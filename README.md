@@ -18,7 +18,7 @@ Inspired by [nanobot](https://github.com/HKUDS/nanobot) and [OpenClaw](https://g
 EdgeClaw uses an **actor-based, message-passing architecture** built on GLib's event loop. Each component runs with its own mailbox (`GAsyncQueue`) and dispatches on a shared `GMainContext` thread.
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────────────────────┐
 │                                 EdgeClaw                                      │
 │                                                                               │
 │  ┌──────────────┐    ┌──────────┐    ┌───────────┐    ┌───────────┐           │
@@ -39,18 +39,18 @@ EdgeClaw uses an **actor-based, message-passing architecture** built on GLib's e
 │                                   │                                           │
 │                    ┌──────────────┼──────────────┐                            │
 │                    │              │              │                            │
-│              ┌─────▼─────┐  ┌─────▼─────┐  ┌────▼──────┐                     │
-│              │  Sandbox  │  │  Skills   │  │  Secrets  │                     │
-│              │ • BPF     │  │  Loader   │  │  (mbedtls)│                     │
-│              │ • Landlock│  │           │  │           │                     │
-│              │ • NS      │  │           │  │           │                     │
-│              └───────────┘  └───────────┘  └───────────┘                     │
+│              ┌─────▼─────┐  ┌─────▼─────┐  ┌─────▼─────┐                      │
+│              │  Sandbox  │  │  Skills   │  │  Secrets  │                      │
+│              │ • BPF     │  │  Loader   │  │  (mbedtls)│                      │
+│              │ • Landlock│  │           │  │           │                      │
+│              │ • NS      │  │           │  │           │                      │
+│              └───────────┘  └───────────┘  └───────────┘                      │
 │                                                                               │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                     │
 │  │  Commands    │    │  Markdown    │    │  Scheduler   │                     │
 │  │  Handler     │    │  Renderer    │    │  (cron fire) │                     │
 │  └──────────────┘    └──────────────┘    └──────────────┘                     │
-└──────────────────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Data Flow
@@ -186,15 +186,31 @@ edgeclaw/
 
 ## Getting Started
 
-### Prerequisites
+### Download Binary (Quick)
+
+Pre-built static binaries for Linux (amd64, armv7, aarch64) and macOS (aarch64) are available on the [Releases](https://github.com/edgeclaw-chat/edgeclaw/releases) page. Download, extract, and run:
+
+```bash
+# Download the latest release tarball for your platform
+curl -LO https://github.com/edgeclaw-chat/edgeclaw/releases/latest/download/edgeclaw_$(uname -m).tar.gz
+
+# Extract and run
+tar -xzf edgeclaw_*.tar.gz
+cd edgeclaw_*/
+./edgeclaw --setup
+```
+
+### Build from Source
+
+#### Prerequisites
 
 - **Bazel** (build system)
 - C compiler (GCC / Clang)
 
-### Build
+#### Build
 
 ```bash
-git clone https://github.com/yourname/edgeclaw.git
+git clone https://github.com/edgeclaw-chat/edgeclaw.git
 cd edgeclaw
 
 # Build for the host platform
