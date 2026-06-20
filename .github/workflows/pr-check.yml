@@ -1,0 +1,54 @@
+name: PR Check
+
+on:
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: amd64_linux
+            runner: ubuntu-latest
+            platform: //:amd64_linux
+          - target: arm_linux
+            runner: ubuntu-latest
+            platform: //:arm_linux
+            cross_compile: arm-linux-gnueabi
+            apt_package: gcc-arm-linux-gnueabi
+          - target: aarch64_linux
+            runner: ubuntu-latest
+            platform: //:aarch64_linux
+            cross_compile: aarch64-linux-gnu
+            apt_package: gcc-aarch64-linux-gnu
+          - target: aarch64_macos
+            runner: macos-14
+            platform: //:aarch64_macos
+
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross-compilation toolchain
+        if: matrix.apt_package != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.apt_package }}
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.14.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-${{ matrix.target }}
+          repository-cache: true
+
+      - name: Build
+        env:
+          CROSS_COMPILE: ${{ matrix.cross_compile && format('/usr/bin/{0}-', matrix.cross_compile) || '' }}
+        run: |
+          bazel build --compilation_mode=opt --platforms=${{ matrix.platform }} //:edgeclaw

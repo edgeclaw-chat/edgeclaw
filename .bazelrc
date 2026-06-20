@@ -1,0 +1,17 @@
+build --features=-supports_start_end_lib
+build --enable_platform_specific_config
+#build --copt=-ffunction-sections
+#build --copt=-fdata-sections
+#build --linkopt=-Wl,--gc-sections
+build --conlyopt="-std=gnu99"
+build --@mbedtls//:mbedtls_config=//src:mbedtls_config
+
+# Pure C project: override default link_libs to exclude -lstdc++
+build --repo_env=BAZEL_LINKLIBS=-lm
+
+# Fix hedron_compile_commands' C++ helper binary linking (pure C project lacks -lstdc++)
+build:cc --linkopt=-lstdc++
+
+build:dbg --compilation_mode=dbg
+build:dbg --copt=-g
+build:dbg --strip=never

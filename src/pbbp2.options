@@ -1,0 +1,6 @@
+pbbp2.Header.key    max_size:64
+pbbp2.Header.value  max_size:256
+pbbp2.Frame.headers               max_count:16
+pbbp2.Frame.payload_encoding      max_size:32
+pbbp2.Frame.payload_type          max_size:32
+pbbp2.Frame.LogIDNew              max_size:64

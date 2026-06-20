@@ -1,0 +1,40 @@
+#ifndef __BC_TOOLBOX_H__
+#define __BC_TOOLBOX_H__
+
+#include "edc_actor.h"
+#include "edc_config.h"
+#include "edc_network_async.h"
+#include <cJSON.h>
+#include <glib.h>
+
+struct edc_tool;
+struct edc_channel;
+
+struct edc_toolbox
+{
+    GHashTable *tools; // name -> edc_tool
+    struct edc_config *conf;
+    cJSON *schemas;
+    edc_actor_t *scheduler;
+    edc_actor_t *channel_actor;
+};
+
+struct edc_toolbox_call_ctx
+{
+    struct edc_toolbox *tb;
+    struct edc_channel *call_from;
+    void *priv;
+};
+
+extern struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, struct edc_channel *channel,
+                                                           void *priv);
+extern void edc_toolbox_call_ctx_free(struct edc_toolbox_call_ctx *);
+extern struct edc_toolbox *edc_toolbox_new(struct edc_config *conf, edc_actor_t *scheduler, edc_actor_t *channel_actor);
+extern void edc_toolbox_free(struct edc_toolbox *tb);
+
+extern void edc_toolbox_register(struct edc_toolbox *tb, struct edc_tool *tool);
+extern void edc_toolbox_register_defaults(struct edc_toolbox *tb);
+
+extern void edc_toolbox_exec(struct edc_toolbox_call_ctx *, const gchar *name, cJSON *args,
+                            void (*callback)(struct edc_toolbox_call_ctx *, GString *, GError *));
+#endif

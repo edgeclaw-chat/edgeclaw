@@ -1,0 +1,12 @@
+--- a/glib/glibconfig.h.in-posix
++++ b/glib/glibconfig.h.in-posix
+@@ -173,7 +173,9 @@
+ #define G_THREADS_ENABLED
+ #define G_THREADS_IMPL_POSIX
+ 
++#if defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4)
+ #define G_ATOMIC_LOCK_FREE
++#endif
+ 
+ #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+ 

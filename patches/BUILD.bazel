@@ -1,0 +1,5 @@
+exports_files([
+    "glib-gmodule-fix.patch",
+    "glib-atomic-lock-free.patch",
+    "sed-static-link.patch",
+])

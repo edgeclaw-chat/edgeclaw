@@ -1,0 +1,66 @@
+module(
+    name = "edgeclaw",
+    version = "1.0.0",
+    repo_name = "edgeclaw"
+)
+
+arm_toolchain = use_extension("//:extensions.bzl", "arm_toolchain")
+use_repo(arm_toolchain, "arm_toolchain")
+register_toolchains("@arm_toolchain//:arm_linux_toolchain")
+
+aarch64_toolchain = use_extension("//:extensions.bzl", "aarch64_toolchain")
+use_repo(aarch64_toolchain, "aarch64_toolchain")
+register_toolchains("@aarch64_toolchain//:aarch64_linux_toolchain")
+
+# Hermetic Python toolchain: downloads Python 3.8 for native builds, no system
+# Python required. Has platform constraints so it only matches native builds.
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(python_version = "3.8", is_default = True)
+use_repo(python, "python_3_8")
+
+# Autodetecting toolchain (fallback for cross-compilation): has no platform
+# constraints so it matches any target. Bazel prefers the hermetic toolchain for
+# native builds (it has more specific constraints); this fallback is only used
+# when the hermetic toolchain doesn't match (e.g., cross-compiling to armv7).
+register_toolchains("@bazel_tools//tools/python:autodetecting_toolchain")
+
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "rules_foreign_cc", version = "0.15.1")
+bazel_dep(name = "glib", version = "2.82.2.bcr.8")
+bazel_dep(name = "mbedtls", version = "3.6.5")
+bazel_dep(name = "nanopb", version = "0.4.9.1.bcr.2")
+bazel_dep(name = "rules_pkg", version = "1.2.0")
+
+single_version_override(
+    module_name = "glib",
+    patches = [
+        "//patches:glib-gmodule-fix.patch",
+        "//patches:glib-atomic-lock-free.patch",
+    ],
+    patch_strip = 1,
+)
+bazel_dep(name = "cjson", version = "1.7.19-0.20240923110858-12c4bf1986c2.bcr.4")
+
+bazel_dep(name = "rules_python", version = "1.7.0")
+
+# Hedron's Compile Commands Extractor for Bazel
+# https://github.com/hedronvision/bazel-compile-commands-extractor
+bazel_dep(name = "hedron_compile_commands", dev_dependency = True)
+git_override(
+    module_name = "hedron_compile_commands",
+    remote = "https://github.com/hedronvision/bazel-compile-commands-extractor.git",
+    commit = "abb61a688167623088f8768cc9264798df6a9d10",
+    # Replace the commit hash (above) with the latest (https://github.com/hedronvision/bazel-compile-commands-extractor/commits/main).
+    # Even better, set up Renovate and let it do the work for you (see "Suggestion: Updates" in the README).
+)
+
+bc_thirdparty_deps = use_extension("//:extensions.bzl", "bc_thirdparty_deps")
+use_repo(
+    bc_thirdparty_deps,
+    "log.c",
+    "mongoose",
+    "ccronexpr",
+    "linenoise",
+    "md4c",
+)
