@@ -188,11 +188,18 @@ edgeclaw/
 
 ### Download Binary (Quick)
 
-Pre-built static binaries for Linux (amd64, armv7, aarch64) and macOS (aarch64) are available on the [Releases](https://github.com/edgeclaw-chat/edgeclaw/releases) page. Download, extract, and run:
+Pre-built static binaries for Linux (amd64, armv7, aarch64) and macOS (aarch64) are available on the [Releases](https://github.com/edgeclaw-chat/edgeclaw/releases) page. Download the tarball matching your platform:
+
+| Platform | Tarball |
+|----------|---------|
+| Linux x86_64 | `edgeclaw_amd64_linux.tar.gz` |
+| Linux aarch64 | `edgeclaw_aarch64_linux.tar.gz` |
+| Linux armv7 | `edgeclaw_arm_linux.tar.gz` |
+| macOS aarch64 | `edgeclaw_aarch64_macos.tar.gz` |
 
 ```bash
-# Download the latest release tarball for your platform
-curl -LO https://github.com/edgeclaw-chat/edgeclaw/releases/latest/download/edgeclaw_$(uname -m).tar.gz
+# Replace {ARCH}_{OS} with your platform, e.g. edgeclaw_amd64_linux.tar.gz
+curl -LO https://github.com/edgeclaw-chat/edgeclaw/releases/latest/download/edgeclaw_{ARCH}_{OS}.tar.gz
 
 # Extract and run
 tar -xzf edgeclaw_*.tar.gz
