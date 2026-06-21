@@ -585,7 +585,7 @@ static void edc_tool_create_crontab(struct edc_toolbox *tb)
                             edc_tool_param_new("message", edc_param_str_type("Reminder message (for add)", NULL), FALSE));
 
     params = g_slist_append(params, edc_tool_param_new("every_seconds",
-                                                       edc_param_int_type("Interval in seconds (for recurring task)"), FALSE));
+                                                       edc_param_int_type("Interval in seconds (for recurring task)", 1, G_MAXINT64), FALSE));
     params =
         g_slist_append(params, edc_tool_param_new("cron_expr",
                                                   edc_param_str_type("Cron expression like '0 2 * * *' (for scheduled tasks)", NULL), FALSE));

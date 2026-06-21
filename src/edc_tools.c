@@ -50,3 +50,23 @@ struct edc_tool *edc_tool_new(const gchar *name, const gchar *desc, GSList *para
 
     return tool;
 }
+
+struct edc_tool *edc_tool_new_v(const gchar *name, const gchar *desc, struct edc_tool_param **params,
+                                edc_tool_exec_async_fn exec)
+{
+    struct edc_tool *tool = g_new0(struct edc_tool, 1);
+    tool->name = g_string_new(name);
+    tool->desc = g_string_new(desc);
+
+    GSList *l = NULL;
+    for (int i = 0; params[i]; ++i)
+    {
+        l = g_slist_append(l, params[i]);
+    }
+    tool->params = l;
+    tool->exec = exec;
+    tool->priv = NULL;
+    tool->priv_free_fn = NULL;
+
+    return tool;
+}

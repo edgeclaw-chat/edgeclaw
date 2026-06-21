@@ -34,6 +34,12 @@ struct edc_param_type
     union {
         struct
         {
+            gint64 min;
+            gint64 max;
+        } num;
+
+        struct
+        {
             struct edc_param_type *item;
         } array;
 
@@ -51,7 +57,7 @@ struct edc_param_type
     };
 };
 
-extern struct edc_param_type *edc_param_int_type(gchar *desc);
+extern struct edc_param_type *edc_param_int_type(gchar *desc, gint64 min, gint64 max);
 extern struct edc_param_type *edc_param_str_type(gchar *desc, const gchar *first, ...);
 extern struct edc_param_type *edc_param_bool_type(gchar *desc);
 extern struct edc_param_type *edc_param_array_type(gchar *desc, struct edc_param_type *item_type);
