@@ -170,7 +170,7 @@ static GString *edc_edit_file_try_create(const gchar *path, gchar *safe_path,
         g_file_get_contents(safe_path, &content, NULL, error);
         if (*error)
             return NULL;
-        g_strstrip(content);
+        content = g_strstrip(content);
         if (content[0] != '\0')
         {
             g_free(content);
@@ -193,6 +193,13 @@ static void edc_edit_file_find_matches(const gchar *content, const gchar *old_te
     *positions = g_array_new(FALSE, FALSE, sizeof(gsize));
     *line_nums = g_array_new(FALSE, FALSE, sizeof(gint64));
 
+    /* Guard: strstr with empty needle matches at every position → infinite loop */
+    if (old_len == 0)
+    {
+        *out_count = 0;
+        return;
+    }
+
     const gchar *scan = content;
     gint64 current_line = 1;
     const gchar *nl_scan = content;
@@ -213,90 +220,147 @@ static void edc_edit_file_find_matches(const gchar *content, const gchar *old_te
     *out_count = (*positions)->len;
 }
 
-static gboolean edc_edit_file_select_matches(guint count, GArray *line_nums,
+static void edc_edit_file_format_match_list(const gchar *content, gsize content_len,
+                                              GArray *positions, GArray *line_nums,
+                                              gsize old_len, guint count, guint max_preview,
+                                              GString *out)
+{
+    guint preview = MIN(count, max_preview);
+    for (guint i = 0; i < preview; i++)
+    {
+        gsize pos = g_array_index(positions, gsize, i);
+        gint64 ln = g_array_index(line_nums, gint64, i);
+        gsize ctx_start = pos > 25 ? pos - 25 : 0;
+        gsize ctx_end = pos + old_len + 25;
+        if (ctx_end > content_len)
+            ctx_end = content_len;
+
+        GString *ctx = g_string_sized_new(ctx_end - ctx_start + 10);
+        for (gsize ci = ctx_start; ci < ctx_end; ci++)
+        {
+            gchar c = content[ci];
+            if (c == '\n')
+                g_string_append(ctx, "\\n");
+            else if (c == '\t')
+                g_string_append(ctx, "\\t");
+            else
+                g_string_append_c(ctx, c);
+        }
+        g_string_append_printf(out, "\n  [%u] line %ld: \"%s\"", i + 1, (long)ln, ctx->str);
+        g_string_free(ctx, TRUE);
+    }
+    if (count > max_preview)
+        g_string_append_printf(out, "\n  ... and %u more matches", count - max_preview);
+}
+
+static gboolean edc_edit_file_select_all(guint count, GArray **selected, GError **error)
+{
+    for (guint i = 0; i < count; i++)
+    {
+        guint idx = i;
+        g_array_append_val(*selected, idx);
+    }
+    return TRUE;
+}
+
+static gboolean edc_edit_file_select_by_occurrence(guint count, gint64 occurrence,
+                                                     GArray **selected, GError **error)
+{
+    if ((guint64)occurrence > count)
+    {
+        g_set_error(error, BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
+                    "Error: occurrence %ld out of range; old_text appears %u times.",
+                    (long)occurrence, count);
+        return FALSE;
+    }
+    guint idx = (guint)(occurrence - 1);
+    g_array_append_val(*selected, idx);
+    return TRUE;
+}
+
+static gboolean edc_edit_file_select_by_line_hint(const gchar *content, gsize content_len,
+                                                    guint count, GArray *line_nums,
+                                                    GArray *positions, gsize old_len,
+                                                    gint64 line_hint, GArray **selected,
+                                                    GError **error)
+{
+    gint64 best_dist = G_MAXINT64;
+    guint best_idx = 0;
+    gboolean ambiguous = FALSE;
+
+    for (guint i = 0; i < count; i++)
+    {
+        gint64 ln = g_array_index(line_nums, gint64, i);
+        gint64 dist = ln > line_hint ? ln - line_hint : line_hint - ln;
+        if (dist < best_dist)
+        {
+            best_dist = dist;
+            best_idx = i;
+            ambiguous = FALSE;
+        }
+        else if (dist == best_dist)
+            ambiguous = TRUE;
+    }
+
+    if (ambiguous)
+    {
+        GString *msg = g_string_new(NULL);
+        edc_edit_file_format_match_list(content, content_len, positions, line_nums,
+                                         old_len, count, 5, msg);
+        g_set_error(error, BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
+                    "Error: line_hint %ld is ambiguous; old_text appears %u times.%s",
+                    (long)line_hint, count, msg->str);
+        g_string_free(msg, TRUE);
+        return FALSE;
+    }
+
+    g_array_append_val(*selected, best_idx);
+    return TRUE;
+}
+
+static gboolean edc_edit_file_select_matches(const gchar *content, gsize content_len,
+                                              guint count, GArray *line_nums,
+                                              GArray *positions, gsize old_len,
                                               gboolean replace_all, gint64 occurrence,
                                               gint64 line_hint, GArray **selected, GError **error)
 {
     *selected = g_array_new(FALSE, FALSE, sizeof(guint));
 
-    if (replace_all && occurrence > 0)
-        goto mutual_exclusive;
-    if (replace_all && line_hint > 0)
-        goto mutual_exclusive;
-    if (occurrence > 0 && line_hint > 0)
-        goto mutual_exclusive;
+    if ((replace_all ? 1 : 0) + (occurrence > 0 ? 1 : 0) + (line_hint > 0 ? 1 : 0) > 1)
+    {
+        g_set_error(error, BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
+                    "Error: occurrence, line_hint, and replace_all are mutually exclusive.");
+        return FALSE;
+    }
+
+    if (count == 0)
+    {
+        g_set_error(error, BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
+                    "Error: internal error — no matches to select from.");
+        return FALSE;
+    }
 
     if (replace_all)
-    {
-        for (guint i = 0; i < count; i++)
-        {
-            guint idx = i;
-            g_array_append_val(*selected, idx);
-        }
-        return TRUE;
-    }
+        return edc_edit_file_select_all(count, selected, error);
 
     if (occurrence > 0)
-    {
-        if ((guint64)occurrence > count)
-        {
-            g_set_error(error, BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
-                        "Error: occurrence %ld out of range; old_text appears %u times.",
-                        (long)occurrence, count);
-            return FALSE;
-        }
-        guint idx = (guint)(occurrence - 1);
-        g_array_append_val(*selected, idx);
-        return TRUE;
-    }
+        return edc_edit_file_select_by_occurrence(count, occurrence, selected, error);
 
     if (line_hint > 0)
-    {
-        gint64 best_dist = G_MAXINT64;
-        guint best_idx = 0;
-        gboolean ambiguous = FALSE;
-        for (guint i = 0; i < count; i++)
-        {
-            gint64 ln = g_array_index(line_nums, gint64, i);
-            gint64 dist = ln > line_hint ? ln - line_hint : line_hint - ln;
-            if (dist < best_dist)
-            {
-                best_dist = dist;
-                best_idx = i;
-                ambiguous = FALSE;
-            }
-            else if (dist == best_dist)
-                ambiguous = TRUE;
-        }
-        if (ambiguous)
-        {
-            g_set_error(error, BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
-                        "Error: line_hint %ld is ambiguous; old_text appears %u times.",
-                        (long)line_hint, count);
-            return FALSE;
-        }
-        g_array_append_val(*selected, best_idx);
-        return TRUE;
-    }
+        return edc_edit_file_select_by_line_hint(content, content_len, count, line_nums,
+                                                  positions, old_len, line_hint,
+                                                  selected, error);
 
     if (count > 1)
     {
-        GString *loc_msg = g_string_new(NULL);
-        guint preview = MIN(count, 3);
-        for (guint i = 0; i < preview; i++)
-        {
-            if (i > 0)
-                g_string_append(loc_msg, ", ");
-            g_string_append_printf(loc_msg, "line %ld",
-                                   (long)g_array_index(line_nums, gint64, i));
-        }
-        if (count > 3)
-            g_string_append(loc_msg, ", ...");
+        GString *msg = g_string_new(NULL);
+        edc_edit_file_format_match_list(content, content_len, positions, line_nums,
+                                         old_len, count, 5, msg);
         g_set_error(error, BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
-                    "Warning: old_text appears %u times at %s. "
-                    "Provide more context, set occurrence, or set replace_all=true.",
-                    count, loc_msg->str);
-        g_string_free(loc_msg, TRUE);
+                    "Warning: old_text appears %u times. "
+                    "Provide more context, set occurrence, or set replace_all=true.%s",
+                    count, msg->str);
+        g_string_free(msg, TRUE);
         return FALSE;
     }
 
@@ -305,11 +369,6 @@ static gboolean edc_edit_file_select_matches(guint count, GArray *line_nums,
         g_array_append_val(*selected, zero);
     }
     return TRUE;
-
-mutual_exclusive:
-    g_set_error(error, BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
-                "Error: occurrence, line_hint, and replace_all are mutually exclusive.");
-    return FALSE;
 }
 
 static void edc_edit_file_apply_replacements(const gchar *content, gsize content_len,
@@ -344,6 +403,13 @@ static GString *edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, GE
     const gchar *old_text = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "old_text"));
     const gchar *new_text = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "new_text"));
 
+    if (!path || !old_text || !new_text)
+    {
+        g_set_error(error, BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
+                    "Error: missing required parameter 'path', 'old_text', or 'new_text'.");
+        return NULL;
+    }
+
     gboolean replace_all = cJSON_IsTrue(cJSON_GetObjectItem(args, "replace_all"));
 
     cJSON *j;
@@ -361,6 +427,13 @@ static GString *edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, GE
     j = cJSON_GetObjectItem(args, "expected_replacements");
     if (j && cJSON_IsNumber(j))
         expected_replacements = (gint64)j->valuedouble;
+
+    if (occurrence < 0 || line_hint < 0 || expected_replacements < 0)
+    {
+        g_set_error(error, BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
+                    "Error: occurrence, line_hint, and expected_replacements must be non-negative.");
+        return NULL;
+    }
 
     gchar *safe_path = edc_sandbox_verify_path(conf, path, TRUE, error);
     if (!safe_path)
@@ -396,7 +469,8 @@ static GString *edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, GE
         goto cleanup;
     }
 
-    if (!edc_edit_file_select_matches(count, line_nums, replace_all, occurrence,
+    if (!edc_edit_file_select_matches(content, content_len, count, line_nums,
+                                       positions, old_len, replace_all, occurrence,
                                        line_hint, &selected, error))
         goto cleanup;
 
