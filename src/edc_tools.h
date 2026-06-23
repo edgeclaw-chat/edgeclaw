@@ -1,8 +1,8 @@
 #ifndef __BC_TOOLS_H__
 #define __BC_TOOLS_H__
 
-#include "edc_param_types.h"
 #include "cJSON.h"
+#include "edc_param_types.h"
 #include <glib.h>
 
 extern GQuark edc_tool_error_quark(void);
@@ -22,7 +22,7 @@ struct edc_toolbox;
 struct edc_tool;
 struct edc_toolbox_call_ctx;
 typedef void (*edc_tool_exec_async_fn)(struct edc_toolbox_call_ctx *ctx, struct edc_tool *, cJSON *,
-                                      void (*callback)(struct edc_toolbox_call_ctx *ctx, GString *, GError *));
+                                       void (*callback)(struct edc_toolbox_call_ctx *ctx, GString *, GError *));
 
 struct edc_tool
 {
@@ -37,4 +37,6 @@ struct edc_tool
 
 extern struct edc_tool *edc_tool_new(const gchar *name, const gchar *desc, GSList *params, edc_tool_exec_async_fn exec);
 extern void edc_tool_free(struct edc_tool *tool);
+extern struct edc_tool *edc_tool_new_v(const gchar *name, const gchar *desc, struct edc_tool_param **params,
+                                       edc_tool_exec_async_fn exec);
 #endif

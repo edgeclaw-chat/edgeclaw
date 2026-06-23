@@ -2,11 +2,13 @@
 
 #include <stdarg.h>
 
-struct edc_param_type *edc_param_int_type(gchar *desc)
+struct edc_param_type *edc_param_int_type(gchar *desc, gint64 min, gint64 max)
 {
     struct edc_param_type *type = g_new0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_INT;
     type->desc = g_strdup(desc);
+    type->num.min = min;
+    type->num.max = max;
     return type;
 }
 
@@ -118,7 +120,13 @@ gboolean edc_param_type_validate(cJSON *args, struct edc_param_type *type)
     switch (type->type)
     {
     case BC_TOOL_TYPE_INT:
-        return cJSON_IsNumber(args) && (args->valueint == args->valuedouble);
+        if (!cJSON_IsNumber(args) || (args->valueint != args->valuedouble))
+            return FALSE;
+        if (type->num.min != G_MININT64 && args->valueint < type->num.min)
+            return FALSE;
+        if (type->num.max != G_MAXINT64 && args->valueint > type->num.max)
+            return FALSE;
+        return TRUE;
     case BC_TOOL_TYPE_BOOL:
         return cJSON_IsBool(args);
     case BC_TOOL_TYPE_STR:
@@ -174,6 +182,10 @@ cJSON *edc_param_type_to_json(struct edc_param_type *type)
         cJSON_AddStringToObject(obj, "type", "integer");
         if (type->desc)
             cJSON_AddStringToObject(obj, "description", type->desc);
+        if (type->num.min != G_MININT64)
+            cJSON_AddNumberToObject(obj, "minimum", (double)type->num.min);
+        if (type->num.max != G_MAXINT64)
+            cJSON_AddNumberToObject(obj, "maximum", (double)type->num.max);
         return obj;
     }
     case BC_TOOL_TYPE_BOOL: {
