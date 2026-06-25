@@ -89,9 +89,6 @@ cc_test(
         "//src:agent",
     ],
     linkopts = LINK_OPTS,
-    env = {
-        "PRECONFIGURED_TAPIF": "tap0",
-    },
 )
 
 cc_test(
