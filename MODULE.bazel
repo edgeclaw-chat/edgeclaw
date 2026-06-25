@@ -63,4 +63,5 @@ use_repo(
     "ccronexpr",
     "linenoise",
     "md4c",
+    "lwip",
 )
