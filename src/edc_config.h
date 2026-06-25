@@ -66,6 +66,7 @@ struct edc_config
     gchar **sandbox_rw_paths;
     int max_iter;
     int load_n_histories;
+    int memory_compress_threshold;
     int tool_max_output_size;
 };
 

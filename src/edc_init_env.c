@@ -225,6 +225,10 @@ static struct edc_init_env_result *load_existing_config(const gchar *conf_file)
     if (item && cJSON_IsNumber(item))
         result->load_n_histories = item->valueint;
 
+    item = cJSON_GetObjectItem(json, "memory_compress_threshold");
+    if (item && cJSON_IsNumber(item))
+        result->memory_compress_threshold = item->valueint;
+
     item = cJSON_GetObjectItem(json, "tool_max_output_size");
     if (item && cJSON_IsNumber(item))
         result->tool_max_output_size = item->valueint;
@@ -428,6 +432,13 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     if (ival < 0)
         return -1;
     result->load_n_histories = ival;
+
+    /* Memory Compress Threshold */
+    ival = prompt_int("Memory Compress Threshold",
+                      defaults && defaults->memory_compress_threshold > 0 ? defaults->memory_compress_threshold : 100);
+    if (ival < 0)
+        return -1;
+    result->memory_compress_threshold = ival;
 
     /* Tool Max Output Size */
     ival = prompt_int("Tool Max Output Size",
@@ -927,6 +938,7 @@ static gboolean edc_init_env_conf_file(const gchar *conf_file, const gchar *edc_
     cJSON_AddStringToObject(config, "api_url", env_result.api_url);
     cJSON_AddNumberToObject(config, "max_iter", env_result.max_iter);
     cJSON_AddNumberToObject(config, "load_n_histories", env_result.load_n_histories);
+    cJSON_AddNumberToObject(config, "memory_compress_threshold", env_result.memory_compress_threshold);
     cJSON_AddNumberToObject(config, "tool_max_output_size", env_result.tool_max_output_size);
 
     cJSON *sandbox = cJSON_CreateObject();
