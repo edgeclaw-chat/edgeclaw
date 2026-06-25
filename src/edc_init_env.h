@@ -37,6 +37,7 @@ struct edc_init_env_result
     char model[128];
     int max_iter;
     int load_n_histories;
+    int memory_compress_threshold;
     int tool_max_output_size;
     char sandbox_root[512];
     char sandbox_rw_paths[2048];
