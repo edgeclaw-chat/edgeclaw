@@ -28,8 +28,9 @@
 #define MEMP_NUM_PBUF               32
 
 #define MEMP_NUM_TCP_SEG            64
-#define MEMP_NUM_TCP_PCB            16
-#define MEMP_NUM_TCP_PCB_LISTEN     4
+#define MEMP_NUM_TCP_PCB            64
+#define MEMP_NUM_TCP_PCB_LISTEN     8
+#define LWIP_SO_LINGER              1
 #define MEMP_NUM_UDP_PCB            8
 #define MEMP_NUM_RAW_PCB            4
 

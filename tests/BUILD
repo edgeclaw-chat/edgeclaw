@@ -112,6 +112,30 @@ cc_test(
 )
 
 cc_test(
+    name = "test_pppos_agent",
+    srcs = ["test_pppos_agent.c"],
+    deps = [
+        "@lwip//:lwip",
+        "//thirdparty/lwip:sys_arch",
+        "//src:agent",
+    ],
+    linkopts = LINUX_LINK_OPTS + ["-lutil"],
+)
+
+cc_test(
+    name = "test_pppos_agent_stress",
+    srcs = ["test_pppos_agent_stress.c"],
+    deps = [
+        "@glib//glib:glib",
+        "@cjson//:cjson",
+        "@lwip//:lwip",
+        "//thirdparty/lwip:sys_arch",
+        "//src:agent",
+    ],
+    linkopts = LINUX_LINK_OPTS + ["-lutil"],
+)
+
+cc_test(
     name = "test_markdown_render",
     srcs = ["test_markdown_render.c"],
     deps = [

@@ -66,6 +66,7 @@ cc_library(
         "edc_tools_todo.c",
         "edc_markdown_render.c",
         "edc_lwip.c",
+        "edc_pppos_agent.c",
     ],
     hdrs = [
         "edc_context.h",
@@ -101,6 +102,7 @@ cc_library(
         "edc_tools_todo.h",
         "edc_markdown_render.h",
         "edc_lwip.h",
+        "edc_pppos_agent.h",
     ],
     deps = [
         "@glib//glib:glib",
