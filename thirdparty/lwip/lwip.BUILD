@@ -11,11 +11,14 @@ cc_library(
             "src/core/*.c",
             "src/core/ipv4/*.c",
             "src/netif/*.c",
+            "src/netif/ppp/*.c",
             "src/api/*.c",
             "contrib/ports/unix/port/netif/tapif.c",
         ],
         exclude = [
             "src/api/netdb.c",
+            "src/netif/ppp/pppoe.c",
+            "src/netif/ppp/pppol2tp.c",
         ],
     ),
     copts = [

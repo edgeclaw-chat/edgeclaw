@@ -45,7 +45,24 @@
 #define LWIP_TCPIP_CORE_LOCKING     1
 #define LWIP_TCPIP_CORE_LOCKING_INPUT 0
 
+#define PPP_SUPPORT                 1
+#define PPPOS_SUPPORT               1
+#define PPP_IPV4_SUPPORT            1
+#define PPP_IPV6_SUPPORT            0
+#define PAP_SUPPORT                 1
+#define CHAP_SUPPORT                0
+#define MSCHAP_SUPPORT              0
+#define EAP_SUPPORT                 0
+#define CCP_SUPPORT                 0
+#define MPPE_SUPPORT                0
+#define VJ_SUPPORT                  1
+#define PPP_NOTIFY_PHASE            1
+
+#define MEMP_NUM_PPP_PCB            2
+#define PPP_DEFMRU                  1500
+
 #define LWIP_STATS                  0
 #define LWIP_DEBUG                  0
+#define PPP_DEBUG                   LWIP_DBG_OFF
 
 #endif
