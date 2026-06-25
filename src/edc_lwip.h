@@ -3,8 +3,9 @@
 
 #include <glib.h>
 
-extern gboolean edc_lwip_init_tap(const gchar *ipaddr, const gchar *netmask, const gchar *gw);
-extern void edc_lwip_init_loopback(void);
-extern void edc_lwip_shutdown(void);
+gboolean edc_lwip_init_tap(const char *ipaddr, const char *netmask, const char *gw);
+void edc_lwip_init_loopback(void);
+gboolean edc_lwip_init_pppos(int fd);
+void edc_lwip_shutdown(void);
 
 #endif

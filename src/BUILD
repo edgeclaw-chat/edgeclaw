@@ -7,6 +7,17 @@ LINK_OPTS = select({
 })
 
 cc_binary(
+    name = "device_agent",
+    srcs = ["agent_main.c"],
+    deps = [
+        ":agent",
+    ],
+    linkstatic = True,
+    linkopts = LINK_OPTS,
+    visibility = ["//visibility:public"],
+)
+
+cc_binary(
     name = "edgeclaw",
     srcs = [
         "main.c",
@@ -67,6 +78,7 @@ cc_library(
         "edc_markdown_render.c",
         "edc_lwip.c",
         "edc_pppos_agent.c",
+        "edc_tools_device_shell.c",
     ],
     hdrs = [
         "edc_context.h",
@@ -103,6 +115,7 @@ cc_library(
         "edc_markdown_render.h",
         "edc_lwip.h",
         "edc_pppos_agent.h",
+        "edc_tools_device_shell.h",
     ],
     deps = [
         "@glib//glib:glib",
