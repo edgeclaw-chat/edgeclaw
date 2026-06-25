@@ -102,6 +102,16 @@ cc_test(
 )
 
 cc_test(
+    name = "test_pppos_stress",
+    srcs = ["test_pppos_stress.c"],
+    deps = [
+        "@lwip//:lwip",
+        "//thirdparty/lwip:sys_arch",
+    ],
+    linkopts = LINUX_LINK_OPTS + ["-lutil"],
+)
+
+cc_test(
     name = "test_markdown_render",
     srcs = ["test_markdown_render.c"],
     deps = [
