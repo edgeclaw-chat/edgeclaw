@@ -1,8 +1,5 @@
 #include "edc_lwip.h"
-
-#include "lwip/init.h"
 #include "lwip/netif.h"
-#include "lwip/ip_addr.h"
 #include "lwip/tcpip.h"
 #include "netif/tapif.h"
 
@@ -16,15 +13,18 @@ static void init_tap_netif(void *arg)
 
     (void)ipaddr;
     ipaddr = getenv("LWIP_IPADDR");
-    if (!ipaddr) {
+    if (!ipaddr)
+    {
         ipaddr = "192.168.100.2";
     }
 
-    if (!getenv("PRECONFIGURED_TAPIF")) {
+    if (!getenv("PRECONFIGURED_TAPIF"))
+    {
         setenv("PRECONFIGURED_TAPIF", "tap0", 1);
     }
 
-    if (!ip4addr_aton(ipaddr, &ip)) {
+    if (!ip4addr_aton(ipaddr, &ip))
+    {
         return;
     }
     IP4_ADDR(&nm, 255, 255, 255, 0);
@@ -53,10 +53,12 @@ void edc_lwip_init_loopback(void)
 
 void edc_lwip_shutdown(void)
 {
-    if (!lwip_initialized) {
+    if (!lwip_initialized)
+    {
         return;
     }
-    if (lwip_tap_netif.name[0] != 0) {
+    if (lwip_tap_netif.name[0] != 0)
+    {
         netif_set_down(&lwip_tap_netif);
         netif_remove(&lwip_tap_netif);
     }
