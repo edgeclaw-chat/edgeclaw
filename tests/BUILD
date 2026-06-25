@@ -80,6 +80,21 @@ cc_test(
 )
 
 cc_test(
+    name = "test_lwip_http",
+    srcs = ["test_lwip_http.c"],
+    deps = [
+        "@glib//glib:glib",
+        "@lwip//:lwip",
+        "//thirdparty/lwip:sys_arch",
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+    env = {
+        "PRECONFIGURED_TAPIF": "tap0",
+    },
+)
+
+cc_test(
     name = "test_markdown_render",
     srcs = ["test_markdown_render.c"],
     deps = [

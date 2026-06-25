@@ -23,7 +23,6 @@ typedef uintptr_t   mem_ptr_t;
 #define LWIP_PLATFORM_DIAG(x)
 
 void abort(void) __attribute__((__noreturn__));
-int rand(void);
 
 #define LWIP_PLATFORM_ASSERT(x) \
     do { abort(); } while (0)
@@ -34,6 +33,7 @@ int rand(void);
 
 #define LWIP_PROVIDE_ERRNO
 
-#define LWIP_RAND()     ((u32_t)rand())
+unsigned int lwip_port_rand(void);
+#define LWIP_RAND()     ((u32_t)lwip_port_rand())
 
 #endif

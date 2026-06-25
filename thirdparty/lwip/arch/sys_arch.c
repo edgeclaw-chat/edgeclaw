@@ -35,6 +35,29 @@ struct sys_mbox_impl {
 
 static pthread_mutex_t lwip_protect_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+static pthread_t lwip_tcpip_thread_id;
+static pthread_mutex_t lwip_core_lock = PTHREAD_MUTEX_INITIALIZER;
+
+unsigned int lwip_port_rand(void)
+{
+    return (unsigned int)rand();
+}
+
+void sys_mark_tcpip_thread(void)
+{
+    lwip_tcpip_thread_id = pthread_self();
+}
+
+void sys_lock_tcpip_core(void)
+{
+    pthread_mutex_lock(&lwip_core_lock);
+}
+
+void sys_unlock_tcpip_core(void)
+{
+    pthread_mutex_unlock(&lwip_core_lock);
+}
+
 void sys_init(void)
 {
 }

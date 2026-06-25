@@ -65,6 +65,7 @@ cc_library(
         "edc_param_types.c",
         "edc_tools_todo.c",
         "edc_markdown_render.c",
+        "edc_lwip.c",
     ],
     hdrs = [
         "edc_context.h",
@@ -99,6 +100,7 @@ cc_library(
         "edc_param_types.h",
         "edc_tools_todo.h",
         "edc_markdown_render.h",
+        "edc_lwip.h",
     ],
     deps = [
         "@glib//glib:glib",
@@ -110,10 +112,12 @@ cc_library(
         "@md4c//:md4c",
         ":lark_api_pb",
         ":edc_secret_lib",
+        "@lwip//:lwip",
+        "//thirdparty/lwip:sys_arch",
     ],
     linkopts = select({
         "//:macos": ["-lresolv"],
-        "//conditions:default": [],
+        "//conditions:default": ["-lpthread"],
     }),
     linkstatic = True,
     visibility = ["//visibility:public"],

@@ -19,7 +19,7 @@ cc_library(
         ":config",
         "@lwip//:lwip",
     ],
-    linkopts = ["-lpthread"],
     visibility = ["//visibility:public"],
     linkstatic = True,
+    alwayslink = True,
 )

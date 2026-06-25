@@ -4,6 +4,7 @@ cc_library(
     name = "lwip",
     hdrs = glob([
         "src/include/**/*.h",
+        "contrib/ports/unix/port/include/**/*.h",
     ]),
     srcs = glob(
         [
@@ -11,6 +12,7 @@ cc_library(
             "src/core/ipv4/*.c",
             "src/netif/*.c",
             "src/api/*.c",
+            "contrib/ports/unix/port/netif/tapif.c",
         ],
         exclude = [
             "src/api/netdb.c",
@@ -18,8 +20,12 @@ cc_library(
     ),
     copts = [
         "-DLWIP_NOASSERT",
+        "-DLWIP_UNIX_LINUX",
     ],
-    includes = ["src/include"],
+    includes = [
+        "src/include",
+        "contrib/ports/unix/port/include",
+    ],
     deps = [
         "@//thirdparty/lwip:config",
     ],
