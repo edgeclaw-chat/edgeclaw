@@ -224,7 +224,7 @@ static void edc_agent_scheduler_handler(struct edc_actor *actor, struct edc_acto
         break;
     }
 
-    if (edc_session_get_message_count(agent->session) > 40 &&
+    if (edc_session_get_message_count(agent->session) > agent->config->memory_compress_threshold &&
         !edc_memory_actor_is_compressing(agent->memory_actor)) // msg + system prompt
     {
         log_info("message count = %zu, start compress.", edc_session_get_message_count(agent->session));
@@ -271,7 +271,7 @@ struct edc_agent *edc_agent_new(gboolean setup, gboolean enable_sandbox)
     agent->scheduler = edc_actor_new("schuler", edc_agent_scheduler_handler, agent);
     agent->channel_actor = edc_channel_actor_new(&agent->config->channel, agent->network);
     agent->llm_actor = edc_llm_actor_new(&agent->config->llm_api_conf, agent->network);
-    agent->memory_actor = edc_memory_actor_new(agent->config->workspace, 40, agent->llm_actor);
+    agent->memory_actor = edc_memory_actor_new(agent->config->workspace, agent->config->memory_compress_threshold, agent->llm_actor);
     agent->session = edc_session_new(agent->config);
 
     edc_channel_actor_set_observer(agent->channel_actor, agent->scheduler);

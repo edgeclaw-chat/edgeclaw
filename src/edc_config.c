@@ -225,6 +225,16 @@ struct edc_config *edc_config_load(const gchar *edc_home)
     }
     config->load_n_histories = load_n_histories->valueint;
 
+    cJSON *memory_compress_threshold = cJSON_GetObjectItem(conf, "memory_compress_threshold");
+    if (!memory_compress_threshold || !cJSON_IsNumber(memory_compress_threshold))
+    {
+        config->memory_compress_threshold = 100;
+    }
+    else
+    {
+        config->memory_compress_threshold = memory_compress_threshold->valueint;
+    }
+
     cJSON *tool_max_output_size = cJSON_GetObjectItem(conf, "tool_max_output_size");
     if (!tool_max_output_size || !cJSON_IsNumber(tool_max_output_size))
     {
