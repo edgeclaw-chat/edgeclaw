@@ -11,6 +11,7 @@
 #include <termios.h>
 
 static struct netif lwip_tap_netif;
+static struct netif lwip_pppos_netif;
 static gboolean lwip_initialized = FALSE;
 
 static void init_tap_netif(void *arg)
@@ -71,43 +72,40 @@ static void *pppos_reader(void *arg)
     return NULL;
 }
 
-static struct netif lwip_pppos_netif;
-
-static void init_pppos_netif(void *arg)
+gboolean edc_lwip_init_pppos(int fd)
 {
     struct netif *ni = &lwip_pppos_netif;
-    (void)arg;
-    ip4_addr_t zero, m;
+    ip4_addr_t my_addr, peer_addr, nm;
 
-    IP4_ADDR(&zero, 0, 0, 0, 0);
-    IP4_ADDR(&m, 255, 255, 255, 0);
+    g_pppos_fd = fd;
+    lwip_initialized = TRUE;
+    tcpip_init(NULL, NULL);
+
+    IP4_ADDR(&my_addr, 192, 168, 4, 2);
+    IP4_ADDR(&peer_addr, 192, 168, 4, 1);
+    IP4_ADDR(&nm, 255, 255, 255, 0);
     memset(ni, 0, sizeof(*ni));
-    ip_addr_copy(ni->ip_addr, zero);
-    ip_addr_copy(ni->gw, zero);
-    ip_addr_copy(ni->netmask, m);
+    ip_addr_copy(ni->ip_addr, my_addr);
+    ip_addr_copy(ni->gw, peer_addr);
+    ip_addr_copy(ni->netmask, nm);
 
     g_pppos_pcb = pppapi_pppos_create(ni, pppos_out_cb, pppos_status_cb, &g_pppos_fd);
-    if (!g_pppos_pcb) return;
+    if (!g_pppos_pcb) return FALSE;
     pppapi_set_default(g_pppos_pcb);
     ppp_set_auth(g_pppos_pcb, PPPAUTHTYPE_NONE, NULL, NULL);
-    ppp_set_ipcp_ouraddr(g_pppos_pcb, &zero);   /* 0.0.0.0 = let server assign */
-    ppp_set_ipcp_hisaddr(g_pppos_pcb, &zero);   /* 0.0.0.0 = accept whatever server says */
+    ppp_set_ipcp_ouraddr(g_pppos_pcb, &my_addr);
+    ppp_set_ipcp_hisaddr(g_pppos_pcb, &peer_addr);
     sys_thread_new("pppos_rd", (lwip_thread_fn)pppos_reader, NULL, 0, 1);
     sys_msleep(50);
     pppapi_connect(g_pppos_pcb, 0);
-}
-
-gboolean edc_lwip_init_pppos(int fd)
-{
-    g_pppos_fd = fd;
-    lwip_initialized = TRUE;
-    tcpip_init(init_pppos_netif, NULL);
 
     int timeout = 200;
     while (!g_pppos_link_up && timeout > 0) {
         sys_msleep(50);
         timeout--;
     }
+    if (g_pppos_link_up)
+        sys_msleep(500);
     return g_pppos_link_up;
 }
 
@@ -130,6 +128,10 @@ void edc_lwip_shutdown(void)
     if (lwip_tap_netif.name[0] != 0) {
         netif_set_down(&lwip_tap_netif);
         netif_remove(&lwip_tap_netif);
+    }
+    if (lwip_pppos_netif.name[0] != 0) {
+        netif_set_down(&lwip_pppos_netif);
+        netif_remove(&lwip_pppos_netif);
     }
     lwip_initialized = FALSE;
 }
