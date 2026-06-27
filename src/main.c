@@ -8,8 +8,6 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
-#include <fcntl.h>
-#include <unistd.h>
 #ifdef __linux__
 #include <sys/prctl.h>
 #elif defined(__APPLE__)
@@ -132,16 +130,11 @@ int main(int argc, char *argv[])
 
     /* PPPoS device link (optional, configured via config.json "device_pty") */
     if (agent->config->device_pty) {
-        int fd = open(agent->config->device_pty, O_RDWR | O_NOCTTY);
-        if (fd >= 0) {
-            log_info("connecting to device via PPPoS on %s ...", agent->config->device_pty);
-            if (edc_lwip_init_pppos(fd))
-                log_info("PPPoS link UP");
-            else
-                log_error("PPPoS link failed");
-        } else {
-            log_error("cannot open device pty: %s", agent->config->device_pty);
-        }
+        log_info("connecting to device via PPPoS on %s ...", agent->config->device_pty);
+        if (edc_lwip_init_pppos_path(agent->config->device_pty))
+            log_info("PPPoS link UP");
+        else
+            log_error("PPPoS link failed");
     }
 
     while (_run_loop)

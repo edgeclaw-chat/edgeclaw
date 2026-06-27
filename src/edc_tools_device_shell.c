@@ -45,8 +45,7 @@ static err_t recv_until_close(struct netconn *c, GString *buf)
 static void device_shell_thread(gpointer data, gpointer user_data)
 {
     struct device_shell_ctx *ctx = data;
-    struct edc_toolbox *tb = user_data;
-    (void)tb;
+    (void)user_data;
 
     GString *result = g_string_new(NULL);
     GError *error = NULL;
@@ -54,7 +53,7 @@ static void device_shell_thread(gpointer data, gpointer user_data)
     ip_addr_t addr;
     if (!ip4addr_aton(ctx->agent_ip, &addr)) {
         error = g_error_new(BC_TOOL_ERROR, BC_TOOL_ARG_INVALID,
-                            "device_shell: invalid agent IP: %s", ctx->agent_ip);
+                            "device_shell: invalid device_ip in config: %s", ctx->agent_ip);
         ctx->callback(ctx->tb_ctx, NULL, error);
         device_shell_ctx_free(ctx);
         return;
@@ -80,7 +79,6 @@ static void device_shell_thread(gpointer data, gpointer user_data)
         return;
     }
 
-    /* build JSON request */
     cJSON *req_json = cJSON_CreateObject();
     cJSON_AddStringToObject(req_json, "command", ctx->command);
     char *req_body = cJSON_PrintUnformatted(req_json);
@@ -100,13 +98,11 @@ static void device_shell_thread(gpointer data, gpointer user_data)
     netconn_write_partly(c, req_body, strlen(req_body), NETCONN_COPY, NULL);
     free(req_body);
 
-    /* read response */
     GString *resp_buf = g_string_new(NULL);
     recv_until_close(c, resp_buf);
     netconn_close(c);
     netconn_delete(c);
 
-    /* parse HTTP response */
     char *body = strstr(resp_buf->str, "\r\n\r\n");
     if (!body) {
         g_string_free(resp_buf, TRUE);
@@ -173,28 +169,21 @@ edc_tool_device_shell_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc
         return;
     }
 
+    struct edc_config *conf = tb_ctx->tb->conf;
+    if (!conf->device_ip) {
+        GError *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_ARG_INVALID,
+                                    "device_shell: device_ip not configured in config.json");
+        callback(tb_ctx, NULL, error);
+        return;
+    }
+
     struct device_shell_ctx *ctx = g_new0(struct device_shell_ctx, 1);
     ctx->tb_ctx = tb_ctx;
     ctx->callback = callback;
     ctx->command = g_strdup(cJSON_GetStringValue(cmd));
+    ctx->agent_ip = g_strdup(conf->device_ip);
+    ctx->agent_port = (uint16_t)(conf->device_port > 0 ? conf->device_port : 5000);
 
-    struct edc_config *conf = tb_ctx->tb->conf;
-
-    cJSON *aip = cJSON_GetObjectItem(args, "agent_ip");
-    if (aip && cJSON_IsString(aip))
-        ctx->agent_ip = g_strdup(aip->valuestring);
-    else if (conf->device_ip)
-        ctx->agent_ip = g_strdup(conf->device_ip);
-    else
-        ctx->agent_ip = g_strdup("192.168.4.1");
-
-    cJSON *aport = cJSON_GetObjectItem(args, "agent_port");
-    if (aport && cJSON_IsNumber(aport))
-        ctx->agent_port = (uint16_t)aport->valueint;
-    else
-        ctx->agent_port = (uint16_t)(conf->device_port > 0 ? conf->device_port : 5000);
-
-    /* Run HTTP request in thread to avoid blocking main loop */
     g_thread_new("device_shell", (GThreadFunc)device_shell_thread, ctx);
 }
 
@@ -203,11 +192,6 @@ struct edc_tool *edc_tool_create_device_shell(struct edc_toolbox *tb)
     GSList *params = NULL;
     params = g_slist_append(params,
         edc_tool_param_new("command", edc_param_str_type("Shell command to execute on remote device", NULL), TRUE));
-    params = g_slist_append(params,
-        edc_tool_param_new("agent_ip", edc_param_str_type("Agent IP (default 192.168.4.1)", "192.168.4.1"), FALSE));
-    params = g_slist_append(params,
-        edc_tool_param_new("agent_port",
-            edc_param_int_type("Agent port (default 5000)", 1, 65535), FALSE));
 
     struct edc_tool *tool = edc_tool_new("device_shell",
         "Execute a shell command on a remote device via lwIP PPPoS agent", params,

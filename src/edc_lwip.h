@@ -6,6 +6,7 @@
 gboolean edc_lwip_init_tap(const char *ipaddr, const char *netmask, const char *gw);
 void edc_lwip_init_loopback(void);
 gboolean edc_lwip_init_pppos(int fd);
+gboolean edc_lwip_init_pppos_path(const char *path);
 void edc_lwip_shutdown(void);
 
 #endif

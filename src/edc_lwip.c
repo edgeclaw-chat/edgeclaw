@@ -7,6 +7,8 @@
 #include "netif/ppp/pppos.h"
 #include "netif/ppp/ppp.h"
 #include <unistd.h>
+#include <fcntl.h>
+#include <termios.h>
 
 static struct netif lwip_tap_netif;
 static gboolean lwip_initialized = FALSE;
@@ -69,9 +71,12 @@ static void *pppos_reader(void *arg)
     return NULL;
 }
 
+static struct netif lwip_pppos_netif;
+
 static void init_pppos_netif(void *arg)
 {
-    struct netif *ni = (struct netif *)arg;
+    struct netif *ni = &lwip_pppos_netif;
+    (void)arg;
     ip4_addr_t zero, m;
 
     IP4_ADDR(&zero, 0, 0, 0, 0);
@@ -104,6 +109,19 @@ gboolean edc_lwip_init_pppos(int fd)
         timeout--;
     }
     return g_pppos_link_up;
+}
+
+gboolean edc_lwip_init_pppos_path(const char *path)
+{
+    int fd = open(path, O_RDWR | O_NOCTTY);
+    if (fd < 0) return FALSE;
+
+    struct termios t;
+    tcgetattr(fd, &t);
+    cfmakeraw(&t);
+    tcsetattr(fd, TCSANOW, &t);
+
+    return edc_lwip_init_pppos(fd);
 }
 
 void edc_lwip_shutdown(void)

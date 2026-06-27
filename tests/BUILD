@@ -135,6 +135,18 @@ cc_test(
     linkopts = LINUX_LINK_OPTS + ["-lutil"],
 )
 
+cc_binary(
+    name = "pppos_cli",
+    srcs = ["pppos_cli.c"],
+    deps = [
+        "@lwip//:lwip",
+        "//thirdparty/lwip:sys_arch",
+        "@cjson//:cjson",
+        "//src:agent",
+    ],
+    linkopts = LINUX_LINK_OPTS,
+)
+
 cc_test(
     name = "test_markdown_render",
     srcs = ["test_markdown_render.c"],
