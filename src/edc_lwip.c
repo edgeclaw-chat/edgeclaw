@@ -81,8 +81,8 @@ gboolean edc_lwip_init_pppos(int fd)
     lwip_initialized = TRUE;
     tcpip_init(NULL, NULL);
 
-    IP4_ADDR(&my_addr, 192, 168, 4, 2);
-    IP4_ADDR(&peer_addr, 192, 168, 4, 1);
+    IP4_ADDR(&my_addr, 0, 0, 0, 0);
+    IP4_ADDR(&peer_addr, 0, 0, 0, 0);
     IP4_ADDR(&nm, 255, 255, 255, 0);
     memset(ni, 0, sizeof(*ni));
     ip_addr_copy(ni->ip_addr, my_addr);
@@ -104,8 +104,6 @@ gboolean edc_lwip_init_pppos(int fd)
         sys_msleep(50);
         timeout--;
     }
-    if (g_pppos_link_up)
-        sys_msleep(500);
     return g_pppos_link_up;
 }
 
