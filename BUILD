@@ -141,6 +141,16 @@ FILE_NAME = select({
         "//conditions:default": "edgeclaw_unkown",
 })
 
+DAGENT_FILE_NAME = select({
+        ":is_arm_linux": "device_agent_arm_linux",
+        ":is_aarch64_linux": "device_agent_aarch64_linux",
+        ":is_amd64_linux": "device_agent_amd64_linux",
+        ":is_aarch64_macos": "device_agent_aarch64_macos",
+        ":is_aarch64_android": "device_agent_aarch64_android",
+        ":is_arm_android": "device_agent_arm_android",
+        "//conditions:default": "device_agent_unkown",
+})
+
 pkg_files(
     name = "edgeclaw_binary",
     srcs = ["//src:edgeclaw"],
@@ -167,4 +177,20 @@ pkg_tar(
     extension = "tar.gz",
     package_dir = FILE_NAME,
     package_file_name = FILE_NAME + ".tar.gz",
+)
+
+pkg_files(
+    name = "device_agent_binary",
+    srcs = ["//src:device_agent"],
+    attributes = pkg_attributes(mode = "0755"),
+)
+
+pkg_tar(
+    name = "device_agent",
+    srcs = [
+        ":device_agent_binary",
+    ],
+    extension = "tar.gz",
+    package_dir = DAGENT_FILE_NAME,
+    package_file_name = DAGENT_FILE_NAME + ".tar.gz",
 )

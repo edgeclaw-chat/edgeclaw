@@ -86,18 +86,6 @@ cc_binary(
 )
 
 cc_binary(
-    name = "device_agent_socket",
-    srcs = ["device_agent_socket.c"],
-    deps = [
-        ":device_agent_lib",
-        ":transport_socket_lib",
-    ],
-    linkstatic = True,
-    linkopts = LINK_OPTS,
-    visibility = ["//visibility:public"],
-)
-
-cc_binary(
     name = "edgeclaw",
     srcs = [
         "main.c",
