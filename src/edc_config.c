@@ -254,6 +254,9 @@ struct edc_config *edc_config_load(const gchar *edc_home)
     cJSON *device_port = cJSON_GetObjectItem(conf, "device_port");
     config->device_port = (device_port && cJSON_IsNumber(device_port)) ? device_port->valueint : 5000;
 
+    cJSON *device_baud = cJSON_GetObjectItem(conf, "device_baud");
+    config->device_baud = (device_baud && cJSON_IsNumber(device_baud)) ? device_baud->valueint : 115200;
+
     cJSON *channel = cJSON_GetObjectItem(conf, "channel");
     if (!channel || !cJSON_IsObject(channel))
     {

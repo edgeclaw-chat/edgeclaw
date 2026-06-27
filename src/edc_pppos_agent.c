@@ -91,7 +91,11 @@ static int exec_cmd(const char *cmd, sds *out, sds *err, int *exit_code)
         dup2(err_pipe[1], STDERR_FILENO);
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
+#ifdef __ANDROID__
+        execl("/system/bin/sh", "sh", "-c", cmd, (char *)NULL);
+#else
         execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+#endif
         _exit(127);
     }
 

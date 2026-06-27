@@ -17,8 +17,13 @@ static int open_serial(const char *path, int baud)
 
     struct termios t;
     tcgetattr(fd, &t);
-    cfmakeraw(&t);
-    cfsetspeed(&t, (speed_t)baud);
+    t.c_iflag &= (tcflag_t)~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
+    t.c_oflag &= (tcflag_t)~OPOST;
+    t.c_lflag &= (tcflag_t)~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+    t.c_cflag &= (tcflag_t)~(CSIZE | PARENB);
+    t.c_cflag |= CS8;
+    cfsetispeed(&t, (speed_t)baud);
+    cfsetospeed(&t, (speed_t)baud);
     tcsetattr(fd, TCSANOW, &t);
     return fd;
 }

@@ -1,6 +1,7 @@
 #include "src/edc_lwip.h"
 #include "lwip/api.h"
 #include "lwip/ip_addr.h"
+#include "lwip/sys.h"
 #include <cJSON.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +15,15 @@ static int open_serial(const char *path)
     int fd = open(path, O_RDWR | O_NOCTTY);
     if (fd < 0) { perror("open"); return -1; }
     struct termios t;
-    tcgetattr(fd, &t); cfmakeraw(&t); tcsetattr(fd, TCSANOW, &t);
+    tcgetattr(fd, &t);
+    t.c_iflag &= (tcflag_t)~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
+    t.c_oflag &= (tcflag_t)~OPOST;
+    t.c_lflag &= (tcflag_t)~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+    t.c_cflag &= (tcflag_t)~(CSIZE | PARENB);
+    t.c_cflag |= CS8;
+    cfsetispeed(&t, B115200);
+    cfsetospeed(&t, B115200);
+    tcsetattr(fd, TCSANOW, &t);
     return fd;
 }
 
@@ -34,12 +43,16 @@ int main(int argc, char **argv)
     if (!edc_lwip_init_pppos(fd)) { printf("PPPoS link failed\n"); return 1; }
     printf("Link UP.\n");
 
+    sys_msleep(200);
+
     ip_addr_t addr;
     ip4addr_aton(dev_ip, &addr);
 
     struct netconn *c = netconn_new(NETCONN_TCP);
-    if (netconn_connect(c, &addr, port) != ERR_OK) {
-        printf("connect failed\n"); return 1;
+    if (!c) { printf("netconn_new failed\n"); return 1; }
+    err_t conn_err = netconn_connect(c, &addr, port);
+    if (conn_err != ERR_OK) {
+        printf("connect failed (%d)\n", conn_err); return 1;
     }
 
     cJSON *req = cJSON_CreateObject();
@@ -57,8 +70,8 @@ int main(int argc, char **argv)
     netconn_write_partly(c, body, strlen(body), NETCONN_COPY, NULL);
     free(body);
 
-    struct netbuf *nb; u8_t *p; u16_t chunk; err_t err;
-    while ((err = netconn_recv(c, &nb)) == ERR_OK) {
+    struct netbuf *nb; u8_t *p; u16_t chunk; err_t recv_err;
+    while ((recv_err = netconn_recv(c, &nb)) == ERR_OK) {
         netbuf_data(nb, (void **)&p, &chunk);
         fwrite(p, 1, chunk, stdout);
         netbuf_delete(nb);

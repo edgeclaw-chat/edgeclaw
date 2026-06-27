@@ -130,8 +130,9 @@ int main(int argc, char *argv[])
 
     /* PPPoS device link (optional, configured via config.json "device_pty") */
     if (agent->config->device_pty) {
-        log_info("connecting to device via PPPoS on %s ...", agent->config->device_pty);
-        if (edc_lwip_init_pppos_path(agent->config->device_pty))
+        log_info("connecting to device via PPPoS on %s (baud %d) ...",
+                 agent->config->device_pty, agent->config->device_baud);
+        if (edc_lwip_init_pppos_path(agent->config->device_pty, agent->config->device_baud))
             log_info("PPPoS link UP");
         else
             log_error("PPPoS link failed");
