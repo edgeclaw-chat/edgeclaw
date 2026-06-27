@@ -9,12 +9,12 @@
 #include "netif/ppp/pppos.h"
 #include "netif/ppp/ppp.h"
 #include <cJSON.h>
-#include <glib.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 static ppp_pcb *g_ppp;
 static int g_ppp_fd;
@@ -67,29 +67,88 @@ static err_t recv_http_request(struct netconn *c, u8_t *buf, size_t *len, size_t
     return (*len > 0) ? ERR_OK : ERR_CLSD;
 }
 
-static int exec_cmd(const char *cmd, GString **out, GString **err, int *exit_code)
+struct dyn_buf {
+    char *data;
+    size_t len;
+    size_t cap;
+};
+
+static void dyn_buf_init(struct dyn_buf *b, size_t cap)
 {
-    gchar *argv[] = {"sh", "-c", (gchar *)cmd, NULL};
-    gchar *stdout_str = NULL, *stderr_str = NULL;
-    gint status;
-    GError *error = NULL;
+    b->data = (char *)malloc(cap);
+    b->len = 0;
+    b->cap = cap;
+}
 
-    *out = g_string_new("");
-    *err = g_string_new("");
+static void dyn_buf_append(struct dyn_buf *b, const char *src, size_t n)
+{
+    if (b->len + n > b->cap) {
+        b->cap = b->cap * 2 + n;
+        b->data = (char *)realloc(b->data, b->cap);
+    }
+    memcpy(b->data + b->len, src, n);
+    b->len += n;
+}
+
+static void dyn_buf_free(struct dyn_buf *b)
+{
+    free(b->data);
+    b->data = NULL;
+    b->len = b->cap = 0;
+}
+
+static int exec_cmd(const char *cmd, struct dyn_buf *out, struct dyn_buf *err, int *exit_code)
+{
+    int out_pipe[2], err_pipe[2];
+    pid_t pid;
+
     *exit_code = -1;
+    if (pipe(out_pipe) < 0 || pipe(err_pipe) < 0) return -1;
 
-    gboolean ok = g_spawn_sync(NULL, argv, NULL,
-                               G_SPAWN_SEARCH_PATH, NULL, NULL,
-                               &stdout_str, &stderr_str, &status, &error);
-    if (!ok) {
-        g_string_assign(*err, error->message);
-        g_error_free(error);
+    pid = fork();
+    if (pid < 0) {
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
         return -1;
     }
 
-    if (stdout_str) { g_string_assign(*out, stdout_str); g_free(stdout_str); }
-    if (stderr_str) { g_string_assign(*err, stderr_str); g_free(stderr_str); }
+    if (pid == 0) {
+        dup2(out_pipe[1], STDOUT_FILENO);
+        dup2(err_pipe[1], STDERR_FILENO);
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
 
+    close(out_pipe[1]); close(err_pipe[1]);
+
+    fd_set rfds;
+    int max_fd = (out_pipe[0] > err_pipe[0]) ? out_pipe[0] : err_pipe[0];
+    int done_out = 0, done_err = 0;
+
+    while (!done_out || !done_err) {
+        FD_ZERO(&rfds);
+        if (!done_out) FD_SET(out_pipe[0], &rfds);
+        if (!done_err) FD_SET(err_pipe[0], &rfds);
+        if (select(max_fd + 1, &rfds, NULL, NULL, NULL) < 0) break;
+
+        char buf[1024]; ssize_t n;
+        if (!done_out && FD_ISSET(out_pipe[0], &rfds)) {
+            n = read(out_pipe[0], buf, sizeof(buf));
+            if (n > 0) dyn_buf_append(out, buf, (size_t)n);
+            else done_out = 1;
+        }
+        if (!done_err && FD_ISSET(err_pipe[0], &rfds)) {
+            n = read(err_pipe[0], buf, sizeof(buf));
+            if (n > 0) dyn_buf_append(err, buf, (size_t)n);
+            else done_err = 1;
+        }
+    }
+    close(out_pipe[0]); close(err_pipe[0]);
+
+    int status;
+    waitpid(pid, &status, 0);
     *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     return 0;
 }
@@ -172,14 +231,20 @@ void edc_pppos_agent_run(int ppp_fd, const char *my_ip, const char *peer_ip, uin
         const char *command = cmd_item->valuestring;
         fprintf(stderr, "agent: exec: %s\n", command);
 
-        GString *out_str, *err_str;
+        struct dyn_buf out_buf, err_buf;
         int exit_code;
-        exec_cmd(command, &out_str, &err_str, &exit_code);
+        dyn_buf_init(&out_buf, 4096);
+        dyn_buf_init(&err_buf, 4096);
+        exec_cmd(command, &out_buf, &err_buf, &exit_code);
+
+        /* null-terminate for cJSON */
+        dyn_buf_append(&out_buf, "", 1); out_buf.len--;
+        dyn_buf_append(&err_buf, "", 1); err_buf.len--;
 
         cJSON *resp_json = cJSON_CreateObject();
         cJSON_AddNumberToObject(resp_json, "exit_code", exit_code);
-        cJSON_AddStringToObject(resp_json, "stdout", out_str->str);
-        cJSON_AddStringToObject(resp_json, "stderr", err_str->str);
+        cJSON_AddStringToObject(resp_json, "stdout", out_buf.data);
+        cJSON_AddStringToObject(resp_json, "stderr", err_buf.data);
 
         char *resp_str = cJSON_PrintUnformatted(resp_json);
         size_t body_len = strlen(resp_str);
@@ -197,8 +262,8 @@ void edc_pppos_agent_run(int ppp_fd, const char *my_ip, const char *peer_ip, uin
         cJSON_Delete(req_json);
         cJSON_Delete(resp_json);
         free(resp_str);
-        g_string_free(out_str, TRUE);
-        g_string_free(err_str, TRUE);
+        dyn_buf_free(&out_buf);
+        dyn_buf_free(&err_buf);
 
         netconn_close(c);
         netconn_delete(c);

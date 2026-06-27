@@ -6,11 +6,23 @@ LINK_OPTS = select({
     "//conditions:default": ["-static", "-Wl,--no-gc-sections"],
 })
 
+cc_library(
+    name = "pppos_agent_lib",
+    srcs = ["edc_pppos_agent.c"],
+    hdrs = ["edc_pppos_agent.h"],
+    deps = [
+        "@lwip//:lwip",
+        "//thirdparty/lwip:sys_arch",
+        "@cjson//:cjson",
+    ],
+    linkstatic = True,
+)
+
 cc_binary(
     name = "device_agent",
-    srcs = ["agent_main.c"],
+    srcs = ["device_agent.c"],
     deps = [
-        ":agent",
+        ":pppos_agent_lib",
     ],
     linkstatic = True,
     linkopts = LINK_OPTS,
@@ -77,7 +89,6 @@ cc_library(
         "edc_tools_todo.c",
         "edc_markdown_render.c",
         "edc_lwip.c",
-        "edc_pppos_agent.c",
         "edc_tools_device_shell.c",
     ],
     hdrs = [
@@ -114,8 +125,8 @@ cc_library(
         "edc_tools_todo.h",
         "edc_markdown_render.h",
         "edc_lwip.h",
-        "edc_pppos_agent.h",
         "edc_tools_device_shell.h",
+        "edc_pppos_agent.h",
     ],
     deps = [
         "@glib//glib:glib",
@@ -129,6 +140,7 @@ cc_library(
         ":edc_secret_lib",
         "@lwip//:lwip",
         "//thirdparty/lwip:sys_arch",
+        ":pppos_agent_lib",
     ],
     linkopts = select({
         "//:macos": ["-lresolv"],
