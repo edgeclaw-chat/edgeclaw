@@ -47,12 +47,50 @@ cc_library(
     linkstatic = True,
 )
 
+cc_library(
+    name = "transport_socket_lib",
+    srcs = ["edc_transport_socket.c"],
+    hdrs = [
+        "edc_transport_socket.h",
+        "edc_device_agent.h",
+    ],
+    deps = [
+        ":device_agent_lib",
+        "@cjson//:cjson",
+    ],
+    linkstatic = True,
+)
+
+cc_library(
+    name = "socket_agent_lib",
+    srcs = ["edc_socket_agent.c"],
+    hdrs = ["edc_socket_agent.h"],
+    deps = [
+        ":device_agent_lib",
+        ":transport_socket_lib",
+    ],
+    linkstatic = True,
+)
+
 cc_binary(
     name = "device_agent",
     srcs = ["device_agent.c"],
     deps = [
         ":device_agent_lib",
         ":transport_pppos_lib",
+        ":transport_socket_lib",
+    ],
+    linkstatic = True,
+    linkopts = LINK_OPTS,
+    visibility = ["//visibility:public"],
+)
+
+cc_binary(
+    name = "device_agent_socket",
+    srcs = ["device_agent_socket.c"],
+    deps = [
+        ":device_agent_lib",
+        ":transport_socket_lib",
     ],
     linkstatic = True,
     linkopts = LINK_OPTS,

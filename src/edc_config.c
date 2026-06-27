@@ -257,6 +257,10 @@ struct edc_config *edc_config_load(const gchar *edc_home)
     cJSON *device_baud = cJSON_GetObjectItem(conf, "device_baud");
     config->device_baud = (device_baud && cJSON_IsNumber(device_baud)) ? device_baud->valueint : 115200;
 
+    cJSON *device_transport = cJSON_GetObjectItem(conf, "device_transport");
+    if (device_transport && cJSON_IsString(device_transport))
+        config->device_transport = g_strdup(device_transport->valuestring);
+
     cJSON *channel = cJSON_GetObjectItem(conf, "channel");
     if (!channel || !cJSON_IsObject(channel))
     {
@@ -429,6 +433,7 @@ void edc_config_free(struct edc_config *config)
     g_free(config->channel.email.target);
     g_free(config->device_pty);
     g_free(config->device_ip);
+    g_free(config->device_transport);
     g_free(config->workspace);
     g_free(config->sandbox_root_real);
     g_strfreev(config->sandbox_ro_paths);

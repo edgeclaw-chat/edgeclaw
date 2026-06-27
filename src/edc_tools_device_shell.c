@@ -10,6 +10,12 @@
 #include "lwip/err.h"
 #include <cJSON.h>
 #include <glib.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 struct device_shell_ctx
 {
@@ -43,11 +49,170 @@ static err_t recv_until_close(struct netconn *c, GString *buf)
     return err;
 }
 
-static void device_shell_thread(gpointer data, gpointer user_data)
+static int send_all(int fd, const void *buf, size_t len)
 {
-    struct device_shell_ctx *ctx = data;
-    (void)user_data;
+    size_t total = 0;
+    while (total < len)
+    {
+        ssize_t n = send(fd, (const char *)buf + total, len - total, 0);
+        if (n <= 0)
+            return -1;
+        total += (size_t)n;
+    }
+    return 0;
+}
 
+static int recv_until_close_socket(int fd, GString *buf)
+{
+    char tmp[4096];
+    ssize_t n;
+    while ((n = recv(fd, tmp, sizeof(tmp), 0)) > 0)
+        g_string_append_len(buf, tmp, n);
+    return (n == 0) ? 0 : -1;
+}
+
+static void process_shell_response(GString *resp_buf, GString *result, GError **error)
+{
+    char *body = strstr(resp_buf->str, "\r\n\r\n");
+    if (!body) {
+        *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
+                            "device_shell: invalid HTTP response");
+        return;
+    }
+    body += 4;
+
+    int http_status = 0;
+    if (g_ascii_strncasecmp(resp_buf->str, "HTTP/", 5) == 0) {
+        const char *sp = strchr(resp_buf->str, ' ');
+        if (sp) http_status = atoi(sp + 1);
+    }
+    if (http_status != 200) {
+        *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
+                            "device_shell: HTTP %d", http_status);
+        return;
+    }
+
+    cJSON *resp_json = cJSON_Parse(body);
+    if (!resp_json) {
+        *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
+                            "device_shell: invalid JSON response");
+        return;
+    }
+
+    cJSON *ec = cJSON_GetObjectItem(resp_json, "exit_code");
+    cJSON *so = cJSON_GetObjectItem(resp_json, "stdout");
+    cJSON *se = cJSON_GetObjectItem(resp_json, "stderr");
+
+    int exit_code = ec ? ec->valueint : -1;
+
+    if (so && cJSON_IsString(so)) g_string_append(result, so->valuestring);
+    if (se && cJSON_IsString(se) && se->valuestring[0]) {
+        if (result->len > 0) g_string_append(result, "\n");
+        g_string_append_printf(result, "STDERR:\n%s", se->valuestring);
+    }
+    if (result->len > 0)
+        g_string_append_printf(result, "\nDone (exit code %d)", exit_code);
+    else
+        g_string_append_printf(result, "Done (exit code %d)", exit_code);
+
+    cJSON_Delete(resp_json);
+
+    if (exit_code != 0)
+        *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR, "%s", result->str);
+}
+
+static void device_shell_thread_socket(struct device_shell_ctx *ctx)
+{
+    GString *result = g_string_new(NULL);
+    GError *error = NULL;
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
+                            "device_shell: socket() failed: %s", strerror(errno));
+        ctx->callback(ctx->tb_ctx, NULL, error);
+        device_shell_ctx_free(ctx);
+        return;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(ctx->agent_port);
+    if (inet_pton(AF_INET, ctx->agent_ip, &addr.sin_addr) != 1) {
+        close(sock);
+        error = g_error_new(BC_TOOL_ERROR, BC_TOOL_ARG_INVALID,
+                            "device_shell: invalid device_ip: %s", ctx->agent_ip);
+        ctx->callback(ctx->tb_ctx, NULL, error);
+        device_shell_ctx_free(ctx);
+        return;
+    }
+
+    struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(sock);
+        error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
+                            "device_shell: connect to %s:%u failed: %s",
+                            ctx->agent_ip, ctx->agent_port, strerror(errno));
+        ctx->callback(ctx->tb_ctx, NULL, error);
+        device_shell_ctx_free(ctx);
+        return;
+    }
+
+    cJSON *req_json = cJSON_CreateObject();
+    cJSON_AddStringToObject(req_json, "command", ctx->command);
+    if (ctx->timeout_sec > 0)
+        cJSON_AddNumberToObject(req_json, "timeout", ctx->timeout_sec);
+    char *req_body = cJSON_PrintUnformatted(req_json);
+    cJSON_Delete(req_json);
+
+    char hdr[512];
+    int hdr_len = snprintf(hdr, sizeof(hdr),
+        "POST /exec HTTP/1.1\r\n"
+        "Host: %s:%u\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n"
+        "\r\n",
+        ctx->agent_ip, ctx->agent_port, strlen(req_body));
+
+    send_all(sock, hdr, (size_t)hdr_len);
+    send_all(sock, req_body, strlen(req_body));
+    free(req_body);
+
+    tv.tv_sec = ctx->timeout_sec;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    GString *resp_buf = g_string_new(NULL);
+    int recv_ret = recv_until_close_socket(sock, resp_buf);
+    close(sock);
+
+    if (recv_ret != 0) {
+        g_string_free(resp_buf, TRUE);
+        error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
+                            "device_shell: recv failed: %s", strerror(errno));
+        ctx->callback(ctx->tb_ctx, NULL, error);
+        device_shell_ctx_free(ctx);
+        return;
+    }
+
+    process_shell_response(resp_buf, result, &error);
+    g_string_free(resp_buf, TRUE);
+
+    if (error) {
+        ctx->callback(ctx->tb_ctx, NULL, error);
+        g_string_free(result, TRUE);
+    } else {
+        ctx->callback(ctx->tb_ctx, result, NULL);
+    }
+
+    device_shell_ctx_free(ctx);
+}
+
+static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
+{
     GString *result = g_string_new(NULL);
     GError *error = NULL;
 
@@ -101,7 +266,6 @@ static void device_shell_thread(gpointer data, gpointer user_data)
     netconn_write_partly(c, req_body, strlen(req_body), NETCONN_COPY, NULL);
     free(req_body);
 
-    /* Set TCP receive timeout to avoid hanging if the server dies */
     netconn_set_recvtimeout(c, ctx->timeout_sec * 1000);
 
     GString *resp_buf = g_string_new(NULL);
@@ -118,63 +282,10 @@ static void device_shell_thread(gpointer data, gpointer user_data)
         return;
     }
 
-    /* Validate HTTP status line */
-    char *body = strstr(resp_buf->str, "\r\n\r\n");
-    if (!body) {
-        g_string_free(resp_buf, TRUE);
-        error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
-                            "device_shell: invalid HTTP response");
-        ctx->callback(ctx->tb_ctx, NULL, error);
-        device_shell_ctx_free(ctx);
-        return;
-    }
-    body += 4;
-
-    int http_status = 0;
-    if (g_ascii_strncasecmp(resp_buf->str, "HTTP/", 5) == 0) {
-        const char *sp = strchr(resp_buf->str, ' ');
-        if (sp) http_status = atoi(sp + 1);
-    }
-    if (http_status != 200) {
-        g_string_free(resp_buf, TRUE);
-        error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
-                            "device_shell: HTTP %d", http_status);
-        ctx->callback(ctx->tb_ctx, NULL, error);
-        device_shell_ctx_free(ctx);
-        return;
-    }
-
-    cJSON *resp_json = cJSON_Parse(body);
+    process_shell_response(resp_buf, result, &error);
     g_string_free(resp_buf, TRUE);
 
-    if (!resp_json) {
-        error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
-                            "device_shell: invalid JSON response");
-        ctx->callback(ctx->tb_ctx, NULL, error);
-        device_shell_ctx_free(ctx);
-        return;
-    }
-
-    cJSON *ec = cJSON_GetObjectItem(resp_json, "exit_code");
-    cJSON *so = cJSON_GetObjectItem(resp_json, "stdout");
-    cJSON *se = cJSON_GetObjectItem(resp_json, "stderr");
-
-    int exit_code = ec ? ec->valueint : -1;
-
-    if (so && cJSON_IsString(so)) g_string_append(result, so->valuestring);
-    if (se && cJSON_IsString(se) && se->valuestring[0]) {
-        if (result->len > 0) g_string_append(result, "\n");
-        g_string_append_printf(result, "STDERR:\n%s", se->valuestring);
-    }
-    if (result->len > 0)
-        g_string_append_printf(result, "\nDone (exit code %d)", exit_code);
-    else
-        g_string_append_printf(result, "Done (exit code %d)", exit_code);
-
-    cJSON_Delete(resp_json);
-
-    if (exit_code != 0) {
-        error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR, "%s", result->str);
+    if (error) {
         ctx->callback(ctx->tb_ctx, NULL, error);
         g_string_free(result, TRUE);
     } else {
@@ -182,6 +293,25 @@ static void device_shell_thread(gpointer data, gpointer user_data)
     }
 
     device_shell_ctx_free(ctx);
+}
+
+static void device_shell_thread(gpointer data, gpointer user_data)
+{
+    struct device_shell_ctx *ctx = data;
+    (void)user_data;
+
+    struct edc_config *conf = ctx->tb_ctx->tb->conf;
+
+    if (conf->device_transport && conf->device_transport[0]) {
+        if (g_ascii_strcasecmp(conf->device_transport, "socket") == 0)
+            device_shell_thread_socket(ctx);
+        else
+            device_shell_thread_lwip(ctx);
+    } else if (conf->device_pty && conf->device_pty[0]) {
+        device_shell_thread_lwip(ctx);
+    } else {
+        device_shell_thread_socket(ctx);
+    }
 }
 
 static void
@@ -232,7 +362,7 @@ struct edc_tool *edc_tool_create_device_shell(struct edc_toolbox *tb)
         edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), FALSE));
 
     struct edc_tool *tool = edc_tool_new("device_shell",
-        "Execute a shell command on a remote device via lwIP PPPoS agent", params,
+        "Execute a shell command on a remote device agent (PPPoS or TCP socket)", params,
         edc_tool_device_shell_exec_async);
     edc_toolbox_register(tb, tool);
     return tool;
