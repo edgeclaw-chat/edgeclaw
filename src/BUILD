@@ -14,6 +14,7 @@ cc_library(
         "@lwip//:lwip",
         "//thirdparty/lwip:sys_arch",
         "@cjson//:cjson",
+        "@sds//:sds",
     ],
     linkstatic = True,
 )
