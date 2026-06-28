@@ -106,6 +106,9 @@ def _get_ndk_host_tag(rctx):
     os_name = rctx.os.name
     if "mac" in os_name:
         return "darwin-x86_64"
+    arch = rctx.os.arch
+    if arch == "aarch64":
+        return "linux-aarch64"
     return "linux-x86_64"
 
 def _android_toolchain_repo_impl(rctx, arch_config):
