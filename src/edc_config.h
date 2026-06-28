@@ -68,6 +68,11 @@ struct edc_config
     int load_n_histories;
     int memory_compress_threshold;
     int tool_max_output_size;
+
+    gchar *device_pty;
+    gchar *device_ip;
+    int device_port;
+    int device_baud;
 };
 
 extern gchar *edc_config_resolve_bc_home(void);

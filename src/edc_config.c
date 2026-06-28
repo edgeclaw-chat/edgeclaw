@@ -243,6 +243,20 @@ struct edc_config *edc_config_load(const gchar *edc_home)
     }
     config->tool_max_output_size = tool_max_output_size->valueint;
 
+    cJSON *device_pty = cJSON_GetObjectItem(conf, "device_pty");
+    if (device_pty && cJSON_IsString(device_pty))
+        config->device_pty = g_strdup(device_pty->valuestring);
+
+    cJSON *device_ip = cJSON_GetObjectItem(conf, "device_ip");
+    if (device_ip && cJSON_IsString(device_ip))
+        config->device_ip = g_strdup(device_ip->valuestring);
+
+    cJSON *device_port = cJSON_GetObjectItem(conf, "device_port");
+    config->device_port = (device_port && cJSON_IsNumber(device_port)) ? device_port->valueint : 5000;
+
+    cJSON *device_baud = cJSON_GetObjectItem(conf, "device_baud");
+    config->device_baud = (device_baud && cJSON_IsNumber(device_baud)) ? device_baud->valueint : 115200;
+
     cJSON *channel = cJSON_GetObjectItem(conf, "channel");
     if (!channel || !cJSON_IsObject(channel))
     {
@@ -413,6 +427,8 @@ void edc_config_free(struct edc_config *config)
     g_free(config->channel.email.user);
     secure_free(config->channel.email.passwd);
     g_free(config->channel.email.target);
+    g_free(config->device_pty);
+    g_free(config->device_ip);
     g_free(config->workspace);
     g_free(config->sandbox_root_real);
     g_strfreev(config->sandbox_ro_paths);

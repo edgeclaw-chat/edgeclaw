@@ -1,10 +1,36 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 
 LINK_OPTS = select({
+    "//:macos_debug": ["-lresolv"],
     "//:macos": ["-lresolv"],
+    "//:linux_debug": [],
     "//:debug": [],
     "//conditions:default": ["-static", "-Wl,--no-gc-sections"],
 })
+
+cc_library(
+    name = "pppos_agent_lib",
+    srcs = ["edc_pppos_agent.c"],
+    hdrs = ["edc_pppos_agent.h"],
+    deps = [
+        "@lwip//:lwip",
+        "//thirdparty/lwip:sys_arch",
+        "@cjson//:cjson",
+        "@sds//:sds",
+    ],
+    linkstatic = True,
+)
+
+cc_binary(
+    name = "device_agent",
+    srcs = ["device_agent.c"],
+    deps = [
+        ":pppos_agent_lib",
+    ],
+    linkstatic = True,
+    linkopts = LINK_OPTS,
+    visibility = ["//visibility:public"],
+)
 
 cc_binary(
     name = "edgeclaw",
@@ -65,6 +91,8 @@ cc_library(
         "edc_param_types.c",
         "edc_tools_todo.c",
         "edc_markdown_render.c",
+        "edc_lwip.c",
+        "edc_tools_device_shell.c",
     ],
     hdrs = [
         "edc_context.h",
@@ -99,6 +127,9 @@ cc_library(
         "edc_param_types.h",
         "edc_tools_todo.h",
         "edc_markdown_render.h",
+        "edc_lwip.h",
+        "edc_tools_device_shell.h",
+        "edc_pppos_agent.h",
     ],
     deps = [
         "@glib//glib:glib",
@@ -110,10 +141,13 @@ cc_library(
         "@md4c//:md4c",
         ":lark_api_pb",
         ":edc_secret_lib",
+        "@lwip//:lwip",
+        "//thirdparty/lwip:sys_arch",
+        ":pppos_agent_lib",
     ],
     linkopts = select({
         "//:macos": ["-lresolv"],
-        "//conditions:default": [],
+        "//conditions:default": ["-lpthread"],
     }),
     linkstatic = True,
     visibility = ["//visibility:public"],

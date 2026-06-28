@@ -288,7 +288,21 @@ static struct edc_init_env_result *load_existing_config(const gchar *conf_file)
         }
     }
 
-    cJSON *channel = cJSON_GetObjectItem(json, "channel");
+    item = cJSON_GetObjectItem(json, "device_pty");
+    if (item && cJSON_IsString(item))
+        strncpy(result->device_pty, item->valuestring, sizeof(result->device_pty) - 1);
+
+    item = cJSON_GetObjectItem(json, "device_ip");
+    if (item && cJSON_IsString(item))
+        strncpy(result->device_ip, item->valuestring, sizeof(result->device_ip) - 1);
+
+    item = cJSON_GetObjectItem(json, "device_port");
+    result->device_port = (item && cJSON_IsNumber(item)) ? item->valueint : 5000;
+
+    item = cJSON_GetObjectItem(json, "device_baud");
+    result->device_baud = (item && cJSON_IsNumber(item)) ? item->valueint : 115200;
+
+        cJSON *channel = cJSON_GetObjectItem(json, "channel");
     if (channel)
     {
         item = cJSON_GetObjectItem(channel, "type");
@@ -621,6 +635,37 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
             return -1;
         strncpy(result->qq.app_secret, val, sizeof(result->qq.app_secret) - 1);
         free(val);
+    }
+
+    printf("\n--- Device (PPPoS) Configuration (optional) ---\n");
+
+    {
+        const char *def = (defaults && defaults->device_pty[0]) ? defaults->device_pty : "";
+        val = prompt_with_default("Device PTY/Serial Path (leave empty to disable)", def);
+        if (!val)
+            return -1;
+        strncpy(result->device_pty, val, sizeof(result->device_pty) - 1);
+        free(val);
+    }
+
+    if (result->device_pty[0])
+    {
+        const char *def = (defaults && defaults->device_ip[0]) ? defaults->device_ip : "192.168.4.1";
+        val = prompt_with_default("Device IP", def);
+        if (!val)
+            return -1;
+        strncpy(result->device_ip, val, sizeof(result->device_ip) - 1);
+        free(val);
+
+        ival = prompt_int("Device Port",
+                          (defaults && defaults->device_port > 0) ? defaults->device_port : 5000);
+        if (ival < 0) return -1;
+        result->device_port = ival;
+
+        ival = prompt_int("Device Baud Rate",
+                          (defaults && defaults->device_baud > 0) ? defaults->device_baud : 115200);
+        if (ival < 0) return -1;
+        result->device_baud = ival;
     }
 
     printf("\n===================================================\n");
@@ -1000,6 +1045,14 @@ static gboolean edc_init_env_conf_file(const gchar *conf_file, const gchar *edc_
     }
 
     cJSON_AddItemToObject(config, "channel", channel);
+
+    if (env_result.device_pty[0])
+    {
+        cJSON_AddStringToObject(config, "device_pty", env_result.device_pty);
+        cJSON_AddStringToObject(config, "device_ip", env_result.device_ip);
+        cJSON_AddNumberToObject(config, "device_port", env_result.device_port);
+        cJSON_AddNumberToObject(config, "device_baud", env_result.device_baud);
+    }
 
     g_free(encrypted_api_key);
 

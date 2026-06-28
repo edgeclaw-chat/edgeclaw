@@ -80,6 +80,74 @@ cc_test(
 )
 
 cc_test(
+    name = "test_lwip_http",
+    srcs = ["test_lwip_http.c"],
+    deps = [
+        "@glib//glib:glib",
+        "@lwip//:lwip",
+        "//thirdparty/lwip:sys_arch",
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_pppos_http",
+    srcs = ["test_pppos_http.c"],
+    deps = [
+        "@lwip//:lwip",
+        "//thirdparty/lwip:sys_arch",
+    ],
+    linkopts = LINUX_LINK_OPTS + ["-lutil"],
+)
+
+cc_test(
+    name = "test_pppos_stress",
+    srcs = ["test_pppos_stress.c"],
+    deps = [
+        "@lwip//:lwip",
+        "//thirdparty/lwip:sys_arch",
+    ],
+    linkopts = LINUX_LINK_OPTS + ["-lutil"],
+)
+
+cc_test(
+    name = "test_pppos_agent",
+    srcs = ["test_pppos_agent.c"],
+    deps = [
+        "@lwip//:lwip",
+        "//thirdparty/lwip:sys_arch",
+        "//src:agent",
+    ],
+    linkopts = LINUX_LINK_OPTS + ["-lutil"],
+)
+
+cc_test(
+    name = "test_pppos_agent_stress",
+    srcs = ["test_pppos_agent_stress.c"],
+    deps = [
+        "@glib//glib:glib",
+        "@cjson//:cjson",
+        "@lwip//:lwip",
+        "//thirdparty/lwip:sys_arch",
+        "//src:agent",
+    ],
+    linkopts = LINUX_LINK_OPTS + ["-lutil"],
+)
+
+cc_binary(
+    name = "pppos_cli",
+    srcs = ["pppos_cli.c"],
+    deps = [
+        "@lwip//:lwip",
+        "//thirdparty/lwip:sys_arch",
+        "@cjson//:cjson",
+        "//src:agent",
+    ],
+    linkopts = LINUX_LINK_OPTS,
+)
+
+cc_test(
     name = "test_markdown_render",
     srcs = ["test_markdown_render.c"],
     deps = [

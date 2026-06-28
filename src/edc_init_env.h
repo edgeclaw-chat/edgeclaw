@@ -46,6 +46,11 @@ struct edc_init_env_result
     /* channel type: "none", "email", "telegram", "feishu", "qq" */
     char channel_type[32];
 
+    char device_pty[256];
+    char device_ip[64];
+    int device_port;
+    int device_baud;
+
     struct edc_init_env_channel_email email;
     struct edc_init_env_channel_telegram telegram;
     struct edc_init_env_channel_feishu feishu;
