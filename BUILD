@@ -16,6 +16,24 @@ config_setting(
 )
 
 config_setting(
+    name = "macos_debug",
+    constraint_values = [
+        "@platforms//os:macos"
+    ],
+    values = {"compilation_mode": "dbg"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "linux_debug",
+    constraint_values = [
+        "@platforms//os:linux"
+    ],
+    values = {"compilation_mode": "dbg"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
     name = "linux",
     constraint_values = [
         "@platforms//os:linux"

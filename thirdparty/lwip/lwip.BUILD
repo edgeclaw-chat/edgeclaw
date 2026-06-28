@@ -13,14 +13,16 @@ cc_library(
             "src/netif/*.c",
             "src/netif/ppp/*.c",
             "src/api/*.c",
-            "contrib/ports/unix/port/netif/tapif.c",
         ],
         exclude = [
             "src/api/netdb.c",
             "src/netif/ppp/pppoe.c",
             "src/netif/ppp/pppol2tp.c",
         ],
-    ),
+    ) + select({
+        "@//:linux": ["contrib/ports/unix/port/netif/tapif.c"],
+        "//conditions:default": [],
+    }),
     copts = [
         "-DLWIP_NOASSERT",
         "-DLWIP_UNIX_LINUX",

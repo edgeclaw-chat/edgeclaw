@@ -1,7 +1,9 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 
 LINK_OPTS = select({
+    "//:macos_debug": ["-lresolv"],
     "//:macos": ["-lresolv"],
+    "//:linux_debug": [],
     "//:debug": [],
     "//conditions:default": ["-static", "-Wl,--no-gc-sections"],
 })

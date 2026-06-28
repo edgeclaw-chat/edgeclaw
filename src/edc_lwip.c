@@ -2,7 +2,9 @@
 #include "lwip/netif.h"
 #include "lwip/tcpip.h"
 #include "lwip/ip_addr.h"
+#ifdef __linux__
 #include "netif/tapif.h"
+#endif
 #include "netif/ppp/pppapi.h"
 #include "netif/ppp/pppos.h"
 #include "netif/ppp/ppp.h"
@@ -10,10 +12,13 @@
 #include <fcntl.h>
 #include <termios.h>
 
+#ifdef __linux__
 static struct netif lwip_tap_netif;
+#endif
 static struct netif lwip_pppos_netif;
 static gboolean lwip_initialized = FALSE;
 
+#ifdef __linux__
 static void init_tap_netif(void *arg)
 {
     ip4_addr_t ip, nm, g;
@@ -38,6 +43,7 @@ gboolean edc_lwip_init_tap(const char *ipaddr, const char *netmask, const char *
     lwip_initialized = TRUE;
     return TRUE;
 }
+#endif
 
 void edc_lwip_init_loopback(void)
 {
@@ -129,18 +135,42 @@ static speed_t int_to_baud(int baud)
     case 57600:    return B57600;
     case 115200:   return B115200;
     case 230400:   return B230400;
+#ifdef B460800
     case 460800:   return B460800;
+#endif
+#ifdef B500000
     case 500000:   return B500000;
+#endif
+#ifdef B576000
     case 576000:   return B576000;
+#endif
+#ifdef B921600
     case 921600:   return B921600;
+#endif
+#ifdef B1000000
     case 1000000:  return B1000000;
+#endif
+#ifdef B1152000
     case 1152000:  return B1152000;
+#endif
+#ifdef B1500000
     case 1500000:  return B1500000;
+#endif
+#ifdef B2000000
     case 2000000:  return B2000000;
+#endif
+#ifdef B2500000
     case 2500000:  return B2500000;
+#endif
+#ifdef B3000000
     case 3000000:  return B3000000;
+#endif
+#ifdef B3500000
     case 3500000:  return B3500000;
+#endif
+#ifdef B4000000
     case 4000000:  return B4000000;
+#endif
     default:       return B115200;
     }
 }
@@ -167,10 +197,12 @@ gboolean edc_lwip_init_pppos_path(const char *path, int baud)
 void edc_lwip_shutdown(void)
 {
     if (!lwip_initialized) return;
+#ifdef __linux__
     if (lwip_tap_netif.name[0] != 0) {
         netif_set_down(&lwip_tap_netif);
         netif_remove(&lwip_tap_netif);
     }
+#endif
     if (lwip_pppos_netif.name[0] != 0) {
         netif_set_down(&lwip_pppos_netif);
         netif_remove(&lwip_pppos_netif);
