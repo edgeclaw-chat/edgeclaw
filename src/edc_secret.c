@@ -168,7 +168,7 @@ static gboolean verify_master_key(const gchar *edc_home)
         return FALSE;
     }
 
-    char expected_hex[65];
+    char expected_hex[96] = {0};
     for (int i = 0; i < 32; i++)
         snprintf(expected_hex + i * 2, 3, "%02x", expected[i]);
     expected_hex[64] = '\0';

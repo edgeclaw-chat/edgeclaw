@@ -32,7 +32,7 @@ static void edc_log_rotate(void)
     time_t now = time(NULL);
     struct tm tm_now;
     localtime_r(&now, &tm_now);
-    char new_date[32];
+    char new_date[32] = {0};
     strftime(new_date, sizeof(new_date), "%Y-%m-%d", &tm_now);
 
     if (strcmp(new_date, g_current_date) == 0)
