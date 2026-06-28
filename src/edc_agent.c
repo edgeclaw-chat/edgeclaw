@@ -156,7 +156,7 @@ static void handle_tool_resp(struct edc_agent *agent, edc_actor_t *actor, edc_ac
 
     if (!turn)
     {
-        log_info("turn %p is not exists. remove now.", msg->request_id);
+        log_warn("tool response dropped: turn %p was already removed (cancelled by /stop, /new, or error)", msg->request_id);
         g_hash_table_remove(agent->turns, msg->request_id);
         return;
     }

@@ -89,15 +89,14 @@ static void edc_tool_shell_complete(struct edc_tool_shell_ctx *ctx)
 
 static gboolean on_pipe_readable(GIOChannel *source, GIOCondition condition, gpointer data)
 {
-    if (condition == G_IO_ERR)
+    if (condition & G_IO_ERR)
     {
         log_error("edc_tools_shell: io channel error.");
         return FALSE;
     }
 
-    if (condition == G_IO_HUP)
+    if (condition & G_IO_HUP)
     {
-        log_error("edc_tools_shell: io channel hup");
         return FALSE;
     }
 

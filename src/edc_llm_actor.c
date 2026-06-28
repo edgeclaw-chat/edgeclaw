@@ -97,17 +97,39 @@ static void edc_llm_actor_on_http_fn(struct mg_connection *c, int ev, void *ev_d
     else if (ev == BC_CONN_ERROR)
     {
         log_error("llm actor http async conn error");
+        if (req->from)
+        {
+            struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
+            resp->error = g_error_new(BC_LLM_ACTOR_ERROR, -1, "LLM API connection error");
+            edc_actor_send(req->from, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, req->request_id, resp,
+                                                       (edc_actor_data_free_fn)edc_llm_actor_resp_free));
+        }
         edc_llm_actor_http_req_free(req);
     }
     else if (ev == MG_EV_CLOSE)
     {
         if (req->response == NULL)
         {
+            if (req->from)
+            {
+                struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
+                resp->error = g_error_new(BC_LLM_ACTOR_ERROR, -1, "LLM API connection closed unexpectedly");
+                edc_actor_send(req->from, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, req->request_id, resp,
+                                                           (edc_actor_data_free_fn)edc_llm_actor_resp_free));
+            }
             edc_llm_actor_http_req_free(req);
         }
     }
     else if (ev == BC_CONN_TIME_OUT || ev == MG_EV_ERROR)
     {
+        const gchar *err_msg = ev == BC_CONN_TIME_OUT ? "LLM API request timed out" : "LLM API request error";
+        if (req->from)
+        {
+            struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
+            resp->error = g_error_new(BC_LLM_ACTOR_ERROR, -1, "%s", err_msg);
+            edc_actor_send(req->from, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, req->request_id, resp,
+                                                       (edc_actor_data_free_fn)edc_llm_actor_resp_free));
+        }
         edc_llm_actor_http_req_free(req);
     }
 }

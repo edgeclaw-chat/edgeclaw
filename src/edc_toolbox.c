@@ -6,6 +6,7 @@
 #include "edc_tools_shell.h"
 #include "edc_tools_todo.h"
 #include "edc_tools_device_shell.h"
+#include "edc_tools_device_file.h"
 #include "log.h"
 
 struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, struct edc_channel *channel, void *priv)
@@ -107,6 +108,7 @@ void edc_toolbox_register_defaults(struct edc_toolbox *tb)
     edc_tools_crontab_register(tb);
     edc_tools_todo_register(tb);
     edc_tools_device_shell_register(tb);
+    edc_tools_device_file_register(tb);
 }
 
 static gboolean edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, GError **error)
