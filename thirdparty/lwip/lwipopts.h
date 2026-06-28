@@ -66,6 +66,8 @@
 #define MEMP_NUM_PPP_PCB            2
 #define PPP_DEFMRU                  1500
 
+#define LWIP_TIMEVAL_PRIVATE        0
+
 #define LWIP_STATS                  0
 #define LWIP_DEBUG                  0
 #define PPP_DEBUG                   LWIP_DBG_OFF
