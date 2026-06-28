@@ -109,8 +109,6 @@ static bool edc_extract_skill_meta_and_content(const char *content, struct edc_s
 
         sdsfreesplitres(lines, line_count);
 
-        sdsfreesplitres(lines, line_count);
-
         int start = 0, end = 0;
         if (g_match_info_fetch_pos(match_info, 0, &start, &end))
         {
