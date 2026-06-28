@@ -113,10 +113,10 @@ int main(int argc, char *argv[])
         if (!edc_init_env(edc_home, TRUE))
         {
             log_error("Failed to initialize environment.");
-            free(edc_home);
+            sdsfree(edc_home);
             return -1;
         }
-        free(edc_home);
+        sdsfree(edc_home);
         printf("Setup complete.\n");
         return 0;
     }

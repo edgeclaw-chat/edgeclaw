@@ -1,4 +1,3 @@
-#include "edc_strutil.h"
 #include "edc_sandbox.h"
 #include "edc_bpf_sandbox.h"
 #include "edc_config.h"
@@ -44,7 +43,7 @@ static bool path_is_under_any(const char *resolved_path, char **paths)
             continue;
 
         size_t len = strlen(entry_real);
-        if (edc_str_has_prefix(resolved_path, entry_real) && (resolved_path[len] == '\0' || resolved_path[len] == '/'))
+        if (strncmp(resolved_path, entry_real, strlen(entry_real)) == 0 && (resolved_path[len] == '\0' || resolved_path[len] == '/'))
         {
             free(entry_real);
             return TRUE;

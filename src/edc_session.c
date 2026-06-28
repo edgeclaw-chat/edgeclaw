@@ -1,4 +1,4 @@
-#include "edc_string.h"
+#include "sds.h"
 #include "edc_session.h"
 #include <glib.h>
 #include "edc_config.h"
@@ -47,7 +47,7 @@ static void edc_session_build_messages(struct edc_session *session, const char *
     cJSON_AddStringToObject(system_msg, "role", "system");
     cJSON_AddStringToObject(system_msg, "content", valid_utf8);
     free(valid_utf8);
-    edc_str_free(system_prompt);
+    sdsfree(system_prompt);
 
     cJSON_AddItemToArray(session->messages, system_msg);
 
@@ -111,7 +111,7 @@ void edc_session_free(struct edc_session *session)
     DL_FOREACH_SAFE(session->timestamps, n, tmp)
     {
         DL_DELETE(session->timestamps, n);
-        free(n->ts);
+        sdsfree(n->ts);
         free(n);
     }
 
@@ -128,7 +128,8 @@ void edc_session_add_turn(struct edc_session *sess, struct edc_turn *turn)
         char *ts = edc_queue_pop(t);
         cJSON_AddItemToArray(sess->messages, message);
         struct edc_timestamp_node *n = g_new0(struct edc_timestamp_node, 1);
-        n->ts = ts;
+        n->ts = sdsnew(ts);
+        free(ts);
         DL_APPEND(sess->timestamps, n);
     }
 }
@@ -154,7 +155,7 @@ bool edc_session_save_history(struct edc_session *session)
         DL_FOREACH_SAFE(session->timestamps, n, tmp)
         {
             DL_DELETE(session->timestamps, n);
-            free(n->ts);
+            sdsfree(n->ts);
             free(n);
         }
         session->timestamps = NULL;

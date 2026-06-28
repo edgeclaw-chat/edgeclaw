@@ -1,5 +1,4 @@
-#include "edc_string.h"
-#include "edc_strutil.h"
+#include "sds.h"
 #include "edc_channel_actor.h"
 #include "edc_channel_cli.h"
 #include "edc_markdown_render.h"
@@ -62,7 +61,7 @@ static void* cli_input_thread(void* data)
         {
             printf("\r\e[K%s\n", state->cli.pending_output);
             fflush(stdout);
-            edc_str_free(state->cli.pending_output);
+            sdsfree(state->cli.pending_output);
             state->cli.pending_output = NULL;
         }
         pthread_mutex_unlock(&state->cli.term_mutex);
@@ -74,7 +73,8 @@ static void* cli_input_thread(void* data)
             break;
         }
 
-        char *trimmed = edc_strstrip(strdup(line));
+        sds trimmed = sdsnew(line);
+        trimmed = sdstrim(trimmed, " \t\r\n");
         free(line);
 
         if (trimmed[0] != '\0')
@@ -88,7 +88,7 @@ static void* cli_input_thread(void* data)
         }
         else
         {
-            free(trimmed);
+            sdsfree(trimmed);
         }
     }
 
@@ -110,13 +110,13 @@ static void edc_channel_cli_handle_send(edc_actor_t *actor, edc_actor_msg_t *msg
     pthread_mutex_lock(&state->cli.term_mutex);
     if (state->cli.pending_output)
     {
-        edc_str_free(state->cli.pending_output);
+        sdsfree(state->cli.pending_output);
     }
-    if (edc_str_has_prefix(message->content, "[思考]:"))
+    if (strncmp(message->content, "[思考]:", strlen("[思考]:")) == 0)
     {
-        char *_cli_tmp = edc_strdup_printf("%s%s%s", CLI_DIM, message->content, CLI_RESET);
+        char *_cli_tmp = sdscatprintf(sdsempty(), "%s%s%s", CLI_DIM, message->content, CLI_RESET);
         state->cli.pending_output = sdsnewlen(_cli_tmp, strlen(_cli_tmp));
-        free(_cli_tmp);
+        sdsfree(_cli_tmp);
     }
     else
     {
@@ -176,9 +176,9 @@ void edc_channel_cli_init(edc_actor_t *channel_actor)
 {
     edc_channel_actor_state_t *state = channel_actor->state;
     memset(&state->cli, 0, sizeof(state->cli));
-    state->cli.history_path = edc_str_new(NULL);
+    state->cli.history_path = sdsempty();
     char *edc_home = edc_config_resolve_bc_home();
-    edc_str_printf(state->cli.history_path, "%s/.cli_history", edc_home);
-    free(edc_home);
+    state->cli.history_path = sdscatprintf(state->cli.history_path, "%s/.cli_history", edc_home);
+    sdsfree(edc_home);
     edc_channel_actor_add(channel_actor, edc_channel_cli, edc_channel_cli_handler);
 }

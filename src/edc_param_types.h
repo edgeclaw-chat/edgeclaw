@@ -1,5 +1,6 @@
 #ifndef __BC_PARAM_TYPES_H__
 #define __BC_PARAM_TYPES_H__
+#include "sds.h"
 #include <cJSON.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -15,7 +16,7 @@ struct edc_param_type;
 
 struct edc_param_object_property
 {
-    char *name;
+    sds name;
     struct edc_param_type *type;
 };
 
@@ -30,7 +31,7 @@ struct edc_param_type
         BC_TOOL_TYPE_OBJECT
     } type;
 
-    char *desc;
+    sds desc;
 
     union {
         struct

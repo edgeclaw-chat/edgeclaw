@@ -1,5 +1,4 @@
-#include "edc_string.h"
-#include "edc_strutil.h"
+#include "sds.h"
 #include "edc_error.h"
 #include "edc_tools_crontab.h"
 #include "edc_actor.h"
@@ -15,19 +14,19 @@ struct edc_tool_crontab_state
 {
     GSource *source;
     uint64_t timeout_at;
-    char *job_id;
-    char *job_name;
-    char *message;
-    char *workspace;
+    sds job_id;
+    sds job_name;
+    sds message;
+    sds workspace;
     bool once;
     edc_actor_t *scheduler;
     struct edc_channel *channel;
 };
 
-static struct edc_tool_crontab_state *edc_tool_crontab_state_new(GSource *source, uint64_t timeout_at, char *job_id,
-                                                               char *job_name, char *message, char *workspace,
-                                                               bool once, edc_actor_t *scheduler,
-                                                               struct edc_channel *channel)
+static struct edc_tool_crontab_state *edc_tool_crontab_state_new(GSource *source, uint64_t timeout_at, sds job_id,
+                                                                sds job_name, sds message, sds workspace,
+                                                                bool once, edc_actor_t *scheduler,
+                                                                struct edc_channel *channel)
 {
     struct edc_tool_crontab_state *state = g_new0(struct edc_tool_crontab_state, 1);
     state->source = source;
@@ -54,17 +53,17 @@ static void edc_tool_crontab_state_free(struct edc_tool_crontab_state *state)
 
     if (state->job_id)
     {
-        free(state->job_id);
+        sdsfree(state->job_id);
     }
 
     if (state->job_name)
     {
-        free(state->job_name);
+        sdsfree(state->job_name);
     }
 
     if (state->message)
     {
-        free(state->message);
+        sdsfree(state->message);
     }
 
     if (state->channel)
@@ -74,7 +73,7 @@ static void edc_tool_crontab_state_free(struct edc_tool_crontab_state *state)
 
     if (state->workspace)
     {
-        free(state->workspace);
+        sdsfree(state->workspace);
     }
 
     free(state);
@@ -137,7 +136,7 @@ static void edc_tool_crontab_remove_job(cJSON *jobs, char *job_id)
     {
         cJSON *job = cJSON_GetArrayItem(jobs, i);
         cJSON *job_id_i = cJSON_GetObjectItem(job, "job_id");
-        if (edc_str_equal(cJSON_GetStringValue(job_id_i), job_id))
+        if (strcmp(cJSON_GetStringValue(job_id_i), job_id) == 0)
         {
             target = i;
             break;
@@ -166,11 +165,11 @@ static void edc_tool_crontab_exec_list_async(struct edc_toolbox_call_ctx *ctx, s
 
     cJSON *jobs = cJSON_GetObjectItem(db, "jobs");
 
-    sds result = edc_str_new(NULL);
+    sds result = sdsempty();
     for (int i = 0; i < cJSON_GetArraySize(jobs); ++i)
     {
         cJSON *job = cJSON_GetArrayItem(jobs, i);
-        edc_str_printf(result, "job name: %s\tjob id: %s",
+        result = sdscatprintf(result, "job name: %s\tjob id: %s",
                                cJSON_GetStringValue(cJSON_GetObjectItem(job, "name")),
                                cJSON_GetStringValue(cJSON_GetObjectItem(job, "job_id")));
     }
@@ -210,20 +209,19 @@ static void edc_tool_crontab_exec_remove_async(struct edc_toolbox_call_ctx *ctx,
     }
     else
     {
-        sds result = edc_str_new(NULL);
-        edc_str_printf(result, "Remove job %s done. (exit code: 0)", cJSON_GetStringValue(job_id));
+        sds result = sdsempty();
+        result = sdscatprintf(result, "Remove job %s done. (exit code: 0)", cJSON_GetStringValue(job_id));
         callback(ctx, result, NULL);
     }
 
     cJSON_Delete(db);
 }
-
-static char *edc_tool_crontab_build_task_message(char *job_name, char *job_message)
+static sds edc_tool_crontab_build_task_message(char *job_name, char *job_message)
 {
-    return edc_strdup_printf("[Scheduled Task] Timer finished.\n\n"
-                           "Task '%s' has been triggered.\n"
-                           "Scheduled instruction: %s",
-                           job_name, job_message);
+    return sdscatprintf(sdsempty(),
+        "[Scheduled Task] Timer finished.\n\n"
+        "Task '%s' has been triggered.\n"
+        "Scheduled instruction: %s", job_name, job_message);
 }
 
 static void edc_tool_crontab_schedule(const char *workspace, edc_actor_t *scheduler, struct edc_tool *tool, cJSON *jobs);
@@ -238,10 +236,10 @@ static void edc_tool_crontab_caculate_next_run(cJSON *jobs)
         cJSON *tz_id = cJSON_GetObjectItem(schedule, "tz");
         cJSON *kind = cJSON_GetObjectItem(schedule, "kind");
         GTimeZone *tz = g_time_zone_new_identifier(cJSON_GetStringValue(tz_id));
-        if (edc_str_equal(cJSON_GetStringValue(kind), "at"))
+        if (strcmp(cJSON_GetStringValue(kind), "at") == 0)
         {
         }
-        else if (edc_str_equal(cJSON_GetStringValue(kind), "every"))
+        else if (strcmp(cJSON_GetStringValue(kind), "every") == 0)
         {
             cJSON *interval = cJSON_GetObjectItem(schedule, "every_seconds");
             int every_seconds = interval->valueint;
@@ -250,7 +248,7 @@ static void edc_tool_crontab_caculate_next_run(cJSON *jobs)
             g_date_time_unref(dt);
             cJSON_ReplaceItemInObject(schedule, "next_run_at_unix_ts", cJSON_CreateNumber(now + every_seconds));
         }
-        else if (edc_str_equal(cJSON_GetStringValue(kind), "cron"))
+        else if (strcmp(cJSON_GetStringValue(kind), "cron") == 0)
         {
             cJSON *expr = cJSON_GetObjectItem(schedule, "cron_expr");
             const char *error = NULL;
@@ -335,9 +333,9 @@ static void edc_tool_crontab_update_task(const char *workspace, struct edc_chann
     g_date_time_unref(now);
 
     GSource *source = g_timeout_source_new_seconds(interval);
-    tool->priv = edc_tool_crontab_state_new(source, run_at, strdup(job_id), strdup(job_name),
+    tool->priv = edc_tool_crontab_state_new(source, run_at, sdsnew(job_id), sdsnew(job_name),
                                             edc_tool_crontab_build_task_message(job_name, job_message),
-                                            strdup(workspace), once, scheduler, call_from);
+                                            sdsnew(workspace), once, scheduler, call_from);
 
     g_source_set_callback(source, (GSourceFunc)edc_tool_crontab_on_timeout, tool, NULL);
     g_source_attach(source, scheduler->context);
@@ -388,7 +386,7 @@ static void edc_tool_crontab_schedule(const char *workspace, edc_actor_t *schedu
     }
 
     struct edc_tool_crontab_state *state = tool->priv;
-    if (!state || (next_time < state->timeout_at && !edc_str_equal(job_id, state->job_id)))
+    if (!state || (next_time < state->timeout_at && !strcmp(job_id, state->job_id) == 0))
     {
         edc_tool_crontab_update_task(workspace, edc_channel_from_json(channel), scheduler, tool, job_id, job_name,
                                     job_message, next_time, once);
@@ -551,9 +549,9 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
     }
     else
     {
-        sds result = edc_str_new(NULL);
+        sds result = sdsempty();
         char *s = cJSON_PrintUnformatted(job);
-        edc_str_printf(result, "Add job %s done. (exit code: 0)", s);
+        result = sdscatprintf(result, "Add job %s done. (exit code: 0)", s);
         free(s);
         callback(ctx, result, NULL);
     }
@@ -566,15 +564,15 @@ static void edc_tool_crontab_exec_async(struct edc_toolbox_call_ctx *ctx, struct
                                        void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
 {
     char *action = cJSON_GetStringValue(cJSON_GetObjectItem(args, "action"));
-    if (edc_str_equal(action, "add"))
+    if (strcmp(action, "add") == 0)
     {
         edc_tool_crontab_exec_add_async(ctx, tool, args, callback);
     }
-    else if (edc_str_equal(action, "list"))
+    else if (strcmp(action, "list") == 0)
     {
         edc_tool_crontab_exec_list_async(ctx, tool, args, callback);
     }
-    else if (edc_str_equal(action, "remove"))
+    else if (strcmp(action, "remove") == 0)
     {
         edc_tool_crontab_exec_remove_async(ctx, tool, args, callback);
     }

@@ -1,5 +1,4 @@
-#include "edc_string.h"
-#include "edc_strutil.h"
+#include "sds.h"
 #include "edc_error.h"
 #include "edc_memory_actor.h"
 #include "edc_actor.h"
@@ -167,7 +166,7 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
 
     state->compress_index = compress_index + cJSON_GetArraySize(history);
     sds user_message =
-        edc_str_new("Process this conversation. summarizing it. and call the save_memory tool with your "
+        sdsnew("Process this conversation. summarizing it. and call the save_memory tool with your "
                      "consolidation. NOTICE: !!!! you can only call save_memory tool\n\n");
 
     const char *memory_file = g_build_filename(state->workspace, "memory", "MEMORY.md", NULL);
@@ -188,18 +187,18 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
 
     free((char *)memory_file);
 
-    edc_str_cat(user_message, "## Current Long-term Memory\n");
+    user_message = sdscat(user_message, "## Current Long-term Memory\n");
     if (memory)
     {
-        edc_str_cat(user_message, memory);
+        user_message = sdscat(user_message, memory);
         free(memory);
     }
     else
     {
-        edc_str_cat(user_message, "(empty)");
+        user_message = sdscat(user_message, "(empty)");
     }
 
-    edc_str_cat(user_message, "\n## Conversation History\n");
+    user_message = sdscat(user_message, "\n## Conversation History\n");
     for (int i = 0; i < cJSON_GetArraySize(history); i++)
     {
         cJSON *msg = cJSON_GetArrayItem(history, i);
@@ -225,25 +224,25 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
             continue;
         }
 
-        sds line = edc_str_new(NULL);
+        sds line = sdsempty();
         char *tools_used = edc_memory_get_tools_used(msg);
         if (tools_used)
         {
-            edc_str_printf(line, "[%s] %s[called: %s]: %s\n", cJSON_GetStringValue(timestamp),
+            line = sdscatprintf(line, "[%s] %s[called: %s]: %s\n", cJSON_GetStringValue(timestamp),
                                    cJSON_GetStringValue(role), tools_used, cJSON_GetStringValue(content));
             free(tools_used);
         }
         else
         {
-            edc_str_printf(line, "[%s] %s: %s\n", cJSON_GetStringValue(timestamp), cJSON_GetStringValue(role),
+            line = sdscatprintf(line, "[%s] %s: %s\n", cJSON_GetStringValue(timestamp), cJSON_GetStringValue(role),
                                    cJSON_GetStringValue(content));
         }
 
-        edc_str_cat(user_message, line);
-        edc_str_free(line);
+        user_message = sdscat(user_message, line);
+        sdsfree(line);
     }
 
-    edc_str_cat(user_message, "\n# Notice\n\n !!!!! You can only call save_memory tool.!!!!!");
+    user_message = sdscat(user_message, "\n# Notice\n\n !!!!! You can only call save_memory tool.!!!!!");
 
     cJSON *system = cJSON_CreateObject();
     cJSON_AddStringToObject(system, "role", "system");
@@ -269,7 +268,7 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
     edc_actor_send(state->llm_actor, llm_msg);
 
 exit_free_user_message:
-    edc_str_free(user_message);
+    sdsfree(user_message);
 exit_free_history:
     cJSON_Delete(history);
     return ret;
@@ -341,7 +340,7 @@ static bool edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_msg_t 
     for (unsigned i = 0; i < utarray_len(resp->tool_calls); i++)
     {
         struct edc_llm_chat_tool_call *tool_call = (struct edc_llm_chat_tool_call*)utarray_eltptr(resp->tool_calls, i);
-        if (edc_strcmp0(tool_call->function.name, "save_memory") != 0)
+        if (strcmp(tool_call->function.name, "save_memory") != 0)
         {
             ret = FALSE;
             goto exit_;

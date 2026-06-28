@@ -1,4 +1,4 @@
-#include "edc_string.h"
+#include "sds.h"
 #ifndef __BC_SKILLS_H__
 #define __BC_SKILLS_H__
 
@@ -7,8 +7,8 @@
 
 struct edc_skill_meta_entry
 {
-    char *key;
-    char *value;
+    sds key;
+    sds value;
     UT_hash_handle hh;
 };
 

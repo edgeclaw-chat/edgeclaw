@@ -1,6 +1,6 @@
+#include "sds.h"
 #include "edc_secret.h"
 #include "edc_error.h"
-#include "edc_strutil.h"
 #include "log.h"
 #include <errno.h>
 #include <glib.h>
@@ -308,7 +308,7 @@ void edc_secret_lockdown(void)
     log_info("Master key wiped — secret module locked down");
 }
 
-char *edc_secret_encrypt(const char *plaintext)
+sds edc_secret_encrypt(const char *plaintext)
 {
     if (!plaintext || !g_secret_ready)
         return NULL;
@@ -407,7 +407,7 @@ char *edc_secret_encrypt(const char *plaintext)
     free(packed);
     packed = NULL;
 
-    result = edc_strdup_printf("%s%s", BC_SECRET_PREFIX, b64_buf);
+    result = sdscatprintf(sdsempty(), "%s%s", BC_SECRET_PREFIX, b64_buf);
     free(b64_buf);
 
 cleanup:

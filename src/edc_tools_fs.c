@@ -1,5 +1,4 @@
-#include "edc_string.h"
-#include "edc_strutil.h"
+#include "sds.h"
 #include "edc_error.h"
 #include "edc_sandbox.h"
 #include "edc_toolbox.h"
@@ -60,8 +59,8 @@ static sds edc_tool_exec_write_file(struct edc_config *conf, cJSON *args, EdcErr
         return NULL;
     }
 
-    sds result = edc_str_new("");
-    edc_str_printf(result, "Successfully wrote to file %s", path);
+    sds result = sdsnew("");
+    result = sdscatprintf(result, "Successfully wrote to file %s", path);
     return result;
 }
 
@@ -85,7 +84,7 @@ static sds edc_tool_exec_list_dir(struct edc_config *conf, cJSON *args, EdcError
         return NULL;
     }
 
-    sds result = edc_str_new("");
+    sds result = sdsnew("");
     const char *name;
     while ((name = g_dir_read_name(dir)))
     {
@@ -94,7 +93,7 @@ static sds edc_tool_exec_list_dir(struct edc_config *conf, cJSON *args, EdcError
         free(full_path);
 
         const char *prefix = is_dir ? "[DIR]  " : "[FILE] ";
-        edc_str_printf(result, "%s%s\n", prefix, name);
+        result = sdscatprintf(result, "%s%s\n", prefix, name);
     }
 
     g_dir_close(dir);
@@ -175,9 +174,9 @@ static sds edc_edit_file_try_create(const char *path, char *safe_path,
                 g_error_free(gerror);
                 return NULL;
             }
-            char *msg = edc_strdup_printf("Successfully created %s", path);
+            char *msg = sdscatprintf(sdsempty(), "Successfully created %s", path);
             sds ret = sdsnewlen(msg, strlen(msg));
-            free(msg);
+        sdsfree(msg);
             return ret;
         }
         edc_error_set(error, EDC_ERR_EXEC,
@@ -196,15 +195,17 @@ static sds edc_edit_file_try_create(const char *path, char *safe_path,
             g_error_free(gerror);
             return NULL;
         }
-        content = edc_strstrip(content);
-        if (content[0] != '\0')
+        sds sds_content = sdsnewlen(content, strlen(content));
+        free(content);
+        sds_content = sdstrim(sds_content, " \t\r\n");
+        if (sds_content[0] != '\0')
         {
-            free(content);
+            sdsfree(sds_content);
             edc_error_set(error, EDC_ERR_EXEC,
                         "Error: Cannot create file — %s already exists and is not empty.", path);
             return NULL;
         }
-        free(content);
+        sdsfree(sds_content);
         GError *gerror2 = NULL;
         g_file_set_contents(safe_path, new_text, -1, &gerror2);
         if (gerror2)
@@ -213,9 +214,9 @@ static sds edc_edit_file_try_create(const char *path, char *safe_path,
             g_error_free(gerror2);
             return NULL;
         }
-        char *msg = edc_strdup_printf("Successfully edited %s", path);
+        char *msg = sdscatprintf(sdsempty(), "Successfully edited %s", path);
         sds ret = sdsnewlen(msg, strlen(msg));
-        free(msg);
+        sdsfree(msg);
         return ret;
     }
 
@@ -270,22 +271,22 @@ static void edc_edit_file_format_match_list(const char *content, size_t content_
         if (ctx_end > content_len)
             ctx_end = content_len;
 
-        sds ctx = edc_str_new(NULL);
+        sds ctx = sdsempty();
         for (size_t ci = ctx_start; ci < ctx_end; ci++)
         {
             char c = content[ci];
             if (c == '\n')
-                edc_str_cat(ctx, "\\n");
+                ctx = sdscat(ctx, "\\n");
             else if (c == '\t')
-                edc_str_cat(ctx, "\\t");
+                ctx = sdscat(ctx, "\\t");
             else
-                edc_str_printf(ctx, "%c", c);
+                ctx = sdscatprintf(ctx, "%c", c);
         }
-        edc_str_printf(out, "\n  [%u] line %ld: \"%s\"", i + 1, (long)ln, ctx);
-        edc_str_free(ctx);
+        out = sdscatprintf(out, "\n  [%u] line %ld: \"%s\"", i + 1, (long)ln, ctx);
+        sdsfree(ctx);
     }
     if (count > max_preview)
-        edc_str_printf(out, "\n  ... and %u more matches", count - max_preview);
+        out = sdscatprintf(out, "\n  ... and %u more matches", count - max_preview);
 }
 
 static bool edc_edit_file_select_all(unsigned int count, UT_array **selected, EdcError **error)
@@ -339,13 +340,13 @@ static bool edc_edit_file_select_by_line_hint(const char *content, size_t conten
 
     if (ambiguous)
     {
-        sds msg = edc_str_new(NULL);
+        sds msg = sdsempty();
         edc_edit_file_format_match_list(content, content_len, positions, line_nums,
                                          old_len, count, 5, msg);
         edc_error_set(error, EDC_ERR_EXEC,
                     "Error: line_hint %ld is ambiguous; old_text appears %u times.%s",
                     (long)line_hint, count, msg);
-        edc_str_free(msg);
+        sdsfree(msg);
         return FALSE;
     }
 
@@ -388,14 +389,14 @@ static bool edc_edit_file_select_matches(const char *content, size_t content_len
 
     if (count > 1)
     {
-        sds msg = edc_str_new(NULL);
+        sds msg = sdsempty();
         edc_edit_file_format_match_list(content, content_len, positions, line_nums,
                                          old_len, count, 5, msg);
         edc_error_set(error, EDC_ERR_EXEC,
                     "Warning: old_text appears %u times. "
                     "Provide more context, set occurrence, or set replace_all=true.%s",
                     count, msg);
-        edc_str_free(msg);
+        sdsfree(msg);
         return FALSE;
     }
 
@@ -412,7 +413,7 @@ static void edc_edit_file_apply_replacements(const char *content, size_t content
                                               UT_array *selected, sds *out_content)
 {
     size_t new_len = strlen(new_text);
-    *out_content = edc_str_new(NULL);
+    *out_content = sdsempty();
     size_t prev_end = 0;
 
     for (unsigned int si = 0; si < utarray_len(selected); si++)
@@ -421,15 +422,15 @@ static void edc_edit_file_apply_replacements(const char *content, size_t content
         size_t start = *(size_t*)utarray_eltptr(positions, (unsigned)idx);
         size_t end = start + old_len;
 
-        edc_str_catn(*out_content, content + prev_end, (ssize_t)(start - prev_end));
-        edc_str_cat(*out_content, new_text);
+        *out_content = sdscatlen(*out_content, content + prev_end, (ssize_t)(start - prev_end));
+        *out_content = sdscat(*out_content, new_text);
         prev_end = end;
 
         if (new_len == 0 && end < content_len
             && content[end - 1] != '\n' && content[end] == '\n')
             prev_end++;
     }
-    edc_str_catn(*out_content, content + prev_end, (ssize_t)(content_len - prev_end));
+    *out_content = sdscatlen(*out_content, content + prev_end, (ssize_t)(content_len - prev_end));
 }
 
 static sds edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, EdcError **error)
@@ -527,7 +528,7 @@ static sds edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, EdcErro
 
     GError *gerror2 = NULL;
     g_file_set_contents(safe_path, new_content, -1, &gerror2);
-    edc_str_free(new_content);
+    sdsfree(new_content);
     if (gerror2)
     {
         edc_error_set(error, EDC_ERR_FAILED, "%s", gerror2->message);
@@ -535,9 +536,9 @@ static sds edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, EdcErro
     }
     else
     {
-        char *msg = edc_strdup_printf("Successfully edited %s", path);
+        char *msg = sdscatprintf(sdsempty(), "Successfully edited %s", path);
         result = sdsnewlen(msg, strlen(msg));
-        free(msg);
+        sdsfree(msg);
     }
 
 cleanup:

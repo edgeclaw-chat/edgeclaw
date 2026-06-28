@@ -2,7 +2,7 @@
 #include "md4c.h"
 #include "log.h"
 #include <glib.h>
-#include "edc_string.h"
+#include "sds.h"
 #include <string.h>
 
 #define ANSI_RESET      "\033[0m"
@@ -61,7 +61,7 @@ struct edc_md_render_ctx {
 static void edc_md_render_ctx_init(struct edc_md_render_ctx *ctx)
 {
     memset(ctx, 0, sizeof(*ctx));
-    ctx->out = edc_str_new(NULL);
+    ctx->out = sdsempty();
 }
 
 static int edc_md_visual_strlen(const char *s)
@@ -88,13 +88,13 @@ static int edc_md_visual_strlen(const char *s)
 static void edc_md_render_ctx_free(struct edc_md_render_ctx *ctx)
 {
     if (ctx->out)
-        edc_str_free(ctx->out);
+        sdsfree(ctx->out);
     if (ctx->table_rows) {
         for (unsigned int i = 0; i < ctx->table_rows->len; i++) {
             GPtrArray *row = g_ptr_array_index(ctx->table_rows, i);
             for (unsigned int j = 0; j < row->len; j++) {
                 sds cell = g_ptr_array_index(row, j);
-                edc_str_free(cell);
+                sdsfree(cell);
             }
             free(g_ptr_array_free(row, FALSE));
         }
@@ -103,12 +103,12 @@ static void edc_md_render_ctx_free(struct edc_md_render_ctx *ctx)
     if (ctx->current_row) {
         for (unsigned int i = 0; i < ctx->current_row->len; i++) {
             sds cell = g_ptr_array_index(ctx->current_row, i);
-            edc_str_free(cell);
+            sdsfree(cell);
         }
         free(g_ptr_array_free(ctx->current_row, FALSE));
     }
     if (ctx->current_cell) {
-        edc_str_free(ctx->current_cell);
+        sdsfree(ctx->current_cell);
     }
     if (ctx->col_aligns) {
         for (unsigned int i = 0; i < ctx->col_aligns->len; i++) {
@@ -133,7 +133,7 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 
     case MD_BLOCK_QUOTE:
         ctx->in_quote = TRUE;
-        edc_str_cat(*o, ANSI_DIM "│ " ANSI_RESET);
+        *o = sdscat(*o, ANSI_DIM "│ " ANSI_RESET);
         break;
 
     case MD_BLOCK_UL:
@@ -145,7 +145,7 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         }
         ctx->list_depth++;
         if (ctx->has_content) {
-            edc_str_catc(*o, '\n');
+            *o = sdscatlen(*o, &(char){'\n'}, 1);
         }
         break;
 
@@ -158,7 +158,7 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         }
         ctx->list_depth++;
         if (ctx->has_content) {
-            edc_str_catc(*o, '\n');
+            *o = sdscatlen(*o, &(char){'\n'}, 1);
         }
         break;
     }
@@ -168,26 +168,26 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         if (depth < 0) depth = 0;
         if (depth >= MAX_LIST_DEPTH) depth = MAX_LIST_DEPTH - 1;
 
-        edc_str_printf(*o, "%*s", depth * 2, "");
+        *o = sdscatprintf(*o, "%*s", depth * 2, "");
 
         MD_BLOCK_LI_DETAIL *det = detail;
         if (det->is_task) {
-            edc_str_printf(*o, "%s[%c]%s ", ANSI_GREEN,
+            *o = sdscatprintf(*o, "%s[%c]%s ", ANSI_GREEN,
                                    det->task_mark ? det->task_mark : ' ',
                                    ANSI_RESET);
         } else if (depth < MAX_LIST_DEPTH && ctx->is_ordered[depth]) {
-            edc_str_printf(*o, "%s%d.%s ",
+            *o = sdscatprintf(*o, "%s%d.%s ",
                                    ANSI_BOLD, ctx->ol_counter[depth]++,
                                    ANSI_RESET);
         } else {
-            edc_str_cat(*o, "• ");
+            *o = sdscat(*o, "• ");
         }
         break;
     }
 
     case MD_BLOCK_HR:
-        if (ctx->has_content) edc_str_catc(*o, '\n');
-        edc_str_cat(*o, ANSI_DIM "────" ANSI_RESET "\n");
+        if (ctx->has_content) *o = sdscatlen(*o, &(char){'\n'}, 1);
+        *o = sdscat(*o, ANSI_DIM "────" ANSI_RESET "\n");
         ctx->has_content = TRUE;
         break;
 
@@ -196,22 +196,22 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         int level = det->level;
         if (level < 1) level = 1;
         if (level > 6) level = 6;
-        if (ctx->has_content) edc_str_catc(*o, '\n');
-        edc_str_cat(*o, HEADING_COLORS[level]);
+        if (ctx->has_content) *o = sdscatlen(*o, &(char){'\n'}, 1);
+        *o = sdscat(*o, HEADING_COLORS[level]);
         for (int i = 0; i < level; i++)
-            edc_str_catc(*o, '#');
-        edc_str_catc(*o, ' ');
+            *o = sdscatlen(*o, &(char){'#'}, 1);
+        *o = sdscatlen(*o, &(char){' '}, 1);
         break;
     }
 
     case MD_BLOCK_CODE:
-        if (ctx->has_content) edc_str_catc(*o, '\n');
-        edc_str_cat(*o, ANSI_GRAY);
+        if (ctx->has_content) *o = sdscatlen(*o, &(char){'\n'}, 1);
+        *o = sdscat(*o, ANSI_GRAY);
         {
             MD_BLOCK_CODE_DETAIL *det = detail;
             if (det->lang.text && det->lang.size > 0) {
-                edc_str_catn(*o, det->lang.text, det->lang.size);
-                edc_str_catc(*o, '\n');
+                *o = sdscatlen(*o, det->lang.text, det->lang.size);
+                *o = sdscatlen(*o, &(char){'\n'}, 1);
             }
         }
         break;
@@ -221,14 +221,14 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 
     case MD_BLOCK_P:
         if (ctx->has_content && !ctx->in_quote && ctx->list_depth == 0)
-            edc_str_catc(*o, '\n');
+            *o = sdscatlen(*o, &(char){'\n'}, 1);
         break;
 
     case MD_BLOCK_TABLE:
         ctx->in_table = TRUE;
         ctx->table_rows = g_ptr_array_new();
         ctx->col_aligns = g_ptr_array_new();
-        if (ctx->has_content) edc_str_catc(*o, '\n');
+        if (ctx->has_content) *o = sdscatlen(*o, &(char){'\n'}, 1);
         break;
 
     case MD_BLOCK_THEAD:
@@ -242,7 +242,7 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 
     case MD_BLOCK_TH:
     case MD_BLOCK_TD:
-        ctx->current_cell = edc_str_new(NULL);
+        ctx->current_cell = sdsempty();
         break;
 
     default:
@@ -263,7 +263,7 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 
     case MD_BLOCK_QUOTE:
         ctx->in_quote = FALSE;
-        edc_str_catc(*o, '\n');
+        *o = sdscatlen(*o, &(char){'\n'}, 1);
         ctx->has_content = TRUE;
         break;
 
@@ -271,7 +271,7 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
     case MD_BLOCK_OL:
         if (ctx->list_depth > 0) ctx->list_depth--;
         if (ctx->list_depth == 0) {
-            edc_str_catc(*o, '\n');
+            *o = sdscatlen(*o, &(char){'\n'}, 1);
         }
         ctx->has_content = TRUE;
         break;
@@ -279,9 +279,9 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
     case MD_BLOCK_LI:
         if (!ctx->is_tight_list[ctx->list_depth > 0 ?
                                ctx->list_depth - 1 : 0]) {
-            edc_str_catc(*o, '\n');
+            *o = sdscatlen(*o, &(char){'\n'}, 1);
         } else {
-            if (ctx->list_depth > 0) edc_str_catc(*o, '\n');
+            if (ctx->list_depth > 0) *o = sdscatlen(*o, &(char){'\n'}, 1);
         }
         ctx->has_content = TRUE;
         break;
@@ -294,25 +294,25 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         int level = det->level;
         if (level < 1) level = 1;
         if (level > 6) level = 6;
-        edc_str_cat(*o, ANSI_RESET "\n");
-        if (level <= 2) edc_str_catc(*o, '\n');
+        *o = sdscat(*o, ANSI_RESET "\n");
+        if (level <= 2) *o = sdscatlen(*o, &(char){'\n'}, 1);
         ctx->has_content = TRUE;
         break;
     }
 
     case MD_BLOCK_CODE:
-        edc_str_cat(*o, ANSI_RESET "\n\n");
+        *o = sdscat(*o, ANSI_RESET "\n\n");
         ctx->has_content = TRUE;
         break;
 
     case MD_BLOCK_HTML:
-        edc_str_catc(*o, '\n');
+        *o = sdscatlen(*o, &(char){'\n'}, 1);
         ctx->has_content = TRUE;
         break;
 
     case MD_BLOCK_P:
-        if (!ctx->in_quote) edc_str_cat(*o, ANSI_RESET);
-        edc_str_catc(*o, '\n');
+        if (!ctx->in_quote) *o = sdscat(*o, ANSI_RESET);
+        *o = sdscatlen(*o, &(char){'\n'}, 1);
         ctx->has_content = TRUE;
         break;
 
@@ -339,56 +339,56 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
                 if (widths[c] < 2) widths[c] = 2;
             }
 
-            edc_str_cat(*o, ANSI_DIM);
-            edc_str_cat(*o, "┌");
+            *o = sdscat(*o, ANSI_DIM);
+            *o = sdscat(*o, "┌");
             for (unsigned int c = 0; c < ncols; c++) {
                 for (int i = 0; i < widths[c] + 2; i++)
-                    edc_str_cat(*o, "─");
-                if (c < ncols - 1) edc_str_cat(*o, "┬");
+                    *o = sdscat(*o, "─");
+                if (c < ncols - 1) *o = sdscat(*o, "┬");
             }
-            edc_str_cat(*o, "┐\n" ANSI_RESET);
+            *o = sdscat(*o, "┐\n" ANSI_RESET);
 
             for (unsigned int r = 0; r < rows->len; r++) {
                 GPtrArray *row = g_ptr_array_index(rows, r);
 
-                edc_str_cat(*o, ANSI_DIM "│" ANSI_RESET);
+                *o = sdscat(*o, ANSI_DIM "│" ANSI_RESET);
                 for (unsigned int c = 0; c < ncols; c++) {
-                    edc_str_catc(*o, ' ');
+                    *o = sdscatlen(*o, &(char){' '}, 1);
                     if (c < row->len) {
                         sds cell = g_ptr_array_index(row, c);
-                        edc_str_cat(*o, cell);
+                        *o = sdscat(*o, cell);
                         int len = edc_md_visual_strlen(cell);
                         for (int i = len; i < widths[c]; i++)
-                            edc_str_catc(*o, ' ');
+                            *o = sdscatlen(*o, &(char){' '}, 1);
                     } else {
                         for (int i = 0; i < widths[c]; i++)
-                            edc_str_catc(*o, ' ');
+                            *o = sdscatlen(*o, &(char){' '}, 1);
                     }
-                    edc_str_cat(*o, ANSI_DIM " │" ANSI_RESET);
+                    *o = sdscat(*o, ANSI_DIM " │" ANSI_RESET);
                 }
-                edc_str_catc(*o, '\n');
+                *o = sdscatlen(*o, &(char){'\n'}, 1);
 
                 if (r == nhead - 1 && nhead > 0 &&
                     r < rows->len - 1) {
-                    edc_str_cat(*o, ANSI_DIM);
-                    edc_str_cat(*o, "├");
+                    *o = sdscat(*o, ANSI_DIM);
+                    *o = sdscat(*o, "├");
                     for (unsigned int c = 0; c < ncols; c++) {
                         for (int i = 0; i < widths[c] + 2; i++)
-                            edc_str_cat(*o, "─");
-                        if (c < ncols - 1) edc_str_cat(*o, "┼");
+                            *o = sdscat(*o, "─");
+                        if (c < ncols - 1) *o = sdscat(*o, "┼");
                     }
-                    edc_str_cat(*o, "┤\n" ANSI_RESET);
+                    *o = sdscat(*o, "┤\n" ANSI_RESET);
                 }
             }
 
-            edc_str_cat(*o, ANSI_DIM);
-            edc_str_cat(*o, "└");
+            *o = sdscat(*o, ANSI_DIM);
+            *o = sdscat(*o, "└");
             for (unsigned int c = 0; c < ncols; c++) {
                 for (int i = 0; i < widths[c] + 2; i++)
-                    edc_str_cat(*o, "─");
-                if (c < ncols - 1) edc_str_cat(*o, "┴");
+                    *o = sdscat(*o, "─");
+                if (c < ncols - 1) *o = sdscat(*o, "┴");
             }
-            edc_str_cat(*o, "┘" ANSI_RESET "\n");
+            *o = sdscat(*o, "┘" ANSI_RESET "\n");
 
             free(widths);
             ctx->has_content = TRUE;
@@ -399,7 +399,7 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
                 GPtrArray *row = g_ptr_array_index(ctx->table_rows, i);
                 for (unsigned int j = 0; j < row->len; j++) {
                     sds cell = g_ptr_array_index(row, j);
-                    edc_str_free(cell);
+                    sdsfree(cell);
                 }
                 free(g_ptr_array_free(row, FALSE));
             }
@@ -461,37 +461,37 @@ static int edc_md_enter_span(MD_SPANTYPE type, void *detail, void *userdata)
 
     switch (type) {
     case MD_SPAN_EM:
-        edc_str_cat(*o, ANSI_ITALIC);
+        *o = sdscat(*o, ANSI_ITALIC);
         break;
 
     case MD_SPAN_STRONG:
-        edc_str_cat(*o, ANSI_BOLD);
+        *o = sdscat(*o, ANSI_BOLD);
         break;
 
     case MD_SPAN_A:
         ctx->in_span_a = TRUE;
-        edc_str_cat(*o, ANSI_BLUE ANSI_UNDERLINE);
+        *o = sdscat(*o, ANSI_BLUE ANSI_UNDERLINE);
         break;
 
     case MD_SPAN_IMG:
         break;
 
     case MD_SPAN_CODE:
-        edc_str_cat(*o, ANSI_GRAY);
+        *o = sdscat(*o, ANSI_GRAY);
         break;
 
     case MD_SPAN_DEL:
-        edc_str_cat(*o, ANSI_STRIKE);
+        *o = sdscat(*o, ANSI_STRIKE);
         break;
 
     case MD_SPAN_LATEXMATH:
     case MD_SPAN_LATEXMATH_DISPLAY:
-        edc_str_cat(*o, ANSI_GRAY);
+        *o = sdscat(*o, ANSI_GRAY);
         break;
 
     case MD_SPAN_WIKILINK:
     case MD_SPAN_U:
-        edc_str_cat(*o, ANSI_UNDERLINE);
+        *o = sdscat(*o, ANSI_UNDERLINE);
         break;
 
     default:
@@ -509,33 +509,33 @@ static int edc_md_leave_span(MD_SPANTYPE type, void *detail, void *userdata)
     switch (type) {
     case MD_SPAN_EM:
     case MD_SPAN_STRONG:
-        edc_str_cat(*o, ANSI_RESET);
+        *o = sdscat(*o, ANSI_RESET);
         break;
 
     case MD_SPAN_A: {
         ctx->in_span_a = FALSE;
-        edc_str_cat(*o, ANSI_RESET);
+        *o = sdscat(*o, ANSI_RESET);
         MD_SPAN_A_DETAIL *det = detail;
         if (!det->is_autolink && det->href.text && det->href.size > 0) {
-            edc_str_cat(*o, " " ANSI_BLUE "(");
-            edc_str_catn(*o, det->href.text, det->href.size);
-            edc_str_cat(*o, ")" ANSI_RESET);
+            *o = sdscat(*o, " " ANSI_BLUE "(");
+            *o = sdscatlen(*o, det->href.text, det->href.size);
+            *o = sdscat(*o, ")" ANSI_RESET);
         }
         break;
     }
 
     case MD_SPAN_IMG: {
-        edc_str_cat(*o, ANSI_BLUE "[img");
+        *o = sdscat(*o, ANSI_BLUE "[img");
         MD_SPAN_IMG_DETAIL *det = detail;
         if (det->title.text && det->title.size > 0) {
-            edc_str_catc(*o, ':');
-            edc_str_catn(*o, det->title.text, det->title.size);
+            *o = sdscatlen(*o, &(char){':'}, 1);
+            *o = sdscatlen(*o, det->title.text, det->title.size);
         }
-        edc_str_cat(*o, "]");
+        *o = sdscat(*o, "]");
         if (det->src.text && det->src.size > 0) {
-            edc_str_catn(*o, det->src.text, det->src.size);
+            *o = sdscatlen(*o, det->src.text, det->src.size);
         }
-        edc_str_cat(*o, ANSI_RESET);
+        *o = sdscat(*o, ANSI_RESET);
         break;
     }
 
@@ -543,21 +543,21 @@ static int edc_md_leave_span(MD_SPANTYPE type, void *detail, void *userdata)
     case MD_SPAN_DEL:
     case MD_SPAN_LATEXMATH:
     case MD_SPAN_LATEXMATH_DISPLAY:
-        edc_str_cat(*o, ANSI_RESET);
+        *o = sdscat(*o, ANSI_RESET);
         break;
 
     case MD_SPAN_WIKILINK: {
         MD_SPAN_WIKILINK_DETAIL *det = detail;
         if (det->target.text && det->target.size > 0) {
-            edc_str_cat(*o, ANSI_BLUE " (");
-            edc_str_catn(*o, det->target.text, det->target.size);
-            edc_str_cat(*o, ")" ANSI_RESET);
+            *o = sdscat(*o, ANSI_BLUE " (");
+            *o = sdscatlen(*o, det->target.text, det->target.size);
+            *o = sdscat(*o, ")" ANSI_RESET);
         }
         break;
     }
 
     case MD_SPAN_U:
-        edc_str_cat(*o, ANSI_RESET);
+        *o = sdscat(*o, ANSI_RESET);
         break;
 
     default:
@@ -575,7 +575,7 @@ static int edc_md_text(MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size,
 
     switch (type) {
     case MD_TEXT_NORMAL:
-        edc_str_catn(*o, text, size);
+        *o = sdscatlen(*o, text, size);
         break;
 
     case MD_TEXT_NULLCHAR:
@@ -583,36 +583,36 @@ static int edc_md_text(MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size,
 
     case MD_TEXT_BR:
         if (ctx->in_table && ctx->current_cell) {
-            edc_str_catc(*o, ' ');
+            *o = sdscatlen(*o, &(char){' '}, 1);
         } else {
-            edc_str_catc(*o, '\n');
+            *o = sdscatlen(*o, &(char){'\n'}, 1);
             if (ctx->in_quote)
-                edc_str_cat(*o, ANSI_DIM "│ " ANSI_RESET);
+                *o = sdscat(*o, ANSI_DIM "│ " ANSI_RESET);
             else if (ctx->list_depth > 0) {
                 int depth = ctx->list_depth - 1;
                 if (depth >= MAX_LIST_DEPTH) depth = MAX_LIST_DEPTH - 1;
                 if (depth < 0) depth = 0;
-                edc_str_printf(*o, "%*s", depth * 2 + 2, "");
+                *o = sdscatprintf(*o, "%*s", depth * 2 + 2, "");
             }
         }
         break;
 
     case MD_TEXT_SOFTBR:
         if (ctx->in_table && ctx->current_cell) {
-            edc_str_catc(*o, ' ');
+            *o = sdscatlen(*o, &(char){' '}, 1);
         } else {
-            edc_str_catc(*o, ' ');
+            *o = sdscatlen(*o, &(char){' '}, 1);
         }
         break;
 
     case MD_TEXT_CODE:
     case MD_TEXT_HTML:
     case MD_TEXT_LATEXMATH:
-        edc_str_catn(*o, text, size);
+        *o = sdscatlen(*o, text, size);
         break;
 
     case MD_TEXT_ENTITY:
-        edc_str_catn(*o, text, size);
+        *o = sdscatlen(*o, text, size);
         break;
 
     default:
@@ -631,7 +631,7 @@ static void edc_md_debug_log(const char *msg, void *userdata)
 
 sds edc_markdown_render(const char *markdown)
 {
-    if (!markdown) return edc_str_new(NULL);
+    if (!markdown) return sdsempty();
 
     struct edc_md_render_ctx ctx;
     edc_md_render_ctx_init(&ctx);

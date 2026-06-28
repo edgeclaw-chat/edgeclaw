@@ -1,4 +1,4 @@
-#include "edc_strutil.h"
+#include "sds.h"
 #include "edc_commands.h"
 #include "edc_actor.h"
 #include "edc_agent.h"
@@ -12,11 +12,10 @@ extern volatile sig_atomic_t _run_loop;
 
 static bool edc_commands_is_target(const char *content, const char *target)
 {
-    char *cmd = strdup(content);
-
-    edc_strstrip(cmd);
-    bool is = edc_str_equal(cmd, target);
-    free(cmd);
+    sds cmd = sdsnew(content);
+    cmd = sdstrim(cmd, " \t\r\n");
+    bool is = strcmp(cmd, target) == 0;
+    sdsfree(cmd);
 
     return is;
 }
@@ -35,7 +34,7 @@ static bool edc_commands_handle_new(struct edc_agent *agent, edc_actor_t *actor,
     }
 
     struct edc_channel_message *reply =
-        edc_channel_message_new(edc_channel_copy(channel), strdup("[system] start new session now."));
+        edc_channel_message_new(edc_channel_copy(channel), sdsnew("[system] start new session now."));
     edc_actor_send(agent->channel_actor,
                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->channel->type, actor, NULL, reply,
                                             (edc_actor_data_free_fn)edc_channel_message_free));
@@ -49,7 +48,7 @@ static bool edc_commands_handle_stop(struct edc_agent *agent, edc_actor_t *actor
     edc_agent_remove_all_turns(agent);
 
     struct edc_channel_message *reply =
-        edc_channel_message_new(edc_channel_copy(channel), strdup("[system] stop all turn."));
+        edc_channel_message_new(edc_channel_copy(channel), sdsnew("[system] stop all turn."));
     edc_actor_send(agent->channel_actor,
                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->channel->type, actor, NULL, reply,
                                             (edc_actor_data_free_fn)edc_channel_message_free));
@@ -67,7 +66,7 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
         "- `/exit` — Exit the program gracefully";
 
     struct edc_channel_message *reply =
-        edc_channel_message_new(edc_channel_copy(channel), strdup(help_text));
+        edc_channel_message_new(edc_channel_copy(channel), sdsnew(help_text));
     edc_actor_send(agent->channel_actor,
                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->channel->type, actor, NULL, reply,
                                             (edc_actor_data_free_fn)edc_channel_message_free));
@@ -78,7 +77,7 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
 static bool edc_commands_handle_exit(struct edc_agent *agent, edc_actor_t *actor, struct edc_channel *channel)
 {
     struct edc_channel_message *reply =
-        edc_channel_message_new(edc_channel_copy(channel), strdup("[system] shutting down..."));
+        edc_channel_message_new(edc_channel_copy(channel), sdsnew("[system] shutting down..."));
     edc_actor_send(agent->channel_actor,
                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->channel->type, actor, NULL, reply,
                                             (edc_actor_data_free_fn)edc_channel_message_free));

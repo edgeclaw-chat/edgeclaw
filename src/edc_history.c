@@ -1,5 +1,4 @@
-#include "edc_string.h"
-#include "edc_strutil.h"
+#include "sds.h"
 #include "edc_history.h"
 #include "edc_session.h"
 #include "log.h"
@@ -29,24 +28,24 @@ cJSON *edc_history_load(const char *workspace, const size_t offset)
 
     cJSON *history_array = cJSON_CreateArray();
     char buf[1024];
-    sds line = edc_str_new(NULL);
+    sds line = sdsempty();
     size_t line_counts = 0;
 
     while (fgets(buf, sizeof(buf), fin) != NULL)
     {
-        edc_str_cat(line, buf);
-        if (edc_str_len(line) > 0 && line[edc_str_len(line) - 1] == '\n')
+        line = sdscat(line, buf);
+        if (sdslen(line) > 0 && line[sdslen(line) - 1] == '\n')
         {
             line_counts += 1;
             if (line_counts < offset)
             {
-                edc_str_trunc(line, 0);
+                sdsrange(line, 0, 0);
                 continue;
             }
 
-            edc_strstrip(line);
-            edc_str_setlen(line, strlen(line));
-            if (edc_str_len(line) > 0)
+            line = sdstrim(line, " \t\r\n");
+            sdssetlen(line, strlen(line));
+            if (sdslen(line) > 0)
             {
                 cJSON *msg = cJSON_Parse(line);
                 if (msg != NULL)
@@ -54,11 +53,11 @@ cJSON *edc_history_load(const char *workspace, const size_t offset)
                     cJSON_AddItemToArray(history_array, msg);
                 }
             }
-            edc_str_trunc(line, 0);
+            sdsrange(line, 0, 0);
         }
     }
 
-    if (edc_str_len(line) > 0 && line_counts >= offset)
+    if (sdslen(line) > 0 && line_counts >= offset)
     {
         cJSON *msg = cJSON_Parse(line);
         if (msg != NULL)
@@ -67,7 +66,7 @@ cJSON *edc_history_load(const char *workspace, const size_t offset)
         }
     }
 
-    edc_str_free(line);
+    sdsfree(line);
     fclose(fin);
     return history_array;
 }

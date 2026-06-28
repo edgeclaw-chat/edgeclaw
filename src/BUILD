@@ -113,16 +113,7 @@ cc_library(
     name = "edc_error",
     srcs = ["edc_error.c"],
     hdrs = ["edc_error.h"],
-    deps = [],
-    linkstatic = True,
-    visibility = ["//visibility:public"],
-)
-
-cc_library(
-    name = "edc_strutil",
-    srcs = ["edc_strutil.c"],
-    hdrs = ["edc_strutil.h"],
-    deps = ["@glib//glib:glib"],
+    deps = ["@sds//:sds"],
     linkstatic = True,
     visibility = ["//visibility:public"],
 )
@@ -169,7 +160,6 @@ cc_library(
     ],
     hdrs = [
         "edc_compat.h",
-        "edc_string.h",
         "edc_containers.h",
         "edc_context.h",
         "edc_history.h",
@@ -214,7 +204,6 @@ cc_library(
     deps = [
         "@glib//glib:glib",
         ":edc_error",
-        ":edc_strutil",
         "@uthash//:uthash",
         "@sds//:sds",
         "@cjson//:cjson",
@@ -255,7 +244,7 @@ cc_library(
     deps = [
         "@glib//glib:glib",
         ":edc_error",
-        ":edc_strutil",
+        "@sds//:sds",
         "@log.c//:log.c",
         ":mbedtls_config",
         "@mbedtls//:mbedtls",

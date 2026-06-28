@@ -1,4 +1,4 @@
-#include "edc_strutil.h"
+#include "sds.h"
 #include "edc_channel_qq.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
@@ -96,7 +96,7 @@ void edc_channel_qq_network_req_free(struct edc_channel_qq_network_req *req)
         }
         if (req->http_send_msg.url)
         {
-            free(req->http_send_msg.url);
+            sdsfree(req->http_send_msg.url);
         }
     }
     else if (req->type == BC_CHANNEL_QQ_WSS_CONN_REQ)
@@ -227,7 +227,7 @@ static bool edc_channel_qq_access_token_update(void *data)
 {
     edc_actor_t *actor = data;
     edc_channel_actor_state_t *state = actor->state;
-    free(state->qq.access_token);
+    sdsfree(state->qq.access_token);
     state->qq.access_token = NULL;
     state->qq.expires_in = -1;
 
@@ -253,9 +253,9 @@ static bool edc_channel_qq_handle_get_access_token_resp(edc_actor_t *actor, edc_
     }
 
     edc_channel_actor_state_t *state = actor->state;
-    state->qq.access_token = access_token->valuestring;
+    state->qq.access_token = sdsnew(access_token->valuestring);
     state->qq.expires_in = atoi(expires_in->valuestring);
-    // state->qq.expires_in = 60;
+    free(access_token->valuestring);
     access_token->valuestring = NULL;
 
     if (state->qq.expire_source)
@@ -340,9 +340,10 @@ static bool edc_channel_qq_handle_get_wss_endpoint_resp(edc_actor_t *actor, edc_
 
     if (state->qq.wss_url)
     {
-        free(state->qq.wss_url);
+        sdsfree(state->qq.wss_url);
     }
-    state->qq.wss_url = url->valuestring;
+    state->qq.wss_url = sdsnew(url->valuestring);
+    free(url->valuestring);
     url->valuestring = NULL;
 
     state->qq.wss_shards = (int)cJSON_GetNumberValue(shards);
@@ -379,9 +380,9 @@ static void edc_channel_qq_wss_send_identify(struct mg_connection *c, edc_actor_
     cJSON *d = cJSON_AddObjectToObject(identify, "d");
 
     edc_channel_actor_state_t *state = actor->state;
-    char *token = edc_strdup_printf("QQBot %s", state->qq.access_token);
+    char *token = sdscatprintf(sdsempty(), "QQBot %s", state->qq.access_token);
     cJSON_AddStringToObject(d, "token", token);
-    free(token);
+    sdsfree(token);
     cJSON_AddNumberToObject(d, "intents", BC_CHANNEL_QQ_INTENTS_ALL);
 
     cJSON *shards = cJSON_AddArrayToObject(d, "shard");
@@ -401,9 +402,9 @@ static void edc_channel_qq_wss_send_resume(struct mg_connection *c, edc_actor_t 
     cJSON *d = cJSON_AddObjectToObject(resume, "d");
 
     edc_channel_actor_state_t *state = actor->state;
-    char *token = edc_strdup_printf("QQBot %s", state->qq.access_token);
+    char *token = sdscatprintf(sdsempty(), "QQBot %s", state->qq.access_token);
     cJSON_AddStringToObject(d, "token", token);
-    free(token);
+    sdsfree(token);
 
     cJSON_AddStringToObject(d, "session_id", session_id);
     cJSON_AddNumberToObject(d, "seq", s);
@@ -690,7 +691,7 @@ static void edc_channel_qq_handle_wss_dispatch(edc_actor_t *actor, struct edc_ch
     }
 
     struct edc_channel_message *message =
-        edc_channel_qq_message_new(id->valuestring, author_id->valuestring, content->valuestring);
+        edc_channel_qq_message_new(sdsnew(id->valuestring), sdsnew(author_id->valuestring), sdsnew(content->valuestring));
 
     id->valuestring = NULL;
     author_id->valuestring = NULL;
@@ -781,7 +782,7 @@ static void edc_channel_qq_handle_send(edc_actor_t *actor, edc_actor_msg_t *msg)
     edc_channel_actor_state_t *state = actor->state;
 
     char *send_c2c_url =
-        edc_strdup_printf("https://api.sgroup.qq.com/v2/users/%s/messages", message->channel->qq.author_id);
+        sdscatprintf(sdsempty(), "https://api.sgroup.qq.com/v2/users/%s/messages", message->channel->qq.author_id);
 
     cJSON *req = cJSON_CreateObject();
     cJSON_AddNumberToObject(req, "msg_type", 2);

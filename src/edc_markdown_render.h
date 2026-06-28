@@ -1,4 +1,4 @@
-#include "edc_string.h"
+#include "sds.h"
 #ifndef __BC_MARKDOWN_RENDER_H__
 #define __BC_MARKDOWN_RENDER_H__
 

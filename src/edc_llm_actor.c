@@ -1,5 +1,4 @@
-#include "edc_string.h"
-#include "edc_strutil.h"
+#include "sds.h"
 #include "edc_error.h"
 #include "edc_llm_actor.h"
 #include "edc_actor.h"
@@ -52,7 +51,7 @@ static void edc_llm_actor_http_req_free(struct edc_llm_actor_http_req *req)
     free((char *)req->body);
     if (req->response)
     {
-        edc_str_free(req->response);
+        sdsfree(req->response);
     }
     free(req);
 }
@@ -80,8 +79,8 @@ static void edc_llm_actor_on_http_fn(struct mg_connection *c, int ev, void *ev_d
     if (ev == MG_EV_HTTP_MSG)
     {
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
-        sds buf = edc_str_new(NULL);
-        edc_str_catn(buf, hm->body.buf, hm->body.len);
+        sds buf = sdsempty();
+        buf = sdscatlen(buf, hm->body.buf, hm->body.len);
         req->response = buf;
 
         edc_actor_send(req->actor, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, req->request_id, req,
@@ -178,11 +177,11 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
     const char *proto = mg_url_is_ssl(state->api_conf.api_url) ? "https://" : "http://";
     struct mg_str host = mg_url_host(state->api_conf.api_url);
     int port = (int)mg_url_port(state->api_conf.api_url);
-    char *url = edc_strdup_printf("%s%.*s:%d", proto, (int)host.len, host.buf, port);
+    char *url = sdscatprintf(sdsempty(), "%s%.*s:%d", proto, (int)host.len, host.buf, port);
 
     edc_http_async_connect(state->network, url, NULL, edc_llm_actor_on_http_fn,
                           edc_llm_actor_http_req_new(actor, body_s, &state->api_conf, from, request_id), 60 * 5);
-    free(url);
+    sdsfree(url);
 }
 
 static UT_icd ut_tool_call_icd = {sizeof(struct edc_llm_chat_tool_call), NULL, NULL, NULL};
@@ -275,13 +274,13 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
     cJSON *content = cJSON_GetObjectItem(message, "content");
     if (content && cJSON_IsString(content))
     {
-        resp->content = edc_str_new(content->valuestring);
+        resp->content = sdsnew(content->valuestring);
     }
 
     cJSON *reasoning_content = cJSON_GetObjectItem(message, "reasoning_content");
     if (reasoning_content && cJSON_IsString(reasoning_content))
     {
-        resp->reasoning_content = edc_str_new(reasoning_content->valuestring);
+        resp->reasoning_content = sdsnew(reasoning_content->valuestring);
     }
 
     cJSON *role = cJSON_GetObjectItem(message, "role");
@@ -318,7 +317,7 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
             cJSON *id = cJSON_GetObjectItem(tool_call, "id");
             if (id && cJSON_IsString(id))
             {
-                tc.id = edc_str_new(id->valuestring);
+                tc.id = sdsnew(id->valuestring);
             }
 
             cJSON *tc_index = cJSON_GetObjectItem(tool_call, "index");
@@ -343,7 +342,7 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
                 cJSON *name = cJSON_GetObjectItem(function, "name");
                 if (name && cJSON_IsString(name))
                 {
-                    tc.function.name = edc_str_new(name->valuestring);
+                    tc.function.name = sdsnew(name->valuestring);
                 }
 
                 cJSON *arguments = cJSON_GetObjectItem(function, "arguments");
@@ -439,12 +438,12 @@ void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp)
 
     if (resp->content)
     {
-        edc_str_free(resp->content);
+        sdsfree(resp->content);
     }
 
     if (resp->reasoning_content)
     {
-        edc_str_free(resp->reasoning_content);
+        sdsfree(resp->reasoning_content);
     }
 
     if (resp->tool_calls)
@@ -454,7 +453,7 @@ void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp)
             struct edc_llm_chat_tool_call call = *(struct edc_llm_chat_tool_call*)utarray_eltptr(resp->tool_calls, i);
             if (call.id)
             {
-                edc_str_free(call.id);
+                sdsfree(call.id);
             }
 
             if (call.function.arguments)
@@ -464,7 +463,7 @@ void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp)
 
             if (call.function.name)
             {
-                edc_str_free(call.function.name);
+                sdsfree(call.function.name);
             }
         }
 

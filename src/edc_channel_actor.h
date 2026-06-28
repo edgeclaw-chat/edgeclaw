@@ -1,4 +1,4 @@
-#include "edc_string.h"
+#include "sds.h"
 #ifndef __BC_CHANNEL_ACTOR_H__
 #define __BC_CHANNEL_ACTOR_H__
 
@@ -15,28 +15,28 @@ struct edc_channel
     union {
         struct
         {
-            char *title;
-            char *message_id;
-            char *reply_to;
-            char *refs;
+            sds title;
+            sds message_id;
+            sds reply_to;
+            sds refs;
         } email;
         struct
         {
-            char *chat_id;
+            sds chat_id;
         } telegram;
 
         struct
         {
-            char *chat_type;
-            char *chat_id;
-            char *message_id;
-            char *user_open_id;
+            sds chat_type;
+            sds chat_id;
+            sds message_id;
+            sds user_open_id;
         } feishu;
 
         struct
         {
-            char *message_id;
-            char *author_id;
+            sds message_id;
+            sds author_id;
             int64_t seq_id;
         } qq;
     };
@@ -44,7 +44,7 @@ struct edc_channel
 
 struct edc_channel_message
 {
-    char *content;
+    sds content;
     bool channel_ref;
     struct edc_channel *channel;
 };
@@ -78,9 +78,9 @@ typedef struct
 
         struct
         {
-            char *tenant_access_token;
+            sds tenant_access_token;
             int64_t expire;
-            char *wss_url;
+            sds wss_url;
             int32_t wss_service_id;
             GSource *expire_source;
             struct
@@ -94,9 +94,9 @@ typedef struct
 
         struct
         {
-            char *wss_url;
+            sds wss_url;
             int wss_shards;
-            char *access_token;
+            sds access_token;
             int64_t expires_in;
             GSource *expire_source;
             struct edc_mg_conn_node *conns;
@@ -122,10 +122,10 @@ extern void edc_channel_actor_free(edc_actor_t *actor);
 extern void edc_channel_actor_set_observer(edc_actor_t *actor, edc_actor_t *observer);
 extern void edc_channel_actor_add(edc_actor_t *actor, edc_channel_type type, edc_actor_handler_t handler);
 
-extern struct edc_channel *edc_channel_qq_new(char *message_id, char *author_id);
-extern struct edc_channel *edc_channel_feishu_new(char *chat_type, char *chat_id, char *message_id,
-                                                char *user_open_id);
-extern struct edc_channel *edc_channel_telegram_new(char *chat_id);
+extern struct edc_channel *edc_channel_qq_new(sds message_id, sds author_id);
+extern struct edc_channel *edc_channel_feishu_new(sds chat_type, sds chat_id, sds message_id,
+                                                sds user_open_id);
+extern struct edc_channel *edc_channel_telegram_new(sds chat_id);
 extern struct edc_channel *edc_channel_cli_new(void);
 extern struct edc_channel *edc_channel_copy(struct edc_channel *channel);
 extern cJSON *edc_channel_to_json(struct edc_channel *channel);
@@ -133,13 +133,13 @@ extern struct edc_channel *edc_channel_from_json(cJSON *channel);
 extern void edc_channel_free(struct edc_channel *channel);
 
 extern void edc_channel_message_free(struct edc_channel_message *msg);
-extern struct edc_channel_message *edc_channel_message_new(struct edc_channel *channel, char *content);
-extern struct edc_channel_message *edc_channel_ref_message_new(struct edc_channel *channel, char *content);
+extern struct edc_channel_message *edc_channel_message_new(struct edc_channel *channel, sds content);
+extern struct edc_channel_message *edc_channel_ref_message_new(struct edc_channel *channel, sds content);
 extern struct edc_channel_message *edc_channel_message_move(struct edc_channel_message *rhs);
-extern struct edc_channel_message *edc_channel_message_copy(struct edc_channel_message *rhs, char *content);
-extern struct edc_channel_message *edc_channel_telegram_message_new(char *chat_id, char *content);
-extern struct edc_channel_message *edc_channel_feishu_message_new(char *chat_type, char *chat_id, char *message_id,
-                                                                char *user_open_id, char *content);
-extern struct edc_channel_message *edc_channel_qq_message_new(char *message_id, char *author_id, char *content);
+extern struct edc_channel_message *edc_channel_message_copy(struct edc_channel_message *rhs, sds content);
+extern struct edc_channel_message *edc_channel_telegram_message_new(sds chat_id, sds content);
+extern struct edc_channel_message *edc_channel_feishu_message_new(sds chat_type, sds chat_id, sds message_id,
+                                                                sds user_open_id, sds content);
+extern struct edc_channel_message *edc_channel_qq_message_new(sds message_id, sds author_id, sds content);
 
 #endif

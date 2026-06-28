@@ -1,6 +1,7 @@
 #ifndef __BC_SECRET_H__
 #define __BC_SECRET_H__
 
+#include "sds.h"
 #include <stdbool.h>
 
 #define BC_SECRET_PREFIX "EDGECLAW_ENC:"
@@ -26,8 +27,8 @@ void edc_secret_lockdown(void);
 
 /* Encrypt a plaintext string.
  * Returns a string prefixed with BC_SECRET_PREFIX followed by base64 ciphertext,
- * or NULL on failure. Caller must free() the result. */
-char *edc_secret_encrypt(const char *plaintext);
+ * or NULL on failure. Caller must sdsfree() the result. */
+sds edc_secret_encrypt(const char *plaintext);
 
 /* Decrypt a ciphertext string (optionally prefixed with BC_SECRET_PREFIX).
  * If the input starts with the prefix, decrypts and returns the plaintext.

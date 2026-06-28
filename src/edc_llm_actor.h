@@ -1,4 +1,4 @@
-#include "edc_string.h"
+#include "sds.h"
 #include "utarray.h"
 #ifndef __BC_LLM_ACTOR_H__
 #define __BC_LLM_ACTOR_H__

@@ -2,6 +2,7 @@
 #define __BC_ACTOR_H__
 
 #include <glib.h>
+#include "sds.h"
 #include <stdbool.h>
 
 typedef struct edc_actor edc_actor_t;
@@ -42,7 +43,7 @@ struct edc_actor
     GMainContext *context;
     edc_actor_handler_t handler;
     void *state;
-    char *name;
+    sds name;
 };
 
 typedef struct

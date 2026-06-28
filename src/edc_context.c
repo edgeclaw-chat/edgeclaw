@@ -3,7 +3,7 @@
 #include "edc_skills.h"
 #include "log.h"
 #include <glib.h>
-#include "edc_string.h"
+#include "sds.h"
 
 const char *BOOTSTRAP_FILES[] = {"AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"};
 
@@ -15,12 +15,12 @@ static void sds_replace_all(sds *s, const char *find, const char *replacement)
     char *pos;
     while ((pos = strstr(scan, find)) != NULL)
     {
-        edc_str_catn(result, scan, pos - scan);
-        edc_str_cat(result, replacement);
+        result = sdscatlen(result, scan, pos - scan);
+        result = sdscat(result, replacement);
         scan = pos + find_len;
     }
-    edc_str_cat(result, scan);
-    edc_str_free(*s);
+    result = sdscat(result, scan);
+    sdsfree(*s);
     *s = result;
 }
 
@@ -61,7 +61,7 @@ static sds edc_context_get_identity(const char *os_name, const char *time, const
                                "{{workspace}}/memory/MEMORY.md\n\n";
 
     char *cwd = g_get_current_dir();
-    sds identity = edc_str_new(identity_fmt);
+    sds identity = sdsnew(identity_fmt);
     sds_replace_all(&identity, "{{os_name}}", os_name);
     sds_replace_all(&identity, "{{cwd}}", cwd);
     sds_replace_all(&identity, "{{time}}", time);
@@ -73,7 +73,7 @@ static sds edc_context_get_identity(const char *os_name, const char *time, const
 
 static sds edc_context_load_bootstrap_files(const char *workspace)
 {
-    sds result = edc_str_new(NULL);
+    sds result = sdsempty();
     size_t num_files = sizeof(BOOTSTRAP_FILES) / sizeof(BOOTSTRAP_FILES[0]);
 
     for (size_t i = 0; i < num_files; i++)
@@ -87,7 +87,7 @@ static sds edc_context_load_bootstrap_files(const char *workspace)
 
         if (g_file_get_contents(filepath, &content, &length, &error))
         {
-            edc_str_printf(result, "## %s\n\n%s", filename, content);
+            result = sdscatprintf(result, "## %s\n\n%s", filename, content);
             free(content);
         }
         else
@@ -97,7 +97,7 @@ static sds edc_context_load_bootstrap_files(const char *workspace)
 
         if (i < num_files - 1)
         {
-            edc_str_cat(result, "\n\n");
+            result = sdscat(result, "\n\n");
         }
 
         free(filepath);
@@ -108,15 +108,15 @@ static sds edc_context_load_bootstrap_files(const char *workspace)
 
 static sds edc_context_load_skills(const char *workspace)
 {
-    sds result = edc_str_new(NULL);
+    sds result = sdsempty();
     char *tmp = g_build_filename(workspace, "skills", NULL);
     sds skills_dir = sdsnewlen(tmp, strlen(tmp));
     free(tmp);
 
     UT_array *skills = edc_skills_load(skills_dir);
-    edc_str_free(skills_dir);
+    sdsfree(skills_dir);
 
-    edc_str_printf(result, "## Skills\n\n"
+    result = sdscatprintf(result, "## Skills\n\n"
                                    "The following skills extend your capabilities. To use a skill, read its SKILL.md "
                                    "file using the read_file tool.\n\n");
 
@@ -134,12 +134,12 @@ static sds edc_context_load_skills(const char *workspace)
         }
 
         char *loc = g_build_filename(workspace, "skills", skill->name, "SKILL.md", NULL);
-        edc_str_printf(result, "### Skill: %s\n\n", skill->name);
-        edc_str_printf(result, "description: %s\nSKILL.md localtion: %s\n", desc, loc);
+        result = sdscatprintf(result, "### Skill: %s\n\n", skill->name);
+        result = sdscatprintf(result, "description: %s\nSKILL.md localtion: %s\n", desc, loc);
         free(loc);
         if (i < utarray_len(skills) - 1)
         {
-            edc_str_cat(result, "\n\n---\n\n");
+            result = sdscat(result, "\n\n---\n\n");
         }
 
         edc_skill_free(skill);
@@ -164,9 +164,9 @@ static sds edc_context_load_memory(const char *workspace)
         return NULL;
     }
 
-    sds buf = edc_str_new("## Memory\n\n### Long-Term Memory\n\n");
-    edc_str_cat(buf, content);
-    edc_str_cat(buf, "\n\n");
+    sds buf = sdsnew("## Memory\n\n### Long-Term Memory\n\n");
+    buf = sdscat(buf, content);
+    buf = sdscat(buf, "\n\n");
 
     free(memory_file);
     free(content);
@@ -185,14 +185,14 @@ sds edc_context_build_system_prompt(struct edc_config *conf)
     sds memory = edc_context_load_memory(workspace);
     sds skills = edc_context_load_skills(workspace);
 
-    sds system_prompt = edc_str_new(NULL);
-    edc_str_cat(system_prompt, identity);
-    edc_str_cat(system_prompt, bootstrap);
+    sds system_prompt = sdsempty();
+    system_prompt = sdscat(system_prompt, identity);
+    system_prompt = sdscat(system_prompt, bootstrap);
     if (memory)
     {
-        edc_str_cat(system_prompt, memory);
+        system_prompt = sdscat(system_prompt, memory);
     }
-    edc_str_cat(system_prompt, skills);
+    system_prompt = sdscat(system_prompt, skills);
 
     if (os_name)
     {
@@ -200,13 +200,13 @@ sds edc_context_build_system_prompt(struct edc_config *conf)
     }
 
     free(time);
-    edc_str_free(identity);
-    edc_str_free(bootstrap);
+    sdsfree(identity);
+    sdsfree(bootstrap);
     if (memory)
     {
-        edc_str_free(memory);
+        sdsfree(memory);
     }
-    edc_str_free(skills);
+    sdsfree(skills);
 
     return system_prompt;
 }

@@ -193,7 +193,7 @@ static int transport_pppos_recv(struct edc_device_transport *base, struct edc_de
             goto fail;
         }
 
-        req->command = strdup(cmd_item->valuestring);
+        req->command = sdsnew(cmd_item->valuestring);
         req->timeout = 0;
 
         cJSON *timeout_item = cJSON_GetObjectItem(req_json, "timeout");
@@ -213,13 +213,13 @@ static int transport_pppos_recv(struct edc_device_transport *base, struct edc_de
             goto fail;
         }
 
-        req->file_path = strdup(path_item->valuestring);
-        req->file_data = strdup(data_item->valuestring);
+        req->file_path = sdsnew(path_item->valuestring);
+        req->file_data = sdsnew(data_item->valuestring);
         if (!req->file_path || !req->file_data)
         {
             cJSON_Delete(req_json);
-            free(req->file_path);
-            free(req->file_data);
+            sdsfree(req->file_path);
+            sdsfree(req->file_data);
             netconn_write(c, "HTTP/1.1 500\r\nContent-Length: 0\r\n\r\n", 37, NETCONN_COPY);
             netconn_close(c);
             netconn_delete(c);
@@ -249,7 +249,7 @@ static int transport_pppos_recv(struct edc_device_transport *base, struct edc_de
             goto fail;
         }
 
-        req->file_path = strdup(path_item->valuestring);
+        req->file_path = sdsnew(path_item->valuestring);
         req->file_offset = 0;
         req->file_length = 0;
 

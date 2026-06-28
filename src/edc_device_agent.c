@@ -247,7 +247,7 @@ static void handle_file_upload(struct edc_device_request *req, struct edc_device
     if (!path_is_safe(req->file_path))
     {
         fprintf(stderr, "agent: upload: unsafe path '%s'\n", req->file_path);
-        resp.stdout_buf = "unsafe path";
+        resp.stdout_buf = sdsnew("unsafe path");
         transport->send(transport, &resp);
         return;
     }
@@ -255,7 +255,7 @@ static void handle_file_upload(struct edc_device_request *req, struct edc_device
     if (!req->file_data || req->file_data_len == 0)
     {
         fprintf(stderr, "agent: upload: no file data\n");
-        resp.stdout_buf = "no file data provided";
+        resp.stdout_buf = sdsnew("no file data provided");
         transport->send(transport, &resp);
         return;
     }
@@ -265,7 +265,7 @@ static void handle_file_upload(struct edc_device_request *req, struct edc_device
     if (!decoded)
     {
         fprintf(stderr, "agent: upload: base64 decode failed\n");
-        resp.stdout_buf = "base64 decode failed";
+        resp.stdout_buf = sdsnew("base64 decode failed");
         transport->send(transport, &resp);
         return;
     }
@@ -280,7 +280,7 @@ static void handle_file_upload(struct edc_device_request *req, struct edc_device
     {
         perror("agent: upload open");
         free(decoded);
-        resp.stdout_buf = "failed to open file for writing";
+        resp.stdout_buf = sdsnew("failed to open file for writing");
         transport->send(transport, &resp);
         return;
     }
@@ -292,7 +292,7 @@ static void handle_file_upload(struct edc_device_request *req, struct edc_device
             perror("agent: upload lseek");
             close(fd);
             free(decoded);
-            resp.stdout_buf = "lseek failed";
+            resp.stdout_buf = sdsnew("lseek failed");
             transport->send(transport, &resp);
             return;
         }
@@ -308,7 +308,7 @@ static void handle_file_upload(struct edc_device_request *req, struct edc_device
     if (written != (ssize_t)decoded_len)
     {
         fprintf(stderr, "agent: upload: write failed (%zd / %zu)\n", written, decoded_len);
-        resp.stdout_buf = "write failed";
+        resp.stdout_buf = sdsnew("write failed");
         transport->send(transport, &resp);
         return;
     }
@@ -330,7 +330,7 @@ static void handle_file_download(struct edc_device_request *req, struct edc_devi
     if (!path_is_safe(req->file_path))
     {
         fprintf(stderr, "agent: download: unsafe path '%s'\n", req->file_path);
-        resp.stdout_buf = "unsafe path";
+        resp.stdout_buf = sdsnew("unsafe path");
         transport->send(transport, &resp);
         return;
     }
@@ -339,7 +339,7 @@ static void handle_file_download(struct edc_device_request *req, struct edc_devi
     if (fd < 0)
     {
         perror("agent: download open");
-        resp.stdout_buf = "file not found or cannot be read";
+        resp.stdout_buf = sdsnew("file not found or cannot be read");
         transport->send(transport, &resp);
         return;
     }
@@ -348,7 +348,7 @@ static void handle_file_download(struct edc_device_request *req, struct edc_devi
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode))
     {
         close(fd);
-        resp.stdout_buf = "not a regular file";
+        resp.stdout_buf = sdsnew("not a regular file");
         transport->send(transport, &resp);
         return;
     }
@@ -374,7 +374,7 @@ static void handle_file_download(struct edc_device_request *req, struct edc_devi
     if (lseek(fd, (off_t)offset, SEEK_SET) < 0)
     {
         close(fd);
-        resp.stdout_buf = "lseek failed";
+        resp.stdout_buf = sdsnew("lseek failed");
         transport->send(transport, &resp);
         return;
     }
@@ -386,7 +386,7 @@ static void handle_file_download(struct edc_device_request *req, struct edc_devi
     if (!raw)
     {
         close(fd);
-        resp.stdout_buf = "out of memory";
+        resp.stdout_buf = sdsnew("out of memory");
         transport->send(transport, &resp);
         return;
     }
@@ -404,7 +404,7 @@ static void handle_file_download(struct edc_device_request *req, struct edc_devi
     if (total != (ssize_t)length)
     {
         free(raw);
-        resp.stdout_buf = "read failed";
+        resp.stdout_buf = sdsnew("read failed");
         transport->send(transport, &resp);
         return;
     }
@@ -413,7 +413,7 @@ static void handle_file_download(struct edc_device_request *req, struct edc_devi
     free(raw);
     if (!encoded)
     {
-        resp.stdout_buf = "base64 encode failed";
+        resp.stdout_buf = sdsnew("base64 encode failed");
         transport->send(transport, &resp);
         return;
     }
@@ -457,8 +457,8 @@ void edc_device_agent_run(struct edc_device_transport *transport)
             break;
         }
 
-        free(req.command);
-        free(req.file_path);
-        free(req.file_data);
+        sdsfree(req.command);
+        sdsfree(req.file_path);
+        sdsfree(req.file_data);
     }
 }

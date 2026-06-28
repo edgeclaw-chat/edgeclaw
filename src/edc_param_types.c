@@ -1,4 +1,3 @@
-#include "edc_strutil.h"
 #include "edc_param_types.h"
 
 #include <glib.h>
@@ -8,7 +7,7 @@ struct edc_param_type *edc_param_int_type(char *desc, int64_t min, int64_t max)
 {
     struct edc_param_type *type = g_new0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_INT;
-    type->desc = strdup(desc);
+    type->desc = sdsnew(desc);
     type->num.min = min;
     type->num.max = max;
     return type;
@@ -18,7 +17,7 @@ struct edc_param_type *edc_param_str_type(char *desc, const char *first, ...)
 {
     struct edc_param_type *type = g_new0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_STR;
-    type->desc = strdup(desc);
+    type->desc = sdsnew(desc);
 
     if (!first)
         return type;
@@ -49,7 +48,7 @@ struct edc_param_type *edc_param_bool_type(char *desc)
 {
     struct edc_param_type *type = g_new0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_BOOL;
-    type->desc = strdup(desc);
+    type->desc = sdsnew(desc);
     return type;
 }
 
@@ -57,7 +56,7 @@ struct edc_param_type *edc_param_array_type(char *desc, struct edc_param_type *i
 {
     struct edc_param_type *type = g_new0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_ARRAY;
-    type->desc = strdup(desc);
+    type->desc = sdsnew(desc);
     type->array.item = item_type;
     return type;
 }
@@ -66,12 +65,12 @@ struct edc_param_type *edc_param_object_type(char *desc, struct edc_param_object
 {
     struct edc_param_type *type = g_new0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_OBJECT;
-    type->desc = strdup(desc);
+    type->desc = sdsnew(desc);
     type->object.properties = g_new(struct edc_param_object_property, n);
     type->object.n = n;
     for (int i = 0; i < n; i++)
     {
-        type->object.properties[i].name = strdup(properties[i].name);
+        type->object.properties[i].name = sdsnew(properties[i].name);
         type->object.properties[i].type = properties[i].type;
     }
     return type;
@@ -101,7 +100,7 @@ void edc_param_type_free(struct edc_param_type *type)
     case BC_TOOL_TYPE_OBJECT:
         for (int i = 0; i < type->object.n; i++)
         {
-            free(type->object.properties[i].name);
+            sdsfree(type->object.properties[i].name);
             edc_param_type_free(type->object.properties[i].type);
         }
         free(type->object.properties);
@@ -110,7 +109,7 @@ void edc_param_type_free(struct edc_param_type *type)
         break;
     }
 
-    free(type->desc);
+    sdsfree(type->desc);
     free(type);
 }
 
@@ -139,7 +138,7 @@ bool edc_param_type_validate(cJSON *args, struct edc_param_type *type)
             char **enums = (char **)type->str.enums;
             for (int i = 0; i < type->str.n; i++)
             {
-                if (edc_str_equal(cJSON_GetStringValue(args), enums[i]))
+                if (strcmp(cJSON_GetStringValue(args), enums[i]) == 0)
                     return TRUE;
             }
             return FALSE;

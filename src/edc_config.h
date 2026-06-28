@@ -1,13 +1,14 @@
 #ifndef __BC_CONFIG_H__
 #define __BC_CONFIG_H__
+#include "sds.h"
 #include <stdbool.h>
 #include <stdint.h>
 
 struct llm_api_conf
 {
-    char *model;
-    char *api_key;
-    char *api_url;
+    sds model;
+    sds api_key;
+    sds api_url;
 };
 
 typedef enum
@@ -23,31 +24,31 @@ struct channel_conf
 {
     struct
     {
-        char *imap_host;
-        char *smtp_host;
-        char *user;
-        char *passwd;
-        char *target;
+        sds imap_host;
+        sds smtp_host;
+        sds user;
+        sds passwd;
+        sds target;
 
     } email;
 
     struct
     {
-        char *bot_key;
+        sds bot_key;
         int64_t user_id;
     } telegram;
 
     struct
     {
-        char *user_open_id;
-        char *app_id;
-        char *app_secret;
+        sds user_open_id;
+        sds app_id;
+        sds app_secret;
     } feishu;
 
     struct
     {
-        char *app_id;
-        char *app_secret;
+        sds app_id;
+        sds app_secret;
     } qq;
 
     edc_channel_type type;
@@ -55,29 +56,29 @@ struct channel_conf
 
 struct edc_config
 {
-    char *edc_home;
+    sds edc_home;
 
     struct llm_api_conf llm_api_conf;
     struct channel_conf channel;
 
-    char *workspace;
+    sds workspace;
     bool enable_sandbox;
-    char *sandbox_root_real;
-    char **sandbox_ro_paths;
-    char **sandbox_rw_paths;
+    sds sandbox_root_real;
+    sds *sandbox_ro_paths;
+    sds *sandbox_rw_paths;
     int max_iter;
     int load_n_histories;
     int memory_compress_threshold;
     int tool_max_output_size;
 
-    char *device_pty;
-    char *device_ip;
+    sds device_pty;
+    sds device_ip;
     int device_port;
     int device_baud;
-    char *device_transport;
+    sds device_transport;
 };
 
-extern char *edc_config_resolve_bc_home(void);
+extern sds edc_config_resolve_bc_home(void);
 extern struct edc_config *edc_config_load(const char *edc_home);
 extern void edc_config_free(struct edc_config *config);
 #endif

@@ -5,8 +5,7 @@
 #include "log.h"
 #include <dirent.h>
 #include <glib.h>
-#include "edc_string.h"
-#include "edc_strutil.h"
+#include "sds.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -288,19 +287,19 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
 
                 if (size > 1)
                 {
-                    sds joined = edc_str_new(NULL);
+                    sds joined = sdsempty();
                     for (int i = 1; i < size; i++)
                     {
                         cJSON *elem = cJSON_GetArrayItem(rw, i);
                         if (elem && cJSON_IsString(elem))
                         {
-                            if (edc_str_len(joined) > 0)
-                                edc_str_cat(joined, ", ");
-                            edc_str_cat(joined, elem->valuestring);
+                            if (sdslen(joined) > 0)
+                                joined = sdscat(joined, ", ");
+                            joined = sdscat(joined, elem->valuestring);
                         }
                     }
                     strncpy(result->sandbox_rw_paths, joined, sizeof(result->sandbox_rw_paths) - 1);
-                    edc_str_free(joined);
+                    sdsfree(joined);
                 }
             }
         }
@@ -311,19 +310,19 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
             int size = cJSON_GetArraySize(ro);
             if (size > 0)
             {
-                sds joined = edc_str_new(NULL);
+                sds joined = sdsempty();
                 for (int i = 0; i < size; i++)
                 {
                     cJSON *elem = cJSON_GetArrayItem(ro, i);
                     if (elem && cJSON_IsString(elem))
                     {
-                        if (edc_str_len(joined) > 0)
-                            edc_str_cat(joined, ", ");
-                        edc_str_cat(joined, elem->valuestring);
+                        if (sdslen(joined) > 0)
+                            joined = sdscat(joined, ", ");
+                        joined = sdscat(joined, elem->valuestring);
                     }
                 }
                 strncpy(result->sandbox_ro_paths, joined, sizeof(result->sandbox_ro_paths) - 1);
-                edc_str_free(joined);
+                sdsfree(joined);
             }
         }
     }
@@ -521,10 +520,10 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
 
     {
         char *def_rw_str =
-            edc_strdup_printf("%s/workspace/, /tmp, /dev", edc_home);
+            sdscatprintf(sdsempty(), "%s/workspace/, /tmp, /dev", edc_home);
         const char *def_rw = (defaults && defaults->sandbox_rw_paths[0]) ? defaults->sandbox_rw_paths : def_rw_str;
         val = prompt_with_default("  Additional writable paths (comma-separated)", def_rw);
-        free(def_rw_str);
+        sdsfree(def_rw_str);
         if (!val)
             return -1;
         strncpy(result->sandbox_rw_paths, val, sizeof(result->sandbox_rw_paths) - 1);
@@ -533,13 +532,13 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
 
     {
         char *def_ro_str =
-            edc_strdup_printf("%s/workspace/ssl, /usr, /lib, /lib32, /lib64, /libx32, /bin, /sbin, /etc, /proc",
+            sdscatprintf(sdsempty(), "%s/workspace/ssl, /usr, /lib, /lib32, /lib64, /libx32, /bin, /sbin, /etc, /proc",
                             edc_home);
         const char *def_ro = (defaults && defaults->sandbox_ro_paths[0])
                                  ? defaults->sandbox_ro_paths
                                  : def_ro_str;
         val = prompt_with_default("  Read-only paths (comma-separated)", def_ro);
-        free(def_ro_str);
+        sdsfree(def_ro_str);
         if (!val)
             return -1;
         strncpy(result->sandbox_ro_paths, val, sizeof(result->sandbox_ro_paths) - 1);
@@ -857,37 +856,38 @@ static bool edc_init_env_workspace(const char *dest_workspace)
     return TRUE;
 }
 
-static char **split_paths(const char *input)
+static sds *split_paths(const char *input)
 {
     if (!input || !input[0])
         return NULL;
 
-    char **parts = edc_strsplit(input, ",", -1);
+    int count;
+    sds *parts = sdssplitlen(input, (ssize_t)strlen(input), ",", 1, &count);
     if (!parts || !parts[0])
         return NULL;
 
-    int count = 0;
+    int valid = 0;
     for (int i = 0; parts[i]; i++)
     {
-        edc_strstrip(parts[i]);
+        parts[i] = sdstrim(parts[i], " \t\r\n");
         if (parts[i][0])
-            count++;
+            valid++;
     }
 
-    if (count == 0)
+    if (valid == 0)
     {
-        edc_strfreev(parts);
+        sdsfreesplitres(parts, count);
         return NULL;
     }
 
-    char **result = g_new0(char *, count + 1);
+    sds *result = g_new0(sds, valid + 1);
     int idx = 0;
     for (int i = 0; parts[i]; i++)
     {
         if (parts[i][0])
-            result[idx++] = strdup(parts[i]);
+            result[idx++] = sdsdup(parts[i]);
     }
-    edc_strfreev(parts);
+    sdsfreesplitres(parts, count);
     return result;
 }
 
@@ -897,12 +897,14 @@ static void build_sandbox_rw(cJSON *sandbox, const char *root, const char *rw_pa
     if (root && root[0])
         cJSON_AddItemToArray(arr, cJSON_CreateString(root));
 
-    char **extra = split_paths(rw_paths_str);
+    sds *extra = split_paths(rw_paths_str);
     if (extra)
     {
         for (int i = 0; extra[i]; i++)
             cJSON_AddItemToArray(arr, cJSON_CreateString(extra[i]));
-        edc_strfreev(extra);
+        for (int i = 0; extra[i]; i++)
+            sdsfree(extra[i]);
+        free(extra);
     }
 
     cJSON_AddItemToObject(sandbox, "rw_paths", arr);
@@ -1040,8 +1042,9 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     /* Build JSON config */
     cJSON *config = cJSON_CreateObject();
 
-    char *encrypted_api_key = edc_secret_encrypt(env_result.api_key);
+    sds encrypted_api_key = edc_secret_encrypt(env_result.api_key);
     cJSON_AddStringToObject(config, "api_key", encrypted_api_key ? encrypted_api_key : "");
+    sdsfree(encrypted_api_key);
 
     cJSON_AddStringToObject(config, "model", env_result.model);
     cJSON_AddStringToObject(config, "api_url", env_result.api_url);
@@ -1054,13 +1057,15 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     build_sandbox_rw(sandbox, env_result.sandbox_root, env_result.sandbox_rw_paths);
     {
         char *workspace_path = g_build_filename(edc_home, "workspace", NULL);
-        char **ro = split_paths(env_result.sandbox_ro_paths);
+        sds *ro = split_paths(env_result.sandbox_ro_paths);
         cJSON *ro_arr = cJSON_CreateArray();
         if (ro)
         {
             for (int i = 0; ro[i]; i++)
                 cJSON_AddItemToArray(ro_arr, cJSON_CreateString(ro[i]));
-            edc_strfreev(ro);
+            for (int i = 0; ro[i]; i++)
+                sdsfree(ro[i]);
+            free(ro);
         }
         cJSON_AddItemToArray(ro_arr, cJSON_CreateString(workspace_path));
         cJSON_AddItemToObject(sandbox, "ro_paths", ro_arr);
@@ -1077,17 +1082,17 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
         cJSON_AddStringToObject(channel, "smtp_host", env_result.email.smtp_host);
         cJSON_AddStringToObject(channel, "user", env_result.email.user);
 
-        char *encrypted_passwd = edc_secret_encrypt(env_result.email.passwd);
+        sds encrypted_passwd = edc_secret_encrypt(env_result.email.passwd);
         cJSON_AddStringToObject(channel, "passwd", encrypted_passwd ? encrypted_passwd : "");
-        free(encrypted_passwd);
+        sdsfree(encrypted_passwd);
 
         cJSON_AddStringToObject(channel, "target", env_result.email.target);
     }
     else if (strcmp(ctype, "telegram") == 0)
     {
-        char *encrypted_bot_key = edc_secret_encrypt(env_result.telegram.bot_key);
+        sds encrypted_bot_key = edc_secret_encrypt(env_result.telegram.bot_key);
         cJSON_AddStringToObject(channel, "bot_key", encrypted_bot_key ? encrypted_bot_key : "");
-        free(encrypted_bot_key);
+        sdsfree(encrypted_bot_key);
 
         cJSON_AddNumberToObject(channel, "user_id", env_result.telegram.user_id);
     }
@@ -1095,17 +1100,17 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     {
         cJSON_AddStringToObject(channel, "app_id", env_result.feishu.app_id);
 
-        char *encrypted_app_secret = edc_secret_encrypt(env_result.feishu.app_secret);
+        sds encrypted_app_secret = edc_secret_encrypt(env_result.feishu.app_secret);
         cJSON_AddStringToObject(channel, "app_secret", encrypted_app_secret ? encrypted_app_secret : "");
-        free(encrypted_app_secret);
+        sdsfree(encrypted_app_secret);
     }
     else if (strcmp(ctype, "qq") == 0)
     {
         cJSON_AddStringToObject(channel, "app_id", env_result.qq.app_id);
 
-        char *encrypted_app_secret = edc_secret_encrypt(env_result.qq.app_secret);
+        sds encrypted_app_secret = edc_secret_encrypt(env_result.qq.app_secret);
         cJSON_AddStringToObject(channel, "app_secret", encrypted_app_secret ? encrypted_app_secret : "");
-        free(encrypted_app_secret);
+        sdsfree(encrypted_app_secret);
     }
 
     cJSON_AddItemToObject(config, "channel", channel);

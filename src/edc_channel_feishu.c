@@ -229,8 +229,8 @@ static bool edc_channel_feishu_tenant_token_update(void *data)
     log_info("edc_channel_feishu tenant_token expired. update now.");
 
     state->feishu.expire = -1;
-    free(state->feishu.tenant_access_token);
-    state->feishu.tenant_access_token = NULL;
+        sdsfree(state->feishu.tenant_access_token);
+        state->feishu.tenant_access_token = NULL;
 
     edc_channel_feishu_tenant_token_req(actor);
     return G_SOURCE_REMOVE;
@@ -284,7 +284,7 @@ static void edc_channel_feishu_handle_tenant_token_recv(edc_actor_t *actor, stru
 
     state->feishu.expire = (int64_t)cJSON_GetNumberValue(expire);
 
-    state->feishu.tenant_access_token = strdup(cJSON_GetStringValue(token));
+    state->feishu.tenant_access_token = sdsnew(cJSON_GetStringValue(token));
     log_debug("get feishu tenant_access_token: %s, expire at: %" PRId64, state->feishu.tenant_access_token,
               state->feishu.expire);
 
@@ -346,9 +346,9 @@ static bool edc_channel_feishu_parse_wss_endpoint_resp(edc_channel_actor_state_t
 
     if (state->feishu.wss_url)
     {
-        free(state->feishu.wss_url);
+        sdsfree(state->feishu.wss_url);
     }
-    state->feishu.wss_url = strdup(cJSON_GetStringValue(URL));
+    state->feishu.wss_url = sdsnew(cJSON_GetStringValue(URL));
     state->feishu.wss_client_config.ping_interval = (int)cJSON_GetNumberValue(ping_interval);
     state->feishu.wss_client_config.reconnect_count = (int)cJSON_GetNumberValue(reconnect_count);
     state->feishu.wss_client_config.reconnect_interval = (int)cJSON_GetNumberValue(reconnect_interval);
@@ -599,11 +599,13 @@ static void edc_channel_feishu_handle_wss_endpoint_recv(edc_actor_t *actor, stru
     edc_channel_feishu_wss_connect(actor);
 }
 
-static char *edc_channel_feishu_detach_str(cJSON *s)
+static sds edc_channel_feishu_detach_str(cJSON *s)
 {
     char *val = s->valuestring;
     s->valuestring = NULL;
-    return val;
+    sds result = sdsnew(val);
+    free(val);
+    return result;
 }
 
 static void edc_channel_feishu_handle_wss_event_recv(edc_actor_t *actor, struct edc_channel_feishu_resp *resp)

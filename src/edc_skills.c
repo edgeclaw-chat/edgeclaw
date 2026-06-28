@@ -1,5 +1,4 @@
-#include "edc_string.h"
-#include "edc_strutil.h"
+#include "sds.h"
 #include "edc_error.h"
 #include "edc_skills.h"
 
@@ -27,21 +26,21 @@ void edc_skill_free(struct edc_skill *skill)
 
     if (skill->name)
     {
-        edc_str_free(skill->name);
+        sdsfree(skill->name);
     }
 
     {
         struct edc_skill_meta_entry *e, *tmp;
         HASH_ITER(hh, skill->meta, e, tmp) {
             HASH_DEL(skill->meta, e);
-            free(e->key);
-            free(e->value);
+            sdsfree(e->key);
+            sdsfree(e->value);
             free(e);
         }
     }
     if (skill->content)
     {
-        edc_str_free(skill->content);
+        sdsfree(skill->content);
     }
 
     free(skill);
@@ -49,7 +48,7 @@ void edc_skill_free(struct edc_skill *skill)
 
 static bool edc_extract_skill_meta_and_content(const char *content, struct edc_skill *skill)
 {
-    if (!edc_str_has_prefix(content, "---"))
+    if (!strncmp(content, "---", strlen("---")) == 0)
     {
         log_error("skill content has not prefix ---");
         return FALSE;
@@ -84,40 +83,44 @@ static bool edc_extract_skill_meta_and_content(const char *content, struct edc_s
             goto match_info_err;
         }
 
-        char **lines = edc_strsplit(meta, "\n", -1);
+        int line_count;
+        sds *lines = sdssplitlen(meta, (ssize_t)strlen(meta), "\n", 1, &line_count);
         if (!lines)
         {
             err = FALSE;
             goto meta_err;
         }
 
-        char **p = lines;
+        sds *p = lines;
         while (*p)
         {
-            char **kv = edc_strsplit(*p, ":", 2);
+            int kv_count;
+            sds *kv = sdssplitlen(*p, strlen(*p), ":", 1, &kv_count);
             if (kv && kv[0] && kv[1])
             {
-                char *k = strdup(kv[0]); edc_strstrip(k);
-                char *v = strdup(kv[1]); edc_strstrip(v);
+                sds k = sdsdup(kv[0]); k = sdstrim(k, " \t\r\n");
+                sds v = sdsdup(kv[1]); v = sdstrim(v, " \t\r\n");
                 struct edc_skill_meta_entry *e = malloc(sizeof(*e));
                 e->key = k;
                 e->value = v;
-                HASH_ADD_KEYPTR(hh, skill->meta, e->key, strlen(e->key), e);
+                HASH_ADD_KEYPTR(hh, skill->meta, e->key, sdslen(e->key), e);
             }
-            edc_strfreev(kv);
+            sdsfreesplitres(kv, kv_count);
             p++;
         }
 
-        edc_strfreev(lines);
+        sdsfreesplitres(lines, line_count);
 
         int start = 0, end = 0;
         if (g_match_info_fetch_pos(match_info, 0, &start, &end))
         {
-            skill->content = edc_str_new(edc_strstrip((char *)content + end));
+            sds tmp = sdsnew((char *)content + end);
+            skill->content = sdstrim(tmp, " \t\r\n");
         }
         else
         {
-            skill->content = edc_str_new(edc_strstrip((char *)content));
+            sds tmp = sdsnew((char *)content);
+            skill->content = sdstrim(tmp, " \t\r\n");
         }
     }
 
@@ -149,7 +152,7 @@ static struct edc_skill *edc_skill_load(const char *name, const char *file_path)
         }
 
         free(content);
-        skill->name = edc_str_new(name);
+        skill->name = sdsnew(name);
 
         return skill;
     }

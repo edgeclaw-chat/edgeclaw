@@ -1,13 +1,14 @@
 #ifndef __BC_SESSION_H__
 #define __BC_SESSION_H__
 
+#include "sds.h"
 #include <cJSON.h>
 #include <stdbool.h>
 
 struct edc_config;
 
 struct edc_timestamp_node {
-    char *ts;
+    sds ts;
     struct edc_timestamp_node *prev, *next;
 };
 

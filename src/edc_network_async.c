@@ -1,4 +1,4 @@
-#include "edc_strutil.h"
+#include "sds.h"
 #include "edc_network_async.h"
 #include "log.h"
 #include <resolv.h>
@@ -85,7 +85,7 @@ static void* network_async_thread(void* user_data)
     return NULL;
 }
 
-static char *edc_network_async_get_dns()
+static sds edc_network_async_get_dns()
 {
     struct __res_state dns_state;
     memset(&dns_state, 0, sizeof(struct __res_state));
@@ -115,7 +115,7 @@ static char *edc_network_async_get_dns()
         }
         else
         {
-            result = edc_strdup_printf("udp://%s:53", inet_ntoa(servers[i].sin.sin_addr));
+            result = sdscatprintf(sdsempty(), "udp://%s:53", inet_ntoa(servers[i].sin.sin_addr));
             break;
         }
     }
@@ -133,7 +133,7 @@ static char *edc_network_async_get_dns()
         else
         {
             struct sockaddr_in *addr = &dns_state.nsaddr_list[i];
-            result = edc_strdup_printf("udp://%s:53", inet_ntoa(addr->sin_addr));
+            result = sdscatprintf(sdsempty(), "udp://%s:53", inet_ntoa(addr->sin_addr));
             break;
         }
     }
@@ -150,7 +150,7 @@ edc_network_async_t *edc_network_async_new(const char *cert_path)
     async->mgr.dnstimeout = 5000;
     mg_log_set(MG_LL_ERROR);
 
-    char *dns = edc_network_async_get_dns();
+    sds dns = edc_network_async_get_dns();
     if (dns)
     {
         async->mgr.dns4.url = dns;
@@ -180,7 +180,7 @@ void edc_network_async_free(edc_network_async_t *async)
     edc_queue_destroy(&async->task_queue);
     g_mutex_clear(&async->mutex);
 
-    free((char *)async->mgr.dns4.url);
+    sdsfree(async->mgr.dns4.url);
     mg_mgr_free(&async->mgr);
     mg_free(async->cert_pem.buf);
 
@@ -427,10 +427,10 @@ static bool mg_http_connect_wrapper(void* data)
     unsigned short port = mg_url_port(direct);
     const char *proto = mg_url_is_ssl(direct) ? "https" : "http";
 
-    char *url = edc_strdup_printf("%s://%.*s:%d", proto, (int)host.len, host.buf, (int)port);
+    char *url = sdscatprintf(sdsempty(), "%s://%.*s:%d", proto, (int)host.len, host.buf, (int)port);
 
     struct mg_connection *c = mg_http_connect(&req->network->mgr, url, edc_network_async_conn_fn, req);
-    free(url);
+    sdsfree(url);
 
     if (c == NULL)
     {

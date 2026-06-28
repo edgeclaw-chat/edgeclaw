@@ -1,4 +1,4 @@
-#include "edc_strutil.h"
+#include "sds.h"
 #include "edc_agent.h"
 #include "edc_actor.h"
 #include "uthash.h"
@@ -96,7 +96,7 @@ static void handle_llm_resp(struct edc_agent *agent, edc_actor_t *actor, edc_act
     if (resp->error)
     {
         log_error("[ERROR]: %s", resp->error->message);
-        reply = edc_channel_message_new(turn->channel, strdup(resp->error->message));
+        reply = edc_channel_message_new(turn->channel, sdsdup(resp->error->message));
         turn->channel = NULL;
 
         log_info("agent remove turn reqid = %p", msg->request_id);
@@ -107,12 +107,12 @@ static void handle_llm_resp(struct edc_agent *agent, edc_actor_t *actor, edc_act
 
     if (resp->reason == BC_LLM_FINISH_REASON_TOOL_CALL)
     {
-        if ((resp->reasoning_content && edc_str_len(resp->reasoning_content) > 0) || (resp->content && edc_str_len(resp->content) > 0))
+        if ((resp->reasoning_content && sdslen(resp->reasoning_content) > 0) || (resp->content && sdslen(resp->content) > 0))
         {
-            char *content =
-                (resp->content && edc_str_len(resp->content) > 0) ? resp->content : resp->reasoning_content;
+            sds content =
+                (resp->content && sdslen(resp->content) > 0) ? resp->content : resp->reasoning_content;
 
-            reply = edc_channel_ref_message_new(turn->channel, edc_strdup_printf("[思考]: %s", content));
+            reply = edc_channel_ref_message_new(turn->channel, sdscatprintf(sdsempty(), "[思考]: %s", content));
         }
 
         edc_turn_add_assistant_message(turn->turn, resp->msg);
@@ -121,7 +121,7 @@ static void handle_llm_resp(struct edc_agent *agent, edc_actor_t *actor, edc_act
     }
     else if (resp->reason == BC_LLM_FINISH_REASON_STOP)
     {
-        reply = edc_channel_message_new(turn->channel, strdup(resp->content));
+        reply = edc_channel_message_new(turn->channel, sdsdup(resp->content));
         turn->channel = NULL;
 
         edc_turn_add_assistant_message(turn->turn, resp->msg);
@@ -135,7 +135,7 @@ static void handle_llm_resp(struct edc_agent *agent, edc_actor_t *actor, edc_act
     else
     {
         reply = edc_channel_message_new(
-            turn->channel, edc_strdup_printf("Internal error, edc_llm_chat unknown stop reason: %d", resp->reason));
+            turn->channel, sdscatprintf(sdsempty(), "Internal error, edc_llm_chat unknown stop reason: %d", resp->reason));
         turn->channel = NULL;
 
         log_info("agent remove turn reqid = %p", msg->request_id);
@@ -246,14 +246,14 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
     if (!edc_init_env(edc_home, setup))
     {
         log_error("Failed to initialize environment");
-        free(edc_home);
+        sdsfree(edc_home);
         return NULL;
     }
 
     if (!edc_secret_init(FALSE, edc_home))
     {
         log_error("Failed to initialize secret module");
-        free(edc_home);
+        sdsfree(edc_home);
         return NULL;
     }
 
@@ -292,7 +292,7 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
 
     edc_actor_runner_start(agent->runner);
 
-    free(edc_home);
+    sdsfree(edc_home);
     return agent;
 }
 

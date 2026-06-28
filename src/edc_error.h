@@ -5,6 +5,8 @@
 extern "C" {
 #endif
 
+#include "sds.h"
+
 typedef enum {
     EDC_ERR_NONE = 0,
     EDC_ERR_FAILED,
@@ -16,7 +18,7 @@ typedef enum {
 
 typedef struct {
     EdcErrorCode code;
-    char *message;
+    sds message;
 } EdcError;
 
 EdcError *edc_error_new(EdcErrorCode code, const char *fmt, ...)

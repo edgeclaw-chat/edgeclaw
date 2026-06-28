@@ -10,7 +10,7 @@
 #include "lwip/err.h"
 #include <cJSON.h>
 #include <glib.h>
-#include "edc_string.h"
+#include "sds.h"
 #include "edc_error.h"
 #include <arpa/inet.h>
 #include <errno.h>
@@ -23,7 +23,7 @@ struct device_shell_ctx
 {
     struct edc_toolbox_call_ctx *tb_ctx;
     void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *);
-    char *command;
+    sds command;
     char *agent_ip;
     uint16_t agent_port;
     int timeout_sec;
@@ -31,7 +31,7 @@ struct device_shell_ctx
 
 static void device_shell_ctx_free(struct device_shell_ctx *ctx)
 {
-    free(ctx->command);
+    sdsfree(ctx->command);
     free(ctx->agent_ip);
     free(ctx);
 }
@@ -45,7 +45,7 @@ static err_t recv_until_close(struct netconn *c, sds *buf)
 
     while ((err = netconn_recv(c, &nb)) == ERR_OK) {
         netbuf_data(nb, (void **)&p, &chunk);
-        edc_str_catn(*buf, (char *)p, chunk);
+        *buf = sdscatlen(*buf, (char *)p, chunk);
         netbuf_delete(nb);
     }
     return err;
@@ -69,7 +69,7 @@ static int recv_until_close_socket(int fd, sds *buf)
     char tmp[4096];
     ssize_t n;
     while ((n = recv(fd, tmp, sizeof(tmp), 0)) > 0)
-        edc_str_catn(*buf, tmp, n);
+        *buf = sdscatlen(*buf, tmp, n);
     return (n == 0) ? 0 : -1;
 }
 
@@ -107,15 +107,15 @@ static void process_shell_response(sds resp_buf, sds *result, EdcError **error)
 
     int exit_code = ec ? ec->valueint : -1;
 
-    if (so && cJSON_IsString(so)) edc_str_cat(*result, so->valuestring);
+    if (so && cJSON_IsString(so)) *result = sdscat(*result, so->valuestring);
     if (se && cJSON_IsString(se) && se->valuestring[0]) {
-        if (edc_str_len(*result) > 0) edc_str_cat(*result, "\n");
-        edc_str_printf(*result, "STDERR:\n%s", se->valuestring);
+        if (sdslen(*result) > 0) *result = sdscat(*result, "\n");
+        *result = sdscatprintf(*result, "STDERR:\n%s", se->valuestring);
     }
-    if (edc_str_len(*result) > 0)
-        edc_str_printf(*result, "\nDone (exit code %d)", exit_code);
+    if (sdslen(*result) > 0)
+        *result = sdscatprintf(*result, "\nDone (exit code %d)", exit_code);
     else
-        edc_str_printf(*result, "Done (exit code %d)", exit_code);
+        *result = sdscatprintf(*result, "Done (exit code %d)", exit_code);
 
     cJSON_Delete(resp_json);
 
@@ -125,12 +125,12 @@ static void process_shell_response(sds resp_buf, sds *result, EdcError **error)
 
 static void device_shell_thread_socket(struct device_shell_ctx *ctx)
 {
-    sds result = edc_str_new(NULL);
+    sds result = sdsempty();
     EdcError *error = NULL;
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
-        edc_str_free(result);
+        sdsfree(result);
         error = edc_error_new(EDC_ERR_EXEC,
                             "device_shell: socket() failed: %s", strerror(errno));
         ctx->callback(ctx->tb_ctx, NULL, error);
@@ -144,7 +144,7 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
     addr.sin_port = htons(ctx->agent_port);
     if (inet_pton(AF_INET, ctx->agent_ip, &addr.sin_addr) != 1) {
         close(sock);
-        edc_str_free(result);
+        sdsfree(result);
         error = edc_error_new(EDC_ERR_INVAL,
                             "device_shell: invalid device_ip: %s", ctx->agent_ip);
         ctx->callback(ctx->tb_ctx, NULL, error);
@@ -157,7 +157,7 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
 
     if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(sock);
-        edc_str_free(result);
+        sdsfree(result);
         error = edc_error_new(EDC_ERR_EXEC,
                             "device_shell: connect to %s:%u failed: %s",
                             ctx->agent_ip, ctx->agent_port, strerror(errno));
@@ -190,13 +190,13 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
     tv.tv_sec = ctx->timeout_sec;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    sds resp_buf = edc_str_new(NULL);
+    sds resp_buf = sdsempty();
     int recv_ret = recv_until_close_socket(sock, &resp_buf);
     close(sock);
 
     if (recv_ret != 0) {
-        edc_str_free(resp_buf);
-        edc_str_free(result);
+        sdsfree(resp_buf);
+        sdsfree(result);
         error = edc_error_new(EDC_ERR_EXEC,
                             "device_shell: recv failed: %s", strerror(errno));
         ctx->callback(ctx->tb_ctx, NULL, error);
@@ -205,11 +205,11 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
     }
 
     process_shell_response(resp_buf, &result, &error);
-    edc_str_free(resp_buf);
+    sdsfree(resp_buf);
 
     if (error) {
         ctx->callback(ctx->tb_ctx, NULL, error);
-        edc_str_free(result);
+        sdsfree(result);
     } else {
         ctx->callback(ctx->tb_ctx, result, NULL);
     }
@@ -219,12 +219,12 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
 
 static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
 {
-    sds result = edc_str_new(NULL);
+    sds result = sdsempty();
     EdcError *error = NULL;
 
     ip_addr_t addr;
     if (!ip4addr_aton(ctx->agent_ip, &addr)) {
-        edc_str_free(result);
+        sdsfree(result);
         error = edc_error_new(EDC_ERR_INVAL,
                             "device_shell: invalid device_ip in config: %s", ctx->agent_ip);
         ctx->callback(ctx->tb_ctx, NULL, error);
@@ -234,7 +234,7 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
 
     struct netconn *c = netconn_new(NETCONN_TCP);
     if (!c) {
-        edc_str_free(result);
+        sdsfree(result);
         error = edc_error_new(EDC_ERR_EXEC,
                             "device_shell: netconn_new failed");
         ctx->callback(ctx->tb_ctx, NULL, error);
@@ -245,7 +245,7 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
     err_t err = netconn_connect(c, &addr, ctx->agent_port);
     if (err != ERR_OK) {
         netconn_delete(c);
-        edc_str_free(result);
+        sdsfree(result);
         error = edc_error_new(EDC_ERR_EXEC,
                             "device_shell: connect to %s:%u failed (%d)",
                             ctx->agent_ip, ctx->agent_port, err);
@@ -277,14 +277,14 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
 
     netconn_set_recvtimeout(c, ctx->timeout_sec * 1000);
 
-    sds resp_buf = edc_str_new(NULL);
+    sds resp_buf = sdsempty();
     err_t recv_err = recv_until_close(c, &resp_buf);
     netconn_close(c);
     netconn_delete(c);
 
     if (recv_err == ERR_TIMEOUT) {
-        edc_str_free(resp_buf);
-        edc_str_free(result);
+        sdsfree(resp_buf);
+        sdsfree(result);
         error = edc_error_new(EDC_ERR_EXEC,
                             "device_shell: request timed out after %ds", ctx->timeout_sec);
         ctx->callback(ctx->tb_ctx, NULL, error);
@@ -293,11 +293,11 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
     }
 
     process_shell_response(resp_buf, &result, &error);
-    edc_str_free(resp_buf);
+    sdsfree(resp_buf);
 
     if (error) {
         ctx->callback(ctx->tb_ctx, NULL, error);
-        edc_str_free(result);
+        sdsfree(result);
     } else {
         ctx->callback(ctx->tb_ctx, result, NULL);
     }
@@ -355,7 +355,7 @@ edc_tool_device_shell_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc
     struct device_shell_ctx *ctx = g_new0(struct device_shell_ctx, 1);
     ctx->tb_ctx = tb_ctx;
     ctx->callback = callback;
-    ctx->command = strdup(cJSON_GetStringValue(cmd));
+    ctx->command = sdsnew(cJSON_GetStringValue(cmd));
     ctx->agent_ip = strdup(conf->device_ip);
     ctx->agent_port = (uint16_t)(conf->device_port > 0 ? conf->device_port : 5000);
     ctx->timeout_sec = timeout_sec;

@@ -1,5 +1,4 @@
-#include "edc_string.h"
-#include "edc_strutil.h"
+#include "sds.h"
 #include "edc_sandbox.h"
 #include "edc_error.h"
 #include "edc_toolbox.h"
@@ -47,18 +46,18 @@ static void edc_tool_shell_complete(struct edc_tool_shell_ctx *ctx)
     sds result = ctx->stdout_buf;
     int status = ctx->status;
 
-    if (edc_str_len(ctx->stderr_buf))
+    if (sdslen(ctx->stderr_buf))
     {
-        edc_str_printf(result, "STDERR:\n%s", ctx->stderr_buf);
+        result = sdscatprintf(result, "STDERR:\n%s", ctx->stderr_buf);
     }
 
-    if (edc_str_len(result))
+    if (sdslen(result))
     {
-        edc_str_printf(result, "\nDone (exit code %d)", status);
+        result = sdscatprintf(result, "\nDone (exit code %d)", status);
     }
     else
     {
-        edc_str_printf(result, "Done (exit code %d)", status);
+        result = sdscatprintf(result, "Done (exit code %d)", status);
     }
 
     ctx->stdout_buf = result;
@@ -67,7 +66,7 @@ static void edc_tool_shell_complete(struct edc_tool_shell_ctx *ctx)
     {
         EdcError *error = edc_error_new(EDC_ERR_EXEC, "%s", result);
         ctx->callback(ctx->tb_ctx, NULL, error);
-        edc_str_free(result);
+        sdsfree(result);
     }
     else
     {
@@ -103,7 +102,7 @@ static void edc_tool_shell_complete(struct edc_tool_shell_ctx *ctx)
         g_io_channel_unref(ctx->stderr_ch);
         ctx->stderr_ch = NULL;
     }
-    edc_str_free(ctx->stderr_buf);
+    sdsfree(ctx->stderr_buf);
     ctx->stderr_buf = NULL;
 
     g_mutex_lock(&active_mutex);
@@ -134,7 +133,7 @@ static bool on_pipe_readable(GIOChannel *source, GIOCondition condition, void* d
 
     if (bytes_read > 0)
     {
-        edc_str_catn(*buf_ptr, line, bytes_read);
+        *buf_ptr = sdscatlen(*buf_ptr, line, bytes_read);
     }
 
     if (status == G_IO_STATUS_EOF || (condition & G_IO_HUP))
@@ -246,7 +245,7 @@ static bool shell_timeout_cb(void* data)
             ctx->status = 1;
         }
 
-        edc_str_cat(ctx->stderr_buf, "\n[command timed out]");
+        ctx->stderr_buf = sdscat(ctx->stderr_buf, "\n[command timed out]");
     }
 
     ctx->stdout_complete = TRUE;
@@ -307,7 +306,8 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
     }
 
     char **envp = g_get_environ();
-    int env_count = edc_strv_length(envp);
+    int env_count = 0;
+    while (envp && envp[env_count]) env_count++;
     char **filtered_envp = g_new0(char *, env_count + 1);
     int j = 0;
     size_t master_key_prefix_len = strlen(BC_MASTER_KEY_ENV);
@@ -318,7 +318,8 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
             filtered_envp[j++] = strdup(envp[i]);
         }
     }
-    edc_strfreev(envp);
+    for (int _i = 0; envp[_i]; _i++) free(envp[_i]);
+    free(envp);
 
     GPid child_pid = 0;
     int stdin_fd = 0, stdout_fd = 0, stderr_fd = 0;
@@ -329,7 +330,8 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
 
     free(allocated_cwd);
 
-    edc_strfreev(filtered_envp);
+    for (int _i = 0; filtered_envp[_i]; _i++) free(filtered_envp[_i]);
+    free(filtered_envp);
 
     if (!success)
     {
@@ -343,8 +345,8 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
 
     struct edc_tool_shell_ctx *ctx = g_new0(struct edc_tool_shell_ctx, 1);
     ctx->tb_ctx = tb_ctx;
-    ctx->stderr_buf = edc_str_new(NULL);
-    ctx->stdout_buf = edc_str_new(NULL);
+    ctx->stderr_buf = sdsempty();
+    ctx->stdout_buf = sdsempty();
     ctx->stderr_complete = FALSE;
     ctx->stdout_complete = FALSE;
     ctx->child_exited = FALSE;

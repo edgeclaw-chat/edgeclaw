@@ -1,18 +1,19 @@
-#include "edc_string.h"
+#include "sds.h"
 #ifndef __BC_TOOLS_H__
 #define __BC_TOOLS_H__
 
 #include "cJSON.h"
 #include "edc_error.h"
 #include "edc_param_types.h"
-#include "edc_strutil.h"
 #include "uthash.h"
 #include "utlist_fix.h"
 #include <stdbool.h>
 
+typedef void (*EdcDestroyNotify)(void *data);
+
 struct edc_tool_param
 {
-    char *name;
+    sds name;
     struct edc_param_type *type;
     bool required;
     struct edc_tool_param *next;

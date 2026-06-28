@@ -13,8 +13,9 @@ EdcError *edc_error_new(EdcErrorCode code, const char *fmt, ...)
 
     va_list ap;
     va_start(ap, fmt);
-    if (vasprintf(&err->message, fmt, ap) < 0)
-        err->message = NULL;
+    err->message = sdsempty();
+    if (err->message)
+        err->message = sdscatvprintf(err->message, fmt, ap);
     va_end(ap);
 
     return err;
@@ -24,7 +25,7 @@ void edc_error_free(EdcError *error)
 {
     if (error)
     {
-        free(error->message);
+        sdsfree(error->message);
         free(error);
     }
 }
@@ -46,8 +47,9 @@ void edc_error_set(EdcError **errp, EdcErrorCode code, const char *fmt, ...)
 
     va_list ap;
     va_start(ap, fmt);
-    if (vasprintf(&err->message, fmt, ap) < 0)
-        err->message = NULL;
+    err->message = sdsempty();
+    if (err->message)
+        err->message = sdscatvprintf(err->message, fmt, ap);
     va_end(ap);
 
     *errp = err;

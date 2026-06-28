@@ -1,5 +1,4 @@
-#include "edc_string.h"
-#include "edc_strutil.h"
+#include "sds.h"
 #include "edc_toolbox.h"
 #include "edc_error.h"
 #include "edc_param_types.h"
@@ -170,16 +169,16 @@ void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON 
         return;
     }
 
-    sds tool_names = edc_str_new(NULL);
+    sds tool_names = sdsempty();
     {
         struct edc_tool *t, *tmp;
         HASH_ITER(hh, ctx->tb->tools, t, tmp) {
-            edc_str_printf(tool_names, "%s, ", t->name);
+            tool_names = sdscatprintf(tool_names, "%s, ", t->name);
         }
     }
 
     edc_error_set(&error, EDC_ERR_NOTFOUND, "Error: tool %s not found. Available: %s", name,
                 tool_names);
-    edc_str_free(tool_names);
+    sdsfree(tool_names);
     callback(ctx, NULL, error);
 }

@@ -3,37 +3,36 @@
 #include "cJSON.h"
 #include "log.h"
 #include <glib.h>
-#include "edc_string.h"
-#include "edc_strutil.h"
+#include "sds.h"
 
 static const char *telegram_api_host = "api.telegram.org";
 static char *telegram_build_path(struct channel_conf *conf, const char *method, const char *args[])
 {
-    sds url = edc_str_new(NULL);
-    edc_str_printf(url, "/bot%s/%s", conf->telegram.bot_key, method);
+    sds url = sdsempty();
+    url = sdscatprintf(url, "/bot%s/%s", conf->telegram.bot_key, method);
     if (!args)
     {
         char *s = strdup(url);
-        edc_str_free(url);
+        sdsfree(url);
         return s;
     }
 
-    edc_str_cat(url, "?");
+    url = sdscat(url, "?");
 
     const char **p = args;
     while (TRUE)
     {
-        edc_str_printf(url, "%s", *p);
+        url = sdscatprintf(url, "%s", *p);
         ++p;
         if (!p || !(*p))
         {
             break;
         }
-        edc_str_cat(url, "&");
+        url = sdscat(url, "&");
     }
 
     char *s = strdup(url);
-    edc_str_free(url);
+    sdsfree(url);
     return s;
 }
 
@@ -54,15 +53,15 @@ struct edc_channel_telegram_req
 
 static void __bc_channel_telegram_req_free(struct edc_channel_telegram_req *req, bool free_next)
 {
-    free((char *)req->url);
+    sdsfree(req->url);
     free((char *)req->path);
     if (req->body)
     {
-        edc_str_free(req->body);
+        sdsfree(req->body);
     }
     if (req->resp)
     {
-        edc_str_free(req->resp);
+        sdsfree(req->resp);
     }
 
     if (free_next && req->next)
@@ -97,7 +96,7 @@ static void edc_channel_telegram_make_http_request(struct mg_connection *c, stru
                   "Content-Length: %d\r\n"
                   "Connection: close\r\n\r\n"
                   "%s",
-                  req->path, req->host, (int)edc_str_len(req->body), req->body);
+                  req->path, req->host, (int)sdslen(req->body), req->body);
     }
     else
     {
@@ -114,9 +113,9 @@ static void edc_channel_actor_telegram_conn_fn(struct mg_connection *c, int ev, 
         edc_actor_t *actor = req->actor;
         edc_channel_actor_state_t *state = actor->state;
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
-        sds buf = edc_str_new(NULL);
+        sds buf = sdsempty();
 
-        edc_str_catn(buf, hm->body.buf, hm->body.len);
+        buf = sdscatlen(buf, hm->body.buf, hm->body.len);
         req->resp = buf;
 
         edc_actor_msg_t *msg = edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_telegram, NULL, NULL, req,
@@ -165,7 +164,7 @@ static struct edc_channel_telegram_req *edc_channel_actor_send_message_chunk_req
 
     char *path = telegram_build_path(&state->config, "sendMessage", NULL);
     char *escaped_content = g_uri_escape_bytes((uint8_t *)content, len, NULL);
-    char *post_fields = edc_strdup_printf("chat_id=%s&text=%s", chat_id, escaped_content);
+    char *post_fields = sdscatprintf(sdsempty(), "chat_id=%s&text=%s", chat_id, escaped_content);
     free(escaped_content);
 
     struct edc_channel_telegram_req *req = g_new0(struct edc_channel_telegram_req, 1);
@@ -176,9 +175,9 @@ static struct edc_channel_telegram_req *edc_channel_actor_send_message_chunk_req
     req->path = path;
     req->host = telegram_api_host;
     req->connected = FALSE;
-    req->url = edc_strdup_printf("https://%s%s", req->host, req->path);
+    req->url = sdscatprintf(sdsempty(), "https://%s%s", req->host, req->path);
     req->body = sdsnewlen(post_fields, strlen(post_fields));
-    free(post_fields);
+    sdsfree(post_fields);
     req->method = 1;
     req->next = NULL;
 
@@ -314,7 +313,7 @@ static struct edc_channel_message *process_user_input(edc_channel_actor_state_t 
     }
 
     struct edc_channel_message *msg = edc_channel_telegram_message_new(
-        edc_strdup_printf("%.0lf", chat_id_json->valuedouble), strdup(cJSON_GetStringValue(text)));
+        sdscatprintf(sdsempty(), "%.0lf", chat_id_json->valuedouble), sdsnew(cJSON_GetStringValue(text)));
 
     state->telegram.update_id = 1 + (int64_t)update_id_json->valuedouble;
 
@@ -399,9 +398,9 @@ static bool edc_channel_actor_telegram_poll(void* data)
         return G_SOURCE_CONTINUE;
     }
 
-    const char *args[] = {edc_strdup_printf("offset=%" PRId64, state->telegram.update_id), NULL};
+    const char *args[] = {sdscatprintf(sdsempty(), "offset=%" PRId64, state->telegram.update_id), NULL};
     const char *path = telegram_build_path(&state->config, "getUpdates", args);
-    free((char *)args[0]);
+    sdsfree((char *)args[0]);
 
     struct edc_channel_telegram_req *req = g_new0(struct edc_channel_telegram_req, 1);
     const char *proxy = g_getenv("https_proxy");
@@ -411,7 +410,7 @@ static bool edc_channel_actor_telegram_poll(void* data)
     req->path = path;
     req->host = telegram_api_host;
     req->connected = FALSE;
-    req->url = edc_strdup_printf("https://%s%s", req->host, req->path);
+    req->url = sdscatprintf(sdsempty(), "https://%s%s", req->host, req->path);
     req->body = NULL;
     req->method = 0;
 

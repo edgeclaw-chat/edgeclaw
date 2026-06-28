@@ -1,6 +1,7 @@
 #ifndef __EDC_DEVICE_AGENT_H__
 #define __EDC_DEVICE_AGENT_H__
 
+#include "sds.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -16,10 +17,10 @@ struct edc_device_request
     int type;
     int timeout;
 
-    char *command;
+    sds command;
 
-    char *file_path;
-    char *file_data;
+    sds file_path;
+    sds file_data;
     size_t file_data_len;
     int file_mode;
     size_t file_offset;
@@ -31,8 +32,8 @@ struct edc_device_response
     int type;
 
     int exit_code;
-    char *stdout_buf;
-    char *stderr_buf;
+    sds stdout_buf;
+    sds stderr_buf;
 
     int file_status;
     size_t file_size;

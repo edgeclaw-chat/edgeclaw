@@ -1,4 +1,4 @@
-#include "edc_string.h"
+#include "sds.h"
 #ifndef __BC_TOOLBOX_H__
 #define __BC_TOOLBOX_H__
 

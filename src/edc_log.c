@@ -1,6 +1,6 @@
+#include "sds.h"
 #include "edc_log.h"
 #include "edc_config.h"
-#include "edc_strutil.h"
 #include "log.h"
 
 #include <glib.h>
@@ -44,10 +44,10 @@ static void edc_log_rotate(void)
 
     char *edc_home = edc_config_resolve_bc_home();
     char *log_dir = g_build_filename(edc_home, "log", NULL);
-    free(edc_home);
+    sdsfree(edc_home);
     g_mkdir_with_parents(log_dir, 0755);
 
-    char *filename = edc_strdup_printf("%s/edgeclaw-%s.log", log_dir, new_date);
+    char *filename = sdscatprintf(sdsempty(), "%s/edgeclaw-%s.log", log_dir, new_date);
 
     g_mutex_lock(&g_log_mutex);
     FILE *new_file = fopen(filename, "a");
@@ -61,7 +61,7 @@ static void edc_log_rotate(void)
     }
     g_mutex_unlock(&g_log_mutex);
 
-    free(filename);
+    sdsfree(filename);
     free(log_dir);
 }
 

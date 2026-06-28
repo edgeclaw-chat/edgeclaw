@@ -1,5 +1,4 @@
-#include "edc_string.h"
-#include "edc_strutil.h"
+#include "sds.h"
 #include "edc_tools_todo.h"
 #include "edc_channel_actor.h"
 #include "edc_param_types.h"
@@ -12,11 +11,11 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
     cJSON *items = cJSON_GetObjectItem(args, "items");
     if (!items || !cJSON_GetArraySize(items))
     {
-        callback(ctx, edc_str_new("No todos"), NULL);
+        callback(ctx, sdsnew("No todos"), NULL);
         return;
     }
 
-    sds lines = edc_str_new("# TODO\n");
+    sds lines = sdsnew("# TODO\n");
     int completed = 0;
     int total = cJSON_GetArraySize(items);
     for (int i = 0; i < total; ++i)
@@ -26,24 +25,24 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
         char *content = cJSON_GetStringValue(cJSON_GetObjectItem(item, "content"));
         char *activeForm = cJSON_GetStringValue(cJSON_GetObjectItem(item, "activeForm"));
 
-        if (edc_str_equal(status, "completed"))
+        if (strcmp(status, "completed") == 0)
         {
-            edc_str_printf(lines, "- [x] %s\n", content);
+            lines = sdscatprintf(lines, "- [x] %s\n", content);
             completed += 1;
         }
-        else if (edc_str_equal(status, "in_progress"))
+        else if (strcmp(status, "in_progress") == 0)
         {
-            edc_str_printf(lines, "- [ ] %s <- %s\n", content, activeForm);
+            lines = sdscatprintf(lines, "- [ ] %s <- %s\n", content, activeForm);
         }
         else
         {
-            edc_str_printf(lines, "- [ ] %s\n", content);
+            lines = sdscatprintf(lines, "- [ ] %s\n", content);
         }
     }
 
-    edc_str_printf(lines, "\n%d/%d completed", completed, total);
+    lines = sdscatprintf(lines, "\n%d/%d completed", completed, total);
 
-    struct edc_channel_message *message = edc_channel_message_new(edc_channel_copy(ctx->call_from), strdup(lines));
+    struct edc_channel_message *message = edc_channel_message_new(edc_channel_copy(ctx->call_from), sdsdup(lines));
     if (message->channel->type == edc_channel_qq)
     {
         message->channel->qq.seq_id = g_random_int();

@@ -1,4 +1,3 @@
-#include "edc_strutil.h"
 #include "edc_config.h"
 #include "edc_error.h"
 #include "edc_secret.h"
@@ -10,7 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 
-char *edc_config_resolve_bc_home(void)
+sds edc_config_resolve_bc_home(void)
 {
     const char *home = g_get_home_dir();
     if (!home)
@@ -18,16 +17,7 @@ char *edc_config_resolve_bc_home(void)
         log_error("g_get_home_dir() returned NULL, falling back to /tmp/.edgeclaw");
         home = "/tmp";
     }
-    return g_build_filename(home, ".edgeclaw", NULL);
-}
-
-static void secure_free(char *str)
-{
-    if (str)
-    {
-        memset(str, 0, strlen(str));
-        free(str);
-    }
+    return sdscatprintf(sdsempty(), "%s/.edgeclaw", home);
 }
 
 static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *channel)
@@ -39,7 +29,7 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
         return FALSE;
     }
 
-    config->channel.email.imap_host = strdup(cJSON_GetStringValue(imap_host));
+    config->channel.email.imap_host = sdsnew(cJSON_GetStringValue(imap_host));
 
     cJSON *smtp_host = cJSON_GetObjectItem(channel, "smtp_host");
     if (!smtp_host || !cJSON_IsString(smtp_host))
@@ -47,7 +37,7 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
         log_error("channel.smtp_host is not string type");
         return FALSE;
     }
-    config->channel.email.smtp_host = strdup(cJSON_GetStringValue(smtp_host));
+    config->channel.email.smtp_host = sdsnew(cJSON_GetStringValue(smtp_host));
 
     cJSON *user = cJSON_GetObjectItem(channel, "user");
     if (!user || !cJSON_IsString(user))
@@ -55,7 +45,7 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
         log_error("channel.user is not string type");
         return FALSE;
     }
-    config->channel.email.user = strdup(cJSON_GetStringValue(user));
+    config->channel.email.user = sdsnew(cJSON_GetStringValue(user));
 
     cJSON *password = cJSON_GetObjectItem(channel, "passwd");
     if (!password || !cJSON_IsString(password))
@@ -63,7 +53,9 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
         log_error("channel.passwd is not string type");
         return FALSE;
     }
-    config->channel.email.passwd = edc_secret_decrypt(cJSON_GetStringValue(password));
+    char *_d = edc_secret_decrypt(cJSON_GetStringValue(password));
+    config->channel.email.passwd = sdsnew(_d);
+    free(_d);
 
     cJSON *target = cJSON_GetObjectItem(channel, "target");
     if (!target || !cJSON_IsString(target))
@@ -71,7 +63,7 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
         log_error("channel.target is not string type");
         return FALSE;
     }
-    config->channel.email.target = strdup(cJSON_GetStringValue(target));
+    config->channel.email.target = sdsnew(cJSON_GetStringValue(target));
 
     return TRUE;
 }
@@ -94,7 +86,9 @@ static bool edc_config_parse_telegram_channel(struct edc_config *config, cJSON *
         return FALSE;
     }
 
-    config->channel.telegram.bot_key = edc_secret_decrypt(cJSON_GetStringValue(bot_key));
+    char *_d = edc_secret_decrypt(cJSON_GetStringValue(bot_key));
+    config->channel.telegram.bot_key = sdsnew(_d);
+    free(_d);
     config->channel.telegram.user_id = (int64_t)cJSON_GetNumberValue(user_id);
     return TRUE;
 }
@@ -107,7 +101,7 @@ static bool edc_config_parse_feishu_channel(struct edc_config *config, cJSON *ch
         log_error("channel.app_id is not string type");
         return FALSE;
     }
-    config->channel.feishu.app_id = strdup(cJSON_GetStringValue(app_id));
+    config->channel.feishu.app_id = sdsnew(cJSON_GetStringValue(app_id));
 
     cJSON *app_secret = cJSON_GetObjectItem(channel, "app_secret");
     if (!app_secret || !cJSON_IsString(app_secret))
@@ -115,7 +109,9 @@ static bool edc_config_parse_feishu_channel(struct edc_config *config, cJSON *ch
         log_error("channel.app_secret is not string type");
         return FALSE;
     }
-    config->channel.feishu.app_secret = edc_secret_decrypt(cJSON_GetStringValue(app_secret));
+    char *_d = edc_secret_decrypt(cJSON_GetStringValue(app_secret));
+    config->channel.feishu.app_secret = sdsnew(_d);
+    free(_d);
 
     return TRUE;
 }
@@ -128,7 +124,7 @@ static bool edc_config_parse_qq_channel(struct edc_config *config, cJSON *channe
         log_error("channel.app_id is not string type");
         return FALSE;
     }
-    config->channel.qq.app_id = strdup(cJSON_GetStringValue(app_id));
+    config->channel.qq.app_id = sdsnew(cJSON_GetStringValue(app_id));
 
     cJSON *app_secret = cJSON_GetObjectItem(channel, "app_secret");
     if (!app_secret || !cJSON_IsString(app_secret))
@@ -136,7 +132,9 @@ static bool edc_config_parse_qq_channel(struct edc_config *config, cJSON *channe
         log_error("channel.app_secret is not string type");
         return FALSE;
     }
-    config->channel.qq.app_secret = edc_secret_decrypt(cJSON_GetStringValue(app_secret));
+    char *_d = edc_secret_decrypt(cJSON_GetStringValue(app_secret));
+    config->channel.qq.app_secret = sdsnew(_d);
+    free(_d);
 
     return TRUE;
 }
@@ -148,7 +146,7 @@ struct edc_config *edc_config_load(const char *edc_home)
     GError *gerror = NULL;
     struct edc_config *config = NULL;
 
-    char *path = g_build_filename(edc_home, "config.json", NULL);
+    sds path = sdscatprintf(sdsempty(), "%s/config.json", edc_home);
     bool success = g_file_get_contents(path, &content, &len, &gerror);
 
     if (!success)
@@ -178,7 +176,7 @@ struct edc_config *edc_config_load(const char *edc_home)
         goto exit_free_conf;
     }
 
-    config->edc_home = strdup(edc_home);
+    config->edc_home = sdsnew(edc_home);
 
     cJSON *api_key = cJSON_GetObjectItem(conf, "api_key");
     if (!api_key || !cJSON_IsString(api_key))
@@ -193,7 +191,9 @@ struct edc_config *edc_config_load(const char *edc_home)
     }
     else
     {
-        config->llm_api_conf.api_key = edc_secret_decrypt(cJSON_GetStringValue(api_key));
+        char *_d = edc_secret_decrypt(cJSON_GetStringValue(api_key));
+        config->llm_api_conf.api_key = sdsnew(_d);
+        free(_d);
     }
 
     cJSON *model = cJSON_GetObjectItem(conf, "model");
@@ -202,7 +202,7 @@ struct edc_config *edc_config_load(const char *edc_home)
         log_error("model is not string type");
         goto exit_free_config;
     }
-    config->llm_api_conf.model = strdup(cJSON_GetStringValue(model));
+    config->llm_api_conf.model = sdsnew(cJSON_GetStringValue(model));
 
     cJSON *api_url = cJSON_GetObjectItem(conf, "api_url");
     if (!api_url || !cJSON_IsString(api_url))
@@ -210,7 +210,7 @@ struct edc_config *edc_config_load(const char *edc_home)
         log_error("api_url is not string type");
         goto exit_free_config;
     }
-    config->llm_api_conf.api_url = strdup(cJSON_GetStringValue(api_url));
+    config->llm_api_conf.api_url = sdsnew(cJSON_GetStringValue(api_url));
 
     cJSON *max_iter = cJSON_GetObjectItem(conf, "max_iter");
     if (!max_iter || !cJSON_IsNumber(max_iter))
@@ -248,11 +248,11 @@ struct edc_config *edc_config_load(const char *edc_home)
 
     cJSON *device_pty = cJSON_GetObjectItem(conf, "device_pty");
     if (device_pty && cJSON_IsString(device_pty))
-        config->device_pty = strdup(device_pty->valuestring);
+        config->device_pty = sdsnew(device_pty->valuestring);
 
     cJSON *device_ip = cJSON_GetObjectItem(conf, "device_ip");
     if (device_ip && cJSON_IsString(device_ip))
-        config->device_ip = strdup(device_ip->valuestring);
+        config->device_ip = sdsnew(device_ip->valuestring);
 
     cJSON *device_port = cJSON_GetObjectItem(conf, "device_port");
     config->device_port = (device_port && cJSON_IsNumber(device_port)) ? device_port->valueint : 5000;
@@ -262,7 +262,7 @@ struct edc_config *edc_config_load(const char *edc_home)
 
     cJSON *device_transport = cJSON_GetObjectItem(conf, "device_transport");
     if (device_transport && cJSON_IsString(device_transport))
-        config->device_transport = strdup(device_transport->valuestring);
+        config->device_transport = sdsnew(device_transport->valuestring);
 
     cJSON *channel = cJSON_GetObjectItem(conf, "channel");
     if (!channel || !cJSON_IsObject(channel))
@@ -316,7 +316,7 @@ struct edc_config *edc_config_load(const char *edc_home)
         config->channel.type = edc_channel_cli;
     }
 
-    config->workspace = g_build_filename(edc_home, "workspace", NULL);
+    config->workspace = sdscatprintf(sdsempty(), "%s/workspace", edc_home);
 
     cJSON *sandbox = cJSON_GetObjectItem(conf, "sandbox");
     if (sandbox && cJSON_IsObject(sandbox))
@@ -325,59 +325,59 @@ struct edc_config *edc_config_load(const char *edc_home)
         if (rw && cJSON_IsArray(rw) && cJSON_GetArraySize(rw) > 0)
         {
             int size = cJSON_GetArraySize(rw);
-            config->sandbox_rw_paths = g_new0(char *, size + 1);
+            config->sandbox_rw_paths = g_new0(sds, size + 1);
             for (int i = 0; i < size; i++)
-                config->sandbox_rw_paths[i] = strdup(cJSON_GetStringValue(cJSON_GetArrayItem(rw, i)));
+                config->sandbox_rw_paths[i] = sdsnew(cJSON_GetStringValue(cJSON_GetArrayItem(rw, i)));
         }
         else
         {
-            config->sandbox_rw_paths = g_new0(char *, 3 + 1);
-            config->sandbox_rw_paths[0] = g_build_filename(edc_home, "sandbox", NULL);
-            config->sandbox_rw_paths[1] = strdup("/tmp");
-            config->sandbox_rw_paths[2] = strdup("/dev");
+            config->sandbox_rw_paths = g_new0(sds, 3 + 1);
+            config->sandbox_rw_paths[0] = sdscatprintf(sdsempty(), "%s/sandbox", edc_home);
+            config->sandbox_rw_paths[1] = sdsnew("/tmp");
+            config->sandbox_rw_paths[2] = sdsnew("/dev");
         }
 
         cJSON *ro = cJSON_GetObjectItem(sandbox, "ro_paths");
         if (ro && cJSON_IsArray(ro) && cJSON_GetArraySize(ro) > 0)
         {
             int size = cJSON_GetArraySize(ro);
-            config->sandbox_ro_paths = g_new0(char *, size + 1);
+            config->sandbox_ro_paths = g_new0(sds, size + 1);
             for (int i = 0; i < size; i++)
-                config->sandbox_ro_paths[i] = strdup(cJSON_GetStringValue(cJSON_GetArrayItem(ro, i)));
+                config->sandbox_ro_paths[i] = sdsnew(cJSON_GetStringValue(cJSON_GetArrayItem(ro, i)));
         }
         else
         {
-            config->sandbox_ro_paths = g_new0(char *, 10 + 1);
-            config->sandbox_ro_paths[0] = strdup("/");
-            config->sandbox_ro_paths[1] = strdup("/usr");
-            config->sandbox_ro_paths[2] = strdup("/lib");
-            config->sandbox_ro_paths[3] = strdup("/lib32");
-            config->sandbox_ro_paths[4] = strdup("/lib64");
-            config->sandbox_ro_paths[5] = strdup("/libx32");
-            config->sandbox_ro_paths[6] = strdup("/bin");
-            config->sandbox_ro_paths[7] = strdup("/sbin");
-            config->sandbox_ro_paths[8] = strdup("/etc");
-            config->sandbox_ro_paths[9] = strdup("/proc");
+            config->sandbox_ro_paths = g_new0(sds, 10 + 1);
+            config->sandbox_ro_paths[0] = sdsnew("/");
+            config->sandbox_ro_paths[1] = sdsnew("/usr");
+            config->sandbox_ro_paths[2] = sdsnew("/lib");
+            config->sandbox_ro_paths[3] = sdsnew("/lib32");
+            config->sandbox_ro_paths[4] = sdsnew("/lib64");
+            config->sandbox_ro_paths[5] = sdsnew("/libx32");
+            config->sandbox_ro_paths[6] = sdsnew("/bin");
+            config->sandbox_ro_paths[7] = sdsnew("/sbin");
+            config->sandbox_ro_paths[8] = sdsnew("/etc");
+            config->sandbox_ro_paths[9] = sdsnew("/proc");
         }
     }
     else
     {
-        config->sandbox_rw_paths = g_new0(char *, 3 + 1);
-        config->sandbox_rw_paths[0] = g_build_filename(edc_home, "sandbox", NULL);
-        config->sandbox_rw_paths[1] = strdup("/tmp");
-        config->sandbox_rw_paths[2] = strdup("/dev");
+        config->sandbox_rw_paths = g_new0(sds, 3 + 1);
+        config->sandbox_rw_paths[0] = sdscatprintf(sdsempty(), "%s/sandbox", edc_home);
+        config->sandbox_rw_paths[1] = sdsnew("/tmp");
+        config->sandbox_rw_paths[2] = sdsnew("/dev");
 
-        config->sandbox_ro_paths = g_new0(char *, 10 + 1);
-        config->sandbox_ro_paths[0] = strdup("/");
-        config->sandbox_ro_paths[1] = strdup("/usr");
-        config->sandbox_ro_paths[2] = strdup("/lib");
-        config->sandbox_ro_paths[3] = strdup("/lib32");
-        config->sandbox_ro_paths[4] = strdup("/lib64");
-        config->sandbox_ro_paths[5] = strdup("/libx32");
-        config->sandbox_ro_paths[6] = strdup("/bin");
-        config->sandbox_ro_paths[7] = strdup("/sbin");
-        config->sandbox_ro_paths[8] = strdup("/etc");
-        config->sandbox_ro_paths[9] = strdup("/proc");
+        config->sandbox_ro_paths = g_new0(sds, 10 + 1);
+        config->sandbox_ro_paths[0] = sdsnew("/");
+        config->sandbox_ro_paths[1] = sdsnew("/usr");
+        config->sandbox_ro_paths[2] = sdsnew("/lib");
+        config->sandbox_ro_paths[3] = sdsnew("/lib32");
+        config->sandbox_ro_paths[4] = sdsnew("/lib64");
+        config->sandbox_ro_paths[5] = sdsnew("/libx32");
+        config->sandbox_ro_paths[6] = sdsnew("/bin");
+        config->sandbox_ro_paths[7] = sdsnew("/sbin");
+        config->sandbox_ro_paths[8] = sdsnew("/etc");
+        config->sandbox_ro_paths[9] = sdsnew("/proc");
     }
 
     {
@@ -387,15 +387,17 @@ struct edc_config *edc_config_load(const char *edc_home)
             while (config->sandbox_ro_paths[ro_count])
                 ro_count++;
         }
-        config->sandbox_ro_paths = g_renew(char *, config->sandbox_ro_paths, ro_count + 2);
-        config->sandbox_ro_paths[ro_count] = strdup(config->workspace);
+        config->sandbox_ro_paths = g_renew(sds, config->sandbox_ro_paths, ro_count + 2);
+        config->sandbox_ro_paths[ro_count] = sdsnew(config->workspace);
         config->sandbox_ro_paths[ro_count + 1] = NULL;
     }
 
     if (config->sandbox_rw_paths && config->sandbox_rw_paths[0])
     {
         g_mkdir_with_parents(config->sandbox_rw_paths[0], 0755);
-        config->sandbox_root_real = realpath(config->sandbox_rw_paths[0], NULL);
+        char *rp = realpath(config->sandbox_rw_paths[0], NULL);
+        config->sandbox_root_real = rp ? sdsnew(rp) : NULL;
+        if (rp) free(rp);
         if (!config->sandbox_root_real)
         {
             log_error("edc_config: cannot resolve sandbox root '%s': %s", config->sandbox_rw_paths[0], strerror(errno));
@@ -404,7 +406,7 @@ struct edc_config *edc_config_load(const char *edc_home)
 
     cJSON_Delete(conf);
     free(content);
-    free(path);
+    sdsfree(path);
 
     return config;
 
@@ -415,7 +417,7 @@ exit_free_conf:
 exit_free_content:
     free(content);
 exit_free_path:
-    free(path);
+    sdsfree(path);
 
     return NULL;
 }
@@ -425,26 +427,28 @@ void edc_config_free(struct edc_config *config)
     if (!config)
         return;
 
-    free(config->llm_api_conf.model);
-    secure_free(config->llm_api_conf.api_key);
-    free(config->llm_api_conf.api_url);
-    free(config->edc_home);
-    free(config->channel.email.imap_host);
-    free(config->channel.email.smtp_host);
-    free(config->channel.email.user);
-    secure_free(config->channel.email.passwd);
-    free(config->channel.email.target);
-    free(config->device_pty);
-    free(config->device_ip);
-    free(config->device_transport);
-    free(config->workspace);
-    free(config->sandbox_root_real);
-    edc_strfreev(config->sandbox_ro_paths);
-    edc_strfreev(config->sandbox_rw_paths);
-    secure_free(config->channel.telegram.bot_key);
-    free(config->channel.feishu.app_id);
-    secure_free(config->channel.feishu.app_secret);
-    free(config->channel.qq.app_id);
-    secure_free(config->channel.qq.app_secret);
+    sdsfree(config->llm_api_conf.model);
+    sdsfree(config->llm_api_conf.api_key);
+    sdsfree(config->llm_api_conf.api_url);
+    sdsfree(config->edc_home);
+    sdsfree(config->channel.email.imap_host);
+    sdsfree(config->channel.email.smtp_host);
+    sdsfree(config->channel.email.user);
+    sdsfree(config->channel.email.passwd);
+    sdsfree(config->channel.email.target);
+    sdsfree(config->device_pty);
+    sdsfree(config->device_ip);
+    sdsfree(config->device_transport);
+    sdsfree(config->workspace);
+    sdsfree(config->sandbox_root_real);
+    for (int _i = 0; config->sandbox_ro_paths && config->sandbox_ro_paths[_i]; _i++) sdsfree(config->sandbox_ro_paths[_i]);
+    free(config->sandbox_ro_paths);
+    for (int _i = 0; config->sandbox_rw_paths && config->sandbox_rw_paths[_i]; _i++) sdsfree(config->sandbox_rw_paths[_i]);
+    free(config->sandbox_rw_paths);
+    sdsfree(config->channel.telegram.bot_key);
+    sdsfree(config->channel.feishu.app_id);
+    sdsfree(config->channel.feishu.app_secret);
+    sdsfree(config->channel.qq.app_id);
+    sdsfree(config->channel.qq.app_secret);
     free(config);
 }

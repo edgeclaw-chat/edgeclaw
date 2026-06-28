@@ -1,4 +1,4 @@
-#include "edc_string.h"
+#include "sds.h"
 #include "edc_toolbox_actor.h"
 #include "edc_actor.h"
 #include "edc_toolbox.h"
@@ -29,14 +29,14 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
 {
     if (error)
     {
-        result = edc_str_new(error->message);
-        edc_str_cat(result, _HINT);
+        result = sdsnew(error->message);
+        result = sdscat(result, _HINT);
         edc_error_free(error);
     }
 
     if (!result)
     {
-        result = edc_str_new("");
+        result = sdsnew("");
     }
 
     struct edc_toolbox_actor_exec_ctx *ctx = tb_ctx->priv;
@@ -46,15 +46,15 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
     edc_toolbox_actor_state_t *state = (edc_toolbox_actor_state_t *)actor->state;
 
     char *args = cJSON_PrintUnformatted(req->args);
-    log_debug("tool call request name = %s, args = %s, result_len = %zu", req->name, args, edc_str_len(result));
+    log_debug("tool call request name = %s, args = %s, result_len = %zu", req->name, args, sdslen(result));
     free(args);
 
     req->result = result;
-    if ((edc_str_len(result)) > state->toolbox->conf->tool_max_output_size)
+    if ((sdslen(result)) > state->toolbox->conf->tool_max_output_size)
     {
-        size_t len = edc_str_len(result);
-        edc_str_trunc(result, state->toolbox->conf->tool_max_output_size);
-        edc_str_printf(result, "\n\n[Result truncated to 10000 characters, total length: %zu]", len);
+        size_t len = sdslen(result);
+        sdsrange(result, 0, state->toolbox->conf->tool_max_output_size);
+        result = sdscatprintf(result, "\n\n[Result truncated to 10000 characters, total length: %zu]", len);
         req->result = result;
     }
 
@@ -111,12 +111,12 @@ void edc_toolbox_actor_req_free(struct edc_toolbox_actor_req *req)
 
     if (req->name)
     {
-        edc_str_free(req->name);
+        sdsfree(req->name);
     }
 
     if (req->call_id)
     {
-        edc_str_free(req->call_id);
+        sdsfree(req->call_id);
     }
     if (req->args)
     {
@@ -125,7 +125,7 @@ void edc_toolbox_actor_req_free(struct edc_toolbox_actor_req *req)
     }
     if (req->result)
     {
-        edc_str_free(req->result);
+        sdsfree(req->result);
     }
     free(req);
 }
