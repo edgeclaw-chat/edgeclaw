@@ -491,7 +491,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
 
     /* Memory Compress Threshold */
     ival = prompt_int("Memory Compress Threshold",
-                      defaults && defaults->memory_compress_threshold > 0 ? defaults->memory_compress_threshold : 100);
+                      defaults && defaults->memory_compress_threshold > 0 ? defaults->memory_compress_threshold : 200);
     if (ival < 0)
         return -1;
     result->memory_compress_threshold = ival;
