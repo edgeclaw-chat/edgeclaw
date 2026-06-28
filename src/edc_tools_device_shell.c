@@ -303,10 +303,10 @@ static void device_shell_thread(gpointer data, gpointer user_data)
     struct edc_config *conf = ctx->tb_ctx->tb->conf;
 
     if (conf->device_transport && conf->device_transport[0]) {
-        if (g_ascii_strcasecmp(conf->device_transport, "socket") == 0)
-            device_shell_thread_socket(ctx);
-        else
+        if (g_ascii_strcasecmp(conf->device_transport, "tty") == 0)
             device_shell_thread_lwip(ctx);
+        else
+            device_shell_thread_socket(ctx);
     } else if (conf->device_pty && conf->device_pty[0]) {
         device_shell_thread_lwip(ctx);
     } else {

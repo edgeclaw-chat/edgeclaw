@@ -18,6 +18,9 @@
 static const char *channel_types[] = {"cli", "telegram", "email", "feishu", "qq"};
 #define CHANNEL_TYPE_COUNT 5
 
+static const char *device_transport_types[] = {"socket", "tty"};
+#define DEVICE_TRANSPORT_TYPE_COUNT 2
+
 /* --- Helper functions --- */
 
 /* Read a line with linenoise, applying a default if the user enters nothing.
@@ -173,6 +176,41 @@ static int prompt_channel_type(int default_idx)
     }
 }
 
+/* Prompt for device transport type selection. Returns index, or -1 on cancel. */
+static int prompt_device_transport(int default_idx)
+{
+    if (default_idx < 0 || default_idx >= DEVICE_TRANSPORT_TYPE_COUNT)
+        default_idx = 0;
+
+    printf("\n--- Device Transport ---\n");
+    for (int i = 0; i < DEVICE_TRANSPORT_TYPE_COUNT; i++)
+    {
+        printf("  %d) %s\n", i + 1, device_transport_types[i]);
+    }
+
+    char default_str[32];
+    snprintf(default_str, sizeof(default_str), "%d", default_idx + 1);
+
+    while (1)
+    {
+        char *line = prompt_with_default("Select transport", default_str);
+        if (line == NULL)
+        {
+            return -1;
+        }
+
+        int choice = 0;
+        if (sscanf(line, "%d", &choice) == 1 && choice >= 1 && choice <= DEVICE_TRANSPORT_TYPE_COUNT)
+        {
+            free(line);
+            return choice - 1;
+        }
+
+        free(line);
+        fprintf(stderr, "  Invalid choice, enter 1-%d.\n", DEVICE_TRANSPORT_TYPE_COUNT);
+    }
+}
+
 /* Parse existing config.json into a edc_init_env_result.
  * Returns a newly allocated struct, or NULL if the file doesn't exist or can't be parsed. */
 static struct edc_init_env_result *load_existing_config(const gchar *conf_file)
@@ -302,7 +340,11 @@ static struct edc_init_env_result *load_existing_config(const gchar *conf_file)
     item = cJSON_GetObjectItem(json, "device_baud");
     result->device_baud = (item && cJSON_IsNumber(item)) ? item->valueint : 115200;
 
-        cJSON *channel = cJSON_GetObjectItem(json, "channel");
+    item = cJSON_GetObjectItem(json, "device_transport");
+    if (item && cJSON_IsString(item))
+        strncpy(result->device_transport, item->valuestring, sizeof(result->device_transport) - 1);
+
+    cJSON *channel = cJSON_GetObjectItem(json, "channel");
     if (channel)
     {
         item = cJSON_GetObjectItem(channel, "type");
@@ -637,18 +679,35 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
         free(val);
     }
 
-    printf("\n--- Device (PPPoS) Configuration (optional) ---\n");
+    printf("\n--- Device Shell Configuration (optional) ---\n");
 
+    int default_transport = 0;
+    if (defaults && defaults->device_transport[0])
+    {
+        for (int i = 0; i < DEVICE_TRANSPORT_TYPE_COUNT; i++)
+        {
+            if (strcmp(defaults->device_transport, device_transport_types[i]) == 0)
+            {
+                default_transport = i;
+                break;
+            }
+        }
+    }
+    int transport_idx = prompt_device_transport(default_transport);
+    if (transport_idx < 0)
+        return -1;
+    strncpy(result->device_transport, device_transport_types[transport_idx], sizeof(result->device_transport) - 1);
+
+    if (strcmp(result->device_transport, "tty") == 0)
     {
         const char *def = (defaults && defaults->device_pty[0]) ? defaults->device_pty : "";
-        val = prompt_with_default("Device PTY/Serial Path (leave empty to disable)", def);
+        val = prompt_with_default("Device PTY/Serial Path", def);
         if (!val)
             return -1;
         strncpy(result->device_pty, val, sizeof(result->device_pty) - 1);
         free(val);
     }
 
-    if (result->device_pty[0])
     {
         const char *def = (defaults && defaults->device_ip[0]) ? defaults->device_ip : "192.168.4.1";
         val = prompt_with_default("Device IP", def);
@@ -656,12 +715,15 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
             return -1;
         strncpy(result->device_ip, val, sizeof(result->device_ip) - 1);
         free(val);
+    }
 
-        ival = prompt_int("Device Port",
-                          (defaults && defaults->device_port > 0) ? defaults->device_port : 5000);
-        if (ival < 0) return -1;
-        result->device_port = ival;
+    ival = prompt_int("Device Port",
+                      (defaults && defaults->device_port > 0) ? defaults->device_port : 5000);
+    if (ival < 0) return -1;
+    result->device_port = ival;
 
+    if (strcmp(result->device_transport, "tty") == 0)
+    {
         ival = prompt_int("Device Baud Rate",
                           (defaults && defaults->device_baud > 0) ? defaults->device_baud : 115200);
         if (ival < 0) return -1;
@@ -1046,11 +1108,13 @@ static gboolean edc_init_env_conf_file(const gchar *conf_file, const gchar *edc_
 
     cJSON_AddItemToObject(config, "channel", channel);
 
+    cJSON_AddStringToObject(config, "device_transport", env_result.device_transport);
+    cJSON_AddStringToObject(config, "device_ip", env_result.device_ip);
+    cJSON_AddNumberToObject(config, "device_port", env_result.device_port);
+
     if (env_result.device_pty[0])
     {
         cJSON_AddStringToObject(config, "device_pty", env_result.device_pty);
-        cJSON_AddStringToObject(config, "device_ip", env_result.device_ip);
-        cJSON_AddNumberToObject(config, "device_port", env_result.device_port);
         cJSON_AddNumberToObject(config, "device_baud", env_result.device_baud);
     }
 

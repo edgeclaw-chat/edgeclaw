@@ -50,6 +50,7 @@ struct edc_init_env_result
     char device_ip[64];
     int device_port;
     int device_baud;
+    char device_transport[32];
 
     struct edc_init_env_channel_email email;
     struct edc_init_env_channel_telegram telegram;
