@@ -68,6 +68,8 @@
 
 #define LWIP_TIMEVAL_PRIVATE        0
 
+#define SOCKLEN_T_DEFINED
+
 #define LWIP_STATS                  0
 #define LWIP_DEBUG                  0
 #define PPP_DEBUG                   LWIP_DBG_OFF
