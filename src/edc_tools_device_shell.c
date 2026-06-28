@@ -101,11 +101,24 @@ static void device_shell_thread(gpointer data, gpointer user_data)
     netconn_write_partly(c, req_body, strlen(req_body), NETCONN_COPY, NULL);
     free(req_body);
 
+    /* Set TCP receive timeout to avoid hanging if the server dies */
+    netconn_set_recvtimeout(c, ctx->timeout_sec * 1000);
+
     GString *resp_buf = g_string_new(NULL);
-    recv_until_close(c, resp_buf);
+    err_t recv_err = recv_until_close(c, resp_buf);
     netconn_close(c);
     netconn_delete(c);
 
+    if (recv_err == ERR_TIMEOUT) {
+        g_string_free(resp_buf, TRUE);
+        error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
+                            "device_shell: request timed out after %ds", ctx->timeout_sec);
+        ctx->callback(ctx->tb_ctx, NULL, error);
+        device_shell_ctx_free(ctx);
+        return;
+    }
+
+    /* Validate HTTP status line */
     char *body = strstr(resp_buf->str, "\r\n\r\n");
     if (!body) {
         g_string_free(resp_buf, TRUE);
@@ -116,6 +129,20 @@ static void device_shell_thread(gpointer data, gpointer user_data)
         return;
     }
     body += 4;
+
+    int http_status = 0;
+    if (g_ascii_strncasecmp(resp_buf->str, "HTTP/", 5) == 0) {
+        const char *sp = strchr(resp_buf->str, ' ');
+        if (sp) http_status = atoi(sp + 1);
+    }
+    if (http_status != 200) {
+        g_string_free(resp_buf, TRUE);
+        error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
+                            "device_shell: HTTP %d", http_status);
+        ctx->callback(ctx->tb_ctx, NULL, error);
+        device_shell_ctx_free(ctx);
+        return;
+    }
 
     cJSON *resp_json = cJSON_Parse(body);
     g_string_free(resp_buf, TRUE);

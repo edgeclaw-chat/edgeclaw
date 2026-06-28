@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #define CMD_TIMEOUT_SEC 30
@@ -58,6 +59,7 @@ static int exec_cmd(const char *cmd, sds *out, sds *err, int *exit_code, int tim
     fd_set rfds;
     int max_fd = (out_pipe[0] > err_pipe[0]) ? out_pipe[0] : err_pipe[0];
     int done_out = 0, done_err = 0;
+    time_t start_time = time(NULL);
 
     while (!done_out || !done_err)
     {
@@ -65,7 +67,15 @@ static int exec_cmd(const char *cmd, sds *out, sds *err, int *exit_code, int tim
         struct timeval *tvp = NULL;
         if (timeout_sec > 0)
         {
-            tv.tv_sec = timeout_sec;
+            int elapsed = (int)(time(NULL) - start_time);
+            int remaining = timeout_sec - elapsed;
+            if (remaining <= 0)
+            {
+                kill(-pid, SIGKILL);
+                *err = sdscat(*err, "\n[command timed out]");
+                break;
+            }
+            tv.tv_sec = remaining;
             tv.tv_usec = 0;
             tvp = &tv;
         }
