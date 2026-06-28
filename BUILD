@@ -58,6 +58,22 @@ platform(
 )
 
 platform(
+    name = "aarch64_android",
+    constraint_values = [
+        "@platforms//os:android",
+        "@platforms//cpu:aarch64",
+    ],
+)
+
+platform(
+    name = "arm_android",
+    constraint_values = [
+        "@platforms//os:android",
+        "@platforms//cpu:armv7",
+    ],
+)
+
+platform(
     name = "aarch64_macos",
     constraint_values = [
         "@platforms//os:macos",
@@ -97,12 +113,42 @@ config_setting(
     values = {"platforms": "//:aarch64_macos"},
 )
 
+config_setting(
+    name = "is_aarch64_android",
+    constraint_values = [],
+    values = {"platforms": "//:aarch64_android"},
+)
+
+config_setting(
+    name = "is_arm_android",
+    constraint_values = [],
+    values = {"platforms": "//:arm_android"},
+)
+
+config_setting(
+    name = "android",
+    constraint_values = [
+        "@platforms//os:android",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 FILE_NAME = select({
         ":is_arm_linux": "edgeclaw_arm_linux",
         ":is_aarch64_linux": "edgeclaw_aarch64_linux",
         ":is_amd64_linux": "edgeclaw_amd64_linux",
         ":is_aarch64_macos": "edgeclaw_aarch64_macos",
         "//conditions:default": "edgeclaw_unkown",
+})
+
+DAGENT_FILE_NAME = select({
+        ":is_arm_linux": "device_agent_arm_linux",
+        ":is_aarch64_linux": "device_agent_aarch64_linux",
+        ":is_amd64_linux": "device_agent_amd64_linux",
+        ":is_aarch64_macos": "device_agent_aarch64_macos",
+        ":is_aarch64_android": "device_agent_aarch64_android",
+        ":is_arm_android": "device_agent_arm_android",
+        "//conditions:default": "device_agent_unkown",
 })
 
 pkg_files(
@@ -131,4 +177,20 @@ pkg_tar(
     extension = "tar.gz",
     package_dir = FILE_NAME,
     package_file_name = FILE_NAME + ".tar.gz",
+)
+
+pkg_files(
+    name = "device_agent_binary",
+    srcs = ["//src:device_agent"],
+    attributes = pkg_attributes(mode = "0755"),
+)
+
+pkg_tar(
+    name = "device_agent",
+    srcs = [
+        ":device_agent_binary",
+    ],
+    extension = "tar.gz",
+    package_dir = DAGENT_FILE_NAME,
+    package_file_name = DAGENT_FILE_NAME + ".tar.gz",
 )

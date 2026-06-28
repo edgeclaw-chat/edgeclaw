@@ -4,8 +4,10 @@ cc_library(
     name = "lwip",
     hdrs = glob([
         "src/include/**/*.h",
-        "contrib/ports/unix/port/include/**/*.h",
-    ]),
+    ]) + select({
+        "@//:linux": glob(["contrib/ports/unix/port/include/**/*.h"]),
+        "//conditions:default": [],
+    }),
     srcs = glob(
         [
             "src/core/*.c",
@@ -25,12 +27,16 @@ cc_library(
     }),
     copts = [
         "-DLWIP_NOASSERT",
-        "-DLWIP_UNIX_LINUX",
-    ],
+    ] + select({
+        "@//:linux": ["-DLWIP_UNIX_LINUX"],
+        "//conditions:default": [],
+    }),
     includes = [
         "src/include",
-        "contrib/ports/unix/port/include",
-    ],
+    ] + select({
+        "@//:linux": ["contrib/ports/unix/port/include"],
+        "//conditions:default": [],
+    }),
     deps = [
         "@//thirdparty/lwip:config",
     ],

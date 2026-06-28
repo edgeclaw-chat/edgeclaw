@@ -73,6 +73,7 @@ struct edc_config
     gchar *device_ip;
     int device_port;
     int device_baud;
+    gchar *device_transport;
 };
 
 extern gchar *edc_config_resolve_bc_home(void);

@@ -12,6 +12,14 @@ aarch64_toolchain = use_extension("//:extensions.bzl", "aarch64_toolchain")
 use_repo(aarch64_toolchain, "aarch64_toolchain")
 register_toolchains("@aarch64_toolchain//:aarch64_linux_toolchain")
 
+aarch64_android_toolchain = use_extension("//:extensions.bzl", "aarch64_android_toolchain")
+use_repo(aarch64_android_toolchain, "aarch64_android_toolchain")
+register_toolchains("@aarch64_android_toolchain//:aarch64_android_toolchain")
+
+arm_android_toolchain = use_extension("//:extensions.bzl", "arm_android_toolchain")
+use_repo(arm_android_toolchain, "arm_android_toolchain")
+register_toolchains("@arm_android_toolchain//:arm_android_toolchain")
+
 # Hermetic Python toolchain: downloads Python 3.8 for native builds, no system
 # Python required. Has platform constraints so it only matches native builds.
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")

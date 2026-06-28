@@ -31,6 +31,7 @@
 #define MEMP_NUM_TCP_PCB            64
 #define MEMP_NUM_TCP_PCB_LISTEN     8
 #define LWIP_SO_LINGER              1
+#define LWIP_SO_RCVTIMEO            1
 #define MEMP_NUM_UDP_PCB            8
 #define MEMP_NUM_RAW_PCB            4
 
@@ -64,6 +65,12 @@
 
 #define MEMP_NUM_PPP_PCB            2
 #define PPP_DEFMRU                  1500
+
+#define LWIP_TIMEVAL_PRIVATE        0
+
+#ifndef __APPLE__
+#define SOCKLEN_T_DEFINED
+#endif
 
 #define LWIP_STATS                  0
 #define LWIP_DEBUG                  0

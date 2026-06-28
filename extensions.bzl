@@ -7,6 +7,7 @@ load('//thirdparty/lwip:repo.bzl', lwip_repo = "repo")
 load('//thirdparty/sds:repo.bzl', sds_repo = "repo")
 load('//toolchain:arm_toolchain_repo.bzl', 'arm_toolchain_repo')
 load('//toolchain:aarch64_toolchain_repo.bzl', 'aarch64_toolchain_repo')
+load('//toolchain:android_toolchain_repo.bzl', 'aarch64_android_toolchain_repo', 'arm_android_toolchain_repo')
 
 def _bc_thirdparty_deps_impl(module_ctx):
     logc_repo()
@@ -33,4 +34,18 @@ def _aarch64_toolchain_impl(module_ctx):
 
 aarch64_toolchain = module_extension(
     implementation = _aarch64_toolchain_impl,
+)
+
+def _aarch64_android_toolchain_impl(module_ctx):
+    aarch64_android_toolchain_repo(name = "aarch64_android_toolchain")
+
+aarch64_android_toolchain = module_extension(
+    implementation = _aarch64_android_toolchain_impl,
+)
+
+def _arm_android_toolchain_impl(module_ctx):
+    arm_android_toolchain_repo(name = "arm_android_toolchain")
+
+arm_android_toolchain = module_extension(
+    implementation = _arm_android_toolchain_impl,
 )
