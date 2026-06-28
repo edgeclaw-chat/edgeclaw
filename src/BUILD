@@ -10,10 +10,24 @@ LINK_OPTS = select({
 })
 
 cc_library(
-    name = "pppos_agent_lib",
-    srcs = ["edc_pppos_agent.c"],
-    hdrs = ["edc_pppos_agent.h"],
+    name = "device_agent_lib",
+    srcs = ["edc_device_agent.c"],
+    hdrs = ["edc_device_agent.h"],
     deps = [
+        "@sds//:sds",
+    ],
+    linkstatic = True,
+)
+
+cc_library(
+    name = "transport_pppos_lib",
+    srcs = ["edc_transport_pppos.c"],
+    hdrs = [
+        "edc_transport_pppos.h",
+        "edc_device_agent.h",
+    ],
+    deps = [
+        ":device_agent_lib",
         "@lwip//:lwip",
         "//thirdparty/lwip:sys_arch",
         "@cjson//:cjson",
@@ -22,11 +36,23 @@ cc_library(
     linkstatic = True,
 )
 
+cc_library(
+    name = "pppos_agent_lib",
+    srcs = ["edc_pppos_agent.c"],
+    hdrs = ["edc_pppos_agent.h"],
+    deps = [
+        ":device_agent_lib",
+        ":transport_pppos_lib",
+    ],
+    linkstatic = True,
+)
+
 cc_binary(
     name = "device_agent",
     srcs = ["device_agent.c"],
     deps = [
-        ":pppos_agent_lib",
+        ":device_agent_lib",
+        ":transport_pppos_lib",
     ],
     linkstatic = True,
     linkopts = LINK_OPTS,
@@ -131,6 +157,8 @@ cc_library(
         "edc_lwip.h",
         "edc_tools_device_shell.h",
         "edc_pppos_agent.h",
+        "edc_device_agent.h",
+        "edc_transport_pppos.h",
     ],
     deps = [
         "@glib//glib:glib",

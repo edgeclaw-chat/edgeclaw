@@ -1,4 +1,6 @@
-#include "edc_pppos_agent.h"
+#include "edc_device_agent.h"
+#include "edc_transport_pppos.h"
+
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -53,6 +55,11 @@ int main(int argc, char **argv)
     if (fd < 0)
         return 1;
 
-    edc_pppos_agent_run(fd, my_ip, pc_ip, (uint16_t)port);
+    struct edc_device_transport *transport = edc_transport_pppos_create(fd, my_ip, pc_ip, (uint16_t)port);
+    if (!transport)
+        return 1;
+
+    edc_device_agent_run(transport);
+    transport->cleanup(transport);
     return 0;
 }
