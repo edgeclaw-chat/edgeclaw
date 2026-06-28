@@ -255,9 +255,19 @@ Script is not in PATH. Install to `/usr/local/bin/` (not `~/.local/bin/` — zsh
 
 The BUSID was parsed incorrectly (likely included a trailing colon like `1-19:` instead of `1-19`). The current script uses `grep -oE '[0-9]+-[0-9]+'` which avoids this. If still failing, pass BUSID manually: `usb-attach 1-19`.
 
-### ❌ Device shows `?` (unauthorized)
+### ❌ Device shows `?` (unauthorized) — but try `adb shell` first!
 
-The phone hasn't authorized USB debugging from this PC yet:
+`?` status in `adb devices` **does not always mean the device is blocked**. Some devices (especially Qualcomm-based boards with `userdebug`/`eng` builds) show `?` but still accept `adb shell` without issues.
+
+**Always verify with a real command before assuming it's broken:**
+```bash
+adb shell echo "test"
+```
+
+If that returns output, the device is **usable** — ignore the `?` status.
+
+If it fails with "device unauthorized (no debuggable)" or similar:
+
 1. **Unlock the phone screen**
 2. Look for **"Allow USB debugging?"** popup → tap **Allow** (✓ "Always allow")
 3. If no popup: replug the USB cable, or go to **Developer Options → Revoke USB debugging authorizations** and replug
@@ -327,3 +337,12 @@ This does **not** affect the setup. The `usb-attach` script uses the Linux `usbi
 6. **`usbip attach` needs `sudo`** — vhci-hcd requires root.
 7. **Two-step workflow is inherent**: bind (Windows) → attach (WSL). Neither step is optional.
 8. **Make Windows manual steps explicit**: Use `💻 Windows PowerShell (Admin)` markers. The assistant cannot run these — the user must.
+9. **`?` device ≠ blocked**: `adb devices` showing `?` doesn't always mean unauthorized. Some devices (especially `userdebug`/`eng` builds, Qualcomm reference boards) show `?` but work fine. Always test with `adb shell echo "test"` before troubleshooting authorization.
+
+## Verified Devices
+
+Devices confirmed working through this setup:
+
+| Device | USB ID | BUSID | Model | Notes |
+|--------|--------|-------|-------|-------|
+| Qualcomm Bengal | 05c6:901f | 1-19 | Bengal_for_arm64 | Shows `?` in adb devices but shell works |
