@@ -95,11 +95,6 @@ static gboolean on_pipe_readable(GIOChannel *source, GIOCondition condition, gpo
         return FALSE;
     }
 
-    if (condition & G_IO_HUP)
-    {
-        return FALSE;
-    }
-
     GString *buf = data;
 
     gchar line[1024];
@@ -111,19 +106,19 @@ static gboolean on_pipe_readable(GIOChannel *source, GIOCondition condition, gpo
         return FALSE;
     }
 
-    if (status == G_IO_STATUS_AGAIN)
-    {
-        return TRUE;
-    }
-
     if (bytes_read > 0)
     {
         g_string_append_len(buf, line, bytes_read);
     }
 
-    if (status == G_IO_STATUS_EOF)
+    if (status == G_IO_STATUS_EOF || (condition & G_IO_HUP))
     {
         return FALSE;
+    }
+
+    if (status == G_IO_STATUS_AGAIN)
+    {
+        return TRUE;
     }
 
     return TRUE;
@@ -196,6 +191,7 @@ static void edc_tool_shell_watch_io_channel(GIOChannel *channel, GIOFunc fn, gpo
 static void edc_tool_shell_child_setup(gpointer user_data)
 {
     struct edc_config *conf = user_data;
+    setpgid(0, 0);
     edc_sandbox_apply(conf);
 }
 
@@ -205,7 +201,7 @@ static gboolean shell_timeout_cb(gpointer data)
 
     if (!ctx->child_exited)
     {
-        kill(ctx->child_pid, SIGKILL);
+        kill(-ctx->child_pid, SIGKILL);
         g_string_append(ctx->stderr_buf, "\n[command timed out]");
     }
 
@@ -313,7 +309,7 @@ void edc_tool_shell_abort_all(void)
         }
         if (!ctx->child_exited)
         {
-            kill(ctx->child_pid, SIGKILL);
+            kill(-ctx->child_pid, SIGKILL);
             gint status;
             waitpid(ctx->child_pid, &status, 0);
             g_spawn_close_pid(ctx->child_pid);
