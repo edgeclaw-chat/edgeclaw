@@ -867,7 +867,7 @@ static sds *split_paths(const char *input)
         return NULL;
 
     int valid = 0;
-    for (int i = 0; parts[i]; i++)
+    for (int i = 0; i < count; i++)
     {
         parts[i] = sdstrim(parts[i], " \t\r\n");
         if (parts[i][0])
@@ -882,7 +882,7 @@ static sds *split_paths(const char *input)
 
     sds *result = g_new0(sds, valid + 1);
     int idx = 0;
-    for (int i = 0; parts[i]; i++)
+    for (int i = 0; i < count; i++)
     {
         if (parts[i][0])
             result[idx++] = sdsdup(parts[i]);
