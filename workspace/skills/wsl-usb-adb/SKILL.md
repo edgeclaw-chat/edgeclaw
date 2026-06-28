@@ -1,167 +1,329 @@
 ---
 name: wsl-usb-adb
 description: Pass USB devices (especially Android phones for ADB) from Windows to WSL2 using usbipd-win. Use this skill when the user asks about using ADB in WSL, connecting Android devices in WSL2, USB passthrough from Windows to WSL, or mentions usbipd-win/ADB/USB in a WSL context.
-metadata: {"nanobot":{"emoji":"🔌","requires":{"bins":["adb","usbip","powershell.exe"]}}}
+metadata: {"nanobot":{"emoji":"🔌","requires":{"bins":["adb","usbip"]}}}
 ---
 
 # WSL2 USB ADB via usbipd-win
 
 Bridge USB Android devices from Windows into WSL2 for `adb` / `fastboot`.
 
+## ⚠️ Who Does What
+
+This setup requires actions on **both sides**. The split is non-negotiable because WSL2 has no direct access to physical USB controllers — only Windows does.
+
+| Action | Where | Who | Automatable? |
+|--------|-------|-----|--------------|
+| Install usbipd-win | 💻 Windows | **User** | ❌ Manual (Windows installer) |
+| `usbipd bind` (export device) | 💻 Windows PowerShell | **User** | ❌ Manual every time device is plugged / WSL restarts |
+| `usbipd detach` (release device) | 💻 Windows PowerShell | **User** | ❌ Manual |
+| Install linux-tools, adb | 🐧 WSL2 | Assistant | ✅ `apt-get install` |
+| Kernel modules, symlink fix | 🐧 WSL2 | Assistant | ✅ |
+| `usbip attach` (import device) | 🐧 WSL2 | `usb-attach` script | ✅ Semi-auto (script with auto-detection) |
+| `adb devices / shell / install` | 🐧 WSL2 | User | N/A (normal usage) |
+
+**Bottom line**: The assistant CAN automate everything on the WSL2 side. The Windows side steps are physical/manual and must be done by the user. Make this clear when instructing the user.
+
+---
+
 ## Prerequisites
 
-| Side      | Package            | Check                                   |
-|-----------|--------------------|-----------------------------------------|
-| Windows   | usbipd-win ≥ 4.0   | `usbipd list` in PowerShell             |
-| WSL2      | linux-tools-generic | `which usbip`                           |
-| WSL2      | adb                | `adb version`                           |
-
-WSL2 kernel modules must load: `usbip-core`, `vhci-hcd`, `usbip-host`.
+| Side | Package | Check |
+|------|---------|-------|
+| 💻 Windows | usbipd-win ≥ 4.0 | `usbipd list` in PowerShell |
+| 🐧 WSL2 | linux-tools-generic + usbutils | `which usbip && which lsusb` |
+| 🐧 WSL2 | adb | `adb version` |
 
 ---
 
 ## One-Time Setup
 
-### 1. Install usbip client in WSL2
+### 💻 Windows Side (User — Manual)
 
-```bash
-sudo apt-get update && sudo apt-get install -y linux-tools-generic
+#### Install usbipd-win
+
+In **Windows PowerShell (Admin)**:
+```powershell
+winget install --interactive --exact dorssel.usbipd-win
 ```
 
-### 2. Auto-load kernel modules
+After installation, **restart WSL2** so the new USB/IP kernel support takes effect:
+```powershell
+wsl --shutdown
+```
+Then reopen your WSL terminal.
+
+> ⚠️ This is the one and only step the assistant **cannot** do — it requires Windows GUI installer interaction.
+
+---
+
+### 🐧 WSL2 Side (Assistant — Can Fully Automate)
+
+The following steps can all be executed by the assistant via shell commands.
+
+#### Step 1: Install packages
+
+```bash
+sudo apt-get update && sudo apt-get install -y linux-tools-generic usbutils
+```
+
+#### Step 2: Load and auto-load kernel modules
 
 ```bash
 echo -e "usbip-core\nvhci-hcd\nusbip-host" | sudo tee /etc/modules-load.d/usbip.conf
 sudo modprobe usbip-core vhci-hcd usbip-host
 ```
 
-### 3. Avoid port conflict (WSL2 mirrored networking)
+#### Step 3: Fix usbip kernel version mismatch
 
-Windows ADB often holds port 5037. Tell WSL ADB to use 5038:
+WSL2 uses a custom kernel (e.g. `6.18.33.2-microsoft-standard-WSL2`) that differs from the Ubuntu linux-tools version. The `usbip` wrapper dispatches to `/usr/lib/linux-tools/<kernel>/` — create a symlink:
 
 ```bash
-echo 'export ANDROID_ADB_SERVER_PORT=5038' >> ~/.bashrc
+KERNEL_VER=$(uname -r)
+TOOLS_VER=$(ls /usr/lib/linux-tools/ | head -1)
+sudo ln -sf /usr/lib/linux-tools/$TOOLS_VER /usr/lib/linux-tools/$KERNEL_VER
 ```
 
-### 4. Install helper script
+Verify: `usbip version` should print `usbip (usbip-utils 2.0)` without warnings.
 
-Save as `~/.local/bin/usb-attach`:
+#### Step 4: Avoid ADB port conflict
+
+WSL2 mirrored mode shares `localhost` with Windows. If Windows ADB holds port 5037, WSL ADB **must** use a different port. Add to both bash and zsh configs (user's shell is not guaranteed):
+
+```bash
+for rc in ~/.bashrc ~/.zshrc; do
+    grep -q "ANDROID_ADB_SERVER_PORT" "$rc" 2>/dev/null || \
+        echo 'export ANDROID_ADB_SERVER_PORT=5038' >> "$rc"
+done
+```
+
+#### Step 5: Install `usb-attach` helper script
+
+Write to `/usr/local/bin/usb-attach` (always in PATH, works for both bash and zsh):
 
 ```bash
 #!/bin/bash
-# Auto-detect Android device and attach via usbipd-win
+# WSL2 USB Attach — Import a USB Android device from Windows usbipd-win into WSL2.
+# Usage: usb-attach [BUSID]
+#   With BUSID: attaches that specific device.
+#   Without:    auto-detects the first Android device exported by usbipd-win.
+
+USBIPD_HOST="127.0.0.1"
 BUSID="${1}"
 
 if [ -z "$BUSID" ]; then
-    DEVICE_LINE=$(powershell.exe -Command "& 'C:\Program Files\usbipd-win\usbipd.exe' list" 2>/dev/null \
-        | grep -iE "qualcomm|android|xiaomi|samsung|huawei|oneplus|google|pixel|oppo|vivo")
-    if [ -z "$DEVICE_LINE" ]; then
-        echo "❌ No Android device found. Run: usbipd list  (in PowerShell)"
+    echo "🔍 Checking for available devices on usbipd-win..."
+    DEVICE_LIST=$(usbip list --remote="$USBIPD_HOST" 2>&1)
+
+    if echo "$DEVICE_LIST" | grep -q "no exportable devices"; then
+        echo ""
+        echo "❌ No device exported on the Windows side yet."
+        echo ""
+        echo "👉 ACTION REQUIRED — Run these in 💻 Windows PowerShell (Admin):"
+        echo ""
+        echo "   usbipd list                          # Find your phone's BUSID"
+        echo "   usbipd bind --busid <BUSID> --force  # Export the device"
+        echo ""
+        echo "   Then re-run: usb-attach"
         exit 1
     fi
-    BUSID=$(echo "$DEVICE_LINE" | awk '{print $1}')
-    echo "📱 $DEVICE_LINE"
+
+    # Extract clean BUSID (strip trailing colon from usbip list output)
+    BUSID=$(echo "$DEVICE_LIST" \
+        | grep -iE "qualcomm|android|xiaomi|samsung|huawei|oneplus|google|pixel|oppo|vivo" \
+        | grep -oE '[0-9]+-[0-9]+' | head -1)
+
+    if [ -z "$BUSID" ]; then
+        BUSID=$(echo "$DEVICE_LIST" | grep -oE '[0-9]+-[0-9]+' | head -1)
+    fi
+
+    if [ -z "$BUSID" ]; then
+        echo "❌ Could not determine BUSID. Available devices:"
+        echo "$DEVICE_LIST"
+        exit 1
+    fi
+
+    echo "📱 Auto-detected BUSID: $BUSID"
 fi
 
-powershell.exe -Command "& 'C:\Program Files\usbipd-win\usbipd.exe' bind --busid '$BUSID' --force" 2>/dev/null
-powershell.exe -Command "& 'C:\Program Files\usbipd-win\usbipd.exe' attach --wsl --busid '$BUSID'" 2>/dev/null
+echo "🔌 Attaching BUSID=$BUSID from usbipd-win..."
+sudo usbip attach --remote="$USBIPD_HOST" --busid="$BUSID" 2>&1
 
 sleep 1
+
 export ANDROID_ADB_SERVER_PORT=5038
 adb start-server 2>/dev/null
+
+echo ""
+echo "📱 Connected devices:"
 adb devices
 ```
 
-Make executable: `chmod +x ~/.local/bin/usb-attach`
+```bash
+sudo chmod +x /usr/local/bin/usb-attach
+```
 
 ---
 
 ## Daily Usage
 
-### Attach device
+### 💻 Step 1 — Windows PowerShell (Admin) [User — Manual]
 
-```bash
-usb-attach
+**Every time** the phone is plugged in or WSL2 is restarted, the device must be exported from Windows:
+
+```powershell
+# List USB devices, find your phone's BUSID (e.g., 1-19)
+usbipd list
+
+# Export/bind the device so WSL can see it
+usbipd bind --busid 1-19 --force
 ```
 
-Or manually with a known BUSID:
+> 📌 **The BUSID may change** each time you replug the cable. Always check with `usbipd list` first.
+
+### 🐧 Step 2 — WSL2 Terminal
 
 ```bash
+# Ensure the port variable is set (needed after fresh terminal)
+export ANDROID_ADB_SERVER_PORT=5038
+
+# Auto-detect and attach
+usb-attach
+
+# Or with explicit BUSID:
 usb-attach 1-19
 ```
 
-### Verify
+### 🐧 Verify & Use
 
 ```bash
-adb devices
-# List of devices attached
-# 63DF24FA    device
+adb devices                 # Should show:  63DF24FA  device
+adb shell                   # Open shell on phone
+adb install app.apk         # Install APK
+adb logcat                  # View logs
 ```
 
-### Detach (return device to Windows)
+### Detach Device
 
-In **PowerShell (Admin)**:
+```bash
+# 🐧 WSL2: detach from WSL side
+sudo usbip detach --port=0
+```
+
 ```powershell
+# 💻 Windows PowerShell (Admin): release from usbipd
 usbipd detach --busid 1-19
+```
+
+---
+
+## 🔁 Quick Reference Card
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  💻 WINDOWS (User — Manual, cannot automate)                │
+│                                                             │
+│  Install:   winget install dorssel.usbipd-win               │
+│  List:      usbipd list                                     │
+│  Export:    usbipd bind --busid <X> --force                 │
+│  Release:   usbipd detach --busid <X>                       │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│  🐧 WSL2 (Assistant can fully automate)                     │
+│                                                             │
+│  Import:    usb-attach [BUSID]                              │
+│  Check:     adb devices                                     │
+│  Detach:    sudo usbip detach --port=0                      │
+│                                                             │
+│  Key env:   export ANDROID_ADB_SERVER_PORT=5038             │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Troubleshooting
 
-### "Device busy (exported)"
-Windows is holding the device. Kill adb on Windows first:
+### ❌ "usbip not found for kernel X.X.X"
+
+The usbip wrapper can't find binaries for the WSL2 custom kernel. **Fix**: run One-Time Setup Step 3 (symlink). This warning is cosmetic once fixed.
+
+### ❌ "usb-attach: command not found"
+
+Script is not in PATH. Install to `/usr/local/bin/` (not `~/.local/bin/` — zsh may not include it). See One-Time Setup Step 5.
+
+### ❌ "Attach Request for X-X failed - Device not found"
+
+The BUSID was parsed incorrectly (likely included a trailing colon like `1-19:` instead of `1-19`). The current script uses `grep -oE '[0-9]+-[0-9]+'` which avoids this. If still failing, pass BUSID manually: `usb-attach 1-19`.
+
+### ❌ Device shows `?` (unauthorized)
+
+The phone hasn't authorized USB debugging from this PC yet:
+1. **Unlock the phone screen**
+2. Look for **"Allow USB debugging?"** popup → tap **Allow** (✓ "Always allow")
+3. If no popup: replug the USB cable, or go to **Developer Options → Revoke USB debugging authorizations** and replug
+4. Then: `adb kill-server && adb start-server && adb devices`
+
+### ❌ Device disappears after a while
+
+USB/IP attachments are not persistent — they can drop on sleep/timeout. Simply re-run `usb-attach`. The device should still be exported on Windows side; verify with `usbip list --remote=127.0.0.1`.
+
+### ❌ "Address already in use" (port 5037)
+
+Port conflict with Windows ADB. Ensure `ANDROID_ADB_SERVER_PORT=5038` is exported in the current shell.
+
+### ❌ "Device busy (exported)"
+
+Windows is holding the device (e.g., Windows ADB has it). Run in 💻 Windows PowerShell:
 ```powershell
 adb kill-server
 ```
-Then rebind and attach.
 
-### "could not install *smartsocket* listener: Address already in use"
-Port 5037 is taken. Use `ANDROID_ADB_SERVER_PORT=5038` (or `adb -P 5038`).
+### ❌ After WSL2 restart
 
-### "usbip not found for kernel X.X.X"
-WSL2 custom kernel mismatch — `linux-tools-generic` still provides a working `usbip` binary. Ignore if `lsusb` shows the device.
+Two things must be re-done:
+1. 💻 Windows PowerShell: `usbipd bind --busid <X> --force` (bindings don't survive WSL restart)
+2. 🐧 WSL2: `usb-attach` (attachments don't survive WSL restart)
 
-### Device shows `?` in `adb devices`
-The phone needs USB debugging authorization. Unlock phone and tap **"Allow USB debugging"** dialog. If no dialog appears:
-```bash
-adb kill-server && adb start-server
-adb devices
-```
+Kernel modules auto-load via `/etc/modules-load.d/usbip.conf` — no action needed for that.
 
-### After WSL2 restart
-Kernel modules auto-load via `/etc/modules-load.d/`, but you must re-run `usb-attach` to re-attach the device.
+### ❌ Windows interop broken (powershell.exe not callable from WSL)
+
+This does **not** affect the setup. The `usb-attach` script uses the Linux `usbip` client to connect directly to `usbipd-win` at `127.0.0.1:3240` — it never calls Windows executables. This is by design.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Windows                                         │
-│  ┌──────────┐    ┌──────────────┐               │
-│  │ USB Host │───▶│ usbipd-win   │               │
-│  │ (Phone)  │    │ bind+attach  │               │
-│  └──────────┘    └──────┬───────┘               │
-│                         │ TCP 3240              │
-├─────────────────────────┼───────────────────────┤
-│  WSL2 VM (mirrored net) │                       │
-│  ┌──────────────────────▼──────────────────────┐│
-│  │  vhci-hcd (virtual USB host controller)     ││
-│  │  → /dev/bus/usb/002/002                    ││
-│  │  → lsusb: Qualcomm QCM2290-IDP             ││
-│  └──────────────────────┬──────────────────────┘│
-│                         ▼                       │
-│  ┌──────────────────────────────────────────┐  │
-│  │  adb server (port 5038)                   │  │
-│  │  adb devices → 63DF24FA  device          │  │
-│  └──────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  💻 WINDOWS                                               │
+│                                                           │
+│  Android Phone ──USB──▶ usbipd-win service               │
+│                         ▲                                 │
+│                         │ usbipd bind --busid X --force   │
+│                         │ (USER MUST RUN MANUALLY)        │
+│                         │                                 │
+│                         │ Listens on TCP :3240            │
+├─────────────────────────┼────────────────────────────────┤
+│  🐧 WSL2 (mirrored net) │                                 │
+│                         ▼                                 │
+│  usbip attach --remote=127.0.0.1 --busid=X               │
+│       │                                                   │
+│       ▼                                                   │
+│  vhci-hcd → /dev/bus/usb/002/002                         │
+│       │                                                   │
+│       ▼                                                   │
+│  adb server (:5038) → adb devices → 63DF24FA  device     │
+└──────────────────────────────────────────────────────────┘
 ```
 
-## Notes
+## Key Lessons Learned
 
-- Works only on **WSL2** (WSL1 has direct USB and doesn't need usbipd)
-- Mirrored networking mode (`wsl.conf` `[wsl2] networkingMode=mirrored`) enables `bind` from WSL side via PowerShell
-- Fastboot also works once the device is in bootloader mode and attached via usbipd
-- Multiple devices can be attached simultaneously (different BUSIDs)
+1. **Never rely on WSL interop** (`powershell.exe` from WSL). It may be broken. Use Linux `usbip` client against `127.0.0.1` instead.
+2. **BUSID parsing**: `usbip list --remote=` outputs `1-19:` (with colon). Use `grep -oE '[0-9]+-[0-9]+'` — never `awk '{print $1}'`.
+3. **Kernel version mismatch**: one symlink fixes it. Don't skip this.
+4. **Install script to `/usr/local/bin/`** — it's always in PATH for bash and zsh. `~/.local/bin/` is not in zsh PATH by default.
+5. **`ANDROID_ADB_SERVER_PORT=5038` is mandatory** in mirrored mode. Write it to both `.bashrc` and `.zshrc`.
+6. **`usbip attach` needs `sudo`** — vhci-hcd requires root.
+7. **Two-step workflow is inherent**: bind (Windows) → attach (WSL). Neither step is optional.
+8. **Make Windows manual steps explicit**: Use `💻 Windows PowerShell (Admin)` markers. The assistant cannot run these — the user must.
