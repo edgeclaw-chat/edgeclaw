@@ -58,6 +58,22 @@ platform(
 )
 
 platform(
+    name = "aarch64_android",
+    constraint_values = [
+        "@platforms//os:android",
+        "@platforms//cpu:aarch64",
+    ],
+)
+
+platform(
+    name = "arm_android",
+    constraint_values = [
+        "@platforms//os:android",
+        "@platforms//cpu:armv7",
+    ],
+)
+
+platform(
     name = "aarch64_macos",
     constraint_values = [
         "@platforms//os:macos",
@@ -95,6 +111,26 @@ config_setting(
     name = "is_aarch64_macos",
     constraint_values = [],
     values = {"platforms": "//:aarch64_macos"},
+)
+
+config_setting(
+    name = "is_aarch64_android",
+    constraint_values = [],
+    values = {"platforms": "//:aarch64_android"},
+)
+
+config_setting(
+    name = "is_arm_android",
+    constraint_values = [],
+    values = {"platforms": "//:arm_android"},
+)
+
+config_setting(
+    name = "android",
+    constraint_values = [
+        "@platforms//os:android",
+    ],
+    visibility = ["//visibility:public"],
 )
 
 FILE_NAME = select({

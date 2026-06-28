@@ -5,6 +5,7 @@ LINK_OPTS = select({
     "//:macos": ["-lresolv"],
     "//:linux_debug": [],
     "//:debug": [],
+    "//:android": [],
     "//conditions:default": ["-static", "-Wl,--no-gc-sections"],
 })
 
