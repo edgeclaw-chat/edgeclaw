@@ -7,7 +7,7 @@
 #include "edc_tools.h"
 
 static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
-                                     void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *))
+                                      void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     cJSON *items = cJSON_GetObjectItem(args, "items");
     if (!items || !cJSON_GetArraySize(items))

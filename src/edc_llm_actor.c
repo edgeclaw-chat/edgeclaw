@@ -1,13 +1,12 @@
 #include "edc_string.h"
 #include "edc_strutil.h"
+#include "edc_error.h"
 #include "edc_llm_actor.h"
 #include "edc_actor.h"
 #include "edc_network_async.h"
 #include "log.h"
 #include "mongoose.h"
 #include "utarray.h"
-
-G_DEFINE_QUARK(edc_llm_actor_error_quark, edc_llm_actor_error)
 struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools, EdcQueue *turn)
 {
     struct edc_llm_actor_req *req = g_new0(struct edc_llm_actor_req, 1);
@@ -103,7 +102,7 @@ static void edc_llm_actor_on_http_fn(struct mg_connection *c, int ev, void *ev_d
         if (req->from)
         {
             struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
-            resp->error = g_error_new(BC_LLM_ACTOR_ERROR, -1, "LLM API connection error");
+            resp->error = edc_error_new(EDC_ERR_FAILED, "LLM API connection error");
             edc_actor_send(req->from, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, req->request_id, resp,
                                                        (edc_actor_data_free_fn)edc_llm_actor_resp_free));
         }
@@ -116,7 +115,7 @@ static void edc_llm_actor_on_http_fn(struct mg_connection *c, int ev, void *ev_d
             if (req->from)
             {
                 struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
-                resp->error = g_error_new(BC_LLM_ACTOR_ERROR, -1, "LLM API connection closed unexpectedly");
+                resp->error = edc_error_new(EDC_ERR_FAILED, "LLM API connection closed unexpectedly");
                 edc_actor_send(req->from, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, req->request_id, resp,
                                                            (edc_actor_data_free_fn)edc_llm_actor_resp_free));
             }
@@ -129,7 +128,7 @@ static void edc_llm_actor_on_http_fn(struct mg_connection *c, int ev, void *ev_d
         if (req->from)
         {
             struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
-            resp->error = g_error_new(BC_LLM_ACTOR_ERROR, -1, "%s", err_msg);
+            resp->error = edc_error_new(EDC_ERR_FAILED, "%s", err_msg);
             edc_actor_send(req->from, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, req->request_id, resp,
                                                        (edc_actor_data_free_fn)edc_llm_actor_resp_free));
         }
@@ -196,7 +195,7 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
     {
         char *err_msg = cJSON_Print(response);
         log_error("resp format error choice 0 is not exist: %s", response);
-        resp->error = g_error_new(BC_LLM_ACTOR_ERROR, -2, "resp format choice 0 is not exist: %s", err_msg);
+        resp->error = edc_error_new(EDC_ERR_INVAL, "resp format choice 0 is not exist: %s", err_msg);
         free(err_msg);
 
         if (choices)
@@ -268,7 +267,7 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
     if (!message)
     {
         char *err_msg = cJSON_Print(choice);
-        resp->error = g_error_new(BC_LLM_ACTOR_ERROR, -2, "resp format message is not exist: %s", err_msg);
+        resp->error = edc_error_new(EDC_ERR_INVAL, "resp format message is not exist: %s", err_msg);
         free(err_msg);
         return FALSE;
     }
@@ -372,7 +371,7 @@ static void edc_llm_actor_handle_respone(edc_actor_t *actor, edc_actor_msg_t *ms
     cJSON *body = cJSON_Parse(buf);
     if (!body)
     {
-        resp->error = g_error_new(BC_LLM_ACTOR_ERROR, -1, "resp format error: %s", buf);
+        resp->error = edc_error_new(EDC_ERR_FAILED, "resp format error: %s", buf);
         goto exit;
     }
 
@@ -434,7 +433,8 @@ void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp)
 
     if (resp->error)
     {
-        g_clear_error(&resp->error);
+        edc_error_free(resp->error);
+        resp->error = NULL;
     }
 
     if (resp->content)

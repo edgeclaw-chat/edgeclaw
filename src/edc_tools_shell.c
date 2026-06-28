@@ -1,6 +1,7 @@
 #include "edc_string.h"
 #include "edc_strutil.h"
 #include "edc_sandbox.h"
+#include "edc_error.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
 #include "log.h"
@@ -30,7 +31,7 @@ struct edc_tool_shell_ctx
     GSource *stderr_source;
     GSource *timeout_source;
     struct edc_toolbox_call_ctx *tb_ctx;
-    void (*callback)(struct edc_toolbox_call_ctx *, sds result, GError *error);
+    void (*callback)(struct edc_toolbox_call_ctx *, sds result, EdcError *error);
     struct edc_tool_shell_ctx *next;
 };
 
@@ -64,7 +65,7 @@ static void edc_tool_shell_complete(struct edc_tool_shell_ctx *ctx)
 
     if (status)
     {
-        GError *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR, "%s", result);
+        EdcError *error = edc_error_new(EDC_ERR_EXEC, "%s", result);
         ctx->callback(ctx->tb_ctx, NULL, error);
         edc_str_free(result);
     }
@@ -255,15 +256,15 @@ static bool shell_timeout_cb(void* data)
 }
 
 static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, cJSON *args,
-                                     void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *))
+                                     void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
 {
-    GError *error = NULL;
+    EdcError *error = NULL;
     cJSON *cmd = cJSON_GetObjectItemCaseSensitive(args, "command");
     if (!cmd || !cJSON_IsString(cmd))
     {
         char *msg = cJSON_PrintUnformatted(args);
         log_error("bc tool shell error, cmd error %s", msg);
-        error = g_error_new(BC_TOOL_ERROR, BC_TOOL_ARG_INVALID, "ERROR: edc_tools_shell exec command failed: %s", msg);
+        error = edc_error_new(EDC_ERR_INVAL, "ERROR: edc_tools_shell exec command failed: %s", msg);
         free(msg);
         callback(tb_ctx, NULL, error);
         return;
@@ -321,9 +322,10 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
 
     GPid child_pid = 0;
     int stdin_fd = 0, stdout_fd = 0, stderr_fd = 0;
+    GError *spawn_error = NULL;
     bool success =
         g_spawn_async_with_pipes(cwd, argv, filtered_envp, G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
-                                 edc_tool_shell_child_setup, conf, &child_pid, &stdin_fd, &stdout_fd, &stderr_fd, &error);
+                                 edc_tool_shell_child_setup, conf, &child_pid, &stdin_fd, &stdout_fd, &stderr_fd, &spawn_error);
 
     free(allocated_cwd);
 
@@ -331,6 +333,8 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
 
     if (!success)
     {
+        error = edc_error_new(EDC_ERR_EXEC, "%s", spawn_error->message);
+        g_error_free(spawn_error);
         callback(tb_ctx, NULL, error);
         return;
     }

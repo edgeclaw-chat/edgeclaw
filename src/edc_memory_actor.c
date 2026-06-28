@@ -1,5 +1,6 @@
 #include "edc_string.h"
 #include "edc_strutil.h"
+#include "edc_error.h"
 #include "edc_memory_actor.h"
 #include "edc_actor.h"
 #include "edc_history.h"
@@ -171,18 +172,21 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
 
     const char *memory_file = g_build_filename(state->workspace, "memory", "MEMORY.md", NULL);
     char *memory = NULL;
-    GError *error = NULL;
+    GError *gerror = NULL;
 
-    bool ok = g_file_get_contents(memory_file, &memory, NULL, &error);
-    free((char *)memory_file);
-
-    if (ok && error)
+    if (!g_file_get_contents(memory_file, &memory, NULL, &gerror))
     {
-        log_error("get memory file content failed: %s", error->message);
-        g_error_free(error);
+        if (gerror)
+        {
+            log_error("get memory file content failed: %s", gerror->message);
+            g_error_free(gerror);
+        }
         ret = FALSE;
+        free((char *)memory_file);
         goto exit_free_user_message;
     }
+
+    free((char *)memory_file);
 
     edc_str_cat(user_message, "## Current Long-term Memory\n");
     if (memory)
@@ -274,12 +278,12 @@ exit_free_history:
 static bool edc_memory_save_memory_file(const char *workspace, const char *memory)
 {
     const char *memory_file = g_build_filename(workspace, "memory", "MEMORY.md", NULL);
-    GError *error = NULL;
-    if (!g_file_set_contents(memory_file, memory, -1, &error))
+    GError *gerror = NULL;
+    if (!g_file_set_contents(memory_file, memory, -1, &gerror))
     {
-        log_error("save memory file failed: %s", error->message);
+        log_error("save memory file failed: %s", gerror->message);
         free((char *)memory_file);
-        g_error_free(error);
+        g_error_free(gerror);
         return FALSE;
     }
 

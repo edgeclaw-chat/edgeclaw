@@ -5,6 +5,7 @@
 #include "edc_landlock_sandbox.h"
 #include "edc_ns_sandbox.h"
 #include "log.h"
+#include <glib.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -12,10 +13,7 @@
 #include <sys/prctl.h>
 #endif
 
-GQuark edc_sandbox_error_quark(void)
-{
-    return g_quark_from_static_string("edc_sandbox_error");
-}
+#include "edc_error.h"
 
 bool edc_sandbox_init(struct edc_config *conf)
 {
@@ -71,7 +69,7 @@ static bool path_allowed(struct edc_config *conf, const char *resolved_path, boo
     return FALSE;
 }
 
-char *edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writable, GError **error)
+char *edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writable, EdcError **error)
 {
     if (!conf->enable_sandbox || !conf->sandbox_root_real)
     {
@@ -81,7 +79,7 @@ char *edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool wr
     if (!path || !path[0])
     {
         if (error)
-            *error = g_error_new(BC_SANDBOX_ERROR, BC_SANDBOX_ERROR_ESCAPE, "empty path");
+            *error = edc_error_new(EDC_ERR_SANDBOX, "empty path");
         return NULL;
     }
 
@@ -94,7 +92,7 @@ char *edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool wr
         free(resolved);
         if (error)
             *error =
-                g_error_new(BC_SANDBOX_ERROR, BC_SANDBOX_ERROR_ESCAPE, "access denied: '%s' is outside sandbox", path);
+                edc_error_new(EDC_ERR_SANDBOX, "access denied: '%s' is outside sandbox", path);
         return NULL;
     }
 
@@ -105,7 +103,7 @@ char *edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool wr
     if (!parent_real)
     {
         if (error)
-            *error = g_error_new(BC_SANDBOX_ERROR, BC_SANDBOX_ERROR_ESCAPE, "cannot resolve path: %s", path);
+            *error = edc_error_new(EDC_ERR_SANDBOX, "cannot resolve path: %s", path);
         return NULL;
     }
 
@@ -114,7 +112,7 @@ char *edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool wr
         free(parent_real);
         if (error)
             *error =
-                g_error_new(BC_SANDBOX_ERROR, BC_SANDBOX_ERROR_ESCAPE, "access denied: '%s' is outside sandbox", path);
+                edc_error_new(EDC_ERR_SANDBOX, "access denied: '%s' is outside sandbox", path);
         return NULL;
     }
 

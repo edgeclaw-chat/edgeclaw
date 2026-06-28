@@ -1,4 +1,5 @@
 #include "edc_secret.h"
+#include "edc_error.h"
 #include "edc_strutil.h"
 #include "log.h"
 #include <errno.h>
@@ -120,12 +121,12 @@ static bool store_verify_hash(const char *edc_home)
     hash_hex[64] = '\0';
 
     char *path = g_build_filename(edc_home, BC_KEY_VERIFY_FILE, NULL);
-    GError *error = NULL;
-    bool ok = g_file_set_contents(path, hash_hex, -1, &error);
-    if (!ok && error)
+    GError *gerror = NULL;
+    bool ok = g_file_set_contents(path, hash_hex, -1, &gerror);
+    if (!ok && gerror)
     {
-        log_error("Failed to store verification hash: %s", error->message);
-        g_error_free(error);
+        log_error("Failed to store verification hash: %s", gerror->message);
+        g_error_free(gerror);
     }
     free(path);
     memset(hash, 0, sizeof(hash));
@@ -139,11 +140,11 @@ static bool verify_master_key(const char *edc_home)
 
     char *contents = NULL;
     size_t length = 0;
-    GError *error = NULL;
-    if (!g_file_get_contents(path, &contents, &length, &error))
+    GError *gerror = NULL;
+    if (!g_file_get_contents(path, &contents, &length, &gerror))
     {
-        if (error)
-            g_error_free(error);
+        if (gerror)
+            g_error_free(gerror);
         free(path);
         log_error("Cannot verify passphrase: verification file not found"
                   " — run setup first");

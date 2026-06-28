@@ -2,6 +2,7 @@
 #include "edc_toolbox_actor.h"
 #include "edc_actor.h"
 #include "edc_toolbox.h"
+#include "edc_error.h"
 #include "log.h"
 
 struct edc_toolbox_actor_exec_ctx
@@ -24,13 +25,13 @@ static struct edc_toolbox_actor_exec_ctx *edc_toolbox_actor_exec_ctx_new(edc_act
 static char *_HINT = "\n\n[Analyze the error above and try a different approach.]";
 
 // TODO: fix error handle
-static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds result, GError *error)
+static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds result, EdcError *error)
 {
     if (error)
     {
         result = edc_str_new(error->message);
         edc_str_cat(result, _HINT);
-        g_error_free(error);
+        edc_error_free(error);
     }
 
     if (!result)

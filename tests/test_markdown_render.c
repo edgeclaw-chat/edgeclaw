@@ -10,11 +10,11 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    GError *error = NULL;
+    GError *gerror = NULL;
     char *contents = NULL;
-    if (!g_file_get_contents(argv[1], &contents, NULL, &error)) {
-        fprintf(stderr, "read file failed: %s\n", error->message);
-        g_error_free(error);
+    if (!g_file_get_contents(argv[1], &contents, NULL, &gerror)) {
+        fprintf(stderr, "read file failed: %s\n", gerror->message);
+        g_error_free(gerror);
         return 1;
     }
 

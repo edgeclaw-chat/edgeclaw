@@ -5,11 +5,9 @@
 #include "edc_actor.h"
 #include "edc_config.h"
 #include "edc_containers.h"
+#include "edc_error.h"
 #include "edc_network_async.h"
 #include <cJSON.h>
-
-extern GQuark edc_llm_actor_error_quark(void);
-#define BC_LLM_ACTOR_ERROR (edc_llm_actor_error_quark())
 typedef struct
 {
     struct llm_api_conf api_conf;
@@ -68,7 +66,7 @@ struct edc_llm_actor_resp
 
     UT_array *tool_calls;
     cJSON *msg;
-    GError *error;
+    EdcError *error;
 };
 
 extern edc_actor_t *edc_llm_actor_new(struct llm_api_conf *api_conf, edc_network_async_t *network);

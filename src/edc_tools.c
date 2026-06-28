@@ -3,8 +3,6 @@
 #include "edc_tools.h"
 #include "edc_toolbox.h"
 
-G_DEFINE_QUARK(edc_tool_error_quark, edc_tool_error)
-
 struct edc_tool_param *edc_tool_param_new(char *name, struct edc_param_type *type, bool required)
 {
     struct edc_tool_param *param = calloc(1, sizeof(*param));

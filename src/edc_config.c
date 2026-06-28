@@ -1,5 +1,6 @@
 #include "edc_strutil.h"
 #include "edc_config.h"
+#include "edc_error.h"
 #include "edc_secret.h"
 #include "cJSON.h"
 #include "log.h"
@@ -144,16 +145,16 @@ struct edc_config *edc_config_load(const char *edc_home)
 {
     char *content = NULL;
     size_t len = 0;
-    GError *error = NULL;
+    GError *gerror = NULL;
     struct edc_config *config = NULL;
 
     char *path = g_build_filename(edc_home, "config.json", NULL);
-    bool success = g_file_get_contents(path, &content, &len, &error);
+    bool success = g_file_get_contents(path, &content, &len, &gerror);
 
     if (!success)
     {
-        log_error("failed to load config file: %s", error->message);
-        g_error_free(error);
+        log_error("failed to load config file: %s", gerror->message);
+        g_error_free(gerror);
         goto exit_free_path;
     }
 

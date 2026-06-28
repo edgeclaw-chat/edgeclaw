@@ -1,6 +1,7 @@
 #include "edc_string.h"
 #include "edc_strutil.h"
 #include "edc_toolbox.h"
+#include "edc_error.h"
 #include "edc_param_types.h"
 #include "edc_tools.h"
 #include "uthash.h"
@@ -111,11 +112,11 @@ void edc_toolbox_register_defaults(struct edc_toolbox *tb)
     edc_tools_device_file_register(tb);
 }
 
-static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, GError **error)
+static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, EdcError **error)
 {
     if (!args || !cJSON_IsObject(args))
     {
-        g_set_error(error, BC_TOOL_ERROR, BC_TOOL_ARG_INVALID, "arguments must be a JSON object");
+        edc_error_set(error, EDC_ERR_INVAL, "arguments must be a JSON object");
         return FALSE;
     }
 
@@ -128,7 +129,7 @@ static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, G
         {
             if (param->required)
             {
-                g_set_error(error, BC_TOOL_ERROR, BC_TOOL_ARG_INVALID, "required parameter '%s' is missing",
+                edc_error_set(error, EDC_ERR_INVAL, "required parameter '%s' is missing",
                             param->name);
                 return FALSE;
             }
@@ -140,7 +141,7 @@ static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, G
 
         if (!valid)
         {
-            g_set_error(error, G_FILE_ERROR, G_FILE_ERROR_INVAL, "parameter '%s' must be of type '%s'", param->name,
+            edc_error_set(error, EDC_ERR_INVAL, "parameter '%s' must be of type '%s'", param->name,
                         edc_param_type_to_s(type));
             return FALSE;
         }
@@ -150,10 +151,10 @@ static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, G
 }
 
 void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON *args,
-                     void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *))
+                     void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
 {
 
-    GError *error = NULL;
+    EdcError *error = NULL;
 
     struct edc_tool *tool;
     HASH_FIND_STR(ctx->tb->tools, name, tool);
@@ -177,7 +178,7 @@ void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON 
         }
     }
 
-    g_set_error(&error, BC_TOOL_ERROR, BC_TOOL_NOT_FOUND, "Error: tool %s not found. Available: %s", name,
+    edc_error_set(&error, EDC_ERR_NOTFOUND, "Error: tool %s not found. Available: %s", name,
                 tool_names);
     edc_str_free(tool_names);
     callback(ctx, NULL, error);

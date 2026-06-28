@@ -30,7 +30,7 @@ static bool on_stdout_readable(GIOChannel *source, GIOCondition condition, void*
 
 int main(int argc, char *argv[])
 {
-    GError *error = NULL;
+    GError *gerror = NULL;
     char *command_line[] = {"ls", "-l", "/", NULL}; // 要执行的命令
     int stdout_fd;
     GPid child_pid;
@@ -45,13 +45,13 @@ int main(int argc, char *argv[])
                                                 NULL,                // 返回 stdin 的文件描述符 (不需要则传 NULL)
                                                 &stdout_fd,          // 返回 stdout 的文件描述符
                                                 NULL,                // 返回 stderr 的文件描述符
-                                                &error               // 错误捕获
+                                                &gerror              // 错误捕获
     );
 
     if (!success)
     {
-        g_printerr("启动失败: %s\n", error->message);
-        g_error_free(error);
+        g_printerr("启动失败: %s\n", gerror->message);
+        g_error_free(gerror);
         return EXIT_FAILURE;
     }
 

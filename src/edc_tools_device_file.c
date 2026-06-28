@@ -11,6 +11,7 @@
 #include <cJSON.h>
 #include <glib.h>
 #include "edc_string.h"
+#include "edc_error.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -26,7 +27,7 @@
 struct device_file_ctx
 {
     struct edc_toolbox_call_ctx *tb_ctx;
-    void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *);
+    void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *);
     char *agent_ip;
     uint16_t agent_port;
 
@@ -94,17 +95,17 @@ static void device_file_send_error(struct device_file_ctx *ctx, const char *fmt,
     char *msg = g_strdup_vprintf(fmt, ap);
     va_end(ap);
 
-    GError *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR, "%s", msg);
+    EdcError *error = edc_error_new(EDC_ERR_EXEC, "%s", msg);
     ctx->callback(ctx->tb_ctx, NULL, error);
     free(msg);
 }
 
-static int parse_json_response(sds resp_buf, cJSON **out_json, GError **error)
+static int parse_json_response(sds resp_buf, cJSON **out_json, EdcError **error)
 {
     char *body = strstr(resp_buf, "\r\n\r\n");
     if (!body)
     {
-        *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR, "device_file: invalid HTTP response");
+        *error = edc_error_new(EDC_ERR_EXEC, "device_file: invalid HTTP response");
         return -1;
     }
     body += 4;
@@ -118,21 +119,21 @@ static int parse_json_response(sds resp_buf, cJSON **out_json, GError **error)
     }
     if (http_status != 200)
     {
-        *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR, "device_file: HTTP %d", http_status);
+        *error = edc_error_new(EDC_ERR_EXEC, "device_file: HTTP %d", http_status);
         return -1;
     }
 
     *out_json = cJSON_Parse(body);
     if (!*out_json)
     {
-        *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR, "device_file: invalid JSON response");
+        *error = edc_error_new(EDC_ERR_EXEC, "device_file: invalid JSON response");
         return -1;
     }
 
     cJSON *error_item = cJSON_GetObjectItem(*out_json, "error");
     if (error_item && cJSON_IsString(error_item))
     {
-        *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR, "device_file: %s", error_item->valuestring);
+        *error = edc_error_new(EDC_ERR_EXEC, "device_file: %s", error_item->valuestring);
         cJSON_Delete(*out_json);
         *out_json = NULL;
         return -1;
@@ -223,7 +224,7 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
     }
 
     cJSON *resp_json = NULL;
-    GError *error = NULL;
+    EdcError *error = NULL;
     int ret = parse_json_response(resp_buf, &resp_json, &error);
     edc_str_free(resp_buf);
     if (ret != 0)
@@ -232,7 +233,7 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
         if (error)
         {
             log_error("device_upload: error=%s", error->message);
-            g_error_free(error);
+            edc_error_free(error);
         }
         return -1;
     }
@@ -297,13 +298,13 @@ static int do_upload_chunk_lwip(struct device_file_ctx *ctx, const char *b64_chu
     }
 
     cJSON *resp_json = NULL;
-    GError *error = NULL;
+    EdcError *error = NULL;
     int ret = parse_json_response(resp_buf, &resp_json, &error);
     edc_str_free(resp_buf);
     if (ret != 0)
     {
         if (error)
-            g_error_free(error);
+            edc_error_free(error);
         return -1;
     }
 
@@ -452,12 +453,12 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
     }
 
     cJSON *resp_json = NULL;
-    GError *error = NULL;
+    EdcError *error = NULL;
     if (parse_json_response(resp_buf, &resp_json, &error) != 0)
     {
         edc_str_free(resp_buf);
         if (error)
-            g_error_free(error);
+            edc_error_free(error);
         return -1;
     }
     edc_str_free(resp_buf);
@@ -548,12 +549,12 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
     }
 
     cJSON *resp_json = NULL;
-    GError *error = NULL;
+    EdcError *error = NULL;
     if (parse_json_response(resp_buf, &resp_json, &error) != 0)
     {
         edc_str_free(resp_buf);
         if (error)
-            g_error_free(error);
+            edc_error_free(error);
         return -1;
     }
     edc_str_free(resp_buf);
@@ -680,7 +681,7 @@ static void device_file_thread(void* data, void* user_data)
 }
 
 static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, cJSON *args,
-                                              void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *))
+                                              void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
 {
     (void)tool;
 
@@ -688,7 +689,7 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
     cJSON *remote = cJSON_GetObjectItem(args, "remote_path");
     if (!local || !cJSON_IsString(local) || !remote || !cJSON_IsString(remote))
     {
-        GError *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_ARG_INVALID,
+        EdcError *error = edc_error_new(EDC_ERR_INVAL,
                                     "device_upload: missing 'local_path' or 'remote_path' parameter");
         callback(tb_ctx, NULL, error);
         return;
@@ -697,7 +698,7 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
     struct edc_config *conf = tb_ctx->tb->conf;
     if (!conf->device_ip)
     {
-        GError *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_ARG_INVALID,
+        EdcError *error = edc_error_new(EDC_ERR_INVAL,
                                     "device_upload: device_ip not configured");
         callback(tb_ctx, NULL, error);
         return;
@@ -715,7 +716,7 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
 
     if (!g_file_test(cJSON_GetStringValue(local), G_FILE_TEST_IS_REGULAR))
     {
-        GError *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
+        EdcError *error = edc_error_new(EDC_ERR_EXEC,
                                     "device_upload: local file not found: '%s'", cJSON_GetStringValue(local));
         callback(tb_ctx, NULL, error);
         return;
@@ -736,7 +737,7 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
 }
 
 static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, cJSON *args,
-                                                void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *))
+                                                void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
 {
     (void)tool;
 
@@ -744,7 +745,7 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
     cJSON *local = cJSON_GetObjectItem(args, "local_path");
     if (!remote || !cJSON_IsString(remote) || !local || !cJSON_IsString(local))
     {
-        GError *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_ARG_INVALID,
+        EdcError *error = edc_error_new(EDC_ERR_INVAL,
                                     "device_download: missing 'remote_path' or 'local_path' parameter");
         callback(tb_ctx, NULL, error);
         return;
@@ -753,7 +754,7 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
     struct edc_config *conf = tb_ctx->tb->conf;
     if (!conf->device_ip)
     {
-        GError *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_ARG_INVALID,
+        EdcError *error = edc_error_new(EDC_ERR_INVAL,
                                     "device_download: device_ip not configured");
         callback(tb_ctx, NULL, error);
         return;

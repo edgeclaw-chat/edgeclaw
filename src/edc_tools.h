@@ -3,14 +3,12 @@
 #define __BC_TOOLS_H__
 
 #include "cJSON.h"
+#include "edc_error.h"
 #include "edc_param_types.h"
+#include "edc_strutil.h"
 #include "uthash.h"
 #include "utlist_fix.h"
-#include <glib.h>
 #include <stdbool.h>
-
-extern GQuark edc_tool_error_quark(void);
-#define BC_TOOL_ERROR (edc_tool_error_quark())
 
 struct edc_tool_param
 {
@@ -27,7 +25,7 @@ struct edc_toolbox;
 struct edc_tool;
 struct edc_toolbox_call_ctx;
 typedef void (*edc_tool_exec_async_fn)(struct edc_toolbox_call_ctx *ctx, struct edc_tool *, cJSON *,
-                                       void (*callback)(struct edc_toolbox_call_ctx *ctx, sds , GError *));
+                                       void (*callback)(struct edc_toolbox_call_ctx *ctx, sds , EdcError *));
 
 struct edc_tool
 {
@@ -37,7 +35,7 @@ struct edc_tool
     void *priv;
 
     edc_tool_exec_async_fn exec;
-    GFreeFunc priv_free_fn;
+    EdcDestroyNotify priv_free_fn;
     UT_hash_handle hh;
 };
 

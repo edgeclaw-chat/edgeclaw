@@ -1,5 +1,6 @@
 #include "edc_string.h"
 #include "edc_strutil.h"
+#include "edc_error.h"
 #include "edc_skills.h"
 
 #include <glib.h>
@@ -136,9 +137,9 @@ static struct edc_skill *edc_skill_load(const char *name, const char *file_path)
 {
     char *content = NULL;
     size_t length = 0;
-    GError *error = NULL;
+    GError *gerror = NULL;
 
-    if (g_file_get_contents(file_path, &content, &length, &error))
+    if (g_file_get_contents(file_path, &content, &length, &gerror))
     {
         struct edc_skill *skill = edc_skill_new();
         if (!edc_extract_skill_meta_and_content(content, skill))
@@ -154,7 +155,7 @@ static struct edc_skill *edc_skill_load(const char *name, const char *file_path)
     }
     else
     {
-        g_error_free(error);
+        g_error_free(gerror);
     }
     return NULL;
 }

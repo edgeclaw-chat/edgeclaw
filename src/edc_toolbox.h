@@ -4,9 +4,9 @@
 
 #include "edc_actor.h"
 #include "edc_config.h"
+#include "edc_error.h"
 #include "edc_network_async.h"
 #include <cJSON.h>
-#include <glib.h>
 
 struct edc_tool;
 struct edc_channel;
@@ -37,5 +37,5 @@ extern void edc_toolbox_register(struct edc_toolbox *tb, struct edc_tool *tool);
 extern void edc_toolbox_register_defaults(struct edc_toolbox *tb);
 
 extern void edc_toolbox_exec(struct edc_toolbox_call_ctx *, const char *name, cJSON *args,
-                            void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *));
+                             void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *));
 #endif

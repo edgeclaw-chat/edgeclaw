@@ -1,5 +1,6 @@
 #include "edc_string.h"
 #include "edc_strutil.h"
+#include "edc_error.h"
 #include "edc_tools_crontab.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
@@ -79,7 +80,7 @@ static void edc_tool_crontab_state_free(struct edc_tool_crontab_state *state)
     free(state);
 }
 
-static cJSON *edc_tool_crontab_load_jobs_db(const char *workspace, GError **error)
+static cJSON *edc_tool_crontab_load_jobs_db(const char *workspace, EdcError **error)
 {
     char *jobs_path = g_build_filename(workspace, "jobs.json", NULL);
 
@@ -89,8 +90,11 @@ static cJSON *edc_tool_crontab_load_jobs_db(const char *workspace, GError **erro
 
     if (g_file_test(jobs_path, G_FILE_TEST_IS_REGULAR))
     {
-        if (!g_file_get_contents(jobs_path, &content, &len, error))
+        GError *gerror = NULL;
+        if (!g_file_get_contents(jobs_path, &content, &len, &gerror))
         {
+            edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
+            g_error_free(gerror);
             goto out;
         }
 
@@ -103,7 +107,7 @@ out:
     return db;
 }
 
-static bool edc_tool_crontab_save_jobs_db(const char *workspace, cJSON *db, GError **error)
+static bool edc_tool_crontab_save_jobs_db(const char *workspace, cJSON *db, EdcError **error)
 {
     char *jobs_path = g_build_filename(workspace, "jobs.json", NULL);
     FILE *fout = fopen(jobs_path, "w+");
@@ -111,8 +115,7 @@ static bool edc_tool_crontab_save_jobs_db(const char *workspace, cJSON *db, GErr
     if (!fout)
     {
         const char *s = g_strerror(errno);
-        *error =
-            g_error_new(edc_tool_error_quark(), BC_TOOL_ARG_INVALID, "open %s for writting failed: %s", jobs_path, s);
+        edc_error_set(error, EDC_ERR_INVAL, "open %s for writting failed: %s", jobs_path, s);
         free(jobs_path);
         return FALSE;
     }
@@ -152,9 +155,9 @@ static void edc_tool_crontab_remove_job(cJSON *jobs, char *job_id)
 }
 
 static void edc_tool_crontab_exec_list_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
-                                            void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *))
+                                            void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
 {
-    GError *error = NULL;
+    EdcError *error = NULL;
     cJSON *db = edc_tool_crontab_load_jobs_db(ctx->tb->conf->workspace, &error);
     if (error)
     {
@@ -177,20 +180,20 @@ static void edc_tool_crontab_exec_list_async(struct edc_toolbox_call_ctx *ctx, s
 }
 
 static void edc_tool_crontab_exec_remove_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
-                                              void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *))
+                                              void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
 {
     cJSON *job_id = cJSON_GetObjectItem(args, "job_id");
     if (!job_id || !cJSON_IsString(job_id))
     {
         char *tmp = cJSON_PrintUnformatted(args);
-        GError *error = g_error_new(edc_tool_error_quark(), BC_TOOL_ARG_INVALID,
+        EdcError *error = edc_error_new(EDC_ERR_INVAL,
                                     "crontab tool: remove job failed. job_id is not provided in args: %s", tmp);
         free(tmp);
         callback(ctx, NULL, error);
         return;
     }
 
-    GError *error = NULL;
+    EdcError *error = NULL;
     cJSON *db = edc_tool_crontab_load_jobs_db(ctx->tb->conf->workspace, &error);
     if (error)
     {
@@ -283,12 +286,12 @@ static bool edc_tool_crontab_on_timeout(void *data)
 
     edc_actor_send(state->scheduler, edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, NULL, message,
                                                      (edc_actor_data_free_fn)edc_channel_message_free));
-    GError *error = NULL;
+    EdcError *error = NULL;
     cJSON *db = edc_tool_crontab_load_jobs_db(state->workspace, &error);
     if (error)
     {
         log_error("failed at load jobs db: %s", error->message);
-        g_error_free(error);
+        edc_error_free(error);
     }
 
     cJSON *jobs = cJSON_GetObjectItem(db, "jobs");
@@ -303,7 +306,7 @@ static bool edc_tool_crontab_on_timeout(void *data)
     if (!edc_tool_crontab_save_jobs_db(state->workspace, db, &error))
     {
         log_error("failed at load jobs db: %s", error->message);
-        g_error_free(error);
+        edc_error_free(error);
     }
 
     edc_tool_crontab_schedule(state->workspace, state->scheduler, tool, jobs);
@@ -393,7 +396,7 @@ static void edc_tool_crontab_schedule(const char *workspace, edc_actor_t *schedu
 }
 
 static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
-                                           void (*callback)(struct edc_toolbox_call_ctx *ctx, sds , GError *))
+                                           void (*callback)(struct edc_toolbox_call_ctx *ctx, sds , EdcError *))
 {
     cJSON *name = cJSON_GetObjectItem(args, "name");
     cJSON *every_seconds = cJSON_GetObjectItem(args, "every_seconds");
@@ -405,7 +408,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
     if (!message)
     {
         char *tmp = cJSON_PrintUnformatted(args);
-        GError *error = g_error_new(edc_tool_error_quark(), BC_TOOL_ARG_INVALID,
+        EdcError *error = edc_error_new(EDC_ERR_INVAL,
                                     "crontab tool: message is required for action add, args = %s", tmp);
         free(tmp);
         callback(ctx, NULL, error);
@@ -415,8 +418,8 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
     if (!at && !every_seconds && !cexpr)
     {
         char *tmp = cJSON_PrintUnformatted(args);
-        GError *error =
-            g_error_new(edc_tool_error_quark(), BC_TOOL_ARG_INVALID,
+        EdcError *error =
+            edc_error_new(EDC_ERR_INVAL,
                         "'at' / 'every_seconds' / 'cron_expr' should be provided for schedule. args = %s", tmp);
         callback(ctx, NULL, error);
         free(tmp);
@@ -430,7 +433,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
         if (!g_tz)
         {
             char *tmp = cJSON_PrintUnformatted(tz);
-            GError *error = g_error_new(edc_tool_error_quark(), BC_TOOL_ARG_INVALID, "timezone is invalid: %s", tmp);
+            EdcError *error = edc_error_new(EDC_ERR_INVAL, "timezone is invalid: %s", tmp);
             free(tmp);
             callback(ctx, NULL, error);
             return;
@@ -444,7 +447,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
     struct edc_toolbox *tb = ctx->tb;
     struct edc_config *conf = tb->conf;
 
-    GError *error = NULL;
+    EdcError *error = NULL;
     cJSON *db = edc_tool_crontab_load_jobs_db(conf->workspace, &error);
     cJSON *jobs = NULL;
 
@@ -486,8 +489,8 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
         if (!dt)
         {
             char *tmp = cJSON_PrintUnformatted(at);
-            GError *error =
-                g_error_new(edc_tool_error_quark(), BC_TOOL_ARG_INVALID, "'at' is not iso8601 format: %s", tmp);
+            EdcError *error =
+                edc_error_new(EDC_ERR_INVAL, "'at' is not iso8601 format: %s", tmp);
             callback(ctx, NULL, error);
             free(tmp);
             g_time_zone_unref(g_tz);
@@ -521,7 +524,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
 
         if (error)
         {
-            GError *e = g_error_new(edc_tool_error_quark(), BC_TOOL_ARG_INVALID, "parse cron expr %s failed: %s",
+            EdcError *e = edc_error_new(EDC_ERR_INVAL, "parse cron expr %s failed: %s",
                                     cJSON_GetStringValue(cexpr), error);
             callback(ctx, NULL, e);
 
@@ -560,7 +563,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
 }
 
 static void edc_tool_crontab_exec_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
-                                       void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *))
+                                       void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
 {
     char *action = cJSON_GetStringValue(cJSON_GetObjectItem(args, "action"));
     if (edc_str_equal(action, "add"))
@@ -597,11 +600,11 @@ static void edc_tool_create_crontab(struct edc_toolbox *tb)
                                        params, edc_tool_crontab_exec_async);
 
     tool->priv = NULL;
-    tool->priv_free_fn = (GFreeFunc)edc_tool_crontab_state_free;
+    tool->priv_free_fn = (EdcDestroyNotify)edc_tool_crontab_state_free;
 
     edc_toolbox_register(tb, tool);
 
-    GError *error = NULL;
+    EdcError *error = NULL;
     cJSON *db = edc_tool_crontab_load_jobs_db(tb->conf->workspace, &error);
     if (!db)
     {
