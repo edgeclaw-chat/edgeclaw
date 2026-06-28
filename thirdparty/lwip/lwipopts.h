@@ -68,7 +68,7 @@
 
 #define LWIP_TIMEVAL_PRIVATE        0
 
-#define SOCKLEN_T_DEFINED
+// #define SOCKLEN_T_DEFINED  // macOS doesn't provide socklen_t without <sys/socket.h>, let lwip define it
 
 #define LWIP_STATS                  0
 #define LWIP_DEBUG                  0
