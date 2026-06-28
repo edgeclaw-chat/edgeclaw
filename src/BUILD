@@ -146,6 +146,7 @@ cc_library(
         "edc_markdown_render.c",
         "edc_lwip.c",
         "edc_tools_device_shell.c",
+        "edc_tools_device_file.c",
     ],
     hdrs = [
         "edc_context.h",
@@ -182,6 +183,7 @@ cc_library(
         "edc_markdown_render.h",
         "edc_lwip.h",
         "edc_tools_device_shell.h",
+        "edc_tools_device_file.h",
         "edc_pppos_agent.h",
         "edc_device_agent.h",
         "edc_transport_pppos.h",
