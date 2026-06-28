@@ -186,16 +186,6 @@ static int transport_socket_recv(struct edc_device_transport *base, struct edc_d
 
         req->file_path = strdup(path_item->valuestring);
         req->file_data = strdup(data_item->valuestring);
-        if (!req->file_path || !req->file_data)
-        {
-            cJSON_Delete(req_json);
-            free(req->file_path);
-            free(req->file_data);
-            const char *bad = "HTTP/1.1 500\r\nContent-Length: 0\r\n\r\n";
-            send_all(conn_fd, bad, strlen(bad));
-            close(conn_fd);
-            return -1;
-        }
         req->file_data_len = strlen(req->file_data);
         req->file_mode = 0;
         req->file_offset = 0;
