@@ -44,7 +44,7 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, GStr
     edc_toolbox_actor_state_t *state = (edc_toolbox_actor_state_t *)actor->state;
 
     gchar *args = cJSON_PrintUnformatted(req->args);
-    log_debug("tool call request name = %s, args = %s, result = %s", req->name, args, result->str);
+    log_debug("tool call request name = %s, args = %s, result_len = %zu", req->name, args, result->len);
     g_free(args);
 
     req->result = result;
