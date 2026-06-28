@@ -18,6 +18,7 @@ struct device_shell_ctx
     char *command;
     char *agent_ip;
     uint16_t agent_port;
+    int timeout_sec;
 };
 
 static void device_shell_ctx_free(struct device_shell_ctx *ctx)
@@ -81,6 +82,8 @@ static void device_shell_thread(gpointer data, gpointer user_data)
 
     cJSON *req_json = cJSON_CreateObject();
     cJSON_AddStringToObject(req_json, "command", ctx->command);
+    if (ctx->timeout_sec > 0)
+        cJSON_AddNumberToObject(req_json, "timeout", ctx->timeout_sec);
     char *req_body = cJSON_PrintUnformatted(req_json);
     cJSON_Delete(req_json);
 
@@ -177,12 +180,18 @@ edc_tool_device_shell_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc
         return;
     }
 
+    int timeout_sec = 30;
+    cJSON *timeout_json = cJSON_GetObjectItem(args, "timeout");
+    if (timeout_json && cJSON_IsNumber(timeout_json) && timeout_json->valueint > 0)
+        timeout_sec = timeout_json->valueint;
+
     struct device_shell_ctx *ctx = g_new0(struct device_shell_ctx, 1);
     ctx->tb_ctx = tb_ctx;
     ctx->callback = callback;
     ctx->command = g_strdup(cJSON_GetStringValue(cmd));
     ctx->agent_ip = g_strdup(conf->device_ip);
     ctx->agent_port = (uint16_t)(conf->device_port > 0 ? conf->device_port : 5000);
+    ctx->timeout_sec = timeout_sec;
 
     g_thread_new("device_shell", (GThreadFunc)device_shell_thread, ctx);
 }
@@ -192,6 +201,8 @@ struct edc_tool *edc_tool_create_device_shell(struct edc_toolbox *tb)
     GSList *params = NULL;
     params = g_slist_append(params,
         edc_tool_param_new("command", edc_param_str_type("Shell command to execute on remote device", NULL), TRUE));
+    params = g_slist_append(params,
+        edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), FALSE));
 
     struct edc_tool *tool = edc_tool_new("device_shell",
         "Execute a shell command on a remote device via lwIP PPPoS agent", params,

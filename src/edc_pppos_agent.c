@@ -85,7 +85,7 @@ static err_t recv_http_request(struct netconn *c, u8_t *buf, size_t *len, size_t
     return (*len > 0) ? ERR_OK : ERR_CLSD;
 }
 
-static int exec_cmd(const char *cmd, sds *out, sds *err, int *exit_code)
+static int exec_cmd(const char *cmd, sds *out, sds *err, int *exit_code, int timeout_sec)
 {
     int out_pipe[2], err_pipe[2];
     pid_t pid;
@@ -136,8 +136,13 @@ static int exec_cmd(const char *cmd, sds *out, sds *err, int *exit_code)
     while (!done_out || !done_err)
     {
         struct timeval tv;
-        tv.tv_sec = CMD_TIMEOUT_SEC;
-        tv.tv_usec = 0;
+        struct timeval *tvp = NULL;
+        if (timeout_sec > 0)
+        {
+            tv.tv_sec = timeout_sec;
+            tv.tv_usec = 0;
+            tvp = &tv;
+        }
 
         FD_ZERO(&rfds);
         if (!done_out)
@@ -145,7 +150,7 @@ static int exec_cmd(const char *cmd, sds *out, sds *err, int *exit_code)
         if (!done_err)
             FD_SET(err_pipe[0], &rfds);
 
-        int ret = select(max_fd + 1, &rfds, NULL, NULL, &tv);
+        int ret = select(max_fd + 1, &rfds, NULL, NULL, tvp);
         if (ret < 0)
             break;
         if (ret == 0)
@@ -287,11 +292,16 @@ void edc_pppos_agent_run(int ppp_fd, const char *my_ip, const char *peer_ip, uin
         }
 
         const char *command = cmd_item->valuestring;
-        fprintf(stderr, "agent: exec: %s\n", command);
+        int cmd_timeout = CMD_TIMEOUT_SEC;
+        cJSON *timeout_item = cJSON_GetObjectItem(req_json, "timeout");
+        if (timeout_item && cJSON_IsNumber(timeout_item) && timeout_item->valueint > 0)
+            cmd_timeout = timeout_item->valueint;
+
+        fprintf(stderr, "agent: exec: %s (timeout %ds)\n", command, cmd_timeout);
 
         sds out_buf, err_buf;
         int exit_code;
-        exec_cmd(command, &out_buf, &err_buf, &exit_code);
+        exec_cmd(command, &out_buf, &err_buf, &exit_code, cmd_timeout);
 
         cJSON *resp_json = cJSON_CreateObject();
         cJSON_AddNumberToObject(resp_json, "exit_code", exit_code);

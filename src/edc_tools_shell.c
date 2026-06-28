@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #define BC_MASTER_KEY_ENV "EDGECLAW_MASTER_KEY"
+#define CMD_TIMEOUT_SEC 30
 
 struct edc_tool_shell_ctx
 {
@@ -24,6 +25,7 @@ struct edc_tool_shell_ctx
     GIOChannel *stderr_ch;
     struct edc_toolbox_call_ctx *tb_ctx;
     void (*callback)(struct edc_toolbox_call_ctx *, GString *result, GError *error);
+    guint timeout_id;
 };
 
 static GSList *active_contexts = NULL;
@@ -66,6 +68,12 @@ static void edc_tool_shell_complete(struct edc_tool_shell_ctx *ctx)
     else
     {
         ctx->callback(ctx->tb_ctx, result, NULL);
+    }
+
+    if (ctx->timeout_id > 0)
+    {
+        g_source_remove(ctx->timeout_id);
+        ctx->timeout_id = 0;
     }
 
     edc_tool_shell_cleanup_channel(ctx->stdout_ch);
@@ -192,6 +200,20 @@ static void edc_tool_shell_child_setup(gpointer user_data)
     edc_sandbox_apply(conf);
 }
 
+static gboolean shell_timeout_cb(gpointer data)
+{
+    struct edc_tool_shell_ctx *ctx = data;
+
+    if (!ctx->child_exited)
+    {
+        kill(ctx->child_pid, SIGKILL);
+        g_string_append(ctx->stderr_buf, "\n[command timed out]");
+    }
+
+    ctx->timeout_id = 0;
+    return G_SOURCE_REMOVE;
+}
+
 static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, cJSON *args,
                                      void (*callback)(struct edc_toolbox_call_ctx *, GString *, GError *))
 {
@@ -209,7 +231,14 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
 
     const gchar *cmd_s = cJSON_GetStringValue(cmd);
 
-    log_debug("shell tool exec: %s", cmd_s);
+    guint timeout_sec = CMD_TIMEOUT_SEC;
+    cJSON *timeout_json = cJSON_GetObjectItemCaseSensitive(args, "timeout");
+    if (timeout_json && cJSON_IsNumber(timeout_json) && timeout_json->valueint > 0)
+    {
+        timeout_sec = (guint)timeout_json->valueint;
+    }
+
+    log_debug("shell tool exec: %s (timeout %us)", cmd_s, timeout_sec);
 
     gchar *argv[] = {"sh", "-c", (gchar *)cmd_s, NULL};
 
@@ -261,6 +290,8 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
     g_io_channel_set_flags(ctx->stdout_ch, G_IO_FLAG_NONBLOCK, NULL);
     g_io_channel_set_flags(ctx->stderr_ch, G_IO_FLAG_NONBLOCK, NULL);
 
+    ctx->timeout_id = g_timeout_add_seconds(timeout_sec, shell_timeout_cb, ctx);
+
     edc_tool_shell_watch_io_channel(ctx->stderr_ch, on_stderr_pipe_readable, ctx);
     edc_tool_shell_watch_io_channel(ctx->stdout_ch, on_stdout_pipe_readable, ctx);
 
@@ -276,6 +307,11 @@ void edc_tool_shell_abort_all(void)
     while (p)
     {
         struct edc_tool_shell_ctx *ctx = p->data;
+        if (ctx->timeout_id > 0)
+        {
+            g_source_remove(ctx->timeout_id);
+            ctx->timeout_id = 0;
+        }
         if (!ctx->child_exited)
         {
             kill(ctx->child_pid, SIGKILL);
@@ -301,6 +337,8 @@ struct edc_tool *edc_tool_create_exec_shell(struct edc_toolbox *tb)
 
     GSList *params = g_slist_append(
         NULL, edc_tool_param_new("command", edc_param_str_type("The shell command to execute", NULL), TRUE));
+    params = g_slist_append(params,
+        edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), FALSE));
 
     struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_shell_async);
     edc_toolbox_register(tb, tool);
