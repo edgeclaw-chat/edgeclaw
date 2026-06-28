@@ -11,11 +11,14 @@
 #include "sds.h"
 #include <cJSON.h>
 
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#define CMD_TIMEOUT_SEC 30
 
 static ppp_pcb *g_ppp;
 static int g_ppp_fd;
@@ -106,12 +109,14 @@ static int exec_cmd(const char *cmd, sds *out, sds *err, int *exit_code)
 
     if (pid == 0)
     {
+        close(STDIN_FILENO);
         dup2(out_pipe[1], STDOUT_FILENO);
         dup2(err_pipe[1], STDERR_FILENO);
         close(out_pipe[0]);
         close(out_pipe[1]);
         close(err_pipe[0]);
         close(err_pipe[1]);
+        setpgid(0, 0);
 #ifdef __ANDROID__
         execl("/system/bin/sh", "sh", "-c", cmd, (char *)NULL);
 #else
@@ -122,6 +127,7 @@ static int exec_cmd(const char *cmd, sds *out, sds *err, int *exit_code)
 
     close(out_pipe[1]);
     close(err_pipe[1]);
+    setpgid(pid, 0);
 
     fd_set rfds;
     int max_fd = (out_pipe[0] > err_pipe[0]) ? out_pipe[0] : err_pipe[0];
@@ -129,13 +135,25 @@ static int exec_cmd(const char *cmd, sds *out, sds *err, int *exit_code)
 
     while (!done_out || !done_err)
     {
+        struct timeval tv;
+        tv.tv_sec = CMD_TIMEOUT_SEC;
+        tv.tv_usec = 0;
+
         FD_ZERO(&rfds);
         if (!done_out)
             FD_SET(out_pipe[0], &rfds);
         if (!done_err)
             FD_SET(err_pipe[0], &rfds);
-        if (select(max_fd + 1, &rfds, NULL, NULL, NULL) < 0)
+
+        int ret = select(max_fd + 1, &rfds, NULL, NULL, &tv);
+        if (ret < 0)
             break;
+        if (ret == 0)
+        {
+            kill(-pid, SIGKILL);
+            *err = sdscat(*err, "\n[command timed out]");
+            break;
+        }
 
         char buf[1024];
         ssize_t n;

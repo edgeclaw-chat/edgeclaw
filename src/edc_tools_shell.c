@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 #define BC_MASTER_KEY_ENV "EDGECLAW_MASTER_KEY"
 
@@ -227,12 +228,12 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
     g_strfreev(envp);
 
     GPid child_pid = 0;
-    gint stdout_fd = 0, stderr_fd = 0;
+    gint stdin_fd = 0, stdout_fd = 0, stderr_fd = 0;
     struct edc_config *conf = tb_ctx->tb->conf;
     const gchar *working_dir = edc_sandbox_get_root(conf);
     gboolean success =
         g_spawn_async_with_pipes(working_dir, argv, filtered_envp, G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
-                                 edc_tool_shell_child_setup, conf, &child_pid, NULL, &stdout_fd, &stderr_fd, &error);
+                                 edc_tool_shell_child_setup, conf, &child_pid, &stdin_fd, &stdout_fd, &stderr_fd, &error);
 
     g_strfreev(filtered_envp);
 
@@ -241,6 +242,8 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
         callback(tb_ctx, NULL, error);
         return;
     }
+
+    close(stdin_fd);
 
     struct edc_tool_shell_ctx *ctx = g_new0(struct edc_tool_shell_ctx, 1);
     ctx->tb_ctx = tb_ctx;
