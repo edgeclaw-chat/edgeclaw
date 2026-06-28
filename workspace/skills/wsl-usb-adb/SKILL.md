@@ -86,9 +86,9 @@ sudo ln -sf /usr/lib/linux-tools/$TOOLS_VER /usr/lib/linux-tools/$KERNEL_VER
 
 Verify: `usbip version` should print `usbip (usbip-utils 2.0)` without warnings.
 
-#### Step 4: Avoid ADB port conflict
+#### Step 4: (Optional) Avoid ADB port conflict
 
-WSL2 mirrored mode shares `localhost` with Windows. If Windows ADB holds port 5037, WSL ADB **must** use a different port. Add to both bash and zsh configs (user's shell is not guaranteed):
+仅在 **Windows 和 WSL 两边同时使用 ADB** 时需要。WSL2 mirrored 模式下共享 `localhost`，如果 Windows ADB 占用了 5037，WSL ADB 需要换端口：
 
 ```bash
 for rc in ~/.bashrc ~/.zshrc; do
@@ -96,6 +96,8 @@ for rc in ~/.bashrc ~/.zshrc; do
         echo 'export ANDROID_ADB_SERVER_PORT=5038' >> "$rc"
 done
 ```
+
+> 如果只用 WSL 跑 ADB，Windows 不跑，**跳过此步骤**，默认 5037 即可。
 
 #### Step 5: Install `usb-attach` helper script
 
@@ -110,8 +112,6 @@ Write to `/usr/local/bin/usb-attach` (always in PATH, works for both bash and zs
 
 USBIPD_HOST="127.0.0.1"
 BUSID="${1}"
-
-export ANDROID_ADB_SERVER_PORT=5038
 
 # Check if device is already attached
 EXISTING=$(sudo usbip port 2>/dev/null | grep -oP 'usbip://\K[0-9]+\.[0-9]+\.[0-9]+/[0-9]+-[0-9]+' | head -1)
@@ -196,9 +196,6 @@ usbipd bind --busid 1-19 --force
 ### 🐧 Step 2 — WSL2 Terminal
 
 ```bash
-# Ensure the port variable is set (needed after fresh terminal)
-export ANDROID_ADB_SERVER_PORT=5038
-
 # Auto-detect and attach
 usb-attach
 
@@ -246,8 +243,6 @@ usbipd detach --busid 1-19
 │  Import:    usb-attach [BUSID]                              │
 │  Check:     adb devices                                     │
 │  Detach:    sudo usbip detach --port=0                      │
-│                                                             │
-│  Key env:   export ANDROID_ADB_SERVER_PORT=5038             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
