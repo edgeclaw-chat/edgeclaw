@@ -42,8 +42,8 @@ static char *edc_memory_get_tools_used(cJSON *msg)
     int n = cJSON_GetArraySize(tool_calls);
     char **tools = g_new(char *, n + 1);
 
-    int i = 0;
-    for (; i < n; i++)
+    int valid = 0;
+    for (int i = 0; i < n; i++)
     {
         cJSON *tool_call = cJSON_GetArrayItem(tool_calls, i);
         cJSON *function = cJSON_GetObjectItem(tool_call, "function");
@@ -58,10 +58,10 @@ static char *edc_memory_get_tools_used(cJSON *msg)
             continue;
         }
 
-        tools[i] = cJSON_GetStringValue(name);
+        tools[valid++] = cJSON_GetStringValue(name);
     }
 
-    tools[i] = NULL;
+    tools[valid] = NULL;
     char *tools_used = g_strjoinv(", ", tools);
     free(tools);
 

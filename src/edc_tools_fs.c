@@ -259,7 +259,7 @@ static void edc_edit_file_find_matches(const char *content, const char *old_text
 static void edc_edit_file_format_match_list(const char *content, size_t content_len,
                                               UT_array *positions, UT_array *line_nums,
                                               size_t old_len, unsigned int count, unsigned int max_preview,
-                                              sds out)
+                                              sds *out)
 {
     unsigned int preview = MIN(count, max_preview);
     for (unsigned int i = 0; i < preview; i++)
@@ -282,11 +282,11 @@ static void edc_edit_file_format_match_list(const char *content, size_t content_
             else
                 ctx = sdscatprintf(ctx, "%c", c);
         }
-        out = sdscatprintf(out, "\n  [%u] line %ld: \"%s\"", i + 1, (long)ln, ctx);
+        *out = sdscatprintf(*out, "\n  [%u] line %ld: \"%s\"", i + 1, (long)ln, ctx);
         sdsfree(ctx);
     }
     if (count > max_preview)
-        out = sdscatprintf(out, "\n  ... and %u more matches", count - max_preview);
+        *out = sdscatprintf(*out, "\n  ... and %u more matches", count - max_preview);
 }
 
 static bool edc_edit_file_select_all(unsigned int count, UT_array **selected, EdcError **error)
@@ -342,7 +342,7 @@ static bool edc_edit_file_select_by_line_hint(const char *content, size_t conten
     {
         sds msg = sdsempty();
         edc_edit_file_format_match_list(content, content_len, positions, line_nums,
-                                         old_len, count, 5, msg);
+                                         old_len, count, 5, &msg);
         edc_error_set(error, EDC_ERR_EXEC,
                     "Error: line_hint %ld is ambiguous; old_text appears %u times.%s",
                     (long)line_hint, count, msg);
@@ -391,7 +391,7 @@ static bool edc_edit_file_select_matches(const char *content, size_t content_len
     {
         sds msg = sdsempty();
         edc_edit_file_format_match_list(content, content_len, positions, line_nums,
-                                         old_len, count, 5, msg);
+                                         old_len, count, 5, &msg);
         edc_error_set(error, EDC_ERR_EXEC,
                     "Warning: old_text appears %u times. "
                     "Provide more context, set occurrence, or set replace_all=true.%s",
