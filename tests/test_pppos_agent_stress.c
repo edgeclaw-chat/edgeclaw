@@ -9,7 +9,6 @@
 #include "netif/ppp/pppos.h"
 #include "netif/ppp/ppp.h"
 #include <cJSON.h>
-#include <glib.h>
 #include "edc_string.h"
 
 #include <stdio.h>

@@ -1,7 +1,7 @@
 #ifndef __BC_CONFIG_H__
 #define __BC_CONFIG_H__
-#include <glib.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 struct llm_api_conf
 {

@@ -2,7 +2,6 @@
 #define __BC_TURN_H__
 #include "edc_containers.h"
 #include <cJSON.h>
-#include <glib.h>
 
 struct edc_turn
 {

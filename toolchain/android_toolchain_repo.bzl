@@ -129,7 +129,8 @@ def _android_toolchain_repo_impl(rctx, arch_config):
         environment = {"LC_ALL": "C"},
     )
     if result.return_code != 0:
-        fail("Failed to query NDK compiler ({}): {}".format(clang_bin, result.stderr))
+        _create_dummy_repo(rctx, arch_config)
+        return
 
     include_dirs = _parse_builtin_includes(result.stderr)
 

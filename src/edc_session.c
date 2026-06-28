@@ -1,5 +1,6 @@
 #include "edc_string.h"
 #include "edc_session.h"
+#include <glib.h>
 #include "edc_config.h"
 #include "edc_context.h"
 #include "edc_history.h"

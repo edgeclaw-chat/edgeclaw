@@ -1,8 +1,8 @@
 #ifndef __BC_PARAM_TYPES_H__
 #define __BC_PARAM_TYPES_H__
 #include <cJSON.h>
-#include <glib.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 typedef enum
 {

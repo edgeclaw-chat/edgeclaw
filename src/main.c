@@ -5,7 +5,6 @@
 #include "edc_lwip.h"
 #include <errno.h>
 #include <getopt.h>
-#include <glib.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>

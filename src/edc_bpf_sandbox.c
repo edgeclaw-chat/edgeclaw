@@ -5,6 +5,7 @@
 #include "edc_bpf_sandbox.h"
 #include "log.h"
 #include <errno.h>
+#include <glib.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>

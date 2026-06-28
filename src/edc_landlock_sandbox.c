@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 
 #include "edc_landlock_sandbox.h"
+#include "edc_compat.h"
 #include "log.h"
 #include <errno.h>
 #include <fcntl.h>

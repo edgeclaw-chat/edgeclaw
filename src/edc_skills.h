@@ -2,7 +2,6 @@
 #ifndef __BC_SKILLS_H__
 #define __BC_SKILLS_H__
 
-#include <glib.h>
 #include "uthash.h"
 #include "utarray.h"
 

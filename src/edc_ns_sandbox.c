@@ -3,6 +3,7 @@
 #include "edc_ns_sandbox.h"
 #include "log.h"
 #include <errno.h>
+#include <glib.h>
 #include <fcntl.h>
 #include <sched.h>
 #include <string.h>

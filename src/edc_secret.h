@@ -1,7 +1,6 @@
 #ifndef __BC_SECRET_H__
 #define __BC_SECRET_H__
 
-#include <glib.h>
 #include <stdbool.h>
 
 #define BC_SECRET_PREFIX "EDGECLAW_ENC:"

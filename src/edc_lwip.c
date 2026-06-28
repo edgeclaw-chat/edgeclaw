@@ -1,4 +1,5 @@
 #include "edc_lwip.h"
+#include "edc_compat.h"
 #include "lwip/netif.h"
 #include "lwip/tcpip.h"
 #include "lwip/ip_addr.h"

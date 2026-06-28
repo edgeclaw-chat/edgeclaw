@@ -1,7 +1,6 @@
 #ifndef __BC_COMMANDS_H__
 #define __BC_COMMANDS_H__
 
-#include <glib.h>
 #include <stdbool.h>
 struct edc_actor;
 struct edc_agent;

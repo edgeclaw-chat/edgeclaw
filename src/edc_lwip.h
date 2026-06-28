@@ -1,7 +1,6 @@
 #ifndef __EDC_LWIP_H__
 #define __EDC_LWIP_H__
 
-#include <glib.h>
 #include <stdbool.h>
 
 #ifdef __linux__

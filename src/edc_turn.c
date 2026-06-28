@@ -1,5 +1,6 @@
 #include "edc_turn.h"
 #include "edc_history.h"
+#include <glib.h>
 
 static void edc_turn_add_message(struct edc_turn *turn, cJSON *msg)
 {

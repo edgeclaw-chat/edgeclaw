@@ -1,6 +1,7 @@
 #include "edc_strutil.h"
 #include "edc_param_types.h"
 
+#include <glib.h>
 #include <stdarg.h>
 
 struct edc_param_type *edc_param_int_type(char *desc, int64_t min, int64_t max)

@@ -1,8 +1,8 @@
 #ifndef __BC_INIT_ENV_H__
 #define __BC_INIT_ENV_H__
 
-#include <glib.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 struct edc_init_env_channel_email
 {

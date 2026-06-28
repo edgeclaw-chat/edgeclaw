@@ -2,7 +2,6 @@
 #define __BC_SESSION_H__
 
 #include <cJSON.h>
-#include <glib.h>
 #include <stdbool.h>
 
 struct edc_config;

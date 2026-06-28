@@ -2,6 +2,7 @@
 #include "edc_strutil.h"
 #include "log.h"
 #include <errno.h>
+#include <glib.h>
 #include <mbedtls/base64.h>
 #include <mbedtls/cipher.h>
 #include <mbedtls/ctr_drbg.h>

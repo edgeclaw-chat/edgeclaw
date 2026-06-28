@@ -2,6 +2,7 @@
 #include "edc_strutil.h"
 #include "edc_skills.h"
 
+#include <glib.h>
 #include "log.h"
 #include "uthash.h"
 #include "utarray.h"
