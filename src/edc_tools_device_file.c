@@ -291,15 +291,24 @@ static int do_upload_chunk_lwip(struct device_file_ctx *ctx, const char *b64_chu
 static gboolean do_device_upload(struct device_file_ctx *ctx,
                                  int (*do_chunk)(struct device_file_ctx *, const char *, size_t, size_t))
 {
-    gsize raw_len = 0;
-    gchar *raw = NULL;
-
-    if (!g_file_get_contents(ctx->local_path, &raw, &raw_len, NULL) || !raw)
+    struct stat st;
+    if (stat(ctx->local_path, &st) != 0 || !S_ISREG(st.st_mode))
     {
-        device_file_send_error(ctx, "device_upload: cannot read local file '%s'", ctx->local_path);
+        device_file_send_error(ctx, "device_upload: cannot stat local file '%s'", ctx->local_path);
         return FALSE;
     }
 
+    int fd = open(ctx->local_path, O_RDONLY);
+    if (fd < 0)
+    {
+        device_file_send_error(ctx, "device_upload: cannot open local file '%s': %s",
+                               ctx->local_path, strerror(errno));
+        return FALSE;
+    }
+
+    size_t raw_len = (size_t)st.st_size;
+    size_t chunk_buf_size = DEVICE_FILE_CHUNK_SIZE;
+    gchar *chunk_buf = g_malloc(chunk_buf_size);
     size_t offset = 0;
     int chunk_idx = 0;
     GString *final_result = g_string_new(NULL);
@@ -307,15 +316,26 @@ static gboolean do_device_upload(struct device_file_ctx *ctx,
     while (offset < raw_len)
     {
         size_t this_len = raw_len - offset;
-        if (this_len > DEVICE_FILE_CHUNK_SIZE)
-            this_len = DEVICE_FILE_CHUNK_SIZE;
+        if (this_len > chunk_buf_size)
+            this_len = chunk_buf_size;
 
-        gchar *b64 = g_base64_encode((const guchar *)raw + offset, this_len);
+        ssize_t n = read(fd, chunk_buf, this_len);
+        if (n <= 0 || (size_t)n != this_len)
+        {
+            device_file_send_error(ctx, "device_upload: read failed at offset %zu", offset);
+            g_free(chunk_buf);
+            g_string_free(final_result, TRUE);
+            close(fd);
+            return FALSE;
+        }
+
+        gchar *b64 = g_base64_encode((const guchar *)chunk_buf, this_len);
         if (!b64)
         {
             device_file_send_error(ctx, "device_upload: base64 encode failed at offset %zu", offset);
-            g_free(raw);
+            g_free(chunk_buf);
             g_string_free(final_result, TRUE);
+            close(fd);
             return FALSE;
         }
 
@@ -328,8 +348,9 @@ static gboolean do_device_upload(struct device_file_ctx *ctx,
         if (ret != 0)
         {
             device_file_send_error(ctx, "device_upload: chunk %d failed at offset %zu", chunk_idx, offset);
-            g_free(raw);
+            g_free(chunk_buf);
             g_string_free(final_result, TRUE);
+            close(fd);
             return FALSE;
         }
 
@@ -337,17 +358,18 @@ static gboolean do_device_upload(struct device_file_ctx *ctx,
         chunk_idx++;
     }
 
-    g_free(raw);
+    g_free(chunk_buf);
+    close(fd);
 
     g_string_printf(final_result, "Uploaded %zu bytes in %d chunk(s) to %s",
-                    (size_t)raw_len, chunk_idx, ctx->remote_path);
+                    raw_len, chunk_idx, ctx->remote_path);
 
     ctx->callback(ctx->tb_ctx, final_result, NULL);
     return TRUE;
 }
 
 static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
-                                    size_t *out_total_size, GString *assembled)
+                                    size_t *out_total_size, size_t *out_chunk_len, int fd)
 {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0)
@@ -430,7 +452,14 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
         gchar *decoded = (gchar *)g_base64_decode(data_item->valuestring, &decoded_len);
         if (decoded)
         {
-            g_string_append_len(assembled, decoded, decoded_len);
+            if (write(fd, decoded, decoded_len) != (ssize_t)decoded_len)
+            {
+                g_free(decoded);
+                cJSON_Delete(resp_json);
+                return -1;
+            }
+            if (out_chunk_len)
+                *out_chunk_len = decoded_len;
             g_free(decoded);
         }
     }
@@ -444,7 +473,7 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
 }
 
 static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
-                                  size_t *out_total_size, GString *assembled)
+                                  size_t *out_total_size, size_t *out_chunk_len, int fd)
 {
     ip_addr_t addr;
     if (!ip4addr_aton(ctx->agent_ip, &addr))
@@ -519,7 +548,14 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
         gchar *decoded = (gchar *)g_base64_decode(data_item->valuestring, &decoded_len);
         if (decoded)
         {
-            g_string_append_len(assembled, decoded, decoded_len);
+            if (write(fd, decoded, decoded_len) != (ssize_t)decoded_len)
+            {
+                g_free(decoded);
+                cJSON_Delete(resp_json);
+                return -1;
+            }
+            if (out_chunk_len)
+                *out_chunk_len = decoded_len;
             g_free(decoded);
         }
     }
@@ -533,36 +569,45 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
 }
 
 static gboolean do_device_download(struct device_file_ctx *ctx,
-                                   int (*do_chunk)(struct device_file_ctx *, size_t, size_t *, GString *))
+                                   int (*do_chunk)(struct device_file_ctx *, size_t, size_t *, size_t *, int))
 {
-    GString *assembled = g_string_new(NULL);
+    int fd = open(ctx->local_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0)
+    {
+        device_file_send_error(ctx, "device_download: cannot open local file '%s': %s",
+                               ctx->local_path, strerror(errno));
+        return FALSE;
+    }
+
     size_t total_size = 0;
-    size_t offset = 0;
+    size_t received = 0;
 
     while (1)
     {
         size_t chunk_total = 0;
-        int ret = do_chunk(ctx, offset, &chunk_total, assembled);
+        size_t chunk_len = 0;
+        int ret = do_chunk(ctx, received, &chunk_total, &chunk_len, fd);
         if (ret != 0)
         {
-            device_file_send_error(ctx, "device_download: chunk at offset %zu failed", offset);
-            g_string_free(assembled, TRUE);
+            device_file_send_error(ctx, "device_download: chunk at offset %zu failed", received);
+            close(fd);
+            unlink(ctx->local_path);
             return FALSE;
         }
 
-        if (offset == 0)
+        if (received == 0)
             total_size = chunk_total;
 
-        if (total_size == 0 || assembled->len >= total_size)
-            break;
+        received += chunk_len;
 
-        offset = assembled->len;
+        if (total_size == 0 || received >= total_size)
+            break;
     }
 
-    GString *result = g_string_new(NULL);
-    g_string_append_len(result, assembled->str, assembled->len);
-    g_string_free(assembled, TRUE);
+    close(fd);
 
+    GString *result = g_string_new(NULL);
+    g_string_printf(result, "Downloaded %zu bytes to %s", received, ctx->local_path);
     ctx->callback(ctx->tb_ctx, result, NULL);
     return TRUE;
 }
@@ -673,10 +718,11 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
     (void)tool;
 
     cJSON *remote = cJSON_GetObjectItem(args, "remote_path");
-    if (!remote || !cJSON_IsString(remote))
+    cJSON *local = cJSON_GetObjectItem(args, "local_path");
+    if (!remote || !cJSON_IsString(remote) || !local || !cJSON_IsString(local))
     {
         GError *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_ARG_INVALID,
-                                    "device_download: missing 'remote_path' parameter");
+                                    "device_download: missing 'remote_path' or 'local_path' parameter");
         callback(tb_ctx, NULL, error);
         return;
     }
@@ -701,6 +747,7 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
     ctx->agent_ip = g_strdup(conf->device_ip);
     ctx->agent_port = (uint16_t)(conf->device_port > 0 ? conf->device_port : 5000);
     ctx->remote_path = g_strdup(cJSON_GetStringValue(remote));
+    ctx->local_path = g_strdup(cJSON_GetStringValue(local));
     ctx->is_upload = FALSE;
     ctx->timeout_sec = timeout_sec;
 
@@ -731,6 +778,8 @@ static struct edc_tool *edc_tool_create_device_download(struct edc_toolbox *tb)
     GSList *params = NULL;
     params = g_slist_append(params,
         edc_tool_param_new("remote_path", edc_param_str_type("Remote file path on device to download", NULL), TRUE));
+    params = g_slist_append(params,
+        edc_tool_param_new("local_path", edc_param_str_type("Local destination file path on host", NULL), TRUE));
     params = g_slist_append(params,
         edc_tool_param_new("timeout", edc_param_int_type("Timeout per chunk in seconds (default 60)", 1, 3600), FALSE));
 
