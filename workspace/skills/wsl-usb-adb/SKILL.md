@@ -111,6 +111,19 @@ Write to `/usr/local/bin/usb-attach` (always in PATH, works for both bash and zs
 USBIPD_HOST="127.0.0.1"
 BUSID="${1}"
 
+export ANDROID_ADB_SERVER_PORT=5038
+
+# Check if device is already attached
+EXISTING=$(sudo usbip port 2>/dev/null | grep -oP 'usbip://\K[0-9]+\.[0-9]+\.[0-9]+/[0-9]+-[0-9]+' | head -1)
+if [ -n "$EXISTING" ]; then
+    echo "✅ Device already attached: $EXISTING"
+    adb start-server 2>/dev/null
+    echo ""
+    echo "📱 Connected devices:"
+    adb devices
+    exit 0
+fi
+
 if [ -z "$BUSID" ]; then
     echo "🔍 Checking for available devices on usbipd-win..."
     DEVICE_LIST=$(usbip list --remote="$USBIPD_HOST" 2>&1)
@@ -151,7 +164,6 @@ sudo usbip attach --remote="$USBIPD_HOST" --busid="$BUSID" 2>&1
 
 sleep 1
 
-export ANDROID_ADB_SERVER_PORT=5038
 adb start-server 2>/dev/null
 
 echo ""
@@ -255,19 +267,11 @@ Script is not in PATH. Install to `/usr/local/bin/` (not `~/.local/bin/` — zsh
 
 The BUSID was parsed incorrectly (likely included a trailing colon like `1-19:` instead of `1-19`). The current script uses `grep -oE '[0-9]+-[0-9]+'` which avoids this. If still failing, pass BUSID manually: `usb-attach 1-19`.
 
-### ❌ Device shows `?` (unauthorized) — but try `adb shell` first!
+### ⚠️ Device shows `?` (unauthorized)
 
-`?` status in `adb devices` **does not always mean the device is blocked**. Some devices (especially Qualcomm-based boards with `userdebug`/`eng` builds) show `?` but still accept `adb shell` without issues.
+**This does NOT block most ADB operations.** `adb push`, `adb shell`, `adb forward`, and `adb install` all work fine even with `?` status. Do not let this status deter you from proceeding — **always try the operation first** before diagnosing further.
 
-**Always verify with a real command before assuming it's broken:**
-```bash
-adb shell echo "test"
-```
-
-If that returns output, the device is **usable** — ignore the `?` status.
-
-If it fails with "device unauthorized (no debuggable)" or similar:
-
+If the operation actually fails with an authorization error (e.g., "device unauthorized"):
 1. **Unlock the phone screen**
 2. Look for **"Allow USB debugging?"** popup → tap **Allow** (✓ "Always allow")
 3. If no popup: replug the USB cable, or go to **Developer Options → Revoke USB debugging authorizations** and replug
@@ -281,9 +285,17 @@ USB/IP attachments are not persistent — they can drop on sleep/timeout. Simply
 
 Port conflict with Windows ADB. Ensure `ANDROID_ADB_SERVER_PORT=5038` is exported in the current shell.
 
-### ❌ "Device busy (exported)"
+### ⚠️ "Device busy (exported)" — often a false alarm
 
-Windows is holding the device (e.g., Windows ADB has it). Run in 💻 Windows PowerShell:
+If `usb-attach` reports `Attach Request for X-X failed - Device busy (exported)` but the device already appears in `adb devices`, it's because the device was **already attached** from a previous session. Check first:
+
+```bash
+sudo usbip port          # If device already listed here, no need to re-attach
+export ANDROID_ADB_SERVER_PORT=5038
+adb devices              # Device probably already works
+```
+
+Only if `sudo usbip port` shows nothing should you re-attach. If truly stuck (port shows nothing but attach fails), Windows may be holding the device — run in 💻 Windows PowerShell:
 ```powershell
 adb kill-server
 ```
