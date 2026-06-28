@@ -446,9 +446,6 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
     size_t total_size = size_item ? (size_t)size_item->valuedouble : 0;
     size_t chunk_len = length_item ? (size_t)length_item->valuedouble : 0;
 
-    log_debug("device_download_chunk socket: offset=%zu json_size=%zu json_length=%zu has_data=%d",
-              offset, total_size, chunk_len, (data_item && cJSON_IsString(data_item)) ? 1 : 0);
-
     if (data_item && cJSON_IsString(data_item) && chunk_len > 0)
     {
         gsize decoded_len = 0;
@@ -545,9 +542,6 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
     size_t total_size = size_item ? (size_t)size_item->valuedouble : 0;
     size_t chunk_len = length_item ? (size_t)length_item->valuedouble : 0;
 
-    log_debug("device_download_chunk lwip: offset=%zu json_size=%zu json_length=%zu has_data=%d",
-              offset, total_size, chunk_len, (data_item && cJSON_IsString(data_item)) ? 1 : 0);
-
     if (data_item && cJSON_IsString(data_item) && chunk_len > 0)
     {
         gsize decoded_len = 0;
@@ -605,9 +599,6 @@ static gboolean do_device_download(struct device_file_ctx *ctx,
             total_size = chunk_total;
 
         received += chunk_len;
-
-        log_debug("device_download: chunk_total=%zu chunk_len=%zu total_size=%zu received=%zu",
-                  chunk_total, chunk_len, total_size, received);
 
         if (total_size == 0 || received >= total_size)
             break;
