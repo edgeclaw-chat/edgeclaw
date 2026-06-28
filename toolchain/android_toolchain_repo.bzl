@@ -53,10 +53,12 @@ def _generate_android_config_bzl(tool_paths, include_dirs, arch_config):
     include_dirs_str = "\n".join(include_entries)
 
     features_str = ""
+    cc_toolchain_config_imports = 'load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path")'
     if arch_config.get("features"):
         features_str = arch_config["features"]
+        cc_toolchain_config_imports = 'load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "feature", "flag_set", "flag_group")'
 
-    return """load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path")
+    return """{cc_toolchain_config_imports}
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 
 def _impl(ctx):
@@ -90,6 +92,7 @@ android_toolchain_config = rule(
     attrs = {{}},
 )
 """.format(
+        cc_toolchain_config_imports = cc_toolchain_config_imports,
         tool_paths = tool_paths_str,
         include_dirs = include_dirs_str,
         features = features_str,
