@@ -1,21 +1,21 @@
 #include "edc_pppos_agent.h"
 
-#include "lwip/tcpip.h"
-#include "lwip/netif.h"
 #include "lwip/api.h"
 #include "lwip/ip_addr.h"
+#include "lwip/netif.h"
 #include "lwip/sys.h"
+#include "lwip/tcpip.h"
+#include "netif/ppp/ppp.h"
 #include "netif/ppp/pppapi.h"
 #include "netif/ppp/pppos.h"
-#include "netif/ppp/ppp.h"
-#include <cJSON.h>
 #include "sds.h"
+#include <cJSON.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 static ppp_pcb *g_ppp;
 static int g_ppp_fd;
@@ -23,20 +23,24 @@ static volatile int g_link_up;
 
 static u32_t out_cb(ppp_pcb *pcb, const void *d, u32_t len, void *ctx)
 {
-    int fd = *(int *)ctx; (void)pcb;
+    int fd = *(int *)ctx;
+    (void)pcb;
     ssize_t w = write(fd, d, len);
     return (w < 0) ? 0 : (u32_t)w;
 }
 
 static void status_cb(ppp_pcb *pcb, int code, void *ctx)
 {
-    (void)pcb; (void)ctx;
+    (void)pcb;
+    (void)ctx;
     g_link_up = (code == PPPERR_NONE);
 }
 
 static void *reader(void *arg)
 {
-    char buf[2048]; ssize_t n; (void)arg;
+    char buf[2048];
+    ssize_t n;
+    (void)arg;
     while ((n = read(g_ppp_fd, buf, sizeof(buf))) > 0)
         pppos_input_tcpip(g_ppp, buf, (int)n);
     return NULL;
@@ -44,26 +48,36 @@ static void *reader(void *arg)
 
 static err_t recv_http_request(struct netconn *c, u8_t *buf, size_t *len, size_t cap)
 {
-    struct netbuf *nb; u8_t *p; u16_t chunk; err_t err;
+    struct netbuf *nb;
+    u8_t *p;
+    u16_t chunk;
+    err_t err;
     int content_length = -1;
 
     *len = 0;
-    while (*len < cap) {
+    while (*len < cap)
+    {
         err = netconn_recv(c, &nb);
-        if (err != ERR_OK) break;
+        if (err != ERR_OK)
+            break;
         netbuf_data(nb, (void **)&p, &chunk);
-        if (*len + chunk > cap) chunk = (u16_t)(cap - *len);
-        memcpy(buf + *len, p, chunk); *len += chunk;
+        if (*len + chunk > cap)
+            chunk = (u16_t)(cap - *len);
+        memcpy(buf + *len, p, chunk);
+        *len += chunk;
         buf[*len] = '\0';
         netbuf_delete(nb);
 
         char *body = strstr((char *)buf, "\r\n\r\n");
-        if (!body) continue;
-        if (content_length < 0) {
+        if (!body)
+            continue;
+        if (content_length < 0)
+        {
             char *cl = strcasestr((char *)buf, "Content-Length:");
             content_length = cl ? atoi(cl + 15) : 0;
         }
-        if (*len >= (size_t)(body + 4 - (char *)buf) + (size_t)content_length) break;
+        if (*len >= (size_t)(body + 4 - (char *)buf) + (size_t)content_length)
+            break;
     }
     return (*len > 0) ? ERR_OK : ERR_CLSD;
 }
@@ -77,20 +91,27 @@ static int exec_cmd(const char *cmd, sds *out, sds *err, int *exit_code)
     *err = sdsempty();
     *exit_code = -1;
 
-    if (pipe(out_pipe) < 0 || pipe(err_pipe) < 0) return -1;
+    if (pipe(out_pipe) < 0 || pipe(err_pipe) < 0)
+        return -1;
 
     pid = fork();
-    if (pid < 0) {
-        close(out_pipe[0]); close(out_pipe[1]);
-        close(err_pipe[0]); close(err_pipe[1]);
+    if (pid < 0)
+    {
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        close(err_pipe[0]);
+        close(err_pipe[1]);
         return -1;
     }
 
-    if (pid == 0) {
+    if (pid == 0)
+    {
         dup2(out_pipe[1], STDOUT_FILENO);
         dup2(err_pipe[1], STDERR_FILENO);
-        close(out_pipe[0]); close(out_pipe[1]);
-        close(err_pipe[0]); close(err_pipe[1]);
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        close(err_pipe[0]);
+        close(err_pipe[1]);
 #ifdef __ANDROID__
         execl("/system/bin/sh", "sh", "-c", cmd, (char *)NULL);
 #else
@@ -99,31 +120,44 @@ static int exec_cmd(const char *cmd, sds *out, sds *err, int *exit_code)
         _exit(127);
     }
 
-    close(out_pipe[1]); close(err_pipe[1]);
+    close(out_pipe[1]);
+    close(err_pipe[1]);
 
     fd_set rfds;
     int max_fd = (out_pipe[0] > err_pipe[0]) ? out_pipe[0] : err_pipe[0];
     int done_out = 0, done_err = 0;
 
-    while (!done_out || !done_err) {
+    while (!done_out || !done_err)
+    {
         FD_ZERO(&rfds);
-        if (!done_out) FD_SET(out_pipe[0], &rfds);
-        if (!done_err) FD_SET(err_pipe[0], &rfds);
-        if (select(max_fd + 1, &rfds, NULL, NULL, NULL) < 0) break;
+        if (!done_out)
+            FD_SET(out_pipe[0], &rfds);
+        if (!done_err)
+            FD_SET(err_pipe[0], &rfds);
+        if (select(max_fd + 1, &rfds, NULL, NULL, NULL) < 0)
+            break;
 
-        char buf[1024]; ssize_t n;
-        if (!done_out && FD_ISSET(out_pipe[0], &rfds)) {
+        char buf[1024];
+        ssize_t n;
+        if (!done_out && FD_ISSET(out_pipe[0], &rfds))
+        {
             n = read(out_pipe[0], buf, sizeof(buf));
-            if (n > 0) *out = sdscatlen(*out, buf, (size_t)n);
-            else done_out = 1;
+            if (n > 0)
+                *out = sdscatlen(*out, buf, (size_t)n);
+            else
+                done_out = 1;
         }
-        if (!done_err && FD_ISSET(err_pipe[0], &rfds)) {
+        if (!done_err && FD_ISSET(err_pipe[0], &rfds))
+        {
             n = read(err_pipe[0], buf, sizeof(buf));
-            if (n > 0) *err = sdscatlen(*err, buf, (size_t)n);
-            else done_err = 1;
+            if (n > 0)
+                *err = sdscatlen(*err, buf, (size_t)n);
+            else
+                done_err = 1;
         }
     }
-    close(out_pipe[0]); close(err_pipe[0]);
+    close(out_pipe[0]);
+    close(err_pipe[0]);
 
     int status;
     waitpid(pid, &status, 0);
@@ -150,7 +184,11 @@ void edc_pppos_agent_run(int ppp_fd, const char *my_ip, const char *peer_ip, uin
     ip_addr_copy(ni.netmask, m);
 
     g_ppp = pppapi_pppos_create(&ni, out_cb, status_cb, &g_ppp_fd);
-    if (!g_ppp) { fprintf(stderr, "agent: PPPoS create failed\n"); return; }
+    if (!g_ppp)
+    {
+        fprintf(stderr, "agent: PPPoS create failed\n");
+        return;
+    }
     pppapi_set_default(g_ppp);
     ppp_set_auth(g_ppp, PPPAUTHTYPE_NONE, NULL, NULL);
     ppp_set_ipcp_ouraddr(g_ppp, &a);
@@ -160,50 +198,74 @@ void edc_pppos_agent_run(int ppp_fd, const char *my_ip, const char *peer_ip, uin
     pppapi_connect(g_ppp, 0);
 
     fprintf(stderr, "agent: waiting for PPP link ...\n");
-    while (!g_link_up) sys_msleep(50);
+    while (!g_link_up)
+        sys_msleep(50);
     fprintf(stderr, "agent: link UP (%s <- %s)\n", my_ip, peer_ip);
     ip4addr_aton(my_ip, &bind_addr);
 
     struct netconn *ln = netconn_new(NETCONN_TCP);
-    if (netconn_bind(ln, &bind_addr, port) != ERR_OK) {
-        fprintf(stderr, "agent: bind failed\n"); return;
+    if (netconn_bind(ln, &bind_addr, port) != ERR_OK)
+    {
+        fprintf(stderr, "agent: bind failed\n");
+        return;
     }
-    if (netconn_listen(ln) != ERR_OK) {
-        fprintf(stderr, "agent: listen failed\n"); return;
+    if (netconn_listen(ln) != ERR_OK)
+    {
+        fprintf(stderr, "agent: listen failed\n");
+        return;
     }
     fprintf(stderr, "agent: listening on %s:%u\n", my_ip, port);
 
-    while (1) {
+    while (1)
+    {
         struct netconn *c;
         err_t err;
 
         err = netconn_accept(ln, &c);
-        if (err != ERR_OK) { sys_msleep(100); continue; }
+        if (err != ERR_OK)
+        {
+            sys_msleep(100);
+            continue;
+        }
 
         u8_t req_buf[131072];
         size_t req_len = 0;
         err = recv_http_request(c, req_buf, &req_len, sizeof(req_buf));
-        if (err != ERR_OK) { netconn_close(c); netconn_delete(c); continue; }
+        if (err != ERR_OK)
+        {
+            netconn_close(c);
+            netconn_delete(c);
+            continue;
+        }
 
         req_buf[req_len] = '\0';
         char *body = strstr((char *)req_buf, "\r\n\r\n");
-        if (!body) {
+        if (!body)
+        {
             netconn_write(c, "HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n", 37, NETCONN_COPY);
-            netconn_close(c); netconn_delete(c); continue;
+            netconn_close(c);
+            netconn_delete(c);
+            continue;
         }
         body += 4;
 
         cJSON *req_json = cJSON_Parse(body);
-        if (!req_json) {
+        if (!req_json)
+        {
             netconn_write(c, "HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n", 37, NETCONN_COPY);
-            netconn_close(c); netconn_delete(c); continue;
+            netconn_close(c);
+            netconn_delete(c);
+            continue;
         }
 
         cJSON *cmd_item = cJSON_GetObjectItem(req_json, "command");
-        if (!cmd_item || !cJSON_IsString(cmd_item)) {
+        if (!cmd_item || !cJSON_IsString(cmd_item))
+        {
             cJSON_Delete(req_json);
             netconn_write(c, "HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n", 37, NETCONN_COPY);
-            netconn_close(c); netconn_delete(c); continue;
+            netconn_close(c);
+            netconn_delete(c);
+            continue;
         }
 
         const char *command = cmd_item->valuestring;
@@ -223,10 +285,11 @@ void edc_pppos_agent_run(int ppp_fd, const char *my_ip, const char *peer_ip, uin
 
         char hdr[256];
         int hdr_len = snprintf(hdr, sizeof(hdr),
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: application/json\r\n"
-            "Content-Length: %zu\r\n"
-            "\r\n", body_len);
+                               "HTTP/1.1 200 OK\r\n"
+                               "Content-Type: application/json\r\n"
+                               "Content-Length: %zu\r\n"
+                               "\r\n",
+                               body_len);
 
         netconn_write_partly(c, hdr, (size_t)hdr_len, NETCONN_COPY, NULL);
         netconn_write_partly(c, resp_str, body_len, NETCONN_COPY, NULL);
