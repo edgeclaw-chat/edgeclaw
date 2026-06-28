@@ -112,7 +112,73 @@ Three sources of truth, two in software, one in hardware:
 
 If any two disagree, the peripheral won't work.
 
-### 2.2 Cross-Reference Method
+### 2.2 Extract Signal Assignments from Hardware Documents
+
+The DTSI side is plain text — but hardware docs come in PDF schematics, Excel pinout tables, or HTML datasheets. Extract the relevant signals before attempting comparison.
+
+#### 2.2.1 Schematics (PDF)
+
+Use `pdftotext` to pull net names from schematic PDFs:
+
+```bash
+# Search for the peripheral's signal nets
+pdftotext schematic.pdf - | grep -iE "tp_int|tp_rst|sensor_int|<signal_name>"
+
+# Or broader: find all nets on a specific page/block
+pdftotext schematic.pdf - | grep -iE "<peripheral>|i2c|<bus_name>" | head -40
+```
+
+**What to look for:**
+- Net labels like `TP_INT`, `TP_RST`, `TP_I2C_SDA`, `CAM_PWDN`
+- Pin numbers on connectors between the SoC/module and the peripheral
+- Supply rails: `VDD_3V3`, `VIO_1V8` → verify regulator assignment in DTSI
+
+**Tip:** If `pdftotext` output is jumbled, search for connector designators (e.g., `J0801`) and trace the pins manually from the PDF with a viewer.
+
+#### 2.2.2 GPIO Pinout Tables (Excel/CSV)
+
+Module vendors often provide GPIO configuration spreadsheets. Parse them programmatically:
+
+```python
+import openpyxl  # or csv, pandas
+
+wb = openpyxl.load_workbook('gpio_config.xlsx')
+for sheet_name in wb.sheetnames:
+    ws = wb[sheet_name]
+    for row in ws.iter_rows(values_only=True):
+        row_str = '|'.join([str(c or '') for c in row])
+        # Filter for the peripheral's signals
+        if any(k in row_str.lower() for k in ['tp', 'touch', 'sensor', 'camera']):
+            print(' | '.join([str(c or '') for c in row]))
+```
+
+**What the table typically contains:**
+
+| Pin# | Signal Name | GPIO | Function | Voltage | Notes |
+|------|------------|------|----------|---------|-------|
+| 30 | TP_INT | GPIO_80 | TP interrupt | 1.8V | QUP SE2 |
+| 31 | TP_RST | GPIO_71 | TP reset | 1.8V | |
+| 47 | TP_I2C_SCL | GPIO_7 | I2C clock | 1.8V | Needs external pull-up |
+
+Extract the **Signal Name → GPIO** mapping. This is the hardware truth that the DTSI must match.
+
+#### 2.2.3 Board-Specific vs Module-Level
+
+In modular designs (SoM + carrier board), pin assignments exist at **two levels**:
+
+```
+SoC ball → Module pin (fixed, from module datasheet)
+Module pin → Peripheral (from carrier board schematic)
+```
+
+The DTSI must match the **SoC ball / GPIO number**, while the schematic shows the **module pin**. Cross-reference using the module's GPIO configuration table as the bridge:
+
+```
+Schematic net:  TP_INT → Module Pin 30
+GPIO config:    Pin 30 → GPIO_80  ← This is what the DTSI needs
+```
+
+### 2.3 Cross-Reference Method
 
 For each signal of the failing peripheral, build a comparison table:
 
@@ -132,7 +198,7 @@ Common mismatches:
 - **Shared GPIO** — two peripherals (e.g., touchscreen IRQ and SD card detect) assigned the same GPIO
 - **Wrong function** — GPIO muxed as `func1` (peripheral) but driver expects `func0` (GPIO mode)
 
-### 2.3 Check for Resource Conflicts
+### 2.4 Check for Resource Conflicts
 
 ```bash
 # On device: which DT nodes reference a suspicious GPIO?
@@ -141,7 +207,7 @@ grep -r "gpio<XX>" /sys/firmware/devicetree/ 2>/dev/null | grep -v phandle
 
 If GPIO_N appears under two unrelated devices (e.g., both `sdc2_cd` and `ts_int`), that's a conflict — whichever driver probes first wins, the second gets -EBUSY.
 
-### 2.4 Pinctrl Verification
+### 2.5 Pinctrl Verification
 
 Pinctrl definitions (in `*-pinctrl.dtsi`) set up pinmux and pull configuration. They must match both the driver node's GPIO references **and** the physical pin:
 
