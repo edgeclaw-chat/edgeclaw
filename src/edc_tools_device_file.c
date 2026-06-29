@@ -9,7 +9,9 @@
 #include "lwip/ip_addr.h"
 #include "lwip/err.h"
 #include <cJSON.h>
-#include <glib.h>
+#include "edc_compat.h"
+#include "edc_file_utils.h"
+#include "edc_string_utils.h"
 #include "sds.h"
 #include "edc_error.h"
 #include <arpa/inet.h>
@@ -92,7 +94,7 @@ static void device_file_send_error(struct device_file_ctx *ctx, const char *fmt,
 {
     va_list ap;
     va_start(ap, fmt);
-    char *msg = g_strdup_vprintf(fmt, ap);
+    char *msg = edc_strdup_printf(fmt, ap);
     va_end(ap);
 
     EdcError *error = edc_error_new(EDC_ERR_EXEC, "%s", msg);
@@ -111,7 +113,7 @@ static int parse_json_response(sds resp_buf, cJSON **out_json, EdcError **error)
     body += 4;
 
     int http_status = 0;
-    if (g_ascii_strncasecmp(resp_buf, "HTTP/", 5) == 0)
+    if (strncasecmp(resp_buf, "HTTP/", 5) == 0)
     {
         const char *sp = strchr(resp_buf, ' ');
         if (sp)
@@ -334,7 +336,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
 
     size_t raw_len = (size_t)st.st_size;
     size_t chunk_buf_size = DEVICE_FILE_CHUNK_SIZE;
-    char *chunk_buf = g_malloc(chunk_buf_size);
+    char *chunk_buf = malloc(chunk_buf_size);
     size_t offset = 0;
     int chunk_idx = 0;
     sds final_result = sdsempty();
@@ -355,7 +357,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
             return FALSE;
         }
 
-        char *b64 = g_base64_encode((const unsigned char *)chunk_buf, this_len);
+        sds b64 = edc_base64_encode((const unsigned char *)chunk_buf, this_len);
         if (!b64)
         {
             device_file_send_error(ctx, "device_upload: base64 encode failed at offset %zu", offset);
@@ -369,7 +371,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
                   chunk_idx, offset, this_len, strlen(b64));
 
         int ret = do_chunk(ctx, b64, this_len, offset);
-        free(b64);
+        sdsfree(b64);
 
         if (ret != 0)
         {
@@ -475,18 +477,18 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
     if (data_item && cJSON_IsString(data_item) && chunk_len > 0)
     {
         size_t decoded_len = 0;
-        char *decoded = (char *)g_base64_decode(data_item->valuestring, &decoded_len);
+        sds decoded = edc_base64_decode(data_item->valuestring, &decoded_len);
         if (decoded)
         {
             if (write(fd, decoded, decoded_len) != (ssize_t)decoded_len)
             {
-                free(decoded);
+                sdsfree(decoded);
                 cJSON_Delete(resp_json);
                 return -1;
             }
             if (out_chunk_len)
                 *out_chunk_len = decoded_len;
-            free(decoded);
+            sdsfree(decoded);
         }
     }
 
@@ -571,18 +573,18 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
     if (data_item && cJSON_IsString(data_item) && chunk_len > 0)
     {
         size_t decoded_len = 0;
-        char *decoded = (char *)g_base64_decode(data_item->valuestring, &decoded_len);
+        sds decoded = edc_base64_decode(data_item->valuestring, &decoded_len);
         if (decoded)
         {
             if (write(fd, decoded, decoded_len) != (ssize_t)decoded_len)
             {
-                free(decoded);
+                sdsfree(decoded);
                 cJSON_Delete(resp_json);
                 return -1;
             }
             if (out_chunk_len)
                 *out_chunk_len = decoded_len;
-            free(decoded);
+            sdsfree(decoded);
         }
     }
 
@@ -658,16 +660,15 @@ static void device_file_thread_lwip(struct device_file_ctx *ctx)
     device_file_ctx_free(ctx);
 }
 
-static void device_file_thread(void* data, void* user_data)
+static void device_file_thread(void *data)
 {
     struct device_file_ctx *ctx = data;
-    (void)user_data;
 
     struct edc_config *conf = ctx->tb_ctx->tb->conf;
 
     if (conf->device_transport && conf->device_transport[0])
     {
-        if (g_ascii_strcasecmp(conf->device_transport, "tty") == 0)
+        if (strcasecmp(conf->device_transport, "tty") == 0)
             device_file_thread_lwip(ctx);
         else
             device_file_thread_socket(ctx);
@@ -716,7 +717,7 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
     if (timeout_json && cJSON_IsNumber(timeout_json) && timeout_json->valueint > 0)
         timeout_sec = timeout_json->valueint;
 
-    if (!g_file_test(cJSON_GetStringValue(local), G_FILE_TEST_IS_REGULAR))
+    if (!edc_file_is_regular(cJSON_GetStringValue(local)))
     {
         EdcError *error = edc_error_new(EDC_ERR_EXEC,
                                     "device_upload: local file not found: '%s'", cJSON_GetStringValue(local));
@@ -735,7 +736,8 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
     ctx->is_upload = TRUE;
     ctx->timeout_sec = timeout_sec;
 
-    g_thread_new("device_upload", (GThreadFunc)device_file_thread, ctx);
+    uv_thread_t tid;
+    uv_thread_create(&tid, device_file_thread, ctx);
 }
 
 static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, cJSON *args,
@@ -777,7 +779,8 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
     ctx->is_upload = FALSE;
     ctx->timeout_sec = timeout_sec;
 
-    g_thread_new("device_download", (GThreadFunc)device_file_thread, ctx);
+    uv_thread_t tid;
+    uv_thread_create(&tid, device_file_thread, ctx);
 }
 
 static struct edc_tool *edc_tool_create_device_upload(struct edc_toolbox *tb)

@@ -2,7 +2,6 @@
 #include "edc_error.h"
 #include "edc_memory_actor.h"
 #include "edc_actor.h"
-#include <glib.h>
 #include "edc_compat.h"
 #include "edc_file_utils.h"
 #include "edc_string_utils.h"

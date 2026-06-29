@@ -1,7 +1,6 @@
 #include "sds.h"
 #include "edc_agent.h"
 #include "edc_actor.h"
-#include <glib.h>
 #include "edc_compat.h"
 #include "edc_file_utils.h"
 #include "uthash.h"
@@ -271,9 +270,9 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
         edc_sandbox_init(agent->config);
     }
 
-    char *pem = g_build_filename(agent->config->workspace, "ssl", "cacert.pem", NULL);
+    sds pem = edc_path_join(agent->config->workspace, "ssl", "cacert.pem", NULL);
     agent->network = edc_network_async_new(pem);
-    free(pem);
+    sdsfree(pem);
 
     agent->scheduler = edc_actor_new("schuler", edc_agent_scheduler_handler, agent);
     agent->channel_actor = edc_channel_actor_new(&agent->config->channel, agent->network);

@@ -4,7 +4,7 @@
 #include "linenoise.h"
 #include "log.h"
 #include <dirent.h>
-#include <glib.h>
+#include <inttypes.h>
 #include "edc_compat.h"
 #include "edc_file_utils.h"
 #include "sds.h"

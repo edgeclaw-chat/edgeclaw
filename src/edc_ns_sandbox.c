@@ -2,8 +2,8 @@
 #define _GNU_SOURCE
 #include "edc_ns_sandbox.h"
 #include "log.h"
-#include <glib.h>
 #include "edc_compat.h"
+#include "edc_file_utils.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <sched.h>
@@ -98,9 +98,9 @@ static bool path_is_mount_point(const char *path)
     if (stat(path, &st1) != 0)
         return FALSE;
 
-    char *parent = g_path_get_dirname(path);
+    sds parent = edc_path_dirname(path);
     int ret = stat(parent, &st2);
-    free(parent);
+    sdsfree(parent);
     if (ret != 0)
         return FALSE;
 

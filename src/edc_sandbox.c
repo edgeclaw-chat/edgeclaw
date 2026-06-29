@@ -1,13 +1,11 @@
 #include "edc_sandbox.h"
 #include "edc_bpf_sandbox.h"
-#include <glib.h>
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
 #include "edc_landlock_sandbox.h"
 #include "edc_ns_sandbox.h"
 #include "log.h"
-#include <glib.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -102,9 +100,9 @@ sds edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writ
         return NULL;
     }
 
-    char *parent = g_path_get_dirname(path);
+    sds parent = edc_path_dirname(path);
     char *parent_real = realpath(parent, NULL);
-    free(parent);
+    sdsfree(parent);
 
     if (!parent_real)
     {
@@ -122,9 +120,8 @@ sds edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writ
         return NULL;
     }
 
-    char *basename = g_path_get_basename(path);
-    sds result = edc_path_join(parent_real, basename, NULL);
-    free(basename);
+    const char *last_slash = strrchr(path, '/');
+    sds result = edc_path_join(parent_real, last_slash ? last_slash + 1 : path, NULL);
     free(parent_real);
     return result;
 }

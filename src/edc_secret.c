@@ -4,7 +4,6 @@
 #include "edc_file_utils.h"
 #include "log.h"
 #include <errno.h>
-#include <glib.h>
 #include "edc_compat.h"
 #include <mbedtls/base64.h>
 #include <mbedtls/cipher.h>
@@ -196,7 +195,7 @@ bool edc_secret_init(bool confirm_password, const char *edc_home)
         if (!derive_key(env_val, strlen(env_val)))
             return FALSE;
 
-        g_unsetenv(BC_MASTER_KEY_ENV);
+        unsetenv(BC_MASTER_KEY_ENV);
         log_info("Master key loaded from %s", BC_MASTER_KEY_ENV);
 
         lock_master_key();

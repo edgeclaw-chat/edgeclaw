@@ -4,7 +4,6 @@
 #include "edc_file_utils.h"
 #include "cJSON.h"
 #include "log.h"
-#include <glib.h>
 #include "edc_compat.h"
 #include <errno.h>
 

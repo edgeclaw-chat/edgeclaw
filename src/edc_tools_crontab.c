@@ -5,6 +5,7 @@
 #include <glib.h>
 #include "edc_compat.h"
 #include "edc_channel_actor.h"
+#include "edc_file_utils.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
 #include "ccronexpr.h"
@@ -85,44 +86,43 @@ static void edc_tool_crontab_state_free(struct edc_tool_crontab_state *state)
 
 static cJSON *edc_tool_crontab_load_jobs_db(const char *workspace, EdcError **error)
 {
-    char *jobs_path = g_build_filename(workspace, "jobs.json", NULL);
+    sds jobs_path = edc_path_join(workspace, "jobs.json", NULL);
 
     cJSON *db = NULL;
-    char *content = NULL;
-    size_t len = 0;
 
-    if (g_file_test(jobs_path, G_FILE_TEST_IS_REGULAR))
+    if (edc_file_is_regular(jobs_path))
     {
-        GError *gerror = NULL;
-        if (!g_file_get_contents(jobs_path, &content, &len, &gerror))
+        EdcError *gerror = NULL;
+        sds content = edc_file_read(jobs_path, &gerror);
+        if (!content)
         {
             edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
-            g_error_free(gerror);
+            edc_error_free(gerror);
             goto out;
         }
 
-        db = cJSON_ParseWithLength(content, len);
-        free(content);
+        db = cJSON_Parse(content);
+        sdsfree(content);
     }
 
 out:
-    free(jobs_path);
+    sdsfree(jobs_path);
     return db;
 }
 
 static bool edc_tool_crontab_save_jobs_db(const char *workspace, cJSON *db, EdcError **error)
 {
-    char *jobs_path = g_build_filename(workspace, "jobs.json", NULL);
+    sds jobs_path = edc_path_join(workspace, "jobs.json", NULL);
     FILE *fout = fopen(jobs_path, "w+");
 
     if (!fout)
     {
-        const char *s = g_strerror(errno);
+        const char *s = strerror(errno);
         edc_error_set(error, EDC_ERR_INVAL, "open %s for writting failed: %s", jobs_path, s);
-        free(jobs_path);
+        sdsfree(jobs_path);
         return FALSE;
     }
-    free(jobs_path);
+    sdsfree(jobs_path);
 
     char *tmp = cJSON_PrintUnformatted(db);
     fprintf(fout, "%s", tmp);
@@ -472,7 +472,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
     }
     else
     {
-        char *s = g_strndup(cJSON_GetStringValue(message), 30);
+        char *s = strndup(cJSON_GetStringValue(message), 30);
         cJSON_AddStringToObject(job, "name", s);
         free(s);
     }

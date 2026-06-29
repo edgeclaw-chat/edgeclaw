@@ -5,7 +5,6 @@
 #include "edc_tools.h"
 #include "log.h"
 #include <edc_param_types.h>
-#include <glib.h>
 #include <errno.h>
 #include <signal.h>
 #include <sys/wait.h>
@@ -237,13 +236,6 @@ static void on_timeout(uv_timer_t *timer)
     shell_ctx_try_complete(ctx);
 }
 
-static void edc_tool_shell_child_setup(void *user_data)
-{
-    struct edc_config *conf = user_data;
-    setpgid(0, 0);
-    edc_sandbox_apply(conf);
-}
-
 static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, cJSON *args,
                                       void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
@@ -303,27 +295,69 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
             filtered_envp[j++] = sdsnew(environ[i]);
     }
 
-    GPid child_pid = 0;
-    int stdin_fd = 0, stdout_fd = 0, stderr_fd = 0;
-    GError *spawn_error = NULL;
-    bool success =
-        g_spawn_async_with_pipes(cwd, argv, (char **)filtered_envp,
-                                 G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
-                                 edc_tool_shell_child_setup, conf,
-                                 &child_pid, &stdin_fd, &stdout_fd, &stderr_fd, &spawn_error);
-
-    sdsfree(allocated_cwd);
-
-    for (int _i = 0; filtered_envp[_i]; _i++) sdsfree(filtered_envp[_i]);
-    free(filtered_envp);
-
-    if (!success)
+    int _stdin[2], _stdout[2], _stderr[2];
+    if (pipe(_stdin) == -1 || pipe(_stdout) == -1 || pipe(_stderr) == -1)
     {
-        error = edc_error_new(EDC_ERR_EXEC, "%s", spawn_error->message);
-        g_error_free(spawn_error);
+        error = edc_error_new(EDC_ERR_EXEC, "pipe failed: %s", strerror(errno));
+        sdsfree(allocated_cwd);
+        for (int _i = 0; filtered_envp[_i]; _i++) sdsfree(filtered_envp[_i]);
+        free(filtered_envp);
         callback(tb_ctx, NULL, error);
         return;
     }
+
+    pid_t child_pid = fork();
+    if (child_pid < 0)
+    {
+        error = edc_error_new(EDC_ERR_EXEC, "fork failed: %s", strerror(errno));
+        close(_stdin[0]); close(_stdin[1]);
+        close(_stdout[0]); close(_stdout[1]);
+        close(_stderr[0]); close(_stderr[1]);
+        sdsfree(allocated_cwd);
+        for (int _i = 0; filtered_envp[_i]; _i++) sdsfree(filtered_envp[_i]);
+        free(filtered_envp);
+        callback(tb_ctx, NULL, error);
+        return;
+    }
+
+    if (child_pid == 0)
+    {
+        /* Child: sandbox setup, dup stdio, exec */
+        setpgid(0, 0);
+        edc_sandbox_apply(conf);
+
+        dup2(_stdin[0], STDIN_FILENO);
+        dup2(_stdout[1], STDOUT_FILENO);
+        dup2(_stderr[1], STDERR_FILENO);
+
+        close(_stdin[0]); close(_stdin[1]);
+        close(_stdout[0]); close(_stdout[1]);
+        close(_stderr[0]); close(_stderr[1]);
+
+        for (int _i = 0; filtered_envp[_i]; _i++)
+            sdsfree(filtered_envp[_i]);
+        free(filtered_envp);
+        sdsfree(allocated_cwd);
+
+        if (chdir(cwd) != 0)
+            _exit(EXIT_FAILURE);
+
+        execvp(argv[0], argv);
+        _exit(EXIT_FAILURE);
+    }
+
+    /* Parent */
+    close(_stdin[0]);
+    close(_stdout[1]);
+    close(_stderr[1]);
+
+    sdsfree(allocated_cwd);
+    for (int _i = 0; filtered_envp[_i]; _i++) sdsfree(filtered_envp[_i]);
+    free(filtered_envp);
+
+    int stdin_fd = _stdin[1];
+    int stdout_fd = _stdout[0];
+    int stderr_fd = _stderr[0];
 
     close(stdin_fd);
 

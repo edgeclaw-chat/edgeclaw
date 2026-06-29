@@ -2,11 +2,13 @@
 #include "edc_error.h"
 #include "edc_skills.h"
 
-#include <glib.h>
+#include "edc_compat.h"
+#include "edc_file_utils.h"
 #include "log.h"
 #include "uthash.h"
 #include "utarray.h"
 #include <stdio.h>
+#include <string.h>
 
 static UT_icd ut_skill_ptr_icd = {sizeof(struct edc_skill *), NULL, NULL, NULL};
 
@@ -48,49 +50,31 @@ void edc_skill_free(struct edc_skill *skill)
 
 static bool edc_extract_skill_meta_and_content(const char *content, struct edc_skill *skill)
 {
-    if (!strncmp(content, "---", strlen("---")) == 0)
+    /* YAML front matter: starts with ---\n, ends with \n--- */
+    if (strncmp(content, "---\n", 4) != 0)
     {
-        log_error("skill content has not prefix ---");
+        log_error("skill content has no YAML front matter prefix");
         return FALSE;
     }
 
-    GRegex *regex = g_regex_new("^---\n(.*?)\n---", G_REGEX_DOTALL, G_REGEX_MATCH_DEFAULT, NULL);
-    bool err = TRUE;
-    GMatchInfo *match_info = NULL;
-    char *meta = NULL;
-
-    if (regex)
+    const char *meta_start = content + 4;
+    const char *meta_end = strstr(meta_start, "\n---\n");
+    if (!meta_end)
     {
-        if (!g_regex_match(regex, content, 0, &match_info))
-
+        meta_end = strstr(meta_start, "\n---");
+        if (!meta_end)
         {
-            log_error("skill content regex match failed");
-            err = FALSE;
-            goto match_err;
+            log_error("skill content: closing --- not found");
+            return FALSE;
         }
+    }
 
-        if (g_match_info_get_match_count(match_info) != 2)
-        {
-            log_error("skill content regex match count != 2 failed");
-            err = FALSE;
-            goto match_info_err;
-        }
+    sds meta = sdsnewlen(meta_start, (size_t)(meta_end - meta_start));
 
-        meta = g_match_info_fetch(match_info, 1);
-        if (!meta)
-        {
-            err = FALSE;
-            goto match_info_err;
-        }
-
-        int line_count;
-        sds *lines = sdssplitlen(meta, (ssize_t)strlen(meta), "\n", 1, &line_count);
-        if (!lines)
-        {
-            err = FALSE;
-            goto meta_err;
-        }
-
+    int line_count;
+    sds *lines = sdssplitlen(meta, sdslen(meta), "\n", 1, &line_count);
+    if (lines)
+    {
         for (int i = 0; i < line_count; i++)
         {
             int kv_count;
@@ -108,79 +92,77 @@ static bool edc_extract_skill_meta_and_content(const char *content, struct edc_s
         }
 
         sdsfreesplitres(lines, line_count);
-
-        int start = 0, end = 0;
-        if (g_match_info_fetch_pos(match_info, 0, &start, &end))
-        {
-            sds tmp = sdsnew((char *)content + end);
-            skill->content = sdstrim(tmp, " \t\r\n");
-        }
-        else
-        {
-            sds tmp = sdsnew((char *)content);
-            skill->content = sdstrim(tmp, " \t\r\n");
-        }
     }
 
-meta_err:
-    if (meta)
-        free(meta);
-match_info_err:
-    if (match_info)
-        g_match_info_unref(match_info);
-match_err:
-    if (regex)
-        g_regex_unref(regex);
-    return err;
+    const char *body_start = meta_end;
+    if (body_start[0] == '\n')
+        body_start++;  /* skip the leading \n of the delimiter */
+    if (strncmp(body_start, "---\n", 4) == 0)
+        body_start += 4;  /* skip "---\n" */
+    else if (strncmp(body_start, "---", 3) == 0)
+        body_start += 3;  /* skip "---" at end of file */
+
+    sds tmp = sdsnew(body_start);
+    skill->content = sdstrim(tmp, " \t\r\n");
+
+    sdsfree(meta);
+    return TRUE;
 }
 
 static struct edc_skill *edc_skill_load(const char *name, const char *file_path)
 {
-    char *content = NULL;
-    size_t length = 0;
-    GError *gerror = NULL;
+    EdcError *gerror = NULL;
+    sds content = edc_file_read(file_path, &gerror);
 
-    if (g_file_get_contents(file_path, &content, &length, &gerror))
+    if (content)
     {
         struct edc_skill *skill = edc_skill_new();
         if (!edc_extract_skill_meta_and_content(content, skill))
         {
             edc_skill_free(skill);
+            sdsfree(content);
             return NULL;
         }
 
-        free(content);
+        sdsfree(content);
         skill->name = sdsnew(name);
 
         return skill;
     }
     else
     {
-        g_error_free(gerror);
+        edc_error_free(gerror);
     }
     return NULL;
+}
+
+struct edc_skills_foreach_ctx
+{
+    UT_array *skills;
+    sds dir_path;
+};
+
+static void edc_skills_foreach_cb(const char *name, int type, void *userdata)
+{
+    struct edc_skills_foreach_ctx *ctx = (struct edc_skills_foreach_ctx *)userdata;
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
+        return;
+
+    sds full_path = edc_path_join(ctx->dir_path, name, "SKILL.md", NULL);
+    struct edc_skill *skill = edc_skill_load(name, full_path);
+    if (skill)
+        utarray_push_back(ctx->skills, &skill);
+    sdsfree(full_path);
 }
 
 UT_array *edc_skills_load(const char *dir_path)
 {
     UT_array *skills;
     utarray_new(skills, &ut_skill_ptr_icd);
-    GDir *dir = g_dir_open(dir_path, 0, NULL);
-    if (dir)
-    {
-        const char *filename = NULL;
-        while ((filename = g_dir_read_name(dir)))
-        {
-            char *full_path = g_build_filename(dir_path, filename, "SKILL.md", NULL);
 
-            struct edc_skill *skill = edc_skill_load(filename, full_path);
-            if (skill)
-            {
-                utarray_push_back(skills, &skill);
-            }
-            free(full_path);
-        }
-        g_dir_close(dir);
-    }
+    struct edc_skills_foreach_ctx ctx = { .skills = skills, .dir_path = sdsnew(dir_path) };
+    edc_dir_foreach(dir_path, edc_skills_foreach_cb, &ctx, NULL);
+    sdsfree(ctx.dir_path);
+
     return skills;
 }
