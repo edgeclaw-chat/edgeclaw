@@ -9,9 +9,16 @@ MACOS_LINK_OPTS = [
     "-lresolv",
 ]
 
+WINDOWS_LINK_OPTS = [
+    "-lws2_32",
+    "-lbcrypt",
+    "-luserenv",
+]
+
 LINK_OPTS = select({
     "//:macos": MACOS_LINK_OPTS,
     "//:linux": LINUX_LINK_OPTS,
+    "//:windows": WINDOWS_LINK_OPTS,
     "//conditions:default": [], 
 })
 

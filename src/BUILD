@@ -6,6 +6,7 @@ LINK_OPTS = select({
     "//:linux_debug": [],
     "//:debug": [],
     "//:android": [],
+    "//:windows": ["-lws2_32", "-lbcrypt", "-luserenv"],
     "//conditions:default": ["-static", "-Wl,--no-gc-sections"],
 })
 
@@ -271,6 +272,7 @@ cc_library(
     ],
     linkopts = select({
         "//:macos": ["-lresolv"],
+        "//:windows": [],
         "//conditions:default": ["-lpthread"],
     }),
     linkstatic = True,

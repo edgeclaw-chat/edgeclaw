@@ -41,6 +41,14 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
+config_setting(
+    name = "windows",
+    constraint_values = [
+        "@platforms//os:windows"
+    ],
+    visibility = ["//visibility:public"],
+)
+
 platform(
     name = "arm_linux",
     constraint_values = [
@@ -85,6 +93,14 @@ platform(
     name = "amd64_linux",
     constraint_values = [
         "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+platform(
+    name = "amd64_windows",
+    constraint_values = [
+        "@platforms//os:windows",
         "@platforms//cpu:x86_64",
     ],
 )
