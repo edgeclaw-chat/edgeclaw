@@ -31,6 +31,10 @@ jobs:
             runner: macos-14
             platform: //:aarch64_macos
             bazel_target: //:edgeclaw
+          - target: edgeclaw_amd64_windows
+            runner: windows-latest
+            platform: //:amd64_windows
+            bazel_target: //:edgeclaw
 
           - target: device_agent_amd64_linux
             runner: ubuntu-latest

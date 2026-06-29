@@ -33,6 +33,10 @@ jobs:
             runner: macos-14
             platform: //:aarch64_macos
             bazel_target: //:edgeclaw
+          - target: edgeclaw_amd64_windows
+            runner: windows-latest
+            platform: //:amd64_windows
+            bazel_target: //:edgeclaw
 
           - target: device_agent_amd64_linux
             runner: ubuntu-latest
@@ -97,6 +101,7 @@ jobs:
           bazel build --compilation_mode=opt --platforms=${{ matrix.platform }} ${{ matrix.bazel_target }}
 
       - name: Collect artifact
+        if: runner.os != 'Windows'
         run: |
           VERSION="${{ github.ref_name }}"
           ARTIFACT="${{ matrix.target }}.tar.gz"
@@ -106,6 +111,7 @@ jobs:
           fi
 
       - name: Upload artifact
+        if: runner.os != 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
