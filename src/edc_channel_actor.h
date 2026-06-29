@@ -1,3 +1,4 @@
+#include "edc_string.h"
 #ifndef __BC_CHANNEL_ACTOR_H__
 #define __BC_CHANNEL_ACTOR_H__
 
@@ -94,10 +95,10 @@ typedef struct
             GThread *input_thread;
             GAsyncQueue *input_queue;
             GSource *queue_source;
-            char *pending_output;
+            sds pending_output;
             pthread_mutex_t term_mutex;
             volatile int running;
-            GString *history_path;
+            sds history_path;
         } cli;
     };
 } edc_channel_actor_state_t;

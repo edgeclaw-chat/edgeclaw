@@ -2,6 +2,7 @@
 #include "md4c.h"
 #include "log.h"
 #include <glib.h>
+#include "edc_string.h"
 #include <string.h>
 
 #define ANSI_RESET      "\033[0m"
@@ -41,11 +42,11 @@ static const char *HEADING_COLORS[] = {
 #define MAX_LIST_DEPTH 16
 
 struct edc_md_render_ctx {
-    GString *out;
+    sds out;
     bool in_table;
     GPtrArray *table_rows;
     GPtrArray *current_row;
-    GString *current_cell;
+    sds current_cell;
     GPtrArray *col_aligns;
     int td_col_idx;
     int list_depth;
@@ -60,7 +61,7 @@ struct edc_md_render_ctx {
 static void edc_md_render_ctx_init(struct edc_md_render_ctx *ctx)
 {
     memset(ctx, 0, sizeof(*ctx));
-    ctx->out = g_string_new(NULL);
+    ctx->out = edc_str_new(NULL);
 }
 
 static int edc_md_visual_strlen(const char *s)
@@ -87,34 +88,34 @@ static int edc_md_visual_strlen(const char *s)
 static void edc_md_render_ctx_free(struct edc_md_render_ctx *ctx)
 {
     if (ctx->out)
-        g_string_free(ctx->out, TRUE);
+        edc_str_free(ctx->out);
     if (ctx->table_rows) {
         for (unsigned int i = 0; i < ctx->table_rows->len; i++) {
             GPtrArray *row = g_ptr_array_index(ctx->table_rows, i);
             for (unsigned int j = 0; j < row->len; j++) {
-                GString *cell = g_ptr_array_index(row, j);
-                g_string_free(cell, TRUE);
+                sds cell = g_ptr_array_index(row, j);
+                edc_str_free(cell);
             }
-            g_ptr_array_free(row, TRUE);
+            g_ptr_array_free(row, FALSE);
         }
-        g_ptr_array_free(ctx->table_rows, TRUE);
+        g_ptr_array_free(ctx->table_rows, FALSE);
     }
     if (ctx->current_row) {
         for (unsigned int i = 0; i < ctx->current_row->len; i++) {
-            GString *cell = g_ptr_array_index(ctx->current_row, i);
-            g_string_free(cell, TRUE);
+            sds cell = g_ptr_array_index(ctx->current_row, i);
+            edc_str_free(cell);
         }
-        g_ptr_array_free(ctx->current_row, TRUE);
+        g_ptr_array_free(ctx->current_row, FALSE);
     }
     if (ctx->current_cell) {
-        g_string_free(ctx->current_cell, TRUE);
+        edc_str_free(ctx->current_cell);
     }
     if (ctx->col_aligns) {
         for (unsigned int i = 0; i < ctx->col_aligns->len; i++) {
             int *a = g_ptr_array_index(ctx->col_aligns, i);
             free(a);
         }
-        g_ptr_array_free(ctx->col_aligns, TRUE);
+        g_ptr_array_free(ctx->col_aligns, FALSE);
     }
 }
 
@@ -124,7 +125,7 @@ static int edc_md_text(MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size,
 static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 {
     struct edc_md_render_ctx *ctx = userdata;
-    GString *o = ctx->out;
+    sds *o = &ctx->out;
 
     switch (type) {
     case MD_BLOCK_DOC:
@@ -132,7 +133,7 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 
     case MD_BLOCK_QUOTE:
         ctx->in_quote = TRUE;
-        g_string_append(o, ANSI_DIM "│ " ANSI_RESET);
+        edc_str_cat(*o, ANSI_DIM "│ " ANSI_RESET);
         break;
 
     case MD_BLOCK_UL:
@@ -144,7 +145,7 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         }
         ctx->list_depth++;
         if (ctx->has_content) {
-            g_string_append_c(o, '\n');
+            edc_str_catc(*o, '\n');
         }
         break;
 
@@ -157,7 +158,7 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         }
         ctx->list_depth++;
         if (ctx->has_content) {
-            g_string_append_c(o, '\n');
+            edc_str_catc(*o, '\n');
         }
         break;
     }
@@ -167,26 +168,26 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         if (depth < 0) depth = 0;
         if (depth >= MAX_LIST_DEPTH) depth = MAX_LIST_DEPTH - 1;
 
-        g_string_append_printf(o, "%*s", depth * 2, "");
+        edc_str_printf(*o, "%*s", depth * 2, "");
 
         MD_BLOCK_LI_DETAIL *det = detail;
         if (det->is_task) {
-            g_string_append_printf(o, "%s[%c]%s ", ANSI_GREEN,
+            edc_str_printf(*o, "%s[%c]%s ", ANSI_GREEN,
                                    det->task_mark ? det->task_mark : ' ',
                                    ANSI_RESET);
         } else if (depth < MAX_LIST_DEPTH && ctx->is_ordered[depth]) {
-            g_string_append_printf(o, "%s%d.%s ",
+            edc_str_printf(*o, "%s%d.%s ",
                                    ANSI_BOLD, ctx->ol_counter[depth]++,
                                    ANSI_RESET);
         } else {
-            g_string_append(o, "• ");
+            edc_str_cat(*o, "• ");
         }
         break;
     }
 
     case MD_BLOCK_HR:
-        if (ctx->has_content) g_string_append_c(o, '\n');
-        g_string_append(o, ANSI_DIM "────" ANSI_RESET "\n");
+        if (ctx->has_content) edc_str_catc(*o, '\n');
+        edc_str_cat(*o, ANSI_DIM "────" ANSI_RESET "\n");
         ctx->has_content = TRUE;
         break;
 
@@ -195,22 +196,22 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         int level = det->level;
         if (level < 1) level = 1;
         if (level > 6) level = 6;
-        if (ctx->has_content) g_string_append_c(o, '\n');
-        g_string_append(o, HEADING_COLORS[level]);
+        if (ctx->has_content) edc_str_catc(*o, '\n');
+        edc_str_cat(*o, HEADING_COLORS[level]);
         for (int i = 0; i < level; i++)
-            g_string_append_c(o, '#');
-        g_string_append_c(o, ' ');
+            edc_str_catc(*o, '#');
+        edc_str_catc(*o, ' ');
         break;
     }
 
     case MD_BLOCK_CODE:
-        if (ctx->has_content) g_string_append_c(o, '\n');
-        g_string_append(o, ANSI_GRAY);
+        if (ctx->has_content) edc_str_catc(*o, '\n');
+        edc_str_cat(*o, ANSI_GRAY);
         {
             MD_BLOCK_CODE_DETAIL *det = detail;
             if (det->lang.text && det->lang.size > 0) {
-                g_string_append_len(o, det->lang.text, det->lang.size);
-                g_string_append_c(o, '\n');
+                edc_str_catn(*o, det->lang.text, det->lang.size);
+                edc_str_catc(*o, '\n');
             }
         }
         break;
@@ -220,14 +221,14 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 
     case MD_BLOCK_P:
         if (ctx->has_content && !ctx->in_quote && ctx->list_depth == 0)
-            g_string_append_c(o, '\n');
+            edc_str_catc(*o, '\n');
         break;
 
     case MD_BLOCK_TABLE:
         ctx->in_table = TRUE;
         ctx->table_rows = g_ptr_array_new();
         ctx->col_aligns = g_ptr_array_new();
-        if (ctx->has_content) g_string_append_c(o, '\n');
+        if (ctx->has_content) edc_str_catc(*o, '\n');
         break;
 
     case MD_BLOCK_THEAD:
@@ -241,7 +242,7 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 
     case MD_BLOCK_TH:
     case MD_BLOCK_TD:
-        ctx->current_cell = g_string_new(NULL);
+        ctx->current_cell = edc_str_new(NULL);
         break;
 
     default:
@@ -254,7 +255,7 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 {
     struct edc_md_render_ctx *ctx = userdata;
-    GString *o = ctx->out;
+    sds *o = &ctx->out;
 
     switch (type) {
     case MD_BLOCK_DOC:
@@ -262,7 +263,7 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 
     case MD_BLOCK_QUOTE:
         ctx->in_quote = FALSE;
-        g_string_append_c(o, '\n');
+        edc_str_catc(*o, '\n');
         ctx->has_content = TRUE;
         break;
 
@@ -270,7 +271,7 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
     case MD_BLOCK_OL:
         if (ctx->list_depth > 0) ctx->list_depth--;
         if (ctx->list_depth == 0) {
-            g_string_append_c(o, '\n');
+            edc_str_catc(*o, '\n');
         }
         ctx->has_content = TRUE;
         break;
@@ -278,9 +279,9 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
     case MD_BLOCK_LI:
         if (!ctx->is_tight_list[ctx->list_depth > 0 ?
                                ctx->list_depth - 1 : 0]) {
-            g_string_append_c(o, '\n');
+            edc_str_catc(*o, '\n');
         } else {
-            if (ctx->list_depth > 0) g_string_append_c(o, '\n');
+            if (ctx->list_depth > 0) edc_str_catc(*o, '\n');
         }
         ctx->has_content = TRUE;
         break;
@@ -293,25 +294,25 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         int level = det->level;
         if (level < 1) level = 1;
         if (level > 6) level = 6;
-        g_string_append(o, ANSI_RESET "\n");
-        if (level <= 2) g_string_append_c(o, '\n');
+        edc_str_cat(*o, ANSI_RESET "\n");
+        if (level <= 2) edc_str_catc(*o, '\n');
         ctx->has_content = TRUE;
         break;
     }
 
     case MD_BLOCK_CODE:
-        g_string_append(o, ANSI_RESET "\n\n");
+        edc_str_cat(*o, ANSI_RESET "\n\n");
         ctx->has_content = TRUE;
         break;
 
     case MD_BLOCK_HTML:
-        g_string_append_c(o, '\n');
+        edc_str_catc(*o, '\n');
         ctx->has_content = TRUE;
         break;
 
     case MD_BLOCK_P:
-        if (!ctx->in_quote) g_string_append(o, ANSI_RESET);
-        g_string_append_c(o, '\n');
+        if (!ctx->in_quote) edc_str_cat(*o, ANSI_RESET);
+        edc_str_catc(*o, '\n');
         ctx->has_content = TRUE;
         break;
 
@@ -329,8 +330,8 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
             for (unsigned int r = 0; r < rows->len; r++) {
                 GPtrArray *row = g_ptr_array_index(rows, r);
                 for (unsigned int c = 0; c < ncols && c < row->len; c++) {
-                    GString *cell = g_ptr_array_index(row, c);
-                    int w = edc_md_visual_strlen(cell->str);
+                    sds cell = g_ptr_array_index(row, c);
+                    int w = edc_md_visual_strlen(cell);
                     if (w > widths[c]) widths[c] = w;
                 }
             }
@@ -338,56 +339,56 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
                 if (widths[c] < 2) widths[c] = 2;
             }
 
-            g_string_append(o, ANSI_DIM);
-            g_string_append(o, "┌");
+            edc_str_cat(*o, ANSI_DIM);
+            edc_str_cat(*o, "┌");
             for (unsigned int c = 0; c < ncols; c++) {
                 for (int i = 0; i < widths[c] + 2; i++)
-                    g_string_append(o, "─");
-                if (c < ncols - 1) g_string_append(o, "┬");
+                    edc_str_cat(*o, "─");
+                if (c < ncols - 1) edc_str_cat(*o, "┬");
             }
-            g_string_append(o, "┐\n" ANSI_RESET);
+            edc_str_cat(*o, "┐\n" ANSI_RESET);
 
             for (unsigned int r = 0; r < rows->len; r++) {
                 GPtrArray *row = g_ptr_array_index(rows, r);
 
-                g_string_append(o, ANSI_DIM "│" ANSI_RESET);
+                edc_str_cat(*o, ANSI_DIM "│" ANSI_RESET);
                 for (unsigned int c = 0; c < ncols; c++) {
-                    g_string_append_c(o, ' ');
+                    edc_str_catc(*o, ' ');
                     if (c < row->len) {
-                        GString *cell = g_ptr_array_index(row, c);
-                        g_string_append(o, cell->str);
-                        int len = edc_md_visual_strlen(cell->str);
+                        sds cell = g_ptr_array_index(row, c);
+                        edc_str_cat(*o, cell);
+                        int len = edc_md_visual_strlen(cell);
                         for (int i = len; i < widths[c]; i++)
-                            g_string_append_c(o, ' ');
+                            edc_str_catc(*o, ' ');
                     } else {
                         for (int i = 0; i < widths[c]; i++)
-                            g_string_append_c(o, ' ');
+                            edc_str_catc(*o, ' ');
                     }
-                    g_string_append(o, ANSI_DIM " │" ANSI_RESET);
+                    edc_str_cat(*o, ANSI_DIM " │" ANSI_RESET);
                 }
-                g_string_append_c(o, '\n');
+                edc_str_catc(*o, '\n');
 
                 if (r == nhead - 1 && nhead > 0 &&
                     r < rows->len - 1) {
-                    g_string_append(o, ANSI_DIM);
-                    g_string_append(o, "├");
+                    edc_str_cat(*o, ANSI_DIM);
+                    edc_str_cat(*o, "├");
                     for (unsigned int c = 0; c < ncols; c++) {
                         for (int i = 0; i < widths[c] + 2; i++)
-                            g_string_append(o, "─");
-                        if (c < ncols - 1) g_string_append(o, "┼");
+                            edc_str_cat(*o, "─");
+                        if (c < ncols - 1) edc_str_cat(*o, "┼");
                     }
-                    g_string_append(o, "┤\n" ANSI_RESET);
+                    edc_str_cat(*o, "┤\n" ANSI_RESET);
                 }
             }
 
-            g_string_append(o, ANSI_DIM);
-            g_string_append(o, "└");
+            edc_str_cat(*o, ANSI_DIM);
+            edc_str_cat(*o, "└");
             for (unsigned int c = 0; c < ncols; c++) {
                 for (int i = 0; i < widths[c] + 2; i++)
-                    g_string_append(o, "─");
-                if (c < ncols - 1) g_string_append(o, "┴");
+                    edc_str_cat(*o, "─");
+                if (c < ncols - 1) edc_str_cat(*o, "┴");
             }
-            g_string_append(o, "┘" ANSI_RESET "\n");
+            edc_str_cat(*o, "┘" ANSI_RESET "\n");
 
             free(widths);
             ctx->has_content = TRUE;
@@ -397,12 +398,12 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
             for (unsigned int i = 0; i < ctx->table_rows->len; i++) {
                 GPtrArray *row = g_ptr_array_index(ctx->table_rows, i);
                 for (unsigned int j = 0; j < row->len; j++) {
-                    GString *cell = g_ptr_array_index(row, j);
-                    g_string_free(cell, TRUE);
+                    sds cell = g_ptr_array_index(row, j);
+                    edc_str_free(cell);
                 }
-                g_ptr_array_free(row, TRUE);
+                g_ptr_array_free(row, FALSE);
             }
-            g_ptr_array_free(ctx->table_rows, TRUE);
+            g_ptr_array_free(ctx->table_rows, FALSE);
             ctx->table_rows = NULL;
         }
         if (ctx->col_aligns) {
@@ -410,7 +411,7 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
                 int *a = g_ptr_array_index(ctx->col_aligns, i);
                 free(a);
             }
-            g_ptr_array_free(ctx->col_aligns, TRUE);
+            g_ptr_array_free(ctx->col_aligns, FALSE);
             ctx->col_aligns = NULL;
         }
         break;
@@ -456,41 +457,41 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 static int edc_md_enter_span(MD_SPANTYPE type, void *detail, void *userdata)
 {
     struct edc_md_render_ctx *ctx = userdata;
-    GString *o = ctx->in_table && ctx->current_cell ? ctx->current_cell : ctx->out;
+    sds *o = (ctx->in_table && ctx->current_cell) ? &ctx->current_cell : &ctx->out;
 
     switch (type) {
     case MD_SPAN_EM:
-        g_string_append(o, ANSI_ITALIC);
+        edc_str_cat(*o, ANSI_ITALIC);
         break;
 
     case MD_SPAN_STRONG:
-        g_string_append(o, ANSI_BOLD);
+        edc_str_cat(*o, ANSI_BOLD);
         break;
 
     case MD_SPAN_A:
         ctx->in_span_a = TRUE;
-        g_string_append(o, ANSI_BLUE ANSI_UNDERLINE);
+        edc_str_cat(*o, ANSI_BLUE ANSI_UNDERLINE);
         break;
 
     case MD_SPAN_IMG:
         break;
 
     case MD_SPAN_CODE:
-        g_string_append(o, ANSI_GRAY);
+        edc_str_cat(*o, ANSI_GRAY);
         break;
 
     case MD_SPAN_DEL:
-        g_string_append(o, ANSI_STRIKE);
+        edc_str_cat(*o, ANSI_STRIKE);
         break;
 
     case MD_SPAN_LATEXMATH:
     case MD_SPAN_LATEXMATH_DISPLAY:
-        g_string_append(o, ANSI_GRAY);
+        edc_str_cat(*o, ANSI_GRAY);
         break;
 
     case MD_SPAN_WIKILINK:
     case MD_SPAN_U:
-        g_string_append(o, ANSI_UNDERLINE);
+        edc_str_cat(*o, ANSI_UNDERLINE);
         break;
 
     default:
@@ -503,38 +504,38 @@ static int edc_md_enter_span(MD_SPANTYPE type, void *detail, void *userdata)
 static int edc_md_leave_span(MD_SPANTYPE type, void *detail, void *userdata)
 {
     struct edc_md_render_ctx *ctx = userdata;
-    GString *o = ctx->in_table && ctx->current_cell ? ctx->current_cell : ctx->out;
+    sds *o = (ctx->in_table && ctx->current_cell) ? &ctx->current_cell : &ctx->out;
 
     switch (type) {
     case MD_SPAN_EM:
     case MD_SPAN_STRONG:
-        g_string_append(o, ANSI_RESET);
+        edc_str_cat(*o, ANSI_RESET);
         break;
 
     case MD_SPAN_A: {
         ctx->in_span_a = FALSE;
-        g_string_append(o, ANSI_RESET);
+        edc_str_cat(*o, ANSI_RESET);
         MD_SPAN_A_DETAIL *det = detail;
         if (!det->is_autolink && det->href.text && det->href.size > 0) {
-            g_string_append(o, " " ANSI_BLUE "(");
-            g_string_append_len(o, det->href.text, det->href.size);
-            g_string_append(o, ")" ANSI_RESET);
+            edc_str_cat(*o, " " ANSI_BLUE "(");
+            edc_str_catn(*o, det->href.text, det->href.size);
+            edc_str_cat(*o, ")" ANSI_RESET);
         }
         break;
     }
 
     case MD_SPAN_IMG: {
-        g_string_append(o, ANSI_BLUE "[img");
+        edc_str_cat(*o, ANSI_BLUE "[img");
         MD_SPAN_IMG_DETAIL *det = detail;
         if (det->title.text && det->title.size > 0) {
-            g_string_append_c(o, ':');
-            g_string_append_len(o, det->title.text, det->title.size);
+            edc_str_catc(*o, ':');
+            edc_str_catn(*o, det->title.text, det->title.size);
         }
-        g_string_append(o, "]");
+        edc_str_cat(*o, "]");
         if (det->src.text && det->src.size > 0) {
-            g_string_append_len(o, det->src.text, det->src.size);
+            edc_str_catn(*o, det->src.text, det->src.size);
         }
-        g_string_append(o, ANSI_RESET);
+        edc_str_cat(*o, ANSI_RESET);
         break;
     }
 
@@ -542,21 +543,21 @@ static int edc_md_leave_span(MD_SPANTYPE type, void *detail, void *userdata)
     case MD_SPAN_DEL:
     case MD_SPAN_LATEXMATH:
     case MD_SPAN_LATEXMATH_DISPLAY:
-        g_string_append(o, ANSI_RESET);
+        edc_str_cat(*o, ANSI_RESET);
         break;
 
     case MD_SPAN_WIKILINK: {
         MD_SPAN_WIKILINK_DETAIL *det = detail;
         if (det->target.text && det->target.size > 0) {
-            g_string_append(o, ANSI_BLUE " (");
-            g_string_append_len(o, det->target.text, det->target.size);
-            g_string_append(o, ")" ANSI_RESET);
+            edc_str_cat(*o, ANSI_BLUE " (");
+            edc_str_catn(*o, det->target.text, det->target.size);
+            edc_str_cat(*o, ")" ANSI_RESET);
         }
         break;
     }
 
     case MD_SPAN_U:
-        g_string_append(o, ANSI_RESET);
+        edc_str_cat(*o, ANSI_RESET);
         break;
 
     default:
@@ -570,11 +571,11 @@ static int edc_md_text(MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size,
                        void *userdata)
 {
     struct edc_md_render_ctx *ctx = userdata;
-    GString *o = ctx->in_table && ctx->current_cell ? ctx->current_cell : ctx->out;
+    sds *o = (ctx->in_table && ctx->current_cell) ? &ctx->current_cell : &ctx->out;
 
     switch (type) {
     case MD_TEXT_NORMAL:
-        g_string_append_len(o, text, size);
+        edc_str_catn(*o, text, size);
         break;
 
     case MD_TEXT_NULLCHAR:
@@ -582,36 +583,36 @@ static int edc_md_text(MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size,
 
     case MD_TEXT_BR:
         if (ctx->in_table && ctx->current_cell) {
-            g_string_append_c(o, ' ');
+            edc_str_catc(*o, ' ');
         } else {
-            g_string_append_c(o, '\n');
+            edc_str_catc(*o, '\n');
             if (ctx->in_quote)
-                g_string_append(o, ANSI_DIM "│ " ANSI_RESET);
+                edc_str_cat(*o, ANSI_DIM "│ " ANSI_RESET);
             else if (ctx->list_depth > 0) {
                 int depth = ctx->list_depth - 1;
                 if (depth >= MAX_LIST_DEPTH) depth = MAX_LIST_DEPTH - 1;
                 if (depth < 0) depth = 0;
-                g_string_append_printf(o, "%*s", depth * 2 + 2, "");
+                edc_str_printf(*o, "%*s", depth * 2 + 2, "");
             }
         }
         break;
 
     case MD_TEXT_SOFTBR:
         if (ctx->in_table && ctx->current_cell) {
-            g_string_append_c(o, ' ');
+            edc_str_catc(*o, ' ');
         } else {
-            g_string_append_c(o, ' ');
+            edc_str_catc(*o, ' ');
         }
         break;
 
     case MD_TEXT_CODE:
     case MD_TEXT_HTML:
     case MD_TEXT_LATEXMATH:
-        g_string_append_len(o, text, size);
+        edc_str_catn(*o, text, size);
         break;
 
     case MD_TEXT_ENTITY:
-        g_string_append_len(o, text, size);
+        edc_str_catn(*o, text, size);
         break;
 
     default:
@@ -628,9 +629,9 @@ static void edc_md_debug_log(const char *msg, void *userdata)
     log_debug("md4c: %s", msg);
 }
 
-GString *edc_markdown_render(const char *markdown)
+sds edc_markdown_render(const char *markdown)
 {
-    if (!markdown) return g_string_new(NULL);
+    if (!markdown) return edc_str_new(NULL);
 
     struct edc_md_render_ctx ctx;
     edc_md_render_ctx_init(&ctx);
@@ -655,7 +656,7 @@ GString *edc_markdown_render(const char *markdown)
         log_error("md_parse failed: %d", ret);
     }
 
-    GString *result = ctx.out;
+    sds result = ctx.out;
     ctx.out = NULL;
     edc_md_render_ctx_free(&ctx);
 

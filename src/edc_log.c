@@ -1,5 +1,6 @@
 #include "edc_log.h"
 #include "edc_config.h"
+#include "edc_strutil.h"
 #include "log.h"
 
 #include <glib.h>

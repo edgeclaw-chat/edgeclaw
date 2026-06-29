@@ -5,6 +5,7 @@
 #include "log.h"
 #include <dirent.h>
 #include <glib.h>
+#include "edc_string.h"
 #include "edc_strutil.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -287,19 +288,19 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
 
                 if (size > 1)
                 {
-                    GString *joined = g_string_new(NULL);
+                    sds joined = edc_str_new(NULL);
                     for (int i = 1; i < size; i++)
                     {
                         cJSON *elem = cJSON_GetArrayItem(rw, i);
                         if (elem && cJSON_IsString(elem))
                         {
-                            if (joined->len > 0)
-                                g_string_append(joined, ", ");
-                            g_string_append(joined, elem->valuestring);
+                            if (edc_str_len(joined) > 0)
+                                edc_str_cat(joined, ", ");
+                            edc_str_cat(joined, elem->valuestring);
                         }
                     }
-                    strncpy(result->sandbox_rw_paths, joined->str, sizeof(result->sandbox_rw_paths) - 1);
-                    g_string_free(joined, TRUE);
+                    strncpy(result->sandbox_rw_paths, joined, sizeof(result->sandbox_rw_paths) - 1);
+                    edc_str_free(joined);
                 }
             }
         }
@@ -310,19 +311,19 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
             int size = cJSON_GetArraySize(ro);
             if (size > 0)
             {
-                GString *joined = g_string_new(NULL);
+                sds joined = edc_str_new(NULL);
                 for (int i = 0; i < size; i++)
                 {
                     cJSON *elem = cJSON_GetArrayItem(ro, i);
                     if (elem && cJSON_IsString(elem))
                     {
-                        if (joined->len > 0)
-                            g_string_append(joined, ", ");
-                        g_string_append(joined, elem->valuestring);
+                        if (edc_str_len(joined) > 0)
+                            edc_str_cat(joined, ", ");
+                        edc_str_cat(joined, elem->valuestring);
                     }
                 }
-                strncpy(result->sandbox_ro_paths, joined->str, sizeof(result->sandbox_ro_paths) - 1);
-                g_string_free(joined, TRUE);
+                strncpy(result->sandbox_ro_paths, joined, sizeof(result->sandbox_ro_paths) - 1);
+                edc_str_free(joined);
             }
         }
     }

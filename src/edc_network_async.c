@@ -208,7 +208,7 @@ static struct edc_network_async_request *edc_http_async_request_new(edc_network_
     req->retries = 3;
     req->fn = fn;
     req->fn_data = fn_data;
-    req->proxy = strdup(proxy);
+    req->proxy = proxy ? strdup(proxy) : NULL;
     req->timeout = timeout;
     req->connected = FALSE;
 

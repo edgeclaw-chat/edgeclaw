@@ -1,3 +1,4 @@
+#include "edc_string.h"
 #include "edc_session.h"
 #include "edc_config.h"
 #include "edc_context.h"
@@ -37,14 +38,14 @@ static void edc_session_merge_history(struct edc_session *session, cJSON *histor
 
 static void edc_session_build_messages(struct edc_session *session, const char *user_input, bool load_history)
 {
-    GString *system_prompt = edc_context_build_system_prompt(session->config);
+    sds system_prompt = edc_context_build_system_prompt(session->config);
 
     cJSON *system_msg = cJSON_CreateObject();
-    char *valid_utf8 = g_utf8_make_valid(system_prompt->str, -1);
+    char *valid_utf8 = g_utf8_make_valid(system_prompt, -1);
     cJSON_AddStringToObject(system_msg, "role", "system");
     cJSON_AddStringToObject(system_msg, "content", valid_utf8);
     free(valid_utf8);
-    g_string_free(system_prompt, TRUE);
+    edc_str_free(system_prompt);
 
     cJSON_AddItemToArray(session->messages, system_msg);
 

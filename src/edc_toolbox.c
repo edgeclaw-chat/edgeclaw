@@ -1,3 +1,4 @@
+#include "edc_string.h"
 #include "edc_strutil.h"
 #include "edc_toolbox.h"
 #include "edc_param_types.h"
@@ -79,8 +80,8 @@ static cJSON *edc_tool_params_to_json(GSList *params)
 static cJSON *edc_tool_to_schema(const struct edc_tool *tool)
 {
     cJSON *function = cJSON_CreateObject();
-    cJSON_AddStringToObject(function, "name", tool->name->str);
-    cJSON_AddStringToObject(function, "description", tool->desc->str);
+    cJSON_AddStringToObject(function, "name", tool->name);
+    cJSON_AddStringToObject(function, "description", tool->desc);
     cJSON_AddItemToObject(function, "parameters", edc_tool_params_to_json(tool->params));
 
     cJSON *schema = cJSON_CreateObject();
@@ -92,7 +93,7 @@ static cJSON *edc_tool_to_schema(const struct edc_tool *tool)
 
 void edc_toolbox_register(struct edc_toolbox *tb, struct edc_tool *tool)
 {
-    g_hash_table_insert(tb->tools, tool->name->str, tool);
+    g_hash_table_insert(tb->tools, tool->name, tool);
     cJSON_AddItemToArray(tb->schemas, edc_tool_to_schema(tool));
 
     cJSON *schema = edc_tool_to_schema(tool);
@@ -154,7 +155,7 @@ static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, G
 }
 
 void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON *args,
-                     void (*callback)(struct edc_toolbox_call_ctx *, GString *, GError *))
+                     void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *))
 {
 
     GError *error = NULL;
@@ -172,19 +173,19 @@ void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON 
         return;
     }
 
-    GString *tool_names = g_string_new(NULL);
+    sds tool_names = edc_str_new(NULL);
     GList *head = g_hash_table_get_keys(ctx->tb->tools);
     GList *p = head;
     while (p)
     {
         const char *name = p->data;
-        g_string_append_printf(tool_names, "%s, ", name);
+        edc_str_printf(tool_names, "%s, ", name);
         p = p->next;
     }
 
     g_set_error(&error, BC_TOOL_ERROR, BC_TOOL_NOT_FOUND, "Error: tool %s not found. Available: %s", name,
-                tool_names->str);
+                tool_names);
     g_list_free(head);
-    g_string_free(tool_names, TRUE);
+    edc_str_free(tool_names);
     callback(ctx, NULL, error);
 }

@@ -1,5 +1,6 @@
 #include "src/edc_markdown_render.h"
 #include <glib.h>
+#include "edc_string.h"
 #include <stdio.h>
 
 int main(int argc, char *argv[])
@@ -17,13 +18,13 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    GString *rendered = edc_markdown_render(contents);
+    sds rendered = edc_markdown_render(contents);
     free(contents);
 
-    if (rendered && rendered->str) {
-        printf("%s\n", rendered->str);
+    if (rendered && rendered) {
+        printf("%s\n", rendered);
     }
 
-    g_string_free(rendered, TRUE);
+    edc_str_free(rendered);
     return 0;
 }

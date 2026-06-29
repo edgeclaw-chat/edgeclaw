@@ -1,3 +1,4 @@
+#include "edc_string.h"
 #include "edc_strutil.h"
 #include "edc_sandbox.h"
 #include "edc_toolbox.h"
@@ -15,8 +16,8 @@
 struct edc_tool_shell_ctx
 {
     struct edc_tool *tool;
-    GString *stderr_buf;
-    GString *stdout_buf;
+    sds stderr_buf;
+    sds stdout_buf;
     bool stderr_complete;
     bool stdout_complete;
     bool child_exited;
@@ -25,7 +26,7 @@ struct edc_tool_shell_ctx
     GIOChannel *stdout_ch;
     GIOChannel *stderr_ch;
     struct edc_toolbox_call_ctx *tb_ctx;
-    void (*callback)(struct edc_toolbox_call_ctx *, GString *result, GError *error);
+    void (*callback)(struct edc_toolbox_call_ctx *, sds result, GError *error);
     unsigned int timeout_id;
 };
 
@@ -43,28 +44,30 @@ static void edc_tool_shell_cleanup_channel(GIOChannel *ch)
 
 static void edc_tool_shell_complete(struct edc_tool_shell_ctx *ctx)
 {
-    GString *result = ctx->stdout_buf;
+    sds result = ctx->stdout_buf;
     int status = ctx->status;
 
-    if (ctx->stderr_buf->len)
+    if (edc_str_len(ctx->stderr_buf))
     {
-        g_string_append_printf(result, "STDERR:\n%s", ctx->stderr_buf->str);
+        edc_str_printf(result, "STDERR:\n%s", ctx->stderr_buf);
     }
 
-    if (result->len)
+    if (edc_str_len(result))
     {
-        g_string_append_printf(result, "\nDone (exit code %d)", status);
+        edc_str_printf(result, "\nDone (exit code %d)", status);
     }
     else
     {
-        g_string_append_printf(result, "Done (exit code %d)", status);
+        edc_str_printf(result, "Done (exit code %d)", status);
     }
+
+    ctx->stdout_buf = result;
 
     if (status)
     {
-        GError *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR, "%s", result->str);
+        GError *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR, "%s", result);
         ctx->callback(ctx->tb_ctx, NULL, error);
-        g_string_free(result, TRUE);
+        edc_str_free(result);
     }
     else
     {
@@ -79,7 +82,7 @@ static void edc_tool_shell_complete(struct edc_tool_shell_ctx *ctx)
 
     edc_tool_shell_cleanup_channel(ctx->stdout_ch);
     edc_tool_shell_cleanup_channel(ctx->stderr_ch);
-    g_string_free(ctx->stderr_buf, TRUE);
+    edc_str_free(ctx->stderr_buf);
 
     g_mutex_lock(&active_mutex);
     active_contexts = g_slist_remove(active_contexts, ctx);
@@ -96,7 +99,7 @@ static bool on_pipe_readable(GIOChannel *source, GIOCondition condition, void* d
         return FALSE;
     }
 
-    GString *buf = data;
+    sds *buf_ptr = data;
 
     char line[1024];
     size_t bytes_read = 0;
@@ -109,7 +112,7 @@ static bool on_pipe_readable(GIOChannel *source, GIOCondition condition, void* d
 
     if (bytes_read > 0)
     {
-        g_string_append_len(buf, line, bytes_read);
+        edc_str_catn(*buf_ptr, line, bytes_read);
     }
 
     if (status == G_IO_STATUS_EOF || (condition & G_IO_HUP))
@@ -160,7 +163,7 @@ static void edc_tool_shell_try_complete(struct edc_tool_shell_ctx *ctx)
 static bool on_stderr_pipe_readable(GIOChannel *source, GIOCondition cond, void *data)
 {
     struct edc_tool_shell_ctx *ctx = data;
-    bool ret = on_pipe_readable(source, cond, ctx->stderr_buf);
+    bool ret = on_pipe_readable(source, cond, &ctx->stderr_buf);
     if (!ret)
     {
         ctx->stderr_complete = TRUE;
@@ -172,7 +175,7 @@ static bool on_stderr_pipe_readable(GIOChannel *source, GIOCondition cond, void 
 static bool on_stdout_pipe_readable(GIOChannel *source, GIOCondition cond, void *data)
 {
     struct edc_tool_shell_ctx *ctx = data;
-    bool ret = on_pipe_readable(source, cond, ctx->stdout_buf);
+    bool ret = on_pipe_readable(source, cond, &ctx->stdout_buf);
     if (!ret)
     {
         ctx->stdout_complete = TRUE;
@@ -203,7 +206,7 @@ static bool shell_timeout_cb(void* data)
     if (!ctx->child_exited)
     {
         kill(-ctx->child_pid, SIGKILL);
-        g_string_append(ctx->stderr_buf, "\n[command timed out]");
+        edc_str_cat(ctx->stderr_buf, "\n[command timed out]");
     }
 
     ctx->timeout_id = 0;
@@ -211,7 +214,7 @@ static bool shell_timeout_cb(void* data)
 }
 
 static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, cJSON *args,
-                                     void (*callback)(struct edc_toolbox_call_ctx *, GString *, GError *))
+                                     void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *))
 {
     GError *error = NULL;
     cJSON *cmd = cJSON_GetObjectItemCaseSensitive(args, "command");
@@ -272,8 +275,8 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
 
     struct edc_tool_shell_ctx *ctx = g_new0(struct edc_tool_shell_ctx, 1);
     ctx->tb_ctx = tb_ctx;
-    ctx->stderr_buf = g_string_new(NULL);
-    ctx->stdout_buf = g_string_new(NULL);
+    ctx->stderr_buf = edc_str_new(NULL);
+    ctx->stdout_buf = edc_str_new(NULL);
     ctx->stderr_complete = FALSE;
     ctx->stdout_complete = FALSE;
     ctx->child_exited = FALSE;

@@ -1,3 +1,4 @@
+#include "edc_string.h"
 #ifndef __BC_LLM_ACTOR_H__
 #define __BC_LLM_ACTOR_H__
 #include "edc_actor.h"
@@ -45,12 +46,12 @@ typedef enum
 
 struct edc_llm_chat_tool_call
 {
-    GString *id;
+    sds id;
     edc_llm_actor_tool_call_type_t type;
     size_t index;
     struct
     {
-        GString *name;
+        sds name;
         cJSON *arguments;
     } function;
 };
@@ -59,8 +60,8 @@ struct edc_llm_actor_resp
 {
     edc_llm_actor_finish_reason_t reason;
     size_t index;
-    GString *content;
-    GString *reasoning_content;
+    sds content;
+    sds reasoning_content;
     edc_llm_actor_role_t role;
 
     GArray *tool_calls;

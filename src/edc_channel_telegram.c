@@ -3,36 +3,37 @@
 #include "cJSON.h"
 #include "log.h"
 #include <glib.h>
+#include "edc_string.h"
 #include "edc_strutil.h"
 
 static const char *telegram_api_host = "api.telegram.org";
 static char *telegram_build_path(struct channel_conf *conf, const char *method, const char *args[])
 {
-    GString *url = g_string_new(NULL);
-    g_string_append_printf(url, "/bot%s/%s", conf->telegram.bot_key, method);
+    sds url = edc_str_new(NULL);
+    edc_str_printf(url, "/bot%s/%s", conf->telegram.bot_key, method);
     if (!args)
     {
-        char *s = url->str;
-        g_string_free(url, FALSE);
+        char *s = strdup(url);
+        edc_str_free(url);
         return s;
     }
 
-    g_string_append(url, "?");
+    edc_str_cat(url, "?");
 
     const char **p = args;
     while (TRUE)
     {
-        g_string_append_printf(url, "%s", *p);
+        edc_str_printf(url, "%s", *p);
         ++p;
         if (!p || !(*p))
         {
             break;
         }
-        g_string_append(url, "&");
+        edc_str_cat(url, "&");
     }
 
-    char *s = url->str;
-    g_string_free(url, FALSE);
+    char *s = strdup(url);
+    edc_str_free(url);
     return s;
 }
 
@@ -44,9 +45,9 @@ struct edc_channel_telegram_req
     const char *url;
     const char *proxy;
     int method; // 0: GET, 1: POST
-    GString *body;
+    sds body;
     bool connected;
-    GString *resp;
+    sds resp;
     uint64_t create_time;
     struct edc_channel_telegram_req *next;
 };
@@ -57,11 +58,11 @@ static void __bc_channel_telegram_req_free(struct edc_channel_telegram_req *req,
     free((char *)req->path);
     if (req->body)
     {
-        g_string_free(req->body, TRUE);
+        edc_str_free(req->body);
     }
     if (req->resp)
     {
-        g_string_free(req->resp, TRUE);
+        edc_str_free(req->resp);
     }
 
     if (free_next && req->next)
@@ -96,7 +97,7 @@ static void edc_channel_telegram_make_http_request(struct mg_connection *c, stru
                   "Content-Length: %d\r\n"
                   "Connection: close\r\n\r\n"
                   "%s",
-                  req->path, req->host, (int)req->body->len, req->body->str);
+                  req->path, req->host, (int)edc_str_len(req->body), req->body);
     }
     else
     {
@@ -113,9 +114,9 @@ static void edc_channel_actor_telegram_conn_fn(struct mg_connection *c, int ev, 
         edc_actor_t *actor = req->actor;
         edc_channel_actor_state_t *state = actor->state;
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
-        GString *buf = g_string_new(NULL);
+        sds buf = edc_str_new(NULL);
 
-        g_string_append_len(buf, hm->body.buf, hm->body.len);
+        edc_str_catn(buf, hm->body.buf, hm->body.len);
         req->resp = buf;
 
         edc_actor_msg_t *msg = edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_telegram, NULL, NULL, req,
@@ -176,7 +177,8 @@ static struct edc_channel_telegram_req *edc_channel_actor_send_message_chunk_req
     req->host = telegram_api_host;
     req->connected = FALSE;
     req->url = edc_strdup_printf("https://%s%s", req->host, req->path);
-    req->body = g_string_new_take(post_fields);
+    req->body = sdsnewlen(post_fields, strlen(post_fields));
+    free(post_fields);
     req->method = 1;
     req->next = NULL;
 
@@ -322,10 +324,10 @@ static struct edc_channel_message *process_user_input(edc_channel_actor_state_t 
 static struct edc_channel_message *edc_channel_handle_telegram_user_input(edc_actor_t *actor,
                                                                         const struct edc_channel_telegram_req *req)
 {
-    cJSON *input = cJSON_Parse(req->resp->str);
+    cJSON *input = cJSON_Parse(req->resp);
     if (input == NULL)
     {
-        log_error("parse input failed: %s", (char *)req->resp->str);
+        log_error("parse input failed: %s", (char *)req->resp);
         return NULL;
     }
 
@@ -342,11 +344,11 @@ static struct edc_channel_message *edc_channel_handle_telegram_user_input(edc_ac
 
 static void edc_channel_handle_telegram_reply(edc_actor_t *actor, struct edc_channel_telegram_req *req)
 {
-    cJSON *result = cJSON_Parse(req->resp->str);
+    cJSON *result = cJSON_Parse(req->resp);
 
     if (result == NULL)
     {
-        log_error("reply to user failed. parse input failed: %s", (char *)req->resp->str);
+        log_error("reply to user failed. parse input failed: %s", (char *)req->resp);
         return;
     }
 

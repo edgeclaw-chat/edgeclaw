@@ -1,3 +1,4 @@
+#include "edc_string.h"
 #include "edc_strutil.h"
 #include "edc_llm_actor.h"
 #include "edc_actor.h"
@@ -28,7 +29,7 @@ struct edc_llm_actor_http_req
     const char *body;
     struct llm_api_conf *api_conf;
     edc_actor_t *from;
-    GString *response;
+    sds response;
     void* request_id;
 };
 
@@ -51,7 +52,7 @@ static void edc_llm_actor_http_req_free(struct edc_llm_actor_http_req *req)
     free((char *)req->body);
     if (req->response)
     {
-        g_string_free(req->response, TRUE);
+        edc_str_free(req->response);
     }
     free(req);
 }
@@ -79,8 +80,8 @@ static void edc_llm_actor_on_http_fn(struct mg_connection *c, int ev, void *ev_d
     if (ev == MG_EV_HTTP_MSG)
     {
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
-        GString *buf = g_string_new(NULL);
-        g_string_append_len(buf, hm->body.buf, hm->body.len);
+        sds buf = edc_str_new(NULL);
+        edc_str_catn(buf, hm->body.buf, hm->body.len);
         req->response = buf;
 
         edc_actor_send(req->actor, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, req->request_id, req,
@@ -269,13 +270,13 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
     cJSON *content = cJSON_GetObjectItem(message, "content");
     if (content && cJSON_IsString(content))
     {
-        resp->content = g_string_new(content->valuestring);
+        resp->content = edc_str_new(content->valuestring);
     }
 
     cJSON *reasoning_content = cJSON_GetObjectItem(message, "reasoning_content");
     if (reasoning_content && cJSON_IsString(reasoning_content))
     {
-        resp->reasoning_content = g_string_new(reasoning_content->valuestring);
+        resp->reasoning_content = edc_str_new(reasoning_content->valuestring);
     }
 
     cJSON *role = cJSON_GetObjectItem(message, "role");
@@ -312,7 +313,7 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
             cJSON *id = cJSON_GetObjectItem(tool_call, "id");
             if (id && cJSON_IsString(id))
             {
-                tc.id = g_string_new(id->valuestring);
+                tc.id = edc_str_new(id->valuestring);
             }
 
             cJSON *tc_index = cJSON_GetObjectItem(tool_call, "index");
@@ -337,7 +338,7 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
                 cJSON *name = cJSON_GetObjectItem(function, "name");
                 if (name && cJSON_IsString(name))
                 {
-                    tc.function.name = g_string_new(name->valuestring);
+                    tc.function.name = edc_str_new(name->valuestring);
                 }
 
                 cJSON *arguments = cJSON_GetObjectItem(function, "arguments");
@@ -359,13 +360,13 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
 static void edc_llm_actor_handle_respone(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
     struct edc_llm_actor_http_req *req = (struct edc_llm_actor_http_req *)msg->data;
-    GString *buf = req->response;
+    sds buf = req->response;
 
     struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
-    cJSON *body = cJSON_Parse(buf->str);
+    cJSON *body = cJSON_Parse(buf);
     if (!body)
     {
-        resp->error = g_error_new(BC_LLM_ACTOR_ERROR, -1, "resp format error: %s", buf->str);
+        resp->error = g_error_new(BC_LLM_ACTOR_ERROR, -1, "resp format error: %s", buf);
         goto exit;
     }
 
@@ -432,12 +433,12 @@ void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp)
 
     if (resp->content)
     {
-        g_string_free(resp->content, TRUE);
+        edc_str_free(resp->content);
     }
 
     if (resp->reasoning_content)
     {
-        g_string_free(resp->reasoning_content, TRUE);
+        edc_str_free(resp->reasoning_content);
     }
 
     if (resp->tool_calls)
@@ -447,7 +448,7 @@ void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp)
             struct edc_llm_chat_tool_call call = g_array_index(resp->tool_calls, struct edc_llm_chat_tool_call, i);
             if (call.id)
             {
-                g_string_free(call.id, TRUE);
+                edc_str_free(call.id);
             }
 
             if (call.function.arguments)
@@ -457,7 +458,7 @@ void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp)
 
             if (call.function.name)
             {
-                g_string_free(call.function.name, TRUE);
+                edc_str_free(call.function.name);
             }
         }
 

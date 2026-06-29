@@ -1,3 +1,4 @@
+#include "edc_string.h"
 #include "edc_strutil.h"
 #include "edc_skills.h"
 
@@ -22,13 +23,13 @@ void edc_skill_free(struct edc_skill *skill)
 
     if (skill->name)
     {
-        g_string_free(skill->name, TRUE);
+        edc_str_free(skill->name);
     }
 
     g_hash_table_destroy(skill->meta);
     if (skill->content)
     {
-        g_string_free(skill->content, TRUE);
+        edc_str_free(skill->content);
     }
 
     free(skill);
@@ -84,7 +85,9 @@ static bool edc_extract_skill_meta_and_content(const char *content, struct edc_s
             char **kv = edc_strsplit(*p, ":", 2);
             if (kv && kv[0] && kv[1])
             {
-                g_hash_table_insert(skill->meta, edc_strstrip(strdup(kv[0])), edc_strstrip(strdup(kv[1])));
+                char *k = strdup(kv[0]); edc_strstrip(k);
+                char *v = strdup(kv[1]); edc_strstrip(v);
+                g_hash_table_insert(skill->meta, k, v);
             }
             edc_strfreev(kv);
             p++;
@@ -95,11 +98,11 @@ static bool edc_extract_skill_meta_and_content(const char *content, struct edc_s
         int start = 0, end = 0;
         if (g_match_info_fetch_pos(match_info, 0, &start, &end))
         {
-            skill->content = g_string_new(edc_strstrip((char *)content + end));
+            skill->content = edc_str_new(edc_strstrip((char *)content + end));
         }
         else
         {
-            skill->content = g_string_new(edc_strstrip((char *)content));
+            skill->content = edc_str_new(edc_strstrip((char *)content));
         }
     }
 
@@ -131,7 +134,7 @@ static struct edc_skill *edc_skill_load(const char *name, const char *file_path)
         }
 
         free(content);
-        skill->name = g_string_new(name);
+        skill->name = edc_str_new(name);
 
         return skill;
     }
@@ -142,16 +145,16 @@ static struct edc_skill *edc_skill_load(const char *name, const char *file_path)
     return NULL;
 }
 
-GArray *edc_skills_load(const GString *dir_path)
+GArray *edc_skills_load(const char *dir_path)
 {
     GArray *skills = g_array_new(FALSE, FALSE, sizeof(struct edc_skill *));
-    GDir *dir = g_dir_open(dir_path->str, 0, NULL);
+    GDir *dir = g_dir_open(dir_path, 0, NULL);
     if (dir)
     {
         const char *filename = NULL;
         while ((filename = g_dir_read_name(dir)))
         {
-            char *full_path = g_build_filename(dir_path->str, filename, "SKILL.md", NULL);
+            char *full_path = g_build_filename(dir_path, filename, "SKILL.md", NULL);
 
             struct edc_skill *skill = edc_skill_load(filename, full_path);
             if (skill)

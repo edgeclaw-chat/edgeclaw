@@ -10,6 +10,7 @@
 #include "lwip/err.h"
 #include <cJSON.h>
 #include <glib.h>
+#include "edc_string.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -25,7 +26,7 @@
 struct device_file_ctx
 {
     struct edc_toolbox_call_ctx *tb_ctx;
-    void (*callback)(struct edc_toolbox_call_ctx *, GString *, GError *);
+    void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *);
     char *agent_ip;
     uint16_t agent_port;
 
@@ -61,16 +62,16 @@ static int send_all(int fd, const void *buf, size_t len)
     return 0;
 }
 
-static int recv_until_close_socket(int fd, GString *buf)
+static int recv_until_close_socket(int fd, sds *buf)
 {
     char tmp[4096];
     ssize_t n;
     while ((n = recv(fd, tmp, sizeof(tmp), 0)) > 0)
-        g_string_append_len(buf, tmp, n);
+        edc_str_catn(*buf, tmp, n);
     return (n == 0) ? 0 : -1;
 }
 
-static err_t recv_until_close(struct netconn *c, GString *buf)
+static err_t recv_until_close(struct netconn *c, sds *buf)
 {
     struct netbuf *nb;
     u8_t *p;
@@ -80,7 +81,7 @@ static err_t recv_until_close(struct netconn *c, GString *buf)
     while ((err = netconn_recv(c, &nb)) == ERR_OK)
     {
         netbuf_data(nb, (void **)&p, &chunk);
-        g_string_append_len(buf, (char *)p, chunk);
+        edc_str_catn(*buf, (char *)p, chunk);
         netbuf_delete(nb);
     }
     return err;
@@ -98,9 +99,9 @@ static void device_file_send_error(struct device_file_ctx *ctx, const char *fmt,
     free(msg);
 }
 
-static int parse_json_response(GString *resp_buf, cJSON **out_json, GError **error)
+static int parse_json_response(sds resp_buf, cJSON **out_json, GError **error)
 {
-    char *body = strstr(resp_buf->str, "\r\n\r\n");
+    char *body = strstr(resp_buf, "\r\n\r\n");
     if (!body)
     {
         *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR, "device_file: invalid HTTP response");
@@ -109,9 +110,9 @@ static int parse_json_response(GString *resp_buf, cJSON **out_json, GError **err
     body += 4;
 
     int http_status = 0;
-    if (g_ascii_strncasecmp(resp_buf->str, "HTTP/", 5) == 0)
+    if (g_ascii_strncasecmp(resp_buf, "HTTP/", 5) == 0)
     {
-        const char *sp = strchr(resp_buf->str, ' ');
+        const char *sp = strchr(resp_buf, ' ');
         if (sp)
             http_status = atoi(sp + 1);
     }
@@ -193,20 +194,20 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
     tv.tv_sec = ctx->timeout_sec;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    GString *resp_buf = g_string_new(NULL);
-    int recv_ret = recv_until_close_socket(sock, resp_buf);
+    sds resp_buf = edc_str_new(NULL);
+    int recv_ret = recv_until_close_socket(sock, &resp_buf);
     close(sock);
 
     if (recv_ret != 0)
     {
-        g_string_free(resp_buf, TRUE);
+        edc_str_free(resp_buf);
         return -1;
     }
 
     cJSON *resp_json = NULL;
     GError *error = NULL;
     int ret = parse_json_response(resp_buf, &resp_json, &error);
-    g_string_free(resp_buf, TRUE);
+    edc_str_free(resp_buf);
     if (ret != 0)
     {
         if (error)
@@ -262,21 +263,21 @@ static int do_upload_chunk_lwip(struct device_file_ctx *ctx, const char *b64_chu
 
     netconn_set_recvtimeout(c, ctx->timeout_sec * 1000);
 
-    GString *resp_buf = g_string_new(NULL);
-    err_t recv_err = recv_until_close(c, resp_buf);
+    sds resp_buf = edc_str_new(NULL);
+    err_t recv_err = recv_until_close(c, &resp_buf);
     netconn_close(c);
     netconn_delete(c);
 
     if (recv_err == ERR_TIMEOUT)
     {
-        g_string_free(resp_buf, TRUE);
+        edc_str_free(resp_buf);
         return -1;
     }
 
     cJSON *resp_json = NULL;
     GError *error = NULL;
     int ret = parse_json_response(resp_buf, &resp_json, &error);
-    g_string_free(resp_buf, TRUE);
+    edc_str_free(resp_buf);
     if (ret != 0)
     {
         if (error)
@@ -311,7 +312,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
     char *chunk_buf = g_malloc(chunk_buf_size);
     size_t offset = 0;
     int chunk_idx = 0;
-    GString *final_result = g_string_new(NULL);
+    sds final_result = edc_str_new(NULL);
 
     while (offset < raw_len)
     {
@@ -324,7 +325,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
         {
             device_file_send_error(ctx, "device_upload: read failed at offset %zu", offset);
             free(chunk_buf);
-            g_string_free(final_result, TRUE);
+            edc_str_free(final_result);
             close(fd);
             return FALSE;
         }
@@ -334,7 +335,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
         {
             device_file_send_error(ctx, "device_upload: base64 encode failed at offset %zu", offset);
             free(chunk_buf);
-            g_string_free(final_result, TRUE);
+            edc_str_free(final_result);
             close(fd);
             return FALSE;
         }
@@ -349,7 +350,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
         {
             device_file_send_error(ctx, "device_upload: chunk %d failed at offset %zu", chunk_idx, offset);
             free(chunk_buf);
-            g_string_free(final_result, TRUE);
+            edc_str_free(final_result);
             close(fd);
             return FALSE;
         }
@@ -361,7 +362,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
     free(chunk_buf);
     close(fd);
 
-    g_string_printf(final_result, "Uploaded %zu bytes in %d chunk(s) to %s",
+    edc_str_printf(final_result, "Uploaded %zu bytes in %d chunk(s) to %s",
                     raw_len, chunk_idx, ctx->remote_path);
 
     ctx->callback(ctx->tb_ctx, final_result, NULL);
@@ -418,13 +419,13 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
     tv.tv_sec = ctx->timeout_sec;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    GString *resp_buf = g_string_new(NULL);
-    int recv_ret = recv_until_close_socket(sock, resp_buf);
+    sds resp_buf = edc_str_new(NULL);
+    int recv_ret = recv_until_close_socket(sock, &resp_buf);
     close(sock);
 
     if (recv_ret != 0)
     {
-        g_string_free(resp_buf, TRUE);
+        edc_str_free(resp_buf);
         return -1;
     }
 
@@ -432,12 +433,12 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
     GError *error = NULL;
     if (parse_json_response(resp_buf, &resp_json, &error) != 0)
     {
-        g_string_free(resp_buf, TRUE);
+        edc_str_free(resp_buf);
         if (error)
             g_error_free(error);
         return -1;
     }
-    g_string_free(resp_buf, TRUE);
+    edc_str_free(resp_buf);
 
     cJSON *size_item = cJSON_GetObjectItem(resp_json, "size");
     cJSON *data_item = cJSON_GetObjectItem(resp_json, "data");
@@ -513,14 +514,14 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
 
     netconn_set_recvtimeout(c, ctx->timeout_sec * 1000);
 
-    GString *resp_buf = g_string_new(NULL);
-    err_t recv_err = recv_until_close(c, resp_buf);
+    sds resp_buf = edc_str_new(NULL);
+    err_t recv_err = recv_until_close(c, &resp_buf);
     netconn_close(c);
     netconn_delete(c);
 
     if (recv_err == ERR_TIMEOUT)
     {
-        g_string_free(resp_buf, TRUE);
+        edc_str_free(resp_buf);
         return -1;
     }
 
@@ -528,12 +529,12 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
     GError *error = NULL;
     if (parse_json_response(resp_buf, &resp_json, &error) != 0)
     {
-        g_string_free(resp_buf, TRUE);
+        edc_str_free(resp_buf);
         if (error)
             g_error_free(error);
         return -1;
     }
-    g_string_free(resp_buf, TRUE);
+    edc_str_free(resp_buf);
 
     cJSON *size_item = cJSON_GetObjectItem(resp_json, "size");
     cJSON *data_item = cJSON_GetObjectItem(resp_json, "data");
@@ -606,8 +607,8 @@ static bool do_device_download(struct device_file_ctx *ctx,
 
     close(fd);
 
-    GString *result = g_string_new(NULL);
-    g_string_printf(result, "Downloaded %zu bytes to %s", received, ctx->local_path);
+    sds result = edc_str_new(NULL);
+    edc_str_printf(result, "Downloaded %zu bytes to %s", received, ctx->local_path);
     ctx->callback(ctx->tb_ctx, result, NULL);
     return TRUE;
 }
@@ -657,7 +658,7 @@ static void device_file_thread(void* data, void* user_data)
 }
 
 static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, cJSON *args,
-                                              void (*callback)(struct edc_toolbox_call_ctx *, GString *, GError *))
+                                              void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *))
 {
     (void)tool;
 
@@ -713,7 +714,7 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
 }
 
 static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, cJSON *args,
-                                                void (*callback)(struct edc_toolbox_call_ctx *, GString *, GError *))
+                                                void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *))
 {
     (void)tool;
 

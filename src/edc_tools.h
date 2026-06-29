@@ -1,3 +1,4 @@
+#include "edc_string.h"
 #ifndef __BC_TOOLS_H__
 #define __BC_TOOLS_H__
 
@@ -23,12 +24,12 @@ struct edc_toolbox;
 struct edc_tool;
 struct edc_toolbox_call_ctx;
 typedef void (*edc_tool_exec_async_fn)(struct edc_toolbox_call_ctx *ctx, struct edc_tool *, cJSON *,
-                                       void (*callback)(struct edc_toolbox_call_ctx *ctx, GString *, GError *));
+                                       void (*callback)(struct edc_toolbox_call_ctx *ctx, sds , GError *));
 
 struct edc_tool
 {
-    GString *name;
-    GString *desc;
+    sds name;
+    sds desc;
     GSList *params;
     void *priv;
 

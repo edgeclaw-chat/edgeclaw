@@ -1,3 +1,4 @@
+#include "edc_string.h"
 #include "edc_strutil.h"
 #include "edc_tools.h"
 #include "edc_toolbox.h"
@@ -26,8 +27,8 @@ void edc_tool_free(struct edc_tool *tool)
 {
     if (!tool)
         return;
-    g_string_free(tool->name, TRUE);
-    g_string_free(tool->desc, TRUE);
+    edc_str_free(tool->name);
+    edc_str_free(tool->desc);
 
     g_slist_free_full(tool->params, (EdcDestroyNotify)edc_tool_param_free);
 
@@ -42,8 +43,8 @@ void edc_tool_free(struct edc_tool *tool)
 struct edc_tool *edc_tool_new(const char *name, const char *desc, GSList *params, edc_tool_exec_async_fn exec)
 {
     struct edc_tool *tool = g_new0(struct edc_tool, 1);
-    tool->name = g_string_new(name);
-    tool->desc = g_string_new(desc);
+    tool->name = edc_str_new(name);
+    tool->desc = edc_str_new(desc);
     tool->params = params;
     tool->exec = exec;
     tool->priv = NULL;
@@ -56,8 +57,8 @@ struct edc_tool *edc_tool_new_v(const char *name, const char *desc, struct edc_t
                                 edc_tool_exec_async_fn exec)
 {
     struct edc_tool *tool = g_new0(struct edc_tool, 1);
-    tool->name = g_string_new(name);
-    tool->desc = g_string_new(desc);
+    tool->name = edc_str_new(name);
+    tool->desc = edc_str_new(desc);
 
     GSList *l = NULL;
     for (int i = 0; params[i]; ++i)

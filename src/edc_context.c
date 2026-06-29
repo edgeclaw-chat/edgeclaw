@@ -3,10 +3,28 @@
 #include "edc_skills.h"
 #include "log.h"
 #include <glib.h>
+#include "edc_string.h"
 
 const char *BOOTSTRAP_FILES[] = {"AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"};
 
-static GString *edc_context_get_identity(const char *os_name, const char *time, const char *workspace)
+static void sds_replace_all(sds *s, const char *find, const char *replacement)
+{
+    size_t find_len = strlen(find);
+    sds result = sdsempty();
+    char *scan = *s;
+    char *pos;
+    while ((pos = strstr(scan, find)) != NULL)
+    {
+        edc_str_catn(result, scan, pos - scan);
+        edc_str_cat(result, replacement);
+        scan = pos + find_len;
+    }
+    edc_str_cat(result, scan);
+    edc_str_free(*s);
+    *s = result;
+}
+
+static sds edc_context_get_identity(const char *os_name, const char *time, const char *workspace)
 {
     const char *identity_fmt = "# EdgeClaw\n"
                                "You are EdgeClaw, a helpful AI assistant. You have access to tools "
@@ -43,19 +61,19 @@ static GString *edc_context_get_identity(const char *os_name, const char *time, 
                                "{{workspace}}/memory/MEMORY.md\n\n";
 
     char *cwd = g_get_current_dir();
-    GString *identity = g_string_new(identity_fmt);
-    g_string_replace(identity, "{{os_name}}", os_name, 0);
-    g_string_replace(identity, "{{cwd}}", cwd, 0);
-    g_string_replace(identity, "{{time}}", time, 0);
-    g_string_replace(identity, "{{workspace}}", workspace, 0);
+    sds identity = edc_str_new(identity_fmt);
+    sds_replace_all(&identity, "{{os_name}}", os_name);
+    sds_replace_all(&identity, "{{cwd}}", cwd);
+    sds_replace_all(&identity, "{{time}}", time);
+    sds_replace_all(&identity, "{{workspace}}", workspace);
     free(cwd);
 
     return identity;
 }
 
-static GString *edc_context_load_bootstrap_files(const char *workspace)
+static sds edc_context_load_bootstrap_files(const char *workspace)
 {
-    GString *result = g_string_new(NULL);
+    sds result = edc_str_new(NULL);
     size_t num_files = sizeof(BOOTSTRAP_FILES) / sizeof(BOOTSTRAP_FILES[0]);
 
     for (size_t i = 0; i < num_files; i++)
@@ -69,7 +87,7 @@ static GString *edc_context_load_bootstrap_files(const char *workspace)
 
         if (g_file_get_contents(filepath, &content, &length, &error))
         {
-            g_string_append_printf(result, "## %s\n\n%s", filename, content);
+            edc_str_printf(result, "## %s\n\n%s", filename, content);
             free(content);
         }
         else
@@ -79,7 +97,7 @@ static GString *edc_context_load_bootstrap_files(const char *workspace)
 
         if (i < num_files - 1)
         {
-            g_string_append(result, "\n\n");
+            edc_str_cat(result, "\n\n");
         }
 
         free(filepath);
@@ -88,15 +106,17 @@ static GString *edc_context_load_bootstrap_files(const char *workspace)
     return result;
 }
 
-static GString *edc_context_load_skills(const char *workspace)
+static sds edc_context_load_skills(const char *workspace)
 {
-    GString *result = g_string_new(NULL);
-    GString *skills_dir = g_string_new_take(g_build_filename(workspace, "skills", NULL));
+    sds result = edc_str_new(NULL);
+    char *tmp = g_build_filename(workspace, "skills", NULL);
+    sds skills_dir = sdsnewlen(tmp, strlen(tmp));
+    free(tmp);
 
     GArray *skills = edc_skills_load(skills_dir);
-    g_string_free(skills_dir, TRUE);
+    edc_str_free(skills_dir);
 
-    g_string_append_printf(result, "## Skills\n\n"
+    edc_str_printf(result, "## Skills\n\n"
                                    "The following skills extend your capabilities. To use a skill, read its SKILL.md "
                                    "file using the read_file tool.\n\n");
 
@@ -110,13 +130,13 @@ static GString *edc_context_load_skills(const char *workspace)
             continue;
         }
 
-        char *loc = g_build_filename(workspace, "skills", skill->name->str, "SKILL.md", NULL);
-        g_string_append_printf(result, "### Skill: %s\n\n", skill->name->str);
-        g_string_append_printf(result, "description: %s\nSKILL.md localtion: %s\n", desc, loc);
+        char *loc = g_build_filename(workspace, "skills", skill->name, "SKILL.md", NULL);
+        edc_str_printf(result, "### Skill: %s\n\n", skill->name);
+        edc_str_printf(result, "description: %s\nSKILL.md localtion: %s\n", desc, loc);
         free(loc);
         if (i < skills->len - 1)
         {
-            g_string_append(result, "\n\n---\n\n");
+            edc_str_cat(result, "\n\n---\n\n");
         }
 
         edc_skill_free(skill);
@@ -126,7 +146,7 @@ static GString *edc_context_load_skills(const char *workspace)
     return result;
 }
 
-static char *edc_context_load_memory(const char *workspace)
+static sds edc_context_load_memory(const char *workspace)
 {
     char *memory_file = g_build_filename(workspace, "memory", "MEMORY.md", NULL);
     char *content = NULL;
@@ -141,37 +161,35 @@ static char *edc_context_load_memory(const char *workspace)
         return NULL;
     }
 
-    GString *buf = g_string_new("## Memory\n\n### Long-Term Memory\n\n");
-    g_string_append(buf, content);
-    g_string_append(buf, "\n\n");
+    sds buf = edc_str_new("## Memory\n\n### Long-Term Memory\n\n");
+    edc_str_cat(buf, content);
+    edc_str_cat(buf, "\n\n");
 
     free(memory_file);
     free(content);
 
-    char *memory = buf->str;
-    g_string_free(buf, FALSE);
-    return memory;
+    return buf;
 }
 
-GString *edc_context_build_system_prompt(struct edc_config *conf)
+sds edc_context_build_system_prompt(struct edc_config *conf)
 {
     const char *workspace = conf->workspace;
     char *os_name = g_get_os_info(G_OS_INFO_KEY_NAME);
 
     char *time = edc_get_timestamp();
-    GString *identity = edc_context_get_identity(os_name ? os_name : "Unknown", time, workspace);
-    GString *bootstrap = edc_context_load_bootstrap_files(workspace);
-    char *memory = edc_context_load_memory(workspace);
-    GString *skills = edc_context_load_skills(workspace);
+    sds identity = edc_context_get_identity(os_name ? os_name : "Unknown", time, workspace);
+    sds bootstrap = edc_context_load_bootstrap_files(workspace);
+    sds memory = edc_context_load_memory(workspace);
+    sds skills = edc_context_load_skills(workspace);
 
-    GString *system_prompt = g_string_new(NULL);
-    g_string_append(system_prompt, identity->str);
-    g_string_append(system_prompt, bootstrap->str);
+    sds system_prompt = edc_str_new(NULL);
+    edc_str_cat(system_prompt, identity);
+    edc_str_cat(system_prompt, bootstrap);
     if (memory)
     {
-        g_string_append(system_prompt, memory);
+        edc_str_cat(system_prompt, memory);
     }
-    g_string_append(system_prompt, skills->str);
+    edc_str_cat(system_prompt, skills);
 
     if (os_name)
     {
@@ -179,13 +197,13 @@ GString *edc_context_build_system_prompt(struct edc_config *conf)
     }
 
     free(time);
-    g_string_free(identity, TRUE);
-    g_string_free(bootstrap, TRUE);
+    edc_str_free(identity);
+    edc_str_free(bootstrap);
     if (memory)
     {
-        free(memory);
+        edc_str_free(memory);
     }
-    g_string_free(skills, TRUE);
+    edc_str_free(skills);
 
     return system_prompt;
 }

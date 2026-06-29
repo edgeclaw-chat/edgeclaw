@@ -159,6 +159,7 @@ cc_library(
     ],
     hdrs = [
         "edc_compat.h",
+        "edc_string.h",
         "edc_context.h",
         "edc_history.h",
         "edc_session.h",

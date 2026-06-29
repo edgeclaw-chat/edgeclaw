@@ -1,3 +1,4 @@
+#include "edc_string.h"
 #include "edc_strutil.h"
 #include "edc_channel_actor.h"
 #include "edc_actor.h"
@@ -455,9 +456,9 @@ void edc_channel_actor_free(edc_actor_t *actor)
             g_source_unref(state->cli.queue_source);
         }
         if (state->cli.pending_output)
-            free(state->cli.pending_output);
+            edc_str_free(state->cli.pending_output);
         if (state->cli.history_path)
-            g_string_free(state->cli.history_path, TRUE);
+            edc_str_free(state->cli.history_path);
         pthread_mutex_destroy(&state->cli.term_mutex);
         tcsetattr(STDIN_FILENO, TCSANOW, &state->cli.orig_term);
         break;

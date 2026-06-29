@@ -1,3 +1,4 @@
+#include "edc_string.h"
 #include "edc_toolbox_actor.h"
 #include "edc_actor.h"
 #include "edc_toolbox.h"
@@ -23,18 +24,18 @@ static struct edc_toolbox_actor_exec_ctx *edc_toolbox_actor_exec_ctx_new(edc_act
 static char *_HINT = "\n\n[Analyze the error above and try a different approach.]";
 
 // TODO: fix error handle
-static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, GString *result, GError *error)
+static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds result, GError *error)
 {
     if (error)
     {
-        result = g_string_new(error->message);
-        g_string_append(result, _HINT);
+        result = edc_str_new(error->message);
+        edc_str_cat(result, _HINT);
         g_error_free(error);
     }
 
     if (!result)
     {
-        result = g_string_new("");
+        result = edc_str_new("");
     }
 
     struct edc_toolbox_actor_exec_ctx *ctx = tb_ctx->priv;
@@ -44,15 +45,16 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, GStr
     edc_toolbox_actor_state_t *state = (edc_toolbox_actor_state_t *)actor->state;
 
     char *args = cJSON_PrintUnformatted(req->args);
-    log_debug("tool call request name = %s, args = %s, result_len = %zu", req->name, args, result->len);
+    log_debug("tool call request name = %s, args = %s, result_len = %zu", req->name, args, edc_str_len(result));
     free(args);
 
     req->result = result;
-    if ((result->len) > state->toolbox->conf->tool_max_output_size)
+    if ((edc_str_len(result)) > state->toolbox->conf->tool_max_output_size)
     {
-        size_t len = result->len;
-        result = g_string_truncate(result, state->toolbox->conf->tool_max_output_size);
-        g_string_append_printf(result, "\n\n[Result truncated to 10000 characters, total length: %zu]", len);
+        size_t len = edc_str_len(result);
+        edc_str_trunc(result, state->toolbox->conf->tool_max_output_size);
+        edc_str_printf(result, "\n\n[Result truncated to 10000 characters, total length: %zu]", len);
+        req->result = result;
     }
 
     struct edc_toolbox_actor_req *next = req->next;
@@ -108,12 +110,12 @@ void edc_toolbox_actor_req_free(struct edc_toolbox_actor_req *req)
 
     if (req->name)
     {
-        free(req->name);
+        edc_str_free(req->name);
     }
 
     if (req->call_id)
     {
-        free(req->call_id);
+        edc_str_free(req->call_id);
     }
     if (req->args)
     {
@@ -122,12 +124,12 @@ void edc_toolbox_actor_req_free(struct edc_toolbox_actor_req *req)
     }
     if (req->result)
     {
-        g_string_free(req->result, TRUE);
+        edc_str_free(req->result);
     }
     free(req);
 }
 
-struct edc_toolbox_actor_req *edc_toolbox_actor_req_new(char *name, cJSON *args, char *call_id,
+struct edc_toolbox_actor_req *edc_toolbox_actor_req_new(sds name, cJSON *args, sds call_id,
                                                       struct edc_channel *call_from)
 {
     struct edc_toolbox_actor_req *req = g_new0(struct edc_toolbox_actor_req, 1);

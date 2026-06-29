@@ -1,3 +1,4 @@
+#include "edc_string.h"
 #include "edc_strutil.h"
 #include "edc_tools_crontab.h"
 #include "edc_actor.h"
@@ -106,23 +107,22 @@ static bool edc_tool_crontab_save_jobs_db(const char *workspace, cJSON *db, GErr
 {
     char *jobs_path = g_build_filename(workspace, "jobs.json", NULL);
     FILE *fout = fopen(jobs_path, "w+");
-    free(jobs_path);
 
     if (!fout)
     {
         const char *s = g_strerror(errno);
         *error =
             g_error_new(edc_tool_error_quark(), BC_TOOL_ARG_INVALID, "open %s for writting failed: %s", jobs_path, s);
+        free(jobs_path);
         return FALSE;
     }
-    else
-    {
-        char *tmp = cJSON_PrintUnformatted(db);
-        fprintf(fout, "%s", tmp);
-        fflush(fout);
-        fclose(fout);
-        free(tmp);
-    }
+    free(jobs_path);
+
+    char *tmp = cJSON_PrintUnformatted(db);
+    fprintf(fout, "%s", tmp);
+    fflush(fout);
+    fclose(fout);
+    free(tmp);
 
     return TRUE;
 }
@@ -152,7 +152,7 @@ static void edc_tool_crontab_remove_job(cJSON *jobs, char *job_id)
 }
 
 static void edc_tool_crontab_exec_list_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
-                                            void (*callback)(struct edc_toolbox_call_ctx *, GString *, GError *))
+                                            void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *))
 {
     GError *error = NULL;
     cJSON *db = edc_tool_crontab_load_jobs_db(ctx->tb->conf->workspace, &error);
@@ -163,11 +163,11 @@ static void edc_tool_crontab_exec_list_async(struct edc_toolbox_call_ctx *ctx, s
 
     cJSON *jobs = cJSON_GetObjectItem(db, "jobs");
 
-    GString *result = g_string_new(NULL);
+    sds result = edc_str_new(NULL);
     for (int i = 0; i < cJSON_GetArraySize(jobs); ++i)
     {
         cJSON *job = cJSON_GetArrayItem(jobs, i);
-        g_string_append_printf(result, "job name: %s\tjob id: %s",
+        edc_str_printf(result, "job name: %s\tjob id: %s",
                                cJSON_GetStringValue(cJSON_GetObjectItem(job, "name")),
                                cJSON_GetStringValue(cJSON_GetObjectItem(job, "job_id")));
     }
@@ -177,7 +177,7 @@ static void edc_tool_crontab_exec_list_async(struct edc_toolbox_call_ctx *ctx, s
 }
 
 static void edc_tool_crontab_exec_remove_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
-                                              void (*callback)(struct edc_toolbox_call_ctx *, GString *, GError *))
+                                              void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *))
 {
     cJSON *job_id = cJSON_GetObjectItem(args, "job_id");
     if (!job_id || !cJSON_IsString(job_id))
@@ -207,8 +207,8 @@ static void edc_tool_crontab_exec_remove_async(struct edc_toolbox_call_ctx *ctx,
     }
     else
     {
-        GString *result = g_string_new(NULL);
-        g_string_append_printf(result, "Remove job %s done. (exit code: 0)", cJSON_GetStringValue(job_id));
+        sds result = edc_str_new(NULL);
+        edc_str_printf(result, "Remove job %s done. (exit code: 0)", cJSON_GetStringValue(job_id));
         callback(ctx, result, NULL);
     }
 
@@ -393,7 +393,7 @@ static void edc_tool_crontab_schedule(const char *workspace, edc_actor_t *schedu
 }
 
 static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
-                                           void (*callback)(struct edc_toolbox_call_ctx *ctx, GString *, GError *))
+                                           void (*callback)(struct edc_toolbox_call_ctx *ctx, sds , GError *))
 {
     cJSON *name = cJSON_GetObjectItem(args, "name");
     cJSON *every_seconds = cJSON_GetObjectItem(args, "every_seconds");
@@ -548,9 +548,9 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
     }
     else
     {
-        GString *result = g_string_new(NULL);
+        sds result = edc_str_new(NULL);
         char *s = cJSON_PrintUnformatted(job);
-        g_string_append_printf(result, "Add job %s done. (exit code: 0)", s);
+        edc_str_printf(result, "Add job %s done. (exit code: 0)", s);
         free(s);
         callback(ctx, result, NULL);
     }
@@ -560,7 +560,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
 }
 
 static void edc_tool_crontab_exec_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
-                                       void (*callback)(struct edc_toolbox_call_ctx *, GString *, GError *))
+                                       void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *))
 {
     char *action = cJSON_GetStringValue(cJSON_GetObjectItem(args, "action"));
     if (edc_str_equal(action, "add"))

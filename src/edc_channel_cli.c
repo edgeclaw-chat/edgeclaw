@@ -1,3 +1,4 @@
+#include "edc_string.h"
 #include "edc_strutil.h"
 #include "edc_channel_cli.h"
 #include "edc_actor.h"
@@ -50,7 +51,7 @@ static void* cli_input_thread(void* data)
     linenoiseHistorySetMaxLen(1000);
 
     if (state->cli.history_path)
-        linenoiseHistoryLoad(state->cli.history_path->str);
+        linenoiseHistoryLoad(state->cli.history_path);
 
     while (g_atomic_int_get(&state->cli.running))
     {
@@ -61,7 +62,7 @@ static void* cli_input_thread(void* data)
         {
             printf("\r\e[K%s\n", state->cli.pending_output);
             fflush(stdout);
-            free(state->cli.pending_output);
+            edc_str_free(state->cli.pending_output);
             state->cli.pending_output = NULL;
         }
         pthread_mutex_unlock(&state->cli.term_mutex);
@@ -92,7 +93,7 @@ static void* cli_input_thread(void* data)
     }
 
     if (state->cli.history_path)
-        linenoiseHistorySave(state->cli.history_path->str);
+        linenoiseHistorySave(state->cli.history_path);
 
     return NULL;
 }
@@ -105,15 +106,17 @@ static void edc_channel_cli_handle_send(edc_actor_t *actor, edc_actor_msg_t *msg
     pthread_mutex_lock(&state->cli.term_mutex);
     if (state->cli.pending_output)
     {
-        free(state->cli.pending_output);
+        edc_str_free(state->cli.pending_output);
     }
     if (edc_str_has_prefix(message->content, "[思考]:"))
     {
-        state->cli.pending_output = edc_strdup_printf("%s%s%s", CLI_DIM, message->content, CLI_RESET);
+        char *_cli_tmp = edc_strdup_printf("%s%s%s", CLI_DIM, message->content, CLI_RESET);
+        state->cli.pending_output = sdsnewlen(_cli_tmp, strlen(_cli_tmp));
+        free(_cli_tmp);
     }
     else
     {
-        state->cli.pending_output = g_string_free(edc_markdown_render(message->content), FALSE);
+        state->cli.pending_output = edc_markdown_render(message->content);
     }
     pthread_mutex_unlock(&state->cli.term_mutex);
 
@@ -169,9 +172,9 @@ void edc_channel_cli_init(edc_actor_t *channel_actor)
 {
     edc_channel_actor_state_t *state = channel_actor->state;
     memset(&state->cli, 0, sizeof(state->cli));
-    state->cli.history_path = g_string_new(NULL);
+    state->cli.history_path = edc_str_new(NULL);
     char *edc_home = edc_config_resolve_bc_home();
-    g_string_printf(state->cli.history_path, "%s/.cli_history", edc_home);
+    edc_str_printf(state->cli.history_path, "%s/.cli_history", edc_home);
     free(edc_home);
     edc_channel_actor_add(channel_actor, edc_channel_cli, edc_channel_cli_handler);
 }

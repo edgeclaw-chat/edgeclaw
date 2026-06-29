@@ -1,3 +1,4 @@
+#include "edc_string.h"
 #include "edc_strutil.h"
 #include "edc_tools_todo.h"
 #include "edc_channel_actor.h"
@@ -6,16 +7,16 @@
 #include "edc_tools.h"
 
 static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
-                                     void (*callback)(struct edc_toolbox_call_ctx *, GString *, GError *))
+                                     void (*callback)(struct edc_toolbox_call_ctx *, sds , GError *))
 {
     cJSON *items = cJSON_GetObjectItem(args, "items");
     if (!items || !cJSON_GetArraySize(items))
     {
-        callback(ctx, g_string_new("No todos"), NULL);
+        callback(ctx, edc_str_new("No todos"), NULL);
         return;
     }
 
-    GString *lines = g_string_new("# TODO\n");
+    sds lines = edc_str_new("# TODO\n");
     int completed = 0;
     int total = cJSON_GetArraySize(items);
     for (int i = 0; i < total; ++i)
@@ -27,22 +28,22 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
 
         if (edc_str_equal(status, "completed"))
         {
-            g_string_append_printf(lines, "- [x] %s\n", content);
+            edc_str_printf(lines, "- [x] %s\n", content);
             completed += 1;
         }
         else if (edc_str_equal(status, "in_progress"))
         {
-            g_string_append_printf(lines, "- [ ] %s <- %s\n", content, activeForm);
+            edc_str_printf(lines, "- [ ] %s <- %s\n", content, activeForm);
         }
         else
         {
-            g_string_append_printf(lines, "- [ ] %s\n", content);
+            edc_str_printf(lines, "- [ ] %s\n", content);
         }
     }
 
-    g_string_append_printf(lines, "\n%d/%d completed", completed, total);
+    edc_str_printf(lines, "\n%d/%d completed", completed, total);
 
-    struct edc_channel_message *message = edc_channel_message_new(edc_channel_copy(ctx->call_from), strdup(lines->str));
+    struct edc_channel_message *message = edc_channel_message_new(edc_channel_copy(ctx->call_from), strdup(lines));
     if (message->channel->type == edc_channel_qq)
     {
         message->channel->qq.seq_id = g_random_int();

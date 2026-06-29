@@ -10,6 +10,7 @@
 #include "netif/ppp/ppp.h"
 #include <cJSON.h>
 #include <glib.h>
+#include "edc_string.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,7 +45,7 @@ typedef struct {
 static int total_ok = 0, total_fail = 0;
 
 static int do_request(struct netconn *c, const char *cmd, int *exit_code,
-                       GString **out, GString **err)
+                       sds *out, sds *err)
 {
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "command", cmd);
@@ -82,8 +83,8 @@ static int do_request(struct netconn *c, const char *cmd, int *exit_code,
     cJSON *se = cJSON_GetObjectItem(resp, "stderr");
 
     *exit_code = ec ? ec->valueint : -999;
-    *out = g_string_new(so && cJSON_IsString(so) ? so->valuestring : "");
-    *err = g_string_new(se && cJSON_IsString(se) ? se->valuestring : "");
+    *out = edc_str_new(so && cJSON_IsString(so) ? so->valuestring : "");
+    *err = edc_str_new(se && cJSON_IsString(se) ? se->valuestring : "");
 
     cJSON_Delete(resp);
     return 0;
@@ -120,7 +121,7 @@ static int run_one(ip_addr_t *addr, test_case_t *tc)
     if (!c) { printf("  FAIL [%s]: connect timeout\n", tc->desc); total_fail++; return 0; }
 
     int exit_code, ok = 1;
-    GString *out, *err;
+    sds out, *err;
 
     if (do_request(c, tc->cmd, &exit_code, &out, &err) != 0) {
         printf("  FAIL [%s]: request failed\n", tc->desc);
@@ -132,22 +133,22 @@ static int run_one(ip_addr_t *addr, test_case_t *tc)
         printf("  FAIL [%s]: exit_code=%d want=%d\n", tc->desc, exit_code, tc->want_exit);
         ok = 0;
     }
-    if (tc->want_out && !strstr(out->str, tc->want_out)) {
+    if (tc->want_out && !strstr(out, tc->want_out)) {
         printf("  FAIL [%s]: stdout missing '%s' got='%s'\n",
-               tc->desc, tc->want_out, out->str);
+               tc->desc, tc->want_out, out);
         ok = 0;
     }
-    if (tc->want_err && !strstr(err->str, tc->want_err)) {
+    if (tc->want_err && !strstr(err, tc->want_err)) {
         printf("  FAIL [%s]: stderr missing '%s' got='%s'\n",
-               tc->desc, tc->want_err, err->str);
+               tc->desc, tc->want_err, err);
         ok = 0;
     }
 
     if (ok) { total_ok++; printf("  OK   [%s]\n", tc->desc); }
     else total_fail++;
 
-    g_string_free(out, TRUE);
-    g_string_free(err, TRUE);
+    edc_str_free(out);
+    edc_str_free(err);
     return ok;
 }
 
@@ -230,18 +231,18 @@ int main(void)
     /* ---- rapid-fire: 50 iterations ---- */
     printf("\n  [rapid-fire: 50 iterations]\n");
     {
-        GString *o = NULL, *e = NULL; int ec; int rok = 0, rfail = 0;
+        sds o = NULL, *e = NULL; int ec; int rok = 0, rfail = 0;
         for (int i = 0; i < 50; i++) {
             char rcmd[64];
             snprintf(rcmd, sizeof(rcmd), "echo iter-%d", i);
             struct netconn *rc = new_conn_timeout(&addr, 5000);
             if (rc) {
-                if (do_request(rc, rcmd, &ec, &o, &e) == 0 && ec == 0 && strstr(o->str, "iter-")) rok++;
+                if (do_request(rc, rcmd, &ec, &o, &e) == 0 && ec == 0 && strstr(o, "iter-")) rok++;
                 else rfail++;
                 close_conn(rc);
             } else rfail++;
-            if (o) g_string_free(o, TRUE);
-            if (e) g_string_free(e, TRUE);
+            if (o) edc_str_free(o);
+            if (e) edc_str_free(e);
             o = e = NULL;
         }
         printf("  OK=%d FAIL=%d\n", rok, rfail);
@@ -251,17 +252,17 @@ int main(void)
     /* ---- large payload ---- */
     printf("\n  [large payload: 64KB response]\n");
     {
-        GString *o = NULL, *e = NULL; int ec;
+        sds o = NULL, *e = NULL; int ec;
         struct netconn *lc = new_conn_timeout(&addr, 5000);
         if (lc && do_request(lc, "dd if=/dev/urandom bs=1024 count=64 2>/dev/null | wc -c",
-                             &ec, &o, &e) == 0 && ec == 0 && strstr(o->str, "65536")) {
+                             &ec, &o, &e) == 0 && ec == 0 && strstr(o, "65536")) {
             printf("  OK: 65536 bytes received\n"); total_ok++;
         } else {
             printf("  FAIL\n"); total_fail++;
         }
         if (lc) close_conn(lc);
-        if (o) g_string_free(o, TRUE);
-        if (e) g_string_free(e, TRUE);
+        if (o) edc_str_free(o);
+        if (e) edc_str_free(e);
     }
 
     printf("\n=== Results: OK=%d FAIL=%d ===\n", total_ok, total_fail);

@@ -1,3 +1,4 @@
+#include "edc_string.h"
 #include "src/edc_actor.h"
 #include "src/edc_config.h"
 #include "src/edc_llm_actor.h"
@@ -15,8 +16,8 @@ static void edc_observe_llm_handler(edc_actor_t *actor, edc_actor_msg_t *message
             break;
         }
 
-        GString *content = resp->content;
-        fprintf(stderr, "[ASSISTANT]: %s\n", content->str);
+        sds content = resp->content;
+        fprintf(stderr, "[ASSISTANT]: %s\n", content);
         break;
     }
     default:

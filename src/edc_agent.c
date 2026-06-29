@@ -29,14 +29,12 @@ static void edc_agent_handle_tool_calls(struct edc_agent *agent, struct edc_chan
         struct edc_llm_chat_tool_call *tool_call = &g_array_index(resp->tool_calls, struct edc_llm_chat_tool_call, i);
         if (tool_call->type == BC_LLM_TOOL_CALL_TYPE_FUNCTION)
         {
-            req->next = edc_toolbox_actor_req_new(tool_call->function.name->str, tool_call->function.arguments,
-                                                 tool_call->id->str, call_from);
+            req->next = edc_toolbox_actor_req_new(tool_call->function.name, tool_call->function.arguments,
+                                                 tool_call->id, call_from);
             req = req->next;
 
             tool_call->function.arguments = NULL;
-            g_string_free(tool_call->function.name, FALSE);
             tool_call->function.name = NULL;
-            g_string_free(tool_call->id, FALSE);
             tool_call->id = NULL;
         }
     }
@@ -105,10 +103,10 @@ static void handle_llm_resp(struct edc_agent *agent, edc_actor_t *actor, edc_act
 
     if (resp->reason == BC_LLM_FINISH_REASON_TOOL_CALL)
     {
-        if ((resp->reasoning_content && resp->reasoning_content->len > 0) || (resp->content && resp->content->len > 0))
+        if ((resp->reasoning_content && edc_str_len(resp->reasoning_content) > 0) || (resp->content && edc_str_len(resp->content) > 0))
         {
             char *content =
-                (resp->content && resp->content->len > 0) ? resp->content->str : resp->reasoning_content->str;
+                (resp->content && edc_str_len(resp->content) > 0) ? resp->content : resp->reasoning_content;
 
             reply = edc_channel_ref_message_new(turn->channel, edc_strdup_printf("[思考]: %s", content));
         }
@@ -119,7 +117,7 @@ static void handle_llm_resp(struct edc_agent *agent, edc_actor_t *actor, edc_act
     }
     else if (resp->reason == BC_LLM_FINISH_REASON_STOP)
     {
-        reply = edc_channel_message_new(turn->channel, strdup(resp->content->str));
+        reply = edc_channel_message_new(turn->channel, strdup(resp->content));
         turn->channel = NULL;
 
         edc_turn_add_assistant_message(turn->turn, resp->msg);
@@ -164,7 +162,7 @@ static void handle_tool_resp(struct edc_agent *agent, edc_actor_t *actor, edc_ac
 
     if (req->result)
     {
-        edc_turn_add_tool_message(turn->turn, req->call_id, req->name, req->result->str);
+        edc_turn_add_tool_message(turn->turn, req->call_id, req->name, req->result);
     }
 
     if (!req->next)
