@@ -1,6 +1,7 @@
 #include "sds.h"
 #include "edc_agent.h"
 #include "edc_actor.h"
+#include <glib.h>
 #include "edc_compat.h"
 #include "uthash.h"
 #include "edc_channel_actor.h"
