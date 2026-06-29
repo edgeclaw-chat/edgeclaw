@@ -1,6 +1,7 @@
 #include "sds.h"
 #include "edc_session.h"
-#include <glib.h>
+#include "edc_compat.h"
+#include "edc_string_utils.h"
 #include "edc_config.h"
 #include "edc_context.h"
 #include "edc_history.h"
@@ -43,10 +44,10 @@ static void edc_session_build_messages(struct edc_session *session, const char *
     sds system_prompt = edc_context_build_system_prompt(session->config);
 
     cJSON *system_msg = cJSON_CreateObject();
-    char *valid_utf8 = g_utf8_make_valid(system_prompt, -1);
+    sds valid_utf8 = edc_str_utf8_make_valid(system_prompt, -1);
     cJSON_AddStringToObject(system_msg, "role", "system");
     cJSON_AddStringToObject(system_msg, "content", valid_utf8);
-    free(valid_utf8);
+    sdsfree(valid_utf8);
     sdsfree(system_prompt);
 
     cJSON_AddItemToArray(session->messages, system_msg);

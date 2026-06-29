@@ -4,8 +4,8 @@
 
 #include "edc_bpf_sandbox.h"
 #include "log.h"
+#include "edc_compat.h"
 #include <errno.h>
-#include <glib.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1221,7 +1221,7 @@ static struct sock_filter *build_filter(size_t *out_len)
     int total = safe_n + nchains + deny_n;
 
     size_t cap = HDR_LEN + total + TAIL_LEN + 3 + 8;
-    struct sock_filter *f = g_malloc_n(cap, sizeof(struct sock_filter));
+    struct sock_filter *f = calloc(cap, sizeof(struct sock_filter));
     size_t pos = 0;
 
     /* arch check */

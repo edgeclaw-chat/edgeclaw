@@ -1,13 +1,14 @@
 #include "edc_turn.h"
 #include "edc_history.h"
-#include <glib.h>
+#include "edc_compat.h"
+#include "edc_string_utils.h"
 
 static void edc_turn_add_message(struct edc_turn *turn, cJSON *msg)
 {
     cJSON *content = cJSON_GetObjectItem(msg, "content");
-    char *valid_utf8 = g_utf8_make_valid(cJSON_GetStringValue(content), -1);
+    sds valid_utf8 = edc_str_utf8_make_valid(cJSON_GetStringValue(content), -1);
     cJSON *valid_content = cJSON_CreateString(valid_utf8);
-    free(valid_utf8);
+    sdsfree(valid_utf8);
     cJSON_ReplaceItemInObject(msg, "content", valid_content);
 
     edc_queue_push(&turn->messages, msg);

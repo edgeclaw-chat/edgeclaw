@@ -161,28 +161,52 @@ sds edc_str_utf8_make_valid(const char *str, ssize_t len)
 
     while (p < end) {
         unsigned char c = *p;
-        int need;
+        int seq_len;
+        uint32_t codepoint;
 
-        if (c < 0x80)
-            need = 0;
-        else if ((c & 0xE0) == 0xC0)
-            need = 1;
-        else if ((c & 0xF0) == 0xE0)
-            need = 2;
-        else if ((c & 0xF8) == 0xF0)
-            need = 3;
-        else {
-            need = -1;
+        if (c < 0x80) {
+            seq_len = 1;
+            codepoint = c;
+        } else if ((c & 0xE0) == 0xC0) {
+            seq_len = 2;
+            codepoint = c & 0x1F;
+        } else if ((c & 0xF0) == 0xE0) {
+            seq_len = 3;
+            codepoint = c & 0x0F;
+        } else if ((c & 0xF8) == 0xF0) {
+            seq_len = 4;
+            codepoint = c & 0x07;
+        } else {
+            seq_len = -1;
+            codepoint = 0;
         }
 
-        if (need >= 0 && p + need < end) {
+        if (seq_len >= 1 && p + seq_len <= end) {
             bool valid = true;
-            for (int i = 1; i <= need; i++) {
+
+            for (int i = 1; i < seq_len; i++) {
                 if ((p[i] & 0xC0) != 0x80) { valid = false; break; }
+                codepoint = (codepoint << 6) | (p[i] & 0x3F);
             }
+
             if (valid) {
-                result = sdscatlen(result, (const char *)p, (size_t)(need + 1));
-                p += need + 1;
+                if (seq_len == 2 && codepoint < 0x80)
+                    valid = false;
+                else if (seq_len == 3 && codepoint < 0x800)
+                    valid = false;
+                else if (seq_len == 4 && codepoint < 0x10000)
+                    valid = false;
+
+                if (codepoint > 0x10FFFF)
+                    valid = false;
+
+                if (codepoint >= 0xD800 && codepoint <= 0xDFFF)
+                    valid = false;
+            }
+
+            if (valid) {
+                result = sdscatlen(result, (const char *)p, (size_t)seq_len);
+                p += seq_len;
                 continue;
             }
         }

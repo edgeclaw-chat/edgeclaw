@@ -1,9 +1,11 @@
 #include "sds.h"
 #include "edc_secret.h"
 #include "edc_error.h"
+#include "edc_file_utils.h"
 #include "log.h"
 #include <errno.h>
 #include <glib.h>
+#include "edc_compat.h"
 #include <mbedtls/base64.h>
 #include <mbedtls/cipher.h>
 #include <mbedtls/ctr_drbg.h>
@@ -120,15 +122,13 @@ static bool store_verify_hash(const char *edc_home)
         snprintf(hash_hex + i * 2, 3, "%02x", hash[i]);
     hash_hex[64] = '\0';
 
-    char *path = g_build_filename(edc_home, BC_KEY_VERIFY_FILE, NULL);
-    GError *gerror = NULL;
-    bool ok = g_file_set_contents(path, hash_hex, -1, &gerror);
-    if (!ok && gerror)
+    sds path = edc_path_join(edc_home, BC_KEY_VERIFY_FILE, NULL);
+    bool ok = edc_file_write(path, hash_hex, -1, NULL);
+    if (!ok)
     {
-        log_error("Failed to store verification hash: %s", gerror->message);
-        g_error_free(gerror);
+        log_error("Failed to store verification hash");
     }
-    free(path);
+    sdsfree(path);
     memset(hash, 0, sizeof(hash));
     memset(hash_hex, 0, sizeof(hash_hex));
     return ok;
@@ -136,29 +136,27 @@ static bool store_verify_hash(const char *edc_home)
 
 static bool verify_master_key(const char *edc_home)
 {
-    char *path = g_build_filename(edc_home, BC_KEY_VERIFY_FILE, NULL);
+    sds path = edc_path_join(edc_home, BC_KEY_VERIFY_FILE, NULL);
 
-    char *contents = NULL;
-    size_t length = 0;
-    GError *gerror = NULL;
-    if (!g_file_get_contents(path, &contents, &length, &gerror))
+    EdcError *error = NULL;
+    sds contents = edc_file_read(path, &error);
+    if (!contents)
     {
-        if (gerror)
-            g_error_free(gerror);
-        free(path);
+        if (error)
+            edc_error_free(error);
+        sdsfree(path);
         log_error("Cannot verify passphrase: verification file not found"
                   " — run setup first");
         return FALSE;
     }
-    free(path);
+    sdsfree(path);
 
-    while (length > 0 && (contents[length - 1] == '\n' || contents[length - 1] == '\r'))
-        contents[--length] = '\0';
+    sdstrim(contents, "\n\r");
 
     const mbedtls_md_info_t *md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
     if (!md)
     {
-        free(contents);
+        sdsfree(contents);
         return FALSE;
     }
 
@@ -167,7 +165,7 @@ static bool verify_master_key(const char *edc_home)
         mbedtls_md_hmac(md, (const unsigned char *)g_master_key, BC_KEY_SIZE, (const unsigned char *)"edgeclaw_verify", 15, expected);
     if (ret != 0)
     {
-        free(contents);
+        sdsfree(contents);
         return FALSE;
     }
 
@@ -182,7 +180,7 @@ static bool verify_master_key(const char *edc_home)
 
     memset(expected, 0, sizeof(expected));
     memset(expected_hex, 0, sizeof(expected_hex));
-    free(contents);
+    sdsfree(contents);
     return match;
 }
 
@@ -192,7 +190,7 @@ bool edc_secret_init(bool confirm_password, const char *edc_home)
         return TRUE;
 
     /* Priority 1: env var (scripts / Docker) */
-    const char *env_val = g_getenv(BC_MASTER_KEY_ENV);
+    const char *env_val = getenv(BC_MASTER_KEY_ENV);
     if (env_val && strlen(env_val) > 0)
     {
         if (!derive_key(env_val, strlen(env_val)))
@@ -362,7 +360,7 @@ sds edc_secret_encrypt(sds plaintext)
 
     size_t plain_len = sdslen(plaintext);
     size_t output_len = plain_len + BC_GCM_TAG_SIZE;
-    output = g_new(unsigned char, output_len);
+    output = EDC_NEW(unsigned char, output_len);
     size_t olen = 0;
 
     ret = mbedtls_cipher_auth_encrypt_ext(&cipher, iv, BC_GCM_IV_SIZE, NULL, 0, (const unsigned char *)plaintext, plain_len,
@@ -377,7 +375,7 @@ sds edc_secret_encrypt(sds plaintext)
     }
 
     size_t total = BC_GCM_IV_SIZE + olen;
-    unsigned char *packed = g_new(unsigned char, total);
+    unsigned char *packed = EDC_NEW(unsigned char, total);
     memcpy(packed, iv, BC_GCM_IV_SIZE);
     memcpy(packed + BC_GCM_IV_SIZE, output, olen);
     free(output);
@@ -392,7 +390,7 @@ sds edc_secret_encrypt(sds plaintext)
         goto cleanup;
     }
 
-    b64_buf = g_new(char, b64_len + 1);
+    b64_buf = EDC_NEW(char, b64_len + 1);
     ret = mbedtls_base64_encode((unsigned char *)b64_buf, b64_len + 1, &b64_len, packed, total);
     if (ret != 0)
     {
@@ -460,7 +458,7 @@ sds edc_secret_decrypt(const char *input)
         return NULL;
     }
 
-    packed = g_new(unsigned char, packed_len);
+    packed = EDC_NEW(unsigned char, packed_len);
     ret = mbedtls_base64_decode(packed, packed_len, &packed_len, (const unsigned char *)b64_input, b64_len);
     if (ret != 0)
     {
@@ -474,7 +472,7 @@ sds edc_secret_decrypt(const char *input)
     size_t input_len = packed_len - BC_GCM_IV_SIZE;
     size_t plain_len = input_len - BC_GCM_TAG_SIZE;
 
-    plain_buf = g_new(unsigned char, plain_len + 1);
+    plain_buf = EDC_NEW(unsigned char, plain_len + 1);
 
     mbedtls_cipher_init(&cipher);
 

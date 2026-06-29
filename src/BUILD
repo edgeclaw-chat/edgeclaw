@@ -284,6 +284,7 @@ cc_library(
     deps = [
         "@glib//glib:glib",
         ":edc_error",
+        ":edc_file_utils",
         "@sds//:sds",
         "@log.c//:log.c",
         ":mbedtls_config",

@@ -4,6 +4,8 @@
 #include "edc_actor.h"
 #include <glib.h>
 #include "edc_compat.h"
+#include "edc_file_utils.h"
+#include "edc_string_utils.h"
 #include "edc_history.h"
 #include "edc_llm_actor.h"
 #include "cJSON.h"
@@ -33,7 +35,7 @@ void edc_memory_actor_free(edc_actor_t *actor)
     edc_actor_free(actor);
 }
 
-static char *edc_memory_get_tools_used(cJSON *msg)
+static sds edc_memory_get_tools_used(cJSON *msg)
 {
     cJSON *tool_calls = cJSON_GetObjectItem(msg, "tool_calls");
     if (!tool_calls || !cJSON_IsArray(tool_calls))
@@ -42,7 +44,7 @@ static char *edc_memory_get_tools_used(cJSON *msg)
     }
 
     int n = cJSON_GetArraySize(tool_calls);
-    char **tools = g_new(char *, n + 1);
+    char **tools = EDC_NEW(char *, n + 1);
 
     int valid = 0;
     for (int i = 0; i < n; i++)
@@ -64,7 +66,7 @@ static char *edc_memory_get_tools_used(cJSON *msg)
     }
 
     tools[valid] = NULL;
-    char *tools_used = g_strjoinv(", ", tools);
+    sds tools_used = edc_str_joinv(", ", tools);
     free(tools);
 
     return tools_used;
@@ -171,29 +173,29 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
         sdsnew("Process this conversation. summarizing it. and call the save_memory tool with your "
                      "consolidation. NOTICE: !!!! you can only call save_memory tool\n\n");
 
-    const char *memory_file = g_build_filename(state->workspace, "memory", "MEMORY.md", NULL);
-    char *memory = NULL;
-    GError *gerror = NULL;
+    sds memory_file = edc_path_join(state->workspace, "memory", "MEMORY.md", NULL);
+    EdcError *gerror = NULL;
+    sds memory = edc_file_read(memory_file, &gerror);
 
-    if (!g_file_get_contents(memory_file, &memory, NULL, &gerror))
+    if (!memory)
     {
         if (gerror)
         {
             log_error("get memory file content failed: %s", gerror->message);
-            g_error_free(gerror);
+            edc_error_free(gerror);
         }
         ret = FALSE;
-        free((char *)memory_file);
+        sdsfree(memory_file);
         goto exit_free_user_message;
     }
 
-    free((char *)memory_file);
+    sdsfree(memory_file);
 
     user_message = sdscat(user_message, "## Current Long-term Memory\n");
     if (memory)
     {
         user_message = sdscat(user_message, memory);
-        free(memory);
+    sdsfree(memory);
     }
     else
     {
@@ -227,12 +229,12 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
         }
 
         sds line = sdsempty();
-        char *tools_used = edc_memory_get_tools_used(msg);
+        sds tools_used = edc_memory_get_tools_used(msg);
         if (tools_used)
         {
             line = sdscatprintf(line, "[%s] %s[called: %s]: %s\n", cJSON_GetStringValue(timestamp),
                                    cJSON_GetStringValue(role), tools_used, cJSON_GetStringValue(content));
-            free(tools_used);
+            sdsfree(tools_used);
         }
         else
         {
@@ -278,25 +280,25 @@ exit_free_history:
 
 static bool edc_memory_save_memory_file(const char *workspace, const char *memory)
 {
-    const char *memory_file = g_build_filename(workspace, "memory", "MEMORY.md", NULL);
-    GError *gerror = NULL;
-    if (!g_file_set_contents(memory_file, memory, -1, &gerror))
+    sds memory_file = edc_path_join(workspace, "memory", "MEMORY.md", NULL);
+    EdcError *gerror = NULL;
+    if (!edc_file_write(memory_file, memory, -1, &gerror))
     {
         log_error("save memory file failed: %s", gerror->message);
-        free((char *)memory_file);
-        g_error_free(gerror);
+        sdsfree(memory_file);
+        edc_error_free(gerror);
         return FALSE;
     }
 
-    free((char *)memory_file);
+    sdsfree(memory_file);
     return TRUE;
 }
 
 static bool edc_memory_save_history_file(const char *workspace, const char *history)
 {
-    char *history_file = g_build_filename(workspace, "memory", "HISTORY.md", NULL);
+    sds history_file = edc_path_join(workspace, "memory", "HISTORY.md", NULL);
     FILE *fout = fopen(history_file, "a+");
-    free(history_file);
+    sdsfree(history_file);
 
     if (fout == NULL)
     {

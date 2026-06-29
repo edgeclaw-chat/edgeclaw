@@ -1,11 +1,11 @@
 #include "edc_param_types.h"
 
-#include <glib.h>
+#include "edc_compat.h"
 #include <stdarg.h>
 
 struct edc_param_type *edc_param_int_type(char *desc, int64_t min, int64_t max)
 {
-    struct edc_param_type *type = g_new0(struct edc_param_type, 1);
+    struct edc_param_type *type = EDC_NEW0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_INT;
     type->desc = sdsnew(desc);
     type->num.min = min;
@@ -15,7 +15,7 @@ struct edc_param_type *edc_param_int_type(char *desc, int64_t min, int64_t max)
 
 struct edc_param_type *edc_param_str_type(char *desc, const char *first, ...)
 {
-    struct edc_param_type *type = g_new0(struct edc_param_type, 1);
+    struct edc_param_type *type = EDC_NEW0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_STR;
     type->desc = sdsnew(desc);
 
@@ -31,7 +31,7 @@ struct edc_param_type *edc_param_str_type(char *desc, const char *first, ...)
         n++;
     va_end(args_copy);
 
-    sds *dst = g_new(sds, n);
+    sds *dst = EDC_NEW(sds, n);
     dst[0] = sdsnew(first);
     for (int i = 1; i < n; i++)
     {
@@ -46,7 +46,7 @@ struct edc_param_type *edc_param_str_type(char *desc, const char *first, ...)
 
 struct edc_param_type *edc_param_bool_type(char *desc)
 {
-    struct edc_param_type *type = g_new0(struct edc_param_type, 1);
+    struct edc_param_type *type = EDC_NEW0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_BOOL;
     type->desc = sdsnew(desc);
     return type;
@@ -54,7 +54,7 @@ struct edc_param_type *edc_param_bool_type(char *desc)
 
 struct edc_param_type *edc_param_array_type(char *desc, struct edc_param_type *item_type)
 {
-    struct edc_param_type *type = g_new0(struct edc_param_type, 1);
+    struct edc_param_type *type = EDC_NEW0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_ARRAY;
     type->desc = sdsnew(desc);
     type->array.item = item_type;
@@ -63,10 +63,10 @@ struct edc_param_type *edc_param_array_type(char *desc, struct edc_param_type *i
 
 struct edc_param_type *edc_param_object_type(char *desc, struct edc_param_object_property *properties, int n)
 {
-    struct edc_param_type *type = g_new0(struct edc_param_type, 1);
+    struct edc_param_type *type = EDC_NEW0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_OBJECT;
     type->desc = sdsnew(desc);
-    type->object.properties = g_new(struct edc_param_object_property, n);
+    type->object.properties = EDC_NEW(struct edc_param_object_property, n);
     type->object.n = n;
     for (int i = 0; i < n; i++)
     {

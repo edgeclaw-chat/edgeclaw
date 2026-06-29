@@ -1,10 +1,10 @@
 #include "sds.h"
 #include "edc_log.h"
 #include "edc_config.h"
+#include "edc_file_utils.h"
 #include "log.h"
 
 #include <uv.h>
-#include <glib.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -44,9 +44,9 @@ static void edc_log_rotate(void)
     g_current_date[sizeof(g_current_date) - 1] = '\0';
 
     sds edc_home = edc_config_resolve_bc_home();
-    char *log_dir = g_build_filename(edc_home, "log", NULL);
+    sds log_dir = edc_path_join(edc_home, "log", NULL);
     sdsfree(edc_home);
-    g_mkdir_with_parents(log_dir, 0755);
+    edc_dir_create_with_parents(log_dir, 0755, NULL);
 
     sds filename = sdscatprintf(sdsempty(), "%s/edgeclaw-%s.log", log_dir, new_date);
 
@@ -63,7 +63,7 @@ static void edc_log_rotate(void)
     uv_mutex_unlock(&g_log_mutex);
 
     sdsfree(filename);
-    free(log_dir);
+    sdsfree(log_dir);
 }
 
 void edc_log_init(void)

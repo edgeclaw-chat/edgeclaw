@@ -2,8 +2,8 @@
 #include "md4c.h"
 #include "log.h"
 #include <glib.h>
+#include "edc_compat.h"
 #include "sds.h"
-#include <string.h>
 
 #define ANSI_RESET      "\033[0m"
 #define ANSI_BOLD       "\033[1m"
@@ -326,7 +326,7 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
             unsigned int nhead = det->head_row_count;
             if (ncols == 0) ncols = 1;
 
-            int *widths = g_new0(int, ncols);
+            int *widths = EDC_NEW0(int, ncols);
             for (unsigned int r = 0; r < rows->len; r++) {
                 GPtrArray *row = g_ptr_array_index(rows, r);
                 for (unsigned int c = 0; c < ncols && c < row->len; c++) {
@@ -437,7 +437,7 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         if (type == MD_BLOCK_TH && ctx->col_aligns) {
             MD_BLOCK_TD_DETAIL *td = detail;
             while (ctx->col_aligns->len <= (unsigned int)ctx->td_col_idx) {
-                int *a = g_new0(int, 1);
+                int *a = EDC_NEW0(int, 1);
                 *a = MD_ALIGN_DEFAULT;
                 g_ptr_array_add(ctx->col_aligns, a);
             }

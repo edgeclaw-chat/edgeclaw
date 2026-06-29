@@ -4,8 +4,8 @@
 #include "edc_param_types.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
-#include <glib.h>
 #include "edc_compat.h"
+#include <stdlib.h>
 
 static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
                                       void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
@@ -80,7 +80,7 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
     struct edc_channel_message *message = edc_channel_message_new(edc_channel_copy(ctx->call_from), sdsdup(lines));
     if (message->channel->type == edc_channel_qq)
     {
-        message->channel->qq.seq_id = g_random_int();
+        message->channel->qq.seq_id = rand();
     }
 
     edc_actor_send(ctx->tb->channel_actor,

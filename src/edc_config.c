@@ -1,23 +1,25 @@
 #include "edc_config.h"
 #include "edc_error.h"
 #include "edc_secret.h"
+#include "edc_file_utils.h"
 #include "cJSON.h"
 #include "log.h"
-#include <errno.h>
 #include <glib.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
+#include "edc_compat.h"
+#include <errno.h>
 
 sds edc_config_resolve_bc_home(void)
 {
-    const char *home = g_get_home_dir();
-    if (!home)
+    sds home = edc_homedir();
+    if (sdslen(home) == 0)
     {
-        log_error("g_get_home_dir() returned NULL, falling back to /tmp/.edgeclaw");
-        home = "/tmp";
+        sdsfree(home);
+        log_error("edc_homedir() failed, falling back to /tmp/.edgeclaw");
+        return sdsnew("/tmp/.edgeclaw");
     }
-    return sdscatprintf(sdsempty(), "%s/.edgeclaw", home);
+    sds result = sdscatprintf(sdsempty(), "%s/.edgeclaw", home);
+    sdsfree(home);
+    return result;
 }
 
 static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *channel)
@@ -137,22 +139,20 @@ static bool edc_config_parse_qq_channel(struct edc_config *config, cJSON *channe
 
 struct edc_config *edc_config_load(const char *edc_home)
 {
-    char *content = NULL;
-    size_t len = 0;
-    GError *gerror = NULL;
+    EdcError *error = NULL;
     struct edc_config *config = NULL;
 
     sds path = sdscatprintf(sdsempty(), "%s/config.json", edc_home);
-    bool success = g_file_get_contents(path, &content, &len, &gerror);
+    sds content = edc_file_read(path, &error);
 
-    if (!success)
+    if (!content)
     {
-        log_error("failed to load config file: %s", gerror->message);
-        g_error_free(gerror);
+        log_error("failed to load config file: %s", error->message);
+        edc_error_free(error);
         goto exit_free_path;
     }
 
-    cJSON *conf = cJSON_ParseWithLength(content, len);
+    cJSON *conf = cJSON_Parse(content);
     if (!conf)
     {
         log_error("failed to parse config file: %s", cJSON_GetErrorPtr());
@@ -382,14 +382,14 @@ struct edc_config *edc_config_load(const char *edc_home)
             while (config->sandbox_ro_paths[ro_count])
                 ro_count++;
         }
-        config->sandbox_ro_paths = g_renew(sds, config->sandbox_ro_paths, ro_count + 2);
+        config->sandbox_ro_paths = realloc(config->sandbox_ro_paths, (ro_count + 2) * sizeof(sds));
         config->sandbox_ro_paths[ro_count] = sdsnew(config->workspace);
         config->sandbox_ro_paths[ro_count + 1] = NULL;
     }
 
     if (config->sandbox_rw_paths && config->sandbox_rw_paths[0])
     {
-        g_mkdir_with_parents(config->sandbox_rw_paths[0], 0755);
+        edc_dir_create_with_parents(config->sandbox_rw_paths[0], 0755, NULL);
         char *rp = realpath(config->sandbox_rw_paths[0], NULL);
         config->sandbox_root_real = rp ? sdsnew(rp) : NULL;
         if (rp) free(rp);
@@ -400,7 +400,7 @@ struct edc_config *edc_config_load(const char *edc_home)
     }
 
     cJSON_Delete(conf);
-    free(content);
+    sdsfree(content);
     sdsfree(path);
 
     return config;
@@ -410,7 +410,7 @@ exit_free_config:
 exit_free_conf:
     cJSON_Delete(conf);
 exit_free_content:
-    free(content);
+    sdsfree(content);
 exit_free_path:
     sdsfree(path);
 

@@ -1,8 +1,8 @@
 #include "edc_context.h"
+#include "edc_file_utils.h"
 #include "edc_history.h"
 #include "edc_skills.h"
 #include "log.h"
-#include <glib.h>
 #include "sds.h"
 
 const char *BOOTSTRAP_FILES[] = {"AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"};
@@ -60,13 +60,13 @@ static sds edc_context_get_identity(const char *os_name, const char *time, const
                                "When remembering something, write to "
                                "{{workspace}}/memory/MEMORY.md\n\n";
 
-    char *cwd = g_get_current_dir();
+    sds cwd = edc_cwd();
     sds identity = sdsnew(identity_fmt);
     sds_replace_all(&identity, "{{os_name}}", os_name);
     sds_replace_all(&identity, "{{cwd}}", cwd);
     sds_replace_all(&identity, "{{time}}", time);
     sds_replace_all(&identity, "{{workspace}}", workspace);
-    free(cwd);
+    sdsfree(cwd);
 
     return identity;
 }
@@ -79,20 +79,19 @@ static sds edc_context_load_bootstrap_files(const char *workspace)
     for (size_t i = 0; i < num_files; i++)
     {
         const char *filename = BOOTSTRAP_FILES[i];
-        char *filepath = g_build_filename(workspace, filename, NULL);
+        sds filepath = edc_path_join(workspace, filename, NULL);
 
-        char *content = NULL;
-        size_t length = 0;
-        GError *error = NULL;
+        EdcError *error = NULL;
+        sds content = edc_file_read(filepath, &error);
 
-        if (g_file_get_contents(filepath, &content, &length, &error))
+        if (content)
         {
             result = sdscatprintf(result, "## %s\n\n%s", filename, content);
-            free(content);
+            sdsfree(content);
         }
         else
         {
-            g_error_free(error);
+            edc_error_free(error);
         }
 
         if (i < num_files - 1)
@@ -100,7 +99,7 @@ static sds edc_context_load_bootstrap_files(const char *workspace)
             result = sdscat(result, "\n\n");
         }
 
-        free(filepath);
+        sdsfree(filepath);
     }
 
     return result;
@@ -109,12 +108,9 @@ static sds edc_context_load_bootstrap_files(const char *workspace)
 static sds edc_context_load_skills(const char *workspace)
 {
     sds result = sdsempty();
-    char *tmp = g_build_filename(workspace, "skills", NULL);
-    sds skills_dir = sdsnewlen(tmp, strlen(tmp));
-    free(tmp);
-
-    UT_array *skills = edc_skills_load(skills_dir);
-    sdsfree(skills_dir);
+    sds tmp = edc_path_join(workspace, "skills", NULL);
+    UT_array *skills = edc_skills_load(tmp);
+    sdsfree(tmp);
 
     result = sdscatprintf(result, "## Skills\n\n"
                                    "The following skills extend your capabilities. To use a skill, read its SKILL.md "
@@ -133,10 +129,10 @@ static sds edc_context_load_skills(const char *workspace)
             continue;
         }
 
-        char *loc = g_build_filename(workspace, "skills", skill->name, "SKILL.md", NULL);
+        sds loc = edc_path_join(workspace, "skills", skill->name, "SKILL.md", NULL);
         result = sdscatprintf(result, "### Skill: %s\n\n", skill->name);
         result = sdscatprintf(result, "description: %s\nSKILL.md localtion: %s\n", desc, loc);
-        free(loc);
+        sdsfree(loc);
         if (i < utarray_len(skills) - 1)
         {
             result = sdscat(result, "\n\n---\n\n");
@@ -151,16 +147,15 @@ static sds edc_context_load_skills(const char *workspace)
 
 static sds edc_context_load_memory(const char *workspace)
 {
-    char *memory_file = g_build_filename(workspace, "memory", "MEMORY.md", NULL);
-    char *content = NULL;
-    GError *error = NULL;
-    size_t len = 0;
+    sds memory_file = edc_path_join(workspace, "memory", "MEMORY.md", NULL);
+    EdcError *error = NULL;
+    sds content = edc_file_read(memory_file, &error);
 
-    if (!g_file_get_contents(memory_file, &content, &len, &error))
+    if (!content)
     {
         log_error("load memory failed: %s", error->message);
-        g_error_free(error);
-        free(memory_file);
+        edc_error_free(error);
+        sdsfree(memory_file);
         return NULL;
     }
 
@@ -168,8 +163,8 @@ static sds edc_context_load_memory(const char *workspace)
     buf = sdscat(buf, content);
     buf = sdscat(buf, "\n\n");
 
-    free(memory_file);
-    free(content);
+    sdsfree(memory_file);
+    sdsfree(content);
 
     return buf;
 }
@@ -177,10 +172,10 @@ static sds edc_context_load_memory(const char *workspace)
 sds edc_context_build_system_prompt(struct edc_config *conf)
 {
     const char *workspace = conf->workspace;
-    char *os_name = g_get_os_info(G_OS_INFO_KEY_NAME);
+    sds os_name = edc_os_name();
 
     sds time = edc_get_timestamp();
-    sds identity = edc_context_get_identity(os_name ? os_name : "Unknown", time, workspace);
+    sds identity = edc_context_get_identity(os_name, time, workspace);
     sds bootstrap = edc_context_load_bootstrap_files(workspace);
     sds memory = edc_context_load_memory(workspace);
     sds skills = edc_context_load_skills(workspace);
@@ -194,10 +189,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf)
     }
     system_prompt = sdscat(system_prompt, skills);
 
-    if (os_name)
-    {
-        free(os_name);
-    }
+    sdsfree(os_name);
 
     sdsfree(time);
     sdsfree(identity);

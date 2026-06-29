@@ -1,5 +1,7 @@
 #include "edc_file_utils.h"
 
+#include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -158,20 +160,26 @@ bool edc_dir_create_with_parents(const char *path, int mode, EdcError **error)
 bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata,
                      EdcError **error)
 {
-    uv_fs_t req;
-    int n = (int)uv_fs_scandir(g_file_loop, &req, path, 0, NULL);
-    if (n < 0) {
-        edc_error_set(error, EDC_ERR_FAILED, "scandir '%s' failed: %s",
-                      path, uv_strerror(n));
-        uv_fs_req_cleanup(&req);
+    DIR *dir = opendir(path);
+    if (!dir) {
+        edc_error_set(error, EDC_ERR_FAILED, "opendir '%s' failed: %s",
+                      path, strerror(errno));
         return false;
     }
 
-    uv_dirent_t *entries = (uv_dirent_t *)req.ptr;
-    for (int i = 0; i < n; i++)
-        cb(entries[i].name, (int)entries[i].type, userdata);
+    struct dirent *entry;
+    while ((entry = readdir(dir))) {
+        int type = UV_DIRENT_UNKNOWN;
+        if (entry->d_type == DT_DIR)
+            type = UV_DIRENT_DIR;
+        else if (entry->d_type == DT_REG)
+            type = UV_DIRENT_FILE;
+        else if (entry->d_type == DT_LNK)
+            type = UV_DIRENT_LINK;
+        cb(entry->d_name, type, userdata);
+    }
 
-    uv_fs_req_cleanup(&req);
+    closedir(dir);
     return true;
 }
 

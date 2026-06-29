@@ -2,8 +2,9 @@
 #define _GNU_SOURCE
 #include "edc_ns_sandbox.h"
 #include "log.h"
-#include <errno.h>
 #include <glib.h>
+#include "edc_compat.h"
+#include <errno.h>
 #include <fcntl.h>
 #include <sched.h>
 #include <string.h>

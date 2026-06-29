@@ -2,7 +2,8 @@
 #include "edc_channel_actor.h"
 #include "cJSON.h"
 #include "log.h"
-#include <glib.h>
+#include "edc_compat.h"
+#include "edc_string_utils.h"
 #include "sds.h"
 
 static const char *telegram_api_host = "api.telegram.org";
@@ -159,12 +160,12 @@ static struct edc_channel_telegram_req *edc_channel_actor_send_message_chunk_req
     edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
 
     sds path = telegram_build_path(&state->config, "sendMessage", NULL);
-    char *escaped_content = g_uri_escape_bytes((uint8_t *)content, len, NULL);
+    char *escaped_content = edc_str_uri_escape(content, len);
     sds post_fields = sdscatprintf(sdsempty(), "chat_id=%s&text=%s", chat_id, escaped_content);
-    free(escaped_content);
+    sdsfree(escaped_content);
 
     struct edc_channel_telegram_req *req = g_new0(struct edc_channel_telegram_req, 1);
-    const char *proxy = g_getenv("https_proxy");
+    const char *proxy = getenv("https_proxy");
 
     req->actor = actor;
     req->proxy = proxy;

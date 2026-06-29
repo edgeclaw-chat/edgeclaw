@@ -1,27 +1,25 @@
 #include "sds.h"
 #include "edc_history.h"
 #include "edc_session.h"
+#include "edc_datetime_utils.h"
+#include "edc_file_utils.h"
 #include "log.h"
 #include <glib.h>
+#include "edc_compat.h"
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
 sds edc_get_timestamp(void)
 {
-    GDateTime *now = g_date_time_new_now_local();
-    char *time = g_date_time_format(now, "%Y-%m-%d %H:%M:%S");
-    g_date_time_unref(now);
-    sds result = sdsnew(time);
-    free(time);
-    return result;
+    return edc_datetime_timestamp();
 }
 
 cJSON *edc_history_load(const char *workspace, const size_t offset)
 {
-    char *history_file = g_build_filename(workspace, "history.jsonl", NULL);
+    sds history_file = edc_path_join(workspace, "history.jsonl", NULL);
     FILE *fin = fopen(history_file, "r");
-    free(history_file);
+    sdsfree(history_file);
 
     if (fin == NULL)
     {
@@ -75,13 +73,13 @@ cJSON *edc_history_load(const char *workspace, const size_t offset)
 
 bool edc_history_save(const char *workspace, cJSON *msg_lst, struct edc_timestamp_node *timestamps, size_t skip_count)
 {
-    char *hist_file = g_build_filename(workspace, "history.jsonl", NULL);
+    sds hist_file = edc_path_join(workspace, "history.jsonl", NULL);
     FILE *fout = fopen(hist_file, "a+");
     if (fout == NULL)
     {
         char *s = strerror(errno);
         log_info("open file %s failed: %s", hist_file, s);
-        free(hist_file);
+        sdsfree(hist_file);
         return FALSE;
     }
 
@@ -113,30 +111,30 @@ bool edc_history_save(const char *workspace, cJSON *msg_lst, struct edc_timestam
 
     fflush(fout);
     fclose(fout);
-    free(hist_file);
+    sdsfree(hist_file);
     return TRUE;
 }
 
 bool edc_history_get_info(const char *workspace, size_t *compress_index, sds *update_time)
 {
-    char *history_info_path = g_build_filename(workspace, "history_info.json", NULL);
-    GError *error = NULL;
-    char *info = NULL;
+    sds history_info_path = edc_path_join(workspace, "history_info.json", NULL);
+
     cJSON *history_info = NULL;
 
-    if (!g_file_test(history_info_path, G_FILE_TEST_EXISTS))
+    if (!edc_file_exists(history_info_path))
     {
         *compress_index = 0;
         if (update_time)
             *update_time = edc_get_timestamp();
-        free(history_info_path);
+        sdsfree(history_info_path);
         return TRUE;
     }
 
     bool ret = TRUE;
-    bool ok = g_file_get_contents(history_info_path, &info, NULL, &error);
+    EdcError *error = NULL;
+    sds info = edc_file_read(history_info_path, &error);
 
-    if (!ok)
+    if (!info)
     {
         log_error("load history info failed: %s", error->message);
         ret = FALSE;
@@ -170,13 +168,13 @@ bool edc_history_get_info(const char *workspace, size_t *compress_index, sds *up
 exit_:
     if (error)
     {
-        g_error_free(error);
+        edc_error_free(error);
     }
     if (info)
     {
-        free(info);
+        sdsfree(info);
     }
-    free(history_info_path);
+    sdsfree(history_info_path);
     cJSON_Delete(history_info);
 
     return ret;
@@ -184,9 +182,9 @@ exit_:
 
 bool edc_history_set_info(const char *workspace, size_t compress_index, const char *update_time)
 {
-    char *history_info_path = g_build_filename(workspace, "history_info.json", NULL);
+    sds history_info_path = edc_path_join(workspace, "history_info.json", NULL);
     FILE *fout = fopen(history_info_path, "w+");
-    free(history_info_path);
+    sdsfree(history_info_path);
 
     if (fout == NULL)
     {

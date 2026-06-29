@@ -50,6 +50,13 @@ typedef ssize_t gssize;
 #define G_N_ELEMENTS(arr) (sizeof(arr) / sizeof((arr)[0]))
 #endif
 
+#ifndef G_MAXINT64
+#define G_MAXINT64 INT64_MAX
+#endif
+#ifndef G_MININT64
+#define G_MININT64 INT64_MIN
+#endif
+
 #define EDC_NEW(type, n)   ((type*)malloc((n) * sizeof(type)))
 #define EDC_NEW0(type, n)  ((type*)calloc((n), sizeof(type)))
 #define EDC_MALLOC0(n)     calloc(1, (n))

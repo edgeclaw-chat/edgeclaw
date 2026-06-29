@@ -1,5 +1,6 @@
 #include "edc_agent.h"
 #include "edc_config.h"
+#include "edc_file_utils.h"
 #include "edc_init_env.h"
 #include "edc_log.h"
 #include "edc_lwip.h"
@@ -107,6 +108,9 @@ int main(int argc, char *argv[])
 #endif
 
     edc_log_init();
+
+    uv_loop_t *default_loop = uv_default_loop();
+    edc_file_utils_init(default_loop);
 
     if (setup)
     {

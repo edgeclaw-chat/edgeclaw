@@ -3,7 +3,6 @@
 #include "edc_sandbox.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
-#include <glib.h>
 #include "edc_compat.h"
 #include "edc_file_utils.h"
 #include <edc_param_types.h>
@@ -24,21 +23,17 @@ static sds edc_tool_exec_read_file(struct edc_config *conf, cJSON *args, EdcErro
         return NULL;
     }
 
-    char *content;
-    size_t len = 0;
-    GError *gerror = NULL;
-    g_file_get_contents(safe_path, &content, &len, &gerror);
+    EdcError *gerror = NULL;
+    sds content = edc_file_read(safe_path, &gerror);
     sdsfree(safe_path);
-    if (gerror)
+    if (!content)
     {
         edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
-        g_error_free(gerror);
+        edc_error_free(gerror);
         return NULL;
     }
 
-    sds result = sdsnewlen(content, len);
-    free(content);
-    return result;
+    return content;
 }
 
 static sds edc_tool_exec_write_file(struct edc_config *conf, cJSON *args, EdcError **error)
@@ -73,6 +68,18 @@ static sds edc_tool_exec_write_file(struct edc_config *conf, cJSON *args, EdcErr
     return result;
 }
 
+struct edc_list_dir_ctx
+{
+    sds result;
+};
+
+static void edc_tool_list_dir_cb(const char *name, int type, void *userdata)
+{
+    struct edc_list_dir_ctx *lctx = (struct edc_list_dir_ctx *)userdata;
+    const char *prefix = (type == UV_DIRENT_DIR) ? "[DIR]  " : "[FILE] ";
+    lctx->result = sdscatprintf(lctx->result, "%s%s\n", prefix, name);
+}
+
 static sds edc_tool_exec_list_dir(struct edc_config *conf, cJSON *args, EdcError **error)
 {
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
@@ -83,30 +90,19 @@ static sds edc_tool_exec_list_dir(struct edc_config *conf, cJSON *args, EdcError
         return NULL;
     }
 
-    GError *gerror = NULL;
-    GDir *dir = g_dir_open(safe_path, 0, &gerror);
+    EdcError *gerror = NULL;
+    struct edc_list_dir_ctx lctx = { .result = sdsnew("") };
+    bool ok = edc_dir_foreach(safe_path, edc_tool_list_dir_cb, &lctx, &gerror);
     sdsfree(safe_path);
-    if (gerror)
+    if (!ok)
     {
+        sdsfree(lctx.result);
         edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
-        g_error_free(gerror);
+        edc_error_free(gerror);
         return NULL;
     }
 
-    sds result = sdsnew("");
-    const char *name;
-    while ((name = g_dir_read_name(dir)))
-    {
-        char *full_path = g_build_filename(path, name, NULL);
-        bool is_dir = g_file_test(full_path, G_FILE_TEST_IS_DIR);
-        free(full_path);
-
-        const char *prefix = is_dir ? "[DIR]  " : "[FILE] ";
-        result = sdscatprintf(result, "%s%s\n", prefix, name);
-    }
-
-    g_dir_close(dir);
-    return result;
+    return lctx.result;
 }
 
 static void edc_tool_exec_read_file_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
@@ -168,19 +164,15 @@ static sds edc_edit_file_try_create(const char *path, sds safe_path,
                                             const char *old_text, const char *new_text,
                                             EdcError **error)
 {
-    if (!g_file_test(safe_path, G_FILE_TEST_EXISTS))
+    if (!edc_file_exists(safe_path))
     {
         if (old_text && old_text[0] == '\0')
         {
-            char *parent = g_path_get_dirname(safe_path);
-            g_mkdir_with_parents(parent, 0755);
-            free(parent);
-            GError *gerror = NULL;
-            g_file_set_contents(safe_path, new_text, -1, &gerror);
-            if (gerror)
+            sds parent = edc_path_dirname(safe_path);
+            edc_dir_create_with_parents(parent, 0755, NULL);
+            sdsfree(parent);
+            if (!edc_file_write(safe_path, new_text, -1, error))
             {
-                edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
-                g_error_free(gerror);
                 return NULL;
             }
             sds msg = sdscatprintf(sdsempty(), "Successfully created %s", path);
@@ -193,32 +185,28 @@ static sds edc_edit_file_try_create(const char *path, sds safe_path,
 
     if (old_text && old_text[0] == '\0')
     {
-        char *content;
-        GError *gerror = NULL;
-        g_file_get_contents(safe_path, &content, NULL, &gerror);
-        if (gerror)
+        EdcError *gerror = NULL;
+        sds content = edc_file_read(safe_path, &gerror);
+        if (!content)
         {
-            edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
-            g_error_free(gerror);
+            if (gerror)
+            {
+                edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
+                edc_error_free(gerror);
+            }
             return NULL;
         }
-        sds sds_content = sdsnewlen(content, strlen(content));
-        free(content);
-        sds_content = sdstrim(sds_content, " \t\r\n");
-        if (sds_content[0] != '\0')
+        sdstrim(content, " \t\r\n");
+        if (content[0] != '\0')
         {
-            sdsfree(sds_content);
+            sdsfree(content);
             edc_error_set(error, EDC_ERR_EXEC,
                         "Error: Cannot create file — %s already exists and is not empty.", path);
             return NULL;
         }
-        sdsfree(sds_content);
-        GError *gerror2 = NULL;
-        g_file_set_contents(safe_path, new_text, -1, &gerror2);
-        if (gerror2)
+        sdsfree(content);
+        if (!edc_file_write(safe_path, new_text, -1, error))
         {
-            edc_error_set(error, EDC_ERR_FAILED, "%s", gerror2->message);
-            g_error_free(gerror2);
             return NULL;
         }
         sds msg = sdscatprintf(sdsempty(), "Successfully edited %s", path);
@@ -487,21 +475,21 @@ static sds edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, EdcErro
         return created;
     }
 
-    char *content = NULL;
+    sds content = NULL;
     UT_array *positions = NULL;
     UT_array *line_nums = NULL;
     UT_array *selected = NULL;
     sds result = NULL;
 
-    GError *gerror = NULL;
-    size_t content_len;
-    g_file_get_contents(safe_path, &content, &content_len, &gerror);
-    if (gerror)
+    EdcError *gerror = NULL;
+    content = edc_file_read(safe_path, &gerror);
+    if (!content)
     {
         edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
-        g_error_free(gerror);
+        edc_error_free(gerror);
         goto cleanup;
     }
+    size_t content_len = sdslen(content);
 
     size_t old_len = strlen(old_text);
     unsigned int count;
@@ -531,21 +519,19 @@ static sds edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, EdcErro
     edc_edit_file_apply_replacements(content, content_len, old_text, old_len,
                                       new_text, positions, selected, &new_content);
 
-    GError *gerror2 = NULL;
-    g_file_set_contents(safe_path, new_content, -1, &gerror2);
-    sdsfree(new_content);
-    if (gerror2)
+    if (!edc_file_write(safe_path, new_content, -1, error))
     {
-        edc_error_set(error, EDC_ERR_FAILED, "%s", gerror2->message);
-        g_error_free(gerror2);
+        sdsfree(new_content);
     }
     else
     {
+        sdsfree(new_content);
         result = sdscatprintf(sdsempty(), "Successfully edited %s", path);
     }
 
 cleanup:
-    free(content);
+    if (content)
+        sdsfree(content);
     sdsfree(safe_path);
     if (positions)
         utarray_free(positions);

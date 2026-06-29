@@ -5,6 +5,8 @@
 #include "log.h"
 #include <dirent.h>
 #include <glib.h>
+#include "edc_compat.h"
+#include "edc_file_utils.h"
 #include "sds.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -218,25 +220,24 @@ static int prompt_device_transport(int default_idx)
  * Returns a newly allocated struct, or NULL if the file doesn't exist or can't be parsed. */
 static struct edc_init_env_result *load_existing_config(const char *conf_file)
 {
-    if (!g_file_test(conf_file, G_FILE_TEST_IS_REGULAR))
+    if (!edc_file_is_regular(conf_file))
         return NULL;
 
-    char *contents = NULL;
-    size_t length = 0;
-    GError *error = NULL;
-    if (!g_file_get_contents(conf_file, &contents, &length, &error))
+    EdcError *error = NULL;
+    sds contents = edc_file_read(conf_file, &error);
+    if (!contents)
     {
         if (error)
-            g_error_free(error);
+            edc_error_free(error);
         return NULL;
     }
 
     cJSON *json = cJSON_Parse(contents);
-    free(contents);
+    sdsfree(contents);
     if (!json)
         return NULL;
 
-    struct edc_init_env_result *result = g_malloc0(sizeof(*result));
+    struct edc_init_env_result *result = EDC_MALLOC0(sizeof(*result));
 
     cJSON *item;
     item = cJSON_GetObjectItem(json, "api_key");
@@ -722,7 +723,7 @@ static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
         return FALSE;
     }
 
-    if (g_mkdir_with_parents(dest_dir, 0755) != 0)
+    if (!edc_dir_create_with_parents(dest_dir, 0755, NULL))
     {
         log_error("Failed to create destination directory %s", dest_dir);
         closedir(dir);
@@ -737,16 +738,16 @@ static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
             continue;
 
-        char *src_path = g_build_filename(src_dir, entry->d_name, NULL);
-        char *dest_path = g_build_filename(dest_dir, entry->d_name, NULL);
+        sds src_path = edc_path_join(src_dir, entry->d_name, NULL);
+        sds dest_path = edc_path_join(dest_dir, entry->d_name, NULL);
 
         struct stat st;
         if (lstat(src_path, &st) != 0)
         {
             log_error("Failed to stat %s", src_path);
             success = FALSE;
-            free(src_path);
-            free(dest_path);
+            sdsfree(src_path);
+            sdsfree(dest_path);
             break;
         }
 
@@ -755,45 +756,43 @@ static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
             if (!copy_directory_recursive(src_path, dest_path))
             {
                 success = FALSE;
-                free(src_path);
-                free(dest_path);
+                sdsfree(src_path);
+                sdsfree(dest_path);
                 break;
             }
         }
         else
         {
-            char *contents = NULL;
-            size_t length = 0;
-            GError *error = NULL;
+            EdcError *error = NULL;
+            sds contents = edc_file_read(src_path, &error);
 
-            if (!g_file_get_contents(src_path, &contents, &length, &error))
+            if (!contents)
             {
                 log_error("Failed to read %s: %s", src_path, error ? error->message : "Unknown");
                 if (error)
-                    g_error_free(error);
+                    edc_error_free(error);
                 success = FALSE;
-                free(src_path);
-                free(dest_path);
+                sdsfree(src_path);
+                sdsfree(dest_path);
                 break;
             }
 
-            if (!g_file_set_contents(dest_path, contents, length, &error))
+            if (!edc_file_write(dest_path, contents, -1, &error))
             {
                 log_error("Failed to write %s: %s", dest_path, error ? error->message : "Unknown");
                 if (error)
-                    g_error_free(error);
-                free(contents);
+                    edc_error_free(error);
                 success = FALSE;
-                free(src_path);
-                free(dest_path);
+                sdsfree(contents);
+                sdsfree(src_path);
+                sdsfree(dest_path);
                 break;
             }
-
-            free(contents);
+            sdsfree(contents);
         }
 
-        free(src_path);
-        free(dest_path);
+        sdsfree(src_path);
+        sdsfree(dest_path);
     }
 
     closedir(dir);
@@ -802,26 +801,26 @@ static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
 
 static bool edc_init_env_workspace(const char *dest_workspace)
 {
-    if (g_file_test(dest_workspace, G_FILE_TEST_IS_DIR))
+    if (edc_file_is_dir(dest_workspace))
     {
         return TRUE;
     }
 
-    char *current_dir = g_get_current_dir();
-    char *src_workspace = g_build_filename(current_dir, "workspace", NULL);
-    free(current_dir);
+    sds current_dir = edc_cwd();
+    sds src_workspace = edc_path_join(current_dir, "workspace", NULL);
+    sdsfree(current_dir);
 
-    if (!g_file_test(src_workspace, G_FILE_TEST_IS_DIR))
+    if (!edc_file_is_dir(src_workspace))
     {
         log_error("Source workspace directory %s does not exist", src_workspace);
-        free(src_workspace);
+        sdsfree(src_workspace);
         return FALSE;
     }
 
     log_info("Copying workspace from %s to %s", src_workspace, dest_workspace);
 
     bool success = copy_directory_recursive(src_workspace, dest_workspace);
-    free(src_workspace);
+    sdsfree(src_workspace);
 
     if (!success)
     {
@@ -857,7 +856,7 @@ static sds *split_paths(const char *input)
         return NULL;
     }
 
-    sds *result = g_new0(sds, valid + 1);
+    sds *result = EDC_NEW0(sds, valid + 1);
     int idx = 0;
     for (int i = 0; i < count; i++)
     {
@@ -920,16 +919,16 @@ void edc_init_env_result_free(struct edc_init_env_result *result)
 
 static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
 {
-    bool is_create = !g_file_test(conf_file, G_FILE_TEST_IS_REGULAR);
-    char *edc_home_dir = g_path_get_dirname(conf_file);
+    bool is_create = !edc_file_is_regular(conf_file);
+    sds edc_home_dir = edc_path_dirname(conf_file);
 
     if (!edc_secret_init(is_create, edc_home_dir))
     {
         log_error("Failed to initialize secret module");
-        free(edc_home_dir);
+        sdsfree(edc_home_dir);
         return FALSE;
     }
-    free(edc_home_dir);
+    sdsfree(edc_home_dir);
 
     struct edc_init_env_result *existing = load_existing_config(conf_file);
 
@@ -1066,7 +1065,7 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     cJSON *sandbox = cJSON_CreateObject();
     build_sandbox_rw(sandbox, env_result.sandbox_root, env_result.sandbox_rw_paths);
     {
-        char *workspace_path = g_build_filename(edc_home, "workspace", NULL);
+        sds workspace_path = edc_path_join(edc_home, "workspace", NULL);
         sds *ro = split_paths(env_result.sandbox_ro_paths);
         cJSON *ro_arr = cJSON_CreateArray();
         if (ro)
@@ -1079,7 +1078,7 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
         }
         cJSON_AddItemToArray(ro_arr, cJSON_CreateString(workspace_path));
         cJSON_AddItemToObject(sandbox, "ro_paths", ro_arr);
-        free(workspace_path);
+        sdsfree(workspace_path);
     }
     cJSON_AddItemToObject(config, "sandbox", sandbox);
 
@@ -1129,21 +1128,21 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     cJSON_AddStringToObject(config, "device_ip", env_result.device_ip);
     cJSON_AddNumberToObject(config, "device_port", env_result.device_port);
 
-    if (sdslen(env_result.device_pty) > 0)
+    if (env_result.device_pty && sdslen(env_result.device_pty) > 0)
     {
         cJSON_AddStringToObject(config, "device_pty", env_result.device_pty);
         cJSON_AddNumberToObject(config, "device_baud", env_result.device_baud);
     }
 
     char *config_str = cJSON_Print(config);
-    GError *error = NULL;
-    if (!g_file_set_contents(conf_file, config_str, -1, &error))
+    EdcError *error = NULL;
+    if (!edc_file_write(conf_file, config_str, -1, &error))
     {
         log_error("save config to %s failed: %s", conf_file, error ? error->message : "Unknown");
         cJSON_Delete(config);
         cJSON_free(config_str);
         if (error)
-            g_error_free(error);
+            edc_error_free(error);
         goto exit_free_env;
     }
 
@@ -1160,13 +1159,13 @@ exit_free_env:
 
 bool edc_init_env(const char *edc_home, bool setup)
 {
-    char *workspace = g_build_filename(edc_home, "workspace", NULL);
-    char *conf_file = g_build_filename(edc_home, "config.json", NULL);
+    sds workspace = edc_path_join(edc_home, "workspace", NULL);
+    sds conf_file = edc_path_join(edc_home, "config.json", NULL);
 
     bool ret = TRUE;
-    if (!g_file_test(edc_home, G_FILE_TEST_IS_DIR))
+    if (!edc_file_is_dir(edc_home))
     {
-        if (g_mkdir_with_parents(edc_home, 0755) != 0)
+        if (!edc_dir_create_with_parents(edc_home, 0755, NULL))
         {
             log_error("Failed to create directory %s", edc_home);
             ret = FALSE;
@@ -1174,7 +1173,7 @@ bool edc_init_env(const char *edc_home, bool setup)
         }
     }
 
-    if (setup || !g_file_test(conf_file, G_FILE_TEST_IS_REGULAR))
+    if (setup || !edc_file_is_regular(conf_file))
     {
         if (!edc_init_env_conf_file(conf_file, edc_home))
         {
@@ -1192,7 +1191,7 @@ bool edc_init_env(const char *edc_home, bool setup)
     }
 
 exit_:
-    free(workspace);
-    free(conf_file);
+sdsfree(workspace);
+sdsfree(conf_file);
     return ret;
 }

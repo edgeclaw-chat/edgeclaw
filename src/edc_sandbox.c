@@ -1,6 +1,9 @@
 #include "edc_sandbox.h"
 #include "edc_bpf_sandbox.h"
+#include <glib.h>
+#include "edc_compat.h"
 #include "edc_config.h"
+#include "edc_file_utils.h"
 #include "edc_landlock_sandbox.h"
 #include "edc_ns_sandbox.h"
 #include "log.h"
@@ -120,12 +123,10 @@ sds edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writ
     }
 
     char *basename = g_path_get_basename(path);
-    char *result = g_build_filename(parent_real, basename, NULL);
+    sds result = edc_path_join(parent_real, basename, NULL);
     free(basename);
     free(parent_real);
-    sds ret2 = sdsnew(result);
-    free(result);
-    return ret2;
+    return result;
 }
 
 bool edc_sandbox_apply(struct edc_config *conf)

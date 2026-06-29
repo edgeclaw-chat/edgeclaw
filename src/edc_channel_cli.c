@@ -4,7 +4,6 @@
 #include "edc_markdown_render.h"
 #include "edc_config.h"
 #include "linenoise.h"
-#include <glib.h>
 #include <pthread.h>
 #include <signal.h>
 #include <errno.h>
