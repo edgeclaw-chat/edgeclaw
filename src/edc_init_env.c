@@ -15,8 +15,6 @@
 #include <termios.h>
 #include <unistd.h>
 
-#define MAX_FIELD_LEN 512
-
 /* Channel type options */
 static const char *channel_types[] = {"cli", "telegram", "email", "feishu", "qq"};
 #define CHANNEL_TYPE_COUNT 5
@@ -92,19 +90,17 @@ static sds prompt_password(const char *label, const char *default_val)
     new_term.c_lflag &= ~(ECHO);
     tcsetattr(STDIN_FILENO, TCSANOW, &new_term);
 
-    char buf[MAX_FIELD_LEN];
     sds result = NULL;
-
-    if (fgets(buf, sizeof(buf), stdin) != NULL)
+    char *raw = NULL;
+    size_t raw_cap = 0;
+    ssize_t raw_len = getline(&raw, &raw_cap, stdin);
+    if (raw_len != -1)
     {
-        /* Strip newline */
-        size_t len = strlen(buf);
-        if (len > 0 && buf[len - 1] == '\n')
-        {
-            buf[len - 1] = '\0';
-        }
-        result = sdsnew(buf);
+        if (raw_len > 0 && raw[raw_len - 1] == '\n')
+            raw[raw_len - 1] = '\0';
+        result = sdsnew(raw);
     }
+    free(raw);
 
     tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
     fprintf(stdout, "\n");

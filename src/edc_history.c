@@ -27,46 +27,32 @@ cJSON *edc_history_load(const char *workspace, const size_t offset)
     }
 
     cJSON *history_array = cJSON_CreateArray();
-    char buf[1024];
-    sds line = sdsempty();
+    char *raw_line = NULL;
+    size_t raw_cap = 0;
+    ssize_t raw_len;
     size_t line_counts = 0;
 
-    while (fgets(buf, sizeof(buf), fin) != NULL)
+    while ((raw_len = getline(&raw_line, &raw_cap, fin)) != -1)
     {
-        line = sdscat(line, buf);
-        if (sdslen(line) > 0 && line[sdslen(line) - 1] == '\n')
-        {
-            line_counts += 1;
-            if (line_counts < offset)
-            {
-                sdsrange(line, 0, 0);
-                continue;
-            }
+        line_counts += 1;
+        if (line_counts < offset)
+            continue;
 
-            line = sdstrim(line, " \t\r\n");
-            sdssetlen(line, sdslen(line));
-            if (sdslen(line) > 0)
+        sds line = sdsnewlen(raw_line, (size_t)raw_len);
+        line = sdstrim(line, " \t\r\n");
+        sdssetlen(line, sdslen(line));
+        if (sdslen(line) > 0)
+        {
+            cJSON *msg = cJSON_Parse(line);
+            if (msg != NULL)
             {
-                cJSON *msg = cJSON_Parse(line);
-                if (msg != NULL)
-                {
-                    cJSON_AddItemToArray(history_array, msg);
-                }
+                cJSON_AddItemToArray(history_array, msg);
             }
-            sdsrange(line, 0, 0);
         }
+        sdsfree(line);
     }
 
-    if (sdslen(line) > 0 && line_counts >= offset)
-    {
-        cJSON *msg = cJSON_Parse(line);
-        if (msg != NULL)
-        {
-            cJSON_AddItemToArray(history_array, msg);
-        }
-    }
-
-    sdsfree(line);
+    free(raw_line);
     fclose(fin);
     return history_array;
 }
