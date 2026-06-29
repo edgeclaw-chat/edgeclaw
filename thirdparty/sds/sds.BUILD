@@ -5,6 +5,10 @@ cc_library(
         "sds.h",
         "sdsalloc.h",
     ],
+    defines = select({
+        "@platforms//os:windows": ["__attribute__(x)="],
+        "//conditions:default": [],
+    }),
     linkstatic = True,
     visibility = ["//visibility:public"],
 )
