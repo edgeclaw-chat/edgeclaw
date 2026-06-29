@@ -146,7 +146,10 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
 {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0)
+    {
+        log_error("device_upload: socket() failed: %s", strerror(errno));
         return -1;
+    }
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -154,6 +157,7 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
     addr.sin_port = htons(ctx->agent_port);
     if (inet_pton(AF_INET, ctx->agent_ip, &addr.sin_addr) != 1)
     {
+        log_error("device_upload: inet_pton failed for '%s': %s", ctx->agent_ip, strerror(errno));
         close(sock);
         return -1;
     }
@@ -163,6 +167,7 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
 
     if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0)
     {
+        log_error("device_upload: connect failed: %s", strerror(errno));
         close(sock);
         return -1;
     }
@@ -187,8 +192,20 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
                            "\r\n",
                            ctx->agent_ip, ctx->agent_port, strlen(req_body));
 
-    send_all(sock, hdr, (size_t)hdr_len);
-    send_all(sock, req_body, strlen(req_body));
+    if (send_all(sock, hdr, (size_t)hdr_len) != 0)
+    {
+        log_error("device_upload: send header failed: %s", strerror(errno));
+        free(req_body);
+        close(sock);
+        return -1;
+    }
+    if (send_all(sock, req_body, strlen(req_body)) != 0)
+    {
+        log_error("device_upload: send body failed (len=%zu): %s", strlen(req_body), strerror(errno));
+        free(req_body);
+        close(sock);
+        return -1;
+    }
     free(req_body);
 
     tv.tv_sec = ctx->timeout_sec;
@@ -200,6 +217,7 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
 
     if (recv_ret != 0)
     {
+        log_error("device_upload: recv failed (ret=%d): %s", recv_ret, strerror(errno));
         edc_str_free(resp_buf);
         return -1;
     }
@@ -210,8 +228,12 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
     edc_str_free(resp_buf);
     if (ret != 0)
     {
+        log_error("device_upload: parse_json_response failed (ret=%d)", ret);
         if (error)
+        {
+            log_error("device_upload: error=%s", error->message);
             g_error_free(error);
+        }
         return -1;
     }
 

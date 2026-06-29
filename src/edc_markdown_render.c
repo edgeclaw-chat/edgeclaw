@@ -96,16 +96,16 @@ static void edc_md_render_ctx_free(struct edc_md_render_ctx *ctx)
                 sds cell = g_ptr_array_index(row, j);
                 edc_str_free(cell);
             }
-            g_ptr_array_free(row, FALSE);
+            free(g_ptr_array_free(row, FALSE));
         }
-        g_ptr_array_free(ctx->table_rows, FALSE);
+        free(g_ptr_array_free(ctx->table_rows, FALSE));
     }
     if (ctx->current_row) {
         for (unsigned int i = 0; i < ctx->current_row->len; i++) {
             sds cell = g_ptr_array_index(ctx->current_row, i);
             edc_str_free(cell);
         }
-        g_ptr_array_free(ctx->current_row, FALSE);
+        free(g_ptr_array_free(ctx->current_row, FALSE));
     }
     if (ctx->current_cell) {
         edc_str_free(ctx->current_cell);
@@ -115,7 +115,7 @@ static void edc_md_render_ctx_free(struct edc_md_render_ctx *ctx)
             int *a = g_ptr_array_index(ctx->col_aligns, i);
             free(a);
         }
-        g_ptr_array_free(ctx->col_aligns, FALSE);
+        free(g_ptr_array_free(ctx->col_aligns, FALSE));
     }
 }
 
@@ -401,9 +401,9 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
                     sds cell = g_ptr_array_index(row, j);
                     edc_str_free(cell);
                 }
-                g_ptr_array_free(row, FALSE);
+                free(g_ptr_array_free(row, FALSE));
             }
-            g_ptr_array_free(ctx->table_rows, FALSE);
+            free(g_ptr_array_free(ctx->table_rows, FALSE));
             ctx->table_rows = NULL;
         }
         if (ctx->col_aligns) {
@@ -411,7 +411,7 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
                 int *a = g_ptr_array_index(ctx->col_aligns, i);
                 free(a);
             }
-            g_ptr_array_free(ctx->col_aligns, FALSE);
+            free(g_ptr_array_free(ctx->col_aligns, FALSE));
             ctx->col_aligns = NULL;
         }
         break;
