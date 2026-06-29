@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "utf8proc.h"
 
 char *edc_strdup_printf(const char *fmt, ...)
 {
@@ -157,62 +158,20 @@ sds edc_str_utf8_make_valid(const char *str, ssize_t len)
     result = sdsMakeRoomFor(result, n + n / 2);
 
     const unsigned char *p = (const unsigned char *)str;
-    const unsigned char *end = p + n;
+    ssize_t remaining = (ssize_t)n;
 
-    while (p < end) {
-        unsigned char c = *p;
-        int seq_len;
-        uint32_t codepoint;
-
-        if (c < 0x80) {
-            seq_len = 1;
-            codepoint = c;
-        } else if ((c & 0xE0) == 0xC0) {
-            seq_len = 2;
-            codepoint = c & 0x1F;
-        } else if ((c & 0xF0) == 0xE0) {
-            seq_len = 3;
-            codepoint = c & 0x0F;
-        } else if ((c & 0xF8) == 0xF0) {
-            seq_len = 4;
-            codepoint = c & 0x07;
+    while (remaining > 0) {
+        utf8proc_int32_t uc = -1;
+        ssize_t clen = utf8proc_iterate(p, remaining, &uc);
+        if (clen <= 0 || uc == -1) {
+            result = sdscatlen(result, "\xEF\xBF\xBD", 3);
+            p++;
+            remaining--;
         } else {
-            seq_len = -1;
-            codepoint = 0;
+            result = sdscatlen(result, (const char *)p, (size_t)clen);
+            p += clen;
+            remaining -= clen;
         }
-
-        if (seq_len >= 1 && p + seq_len <= end) {
-            bool valid = true;
-
-            for (int i = 1; i < seq_len; i++) {
-                if ((p[i] & 0xC0) != 0x80) { valid = false; break; }
-                codepoint = (codepoint << 6) | (p[i] & 0x3F);
-            }
-
-            if (valid) {
-                if (seq_len == 2 && codepoint < 0x80)
-                    valid = false;
-                else if (seq_len == 3 && codepoint < 0x800)
-                    valid = false;
-                else if (seq_len == 4 && codepoint < 0x10000)
-                    valid = false;
-
-                if (codepoint > 0x10FFFF)
-                    valid = false;
-
-                if (codepoint >= 0xD800 && codepoint <= 0xDFFF)
-                    valid = false;
-            }
-
-            if (valid) {
-                result = sdscatlen(result, (const char *)p, (size_t)seq_len);
-                p += seq_len;
-                continue;
-            }
-        }
-
-        result = sdscatlen(result, "\xEF\xBF\xBD", 3);
-        p++;
     }
 
     return result;

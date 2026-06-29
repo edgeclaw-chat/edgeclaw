@@ -139,6 +139,7 @@ cc_library(
         "@sds//:sds",
         ":mbedtls_config",
         "@mbedtls//:mbedtls",
+        "//thirdparty/utf8proc",
     ],
     linkstatic = True,
     visibility = ["//visibility:public"],
@@ -257,6 +258,8 @@ cc_library(
         "@lwip//:lwip",
         "//thirdparty/lwip:sys_arch",
         ":pppos_agent_lib",
+        "//thirdparty/brutezone:brutezone",
+        "//thirdparty/utf8proc",
     ],
     linkopts = select({
         "//:macos": ["-lresolv"],

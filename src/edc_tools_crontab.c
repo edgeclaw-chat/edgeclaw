@@ -1,8 +1,8 @@
+#define _GNU_SOURCE
 #include "sds.h"
 #include "edc_error.h"
 #include "edc_tools_crontab.h"
 #include "edc_actor.h"
-#include <glib.h>
 #include "edc_compat.h"
 #include "edc_channel_actor.h"
 #include "edc_file_utils.h"
@@ -12,6 +12,24 @@
 #include "log.h"
 #include <edc_param_types.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "timezone.h"
+
+static char *edc_uuid_gen(void)
+{
+    unsigned char b[16];
+    for (int i = 0; i < 16; i++) b[i] = (unsigned char)(rand() % 256);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    char *s = malloc(37);
+    snprintf(s, 37, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+             b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+    return s;
+}
 
 struct edc_tool_crontab_state
 {
@@ -239,7 +257,8 @@ static void edc_tool_crontab_caculate_next_run(cJSON *jobs)
         cJSON *schedule = cJSON_GetObjectItem(job, "schedule");
         cJSON *tz_id = cJSON_GetObjectItem(schedule, "tz");
         cJSON *kind = cJSON_GetObjectItem(schedule, "kind");
-        GTimeZone *tz = g_time_zone_new_identifier(cJSON_GetStringValue(tz_id));
+        const char *tz_name = cJSON_GetStringValue(tz_id);
+
         if (strcmp(cJSON_GetStringValue(kind), "at") == 0)
         {
         }
@@ -247,9 +266,7 @@ static void edc_tool_crontab_caculate_next_run(cJSON *jobs)
         {
             cJSON *interval = cJSON_GetObjectItem(schedule, "every_seconds");
             int every_seconds = interval->valueint;
-            GDateTime *dt = g_date_time_new_now(tz);
-            int64_t now = g_date_time_to_unix(dt);
-            g_date_time_unref(dt);
+            int64_t now = (int64_t)time(NULL);
             cJSON_ReplaceItemInObject(schedule, "next_run_at_unix_ts", cJSON_CreateNumber(now + every_seconds));
         }
         else if (strcmp(cJSON_GetStringValue(kind), "cron") == 0)
@@ -262,17 +279,20 @@ static void edc_tool_crontab_caculate_next_run(cJSON *jobs)
             {
                 log_error("job id: %s parse crontab expr failed: %s", cJSON_GetStringValue(job_id), error);
             }
+            else if (tz_name && tz_name[0])
+            {
+                time_t local_now = timezone_local_time(tz_name, time(NULL));
+                time_t local_next = cron_next(&cexpr, local_now);
+                time_t utc_next = timezone_gmt_time(tz_name, local_next);
+                if (utc_next >= 0)
+                    cJSON_ReplaceItemInObject(schedule, "next_run_at_unix_ts", cJSON_CreateNumber(utc_next));
+            }
             else
             {
-                int interval = g_time_zone_find_interval(tz, G_TIME_TYPE_STANDARD, g_get_real_time() / 1000000);
-                int32_t tz_offset = g_time_zone_get_offset(tz, interval);
-                time_t next = cron_next(&cexpr, time(NULL) + tz_offset);
-                next -= tz_offset;
+                time_t next = cron_next(&cexpr, time(NULL));
                 cJSON_ReplaceItemInObject(schedule, "next_run_at_unix_ts", cJSON_CreateNumber(next));
             }
         }
-
-        g_time_zone_unref(tz);
     }
 }
 
@@ -327,15 +347,13 @@ static void edc_tool_crontab_update_task(const char *workspace, struct edc_chann
         tool->priv = NULL;
     }
 
-    GDateTime *now = g_date_time_new_now_utc();
-    int64_t ts = g_date_time_to_unix(now);
+    int64_t ts = time(NULL);
     if (run_at < ts)
     {
         run_at = ts + 1;
     }
 
     int interval = run_at - ts;
-    g_date_time_unref(now);
 
     struct edc_tool_crontab_state *state =
         edc_tool_crontab_state_new(run_at, sdsnew(job_id), sdsnew(job_name),
@@ -346,11 +364,11 @@ static void edc_tool_crontab_update_task(const char *workspace, struct edc_chann
     uv_timer_start(&state->timer, edc_tool_crontab_on_timeout, (uint64_t)interval * 1000, 0);
     tool->priv = state;
 
-    GDateTime *point = g_date_time_new_from_unix_local(run_at);
-    char *s = g_date_time_format_iso8601(point);
-    log_info("crontabl tool schedule job name = %s, id = %s, run at %s", job_name, job_id, s);
-    free(s);
-    g_date_time_unref(point);
+    struct tm tm;
+    localtime_r((const time_t *)&run_at, &tm);
+    char buf[64];
+    strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S%z", &tm);
+    log_info("crontabl tool schedule job name = %s, id = %s, run at %s", job_name, job_id, buf);
 }
 
 static void edc_tool_crontab_schedule(const char *workspace, edc_actor_t *scheduler, struct edc_tool *tool, cJSON *jobs)
@@ -430,22 +448,14 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
         return;
     }
 
-    GTimeZone *g_tz = NULL;
-    if (tz)
+    const char *tz_name = tz ? cJSON_GetStringValue(tz) : NULL;
+    if (tz && (!tz_name || !find_timezone(tz_name)))
     {
-        g_tz = g_time_zone_new_identifier(cJSON_GetStringValue(tz));
-        if (!g_tz)
-        {
-            char *tmp = cJSON_PrintUnformatted(tz);
-            EdcError *error = edc_error_new(EDC_ERR_INVAL, "timezone is invalid: %s", tmp);
-            cJSON_free(tmp);
-            callback(ctx, NULL, error);
-            return;
-        }
-    }
-    else
-    {
-        g_tz = g_time_zone_new_local();
+        char *tmp = cJSON_PrintUnformatted(tz);
+        EdcError *error = edc_error_new(EDC_ERR_INVAL, "timezone is invalid: %s", tmp);
+        cJSON_free(tmp);
+        callback(ctx, NULL, error);
+        return;
     }
 
     struct edc_toolbox *tb = ctx->tb;
@@ -477,44 +487,53 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
         free(s);
     }
 
-    char *job_id = g_uuid_string_random();
+    char *job_id = edc_uuid_gen();
     cJSON_AddStringToObject(job, "job_id", job_id);
     free(job_id);
 
     cJSON_AddItemToObject(job, "channel", edc_channel_to_json(ctx->call_from));
 
     cJSON *schedule = cJSON_AddObjectToObject(job, "schedule");
-    cJSON_AddStringToObject(schedule, "tz", g_time_zone_get_identifier(g_tz));
+    cJSON_AddStringToObject(schedule, "tz", tz_name ? tz_name : "");
 
     if (at)
     {
         cJSON_AddStringToObject(schedule, "kind", "at");
-        GDateTime *dt = g_date_time_new_from_iso8601(cJSON_GetStringValue(at), g_tz);
-        if (!dt)
+        struct tm tm = {0};
+        const char *p = cJSON_GetStringValue(at);
+        char *end = strptime(p, "%Y-%m-%dT%H:%M:%S", &tm);
+        if (!end)
         {
             char *tmp = cJSON_PrintUnformatted(at);
-            EdcError *error =
-                edc_error_new(EDC_ERR_INVAL, "'at' is not iso8601 format: %s", tmp);
-            callback(ctx, NULL, error);
+            EdcError *e = edc_error_new(EDC_ERR_INVAL, "'at' is not iso8601 format: %s", tmp);
+            callback(ctx, NULL, e);
             cJSON_free(tmp);
             cJSON_Delete(job);
             cJSON_Delete(db);
-            g_time_zone_unref(g_tz);
             return;
         }
-
-        cJSON_AddNumberToObject(schedule, "next_run_at_unix_ts", g_date_time_to_unix(dt));
+        time_t local_ts = timegm(&tm);
+        time_t utc_ts;
+        if (tz_name && tz_name[0])
+            utc_ts = timezone_gmt_time(tz_name, local_ts);
+        else
+            utc_ts = local_ts;
+        if (utc_ts < 0)
+        {
+            cJSON_Delete(job);
+            cJSON_Delete(db);
+            EdcError *e = edc_error_new(EDC_ERR_INVAL, "'at' time is out of timezone database range");
+            callback(ctx, NULL, e);
+            return;
+        }
+        cJSON_AddNumberToObject(schedule, "next_run_at_unix_ts", utc_ts);
         cJSON_AddBoolToObject(schedule, "once", TRUE);
-        g_date_time_unref(dt);
     }
     else if (every_seconds)
     {
         cJSON_AddStringToObject(schedule, "kind", "every");
         cJSON_AddNumberToObject(schedule, "every_seconds", every_seconds->valueint);
-        GDateTime *dt = g_date_time_new_now_local();
-        int64_t now = g_date_time_to_unix(dt);
-        g_date_time_unref(dt);
-
+        int64_t now = (int64_t)time(NULL);
         cJSON_AddNumberToObject(schedule, "next_run_at_unix_ts", now + every_seconds->valueint);
         cJSON_AddBoolToObject(schedule, "once", FALSE);
     }
@@ -524,27 +543,31 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
         cJSON_AddStringToObject(schedule, "cron_expr", cJSON_GetStringValue(cexpr));
 
         cron_expr expr;
-        const char *error = NULL;
-        // 解析表达式
-        cron_parse_expr(cJSON_GetStringValue(cexpr), &expr, &error);
+        const char *cron_err = NULL;
+        cron_parse_expr(cJSON_GetStringValue(cexpr), &expr, &cron_err);
 
-        if (error)
+        if (cron_err)
         {
             EdcError *e = edc_error_new(EDC_ERR_INVAL, "parse cron expr %s failed: %s",
-                                    cJSON_GetStringValue(cexpr), error);
+                                    cJSON_GetStringValue(cexpr), cron_err);
             callback(ctx, NULL, e);
-
             cJSON_Delete(job);
             cJSON_Delete(db);
-            g_time_zone_unref(g_tz);
             return;
         }
 
-        int interval = g_time_zone_find_interval(g_tz, G_TIME_TYPE_STANDARD, g_get_real_time() / 1000000);
-        int32_t tz_offset = g_time_zone_get_offset(g_tz, interval);
-
-        time_t next = cron_next(&expr, time(NULL) + tz_offset);
-        next -= tz_offset;
+        time_t next;
+        if (tz_name && tz_name[0])
+        {
+            time_t local_now = timezone_local_time(tz_name, time(NULL));
+            time_t local_next = cron_next(&expr, local_now);
+            next = timezone_gmt_time(tz_name, local_next);
+            if (next < 0) next = time(NULL) + 60;
+        }
+        else
+        {
+            next = cron_next(&expr, time(NULL));
+        }
         cJSON_AddNumberToObject(schedule, "next_run_at_unix_ts", next);
         cJSON_AddBoolToObject(schedule, "once", FALSE);
     }
@@ -566,7 +589,6 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
         callback(ctx, result, NULL);
     }
 
-    g_time_zone_unref(g_tz);
     cJSON_Delete(db);
 }
 

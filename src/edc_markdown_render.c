@@ -1,9 +1,45 @@
 #include "edc_markdown_render.h"
 #include "md4c.h"
 #include "log.h"
-#include <glib.h>
 #include "edc_compat.h"
 #include "sds.h"
+#include "utf8proc.h"
+#include <stdlib.h>
+#include <string.h>
+
+struct edc_ptr_array {
+    void **pdata;
+    unsigned int len;
+    unsigned int cap;
+};
+
+static struct edc_ptr_array *edc_ptr_array_new(void)
+{
+    struct edc_ptr_array *arr = EDC_NEW0(struct edc_ptr_array, 1);
+    arr->cap = 4;
+    arr->pdata = EDC_NEW(void *, arr->cap);
+    return arr;
+}
+
+static void edc_ptr_array_add(struct edc_ptr_array *arr, void *ptr)
+{
+    if (arr->len >= arr->cap) {
+        arr->cap *= 2;
+        arr->pdata = realloc(arr->pdata, arr->cap * sizeof(void *));
+    }
+    arr->pdata[arr->len++] = ptr;
+}
+
+static void *edc_ptr_array_index(struct edc_ptr_array *arr, unsigned int idx)
+{
+    return arr->pdata[idx];
+}
+
+static void edc_ptr_array_free(struct edc_ptr_array *arr)
+{
+    free(arr->pdata);
+    free(arr);
+}
 
 #define ANSI_RESET      "\033[0m"
 #define ANSI_BOLD       "\033[1m"
@@ -44,10 +80,10 @@ static const char *HEADING_COLORS[] = {
 struct edc_md_render_ctx {
     sds out;
     bool in_table;
-    GPtrArray *table_rows;
-    GPtrArray *current_row;
+    struct edc_ptr_array *table_rows;
+    struct edc_ptr_array *current_row;
     sds current_cell;
-    GPtrArray *col_aligns;
+    struct edc_ptr_array *col_aligns;
     int td_col_idx;
     int list_depth;
     int ol_counter[MAX_LIST_DEPTH];
@@ -68,19 +104,23 @@ static int edc_md_visual_strlen(const char *s)
 {
     int w = 0;
     bool in_esc = FALSE;
-    const char *p = s;
+    const unsigned char *p = (const unsigned char *)s;
+    ssize_t len = (ssize_t)strlen(s);
 
-    while (*p) {
-        gunichar uc = g_utf8_get_char(p);
+    while (p - (const unsigned char *)s < len) {
+        utf8proc_int32_t uc;
+        ssize_t clen = utf8proc_iterate(p, len - (p - (const unsigned char *)s), &uc);
+        if (clen <= 0) break;
         if (uc == '\033') {
             in_esc = TRUE;
         } else if (in_esc) {
             if (uc == 'm')
                 in_esc = FALSE;
-        } else if (!g_unichar_iszerowidth(uc)) {
-            w += g_unichar_iswide(uc) ? 2 : 1;
+        } else {
+            int wv = utf8proc_charwidth(uc);
+            if (wv > 0) w += wv;
         }
-        p = g_utf8_next_char(p);
+        p += clen;
     }
     return w;
 }
@@ -91,31 +131,31 @@ static void edc_md_render_ctx_free(struct edc_md_render_ctx *ctx)
         sdsfree(ctx->out);
     if (ctx->table_rows) {
         for (unsigned int i = 0; i < ctx->table_rows->len; i++) {
-            GPtrArray *row = g_ptr_array_index(ctx->table_rows, i);
+            struct edc_ptr_array *row = edc_ptr_array_index(ctx->table_rows, i);
             for (unsigned int j = 0; j < row->len; j++) {
-                sds cell = g_ptr_array_index(row, j);
+                sds cell = edc_ptr_array_index(row, j);
                 sdsfree(cell);
             }
-            free(g_ptr_array_free(row, FALSE));
+            edc_ptr_array_free(row);
         }
-        free(g_ptr_array_free(ctx->table_rows, FALSE));
+        edc_ptr_array_free(ctx->table_rows);
     }
     if (ctx->current_row) {
         for (unsigned int i = 0; i < ctx->current_row->len; i++) {
-            sds cell = g_ptr_array_index(ctx->current_row, i);
+            sds cell = edc_ptr_array_index(ctx->current_row, i);
             sdsfree(cell);
         }
-        free(g_ptr_array_free(ctx->current_row, FALSE));
+        edc_ptr_array_free(ctx->current_row);
     }
     if (ctx->current_cell) {
         sdsfree(ctx->current_cell);
     }
     if (ctx->col_aligns) {
         for (unsigned int i = 0; i < ctx->col_aligns->len; i++) {
-            int *a = g_ptr_array_index(ctx->col_aligns, i);
+            int *a = edc_ptr_array_index(ctx->col_aligns, i);
             free(a);
         }
-        free(g_ptr_array_free(ctx->col_aligns, FALSE));
+        edc_ptr_array_free(ctx->col_aligns);
     }
 }
 
@@ -226,8 +266,8 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 
     case MD_BLOCK_TABLE:
         ctx->in_table = TRUE;
-        ctx->table_rows = g_ptr_array_new();
-        ctx->col_aligns = g_ptr_array_new();
+        ctx->table_rows = edc_ptr_array_new();
+        ctx->col_aligns = edc_ptr_array_new();
         if (ctx->has_content) *o = sdscatlen(*o, &(char){'\n'}, 1);
         break;
 
@@ -236,7 +276,7 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         break;
 
     case MD_BLOCK_TR:
-        ctx->current_row = g_ptr_array_new();
+        ctx->current_row = edc_ptr_array_new();
         ctx->td_col_idx = 0;
         break;
 
@@ -320,7 +360,7 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         ctx->in_table = FALSE;
 
         if (ctx->table_rows && ctx->table_rows->len > 0) {
-            GPtrArray *rows = ctx->table_rows;
+            struct edc_ptr_array *rows = ctx->table_rows;
             MD_BLOCK_TABLE_DETAIL *det = detail;
             unsigned int ncols = det->col_count;
             unsigned int nhead = det->head_row_count;
@@ -328,9 +368,9 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 
             int *widths = EDC_NEW0(int, ncols);
             for (unsigned int r = 0; r < rows->len; r++) {
-                GPtrArray *row = g_ptr_array_index(rows, r);
+                struct edc_ptr_array *row = edc_ptr_array_index(rows, r);
                 for (unsigned int c = 0; c < ncols && c < row->len; c++) {
-                    sds cell = g_ptr_array_index(row, c);
+                    sds cell = edc_ptr_array_index(row, c);
                     int w = edc_md_visual_strlen(cell);
                     if (w > widths[c]) widths[c] = w;
                 }
@@ -349,13 +389,13 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
             *o = sdscat(*o, "┐\n" ANSI_RESET);
 
             for (unsigned int r = 0; r < rows->len; r++) {
-                GPtrArray *row = g_ptr_array_index(rows, r);
+                struct edc_ptr_array *row = edc_ptr_array_index(rows, r);
 
                 *o = sdscat(*o, ANSI_DIM "│" ANSI_RESET);
                 for (unsigned int c = 0; c < ncols; c++) {
                     *o = sdscatlen(*o, &(char){' '}, 1);
                     if (c < row->len) {
-                        sds cell = g_ptr_array_index(row, c);
+                        sds cell = edc_ptr_array_index(row, c);
                         *o = sdscat(*o, cell);
                         int len = edc_md_visual_strlen(cell);
                         for (int i = len; i < widths[c]; i++)
@@ -396,22 +436,22 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 
         if (ctx->table_rows) {
             for (unsigned int i = 0; i < ctx->table_rows->len; i++) {
-                GPtrArray *row = g_ptr_array_index(ctx->table_rows, i);
+                struct edc_ptr_array *row = edc_ptr_array_index(ctx->table_rows, i);
                 for (unsigned int j = 0; j < row->len; j++) {
-                    sds cell = g_ptr_array_index(row, j);
+                    sds cell = edc_ptr_array_index(row, j);
                     sdsfree(cell);
                 }
-                free(g_ptr_array_free(row, FALSE));
+                edc_ptr_array_free(row);
             }
-            free(g_ptr_array_free(ctx->table_rows, FALSE));
+            edc_ptr_array_free(ctx->table_rows);
             ctx->table_rows = NULL;
         }
         if (ctx->col_aligns) {
             for (unsigned int i = 0; i < ctx->col_aligns->len; i++) {
-                int *a = g_ptr_array_index(ctx->col_aligns, i);
+                int *a = edc_ptr_array_index(ctx->col_aligns, i);
                 free(a);
             }
-            free(g_ptr_array_free(ctx->col_aligns, FALSE));
+            edc_ptr_array_free(ctx->col_aligns);
             ctx->col_aligns = NULL;
         }
         break;
@@ -423,7 +463,7 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 
     case MD_BLOCK_TR:
         if (ctx->current_row) {
-            g_ptr_array_add(ctx->table_rows, ctx->current_row);
+            edc_ptr_array_add(ctx->table_rows, ctx->current_row);
             ctx->current_row = NULL;
         }
         break;
@@ -431,7 +471,7 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
     case MD_BLOCK_TH:
     case MD_BLOCK_TD:
         if (ctx->current_cell && ctx->current_row) {
-            g_ptr_array_add(ctx->current_row, ctx->current_cell);
+            edc_ptr_array_add(ctx->current_row, ctx->current_cell);
             ctx->current_cell = NULL;
         }
         if (type == MD_BLOCK_TH && ctx->col_aligns) {
@@ -439,9 +479,9 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
             while (ctx->col_aligns->len <= (unsigned int)ctx->td_col_idx) {
                 int *a = EDC_NEW0(int, 1);
                 *a = MD_ALIGN_DEFAULT;
-                g_ptr_array_add(ctx->col_aligns, a);
+                edc_ptr_array_add(ctx->col_aligns, a);
             }
-            int *a = g_ptr_array_index(ctx->col_aligns, ctx->td_col_idx);
+            int *a = edc_ptr_array_index(ctx->col_aligns, ctx->td_col_idx);
             *a = td->align;
         }
         ctx->td_col_idx++;
