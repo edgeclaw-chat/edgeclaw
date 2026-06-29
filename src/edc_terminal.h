@@ -5,6 +5,9 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#ifndef STDIN_FILENO
+#define STDIN_FILENO 0
+#endif
 #else
 #include <termios.h>
 #endif
