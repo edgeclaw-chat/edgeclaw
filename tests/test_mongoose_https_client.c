@@ -1,7 +1,12 @@
 #include "mongoose.h"
 #include "src/edc_network_async.h"
-#include <glib.h>
+#include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
+#include <unistd.h>
+
+#define TRUE true
+#define FALSE false
 
 // 1. 定义事件处理回调
 static void fn(struct mg_connection *c, int ev, void *ev_data)
@@ -39,7 +44,7 @@ int main(void)
 
     while (running)
     {
-        g_usleep(5 * G_USEC_PER_SEC);
+        sleep(5);
     }
 
     edc_network_async_free(async);

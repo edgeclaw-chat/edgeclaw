@@ -2,8 +2,8 @@
 #include "src/edc_actor.h"
 #include "src/edc_channel_actor.h"
 #include "src/edc_config.h"
+#include "src/edc_file_utils.h"
 #include "src/edc_network_async.h"
-#include <glib.h>
 #include <stdio.h>
 
 static void edc_observe_channel_handler(edc_actor_t *actor, edc_actor_msg_t *message)
@@ -30,12 +30,13 @@ static void edc_observe_channel_handler(edc_actor_t *actor, edc_actor_msg_t *mes
 int main()
 {
     mg_log_set(MG_LL_DEBUG);
-    const char *home_dir = g_get_home_dir();
-    char *root = g_build_filename(home_dir, ".edgeclaw", NULL);
+    sds home_dir = edc_homedir();
+    sds root = edc_path_join(home_dir, ".edgeclaw", NULL);
     struct edc_config *conf = edc_config_load(root);
-    free(root);
+    sdsfree(root);
+    sdsfree(home_dir);
 
-    char *cert_pem = g_build_filename(conf->workspace, "cacert.pem", NULL);
+    sds cert_pem = edc_path_join(conf->workspace, "cacert.pem", NULL);
     edc_network_async_t *http = edc_network_async_new(cert_pem);
     // http->mgr.dns4.url = "udp://114.114.114.114:53";
     http->mgr.dns4.url = "udp://10.33.25.62:53";

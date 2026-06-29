@@ -35,20 +35,11 @@ register_toolchains("@bazel_tools//tools/python:autodetecting_toolchain")
 bazel_dep(name = "platforms", version = "1.0.0")
 bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "rules_foreign_cc", version = "0.15.1")
-bazel_dep(name = "glib", version = "2.82.2.bcr.8")
 bazel_dep(name = "libuv", version = "1.48.0")
 bazel_dep(name = "mbedtls", version = "3.6.5")
 bazel_dep(name = "nanopb", version = "0.4.9.1.bcr.2")
 bazel_dep(name = "rules_pkg", version = "1.2.0")
 
-single_version_override(
-    module_name = "glib",
-    patches = [
-        "//patches:glib-gmodule-fix.patch",
-        "//patches:glib-atomic-lock-free.patch",
-    ],
-    patch_strip = 1,
-)
 bazel_dep(name = "cjson", version = "1.7.19-0.20240923110858-12c4bf1986c2.bcr.4")
 
 bazel_dep(name = "rules_python", version = "1.7.0")

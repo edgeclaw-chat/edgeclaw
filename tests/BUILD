@@ -20,7 +20,6 @@ cc_test(
     srcs = ["test_mongoose_https_client.c"],
     deps = [
         "@mongoose//:mongoose",
-        "@glib//glib:glib",
         "//src:agent",
     ],
     linkopts = LINK_OPTS,
@@ -31,7 +30,6 @@ cc_test(
     srcs = ["test_mongoose_resolve.c"],
     deps = [
         "@mongoose//:mongoose",
-        "@glib//glib:glib",
         "//src:agent",
     ],
     linkopts = LINK_OPTS,
@@ -42,7 +40,6 @@ cc_test(
     srcs = ["test_channel_actor.c"],
     deps = [
         "@mongoose//:mongoose",
-        "@glib//glib:glib",
         "//src:agent",
     ],
     linkopts = LINK_OPTS,
@@ -53,7 +50,6 @@ cc_test(
     srcs = ["test_llm_actor.c"],
     deps = [
         "@mongoose//:mongoose",
-        "@glib//glib:glib",
         "//src:agent",
     ],
     linkopts = LINK_OPTS,
@@ -64,17 +60,7 @@ cc_test(
     srcs = ["test_memory_actor.c"],
     deps = [
         "@mongoose//:mongoose",
-        "@glib//glib:glib",
         "//src:agent",
-    ],
-    linkopts = LINK_OPTS,
-)
-
-cc_test(
-    name = "test_exec_cmdline_async",
-    srcs = ["test_exec_cmdline_async.c"],
-    deps = [
-        "@glib//glib:glib",
     ],
     linkopts = LINK_OPTS,
 )
@@ -83,7 +69,6 @@ cc_test(
     name = "test_lwip_http",
     srcs = ["test_lwip_http.c"],
     deps = [
-        "@glib//glib:glib",
         "@lwip//:lwip",
         "//thirdparty/lwip:sys_arch",
         "//src:agent",
@@ -126,7 +111,6 @@ cc_test(
     name = "test_pppos_agent_stress",
     srcs = ["test_pppos_agent_stress.c"],
     deps = [
-        "@glib//glib:glib",
         "@cjson//:cjson",
         "@lwip//:lwip",
         "//thirdparty/lwip:sys_arch",
@@ -160,7 +144,6 @@ cc_test(
     name = "test_markdown_render",
     srcs = ["test_markdown_render.c"],
     deps = [
-        "@glib//glib:glib",
         "//src:agent",
     ],
     linkopts = LINK_OPTS,

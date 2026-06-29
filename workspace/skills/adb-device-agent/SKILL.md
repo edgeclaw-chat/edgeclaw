@@ -27,7 +27,6 @@ Build the edgeclaw device agent and deploy it to an Android device via ADB for r
 
 - ADB connected to target device
 - Bazel build system **OR** a prebuilt `device_agent` binary
-- If using WSL2: USB device passed through from Windows (see wsl-usb-adb skill)
 
 ## Workflow
 
@@ -176,6 +175,3 @@ adb shell 'su -c "ps -A | grep device_agent"'
 
 ### Device disappears after sleep
 USB may have disconnected. Re-attach and restart agent from Step 3.
-
-### WSL2: ADB can't see device
-Windows side needs `usbipd bind` first. See wsl-usb-adb skill.

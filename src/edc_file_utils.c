@@ -129,6 +129,12 @@ bool edc_dir_create_with_parents(const char *path, int mode, EdcError **error)
 {
     sds partial = sdsempty();
     const char *p = path;
+    bool is_absolute = (*p == '/');
+
+    if (is_absolute) {
+        partial = sdscat(partial, "/");
+        while (*p == '/') p++;
+    }
 
     while (*p) {
         while (*p == '/') p++;
@@ -136,7 +142,7 @@ bool edc_dir_create_with_parents(const char *path, int mode, EdcError **error)
         size_t seg_len = next ? (size_t)(next - p) : strlen(p);
         if (seg_len == 0) break;
 
-        if (sdslen(partial) > 0)
+        if (sdslen(partial) > 0 && partial[sdslen(partial) - 1] != '/')
             partial = sdscat(partial, "/");
         partial = sdscatlen(partial, p, seg_len);
 
@@ -217,7 +223,7 @@ sds edc_cwd(void)
     size_t size = sizeof(buf);
     int r = uv_cwd(buf, &size);
     if (r != 0) return sdsempty();
-    return sdsnewlen(buf, size > 0 ? size - 1 : 0);
+    return sdsnewlen(buf, size);
 }
 
 sds edc_homedir(void)

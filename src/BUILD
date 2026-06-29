@@ -239,7 +239,6 @@ cc_library(
         "edc_string.h",
     ],
     deps = [
-        "@glib//glib:glib",
         "@libuv",
         ":edc_error",
         ":edc_file_utils",
@@ -285,7 +284,6 @@ cc_library(
         "edc_compat.h",
     ],
     deps = [
-        "@glib//glib:glib",
         ":edc_error",
         ":edc_file_utils",
         "@sds//:sds",
