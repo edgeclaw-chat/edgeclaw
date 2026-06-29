@@ -17,15 +17,36 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
         return;
     }
 
+    int total = cJSON_GetArraySize(items);
+    if (total > 20)
+    {
+        sds msg = sdscatprintf(sdsempty(),
+                               "Error: Maximum 20 items allowed, got %d.", total);
+        EdcError *err = edc_error_new(EDC_ERR_INVAL, "%s", msg);
+        callback(ctx, msg, err);
+        return;
+    }
+
     sds lines = sdsnew("# TODO\n");
     int completed = 0;
-    int total = cJSON_GetArraySize(items);
+    int in_progress_count = 0;
     for (int i = 0; i < total; ++i)
     {
         cJSON *item = cJSON_GetArrayItem(items, i);
         char *status = cJSON_GetStringValue(cJSON_GetObjectItem(item, "status"));
         char *content = cJSON_GetStringValue(cJSON_GetObjectItem(item, "content"));
         char *activeForm = cJSON_GetStringValue(cJSON_GetObjectItem(item, "activeForm"));
+
+        if (!status || (strcmp(status, "pending") && strcmp(status, "in_progress") && strcmp(status, "completed")))
+        {
+            sdsfree(lines);
+            sds msg = sdscatprintf(sdsempty(),
+                                   "Error: invalid status '%s' at item %d. Must be pending, in_progress, or completed.",
+                                   status ? status : "(null)", i + 1);
+            EdcError *err = edc_error_new(EDC_ERR_INVAL, "%s", msg);
+            callback(ctx, msg, err);
+            return;
+        }
 
         if (strcmp(status, "completed") == 0)
         {
@@ -34,12 +55,24 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
         }
         else if (strcmp(status, "in_progress") == 0)
         {
+            in_progress_count++;
             lines = sdscatprintf(lines, "- [ ] %s <- %s\n", content, activeForm);
         }
         else
         {
             lines = sdscatprintf(lines, "- [ ] %s\n", content);
         }
+    }
+
+    if (in_progress_count > 1)
+    {
+        sdsfree(lines);
+        sds msg = sdscatprintf(sdsempty(),
+                               "Error: Only ONE item can be in_progress at a time, got %d.",
+                               in_progress_count);
+        EdcError *err = edc_error_new(EDC_ERR_INVAL, "%s", msg);
+        callback(ctx, msg, err);
+        return;
     }
 
     lines = sdscatprintf(lines, "\n%d/%d completed", completed, total);

@@ -1,7 +1,8 @@
-#include "src/edc_strutil.h"
+#include "src/edc_string_utils.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <inttypes.h>
 
 #define T_PASS()  do { passed++; } while (0)
 #define T_FAIL(msg) do { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, msg); failed++; } while (0)

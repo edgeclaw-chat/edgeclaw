@@ -1,3 +1,4 @@
+#include <glib.h>
 #include "log.h"
 #include "src/edc_actor.h"
 #include "src/edc_config.h"

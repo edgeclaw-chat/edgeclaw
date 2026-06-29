@@ -119,6 +119,41 @@ cc_library(
 )
 
 cc_library(
+    name = "edc_file_utils",
+    srcs = ["edc_file_utils.c"],
+    hdrs = ["edc_file_utils.h"],
+    deps = [
+        "@libuv",
+        ":edc_error",
+        "@sds//:sds",
+    ],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "edc_string_utils",
+    srcs = ["edc_string_utils.c"],
+    hdrs = ["edc_string_utils.h"],
+    deps = [
+        "@sds//:sds",
+        ":mbedtls_config",
+        "@mbedtls//:mbedtls",
+    ],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "edc_datetime_utils",
+    srcs = ["edc_datetime_utils.c"],
+    hdrs = ["edc_datetime_utils.h"],
+    deps = ["@sds//:sds"],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "agent",
     srcs = [
         "edc_context.c",
@@ -200,11 +235,15 @@ cc_library(
         "edc_pppos_agent.h",
         "edc_device_agent.h",
         "edc_transport_pppos.h",
+        "edc_string.h",
     ],
     deps = [
         "@glib//glib:glib",
         "@libuv",
         ":edc_error",
+        ":edc_file_utils",
+        ":edc_string_utils",
+        ":edc_datetime_utils",
         "@uthash//:uthash",
         "@sds//:sds",
         "@cjson//:cjson",

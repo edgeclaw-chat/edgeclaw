@@ -1,8 +1,9 @@
-#include "edc_strutil.h"
+#include "edc_string_utils.h"
 #include "src/edc_actor.h"
 #include "src/edc_channel_actor.h"
 #include "src/edc_config.h"
 #include "src/edc_network_async.h"
+#include <glib.h>
 #include <stdio.h>
 
 static void edc_observe_channel_handler(edc_actor_t *actor, edc_actor_msg_t *message)

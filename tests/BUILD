@@ -151,7 +151,7 @@ cc_test(
     name = "test_strutil",
     srcs = ["test_strutil.c"],
     deps = [
-        "//src:edc_strutil",
+        "//src:edc_string_utils",
     ],
     linkopts = LINK_OPTS,
 )

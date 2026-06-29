@@ -52,10 +52,15 @@ void edc_turn_free(struct edc_turn *turn)
         return;
     }
 
+    void *item;
+    while ((item = edc_queue_pop(&turn->messages)))
+        cJSON_Delete((cJSON *)item);
+    while ((item = edc_queue_pop(&turn->timestamps)))
+        sdsfree((sds)item);
+
     edc_queue_destroy(&turn->messages);
     edc_queue_destroy(&turn->timestamps);
 
     free(turn);
-    return;
 }
 

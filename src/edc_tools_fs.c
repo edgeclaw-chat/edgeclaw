@@ -5,6 +5,7 @@
 #include "edc_tools.h"
 #include <glib.h>
 #include "edc_compat.h"
+#include "edc_file_utils.h"
 #include <edc_param_types.h>
 #include <string.h>
 #include "utarray.h"
@@ -51,16 +52,22 @@ static sds edc_tool_exec_write_file(struct edc_config *conf, cJSON *args, EdcErr
         return NULL;
     }
 
-    GError *gerror = NULL;
-    g_file_set_contents(safe_path, content, -1, &gerror);
-    sdsfree(safe_path);
-    if (gerror)
+    sds parent = edc_path_dirname(safe_path);
+    if (!edc_dir_create_with_parents(parent, 0755, error))
     {
-        edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
-        g_error_free(gerror);
+        sdsfree(parent);
+        sdsfree(safe_path);
+        return NULL;
+    }
+    sdsfree(parent);
+
+    if (!edc_file_write(safe_path, content, -1, error))
+    {
+        sdsfree(safe_path);
         return NULL;
     }
 
+    sdsfree(safe_path);
     sds result = sdsnew("");
     result = sdscatprintf(result, "Successfully wrote to file %s", path);
     return result;

@@ -3,6 +3,7 @@
 #include "edc_actor.h"
 #include <glib.h>
 #include "edc_compat.h"
+#include "edc_file_utils.h"
 #include "uthash.h"
 #include "edc_channel_actor.h"
 #include "edc_config.h"
@@ -283,6 +284,7 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
     edc_channel_actor_set_observer(agent->channel_actor, agent->scheduler);
 
     agent->runner = edc_actor_runner_new();
+    edc_file_utils_init(&agent->runner->loop);
     edc_actor_runner_add(agent->runner, agent->scheduler);
     edc_actor_runner_add(agent->runner, agent->channel_actor);
     edc_actor_runner_add(agent->runner, agent->llm_actor);

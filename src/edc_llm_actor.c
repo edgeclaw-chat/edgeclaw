@@ -109,6 +109,7 @@ static void edc_llm_actor_on_http_fn(struct mg_connection *c, int ev, void *ev_d
                                                        (edc_actor_data_free_fn)edc_llm_actor_resp_free));
         }
         edc_llm_actor_http_req_free(req);
+        c->fn_data = NULL;
     }
     else if (ev == MG_EV_CLOSE)
     {
@@ -137,6 +138,7 @@ static void edc_llm_actor_on_http_fn(struct mg_connection *c, int ev, void *ev_d
                                                        (edc_actor_data_free_fn)edc_llm_actor_resp_free));
         }
         edc_llm_actor_http_req_free(req);
+        c->fn_data = NULL;
     }
 }
 

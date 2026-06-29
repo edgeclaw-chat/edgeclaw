@@ -497,6 +497,8 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
                 edc_error_new(EDC_ERR_INVAL, "'at' is not iso8601 format: %s", tmp);
             callback(ctx, NULL, error);
             cJSON_free(tmp);
+            cJSON_Delete(job);
+            cJSON_Delete(db);
             g_time_zone_unref(g_tz);
             return;
         }
@@ -532,6 +534,8 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
                                     cJSON_GetStringValue(cexpr), error);
             callback(ctx, NULL, e);
 
+            cJSON_Delete(job);
+            cJSON_Delete(db);
             g_time_zone_unref(g_tz);
             return;
         }
