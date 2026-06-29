@@ -1,4 +1,5 @@
 #include "sds.h"
+#include "edc_compat.h"
 #include "edc_sandbox.h"
 #include "edc_error.h"
 #include "edc_toolbox.h"
@@ -9,8 +10,6 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-
 #include <uv.h>
 
 #define BC_MASTER_KEY_ENV "EDGECLAW_MASTER_KEY"
@@ -169,7 +168,13 @@ static void on_timeout(uv_timer_t *timer)
     struct edc_tool_shell_ctx *ctx = timer->data;
     if (!ctx->child_exited)
     {
-        uv_process_kill(&ctx->process, SIGKILL);
+        uv_process_kill(&ctx->process,
+#ifdef _WIN32
+                         SIGTERM
+#else
+                         SIGKILL
+#endif
+                         );
         ctx->child_exited = true;
         ctx->exit_status = -1;
         ctx->stderr_buf = sdscat(ctx->stderr_buf,
@@ -218,8 +223,13 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx,
 
     uv_process_options_t options = {0};
     options.exit_cb = on_shell_exit;
+#ifdef _WIN32
+    options.file = "cmd.exe";
+    char *args[] = {"cmd.exe", "/c", (char *)cmd_s, NULL};
+#else
     options.file = "/bin/sh";
     char *args[] = {"sh", "-c", (char *)cmd_s, NULL};
+#endif
     options.args = args;
     options.env = NULL;
     options.cwd = cwd;
@@ -307,7 +317,13 @@ void edc_tool_shell_abort_all(void)
     LL_FOREACH(active_contexts, ctx)
     {
         if (!ctx->child_exited)
-            uv_process_kill(&ctx->process, SIGKILL);
+        uv_process_kill(&ctx->process,
+#ifdef _WIN32
+                         SIGTERM
+#else
+                         SIGKILL
+#endif
+                         );
         shell_ctx_close_handles(ctx);
     }
     uv_mutex_unlock(&active_mutex);

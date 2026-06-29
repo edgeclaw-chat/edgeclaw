@@ -55,8 +55,16 @@ typedef SSIZE_T ssize_t;
 /* ---- path ---- */
 static inline char *win32_realpath(const char *path, char *resolved)
 {
-    if (!_fullpath(resolved, path, PATH_MAX))
+    int need_free = 0;
+    if (!resolved) {
+        resolved = (char *)malloc(PATH_MAX);
+        if (!resolved) return NULL;
+        need_free = 1;
+    }
+    if (!_fullpath(resolved, path, PATH_MAX)) {
+        if (need_free) free(resolved);
         return NULL;
+    }
     return resolved;
 }
 #define realpath(p, r)         win32_realpath(p, r)

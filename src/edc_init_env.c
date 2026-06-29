@@ -726,6 +726,81 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
 /* Copy directory recursively */
 static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
 {
+#ifdef _WIN32
+    sds pattern = edc_path_join(src_dir, "*", NULL);
+    WIN32_FIND_DATA fd;
+    HANDLE hFind = FindFirstFile(pattern, &fd);
+    sdsfree(pattern);
+
+    if (hFind == INVALID_HANDLE_VALUE)
+    {
+        log_error("Failed to open source directory %s", src_dir);
+        return FALSE;
+    }
+
+    if (!edc_dir_create_with_parents(dest_dir, 0755, NULL))
+    {
+        log_error("Failed to create destination directory %s", dest_dir);
+        FindClose(hFind);
+        return FALSE;
+    }
+
+    bool success = TRUE;
+    do
+    {
+        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0)
+            continue;
+
+        sds src_path = edc_path_join(src_dir, fd.cFileName, NULL);
+        sds dest_path = edc_path_join(dest_dir, fd.cFileName, NULL);
+
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+        {
+            if (!copy_directory_recursive(src_path, dest_path))
+            {
+                success = FALSE;
+                sdsfree(src_path);
+                sdsfree(dest_path);
+                break;
+            }
+        }
+        else
+        {
+            EdcError *error = NULL;
+            sds contents = edc_file_read(src_path, &error);
+
+            if (!contents)
+            {
+                log_error("Failed to read %s: %s", src_path, error ? error->message : "Unknown");
+                if (error)
+                    edc_error_free(error);
+                success = FALSE;
+                sdsfree(src_path);
+                sdsfree(dest_path);
+                break;
+            }
+
+            if (!edc_file_write(dest_path, contents, -1, &error))
+            {
+                log_error("Failed to write %s: %s", dest_path, error ? error->message : "Unknown");
+                if (error)
+                    edc_error_free(error);
+                success = FALSE;
+                sdsfree(contents);
+                sdsfree(src_path);
+                sdsfree(dest_path);
+                break;
+            }
+            sdsfree(contents);
+        }
+
+        sdsfree(src_path);
+        sdsfree(dest_path);
+    } while (FindNextFile(hFind, &fd));
+
+    FindClose(hFind);
+    return success;
+#else  /* POSIX */
     DIR *dir = opendir(src_dir);
     if (!dir)
     {
@@ -807,6 +882,7 @@ static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
 
     closedir(dir);
     return success;
+#endif  /* _WIN32 */
 }
 
 static bool edc_init_env_workspace(const char *dest_workspace)
