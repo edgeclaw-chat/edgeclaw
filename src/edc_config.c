@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_config.h"
 #include "edc_secret.h"
 #include "cJSON.h"
@@ -36,7 +37,7 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
         return FALSE;
     }
 
-    config->channel.email.imap_host = g_strdup(cJSON_GetStringValue(imap_host));
+    config->channel.email.imap_host = strdup(cJSON_GetStringValue(imap_host));
 
     cJSON *smtp_host = cJSON_GetObjectItem(channel, "smtp_host");
     if (!smtp_host || !cJSON_IsString(smtp_host))
@@ -44,7 +45,7 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
         log_error("channel.smtp_host is not string type");
         return FALSE;
     }
-    config->channel.email.smtp_host = g_strdup(cJSON_GetStringValue(smtp_host));
+    config->channel.email.smtp_host = strdup(cJSON_GetStringValue(smtp_host));
 
     cJSON *user = cJSON_GetObjectItem(channel, "user");
     if (!user || !cJSON_IsString(user))
@@ -52,7 +53,7 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
         log_error("channel.user is not string type");
         return FALSE;
     }
-    config->channel.email.user = g_strdup(cJSON_GetStringValue(user));
+    config->channel.email.user = strdup(cJSON_GetStringValue(user));
 
     cJSON *password = cJSON_GetObjectItem(channel, "passwd");
     if (!password || !cJSON_IsString(password))
@@ -68,7 +69,7 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
         log_error("channel.target is not string type");
         return FALSE;
     }
-    config->channel.email.target = g_strdup(cJSON_GetStringValue(target));
+    config->channel.email.target = strdup(cJSON_GetStringValue(target));
 
     return TRUE;
 }
@@ -104,7 +105,7 @@ static bool edc_config_parse_feishu_channel(struct edc_config *config, cJSON *ch
         log_error("channel.app_id is not string type");
         return FALSE;
     }
-    config->channel.feishu.app_id = g_strdup(cJSON_GetStringValue(app_id));
+    config->channel.feishu.app_id = strdup(cJSON_GetStringValue(app_id));
 
     cJSON *app_secret = cJSON_GetObjectItem(channel, "app_secret");
     if (!app_secret || !cJSON_IsString(app_secret))
@@ -125,7 +126,7 @@ static bool edc_config_parse_qq_channel(struct edc_config *config, cJSON *channe
         log_error("channel.app_id is not string type");
         return FALSE;
     }
-    config->channel.qq.app_id = g_strdup(cJSON_GetStringValue(app_id));
+    config->channel.qq.app_id = strdup(cJSON_GetStringValue(app_id));
 
     cJSON *app_secret = cJSON_GetObjectItem(channel, "app_secret");
     if (!app_secret || !cJSON_IsString(app_secret))
@@ -175,7 +176,7 @@ struct edc_config *edc_config_load(const char *edc_home)
         goto exit_free_conf;
     }
 
-    config->edc_home = g_strdup(edc_home);
+    config->edc_home = strdup(edc_home);
 
     cJSON *api_key = cJSON_GetObjectItem(conf, "api_key");
     if (!api_key || !cJSON_IsString(api_key))
@@ -199,7 +200,7 @@ struct edc_config *edc_config_load(const char *edc_home)
         log_error("model is not string type");
         goto exit_free_config;
     }
-    config->llm_api_conf.model = g_strdup(cJSON_GetStringValue(model));
+    config->llm_api_conf.model = strdup(cJSON_GetStringValue(model));
 
     cJSON *api_url = cJSON_GetObjectItem(conf, "api_url");
     if (!api_url || !cJSON_IsString(api_url))
@@ -207,7 +208,7 @@ struct edc_config *edc_config_load(const char *edc_home)
         log_error("api_url is not string type");
         goto exit_free_config;
     }
-    config->llm_api_conf.api_url = g_strdup(cJSON_GetStringValue(api_url));
+    config->llm_api_conf.api_url = strdup(cJSON_GetStringValue(api_url));
 
     cJSON *max_iter = cJSON_GetObjectItem(conf, "max_iter");
     if (!max_iter || !cJSON_IsNumber(max_iter))
@@ -245,11 +246,11 @@ struct edc_config *edc_config_load(const char *edc_home)
 
     cJSON *device_pty = cJSON_GetObjectItem(conf, "device_pty");
     if (device_pty && cJSON_IsString(device_pty))
-        config->device_pty = g_strdup(device_pty->valuestring);
+        config->device_pty = strdup(device_pty->valuestring);
 
     cJSON *device_ip = cJSON_GetObjectItem(conf, "device_ip");
     if (device_ip && cJSON_IsString(device_ip))
-        config->device_ip = g_strdup(device_ip->valuestring);
+        config->device_ip = strdup(device_ip->valuestring);
 
     cJSON *device_port = cJSON_GetObjectItem(conf, "device_port");
     config->device_port = (device_port && cJSON_IsNumber(device_port)) ? device_port->valueint : 5000;
@@ -259,7 +260,7 @@ struct edc_config *edc_config_load(const char *edc_home)
 
     cJSON *device_transport = cJSON_GetObjectItem(conf, "device_transport");
     if (device_transport && cJSON_IsString(device_transport))
-        config->device_transport = g_strdup(device_transport->valuestring);
+        config->device_transport = strdup(device_transport->valuestring);
 
     cJSON *channel = cJSON_GetObjectItem(conf, "channel");
     if (!channel || !cJSON_IsObject(channel))
@@ -324,14 +325,14 @@ struct edc_config *edc_config_load(const char *edc_home)
             int size = cJSON_GetArraySize(rw);
             config->sandbox_rw_paths = g_new0(char *, size + 1);
             for (int i = 0; i < size; i++)
-                config->sandbox_rw_paths[i] = g_strdup(cJSON_GetStringValue(cJSON_GetArrayItem(rw, i)));
+                config->sandbox_rw_paths[i] = strdup(cJSON_GetStringValue(cJSON_GetArrayItem(rw, i)));
         }
         else
         {
             config->sandbox_rw_paths = g_new0(char *, 3 + 1);
             config->sandbox_rw_paths[0] = g_build_filename(edc_home, "sandbox", NULL);
-            config->sandbox_rw_paths[1] = g_strdup("/tmp");
-            config->sandbox_rw_paths[2] = g_strdup("/dev");
+            config->sandbox_rw_paths[1] = strdup("/tmp");
+            config->sandbox_rw_paths[2] = strdup("/dev");
         }
 
         cJSON *ro = cJSON_GetObjectItem(sandbox, "ro_paths");
@@ -340,41 +341,41 @@ struct edc_config *edc_config_load(const char *edc_home)
             int size = cJSON_GetArraySize(ro);
             config->sandbox_ro_paths = g_new0(char *, size + 1);
             for (int i = 0; i < size; i++)
-                config->sandbox_ro_paths[i] = g_strdup(cJSON_GetStringValue(cJSON_GetArrayItem(ro, i)));
+                config->sandbox_ro_paths[i] = strdup(cJSON_GetStringValue(cJSON_GetArrayItem(ro, i)));
         }
         else
         {
             config->sandbox_ro_paths = g_new0(char *, 10 + 1);
-            config->sandbox_ro_paths[0] = g_strdup("/");
-            config->sandbox_ro_paths[1] = g_strdup("/usr");
-            config->sandbox_ro_paths[2] = g_strdup("/lib");
-            config->sandbox_ro_paths[3] = g_strdup("/lib32");
-            config->sandbox_ro_paths[4] = g_strdup("/lib64");
-            config->sandbox_ro_paths[5] = g_strdup("/libx32");
-            config->sandbox_ro_paths[6] = g_strdup("/bin");
-            config->sandbox_ro_paths[7] = g_strdup("/sbin");
-            config->sandbox_ro_paths[8] = g_strdup("/etc");
-            config->sandbox_ro_paths[9] = g_strdup("/proc");
+            config->sandbox_ro_paths[0] = strdup("/");
+            config->sandbox_ro_paths[1] = strdup("/usr");
+            config->sandbox_ro_paths[2] = strdup("/lib");
+            config->sandbox_ro_paths[3] = strdup("/lib32");
+            config->sandbox_ro_paths[4] = strdup("/lib64");
+            config->sandbox_ro_paths[5] = strdup("/libx32");
+            config->sandbox_ro_paths[6] = strdup("/bin");
+            config->sandbox_ro_paths[7] = strdup("/sbin");
+            config->sandbox_ro_paths[8] = strdup("/etc");
+            config->sandbox_ro_paths[9] = strdup("/proc");
         }
     }
     else
     {
         config->sandbox_rw_paths = g_new0(char *, 3 + 1);
         config->sandbox_rw_paths[0] = g_build_filename(edc_home, "sandbox", NULL);
-        config->sandbox_rw_paths[1] = g_strdup("/tmp");
-        config->sandbox_rw_paths[2] = g_strdup("/dev");
+        config->sandbox_rw_paths[1] = strdup("/tmp");
+        config->sandbox_rw_paths[2] = strdup("/dev");
 
         config->sandbox_ro_paths = g_new0(char *, 10 + 1);
-        config->sandbox_ro_paths[0] = g_strdup("/");
-        config->sandbox_ro_paths[1] = g_strdup("/usr");
-        config->sandbox_ro_paths[2] = g_strdup("/lib");
-        config->sandbox_ro_paths[3] = g_strdup("/lib32");
-        config->sandbox_ro_paths[4] = g_strdup("/lib64");
-        config->sandbox_ro_paths[5] = g_strdup("/libx32");
-        config->sandbox_ro_paths[6] = g_strdup("/bin");
-        config->sandbox_ro_paths[7] = g_strdup("/sbin");
-        config->sandbox_ro_paths[8] = g_strdup("/etc");
-        config->sandbox_ro_paths[9] = g_strdup("/proc");
+        config->sandbox_ro_paths[0] = strdup("/");
+        config->sandbox_ro_paths[1] = strdup("/usr");
+        config->sandbox_ro_paths[2] = strdup("/lib");
+        config->sandbox_ro_paths[3] = strdup("/lib32");
+        config->sandbox_ro_paths[4] = strdup("/lib64");
+        config->sandbox_ro_paths[5] = strdup("/libx32");
+        config->sandbox_ro_paths[6] = strdup("/bin");
+        config->sandbox_ro_paths[7] = strdup("/sbin");
+        config->sandbox_ro_paths[8] = strdup("/etc");
+        config->sandbox_ro_paths[9] = strdup("/proc");
     }
 
     {
@@ -385,7 +386,7 @@ struct edc_config *edc_config_load(const char *edc_home)
                 ro_count++;
         }
         config->sandbox_ro_paths = g_renew(char *, config->sandbox_ro_paths, ro_count + 2);
-        config->sandbox_ro_paths[ro_count] = g_strdup(config->workspace);
+        config->sandbox_ro_paths[ro_count] = strdup(config->workspace);
         config->sandbox_ro_paths[ro_count + 1] = NULL;
     }
 
@@ -436,8 +437,8 @@ void edc_config_free(struct edc_config *config)
     free(config->device_transport);
     free(config->workspace);
     free(config->sandbox_root_real);
-    g_strfreev(config->sandbox_ro_paths);
-    g_strfreev(config->sandbox_rw_paths);
+    edc_strfreev(config->sandbox_ro_paths);
+    edc_strfreev(config->sandbox_rw_paths);
     secure_free(config->channel.telegram.bot_key);
     free(config->channel.feishu.app_id);
     secure_free(config->channel.feishu.app_secret);

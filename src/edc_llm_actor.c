@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_llm_actor.h"
 #include "edc_actor.h"
 #include "edc_network_async.h"
@@ -173,7 +174,7 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
     const char *proto = mg_url_is_ssl(state->api_conf.api_url) ? "https://" : "http://";
     struct mg_str host = mg_url_host(state->api_conf.api_url);
     int port = (int)mg_url_port(state->api_conf.api_url);
-    char *url = g_strdup_printf("%s%.*s:%d", proto, (int)host.len, host.buf, port);
+    char *url = edc_strdup_printf("%s%.*s:%d", proto, (int)host.len, host.buf, port);
 
     edc_http_async_connect(state->network, url, NULL, edc_llm_actor_on_http_fn,
                           edc_llm_actor_http_req_new(actor, body_s, &state->api_conf, from, request_id), 60 * 5);

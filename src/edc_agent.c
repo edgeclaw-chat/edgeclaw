@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_agent.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
@@ -93,7 +94,7 @@ static void handle_llm_resp(struct edc_agent *agent, edc_actor_t *actor, edc_act
     if (resp->error)
     {
         log_error("[ERROR]: %s", resp->error->message);
-        reply = edc_channel_message_new(turn->channel, g_strdup(resp->error->message));
+        reply = edc_channel_message_new(turn->channel, strdup(resp->error->message));
         turn->channel = NULL;
 
         log_info("agent remove turn reqid = %p", msg->request_id);
@@ -109,7 +110,7 @@ static void handle_llm_resp(struct edc_agent *agent, edc_actor_t *actor, edc_act
             char *content =
                 (resp->content && resp->content->len > 0) ? resp->content->str : resp->reasoning_content->str;
 
-            reply = edc_channel_ref_message_new(turn->channel, g_strdup_printf("[思考]: %s", content));
+            reply = edc_channel_ref_message_new(turn->channel, edc_strdup_printf("[思考]: %s", content));
         }
 
         edc_turn_add_assistant_message(turn->turn, resp->msg);
@@ -118,7 +119,7 @@ static void handle_llm_resp(struct edc_agent *agent, edc_actor_t *actor, edc_act
     }
     else if (resp->reason == BC_LLM_FINISH_REASON_STOP)
     {
-        reply = edc_channel_message_new(turn->channel, g_strdup(resp->content->str));
+        reply = edc_channel_message_new(turn->channel, strdup(resp->content->str));
         turn->channel = NULL;
 
         edc_turn_add_assistant_message(turn->turn, resp->msg);
@@ -132,7 +133,7 @@ static void handle_llm_resp(struct edc_agent *agent, edc_actor_t *actor, edc_act
     else
     {
         reply = edc_channel_message_new(
-            turn->channel, g_strdup_printf("Internal error, edc_llm_chat unknown stop reason: %d", resp->reason));
+            turn->channel, edc_strdup_printf("Internal error, edc_llm_chat unknown stop reason: %d", resp->reason));
         turn->channel = NULL;
 
         log_info("agent remove turn reqid = %p", msg->request_id);
@@ -276,7 +277,7 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
 
     edc_channel_actor_set_observer(agent->channel_actor, agent->scheduler);
 
-    agent->turns = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, NULL);
+    agent->turns = g_hash_table_new_full(edc_direct_hash, edc_direct_equal, NULL, NULL);
 
     agent->runner = edc_actor_runner_new();
     edc_actor_runner_add(agent->runner, agent->scheduler);

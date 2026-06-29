@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_actor.h"
 
 const char *edc_actor_msg_type_s(edc_actor_msg_type_t type)
@@ -95,7 +96,7 @@ edc_actor_msg_t *edc_actor_msg_new_sub_type(edc_actor_msg_type_t type, int sub_t
     else
     {
         char *uuid = g_uuid_string_random();
-        msg->request_id = request_id ? request_id : (void *)(int64_t)(g_str_hash(uuid));
+        msg->request_id = request_id ? request_id : (void *)(int64_t)(edc_str_hash(uuid));
         free(uuid);
     }
     msg->data_free_fn = fn;
@@ -124,7 +125,7 @@ void edc_actor_msg_free(edc_actor_msg_t *msg)
 edc_actor_t *edc_actor_new(const char *name, edc_actor_handler_t handler, void *state)
 {
     edc_actor_t *actor = g_new0(edc_actor_t, 1);
-    actor->name = g_strdup(name);
+    actor->name = strdup(name);
     actor->handler = handler;
     actor->state = state;
     actor->mailbox = g_async_queue_new();

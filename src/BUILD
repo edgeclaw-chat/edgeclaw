@@ -110,6 +110,15 @@ cc_library(
 )
 
 cc_library(
+    name = "edc_strutil",
+    srcs = ["edc_strutil.c"],
+    hdrs = ["edc_strutil.h"],
+    deps = ["@glib//glib:glib"],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "agent",
     srcs = [
         "edc_context.c",
@@ -191,6 +200,7 @@ cc_library(
     ],
     deps = [
         "@glib//glib:glib",
+        ":edc_strutil",
         "@sds//:sds",
         "@cjson//:cjson",
         "@log.c//:log.c",
@@ -229,6 +239,7 @@ cc_library(
     ],
     deps = [
         "@glib//glib:glib",
+        ":edc_strutil",
         "@log.c//:log.c",
         ":mbedtls_config",
         "@mbedtls//:mbedtls",

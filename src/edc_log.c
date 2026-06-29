@@ -46,7 +46,7 @@ static void edc_log_rotate(void)
     free(edc_home);
     g_mkdir_with_parents(log_dir, 0755);
 
-    char *filename = g_strdup_printf("%s/edgeclaw-%s.log", log_dir, new_date);
+    char *filename = edc_strdup_printf("%s/edgeclaw-%s.log", log_dir, new_date);
 
     g_mutex_lock(&g_log_mutex);
     FILE *new_file = fopen(filename, "a");

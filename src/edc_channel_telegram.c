@@ -3,6 +3,7 @@
 #include "cJSON.h"
 #include "log.h"
 #include <glib.h>
+#include "edc_strutil.h"
 
 static const char *telegram_api_host = "api.telegram.org";
 static char *telegram_build_path(struct channel_conf *conf, const char *method, const char *args[])
@@ -163,7 +164,7 @@ static struct edc_channel_telegram_req *edc_channel_actor_send_message_chunk_req
 
     char *path = telegram_build_path(&state->config, "sendMessage", NULL);
     char *escaped_content = g_uri_escape_bytes((uint8_t *)content, len, NULL);
-    char *post_fields = g_strdup_printf("chat_id=%s&text=%s", chat_id, escaped_content);
+    char *post_fields = edc_strdup_printf("chat_id=%s&text=%s", chat_id, escaped_content);
     free(escaped_content);
 
     struct edc_channel_telegram_req *req = g_new0(struct edc_channel_telegram_req, 1);
@@ -174,7 +175,7 @@ static struct edc_channel_telegram_req *edc_channel_actor_send_message_chunk_req
     req->path = path;
     req->host = telegram_api_host;
     req->connected = FALSE;
-    req->url = g_strdup_printf("https://%s%s", req->host, req->path);
+    req->url = edc_strdup_printf("https://%s%s", req->host, req->path);
     req->body = g_string_new_take(post_fields);
     req->method = 1;
     req->next = NULL;
@@ -311,7 +312,7 @@ static struct edc_channel_message *process_user_input(edc_channel_actor_state_t 
     }
 
     struct edc_channel_message *msg = edc_channel_telegram_message_new(
-        g_strdup_printf("%.0lf", chat_id_json->valuedouble), g_strdup(cJSON_GetStringValue(text)));
+        edc_strdup_printf("%.0lf", chat_id_json->valuedouble), strdup(cJSON_GetStringValue(text)));
 
     state->telegram.update_id = 1 + (int64_t)update_id_json->valuedouble;
 
@@ -396,7 +397,7 @@ static bool edc_channel_actor_telegram_poll(void* data)
         return G_SOURCE_CONTINUE;
     }
 
-    const char *args[] = {g_strdup_printf("offset=%" G_GINT64_FORMAT, state->telegram.update_id), NULL};
+    const char *args[] = {edc_strdup_printf("offset=%" PRId64, state->telegram.update_id), NULL};
     const char *path = telegram_build_path(&state->config, "getUpdates", args);
     free((char *)args[0]);
 
@@ -408,7 +409,7 @@ static bool edc_channel_actor_telegram_poll(void* data)
     req->path = path;
     req->host = telegram_api_host;
     req->connected = FALSE;
-    req->url = g_strdup_printf("https://%s%s", req->host, req->path);
+    req->url = edc_strdup_printf("https://%s%s", req->host, req->path);
     req->body = NULL;
     req->method = 0;
 

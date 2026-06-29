@@ -1,4 +1,5 @@
 #include "edc_secret.h"
+#include "edc_strutil.h"
 #include "log.h"
 #include <errno.h>
 #include <mbedtls/base64.h>
@@ -404,7 +405,7 @@ char *edc_secret_encrypt(const char *plaintext)
     free(packed);
     packed = NULL;
 
-    result = g_strdup_printf("%s%s", BC_SECRET_PREFIX, b64_buf);
+    result = edc_strdup_printf("%s%s", BC_SECRET_PREFIX, b64_buf);
     free(b64_buf);
 
 cleanup:
@@ -423,7 +424,7 @@ char *edc_secret_decrypt(const char *input)
 
     size_t prefix_len = strlen(BC_SECRET_PREFIX);
     if (strncmp(input, BC_SECRET_PREFIX, prefix_len) != 0)
-        return g_strdup(input);
+        return strdup(input);
 
     const char *b64_input = input + prefix_len;
     if (strlen(b64_input) == 0)
@@ -508,7 +509,7 @@ char *edc_secret_decrypt(const char *input)
     }
 
     plain_buf[olen] = '\0';
-    result = g_strdup((const char *)plain_buf);
+    result = strdup((const char *)plain_buf);
 
     memset(plain_buf, 0, plain_len + 1);
     free(plain_buf);

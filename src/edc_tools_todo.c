@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_tools_todo.h"
 #include "edc_channel_actor.h"
 #include "edc_param_types.h"
@@ -24,12 +25,12 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
         char *content = cJSON_GetStringValue(cJSON_GetObjectItem(item, "content"));
         char *activeForm = cJSON_GetStringValue(cJSON_GetObjectItem(item, "activeForm"));
 
-        if (g_str_equal(status, "completed"))
+        if (edc_str_equal(status, "completed"))
         {
             g_string_append_printf(lines, "- [x] %s\n", content);
             completed += 1;
         }
-        else if (g_str_equal(status, "in_progress"))
+        else if (edc_str_equal(status, "in_progress"))
         {
             g_string_append_printf(lines, "- [ ] %s <- %s\n", content, activeForm);
         }
@@ -41,7 +42,7 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
 
     g_string_append_printf(lines, "\n%d/%d completed", completed, total);
 
-    struct edc_channel_message *message = edc_channel_message_new(edc_channel_copy(ctx->call_from), g_strdup(lines->str));
+    struct edc_channel_message *message = edc_channel_message_new(edc_channel_copy(ctx->call_from), strdup(lines->str));
     if (message->channel->type == edc_channel_qq)
     {
         message->channel->qq.seq_id = g_random_int();

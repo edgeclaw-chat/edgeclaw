@@ -148,6 +148,15 @@ cc_binary(
 )
 
 cc_test(
+    name = "test_strutil",
+    srcs = ["test_strutil.c"],
+    deps = [
+        "//src:edc_strutil",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_markdown_render",
     srcs = ["test_markdown_render.c"],
     deps = [

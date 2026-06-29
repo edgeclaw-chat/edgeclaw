@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_channel_qq.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
@@ -377,7 +378,7 @@ static void edc_channel_qq_wss_send_identify(struct mg_connection *c, edc_actor_
     cJSON *d = cJSON_AddObjectToObject(identify, "d");
 
     edc_channel_actor_state_t *state = actor->state;
-    char *token = g_strdup_printf("QQBot %s", state->qq.access_token);
+    char *token = edc_strdup_printf("QQBot %s", state->qq.access_token);
     cJSON_AddStringToObject(d, "token", token);
     free(token);
     cJSON_AddNumberToObject(d, "intents", BC_CHANNEL_QQ_INTENTS_ALL);
@@ -399,7 +400,7 @@ static void edc_channel_qq_wss_send_resume(struct mg_connection *c, edc_actor_t 
     cJSON *d = cJSON_AddObjectToObject(resume, "d");
 
     edc_channel_actor_state_t *state = actor->state;
-    char *token = g_strdup_printf("QQBot %s", state->qq.access_token);
+    char *token = edc_strdup_printf("QQBot %s", state->qq.access_token);
     cJSON_AddStringToObject(d, "token", token);
     free(token);
 
@@ -440,7 +441,7 @@ static void edc_channel_qq_handle_wss_dispatch_msg(struct mg_connection *c, stru
             goto format_error_exit;
         }
 
-        req->wss.session_id = g_strdup(cJSON_GetStringValue(sess_id));
+        req->wss.session_id = strdup(cJSON_GetStringValue(sess_id));
         cJSON_Delete(data);
         log_info("qq channel wss conn READY, session_id = %s", req->wss.session_id);
 
@@ -774,7 +775,7 @@ static void edc_channel_qq_handle_send(edc_actor_t *actor, edc_actor_msg_t *msg)
     edc_channel_actor_state_t *state = actor->state;
 
     char *send_c2c_url =
-        g_strdup_printf("https://api.sgroup.qq.com/v2/users/%s/messages", message->channel->qq.author_id);
+        edc_strdup_printf("https://api.sgroup.qq.com/v2/users/%s/messages", message->channel->qq.author_id);
 
     cJSON *req = cJSON_CreateObject();
     cJSON_AddNumberToObject(req, "msg_type", 2);

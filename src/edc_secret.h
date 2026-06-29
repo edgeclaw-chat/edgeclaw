@@ -32,7 +32,7 @@ char *edc_secret_encrypt(const char *plaintext);
 
 /* Decrypt a ciphertext string (optionally prefixed with BC_SECRET_PREFIX).
  * If the input starts with the prefix, decrypts and returns the plaintext.
- * Otherwise returns g_strdup(input) as a pass-through.
+ * Otherwise returns strdup(input) as a pass-through.
  * Caller must free() the result. */
 char *edc_secret_decrypt(const char *input);
 

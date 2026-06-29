@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_sandbox.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
@@ -156,7 +157,7 @@ static GString *edc_edit_file_try_create(const char *path, char *safe_path,
             free(parent);
             *error = NULL;
             g_file_set_contents(safe_path, new_text, -1, error);
-            return *error ? NULL : g_string_new_take(g_strdup_printf("Successfully created %s", path));
+            return *error ? NULL : g_string_new_take(edc_strdup_printf("Successfully created %s", path));
         }
         g_set_error(error, BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
                     "Error: File not found: %s", path);
@@ -170,7 +171,7 @@ static GString *edc_edit_file_try_create(const char *path, char *safe_path,
         g_file_get_contents(safe_path, &content, NULL, error);
         if (*error)
             return NULL;
-        content = g_strstrip(content);
+        content = edc_strstrip(content);
         if (content[0] != '\0')
         {
             free(content);
@@ -181,7 +182,7 @@ static GString *edc_edit_file_try_create(const char *path, char *safe_path,
         free(content);
         *error = NULL;
         g_file_set_contents(safe_path, new_text, -1, error);
-        return *error ? NULL : g_string_new_take(g_strdup_printf("Successfully edited %s", path));
+        return *error ? NULL : g_string_new_take(edc_strdup_printf("Successfully edited %s", path));
     }
 
     return NULL;
@@ -490,7 +491,7 @@ static GString *edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, GE
     g_file_set_contents(safe_path, new_content->str, -1, error);
     g_string_free(new_content, TRUE);
     if (!*error)
-        result = g_string_new_take(g_strdup_printf("Successfully edited %s", path));
+        result = g_string_new_take(edc_strdup_printf("Successfully edited %s", path));
 
 cleanup:
     free(content);

@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_history.h"
 #include "log.h"
 #include <errno.h>
@@ -40,7 +41,7 @@ cJSON *edc_history_load(const char *workspace, const size_t offset)
                 continue;
             }
 
-            g_strstrip(line->str);
+            edc_strstrip(line->str);
             line->len = strlen(line->str);
             if (line->len > 0)
             {
@@ -156,7 +157,7 @@ bool edc_history_get_info(const char *workspace, size_t *compress_index, char **
     *compress_index = (size_t)cJSON_GetNumberValue(compress_index_obj);
     if (update_time)
     {
-        *update_time = g_strdup(cJSON_GetStringValue(update_time_obj));
+        *update_time = strdup(cJSON_GetStringValue(update_time_obj));
     }
 
 exit_:

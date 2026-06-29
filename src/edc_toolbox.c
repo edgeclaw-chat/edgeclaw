@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_toolbox.h"
 #include "edc_param_types.h"
 #include "edc_tools.h"
@@ -26,7 +27,7 @@ void edc_toolbox_call_ctx_free(struct edc_toolbox_call_ctx *ctx)
 struct edc_toolbox *edc_toolbox_new(struct edc_config *conf, edc_actor_t *scheduler, edc_actor_t *channel_actor)
 {
     struct edc_toolbox *tb = g_new0(struct edc_toolbox, 1);
-    tb->tools = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, (GDestroyNotify)edc_tool_free);
+    tb->tools = g_hash_table_new_full(edc_str_hash, edc_str_equal, NULL, (EdcDestroyNotify)edc_tool_free);
     tb->conf = conf;
     tb->schemas = cJSON_CreateArray();
     tb->scheduler = scheduler;

@@ -5,6 +5,7 @@
 #include "log.h"
 #include <dirent.h>
 #include <glib.h>
+#include "edc_strutil.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -519,7 +520,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
 
     {
         char *def_rw_str =
-            g_strdup_printf("%s/workspace/, /tmp, /dev", edc_home);
+            edc_strdup_printf("%s/workspace/, /tmp, /dev", edc_home);
         const char *def_rw = (defaults && defaults->sandbox_rw_paths[0]) ? defaults->sandbox_rw_paths : def_rw_str;
         val = prompt_with_default("  Additional writable paths (comma-separated)", def_rw);
         free(def_rw_str);
@@ -531,7 +532,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
 
     {
         char *def_ro_str =
-            g_strdup_printf("%s/workspace/ssl, /usr, /lib, /lib32, /lib64, /libx32, /bin, /sbin, /etc, /proc",
+            edc_strdup_printf("%s/workspace/ssl, /usr, /lib, /lib32, /lib64, /libx32, /bin, /sbin, /etc, /proc",
                             edc_home);
         const char *def_ro = (defaults && defaults->sandbox_ro_paths[0])
                                  ? defaults->sandbox_ro_paths
@@ -624,13 +625,13 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
             const char *uid_def = uid_buf;
             if (same_chan && defaults->telegram.user_id != 0)
             {
-                snprintf(uid_buf, sizeof(uid_buf), "%" G_GINT64_FORMAT, defaults->telegram.user_id);
+                snprintf(uid_buf, sizeof(uid_buf), "%" PRId64, defaults->telegram.user_id);
             }
             val = prompt_with_default("User ID", uid_def);
             if (!val)
                 return -1;
             int64_t uid = 0;
-            if (sscanf(val, "%" G_GINT64_FORMAT, &uid) == 1 && uid != 0)
+            if (sscanf(val, "%" PRId64, &uid) == 1 && uid != 0)
             {
                 result->telegram.user_id = uid;
                 free(val);
@@ -860,21 +861,21 @@ static char **split_paths(const char *input)
     if (!input || !input[0])
         return NULL;
 
-    char **parts = g_strsplit(input, ",", -1);
+    char **parts = edc_strsplit(input, ",", -1);
     if (!parts || !parts[0])
         return NULL;
 
     int count = 0;
     for (int i = 0; parts[i]; i++)
     {
-        g_strstrip(parts[i]);
+        edc_strstrip(parts[i]);
         if (parts[i][0])
             count++;
     }
 
     if (count == 0)
     {
-        g_strfreev(parts);
+        edc_strfreev(parts);
         return NULL;
     }
 
@@ -883,9 +884,9 @@ static char **split_paths(const char *input)
     for (int i = 0; parts[i]; i++)
     {
         if (parts[i][0])
-            result[idx++] = g_strdup(parts[i]);
+            result[idx++] = strdup(parts[i]);
     }
-    g_strfreev(parts);
+    edc_strfreev(parts);
     return result;
 }
 
@@ -900,7 +901,7 @@ static void build_sandbox_rw(cJSON *sandbox, const char *root, const char *rw_pa
     {
         for (int i = 0; extra[i]; i++)
             cJSON_AddItemToArray(arr, cJSON_CreateString(extra[i]));
-        g_strfreev(extra);
+        edc_strfreev(extra);
     }
 
     cJSON_AddItemToObject(sandbox, "rw_paths", arr);
@@ -1058,7 +1059,7 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
         {
             for (int i = 0; ro[i]; i++)
                 cJSON_AddItemToArray(ro_arr, cJSON_CreateString(ro[i]));
-            g_strfreev(ro);
+            edc_strfreev(ro);
         }
         cJSON_AddItemToArray(ro_arr, cJSON_CreateString(workspace_path));
         cJSON_AddItemToObject(sandbox, "ro_paths", ro_arr);

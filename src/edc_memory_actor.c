@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_memory_actor.h"
 #include "edc_actor.h"
 #include "edc_history.h"
@@ -335,7 +336,7 @@ static bool edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_msg_t 
     for (int i = 0; i < resp->tool_calls->len; i++)
     {
         struct edc_llm_chat_tool_call *tool_call = &g_array_index(resp->tool_calls, struct edc_llm_chat_tool_call, i);
-        if (g_strcmp0(tool_call->function.name->str, "save_memory") != 0)
+        if (edc_strcmp0(tool_call->function.name->str, "save_memory") != 0)
         {
             ret = FALSE;
             goto exit_;

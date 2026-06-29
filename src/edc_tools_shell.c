@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_sandbox.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
@@ -238,7 +239,7 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
     char *argv[] = {"sh", "-c", (char *)cmd_s, NULL};
 
     char **envp = g_get_environ();
-    int env_count = g_strv_length(envp);
+    int env_count = edc_strv_length(envp);
     char **filtered_envp = g_new0(char *, env_count + 1);
     int j = 0;
     size_t master_key_prefix_len = strlen(BC_MASTER_KEY_ENV);
@@ -246,10 +247,10 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
     {
         if (strncmp(envp[i], BC_MASTER_KEY_ENV, master_key_prefix_len) != 0 || envp[i][master_key_prefix_len] != '=')
         {
-            filtered_envp[j++] = g_strdup(envp[i]);
+            filtered_envp[j++] = strdup(envp[i]);
         }
     }
-    g_strfreev(envp);
+    edc_strfreev(envp);
 
     GPid child_pid = 0;
     int stdin_fd = 0, stdout_fd = 0, stderr_fd = 0;
@@ -259,7 +260,7 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
         g_spawn_async_with_pipes(working_dir, argv, filtered_envp, G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
                                  edc_tool_shell_child_setup, conf, &child_pid, &stdin_fd, &stdout_fd, &stderr_fd, &error);
 
-    g_strfreev(filtered_envp);
+    edc_strfreev(filtered_envp);
 
     if (!success)
     {

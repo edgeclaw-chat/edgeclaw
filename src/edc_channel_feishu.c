@@ -284,7 +284,7 @@ static void edc_channel_feishu_handle_tenant_token_recv(edc_actor_t *actor, stru
 
     state->feishu.expire = (int64_t)cJSON_GetNumberValue(expire);
 
-    state->feishu.tenant_access_token = g_strdup(cJSON_GetStringValue(token));
+    state->feishu.tenant_access_token = strdup(cJSON_GetStringValue(token));
     log_debug("get feishu tenant_access_token: %s, expire at: %" PRId64, state->feishu.tenant_access_token,
               state->feishu.expire);
 
@@ -348,7 +348,7 @@ static bool edc_channel_feishu_parse_wss_endpoint_resp(edc_channel_actor_state_t
     {
         free(state->feishu.wss_url);
     }
-    state->feishu.wss_url = g_strdup(cJSON_GetStringValue(URL));
+    state->feishu.wss_url = strdup(cJSON_GetStringValue(URL));
     state->feishu.wss_client_config.ping_interval = (int)cJSON_GetNumberValue(ping_interval);
     state->feishu.wss_client_config.reconnect_count = (int)cJSON_GetNumberValue(reconnect_count);
     state->feishu.wss_client_config.reconnect_interval = (int)cJSON_GetNumberValue(reconnect_interval);

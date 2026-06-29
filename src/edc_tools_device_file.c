@@ -701,10 +701,10 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
     struct device_file_ctx *ctx = g_new0(struct device_file_ctx, 1);
     ctx->tb_ctx = tb_ctx;
     ctx->callback = callback;
-    ctx->agent_ip = g_strdup(conf->device_ip);
+    ctx->agent_ip = strdup(conf->device_ip);
     ctx->agent_port = (uint16_t)(conf->device_port > 0 ? conf->device_port : 5000);
-    ctx->remote_path = g_strdup(cJSON_GetStringValue(remote));
-    ctx->local_path = g_strdup(cJSON_GetStringValue(local));
+    ctx->remote_path = strdup(cJSON_GetStringValue(remote));
+    ctx->local_path = strdup(cJSON_GetStringValue(local));
     ctx->file_mode = file_mode;
     ctx->is_upload = TRUE;
     ctx->timeout_sec = timeout_sec;
@@ -744,10 +744,10 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
     struct device_file_ctx *ctx = g_new0(struct device_file_ctx, 1);
     ctx->tb_ctx = tb_ctx;
     ctx->callback = callback;
-    ctx->agent_ip = g_strdup(conf->device_ip);
+    ctx->agent_ip = strdup(conf->device_ip);
     ctx->agent_port = (uint16_t)(conf->device_port > 0 ? conf->device_port : 5000);
-    ctx->remote_path = g_strdup(cJSON_GetStringValue(remote));
-    ctx->local_path = g_strdup(cJSON_GetStringValue(local));
+    ctx->remote_path = strdup(cJSON_GetStringValue(remote));
+    ctx->local_path = strdup(cJSON_GetStringValue(local));
     ctx->is_upload = FALSE;
     ctx->timeout_sec = timeout_sec;
 

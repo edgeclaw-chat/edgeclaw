@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_skills.h"
 
 #include "log.h"
@@ -7,7 +8,7 @@ static struct edc_skill *edc_skill_new()
 {
     struct edc_skill *skill = g_new(struct edc_skill, 1);
     skill->name = NULL;
-    skill->meta = g_hash_table_new_full(g_str_hash, g_str_equal, free, free);
+    skill->meta = g_hash_table_new_full(edc_str_hash, edc_str_equal, free, free);
     skill->content = NULL;
     return skill;
 }
@@ -35,7 +36,7 @@ void edc_skill_free(struct edc_skill *skill)
 
 static bool edc_extract_skill_meta_and_content(const char *content, struct edc_skill *skill)
 {
-    if (!g_str_has_prefix(content, "---"))
+    if (!edc_str_has_prefix(content, "---"))
     {
         log_error("skill content has not prefix ---");
         return FALSE;
@@ -70,7 +71,7 @@ static bool edc_extract_skill_meta_and_content(const char *content, struct edc_s
             goto match_info_err;
         }
 
-        char **lines = g_strsplit(meta, "\n", -1);
+        char **lines = edc_strsplit(meta, "\n", -1);
         if (!lines)
         {
             err = FALSE;
@@ -80,25 +81,25 @@ static bool edc_extract_skill_meta_and_content(const char *content, struct edc_s
         char **p = lines;
         while (*p)
         {
-            char **kv = g_strsplit(*p, ":", 2);
+            char **kv = edc_strsplit(*p, ":", 2);
             if (kv && kv[0] && kv[1])
             {
-                g_hash_table_insert(skill->meta, g_strstrip(g_strdup(kv[0])), g_strstrip(g_strdup(kv[1])));
+                g_hash_table_insert(skill->meta, edc_strstrip(strdup(kv[0])), edc_strstrip(strdup(kv[1])));
             }
-            g_strfreev(kv);
+            edc_strfreev(kv);
             p++;
         }
 
-        g_strfreev(lines);
+        edc_strfreev(lines);
 
         int start = 0, end = 0;
         if (g_match_info_fetch_pos(match_info, 0, &start, &end))
         {
-            skill->content = g_string_new(g_strstrip((char *)content + end));
+            skill->content = g_string_new(edc_strstrip((char *)content + end));
         }
         else
         {
-            skill->content = g_string_new(g_strstrip((char *)content));
+            skill->content = g_string_new(edc_strstrip((char *)content));
         }
     }
 

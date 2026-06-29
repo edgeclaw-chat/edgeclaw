@@ -345,8 +345,8 @@ edc_tool_device_shell_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc
     struct device_shell_ctx *ctx = g_new0(struct device_shell_ctx, 1);
     ctx->tb_ctx = tb_ctx;
     ctx->callback = callback;
-    ctx->command = g_strdup(cJSON_GetStringValue(cmd));
-    ctx->agent_ip = g_strdup(conf->device_ip);
+    ctx->command = strdup(cJSON_GetStringValue(cmd));
+    ctx->agent_ip = strdup(conf->device_ip);
     ctx->agent_port = (uint16_t)(conf->device_port > 0 ? conf->device_port : 5000);
     ctx->timeout_sec = timeout_sec;
 

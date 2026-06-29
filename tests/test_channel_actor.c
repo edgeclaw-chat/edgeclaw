@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "src/edc_actor.h"
 #include "src/edc_channel_actor.h"
 #include "src/edc_config.h"
@@ -13,7 +14,7 @@ static void edc_observe_channel_handler(edc_actor_t *actor, edc_actor_msg_t *mes
         fprintf(stderr, "[USER]: %s\n", input->content);
 
         char *content = input->content;
-        input->content = g_strdup_printf("%s%s", content, content);
+        input->content = edc_strdup_printf("%s%s", content, content);
         free(content);
 
         message->type = BC_ACTOR_MSG_CHANNEL_SEND;

@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_tools.h"
 #include "edc_toolbox.h"
 
@@ -6,7 +7,7 @@ G_DEFINE_QUARK(edc_tool_error_quark, edc_tool_error)
 struct edc_tool_param *edc_tool_param_new(char *name, struct edc_param_type *type, bool required)
 {
     struct edc_tool_param *param = g_new(struct edc_tool_param, 1);
-    param->name = g_strdup(name);
+    param->name = strdup(name);
     param->type = type;
     param->required = required;
     return param;
@@ -28,7 +29,7 @@ void edc_tool_free(struct edc_tool *tool)
     g_string_free(tool->name, TRUE);
     g_string_free(tool->desc, TRUE);
 
-    g_slist_free_full(tool->params, (GDestroyNotify)edc_tool_param_free);
+    g_slist_free_full(tool->params, (EdcDestroyNotify)edc_tool_param_free);
 
     if (tool->priv_free_fn && tool->priv)
     {

@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_tools_crontab.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
@@ -133,7 +134,7 @@ static void edc_tool_crontab_remove_job(cJSON *jobs, char *job_id)
     {
         cJSON *job = cJSON_GetArrayItem(jobs, i);
         cJSON *job_id_i = cJSON_GetObjectItem(job, "job_id");
-        if (g_str_equal(cJSON_GetStringValue(job_id_i), job_id))
+        if (edc_str_equal(cJSON_GetStringValue(job_id_i), job_id))
         {
             target = i;
             break;
@@ -216,7 +217,7 @@ static void edc_tool_crontab_exec_remove_async(struct edc_toolbox_call_ctx *ctx,
 
 static char *edc_tool_crontab_build_task_message(char *job_name, char *job_message)
 {
-    return g_strdup_printf("[Scheduled Task] Timer finished.\n\n"
+    return edc_strdup_printf("[Scheduled Task] Timer finished.\n\n"
                            "Task '%s' has been triggered.\n"
                            "Scheduled instruction: %s",
                            job_name, job_message);
@@ -234,10 +235,10 @@ static void edc_tool_crontab_caculate_next_run(cJSON *jobs)
         cJSON *tz_id = cJSON_GetObjectItem(schedule, "tz");
         cJSON *kind = cJSON_GetObjectItem(schedule, "kind");
         GTimeZone *tz = g_time_zone_new_identifier(cJSON_GetStringValue(tz_id));
-        if (g_str_equal(cJSON_GetStringValue(kind), "at"))
+        if (edc_str_equal(cJSON_GetStringValue(kind), "at"))
         {
         }
-        else if (g_str_equal(cJSON_GetStringValue(kind), "every"))
+        else if (edc_str_equal(cJSON_GetStringValue(kind), "every"))
         {
             cJSON *interval = cJSON_GetObjectItem(schedule, "every_seconds");
             int every_seconds = interval->valueint;
@@ -246,7 +247,7 @@ static void edc_tool_crontab_caculate_next_run(cJSON *jobs)
             g_date_time_unref(dt);
             cJSON_ReplaceItemInObject(schedule, "next_run_at_unix_ts", cJSON_CreateNumber(now + every_seconds));
         }
-        else if (g_str_equal(cJSON_GetStringValue(kind), "cron"))
+        else if (edc_str_equal(cJSON_GetStringValue(kind), "cron"))
         {
             cJSON *expr = cJSON_GetObjectItem(schedule, "cron_expr");
             const char *error = NULL;
@@ -331,9 +332,9 @@ static void edc_tool_crontab_update_task(const char *workspace, struct edc_chann
     g_date_time_unref(now);
 
     GSource *source = g_timeout_source_new_seconds(interval);
-    tool->priv = edc_tool_crontab_state_new(source, run_at, g_strdup(job_id), g_strdup(job_name),
+    tool->priv = edc_tool_crontab_state_new(source, run_at, strdup(job_id), strdup(job_name),
                                            edc_tool_crontab_build_task_message(job_name, job_message),
-                                           g_strdup(workspace), once, scheduler, call_from);
+                                           strdup(workspace), once, scheduler, call_from);
 
     g_source_set_callback(source, edc_tool_crontab_on_timeout, tool, NULL);
     g_source_attach(source, scheduler->context);
@@ -384,7 +385,7 @@ static void edc_tool_crontab_schedule(const char *workspace, edc_actor_t *schedu
     }
 
     struct edc_tool_crontab_state *state = tool->priv;
-    if (!state || (next_time < state->timeout_at && !g_str_equal(job_id, state->job_id)))
+    if (!state || (next_time < state->timeout_at && !edc_str_equal(job_id, state->job_id)))
     {
         edc_tool_crontab_update_task(workspace, edc_channel_from_json(channel), scheduler, tool, job_id, job_name,
                                     job_message, next_time, once);
@@ -562,15 +563,15 @@ static void edc_tool_crontab_exec_async(struct edc_toolbox_call_ctx *ctx, struct
                                        void (*callback)(struct edc_toolbox_call_ctx *, GString *, GError *))
 {
     char *action = cJSON_GetStringValue(cJSON_GetObjectItem(args, "action"));
-    if (g_str_equal(action, "add"))
+    if (edc_str_equal(action, "add"))
     {
         edc_tool_crontab_exec_add_async(ctx, tool, args, callback);
     }
-    else if (g_str_equal(action, "list"))
+    else if (edc_str_equal(action, "list"))
     {
         edc_tool_crontab_exec_list_async(ctx, tool, args, callback);
     }
-    else if (g_str_equal(action, "remove"))
+    else if (edc_str_equal(action, "remove"))
     {
         edc_tool_crontab_exec_remove_async(ctx, tool, args, callback);
     }

@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_commands.h"
 #include "edc_actor.h"
 #include "edc_agent.h"
@@ -8,10 +9,10 @@
 
 static bool edc_commands_is_target(const char *content, const char *target)
 {
-    char *cmd = g_strdup(content);
+    char *cmd = strdup(content);
 
-    g_strstrip(cmd);
-    bool is = g_str_equal(cmd, target);
+    edc_strstrip(cmd);
+    bool is = edc_str_equal(cmd, target);
     free(cmd);
 
     return is;
@@ -30,7 +31,7 @@ static bool edc_commands_handle_new(struct edc_agent *agent, edc_actor_t *actor,
     }
 
     struct edc_channel_message *reply =
-        edc_channel_message_new(edc_channel_copy(channel), g_strdup("[system] start new session now."));
+        edc_channel_message_new(edc_channel_copy(channel), strdup("[system] start new session now."));
     edc_actor_send(agent->channel_actor,
                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->channel->type, actor, NULL, reply,
                                             (edc_actor_data_free_fn)edc_channel_message_free));
@@ -44,7 +45,7 @@ static bool edc_commands_handle_stop(struct edc_agent *agent, edc_actor_t *actor
     edc_agent_remove_all_turns(agent);
 
     struct edc_channel_message *reply =
-        edc_channel_message_new(edc_channel_copy(channel), g_strdup("[system] stop all turn."));
+        edc_channel_message_new(edc_channel_copy(channel), strdup("[system] stop all turn."));
     edc_actor_send(agent->channel_actor,
                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->channel->type, actor, NULL, reply,
                                             (edc_actor_data_free_fn)edc_channel_message_free));
@@ -61,7 +62,7 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
         "- `/help` — Show this help message";
 
     struct edc_channel_message *reply =
-        edc_channel_message_new(edc_channel_copy(channel), g_strdup(help_text));
+        edc_channel_message_new(edc_channel_copy(channel), strdup(help_text));
     edc_actor_send(agent->channel_actor,
                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->channel->type, actor, NULL, reply,
                                             (edc_actor_data_free_fn)edc_channel_message_free));

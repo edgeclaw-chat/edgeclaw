@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_channel_cli.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
@@ -72,7 +73,7 @@ static void* cli_input_thread(void* data)
             break;
         }
 
-        char *trimmed = g_strstrip(g_strdup(line));
+        char *trimmed = edc_strstrip(strdup(line));
         free(line);
 
         if (trimmed[0] != '\0')
@@ -106,9 +107,9 @@ static void edc_channel_cli_handle_send(edc_actor_t *actor, edc_actor_msg_t *msg
     {
         free(state->cli.pending_output);
     }
-    if (g_str_has_prefix(message->content, "[思考]:"))
+    if (edc_str_has_prefix(message->content, "[思考]:"))
     {
-        state->cli.pending_output = g_strdup_printf("%s%s%s", CLI_DIM, message->content, CLI_RESET);
+        state->cli.pending_output = edc_strdup_printf("%s%s%s", CLI_DIM, message->content, CLI_RESET);
     }
     else
     {

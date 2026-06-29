@@ -1,3 +1,4 @@
+#include "edc_strutil.h"
 #include "edc_param_types.h"
 
 #include <stdarg.h>
@@ -6,7 +7,7 @@ struct edc_param_type *edc_param_int_type(char *desc, int64_t min, int64_t max)
 {
     struct edc_param_type *type = g_new0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_INT;
-    type->desc = g_strdup(desc);
+    type->desc = strdup(desc);
     type->num.min = min;
     type->num.max = max;
     return type;
@@ -16,7 +17,7 @@ struct edc_param_type *edc_param_str_type(char *desc, const char *first, ...)
 {
     struct edc_param_type *type = g_new0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_STR;
-    type->desc = g_strdup(desc);
+    type->desc = strdup(desc);
 
     if (!first)
         return type;
@@ -31,10 +32,10 @@ struct edc_param_type *edc_param_str_type(char *desc, const char *first, ...)
     va_end(args_copy);
 
     char **dst = g_new(char *, n);
-    dst[0] = g_strdup(first);
+    dst[0] = strdup(first);
     for (int i = 1; i < n; i++)
     {
-        dst[i] = g_strdup(va_arg(args, const char *));
+        dst[i] = strdup(va_arg(args, const char *));
     }
     va_end(args);
 
@@ -47,7 +48,7 @@ struct edc_param_type *edc_param_bool_type(char *desc)
 {
     struct edc_param_type *type = g_new0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_BOOL;
-    type->desc = g_strdup(desc);
+    type->desc = strdup(desc);
     return type;
 }
 
@@ -55,7 +56,7 @@ struct edc_param_type *edc_param_array_type(char *desc, struct edc_param_type *i
 {
     struct edc_param_type *type = g_new0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_ARRAY;
-    type->desc = g_strdup(desc);
+    type->desc = strdup(desc);
     type->array.item = item_type;
     return type;
 }
@@ -64,12 +65,12 @@ struct edc_param_type *edc_param_object_type(char *desc, struct edc_param_object
 {
     struct edc_param_type *type = g_new0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_OBJECT;
-    type->desc = g_strdup(desc);
+    type->desc = strdup(desc);
     type->object.properties = g_new(struct edc_param_object_property, n);
     type->object.n = n;
     for (int i = 0; i < n; i++)
     {
-        type->object.properties[i].name = g_strdup(properties[i].name);
+        type->object.properties[i].name = strdup(properties[i].name);
         type->object.properties[i].type = properties[i].type;
     }
     return type;
@@ -137,7 +138,7 @@ bool edc_param_type_validate(cJSON *args, struct edc_param_type *type)
             char **enums = (char **)type->str.enums;
             for (int i = 0; i < type->str.n; i++)
             {
-                if (g_str_equal(cJSON_GetStringValue(args), enums[i]))
+                if (edc_str_equal(cJSON_GetStringValue(args), enums[i]))
                     return TRUE;
             }
             return FALSE;
@@ -243,7 +244,7 @@ char *edc_param_type_to_s(struct edc_param_type *type)
 {
     cJSON *json = edc_param_type_to_json(type);
     if (!json)
-        return g_strdup("<string format error>");
+        return strdup("<string format error>");
     char *str = cJSON_PrintUnformatted(json);
     cJSON_Delete(json);
     return str;
