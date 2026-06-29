@@ -190,6 +190,7 @@ cc_library(
     ],
     deps = [
         "@glib//glib:glib",
+        "@sds//:sds",
         "@cjson//:cjson",
         "@log.c//:log.c",
         "@linenoise//:linenoise",
