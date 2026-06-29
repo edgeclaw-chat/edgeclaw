@@ -293,7 +293,7 @@ static void edc_channel_feishu_handle_tenant_token_recv(edc_actor_t *actor, stru
         g_source_unref(state->feishu.expire_source);
     }
     state->feishu.expire_source = g_timeout_source_new_seconds(state->feishu.expire + 1);
-    g_source_set_callback(state->feishu.expire_source, edc_channel_feishu_tenant_token_update, actor, NULL);
+    g_source_set_callback(state->feishu.expire_source, (GSourceFunc)edc_channel_feishu_tenant_token_update, actor, NULL);
     g_source_attach(state->feishu.expire_source, actor->context);
 }
 

@@ -62,7 +62,7 @@ int main(int argc, char *argv[])
 
     // 3. 将通道添加到主循环监视中
     // G_IO_IN 表示有数据可读，G_IO_HUP 表示连接挂断
-    g_io_add_watch(stdout_channel, G_IO_IN | G_IO_HUP, on_stdout_readable, NULL);
+    g_io_add_watch(stdout_channel, G_IO_IN | G_IO_HUP, (GIOFunc)on_stdout_readable, NULL);
 
     // 释放对 channel 的初始引用（watch 会维持它，直到回调返回 FALSE）
     g_io_channel_unref(stdout_channel);

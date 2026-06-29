@@ -41,7 +41,7 @@ void edc_actor_runner_start(edc_actor_runner_t *runner)
 {
     if (!runner)
         return;
-    runner->thread = g_thread_new("edc_actor_runner", actor_thread_func, runner);
+    runner->thread = g_thread_new("edc_actor_runner", (GThreadFunc)actor_thread_func, runner);
 
     for (int i = 0; i < runner->actors->len; ++i)
     {
@@ -174,5 +174,5 @@ void edc_actor_send(edc_actor_t *actor, edc_actor_msg_t *msg)
         return;
 
     g_async_queue_push(actor->mailbox, msg);
-    g_main_context_invoke(actor->context, process_single_message, actor);
+    g_main_context_invoke(actor->context, (GSourceFunc)process_single_message, actor);
 }

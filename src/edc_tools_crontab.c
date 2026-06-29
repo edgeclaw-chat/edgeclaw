@@ -336,7 +336,7 @@ static void edc_tool_crontab_update_task(const char *workspace, struct edc_chann
                                            edc_tool_crontab_build_task_message(job_name, job_message),
                                            strdup(workspace), once, scheduler, call_from);
 
-    g_source_set_callback(source, edc_tool_crontab_on_timeout, tool, NULL);
+    g_source_set_callback(source, (GSourceFunc)edc_tool_crontab_on_timeout, tool, NULL);
     g_source_attach(source, scheduler->context);
 
     GDateTime *point = g_date_time_new_from_unix_local(run_at);

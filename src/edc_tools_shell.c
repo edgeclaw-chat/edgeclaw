@@ -286,10 +286,10 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
     g_io_channel_set_flags(ctx->stdout_ch, G_IO_FLAG_NONBLOCK, NULL);
     g_io_channel_set_flags(ctx->stderr_ch, G_IO_FLAG_NONBLOCK, NULL);
 
-    ctx->timeout_id = g_timeout_add_seconds(timeout_sec, shell_timeout_cb, ctx);
+    ctx->timeout_id = g_timeout_add_seconds(timeout_sec, (GSourceFunc)shell_timeout_cb, ctx);
 
-    edc_tool_shell_watch_io_channel(ctx->stderr_ch, on_stderr_pipe_readable, ctx);
-    edc_tool_shell_watch_io_channel(ctx->stdout_ch, on_stdout_pipe_readable, ctx);
+    edc_tool_shell_watch_io_channel(ctx->stderr_ch, (GIOFunc)on_stderr_pipe_readable, ctx);
+    edc_tool_shell_watch_io_channel(ctx->stdout_ch, (GIOFunc)on_stdout_pipe_readable, ctx);
 
     g_mutex_lock(&active_mutex);
     active_contexts = g_slist_prepend(active_contexts, ctx);

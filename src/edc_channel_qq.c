@@ -263,7 +263,7 @@ static bool edc_channel_qq_handle_get_access_token_resp(edc_actor_t *actor, edc_
     }
 
     state->qq.expire_source = g_timeout_source_new_seconds(state->qq.expires_in + 1);
-    g_source_set_callback(state->qq.expire_source, edc_channel_qq_access_token_update, actor, NULL);
+    g_source_set_callback(state->qq.expire_source, (GSourceFunc)edc_channel_qq_access_token_update, actor, NULL);
     g_source_attach(state->qq.expire_source, actor->context);
 
     log_info("qq channel: got access_token: %s, expires_in: %d", state->qq.access_token, (int)state->qq.expires_in);

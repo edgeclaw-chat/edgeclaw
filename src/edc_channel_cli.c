@@ -83,7 +83,7 @@ static void* cli_input_thread(void* data)
             g_async_queue_push(state->cli.input_queue, trimmed);
 
             g_main_context_invoke(state->cli.queue_source ? g_source_get_context(state->cli.queue_source) : NULL,
-                                  cli_process_input, actor);
+                                  (GSourceFunc)cli_process_input, actor);
         }
         else
         {
@@ -149,10 +149,10 @@ static void edc_channel_cli_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
         }
 
         state->cli.queue_source = g_timeout_source_new(50);
-        g_source_set_callback(state->cli.queue_source, cli_process_input, actor, NULL);
+        g_source_set_callback(state->cli.queue_source, (GSourceFunc)cli_process_input, actor, NULL);
         g_source_attach(state->cli.queue_source, actor->context);
 
-        state->cli.input_thread = g_thread_new("cli_input", cli_input_thread, actor);
+        state->cli.input_thread = g_thread_new("cli_input", (GThreadFunc)cli_input_thread, actor);
 
         printf("\e[1;32mEdgeClaw CLI ready. Type /help for commands.\e[0m\n");
         break;
