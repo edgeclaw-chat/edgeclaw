@@ -258,7 +258,6 @@ cc_library(
         "@sds//:sds",
         "@cjson//:cjson",
         "@log.c//:log.c",
-        "@linenoise//:linenoise",
         "@mongoose//:mongoose",
         "@ccronexpr//:ccronexpr",
         "@md4c//:md4c",
@@ -269,7 +268,10 @@ cc_library(
         ":pppos_agent_lib",
         "//thirdparty/brutezone:brutezone",
         "//thirdparty/utf8proc",
-    ],
+    ] + select({
+        "//:windows": [],
+        "//conditions:default": ["@linenoise//:linenoise"],
+    }),
     linkopts = select({
         "//:macos": ["-lresolv"],
         "//:windows": [],

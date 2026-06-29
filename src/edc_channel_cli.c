@@ -1,3 +1,16 @@
+#ifdef _WIN32
+/* Windows: CLI channel not supported (no linenoise/termios) — stubs */
+
+#include "edc_channel_actor.h"
+#include "edc_channel_cli.h"
+#include <string.h>
+
+void edc_channel_cli_init(edc_actor_t *channel_actor)
+{
+    (void)channel_actor;
+}
+#else /* POSIX */
+
 #include "sds.h"
 #include "edc_channel_actor.h"
 #include "edc_channel_cli.h"
@@ -181,3 +194,4 @@ void edc_channel_cli_init(edc_actor_t *channel_actor)
     sdsfree(edc_home);
     edc_channel_actor_add(channel_actor, edc_channel_cli, edc_channel_cli_handler);
 }
+#endif /* _WIN32 */
