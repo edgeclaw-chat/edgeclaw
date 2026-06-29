@@ -100,8 +100,9 @@ def _aarch64_toolchain_repo_impl(rctx):
         if gcc_bin:
             prefix = str(gcc_bin)[:str(gcc_bin).rfind("/")] + "/"
 
+    null_device = "NUL" if rctx.os.name.startswith("windows") else "/dev/null"
     result = rctx.execute(
-        [prefix + "gcc", "-E", "-v", "-x", "c", "/dev/null"],
+        [prefix + "gcc", "-E", "-v", "-x", "c", null_device],
         environment = {"LC_ALL": "C"},
     )
     if result.return_code != 0:

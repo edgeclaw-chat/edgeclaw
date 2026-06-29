@@ -124,8 +124,9 @@ def _android_toolchain_repo_impl(rctx, arch_config):
     target_triple = arch_config["target_triple"]
     clang_bin = bin_dir + target_triple + api_level + "-clang"
 
+    null_device = "NUL" if rctx.os.name.startswith("windows") else "/dev/null"
     result = rctx.execute(
-        [clang_bin, "-E", "-v", "-x", "c", "/dev/null"],
+        [clang_bin, "-E", "-v", "-x", "c", null_device],
         environment = {"LC_ALL": "C"},
     )
     if result.return_code != 0:

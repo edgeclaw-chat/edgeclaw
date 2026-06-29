@@ -123,7 +123,8 @@ def _arm_toolchain_repo_impl(rctx):
         if gcc_bin:
             prefix = str(gcc_bin)[:str(gcc_bin).rfind("/")] + "/"
 
-    compiler_args = [prefix + "gcc", "-E", "-v", "-x", "c", "/dev/null"]
+    null_device = "NUL" if rctx.os.name.startswith("windows") else "/dev/null"
+    compiler_args = [prefix + "gcc", "-E", "-v", "-x", "c", null_device]
     result = rctx.execute(compiler_args, environment = {"LC_ALL": "C"})
     if result.return_code != 0:
         fail("Failed to query compiler: " + result.stderr)
