@@ -35,6 +35,6 @@ extern void edc_toolbox_free(struct edc_toolbox *tb);
 extern void edc_toolbox_register(struct edc_toolbox *tb, struct edc_tool *tool);
 extern void edc_toolbox_register_defaults(struct edc_toolbox *tb);
 
-extern void edc_toolbox_exec(struct edc_toolbox_call_ctx *, const gchar *name, cJSON *args,
+extern void edc_toolbox_exec(struct edc_toolbox_call_ctx *, const char *name, cJSON *args,
                             void (*callback)(struct edc_toolbox_call_ctx *, GString *, GError *));
 #endif

@@ -6,7 +6,7 @@
 #include <string.h>
 
 static struct netconn *echo_server_conn;
-static volatile gboolean server_running;
+static volatile bool server_running;
 
 static void echo_server_thread(void *arg)
 {

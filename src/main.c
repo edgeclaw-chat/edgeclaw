@@ -51,8 +51,8 @@ int main(int argc, char *argv[])
 {
     signal(SIGINT, signal_handler);
 
-    gboolean setup = FALSE;
-    gboolean sandbox_enabled = FALSE;
+    bool setup = FALSE;
+    bool sandbox_enabled = FALSE;
 
     static struct option long_options[] = {{"setup", no_argument, 0, 's'},
                                            {"sandbox", no_argument, 0, 'S'},
@@ -107,14 +107,14 @@ int main(int argc, char *argv[])
 
     if (setup)
     {
-        gchar *edc_home = edc_config_resolve_bc_home();
+        char *edc_home = edc_config_resolve_bc_home();
         if (!edc_init_env(edc_home, TRUE))
         {
             log_error("Failed to initialize environment.");
-            g_free(edc_home);
+            free(edc_home);
             return -1;
         }
-        g_free(edc_home);
+        free(edc_home);
         printf("Setup complete.\n");
         return 0;
     }

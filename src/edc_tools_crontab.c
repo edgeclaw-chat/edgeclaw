@@ -12,18 +12,18 @@ struct edc_tool_crontab_state
 {
     GSource *source;
     uint64_t timeout_at;
-    gchar *job_id;
-    gchar *job_name;
-    gchar *message;
-    gchar *workspace;
-    gboolean once;
+    char *job_id;
+    char *job_name;
+    char *message;
+    char *workspace;
+    bool once;
     edc_actor_t *scheduler;
     struct edc_channel *channel;
 };
 
-static struct edc_tool_crontab_state *edc_tool_crontab_state_new(GSource *source, uint64_t timeout_at, gchar *job_id,
-                                                               gchar *job_name, gchar *message, gchar *workspace,
-                                                               gboolean once, edc_actor_t *scheduler,
+static struct edc_tool_crontab_state *edc_tool_crontab_state_new(GSource *source, uint64_t timeout_at, char *job_id,
+                                                               char *job_name, char *message, char *workspace,
+                                                               bool once, edc_actor_t *scheduler,
                                                                struct edc_channel *channel)
 {
     struct edc_tool_crontab_state *state = g_new0(struct edc_tool_crontab_state, 1);
@@ -51,17 +51,17 @@ static void edc_tool_crontab_state_free(struct edc_tool_crontab_state *state)
 
     if (state->job_id)
     {
-        g_free(state->job_id);
+        free(state->job_id);
     }
 
     if (state->job_name)
     {
-        g_free(state->job_name);
+        free(state->job_name);
     }
 
     if (state->message)
     {
-        g_free(state->message);
+        free(state->message);
     }
 
     if (state->channel)
@@ -71,19 +71,19 @@ static void edc_tool_crontab_state_free(struct edc_tool_crontab_state *state)
 
     if (state->workspace)
     {
-        g_free(state->workspace);
+        free(state->workspace);
     }
 
-    g_free(state);
+    free(state);
 }
 
-static cJSON *edc_tool_crontab_load_jobs_db(const gchar *workspace, GError **error)
+static cJSON *edc_tool_crontab_load_jobs_db(const char *workspace, GError **error)
 {
-    gchar *jobs_path = g_build_filename(workspace, "jobs.json", NULL);
+    char *jobs_path = g_build_filename(workspace, "jobs.json", NULL);
 
     cJSON *db = NULL;
-    gchar *content = NULL;
-    gsize len = 0;
+    char *content = NULL;
+    size_t len = 0;
 
     if (g_file_test(jobs_path, G_FILE_TEST_IS_REGULAR))
     {
@@ -93,40 +93,40 @@ static cJSON *edc_tool_crontab_load_jobs_db(const gchar *workspace, GError **err
         }
 
         db = cJSON_ParseWithLength(content, len);
-        g_free(content);
+        free(content);
     }
 
 out:
-    g_free(jobs_path);
+    free(jobs_path);
     return db;
 }
 
-static gboolean edc_tool_crontab_save_jobs_db(const gchar *workspace, cJSON *db, GError **error)
+static bool edc_tool_crontab_save_jobs_db(const char *workspace, cJSON *db, GError **error)
 {
-    gchar *jobs_path = g_build_filename(workspace, "jobs.json", NULL);
+    char *jobs_path = g_build_filename(workspace, "jobs.json", NULL);
     FILE *fout = fopen(jobs_path, "w+");
-    g_free(jobs_path);
+    free(jobs_path);
 
     if (!fout)
     {
-        const gchar *s = g_strerror(errno);
+        const char *s = g_strerror(errno);
         *error =
             g_error_new(edc_tool_error_quark(), BC_TOOL_ARG_INVALID, "open %s for writting failed: %s", jobs_path, s);
         return FALSE;
     }
     else
     {
-        gchar *tmp = cJSON_PrintUnformatted(db);
+        char *tmp = cJSON_PrintUnformatted(db);
         fprintf(fout, "%s", tmp);
         fflush(fout);
         fclose(fout);
-        g_free(tmp);
+        free(tmp);
     }
 
     return TRUE;
 }
 
-static void edc_tool_crontab_remove_job(cJSON *jobs, gchar *job_id)
+static void edc_tool_crontab_remove_job(cJSON *jobs, char *job_id)
 {
     int target = -1;
     for (int i = 0; i < cJSON_GetArraySize(jobs); ++i)
@@ -181,10 +181,10 @@ static void edc_tool_crontab_exec_remove_async(struct edc_toolbox_call_ctx *ctx,
     cJSON *job_id = cJSON_GetObjectItem(args, "job_id");
     if (!job_id || !cJSON_IsString(job_id))
     {
-        gchar *tmp = cJSON_PrintUnformatted(args);
+        char *tmp = cJSON_PrintUnformatted(args);
         GError *error = g_error_new(edc_tool_error_quark(), BC_TOOL_ARG_INVALID,
                                     "crontab tool: remove job failed. job_id is not provided in args: %s", tmp);
-        g_free(tmp);
+        free(tmp);
         callback(ctx, NULL, error);
         return;
     }
@@ -214,7 +214,7 @@ static void edc_tool_crontab_exec_remove_async(struct edc_toolbox_call_ctx *ctx,
     cJSON_Delete(db);
 }
 
-static gchar *edc_tool_crontab_build_task_message(gchar *job_name, gchar *job_message)
+static char *edc_tool_crontab_build_task_message(char *job_name, char *job_message)
 {
     return g_strdup_printf("[Scheduled Task] Timer finished.\n\n"
                            "Task '%s' has been triggered.\n"
@@ -222,7 +222,7 @@ static gchar *edc_tool_crontab_build_task_message(gchar *job_name, gchar *job_me
                            job_name, job_message);
 }
 
-static void edc_tool_crontab_schedule(const gchar *workspace, edc_actor_t *scheduler, struct edc_tool *tool, cJSON *jobs);
+static void edc_tool_crontab_schedule(const char *workspace, edc_actor_t *scheduler, struct edc_tool *tool, cJSON *jobs);
 
 static void edc_tool_crontab_caculate_next_run(cJSON *jobs)
 {
@@ -242,14 +242,14 @@ static void edc_tool_crontab_caculate_next_run(cJSON *jobs)
             cJSON *interval = cJSON_GetObjectItem(schedule, "every_seconds");
             int every_seconds = interval->valueint;
             GDateTime *dt = g_date_time_new_now(tz);
-            gint64 now = g_date_time_to_unix(dt);
+            int64_t now = g_date_time_to_unix(dt);
             g_date_time_unref(dt);
             cJSON_ReplaceItemInObject(schedule, "next_run_at_unix_ts", cJSON_CreateNumber(now + every_seconds));
         }
         else if (g_str_equal(cJSON_GetStringValue(kind), "cron"))
         {
             cJSON *expr = cJSON_GetObjectItem(schedule, "cron_expr");
-            const gchar *error = NULL;
+            const char *error = NULL;
             cron_expr cexpr;
             cron_parse_expr(cJSON_GetStringValue(expr), &cexpr, &error);
             if (error)
@@ -258,8 +258,8 @@ static void edc_tool_crontab_caculate_next_run(cJSON *jobs)
             }
             else
             {
-                gint interval = g_time_zone_find_interval(tz, G_TIME_TYPE_STANDARD, g_get_real_time() / 1000000);
-                gint32 tz_offset = g_time_zone_get_offset(tz, interval);
+                int interval = g_time_zone_find_interval(tz, G_TIME_TYPE_STANDARD, g_get_real_time() / 1000000);
+                int32_t tz_offset = g_time_zone_get_offset(tz, interval);
                 time_t next = cron_next(&cexpr, time(NULL) + tz_offset);
                 next -= tz_offset;
                 cJSON_ReplaceItemInObject(schedule, "next_run_at_unix_ts", cJSON_CreateNumber(next));
@@ -270,7 +270,7 @@ static void edc_tool_crontab_caculate_next_run(cJSON *jobs)
     }
 }
 
-static gboolean edc_tool_crontab_on_timeout(void *data)
+static bool edc_tool_crontab_on_timeout(void *data)
 {
     struct edc_tool *tool = data;
     struct edc_tool_crontab_state *state = tool->priv;
@@ -313,21 +313,21 @@ static gboolean edc_tool_crontab_on_timeout(void *data)
     return G_SOURCE_REMOVE;
 }
 
-static void edc_tool_crontab_update_task(const gchar *workspace, struct edc_channel *call_from, edc_actor_t *scheduler,
-                                        struct edc_tool *tool, gchar *job_id, gchar *job_name, gchar *job_message,
-                                        gint64 run_at, gboolean once)
+static void edc_tool_crontab_update_task(const char *workspace, struct edc_channel *call_from, edc_actor_t *scheduler,
+                                        struct edc_tool *tool, char *job_id, char *job_name, char *job_message,
+                                        int64_t run_at, bool once)
 {
     struct edc_tool_crontab_state *state = tool->priv;
     edc_tool_crontab_state_free(state);
 
     GDateTime *now = g_date_time_new_now_utc();
-    gint64 ts = g_date_time_to_unix(now);
+    int64_t ts = g_date_time_to_unix(now);
     if (run_at < ts)
     {
         run_at = ts + 1;
     }
 
-    gint interval = run_at - ts;
+    int interval = run_at - ts;
     g_date_time_unref(now);
 
     GSource *source = g_timeout_source_new_seconds(interval);
@@ -339,13 +339,13 @@ static void edc_tool_crontab_update_task(const gchar *workspace, struct edc_chan
     g_source_attach(source, scheduler->context);
 
     GDateTime *point = g_date_time_new_from_unix_local(run_at);
-    gchar *s = g_date_time_format_iso8601(point);
+    char *s = g_date_time_format_iso8601(point);
     log_info("crontabl tool schedule job name = %s, id = %s, run at %s", job_name, job_id, s);
-    g_free(s);
+    free(s);
     g_date_time_unref(point);
 }
 
-static void edc_tool_crontab_schedule(const gchar *workspace, edc_actor_t *scheduler, struct edc_tool *tool, cJSON *jobs)
+static void edc_tool_crontab_schedule(const char *workspace, edc_actor_t *scheduler, struct edc_tool *tool, cJSON *jobs)
 {
     int n_jobs = cJSON_GetArraySize(jobs);
     if (n_jobs == 0)
@@ -357,19 +357,19 @@ static void edc_tool_crontab_schedule(const gchar *workspace, edc_actor_t *sched
     cJSON *schedule = cJSON_GetObjectItem(job0, "schedule");
     cJSON *channel = cJSON_GetObjectItem(job0, "channel");
 
-    gboolean once = cJSON_IsTrue(cJSON_GetObjectItem(schedule, "once"));
-    gint64 next_time = (gint64)cJSON_GetObjectItem(schedule, "next_run_at_unix_ts")->valuedouble;
-    gchar *job_id = cJSON_GetStringValue(cJSON_GetObjectItem(job0, "job_id"));
-    gchar *job_name = cJSON_GetStringValue(cJSON_GetObjectItem(job0, "name"));
-    gchar *job_message = cJSON_GetStringValue(cJSON_GetObjectItem(job0, "message"));
+    bool once = cJSON_IsTrue(cJSON_GetObjectItem(schedule, "once"));
+    int64_t next_time = (int64_t)cJSON_GetObjectItem(schedule, "next_run_at_unix_ts")->valuedouble;
+    char *job_id = cJSON_GetStringValue(cJSON_GetObjectItem(job0, "job_id"));
+    char *job_name = cJSON_GetStringValue(cJSON_GetObjectItem(job0, "name"));
+    char *job_message = cJSON_GetStringValue(cJSON_GetObjectItem(job0, "message"));
 
     for (int i = 1; i < n_jobs; ++i)
     {
         cJSON *job_i = cJSON_GetArrayItem(jobs, i);
         cJSON *schedule_i = cJSON_GetObjectItem(job_i, "schedule");
-        gint64 next_time_i = (gint64)(cJSON_GetObjectItem(schedule_i, "next_run_at_unix_ts")->valuedouble);
-        gboolean once_i = cJSON_IsTrue(cJSON_GetObjectItem(schedule, "once"));
-        gchar *job_name_i = cJSON_GetStringValue(cJSON_GetObjectItem(job_i, "name"));
+        int64_t next_time_i = (int64_t)(cJSON_GetObjectItem(schedule_i, "next_run_at_unix_ts")->valuedouble);
+        bool once_i = cJSON_IsTrue(cJSON_GetObjectItem(schedule, "once"));
+        char *job_name_i = cJSON_GetStringValue(cJSON_GetObjectItem(job_i, "name"));
         cJSON *channel_i = cJSON_GetObjectItem(job_i, "channel");
 
         if (next_time_i < next_time)
@@ -403,22 +403,22 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
 
     if (!message)
     {
-        gchar *tmp = cJSON_PrintUnformatted(args);
+        char *tmp = cJSON_PrintUnformatted(args);
         GError *error = g_error_new(edc_tool_error_quark(), BC_TOOL_ARG_INVALID,
                                     "crontab tool: message is required for action add, args = %s", tmp);
-        g_free(tmp);
+        free(tmp);
         callback(ctx, NULL, error);
         return;
     }
 
     if (!at && !every_seconds && !cexpr)
     {
-        gchar *tmp = cJSON_PrintUnformatted(args);
+        char *tmp = cJSON_PrintUnformatted(args);
         GError *error =
             g_error_new(edc_tool_error_quark(), BC_TOOL_ARG_INVALID,
                         "'at' / 'every_seconds' / 'cron_expr' should be provided for schedule. args = %s", tmp);
         callback(ctx, NULL, error);
-        g_free(tmp);
+        free(tmp);
         return;
     }
 
@@ -428,9 +428,9 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
         g_tz = g_time_zone_new_identifier(cJSON_GetStringValue(tz));
         if (!g_tz)
         {
-            gchar *tmp = cJSON_PrintUnformatted(tz);
+            char *tmp = cJSON_PrintUnformatted(tz);
             GError *error = g_error_new(edc_tool_error_quark(), BC_TOOL_ARG_INVALID, "timezone is invalid: %s", tmp);
-            g_free(tmp);
+            free(tmp);
             callback(ctx, NULL, error);
             return;
         }
@@ -464,14 +464,14 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
     }
     else
     {
-        gchar *s = g_strndup(cJSON_GetStringValue(message), 30);
+        char *s = g_strndup(cJSON_GetStringValue(message), 30);
         cJSON_AddStringToObject(job, "name", s);
-        g_free(s);
+        free(s);
     }
 
-    gchar *job_id = g_uuid_string_random();
+    char *job_id = g_uuid_string_random();
     cJSON_AddStringToObject(job, "job_id", job_id);
-    g_free(job_id);
+    free(job_id);
 
     cJSON_AddItemToObject(job, "channel", edc_channel_to_json(ctx->call_from));
 
@@ -484,11 +484,11 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
         GDateTime *dt = g_date_time_new_from_iso8601(cJSON_GetStringValue(at), g_tz);
         if (!dt)
         {
-            gchar *tmp = cJSON_PrintUnformatted(at);
+            char *tmp = cJSON_PrintUnformatted(at);
             GError *error =
                 g_error_new(edc_tool_error_quark(), BC_TOOL_ARG_INVALID, "'at' is not iso8601 format: %s", tmp);
             callback(ctx, NULL, error);
-            g_free(tmp);
+            free(tmp);
             g_time_zone_unref(g_tz);
             return;
         }
@@ -502,7 +502,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
         cJSON_AddStringToObject(schedule, "kind", "every");
         cJSON_AddNumberToObject(schedule, "every_seconds", every_seconds->valueint);
         GDateTime *dt = g_date_time_new_now_local();
-        gint64 now = g_date_time_to_unix(dt);
+        int64_t now = g_date_time_to_unix(dt);
         g_date_time_unref(dt);
 
         cJSON_AddNumberToObject(schedule, "next_run_at_unix_ts", now + every_seconds->valueint);
@@ -528,8 +528,8 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
             return;
         }
 
-        gint interval = g_time_zone_find_interval(g_tz, G_TIME_TYPE_STANDARD, g_get_real_time() / 1000000);
-        gint32 tz_offset = g_time_zone_get_offset(g_tz, interval);
+        int interval = g_time_zone_find_interval(g_tz, G_TIME_TYPE_STANDARD, g_get_real_time() / 1000000);
+        int32_t tz_offset = g_time_zone_get_offset(g_tz, interval);
 
         time_t next = cron_next(&expr, time(NULL) + tz_offset);
         next -= tz_offset;
@@ -548,9 +548,9 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
     else
     {
         GString *result = g_string_new(NULL);
-        gchar *s = cJSON_PrintUnformatted(job);
+        char *s = cJSON_PrintUnformatted(job);
         g_string_append_printf(result, "Add job %s done. (exit code: 0)", s);
-        g_free(s);
+        free(s);
         callback(ctx, result, NULL);
     }
 
@@ -561,7 +561,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
 static void edc_tool_crontab_exec_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
                                        void (*callback)(struct edc_toolbox_call_ctx *, GString *, GError *))
 {
-    gchar *action = cJSON_GetStringValue(cJSON_GetObjectItem(args, "action"));
+    char *action = cJSON_GetStringValue(cJSON_GetObjectItem(args, "action"));
     if (g_str_equal(action, "add"))
     {
         edc_tool_crontab_exec_add_async(ctx, tool, args, callback);

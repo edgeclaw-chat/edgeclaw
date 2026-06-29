@@ -6,19 +6,19 @@
 
 static GString *edc_tool_exec_read_file(struct edc_config *conf, cJSON *args, GError **error)
 {
-    const gchar *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
+    const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
 
-    gchar *safe_path = edc_sandbox_verify_path(conf, path, FALSE, error);
+    char *safe_path = edc_sandbox_verify_path(conf, path, FALSE, error);
     if (!safe_path)
     {
         return NULL;
     }
 
-    gchar *content;
-    gsize len = 0;
+    char *content;
+    size_t len = 0;
     *error = NULL;
     g_file_get_contents(safe_path, &content, &len, error);
-    g_free(safe_path);
+    free(safe_path);
     if (*error)
     {
         return NULL;
@@ -29,10 +29,10 @@ static GString *edc_tool_exec_read_file(struct edc_config *conf, cJSON *args, GE
 
 static GString *edc_tool_exec_write_file(struct edc_config *conf, cJSON *args, GError **error)
 {
-    const gchar *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
-    const gchar *content = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "content"));
+    const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
+    const char *content = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "content"));
 
-    gchar *safe_path = edc_sandbox_verify_path(conf, path, TRUE, error);
+    char *safe_path = edc_sandbox_verify_path(conf, path, TRUE, error);
     if (!safe_path)
     {
         return NULL;
@@ -40,7 +40,7 @@ static GString *edc_tool_exec_write_file(struct edc_config *conf, cJSON *args, G
 
     *error = NULL;
     g_file_set_contents(safe_path, content, -1, error);
-    g_free(safe_path);
+    free(safe_path);
     if (*error)
     {
         return NULL;
@@ -53,30 +53,30 @@ static GString *edc_tool_exec_write_file(struct edc_config *conf, cJSON *args, G
 
 static GString *edc_tool_exec_list_dir(struct edc_config *conf, cJSON *args, GError **error)
 {
-    const gchar *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
+    const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
 
-    gchar *safe_path = edc_sandbox_verify_path(conf, path, FALSE, error);
+    char *safe_path = edc_sandbox_verify_path(conf, path, FALSE, error);
     if (!safe_path)
     {
         return NULL;
     }
 
     GDir *dir = g_dir_open(safe_path, 0, error);
-    g_free(safe_path);
+    free(safe_path);
     if (*error)
     {
         return NULL;
     }
 
     GString *result = g_string_new("");
-    const gchar *name;
+    const char *name;
     while ((name = g_dir_read_name(dir)))
     {
-        gchar *full_path = g_build_filename(path, name, NULL);
-        gboolean is_dir = g_file_test(full_path, G_FILE_TEST_IS_DIR);
-        g_free(full_path);
+        char *full_path = g_build_filename(path, name, NULL);
+        bool is_dir = g_file_test(full_path, G_FILE_TEST_IS_DIR);
+        free(full_path);
 
-        const gchar *prefix = is_dir ? "[DIR]  " : "[FILE] ";
+        const char *prefix = is_dir ? "[DIR]  " : "[FILE] ";
         g_string_append_printf(result, "%s%s\n", prefix, name);
     }
 
@@ -94,8 +94,8 @@ static void edc_tool_exec_read_file_async(struct edc_toolbox_call_ctx *ctx, stru
 
 static void edc_tool_create_read_file(struct edc_toolbox *tb)
 {
-    const gchar *name = "read_file";
-    const gchar *desc = "Read the contents of a file at the given path.";
+    const char *name = "read_file";
+    const char *desc = "Read the contents of a file at the given path.";
     GSList *params = NULL;
     params =
         g_slist_append(params, edc_tool_param_new("path", edc_param_str_type("The file path to read", NULL), TRUE));
@@ -112,8 +112,8 @@ static void edc_tool_exec_write_file_async(struct edc_toolbox_call_ctx *ctx, str
 
 static void edc_tool_create_write_file(struct edc_toolbox *tb)
 {
-    const gchar *name = "write_file";
-    const gchar *desc = "Write the contents of a file at the given path.";
+    const char *name = "write_file";
+    const char *desc = "Write the contents of a file at the given path.";
 
     GSList *params = NULL;
     params =
@@ -134,8 +134,8 @@ static void edc_tool_exec_list_dir_async(struct edc_toolbox_call_ctx *ctx, struc
 
 static void edc_tool_create_list_dir(struct edc_toolbox *tb)
 {
-    const gchar *name = "list_dir";
-    const gchar *desc = "List the contents of a directory at the given path.";
+    const char *name = "list_dir";
+    const char *desc = "List the contents of a directory at the given path.";
 
     GSList *params = NULL;
     params = g_slist_append(params,
@@ -143,17 +143,17 @@ static void edc_tool_create_list_dir(struct edc_toolbox *tb)
     edc_toolbox_register(tb, edc_tool_new(name, desc, params, edc_tool_exec_list_dir_async));
 }
 
-static GString *edc_edit_file_try_create(const gchar *path, gchar *safe_path,
-                                            const gchar *old_text, const gchar *new_text,
+static GString *edc_edit_file_try_create(const char *path, char *safe_path,
+                                            const char *old_text, const char *new_text,
                                             GError **error)
 {
     if (!g_file_test(safe_path, G_FILE_TEST_EXISTS))
     {
         if (old_text && old_text[0] == '\0')
         {
-            gchar *parent = g_path_get_dirname(safe_path);
+            char *parent = g_path_get_dirname(safe_path);
             g_mkdir_with_parents(parent, 0755);
-            g_free(parent);
+            free(parent);
             *error = NULL;
             g_file_set_contents(safe_path, new_text, -1, error);
             return *error ? NULL : g_string_new_take(g_strdup_printf("Successfully created %s", path));
@@ -165,7 +165,7 @@ static GString *edc_edit_file_try_create(const gchar *path, gchar *safe_path,
 
     if (old_text && old_text[0] == '\0')
     {
-        gchar *content;
+        char *content;
         *error = NULL;
         g_file_get_contents(safe_path, &content, NULL, error);
         if (*error)
@@ -173,12 +173,12 @@ static GString *edc_edit_file_try_create(const gchar *path, gchar *safe_path,
         content = g_strstrip(content);
         if (content[0] != '\0')
         {
-            g_free(content);
+            free(content);
             g_set_error(error, BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
                         "Error: Cannot create file — %s already exists and is not empty.", path);
             return NULL;
         }
-        g_free(content);
+        free(content);
         *error = NULL;
         g_file_set_contents(safe_path, new_text, -1, error);
         return *error ? NULL : g_string_new_take(g_strdup_printf("Successfully edited %s", path));
@@ -187,11 +187,11 @@ static GString *edc_edit_file_try_create(const gchar *path, gchar *safe_path,
     return NULL;
 }
 
-static void edc_edit_file_find_matches(const gchar *content, const gchar *old_text, gsize old_len,
-                                        GArray **positions, GArray **line_nums, guint *out_count)
+static void edc_edit_file_find_matches(const char *content, const char *old_text, size_t old_len,
+                                        GArray **positions, GArray **line_nums, unsigned int *out_count)
 {
-    *positions = g_array_new(FALSE, FALSE, sizeof(gsize));
-    *line_nums = g_array_new(FALSE, FALSE, sizeof(gint64));
+    *positions = g_array_new(FALSE, FALSE, sizeof(size_t));
+    *line_nums = g_array_new(FALSE, FALSE, sizeof(int64_t));
 
     /* Guard: strstr with empty needle matches at every position → infinite loop */
     if (old_len == 0)
@@ -200,13 +200,13 @@ static void edc_edit_file_find_matches(const gchar *content, const gchar *old_te
         return;
     }
 
-    const gchar *scan = content;
-    gint64 current_line = 1;
-    const gchar *nl_scan = content;
+    const char *scan = content;
+    int64_t current_line = 1;
+    const char *nl_scan = content;
 
     while ((scan = strstr(scan, old_text)) != NULL)
     {
-        gsize pos = (gsize)(scan - content);
+        size_t pos = (size_t)(scan - content);
         while (nl_scan < scan)
         {
             if (*nl_scan == '\n')
@@ -220,25 +220,25 @@ static void edc_edit_file_find_matches(const gchar *content, const gchar *old_te
     *out_count = (*positions)->len;
 }
 
-static void edc_edit_file_format_match_list(const gchar *content, gsize content_len,
+static void edc_edit_file_format_match_list(const char *content, size_t content_len,
                                               GArray *positions, GArray *line_nums,
-                                              gsize old_len, guint count, guint max_preview,
+                                              size_t old_len, unsigned int count, unsigned int max_preview,
                                               GString *out)
 {
-    guint preview = MIN(count, max_preview);
-    for (guint i = 0; i < preview; i++)
+    unsigned int preview = MIN(count, max_preview);
+    for (unsigned int i = 0; i < preview; i++)
     {
-        gsize pos = g_array_index(positions, gsize, i);
-        gint64 ln = g_array_index(line_nums, gint64, i);
-        gsize ctx_start = pos > 25 ? pos - 25 : 0;
-        gsize ctx_end = pos + old_len + 25;
+        size_t pos = g_array_index(positions, size_t, i);
+        int64_t ln = g_array_index(line_nums, int64_t, i);
+        size_t ctx_start = pos > 25 ? pos - 25 : 0;
+        size_t ctx_end = pos + old_len + 25;
         if (ctx_end > content_len)
             ctx_end = content_len;
 
         GString *ctx = g_string_sized_new(ctx_end - ctx_start + 10);
-        for (gsize ci = ctx_start; ci < ctx_end; ci++)
+        for (size_t ci = ctx_start; ci < ctx_end; ci++)
         {
-            gchar c = content[ci];
+            char c = content[ci];
             if (c == '\n')
                 g_string_append(ctx, "\\n");
             else if (c == '\t')
@@ -253,45 +253,45 @@ static void edc_edit_file_format_match_list(const gchar *content, gsize content_
         g_string_append_printf(out, "\n  ... and %u more matches", count - max_preview);
 }
 
-static gboolean edc_edit_file_select_all(guint count, GArray **selected, GError **error)
+static bool edc_edit_file_select_all(unsigned int count, GArray **selected, GError **error)
 {
-    for (guint i = 0; i < count; i++)
+    for (unsigned int i = 0; i < count; i++)
     {
-        guint idx = i;
+        unsigned int idx = i;
         g_array_append_val(*selected, idx);
     }
     return TRUE;
 }
 
-static gboolean edc_edit_file_select_by_occurrence(guint count, gint64 occurrence,
+static bool edc_edit_file_select_by_occurrence(unsigned int count, int64_t occurrence,
                                                      GArray **selected, GError **error)
 {
-    if ((guint64)occurrence > count)
+    if ((uint64_t)occurrence > count)
     {
         g_set_error(error, BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
                     "Error: occurrence %ld out of range; old_text appears %u times.",
                     (long)occurrence, count);
         return FALSE;
     }
-    guint idx = (guint)(occurrence - 1);
+    unsigned int idx = (unsigned int)(occurrence - 1);
     g_array_append_val(*selected, idx);
     return TRUE;
 }
 
-static gboolean edc_edit_file_select_by_line_hint(const gchar *content, gsize content_len,
-                                                    guint count, GArray *line_nums,
-                                                    GArray *positions, gsize old_len,
-                                                    gint64 line_hint, GArray **selected,
+static bool edc_edit_file_select_by_line_hint(const char *content, size_t content_len,
+                                                    unsigned int count, GArray *line_nums,
+                                                    GArray *positions, size_t old_len,
+                                                    int64_t line_hint, GArray **selected,
                                                     GError **error)
 {
-    gint64 best_dist = G_MAXINT64;
-    guint best_idx = 0;
-    gboolean ambiguous = FALSE;
+    int64_t best_dist = G_MAXINT64;
+    unsigned int best_idx = 0;
+    bool ambiguous = FALSE;
 
-    for (guint i = 0; i < count; i++)
+    for (unsigned int i = 0; i < count; i++)
     {
-        gint64 ln = g_array_index(line_nums, gint64, i);
-        gint64 dist = ln > line_hint ? ln - line_hint : line_hint - ln;
+        int64_t ln = g_array_index(line_nums, int64_t, i);
+        int64_t dist = ln > line_hint ? ln - line_hint : line_hint - ln;
         if (dist < best_dist)
         {
             best_dist = dist;
@@ -318,13 +318,13 @@ static gboolean edc_edit_file_select_by_line_hint(const gchar *content, gsize co
     return TRUE;
 }
 
-static gboolean edc_edit_file_select_matches(const gchar *content, gsize content_len,
-                                              guint count, GArray *line_nums,
-                                              GArray *positions, gsize old_len,
-                                              gboolean replace_all, gint64 occurrence,
-                                              gint64 line_hint, GArray **selected, GError **error)
+static bool edc_edit_file_select_matches(const char *content, size_t content_len,
+                                              unsigned int count, GArray *line_nums,
+                                              GArray *positions, size_t old_len,
+                                              bool replace_all, int64_t occurrence,
+                                              int64_t line_hint, GArray **selected, GError **error)
 {
-    *selected = g_array_new(FALSE, FALSE, sizeof(guint));
+    *selected = g_array_new(FALSE, FALSE, sizeof(unsigned int));
 
     if ((replace_all ? 1 : 0) + (occurrence > 0 ? 1 : 0) + (line_hint > 0 ? 1 : 0) > 1)
     {
@@ -365,28 +365,28 @@ static gboolean edc_edit_file_select_matches(const gchar *content, gsize content
     }
 
     {
-        guint zero = 0;
+        unsigned int zero = 0;
         g_array_append_val(*selected, zero);
     }
     return TRUE;
 }
 
-static void edc_edit_file_apply_replacements(const gchar *content, gsize content_len,
-                                              const gchar *old_text, gsize old_len,
-                                              const gchar *new_text, GArray *positions,
+static void edc_edit_file_apply_replacements(const char *content, size_t content_len,
+                                              const char *old_text, size_t old_len,
+                                              const char *new_text, GArray *positions,
                                               GArray *selected, GString **out_content)
 {
-    gsize new_len = strlen(new_text);
+    size_t new_len = strlen(new_text);
     *out_content = g_string_sized_new(content_len + selected->len * new_len);
-    gsize prev_end = 0;
+    size_t prev_end = 0;
 
-    for (guint si = 0; si < selected->len; si++)
+    for (unsigned int si = 0; si < selected->len; si++)
     {
-        guint idx = g_array_index(selected, guint, si);
-        gsize start = g_array_index(positions, gsize, idx);
-        gsize end = start + old_len;
+        unsigned int idx = g_array_index(selected, unsigned int, si);
+        size_t start = g_array_index(positions, size_t, idx);
+        size_t end = start + old_len;
 
-        g_string_append_len(*out_content, content + prev_end, (gssize)(start - prev_end));
+        g_string_append_len(*out_content, content + prev_end, (ssize_t)(start - prev_end));
         g_string_append(*out_content, new_text);
         prev_end = end;
 
@@ -394,14 +394,14 @@ static void edc_edit_file_apply_replacements(const gchar *content, gsize content
             && content[end - 1] != '\n' && content[end] == '\n')
             prev_end++;
     }
-    g_string_append_len(*out_content, content + prev_end, (gssize)(content_len - prev_end));
+    g_string_append_len(*out_content, content + prev_end, (ssize_t)(content_len - prev_end));
 }
 
 static GString *edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, GError **error)
 {
-    const gchar *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
-    const gchar *old_text = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "old_text"));
-    const gchar *new_text = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "new_text"));
+    const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
+    const char *old_text = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "old_text"));
+    const char *new_text = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "new_text"));
 
     if (!path || !old_text || !new_text)
     {
@@ -410,23 +410,23 @@ static GString *edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, GE
         return NULL;
     }
 
-    gboolean replace_all = cJSON_IsTrue(cJSON_GetObjectItem(args, "replace_all"));
+    bool replace_all = cJSON_IsTrue(cJSON_GetObjectItem(args, "replace_all"));
 
     cJSON *j;
-    gint64 occurrence = 0;
+    int64_t occurrence = 0;
     j = cJSON_GetObjectItem(args, "occurrence");
     if (j && cJSON_IsNumber(j))
-        occurrence = (gint64)j->valuedouble;
+        occurrence = (int64_t)j->valuedouble;
 
-    gint64 line_hint = 0;
+    int64_t line_hint = 0;
     j = cJSON_GetObjectItem(args, "line_hint");
     if (j && cJSON_IsNumber(j))
-        line_hint = (gint64)j->valuedouble;
+        line_hint = (int64_t)j->valuedouble;
 
-    gint64 expected_replacements = 0;
+    int64_t expected_replacements = 0;
     j = cJSON_GetObjectItem(args, "expected_replacements");
     if (j && cJSON_IsNumber(j))
-        expected_replacements = (gint64)j->valuedouble;
+        expected_replacements = (int64_t)j->valuedouble;
 
     if (occurrence < 0 || line_hint < 0 || expected_replacements < 0)
     {
@@ -435,31 +435,31 @@ static GString *edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, GE
         return NULL;
     }
 
-    gchar *safe_path = edc_sandbox_verify_path(conf, path, TRUE, error);
+    char *safe_path = edc_sandbox_verify_path(conf, path, TRUE, error);
     if (!safe_path)
         return NULL;
 
     GString *created = edc_edit_file_try_create(path, safe_path, old_text, new_text, error);
     if (created || *error)
     {
-        g_free(safe_path);
+        free(safe_path);
         return created;
     }
 
-    gchar *content = NULL;
+    char *content = NULL;
     GArray *positions = NULL;
     GArray *line_nums = NULL;
     GArray *selected = NULL;
     GString *result = NULL;
 
     *error = NULL;
-    gsize content_len;
+    size_t content_len;
     g_file_get_contents(safe_path, &content, &content_len, error);
     if (*error)
         goto cleanup;
 
-    gsize old_len = strlen(old_text);
-    guint count;
+    size_t old_len = strlen(old_text);
+    unsigned int count;
     edc_edit_file_find_matches(content, old_text, old_len, &positions, &line_nums, &count);
 
     if (count == 0)
@@ -474,7 +474,7 @@ static GString *edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, GE
                                        line_hint, &selected, error))
         goto cleanup;
 
-    if (expected_replacements > 0 && selected->len != (guint)expected_replacements)
+    if (expected_replacements > 0 && selected->len != (unsigned int)expected_replacements)
     {
         g_set_error(error, BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
                     "Error: expected %ld replacements but would make %u.",
@@ -493,8 +493,8 @@ static GString *edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, GE
         result = g_string_new_take(g_strdup_printf("Successfully edited %s", path));
 
 cleanup:
-    g_free(content);
-    g_free(safe_path);
+    free(content);
+    free(safe_path);
     if (positions)
         g_array_free(positions, TRUE);
     if (line_nums)
@@ -514,8 +514,8 @@ static void edc_tool_exec_edit_file_async(struct edc_toolbox_call_ctx *ctx, stru
 
 static void edc_tool_create_edit_file(struct edc_toolbox *tb)
 {
-    const gchar *name = "edit_file";
-    const gchar *desc =
+    const char *name = "edit_file";
+    const char *desc =
         "Perform a small, exact replacement in one file by replacing old_text with new_text. Use this for narrow text "
         "substitutions with old_text copied from read_file. For multi-file, structural, or generated code edits, "
         "prefer apply_patch. If old_text matches multiple times, provide more context or set occurrence, line_hint, "

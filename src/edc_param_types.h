@@ -2,6 +2,7 @@
 #define __BC_PARAM_TYPES_H__
 #include <cJSON.h>
 #include <glib.h>
+#include <stdbool.h>
 
 typedef enum
 {
@@ -14,7 +15,7 @@ struct edc_param_type;
 
 struct edc_param_object_property
 {
-    gchar *name;
+    char *name;
     struct edc_param_type *type;
 };
 
@@ -29,13 +30,13 @@ struct edc_param_type
         BC_TOOL_TYPE_OBJECT
     } type;
 
-    gchar *desc;
+    char *desc;
 
     union {
         struct
         {
-            gint64 min;
-            gint64 max;
+            int64_t min;
+            int64_t max;
         } num;
 
         struct
@@ -51,19 +52,19 @@ struct edc_param_type
 
         struct
         {
-            gchar *enums;
+            char *enums;
             int n;
         } str;
     };
 };
 
-extern struct edc_param_type *edc_param_int_type(gchar *desc, gint64 min, gint64 max);
-extern struct edc_param_type *edc_param_str_type(gchar *desc, const gchar *first, ...);
-extern struct edc_param_type *edc_param_bool_type(gchar *desc);
-extern struct edc_param_type *edc_param_array_type(gchar *desc, struct edc_param_type *item_type);
-extern struct edc_param_type *edc_param_object_type(gchar *desc, struct edc_param_object_property *properties, int n);
+extern struct edc_param_type *edc_param_int_type(char *desc, int64_t min, int64_t max);
+extern struct edc_param_type *edc_param_str_type(char *desc, const char *first, ...);
+extern struct edc_param_type *edc_param_bool_type(char *desc);
+extern struct edc_param_type *edc_param_array_type(char *desc, struct edc_param_type *item_type);
+extern struct edc_param_type *edc_param_object_type(char *desc, struct edc_param_object_property *properties, int n);
 extern void edc_param_type_free(struct edc_param_type *type);
-extern gboolean edc_param_type_validate(cJSON *args, struct edc_param_type *type);
+extern bool edc_param_type_validate(cJSON *args, struct edc_param_type *type);
 extern cJSON *edc_param_type_to_json(struct edc_param_type *type);
-extern gchar *edc_param_type_to_s(struct edc_param_type *type);
+extern char *edc_param_type_to_s(struct edc_param_type *type);
 #endif

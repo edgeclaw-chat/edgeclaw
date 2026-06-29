@@ -213,13 +213,13 @@ static int prompt_device_transport(int default_idx)
 
 /* Parse existing config.json into a edc_init_env_result.
  * Returns a newly allocated struct, or NULL if the file doesn't exist or can't be parsed. */
-static struct edc_init_env_result *load_existing_config(const gchar *conf_file)
+static struct edc_init_env_result *load_existing_config(const char *conf_file)
 {
     if (!g_file_test(conf_file, G_FILE_TEST_IS_REGULAR))
         return NULL;
 
-    gchar *contents = NULL;
-    gsize length = 0;
+    char *contents = NULL;
+    size_t length = 0;
     GError *error = NULL;
     if (!g_file_get_contents(conf_file, &contents, &length, &error))
     {
@@ -229,7 +229,7 @@ static struct edc_init_env_result *load_existing_config(const gchar *conf_file)
     }
 
     cJSON *json = cJSON_Parse(contents);
-    g_free(contents);
+    free(contents);
     if (!json)
         return NULL;
 
@@ -239,11 +239,11 @@ static struct edc_init_env_result *load_existing_config(const gchar *conf_file)
     item = cJSON_GetObjectItem(json, "api_key");
     if (item && cJSON_IsString(item))
     {
-        gchar *decrypted = edc_secret_decrypt(item->valuestring);
+        char *decrypted = edc_secret_decrypt(item->valuestring);
         if (decrypted)
         {
             strncpy(result->api_key, decrypted, sizeof(result->api_key) - 1);
-            g_free(decrypted);
+            free(decrypted);
         }
     }
 
@@ -370,11 +370,11 @@ static struct edc_init_env_result *load_existing_config(const gchar *conf_file)
             item = cJSON_GetObjectItem(channel, "passwd");
             if (item && cJSON_IsString(item))
             {
-                gchar *decrypted = edc_secret_decrypt(item->valuestring);
+                char *decrypted = edc_secret_decrypt(item->valuestring);
                 if (decrypted)
                 {
                     strncpy(result->email.passwd, decrypted, sizeof(result->email.passwd) - 1);
-                    g_free(decrypted);
+                    free(decrypted);
                 }
             }
 
@@ -387,17 +387,17 @@ static struct edc_init_env_result *load_existing_config(const gchar *conf_file)
             item = cJSON_GetObjectItem(channel, "bot_key");
             if (item && cJSON_IsString(item))
             {
-                gchar *decrypted = edc_secret_decrypt(item->valuestring);
+                char *decrypted = edc_secret_decrypt(item->valuestring);
                 if (decrypted)
                 {
                     strncpy(result->telegram.bot_key, decrypted, sizeof(result->telegram.bot_key) - 1);
-                    g_free(decrypted);
+                    free(decrypted);
                 }
             }
 
             item = cJSON_GetObjectItem(channel, "user_id");
             if (item && cJSON_IsNumber(item))
-                result->telegram.user_id = (gint64)item->valuedouble;
+                result->telegram.user_id = (int64_t)item->valuedouble;
         }
         else if (strcmp(ctype, "feishu") == 0)
         {
@@ -408,11 +408,11 @@ static struct edc_init_env_result *load_existing_config(const gchar *conf_file)
             item = cJSON_GetObjectItem(channel, "app_secret");
             if (item && cJSON_IsString(item))
             {
-                gchar *decrypted = edc_secret_decrypt(item->valuestring);
+                char *decrypted = edc_secret_decrypt(item->valuestring);
                 if (decrypted)
                 {
                     strncpy(result->feishu.app_secret, decrypted, sizeof(result->feishu.app_secret) - 1);
-                    g_free(decrypted);
+                    free(decrypted);
                 }
             }
         }
@@ -425,11 +425,11 @@ static struct edc_init_env_result *load_existing_config(const gchar *conf_file)
             item = cJSON_GetObjectItem(channel, "app_secret");
             if (item && cJSON_IsString(item))
             {
-                gchar *decrypted = edc_secret_decrypt(item->valuestring);
+                char *decrypted = edc_secret_decrypt(item->valuestring);
                 if (decrypted)
                 {
                     strncpy(result->qq.app_secret, decrypted, sizeof(result->qq.app_secret) - 1);
-                    g_free(decrypted);
+                    free(decrypted);
                 }
             }
         }
@@ -440,7 +440,7 @@ static struct edc_init_env_result *load_existing_config(const gchar *conf_file)
 }
 
 static int edc_init_env_get_configure(struct edc_init_env_result *result, const struct edc_init_env_result *defaults,
-                                     const gchar *edc_home)
+                                     const char *edc_home)
 {
     if (!result)
         return -1;
@@ -507,7 +507,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     printf("\n--- Sandbox Configuration ---\n");
 
     {
-        gchar default_sandbox[512];
+        char default_sandbox[512];
         snprintf(default_sandbox, sizeof(default_sandbox), "%s/sandbox", edc_home);
         const char *def = (defaults && defaults->sandbox_root[0]) ? defaults->sandbox_root : default_sandbox;
         val = prompt_with_default("Sandbox Root (working directory, writable)", def);
@@ -518,11 +518,11 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     }
 
     {
-        gchar *def_rw_str =
+        char *def_rw_str =
             g_strdup_printf("%s/workspace/, /tmp, /dev", edc_home);
         const char *def_rw = (defaults && defaults->sandbox_rw_paths[0]) ? defaults->sandbox_rw_paths : def_rw_str;
         val = prompt_with_default("  Additional writable paths (comma-separated)", def_rw);
-        g_free(def_rw_str);
+        free(def_rw_str);
         if (!val)
             return -1;
         strncpy(result->sandbox_rw_paths, val, sizeof(result->sandbox_rw_paths) - 1);
@@ -530,14 +530,14 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     }
 
     {
-        gchar *def_ro_str =
+        char *def_ro_str =
             g_strdup_printf("%s/workspace/ssl, /usr, /lib, /lib32, /lib64, /libx32, /bin, /sbin, /etc, /proc",
                             edc_home);
         const char *def_ro = (defaults && defaults->sandbox_ro_paths[0])
                                  ? defaults->sandbox_ro_paths
                                  : def_ro_str;
         val = prompt_with_default("  Read-only paths (comma-separated)", def_ro);
-        g_free(def_ro_str);
+        free(def_ro_str);
         if (!val)
             return -1;
         strncpy(result->sandbox_ro_paths, val, sizeof(result->sandbox_ro_paths) - 1);
@@ -568,7 +568,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     if (strcmp(ctype, "email") == 0)
     {
         printf("\n--- Email Settings ---\n");
-        gboolean same_chan = (defaults && strcmp(defaults->channel_type, "email") == 0);
+        bool same_chan = (defaults && strcmp(defaults->channel_type, "email") == 0);
 
         const char *def = (same_chan && defaults->email.imap_host[0]) ? defaults->email.imap_host : "imap.qq.com";
         val = prompt_with_default("IMAP Host", def);
@@ -608,7 +608,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     else if (strcmp(ctype, "telegram") == 0)
     {
         printf("\n--- Telegram Settings ---\n");
-        gboolean same_chan = (defaults && strcmp(defaults->channel_type, "telegram") == 0);
+        bool same_chan = (defaults && strcmp(defaults->channel_type, "telegram") == 0);
 
         val = prompt_password("Bot Key",
                               (same_chan && defaults->telegram.bot_key[0]) ? defaults->telegram.bot_key : NULL);
@@ -629,7 +629,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
             val = prompt_with_default("User ID", uid_def);
             if (!val)
                 return -1;
-            gint64 uid = 0;
+            int64_t uid = 0;
             if (sscanf(val, "%" G_GINT64_FORMAT, &uid) == 1 && uid != 0)
             {
                 result->telegram.user_id = uid;
@@ -643,7 +643,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     else if (strcmp(ctype, "feishu") == 0)
     {
         printf("\n--- Feishu Settings ---\n");
-        gboolean same_chan = (defaults && strcmp(defaults->channel_type, "feishu") == 0);
+        bool same_chan = (defaults && strcmp(defaults->channel_type, "feishu") == 0);
 
         const char *def = (same_chan && defaults->feishu.app_id[0]) ? defaults->feishu.app_id : "";
         val = prompt_with_default("Feishu App ID", def);
@@ -662,7 +662,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     else if (strcmp(ctype, "qq") == 0)
     {
         printf("\n--- QQ Settings ---\n");
-        gboolean same_chan = (defaults && strcmp(defaults->channel_type, "qq") == 0);
+        bool same_chan = (defaults && strcmp(defaults->channel_type, "qq") == 0);
 
         const char *def = (same_chan && defaults->qq.app_id[0]) ? defaults->qq.app_id : "";
         val = prompt_with_default("QQ App ID", def);
@@ -735,7 +735,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
 }
 
 /* Copy directory recursively */
-static gboolean copy_directory_recursive(const gchar *src_dir, const gchar *dest_dir)
+static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
 {
     DIR *dir = opendir(src_dir);
     if (!dir)
@@ -752,23 +752,23 @@ static gboolean copy_directory_recursive(const gchar *src_dir, const gchar *dest
     }
 
     struct dirent *entry;
-    gboolean success = TRUE;
+    bool success = TRUE;
 
     while ((entry = readdir(dir)) != NULL)
     {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
             continue;
 
-        gchar *src_path = g_build_filename(src_dir, entry->d_name, NULL);
-        gchar *dest_path = g_build_filename(dest_dir, entry->d_name, NULL);
+        char *src_path = g_build_filename(src_dir, entry->d_name, NULL);
+        char *dest_path = g_build_filename(dest_dir, entry->d_name, NULL);
 
         struct stat st;
         if (lstat(src_path, &st) != 0)
         {
             log_error("Failed to stat %s", src_path);
             success = FALSE;
-            g_free(src_path);
-            g_free(dest_path);
+            free(src_path);
+            free(dest_path);
             break;
         }
 
@@ -777,15 +777,15 @@ static gboolean copy_directory_recursive(const gchar *src_dir, const gchar *dest
             if (!copy_directory_recursive(src_path, dest_path))
             {
                 success = FALSE;
-                g_free(src_path);
-                g_free(dest_path);
+                free(src_path);
+                free(dest_path);
                 break;
             }
         }
         else
         {
-            gchar *contents = NULL;
-            gsize length = 0;
+            char *contents = NULL;
+            size_t length = 0;
             GError *error = NULL;
 
             if (!g_file_get_contents(src_path, &contents, &length, &error))
@@ -794,8 +794,8 @@ static gboolean copy_directory_recursive(const gchar *src_dir, const gchar *dest
                 if (error)
                     g_error_free(error);
                 success = FALSE;
-                g_free(src_path);
-                g_free(dest_path);
+                free(src_path);
+                free(dest_path);
                 break;
             }
 
@@ -804,46 +804,46 @@ static gboolean copy_directory_recursive(const gchar *src_dir, const gchar *dest
                 log_error("Failed to write %s: %s", dest_path, error ? error->message : "Unknown");
                 if (error)
                     g_error_free(error);
-                g_free(contents);
+                free(contents);
                 success = FALSE;
-                g_free(src_path);
-                g_free(dest_path);
+                free(src_path);
+                free(dest_path);
                 break;
             }
 
-            g_free(contents);
+            free(contents);
         }
 
-        g_free(src_path);
-        g_free(dest_path);
+        free(src_path);
+        free(dest_path);
     }
 
     closedir(dir);
     return success;
 }
 
-static gboolean edc_init_env_workspace(const gchar *dest_workspace)
+static bool edc_init_env_workspace(const char *dest_workspace)
 {
     if (g_file_test(dest_workspace, G_FILE_TEST_IS_DIR))
     {
         return TRUE;
     }
 
-    gchar *current_dir = g_get_current_dir();
-    gchar *src_workspace = g_build_filename(current_dir, "workspace", NULL);
-    g_free(current_dir);
+    char *current_dir = g_get_current_dir();
+    char *src_workspace = g_build_filename(current_dir, "workspace", NULL);
+    free(current_dir);
 
     if (!g_file_test(src_workspace, G_FILE_TEST_IS_DIR))
     {
         log_error("Source workspace directory %s does not exist", src_workspace);
-        g_free(src_workspace);
+        free(src_workspace);
         return FALSE;
     }
 
     log_info("Copying workspace from %s to %s", src_workspace, dest_workspace);
 
-    gboolean success = copy_directory_recursive(src_workspace, dest_workspace);
-    g_free(src_workspace);
+    bool success = copy_directory_recursive(src_workspace, dest_workspace);
+    free(src_workspace);
 
     if (!success)
     {
@@ -855,12 +855,12 @@ static gboolean edc_init_env_workspace(const gchar *dest_workspace)
     return TRUE;
 }
 
-static gchar **split_paths(const char *input)
+static char **split_paths(const char *input)
 {
     if (!input || !input[0])
         return NULL;
 
-    gchar **parts = g_strsplit(input, ",", -1);
+    char **parts = g_strsplit(input, ",", -1);
     if (!parts || !parts[0])
         return NULL;
 
@@ -878,7 +878,7 @@ static gchar **split_paths(const char *input)
         return NULL;
     }
 
-    gchar **result = g_new0(gchar *, count + 1);
+    char **result = g_new0(char *, count + 1);
     int idx = 0;
     for (int i = 0; parts[i]; i++)
     {
@@ -895,7 +895,7 @@ static void build_sandbox_rw(cJSON *sandbox, const char *root, const char *rw_pa
     if (root && root[0])
         cJSON_AddItemToArray(arr, cJSON_CreateString(root));
 
-    gchar **extra = split_paths(rw_paths_str);
+    char **extra = split_paths(rw_paths_str);
     if (extra)
     {
         for (int i = 0; extra[i]; i++)
@@ -906,18 +906,18 @@ static void build_sandbox_rw(cJSON *sandbox, const char *root, const char *rw_pa
     cJSON_AddItemToObject(sandbox, "rw_paths", arr);
 }
 
-static gboolean edc_init_env_conf_file(const gchar *conf_file, const gchar *edc_home)
+static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
 {
-    gboolean is_create = !g_file_test(conf_file, G_FILE_TEST_IS_REGULAR);
-    gchar *edc_home_dir = g_path_get_dirname(conf_file);
+    bool is_create = !g_file_test(conf_file, G_FILE_TEST_IS_REGULAR);
+    char *edc_home_dir = g_path_get_dirname(conf_file);
 
     if (!edc_secret_init(is_create, edc_home_dir))
     {
         log_error("Failed to initialize secret module");
-        g_free(edc_home_dir);
+        free(edc_home_dir);
         return FALSE;
     }
-    g_free(edc_home_dir);
+    free(edc_home_dir);
 
     struct edc_init_env_result *existing = load_existing_config(conf_file);
 
@@ -927,10 +927,10 @@ static gboolean edc_init_env_conf_file(const gchar *conf_file, const gchar *edc_
     if (edc_init_env_get_configure(&env_result, existing, edc_home) != 0)
     {
         log_error("Configuration cancelled or failed.");
-        g_free(existing);
+        free(existing);
         return FALSE;
     }
-    g_free(existing);
+    free(existing);
 
     /* Validate required fields */
     if (strlen(env_result.api_key) == 0)
@@ -1038,7 +1038,7 @@ static gboolean edc_init_env_conf_file(const gchar *conf_file, const gchar *edc_
     /* Build JSON config */
     cJSON *config = cJSON_CreateObject();
 
-    gchar *encrypted_api_key = edc_secret_encrypt(env_result.api_key);
+    char *encrypted_api_key = edc_secret_encrypt(env_result.api_key);
     cJSON_AddStringToObject(config, "api_key", encrypted_api_key ? encrypted_api_key : "");
 
     cJSON_AddStringToObject(config, "model", env_result.model);
@@ -1051,8 +1051,8 @@ static gboolean edc_init_env_conf_file(const gchar *conf_file, const gchar *edc_
     cJSON *sandbox = cJSON_CreateObject();
     build_sandbox_rw(sandbox, env_result.sandbox_root, env_result.sandbox_rw_paths);
     {
-        gchar *workspace_path = g_build_filename(edc_home, "workspace", NULL);
-        gchar **ro = split_paths(env_result.sandbox_ro_paths);
+        char *workspace_path = g_build_filename(edc_home, "workspace", NULL);
+        char **ro = split_paths(env_result.sandbox_ro_paths);
         cJSON *ro_arr = cJSON_CreateArray();
         if (ro)
         {
@@ -1062,7 +1062,7 @@ static gboolean edc_init_env_conf_file(const gchar *conf_file, const gchar *edc_
         }
         cJSON_AddItemToArray(ro_arr, cJSON_CreateString(workspace_path));
         cJSON_AddItemToObject(sandbox, "ro_paths", ro_arr);
-        g_free(workspace_path);
+        free(workspace_path);
     }
     cJSON_AddItemToObject(config, "sandbox", sandbox);
 
@@ -1075,17 +1075,17 @@ static gboolean edc_init_env_conf_file(const gchar *conf_file, const gchar *edc_
         cJSON_AddStringToObject(channel, "smtp_host", env_result.email.smtp_host);
         cJSON_AddStringToObject(channel, "user", env_result.email.user);
 
-        gchar *encrypted_passwd = edc_secret_encrypt(env_result.email.passwd);
+        char *encrypted_passwd = edc_secret_encrypt(env_result.email.passwd);
         cJSON_AddStringToObject(channel, "passwd", encrypted_passwd ? encrypted_passwd : "");
-        g_free(encrypted_passwd);
+        free(encrypted_passwd);
 
         cJSON_AddStringToObject(channel, "target", env_result.email.target);
     }
     else if (strcmp(ctype, "telegram") == 0)
     {
-        gchar *encrypted_bot_key = edc_secret_encrypt(env_result.telegram.bot_key);
+        char *encrypted_bot_key = edc_secret_encrypt(env_result.telegram.bot_key);
         cJSON_AddStringToObject(channel, "bot_key", encrypted_bot_key ? encrypted_bot_key : "");
-        g_free(encrypted_bot_key);
+        free(encrypted_bot_key);
 
         cJSON_AddNumberToObject(channel, "user_id", env_result.telegram.user_id);
     }
@@ -1093,17 +1093,17 @@ static gboolean edc_init_env_conf_file(const gchar *conf_file, const gchar *edc_
     {
         cJSON_AddStringToObject(channel, "app_id", env_result.feishu.app_id);
 
-        gchar *encrypted_app_secret = edc_secret_encrypt(env_result.feishu.app_secret);
+        char *encrypted_app_secret = edc_secret_encrypt(env_result.feishu.app_secret);
         cJSON_AddStringToObject(channel, "app_secret", encrypted_app_secret ? encrypted_app_secret : "");
-        g_free(encrypted_app_secret);
+        free(encrypted_app_secret);
     }
     else if (strcmp(ctype, "qq") == 0)
     {
         cJSON_AddStringToObject(channel, "app_id", env_result.qq.app_id);
 
-        gchar *encrypted_app_secret = edc_secret_encrypt(env_result.qq.app_secret);
+        char *encrypted_app_secret = edc_secret_encrypt(env_result.qq.app_secret);
         cJSON_AddStringToObject(channel, "app_secret", encrypted_app_secret ? encrypted_app_secret : "");
-        g_free(encrypted_app_secret);
+        free(encrypted_app_secret);
     }
 
     cJSON_AddItemToObject(config, "channel", channel);
@@ -1118,32 +1118,32 @@ static gboolean edc_init_env_conf_file(const gchar *conf_file, const gchar *edc_
         cJSON_AddNumberToObject(config, "device_baud", env_result.device_baud);
     }
 
-    g_free(encrypted_api_key);
+    free(encrypted_api_key);
 
-    gchar *config_str = cJSON_Print(config);
+    char *config_str = cJSON_Print(config);
     GError *error = NULL;
     if (!g_file_set_contents(conf_file, config_str, -1, &error))
     {
         log_error("save config to %s failed: %s", conf_file, error ? error->message : "Unknown");
         cJSON_Delete(config);
-        g_free(config_str);
+        free(config_str);
         if (error)
             g_error_free(error);
         return FALSE;
     }
 
     cJSON_Delete(config);
-    g_free(config_str);
+    free(config_str);
 
     return TRUE;
 }
 
-gboolean edc_init_env(const gchar *edc_home, gboolean setup)
+bool edc_init_env(const char *edc_home, bool setup)
 {
-    gchar *workspace = g_build_filename(edc_home, "workspace", NULL);
-    gchar *conf_file = g_build_filename(edc_home, "config.json", NULL);
+    char *workspace = g_build_filename(edc_home, "workspace", NULL);
+    char *conf_file = g_build_filename(edc_home, "config.json", NULL);
 
-    gboolean ret = TRUE;
+    bool ret = TRUE;
     if (!g_file_test(edc_home, G_FILE_TEST_IS_DIR))
     {
         if (g_mkdir_with_parents(edc_home, 0755) != 0)
@@ -1172,7 +1172,7 @@ gboolean edc_init_env(const gchar *edc_home, gboolean setup)
     }
 
 exit_:
-    g_free(workspace);
-    g_free(conf_file);
+    free(workspace);
+    free(conf_file);
     return ret;
 }

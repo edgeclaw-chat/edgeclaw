@@ -6,17 +6,17 @@
 
 struct edc_memory_actor_state
 {
-    const gchar *workspace;
+    const char *workspace;
     edc_actor_t *llm_actor;
     edc_actor_msg_t *compress_msg;
     cJSON *compress_msg_lst;
     cJSON *compress_tools;
     size_t compress_index;
     size_t history_window;
-    gboolean compressing;
+    bool compressing;
 };
 
-extern edc_actor_t *edc_memory_actor_new(const gchar *workspace, const size_t history_window, edc_actor_t *llm_actor);
+extern edc_actor_t *edc_memory_actor_new(const char *workspace, const size_t history_window, edc_actor_t *llm_actor);
 extern void edc_memory_actor_free(edc_actor_t *actor);
-extern gboolean edc_memory_actor_is_compressing(edc_actor_t *actor);
+extern bool edc_memory_actor_is_compressing(edc_actor_t *actor);
 #endif

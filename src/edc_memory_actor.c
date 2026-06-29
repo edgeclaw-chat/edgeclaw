@@ -25,11 +25,11 @@ void edc_memory_actor_free(edc_actor_t *actor)
         cJSON_Delete(state->compress_tools);
     }
 
-    g_free(state);
+    free(state);
     edc_actor_free(actor);
 }
 
-static gchar *edc_memory_get_tools_used(cJSON *msg)
+static char *edc_memory_get_tools_used(cJSON *msg)
 {
     cJSON *tool_calls = cJSON_GetObjectItem(msg, "tool_calls");
     if (!tool_calls || !cJSON_IsArray(tool_calls))
@@ -38,7 +38,7 @@ static gchar *edc_memory_get_tools_used(cJSON *msg)
     }
 
     int n = cJSON_GetArraySize(tool_calls);
-    gchar **tools = g_new(gchar *, n + 1);
+    char **tools = g_new(char *, n + 1);
 
     int i = 0;
     for (; i < n; i++)
@@ -60,8 +60,8 @@ static gchar *edc_memory_get_tools_used(cJSON *msg)
     }
 
     tools[i] = NULL;
-    gchar *tools_used = g_strjoinv(", ", tools);
-    g_free(tools);
+    char *tools_used = g_strjoinv(", ", tools);
+    free(tools);
 
     return tools_used;
 }
@@ -109,7 +109,7 @@ static cJSON *edc_memory_save_tool()
     return tools;
 }
 
-static gboolean edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg)
+static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
     struct edc_memory_actor_state *state = actor->state;
 
@@ -126,7 +126,7 @@ static gboolean edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg)
         return FALSE;
     }
 
-    gboolean ret = TRUE;
+    bool ret = TRUE;
     const size_t history_size = cJSON_GetArraySize(history);
     if (history_size < state->history_window)
     {
@@ -167,12 +167,12 @@ static gboolean edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg)
         g_string_new("Process this conversation. summarizing it. and call the save_memory tool with your "
                      "consolidation. NOTICE: !!!! you can only call save_memory tool\n\n");
 
-    const gchar *memory_file = g_build_filename(state->workspace, "memory", "MEMORY.md", NULL);
-    gchar *memory = NULL;
+    const char *memory_file = g_build_filename(state->workspace, "memory", "MEMORY.md", NULL);
+    char *memory = NULL;
     GError *error = NULL;
 
-    gboolean ok = g_file_get_contents(memory_file, &memory, NULL, &error);
-    g_free((gchar *)memory_file);
+    bool ok = g_file_get_contents(memory_file, &memory, NULL, &error);
+    free((char *)memory_file);
 
     if (ok && error)
     {
@@ -186,7 +186,7 @@ static gboolean edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg)
     if (memory)
     {
         g_string_append(user_message, memory);
-        g_free(memory);
+        free(memory);
     }
     else
     {
@@ -208,9 +208,9 @@ static gboolean edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg)
 
         if (!timestamp)
         {
-            gchar *ts = edc_get_timestamp();
+            char *ts = edc_get_timestamp();
             cJSON_AddStringToObject(msg, "timestamp", ts);
-            g_free(ts);
+            free(ts);
             timestamp = cJSON_GetObjectItem(msg, "timestamp");
         }
 
@@ -220,12 +220,12 @@ static gboolean edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg)
         }
 
         GString *line = g_string_new(NULL);
-        gchar *tools_used = edc_memory_get_tools_used(msg);
+        char *tools_used = edc_memory_get_tools_used(msg);
         if (tools_used)
         {
             g_string_append_printf(line, "[%s] %s[called: %s]: %s\n", cJSON_GetStringValue(timestamp),
                                    cJSON_GetStringValue(role), tools_used, cJSON_GetStringValue(content));
-            g_free(tools_used);
+            free(tools_used);
         }
         else
         {
@@ -269,27 +269,27 @@ exit_free_history:
     return ret;
 }
 
-static gboolean edc_memory_save_memory_file(const gchar *workspace, const gchar *memory)
+static bool edc_memory_save_memory_file(const char *workspace, const char *memory)
 {
-    const gchar *memory_file = g_build_filename(workspace, "memory", "MEMORY.md", NULL);
+    const char *memory_file = g_build_filename(workspace, "memory", "MEMORY.md", NULL);
     GError *error = NULL;
     if (!g_file_set_contents(memory_file, memory, -1, &error))
     {
         log_error("save memory file failed: %s", error->message);
-        g_free((gchar *)memory_file);
+        free((char *)memory_file);
         g_error_free(error);
         return FALSE;
     }
 
-    g_free((gchar *)memory_file);
+    free((char *)memory_file);
     return TRUE;
 }
 
-static gboolean edc_memory_save_history_file(const gchar *workspace, const gchar *history)
+static bool edc_memory_save_history_file(const char *workspace, const char *history)
 {
-    gchar *history_file = g_build_filename(workspace, "memory", "HISTORY.md", NULL);
+    char *history_file = g_build_filename(workspace, "memory", "HISTORY.md", NULL);
     FILE *fout = fopen(history_file, "a+");
-    g_free(history_file);
+    free(history_file);
 
     if (fout == NULL)
     {
@@ -303,13 +303,13 @@ static gboolean edc_memory_save_history_file(const gchar *workspace, const gchar
     return TRUE;
 }
 
-static gboolean edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_msg_t *msg)
+static bool edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_msg_t *msg)
 {
     struct edc_memory_actor_state *state = actor->state;
     struct edc_llm_actor_resp *resp = msg->data;
-    gchar *update_time = NULL;
+    char *update_time = NULL;
 
-    gboolean ret = TRUE;
+    bool ret = TRUE;
     if (resp->error)
     {
         log_error("memory compress failed: %s", resp->error);
@@ -327,9 +327,9 @@ static gboolean edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_ms
     for (int i = 0; i < resp->tool_calls->len; i++)
     {
         struct edc_llm_chat_tool_call *tool_call = &g_array_index(resp->tool_calls, struct edc_llm_chat_tool_call, i);
-        gchar *s = cJSON_Print(tool_call->function.arguments);
+        char *s = cJSON_Print(tool_call->function.arguments);
         log_info("edc_memory_actor: call tool %s with args %s", tool_call->function.name->str, s);
-        g_free(s);
+        free(s);
     }
 
     for (int i = 0; i < resp->tool_calls->len; i++)
@@ -358,8 +358,8 @@ static gboolean edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_ms
             goto exit_;
         }
 
-        gchar *history = cJSON_GetStringValue(history_entry);
-        gchar *memory = cJSON_GetStringValue(memory_update);
+        char *history = cJSON_GetStringValue(history_entry);
+        char *memory = cJSON_GetStringValue(memory_update);
 
         if (!memory || !history)
         {
@@ -389,7 +389,7 @@ static gboolean edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_ms
 
 exit_:
     if (update_time)
-        g_free(update_time);
+        free(update_time);
     return ret;
 }
 
@@ -443,7 +443,7 @@ static void edc_memory_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
     }
 }
 
-edc_actor_t *edc_memory_actor_new(const gchar *workspace, const size_t history_window, edc_actor_t *llm_actor)
+edc_actor_t *edc_memory_actor_new(const char *workspace, const size_t history_window, edc_actor_t *llm_actor)
 {
     struct edc_memory_actor_state *state = g_new0(struct edc_memory_actor_state, 1);
     state->workspace = workspace;
@@ -456,7 +456,7 @@ edc_actor_t *edc_memory_actor_new(const gchar *workspace, const size_t history_w
     return edc_actor_new("edc_memory_actor", edc_memory_actor_handler, state);
 }
 
-gboolean edc_memory_actor_is_compressing(edc_actor_t *actor)
+bool edc_memory_actor_is_compressing(edc_actor_t *actor)
 {
     struct edc_memory_actor_state *state = (struct edc_memory_actor_state *)actor->state;
     return state->compressing;

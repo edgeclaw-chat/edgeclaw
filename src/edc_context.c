@@ -6,7 +6,7 @@
 
 const char *BOOTSTRAP_FILES[] = {"AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"};
 
-static GString *edc_context_get_identity(const gchar *os_name, const gchar *time, const gchar *workspace)
+static GString *edc_context_get_identity(const char *os_name, const char *time, const char *workspace)
 {
     const char *identity_fmt = "# EdgeClaw\n"
                                "You are EdgeClaw, a helpful AI assistant. You have access to tools "
@@ -42,35 +42,35 @@ static GString *edc_context_get_identity(const gchar *os_name, const gchar *time
                                "When remembering something, write to "
                                "{{workspace}}/memory/MEMORY.md\n\n";
 
-    gchar *cwd = g_get_current_dir();
+    char *cwd = g_get_current_dir();
     GString *identity = g_string_new(identity_fmt);
     g_string_replace(identity, "{{os_name}}", os_name, 0);
     g_string_replace(identity, "{{cwd}}", cwd, 0);
     g_string_replace(identity, "{{time}}", time, 0);
     g_string_replace(identity, "{{workspace}}", workspace, 0);
-    g_free(cwd);
+    free(cwd);
 
     return identity;
 }
 
-static GString *edc_context_load_bootstrap_files(const gchar *workspace)
+static GString *edc_context_load_bootstrap_files(const char *workspace)
 {
     GString *result = g_string_new(NULL);
-    gsize num_files = sizeof(BOOTSTRAP_FILES) / sizeof(BOOTSTRAP_FILES[0]);
+    size_t num_files = sizeof(BOOTSTRAP_FILES) / sizeof(BOOTSTRAP_FILES[0]);
 
-    for (gsize i = 0; i < num_files; i++)
+    for (size_t i = 0; i < num_files; i++)
     {
         const char *filename = BOOTSTRAP_FILES[i];
-        gchar *filepath = g_build_filename(workspace, filename, NULL);
+        char *filepath = g_build_filename(workspace, filename, NULL);
 
-        gchar *content = NULL;
-        gsize length = 0;
+        char *content = NULL;
+        size_t length = 0;
         GError *error = NULL;
 
         if (g_file_get_contents(filepath, &content, &length, &error))
         {
             g_string_append_printf(result, "## %s\n\n%s", filename, content);
-            g_free(content);
+            free(content);
         }
         else
         {
@@ -82,13 +82,13 @@ static GString *edc_context_load_bootstrap_files(const gchar *workspace)
             g_string_append(result, "\n\n");
         }
 
-        g_free(filepath);
+        free(filepath);
     }
 
     return result;
 }
 
-static GString *edc_context_load_skills(const gchar *workspace)
+static GString *edc_context_load_skills(const char *workspace)
 {
     GString *result = g_string_new(NULL);
     GString *skills_dir = g_string_new_take(g_build_filename(workspace, "skills", NULL));
@@ -100,20 +100,20 @@ static GString *edc_context_load_skills(const gchar *workspace)
                                    "The following skills extend your capabilities. To use a skill, read its SKILL.md "
                                    "file using the read_file tool.\n\n");
 
-    for (gsize i = 0; i < skills->len; i++)
+    for (size_t i = 0; i < skills->len; i++)
     {
         struct edc_skill *skill = g_array_index(skills, struct edc_skill *, i);
-        const gchar *desc = g_hash_table_lookup(skill->meta, "description");
+        const char *desc = g_hash_table_lookup(skill->meta, "description");
         if (!desc)
         {
             edc_skill_free(skill);
             continue;
         }
 
-        gchar *loc = g_build_filename(workspace, "skills", skill->name->str, "SKILL.md", NULL);
+        char *loc = g_build_filename(workspace, "skills", skill->name->str, "SKILL.md", NULL);
         g_string_append_printf(result, "### Skill: %s\n\n", skill->name->str);
         g_string_append_printf(result, "description: %s\nSKILL.md localtion: %s\n", desc, loc);
-        g_free(loc);
+        free(loc);
         if (i < skills->len - 1)
         {
             g_string_append(result, "\n\n---\n\n");
@@ -126,18 +126,18 @@ static GString *edc_context_load_skills(const gchar *workspace)
     return result;
 }
 
-static gchar *edc_context_load_memory(const gchar *workspace)
+static char *edc_context_load_memory(const char *workspace)
 {
-    gchar *memory_file = g_build_filename(workspace, "memory", "MEMORY.md", NULL);
-    gchar *content = NULL;
+    char *memory_file = g_build_filename(workspace, "memory", "MEMORY.md", NULL);
+    char *content = NULL;
     GError *error = NULL;
-    gsize len = 0;
+    size_t len = 0;
 
     if (!g_file_get_contents(memory_file, &content, &len, &error))
     {
         log_error("load memory failed: %s", error->message);
         g_error_free(error);
-        g_free(memory_file);
+        free(memory_file);
         return NULL;
     }
 
@@ -145,23 +145,23 @@ static gchar *edc_context_load_memory(const gchar *workspace)
     g_string_append(buf, content);
     g_string_append(buf, "\n\n");
 
-    g_free(memory_file);
-    g_free(content);
+    free(memory_file);
+    free(content);
 
-    gchar *memory = buf->str;
+    char *memory = buf->str;
     g_string_free(buf, FALSE);
     return memory;
 }
 
 GString *edc_context_build_system_prompt(struct edc_config *conf)
 {
-    const gchar *workspace = conf->workspace;
-    gchar *os_name = g_get_os_info(G_OS_INFO_KEY_NAME);
+    const char *workspace = conf->workspace;
+    char *os_name = g_get_os_info(G_OS_INFO_KEY_NAME);
 
-    gchar *time = edc_get_timestamp();
+    char *time = edc_get_timestamp();
     GString *identity = edc_context_get_identity(os_name ? os_name : "Unknown", time, workspace);
     GString *bootstrap = edc_context_load_bootstrap_files(workspace);
-    gchar *memory = edc_context_load_memory(workspace);
+    char *memory = edc_context_load_memory(workspace);
     GString *skills = edc_context_load_skills(workspace);
 
     GString *system_prompt = g_string_new(NULL);
@@ -175,15 +175,15 @@ GString *edc_context_build_system_prompt(struct edc_config *conf)
 
     if (os_name)
     {
-        g_free(os_name);
+        free(os_name);
     }
 
-    g_free(time);
+    free(time);
     g_string_free(identity, TRUE);
     g_string_free(bootstrap, TRUE);
     if (memory)
     {
-        g_free(memory);
+        free(memory);
     }
     g_string_free(skills, TRUE);
 

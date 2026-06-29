@@ -17,7 +17,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data)
     }
 }
 
-static volatile gboolean running = TRUE;
+static volatile bool running = TRUE;
 
 static void signal_handler(int sig)
 {
@@ -32,8 +32,8 @@ int main(void)
     signal(SIGINT, signal_handler);
 
     edc_network_async_t *async = edc_network_async_new("/etc/ssl/cert.pem");
-    // gchar *proxy = g_getenv("http_proxy");
-    gchar *proxy = NULL;
+    // char *proxy = g_getenv("http_proxy");
+    char *proxy = NULL;
     async->mgr.dns4.url = "udp://192.168.31.1:53";
     edc_http_async_connect(async, "https://httpbin.org/get", NULL, fn, proxy, 60);
 

@@ -2,6 +2,7 @@
 #define __BC_INIT_ENV_H__
 
 #include <glib.h>
+#include <stdbool.h>
 
 struct edc_init_env_channel_email
 {
@@ -15,7 +16,7 @@ struct edc_init_env_channel_email
 struct edc_init_env_channel_telegram
 {
     char bot_key[256];
-    gint64 user_id;
+    int64_t user_id;
 };
 
 struct edc_init_env_channel_feishu
@@ -58,5 +59,5 @@ struct edc_init_env_result
     struct edc_init_env_channel_qq qq;
 };
 
-gboolean edc_init_env(const gchar *edc_home, gboolean setup);
+bool edc_init_env(const char *edc_home, bool setup);
 #endif

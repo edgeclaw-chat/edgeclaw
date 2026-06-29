@@ -32,20 +32,20 @@ struct device_file_ctx
     char *remote_path;
     char *local_path;
     char *file_data;
-    gsize file_data_len;
+    size_t file_data_len;
     int file_mode;
 
-    gboolean is_upload;
+    bool is_upload;
     int timeout_sec;
 };
 
 static void device_file_ctx_free(struct device_file_ctx *ctx)
 {
-    g_free(ctx->agent_ip);
-    g_free(ctx->remote_path);
-    g_free(ctx->local_path);
-    g_free(ctx->file_data);
-    g_free(ctx);
+    free(ctx->agent_ip);
+    free(ctx->remote_path);
+    free(ctx->local_path);
+    free(ctx->file_data);
+    free(ctx);
 }
 
 static int send_all(int fd, const void *buf, size_t len)
@@ -80,7 +80,7 @@ static err_t recv_until_close(struct netconn *c, GString *buf)
     while ((err = netconn_recv(c, &nb)) == ERR_OK)
     {
         netbuf_data(nb, (void **)&p, &chunk);
-        g_string_append_len(buf, (gchar *)p, chunk);
+        g_string_append_len(buf, (char *)p, chunk);
         netbuf_delete(nb);
     }
     return err;
@@ -90,12 +90,12 @@ static void device_file_send_error(struct device_file_ctx *ctx, const char *fmt,
 {
     va_list ap;
     va_start(ap, fmt);
-    gchar *msg = g_strdup_vprintf(fmt, ap);
+    char *msg = g_strdup_vprintf(fmt, ap);
     va_end(ap);
 
     GError *error = g_error_new(BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR, "%s", msg);
     ctx->callback(ctx->tb_ctx, NULL, error);
-    g_free(msg);
+    free(msg);
 }
 
 static int parse_json_response(GString *resp_buf, cJSON **out_json, GError **error)
@@ -288,7 +288,7 @@ static int do_upload_chunk_lwip(struct device_file_ctx *ctx, const char *b64_chu
     return 0;
 }
 
-static gboolean do_device_upload(struct device_file_ctx *ctx,
+static bool do_device_upload(struct device_file_ctx *ctx,
                                  int (*do_chunk)(struct device_file_ctx *, const char *, size_t, size_t))
 {
     struct stat st;
@@ -308,7 +308,7 @@ static gboolean do_device_upload(struct device_file_ctx *ctx,
 
     size_t raw_len = (size_t)st.st_size;
     size_t chunk_buf_size = DEVICE_FILE_CHUNK_SIZE;
-    gchar *chunk_buf = g_malloc(chunk_buf_size);
+    char *chunk_buf = g_malloc(chunk_buf_size);
     size_t offset = 0;
     int chunk_idx = 0;
     GString *final_result = g_string_new(NULL);
@@ -323,17 +323,17 @@ static gboolean do_device_upload(struct device_file_ctx *ctx,
         if (n <= 0 || (size_t)n != this_len)
         {
             device_file_send_error(ctx, "device_upload: read failed at offset %zu", offset);
-            g_free(chunk_buf);
+            free(chunk_buf);
             g_string_free(final_result, TRUE);
             close(fd);
             return FALSE;
         }
 
-        gchar *b64 = g_base64_encode((const guchar *)chunk_buf, this_len);
+        char *b64 = g_base64_encode((const unsigned char *)chunk_buf, this_len);
         if (!b64)
         {
             device_file_send_error(ctx, "device_upload: base64 encode failed at offset %zu", offset);
-            g_free(chunk_buf);
+            free(chunk_buf);
             g_string_free(final_result, TRUE);
             close(fd);
             return FALSE;
@@ -343,12 +343,12 @@ static gboolean do_device_upload(struct device_file_ctx *ctx,
                   chunk_idx, offset, this_len, strlen(b64));
 
         int ret = do_chunk(ctx, b64, this_len, offset);
-        g_free(b64);
+        free(b64);
 
         if (ret != 0)
         {
             device_file_send_error(ctx, "device_upload: chunk %d failed at offset %zu", chunk_idx, offset);
-            g_free(chunk_buf);
+            free(chunk_buf);
             g_string_free(final_result, TRUE);
             close(fd);
             return FALSE;
@@ -358,7 +358,7 @@ static gboolean do_device_upload(struct device_file_ctx *ctx,
         chunk_idx++;
     }
 
-    g_free(chunk_buf);
+    free(chunk_buf);
     close(fd);
 
     g_string_printf(final_result, "Uploaded %zu bytes in %d chunk(s) to %s",
@@ -448,19 +448,19 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
 
     if (data_item && cJSON_IsString(data_item) && chunk_len > 0)
     {
-        gsize decoded_len = 0;
-        gchar *decoded = (gchar *)g_base64_decode(data_item->valuestring, &decoded_len);
+        size_t decoded_len = 0;
+        char *decoded = (char *)g_base64_decode(data_item->valuestring, &decoded_len);
         if (decoded)
         {
             if (write(fd, decoded, decoded_len) != (ssize_t)decoded_len)
             {
-                g_free(decoded);
+                free(decoded);
                 cJSON_Delete(resp_json);
                 return -1;
             }
             if (out_chunk_len)
                 *out_chunk_len = decoded_len;
-            g_free(decoded);
+            free(decoded);
         }
     }
 
@@ -544,19 +544,19 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
 
     if (data_item && cJSON_IsString(data_item) && chunk_len > 0)
     {
-        gsize decoded_len = 0;
-        gchar *decoded = (gchar *)g_base64_decode(data_item->valuestring, &decoded_len);
+        size_t decoded_len = 0;
+        char *decoded = (char *)g_base64_decode(data_item->valuestring, &decoded_len);
         if (decoded)
         {
             if (write(fd, decoded, decoded_len) != (ssize_t)decoded_len)
             {
-                g_free(decoded);
+                free(decoded);
                 cJSON_Delete(resp_json);
                 return -1;
             }
             if (out_chunk_len)
                 *out_chunk_len = decoded_len;
-            g_free(decoded);
+            free(decoded);
         }
     }
 
@@ -568,7 +568,7 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
     return 0;
 }
 
-static gboolean do_device_download(struct device_file_ctx *ctx,
+static bool do_device_download(struct device_file_ctx *ctx,
                                    int (*do_chunk)(struct device_file_ctx *, size_t, size_t *, size_t *, int))
 {
     int fd = open(ctx->local_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -632,7 +632,7 @@ static void device_file_thread_lwip(struct device_file_ctx *ctx)
     device_file_ctx_free(ctx);
 }
 
-static void device_file_thread(gpointer data, gpointer user_data)
+static void device_file_thread(void* data, void* user_data)
 {
     struct device_file_ctx *ctx = data;
     (void)user_data;

@@ -6,18 +6,18 @@
 #include <edc_session.h>
 #include <log.h>
 
-static gboolean edc_commands_is_target(const gchar *content, const gchar *target)
+static bool edc_commands_is_target(const char *content, const char *target)
 {
-    gchar *cmd = g_strdup(content);
+    char *cmd = g_strdup(content);
 
     g_strstrip(cmd);
-    gboolean is = g_str_equal(cmd, target);
-    g_free(cmd);
+    bool is = g_str_equal(cmd, target);
+    free(cmd);
 
     return is;
 }
 
-static gboolean edc_commands_handle_new(struct edc_agent *agent, edc_actor_t *actor, struct edc_channel *channel)
+static bool edc_commands_handle_new(struct edc_agent *agent, edc_actor_t *actor, struct edc_channel *channel)
 {
 
     edc_session_reload(agent->session, FALSE);
@@ -38,7 +38,7 @@ static gboolean edc_commands_handle_new(struct edc_agent *agent, edc_actor_t *ac
     return TRUE;
 }
 
-static gboolean edc_commands_handle_stop(struct edc_agent *agent, edc_actor_t *actor, struct edc_channel *channel)
+static bool edc_commands_handle_stop(struct edc_agent *agent, edc_actor_t *actor, struct edc_channel *channel)
 {
     edc_session_reload(agent->session, TRUE);
     edc_agent_remove_all_turns(agent);
@@ -52,9 +52,9 @@ static gboolean edc_commands_handle_stop(struct edc_agent *agent, edc_actor_t *a
     return TRUE;
 }
 
-static gboolean edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor, struct edc_channel *channel)
+static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor, struct edc_channel *channel)
 {
-    const gchar *help_text =
+    const char *help_text =
         "# EdgeClaw Commands\n\n"
         "- `/new` — Start a new session (clear current turns, trigger memory compress)\n"
         "- `/stop` — Stop all current turns and save session history\n"
@@ -69,7 +69,7 @@ static gboolean edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *a
     return TRUE;
 }
 
-gboolean edc_commands_handler(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel_message *message)
+bool edc_commands_handler(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel_message *message)
 {
     if (!message || !message->channel || !message->content)
     {

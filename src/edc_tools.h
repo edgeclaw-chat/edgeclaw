@@ -4,18 +4,19 @@
 #include "cJSON.h"
 #include "edc_param_types.h"
 #include <glib.h>
+#include <stdbool.h>
 
 extern GQuark edc_tool_error_quark(void);
 #define BC_TOOL_ERROR (edc_tool_error_quark())
 
 struct edc_tool_param
 {
-    gchar *name;
+    char *name;
     struct edc_param_type *type;
-    gboolean required;
+    bool required;
 };
 
-extern struct edc_tool_param *edc_tool_param_new(gchar *name, struct edc_param_type *type, gboolean required);
+extern struct edc_tool_param *edc_tool_param_new(char *name, struct edc_param_type *type, bool required);
 extern void edc_tool_param_free(struct edc_tool_param *param);
 
 struct edc_toolbox;
@@ -35,8 +36,8 @@ struct edc_tool
     GFreeFunc priv_free_fn;
 };
 
-extern struct edc_tool *edc_tool_new(const gchar *name, const gchar *desc, GSList *params, edc_tool_exec_async_fn exec);
+extern struct edc_tool *edc_tool_new(const char *name, const char *desc, GSList *params, edc_tool_exec_async_fn exec);
 extern void edc_tool_free(struct edc_tool *tool);
-extern struct edc_tool *edc_tool_new_v(const gchar *name, const gchar *desc, struct edc_tool_param **params,
+extern struct edc_tool *edc_tool_new_v(const char *name, const char *desc, struct edc_tool_param **params,
                                        edc_tool_exec_async_fn exec);
 #endif

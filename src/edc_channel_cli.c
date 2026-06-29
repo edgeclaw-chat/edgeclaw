@@ -19,11 +19,11 @@ static void cli_sigusr1_handler(int sig)
     (void)sig;
 }
 
-static gboolean cli_process_input(gpointer data)
+static bool cli_process_input(void* data)
 {
     edc_actor_t *actor = data;
     edc_channel_actor_state_t *state = actor->state;
-    gchar *line = g_async_queue_try_pop(state->cli.input_queue);
+    char *line = g_async_queue_try_pop(state->cli.input_queue);
 
     if (!line)
         return G_SOURCE_CONTINUE;
@@ -38,7 +38,7 @@ static gboolean cli_process_input(gpointer data)
     return G_SOURCE_CONTINUE;
 }
 
-static gpointer cli_input_thread(gpointer data)
+static void* cli_input_thread(void* data)
 {
     edc_actor_t *actor = data;
     edc_channel_actor_state_t *state = actor->state;
@@ -60,7 +60,7 @@ static gpointer cli_input_thread(gpointer data)
         {
             printf("\r\e[K%s\n", state->cli.pending_output);
             fflush(stdout);
-            g_free(state->cli.pending_output);
+            free(state->cli.pending_output);
             state->cli.pending_output = NULL;
         }
         pthread_mutex_unlock(&state->cli.term_mutex);
@@ -72,7 +72,7 @@ static gpointer cli_input_thread(gpointer data)
             break;
         }
 
-        gchar *trimmed = g_strstrip(g_strdup(line));
+        char *trimmed = g_strstrip(g_strdup(line));
         free(line);
 
         if (trimmed[0] != '\0')
@@ -86,7 +86,7 @@ static gpointer cli_input_thread(gpointer data)
         }
         else
         {
-            g_free(trimmed);
+            free(trimmed);
         }
     }
 
@@ -104,7 +104,7 @@ static void edc_channel_cli_handle_send(edc_actor_t *actor, edc_actor_msg_t *msg
     pthread_mutex_lock(&state->cli.term_mutex);
     if (state->cli.pending_output)
     {
-        g_free(state->cli.pending_output);
+        free(state->cli.pending_output);
     }
     if (g_str_has_prefix(message->content, "[思考]:"))
     {
@@ -169,8 +169,8 @@ void edc_channel_cli_init(edc_actor_t *channel_actor)
     edc_channel_actor_state_t *state = channel_actor->state;
     memset(&state->cli, 0, sizeof(state->cli));
     state->cli.history_path = g_string_new(NULL);
-    gchar *edc_home = edc_config_resolve_bc_home();
+    char *edc_home = edc_config_resolve_bc_home();
     g_string_printf(state->cli.history_path, "%s/.cli_history", edc_home);
-    g_free(edc_home);
+    free(edc_home);
     edc_channel_actor_add(channel_actor, edc_channel_cli, edc_channel_cli_handler);
 }

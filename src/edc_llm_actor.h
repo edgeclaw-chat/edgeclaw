@@ -47,7 +47,7 @@ struct edc_llm_chat_tool_call
 {
     GString *id;
     edc_llm_actor_tool_call_type_t type;
-    gsize index;
+    size_t index;
     struct
     {
         GString *name;
@@ -58,7 +58,7 @@ struct edc_llm_chat_tool_call
 struct edc_llm_actor_resp
 {
     edc_llm_actor_finish_reason_t reason;
-    gsize index;
+    size_t index;
     GString *content;
     GString *reasoning_content;
     edc_llm_actor_role_t role;

@@ -20,9 +20,9 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
     for (int i = 0; i < total; ++i)
     {
         cJSON *item = cJSON_GetArrayItem(items, i);
-        gchar *status = cJSON_GetStringValue(cJSON_GetObjectItem(item, "status"));
-        gchar *content = cJSON_GetStringValue(cJSON_GetObjectItem(item, "content"));
-        gchar *activeForm = cJSON_GetStringValue(cJSON_GetObjectItem(item, "activeForm"));
+        char *status = cJSON_GetStringValue(cJSON_GetObjectItem(item, "status"));
+        char *content = cJSON_GetStringValue(cJSON_GetObjectItem(item, "content"));
+        char *activeForm = cJSON_GetStringValue(cJSON_GetObjectItem(item, "activeForm"));
 
         if (g_str_equal(status, "completed"))
         {
@@ -56,8 +56,8 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
 
 void edc_tools_todo_register(struct edc_toolbox *tb)
 {
-    const gchar *name = "update_todolist";
-    const gchar *desc =
+    const char *name = "update_todolist";
+    const char *desc =
         "Validate and update the todo list.\n\nThe model sends a complete new list each time. We validate it,\nstore "
         "it, and return a rendered view that the model will see.\n\nValidation Rules:\n- Each item must have: content, "
         "status, activeForm\n- Status must be: pending | in_progress | completed\n- Only ONE item can be in_progress "

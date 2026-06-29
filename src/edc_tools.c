@@ -3,7 +3,7 @@
 
 G_DEFINE_QUARK(edc_tool_error_quark, edc_tool_error)
 
-struct edc_tool_param *edc_tool_param_new(gchar *name, struct edc_param_type *type, gboolean required)
+struct edc_tool_param *edc_tool_param_new(char *name, struct edc_param_type *type, bool required)
 {
     struct edc_tool_param *param = g_new(struct edc_tool_param, 1);
     param->name = g_strdup(name);
@@ -16,9 +16,9 @@ void edc_tool_param_free(struct edc_tool_param *param)
 {
     if (!param)
         return;
-    g_free(param->name);
+    free(param->name);
     edc_param_type_free(param->type);
-    g_free(param);
+    free(param);
 }
 
 void edc_tool_free(struct edc_tool *tool)
@@ -35,10 +35,10 @@ void edc_tool_free(struct edc_tool *tool)
         tool->priv_free_fn(tool->priv);
     }
 
-    g_free(tool);
+    free(tool);
 }
 
-struct edc_tool *edc_tool_new(const gchar *name, const gchar *desc, GSList *params, edc_tool_exec_async_fn exec)
+struct edc_tool *edc_tool_new(const char *name, const char *desc, GSList *params, edc_tool_exec_async_fn exec)
 {
     struct edc_tool *tool = g_new0(struct edc_tool, 1);
     tool->name = g_string_new(name);
@@ -51,7 +51,7 @@ struct edc_tool *edc_tool_new(const gchar *name, const gchar *desc, GSList *para
     return tool;
 }
 
-struct edc_tool *edc_tool_new_v(const gchar *name, const gchar *desc, struct edc_tool_param **params,
+struct edc_tool *edc_tool_new_v(const char *name, const char *desc, struct edc_tool_param **params,
                                 edc_tool_exec_async_fn exec)
 {
     struct edc_tool *tool = g_new0(struct edc_tool, 1);

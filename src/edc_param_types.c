@@ -2,7 +2,7 @@
 
 #include <stdarg.h>
 
-struct edc_param_type *edc_param_int_type(gchar *desc, gint64 min, gint64 max)
+struct edc_param_type *edc_param_int_type(char *desc, int64_t min, int64_t max)
 {
     struct edc_param_type *type = g_new0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_INT;
@@ -12,7 +12,7 @@ struct edc_param_type *edc_param_int_type(gchar *desc, gint64 min, gint64 max)
     return type;
 }
 
-struct edc_param_type *edc_param_str_type(gchar *desc, const gchar *first, ...)
+struct edc_param_type *edc_param_str_type(char *desc, const char *first, ...)
 {
     struct edc_param_type *type = g_new0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_STR;
@@ -26,24 +26,24 @@ struct edc_param_type *edc_param_str_type(gchar *desc, const gchar *first, ...)
     va_copy(args_copy, args);
 
     int n = 1;
-    while (va_arg(args_copy, const gchar *))
+    while (va_arg(args_copy, const char *))
         n++;
     va_end(args_copy);
 
-    gchar **dst = g_new(gchar *, n);
+    char **dst = g_new(char *, n);
     dst[0] = g_strdup(first);
     for (int i = 1; i < n; i++)
     {
-        dst[i] = g_strdup(va_arg(args, const gchar *));
+        dst[i] = g_strdup(va_arg(args, const char *));
     }
     va_end(args);
 
-    type->str.enums = (gchar *)dst;
+    type->str.enums = (char *)dst;
     type->str.n = n;
     return type;
 }
 
-struct edc_param_type *edc_param_bool_type(gchar *desc)
+struct edc_param_type *edc_param_bool_type(char *desc)
 {
     struct edc_param_type *type = g_new0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_BOOL;
@@ -51,7 +51,7 @@ struct edc_param_type *edc_param_bool_type(gchar *desc)
     return type;
 }
 
-struct edc_param_type *edc_param_array_type(gchar *desc, struct edc_param_type *item_type)
+struct edc_param_type *edc_param_array_type(char *desc, struct edc_param_type *item_type)
 {
     struct edc_param_type *type = g_new0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_ARRAY;
@@ -60,7 +60,7 @@ struct edc_param_type *edc_param_array_type(gchar *desc, struct edc_param_type *
     return type;
 }
 
-struct edc_param_type *edc_param_object_type(gchar *desc, struct edc_param_object_property *properties, int n)
+struct edc_param_type *edc_param_object_type(char *desc, struct edc_param_object_property *properties, int n)
 {
     struct edc_param_type *type = g_new0(struct edc_param_type, 1);
     type->type = BC_TOOL_TYPE_OBJECT;
@@ -85,12 +85,12 @@ void edc_param_type_free(struct edc_param_type *type)
     case BC_TOOL_TYPE_STR:
         if (type->str.n > 0 && type->str.enums)
         {
-            gchar **enums = (gchar **)type->str.enums;
+            char **enums = (char **)type->str.enums;
             for (int i = 0; i < type->str.n; i++)
             {
-                g_free(enums[i]);
+                free(enums[i]);
             }
-            g_free(enums);
+            free(enums);
         }
         break;
     case BC_TOOL_TYPE_ARRAY:
@@ -99,20 +99,20 @@ void edc_param_type_free(struct edc_param_type *type)
     case BC_TOOL_TYPE_OBJECT:
         for (int i = 0; i < type->object.n; i++)
         {
-            g_free(type->object.properties[i].name);
+            free(type->object.properties[i].name);
             edc_param_type_free(type->object.properties[i].type);
         }
-        g_free(type->object.properties);
+        free(type->object.properties);
         break;
     default:
         break;
     }
 
-    g_free(type->desc);
-    g_free(type);
+    free(type->desc);
+    free(type);
 }
 
-gboolean edc_param_type_validate(cJSON *args, struct edc_param_type *type)
+bool edc_param_type_validate(cJSON *args, struct edc_param_type *type)
 {
     if (!args || !type)
         return FALSE;
@@ -134,7 +134,7 @@ gboolean edc_param_type_validate(cJSON *args, struct edc_param_type *type)
             return FALSE;
         if (type->str.n > 0 && type->str.enums)
         {
-            gchar **enums = (gchar **)type->str.enums;
+            char **enums = (char **)type->str.enums;
             for (int i = 0; i < type->str.n; i++)
             {
                 if (g_str_equal(cJSON_GetStringValue(args), enums[i]))
@@ -203,7 +203,7 @@ cJSON *edc_param_type_to_json(struct edc_param_type *type)
         if (type->str.n > 0 && type->str.enums)
         {
             cJSON *arr = cJSON_CreateArray();
-            gchar **enums = (gchar **)type->str.enums;
+            char **enums = (char **)type->str.enums;
             for (int i = 0; i < type->str.n; i++)
             {
                 cJSON_AddItemToArray(arr, cJSON_CreateString(enums[i]));
@@ -239,12 +239,12 @@ cJSON *edc_param_type_to_json(struct edc_param_type *type)
     }
 }
 
-gchar *edc_param_type_to_s(struct edc_param_type *type)
+char *edc_param_type_to_s(struct edc_param_type *type)
 {
     cJSON *json = edc_param_type_to_json(type);
     if (!json)
         return g_strdup("<string format error>");
-    gchar *str = cJSON_PrintUnformatted(json);
+    char *str = cJSON_PrintUnformatted(json);
     cJSON_Delete(json);
     return str;
 }

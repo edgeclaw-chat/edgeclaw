@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 
 /*
  * Transitional compatibility header for migrating away from GLib.
@@ -35,5 +36,9 @@ typedef ssize_t gssize;
 #define g_new0(type, n)    ((type*)calloc((n), sizeof(type)))
 #define g_malloc0(n)       calloc(1, (n))
 #define g_free             free
+
+#define EDC_NEW(type, n)   ((type*)malloc((n) * sizeof(type)))
+#define EDC_NEW0(type, n)  ((type*)calloc((n), sizeof(type)))
+#define EDC_MALLOC0(n)     calloc(1, (n))
 
 #endif /* EDC_COMPAT_H */

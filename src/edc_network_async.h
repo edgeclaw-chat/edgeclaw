@@ -2,6 +2,7 @@
 #define __BC_HTTP_ASYNC_H__
 #include "mongoose.h"
 #include <glib.h>
+#include <stdbool.h>
 
 struct mg_mgr;
 typedef struct
@@ -11,18 +12,18 @@ typedef struct
     struct mg_str cert_pem;
     GMutex mutex;
     GQueue task_queue;
-    gboolean running;
+    int running;
     void *pending_retries;
 } edc_network_async_t;
 
 #define BC_CONN_ERROR (MG_EV_USER + 1)
 #define BC_CONN_TIME_OUT (MG_EV_USER + 2)
 
-extern edc_network_async_t *edc_network_async_new(const gchar *cert_path);
+extern edc_network_async_t *edc_network_async_new(const char *cert_path);
 extern void edc_network_async_free(edc_network_async_t *async);
-extern void edc_http_async_connect(edc_network_async_t *async, const gchar *url, const gchar *proxy,
+extern void edc_http_async_connect(edc_network_async_t *async, const char *url, const char *proxy,
                                   mg_event_handler_t fn, void *fn_data, int timeout);
-extern void edc_wss_async_connect(edc_network_async_t *async, const gchar *url, mg_event_handler_t fn, void *fn_data,
+extern void edc_wss_async_connect(edc_network_async_t *async, const char *url, mg_event_handler_t fn, void *fn_data,
                                  int timeout);
 extern void edc_network_async_close_conn(edc_network_async_t *async, struct mg_connection *c);
 extern void edc_network_async_reset_dns(struct mg_mgr *mgr);

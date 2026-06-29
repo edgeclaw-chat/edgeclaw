@@ -149,6 +149,7 @@ cc_library(
         "edc_tools_device_file.c",
     ],
     hdrs = [
+        "edc_compat.h",
         "edc_context.h",
         "edc_history.h",
         "edc_session.h",
@@ -222,7 +223,10 @@ cc_library(
 cc_library(
     name = "edc_secret_lib",
     srcs = ["edc_secret.c"],
-    hdrs = ["edc_secret.h"],
+    hdrs = [
+        "edc_secret.h",
+        "edc_compat.h",
+    ],
     deps = [
         "@glib//glib:glib",
         "@log.c//:log.c",

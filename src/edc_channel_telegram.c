@@ -4,21 +4,21 @@
 #include "log.h"
 #include <glib.h>
 
-static const gchar *telegram_api_host = "api.telegram.org";
-static gchar *telegram_build_path(struct channel_conf *conf, const gchar *method, const gchar *args[])
+static const char *telegram_api_host = "api.telegram.org";
+static char *telegram_build_path(struct channel_conf *conf, const char *method, const char *args[])
 {
     GString *url = g_string_new(NULL);
     g_string_append_printf(url, "/bot%s/%s", conf->telegram.bot_key, method);
     if (!args)
     {
-        gchar *s = url->str;
+        char *s = url->str;
         g_string_free(url, FALSE);
         return s;
     }
 
     g_string_append(url, "?");
 
-    const gchar **p = args;
+    const char **p = args;
     while (TRUE)
     {
         g_string_append_printf(url, "%s", *p);
@@ -30,7 +30,7 @@ static gchar *telegram_build_path(struct channel_conf *conf, const gchar *method
         g_string_append(url, "&");
     }
 
-    gchar *s = url->str;
+    char *s = url->str;
     g_string_free(url, FALSE);
     return s;
 }
@@ -38,22 +38,22 @@ static gchar *telegram_build_path(struct channel_conf *conf, const gchar *method
 struct edc_channel_telegram_req
 {
     edc_actor_t *actor;
-    const gchar *host;
-    const gchar *path;
-    const gchar *url;
-    const gchar *proxy;
+    const char *host;
+    const char *path;
+    const char *url;
+    const char *proxy;
     int method; // 0: GET, 1: POST
     GString *body;
-    gboolean connected;
+    bool connected;
     GString *resp;
     uint64_t create_time;
     struct edc_channel_telegram_req *next;
 };
 
-static void __bc_channel_telegram_req_free(struct edc_channel_telegram_req *req, gboolean free_next)
+static void __bc_channel_telegram_req_free(struct edc_channel_telegram_req *req, bool free_next)
 {
-    g_free((gchar *)req->url);
-    g_free((gchar *)req->path);
+    free((char *)req->url);
+    free((char *)req->path);
     if (req->body)
     {
         g_string_free(req->body, TRUE);
@@ -67,7 +67,7 @@ static void __bc_channel_telegram_req_free(struct edc_channel_telegram_req *req,
     {
         __bc_channel_telegram_req_free(req->next, free_next);
     }
-    g_free(req);
+    free(req);
 }
 
 static void edc_channel_telegram_req_free_all(struct edc_channel_telegram_req *req)
@@ -147,7 +147,7 @@ static void edc_channel_actor_telegram_conn_fn(struct mg_connection *c, int ev, 
     }
 }
 
-static gboolean edc_channel_actor_telegram_send_req(edc_actor_t *actor, struct edc_channel_telegram_req *req)
+static bool edc_channel_actor_telegram_send_req(edc_actor_t *actor, struct edc_channel_telegram_req *req)
 {
     edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
     edc_http_async_connect(state->network, req->url, req->proxy, edc_channel_actor_telegram_conn_fn, req, 60);
@@ -156,15 +156,15 @@ static gboolean edc_channel_actor_telegram_send_req(edc_actor_t *actor, struct e
 }
 
 #define TELEGRAM_MAX_MSG_LEN 4096
-static struct edc_channel_telegram_req *edc_channel_actor_send_message_chunk_req(edc_actor_t *actor, const gchar *chat_id,
-                                                                               const gchar *content, size_t len)
+static struct edc_channel_telegram_req *edc_channel_actor_send_message_chunk_req(edc_actor_t *actor, const char *chat_id,
+                                                                               const char *content, size_t len)
 {
     edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
 
-    gchar *path = telegram_build_path(&state->config, "sendMessage", NULL);
-    gchar *escaped_content = g_uri_escape_bytes((guint8 *)content, len, NULL);
-    gchar *post_fields = g_strdup_printf("chat_id=%s&text=%s", chat_id, escaped_content);
-    g_free(escaped_content);
+    char *path = telegram_build_path(&state->config, "sendMessage", NULL);
+    char *escaped_content = g_uri_escape_bytes((uint8_t *)content, len, NULL);
+    char *post_fields = g_strdup_printf("chat_id=%s&text=%s", chat_id, escaped_content);
+    free(escaped_content);
 
     struct edc_channel_telegram_req *req = g_new0(struct edc_channel_telegram_req, 1);
     const char *proxy = g_getenv("https_proxy");
@@ -182,24 +182,24 @@ static struct edc_channel_telegram_req *edc_channel_actor_send_message_chunk_req
     return req;
 }
 
-static gsize find_utf8_boundary(const gchar *content, gsize max_len)
+static size_t find_utf8_boundary(const char *content, size_t max_len)
 {
     if (strlen(content) <= max_len)
         return max_len;
 
-    for (gint i = max_len; i >= 0; i--)
+    for (int i = max_len; i >= 0; i--)
     {
         if ((content[i] & 0xC0) != 0x80)
-            return (gsize)i;
+            return (size_t)i;
     }
 
     return max_len;
 }
 
-static gboolean edc_channel_actor_send_message(edc_actor_t *actor, const struct edc_channel_message *msg)
+static bool edc_channel_actor_send_message(edc_actor_t *actor, const struct edc_channel_message *msg)
 {
-    const gchar *content = msg->content;
-    const gchar *chat_id = msg->channel->telegram.chat_id;
+    const char *content = msg->content;
+    const char *chat_id = msg->channel->telegram.chat_id;
     size_t n = strlen(content);
     if (n < TELEGRAM_MAX_MSG_LEN)
     {
@@ -207,15 +207,15 @@ static gboolean edc_channel_actor_send_message(edc_actor_t *actor, const struct 
         return edc_channel_actor_telegram_send_req(actor, req);
     }
 
-    gsize offset = 0;
+    size_t offset = 0;
 
     struct edc_channel_telegram_req *req = g_new0(struct edc_channel_telegram_req, 1);
     struct edc_channel_telegram_req *p = req;
 
     while (offset < n)
     {
-        gsize remaining = n - offset;
-        gsize chunk_len;
+        size_t remaining = n - offset;
+        size_t chunk_len;
 
         if (remaining > TELEGRAM_MAX_MSG_LEN)
         {
@@ -304,7 +304,7 @@ static struct edc_channel_message *process_user_input(edc_channel_actor_state_t 
         return NULL;
     }
 
-    if (conf->telegram.user_id != (gint64)user_id->valuedouble)
+    if (conf->telegram.user_id != (int64_t)user_id->valuedouble)
     {
         log_error("user id not match");
         return NULL;
@@ -313,7 +313,7 @@ static struct edc_channel_message *process_user_input(edc_channel_actor_state_t 
     struct edc_channel_message *msg = edc_channel_telegram_message_new(
         g_strdup_printf("%.0lf", chat_id_json->valuedouble), g_strdup(cJSON_GetStringValue(text)));
 
-    state->telegram.update_id = 1 + (gint64)update_id_json->valuedouble;
+    state->telegram.update_id = 1 + (int64_t)update_id_json->valuedouble;
 
     return msg;
 }
@@ -386,7 +386,7 @@ static struct edc_channel_message *edc_channel_actor_telegram_handle_recv(edc_ac
     return message;
 }
 
-static gboolean edc_channel_actor_telegram_poll(gpointer data)
+static bool edc_channel_actor_telegram_poll(void* data)
 {
     edc_actor_t *actor = data;
     edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
@@ -396,9 +396,9 @@ static gboolean edc_channel_actor_telegram_poll(gpointer data)
         return G_SOURCE_CONTINUE;
     }
 
-    const gchar *args[] = {g_strdup_printf("offset=%" G_GINT64_FORMAT, state->telegram.update_id), NULL};
-    const gchar *path = telegram_build_path(&state->config, "getUpdates", args);
-    g_free((gchar *)args[0]);
+    const char *args[] = {g_strdup_printf("offset=%" G_GINT64_FORMAT, state->telegram.update_id), NULL};
+    const char *path = telegram_build_path(&state->config, "getUpdates", args);
+    free((char *)args[0]);
 
     struct edc_channel_telegram_req *req = g_new0(struct edc_channel_telegram_req, 1);
     const char *proxy = g_getenv("https_proxy");

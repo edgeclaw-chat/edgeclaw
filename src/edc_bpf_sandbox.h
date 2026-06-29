@@ -2,7 +2,8 @@
 #define __BC_BPF_SANDBOX_H__
 
 #include <glib.h>
+#include <stdbool.h>
 
-gboolean edc_bpf_sandbox_apply(const gchar *sandbox_root);
+bool edc_bpf_sandbox_apply(const char *sandbox_root);
 
 #endif

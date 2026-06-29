@@ -2,6 +2,7 @@
 #define __BC_SANDBOX_H__
 
 #include <glib.h>
+#include <stdbool.h>
 
 struct edc_config;
 
@@ -13,9 +14,9 @@ typedef enum
     BC_SANDBOX_ERROR_INIT,
 } edc_sandbox_err_t;
 
-extern gboolean edc_sandbox_init(struct edc_config *conf);
-extern const gchar *edc_sandbox_get_root(struct edc_config *conf);
-extern gchar *edc_sandbox_verify_path(struct edc_config *conf, const gchar *path, gboolean writable, GError **error);
-extern gboolean edc_sandbox_apply(struct edc_config *conf);
+extern bool edc_sandbox_init(struct edc_config *conf);
+extern const char *edc_sandbox_get_root(struct edc_config *conf);
+extern char *edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writable, GError **error);
+extern bool edc_sandbox_apply(struct edc_config *conf);
 
 #endif

@@ -15,7 +15,8 @@ static void edc_channel_actor_handle(edc_actor_t *actor, edc_actor_msg_t *msg)
     if (msg->type == BC_ACTOR_MSG_START)
     {
         GHashTableIter iter;
-        gpointer key = NULL, value = NULL;
+        void* key = NULL;
+        void* value = NULL;
         g_hash_table_iter_init(&iter, state->handlers);
         while (g_hash_table_iter_next(&iter, &key, &value))
         {
@@ -34,7 +35,7 @@ static void edc_channel_actor_handle(edc_actor_t *actor, edc_actor_msg_t *msg)
     return;
 }
 
-struct edc_channel *edc_channel_feishu_new(gchar *chat_type, gchar *chat_id, gchar *message_id, gchar *user_open_id)
+struct edc_channel *edc_channel_feishu_new(char *chat_type, char *chat_id, char *message_id, char *user_open_id)
 {
     struct edc_channel *channel = g_new0(struct edc_channel, 1);
     channel->type = edc_channel_feishu;
@@ -45,8 +46,8 @@ struct edc_channel *edc_channel_feishu_new(gchar *chat_type, gchar *chat_id, gch
     return channel;
 }
 
-struct edc_channel_message *edc_channel_feishu_message_new(gchar *chat_type, gchar *chat_id, gchar *message_id,
-                                                         gchar *user_open_id, gchar *content)
+struct edc_channel_message *edc_channel_feishu_message_new(char *chat_type, char *chat_id, char *message_id,
+                                                         char *user_open_id, char *content)
 {
     struct edc_channel_message *msg = g_new0(struct edc_channel_message, 1);
     msg->channel = edc_channel_feishu_new(chat_type, chat_id, message_id, user_open_id);
@@ -61,7 +62,7 @@ struct edc_channel *edc_channel_cli_new(void)
     return channel;
 }
 
-struct edc_channel *edc_channel_telegram_new(gchar *chat_id)
+struct edc_channel *edc_channel_telegram_new(char *chat_id)
 {
     struct edc_channel *channel = g_new0(struct edc_channel, 1);
     channel->type = edc_channel_telegram;
@@ -149,7 +150,7 @@ struct edc_channel *edc_channel_from_json(cJSON *data)
     return NULL;
 }
 
-struct edc_channel_message *edc_channel_telegram_message_new(gchar *chat_id, gchar *content)
+struct edc_channel_message *edc_channel_telegram_message_new(char *chat_id, char *content)
 {
     struct edc_channel_message *msg = g_new0(struct edc_channel_message, 1);
     msg->channel = edc_channel_telegram_new(chat_id);
@@ -157,7 +158,7 @@ struct edc_channel_message *edc_channel_telegram_message_new(gchar *chat_id, gch
     return msg;
 }
 
-struct edc_channel *edc_channel_qq_new(gchar *message_id, gchar *author_id)
+struct edc_channel *edc_channel_qq_new(char *message_id, char *author_id)
 {
     struct edc_channel *channel = g_new0(struct edc_channel, 1);
     channel->type = edc_channel_qq;
@@ -167,7 +168,7 @@ struct edc_channel *edc_channel_qq_new(gchar *message_id, gchar *author_id)
     return channel;
 }
 
-struct edc_channel_message *edc_channel_qq_message_new(gchar *message_id, gchar *author_id, gchar *content)
+struct edc_channel_message *edc_channel_qq_message_new(char *message_id, char *author_id, char *content)
 {
     struct edc_channel_message *msg = g_new0(struct edc_channel_message, 1);
     msg->channel = edc_channel_qq_new(message_id, author_id);
@@ -184,34 +185,34 @@ void edc_channel_free(struct edc_channel *channel)
     {
         if (channel->qq.author_id)
         {
-            g_free(channel->qq.author_id);
+            free(channel->qq.author_id);
         }
 
         if (channel->qq.message_id)
         {
-            g_free(channel->qq.message_id);
+            free(channel->qq.message_id);
         }
     }
     else if (channel->type == edc_channel_feishu)
     {
         if (channel->feishu.chat_type)
-            g_free(channel->feishu.chat_type);
+            free(channel->feishu.chat_type);
         if (channel->feishu.chat_id)
-            g_free(channel->feishu.chat_id);
+            free(channel->feishu.chat_id);
         if (channel->feishu.message_id)
-            g_free(channel->feishu.message_id);
+            free(channel->feishu.message_id);
         if (channel->feishu.user_open_id)
-            g_free(channel->feishu.user_open_id);
+            free(channel->feishu.user_open_id);
     }
     else if (channel->type == edc_channel_telegram)
     {
-        g_free(channel->telegram.chat_id);
+        free(channel->telegram.chat_id);
     }
     else if (channel->type == edc_channel_cli)
     {
     }
 
-    g_free(channel);
+    free(channel);
 }
 
 struct edc_channel *edc_channel_copy(struct edc_channel *rhs)
@@ -274,7 +275,7 @@ struct edc_channel *edc_channel_move(struct edc_channel *rhs)
 
 #undef __MOVE
 
-struct edc_channel_message *edc_channel_message_new(struct edc_channel *channel, gchar *content)
+struct edc_channel_message *edc_channel_message_new(struct edc_channel *channel, char *content)
 {
     struct edc_channel_message *message = g_new0(struct edc_channel_message, 1);
     message->channel = channel;
@@ -287,7 +288,7 @@ struct edc_channel_message *edc_channel_message_new(struct edc_channel *channel,
     return message;
 }
 
-extern struct edc_channel_message *edc_channel_ref_message_new(struct edc_channel *channel, gchar *content)
+extern struct edc_channel_message *edc_channel_ref_message_new(struct edc_channel *channel, char *content)
 {
     struct edc_channel_message *message = g_new0(struct edc_channel_message, 1);
     message->channel = channel;
@@ -301,7 +302,7 @@ extern struct edc_channel_message *edc_channel_ref_message_new(struct edc_channe
     return message;
 }
 
-struct edc_channel_message *edc_channel_message_copy(struct edc_channel_message *rhs, gchar *content)
+struct edc_channel_message *edc_channel_message_copy(struct edc_channel_message *rhs, char *content)
 {
     if (!content)
     {
@@ -322,14 +323,14 @@ void edc_channel_message_free(struct edc_channel_message *msg)
 {
     if (msg->content)
     {
-        g_free(msg->content);
+        free(msg->content);
     }
 
     if (msg->channel && !msg->channel_ref)
     {
         edc_channel_free(msg->channel);
     }
-    g_free(msg);
+    free(msg);
 }
 
 struct edc_channel_message *edc_channel_message_move(struct edc_channel_message *rhs)
@@ -395,12 +396,12 @@ void edc_channel_actor_free(edc_actor_t *actor)
     case edc_channel_feishu:
         if (state->feishu.wss_url)
         {
-            g_free(state->feishu.wss_url);
+            free(state->feishu.wss_url);
         }
 
         if (state->feishu.tenant_access_token)
         {
-            g_free(state->feishu.tenant_access_token);
+            free(state->feishu.tenant_access_token);
         }
 
         if (state->feishu.expire_source)
@@ -412,7 +413,7 @@ void edc_channel_actor_free(edc_actor_t *actor)
     case edc_channel_qq:
         if (state->qq.access_token)
         {
-            g_free(state->qq.access_token);
+            free(state->qq.access_token);
         }
 
         if (state->qq.expire_source)
@@ -422,7 +423,7 @@ void edc_channel_actor_free(edc_actor_t *actor)
 
         if (state->qq.wss_url)
         {
-            g_free(state->qq.wss_url);
+            free(state->qq.wss_url);
         }
 
         if (state->qq.conns)
@@ -440,10 +441,10 @@ void edc_channel_actor_free(edc_actor_t *actor)
         }
         if (state->cli.input_queue)
         {
-            gchar *line;
+            char *line;
             while ((line = g_async_queue_try_pop(state->cli.input_queue)))
             {
-                g_free(line);
+                free(line);
             }
             g_async_queue_unref(state->cli.input_queue);
         }
@@ -453,7 +454,7 @@ void edc_channel_actor_free(edc_actor_t *actor)
             g_source_unref(state->cli.queue_source);
         }
         if (state->cli.pending_output)
-            g_free(state->cli.pending_output);
+            free(state->cli.pending_output);
         if (state->cli.history_path)
             g_string_free(state->cli.history_path, TRUE);
         pthread_mutex_destroy(&state->cli.term_mutex);
@@ -463,7 +464,7 @@ void edc_channel_actor_free(edc_actor_t *actor)
         break;
     }
 
-    g_free(state);
+    free(state);
     edc_actor_free(actor);
 }
 

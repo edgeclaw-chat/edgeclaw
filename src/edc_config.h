@@ -1,12 +1,13 @@
 #ifndef __BC_CONFIG_H__
 #define __BC_CONFIG_H__
 #include <glib.h>
+#include <stdbool.h>
 
 struct llm_api_conf
 {
-    gchar *model;
-    gchar *api_key;
-    gchar *api_url;
+    char *model;
+    char *api_key;
+    char *api_url;
 };
 
 typedef enum
@@ -22,31 +23,31 @@ struct channel_conf
 {
     struct
     {
-        gchar *imap_host;
-        gchar *smtp_host;
-        gchar *user;
-        gchar *passwd;
-        gchar *target;
+        char *imap_host;
+        char *smtp_host;
+        char *user;
+        char *passwd;
+        char *target;
 
     } email;
 
     struct
     {
-        gchar *bot_key;
-        gint64 user_id;
+        char *bot_key;
+        int64_t user_id;
     } telegram;
 
     struct
     {
-        gchar *user_open_id;
-        gchar *app_id;
-        gchar *app_secret;
+        char *user_open_id;
+        char *app_id;
+        char *app_secret;
     } feishu;
 
     struct
     {
-        gchar *app_id;
-        gchar *app_secret;
+        char *app_id;
+        char *app_secret;
     } qq;
 
     edc_channel_type type;
@@ -54,29 +55,29 @@ struct channel_conf
 
 struct edc_config
 {
-    gchar *edc_home;
+    char *edc_home;
 
     struct llm_api_conf llm_api_conf;
     struct channel_conf channel;
 
-    gchar *workspace;
-    gboolean enable_sandbox;
-    gchar *sandbox_root_real;
-    gchar **sandbox_ro_paths;
-    gchar **sandbox_rw_paths;
+    char *workspace;
+    bool enable_sandbox;
+    char *sandbox_root_real;
+    char **sandbox_ro_paths;
+    char **sandbox_rw_paths;
     int max_iter;
     int load_n_histories;
     int memory_compress_threshold;
     int tool_max_output_size;
 
-    gchar *device_pty;
-    gchar *device_ip;
+    char *device_pty;
+    char *device_ip;
     int device_port;
     int device_baud;
-    gchar *device_transport;
+    char *device_transport;
 };
 
-extern gchar *edc_config_resolve_bc_home(void);
-extern struct edc_config *edc_config_load(const gchar *edc_home);
+extern char *edc_config_resolve_bc_home(void);
+extern struct edc_config *edc_config_load(const char *edc_home);
 extern void edc_config_free(struct edc_config *config);
 #endif

@@ -12,9 +12,9 @@ typedef struct
 struct edc_channel;
 struct edc_toolbox_actor_req
 {
-    gchar *name;
+    char *name;
     cJSON *args;
-    gchar *call_id;
+    char *call_id;
     struct edc_channel *call_from;
     GString *result;
     struct edc_toolbox_actor_req *next;
@@ -22,7 +22,7 @@ struct edc_toolbox_actor_req
 
 extern edc_actor_t *edc_toolbox_actor_new(struct edc_toolbox *toolbox);
 extern void edc_toolbox_actor_free(edc_actor_t *actor);
-extern struct edc_toolbox_actor_req *edc_toolbox_actor_req_new(gchar *name, cJSON *args, gchar *call_id,
+extern struct edc_toolbox_actor_req *edc_toolbox_actor_req_new(char *name, cJSON *args, char *call_id,
                                                              struct edc_channel *call_from);
 extern void edc_toolbox_actor_req_free(struct edc_toolbox_actor_req *req);
 #endif

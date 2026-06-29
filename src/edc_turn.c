@@ -4,16 +4,16 @@
 static void edc_turn_add_message(struct edc_turn *turn, cJSON *msg)
 {
     cJSON *content = cJSON_GetObjectItem(msg, "content");
-    gchar *valid_utf8 = g_utf8_make_valid(cJSON_GetStringValue(content), -1);
+    char *valid_utf8 = g_utf8_make_valid(cJSON_GetStringValue(content), -1);
     cJSON *valid_content = cJSON_CreateString(valid_utf8);
-    g_free(valid_utf8);
+    free(valid_utf8);
     cJSON_ReplaceItemInObject(msg, "content", valid_content);
 
     g_queue_push_tail(turn->messages, msg);
     g_queue_push_tail(turn->timestamps, edc_get_timestamp());
 }
 
-void edc_turn_add_user_message(struct edc_turn *turn, const gchar *content)
+void edc_turn_add_user_message(struct edc_turn *turn, const char *content)
 {
     cJSON *msg = cJSON_CreateObject();
     cJSON_AddStringToObject(msg, "role", "user");
@@ -26,7 +26,7 @@ void edc_turn_add_assistant_message(struct edc_turn *turn, cJSON *msg)
     edc_turn_add_message(turn, msg);
 }
 
-void edc_turn_add_tool_message(struct edc_turn *turn, const gchar *tool_call_id, const gchar *name, const gchar *content)
+void edc_turn_add_tool_message(struct edc_turn *turn, const char *tool_call_id, const char *name, const char *content)
 {
     cJSON *msg = cJSON_CreateObject();
     cJSON_AddStringToObject(msg, "role", "tool");
@@ -60,7 +60,7 @@ void edc_turn_free(struct edc_turn *turn)
         g_queue_free(turn->timestamps);
     }
 
-    g_free(turn);
+    free(turn);
     return;
 }
 

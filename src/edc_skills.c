@@ -7,7 +7,7 @@ static struct edc_skill *edc_skill_new()
 {
     struct edc_skill *skill = g_new(struct edc_skill, 1);
     skill->name = NULL;
-    skill->meta = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    skill->meta = g_hash_table_new_full(g_str_hash, g_str_equal, free, free);
     skill->content = NULL;
     return skill;
 }
@@ -30,10 +30,10 @@ void edc_skill_free(struct edc_skill *skill)
         g_string_free(skill->content, TRUE);
     }
 
-    g_free(skill);
+    free(skill);
 }
 
-static gboolean edc_extract_skill_meta_and_content(const gchar *content, struct edc_skill *skill)
+static bool edc_extract_skill_meta_and_content(const char *content, struct edc_skill *skill)
 {
     if (!g_str_has_prefix(content, "---"))
     {
@@ -42,9 +42,9 @@ static gboolean edc_extract_skill_meta_and_content(const gchar *content, struct 
     }
 
     GRegex *regex = g_regex_new("^---\n(.*?)\n---", G_REGEX_DOTALL, G_REGEX_MATCH_DEFAULT, NULL);
-    gboolean err = TRUE;
+    bool err = TRUE;
     GMatchInfo *match_info = NULL;
-    gchar *meta = NULL;
+    char *meta = NULL;
 
     if (regex)
     {
@@ -70,17 +70,17 @@ static gboolean edc_extract_skill_meta_and_content(const gchar *content, struct 
             goto match_info_err;
         }
 
-        gchar **lines = g_strsplit(meta, "\n", -1);
+        char **lines = g_strsplit(meta, "\n", -1);
         if (!lines)
         {
             err = FALSE;
             goto meta_err;
         }
 
-        gchar **p = lines;
+        char **p = lines;
         while (*p)
         {
-            gchar **kv = g_strsplit(*p, ":", 2);
+            char **kv = g_strsplit(*p, ":", 2);
             if (kv && kv[0] && kv[1])
             {
                 g_hash_table_insert(skill->meta, g_strstrip(g_strdup(kv[0])), g_strstrip(g_strdup(kv[1])));
@@ -91,7 +91,7 @@ static gboolean edc_extract_skill_meta_and_content(const gchar *content, struct 
 
         g_strfreev(lines);
 
-        gint start = 0, end = 0;
+        int start = 0, end = 0;
         if (g_match_info_fetch_pos(match_info, 0, &start, &end))
         {
             skill->content = g_string_new(g_strstrip((char *)content + end));
@@ -104,7 +104,7 @@ static gboolean edc_extract_skill_meta_and_content(const gchar *content, struct 
 
 meta_err:
     if (meta)
-        g_free(meta);
+        free(meta);
 match_info_err:
     if (match_info)
         g_match_info_unref(match_info);
@@ -114,10 +114,10 @@ match_err:
     return err;
 }
 
-static struct edc_skill *edc_skill_load(const char *name, const gchar *file_path)
+static struct edc_skill *edc_skill_load(const char *name, const char *file_path)
 {
-    gchar *content = NULL;
-    gsize length = 0;
+    char *content = NULL;
+    size_t length = 0;
     GError *error = NULL;
 
     if (g_file_get_contents(file_path, &content, &length, &error))
@@ -129,7 +129,7 @@ static struct edc_skill *edc_skill_load(const char *name, const gchar *file_path
             return NULL;
         }
 
-        g_free(content);
+        free(content);
         skill->name = g_string_new(name);
 
         return skill;
@@ -147,17 +147,17 @@ GArray *edc_skills_load(const GString *dir_path)
     GDir *dir = g_dir_open(dir_path->str, 0, NULL);
     if (dir)
     {
-        const gchar *filename = NULL;
+        const char *filename = NULL;
         while ((filename = g_dir_read_name(dir)))
         {
-            gchar *full_path = g_build_filename(dir_path->str, filename, "SKILL.md", NULL);
+            char *full_path = g_build_filename(dir_path->str, filename, "SKILL.md", NULL);
 
             struct edc_skill *skill = edc_skill_load(filename, full_path);
             if (skill)
             {
                 g_array_append_val(skills, skill);
             }
-            g_free(full_path);
+            free(full_path);
         }
         g_dir_close(dir);
     }

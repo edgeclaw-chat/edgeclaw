@@ -16,7 +16,7 @@
 static struct netif lwip_tap_netif;
 #endif
 static struct netif lwip_pppos_netif;
-static gboolean lwip_initialized = FALSE;
+static bool lwip_initialized = FALSE;
 
 #ifdef __linux__
 static void init_tap_netif(void *arg)
@@ -35,7 +35,7 @@ static void init_tap_netif(void *arg)
     netif_set_up(&lwip_tap_netif);
 }
 
-gboolean edc_lwip_init_tap(const char *ipaddr, const char *netmask, const char *gw)
+bool edc_lwip_init_tap(const char *ipaddr, const char *netmask, const char *gw)
 {
     (void)netmask; (void)gw;
     setenv("LWIP_IPADDR", ipaddr ? ipaddr : "192.168.100.2", 1);
@@ -78,7 +78,7 @@ static void *pppos_reader(void *arg)
     return NULL;
 }
 
-gboolean edc_lwip_init_pppos(int fd)
+bool edc_lwip_init_pppos(int fd)
 {
     struct netif *ni = &lwip_pppos_netif;
     ip4_addr_t my_addr, peer_addr, nm;
@@ -175,7 +175,7 @@ static speed_t int_to_baud(int baud)
     }
 }
 
-gboolean edc_lwip_init_pppos_path(const char *path, int baud)
+bool edc_lwip_init_pppos_path(const char *path, int baud)
 {
     int fd = open(path, O_RDWR | O_NOCTTY);
     if (fd < 0) return FALSE;

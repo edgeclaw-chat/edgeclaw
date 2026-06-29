@@ -2,7 +2,8 @@
 #define __BC_LANDLOCK_SANDBOX_H__
 
 #include <glib.h>
+#include <stdbool.h>
 
-gboolean edc_landlock_sandbox_apply(const gchar **ro_paths, const gchar **rw_paths);
+bool edc_landlock_sandbox_apply(const char **ro_paths, const char **rw_paths);
 
 #endif

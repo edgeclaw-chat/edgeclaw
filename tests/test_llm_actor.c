@@ -32,12 +32,12 @@ static void edc_observe_llm_handler(edc_actor_t *actor, edc_actor_msg_t *message
 #endif
 int main(void)
 {
-    const gchar *home_dir = g_get_home_dir();
-    gchar *root = g_build_filename(home_dir, ".edgeclaw", NULL);
+    const char *home_dir = g_get_home_dir();
+    char *root = g_build_filename(home_dir, ".edgeclaw", NULL);
     struct edc_config *conf = edc_config_load(root);
-    g_free(root);
+    free(root);
 
-    gchar *cert_pem = g_build_filename(conf->workspace, "cacert.pem", NULL);
+    char *cert_pem = g_build_filename(conf->workspace, "cacert.pem", NULL);
     edc_network_async_t *http = edc_network_async_new(cert_pem);
     http->mgr.dns4.url = "udp://" DNS_SERVER_IP ":53";
 

@@ -29,9 +29,9 @@ struct device_shell_ctx
 
 static void device_shell_ctx_free(struct device_shell_ctx *ctx)
 {
-    g_free(ctx->command);
-    g_free(ctx->agent_ip);
-    g_free(ctx);
+    free(ctx->command);
+    free(ctx->agent_ip);
+    free(ctx);
 }
 
 static err_t recv_until_close(struct netconn *c, GString *buf)
@@ -43,7 +43,7 @@ static err_t recv_until_close(struct netconn *c, GString *buf)
 
     while ((err = netconn_recv(c, &nb)) == ERR_OK) {
         netbuf_data(nb, (void **)&p, &chunk);
-        g_string_append_len(buf, (gchar *)p, chunk);
+        g_string_append_len(buf, (char *)p, chunk);
         netbuf_delete(nb);
     }
     return err;
@@ -295,7 +295,7 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
     device_shell_ctx_free(ctx);
 }
 
-static void device_shell_thread(gpointer data, gpointer user_data)
+static void device_shell_thread(void* data, void* user_data)
 {
     struct device_shell_ctx *ctx = data;
     (void)user_data;

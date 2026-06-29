@@ -3,11 +3,12 @@
 
 #include <cJSON.h>
 #include <glib.h>
+#include <stdbool.h>
 
-extern cJSON *edc_history_load(const gchar *workspace, size_t offset);
-extern gboolean edc_history_save(const gchar *workspace, cJSON *msg_lst, GList *timestamps, gsize skip_count);
-extern gboolean edc_history_get_info(const gchar *workspace, size_t *compress_index, gchar **update_time);
-extern gboolean edc_history_set_info(const gchar *workspace, size_t compress_index, const gchar *update_time);
-extern gchar *edc_get_timestamp(void);
+extern cJSON *edc_history_load(const char *workspace, size_t offset);
+extern bool edc_history_save(const char *workspace, cJSON *msg_lst, GList *timestamps, size_t skip_count);
+extern bool edc_history_get_info(const char *workspace, size_t *compress_index, char **update_time);
+extern bool edc_history_set_info(const char *workspace, size_t compress_index, const char *update_time);
+extern char *edc_get_timestamp(void);
 
 #endif

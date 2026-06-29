@@ -1,12 +1,13 @@
 #include <glib.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 // 当子进程有数据写入 stdout 时触发的回调函数
-static gboolean on_stdout_readable(GIOChannel *source, GIOCondition condition, gpointer data)
+static bool on_stdout_readable(GIOChannel *source, GIOCondition condition, void* data)
 {
-    gchar *line = NULL;
-    gsize length = 0;
+    char *line = NULL;
+    size_t length = 0;
     GIOStatus status;
 
     // 读取一行数据
@@ -15,7 +16,7 @@ static gboolean on_stdout_readable(GIOChannel *source, GIOCondition condition, g
     if (status == G_IO_STATUS_NORMAL && line != NULL)
     {
         g_print("子进程输出: %s", line);
-        g_free(line);
+        free(line);
         return TRUE; // 继续监视
     }
     else if (status == G_IO_STATUS_EOF)
@@ -30,12 +31,12 @@ static gboolean on_stdout_readable(GIOChannel *source, GIOCondition condition, g
 int main(int argc, char *argv[])
 {
     GError *error = NULL;
-    gchar *command_line[] = {"ls", "-l", "/", NULL}; // 要执行的命令
-    gint stdout_fd;
+    char *command_line[] = {"ls", "-l", "/", NULL}; // 要执行的命令
+    int stdout_fd;
     GPid child_pid;
 
     // 1. 异步启动子进程并打开 stdout 管道
-    gboolean success = g_spawn_async_with_pipes(NULL,                // 工作目录 (NULL 为当前目录)
+    bool success = g_spawn_async_with_pipes(NULL,                // 工作目录 (NULL 为当前目录)
                                                 command_line,        // 命令及参数
                                                 NULL,                // 环境变量
                                                 G_SPAWN_SEARCH_PATH, // 标志 (在 PATH 中寻找可执行文件)

@@ -42,19 +42,19 @@ static const char *HEADING_COLORS[] = {
 
 struct edc_md_render_ctx {
     GString *out;
-    gboolean in_table;
+    bool in_table;
     GPtrArray *table_rows;
     GPtrArray *current_row;
     GString *current_cell;
     GPtrArray *col_aligns;
-    gint td_col_idx;
-    gint list_depth;
+    int td_col_idx;
+    int list_depth;
     int ol_counter[MAX_LIST_DEPTH];
-    gboolean is_ordered[MAX_LIST_DEPTH];
-    gboolean is_tight_list[MAX_LIST_DEPTH];
-    gboolean in_quote;
-    gboolean in_span_a;
-    gboolean has_content;
+    bool is_ordered[MAX_LIST_DEPTH];
+    bool is_tight_list[MAX_LIST_DEPTH];
+    bool in_quote;
+    bool in_span_a;
+    bool has_content;
 };
 
 static void edc_md_render_ctx_init(struct edc_md_render_ctx *ctx)
@@ -63,10 +63,10 @@ static void edc_md_render_ctx_init(struct edc_md_render_ctx *ctx)
     ctx->out = g_string_new(NULL);
 }
 
-static gint edc_md_visual_strlen(const char *s)
+static int edc_md_visual_strlen(const char *s)
 {
-    gint w = 0;
-    gboolean in_esc = FALSE;
+    int w = 0;
+    bool in_esc = FALSE;
     const char *p = s;
 
     while (*p) {
@@ -89,9 +89,9 @@ static void edc_md_render_ctx_free(struct edc_md_render_ctx *ctx)
     if (ctx->out)
         g_string_free(ctx->out, TRUE);
     if (ctx->table_rows) {
-        for (guint i = 0; i < ctx->table_rows->len; i++) {
+        for (unsigned int i = 0; i < ctx->table_rows->len; i++) {
             GPtrArray *row = g_ptr_array_index(ctx->table_rows, i);
-            for (guint j = 0; j < row->len; j++) {
+            for (unsigned int j = 0; j < row->len; j++) {
                 GString *cell = g_ptr_array_index(row, j);
                 g_string_free(cell, TRUE);
             }
@@ -100,7 +100,7 @@ static void edc_md_render_ctx_free(struct edc_md_render_ctx *ctx)
         g_ptr_array_free(ctx->table_rows, TRUE);
     }
     if (ctx->current_row) {
-        for (guint i = 0; i < ctx->current_row->len; i++) {
+        for (unsigned int i = 0; i < ctx->current_row->len; i++) {
             GString *cell = g_ptr_array_index(ctx->current_row, i);
             g_string_free(cell, TRUE);
         }
@@ -110,9 +110,9 @@ static void edc_md_render_ctx_free(struct edc_md_render_ctx *ctx)
         g_string_free(ctx->current_cell, TRUE);
     }
     if (ctx->col_aligns) {
-        for (guint i = 0; i < ctx->col_aligns->len; i++) {
-            gint *a = g_ptr_array_index(ctx->col_aligns, i);
-            g_free(a);
+        for (unsigned int i = 0; i < ctx->col_aligns->len; i++) {
+            int *a = g_ptr_array_index(ctx->col_aligns, i);
+            free(a);
         }
         g_ptr_array_free(ctx->col_aligns, TRUE);
     }
@@ -321,46 +321,46 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         if (ctx->table_rows && ctx->table_rows->len > 0) {
             GPtrArray *rows = ctx->table_rows;
             MD_BLOCK_TABLE_DETAIL *det = detail;
-            guint ncols = det->col_count;
-            guint nhead = det->head_row_count;
+            unsigned int ncols = det->col_count;
+            unsigned int nhead = det->head_row_count;
             if (ncols == 0) ncols = 1;
 
-            gint *widths = g_new0(gint, ncols);
-            for (guint r = 0; r < rows->len; r++) {
+            int *widths = g_new0(int, ncols);
+            for (unsigned int r = 0; r < rows->len; r++) {
                 GPtrArray *row = g_ptr_array_index(rows, r);
-                for (guint c = 0; c < ncols && c < row->len; c++) {
+                for (unsigned int c = 0; c < ncols && c < row->len; c++) {
                     GString *cell = g_ptr_array_index(row, c);
-                    gint w = edc_md_visual_strlen(cell->str);
+                    int w = edc_md_visual_strlen(cell->str);
                     if (w > widths[c]) widths[c] = w;
                 }
             }
-            for (guint c = 0; c < ncols; c++) {
+            for (unsigned int c = 0; c < ncols; c++) {
                 if (widths[c] < 2) widths[c] = 2;
             }
 
             g_string_append(o, ANSI_DIM);
             g_string_append(o, "┌");
-            for (guint c = 0; c < ncols; c++) {
-                for (gint i = 0; i < widths[c] + 2; i++)
+            for (unsigned int c = 0; c < ncols; c++) {
+                for (int i = 0; i < widths[c] + 2; i++)
                     g_string_append(o, "─");
                 if (c < ncols - 1) g_string_append(o, "┬");
             }
             g_string_append(o, "┐\n" ANSI_RESET);
 
-            for (guint r = 0; r < rows->len; r++) {
+            for (unsigned int r = 0; r < rows->len; r++) {
                 GPtrArray *row = g_ptr_array_index(rows, r);
 
                 g_string_append(o, ANSI_DIM "│" ANSI_RESET);
-                for (guint c = 0; c < ncols; c++) {
+                for (unsigned int c = 0; c < ncols; c++) {
                     g_string_append_c(o, ' ');
                     if (c < row->len) {
                         GString *cell = g_ptr_array_index(row, c);
                         g_string_append(o, cell->str);
-                        gint len = edc_md_visual_strlen(cell->str);
-                        for (gint i = len; i < widths[c]; i++)
+                        int len = edc_md_visual_strlen(cell->str);
+                        for (int i = len; i < widths[c]; i++)
                             g_string_append_c(o, ' ');
                     } else {
-                        for (gint i = 0; i < widths[c]; i++)
+                        for (int i = 0; i < widths[c]; i++)
                             g_string_append_c(o, ' ');
                     }
                     g_string_append(o, ANSI_DIM " │" ANSI_RESET);
@@ -371,8 +371,8 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
                     r < rows->len - 1) {
                     g_string_append(o, ANSI_DIM);
                     g_string_append(o, "├");
-                    for (guint c = 0; c < ncols; c++) {
-                        for (gint i = 0; i < widths[c] + 2; i++)
+                    for (unsigned int c = 0; c < ncols; c++) {
+                        for (int i = 0; i < widths[c] + 2; i++)
                             g_string_append(o, "─");
                         if (c < ncols - 1) g_string_append(o, "┼");
                     }
@@ -382,21 +382,21 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 
             g_string_append(o, ANSI_DIM);
             g_string_append(o, "└");
-            for (guint c = 0; c < ncols; c++) {
-                for (gint i = 0; i < widths[c] + 2; i++)
+            for (unsigned int c = 0; c < ncols; c++) {
+                for (int i = 0; i < widths[c] + 2; i++)
                     g_string_append(o, "─");
                 if (c < ncols - 1) g_string_append(o, "┴");
             }
             g_string_append(o, "┘" ANSI_RESET "\n");
 
-            g_free(widths);
+            free(widths);
             ctx->has_content = TRUE;
         }
 
         if (ctx->table_rows) {
-            for (guint i = 0; i < ctx->table_rows->len; i++) {
+            for (unsigned int i = 0; i < ctx->table_rows->len; i++) {
                 GPtrArray *row = g_ptr_array_index(ctx->table_rows, i);
-                for (guint j = 0; j < row->len; j++) {
+                for (unsigned int j = 0; j < row->len; j++) {
                     GString *cell = g_ptr_array_index(row, j);
                     g_string_free(cell, TRUE);
                 }
@@ -406,9 +406,9 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
             ctx->table_rows = NULL;
         }
         if (ctx->col_aligns) {
-            for (guint i = 0; i < ctx->col_aligns->len; i++) {
-                gint *a = g_ptr_array_index(ctx->col_aligns, i);
-                g_free(a);
+            for (unsigned int i = 0; i < ctx->col_aligns->len; i++) {
+                int *a = g_ptr_array_index(ctx->col_aligns, i);
+                free(a);
             }
             g_ptr_array_free(ctx->col_aligns, TRUE);
             ctx->col_aligns = NULL;
@@ -435,12 +435,12 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         }
         if (type == MD_BLOCK_TH && ctx->col_aligns) {
             MD_BLOCK_TD_DETAIL *td = detail;
-            while (ctx->col_aligns->len <= (guint)ctx->td_col_idx) {
-                gint *a = g_new0(gint, 1);
+            while (ctx->col_aligns->len <= (unsigned int)ctx->td_col_idx) {
+                int *a = g_new0(int, 1);
                 *a = MD_ALIGN_DEFAULT;
                 g_ptr_array_add(ctx->col_aligns, a);
             }
-            gint *a = g_ptr_array_index(ctx->col_aligns, ctx->td_col_idx);
+            int *a = g_ptr_array_index(ctx->col_aligns, ctx->td_col_idx);
             *a = td->align;
         }
         ctx->td_col_idx++;

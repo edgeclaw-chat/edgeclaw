@@ -20,7 +20,7 @@ static struct edc_toolbox_actor_exec_ctx *edc_toolbox_actor_exec_ctx_new(edc_act
     return ctx;
 }
 
-static gchar *_HINT = "\n\n[Analyze the error above and try a different approach.]";
+static char *_HINT = "\n\n[Analyze the error above and try a different approach.]";
 
 // TODO: fix error handle
 static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, GString *result, GError *error)
@@ -43,14 +43,14 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, GStr
     edc_actor_t *actor = ctx->actor;
     edc_toolbox_actor_state_t *state = (edc_toolbox_actor_state_t *)actor->state;
 
-    gchar *args = cJSON_PrintUnformatted(req->args);
+    char *args = cJSON_PrintUnformatted(req->args);
     log_debug("tool call request name = %s, args = %s, result_len = %zu", req->name, args, result->len);
-    g_free(args);
+    free(args);
 
     req->result = result;
     if ((result->len) > state->toolbox->conf->tool_max_output_size)
     {
-        gsize len = result->len;
+        size_t len = result->len;
         result = g_string_truncate(result, state->toolbox->conf->tool_max_output_size);
         g_string_append_printf(result, "\n\n[Result truncated to 10000 characters, total length: %zu]", len);
     }
@@ -70,7 +70,7 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, GStr
         msg->data = NULL;
         edc_toolbox_call_ctx_free(tb_ctx);
         edc_actor_msg_free(msg);
-        g_free(ctx);
+        free(ctx);
     }
 }
 
@@ -97,7 +97,7 @@ static void edc_toolbox_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 void edc_toolbox_actor_free(edc_actor_t *actor)
 {
     edc_toolbox_actor_state_t *state = (edc_toolbox_actor_state_t *)actor->state;
-    g_free(state);
+    free(state);
     edc_actor_free(actor);
 }
 
@@ -108,12 +108,12 @@ void edc_toolbox_actor_req_free(struct edc_toolbox_actor_req *req)
 
     if (req->name)
     {
-        g_free(req->name);
+        free(req->name);
     }
 
     if (req->call_id)
     {
-        g_free(req->call_id);
+        free(req->call_id);
     }
     if (req->args)
     {
@@ -124,10 +124,10 @@ void edc_toolbox_actor_req_free(struct edc_toolbox_actor_req *req)
     {
         g_string_free(req->result, TRUE);
     }
-    g_free(req);
+    free(req);
 }
 
-struct edc_toolbox_actor_req *edc_toolbox_actor_req_new(gchar *name, cJSON *args, gchar *call_id,
+struct edc_toolbox_actor_req *edc_toolbox_actor_req_new(char *name, cJSON *args, char *call_id,
                                                       struct edc_channel *call_from)
 {
     struct edc_toolbox_actor_req *req = g_new0(struct edc_toolbox_actor_req, 1);

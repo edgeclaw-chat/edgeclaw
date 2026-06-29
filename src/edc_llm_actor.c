@@ -18,22 +18,22 @@ void edc_llm_actor_req_free(struct edc_llm_actor_req *req)
 {
     if (!req)
         return;
-    g_free(req);
+    free(req);
 }
 
 struct edc_llm_actor_http_req
 {
     edc_actor_t *actor;
-    const gchar *body;
+    const char *body;
     struct llm_api_conf *api_conf;
     edc_actor_t *from;
     GString *response;
-    gpointer request_id;
+    void* request_id;
 };
 
-static struct edc_llm_actor_http_req *edc_llm_actor_http_req_new(edc_actor_t *actor, const gchar *body,
+static struct edc_llm_actor_http_req *edc_llm_actor_http_req_new(edc_actor_t *actor, const char *body,
                                                                struct llm_api_conf *api_conf, edc_actor_t *from,
-                                                               gpointer request_id)
+                                                               void* request_id)
 {
     struct edc_llm_actor_http_req *req = g_new0(struct edc_llm_actor_http_req, 1);
     req->actor = actor;
@@ -47,12 +47,12 @@ static struct edc_llm_actor_http_req *edc_llm_actor_http_req_new(edc_actor_t *ac
 
 static void edc_llm_actor_http_req_free(struct edc_llm_actor_http_req *req)
 {
-    g_free((char *)req->body);
+    free((char *)req->body);
     if (req->response)
     {
         g_string_free(req->response, TRUE);
     }
-    g_free(req);
+    free(req);
 }
 
 static void edc_llm_actor_make_http_request(struct mg_connection *c)
@@ -122,7 +122,7 @@ static void edc_llm_actor_on_http_fn(struct mg_connection *c, int ev, void *ev_d
     }
     else if (ev == BC_CONN_TIME_OUT || ev == MG_EV_ERROR)
     {
-        const gchar *err_msg = ev == BC_CONN_TIME_OUT ? "LLM API request timed out" : "LLM API request error";
+        const char *err_msg = ev == BC_CONN_TIME_OUT ? "LLM API request timed out" : "LLM API request error";
         if (req->from)
         {
             struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
@@ -134,7 +134,7 @@ static void edc_llm_actor_on_http_fn(struct mg_connection *c, int ev, void *ev_d
     }
 }
 
-static void edc_llm_actor_messages_add_turn(gpointer data, gpointer user_data)
+static void edc_llm_actor_messages_add_turn(void* data, void* user_data)
 {
     cJSON *item = data;
     cJSON *messages = user_data;
@@ -142,7 +142,7 @@ static void edc_llm_actor_messages_add_turn(gpointer data, gpointer user_data)
 }
 
 static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct edc_llm_actor_req *req,
-                                  gpointer request_id)
+                                  void* request_id)
 {
     edc_llm_actor_state_t *state = (edc_llm_actor_state_t *)actor->state;
 
@@ -167,29 +167,29 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
         cJSON_AddItemReferenceToObject(body, "tools", req->tools);
     }
 
-    const gchar *body_s = cJSON_PrintUnformatted(body);
+    const char *body_s = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
 
-    const gchar *proto = mg_url_is_ssl(state->api_conf.api_url) ? "https://" : "http://";
+    const char *proto = mg_url_is_ssl(state->api_conf.api_url) ? "https://" : "http://";
     struct mg_str host = mg_url_host(state->api_conf.api_url);
     int port = (int)mg_url_port(state->api_conf.api_url);
-    gchar *url = g_strdup_printf("%s%.*s:%d", proto, (int)host.len, host.buf, port);
+    char *url = g_strdup_printf("%s%.*s:%d", proto, (int)host.len, host.buf, port);
 
     edc_http_async_connect(state->network, url, NULL, edc_llm_actor_on_http_fn,
                           edc_llm_actor_http_req_new(actor, body_s, &state->api_conf, from, request_id), 60 * 5);
-    g_free(url);
+    free(url);
 }
 
-static gboolean edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp *resp)
+static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp *resp)
 {
     resp->error = NULL;
     cJSON *choices = cJSON_GetObjectItem(response, "choices");
     if (!choices || !cJSON_IsArray(choices) || cJSON_GetArraySize(choices) == 0)
     {
-        gchar *err_msg = cJSON_Print(response);
+        char *err_msg = cJSON_Print(response);
         log_error("resp format error choice 0 is not exist: %s", response);
         resp->error = g_error_new(BC_LLM_ACTOR_ERROR, -2, "resp format choice 0 is not exist: %s", err_msg);
-        g_free(err_msg);
+        free(err_msg);
 
         if (choices)
         {
@@ -208,7 +208,7 @@ static gboolean edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_r
     cJSON *finish_reason = cJSON_GetObjectItem(choice, "finish_reason");
     if (finish_reason && cJSON_IsString(finish_reason))
     {
-        const gchar *finish_reason_s = cJSON_GetStringValue(finish_reason);
+        const char *finish_reason_s = cJSON_GetStringValue(finish_reason);
         if (strcmp(finish_reason_s, "stop") == 0)
         {
             resp->reason = BC_LLM_FINISH_REASON_STOP;
@@ -245,9 +245,9 @@ static gboolean edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_r
 
     if (resp->reason == BC_LLM_FINISH_REASON_UNKNOWN)
     {
-        gchar *s = cJSON_Print(choice);
+        char *s = cJSON_Print(choice);
         log_error("llm unkown stop reason: %s", s);
-        g_free(s);
+        free(s);
     }
 
     cJSON *index = cJSON_GetObjectItem(choice, "index");
@@ -259,9 +259,9 @@ static gboolean edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_r
     cJSON *message = cJSON_DetachItemFromObject(choice, "message");
     if (!message)
     {
-        gchar *err_msg = cJSON_Print(choice);
+        char *err_msg = cJSON_Print(choice);
         resp->error = g_error_new(BC_LLM_ACTOR_ERROR, -2, "resp format message is not exist: %s", err_msg);
-        g_free(err_msg);
+        free(err_msg);
         return FALSE;
     }
 
@@ -317,7 +317,7 @@ static gboolean edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_r
             cJSON *tc_index = cJSON_GetObjectItem(tool_call, "index");
             if (tc_index && cJSON_IsNumber(tc_index))
             {
-                tc.index = (gsize)tc_index->valueint;
+                tc.index = (size_t)tc_index->valueint;
             }
 
             cJSON *type = cJSON_GetObjectItem(tool_call, "type");
@@ -368,7 +368,7 @@ static void edc_llm_actor_handle_respone(edc_actor_t *actor, edc_actor_msg_t *ms
         goto exit;
     }
 
-    gboolean ok = edc_llm_actor_parse_resp(body, resp);
+    bool ok = edc_llm_actor_parse_resp(body, resp);
     if (!ok)
     {
         log_error("parse resp error: %s", resp->error->message);
@@ -441,7 +441,7 @@ void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp)
 
     if (resp->tool_calls)
     {
-        for (gsize i = 0; i < resp->tool_calls->len; ++i)
+        for (size_t i = 0; i < resp->tool_calls->len; ++i)
         {
             struct edc_llm_chat_tool_call call = g_array_index(resp->tool_calls, struct edc_llm_chat_tool_call, i);
             if (call.id)
@@ -468,7 +468,7 @@ void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp)
         cJSON_Delete(resp->msg);
     }
 
-    g_free(resp); // FIX: free the resp struct itself
+    free(resp); // FIX: free the resp struct itself
 }
 
 edc_actor_t *edc_llm_actor_new(struct llm_api_conf *api_conf, edc_network_async_t *network)
@@ -484,6 +484,6 @@ edc_actor_t *edc_llm_actor_new(struct llm_api_conf *api_conf, edc_network_async_
 void edc_llm_actor_free(edc_actor_t *actor)
 {
     edc_llm_actor_state_t *state = actor->state;
-    g_free(state);
+    free(state);
     edc_actor_free(actor);
 }

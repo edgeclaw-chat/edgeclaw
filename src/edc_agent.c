@@ -18,7 +18,7 @@
 #include <unistd.h>
 
 static void edc_agent_handle_tool_calls(struct edc_agent *agent, struct edc_channel *call_from,
-                                       struct edc_llm_actor_resp *resp, gpointer request_id)
+                                       struct edc_llm_actor_resp *resp, void* request_id)
 {
     struct edc_toolbox_actor_req *req = edc_toolbox_actor_req_new(NULL, NULL, NULL, NULL);
     struct edc_toolbox_actor_req *head = req;
@@ -75,7 +75,7 @@ void edc_channel_turn_free(struct edc_channel_turn *turn)
         edc_turn_free(turn->turn);
     }
 
-    g_free(turn);
+    free(turn);
 }
 
 static void handle_llm_resp(struct edc_agent *agent, edc_actor_t *actor, edc_actor_msg_t *msg)
@@ -106,7 +106,7 @@ static void handle_llm_resp(struct edc_agent *agent, edc_actor_t *actor, edc_act
     {
         if ((resp->reasoning_content && resp->reasoning_content->len > 0) || (resp->content && resp->content->len > 0))
         {
-            gchar *content =
+            char *content =
                 (resp->content && resp->content->len > 0) ? resp->content->str : resp->reasoning_content->str;
 
             reply = edc_channel_ref_message_new(turn->channel, g_strdup_printf("[思考]: %s", content));
@@ -235,21 +235,21 @@ static void edc_agent_scheduler_handler(struct edc_actor *actor, struct edc_acto
     edc_actor_msg_free(msg);
 }
 
-struct edc_agent *edc_agent_new(gboolean setup, gboolean enable_sandbox)
+struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
 {
-    gchar *edc_home = edc_config_resolve_bc_home();
+    char *edc_home = edc_config_resolve_bc_home();
 
     if (!edc_init_env(edc_home, setup))
     {
         log_error("Failed to initialize environment");
-        g_free(edc_home);
+        free(edc_home);
         return NULL;
     }
 
     if (!edc_secret_init(FALSE, edc_home))
     {
         log_error("Failed to initialize secret module");
-        g_free(edc_home);
+        free(edc_home);
         return NULL;
     }
 
@@ -264,9 +264,9 @@ struct edc_agent *edc_agent_new(gboolean setup, gboolean enable_sandbox)
         edc_sandbox_init(agent->config);
     }
 
-    gchar *pem = g_build_filename(agent->config->workspace, "ssl", "cacert.pem", NULL);
+    char *pem = g_build_filename(agent->config->workspace, "ssl", "cacert.pem", NULL);
     agent->network = edc_network_async_new(pem);
-    g_free(pem);
+    free(pem);
 
     agent->scheduler = edc_actor_new("schuler", edc_agent_scheduler_handler, agent);
     agent->channel_actor = edc_channel_actor_new(&agent->config->channel, agent->network);
@@ -290,7 +290,7 @@ struct edc_agent *edc_agent_new(gboolean setup, gboolean enable_sandbox)
 
     edc_actor_runner_start(agent->runner);
 
-    g_free(edc_home);
+    free(edc_home);
     return agent;
 }
 
@@ -346,5 +346,5 @@ void edc_agent_free(struct edc_agent *agent)
 
     edc_secret_cleanup();
 
-    g_free(agent);
+    free(agent);
 }

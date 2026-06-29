@@ -2,7 +2,8 @@
 #define __BC_NS_SANDBOX_H__
 
 #include <glib.h>
+#include <stdbool.h>
 
-gboolean edc_ns_sandbox_apply(const gchar **ro_paths, const gchar **rw_paths);
+bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths);
 
 #endif

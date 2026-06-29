@@ -13,28 +13,28 @@ struct edc_channel
     union {
         struct
         {
-            gchar *title;
-            gchar *message_id;
-            gchar *reply_to;
-            gchar *refs;
+            char *title;
+            char *message_id;
+            char *reply_to;
+            char *refs;
         } email;
         struct
         {
-            gchar *chat_id;
+            char *chat_id;
         } telegram;
 
         struct
         {
-            gchar *chat_type;
-            gchar *chat_id;
-            gchar *message_id;
-            gchar *user_open_id;
+            char *chat_type;
+            char *chat_id;
+            char *message_id;
+            char *user_open_id;
         } feishu;
 
         struct
         {
-            gchar *message_id;
-            gchar *author_id;
+            char *message_id;
+            char *author_id;
             int64_t seq_id;
         } qq;
     };
@@ -42,8 +42,8 @@ struct edc_channel
 
 struct edc_channel_message
 {
-    gchar *content;
-    gboolean channel_ref;
+    char *content;
+    bool channel_ref;
     struct edc_channel *channel;
 };
 
@@ -56,16 +56,16 @@ typedef struct
     union {
         struct
         {
-            gboolean polling;
-            gint64 update_id;
+            bool polling;
+            int64_t update_id;
             GSource *poll_source;
         } telegram;
 
         struct
         {
-            gchar *tenant_access_token;
+            char *tenant_access_token;
             int64_t expire;
-            gchar *wss_url;
+            char *wss_url;
             int32_t wss_service_id;
             GSource *expire_source;
             struct
@@ -79,9 +79,9 @@ typedef struct
 
         struct
         {
-            gchar *wss_url;
+            char *wss_url;
             int wss_shards;
-            gchar *access_token;
+            char *access_token;
             int64_t expires_in;
             GSource *expire_source;
             GSList *conns;
@@ -94,9 +94,9 @@ typedef struct
             GThread *input_thread;
             GAsyncQueue *input_queue;
             GSource *queue_source;
-            gchar *pending_output;
+            char *pending_output;
             pthread_mutex_t term_mutex;
-            volatile gboolean running;
+            volatile int running;
             GString *history_path;
         } cli;
     };
@@ -107,10 +107,10 @@ extern void edc_channel_actor_free(edc_actor_t *actor);
 extern void edc_channel_actor_set_observer(edc_actor_t *actor, edc_actor_t *observer);
 extern void edc_channel_actor_add(edc_actor_t *actor, edc_channel_type type, edc_actor_handler_t handler);
 
-extern struct edc_channel *edc_channel_qq_new(gchar *message_id, gchar *author_id);
-extern struct edc_channel *edc_channel_feishu_new(gchar *chat_type, gchar *chat_id, gchar *message_id,
-                                                gchar *user_open_id);
-extern struct edc_channel *edc_channel_telegram_new(gchar *chat_id);
+extern struct edc_channel *edc_channel_qq_new(char *message_id, char *author_id);
+extern struct edc_channel *edc_channel_feishu_new(char *chat_type, char *chat_id, char *message_id,
+                                                char *user_open_id);
+extern struct edc_channel *edc_channel_telegram_new(char *chat_id);
 extern struct edc_channel *edc_channel_cli_new(void);
 extern struct edc_channel *edc_channel_copy(struct edc_channel *channel);
 extern cJSON *edc_channel_to_json(struct edc_channel *channel);
@@ -118,13 +118,13 @@ extern struct edc_channel *edc_channel_from_json(cJSON *channel);
 extern void edc_channel_free(struct edc_channel *channel);
 
 extern void edc_channel_message_free(struct edc_channel_message *msg);
-extern struct edc_channel_message *edc_channel_message_new(struct edc_channel *channel, gchar *content);
-extern struct edc_channel_message *edc_channel_ref_message_new(struct edc_channel *channel, gchar *content);
+extern struct edc_channel_message *edc_channel_message_new(struct edc_channel *channel, char *content);
+extern struct edc_channel_message *edc_channel_ref_message_new(struct edc_channel *channel, char *content);
 extern struct edc_channel_message *edc_channel_message_move(struct edc_channel_message *rhs);
-extern struct edc_channel_message *edc_channel_message_copy(struct edc_channel_message *rhs, gchar *content);
-extern struct edc_channel_message *edc_channel_telegram_message_new(gchar *chat_id, gchar *content);
-extern struct edc_channel_message *edc_channel_feishu_message_new(gchar *chat_type, gchar *chat_id, gchar *message_id,
-                                                                gchar *user_open_id, gchar *content);
-extern struct edc_channel_message *edc_channel_qq_message_new(gchar *message_id, gchar *author_id, gchar *content);
+extern struct edc_channel_message *edc_channel_message_copy(struct edc_channel_message *rhs, char *content);
+extern struct edc_channel_message *edc_channel_telegram_message_new(char *chat_id, char *content);
+extern struct edc_channel_message *edc_channel_feishu_message_new(char *chat_type, char *chat_id, char *message_id,
+                                                                char *user_open_id, char *content);
+extern struct edc_channel_message *edc_channel_qq_message_new(char *message_id, char *author_id, char *content);
 
 #endif

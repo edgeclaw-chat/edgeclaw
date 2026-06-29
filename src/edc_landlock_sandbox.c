@@ -89,7 +89,7 @@ static int landlock_add_path(int ruleset_fd, const char *path, uint64_t access)
     return ret;
 }
 
-gboolean edc_landlock_sandbox_apply(const gchar **ro_paths, const gchar **rw_paths)
+bool edc_landlock_sandbox_apply(const char **ro_paths, const char **rw_paths)
 {
     if (!rw_paths || !rw_paths[0])
     {
@@ -171,7 +171,7 @@ gboolean edc_landlock_sandbox_apply(const gchar **ro_paths, const gchar **rw_pat
 
 #include "edc_landlock_sandbox.h"
 
-gboolean edc_landlock_sandbox_apply(const gchar **ro_paths, const gchar **rw_paths)
+bool edc_landlock_sandbox_apply(const char **ro_paths, const char **rw_paths)
 {
     (void)ro_paths;
     (void)rw_paths;

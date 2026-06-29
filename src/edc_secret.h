@@ -2,6 +2,7 @@
 #define __BC_SECRET_H__
 
 #include <glib.h>
+#include <stdbool.h>
 
 #define BC_SECRET_PREFIX "EDGECLAW_ENC:"
 
@@ -14,7 +15,7 @@
  * edc_home may be NULL to skip storage/verification (env var mode).
  * Must be called once at startup, before edc_config_load().
  * Returns TRUE on success. */
-gboolean edc_secret_init(gboolean confirm_password, const gchar *edc_home);
+bool edc_secret_init(bool confirm_password, const char *edc_home);
 
 /* Clean up the secret module. Zeros master key from memory. */
 void edc_secret_cleanup(void);
@@ -26,13 +27,13 @@ void edc_secret_lockdown(void);
 
 /* Encrypt a plaintext string.
  * Returns a string prefixed with BC_SECRET_PREFIX followed by base64 ciphertext,
- * or NULL on failure. Caller must g_free() the result. */
-gchar *edc_secret_encrypt(const gchar *plaintext);
+ * or NULL on failure. Caller must free() the result. */
+char *edc_secret_encrypt(const char *plaintext);
 
 /* Decrypt a ciphertext string (optionally prefixed with BC_SECRET_PREFIX).
  * If the input starts with the prefix, decrypts and returns the plaintext.
  * Otherwise returns g_strdup(input) as a pass-through.
- * Caller must g_free() the result. */
-gchar *edc_secret_decrypt(const gchar *input);
+ * Caller must free() the result. */
+char *edc_secret_decrypt(const char *input);
 
 #endif

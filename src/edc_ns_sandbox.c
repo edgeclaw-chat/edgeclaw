@@ -90,22 +90,22 @@ static int write_id_map(const char *map_file, unsigned int inside_id, unsigned i
     return 0;
 }
 
-static gboolean path_is_mount_point(const gchar *path)
+static bool path_is_mount_point(const char *path)
 {
     struct stat st1, st2;
     if (stat(path, &st1) != 0)
         return FALSE;
 
-    gchar *parent = g_path_get_dirname(path);
+    char *parent = g_path_get_dirname(path);
     int ret = stat(parent, &st2);
-    g_free(parent);
+    free(parent);
     if (ret != 0)
         return FALSE;
 
     return (st1.st_dev != st2.st_dev) || (st1.st_ino == 2);
 }
 
-static gboolean is_special_fs(const gchar *path)
+static bool is_special_fs(const char *path)
 {
     if (!path_is_mount_point(path))
         return FALSE;
@@ -143,7 +143,7 @@ static gboolean is_special_fs(const gchar *path)
     }
 }
 
-static gboolean ns_mount_special_fs(const gchar *path, int flag)
+static bool ns_mount_special_fs(const char *path, int flag)
 {
     struct statfs sfs;
     if (statfs(path, &sfs) != 0)
@@ -238,7 +238,7 @@ static gboolean ns_mount_special_fs(const gchar *path, int flag)
     return TRUE;
 }
 
-static gboolean ns_mount_dir_as_rw(const gchar *path)
+static bool ns_mount_dir_as_rw(const char *path)
 {
     if (mount(path, path, NULL, MS_BIND, NULL) != 0)
     {
@@ -255,7 +255,7 @@ static gboolean ns_mount_dir_as_rw(const gchar *path)
     return TRUE;
 }
 
-gboolean edc_ns_sandbox_apply(const gchar **ro_paths, const gchar **rw_paths)
+bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths)
 {
     if (!rw_paths || !rw_paths[0])
     {
@@ -278,7 +278,7 @@ gboolean edc_ns_sandbox_apply(const gchar **ro_paths, const gchar **rw_paths)
      * creation is also unavailable. In that case we skip namespace
      * isolation and rely on seccomp-bpf as the primary sandbox layer.
      */
-    gboolean have_userns = FALSE;
+    bool have_userns = FALSE;
     if (syscall(SYS_unshare, CLONE_NEWUSER) == 0)
     {
         have_userns = TRUE;
@@ -380,7 +380,7 @@ gboolean edc_ns_sandbox_apply(const gchar **ro_paths, const gchar **rw_paths)
 
 #else /* !__linux__ */
 #include "edc_ns_sandbox.h"
-gboolean edc_ns_sandbox_apply(const gchar **ro_paths, const gchar **rw_paths)
+bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths)
 {
     (void)ro_paths;
     (void)rw_paths;

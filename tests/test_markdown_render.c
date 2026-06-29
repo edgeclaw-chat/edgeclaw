@@ -10,7 +10,7 @@ int main(int argc, char *argv[])
     }
 
     GError *error = NULL;
-    gchar *contents = NULL;
+    char *contents = NULL;
     if (!g_file_get_contents(argv[1], &contents, NULL, &error)) {
         fprintf(stderr, "read file failed: %s\n", error->message);
         g_error_free(error);
@@ -18,7 +18,7 @@ int main(int argc, char *argv[])
     }
 
     GString *rendered = edc_markdown_render(contents);
-    g_free(contents);
+    free(contents);
 
     if (rendered && rendered->str) {
         printf("%s\n", rendered->str);

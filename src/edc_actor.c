@@ -1,8 +1,8 @@
 #include "edc_actor.h"
 
-const gchar *edc_actor_msg_type_s(edc_actor_msg_type_t type)
+const char *edc_actor_msg_type_s(edc_actor_msg_type_t type)
 {
-    static const gchar *__msg_type_s[] = {
+    static const char *__msg_type_s[] = {
         "BC_ACTOR_MSG_START",        "BC_ACTOR_MSG_USER_INPUT",   "BC_ACTOR_MSG_LLM_REQUEST",
         "BC_ACTOR_MSG_LLM_RESPONSE", "BC_ACTOR_MSG_TOOL_REQUEST", "BC_ACTOR_MSG_TOOL_RESPONSE",
         "BC_ACTOR_MSG_CHANNEL_SEND", "BC_ACTOR_MSG_CHANNEL_RECV", "BC_ACTOR_MSG_MEMORY_COMPRESS",
@@ -23,7 +23,7 @@ edc_actor_runner_t *edc_actor_runner_new()
     return runner;
 }
 
-static gpointer actor_thread_func(gpointer data)
+static void* actor_thread_func(void* data)
 {
     edc_actor_runner_t *runner = data;
 
@@ -71,7 +71,7 @@ void edc_actor_runner_free(edc_actor_runner_t *runner)
     g_main_loop_unref(runner->loop);
     g_main_context_unref(runner->context);
     g_array_free(runner->actors, TRUE);
-    g_free(runner);
+    free(runner);
 }
 
 void edc_actor_runner_add(edc_actor_runner_t *runner, edc_actor_t *actor)
@@ -80,7 +80,7 @@ void edc_actor_runner_add(edc_actor_runner_t *runner, edc_actor_t *actor)
     g_array_append_val(runner->actors, actor);
 }
 
-edc_actor_msg_t *edc_actor_msg_new_sub_type(edc_actor_msg_type_t type, int sub_type, edc_actor_t *from, gpointer request_id,
+edc_actor_msg_t *edc_actor_msg_new_sub_type(edc_actor_msg_type_t type, int sub_type, edc_actor_t *from, void* request_id,
                                           void *data, edc_actor_data_free_fn fn)
 {
     edc_actor_msg_t *msg = g_new0(edc_actor_msg_t, 1);
@@ -94,16 +94,16 @@ edc_actor_msg_t *edc_actor_msg_new_sub_type(edc_actor_msg_type_t type, int sub_t
     }
     else
     {
-        gchar *uuid = g_uuid_string_random();
-        msg->request_id = request_id ? request_id : (void *)(gint64)(g_str_hash(uuid));
-        g_free(uuid);
+        char *uuid = g_uuid_string_random();
+        msg->request_id = request_id ? request_id : (void *)(int64_t)(g_str_hash(uuid));
+        free(uuid);
     }
     msg->data_free_fn = fn;
 
     return msg;
 }
 
-edc_actor_msg_t *edc_actor_msg_new(edc_actor_msg_type_t type, edc_actor_t *from, gpointer request_id, void *data,
+edc_actor_msg_t *edc_actor_msg_new(edc_actor_msg_type_t type, edc_actor_t *from, void* request_id, void *data,
                                  edc_actor_data_free_fn fn)
 {
     return edc_actor_msg_new_sub_type(type, 0, from, request_id, data, fn);
@@ -118,10 +118,10 @@ void edc_actor_msg_free(edc_actor_msg_t *msg)
     {
         msg->data_free_fn(msg->data);
     }
-    g_free(msg);
+    free(msg);
 }
 
-edc_actor_t *edc_actor_new(const gchar *name, edc_actor_handler_t handler, void *state)
+edc_actor_t *edc_actor_new(const char *name, edc_actor_handler_t handler, void *state)
 {
     edc_actor_t *actor = g_new0(edc_actor_t, 1);
     actor->name = g_strdup(name);
@@ -149,13 +149,13 @@ void edc_actor_free(edc_actor_t *actor)
 
     if (actor->name)
     {
-        g_free(actor->name);
+        free(actor->name);
     }
 
-    g_free(actor);
+    free(actor);
 }
 
-static gboolean process_single_message(gpointer data)
+static bool process_single_message(void* data)
 {
     edc_actor_t *actor = data;
     edc_actor_msg_t *msg = g_async_queue_try_pop(actor->mailbox);

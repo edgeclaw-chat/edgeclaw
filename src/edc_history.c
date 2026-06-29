@@ -4,19 +4,19 @@
 #include <stdio.h>
 #include <string.h>
 
-gchar *edc_get_timestamp(void)
+char *edc_get_timestamp(void)
 {
     GDateTime *now = g_date_time_new_now_local();
-    gchar *time = g_date_time_format(now, "%Y-%m-%d %H:%M:%S");
+    char *time = g_date_time_format(now, "%Y-%m-%d %H:%M:%S");
     g_date_time_unref(now);
     return time;
 }
 
-cJSON *edc_history_load(const gchar *workspace, const size_t offset)
+cJSON *edc_history_load(const char *workspace, const size_t offset)
 {
-    gchar *history_file = g_build_filename(workspace, "history.jsonl", NULL);
+    char *history_file = g_build_filename(workspace, "history.jsonl", NULL);
     FILE *fin = fopen(history_file, "r");
-    g_free(history_file);
+    free(history_file);
 
     if (fin == NULL)
     {
@@ -24,7 +24,7 @@ cJSON *edc_history_load(const gchar *workspace, const size_t offset)
     }
 
     cJSON *history_array = cJSON_CreateArray();
-    gchar buf[1024];
+    char buf[1024];
     GString *line = g_string_new(NULL);
     size_t line_counts = 0;
 
@@ -68,25 +68,25 @@ cJSON *edc_history_load(const gchar *workspace, const size_t offset)
     return history_array;
 }
 
-gboolean edc_history_save(const gchar *workspace, cJSON *msg_lst, GList *timestamps, gsize skip_count)
+bool edc_history_save(const char *workspace, cJSON *msg_lst, GList *timestamps, size_t skip_count)
 {
-    gchar *hist_file = g_build_filename(workspace, "history.jsonl", NULL);
+    char *hist_file = g_build_filename(workspace, "history.jsonl", NULL);
     FILE *fout = fopen(hist_file, "a+");
     if (fout == NULL)
     {
         char *s = strerror(errno);
         log_info("open file %s failed: %s", hist_file, s);
-        g_free(hist_file);
+        free(hist_file);
         return FALSE;
     }
 
     for (int i = skip_count, t = 0; i < cJSON_GetArraySize(msg_lst); i++, t++)
     {
         cJSON *msg = cJSON_GetArrayItem(msg_lst, i);
-        const gchar *timestamp = NULL;
+        const char *timestamp = NULL;
         if (timestamps != NULL)
         {
-            timestamp = (const gchar *)g_list_nth_data(timestamps, t);
+            timestamp = (const char *)g_list_nth_data(timestamps, t);
             if (timestamp)
             {
                 cJSON_AddStringToObject(msg, "timestamp", timestamp);
@@ -105,15 +105,15 @@ gboolean edc_history_save(const gchar *workspace, cJSON *msg_lst, GList *timesta
 
     fflush(fout);
     fclose(fout);
-    g_free(hist_file);
+    free(hist_file);
     return TRUE;
 }
 
-gboolean edc_history_get_info(const gchar *workspace, size_t *compress_index, gchar **update_time)
+bool edc_history_get_info(const char *workspace, size_t *compress_index, char **update_time)
 {
-    gchar *history_info_path = g_build_filename(workspace, "history_info.json", NULL);
+    char *history_info_path = g_build_filename(workspace, "history_info.json", NULL);
     GError *error = NULL;
-    gchar *info = NULL;
+    char *info = NULL;
     cJSON *history_info = NULL;
 
     if (!g_file_test(history_info_path, G_FILE_TEST_EXISTS))
@@ -121,12 +121,12 @@ gboolean edc_history_get_info(const gchar *workspace, size_t *compress_index, gc
         *compress_index = 0;
         if (update_time)
             *update_time = edc_get_timestamp();
-        g_free(history_info_path);
+        free(history_info_path);
         return TRUE;
     }
 
-    gboolean ret = TRUE;
-    gboolean ok = g_file_get_contents(history_info_path, &info, NULL, &error);
+    bool ret = TRUE;
+    bool ok = g_file_get_contents(history_info_path, &info, NULL, &error);
 
     if (!ok)
     {
@@ -166,19 +166,19 @@ exit_:
     }
     if (info)
     {
-        g_free(info);
+        free(info);
     }
-    g_free(history_info_path);
+    free(history_info_path);
     cJSON_Delete(history_info);
 
     return ret;
 }
 
-gboolean edc_history_set_info(const gchar *workspace, size_t compress_index, const gchar *update_time)
+bool edc_history_set_info(const char *workspace, size_t compress_index, const char *update_time)
 {
-    gchar *history_info_path = g_build_filename(workspace, "history_info.json", NULL);
+    char *history_info_path = g_build_filename(workspace, "history_info.json", NULL);
     FILE *fout = fopen(history_info_path, "w+");
-    g_free(history_info_path);
+    free(history_info_path);
 
     if (fout == NULL)
     {
@@ -189,7 +189,7 @@ gboolean edc_history_set_info(const gchar *workspace, size_t compress_index, con
     cJSON *history_info = cJSON_CreateObject();
     cJSON_AddStringToObject(history_info, "update_time", update_time);
     cJSON_AddNumberToObject(history_info, "compress_index", compress_index);
-    gchar *info = cJSON_PrintUnformatted(history_info);
+    char *info = cJSON_PrintUnformatted(history_info);
     cJSON_Delete(history_info);
 
     fprintf(fout, "%s", info);

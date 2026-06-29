@@ -20,7 +20,7 @@ struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, st
 
 void edc_toolbox_call_ctx_free(struct edc_toolbox_call_ctx *ctx)
 {
-    g_free(ctx);
+    free(ctx);
 }
 
 struct edc_toolbox *edc_toolbox_new(struct edc_config *conf, edc_actor_t *scheduler, edc_actor_t *channel_actor)
@@ -44,7 +44,7 @@ void edc_toolbox_free(struct edc_toolbox *tb)
     g_hash_table_destroy(tb->tools);
     if (tb->schemas)
         cJSON_Delete(tb->schemas);
-    g_free(tb);
+    free(tb);
 }
 
 static cJSON *edc_tool_params_to_json(GSList *params)
@@ -95,10 +95,10 @@ void edc_toolbox_register(struct edc_toolbox *tb, struct edc_tool *tool)
     cJSON_AddItemToArray(tb->schemas, edc_tool_to_schema(tool));
 
     cJSON *schema = edc_tool_to_schema(tool);
-    gchar *s = cJSON_Print(schema);
+    char *s = cJSON_Print(schema);
     log_info("edc_toolbox: register tool: %s", s);
     cJSON_Delete(schema);
-    g_free(s);
+    free(s);
 }
 
 void edc_toolbox_register_defaults(struct edc_toolbox *tb)
@@ -111,7 +111,7 @@ void edc_toolbox_register_defaults(struct edc_toolbox *tb)
     edc_tools_device_file_register(tb);
 }
 
-static gboolean edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, GError **error)
+static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, GError **error)
 {
     if (!args || !cJSON_IsObject(args))
     {
@@ -139,7 +139,7 @@ static gboolean edc_tool_validate_params(const struct edc_tool *tool, cJSON *arg
         }
 
         struct edc_param_type *type = param->type;
-        gboolean valid = edc_param_type_validate(item, type);
+        bool valid = edc_param_type_validate(item, type);
 
         if (!valid)
         {
@@ -152,7 +152,7 @@ static gboolean edc_tool_validate_params(const struct edc_tool *tool, cJSON *arg
     return TRUE;
 }
 
-void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const gchar *name, cJSON *args,
+void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON *args,
                      void (*callback)(struct edc_toolbox_call_ctx *, GString *, GError *))
 {
 
@@ -176,7 +176,7 @@ void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const gchar *name, cJSON
     GList *p = head;
     while (p)
     {
-        const gchar *name = p->data;
+        const char *name = p->data;
         g_string_append_printf(tool_names, "%s, ", name);
         p = p->next;
     }

@@ -16,7 +16,7 @@ GQuark edc_sandbox_error_quark(void)
     return g_quark_from_static_string("edc_sandbox_error");
 }
 
-gboolean edc_sandbox_init(struct edc_config *conf)
+bool edc_sandbox_init(struct edc_config *conf)
 {
     if (!conf->sandbox_root_real)
     {
@@ -28,35 +28,35 @@ gboolean edc_sandbox_init(struct edc_config *conf)
     return TRUE;
 }
 
-const gchar *edc_sandbox_get_root(struct edc_config *conf)
+const char *edc_sandbox_get_root(struct edc_config *conf)
 {
     return conf->sandbox_root_real;
 }
 
-static gboolean path_is_under_any(const gchar *resolved_path, gchar **paths)
+static bool path_is_under_any(const char *resolved_path, char **paths)
 {
     if (!paths || !resolved_path)
         return FALSE;
 
     for (int i = 0; paths[i]; i++)
     {
-        gchar *entry_real = realpath(paths[i], NULL);
+        char *entry_real = realpath(paths[i], NULL);
         if (!entry_real)
             continue;
 
         size_t len = strlen(entry_real);
         if (g_str_has_prefix(resolved_path, entry_real) && (resolved_path[len] == '\0' || resolved_path[len] == '/'))
         {
-            g_free(entry_real);
+            free(entry_real);
             return TRUE;
         }
-        g_free(entry_real);
+        free(entry_real);
     }
 
     return FALSE;
 }
 
-static gboolean path_allowed(struct edc_config *conf, const gchar *resolved_path, gboolean writable)
+static bool path_allowed(struct edc_config *conf, const char *resolved_path, bool writable)
 {
     if (!conf->sandbox_root_real)
         return TRUE;
@@ -70,7 +70,7 @@ static gboolean path_allowed(struct edc_config *conf, const gchar *resolved_path
     return FALSE;
 }
 
-gchar *edc_sandbox_verify_path(struct edc_config *conf, const gchar *path, gboolean writable, GError **error)
+char *edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writable, GError **error)
 {
     if (!conf->enable_sandbox || !conf->sandbox_root_real)
     {
@@ -84,22 +84,22 @@ gchar *edc_sandbox_verify_path(struct edc_config *conf, const gchar *path, gbool
         return NULL;
     }
 
-    gchar *resolved = realpath(path, NULL);
+    char *resolved = realpath(path, NULL);
     if (resolved)
     {
         if (path_allowed(conf, resolved, writable))
             return resolved;
 
-        g_free(resolved);
+        free(resolved);
         if (error)
             *error =
                 g_error_new(BC_SANDBOX_ERROR, BC_SANDBOX_ERROR_ESCAPE, "access denied: '%s' is outside sandbox", path);
         return NULL;
     }
 
-    gchar *parent = g_path_get_dirname(path);
-    gchar *parent_real = realpath(parent, NULL);
-    g_free(parent);
+    char *parent = g_path_get_dirname(path);
+    char *parent_real = realpath(parent, NULL);
+    free(parent);
 
     if (!parent_real)
     {
@@ -110,21 +110,21 @@ gchar *edc_sandbox_verify_path(struct edc_config *conf, const gchar *path, gbool
 
     if (!path_allowed(conf, parent_real, writable))
     {
-        g_free(parent_real);
+        free(parent_real);
         if (error)
             *error =
                 g_error_new(BC_SANDBOX_ERROR, BC_SANDBOX_ERROR_ESCAPE, "access denied: '%s' is outside sandbox", path);
         return NULL;
     }
 
-    gchar *basename = g_path_get_basename(path);
-    gchar *result = g_build_filename(parent_real, basename, NULL);
-    g_free(basename);
-    g_free(parent_real);
+    char *basename = g_path_get_basename(path);
+    char *result = g_build_filename(parent_real, basename, NULL);
+    free(basename);
+    free(parent_real);
     return result;
 }
 
-gboolean edc_sandbox_apply(struct edc_config *conf)
+bool edc_sandbox_apply(struct edc_config *conf)
 {
 #ifdef __linux__
     if (!conf->enable_sandbox || !conf->sandbox_root_real)
@@ -144,22 +144,22 @@ gboolean edc_sandbox_apply(struct edc_config *conf)
      * are locked down.
      */
 
-    gboolean fs_ok = FALSE;
+    bool fs_ok = FALSE;
 
-    if (edc_landlock_sandbox_apply((const gchar **)conf->sandbox_ro_paths, (const gchar **)conf->sandbox_rw_paths))
+    if (edc_landlock_sandbox_apply((const char **)conf->sandbox_ro_paths, (const char **)conf->sandbox_rw_paths))
     {
         fs_ok = TRUE;
     }
     else
     {
         log_info("edc_sandbox: Landlock not available, trying namespace sandbox...");
-        if (edc_ns_sandbox_apply((const gchar **)conf->sandbox_ro_paths, (const gchar **)conf->sandbox_rw_paths))
+        if (edc_ns_sandbox_apply((const char **)conf->sandbox_ro_paths, (const char **)conf->sandbox_rw_paths))
         {
             fs_ok = TRUE;
         }
     }
 
-    gboolean bpfs_ok = edc_bpf_sandbox_apply(conf->sandbox_root_real);
+    bool bpfs_ok = edc_bpf_sandbox_apply(conf->sandbox_root_real);
     if (!bpfs_ok)
     {
         log_info("edc_sandbox: seccomp-bpf not available, continuing without syscall filter");

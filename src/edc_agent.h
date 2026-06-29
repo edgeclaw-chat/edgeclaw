@@ -8,6 +8,7 @@
 #include "edc_toolbox.h"
 #include <cJSON.h>
 #include <glib.h>
+#include <stdbool.h>
 
 struct edc_agent
 {
@@ -25,9 +26,9 @@ struct edc_agent
     GHashTable *turns; // key: request_id, value: edc_channel_message
 };
 
-extern gchar *edc_agent_run_turn(struct edc_agent *agent, const gchar *input);
+extern char *edc_agent_run_turn(struct edc_agent *agent, const char *input);
 extern void edc_agent_run_loop(struct edc_agent *agent);
-extern struct edc_agent *edc_agent_new(gboolean setup, gboolean enable_sandbox);
+extern struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox);
 extern void edc_agent_remove_all_turns(struct edc_agent *agent);
 extern void edc_agent_free(struct edc_agent *agent);
 

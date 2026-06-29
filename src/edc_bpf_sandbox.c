@@ -1299,7 +1299,7 @@ static struct sock_filter *build_filter(size_t *out_len)
     return f;
 }
 
-gboolean edc_bpf_sandbox_apply(const gchar *sandbox_root)
+bool edc_bpf_sandbox_apply(const char *sandbox_root)
 {
     size_t filter_len = 0;
     struct sock_filter *filter = build_filter(&filter_len);
@@ -1316,18 +1316,18 @@ gboolean edc_bpf_sandbox_apply(const gchar *sandbox_root)
     if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) != 0)
     {
         log_error("edc_bpf_sandbox: seccomp filter install failed: %s", strerror(errno));
-        g_free(filter);
+        free(filter);
         return FALSE;
     }
 
-    g_free(filter);
+    free(filter);
     log_info("edc_bpf_sandbox: seccomp-bpf sandbox enforced, root='%s'", sandbox_root);
     return TRUE;
 }
 
 #else /* !defined(ARCH_NR) */
 
-gboolean edc_bpf_sandbox_apply(const gchar *sandbox_root)
+bool edc_bpf_sandbox_apply(const char *sandbox_root)
 {
     (void)sandbox_root;
     log_debug("edc_bpf_sandbox: unsupported architecture, BPF sandbox disabled");
@@ -1338,7 +1338,7 @@ gboolean edc_bpf_sandbox_apply(const gchar *sandbox_root)
 
 #else /* !__linux__ */
 
-gboolean edc_bpf_sandbox_apply(const gchar *sandbox_root)
+bool edc_bpf_sandbox_apply(const char *sandbox_root)
 {
     (void)sandbox_root;
     return FALSE;
