@@ -23,11 +23,26 @@
 
 volatile sig_atomic_t _run_loop = 1;
 
+#ifdef _WIN32
+#include <windows.h>
+
+static BOOL WINAPI win32_ctrl_handler(DWORD ctrl_type)
+{
+    if (ctrl_type == CTRL_C_EVENT || ctrl_type == CTRL_CLOSE_EVENT ||
+        ctrl_type == CTRL_SHUTDOWN_EVENT)
+    {
+        _run_loop = 0;
+        return TRUE;
+    }
+    return FALSE;
+}
+#else
 static void signal_handler(int sig)
 {
     (void)sig;
     _run_loop = 0;
 }
+#endif
 
 static void print_usage(const char *progname)
 {
@@ -50,10 +65,14 @@ static void print_version(void)
 
 int main(int argc, char *argv[])
 {
+#ifdef _WIN32
+    SetConsoleCtrlHandler(win32_ctrl_handler, TRUE);
+#else
     struct sigaction sa = {.sa_handler = signal_handler, .sa_flags = 0};
     sigemptyset(&sa.sa_mask);
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
+#endif
 
     bool setup = FALSE;
     bool sandbox_enabled = FALSE;
@@ -104,6 +123,8 @@ int main(int argc, char *argv[])
     prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
 #elif defined(__APPLE__)
     ptrace(PT_DENY_ATTACH, 0, 0, 0);
+#elif defined(_WIN32)
+    /* Windows: no ptrace equivalent; rely on ASLR + DEP enabled by linker */
 #endif
 #endif
 

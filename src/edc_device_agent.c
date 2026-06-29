@@ -105,12 +105,13 @@ static int path_is_safe(const char *path)
 
 static int exec_cmd(const char *cmd, sds *out, sds *err, int *exit_code, int timeout_sec)
 {
-    int out_pipe[2], err_pipe[2];
-    pid_t pid;
-
     *out = sdsempty();
     *err = sdsempty();
     *exit_code = -1;
+
+#if defined(__linux__) || defined(__APPLE__)
+    int out_pipe[2], err_pipe[2];
+    pid_t pid;
 
     if (pipe(out_pipe) < 0 || pipe(err_pipe) < 0)
         return -1;
@@ -212,6 +213,7 @@ static int exec_cmd(const char *cmd, sds *out, sds *err, int *exit_code, int tim
     waitpid(pid, &status, 0);
     *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     return 0;
+#endif
 }
 
 static void handle_exec(struct edc_device_request *req, struct edc_device_transport *transport)
