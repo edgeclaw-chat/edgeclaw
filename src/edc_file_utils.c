@@ -166,6 +166,30 @@ bool edc_dir_create_with_parents(const char *path, int mode, EdcError **error)
 bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata,
                      EdcError **error)
 {
+#ifdef _WIN32
+    sds pattern = edc_path_join(path, "*", NULL);
+    WIN32_FIND_DATA fd;
+    HANDLE hFind = FindFirstFile(pattern, &fd);
+    sdsfree(pattern);
+
+    if (hFind == INVALID_HANDLE_VALUE) {
+        edc_error_set(error, EDC_ERR_FAILED, "FindFirstFile '%s' failed: %lu",
+                      path, GetLastError());
+        return false;
+    }
+
+    do {
+        int type = UV_DIRENT_UNKNOWN;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            type = UV_DIRENT_DIR;
+        else
+            type = UV_DIRENT_FILE;
+        cb(fd.cFileName, type, userdata);
+    } while (FindNextFile(hFind, &fd));
+
+    FindClose(hFind);
+    return true;
+#else
     DIR *dir = opendir(path);
     if (!dir) {
         edc_error_set(error, EDC_ERR_FAILED, "opendir '%s' failed: %s",
@@ -187,6 +211,7 @@ bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata,
 
     closedir(dir);
     return true;
+#endif
 }
 
 sds edc_path_join(const char *first, ...)

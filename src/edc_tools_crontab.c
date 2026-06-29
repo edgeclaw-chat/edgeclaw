@@ -1,4 +1,6 @@
+#ifndef _WIN32
 #define _GNU_SOURCE
+#endif
 #include "sds.h"
 #include "edc_error.h"
 #include "edc_tools_crontab.h"
@@ -501,8 +503,26 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
         cJSON_AddStringToObject(schedule, "kind", "at");
         struct tm tm = {0};
         const char *p = cJSON_GetStringValue(at);
-        char *end = strptime(p, "%Y-%m-%dT%H:%M:%S", &tm);
-        if (!end)
+        bool at_ok = false;
+#ifdef _WIN32
+        {
+            int year, mon, day, hour, min, sec;
+            if (sscanf(p, "%d-%d-%dT%d:%d:%d", &year, &mon, &day,
+                       &hour, &min, &sec) == 6) {
+                tm.tm_year = year - 1900;
+                tm.tm_mon = mon - 1;
+                tm.tm_mday = day;
+                tm.tm_hour = hour;
+                tm.tm_min = min;
+                tm.tm_sec = sec;
+                at_ok = true;
+            }
+        }
+#else
+        if (strptime(p, "%Y-%m-%dT%H:%M:%S", &tm))
+            at_ok = true;
+#endif
+        if (!at_ok)
         {
             char *tmp = cJSON_PrintUnformatted(at);
             EdcError *e = edc_error_new(EDC_ERR_INVAL, "'at' is not iso8601 format: %s", tmp);

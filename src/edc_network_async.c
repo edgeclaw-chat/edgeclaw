@@ -1,7 +1,9 @@
 #include "sds.h"
 #include "edc_network_async.h"
 #include "log.h"
+#ifndef _WIN32
 #include <resolv.h>
+#endif
 
 typedef struct
 {
@@ -86,6 +88,10 @@ static void network_async_thread(void* user_data)
 
 static sds edc_network_async_get_dns()
 {
+#ifdef _WIN32
+    /* On Windows, Mongoose uses GetNetworkParams() internally */
+    return NULL;
+#else
     struct __res_state dns_state;
     memset(&dns_state, 0, sizeof(struct __res_state));
 
@@ -140,6 +146,7 @@ static sds edc_network_async_get_dns()
 
     res_nclose(&dns_state);
     return result;
+#endif
 }
 
 edc_network_async_t *edc_network_async_new(const char *cert_path)

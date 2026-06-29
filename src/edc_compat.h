@@ -169,4 +169,8 @@ typedef ssize_t gssize;
 #define EDC_NEW0(type, n)  ((type*)calloc((n), sizeof(type)))
 #define EDC_MALLOC0(n)     calloc(1, (n))
 
+#ifdef _WIN32
+#define timegm _mkgmtime
+#endif
+
 #endif /* EDC_COMPAT_H */
