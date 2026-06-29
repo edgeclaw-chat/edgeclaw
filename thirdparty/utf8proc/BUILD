@@ -7,6 +7,7 @@ cc_library(
         "utf8proc.h",
         "utf8proc_data.c",
     ],
+    defines = ["UTF8PROC_EXPORTS"],
     includes = ["."],
     visibility = ["//visibility:public"],
 )
