@@ -141,14 +141,21 @@ static int transport_pppos_recv(struct edc_device_transport *base, struct edc_de
         return -1;
     }
 
-    u8_t req_buf[524288];
-    size_t req_len = 0;
-    err = recv_http_request(c, req_buf, &req_len, sizeof(req_buf));
-    if (err != ERR_OK)
+    u8_t *req_buf = malloc(524288);
+    if (!req_buf)
     {
         netconn_close(c);
         netconn_delete(c);
         return -1;
+    }
+
+    size_t req_len = 0;
+    err = recv_http_request(c, req_buf, &req_len, 524288);
+    if (err != ERR_OK)
+    {
+        netconn_close(c);
+        netconn_delete(c);
+        goto fail;
     }
 
     req_buf[req_len] = '\0';
@@ -158,7 +165,7 @@ static int transport_pppos_recv(struct edc_device_transport *base, struct edc_de
         netconn_write(c, "HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n", 37, NETCONN_COPY);
         netconn_close(c);
         netconn_delete(c);
-        return -1;
+        goto fail;
     }
     body += 4;
 
@@ -171,7 +178,7 @@ static int transport_pppos_recv(struct edc_device_transport *base, struct edc_de
         netconn_write(c, "HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n", 37, NETCONN_COPY);
         netconn_close(c);
         netconn_delete(c);
-        return -1;
+        goto fail;
     }
 
     if (req_type == REQ_EXEC)
@@ -183,7 +190,7 @@ static int transport_pppos_recv(struct edc_device_transport *base, struct edc_de
             netconn_write(c, "HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n", 37, NETCONN_COPY);
             netconn_close(c);
             netconn_delete(c);
-            return -1;
+            goto fail;
         }
 
         req->command = strdup(cmd_item->valuestring);
@@ -203,11 +210,21 @@ static int transport_pppos_recv(struct edc_device_transport *base, struct edc_de
             netconn_write(c, "HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n", 37, NETCONN_COPY);
             netconn_close(c);
             netconn_delete(c);
-            return -1;
+            goto fail;
         }
 
         req->file_path = strdup(path_item->valuestring);
         req->file_data = strdup(data_item->valuestring);
+        if (!req->file_path || !req->file_data)
+        {
+            cJSON_Delete(req_json);
+            free(req->file_path);
+            free(req->file_data);
+            netconn_write(c, "HTTP/1.1 500\r\nContent-Length: 0\r\n\r\n", 37, NETCONN_COPY);
+            netconn_close(c);
+            netconn_delete(c);
+            goto fail;
+        }
         req->file_data_len = strlen(req->file_data);
         req->file_mode = 0;
         req->file_offset = 0;
@@ -229,7 +246,7 @@ static int transport_pppos_recv(struct edc_device_transport *base, struct edc_de
             netconn_write(c, "HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n", 37, NETCONN_COPY);
             netconn_close(c);
             netconn_delete(c);
-            return -1;
+            goto fail;
         }
 
         req->file_path = strdup(path_item->valuestring);
@@ -248,7 +265,12 @@ static int transport_pppos_recv(struct edc_device_transport *base, struct edc_de
     cJSON_Delete(req_json);
 
     t->conn = c;
+    free(req_buf);
     return 0;
+
+fail:
+    free(req_buf);
+    return -1;
 }
 
 static int transport_pppos_send(struct edc_device_transport *base, const struct edc_device_response *resp)

@@ -121,12 +121,18 @@ static int transport_socket_recv(struct edc_device_transport *base, struct edc_d
         setsockopt(conn_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
     }
 
-    char req_buf[524288];
-    size_t req_len = 0;
-    if (recv_http_request(conn_fd, req_buf, &req_len, sizeof(req_buf)) != 0)
+    char *req_buf = malloc(524288);
+    if (!req_buf)
     {
         close(conn_fd);
         return -1;
+    }
+
+    size_t req_len = 0;
+    if (recv_http_request(conn_fd, req_buf, &req_len, 524288) != 0)
+    {
+        close(conn_fd);
+        goto fail;
     }
 
     req_buf[req_len] = '\0';
@@ -136,7 +142,7 @@ static int transport_socket_recv(struct edc_device_transport *base, struct edc_d
         const char *bad = "HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n";
         send_all(conn_fd, bad, strlen(bad));
         close(conn_fd);
-        return -1;
+        goto fail;
     }
     body += 4;
 
@@ -149,7 +155,7 @@ static int transport_socket_recv(struct edc_device_transport *base, struct edc_d
         const char *bad = "HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n";
         send_all(conn_fd, bad, strlen(bad));
         close(conn_fd);
-        return -1;
+        goto fail;
     }
 
     if (req_type == REQ_EXEC)
@@ -161,7 +167,7 @@ static int transport_socket_recv(struct edc_device_transport *base, struct edc_d
             const char *bad = "HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n";
             send_all(conn_fd, bad, strlen(bad));
             close(conn_fd);
-            return -1;
+            goto fail;
         }
 
         req->command = strdup(cmd_item->valuestring);
@@ -181,11 +187,21 @@ static int transport_socket_recv(struct edc_device_transport *base, struct edc_d
             const char *bad = "HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n";
             send_all(conn_fd, bad, strlen(bad));
             close(conn_fd);
-            return -1;
+            goto fail;
         }
 
         req->file_path = strdup(path_item->valuestring);
         req->file_data = strdup(data_item->valuestring);
+        if (!req->file_path || !req->file_data)
+        {
+            cJSON_Delete(req_json);
+            free(req->file_path);
+            free(req->file_data);
+            const char *bad = "HTTP/1.1 500\r\nContent-Length: 0\r\n\r\n";
+            send_all(conn_fd, bad, strlen(bad));
+            close(conn_fd);
+            goto fail;
+        }
         req->file_data_len = strlen(req->file_data);
         req->file_mode = 0;
         req->file_offset = 0;
@@ -207,7 +223,7 @@ static int transport_socket_recv(struct edc_device_transport *base, struct edc_d
             const char *bad = "HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n";
             send_all(conn_fd, bad, strlen(bad));
             close(conn_fd);
-            return -1;
+            goto fail;
         }
 
         req->file_path = strdup(path_item->valuestring);
@@ -226,7 +242,12 @@ static int transport_socket_recv(struct edc_device_transport *base, struct edc_d
     cJSON_Delete(req_json);
 
     t->conn_fd = conn_fd;
+    free(req_buf);
     return 0;
+
+fail:
+    free(req_buf);
+    return -1;
 }
 
 static int transport_socket_send(struct edc_device_transport *base, const struct edc_device_response *resp)
