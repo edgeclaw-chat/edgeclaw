@@ -2,18 +2,28 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 
 cc_library(
     name = "config",
-    hdrs = [
-        "lwipopts.h",
-        "arch/cc.h",
-        "arch/sys_arch.h",
-    ],
+    hdrs = select({
+        "//:windows": [
+            "lwipopts.h",
+            "arch/win32/cc.h",
+            "arch/win32/sys_arch.h",
+        ],
+        "//conditions:default": [
+            "lwipopts.h",
+            "arch/cc.h",
+            "arch/sys_arch.h",
+        ],
+    }),
     includes = ["."],
     visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "sys_arch",
-    srcs = ["arch/sys_arch.c"],
+    srcs = select({
+        "//:windows": ["arch/win32/sys_arch.c"],
+        "//conditions:default": ["arch/sys_arch.c"],
+    }),
     includes = ["."],
     deps = [
         ":config",

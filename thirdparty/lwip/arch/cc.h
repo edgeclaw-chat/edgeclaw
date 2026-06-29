@@ -4,7 +4,12 @@
 #include <stdint.h>
 #include <string.h>
 #include <limits.h>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#else
 #include <sys/time.h>
+#endif
 
 typedef uint8_t     u8_t;
 typedef int8_t      s8_t;

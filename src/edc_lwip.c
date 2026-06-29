@@ -11,7 +11,9 @@
 #include "netif/ppp/ppp.h"
 #include <unistd.h>
 #include <fcntl.h>
+#ifndef _WIN32
 #include <termios.h>
+#endif
 
 #ifdef __linux__
 static struct netif lwip_tap_netif;
@@ -114,6 +116,7 @@ bool edc_lwip_init_pppos(int fd)
     return g_pppos_link_up;
 }
 
+#ifndef _WIN32
 static speed_t int_to_baud(int baud)
 {
     switch (baud) {
@@ -175,9 +178,11 @@ static speed_t int_to_baud(int baud)
     default:       return B115200;
     }
 }
+#endif /* !_WIN32 */
 
 bool edc_lwip_init_pppos_path(const char *path, int baud)
 {
+#ifndef _WIN32
     int fd = open(path, O_RDWR | O_NOCTTY);
     if (fd < 0) return FALSE;
 
@@ -193,6 +198,10 @@ bool edc_lwip_init_pppos_path(const char *path, int baud)
     tcsetattr(fd, TCSANOW, &t);
 
     return edc_lwip_init_pppos(fd);
+#else
+    (void)path; (void)baud;
+    return FALSE;
+#endif
 }
 
 void edc_lwip_shutdown(void)
