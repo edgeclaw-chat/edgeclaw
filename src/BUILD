@@ -119,6 +119,14 @@ cc_library(
 )
 
 cc_library(
+    name = "edc_terminal",
+    srcs = ["edc_terminal.c"],
+    hdrs = ["edc_terminal.h"],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "edc_file_utils",
     srcs = ["edc_file_utils.c"],
     hdrs = ["edc_file_utils.h"],
@@ -243,6 +251,7 @@ cc_library(
         ":edc_error",
         ":edc_file_utils",
         ":edc_string_utils",
+        ":edc_terminal",
         ":edc_datetime_utils",
         "@uthash//:uthash",
         "@sds//:sds",
@@ -286,6 +295,7 @@ cc_library(
     deps = [
         ":edc_error",
         ":edc_file_utils",
+        ":edc_terminal",
         "@sds//:sds",
         "@log.c//:log.c",
         ":mbedtls_config",

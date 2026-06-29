@@ -2,6 +2,7 @@
 #include "edc_secret.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
+#include "edc_terminal.h"
 #include "log.h"
 #include <errno.h>
 #include "edc_compat.h"
@@ -14,7 +15,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <termios.h>
 #include <unistd.h>
 
 #define BC_KEY_SIZE 32
@@ -52,19 +52,15 @@ static bool read_passphrase_tty(const char *prompt, char *buf, size_t buf_size)
     fprintf(stdout, "%s", prompt);
     fflush(stdout);
 
-    struct termios old_term, new_term;
-    if (tcgetattr(STDIN_FILENO, &old_term) != 0)
+    struct edc_terminal_state saved = {{0}};
+    if (edc_terminal_echo_off(STDIN_FILENO, &saved) != 0)
     {
-        log_error("tcgetattr failed");
+        log_error("edc_terminal_echo_off failed");
         return FALSE;
     }
 
-    new_term = old_term;
-    new_term.c_lflag &= ~(ECHO | ECHOE | ECHOK | ECHONL);
-    tcsetattr(STDIN_FILENO, TCSANOW, &new_term);
-
     char *result = fgets(buf, (int)buf_size, stdin);
-    tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
+    edc_terminal_echo_restore(STDIN_FILENO, &saved);
     fprintf(stdout, "\n");
     fflush(stdout);
 

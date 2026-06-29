@@ -142,7 +142,7 @@ static void edc_channel_cli_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
         sigemptyset(&sa.sa_mask);
         sigaction(SIGUSR1, &sa, NULL);
 
-        tcgetattr(STDIN_FILENO, &state->cli.orig_term);
+        edc_terminal_save(STDIN_FILENO, &state->cli.orig_term);
 
         edc_queue_init(&state->cli.input_queue);
         uv_mutex_init(&state->cli.input_queue_lock);

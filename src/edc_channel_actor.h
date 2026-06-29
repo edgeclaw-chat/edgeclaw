@@ -6,11 +6,11 @@
 #include "edc_config.h"
 #include "edc_containers.h"
 #include "edc_network_async.h"
+#include "edc_terminal.h"
 #include "cJSON.h"
 #include "uthash.h"
 #include <uv.h>
 #include <pthread.h>
-#include <termios.h>
 struct edc_channel
 {
     edc_channel_type type;
@@ -107,7 +107,7 @@ typedef struct
 
         struct
         {
-            struct termios orig_term;
+            struct edc_terminal_state orig_term;
             pthread_t input_tid;
             uv_thread_t input_thread;
             EdcQueue input_queue;

@@ -7,12 +7,12 @@
 #include <inttypes.h>
 #include "edc_compat.h"
 #include "edc_file_utils.h"
+#include "edc_terminal.h"
 #include "sds.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <termios.h>
 #include <unistd.h>
 
 /* Channel type options */
@@ -80,15 +80,11 @@ static sds prompt_password(const char *label, const char *default_val)
     fprintf(stdout, "%s", prompt);
     fflush(stdout);
 
-    struct termios old_term, new_term;
-    if (tcgetattr(STDIN_FILENO, &old_term) != 0)
+    struct edc_terminal_state saved = {{0}};
+    if (edc_terminal_echo_off(STDIN_FILENO, &saved) != 0)
     {
         return NULL;
     }
-
-    new_term = old_term;
-    new_term.c_lflag &= ~(ECHO);
-    tcsetattr(STDIN_FILENO, TCSANOW, &new_term);
 
     sds result = NULL;
     char *raw = NULL;
@@ -102,7 +98,7 @@ static sds prompt_password(const char *label, const char *default_val)
     }
     free(raw);
 
-    tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
+    edc_terminal_echo_restore(STDIN_FILENO, &saved);
     fprintf(stdout, "\n");
     fflush(stdout);
 

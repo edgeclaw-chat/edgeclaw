@@ -430,7 +430,7 @@ void edc_channel_actor_free(edc_actor_t *actor)
         if (state->cli.history_path)
             sdsfree(state->cli.history_path);
         pthread_mutex_destroy(&state->cli.term_mutex);
-        tcsetattr(STDIN_FILENO, TCSANOW, &state->cli.orig_term);
+        edc_terminal_restore(STDIN_FILENO, &state->cli.orig_term);
         break;
     default:
         break;
