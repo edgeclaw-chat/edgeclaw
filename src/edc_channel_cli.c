@@ -1,15 +1,15 @@
 #include "edc_string.h"
 #include "edc_strutil.h"
-#include "edc_channel_cli.h"
-#include "edc_actor.h"
 #include "edc_channel_actor.h"
+#include "edc_channel_cli.h"
 #include "edc_markdown_render.h"
+#include "edc_config.h"
 #include "linenoise.h"
-#include "log.h"
-#include <errno.h>
+#include <glib.h>
+#include <pthread.h>
 #include <signal.h>
+#include <errno.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -94,6 +94,10 @@ static void* cli_input_thread(void* data)
 
     if (state->cli.history_path)
         linenoiseHistorySave(state->cli.history_path);
+
+    /* Wake up main loop if we exited due to EOF/Ctrl+C (not /stop) */
+    if (g_atomic_int_get(&state->cli.running))
+        raise(SIGINT);
 
     return NULL;
 }

@@ -6,6 +6,9 @@
 #include "edc_memory_actor.h"
 #include <edc_session.h>
 #include <log.h>
+#include <signal.h>
+
+extern volatile sig_atomic_t _run_loop;
 
 static bool edc_commands_is_target(const char *content, const char *target)
 {
@@ -60,7 +63,8 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
         "# EdgeClaw Commands\n\n"
         "- `/new` — Start a new session (clear current turns, trigger memory compress)\n"
         "- `/stop` — Stop all current turns and save session history\n"
-        "- `/help` — Show this help message";
+        "- `/help` — Show this help message\n"
+        "- `/exit` — Exit the program gracefully";
 
     struct edc_channel_message *reply =
         edc_channel_message_new(edc_channel_copy(channel), strdup(help_text));
@@ -68,6 +72,19 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->channel->type, actor, NULL, reply,
                                             (edc_actor_data_free_fn)edc_channel_message_free));
 
+    return TRUE;
+}
+
+static bool edc_commands_handle_exit(struct edc_agent *agent, edc_actor_t *actor, struct edc_channel *channel)
+{
+    struct edc_channel_message *reply =
+        edc_channel_message_new(edc_channel_copy(channel), strdup("[system] shutting down..."));
+    edc_actor_send(agent->channel_actor,
+                  edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->channel->type, actor, NULL, reply,
+                                            (edc_actor_data_free_fn)edc_channel_message_free));
+
+    log_info("received /exit command");
+    _run_loop = 0;
     return TRUE;
 }
 
@@ -89,6 +106,10 @@ bool edc_commands_handler(struct edc_agent *agent, struct edc_actor *actor, stru
     else if (edc_commands_is_target(message->content, "/help"))
     {
         return edc_commands_handle_help(agent, actor, message->channel);
+    }
+    else if (edc_commands_is_target(message->content, "/exit"))
+    {
+        return edc_commands_handle_exit(agent, actor, message->channel);
     }
     else
     {

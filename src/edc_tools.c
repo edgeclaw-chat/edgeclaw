@@ -7,7 +7,7 @@ G_DEFINE_QUARK(edc_tool_error_quark, edc_tool_error)
 
 struct edc_tool_param *edc_tool_param_new(char *name, struct edc_param_type *type, bool required)
 {
-    struct edc_tool_param *param = g_new(struct edc_tool_param, 1);
+    struct edc_tool_param *param = calloc(1, sizeof(*param));
     param->name = strdup(name);
     param->type = type;
     param->required = required;
@@ -27,8 +27,6 @@ void edc_tool_free(struct edc_tool *tool)
 {
     if (!tool)
         return;
-    edc_str_free(tool->name);
-    edc_str_free(tool->desc);
 
     {
         struct edc_tool_param *p, *tmp;
@@ -38,6 +36,9 @@ void edc_tool_free(struct edc_tool *tool)
             edc_tool_param_free(p);
         }
     }
+
+    edc_str_free(tool->name);
+    edc_str_free(tool->desc);
 
     if (tool->priv_free_fn && tool->priv)
     {

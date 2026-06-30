@@ -333,8 +333,8 @@ static void edc_tool_crontab_update_task(const char *workspace, struct edc_chann
 
     GSource *source = g_timeout_source_new_seconds(interval);
     tool->priv = edc_tool_crontab_state_new(source, run_at, strdup(job_id), strdup(job_name),
-                                           edc_tool_crontab_build_task_message(job_name, job_message),
-                                           strdup(workspace), once, scheduler, call_from);
+                                            edc_tool_crontab_build_task_message(job_name, job_message),
+                                            strdup(workspace), once, scheduler, call_from);
 
     g_source_set_callback(source, (GSourceFunc)edc_tool_crontab_on_timeout, tool, NULL);
     g_source_attach(source, scheduler->context);
@@ -375,7 +375,7 @@ static void edc_tool_crontab_schedule(const char *workspace, edc_actor_t *schedu
 
         if (next_time_i < next_time)
         {
-            job_id = cJSON_GetStringValue(job_i);
+            job_id = cJSON_GetStringValue(cJSON_GetObjectItem(job_i, "job_id"));
             job_name = job_name_i;
             job_message = cJSON_GetStringValue(cJSON_GetObjectItem(job_i, "message"));
             next_time = next_time_i;

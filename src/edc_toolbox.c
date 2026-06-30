@@ -99,12 +99,6 @@ void edc_toolbox_register(struct edc_toolbox *tb, struct edc_tool *tool)
 {
     HASH_ADD_STR(tb->tools, name, tool);
     cJSON_AddItemToArray(tb->schemas, edc_tool_to_schema(tool));
-
-    cJSON *schema = edc_tool_to_schema(tool);
-    char *s = cJSON_Print(schema);
-    log_info("edc_toolbox: register tool: %s", s);
-    cJSON_Delete(schema);
-    free(s);
 }
 
 void edc_toolbox_register_defaults(struct edc_toolbox *tb)

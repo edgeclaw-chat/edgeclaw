@@ -3,11 +3,13 @@
 #include "edc_init_env.h"
 #include "edc_log.h"
 #include "edc_lwip.h"
+#include <errno.h>
 #include <getopt.h>
 #include <glib.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #ifdef __linux__
 #include <sys/prctl.h>
 #elif defined(__APPLE__)
@@ -18,14 +20,12 @@
 
 #define EDGECLAW_VERSION "1.0.0"
 
-static int _run_loop = 1;
+volatile sig_atomic_t _run_loop = 1;
 
 static void signal_handler(int sig)
 {
-    if (sig == SIGINT)
-    {
-        _run_loop = 0;
-    }
+    (void)sig;
+    _run_loop = 0;
 }
 
 static void print_usage(const char *progname)
@@ -49,7 +49,10 @@ static void print_version(void)
 
 int main(int argc, char *argv[])
 {
-    signal(SIGINT, signal_handler);
+    struct sigaction sa = {.sa_handler = signal_handler, .sa_flags = 0};
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
 
     bool setup = FALSE;
     bool sandbox_enabled = FALSE;
@@ -141,7 +144,8 @@ int main(int argc, char *argv[])
     while (_run_loop)
     {
         edc_log_check_rotate();
-        g_usleep(1 * G_USEC_PER_SEC);
+        if (usleep(1 * 1000000) == -1 && errno == EINTR)
+            continue;
     }
 
     edc_agent_free(agent);
