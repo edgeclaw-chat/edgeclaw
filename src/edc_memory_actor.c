@@ -111,7 +111,7 @@ static cJSON *edc_memory_save_tool()
     return tools;
 }
 
-static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg)
+static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, bool force)
 {
     struct edc_memory_actor_state *state = actor->state;
 
@@ -130,7 +130,7 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg)
 
     bool ret = TRUE;
     const size_t history_size = cJSON_GetArraySize(history);
-    if (history_size < state->history_window)
+    if (!force && history_size < state->history_window)
     {
         ret = FALSE;
         goto exit_free_history;
@@ -408,7 +408,7 @@ static void edc_memory_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
         {
             state->compressing = TRUE;
             state->compress_msg = msg;
-            if (!edc_memory_do_compress(actor, msg))
+            if (!edc_memory_do_compress(actor, msg, msg->data != NULL))
             {
                 state->compressing = FALSE;
                 state->compress_msg = NULL;

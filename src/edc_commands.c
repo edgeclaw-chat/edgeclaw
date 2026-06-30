@@ -27,7 +27,8 @@ static bool edc_commands_handle_new(struct edc_agent *agent, edc_actor_t *actor,
     if (!edc_memory_actor_is_compressing(agent->memory_actor)) // msg + system prompt
     {
         edc_actor_send(agent->memory_actor,
-                      edc_actor_msg_new(BC_ACTOR_MSG_MEMORY_COMPRESS, agent->scheduler, NULL, NULL, NULL));
+                      edc_actor_msg_new(BC_ACTOR_MSG_MEMORY_COMPRESS, agent->scheduler, NULL,
+                                        (void *)(intptr_t)1 /* force */, NULL));
     }
 
     struct edc_channel_message *reply =
