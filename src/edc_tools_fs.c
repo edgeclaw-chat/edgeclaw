@@ -5,6 +5,11 @@
 #include "edc_tools.h"
 #include <edc_param_types.h>
 #include <string.h>
+#include "utarray.h"
+
+static UT_icd ut_size_t_icd = {sizeof(size_t), NULL, NULL, NULL};
+static UT_icd ut_int64_icd = {sizeof(int64_t), NULL, NULL, NULL};
+static UT_icd ut_uint_icd = {sizeof(unsigned int), NULL, NULL, NULL};
 
 static sds edc_tool_exec_read_file(struct edc_config *conf, cJSON *args, GError **error)
 {
@@ -100,9 +105,8 @@ static void edc_tool_create_read_file(struct edc_toolbox *tb)
 {
     const char *name = "read_file";
     const char *desc = "Read the contents of a file at the given path.";
-    GSList *params = NULL;
-    params =
-        g_slist_append(params, edc_tool_param_new("path", edc_param_str_type("The file path to read", NULL), TRUE));
+    struct edc_tool_param *params = NULL;
+    LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The file path to read", NULL), TRUE));
     edc_toolbox_register(tb, edc_tool_new(name, desc, params, edc_tool_exec_read_file_async));
 }
 
@@ -119,11 +123,9 @@ static void edc_tool_create_write_file(struct edc_toolbox *tb)
     const char *name = "write_file";
     const char *desc = "Write the contents of a file at the given path.";
 
-    GSList *params = NULL;
-    params =
-        g_slist_append(params, edc_tool_param_new("path", edc_param_str_type("The file path to write", NULL), TRUE));
-    params =
-        g_slist_append(params, edc_tool_param_new("content", edc_param_str_type("The content to write", NULL), TRUE));
+    struct edc_tool_param *params = NULL;
+    LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The file path to write", NULL), TRUE));
+    LL_APPEND(params, edc_tool_param_new("content", edc_param_str_type("The content to write", NULL), TRUE));
 
     edc_toolbox_register(tb, edc_tool_new(name, desc, params, edc_tool_exec_write_file_async));
 }
@@ -141,9 +143,8 @@ static void edc_tool_create_list_dir(struct edc_toolbox *tb)
     const char *name = "list_dir";
     const char *desc = "List the contents of a directory at the given path.";
 
-    GSList *params = NULL;
-    params = g_slist_append(params,
-                            edc_tool_param_new("path", edc_param_str_type("The directory path to list", NULL), TRUE));
+    struct edc_tool_param *params = NULL;
+    LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The directory path to list", NULL), TRUE));
     edc_toolbox_register(tb, edc_tool_new(name, desc, params, edc_tool_exec_list_dir_async));
 }
 
@@ -200,10 +201,10 @@ static sds edc_edit_file_try_create(const char *path, char *safe_path,
 }
 
 static void edc_edit_file_find_matches(const char *content, const char *old_text, size_t old_len,
-                                        GArray **positions, GArray **line_nums, unsigned int *out_count)
+                                        UT_array **positions, UT_array **line_nums, unsigned int *out_count)
 {
-    *positions = g_array_new(FALSE, FALSE, sizeof(size_t));
-    *line_nums = g_array_new(FALSE, FALSE, sizeof(int64_t));
+    utarray_new(*positions, &ut_size_t_icd);
+    utarray_new(*line_nums, &ut_int64_icd);
 
     /* Guard: strstr with empty needle matches at every position → infinite loop */
     if (old_len == 0)
@@ -225,23 +226,23 @@ static void edc_edit_file_find_matches(const char *content, const char *old_text
                 current_line++;
             nl_scan++;
         }
-        g_array_append_val(*positions, pos);
-        g_array_append_val(*line_nums, current_line);
+        utarray_push_back(*positions, &pos);
+        utarray_push_back(*line_nums, &current_line);
         scan += old_len;
     }
-    *out_count = (*positions)->len;
+    *out_count = utarray_len(*positions);
 }
 
 static void edc_edit_file_format_match_list(const char *content, size_t content_len,
-                                              GArray *positions, GArray *line_nums,
+                                              UT_array *positions, UT_array *line_nums,
                                               size_t old_len, unsigned int count, unsigned int max_preview,
                                               sds out)
 {
     unsigned int preview = MIN(count, max_preview);
     for (unsigned int i = 0; i < preview; i++)
     {
-        size_t pos = g_array_index(positions, size_t, i);
-        int64_t ln = g_array_index(line_nums, int64_t, i);
+        size_t pos = *(size_t*)utarray_eltptr(positions, (unsigned)i);
+        int64_t ln = *(int64_t*)utarray_eltptr(line_nums, (unsigned)i);
         size_t ctx_start = pos > 25 ? pos - 25 : 0;
         size_t ctx_end = pos + old_len + 25;
         if (ctx_end > content_len)
@@ -265,18 +266,18 @@ static void edc_edit_file_format_match_list(const char *content, size_t content_
         edc_str_printf(out, "\n  ... and %u more matches", count - max_preview);
 }
 
-static bool edc_edit_file_select_all(unsigned int count, GArray **selected, GError **error)
+static bool edc_edit_file_select_all(unsigned int count, UT_array **selected, GError **error)
 {
     for (unsigned int i = 0; i < count; i++)
     {
         unsigned int idx = i;
-        g_array_append_val(*selected, idx);
+        utarray_push_back(*selected, &idx);
     }
     return TRUE;
 }
 
 static bool edc_edit_file_select_by_occurrence(unsigned int count, int64_t occurrence,
-                                                     GArray **selected, GError **error)
+                                                     UT_array **selected, GError **error)
 {
     if ((uint64_t)occurrence > count)
     {
@@ -286,14 +287,14 @@ static bool edc_edit_file_select_by_occurrence(unsigned int count, int64_t occur
         return FALSE;
     }
     unsigned int idx = (unsigned int)(occurrence - 1);
-    g_array_append_val(*selected, idx);
+    utarray_push_back(*selected, &idx);
     return TRUE;
 }
 
 static bool edc_edit_file_select_by_line_hint(const char *content, size_t content_len,
-                                                    unsigned int count, GArray *line_nums,
-                                                    GArray *positions, size_t old_len,
-                                                    int64_t line_hint, GArray **selected,
+                                                    unsigned int count, UT_array *line_nums,
+                                                    UT_array *positions, size_t old_len,
+                                                    int64_t line_hint, UT_array **selected,
                                                     GError **error)
 {
     int64_t best_dist = G_MAXINT64;
@@ -302,7 +303,7 @@ static bool edc_edit_file_select_by_line_hint(const char *content, size_t conten
 
     for (unsigned int i = 0; i < count; i++)
     {
-        int64_t ln = g_array_index(line_nums, int64_t, i);
+        int64_t ln = *(int64_t*)utarray_eltptr(line_nums, (unsigned)i);
         int64_t dist = ln > line_hint ? ln - line_hint : line_hint - ln;
         if (dist < best_dist)
         {
@@ -326,17 +327,17 @@ static bool edc_edit_file_select_by_line_hint(const char *content, size_t conten
         return FALSE;
     }
 
-    g_array_append_val(*selected, best_idx);
+    utarray_push_back(*selected, &best_idx);
     return TRUE;
 }
 
 static bool edc_edit_file_select_matches(const char *content, size_t content_len,
-                                              unsigned int count, GArray *line_nums,
-                                              GArray *positions, size_t old_len,
+                                              unsigned int count, UT_array *line_nums,
+                                              UT_array *positions, size_t old_len,
                                               bool replace_all, int64_t occurrence,
-                                              int64_t line_hint, GArray **selected, GError **error)
+                                              int64_t line_hint, UT_array **selected, GError **error)
 {
-    *selected = g_array_new(FALSE, FALSE, sizeof(unsigned int));
+    utarray_new(*selected, &ut_uint_icd);
 
     if ((replace_all ? 1 : 0) + (occurrence > 0 ? 1 : 0) + (line_hint > 0 ? 1 : 0) > 1)
     {
@@ -378,24 +379,24 @@ static bool edc_edit_file_select_matches(const char *content, size_t content_len
 
     {
         unsigned int zero = 0;
-        g_array_append_val(*selected, zero);
+        utarray_push_back(*selected, &zero);
     }
     return TRUE;
 }
 
 static void edc_edit_file_apply_replacements(const char *content, size_t content_len,
                                               const char *old_text, size_t old_len,
-                                              const char *new_text, GArray *positions,
-                                              GArray *selected, sds *out_content)
+                                              const char *new_text, UT_array *positions,
+                                              UT_array *selected, sds *out_content)
 {
     size_t new_len = strlen(new_text);
     *out_content = edc_str_new(NULL);
     size_t prev_end = 0;
 
-    for (unsigned int si = 0; si < selected->len; si++)
+    for (unsigned int si = 0; si < utarray_len(selected); si++)
     {
-        unsigned int idx = g_array_index(selected, unsigned int, si);
-        size_t start = g_array_index(positions, size_t, idx);
+        unsigned int idx = *(unsigned int*)utarray_eltptr(selected, si);
+        size_t start = *(size_t*)utarray_eltptr(positions, (unsigned)idx);
         size_t end = start + old_len;
 
         edc_str_catn(*out_content, content + prev_end, (ssize_t)(start - prev_end));
@@ -459,9 +460,9 @@ static sds edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, GError 
     }
 
     char *content = NULL;
-    GArray *positions = NULL;
-    GArray *line_nums = NULL;
-    GArray *selected = NULL;
+    UT_array *positions = NULL;
+    UT_array *line_nums = NULL;
+    UT_array *selected = NULL;
     sds result = NULL;
 
     *error = NULL;
@@ -486,11 +487,11 @@ static sds edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, GError 
                                        line_hint, &selected, error))
         goto cleanup;
 
-    if (expected_replacements > 0 && selected->len != (unsigned int)expected_replacements)
+    if (expected_replacements > 0 && utarray_len(selected) != (unsigned int)expected_replacements)
     {
         g_set_error(error, BC_TOOL_ERROR, BC_TOOL_EXEC_ERROR,
                     "Error: expected %ld replacements but would make %u.",
-                    (long)expected_replacements, selected->len);
+                    (long)expected_replacements, (unsigned)utarray_len(selected));
         goto cleanup;
     }
 
@@ -512,11 +513,11 @@ cleanup:
     free(content);
     free(safe_path);
     if (positions)
-        g_array_free(positions, TRUE);
+        utarray_free(positions);
     if (line_nums)
-        g_array_free(line_nums, TRUE);
+        utarray_free(line_nums);
     if (selected)
-        g_array_free(selected, TRUE);
+        utarray_free(selected);
     return result;
 }
 

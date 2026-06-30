@@ -1,5 +1,6 @@
 #ifndef __BC_HTTP_ASYNC_H__
 #define __BC_HTTP_ASYNC_H__
+#include "edc_containers.h"
 #include "mongoose.h"
 #include <glib.h>
 #include <stdbool.h>
@@ -11,7 +12,7 @@ typedef struct
     struct mg_mgr mgr;
     struct mg_str cert_pem;
     GMutex mutex;
-    GQueue task_queue;
+    EdcQueue task_queue;
     int running;
     void *pending_retries;
 } edc_network_async_t;

@@ -1,12 +1,13 @@
 #ifndef __BC_TURN_H__
 #define __BC_TURN_H__
+#include "edc_containers.h"
 #include <cJSON.h>
 #include <glib.h>
 
 struct edc_turn
 {
-    GQueue *messages;
-    GQueue *timestamps;
+    EdcQueue messages;
+    EdcQueue timestamps;
 };
 
 extern struct edc_turn *edc_turn_new();

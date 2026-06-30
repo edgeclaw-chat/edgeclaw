@@ -30,7 +30,14 @@ void edc_tool_free(struct edc_tool *tool)
     edc_str_free(tool->name);
     edc_str_free(tool->desc);
 
-    g_slist_free_full(tool->params, (EdcDestroyNotify)edc_tool_param_free);
+    {
+        struct edc_tool_param *p, *tmp;
+        LL_FOREACH_SAFE(tool->params, p, tmp)
+        {
+            LL_DELETE(tool->params, p);
+            edc_tool_param_free(p);
+        }
+    }
 
     if (tool->priv_free_fn && tool->priv)
     {
@@ -40,7 +47,8 @@ void edc_tool_free(struct edc_tool *tool)
     free(tool);
 }
 
-struct edc_tool *edc_tool_new(const char *name, const char *desc, GSList *params, edc_tool_exec_async_fn exec)
+struct edc_tool *edc_tool_new(const char *name, const char *desc, struct edc_tool_param *params,
+                                edc_tool_exec_async_fn exec)
 {
     struct edc_tool *tool = g_new0(struct edc_tool, 1);
     tool->name = edc_str_new(name);
@@ -60,10 +68,10 @@ struct edc_tool *edc_tool_new_v(const char *name, const char *desc, struct edc_t
     tool->name = edc_str_new(name);
     tool->desc = edc_str_new(desc);
 
-    GSList *l = NULL;
+    struct edc_tool_param *l = NULL;
     for (int i = 0; params[i]; ++i)
     {
-        l = g_slist_append(l, params[i]);
+        LL_APPEND(l, params[i]);
     }
     tool->params = l;
     tool->exec = exec;

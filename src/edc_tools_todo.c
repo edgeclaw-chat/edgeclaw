@@ -77,7 +77,7 @@ void edc_tools_todo_register(struct edc_toolbox *tb)
 
     struct edc_tool_param *param = edc_tool_param_new("items", items_type, TRUE);
 
-    struct edc_tool *tool = edc_tool_new(name, desc, g_slist_append(NULL, param), edc_tools_todo_exec_async);
+    struct edc_tool *tool = edc_tool_new(name, desc, param, edc_tools_todo_exec_async);
 
     edc_toolbox_register(tb, tool);
 }

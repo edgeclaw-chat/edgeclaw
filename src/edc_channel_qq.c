@@ -2,6 +2,7 @@
 #include "edc_channel_qq.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
+#include "utlist.h"
 #include "edc_network_async.h"
 #include "cJSON.h"
 #include "log.h"
@@ -472,7 +473,16 @@ static void edc_channel_qq_handle_wss_reconnect(struct mg_connection *c, struct 
     req->wss.session_id = NULL;
     c->is_closing = 1;
 
-    state->qq.conns = g_slist_remove(state->qq.conns, c);
+    struct edc_mg_conn_node *node;
+    LL_FOREACH(state->qq.conns, node)
+    {
+        if (node->conn == c)
+        {
+            LL_DELETE(state->qq.conns, node);
+            free(node);
+            break;
+        }
+    }
 
     edc_actor_send(req->wss.actor,
                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_qq, req->wss.actor, NULL, resp,
@@ -575,7 +585,9 @@ static void edc_channel_qq_wss_fn(struct mg_connection *c, int ev, void *ev_data
     {
         struct edc_channel_qq_network_req *req = c->fn_data;
         edc_channel_actor_state_t *state = req->wss.actor->state;
-        state->qq.conns = g_slist_append(state->qq.conns, c);
+        struct edc_mg_conn_node *node = g_new0(struct edc_mg_conn_node, 1);
+        node->conn = c;
+        LL_APPEND(state->qq.conns, node);
     }
     else if (ev == MG_EV_POLL)
     {
@@ -624,19 +636,13 @@ static void edc_channel_qq_start_wss_conn_shard(edc_actor_t *actor, char *sessio
 static void edc_channel_qq_start_wss_conn(edc_actor_t *actor, char *session_id, int64_t s)
 {
     edc_channel_actor_state_t *state = actor->state;
-    GSList *p = state->qq.conns;
-    while (p)
+    struct edc_mg_conn_node *node, *tmp;
+    LL_FOREACH_SAFE(state->qq.conns, node, tmp)
     {
-        struct mg_connection *c = p->data;
-        edc_network_async_close_conn(state->network, c);
-        p = p->next;
+        edc_network_async_close_conn(state->network, node->conn);
+        free(node);
     }
-
-    if (state->qq.conns)
-    {
-        g_slist_free(state->qq.conns);
-        state->qq.conns = NULL;
-    }
+    state->qq.conns = NULL;
 
     for (int i = 0; i < state->qq.wss_shards; ++i)
     {

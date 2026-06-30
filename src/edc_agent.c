@@ -1,6 +1,7 @@
 #include "edc_strutil.h"
 #include "edc_agent.h"
 #include "edc_actor.h"
+#include "uthash.h"
 #include "edc_channel_actor.h"
 #include "edc_config.h"
 #include "edc_init_env.h"
@@ -24,9 +25,9 @@ static void edc_agent_handle_tool_calls(struct edc_agent *agent, struct edc_chan
     struct edc_toolbox_actor_req *req = edc_toolbox_actor_req_new(NULL, NULL, NULL, NULL);
     struct edc_toolbox_actor_req *head = req;
 
-    for (int i = 0; i < resp->tool_calls->len; i++)
+    for (unsigned i = 0; i < utarray_len(resp->tool_calls); i++)
     {
-        struct edc_llm_chat_tool_call *tool_call = &g_array_index(resp->tool_calls, struct edc_llm_chat_tool_call, i);
+        struct edc_llm_chat_tool_call *tool_call = (struct edc_llm_chat_tool_call*)utarray_eltptr(resp->tool_calls, i);
         if (tool_call->type == BC_LLM_TOOL_CALL_TYPE_FUNCTION)
         {
             req->next = edc_toolbox_actor_req_new(tool_call->function.name, tool_call->function.arguments,
@@ -50,8 +51,10 @@ static void edc_agent_handle_tool_calls(struct edc_agent *agent, struct edc_chan
 
 struct edc_channel_turn
 {
+    void *request_id;
     struct edc_turn *turn;
     struct edc_channel *channel;
+    UT_hash_handle hh;
 };
 
 struct edc_channel_turn *edc_channel_turn_new(struct edc_channel *channel)
@@ -79,7 +82,8 @@ void edc_channel_turn_free(struct edc_channel_turn *turn)
 
 static void handle_llm_resp(struct edc_agent *agent, edc_actor_t *actor, edc_actor_msg_t *msg)
 {
-    struct edc_channel_turn *turn = g_hash_table_lookup(agent->turns, msg->request_id);
+    struct edc_channel_turn *turn;
+    HASH_FIND_PTR(agent->turns, &msg->request_id, turn);
     if (!turn)
     {
         log_info("turn %p is not exists. remove now.", msg->request_id);
@@ -96,7 +100,7 @@ static void handle_llm_resp(struct edc_agent *agent, edc_actor_t *actor, edc_act
         turn->channel = NULL;
 
         log_info("agent remove turn reqid = %p", msg->request_id);
-        g_hash_table_remove(agent->turns, msg->request_id);
+        HASH_DEL(agent->turns, turn);
         edc_channel_turn_free(turn);
         goto exit;
     }
@@ -123,7 +127,7 @@ static void handle_llm_resp(struct edc_agent *agent, edc_actor_t *actor, edc_act
         edc_turn_add_assistant_message(turn->turn, resp->msg);
         resp->msg = NULL;
         log_info("agent remove turn reqid = %p", msg->request_id);
-        g_hash_table_remove(agent->turns, msg->request_id);
+        HASH_DEL(agent->turns, turn);
         edc_session_add_turn(agent->session, turn->turn);
         edc_channel_turn_free(turn);
         edc_session_save_history(agent->session);
@@ -135,7 +139,7 @@ static void handle_llm_resp(struct edc_agent *agent, edc_actor_t *actor, edc_act
         turn->channel = NULL;
 
         log_info("agent remove turn reqid = %p", msg->request_id);
-        g_hash_table_remove(agent->turns, msg->request_id);
+        HASH_DEL(agent->turns, turn);
         edc_channel_turn_free(turn);
     }
 
@@ -151,12 +155,12 @@ exit:
 static void handle_tool_resp(struct edc_agent *agent, edc_actor_t *actor, edc_actor_msg_t *msg)
 {
     struct edc_toolbox_actor_req *req = msg->data;
-    struct edc_channel_turn *turn = g_hash_table_lookup(agent->turns, msg->request_id);
+    struct edc_channel_turn *turn;
+    HASH_FIND_PTR(agent->turns, &msg->request_id, turn);
 
     if (!turn)
     {
         log_warn("tool response dropped: turn %p was already removed (cancelled by /stop, /new, or error)", msg->request_id);
-        g_hash_table_remove(agent->turns, msg->request_id);
         return;
     }
 
@@ -168,7 +172,7 @@ static void handle_tool_resp(struct edc_agent *agent, edc_actor_t *actor, edc_ac
     if (!req->next)
     {
         struct edc_llm_actor_req *req = edc_llm_actor_req_new(edc_session_get_messages(agent->session),
-                                                            agent->toolbox->schemas, turn->turn->messages);
+                                                             agent->toolbox->schemas, &turn->turn->messages);
         edc_actor_msg_t *llm_msg = edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST, actor, msg->request_id, req,
                                                    (edc_actor_data_free_fn)edc_llm_actor_req_free);
 
@@ -188,11 +192,12 @@ static void handle_user_input(struct edc_agent *agent, edc_actor_t *actor, edc_a
     log_info("agent insert turn reqid = %p", msg->request_id);
     struct edc_channel_turn *turn = edc_channel_turn_new(input->channel);
     edc_turn_add_user_message(turn->turn, input->content);
-    g_hash_table_insert(agent->turns, msg->request_id, turn);
+    turn->request_id = msg->request_id;
+    HASH_ADD_PTR(agent->turns, request_id, turn);
     input->channel = NULL;
 
     struct edc_llm_actor_req *req =
-        edc_llm_actor_req_new(edc_session_get_messages(agent->session), agent->toolbox->schemas, turn->turn->messages);
+        edc_llm_actor_req_new(edc_session_get_messages(agent->session), agent->toolbox->schemas, &turn->turn->messages);
     edc_actor_msg_t *llm_msg = edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST, actor, msg->request_id, req,
                                                (edc_actor_data_free_fn)edc_llm_actor_req_free);
 
@@ -275,8 +280,6 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
 
     edc_channel_actor_set_observer(agent->channel_actor, agent->scheduler);
 
-    agent->turns = g_hash_table_new_full(edc_direct_hash, edc_direct_equal, NULL, NULL);
-
     agent->runner = edc_actor_runner_new();
     edc_actor_runner_add(agent->runner, agent->scheduler);
     edc_actor_runner_add(agent->runner, agent->channel_actor);
@@ -295,17 +298,11 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
 
 void edc_agent_remove_all_turns(struct edc_agent *agent)
 {
-    GList *turns = g_hash_table_get_values(agent->turns);
-    GList *p = turns;
-    while (p)
-    {
-        struct edc_channel_turn *turn = p->data;
-        edc_channel_turn_free(turn);
-        p = g_list_next(p);
+    struct edc_channel_turn *t, *tmp;
+    HASH_ITER(hh, agent->turns, t, tmp) {
+        HASH_DEL(agent->turns, t);
+        edc_channel_turn_free(t);
     }
-
-    g_list_free(turns);
-    g_hash_table_remove_all(agent->turns);
 }
 
 void edc_agent_free(struct edc_agent *agent)
@@ -326,7 +323,6 @@ void edc_agent_free(struct edc_agent *agent)
     edc_actor_free(agent->scheduler);
 
     edc_agent_remove_all_turns(agent);
-    g_hash_table_destroy(agent->turns);
 
     if (agent->session)
     {

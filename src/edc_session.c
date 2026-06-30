@@ -4,6 +4,7 @@
 #include "edc_context.h"
 #include "edc_history.h"
 #include "edc_turn.h"
+#include "utlist.h"
 #include <string.h>
 
 static void edc_session_trim_orphan_tool_messages(cJSON *history)
@@ -105,9 +106,12 @@ void edc_session_free(struct edc_session *session)
         cJSON_Delete(session->messages);
     }
 
-    if (session->timestamps)
+    struct edc_timestamp_node *n, *tmp;
+    DL_FOREACH_SAFE(session->timestamps, n, tmp)
     {
-        g_list_free_full(session->timestamps, free);
+        DL_DELETE(session->timestamps, n);
+        free(n->ts);
+        free(n);
     }
 
     free(session);
@@ -115,14 +119,16 @@ void edc_session_free(struct edc_session *session)
 
 void edc_session_add_turn(struct edc_session *sess, struct edc_turn *turn)
 {
-    GQueue *m = turn->messages;
-    GQueue *t = turn->timestamps;
-    while (g_queue_get_length(m) > 0 && g_queue_get_length(t) > 0)
+    EdcQueue *m = &turn->messages;
+    EdcQueue *t = &turn->timestamps;
+    while (edc_queue_length(m) > 0 && edc_queue_length(t) > 0)
     {
-        cJSON *message = g_queue_pop_head(m);
-        char *ts = g_queue_pop_head(t);
+        cJSON *message = edc_queue_pop(m);
+        char *ts = edc_queue_pop(t);
         cJSON_AddItemToArray(sess->messages, message);
-        sess->timestamps = g_list_append(sess->timestamps, ts);
+        struct edc_timestamp_node *n = g_new0(struct edc_timestamp_node, 1);
+        n->ts = ts;
+        DL_APPEND(sess->timestamps, n);
     }
 }
 
@@ -143,7 +149,13 @@ bool edc_session_save_history(struct edc_session *session)
     if (ok)
     {
         session->save_skip_count = edc_session_get_message_count(session);
-        g_list_free_full(session->timestamps, free);
+        struct edc_timestamp_node *n, *tmp;
+        DL_FOREACH_SAFE(session->timestamps, n, tmp)
+        {
+            DL_DELETE(session->timestamps, n);
+            free(n->ts);
+            free(n);
+        }
         session->timestamps = NULL;
     }
 

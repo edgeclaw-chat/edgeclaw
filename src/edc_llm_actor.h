@@ -1,8 +1,10 @@
 #include "edc_string.h"
+#include "utarray.h"
 #ifndef __BC_LLM_ACTOR_H__
 #define __BC_LLM_ACTOR_H__
 #include "edc_actor.h"
 #include "edc_config.h"
+#include "edc_containers.h"
 #include "edc_network_async.h"
 #include <cJSON.h>
 
@@ -16,7 +18,7 @@ typedef struct
 
 struct edc_llm_actor_req
 {
-    GQueue *turn;
+    EdcQueue *turn;
     cJSON *history;
     cJSON *tools;
 };
@@ -64,14 +66,14 @@ struct edc_llm_actor_resp
     sds reasoning_content;
     edc_llm_actor_role_t role;
 
-    GArray *tool_calls;
+    UT_array *tool_calls;
     cJSON *msg;
     GError *error;
 };
 
 extern edc_actor_t *edc_llm_actor_new(struct llm_api_conf *api_conf, edc_network_async_t *network);
 extern void edc_llm_actor_free(edc_actor_t *actor);
-extern struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools, GQueue *turn);
+extern struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools, EdcQueue *turn);
 extern void edc_llm_actor_req_free(struct edc_llm_actor_req *req);
 extern struct edc_llm_actor_resp *edc_llm_actor_resp_new();
 extern void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp);

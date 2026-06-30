@@ -7,7 +7,6 @@
 #include "edc_session.h"
 #include "edc_toolbox.h"
 #include <cJSON.h>
-#include <glib.h>
 #include <stdbool.h>
 
 struct edc_agent
@@ -23,7 +22,7 @@ struct edc_agent
     edc_actor_t *scheduler;
     edc_actor_runner_t *runner;
 
-    GHashTable *turns; // key: request_id, value: edc_channel_message
+    struct edc_channel_turn *turns;
 };
 
 extern char *edc_agent_run_turn(struct edc_agent *agent, const char *input);

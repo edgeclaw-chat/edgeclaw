@@ -1,7 +1,9 @@
 #include "edc_string.h"
 #include "edc_strutil.h"
 #include "edc_history.h"
+#include "edc_session.h"
 #include "log.h"
+#include <glib.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -70,7 +72,7 @@ cJSON *edc_history_load(const char *workspace, const size_t offset)
     return history_array;
 }
 
-bool edc_history_save(const char *workspace, cJSON *msg_lst, GList *timestamps, size_t skip_count)
+bool edc_history_save(const char *workspace, cJSON *msg_lst, struct edc_timestamp_node *timestamps, size_t skip_count)
 {
     char *hist_file = g_build_filename(workspace, "history.jsonl", NULL);
     FILE *fout = fopen(hist_file, "a+");
@@ -88,9 +90,12 @@ bool edc_history_save(const char *workspace, cJSON *msg_lst, GList *timestamps, 
         const char *timestamp = NULL;
         if (timestamps != NULL)
         {
-            timestamp = (const char *)g_list_nth_data(timestamps, t);
-            if (timestamp)
+            struct edc_timestamp_node *iter = timestamps;
+            for (int j = 0; j < t && iter != NULL; j++)
+                iter = iter->next;
+            if (iter)
             {
+                timestamp = iter->ts;
                 cJSON_AddStringToObject(msg, "timestamp", timestamp);
             }
         }

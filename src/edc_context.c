@@ -113,17 +113,20 @@ static sds edc_context_load_skills(const char *workspace)
     sds skills_dir = sdsnewlen(tmp, strlen(tmp));
     free(tmp);
 
-    GArray *skills = edc_skills_load(skills_dir);
+    UT_array *skills = edc_skills_load(skills_dir);
     edc_str_free(skills_dir);
 
     edc_str_printf(result, "## Skills\n\n"
                                    "The following skills extend your capabilities. To use a skill, read its SKILL.md "
                                    "file using the read_file tool.\n\n");
 
-    for (size_t i = 0; i < skills->len; i++)
+    for (size_t i = 0; i < utarray_len(skills); i++)
     {
-        struct edc_skill *skill = g_array_index(skills, struct edc_skill *, i);
-        const char *desc = g_hash_table_lookup(skill->meta, "description");
+        struct edc_skill **skill_ptr = (struct edc_skill **)utarray_eltptr(skills, (unsigned)i);
+        struct edc_skill *skill = *skill_ptr;
+        struct edc_skill_meta_entry *e;
+        HASH_FIND_STR(skill->meta, "description", e);
+        const char *desc = e ? e->value : NULL;
         if (!desc)
         {
             edc_skill_free(skill);
@@ -134,7 +137,7 @@ static sds edc_context_load_skills(const char *workspace)
         edc_str_printf(result, "### Skill: %s\n\n", skill->name);
         edc_str_printf(result, "description: %s\nSKILL.md localtion: %s\n", desc, loc);
         free(loc);
-        if (i < skills->len - 1)
+        if (i < utarray_len(skills) - 1)
         {
             edc_str_cat(result, "\n\n---\n\n");
         }
@@ -142,7 +145,7 @@ static sds edc_context_load_skills(const char *workspace)
         edc_skill_free(skill);
     }
 
-    g_array_free(skills, TRUE);
+    utarray_free(skills);
     return result;
 }
 

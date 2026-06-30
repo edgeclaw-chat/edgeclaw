@@ -3,13 +3,15 @@
 #include "edc_skills.h"
 
 #include "log.h"
+#include "uthash.h"
+#include "utarray.h"
 #include <stdio.h>
+
+static UT_icd ut_skill_ptr_icd = {sizeof(struct edc_skill *), NULL, NULL, NULL};
 
 static struct edc_skill *edc_skill_new()
 {
-    struct edc_skill *skill = g_new(struct edc_skill, 1);
-    skill->name = NULL;
-    skill->meta = g_hash_table_new_full(edc_str_hash, edc_str_equal, free, free);
+    struct edc_skill *skill = g_new0(struct edc_skill, 1);
     skill->content = NULL;
     return skill;
 }
@@ -26,7 +28,15 @@ void edc_skill_free(struct edc_skill *skill)
         edc_str_free(skill->name);
     }
 
-    g_hash_table_destroy(skill->meta);
+    {
+        struct edc_skill_meta_entry *e, *tmp;
+        HASH_ITER(hh, skill->meta, e, tmp) {
+            HASH_DEL(skill->meta, e);
+            free(e->key);
+            free(e->value);
+            free(e);
+        }
+    }
     if (skill->content)
     {
         edc_str_free(skill->content);
@@ -87,7 +97,10 @@ static bool edc_extract_skill_meta_and_content(const char *content, struct edc_s
             {
                 char *k = strdup(kv[0]); edc_strstrip(k);
                 char *v = strdup(kv[1]); edc_strstrip(v);
-                g_hash_table_insert(skill->meta, k, v);
+                struct edc_skill_meta_entry *e = malloc(sizeof(*e));
+                e->key = k;
+                e->value = v;
+                HASH_ADD_KEYPTR(hh, skill->meta, e->key, strlen(e->key), e);
             }
             edc_strfreev(kv);
             p++;
@@ -145,9 +158,10 @@ static struct edc_skill *edc_skill_load(const char *name, const char *file_path)
     return NULL;
 }
 
-GArray *edc_skills_load(const char *dir_path)
+UT_array *edc_skills_load(const char *dir_path)
 {
-    GArray *skills = g_array_new(FALSE, FALSE, sizeof(struct edc_skill *));
+    UT_array *skills;
+    utarray_new(skills, &ut_skill_ptr_icd);
     GDir *dir = g_dir_open(dir_path, 0, NULL);
     if (dir)
     {
@@ -159,7 +173,7 @@ GArray *edc_skills_load(const char *dir_path)
             struct edc_skill *skill = edc_skill_load(filename, full_path);
             if (skill)
             {
-                g_array_append_val(skills, skill);
+                utarray_push_back(skills, &skill);
             }
             free(full_path);
         }

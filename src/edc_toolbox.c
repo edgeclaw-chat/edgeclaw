@@ -3,6 +3,7 @@
 #include "edc_toolbox.h"
 #include "edc_param_types.h"
 #include "edc_tools.h"
+#include "uthash.h"
 #include "edc_tools_crontab.h"
 #include "edc_tools_fs.h"
 #include "edc_tools_shell.h"
@@ -28,7 +29,6 @@ void edc_toolbox_call_ctx_free(struct edc_toolbox_call_ctx *ctx)
 struct edc_toolbox *edc_toolbox_new(struct edc_config *conf, edc_actor_t *scheduler, edc_actor_t *channel_actor)
 {
     struct edc_toolbox *tb = g_new0(struct edc_toolbox, 1);
-    tb->tools = g_hash_table_new_full(edc_str_hash, edc_str_equal, NULL, (EdcDestroyNotify)edc_tool_free);
     tb->conf = conf;
     tb->schemas = cJSON_CreateArray();
     tb->scheduler = scheduler;
@@ -43,13 +43,19 @@ void edc_toolbox_free(struct edc_toolbox *tb)
     if (!tb)
         return;
     edc_tool_shell_abort_all();
-    g_hash_table_destroy(tb->tools);
+    {
+        struct edc_tool *t, *tmp;
+        HASH_ITER(hh, tb->tools, t, tmp) {
+            HASH_DEL(tb->tools, t);
+            edc_tool_free(t);
+        }
+    }
     if (tb->schemas)
         cJSON_Delete(tb->schemas);
     free(tb);
 }
 
-static cJSON *edc_tool_params_to_json(GSList *params)
+static cJSON *edc_tool_params_to_json(struct edc_tool_param *params)
 {
     cJSON *result = cJSON_CreateObject();
     cJSON_AddStringToObject(result, "type", "object");
@@ -57,11 +63,9 @@ static cJSON *edc_tool_params_to_json(GSList *params)
     cJSON *properties = cJSON_CreateObject();
     cJSON *required = cJSON_CreateArray();
 
-    GSList *p = params;
-    while (p)
+    struct edc_tool_param *param;
+    LL_FOREACH(params, param)
     {
-        struct edc_tool_param *param = p->data;
-        p = g_slist_next(p);
         cJSON *item = edc_param_type_to_json(param->type);
 
         cJSON_AddItemToObject(properties, param->name, item);
@@ -93,7 +97,7 @@ static cJSON *edc_tool_to_schema(const struct edc_tool *tool)
 
 void edc_toolbox_register(struct edc_toolbox *tb, struct edc_tool *tool)
 {
-    g_hash_table_insert(tb->tools, tool->name, tool);
+    HASH_ADD_STR(tb->tools, name, tool);
     cJSON_AddItemToArray(tb->schemas, edc_tool_to_schema(tool));
 
     cJSON *schema = edc_tool_to_schema(tool);
@@ -121,12 +125,9 @@ static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, G
         return FALSE;
     }
 
-    GSList *p = tool->params;
-    while (p)
+    struct edc_tool_param *param;
+    LL_FOREACH(tool->params, param)
     {
-        struct edc_tool_param *param = p->data;
-        p = g_slist_next(p);
-
         cJSON *item = cJSON_GetObjectItem(args, param->name);
 
         if (!item || cJSON_IsNull(item))
@@ -160,7 +161,8 @@ void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON 
 
     GError *error = NULL;
 
-    struct edc_tool *tool = g_hash_table_lookup(ctx->tb->tools, name);
+    struct edc_tool *tool;
+    HASH_FIND_STR(ctx->tb->tools, name, tool);
     if (tool)
     {
         if (!edc_tool_validate_params(tool, args, &error))
@@ -174,18 +176,15 @@ void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON 
     }
 
     sds tool_names = edc_str_new(NULL);
-    GList *head = g_hash_table_get_keys(ctx->tb->tools);
-    GList *p = head;
-    while (p)
     {
-        const char *name = p->data;
-        edc_str_printf(tool_names, "%s, ", name);
-        p = p->next;
+        struct edc_tool *t, *tmp;
+        HASH_ITER(hh, ctx->tb->tools, t, tmp) {
+            edc_str_printf(tool_names, "%s, ", t->name);
+        }
     }
 
     g_set_error(&error, BC_TOOL_ERROR, BC_TOOL_NOT_FOUND, "Error: tool %s not found. Available: %s", name,
                 tool_names);
-    g_list_free(head);
     edc_str_free(tool_names);
     callback(ctx, NULL, error);
 }

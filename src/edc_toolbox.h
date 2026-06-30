@@ -13,7 +13,7 @@ struct edc_channel;
 
 struct edc_toolbox
 {
-    GHashTable *tools; // name -> edc_tool
+    struct edc_tool *tools;
     struct edc_config *conf;
     cJSON *schemas;
     edc_actor_t *scheduler;

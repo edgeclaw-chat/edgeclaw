@@ -6,6 +6,7 @@
 #include "edc_config.h"
 #include "edc_network_async.h"
 #include "cJSON.h"
+#include "uthash.h"
 #include <pthread.h>
 #include <termios.h>
 struct edc_channel
@@ -48,12 +49,25 @@ struct edc_channel_message
     struct edc_channel *channel;
 };
 
+struct edc_mg_conn_node
+{
+    struct mg_connection *conn;
+    struct edc_mg_conn_node *next;
+};
+
+struct edc_handler_entry
+{
+    int type;
+    edc_actor_handler_t handler;
+    UT_hash_handle hh;
+};
+
 typedef struct
 {
     struct channel_conf config;
     edc_network_async_t *network;
     edc_actor_t *observer;
-    GHashTable *handlers;
+    struct edc_handler_entry *handlers;
     union {
         struct
         {
@@ -85,7 +99,7 @@ typedef struct
             char *access_token;
             int64_t expires_in;
             GSource *expire_source;
-            GSList *conns;
+            struct edc_mg_conn_node *conns;
         } qq;
 
         struct

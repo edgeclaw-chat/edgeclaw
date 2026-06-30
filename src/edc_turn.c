@@ -9,8 +9,8 @@ static void edc_turn_add_message(struct edc_turn *turn, cJSON *msg)
     free(valid_utf8);
     cJSON_ReplaceItemInObject(msg, "content", valid_content);
 
-    g_queue_push_tail(turn->messages, msg);
-    g_queue_push_tail(turn->timestamps, edc_get_timestamp());
+    edc_queue_push(&turn->messages, msg);
+    edc_queue_push(&turn->timestamps, edc_get_timestamp());
 }
 
 void edc_turn_add_user_message(struct edc_turn *turn, const char *content)
@@ -39,8 +39,8 @@ void edc_turn_add_tool_message(struct edc_turn *turn, const char *tool_call_id, 
 struct edc_turn *edc_turn_new()
 {
     struct edc_turn *turn = g_new0(struct edc_turn, 1);
-    turn->messages = g_queue_new();
-    turn->timestamps = g_queue_new();
+    edc_queue_init(&turn->messages);
+    edc_queue_init(&turn->timestamps);
     return turn;
 }
 
@@ -50,15 +50,9 @@ void edc_turn_free(struct edc_turn *turn)
     {
         return;
     }
-    if (turn->messages)
-    {
-        g_queue_free(turn->messages);
-    }
 
-    if (turn->timestamps)
-    {
-        g_queue_free(turn->timestamps);
-    }
+    edc_queue_destroy(&turn->messages);
+    edc_queue_destroy(&turn->timestamps);
 
     free(turn);
     return;

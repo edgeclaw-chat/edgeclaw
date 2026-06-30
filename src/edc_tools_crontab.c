@@ -579,27 +579,24 @@ static void edc_tool_crontab_exec_async(struct edc_toolbox_call_ctx *ctx, struct
 
 static void edc_tool_create_crontab(struct edc_toolbox *tb)
 {
-    GSList *params = NULL;
-    params = g_slist_append(params, edc_tool_param_new("action",
-                                                       edc_param_str_type("Action to perform", "add", "list", "remove", NULL), TRUE));
-    params = g_slist_append(params,
-                            edc_tool_param_new("message", edc_param_str_type("Reminder message (for add)", NULL), FALSE));
+    struct edc_tool_param *params = NULL;
+    LL_APPEND(params, edc_tool_param_new("action",
+                                         edc_param_str_type("Action to perform", "add", "list", "remove", NULL), TRUE));
+    LL_APPEND(params, edc_tool_param_new("message", edc_param_str_type("Reminder message (for add)", NULL), FALSE));
 
-    params = g_slist_append(params, edc_tool_param_new("every_seconds",
-                                                       edc_param_int_type("Interval in seconds (for recurring task)", 1, G_MAXINT64), FALSE));
-    params =
-        g_slist_append(params, edc_tool_param_new("cron_expr",
-                                                  edc_param_str_type("Cron expression like '0 2 * * *' (for scheduled tasks)", NULL), FALSE));
+    LL_APPEND(params, edc_tool_param_new("every_seconds",
+                                         edc_param_int_type("Interval in seconds (for recurring task)", 1, G_MAXINT64), FALSE));
+    LL_APPEND(params, edc_tool_param_new("cron_expr",
+                                         edc_param_str_type("Cron expression like '0 2 * * *' (for scheduled tasks)", NULL), FALSE));
 
-    params = g_slist_append(params, edc_tool_param_new("tz",
-                                                       edc_param_str_type("IANA timezone for cron expressions (e.g. 'China/Beijing')", NULL), FALSE));
+    LL_APPEND(params, edc_tool_param_new("tz",
+                                         edc_param_str_type("IANA timezone for cron expressions (e.g. 'China/Beijing')", NULL), FALSE));
 
-    params = g_slist_append(params,
-                            edc_tool_param_new("at",
-                                              edc_param_str_type("ISO datetime for one-time execution (e.g. '2026-05-01T12:00:00')", NULL), FALSE));
+    LL_APPEND(params, edc_tool_param_new("at",
+                                         edc_param_str_type("ISO datetime for one-time execution (e.g. '2026-05-01T12:00:00')", NULL), FALSE));
 
-    params = g_slist_append(params, edc_tool_param_new("job_id", edc_param_str_type("Job ID (for remove)", NULL), FALSE));
-    params = g_slist_append(params, edc_tool_param_new("name", edc_param_str_type("Job Name (for add)", NULL), FALSE));
+    LL_APPEND(params, edc_tool_param_new("job_id", edc_param_str_type("Job ID (for remove)", NULL), FALSE));
+    LL_APPEND(params, edc_tool_param_new("name", edc_param_str_type("Job Name (for add)", NULL), FALSE));
 
     struct edc_tool *tool = edc_tool_new("crontab", "Schedule reminders and recurring tasks. Actions: add, list, remove.",
                                        params, edc_tool_crontab_exec_async);

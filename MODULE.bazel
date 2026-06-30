@@ -74,4 +74,5 @@ use_repo(
     "md4c",
     "lwip",
     "sds",
+    "uthash",
 )

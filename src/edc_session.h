@@ -7,12 +7,17 @@
 
 struct edc_config;
 
+struct edc_timestamp_node {
+    char *ts;
+    struct edc_timestamp_node *prev, *next;
+};
+
 struct edc_session
 {
     cJSON *messages;
     struct edc_config *config;
     int save_skip_count;
-    GList *timestamps;
+    struct edc_timestamp_node *timestamps;
 };
 
 struct edc_turn;

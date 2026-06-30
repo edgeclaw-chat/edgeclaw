@@ -40,7 +40,7 @@ static void edc_network_async_enqueue(edc_network_async_t *async, GSourceFunc fn
     task->fn = fn;
     task->data = data;
     g_mutex_lock(&async->mutex);
-    g_queue_push_tail(&async->task_queue, task);
+    edc_queue_push(&async->task_queue, task);
     g_mutex_unlock(&async->mutex);
 }
 
@@ -73,7 +73,7 @@ static void* network_async_thread(void* user_data)
         {
             edc_network_async_task_t *task = NULL;
             g_mutex_lock(&async->mutex);
-            task = g_queue_pop_head(&async->task_queue);
+            task = edc_queue_pop(&async->task_queue);
             g_mutex_unlock(&async->mutex);
             if (!task)
                 break;
@@ -160,7 +160,7 @@ edc_network_async_t *edc_network_async_new(const char *cert_path)
     async->cert_pem = mg_file_read(&mg_fs_posix, cert_path);
 
     g_mutex_init(&async->mutex);
-    g_queue_init(&async->task_queue);
+    edc_queue_init(&async->task_queue);
     async->running = TRUE;
     async->thread = g_thread_new("edc_network_async", (GThreadFunc)network_async_thread, async);
 
@@ -173,10 +173,11 @@ void edc_network_async_free(edc_network_async_t *async)
     g_thread_join(async->thread);
 
     edc_network_async_task_t *task;
-    while ((task = g_queue_pop_head(&async->task_queue)))
+    while ((task = edc_queue_pop(&async->task_queue)))
     {
         free(task);
     }
+    edc_queue_destroy(&async->task_queue);
     g_mutex_clear(&async->mutex);
 
     free((char *)async->mgr.dns4.url);

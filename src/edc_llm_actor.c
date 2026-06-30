@@ -5,9 +5,10 @@
 #include "edc_network_async.h"
 #include "log.h"
 #include "mongoose.h"
+#include "utarray.h"
 
 G_DEFINE_QUARK(edc_llm_actor_error_quark, edc_llm_actor_error)
-struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools, GQueue *turn)
+struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools, EdcQueue *turn)
 {
     struct edc_llm_actor_req *req = g_new0(struct edc_llm_actor_req, 1);
     req->history = msg_lst;
@@ -161,7 +162,10 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
 
     if (req->turn)
     {
-        g_queue_foreach(req->turn, edc_llm_actor_messages_add_turn, messages);
+        for (size_t qi = req->turn->head; qi < req->turn->tail; qi++)
+        {
+            edc_llm_actor_messages_add_turn(req->turn->data[qi], messages);
+        }
     }
 
     if (req->tools)
@@ -181,6 +185,8 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
                           edc_llm_actor_http_req_new(actor, body_s, &state->api_conf, from, request_id), 60 * 5);
     free(url);
 }
+
+static UT_icd ut_tool_call_icd = {sizeof(struct edc_llm_chat_tool_call), NULL, NULL, NULL};
 
 static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp *resp)
 {
@@ -299,7 +305,7 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
     cJSON *tool_calls = cJSON_GetObjectItem(message, "tool_calls");
     if (tool_calls && cJSON_IsArray(tool_calls))
     {
-        resp->tool_calls = g_array_new(FALSE, FALSE, sizeof(struct edc_llm_chat_tool_call));
+        utarray_new(resp->tool_calls, &ut_tool_call_icd);
         int num_tool_calls = cJSON_GetArraySize(tool_calls);
 
         for (int i = 0; i < num_tool_calls; i++)
@@ -348,7 +354,7 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
                 }
             }
 
-            g_array_append_val(resp->tool_calls, tc);
+            utarray_push_back(resp->tool_calls, &tc);
         }
     }
 
@@ -443,9 +449,9 @@ void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp)
 
     if (resp->tool_calls)
     {
-        for (size_t i = 0; i < resp->tool_calls->len; ++i)
+        for (unsigned i = 0; i < utarray_len(resp->tool_calls); ++i)
         {
-            struct edc_llm_chat_tool_call call = g_array_index(resp->tool_calls, struct edc_llm_chat_tool_call, i);
+            struct edc_llm_chat_tool_call call = *(struct edc_llm_chat_tool_call*)utarray_eltptr(resp->tool_calls, i);
             if (call.id)
             {
                 edc_str_free(call.id);
@@ -462,7 +468,7 @@ void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp)
             }
         }
 
-        g_array_free(resp->tool_calls, TRUE);
+        utarray_free(resp->tool_calls);
     }
 
     if (resp->msg)

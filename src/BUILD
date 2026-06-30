@@ -122,6 +122,7 @@ cc_library(
     name = "agent",
     srcs = [
         "edc_context.c",
+        "edc_containers.c",
         "edc_history.c",
         "edc_session.c",
         "edc_turn.c",
@@ -160,6 +161,7 @@ cc_library(
     hdrs = [
         "edc_compat.h",
         "edc_string.h",
+        "edc_containers.h",
         "edc_context.h",
         "edc_history.h",
         "edc_session.h",
@@ -202,6 +204,7 @@ cc_library(
     deps = [
         "@glib//glib:glib",
         ":edc_strutil",
+        "@uthash//:uthash",
         "@sds//:sds",
         "@cjson//:cjson",
         "@log.c//:log.c",

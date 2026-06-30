@@ -779,14 +779,14 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
 
 static struct edc_tool *edc_tool_create_device_upload(struct edc_toolbox *tb)
 {
-    GSList *params = NULL;
-    params = g_slist_append(params,
+    struct edc_tool_param *params = NULL;
+    LL_APPEND(params,
         edc_tool_param_new("local_path", edc_param_str_type("Local file path on host to upload", NULL), TRUE));
-    params = g_slist_append(params,
+    LL_APPEND(params,
         edc_tool_param_new("remote_path", edc_param_str_type("Remote file path on device destination", NULL), TRUE));
-    params = g_slist_append(params,
+    LL_APPEND(params,
         edc_tool_param_new("mode", edc_param_int_type("File permission mode (default 0644)", 0, 07777), FALSE));
-    params = g_slist_append(params,
+    LL_APPEND(params,
         edc_tool_param_new("timeout", edc_param_int_type("Timeout per chunk in seconds (default 60)", 1, 3600), FALSE));
 
     struct edc_tool *tool = edc_tool_new("device_upload",
@@ -798,12 +798,12 @@ static struct edc_tool *edc_tool_create_device_upload(struct edc_toolbox *tb)
 
 static struct edc_tool *edc_tool_create_device_download(struct edc_toolbox *tb)
 {
-    GSList *params = NULL;
-    params = g_slist_append(params,
+    struct edc_tool_param *params = NULL;
+    LL_APPEND(params,
         edc_tool_param_new("remote_path", edc_param_str_type("Remote file path on device to download", NULL), TRUE));
-    params = g_slist_append(params,
+    LL_APPEND(params,
         edc_tool_param_new("local_path", edc_param_str_type("Local destination file path on host", NULL), TRUE));
-    params = g_slist_append(params,
+    LL_APPEND(params,
         edc_tool_param_new("timeout", edc_param_int_type("Timeout per chunk in seconds (default 60)", 1, 3600), FALSE));
 
     struct edc_tool *tool = edc_tool_new("device_download",

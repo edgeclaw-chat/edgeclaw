@@ -3,6 +3,8 @@
 #include "edc_channel_actor.h"
 #include "edc_actor.h"
 #include "edc_channel_cli.h"
+#include "uthash.h"
+#include "utlist.h"
 #include "edc_channel_feishu.h"
 #include "edc_channel_qq.h"
 #include "edc_channel_telegram.h"
@@ -16,21 +18,17 @@ static void edc_channel_actor_handle(edc_actor_t *actor, edc_actor_msg_t *msg)
 
     if (msg->type == BC_ACTOR_MSG_START)
     {
-        GHashTableIter iter;
-        void* key = NULL;
-        void* value = NULL;
-        g_hash_table_iter_init(&iter, state->handlers);
-        while (g_hash_table_iter_next(&iter, &key, &value))
-        {
-            edc_actor_handler_t handler = (edc_actor_handler_t)value;
-            handler(actor, msg);
+        struct edc_handler_entry *e, *tmp;
+        HASH_ITER(hh, state->handlers, e, tmp) {
+            e->handler(actor, msg);
         }
     }
     else
     {
-        edc_actor_handler_t handler = g_hash_table_lookup(state->handlers, EDC_INT_TO_POINTER(msg->sub_type));
-        if (handler)
-            handler(actor, msg);
+        struct edc_handler_entry *e;
+        HASH_FIND_INT(state->handlers, &msg->sub_type, e);
+        if (e)
+            e->handler(actor, msg);
     }
 
     edc_actor_msg_free(msg);
@@ -361,7 +359,6 @@ edc_actor_t *edc_channel_actor_new(struct channel_conf *config, edc_network_asyn
 
     state->network = network;
     state->observer = NULL;
-    state->handlers = g_hash_table_new_full(edc_direct_hash, edc_direct_equal, NULL, NULL);
 
     edc_actor_t *actor = edc_actor_new("edc_channel_actor", edc_channel_actor_handle, state);
 
@@ -387,7 +384,13 @@ edc_actor_t *edc_channel_actor_new(struct channel_conf *config, edc_network_asyn
 void edc_channel_actor_free(edc_actor_t *actor)
 {
     edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
-    g_hash_table_destroy(state->handlers);
+    {
+        struct edc_handler_entry *e, *tmp;
+        HASH_ITER(hh, state->handlers, e, tmp) {
+            HASH_DEL(state->handlers, e);
+            free(e);
+        }
+    }
 
     switch (state->config.type)
     {
@@ -430,7 +433,12 @@ void edc_channel_actor_free(edc_actor_t *actor)
 
         if (state->qq.conns)
         {
-            g_slist_free(state->qq.conns);
+            struct edc_mg_conn_node *node, *tmp;
+            LL_FOREACH_SAFE(state->qq.conns, node, tmp)
+            {
+                LL_DELETE(state->qq.conns, node);
+                free(node);
+            }
         }
         break;
 
@@ -479,5 +487,8 @@ void edc_channel_actor_set_observer(edc_actor_t *actor, edc_actor_t *observer)
 void edc_channel_actor_add(edc_actor_t *actor, edc_channel_type type, edc_actor_handler_t handler)
 {
     edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
-    g_hash_table_insert(state->handlers, EDC_INT_TO_POINTER(type), handler);
+    struct edc_handler_entry *e = g_new0(struct edc_handler_entry, 1);
+    e->type = (int)type;
+    e->handler = handler;
+    HASH_ADD_INT(state->handlers, type, e);
 }

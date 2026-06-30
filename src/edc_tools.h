@@ -4,6 +4,8 @@
 
 #include "cJSON.h"
 #include "edc_param_types.h"
+#include "uthash.h"
+#include "utlist.h"
 #include <glib.h>
 #include <stdbool.h>
 
@@ -15,6 +17,7 @@ struct edc_tool_param
     char *name;
     struct edc_param_type *type;
     bool required;
+    struct edc_tool_param *next;
 };
 
 extern struct edc_tool_param *edc_tool_param_new(char *name, struct edc_param_type *type, bool required);
@@ -30,14 +33,16 @@ struct edc_tool
 {
     sds name;
     sds desc;
-    GSList *params;
+    struct edc_tool_param *params;
     void *priv;
 
     edc_tool_exec_async_fn exec;
     GFreeFunc priv_free_fn;
+    UT_hash_handle hh;
 };
 
-extern struct edc_tool *edc_tool_new(const char *name, const char *desc, GSList *params, edc_tool_exec_async_fn exec);
+extern struct edc_tool *edc_tool_new(const char *name, const char *desc, struct edc_tool_param *params,
+                                     edc_tool_exec_async_fn exec);
 extern void edc_tool_free(struct edc_tool *tool);
 extern struct edc_tool *edc_tool_new_v(const char *name, const char *desc, struct edc_tool_param **params,
                                        edc_tool_exec_async_fn exec);

@@ -28,9 +28,10 @@ struct edc_tool_shell_ctx
     struct edc_toolbox_call_ctx *tb_ctx;
     void (*callback)(struct edc_toolbox_call_ctx *, sds result, GError *error);
     unsigned int timeout_id;
+    struct edc_tool_shell_ctx *next;
 };
 
-static GSList *active_contexts = NULL;
+static struct edc_tool_shell_ctx *active_contexts = NULL;
 static GMutex active_mutex;
 
 static void edc_tool_shell_cleanup_channel(GIOChannel *ch)
@@ -85,7 +86,7 @@ static void edc_tool_shell_complete(struct edc_tool_shell_ctx *ctx)
     edc_str_free(ctx->stderr_buf);
 
     g_mutex_lock(&active_mutex);
-    active_contexts = g_slist_remove(active_contexts, ctx);
+    LL_DELETE(active_contexts, ctx);
     g_mutex_unlock(&active_mutex);
 
     free(ctx);
@@ -295,17 +296,16 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
     edc_tool_shell_watch_io_channel(ctx->stdout_ch, (GIOFunc)on_stdout_pipe_readable, ctx);
 
     g_mutex_lock(&active_mutex);
-    active_contexts = g_slist_prepend(active_contexts, ctx);
+    LL_PREPEND(active_contexts, ctx);
     g_mutex_unlock(&active_mutex);
 }
 
 void edc_tool_shell_abort_all(void)
 {
     g_mutex_lock(&active_mutex);
-    GSList *p = active_contexts;
-    while (p)
+    struct edc_tool_shell_ctx *ctx;
+    LL_FOREACH(active_contexts, ctx)
     {
-        struct edc_tool_shell_ctx *ctx = p->data;
         if (ctx->timeout_id > 0)
         {
             g_source_remove(ctx->timeout_id);
@@ -324,7 +324,6 @@ void edc_tool_shell_abort_all(void)
         edc_tool_shell_cleanup_channel(ctx->stderr_ch);
         ctx->stdout_ch = NULL;
         ctx->stderr_ch = NULL;
-        p = g_slist_next(p);
     }
     g_mutex_unlock(&active_mutex);
 }
@@ -334,9 +333,9 @@ struct edc_tool *edc_tool_create_exec_shell(struct edc_toolbox *tb)
     const char *name = "exec_shell";
     const char *desc = "Execute `sh -c '<command>'` then return output";
 
-    GSList *params = g_slist_append(
-        NULL, edc_tool_param_new("command", edc_param_str_type("The shell command to execute", NULL), TRUE));
-    params = g_slist_append(params,
+    struct edc_tool_param *params = NULL;
+    LL_APPEND(params, edc_tool_param_new("command", edc_param_str_type("The shell command to execute", NULL), TRUE));
+    LL_APPEND(params,
         edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), FALSE));
 
     struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_shell_async);
