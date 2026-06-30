@@ -2,7 +2,7 @@
 #include "edc_channel_qq.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
-#include "utlist.h"
+#include "utlist_fix.h"
 #include "edc_network_async.h"
 #include "cJSON.h"
 #include "log.h"

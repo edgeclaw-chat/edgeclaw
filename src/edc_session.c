@@ -4,7 +4,7 @@
 #include "edc_context.h"
 #include "edc_history.h"
 #include "edc_turn.h"
-#include "utlist.h"
+#include "utlist_fix.h"
 #include <string.h>
 
 static void edc_session_trim_orphan_tool_messages(cJSON *history)

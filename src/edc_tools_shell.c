@@ -335,8 +335,7 @@ struct edc_tool *edc_tool_create_exec_shell(struct edc_toolbox *tb)
 
     struct edc_tool_param *params = NULL;
     LL_APPEND(params, edc_tool_param_new("command", edc_param_str_type("The shell command to execute", NULL), TRUE));
-    LL_APPEND(params,
-        edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), FALSE));
+    LL_APPEND(params, edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), FALSE));
 
     struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_shell_async);
     edc_toolbox_register(tb, tool);

@@ -168,6 +168,7 @@ cc_library(
         "edc_turn.h",
         "edc_skills.h",
         "edc_tools.h",
+        "utlist_fix.h",
         "edc_tools_fs.h",
         "edc_tools_shell.h",
         "edc_tools_crontab.h",

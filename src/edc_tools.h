@@ -5,7 +5,7 @@
 #include "cJSON.h"
 #include "edc_param_types.h"
 #include "uthash.h"
-#include "utlist.h"
+#include "utlist_fix.h"
 #include <glib.h>
 #include <stdbool.h>
 

@@ -1,15 +1,15 @@
-#include "edc_string.h"
-#include "edc_strutil.h"
 #include "edc_channel_actor.h"
 #include "edc_actor.h"
 #include "edc_channel_cli.h"
-#include "uthash.h"
-#include "utlist.h"
 #include "edc_channel_feishu.h"
 #include "edc_channel_qq.h"
 #include "edc_channel_telegram.h"
 #include "edc_config.h"
 #include "edc_network_async.h"
+#include "edc_string.h"
+#include "edc_strutil.h"
+#include "uthash.h"
+#include "utlist_fix.h"
 #include <stdlib.h>
 
 static void edc_channel_actor_handle(edc_actor_t *actor, edc_actor_msg_t *msg)
@@ -19,7 +19,8 @@ static void edc_channel_actor_handle(edc_actor_t *actor, edc_actor_msg_t *msg)
     if (msg->type == BC_ACTOR_MSG_START)
     {
         struct edc_handler_entry *e, *tmp;
-        HASH_ITER(hh, state->handlers, e, tmp) {
+        HASH_ITER(hh, state->handlers, e, tmp)
+        {
             e->handler(actor, msg);
         }
     }
@@ -47,7 +48,7 @@ struct edc_channel *edc_channel_feishu_new(char *chat_type, char *chat_id, char 
 }
 
 struct edc_channel_message *edc_channel_feishu_message_new(char *chat_type, char *chat_id, char *message_id,
-                                                         char *user_open_id, char *content)
+                                                           char *user_open_id, char *content)
 {
     struct edc_channel_message *msg = g_new0(struct edc_channel_message, 1);
     msg->channel = edc_channel_feishu_new(chat_type, chat_id, message_id, user_open_id);
@@ -118,8 +119,8 @@ struct edc_channel *edc_channel_from_json(cJSON *data)
     {
         if (author_id && message_id && cJSON_IsString(author_id) && cJSON_IsString(message_id))
         {
-            struct edc_channel *qchannel = edc_channel_qq_new(strdup(cJSON_GetStringValue(message_id)),
-                                                            strdup(cJSON_GetStringValue(author_id)));
+            struct edc_channel *qchannel =
+                edc_channel_qq_new(strdup(cJSON_GetStringValue(message_id)), strdup(cJSON_GetStringValue(author_id)));
             return qchannel;
         }
     }
@@ -231,7 +232,7 @@ struct edc_channel *edc_channel_copy(struct edc_channel *rhs)
     else if (rhs->type == edc_channel_feishu)
     {
         return edc_channel_feishu_new(strdup(rhs->feishu.chat_type), strdup(rhs->feishu.chat_id),
-                                     strdup(rhs->feishu.message_id), strdup(rhs->feishu.user_open_id));
+                                      strdup(rhs->feishu.message_id), strdup(rhs->feishu.user_open_id));
     }
     else if (rhs->type == edc_channel_qq)
     {
@@ -386,7 +387,8 @@ void edc_channel_actor_free(edc_actor_t *actor)
     edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
     {
         struct edc_handler_entry *e, *tmp;
-        HASH_ITER(hh, state->handlers, e, tmp) {
+        HASH_ITER(hh, state->handlers, e, tmp)
+        {
             HASH_DEL(state->handlers, e);
             free(e);
         }

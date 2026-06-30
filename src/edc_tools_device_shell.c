@@ -357,10 +357,8 @@ edc_tool_device_shell_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc
 struct edc_tool *edc_tool_create_device_shell(struct edc_toolbox *tb)
 {
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params,
-        edc_tool_param_new("command", edc_param_str_type("Shell command to execute on remote device", NULL), TRUE));
-    LL_APPEND(params,
-        edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), FALSE));
+    LL_APPEND(params, edc_tool_param_new("command", edc_param_str_type("Shell command to execute on remote device", NULL), TRUE));
+    LL_APPEND(params, edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), FALSE));
 
     struct edc_tool *tool = edc_tool_new("device_shell",
         "Execute a shell command on a remote device agent (PPPoS or TCP socket)", params,
