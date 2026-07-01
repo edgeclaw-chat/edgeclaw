@@ -4,9 +4,11 @@
 
 #include "edc_actor.h"
 #include "edc_config.h"
+#include "edc_containers.h"
 #include "edc_network_async.h"
 #include "cJSON.h"
 #include "uthash.h"
+#include <uv.h>
 #include <pthread.h>
 #include <termios.h>
 struct edc_channel
@@ -64,6 +66,7 @@ struct edc_handler_entry
 
 typedef struct
 {
+    edc_actor_t *actor;
     struct channel_conf config;
     edc_network_async_t *network;
     edc_actor_t *observer;
@@ -73,7 +76,7 @@ typedef struct
         {
             bool polling;
             int64_t update_id;
-            GSource *poll_source;
+            uv_timer_t poll_timer;
         } telegram;
 
         struct
@@ -82,7 +85,7 @@ typedef struct
             int64_t expire;
             sds wss_url;
             int32_t wss_service_id;
-            GSource *expire_source;
+            uv_timer_t expire_timer;
             struct
             {
                 int ping_interval;
@@ -98,7 +101,7 @@ typedef struct
             int wss_shards;
             sds access_token;
             int64_t expires_in;
-            GSource *expire_source;
+            uv_timer_t expire_timer;
             struct edc_mg_conn_node *conns;
         } qq;
 
@@ -106,9 +109,10 @@ typedef struct
         {
             struct termios orig_term;
             pthread_t input_tid;
-            GThread *input_thread;
-            GAsyncQueue *input_queue;
-            GSource *queue_source;
+            uv_thread_t input_thread;
+            EdcQueue input_queue;
+            uv_mutex_t input_queue_lock;
+            uv_async_t input_wakeup;
             sds pending_output;
             pthread_mutex_t term_mutex;
             volatile int running;

@@ -12,7 +12,8 @@
 
 struct edc_tool_crontab_state
 {
-    GSource *source;
+    uv_timer_t timer;
+    struct edc_tool *tool;
     uint64_t timeout_at;
     sds job_id;
     sds job_name;
@@ -23,13 +24,13 @@ struct edc_tool_crontab_state
     struct edc_channel *channel;
 };
 
-static struct edc_tool_crontab_state *edc_tool_crontab_state_new(GSource *source, uint64_t timeout_at, sds job_id,
+static struct edc_tool_crontab_state *edc_tool_crontab_state_new(uint64_t timeout_at, sds job_id,
                                                                 sds job_name, sds message, sds workspace,
                                                                 bool once, edc_actor_t *scheduler,
-                                                                struct edc_channel *channel)
+                                                                struct edc_channel *channel, struct edc_tool *tool)
 {
-    struct edc_tool_crontab_state *state = g_new0(struct edc_tool_crontab_state, 1);
-    state->source = source;
+    struct edc_tool_crontab_state *state = calloc(1, sizeof(struct edc_tool_crontab_state));
+    state->tool = tool;
     state->timeout_at = timeout_at;
     state->job_id = job_id;
     state->job_name = job_name;
@@ -41,42 +42,28 @@ static struct edc_tool_crontab_state *edc_tool_crontab_state_new(GSource *source
     return state;
 }
 
+static void on_crontab_timer_close(uv_handle_t *handle)
+{
+    struct edc_tool_crontab_state *state = container_of(handle, struct edc_tool_crontab_state, timer);
+    if (state->job_id)
+        sdsfree(state->job_id);
+    if (state->job_name)
+        sdsfree(state->job_name);
+    if (state->message)
+        sdsfree(state->message);
+    if (state->channel)
+        edc_channel_free(state->channel);
+    if (state->workspace)
+        sdsfree(state->workspace);
+    free(state);
+}
+
 static void edc_tool_crontab_state_free(struct edc_tool_crontab_state *state)
 {
     if (!state)
         return;
-    if (state->source)
-    {
-        g_source_destroy(state->source);
-        g_source_unref(state->source);
-    }
-
-    if (state->job_id)
-    {
-        sdsfree(state->job_id);
-    }
-
-    if (state->job_name)
-    {
-        sdsfree(state->job_name);
-    }
-
-    if (state->message)
-    {
-        sdsfree(state->message);
-    }
-
-    if (state->channel)
-    {
-        edc_channel_free(state->channel);
-    }
-
-    if (state->workspace)
-    {
-        sdsfree(state->workspace);
-    }
-
-    free(state);
+    uv_timer_stop(&state->timer);
+    uv_close((uv_handle_t *)&state->timer, on_crontab_timer_close);
 }
 
 static cJSON *edc_tool_crontab_load_jobs_db(const char *workspace, EdcError **error)
@@ -272,10 +259,10 @@ static void edc_tool_crontab_caculate_next_run(cJSON *jobs)
     }
 }
 
-static bool edc_tool_crontab_on_timeout(void *data)
+static void edc_tool_crontab_on_timeout(uv_timer_t *timer)
 {
-    struct edc_tool *tool = data;
-    struct edc_tool_crontab_state *state = tool->priv;
+    struct edc_tool_crontab_state *state = container_of(timer, struct edc_tool_crontab_state, timer);
+    struct edc_tool *tool = state->tool;
     tool->priv = NULL;
 
     struct edc_channel_message *message = edc_channel_message_new(state->channel, state->message);
@@ -311,16 +298,17 @@ static bool edc_tool_crontab_on_timeout(void *data)
     edc_tool_crontab_state_free(state);
 
     cJSON_Delete(db);
-
-    return G_SOURCE_REMOVE;
 }
 
 static void edc_tool_crontab_update_task(const char *workspace, struct edc_channel *call_from, edc_actor_t *scheduler,
                                         struct edc_tool *tool, char *job_id, char *job_name, char *job_message,
                                         int64_t run_at, bool once)
 {
-    struct edc_tool_crontab_state *state = tool->priv;
-    edc_tool_crontab_state_free(state);
+    {
+        struct edc_tool_crontab_state *old_state = tool->priv;
+        edc_tool_crontab_state_free(old_state);
+        tool->priv = NULL;
+    }
 
     GDateTime *now = g_date_time_new_now_utc();
     int64_t ts = g_date_time_to_unix(now);
@@ -332,13 +320,14 @@ static void edc_tool_crontab_update_task(const char *workspace, struct edc_chann
     int interval = run_at - ts;
     g_date_time_unref(now);
 
-    GSource *source = g_timeout_source_new_seconds(interval);
-    tool->priv = edc_tool_crontab_state_new(source, run_at, sdsnew(job_id), sdsnew(job_name),
-                                            edc_tool_crontab_build_task_message(job_name, job_message),
-                                            sdsnew(workspace), once, scheduler, call_from);
+    struct edc_tool_crontab_state *state =
+        edc_tool_crontab_state_new(run_at, sdsnew(job_id), sdsnew(job_name),
+                                   edc_tool_crontab_build_task_message(job_name, job_message),
+                                   sdsnew(workspace), once, scheduler, call_from, tool);
 
-    g_source_set_callback(source, (GSourceFunc)edc_tool_crontab_on_timeout, tool, NULL);
-    g_source_attach(source, scheduler->context);
+    uv_timer_init(scheduler->loop, &state->timer);
+    uv_timer_start(&state->timer, edc_tool_crontab_on_timeout, (uint64_t)interval * 1000, 0);
+    tool->priv = state;
 
     GDateTime *point = g_date_time_new_from_unix_local(run_at);
     char *s = g_date_time_format_iso8601(point);

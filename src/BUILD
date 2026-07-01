@@ -203,6 +203,7 @@ cc_library(
     ],
     deps = [
         "@glib//glib:glib",
+        "@libuv",
         ":edc_error",
         "@uthash//:uthash",
         "@sds//:sds",

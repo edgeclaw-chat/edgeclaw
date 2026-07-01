@@ -20,29 +20,33 @@ static void cli_sigusr1_handler(int sig)
     (void)sig;
 }
 
-static bool cli_process_input(void* data)
+static void cli_process_input(uv_async_t *handle)
 {
-    edc_actor_t *actor = data;
-    edc_channel_actor_state_t *state = actor->state;
-    char *line = g_async_queue_try_pop(state->cli.input_queue);
+    edc_channel_actor_state_t *state = container_of(handle, edc_channel_actor_state_t, cli.input_wakeup);
+    edc_actor_t *actor = state->actor;
 
-    if (!line)
-        return G_SOURCE_CONTINUE;
+    char *line;
+    uv_mutex_lock(&state->cli.input_queue_lock);
+    while ((line = edc_queue_pop(&state->cli.input_queue)) != NULL)
+    {
+        uv_mutex_unlock(&state->cli.input_queue_lock);
 
-    struct edc_channel *channel = edc_channel_cli_new();
-    struct edc_channel_message *msg = edc_channel_message_new(channel, line);
+        struct edc_channel *channel = edc_channel_cli_new();
+        struct edc_channel_message *msg = edc_channel_message_new(channel, line);
 
-    edc_actor_msg_t *actor_msg =
-        edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, actor, NULL, msg, (edc_actor_data_free_fn)edc_channel_message_free);
-    edc_actor_send(state->observer, actor_msg);
+        edc_actor_msg_t *actor_msg =
+            edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, actor, NULL, msg,
+                              (edc_actor_data_free_fn)edc_channel_message_free);
+        edc_actor_send(state->observer, actor_msg);
 
-    return G_SOURCE_CONTINUE;
+        uv_mutex_lock(&state->cli.input_queue_lock);
+    }
+    uv_mutex_unlock(&state->cli.input_queue_lock);
 }
 
-static void* cli_input_thread(void* data)
+static void cli_input_thread(void* data)
 {
-    edc_actor_t *actor = data;
-    edc_channel_actor_state_t *state = actor->state;
+    edc_channel_actor_state_t *state = data;
 
     state->cli.input_tid = pthread_self();
 
@@ -52,7 +56,7 @@ static void* cli_input_thread(void* data)
     if (state->cli.history_path)
         linenoiseHistoryLoad(state->cli.history_path);
 
-    while (g_atomic_int_get(&state->cli.running))
+    while (state->cli.running)
     {
         char *line = linenoise("\e[1;36m> \e[0m");
 
@@ -81,10 +85,11 @@ static void* cli_input_thread(void* data)
         {
             linenoiseHistoryAdd(trimmed);
 
-            g_async_queue_push(state->cli.input_queue, trimmed);
+            uv_mutex_lock(&state->cli.input_queue_lock);
+            edc_queue_push(&state->cli.input_queue, trimmed);
+            uv_mutex_unlock(&state->cli.input_queue_lock);
 
-            g_main_context_invoke(state->cli.queue_source ? g_source_get_context(state->cli.queue_source) : NULL,
-                                  (GSourceFunc)cli_process_input, actor);
+            uv_async_send(&state->cli.input_wakeup);
         }
         else
         {
@@ -96,10 +101,8 @@ static void* cli_input_thread(void* data)
         linenoiseHistorySave(state->cli.history_path);
 
     /* Wake up main loop if we exited due to EOF/Ctrl+C (not /stop) */
-    if (g_atomic_int_get(&state->cli.running))
+    if (state->cli.running)
         raise(SIGINT);
-
-    return NULL;
 }
 
 static void edc_channel_cli_handle_send(edc_actor_t *actor, edc_actor_msg_t *msg)
@@ -122,7 +125,7 @@ static void edc_channel_cli_handle_send(edc_actor_t *actor, edc_actor_msg_t *msg
     }
     pthread_mutex_unlock(&state->cli.term_mutex);
 
-    if (state->cli.input_thread)
+    if (state->cli.running)
         pthread_kill(state->cli.input_tid, SIGUSR1);
 }
 
@@ -142,22 +145,21 @@ static void edc_channel_cli_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 
         tcgetattr(STDIN_FILENO, &state->cli.orig_term);
 
-        state->cli.input_queue = g_async_queue_new();
+        edc_queue_init(&state->cli.input_queue);
+        uv_mutex_init(&state->cli.input_queue_lock);
         state->cli.pending_output = NULL;
-        state->cli.running = TRUE;
+        state->cli.running = 1;
 
         if (pthread_mutex_init(&state->cli.term_mutex, NULL) != 0)
         {
             printf("Failed to init CLI mutex\r\n");
-            state->cli.running = FALSE;
+            state->cli.running = 0;
             break;
         }
 
-        state->cli.queue_source = g_timeout_source_new(50);
-        g_source_set_callback(state->cli.queue_source, (GSourceFunc)cli_process_input, actor, NULL);
-        g_source_attach(state->cli.queue_source, actor->context);
+        uv_async_init(actor->loop, &state->cli.input_wakeup, cli_process_input);
 
-        state->cli.input_thread = g_thread_new("cli_input", (GThreadFunc)cli_input_thread, actor);
+        uv_thread_create(&state->cli.input_thread, cli_input_thread, state);
 
         printf("\e[1;32mEdgeClaw CLI ready. Type /help for commands.\e[0m\n");
         break;

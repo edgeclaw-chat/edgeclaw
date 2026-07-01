@@ -384,36 +384,34 @@ static struct edc_channel_message *edc_channel_actor_telegram_handle_recv(edc_ac
     return message;
 }
 
-static bool edc_channel_actor_telegram_poll(void* data)
+static void edc_channel_actor_telegram_poll(uv_timer_t *timer)
 {
-    edc_actor_t *actor = data;
-    edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
+    edc_channel_actor_state_t *state = container_of(timer, edc_channel_actor_state_t, telegram.poll_timer);
+    edc_actor_t *actor = state->actor;
 
     if (state->telegram.polling)
     {
-        return G_SOURCE_CONTINUE;
+        return;
     }
 
     sds args[] = {sdscatprintf(sdsempty(), "offset=%" PRId64, state->telegram.update_id), NULL};
     sds path = telegram_build_path(&state->config, "getUpdates", (const char **)args);
     sdsfree(args[0]);
 
-    struct edc_channel_telegram_req *req = g_new0(struct edc_channel_telegram_req, 1);
-    const char *proxy = g_getenv("https_proxy");
+    struct edc_channel_telegram_req *req = calloc(1, sizeof(struct edc_channel_telegram_req));
+    const char *proxy = getenv("https_proxy");
 
     req->actor = actor;
     req->proxy = proxy;
     req->path = path;
     req->host = telegram_api_host;
-    req->connected = FALSE;
+    req->connected = 0;
     req->url = sdscatprintf(sdsempty(), "https://%s%s", req->host, req->path);
     req->body = NULL;
     req->method = 0;
 
     edc_channel_actor_telegram_send_req(actor, req);
     state->telegram.polling = TRUE;
-
-    return G_SOURCE_CONTINUE;
 }
 
 static void edc_channel_actor_telegram_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
@@ -422,9 +420,8 @@ static void edc_channel_actor_telegram_handler(edc_actor_t *actor, edc_actor_msg
     switch (msg->type)
     {
     case BC_ACTOR_MSG_START: {
-        state->telegram.poll_source = g_timeout_source_new_seconds(1);
-        g_source_set_callback(state->telegram.poll_source, (GSourceFunc)edc_channel_actor_telegram_poll, actor, NULL);
-        g_source_attach(state->telegram.poll_source, actor->context);
+        uv_timer_init(actor->loop, &state->telegram.poll_timer);
+        uv_timer_start(&state->telegram.poll_timer, edc_channel_actor_telegram_poll, 1000, 1000);
         break;
     }
     case BC_ACTOR_MSG_CHANNEL_SEND:
@@ -454,6 +451,5 @@ void edc_channel_telegram_init(edc_actor_t *channel_actor)
     edc_channel_actor_state_t *state = channel_actor->state;
     state->telegram.update_id = -1;
     state->telegram.polling = FALSE;
-    state->telegram.poll_source = NULL;
     edc_channel_actor_add(channel_actor, edc_channel_telegram, edc_channel_actor_telegram_handler);
 }

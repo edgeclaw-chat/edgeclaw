@@ -223,17 +223,15 @@ static void edc_channel_qq_start_get_access_token(edc_actor_t *actor)
                           edc_channel_qq_get_access_token_http_fn, actor, 20);
 }
 
-static bool edc_channel_qq_access_token_update(void *data)
+static void edc_channel_qq_access_token_update(uv_timer_t *timer)
 {
-    edc_actor_t *actor = data;
-    edc_channel_actor_state_t *state = actor->state;
+    edc_channel_actor_state_t *state = container_of(timer, edc_channel_actor_state_t, qq.expire_timer);
     sdsfree(state->qq.access_token);
     state->qq.access_token = NULL;
     state->qq.expires_in = -1;
 
     log_info("qq channel: access_token expired. update now.");
-    edc_channel_qq_start_get_access_token(data);
-    return G_SOURCE_REMOVE;
+    edc_channel_qq_start_get_access_token(state->actor);
 }
 
 static bool edc_channel_qq_handle_get_access_token_resp(edc_actor_t *actor, edc_actor_msg_t *msg)
@@ -258,14 +256,9 @@ static bool edc_channel_qq_handle_get_access_token_resp(edc_actor_t *actor, edc_
     free(access_token->valuestring);
     access_token->valuestring = NULL;
 
-    if (state->qq.expire_source)
-    {
-        g_source_unref(state->qq.expire_source);
-    }
-
-    state->qq.expire_source = g_timeout_source_new_seconds(state->qq.expires_in + 1);
-    g_source_set_callback(state->qq.expire_source, (GSourceFunc)edc_channel_qq_access_token_update, actor, NULL);
-    g_source_attach(state->qq.expire_source, actor->context);
+    uv_timer_stop(&state->qq.expire_timer);
+    uv_timer_start(&state->qq.expire_timer, edc_channel_qq_access_token_update,
+                   (uint64_t)(state->qq.expires_in + 1) * 1000, 0);
 
     log_info("qq channel: got access_token: %s, expires_in: %d", state->qq.access_token, (int)state->qq.expires_in);
     return TRUE;
@@ -804,9 +797,11 @@ static void edc_channel_qq_handle_send(edc_actor_t *actor, edc_actor_msg_t *msg)
 
 static void edc_channel_qq_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
+    edc_channel_actor_state_t *state = actor->state;
     switch (msg->type)
     {
     case BC_ACTOR_MSG_START:
+        uv_timer_init(actor->loop, &state->qq.expire_timer);
         edc_channel_qq_start_get_access_token(actor);
         break;
     case BC_ACTOR_MSG_CHANNEL_RECV:
@@ -823,7 +818,6 @@ void edc_channel_qq_init(edc_actor_t *channel_actor)
 {
     edc_channel_actor_state_t *state = channel_actor->state;
     state->qq.access_token = NULL;
-    state->qq.expire_source = NULL;
     state->qq.expires_in = -1;
     state->qq.wss_shards = -1;
     state->qq.wss_url = NULL;

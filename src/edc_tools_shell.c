@@ -23,42 +23,96 @@ struct edc_tool_shell_ctx
     bool child_exited;
     bool completed;
     int status;
-    GPid child_pid;
-    GIOChannel *stdout_ch;
-    GIOChannel *stderr_ch;
-    GSource *stdout_source;
-    GSource *stderr_source;
-    GSource *timeout_source;
+    pid_t child_pid;
+    uv_pipe_t stdout_pipe;
+    uv_pipe_t stderr_pipe;
+    uv_timer_t timeout_timer;
+    int pending_handles;
     struct edc_toolbox_call_ctx *tb_ctx;
     void (*callback)(struct edc_toolbox_call_ctx *, sds result, EdcError *error);
     struct edc_tool_shell_ctx *next;
 };
 
 static struct edc_tool_shell_ctx *active_contexts = NULL;
-static GMutex active_mutex;
+static uv_mutex_t active_mutex;
 
-static void edc_tool_shell_complete(struct edc_tool_shell_ctx *ctx)
+static void shell_ctx_try_complete(struct edc_tool_shell_ctx *ctx);
+
+static void on_stdout_close(uv_handle_t *handle)
+{
+    struct edc_tool_shell_ctx *ctx = container_of(handle, struct edc_tool_shell_ctx, stdout_pipe);
+    if (--ctx->pending_handles == 0)
+    {
+        if (ctx->stderr_buf)
+            sdsfree(ctx->stderr_buf);
+        free(ctx);
+    }
+}
+
+static void on_stderr_close(uv_handle_t *handle)
+{
+    struct edc_tool_shell_ctx *ctx = container_of(handle, struct edc_tool_shell_ctx, stderr_pipe);
+    if (--ctx->pending_handles == 0)
+    {
+        if (ctx->stderr_buf)
+            sdsfree(ctx->stderr_buf);
+        free(ctx);
+    }
+}
+
+static void on_timer_close(uv_handle_t *handle)
+{
+    struct edc_tool_shell_ctx *ctx = container_of(handle, struct edc_tool_shell_ctx, timeout_timer);
+    if (--ctx->pending_handles == 0)
+    {
+        if (ctx->stderr_buf)
+            sdsfree(ctx->stderr_buf);
+        free(ctx);
+    }
+}
+
+static void shell_ctx_close_handles(struct edc_tool_shell_ctx *ctx)
+{
+    int count = 0;
+
+    if (!uv_is_closing((uv_handle_t *)&ctx->stdout_pipe))
+    {
+        uv_read_stop((uv_stream_t *)&ctx->stdout_pipe);
+        uv_close((uv_handle_t *)&ctx->stdout_pipe, on_stdout_close);
+        count++;
+    }
+    if (!uv_is_closing((uv_handle_t *)&ctx->stderr_pipe))
+    {
+        uv_read_stop((uv_stream_t *)&ctx->stderr_pipe);
+        uv_close((uv_handle_t *)&ctx->stderr_pipe, on_stderr_close);
+        count++;
+    }
+    if (!uv_is_closing((uv_handle_t *)&ctx->timeout_timer))
+    {
+        uv_timer_stop(&ctx->timeout_timer);
+        uv_close((uv_handle_t *)&ctx->timeout_timer, on_timer_close);
+        count++;
+    }
+
+    ctx->pending_handles = count;
+}
+
+static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
 {
     if (ctx->completed)
         return;
-    ctx->completed = TRUE;
+    ctx->completed = true;
 
     sds result = ctx->stdout_buf;
     int status = ctx->status;
 
     if (sdslen(ctx->stderr_buf))
-    {
         result = sdscatprintf(result, "STDERR:\n%s", ctx->stderr_buf);
-    }
 
     if (sdslen(result))
-    {
         result = sdscatprintf(result, "\nDone (exit code %d)", status);
-    }
     else
-    {
         result = sdscatprintf(result, "Done (exit code %d)", status);
-    }
 
     ctx->stdout_buf = result;
 
@@ -73,88 +127,63 @@ static void edc_tool_shell_complete(struct edc_tool_shell_ctx *ctx)
         ctx->callback(ctx->tb_ctx, result, NULL);
     }
 
-    if (ctx->timeout_source)
-    {
-        g_source_destroy(ctx->timeout_source);
-        g_source_unref(ctx->timeout_source);
-        ctx->timeout_source = NULL;
-    }
-    if (ctx->stdout_source)
-    {
-        g_source_destroy(ctx->stdout_source);
-        g_source_unref(ctx->stdout_source);
-        ctx->stdout_source = NULL;
-    }
-    if (ctx->stderr_source)
-    {
-        g_source_destroy(ctx->stderr_source);
-        g_source_unref(ctx->stderr_source);
-        ctx->stderr_source = NULL;
-    }
-
-    if (ctx->stdout_ch)
-    {
-        g_io_channel_unref(ctx->stdout_ch);
-        ctx->stdout_ch = NULL;
-    }
-    if (ctx->stderr_ch)
-    {
-        g_io_channel_unref(ctx->stderr_ch);
-        ctx->stderr_ch = NULL;
-    }
-    sdsfree(ctx->stderr_buf);
-    ctx->stderr_buf = NULL;
-
-    g_mutex_lock(&active_mutex);
+    uv_mutex_lock(&active_mutex);
     LL_DELETE(active_contexts, ctx);
-    g_mutex_unlock(&active_mutex);
+    uv_mutex_unlock(&active_mutex);
 
-    free(ctx);
+    shell_ctx_close_handles(ctx);
 }
 
-static bool on_pipe_readable(GIOChannel *source, GIOCondition condition, void* data)
+static void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf)
 {
-    if (condition & G_IO_ERR)
-    {
-        log_error("edc_tools_shell: io channel error.");
-        return FALSE;
-    }
-
-    sds *buf_ptr = data;
-
-    char line[1024];
-    size_t bytes_read = 0;
-    GIOStatus status = g_io_channel_read_chars(source, line, sizeof(line), &bytes_read, NULL);
-
-    if (status == G_IO_STATUS_ERROR)
-    {
-        return FALSE;
-    }
-
-    if (bytes_read > 0)
-    {
-        *buf_ptr = sdscatlen(*buf_ptr, line, bytes_read);
-    }
-
-    if (status == G_IO_STATUS_EOF || (condition & G_IO_HUP))
-    {
-        return FALSE;
-    }
-
-    if (status == G_IO_STATUS_AGAIN)
-    {
-        return TRUE;
-    }
-
-    return TRUE;
+    (void)handle;
+    buf->base = malloc(suggested_size ? suggested_size : 4096);
+    buf->len = suggested_size ? suggested_size : 4096;
 }
 
-static void edc_tool_shell_try_complete(struct edc_tool_shell_ctx *ctx)
+static void on_stdout_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
+{
+    struct edc_tool_shell_ctx *ctx = container_of(stream, struct edc_tool_shell_ctx, stdout_pipe);
+
+    if (nread > 0)
+        ctx->stdout_buf = sdscatlen(ctx->stdout_buf, buf->base, (size_t)nread);
+
+    free(buf->base);
+
+    if (nread < 0)
+    {
+        if (nread != UV_EOF)
+            log_error("edc_tools_shell: stdout read error: %s", uv_strerror((int)nread));
+        ctx->stdout_complete = true;
+        uv_read_stop(stream);
+        shell_ctx_try_complete(ctx);
+    }
+}
+
+static void on_stderr_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
+{
+    struct edc_tool_shell_ctx *ctx = container_of(stream, struct edc_tool_shell_ctx, stderr_pipe);
+
+    if (nread > 0)
+        ctx->stderr_buf = sdscatlen(ctx->stderr_buf, buf->base, (size_t)nread);
+
+    free(buf->base);
+
+    if (nread < 0)
+    {
+        if (nread != UV_EOF)
+            log_error("edc_tools_shell: stderr read error: %s", uv_strerror((int)nread));
+        ctx->stderr_complete = true;
+        uv_read_stop(stream);
+        shell_ctx_try_complete(ctx);
+    }
+}
+
+static void shell_ctx_try_complete(struct edc_tool_shell_ctx *ctx)
 {
     if (!ctx->stderr_complete || !ctx->stdout_complete)
         return;
 
-    /* Both pipes closed. Try to reap the child, but don't block. */
     if (!ctx->child_exited)
     {
         int status;
@@ -162,9 +191,8 @@ static void edc_tool_shell_try_complete(struct edc_tool_shell_ctx *ctx)
 
         if (wret > 0)
         {
-            ctx->child_exited = TRUE;
+            ctx->child_exited = true;
             ctx->status = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
-            g_spawn_close_pid(ctx->child_pid);
         }
         else if (wret == -1)
         {
@@ -172,61 +200,17 @@ static void edc_tool_shell_try_complete(struct edc_tool_shell_ctx *ctx)
         }
         else
         {
-            /* Child still running (pipes closed but not exited).
-             * Don't block the event loop — signal ECHILD as if exited. */
             log_error("child pid %d still running after pipes closed", ctx->child_pid);
             ctx->status = 1;
         }
     }
 
-    edc_tool_shell_complete(ctx);
-}
-static bool on_stderr_pipe_readable(GIOChannel *source, GIOCondition cond, void *data)
-{
-    struct edc_tool_shell_ctx *ctx = data;
-    if (ctx->completed)
-        return FALSE;
-    bool ret = on_pipe_readable(source, cond, &ctx->stderr_buf);
-    if (!ret)
-    {
-        ctx->stderr_complete = TRUE;
-    }
-    edc_tool_shell_try_complete(ctx);
-    return ret;
+    shell_ctx_complete(ctx);
 }
 
-static bool on_stdout_pipe_readable(GIOChannel *source, GIOCondition cond, void *data)
+static void on_timeout(uv_timer_t *timer)
 {
-    struct edc_tool_shell_ctx *ctx = data;
-    if (ctx->completed)
-        return FALSE;
-    bool ret = on_pipe_readable(source, cond, &ctx->stdout_buf);
-    if (!ret)
-    {
-        ctx->stdout_complete = TRUE;
-    }
-    edc_tool_shell_try_complete(ctx);
-    return ret;
-}
-
-static GSource *edc_tool_shell_watch_io_channel(GIOChannel *channel, GIOFunc fn, void* user_data)
-{
-    GSource *source = g_io_create_watch(channel, G_IO_IN | G_IO_HUP | G_IO_ERR);
-    g_source_set_callback(source, (GSourceFunc)fn, user_data, NULL);
-    g_source_attach(source, g_main_context_get_thread_default());
-    return source;
-}
-
-static void edc_tool_shell_child_setup(void* user_data)
-{
-    struct edc_config *conf = user_data;
-    setpgid(0, 0);
-    edc_sandbox_apply(conf);
-}
-
-static bool shell_timeout_cb(void* data)
-{
-    struct edc_tool_shell_ctx *ctx = data;
+    struct edc_tool_shell_ctx *ctx = container_of(timer, struct edc_tool_shell_ctx, timeout_timer);
 
     if (!ctx->child_exited)
     {
@@ -236,9 +220,8 @@ static bool shell_timeout_cb(void* data)
         pid_t wret = waitpid(ctx->child_pid, &status, WNOHANG);
         if (wret > 0)
         {
-            ctx->child_exited = TRUE;
+            ctx->child_exited = true;
             ctx->status = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
-            g_spawn_close_pid(ctx->child_pid);
         }
         else
         {
@@ -248,14 +231,20 @@ static bool shell_timeout_cb(void* data)
         ctx->stderr_buf = sdscat(ctx->stderr_buf, "\n[command timed out]");
     }
 
-    ctx->stdout_complete = TRUE;
-    ctx->stderr_complete = TRUE;
-    edc_tool_shell_try_complete(ctx);
-    return G_SOURCE_REMOVE;
+    ctx->stdout_complete = true;
+    ctx->stderr_complete = true;
+    shell_ctx_try_complete(ctx);
+}
+
+static void edc_tool_shell_child_setup(void *user_data)
+{
+    struct edc_config *conf = user_data;
+    setpgid(0, 0);
+    edc_sandbox_apply(conf);
 }
 
 static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, cJSON *args,
-                                     void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
+                                      void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     EdcError *error = NULL;
     cJSON *cmd = cJSON_GetObjectItemCaseSensitive(args, "command");
@@ -274,29 +263,24 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
     unsigned int timeout_sec = CMD_TIMEOUT_SEC;
     cJSON *timeout_json = cJSON_GetObjectItemCaseSensitive(args, "timeout");
     if (timeout_json && cJSON_IsNumber(timeout_json) && timeout_json->valueint > 0)
-    {
         timeout_sec = (unsigned int)timeout_json->valueint;
-    }
 
     const char *working_dir = NULL;
     cJSON *working_dir_json = cJSON_GetObjectItemCaseSensitive(args, "working_dir");
     if (working_dir_json && cJSON_IsString(working_dir_json))
-    {
         working_dir = cJSON_GetStringValue(working_dir_json);
-    }
 
     log_debug("shell tool exec: %s (timeout %us, working_dir %s)", cmd_s, timeout_sec,
               working_dir ? working_dir : "(default)");
 
     char *argv[] = {"sh", "-c", (char *)cmd_s, NULL};
-
     struct edc_config *conf = tb_ctx->tb->conf;
 
     sds allocated_cwd = NULL;
     const char *cwd = edc_sandbox_get_root(conf);
     if (working_dir)
     {
-        allocated_cwd = edc_sandbox_verify_path(conf, working_dir, FALSE, &error);
+        allocated_cwd = edc_sandbox_verify_path(conf, working_dir, false, &error);
         if (!allocated_cwd)
         {
             callback(tb_ctx, NULL, error);
@@ -305,28 +289,27 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
         cwd = allocated_cwd;
     }
 
-    char **envp = g_get_environ();
+    extern char **environ;
     int env_count = 0;
-    while (envp && envp[env_count]) env_count++;
-    sds *filtered_envp = g_new0(sds, env_count + 1);
+    while (environ && environ[env_count]) env_count++;
+    sds *filtered_envp = calloc((size_t)env_count + 1, sizeof(sds));
     int j = 0;
     size_t master_key_prefix_len = strlen(BC_MASTER_KEY_ENV);
     for (int i = 0; i < env_count; i++)
     {
-        if (strncmp(envp[i], BC_MASTER_KEY_ENV, master_key_prefix_len) != 0 || envp[i][master_key_prefix_len] != '=')
-        {
-            filtered_envp[j++] = sdsnew(envp[i]);
-        }
+        if (strncmp(environ[i], BC_MASTER_KEY_ENV, master_key_prefix_len) != 0 ||
+            environ[i][master_key_prefix_len] != '=')
+            filtered_envp[j++] = sdsnew(environ[i]);
     }
-    for (int _i = 0; envp[_i]; _i++) free(envp[_i]);
-    free(envp);
 
     GPid child_pid = 0;
     int stdin_fd = 0, stdout_fd = 0, stderr_fd = 0;
     GError *spawn_error = NULL;
     bool success =
-        g_spawn_async_with_pipes(cwd, argv, (char **)filtered_envp, G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
-                                 edc_tool_shell_child_setup, conf, &child_pid, &stdin_fd, &stdout_fd, &stderr_fd, &spawn_error);
+        g_spawn_async_with_pipes(cwd, argv, (char **)filtered_envp,
+                                 G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
+                                 edc_tool_shell_child_setup, conf,
+                                 &child_pid, &stdin_fd, &stdout_fd, &stderr_fd, &spawn_error);
 
     sdsfree(allocated_cwd);
 
@@ -343,83 +326,49 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
 
     close(stdin_fd);
 
-    struct edc_tool_shell_ctx *ctx = g_new0(struct edc_tool_shell_ctx, 1);
+    uv_loop_t *loop = tb_ctx->tb->scheduler->loop;
+
+    struct edc_tool_shell_ctx *ctx = calloc(1, sizeof(struct edc_tool_shell_ctx));
     ctx->tb_ctx = tb_ctx;
     ctx->stderr_buf = sdsempty();
     ctx->stdout_buf = sdsempty();
-    ctx->stderr_complete = FALSE;
-    ctx->stdout_complete = FALSE;
-    ctx->child_exited = FALSE;
-    ctx->completed = FALSE;
-    ctx->stdout_source = NULL;
-    ctx->stderr_source = NULL;
-    ctx->timeout_source = NULL;
     ctx->child_pid = child_pid;
     ctx->callback = callback;
+    ctx->tool = tool;
 
-    ctx->stdout_ch = g_io_channel_unix_new(stdout_fd);
-    ctx->stderr_ch = g_io_channel_unix_new(stderr_fd);
+    uv_pipe_init(loop, &ctx->stdout_pipe, 0);
+    uv_pipe_open(&ctx->stdout_pipe, stdout_fd);
+    uv_read_start((uv_stream_t *)&ctx->stdout_pipe, alloc_buffer, on_stdout_read);
 
-    g_io_channel_set_flags(ctx->stdout_ch, G_IO_FLAG_NONBLOCK, NULL);
-    g_io_channel_set_flags(ctx->stderr_ch, G_IO_FLAG_NONBLOCK, NULL);
+    uv_pipe_init(loop, &ctx->stderr_pipe, 0);
+    uv_pipe_open(&ctx->stderr_pipe, stderr_fd);
+    uv_read_start((uv_stream_t *)&ctx->stderr_pipe, alloc_buffer, on_stderr_read);
 
-    ctx->timeout_source = g_timeout_source_new_seconds(timeout_sec);
-    g_source_set_callback(ctx->timeout_source, (GSourceFunc)shell_timeout_cb, ctx, NULL);
-    g_source_attach(ctx->timeout_source, g_main_context_get_thread_default());
+    uv_timer_init(loop, &ctx->timeout_timer);
+    uv_timer_start(&ctx->timeout_timer, on_timeout, (uint64_t)timeout_sec * 1000, 0);
 
-    ctx->stderr_source = edc_tool_shell_watch_io_channel(ctx->stderr_ch, (GIOFunc)on_stderr_pipe_readable, ctx);
-    ctx->stdout_source = edc_tool_shell_watch_io_channel(ctx->stdout_ch, (GIOFunc)on_stdout_pipe_readable, ctx);
-
-    g_mutex_lock(&active_mutex);
+    uv_mutex_lock(&active_mutex);
     LL_PREPEND(active_contexts, ctx);
-    g_mutex_unlock(&active_mutex);
+    uv_mutex_unlock(&active_mutex);
 }
 
 void edc_tool_shell_abort_all(void)
 {
-    g_mutex_lock(&active_mutex);
+    uv_mutex_lock(&active_mutex);
     struct edc_tool_shell_ctx *ctx;
     LL_FOREACH(active_contexts, ctx)
     {
-        if (ctx->timeout_source)
-        {
-            g_source_destroy(ctx->timeout_source);
-            g_source_unref(ctx->timeout_source);
-            ctx->timeout_source = NULL;
-        }
-        if (ctx->stdout_source)
-        {
-            g_source_destroy(ctx->stdout_source);
-            g_source_unref(ctx->stdout_source);
-            ctx->stdout_source = NULL;
-        }
-        if (ctx->stderr_source)
-        {
-            g_source_destroy(ctx->stderr_source);
-            g_source_unref(ctx->stderr_source);
-            ctx->stderr_source = NULL;
-        }
         if (!ctx->child_exited)
         {
             kill(-ctx->child_pid, SIGKILL);
             int status;
             waitpid(ctx->child_pid, &status, 0);
-            g_spawn_close_pid(ctx->child_pid);
-            ctx->child_exited = TRUE;
+            ctx->child_exited = true;
             ctx->status = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
         }
-        if (ctx->stdout_ch)
-        {
-            g_io_channel_unref(ctx->stdout_ch);
-            ctx->stdout_ch = NULL;
-        }
-        if (ctx->stderr_ch)
-        {
-            g_io_channel_unref(ctx->stderr_ch);
-            ctx->stderr_ch = NULL;
-        }
+        shell_ctx_close_handles(ctx);
     }
-    g_mutex_unlock(&active_mutex);
+    uv_mutex_unlock(&active_mutex);
 }
 
 struct edc_tool *edc_tool_create_exec_shell(struct edc_toolbox *tb)
@@ -428,9 +377,13 @@ struct edc_tool *edc_tool_create_exec_shell(struct edc_toolbox *tb)
     const char *desc = "Execute `sh -c '<command>'` then return output";
 
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params, edc_tool_param_new("command", edc_param_str_type("The shell command to execute", NULL), TRUE));
-    LL_APPEND(params, edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), FALSE));
-    LL_APPEND(params, edc_tool_param_new("working_dir", edc_param_str_type("Working directory (relative to sandbox root)", NULL), FALSE));
+    LL_APPEND(params,
+              edc_tool_param_new("command", edc_param_str_type("The shell command to execute", NULL), true));
+    LL_APPEND(params,
+              edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), false));
+    LL_APPEND(params,
+              edc_tool_param_new("working_dir",
+                                 edc_param_str_type("Working directory (relative to sandbox root)", NULL), false));
 
     struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_shell_async);
     edc_toolbox_register(tb, tool);

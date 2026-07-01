@@ -1,9 +1,14 @@
 #ifndef __BC_ACTOR_H__
 #define __BC_ACTOR_H__
 
-#include <glib.h>
+#include <uv.h>
 #include "sds.h"
+#include "edc_containers.h"
 #include <stdbool.h>
+#include <stddef.h>
+
+#define container_of(ptr, type, member) \
+    ((type *)((char *)(ptr) - offsetof(type, member)))
 
 typedef struct edc_actor edc_actor_t;
 typedef struct edc_actor_msg edc_actor_msg_t;
@@ -39,8 +44,10 @@ typedef void (*edc_actor_handler_t)(edc_actor_t *actor, edc_actor_msg_t *msg);
 
 struct edc_actor
 {
-    GAsyncQueue *mailbox;
-    GMainContext *context;
+    EdcQueue mailbox;
+    uv_mutex_t mailbox_lock;
+    uv_loop_t *loop;
+    uv_async_t wakeup;
     edc_actor_handler_t handler;
     void *state;
     sds name;
@@ -48,11 +55,12 @@ struct edc_actor
 
 typedef struct
 {
-    GThread *thread;
-    GMainLoop *loop;
-    GMainContext *context;
-    GArray *actors;
-    int running;
+    uv_thread_t thread;
+    uv_loop_t loop;
+    edc_actor_t **actors;
+    int actor_count;
+    int actor_capacity;
+    volatile int running;
 } edc_actor_runner_t;
 
 edc_actor_runner_t *edc_actor_runner_new();

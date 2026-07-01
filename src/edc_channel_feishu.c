@@ -222,18 +222,16 @@ static void edc_channel_feishu_wss_endpoint_req(edc_actor_t *actor)
     edc_channel_feishu_http_connect(actor, GEN_WSS_ENDPOINT_URL, edc_channel_feishu_wss_url_fn, actor);
 }
 
-static bool edc_channel_feishu_tenant_token_update(void *data)
+static void edc_channel_feishu_tenant_token_update(uv_timer_t *timer)
 {
-    edc_actor_t *actor = data;
-    edc_channel_actor_state_t *state = actor->state;
+    edc_channel_actor_state_t *state = container_of(timer, edc_channel_actor_state_t, feishu.expire_timer);
     log_info("edc_channel_feishu tenant_token expired. update now.");
 
     state->feishu.expire = -1;
-        sdsfree(state->feishu.tenant_access_token);
-        state->feishu.tenant_access_token = NULL;
+    sdsfree(state->feishu.tenant_access_token);
+    state->feishu.tenant_access_token = NULL;
 
-    edc_channel_feishu_tenant_token_req(actor);
-    return G_SOURCE_REMOVE;
+    edc_channel_feishu_tenant_token_req(state->actor);
 }
 
 static void edc_channel_feishu_handle_tenant_token_recv(edc_actor_t *actor, struct edc_channel_feishu_resp *resp)
@@ -288,13 +286,9 @@ static void edc_channel_feishu_handle_tenant_token_recv(edc_actor_t *actor, stru
     log_debug("get feishu tenant_access_token: %s, expire at: %" PRId64, state->feishu.tenant_access_token,
               state->feishu.expire);
 
-    if (state->feishu.expire_source)
-    {
-        g_source_unref(state->feishu.expire_source);
-    }
-    state->feishu.expire_source = g_timeout_source_new_seconds(state->feishu.expire + 1);
-    g_source_set_callback(state->feishu.expire_source, (GSourceFunc)edc_channel_feishu_tenant_token_update, actor, NULL);
-    g_source_attach(state->feishu.expire_source, actor->context);
+    uv_timer_stop(&state->feishu.expire_timer);
+    uv_timer_start(&state->feishu.expire_timer, edc_channel_feishu_tenant_token_update,
+                   (uint64_t)(state->feishu.expire + 1) * 1000, 0);
 }
 
 static bool edc_channel_feishu_parse_wss_endpoint_resp(edc_channel_actor_state_t *state, cJSON *body)
@@ -880,9 +874,11 @@ static void edc_channel_feishu_handle_send(edc_actor_t *actor, edc_actor_msg_t *
 
 static void edc_channel_feishu_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
+    edc_channel_actor_state_t *state = actor->state;
     switch (msg->type)
     {
     case BC_ACTOR_MSG_START:
+        uv_timer_init(actor->loop, &state->feishu.expire_timer);
         edc_channel_feishu_tenant_token_req(actor);
         edc_channel_feishu_wss_endpoint_req(actor);
         break;
@@ -901,7 +897,6 @@ void edc_channel_feishu_init(edc_actor_t *channel_actor)
 {
     edc_channel_actor_state_t *state = channel_actor->state;
     state->feishu.tenant_access_token = NULL;
-    state->feishu.expire_source = NULL;
     state->feishu.expire = -1;
     state->feishu.wss_url = NULL;
     edc_channel_actor_add(channel_actor, edc_channel_feishu, edc_channel_feishu_handler);

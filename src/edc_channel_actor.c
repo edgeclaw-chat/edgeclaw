@@ -340,13 +340,14 @@ struct edc_channel_message *edc_channel_message_move(struct edc_channel_message 
 
 edc_actor_t *edc_channel_actor_new(struct channel_conf *config, edc_network_async_t *network)
 {
-    edc_channel_actor_state_t *state = g_new0(edc_channel_actor_state_t, 1);
+    edc_channel_actor_state_t *state = calloc(1, sizeof(edc_channel_actor_state_t));
     state->config = *config;
 
     state->network = network;
     state->observer = NULL;
 
     edc_actor_t *actor = edc_actor_new("edc_channel_actor", edc_channel_actor_handle, state);
+    state->actor = actor;
 
     if (config->type == edc_channel_telegram)
     {
@@ -382,27 +383,14 @@ void edc_channel_actor_free(edc_actor_t *actor)
     switch (state->config.type)
     {
     case edc_channel_telegram:
-        if (state->telegram.poll_source)
-            g_source_unref(state->telegram.poll_source);
         break;
     case edc_channel_feishu:
         sdsfree(state->feishu.wss_url);
         sdsfree(state->feishu.tenant_access_token);
-
-        if (state->feishu.expire_source)
-        {
-            g_source_unref(state->feishu.expire_source);
-        }
         break;
 
     case edc_channel_qq:
         sdsfree(state->qq.access_token);
-
-        if (state->qq.expire_source)
-        {
-            g_source_unref(state->qq.expire_source);
-        }
-
         sdsfree(state->qq.wss_url);
 
         if (state->qq.conns)
@@ -417,26 +405,25 @@ void edc_channel_actor_free(edc_actor_t *actor)
         break;
 
     case edc_channel_cli:
-        g_atomic_int_set(&state->cli.running, FALSE);
-        if (state->cli.input_thread)
+        state->cli.running = 0;
+        if (state->cli.input_tid)
         {
             pthread_kill(state->cli.input_tid, SIGUSR1);
-            g_thread_join(state->cli.input_thread);
+            uv_thread_join(&state->cli.input_thread);
         }
-        if (state->cli.input_queue)
         {
             char *line;
-            while ((line = g_async_queue_try_pop(state->cli.input_queue)))
+            uv_mutex_lock(&state->cli.input_queue_lock);
+            while ((line = edc_queue_pop(&state->cli.input_queue)))
             {
+                uv_mutex_unlock(&state->cli.input_queue_lock);
                 sdsfree(line);
+                uv_mutex_lock(&state->cli.input_queue_lock);
             }
-            g_async_queue_unref(state->cli.input_queue);
+            uv_mutex_unlock(&state->cli.input_queue_lock);
         }
-        if (state->cli.queue_source)
-        {
-            g_source_destroy(state->cli.queue_source);
-            g_source_unref(state->cli.queue_source);
-        }
+        edc_queue_destroy(&state->cli.input_queue);
+        uv_mutex_destroy(&state->cli.input_queue_lock);
         if (state->cli.pending_output)
             sdsfree(state->cli.pending_output);
         if (state->cli.history_path)
