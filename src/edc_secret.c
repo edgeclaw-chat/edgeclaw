@@ -308,7 +308,7 @@ void edc_secret_lockdown(void)
     log_info("Master key wiped — secret module locked down");
 }
 
-sds edc_secret_encrypt(const char *plaintext)
+sds edc_secret_encrypt(sds plaintext)
 {
     if (!plaintext || !g_secret_ready)
         return NULL;
@@ -360,7 +360,7 @@ sds edc_secret_encrypt(const char *plaintext)
         goto cleanup;
     }
 
-    size_t plain_len = strlen(plaintext);
+    size_t plain_len = sdslen(plaintext);
     size_t output_len = plain_len + BC_GCM_TAG_SIZE;
     output = g_new(unsigned char, output_len);
     size_t olen = 0;

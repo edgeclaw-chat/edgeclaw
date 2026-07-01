@@ -46,7 +46,7 @@ cJSON *edc_history_load(const char *workspace, const size_t offset)
             }
 
             line = sdstrim(line, " \t\r\n");
-            sdssetlen(line, strlen(line));
+            sdssetlen(line, sdslen(line));
             if (sdslen(line) > 0)
             {
                 cJSON *msg = cJSON_Parse(line);

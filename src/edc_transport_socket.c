@@ -202,7 +202,7 @@ static int transport_socket_recv(struct edc_device_transport *base, struct edc_d
             close(conn_fd);
             goto fail;
         }
-        req->file_data_len = strlen(req->file_data);
+        req->file_data_len = sdslen(req->file_data);
         req->file_mode = 0;
         req->file_offset = 0;
 

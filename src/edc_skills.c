@@ -94,7 +94,7 @@ static bool edc_extract_skill_meta_and_content(const char *content, struct edc_s
         for (int i = 0; i < line_count; i++)
         {
             int kv_count;
-            sds *kv = sdssplitlen(lines[i], strlen(lines[i]), ":", 1, &kv_count);
+            sds *kv = sdssplitlen(lines[i], sdslen(lines[i]), ":", 1, &kv_count);
             if (kv && kv_count >= 2 && kv[0] && kv[1])
             {
                 sds k = sdsdup(kv[0]); k = sdstrim(k, " \t\r\n");

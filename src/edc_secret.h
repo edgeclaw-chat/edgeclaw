@@ -28,7 +28,7 @@ void edc_secret_lockdown(void);
 /* Encrypt a plaintext string.
  * Returns a string prefixed with BC_SECRET_PREFIX followed by base64 ciphertext,
  * or NULL on failure. Caller must sdsfree() the result. */
-sds edc_secret_encrypt(const char *plaintext);
+sds edc_secret_encrypt(sds plaintext);
 
 /* Decrypt a ciphertext string (optionally prefixed with BC_SECRET_PREFIX).
  * If the input starts with the prefix, decrypts and returns the plaintext.

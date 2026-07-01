@@ -756,7 +756,7 @@ static void edc_channel_qq_send_message_http_fn(struct mg_connection *c, int ev,
         mg_printf(c, "Authorization: QQBot %s\r\n", state->qq.access_token);
         mg_printf(c, "X-Union-Appid: %s\r\n", state->config.qq.app_id);
         mg_printf(c, "Content-Type: application/json\r\n");
-        mg_printf(c, "Content-Length: %d\r\n\r\n", (int)strlen(req->http_send_msg.body));
+        mg_printf(c, "Content-Length: %d\r\n\r\n", (int)sdslen(req->http_send_msg.body));
         mg_printf(c, "%s", req->http_send_msg.body);
     }
     else if (ev == MG_EV_HTTP_MSG)

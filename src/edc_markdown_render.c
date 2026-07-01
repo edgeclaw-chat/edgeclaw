@@ -629,7 +629,7 @@ static void edc_md_debug_log(const char *msg, void *userdata)
     log_debug("md4c: %s", msg);
 }
 
-sds edc_markdown_render(const char *markdown)
+sds edc_markdown_render(sds markdown)
 {
     if (!markdown) return sdsempty();
 
@@ -651,7 +651,7 @@ sds edc_markdown_render(const char *markdown)
         .syntax = NULL,
     };
 
-    int ret = md_parse(markdown, (MD_SIZE)strlen(markdown), &parser, &ctx);
+    int ret = md_parse(markdown, (MD_SIZE)sdslen(markdown), &parser, &ctx);
     if (ret != 0) {
         log_error("md_parse failed: %d", ret);
     }

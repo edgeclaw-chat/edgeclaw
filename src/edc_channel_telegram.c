@@ -172,7 +172,7 @@ static struct edc_channel_telegram_req *edc_channel_actor_send_message_chunk_req
     req->host = telegram_api_host;
     req->connected = FALSE;
     req->url = sdscatprintf(sdsempty(), "https://%s%s", req->host, req->path);
-    req->body = sdsnewlen(post_fields, strlen(post_fields));
+    req->body = sdsnewlen(post_fields, sdslen(post_fields));
     sdsfree(post_fields);
     req->method = 1;
     req->next = NULL;
@@ -198,7 +198,7 @@ static bool edc_channel_actor_send_message(edc_actor_t *actor, const struct edc_
 {
     const char *content = msg->content;
     const char *chat_id = msg->channel->telegram.chat_id;
-    size_t n = strlen(content);
+    size_t n = sdslen(msg->content);
     if (n < TELEGRAM_MAX_MSG_LEN)
     {
         struct edc_channel_telegram_req *req = edc_channel_actor_send_message_chunk_req(actor, chat_id, content, n);
