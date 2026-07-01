@@ -500,10 +500,10 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     printf("\n--- Sandbox Configuration ---\n");
 
     {
-        char default_sandbox[512];
-        snprintf(default_sandbox, sizeof(default_sandbox), "%s/sandbox", edc_home);
+        sds default_sandbox = sdscatprintf(sdsempty(), "%s/sandbox", edc_home);
         const char *def = (defaults && sdslen(defaults->sandbox_root) > 0) ? defaults->sandbox_root : default_sandbox;
         val = prompt_with_default("Sandbox Root (working directory, writable)", def);
+        sdsfree(default_sandbox);
         if (!val)
             return -1;
         result->sandbox_root = val;
