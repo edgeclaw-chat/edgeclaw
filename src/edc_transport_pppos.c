@@ -325,16 +325,16 @@ static int transport_pppos_send(struct edc_device_transport *base, const struct 
     char *resp_str = cJSON_PrintUnformatted(resp_json);
     size_t body_len = strlen(resp_str);
 
-    char hdr[256];
-    int hdr_len = snprintf(hdr, sizeof(hdr),
+    sds hdr = sdscatprintf(sdsempty(),
                            "HTTP/1.1 200 OK\r\n"
                            "Content-Type: application/json\r\n"
                            "Content-Length: %zu\r\n"
                            "\r\n",
                            body_len);
 
-    netconn_write_partly(t->conn, hdr, (size_t)hdr_len, NETCONN_COPY, NULL);
+    netconn_write_partly(t->conn, hdr, sdslen(hdr), NETCONN_COPY, NULL);
     netconn_write_partly(t->conn, resp_str, body_len, NETCONN_COPY, NULL);
+    sdsfree(hdr);
 
     cJSON_Delete(resp_json);
     cJSON_free(resp_str);

@@ -173,8 +173,7 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
     char *req_body = cJSON_PrintUnformatted(req_json);
     cJSON_Delete(req_json);
 
-    char hdr[512];
-    int hdr_len = snprintf(hdr, sizeof(hdr),
+    sds hdr = sdscatprintf(sdsempty(),
         "POST /exec HTTP/1.1\r\n"
         "Host: %s:%u\r\n"
         "Content-Type: application/json\r\n"
@@ -183,8 +182,9 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
         "\r\n",
         ctx->agent_ip, ctx->agent_port, strlen(req_body));
 
-    send_all(sock, hdr, (size_t)hdr_len);
+    send_all(sock, hdr, sdslen(hdr));
     send_all(sock, req_body, strlen(req_body));
+    sdsfree(hdr);
     cJSON_free(req_body);
 
     tv.tv_sec = ctx->timeout_sec;
@@ -261,8 +261,7 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
     char *req_body = cJSON_PrintUnformatted(req_json);
     cJSON_Delete(req_json);
 
-    char hdr[512];
-    int hdr_len = snprintf(hdr, sizeof(hdr),
+    sds hdr = sdscatprintf(sdsempty(),
         "POST /exec HTTP/1.1\r\n"
         "Host: %s:%u\r\n"
         "Content-Type: application/json\r\n"
@@ -271,8 +270,9 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
         "\r\n",
         ctx->agent_ip, ctx->agent_port, strlen(req_body));
 
-    netconn_write_partly(c, hdr, (size_t)hdr_len, NETCONN_COPY, NULL);
+    netconn_write_partly(c, hdr, sdslen(hdr), NETCONN_COPY, NULL);
     netconn_write_partly(c, req_body, strlen(req_body), NETCONN_COPY, NULL);
+    sdsfree(hdr);
     cJSON_free(req_body);
 
     netconn_set_recvtimeout(c, ctx->timeout_sec * 1000);

@@ -183,8 +183,7 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
     char *req_body = cJSON_PrintUnformatted(req_json);
     cJSON_Delete(req_json);
 
-    char hdr[512];
-    int hdr_len = snprintf(hdr, sizeof(hdr),
+    sds hdr = sdscatprintf(sdsempty(),
                            "POST /file/upload HTTP/1.1\r\n"
                            "Host: %s:%u\r\n"
                            "Content-Type: application/json\r\n"
@@ -193,9 +192,10 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
                            "\r\n",
                            ctx->agent_ip, ctx->agent_port, strlen(req_body));
 
-    if (send_all(sock, hdr, (size_t)hdr_len) != 0)
+    if (send_all(sock, hdr, sdslen(hdr)) != 0)
     {
         log_error("device_upload: send header failed: %s", strerror(errno));
+        sdsfree(hdr);
         cJSON_free(req_body);
         close(sock);
         return -1;
@@ -203,10 +203,12 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
     if (send_all(sock, req_body, strlen(req_body)) != 0)
     {
         log_error("device_upload: send body failed (len=%zu): %s", strlen(req_body), strerror(errno));
+        sdsfree(hdr);
         cJSON_free(req_body);
         close(sock);
         return -1;
     }
+    sdsfree(hdr);
     cJSON_free(req_body);
 
     tv.tv_sec = ctx->timeout_sec;
@@ -270,8 +272,7 @@ static int do_upload_chunk_lwip(struct device_file_ctx *ctx, const char *b64_chu
     char *req_body = cJSON_PrintUnformatted(req_json);
     cJSON_Delete(req_json);
 
-    char hdr[512];
-    int hdr_len = snprintf(hdr, sizeof(hdr),
+    sds hdr = sdscatprintf(sdsempty(),
                            "POST /file/upload HTTP/1.1\r\n"
                            "Host: %s:%u\r\n"
                            "Content-Type: application/json\r\n"
@@ -280,8 +281,9 @@ static int do_upload_chunk_lwip(struct device_file_ctx *ctx, const char *b64_chu
                            "\r\n",
                            ctx->agent_ip, ctx->agent_port, strlen(req_body));
 
-    netconn_write_partly(c, hdr, (size_t)hdr_len, NETCONN_COPY, NULL);
+    netconn_write_partly(c, hdr, sdslen(hdr), NETCONN_COPY, NULL);
     netconn_write_partly(c, req_body, strlen(req_body), NETCONN_COPY, NULL);
+    sdsfree(hdr);
     cJSON_free(req_body);
 
     netconn_set_recvtimeout(c, ctx->timeout_sec * 1000);
@@ -425,8 +427,7 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
     char *req_body = cJSON_PrintUnformatted(req_json);
     cJSON_Delete(req_json);
 
-    char hdr[512];
-    int hdr_len = snprintf(hdr, sizeof(hdr),
+    sds hdr = sdscatprintf(sdsempty(),
                            "POST /file/download HTTP/1.1\r\n"
                            "Host: %s:%u\r\n"
                            "Content-Type: application/json\r\n"
@@ -435,8 +436,9 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
                            "\r\n",
                            ctx->agent_ip, ctx->agent_port, strlen(req_body));
 
-    send_all(sock, hdr, (size_t)hdr_len);
+    send_all(sock, hdr, sdslen(hdr));
     send_all(sock, req_body, strlen(req_body));
+    sdsfree(hdr);
     cJSON_free(req_body);
 
     tv.tv_sec = ctx->timeout_sec;
@@ -521,8 +523,7 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
     char *req_body = cJSON_PrintUnformatted(req_json);
     cJSON_Delete(req_json);
 
-    char hdr[512];
-    int hdr_len = snprintf(hdr, sizeof(hdr),
+    sds hdr = sdscatprintf(sdsempty(),
                            "POST /file/download HTTP/1.1\r\n"
                            "Host: %s:%u\r\n"
                            "Content-Type: application/json\r\n"
@@ -531,8 +532,9 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
                            "\r\n",
                            ctx->agent_ip, ctx->agent_port, strlen(req_body));
 
-    netconn_write_partly(c, hdr, (size_t)hdr_len, NETCONN_COPY, NULL);
+    netconn_write_partly(c, hdr, sdslen(hdr), NETCONN_COPY, NULL);
     netconn_write_partly(c, req_body, strlen(req_body), NETCONN_COPY, NULL);
+    sdsfree(hdr);
     cJSON_free(req_body);
 
     netconn_set_recvtimeout(c, ctx->timeout_sec * 1000);

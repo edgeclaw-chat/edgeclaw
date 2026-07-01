@@ -302,16 +302,16 @@ static int transport_socket_send(struct edc_device_transport *base, const struct
     char *resp_str = cJSON_PrintUnformatted(resp_json);
     size_t body_len = strlen(resp_str);
 
-    char hdr[256];
-    int hdr_len = snprintf(hdr, sizeof(hdr),
+    sds hdr = sdscatprintf(sdsempty(),
                            "HTTP/1.1 200 OK\r\n"
                            "Content-Type: application/json\r\n"
                            "Content-Length: %zu\r\n"
                            "\r\n",
                            body_len);
 
-    send_all(t->conn_fd, hdr, (size_t)hdr_len);
+    send_all(t->conn_fd, hdr, sdslen(hdr));
     send_all(t->conn_fd, resp_str, body_len);
+    sdsfree(hdr);
 
     cJSON_Delete(resp_json);
     cJSON_free(resp_str);
