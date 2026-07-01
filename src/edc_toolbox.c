@@ -1,6 +1,7 @@
 #include "sds.h"
 #include "edc_toolbox.h"
 #include "edc_error.h"
+#include "edc_compat.h"
 #include "edc_param_types.h"
 #include "edc_tools.h"
 #include "uthash.h"

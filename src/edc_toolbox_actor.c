@@ -1,6 +1,7 @@
 #include "sds.h"
 #include "edc_toolbox_actor.h"
 #include "edc_actor.h"
+#include "edc_compat.h"
 #include "edc_toolbox.h"
 #include "edc_error.h"
 #include "log.h"

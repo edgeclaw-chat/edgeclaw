@@ -5,7 +5,7 @@
 
 typedef struct
 {
-    GSourceFunc fn;
+    network_async_task_fn fn;
     void* data;
 } edc_network_async_task_t;
 
@@ -34,14 +34,14 @@ struct edc_network_async_request
 
 static void edc_network_async_request_free(struct edc_network_async_request *req);
 
-static void edc_network_async_enqueue(edc_network_async_t *async, GSourceFunc fn, void* data)
+static void edc_network_async_enqueue(edc_network_async_t *async, network_async_task_fn fn, void* data)
 {
-    edc_network_async_task_t *task = g_new0(edc_network_async_task_t, 1);
+    edc_network_async_task_t *task = calloc(1, sizeof(edc_network_async_task_t));
     task->fn = fn;
     task->data = data;
-    g_mutex_lock(&async->mutex);
+    uv_mutex_lock(&async->mutex);
     edc_queue_push(&async->task_queue, task);
-    g_mutex_unlock(&async->mutex);
+    uv_mutex_unlock(&async->mutex);
 }
 
 static void edc_network_async_pending_add(edc_network_async_t *async, struct edc_network_async_request *req)
@@ -64,17 +64,17 @@ static void edc_network_async_pending_remove(edc_network_async_t *async, struct 
     }
 }
 
-static void* network_async_thread(void* user_data)
+static void network_async_thread(void* user_data)
 {
     edc_network_async_t *async = (edc_network_async_t *)user_data;
-    while (g_atomic_int_get(&async->running))
+    while (async->running)
     {
         for (;;)
         {
             edc_network_async_task_t *task = NULL;
-            g_mutex_lock(&async->mutex);
+            uv_mutex_lock(&async->mutex);
             task = edc_queue_pop(&async->task_queue);
-            g_mutex_unlock(&async->mutex);
+            uv_mutex_unlock(&async->mutex);
             if (!task)
                 break;
             task->fn(task->data);
@@ -82,7 +82,6 @@ static void* network_async_thread(void* user_data)
         }
         mg_mgr_poll(&async->mgr, 100);
     }
-    return NULL;
 }
 
 static sds edc_network_async_get_dns()
@@ -145,7 +144,7 @@ static sds edc_network_async_get_dns()
 
 edc_network_async_t *edc_network_async_new(const char *cert_path)
 {
-    edc_network_async_t *async = g_new0(edc_network_async_t, 1);
+    edc_network_async_t *async = calloc(1, sizeof(edc_network_async_t));
     mg_mgr_init(&async->mgr);
     async->mgr.dnstimeout = 5000;
     mg_log_set(MG_LL_ERROR);
@@ -159,18 +158,18 @@ edc_network_async_t *edc_network_async_new(const char *cert_path)
 
     async->cert_pem = mg_file_read(&mg_fs_posix, cert_path);
 
-    g_mutex_init(&async->mutex);
+    uv_mutex_init(&async->mutex);
     edc_queue_init(&async->task_queue);
-    async->running = TRUE;
-    async->thread = g_thread_new("edc_network_async", (GThreadFunc)network_async_thread, async);
+    async->running = 1;
+    uv_thread_create(&async->thread, network_async_thread, async);
 
     return async;
 }
 
 void edc_network_async_free(edc_network_async_t *async)
 {
-    g_atomic_int_set(&async->running, FALSE);
-    g_thread_join(async->thread);
+    async->running = 0;
+    uv_thread_join(&async->thread);
 
     edc_network_async_task_t *task;
     while ((task = edc_queue_pop(&async->task_queue)))
@@ -178,7 +177,7 @@ void edc_network_async_free(edc_network_async_t *async)
         free(task);
     }
     edc_queue_destroy(&async->task_queue);
-    g_mutex_clear(&async->mutex);
+    uv_mutex_destroy(&async->mutex);
 
     sdsfree((sds)async->mgr.dns4.url);
     mg_mgr_free(&async->mgr);
@@ -201,7 +200,7 @@ static struct edc_network_async_request *edc_http_async_request_new(edc_network_
                                                                   const char *proxy, mg_event_handler_t fn,
                                                                   void *fn_data, int timeout)
 {
-    struct edc_network_async_request *req = g_new0(struct edc_network_async_request, 1);
+    struct edc_network_async_request *req = calloc(1, sizeof(struct edc_network_async_request));
     req->type = HTTP;
     req->network = async;
     req->url = sdsnew(url);
@@ -211,7 +210,7 @@ static struct edc_network_async_request *edc_http_async_request_new(edc_network_
     req->fn_data = fn_data;
     req->proxy = proxy ? sdsnew(proxy) : NULL;
     req->timeout = timeout;
-    req->connected = FALSE;
+    req->connected = false;
 
     return req;
 }
@@ -219,7 +218,7 @@ static struct edc_network_async_request *edc_http_async_request_new(edc_network_
 static struct edc_network_async_request *edc_wss_async_request_new(edc_network_async_t *async, const char *url,
                                                                   mg_event_handler_t fn, void *fn_data, int timeout)
 {
-    struct edc_network_async_request *req = g_new0(struct edc_network_async_request, 1);
+    struct edc_network_async_request *req = calloc(1, sizeof(struct edc_network_async_request));
     req->type = WSS;
     req->network = async;
     req->url = sdsnew(url);
@@ -229,7 +228,7 @@ static struct edc_network_async_request *edc_wss_async_request_new(edc_network_a
     req->fn_data = fn_data;
     req->proxy = NULL;
     req->timeout = timeout;
-    req->connected = FALSE;
+    req->connected = false;
 
     return req;
 }
@@ -264,8 +263,8 @@ static void edc_network_async_fn_forward(struct mg_connection *c, int ev, void *
     }
 }
 
-static bool mg_http_connect_wrapper(void* data);
-static bool mg_wss_connect_wrapper(void* data);
+static void mg_http_connect_wrapper(void* data);
+static void mg_wss_connect_wrapper(void* data);
 void edc_network_async_reset_dns(struct mg_mgr *mgr)
 {
     if (mgr->dns4.c != NULL)
@@ -365,7 +364,7 @@ static void edc_network_async_conn_fn(struct mg_connection *c, int ev, void *ev_
                       (int)host.len, host.buf, port);
         }
 
-        req->connected = TRUE;
+        req->connected = true;
         edc_network_async_fn_forward(c, ev, ev_data);
     }
     else if (ev == MG_EV_TLS_HS)
@@ -378,7 +377,7 @@ static void edc_network_async_conn_fn(struct mg_connection *c, int ev, void *ev_
         int n = mg_http_parse((char *)c->recv.buf, c->recv.len, &hm);
         if (n > 0)
         {
-            req->connected = TRUE;
+            req->connected = true;
             mg_iobuf_del(&c->recv, 0, n);
 
             struct mg_str host = mg_url_host(req->url);
@@ -421,7 +420,7 @@ static void edc_network_async_conn_fn(struct mg_connection *c, int ev, void *ev_
     }
 }
 
-static bool mg_http_connect_wrapper(void* data)
+static void mg_http_connect_wrapper(void* data)
 {
     struct edc_network_async_request *req = (struct edc_network_async_request *)data;
     const char *direct = req->proxy ? req->proxy : req->url;
@@ -440,11 +439,9 @@ static bool mg_http_connect_wrapper(void* data)
         edc_network_async_request_free(req);
         log_error("connect to %s failed.", req->url);
     }
-
-    return G_SOURCE_REMOVE;
 }
 
-static bool mg_wss_connect_wrapper(void* data)
+static void mg_wss_connect_wrapper(void* data)
 {
     struct edc_network_async_request *req = (struct edc_network_async_request *)data;
     struct mg_connection *c = mg_ws_connect(&req->network->mgr, req->url, edc_network_async_conn_fn, req, NULL);
@@ -455,22 +452,20 @@ static bool mg_wss_connect_wrapper(void* data)
         edc_network_async_request_free(req);
         log_error("connect to %s failed.", req->url);
     }
-
-    return G_SOURCE_REMOVE;
 }
 
 void edc_http_async_connect(edc_network_async_t *async, const char *url, const char *proxy, mg_event_handler_t fn,
                            void *fn_data, int timeout)
 {
     struct edc_network_async_request *req = edc_http_async_request_new(async, url, proxy, fn, fn_data, timeout);
-    edc_network_async_enqueue(async, (GSourceFunc)mg_http_connect_wrapper, req);
+    edc_network_async_enqueue(async, mg_http_connect_wrapper, req);
 }
 
 void edc_wss_async_connect(edc_network_async_t *async, const char *url, mg_event_handler_t fn, void *fn_data,
                           int timeout)
 {
     struct edc_network_async_request *req = edc_wss_async_request_new(async, url, fn, fn_data, timeout);
-    edc_network_async_enqueue(async, (GSourceFunc)mg_wss_connect_wrapper, req);
+    edc_network_async_enqueue(async, mg_wss_connect_wrapper, req);
 }
 
 typedef struct
@@ -479,7 +474,7 @@ typedef struct
     struct mg_connection *conn;
 } edc_network_async_close_task_t;
 
-static bool edc_network_close_conn_wrapper(void *data)
+static void edc_network_close_conn_wrapper(void *data)
 {
     edc_network_async_close_task_t *task = data;
     /* Verify the connection hasn't been freed by Mongoose yet */
@@ -493,13 +488,12 @@ static bool edc_network_close_conn_wrapper(void *data)
         }
     }
     free(task);
-    return G_SOURCE_REMOVE;
 }
 
 void edc_network_async_close_conn(edc_network_async_t *async, struct mg_connection *c)
 {
-    edc_network_async_close_task_t *task = g_new0(edc_network_async_close_task_t, 1);
+    edc_network_async_close_task_t *task = calloc(1, sizeof(edc_network_async_close_task_t));
     task->async = async;
     task->conn = c;
-    edc_network_async_enqueue(async, (GSourceFunc)edc_network_close_conn_wrapper, task);
+    edc_network_async_enqueue(async, edc_network_close_conn_wrapper, task);
 }

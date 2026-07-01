@@ -2,6 +2,8 @@
 #include "edc_error.h"
 #include "edc_memory_actor.h"
 #include "edc_actor.h"
+#include <glib.h>
+#include "edc_compat.h"
 #include "edc_history.h"
 #include "edc_llm_actor.h"
 #include "cJSON.h"

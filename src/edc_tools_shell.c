@@ -5,6 +5,7 @@
 #include "edc_tools.h"
 #include "log.h"
 #include <edc_param_types.h>
+#include <glib.h>
 #include <errno.h>
 #include <signal.h>
 #include <sys/wait.h>

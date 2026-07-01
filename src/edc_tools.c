@@ -1,6 +1,7 @@
 #include "sds.h"
 #include "edc_tools.h"
 #include "edc_toolbox.h"
+#include "edc_compat.h"
 
 struct edc_tool_param *edc_tool_param_new(char *name, struct edc_param_type *type, bool required)
 {

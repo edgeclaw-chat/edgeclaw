@@ -3,6 +3,7 @@
 #include "edc_config.h"
 #include "log.h"
 
+#include <uv.h>
 #include <glib.h>
 #include <stdio.h>
 #include <string.h>
@@ -10,11 +11,11 @@
 
 static FILE *g_log_file = NULL;
 static char g_current_date[32] = {0};
-static GMutex g_log_mutex;
+static uv_mutex_t g_log_mutex;
 
 static void edc_log_file_callback(log_Event *ev)
 {
-    g_mutex_lock(&g_log_mutex);
+    uv_mutex_lock(&g_log_mutex);
     FILE *fp = g_log_file;
     if (fp)
     {
@@ -25,7 +26,7 @@ static void edc_log_file_callback(log_Event *ev)
         fprintf(fp, "\n");
         fflush(fp);
     }
-    g_mutex_unlock(&g_log_mutex);
+    uv_mutex_unlock(&g_log_mutex);
 }
 
 static void edc_log_rotate(void)
@@ -49,7 +50,7 @@ static void edc_log_rotate(void)
 
     sds filename = sdscatprintf(sdsempty(), "%s/edgeclaw-%s.log", log_dir, new_date);
 
-    g_mutex_lock(&g_log_mutex);
+    uv_mutex_lock(&g_log_mutex);
     FILE *new_file = fopen(filename, "a");
     if (new_file)
     {
@@ -59,7 +60,7 @@ static void edc_log_rotate(void)
         if (old)
             fclose(old);
     }
-    g_mutex_unlock(&g_log_mutex);
+    uv_mutex_unlock(&g_log_mutex);
 
     sdsfree(filename);
     free(log_dir);

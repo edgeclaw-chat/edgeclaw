@@ -1,5 +1,6 @@
 #include "edc_channel_actor.h"
 #include "edc_actor.h"
+#include "edc_compat.h"
 #include "edc_channel_cli.h"
 #include "edc_channel_feishu.h"
 #include "edc_channel_qq.h"

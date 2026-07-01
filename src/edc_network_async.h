@@ -2,18 +2,20 @@
 #define __BC_HTTP_ASYNC_H__
 #include "edc_containers.h"
 #include "mongoose.h"
-#include <glib.h>
+#include <uv.h>
 #include <stdbool.h>
+
+typedef void (*network_async_task_fn)(void *);
 
 struct mg_mgr;
 typedef struct
 {
-    GThread *thread;
+    uv_thread_t thread;
     struct mg_mgr mgr;
     struct mg_str cert_pem;
-    GMutex mutex;
+    uv_mutex_t mutex;
     EdcQueue task_queue;
-    int running;
+    volatile int running;
     void *pending_retries;
 } edc_network_async_t;
 

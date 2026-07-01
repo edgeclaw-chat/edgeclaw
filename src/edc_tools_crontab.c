@@ -2,6 +2,8 @@
 #include "edc_error.h"
 #include "edc_tools_crontab.h"
 #include "edc_actor.h"
+#include <glib.h>
+#include "edc_compat.h"
 #include "edc_channel_actor.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
@@ -62,6 +64,21 @@ static void edc_tool_crontab_state_free(struct edc_tool_crontab_state *state)
 {
     if (!state)
         return;
+    if (uv_is_closing((uv_handle_t *)&state->timer))
+    {
+        if (state->job_id)
+            sdsfree(state->job_id);
+        if (state->job_name)
+            sdsfree(state->job_name);
+        if (state->message)
+            sdsfree(state->message);
+        if (state->channel)
+            edc_channel_free(state->channel);
+        if (state->workspace)
+            sdsfree(state->workspace);
+        free(state);
+        return;
+    }
     uv_timer_stop(&state->timer);
     uv_close((uv_handle_t *)&state->timer, on_crontab_timer_close);
 }

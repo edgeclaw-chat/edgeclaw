@@ -3,6 +3,8 @@
 #include "edc_sandbox.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
+#include <glib.h>
+#include "edc_compat.h"
 #include <edc_param_types.h>
 #include <string.h>
 #include "utarray.h"

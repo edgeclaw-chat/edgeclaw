@@ -4,6 +4,7 @@
 #include "edc_channel_actor.h"
 #include "utlist_fix.h"
 #include "edc_network_async.h"
+#include "edc_compat.h"
 #include "cJSON.h"
 #include "log.h"
 #include <string.h>

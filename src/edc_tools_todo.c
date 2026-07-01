@@ -4,6 +4,7 @@
 #include "edc_param_types.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
+#include "edc_compat.h"
 
 static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
                                       void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))

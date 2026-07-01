@@ -2,6 +2,7 @@
 #include "edc_toolbox.h"
 #include "edc_tools_device_shell.h"
 #include "edc_config.h"
+#include "edc_compat.h"
 #include "log.h"
 #include <edc_param_types.h>
 

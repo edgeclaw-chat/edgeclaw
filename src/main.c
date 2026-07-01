@@ -3,6 +3,7 @@
 #include "edc_init_env.h"
 #include "edc_log.h"
 #include "edc_lwip.h"
+#include "edc_compat.h"
 #include <errno.h>
 #include <getopt.h>
 #include <signal.h>

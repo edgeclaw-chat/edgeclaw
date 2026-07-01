@@ -12,13 +12,21 @@
  * Provides GLib type aliases and memory allocation macros using
  * standard C and POSIX equivalents.
  *
+ * All definitions are guarded so this header can be safely included
+ * alongside <glib.h> during the transition period.
+ *
  * This file is temporary scaffolding. Once all files are migrated,
  * these macros should be replaced with direct standard C usage.
  */
 
+#ifndef TRUE
 #define TRUE  true
+#endif
+#ifndef FALSE
 #define FALSE false
+#endif
 
+#ifndef G_BEGIN_DECLS
 typedef char  gchar;
 typedef int   gint;
 typedef bool  gboolean;
@@ -36,6 +44,11 @@ typedef ssize_t gssize;
 #define g_new0(type, n)    ((type*)calloc((n), sizeof(type)))
 #define g_malloc0(n)       calloc(1, (n))
 #define g_free             free
+#endif
+
+#ifndef G_N_ELEMENTS
+#define G_N_ELEMENTS(arr) (sizeof(arr) / sizeof((arr)[0]))
+#endif
 
 #define EDC_NEW(type, n)   ((type*)malloc((n) * sizeof(type)))
 #define EDC_NEW0(type, n)  ((type*)calloc((n), sizeof(type)))
