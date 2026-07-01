@@ -53,9 +53,8 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
         log_error("channel.passwd is not string type");
         return FALSE;
     }
-    char *_d = edc_secret_decrypt(cJSON_GetStringValue(password));
-    config->channel.email.passwd = sdsnew(_d);
-    free(_d);
+    sds _d = edc_secret_decrypt(cJSON_GetStringValue(password));
+    config->channel.email.passwd = _d;
 
     cJSON *target = cJSON_GetObjectItem(channel, "target");
     if (!target || !cJSON_IsString(target))
@@ -86,9 +85,8 @@ static bool edc_config_parse_telegram_channel(struct edc_config *config, cJSON *
         return FALSE;
     }
 
-    char *_d = edc_secret_decrypt(cJSON_GetStringValue(bot_key));
-    config->channel.telegram.bot_key = sdsnew(_d);
-    free(_d);
+    sds _d = edc_secret_decrypt(cJSON_GetStringValue(bot_key));
+    config->channel.telegram.bot_key = _d;
     config->channel.telegram.user_id = (int64_t)cJSON_GetNumberValue(user_id);
     return TRUE;
 }
@@ -109,9 +107,8 @@ static bool edc_config_parse_feishu_channel(struct edc_config *config, cJSON *ch
         log_error("channel.app_secret is not string type");
         return FALSE;
     }
-    char *_d = edc_secret_decrypt(cJSON_GetStringValue(app_secret));
-    config->channel.feishu.app_secret = sdsnew(_d);
-    free(_d);
+    sds _d = edc_secret_decrypt(cJSON_GetStringValue(app_secret));
+    config->channel.feishu.app_secret = _d;
 
     return TRUE;
 }
@@ -132,9 +129,8 @@ static bool edc_config_parse_qq_channel(struct edc_config *config, cJSON *channe
         log_error("channel.app_secret is not string type");
         return FALSE;
     }
-    char *_d = edc_secret_decrypt(cJSON_GetStringValue(app_secret));
-    config->channel.qq.app_secret = sdsnew(_d);
-    free(_d);
+    sds _d = edc_secret_decrypt(cJSON_GetStringValue(app_secret));
+    config->channel.qq.app_secret = _d;
 
     return TRUE;
 }
@@ -191,9 +187,8 @@ struct edc_config *edc_config_load(const char *edc_home)
     }
     else
     {
-        char *_d = edc_secret_decrypt(cJSON_GetStringValue(api_key));
-        config->llm_api_conf.api_key = sdsnew(_d);
-        free(_d);
+        sds _d = edc_secret_decrypt(cJSON_GetStringValue(api_key));
+        config->llm_api_conf.api_key = _d;
     }
 
     cJSON *model = cJSON_GetObjectItem(conf, "model");

@@ -292,7 +292,7 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
 
     struct edc_config *conf = tb_ctx->tb->conf;
 
-    char *allocated_cwd = NULL;
+    sds allocated_cwd = NULL;
     const char *cwd = edc_sandbox_get_root(conf);
     if (working_dir)
     {
@@ -308,14 +308,14 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
     char **envp = g_get_environ();
     int env_count = 0;
     while (envp && envp[env_count]) env_count++;
-    char **filtered_envp = g_new0(char *, env_count + 1);
+    sds *filtered_envp = g_new0(sds, env_count + 1);
     int j = 0;
     size_t master_key_prefix_len = strlen(BC_MASTER_KEY_ENV);
     for (int i = 0; i < env_count; i++)
     {
         if (strncmp(envp[i], BC_MASTER_KEY_ENV, master_key_prefix_len) != 0 || envp[i][master_key_prefix_len] != '=')
         {
-            filtered_envp[j++] = strdup(envp[i]);
+            filtered_envp[j++] = sdsnew(envp[i]);
         }
     }
     for (int _i = 0; envp[_i]; _i++) free(envp[_i]);
@@ -325,12 +325,12 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
     int stdin_fd = 0, stdout_fd = 0, stderr_fd = 0;
     GError *spawn_error = NULL;
     bool success =
-        g_spawn_async_with_pipes(cwd, argv, filtered_envp, G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
+        g_spawn_async_with_pipes(cwd, argv, (char **)filtered_envp, G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
                                  edc_tool_shell_child_setup, conf, &child_pid, &stdin_fd, &stdout_fd, &stderr_fd, &spawn_error);
 
-    free(allocated_cwd);
+    sdsfree(allocated_cwd);
 
-    for (int _i = 0; filtered_envp[_i]; _i++) free(filtered_envp[_i]);
+    for (int _i = 0; filtered_envp[_i]; _i++) sdsfree(filtered_envp[_i]);
     free(filtered_envp);
 
     if (!success)

@@ -362,9 +362,9 @@ static void handle_file_download(struct edc_device_request *req, struct edc_devi
         close(fd);
         resp.file_status = 0;
         resp.file_size = 0;
-        resp.stdout_buf = strdup("");
+        resp.stdout_buf = sdsempty();
         transport->send(transport, &resp);
-        free(resp.stdout_buf);
+        sdsfree(resp.stdout_buf);
         return;
     }
 

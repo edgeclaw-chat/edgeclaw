@@ -7,12 +7,14 @@
 #include <stdio.h>
 #include <string.h>
 
-char *edc_get_timestamp(void)
+sds edc_get_timestamp(void)
 {
     GDateTime *now = g_date_time_new_now_local();
     char *time = g_date_time_format(now, "%Y-%m-%d %H:%M:%S");
     g_date_time_unref(now);
-    return time;
+    sds result = sdsnew(time);
+    free(time);
+    return result;
 }
 
 cJSON *edc_history_load(const char *workspace, const size_t offset)
@@ -115,7 +117,7 @@ bool edc_history_save(const char *workspace, cJSON *msg_lst, struct edc_timestam
     return TRUE;
 }
 
-bool edc_history_get_info(const char *workspace, size_t *compress_index, char **update_time)
+bool edc_history_get_info(const char *workspace, size_t *compress_index, sds *update_time)
 {
     char *history_info_path = g_build_filename(workspace, "history_info.json", NULL);
     GError *error = NULL;
@@ -162,7 +164,7 @@ bool edc_history_get_info(const char *workspace, size_t *compress_index, char **
     *compress_index = (size_t)cJSON_GetNumberValue(compress_index_obj);
     if (update_time)
     {
-        *update_time = strdup(cJSON_GetStringValue(update_time_obj));
+        *update_time = sdsnew(cJSON_GetStringValue(update_time_obj));
     }
 
 exit_:

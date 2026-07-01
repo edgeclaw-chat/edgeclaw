@@ -68,11 +68,11 @@ static bool path_allowed(struct edc_config *conf, const char *resolved_path, boo
     return FALSE;
 }
 
-char *edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writable, EdcError **error)
+sds edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writable, EdcError **error)
 {
     if (!conf->enable_sandbox || !conf->sandbox_root_real)
     {
-        return strdup(path);
+        return sdsnew(path);
     }
 
     if (!path || !path[0])
@@ -86,7 +86,11 @@ char *edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool wr
     if (resolved)
     {
         if (path_allowed(conf, resolved, writable))
-            return resolved;
+        {
+            sds ret = sdsnew(resolved);
+            free(resolved);
+            return ret;
+        }
 
         free(resolved);
         if (error)
@@ -119,7 +123,9 @@ char *edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool wr
     char *result = g_build_filename(parent_real, basename, NULL);
     free(basename);
     free(parent_real);
-    return result;
+    sds ret2 = sdsnew(result);
+    free(result);
+    return ret2;
 }
 
 bool edc_sandbox_apply(struct edc_config *conf)

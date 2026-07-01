@@ -25,8 +25,8 @@ static const char *device_transport_types[] = {"socket", "tty"};
 /* --- Helper functions --- */
 
 /* Read a line with linenoise, applying a default if the user enters nothing.
- * Returns a malloc'd string (caller must free), or NULL on EOF/Ctrl-C. */
-static char *prompt_with_default(const char *label, const char *default_val)
+ * Returns an sds (caller must sdsfree), or NULL on EOF/Ctrl-C. */
+static sds prompt_with_default(const char *label, const char *default_val)
 {
     char prompt[1024];
     if (default_val && default_val[0] != '\0')
@@ -55,16 +55,18 @@ static char *prompt_with_default(const char *label, const char *default_val)
     if (line[0] == '\0' && default_val && default_val[0] != '\0')
     {
         free(line);
-        return strdup(default_val);
+        return sdsnew(default_val);
     }
 
-    return line;
+    sds result = sdsnew(line);
+    free(line);
+    return result;
 }
 
 /* Read a password (no echo). If default_val is non-empty, shows [***unchanged***]
  * and returns a copy of it when the user enters nothing.
- * Returns malloc'd string, or NULL on error. */
-static char *prompt_password(const char *label, const char *default_val)
+ * Returns sds, or NULL on error. */
+static sds prompt_password(const char *label, const char *default_val)
 {
     char prompt[1024];
     if (default_val && default_val[0] != '\0')
@@ -89,7 +91,7 @@ static char *prompt_password(const char *label, const char *default_val)
     tcsetattr(STDIN_FILENO, TCSANOW, &new_term);
 
     char buf[MAX_FIELD_LEN];
-    char *result = NULL;
+    sds result = NULL;
 
     if (fgets(buf, sizeof(buf), stdin) != NULL)
     {
@@ -99,7 +101,7 @@ static char *prompt_password(const char *label, const char *default_val)
         {
             buf[len - 1] = '\0';
         }
-        result = strdup(buf);
+        result = sdsnew(buf);
     }
 
     tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
@@ -107,10 +109,10 @@ static char *prompt_password(const char *label, const char *default_val)
     fflush(stdout);
 
     /* If user entered nothing and a default exists, keep the old value */
-    if (result && result[0] == '\0' && default_val && default_val[0] != '\0')
+    if (result && sdslen(result) == 0 && default_val && default_val[0] != '\0')
     {
-        free(result);
-        return strdup(default_val);
+        sdsfree(result);
+        return sdsnew(default_val);
     }
 
     return result;
@@ -124,7 +126,7 @@ static int prompt_int(const char *label, int default_val)
 
     while (1)
     {
-        char *line = prompt_with_default(label, default_str);
+        sds line = prompt_with_default(label, default_str);
         if (line == NULL)
         {
             return -1;
@@ -133,12 +135,12 @@ static int prompt_int(const char *label, int default_val)
         int val = 0;
         if (sscanf(line, "%d", &val) == 1)
         {
-            free(line);
+            sdsfree(line);
             return val;
         }
 
         fprintf(stderr, "  Invalid number, please try again.\n");
-        free(line);
+        sdsfree(line);
     }
 }
 
@@ -159,7 +161,7 @@ static int prompt_channel_type(int default_idx)
 
     while (1)
     {
-        char *line = prompt_with_default("Select channel", default_str);
+        sds line = prompt_with_default("Select channel", default_str);
         if (line == NULL)
         {
             return -1;
@@ -168,11 +170,11 @@ static int prompt_channel_type(int default_idx)
         int choice = 0;
         if (sscanf(line, "%d", &choice) == 1 && choice >= 1 && choice <= CHANNEL_TYPE_COUNT)
         {
-            free(line);
+            sdsfree(line);
             return choice - 1;
         }
 
-        free(line);
+        sdsfree(line);
         fprintf(stderr, "  Invalid choice, enter 1-%d.\n", CHANNEL_TYPE_COUNT);
     }
 }
@@ -194,7 +196,7 @@ static int prompt_device_transport(int default_idx)
 
     while (1)
     {
-        char *line = prompt_with_default("Select transport", default_str);
+        sds line = prompt_with_default("Select transport", default_str);
         if (line == NULL)
         {
             return -1;
@@ -203,11 +205,11 @@ static int prompt_device_transport(int default_idx)
         int choice = 0;
         if (sscanf(line, "%d", &choice) == 1 && choice >= 1 && choice <= DEVICE_TRANSPORT_TYPE_COUNT)
         {
-            free(line);
+            sdsfree(line);
             return choice - 1;
         }
 
-        free(line);
+        sdsfree(line);
         fprintf(stderr, "  Invalid choice, enter 1-%d.\n", DEVICE_TRANSPORT_TYPE_COUNT);
     }
 }
@@ -240,21 +242,20 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
     item = cJSON_GetObjectItem(json, "api_key");
     if (item && cJSON_IsString(item))
     {
-        char *decrypted = edc_secret_decrypt(item->valuestring);
+        sds decrypted = edc_secret_decrypt(item->valuestring);
         if (decrypted)
         {
-            strncpy(result->api_key, decrypted, sizeof(result->api_key) - 1);
-            free(decrypted);
+            result->api_key = decrypted;
         }
     }
 
     item = cJSON_GetObjectItem(json, "api_url");
     if (item && cJSON_IsString(item))
-        strncpy(result->api_url, item->valuestring, sizeof(result->api_url) - 1);
+        result->api_url = sdsnew(item->valuestring);
 
     item = cJSON_GetObjectItem(json, "model");
     if (item && cJSON_IsString(item))
-        strncpy(result->model, item->valuestring, sizeof(result->model) - 1);
+        result->model = sdsnew(item->valuestring);
 
     item = cJSON_GetObjectItem(json, "max_iter");
     if (item && cJSON_IsNumber(item))
@@ -279,11 +280,11 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
         if (rw && cJSON_IsArray(rw))
         {
             int size = cJSON_GetArraySize(rw);
-            if (size > 0)
+                if (size > 0)
             {
                 cJSON *first = cJSON_GetArrayItem(rw, 0);
                 if (first && cJSON_IsString(first))
-                    strncpy(result->sandbox_root, first->valuestring, sizeof(result->sandbox_root) - 1);
+                    result->sandbox_root = sdsnew(first->valuestring);
 
                 if (size > 1)
                 {
@@ -298,8 +299,7 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
                             joined = sdscat(joined, elem->valuestring);
                         }
                     }
-                    strncpy(result->sandbox_rw_paths, joined, sizeof(result->sandbox_rw_paths) - 1);
-                    sdsfree(joined);
+                    result->sandbox_rw_paths = joined;
                 }
             }
         }
@@ -321,19 +321,18 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
                         joined = sdscat(joined, elem->valuestring);
                     }
                 }
-                strncpy(result->sandbox_ro_paths, joined, sizeof(result->sandbox_ro_paths) - 1);
-                sdsfree(joined);
+                result->sandbox_ro_paths = joined;
             }
         }
     }
 
     item = cJSON_GetObjectItem(json, "device_pty");
     if (item && cJSON_IsString(item))
-        strncpy(result->device_pty, item->valuestring, sizeof(result->device_pty) - 1);
+        result->device_pty = sdsnew(item->valuestring);
 
     item = cJSON_GetObjectItem(json, "device_ip");
     if (item && cJSON_IsString(item))
-        strncpy(result->device_ip, item->valuestring, sizeof(result->device_ip) - 1);
+        result->device_ip = sdsnew(item->valuestring);
 
     item = cJSON_GetObjectItem(json, "device_port");
     result->device_port = (item && cJSON_IsNumber(item)) ? item->valueint : 5000;
@@ -343,14 +342,14 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
 
     item = cJSON_GetObjectItem(json, "device_transport");
     if (item && cJSON_IsString(item))
-        strncpy(result->device_transport, item->valuestring, sizeof(result->device_transport) - 1);
+        result->device_transport = sdsnew(item->valuestring);
 
     cJSON *channel = cJSON_GetObjectItem(json, "channel");
     if (channel)
     {
         item = cJSON_GetObjectItem(channel, "type");
         if (item && cJSON_IsString(item))
-            strncpy(result->channel_type, item->valuestring, sizeof(result->channel_type) - 1);
+            result->channel_type = sdsnew(item->valuestring);
 
         const char *ctype = result->channel_type;
 
@@ -358,41 +357,39 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
         {
             item = cJSON_GetObjectItem(channel, "imap_host");
             if (item && cJSON_IsString(item))
-                strncpy(result->email.imap_host, item->valuestring, sizeof(result->email.imap_host) - 1);
+                result->email.imap_host = sdsnew(item->valuestring);
 
             item = cJSON_GetObjectItem(channel, "smtp_host");
             if (item && cJSON_IsString(item))
-                strncpy(result->email.smtp_host, item->valuestring, sizeof(result->email.smtp_host) - 1);
+                result->email.smtp_host = sdsnew(item->valuestring);
 
             item = cJSON_GetObjectItem(channel, "user");
             if (item && cJSON_IsString(item))
-                strncpy(result->email.user, item->valuestring, sizeof(result->email.user) - 1);
+                result->email.user = sdsnew(item->valuestring);
 
             item = cJSON_GetObjectItem(channel, "passwd");
             if (item && cJSON_IsString(item))
             {
-                char *decrypted = edc_secret_decrypt(item->valuestring);
+                sds decrypted = edc_secret_decrypt(item->valuestring);
                 if (decrypted)
                 {
-                    strncpy(result->email.passwd, decrypted, sizeof(result->email.passwd) - 1);
-                    free(decrypted);
+                    result->email.passwd = decrypted;
                 }
             }
 
             item = cJSON_GetObjectItem(channel, "target");
             if (item && cJSON_IsString(item))
-                strncpy(result->email.target, item->valuestring, sizeof(result->email.target) - 1);
+                result->email.target = sdsnew(item->valuestring);
         }
         else if (strcmp(ctype, "telegram") == 0)
         {
             item = cJSON_GetObjectItem(channel, "bot_key");
             if (item && cJSON_IsString(item))
             {
-                char *decrypted = edc_secret_decrypt(item->valuestring);
+                sds decrypted = edc_secret_decrypt(item->valuestring);
                 if (decrypted)
                 {
-                    strncpy(result->telegram.bot_key, decrypted, sizeof(result->telegram.bot_key) - 1);
-                    free(decrypted);
+                    result->telegram.bot_key = decrypted;
                 }
             }
 
@@ -404,16 +401,15 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
         {
             item = cJSON_GetObjectItem(channel, "app_id");
             if (item && cJSON_IsString(item))
-                strncpy(result->feishu.app_id, item->valuestring, sizeof(result->feishu.app_id) - 1);
+                result->feishu.app_id = sdsnew(item->valuestring);
 
             item = cJSON_GetObjectItem(channel, "app_secret");
             if (item && cJSON_IsString(item))
             {
-                char *decrypted = edc_secret_decrypt(item->valuestring);
+                sds decrypted = edc_secret_decrypt(item->valuestring);
                 if (decrypted)
                 {
-                    strncpy(result->feishu.app_secret, decrypted, sizeof(result->feishu.app_secret) - 1);
-                    free(decrypted);
+                    result->feishu.app_secret = decrypted;
                 }
             }
         }
@@ -421,16 +417,15 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
         {
             item = cJSON_GetObjectItem(channel, "app_id");
             if (item && cJSON_IsString(item))
-                strncpy(result->qq.app_id, item->valuestring, sizeof(result->qq.app_id) - 1);
+                result->qq.app_id = sdsnew(item->valuestring);
 
             item = cJSON_GetObjectItem(channel, "app_secret");
             if (item && cJSON_IsString(item))
             {
-                char *decrypted = edc_secret_decrypt(item->valuestring);
+                sds decrypted = edc_secret_decrypt(item->valuestring);
                 if (decrypted)
                 {
-                    strncpy(result->qq.app_secret, decrypted, sizeof(result->qq.app_secret) - 1);
-                    free(decrypted);
+                    result->qq.app_secret = decrypted;
                 }
             }
         }
@@ -454,29 +449,26 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     printf("\n--- LLM API Configuration ---\n");
 
     /* API URL */
-    const char *def_api_url = (defaults && defaults->api_url[0])
+    const char *def_api_url = (defaults && sdslen(defaults->api_url) > 0)
                                   ? defaults->api_url
                                   : "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions";
-    char *val = prompt_with_default("API URL", def_api_url);
+    sds val = prompt_with_default("API URL", def_api_url);
     if (!val)
         return -1;
-    strncpy(result->api_url, val, sizeof(result->api_url) - 1);
-    free(val);
+    result->api_url = val;
 
     /* Model */
-    const char *def_model = (defaults && defaults->model[0]) ? defaults->model : "glm-5";
+    const char *def_model = (defaults && sdslen(defaults->model) > 0) ? defaults->model : "glm-5";
     val = prompt_with_default("Model", def_model);
     if (!val)
         return -1;
-    strncpy(result->model, val, sizeof(result->model) - 1);
-    free(val);
+    result->model = val;
 
     /* API Key (password) */
-    val = prompt_password("API Key", (defaults && defaults->api_key[0]) ? defaults->api_key : NULL);
+    val = prompt_password("API Key", (defaults && sdslen(defaults->api_key) > 0) ? defaults->api_key : NULL);
     if (!val)
         return -1;
-    strncpy(result->api_key, val, sizeof(result->api_key) - 1);
-    free(val);
+    result->api_key = val;
 
     /* Max Iterations */
     int ival = prompt_int("Max Iterations", defaults && defaults->max_iter > 0 ? defaults->max_iter : 20);
@@ -510,44 +502,41 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     {
         char default_sandbox[512];
         snprintf(default_sandbox, sizeof(default_sandbox), "%s/sandbox", edc_home);
-        const char *def = (defaults && defaults->sandbox_root[0]) ? defaults->sandbox_root : default_sandbox;
+        const char *def = (defaults && sdslen(defaults->sandbox_root) > 0) ? defaults->sandbox_root : default_sandbox;
         val = prompt_with_default("Sandbox Root (working directory, writable)", def);
         if (!val)
             return -1;
-        strncpy(result->sandbox_root, val, sizeof(result->sandbox_root) - 1);
-        free(val);
+        result->sandbox_root = val;
     }
 
     {
-        char *def_rw_str =
+        sds def_rw_str =
             sdscatprintf(sdsempty(), "%s/workspace/, /tmp, /dev", edc_home);
-        const char *def_rw = (defaults && defaults->sandbox_rw_paths[0]) ? defaults->sandbox_rw_paths : def_rw_str;
+        const char *def_rw = (defaults && sdslen(defaults->sandbox_rw_paths) > 0) ? defaults->sandbox_rw_paths : def_rw_str;
         val = prompt_with_default("  Additional writable paths (comma-separated)", def_rw);
         sdsfree(def_rw_str);
         if (!val)
             return -1;
-        strncpy(result->sandbox_rw_paths, val, sizeof(result->sandbox_rw_paths) - 1);
-        free(val);
+        result->sandbox_rw_paths = val;
     }
 
     {
-        char *def_ro_str =
+        sds def_ro_str =
             sdscatprintf(sdsempty(), "%s/workspace/ssl, /usr, /lib, /lib32, /lib64, /libx32, /bin, /sbin, /etc, /proc",
                             edc_home);
-        const char *def_ro = (defaults && defaults->sandbox_ro_paths[0])
+        const char *def_ro = (defaults && sdslen(defaults->sandbox_ro_paths) > 0)
                                  ? defaults->sandbox_ro_paths
                                  : def_ro_str;
         val = prompt_with_default("  Read-only paths (comma-separated)", def_ro);
         sdsfree(def_ro_str);
         if (!val)
             return -1;
-        strncpy(result->sandbox_ro_paths, val, sizeof(result->sandbox_ro_paths) - 1);
-        free(val);
+        result->sandbox_ro_paths = val;
     }
 
     /* --- Channel Type --- */
     int default_channel = 0;
-    if (defaults && defaults->channel_type[0])
+    if (defaults && sdslen(defaults->channel_type) > 0)
     {
         for (int i = 0; i < CHANNEL_TYPE_COUNT; i++)
         {
@@ -561,7 +550,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     int channel_idx = prompt_channel_type(default_channel);
     if (channel_idx < 0)
         return -1;
-    strncpy(result->channel_type, channel_types[channel_idx], sizeof(result->channel_type) - 1);
+    result->channel_type = sdsnew(channel_types[channel_idx]);
 
     /* --- Channel-specific settings --- */
     const char *ctype = result->channel_type;
@@ -571,40 +560,35 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
         printf("\n--- Email Settings ---\n");
         bool same_chan = (defaults && strcmp(defaults->channel_type, "email") == 0);
 
-        const char *def = (same_chan && defaults->email.imap_host[0]) ? defaults->email.imap_host : "imap.qq.com";
+        const char *def = (same_chan && sdslen(defaults->email.imap_host) > 0) ? defaults->email.imap_host : "imap.qq.com";
         val = prompt_with_default("IMAP Host", def);
         if (!val)
             return -1;
-        strncpy(result->email.imap_host, val, sizeof(result->email.imap_host) - 1);
-        free(val);
+        result->email.imap_host = val;
 
-        def = (same_chan && defaults->email.smtp_host[0]) ? defaults->email.smtp_host : "smtp.qq.com";
+        def = (same_chan && sdslen(defaults->email.smtp_host) > 0) ? defaults->email.smtp_host : "smtp.qq.com";
         val = prompt_with_default("SMTP Host", def);
         if (!val)
             return -1;
-        strncpy(result->email.smtp_host, val, sizeof(result->email.smtp_host) - 1);
-        free(val);
+        result->email.smtp_host = val;
 
-        def = (same_chan && defaults->email.user[0]) ? defaults->email.user : "";
+        def = (same_chan && sdslen(defaults->email.user) > 0) ? defaults->email.user : "";
         val = prompt_with_default("Email User", def);
         if (!val)
             return -1;
-        strncpy(result->email.user, val, sizeof(result->email.user) - 1);
-        free(val);
+        result->email.user = val;
 
         val =
-            prompt_password("Email Password", (same_chan && defaults->email.passwd[0]) ? defaults->email.passwd : NULL);
+            prompt_password("Email Password", (same_chan && sdslen(defaults->email.passwd) > 0) ? defaults->email.passwd : NULL);
         if (!val)
             return -1;
-        strncpy(result->email.passwd, val, sizeof(result->email.passwd) - 1);
-        free(val);
+        result->email.passwd = val;
 
-        def = (same_chan && defaults->email.target[0]) ? defaults->email.target : "";
+        def = (same_chan && sdslen(defaults->email.target) > 0) ? defaults->email.target : "";
         val = prompt_with_default("Target Email", def);
         if (!val)
             return -1;
-        strncpy(result->email.target, val, sizeof(result->email.target) - 1);
-        free(val);
+        result->email.target = val;
     }
     else if (strcmp(ctype, "telegram") == 0)
     {
@@ -612,11 +596,10 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
         bool same_chan = (defaults && strcmp(defaults->channel_type, "telegram") == 0);
 
         val = prompt_password("Bot Key",
-                              (same_chan && defaults->telegram.bot_key[0]) ? defaults->telegram.bot_key : NULL);
+                              (same_chan && sdslen(defaults->telegram.bot_key) > 0) ? defaults->telegram.bot_key : NULL);
         if (!val)
             return -1;
-        strncpy(result->telegram.bot_key, val, sizeof(result->telegram.bot_key) - 1);
-        free(val);
+        result->telegram.bot_key = val;
 
         /* User ID is an integer */
         while (1)
@@ -634,11 +617,11 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
             if (sscanf(val, "%" PRId64, &uid) == 1 && uid != 0)
             {
                 result->telegram.user_id = uid;
-                free(val);
+                sdsfree(val);
                 break;
             }
             fprintf(stderr, "  Invalid number, please try again.\n");
-            free(val);
+            sdsfree(val);
         }
     }
     else if (strcmp(ctype, "feishu") == 0)
@@ -646,44 +629,40 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
         printf("\n--- Feishu Settings ---\n");
         bool same_chan = (defaults && strcmp(defaults->channel_type, "feishu") == 0);
 
-        const char *def = (same_chan && defaults->feishu.app_id[0]) ? defaults->feishu.app_id : "";
+        const char *def = (same_chan && sdslen(defaults->feishu.app_id) > 0) ? defaults->feishu.app_id : "";
         val = prompt_with_default("Feishu App ID", def);
         if (!val)
             return -1;
-        strncpy(result->feishu.app_id, val, sizeof(result->feishu.app_id) - 1);
-        free(val);
+        result->feishu.app_id = val;
 
         val = prompt_password("Feishu App Secret",
-                              (same_chan && defaults->feishu.app_secret[0]) ? defaults->feishu.app_secret : NULL);
+                              (same_chan && sdslen(defaults->feishu.app_secret) > 0) ? defaults->feishu.app_secret : NULL);
         if (!val)
             return -1;
-        strncpy(result->feishu.app_secret, val, sizeof(result->feishu.app_secret) - 1);
-        free(val);
+        result->feishu.app_secret = val;
     }
     else if (strcmp(ctype, "qq") == 0)
     {
         printf("\n--- QQ Settings ---\n");
         bool same_chan = (defaults && strcmp(defaults->channel_type, "qq") == 0);
 
-        const char *def = (same_chan && defaults->qq.app_id[0]) ? defaults->qq.app_id : "";
+        const char *def = (same_chan && sdslen(defaults->qq.app_id) > 0) ? defaults->qq.app_id : "";
         val = prompt_with_default("QQ App ID", def);
         if (!val)
             return -1;
-        strncpy(result->qq.app_id, val, sizeof(result->qq.app_id) - 1);
-        free(val);
+        result->qq.app_id = val;
 
         val = prompt_password("QQ App Secret",
-                              (same_chan && defaults->qq.app_secret[0]) ? defaults->qq.app_secret : NULL);
+                              (same_chan && sdslen(defaults->qq.app_secret) > 0) ? defaults->qq.app_secret : NULL);
         if (!val)
             return -1;
-        strncpy(result->qq.app_secret, val, sizeof(result->qq.app_secret) - 1);
-        free(val);
+        result->qq.app_secret = val;
     }
 
     printf("\n--- Device Shell Configuration (optional) ---\n");
 
     int default_transport = 0;
-    if (defaults && defaults->device_transport[0])
+    if (defaults && sdslen(defaults->device_transport) > 0)
     {
         for (int i = 0; i < DEVICE_TRANSPORT_TYPE_COUNT; i++)
         {
@@ -697,25 +676,23 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     int transport_idx = prompt_device_transport(default_transport);
     if (transport_idx < 0)
         return -1;
-    strncpy(result->device_transport, device_transport_types[transport_idx], sizeof(result->device_transport) - 1);
+    result->device_transport = sdsnew(device_transport_types[transport_idx]);
 
     if (strcmp(result->device_transport, "tty") == 0)
     {
-        const char *def = (defaults && defaults->device_pty[0]) ? defaults->device_pty : "";
+        const char *def = (defaults && sdslen(defaults->device_pty) > 0) ? defaults->device_pty : "";
         val = prompt_with_default("Device PTY/Serial Path", def);
         if (!val)
             return -1;
-        strncpy(result->device_pty, val, sizeof(result->device_pty) - 1);
-        free(val);
+        result->device_pty = val;
     }
 
     {
-        const char *def = (defaults && defaults->device_ip[0]) ? defaults->device_ip : "192.168.4.1";
+        const char *def = (defaults && sdslen(defaults->device_ip) > 0) ? defaults->device_ip : "192.168.4.1";
         val = prompt_with_default("Device IP", def);
         if (!val)
             return -1;
-        strncpy(result->device_ip, val, sizeof(result->device_ip) - 1);
-        free(val);
+        result->device_ip = val;
     }
 
     ival = prompt_int("Device Port",
@@ -910,6 +887,37 @@ static void build_sandbox_rw(cJSON *sandbox, const char *root, const char *rw_pa
     cJSON_AddItemToObject(sandbox, "rw_paths", arr);
 }
 
+void edc_init_env_result_free(struct edc_init_env_result *result)
+{
+    if (!result)
+        return;
+
+    sdsfree(result->api_key);
+    sdsfree(result->api_url);
+    sdsfree(result->model);
+    sdsfree(result->sandbox_root);
+    sdsfree(result->sandbox_rw_paths);
+    sdsfree(result->sandbox_ro_paths);
+    sdsfree(result->channel_type);
+    sdsfree(result->device_pty);
+    sdsfree(result->device_ip);
+    sdsfree(result->device_transport);
+
+    sdsfree(result->email.imap_host);
+    sdsfree(result->email.smtp_host);
+    sdsfree(result->email.user);
+    sdsfree(result->email.passwd);
+    sdsfree(result->email.target);
+
+    sdsfree(result->telegram.bot_key);
+
+    sdsfree(result->feishu.app_id);
+    sdsfree(result->feishu.app_secret);
+
+    sdsfree(result->qq.app_id);
+    sdsfree(result->qq.app_secret);
+}
+
 static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
 {
     bool is_create = !g_file_test(conf_file, G_FILE_TEST_IS_REGULAR);
@@ -931,41 +939,43 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     if (edc_init_env_get_configure(&env_result, existing, edc_home) != 0)
     {
         log_error("Configuration cancelled or failed.");
+        edc_init_env_result_free(existing);
         free(existing);
         return FALSE;
     }
+    edc_init_env_result_free(existing);
     free(existing);
 
     /* Validate required fields */
-    if (strlen(env_result.api_key) == 0)
+    if (sdslen(env_result.api_key) == 0)
     {
         log_error("API Key is required.");
-        return FALSE;
+        goto exit_free_env;
     }
-    if (strlen(env_result.api_url) == 0)
+    if (sdslen(env_result.api_url) == 0)
     {
         log_error("API URL is required.");
-        return FALSE;
+        goto exit_free_env;
     }
-    if (strlen(env_result.model) == 0)
+    if (sdslen(env_result.model) == 0)
     {
         log_error("Model is required.");
-        return FALSE;
+        goto exit_free_env;
     }
     if (env_result.max_iter <= 0)
     {
         log_error("Max Iterations must be greater than 0.");
-        return FALSE;
+        goto exit_free_env;
     }
     if (env_result.load_n_histories < 0)
     {
         log_error("Load N Histories must be >= 0.");
-        return FALSE;
+        goto exit_free_env;
     }
     if (env_result.tool_max_output_size <= 0)
     {
         log_error("Tool Max Output Size must be greater than 0.");
-        return FALSE;
+        goto exit_free_env;
     }
 
     /* Validate channel-specific fields */
@@ -973,69 +983,69 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
 
     if (strcmp(ctype, "email") == 0)
     {
-        if (strlen(env_result.email.imap_host) == 0)
+        if (sdslen(env_result.email.imap_host) == 0)
         {
             log_error("IMAP Host is required for email channel.");
-            return FALSE;
+            goto exit_free_env;
         }
-        if (strlen(env_result.email.smtp_host) == 0)
+        if (sdslen(env_result.email.smtp_host) == 0)
         {
             log_error("SMTP Host is required for email channel.");
-            return FALSE;
+            goto exit_free_env;
         }
-        if (strlen(env_result.email.user) == 0)
+        if (sdslen(env_result.email.user) == 0)
         {
             log_error("Email User is required for email channel.");
-            return FALSE;
+            goto exit_free_env;
         }
-        if (strlen(env_result.email.passwd) == 0)
+        if (sdslen(env_result.email.passwd) == 0)
         {
             log_error("Email Password is required for email channel.");
-            return FALSE;
+            goto exit_free_env;
         }
-        if (strlen(env_result.email.target) == 0)
+        if (sdslen(env_result.email.target) == 0)
         {
             log_error("Target Email is required for email channel.");
-            return FALSE;
+            goto exit_free_env;
         }
     }
     else if (strcmp(ctype, "telegram") == 0)
     {
-        if (strlen(env_result.telegram.bot_key) == 0)
+        if (sdslen(env_result.telegram.bot_key) == 0)
         {
             log_error("Bot Key is required for telegram channel.");
-            return FALSE;
+            goto exit_free_env;
         }
         if (env_result.telegram.user_id == 0)
         {
             log_error("User ID is required for telegram channel.");
-            return FALSE;
+            goto exit_free_env;
         }
     }
     else if (strcmp(ctype, "feishu") == 0)
     {
-        if (strlen(env_result.feishu.app_id) == 0)
+        if (sdslen(env_result.feishu.app_id) == 0)
         {
             log_error("Feishu App ID is required for feishu channel.");
-            return FALSE;
+            goto exit_free_env;
         }
-        if (strlen(env_result.feishu.app_secret) == 0)
+        if (sdslen(env_result.feishu.app_secret) == 0)
         {
             log_error("Feishu App Secret is required for feishu channel.");
-            return FALSE;
+            goto exit_free_env;
         }
     }
     else if (strcmp(ctype, "qq") == 0)
     {
-        if (strlen(env_result.qq.app_id) == 0)
+        if (sdslen(env_result.qq.app_id) == 0)
         {
             log_error("QQ App ID is required for qq channel.");
-            return FALSE;
+            goto exit_free_env;
         }
-        if (strlen(env_result.qq.app_secret) == 0)
+        if (sdslen(env_result.qq.app_secret) == 0)
         {
             log_error("QQ App Secret is required for qq channel.");
-            return FALSE;
+            goto exit_free_env;
         }
     }
 
@@ -1119,13 +1129,11 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     cJSON_AddStringToObject(config, "device_ip", env_result.device_ip);
     cJSON_AddNumberToObject(config, "device_port", env_result.device_port);
 
-    if (env_result.device_pty[0])
+    if (sdslen(env_result.device_pty) > 0)
     {
         cJSON_AddStringToObject(config, "device_pty", env_result.device_pty);
         cJSON_AddNumberToObject(config, "device_baud", env_result.device_baud);
     }
-
-    free(encrypted_api_key);
 
     char *config_str = cJSON_Print(config);
     GError *error = NULL;
@@ -1136,13 +1144,18 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
         free(config_str);
         if (error)
             g_error_free(error);
-        return FALSE;
+        goto exit_free_env;
     }
 
     cJSON_Delete(config);
     free(config_str);
 
+    edc_init_env_result_free(&env_result);
     return TRUE;
+
+exit_free_env:
+    edc_init_env_result_free(&env_result);
+    return FALSE;
 }
 
 bool edc_init_env(const char *edc_home, bool setup)

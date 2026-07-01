@@ -114,9 +114,7 @@ static void edc_channel_cli_handle_send(edc_actor_t *actor, edc_actor_msg_t *msg
     }
     if (strncmp(message->content, "[思考]:", strlen("[思考]:")) == 0)
     {
-        char *_cli_tmp = sdscatprintf(sdsempty(), "%s%s%s", CLI_DIM, message->content, CLI_RESET);
-        state->cli.pending_output = sdsnewlen(_cli_tmp, strlen(_cli_tmp));
-        sdsfree(_cli_tmp);
+        state->cli.pending_output = sdscatprintf(sdsempty(), "%s%s%s", CLI_DIM, message->content, CLI_RESET);
     }
     else
     {

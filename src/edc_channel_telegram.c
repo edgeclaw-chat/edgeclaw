@@ -6,15 +6,13 @@
 #include "sds.h"
 
 static const char *telegram_api_host = "api.telegram.org";
-static char *telegram_build_path(struct channel_conf *conf, const char *method, const char *args[])
+static sds telegram_build_path(struct channel_conf *conf, const char *method, const char *args[])
 {
     sds url = sdsempty();
     url = sdscatprintf(url, "/bot%s/%s", conf->telegram.bot_key, method);
     if (!args)
     {
-        char *s = strdup(url);
-        sdsfree(url);
-        return s;
+        return url;
     }
 
     url = sdscat(url, "?");
@@ -31,17 +29,15 @@ static char *telegram_build_path(struct channel_conf *conf, const char *method, 
         url = sdscat(url, "&");
     }
 
-    char *s = strdup(url);
-    sdsfree(url);
-    return s;
+    return url;
 }
 
 struct edc_channel_telegram_req
 {
     edc_actor_t *actor;
     const char *host;
-    const char *path;
-    const char *url;
+    sds path;
+    sds url;
     const char *proxy;
     int method; // 0: GET, 1: POST
     sds body;
@@ -54,7 +50,7 @@ struct edc_channel_telegram_req
 static void __bc_channel_telegram_req_free(struct edc_channel_telegram_req *req, bool free_next)
 {
     sdsfree(req->url);
-    free((char *)req->path);
+    sdsfree(req->path);
     if (req->body)
     {
         sdsfree(req->body);
@@ -162,7 +158,7 @@ static struct edc_channel_telegram_req *edc_channel_actor_send_message_chunk_req
 {
     edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
 
-    char *path = telegram_build_path(&state->config, "sendMessage", NULL);
+    sds path = telegram_build_path(&state->config, "sendMessage", NULL);
     char *escaped_content = g_uri_escape_bytes((uint8_t *)content, len, NULL);
     char *post_fields = sdscatprintf(sdsempty(), "chat_id=%s&text=%s", chat_id, escaped_content);
     free(escaped_content);
@@ -398,9 +394,9 @@ static bool edc_channel_actor_telegram_poll(void* data)
         return G_SOURCE_CONTINUE;
     }
 
-    const char *args[] = {sdscatprintf(sdsempty(), "offset=%" PRId64, state->telegram.update_id), NULL};
-    const char *path = telegram_build_path(&state->config, "getUpdates", args);
-    sdsfree((char *)args[0]);
+    sds args[] = {sdscatprintf(sdsempty(), "offset=%" PRId64, state->telegram.update_id), NULL};
+    sds path = telegram_build_path(&state->config, "getUpdates", (const char **)args);
+    sdsfree(args[0]);
 
     struct edc_channel_telegram_req *req = g_new0(struct edc_channel_telegram_req, 1);
     const char *proxy = g_getenv("https_proxy");

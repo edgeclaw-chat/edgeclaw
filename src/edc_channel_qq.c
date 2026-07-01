@@ -45,7 +45,7 @@ struct edc_channel_qq_network_req
             edc_actor_t *actor;
             int shard;
             int64_t s;
-            char *session_id;
+            sds session_id;
             int heartbeat_interval;
             int64_t last_heartbeat_time;
             int64_t last_ack_time;
@@ -54,13 +54,13 @@ struct edc_channel_qq_network_req
         struct
         {
             edc_actor_t *actor;
-            char *body;
-            char *url;
+            sds body;
+            sds url;
         } http_send_msg;
     };
 };
 
-struct edc_channel_qq_network_req *edc_channel_qq_network_wss_req_new(edc_actor_t *actor, int shard, char *session_id,
+struct edc_channel_qq_network_req *edc_channel_qq_network_wss_req_new(edc_actor_t *actor, int shard, sds session_id,
                                                                     int64_t s)
 {
     struct edc_channel_qq_network_req *req = g_new0(struct edc_channel_qq_network_req, 1);
@@ -75,7 +75,7 @@ struct edc_channel_qq_network_req *edc_channel_qq_network_wss_req_new(edc_actor_
     return req;
 }
 
-struct edc_channel_qq_network_req *edc_channel_qq_network_send_msg_req_new(edc_actor_t *actor, char *body, char *url)
+struct edc_channel_qq_network_req *edc_channel_qq_network_send_msg_req_new(edc_actor_t *actor, sds body, sds url)
 {
 
     struct edc_channel_qq_network_req *req = g_new0(struct edc_channel_qq_network_req, 1);
@@ -92,7 +92,7 @@ void edc_channel_qq_network_req_free(struct edc_channel_qq_network_req *req)
     {
         if (req->http_send_msg.body)
         {
-            free(req->http_send_msg.body);
+            sdsfree(req->http_send_msg.body);
         }
         if (req->http_send_msg.url)
         {
@@ -103,7 +103,7 @@ void edc_channel_qq_network_req_free(struct edc_channel_qq_network_req *req)
     {
         if (req->wss.session_id)
         {
-            free(req->wss.session_id);
+            sdsfree(req->wss.session_id);
         }
     }
     free(req);
@@ -123,7 +123,7 @@ struct edc_channel_qq_network_resp
         cJSON *data;
         struct
         {
-            char *session_id;
+            sds session_id;
             int64_t s;
             int shard;
         } reconn;
@@ -161,7 +161,7 @@ struct edc_channel_qq_network_resp *edc_channel_qq_wss_dispatch_network_resp_new
     return resp;
 }
 
-struct edc_channel_qq_network_resp *edc_channel_qq_wss_reconn_resp_new(char *session_id, int64_t s, int shard)
+struct edc_channel_qq_network_resp *edc_channel_qq_wss_reconn_resp_new(sds session_id, int64_t s, int shard)
 {
     struct edc_channel_qq_network_resp *resp = g_new0(struct edc_channel_qq_network_resp, 1);
     resp->type = BC_CHANNEL_QQ_WSS_RECONN_RESP;
@@ -177,7 +177,7 @@ void edc_channel_qq_network_resp_free(struct edc_channel_qq_network_resp *resp)
     {
     case BC_CHANNEL_QQ_WSS_RECONN_RESP:
         if (resp->reconn.session_id)
-            free(resp->reconn.session_id);
+            sdsfree(resp->reconn.session_id);
         break;
     default:
         if (resp->data)
@@ -395,14 +395,14 @@ static void edc_channel_qq_wss_send_identify(struct mg_connection *c, edc_actor_
     free(payload);
 }
 
-static void edc_channel_qq_wss_send_resume(struct mg_connection *c, edc_actor_t *actor, char *session_id, int64_t s)
+static void edc_channel_qq_wss_send_resume(struct mg_connection *c, edc_actor_t *actor, sds session_id, int64_t s)
 {
     cJSON *resume = cJSON_CreateObject();
     cJSON_AddNumberToObject(resume, "op", 6);
     cJSON *d = cJSON_AddObjectToObject(resume, "d");
 
     edc_channel_actor_state_t *state = actor->state;
-    char *token = sdscatprintf(sdsempty(), "QQBot %s", state->qq.access_token);
+    sds token = sdscatprintf(sdsempty(), "QQBot %s", state->qq.access_token);
     cJSON_AddStringToObject(d, "token", token);
     sdsfree(token);
 
@@ -443,7 +443,7 @@ static void edc_channel_qq_handle_wss_dispatch_msg(struct mg_connection *c, stru
             goto format_error_exit;
         }
 
-        req->wss.session_id = strdup(cJSON_GetStringValue(sess_id));
+        req->wss.session_id = sdsnew(cJSON_GetStringValue(sess_id));
         cJSON_Delete(data);
         log_info("qq channel wss conn READY, session_id = %s", req->wss.session_id);
 
@@ -627,14 +627,14 @@ static void edc_channel_qq_wss_fn(struct mg_connection *c, int ev, void *ev_data
     }
 }
 
-static void edc_channel_qq_start_wss_conn_shard(edc_actor_t *actor, char *session_id, int64_t s, int shard)
+static void edc_channel_qq_start_wss_conn_shard(edc_actor_t *actor, sds session_id, int64_t s, int shard)
 {
     edc_channel_actor_state_t *state = actor->state;
     edc_wss_async_connect(state->network, state->qq.wss_url, edc_channel_qq_wss_fn,
                          edc_channel_qq_network_wss_req_new(actor, shard, session_id, s), -1);
 }
 
-static void edc_channel_qq_start_wss_conn(edc_actor_t *actor, char *session_id, int64_t s)
+static void edc_channel_qq_start_wss_conn(edc_actor_t *actor, sds session_id, int64_t s)
 {
     edc_channel_actor_state_t *state = actor->state;
     struct edc_mg_conn_node *node, *tmp;
@@ -795,8 +795,11 @@ static void edc_channel_qq_handle_send(edc_actor_t *actor, edc_actor_msg_t *msg)
     char *body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
 
+    sds sds_body = sdsnew(body);
+    cJSON_free(body);
+
     edc_http_async_connect(state->network, send_c2c_url, NULL, edc_channel_qq_send_message_http_fn,
-                          edc_channel_qq_network_send_msg_req_new(actor, body, send_c2c_url), 20);
+                          edc_channel_qq_network_send_msg_req_new(actor, sds_body, send_c2c_url), 20);
 }
 
 static void edc_channel_qq_handler(edc_actor_t *actor, edc_actor_msg_t *msg)

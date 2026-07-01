@@ -125,11 +125,10 @@ void edc_session_add_turn(struct edc_session *sess, struct edc_turn *turn)
     while (edc_queue_length(m) > 0 && edc_queue_length(t) > 0)
     {
         cJSON *message = edc_queue_pop(m);
-        char *ts = edc_queue_pop(t);
+        sds ts = edc_queue_pop(t);
         cJSON_AddItemToArray(sess->messages, message);
         struct edc_timestamp_node *n = g_new0(struct edc_timestamp_node, 1);
-        n->ts = sdsnew(ts);
-        free(ts);
+        n->ts = ts;
         DL_APPEND(sess->timestamps, n);
     }
 }

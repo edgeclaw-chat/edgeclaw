@@ -15,7 +15,7 @@ static sds edc_tool_exec_read_file(struct edc_config *conf, cJSON *args, EdcErro
 {
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
 
-    char *safe_path = edc_sandbox_verify_path(conf, path, FALSE, error);
+    sds safe_path = edc_sandbox_verify_path(conf, path, FALSE, error);
     if (!safe_path)
     {
         return NULL;
@@ -25,7 +25,7 @@ static sds edc_tool_exec_read_file(struct edc_config *conf, cJSON *args, EdcErro
     size_t len = 0;
     GError *gerror = NULL;
     g_file_get_contents(safe_path, &content, &len, &gerror);
-    free(safe_path);
+    sdsfree(safe_path);
     if (gerror)
     {
         edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
@@ -43,7 +43,7 @@ static sds edc_tool_exec_write_file(struct edc_config *conf, cJSON *args, EdcErr
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
     const char *content = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "content"));
 
-    char *safe_path = edc_sandbox_verify_path(conf, path, TRUE, error);
+    sds safe_path = edc_sandbox_verify_path(conf, path, TRUE, error);
     if (!safe_path)
     {
         return NULL;
@@ -51,7 +51,7 @@ static sds edc_tool_exec_write_file(struct edc_config *conf, cJSON *args, EdcErr
 
     GError *gerror = NULL;
     g_file_set_contents(safe_path, content, -1, &gerror);
-    free(safe_path);
+    sdsfree(safe_path);
     if (gerror)
     {
         edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
@@ -68,7 +68,7 @@ static sds edc_tool_exec_list_dir(struct edc_config *conf, cJSON *args, EdcError
 {
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
 
-    char *safe_path = edc_sandbox_verify_path(conf, path, FALSE, error);
+    sds safe_path = edc_sandbox_verify_path(conf, path, FALSE, error);
     if (!safe_path)
     {
         return NULL;
@@ -76,7 +76,7 @@ static sds edc_tool_exec_list_dir(struct edc_config *conf, cJSON *args, EdcError
 
     GError *gerror = NULL;
     GDir *dir = g_dir_open(safe_path, 0, &gerror);
-    free(safe_path);
+    sdsfree(safe_path);
     if (gerror)
     {
         edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
@@ -155,7 +155,7 @@ static void edc_tool_create_list_dir(struct edc_toolbox *tb)
     edc_toolbox_register(tb, edc_tool_new(name, desc, params, edc_tool_exec_list_dir_async));
 }
 
-static sds edc_edit_file_try_create(const char *path, char *safe_path,
+static sds edc_edit_file_try_create(const char *path, sds safe_path,
                                             const char *old_text, const char *new_text,
                                             EdcError **error)
 {
@@ -174,10 +174,8 @@ static sds edc_edit_file_try_create(const char *path, char *safe_path,
                 g_error_free(gerror);
                 return NULL;
             }
-            char *msg = sdscatprintf(sdsempty(), "Successfully created %s", path);
-            sds ret = sdsnewlen(msg, strlen(msg));
-        sdsfree(msg);
-            return ret;
+            sds msg = sdscatprintf(sdsempty(), "Successfully created %s", path);
+            return msg;
         }
         edc_error_set(error, EDC_ERR_EXEC,
                     "Error: File not found: %s", path);
@@ -214,10 +212,8 @@ static sds edc_edit_file_try_create(const char *path, char *safe_path,
             g_error_free(gerror2);
             return NULL;
         }
-        char *msg = sdscatprintf(sdsempty(), "Successfully edited %s", path);
-        sds ret = sdsnewlen(msg, strlen(msg));
-        sdsfree(msg);
-        return ret;
+        sds msg = sdscatprintf(sdsempty(), "Successfully edited %s", path);
+        return msg;
     }
 
     return NULL;
@@ -471,14 +467,14 @@ static sds edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, EdcErro
         return NULL;
     }
 
-    char *safe_path = edc_sandbox_verify_path(conf, path, TRUE, error);
+    sds safe_path = edc_sandbox_verify_path(conf, path, TRUE, error);
     if (!safe_path)
         return NULL;
 
     sds created = edc_edit_file_try_create(path, safe_path, old_text, new_text, error);
     if (created || *error)
     {
-        free(safe_path);
+        sdsfree(safe_path);
         return created;
     }
 
@@ -536,14 +532,12 @@ static sds edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, EdcErro
     }
     else
     {
-        char *msg = sdscatprintf(sdsempty(), "Successfully edited %s", path);
-        result = sdsnewlen(msg, strlen(msg));
-        sdsfree(msg);
+        result = sdscatprintf(sdsempty(), "Successfully edited %s", path);
     }
 
 cleanup:
     free(content);
-    free(safe_path);
+    sdsfree(safe_path);
     if (positions)
         utarray_free(positions);
     if (line_nums)

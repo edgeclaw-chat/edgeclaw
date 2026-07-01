@@ -25,8 +25,8 @@ struct edc_network_async_request
     int timeout;
 
     edc_network_async_t *network;
-    const char *url;
-    const char *proxy;
+    sds url;
+    sds proxy;
 
     /* linked list for pending retry tracking */
     struct edc_network_async_request *pending_next;
@@ -101,7 +101,7 @@ static sds edc_network_async_get_dns()
         return NULL;
     }
 
-    char *result = NULL;
+    sds result = NULL;
 
 #if defined(__APPLE__)
     union res_sockaddr_union servers[MAXNS];
@@ -180,7 +180,7 @@ void edc_network_async_free(edc_network_async_t *async)
     edc_queue_destroy(&async->task_queue);
     g_mutex_clear(&async->mutex);
 
-    sdsfree(async->mgr.dns4.url);
+    sdsfree((sds)async->mgr.dns4.url);
     mg_mgr_free(&async->mgr);
     mg_free(async->cert_pem.buf);
 
@@ -204,12 +204,12 @@ static struct edc_network_async_request *edc_http_async_request_new(edc_network_
     struct edc_network_async_request *req = g_new0(struct edc_network_async_request, 1);
     req->type = HTTP;
     req->network = async;
-    req->url = strdup(url);
+    req->url = sdsnew(url);
     req->create_time = mg_millis();
     req->retries = 3;
     req->fn = fn;
     req->fn_data = fn_data;
-    req->proxy = proxy ? strdup(proxy) : NULL;
+    req->proxy = proxy ? sdsnew(proxy) : NULL;
     req->timeout = timeout;
     req->connected = FALSE;
 
@@ -217,12 +217,12 @@ static struct edc_network_async_request *edc_http_async_request_new(edc_network_
 }
 
 static struct edc_network_async_request *edc_wss_async_request_new(edc_network_async_t *async, const char *url,
-                                                                 mg_event_handler_t fn, void *fn_data, int timeout)
+                                                                  mg_event_handler_t fn, void *fn_data, int timeout)
 {
     struct edc_network_async_request *req = g_new0(struct edc_network_async_request, 1);
     req->type = WSS;
     req->network = async;
-    req->url = strdup(url);
+    req->url = sdsnew(url);
     req->create_time = mg_millis();
     req->retries = 3;
     req->fn = fn;
@@ -238,12 +238,12 @@ static void edc_network_async_request_free(struct edc_network_async_request *req
 {
     if (req->url)
     {
-        free((char *)req->url);
+        sdsfree(req->url);
     }
 
     if (req->proxy)
     {
-        free((char *)req->proxy);
+        sdsfree(req->proxy);
     }
 
     free(req);
@@ -427,7 +427,7 @@ static bool mg_http_connect_wrapper(void* data)
     unsigned short port = mg_url_port(direct);
     const char *proto = mg_url_is_ssl(direct) ? "https" : "http";
 
-    char *url = sdscatprintf(sdsempty(), "%s://%.*s:%d", proto, (int)host.len, host.buf, (int)port);
+    sds url = sdscatprintf(sdsempty(), "%s://%.*s:%d", proto, (int)host.len, host.buf, (int)port);
 
     struct mg_connection *c = mg_http_connect(&req->network->mgr, url, edc_network_async_conn_fn, req);
     sdsfree(url);

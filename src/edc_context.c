@@ -179,7 +179,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf)
     const char *workspace = conf->workspace;
     char *os_name = g_get_os_info(G_OS_INFO_KEY_NAME);
 
-    char *time = edc_get_timestamp();
+    sds time = edc_get_timestamp();
     sds identity = edc_context_get_identity(os_name ? os_name : "Unknown", time, workspace);
     sds bootstrap = edc_context_load_bootstrap_files(workspace);
     sds memory = edc_context_load_memory(workspace);
@@ -199,7 +199,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf)
         free(os_name);
     }
 
-    free(time);
+    sdsfree(time);
     sdsfree(identity);
     sdsfree(bootstrap);
     if (memory)

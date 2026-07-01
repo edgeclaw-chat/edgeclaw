@@ -140,8 +140,10 @@ static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, E
 
         if (!valid)
         {
+            sds type_str = edc_param_type_to_s(type);
             edc_error_set(error, EDC_ERR_INVAL, "parameter '%s' must be of type '%s'", param->name,
-                        edc_param_type_to_s(type));
+                        type_str);
+            sdsfree(type_str);
             return FALSE;
         }
     }

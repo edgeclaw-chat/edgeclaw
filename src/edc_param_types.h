@@ -53,7 +53,7 @@ struct edc_param_type
 
         struct
         {
-            char *enums;
+            sds *enums;
             int n;
         } str;
     };
@@ -67,5 +67,5 @@ extern struct edc_param_type *edc_param_object_type(char *desc, struct edc_param
 extern void edc_param_type_free(struct edc_param_type *type);
 extern bool edc_param_type_validate(cJSON *args, struct edc_param_type *type);
 extern cJSON *edc_param_type_to_json(struct edc_param_type *type);
-extern char *edc_param_type_to_s(struct edc_param_type *type);
+extern sds edc_param_type_to_s(struct edc_param_type *type);
 #endif

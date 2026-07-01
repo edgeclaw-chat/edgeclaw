@@ -31,15 +31,15 @@ struct edc_param_type *edc_param_str_type(char *desc, const char *first, ...)
         n++;
     va_end(args_copy);
 
-    char **dst = g_new(char *, n);
-    dst[0] = strdup(first);
+    sds *dst = g_new(sds, n);
+    dst[0] = sdsnew(first);
     for (int i = 1; i < n; i++)
     {
-        dst[i] = strdup(va_arg(args, const char *));
+        dst[i] = sdsnew(va_arg(args, const char *));
     }
     va_end(args);
 
-    type->str.enums = (char *)dst;
+    type->str.enums = dst;
     type->str.n = n;
     return type;
 }
@@ -86,12 +86,11 @@ void edc_param_type_free(struct edc_param_type *type)
     case BC_TOOL_TYPE_STR:
         if (type->str.n > 0 && type->str.enums)
         {
-            char **enums = (char **)type->str.enums;
             for (int i = 0; i < type->str.n; i++)
             {
-                free(enums[i]);
+                sdsfree(type->str.enums[i]);
             }
-            free(enums);
+            free(type->str.enums);
         }
         break;
     case BC_TOOL_TYPE_ARRAY:
@@ -135,10 +134,9 @@ bool edc_param_type_validate(cJSON *args, struct edc_param_type *type)
             return FALSE;
         if (type->str.n > 0 && type->str.enums)
         {
-            char **enums = (char **)type->str.enums;
             for (int i = 0; i < type->str.n; i++)
             {
-                if (strcmp(cJSON_GetStringValue(args), enums[i]) == 0)
+                if (strcmp(cJSON_GetStringValue(args), type->str.enums[i]) == 0)
                     return TRUE;
             }
             return FALSE;
@@ -204,10 +202,9 @@ cJSON *edc_param_type_to_json(struct edc_param_type *type)
         if (type->str.n > 0 && type->str.enums)
         {
             cJSON *arr = cJSON_CreateArray();
-            char **enums = (char **)type->str.enums;
             for (int i = 0; i < type->str.n; i++)
             {
-                cJSON_AddItemToArray(arr, cJSON_CreateString(enums[i]));
+                cJSON_AddItemToArray(arr, cJSON_CreateString(type->str.enums[i]));
             }
             cJSON_AddItemToObject(obj, "enum", arr);
         }
@@ -240,12 +237,14 @@ cJSON *edc_param_type_to_json(struct edc_param_type *type)
     }
 }
 
-char *edc_param_type_to_s(struct edc_param_type *type)
+sds edc_param_type_to_s(struct edc_param_type *type)
 {
     cJSON *json = edc_param_type_to_json(type);
     if (!json)
-        return strdup("<string format error>");
+        return sdsnew("<string format error>");
     char *str = cJSON_PrintUnformatted(json);
     cJSON_Delete(json);
-    return str;
+    sds result = sdsnew(str);
+    free(str);
+    return result;
 }

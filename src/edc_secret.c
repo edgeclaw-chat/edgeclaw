@@ -419,14 +419,14 @@ cleanup:
     return result;
 }
 
-char *edc_secret_decrypt(const char *input)
+sds edc_secret_decrypt(const char *input)
 {
     if (!input || !g_secret_ready)
         return NULL;
 
     size_t prefix_len = strlen(BC_SECRET_PREFIX);
     if (strncmp(input, BC_SECRET_PREFIX, prefix_len) != 0)
-        return strdup(input);
+        return sdsnew(input);
 
     const char *b64_input = input + prefix_len;
     if (strlen(b64_input) == 0)
@@ -435,7 +435,7 @@ char *edc_secret_decrypt(const char *input)
     mbedtls_cipher_context_t cipher;
     unsigned char *packed = NULL;
     unsigned char *plain_buf = NULL;
-    char *result = NULL;
+    sds result = NULL;
 
     const mbedtls_cipher_info_t *cipher_info = mbedtls_cipher_info_from_type(MBEDTLS_CIPHER_AES_256_GCM);
     if (!cipher_info)
@@ -511,7 +511,7 @@ char *edc_secret_decrypt(const char *input)
     }
 
     plain_buf[olen] = '\0';
-    result = strdup((const char *)plain_buf);
+    result = sdsnew((const char *)plain_buf);
 
     memset(plain_buf, 0, plain_len + 1);
     free(plain_buf);

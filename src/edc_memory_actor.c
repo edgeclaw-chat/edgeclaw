@@ -213,9 +213,9 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
 
         if (!timestamp)
         {
-            char *ts = edc_get_timestamp();
+            sds ts = edc_get_timestamp();
             cJSON_AddStringToObject(msg, "timestamp", ts);
-            free(ts);
+            sdsfree(ts);
             timestamp = cJSON_GetObjectItem(msg, "timestamp");
         }
 
@@ -312,7 +312,7 @@ static bool edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_msg_t 
 {
     struct edc_memory_actor_state *state = actor->state;
     struct edc_llm_actor_resp *resp = msg->data;
-    char *update_time = NULL;
+    sds update_time = NULL;
 
     bool ret = TRUE;
     if (resp->error)
@@ -394,7 +394,7 @@ static bool edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_msg_t 
 
 exit_:
     if (update_time)
-        free(update_time);
+        sdsfree(update_time);
     return ret;
 }
 

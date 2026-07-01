@@ -24,7 +24,7 @@ struct device_shell_ctx
     struct edc_toolbox_call_ctx *tb_ctx;
     void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *);
     sds command;
-    char *agent_ip;
+    sds agent_ip;
     uint16_t agent_port;
     int timeout_sec;
 };
@@ -32,7 +32,7 @@ struct device_shell_ctx
 static void device_shell_ctx_free(struct device_shell_ctx *ctx)
 {
     sdsfree(ctx->command);
-    free(ctx->agent_ip);
+    sdsfree(ctx->agent_ip);
     free(ctx);
 }
 
@@ -356,7 +356,7 @@ edc_tool_device_shell_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc
     ctx->tb_ctx = tb_ctx;
     ctx->callback = callback;
     ctx->command = sdsnew(cJSON_GetStringValue(cmd));
-    ctx->agent_ip = strdup(conf->device_ip);
+    ctx->agent_ip = sdsnew(conf->device_ip);
     ctx->agent_port = (uint16_t)(conf->device_port > 0 ? conf->device_port : 5000);
     ctx->timeout_sec = timeout_sec;
 
