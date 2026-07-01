@@ -145,7 +145,6 @@ static int exec_cmd(const char *cmd, sds *out, sds *err, int *exit_code, int tim
 
     close(out_pipe[1]);
     close(err_pipe[1]);
-    setpgid(pid, 0);
 
     fd_set rfds;
     int max_fd = (out_pipe[0] > err_pipe[0]) ? out_pipe[0] : err_pipe[0];

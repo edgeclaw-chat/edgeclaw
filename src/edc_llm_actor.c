@@ -85,6 +85,7 @@ static void edc_llm_actor_on_http_fn(struct mg_connection *c, int ev, void *ev_d
 
         edc_actor_send(req->actor, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, req->request_id, req,
                                                    (edc_actor_data_free_fn)edc_llm_actor_http_req_free));
+        c->fn_data = NULL;
         c->is_closing = 1;
     }
     else if (c->is_tls && ev == MG_EV_TLS_HS)
@@ -97,6 +98,7 @@ static void edc_llm_actor_on_http_fn(struct mg_connection *c, int ev, void *ev_d
     }
     else if (ev == BC_CONN_ERROR)
     {
+        if (!req) return;
         log_error("llm actor http async conn error");
         if (req->from)
         {
@@ -109,6 +111,7 @@ static void edc_llm_actor_on_http_fn(struct mg_connection *c, int ev, void *ev_d
     }
     else if (ev == MG_EV_CLOSE)
     {
+        if (!req) return;
         if (req->response == NULL)
         {
             if (req->from)
@@ -123,6 +126,7 @@ static void edc_llm_actor_on_http_fn(struct mg_connection *c, int ev, void *ev_d
     }
     else if (ev == BC_CONN_TIME_OUT || ev == MG_EV_ERROR)
     {
+        if (!req) return;
         const char *err_msg = ev == BC_CONN_TIME_OUT ? "LLM API request timed out" : "LLM API request error";
         if (req->from)
         {

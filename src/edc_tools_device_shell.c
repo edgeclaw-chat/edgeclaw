@@ -9,7 +9,7 @@
 #include "lwip/ip_addr.h"
 #include "lwip/err.h"
 #include <cJSON.h>
-#include <glib.h>
+#include <uv.h>
 #include "sds.h"
 #include "edc_error.h"
 #include <arpa/inet.h>
@@ -84,7 +84,7 @@ static void process_shell_response(sds resp_buf, sds *result, EdcError **error)
     body += 4;
 
     int http_status = 0;
-    if (g_ascii_strncasecmp(resp_buf, "HTTP/", 5) == 0) {
+    if (strncasecmp(resp_buf, "HTTP/", 5) == 0) {
         const char *sp = strchr(resp_buf, ' ');
         if (sp) http_status = atoi(sp + 1);
     }
@@ -305,15 +305,13 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
     device_shell_ctx_free(ctx);
 }
 
-static void device_shell_thread(void* data, void* user_data)
+static void device_shell_thread(void *data)
 {
     struct device_shell_ctx *ctx = data;
-    (void)user_data;
-
     struct edc_config *conf = ctx->tb_ctx->tb->conf;
 
     if (conf->device_transport && conf->device_transport[0]) {
-        if (g_ascii_strcasecmp(conf->device_transport, "tty") == 0)
+        if (strcasecmp(conf->device_transport, "tty") == 0)
             device_shell_thread_lwip(ctx);
         else
             device_shell_thread_socket(ctx);
@@ -352,7 +350,7 @@ edc_tool_device_shell_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc
     if (timeout_json && cJSON_IsNumber(timeout_json) && timeout_json->valueint > 0)
         timeout_sec = timeout_json->valueint;
 
-    struct device_shell_ctx *ctx = g_new0(struct device_shell_ctx, 1);
+    struct device_shell_ctx *ctx = calloc(1, sizeof(struct device_shell_ctx));
     ctx->tb_ctx = tb_ctx;
     ctx->callback = callback;
     ctx->command = sdsnew(cJSON_GetStringValue(cmd));
@@ -360,7 +358,8 @@ edc_tool_device_shell_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc
     ctx->agent_port = (uint16_t)(conf->device_port > 0 ? conf->device_port : 5000);
     ctx->timeout_sec = timeout_sec;
 
-    g_thread_new("device_shell", (GThreadFunc)device_shell_thread, ctx);
+    uv_thread_t thread;
+    uv_thread_create(&thread, device_shell_thread, ctx);
 }
 
 struct edc_tool *edc_tool_create_device_shell(struct edc_toolbox *tb)

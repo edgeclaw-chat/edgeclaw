@@ -255,6 +255,8 @@ static void edc_network_async_fn_forward(struct mg_connection *c, int ev, void *
     bool was_closing = c->is_closing;
     c->fn_data = req->fn_data;
     req->fn(c, ev, ev_data);
+    if (c->fn_data == NULL)
+        req->fn_data = NULL;
     c->fn_data = req;
     if (c->is_closing && !was_closing)
     {
