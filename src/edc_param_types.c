@@ -245,6 +245,6 @@ sds edc_param_type_to_s(struct edc_param_type *type)
     char *str = cJSON_PrintUnformatted(json);
     cJSON_Delete(json);
     sds result = sdsnew(str);
-    free(str);
+    cJSON_free(str);
     return result;
 }

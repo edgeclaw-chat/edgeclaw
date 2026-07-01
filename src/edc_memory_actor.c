@@ -334,7 +334,7 @@ static bool edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_msg_t 
         struct edc_llm_chat_tool_call *tool_call = (struct edc_llm_chat_tool_call*)utarray_eltptr(resp->tool_calls, i);
         char *s = cJSON_Print(tool_call->function.arguments);
         log_info("edc_memory_actor: call tool %s with args %s", tool_call->function.name, s);
-        free(s);
+        cJSON_free(s);
     }
 
     for (unsigned i = 0; i < utarray_len(resp->tool_calls); i++)

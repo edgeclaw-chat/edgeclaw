@@ -160,7 +160,7 @@ static struct edc_channel_telegram_req *edc_channel_actor_send_message_chunk_req
 
     sds path = telegram_build_path(&state->config, "sendMessage", NULL);
     char *escaped_content = g_uri_escape_bytes((uint8_t *)content, len, NULL);
-    char *post_fields = sdscatprintf(sdsempty(), "chat_id=%s&text=%s", chat_id, escaped_content);
+    sds post_fields = sdscatprintf(sdsempty(), "chat_id=%s&text=%s", chat_id, escaped_content);
     free(escaped_content);
 
     struct edc_channel_telegram_req *req = g_new0(struct edc_channel_telegram_req, 1);

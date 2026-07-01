@@ -196,18 +196,18 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
     if (send_all(sock, hdr, (size_t)hdr_len) != 0)
     {
         log_error("device_upload: send header failed: %s", strerror(errno));
-        free(req_body);
+        cJSON_free(req_body);
         close(sock);
         return -1;
     }
     if (send_all(sock, req_body, strlen(req_body)) != 0)
     {
         log_error("device_upload: send body failed (len=%zu): %s", strlen(req_body), strerror(errno));
-        free(req_body);
+        cJSON_free(req_body);
         close(sock);
         return -1;
     }
-    free(req_body);
+    cJSON_free(req_body);
 
     tv.tv_sec = ctx->timeout_sec;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -282,7 +282,7 @@ static int do_upload_chunk_lwip(struct device_file_ctx *ctx, const char *b64_chu
 
     netconn_write_partly(c, hdr, (size_t)hdr_len, NETCONN_COPY, NULL);
     netconn_write_partly(c, req_body, strlen(req_body), NETCONN_COPY, NULL);
-    free(req_body);
+    cJSON_free(req_body);
 
     netconn_set_recvtimeout(c, ctx->timeout_sec * 1000);
 
@@ -437,7 +437,7 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
 
     send_all(sock, hdr, (size_t)hdr_len);
     send_all(sock, req_body, strlen(req_body));
-    free(req_body);
+    cJSON_free(req_body);
 
     tv.tv_sec = ctx->timeout_sec;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -533,7 +533,7 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
 
     netconn_write_partly(c, hdr, (size_t)hdr_len, NETCONN_COPY, NULL);
     netconn_write_partly(c, req_body, strlen(req_body), NETCONN_COPY, NULL);
-    free(req_body);
+    cJSON_free(req_body);
 
     netconn_set_recvtimeout(c, ctx->timeout_sec * 1000);
 

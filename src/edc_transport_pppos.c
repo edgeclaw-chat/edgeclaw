@@ -337,7 +337,7 @@ static int transport_pppos_send(struct edc_device_transport *base, const struct 
     netconn_write_partly(t->conn, resp_str, body_len, NETCONN_COPY, NULL);
 
     cJSON_Delete(resp_json);
-    free(resp_str);
+    cJSON_free(resp_str);
 
     netconn_close(t->conn);
     netconn_delete(t->conn);

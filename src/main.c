@@ -109,7 +109,7 @@ int main(int argc, char *argv[])
 
     if (setup)
     {
-        char *edc_home = edc_config_resolve_bc_home();
+        sds edc_home = edc_config_resolve_bc_home();
         if (!edc_init_env(edc_home, TRUE))
         {
             log_error("Failed to initialize environment.");

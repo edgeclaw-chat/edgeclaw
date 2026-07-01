@@ -47,7 +47,7 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
 
     char *args = cJSON_PrintUnformatted(req->args);
     log_debug("tool call request name = %s, args = %s, result_len = %zu", req->name, args, sdslen(result));
-    free(args);
+    cJSON_free(args);
 
     req->result = result;
     if ((sdslen(result)) > state->toolbox->conf->tool_max_output_size)

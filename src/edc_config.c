@@ -75,7 +75,7 @@ static bool edc_config_parse_telegram_channel(struct edc_config *config, cJSON *
     {
         char *s = cJSON_PrintUnformatted(channel);
         log_error("channel.bot_key is not string type: %s", s);
-        free(s);
+        cJSON_free(s);
         return FALSE;
     }
 

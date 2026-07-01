@@ -48,7 +48,7 @@ static struct edc_llm_actor_http_req *edc_llm_actor_http_req_new(edc_actor_t *ac
 
 static void edc_llm_actor_http_req_free(struct edc_llm_actor_http_req *req)
 {
-    free((char *)req->body);
+    cJSON_free((char *)req->body);
     if (req->response)
     {
         sdsfree(req->response);
@@ -177,7 +177,7 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
     const char *proto = mg_url_is_ssl(state->api_conf.api_url) ? "https://" : "http://";
     struct mg_str host = mg_url_host(state->api_conf.api_url);
     int port = (int)mg_url_port(state->api_conf.api_url);
-    char *url = sdscatprintf(sdsempty(), "%s%.*s:%d", proto, (int)host.len, host.buf, port);
+    sds url = sdscatprintf(sdsempty(), "%s%.*s:%d", proto, (int)host.len, host.buf, port);
 
     edc_http_async_connect(state->network, url, NULL, edc_llm_actor_on_http_fn,
                           edc_llm_actor_http_req_new(actor, body_s, &state->api_conf, from, request_id), 60 * 5);
@@ -195,7 +195,7 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
         char *err_msg = cJSON_Print(response);
         log_error("resp format error choice 0 is not exist: %s", response);
         resp->error = edc_error_new(EDC_ERR_INVAL, "resp format choice 0 is not exist: %s", err_msg);
-        free(err_msg);
+        cJSON_free(err_msg);
 
         if (choices)
         {
@@ -253,7 +253,7 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
     {
         char *s = cJSON_Print(choice);
         log_error("llm unkown stop reason: %s", s);
-        free(s);
+        cJSON_free(s);
     }
 
     cJSON *index = cJSON_GetObjectItem(choice, "index");
@@ -267,7 +267,7 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
     {
         char *err_msg = cJSON_Print(choice);
         resp->error = edc_error_new(EDC_ERR_INVAL, "resp format message is not exist: %s", err_msg);
-        free(err_msg);
+        cJSON_free(err_msg);
         return FALSE;
     }
 

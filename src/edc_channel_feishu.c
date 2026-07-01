@@ -35,7 +35,7 @@ static void edc_channel_feishu_make_tenant_token_req(struct mg_connection *c)
     mg_printf(c, "%s", body);
 
     cJSON_Delete(req);
-    free(body);
+    cJSON_free(body);
 }
 
 struct edc_channel_feishu_resp
@@ -174,7 +174,7 @@ static void edc_channel_feishu_make_tenant_wss_url_req(struct mg_connection *c, 
     mg_printf(c, "%s", body);
 
     cJSON_Delete(req);
-    free(body);
+    cJSON_free(body);
 }
 
 static void edc_channel_feishu_handle_wss_endpoint_resp(struct mg_connection *c, struct mg_http_message *hm)
@@ -252,7 +252,7 @@ static void edc_channel_feishu_handle_tenant_token_recv(edc_actor_t *actor, stru
     {
         char *tmp = cJSON_PrintUnformatted(data);
         log_error("feishu channel: get tenant_token failed. resp format error: %s", tmp);
-        free(tmp);
+        cJSON_free(tmp);
         return;
     }
 
@@ -269,7 +269,7 @@ static void edc_channel_feishu_handle_tenant_token_recv(edc_actor_t *actor, stru
     {
         char *tmp = cJSON_PrintUnformatted(data);
         log_error("feishu channel: get tenant_token failed. resp format error: %s", tmp);
-        free(tmp);
+        cJSON_free(tmp);
         return;
     }
 
@@ -278,7 +278,7 @@ static void edc_channel_feishu_handle_tenant_token_recv(edc_actor_t *actor, stru
     {
         char *tmp = cJSON_PrintUnformatted(data);
         log_error("feishu channel: get tenant_token failed. resp format error: %s", tmp);
-        free(tmp);
+        cJSON_free(tmp);
         return;
     }
 
@@ -373,7 +373,7 @@ static bool edc_channel_feishu_parse_wss_endpoint_resp(edc_channel_actor_state_t
 format_err_exit: {
     char *tmp = data ? cJSON_PrintUnformatted(data) : NULL;
     log_error("channel feishu: wss endpoint recv error json format: %s", tmp ? tmp : "(null)");
-    free(tmp);
+    cJSON_free(tmp);
 }
     return FALSE;
 }
@@ -712,7 +712,7 @@ static void edc_channel_feishu_handle_wss_event_recv(edc_actor_t *actor, struct 
 format_error_exit:
     tmp = cJSON_Print(payload);
     log_error("feishu channel event payload format error: %s", tmp);
-    free(tmp);
+    cJSON_free(tmp);
 
 exit:
     if (message_content)
@@ -748,7 +748,7 @@ static void edc_channel_feishu_handle_send_message_recv(edc_actor_t *actor, stru
 format_error_exit:
     tmp = cJSON_Print(body);
     log_error("feishu channel: send message resp format error: %s", tmp);
-    free(tmp);
+    cJSON_free(tmp);
     return;
 }
 
@@ -790,7 +790,7 @@ struct edc_channel_feishu_send_message_req *edc_channel_feishu_send_message_req_
 static void edc_channel_feishu_send_message_req_free(struct edc_channel_feishu_send_message_req *req)
 {
     if (req->body)
-        free((char *)req->body);
+        cJSON_free((char *)req->body);
     free(req);
 }
 
@@ -873,7 +873,7 @@ static void edc_channel_feishu_handle_send(edc_actor_t *actor, edc_actor_msg_t *
     edc_channel_feishu_http_connect(actor, FEISHU_SEND_MESSAGE_URL, edc_channel_feishu_send_msg_conn_fn,
                                    edc_channel_feishu_send_message_req_new(actor, body));
 
-    free(content_text);
+    cJSON_free(content_text);
     cJSON_Delete(content);
     cJSON_Delete(send_req);
 }

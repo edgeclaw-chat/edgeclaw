@@ -124,7 +124,7 @@ static bool edc_tool_crontab_save_jobs_db(const char *workspace, cJSON *db, EdcE
     fprintf(fout, "%s", tmp);
     fflush(fout);
     fclose(fout);
-    free(tmp);
+    cJSON_free(tmp);
 
     return TRUE;
 }
@@ -187,7 +187,7 @@ static void edc_tool_crontab_exec_remove_async(struct edc_toolbox_call_ctx *ctx,
         char *tmp = cJSON_PrintUnformatted(args);
         EdcError *error = edc_error_new(EDC_ERR_INVAL,
                                     "crontab tool: remove job failed. job_id is not provided in args: %s", tmp);
-        free(tmp);
+        cJSON_free(tmp);
         callback(ctx, NULL, error);
         return;
     }
@@ -408,7 +408,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
         char *tmp = cJSON_PrintUnformatted(args);
         EdcError *error = edc_error_new(EDC_ERR_INVAL,
                                     "crontab tool: message is required for action add, args = %s", tmp);
-        free(tmp);
+        cJSON_free(tmp);
         callback(ctx, NULL, error);
         return;
     }
@@ -420,7 +420,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
             edc_error_new(EDC_ERR_INVAL,
                         "'at' / 'every_seconds' / 'cron_expr' should be provided for schedule. args = %s", tmp);
         callback(ctx, NULL, error);
-        free(tmp);
+        cJSON_free(tmp);
         return;
     }
 
@@ -432,7 +432,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
         {
             char *tmp = cJSON_PrintUnformatted(tz);
             EdcError *error = edc_error_new(EDC_ERR_INVAL, "timezone is invalid: %s", tmp);
-            free(tmp);
+            cJSON_free(tmp);
             callback(ctx, NULL, error);
             return;
         }
@@ -490,7 +490,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
             EdcError *error =
                 edc_error_new(EDC_ERR_INVAL, "'at' is not iso8601 format: %s", tmp);
             callback(ctx, NULL, error);
-            free(tmp);
+            cJSON_free(tmp);
             g_time_zone_unref(g_tz);
             return;
         }
@@ -552,7 +552,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
         sds result = sdsempty();
         char *s = cJSON_PrintUnformatted(job);
         result = sdscatprintf(result, "Add job %s done. (exit code: 0)", s);
-        free(s);
+        cJSON_free(s);
         callback(ctx, result, NULL);
     }
 

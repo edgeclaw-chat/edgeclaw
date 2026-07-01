@@ -175,7 +175,7 @@ void edc_channel_cli_init(edc_actor_t *channel_actor)
     edc_channel_actor_state_t *state = channel_actor->state;
     memset(&state->cli, 0, sizeof(state->cli));
     state->cli.history_path = sdsempty();
-    char *edc_home = edc_config_resolve_bc_home();
+    sds edc_home = edc_config_resolve_bc_home();
     state->cli.history_path = sdscatprintf(state->cli.history_path, "%s/.cli_history", edc_home);
     sdsfree(edc_home);
     edc_channel_actor_add(channel_actor, edc_channel_cli, edc_channel_cli_handler);

@@ -1141,14 +1141,14 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     {
         log_error("save config to %s failed: %s", conf_file, error ? error->message : "Unknown");
         cJSON_Delete(config);
-        free(config_str);
+        cJSON_free(config_str);
         if (error)
             g_error_free(error);
         goto exit_free_env;
     }
 
     cJSON_Delete(config);
-    free(config_str);
+    cJSON_free(config_str);
 
     edc_init_env_result_free(&env_result);
     return TRUE;

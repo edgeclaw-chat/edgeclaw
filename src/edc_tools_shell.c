@@ -264,7 +264,7 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
         char *msg = cJSON_PrintUnformatted(args);
         log_error("bc tool shell error, cmd error %s", msg);
         error = edc_error_new(EDC_ERR_INVAL, "ERROR: edc_tools_shell exec command failed: %s", msg);
-        free(msg);
+        cJSON_free(msg);
         callback(tb_ctx, NULL, error);
         return;
     }

@@ -108,7 +108,7 @@ bool edc_history_save(const char *workspace, cJSON *msg_lst, struct edc_timestam
         }
 
         fprintf(fout, "%s\n", line);
-        free(line);
+        cJSON_free(line);
     }
 
     fflush(fout);

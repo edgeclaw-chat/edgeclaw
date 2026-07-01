@@ -185,7 +185,7 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
 
     send_all(sock, hdr, (size_t)hdr_len);
     send_all(sock, req_body, strlen(req_body));
-    free(req_body);
+    cJSON_free(req_body);
 
     tv.tv_sec = ctx->timeout_sec;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -273,7 +273,7 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
 
     netconn_write_partly(c, hdr, (size_t)hdr_len, NETCONN_COPY, NULL);
     netconn_write_partly(c, req_body, strlen(req_body), NETCONN_COPY, NULL);
-    free(req_body);
+    cJSON_free(req_body);
 
     netconn_set_recvtimeout(c, ctx->timeout_sec * 1000);
 

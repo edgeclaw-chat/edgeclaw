@@ -241,7 +241,7 @@ static void edc_agent_scheduler_handler(struct edc_actor *actor, struct edc_acto
 
 struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
 {
-    char *edc_home = edc_config_resolve_bc_home();
+    sds edc_home = edc_config_resolve_bc_home();
 
     if (!edc_init_env(edc_home, setup))
     {

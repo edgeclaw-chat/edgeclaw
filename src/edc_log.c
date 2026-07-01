@@ -42,12 +42,12 @@ static void edc_log_rotate(void)
     strncpy(g_current_date, new_date, sizeof(g_current_date) - 1);
     g_current_date[sizeof(g_current_date) - 1] = '\0';
 
-    char *edc_home = edc_config_resolve_bc_home();
+    sds edc_home = edc_config_resolve_bc_home();
     char *log_dir = g_build_filename(edc_home, "log", NULL);
     sdsfree(edc_home);
     g_mkdir_with_parents(log_dir, 0755);
 
-    char *filename = sdscatprintf(sdsempty(), "%s/edgeclaw-%s.log", log_dir, new_date);
+    sds filename = sdscatprintf(sdsempty(), "%s/edgeclaw-%s.log", log_dir, new_date);
 
     g_mutex_lock(&g_log_mutex);
     FILE *new_file = fopen(filename, "a");

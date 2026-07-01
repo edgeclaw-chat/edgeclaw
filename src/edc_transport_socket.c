@@ -314,7 +314,7 @@ static int transport_socket_send(struct edc_device_transport *base, const struct
     send_all(t->conn_fd, resp_str, body_len);
 
     cJSON_Delete(resp_json);
-    free(resp_str);
+    cJSON_free(resp_str);
 
     close(t->conn_fd);
     t->conn_fd = -1;
