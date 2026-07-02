@@ -1,4 +1,4 @@
-#include "edc_sandbox.h"
+﻿#include "edc_sandbox.h"
 #include "edc_bpf_sandbox.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -20,11 +20,11 @@ bool edc_sandbox_init(struct edc_config *conf)
     if (!conf->sandbox_root_real)
     {
         log_error("edc_sandbox: sandbox root could not be resolved");
-        return FALSE;
+        return false;
     }
 
     log_info("edc_sandbox: initialized, root = %s", conf->sandbox_root_real);
-    return TRUE;
+    return true;
 }
 
 const char *edc_sandbox_get_root(struct edc_config *conf)
@@ -35,7 +35,7 @@ const char *edc_sandbox_get_root(struct edc_config *conf)
 static bool path_is_under_any(const char *resolved_path, char **paths)
 {
     if (!paths || !resolved_path)
-        return FALSE;
+        return false;
 
     for (int i = 0; paths[i]; i++)
     {
@@ -47,26 +47,26 @@ static bool path_is_under_any(const char *resolved_path, char **paths)
         if (strncmp(resolved_path, entry_real, strlen(entry_real)) == 0 && (resolved_path[len] == '\0' || resolved_path[len] == '/'))
         {
             free(entry_real);
-            return TRUE;
+            return true;
         }
         free(entry_real);
     }
 
-    return FALSE;
+    return false;
 }
 
 static bool path_allowed(struct edc_config *conf, const char *resolved_path, bool writable)
 {
     if (!conf->sandbox_root_real)
-        return TRUE;
+        return true;
 
     if (path_is_under_any(resolved_path, conf->sandbox_rw_paths))
-        return TRUE;
+        return true;
 
     if (!writable && path_is_under_any(resolved_path, conf->sandbox_ro_paths))
-        return TRUE;
+        return true;
 
-    return FALSE;
+    return false;
 }
 
 sds edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writable, EdcError **error)
@@ -132,7 +132,7 @@ bool edc_sandbox_apply(struct edc_config *conf)
     if (!conf->enable_sandbox || !conf->sandbox_root_real)
     {
         log_info("edc_sandbox: sandbox not enabled, not applied");
-        return TRUE;
+        return true;
     }
 
     /*
@@ -146,18 +146,18 @@ bool edc_sandbox_apply(struct edc_config *conf)
      * are locked down.
      */
 
-    bool fs_ok = FALSE;
+    bool fs_ok = false;
 
     if (edc_landlock_sandbox_apply((const char **)conf->sandbox_ro_paths, (const char **)conf->sandbox_rw_paths))
     {
-        fs_ok = TRUE;
+        fs_ok = true;
     }
     else
     {
         log_info("edc_sandbox: Landlock not available, trying namespace sandbox...");
         if (edc_ns_sandbox_apply((const char **)conf->sandbox_ro_paths, (const char **)conf->sandbox_rw_paths))
         {
-            fs_ok = TRUE;
+            fs_ok = true;
         }
     }
 
@@ -170,11 +170,11 @@ bool edc_sandbox_apply(struct edc_config *conf)
     if (!fs_ok && !bpfs_ok)
     {
         log_warn("edc_sandbox: no kernel sandbox available; relying on path validation only");
-        return FALSE;
+        return false;
     }
 
-    return TRUE;
+    return true;
 #else
-    return TRUE;
+    return true;
 #endif
 }

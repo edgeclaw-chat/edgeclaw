@@ -1,4 +1,4 @@
-#include "sds.h"
+﻿#include "sds.h"
 #include "edc_error.h"
 #include "edc_memory_actor.h"
 #include "edc_actor.h"
@@ -121,21 +121,21 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
     size_t compress_index = 0;
     if (!edc_history_get_info(state->workspace, &compress_index, NULL))
     {
-        return FALSE;
+        return false;
     }
 
     cJSON *history = edc_history_load(state->workspace, compress_index);
     if (!history)
     {
         log_error("load history failed");
-        return FALSE;
+        return false;
     }
 
-    bool ret = TRUE;
+    bool ret = true;
     const size_t history_size = cJSON_GetArraySize(history);
     if (!force && history_size < state->history_window)
     {
-        ret = FALSE;
+        ret = false;
         goto exit_free_history;
     }
 
@@ -183,7 +183,7 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
             log_error("get memory file content failed: %s", gerror->message);
             edc_error_free(gerror);
         }
-        ret = FALSE;
+        ret = false;
         sdsfree(memory_file);
         goto exit_free_user_message;
     }
@@ -286,11 +286,11 @@ static bool edc_memory_save_memory_file(const char *workspace, const char *memor
         log_error("save memory file failed: %s", gerror->message);
         sdsfree(memory_file);
         edc_error_free(gerror);
-        return FALSE;
+        return false;
     }
 
     sdsfree(memory_file);
-    return TRUE;
+    return true;
 }
 
 static bool edc_memory_save_history_file(const char *workspace, const char *history)
@@ -302,13 +302,13 @@ static bool edc_memory_save_history_file(const char *workspace, const char *hist
     if (fout == NULL)
     {
         log_error("open history file failed");
-        return FALSE;
+        return false;
     }
 
     fprintf(fout, "%s\n", history);
     fflush(fout);
     fclose(fout);
-    return TRUE;
+    return true;
 }
 
 static bool edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_msg_t *msg)
@@ -317,18 +317,18 @@ static bool edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_msg_t 
     struct edc_llm_actor_resp *resp = msg->data;
     sds update_time = NULL;
 
-    bool ret = TRUE;
+    bool ret = true;
     if (resp->error)
     {
         log_error("memory compress failed: %s", resp->error);
-        ret = FALSE;
+        ret = false;
         goto exit_;
     }
 
     if (resp->reason != BC_LLM_FINISH_REASON_TOOL_CALL)
     {
         log_error("memory compress failed: reason is not tool call");
-        ret = FALSE;
+        ret = false;
         goto exit_;
     }
 
@@ -345,7 +345,7 @@ static bool edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_msg_t 
         struct edc_llm_chat_tool_call *tool_call = (struct edc_llm_chat_tool_call*)utarray_eltptr(resp->tool_calls, i);
         if (strcmp(tool_call->function.name, "save_memory") != 0)
         {
-            ret = FALSE;
+            ret = false;
             goto exit_;
         }
 
@@ -355,14 +355,14 @@ static bool edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_msg_t 
         if (!history_entry || !memory_update)
         {
             log_error("memory compress failed: missing history_entry or memory_update");
-            ret = FALSE;
+            ret = false;
             goto exit_;
         }
 
         if (!cJSON_IsString(history_entry) || !cJSON_IsString(memory_update))
         {
             log_error("memory compress failed: history_entry or memory_update is not string");
-            ret = FALSE;
+            ret = false;
             goto exit_;
         }
 
@@ -371,19 +371,19 @@ static bool edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_msg_t 
 
         if (!memory || !history)
         {
-            ret = FALSE;
+            ret = false;
             goto exit_;
         }
 
         if (!edc_memory_save_memory_file(state->workspace, memory))
         {
-            ret = FALSE;
+            ret = false;
             goto exit_;
         }
 
         if (!edc_memory_save_history_file(state->workspace, history))
         {
-            ret = FALSE;
+            ret = false;
             goto exit_;
         }
     }
@@ -391,7 +391,7 @@ static bool edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_msg_t 
     update_time = edc_get_timestamp();
     if (!edc_history_set_info(state->workspace, state->compress_index, update_time))
     {
-        ret = FALSE;
+        ret = false;
         goto exit_;
     }
 
@@ -412,11 +412,11 @@ static void edc_memory_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
     case BC_ACTOR_MSG_MEMORY_COMPRESS:
         if (!state->compressing)
         {
-            state->compressing = TRUE;
+            state->compressing = true;
             state->compress_msg = msg;
             if (!edc_memory_do_compress(actor, msg, msg->data != NULL))
             {
-                state->compressing = FALSE;
+                state->compressing = false;
                 state->compress_msg = NULL;
                 state->compress_index = 0;
                 edc_actor_msg_free(msg);
@@ -437,7 +437,7 @@ static void edc_memory_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
             }
         }
 
-        state->compressing = FALSE;
+        state->compressing = false;
         edc_actor_msg_free(msg);
         edc_actor_msg_free(state->compress_msg);
         cJSON_Delete(state->compress_msg_lst);
@@ -456,7 +456,7 @@ edc_actor_t *edc_memory_actor_new(const char *workspace, const size_t history_wi
     struct edc_memory_actor_state *state = g_new0(struct edc_memory_actor_state, 1);
     state->workspace = workspace;
     state->llm_actor = llm_actor;
-    state->compressing = FALSE;
+    state->compressing = false;
     state->compress_msg_lst = NULL;
     state->compress_tools = edc_memory_save_tool();
     state->compress_index = 0;

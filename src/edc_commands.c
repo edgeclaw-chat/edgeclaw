@@ -1,4 +1,4 @@
-#include "sds.h"
+﻿#include "sds.h"
 #include "edc_commands.h"
 #include "edc_actor.h"
 #include "edc_agent.h"
@@ -24,7 +24,7 @@ static bool edc_commands_is_target(const char *content, const char *target)
 static bool edc_commands_handle_new(struct edc_agent *agent, edc_actor_t *actor, struct edc_channel *channel)
 {
 
-    edc_session_reload(agent->session, FALSE);
+    edc_session_reload(agent->session, false);
     edc_agent_remove_all_turns(agent);
 
     if (!edc_memory_actor_is_compressing(agent->memory_actor)) // msg + system prompt
@@ -40,12 +40,12 @@ static bool edc_commands_handle_new(struct edc_agent *agent, edc_actor_t *actor,
                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->channel->type, actor, NULL, reply,
                                             (edc_actor_data_free_fn)edc_channel_message_free));
     log_info("receive /new command. save session and remove all turns");
-    return TRUE;
+    return true;
 }
 
 static bool edc_commands_handle_stop(struct edc_agent *agent, edc_actor_t *actor, struct edc_channel *channel)
 {
-    edc_session_reload(agent->session, TRUE);
+    edc_session_reload(agent->session, true);
     edc_agent_remove_all_turns(agent);
 
     struct edc_channel_message *reply =
@@ -54,7 +54,7 @@ static bool edc_commands_handle_stop(struct edc_agent *agent, edc_actor_t *actor
                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->channel->type, actor, NULL, reply,
                                             (edc_actor_data_free_fn)edc_channel_message_free));
 
-    return TRUE;
+    return true;
 }
 
 static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor, struct edc_channel *channel)
@@ -72,7 +72,7 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->channel->type, actor, NULL, reply,
                                             (edc_actor_data_free_fn)edc_channel_message_free));
 
-    return TRUE;
+    return true;
 }
 
 static bool edc_commands_handle_exit(struct edc_agent *agent, edc_actor_t *actor, struct edc_channel *channel)
@@ -85,14 +85,14 @@ static bool edc_commands_handle_exit(struct edc_agent *agent, edc_actor_t *actor
 
     log_info("received /exit command");
     _run_loop = 0;
-    return TRUE;
+    return true;
 }
 
 bool edc_commands_handler(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel_message *message)
 {
     if (!message || !message->channel || !message->content)
     {
-        return FALSE;
+        return false;
     }
 
     if (edc_commands_is_target(message->content, "/new"))
@@ -113,6 +113,6 @@ bool edc_commands_handler(struct edc_agent *agent, struct edc_actor *actor, stru
     }
     else
     {
-        return FALSE;
+        return false;
     }
 }

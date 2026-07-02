@@ -1,4 +1,4 @@
-#include "edc_agent.h"
+﻿#include "edc_agent.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
 #include "edc_init_env.h"
@@ -34,9 +34,9 @@ static BOOL WINAPI win32_ctrl_handler(DWORD ctrl_type)
         ctrl_type == CTRL_SHUTDOWN_EVENT)
     {
         _run_loop = 0;
-        return TRUE;
+        return true;
     }
-    return FALSE;
+    return false;
 }
 #else
 static void signal_handler(int sig)
@@ -68,7 +68,7 @@ static void print_version(void)
 int main(int argc, char *argv[])
 {
 #ifdef _WIN32
-    SetConsoleCtrlHandler(win32_ctrl_handler, TRUE);
+    SetConsoleCtrlHandler(win32_ctrl_handler, true);
 #else
     struct sigaction sa = {.sa_handler = signal_handler, .sa_flags = 0};
     sigemptyset(&sa.sa_mask);
@@ -76,8 +76,8 @@ int main(int argc, char *argv[])
     sigaction(SIGTERM, &sa, NULL);
 #endif
 
-    bool setup = FALSE;
-    bool sandbox_enabled = FALSE;
+    bool setup = false;
+    bool sandbox_enabled = false;
 
     static struct option long_options[] = {{"setup", no_argument, 0, 's'},
                                            {"sandbox", no_argument, 0, 'S'},
@@ -92,10 +92,10 @@ int main(int argc, char *argv[])
         switch (opt)
         {
         case 's':
-            setup = TRUE;
+            setup = true;
             break;
         case 'S':
-            sandbox_enabled = TRUE;
+            sandbox_enabled = true;
             break;
         case 'h':
             print_usage(argv[0]);
@@ -115,7 +115,7 @@ int main(int argc, char *argv[])
     {
         if (strcmp(argv[i], "setup") == 0)
         {
-            setup = TRUE;
+            setup = true;
             break;
         }
     }
@@ -138,7 +138,7 @@ int main(int argc, char *argv[])
     if (setup)
     {
         sds edc_home = edc_config_resolve_bc_home();
-        if (!edc_init_env(edc_home, TRUE))
+        if (!edc_init_env(edc_home, true))
         {
             log_error("Failed to initialize environment.");
             sdsfree(edc_home);
@@ -149,7 +149,7 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    struct edc_agent *agent = edc_agent_new(FALSE, sandbox_enabled);
+    struct edc_agent *agent = edc_agent_new(false, sandbox_enabled);
     if (!agent)
     {
         log_error("create agent failed.");

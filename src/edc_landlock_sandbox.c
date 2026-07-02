@@ -1,4 +1,4 @@
-#ifdef __linux__
+﻿#ifdef __linux__
 
 #define _GNU_SOURCE
 
@@ -95,7 +95,7 @@ bool edc_landlock_sandbox_apply(const char **ro_paths, const char **rw_paths)
     if (!rw_paths || !rw_paths[0])
     {
         log_error("edc_sandbox: Landlock requires at least one rw_path");
-        return FALSE;
+        return false;
     }
 
     prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
@@ -134,7 +134,7 @@ bool edc_landlock_sandbox_apply(const char **ro_paths, const char **rw_paths)
     if (ruleset_fd < 0)
     {
         log_debug("edc_sandbox: Landlock not available: %s", strerror(errno));
-        return FALSE;
+        return false;
     }
 
     for (int i = 0; rw_paths[i]; i++)
@@ -160,12 +160,12 @@ bool edc_landlock_sandbox_apply(const char **ro_paths, const char **rw_paths)
     {
         log_error("edc_sandbox: Landlock restrict failed: %s", strerror(errno));
         close(ruleset_fd);
-        return FALSE;
+        return false;
     }
 
     close(ruleset_fd);
     log_info("edc_sandbox: Landlock enforced");
-    return TRUE;
+    return true;
 }
 
 #else /* !__linux__ */
@@ -176,7 +176,7 @@ bool edc_landlock_sandbox_apply(const char **ro_paths, const char **rw_paths)
 {
     (void)ro_paths;
     (void)rw_paths;
-    return FALSE;
+    return false;
 }
 
 #endif

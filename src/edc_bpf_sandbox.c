@@ -1,5 +1,6 @@
-#ifdef __linux__
+﻿#ifdef __linux__
 #define _GNU_SOURCE
+#include <sys/syscall.h>
 #endif
 
 #include "edc_bpf_sandbox.h"
@@ -9,7 +10,6 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/syscall.h>
 
 #ifdef __linux__
 #include <linux/audit.h>
@@ -1306,7 +1306,7 @@ bool edc_bpf_sandbox_apply(const char *sandbox_root)
     struct sock_filter *filter = build_filter(&filter_len);
     if (!filter)
     {
-        return FALSE;
+        return false;
     }
 
     struct sock_fprog prog = {
@@ -1318,12 +1318,12 @@ bool edc_bpf_sandbox_apply(const char *sandbox_root)
     {
         log_error("edc_bpf_sandbox: seccomp filter install failed: %s", strerror(errno));
         free(filter);
-        return FALSE;
+        return false;
     }
 
     free(filter);
     log_info("edc_bpf_sandbox: seccomp-bpf sandbox enforced, root='%s'", sandbox_root);
-    return TRUE;
+    return true;
 }
 
 #else /* !defined(ARCH_NR) */
@@ -1332,7 +1332,7 @@ bool edc_bpf_sandbox_apply(const char *sandbox_root)
 {
     (void)sandbox_root;
     log_debug("edc_bpf_sandbox: unsupported architecture, BPF sandbox disabled");
-    return FALSE;
+    return false;
 }
 
 #endif /* ARCH_NR */
@@ -1342,7 +1342,7 @@ bool edc_bpf_sandbox_apply(const char *sandbox_root)
 bool edc_bpf_sandbox_apply(const char *sandbox_root)
 {
     (void)sandbox_root;
-    return FALSE;
+    return false;
 }
 
 #endif /* __linux__ */

@@ -1,4 +1,4 @@
-#include "edc_init_env.h"
+﻿#include "edc_init_env.h"
 #include "edc_secret.h"
 #include "cJSON.h"
 #include "log.h"
@@ -77,6 +77,16 @@ static sds prompt_password(const char *label, const char *default_val)
     }
 
     sds result = NULL;
+#ifdef _WIN32
+    char buf[4096];
+    if (fgets(buf, sizeof(buf), stdin) != NULL)
+    {
+        size_t len = strlen(buf);
+        if (len > 0 && buf[len - 1] == '\n')
+            buf[len - 1] = '\0';
+        result = sdsnew(buf);
+    }
+#else
     char *raw = NULL;
     size_t raw_cap = 0;
     ssize_t raw_len = getline(&raw, &raw_cap, stdin);
@@ -87,6 +97,7 @@ static sds prompt_password(const char *label, const char *default_val)
         result = sdsnew(raw);
     }
     free(raw);
+#endif
 
     edc_terminal_echo_restore(STDIN_FILENO, &saved);
     fprintf(stdout, "\n");
@@ -707,17 +718,17 @@ static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
     if (hFind == INVALID_HANDLE_VALUE)
     {
         log_error("Failed to open source directory %s", src_dir);
-        return FALSE;
+        return false;
     }
 
     if (!edc_dir_create_with_parents(dest_dir, 0755, NULL))
     {
         log_error("Failed to create destination directory %s", dest_dir);
         FindClose(hFind);
-        return FALSE;
+        return false;
     }
 
-    bool success = TRUE;
+    bool success = true;
     do
     {
         if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0)
@@ -730,7 +741,7 @@ static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
         {
             if (!copy_directory_recursive(src_path, dest_path))
             {
-                success = FALSE;
+                success = false;
                 sdsfree(src_path);
                 sdsfree(dest_path);
                 break;
@@ -746,7 +757,7 @@ static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
                 log_error("Failed to read %s: %s", src_path, error ? error->message : "Unknown");
                 if (error)
                     edc_error_free(error);
-                success = FALSE;
+                success = false;
                 sdsfree(src_path);
                 sdsfree(dest_path);
                 break;
@@ -757,7 +768,7 @@ static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
                 log_error("Failed to write %s: %s", dest_path, error ? error->message : "Unknown");
                 if (error)
                     edc_error_free(error);
-                success = FALSE;
+                success = false;
                 sdsfree(contents);
                 sdsfree(src_path);
                 sdsfree(dest_path);
@@ -777,18 +788,18 @@ static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
     if (!dir)
     {
         log_error("Failed to open source directory %s", src_dir);
-        return FALSE;
+        return false;
     }
 
     if (!edc_dir_create_with_parents(dest_dir, 0755, NULL))
     {
         log_error("Failed to create destination directory %s", dest_dir);
         closedir(dir);
-        return FALSE;
+        return false;
     }
 
     struct dirent *entry;
-    bool success = TRUE;
+    bool success = true;
 
     while ((entry = readdir(dir)) != NULL)
     {
@@ -802,7 +813,7 @@ static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
         if (lstat(src_path, &st) != 0)
         {
             log_error("Failed to stat %s", src_path);
-            success = FALSE;
+            success = false;
             sdsfree(src_path);
             sdsfree(dest_path);
             break;
@@ -812,7 +823,7 @@ static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
         {
             if (!copy_directory_recursive(src_path, dest_path))
             {
-                success = FALSE;
+                success = false;
                 sdsfree(src_path);
                 sdsfree(dest_path);
                 break;
@@ -828,7 +839,7 @@ static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
                 log_error("Failed to read %s: %s", src_path, error ? error->message : "Unknown");
                 if (error)
                     edc_error_free(error);
-                success = FALSE;
+                success = false;
                 sdsfree(src_path);
                 sdsfree(dest_path);
                 break;
@@ -839,7 +850,7 @@ static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
                 log_error("Failed to write %s: %s", dest_path, error ? error->message : "Unknown");
                 if (error)
                     edc_error_free(error);
-                success = FALSE;
+                success = false;
                 sdsfree(contents);
                 sdsfree(src_path);
                 sdsfree(dest_path);
@@ -861,7 +872,7 @@ static bool edc_init_env_workspace(const char *dest_workspace)
 {
     if (edc_file_is_dir(dest_workspace))
     {
-        return TRUE;
+        return true;
     }
 
     sds current_dir = edc_cwd();
@@ -872,7 +883,7 @@ static bool edc_init_env_workspace(const char *dest_workspace)
     {
         log_error("Source workspace directory %s does not exist", src_workspace);
         sdsfree(src_workspace);
-        return FALSE;
+        return false;
     }
 
     log_info("Copying workspace from %s to %s", src_workspace, dest_workspace);
@@ -883,11 +894,11 @@ static bool edc_init_env_workspace(const char *dest_workspace)
     if (!success)
     {
         log_error("Failed to copy workspace directory");
-        return FALSE;
+        return false;
     }
 
     log_info("Workspace directory copied successfully");
-    return TRUE;
+    return true;
 }
 
 static sds *split_paths(const char *input)
@@ -984,7 +995,7 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     {
         log_error("Failed to initialize secret module");
         sdsfree(edc_home_dir);
-        return FALSE;
+        return false;
     }
     sdsfree(edc_home_dir);
 
@@ -998,7 +1009,7 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
         log_error("Configuration cancelled or failed.");
         edc_init_env_result_free(existing);
         free(existing);
-        return FALSE;
+        return false;
     }
     edc_init_env_result_free(existing);
     free(existing);
@@ -1208,11 +1219,11 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     cJSON_free(config_str);
 
     edc_init_env_result_free(&env_result);
-    return TRUE;
+    return true;
 
 exit_free_env:
     edc_init_env_result_free(&env_result);
-    return FALSE;
+    return false;
 }
 
 bool edc_init_env(const char *edc_home, bool setup)
@@ -1220,13 +1231,13 @@ bool edc_init_env(const char *edc_home, bool setup)
     sds workspace = edc_path_join(edc_home, "workspace", NULL);
     sds conf_file = edc_path_join(edc_home, "config.json", NULL);
 
-    bool ret = TRUE;
+    bool ret = true;
     if (!edc_file_is_dir(edc_home))
     {
         if (!edc_dir_create_with_parents(edc_home, 0755, NULL))
         {
             log_error("Failed to create directory %s", edc_home);
-            ret = FALSE;
+            ret = false;
             goto exit_;
         }
     }
@@ -1236,7 +1247,7 @@ bool edc_init_env(const char *edc_home, bool setup)
         if (!edc_init_env_conf_file(conf_file, edc_home))
         {
             log_error("Failed to initialize config file.");
-            ret = FALSE;
+            ret = false;
             goto exit_;
         }
     }
@@ -1244,7 +1255,7 @@ bool edc_init_env(const char *edc_home, bool setup)
     if (!edc_init_env_workspace(workspace))
     {
         log_error("Failed to initialize workspace.");
-        ret = FALSE;
+        ret = false;
         goto exit_;
     }
 

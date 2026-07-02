@@ -1,4 +1,4 @@
-#include "edc_channel_feishu.h"
+﻿#include "edc_channel_feishu.h"
 #include "edc_actor.h"
 #include "edc_compat.h"
 #include "edc_channel_actor.h"
@@ -306,7 +306,7 @@ static bool edc_channel_feishu_parse_wss_endpoint_resp(edc_channel_actor_state_t
     {
         cJSON *msg = cJSON_GetObjectItem(body, "msg");
         log_error("channel feishu: wss endpoint resp error: %d, %s", code_num, cJSON_GetStringValue(msg));
-        return FALSE;
+        return false;
     }
 
     data = cJSON_GetObjectItem(body, "data");
@@ -363,14 +363,14 @@ static bool edc_channel_feishu_parse_wss_endpoint_resp(edc_channel_actor_state_t
              state->feishu.wss_client_config.reconnect_count, state->feishu.wss_client_config.reconnect_interval,
              state->feishu.wss_client_config.reconnect_nonce);
 
-    return TRUE;
+    return true;
 
 format_err_exit: {
     char *tmp = data ? cJSON_PrintUnformatted(data) : NULL;
     log_error("channel feishu: wss endpoint recv error json format: %s", tmp ? tmp : "(null)");
     cJSON_free(tmp);
 }
-    return FALSE;
+    return false;
 }
 
 static size_t edc_channel_feishu_build_ping_frame(int32_t service_id, uint8_t *buf, size_t len)

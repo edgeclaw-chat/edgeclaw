@@ -1,4 +1,4 @@
-#include "sds.h"
+﻿#include "sds.h"
 #include "edc_agent.h"
 #include "edc_actor.h"
 #include "edc_compat.h"
@@ -223,7 +223,7 @@ static void edc_agent_scheduler_handler(struct edc_actor *actor, struct edc_acto
         handle_tool_resp(agent, actor, msg);
         break;
     case BC_ACTOR_MSG_MEMORY_DONE:
-        edc_session_reload(agent->session, TRUE);
+        edc_session_reload(agent->session, true);
         log_info("memory compress done. reload session, message count = %zu",
                  edc_session_get_message_count(agent->session));
     default:
@@ -252,7 +252,7 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
         return NULL;
     }
 
-    if (!edc_secret_init(FALSE, edc_home))
+    if (!edc_secret_init(false, edc_home))
     {
         log_error("Failed to initialize secret module");
         sdsfree(edc_home);

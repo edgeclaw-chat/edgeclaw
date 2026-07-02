@@ -1,4 +1,4 @@
-#include "edc_markdown_render.h"
+﻿#include "edc_markdown_render.h"
 #include "md4c.h"
 #include "log.h"
 #include "edc_compat.h"
@@ -103,7 +103,7 @@ static void edc_md_render_ctx_init(struct edc_md_render_ctx *ctx)
 static int edc_md_visual_strlen(const char *s)
 {
     int w = 0;
-    bool in_esc = FALSE;
+    bool in_esc = false;
     const unsigned char *p = (const unsigned char *)s;
     ssize_t len = (ssize_t)strlen(s);
 
@@ -112,10 +112,10 @@ static int edc_md_visual_strlen(const char *s)
         ssize_t clen = utf8proc_iterate(p, len - (p - (const unsigned char *)s), &uc);
         if (clen <= 0) break;
         if (uc == '\033') {
-            in_esc = TRUE;
+            in_esc = true;
         } else if (in_esc) {
             if (uc == 'm')
-                in_esc = FALSE;
+                in_esc = false;
         } else {
             int wv = utf8proc_charwidth(uc);
             if (wv == 1) {
@@ -179,14 +179,14 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         break;
 
     case MD_BLOCK_QUOTE:
-        ctx->in_quote = TRUE;
+        ctx->in_quote = true;
         *o = sdscat(*o, ANSI_DIM "│ " ANSI_RESET);
         break;
 
     case MD_BLOCK_UL:
         if (ctx->list_depth < MAX_LIST_DEPTH) {
             ctx->ol_counter[ctx->list_depth] = 0;
-            ctx->is_ordered[ctx->list_depth] = FALSE;
+            ctx->is_ordered[ctx->list_depth] = false;
             ctx->is_tight_list[ctx->list_depth] =
                 ((MD_BLOCK_UL_DETAIL *)detail)->is_tight;
         }
@@ -200,7 +200,7 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         if (ctx->list_depth < MAX_LIST_DEPTH) {
             MD_BLOCK_OL_DETAIL *det = detail;
             ctx->ol_counter[ctx->list_depth] = det->start;
-            ctx->is_ordered[ctx->list_depth] = TRUE;
+            ctx->is_ordered[ctx->list_depth] = true;
             ctx->is_tight_list[ctx->list_depth] = det->is_tight;
         }
         ctx->list_depth++;
@@ -235,7 +235,7 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
     case MD_BLOCK_HR:
         if (ctx->has_content) *o = sdscatlen(*o, &(char){'\n'}, 1);
         *o = sdscat(*o, ANSI_DIM "────" ANSI_RESET "\n");
-        ctx->has_content = TRUE;
+        ctx->has_content = true;
         break;
 
     case MD_BLOCK_H: {
@@ -272,7 +272,7 @@ static int edc_md_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         break;
 
     case MD_BLOCK_TABLE:
-        ctx->in_table = TRUE;
+        ctx->in_table = true;
         ctx->table_rows = edc_ptr_array_new();
         ctx->col_aligns = edc_ptr_array_new();
         if (ctx->has_content) *o = sdscatlen(*o, &(char){'\n'}, 1);
@@ -309,9 +309,9 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         break;
 
     case MD_BLOCK_QUOTE:
-        ctx->in_quote = FALSE;
+        ctx->in_quote = false;
         *o = sdscatlen(*o, &(char){'\n'}, 1);
-        ctx->has_content = TRUE;
+        ctx->has_content = true;
         break;
 
     case MD_BLOCK_UL:
@@ -320,7 +320,7 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         if (ctx->list_depth == 0) {
             *o = sdscatlen(*o, &(char){'\n'}, 1);
         }
-        ctx->has_content = TRUE;
+        ctx->has_content = true;
         break;
 
     case MD_BLOCK_LI:
@@ -330,7 +330,7 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         } else {
             if (ctx->list_depth > 0) *o = sdscatlen(*o, &(char){'\n'}, 1);
         }
-        ctx->has_content = TRUE;
+        ctx->has_content = true;
         break;
 
     case MD_BLOCK_HR:
@@ -343,28 +343,28 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
         if (level > 6) level = 6;
         *o = sdscat(*o, ANSI_RESET "\n");
         if (level <= 2) *o = sdscatlen(*o, &(char){'\n'}, 1);
-        ctx->has_content = TRUE;
+        ctx->has_content = true;
         break;
     }
 
     case MD_BLOCK_CODE:
         *o = sdscat(*o, ANSI_RESET "\n\n");
-        ctx->has_content = TRUE;
+        ctx->has_content = true;
         break;
 
     case MD_BLOCK_HTML:
         *o = sdscatlen(*o, &(char){'\n'}, 1);
-        ctx->has_content = TRUE;
+        ctx->has_content = true;
         break;
 
     case MD_BLOCK_P:
         if (!ctx->in_quote) *o = sdscat(*o, ANSI_RESET);
         *o = sdscatlen(*o, &(char){'\n'}, 1);
-        ctx->has_content = TRUE;
+        ctx->has_content = true;
         break;
 
     case MD_BLOCK_TABLE: {
-        ctx->in_table = FALSE;
+        ctx->in_table = false;
 
         if (ctx->table_rows && ctx->table_rows->len > 0) {
             struct edc_ptr_array *rows = ctx->table_rows;
@@ -438,7 +438,7 @@ static int edc_md_leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
             *o = sdscat(*o, "┘" ANSI_RESET "\n");
 
             free(widths);
-            ctx->has_content = TRUE;
+            ctx->has_content = true;
         }
 
         if (ctx->table_rows) {
@@ -516,7 +516,7 @@ static int edc_md_enter_span(MD_SPANTYPE type, void *detail, void *userdata)
         break;
 
     case MD_SPAN_A:
-        ctx->in_span_a = TRUE;
+        ctx->in_span_a = true;
         *o = sdscat(*o, ANSI_BLUE ANSI_UNDERLINE);
         break;
 
@@ -560,7 +560,7 @@ static int edc_md_leave_span(MD_SPANTYPE type, void *detail, void *userdata)
         break;
 
     case MD_SPAN_A: {
-        ctx->in_span_a = FALSE;
+        ctx->in_span_a = false;
         *o = sdscat(*o, ANSI_RESET);
         MD_SPAN_A_DETAIL *det = detail;
         if (!det->is_autolink && det->href.text && det->href.size > 0) {
@@ -666,7 +666,7 @@ static int edc_md_text(MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size,
         break;
     }
 
-    ctx->has_content = TRUE;
+    ctx->has_content = true;
     return 0;
 }
 

@@ -1,4 +1,4 @@
-#include "sds.h"
+﻿#include "sds.h"
 #include "edc_channel_qq.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
@@ -248,7 +248,7 @@ static bool edc_channel_qq_handle_get_access_token_resp(edc_actor_t *actor, edc_
         char *s = cJSON_Print(resp);
         log_error("qq channel: get access_token resp format error: %s", s);
         cJSON_free(s);
-        return FALSE;
+        return false;
     }
 
     edc_channel_actor_state_t *state = actor->state;
@@ -262,7 +262,7 @@ static bool edc_channel_qq_handle_get_access_token_resp(edc_actor_t *actor, edc_
                    (uint64_t)(state->qq.expires_in + 1) * 1000, 0);
 
     log_info("qq channel: got access_token: %s, expires_in: %d", state->qq.access_token, (int)state->qq.expires_in);
-    return TRUE;
+    return true;
 }
 
 static void edc_channel_qq_get_wss_endpoint_make_http_req(struct mg_connection *c)
@@ -329,7 +329,7 @@ static bool edc_channel_qq_handle_get_wss_endpoint_resp(edc_actor_t *actor, edc_
         char *s = cJSON_Print(resp);
         log_error("qq channel: get wss endpoint resp format error: %s", s);
         cJSON_free(s);
-        return FALSE;
+        return false;
     }
 
     if (state->qq.wss_url)
@@ -342,7 +342,7 @@ static bool edc_channel_qq_handle_get_wss_endpoint_resp(edc_actor_t *actor, edc_
 
     state->qq.wss_shards = (int)cJSON_GetNumberValue(shards);
     log_info("qq channel: got wss endpoint url: %s, shards: %d", state->qq.wss_url, state->qq.wss_shards);
-    return TRUE;
+    return true;
 }
 
 static bool edc_channel_qq_handle_wss_hello_message(struct edc_channel_qq_network_req *req, cJSON *data, int shard)
@@ -354,13 +354,13 @@ static bool edc_channel_qq_handle_wss_hello_message(struct edc_channel_qq_networ
         char *s = cJSON_Print(data);
         log_error("qq channel: wss hello message format error: %s", s);
         cJSON_free(s);
-        return FALSE;
+        return false;
     }
 
     req->wss.heartbeat_interval = (int)cJSON_GetNumberValue(heartbeat_interval) / 1000;
     req->wss.last_heartbeat_time = mg_millis();
     req->wss.last_ack_time = mg_millis();
-    return TRUE;
+    return true;
 }
 
 #define BC_CHANNEL_QQ_INTENTS_ALL                                                                                      \

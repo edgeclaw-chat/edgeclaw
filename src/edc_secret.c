@@ -1,4 +1,4 @@
-#include "sds.h"
+﻿#include "sds.h"
 #include "edc_secret.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
@@ -27,8 +27,8 @@
 #define BC_KEY_VERIFY_FILE ".key_hash"
 
 static char g_master_key[BC_KEY_SIZE];
-static bool g_secret_ready = FALSE;
-static bool g_key_mlocked = FALSE;
+static bool g_secret_ready = false;
+static bool g_key_mlocked = false;
 
 static bool derive_key(const char *passphrase, size_t len)
 {
@@ -36,7 +36,7 @@ static bool derive_key(const char *passphrase, size_t len)
     if (!md)
     {
         log_error("SHA-256 not available");
-        return FALSE;
+        return false;
     }
 
     int ret = mbedtls_hkdf(md, NULL, 0, (const unsigned char *)passphrase, len, (const unsigned char *)"edgeclaw_master_key", 19,
@@ -44,9 +44,9 @@ static bool derive_key(const char *passphrase, size_t len)
     if (ret != 0)
     {
         log_error("HKDF key derivation failed: %d", ret);
-        return FALSE;
+        return false;
     }
-    return TRUE;
+    return true;
 }
 
 static bool read_passphrase_tty(const char *prompt, char *buf, size_t buf_size)
@@ -58,7 +58,7 @@ static bool read_passphrase_tty(const char *prompt, char *buf, size_t buf_size)
     if (edc_terminal_echo_off(STDIN_FILENO, &saved) != 0)
     {
         log_error("edc_terminal_echo_off failed");
-        return FALSE;
+        return false;
     }
 
     char *result = fgets(buf, (int)buf_size, stdin);
@@ -69,7 +69,7 @@ static bool read_passphrase_tty(const char *prompt, char *buf, size_t buf_size)
     if (!result)
     {
         log_error("Failed to read passphrase from stdin");
-        return FALSE;
+        return false;
     }
 
     size_t len = strlen(buf);
@@ -79,10 +79,10 @@ static bool read_passphrase_tty(const char *prompt, char *buf, size_t buf_size)
     if (len == 0)
     {
         log_error("Empty passphrase");
-        return FALSE;
+        return false;
     }
 
-    return TRUE;
+    return true;
 }
 
 static bool lock_master_key(void)
@@ -91,11 +91,11 @@ static bool lock_master_key(void)
     if (mlock(g_master_key, BC_KEY_SIZE) != 0)
     {
         log_warn("mlock master key failed: %s", strerror(errno));
-        return FALSE;
+        return false;
     }
-    g_key_mlocked = TRUE;
+    g_key_mlocked = true;
 #endif
-    return TRUE;
+    return true;
 }
 
 static bool store_verify_hash(const char *edc_home)
@@ -104,7 +104,7 @@ static bool store_verify_hash(const char *edc_home)
     if (!md)
     {
         log_error("SHA-256 not available for verification");
-        return FALSE;
+        return false;
     }
 
     unsigned char hash[32];
@@ -113,7 +113,7 @@ static bool store_verify_hash(const char *edc_home)
     if (ret != 0)
     {
         log_error("HMAC for verification failed: %d", ret);
-        return FALSE;
+        return false;
     }
 
     char hash_hex[65];
@@ -146,7 +146,7 @@ static bool verify_master_key(const char *edc_home)
         sdsfree(path);
         log_error("Cannot verify passphrase: verification file not found"
                   " — run setup first");
-        return FALSE;
+        return false;
     }
     sdsfree(path);
 
@@ -156,7 +156,7 @@ static bool verify_master_key(const char *edc_home)
     if (!md)
     {
         sdsfree(contents);
-        return FALSE;
+        return false;
     }
 
     unsigned char expected[32];
@@ -165,7 +165,7 @@ static bool verify_master_key(const char *edc_home)
     if (ret != 0)
     {
         sdsfree(contents);
-        return FALSE;
+        return false;
     }
 
     char expected_hex[96] = {0};
@@ -186,21 +186,21 @@ static bool verify_master_key(const char *edc_home)
 bool edc_secret_init(bool confirm_password, const char *edc_home)
 {
     if (g_secret_ready)
-        return TRUE;
+        return true;
 
     /* Priority 1: env var (scripts / Docker) */
     const char *env_val = getenv(BC_MASTER_KEY_ENV);
     if (env_val && strlen(env_val) > 0)
     {
         if (!derive_key(env_val, strlen(env_val)))
-            return FALSE;
+            return false;
 
         unsetenv(BC_MASTER_KEY_ENV);
         log_info("Master key loaded from %s", BC_MASTER_KEY_ENV);
 
         lock_master_key();
-        g_secret_ready = TRUE;
-        return TRUE;
+        g_secret_ready = true;
+        return true;
     }
 
     /* Priority 2: stdin (interactive) */
@@ -209,7 +209,7 @@ bool edc_secret_init(bool confirm_password, const char *edc_home)
         log_error("No terminal for passphrase input"
                   " (set %s for scripting)",
                   BC_MASTER_KEY_ENV);
-        return FALSE;
+        return false;
     }
 
     char buf[MAX_PASSPHRASE];
@@ -218,13 +218,13 @@ bool edc_secret_init(bool confirm_password, const char *edc_home)
     {
         /* First-time setup: prompt twice and confirm match */
         if (!read_passphrase_tty("Enter new passphrase: ", buf, sizeof(buf)))
-            return FALSE;
+            return false;
 
         char confirm[MAX_PASSPHRASE];
         if (!read_passphrase_tty("Confirm passphrase: ", confirm, sizeof(confirm)))
         {
             memset(buf, 0, sizeof(buf));
-            return FALSE;
+            return false;
         }
 
         if (strcmp(buf, confirm) != 0)
@@ -232,21 +232,21 @@ bool edc_secret_init(bool confirm_password, const char *edc_home)
             log_error("Passphrases do not match");
             memset(buf, 0, sizeof(buf));
             memset(confirm, 0, sizeof(confirm));
-            return FALSE;
+            return false;
         }
         memset(confirm, 0, sizeof(confirm));
     }
     else
     {
         if (!read_passphrase_tty("Enter passphrase: ", buf, sizeof(buf)))
-            return FALSE;
+            return false;
     }
 
     size_t len = strlen(buf);
     if (!derive_key(buf, len))
     {
         memset(buf, 0, sizeof(buf));
-        return FALSE;
+        return false;
     }
 
     memset(buf, 0, sizeof(buf));
@@ -259,7 +259,7 @@ bool edc_secret_init(bool confirm_password, const char *edc_home)
             {
                 log_error("Failed to store verification data");
                 memset(g_master_key, 0, BC_KEY_SIZE);
-                return FALSE;
+                return false;
             }
         }
         else
@@ -267,15 +267,15 @@ bool edc_secret_init(bool confirm_password, const char *edc_home)
             if (!verify_master_key(edc_home))
             {
                 memset(g_master_key, 0, BC_KEY_SIZE);
-                return FALSE;
+                return false;
             }
         }
     }
 
     log_info("Master key loaded from stdin");
     lock_master_key();
-    g_secret_ready = TRUE;
-    return TRUE;
+    g_secret_ready = true;
+    return true;
 }
 
 void edc_secret_cleanup(void)
@@ -284,11 +284,11 @@ void edc_secret_cleanup(void)
     if (g_key_mlocked)
     {
         munlock(g_master_key, BC_KEY_SIZE);
-        g_key_mlocked = FALSE;
+        g_key_mlocked = false;
     }
 #endif
     memset(g_master_key, 0, BC_KEY_SIZE);
-    g_secret_ready = FALSE;
+    g_secret_ready = false;
 }
 
 void edc_secret_lockdown(void)
@@ -300,11 +300,11 @@ void edc_secret_lockdown(void)
     if (g_key_mlocked)
     {
         munlock(g_master_key, BC_KEY_SIZE);
-        g_key_mlocked = FALSE;
+        g_key_mlocked = false;
     }
 #endif
     memset(g_master_key, 0, BC_KEY_SIZE);
-    g_secret_ready = FALSE;
+    g_secret_ready = false;
 
     log_info("Master key wiped — secret module locked down");
 }

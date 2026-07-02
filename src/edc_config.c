@@ -1,4 +1,4 @@
-#include "edc_config.h"
+﻿#include "edc_config.h"
 #include "edc_error.h"
 #include "edc_secret.h"
 #include "edc_file_utils.h"
@@ -27,7 +27,7 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
     if (!imap_host || !cJSON_IsString(imap_host))
     {
         log_error("channel.imap_host is not string type");
-        return FALSE;
+        return false;
     }
 
     config->channel.email.imap_host = sdsnew(cJSON_GetStringValue(imap_host));
@@ -36,7 +36,7 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
     if (!smtp_host || !cJSON_IsString(smtp_host))
     {
         log_error("channel.smtp_host is not string type");
-        return FALSE;
+        return false;
     }
     config->channel.email.smtp_host = sdsnew(cJSON_GetStringValue(smtp_host));
 
@@ -44,7 +44,7 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
     if (!user || !cJSON_IsString(user))
     {
         log_error("channel.user is not string type");
-        return FALSE;
+        return false;
     }
     config->channel.email.user = sdsnew(cJSON_GetStringValue(user));
 
@@ -52,7 +52,7 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
     if (!password || !cJSON_IsString(password))
     {
         log_error("channel.passwd is not string type");
-        return FALSE;
+        return false;
     }
     sds _d = edc_secret_decrypt(cJSON_GetStringValue(password));
     config->channel.email.passwd = _d;
@@ -61,11 +61,11 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
     if (!target || !cJSON_IsString(target))
     {
         log_error("channel.target is not string type");
-        return FALSE;
+        return false;
     }
     config->channel.email.target = sdsnew(cJSON_GetStringValue(target));
 
-    return TRUE;
+    return true;
 }
 
 static bool edc_config_parse_telegram_channel(struct edc_config *config, cJSON *channel)
@@ -77,19 +77,19 @@ static bool edc_config_parse_telegram_channel(struct edc_config *config, cJSON *
         char *s = cJSON_PrintUnformatted(channel);
         log_error("channel.bot_key is not string type: %s", s);
         cJSON_free(s);
-        return FALSE;
+        return false;
     }
 
     if (!user_id || !cJSON_IsNumber(user_id))
     {
         log_error("channel.user_id is not string type: %s", cJSON_PrintUnformatted(channel));
-        return FALSE;
+        return false;
     }
 
     sds _d = edc_secret_decrypt(cJSON_GetStringValue(bot_key));
     config->channel.telegram.bot_key = _d;
     config->channel.telegram.user_id = (int64_t)cJSON_GetNumberValue(user_id);
-    return TRUE;
+    return true;
 }
 
 static bool edc_config_parse_feishu_channel(struct edc_config *config, cJSON *channel)
@@ -98,7 +98,7 @@ static bool edc_config_parse_feishu_channel(struct edc_config *config, cJSON *ch
     if (!app_id || !cJSON_IsString(app_id))
     {
         log_error("channel.app_id is not string type");
-        return FALSE;
+        return false;
     }
     config->channel.feishu.app_id = sdsnew(cJSON_GetStringValue(app_id));
 
@@ -106,12 +106,12 @@ static bool edc_config_parse_feishu_channel(struct edc_config *config, cJSON *ch
     if (!app_secret || !cJSON_IsString(app_secret))
     {
         log_error("channel.app_secret is not string type");
-        return FALSE;
+        return false;
     }
     sds _d = edc_secret_decrypt(cJSON_GetStringValue(app_secret));
     config->channel.feishu.app_secret = _d;
 
-    return TRUE;
+    return true;
 }
 
 static bool edc_config_parse_qq_channel(struct edc_config *config, cJSON *channel)
@@ -120,7 +120,7 @@ static bool edc_config_parse_qq_channel(struct edc_config *config, cJSON *channe
     if (!app_id || !cJSON_IsString(app_id))
     {
         log_error("channel.app_id is not string type");
-        return FALSE;
+        return false;
     }
     config->channel.qq.app_id = sdsnew(cJSON_GetStringValue(app_id));
 
@@ -128,12 +128,12 @@ static bool edc_config_parse_qq_channel(struct edc_config *config, cJSON *channe
     if (!app_secret || !cJSON_IsString(app_secret))
     {
         log_error("channel.app_secret is not string type");
-        return FALSE;
+        return false;
     }
     sds _d = edc_secret_decrypt(cJSON_GetStringValue(app_secret));
     config->channel.qq.app_secret = _d;
 
-    return TRUE;
+    return true;
 }
 
 struct edc_config *edc_config_load(const char *edc_home)

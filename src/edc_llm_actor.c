@@ -1,4 +1,4 @@
-#include "sds.h"
+﻿#include "sds.h"
 #include "edc_error.h"
 #include "edc_llm_actor.h"
 #include "edc_actor.h"
@@ -209,13 +209,13 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
             cJSON_Delete(choices);
         }
 
-        return FALSE;
+        return false;
     }
 
     cJSON *choice = cJSON_GetArrayItem(choices, 0);
     if (!choice)
     {
-        return FALSE;
+        return false;
     }
 
     cJSON *finish_reason = cJSON_GetObjectItem(choice, "finish_reason");
@@ -275,7 +275,7 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
         char *err_msg = cJSON_Print(choice);
         resp->error = edc_error_new(EDC_ERR_INVAL, "resp format message is not exist: %s", err_msg);
         cJSON_free(err_msg);
-        return FALSE;
+        return false;
     }
 
     cJSON *content = cJSON_GetObjectItem(message, "content");
@@ -365,7 +365,7 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
 
     resp->msg = message;
 
-    return TRUE;
+    return true;
 }
 
 static void edc_llm_actor_handle_respone(edc_actor_t *actor, edc_actor_msg_t *msg)

@@ -1,10 +1,11 @@
-#include "edc_channel_telegram.h"
+﻿#include "edc_channel_telegram.h"
 #include "edc_channel_actor.h"
 #include "cJSON.h"
 #include "log.h"
 #include "edc_compat.h"
 #include "edc_string_utils.h"
 #include "sds.h"
+#include <inttypes.h>
 
 static const char *telegram_api_host = "api.telegram.org";
 static sds telegram_build_path(struct channel_conf *conf, const char *method, const char *args[])
@@ -19,7 +20,7 @@ static sds telegram_build_path(struct channel_conf *conf, const char *method, co
     url = sdscat(url, "?");
 
     const char **p = args;
-    while (TRUE)
+    while (true)
     {
         url = sdscatprintf(url, "%s", *p);
         ++p;
@@ -70,12 +71,12 @@ static void __bc_channel_telegram_req_free(struct edc_channel_telegram_req *req,
 
 static void edc_channel_telegram_req_free_all(struct edc_channel_telegram_req *req)
 {
-    __bc_channel_telegram_req_free(req, TRUE);
+    __bc_channel_telegram_req_free(req, true);
 }
 
 static void edc_channel_telegram_req_free(struct edc_channel_telegram_req *req)
 {
-    __bc_channel_telegram_req_free(req, FALSE);
+    __bc_channel_telegram_req_free(req, false);
 }
 
 static void edc_channel_telegram_make_http_request(struct mg_connection *c, struct edc_channel_telegram_req *req)
@@ -119,7 +120,7 @@ static void edc_channel_actor_telegram_conn_fn(struct mg_connection *c, int ev, 
                                                         (edc_actor_data_free_fn)edc_channel_telegram_req_free);
         edc_actor_send(actor, msg);
         c->is_closing = 1;
-        state->telegram.polling = FALSE;
+        state->telegram.polling = false;
     }
     else if (ev == MG_EV_TLS_HS)
     {
@@ -131,7 +132,7 @@ static void edc_channel_actor_telegram_conn_fn(struct mg_connection *c, int ev, 
         edc_channel_actor_state_t *state = actor->state;
         log_error("channel telegram http async connect failed.");
         edc_channel_telegram_req_free_all(req);
-        state->telegram.polling = FALSE;
+        state->telegram.polling = false;
     }
     else if (ev == MG_EV_CLOSE)
     {
@@ -141,7 +142,7 @@ static void edc_channel_actor_telegram_conn_fn(struct mg_connection *c, int ev, 
         edc_actor_t *actor = req->actor;
         edc_channel_actor_state_t *state = actor->state;
         edc_channel_telegram_req_free_all(req);
-        state->telegram.polling = FALSE;
+        state->telegram.polling = false;
     }
 }
 
@@ -150,7 +151,7 @@ static bool edc_channel_actor_telegram_send_req(edc_actor_t *actor, struct edc_c
     edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
     edc_http_async_connect(state->network, req->url, req->proxy, edc_channel_actor_telegram_conn_fn, req, 60);
 
-    return TRUE;
+    return true;
 }
 
 #define TELEGRAM_MAX_MSG_LEN 4096
@@ -171,7 +172,7 @@ static struct edc_channel_telegram_req *edc_channel_actor_send_message_chunk_req
     req->proxy = proxy;
     req->path = path;
     req->host = telegram_api_host;
-    req->connected = FALSE;
+    req->connected = false;
     req->url = sdscatprintf(sdsempty(), "https://%s%s", req->host, req->path);
     req->body = sdsnewlen(post_fields, sdslen(post_fields));
     sdsfree(post_fields);
@@ -239,7 +240,7 @@ static bool edc_channel_actor_send_message(edc_actor_t *actor, const struct edc_
         edc_channel_actor_telegram_send_req(actor, req);
     }
 
-    return TRUE;
+    return true;
 }
 
 static struct edc_channel_message *process_user_input(edc_channel_actor_state_t *state, cJSON *root)
@@ -412,7 +413,7 @@ static void edc_channel_actor_telegram_poll(uv_timer_t *timer)
     req->method = 0;
 
     edc_channel_actor_telegram_send_req(actor, req);
-    state->telegram.polling = TRUE;
+    state->telegram.polling = true;
 }
 
 static void edc_channel_actor_telegram_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
@@ -451,6 +452,6 @@ void edc_channel_telegram_init(edc_actor_t *channel_actor)
 {
     edc_channel_actor_state_t *state = channel_actor->state;
     state->telegram.update_id = -1;
-    state->telegram.polling = FALSE;
+    state->telegram.polling = false;
     edc_channel_actor_add(channel_actor, edc_channel_telegram, edc_channel_actor_telegram_handler);
 }

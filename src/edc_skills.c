@@ -1,4 +1,4 @@
-#include "sds.h"
+﻿#include "sds.h"
 #include "edc_error.h"
 #include "edc_skills.h"
 
@@ -54,7 +54,7 @@ static bool edc_extract_skill_meta_and_content(const char *content, struct edc_s
     if (strncmp(content, "---\n", 4) != 0)
     {
         log_error("skill content has no YAML front matter prefix");
-        return FALSE;
+        return false;
     }
 
     const char *meta_start = content + 4;
@@ -65,7 +65,7 @@ static bool edc_extract_skill_meta_and_content(const char *content, struct edc_s
         if (!meta_end)
         {
             log_error("skill content: closing --- not found");
-            return FALSE;
+            return false;
         }
     }
 
@@ -106,7 +106,7 @@ static bool edc_extract_skill_meta_and_content(const char *content, struct edc_s
     skill->content = sdstrim(tmp, " \t\r\n");
 
     sdsfree(meta);
-    return TRUE;
+    return true;
 }
 
 static struct edc_skill *edc_skill_load(const char *name, const char *file_path)

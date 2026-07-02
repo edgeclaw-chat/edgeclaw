@@ -1,4 +1,4 @@
-#include "sds.h"
+﻿#include "sds.h"
 #include "edc_error.h"
 #include "edc_sandbox.h"
 #include "edc_toolbox.h"
@@ -17,7 +17,7 @@ static sds edc_tool_exec_read_file(struct edc_config *conf, cJSON *args, EdcErro
 {
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
 
-    sds safe_path = edc_sandbox_verify_path(conf, path, FALSE, error);
+    sds safe_path = edc_sandbox_verify_path(conf, path, false, error);
     if (!safe_path)
     {
         return NULL;
@@ -41,7 +41,7 @@ static sds edc_tool_exec_write_file(struct edc_config *conf, cJSON *args, EdcErr
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
     const char *content = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "content"));
 
-    sds safe_path = edc_sandbox_verify_path(conf, path, TRUE, error);
+    sds safe_path = edc_sandbox_verify_path(conf, path, true, error);
     if (!safe_path)
     {
         return NULL;
@@ -84,7 +84,7 @@ static sds edc_tool_exec_list_dir(struct edc_config *conf, cJSON *args, EdcError
 {
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
 
-    sds safe_path = edc_sandbox_verify_path(conf, path, FALSE, error);
+    sds safe_path = edc_sandbox_verify_path(conf, path, false, error);
     if (!safe_path)
     {
         return NULL;
@@ -118,7 +118,7 @@ static void edc_tool_create_read_file(struct edc_toolbox *tb)
     const char *name = "read_file";
     const char *desc = "Read the contents of a file at the given path.";
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The file path to read", NULL), TRUE));
+    LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The file path to read", NULL), true));
     edc_toolbox_register(tb, edc_tool_new(name, desc, params, edc_tool_exec_read_file_async));
 }
 
@@ -136,8 +136,8 @@ static void edc_tool_create_write_file(struct edc_toolbox *tb)
     const char *desc = "Write the contents of a file at the given path.";
 
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The file path to write", NULL), TRUE));
-    LL_APPEND(params, edc_tool_param_new("content", edc_param_str_type("The content to write", NULL), TRUE));
+    LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The file path to write", NULL), true));
+    LL_APPEND(params, edc_tool_param_new("content", edc_param_str_type("The content to write", NULL), true));
 
     edc_toolbox_register(tb, edc_tool_new(name, desc, params, edc_tool_exec_write_file_async));
 }
@@ -156,7 +156,7 @@ static void edc_tool_create_list_dir(struct edc_toolbox *tb)
     const char *desc = "List the contents of a directory at the given path.";
 
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The directory path to list", NULL), TRUE));
+    LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The directory path to list", NULL), true));
     edc_toolbox_register(tb, edc_tool_new(name, desc, params, edc_tool_exec_list_dir_async));
 }
 
@@ -289,7 +289,7 @@ static bool edc_edit_file_select_all(unsigned int count, UT_array **selected, Ed
         unsigned int idx = i;
         utarray_push_back(*selected, &idx);
     }
-    return TRUE;
+    return true;
 }
 
 static bool edc_edit_file_select_by_occurrence(unsigned int count, int64_t occurrence,
@@ -300,11 +300,11 @@ static bool edc_edit_file_select_by_occurrence(unsigned int count, int64_t occur
         edc_error_set(error, EDC_ERR_EXEC,
                     "Error: occurrence %ld out of range; old_text appears %u times.",
                     (long)occurrence, count);
-        return FALSE;
+        return false;
     }
     unsigned int idx = (unsigned int)(occurrence - 1);
     utarray_push_back(*selected, &idx);
-    return TRUE;
+    return true;
 }
 
 static bool edc_edit_file_select_by_line_hint(const char *content, size_t content_len,
@@ -315,7 +315,7 @@ static bool edc_edit_file_select_by_line_hint(const char *content, size_t conten
 {
     int64_t best_dist = G_MAXINT64;
     unsigned int best_idx = 0;
-    bool ambiguous = FALSE;
+    bool ambiguous = false;
 
     for (unsigned int i = 0; i < count; i++)
     {
@@ -325,10 +325,10 @@ static bool edc_edit_file_select_by_line_hint(const char *content, size_t conten
         {
             best_dist = dist;
             best_idx = i;
-            ambiguous = FALSE;
+            ambiguous = false;
         }
         else if (dist == best_dist)
-            ambiguous = TRUE;
+            ambiguous = true;
     }
 
     if (ambiguous)
@@ -340,11 +340,11 @@ static bool edc_edit_file_select_by_line_hint(const char *content, size_t conten
                     "Error: line_hint %ld is ambiguous; old_text appears %u times.%s",
                     (long)line_hint, count, msg);
         sdsfree(msg);
-        return FALSE;
+        return false;
     }
 
     utarray_push_back(*selected, &best_idx);
-    return TRUE;
+    return true;
 }
 
 static bool edc_edit_file_select_matches(const char *content, size_t content_len,
@@ -359,14 +359,14 @@ static bool edc_edit_file_select_matches(const char *content, size_t content_len
     {
         edc_error_set(error, EDC_ERR_EXEC,
                     "Error: occurrence, line_hint, and replace_all are mutually exclusive.");
-        return FALSE;
+        return false;
     }
 
     if (count == 0)
     {
         edc_error_set(error, EDC_ERR_EXEC,
                     "Error: internal error — no matches to select from.");
-        return FALSE;
+        return false;
     }
 
     if (replace_all)
@@ -390,14 +390,14 @@ static bool edc_edit_file_select_matches(const char *content, size_t content_len
                     "Provide more context, set occurrence, or set replace_all=true.%s",
                     count, msg);
         sdsfree(msg);
-        return FALSE;
+        return false;
     }
 
     {
         unsigned int zero = 0;
         utarray_push_back(*selected, &zero);
     }
-    return TRUE;
+    return true;
 }
 
 static void edc_edit_file_apply_replacements(const char *content, size_t content_len,
@@ -464,7 +464,7 @@ static sds edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, EdcErro
         return NULL;
     }
 
-    sds safe_path = edc_sandbox_verify_path(conf, path, TRUE, error);
+    sds safe_path = edc_sandbox_verify_path(conf, path, true, error);
     if (!safe_path)
         return NULL;
 
@@ -559,27 +559,27 @@ static void edc_tool_create_edit_file(struct edc_toolbox *tb)
         "prefer apply_patch. If old_text matches multiple times, provide more context or set occurrence, line_hint, "
         "replace_all, and expected_replacements. Shows closest-match diagnostics on failure.";
 
-    struct edc_tool_param *path = edc_tool_param_new("path", edc_param_str_type("The file path to edit", NULL), TRUE);
+    struct edc_tool_param *path = edc_tool_param_new("path", edc_param_str_type("The file path to edit", NULL), true);
     struct edc_tool_param *old_text =
-        edc_tool_param_new("old_text", edc_param_str_type("The text to find and replace", NULL), TRUE);
+        edc_tool_param_new("old_text", edc_param_str_type("The text to find and replace", NULL), true);
     struct edc_tool_param *new_text =
-        edc_tool_param_new("new_text", edc_param_str_type("The text to replace with", NULL), TRUE);
+        edc_tool_param_new("new_text", edc_param_str_type("The text to replace with", NULL), true);
     struct edc_tool_param *replace_all =
-        edc_tool_param_new("replace_all", edc_param_bool_type("Replace all occurrences (default false)"), FALSE);
+        edc_tool_param_new("replace_all", edc_param_bool_type("Replace all occurrences (default false)"), false);
 
     struct edc_tool_param *occurrence = edc_tool_param_new(
         "occurrence",
         edc_param_int_type("Optional 1-based occurrence to replace when old_text appears multiple times.", 1,
                            G_MAXINT64),
-        FALSE);
+        false);
 
     struct edc_tool_param *line_hint = edc_tool_param_new(
         "line_hint", edc_param_int_type("Optional 1-based line hint used to choose the nearest match.", 1, G_MAXINT64),
-        FALSE);
+        false);
 
     struct edc_tool_param *expected_replacements = edc_tool_param_new(
         "expected_replacements",
-        edc_param_int_type("Optional guard for the number of replacements that must be made.", 1, G_MAXINT64), FALSE);
+        edc_param_int_type("Optional guard for the number of replacements that must be made.", 1, G_MAXINT64), false);
 
     struct edc_tool_param *params[] = {
         path, old_text, new_text, replace_all, occurrence, line_hint, expected_replacements, NULL};

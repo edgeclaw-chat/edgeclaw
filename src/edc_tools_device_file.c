@@ -1,4 +1,4 @@
-#include "edc_tools.h"
+﻿#include "edc_tools.h"
 #include "edc_toolbox.h"
 #include "edc_tools_device_file.h"
 #include "edc_config.h"
@@ -506,7 +506,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
     if (stat(ctx->local_path, &st) != 0 || !S_ISREG(st.st_mode))
     {
         device_file_send_error(ctx, "device_upload: cannot stat local file '%s'", ctx->local_path);
-        return FALSE;
+        return false;
     }
 
     int fd = open(ctx->local_path, O_RDONLY);
@@ -514,7 +514,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
     {
         device_file_send_error(ctx, "device_upload: cannot open local file '%s': %s",
                                ctx->local_path, strerror(errno));
-        return FALSE;
+        return false;
     }
 
     size_t raw_len = (size_t)st.st_size;
@@ -536,14 +536,14 @@ static bool do_device_upload(struct device_file_ctx *ctx,
             }
             free(chunk_buf);
             close(fd);
-            return FALSE;
+            return false;
         }
         final_result = sdscatprintf(final_result, "Uploaded 0 bytes in 1 chunk(s) to %s",
                         ctx->remote_path);
         free(chunk_buf);
         close(fd);
         ctx->callback(ctx->tb_ctx, final_result, NULL);
-        return TRUE;
+        return true;
     }
 
     while (offset < raw_len)
@@ -559,7 +559,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
             free(chunk_buf);
             sdsfree(final_result);
             close(fd);
-            return FALSE;
+            return false;
         }
 
         sds b64 = edc_base64_encode((const unsigned char *)chunk_buf, this_len);
@@ -569,7 +569,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
             free(chunk_buf);
             sdsfree(final_result);
             close(fd);
-            return FALSE;
+            return false;
         }
 
         log_debug("device_upload: chunk %d offset=%zu len=%zu b64_len=%zu",
@@ -588,7 +588,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
             free(chunk_buf);
             sdsfree(final_result);
             close(fd);
-            return FALSE;
+            return false;
         }
 
         offset += this_len;
@@ -602,7 +602,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
                     raw_len, chunk_idx, ctx->remote_path);
 
     ctx->callback(ctx->tb_ctx, final_result, NULL);
-    return TRUE;
+    return true;
 }
 
 static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
@@ -785,7 +785,7 @@ static bool do_device_download(struct device_file_ctx *ctx,
     {
         device_file_send_error(ctx, "device_download: cannot open local file '%s': %s",
                                ctx->local_path, strerror(errno));
-        return FALSE;
+        return false;
     }
 
     size_t total_size = 0;
@@ -805,7 +805,7 @@ static bool do_device_download(struct device_file_ctx *ctx,
             }
             close(fd);
             unlink(ctx->local_path);
-            return FALSE;
+            return false;
         }
 
         if (received == 0)
@@ -822,7 +822,7 @@ static bool do_device_download(struct device_file_ctx *ctx,
     sds result = sdsempty();
     result = sdscatprintf(result, "Downloaded %zu bytes to %s", received, ctx->local_path);
     ctx->callback(ctx->tb_ctx, result, NULL);
-    return TRUE;
+    return true;
 }
 
 static void device_file_thread_socket(struct device_file_ctx *ctx)
@@ -926,7 +926,7 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
     ctx->remote_path = sdsnew(cJSON_GetStringValue(remote));
     ctx->local_path = sdsnew(cJSON_GetStringValue(local));
     ctx->file_mode = file_mode;
-    ctx->is_upload = TRUE;
+    ctx->is_upload = true;
     ctx->timeout_sec = timeout_sec;
 
     uv_thread_t tid;
@@ -969,7 +969,7 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
     ctx->agent_port = (uint16_t)(conf->device_port > 0 ? conf->device_port : 5000);
     ctx->remote_path = sdsnew(cJSON_GetStringValue(remote));
     ctx->local_path = sdsnew(cJSON_GetStringValue(local));
-    ctx->is_upload = FALSE;
+    ctx->is_upload = false;
     ctx->timeout_sec = timeout_sec;
 
     uv_thread_t tid;
@@ -979,10 +979,10 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
 static struct edc_tool *edc_tool_create_device_upload(struct edc_toolbox *tb)
 {
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params, edc_tool_param_new("local_path", edc_param_str_type("Local file path on host to upload", NULL), TRUE));
-    LL_APPEND(params, edc_tool_param_new("remote_path", edc_param_str_type("Remote file path on device destination", NULL), TRUE));
-    LL_APPEND(params, edc_tool_param_new("mode", edc_param_int_type("File permission mode (default 0644)", 0, 07777), FALSE));
-    LL_APPEND(params, edc_tool_param_new("timeout", edc_param_int_type("Timeout per chunk in seconds (default 60)", 1, 3600), FALSE));
+    LL_APPEND(params, edc_tool_param_new("local_path", edc_param_str_type("Local file path on host to upload", NULL), true));
+    LL_APPEND(params, edc_tool_param_new("remote_path", edc_param_str_type("Remote file path on device destination", NULL), true));
+    LL_APPEND(params, edc_tool_param_new("mode", edc_param_int_type("File permission mode (default 0644)", 0, 07777), false));
+    LL_APPEND(params, edc_tool_param_new("timeout", edc_param_int_type("Timeout per chunk in seconds (default 60)", 1, 3600), false));
 
     struct edc_tool *tool = edc_tool_new("device_upload",
         "Upload a file from the host to a remote device agent (supports chunked transfer for large files)",
@@ -994,9 +994,9 @@ static struct edc_tool *edc_tool_create_device_upload(struct edc_toolbox *tb)
 static struct edc_tool *edc_tool_create_device_download(struct edc_toolbox *tb)
 {
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params, edc_tool_param_new("remote_path", edc_param_str_type("Remote file path on device to download", NULL), TRUE));
-    LL_APPEND(params, edc_tool_param_new("local_path", edc_param_str_type("Local destination file path on host", NULL), TRUE));
-    LL_APPEND(params, edc_tool_param_new("timeout", edc_param_int_type("Timeout per chunk in seconds (default 60)", 1, 3600), FALSE));
+    LL_APPEND(params, edc_tool_param_new("remote_path", edc_param_str_type("Remote file path on device to download", NULL), true));
+    LL_APPEND(params, edc_tool_param_new("local_path", edc_param_str_type("Local destination file path on host", NULL), true));
+    LL_APPEND(params, edc_tool_param_new("timeout", edc_param_int_type("Timeout per chunk in seconds (default 60)", 1, 3600), false));
 
     struct edc_tool *tool = edc_tool_new("device_download",
         "Download a file from a remote device agent to the host (supports chunked transfer for large files)",

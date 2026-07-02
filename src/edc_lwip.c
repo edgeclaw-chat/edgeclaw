@@ -1,4 +1,4 @@
-#include "edc_lwip.h"
+﻿#include "edc_lwip.h"
 #include "edc_compat.h"
 #include "lwip/netif.h"
 #include "lwip/tcpip.h"
@@ -13,12 +13,12 @@
 #endif
 
 static struct netif lwip_pppos_netif;
-static bool lwip_initialized = FALSE;
+static bool lwip_initialized = false;
 
 void edc_lwip_init_loopback(void)
 {
     tcpip_init(NULL, NULL);
-    lwip_initialized = TRUE;
+    lwip_initialized = true;
 }
 
 /* ---- PPPoS client: connect to a remote device over serial ---- */
@@ -54,7 +54,7 @@ bool edc_lwip_init_pppos(int fd)
     ip4_addr_t my_addr, peer_addr, nm;
 
     g_pppos_fd = fd;
-    lwip_initialized = TRUE;
+    lwip_initialized = true;
     tcpip_init(NULL, NULL);
 
     IP4_ADDR(&my_addr, 0, 0, 0, 0);
@@ -66,7 +66,7 @@ bool edc_lwip_init_pppos(int fd)
     ip_addr_copy(ni->netmask, nm);
 
     g_pppos_pcb = pppapi_pppos_create(ni, pppos_out_cb, pppos_status_cb, &g_pppos_fd);
-    if (!g_pppos_pcb) return FALSE;
+    if (!g_pppos_pcb) return false;
     pppapi_set_default(g_pppos_pcb);
     ppp_set_auth(g_pppos_pcb, PPPAUTHTYPE_NONE, NULL, NULL);
     ppp_set_ipcp_ouraddr(g_pppos_pcb, &my_addr);
@@ -151,7 +151,7 @@ bool edc_lwip_init_pppos_path(const char *path, int baud)
 {
 #ifndef _WIN32
     int fd = open(path, O_RDWR | O_NOCTTY);
-    if (fd < 0) return FALSE;
+    if (fd < 0) return false;
 
     struct termios t;
     tcgetattr(fd, &t);
@@ -167,7 +167,7 @@ bool edc_lwip_init_pppos_path(const char *path, int baud)
     return edc_lwip_init_pppos(fd);
 #else
     (void)path; (void)baud;
-    return FALSE;
+    return false;
 #endif
 }
 
@@ -178,5 +178,5 @@ void edc_lwip_shutdown(void)
         netif_set_down(&lwip_pppos_netif);
         netif_remove(&lwip_pppos_netif);
     }
-    lwip_initialized = FALSE;
+    lwip_initialized = false;
 }

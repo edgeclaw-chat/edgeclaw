@@ -1,4 +1,4 @@
-#include "edc_param_types.h"
+﻿#include "edc_param_types.h"
 
 #include "edc_compat.h"
 #include <stdarg.h>
@@ -115,57 +115,57 @@ void edc_param_type_free(struct edc_param_type *type)
 bool edc_param_type_validate(cJSON *args, struct edc_param_type *type)
 {
     if (!args || !type)
-        return FALSE;
+        return false;
 
     switch (type->type)
     {
     case BC_TOOL_TYPE_INT:
         if (!cJSON_IsNumber(args) || (args->valueint != args->valuedouble))
-            return FALSE;
+            return false;
         if (type->num.min != G_MININT64 && args->valueint < type->num.min)
-            return FALSE;
+            return false;
         if (type->num.max != G_MAXINT64 && args->valueint > type->num.max)
-            return FALSE;
-        return TRUE;
+            return false;
+        return true;
     case BC_TOOL_TYPE_BOOL:
         return cJSON_IsBool(args);
     case BC_TOOL_TYPE_STR:
         if (!cJSON_IsString(args))
-            return FALSE;
+            return false;
         if (type->str.n > 0 && type->str.enums)
         {
             for (int i = 0; i < type->str.n; i++)
             {
                 if (strcmp(cJSON_GetStringValue(args), type->str.enums[i]) == 0)
-                    return TRUE;
+                    return true;
             }
-            return FALSE;
+            return false;
         }
-        return TRUE;
+        return true;
     case BC_TOOL_TYPE_ARRAY:
         if (!cJSON_IsArray(args))
-            return FALSE;
+            return false;
         {
             int size = cJSON_GetArraySize(args);
             for (int i = 0; i < size; i++)
             {
                 if (!edc_param_type_validate(cJSON_GetArrayItem(args, i), type->array.item))
-                    return FALSE;
+                    return false;
             }
         }
-        return TRUE;
+        return true;
     case BC_TOOL_TYPE_OBJECT:
         if (!cJSON_IsObject(args))
-            return FALSE;
+            return false;
         for (int i = 0; i < type->object.n; i++)
         {
             cJSON *item = cJSON_GetObjectItem(args, type->object.properties[i].name);
             if (!edc_param_type_validate(item, type->object.properties[i].type))
-                return FALSE;
+                return false;
         }
-        return TRUE;
+        return true;
     default:
-        return FALSE;
+        return false;
     }
 }
 

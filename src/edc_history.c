@@ -1,4 +1,4 @@
-#include "sds.h"
+﻿#include "sds.h"
 #include "edc_history.h"
 #include "edc_session.h"
 #include "edc_datetime_utils.h"
@@ -65,7 +65,7 @@ bool edc_history_save(const char *workspace, cJSON *msg_lst, struct edc_timestam
         char *s = strerror(errno);
         log_info("open file %s failed: %s", hist_file, s);
         sdsfree(hist_file);
-        return FALSE;
+        return false;
     }
 
     for (int i = skip_count, t = 0; i < cJSON_GetArraySize(msg_lst); i++, t++)
@@ -97,7 +97,7 @@ bool edc_history_save(const char *workspace, cJSON *msg_lst, struct edc_timestam
     fflush(fout);
     fclose(fout);
     sdsfree(hist_file);
-    return TRUE;
+    return true;
 }
 
 bool edc_history_get_info(const char *workspace, size_t *compress_index, sds *update_time)
@@ -112,17 +112,17 @@ bool edc_history_get_info(const char *workspace, size_t *compress_index, sds *up
         if (update_time)
             *update_time = edc_get_timestamp();
         sdsfree(history_info_path);
-        return TRUE;
+        return true;
     }
 
-    bool ret = TRUE;
+    bool ret = true;
     EdcError *error = NULL;
     sds info = edc_file_read(history_info_path, &error);
 
     if (!info)
     {
         log_error("load history info failed: %s", error->message);
-        ret = FALSE;
+        ret = false;
         goto exit_;
     }
 
@@ -130,7 +130,7 @@ bool edc_history_get_info(const char *workspace, size_t *compress_index, sds *up
     if (!history_info)
     {
         log_error("load history info failed. format error: %s", info);
-        ret = FALSE;
+        ret = false;
         goto exit_;
     }
 
@@ -140,7 +140,7 @@ bool edc_history_get_info(const char *workspace, size_t *compress_index, sds *up
         !cJSON_IsString(update_time_obj))
     {
         log_error("load history info failed. format error: %s", info);
-        ret = FALSE;
+        ret = false;
         goto exit_;
     }
 
@@ -174,7 +174,7 @@ bool edc_history_set_info(const char *workspace, size_t compress_index, const ch
     if (fout == NULL)
     {
         log_error("open history info file failed: %s", strerror(errno));
-        return FALSE;
+        return false;
     }
 
     cJSON *history_info = cJSON_CreateObject();
@@ -187,5 +187,5 @@ bool edc_history_set_info(const char *workspace, size_t compress_index, const ch
     fflush(fout);
     fclose(fout);
     cJSON_free(info);
-    return TRUE;
+    return true;
 }

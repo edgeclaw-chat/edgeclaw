@@ -1,4 +1,4 @@
-#ifdef __linux__
+﻿#ifdef __linux__
 #define _GNU_SOURCE
 #include "edc_ns_sandbox.h"
 #include "log.h"
@@ -96,13 +96,13 @@ static bool path_is_mount_point(const char *path)
 {
     struct stat st1, st2;
     if (stat(path, &st1) != 0)
-        return FALSE;
+        return false;
 
     sds parent = edc_path_dirname(path);
     int ret = stat(parent, &st2);
     sdsfree(parent);
     if (ret != 0)
-        return FALSE;
+        return false;
 
     return (st1.st_dev != st2.st_dev) || (st1.st_ino == 2);
 }
@@ -110,13 +110,13 @@ static bool path_is_mount_point(const char *path)
 static bool is_special_fs(const char *path)
 {
     if (!path_is_mount_point(path))
-        return FALSE;
+        return false;
 
     struct statfs sfs;
     if (statfs(path, &sfs) != 0)
     {
         log_debug("edc_ns_sandbox: statfs(%s) failed: %s", path, strerror(errno));
-        return FALSE;
+        return false;
     }
 
     switch (sfs.f_type)
@@ -139,9 +139,9 @@ static bool is_special_fs(const char *path)
     case SELINUX_MAGIC:
     case PSTOREFS_MAGIC:
     case PIPEFS_MAGIC:
-        return TRUE;
+        return true;
     default:
-        return FALSE;
+        return false;
     }
 }
 
@@ -151,7 +151,7 @@ static bool ns_mount_special_fs(const char *path, int flag)
     if (statfs(path, &sfs) != 0)
     {
         log_debug("edc_ns_sandbox: statfs(%s) failed: %s", path, strerror(errno));
-        return FALSE;
+        return false;
     }
 
     const char *source = "none";
@@ -214,7 +214,7 @@ static bool ns_mount_special_fs(const char *path, int flag)
         break;
     default:
         log_debug("edc_ns_sandbox: no mount type for fs 0x%lx at %s", (unsigned long)sfs.f_type, path);
-        return FALSE;
+        return false;
     }
 
     if ((sfs.f_type == PROC_SUPER_MAGIC || sfs.f_type == SYSFS_MAGIC || sfs.f_type == CGROUP_SUPER_MAGIC ||
@@ -222,22 +222,22 @@ static bool ns_mount_special_fs(const char *path, int flag)
          sfs.f_type == SECURITYFS_MAGIC || sfs.f_type == BPF_FS_MAGIC))
     {
         log_debug("edc_ns_sandbox: skip remount of restricted fs at %s in user namespace", path);
-        return FALSE;
+        return false;
     }
 
     if (umount2(path, MNT_DETACH) != 0 && errno != EINVAL)
     {
         log_debug("edc_ns_sandbox: umount2(%s) failed: %s", path, strerror(errno));
-        return FALSE;
+        return false;
     }
 
     if (mount(source, path, fstype, flag, NULL) != 0)
     {
         log_debug("edc_ns_sandbox: mount(%s, %s) at %s failed: %s", source, fstype, path, strerror(errno));
-        return FALSE;
+        return false;
     }
 
-    return TRUE;
+    return true;
 }
 
 static bool ns_mount_dir_as_rw(const char *path)
@@ -245,16 +245,16 @@ static bool ns_mount_dir_as_rw(const char *path)
     if (mount(path, path, NULL, MS_BIND, NULL) != 0)
     {
         log_debug("edc_ns_sandbox: MS_BIND on %s failed: %s", path, strerror(errno));
-        return FALSE;
+        return false;
     }
 
     if (mount(NULL, path, NULL, MS_REMOUNT | MS_BIND, NULL) != 0)
     {
         log_debug("edc_ns_sandbox: MS_REMOUNT | MS_BIND on %s failed: %s", path, strerror(errno));
-        return FALSE;
+        return false;
     }
 
-    return TRUE;
+    return true;
 }
 
 bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths)
@@ -262,7 +262,7 @@ bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths)
     if (!rw_paths || !rw_paths[0])
     {
         log_error("edc_ns_sandbox: requires at least one rw_path");
-        return FALSE;
+        return false;
     }
 
     uid_t uid = getuid();
@@ -280,10 +280,10 @@ bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths)
      * creation is also unavailable. In that case we skip namespace
      * isolation and rely on seccomp-bpf as the primary sandbox layer.
      */
-    bool have_userns = FALSE;
+    bool have_userns = false;
     if (syscall(SYS_unshare, CLONE_NEWUSER) == 0)
     {
-        have_userns = TRUE;
+        have_userns = true;
 
         int fd = open("/proc/self/setgroups", O_WRONLY);
         if (fd >= 0)
@@ -313,26 +313,26 @@ bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths)
     if (!have_userns)
     {
         log_debug("edc_ns_sandbox: need root privileges for mount namespace");
-        return TRUE;
+        return true;
     }
 
     if (syscall(SYS_unshare, CLONE_NEWNS) != 0)
     {
         log_debug("edc_ns_sandbox: CLONE_NEWNS failed: %s", strerror(errno));
-        return TRUE;
+        return true;
     }
 
     /* Make root private so our changes don't propagate to the parent namespace */
     if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0)
     {
         log_debug("edc_ns_sandbox: MS_PRIVATE on / failed: %s", strerror(errno));
-        return FALSE;
+        return false;
     }
 
     if (mount(NULL, "/", NULL, MS_REMOUNT | MS_BIND | MS_RDONLY, NULL))
     {
         log_debug("edc_ns_sandbox: MS_REMOUNT | MS_BIND | MS_RDONLY on / failed: %s", strerror(errno));
-        return FALSE;
+        return false;
     }
 
     for (int i = 0; ro_paths[i]; ++i)
@@ -377,7 +377,7 @@ bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths)
     }
 
     log_info("edc_ns_sandbox: namespace sandbox enforced (userns=%s)", have_userns ? "yes" : "no");
-    return TRUE;
+    return true;
 }
 
 #else /* !__linux__ */
@@ -386,7 +386,7 @@ bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths)
 {
     (void)ro_paths;
     (void)rw_paths;
-    return FALSE;
+    return false;
 }
 
 #endif

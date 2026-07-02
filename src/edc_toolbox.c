@@ -1,4 +1,4 @@
-#include "sds.h"
+﻿#include "sds.h"
 #include "edc_toolbox.h"
 #include "edc_error.h"
 #include "edc_compat.h"
@@ -117,7 +117,7 @@ static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, E
     if (!args || !cJSON_IsObject(args))
     {
         edc_error_set(error, EDC_ERR_INVAL, "arguments must be a JSON object");
-        return FALSE;
+        return false;
     }
 
     struct edc_tool_param *param;
@@ -131,7 +131,7 @@ static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, E
             {
                 edc_error_set(error, EDC_ERR_INVAL, "required parameter '%s' is missing",
                             param->name);
-                return FALSE;
+                return false;
             }
             continue;
         }
@@ -145,11 +145,11 @@ static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, E
             edc_error_set(error, EDC_ERR_INVAL, "parameter '%s' must be of type '%s'", param->name,
                         type_str);
             sdsfree(type_str);
-            return FALSE;
+            return false;
         }
     }
 
-    return TRUE;
+    return true;
 }
 
 void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON *args,

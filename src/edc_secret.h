@@ -1,4 +1,4 @@
-#ifndef __BC_SECRET_H__
+﻿#ifndef __BC_SECRET_H__
 #define __BC_SECRET_H__
 
 #include "sds.h"
@@ -8,13 +8,13 @@
 
 /* Initialize the secret module. Loads the master key from the
  * EDGECLAW_MASTER_KEY environment variable or stdin.
- * If confirm_password is TRUE (first-time setup), prompts for the
+ * If confirm_password is true (first-time setup), prompts for the
  * passphrase twice to confirm the user's input and stores a
  * verification hash in edc_home/.key_hash.
  * Otherwise prompts once and verifies against the stored hash.
  * edc_home may be NULL to skip storage/verification (env var mode).
  * Must be called once at startup, before edc_config_load().
- * Returns TRUE on success. */
+ * Returns true on success. */
 bool edc_secret_init(bool confirm_password, const char *edc_home);
 
 /* Clean up the secret module. Zeros master key from memory. */

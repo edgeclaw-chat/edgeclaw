@@ -1,4 +1,4 @@
-#include "sds.h"
+﻿#include "sds.h"
 #include "edc_session.h"
 #include "edc_compat.h"
 #include "edc_string_utils.h"
@@ -79,7 +79,7 @@ struct edc_session *edc_session_new(struct edc_config *config)
     struct edc_session *session = g_new0(struct edc_session, 1);
     session->config = config;
     session->messages = cJSON_CreateArray();
-    edc_session_build_messages(session, NULL, TRUE);
+    edc_session_build_messages(session, NULL, true);
     session->save_skip_count = edc_session_get_message_count(session);
     return session;
 }

@@ -1,4 +1,4 @@
-#include "edc_terminal.h"
+﻿#include "edc_terminal.h"
 
 #include <stdbool.h>
 #include <stdlib.h>

@@ -125,6 +125,8 @@ cc_library(
             "-liphlpapi",
             "-lpsapi",
             "-lshell32",
+            "-lole32",
+            "-ldbghelp",
         ],
         "//conditions:default": [
             "-pthread",

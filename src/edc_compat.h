@@ -1,4 +1,4 @@
-#ifndef EDC_COMPAT_H
+﻿#ifndef EDC_COMPAT_H
 #define EDC_COMPAT_H
 
 #include <stdbool.h>
@@ -45,12 +45,65 @@ typedef SSIZE_T ssize_t;
 #ifndef strdup
 #define strdup(s)              _strdup(s)
 #endif
+#ifndef strndup
+static inline char *win32_strndup(const char *s, size_t n)
+{
+    size_t len = strnlen(s, n);
+    char *d = (char *)malloc(len + 1);
+    if (d == NULL) return NULL;
+    memcpy(d, s, len);
+    d[len] = '\0';
+    return d;
+}
+#define strndup(s, n)          win32_strndup(s, n)
+#endif
 
 /* ---- process ---- */
 #define getpid()               GetCurrentProcessId()
 
 /* ---- sleep ---- */
+#ifdef __GNUC__
+#include <unistd.h>
+#else
 #define usleep(usec)           Sleep((DWORD)((usec) / 1000))
+#endif
+
+/* ---- time ---- */
+#ifdef _WIN32
+#define localtime_r(tp, tm)    localtime_s(tm, tp)
+#endif
+
+/* ---- I/O ---- */
+#ifdef _WIN32
+#include <stdio.h>
+static inline ssize_t win32_getline(char **lineptr, size_t *n, FILE *stream)
+{
+    if (*lineptr == NULL || *n == 0) {
+        *n = 128;
+        *lineptr = (char *)malloc(*n);
+        if (*lineptr == NULL) return -1;
+    }
+    size_t pos = 0;
+    for (;;) {
+        int c = fgetc(stream);
+        if (c == EOF) {
+            if (pos == 0) return -1;
+            break;
+        }
+        if (pos + 1 >= *n) {
+            *n *= 2;
+            char *tmp = (char *)realloc(*lineptr, *n);
+            if (tmp == NULL) return -1;
+            *lineptr = tmp;
+        }
+        (*lineptr)[pos++] = (char)c;
+        if (c == '\n') break;
+    }
+    (*lineptr)[pos] = '\0';
+    return (ssize_t)pos;
+}
+#define getline(lineptr, n, stream)  win32_getline(lineptr, n, stream)
+#endif
 
 /* ---- path ---- */
 static inline char *win32_realpath(const char *path, char *resolved)
@@ -135,11 +188,11 @@ static inline char *win32_realpath(const char *path, char *resolved)
  *  GLib compatibility (transitional — remove once all callers use EDC_*)
  * ========================================================================= */
 
-#ifndef TRUE
-#define TRUE  true
+#ifndef true
+#define true  true
 #endif
-#ifndef FALSE
-#define FALSE false
+#ifndef false
+#define false false
 #endif
 
 #ifndef G_BEGIN_DECLS
@@ -164,6 +217,13 @@ typedef ssize_t gssize;
 
 #ifndef G_N_ELEMENTS
 #define G_N_ELEMENTS(arr) (sizeof(arr) / sizeof((arr)[0]))
+#endif
+
+#ifndef MIN
+#define MIN(a, b) (((a) < (b)) ? (a) : (b))
+#endif
+#ifndef MAX
+#define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #endif
 
 #ifndef G_MAXINT64

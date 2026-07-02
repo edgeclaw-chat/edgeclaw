@@ -1,4 +1,4 @@
-#include "sds.h"
+﻿#include "sds.h"
 #include "edc_tools_todo.h"
 #include "edc_channel_actor.h"
 #include "edc_param_types.h"
@@ -109,7 +109,7 @@ void edc_tools_todo_register(struct edc_toolbox *tb)
     struct edc_param_type *item_type = edc_param_object_type("Todo item", properties, G_N_ELEMENTS(properties));
     struct edc_param_type *items_type = edc_param_array_type("New todo items", item_type);
 
-    struct edc_tool_param *param = edc_tool_param_new("items", items_type, TRUE);
+    struct edc_tool_param *param = edc_tool_param_new("items", items_type, true);
 
     struct edc_tool *tool = edc_tool_new(name, desc, param, edc_tools_todo_exec_async);
 

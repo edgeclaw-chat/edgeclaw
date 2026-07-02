@@ -1,4 +1,4 @@
-#ifndef _WIN32
+﻿#ifndef _WIN32
 #define _GNU_SOURCE
 #endif
 #include "sds.h"
@@ -140,7 +140,7 @@ static bool edc_tool_crontab_save_jobs_db(const char *workspace, cJSON *db, EdcE
         const char *s = strerror(errno);
         edc_error_set(error, EDC_ERR_INVAL, "open %s for writting failed: %s", jobs_path, s);
         sdsfree(jobs_path);
-        return FALSE;
+        return false;
     }
     sdsfree(jobs_path);
 
@@ -150,7 +150,7 @@ static bool edc_tool_crontab_save_jobs_db(const char *workspace, cJSON *db, EdcE
     fclose(fout);
     cJSON_free(tmp);
 
-    return TRUE;
+    return true;
 }
 
 static void edc_tool_crontab_remove_job(cJSON *jobs, char *job_id)
@@ -547,7 +547,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
             return;
         }
         cJSON_AddNumberToObject(schedule, "next_run_at_unix_ts", utc_ts);
-        cJSON_AddBoolToObject(schedule, "once", TRUE);
+        cJSON_AddBoolToObject(schedule, "once", true);
     }
     else if (every_seconds)
     {
@@ -555,7 +555,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
         cJSON_AddNumberToObject(schedule, "every_seconds", every_seconds->valueint);
         int64_t now = (int64_t)time(NULL);
         cJSON_AddNumberToObject(schedule, "next_run_at_unix_ts", now + every_seconds->valueint);
-        cJSON_AddBoolToObject(schedule, "once", FALSE);
+        cJSON_AddBoolToObject(schedule, "once", false);
     }
     else if (cexpr)
     {
@@ -589,7 +589,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
             next = cron_next(&expr, time(NULL));
         }
         cJSON_AddNumberToObject(schedule, "next_run_at_unix_ts", next);
-        cJSON_AddBoolToObject(schedule, "once", FALSE);
+        cJSON_AddBoolToObject(schedule, "once", false);
     }
 
     cJSON_AddStringToObject(job, "message", cJSON_GetStringValue(message));
@@ -633,18 +633,18 @@ static void edc_tool_crontab_exec_async(struct edc_toolbox_call_ctx *ctx, struct
 static void edc_tool_create_crontab(struct edc_toolbox *tb)
 {
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params, edc_tool_param_new("action", edc_param_str_type("Action to perform", "add", "list", "remove", NULL), TRUE));
-    LL_APPEND(params, edc_tool_param_new("message", edc_param_str_type("Reminder message (for add)", NULL), FALSE));
+    LL_APPEND(params, edc_tool_param_new("action", edc_param_str_type("Action to perform", "add", "list", "remove", NULL), true));
+    LL_APPEND(params, edc_tool_param_new("message", edc_param_str_type("Reminder message (for add)", NULL), false));
 
-    LL_APPEND(params, edc_tool_param_new("every_seconds", edc_param_int_type("Interval in seconds (for recurring task)", 1, G_MAXINT64), FALSE));
-    LL_APPEND(params, edc_tool_param_new("cron_expr", edc_param_str_type("Cron expression like '0 2 * * *' (for scheduled tasks)", NULL), FALSE));
+    LL_APPEND(params, edc_tool_param_new("every_seconds", edc_param_int_type("Interval in seconds (for recurring task)", 1, G_MAXINT64), false));
+    LL_APPEND(params, edc_tool_param_new("cron_expr", edc_param_str_type("Cron expression like '0 2 * * *' (for scheduled tasks)", NULL), false));
 
-    LL_APPEND(params, edc_tool_param_new("tz", edc_param_str_type("IANA timezone for cron expressions (e.g. 'China/Beijing')", NULL), FALSE));
+    LL_APPEND(params, edc_tool_param_new("tz", edc_param_str_type("IANA timezone for cron expressions (e.g. 'China/Beijing')", NULL), false));
 
-    LL_APPEND(params, edc_tool_param_new("at", edc_param_str_type("ISO datetime for one-time execution (e.g. '2026-05-01T12:00:00')", NULL), FALSE));
+    LL_APPEND(params, edc_tool_param_new("at", edc_param_str_type("ISO datetime for one-time execution (e.g. '2026-05-01T12:00:00')", NULL), false));
 
-    LL_APPEND(params, edc_tool_param_new("job_id", edc_param_str_type("Job ID (for remove)", NULL), FALSE));
-    LL_APPEND(params, edc_tool_param_new("name", edc_param_str_type("Job Name (for add)", NULL), FALSE));
+    LL_APPEND(params, edc_tool_param_new("job_id", edc_param_str_type("Job ID (for remove)", NULL), false));
+    LL_APPEND(params, edc_tool_param_new("name", edc_param_str_type("Job Name (for add)", NULL), false));
 
     struct edc_tool *tool = edc_tool_new("crontab", "Schedule reminders and recurring tasks. Actions: add, list, remove.",
                                        params, edc_tool_crontab_exec_async);

@@ -1,4 +1,4 @@
-#include "edc_channel_actor.h"
+﻿#include "edc_channel_actor.h"
 #include "edc_actor.h"
 #include "edc_compat.h"
 #include "edc_channel_cli.h"
@@ -270,7 +270,7 @@ struct edc_channel_message *edc_channel_message_new(struct edc_channel *channel,
     struct edc_channel_message *message = g_new0(struct edc_channel_message, 1);
     message->channel = channel;
     message->content = content;
-    message->channel_ref = FALSE;
+    message->channel_ref = false;
     if (message->channel->type == edc_channel_qq)
     {
         message->channel->qq.seq_id += 1;
@@ -283,7 +283,7 @@ extern struct edc_channel_message *edc_channel_ref_message_new(struct edc_channe
     struct edc_channel_message *message = g_new0(struct edc_channel_message, 1);
     message->channel = channel;
     message->content = content;
-    message->channel_ref = TRUE;
+    message->channel_ref = true;
     if (message->channel->type == edc_channel_qq)
     {
         message->channel->qq.seq_id += 1;
