@@ -10,7 +10,6 @@
 #include "cJSON.h"
 #include "uthash.h"
 #include <uv.h>
-#include <pthread.h>
 struct edc_channel
 {
     edc_channel_type type;
@@ -108,15 +107,18 @@ typedef struct
         struct
         {
             struct edc_terminal_state orig_term;
-            pthread_t input_tid;
-            uv_thread_t input_thread;
-            EdcQueue input_queue;
-            uv_mutex_t input_queue_lock;
-            uv_async_t input_wakeup;
+            uv_tty_t stdin_tty;
+            sds line_buffer;
+            int cursor_pos;
             sds pending_output;
-            pthread_mutex_t term_mutex;
-            volatile int running;
+            sds *history;
+            int history_count;
+            int history_capacity;
+            int history_pos;
+            sds saved_line;
             sds history_path;
+            volatile int running;
+            bool tty_stopped;
         } cli;
     };
 } edc_channel_actor_state_t;

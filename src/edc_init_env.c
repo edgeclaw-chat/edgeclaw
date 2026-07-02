@@ -1,9 +1,6 @@
 #include "edc_init_env.h"
 #include "edc_secret.h"
 #include "cJSON.h"
-#ifndef _WIN32
-#include "linenoise.h"
-#endif
 #include "log.h"
 #include <dirent.h>
 #include <inttypes.h>
@@ -26,8 +23,6 @@ static const char *device_transport_types[] = {"socket", "tty"};
 
 /* --- Helper functions --- */
 
-/* Read a line with linenoise, applying a default if the user enters nothing.
- * Returns an sds (caller must sdsfree), or NULL on EOF/Ctrl-C. */
 static sds prompt_with_default(const char *label, const char *default_val)
 {
     char prompt[1024];
@@ -40,8 +35,6 @@ static sds prompt_with_default(const char *label, const char *default_val)
         snprintf(prompt, sizeof(prompt), "%s: ", label);
     }
 
-    char *line = NULL;
-#ifdef _WIN32
     char buf[4096];
     printf("%s", prompt);
     fflush(stdout);
@@ -49,36 +42,15 @@ static sds prompt_with_default(const char *label, const char *default_val)
     {
         return NULL;
     }
-    line = buf;
-#else
-    line = linenoise(prompt);
-    if (line == NULL)
-    {
-        return NULL; /* EOF or Ctrl-C */
-    }
-#endif
 
-    /* Strip trailing whitespace (\n, \r) that linenoise may leave in fallback mode */
-    size_t len = strlen(line);
-    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r' || line[len - 1] == ' '))
-    {
-        line[--len] = '\0';
-    }
+    size_t len = strlen(buf);
+    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r' || buf[len - 1] == ' '))
+        buf[--len] = '\0';
 
-    /* If user entered nothing, use default */
-    if (line[0] == '\0' && default_val && default_val[0] != '\0')
-    {
-#ifndef _WIN32
-        free(line);
-#endif
+    if (buf[0] == '\0' && default_val && default_val[0] != '\0')
         return sdsnew(default_val);
-    }
 
-    sds result = sdsnew(line);
-#ifndef _WIN32
-    free(line);
-#endif
-    return result;
+    return sdsnew(buf);
 }
 
 /* Read a password (no echo). If default_val is non-empty, shows [***unchanged***]

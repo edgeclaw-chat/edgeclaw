@@ -118,7 +118,10 @@ static int edc_md_visual_strlen(const char *s)
                 in_esc = FALSE;
         } else {
             int wv = utf8proc_charwidth(uc);
-            if (wv > 0) w += wv;
+            if (wv == 1 && utf8proc_charwidth_ambiguous(uc))
+                w += 2;
+            else if (wv > 0)
+                w += wv;
         }
         p += clen;
     }

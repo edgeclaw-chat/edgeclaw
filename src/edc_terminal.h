@@ -32,4 +32,6 @@ void edc_terminal_echo_restore(int fd, struct edc_terminal_state *saved);
 int edc_terminal_raw_mode(int fd, struct edc_terminal_state *saved);
 void edc_terminal_raw_restore(int fd, struct edc_terminal_state *saved);
 
+void edc_terminal_vt_enable(void);
+
 #endif

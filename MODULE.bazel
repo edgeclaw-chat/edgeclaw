@@ -64,7 +64,6 @@ use_repo(
     "log.c",
     "mongoose",
     "ccronexpr",
-    "linenoise",
     "md4c",
     "lwip",
     "sds",

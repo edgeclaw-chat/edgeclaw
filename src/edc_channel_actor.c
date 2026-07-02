@@ -407,29 +407,21 @@ void edc_channel_actor_free(edc_actor_t *actor)
 
     case edc_channel_cli:
         state->cli.running = 0;
-        if (state->cli.input_tid)
-        {
-            pthread_kill(state->cli.input_tid, SIGUSR1);
-            uv_thread_join(&state->cli.input_thread);
-        }
-        {
-            char *line;
-            uv_mutex_lock(&state->cli.input_queue_lock);
-            while ((line = edc_queue_pop(&state->cli.input_queue)))
-            {
-                uv_mutex_unlock(&state->cli.input_queue_lock);
-                sdsfree(line);
-                uv_mutex_lock(&state->cli.input_queue_lock);
-            }
-            uv_mutex_unlock(&state->cli.input_queue_lock);
-        }
-        edc_queue_destroy(&state->cli.input_queue);
-        uv_mutex_destroy(&state->cli.input_queue_lock);
         if (state->cli.pending_output)
             sdsfree(state->cli.pending_output);
         if (state->cli.history_path)
             sdsfree(state->cli.history_path);
-        pthread_mutex_destroy(&state->cli.term_mutex);
+        if (state->cli.line_buffer)
+            sdsfree(state->cli.line_buffer);
+        if (state->cli.saved_line)
+            sdsfree(state->cli.saved_line);
+        for (int i = 0; i < state->cli.history_count; i++)
+            sdsfree(state->cli.history[i]);
+        free(state->cli.history);
+        if (!state->cli.tty_stopped) {
+            uv_read_stop((uv_stream_t *)&state->cli.stdin_tty);
+            uv_close((uv_handle_t *)&state->cli.stdin_tty, NULL);
+        }
         edc_terminal_restore(STDIN_FILENO, &state->cli.orig_term);
         break;
     default:

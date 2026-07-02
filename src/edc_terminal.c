@@ -58,12 +58,35 @@ void edc_terminal_echo_restore(int fd, struct edc_terminal_state *saved)
 
 int edc_terminal_raw_mode(int fd, struct edc_terminal_state *saved)
 {
-    return edc_terminal_echo_off(fd, saved);
+    HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+    if (!h) return -1;
+    if (!GetConsoleMode(h, &saved->original_mode))
+        return -1;
+    saved->valid = true;
+
+    DWORD mode = saved->original_mode;
+    mode &= ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
+    mode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
+    if (!SetConsoleMode(h, mode)) {
+        saved->valid = false;
+        return -1;
+    }
+    return 0;
 }
 
 void edc_terminal_raw_restore(int fd, struct edc_terminal_state *saved)
 {
     edc_terminal_echo_restore(fd, saved);
+}
+
+void edc_terminal_vt_enable(void)
+{
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (!hOut) return;
+    DWORD mode = 0;
+    if (!GetConsoleMode(hOut, &mode)) return;
+    mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+    SetConsoleMode(hOut, mode);
 }
 #else /* POSIX */
 int edc_terminal_save(int fd, struct edc_terminal_state *saved)
@@ -119,5 +142,9 @@ int edc_terminal_raw_mode(int fd, struct edc_terminal_state *saved)
 void edc_terminal_raw_restore(int fd, struct edc_terminal_state *saved)
 {
     edc_terminal_echo_restore(fd, saved);
+}
+
+void edc_terminal_vt_enable(void)
+{
 }
 #endif

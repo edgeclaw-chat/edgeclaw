@@ -268,10 +268,7 @@ cc_library(
         ":pppos_agent_lib",
         "//thirdparty/brutezone:brutezone",
         "//thirdparty/utf8proc",
-    ] + select({
-        "//:windows": [],
-        "//conditions:default": ["@linenoise//:linenoise"],
-    }),
+    ],
     linkopts = select({
         "//:macos": ["-lresolv"],
         "//:windows": [],
