@@ -14,7 +14,9 @@
 #include <mbedtls/md.h>
 #include <stdio.h>
 #include <string.h>
+#ifndef _WIN32
 #include <sys/mman.h>
+#endif
 #include <unistd.h>
 
 #define BC_KEY_SIZE 32
@@ -85,12 +87,14 @@ static bool read_passphrase_tty(const char *prompt, char *buf, size_t buf_size)
 
 static bool lock_master_key(void)
 {
+#ifndef _WIN32
     if (mlock(g_master_key, BC_KEY_SIZE) != 0)
     {
         log_warn("mlock master key failed: %s", strerror(errno));
         return FALSE;
     }
     g_key_mlocked = TRUE;
+#endif
     return TRUE;
 }
 
@@ -276,11 +280,13 @@ bool edc_secret_init(bool confirm_password, const char *edc_home)
 
 void edc_secret_cleanup(void)
 {
+#ifndef _WIN32
     if (g_key_mlocked)
     {
         munlock(g_master_key, BC_KEY_SIZE);
         g_key_mlocked = FALSE;
     }
+#endif
     memset(g_master_key, 0, BC_KEY_SIZE);
     g_secret_ready = FALSE;
 }
@@ -290,11 +296,13 @@ void edc_secret_lockdown(void)
     if (!g_secret_ready)
         return;
 
+#ifndef _WIN32
     if (g_key_mlocked)
     {
         munlock(g_master_key, BC_KEY_SIZE);
         g_key_mlocked = FALSE;
     }
+#endif
     memset(g_master_key, 0, BC_KEY_SIZE);
     g_secret_ready = FALSE;
 
