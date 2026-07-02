@@ -1,7 +1,9 @@
 #include "edc_init_env.h"
 #include "edc_secret.h"
 #include "cJSON.h"
+#ifndef _WIN32
 #include "linenoise.h"
+#endif
 #include "log.h"
 #include <dirent.h>
 #include <inttypes.h>
@@ -38,11 +40,23 @@ static sds prompt_with_default(const char *label, const char *default_val)
         snprintf(prompt, sizeof(prompt), "%s: ", label);
     }
 
-    char *line = linenoise(prompt);
+    char *line = NULL;
+#ifdef _WIN32
+    char buf[4096];
+    printf("%s", prompt);
+    fflush(stdout);
+    if (fgets(buf, sizeof(buf), stdin) == NULL)
+    {
+        return NULL;
+    }
+    line = buf;
+#else
+    line = linenoise(prompt);
     if (line == NULL)
     {
         return NULL; /* EOF or Ctrl-C */
     }
+#endif
 
     /* Strip trailing whitespace (\n, \r) that linenoise may leave in fallback mode */
     size_t len = strlen(line);
@@ -54,12 +68,16 @@ static sds prompt_with_default(const char *label, const char *default_val)
     /* If user entered nothing, use default */
     if (line[0] == '\0' && default_val && default_val[0] != '\0')
     {
+#ifndef _WIN32
         free(line);
+#endif
         return sdsnew(default_val);
     }
 
     sds result = sdsnew(line);
+#ifndef _WIN32
     free(line);
+#endif
     return result;
 }
 
