@@ -64,7 +64,7 @@
 
 #define LWIP_TIMEVAL_PRIVATE        0
 
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(_WIN32)
 #define SOCKLEN_T_DEFINED
 #endif
 
