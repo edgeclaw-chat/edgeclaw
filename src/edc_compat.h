@@ -39,12 +39,6 @@ typedef SSIZE_T ssize_t;
 #define PATH_MAX MAX_PATH
 #endif
 
-#ifdef _WIN32
-#define PATH_SEP '\\'
-#else
-#define PATH_SEP '/'
-#endif
-
 /* ---- string helpers ---- */
 #define strcasecmp(s1, s2)     _stricmp(s1, s2)
 #define strncasecmp(s1, s2, n) _strnicmp(s1, s2, n)
@@ -183,10 +177,14 @@ static inline char *win32_realpath(const char *path, char *resolved)
 #define DT_LNK    10
 #endif
 
+#define PATH_SEP '\\'
+
 #else  /* !_WIN32 — POSIX */
 
 /* ---- POSIX headers commonly needed across the project ---- */
 #include <unistd.h>
+
+#define PATH_SEP '/'
 
 #endif /* _WIN32 */
 

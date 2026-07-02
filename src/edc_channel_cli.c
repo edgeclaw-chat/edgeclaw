@@ -92,6 +92,47 @@ static void cli_history_add(edc_channel_actor_state_t *state, const char *line)
 
 /* ---- line editing helpers ---- */
 
+static int cli_display_width(const char *s, int byte_pos)
+{
+    int w = 0;
+    int i = 0;
+    while (i < byte_pos) {
+        unsigned char c = (unsigned char)s[i];
+        if (c <= 0x7F) {
+            w++; i++;
+        } else if ((c & 0xE0) == 0xC0) {
+            w += 2; i += 2;
+        } else if ((c & 0xF0) == 0xE0) {
+            w += 2; i += 3;
+        } else if ((c & 0xF8) == 0xF0) {
+            w += 2; i += 4;
+        } else {
+            i++;
+        }
+    }
+    return w;
+}
+
+static int cli_prev_char_pos(const char *s, int byte_pos)
+{
+    if (byte_pos <= 0) return 0;
+    int pos = byte_pos - 1;
+    while (pos > 0 && ((unsigned char)s[pos] & 0xC0) == 0x80)
+        pos--;
+    return pos;
+}
+
+static int cli_next_char_pos(const char *s, int byte_pos, int total_len)
+{
+    if (byte_pos >= total_len) return total_len;
+    unsigned char c = (unsigned char)s[byte_pos];
+    if ((c & 0x80) == 0)          return byte_pos + 1;
+    if ((c & 0xE0) == 0xC0)       return byte_pos + 2;
+    if ((c & 0xF0) == 0xE0)       return byte_pos + 3;
+    if ((c & 0xF8) == 0xF0)       return byte_pos + 4;
+    return byte_pos + 1;
+}
+
 static sds cli_buf_insert(edc_channel_actor_state_t *state, const char *s, size_t len)
 {
     sds new_s = sdsnewlen(state->cli.line_buffer, (size_t)state->cli.cursor_pos);
@@ -114,11 +155,11 @@ static sds cli_buf_delete(edc_channel_actor_state_t *state, int pos, int count)
 
 static void cli_redraw(edc_channel_actor_state_t *state)
 {
-    fprintf(stdout, "\r\e[K\e[0m\e[1;36m> \e[0m%s", state->cli.line_buffer);
+    fprintf(stdout, "\r\e[K\e[0m\e[1;36m> \e[0m");
 
-    int delta = (int)sdslen(state->cli.line_buffer) - state->cli.cursor_pos;
-    if (delta > 0)
-        fprintf(stdout, "\e[%dD", delta);
+    sds prefix = sdsnewlen(state->cli.line_buffer, (size_t)state->cli.cursor_pos);
+    fprintf(stdout, "%s\e[s%s\e[u", prefix, state->cli.line_buffer + state->cli.cursor_pos);
+    sdsfree(prefix);
     fflush(stdout);
 }
 
@@ -251,13 +292,16 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
                 else if (!strcmp(seq, "[B") || !strcmp(seq, "OB"))
                     cli_history_down(state);
                 else if (!strcmp(seq, "[C") || !strcmp(seq, "OC")) {
-                    if (state->cli.cursor_pos < (int)sdslen(state->cli.line_buffer)) {
-                        state->cli.cursor_pos++;
+                    int total = (int)sdslen(state->cli.line_buffer);
+                    if (state->cli.cursor_pos < total) {
+                        state->cli.cursor_pos = cli_next_char_pos(
+                            state->cli.line_buffer, state->cli.cursor_pos, total);
                         cli_redraw(state);
                     }
                 } else if (!strcmp(seq, "[D") || !strcmp(seq, "OD")) {
                     if (state->cli.cursor_pos > 0) {
-                        state->cli.cursor_pos--;
+                        state->cli.cursor_pos = cli_prev_char_pos(
+                            state->cli.line_buffer, state->cli.cursor_pos);
                         cli_redraw(state);
                     }
                 } else if (!strcmp(seq, "[H") || !strcmp(seq, "OH") || !strcmp(seq, "[1~")) {
@@ -267,8 +311,14 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
                     state->cli.cursor_pos = (int)sdslen(state->cli.line_buffer);
                     cli_redraw(state);
                 } else if (!strcmp(seq, "[3~")) {
-                    if (state->cli.cursor_pos < (int)sdslen(state->cli.line_buffer))
-                        state->cli.line_buffer = cli_buf_delete(state, state->cli.cursor_pos, 1);
+                    int total = (int)sdslen(state->cli.line_buffer);
+                    if (state->cli.cursor_pos < total) {
+                        int next = cli_next_char_pos(state->cli.line_buffer,
+                                                     state->cli.cursor_pos, total);
+                        state->cli.line_buffer = cli_buf_delete(state,
+                            state->cli.cursor_pos, next - state->cli.cursor_pos);
+                        cli_redraw(state);
+                    }
                     cli_redraw(state);
                 }
             }
