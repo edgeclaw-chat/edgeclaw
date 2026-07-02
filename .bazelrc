@@ -15,3 +15,8 @@ build:cc --linkopt=-lstdc++
 build:dbg --compilation_mode=dbg
 build:dbg --copt=-g
 build:dbg --strip=never
+
+# MinGW-w64 toolchain on Windows (auto-detects gcc in PATH)
+# Falls back to MSVC if MinGW not found
+build:windows --extra_toolchains=@mingw_toolchain//:mingw_windows_toolchain
+build:windows --repo_env=PATH

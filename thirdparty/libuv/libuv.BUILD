@@ -25,6 +25,8 @@ _COPTS = [
     "-Wextra",
     "-Wno-unused-parameter",
     "-Wstrict-prototypes",
+    "-Wno-incompatible-pointer-types",
+    "-Wno-discarded-qualifiers",
 ]
 
 cc_library(

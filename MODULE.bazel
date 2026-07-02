@@ -20,6 +20,10 @@ arm_android_toolchain = use_extension("//:extensions.bzl", "arm_android_toolchai
 use_repo(arm_android_toolchain, "arm_android_toolchain")
 register_toolchains("@arm_android_toolchain//:arm_android_toolchain")
 
+mingw_toolchain = use_extension("//:extensions.bzl", "mingw_toolchain")
+use_repo(mingw_toolchain, "mingw_toolchain")
+register_toolchains("@mingw_toolchain//:mingw_windows_toolchain")
+
 # Hermetic Python toolchain: downloads Python 3.8 for native builds, no system
 # Python required. Has platform constraints so it only matches native builds.
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
