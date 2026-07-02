@@ -199,10 +199,12 @@ cc_library(
         "edc_param_types.c",
         "edc_tools_todo.c",
         "edc_markdown_render.c",
-        "edc_lwip.c",
         "edc_tools_device_shell.c",
         "edc_tools_device_file.c",
-    ],
+    ] + select({
+        "//:windows": [],
+        "//conditions:default": ["edc_lwip.c"],
+    }),
     hdrs = [
         "edc_compat.h",
         "edc_containers.h",
@@ -263,12 +265,16 @@ cc_library(
         "@md4c//:md4c",
         ":lark_api_pb",
         ":edc_secret_lib",
-        "@lwip//:lwip",
-        "//thirdparty/lwip:sys_arch",
-        ":pppos_agent_lib",
         "//thirdparty/brutezone:brutezone",
         "//thirdparty/utf8proc",
-    ],
+    ] + select({
+        "//:windows": [],
+        "//conditions:default": [
+            "@lwip//:lwip",
+            "//thirdparty/lwip:sys_arch",
+            ":pppos_agent_lib",
+        ],
+    }),
     linkopts = select({
         "//:macos": ["-lresolv"],
         "//:windows": [],

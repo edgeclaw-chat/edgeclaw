@@ -5,9 +5,11 @@
 #include "log.h"
 #include <edc_param_types.h>
 
+#ifndef _WIN32
 #include "lwip/api.h"
 #include "lwip/ip_addr.h"
 #include "lwip/err.h"
+#endif
 #include <cJSON.h>
 #include "edc_compat.h"
 #include "edc_file_utils.h"
@@ -53,6 +55,7 @@ static void device_file_ctx_free(struct device_file_ctx *ctx)
     free(ctx);
 }
 
+#ifndef _WIN32
 static err_t recv_until_close(struct netconn *c, sds *buf)
 {
     struct netbuf *nb;
@@ -68,6 +71,7 @@ static err_t recv_until_close(struct netconn *c, sds *buf)
     }
     return err;
 }
+#endif
 
 static void device_file_send_error(struct device_file_ctx *ctx, const char *fmt, ...)
 {
@@ -420,6 +424,7 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
     return 0;
 }
 
+#ifndef _WIN32
 static int do_upload_chunk_lwip(struct device_file_ctx *ctx, const char *b64_chunk,
                                 size_t raw_chunk_len, size_t offset)
 {
@@ -492,6 +497,7 @@ static int do_upload_chunk_lwip(struct device_file_ctx *ctx, const char *b64_chu
     cJSON_Delete(resp_json);
     return 0;
 }
+#endif
 
 static bool do_device_upload(struct device_file_ctx *ctx,
                                  int (*do_chunk)(struct device_file_ctx *, const char *, size_t, size_t))
@@ -668,6 +674,7 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
     return 0;
 }
 
+#ifndef _WIN32
 static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
                                   size_t *out_total_size, size_t *out_chunk_len, int fd)
 {
@@ -768,6 +775,7 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
 
     return 0;
 }
+#endif
 
 static bool do_device_download(struct device_file_ctx *ctx,
                                    int (*do_chunk)(struct device_file_ctx *, size_t, size_t *, size_t *, int))
@@ -827,6 +835,7 @@ static void device_file_thread_socket(struct device_file_ctx *ctx)
     device_file_ctx_free(ctx);
 }
 
+#ifndef _WIN32
 static void device_file_thread_lwip(struct device_file_ctx *ctx)
 {
     if (ctx->is_upload)
@@ -836,6 +845,7 @@ static void device_file_thread_lwip(struct device_file_ctx *ctx)
 
     device_file_ctx_free(ctx);
 }
+#endif
 
 static void device_file_thread(void *data)
 {
@@ -846,13 +856,19 @@ static void device_file_thread(void *data)
     if (conf->device_transport && conf->device_transport[0])
     {
         if (strcasecmp(conf->device_transport, "tty") == 0)
+#ifndef _WIN32
             device_file_thread_lwip(ctx);
         else
+#endif
             device_file_thread_socket(ctx);
     }
     else if (conf->device_pty && conf->device_pty[0])
     {
+#ifndef _WIN32
         device_file_thread_lwip(ctx);
+#else
+        device_file_thread_socket(ctx);
+#endif
     }
     else
     {

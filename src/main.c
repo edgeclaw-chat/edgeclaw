@@ -3,8 +3,10 @@
 #include "edc_file_utils.h"
 #include "edc_init_env.h"
 #include "edc_log.h"
-#include "edc_lwip.h"
 #include "edc_compat.h"
+#ifndef _WIN32
+#include "edc_lwip.h"
+#endif
 #include <errno.h>
 #include <getopt.h>
 #include <signal.h>
@@ -157,6 +159,7 @@ int main(int argc, char *argv[])
     // agent->network->mgr.dns4.url = "udp://114.114.114.114:53";
 
     /* PPPoS device link (optional, configured via config.json "device_pty") */
+#ifndef _WIN32
     if (agent->config->device_pty) {
         log_info("connecting to device via PPPoS on %s (baud %d) ...",
                  agent->config->device_pty, agent->config->device_baud);
@@ -165,6 +168,7 @@ int main(int argc, char *argv[])
         else
             log_error("PPPoS link failed");
     }
+#endif
 
     while (_run_loop)
     {

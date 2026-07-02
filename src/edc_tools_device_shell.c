@@ -6,9 +6,11 @@
 #include "log.h"
 #include <edc_param_types.h>
 
+#ifndef _WIN32
 #include "lwip/api.h"
 #include "lwip/ip_addr.h"
 #include "lwip/err.h"
+#endif
 #include <cJSON.h>
 #include <uv.h>
 #include "sds.h"
@@ -33,6 +35,7 @@ static void device_shell_ctx_free(struct device_shell_ctx *ctx)
     free(ctx);
 }
 
+#ifndef _WIN32
 static err_t recv_until_close(struct netconn *c, sds *buf)
 {
     struct netbuf *nb;
@@ -47,6 +50,7 @@ static err_t recv_until_close(struct netconn *c, sds *buf)
     }
     return err;
 }
+#endif
 
 static void process_shell_response(sds resp_buf, sds *result, EdcError **error)
 {
@@ -340,6 +344,7 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
     device_shell_ctx_free(ctx);
 }
 
+#ifndef _WIN32
 static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
 {
     sds result = sdsempty();
@@ -427,6 +432,7 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
 
     device_shell_ctx_free(ctx);
 }
+#endif
 
 static void device_shell_thread(void *data)
 {
@@ -435,11 +441,17 @@ static void device_shell_thread(void *data)
 
     if (conf->device_transport && conf->device_transport[0]) {
         if (strcasecmp(conf->device_transport, "tty") == 0)
+#ifndef _WIN32
             device_shell_thread_lwip(ctx);
         else
+#endif
             device_shell_thread_socket(ctx);
     } else if (conf->device_pty && conf->device_pty[0]) {
+#ifndef _WIN32
         device_shell_thread_lwip(ctx);
+#else
+        device_shell_thread_socket(ctx);
+#endif
     } else {
         device_shell_thread_socket(ctx);
     }
