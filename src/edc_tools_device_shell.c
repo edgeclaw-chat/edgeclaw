@@ -13,12 +13,8 @@
 #include <uv.h>
 #include "sds.h"
 #include "edc_error.h"
-#include <arpa/inet.h>
-#include <errno.h>
-#include <netinet/in.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include <stdlib.h>
 
 struct device_shell_ctx
 {
@@ -50,28 +46,6 @@ static err_t recv_until_close(struct netconn *c, sds *buf)
         netbuf_delete(nb);
     }
     return err;
-}
-
-static int send_all(int fd, const void *buf, size_t len)
-{
-    size_t total = 0;
-    while (total < len)
-    {
-        ssize_t n = send(fd, (const char *)buf + total, len - total, 0);
-        if (n <= 0)
-            return -1;
-        total += (size_t)n;
-    }
-    return 0;
-}
-
-static int recv_until_close_socket(int fd, sds *buf)
-{
-    char tmp[4096];
-    ssize_t n;
-    while ((n = recv(fd, tmp, sizeof(tmp), 0)) > 0)
-        *buf = sdscatlen(*buf, tmp, n);
-    return (n == 0) ? 0 : -1;
 }
 
 static void process_shell_response(sds resp_buf, sds *result, EdcError **error)
@@ -124,48 +98,168 @@ static void process_shell_response(sds resp_buf, sds *result, EdcError **error)
         *error = edc_error_new(EDC_ERR_EXEC, "%s", *result);
 }
 
+struct device_shell_uv_state {
+    uv_loop_t loop;
+    uv_tcp_t tcp;
+    uv_connect_t connect_req;
+    uv_write_t write_req;
+    uv_timer_t timeout_timer;
+
+    struct device_shell_ctx *shell_ctx;
+    sds resp_buf;
+    sds header;
+    sds body_sds;
+
+    bool timed_out;
+    EdcError *error;
+};
+
+static void device_shell_uv_close_cb(uv_handle_t *handle)
+{
+    (void)handle;
+}
+
+static void device_shell_uv_alloc(uv_handle_t *handle, size_t suggested, uv_buf_t *buf)
+{
+    (void)handle;
+    size_t len = suggested > 0 ? suggested : 4096;
+    buf->base = malloc(len);
+    buf->len = buf->base ? len : 0;
+}
+
+static void device_shell_uv_on_timeout(uv_timer_t *timer)
+{
+    struct device_shell_uv_state *state = timer->data;
+    if (state->error || state->timed_out)
+        return;
+    state->timed_out = true;
+    if (!uv_is_closing((uv_handle_t *)&state->tcp))
+        uv_close((uv_handle_t *)&state->tcp, device_shell_uv_close_cb);
+}
+
+static void device_shell_uv_on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
+{
+    struct device_shell_uv_state *state = stream->data;
+
+    if (state->error || state->timed_out) {
+        free(buf->base);
+        return;
+    }
+
+    if (nread > 0) {
+        state->resp_buf = sdscatlen(state->resp_buf, buf->base, nread);
+        free(buf->base);
+        return;
+    }
+
+    free(buf->base);
+    uv_timer_stop(&state->timeout_timer);
+    uv_close((uv_handle_t *)stream, device_shell_uv_close_cb);
+
+    if (nread < 0 && nread != UV_EOF) {
+        state->error = edc_error_new(EDC_ERR_EXEC,
+                            "device_shell: recv failed: %s", uv_strerror((int)nread));
+    }
+
+    uv_stop(&state->loop);
+}
+
+static void device_shell_uv_on_write(uv_write_t *req, int status)
+{
+    struct device_shell_uv_state *state = req->data;
+
+    if (state->error || state->timed_out)
+        return;
+
+    if (status < 0) {
+        state->error = edc_error_new(EDC_ERR_EXEC,
+                            "device_shell: write failed: %s", uv_strerror(status));
+        uv_timer_stop(&state->timeout_timer);
+        uv_close((uv_handle_t *)&state->tcp, device_shell_uv_close_cb);
+        uv_stop(&state->loop);
+        return;
+    }
+
+    int r = uv_read_start((uv_stream_t *)&state->tcp,
+                          device_shell_uv_alloc, device_shell_uv_on_read);
+    if (r < 0) {
+        state->error = edc_error_new(EDC_ERR_EXEC,
+                            "device_shell: read start failed: %s", uv_strerror(r));
+        uv_timer_stop(&state->timeout_timer);
+        uv_close((uv_handle_t *)&state->tcp, device_shell_uv_close_cb);
+        uv_stop(&state->loop);
+    }
+}
+
+static void device_shell_uv_on_connect(uv_connect_t *req, int status)
+{
+    struct device_shell_uv_state *state = req->data;
+
+    if (state->error || state->timed_out)
+        return;
+
+    if (status < 0) {
+        state->error = edc_error_new(EDC_ERR_EXEC,
+                            "device_shell: connect failed: %s", uv_strerror(status));
+        uv_timer_stop(&state->timeout_timer);
+        uv_close((uv_handle_t *)&state->tcp, device_shell_uv_close_cb);
+        uv_stop(&state->loop);
+        return;
+    }
+
+    uv_timer_stop(&state->timeout_timer);
+    uv_timer_start(&state->timeout_timer, device_shell_uv_on_timeout,
+                   (uint64_t)state->shell_ctx->timeout_sec * 1000, 0);
+
+    uv_buf_t bufs[2];
+    bufs[0].base = state->header;
+    bufs[0].len = sdslen(state->header);
+    bufs[1].base = state->body_sds;
+    bufs[1].len = sdslen(state->body_sds);
+
+    int r = uv_write(&state->write_req, (uv_stream_t *)&state->tcp,
+                     bufs, 2, device_shell_uv_on_write);
+    if (r < 0) {
+        state->error = edc_error_new(EDC_ERR_EXEC,
+                            "device_shell: write failed: %s", uv_strerror(r));
+        uv_timer_stop(&state->timeout_timer);
+        uv_close((uv_handle_t *)&state->tcp, device_shell_uv_close_cb);
+        uv_stop(&state->loop);
+    }
+}
+
+static void device_shell_uv_close_walk(uv_handle_t *handle, void *arg)
+{
+    (void)arg;
+    if (!uv_is_closing(handle))
+        uv_close(handle, device_shell_uv_close_cb);
+}
+
 static void device_shell_thread_socket(struct device_shell_ctx *ctx)
 {
     sds result = sdsempty();
     EdcError *error = NULL;
 
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
+    struct device_shell_uv_state *state = calloc(1, sizeof(*state));
+    if (!state) {
         sdsfree(result);
         error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: socket() failed: %s", strerror(errno));
+                            "device_shell: failed to allocate state");
         ctx->callback(ctx->tb_ctx, NULL, error);
         device_shell_ctx_free(ctx);
         return;
     }
 
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(ctx->agent_port);
-    if (inet_pton(AF_INET, ctx->agent_ip, &addr.sin_addr) != 1) {
-        close(sock);
-        sdsfree(result);
-        error = edc_error_new(EDC_ERR_INVAL,
-                            "device_shell: invalid device_ip: %s", ctx->agent_ip);
-        ctx->callback(ctx->tb_ctx, NULL, error);
-        device_shell_ctx_free(ctx);
-        return;
-    }
+    state->shell_ctx = ctx;
+    state->resp_buf = sdsempty();
+    state->tcp.data = state;
+    state->connect_req.data = state;
+    state->write_req.data = state;
+    state->timeout_timer.data = state;
 
-    struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(sock);
-        sdsfree(result);
-        error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: connect to %s:%u failed: %s",
-                            ctx->agent_ip, ctx->agent_port, strerror(errno));
-        ctx->callback(ctx->tb_ctx, NULL, error);
-        device_shell_ctx_free(ctx);
-        return;
-    }
+    uv_loop_init(&state->loop);
+    uv_tcp_init(&state->loop, &state->tcp);
+    uv_timer_init(&state->loop, &state->timeout_timer);
 
     cJSON *req_json = cJSON_CreateObject();
     cJSON_AddStringToObject(req_json, "command", ctx->command);
@@ -174,7 +268,7 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
     char *req_body = cJSON_PrintUnformatted(req_json);
     cJSON_Delete(req_json);
 
-    sds hdr = sdscatprintf(sdsempty(),
+    state->header = sdscatprintf(sdsempty(),
         "POST /exec HTTP/1.1\r\n"
         "Host: %s:%u\r\n"
         "Content-Type: application/json\r\n"
@@ -183,30 +277,58 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
         "\r\n",
         ctx->agent_ip, ctx->agent_port, strlen(req_body));
 
-    send_all(sock, hdr, sdslen(hdr));
-    send_all(sock, req_body, strlen(req_body));
-    sdsfree(hdr);
+    state->body_sds = sdsnewlen(req_body, strlen(req_body));
     cJSON_free(req_body);
 
-    tv.tv_sec = ctx->timeout_sec;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    struct sockaddr_in addr;
+    uv_ip4_addr(ctx->agent_ip, ctx->agent_port, &addr);
 
-    sds resp_buf = sdsempty();
-    int recv_ret = recv_until_close_socket(sock, &resp_buf);
-    close(sock);
+    uv_timer_start(&state->timeout_timer, device_shell_uv_on_timeout, 5000, 0);
 
-    if (recv_ret != 0) {
-        sdsfree(resp_buf);
-        sdsfree(result);
+    int r = uv_tcp_connect(&state->connect_req, &state->tcp,
+                           (const struct sockaddr *)&addr,
+                           device_shell_uv_on_connect);
+    if (r < 0) {
         error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: recv failed: %s", strerror(errno));
+                            "device_shell: connect failed: %s", uv_strerror(r));
+        uv_timer_stop(&state->timeout_timer);
+        uv_close((uv_handle_t *)&state->tcp, device_shell_uv_close_cb);
+        uv_close((uv_handle_t *)&state->timeout_timer, device_shell_uv_close_cb);
+        uv_run(&state->loop, UV_RUN_DEFAULT);
+        uv_loop_close(&state->loop);
+
+        sdsfree(state->header);
+        sdsfree(state->body_sds);
+        sdsfree(state->resp_buf);
+        free(state);
+        sdsfree(result);
         ctx->callback(ctx->tb_ctx, NULL, error);
         device_shell_ctx_free(ctx);
         return;
     }
 
-    process_shell_response(resp_buf, &result, &error);
-    sdsfree(resp_buf);
+    uv_run(&state->loop, UV_RUN_DEFAULT);
+
+    uv_walk(&state->loop, device_shell_uv_close_walk, NULL);
+    uv_run(&state->loop, UV_RUN_DEFAULT);
+
+    if (state->error) {
+        error = state->error;
+        sdsfree(state->resp_buf);
+    } else if (state->timed_out) {
+        sdsfree(state->resp_buf);
+        error = edc_error_new(EDC_ERR_EXEC,
+                            "device_shell: request timed out after %ds",
+                            ctx->timeout_sec);
+    } else {
+        process_shell_response(state->resp_buf, &result, &error);
+        sdsfree(state->resp_buf);
+    }
+
+    sdsfree(state->header);
+    sdsfree(state->body_sds);
+    uv_loop_close(&state->loop);
+    free(state);
 
     if (error) {
         ctx->callback(ctx->tb_ctx, NULL, error);
