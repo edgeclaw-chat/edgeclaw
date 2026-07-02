@@ -5,7 +5,7 @@
 #include <string.h>
 #include <limits.h>
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__GNUC__)
 #include <winsock2.h>
 #else
 #include <sys/time.h>

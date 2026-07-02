@@ -3,7 +3,7 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 cc_library(
     name = "config",
     hdrs = select({
-        "//:windows": [
+        "@platforms//os:windows": [
             "lwipopts.h",
             "arch/win32/cc.h",
             "arch/win32/sys_arch.h",
@@ -21,7 +21,7 @@ cc_library(
 cc_library(
     name = "sys_arch",
     srcs = select({
-        "//:windows": ["arch/win32/sys_arch.c"],
+        "@platforms//os:windows": ["arch/win32/sys_arch.c"],
         "//conditions:default": ["arch/sys_arch.c"],
     }),
     includes = ["."],
