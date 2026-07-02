@@ -35,7 +35,6 @@ register_toolchains("@bazel_tools//tools/python:autodetecting_toolchain")
 bazel_dep(name = "platforms", version = "1.0.0")
 bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "rules_foreign_cc", version = "0.15.1")
-bazel_dep(name = "libuv", version = "1.48.0.bcr.1")
 bazel_dep(name = "mbedtls", version = "3.6.5")
 bazel_dep(name = "nanopb", version = "0.4.9.1.bcr.2")
 bazel_dep(name = "rules_pkg", version = "1.2.0")
@@ -66,4 +65,5 @@ use_repo(
     "lwip",
     "sds",
     "uthash",
+    "libuv",
 )
