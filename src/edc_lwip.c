@@ -3,9 +3,6 @@
 #include "lwip/netif.h"
 #include "lwip/tcpip.h"
 #include "lwip/ip_addr.h"
-#ifdef __linux__
-#include "netif/tapif.h"
-#endif
 #include "netif/ppp/pppapi.h"
 #include "netif/ppp/pppos.h"
 #include "netif/ppp/ppp.h"
@@ -15,38 +12,8 @@
 #include <termios.h>
 #endif
 
-#ifdef __linux__
-static struct netif lwip_tap_netif;
-#endif
 static struct netif lwip_pppos_netif;
 static bool lwip_initialized = FALSE;
-
-#ifdef __linux__
-static void init_tap_netif(void *arg)
-{
-    ip4_addr_t ip, nm, g;
-    const char *ipaddr = (const char *)arg;
-    (void)ipaddr;
-    ipaddr = getenv("LWIP_IPADDR");
-    if (!ipaddr) ipaddr = "192.168.100.2";
-    if (!getenv("PRECONFIGURED_TAPIF")) setenv("PRECONFIGURED_TAPIF", "tap0", 1);
-    if (!ip4addr_aton(ipaddr, &ip)) return;
-    IP4_ADDR(&nm, 255, 255, 255, 0);
-    IP4_ADDR(&g, 192, 168, 100, 1);
-    netif_add(&lwip_tap_netif, &ip, &nm, &g, NULL, tapif_init, tcpip_input);
-    netif_set_default(&lwip_tap_netif);
-    netif_set_up(&lwip_tap_netif);
-}
-
-bool edc_lwip_init_tap(const char *ipaddr, const char *netmask, const char *gw)
-{
-    (void)netmask; (void)gw;
-    setenv("LWIP_IPADDR", ipaddr ? ipaddr : "192.168.100.2", 1);
-    tcpip_init(init_tap_netif, (void *)ipaddr);
-    lwip_initialized = TRUE;
-    return TRUE;
-}
-#endif
 
 void edc_lwip_init_loopback(void)
 {
@@ -207,12 +174,6 @@ bool edc_lwip_init_pppos_path(const char *path, int baud)
 void edc_lwip_shutdown(void)
 {
     if (!lwip_initialized) return;
-#ifdef __linux__
-    if (lwip_tap_netif.name[0] != 0) {
-        netif_set_down(&lwip_tap_netif);
-        netif_remove(&lwip_tap_netif);
-    }
-#endif
     if (lwip_pppos_netif.name[0] != 0) {
         netif_set_down(&lwip_pppos_netif);
         netif_remove(&lwip_pppos_netif);
