@@ -309,11 +309,16 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
             continue;
         }
 
-        /* backspace */
+        /* backspace — delete one full UTF-8 character before cursor */
         if (c == 127 || c == '\b') {
             if (state->cli.cursor_pos > 0) {
-                state->cli.line_buffer = cli_buf_delete(state, state->cli.cursor_pos - 1, 1);
-                state->cli.cursor_pos--;
+                int pos = state->cli.cursor_pos - 1;
+                while (pos > 0 &&
+                       ((unsigned char)state->cli.line_buffer[pos] & 0xC0) == 0x80)
+                    pos--;
+                int count = state->cli.cursor_pos - pos;
+                state->cli.line_buffer = cli_buf_delete(state, pos, count);
+                state->cli.cursor_pos = pos;
                 cli_redraw(state);
             }
             continue;
