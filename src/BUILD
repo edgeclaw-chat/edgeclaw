@@ -87,7 +87,7 @@ cc_binary(
 )
 
 cc_binary(
-    name = "edgeclaw",
+    name = "edgeclaw.exe",
     srcs = [
         "main.c",
     ],

@@ -203,8 +203,8 @@ def _mingw_toolchain_repo_impl(rctx):
     include_dirs = _parse_builtin_includes(result.stderr)
 
     target_cpu = "x86_64"
-    target_system_name = "x86_64-pc-mingw32"
-    toolchain_identifier = "x86_64-pc-mingw32"
+    target_system_name = "x86_64-w64-mingw32"
+    toolchain_identifier = "x86_64-w64-mingw32"
 
     rctx.file("mingw_compiler_config.bzl", content = _generate_config_bzl(bin_dir, tool_prefix, include_dirs, target_cpu, target_system_name, toolchain_identifier))
 

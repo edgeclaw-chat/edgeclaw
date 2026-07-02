@@ -169,7 +169,7 @@ DAGENT_FILE_NAME = select({
 
 pkg_files(
     name = "edgeclaw_binary",
-    srcs = ["//src:edgeclaw"],
+    srcs = ["//src:edgeclaw.exe"],
     attributes = pkg_attributes(mode = "0755"), 
 )
 
