@@ -253,7 +253,7 @@ static void handle_file_upload(struct edc_device_request *req, struct edc_device
         return;
     }
 
-    if (!req->file_data || req->file_data_len == 0)
+    if (!req->file_data)
     {
         fprintf(stderr, "agent: upload: no file data\n");
         resp.stdout_buf = sdsnew("no file data provided");

@@ -30,7 +30,10 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
 {
     if (error)
     {
+        log_error("DEBUG actor_callback: error->message='%s', error->code=%d, error ptr=%p, sdslen=%zu",
+                  error->message, error->code, (void*)error, sdslen(error->message));
         result = sdsnew(error->message);
+        log_error("DEBUG actor_callback: after sdsnew, result='%s', len=%zu", result, sdslen(result));
         result = sdscat(result, _HINT);
         edc_error_free(error);
     }

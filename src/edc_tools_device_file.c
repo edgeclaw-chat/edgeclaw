@@ -73,12 +73,12 @@ static void device_file_send_error(struct device_file_ctx *ctx, const char *fmt,
 {
     va_list ap;
     va_start(ap, fmt);
-    char *msg = edc_strdup_printf(fmt, ap);
+    sds msg = edc_str_vprintf(fmt, ap);
     va_end(ap);
 
     EdcError *error = edc_error_new(EDC_ERR_EXEC, "%s", msg);
     ctx->callback(ctx->tb_ctx, NULL, error);
-    free(msg);
+    sdsfree(msg);
 }
 
 static int parse_json_response(sds resp_buf, cJSON **out_json, EdcError **error)
@@ -87,6 +87,7 @@ static int parse_json_response(sds resp_buf, cJSON **out_json, EdcError **error)
     if (!body)
     {
         *error = edc_error_new(EDC_ERR_EXEC, "device_file: invalid HTTP response");
+        log_error("DEBUG parse_json_response: invalid HTTP response, resp_buf len=%zu", sdslen(resp_buf));
         return -1;
     }
     body += 4;
@@ -98,29 +99,53 @@ static int parse_json_response(sds resp_buf, cJSON **out_json, EdcError **error)
         if (sp)
             http_status = atoi(sp + 1);
     }
-    if (http_status != 200)
-    {
-        *error = edc_error_new(EDC_ERR_EXEC, "device_file: HTTP %d", http_status);
-        return -1;
-    }
 
+    log_error("DEBUG parse_json_response: http_status=%d, body=%.100s", http_status, body);
+
+    /* Try JSON parse first (device agent returns JSON error even on non-200) */
     *out_json = cJSON_Parse(body);
-    if (!*out_json)
+    if (*out_json)
     {
-        *error = edc_error_new(EDC_ERR_EXEC, "device_file: invalid JSON response");
-        return -1;
-    }
+        if (http_status == 200)
+        {
+            cJSON *error_item = cJSON_GetObjectItem(*out_json, "error");
+            if (error_item && cJSON_IsString(error_item))
+            {
+                *error = edc_error_new(EDC_ERR_EXEC, "device_file: %s", error_item->valuestring);
+                log_error("DEBUG parse_json_response: created error, message='%s', ptr=%p", (*error)->message, (void*)(*error));
+                cJSON_Delete(*out_json);
+                *out_json = NULL;
+                return -1;
+            }
+            return 0;
+        }
 
-    cJSON *error_item = cJSON_GetObjectItem(*out_json, "error");
-    if (error_item && cJSON_IsString(error_item))
-    {
-        *error = edc_error_new(EDC_ERR_EXEC, "device_file: %s", error_item->valuestring);
+        cJSON *error_item = cJSON_GetObjectItem(*out_json, "error");
+        if (error_item && cJSON_IsString(error_item))
+            *error = edc_error_new(EDC_ERR_EXEC, "device_file: HTTP %d: %s",
+                                   http_status, error_item->valuestring);
+        else
+            *error = edc_error_new(EDC_ERR_EXEC, "device_file: HTTP %d", http_status);
         cJSON_Delete(*out_json);
         *out_json = NULL;
         return -1;
     }
 
-    return 0;
+    /* Non-JSON body: include text in error message */
+    char *trimmed = body;
+    while (*trimmed == ' ' || *trimmed == '\r' || *trimmed == '\n') trimmed++;
+    if (http_status != 200) {
+        if (*trimmed)
+            *error = edc_error_new(EDC_ERR_EXEC, "device_file: HTTP %d: %.200s", http_status, trimmed);
+        else
+            *error = edc_error_new(EDC_ERR_EXEC, "device_file: HTTP %d", http_status);
+    } else {
+        if (*trimmed)
+            *error = edc_error_new(EDC_ERR_EXEC, "device_file: invalid JSON response: %.200s", trimmed);
+        else
+            *error = edc_error_new(EDC_ERR_EXEC, "device_file: invalid JSON response (empty body)");
+    }
+    return -1;
 }
 
 struct device_file_uv_state {
@@ -589,7 +614,9 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
     cJSON_Delete(req_json);
 
     if (!resp_buf) {
+        log_error("device_download: send_recv failed");
         if (error) {
+            log_error("device_download: %s", error->message);
             if (ctx->last_error)
                 edc_error_free(ctx->last_error);
             ctx->last_error = error;
@@ -599,6 +626,8 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
 
     cJSON *resp_json = NULL;
     if (parse_json_response(resp_buf, &resp_json, &error) != 0) {
+        log_error("device_download: parse error: %s",
+                  error ? error->message : "unknown");
         sdsfree(resp_buf);
         if (error) {
             if (ctx->last_error)
@@ -695,6 +724,8 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
     EdcError *error = NULL;
     if (parse_json_response(resp_buf, &resp_json, &error) != 0)
     {
+        log_error("device_download: parse error: %s",
+                  error ? error->message : "unknown");
         sdsfree(resp_buf);
         if (error) {
             if (ctx->last_error)
