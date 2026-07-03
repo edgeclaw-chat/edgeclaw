@@ -555,7 +555,8 @@ static bool do_device_upload(struct device_file_ctx *ctx,
         ssize_t n = read(fd, chunk_buf, this_len);
         if (n <= 0 || (size_t)n != this_len)
         {
-            device_file_send_error(ctx, "device_upload: read failed at offset %zu", offset);
+            device_file_send_error(ctx, "device_upload: read failed at offset %zu: %s (n=%zd, expected=%zu)",
+                                   offset, strerror(errno), n, this_len);
             free(chunk_buf);
             sdsfree(final_result);
             close(fd);
@@ -856,18 +857,24 @@ static void device_file_thread(void *data)
     if (conf->device_transport && conf->device_transport[0])
     {
         if (strcasecmp(conf->device_transport, "tty") == 0)
-#ifndef _WIN32
-            device_file_thread_lwip(ctx);
-        else
-#endif
+        {
+#ifdef _WIN32
             device_file_thread_socket(ctx);
+#else
+            device_file_thread_lwip(ctx);
+#endif
+        }
+        else
+        {
+            device_file_thread_socket(ctx);
+        }
     }
     else if (conf->device_pty && conf->device_pty[0])
     {
-#ifndef _WIN32
-        device_file_thread_lwip(ctx);
-#else
+#ifdef _WIN32
         device_file_thread_socket(ctx);
+#else
+        device_file_thread_lwip(ctx);
 #endif
     }
     else
@@ -930,7 +937,16 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
     ctx->timeout_sec = timeout_sec;
 
     uv_thread_t tid;
-    uv_thread_create(&tid, device_file_thread, ctx);
+    int tr = uv_thread_create(&tid, device_file_thread, ctx);
+    if (tr != 0)
+    {
+        log_error("device_upload: uv_thread_create failed: %s", uv_strerror(tr));
+        EdcError *error = edc_error_new(EDC_ERR_EXEC,
+                                     "device_upload: failed to create thread: %s", uv_strerror(tr));
+        callback(tb_ctx, NULL, error);
+        device_file_ctx_free(ctx);
+        return;
+    }
 }
 
 static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, cJSON *args,
@@ -973,7 +989,16 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
     ctx->timeout_sec = timeout_sec;
 
     uv_thread_t tid;
-    uv_thread_create(&tid, device_file_thread, ctx);
+    int tr = uv_thread_create(&tid, device_file_thread, ctx);
+    if (tr != 0)
+    {
+        log_error("device_upload: uv_thread_create failed: %s", uv_strerror(tr));
+        EdcError *error = edc_error_new(EDC_ERR_EXEC,
+                                     "device_upload: failed to create thread: %s", uv_strerror(tr));
+        callback(tb_ctx, NULL, error);
+        device_file_ctx_free(ctx);
+        return;
+    }
 }
 
 static struct edc_tool *edc_tool_create_device_upload(struct edc_toolbox *tb)
