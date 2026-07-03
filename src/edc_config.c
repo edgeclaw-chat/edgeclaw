@@ -13,10 +13,20 @@ sds edc_config_resolve_bc_home(void)
     if (sdslen(home) == 0)
     {
         sdsfree(home);
+#ifdef _WIN32
+        char tmp[MAX_PATH];
+        if (GetTempPathA(MAX_PATH, tmp) == 0)
+            log_error("edc_homedir() failed, falling back to C:/.edgeclaw");
+        home = sdsnew(tmp);
+        sds result = edc_path_join(home, ".edgeclaw", NULL);
+        sdsfree(home);
+        return result;
+#else
         log_error("edc_homedir() failed, falling back to /tmp/.edgeclaw");
         return sdsnew("/tmp/.edgeclaw");
+#endif
     }
-    sds result = sdscatprintf(sdsempty(), "%s/.edgeclaw", home);
+    sds result = edc_path_join(home, ".edgeclaw", NULL);
     sdsfree(home);
     return result;
 }
@@ -141,7 +151,7 @@ struct edc_config *edc_config_load(const char *edc_home)
     EdcError *error = NULL;
     struct edc_config *config = NULL;
 
-    sds path = sdscatprintf(sdsempty(), "%s/config.json", edc_home);
+    sds path = edc_path_join(edc_home, "config.json", NULL);
     sds content = edc_file_read(path, &error);
 
     if (!content)
@@ -310,7 +320,7 @@ struct edc_config *edc_config_load(const char *edc_home)
         config->channel.type = edc_channel_cli;
     }
 
-    config->workspace = sdscatprintf(sdsempty(), "%s/workspace", edc_home);
+    config->workspace = edc_path_join(edc_home, "workspace", NULL);
 
     cJSON *sandbox = cJSON_GetObjectItem(conf, "sandbox");
     if (sandbox && cJSON_IsObject(sandbox))
@@ -326,7 +336,7 @@ struct edc_config *edc_config_load(const char *edc_home)
         else
         {
             config->sandbox_rw_paths = g_new0(sds, 3 + 1);
-            config->sandbox_rw_paths[0] = sdscatprintf(sdsempty(), "%s/sandbox", edc_home);
+            config->sandbox_rw_paths[0] = edc_path_join(edc_home, "sandbox", NULL);
             config->sandbox_rw_paths[1] = sdsnew("/tmp");
             config->sandbox_rw_paths[2] = sdsnew("/dev");
         }
@@ -357,7 +367,7 @@ struct edc_config *edc_config_load(const char *edc_home)
     else
     {
         config->sandbox_rw_paths = g_new0(sds, 3 + 1);
-        config->sandbox_rw_paths[0] = sdscatprintf(sdsempty(), "%s/sandbox", edc_home);
+        config->sandbox_rw_paths[0] = edc_path_join(edc_home, "sandbox", NULL);
         config->sandbox_rw_paths[1] = sdsnew("/tmp");
         config->sandbox_rw_paths[2] = sdsnew("/dev");
 

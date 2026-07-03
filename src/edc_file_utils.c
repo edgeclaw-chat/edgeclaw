@@ -216,6 +216,12 @@ bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata,
 
 sds edc_path_join(const char *first, ...)
 {
+#ifdef _WIN32
+    const char *sep = "\\";
+    const char *alt_sep = "/";
+#else
+    const char *sep = "/";
+#endif
     va_list args;
     va_start(args, first);
 
@@ -224,21 +230,34 @@ sds edc_path_join(const char *first, ...)
 
     for (const char *seg = first; seg; seg = va_arg(args, const char *)) {
         if (*seg == '\0') continue;
-        if (need_sep) result = sdscat(result, "/");
+        if (need_sep) result = sdscat(result, sep);
         result = sdscat(result, seg);
         need_sep = true;
     }
 
     va_end(args);
+#ifdef _WIN32
+    {
+        size_t len = sdslen(result);
+        for (size_t i = 0; i < len; i++)
+            if (result[i] == '/') result[i] = '\\';
+    }
+#endif
     return result;
 }
 
 sds edc_path_dirname(const char *path)
 {
     if (!path) return sdsempty();
+#ifdef _WIN32
+    const char *last_slash = strrchr(path, '/');
+    const char *last_bslash = strrchr(path, '\\');
+    const char *last = last_slash > last_bslash ? last_slash : last_bslash;
+#else
     const char *last = strrchr(path, '/');
+#endif
     if (!last) return sdsnew(".");
-    if (last == path) return sdsnew("/");
+    if (last == path) return sdsnewlen(path, 1);
     return sdsnewlen(path, (size_t)(last - path));
 }
 

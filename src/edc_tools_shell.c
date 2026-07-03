@@ -37,6 +37,12 @@ struct edc_tool_shell_ctx
 
 static struct edc_tool_shell_ctx *active_contexts = NULL;
 static uv_mutex_t active_mutex;
+static uv_once_t active_mutex_once = UV_ONCE_INIT;
+
+static void active_mutex_init(void)
+{
+    uv_mutex_init(&active_mutex);
+}
 
 static void shell_ctx_try_complete(struct edc_tool_shell_ctx *ctx);
 
@@ -145,6 +151,7 @@ static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
 
     ctx->callback(ctx->tb_ctx, result, NULL);
 
+    uv_once(&active_mutex_once, active_mutex_init);
     uv_mutex_lock(&active_mutex);
     LL_DELETE(active_contexts, ctx);
     uv_mutex_unlock(&active_mutex);
@@ -259,6 +266,7 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx,
     uv_timer_start(&ctx->timeout_timer, on_timeout,
                    (uint64_t)timeout_sec * 1000, 0);
 
+    uv_once(&active_mutex_once, active_mutex_init);
     uv_mutex_lock(&active_mutex);
     LL_PREPEND(active_contexts, ctx);
     uv_mutex_unlock(&active_mutex);
@@ -312,6 +320,7 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx,
 
 void edc_tool_shell_abort_all(void)
 {
+    uv_once(&active_mutex_once, active_mutex_init);
     uv_mutex_lock(&active_mutex);
     struct edc_tool_shell_ctx *ctx;
     LL_FOREACH(active_contexts, ctx)

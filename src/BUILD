@@ -3,9 +3,6 @@ load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 LINK_OPTS = select({
     "//:macos_debug": ["-lresolv"],
     "//:macos": ["-lresolv"],
-    "//:linux_debug": [],
-    "//:debug": [],
-    "//:android": [],
     "//:windows": ["-lws2_32", "-lbcrypt", "-luserenv"],
     "//conditions:default": ["-static", "-Wl,--no-gc-sections"],
 })

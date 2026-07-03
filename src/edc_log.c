@@ -3,6 +3,7 @@
 #include "edc_config.h"
 #include "edc_file_utils.h"
 #include "log.h"
+#include "edc_compat.h"
 
 #include <uv.h>
 #include <stdio.h>
@@ -52,7 +53,7 @@ static void edc_log_rotate(void)
     sdsfree(edc_home);
     edc_dir_create_with_parents(log_dir, 0755, NULL);
 
-    sds filename = sdscatprintf(sdsempty(), "%s/edgeclaw-%s.log", log_dir, new_date);
+    sds filename = sdscatprintf(sdsempty(), "%s%cedgeclaw-%s.log", log_dir, PATH_SEP, new_date);
 
     uv_mutex_lock(&g_log_mutex);
     FILE *new_file = fopen(filename, "a");
@@ -72,6 +73,7 @@ static void edc_log_rotate(void)
 
 void edc_log_init(void)
 {
+    uv_mutex_init(&g_log_mutex);
     log_set_quiet(true);
     edc_log_rotate();
     log_add_callback(edc_log_file_callback, NULL, LOG_TRACE);
