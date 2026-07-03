@@ -81,6 +81,8 @@ void edc_terminal_raw_restore(int fd, struct edc_terminal_state *saved)
 
 void edc_terminal_vt_enable(void)
 {
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     if (!hOut) return;
     DWORD mode = 0;
