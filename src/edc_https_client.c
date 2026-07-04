@@ -6,6 +6,8 @@
 #include "mbedtls/error.h"
 #include "mbedtls/ssl.h"
 #include "sds.h"
+#include "utarray.h"
+#include "utlist.h"
 #include "uv.h"
 #include "yuarel.h"
 #include <stdlib.h>
@@ -40,11 +42,45 @@ struct edc_https_header
     struct edc_https_header *next;
 };
 
+static void edc_https_client_uv_buf_copy(void *src, const void *dst)
+{
+    *(uv_buf_t *)src = *(uv_buf_t *)dst;
+}
+
+static void edc_https_client_uv_buf_free(void *p)
+{
+    uv_buf_t *buf = p;
+    if (buf->base)
+    {
+        free(buf->base);
+    }
+}
+
+static UT_icd ut_uv_buf_icd = {sizeof(struct uv_buf_t), NULL, edc_https_client_uv_buf_copy,
+                               edc_https_client_uv_buf_free};
+
+struct edc_https_buf_list
+{
+    uv_buf_t buf;
+    size_t offset;
+    struct edc_https_buf_list *next;
+};
+
+struct edc_https_buf_list *edc_https_buf_list_node(const uv_buf_t *buf, size_t offset)
+{
+    struct edc_https_buf_list *node = malloc(sizeof(struct edc_https_buf_list));
+    node->buf = *buf;
+    node->offset = offset;
+    node->next = NULL;
+    return node;
+}
+
 struct edc_https_request
 {
     uv_tcp_t socket;
     uv_connect_t conn;
     mbedtls_ssl_context ssl;
+    struct edc_https_buf_list *mbedtls_recv_bufs;
 
     llhttp_t parser;
     llhttp_settings_t parser_settings;
@@ -92,6 +128,7 @@ static struct edc_https_request *edc_https_request_new(struct edc_https_client *
     req->parser_settings.on_header_value = edc_https_on_header_value;
     req->parser_settings.on_message_complete = edc_https_on_message_complete;
 
+    req->mbedtls_recv_bufs = NULL;
     req->url = sdsnew(url);
     yuarel_parse(&req->url_parser, req->url);
 
@@ -123,12 +160,12 @@ static void edc_https_on_tcp_close(uv_handle_t *handle)
 static int edc_https_ssl_bio_send(void *ctx, const unsigned char *buf, size_t len);
 static int edc_https_ssl_bio_recv(void *ctx, unsigned char *buf, size_t len);
 
-static void edc_https_client_drive_mbedtls_hs(struct edc_https_request *req)
+static bool edc_https_client_drive_mbedtls_hs(struct edc_https_request *req)
 {
     int ret = mbedtls_ssl_handshake(&req->ssl);
     if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
     {
-        return;
+        return false;
     }
 
     if (ret != 0)
@@ -138,10 +175,41 @@ static void edc_https_client_drive_mbedtls_hs(struct edc_https_request *req)
         sds message = sdscatprintf(sdsnew(NULL), "mbedtls handshake error: %s", buf);
         req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
         uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
-        return;
+        return false;
     }
 
     req->fn(req, EDC_HTTPS_EVENT_HS, NULL);
+    return true;
+}
+
+static bool edc_https_client_drive_mbedtls_read(struct edc_https_request *req)
+{
+    unsigned char buf[1024];
+    int ret = mbedtls_ssl_read(&req->ssl, buf, sizeof(buf));
+
+    if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
+    {
+        return false;
+    }
+
+    if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
+    {
+        log_info("mbedtls ssl read failed: peer close.");
+        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+        return false;
+    }
+
+    if (ret < 0)
+    {
+        mbedtls_strerror(ret, (char *)buf, sizeof(buf));
+        sds message = sdscatprintf(sdsnew(NULL), "mbedtls ssl read failed: %s", buf);
+        req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
+        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+        return false;
+    }
+
+    llhttp_execute(&req->parser, (void *)buf, ret);
+    return true;
 }
 
 static void edc_https_client_drive_mbedtls(struct edc_https_request *req)
@@ -150,35 +218,41 @@ static void edc_https_client_drive_mbedtls(struct edc_https_request *req)
     {
         if (req->ssl.private_state != MBEDTLS_SSL_HANDSHAKE_OVER)
         {
-            edc_https_client_drive_mbedtls_hs(req);
-            return;
+            if (!edc_https_client_drive_mbedtls_hs(req))
+            {
+                break;
+            }
         }
-
-        unsigned char buf[1024];
-        int ret = mbedtls_ssl_read(&req->ssl, buf, sizeof(buf));
-
-        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
+        else if (!edc_https_client_drive_mbedtls_read(req))
         {
-            return;
+            break;
         }
+    }
+}
 
-        if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
-        {
-            log_info("mbedtls ssl read failed: peer close.");
-            uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
-            return;
-        }
+static void edc_https_client_alloc_read_buf(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf)
+{
+    *buf = uv_buf_init(malloc(1024 * 64), 64 * 1024);
+}
 
-        if (ret < 0)
-        {
-            mbedtls_strerror(ret, (char *)buf, sizeof(buf));
-            sds message = sdscatprintf(sdsnew(NULL), "mbedtls ssl read failed: %s", buf);
-            req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
-            uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
-            return;
-        }
-
-        llhttp_execute(&req->parser, (void *)buf, ret);
+void edc_https_client_on_tcp_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
+{
+    struct edc_https_request *req = (struct edc_https_request *)stream;
+    if (nread < 0)
+    {
+        sds err_message = sdscatprintf(sdsnew(NULL), "tcp connect failed: %s", uv_strerror((int)nread));
+        req->fn(req, EDC_HTTPS_EVENT_ERROR, err_message);
+        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+    }
+    else if (nread == UV_EOF)
+    {
+        edc_https_client_drive_mbedtls(req);
+        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+    }
+    else
+    {
+        LL_APPEND(req->mbedtls_recv_bufs, edc_https_buf_list_node(buf, 0));
+        edc_https_client_drive_mbedtls(req);
     }
 }
 
@@ -194,10 +268,12 @@ static void edc_https_client_on_tcp_connect(uv_connect_t *conn, int status)
     }
 
     struct edc_https_client *client = req->client;
+
     mbedtls_ssl_init(&req->ssl);
     mbedtls_ssl_setup(&req->ssl, &client->ssl_conf);
     mbedtls_ssl_set_hostname(&req->ssl, req->url_parser.host);
     mbedtls_ssl_set_bio(&req->ssl, req, edc_https_ssl_bio_send, edc_https_ssl_bio_recv, NULL);
+    uv_read_start((uv_stream_t *)req, edc_https_client_alloc_read_buf, edc_https_client_on_tcp_read);
 }
 
 static void edc_https_on_resolved(uv_getaddrinfo_t *req, int status, struct addrinfo *res)
