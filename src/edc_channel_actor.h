@@ -123,7 +123,7 @@ typedef struct
     };
 } edc_channel_actor_state_t;
 
-extern edc_actor_t *edc_channel_actor_new(struct channel_conf *config, edc_network_async_t *network);
+extern edc_actor_t *edc_channel_actor_new(struct channel_conf *config, const char *workspace);
 extern void edc_channel_actor_free(edc_actor_t *actor);
 extern void edc_channel_actor_set_observer(edc_actor_t *actor, edc_actor_t *observer);
 extern void edc_channel_actor_add(edc_actor_t *actor, edc_channel_type type, edc_actor_handler_t handler);

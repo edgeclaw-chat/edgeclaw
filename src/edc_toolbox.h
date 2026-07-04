@@ -5,7 +5,6 @@
 #include "edc_actor.h"
 #include "edc_config.h"
 #include "edc_error.h"
-#include "edc_network_async.h"
 #include <cJSON.h>
 
 struct edc_tool;

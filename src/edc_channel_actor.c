@@ -6,6 +6,7 @@
 #include "edc_channel_qq.h"
 #include "edc_channel_telegram.h"
 #include "edc_config.h"
+#include "edc_file_utils.h"
 #include "edc_network_async.h"
 #include "sds.h"
 #include "uthash.h"
@@ -339,12 +340,15 @@ struct edc_channel_message *edc_channel_message_move(struct edc_channel_message 
     return message;
 }
 
-edc_actor_t *edc_channel_actor_new(struct channel_conf *config, edc_network_async_t *network)
+edc_actor_t *edc_channel_actor_new(struct channel_conf *config, const char *workspace)
 {
     edc_channel_actor_state_t *state = calloc(1, sizeof(edc_channel_actor_state_t));
     state->config = *config;
 
-    state->network = network;
+    sds cert_path = edc_path_join(workspace, "ssl", "cacert.pem", NULL);
+    state->network = edc_network_async_new(cert_path);
+    sdsfree(cert_path);
+
     state->observer = NULL;
 
     edc_actor_t *actor = edc_actor_new("edc_channel_actor", edc_channel_actor_handle, state);
@@ -428,6 +432,7 @@ void edc_channel_actor_free(edc_actor_t *actor)
         break;
     }
 
+    edc_network_async_free(state->network);
     free(state);
     edc_actor_free(actor);
 }

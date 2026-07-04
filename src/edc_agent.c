@@ -9,7 +9,6 @@
 #include "edc_init_env.h"
 #include "edc_llm_actor.h"
 #include "edc_memory_actor.h"
-#include "edc_network_async.h"
 #include "edc_sandbox.h"
 #include "edc_secret.h"
 #include "edc_session.h"
@@ -270,12 +269,8 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
         edc_sandbox_init(agent->config);
     }
 
-    sds pem = edc_path_join(agent->config->workspace, "ssl", "cacert.pem", NULL);
-    agent->network = edc_network_async_new(pem);
-    sdsfree(pem);
-
     agent->scheduler = edc_actor_new("schuler", edc_agent_scheduler_handler, agent);
-    agent->channel_actor = edc_channel_actor_new(&agent->config->channel, agent->network);
+    agent->channel_actor = edc_channel_actor_new(&agent->config->channel, agent->config->workspace);
     agent->llm_actor = edc_llm_actor_new(&agent->config->llm_api_conf);
     agent->memory_actor = edc_memory_actor_new(agent->config->workspace, agent->config->memory_compress_threshold, agent->llm_actor);
     agent->session = edc_session_new(agent->config);
@@ -312,11 +307,6 @@ void edc_agent_free(struct edc_agent *agent)
 {
     if (!agent)
         return;
-
-    if (agent->network)
-    {
-        edc_network_async_free(agent->network);
-    }
 
     edc_actor_runner_free(agent->runner);
     edc_channel_actor_free(agent->channel_actor);
