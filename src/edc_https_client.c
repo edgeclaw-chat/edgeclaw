@@ -258,17 +258,22 @@ void *edc_https_request_get_priv(struct edc_https_request *req)
 
 int edc_https_request_write(struct edc_https_request *req, const unsigned char *buf, size_t len)
 {
-    int ret = mbedtls_ssl_write(&req->ssl, buf, len);
-    if (ret < 0)
+    size_t written = 0;
+    while (written < len)
     {
-        unsigned char errbuf[1024];
-        mbedtls_strerror(ret, (char *)errbuf, sizeof(errbuf));
-        sds message = sdscatprintf(sdsnew(NULL), "mbedtls ssl write failed: %s", (char *)errbuf);
-        req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
-        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
-        return -1;
+        int ret = mbedtls_ssl_write(&req->ssl, buf + written, len - written);
+        if (ret < 0)
+        {
+            unsigned char errbuf[1024];
+            mbedtls_strerror(ret, (char *)errbuf, sizeof(errbuf));
+            sds message = sdscatprintf(sdsnew(NULL), "mbedtls ssl write failed: %s", (char *)errbuf);
+            req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
+            uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+            return -1;
+        }
+        written += (size_t)ret;
     }
-    return ret;
+    return (int)written;
 }
 
 static void edc_https_on_tcp_close(uv_handle_t *handle)

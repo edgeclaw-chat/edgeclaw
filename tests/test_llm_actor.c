@@ -3,6 +3,7 @@
 #include "src/edc_config.h"
 #include "src/edc_file_utils.h"
 #include "src/edc_llm_actor.h"
+#include "src/edc_secret.h"
 #include <stdio.h>
 #include <unistd.h>
 
@@ -29,7 +30,6 @@ static void edc_observe_llm_handler(edc_actor_t *actor, edc_actor_msg_t *message
     edc_actor_msg_free(message);
 }
 
-
 #ifndef DNS_SERVER_IP
 #define DNS_SERVER_IP "114.114.114.114"
 #endif
@@ -37,6 +37,13 @@ int main(void)
 {
     sds home_dir = edc_homedir();
     sds root = edc_path_join(home_dir, ".edgeclaw", NULL);
+
+    if (!edc_secret_init(false, root))
+    {
+        fprintf(stderr, "Failed to initialize secret module");
+        sdsfree(root);
+        return -1;
+    }
     struct edc_config *conf = edc_config_load(root);
     sdsfree(root);
     sdsfree(home_dir);
@@ -57,7 +64,7 @@ int main(void)
 
     struct edc_llm_actor_req *req = edc_llm_actor_req_new(msg_lst, NULL, NULL);
     edc_actor_send(llm_actor, edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST, observe_actor, NULL, req,
-                                              (edc_actor_data_free_fn)edc_llm_actor_req_free));
+                                                (edc_actor_data_free_fn)edc_llm_actor_req_free));
 
     while (1)
     {

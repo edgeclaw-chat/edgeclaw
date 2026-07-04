@@ -66,7 +66,8 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
         sds request = sdscatprintf(sdsempty(),
                                    "POST /%s HTTP/1.1\r\n"
                                    "Host: %s\r\n"
-                                   "Content-Type: application/json\r\n",
+                                   "Content-Type: application/json\r\n"
+                                   "Connection: close\r\n",
                                    edc_https_request_get_path(req), edc_https_request_get_host(req));
 
         if (httpreq->api_conf->api_key)
