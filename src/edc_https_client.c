@@ -26,6 +26,9 @@ struct edc_https_client
     mbedtls_ctr_drbg_context ctr_drbg;
     mbedtls_ssl_config ssl_conf;
     mbedtls_x509_crt cacert;
+
+    struct edc_work *work_queue;
+    uv_mutex_t work_mutex;
 };
 
 struct edc_work
@@ -33,6 +36,7 @@ struct edc_work
     char *url;
     edc_https_event_fn fn;
     void *priv;
+    struct edc_work *next;
 };
 
 static void edc_https_client_uv_buf_copy(void *src, const void *dst)
@@ -158,7 +162,7 @@ static int edc_https_on_body(llhttp_t *http, const char *at, size_t length)
     memcpy(data, at, length);
     uv_buf_t buf = uv_buf_init(data, (unsigned int)length);
     req->fn(req, EDC_HTTPS_EVENT_MSG, &buf);
-    free(data);
+    /* caller owns buf.base, must free it */
     return 0;
 }
 
@@ -223,6 +227,7 @@ static void edc_https_request_free(struct edc_https_request *req)
     }
 
     free(req->write_req);
+    mbedtls_ssl_free(&req->ssl);
     sdsfree(req->url);
     sdsfree(req->current_header_field);
     sdsfree(req->current_header_value);
@@ -235,7 +240,12 @@ void edc_https_client_connect(struct edc_https_client *client, const char *url, 
     work->url = strdup(url);
     work->fn = fn;
     work->priv = priv;
-    uv_handle_set_data((uv_handle_t *)&client->work_async, work);
+    work->next = NULL;
+
+    uv_mutex_lock(&client->work_mutex);
+    LL_APPEND(client->work_queue, work);
+    uv_mutex_unlock(&client->work_mutex);
+
     uv_async_send(&client->work_async);
 }
 
@@ -517,34 +527,42 @@ static void edc_https_on_resolved(uv_getaddrinfo_t *req, int status, struct addr
     }
 
     uv_tcp_connect(&http_req->conn, &http_req->socket, res->ai_addr, edc_https_client_on_tcp_connect);
+    uv_freeaddrinfo(res);
 }
 
 static void on_work_async(uv_async_t *handle)
 {
-    struct edc_work *work = uv_handle_get_data((uv_handle_t *)handle);
-    if (!work)
-        return;
-
-    // FIXME: queue
-    uv_handle_set_data((uv_handle_t *)handle, NULL);
-
     struct edc_https_client *client = EDC_CONTAINER_OF(handle, struct edc_https_client, work_async);
-    struct edc_https_request *http_req = edc_https_request_new(client, work->url, work->fn, work->priv);
 
-    struct addrinfo hints;
-    hints.ai_family = PF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-    hints.ai_flags = 0;
+    /* drain work queue */
+    while (1)
+    {
+        uv_mutex_lock(&client->work_mutex);
+        struct edc_work *work = client->work_queue;
+        if (work)
+            LL_DELETE(client->work_queue, work);
+        uv_mutex_unlock(&client->work_mutex);
 
-    uv_getaddrinfo_t *req = malloc(sizeof(uv_getaddrinfo_t));
-    uv_req_set_data((uv_req_t *)req, http_req);
-    sds port_s = sdscatprintf(sdsempty(), "%d", http_req->url_parser.port ? http_req->url_parser.port : 443);
-    uv_getaddrinfo(&client->loop, req, edc_https_on_resolved, http_req->url_parser.host, port_s, &hints);
-    sdsfree(port_s);
+        if (!work)
+            break;
 
-    free(work->url);
-    free(work);
+        struct edc_https_request *http_req = edc_https_request_new(client, work->url, work->fn, work->priv);
+
+        struct addrinfo hints;
+        hints.ai_family = PF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_protocol = IPPROTO_TCP;
+        hints.ai_flags = 0;
+
+        uv_getaddrinfo_t *req = malloc(sizeof(uv_getaddrinfo_t));
+        uv_req_set_data((uv_req_t *)req, http_req);
+        sds port_s = sdscatprintf(sdsempty(), "%d", http_req->url_parser.port ? http_req->url_parser.port : 443);
+        uv_getaddrinfo(&client->loop, req, edc_https_on_resolved, http_req->url_parser.host, port_s, &hints);
+        sdsfree(port_s);
+
+        free(work->url);
+        free(work);
+    }
 }
 
 static void edc_https_client_thread(void *arg)
@@ -568,6 +586,8 @@ struct edc_https_client *edc_https_client_new(void)
     uv_loop_init(&client->loop);
     uv_async_init(&client->loop, &client->work_async, on_work_async);
     uv_async_init(&client->loop, &client->stop_async, edc_https_on_stop_async);
+    uv_mutex_init(&client->work_mutex);
+    client->work_queue = NULL;
 
     mbedtls_entropy_init(&client->entropy);
     mbedtls_ctr_drbg_init(&client->ctr_drbg);
@@ -601,6 +621,17 @@ void edc_https_client_free(struct edc_https_client *client)
     uv_run(&client->loop, UV_RUN_NOWAIT);
 
     uv_loop_close(&client->loop);
+
+    /* free any remaining work queue items */
+    {
+        struct edc_work *work, *tmp;
+        LL_FOREACH_SAFE(client->work_queue, work, tmp)
+        {
+            free(work->url);
+            free(work);
+        }
+    }
+    uv_mutex_destroy(&client->work_mutex);
 
     mbedtls_ssl_config_free(&client->ssl_conf);
     mbedtls_ctr_drbg_free(&client->ctr_drbg);

@@ -2,6 +2,7 @@
 #include "src/edc_https_client.h"
 #include "uv.h"
 #include <stdio.h>
+#include <stdlib.h>
 
 static uv_sem_t done_sem;
 
@@ -28,6 +29,7 @@ static void edc_https_client_fn(struct edc_https_request *req, int ev, void *dat
     {
         uv_buf_t *buf = data;
         log_info("%.*s", (int)buf->len, buf->base);
+        free(buf->base);
     }
     else if (ev == EDC_HTTPS_EVENT_ERROR)
     {

@@ -93,6 +93,7 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
         {
             httpreq->response = sdscatlen(httpreq->response, buf->base, buf->len);
         }
+        free(buf->base);
     }
     else if (ev == EDC_HTTPS_EVENT_CLOSE)
     {
