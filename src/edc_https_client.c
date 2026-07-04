@@ -35,13 +35,6 @@ struct edc_work
     void *priv;
 };
 
-struct edc_https_header
-{
-    const char *field;
-    const char *value;
-    struct edc_https_header *next;
-};
-
 static void edc_https_client_uv_buf_copy(void *src, const void *dst)
 {
     *(uv_buf_t *)src = *(uv_buf_t *)dst;
@@ -81,6 +74,9 @@ struct edc_https_request
     uv_connect_t conn;
     mbedtls_ssl_context ssl;
     struct edc_https_buf_list *mbedtls_recv_bufs;
+    struct edc_https_buf_list *mbedtls_send_bufs;
+    uv_write_t *write_req;
+    bool writing;
 
     llhttp_t parser;
     llhttp_settings_t parser_settings;
@@ -93,21 +89,79 @@ struct edc_https_request
 
     struct edc_https_header header;
 
+    sds current_header_field;
+    sds current_header_value;
+    bool header_in_field;
+
     void *priv;
 };
 
-static int edc_https_on_body(llhttp_t *http, const char *at, size_t length)
-{
-    return 0;
-}
 static int edc_https_on_header_field(llhttp_t *http, const char *at, size_t len)
 {
+    struct edc_https_request *req = EDC_CONTAINER_OF(http, struct edc_https_request, parser);
+
+    if (!req->header_in_field && req->current_header_value)
+    {
+        req->header.field = req->current_header_field;
+        req->header.value = req->current_header_value;
+        req->fn(req, EDC_HTTPS_EVENT_HEADER, &req->header);
+        sdsfree(req->current_header_field);
+        sdsfree(req->current_header_value);
+        req->current_header_field = NULL;
+        req->current_header_value = NULL;
+    }
+
+    req->header_in_field = true;
+    req->current_header_field =
+        sdscatlen(req->current_header_field ? req->current_header_field : sdsempty(), at, len);
     return 0;
 }
+
 static int edc_https_on_header_value(llhttp_t *http, const char *at, size_t len)
 {
+    struct edc_https_request *req = EDC_CONTAINER_OF(http, struct edc_https_request, parser);
+
+    req->header_in_field = false;
+    req->current_header_value =
+        sdscatlen(req->current_header_value ? req->current_header_value : sdsempty(), at, len);
     return 0;
 }
+
+static int edc_https_on_headers_complete(llhttp_t *http)
+{
+    struct edc_https_request *req = EDC_CONTAINER_OF(http, struct edc_https_request, parser);
+
+    if (req->current_header_value)
+    {
+        req->header.field = req->current_header_field;
+        req->header.value = req->current_header_value;
+        req->fn(req, EDC_HTTPS_EVENT_HEADER, &req->header);
+        sdsfree(req->current_header_field);
+        req->current_header_field = NULL;
+        sdsfree(req->current_header_value);
+        req->current_header_value = NULL;
+    }
+    else if (req->current_header_field)
+    {
+        sdsfree(req->current_header_field);
+        req->current_header_field = NULL;
+    }
+
+    return 0;
+}
+
+static int edc_https_on_body(llhttp_t *http, const char *at, size_t length)
+{
+    struct edc_https_request *req = EDC_CONTAINER_OF(http, struct edc_https_request, parser);
+
+    char *data = malloc(length);
+    memcpy(data, at, length);
+    uv_buf_t buf = uv_buf_init(data, (unsigned int)length);
+    req->fn(req, EDC_HTTPS_EVENT_MSG, &buf);
+    free(data);
+    return 0;
+}
+
 static int edc_https_on_message_complete(llhttp_t *http)
 {
     return 0;
@@ -119,16 +173,28 @@ static struct edc_https_request *edc_https_request_new(struct edc_https_client *
     struct edc_https_request *req = malloc(sizeof(struct edc_https_request));
     req->client = client;
     req->priv = priv;
+    req->fn = fn;
     req->header.field = NULL;
     req->header.value = NULL;
+    req->header.next = NULL;
+
+    req->current_header_field = NULL;
+    req->current_header_value = NULL;
+    req->header_in_field = true;
 
     llhttp_settings_init(&req->parser_settings);
     req->parser_settings.on_body = edc_https_on_body;
     req->parser_settings.on_header_field = edc_https_on_header_field;
     req->parser_settings.on_header_value = edc_https_on_header_value;
+    req->parser_settings.on_headers_complete = edc_https_on_headers_complete;
     req->parser_settings.on_message_complete = edc_https_on_message_complete;
 
+    llhttp_init(&req->parser, HTTP_RESPONSE, &req->parser_settings);
+
     req->mbedtls_recv_bufs = NULL;
+    req->mbedtls_send_bufs = NULL;
+    req->write_req = NULL;
+    req->writing = false;
     req->url = sdsnew(url);
     yuarel_parse(&req->url_parser, req->url);
 
@@ -138,6 +204,29 @@ static struct edc_https_request *edc_https_request_new(struct edc_https_client *
 
 static void edc_https_request_free(struct edc_https_request *req)
 {
+    struct edc_https_buf_list *node = req->mbedtls_recv_bufs;
+    while (node)
+    {
+        struct edc_https_buf_list *next = node->next;
+        free(node->buf.base);
+        free(node);
+        node = next;
+    }
+
+    node = req->mbedtls_send_bufs;
+    while (node)
+    {
+        struct edc_https_buf_list *next = node->next;
+        free(node->buf.base);
+        free(node);
+        node = next;
+    }
+
+    free(req->write_req);
+    sdsfree(req->url);
+    sdsfree(req->current_header_field);
+    sdsfree(req->current_header_value);
+    free(req);
 }
 
 void edc_https_client_connect(struct edc_https_client *client, const char *url, edc_https_event_fn fn, void *priv)
@@ -150,6 +239,38 @@ void edc_https_client_connect(struct edc_https_client *client, const char *url, 
     uv_async_send(&client->work_async);
 }
 
+static void edc_https_on_tcp_close(uv_handle_t *handle);
+
+const char *edc_https_request_get_host(struct edc_https_request *req)
+{
+    return req->url_parser.host;
+}
+
+const char *edc_https_request_get_path(struct edc_https_request *req)
+{
+    return req->url_parser.path;
+}
+
+void *edc_https_request_get_priv(struct edc_https_request *req)
+{
+    return req->priv;
+}
+
+int edc_https_request_write(struct edc_https_request *req, const unsigned char *buf, size_t len)
+{
+    int ret = mbedtls_ssl_write(&req->ssl, buf, len);
+    if (ret < 0)
+    {
+        unsigned char errbuf[1024];
+        mbedtls_strerror(ret, (char *)errbuf, sizeof(errbuf));
+        sds message = sdscatprintf(sdsnew(NULL), "mbedtls ssl write failed: %s", (char *)errbuf);
+        req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
+        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+        return -1;
+    }
+    return ret;
+}
+
 static void edc_https_on_tcp_close(uv_handle_t *handle)
 {
     struct edc_https_request *req = (struct edc_https_request *)handle;
@@ -157,8 +278,96 @@ static void edc_https_on_tcp_close(uv_handle_t *handle)
     edc_https_request_free((struct edc_https_request *)handle);
 }
 
-static int edc_https_ssl_bio_send(void *ctx, const unsigned char *buf, size_t len);
-static int edc_https_ssl_bio_recv(void *ctx, unsigned char *buf, size_t len);
+static void edc_https_client_drive_mbedtls(struct edc_https_request *req);
+
+static void edc_https_client_on_tcp_write(uv_write_t *write_req, int status)
+{
+    struct edc_https_request *req = (struct edc_https_request *)write_req->handle;
+    struct edc_https_buf_list *node = req->mbedtls_send_bufs;
+    req->mbedtls_send_bufs = node->next;
+    free(node->buf.base);
+    free(node);
+    free(write_req);
+
+    if (status < 0)
+    {
+        sds message = sdscatprintf(sdsnew(NULL), "tcp write failed: %s", uv_strerror(status));
+        req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
+        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+        return;
+    }
+
+    if (req->mbedtls_send_bufs)
+    {
+        req->write_req = malloc(sizeof(uv_write_t));
+        uv_write(req->write_req, (uv_stream_t *)&req->socket, &req->mbedtls_send_bufs->buf, 1,
+                 edc_https_client_on_tcp_write);
+    }
+    else
+    {
+        req->writing = false;
+        req->write_req = NULL;
+        edc_https_client_drive_mbedtls(req);
+    }
+}
+
+static int edc_https_ssl_bio_send(void *ctx, const unsigned char *buf, size_t len)
+{
+    struct edc_https_request *req = (struct edc_https_request *)ctx;
+
+    char *data = malloc(len);
+    memcpy(data, buf, len);
+    uv_buf_t wbuf = uv_buf_init(data, (unsigned int)len);
+    LL_APPEND(req->mbedtls_send_bufs, edc_https_buf_list_node(&wbuf, 0));
+
+    if (!req->writing)
+    {
+        req->writing = true;
+        req->write_req = malloc(sizeof(uv_write_t));
+        uv_write(req->write_req, (uv_stream_t *)&req->socket, &req->mbedtls_send_bufs->buf, 1,
+                 edc_https_client_on_tcp_write);
+    }
+
+    return (int)len;
+}
+
+static int edc_https_ssl_bio_recv(void *ctx, unsigned char *buf, size_t len)
+{
+    struct edc_https_request *req = (struct edc_https_request *)ctx;
+
+    if (req->mbedtls_recv_bufs == NULL)
+    {
+        return MBEDTLS_ERR_SSL_WANT_READ;
+    }
+
+    size_t total = 0;
+    struct edc_https_buf_list *node = req->mbedtls_recv_bufs;
+
+    while (node != NULL && total < len)
+    {
+        size_t remaining = node->buf.len - node->offset;
+        size_t to_copy = (len - total) < remaining ? (len - total) : remaining;
+
+        memcpy(buf + total, node->buf.base + node->offset, to_copy);
+        node->offset += to_copy;
+        total += to_copy;
+
+        if (node->offset >= node->buf.len)
+        {
+            struct edc_https_buf_list *old = node;
+            node = node->next;
+            free(old->buf.base);
+            free(old);
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    req->mbedtls_recv_bufs = node;
+    return (int)total;
+}
 
 static bool edc_https_client_drive_mbedtls_hs(struct edc_https_request *req)
 {
@@ -214,6 +423,11 @@ static bool edc_https_client_drive_mbedtls_read(struct edc_https_request *req)
 
 static void edc_https_client_drive_mbedtls(struct edc_https_request *req)
 {
+    if (uv_is_closing((uv_handle_t *)&req->socket))
+    {
+        return;
+    }
+
     while (1)
     {
         if (req->ssl.private_state != MBEDTLS_SSL_HANDSHAKE_OVER)
@@ -240,18 +454,27 @@ void edc_https_client_on_tcp_read(uv_stream_t *stream, ssize_t nread, const uv_b
     struct edc_https_request *req = (struct edc_https_request *)stream;
     if (nread < 0)
     {
-        sds err_message = sdscatprintf(sdsnew(NULL), "tcp connect failed: %s", uv_strerror((int)nread));
+        if (buf->base)
+        {
+            free(buf->base);
+        }
+        sds err_message = sdscatprintf(sdsnew(NULL), "tcp read failed: %s", uv_strerror((int)nread));
         req->fn(req, EDC_HTTPS_EVENT_ERROR, err_message);
         uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
     }
     else if (nread == UV_EOF)
     {
+        if (buf->base)
+        {
+            free(buf->base);
+        }
         edc_https_client_drive_mbedtls(req);
         uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
     }
     else
     {
-        LL_APPEND(req->mbedtls_recv_bufs, edc_https_buf_list_node(buf, 0));
+        uv_buf_t actual = uv_buf_init(buf->base, (unsigned int)nread);
+        LL_APPEND(req->mbedtls_recv_bufs, edc_https_buf_list_node(&actual, 0));
         edc_https_client_drive_mbedtls(req);
     }
 }
@@ -274,6 +497,7 @@ static void edc_https_client_on_tcp_connect(uv_connect_t *conn, int status)
     mbedtls_ssl_set_hostname(&req->ssl, req->url_parser.host);
     mbedtls_ssl_set_bio(&req->ssl, req, edc_https_ssl_bio_send, edc_https_ssl_bio_recv, NULL);
     uv_read_start((uv_stream_t *)req, edc_https_client_alloc_read_buf, edc_https_client_on_tcp_read);
+    edc_https_client_drive_mbedtls(req);
 }
 
 static void edc_https_on_resolved(uv_getaddrinfo_t *req, int status, struct addrinfo *res)
@@ -314,4 +538,67 @@ static void on_work_async(uv_async_t *handle)
 
     free(work->url);
     free(work);
+}
+
+static void edc_https_client_thread(void *arg)
+{
+    struct edc_https_client *client = arg;
+    uv_run(&client->loop, UV_RUN_DEFAULT);
+}
+
+static void edc_https_on_stop_async(uv_async_t *handle)
+{
+    struct edc_https_client *client = EDC_CONTAINER_OF(handle, struct edc_https_client, stop_async);
+    uv_close((uv_handle_t *)handle, NULL);
+    uv_close((uv_handle_t *)&client->work_async, NULL);
+    uv_stop(&client->loop);
+}
+
+struct edc_https_client *edc_https_client_new(void)
+{
+    struct edc_https_client *client = malloc(sizeof(struct edc_https_client));
+
+    uv_loop_init(&client->loop);
+    uv_async_init(&client->loop, &client->work_async, on_work_async);
+    uv_async_init(&client->loop, &client->stop_async, edc_https_on_stop_async);
+
+    mbedtls_entropy_init(&client->entropy);
+    mbedtls_ctr_drbg_init(&client->ctr_drbg);
+    mbedtls_ctr_drbg_seed(&client->ctr_drbg, mbedtls_entropy_func, &client->entropy, NULL, 0);
+
+    mbedtls_ssl_config_init(&client->ssl_conf);
+    mbedtls_ssl_config_defaults(&client->ssl_conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
+                                MBEDTLS_SSL_PRESET_DEFAULT);
+    mbedtls_ssl_conf_rng(&client->ssl_conf, mbedtls_ctr_drbg_random, &client->ctr_drbg);
+    mbedtls_ssl_conf_authmode(&client->ssl_conf, MBEDTLS_SSL_VERIFY_NONE);
+
+    mbedtls_x509_crt_init(&client->cacert);
+
+    uv_thread_create(&client->thread, edc_https_client_thread, client);
+
+    return client;
+}
+
+static void edc_https_client_close_walk(uv_handle_t *handle, void *arg)
+{
+    (void)arg;
+    uv_close(handle, NULL);
+}
+
+void edc_https_client_free(struct edc_https_client *client)
+{
+    uv_async_send(&client->stop_async);
+    uv_thread_join(&client->thread);
+
+    uv_walk(&client->loop, edc_https_client_close_walk, NULL);
+    uv_run(&client->loop, UV_RUN_NOWAIT);
+
+    uv_loop_close(&client->loop);
+
+    mbedtls_ssl_config_free(&client->ssl_conf);
+    mbedtls_ctr_drbg_free(&client->ctr_drbg);
+    mbedtls_entropy_free(&client->entropy);
+    mbedtls_x509_crt_free(&client->cacert);
+
+    free(client);
 }

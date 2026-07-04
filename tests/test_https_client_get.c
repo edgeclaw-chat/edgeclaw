@@ -1,3 +1,4 @@
+#include "log.h"
 #include "src/edc_https_client.h"
 #include "uv.h"
 #include <stdio.h>
@@ -21,21 +22,20 @@ static void edc_https_client_fn(struct edc_https_request *req, int ev, void *dat
     else if (ev == EDC_HTTPS_EVENT_HEADER)
     {
         struct edc_https_header *header = data;
-        printf("%s: %s\n", header->field, header->value);
+        log_info("%s: %s", header->field, header->value);
     }
     else if (ev == EDC_HTTPS_EVENT_MSG)
     {
         uv_buf_t *buf = data;
-        printf("%.*s\n", (int)buf->len, buf->base);
+        log_info("%.*s", (int)buf->len, buf->base);
     }
     else if (ev == EDC_HTTPS_EVENT_ERROR)
     {
-        int *code = data;
-        fprintf(stderr, "edc_https_client: error event, code: %d\n", *code);
+        log_info("edc_https_client: error event: %s", (const char *)data);
     }
     else if (ev == EDC_HTTPS_EVENT_CLOSE)
     {
-        printf("edc_https_client: connection closed\n");
+        log_info("edc_https_client: connection closed");
         uv_sem_post(&done_sem);
     }
 }
@@ -50,7 +50,7 @@ int main(const int argc, const char *argv[])
 
     uv_sem_init(&done_sem, 0);
     struct edc_https_client *client = edc_https_client_new();
-    edc_https_client_connect(client, argv[1], edc_https_client_fn);
+    edc_https_client_connect(client, argv[1], edc_https_client_fn, NULL);
 
     uv_sem_wait(&done_sem);
     edc_https_client_free(client);
