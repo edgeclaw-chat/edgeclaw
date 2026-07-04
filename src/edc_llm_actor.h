@@ -6,12 +6,12 @@
 #include "edc_config.h"
 #include "edc_containers.h"
 #include "edc_error.h"
-#include "edc_network_async.h"
+#include "edc_https_client.h"
 #include <cJSON.h>
 typedef struct
 {
     struct llm_api_conf api_conf;
-    edc_network_async_t *network;
+    struct edc_https_client *client;
 } edc_llm_actor_state_t;
 
 struct edc_llm_actor_req
@@ -69,7 +69,7 @@ struct edc_llm_actor_resp
     EdcError *error;
 };
 
-extern edc_actor_t *edc_llm_actor_new(struct llm_api_conf *api_conf, edc_network_async_t *network);
+extern edc_actor_t *edc_llm_actor_new(struct llm_api_conf *api_conf);
 extern void edc_llm_actor_free(edc_actor_t *actor);
 extern struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools, EdcQueue *turn);
 extern void edc_llm_actor_req_free(struct edc_llm_actor_req *req);

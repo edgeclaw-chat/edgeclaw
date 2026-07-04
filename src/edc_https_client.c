@@ -452,7 +452,16 @@ static void edc_https_client_alloc_read_buf(uv_handle_t *handle, size_t suggeste
 void edc_https_client_on_tcp_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 {
     struct edc_https_request *req = (struct edc_https_request *)stream;
-    if (nread < 0)
+    if (nread == UV_EOF)
+    {
+        if (buf->base)
+        {
+            free(buf->base);
+        }
+        edc_https_client_drive_mbedtls(req);
+        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+    }
+    else if (nread < 0)
     {
         if (buf->base)
         {
@@ -460,15 +469,6 @@ void edc_https_client_on_tcp_read(uv_stream_t *stream, ssize_t nread, const uv_b
         }
         sds err_message = sdscatprintf(sdsnew(NULL), "tcp read failed: %s", uv_strerror((int)nread));
         req->fn(req, EDC_HTTPS_EVENT_ERROR, err_message);
-        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
-    }
-    else if (nread == UV_EOF)
-    {
-        if (buf->base)
-        {
-            free(buf->base);
-        }
-        edc_https_client_drive_mbedtls(req);
         uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
     }
     else
@@ -534,7 +534,9 @@ static void on_work_async(uv_async_t *handle)
 
     uv_getaddrinfo_t *req = malloc(sizeof(uv_getaddrinfo_t));
     uv_req_set_data((uv_req_t *)req, http_req);
-    uv_getaddrinfo(&client->loop, req, edc_https_on_resolved, http_req->url_parser.host, "443", &hints);
+    sds port_s = sdscatprintf(sdsempty(), "%d", http_req->url_parser.port ? http_req->url_parser.port : 443);
+    uv_getaddrinfo(&client->loop, req, edc_https_on_resolved, http_req->url_parser.host, port_s, &hints);
+    sdsfree(port_s);
 
     free(work->url);
     free(work);

@@ -4,6 +4,7 @@
 #include "src/edc_file_utils.h"
 #include "src/edc_llm_actor.h"
 #include <stdio.h>
+#include <unistd.h>
 
 static void edc_observe_llm_handler(edc_actor_t *actor, edc_actor_msg_t *message)
 {
@@ -40,12 +41,7 @@ int main(void)
     sdsfree(root);
     sdsfree(home_dir);
 
-    sds cert_pem = edc_path_join(conf->workspace, "cacert.pem", NULL);
-    edc_network_async_t *http = edc_network_async_new(cert_pem);
-    sdsfree(cert_pem);
-    http->mgr.dns4.url = "udp://" DNS_SERVER_IP ":53";
-
-    edc_actor_t *llm_actor = edc_llm_actor_new(&conf->llm_api_conf, http);
+    edc_actor_t *llm_actor = edc_llm_actor_new(&conf->llm_api_conf);
     edc_actor_t *observe_actor = edc_actor_new("edc_observer", edc_observe_llm_handler, NULL);
 
     edc_actor_runner_t *runner = edc_actor_runner_new();

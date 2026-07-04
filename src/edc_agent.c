@@ -276,7 +276,7 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
 
     agent->scheduler = edc_actor_new("schuler", edc_agent_scheduler_handler, agent);
     agent->channel_actor = edc_channel_actor_new(&agent->config->channel, agent->network);
-    agent->llm_actor = edc_llm_actor_new(&agent->config->llm_api_conf, agent->network);
+    agent->llm_actor = edc_llm_actor_new(&agent->config->llm_api_conf);
     agent->memory_actor = edc_memory_actor_new(agent->config->workspace, agent->config->memory_compress_threshold, agent->llm_actor);
     agent->session = edc_session_new(agent->config);
 

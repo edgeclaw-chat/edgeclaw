@@ -3,10 +3,10 @@
 #include "edc_llm_actor.h"
 #include "edc_actor.h"
 #include "edc_compat.h"
-#include "edc_network_async.h"
+#include "edc_https_client.h"
 #include "log.h"
-#include "mongoose.h"
 #include "utarray.h"
+
 struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools, EdcQueue *turn)
 {
     struct edc_llm_actor_req *req = g_new0(struct edc_llm_actor_req, 1);
@@ -30,12 +30,12 @@ struct edc_llm_actor_http_req
     struct llm_api_conf *api_conf;
     edc_actor_t *from;
     sds response;
-    void* request_id;
+    void *request_id;
 };
 
 static struct edc_llm_actor_http_req *edc_llm_actor_http_req_new(edc_actor_t *actor, const char *body,
-                                                               struct llm_api_conf *api_conf, edc_actor_t *from,
-                                                               void* request_id)
+                                                                  struct llm_api_conf *api_conf, edc_actor_t *from,
+                                                                  void *request_id)
 {
     struct edc_llm_actor_http_req *req = g_new0(struct edc_llm_actor_http_req, 1);
     req->actor = actor;
@@ -57,100 +57,70 @@ static void edc_llm_actor_http_req_free(struct edc_llm_actor_http_req *req)
     free(req);
 }
 
-static void edc_llm_actor_make_http_request(struct mg_connection *c)
+static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void *data)
 {
-    struct edc_llm_actor_http_req *req = c->fn_data;
-    struct mg_str host = mg_url_host(req->api_conf->api_url);
+    struct edc_llm_actor_http_req *httpreq = edc_https_request_get_priv(req);
 
-    mg_printf(c, "POST %s HTTP/1.1\r\n", mg_url_uri(req->api_conf->api_url));
-    mg_printf(c, "Host: %.*s\r\n", (int)host.len, host.buf);
-    mg_printf(c, "Content-Type: application/json\r\n");
-    if (req->api_conf->api_key)
+    if (ev == EDC_HTTPS_EVENT_HS)
     {
-        mg_printf(c, "Authorization: Bearer %s\r\n", req->api_conf->api_key);
-    }
-    mg_printf(c, "Content-Length: %d\r\n\r\n", (int)strlen(req->body));
-    mg_printf(c, "%s", req->body);
-}
+        sds request = sdscatprintf(sdsempty(),
+                                   "POST /%s HTTP/1.1\r\n"
+                                   "Host: %s\r\n"
+                                   "Content-Type: application/json\r\n",
+                                   edc_https_request_get_path(req), edc_https_request_get_host(req));
 
-static void edc_llm_actor_on_http_fn(struct mg_connection *c, int ev, void *ev_data)
-{
-    struct edc_llm_actor_http_req *req = ev == BC_CONN_ERROR ? ev_data : c->fn_data;
-
-    if (ev == MG_EV_HTTP_MSG)
-    {
-        struct mg_http_message *hm = (struct mg_http_message *)ev_data;
-        sds buf = sdsempty();
-        buf = sdscatlen(buf, hm->body.buf, hm->body.len);
-        req->response = buf;
-
-        edc_actor_send(req->actor, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, req->request_id, req,
-                                                   (edc_actor_data_free_fn)edc_llm_actor_http_req_free));
-        c->fn_data = NULL;
-        c->is_closing = 1;
-    }
-    else if (c->is_tls && ev == MG_EV_TLS_HS)
-    {
-        edc_llm_actor_make_http_request(c);
-    }
-    else if (!c->is_tls && ev == MG_EV_CONNECT)
-    {
-        edc_llm_actor_make_http_request(c);
-    }
-    else if (ev == BC_CONN_ERROR)
-    {
-        if (!req) return;
-        log_error("llm actor http async conn error");
-        if (req->from)
+        if (httpreq->api_conf->api_key)
         {
-            struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
-            resp->error = edc_error_new(EDC_ERR_FAILED, "LLM API connection error");
-            edc_actor_send(req->from, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, req->request_id, resp,
-                                                       (edc_actor_data_free_fn)edc_llm_actor_resp_free));
+            request = sdscatprintf(request, "Authorization: Bearer %s\r\n", httpreq->api_conf->api_key);
         }
-        edc_llm_actor_http_req_free(req);
-        c->fn_data = NULL;
+
+        request = sdscatprintf(request, "Content-Length: %zu\r\n\r\n", strlen(httpreq->body));
+        request = sdscatprintf(request, "%s", httpreq->body);
+
+        log_info("send to llm api: %s", request);
+        edc_https_request_write(req, (unsigned char *)request, sdslen(request));
+        sdsfree(request);
     }
-    else if (ev == MG_EV_CLOSE)
+    else if (ev == EDC_HTTPS_EVENT_MSG)
     {
-        if (!req) return;
-        if (req->response == NULL)
+        uv_buf_t *buf = data;
+        if (!httpreq->response)
         {
-            if (req->from)
+            httpreq->response = sdsnewlen(buf->base, buf->len);
+        }
+        else
+        {
+            httpreq->response = sdscatlen(httpreq->response, buf->base, buf->len);
+        }
+    }
+    else if (ev == EDC_HTTPS_EVENT_CLOSE)
+    {
+        if (httpreq->response)
+        {
+            edc_actor_send(httpreq->actor,
+                           edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, httpreq->request_id, httpreq,
+                                             (edc_actor_data_free_fn)edc_llm_actor_http_req_free));
+        }
+        else
+        {
+            if (httpreq->from)
             {
                 struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
                 resp->error = edc_error_new(EDC_ERR_FAILED, "LLM API connection closed unexpectedly");
-                edc_actor_send(req->from, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, req->request_id, resp,
-                                                           (edc_actor_data_free_fn)edc_llm_actor_resp_free));
+                edc_actor_send(httpreq->from,
+                               edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, httpreq->request_id, resp,
+                                                 (edc_actor_data_free_fn)edc_llm_actor_resp_free));
             }
-            edc_llm_actor_http_req_free(req);
+            edc_llm_actor_http_req_free(httpreq);
         }
     }
-    else if (ev == BC_CONN_TIME_OUT || ev == MG_EV_ERROR)
+    else if (ev == EDC_HTTPS_EVENT_ERROR)
     {
-        if (!req) return;
-        const char *err_msg = ev == BC_CONN_TIME_OUT ? "LLM API request timed out" : "LLM API request error";
-        if (req->from)
-        {
-            struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
-            resp->error = edc_error_new(EDC_ERR_FAILED, "%s", err_msg);
-            edc_actor_send(req->from, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, req->request_id, resp,
-                                                       (edc_actor_data_free_fn)edc_llm_actor_resp_free));
-        }
-        edc_llm_actor_http_req_free(req);
-        c->fn_data = NULL;
+        log_error("llm actor https error: %s", (const char *)data);
     }
 }
 
-static void edc_llm_actor_messages_add_turn(void* data, void* user_data)
-{
-    cJSON *item = data;
-    cJSON *messages = user_data;
-    cJSON_AddItemReferenceToArray(messages, item);
-}
-
-static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct edc_llm_actor_req *req,
-                                  void* request_id)
+static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct edc_llm_actor_req *req, void *request_id)
 {
     edc_llm_actor_state_t *state = (edc_llm_actor_state_t *)actor->state;
 
@@ -169,7 +139,8 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
     {
         for (size_t qi = req->turn->head; qi < req->turn->tail; qi++)
         {
-            edc_llm_actor_messages_add_turn(req->turn->data[qi], messages);
+            cJSON *item = req->turn->data[qi];
+            cJSON_AddItemReferenceToArray(messages, item);
         }
     }
 
@@ -181,14 +152,10 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
     const char *body_s = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
 
-    const char *proto = mg_url_is_ssl(state->api_conf.api_url) ? "https://" : "http://";
-    struct mg_str host = mg_url_host(state->api_conf.api_url);
-    int port = (int)mg_url_port(state->api_conf.api_url);
-    sds url = sdscatprintf(sdsempty(), "%s%.*s:%d", proto, (int)host.len, host.buf, port);
+    struct edc_llm_actor_http_req *httpreq =
+        edc_llm_actor_http_req_new(actor, body_s, &state->api_conf, from, request_id);
 
-    edc_http_async_connect(state->network, url, NULL, edc_llm_actor_on_http_fn,
-                          edc_llm_actor_http_req_new(actor, body_s, &state->api_conf, from, request_id), 60 * 5);
-    sdsfree(url);
+    edc_https_client_connect(state->client, state->api_conf.api_url, edc_llm_actor_on_http_fn, httpreq);
 }
 
 static UT_icd ut_tool_call_icd = {sizeof(struct edc_llm_chat_tool_call), NULL, NULL, NULL};
@@ -200,15 +167,9 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
     if (!choices || !cJSON_IsArray(choices) || cJSON_GetArraySize(choices) == 0)
     {
         char *err_msg = cJSON_Print(response);
-        log_error("resp format error choice 0 is not exist: %s", response);
+        log_error("resp format error choice 0 is not exist: %s", err_msg);
         resp->error = edc_error_new(EDC_ERR_INVAL, "resp format choice 0 is not exist: %s", err_msg);
         cJSON_free(err_msg);
-
-        if (choices)
-        {
-            cJSON_Delete(choices);
-        }
-
         return false;
     }
 
@@ -393,7 +354,7 @@ exit:
     if (req->from)
     {
         edc_actor_send(req->from, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, actor, msg->request_id, resp,
-                                                  (edc_actor_data_free_fn)edc_llm_actor_resp_free));
+                                                     (edc_actor_data_free_fn)edc_llm_actor_resp_free));
     }
 }
 
@@ -422,7 +383,6 @@ struct edc_llm_actor_resp *edc_llm_actor_resp_new()
     struct edc_llm_actor_resp *resp = g_new0(struct edc_llm_actor_resp, 1);
     resp->content = NULL;
     resp->reasoning_content = NULL;
-    resp->content = NULL;
     resp->index = 0;
     resp->reason = BC_LLM_FINISH_REASON_UNKNOWN;
     resp->tool_calls = NULL;
@@ -457,7 +417,8 @@ void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp)
     {
         for (unsigned i = 0; i < utarray_len(resp->tool_calls); ++i)
         {
-            struct edc_llm_chat_tool_call call = *(struct edc_llm_chat_tool_call*)utarray_eltptr(resp->tool_calls, i);
+            struct edc_llm_chat_tool_call call =
+                *(struct edc_llm_chat_tool_call *)utarray_eltptr(resp->tool_calls, i);
             if (call.id)
             {
                 sdsfree(call.id);
@@ -482,14 +443,14 @@ void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp)
         cJSON_Delete(resp->msg);
     }
 
-    free(resp); // FIX: free the resp struct itself
+    free(resp);
 }
 
-edc_actor_t *edc_llm_actor_new(struct llm_api_conf *api_conf, edc_network_async_t *network)
+edc_actor_t *edc_llm_actor_new(struct llm_api_conf *api_conf)
 {
     edc_llm_actor_state_t *state = g_new0(edc_llm_actor_state_t, 1);
     state->api_conf = *api_conf;
-    state->network = network;
+    state->client = edc_https_client_new();
 
     edc_actor_t *actor = edc_actor_new("edc_llm_actor", edc_llm_actor_handler, state);
     return actor;
@@ -498,6 +459,7 @@ edc_actor_t *edc_llm_actor_new(struct llm_api_conf *api_conf, edc_network_async_
 void edc_llm_actor_free(edc_actor_t *actor)
 {
     edc_llm_actor_state_t *state = actor->state;
+    edc_https_client_free(state->client);
     free(state);
     edc_actor_free(actor);
 }
