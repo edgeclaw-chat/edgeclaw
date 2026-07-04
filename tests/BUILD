@@ -23,30 +23,9 @@ LINK_OPTS = select({
 })
 
 cc_test(
-    name = "test_mongoose_https_client",
-    srcs = ["test_mongoose_https_client.c"],
-    deps = [
-        "@mongoose//:mongoose",
-        "//src:agent",
-    ],
-    linkopts = LINK_OPTS,
-)
-
-cc_test(
-    name = "test_mongoose_resolve",
-    srcs = ["test_mongoose_resolve.c"],
-    deps = [
-        "@mongoose//:mongoose",
-        "//src:agent",
-    ],
-    linkopts = LINK_OPTS,
-)
-
-cc_test(
     name = "test_channel_actor",
     srcs = ["test_channel_actor.c"],
     deps = [
-        "@mongoose//:mongoose",
         "//src:agent",
     ],
     linkopts = LINK_OPTS,
@@ -56,7 +35,6 @@ cc_test(
     name = "test_llm_actor",
     srcs = ["test_llm_actor.c"],
     deps = [
-        "@mongoose//:mongoose",
         "//src:agent",
     ],
     linkopts = LINK_OPTS,
@@ -66,7 +44,6 @@ cc_test(
     name = "test_memory_actor",
     srcs = ["test_memory_actor.c"],
     deps = [
-        "@mongoose//:mongoose",
         "//src:agent",
     ],
     linkopts = LINK_OPTS,

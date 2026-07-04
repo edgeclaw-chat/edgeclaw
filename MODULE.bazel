@@ -62,7 +62,6 @@ bc_thirdparty_deps = use_extension("//:extensions.bzl", "bc_thirdparty_deps")
 use_repo(
     bc_thirdparty_deps,
     "log.c",
-    "mongoose",
     "ccronexpr",
     "md4c",
     "lwip",

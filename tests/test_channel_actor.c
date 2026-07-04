@@ -4,6 +4,7 @@
 #include "src/edc_config.h"
 #include "src/edc_file_utils.h"
 #include <stdio.h>
+#include <unistd.h>
 
 static void edc_observe_channel_handler(edc_actor_t *actor, edc_actor_msg_t *message)
 {

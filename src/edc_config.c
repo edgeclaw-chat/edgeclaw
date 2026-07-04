@@ -78,74 +78,6 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
     return true;
 }
 
-static bool edc_config_parse_telegram_channel(struct edc_config *config, cJSON *channel)
-{
-    cJSON *bot_key = cJSON_GetObjectItem(channel, "bot_key");
-    cJSON *user_id = cJSON_GetObjectItem(channel, "user_id");
-    if (!bot_key || !cJSON_IsString(bot_key))
-    {
-        char *s = cJSON_PrintUnformatted(channel);
-        log_error("channel.bot_key is not string type: %s", s);
-        cJSON_free(s);
-        return false;
-    }
-
-    if (!user_id || !cJSON_IsNumber(user_id))
-    {
-        log_error("channel.user_id is not string type: %s", cJSON_PrintUnformatted(channel));
-        return false;
-    }
-
-    sds _d = edc_secret_decrypt(cJSON_GetStringValue(bot_key));
-    config->channel.telegram.bot_key = _d;
-    config->channel.telegram.user_id = (int64_t)cJSON_GetNumberValue(user_id);
-    return true;
-}
-
-static bool edc_config_parse_feishu_channel(struct edc_config *config, cJSON *channel)
-{
-    cJSON *app_id = cJSON_GetObjectItem(channel, "app_id");
-    if (!app_id || !cJSON_IsString(app_id))
-    {
-        log_error("channel.app_id is not string type");
-        return false;
-    }
-    config->channel.feishu.app_id = sdsnew(cJSON_GetStringValue(app_id));
-
-    cJSON *app_secret = cJSON_GetObjectItem(channel, "app_secret");
-    if (!app_secret || !cJSON_IsString(app_secret))
-    {
-        log_error("channel.app_secret is not string type");
-        return false;
-    }
-    sds _d = edc_secret_decrypt(cJSON_GetStringValue(app_secret));
-    config->channel.feishu.app_secret = _d;
-
-    return true;
-}
-
-static bool edc_config_parse_qq_channel(struct edc_config *config, cJSON *channel)
-{
-    cJSON *app_id = cJSON_GetObjectItem(channel, "app_id");
-    if (!app_id || !cJSON_IsString(app_id))
-    {
-        log_error("channel.app_id is not string type");
-        return false;
-    }
-    config->channel.qq.app_id = sdsnew(cJSON_GetStringValue(app_id));
-
-    cJSON *app_secret = cJSON_GetObjectItem(channel, "app_secret");
-    if (!app_secret || !cJSON_IsString(app_secret))
-    {
-        log_error("channel.app_secret is not string type");
-        return false;
-    }
-    sds _d = edc_secret_decrypt(cJSON_GetStringValue(app_secret));
-    config->channel.qq.app_secret = _d;
-
-    return true;
-}
-
 struct edc_config *edc_config_load(const char *edc_home)
 {
     EdcError *error = NULL;
@@ -291,30 +223,6 @@ struct edc_config *edc_config_load(const char *edc_home)
             goto exit_free_config;
         }
     }
-    else if (strcmp(type, "telegram") == 0)
-    {
-        config->channel.type = edc_channel_telegram;
-        if (!edc_config_parse_telegram_channel(config, channel))
-        {
-            goto exit_free_config;
-        }
-    }
-    else if (strcmp(type, "feishu") == 0)
-    {
-        config->channel.type = edc_channel_feishu;
-        if (!edc_config_parse_feishu_channel(config, channel))
-        {
-            goto exit_free_config;
-        }
-    }
-    else if (strcmp(type, "qq") == 0)
-    {
-        config->channel.type = edc_channel_qq;
-        if (!edc_config_parse_qq_channel(config, channel))
-        {
-            goto exit_free_config;
-        }
-    }
     else if (strcmp(type, "cli") == 0)
     {
         config->channel.type = edc_channel_cli;
@@ -449,10 +357,5 @@ void edc_config_free(struct edc_config *config)
     free(config->sandbox_ro_paths);
     for (int _i = 0; config->sandbox_rw_paths && config->sandbox_rw_paths[_i]; _i++) sdsfree(config->sandbox_rw_paths[_i]);
     free(config->sandbox_rw_paths);
-    sdsfree(config->channel.telegram.bot_key);
-    sdsfree(config->channel.feishu.app_id);
-    sdsfree(config->channel.feishu.app_secret);
-    sdsfree(config->channel.qq.app_id);
-    sdsfree(config->channel.qq.app_secret);
     free(config);
 }

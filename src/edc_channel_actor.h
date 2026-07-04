@@ -5,7 +5,6 @@
 #include "edc_actor.h"
 #include "edc_config.h"
 #include "edc_containers.h"
-#include "edc_network_async.h"
 #include "edc_terminal.h"
 #include "cJSON.h"
 #include "uthash.h"
@@ -21,25 +20,6 @@ struct edc_channel
             sds reply_to;
             sds refs;
         } email;
-        struct
-        {
-            sds chat_id;
-        } telegram;
-
-        struct
-        {
-            sds chat_type;
-            sds chat_id;
-            sds message_id;
-            sds user_open_id;
-        } feishu;
-
-        struct
-        {
-            sds message_id;
-            sds author_id;
-            int64_t seq_id;
-        } qq;
     };
 };
 
@@ -48,12 +28,6 @@ struct edc_channel_message
     sds content;
     bool channel_ref;
     struct edc_channel *channel;
-};
-
-struct edc_mg_conn_node
-{
-    struct mg_connection *conn;
-    struct edc_mg_conn_node *next;
 };
 
 struct edc_handler_entry
@@ -67,43 +41,9 @@ typedef struct
 {
     edc_actor_t *actor;
     struct channel_conf config;
-    edc_network_async_t *network;
     edc_actor_t *observer;
     struct edc_handler_entry *handlers;
     union {
-        struct
-        {
-            bool polling;
-            int64_t update_id;
-            uv_timer_t poll_timer;
-        } telegram;
-
-        struct
-        {
-            sds tenant_access_token;
-            int64_t expire;
-            sds wss_url;
-            int32_t wss_service_id;
-            uv_timer_t expire_timer;
-            struct
-            {
-                int ping_interval;
-                int reconnect_count;
-                int reconnect_interval;
-                int reconnect_nonce;
-            } wss_client_config;
-        } feishu;
-
-        struct
-        {
-            sds wss_url;
-            int wss_shards;
-            sds access_token;
-            int64_t expires_in;
-            uv_timer_t expire_timer;
-            struct edc_mg_conn_node *conns;
-        } qq;
-
         struct
         {
             struct edc_terminal_state orig_term;
@@ -128,10 +68,6 @@ extern void edc_channel_actor_free(edc_actor_t *actor);
 extern void edc_channel_actor_set_observer(edc_actor_t *actor, edc_actor_t *observer);
 extern void edc_channel_actor_add(edc_actor_t *actor, edc_channel_type type, edc_actor_handler_t handler);
 
-extern struct edc_channel *edc_channel_qq_new(sds message_id, sds author_id);
-extern struct edc_channel *edc_channel_feishu_new(sds chat_type, sds chat_id, sds message_id,
-                                                sds user_open_id);
-extern struct edc_channel *edc_channel_telegram_new(sds chat_id);
 extern struct edc_channel *edc_channel_cli_new(void);
 extern struct edc_channel *edc_channel_copy(struct edc_channel *channel);
 extern cJSON *edc_channel_to_json(struct edc_channel *channel);
@@ -143,9 +79,5 @@ extern struct edc_channel_message *edc_channel_message_new(struct edc_channel *c
 extern struct edc_channel_message *edc_channel_ref_message_new(struct edc_channel *channel, sds content);
 extern struct edc_channel_message *edc_channel_message_move(struct edc_channel_message *rhs);
 extern struct edc_channel_message *edc_channel_message_copy(struct edc_channel_message *rhs, sds content);
-extern struct edc_channel_message *edc_channel_telegram_message_new(sds chat_id, sds content);
-extern struct edc_channel_message *edc_channel_feishu_message_new(sds chat_type, sds chat_id, sds message_id,
-                                                                sds user_open_id, sds content);
-extern struct edc_channel_message *edc_channel_qq_message_new(sds message_id, sds author_id, sds content);
 
 #endif

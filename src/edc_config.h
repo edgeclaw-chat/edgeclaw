@@ -14,9 +14,6 @@ struct llm_api_conf
 typedef enum
 {
     edc_channel_email,
-    edc_channel_telegram,
-    edc_channel_feishu,
-    edc_channel_qq,
     edc_channel_cli,
 } edc_channel_type;
 
@@ -31,25 +28,6 @@ struct channel_conf
         sds target;
 
     } email;
-
-    struct
-    {
-        sds bot_key;
-        int64_t user_id;
-    } telegram;
-
-    struct
-    {
-        sds user_open_id;
-        sds app_id;
-        sds app_secret;
-    } feishu;
-
-    struct
-    {
-        sds app_id;
-        sds app_secret;
-    } qq;
 
     edc_channel_type type;
 };
