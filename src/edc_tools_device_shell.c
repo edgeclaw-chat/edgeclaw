@@ -1,27 +1,27 @@
-﻿#include "edc_tools.h"
-#include "edc_toolbox.h"
-#include "edc_tools_device_shell.h"
-#include "edc_config.h"
+﻿#include "edc_tools_device_shell.h"
 #include "edc_compat.h"
+#include "edc_config.h"
+#include "edc_toolbox.h"
+#include "edc_tools.h"
 #include "log.h"
 #include <edc_param_types.h>
 
 #ifndef _WIN32
 #include "lwip/api.h"
-#include "lwip/ip_addr.h"
 #include "lwip/err.h"
+#include "lwip/ip_addr.h"
 #endif
-#include <cJSON.h>
-#include <uv.h>
-#include "sds.h"
 #include "edc_error.h"
-#include <string.h>
+#include "sds.h"
+#include <cJSON.h>
 #include <stdlib.h>
+#include <string.h>
+#include <uv.h>
 
 struct device_shell_ctx
 {
     struct edc_toolbox_call_ctx *tb_ctx;
-    void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *);
+    void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *);
     sds command;
     sds agent_ip;
     uint16_t agent_port;
@@ -43,7 +43,8 @@ static err_t recv_until_close(struct netconn *c, sds *buf)
     u16_t chunk;
     err_t err;
 
-    while ((err = netconn_recv(c, &nb)) == ERR_OK) {
+    while ((err = netconn_recv(c, &nb)) == ERR_OK)
+    {
         netbuf_data(nb, (void **)&p, &chunk);
         *buf = sdscatlen(*buf, (char *)p, chunk);
         netbuf_delete(nb);
@@ -55,28 +56,30 @@ static err_t recv_until_close(struct netconn *c, sds *buf)
 static void process_shell_response(sds resp_buf, sds *result, EdcError **error)
 {
     char *body = strstr(resp_buf, "\r\n\r\n");
-    if (!body) {
-        *error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: invalid HTTP response");
+    if (!body)
+    {
+        *error = edc_error_new(EDC_ERR_EXEC, "device_shell: invalid HTTP response");
         return;
     }
     body += 4;
 
     int http_status = 0;
-    if (strncasecmp(resp_buf, "HTTP/", 5) == 0) {
+    if (strncasecmp(resp_buf, "HTTP/", 5) == 0)
+    {
         const char *sp = strchr(resp_buf, ' ');
-        if (sp) http_status = atoi(sp + 1);
+        if (sp)
+            http_status = atoi(sp + 1);
     }
-    if (http_status != 200) {
-        *error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: HTTP %d", http_status);
+    if (http_status != 200)
+    {
+        *error = edc_error_new(EDC_ERR_EXEC, "device_shell: HTTP %d", http_status);
         return;
     }
 
     cJSON *resp_json = cJSON_Parse(body);
-    if (!resp_json) {
-        *error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: invalid JSON response");
+    if (!resp_json)
+    {
+        *error = edc_error_new(EDC_ERR_EXEC, "device_shell: invalid JSON response");
         return;
     }
 
@@ -86,9 +89,12 @@ static void process_shell_response(sds resp_buf, sds *result, EdcError **error)
 
     int exit_code = ec ? ec->valueint : -1;
 
-    if (so && cJSON_IsString(so)) *result = sdscat(*result, so->valuestring);
-    if (se && cJSON_IsString(se) && se->valuestring[0]) {
-        if (sdslen(*result) > 0) *result = sdscat(*result, "\n");
+    if (so && cJSON_IsString(so))
+        *result = sdscat(*result, so->valuestring);
+    if (se && cJSON_IsString(se) && se->valuestring[0])
+    {
+        if (sdslen(*result) > 0)
+            *result = sdscat(*result, "\n");
         *result = sdscatprintf(*result, "STDERR:\n%s", se->valuestring);
     }
     if (sdslen(*result) > 0)
@@ -102,7 +108,8 @@ static void process_shell_response(sds resp_buf, sds *result, EdcError **error)
         *error = edc_error_new(EDC_ERR_EXEC, "%s", *result);
 }
 
-struct device_shell_uv_state {
+struct device_shell_uv_state
+{
     uv_loop_t loop;
     uv_tcp_t tcp;
     uv_connect_t connect_req;
@@ -145,12 +152,14 @@ static void device_shell_uv_on_read(uv_stream_t *stream, ssize_t nread, const uv
 {
     struct device_shell_uv_state *state = stream->data;
 
-    if (state->error || state->timed_out) {
+    if (state->error || state->timed_out)
+    {
         free(buf->base);
         return;
     }
 
-    if (nread > 0) {
+    if (nread > 0)
+    {
         state->resp_buf = sdscatlen(state->resp_buf, buf->base, nread);
         free(buf->base);
         return;
@@ -160,9 +169,9 @@ static void device_shell_uv_on_read(uv_stream_t *stream, ssize_t nread, const uv
     uv_timer_stop(&state->timeout_timer);
     uv_close((uv_handle_t *)stream, device_shell_uv_close_cb);
 
-    if (nread < 0 && nread != UV_EOF) {
-        state->error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: recv failed: %s", uv_strerror((int)nread));
+    if (nread < 0 && nread != UV_EOF)
+    {
+        state->error = edc_error_new(EDC_ERR_EXEC, "device_shell: recv failed: %s", uv_strerror((int)nread));
     }
 
     uv_stop(&state->loop);
@@ -175,20 +184,19 @@ static void device_shell_uv_on_write(uv_write_t *req, int status)
     if (state->error || state->timed_out)
         return;
 
-    if (status < 0) {
-        state->error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: write failed: %s", uv_strerror(status));
+    if (status < 0)
+    {
+        state->error = edc_error_new(EDC_ERR_EXEC, "device_shell: write failed: %s", uv_strerror(status));
         uv_timer_stop(&state->timeout_timer);
         uv_close((uv_handle_t *)&state->tcp, device_shell_uv_close_cb);
         uv_stop(&state->loop);
         return;
     }
 
-    int r = uv_read_start((uv_stream_t *)&state->tcp,
-                          device_shell_uv_alloc, device_shell_uv_on_read);
-    if (r < 0) {
-        state->error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: read start failed: %s", uv_strerror(r));
+    int r = uv_read_start((uv_stream_t *)&state->tcp, device_shell_uv_alloc, device_shell_uv_on_read);
+    if (r < 0)
+    {
+        state->error = edc_error_new(EDC_ERR_EXEC, "device_shell: read start failed: %s", uv_strerror(r));
         uv_timer_stop(&state->timeout_timer);
         uv_close((uv_handle_t *)&state->tcp, device_shell_uv_close_cb);
         uv_stop(&state->loop);
@@ -202,9 +210,9 @@ static void device_shell_uv_on_connect(uv_connect_t *req, int status)
     if (state->error || state->timed_out)
         return;
 
-    if (status < 0) {
-        state->error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: connect failed: %s", uv_strerror(status));
+    if (status < 0)
+    {
+        state->error = edc_error_new(EDC_ERR_EXEC, "device_shell: connect failed: %s", uv_strerror(status));
         uv_timer_stop(&state->timeout_timer);
         uv_close((uv_handle_t *)&state->tcp, device_shell_uv_close_cb);
         uv_stop(&state->loop);
@@ -212,8 +220,8 @@ static void device_shell_uv_on_connect(uv_connect_t *req, int status)
     }
 
     uv_timer_stop(&state->timeout_timer);
-    uv_timer_start(&state->timeout_timer, device_shell_uv_on_timeout,
-                   (uint64_t)state->shell_ctx->timeout_sec * 1000, 0);
+    uv_timer_start(&state->timeout_timer, device_shell_uv_on_timeout, (uint64_t)state->shell_ctx->timeout_sec * 1000,
+                   0);
 
     uv_buf_t bufs[2];
     bufs[0].base = state->header;
@@ -221,11 +229,10 @@ static void device_shell_uv_on_connect(uv_connect_t *req, int status)
     bufs[1].base = state->body_sds;
     bufs[1].len = sdslen(state->body_sds);
 
-    int r = uv_write(&state->write_req, (uv_stream_t *)&state->tcp,
-                     bufs, 2, device_shell_uv_on_write);
-    if (r < 0) {
-        state->error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: write failed: %s", uv_strerror(r));
+    int r = uv_write(&state->write_req, (uv_stream_t *)&state->tcp, bufs, 2, device_shell_uv_on_write);
+    if (r < 0)
+    {
+        state->error = edc_error_new(EDC_ERR_EXEC, "device_shell: write failed: %s", uv_strerror(r));
         uv_timer_stop(&state->timeout_timer);
         uv_close((uv_handle_t *)&state->tcp, device_shell_uv_close_cb);
         uv_stop(&state->loop);
@@ -245,10 +252,10 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
     EdcError *error = NULL;
 
     struct device_shell_uv_state *state = calloc(1, sizeof(*state));
-    if (!state) {
+    if (!state)
+    {
         sdsfree(result);
-        error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: failed to allocate state");
+        error = edc_error_new(EDC_ERR_EXEC, "device_shell: failed to allocate state");
         ctx->callback(ctx->tb_ctx, NULL, error);
         device_shell_ctx_free(ctx);
         return;
@@ -273,13 +280,13 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
     cJSON_Delete(req_json);
 
     state->header = sdscatprintf(sdsempty(),
-        "POST /exec HTTP/1.1\r\n"
-        "Host: %s:%u\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: %zu\r\n"
-        "Connection: close\r\n"
-        "\r\n",
-        ctx->agent_ip, ctx->agent_port, strlen(req_body));
+                                 "POST /exec HTTP/1.1\r\n"
+                                 "Host: %s:%u\r\n"
+                                 "Content-Type: application/json\r\n"
+                                 "Content-Length: %zu\r\n"
+                                 "Connection: close\r\n"
+                                 "\r\n",
+                                 ctx->agent_ip, ctx->agent_port, strlen(req_body));
 
     state->body_sds = sdsnewlen(req_body, strlen(req_body));
     cJSON_free(req_body);
@@ -289,12 +296,11 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
 
     uv_timer_start(&state->timeout_timer, device_shell_uv_on_timeout, 5000, 0);
 
-    int r = uv_tcp_connect(&state->connect_req, &state->tcp,
-                           (const struct sockaddr *)&addr,
-                           device_shell_uv_on_connect);
-    if (r < 0) {
-        error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: connect failed: %s", uv_strerror(r));
+    int r =
+        uv_tcp_connect(&state->connect_req, &state->tcp, (const struct sockaddr *)&addr, device_shell_uv_on_connect);
+    if (r < 0)
+    {
+        error = edc_error_new(EDC_ERR_EXEC, "device_shell: connect failed: %s", uv_strerror(r));
         uv_timer_stop(&state->timeout_timer);
         uv_close((uv_handle_t *)&state->tcp, device_shell_uv_close_cb);
         uv_close((uv_handle_t *)&state->timeout_timer, device_shell_uv_close_cb);
@@ -306,6 +312,7 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
         sdsfree(state->resp_buf);
         free(state);
         sdsfree(result);
+        // FIXME: thread race
         ctx->callback(ctx->tb_ctx, NULL, error);
         device_shell_ctx_free(ctx);
         return;
@@ -316,15 +323,18 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
     uv_walk(&state->loop, device_shell_uv_close_walk, NULL);
     uv_run(&state->loop, UV_RUN_DEFAULT);
 
-    if (state->error) {
+    if (state->error)
+    {
         error = state->error;
         sdsfree(state->resp_buf);
-    } else if (state->timed_out) {
+    }
+    else if (state->timed_out)
+    {
         sdsfree(state->resp_buf);
-        error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: request timed out after %ds",
-                            ctx->timeout_sec);
-    } else {
+        error = edc_error_new(EDC_ERR_EXEC, "device_shell: request timed out after %ds", ctx->timeout_sec);
+    }
+    else
+    {
         process_shell_response(state->resp_buf, &result, &error);
         sdsfree(state->resp_buf);
     }
@@ -334,10 +344,13 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
     uv_loop_close(&state->loop);
     free(state);
 
-    if (error) {
+    if (error)
+    {
         ctx->callback(ctx->tb_ctx, NULL, error);
         sdsfree(result);
-    } else {
+    }
+    else
+    {
         ctx->callback(ctx->tb_ctx, result, NULL);
     }
 
@@ -351,32 +364,32 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
     EdcError *error = NULL;
 
     ip_addr_t addr;
-    if (!ip4addr_aton(ctx->agent_ip, &addr)) {
+    if (!ip4addr_aton(ctx->agent_ip, &addr))
+    {
         sdsfree(result);
-        error = edc_error_new(EDC_ERR_INVAL,
-                            "device_shell: invalid device_ip in config: %s", ctx->agent_ip);
+        error = edc_error_new(EDC_ERR_INVAL, "device_shell: invalid device_ip in config: %s", ctx->agent_ip);
         ctx->callback(ctx->tb_ctx, NULL, error);
         device_shell_ctx_free(ctx);
         return;
     }
 
     struct netconn *c = netconn_new(NETCONN_TCP);
-    if (!c) {
+    if (!c)
+    {
         sdsfree(result);
-        error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: netconn_new failed");
+        error = edc_error_new(EDC_ERR_EXEC, "device_shell: netconn_new failed");
         ctx->callback(ctx->tb_ctx, NULL, error);
         device_shell_ctx_free(ctx);
         return;
     }
 
     err_t err = netconn_connect(c, &addr, ctx->agent_port);
-    if (err != ERR_OK) {
+    if (err != ERR_OK)
+    {
         netconn_delete(c);
         sdsfree(result);
-        error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: connect to %s:%u failed (%d)",
-                            ctx->agent_ip, ctx->agent_port, err);
+        error = edc_error_new(EDC_ERR_EXEC, "device_shell: connect to %s:%u failed (%d)", ctx->agent_ip,
+                              ctx->agent_port, err);
         ctx->callback(ctx->tb_ctx, NULL, error);
         device_shell_ctx_free(ctx);
         return;
@@ -390,13 +403,13 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
     cJSON_Delete(req_json);
 
     sds hdr = sdscatprintf(sdsempty(),
-        "POST /exec HTTP/1.1\r\n"
-        "Host: %s:%u\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: %zu\r\n"
-        "Connection: close\r\n"
-        "\r\n",
-        ctx->agent_ip, ctx->agent_port, strlen(req_body));
+                           "POST /exec HTTP/1.1\r\n"
+                           "Host: %s:%u\r\n"
+                           "Content-Type: application/json\r\n"
+                           "Content-Length: %zu\r\n"
+                           "Connection: close\r\n"
+                           "\r\n",
+                           ctx->agent_ip, ctx->agent_port, strlen(req_body));
 
     netconn_write_partly(c, hdr, sdslen(hdr), NETCONN_COPY, NULL);
     netconn_write_partly(c, req_body, strlen(req_body), NETCONN_COPY, NULL);
@@ -410,11 +423,11 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
     netconn_close(c);
     netconn_delete(c);
 
-    if (recv_err == ERR_TIMEOUT) {
+    if (recv_err == ERR_TIMEOUT)
+    {
         sdsfree(resp_buf);
         sdsfree(result);
-        error = edc_error_new(EDC_ERR_EXEC,
-                            "device_shell: request timed out after %ds", ctx->timeout_sec);
+        error = edc_error_new(EDC_ERR_EXEC, "device_shell: request timed out after %ds", ctx->timeout_sec);
         ctx->callback(ctx->tb_ctx, NULL, error);
         device_shell_ctx_free(ctx);
         return;
@@ -423,10 +436,13 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
     process_shell_response(resp_buf, &result, &error);
     sdsfree(resp_buf);
 
-    if (error) {
+    if (error)
+    {
         ctx->callback(ctx->tb_ctx, NULL, error);
         sdsfree(result);
-    } else {
+    }
+    else
+    {
         ctx->callback(ctx->tb_ctx, result, NULL);
     }
 
@@ -439,46 +455,60 @@ static void device_shell_thread(void *data)
     struct device_shell_ctx *ctx = data;
     struct edc_config *conf = ctx->tb_ctx->tb->conf;
 
-    if (conf->device_transport && conf->device_transport[0]) {
+    if (conf->device_transport && conf->device_transport[0])
+    {
         if (strcasecmp(conf->device_transport, "tty") == 0)
-#ifndef _WIN32
-            device_shell_thread_lwip(ctx);
-        else
-#endif
+        {
+            log_info("device shell: device connect via transport tty");
+#ifdef _WIN32
             device_shell_thread_socket(ctx);
-    } else if (conf->device_pty && conf->device_pty[0]) {
-#ifndef _WIN32
-        device_shell_thread_lwip(ctx);
 #else
-        device_shell_thread_socket(ctx);
+            device_shell_thread_lwip(ctx);
 #endif
-    } else {
+        }
+        else
+        {
+            log_info("device shell: device connect via transport socket");
+            device_shell_thread_socket(ctx);
+        }
+    }
+    else if (conf->device_pty && conf->device_pty[0])
+    {
+        log_info("device shell: device connect via transport socket");
+#ifdef _WIN32
+        device_shell_thread_socket(ctx);
+#else
+        device_shell_thread_lwip(ctx);
+#endif
+    }
+    else
+    {
+        log_info("device shell: device connect via default transport socket");
         device_shell_thread_socket(ctx);
     }
 }
 
-static void
-edc_tool_device_shell_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool,
-                                 cJSON *args,
-                                 void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
+static void edc_tool_device_shell_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, cJSON *args,
+                                             void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     (void)tool;
 
     cJSON *cmd = cJSON_GetObjectItem(args, "command");
-    if (!cmd || !cJSON_IsString(cmd)) {
-        EdcError *error = edc_error_new(EDC_ERR_INVAL,
-                                    "device_shell: missing 'command' parameter");
+    if (!cmd || !cJSON_IsString(cmd))
+    {
+        EdcError *error = edc_error_new(EDC_ERR_INVAL, "device_shell: missing 'command' parameter");
         callback(tb_ctx, NULL, error);
         return;
     }
 
     struct edc_config *conf = tb_ctx->tb->conf;
-    if (!conf->device_ip) {
-        EdcError *error = edc_error_new(EDC_ERR_INVAL,
-                                    "device_shell: device_ip not configured in config.json");
+    if (!conf->device_ip)
+    {
+        EdcError *error = edc_error_new(EDC_ERR_INVAL, "device_shell: device_ip not configured in config.json");
         callback(tb_ctx, NULL, error);
         return;
     }
+
 
     int timeout_sec = 30;
     cJSON *timeout_json = cJSON_GetObjectItem(args, "timeout");
@@ -494,18 +524,28 @@ edc_tool_device_shell_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc
     ctx->timeout_sec = timeout_sec;
 
     uv_thread_t thread;
-    uv_thread_create(&thread, device_shell_thread, ctx);
+    int tr = uv_thread_create(&thread, device_shell_thread, ctx);
+    if (tr != 0)
+    {
+        log_error("device shell: uv_thread_create failed: %s", uv_strerror(tr));
+        EdcError *error = edc_error_new(EDC_ERR_EXEC, "device_shell: failed to create thread: %s", uv_strerror(tr));
+        callback(tb_ctx, NULL, error);
+        device_shell_ctx_free(ctx);
+        return;
+    }
 }
 
 struct edc_tool *edc_tool_create_device_shell(struct edc_toolbox *tb)
 {
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params, edc_tool_param_new("command", edc_param_str_type("Shell command to execute on remote device", NULL), true));
-    LL_APPEND(params, edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), false));
+    LL_APPEND(params, edc_tool_param_new("command",
+                                         edc_param_str_type("Shell command to execute on remote device", NULL), true));
+    LL_APPEND(params,
+              edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), false));
 
-    struct edc_tool *tool = edc_tool_new("device_shell",
-        "Execute a shell command on a remote device agent (PPPoS or TCP socket)", params,
-        edc_tool_device_shell_exec_async);
+    struct edc_tool *tool =
+        edc_tool_new("device_shell", "Execute a shell command on a remote device agent (PPPoS or TCP socket)", params,
+                     edc_tool_device_shell_exec_async);
     edc_toolbox_register(tb, tool);
     return tool;
 }
