@@ -435,12 +435,40 @@ static void edc_commands_handle_task_join(struct edc_agent *agent, edc_actor_t *
 
     if (t->state == TASK_COMPLETED)
     {
-        sds reply = sdscatprintf(sdsempty(), "[task %s output]:\n%s", t->task_id,
-                                 t->output ? t->output : "(empty)");
+        /* find or create a target task to inject output into */
+        struct edc_task *active = edc_session_get_active_task(agent->session);
+        if (!active
+            || (active->state != TASK_WAITING_INPUT && active->state != TASK_WAITING_DEPS))
+        {
+            /* no usable active task — create one in foreground group */
+            struct edc_task_group *fg = agent->scheduler->foreground_group;
+            struct edc_channel *ch = NULL;
+            if (fg && fg->members) ch = fg->members->channel;
+            active = edc_scheduler_create_task(agent->scheduler, "Joined task", ch);
+            if (fg)
+            {
+                edc_task_group_add_task(fg, active);
+                edc_session_set_active_task(agent->session, active);
+            }
+            else
+            {
+                struct edc_task_group *g = edc_scheduler_create_group(agent->scheduler, active);
+                edc_scheduler_set_foreground(agent->scheduler, g);
+            }
+        }
+
+        /* auto-chain: inject output into active task */
+        edc_task_add_dependency(active, t, TASK_DEP_JOIN);
+
+        sds reply = sdscatprintf(sdsempty(), "[task %s output]:\n%s\n\n→ injected into %s\n→ %s reaped",
+                                 t->task_id,
+                                 t->output ? t->output : "(empty)",
+                                 active->task_id,
+                                 t->task_id);
         edc_commands_reply(agent, actor, channel, reply);
         sdsfree(reply);
 
-        /* reap */
+        /* reap source */
         if (t->group) edc_task_group_remove_task(t->group, t);
         edc_task_free(t);
         return;

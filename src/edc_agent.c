@@ -70,7 +70,7 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
         }
     }
 
-    /* 注入已完成依赖 task 的 output */
+    /* 注入已完成依赖 task 的输出 (user inputs + final output) */
     struct edc_task_dep *dep;
     LL_FOREACH(task->deps, dep)
     {
@@ -79,14 +79,33 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
                  dep->source ? dep->source->task_id : "(null)",
                  dep->completed,
                  (dep->source && dep->source->output) ? "yes" : "none");
-        if (dep->completed && dep->source && dep->source->output)
+        if (dep->completed && dep->source)
         {
-            sds note = sdscatprintf(sdsempty(),
-                                    "[子任务 %s (id=%s) 结果]:\n%s",
-                                    dep->source->description,
-                                    dep->source->task_id,
-                                    dep->source->output);
-            log_info("  -> injecting source output (%zu bytes)", sdslen(note));
+            sds note = sdscatprintf(sdsempty(), "[子任务 %s (id=%s)]:\n",
+                                     dep->source->description, dep->source->task_id);
+
+            /* collect user inputs from source turns */
+            for (size_t qi = dep->source->turns.head; qi < dep->source->turns.tail; qi++)
+            {
+                struct edc_turn *turn = dep->source->turns.data[qi];
+                for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
+                {
+                    cJSON *msg = turn->messages.data[mj];
+                    cJSON *role = cJSON_GetObjectItem(msg, "role");
+                    if (role && cJSON_IsString(role) && strcmp(role->valuestring, "user") == 0)
+                    {
+                        cJSON *content = cJSON_GetObjectItem(msg, "content");
+                        if (content && cJSON_IsString(content))
+                            note = sdscatprintf(note, "Q: %s\n", content->valuestring);
+                    }
+                }
+            }
+
+            /* final output */
+            if (dep->source->output)
+                note = sdscatprintf(note, "A: %s\n", dep->source->output);
+
+            log_info("  -> injecting source Q&A (%zu bytes)", sdslen(note));
             cJSON *sys = cJSON_CreateObject();
             cJSON_AddStringToObject(sys, "role", "system");
             cJSON_AddStringToObject(sys, "content", note);
