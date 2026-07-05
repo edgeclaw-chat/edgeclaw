@@ -198,7 +198,13 @@ static struct edc_https_request *edc_https_request_new(struct edc_https_client *
     req->mbedtls_send_bufs = NULL;
     req->writing = false;
     req->url = sdsnew(url);
-    yuarel_parse(&req->url_parser, req->url);
+    if (yuarel_parse(&req->url_parser, req->url) < 0)
+    {
+        log_error("edc_https_client: invalid url: %s", url);
+        sdsfree(req->url);
+        free(req);
+        return NULL;
+    }
 
     uv_tcp_init(&client->loop, &req->socket);
     return req;
@@ -314,8 +320,16 @@ static void edc_https_client_on_tcp_write(uv_write_t *write_req, int status)
     if (req->mbedtls_send_bufs)
     {
         uv_write_t *wr = malloc(sizeof(uv_write_t));
-        uv_write(wr, (uv_stream_t *)&req->socket, &req->mbedtls_send_bufs->buf, 1,
-                 edc_https_client_on_tcp_write);
+        if (uv_write(wr, (uv_stream_t *)&req->socket, &req->mbedtls_send_bufs->buf, 1,
+                     edc_https_client_on_tcp_write) < 0)
+        {
+            free(wr);
+            sds message = sdscatprintf(sdsnew(NULL), "uv_write failed in on_tcp_write");
+            req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
+            sdsfree(message);
+            uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+            return;
+        }
     }
     else
     {
@@ -337,8 +351,17 @@ static int edc_https_ssl_bio_send(void *ctx, const unsigned char *buf, size_t le
     {
         req->writing = true;
         uv_write_t *wr = malloc(sizeof(uv_write_t));
-        uv_write(wr, (uv_stream_t *)&req->socket, &req->mbedtls_send_bufs->buf, 1,
-                 edc_https_client_on_tcp_write);
+        if (uv_write(wr, (uv_stream_t *)&req->socket, &req->mbedtls_send_bufs->buf, 1,
+                     edc_https_client_on_tcp_write) < 0)
+        {
+            free(wr);
+            req->writing = false;
+            sds message = sdscatprintf(sdsnew(NULL), "uv_write failed in bio_send");
+            req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
+            sdsfree(message);
+            uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+            return -1;
+        }
     }
 
     return (int)len;
@@ -510,7 +533,14 @@ static void edc_https_client_on_tcp_connect(uv_connect_t *conn, int status)
     struct edc_https_client *client = req->client;
 
     mbedtls_ssl_init(&req->ssl);
-    mbedtls_ssl_setup(&req->ssl, &client->ssl_conf);
+    if (mbedtls_ssl_setup(&req->ssl, &client->ssl_conf) != 0)
+    {
+        sds err_message = sdscatprintf(sdsnew(NULL), "mbedtls ssl_setup failed");
+        req->fn(req, EDC_HTTPS_EVENT_ERROR, err_message);
+        sdsfree(err_message);
+        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+        return;
+    }
     mbedtls_ssl_set_hostname(&req->ssl, req->url_parser.host);
     mbedtls_ssl_set_bio(&req->ssl, req, edc_https_ssl_bio_send, edc_https_ssl_bio_recv, NULL);
     uv_read_start((uv_stream_t *)req, edc_https_client_alloc_read_buf, edc_https_client_on_tcp_read);
@@ -552,8 +582,17 @@ static void on_work_async(uv_async_t *handle)
             break;
 
         struct edc_https_request *http_req = edc_https_request_new(client, work->url, work->fn, work->priv);
+        if (!http_req)
+        {
+            sds message = sdscatprintf(sdsnew(NULL), "invalid url: %s", work->url);
+            work->fn(NULL, EDC_HTTPS_EVENT_ERROR, message);
+            sdsfree(message);
+            free(work->url);
+            free(work);
+            continue;
+        }
 
-        struct addrinfo hints;
+        struct addrinfo hints = {0};
         hints.ai_family = PF_INET;
         hints.ai_socktype = SOCK_STREAM;
         hints.ai_protocol = IPPROTO_TCP;
