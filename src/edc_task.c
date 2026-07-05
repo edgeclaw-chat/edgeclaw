@@ -247,8 +247,13 @@ bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, e
 
     target->deps_total++;
 
+    /* 若 source 已完成，立即标记 dep 为 completed */
+    if (source->state == TASK_COMPLETED)
+    {
+        edc_task_on_dep_completed(target, source);
+    }
     /* 若 target 刚获得依赖，进入 WAITING_DEPS */
-    if (target->state == TASK_IDLE || target->state == TASK_WAITING_INPUT)
+    else if (target->state == TASK_IDLE || target->state == TASK_WAITING_INPUT)
     {
         edc_task_set_state(target, TASK_WAITING_DEPS);
     }
