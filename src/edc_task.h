@@ -62,6 +62,8 @@ struct edc_task {
 
     int is_group_leader;            /* 是否是 group leader */
 
+    struct edc_task_group *group;   /* 所属 group */
+
     EdcQueue turns;                 /* FIFO: struct edc_turn* */
     struct edc_turn *active_turn;   /* 当前活跃 turn */
 

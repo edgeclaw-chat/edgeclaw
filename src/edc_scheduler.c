@@ -318,7 +318,19 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         {
             edc_turn_add_assistant_message(task->active_turn, r->msg);
             r->msg = NULL;
-            /* sync turn messages to session flat array (Phase 4 compat) */
+
+            /* sync turn messages to group history (context sharing) */
+            if (task->group && task->active_turn)
+            {
+                for (size_t qi = task->active_turn->messages.head;
+                     qi < task->active_turn->messages.tail; qi++)
+                {
+                    cJSON *item = task->active_turn->messages.data[qi];
+                    cJSON_AddItemReferenceToArray(task->group->history, item);
+                }
+            }
+
+            /* sync to session (persistence) */
             edc_session_add_turn(sched->session, task->active_turn);
         }
         edc_task_commit_active_turn(task);
@@ -326,7 +338,15 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         edc_task_set_state(task, TASK_COMPLETED);
         edc_task_notify_dependents(task);
 
-        if (sched->foreground_group && sched->send_reply)
+        /* auto-reap: 若有 dependents (有人 JOIN 等我), 通知后自动回收 */
+        if (task->dependents && task->group)
+        {
+            edc_task_group_remove_task(task->group, task);
+            edc_task_free(task);
+            task = NULL;
+        }
+
+        if (task && sched->foreground_group && sched->send_reply)
         {
             struct edc_task *m;
             bool is_fg = false;

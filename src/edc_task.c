@@ -435,14 +435,15 @@ cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *c
     }
 
     /* 2. 已完成的 turn 消息 */
-    for (size_t i = 0; i < edc_queue_length(&task->turns); i++)
+    for (size_t qi = task->turns.head; qi < task->turns.tail; qi++)
     {
-        /* EdcQueue 不支持随机访问，改为遍历 */
+        struct edc_turn *turn = task->turns.data[qi];
+        for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
+        {
+            cJSON *item = turn->messages.data[mj];
+            cJSON_AddItemReferenceToArray(messages, item);
+        }
     }
-
-    /* 遍历 turns 队列: 使用临时数组方式 */
-    /* 因为 EdcQueue 是环形缓冲区，无法在不 pop 的情况下遍历 */
-    /* 此部分在 Phase 4 由 session 层负责拼接 */
 
     /* 3. 已完成依赖 task 的 output 注入 */
     struct edc_task_dep *dep;

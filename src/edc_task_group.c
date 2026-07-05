@@ -16,8 +16,10 @@ struct edc_task_group *edc_task_group_new(struct edc_task *leader)
     group->members = leader;
     group->member_count = 1;
     group->is_orphaned = false;
+    group->history = cJSON_CreateArray();
 
     leader->is_group_leader = 1;
+    leader->group = group;
 
     return group;
 }
@@ -34,6 +36,7 @@ void edc_task_group_free(struct edc_task_group *group)
     }
 
     free(group->group_id);
+    if (group->history) cJSON_Delete(group->history);
     free(group);
 }
 
@@ -45,6 +48,7 @@ void edc_task_group_add_task(struct edc_task_group *group, struct edc_task *task
 
     free(task->group_id);
     task->group_id = strdup(group->group_id);
+    task->group = group;
 
     LL_APPEND2(group->members, task, group_next);
     group->member_count++;
@@ -60,6 +64,7 @@ void edc_task_group_remove_task(struct edc_task_group *group, struct edc_task *t
         if (m == task)
         {
             LL_DELETE2(group->members, m, group_next);
+            task->group = NULL;
             group->member_count--;
 
             if (task == group->leader && group->member_count > 0)

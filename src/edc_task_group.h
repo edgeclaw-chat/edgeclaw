@@ -16,10 +16,9 @@ struct edc_task_group {
     struct edc_channel *channel;    /* 绑定的输出通道 */
     bool is_orphaned;               /* leader 退出后置 true */
 
-    struct edc_task_group *prev, *next;  /* session 内 groups 链表 */
+    cJSON *history;                 /* 组内消息历史 (上下文共享) */
 
-    /* 用于遍历 */
-    struct edc_task_group *hh_prev, *hh_next;
+    struct edc_task_group *prev, *next;  /* session 内 groups 链表 */
 };
 
 /* ── API ────────────────────────────────────────────────────── */

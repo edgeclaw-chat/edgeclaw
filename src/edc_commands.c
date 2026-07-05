@@ -127,7 +127,8 @@ static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *a
                                           struct edc_channel *channel, sds arg)
 {
     struct edc_task *task = edc_scheduler_create_task(agent->scheduler,
-                                                       arg ? arg : "New task", channel);
+                                                       arg ? arg : "New task",
+                                                       edc_channel_copy(channel));
     struct edc_task_group *group = edc_scheduler_create_group(agent->scheduler, task);
     edc_scheduler_set_foreground(agent->scheduler, group);
 
@@ -153,11 +154,20 @@ static void edc_commands_handle_task_list(struct edc_agent *agent, edc_actor_t *
         struct edc_task *t;
         LL_FOREACH2(g->members, t, group_next)
         {
-            out = sdscatprintf(out, "    [%s] %-14s  %-16s  %s\n",
+            sds preview = NULL;
+            if (t->output)
+            {
+                preview = sdsnewlen(t->output, sdslen(t->output) > 60 ? 60 : sdslen(t->output));
+                if (sdslen(t->output) > 60) preview = sdscat(preview, "...");
+            }
+            out = sdscatprintf(out, "    [%s] %-14s  %-16s  %s%s%s\n",
                                t == g->leader ? "L" : "M",
                                t->task_id,
                                edc_task_state_name(t->state),
-                               t->description);
+                               t->description,
+                               preview ? "  → " : "",
+                               preview ? preview : "");
+            if (preview) sdsfree(preview);
         }
     }
     edc_commands_reply(agent, actor, channel, out);
@@ -223,20 +233,31 @@ static void edc_commands_handle_task_groups(struct edc_agent *agent, edc_actor_t
 }
 
 static void edc_commands_handle_task_status(struct edc_agent *agent, edc_actor_t *actor,
-                                              struct edc_channel *channel)
+                                              struct edc_channel *channel, sds arg)
 {
-    struct edc_task *t = edc_session_get_active_task(agent->session);
-    if (!t) { edc_commands_reply(agent, actor, channel, "no active task"); return; }
+    struct edc_task *t;
+    if (arg)
+    {
+        t = edc_session_find_task(agent->session, arg);
+        if (!t) { edc_commands_reply(agent, actor, channel, "task not found"); return; }
+    }
+    else
+    {
+        t = edc_session_get_active_task(agent->session);
+        if (!t) { edc_commands_reply(agent, actor, channel, "no active task"); return; }
+    }
 
     sds out = sdscatprintf(sdsempty(),
                            "task: %s\n"
                            "state: %s\n"
                            "group: %s\n"
                            "desc: %s\n"
-                           "deps: %zu/%zu completed\n",
+                           "deps: %zu/%zu completed\n"
+                           "turns: %zu\n",
                            t->task_id, edc_task_state_name(t->state),
                            t->group_id, t->description,
-                           t->deps_completed, t->deps_total);
+                           t->deps_completed, t->deps_total,
+                           (size_t)edc_queue_length(&t->turns));
     if (t->output)
     {
         out = sdscatprintf(out, "output: %s\n", t->output);
@@ -251,6 +272,54 @@ static void edc_commands_handle_task_status(struct edc_agent *agent, edc_actor_t
     }
     edc_commands_reply(agent, actor, channel, out);
     sdsfree(out);
+}
+
+static void edc_commands_handle_task_output(struct edc_agent *agent, edc_actor_t *actor,
+                                             struct edc_channel *channel, sds arg)
+{
+    if (!arg) { edc_commands_reply(agent, actor, channel, "/task output <id>"); return; }
+    struct edc_task *t = edc_session_find_task(agent->session, arg);
+    if (!t) { edc_commands_reply(agent, actor, channel, "task not found"); return; }
+    if (!t->output) { edc_commands_reply(agent, actor, channel, "(no output)"); return; }
+    edc_commands_reply(agent, actor, channel, t->output);
+}
+
+static void edc_commands_handle_task_join(struct edc_agent *agent, edc_actor_t *actor,
+                                           struct edc_channel *channel, sds arg)
+{
+    if (!arg) { edc_commands_reply(agent, actor, channel, "/task join <id>"); return; }
+    struct edc_task *t = edc_session_find_task(agent->session, arg);
+    if (!t) { edc_commands_reply(agent, actor, channel, "task not found"); return; }
+
+    if (t->state == TASK_COMPLETED)
+    {
+        sds reply = sdscatprintf(sdsempty(), "[task %s output]:\n%s", t->task_id,
+                                 t->output ? t->output : "(empty)");
+        edc_commands_reply(agent, actor, channel, reply);
+        sdsfree(reply);
+
+        /* reap */
+        if (t->group) edc_task_group_remove_task(t->group, t);
+        edc_task_free(t);
+        return;
+    }
+
+    if (t->state == TASK_CANCELLED || t->state == TASK_ERROR)
+    {
+        sds reply = sdscatprintf(sdsempty(), "[task %s] %s, reaped", t->task_id,
+                                 edc_task_state_name(t->state));
+        edc_commands_reply(agent, actor, channel, reply);
+        sdsfree(reply);
+        if (t->group) edc_task_group_remove_task(t->group, t);
+        edc_task_free(t);
+        return;
+    }
+
+    sds reply = sdscatprintf(sdsempty(),
+                              "task %s is %s, cannot join. Use /task chain <task> %s to wait for it",
+                              t->task_id, edc_task_state_name(t->state), t->task_id);
+    edc_commands_reply(agent, actor, channel, reply);
+    sdsfree(reply);
 }
 
 static void edc_commands_handle_task_chain(struct edc_agent *agent, edc_actor_t *actor,
@@ -328,7 +397,17 @@ static bool edc_commands_handle_task(struct edc_agent *agent, edc_actor_t *actor
     }
     else if (strcmp(content_trim, "/task status") == 0)
     {
-        edc_commands_handle_task_status(agent, actor, message->channel);
+        edc_commands_handle_task_status(agent, actor, message->channel, NULL);
+    }
+    else if (strncmp(content_trim, "/task status ", 13) == 0)
+    {
+        arg = sdsnew(content_trim + 13);
+        edc_commands_handle_task_status(agent, actor, message->channel, arg);
+    }
+    else if (strncmp(content_trim, "/task output ", 13) == 0)
+    {
+        arg = sdsnew(content_trim + 13);
+        edc_commands_handle_task_output(agent, actor, message->channel, arg);
     }
     else if (strncmp(content_trim, "/task fg ", 9) == 0)
     {
@@ -347,6 +426,11 @@ static bool edc_commands_handle_task(struct edc_agent *agent, edc_actor_t *actor
     {
         arg = sdsnew(content_trim + 12);
         edc_commands_handle_task_chain(agent, actor, message->channel, arg);
+    }
+    else if (strncmp(content_trim, "/task join ", 11) == 0)
+    {
+        arg = sdsnew(content_trim + 11);
+        edc_commands_handle_task_join(agent, actor, message->channel, arg);
     }
     else if (strncmp(content_trim, "/task prompt ", 13) == 0)
     {
