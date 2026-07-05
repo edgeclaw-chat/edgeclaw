@@ -148,8 +148,8 @@ struct edc_task_group *edc_scheduler_get_foreground(struct edc_scheduler *sched)
 
 /* ── 注册/注销 ──────────────────────────────────────────────── */
 
-static void edc_scheduler_register(struct edc_scheduler *sched, struct edc_task *task,
-                                    void *request_id)
+void edc_scheduler_register_task(struct edc_scheduler *sched, struct edc_task *task,
+                                   void *request_id)
 {
     struct edc_sched_task_entry *e = g_new0(struct edc_sched_task_entry, 1);
     e->request_id = request_id;
@@ -157,7 +157,7 @@ static void edc_scheduler_register(struct edc_scheduler *sched, struct edc_task 
     HASH_ADD_PTR(sched->task_hash, request_id, e);
 }
 
-static void edc_scheduler_unregister(struct edc_scheduler *sched, void *request_id)
+void edc_scheduler_unregister_task(struct edc_scheduler *sched, void *request_id)
 {
     struct edc_sched_task_entry *e;
     HASH_FIND_PTR(sched->task_hash, &request_id, e);
@@ -173,7 +173,7 @@ void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *
     if (!task) return;
     if (task->current_request_id)
     {
-        edc_scheduler_unregister(sched, task->current_request_id);
+        edc_scheduler_unregister_task(sched, task->current_request_id);
     }
     edc_task_send_signal(task, sig);
 }
@@ -193,7 +193,7 @@ void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, const char 
     {
         if (task->current_request_id)
         {
-            edc_scheduler_unregister(sched, task->current_request_id);
+            edc_scheduler_unregister_task(sched, task->current_request_id);
         }
     }
     edc_task_group_send_signal(group, sig);
@@ -279,7 +279,7 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     edc_turn_add_user_message(turn, input->content);
     task->active_turn = turn;
     task->current_request_id = msg->request_id;
-    edc_scheduler_register(sched, task, msg->request_id);
+    edc_scheduler_register_task(sched, task, msg->request_id);
 
     if (task_is_waiting_deps)
     {
@@ -304,7 +304,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
 
     if (r->error)
     {
-        edc_scheduler_unregister(sched, msg->request_id);
+        edc_scheduler_unregister_task(sched, msg->request_id);
         task->current_request_id = NULL;
         edc_task_set_state(task, TASK_ERROR);
         if (r->content) edc_task_set_output(task, sdsnew(r->content));
@@ -327,7 +327,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
 
     if (r->reason == BC_LLM_FINISH_REASON_STOP)
     {
-        edc_scheduler_unregister(sched, msg->request_id);
+        edc_scheduler_unregister_task(sched, msg->request_id);
         task->current_request_id = NULL;
         if (task->active_turn)
         {
@@ -378,7 +378,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         return;
     }
 
-    edc_scheduler_unregister(sched, msg->request_id);
+    edc_scheduler_unregister_task(sched, msg->request_id);
     task->current_request_id = NULL;
     edc_task_set_state(task, TASK_ERROR);
     if (sched->send_reply)

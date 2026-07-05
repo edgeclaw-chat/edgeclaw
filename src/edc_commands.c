@@ -4,6 +4,7 @@
 #include "edc_agent.h"
 #include "edc_compat.h"
 #include "edc_channel_actor.h"
+#include "edc_cmd_parse.h"
 #include "edc_memory_actor.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
@@ -130,51 +131,20 @@ static bool edc_commands_handle_exit(struct edc_agent *agent, edc_actor_t *actor
 static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *actor,
                                           struct edc_channel *channel, sds arg)
 {
-    bool bg = false;
-    sds group_id = NULL;
-    sds desc = NULL;
-
-    if (arg)
-    {
-        desc = sdsnew(arg);
-
-        /* check for --bg */
-        sds bg_pos = strstr(desc, " --bg");
-        if (bg_pos)
-        {
-            bg = true;
-            /* remove " --bg" from desc */
-            sds new_desc = sdsnewlen(desc, bg_pos - desc);
-            sdsfree(desc);
-            desc = new_desc;
-        }
-
-        /* check for --group <id> */
-        sds g_pos = strstr(desc, " --group ");
-        if (g_pos)
-        {
-            group_id = sdsnew(g_pos + 9); /* skip " --group " */
-            sdstrim(group_id, " \t");
-            /* remove " --group <id>" from desc */
-            sds new_desc = sdsnewlen(desc, g_pos - desc);
-            sdsfree(desc);
-            desc = new_desc;
-        }
-
-        sdstrim(desc, " \t");
-    }
+    struct edc_cmd_task_opts opts;
+    edc_cmd_parse_task_opts(arg, &opts);
 
     struct edc_task *task = edc_scheduler_create_task(agent->scheduler,
-                                                       (desc && sdslen(desc) > 0) ? desc : "New task",
+                                                       (opts.desc && sdslen(opts.desc) > 0) ? opts.desc : "New task",
                                                        edc_channel_copy(channel));
+    if (opts.prompt_name) edc_task_set_prompt(task, opts.prompt_name, NULL);
 
-    if (group_id)
+    if (opts.group_id)
     {
-        /* find existing group */
-        struct edc_task_group *group = edc_session_find_group(agent->session, group_id);
+        struct edc_task_group *group = edc_session_find_group(agent->session, opts.group_id);
         if (!group)
         {
-            sds reply = sdscatprintf(sdsempty(), "group %s not found, creating new group", group_id);
+            sds reply = sdscatprintf(sdsempty(), "group %s not found, creating new group", opts.group_id);
             edc_commands_reply(agent, actor, channel, reply);
             sdsfree(reply);
             group = edc_scheduler_create_group(agent->scheduler, task);
@@ -193,7 +163,7 @@ static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *a
     {
         struct edc_task_group *group = edc_scheduler_create_group(agent->scheduler, task);
 
-        if (bg)
+        if (opts.bg)
         {
             sds reply = sdscatprintf(sdsempty(), "[task] created %s (group %s) in background",
                                      task->task_id, group->group_id);
@@ -211,9 +181,15 @@ static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *a
         }
     }
 
+    /* add deps from -d flags */
+    for (int i = 0; i < opts.dep_count; i++)
+    {
+        struct edc_task *dt = edc_session_find_task(agent->session, opts.dep_ids[i]);
+        if (dt) edc_task_add_dependency(task, dt, TASK_DEP_JOIN);
+    }
+
 done:
-    if (desc) sdsfree(desc);
-    if (group_id) sdsfree(group_id);
+    edc_cmd_task_opts_free(&opts);
 }
 
 static void edc_commands_handle_task_list(struct edc_agent *agent, edc_actor_t *actor,
@@ -676,6 +652,60 @@ bool edc_commands_handler(struct edc_agent *agent, struct edc_actor *actor,
 {
     if (!message || !message->channel || !message->content)
         return false;
+
+    if (message->content[0] == '@')
+    {
+        /* @desc "input" [--bg] [-d <id>]... */
+        sds arg = sdsnew(message->content + 1);
+        sdstrim(arg, " \t");
+
+        struct edc_cmd_task_opts opts;
+        edc_cmd_parse_task_opts(arg, &opts);
+
+        struct edc_task *task = edc_scheduler_create_task(agent->scheduler,
+                                                           (opts.desc && sdslen(opts.desc) > 0) ? opts.desc : "Quick task",
+                                                           edc_channel_copy(message->channel));
+        struct edc_task_group *group = edc_scheduler_create_group(agent->scheduler, task);
+        if (!opts.bg)
+        {
+            edc_scheduler_set_foreground(agent->scheduler, group);
+            edc_session_set_active_task(agent->session, task);
+        }
+
+        for (int i = 0; i < opts.dep_count; i++)
+        {
+            struct edc_task *dt = edc_session_find_task(agent->session, opts.dep_ids[i]);
+            if (dt) edc_task_add_dependency(task, dt, TASK_DEP_JOIN);
+        }
+
+        sds reply = sdscatprintf(sdsempty(), "[@] created %s (group %s)%s%s",
+                                 task->task_id, group->group_id,
+                                 opts.bg ? " [bg]" : "",
+                                 opts.dep_count > 0 ? " [chained]" : "");
+        edc_commands_reply(agent, actor, message->channel, reply);
+        sdsfree(reply);
+
+        if (opts.input)
+        {
+            struct edc_turn *turn = edc_turn_new();
+            turn->task_id = strdup(task->task_id);
+            edc_turn_add_user_message(turn, opts.input);
+            task->active_turn = turn;
+            edc_task_set_state(task, TASK_LLM_PROCESSING);
+            if (agent->scheduler && agent->scheduler->send_llm)
+            {
+                static int rid = 0;
+                void *req_id = (void *)(intptr_t)(++rid);
+                edc_scheduler_register_task(agent->scheduler, task, req_id);
+                task->current_request_id = req_id;
+                agent->scheduler->send_llm(agent->scheduler, task, req_id);
+            }
+        }
+
+        edc_cmd_task_opts_free(&opts);
+        sdsfree(arg);
+        return true;
+    }
 
     /* /task prefix */
     if (edc_commands_is_prefix(message->content, "/task"))

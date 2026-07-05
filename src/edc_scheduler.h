@@ -91,6 +91,12 @@ extern struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sche
 extern void edc_scheduler_set_foreground(struct edc_scheduler *sched, struct edc_task_group *group);
 extern struct edc_task_group *edc_scheduler_get_foreground(struct edc_scheduler *sched);
 
+/* ── 注册/反注册 ──────────────────────────────────────────────── */
+
+extern void edc_scheduler_register_task(struct edc_scheduler *sched, struct edc_task *task,
+                                         void *request_id);
+extern void edc_scheduler_unregister_task(struct edc_scheduler *sched, void *request_id);
+
 /* ── 信号 ──────────────────────────────────────────────────── */
 
 extern void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *task_id,

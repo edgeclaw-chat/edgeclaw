@@ -18,15 +18,28 @@ Type and press Enter. Conversations are saved per session under `workspace/<sess
 
 ---
 
-## Task Model (Unix-Inspired)
+## Quick Task Syntax (`@`)
 
-EdgeClaw uses a three-layer process model:
+Use `@` to create a task with input in one line:
+
+```
+@analyze "find performance bugs in src/"
+@analyze "find bugs" --bg                # background
+@summary "please merge" -d task-1        # wait for task-1 first
+@review "check code" -d t1 -d t2        # wait for multiple tasks
+```
+
+---
+
+## Task Model
+
+Three-layer Unix-like process model:
 
 | EdgeClaw   | Unix        | Behavior                              |
 |------------|-------------|---------------------------------------|
-| **Task**   | Thread      | Conversation with state, output. Shares full history with sibling tasks in the same group. |
-| **Group**  | Process     | Isolated container. All tasks in a group share conversation history automatically. Cross-group needs explicit `/task chain`. |
-| **Session**| Session     | Login session containing multiple groups. History stored per-session on disk. |
+| **Task**   | Thread      | Conversation sharing history with siblings. |
+| **Group**  | Process     | Isolated container. Cross-group needs `/task chain`. |
+| **Session**| Session     | Per-session history storage. |
 
 ### Task States
 
@@ -36,8 +49,8 @@ IDLE → WAITING_DEPS → WAITING_INPUT → LLM_PROCESSING
 ```
 
 - **COMPLETED**: persists until reclaimed with `/task join`.
+- **WAITING_DEPS**: accepts input and queues it until dependencies resolve.
 - **SUSPENDED**: can be resumed.
-- **CANCELLED / ERROR**: can be reclaimed with `/task join`.
 
 ---
 
@@ -45,7 +58,7 @@ IDLE → WAITING_DEPS → WAITING_INPUT → LLM_PROCESSING
 
 | Shell             | EdgeClaw                      |
 |-------------------|-------------------------------|
-| `cmd &`           | `/task new "desc" --bg`       |
+| `cmd &`           | `@task "input" --bg`          |
 | `jobs`            | `/task list`                  |
 | `fg %1`           | `/task fg <task_id>`          |
 | `bg %1`           | `/task bg`                    |
@@ -55,7 +68,6 @@ IDLE → WAITING_DEPS → WAITING_INPUT → LLM_PROCESSING
 | `cmd1 \| cmd2`    | `/task chain <src> <dst>`     |
 | `pthread_join()`  | `/task join <task_id>`        |
 | `fork()`          | `/task fork <parent> <desc>`  |
-| `setsid`          | `/task new <desc>`            |
 
 ---
 
@@ -65,7 +77,7 @@ IDLE → WAITING_DEPS → WAITING_INPUT → LLM_PROCESSING
 
 | Command | Description |
 |---------|-------------|
-| `/new`  | Start a new session (clear turns, trigger compress) |
+| `/new`  | Start a new session |
 | `/stop` | Cancel all active tasks in foreground group |
 | `/help` | Show help message |
 | `/exit` | Exit edgeclaw |
@@ -76,26 +88,27 @@ IDLE → WAITING_DEPS → WAITING_INPUT → LLM_PROCESSING
 |---------|-------------|
 | `/task new <desc>` | Create new group + task (foreground) |
 | `/task new <desc> --bg` | Create new group + task (background) |
-| `/task new <desc> --group <gid>` | Create task inside an existing group |
-| `/task fork <pid> <desc>` | Fork a child task in parent's group, inheriting fork-point context |
-| `/task fork <pid> <desc> --prompt <name>` | Fork with a subagent prompt |
+| `/task new <desc> -g <gid>` | Create in existing group |
+| `/task new <desc> -d <tid>` | Create + wait for dependency |
+| `/task fork <pid> <desc>` | Fork child in parent's group |
+| `/task fork <pid> <desc> --prompt <name>` | Fork with subagent prompt |
 
 ### Task Inspection
 
 | Command | Description |
 |---------|-------------|
-| `/task list` | List all groups and tasks (markdown tree) |
+| `/task list` | List all groups and tasks. Active task marked with `*` (e.g. `[L*]` or `[M*]`). |
 | `/task status [tid]` | Show task details (state, output, deps, turns) |
 | `/task output <tid>` | Show only the task's output text |
 | `/task groups` | List all process groups |
 
-### Foreground / Active Task
+### Foreground / Active
 
 | Command | Description |
 |---------|-------------|
-| `/task fg <tid>` | Bring task's group to foreground |
+| `/task fg <tid>` | Foreground + set as active. **Only the active task outputs to terminal.** |
 | `/task bg` | Move current foreground group to background |
-| `/task switch <tid>` | Set active task within foreground group. **Only the active task outputs to terminal.** |
+| `/task switch <tid>` | Set active task within foreground group |
 
 ### Task Control
 
@@ -106,64 +119,61 @@ IDLE → WAITING_DEPS → WAITING_INPUT → LLM_PROCESSING
 | `/task stop --group <id>` | Cancel all tasks in a process group |
 | `/task suspend <tid>` | Pause a task (like Ctrl+Z) |
 | `/task resume <tid>` | Resume a suspended task |
-| `/task join <tid>` | If COMPLETED: show output and reclaim. If RUNNING: shows how to chain/wait |
+| `/task join <tid>` | Show output, auto-inject into active task (or create one), then reclaim |
 | `/task prompt <tid> <name>` | Set a subagent prompt for the task |
 
 ### Pipelines
 
 | Command | Description |
 |---------|-------------|
-| `/task chain <src> <dst>` | dst waits for src. When src completes, its output (final LLM reply) is injected into dst's context. Like `src \| dst`. |
+| `/task chain <src> <dst>` | dst waits for src. When src completes, its user inputs and final output are injected into dst's LLM context as Q&A. Like `src \| dst`. |
+
+---
+
+## Output
+
+Only the session's **active task** outputs to the terminal. `/task fg` and
+`/task switch` change the active task. Other tasks complete silently; use
+`/task join` to retrieve their output.
 
 ---
 
 ## Context Sharing
 
-**Within a group**: all tasks automatically share the full conversation history
-(every turn with all messages, tool calls, and thinking content).
+**Within a group**: all tasks share the full conversation history automatically.
 
-**Cross-group**: use `/task chain` to inject a source task's output into a
-destination task's LLM context when the source completes.
+**Cross-group** (`/task chain` or `/task join`): the source task's user inputs
+and final output are injected into the destination's LLM context as a
+Q&A-style system message:
 
-**Forked tasks**: a child task inherits the group's history up to the fork
-point (not the parent's subsequent messages). Use `/task chain` to pass the
-parent's final result to the child.
-
-## Output
-
-Only the session's **active task** outputs to the terminal. Other tasks in the
-same group complete silently; use `/task join` to retrieve their output.
-Use `/task switch` to change the active task.
+```
+[子任务 analyze (id=task-1)]:
+Q: help me analyze src/ for bugs
+A: Found 3 performance issues ...
+```
 
 ---
 
 ## Workflow Examples
 
-### Simple Conversation
+### Quick Conversation with @
 
 ```
 $ edgeclaw
 > hello
 Welcome! How can I help?
-> write a Python HTTP server
-Here's a simple HTTP server: ...
+> @code "write a Python HTTP server"
 ```
 
-### Background Analysis
+### Background + Pipeline
 
 ```
-> /task new "analyze logs" --bg
-[task] created task-1 (group task-1) in background
-
-> /task new "analyze frontend" --bg
-
-> /task list
-- [fg] task-1 (2)
-    - [L] task-1  WAITING_INPUT  analyze logs
-    - [M] task-2  WAITING_INPUT  analyze frontend
+> @logs "analyze error logs" --bg
+> @api "audit API endpoints" --bg
+> @summary "merge results" -d task-1 -d task-2
 ```
 
-### Pipeline (Cross-Group)
+### Cross-Group Chain
 
 ```
 > /task new "summary"
@@ -174,35 +184,21 @@ Here's a simple HTTP server: ...
 
 > /task switch task-0
 > please summarize both results
-→ LLM sees task-1 and task-2 outputs injected as system messages
-```
-
-### Fork + Subagent
-
-```
-> /task fork task-1 "review" --prompt code-reviewer
-[fork] created fork-xx from task-1 (group task-1)
-
-> /task switch fork-xx
-> review src/agent.c
-→ child sees parent's group history up to fork point
+→ LLM sees task-1 and task-2 Q&A injected as context
 ```
 
 ### Join and Reclaim
 
 ```
 > /task join task-1
-[task-1 output]: "Analysis complete: 3 issues found..."
-→ task-1 reclaimed and removed
+[task-1 output]: ... → injected into task-3 → task-1 reaped
 ```
 
 ### Suspend and Resume
 
 ```
 > /task suspend task-3
-task task-3 suspended
 > /task resume task-3
-task task-3 resumed
 ```
 
 ---
@@ -213,11 +209,10 @@ task task-3 resumed
 |------|-------------|
 | `~/.edgeclaw/` | EdgeClaw home directory |
 | `~/.edgeclaw/config.json` | Configuration (API key, model) |
-| `~/.edgeclaw/workspace/` | Workspace root for tools and files |
+| `~/.edgeclaw/workspace/` | Workspace root |
 | `~/.edgeclaw/workspace/<sid>/` | Per-session directory |
-| `~/.edgeclaw/workspace/<sid>/history.jsonl` | Session conversation history |
-| `~/.edgeclaw/workspace/<sid>/history_info.json` | Session metadata |
-| `~/.edgeclaw/workspace/memory/MEMORY.md` | Agent memory file |
+| `~/.edgeclaw/workspace/<sid>/history.jsonl` | Session history |
+| `~/.edgeclaw/workspace/memory/MEMORY.md` | Agent memory |
 | `~/.edgeclaw/workspace/skills/` | Custom skill SKILL.md files |
 
 ## See Also

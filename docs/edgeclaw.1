@@ -22,36 +22,43 @@ GETTING STARTED
            > hello
            Welcome! How can I help?
 
-     Type and press Enter.  The conversation is saved automatically per
-     session under workspace/<session_id>/.
+     Type and press Enter.  Conversations are saved per session under
+     workspace/<session_id>/.
+
+QUICK TASK SYNTAX (@)
+     Use @ to create a task with input in one line:
+
+           @analyze "find performance bugs in src/"
+
+     Options after the quoted input:
+
+           @analyze "find bugs" --bg          background
+           @summary "please merge" -d task-1   wait for task-1 first
+           @review "check code" -d t1 -d t2   wait for multiple tasks
 
 TASK MODEL
-     EdgeClaw uses a three-layer Unix-like process model:
+     Three-layer Unix-like process model:
 
-     Task     — A conversation with its own state, output, and lifecycle.
-                Shares all history with sibling tasks in the same group.
-                Like a Unix thread sharing the process address space.
+     Task     — A conversation sharing history with sibling tasks.
+                Like a Unix thread (shared address space).
 
-     Group    — An isolated execution container.  All tasks in a group
-                share the full conversation history automatically.
-                Cross-group communication requires explicit /task chain.
-                Like a Unix process (private memory).
+     Group    — An isolated container.  Only active task outputs.
+                Cross-group uses /task chain.  Like a Unix process.
 
-     Session  — A login session containing multiple groups.  History is
-                stored per-session on disk.  Like a Unix login session.
+     Session  — Per-session history storage.  Like a Unix login session.
 
 TASK STATES
        IDLE → WAITING_DEPS → WAITING_INPUT → LLM_PROCESSING
          → TOOL_CALLING → SUSPENDED → COMPLETED / CANCELLED / ERROR
 
      - COMPLETED tasks persist until reclaimed with /task join.
+     - WAITING_DEPS tasks accept input and queue it until deps resolve.
      - SUSPENDED tasks can be resumed.
-     - CANCELLED / ERROR tasks can also be reclaimed with /task join.
 
 SHELL-LIKE JOB CONTROL
      Shell            EdgeClaw
      ─────────────────────────────────────────
-     cmd &            /task new "desc" --bg
+     cmd &            @task "input" --bg
      jobs             /task list
      fg %1            /task fg <task_id>
      bg %1            /task bg
@@ -61,11 +68,10 @@ SHELL-LIKE JOB CONTROL
      cmd1 | cmd2      /task chain <src> <dst>
      pthread_join()   /task join <task_id>
      fork()           /task fork <parent> <desc>
-     setsid           /task new <desc>
 
 COMMAND REFERENCE
      Session
-     /new          Start a new session (clear turns, trigger compress).
+     /new          Start a new session.
      /stop         Cancel all active tasks in foreground group.
      /help         Show help message.
      /exit         Exit edgeclaw.
@@ -73,112 +79,94 @@ COMMAND REFERENCE
      Task creation
      /task new <desc>                  Create new group + task (foreground).
      /task new <desc> --bg             Create new group + task (background).
-     /task new <desc> --group <gid>    Create task inside an existing group.
-     /task fork <pid> <desc>           Fork a child task in parent's group,
-                                        inheriting fork-point context.
+     /task new <desc> -g <gid>         Create in existing group.
+     /task new <desc> -d <tid>         Create + wait for dependency.
+     /task fork <pid> <desc>           Fork child in parent's group.
      /task fork <pid> <desc> --prompt <name>
-                                       Fork with a subagent prompt.
+                                       Fork with subagent prompt.
 
      Task inspection
-     /task list               List all groups and tasks (markdown tree).
+     /task list               List all groups and tasks. Active task
+                               marked with * (e.g. [L*] or [M*]).
      /task status [tid]       Show task details (state, output, deps).
      /task output <tid>       Show only the task's output text.
      /task groups             List all process groups.
 
      Foreground / active
-     /task fg <tid>           Bring task's group to foreground.
-     /task bg                 Move current foreground group to background.
-     /task switch <tid>       Set active task within the foreground group.
-                              Only the active task outputs to the terminal.
+     /task fg <tid>           Foreground + set as active task.
+     /task bg                 Move current foreground to background.
+     /task switch <tid>       Set active task within foreground group.
+                               Only the active task outputs to terminal.
 
      Task control
-     /task stop <tid>         Cancel a task (SIGTERM — notifies deps).
+     /task stop <tid>         Cancel (SIGTERM — notifies deps).
      /task stop --force <id>  Force-kill (SIGKILL — no dep notification).
      /task stop --group <id>  Cancel all tasks in a process group.
-     /task suspend <tid>      Pause a task (like Ctrl+Z).
+     /task suspend <tid>      Pause a task (Ctrl+Z).
      /task resume <tid>       Resume a suspended task.
-     /task join <tid>         If COMPLETED: show output and reclaim.
-                              If RUNNING: shows how to chain/wait.
+     /task join <tid>         Show output, auto-inject into active task
+                               (or create one), then reclaim.
      /task prompt <tid> <name>
-                              Set a subagent prompt for the task.
+                               Set subagent prompt.
 
      Pipelines
-     /task chain <src> <dst>  Make dst wait for src.  When src completes,
-                              its output (final LLM reply) is injected into
-                              dst's context as a system message.
-                              Like: src | dst
-
-CONTEXT SHARING
-     Within a group: all tasks automatically share the full conversation
-     history (every turn with all messages, tool calls, and thinking).
-
-     Cross-group: use /task chain to inject a source task's output into a
-     destination task's LLM context when the source completes.
-
-     Forked tasks: a child task inherits the group's history up to the
-     fork point (not the parent's subsequent messages).  Use /task chain
-     to pass the parent's final result to the child.
+     /task chain <src> <dst>  dst waits for src.  When src completes,
+                               its user inputs and final output are
+                               injected into dst's LLM context.
+                               Like: src | dst
 
 OUTPUT
      Only the session's active task outputs to the terminal.  Other tasks
-     in the same group complete silently; use /task join to retrieve their
-     output.  Use /task switch to change the active task.
+     complete silently; use /task join to retrieve output.  /task fg and
+     /task switch change the active task.
+
+CONTEXT SHARING
+     Within a group: all tasks share the full conversation history.
+
+     Cross-group (/task chain or /task join): source task's user inputs
+     and final output are injected into the destination's LLM context
+     as a Q&A-style system message:
+
+         [子任务 analyze (id=task-1)]:
+         Q: help me analyze src/ for bugs
+         A: Found 3 performance issues ...
 
 WORKFLOW EXAMPLES
-     Simple conversation
+     Simple conversation with @ notation
            $ edgeclaw
            > hello
            Welcome! How can I help?
-           > write a Python HTTP server
-           Here's a simple HTTP server: ...
+           > @code "write a Python HTTP server"
 
-     Background analysis
-           > /task new "analyze logs" --bg
-           [task] created task-1 (group task-1) in background
-           > /task new "analyze frontend" --bg
-           > /task list
-           - [fg] task-1 (2)
-               - [L] task-1  WAITING_INPUT  analyze logs
-               - [M] task-2  WAITING_INPUT  analyze frontend
+     Background + pipeline
+           > @logs "analyze error logs" --bg
+           > @api "audit API endpoints" --bg
+           > @summary "merge results" -d task-1 -d task-2
 
-     Pipeline (cross-group)
+     Cross-group chain
            > /task new "summary"
-           > /task chain task-1 task-0     ← task-0 waits for task-1
-           > /task chain task-2 task-0     ← task-0 waits for both
+           > /task chain task-1 task-0
+           > /task chain task-2 task-0
            ... task-1, task-2 complete ...
            > /task switch task-0
            > please summarize both results
-           → LLM sees task-1 and task-2 outputs injected
-
-     Fork + subagent
-           > /task fork task-1 "review" --prompt code-reviewer
-           [fork] created fork-xx from task-1 (group task-1)
-           > /task switch fork-xx
-           > review src/agent.c
-           → child sees parent's group history up to fork point
+           → LLM sees task-1 and task-2 Q&A injected
 
      Join and reclaim
            > /task join task-1
-           [task-1 output]: "Analysis complete: 3 issues found..."
-           → task-1 reclaimed and removed
+           [task-1 output]: ... → injected into task-3 → task-1 reaped
 
      Suspend and resume
            > /task suspend task-3
-           task task-3 suspended
            > /task resume task-3
-           task task-3 resumed
 
 FILES
      ~/.edgeclaw/                        EdgeClaw home directory.
      ~/.edgeclaw/config.json             Configuration (API key, model).
-     ~/.edgeclaw/workspace/              Workspace root for tools and files.
+     ~/.edgeclaw/workspace/              Workspace root.
      ~/.edgeclaw/workspace/<sid>/        Per-session directory.
-     ~/.edgeclaw/workspace/<sid>/history.jsonl
-                                         Session conversation history.
-     ~/.edgeclaw/workspace/<sid>/history_info.json
-                                         Session metadata.
-     ~/.edgeclaw/workspace/memory/MEMORY.md
-                                         Agent memory file.
+     ~/.edgeclaw/workspace/<sid>/history.jsonl  Session history.
+     ~/.edgeclaw/workspace/memory/MEMORY.md     Agent memory.
      ~/.edgeclaw/workspace/skills/       Custom skill SKILL.md files.
 
 SEE ALSO
