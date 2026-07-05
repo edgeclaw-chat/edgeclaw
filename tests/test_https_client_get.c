@@ -51,7 +51,7 @@ int main(const int argc, const char *argv[])
     }
 
     uv_sem_init(&done_sem, 0);
-    struct edc_https_client *client = edc_https_client_new();
+    struct edc_https_client *client = edc_https_client_new(NULL);
     edc_https_client_connect(client, argv[1], edc_https_client_fn, NULL);
 
     uv_sem_wait(&done_sem);

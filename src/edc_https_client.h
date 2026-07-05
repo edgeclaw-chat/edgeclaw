@@ -21,7 +21,7 @@ struct edc_https_header
 
 typedef void (*edc_https_event_fn)(struct edc_https_request *req, int ev, void *data);
 
-extern struct edc_https_client *edc_https_client_new(void);
+extern struct edc_https_client *edc_https_client_new(const char *cacert_path);
 extern void edc_https_client_free(struct edc_https_client *client);
 extern void edc_https_client_connect(struct edc_https_client *client, const char *url, edc_https_event_fn fn,
                                      void *priv);

@@ -452,7 +452,7 @@ edc_actor_t *edc_llm_actor_new(struct llm_api_conf *api_conf)
 {
     edc_llm_actor_state_t *state = g_new0(edc_llm_actor_state_t, 1);
     state->api_conf = *api_conf;
-    state->client = edc_https_client_new();
+    state->client = edc_https_client_new(NULL);
 
     edc_actor_t *actor = edc_actor_new("edc_llm_actor", edc_llm_actor_handler, state);
     return actor;

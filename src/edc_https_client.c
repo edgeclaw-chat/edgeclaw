@@ -623,7 +623,7 @@ static void edc_https_on_stop_async(uv_async_t *handle)
     uv_stop(&client->loop);
 }
 
-struct edc_https_client *edc_https_client_new(void)
+struct edc_https_client *edc_https_client_new(const char *cacert_path)
 {
     struct edc_https_client *client = malloc(sizeof(struct edc_https_client));
 
@@ -641,9 +641,29 @@ struct edc_https_client *edc_https_client_new(void)
     mbedtls_ssl_config_defaults(&client->ssl_conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
                                 MBEDTLS_SSL_PRESET_DEFAULT);
     mbedtls_ssl_conf_rng(&client->ssl_conf, mbedtls_ctr_drbg_random, &client->ctr_drbg);
-    mbedtls_ssl_conf_authmode(&client->ssl_conf, MBEDTLS_SSL_VERIFY_NONE);
 
     mbedtls_x509_crt_init(&client->cacert);
+
+    if (cacert_path)
+    {
+        int ret = mbedtls_x509_crt_parse_file(&client->cacert, cacert_path);
+        if (ret == 0)
+        {
+            mbedtls_ssl_conf_ca_chain(&client->ssl_conf, &client->cacert, NULL);
+            mbedtls_ssl_conf_authmode(&client->ssl_conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+        }
+        else
+        {
+            char errbuf[256];
+            mbedtls_strerror(ret, errbuf, sizeof(errbuf));
+            log_error("edc_https_client: failed to load cacert '%s': %s", cacert_path, errbuf);
+            mbedtls_ssl_conf_authmode(&client->ssl_conf, MBEDTLS_SSL_VERIFY_NONE);
+        }
+    }
+    else
+    {
+        mbedtls_ssl_conf_authmode(&client->ssl_conf, MBEDTLS_SSL_VERIFY_NONE);
+    }
 
     uv_thread_create(&client->thread, edc_https_client_thread, client);
 
