@@ -3,6 +3,7 @@
 #include "edc_context.h"
 #include "utlist_fix.h"
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <strings.h>
 
@@ -91,6 +92,15 @@ struct edc_task *edc_task_new(const char *task_id, const char *session_id, const
 struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,
                                size_t fork_point_msg_count, struct edc_channel *channel)
 {
+    if (!parent) return NULL;
+
+    char auto_id[64];
+    if (!task_id)
+    {
+        snprintf(auto_id, sizeof(auto_id), "fork-%p", (void *)parent);
+        task_id = auto_id;
+    }
+
     struct edc_task *child = edc_task_new(task_id, parent->session_id, parent->group_id, desc, channel);
     child->forked_from = parent;
     child->fork_point_msg_count = fork_point_msg_count;

@@ -32,6 +32,8 @@ struct edc_session
     struct edc_config *config;
     int save_skip_count;
     struct edc_timestamp_node *timestamps;
+
+    sds history_dir;    /* workspace/session_id — 按 session 存历史 */
 };
 
 /* ── 生命周期 (不变) ───────────────────────────────────────── */

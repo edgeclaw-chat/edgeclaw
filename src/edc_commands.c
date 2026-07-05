@@ -98,13 +98,17 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
                                       struct edc_channel *channel)
 {
     const char *text =
-        "# EdgeClaw Commands\n\n"
-        "**Session:** `/new` `/stop` `/help` `/exit`\n"
-        "**Task:** `/task new <desc>` `/task list` `/task switch <id>` "
-        "`/task stop [id]` `/task status`\n"
-        "**Group:** `/task fg <id>` `/task bg` `/task groups`\n"
-        "**Chain:** `/task chain <src> <dst>` `/task chains [id]`\n"
-        "**Prompt:** `/task prompt <id> [name|--text \"...\"]`\n";
+        "## EdgeClaw Commands\n"
+        "\n"
+        "- /new  ·  /stop  ·  /help  ·  /exit\n"
+        "- /task new <desc>   [--bg]\n"
+        "- /task fork <parent> <desc>\n"
+        "- /task list  ·  /task status [id]  ·  /task output <id>\n"
+        "- /task groups  ·  /task fg <id>  ·  /task bg\n"
+        "- /task switch <id>  ·  /task stop <id>  [--force]\n"
+        "- /task suspend <id>  ·  /task resume <id>\n"
+        "- /task chain <src> <dst>  ·  /task join <id>\n"
+        "- /task prompt <id> <name>\n";
 
     edc_commands_reply(agent, actor, channel, text);
     return true;
@@ -127,76 +131,127 @@ static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *a
                                           struct edc_channel *channel, sds arg)
 {
     bool bg = false;
+    sds group_id = NULL;
     sds desc = NULL;
 
     if (arg)
     {
-        /* check for --bg suffix */
         desc = sdsnew(arg);
-        size_t len = sdslen(desc);
-        if (len >= 4 && strcmp(desc + len - 4, " --bg") == 0)
+
+        /* check for --bg */
+        sds bg_pos = strstr(desc, " --bg");
+        if (bg_pos)
         {
             bg = true;
-            sdsrange(desc, 0, (int)len - 5);
+            /* remove " --bg" from desc */
+            sds new_desc = sdsnewlen(desc, bg_pos - desc);
+            sdsfree(desc);
+            desc = new_desc;
         }
+
+        /* check for --group <id> */
+        sds g_pos = strstr(desc, " --group ");
+        if (g_pos)
+        {
+            group_id = sdsnew(g_pos + 9); /* skip " --group " */
+            sdstrim(group_id, " \t");
+            /* remove " --group <id>" from desc */
+            sds new_desc = sdsnewlen(desc, g_pos - desc);
+            sdsfree(desc);
+            desc = new_desc;
+        }
+
+        sdstrim(desc, " \t");
     }
 
     struct edc_task *task = edc_scheduler_create_task(agent->scheduler,
                                                        (desc && sdslen(desc) > 0) ? desc : "New task",
                                                        edc_channel_copy(channel));
-    struct edc_task_group *group = edc_scheduler_create_group(agent->scheduler, task);
 
-    if (bg)
+    if (group_id)
     {
-        sds reply = sdscatprintf(sdsempty(), "[task] created %s (group %s) in background",
-                                 task->task_id, group->group_id);
-        edc_commands_reply(agent, actor, channel, reply);
-        sdsfree(reply);
+        /* find existing group */
+        struct edc_task_group *group = edc_session_find_group(agent->session, group_id);
+        if (!group)
+        {
+            sds reply = sdscatprintf(sdsempty(), "group %s not found, creating new group", group_id);
+            edc_commands_reply(agent, actor, channel, reply);
+            sdsfree(reply);
+            group = edc_scheduler_create_group(agent->scheduler, task);
+        }
+        else
+        {
+            edc_task_group_add_task(group, task);
+            sds reply = sdscatprintf(sdsempty(), "[task] created %s in group %s",
+                                     task->task_id, group->group_id);
+            edc_commands_reply(agent, actor, channel, reply);
+            sdsfree(reply);
+            goto done;
+        }
     }
     else
     {
-        edc_scheduler_set_foreground(agent->scheduler, group);
-        sds reply = sdscatprintf(sdsempty(), "[task] created %s (group %s)",
-                                 task->task_id, group->group_id);
-        edc_commands_reply(agent, actor, channel, reply);
-        sdsfree(reply);
+        struct edc_task_group *group = edc_scheduler_create_group(agent->scheduler, task);
+
+        if (bg)
+        {
+            sds reply = sdscatprintf(sdsempty(), "[task] created %s (group %s) in background",
+                                     task->task_id, group->group_id);
+            edc_commands_reply(agent, actor, channel, reply);
+            sdsfree(reply);
+        }
+        else
+        {
+            edc_scheduler_set_foreground(agent->scheduler, group);
+            sds reply = sdscatprintf(sdsempty(), "[task] created %s (group %s)",
+                                     task->task_id, group->group_id);
+            edc_commands_reply(agent, actor, channel, reply);
+            sdsfree(reply);
+        }
     }
 
+done:
     if (desc) sdsfree(desc);
+    if (group_id) sdsfree(group_id);
 }
 
 static void edc_commands_handle_task_list(struct edc_agent *agent, edc_actor_t *actor,
                                            struct edc_channel *channel)
 {
-    sds out = sdsnew("Tasks:\n");
+    sds out = sdsempty();
     struct edc_task_group *g;
+    bool first = true;
     DL_FOREACH(agent->scheduler->groups, g)
     {
+        if (!first) out = sdscat(out, "\n");
+        first = false;
+
         bool fg = agent->scheduler->foreground_group == g;
-        out = sdscatprintf(out, "  [%s%s] group %s  (%d members)\n",
-                           fg ? "*" : " ",
-                           g->is_orphaned ? "!" : " ",
+        out = sdscatprintf(out, "- %s%s%s (%d)\n",
+                           fg ? "[fg] " : "",
+                           g->is_orphaned ? "[orphan] " : "",
                            g->group_id, g->member_count);
 
         struct edc_task *t;
         LL_FOREACH2(g->members, t, group_next)
         {
-            sds preview = NULL;
+            out = sdscatprintf(out, "    - %s %-12s %s",
+                               t == g->leader ? "[L]" : "[M]",
+                               t->task_id,
+                               edc_task_state_name(t->state));
+            if (*t->description)
+                out = sdscatprintf(out, "  %s", t->description);
             if (t->output)
             {
-                preview = sdsnewlen(t->output, sdslen(t->output) > 60 ? 60 : sdslen(t->output));
-                if (sdslen(t->output) > 60) preview = sdscat(preview, "...");
+                sds preview = sdsnewlen(t->output, sdslen(t->output) > 40 ? 40 : sdslen(t->output));
+                if (sdslen(t->output) > 40) preview = sdscat(preview, "...");
+                out = sdscatprintf(out, "  -> %s", preview);
+                sdsfree(preview);
             }
-            out = sdscatprintf(out, "    [%s] %-14s  %-16s  %s%s%s\n",
-                               t == g->leader ? "L" : "M",
-                               t->task_id,
-                               edc_task_state_name(t->state),
-                               t->description,
-                               preview ? "  → " : "",
-                               preview ? preview : "");
-            if (preview) sdsfree(preview);
+            out = sdscat(out, "\n");
         }
     }
+    if (!first) ; /* at least one group */
     edc_commands_reply(agent, actor, channel, out);
     sdsfree(out);
 }
@@ -230,7 +285,8 @@ static void edc_commands_handle_task_fg(struct edc_agent *agent, edc_actor_t *ac
     struct edc_task_group *g = edc_session_find_group(agent->session, t->group_id);
     if (!g) { edc_commands_reply(agent, actor, channel, "group not found"); return; }
     edc_scheduler_set_foreground(agent->scheduler, g);
-    sds reply = sdscatprintf(sdsempty(), "foreground group: %s", g->group_id);
+    sds reply = sdscatprintf(sdsempty(), "foreground: group %s (task %s in this group)",
+                             g->group_id, t->task_id);
     edc_commands_reply(agent, actor, channel, reply);
     sdsfree(reply);
 }
@@ -242,16 +298,78 @@ static void edc_commands_handle_task_bg(struct edc_agent *agent, edc_actor_t *ac
     edc_commands_reply(agent, actor, channel, "no foreground group");
 }
 
+static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *actor,
+                                           struct edc_channel *channel, sds arg)
+{
+    /* /task fork <parent_id> <desc> [--prompt <name>] */
+    if (!arg) { edc_commands_reply(agent, actor, channel, "/task fork <parent_id> <desc> [--prompt <name>]"); return; }
+
+    int count = 0;
+    sds *tokens = sdssplitlen(arg, sdslen(arg), " ", 1, &count);
+    if (count < 2)
+    {
+        edc_commands_reply(agent, actor, channel, "usage: /task fork <parent_id> <desc> [--prompt <name>]");
+        sdsfreesplitres(tokens, count);
+        return;
+    }
+
+    struct edc_task *parent = edc_session_find_task(agent->session, tokens[0]);
+    if (!parent)
+    {
+        sds reply = sdscatprintf(sdsempty(), "parent task %s not found", tokens[0]);
+        edc_commands_reply(agent, actor, channel, reply);
+        sdsfree(reply);
+        sdsfreesplitres(tokens, count);
+        return;
+    }
+
+    /* find --prompt in remaining args */
+    sds prompt_name = NULL;
+    sds desc = sdsempty();
+    for (int i = 1; i < count; i++)
+    {
+        if (strcmp(tokens[i], "--prompt") == 0 && i + 1 < count)
+        {
+            prompt_name = sdsnew(tokens[i + 1]);
+            i++; /* skip prompt value */
+        }
+        else
+        {
+            if (sdslen(desc) > 0) desc = sdscat(desc, " ");
+            desc = sdscat(desc, tokens[i]);
+        }
+    }
+    sdsfreesplitres(tokens, count);
+
+    size_t fork_point = parent->group ? (size_t)cJSON_GetArraySize(parent->group->history) : 0;
+    struct edc_task *child = edc_task_fork(parent, NULL /* task_id generated by scheduler */,
+                                            desc, fork_point, edc_channel_copy(channel));
+    if (prompt_name) edc_task_set_prompt(child, prompt_name, NULL);
+
+    if (parent->group)
+        edc_task_group_add_task(parent->group, child);
+
+    sds reply = sdscatprintf(sdsempty(), "[fork] created %s from %s (group %s, fork_point=%zu)%s",
+                             child->task_id, parent->task_id,
+                             child->group_id, fork_point,
+                             prompt_name ? " prompt=" : "");
+    if (prompt_name) reply = sdscat(reply, prompt_name);
+    edc_commands_reply(agent, actor, channel, reply);
+    sdsfree(reply);
+    sdsfree(desc);
+    if (prompt_name) sdsfree(prompt_name);
+}
+
 static void edc_commands_handle_task_groups(struct edc_agent *agent, edc_actor_t *actor,
                                               struct edc_channel *channel)
 {
-    sds out = sdsnew("Task Groups:\n");
+    sds out = sdsnew("## Groups\n\n");
     struct edc_task_group *g;
     DL_FOREACH(agent->scheduler->groups, g)
     {
-        out = sdscatprintf(out, "  [%s%s] %s  %d members  %s\n",
-                           agent->scheduler->foreground_group == g ? "*" : " ",
-                           g->is_orphaned ? "!" : " ",
+        out = sdscatprintf(out, "- %s%s  **%s**  %d members  _%s_\n",
+                           agent->scheduler->foreground_group == g ? "`[fg]` " : "",
+                           g->is_orphaned ? "`[orphan]` " : "",
                            g->group_id, g->member_count,
                            edc_task_group_status_label(g));
     }
@@ -275,27 +393,27 @@ static void edc_commands_handle_task_status(struct edc_agent *agent, edc_actor_t
     }
 
     sds out = sdscatprintf(sdsempty(),
-                           "task: %s\n"
-                           "state: %s\n"
-                           "group: %s\n"
-                           "desc: %s\n"
-                           "deps: %zu/%zu completed\n"
-                           "turns: %zu\n",
+                           "## Task `%s`\n\n"
+                           "- **state**: %s\n"
+                           "- **group**: %s\n"
+                           "- **desc**: %s\n"
+                           "- **deps**: %zu/%zu completed\n"
+                           "- **turns**: %zu\n",
                            t->task_id, edc_task_state_name(t->state),
                            t->group_id, t->description,
                            t->deps_completed, t->deps_total,
                            (size_t)edc_queue_length(&t->turns));
     if (t->output)
     {
-        out = sdscatprintf(out, "output: %s\n", t->output);
+        out = sdscatprintf(out, "- **output**: %s\n", t->output);
     }
     if (t->prompt_name)
     {
-        out = sdscatprintf(out, "prompt: %s\n", t->prompt_name);
+        out = sdscatprintf(out, "- **prompt**: %s\n", t->prompt_name);
     }
     if (t->forked_from)
     {
-        out = sdscatprintf(out, "forked from: %s\n", t->forked_from->task_id);
+        out = sdscatprintf(out, "- **forked from**: `%s`\n", t->forked_from->task_id);
     }
     edc_commands_reply(agent, actor, channel, out);
     sdsfree(out);
@@ -448,6 +566,11 @@ static bool edc_commands_handle_task(struct edc_agent *agent, edc_actor_t *actor
     {
         arg = sdsnew(content_trim + 10);
         edc_commands_handle_task_new(agent, actor, message->channel, arg);
+    }
+    else if (strncmp(content_trim, "/task fork ", 11) == 0)
+    {
+        arg = sdsnew(content_trim + 11);
+        edc_commands_handle_task_fork(agent, actor, message->channel, arg);
     }
     else if (strcmp(content_trim, "/task list") == 0)
     {

@@ -43,7 +43,17 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
     cJSON *msgs;
     if (task->group && cJSON_GetArraySize(task->group->history) > 0)
     {
-        msgs = cJSON_Duplicate(task->group->history, true);
+        msgs = cJSON_CreateArray();
+        /* fork 上下文切片: 只取 fork 点之前的 group history */
+        size_t end = task->forked_from ? task->fork_point_msg_count
+                                       : (size_t)cJSON_GetArraySize(task->group->history);
+        if (end > (size_t)cJSON_GetArraySize(task->group->history))
+            end = (size_t)cJSON_GetArraySize(task->group->history);
+        for (size_t i = 0; i < end; i++)
+        {
+            cJSON *item = cJSON_GetArrayItem(task->group->history, i);
+            cJSON_AddItemReferenceToArray(msgs, item);
+        }
     }
     else
     {

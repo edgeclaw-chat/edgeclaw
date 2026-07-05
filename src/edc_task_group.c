@@ -20,6 +20,8 @@ struct edc_task_group *edc_task_group_new(struct edc_task *leader)
 
     leader->is_group_leader = 1;
     leader->group = group;
+    free(leader->group_id);
+    leader->group_id = strdup(group->group_id);
 
     return group;
 }

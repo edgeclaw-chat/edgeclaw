@@ -4,6 +4,7 @@
 #include "edc_string_utils.h"
 #include "edc_config.h"
 #include "edc_context.h"
+#include "edc_file_utils.h"
 #include "edc_history.h"
 #include "edc_turn.h"
 #include "edc_task.h"
@@ -57,8 +58,8 @@ static void edc_session_build_messages(struct edc_session *session, const char *
     if (load_history)
     {
         size_t compress_index = 0;
-        edc_history_get_info(session->config->workspace, &compress_index, NULL);
-        cJSON *history = edc_history_load(session->config->workspace, compress_index);
+        edc_history_get_info(session->history_dir, &compress_index, NULL);
+        cJSON *history = edc_history_load(session->history_dir, compress_index);
         if (history != NULL)
         {
             edc_session_trim_orphan_tool_messages(history);
@@ -82,6 +83,7 @@ struct edc_session *edc_session_new(struct edc_config *config)
     session->session_id = strdup("sess-1");
     session->config = config;
     session->messages = cJSON_CreateArray();
+    session->history_dir = edc_path_join(config->workspace, session->session_id, NULL);
     edc_session_build_messages(session, NULL, true);
     session->save_skip_count = edc_session_get_message_count(session);
     return session;
@@ -119,15 +121,10 @@ void edc_session_free(struct edc_session *session)
         free(n);
     }
 
-    /* 释放 groups */
-    struct edc_task_group *group, *gtmp;
-    DL_FOREACH_SAFE(session->groups, group, gtmp)
-    {
-        DL_DELETE(session->groups, group);
-        edc_task_group_free(group);
-    }
+    /* groups freed by edc_scheduler_free (shared list) */
 
     free(session->session_id);
+    sdsfree(session->history_dir);
     free(session);
 }
 
@@ -158,7 +155,7 @@ size_t edc_session_get_message_count(struct edc_session *session)
 
 bool edc_session_save_history(struct edc_session *session)
 {
-    bool ok = edc_history_save(session->config->workspace, session->messages, session->timestamps,
+    bool ok = edc_history_save(session->history_dir, session->messages, session->timestamps,
                                   session->save_skip_count);
     if (ok)
     {

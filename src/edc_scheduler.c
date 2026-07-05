@@ -338,25 +338,16 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         edc_task_set_state(task, TASK_COMPLETED);
         edc_task_notify_dependents(task);
 
-        /* send reply before auto-reap (reap frees task) */
-        if (sched->foreground_group && sched->send_reply)
+        /* send reply: only active_task outputs to terminal */
+        if (sched->send_reply && sched->session)
         {
-            struct edc_task *m;
-            bool is_fg = false;
-            LL_FOREACH2(sched->foreground_group->members, m, group_next)
-            {
-                if (m == task) { is_fg = true; break; }
-            }
-            if (is_fg) sched->send_reply(sched, task, r->content, msg->request_id);
+            struct edc_task *at = edc_session_get_active_task(sched->session);
+            if (at == task) sched->send_reply(sched, task, r->content, msg->request_id);
         }
 
-        /* auto-reap: all COMPLETED tasks get recycled after reply */
-        if (task->group)
-        {
-            edc_task_group_remove_task(task->group, task);
-            edc_task_free(task);
-            task = NULL;
-        }
+        /* auto-reap disabled: tasks stay COMPLETED for cross-group join */
+        /* to reclaim a task: use /task join <id> */
+        (void)task;
 
         if (sched->save_session) sched->save_session(sched);
         return;

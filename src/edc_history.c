@@ -59,6 +59,11 @@ cJSON *edc_history_load(const char *workspace, const size_t offset)
 bool edc_history_save(const char *workspace, cJSON *msg_lst, struct edc_timestamp_node *timestamps, size_t skip_count)
 {
     sds hist_file = edc_path_join(workspace, "history.jsonl", NULL);
+    /* auto-create directory */
+    sds dir = edc_path_join(workspace, NULL);
+    mkdir(dir, 0755);
+    sdsfree(dir);
+
     FILE *fout = fopen(hist_file, "a+");
     if (fout == NULL)
     {
