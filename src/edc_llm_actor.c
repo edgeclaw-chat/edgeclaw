@@ -152,23 +152,28 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
         cJSON_AddItemReferenceToObject(body, "tools", req->tools);
     }
 
-    /* diagnostic: count messages and log injected deps */
+    /* diagnostic: log message count by role */
     {
         cJSON *msgs = cJSON_GetObjectItem(body, "messages");
         if (msgs)
         {
-            int count = cJSON_GetArraySize(msgs);
-            log_info("LLM request: %d messages", count);
-            for (int i = 0; i < count; i++)
+            int total = cJSON_GetArraySize(msgs);
+            int n_user = 0, n_assistant = 0, n_system = 0, n_tool = 0;
+            for (int i = 0; i < total; i++)
             {
                 cJSON *m = cJSON_GetArrayItem(msgs, i);
-                cJSON *content = cJSON_GetObjectItem(m, "content");
-                if (content && cJSON_IsString(content)
-                    && strstr(content->valuestring, "[子任务") != NULL)
+                cJSON *role = cJSON_GetObjectItem(m, "role");
+                if (role && cJSON_IsString(role))
                 {
-                    log_info("  -> injected dep at msg[%d]: %.120s...", i, content->valuestring);
+                    const char *rs = role->valuestring;
+                    if (strcmp(rs, "user") == 0) n_user++;
+                    else if (strcmp(rs, "assistant") == 0) n_assistant++;
+                    else if (strcmp(rs, "system") == 0) n_system++;
+                    else if (strcmp(rs, "tool") == 0) n_tool++;
                 }
             }
+            log_info("LLM request: %d msgs (sys=%d user=%d asst=%d tool=%d)",
+                     total, n_system, n_user, n_assistant, n_tool);
         }
     }
 

@@ -82,36 +82,47 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
         if (dep->completed && dep->source && !dep->injected)
         {
             dep->injected = true;
-            sds note = sdscatprintf(sdsempty(), "[子任务 %s (id=%s)]:\n",
-                                     dep->source->description, dep->source->task_id);
 
-            /* collect user inputs from source turns */
-            for (size_t qi = dep->source->turns.head; qi < dep->source->turns.tail; qi++)
+            /* inject source task's final output only (mainstream subagent pattern) */
+            if (dep->source->output)
             {
-                struct edc_turn *turn = dep->source->turns.data[qi];
-                for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
+                /* find the last user message from source to form a Q&A pair */
+                sds last_user = NULL;
+                for (size_t qi = dep->source->turns.head; qi < dep->source->turns.tail; qi++)
                 {
-                    cJSON *msg = turn->messages.data[mj];
-                    cJSON *role = cJSON_GetObjectItem(msg, "role");
-                    if (role && cJSON_IsString(role) && strcmp(role->valuestring, "user") == 0)
+                    struct edc_turn *turn = dep->source->turns.data[qi];
+                    for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
                     {
-                        cJSON *content = cJSON_GetObjectItem(msg, "content");
-                        if (content && cJSON_IsString(content))
-                            note = sdscatprintf(note, "Q: %s\n", content->valuestring);
+                        cJSON *msg = turn->messages.data[mj];
+                        cJSON *role = cJSON_GetObjectItem(msg, "role");
+                        if (role && cJSON_IsString(role) && strcmp(role->valuestring, "user") == 0)
+                        {
+                            cJSON *content = cJSON_GetObjectItem(msg, "content");
+                            if (content && cJSON_IsString(content))
+                            {
+                                if (last_user) sdsfree(last_user);
+                                last_user = sdsnew(content->valuestring);
+                            }
+                        }
                     }
                 }
+
+                if (last_user)
+                {
+                    cJSON *usr = cJSON_CreateObject();
+                    cJSON_AddStringToObject(usr, "role", "user");
+                    cJSON_AddStringToObject(usr, "content", last_user);
+                    cJSON_AddItemToArray(msgs, usr);
+                    sdsfree(last_user);
+                }
+
+                cJSON *asst = cJSON_CreateObject();
+                cJSON_AddStringToObject(asst, "role", "assistant");
+                cJSON_AddStringToObject(asst, "content", dep->source->output);
+                cJSON_AddItemToArray(msgs, asst);
             }
 
-            /* final output */
-            if (dep->source->output)
-                note = sdscatprintf(note, "A: %s\n", dep->source->output);
-
-            log_info("  -> injecting source Q&A (%zu bytes)", sdslen(note));
-            cJSON *sys = cJSON_CreateObject();
-            cJSON_AddStringToObject(sys, "role", "system");
-            cJSON_AddStringToObject(sys, "content", note);
-            cJSON_AddItemToArray(msgs, sys);
-            sdsfree(note);
+            log_info("  -> injected final output from task %s", dep->source->task_id);
         }
     }
 
