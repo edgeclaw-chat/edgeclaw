@@ -338,12 +338,8 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         edc_task_set_state(task, TASK_COMPLETED);
         edc_task_notify_dependents(task);
 
-        /* send reply: only active_task outputs to terminal */
-        if (sched->send_reply && sched->session)
-        {
-            struct edc_task *at = edc_session_get_active_task(sched->session);
-            if (at == task) sched->send_reply(sched, task, r->content, msg->request_id);
-        }
+        /* send_reply internally checks active_task */
+        if (sched->send_reply) sched->send_reply(sched, task, r->content, msg->request_id);
 
         /* auto-reap disabled: tasks stay COMPLETED for cross-group join */
         /* to reclaim a task: use /task join <id> */
@@ -356,7 +352,8 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
     edc_scheduler_unregister(sched, msg->request_id);
     task->current_request_id = NULL;
     edc_task_set_state(task, TASK_ERROR);
-    if (sched->send_reply) sched->send_reply(sched, task, "Internal error: unknown finish reason", msg->request_id);
+    if (sched->send_reply)
+        sched->send_reply(sched, task, "Internal error: unknown finish reason", msg->request_id);
 }
 
 static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor_msg *msg)

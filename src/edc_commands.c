@@ -243,13 +243,6 @@ static void edc_commands_handle_task_list(struct edc_agent *agent, edc_actor_t *
                                edc_task_state_name(t->state));
             if (*t->description)
                 out = sdscatprintf(out, "  %s", t->description);
-            if (t->output)
-            {
-                sds preview = sdsnewlen(t->output, sdslen(t->output) > 40 ? 40 : sdslen(t->output));
-                if (sdslen(t->output) > 40) preview = sdscat(preview, "...");
-                out = sdscatprintf(out, "  -> %s", preview);
-                sdsfree(preview);
-            }
             out = sdscat(out, "\n");
         }
     }
@@ -287,7 +280,8 @@ static void edc_commands_handle_task_fg(struct edc_agent *agent, edc_actor_t *ac
     struct edc_task_group *g = edc_session_find_group(agent->session, t->group_id);
     if (!g) { edc_commands_reply(agent, actor, channel, "group not found"); return; }
     edc_scheduler_set_foreground(agent->scheduler, g);
-    sds reply = sdscatprintf(sdsempty(), "foreground: group %s (task %s in this group)",
+    edc_session_set_active_task(agent->session, t);
+    sds reply = sdscatprintf(sdsempty(), "foreground: group %s (active: %s)",
                              g->group_id, t->task_id);
     edc_commands_reply(agent, actor, channel, reply);
     sdsfree(reply);

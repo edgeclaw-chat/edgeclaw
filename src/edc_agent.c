@@ -110,6 +110,10 @@ static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task
     struct edc_agent *agent = edc_scheduler_agent(sched);
     if (!agent || !task || !task->channel || !content) return;
 
+    /* only active task outputs to terminal */
+    if (!sched->session || edc_session_get_active_task(sched->session) != task)
+        return;
+
     struct edc_channel_message *reply =
         edc_channel_message_new(edc_channel_copy(task->channel), sdsnew(content));
 
@@ -142,15 +146,9 @@ static void edc_agent_cb_dispatch_tools(struct edc_scheduler *sched, struct edc_
         sds content = (resp->content && sdslen(resp->content) > 0)
                           ? resp->content
                           : resp->reasoning_content;
-        struct edc_channel_message *reply =
-            edc_channel_ref_message_new(task->channel,
-                                         sdscatprintf(sdsempty(), "[思考]: %s", content));
-        edc_actor_send(agent->channel_actor,
-                       edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND,
-                                                  reply->channel->type,
-                                                  edc_scheduler_get_actor(sched),
-                                                  request_id, reply,
-                                                  (edc_actor_data_free_fn)edc_channel_message_free));
+        sds text = sdscatprintf(sdsempty(), "[思考]: %s", content);
+        edc_agent_cb_send_reply(sched, task, text, request_id);
+        sdsfree(text);
     }
 
     edc_agent_handle_tool_calls(agent, task->channel, resp, request_id,
