@@ -52,7 +52,7 @@ static bool edc_task_is_valid_transition(edc_task_state from, edc_task_state to)
     case TASK_WAITING_DEPS:
         return to == TASK_WAITING_INPUT || to == TASK_CANCELLED || to == TASK_ERROR;
     case TASK_WAITING_INPUT:
-        return to == TASK_LLM_PROCESSING || to == TASK_CANCELLED;
+        return to == TASK_LLM_PROCESSING || to == TASK_CANCELLED || to == TASK_WAITING_DEPS;
     case TASK_LLM_PROCESSING:
         return to == TASK_TOOL_CALLING || to == TASK_COMPLETED || to == TASK_CANCELLED || to == TASK_ERROR;
     case TASK_TOOL_CALLING:

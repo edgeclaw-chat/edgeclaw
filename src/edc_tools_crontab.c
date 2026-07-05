@@ -185,6 +185,7 @@ static void edc_tool_crontab_exec_list_async(struct edc_toolbox_call_ctx *ctx, s
     if (error)
     {
         callback(ctx, NULL, error);
+        return;
     }
 
     cJSON *jobs = cJSON_GetObjectItem(db, "jobs");
