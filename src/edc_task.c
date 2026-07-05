@@ -17,6 +17,7 @@ const char *edc_task_state_name(edc_task_state state)
     case TASK_WAITING_INPUT:   return "WAITING_INPUT";
     case TASK_LLM_PROCESSING:  return "LLM_PROCESSING";
     case TASK_TOOL_CALLING:    return "TOOL_CALLING";
+    case TASK_SUSPENDED:       return "SUSPENDED";
     case TASK_COMPLETED:       return "COMPLETED";
     case TASK_CANCELLED:       return "CANCELLED";
     case TASK_ERROR:           return "ERROR";
@@ -32,6 +33,7 @@ edc_task_state edc_task_classify_state(const char *name)
     if (strcasecmp(name, "waiting_input") == 0)   return TASK_WAITING_INPUT;
     if (strcasecmp(name, "llm_processing") == 0)  return TASK_LLM_PROCESSING;
     if (strcasecmp(name, "tool_calling") == 0)    return TASK_TOOL_CALLING;
+    if (strcasecmp(name, "suspended") == 0)       return TASK_SUSPENDED;
     if (strcasecmp(name, "completed") == 0)       return TASK_COMPLETED;
     if (strcasecmp(name, "cancelled") == 0)       return TASK_CANCELLED;
     if (strcasecmp(name, "error") == 0)           return TASK_ERROR;
@@ -53,7 +55,9 @@ static bool edc_task_is_valid_transition(edc_task_state from, edc_task_state to)
     case TASK_LLM_PROCESSING:
         return to == TASK_TOOL_CALLING || to == TASK_COMPLETED || to == TASK_CANCELLED || to == TASK_ERROR;
     case TASK_TOOL_CALLING:
-        return to == TASK_LLM_PROCESSING || to == TASK_COMPLETED || to == TASK_CANCELLED || to == TASK_ERROR;
+        return to == TASK_LLM_PROCESSING || to == TASK_COMPLETED || to == TASK_CANCELLED || to == TASK_ERROR || to == TASK_SUSPENDED;
+    case TASK_SUSPENDED:
+        return to == TASK_LLM_PROCESSING || to == TASK_TOOL_CALLING || to == TASK_CANCELLED; /* resume */
     case TASK_COMPLETED:
         return false; /* terminal */
     case TASK_CANCELLED:

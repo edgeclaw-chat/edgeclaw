@@ -126,16 +126,43 @@ static bool edc_commands_handle_exit(struct edc_agent *agent, edc_actor_t *actor
 static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *actor,
                                           struct edc_channel *channel, sds arg)
 {
+    bool bg = false;
+    sds desc = NULL;
+
+    if (arg)
+    {
+        /* check for --bg suffix */
+        desc = sdsnew(arg);
+        size_t len = sdslen(desc);
+        if (len >= 4 && strcmp(desc + len - 4, " --bg") == 0)
+        {
+            bg = true;
+            sdsrange(desc, 0, (int)len - 5);
+        }
+    }
+
     struct edc_task *task = edc_scheduler_create_task(agent->scheduler,
-                                                       arg ? arg : "New task",
+                                                       (desc && sdslen(desc) > 0) ? desc : "New task",
                                                        edc_channel_copy(channel));
     struct edc_task_group *group = edc_scheduler_create_group(agent->scheduler, task);
-    edc_scheduler_set_foreground(agent->scheduler, group);
 
-    sds reply = sdscatprintf(sdsempty(), "[task] created %s (group %s)",
-                             task->task_id, group->group_id);
-    edc_commands_reply(agent, actor, channel, reply);
-    sdsfree(reply);
+    if (bg)
+    {
+        sds reply = sdscatprintf(sdsempty(), "[task] created %s (group %s) in background",
+                                 task->task_id, group->group_id);
+        edc_commands_reply(agent, actor, channel, reply);
+        sdsfree(reply);
+    }
+    else
+    {
+        edc_scheduler_set_foreground(agent->scheduler, group);
+        sds reply = sdscatprintf(sdsempty(), "[task] created %s (group %s)",
+                                 task->task_id, group->group_id);
+        edc_commands_reply(agent, actor, channel, reply);
+        sdsfree(reply);
+    }
+
+    if (desc) sdsfree(desc);
 }
 
 static void edc_commands_handle_task_list(struct edc_agent *agent, edc_actor_t *actor,
@@ -316,8 +343,49 @@ static void edc_commands_handle_task_join(struct edc_agent *agent, edc_actor_t *
     }
 
     sds reply = sdscatprintf(sdsempty(),
-                              "task %s is %s, cannot join. Use /task chain <task> %s to wait for it",
-                              t->task_id, edc_task_state_name(t->state), t->task_id);
+                              "task %s is currently %s. Try:\n"
+                              "  /task chain %s <current>   — current task waits for it\n"
+                              "  /task join %s              — check back later when COMPLETED",
+                              t->task_id, edc_task_state_name(t->state),
+                              t->task_id, t->task_id);
+    edc_commands_reply(agent, actor, channel, reply);
+    sdsfree(reply);
+}
+
+static void edc_commands_handle_task_suspend(struct edc_agent *agent, edc_actor_t *actor,
+                                              struct edc_channel *channel, sds arg)
+{
+    struct edc_task *t;
+    if (arg) t = edc_session_find_task(agent->session, arg);
+    else     t = edc_session_get_active_task(agent->session);
+    if (!t) { edc_commands_reply(agent, actor, channel, "task not found"); return; }
+    if (!edc_task_set_state(t, TASK_SUSPENDED))
+    {
+        edc_commands_reply(agent, actor, channel, "cannot suspend in current state");
+        return;
+    }
+    sds reply = sdscatprintf(sdsempty(), "task %s suspended", t->task_id);
+    edc_commands_reply(agent, actor, channel, reply);
+    sdsfree(reply);
+}
+
+static void edc_commands_handle_task_resume(struct edc_agent *agent, edc_actor_t *actor,
+                                             struct edc_channel *channel, sds arg)
+{
+    struct edc_task *t;
+    if (arg) t = edc_session_find_task(agent->session, arg);
+    else     t = edc_session_get_active_task(agent->session);
+    if (!t) { edc_commands_reply(agent, actor, channel, "task not found"); return; }
+    if (t->state != TASK_SUSPENDED)
+    {
+        sds reply = sdscatprintf(sdsempty(), "task %s is %s, not SUSPENDED", t->task_id,
+                                 edc_task_state_name(t->state));
+        edc_commands_reply(agent, actor, channel, reply);
+        sdsfree(reply);
+        return;
+    }
+    edc_task_set_state(t, TASK_WAITING_INPUT);
+    sds reply = sdscatprintf(sdsempty(), "task %s resumed", t->task_id);
     edc_commands_reply(agent, actor, channel, reply);
     sdsfree(reply);
 }

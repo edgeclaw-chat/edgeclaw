@@ -27,16 +27,16 @@ static int test_passed = 0;
 
 static void test_full_transition_matrix(void)
 {
-    TEST("full 8×8 transition matrix");
+    TEST("full 9×9 transition matrix");
     edc_task_state all[] = {
         TASK_IDLE, TASK_WAITING_DEPS, TASK_WAITING_INPUT,
-        TASK_LLM_PROCESSING, TASK_TOOL_CALLING,
+        TASK_LLM_PROCESSING, TASK_TOOL_CALLING, TASK_SUSPENDED,
         TASK_COMPLETED, TASK_CANCELLED, TASK_ERROR
     };
     const char *names[] = {"IDLE","WAITING_DEPS","WAITING_INPUT",
-        "LLM_PROCESSING","TOOL_CALLING","COMPLETED","CANCELLED","ERROR"};
+        "LLM_PROCESSING","TOOL_CALLING","SUSPENDED","COMPLETED","CANCELLED","ERROR"};
 
-    for (int from = 0; from < 8; from++)
+    for (int from = 0; from < 9; from++)
     {
         struct edc_task *t = edc_task_new("mtx", "s", "g", "matrix test", NULL);
         edc_task_set_state(t, all[from]);
@@ -47,7 +47,7 @@ static void test_full_transition_matrix(void)
             continue;
         }
 
-        for (int to = 0; to < 8; to++)
+        for (int to = 0; to < 9; to++)
         {
             /* Verify same-state transition returns false */
             if (from == to)

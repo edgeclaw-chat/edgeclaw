@@ -20,6 +20,7 @@ typedef enum {
     TASK_WAITING_INPUT,   /* 等待用户输入 */
     TASK_LLM_PROCESSING,  /* LLM 生成中 */
     TASK_TOOL_CALLING,    /* 执行工具调用链 */
+    TASK_SUSPENDED,       /* 已暂停 (Ctrl+Z) */
     TASK_COMPLETED,       /* 任务完成 */
     TASK_CANCELLED,       /* 被取消 */
     TASK_ERROR,           /* 出错 */

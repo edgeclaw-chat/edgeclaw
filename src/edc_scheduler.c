@@ -338,15 +338,8 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         edc_task_set_state(task, TASK_COMPLETED);
         edc_task_notify_dependents(task);
 
-        /* auto-reap: 若有 dependents (有人 JOIN 等我), 通知后自动回收 */
-        if (task->dependents && task->group)
-        {
-            edc_task_group_remove_task(task->group, task);
-            edc_task_free(task);
-            task = NULL;
-        }
-
-        if (task && sched->foreground_group && sched->send_reply)
+        /* send reply before auto-reap (reap frees task) */
+        if (sched->foreground_group && sched->send_reply)
         {
             struct edc_task *m;
             bool is_fg = false;
@@ -356,6 +349,15 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
             }
             if (is_fg) sched->send_reply(sched, task, r->content, msg->request_id);
         }
+
+        /* auto-reap: all COMPLETED tasks get recycled after reply */
+        if (task->group)
+        {
+            edc_task_group_remove_task(task->group, task);
+            edc_task_free(task);
+            task = NULL;
+        }
+
         if (sched->save_session) sched->save_session(sched);
         return;
     }
