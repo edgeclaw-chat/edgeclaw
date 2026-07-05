@@ -188,7 +188,19 @@ static void edc_tool_crontab_exec_list_async(struct edc_toolbox_call_ctx *ctx, s
         return;
     }
 
+    if (!db)
+    {
+        callback(ctx, sdsempty(), NULL);
+        return;
+    }
+
     cJSON *jobs = cJSON_GetObjectItem(db, "jobs");
+    if (!jobs)
+    {
+        cJSON_Delete(db);
+        callback(ctx, sdsempty(), NULL);
+        return;
+    }
 
     sds result = sdsempty();
     for (int i = 0; i < cJSON_GetArraySize(jobs); ++i)
@@ -222,6 +234,15 @@ static void edc_tool_crontab_exec_remove_async(struct edc_toolbox_call_ctx *ctx,
     if (error)
     {
         callback(ctx, NULL, error);
+        return;
+    }
+
+    if (!db)
+    {
+        EdcError *err = edc_error_new(EDC_ERR_INVAL,
+                                      "crontab: no jobs database found, job %s does not exist",
+                                      cJSON_GetStringValue(job_id));
+        callback(ctx, NULL, err);
         return;
     }
 

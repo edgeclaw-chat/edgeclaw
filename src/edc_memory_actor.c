@@ -167,7 +167,6 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
     cJSON_Delete(history);
     history = half_window;
 
-    state->compress_index = compress_index + cJSON_GetArraySize(history);
     sds user_message =
         sdsnew("Process this conversation. summarizing it. and call the save_memory tool with your "
                      "consolidation. NOTICE: !!!! you can only call save_memory tool\n\n");
@@ -189,6 +188,8 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
     }
 
     sdsfree(memory_file);
+
+    state->compress_index = compress_index + cJSON_GetArraySize(history);
 
     user_message = sdscat(user_message, "## Current Long-term Memory\n");
     if (memory)

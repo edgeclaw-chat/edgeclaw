@@ -30,9 +30,18 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
 {
     if (error)
     {
-        log_error("DEBUG actor_callback: error->message='%s', error->code=%d, error ptr=%p, sdslen=%zu",
-                  error->message, error->code, (void*)error, sdslen(error->message));
-        result = sdsnew(error->message);
+        if (error->message)
+        {
+            log_error("DEBUG actor_callback: error->message='%s', error->code=%d, error ptr=%p, sdslen=%zu",
+                      error->message, error->code, (void*)error, sdslen(error->message));
+            result = sdsnew(error->message);
+        }
+        else
+        {
+            log_error("DEBUG actor_callback: error->message=NULL, error->code=%d, error ptr=%p",
+                      error->code, (void*)error);
+            result = sdsnew("unknown error");
+        }
         log_error("DEBUG actor_callback: after sdsnew, result='%s', len=%zu", result, sdslen(result));
         result = sdscat(result, _HINT);
         edc_error_free(error);
@@ -41,6 +50,12 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
     if (!result)
     {
         result = sdsnew("");
+    }
+
+    if (!tb_ctx || !tb_ctx->priv)
+    {
+        sdsfree(result);
+        return;
     }
 
     struct edc_toolbox_actor_exec_ctx *ctx = tb_ctx->priv;

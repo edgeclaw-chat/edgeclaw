@@ -627,8 +627,13 @@ static bool edc_commands_handle_task(struct edc_agent *agent, edc_actor_t *actor
     }
     else
     {
+        /* Unknown /task subcommand — report error instead of falling through */
+        sds reply = sdscatprintf(sdsempty(),
+            "Unknown /task subcommand. Type /help for available commands.");
+        edc_commands_reply(agent, actor, message->channel, reply);
+        sdsfree(reply);
         sdsfree(content_trim);
-        return false;
+        return true;
     }
 
     sdsfree(content_trim);
@@ -658,6 +663,17 @@ bool edc_commands_handler(struct edc_agent *agent, struct edc_actor *actor,
         return edc_commands_handle_help(agent, actor, message->channel);
     if (edc_commands_is_target(message->content, "/exit"))
         return edc_commands_handle_exit(agent, actor, message->channel);
+
+    /* Input starts with '/' but no command matched — treat as invalid command */
+    if (message->content[0] == '/')
+    {
+        sds reply = sdscatprintf(sdsempty(),
+            "Unknown command: %s\nType /help for available commands.",
+            message->content);
+        edc_commands_reply(agent, actor, message->channel, reply);
+        sdsfree(reply);
+        return true;
+    }
 
     return false;
 }

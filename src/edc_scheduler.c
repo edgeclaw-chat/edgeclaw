@@ -220,22 +220,28 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
 
     struct edc_task_group *fg = sched->foreground_group;
     struct edc_task *task = NULL;
+    bool task_is_waiting_deps = false;
 
-    /* 优先：session->active_task 在前台 group 且为 WAITING_INPUT */
+    /* 优先：session->active_task 在前台 group 且为 WAITING_INPUT/WAITING_DEPS */
     if (sched->session)
     {
         struct edc_task *at = edc_session_get_active_task(sched->session);
-        if (at && at->state == TASK_WAITING_INPUT)
+        if (at && (at->state == TASK_WAITING_INPUT || at->state == TASK_WAITING_DEPS))
         {
             struct edc_task *m;
             LL_FOREACH2(fg->members, m, group_next)
             {
-                if (m == at) { task = at; break; }
+                if (m == at)
+                {
+                    task = at;
+                    task_is_waiting_deps = (at->state == TASK_WAITING_DEPS);
+                    break;
+                }
             }
         }
     }
 
-    /* 其次：扫描前台 group 中第一个 WAITING_INPUT */
+    /* 其次：扫描前台 group 中第一个 WAITING_INPUT (不含 WAITING_DEPS) */
     if (!task && fg && !fg->is_orphaned && fg->member_count > 0)
     {
         struct edc_task *m;
@@ -274,9 +280,18 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     task->active_turn = turn;
     task->current_request_id = msg->request_id;
     edc_scheduler_register(sched, task, msg->request_id);
-    edc_task_set_state(task, TASK_LLM_PROCESSING);
 
-    if (sched->send_llm) sched->send_llm(sched, task, msg->request_id);
+    if (task_is_waiting_deps)
+    {
+        /* 排队等待: turn 已创建, deps 完成后自动触发 */
+        if (sched->send_reply)
+            sched->send_reply(sched, task, "input queued — waiting for dependencies to complete...", msg->request_id);
+    }
+    else
+    {
+        edc_task_set_state(task, TASK_LLM_PROCESSING);
+        if (sched->send_llm) sched->send_llm(sched, task, msg->request_id);
+    }
 }
 
 static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_msg *msg)
@@ -337,6 +352,20 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         if (r->content) edc_task_set_output(task, sdsnew(r->content));
         edc_task_set_state(task, TASK_COMPLETED);
         edc_task_notify_dependents(task);
+
+        /* auto-trigger dependents with queued input */
+        {
+            struct edc_task_dep *dep;
+            LL_FOREACH(task->dependents, dep)
+            {
+                struct edc_task *dt = dep->target;
+                if (dt->active_turn && dt->state == TASK_WAITING_INPUT)
+                {
+                    edc_task_set_state(dt, TASK_LLM_PROCESSING);
+                    if (sched->send_llm) sched->send_llm(sched, dt, dt->current_request_id);
+                }
+            }
+        }
 
         /* send_reply internally checks active_task */
         if (sched->send_reply) sched->send_reply(sched, task, r->content, msg->request_id);
