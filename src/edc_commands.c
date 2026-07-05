@@ -235,8 +235,10 @@ static void edc_commands_handle_task_list(struct edc_agent *agent, edc_actor_t *
         struct edc_task *t;
         LL_FOREACH2(g->members, t, group_next)
         {
-            out = sdscatprintf(out, "    - %s %-12s %s",
+            bool is_active = agent->session && agent->session->active_task == t;
+            out = sdscatprintf(out, "    - %s%s %-12s %s",
                                t == g->leader ? "[L]" : "[M]",
+                               is_active ? "*" : " ",
                                t->task_id,
                                edc_task_state_name(t->state));
             if (*t->description)
