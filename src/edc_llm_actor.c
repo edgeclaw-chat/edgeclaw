@@ -152,6 +152,26 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
         cJSON_AddItemReferenceToObject(body, "tools", req->tools);
     }
 
+    /* diagnostic: count messages and log injected deps */
+    {
+        cJSON *msgs = cJSON_GetObjectItem(body, "messages");
+        if (msgs)
+        {
+            int count = cJSON_GetArraySize(msgs);
+            log_info("LLM request: %d messages", count);
+            for (int i = 0; i < count; i++)
+            {
+                cJSON *m = cJSON_GetArrayItem(msgs, i);
+                cJSON *content = cJSON_GetObjectItem(m, "content");
+                if (content && cJSON_IsString(content)
+                    && strstr(content->valuestring, "[子任务") != NULL)
+                {
+                    log_info("  -> injected dep at msg[%d]: %.120s...", i, content->valuestring);
+                }
+            }
+        }
+    }
+
     const char *body_s = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
 
