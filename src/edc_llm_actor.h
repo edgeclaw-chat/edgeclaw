@@ -19,6 +19,7 @@ struct edc_llm_actor_req
     EdcQueue *turn;
     cJSON *history;
     cJSON *tools;
+    bool history_owned;     /* Phase 5: true = history needs cJSON_Delete */
 };
 
 typedef enum

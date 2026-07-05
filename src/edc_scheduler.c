@@ -5,6 +5,7 @@
 #include "edc_context.h"
 #include "edc_channel_actor.h"
 #include "edc_llm_actor.h"
+#include "edc_toolbox_actor.h"
 #include "edc_turn.h"
 #include "uthash.h"
 #include "utlist_fix.h"
@@ -99,6 +100,7 @@ struct edc_task_group *edc_scheduler_create_group(struct edc_scheduler *sched,
     if (!sched || !leader) return NULL;
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_scheduler_add_group(sched, group);
+    if (sched->session) edc_session_add_group(sched->session, group);
     return group;
 }
 
@@ -106,6 +108,7 @@ void edc_scheduler_add_group(struct edc_scheduler *sched, struct edc_task_group 
 {
     if (!sched || !group) return;
     DL_APPEND(sched->groups, group);
+    if (sched->session) edc_session_add_group(sched->session, group);
 }
 
 /* ── 查找 ──────────────────────────────────────────────────── */
@@ -216,17 +219,57 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
         return;
 
     struct edc_task_group *fg = sched->foreground_group;
-    if (!fg || fg->is_orphaned || fg->member_count == 0)
+    struct edc_task *task = NULL;
+
+    /* 优先：session->active_task 在前台 group 且为 WAITING_INPUT */
+    if (sched->session)
     {
-        struct edc_task *leader = edc_scheduler_create_task(sched, "New task", input->channel);
-        fg = edc_scheduler_create_group(sched, leader);
-        edc_scheduler_set_foreground(sched, fg);
+        struct edc_task *at = edc_session_get_active_task(sched->session);
+        if (at && at->state == TASK_WAITING_INPUT)
+        {
+            struct edc_task *m;
+            LL_FOREACH2(fg->members, m, group_next)
+            {
+                if (m == at) { task = at; break; }
+            }
+        }
     }
 
-    struct edc_task *task = edc_scheduler_create_task(sched, "User request", input->channel);
-    if (fg) edc_task_group_add_task(fg, task);
+    /* 其次：扫描前台 group 中第一个 WAITING_INPUT */
+    if (!task && fg && !fg->is_orphaned && fg->member_count > 0)
+    {
+        struct edc_task *m;
+        LL_FOREACH2(fg->members, m, group_next)
+        {
+            if (m->state == TASK_WAITING_INPUT)
+            {
+                task = m;
+                edc_session_set_active_task(sched->session, task);
+                break;
+            }
+        }
+    }
+
+    /* 没有可 attach 的 task → 创建新 task */
+    if (!task)
+    {
+        task = edc_scheduler_create_task(sched, input->content, input->channel);
+        input->channel = NULL;
+        edc_session_set_active_task(sched->session, task);
+
+        if (!fg || fg->is_orphaned || fg->member_count == 0)
+        {
+            fg = edc_scheduler_create_group(sched, task);
+            edc_scheduler_set_foreground(sched, fg);
+        }
+        else
+        {
+            edc_task_group_add_task(fg, task);
+        }
+    }
 
     struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup(task->task_id);
     edc_turn_add_user_message(turn, input->content);
     task->active_turn = turn;
     task->current_request_id = msg->request_id;
@@ -241,14 +284,13 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
     struct edc_task *task = edc_scheduler_find_task(sched, msg->request_id);
     if (!task || task->cancelled_request) return;
 
-    edc_scheduler_unregister(sched, msg->request_id);
-    task->current_request_id = NULL;
-
     struct edc_llm_actor_resp *r = msg->data;
     if (!r) return;
 
     if (r->error)
     {
+        edc_scheduler_unregister(sched, msg->request_id);
+        task->current_request_id = NULL;
         edc_task_set_state(task, TASK_ERROR);
         if (r->content) edc_task_set_output(task, sdsnew(r->content));
         if (sched->send_reply) sched->send_reply(sched, task, r->error->message, msg->request_id);
@@ -263,16 +305,21 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
             edc_turn_add_assistant_message(task->active_turn, r->msg);
             r->msg = NULL;
         }
+        /* keep task registered — tool responses use same request_id */
         if (sched->dispatch_tools) sched->dispatch_tools(sched, task, r, msg->request_id);
         return;
     }
 
     if (r->reason == BC_LLM_FINISH_REASON_STOP)
     {
+        edc_scheduler_unregister(sched, msg->request_id);
+        task->current_request_id = NULL;
         if (task->active_turn)
         {
             edc_turn_add_assistant_message(task->active_turn, r->msg);
             r->msg = NULL;
+            /* sync turn messages to session flat array (Phase 4 compat) */
+            edc_session_add_turn(sched->session, task->active_turn);
         }
         edc_task_commit_active_turn(task);
         if (r->content) edc_task_set_output(task, sdsnew(r->content));
@@ -293,6 +340,8 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         return;
     }
 
+    edc_scheduler_unregister(sched, msg->request_id);
+    task->current_request_id = NULL;
     edc_task_set_state(task, TASK_ERROR);
     if (sched->send_reply) sched->send_reply(sched, task, "Internal error: unknown finish reason", msg->request_id);
 }
@@ -302,8 +351,22 @@ static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor
     struct edc_task *task = edc_scheduler_find_task(sched, msg->request_id);
     if (!task || task->cancelled_request) return;
 
-    /* Phase 5: 完整 tool response 处理 */
-    /* 若 tool chain 完成 → TASK_LLM_PROCESSING → 发送续 LLM 请求 */
+    struct edc_toolbox_actor_req *tr = msg->data;
+    if (!tr) return;
+
+    /* 添加 tool 消息到 active turn */
+    if (task->active_turn && tr->result)
+    {
+        edc_turn_add_tool_message(task->active_turn, tr->call_id, tr->name, tr->result);
+    }
+
+    /* 若 tool chain 完成，发送续 LLM 请求 */
+    if (!tr->next)
+    {
+        edc_task_set_state(task, TASK_LLM_PROCESSING);
+        if (sched->send_llm)
+            sched->send_llm(sched, task, msg->request_id);
+         }
 }
 
 static void sched_handle_memory_done(struct edc_scheduler *sched, struct edc_actor_msg *msg)

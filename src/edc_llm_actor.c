@@ -1,10 +1,10 @@
-﻿#include "sds.h"
-#include "edc_error.h"
-#include "edc_llm_actor.h"
+﻿#include "edc_llm_actor.h"
 #include "edc_actor.h"
 #include "edc_compat.h"
+#include "edc_error.h"
 #include "edc_https_client.h"
 #include "log.h"
+#include "sds.h"
 #include "utarray.h"
 
 struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools, EdcQueue *turn)
@@ -20,6 +20,8 @@ void edc_llm_actor_req_free(struct edc_llm_actor_req *req)
 {
     if (!req)
         return;
+    if (req->history_owned && req->history)
+        cJSON_Delete(req->history);
     free(req);
 }
 
@@ -34,8 +36,8 @@ struct edc_llm_actor_http_req
 };
 
 static struct edc_llm_actor_http_req *edc_llm_actor_http_req_new(edc_actor_t *actor, const char *body,
-                                                                  struct llm_api_conf *api_conf, edc_actor_t *from,
-                                                                  void *request_id)
+                                                                 struct llm_api_conf *api_conf, edc_actor_t *from,
+                                                                 void *request_id)
 {
     struct edc_llm_actor_http_req *req = g_new0(struct edc_llm_actor_http_req, 1);
     req->actor = actor;
@@ -78,7 +80,6 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
         request = sdscatprintf(request, "Content-Length: %zu\r\n\r\n", strlen(httpreq->body));
         request = sdscatprintf(request, "%s", httpreq->body);
 
-        log_info("send to llm api: %s", request);
         edc_https_request_write(req, (unsigned char *)request, sdslen(request));
         sdsfree(request);
     }
@@ -109,9 +110,8 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
             {
                 struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
                 resp->error = edc_error_new(EDC_ERR_FAILED, "LLM API connection closed unexpectedly");
-                edc_actor_send(httpreq->from,
-                               edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, httpreq->request_id, resp,
-                                                 (edc_actor_data_free_fn)edc_llm_actor_resp_free));
+                edc_actor_send(httpreq->from, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, httpreq->request_id,
+                                                                resp, (edc_actor_data_free_fn)edc_llm_actor_resp_free));
             }
             edc_llm_actor_http_req_free(httpreq);
         }
@@ -122,7 +122,8 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
     }
 }
 
-static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct edc_llm_actor_req *req, void *request_id)
+static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct edc_llm_actor_req *req,
+                                   void *request_id)
 {
     edc_llm_actor_state_t *state = (edc_llm_actor_state_t *)actor->state;
 
@@ -356,7 +357,7 @@ exit:
     if (req->from)
     {
         edc_actor_send(req->from, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, actor, msg->request_id, resp,
-                                                     (edc_actor_data_free_fn)edc_llm_actor_resp_free));
+                                                    (edc_actor_data_free_fn)edc_llm_actor_resp_free));
     }
 }
 
@@ -419,8 +420,7 @@ void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp)
     {
         for (unsigned i = 0; i < utarray_len(resp->tool_calls); ++i)
         {
-            struct edc_llm_chat_tool_call call =
-                *(struct edc_llm_chat_tool_call *)utarray_eltptr(resp->tool_calls, i);
+            struct edc_llm_chat_tool_call call = *(struct edc_llm_chat_tool_call *)utarray_eltptr(resp->tool_calls, i);
             if (call.id)
             {
                 sdsfree(call.id);

@@ -16,6 +16,7 @@
 #include "edc_task_group.h"
 #include "edc_toolbox_actor.h"
 #include "edc_turn.h"
+#include "utlist_fix.h"
 #include "log.h"
 #include <edc_commands.h>
 #include <dirent.h>
@@ -37,10 +38,33 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
     struct edc_agent *agent = edc_scheduler_agent(sched);
     if (!agent || !task) return;
 
+    /* 构建 LLM 上下文: session messages + task dep outputs */
+    cJSON *msgs = cJSON_Duplicate(edc_session_get_messages(agent->session), true);
+
+    /* 注入已完成依赖 task 的 output */
+    struct edc_task_dep *dep;
+    LL_FOREACH(task->deps, dep)
+    {
+        if (dep->completed && dep->source && dep->source->output)
+        {
+            sds note = sdscatprintf(sdsempty(),
+                                    "[子任务 %s (id=%s) 结果]:\n%s",
+                                    dep->source->description,
+                                    dep->source->task_id,
+                                    dep->source->output);
+            cJSON *sys = cJSON_CreateObject();
+            cJSON_AddStringToObject(sys, "role", "system");
+            cJSON_AddStringToObject(sys, "content", note);
+            cJSON_AddItemToArray(msgs, sys);
+            sdsfree(note);
+        }
+    }
+
     struct edc_llm_actor_req *req =
-        edc_llm_actor_req_new(edc_session_get_messages(agent->session),
+        edc_llm_actor_req_new(msgs,
                               agent->toolbox ? agent->toolbox->schemas : NULL,
                               task->active_turn ? &task->active_turn->messages : NULL);
+    req->history_owned = true; /* msgs will be freed by req_free */
 
     edc_actor_send(agent->llm_actor,
                    edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST,
