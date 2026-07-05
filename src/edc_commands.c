@@ -655,54 +655,97 @@ bool edc_commands_handler(struct edc_agent *agent, struct edc_actor *actor,
 
     if (message->content[0] == '@')
     {
-        /* @desc "input" [--bg] [-d <id>]... */
+        /* @desc "input" [--bg] [-d <id>]...   or   @a | @b | @c  (pipe chain) */
         sds arg = sdsnew(message->content + 1);
         sdstrim(arg, " \t");
 
-        struct edc_cmd_task_opts opts;
-        edc_cmd_parse_task_opts(arg, &opts);
+        int pipe_count = 0;
+        sds *pipe_seg = sdssplitlen(arg, sdslen(arg), "|", 1, &pipe_count);
+        struct edc_task *prev_task = NULL;
 
-        struct edc_task *task = edc_scheduler_create_task(agent->scheduler,
-                                                           (opts.desc && sdslen(opts.desc) > 0) ? opts.desc : "Quick task",
-                                                           edc_channel_copy(message->channel));
-        struct edc_task_group *group = edc_scheduler_create_group(agent->scheduler, task);
-        if (!opts.bg)
+        for (int pi = 0; pi < pipe_count; pi++)
         {
-            edc_scheduler_set_foreground(agent->scheduler, group);
-            edc_session_set_active_task(agent->session, task);
-        }
+            sdstrim(pipe_seg[pi], " \t");
+            if (sdslen(pipe_seg[pi]) == 0) continue;
 
-        for (int i = 0; i < opts.dep_count; i++)
-        {
-            struct edc_task *dt = edc_session_find_task(agent->session, opts.dep_ids[i]);
-            if (dt) edc_task_add_dependency(task, dt, TASK_DEP_JOIN);
-        }
-
-        sds reply = sdscatprintf(sdsempty(), "[@] created %s (group %s)%s%s",
-                                 task->task_id, group->group_id,
-                                 opts.bg ? " [bg]" : "",
-                                 opts.dep_count > 0 ? " [chained]" : "");
-        edc_commands_reply(agent, actor, message->channel, reply);
-        sdsfree(reply);
-
-        if (opts.input)
-        {
-            struct edc_turn *turn = edc_turn_new();
-            turn->task_id = strdup(task->task_id);
-            edc_turn_add_user_message(turn, opts.input);
-            task->active_turn = turn;
-            edc_task_set_state(task, TASK_LLM_PROCESSING);
-            if (agent->scheduler && agent->scheduler->send_llm)
+            /* strip leading '@' from subsequent pipe segments */
+            if (pipe_seg[pi][0] == '@')
             {
-                static int rid = 0;
-                void *req_id = (void *)(intptr_t)(++rid);
+                sds trimmed = sdsnew(pipe_seg[pi] + 1);
+                sdstrim(trimmed, " \t");
+                sdsfree(pipe_seg[pi]);
+                pipe_seg[pi] = trimmed;
+            }
+
+            struct edc_cmd_task_opts opts;
+            edc_cmd_parse_task_opts(pipe_seg[pi], &opts);
+
+            struct edc_task *task = edc_scheduler_create_task(agent->scheduler,
+                                                               (opts.desc && sdslen(opts.desc) > 0) ? opts.desc : "Quick task",
+                                                               edc_channel_copy(message->channel));
+            struct edc_task_group *group = edc_scheduler_create_group(agent->scheduler, task);
+            if (!opts.bg)
+            {
+                edc_scheduler_set_foreground(agent->scheduler, group);
+                edc_session_set_active_task(agent->session, task);
+            }
+
+            for (int i = 0; i < opts.dep_count; i++)
+            {
+                struct edc_task *dt = edc_session_find_task(agent->session, opts.dep_ids[i]);
+                if (dt) edc_task_add_dependency(task, dt, TASK_DEP_JOIN);
+            }
+
+            /* pipe chain: each segment waits for the previous one */
+            if (prev_task)
+                edc_task_add_dependency(task, prev_task, TASK_DEP_JOIN);
+
+            sds reply = sdscatprintf(sdsempty(), "[@] created %s (group %s)%s%s%s",
+                                     task->task_id, group->group_id,
+                                     opts.bg ? " [bg]" : "",
+                                     opts.dep_count > 0 ? " [chained]" : "",
+                                     pi > 0 ? " [pipe]" : "");
+            edc_commands_reply(agent, actor, message->channel, reply);
+            sdsfree(reply);
+
+            if (opts.input)
+            {
+                struct edc_turn *turn = edc_turn_new();
+                turn->task_id = strdup(task->task_id);
+                edc_turn_add_user_message(turn, opts.input);
+                task->active_turn = turn;
+
+                /* register with unique request_id (int64 counter, won't collide with pointers) */
+                static int64_t counter = 0;
+                void *req_id = (void *)(intptr_t)(++counter);
                 edc_scheduler_register_task(agent->scheduler, task, req_id);
                 task->current_request_id = req_id;
-                agent->scheduler->send_llm(agent->scheduler, task, req_id);
+
+                log_info("@ handler: task=%s state=%s deps_total=%zu input='%s'",
+                         task->task_id, edc_task_state_name(task->state),
+                         task->deps_total, opts.input);
+
+                /* only send_llm if not blocked by pipe deps */
+                if (task->state != TASK_WAITING_DEPS)
+                {
+                    bool ok = edc_task_set_state(task, TASK_LLM_PROCESSING);
+                    log_info("@ handler: set_state LLM_PROCESSING -> %s, send_llm=%s",
+                             ok ? "ok" : "FAILED",
+                             (agent->scheduler && agent->scheduler->send_llm) ? "ready" : "NULL");
+                    if (ok && agent->scheduler && agent->scheduler->send_llm)
+                        agent->scheduler->send_llm(agent->scheduler, task, req_id);
+                }
+                else
+                {
+                    log_info("@ handler: task %s blocked in WAITING_DEPS, turn queued", task->task_id);
+                }
             }
+
+            edc_cmd_task_opts_free(&opts);
+            prev_task = task;
         }
 
-        edc_cmd_task_opts_free(&opts);
+        sdsfreesplitres(pipe_seg, pipe_count);
         sdsfree(arg);
         return true;
     }

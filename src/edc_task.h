@@ -48,6 +48,7 @@ struct edc_task_dep {
     edc_task_dep_type type;
     bool completed;                /* 已完成 */
     bool cancelled;                /* 已取消 */
+    bool injected;                 /* 已注入到 LLM 上下文 */
     struct edc_task_dep *next;     /* 单链表 (在 target 的 deps 链上) */
 };
 

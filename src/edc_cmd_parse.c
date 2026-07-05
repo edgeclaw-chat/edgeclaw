@@ -14,7 +14,15 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
     sds desc = sdsempty();
     sds remaining = sdsnew(arg);
 
-    /* extract "input": first double-quoted string */
+    /* detect trailing & (background) */
+    if (sdslen(remaining) > 0 && remaining[sdslen(remaining)-1] == '&')
+    {
+        opts->bg = true;
+        sdssetlen(remaining, sdslen(remaining) - 1);
+        sdstrim(remaining, " \t");
+    }
+
+    /* extract "input": first double-quoted string, or fallback to unquoted */
     char *p = remaining;
     char *q_start = strchr(p, '"');
     if (q_start)
@@ -23,11 +31,22 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
         if (q_end)
         {
             opts->input = sdsnewlen(q_start + 1, q_end - q_start - 1);
-            /* remove quoted string from remaining */
             sds before = sdsnewlen(remaining, q_start - remaining);
             sdsrange(remaining, (int)(q_end - remaining + 1), -1);
             sdstrim(remaining, " \t");
             sdsfree(before);
+        }
+    }
+    else
+    {
+        /* no quotes: first word = desc, rest = input */
+        char *space = strchr(remaining, ' ');
+        if (space)
+        {
+            opts->input = sdsnew(space + 1);
+            sdstrim(opts->input, " \t");
+            sdssetlen(remaining, space - remaining);
+            sdstrim(remaining, " \t");
         }
     }
 

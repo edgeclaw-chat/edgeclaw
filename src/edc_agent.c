@@ -79,8 +79,9 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
                  dep->source ? dep->source->task_id : "(null)",
                  dep->completed,
                  (dep->source && dep->source->output) ? "yes" : "none");
-        if (dep->completed && dep->source)
+        if (dep->completed && dep->source && !dep->injected)
         {
+            dep->injected = true;
             sds note = sdscatprintf(sdsempty(), "[子任务 %s (id=%s)]:\n",
                                      dep->source->description, dep->source->task_id);
 
