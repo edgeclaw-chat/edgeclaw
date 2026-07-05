@@ -203,6 +203,7 @@ static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *a
         else
         {
             edc_scheduler_set_foreground(agent->scheduler, group);
+            edc_session_set_active_task(agent->session, task);
             sds reply = sdscatprintf(sdsempty(), "[task] created %s (group %s)",
                                      task->task_id, group->group_id);
             edc_commands_reply(agent, actor, channel, reply);
