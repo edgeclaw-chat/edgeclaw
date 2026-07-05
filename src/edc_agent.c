@@ -74,6 +74,11 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
     struct edc_task_dep *dep;
     LL_FOREACH(task->deps, dep)
     {
+        log_info("send_llm task=%s dep src=%s completed=%d output=%s",
+                 task->task_id,
+                 dep->source ? dep->source->task_id : "(null)",
+                 dep->completed,
+                 (dep->source && dep->source->output) ? "yes" : "none");
         if (dep->completed && dep->source && dep->source->output)
         {
             sds note = sdscatprintf(sdsempty(),
@@ -81,6 +86,7 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
                                     dep->source->description,
                                     dep->source->task_id,
                                     dep->source->output);
+            log_info("  -> injecting source output (%zu bytes)", sdslen(note));
             cJSON *sys = cJSON_CreateObject();
             cJSON_AddStringToObject(sys, "role", "system");
             cJSON_AddStringToObject(sys, "content", note);
