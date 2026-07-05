@@ -186,3 +186,12 @@ cc_test(
     ],
     linkopts = LINK_OPTS,
 )
+
+cc_test(
+    name = "test_edc_session_stress",
+    srcs = ["test_edc_session_stress.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)

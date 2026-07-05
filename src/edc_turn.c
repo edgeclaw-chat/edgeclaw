@@ -62,6 +62,7 @@ void edc_turn_free(struct edc_turn *turn)
     edc_queue_destroy(&turn->messages);
     edc_queue_destroy(&turn->timestamps);
 
+    free(turn->task_id);
     free(turn);
 }
 

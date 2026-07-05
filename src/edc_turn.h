@@ -5,6 +5,7 @@
 
 struct edc_turn
 {
+    char *task_id;             /* Phase 6: 序列化时标记归属 */
     EdcQueue messages;
     EdcQueue timestamps;
 };

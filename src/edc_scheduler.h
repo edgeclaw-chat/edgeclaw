@@ -64,6 +64,8 @@ struct edc_scheduler {
     edc_scheduler_save_fn           save_session;
 
     int64_t next_task_id;
+
+    void *ctx;                              /* 回调上下文 (edc_agent*) */
 };
 
 /* ── API ───────────────────────────────────────────────────── */

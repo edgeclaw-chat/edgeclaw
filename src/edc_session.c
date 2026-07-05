@@ -6,6 +6,8 @@
 #include "edc_context.h"
 #include "edc_history.h"
 #include "edc_turn.h"
+#include "edc_task.h"
+#include "edc_task_group.h"
 #include "utlist_fix.h"
 #include <string.h>
 
@@ -77,6 +79,7 @@ static void edc_session_build_messages(struct edc_session *session, const char *
 struct edc_session *edc_session_new(struct edc_config *config)
 {
     struct edc_session *session = g_new0(struct edc_session, 1);
+    session->session_id = strdup("sess-1");
     session->config = config;
     session->messages = cJSON_CreateArray();
     edc_session_build_messages(session, NULL, true);
@@ -116,6 +119,15 @@ void edc_session_free(struct edc_session *session)
         free(n);
     }
 
+    /* 释放 groups */
+    struct edc_task_group *group, *gtmp;
+    DL_FOREACH_SAFE(session->groups, group, gtmp)
+    {
+        DL_DELETE(session->groups, group);
+        edc_task_group_free(group);
+    }
+
+    free(session->session_id);
     free(session);
 }
 
@@ -163,3 +175,117 @@ bool edc_session_save_history(struct edc_session *session)
 
     return ok;
 }
+
+/* ══════════════════════════════════════════════════════════════
+   Phase 4: Task/Group 管理
+   ══════════════════════════════════════════════════════════════ */
+
+void edc_session_add_group(struct edc_session *session, struct edc_task_group *group)
+{
+    if (!session || !group) return;
+    DL_APPEND(session->groups, group);
+}
+
+void edc_session_remove_group(struct edc_session *session, struct edc_task_group *group)
+{
+    if (!session || !group) return;
+    DL_DELETE(session->groups, group);
+}
+
+struct edc_task_group *edc_session_find_group(struct edc_session *session, const char *group_id)
+{
+    if (!session || !group_id) return NULL;
+    struct edc_task_group *group;
+    DL_FOREACH(session->groups, group)
+    {
+        if (strcmp(group->group_id, group_id) == 0) return group;
+    }
+    return NULL;
+}
+
+struct edc_task *edc_session_find_task(struct edc_session *session, const char *task_id)
+{
+    if (!session || !task_id) return NULL;
+    struct edc_task_group *group;
+    DL_FOREACH(session->groups, group)
+    {
+        struct edc_task *t = edc_task_group_find_task(group, task_id);
+        if (t) return t;
+    }
+    return NULL;
+}
+
+void edc_session_set_active_task(struct edc_session *session, struct edc_task *task)
+{
+    if (!session) return;
+    session->active_task = task;
+}
+
+struct edc_task *edc_session_get_active_task(struct edc_session *session)
+{
+    return session ? session->active_task : NULL;
+}
+
+/* ── 消息切片 ──────────────────────────────────────────────── */
+
+cJSON *edc_session_get_messages_slice(struct edc_session *session, size_t from, size_t count)
+{
+    cJSON *slice = cJSON_CreateArray();
+    if (!session || !session->messages) return slice;
+
+    size_t total = cJSON_GetArraySize(session->messages);
+    if (from >= total) return slice;
+
+    size_t end = from + count;
+    if (count == 0 || end > total) end = total;
+
+    for (size_t i = from; i < end; i++)
+    {
+        cJSON *msg = cJSON_GetArrayItem(session->messages, i);
+        cJSON_AddItemReferenceToArray(slice, msg);
+    }
+    return slice;
+}
+
+/* ── Task 结构持久化 ──────────────────────────────────────── */
+
+bool edc_session_save_tasks(struct edc_session *session)
+{
+    if (!session) return false;
+
+    /* 给 messages 中每条 non-system non-tool 消息追加 task_id */
+    /* system 消息和 tool 消息不标记 (属于所有 task 共享) */
+
+    cJSON *messages = session->messages;
+    size_t count = cJSON_GetArraySize(messages);
+
+    for (size_t i = 0; i < count; i++)
+    {
+        cJSON *msg = cJSON_GetArrayItem(messages, i);
+        cJSON *role = cJSON_GetObjectItem(msg, "role");
+        if (!role || !cJSON_IsString(role)) continue;
+
+        const char *role_s = cJSON_GetStringValue(role);
+        if (strcmp(role_s, "system") == 0 || strcmp(role_s, "tool") == 0) continue;
+
+        if (!cJSON_HasObjectItem(msg, "task_id"))
+        {
+            /* 使用默认 "legacy" task_id */
+            cJSON_AddStringToObject(msg, "task_id", "legacy");
+            cJSON_AddStringToObject(msg, "group_id", "legacy");
+        }
+    }
+
+    return edc_session_save_history(session);
+}
+
+void edc_session_reload_tasks(struct edc_session *session)
+{
+    if (!session || !session->messages) return;
+
+    /* 从 messages 中提取所有 unique task_id，为每个创建一个 task */
+    /* 简化为: 扫描 messages, 收集唯一 task_id */
+    /* 完整实现留 Phase 5 在 edc_agent 中处理 */
+    (void)session;
+}
+
