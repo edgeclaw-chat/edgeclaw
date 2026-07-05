@@ -159,3 +159,30 @@ cc_test(
     ],
     linkopts = LINK_OPTS,
 )
+
+cc_test(
+    name = "test_edc_task_group",
+    srcs = ["test_edc_task_group.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_edc_task_stress",
+    srcs = ["test_edc_task_stress.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_edc_scheduler",
+    srcs = ["test_edc_scheduler.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)

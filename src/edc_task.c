@@ -345,6 +345,30 @@ void edc_task_send_signal(struct edc_task *task, edc_task_signal sig)
         }
     }
 
+    /* 移除自己的 deps (不再等待别人) */
+    {
+        struct edc_task_dep *dep, *tmp;
+        LL_FOREACH_SAFE(task->deps, dep, tmp)
+        {
+            if (dep->source)
+            {
+                struct edc_task_dep *sd, *sd_tmp;
+                LL_FOREACH_SAFE(dep->source->dependents, sd, sd_tmp)
+                {
+                    if (sd->target == task)
+                    {
+                        LL_DELETE(dep->source->dependents, sd);
+                        free(sd);
+                    }
+                }
+            }
+            LL_DELETE(task->deps, dep);
+            free(dep);
+        }
+        task->deps = NULL;
+        task->deps_total = 0;
+    }
+
     edc_task_set_state(task, TASK_CANCELLED);
 }
 
@@ -388,6 +412,8 @@ void edc_task_set_prompt(struct edc_task *task, const char *prompt_name, const c
 
 cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *config)
 {
+    if (!task) return cJSON_CreateArray();
+
     cJSON *messages = cJSON_CreateArray();
 
     /* 1. System prompt */
