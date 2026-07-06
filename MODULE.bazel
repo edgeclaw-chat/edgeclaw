@@ -69,4 +69,6 @@ use_repo(
     "sds",
     "uthash",
     "libuv",
+    "llhttp",
+    "libyuarel",
 )
