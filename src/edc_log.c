@@ -33,7 +33,7 @@ static void edc_log_file_callback(log_Event *ev)
 static void edc_log_rotate(void)
 {
     time_t now = time(NULL);
-    struct tm tm_now;
+    struct tm tm_now = {0};
 #ifdef _WIN32
     localtime_s(&tm_now, &now);
 #else

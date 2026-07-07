@@ -366,9 +366,9 @@ static void edc_tool_crontab_update_task(const char *workspace, struct edc_chann
     uv_timer_start(&state->timer, edc_tool_crontab_on_timeout, (uint64_t)interval * 1000, 0);
     tool->priv = state;
 
-    struct tm tm;
+    struct tm tm = {0};
     localtime_r((const time_t *)&run_at, &tm);
-    char buf[64];
+    char buf[64] = {0};
     strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S%z", &tm);
     log_info("crontabl tool schedule job name = %s, id = %s, run at %s", job_name, job_id, buf);
 }
