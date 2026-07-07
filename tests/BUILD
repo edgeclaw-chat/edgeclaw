@@ -158,7 +158,7 @@ cc_test(
 
 cc_test(
     name = "test_https_client_get",
-    srcs = ["test_markdown_render.c"],
+    srcs = ["test_https_client_get.c"],
     deps = [
         "//src:agent",
     ],
