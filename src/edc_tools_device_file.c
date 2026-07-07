@@ -902,8 +902,13 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
 
     int file_mode = 0644;
     cJSON *mode_item = cJSON_GetObjectItem(args, "mode");
-    if (mode_item && cJSON_IsNumber(mode_item) && mode_item->valueint > 0)
-        file_mode = mode_item->valueint;
+    if (mode_item && cJSON_IsString(mode_item) && mode_item->valuestring[0] != '\0')
+    {
+        char *endptr = NULL;
+        long val = strtol(mode_item->valuestring, &endptr, 8);
+        if (endptr != mode_item->valuestring && *endptr == '\0' && val >= 0 && val <= 07777)
+            file_mode = (int)val;
+    }
 
     int timeout_sec = 60;
     cJSON *timeout_json = cJSON_GetObjectItem(args, "timeout");
@@ -981,7 +986,7 @@ static struct edc_tool *edc_tool_create_device_upload(struct edc_toolbox *tb)
     struct edc_tool_param *params = NULL;
     LL_APPEND(params, edc_tool_param_new("local_path", edc_param_str_type("Local file path on host to upload", NULL), true));
     LL_APPEND(params, edc_tool_param_new("remote_path", edc_param_str_type("Remote file path on device destination", NULL), true));
-    LL_APPEND(params, edc_tool_param_new("mode", edc_param_int_type("File permission mode (default 0644)", 0, 07777), false));
+    LL_APPEND(params, edc_tool_param_new("mode", edc_param_str_type("File permission mode in octal, e.g. \"644\" for rw-r--r-- (default \"644\")", NULL), false));
     LL_APPEND(params, edc_tool_param_new("timeout", edc_param_int_type("Timeout per chunk in seconds (default 60)", 1, 3600), false));
 
     struct edc_tool *tool = edc_tool_new("device_upload",
