@@ -249,9 +249,12 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx,
     {
         EdcError *error = edc_error_new(EDC_ERR_EXEC, "uv_spawn failed: %s",
                                         uv_strerror(r));
-        sdsfree(ctx->stderr_buf);
-        sdsfree(ctx->stdout_buf);
-        free(ctx);
+        ctx->stdout_pipe.data = ctx;
+        ctx->stderr_pipe.data = ctx;
+        ctx->pending_handles = 3;
+        uv_close((uv_handle_t *)&ctx->stdout_pipe, on_stdout_close);
+        uv_close((uv_handle_t *)&ctx->stderr_pipe, on_stderr_close);
+        uv_close((uv_handle_t *)&ctx->timeout_timer, on_timer_close);
         callback(tb_ctx, NULL, error);
         return;
     }
@@ -322,18 +325,25 @@ void edc_tool_shell_abort_all(void)
 {
     uv_once(&active_mutex_once, active_mutex_init);
     uv_mutex_lock(&active_mutex);
-    struct edc_tool_shell_ctx *ctx;
-    LL_FOREACH(active_contexts, ctx)
+    struct edc_tool_shell_ctx *ctx, *tmp;
+    LL_FOREACH_SAFE(active_contexts, ctx, tmp)
     {
-        if (!ctx->child_exited)
-        uv_process_kill(&ctx->process,
+        LL_DELETE(active_contexts, ctx);
+        if (!ctx->child_exited) {
+            uv_process_kill(&ctx->process,
 #ifdef _WIN32
                          SIGTERM
 #else
                          SIGKILL
 #endif
                          );
-        shell_ctx_close_handles(ctx);
+        }
+        uv_timer_stop(&ctx->timeout_timer);
+        ctx->pending_handles = 4;
+        uv_close((uv_handle_t *)&ctx->stdout_pipe, on_stdout_close);
+        uv_close((uv_handle_t *)&ctx->stderr_pipe, on_stderr_close);
+        uv_close((uv_handle_t *)&ctx->timeout_timer, on_timer_close);
+        uv_close((uv_handle_t *)&ctx->process, on_process_close);
     }
     uv_mutex_unlock(&active_mutex);
 }

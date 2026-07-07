@@ -225,6 +225,7 @@ static void edc_agent_scheduler_handler(struct edc_actor *actor, struct edc_acto
         edc_session_reload(agent->session, true);
         log_info("memory compress done. reload session, message count = %zu",
                  edc_session_get_message_count(agent->session));
+        break;
     default:
         break;
     }

@@ -23,6 +23,15 @@ LINK_OPTS = select({
 })
 
 cc_test(
+    name = "test_containers",
+    srcs = ["test_containers.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_channel_actor",
     srcs = ["test_channel_actor.c"],
     deps = [
