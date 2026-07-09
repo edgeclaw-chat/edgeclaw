@@ -919,6 +919,9 @@ bool edc_commands_handler(struct edc_agent *agent, struct edc_actor *actor,
         if (edc_commands_is_prefix(message->content, "/task"))
             return edc_commands_handle_task(agent, actor, message);
 
+        if (edc_commands_is_prefix(message->content, "/session"))
+            return edc_commands_handle_session(agent, actor, message);
+
         if (edc_commands_is_target(message->content, "/new"))
             return edc_commands_handle_new(agent, actor, message->channel);
         if (edc_commands_is_target(message->content, "/stop"))
