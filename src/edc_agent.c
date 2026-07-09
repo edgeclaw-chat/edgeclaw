@@ -201,6 +201,7 @@ static void edc_agent_handle_tool_calls(struct edc_agent *agent, struct edc_chan
     struct edc_toolbox_actor_req *req = edc_toolbox_actor_req_new(NULL, NULL, NULL, NULL);
     struct edc_toolbox_actor_req *head = req;
 
+    if (!resp->tool_calls) return;
     for (unsigned i = 0; i < utarray_len(resp->tool_calls); i++)
     {
         struct edc_llm_chat_tool_call *tool_call =

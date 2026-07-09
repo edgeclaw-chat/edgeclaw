@@ -223,7 +223,7 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     bool task_is_waiting_deps = false;
 
     /* 优先：session->active_task 在前台 group 且为 WAITING_INPUT/WAITING_DEPS */
-    if (sched->session)
+    if (sched->session && fg)
     {
         struct edc_task *at = edc_session_get_active_task(sched->session);
         if (at && (at->state == TASK_WAITING_INPUT || at->state == TASK_WAITING_DEPS))

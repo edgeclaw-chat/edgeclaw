@@ -155,6 +155,8 @@ static bool edc_tool_crontab_save_jobs_db(const char *workspace, cJSON *db, EdcE
 
 static void edc_tool_crontab_remove_job(cJSON *jobs, char *job_id)
 {
+    if (!jobs) return;
+
     int target = -1;
     for (int i = 0; i < cJSON_GetArraySize(jobs); ++i)
     {
