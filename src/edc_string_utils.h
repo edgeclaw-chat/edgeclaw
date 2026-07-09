@@ -2,6 +2,7 @@
 #define EDC_STRING_UTILS_H
 
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include "sds.h"
 
@@ -25,6 +26,8 @@ char **edc_strsplit(const char *str, const char *delimiter, int max_tokens);
 void edc_strfreev(char **str_array);
 
 sds edc_str_utf8_make_valid(const char *str, ssize_t len);
+
+sds edc_str_utf8_truncate(const char *str, size_t max_chars, bool append_dots);
 
 sds edc_str_uri_escape(const char *str, size_t len);
 

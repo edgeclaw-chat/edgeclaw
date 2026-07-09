@@ -97,7 +97,8 @@ struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, con
     char auto_id[64];
     if (!task_id)
     {
-        snprintf(auto_id, sizeof(auto_id), "fork-%p", (void *)parent);
+        static int fork_seq = 0;
+        snprintf(auto_id, sizeof(auto_id), "ft%d", ++fork_seq);
         task_id = auto_id;
     }
 

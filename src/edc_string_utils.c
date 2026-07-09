@@ -149,6 +149,36 @@ void edc_strfreev(char **str_array)
     free(str_array);
 }
 
+sds edc_str_utf8_truncate(const char *str, size_t max_chars, bool append_dots)
+{
+    if (!str) return sdsempty();
+
+    size_t byte_count = 0;
+    size_t char_count = 0;
+    const unsigned char *p = (const unsigned char *)str;
+
+    while (*p && char_count < max_chars) {
+        utf8proc_int32_t uc = -1;
+        ssize_t clen = utf8proc_iterate(p, -1, &uc);
+        if (clen <= 0 || uc == -1) {
+            /* invalid byte — still count as one "char" to avoid infinite loop */
+            byte_count++;
+            char_count++;
+            p++;
+        } else {
+            byte_count += (size_t)clen;
+            char_count++;
+            p += clen;
+        }
+    }
+
+    sds result = sdsnewlen(str, byte_count);
+    if (append_dots && str[byte_count] != '\0') {
+        result = sdscat(result, "...");
+    }
+    return result;
+}
+
 sds edc_str_utf8_make_valid(const char *str, ssize_t len)
 {
     if (!str) return sdsempty();

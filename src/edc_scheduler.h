@@ -77,6 +77,7 @@ extern edc_actor_t *edc_scheduler_get_actor(struct edc_scheduler *sched);
 
 /* ── Task 管理 ─────────────────────────────────────────────── */
 
+extern char *edc_scheduler_gen_task_id(struct edc_scheduler *sched);
 extern struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const char *desc,
                                                     struct edc_channel *channel);
 extern struct edc_task_group *edc_scheduler_create_group(struct edc_scheduler *sched,

@@ -8,6 +8,7 @@
 #include "edc_compat.h"
 #include "edc_channel_actor.h"
 #include "edc_file_utils.h"
+#include "edc_string_utils.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
 #include "ccronexpr.h"
@@ -508,9 +509,9 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
     }
     else
     {
-        char *s = strndup(cJSON_GetStringValue(message), 30);
+        sds s = edc_str_utf8_truncate(cJSON_GetStringValue(message), 30, false);
         cJSON_AddStringToObject(job, "name", s);
-        free(s);
+        sdsfree(s);
     }
 
     char *job_id = edc_uuid_gen();

@@ -1,4 +1,5 @@
 #include "edc_cmd_parse.h"
+#include "edc_string_utils.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -43,11 +44,10 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
         remaining = NULL;
     }
 
-    /* build desc: first DESC_MAX chars of input, truncated with "..." */
+    /* build desc: first DESC_MAX UTF-8 chars of input, truncated with "..." */
     if (opts->input)
     {
-        opts->desc = sdsnewlen(opts->input, sdslen(opts->input) < DESC_MAX ? sdslen(opts->input) : DESC_MAX);
-        if (sdslen(opts->input) > DESC_MAX) opts->desc = sdscat(opts->desc, "...");
+        opts->desc = edc_str_utf8_truncate(opts->input, DESC_MAX, true);
     }
 
     /* parse flags from remaining (only when quoted input was extracted) */

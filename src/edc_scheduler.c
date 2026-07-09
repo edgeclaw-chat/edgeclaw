@@ -69,10 +69,10 @@ edc_actor_t *edc_scheduler_get_actor(struct edc_scheduler *sched)
 
 /* ── Task/Group 管理 ───────────────────────────────────────── */
 
-static char *edc_scheduler_gen_task_id(struct edc_scheduler *sched)
+char *edc_scheduler_gen_task_id(struct edc_scheduler *sched)
 {
     char buf[64];
-    snprintf(buf, sizeof(buf), "task-%lld", (long long)sched->next_task_id++);
+    snprintf(buf, sizeof(buf), "t%lld", (long long)sched->next_task_id++);
     return strdup(buf);
 }
 
