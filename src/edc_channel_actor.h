@@ -59,6 +59,8 @@ typedef struct
             sds history_path;
             volatile int running;
             bool tty_stopped;
+            int term_width;
+            int prev_lines;
         } cli;
     };
 } edc_channel_actor_state_t;

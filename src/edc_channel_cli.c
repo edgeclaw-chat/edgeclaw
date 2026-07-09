@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <uv.h>
 
 #define CLI_RESET     "\e[0m"
@@ -153,13 +154,51 @@ static sds cli_buf_delete(edc_channel_actor_state_t *state, int pos, int count)
 
 /* ---- display ---- */
 
+static int cli_get_term_width(edc_channel_actor_state_t *state)
+{
+    (void)state;
+
+    struct winsize ws;
+    if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+        return (int)ws.ws_col;
+
+    const char *cols = getenv("COLUMNS");
+    if (cols) {
+        int w = atoi(cols);
+        if (w > 0) return w;
+    }
+
+    return 80;
+}
+
+static int cli_calc_lines(edc_channel_actor_state_t *state, sds line)
+{
+    int prompt_w = 2;
+    int total_w = prompt_w + cli_display_width(line, (int)sdslen(line));
+    int tw = cli_get_term_width(state);
+    int lines = (total_w + tw - 1) / tw;
+    return lines > 0 ? lines : 1;
+}
+
 static void cli_redraw(edc_channel_actor_state_t *state)
 {
-    fprintf(stdout, "\r\e[K\e[0m\e[1;36m> \e[0m");
+    int new_lines = cli_calc_lines(state, state->cli.line_buffer);
+
+    /* move cursor up to cover all previous lines of the input */
+    if (state->cli.prev_lines > 1) {
+        for (int l = 1; l < state->cli.prev_lines; l++)
+            fprintf(stdout, "\e[A");
+    }
+    fprintf(stdout, "\r\e[J");
+
+    /* draw prompt and input */
+    fprintf(stdout, "\e[0m\e[1;36m> \e[0m");
 
     sds prefix = sdsnewlen(state->cli.line_buffer, (size_t)state->cli.cursor_pos);
     fprintf(stdout, "%s\e[s%s\e[u", prefix, state->cli.line_buffer + state->cli.cursor_pos);
     sdsfree(prefix);
+
+    state->cli.prev_lines = new_lines;
     fflush(stdout);
 }
 
@@ -183,6 +222,7 @@ static void cli_display_output(edc_channel_actor_state_t *state)
     sdsfree(state->cli.pending_output);
     state->cli.pending_output = NULL;
 
+    state->cli.prev_lines = 0;
     cli_redraw(state);
 }
 
@@ -217,8 +257,10 @@ static void cli_commit_line(edc_actor_t *actor, const char *line)
     }
     state->cli.history_pos = -1;
 
-    if (state->cli.running)
+    if (state->cli.running) {
+        state->cli.prev_lines = 0;
         cli_redraw(state);
+    }
 }
 
 /* ---- history navigation via escape sequences ---- */
