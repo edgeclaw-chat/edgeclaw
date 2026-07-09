@@ -681,7 +681,7 @@ static struct edc_task *shell_find_last_completed(struct edc_agent *agent)
     struct edc_task *last = NULL;
     uint32_t highest_seq = 0;
     struct edc_task_group *g;
-    DL_FOREACH(agent->scheduler->groups, g)
+    DL_FOREACH(agent->scheduler->session->groups, g)
     {
         struct edc_task *t;
         LL_FOREACH2(g->members, t, group_next)

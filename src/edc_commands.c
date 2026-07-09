@@ -389,7 +389,7 @@ static void edc_commands_handle_task_list(struct edc_agent *agent, edc_actor_t *
     sds out = sdsempty();
     struct edc_task_group *g;
     bool first = true;
-    DL_FOREACH(agent->scheduler->groups, g)
+    DL_FOREACH(agent->scheduler->session->groups, g)
     {
         if (!first) out = sdscat(out, "\n");
         first = false;
@@ -556,7 +556,7 @@ static void edc_commands_handle_task_groups(struct edc_agent *agent, edc_actor_t
 {
     sds out = sdsnew("## Groups\n\n");
     struct edc_task_group *g;
-    DL_FOREACH(agent->scheduler->groups, g)
+    DL_FOREACH(agent->scheduler->session->groups, g)
     {
         out = sdscatprintf(out, "- %s%s  **%s**  %d members  _%s_\n",
                            agent->scheduler->foreground_group == g ? "`[fg]` " : "",

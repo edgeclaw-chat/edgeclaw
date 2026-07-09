@@ -126,8 +126,8 @@ static void test_scheduler_group_mgmt(void)
     struct edc_task *l2 = edc_scheduler_create_task(sched, "group 2 leader", NULL);
     struct edc_task_group *g2 = edc_scheduler_create_group(sched, l2);
     edc_scheduler_add_group(sched, g2);
-    CHECK(sched->groups == g, "first group at head");
-    CHECK(sched->groups->next == g2, "second at next");
+    CHECK(sched->session->groups == g, "first group at head");
+    CHECK(sched->session->groups->next == g2, "second at next");
 
     TEST("add_group NULL safety");
     edc_scheduler_add_group(sched, NULL);

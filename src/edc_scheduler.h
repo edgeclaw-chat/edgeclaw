@@ -48,7 +48,6 @@ struct edc_scheduler {
     struct edc_session *session;
     struct edc_config *config;
 
-    struct edc_task_group *groups;          /* 双向链表 */
     struct edc_task_group *foreground_group;
 
     struct edc_sched_task_entry *task_hash; /* uthash: request_id → edc_task */

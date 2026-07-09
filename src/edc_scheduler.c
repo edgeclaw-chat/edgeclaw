@@ -53,10 +53,13 @@ void edc_scheduler_free(struct edc_scheduler *sched)
     }
 
     struct edc_task_group *group, *gtmp;
-    DL_FOREACH_SAFE(sched->groups, group, gtmp)
+    if (sched->session)
     {
-        DL_DELETE(sched->groups, group);
-        edc_task_group_free(group);
+        DL_FOREACH_SAFE(sched->session->groups, group, gtmp)
+        {
+            DL_DELETE(sched->session->groups, group);
+            edc_task_group_free(group);
+        }
     }
 
     if (sched->self) edc_actor_free(sched->self);
@@ -101,14 +104,12 @@ struct edc_task_group *edc_scheduler_create_group(struct edc_scheduler *sched,
     if (!sched || !leader) return NULL;
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_scheduler_add_group(sched, group);
-    if (sched->session) edc_session_add_group(sched->session, group);
     return group;
 }
 
 void edc_scheduler_add_group(struct edc_scheduler *sched, struct edc_task_group *group)
 {
     if (!sched || !group) return;
-    DL_APPEND(sched->groups, group);
     if (sched->session) edc_session_add_group(sched->session, group);
 }
 
@@ -124,9 +125,9 @@ struct edc_task *edc_scheduler_find_task(struct edc_scheduler *sched, void *requ
 
 struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sched, const char *task_id)
 {
-    if (!sched || !task_id) return NULL;
+    if (!sched || !task_id || !sched->session) return NULL;
     struct edc_task_group *group;
-    DL_FOREACH(sched->groups, group)
+    DL_FOREACH(sched->session->groups, group)
     {
         struct edc_task *task = edc_task_group_find_task(group, task_id);
         if (task) return task;
@@ -182,8 +183,9 @@ void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *
 void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, const char *group_id,
                                          edc_task_signal sig)
 {
+    if (!sched || !sched->session) return;
     struct edc_task_group *group = NULL;
-    DL_FOREACH(sched->groups, group)
+    DL_FOREACH(sched->session->groups, group)
     {
         if (strcmp(group->group_id, group_id) == 0) break;
     }
@@ -202,8 +204,9 @@ void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, const char 
 
 void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, edc_task_signal sig)
 {
+    if (!sched || !sched->session) return;
     struct edc_task_group *group, *tmp;
-    DL_FOREACH_SAFE(sched->groups, group, tmp)
+    DL_FOREACH_SAFE(sched->session->groups, group, tmp)
     {
         edc_scheduler_send_signal_to_group(sched, group->group_id, sig);
     }

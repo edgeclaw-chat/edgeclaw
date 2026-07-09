@@ -11,16 +11,22 @@
 
 /* ── Helpers ───────────────────────────────────────────────── */
 
-static sds edc_sm_gen_session_id(void)
+static sds edc_sm_gen_session_id(struct edc_session_manager *sm)
 {
-    /* simple incrementing counter based on timestamp */
-    sds ts = edc_datetime_timestamp();
-    /* take last 6 digits of timestamp-based hash for compact id */
-    unsigned long hash = 5381;
-    for (size_t i = 0; i < sdslen(ts); i++)
-        hash = ((hash << 5) + hash) + (unsigned char)ts[i];
-    sdsfree(ts);
-    return sdscatprintf(sdsempty(), "sess-%lu", hash % 1000000);
+    int max_id = 0;
+    for (int i = 0; i < sm->session_count; i++)
+    {
+        const char *sid = sm->sessions[i]->session_id;
+        const char *num = NULL;
+        if (strncmp(sid, "sess-", 5) == 0) num = sid + 5;
+        else if (sid[0] == 's') num = sid + 1;
+        if (num && num[0] >= '0' && num[0] <= '9')
+        {
+            int n = atoi(num);
+            if (n > max_id) max_id = n;
+        }
+    }
+    return sdscatprintf(sdsempty(), "s%d", max_id + 1);
 }
 
 static sds edc_sm_gen_session_name(struct edc_session_manager *sm)
@@ -331,7 +337,7 @@ struct edc_session *edc_session_manager_create(struct edc_session_manager *sm,
 {
     if (!sm) return NULL;
 
-    sds id = edc_sm_gen_session_id();
+    sds id = edc_sm_gen_session_id(sm);
     sds sname = (name && strlen(name) > 0)
                     ? sdsnew(name)
                     : edc_sm_gen_session_name(sm);
