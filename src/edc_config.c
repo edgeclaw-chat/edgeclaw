@@ -65,6 +65,11 @@ static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *cha
         return false;
     }
     sds _d = edc_secret_decrypt(cJSON_GetStringValue(password));
+    if (!_d)
+    {
+        log_error("channel.passwd decryption failed");
+        return false;
+    }
     config->channel.email.passwd = _d;
 
     cJSON *target = cJSON_GetObjectItem(channel, "target");
@@ -129,6 +134,11 @@ struct edc_config *edc_config_load(const char *edc_home)
     else
     {
         sds _d = edc_secret_decrypt(cJSON_GetStringValue(api_key));
+        if (!_d)
+        {
+            log_error("api_key decryption failed");
+            goto exit_free_config;
+        }
         config->llm_api_conf.api_key = _d;
     }
 
