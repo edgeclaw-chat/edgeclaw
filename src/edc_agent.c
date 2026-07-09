@@ -21,6 +21,7 @@
 #include "utlist_fix.h"
 #include "log.h"
 #include <edc_commands.h>
+#include <edc_shell.h>
 #include <dirent.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -130,6 +131,32 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
 
             log_info("  -> injected final output from task %s", dep->source->task_id);
         }
+    }
+
+    /* expand deferred $VAR references in the current turn's user messages */
+    if (task->has_deferred_vars && task->active_turn)
+    {
+        for (size_t mj = task->active_turn->messages.head;
+             mj < task->active_turn->messages.tail; mj++)
+        {
+            cJSON *msg = task->active_turn->messages.data[mj];
+            cJSON *role = cJSON_GetObjectItem(msg, "role");
+            if (role && cJSON_IsString(role) && strcmp(role->valuestring, "user") == 0)
+            {
+                cJSON *content = cJSON_GetObjectItem(msg, "content");
+                if (content && cJSON_IsString(content))
+                {
+                    sds expanded = edc_shell_expand_vars(agent, content->valuestring, NULL);
+                    if (expanded)
+                    {
+                        cJSON_ReplaceItemInObject(msg, "content",
+                            cJSON_CreateString(expanded));
+                        sdsfree(expanded);
+                    }
+                }
+            }
+        }
+        task->has_deferred_vars = 0;
     }
 
     struct edc_llm_actor_req *req =

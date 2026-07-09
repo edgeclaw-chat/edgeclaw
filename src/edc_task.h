@@ -94,6 +94,7 @@ struct edc_task {
     sds output;                         /* 本 task 最终输出 (供 JOIN 注入) */
 
     uint32_t completion_seq;            /* 完成顺序 (0=未完成) */
+    int has_deferred_vars;              /* $VAR 引用待展开 */
 
     /* ── 输出重定向 ── */
     sds redirect_stdout;            /* > / >> file */

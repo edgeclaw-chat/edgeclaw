@@ -27,12 +27,15 @@ GETTING STARTED
            $ edgeclaw
            EdgeClaw CLI ready.  Type /help for commands.
            > explain this code
-           [task] created t1 (group t1)
+           [task] created 1 (group 1)
            ...
 
      Type and press Enter.  All non-/ input creates a task in the current
      foreground group and sends it to the LLM.  Conversations are saved per
      session under workspace/<session_id>/.
+
+     Tab completion is available for commands (type / then Tab) and will
+     cycle through matching completions on subsequent Tab presses.
 
 SHELL SYNTAX
      All non-/ input is processed through the edgeclaw shell parser:
@@ -47,17 +50,19 @@ SHELL SYNTAX
 
      Pipe (|)
            > scan for issues | fix them | write a report
-       Each segment is a separate task.  Each task depends on the previous
-       one.  When a task completes, its output is injected into the next
-       task's LLM context.
-
-     Background (&)
-           > run the full test suite &
-       Runs the task in the background.  The prompt returns immediately.
+       Each segment is a separate task, labeled [pipe].  Each task depends
+       on the previous one.  When a task completes, its output is injected
+       into the next task's LLM context.
 
      Sequential (;)
            > review src/ ; run tests ; summarize > report.md
        Splits on ; (outside quotes) and executes each sub-command in order.
+       Each segment is labeled [seq].  Tasks wait for the previous one to
+       complete, but output is NOT injected between segments (unlike |).
+
+     Background (&)
+           > run the full test suite &
+       Runs the task in the background.  The prompt returns immediately.
 
      Output redirect (>  >>  2>)
            > analyze code > report.md
@@ -68,17 +73,21 @@ SHELL SYNTAX
 
      Input redirect (<)
            > fix bugs < context.txt
-       Reads context.txt and uses its content as the task's user input.
+       Reads context.txt and appends its content to the task's user input
+       (if there is preceding text, it is joined with a newline separator).
+       If the file does not exist or is a directory, the task is NOT created
+       and an error message is shown instead.
 
      Variable expansion ($)
            > $LAST
            > $1
            > $$
-           > $task-abc123
-       $LAST      — output of the last completed task.
-       $N         — output of task with job_id N.
-       $$         — task_id of the current foreground active task.
-       $task-xxx  — output of task with specific task_id.
+       $LAST  — output of the most recently completed task (by completion
+                order, not creation order).
+       $N     — output of task with id N (e.g. $1, $2).
+       $$     — task id of the current foreground active task.
+       Expansion happens after pipe splitting and redirect stripping, so
+       any | or > in the expanded output is treated as literal text.
 
      History expansion (!)
            > !!
@@ -117,8 +126,8 @@ SHELL-LIKE JOB CONTROL
      Shell            EdgeClaw
      ─────────────────────────────────────────
      cmd &            task "input" &  or  task "input" --bg
-     cmd | cmd        a | b | c  (pipe chain)
-     cmd ; cmd        a ; b      (sequential)
+     cmd | cmd        a | b | c  (pipe chain, output injected)
+     cmd ; cmd        a ; b      (sequential, no injection)
      cmd > file       task > out.md  (redirect output)
      cmd >> file      task >> log    (append output)
      cmd 2> file      task 2> err    (stderr redirect)
@@ -130,7 +139,7 @@ SHELL-LIKE JOB CONTROL
      Ctrl+Z           /task suspend <id>
      fg / bg (resume) /task resume <id>
      !!   !n          !!  !3  (history expansion)
-     $?  $!           $LAST  $1  (variable expansion)
+     $LAST  $1  $$    variable expansion
 
 COMMAND REFERENCE
      Session
@@ -143,9 +152,9 @@ COMMAND REFERENCE
      /history      Show the last 20 CLI history entries.
 
      Job control
-     /jobs         List tasks in the current foreground group with [N] IDs.
+     /jobs         List tasks in the current foreground group with IDs.
      /tasks        List all tasks in all groups (alias: /task list).
-     /cancel <id>  Cancel a task by job_id or task_id.
+     /cancel <id>  Cancel a task by id.
      /fg <id>      Bring a task to the foreground.
      /bg [id]      Move a task to the background (no arg: current fg).
 
@@ -200,7 +209,7 @@ CONTEXT SHARING
      inputs and final output are injected into the destination's LLM context
      as a Q&A-style system message:
 
-         [子任务 analyze (id=task-1)]:
+         [子任务 analyze (id=1)]:
          Q: help me analyze src/ for bugs
          A: Found 3 performance issues ...
 
@@ -213,8 +222,11 @@ WORKFLOW EXAMPLES
      @ syntax (new group + task)
            > @code "write a Python HTTP server"
 
-     Pipe chain
-           > scan all files for vulnerabilities | generate a fix plan | create PR
+     Pipe chain (output injected)
+           > scan for vulns | create fix plan | apply patches
+
+     Sequential (no output injection)
+           > review src/ ; run tests ; commit changes
 
      Sequential with redirect
            > review src/ ; run tests ; summarize findings > report.md
@@ -223,9 +235,9 @@ WORKFLOW EXAMPLES
            > analyze the error logs &
            > audit API endpoints &
            > /jobs
-             [1] running  t1  "analyze the error logs"   [bg]
-             [2] running  t2  "audit API endpoints"      [bg]
-           > merge both results -d t1 -d t2 > merged.md
+             [1] running  1  "analyze the error logs"   [bg]
+             [2] running  2  "audit API endpoints"      [bg]
+           > merge both results -d 1 -d 2 > merged.md
 
      Variable + history
            > $LAST
@@ -252,4 +264,4 @@ SEE ALSO
      EdgeClaw source: https://github.com/edgeclaw-chat/edgeclaw
 
 VERSION
-     edgeclaw 1.1.0
+     edgeclaw 1.2.0

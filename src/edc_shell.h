@@ -50,4 +50,8 @@ sds *edc_shell_split_sequential(const char *input, int *count);
 /* 历史展开 (!n, !!)，需要 agent->history 中有缓存的历史记录 */
 sds edc_shell_expand_history(struct edc_agent *agent, const char *input);
 
+/* 展开 $VAR 引用（expand 阶段，deps 已完成后调用）。
+ * out_error 非 NULL 时接收错误消息。成功返回 expanded string，失败返回 NULL。 */
+sds edc_shell_expand_vars(struct edc_agent *agent, const char *input, sds *out_error);
+
 #endif

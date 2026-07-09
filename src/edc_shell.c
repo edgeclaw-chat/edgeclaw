@@ -113,10 +113,9 @@ static void shell_cmd_jobs(struct edc_agent *agent, edc_actor_t *actor,
         struct edc_task *t;
         LL_FOREACH2(fg->members, t, group_next)
         {
-            out = sdscatprintf(out, "  [%s] %-12s %s",
+            out = sdscatprintf(out, "  [%s] %-12s",
                                t->task_id,
-                               edc_task_state_name(t->state),
-                               t->task_id);
+                               edc_task_state_name(t->state));
             if (*t->description)
                 out = sdscatprintf(out, "  \"%s\"", t->description);
             if (edc_session_manager_get_active(agent->session_manager) &&
@@ -503,7 +502,14 @@ void edc_shell_strip_redirects(sds *segment,
     *segment = clean;
 }
 
-static sds shell_expand_vars(struct edc_agent *agent, const char *input);
+static sds shell_expand_vars(struct edc_agent *agent, const char *input, sds *out_error);
+static sds shell_collect_var_refs(struct edc_agent *agent, const char *input,
+                                   sds **out_deps, int *out_dep_count, sds *out_error);
+
+sds edc_shell_expand_vars(struct edc_agent *agent, const char *input, sds *out_error)
+{
+    return shell_expand_vars(agent, input, out_error);
+}
 
 static struct edc_task *shell_exec_pipeline(struct edc_agent *agent, struct edc_actor *actor,
                                 struct edc_channel *channel,
@@ -530,14 +536,37 @@ static struct edc_task *shell_exec_pipeline(struct edc_agent *agent, struct edc_
         edc_shell_strip_redirects(&segments[i], &redirect_stdout, &redirect_append,
                                &redirect_stderr, &input_file);
 
-        /* Phase 3: expand $VAR references (after redirect strip so
-         * expanded output is treated as data, not shell syntax) */
-        sds var_expanded = shell_expand_vars(agent, segments[i]);
+        /* collect $VAR references: validate + collect deps (keep $ text) */
+        sds *var_deps = NULL;
+        int var_dep_count = 0;
+        sds var_err = NULL;
+        sds processed = shell_collect_var_refs(agent, segments[i],
+                                                &var_deps, &var_dep_count, &var_err);
+        if (!processed)
+        {
+            edc_commands_reply(agent, actor, channel, var_err);
+            sdsfree(var_err);
+            sdsfree(segments[i]);
+            if (redirect_stdout) sdsfree(redirect_stdout);
+            if (redirect_stderr) sdsfree(redirect_stderr);
+            if (input_file) sdsfree(input_file);
+            continue;
+        }
         sdsfree(segments[i]);
-        segments[i] = var_expanded;
+        segments[i] = processed;
 
         struct edc_cmd_task_opts opts;
         edc_cmd_parse_task_opts(segments[i], &opts);
+
+        /* merge $VAR deps into opts */
+        for (int j = 0; j < var_dep_count; j++)
+        {
+            opts.dep_count++;
+            opts.dep_ids = realloc(opts.dep_ids, (size_t)opts.dep_count * sizeof(sds));
+            opts.dep_ids[opts.dep_count - 1] = var_deps[j];
+        }
+        free(var_deps);
+        int has_deferred = (var_dep_count > 0) || (strstr(segments[i], "$LAST") != NULL);
 
         if (input_file)
         {
@@ -590,8 +619,10 @@ static struct edc_task *shell_exec_pipeline(struct edc_agent *agent, struct edc_
         prev_task = edc_shell_spawn_task(agent, actor, channel,
                                           &opts, prev_task, group,
                                           is_at ? "@" : "task", &out_group,
-                                          redirect_stdout, redirect_append, redirect_stderr,
-                                          dep);
+                                           redirect_stdout, redirect_append, redirect_stderr,
+                                           dep);
+        if (has_deferred && prev_task)
+            prev_task->has_deferred_vars = 1;
         is_first = false;
         if (!target_group && out_group)
             target_group = out_group;
@@ -723,126 +754,196 @@ sds edc_shell_expand_history(struct edc_agent *agent, const char *input)
     return result;
 }
 
-static sds shell_expand_vars(struct edc_agent *agent, const char *input)
+static sds shell_expand_vars(struct edc_agent *agent, const char *input, sds *out_error);
+
+static sds shell_collect_var_refs(struct edc_agent *agent, const char *input,
+                                   sds **out_deps, int *out_dep_count, sds *out_error)
 {
     sds result = sdsempty();
+    *out_deps = NULL;
+    *out_dep_count = 0;
+    *out_error = NULL;
+
     bool in_dq = false, in_sq = false;
     const char *p = input;
+
+#define VAR_DELIM(c) ((c) == ' ' || (c) == '\t' || (c) == '\0' || \
+                       (c) == '|' || (c) == ';' || (c) == '&' || \
+                       (c) == '>' || (c) == '<')
 
     while (*p)
     {
         if (in_dq)
         {
-            if (*p == '"')
-            {
-                in_dq = false;
-                result = sdscatlen(result, p, 1);
-                p++;
-            }
-            else if (*p == '\\' && *(p + 1))
-            {
-                result = sdscatlen(result, p, 1); p++;
-                result = sdscatlen(result, p, 1); p++;
-            }
-            else if (*p == '$')
-            {
-                result = sdscatlen(result, p, 1);
-                p++;
-            }
-            else
-            {
-                result = sdscatlen(result, p, 1);
-                p++;
-            }
+            if (*p == '"') { in_dq = false; result = sdscatlen(result, p, 1); p++; }
+            else if (*p == '\\' && *(p + 1)) { result = sdscatlen(result, p, 1); p++; result = sdscatlen(result, p, 1); p++; }
+            else if (*p == '$' && *(p + 1)) { p++; goto expand_var; }
+            else { result = sdscatlen(result, p, 1); p++; }
         }
         else if (in_sq)
         {
-            if (*p == '\'')
-                in_sq = false;
+            if (*p == '\'') in_sq = false;
             result = sdscatlen(result, p, 1);
             p++;
         }
-        else
+        else if (*p == '"') { in_dq = true; result = sdscatlen(result, p, 1); p++; }
+        else if (*p == '\'') { in_sq = true; result = sdscatlen(result, p, 1); p++; }
+        else if (*p == '$' && *(p + 1))
         {
-            if (*p == '"')
+            p++; /* skip $ */
+            expand_var:
+            if (*p == '$')
             {
-                in_dq = true;
-                result = sdscatlen(result, p, 1);
                 p++;
+                struct edc_task *active = edc_session_get_active_task(
+                    edc_session_manager_get_active(agent->session_manager));
+                if (active) result = sdscat(result, active->task_id);
             }
-            else if (*p == '\'')
+            else if (strncmp(p, "LAST", 4) == 0 && VAR_DELIM(p[4]))
             {
-                in_sq = true;
-                result = sdscatlen(result, p, 1);
-                p++;
+                result = sdscatlen(result, "$LAST", 5);
+                p += 4;
             }
-            else if (*p == '$' && *(p + 1))
+            else if (*p >= '0' && *p <= '9')
             {
-                p++; /* skip $ */
-                const char *var_start = p;
-
-                if (*p == '$')
-                {
-                    /* $$ → current foreground task_id */
-                    p++;
-                    struct edc_task *active = edc_session_get_active_task(
-                        edc_session_manager_get_active(agent->session_manager));
-                    if (active)
-                        result = sdscat(result, active->task_id);
-                }
-                else if (strncmp(p, "LAST", 4) == 0 &&
-                         (p[4] == ' ' || p[4] == '\t' || p[4] == '\0' || p[4] == '|' || p[4] == ';' || p[4] == '&' || p[4] == '>' || p[4] == '<'))
-                {
-                    /* $LAST → output of last completed task */
-                    p += 4;
-                    struct edc_task *last = shell_find_last_completed(agent);
-                    if (last && last->output)
-                        result = sdscatsds(result, last->output);
-                }
-                else if (*p >= '0' && *p <= '9')
-                {
-                    /* $N → output of task with job_id N */
-                    const char *num_start = p;
-                    while (*p >= '0' && *p <= '9') p++;
-                    char num_buf[32];
-                    size_t num_len = (size_t)(p - num_start);
-                    if (num_len < sizeof(num_buf))
-                    {
-                        memcpy(num_buf, num_start, num_len);
-                        num_buf[num_len] = '\0';
-                        struct edc_task *t = edc_session_find_task(
-                            edc_session_manager_get_active(agent->session_manager), num_buf);
-                        if (t && t->output)
-                            result = sdscatsds(result, t->output);
+                const char *ns = p;
+                while (*p >= '0' && *p <= '9') p++;
+                char buf[32]; size_t nl = (size_t)(p - ns);
+                if (nl < sizeof(buf)) {
+                    memcpy(buf, ns, nl); buf[nl] = '\0';
+                    struct edc_task *t = edc_session_find_task(
+                        edc_session_manager_get_active(agent->session_manager), buf);
+                    if (!t) {
+                        *out_error = sdscatprintf(sdsempty(), "$%s: task not found", buf);
+                        sdsfree(result); return NULL;
                     }
-                }
-                else
-                {
-                    /* $task-xxx → lookup by task_id */
-                    const char *id_start = p;
-                    while (*p && *p != ' ' && *p != '\t' && *p != '|' && *p != ';' &&
-                           *p != '&' && *p != '>' && *p != '<' && *p != '$')
-                        p++;
-                    size_t id_len = (size_t)(p - id_start);
-                    if (id_len > 0)
-                    {
-                        sds id = sdsnewlen(id_start, id_len);
-                        struct edc_task *t = edc_session_find_task(
-                            edc_session_manager_get_active(agent->session_manager), id);
-                        if (t && t->output)
-                            result = sdscatsds(result, t->output);
-                        sdsfree(id);
-                    }
+                    (*out_dep_count)++;
+                    *out_deps = realloc(*out_deps, (size_t)*out_dep_count * sizeof(sds));
+                    (*out_deps)[*out_dep_count - 1] = sdsnew(buf);
+                    result = sdscatprintf(result, "$%s", buf);
                 }
             }
             else
             {
-                result = sdscatlen(result, p, 1);
-                p++;
+                const char *is = p;
+                while (*p && !VAR_DELIM(*p) && *p != '$') p++;
+                size_t il = (size_t)(p - is);
+                if (il > 0) {
+                    sds id = sdsnewlen(is, il);
+                    struct edc_task *t = edc_session_find_task(
+                        edc_session_manager_get_active(agent->session_manager), id);
+                    if (!t) {
+                        *out_error = sdscatprintf(sdsempty(), "$%s: task not found", id);
+                        sdsfree(id); sdsfree(result); return NULL;
+                    }
+                    (*out_dep_count)++;
+                    *out_deps = realloc(*out_deps, (size_t)*out_dep_count * sizeof(sds));
+                    (*out_deps)[*out_dep_count - 1] = id;
+                    result = sdscatprintf(result, "$%s", id);
+                }
             }
+        }
+        else
+        {
+            result = sdscatlen(result, p, 1);
+            p++;
         }
     }
 
+    #undef VAR_DELIM
+    return result;
+}
+
+static sds shell_expand_vars(struct edc_agent *agent, const char *input, sds *out_error)
+{
+    sds result = sdsempty();
+    bool in_dq = false, in_sq = false;
+    const char *p = input;
+
+#define VAR_DELIM(c) ((c) == ' ' || (c) == '\t' || (c) == '\0' || \
+                       (c) == '|' || (c) == ';' || (c) == '&' || \
+                       (c) == '>' || (c) == '<')
+
+    while (*p)
+    {
+        if (in_dq)
+        {
+            if (*p == '"') { in_dq = false; result = sdscatlen(result, p, 1); p++; }
+            else if (*p == '\\' && *(p + 1)) { result = sdscatlen(result, p, 1); p++; result = sdscatlen(result, p, 1); p++; }
+            else if (*p == '$' && *(p + 1)) { p++; goto expand_dq; }
+            else { result = sdscatlen(result, p, 1); p++; }
+        }
+        else if (in_sq)
+        {
+            if (*p == '\'') in_sq = false;
+            result = sdscatlen(result, p, 1);
+            p++;
+        }
+        else if (*p == '"') { in_dq = true; result = sdscatlen(result, p, 1); p++; }
+        else if (*p == '\'') { in_sq = true; result = sdscatlen(result, p, 1); p++; }
+        else if (*p == '$' && *(p + 1))
+        {
+            p++;
+            expand_dq:
+            if (*p == '$')
+            {
+                p++;
+                struct edc_task *active = edc_session_get_active_task(
+                    edc_session_manager_get_active(agent->session_manager));
+                if (active) result = sdscat(result, active->task_id);
+            }
+            else if (strncmp(p, "LAST", 4) == 0 && VAR_DELIM(p[4]))
+            {
+                p += 4;
+                struct edc_task *last = shell_find_last_completed(agent);
+                if (!last || !last->output) {
+                    if (out_error) *out_error = sdscatprintf(sdsempty(), "$LAST: no completed task with output");
+                    sdsfree(result); return NULL;
+                }
+                result = sdscatsds(result, last->output);
+            }
+            else if (*p >= '0' && *p <= '9')
+            {
+                const char *ns = p;
+                while (*p >= '0' && *p <= '9') p++;
+                char buf[32]; size_t nl = (size_t)(p - ns);
+                if (nl < sizeof(buf)) {
+                    memcpy(buf, ns, nl); buf[nl] = '\0';
+                    struct edc_task *t = edc_session_find_task(
+                        edc_session_manager_get_active(agent->session_manager), buf);
+                    if (!t || !t->output) {
+                        if (out_error) *out_error = sdscatprintf(sdsempty(), "$%s: no output", buf);
+                        sdsfree(result); return NULL;
+                    }
+                    result = sdscatsds(result, t->output);
+                }
+            }
+            else
+            {
+                const char *is = p;
+                while (*p && !VAR_DELIM(*p) && *p != '$') p++;
+                size_t il = (size_t)(p - is);
+                if (il > 0) {
+                    sds id = sdsnewlen(is, il);
+                    struct edc_task *t = edc_session_find_task(
+                        edc_session_manager_get_active(agent->session_manager), id);
+                    if (!t || !t->output) {
+                        if (out_error) *out_error = sdscatprintf(sdsempty(), "$%s: no output", id);
+                        sdsfree(id); sdsfree(result); return NULL;
+                    }
+                    result = sdscatsds(result, t->output);
+                    sdsfree(id);
+                }
+            }
+        }
+        else
+        {
+            result = sdscatlen(result, p, 1);
+            p++;
+        }
+    }
+
+    #undef VAR_DELIM
     return result;
 }
 
