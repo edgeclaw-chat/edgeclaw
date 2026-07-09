@@ -6,6 +6,7 @@
 #include "edc_file_utils.h"
 #include "edc_agent.h"
 #include "edc_markdown_render.h"
+#include "edc_completion.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +17,10 @@
 #define CLI_RESET     "\e[0m"
 #define CLI_DIM       "\e[2m"
 #define CLI_HISTORY_MAX 1000
+
+/* ---- completion state (kept static to avoid header changes) ---- */
+static edc_completion_result_t g_comp;
+static bool g_comp_active = false;
 
 static void cli_redraw(edc_channel_actor_state_t *state);
 static void cli_display_output(edc_channel_actor_state_t *state);
@@ -150,6 +155,7 @@ static sds cli_buf_delete(edc_channel_actor_state_t *state, int pos, int count)
     sds new_s = sdsnewlen(state->cli.line_buffer, (size_t)pos);
     new_s = sdscat(new_s, state->cli.line_buffer + pos + count);
     sdsfree(state->cli.line_buffer);
+    state->cli.cursor_pos = pos;
     return new_s;
 }
 
@@ -236,6 +242,7 @@ static void cli_commit_line(edc_actor_t *actor, const char *line)
     if (line && line[0] != '\0')
     {
         cli_history_add(state, line);
+        edc_completion_add_history(line);
         if (g_active_agent) edc_agent_add_history(g_active_agent, line);
     }
 
@@ -316,6 +323,12 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
 
     for (ssize_t i = 0; i < len; i++) {
         unsigned char c = (unsigned char)data[i];
+
+        /* 非 TAB 按键：重置补全状态 */
+        if (c != 9 && g_comp_active) {
+            g_comp_active = false;
+            edc_completion_result_free(&g_comp);
+        }
 
         /* escape sequences */
         if (c == '\x1b' && i + 1 < len) {
@@ -436,7 +449,7 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
             continue;
         }
 
-        /* Tab — completion */
+        /* Tab — completion (new engine) */
         if (c == 9) {
             int len = (int)sdslen(state->cli.line_buffer);
             if (len == 0) continue;
@@ -447,44 +460,74 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
             int wlen = state->cli.cursor_pos - wstart;
             if (wlen == 0) continue;
 
-            sds prefix = sdsnewlen(state->cli.line_buffer + wstart, (size_t)wlen);
+            /* 首次 TAB：收集候选项 */
+            if (!g_comp_active) {
+                edc_completion_result_free(&g_comp);
+                edc_completion_collect(state->cli.line_buffer,
+                                       state->cli.cursor_pos, &g_comp);
+                g_comp_active = true;
 
-            if (prefix[0] == '/')
-            {
-                static const char *cmds[] = {
-                    "/new", "/stop", "/help", "/exit", "/jobs", "/tasks", "/cancel",
-                    "/bg", "/fg", "/whoami", "/model", "/history",
-                    "/task new", "/task fork", "/task list", "/task status",
-                    "/task output", "/task fg", "/task bg", "/task switch",
-                    "/task stop", "/task groups", "/task chain", "/task join",
-                    "/task prompt", "/task suspend", "/task resume",
-                    "/session new", "/session switch", "/session list",
-                    "/session stop", "/session rename", "/session info",
-                    NULL
-                };
-                sds match = NULL;
-                for (const char **c = cmds; *c; c++) {
-                    if (strncmp(*c, prefix, (size_t)wlen) == 0) {
-                        match = sdsnew(*c);
-                        break;
-                    }
+                if (g_comp.count == 0) {
+                    /* 无匹配，重置 */
+                    g_comp_active = false;
+                    continue;
                 }
-                if (match) {
-                    for (size_t ci = (size_t)wlen; ci < sdslen(match); ci++) {
+
+                if (g_comp.count == 1) {
+                    /* 唯一匹配：直接补全 + 空格 */
+                    const char *match = g_comp.items[0].text;
+                    for (size_t ci = (size_t)wlen; ci < strlen(match); ci++) {
                         char tmp[2] = {match[ci], '\0'};
                         state->cli.line_buffer = cli_buf_insert(state, tmp, 1);
-                        state->cli.cursor_pos++;
                     }
-                    if (sdslen(match) > (size_t)wlen) {
-                        state->cli.line_buffer = sdscatlen(state->cli.line_buffer, " ", 1);
-                        state->cli.cursor_pos++;
-                    }
-                    sdsfree(match);
+                    state->cli.line_buffer = sdscatlen(state->cli.line_buffer, " ", 1);
+                    state->cli.cursor_pos++;
+                    edc_completion_result_free(&g_comp);
+                    g_comp_active = false;
+                    cli_redraw(state);
+                    continue;
                 }
+
+                /* 多个候选项：补全公共前缀 */
+                if (g_comp.common_prefix && sdslen(g_comp.common_prefix) > (size_t)wlen) {
+                    size_t cp_len = sdslen(g_comp.common_prefix);
+                    for (size_t ci = (size_t)wlen; ci < cp_len; ci++) {
+                        char tmp[2] = {g_comp.common_prefix[ci], '\0'};
+                        state->cli.line_buffer = cli_buf_insert(state, tmp, 1);
+                    }
+                    cli_redraw(state);
+                    /* 不选第一个，等用户再按 TAB 看列表 */
+                    continue;
+                }
+
+                /* 公共前缀等于 token（各候选差异在后部）：展示候选列表 */
+                fprintf(stdout, "\r\n");
+                for (int ci = 0; ci < g_comp.count; ci++) {
+                    fprintf(stdout, "  %s", g_comp.items[ci].text);
+                    if ((ci + 1) % 4 == 0 || ci == g_comp.count - 1)
+                        fprintf(stdout, "\r\n");
+                    else
+                        fprintf(stdout, "    ");
+                }
+                state->cli.prev_lines = 0;
                 cli_redraw(state);
+                continue;
             }
-            sdsfree(prefix);
-            continue;
+
+            /* 再次 TAB：循环选择候选项 */
+            if (g_comp_active && g_comp.count > 0) {
+                /* 回退当前 token 到 wstart */
+                state->cli.line_buffer = cli_buf_delete(state, wstart,
+                    state->cli.cursor_pos - wstart);
+                state->cli.cursor_pos = wstart;
+
+                /* 选下一个 */
+                g_comp.selected = (g_comp.selected + 1) % g_comp.count;
+                const char *sel = g_comp.items[g_comp.selected].text;
+                state->cli.line_buffer = cli_buf_insert(state, sel, strlen(sel));
+                cli_redraw(state);
+                continue;
+            }
         }
 
         /* printable ASCII + UTF-8 continuation bytes */
@@ -579,6 +622,10 @@ static void edc_channel_cli_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 
         cli_history_load(state);
 
+        /* 将历史记录也喂给补全引擎 */
+        for (int hi = 0; hi < state->cli.history_count; hi++)
+            edc_completion_add_history(state->cli.history[hi]);
+
         fprintf(stdout, "\e[1;32mEdgeClaw CLI ready. Type /help for commands.\e[0m\r\n");
         cli_redraw(state);
         break;
@@ -599,5 +646,24 @@ void edc_channel_cli_init(edc_actor_t *channel_actor)
     state->cli.history_path = edc_path_join(edc_home, ".cli_history", NULL);
     sdsfree(edc_home);
     state->cli.history_pos = -1;
+
+    /* 初始化补全引擎 */
+    edc_completion_init();
+
+    /* 注册所有 slash 命令 */
+    static const char *cmds[] = {
+        "/new", "/stop", "/help", "/exit", "/jobs", "/tasks", "/cancel",
+        "/bg", "/fg", "/whoami", "/model", "/history",
+        "/task new", "/task fork", "/task list", "/task status",
+        "/task output", "/task fg", "/task bg", "/task switch",
+        "/task stop", "/task groups", "/task chain", "/task join",
+        "/task prompt", "/task suspend", "/task resume",
+        "/session new", "/session switch", "/session list",
+        "/session stop", "/session rename", "/session info",
+        NULL
+    };
+    for (const char **c = cmds; *c; c++)
+        edc_completion_add_command(*c);
+
     edc_channel_actor_add(channel_actor, edc_channel_cli, edc_channel_cli_handler);
 }

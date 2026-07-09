@@ -94,10 +94,8 @@ sds *edc_shell_split_pipeline(const char *input, int *count)
 static struct edc_task *shell_find_task_by_id_or_job(struct edc_agent *agent,
                                                       const char *id_or_job)
 {
-    struct edc_task *t = edc_session_find_task(
+    return edc_session_find_task(
         edc_session_manager_get_active(agent->session_manager), id_or_job);
-    if (t) return t;
-    return edc_shell_find_task_by_job_id(agent, id_or_job);
 }
 
 static void shell_cmd_jobs(struct edc_agent *agent, edc_actor_t *actor,
@@ -115,8 +113,8 @@ static void shell_cmd_jobs(struct edc_agent *agent, edc_actor_t *actor,
         struct edc_task *t;
         LL_FOREACH2(fg->members, t, group_next)
         {
-            out = sdscatprintf(out, "  [%u] %-12s %s",
-                               t->session_job_id,
+            out = sdscatprintf(out, "  [%s] %-12s %s",
+                               t->task_id,
                                edc_task_state_name(t->state),
                                t->task_id);
             if (*t->description)
@@ -148,7 +146,7 @@ static void shell_cmd_cancel(struct edc_agent *agent, edc_actor_t *actor,
         return;
     }
     edc_scheduler_send_signal_to_task(agent->scheduler, t->task_id, TASK_SIGTERM);
-    sds reply = sdscatprintf(sdsempty(), "cancelled [%u] %s", t->session_job_id, t->task_id);
+    sds reply = sdscatprintf(sdsempty(), "cancelled %s", t->task_id);
     edc_commands_reply(agent, actor, channel, reply);
     sdsfree(reply);
 }
@@ -260,7 +258,8 @@ struct edc_task *edc_shell_spawn_task(
     struct edc_task_group *target_group,
     const char *reply_prefix,
     struct edc_task_group **out_group,
-    sds redirect_stdout, bool redirect_append, sds redirect_stderr)
+    sds redirect_stdout, bool redirect_append, sds redirect_stderr,
+    edc_task_dep_type prev_dep_type)
 {
     struct edc_task *task = edc_scheduler_create_task(agent->scheduler,
                                                        (opts->desc && sdslen(opts->desc) > 0) ? opts->desc : "New task",
@@ -300,13 +299,13 @@ struct edc_task *edc_shell_spawn_task(
     }
 
     if (prev_task)
-        edc_task_add_dependency(task, prev_task, TASK_DEP_JOIN);
+        edc_task_add_dependency(task, prev_task, prev_dep_type);
 
     sds reply = sdscatprintf(sdsempty(), "[%s] created %s (group %s)%s%s%s%s%s%s",
                              reply_prefix, task->task_id, group->group_id,
                              opts->bg ? " [bg]" : "",
                              opts->dep_count > 0 ? " [chained]" : "",
-                             prev_task ? " [pipe]" : "",
+                              prev_task ? (prev_dep_type == TASK_DEP_SEQUENCE ? " [seq]" : " [pipe]") : "",
                              redirect_stdout ? (redirect_append ? " >> " : " > ") : "",
                              redirect_stdout ? redirect_stdout : "",
                              redirect_stderr ? " 2>" : "");
@@ -506,12 +505,14 @@ void edc_shell_strip_redirects(sds *segment,
 
 static sds shell_expand_vars(struct edc_agent *agent, const char *input);
 
-static void shell_exec_pipeline(struct edc_agent *agent, struct edc_actor *actor,
+static struct edc_task *shell_exec_pipeline(struct edc_agent *agent, struct edc_actor *actor,
                                 struct edc_channel *channel,
-                                sds *segments, int seg_count, bool is_at)
+                                sds *segments, int seg_count, bool is_at,
+                                struct edc_task *initial_prev)
 {
-    struct edc_task *prev_task = NULL;
+    struct edc_task *prev_task = initial_prev;
     struct edc_task_group *target_group = NULL;
+    bool is_first = true;
 
     if (!is_at)
     {
@@ -584,16 +585,20 @@ static void shell_exec_pipeline(struct edc_agent *agent, struct edc_actor *actor
         if (!group && !is_at)
             group = target_group;
 
+        edc_task_dep_type dep = (is_first && initial_prev) ? TASK_DEP_SEQUENCE : TASK_DEP_JOIN;
         struct edc_task_group *out_group = NULL;
         prev_task = edc_shell_spawn_task(agent, actor, channel,
                                           &opts, prev_task, group,
                                           is_at ? "@" : "task", &out_group,
-                                          redirect_stdout, redirect_append, redirect_stderr);
+                                          redirect_stdout, redirect_append, redirect_stderr,
+                                          dep);
+        is_first = false;
         if (!target_group && out_group)
             target_group = out_group;
 
         edc_cmd_task_opts_free(&opts);
     }
+    return prev_task;
 }
 
 sds *edc_shell_split_sequential(const char *input, int *count)
@@ -805,7 +810,8 @@ static sds shell_expand_vars(struct edc_agent *agent, const char *input)
                     {
                         memcpy(num_buf, num_start, num_len);
                         num_buf[num_len] = '\0';
-                        struct edc_task *t = edc_shell_find_task_by_job_id(agent, num_buf);
+                        struct edc_task *t = edc_session_find_task(
+                            edc_session_manager_get_active(agent->session_manager), num_buf);
                         if (t && t->output)
                             result = sdscatsds(result, t->output);
                     }
@@ -861,6 +867,7 @@ bool edc_shell_execute(struct edc_agent *agent, struct edc_actor *actor,
     int seq_count = 0;
     sds *seq_inputs = edc_shell_split_sequential(body, &seq_count);
 
+    struct edc_task *prev_across_seq = NULL;
     for (int si = 0; si < seq_count; si++)
     {
         if (sdslen(seq_inputs[si]) == 0) continue;
@@ -887,7 +894,12 @@ bool edc_shell_execute(struct edc_agent *agent, struct edc_actor *actor,
             }
         }
 
-        shell_exec_pipeline(agent, actor, message->channel, segments, seg_count, is_at);
+        /* execute this ; segment's pipeline.  initial_prev carries the
+         * last task from the previous ; segment, creating a sequential
+         * chain with TASK_DEP_SEQUENCE (wait, no output injection). */
+        prev_across_seq = shell_exec_pipeline(agent, actor, message->channel,
+                                               segments, seg_count, is_at,
+                                               prev_across_seq);
 
         for (int i = 0; i < seg_count; i++) sdsfree(segments[i]);
         free(segments);
@@ -896,23 +908,4 @@ bool edc_shell_execute(struct edc_agent *agent, struct edc_actor *actor,
     for (int i = 0; i < seq_count; i++) sdsfree(seq_inputs[i]);
     free(seq_inputs);
     return true;
-}
-
-struct edc_task *edc_shell_find_task_by_job_id(struct edc_agent *agent,
-                                                const char *job_id)
-{
-    uint32_t target = (uint32_t)strtoul(job_id, NULL, 10);
-    if (target == 0 && strcmp(job_id, "0") != 0) return NULL;
-
-    struct edc_task_group *g;
-    DL_FOREACH(agent->scheduler->groups, g)
-    {
-        struct edc_task *t;
-        LL_FOREACH2(g->members, t, group_next)
-        {
-            if (t->session_job_id == target)
-                return t;
-        }
-    }
-    return NULL;
 }

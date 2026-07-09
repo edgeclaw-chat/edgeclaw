@@ -38,7 +38,6 @@ struct edc_session
 
     sds history_dir;    /* workspace/<session_id> — 按 session 存历史 */
 
-    uint32_t next_job_id;   /* 下一个 job ID (从 1 开始递增) */
     uint32_t next_completion_seq;  /* 完成顺序计数器 (从 1 开始) */
 };
 

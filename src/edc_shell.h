@@ -1,6 +1,7 @@
 #ifndef __EDC_SHELL_H__
 #define __EDC_SHELL_H__
 
+#include "edc_task.h"
 #include "sds.h"
 #include <stdbool.h>
 
@@ -32,11 +33,8 @@ struct edc_task *edc_shell_spawn_task(
     struct edc_task_group *target_group,
     const char *reply_prefix,
     struct edc_task_group **out_group,
-    sds redirect_stdout, bool redirect_append, sds redirect_stderr);
-
-/* 按 job_id 查找 task（遍历 session 中所有 task） */
-struct edc_task *edc_shell_find_task_by_job_id(struct edc_agent *agent,
-                                                const char *job_id);
+    sds redirect_stdout, bool redirect_append, sds redirect_stderr,
+    edc_task_dep_type prev_dep_type);
 
 /* Pipeline 拆分（引号感知的 | 拆分），返回 sds 数组，*count 为段数。
  * 调用方负责 sdsfree 每个元素和 free 数组。 */

@@ -38,8 +38,9 @@ typedef enum {
 /* ── Task 间依赖 ───────────────────────────────────────────── */
 
 typedef enum {
-    TASK_DEP_JOIN,   /* 等待源 task 完成，将源 output 注入自己上下文 */
-    TASK_DEP_PIPE,   /* 流式传输（后续扩展） */
+    TASK_DEP_JOIN,       /* 等待源 task 完成，将源 output 注入自己上下文 */
+    TASK_DEP_PIPE,       /* 流式传输（后续扩展） */
+    TASK_DEP_SEQUENCE,   /* 等待源 task 完成，不注入 output（; 语义） */
 } edc_task_dep_type;
 
 struct edc_task_dep {
@@ -92,7 +93,6 @@ struct edc_task {
     size_t deps_completed;              /* 已完成依赖数 */
     sds output;                         /* 本 task 最终输出 (供 JOIN 注入) */
 
-    uint32_t session_job_id;            /* session 内递增 job 编号 */
     uint32_t completion_seq;            /* 完成顺序 (0=未完成) */
 
     /* ── 输出重定向 ── */

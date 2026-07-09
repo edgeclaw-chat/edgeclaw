@@ -90,7 +90,6 @@ struct edc_session *edc_session_new(struct edc_config *config,
     session->config = config;
     session->messages = cJSON_CreateArray();
     session->history_dir = edc_path_join(config->workspace, session->session_id, NULL);
-    session->next_job_id = 1;
     session->next_completion_seq = 1;
     edc_session_build_messages(session, NULL, true);
     session->save_skip_count = edc_session_get_message_count(session);

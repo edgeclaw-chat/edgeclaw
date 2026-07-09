@@ -73,7 +73,7 @@ edc_actor_t *edc_scheduler_get_actor(struct edc_scheduler *sched)
 char *edc_scheduler_gen_task_id(struct edc_scheduler *sched)
 {
     char buf[64];
-    snprintf(buf, sizeof(buf), "t%lld", (long long)sched->next_task_id++);
+    snprintf(buf, sizeof(buf), "%lld", (long long)sched->next_task_id++);
     return strdup(buf);
 }
 
@@ -90,7 +90,6 @@ struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const ch
 
     struct edc_task *task = edc_task_new(tid, sid, gid, desc, channel);
     task->state = TASK_WAITING_INPUT;
-    task->session_job_id = sched->session ? sched->session->next_job_id++ : 0;
     free(tid);
 
     return task;
