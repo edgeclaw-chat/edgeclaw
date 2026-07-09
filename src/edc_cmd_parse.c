@@ -2,16 +2,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── 参数解析 ──────────────────────────────────────────────── */
+#define DESC_MAX 30
 
 void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
 {
     if (!opts) return;
     memset(opts, 0, sizeof(*opts));
-
     if (!arg) return;
 
-    sds desc = sdsempty();
     sds remaining = sdsnew(arg);
 
     /* detect trailing & (background) */
@@ -22,9 +20,8 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
         sdstrim(remaining, " \t");
     }
 
-    /* extract "input": first double-quoted string, or fallback to unquoted */
-    char *p = remaining;
-    char *q_start = strchr(p, '"');
+    /* extract "input": quoted string, or entire remaining text */
+    char *q_start = strchr(remaining, '"');
     if (q_start)
     {
         char *q_end = strchr(q_start + 1, '"');
@@ -37,102 +34,66 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
             sdsfree(before);
         }
     }
-    else
+
+    if (!opts->input && sdslen(remaining) > 0)
     {
-        /* no quotes: first word = desc, rest = input */
-        char *space = strchr(remaining, ' ');
-        if (space)
-        {
-            opts->input = sdsnew(space + 1);
-            sdstrim(opts->input, " \t");
-            sdssetlen(remaining, space - remaining);
-            sdstrim(remaining, " \t");
-        }
+        /* no quotes: entire remaining text is input */
+        opts->input = sdsdup(remaining);
+        sdsfree(remaining);
+        remaining = NULL;
     }
 
-    if (sdslen(remaining) == 0) { sdsfree(remaining); goto finish; }
-
-    /* extract known flags while building desc from leftovers */
-    sds work = sdsdup(remaining);
-    p = work;
-    char *desc_start = p;
-    while (*p)
+    /* build desc: first DESC_MAX chars of input, truncated with "..." */
+    if (opts->input)
     {
-        if (strncmp(p, "--bg", 4) == 0 && (p[4] == ' ' || p[4] == '\0'))
+        opts->desc = sdsnewlen(opts->input, sdslen(opts->input) < DESC_MAX ? sdslen(opts->input) : DESC_MAX);
+        if (sdslen(opts->input) > DESC_MAX) opts->desc = sdscat(opts->desc, "...");
+    }
+
+    /* parse flags from remaining (only when quoted input was extracted) */
+    if (remaining && sdslen(remaining) > 0)
+    {
+        sds work = sdsdup(remaining);
+        char *p = work;
+        while (*p)
         {
-            opts->bg = true;
-            /* remove from desc area */
-            if (p > desc_start) { sds part = sdsnewlen(desc_start, p - desc_start); desc = sdscatsds(desc, part); sdsfree(part); }
-            p += 4; while (*p == ' ') p++;
+            while (*p == ' ') p++;
             if (*p == '\0') break;
-            desc_start = p;
-            continue;
-        }
-        if (strncmp(p, "-d ", 3) == 0)
-        {
-            if (p > desc_start) { sds part = sdsnewlen(desc_start, p - desc_start); desc = sdscatsds(desc, part); sdsfree(part); }
-            p += 3; while (*p == ' ') p++;
-            char *id_start = p;
-            while (*p && *p != ' ') p++;
-            if (p > id_start)
+
+            if (strncmp(p, "--bg", 4) == 0 && (p[4] == ' ' || p[4] == '\0'))
+                { opts->bg = true; p += 4; continue; }
+            if (strncmp(p, "-d ", 3) == 0)
             {
-                opts->dep_count++;
-                opts->dep_ids = realloc(opts->dep_ids, (size_t)opts->dep_count * sizeof(sds));
-                opts->dep_ids[opts->dep_count - 1] = sdsnewlen(id_start, p - id_start);
+                p += 3; while (*p == ' ') p++;
+                char *start = p;
+                while (*p && *p != ' ') p++;
+                if (p > start)
+                {
+                    opts->dep_count++;
+                    opts->dep_ids = realloc(opts->dep_ids, (size_t)opts->dep_count * sizeof(sds));
+                    opts->dep_ids[opts->dep_count - 1] = sdsnewlen(start, p - start);
+                }
+                continue;
             }
-            while (*p == ' ') p++;
-            if (*p == '\0') break;
-            desc_start = p;
-            continue;
-        }
-        if (strncmp(p, "--group ", 8) == 0)
-        {
-            if (p > desc_start) { sds part = sdsnewlen(desc_start, p - desc_start); desc = sdscatsds(desc, part); sdsfree(part); }
-            p += 8; while (*p == ' ') p++;
-            char *g_start = p;
+            if (strncmp(p, "--group ", 8) == 0)
+                { p += 8; while (*p == ' ') p++;
+                  char *s = p; while (*p && *p != ' ') p++;
+                  if (p > s) opts->group_id = sdsnewlen(s, p - s); continue; }
+            if (strncmp(p, "-g ", 3) == 0)
+                { p += 3; while (*p == ' ') p++;
+                  char *s = p; while (*p && *p != ' ') p++;
+                  if (p > s) { if (opts->group_id) sdsfree(opts->group_id);
+                               opts->group_id = sdsnewlen(s, p - s); } continue; }
+            if (strncmp(p, "--prompt ", 9) == 0)
+                { p += 9; while (*p == ' ') p++;
+                  char *s = p; while (*p && *p != ' ') p++;
+                  if (p > s) opts->prompt_name = sdsnewlen(s, p - s); continue; }
+            /* unrecognized token — skip until space */
             while (*p && *p != ' ') p++;
-            opts->group_id = sdsnewlen(g_start, p - g_start);
-            while (*p == ' ') p++;
-            if (*p == '\0') break;
-            desc_start = p;
-            continue;
         }
-        if (strncmp(p, "-g ", 3) == 0)
-        {
-            if (p > desc_start) { sds part = sdsnewlen(desc_start, p - desc_start); desc = sdscatsds(desc, part); sdsfree(part); }
-            p += 3; while (*p == ' ') p++;
-            char *g_start = p;
-            while (*p && *p != ' ') p++;
-            if (opts->group_id) sdsfree(opts->group_id);
-            opts->group_id = sdsnewlen(g_start, p - g_start);
-            while (*p == ' ') p++;
-            if (*p == '\0') break;
-            desc_start = p;
-            continue;
-        }
-        if (strncmp(p, "--prompt ", 9) == 0)
-        {
-            if (p > desc_start) { sds part = sdsnewlen(desc_start, p - desc_start); desc = sdscatsds(desc, part); sdsfree(part); }
-            p += 9; while (*p == ' ') p++;
-            char *pr_start = p;
-            while (*p && *p != ' ') p++;
-            opts->prompt_name = sdsnewlen(pr_start, p - pr_start);
-            while (*p == ' ') p++;
-            if (*p == '\0') break;
-            desc_start = p;
-            continue;
-        }
-        p++;
+        sdsfree(work);
+        sdsfree(remaining);
     }
-    /* append remaining desc */
-    if (p > desc_start) { sds part = sdsnewlen(desc_start, p - desc_start); desc = sdscatsds(desc, part); sdsfree(part); }
-
-    sdsfree(work);
-    sdsfree(remaining);
-
-finish:
-    sdstrim(desc, " \t");
-    if (sdslen(desc) > 0) opts->desc = desc; else sdsfree(desc);
 }
 
 void edc_cmd_task_opts_free(struct edc_cmd_task_opts *opts)
