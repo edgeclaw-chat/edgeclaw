@@ -105,7 +105,7 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
         "- /task new <desc>   [--bg]\n"
         "- /task fork <parent> <desc>\n"
         "- /task list  ·  /task status [id]  ·  /task output <id>\n"
-        "- /task groups  ·  /task fg <id>  ·  /task bg\n"
+        "- /task groups  ·  /task fg <id>  ·  /task bg [id]\n"
         "- /task switch <id>  ·  /task stop <id>  [--force]\n"
         "- /task suspend <id>  ·  /task resume <id>\n"
         "- /task chain <src> <dst>  ·  /task join <id>\n"
@@ -265,10 +265,35 @@ static void edc_commands_handle_task_fg(struct edc_agent *agent, edc_actor_t *ac
 }
 
 static void edc_commands_handle_task_bg(struct edc_agent *agent, edc_actor_t *actor,
-                                         struct edc_channel *channel)
+                                         struct edc_channel *channel, sds arg)
 {
-    edc_scheduler_set_foreground(agent->scheduler, NULL);
-    edc_commands_reply(agent, actor, channel, "no foreground group");
+    if (arg)
+    {
+        struct edc_task *t = edc_session_find_task(agent->session, arg);
+        if (!t) { edc_commands_reply(agent, actor, channel, "task not found"); return; }
+        struct edc_task_group *g = edc_session_find_group(agent->session, t->group_id);
+        if (!g) { edc_commands_reply(agent, actor, channel, "group not found"); return; }
+        if (agent->scheduler->foreground_group == g)
+        {
+            edc_scheduler_set_foreground(agent->scheduler, NULL);
+            edc_session_set_active_task(agent->session, NULL);
+            sds reply = sdscatprintf(sdsempty(), "background: group %s", g->group_id);
+            edc_commands_reply(agent, actor, channel, reply);
+            sdsfree(reply);
+        }
+        else
+        {
+            sds reply = sdscatprintf(sdsempty(), "group %s is already in background", g->group_id);
+            edc_commands_reply(agent, actor, channel, reply);
+            sdsfree(reply);
+        }
+    }
+    else
+    {
+        edc_scheduler_set_foreground(agent->scheduler, NULL);
+        edc_session_set_active_task(agent->session, NULL);
+        edc_commands_reply(agent, actor, channel, "no foreground group");
+    }
 }
 
 static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *actor,
@@ -608,9 +633,14 @@ static bool edc_commands_handle_task(struct edc_agent *agent, edc_actor_t *actor
         arg = sdsnew(content_trim + 9);
         edc_commands_handle_task_fg(agent, actor, message->channel, arg);
     }
+    else if (strncmp(content_trim, "/task bg ", 9) == 0)
+    {
+        arg = sdsnew(content_trim + 9);
+        edc_commands_handle_task_bg(agent, actor, message->channel, arg);
+    }
     else if (strcmp(content_trim, "/task bg") == 0)
     {
-        edc_commands_handle_task_bg(agent, actor, message->channel);
+        edc_commands_handle_task_bg(agent, actor, message->channel, NULL);
     }
     else if (strcmp(content_trim, "/task groups") == 0)
     {

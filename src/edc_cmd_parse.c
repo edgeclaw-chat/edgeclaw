@@ -21,7 +21,7 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
         sdstrim(remaining, " \t");
     }
 
-    /* extract "input": quoted string, or entire remaining text */
+    /* extract "input": quoted string, or text before first flag */
     char *q_start = strchr(remaining, '"');
     if (q_start)
     {
@@ -38,10 +38,34 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
 
     if (!opts->input && sdslen(remaining) > 0)
     {
-        /* no quotes: entire remaining text is input */
-        opts->input = sdsdup(remaining);
-        sdsfree(remaining);
-        remaining = NULL;
+        /* no quotes: split at first '-' flag token;
+         * left part is input, right part is parsed for flags */
+        char *flag_start = NULL;
+        char *p = remaining;
+        while (*p)
+        {
+            while (*p == ' ') p++;
+            if (*p == '\0') break;
+            if (*p == '-') { flag_start = p; break; }
+            while (*p && *p != ' ') p++;
+        }
+
+        if (!flag_start)
+        {
+            /* no flags at all — everything is input */
+            opts->input = sdsdup(remaining);
+            sdsfree(remaining);
+            remaining = NULL;
+        }
+        else if (flag_start > remaining)
+        {
+            /* text before first flag is input */
+            opts->input = sdsnewlen(remaining, flag_start - remaining);
+            sdstrim(opts->input, " \t");
+            sdsrange(remaining, (int)(flag_start - remaining), -1);
+            sdstrim(remaining, " \t");
+        }
+        /* else: flag at position 0 — no input text, remaining stays for flag parsing */
     }
 
     /* build desc: first DESC_MAX UTF-8 chars of input, truncated with "..." */
@@ -50,7 +74,7 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
         opts->desc = edc_str_utf8_truncate(opts->input, DESC_MAX, true);
     }
 
-    /* parse flags from remaining (only when quoted input was extracted) */
+    /* parse flags from remaining */
     if (remaining && sdslen(remaining) > 0)
     {
         sds work = sdsdup(remaining);
