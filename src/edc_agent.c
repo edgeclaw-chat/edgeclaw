@@ -13,6 +13,7 @@
 #include "edc_sandbox.h"
 #include "edc_secret.h"
 #include "edc_session.h"
+#include "edc_session_manager.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_toolbox_actor.h"
@@ -21,8 +22,13 @@
 #include "log.h"
 #include <edc_commands.h>
 #include <dirent.h>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#define CLI_HISTORY_MAX 1000
+
+struct edc_agent *g_active_agent = NULL;
 
 /* ── 辅助: 获取 agent ──────────────────────────────────────── */
 
@@ -258,8 +264,8 @@ static void edc_agent_cb_trigger_memory(struct edc_scheduler *sched)
 static void edc_agent_cb_save_session(struct edc_scheduler *sched)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
-    if (!agent || !agent->session) return;
-    edc_session_save_history(agent->session);
+    if (!agent || !agent->session_manager) return;
+    edc_session_manager_save_all(agent->session_manager);
 }
 
 void edc_agent_remove_all_turns(struct edc_agent *agent)
@@ -289,6 +295,9 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
     }
 
     struct edc_agent *agent = g_new0(struct edc_agent, 1);
+    g_active_agent = agent;
+    agent->history_capacity = 8;
+    agent->history = malloc((size_t)agent->history_capacity * sizeof(sds));
     agent->config = edc_config_load(edc_home);
 
     edc_secret_lockdown();
@@ -304,10 +313,18 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
     agent->memory_actor = edc_memory_actor_new(agent->config->workspace,
                                                 agent->config->memory_compress_threshold,
                                                 agent->llm_actor);
-    agent->session = edc_session_new(agent->config);
+    agent->session_manager = edc_session_manager_new(agent->config);
+    if (!agent->session_manager)
+    {
+        log_error("failed to create session manager");
+        edc_agent_free(agent);
+        return NULL;
+    }
+
+    struct edc_session *session = edc_session_manager_get_active(agent->session_manager);
 
     /* 创建 scheduler */
-    agent->scheduler = edc_scheduler_new(agent->session, agent->config);
+    agent->scheduler = edc_scheduler_new(session, agent->config);
     agent->scheduler->ctx = agent;
 
     /* 注入回调 */
@@ -340,6 +357,21 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
     return agent;
 }
 
+void edc_agent_add_history(struct edc_agent *agent, const char *line)
+{
+    if (!agent || !line || !*line) return;
+    if (agent->history_count > 0 &&
+        strcmp(agent->history[agent->history_count - 1], line) == 0)
+        return;
+
+    if (agent->history_count >= agent->history_capacity) {
+        agent->history_capacity *= 2;
+        agent->history = realloc(agent->history,
+                                  (size_t)agent->history_capacity * sizeof(sds));
+    }
+    agent->history[agent->history_count++] = sdsnew(line);
+}
+
 void edc_agent_free(struct edc_agent *agent)
 {
     if (!agent) return;
@@ -354,9 +386,12 @@ void edc_agent_free(struct edc_agent *agent)
 
     edc_agent_remove_all_turns(agent);
 
-    if (agent->session) edc_session_free(agent->session);
+    if (agent->session_manager) edc_session_manager_free(agent->session_manager);
     if (agent->config)  edc_config_free(agent->config);
     if (agent->toolbox) edc_toolbox_free(agent->toolbox);
+
+    for (int i = 0; i < agent->history_count; i++) sdsfree(agent->history[i]);
+    free(agent->history);
 
     edc_secret_cleanup();
     free(agent);

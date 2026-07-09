@@ -9,6 +9,7 @@
 #include "edc_turn.h"
 #include "uthash.h"
 #include "utlist_fix.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -89,6 +90,7 @@ struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const ch
 
     struct edc_task *task = edc_task_new(tid, sid, gid, desc, channel);
     task->state = TASK_WAITING_INPUT;
+    task->session_job_id = sched->session ? sched->session->next_job_id++ : 0;
     free(tid);
 
     return task;
@@ -294,6 +296,28 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     }
 }
 
+static void sched_flush_redirects(struct edc_task *task)
+{
+    if (task->redirect_stdout)
+    {
+        FILE *f = fopen(task->redirect_stdout, task->redirect_append ? "a" : "w");
+        if (f)
+        {
+            if (task->output) fputs(task->output, f);
+            fclose(f);
+        }
+    }
+    if (task->redirect_stderr)
+    {
+        FILE *f = fopen(task->redirect_stderr, "w");
+        if (f)
+        {
+            if (task->output) fputs(task->output, f);
+            fclose(f);
+        }
+    }
+}
+
 static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_msg *msg)
 {
     struct edc_task *task = edc_scheduler_find_task(sched, msg->request_id);
@@ -308,6 +332,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         task->current_request_id = NULL;
         edc_task_set_state(task, TASK_ERROR);
         if (r->content) edc_task_set_output(task, sdsnew(r->content));
+        sched_flush_redirects(task);
         if (sched->send_reply) sched->send_reply(sched, task, r->error->message, msg->request_id);
         return;
     }
@@ -350,6 +375,8 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         }
         edc_task_commit_active_turn(task);
         if (r->content) edc_task_set_output(task, sdsnew(r->content));
+        sched_flush_redirects(task);
+        task->completion_seq = sched->session ? sched->session->next_completion_seq++ : 0;
         edc_task_set_state(task, TASK_COMPLETED);
         edc_task_notify_dependents(task);
 

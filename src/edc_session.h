@@ -22,6 +22,9 @@ struct edc_task_group;
 struct edc_session
 {
     char *session_id;
+    char *name;               /* user-friendly display name */
+    sds created_at;           /* ISO 8601 creation timestamp */
+    sds last_active;          /* ISO 8601 last-active timestamp */
 
     /* Phase 4: 新旧双轨 — groups/tasks (新) + messages (旧, Phase 5 移除) */
     struct edc_task_group *groups;      /* 双向链表: 所有 process groups */
@@ -33,14 +36,27 @@ struct edc_session
     int save_skip_count;
     struct edc_timestamp_node *timestamps;
 
-    sds history_dir;    /* workspace/session_id — 按 session 存历史 */
+    sds history_dir;    /* workspace/<session_id> — 按 session 存历史 */
+
+    uint32_t next_job_id;   /* 下一个 job ID (从 1 开始递增) */
+    uint32_t next_completion_seq;  /* 完成顺序计数器 (从 1 开始) */
 };
 
-/* ── 生命周期 (不变) ───────────────────────────────────────── */
+/* ── 生命周期 ──────────────────────────────────────────────── */
 
-extern struct edc_session *edc_session_new(struct edc_config *config);
+/** Create a session with a specific id and display name. */
+extern struct edc_session *edc_session_new(struct edc_config *config,
+                                            const char *session_id,
+                                            const char *name);
 extern void edc_session_reload(struct edc_session *session, bool load_history);
 extern void edc_session_free(struct edc_session *session);
+
+/** Reset session to empty state (clear messages, tasks, groups),
+ *  keeping the same id/name. Does NOT save or load. */
+extern void edc_session_reset(struct edc_session *session);
+
+/** Get the display name (falls back to session_id). */
+extern const char *edc_session_get_name(struct edc_session *session);
 
 /* ── 消息 / 历史 (不变签名) ───────────────────────────────── */
 

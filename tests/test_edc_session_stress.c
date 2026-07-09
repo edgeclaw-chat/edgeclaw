@@ -39,7 +39,7 @@ static void test_lifecycle(void)
 {
     T("edc_session_new has session_id, groups=NULL");
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg);
+    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
     C(s != NULL, "new returns non-NULL");
     C(s->session_id != NULL, "session_id is set");
     C(s->groups == NULL, "groups starts NULL");
@@ -72,7 +72,7 @@ static void test_lifecycle(void)
 static void test_group_mgmt(void)
 {
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg);
+    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
     T("add_group / remove_group basic");
     struct edc_task *l1 = edc_task_new("t-a1", s->session_id, "t-a1", "G1L", NULL);
@@ -111,7 +111,7 @@ static void test_group_mgmt(void)
 static void test_find(void)
 {
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg);
+    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
     T("find_group in 10 groups");
     struct edc_task_group *groups[10];
@@ -149,7 +149,7 @@ static void test_find(void)
 static void test_active_task(void)
 {
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg);
+    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
     T("set/get active_task");
     C(edc_session_get_active_task(s) == NULL, "initially NULL");
@@ -181,7 +181,7 @@ static void test_active_task(void)
 static void test_messages_slice(void)
 {
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg);
+    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
     T("slice from new session (has system prompt)");
     cJSON *ms = edc_session_get_messages_slice(s, 0, 10);
@@ -241,7 +241,7 @@ static void test_messages_slice(void)
 static void test_persistence(void)
 {
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg);
+    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
     T("save_tasks tags messages with task_id/group_id");
     /* Add some messages directly */
@@ -291,7 +291,7 @@ static void test_persistence(void)
 static void test_mixed_scenario(void)
 {
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg);
+    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
     T("scenario: create groups, add tasks, use active_task, then free");
 
@@ -344,7 +344,7 @@ static void test_mixed_scenario(void)
 static void test_stress(void)
 {
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg);
+    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
     T("100 groups, 5 tasks each = 500 tasks");
     struct edc_task_group *first = NULL;
@@ -385,7 +385,7 @@ static void test_stress(void)
 static void test_backward_compat(void)
 {
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg);
+    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
     T("old API: get_messages returns cJSON*");
     cJSON *msgs = edc_session_get_messages(s);
@@ -423,7 +423,7 @@ static void test_active_task_lifetime(void)
 {
     T("group_free also frees tasks that active_task pointed to");
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg);
+    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
     struct edc_task *t = edc_task_new("at-life", s->session_id, "at-life", "test", NULL);
     struct edc_task_group *g = edc_task_group_new(t);
@@ -445,7 +445,7 @@ static void test_orphan_cleanup(void)
 {
     T("session_free cleans orphaned groups");
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg);
+    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
     struct edc_task *l = edc_task_new("orph-l", s->session_id, "orph-l", "L", NULL);
     struct edc_task_group *g = edc_task_group_new(l);

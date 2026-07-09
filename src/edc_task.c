@@ -184,6 +184,9 @@ void edc_task_free(struct edc_task *task)
     if (task->prompt_name)  sdsfree(task->prompt_name);
     if (task->output)       sdsfree(task->output);
 
+    if (task->redirect_stdout) sdsfree(task->redirect_stdout);
+    if (task->redirect_stderr) sdsfree(task->redirect_stderr);
+
     if (task->todolist)     cJSON_Delete(task->todolist);
 
     free(task);

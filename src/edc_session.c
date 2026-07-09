@@ -6,6 +6,7 @@
 #include "edc_context.h"
 #include "edc_file_utils.h"
 #include "edc_history.h"
+#include "edc_datetime_utils.h"
 #include "edc_turn.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -77,13 +78,20 @@ static void edc_session_build_messages(struct edc_session *session, const char *
     }
 }
 
-struct edc_session *edc_session_new(struct edc_config *config)
+struct edc_session *edc_session_new(struct edc_config *config,
+                                    const char *session_id,
+                                    const char *name)
 {
     struct edc_session *session = g_new0(struct edc_session, 1);
-    session->session_id = strdup("sess-1");
+    session->session_id = strdup(session_id ? session_id : "sess-1");
+    session->name = sdsnew(name && strlen(name) > 0 ? name : session->session_id);
+    session->created_at = edc_datetime_timestamp();
+    session->last_active = edc_datetime_timestamp();
     session->config = config;
     session->messages = cJSON_CreateArray();
     session->history_dir = edc_path_join(config->workspace, session->session_id, NULL);
+    session->next_job_id = 1;
+    session->next_completion_seq = 1;
     edc_session_build_messages(session, NULL, true);
     session->save_skip_count = edc_session_get_message_count(session);
     return session;
@@ -124,6 +132,9 @@ void edc_session_free(struct edc_session *session)
     /* groups freed by edc_scheduler_free (shared list) */
 
     free(session->session_id);
+    sdsfree(session->name);
+    sdsfree(session->created_at);
+    sdsfree(session->last_active);
     sdsfree(session->history_dir);
     free(session);
 }
@@ -284,5 +295,41 @@ void edc_session_reload_tasks(struct edc_session *session)
     /* 简化为: 扫描 messages, 收集唯一 task_id */
     /* 完整实现留 Phase 5 在 edc_agent 中处理 */
     (void)session;
+}
+
+/* ── Multi-session support ─────────────────────────────────── */
+
+void edc_session_reset(struct edc_session *session)
+{
+    if (!session) return;
+
+    /* Clear messages */
+    while (cJSON_GetArraySize(session->messages) > 0)
+        cJSON_DeleteItemFromArray(session->messages, 0);
+
+    /* Clear timestamps */
+    struct edc_timestamp_node *n, *tmp;
+    DL_FOREACH_SAFE(session->timestamps, n, tmp)
+    {
+        DL_DELETE(session->timestamps, n);
+        sdsfree(n->ts);
+        free(n);
+    }
+    session->timestamps = NULL;
+
+    /* Reset save skip count */
+    session->save_skip_count = 0;
+
+    /* Clear active task */
+    session->active_task = NULL;
+
+    /* groups are owned by scheduler — just clear the list */
+    session->groups = NULL;
+}
+
+const char *edc_session_get_name(struct edc_session *session)
+{
+    if (!session) return NULL;
+    return session->name ? session->name : session->session_id;
 }
 

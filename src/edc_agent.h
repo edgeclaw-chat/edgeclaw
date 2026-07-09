@@ -4,6 +4,7 @@
 #include "edc_actor.h"
 #include "edc_config.h"
 #include "edc_session.h"
+#include "edc_session_manager.h"
 #include "edc_scheduler.h"
 #include "edc_toolbox.h"
 #include <cJSON.h>
@@ -12,7 +13,7 @@
 struct edc_agent
 {
     struct edc_config *config;
-    struct edc_session *session;
+    struct edc_session_manager *session_manager;
     struct edc_toolbox *toolbox;
     struct edc_scheduler *scheduler;
 
@@ -22,7 +23,16 @@ struct edc_agent
     edc_actor_t *toolbox_actor;
 
     edc_actor_runner_t *runner;
+
+    /* CLI history cache (for !n / !! expansion) */
+    sds *history;
+    int history_count;
+    int history_capacity;
 };
+
+extern struct edc_agent *g_active_agent;
+
+extern void edc_agent_add_history(struct edc_agent *agent, const char *line);
 
 extern char *edc_agent_run_turn(struct edc_agent *agent, const char *input);
 extern void edc_agent_run_loop(struct edc_agent *agent);

@@ -92,6 +92,14 @@ struct edc_task {
     size_t deps_completed;              /* 已完成依赖数 */
     sds output;                         /* 本 task 最终输出 (供 JOIN 注入) */
 
+    uint32_t session_job_id;            /* session 内递增 job 编号 */
+    uint32_t completion_seq;            /* 完成顺序 (0=未完成) */
+
+    /* ── 输出重定向 ── */
+    sds redirect_stdout;            /* > / >> file */
+    sds redirect_stderr;            /* 2> file */
+    bool redirect_append;           /* true = >>, false = > */
+
     /* ── 链表 ── */
     struct edc_task *group_next;    /* group 内下一成员 */
     struct edc_task *prev, *next;   /* session 全局链表 */

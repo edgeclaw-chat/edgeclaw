@@ -82,16 +82,17 @@ static void test_scheduler_task_mgmt(void)
 
     CHECK(t1 != NULL, "task 1 created");
     CHECK(t2 != NULL, "task 2 created");
-    CHECK(strcmp(t1->task_id, "task-1") == 0, "task 1 id = task-1");
-    CHECK(strcmp(t2->task_id, "task-2") == 0, "task 2 id = task-2");
+    CHECK(t1->task_id != NULL, "task 1 id non-NULL");
+    CHECK(t2->task_id != NULL, "task 2 id non-NULL");
+    CHECK(strcmp(t1->task_id, t2->task_id) != 0, "task IDs are unique");
     CHECK(t1->state == TASK_WAITING_INPUT, "task starts WAITING_INPUT");
 
     TEST("find_task_by_id cross-group");
     struct edc_task_group *g1 = edc_scheduler_create_group(sched, t1);
     edc_task_group_add_task(g1, t2);
 
-    CHECK(edc_scheduler_find_task_by_id(sched, "task-1") == t1, "find task-1");
-    CHECK(edc_scheduler_find_task_by_id(sched, "task-2") == t2, "find task-2");
+    CHECK(edc_scheduler_find_task_by_id(sched, t1->task_id) == t1, "find task-1 by ID");
+    CHECK(edc_scheduler_find_task_by_id(sched, t2->task_id) == t2, "find task-2 by ID");
     CHECK(edc_scheduler_find_task_by_id(sched, "nonexistent") == NULL, "find nonexistent → NULL");
 
     TEST("find_task_by_id NULL safety");
@@ -176,7 +177,7 @@ static void test_scheduler_signals(void)
 
     CHECK(t->state == TASK_WAITING_INPUT, "task at WAITING_INPUT");
 
-    edc_scheduler_send_signal_to_task(sched, "task-1", TASK_SIGTERM);
+    edc_scheduler_send_signal_to_task(sched, t->task_id, TASK_SIGTERM);
     CHECK(t->state == TASK_CANCELLED, "task cancelled by SIGTERM");
 
     TEST("send_signal_to_task nonexistent");

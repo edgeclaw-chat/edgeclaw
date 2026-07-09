@@ -210,9 +210,13 @@ void edc_channel_actor_free(edc_actor_t *actor)
         for (int i = 0; i < state->cli.history_count; i++)
             sdsfree(state->cli.history[i]);
         free(state->cli.history);
-        if (!state->cli.tty_stopped) {
-            uv_read_stop((uv_stream_t *)&state->cli.stdin_tty);
-            uv_close((uv_handle_t *)&state->cli.stdin_tty, NULL);
+        if (!state->cli.tty_stopped)
+        {
+            if (!uv_is_closing((uv_handle_t *)&state->cli.stdin_tty))
+            {
+                uv_read_stop((uv_stream_t *)&state->cli.stdin_tty);
+                uv_close((uv_handle_t *)&state->cli.stdin_tty, NULL);
+            }
         }
         edc_terminal_restore(STDIN_FILENO, &state->cli.orig_term);
         break;

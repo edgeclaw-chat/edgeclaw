@@ -4,6 +4,7 @@
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
+#include "edc_agent.h"
 #include "edc_markdown_render.h"
 #include <signal.h>
 #include <stdio.h>
@@ -233,7 +234,10 @@ static void cli_commit_line(edc_actor_t *actor, const char *line)
     edc_channel_actor_state_t *state = actor->state;
 
     if (line && line[0] != '\0')
+    {
         cli_history_add(state, line);
+        if (g_active_agent) edc_agent_add_history(g_active_agent, line);
+    }
 
     fprintf(stdout, "\r\n");
     fflush(stdout);
@@ -429,6 +433,57 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
                 state->cli.cursor_pos = pos;
                 cli_redraw(state);
             }
+            continue;
+        }
+
+        /* Tab — completion */
+        if (c == 9) {
+            int len = (int)sdslen(state->cli.line_buffer);
+            if (len == 0) continue;
+
+            int wstart = state->cli.cursor_pos;
+            while (wstart > 0 && state->cli.line_buffer[wstart - 1] != ' ')
+                wstart--;
+            int wlen = state->cli.cursor_pos - wstart;
+            if (wlen == 0) continue;
+
+            sds prefix = sdsnewlen(state->cli.line_buffer + wstart, (size_t)wlen);
+
+            if (prefix[0] == '/')
+            {
+                static const char *cmds[] = {
+                    "/new", "/stop", "/help", "/exit", "/jobs", "/tasks", "/cancel",
+                    "/bg", "/fg", "/whoami", "/model", "/history",
+                    "/task new", "/task fork", "/task list", "/task status",
+                    "/task output", "/task fg", "/task bg", "/task switch",
+                    "/task stop", "/task groups", "/task chain", "/task join",
+                    "/task prompt", "/task suspend", "/task resume",
+                    "/session new", "/session switch", "/session list",
+                    "/session stop", "/session rename", "/session info",
+                    NULL
+                };
+                sds match = NULL;
+                for (const char **c = cmds; *c; c++) {
+                    if (strncmp(*c, prefix, (size_t)wlen) == 0) {
+                        match = sdsnew(*c);
+                        break;
+                    }
+                }
+                if (match) {
+                    for (size_t ci = (size_t)wlen; ci < sdslen(match); ci++) {
+                        char tmp[2] = {match[ci], '\0'};
+                        state->cli.line_buffer = cli_buf_insert(state, tmp, 1);
+                        state->cli.cursor_pos++;
+                    }
+                    if (sdslen(match) > (size_t)wlen) {
+                        state->cli.line_buffer = sdscatlen(state->cli.line_buffer, " ", 1);
+                        state->cli.cursor_pos++;
+                    }
+                    sdsfree(match);
+                }
+                cli_redraw(state);
+            }
+            sdsfree(prefix);
             continue;
         }
 

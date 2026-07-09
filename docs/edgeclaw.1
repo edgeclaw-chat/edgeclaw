@@ -1,40 +1,98 @@
 EDGECLAW(1)                General Commands Manual                EDGECLAW(1)
 
 NAME
-     edgeclaw — AI-powered personal assistant agent
+     edgeclaw — AI-powered personal assistant agent with shell-like syntax
 
 SYNOPSIS
-     edgeclaw [--setup] [--sandbox] [--help] [--version]
+     edgeclaw [--setup] [--sandbox] [-c CMD] [--help] [--version] [SCRIPT]
 
 DESCRIPTION
-     EdgeClaw is a command-line AI assistant offering shell-like task manage-
-     ment.  It supports multi-turn conversations, tool calling, and Unix-
-     inspired process control for orchestrating multiple parallel agent tasks.
+     EdgeClaw is a command-line AI assistant offering bash-inspired task man-
+     agement.  It supports multi-turn conversations, tool calling, pipeline
+     chaining, I/O redirection, variable expansion, and Unix-style job con-
+     trol for orchestrating multiple parallel agent tasks.
 
 OPTIONS
-     -s, --setup    Run initial setup wizard and exit.
-     -S, --sandbox  Enable filesystem sandbox for tool execution.
-     -h, --help     Display help and exit.
-     -V, --version  Output version information and exit.
+     -s, --setup        Run initial setup wizard and exit.
+     -S, --sandbox      Enable filesystem sandbox for tool execution.
+     -c, --command CMD  Execute a single command and exit (non-interactive).
+     -h, --help         Display help and exit.
+     -V, --version      Output version information and exit.
+
+     If a file path is given as the final argument and it is not an option,
+     edgeclaw executes each non-empty, non-comment line as a command
+     (shell script mode), then exits.
 
 GETTING STARTED
            $ edgeclaw
-           > hello
-           Welcome! How can I help?
+           EdgeClaw CLI ready.  Type /help for commands.
+           > explain this code
+           [task] created t1 (group t1)
+           ...
 
-     Type and press Enter.  Conversations are saved per session under
-     workspace/<session_id>/.
+     Type and press Enter.  All non-/ input creates a task in the current
+     foreground group and sends it to the LLM.  Conversations are saved per
+     session under workspace/<session_id>/.
 
-QUICK TASK SYNTAX (@)
-     Use @ to create a task with input in one line:
+SHELL SYNTAX
+     All non-/ input is processed through the edgeclaw shell parser:
 
-           @analyze "find performance bugs in src/"
+     Implicit task creation
+           > analyze src/ for bugs
+       Creates a task in the current foreground group with the text as input.
 
-     Options after the quoted input:
+     @ syntax (new group)
+           > @review the latest commits
+       Same as above but creates a new group for the task.
 
-           @analyze "find bugs" --bg          background
-           @summary "please merge" -d task-1   wait for task-1 first
-           @review "check code" -d t1 -d t2   wait for multiple tasks
+     Pipe (|)
+           > scan for issues | fix them | write a report
+       Each segment is a separate task.  Each task depends on the previous
+       one.  When a task completes, its output is injected into the next
+       task's LLM context.
+
+     Background (&)
+           > run the full test suite &
+       Runs the task in the background.  The prompt returns immediately.
+
+     Sequential (;)
+           > review src/ ; run tests ; summarize > report.md
+       Splits on ; (outside quotes) and executes each sub-command in order.
+
+     Output redirect (>  >>  2>)
+           > analyze code > report.md
+           > append log >> all.log
+           > build 2> errors.log
+       After the task completes, its output is written to the specified file.
+       >> appends.  2> writes stderr.  Quoted > is not interpreted.
+
+     Input redirect (<)
+           > fix bugs < context.txt
+       Reads context.txt and uses its content as the task's user input.
+
+     Variable expansion ($)
+           > $LAST
+           > $1
+           > $$
+           > $task-abc123
+       $LAST      — output of the last completed task.
+       $N         — output of task with job_id N.
+       $$         — task_id of the current foreground active task.
+       $task-xxx  — output of task with specific task_id.
+
+     History expansion (!)
+           > !!
+           > !3
+       !!  — repeat the last command.
+       !n  — repeat the nth command from history (see /history).
+
+     Options on any shell command
+           > "input text" --bg -d task1 --group dev --prompt reviewer
+       Options must appear after the input or be the only content:
+       --bg              Run in background.
+       -d <id>           Wait for this task before executing.
+       --group <id>      Create in this group (-g is a shortcut).
+       --prompt <name>   Use this subagent prompt template.
 
 TASK MODEL
      Three-layer Unix-like process model:
@@ -43,7 +101,7 @@ TASK MODEL
                 Like a Unix thread (shared address space).
 
      Group    — An isolated container.  Only active task outputs.
-                Cross-group uses /task chain.  Like a Unix process.
+                Cross-group uses | pipe or /task chain.  Like a Unix process.
 
      Session  — Per-session history storage.  Like a Unix login session.
 
@@ -58,16 +116,21 @@ TASK STATES
 SHELL-LIKE JOB CONTROL
      Shell            EdgeClaw
      ─────────────────────────────────────────
-     cmd &            @task "input" --bg
-     jobs             /task list
-     fg %1            /task fg <task_id>
-     bg %1            /task bg
-     kill %1          /task stop <task_id>
-     Ctrl+Z           /task suspend <task_id>
-     fg / bg (resume) /task resume <task_id>
-     cmd1 | cmd2      /task chain <src> <dst>
-     pthread_join()   /task join <task_id>
-     fork()           /task fork <parent> <desc>
+     cmd &            task "input" &  or  task "input" --bg
+     cmd | cmd        a | b | c  (pipe chain)
+     cmd ; cmd        a ; b      (sequential)
+     cmd > file       task > out.md  (redirect output)
+     cmd >> file      task >> log    (append output)
+     cmd 2> file      task 2> err    (stderr redirect)
+     cmd < file       task < in.txt  (input from file)
+     jobs             /jobs  (current group only)
+     fg %n            /fg <id>
+     bg %n            /bg [id]
+     kill %n          /cancel <id>
+     Ctrl+Z           /task suspend <id>
+     fg / bg (resume) /task resume <id>
+     !!   !n          !!  !3  (history expansion)
+     $?  $!           $LAST  $1  (variable expansion)
 
 COMMAND REFERENCE
      Session
@@ -75,6 +138,16 @@ COMMAND REFERENCE
      /stop         Cancel all active tasks in foreground group.
      /help         Show help message.
      /exit         Exit edgeclaw.
+     /whoami       Show current session, model, and group info.
+     /model [name] Show or set the current LLM model name.
+     /history      Show the last 20 CLI history entries.
+
+     Job control
+     /jobs         List tasks in the current foreground group with [N] IDs.
+     /tasks        List all tasks in all groups (alias: /task list).
+     /cancel <id>  Cancel a task by job_id or task_id.
+     /fg <id>      Bring a task to the foreground.
+     /bg [id]      Move a task to the background (no arg: current fg).
 
      Task creation
      /task new <desc>                  Create new group + task (foreground).
@@ -113,7 +186,7 @@ COMMAND REFERENCE
      /task chain <src> <dst>  dst waits for src.  When src completes,
                                its user inputs and final output are
                                injected into dst's LLM context.
-                               Like: src | dst
+                               Shortcut: src | dst (shell syntax).
 
 OUTPUT
      Only the session's active task outputs to the terminal.  Other tasks
@@ -123,8 +196,8 @@ OUTPUT
 CONTEXT SHARING
      Within a group: all tasks share the full conversation history.
 
-     Cross-group (/task chain or /task join): source task's user inputs
-     and final output are injected into the destination's LLM context
+     Cross-group (| pipe or /task chain or /task join): source task's user
+     inputs and final output are injected into the destination's LLM context
      as a Q&A-style system message:
 
          [子任务 analyze (id=task-1)]:
@@ -132,37 +205,42 @@ CONTEXT SHARING
          A: Found 3 performance issues ...
 
 WORKFLOW EXAMPLES
-     Simple conversation with @ notation
+     Simple conversation
            $ edgeclaw
-           > hello
+           > help me understand this code
            Welcome! How can I help?
+
+     @ syntax (new group + task)
            > @code "write a Python HTTP server"
 
+     Pipe chain
+           > scan all files for vulnerabilities | generate a fix plan | create PR
+
+     Sequential with redirect
+           > review src/ ; run tests ; summarize findings > report.md
+
      Background + pipeline
-           > @logs "analyze error logs" --bg
-           > @api "audit API endpoints" --bg
-           > @summary "merge results" -d task-1 -d task-2
+           > analyze the error logs &
+           > audit API endpoints &
+           > /jobs
+             [1] running  t1  "analyze the error logs"   [bg]
+             [2] running  t2  "audit API endpoints"      [bg]
+           > merge both results -d t1 -d t2 > merged.md
 
-     Cross-group chain
-           > /task new "summary"
-           > /task chain task-1 task-0
-           > /task chain task-2 task-0
-           ... task-1, task-2 complete ...
-           > /task switch task-0
-           > please summarize both results
-           → LLM sees task-1 and task-2 Q&A injected
+     Variable + history
+           > $LAST
+           > !3
 
-     Join and reclaim
-           > /task join task-1
-           [task-1 output]: ... → injected into task-3 → task-1 reaped
+     Single command (non-interactive)
+           $ edgeclaw -c "check src/main.c for bugs"
 
-     Suspend and resume
-           > /task suspend task-3
-           > /task resume task-3
+     Script file
+           $ edgeclaw review.ecs
 
 FILES
      ~/.edgeclaw/                        EdgeClaw home directory.
      ~/.edgeclaw/config.json             Configuration (API key, model).
+     ~/.edgeclaw/.cli_history            CLI command history.
      ~/.edgeclaw/workspace/              Workspace root.
      ~/.edgeclaw/workspace/<sid>/        Per-session directory.
      ~/.edgeclaw/workspace/<sid>/history.jsonl  Session history.
@@ -174,4 +252,4 @@ SEE ALSO
      EdgeClaw source: https://github.com/edgeclaw-chat/edgeclaw
 
 VERSION
-     edgeclaw 1.0.0
+     edgeclaw 1.1.0
