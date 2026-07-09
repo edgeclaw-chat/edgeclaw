@@ -36,6 +36,7 @@ sds *edc_shell_split_pipeline(const char *input, int *count)
         {
             if (*p == '"')
             {
+                cur = sdscatlen(cur, p, 1);
                 in_dq = false;
             }
             else if (*p == '\\' && *(p + 1))
@@ -52,6 +53,7 @@ sds *edc_shell_split_pipeline(const char *input, int *count)
         {
             if (*p == '\'')
             {
+                cur = sdscatlen(cur, p, 1);
                 in_sq = false;
             }
             else
@@ -71,10 +73,12 @@ sds *edc_shell_split_pipeline(const char *input, int *count)
             else if (*p == '"')
             {
                 in_dq = true;
+                cur = sdscatlen(cur, p, 1);
             }
             else if (*p == '\'')
             {
                 in_sq = true;
+                cur = sdscatlen(cur, p, 1);
             }
             else
             {
@@ -398,20 +402,32 @@ void edc_shell_strip_redirects(sds *segment,
         if (in_dq)
         {
             if (*p == '"')
+            {
+                clean = sdscatlen(clean, p, 1);
                 in_dq = false;
+            }
             else if (*p == '\\' && *(p + 1))
             {
                 clean = sdscatlen(clean, p, 1); p++;
+                clean = sdscatlen(clean, p, 1);
             }
-            clean = sdscatlen(clean, p, 1);
+            else
+            {
+                clean = sdscatlen(clean, p, 1);
+            }
             p++;
         }
         else if (in_sq)
         {
             if (*p == '\'')
-                in_sq = false;
-            else
+            {
                 clean = sdscatlen(clean, p, 1);
+                in_sq = false;
+            }
+            else
+            {
+                clean = sdscatlen(clean, p, 1);
+            }
             p++;
         }
         else

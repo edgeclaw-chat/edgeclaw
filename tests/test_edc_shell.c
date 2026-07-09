@@ -70,7 +70,7 @@ static void test_split_quoted_pipe_dq(void)
     int n;
     sds *s = edc_shell_split_pipeline("\"a | b\" | c", &n);
     CHECK(n == 2, "count = 2");
-    check_segment(s, 0, "a | b", "\"a | b\" → a | b");
+    check_segment(s, 0, "\"a | b\"", "\"a | b\" preserved");
     check_segment(s, 1, "c", "segment[1]");
     free_segments(s, n);
 }
@@ -81,7 +81,7 @@ static void test_split_quoted_pipe_sq(void)
     int n;
     sds *s = edc_shell_split_pipeline("'a | b' | c", &n);
     CHECK(n == 2, "count = 2");
-    check_segment(s, 0, "a | b", "'a | b' → a | b");
+    check_segment(s, 0, "'a | b'", "'a | b' preserved");
     check_segment(s, 1, "c", "segment[1]");
     free_segments(s, n);
 }
@@ -92,7 +92,7 @@ static void test_split_dq_escape(void)
     int n;
     sds *s = edc_shell_split_pipeline("\"he said \\\"hi\\\"\" | bye", &n);
     CHECK(n == 2, "count = 2");
-    check_segment(s, 0, "he said \"hi\"", "escaped quotes");
+    check_segment(s, 0, "\"he said \"hi\"\"", "escaped quotes");
     check_segment(s, 1, "bye", "segment[1]");
     free_segments(s, n);
 }
@@ -103,7 +103,7 @@ static void test_split_dq_backslash(void)
     int n;
     sds *s = edc_shell_split_pipeline("\"path\\\\to\\\\file\" | next", &n);
     CHECK(n == 2, "count = 2");
-    check_segment(s, 0, "path\\to\\file", "backslashes preserved");
+    check_segment(s, 0, "\"path\\to\\file\"", "backslashes preserved");
     check_segment(s, 1, "next", "segment[1]");
     free_segments(s, n);
 }
@@ -114,8 +114,8 @@ static void test_split_mixed_quotes(void)
     int n;
     sds *s = edc_shell_split_pipeline("\"hello\" | 'world'", &n);
     CHECK(n == 2, "count = 2");
-    check_segment(s, 0, "hello", "\"hello\"");
-    check_segment(s, 1, "world", "'world'");
+    check_segment(s, 0, "\"hello\"", "\"hello\"");
+    check_segment(s, 1, "'world'", "'world'");
     free_segments(s, n);
 }
 
@@ -225,7 +225,7 @@ static void test_split_sq_backslash_literal(void)
      * then unquoted | c */
     sds *s = edc_shell_split_pipeline("'a\\b' | c", &n);
     CHECK(n == 2, "count = 2");
-    check_segment(s, 0, "a\\b", "literal backslash preserved");
+    check_segment(s, 0, "'a\\b'", "literal backslash preserved");
     check_segment(s, 1, "c", "segment[1]");
     free_segments(s, n);
 }
@@ -237,7 +237,7 @@ static void test_split_unterminated_dquote(void)
     sds *s = edc_shell_split_pipeline("\"hello world", &n);
     CHECK(n == 1, "count = 1");
     /* unterminated quote: everything after " goes into cur until EOF */
-    check_segment(s, 0, "hello world", "content after \"");
+    check_segment(s, 0, "\"hello world", "content after \"");
     free_segments(s, n);
 }
 
