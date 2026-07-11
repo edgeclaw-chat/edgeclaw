@@ -189,8 +189,6 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
 
     sdsfree(memory_file);
 
-    state->compress_index = compress_index + cJSON_GetArraySize(history);
-
     user_message = sdscat(user_message, "## Current Long-term Memory\n");
     if (memory)
     {
@@ -266,6 +264,8 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
     req->history = messages;
     req->tools = state->compress_tools;
     state->compress_msg_lst = messages;
+
+    state->compress_index = compress_index + cJSON_GetArraySize(history);
 
     edc_actor_msg_t *llm_msg = edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST, actor, msg->request_id, req,
                                                (edc_actor_data_free_fn)edc_llm_actor_req_free);

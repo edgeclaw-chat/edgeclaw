@@ -178,16 +178,30 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor,
     {
         struct edc_session *sess = edc_session_manager_get_active(agent->session_manager);
         struct edc_task_group *fg = agent->scheduler->foreground_group;
+        struct edc_task *active = sess ? sess->active_task : NULL;
         sds out = sdscatprintf(sdsempty(),
             "session: %s\n"
-            "model: %s\n"
-            "foreground group: %s (%d tasks)\n"
-            "active task: %s",
+            "model: %s\n",
             sess ? edc_session_get_name(sess) : "none",
-            agent->config->llm_api_conf.model ? agent->config->llm_api_conf.model : "default",
-            fg ? fg->group_id : "none",
-            fg ? fg->member_count : 0,
-            (sess && sess->active_task) ? sess->active_task->task_id : "none");
+            agent->config->llm_api_conf.model ? agent->config->llm_api_conf.model : "default");
+        if (fg)
+        {
+            struct edc_task *leader = fg->leader;
+            out = sdscatprintf(out,
+                "[fg] group: %s (%d tasks)\n"
+                "      leader: %s  %s\n"
+                "      active: %s",
+                fg->group_id, fg->member_count,
+                leader ? leader->task_id : "?",
+                (leader && *leader->description) ? leader->description : "",
+                active ? active->task_id : "none");
+            if (active && *active->description)
+                out = sdscatprintf(out, "  %s", active->description);
+        }
+        else
+        {
+            out = sdscat(out, "foreground group: none");
+        }
         edc_commands_reply(agent, actor, message->channel, out);
         sdsfree(out);
         sdsfree(content);

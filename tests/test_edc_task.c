@@ -276,6 +276,19 @@ static void test_dependencies(void)
     ok = edc_task_add_dependency(target, target, TASK_DEP_JOIN);
     CHECK(!ok, "self-dependency returns false");
 
+    TEST("transitive cycle rejected");
+    {
+        struct edc_task *a = edc_task_new("ta-cyc", "sess-1", "ta-cyc", "A", NULL);
+        struct edc_task *b = edc_task_new("tb-cyc", "sess-1", "ta-cyc", "B", NULL);
+        struct edc_task *c = edc_task_new("tc-cyc", "sess-1", "ta-cyc", "C", NULL);
+        CHECK(edc_task_add_dependency(a, b, TASK_DEP_JOIN), "a→b");
+        CHECK(edc_task_add_dependency(b, c, TASK_DEP_JOIN), "b→c");
+        CHECK(!edc_task_add_dependency(c, a, TASK_DEP_JOIN), "c→a rejected (cycle)");
+        edc_task_free(a);
+        edc_task_free(b);
+        edc_task_free(c);
+    }
+
     TEST("dep_completed advances state when all deps done");
     struct edc_task *target2 = edc_task_new("task-target2", "sess-1", "task-target2", "target2", NULL);
     struct edc_task *sourceA = edc_task_new("task-srcA", "sess-1", "task-target2", "srcA", NULL);

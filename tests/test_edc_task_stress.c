@@ -400,19 +400,9 @@ static void test_circular_dependency(void)
     struct edc_task *b = edc_task_new("circ-b", "s", "g", "B", NULL);
 
     edc_task_add_dependency(a, b, TASK_DEP_JOIN);
-    /* Try to add reverse dependency - should be rejected */
+    /* Try to add reverse dependency - must be rejected to prevent deadlock */
     bool ok = edc_task_add_dependency(b, a, TASK_DEP_JOIN);
-    if (ok)
-    {
-        /* Not currently detected - document limitation */
-        log_info("    NOTE: circular dep via add_dependency not detected (known limitation)");
-        /* Clean up */
-        edc_task_on_dep_cancelled(b, a);
-    }
-    else
-    {
-        CHECK(!ok, "circular dependency rejected");
-    }
+    CHECK(!ok, "circular dependency rejected");
 
     edc_task_free(a);
     edc_task_free(b);

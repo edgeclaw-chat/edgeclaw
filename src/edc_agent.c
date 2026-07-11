@@ -425,9 +425,9 @@ void edc_agent_free(struct edc_agent *agent)
     edc_llm_actor_free(agent->llm_actor);
     edc_memory_actor_free(agent->memory_actor);
 
-    edc_scheduler_free(agent->scheduler);
-
     edc_agent_remove_all_turns(agent);
+
+    edc_scheduler_free(agent->scheduler);
 
     if (agent->session_manager) edc_session_manager_free(agent->session_manager);
     if (agent->config)  edc_config_free(agent->config);

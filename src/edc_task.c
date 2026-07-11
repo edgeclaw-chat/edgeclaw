@@ -224,9 +224,33 @@ void edc_task_commit_active_turn(struct edc_task *task)
 
 /* ── 依赖 (IPC) ────────────────────────────────────────────── */
 
+/*
+ * DFS cycle detection: check if 'source' can reach 'target' by following
+ * existing dependency edges. If yes, adding target→source would create a
+ * cycle, causing permanent deadlock.
+ */
+#define EDC_TASK_MAX_DEPTH 64
+
+static bool edc_task_can_reach(struct edc_task *from, struct edc_task *to, int depth)
+{
+    if (depth > EDC_TASK_MAX_DEPTH) return false;
+    if (from == to) return true;
+
+    struct edc_task_dep *dep;
+    LL_FOREACH(from->deps, dep)
+    {
+        if (edc_task_can_reach(dep->source, to, depth + 1))
+            return true;
+    }
+    return false;
+}
+
 bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, edc_task_dep_type type)
 {
     if (!target || !source || target == source) return false;
+
+    /* 环检测: source 能到达 target 则拒绝 */
+    if (edc_task_can_reach(source, target, 0)) return false;
 
     /* 检查是否已有相同依赖 */
     struct edc_task_dep *existing;

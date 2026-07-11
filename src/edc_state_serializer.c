@@ -7,6 +7,7 @@
 #include "edc_channel_actor.h"
 #include "edc_containers.h"
 #include "edc_compat.h"
+#include "edc_context.h"
 #include "utlist_fix.h"
 #include "log.h"
 #include <string.h>
@@ -500,6 +501,52 @@ static void group_map_free(struct group_map_entry **map)
  *  Public: deserialize
  *  ══════════════════════════════════════════════════════════════ */
 
+static void deser_rebuild_group_history(struct edc_session *session,
+                                          struct edc_scheduler *sched)
+{
+    struct edc_task_group *g;
+    DL_FOREACH(session->groups, g)
+    {
+        if (session->config)
+        {
+            sds prompt = edc_context_build_system_prompt(session->config);
+            cJSON *sys = cJSON_CreateObject();
+            cJSON_AddStringToObject(sys, "role", "system");
+            cJSON_AddStringToObject(sys, "content", prompt);
+            cJSON_AddItemToArray(g->history, sys);
+            sdsfree(prompt);
+        }
+
+        struct edc_task *t;
+        LL_FOREACH2(g->members, t, group_next)
+        {
+            for (size_t qi = t->turns.head; qi < t->turns.tail; qi++)
+            {
+                struct edc_turn *turn = t->turns.data[qi];
+                for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
+                    cJSON_AddItemReferenceToArray(g->history, turn->messages.data[mj]);
+            }
+        }
+    }
+
+    if (sched)
+    {
+        uint64_t max_id = 0;
+        struct edc_task_group *g;
+        DL_FOREACH(session->groups, g)
+        {
+            struct edc_task *t;
+            LL_FOREACH2(g->members, t, group_next)
+            {
+                uint64_t id = strtoull(t->task_id, NULL, 10);
+                if (id > max_id) max_id = id;
+            }
+        }
+        if (max_id >= (uint64_t)sched->next_task_id)
+            sched->next_task_id = (int64_t)(max_id + 1);
+    }
+}
+
 bool edc_state_deserialize(cJSON *json,
                            struct edc_session *session,
                            struct edc_scheduler *sched)
@@ -813,6 +860,9 @@ bool edc_state_deserialize(cJSON *json,
                 sched->foreground_group = group_map_get(group_map, fg_id);
         }
     }
+
+    /* ── Rebuild group history from member task turns ── */
+    deser_rebuild_group_history(session, sched);
 
     /* Cleanup maps */
     task_map_free(id_map);
