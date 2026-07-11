@@ -43,6 +43,9 @@ struct edc_turn *edc_turn_new()
     struct edc_turn *turn = g_new0(struct edc_turn, 1);
     edc_queue_init(&turn->messages);
     edc_queue_init(&turn->timestamps);
+    turn->msg_range_start = 0;
+    turn->msg_range_count = 0;
+    turn->range_valid = false;
     return turn;
 }
 

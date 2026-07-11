@@ -390,6 +390,7 @@ bool edc_session_manager_switch(struct edc_session_manager *sm,
     if (old)
     {
         edc_session_save_history(old);
+        /* Phase 4: also save state if scheduler is available */
         sdsfree(old->last_active);
         old->last_active = edc_datetime_timestamp();
     }

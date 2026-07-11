@@ -14,6 +14,7 @@
 #include "edc_secret.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
+#include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_toolbox_actor.h"
@@ -293,7 +294,14 @@ static void edc_agent_cb_save_session(struct edc_scheduler *sched)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
     if (!agent || !agent->session_manager) return;
+
+    /* Save history for all sessions */
     edc_session_manager_save_all(agent->session_manager);
+
+    /* Save state for the current (active) session */
+    struct edc_session *active = edc_session_manager_get_active(agent->session_manager);
+    if (active)
+        edc_session_save_state(active, sched);
 }
 
 void edc_agent_remove_all_turns(struct edc_agent *agent)
@@ -362,6 +370,13 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
     agent->scheduler->handle_command = edc_agent_cb_handle_command;
     agent->scheduler->trigger_memory = edc_agent_cb_trigger_memory;
     agent->scheduler->save_session   = edc_agent_cb_save_session;
+
+    /* Phase 4: restore saved task/group state for active session */
+    {
+        struct edc_session *active = edc_session_manager_get_active(agent->session_manager);
+        if (active)
+            edc_session_load_state(active, agent->scheduler);
+    }
 
     edc_channel_actor_set_observer(agent->channel_actor,
                                     edc_scheduler_get_actor(agent->scheduler));

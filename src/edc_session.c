@@ -145,6 +145,14 @@ void edc_session_free(struct edc_session *session)
 
 void edc_session_add_turn(struct edc_session *sess, struct edc_turn *turn)
 {
+    /* Phase 3: record message range before moving messages out */
+    size_t msg_count = edc_queue_length(&turn->messages);
+    if (msg_count > 0) {
+        turn->msg_range_start = cJSON_GetArraySize(sess->messages);
+        turn->msg_range_count = msg_count;
+        turn->range_valid = true;
+    }
+
     EdcQueue *m = &turn->messages;
     EdcQueue *t = &turn->timestamps;
     while (edc_queue_length(m) > 0 && edc_queue_length(t) > 0)

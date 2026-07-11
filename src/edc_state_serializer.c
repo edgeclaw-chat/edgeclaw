@@ -65,6 +65,20 @@ static cJSON *turn_to_json(struct edc_turn *turn,
     cJSON *tj = cJSON_CreateObject();
     size_t msg_count = edc_queue_length(&turn->messages);
 
+    /* Phase 3: if the turn has a recorded range (from edc_session_add_turn),
+     * use it directly — this is the common path for flushed turns.
+     * The messages are already in session->messages at the recorded indices. */
+    if (turn->range_valid && turn->msg_range_count > 0) {
+        cJSON_AddNumberToObject(tj, "message_start",
+                                (int)turn->msg_range_start);
+        cJSON_AddNumberToObject(tj, "message_count",
+                                (int)turn->msg_range_count);
+        return tj;
+    }
+
+    /* Fallback for turns that still have messages in their queue
+     * (not yet flushed via edc_session_add_turn). */
+
     if (msg_count == 0) {
         cJSON_AddNumberToObject(tj, "message_start", 0);
         cJSON_AddNumberToObject(tj, "message_count", 0);

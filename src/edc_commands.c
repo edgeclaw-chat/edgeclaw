@@ -9,6 +9,7 @@
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
+#include "edc_state_serializer.h"
 #include "edc_shell.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -132,6 +133,24 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
         "- `$LAST` `$1` `$$` — variable expansion\n";
 
     edc_commands_reply(agent, actor, channel, text);
+    return true;
+}
+
+/* ── /save ─────────────────────────────────────────────────── */
+
+static bool edc_commands_handle_save(struct edc_agent *agent, edc_actor_t *actor,
+                                      struct edc_channel *channel)
+{
+    struct edc_session *active = edc_session_manager_get_active(agent->session_manager);
+    if (!active) {
+        edc_commands_reply(agent, actor, channel, "[save] no active session");
+        return true;
+    }
+
+    edc_session_save_history(active);
+    edc_session_save_state(active, agent->scheduler);
+    edc_commands_reply(agent, actor, channel, "[save] session saved.");
+    log_info("receive /save command");
     return true;
 }
 
@@ -930,6 +949,8 @@ bool edc_commands_handler(struct edc_agent *agent, struct edc_actor *actor,
             return edc_commands_handle_help(agent, actor, message->channel);
         if (edc_commands_is_target(message->content, "/exit"))
             return edc_commands_handle_exit(agent, actor, message->channel);
+        if (edc_commands_is_target(message->content, "/save"))
+            return edc_commands_handle_save(agent, actor, message->channel);
 
         sds reply = sdscatprintf(sdsempty(),
             "Unknown command: %s\nType /help for available commands.",

@@ -59,10 +59,15 @@ cJSON *edc_history_load(const char *workspace, const size_t offset)
 bool edc_history_save(const char *workspace, cJSON *msg_lst, struct edc_timestamp_node *timestamps, size_t skip_count)
 {
     sds hist_file = edc_path_join(workspace, "history.jsonl", NULL);
-    /* auto-create directory */
-    sds dir = edc_path_join(workspace, NULL);
-    mkdir(dir, 0755);
-    sdsfree(dir);
+    /* auto-create directory (with parents) */
+    {
+        EdcError *mk_err = NULL;
+        edc_dir_create_with_parents(workspace, 0755, &mk_err);
+        if (mk_err) {
+            log_warn("history_save: mkdir %s: %s", workspace, mk_err->message);
+            edc_error_free(mk_err);
+        }
+    }
 
     FILE *fout = fopen(hist_file, "a+");
     if (fout == NULL)
