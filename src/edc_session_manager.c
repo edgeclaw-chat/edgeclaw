@@ -1,6 +1,7 @@
 #include "sds.h"
 #include "edc_session_manager.h"
 #include "edc_session.h"
+#include "edc_state_serializer.h"
 #include "edc_config.h"
 #include "edc_compat.h"
 #include "edc_file_utils.h"
@@ -385,12 +386,12 @@ bool edc_session_manager_switch(struct edc_session_manager *sm,
         return true;
     }
 
-    /* Save current session history */
+    /* Save current session */
     struct edc_session *old = edc_session_manager_get_active(sm);
     if (old)
     {
         edc_session_save_history(old);
-        /* Phase 4: also save state if scheduler is available */
+        edc_session_save_state(old, NULL);
         sdsfree(old->last_active);
         old->last_active = edc_datetime_timestamp();
     }
@@ -428,6 +429,7 @@ bool edc_session_manager_stop(struct edc_session_manager *sm,
 
     /* Save history one final time */
     edc_session_save_history(to_stop);
+    edc_session_save_state(to_stop, NULL);
 
     /* Remove from array */
     int new_count = sm->session_count - 1;
