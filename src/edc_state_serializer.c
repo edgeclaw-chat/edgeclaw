@@ -212,8 +212,12 @@ static cJSON *group_to_json(struct edc_task_group *group)
 
     cJSON_AddStringToObject(gj, "group_id",
                             group->group_id ? group->group_id : "");
+    /* leader_task_id: for normal groups use leader->task_id;
+     * for orphaned groups fall back to group_id (original leader's id) */
     if (group->leader)
         cJSON_AddStringToObject(gj, "leader_task_id", group->leader->task_id);
+    else if (group->group_id)
+        cJSON_AddStringToObject(gj, "leader_task_id", group->group_id);
     cJSON_AddBoolToObject(gj, "is_orphaned", group->is_orphaned);
 
     /* member task ids */
@@ -242,6 +246,10 @@ cJSON *edc_state_serialize(struct edc_session *session,
                            struct edc_scheduler *sched)
 {
     if (!session) return NULL;
+    if (!session->messages) {
+        log_error("edc_state_serialize: session->messages is NULL");
+        return NULL;
+    }
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "version", 1);
@@ -624,18 +632,32 @@ bool edc_state_deserialize(cJSON *json,
             const char *leader_id = cJSON_GetStringValue(cJSON_GetObjectItem(gj, "leader_task_id"));
 
             struct edc_task *leader = task_map_get(id_map, leader_id);
+            cJSON *orph = cJSON_GetObjectItem(gj, "is_orphaned");
+            bool is_orph = orph && cJSON_IsTrue(orph);
+
             if (!leader) {
-                log_warn("deserialize: group %s leader %s not found",
-                         group_id ? group_id : "(null)",
-                         leader_id ? leader_id : "(null)");
-                continue;
+                if (is_orph) {
+                    /* orphaned group: pick first available member as anchor */
+                    cJSON *members = cJSON_GetObjectItem(gj, "member_task_ids");
+                    if (members && cJSON_IsArray(members) &&
+                        cJSON_GetArraySize(members) > 0) {
+                        const char *first_id = cJSON_GetStringValue(
+                            cJSON_GetArrayItem(members, 0));
+                        leader = task_map_get(id_map, first_id);
+                    }
+                }
+                if (!leader) {
+                    log_warn("deserialize: group %s leader %s not found",
+                             group_id ? group_id : "(null)",
+                             leader_id ? leader_id : "(null)");
+                    continue;
+                }
             }
 
             struct edc_task_group *group = edc_task_group_new(leader);
             if (!group) continue;
 
-            cJSON *orph = cJSON_GetObjectItem(gj, "is_orphaned");
-            if (orph) group->is_orphaned = cJSON_IsTrue(orph);
+            if (is_orph) group->is_orphaned = true;
 
             /* channel */
             cJSON *ch_json = cJSON_GetObjectItem(gj, "channel");
@@ -644,7 +666,10 @@ bool edc_state_deserialize(cJSON *json,
                 /* For now, keep the default from group_new */
             }
 
-            /* Add remaining members */
+            /* Add remaining members.
+             * For orphaned groups, the anchor (leader) might not match
+             * leader_id from JSON, so dedup by the anchor's actual task_id. */
+            const char *anchor_id = leader->task_id;
             cJSON *members = cJSON_GetObjectItem(gj, "member_task_ids");
             if (members && cJSON_IsArray(members)) {
                 size_t mcount = cJSON_GetArraySize(members);
@@ -652,8 +677,8 @@ bool edc_state_deserialize(cJSON *json,
                     cJSON *mid = cJSON_GetArrayItem(members, j);
                     const char *member_id = cJSON_GetStringValue(mid);
                     if (!member_id) continue;
-                    if (leader_id && strcmp(member_id, leader_id) == 0)
-                        continue; /* leader already added by group_new */
+                    if (strcmp(member_id, anchor_id) == 0)
+                        continue; /* anchor already added by group_new */
                     struct edc_task *mt = task_map_get(id_map, member_id);
                     if (mt)
                         edc_task_group_add_task(group, mt);

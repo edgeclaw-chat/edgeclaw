@@ -83,4 +83,22 @@ extern cJSON *edc_session_get_messages_slice(struct edc_session *session, size_t
 extern bool edc_session_save_tasks(struct edc_session *session);
 extern void edc_session_reload_tasks(struct edc_session *session);
 
+/* ── Phase 2: 完整状态持久化 ───────────────────────────────── */
+
+struct edc_scheduler;
+
+/** Save complete session state to workspace/<session_id>/session.json.
+ *  Atomic: writes to .tmp then rename().
+ *  Prerequisite: edc_session_save_history() should be called first.
+ *  Returns true on success. */
+extern bool edc_session_save_state(struct edc_session *session,
+                                   struct edc_scheduler *sched);
+
+/** Load session state from workspace/<session_id>/session.json.
+ *  Rebuilds all groups, tasks, turns, and dependencies.
+ *  Prerequisite: session->messages must already be loaded.
+ *  Returns true on success, false if file missing or corrupt. */
+extern bool edc_session_load_state(struct edc_session *session,
+                                   struct edc_scheduler *sched);
+
 #endif

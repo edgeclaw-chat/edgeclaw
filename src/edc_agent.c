@@ -73,6 +73,7 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
             cJSON_AddStringToObject(sys, "role", "system");
             cJSON_AddStringToObject(sys, "content", prompt);
             cJSON_AddItemToArray(msgs, sys);
+            if (task->group) cJSON_AddItemToArray(task->group->history, cJSON_Duplicate(sys, 1));
             sdsfree(prompt);
         }
     }

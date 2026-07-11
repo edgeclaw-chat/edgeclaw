@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <signal.h>
+
+volatile sig_atomic_t _run_loop;
 
 static int test_failed = 0;
 static int test_passed = 0;

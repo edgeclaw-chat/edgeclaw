@@ -10,8 +10,13 @@
 #include "edc_turn.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
+#include "edc_state_serializer.h"
+#include "edc_scheduler.h"
 #include "utlist_fix.h"
+#include "log.h"
 #include <string.h>
+#include <errno.h>
+#include <sys/stat.h>
 
 static void edc_session_trim_orphan_tool_messages(cJSON *history)
 {
@@ -294,6 +299,106 @@ void edc_session_reload_tasks(struct edc_session *session)
     /* 简化为: 扫描 messages, 收集唯一 task_id */
     /* 完整实现留 Phase 5 在 edc_agent 中处理 */
     (void)session;
+}
+
+/* ── Phase 2: 完整状态持久化 ───────────────────────────────── */
+
+bool edc_session_save_state(struct edc_session *session,
+                            struct edc_scheduler *sched)
+{
+    if (!session || !session->history_dir) return false;
+
+    cJSON *root = edc_state_serialize(session, sched);
+    if (!root) {
+        log_error("save_state: edc_state_serialize returned NULL");
+        return false;
+    }
+
+    char *json_str = cJSON_Print(root);
+    cJSON_Delete(root);
+    if (!json_str) return false;
+
+    sds path    = edc_path_join(session->history_dir, "session.json", NULL);
+    sds tmp     = edc_path_join(session->history_dir, "session.json.tmp", NULL);
+    EdcError *err = NULL;
+
+    /* ensure directory exists (with parents) */
+    {
+        EdcError *mk_err = NULL;
+        edc_dir_create_with_parents(session->history_dir, 0755, &mk_err);
+        if (mk_err) {
+            log_warn("save_state: mkdir %s: %s", session->history_dir, mk_err->message);
+            edc_error_free(mk_err);
+        }
+    }
+
+    bool ok = edc_file_write(tmp, json_str, (ssize_t)strlen(json_str), &err);
+    cJSON_free(json_str);
+
+    if (!ok) {
+        log_error("save_state: write to %s failed: %s",
+                  tmp, err ? err->message : "unknown");
+        if (err) edc_error_free(err);
+        sdsfree(path);
+        sdsfree(tmp);
+        return false;
+    }
+
+    /* atomic rename */
+    if (rename(tmp, path) != 0) {
+        log_error("save_state: rename %s -> %s failed: %s",
+                  tmp, path, strerror(errno));
+        sdsfree(path);
+        sdsfree(tmp);
+        return false;
+    }
+
+    sdsfree(path);
+    sdsfree(tmp);
+    return true;
+}
+
+bool edc_session_load_state(struct edc_session *session,
+                            struct edc_scheduler *sched)
+{
+    if (!session || !session->history_dir) return false;
+
+    sds path = edc_path_join(session->history_dir, "session.json", NULL);
+
+    if (!edc_file_exists(path)) {
+        /* new session — no state file yet */
+        sdsfree(path);
+        return false;
+    }
+
+    EdcError *err = NULL;
+    sds content = edc_file_read(path, &err);
+    if (!content) {
+        log_warn("load_state: read %s failed: %s",
+                 path, err ? err->message : "unknown");
+        if (err) edc_error_free(err);
+        sdsfree(path);
+        return false;
+    }
+
+    cJSON *json = cJSON_Parse(content);
+    sdsfree(content);
+
+    if (!json) {
+        log_error("load_state: failed to parse %s (corrupt JSON)", path);
+        sdsfree(path);
+        return false;
+    }
+
+    bool ok = edc_state_deserialize(json, session, sched);
+    cJSON_Delete(json);
+
+    if (!ok) {
+        log_error("load_state: deserialize failed for %s", path);
+    }
+
+    sdsfree(path);
+    return ok;
 }
 
 /* ── Multi-session support ─────────────────────────────────── */

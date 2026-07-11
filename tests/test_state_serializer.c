@@ -809,6 +809,449 @@ static void test_extra_fields(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
+ *  Test 10: NULL / empty input safety
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_null_inputs(void)
+{
+    TEST("NULL / empty input safety");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-null", "Null");
+    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+
+    /* serialize with NULL session */
+    cJSON *j1 = edc_state_serialize(NULL, NULL);
+    CHECK(j1 == NULL, "serialize(NULL, NULL) returns NULL");
+
+    /* serialize with NULL messages */
+    cJSON *saved = session->messages;
+    session->messages = NULL;
+    cJSON *j2 = edc_state_serialize(session, NULL);
+    CHECK(j2 == NULL, "serialize with NULL messages returns NULL");
+    session->messages = saved;
+
+    /* deserialize with NULL json */
+    bool ok1 = edc_state_deserialize(NULL, session, NULL);
+    CHECK(!ok1, "deserialize(NULL json) returns false");
+
+    /* deserialize with NULL session */
+    cJSON *valid = cJSON_Parse("{\"version\":1,\"session\":{},\"groups\":[],\"tasks\":[]}");
+    bool ok2 = edc_state_deserialize(valid, NULL, NULL);
+    CHECK(!ok2, "deserialize(NULL session) returns false");
+    cJSON_Delete(valid);
+
+    /* deserialize with missing version */
+    cJSON *no_ver = cJSON_Parse("{\"session\":{},\"groups\":[],\"tasks\":[]}");
+    bool ok3 = edc_state_deserialize(no_ver, session, sched);
+    CHECK(!ok3, "deserialize without version returns false");
+    cJSON_Delete(no_ver);
+
+    /* deserialize with missing tasks array */
+    cJSON *no_tasks = cJSON_Parse("{\"version\":1,\"session\":{},\"groups\":[]}");
+    bool ok4 = edc_state_deserialize(no_tasks, session, sched);
+    CHECK(ok4, "deserialize without tasks array succeeds (treated as empty)");
+    cJSON_Delete(no_tasks);
+
+    /* deserialize with tasks not an array */
+    cJSON *bad_tasks = cJSON_Parse("{\"version\":1,\"session\":{},\"groups\":[],\"tasks\":\"not_array\"}");
+    bool ok5 = edc_state_deserialize(bad_tasks, session, sched);
+    CHECK(ok5, "deserialize with non-array tasks succeeds (ignored)");
+    cJSON_Delete(bad_tasks);
+
+    /* deserialize with groups not an array */
+    cJSON *bad_groups = cJSON_Parse("{\"version\":1,\"session\":{},\"groups\":123,\"tasks\":[]}");
+    bool ok6 = edc_state_deserialize(bad_groups, session, sched);
+    CHECK(ok6, "deserialize with non-array groups succeeds (ignored)");
+    cJSON_Delete(bad_groups);
+
+    edc_scheduler_free(sched);
+    edc_session_free(session);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Test 11: Malformed JSON — bad references
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_malformed_inputs(void)
+{
+    TEST("malformed JSON inputs — bad references handled gracefully");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-mal", "Malformed");
+    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+
+    /* dep referencing nonexistent task */
+    const char *bad_dep_json =
+        "{"
+        "  \"version\":1,"
+        "  \"session\":{},"
+        "  \"groups\":["
+        "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
+        "     \"member_task_ids\":[\"t1\"],\"is_orphaned\":false}"
+        "  ],"
+        "  \"tasks\":["
+        "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
+        "     \"description\":\"task 1\",\"state\":\"COMPLETED\","
+        "     \"is_group_leader\":true,\"auto_reap\":false,"
+        "     \"fork_point_msg_count\":0,\"completion_seq\":0,"
+        "     \"redirect_append\":false,"
+        "     \"deps\":[{\"source_task_id\":\"NOBODY\",\"type\":\"JOIN\","
+        "                \"completed\":false,\"cancelled\":false,\"injected\":false}],"
+        "     \"turns\":[]}"
+        "  ]"
+        "}";
+    cJSON *j1 = cJSON_Parse(bad_dep_json);
+    bool ok1 = edc_state_deserialize(j1, session, sched);
+    CHECK(ok1, "deserialize with bad dep reference succeeds (dep ignored)");
+    cJSON_Delete(j1);
+
+    /* group member referencing nonexistent task */
+    const char *bad_member_json =
+        "{"
+        "  \"version\":1,"
+        "  \"session\":{},"
+        "  \"groups\":["
+        "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
+        "     \"member_task_ids\":[\"t1\",\"NOBODY\"],\"is_orphaned\":false}"
+        "  ],"
+        "  \"tasks\":["
+        "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
+        "     \"description\":\"task 1\",\"state\":\"COMPLETED\","
+        "     \"is_group_leader\":true,\"auto_reap\":false,"
+        "     \"fork_point_msg_count\":0,\"completion_seq\":0,"
+        "     \"redirect_append\":false,"
+        "     \"deps\":[],\"turns\":[]}"
+        "  ]"
+        "}";
+    cJSON *j2 = cJSON_Parse(bad_member_json);
+    bool ok2 = edc_state_deserialize(j2, session, sched);
+    CHECK(ok2, "deserialize with bad member reference succeeds (skipped)");
+    cJSON_Delete(j2);
+
+    /* turn message_start out of range */
+    const char *bad_range_json =
+        "{"
+        "  \"version\":1,"
+        "  \"session\":{},"
+        "  \"groups\":["
+        "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
+        "     \"member_task_ids\":[\"t1\"],\"is_orphaned\":false}"
+        "  ],"
+        "  \"tasks\":["
+        "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
+        "     \"description\":\"task 1\",\"state\":\"COMPLETED\","
+        "     \"is_group_leader\":true,\"auto_reap\":false,"
+        "     \"fork_point_msg_count\":0,\"completion_seq\":0,"
+        "     \"redirect_append\":false,"
+        "     \"deps\":[],"
+        "     \"turns\":[{\"turn_index\":0,\"message_start\":999,\"message_count\":5}]}"
+        "  ]"
+        "}";
+    cJSON *j3 = cJSON_Parse(bad_range_json);
+    bool ok3 = edc_state_deserialize(j3, session, sched);
+    CHECK(ok3, "deserialize with out-of-range message_start succeeds (turn empty)");
+    cJSON_Delete(j3);
+
+    /* task with empty task_id */
+    const char *empty_id_json =
+        "{"
+        "  \"version\":1,"
+        "  \"session\":{},"
+        "  \"groups\":[],"
+        "  \"tasks\":["
+        "    {\"task_id\":\"\",\"group_id\":\"g1\",\"session_id\":\"s\","
+        "     \"description\":\"\",\"state\":\"COMPLETED\","
+        "     \"is_group_leader\":false,\"auto_reap\":false,"
+        "     \"fork_point_msg_count\":0,\"completion_seq\":0,"
+        "     \"redirect_append\":false,\"deps\":[],\"turns\":[]}"
+        "  ]"
+        "}";
+    cJSON *j4 = cJSON_Parse(empty_id_json);
+    bool ok4 = edc_state_deserialize(j4, session, sched);
+    CHECK(ok4, "deserialize with empty task_id succeeds (task skipped)");
+    cJSON_Delete(j4);
+
+    edc_scheduler_free(sched);
+    edc_session_free(session);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Test 12: Compact message reference path
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_compact_messages(void)
+{
+    TEST("compact message reference (messages in session->messages)");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-cpt", "Compact");
+    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+
+    /* Build turn messages that also exist in session->messages.
+     * We add messages to session->messages first, then add the SAME
+     * pointers to a turn via cJSON_AddItemReferenceToArray
+     * (which doesn't take ownership).  This simulates what happens
+     * when edc_session_add_turn moves messages from turn to session. */
+
+    struct edc_task *task = edc_task_new("t-cpt", "sess-cpt", "t-cpt",
+                                          "compact test", edc_channel_cli_new());
+    task->is_group_leader = 1;
+    edc_task_set_state(task, TASK_WAITING_INPUT);
+    edc_task_set_state(task, TASK_LLM_PROCESSING);
+    edc_task_set_state(task, TASK_COMPLETED);
+
+    /* Create messages and add to session->messages */
+    cJSON *msg1 = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg1, "role", "user");
+    cJSON_AddStringToObject(msg1, "content", "compact query");
+    cJSON_AddItemToArray(session->messages, msg1);
+
+    cJSON *msg2 = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg2, "role", "assistant");
+    cJSON_AddStringToObject(msg2, "content", "compact answer");
+    cJSON_AddItemToArray(session->messages, msg2);
+
+    /* Build turn with references to the same objects */
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup("t-cpt");
+    /* Push references (not owned by turn) */
+    edc_queue_push(&turn->messages, msg1);
+    edc_queue_push(&turn->messages, msg2);
+    edc_queue_push(&turn->timestamps, sdsnew("2026-01-01T00:00:00"));
+    edc_queue_push(&turn->timestamps, sdsnew("2026-01-01T00:00:01"));
+    edc_task_add_turn(task, turn);
+
+    struct edc_task_group *group = edc_task_group_new(task);
+    edc_session_add_group(session, group);
+
+    /* SERIALIZE — should take compact path (pointer match) */
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize succeeds with compact path");
+
+    /* Verify compact mode was used */
+    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
+    cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
+    cJSON *turns_j = cJSON_GetObjectItem(t0, "turns");
+    cJSON *turn_j = cJSON_GetArrayItem(turns_j, 0);
+
+    cJSON *embedded  = cJSON_GetObjectItem(turn_j, "messages");
+    cJSON *msg_start = cJSON_GetObjectItem(turn_j, "message_start");
+    cJSON *msg_count = cJSON_GetObjectItem(turn_j, "message_count");
+
+    CHECK(embedded == NULL, "compact mode: no embedded messages array");
+    CHECK(msg_start != NULL, "compact mode: has message_start");
+    CHECK(msg_count != NULL, "compact mode: has message_count");
+    CHECK((int)cJSON_GetNumberValue(msg_count) == 2, "message_count = 2");
+
+    /* Verify the start index (should be after system prompt, so >= 1) */
+    int start = (int)cJSON_GetNumberValue(msg_start);
+    CHECK(start >= 1, "message_start >= 1 (after system prompt)");
+
+    /* DESERIALIZE — need matching messages in target session */
+    struct edc_session *session2 = edc_session_new(cfg, "sess-cpt", "Compact");
+    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+
+    /* Put identical-content messages at the same positions in session2 */
+    cJSON *msg1b = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg1b, "role", "user");
+    cJSON_AddStringToObject(msg1b, "content", "compact query");
+    cJSON_AddItemToArray(session2->messages, msg1b);
+
+    cJSON *msg2b = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg2b, "role", "assistant");
+    cJSON_AddStringToObject(msg2b, "content", "compact answer");
+    cJSON_AddItemToArray(session2->messages, msg2b);
+
+    bool ok = edc_state_deserialize(json, session2, sched2);
+    CHECK(ok, "deserialize succeeds from compact mode");
+
+    struct edc_task *rt = find_task(session2, "t-cpt");
+    CHECK(rt != NULL, "task restored from compact mode");
+    CHECK(edc_queue_length(&rt->turns) == 1, "1 turn from compact mode");
+
+    struct edc_turn *rturn = (struct edc_turn *)rt->turns.data[rt->turns.head];
+    CHECK(edc_queue_length(&rturn->messages) == 2, "2 messages from compact range");
+
+    cJSON *m0 = (cJSON *)rturn->messages.data[rturn->messages.head];
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")),
+                "compact query", "msg0 content correct in compact roundtrip");
+
+    /* Cleanup: clear turn queues manually to avoid double-free
+     * (msg1/msg2 are owned by session->messages, not by turn) */
+    while (edc_queue_length(&turn->messages) > 0)
+        edc_queue_pop(&turn->messages);
+    while (edc_queue_length(&turn->timestamps) > 0)
+        sdsfree((sds)edc_queue_pop(&turn->timestamps));
+    /* Also clear task->turns to prevent edc_task_free from freeing the turn */
+    while (edc_queue_length(&task->turns) > 0) {
+        struct edc_turn *t = edc_queue_pop(&task->turns);
+        while (edc_queue_length(&t->messages) > 0) edc_queue_pop(&t->messages);
+        while (edc_queue_length(&t->timestamps) > 0) sdsfree(edc_queue_pop(&t->timestamps));
+        free(t->task_id);
+        free(t);
+    }
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(session2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Test 13: Empty turn (0 messages)
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_empty_turn(void)
+{
+    TEST("empty turn (0 messages) roundtrip");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-et", "EmptyTurn");
+    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+
+    struct edc_task *task = edc_task_new("t-et", "sess-et", "t-et",
+                                          "empty turn task", edc_channel_cli_new());
+    task->is_group_leader = 1;
+    edc_task_set_state(task, TASK_WAITING_INPUT);
+    edc_task_set_state(task, TASK_LLM_PROCESSING);
+    edc_task_set_state(task, TASK_COMPLETED);
+
+    /* Add a turn with 0 messages */
+    struct edc_turn *empty_turn = edc_turn_new();
+    empty_turn->task_id = strdup("t-et");
+    edc_task_add_turn(task, empty_turn);
+
+    struct edc_task_group *group = edc_task_group_new(task);
+    edc_session_add_group(session, group);
+
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize succeeds");
+
+    /* Verify empty turn JSON */
+    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
+    cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
+    cJSON *turns_j = cJSON_GetObjectItem(t0, "turns");
+    cJSON *turn_j = cJSON_GetArrayItem(turns_j, 0);
+    CHECK(turn_j != NULL, "empty turn present in JSON");
+    CHECK(cJSON_GetNumberValue(cJSON_GetObjectItem(turn_j, "message_count")) == 0,
+          "message_count = 0");
+
+    struct edc_session *session2 = edc_session_new(cfg, "sess-et", "EmptyTurn");
+    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    bool ok = edc_state_deserialize(json, session2, sched2);
+    CHECK(ok, "deserialize succeeds");
+
+    struct edc_task *rt = find_task(session2, "t-et");
+    CHECK(rt != NULL, "task restored");
+    CHECK(edc_queue_length(&rt->turns) == 1, "1 empty turn restored");
+    struct edc_turn *rturn = (struct edc_turn *)rt->turns.data[rt->turns.head];
+    CHECK(edc_queue_length(&rturn->messages) == 0, "turn still has 0 messages");
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(session2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Test 14: Orphaned group roundtrip
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_orphaned_group(void)
+{
+    TEST("orphaned group roundtrip");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-orph", "Orphan");
+    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+
+    /* Create group with leader + 2 members */
+    struct edc_task *leader = edc_task_new("t-leader", "sess-orph", "t-leader",
+                                            "group leader", edc_channel_cli_new());
+    leader->is_group_leader = 1;
+    edc_task_set_state(leader, TASK_WAITING_INPUT);
+    edc_task_set_state(leader, TASK_LLM_PROCESSING);
+    edc_task_set_state(leader, TASK_COMPLETED);
+
+    struct edc_task *m1 = edc_task_new("t-m1", "sess-orph", "t-leader",
+                                        "member 1", NULL);
+    edc_task_set_state(m1, TASK_WAITING_INPUT);
+
+    struct edc_task *m2 = edc_task_new("t-m2", "sess-orph", "t-leader",
+                                        "member 2", NULL);
+    edc_task_set_state(m2, TASK_WAITING_INPUT);
+
+    struct edc_task_group *group = edc_task_group_new(leader);
+    edc_task_group_add_task(group, m1);
+    edc_task_group_add_task(group, m2);
+
+    /* Remove leader → group becomes orphaned */
+    edc_task_group_remove_task(group, leader);
+    /* leader is removed from group but still alive (not freed) */
+    /* group is now orphaned, leader=NULL, member_count=2 */
+
+    edc_session_add_group(session, group);
+    /* Also add the ex-leader as a separate task for completeness */
+    /* (it won't be in any group, but that's fine for this test) */
+
+    CHECK(group->is_orphaned, "group is orphaned");
+    CHECK(group->leader == NULL, "leader is NULL");
+    CHECK(group->member_count == 2, "2 members remain");
+
+    /* Serialize */
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize succeeds");
+
+    /* Verify group JSON */
+    cJSON *groups_j = cJSON_GetObjectItem(json, "groups");
+    CHECK(cJSON_GetArraySize(groups_j) == 1, "1 group serialized");
+    cJSON *gj = cJSON_GetArrayItem(groups_j, 0);
+    CHECK(cJSON_IsTrue(cJSON_GetObjectItem(gj, "is_orphaned")), "is_orphaned=true in JSON");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(gj, "leader_task_id")),
+                "t-leader", "leader_task_id preserved as group_id");
+
+    cJSON *members_j = cJSON_GetObjectItem(gj, "member_task_ids");
+    CHECK(cJSON_GetArraySize(members_j) == 2, "2 member ids");
+
+    /* Deserialize */
+    struct edc_session *session2 = edc_session_new(cfg, "sess-orph", "Orphan");
+    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    bool ok = edc_state_deserialize(json, session2, sched2);
+    CHECK(ok, "deserialize succeeds");
+
+    CHECK(count_groups(session2) == 1, "1 group restored");
+    struct edc_task_group *rg = NULL;
+    DL_FOREACH(session2->groups, rg) { break; }
+    CHECK(rg != NULL, "group found");
+    CHECK(rg->is_orphaned, "group is still orphaned after deserialize");
+    CHECK(rg->member_count == 2, "2 members in restored group");
+
+    /* Verify members exist */
+    struct edc_task *rm1 = find_task(session2, "t-m1");
+    struct edc_task *rm2 = find_task(session2, "t-m2");
+    CHECK(rm1 != NULL, "member1 restored");
+    CHECK(rm2 != NULL, "member2 restored");
+    CHECK(rm1->group == rg, "member1 belongs to group");
+    CHECK(rm2->group == rg, "member2 belongs to group");
+
+    cJSON_Delete(json);
+    /* Clear turn pointers from session->messages for leader */
+    edc_task_free(leader);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(session2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
  *  main
  *  ══════════════════════════════════════════════════════════════ */
 
@@ -826,6 +1269,11 @@ int main(void)
     test_filter_transient_states();
     test_active_turn();
     test_extra_fields();
+    test_null_inputs();
+    test_malformed_inputs();
+    test_compact_messages();
+    test_empty_turn();
+    test_orphaned_group();
 
     log_info("");
     log_info("=== Results: %d passed, %d failed ===", test_passed, test_failed);
