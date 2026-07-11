@@ -202,6 +202,7 @@ cc_library(
         "edc_markdown_render.c",
         "edc_tools_device_shell.c",
         "edc_tools_device_file.c",
+        "edc_state_serializer.c",
     ] + select({
         "//:windows": [],
         "//conditions:default": ["edc_lwip.c"],
@@ -249,6 +250,7 @@ cc_library(
         "edc_lwip.h",
         "edc_tools_device_shell.h",
         "edc_tools_device_file.h",
+        "edc_state_serializer.h",
         "edc_pppos_agent.h",
         "edc_device_agent.h",
         "edc_transport_pppos.h",

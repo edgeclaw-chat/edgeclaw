@@ -1,11 +1,11 @@
 ﻿#include "edc_agent.h"
 #include "edc_channel_actor.h"
 #include "edc_commands.h"
+#include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
 #include "edc_init_env.h"
 #include "edc_log.h"
-#include "edc_compat.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "utlist_fix.h"
@@ -35,8 +35,7 @@ volatile sig_atomic_t _run_loop = 1;
 
 static BOOL WINAPI win32_ctrl_handler(DWORD ctrl_type)
 {
-    if (ctrl_type == CTRL_C_EVENT || ctrl_type == CTRL_CLOSE_EVENT ||
-        ctrl_type == CTRL_SHUTDOWN_EVENT)
+    if (ctrl_type == CTRL_C_EVENT || ctrl_type == CTRL_CLOSE_EVENT || ctrl_type == CTRL_SHUTDOWN_EVENT)
     {
         _run_loop = 0;
         return true;
@@ -89,12 +88,9 @@ int main(int argc, char *argv[])
     bool sandbox_enabled = false;
     char *command = NULL;
 
-    static struct option long_options[] = {{"setup", no_argument, 0, 's'},
-                                            {"sandbox", no_argument, 0, 'S'},
-                                            {"command", required_argument, 0, 'c'},
-                                            {"help", no_argument, 0, 'h'},
-                                            {"version", no_argument, 0, 'V'},
-                                            {0, 0, 0, 0}};
+    static struct option long_options[] = {{"setup", no_argument, 0, 's'},         {"sandbox", no_argument, 0, 'S'},
+                                           {"command", required_argument, 0, 'c'}, {"help", no_argument, 0, 'h'},
+                                           {"version", no_argument, 0, 'V'},       {0, 0, 0, 0}};
 
     int opt;
     int option_index = 0;
@@ -174,9 +170,10 @@ int main(int argc, char *argv[])
 
     /* PPPoS device link (optional, configured via config.json "device_pty") */
 #ifndef _WIN32
-    if (agent->config->device_pty) {
-        log_info("connecting to device via PPPoS on %s (baud %d) ...",
-                 agent->config->device_pty, agent->config->device_baud);
+    if (agent->config->device_pty)
+    {
+        log_info("connecting to device via PPPoS on %s (baud %d) ...", agent->config->device_pty,
+                 agent->config->device_baud);
         if (edc_lwip_init_pppos_path(agent->config->device_pty, agent->config->device_baud))
             log_info("PPPoS link UP");
         else
@@ -187,13 +184,13 @@ int main(int argc, char *argv[])
     /* ── -c / script mode ─────────────────────────────── */
     if (command)
     {
-    struct edc_channel *ch = edc_channel_cli_new();
-    struct edc_channel_message *msg = edc_channel_message_new(ch, sdsnew(command));
-    msg->channel_ref = true;
-    edc_actor_t *actor = edc_scheduler_get_actor(agent->scheduler);
-    edc_commands_handler(agent, actor, msg);
-    edc_channel_message_free(msg);
-    edc_channel_free(ch);
+        struct edc_channel *ch = edc_channel_cli_new();
+        struct edc_channel_message *msg = edc_channel_message_new(ch, sdsnew(command));
+        msg->channel_ref = true;
+        edc_actor_t *actor = edc_scheduler_get_actor(agent->scheduler);
+        edc_commands_handler(agent, actor, msg);
+        edc_channel_message_free(msg);
+        edc_channel_free(ch);
 
         int timeout = 300;
         while (timeout-- > 0)
@@ -205,16 +202,18 @@ int main(int argc, char *argv[])
                 struct edc_task *t;
                 LL_FOREACH2(g->members, t, group_next)
                 {
-                    if (t->state != TASK_COMPLETED && t->state != TASK_CANCELLED
-                        && t->state != TASK_ERROR && t->state != TASK_SUSPENDED)
+                    if (t->state != TASK_COMPLETED && t->state != TASK_CANCELLED && t->state != TASK_ERROR &&
+                        t->state != TASK_SUSPENDED)
                     {
                         has_active = 1;
                         break;
                     }
                 }
-                if (has_active) break;
+                if (has_active)
+                    break;
             }
-            if (!has_active) break;
+            if (!has_active)
+                break;
             usleep(100000);
         }
         _run_loop = 0;
@@ -226,7 +225,8 @@ int main(int argc, char *argv[])
     /* Check for script file argument */
     {
         const char *script_path = NULL;
-        if (optind < argc) script_path = argv[optind];
+        if (optind < argc)
+            script_path = argv[optind];
 
         if (script_path)
         {
@@ -239,7 +239,8 @@ int main(int argc, char *argv[])
                 for (int i = 0; i < nlines; i++)
                 {
                     sdstrim(lines[i], " \t\r");
-                    if (sdslen(lines[i]) == 0 || lines[i][0] == '#') continue;
+                    if (sdslen(lines[i]) == 0 || lines[i][0] == '#')
+                        continue;
 
                     struct edc_channel *ch = edc_channel_cli_new();
                     struct edc_channel_message *msg = edc_channel_message_new(ch, sdsdup(lines[i]));
@@ -260,16 +261,18 @@ int main(int argc, char *argv[])
                             struct edc_task *t;
                             LL_FOREACH2(g->members, t, group_next)
                             {
-                                if (t->state != TASK_COMPLETED && t->state != TASK_CANCELLED
-                                    && t->state != TASK_ERROR && t->state != TASK_SUSPENDED)
+                                if (t->state != TASK_COMPLETED && t->state != TASK_CANCELLED &&
+                                    t->state != TASK_ERROR && t->state != TASK_SUSPENDED)
                                 {
                                     has_active = 1;
                                     break;
                                 }
                             }
-                            if (has_active) break;
+                            if (has_active)
+                                break;
                         }
-                        if (!has_active) break;
+                        if (!has_active)
+                            break;
                         usleep(100000);
                     }
                 }
@@ -279,7 +282,8 @@ int main(int argc, char *argv[])
             else
             {
                 fprintf(stderr, "cannot read script: %s\n", script_path);
-                if (err) edc_error_free(err);
+                if (err)
+                    edc_error_free(err);
             }
             _run_loop = 0;
             usleep(200000);
