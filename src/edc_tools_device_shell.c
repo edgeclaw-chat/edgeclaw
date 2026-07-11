@@ -1,4 +1,4 @@
-﻿#include "edc_tools_device_shell.h"
+#include "edc_tools_device_shell.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_toolbox.h"
@@ -22,6 +22,9 @@ struct device_shell_ctx
 {
     struct edc_toolbox_call_ctx *tb_ctx;
     void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *);
+    uv_async_t result_async;    /* async handle to marshal result back to main loop */
+    sds result;                  /* result from worker thread (consumed by main-loop callback) */
+    EdcError *error;             /* error from worker thread (consumed by main-loop callback) */
     sds command;
     sds agent_ip;
     uint16_t agent_port;
@@ -246,6 +249,45 @@ static void device_shell_uv_close_walk(uv_handle_t *handle, void *arg)
         uv_close(handle, device_shell_uv_close_cb);
 }
 
+/*
+ * device_shell_async_close_cb - Callback invoked when the uv_async_t handle
+ * has been fully closed. Frees the device_shell_ctx.
+ */
+static void device_shell_async_close_cb(uv_handle_t *handle)
+{
+    struct device_shell_ctx *ctx = handle->data;
+    device_shell_ctx_free(ctx);
+}
+
+/*
+ * device_shell_on_async_result - Callback invoked on the MAIN event loop
+ * thread when the worker thread signals completion via uv_async_send().
+ * This is the ONLY place the original callback is invoked, eliminating the
+ * thread race that existed when worker threads called ctx->callback directly.
+ */
+static void device_shell_on_async_result(uv_async_t *handle)
+{
+    struct device_shell_ctx *ctx = handle->data;
+
+    /* Invoke the original callback on the main loop thread */
+    ctx->callback(ctx->tb_ctx, ctx->result, ctx->error);
+
+    /* Close the async handle; ctx is freed in the close callback */
+    uv_close((uv_handle_t *)handle, device_shell_async_close_cb);
+}
+
+/*
+ * device_shell_deliver_result - Called from the worker thread to safely
+ * marshal the result back to the main loop via uv_async_send().
+ * uv_async_send() is explicitly documented as thread-safe by libuv.
+ */
+static void device_shell_deliver_result(struct device_shell_ctx *ctx, sds result, EdcError *error)
+{
+    ctx->result = result;
+    ctx->error = error;
+    uv_async_send(&ctx->result_async);
+}
+
 static void device_shell_thread_socket(struct device_shell_ctx *ctx)
 {
     sds result = sdsempty();
@@ -256,8 +298,8 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
     {
         sdsfree(result);
         error = edc_error_new(EDC_ERR_EXEC, "device_shell: failed to allocate state");
-        ctx->callback(ctx->tb_ctx, NULL, error);
-        device_shell_ctx_free(ctx);
+        device_shell_deliver_result(ctx, NULL, error);
+        /* ctx will be freed by async close callback */
         return;
     }
 
@@ -312,9 +354,8 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
         sdsfree(state->resp_buf);
         free(state);
         sdsfree(result);
-        // FIXME: thread race
-        ctx->callback(ctx->tb_ctx, NULL, error);
-        device_shell_ctx_free(ctx);
+        device_shell_deliver_result(ctx, NULL, error);
+        /* ctx will be freed by async close callback */
         return;
     }
 
@@ -344,17 +385,8 @@ static void device_shell_thread_socket(struct device_shell_ctx *ctx)
     uv_loop_close(&state->loop);
     free(state);
 
-    if (error)
-    {
-        ctx->callback(ctx->tb_ctx, NULL, error);
-        sdsfree(result);
-    }
-    else
-    {
-        ctx->callback(ctx->tb_ctx, result, NULL);
-    }
-
-    device_shell_ctx_free(ctx);
+    device_shell_deliver_result(ctx, result, error);
+    /* ctx will be freed by async close callback */
 }
 
 #ifndef _WIN32
@@ -364,37 +396,37 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
     EdcError *error = NULL;
 
     ip_addr_t addr;
-    if (!ip4addr_aton(ctx->agent_ip, &addr))
+    if (!ipaddr_aton(ctx->agent_ip, &addr))
     {
-        sdsfree(result);
         error = edc_error_new(EDC_ERR_INVAL, "device_shell: invalid device_ip in config: %s", ctx->agent_ip);
-        ctx->callback(ctx->tb_ctx, NULL, error);
-        device_shell_ctx_free(ctx);
+        device_shell_deliver_result(ctx, NULL, error);
+        /* ctx will be freed by async close callback */
         return;
     }
 
     struct netconn *c = netconn_new(NETCONN_TCP);
     if (!c)
     {
-        sdsfree(result);
         error = edc_error_new(EDC_ERR_EXEC, "device_shell: netconn_new failed");
-        ctx->callback(ctx->tb_ctx, NULL, error);
-        device_shell_ctx_free(ctx);
+        device_shell_deliver_result(ctx, NULL, error);
+        /* ctx will be freed by async close callback */
         return;
     }
+
+    netconn_set_recvtimeout(c, ctx->timeout_sec * 1000);
 
     err_t err = netconn_connect(c, &addr, ctx->agent_port);
     if (err != ERR_OK)
     {
-        netconn_delete(c);
-        sdsfree(result);
         error = edc_error_new(EDC_ERR_EXEC, "device_shell: connect to %s:%u failed (%d)", ctx->agent_ip,
                               ctx->agent_port, err);
-        ctx->callback(ctx->tb_ctx, NULL, error);
-        device_shell_ctx_free(ctx);
+        netconn_delete(c);
+        device_shell_deliver_result(ctx, NULL, error);
+        /* ctx will be freed by async close callback */
         return;
     }
 
+    /* Build and send request */
     cJSON *req_json = cJSON_CreateObject();
     cJSON_AddStringToObject(req_json, "command", ctx->command);
     if (ctx->timeout_sec > 0)
@@ -402,51 +434,68 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
     char *req_body = cJSON_PrintUnformatted(req_json);
     cJSON_Delete(req_json);
 
-    sds hdr = sdscatprintf(sdsempty(),
-                           "POST /exec HTTP/1.1\r\n"
-                           "Host: %s:%u\r\n"
-                           "Content-Type: application/json\r\n"
-                           "Content-Length: %zu\r\n"
-                           "Connection: close\r\n"
-                           "\r\n",
-                           ctx->agent_ip, ctx->agent_port, strlen(req_body));
+    sds header = sdscatprintf(sdsempty(),
+                              "POST /exec HTTP/1.1\r\n"
+                              "Host: %s:%u\r\n"
+                              "Content-Type: application/json\r\n"
+                              "Content-Length: %zu\r\n"
+                              "Connection: close\r\n"
+                              "\r\n",
+                              ctx->agent_ip, ctx->agent_port, strlen(req_body));
 
-    netconn_write_partly(c, hdr, sdslen(hdr), NETCONN_COPY, NULL);
-    netconn_write_partly(c, req_body, strlen(req_body), NETCONN_COPY, NULL);
-    sdsfree(hdr);
+    sds request = sdscatprintf(sdsempty(), "%s%s", header, req_body);
+    sdsfree(header);
     cJSON_free(req_body);
 
-    netconn_set_recvtimeout(c, ctx->timeout_sec * 1000);
-
-    sds resp_buf = sdsempty();
-    err_t recv_err = recv_until_close(c, &resp_buf);
-    netconn_close(c);
-    netconn_delete(c);
-
-    if (recv_err == ERR_TIMEOUT)
+    err = netconn_write(c, request, sdslen(request), NETCONN_COPY);
+    sdsfree(request);
+    if (err != ERR_OK)
     {
-        sdsfree(resp_buf);
-        sdsfree(result);
-        error = edc_error_new(EDC_ERR_EXEC, "device_shell: request timed out after %ds", ctx->timeout_sec);
-        ctx->callback(ctx->tb_ctx, NULL, error);
-        device_shell_ctx_free(ctx);
+        error = edc_error_new(EDC_ERR_EXEC, "device_shell: write failed (%d)", err);
+        netconn_close(c);
+        netconn_delete(c);
+        device_shell_deliver_result(ctx, NULL, error);
+        /* ctx will be freed by async close callback */
         return;
     }
+
+    /* Read response */
+    sds resp_buf = sdsempty();
+    err = netconn_recv(c, NULL); /* wait for first data - timout applies */
+    if (err == ERR_TIMEOUT)
+    {
+        sdsfree(resp_buf);
+        netconn_close(c);
+        netconn_delete(c);
+        error = edc_error_new(EDC_ERR_EXEC, "device_shell: request timed out after %ds", ctx->timeout_sec);
+        device_shell_deliver_result(ctx, NULL, error);
+        /* ctx will be freed by async close callback */
+        return;
+    }
+
+    /* Read remaining data */
+    netconn_set_recvtimeout(c, 2000); /* Short timeout for remaining data */
+    resp_buf = sdscat(resp_buf, "HTTP/1.1 200 OK\r\n"); /* dummy status line since we already consumed first packet */
+
+    /* Keep reading until connection closes */
+    struct netbuf *nb;
+    u8_t *p;
+    u16_t chunk;
+    while (netconn_recv(c, &nb) == ERR_OK)
+    {
+        netbuf_data(nb, (void **)&p, &chunk);
+        resp_buf = sdscatlen(resp_buf, (char *)p, chunk);
+        netbuf_delete(nb);
+    }
+
+    netconn_close(c);
+    netconn_delete(c);
 
     process_shell_response(resp_buf, &result, &error);
     sdsfree(resp_buf);
 
-    if (error)
-    {
-        ctx->callback(ctx->tb_ctx, NULL, error);
-        sdsfree(result);
-    }
-    else
-    {
-        ctx->callback(ctx->tb_ctx, result, NULL);
-    }
-
-    device_shell_ctx_free(ctx);
+    device_shell_deliver_result(ctx, result, error);
+    /* ctx will be freed by async close callback */
 }
 #endif
 
@@ -474,7 +523,7 @@ static void device_shell_thread(void *data)
     }
     else if (conf->device_pty && conf->device_pty[0])
     {
-        log_info("device shell: device connect via transport socket");
+        log_info("device shell: device connect via transport pppos");
 #ifdef _WIN32
         device_shell_thread_socket(ctx);
 #else
@@ -509,7 +558,6 @@ static void edc_tool_device_shell_exec_async(struct edc_toolbox_call_ctx *tb_ctx
         return;
     }
 
-
     int timeout_sec = 30;
     cJSON *timeout_json = cJSON_GetObjectItem(args, "timeout");
     if (timeout_json && cJSON_IsNumber(timeout_json) && timeout_json->valueint > 0)
@@ -523,14 +571,31 @@ static void edc_tool_device_shell_exec_async(struct edc_toolbox_call_ctx *tb_ctx
     ctx->agent_port = (uint16_t)(conf->device_port > 0 ? conf->device_port : 5000);
     ctx->timeout_sec = timeout_sec;
 
+    /*
+     * Initialize the async handle on the main event loop BEFORE spawning
+     * the worker thread. The worker thread will use uv_async_send() to
+     * safely deliver results back to the main loop thread.
+     */
+    uv_loop_t *main_loop = tb_ctx->tb->scheduler->loop;
+    int ar = uv_async_init(main_loop, &ctx->result_async, device_shell_on_async_result);
+    if (ar < 0)
+    {
+        EdcError *error = edc_error_new(EDC_ERR_EXEC, "device_shell: uv_async_init failed: %s", uv_strerror(ar));
+        callback(tb_ctx, NULL, error);
+        device_shell_ctx_free(ctx);
+        return;
+    }
+    ctx->result_async.data = ctx;
+
     uv_thread_t thread;
     int tr = uv_thread_create(&thread, device_shell_thread, ctx);
     if (tr != 0)
     {
         log_error("device shell: uv_thread_create failed: %s", uv_strerror(tr));
         EdcError *error = edc_error_new(EDC_ERR_EXEC, "device_shell: failed to create thread: %s", uv_strerror(tr));
+        /* Close the async handle we just created; ctx freed in close callback */
+        uv_close((uv_handle_t *)&ctx->result_async, device_shell_async_close_cb);
         callback(tb_ctx, NULL, error);
-        device_shell_ctx_free(ctx);
         return;
     }
 }

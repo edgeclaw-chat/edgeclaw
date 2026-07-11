@@ -29,6 +29,9 @@ struct device_file_ctx
 {
     struct edc_toolbox_call_ctx *tb_ctx;
     void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *);
+    uv_async_t result_async;    /* async handle to marshal result back to main loop */
+    sds result;                  /* result from worker thread (consumed by main-loop callback) */
+    EdcError *error;             /* error from worker thread (consumed by main-loop callback) */
     sds agent_ip;
     uint16_t agent_port;
 
@@ -53,6 +56,44 @@ static void device_file_ctx_free(struct device_file_ctx *ctx)
     if (ctx->last_error)
         edc_error_free(ctx->last_error);
     free(ctx);
+}
+
+/*
+ * device_file_async_close_cb - Callback invoked when the uv_async_t handle
+ * has been fully closed. Frees the device_file_ctx.
+ */
+static void device_file_async_close_cb(uv_handle_t *handle)
+{
+    struct device_file_ctx *ctx = handle->data;
+    device_file_ctx_free(ctx);
+}
+
+/*
+ * device_file_on_async_result - Callback invoked on the MAIN event loop
+ * thread when the worker thread signals completion via uv_async_send().
+ * This is the ONLY place the original callback is invoked.
+ */
+static void device_file_on_async_result(uv_async_t *handle)
+{
+    struct device_file_ctx *ctx = handle->data;
+
+    /* Invoke the original callback on the main loop thread */
+    ctx->callback(ctx->tb_ctx, ctx->result, ctx->error);
+
+    /* Close the async handle; ctx is freed in the close callback */
+    uv_close((uv_handle_t *)handle, device_file_async_close_cb);
+}
+
+/*
+ * device_file_deliver_result - Called from the worker thread to safely
+ * marshal the result back to the main loop via uv_async_send().
+ * uv_async_send() is thread-safe.
+ */
+static void device_file_deliver_result(struct device_file_ctx *ctx, sds result, EdcError *error)
+{
+    ctx->result = result;
+    ctx->error = error;
+    uv_async_send(&ctx->result_async);
 }
 
 #ifndef _WIN32
@@ -81,7 +122,7 @@ static void device_file_send_error(struct device_file_ctx *ctx, const char *fmt,
     va_end(ap);
 
     EdcError *error = edc_error_new(EDC_ERR_EXEC, "%s", msg);
-    ctx->callback(ctx->tb_ctx, NULL, error);
+    device_file_deliver_result(ctx, NULL, error);
     sdsfree(msg);
 }
 
@@ -542,7 +583,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
                         ctx->remote_path);
         free(chunk_buf);
         close(fd);
-        ctx->callback(ctx->tb_ctx, final_result, NULL);
+        device_file_deliver_result(ctx, final_result, NULL);
         return true;
     }
 
@@ -601,7 +642,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
     final_result = sdscatprintf(final_result, "Uploaded %zu bytes in %d chunk(s) to %s",
                     raw_len, chunk_idx, ctx->remote_path);
 
-    ctx->callback(ctx->tb_ctx, final_result, NULL);
+    device_file_deliver_result(ctx, final_result, NULL);
     return true;
 }
 
@@ -821,7 +862,7 @@ static bool do_device_download(struct device_file_ctx *ctx,
 
     sds result = sdsempty();
     result = sdscatprintf(result, "Downloaded %zu bytes to %s", received, ctx->local_path);
-    ctx->callback(ctx->tb_ctx, result, NULL);
+    device_file_deliver_result(ctx, result, NULL);
     return true;
 }
 
@@ -831,8 +872,7 @@ static void device_file_thread_socket(struct device_file_ctx *ctx)
         do_device_upload(ctx, do_upload_chunk_socket);
     else
         do_device_download(ctx, do_download_chunk_socket);
-
-    device_file_ctx_free(ctx);
+    /* ctx will be freed by async close callback */
 }
 
 #ifndef _WIN32
@@ -842,8 +882,7 @@ static void device_file_thread_lwip(struct device_file_ctx *ctx)
         do_device_upload(ctx, do_upload_chunk_lwip);
     else
         do_device_download(ctx, do_download_chunk_lwip);
-
-    device_file_ctx_free(ctx);
+    /* ctx will be freed by async close callback */
 }
 #endif
 
@@ -934,6 +973,16 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
     ctx->is_upload = true;
     ctx->timeout_sec = timeout_sec;
 
+    uv_loop_t *main_loop = tb_ctx->tb->scheduler->loop;
+    int ar = uv_async_init(main_loop, &ctx->result_async, device_file_on_async_result);
+    if (ar < 0) {
+        EdcError *error = edc_error_new(EDC_ERR_EXEC, "device_upload: uv_async_init failed: %s", uv_strerror(ar));
+        callback(tb_ctx, NULL, error);
+        device_file_ctx_free(ctx);
+        return;
+    }
+    ctx->result_async.data = ctx;
+
     uv_thread_t tid;
     uv_thread_create(&tid, device_file_thread, ctx);
 }
@@ -976,6 +1025,16 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
     ctx->local_path = sdsnew(cJSON_GetStringValue(local));
     ctx->is_upload = false;
     ctx->timeout_sec = timeout_sec;
+
+    uv_loop_t *main_loop = tb_ctx->tb->scheduler->loop;
+    int ar = uv_async_init(main_loop, &ctx->result_async, device_file_on_async_result);
+    if (ar < 0) {
+        EdcError *error = edc_error_new(EDC_ERR_EXEC, "device_download: uv_async_init failed: %s", uv_strerror(ar));
+        callback(tb_ctx, NULL, error);
+        device_file_ctx_free(ctx);
+        return;
+    }
+    ctx->result_async.data = ctx;
 
     uv_thread_t tid;
     uv_thread_create(&tid, device_file_thread, ctx);
