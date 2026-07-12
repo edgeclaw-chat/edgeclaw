@@ -13,6 +13,7 @@
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_file_utils.h"
+#include "edc_shell_token.h"
 #include "utlist_fix.h"
 #include <log.h>
 #include <errno.h>
@@ -23,74 +24,19 @@
 
 sds *edc_shell_split_pipeline(const char *input, int *count)
 {
-    int cap = 4;
+    int tok_count = 0;
+    edc_shell_token_t *tokens = edc_shell_tokenize(input, &tok_count);
+
     int n = 0;
-    sds *segs = malloc((size_t)cap * sizeof(sds));
-    sds cur = sdsempty();
-    bool in_dq = false;
-    bool in_sq = false;
+    int *ranges = edc_shell_tokens_split_pipe(tokens, tok_count, &n);
 
-    for (const char *p = input; *p; p++)
-    {
-        if (in_dq)
-        {
-            if (*p == '"')
-            {
-                cur = sdscatlen(cur, p, 1);
-                in_dq = false;
-            }
-            else if (*p == '\\' && *(p + 1))
-            {
-                p++;
-                cur = sdscatlen(cur, p, 1);
-            }
-            else
-            {
-                cur = sdscatlen(cur, p, 1);
-            }
-        }
-        else if (in_sq)
-        {
-            if (*p == '\'')
-            {
-                cur = sdscatlen(cur, p, 1);
-                in_sq = false;
-            }
-            else
-            {
-                cur = sdscatlen(cur, p, 1);
-            }
-        }
-        else
-        {
-            if (*p == '|')
-            {
-                sdstrim(cur, " \t");
-                if (n >= cap) { cap *= 2; segs = realloc(segs, (size_t)cap * sizeof(sds)); }
-                segs[n++] = cur;
-                cur = sdsempty();
-            }
-            else if (*p == '"')
-            {
-                in_dq = true;
-                cur = sdscatlen(cur, p, 1);
-            }
-            else if (*p == '\'')
-            {
-                in_sq = true;
-                cur = sdscatlen(cur, p, 1);
-            }
-            else
-            {
-                cur = sdscatlen(cur, p, 1);
-            }
-        }
-    }
+    sds *segs = malloc((size_t)n * sizeof(sds));
+    for (int i = 0; i < n; i++)
+        segs[i] = edc_shell_tokens_join(tokens, ranges[i * 2], ranges[i * 2 + 1]);
 
-    sdstrim(cur, " \t");
-    if (n >= cap) { cap *= 2; segs = realloc(segs, (size_t)cap * sizeof(sds)); }
-    segs[n++] = cur;
-
+    for (int i = 0; i < tok_count; i++) edc_shell_token_free(&tokens[i]);
+    free(tokens);
+    free(ranges);
     *count = n;
     return segs;
 }
@@ -406,128 +352,144 @@ void edc_shell_strip_redirects(sds *segment,
     *out_stderr = NULL;
     *out_input_file = NULL;
 
-    sds seg = *segment;
-    sds clean = sdsempty();
-    bool in_dq = false, in_sq = false;
-    const char *p = seg;
+    int tok_count = 0;
+    edc_shell_token_t *tokens = edc_shell_tokenize(*segment, &tok_count);
 
-    while (*p)
+    /* scan for redirect tokens, collect surviving text token indices */
+    int *keep = malloc((size_t)tok_count * sizeof(int));
+    int keep_n = 0;
+    int i = 0;
+
+    while (i < tok_count)
     {
-        if (in_dq)
+        if (tokens[i].type == TOK_REDIR_OUT || tokens[i].type == TOK_REDIR_APPEND)
         {
-            if (*p == '"')
+            bool is_stderr = false;
+            if (i > 0 && tokens[i - 1].type == TOK_TEXT && tokens[i - 1].value)
             {
-                clean = sdscatlen(clean, p, 1);
-                in_dq = false;
-            }
-            else if (*p == '\\' && *(p + 1))
-            {
-                clean = sdscatlen(clean, p, 1); p++;
-                clean = sdscatlen(clean, p, 1);
-            }
-            else
-            {
-                clean = sdscatlen(clean, p, 1);
-            }
-            p++;
-        }
-        else if (in_sq)
-        {
-            if (*p == '\'')
-            {
-                clean = sdscatlen(clean, p, 1);
-                in_sq = false;
-            }
-            else
-            {
-                clean = sdscatlen(clean, p, 1);
-            }
-            p++;
-        }
-        else
-        {
-            if (*p == '"')
-            {
-                in_dq = true;
-                clean = sdscatlen(clean, p, 1);
-                p++;
-            }
-            else if (*p == '\'')
-            {
-                in_sq = true;
-                clean = sdscatlen(clean, p, 1);
-                p++;
-            }
-            else if (*p == '>')
-            {
-                bool is_stderr = false;
-                size_t clen = sdslen(clean);
-                if (clen > 0 && clean[clen - 1] == '2')
+                sds tv = tokens[i - 1].value;
+                size_t slen = sdslen(tv);
+                if (slen > 0 && tv[slen - 1] == '2')
                 {
-                    if (clen == 1 || clean[clen - 2] == ' ' || clean[clen - 2] == '\t')
+                    if (slen == 1 || tv[slen - 2] == ' ' || tv[slen - 2] == '\t')
+                    {
                         is_stderr = true;
+                        sdssetlen(tv, slen - 1);
+                        sdstrim(tv, " \t");
+                        if (sdslen(tv) == 0 && keep_n > 0) keep_n--;
+                    }
                 }
-                bool is_append = (*(p + 1) == '>');
-                p++;
-                if (is_append) p++;
+            }
 
+            bool is_append = (tokens[i].type == TOK_REDIR_APPEND);
+            i++; /* skip redirect token */
+
+            if (i < tok_count && tokens[i].type == TOK_TEXT && tokens[i].value)
+            {
+                /* split first word as filename, keep rest */
+                sds val = tokens[i].value;
+                char *sp = strchr(val, ' ');
+                sds fname;
+                if (sp)
+                {
+                    fname = sdsnewlen(val, (size_t)(sp - val));
+                    sds rest = sdsnew(sp + 1);
+                    sdstrim(rest, " \t");
+                    sdsfree(tokens[i].value);
+                    tokens[i].value = rest; /* modified token holds remaining text */
+                }
+                else
+                {
+                    fname = sdsdup(val);
+                    i++; /* consume token */
+                }
                 if (is_stderr)
                 {
-                    sdssetlen(clean, clen - 1);
-                    sdstrim(clean, " \t");
-                }
-
-                while (*p == ' ' || *p == '\t') p++;
-                const char *fstart = p;
-                while (*p && *p != ' ' && *p != '\t' && *p != '>' && *p != '<' && *p != '|' && *p != '&') p++;
-
-                sds fname = sdsnewlen(fstart, (size_t)(p - fstart));
-                if (sdslen(fname) > 0)
-                {
-                    if (is_stderr)
-                    {
-                        if (*out_stderr) sdsfree(*out_stderr);
-                        *out_stderr = fname;
-                    }
-                    else
-                    {
-                        if (*out_stdout) sdsfree(*out_stdout);
-                        *out_stdout = fname;
-                        *out_append = is_append;
-                    }
+                    if (*out_stderr) sdsfree(*out_stderr);
+                    *out_stderr = fname;
                 }
                 else
                 {
-                    sdsfree(fname);
-                }
-            }
-            else if (*p == '<')
-            {
-                p++;
-                while (*p == ' ' || *p == '\t') p++;
-                const char *fstart = p;
-                while (*p && *p != ' ' && *p != '\t' && *p != '>' && *p != '<' && *p != '|' && *p != '&') p++;
-
-                sds fname = sdsnewlen(fstart, (size_t)(p - fstart));
-                if (sdslen(fname) > 0)
-                {
-                    if (*out_input_file) sdsfree(*out_input_file);
-                    *out_input_file = fname;
-                }
-                else
-                {
-                    sdsfree(fname);
+                    if (*out_stdout) sdsfree(*out_stdout);
+                    *out_stdout = fname;
+                    *out_append = is_append;
                 }
             }
             else
             {
-                clean = sdscatlen(clean, p, 1);
-                p++;
+                i++;
             }
+            continue;
         }
+
+        if (tokens[i].type == TOK_REDIR_IN)
+        {
+            i++;
+            if (i < tok_count && tokens[i].type == TOK_TEXT && tokens[i].value)
+            {
+                sds val = tokens[i].value;
+                char *sp = strchr(val, ' ');
+                if (sp)
+                {
+                    if (*out_input_file) sdsfree(*out_input_file);
+                    *out_input_file = sdsnewlen(val, (size_t)(sp - val));
+                    sds rest = sdsnew(sp + 1);
+                    sdstrim(rest, " \t");
+                    sdsfree(tokens[i].value);
+                    tokens[i].value = rest;
+                }
+                else
+                {
+                    if (*out_input_file) sdsfree(*out_input_file);
+                    *out_input_file = sdsdup(val);
+                    i++;
+                }
+            }
+            else
+            {
+                i++;
+            }
+            continue;
+        }
+
+        if (tokens[i].type == TOK_PIPE || tokens[i].type == TOK_SEQ ||
+            tokens[i].type == TOK_BG || tokens[i].type == TOK_TEXT)
+        {
+            keep[keep_n++] = i;
+        }
+        i++;
     }
 
-    sdstrim(clean, " \t");
+    /* rebuild segment from kept tokens */
+    sds clean;
+    if (keep_n == 0)
+    {
+        clean = sdsempty();
+    }
+    else
+    {
+        clean = sdsempty();
+        for (int i = 0; i < keep_n; i++)
+        {
+            edc_shell_token_t *t = &tokens[keep[i]];
+            if (t->type == TOK_TEXT && t->value)
+            {
+                if (sdslen(clean) > 0) clean = sdscat(clean, " ");
+                clean = sdscatsds(clean, t->value);
+            }
+            else if (t->type == TOK_BG)
+                clean = sdscat(clean, " &");
+            else if (t->type == TOK_PIPE)
+                clean = sdscat(clean, " |");
+            else if (t->type == TOK_SEQ)
+                clean = sdscat(clean, " ;");
+        }
+        sdstrim(clean, " \t");
+    }
+
+    for (int i = 0; i < tok_count; i++) edc_shell_token_free(&tokens[i]);
+    free(tokens);
+    free(keep);
     sdsfree(*segment);
     *segment = clean;
 }
@@ -664,44 +626,19 @@ static struct edc_task *shell_exec_pipeline(struct edc_agent *agent, struct edc_
 
 sds *edc_shell_split_sequential(const char *input, int *count)
 {
-    int cap = 4;
+    int tok_count = 0;
+    edc_shell_token_t *tokens = edc_shell_tokenize(input, &tok_count);
+
     int n = 0;
-    sds *segs = malloc((size_t)cap * sizeof(sds));
-    sds cur = sdsempty();
-    bool in_dq = false, in_sq = false;
+    int *ranges = edc_shell_tokens_split_seq(tokens, tok_count, &n);
 
-    for (const char *p = input; *p; p++)
-    {
-        if (in_dq)
-        {
-            if (*p == '"') in_dq = false;
-            else if (*p == '\\' && *(p + 1)) { cur = sdscatlen(cur, p, 1); p++; }
-            cur = sdscatlen(cur, p, 1);
-        }
-        else if (in_sq)
-        {
-            if (*p == '\'') in_sq = false;
-            cur = sdscatlen(cur, p, 1);
-        }
-        else
-        {
-            if (*p == ';')
-            {
-                sdstrim(cur, " \t");
-                if (n >= cap) { cap *= 2; segs = realloc(segs, (size_t)cap * sizeof(sds)); }
-                segs[n++] = cur;
-                cur = sdsempty();
-            }
-            else if (*p == '"') { in_dq = true; cur = sdscatlen(cur, p, 1); }
-            else if (*p == '\'') { in_sq = true; cur = sdscatlen(cur, p, 1); }
-            else { cur = sdscatlen(cur, p, 1); }
-        }
-    }
+    sds *segs = malloc((size_t)n * sizeof(sds));
+    for (int i = 0; i < n; i++)
+        segs[i] = edc_shell_tokens_join(tokens, ranges[i * 2], ranges[i * 2 + 1]);
 
-    sdstrim(cur, " \t");
-    if (n >= cap) { cap *= 2; segs = realloc(segs, (size_t)cap * sizeof(sds)); }
-    segs[n++] = cur;
-
+    for (int i = 0; i < tok_count; i++) edc_shell_token_free(&tokens[i]);
+    free(tokens);
+    free(ranges);
     *count = n;
     return segs;
 }
