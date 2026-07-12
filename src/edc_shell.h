@@ -47,6 +47,9 @@ void edc_shell_strip_redirects(sds *segment, sds *out_stdout, bool *out_append,
 /* ; 分隔符拆分（引号感知），返回 sds 数组，*count 为段数 */
 sds *edc_shell_split_sequential(const char *input, int *count);
 
+/* 读取文件内容，失败时 *err_out 设错误消息 */
+sds edc_shell_read_file(const char *path, sds *err_out);
+
 /* 历史展开 (!n, !!)，需要 agent->history 中有缓存的历史记录 */
 sds edc_shell_expand_history(struct edc_agent *agent, const char *input);
 

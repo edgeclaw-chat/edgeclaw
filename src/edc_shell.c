@@ -14,6 +14,7 @@
 #include "edc_task_group.h"
 #include "edc_file_utils.h"
 #include "edc_shell_token.h"
+#include "edc_shell_ast.h"
 #include "utlist_fix.h"
 #include <log.h>
 #include <errno.h>
@@ -314,7 +315,7 @@ struct edc_task *edc_shell_spawn_task(
     return task;
 }
 
-static sds shell_read_file(const char *path, sds *err_out)
+sds edc_shell_read_file(const char *path, sds *err_out)
 {
     struct stat st;
     if (stat(path, &st) != 0)
@@ -563,7 +564,7 @@ static struct edc_task *shell_exec_pipeline(struct edc_agent *agent, struct edc_
         if (input_file)
         {
             sds err = NULL;
-            sds file_content = shell_read_file(input_file, &err);
+            sds file_content = edc_shell_read_file(input_file, &err);
             if (file_content)
             {
                 if (opts.input && sdslen(opts.input) > 0)
@@ -924,56 +925,22 @@ bool edc_shell_execute(struct edc_agent *agent, struct edc_actor *actor,
     const char *body = is_at ? message->content + 1 : message->content;
 
     sds trimmed = sdstrim(sdsnew(body), " \t");
-    if (sdslen(trimmed) == 0)
-    {
-        sdsfree(trimmed);
-        return true;
-    }
+    if (sdslen(trimmed) == 0) { sdsfree(trimmed); return true; }
     sdsfree(trimmed);
 
-    /* Phase 3: split on ; for sequential execution */
-    int seq_count = 0;
-    sds *seq_inputs = edc_shell_split_sequential(body, &seq_count);
+    /* expand !n / !! history references */
+    sds hist_expanded = edc_shell_expand_history(agent, body);
 
-    struct edc_task *prev_across_seq = NULL;
-    for (int si = 0; si < seq_count; si++)
-    {
-        if (sdslen(seq_inputs[si]) == 0) continue;
+    /* tokenize → parse → execute via AST */
+    int tok_count = 0;
+    edc_shell_token_t *tokens = edc_shell_tokenize(hist_expanded, &tok_count);
+    sdsfree(hist_expanded);
 
-        /* Phase 4: expand !n / !! history references (before pipe split) */
-        sds hist_expanded = edc_shell_expand_history(agent, seq_inputs[si]);
+    ast_node_t *root = ast_parse(tokens, tok_count, is_at);
+    ast_execute(agent, actor, message->channel, root);
+    ast_free(root);
 
-        int seg_count = 0;
-        sds *segments = edc_shell_split_pipeline(hist_expanded, &seg_count);
-        sdsfree(hist_expanded);
-
-        /* strip leading '@' from subsequent pipe segments (backward compat) */
-        if (is_at)
-        {
-            for (int i = 1; i < seg_count; i++)
-            {
-                if (segments[i][0] == '@')
-                {
-                    sds t = sdsnew(segments[i] + 1);
-                    sdstrim(t, " \t");
-                    sdsfree(segments[i]);
-                    segments[i] = t;
-                }
-            }
-        }
-
-        /* execute this ; segment's pipeline.  initial_prev carries the
-         * last task from the previous ; segment, creating a sequential
-         * chain with TASK_DEP_SEQUENCE (wait, no output injection). */
-        prev_across_seq = shell_exec_pipeline(agent, actor, message->channel,
-                                               segments, seg_count, is_at,
-                                               prev_across_seq);
-
-        for (int i = 0; i < seg_count; i++) sdsfree(segments[i]);
-        free(segments);
-    }
-
-    for (int i = 0; i < seq_count; i++) sdsfree(seq_inputs[i]);
-    free(seq_inputs);
+    for (int i = 0; i < tok_count; i++) edc_shell_token_free(&tokens[i]);
+    free(tokens);
     return true;
 }
