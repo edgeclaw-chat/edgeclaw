@@ -14,6 +14,7 @@ struct edc_task_group *edc_task_group_new(struct edc_task *leader)
     group->group_id = strdup(leader->task_id);
     group->leader = leader;
     group->members = leader;
+    leader->group_next = NULL;
     group->member_count = 1;
     group->is_orphaned = false;
     group->history = cJSON_CreateArray();
@@ -47,6 +48,9 @@ void edc_task_group_free(struct edc_task_group *group)
 void edc_task_group_add_task(struct edc_task_group *group, struct edc_task *task)
 {
     if (!group || !task) return;
+
+    /* already a member of this group */
+    if (task->group == group) return;
 
     free(task->group_id);
     task->group_id = strdup(group->group_id);

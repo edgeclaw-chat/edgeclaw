@@ -547,13 +547,238 @@ static void deser_rebuild_group_history(struct edc_session *session,
     }
 }
 
+static void deser_session_meta(struct edc_session *session, cJSON *sj)
+{
+    if (!sj) return;
+    cJSON *name_j = cJSON_GetObjectItem(sj, "name");
+    if (name_j && cJSON_IsString(name_j)) {
+        if (session->name) sdsfree(session->name);
+        session->name = sdsnew(cJSON_GetStringValue(name_j));
+    }
+    cJSON *la_j = cJSON_GetObjectItem(sj, "last_active");
+    if (la_j && cJSON_IsString(la_j)) {
+        if (session->last_active) sdsfree(session->last_active);
+        session->last_active = sdsnew(cJSON_GetStringValue(la_j));
+    }
+    cJSON *ncs_j = cJSON_GetObjectItem(sj, "next_completion_seq");
+    if (ncs_j && cJSON_IsNumber(ncs_j))
+        session->next_completion_seq = (uint32_t)cJSON_GetNumberValue(ncs_j);
+}
+
+static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
+{
+    cJSON *tasks_json = cJSON_GetObjectItem(json, "tasks");
+    if (!tasks_json || !cJSON_IsArray(tasks_json)) return;
+
+    size_t tcount = cJSON_GetArraySize(tasks_json);
+    for (size_t i = 0; i < tcount; i++) {
+        cJSON *tj = cJSON_GetArrayItem(tasks_json, i);
+        if (!tj) continue;
+        const char *task_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "task_id"));
+        if (!task_id) continue;
+
+        cJSON *ch_json = cJSON_GetObjectItem(tj, "channel");
+        struct edc_channel *ch = ch_json ? edc_channel_from_json(ch_json) : NULL;
+
+        struct edc_task *task = edc_task_new(task_id,
+            cJSON_GetStringValue(cJSON_GetObjectItem(tj, "session_id")) ?: "",
+            cJSON_GetStringValue(cJSON_GetObjectItem(tj, "group_id")) ?: "",
+            cJSON_GetStringValue(cJSON_GetObjectItem(tj, "description")) ?: "", ch);
+        if (!task) continue;
+
+        task->state = degrade_state(edc_task_classify_state(
+            cJSON_GetStringValue(cJSON_GetObjectItem(tj, "state"))));
+
+        cJSON *v;
+        if ((v = cJSON_GetObjectItem(tj, "is_group_leader"))) task->is_group_leader = cJSON_IsTrue(v);
+        if ((v = cJSON_GetObjectItem(tj, "auto_reap")))       task->auto_reap = cJSON_IsTrue(v);
+        if ((v = cJSON_GetObjectItem(tj, "prompt_name")) && cJSON_IsString(v))
+            task->prompt_name = sdsnew(cJSON_GetStringValue(v));
+        if ((v = cJSON_GetObjectItem(tj, "prompt")) && cJSON_IsString(v))
+            task->prompt = sdsnew(cJSON_GetStringValue(v));
+        if ((v = cJSON_GetObjectItem(tj, "fork_point_msg_count")) && cJSON_IsNumber(v))
+            task->fork_point_msg_count = (size_t)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "output")) && cJSON_IsString(v))
+            task->output = sdsnew(cJSON_GetStringValue(v));
+        if ((v = cJSON_GetObjectItem(tj, "completion_seq")) && cJSON_IsNumber(v))
+            task->completion_seq = (uint32_t)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "redirect_stdout")) && cJSON_IsString(v))
+            task->redirect_stdout = sdsnew(cJSON_GetStringValue(v));
+        if ((v = cJSON_GetObjectItem(tj, "redirect_stderr")) && cJSON_IsString(v))
+            task->redirect_stderr = sdsnew(cJSON_GetStringValue(v));
+        if ((v = cJSON_GetObjectItem(tj, "redirect_append"))) task->redirect_append = cJSON_IsTrue(v);
+        if ((v = cJSON_GetObjectItem(tj, "todolist")) && cJSON_IsArray(v))
+            task->todolist = cJSON_Duplicate(v, 1);
+
+        task_map_put(id_map, task_id, task);
+    }
+}
+
+static void deser_fork_chains(cJSON *json, struct task_map_entry **id_map)
+{
+    cJSON *tasks_json = cJSON_GetObjectItem(json, "tasks");
+    if (!tasks_json || !cJSON_IsArray(tasks_json)) return;
+
+    size_t tcount = cJSON_GetArraySize(tasks_json);
+    for (size_t i = 0; i < tcount; i++) {
+        cJSON *tj = cJSON_GetArrayItem(tasks_json, i);
+        const char *task_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "task_id"));
+        const char *fork_p = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "forked_from_task_id"));
+        if (task_id && fork_p) {
+            struct edc_task *task = task_map_get(id_map, task_id);
+            struct edc_task *parent = task_map_get(id_map, fork_p);
+            if (task && parent) task->forked_from = parent;
+        }
+    }
+}
+
+static void deser_create_groups(cJSON *json, struct edc_session *session,
+                                 struct task_map_entry **id_map,
+                                 struct group_map_entry **group_map)
+{
+    cJSON *groups_json = cJSON_GetObjectItem(json, "groups");
+    if (!groups_json || !cJSON_IsArray(groups_json)) return;
+
+    size_t gcount = cJSON_GetArraySize(groups_json);
+    for (size_t i = 0; i < gcount; i++) {
+        cJSON *gj = cJSON_GetArrayItem(groups_json, i);
+        const char *group_id = cJSON_GetStringValue(cJSON_GetObjectItem(gj, "group_id"));
+        const char *leader_id = cJSON_GetStringValue(cJSON_GetObjectItem(gj, "leader_task_id"));
+        cJSON *orph = cJSON_GetObjectItem(gj, "is_orphaned");
+        bool is_orph = orph && cJSON_IsTrue(orph);
+
+        struct edc_task *leader = task_map_get(id_map, leader_id);
+        if (!leader && is_orph) {
+            cJSON *members = cJSON_GetObjectItem(gj, "member_task_ids");
+            if (members && cJSON_IsArray(members) && cJSON_GetArraySize(members) > 0)
+                leader = task_map_get(id_map,
+                    cJSON_GetStringValue(cJSON_GetArrayItem(members, 0)));
+        }
+        if (!leader) {
+            log_warn("deserialize: group %s leader %s not found",
+                     group_id ?: "(null)", leader_id ?: "(null)");
+            continue;
+        }
+
+        struct edc_task_group *group = edc_task_group_new(leader);
+        if (!group) continue;
+        if (is_orph) group->is_orphaned = true;
+
+        cJSON *members = cJSON_GetObjectItem(gj, "member_task_ids");
+        if (members && cJSON_IsArray(members)) {
+            size_t mcount = cJSON_GetArraySize(members);
+            for (size_t j = 0; j < mcount; j++) {
+                const char *mid = cJSON_GetStringValue(cJSON_GetArrayItem(members, j));
+                if (!mid || strcmp(mid, leader->task_id) == 0) continue;
+                struct edc_task *mt = task_map_get(id_map, mid);
+                if (mt) edc_task_group_add_task(group, mt);
+            }
+        }
+
+        edc_session_add_group(session, group);
+        if (group_id) group_map_put(group_map, group_id, group);
+    }
+}
+
+static void deser_deps(cJSON *json, struct task_map_entry **id_map)
+{
+    cJSON *tasks_json = cJSON_GetObjectItem(json, "tasks");
+    if (!tasks_json || !cJSON_IsArray(tasks_json)) return;
+
+    size_t tcount = cJSON_GetArraySize(tasks_json);
+    for (size_t i = 0; i < tcount; i++) {
+        cJSON *tj = cJSON_GetArrayItem(tasks_json, i);
+        const char *task_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "task_id"));
+        cJSON *deps_json = cJSON_GetObjectItem(tj, "deps");
+        if (!task_id || !deps_json || !cJSON_IsArray(deps_json)) continue;
+
+        struct edc_task *target = task_map_get(id_map, task_id);
+        if (!target) continue;
+
+        size_t dcount = cJSON_GetArraySize(deps_json);
+        for (size_t j = 0; j < dcount; j++) {
+            cJSON *dj = cJSON_GetArrayItem(deps_json, j);
+            const char *src_id = cJSON_GetStringValue(cJSON_GetObjectItem(dj, "source_task_id"));
+            struct edc_task *source = task_map_get(id_map, src_id);
+            if (!source) continue;
+
+            edc_task_dep_type dt = dep_type_from_name(
+                cJSON_GetStringValue(cJSON_GetObjectItem(dj, "type")));
+            edc_task_add_dependency(target, source, dt);
+
+            cJSON *comp = cJSON_GetObjectItem(dj, "completed");
+            cJSON *canc = cJSON_GetObjectItem(dj, "cancelled");
+            cJSON *inj  = cJSON_GetObjectItem(dj, "injected");
+
+            if (comp && cJSON_IsTrue(comp))
+                edc_task_on_dep_completed(target, source);
+            if (inj && cJSON_IsTrue(inj)) {
+                struct edc_task_dep *dep;
+                LL_FOREACH(target->deps, dep)
+                    if (dep->source == source) { dep->injected = true; break; }
+            }
+        }
+    }
+}
+
+static void deser_turns(cJSON *json, cJSON *messages_array,
+                         struct task_map_entry **id_map)
+{
+    cJSON *tasks_json = cJSON_GetObjectItem(json, "tasks");
+    if (!tasks_json || !cJSON_IsArray(tasks_json)) return;
+
+    size_t tcount = cJSON_GetArraySize(tasks_json);
+    for (size_t i = 0; i < tcount; i++) {
+        cJSON *tj = cJSON_GetArrayItem(tasks_json, i);
+        const char *task_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "task_id"));
+        struct edc_task *task = task_map_get(id_map, task_id);
+        if (!task) continue;
+
+        cJSON *turns_json = cJSON_GetObjectItem(tj, "turns");
+        if (turns_json && cJSON_IsArray(turns_json)) {
+            size_t trc = cJSON_GetArraySize(turns_json);
+            for (size_t j = 0; j < trc; j++) {
+                struct edc_turn *turn = turn_from_json(
+                    cJSON_GetArrayItem(turns_json, j), messages_array);
+                if (!turn) continue;
+                free(turn->task_id);
+                turn->task_id = strdup(task->task_id);
+                edc_task_add_turn(task, turn);
+            }
+        }
+
+        cJSON *at_json = cJSON_GetObjectItem(tj, "active_turn");
+        if (at_json) {
+            struct edc_turn *turn = turn_from_json(at_json, messages_array);
+            if (turn) {
+                free(turn->task_id);
+                turn->task_id = strdup(task->task_id);
+                task->active_turn = turn;
+            }
+        }
+    }
+}
+
+static void deser_global_ptrs(cJSON *sj, struct edc_session *session,
+                                struct edc_scheduler *sched,
+                                struct task_map_entry **id_map,
+                                struct group_map_entry **group_map)
+{
+    if (!sj) return;
+    const char *at_id = cJSON_GetStringValue(cJSON_GetObjectItem(sj, "active_task_id"));
+    if (at_id) session->active_task = task_map_get(id_map, at_id);
+    if (sched) {
+        const char *fg_id = cJSON_GetStringValue(cJSON_GetObjectItem(sj, "foreground_group_id"));
+        if (fg_id) sched->foreground_group = group_map_get(group_map, fg_id);
+    }
+}
+
 bool edc_state_deserialize(cJSON *json,
                            struct edc_session *session,
                            struct edc_scheduler *sched)
 {
     if (!json || !session) return false;
 
-    /* Validate version */
     cJSON *ver = cJSON_GetObjectItem(json, "version");
     if (!ver || !cJSON_IsNumber(ver) || cJSON_GetNumberValue(ver) != 1) {
         log_error("deserialize: unsupported or missing version");
@@ -566,307 +791,24 @@ bool edc_state_deserialize(cJSON *json,
         return false;
     }
 
-    /* ── Session metadata ── */
     cJSON *sj = cJSON_GetObjectItem(json, "session");
-    if (sj) {
-        cJSON *name_j = cJSON_GetObjectItem(sj, "name");
-        if (name_j && cJSON_IsString(name_j)) {
-            if (session->name) sdsfree(session->name);
-            session->name = sdsnew(cJSON_GetStringValue(name_j));
-        }
-        cJSON *la_j = cJSON_GetObjectItem(sj, "last_active");
-        if (la_j && cJSON_IsString(la_j)) {
-            if (session->last_active) sdsfree(session->last_active);
-            session->last_active = sdsnew(cJSON_GetStringValue(la_j));
-        }
-        cJSON *ncs_j = cJSON_GetObjectItem(sj, "next_completion_seq");
-        if (ncs_j && cJSON_IsNumber(ncs_j))
-            session->next_completion_seq = (uint32_t)cJSON_GetNumberValue(ncs_j);
-    }
+    deser_session_meta(session, sj);
 
-    /* ── Pass 1: Create all task objects (scalar fields only) ── */
     struct task_map_entry *id_map[TASK_MAP_BUCKETS] = {0};
-    cJSON *tasks_json = cJSON_GetObjectItem(json, "tasks");
+    deser_create_tasks(json, id_map);
+    deser_fork_chains(json, id_map);
 
-    if (tasks_json && cJSON_IsArray(tasks_json)) {
-        size_t tcount = cJSON_GetArraySize(tasks_json);
-        for (size_t i = 0; i < tcount; i++) {
-            cJSON *tj = cJSON_GetArrayItem(tasks_json, i);
-            if (!tj) continue;
+    /* drop old groups before rebuilding (session switch may reload) */
+    session->groups = NULL;
 
-            const char *task_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "task_id"));
-            const char *group_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "group_id"));
-            const char *sess_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "session_id"));
-            const char *desc    = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "description"));
-            const char *state_s = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "state"));
-
-            if (!task_id) continue;
-
-            /* Channel */
-            struct edc_channel *ch = NULL;
-            cJSON *ch_json = cJSON_GetObjectItem(tj, "channel");
-            if (ch_json) ch = edc_channel_from_json(ch_json);
-
-            struct edc_task *task = edc_task_new(task_id,
-                                                  sess_id ? sess_id : "",
-                                                  group_id ? group_id : "",
-                                                  desc ? desc : "",
-                                                  ch);
-            if (!task) continue;
-
-            /* State (with degradation) */
-            task->state = degrade_state(
-                edc_task_classify_state(state_s));
-
-            /* Scalar fields */
-            cJSON *is_leader = cJSON_GetObjectItem(tj, "is_group_leader");
-            if (is_leader) task->is_group_leader = cJSON_IsTrue(is_leader);
-
-            cJSON *auto_r = cJSON_GetObjectItem(tj, "auto_reap");
-            if (auto_r) task->auto_reap = cJSON_IsTrue(auto_r);
-
-            cJSON *pn = cJSON_GetObjectItem(tj, "prompt_name");
-            if (pn && cJSON_IsString(pn))
-                task->prompt_name = sdsnew(cJSON_GetStringValue(pn));
-
-            cJSON *pr = cJSON_GetObjectItem(tj, "prompt");
-            if (pr && cJSON_IsString(pr))
-                task->prompt = sdsnew(cJSON_GetStringValue(pr));
-
-            cJSON *fp = cJSON_GetObjectItem(tj, "fork_point_msg_count");
-            if (fp && cJSON_IsNumber(fp))
-                task->fork_point_msg_count = (size_t)cJSON_GetNumberValue(fp);
-
-            cJSON *out = cJSON_GetObjectItem(tj, "output");
-            if (out && cJSON_IsString(out))
-                task->output = sdsnew(cJSON_GetStringValue(out));
-
-            cJSON *cs = cJSON_GetObjectItem(tj, "completion_seq");
-            if (cs && cJSON_IsNumber(cs))
-                task->completion_seq = (uint32_t)cJSON_GetNumberValue(cs);
-
-            cJSON *rso = cJSON_GetObjectItem(tj, "redirect_stdout");
-            if (rso && cJSON_IsString(rso))
-                task->redirect_stdout = sdsnew(cJSON_GetStringValue(rso));
-
-            cJSON *rse = cJSON_GetObjectItem(tj, "redirect_stderr");
-            if (rse && cJSON_IsString(rse))
-                task->redirect_stderr = sdsnew(cJSON_GetStringValue(rse));
-
-            cJSON *ra = cJSON_GetObjectItem(tj, "redirect_append");
-            if (ra) task->redirect_append = cJSON_IsTrue(ra);
-
-            cJSON *tl = cJSON_GetObjectItem(tj, "todolist");
-            if (tl && cJSON_IsArray(tl))
-                task->todolist = cJSON_Duplicate(tl, 1);
-
-            task_map_put(id_map, task_id, task);
-        }
-    }
-
-    /* ── Pass 2: fork chains ── */
-    if (tasks_json && cJSON_IsArray(tasks_json)) {
-        size_t tcount = cJSON_GetArraySize(tasks_json);
-        for (size_t i = 0; i < tcount; i++) {
-            cJSON *tj = cJSON_GetArrayItem(tasks_json, i);
-            const char *task_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "task_id"));
-            const char *fork_parent = cJSON_GetStringValue(
-                cJSON_GetObjectItem(tj, "forked_from_task_id"));
-            if (task_id && fork_parent) {
-                struct edc_task *task = task_map_get(id_map, task_id);
-                struct edc_task *parent = task_map_get(id_map, fork_parent);
-                if (task && parent)
-                    task->forked_from = parent;
-            }
-        }
-    }
-
-    /* ── Create groups, populate members ── */
     struct group_map_entry *group_map[GROUP_MAP_BUCKETS] = {0};
-    cJSON *groups_json = cJSON_GetObjectItem(json, "groups");
-
-    if (groups_json && cJSON_IsArray(groups_json)) {
-        size_t gcount = cJSON_GetArraySize(groups_json);
-        for (size_t i = 0; i < gcount; i++) {
-            cJSON *gj = cJSON_GetArrayItem(groups_json, i);
-            const char *group_id = cJSON_GetStringValue(cJSON_GetObjectItem(gj, "group_id"));
-            const char *leader_id = cJSON_GetStringValue(cJSON_GetObjectItem(gj, "leader_task_id"));
-
-            struct edc_task *leader = task_map_get(id_map, leader_id);
-            cJSON *orph = cJSON_GetObjectItem(gj, "is_orphaned");
-            bool is_orph = orph && cJSON_IsTrue(orph);
-
-            if (!leader) {
-                if (is_orph) {
-                    /* orphaned group: pick first available member as anchor */
-                    cJSON *members = cJSON_GetObjectItem(gj, "member_task_ids");
-                    if (members && cJSON_IsArray(members) &&
-                        cJSON_GetArraySize(members) > 0) {
-                        const char *first_id = cJSON_GetStringValue(
-                            cJSON_GetArrayItem(members, 0));
-                        leader = task_map_get(id_map, first_id);
-                    }
-                }
-                if (!leader) {
-                    log_warn("deserialize: group %s leader %s not found",
-                             group_id ? group_id : "(null)",
-                             leader_id ? leader_id : "(null)");
-                    continue;
-                }
-            }
-
-            struct edc_task_group *group = edc_task_group_new(leader);
-            if (!group) continue;
-
-            if (is_orph) group->is_orphaned = true;
-
-            /* channel */
-            cJSON *ch_json = cJSON_GetObjectItem(gj, "channel");
-            if (ch_json && group->channel) {
-                /* group_new already created a default channel; replace if needed */
-                /* For now, keep the default from group_new */
-            }
-
-            /* Add remaining members.
-             * For orphaned groups, the anchor (leader) might not match
-             * leader_id from JSON, so dedup by the anchor's actual task_id. */
-            const char *anchor_id = leader->task_id;
-            cJSON *members = cJSON_GetObjectItem(gj, "member_task_ids");
-            if (members && cJSON_IsArray(members)) {
-                size_t mcount = cJSON_GetArraySize(members);
-                for (size_t j = 0; j < mcount; j++) {
-                    cJSON *mid = cJSON_GetArrayItem(members, j);
-                    const char *member_id = cJSON_GetStringValue(mid);
-                    if (!member_id) continue;
-                    if (strcmp(member_id, anchor_id) == 0)
-                        continue; /* anchor already added by group_new */
-                    struct edc_task *mt = task_map_get(id_map, member_id);
-                    if (mt)
-                        edc_task_group_add_task(group, mt);
-                }
-            }
-
-            edc_session_add_group(session, group);
-            if (group_id) group_map_put(group_map, group_id, group);
-        }
-    }
-
-    /* ── Pass 3: dependencies ── */
-    if (tasks_json && cJSON_IsArray(tasks_json)) {
-        size_t tcount = cJSON_GetArraySize(tasks_json);
-        for (size_t i = 0; i < tcount; i++) {
-            cJSON *tj = cJSON_GetArrayItem(tasks_json, i);
-            const char *task_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "task_id"));
-            cJSON *deps_json = cJSON_GetObjectItem(tj, "deps");
-            if (!task_id || !deps_json || !cJSON_IsArray(deps_json)) continue;
-
-            struct edc_task *target = task_map_get(id_map, task_id);
-            if (!target) continue;
-
-            size_t dcount = cJSON_GetArraySize(deps_json);
-            for (size_t j = 0; j < dcount; j++) {
-                cJSON *dj = cJSON_GetArrayItem(deps_json, j);
-                const char *src_id = cJSON_GetStringValue(
-                    cJSON_GetObjectItem(dj, "source_task_id"));
-                const char *type_s = cJSON_GetStringValue(
-                    cJSON_GetObjectItem(dj, "type"));
-
-                struct edc_task *source = task_map_get(id_map, src_id);
-                if (!source) continue;
-
-                edc_task_dep_type dtype = dep_type_from_name(type_s);
-                edc_task_add_dependency(target, source, dtype);
-
-                /* Apply completed / cancelled / injected flags */
-                cJSON *comp = cJSON_GetObjectItem(dj, "completed");
-                cJSON *canc = cJSON_GetObjectItem(dj, "cancelled");
-                cJSON *inj  = cJSON_GetObjectItem(dj, "injected");
-
-                if (comp && cJSON_IsTrue(comp))
-                    edc_task_on_dep_completed(target, source);
-
-                if (canc && cJSON_IsTrue(canc) && !(comp && cJSON_IsTrue(comp))) {
-                    /* find the dep node and mark cancelled */
-                    struct edc_task_dep *dep;
-                    LL_FOREACH(target->deps, dep) {
-                        if (dep->source == source && !dep->completed && !dep->cancelled) {
-                            dep->cancelled = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (inj && cJSON_IsTrue(inj)) {
-                    struct edc_task_dep *dep;
-                    LL_FOREACH(target->deps, dep) {
-                        if (dep->source == source) {
-                            dep->injected = true;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /* ── Restore turns ── */
-    if (tasks_json && cJSON_IsArray(tasks_json)) {
-        size_t tcount = cJSON_GetArraySize(tasks_json);
-        for (size_t i = 0; i < tcount; i++) {
-            cJSON *tj = cJSON_GetArrayItem(tasks_json, i);
-            const char *task_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "task_id"));
-            struct edc_task *task = task_map_get(id_map, task_id);
-            if (!task) continue;
-
-            /* Committed turns */
-            cJSON *turns_json = cJSON_GetObjectItem(tj, "turns");
-            if (turns_json && cJSON_IsArray(turns_json)) {
-                size_t trcount = cJSON_GetArraySize(turns_json);
-                for (size_t j = 0; j < trcount; j++) {
-                    cJSON *turn_j = cJSON_GetArrayItem(turns_json, j);
-                    struct edc_turn *turn = turn_from_json(turn_j, messages_array);
-                    if (turn) {
-                        free(turn->task_id);
-                        turn->task_id = strdup(task->task_id);
-                        edc_task_add_turn(task, turn);
-                    }
-                }
-            }
-
-            /* Active turn */
-            cJSON *at_json = cJSON_GetObjectItem(tj, "active_turn");
-            if (at_json) {
-                struct edc_turn *turn = turn_from_json(at_json, messages_array);
-                if (turn) {
-                    free(turn->task_id);
-                    turn->task_id = strdup(task->task_id);
-                    task->active_turn = turn;
-                }
-            }
-        }
-    }
-
-    /* ── Restore global pointers ── */
-    if (sj) {
-        const char *active_task_id = cJSON_GetStringValue(
-            cJSON_GetObjectItem(sj, "active_task_id"));
-        if (active_task_id)
-            session->active_task = task_map_get(id_map, active_task_id);
-
-        if (sched) {
-            const char *fg_id = cJSON_GetStringValue(
-                cJSON_GetObjectItem(sj, "foreground_group_id"));
-            if (fg_id)
-                sched->foreground_group = group_map_get(group_map, fg_id);
-        }
-    }
-
-    /* ── Rebuild group history from member task turns ── */
+    deser_create_groups(json, session, id_map, group_map);
+    deser_deps(json, id_map);
+    deser_turns(json, messages_array, id_map);
+    deser_global_ptrs(sj, session, sched, id_map, group_map);
     deser_rebuild_group_history(session, sched);
 
-    /* Cleanup maps */
     task_map_free(id_map);
     group_map_free(group_map);
-
     return true;
 }
