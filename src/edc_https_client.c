@@ -115,8 +115,7 @@ static int edc_https_on_header_field(llhttp_t *http, const char *at, size_t len)
     }
 
     req->header_in_field = true;
-    req->current_header_field =
-        sdscatlen(req->current_header_field ? req->current_header_field : sdsempty(), at, len);
+    req->current_header_field = sdscatlen(req->current_header_field ? req->current_header_field : sdsempty(), at, len);
     return 0;
 }
 
@@ -125,8 +124,7 @@ static int edc_https_on_header_value(llhttp_t *http, const char *at, size_t len)
     struct edc_https_request *req = EDC_CONTAINER_OF(http, struct edc_https_request, parser);
 
     req->header_in_field = false;
-    req->current_header_value =
-        sdscatlen(req->current_header_value ? req->current_header_value : sdsempty(), at, len);
+    req->current_header_value = sdscatlen(req->current_header_value ? req->current_header_value : sdsempty(), at, len);
     return 0;
 }
 
@@ -320,8 +318,8 @@ static void edc_https_client_on_tcp_write(uv_write_t *write_req, int status)
     if (req->mbedtls_send_bufs)
     {
         uv_write_t *wr = malloc(sizeof(uv_write_t));
-        if (uv_write(wr, (uv_stream_t *)&req->socket, &req->mbedtls_send_bufs->buf, 1,
-                     edc_https_client_on_tcp_write) < 0)
+        if (uv_write(wr, (uv_stream_t *)&req->socket, &req->mbedtls_send_bufs->buf, 1, edc_https_client_on_tcp_write) <
+            0)
         {
             free(wr);
             sds message = sdscatprintf(sdsnew(NULL), "uv_write failed in on_tcp_write");
@@ -351,8 +349,8 @@ static int edc_https_ssl_bio_send(void *ctx, const unsigned char *buf, size_t le
     {
         req->writing = true;
         uv_write_t *wr = malloc(sizeof(uv_write_t));
-        if (uv_write(wr, (uv_stream_t *)&req->socket, &req->mbedtls_send_bufs->buf, 1,
-                     edc_https_client_on_tcp_write) < 0)
+        if (uv_write(wr, (uv_stream_t *)&req->socket, &req->mbedtls_send_bufs->buf, 1, edc_https_client_on_tcp_write) <
+            0)
         {
             free(wr);
             req->writing = false;

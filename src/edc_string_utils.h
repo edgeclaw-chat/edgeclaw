@@ -1,13 +1,12 @@
 #ifndef EDC_STRING_UTILS_H
 #define EDC_STRING_UTILS_H
 
+#include "sds.h"
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "sds.h"
 
-char *edc_strdup_printf(const char *fmt, ...)
-    __attribute__((format(printf, 1, 2)));
+char *edc_strdup_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 int edc_strcmp0(const char *str1, const char *str2);
 

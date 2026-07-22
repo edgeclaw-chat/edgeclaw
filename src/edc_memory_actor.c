@@ -1,14 +1,14 @@
-﻿#include "sds.h"
-#include "edc_error.h"
-#include "edc_memory_actor.h"
+﻿#include "edc_memory_actor.h"
+#include "cJSON.h"
 #include "edc_actor.h"
 #include "edc_compat.h"
+#include "edc_error.h"
 #include "edc_file_utils.h"
-#include "edc_string_utils.h"
 #include "edc_history.h"
 #include "edc_llm_actor.h"
-#include "cJSON.h"
+#include "edc_string_utils.h"
 #include "log.h"
+#include "sds.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -167,9 +167,8 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
     cJSON_Delete(history);
     history = half_window;
 
-    sds user_message =
-        sdsnew("Process this conversation. summarizing it. and call the save_memory tool with your "
-                     "consolidation. NOTICE: !!!! you can only call save_memory tool\n\n");
+    sds user_message = sdsnew("Process this conversation. summarizing it. and call the save_memory tool with your "
+                              "consolidation. NOTICE: !!!! you can only call save_memory tool\n\n");
 
     sds memory_file = edc_path_join(state->workspace, "memory", "MEMORY.md", NULL);
     EdcError *gerror = NULL;
@@ -193,7 +192,7 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
     if (memory)
     {
         user_message = sdscat(user_message, memory);
-    sdsfree(memory);
+        sdsfree(memory);
     }
     else
     {
@@ -231,13 +230,13 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
         if (tools_used)
         {
             line = sdscatprintf(line, "[%s] %s[called: %s]: %s\n", cJSON_GetStringValue(timestamp),
-                                   cJSON_GetStringValue(role), tools_used, cJSON_GetStringValue(content));
+                                cJSON_GetStringValue(role), tools_used, cJSON_GetStringValue(content));
             sdsfree(tools_used);
         }
         else
         {
             line = sdscatprintf(line, "[%s] %s: %s\n", cJSON_GetStringValue(timestamp), cJSON_GetStringValue(role),
-                                   cJSON_GetStringValue(content));
+                                cJSON_GetStringValue(content));
         }
 
         user_message = sdscat(user_message, line);
@@ -268,7 +267,7 @@ static bool edc_memory_do_compress(edc_actor_t *actor, edc_actor_msg_t *msg, boo
     state->compress_index = compress_index + cJSON_GetArraySize(history);
 
     edc_actor_msg_t *llm_msg = edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST, actor, msg->request_id, req,
-                                               (edc_actor_data_free_fn)edc_llm_actor_req_free);
+                                                 (edc_actor_data_free_fn)edc_llm_actor_req_free);
     edc_actor_send(state->llm_actor, llm_msg);
 
 exit_free_user_message:
@@ -335,7 +334,7 @@ static bool edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_msg_t 
 
     for (unsigned i = 0; i < utarray_len(resp->tool_calls); i++)
     {
-        struct edc_llm_chat_tool_call *tool_call = (struct edc_llm_chat_tool_call*)utarray_eltptr(resp->tool_calls, i);
+        struct edc_llm_chat_tool_call *tool_call = (struct edc_llm_chat_tool_call *)utarray_eltptr(resp->tool_calls, i);
         char *s = cJSON_Print(tool_call->function.arguments);
         log_info("edc_memory_actor: call tool %s with args %s", tool_call->function.name, s);
         cJSON_free(s);
@@ -343,7 +342,7 @@ static bool edc_memory_do_memory_save(edc_actor_t *actor, const edc_actor_msg_t 
 
     for (unsigned i = 0; i < utarray_len(resp->tool_calls); i++)
     {
-        struct edc_llm_chat_tool_call *tool_call = (struct edc_llm_chat_tool_call*)utarray_eltptr(resp->tool_calls, i);
+        struct edc_llm_chat_tool_call *tool_call = (struct edc_llm_chat_tool_call *)utarray_eltptr(resp->tool_calls, i);
         if (strcmp(tool_call->function.name, "save_memory") != 0)
         {
             ret = false;
@@ -433,8 +432,9 @@ static void edc_memory_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
         {
             if (state->compress_msg->from)
             {
-                edc_actor_send(state->compress_msg->from, edc_actor_msg_new(BC_ACTOR_MSG_MEMORY_DONE, actor,
-                                                                          state->compress_msg->request_id, NULL, NULL));
+                edc_actor_send(
+                    state->compress_msg->from,
+                    edc_actor_msg_new(BC_ACTOR_MSG_MEMORY_DONE, actor, state->compress_msg->request_id, NULL, NULL));
             }
         }
 

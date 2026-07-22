@@ -1,9 +1,9 @@
 ﻿#include "edc_channel_telegram.h"
-#include "edc_channel_actor.h"
 #include "cJSON.h"
-#include "log.h"
+#include "edc_channel_actor.h"
 #include "edc_compat.h"
 #include "edc_string_utils.h"
+#include "log.h"
 #include "sds.h"
 #include <inttypes.h>
 
@@ -116,8 +116,8 @@ static void edc_channel_actor_telegram_conn_fn(struct mg_connection *c, int ev, 
         buf = sdscatlen(buf, hm->body.buf, hm->body.len);
         req->resp = buf;
 
-        edc_actor_msg_t *msg = edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_telegram, NULL, NULL, req,
-                                                        (edc_actor_data_free_fn)edc_channel_telegram_req_free);
+        edc_actor_msg_t *msg = edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_telegram, NULL, NULL,
+                                                          req, (edc_actor_data_free_fn)edc_channel_telegram_req_free);
         edc_actor_send(actor, msg);
         c->is_closing = 1;
         state->telegram.polling = false;
@@ -155,8 +155,9 @@ static bool edc_channel_actor_telegram_send_req(edc_actor_t *actor, struct edc_c
 }
 
 #define TELEGRAM_MAX_MSG_LEN 4096
-static struct edc_channel_telegram_req *edc_channel_actor_send_message_chunk_req(edc_actor_t *actor, const char *chat_id,
-                                                                               const char *content, size_t len)
+static struct edc_channel_telegram_req *edc_channel_actor_send_message_chunk_req(edc_actor_t *actor,
+                                                                                 const char *chat_id,
+                                                                                 const char *content, size_t len)
 {
     edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
 
@@ -319,7 +320,7 @@ static struct edc_channel_message *process_user_input(edc_channel_actor_state_t 
 }
 
 static struct edc_channel_message *edc_channel_handle_telegram_user_input(edc_actor_t *actor,
-                                                                        const struct edc_channel_telegram_req *req)
+                                                                          const struct edc_channel_telegram_req *req)
 {
     cJSON *input = cJSON_Parse(req->resp);
     if (input == NULL)
@@ -436,7 +437,7 @@ static void edc_channel_actor_telegram_handler(edc_actor_t *actor, edc_actor_msg
         {
             edc_actor_msg_t *forward_msg =
                 edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_telegram, actor, msg->request_id,
-                                          message, (edc_actor_data_free_fn)edc_channel_message_free);
+                                           message, (edc_actor_data_free_fn)edc_channel_message_free);
             edc_actor_send(state->observer, forward_msg);
         }
     }

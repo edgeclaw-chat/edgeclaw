@@ -1,10 +1,10 @@
 #ifndef __BC_SCHEDULER_H__
 #define __BC_SCHEDULER_H__
 
-#include "sds.h"
 #include "edc_actor.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
+#include "sds.h"
 #include <stdbool.h>
 
 struct edc_session;
@@ -21,20 +21,19 @@ struct edc_sched_task_entry;
 struct edc_scheduler;
 
 /** 发送 LLM 请求: task 上下文已就绪，回调构造并发送给 llm_actor */
-typedef void (*edc_scheduler_send_llm_fn)(struct edc_scheduler *sched, struct edc_task *task,
-                                           void *request_id);
+typedef void (*edc_scheduler_send_llm_fn)(struct edc_scheduler *sched, struct edc_task *task, void *request_id);
 
 /** 发送 channel 回复 */
-typedef void (*edc_scheduler_send_reply_fn)(struct edc_scheduler *sched, struct edc_task *task,
-                                             const char *content, void *request_id);
+typedef void (*edc_scheduler_send_reply_fn)(struct edc_scheduler *sched, struct edc_task *task, const char *content,
+                                            void *request_id);
 
 /** 分发 tool calls */
-typedef void (*edc_scheduler_dispatch_tools_fn)(struct edc_scheduler *sched, struct edc_task *task,
-                                                 void *llm_resp, void *request_id);
+typedef void (*edc_scheduler_dispatch_tools_fn)(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
+                                                void *request_id);
 
 /** 检查/处理命令 (返回 true=已处理) */
 typedef bool (*edc_scheduler_command_fn)(struct edc_scheduler *sched, struct edc_actor *actor,
-                                          struct edc_channel_message *msg);
+                                         struct edc_channel_message *msg);
 
 /** 触发 memory compress */
 typedef void (*edc_scheduler_memory_fn)(struct edc_scheduler *sched);
@@ -44,7 +43,8 @@ typedef void (*edc_scheduler_save_fn)(struct edc_scheduler *sched);
 
 /* ── 调度器 ────────────────────────────────────────────────── */
 
-struct edc_scheduler {
+struct edc_scheduler
+{
     struct edc_session *session;
     struct edc_config *config;
 
@@ -55,16 +55,16 @@ struct edc_scheduler {
     edc_actor_t *self;
 
     /* 回调 (Phase 5 由 edc_agent 注入) */
-    edc_scheduler_send_llm_fn       send_llm;
-    edc_scheduler_send_reply_fn     send_reply;
+    edc_scheduler_send_llm_fn send_llm;
+    edc_scheduler_send_reply_fn send_reply;
     edc_scheduler_dispatch_tools_fn dispatch_tools;
-    edc_scheduler_command_fn        handle_command;
-    edc_scheduler_memory_fn         trigger_memory;
-    edc_scheduler_save_fn           save_session;
+    edc_scheduler_command_fn handle_command;
+    edc_scheduler_memory_fn trigger_memory;
+    edc_scheduler_save_fn save_session;
 
     int64_t next_task_id;
 
-    void *ctx;                              /* 回调上下文 (edc_agent*) */
+    void *ctx; /* 回调上下文 (edc_agent*) */
 };
 
 /* ── API ───────────────────────────────────────────────────── */
@@ -78,9 +78,8 @@ extern edc_actor_t *edc_scheduler_get_actor(struct edc_scheduler *sched);
 
 extern char *edc_scheduler_gen_task_id(struct edc_scheduler *sched);
 extern struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const char *desc,
-                                                    struct edc_channel *channel);
-extern struct edc_task_group *edc_scheduler_create_group(struct edc_scheduler *sched,
-                                                          struct edc_task *leader);
+                                                  struct edc_channel *channel);
+extern struct edc_task_group *edc_scheduler_create_group(struct edc_scheduler *sched, struct edc_task *leader);
 extern void edc_scheduler_add_group(struct edc_scheduler *sched, struct edc_task_group *group);
 
 extern struct edc_task *edc_scheduler_find_task(struct edc_scheduler *sched, void *request_id);
@@ -93,16 +92,13 @@ extern struct edc_task_group *edc_scheduler_get_foreground(struct edc_scheduler 
 
 /* ── 注册/反注册 ──────────────────────────────────────────────── */
 
-extern void edc_scheduler_register_task(struct edc_scheduler *sched, struct edc_task *task,
-                                         void *request_id);
+extern void edc_scheduler_register_task(struct edc_scheduler *sched, struct edc_task *task, void *request_id);
 extern void edc_scheduler_unregister_task(struct edc_scheduler *sched, void *request_id);
 
 /* ── 信号 ──────────────────────────────────────────────────── */
 
-extern void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *task_id,
-                                               edc_task_signal sig);
-extern void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, const char *group_id,
-                                                edc_task_signal sig);
+extern void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *task_id, edc_task_signal sig);
+extern void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, const char *group_id, edc_task_signal sig);
 extern void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, edc_task_signal sig);
 
 #endif

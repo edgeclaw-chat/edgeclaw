@@ -2,8 +2,8 @@
 #ifndef __BC_SKILLS_H__
 #define __BC_SKILLS_H__
 
-#include "uthash.h"
 #include "utarray.h"
+#include "uthash.h"
 
 struct edc_skill_meta_entry
 {

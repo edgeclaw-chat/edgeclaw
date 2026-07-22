@@ -22,9 +22,9 @@ struct device_shell_ctx
 {
     struct edc_toolbox_call_ctx *tb_ctx;
     void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *);
-    uv_async_t result_async;    /* async handle to marshal result back to main loop */
-    sds result;                  /* result from worker thread (consumed by main-loop callback) */
-    EdcError *error;             /* error from worker thread (consumed by main-loop callback) */
+    uv_async_t result_async; /* async handle to marshal result back to main loop */
+    sds result;              /* result from worker thread (consumed by main-loop callback) */
+    EdcError *error;         /* error from worker thread (consumed by main-loop callback) */
     sds command;
     sds agent_ip;
     uint16_t agent_port;
@@ -474,7 +474,7 @@ static void device_shell_thread_lwip(struct device_shell_ctx *ctx)
     }
 
     /* Read remaining data */
-    netconn_set_recvtimeout(c, 2000); /* Short timeout for remaining data */
+    netconn_set_recvtimeout(c, 2000);                   /* Short timeout for remaining data */
     resp_buf = sdscat(resp_buf, "HTTP/1.1 200 OK\r\n"); /* dummy status line since we already consumed first packet */
 
     /* Keep reading until connection closes */

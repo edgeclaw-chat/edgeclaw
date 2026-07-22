@@ -1,17 +1,17 @@
-﻿#include "sds.h"
-#include "edc_toolbox.h"
-#include "edc_error.h"
+﻿#include "edc_toolbox.h"
 #include "edc_compat.h"
+#include "edc_error.h"
 #include "edc_param_types.h"
 #include "edc_tools.h"
-#include "uthash.h"
 #include "edc_tools_crontab.h"
+#include "edc_tools_device_file.h"
+#include "edc_tools_device_shell.h"
 #include "edc_tools_fs.h"
 #include "edc_tools_shell.h"
 #include "edc_tools_todo.h"
-#include "edc_tools_device_shell.h"
-#include "edc_tools_device_file.h"
 #include "log.h"
+#include "sds.h"
+#include "uthash.h"
 
 struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, struct edc_channel *channel, void *priv)
 {
@@ -46,7 +46,8 @@ void edc_toolbox_free(struct edc_toolbox *tb)
     edc_tool_shell_abort_all();
     {
         struct edc_tool *t, *tmp;
-        HASH_ITER(hh, tb->tools, t, tmp) {
+        HASH_ITER(hh, tb->tools, t, tmp)
+        {
             HASH_DEL(tb->tools, t);
             edc_tool_free(t);
         }
@@ -129,8 +130,7 @@ static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, E
         {
             if (param->required)
             {
-                edc_error_set(error, EDC_ERR_INVAL, "required parameter '%s' is missing",
-                            param->name);
+                edc_error_set(error, EDC_ERR_INVAL, "required parameter '%s' is missing", param->name);
                 return false;
             }
             continue;
@@ -142,8 +142,7 @@ static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, E
         if (!valid)
         {
             sds type_str = edc_param_type_to_s(type);
-            edc_error_set(error, EDC_ERR_INVAL, "parameter '%s' must be of type '%s'", param->name,
-                        type_str);
+            edc_error_set(error, EDC_ERR_INVAL, "parameter '%s' must be of type '%s'", param->name, type_str);
             sdsfree(type_str);
             return false;
         }
@@ -153,7 +152,7 @@ static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, E
 }
 
 void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON *args,
-                     void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
+                      void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
 
     EdcError *error = NULL;
@@ -175,13 +174,13 @@ void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON 
     sds tool_names = sdsempty();
     {
         struct edc_tool *t, *tmp;
-        HASH_ITER(hh, ctx->tb->tools, t, tmp) {
+        HASH_ITER(hh, ctx->tb->tools, t, tmp)
+        {
             tool_names = sdscatprintf(tool_names, "%s, ", t->name);
         }
     }
 
-    edc_error_set(&error, EDC_ERR_NOTFOUND, "Error: tool %s not found. Available: %s", name,
-                tool_names);
+    edc_error_set(&error, EDC_ERR_NOTFOUND, "Error: tool %s not found. Available: %s", name, tool_names);
     sdsfree(tool_names);
     callback(ctx, NULL, error);
 }

@@ -1,10 +1,10 @@
-#include "sds.h"
 #include "edc_toolbox_actor.h"
 #include "edc_actor.h"
 #include "edc_compat.h"
-#include "edc_toolbox.h"
 #include "edc_error.h"
+#include "edc_toolbox.h"
 #include "log.h"
+#include "sds.h"
 
 struct edc_toolbox_actor_exec_ctx
 {
@@ -14,7 +14,7 @@ struct edc_toolbox_actor_exec_ctx
 };
 
 static struct edc_toolbox_actor_exec_ctx *edc_toolbox_actor_exec_ctx_new(edc_actor_t *actor, edc_actor_msg_t *msg,
-                                                                       struct edc_toolbox_actor_req *req)
+                                                                         struct edc_toolbox_actor_req *req)
 {
     struct edc_toolbox_actor_exec_ctx *ctx = g_new0(struct edc_toolbox_actor_exec_ctx, 1);
     ctx->actor = actor;
@@ -33,13 +33,13 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
         if (error->message)
         {
             log_error("DEBUG actor_callback: error->message='%s', error->code=%d, error ptr=%p, sdslen=%zu",
-                      error->message, error->code, (void*)error, sdslen(error->message));
+                      error->message, error->code, (void *)error, sdslen(error->message));
             result = sdsnew(error->message);
         }
         else
         {
-            log_error("DEBUG actor_callback: error->message=NULL, error->code=%d, error ptr=%p",
-                      error->code, (void*)error);
+            log_error("DEBUG actor_callback: error->message=NULL, error->code=%d, error ptr=%p", error->code,
+                      (void *)error);
             result = sdsnew("unknown error");
         }
         log_error("DEBUG actor_callback: after sdsnew, result='%s', len=%zu", result, sdslen(result));
@@ -79,7 +79,7 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
 
     struct edc_toolbox_actor_req *next = req->next;
     edc_actor_send(msg->from, edc_actor_msg_new(BC_ACTOR_MSG_TOOL_RESPONSE, actor, msg->request_id, req,
-                                              (edc_actor_data_free_fn)edc_toolbox_actor_req_free));
+                                                (edc_actor_data_free_fn)edc_toolbox_actor_req_free));
 
     if (next)
     {
@@ -150,7 +150,7 @@ void edc_toolbox_actor_req_free(struct edc_toolbox_actor_req *req)
 }
 
 struct edc_toolbox_actor_req *edc_toolbox_actor_req_new(sds name, cJSON *args, sds call_id,
-                                                      struct edc_channel *call_from)
+                                                        struct edc_channel *call_from)
 {
     struct edc_toolbox_actor_req *req = g_new0(struct edc_toolbox_actor_req, 1);
     req->name = name;

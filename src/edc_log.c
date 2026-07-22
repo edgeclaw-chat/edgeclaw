@@ -1,14 +1,14 @@
-﻿#include "sds.h"
-#include "edc_log.h"
+﻿#include "edc_log.h"
+#include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
 #include "log.h"
-#include "edc_compat.h"
+#include "sds.h"
 
-#include <uv.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <uv.h>
 
 static FILE *g_log_file = NULL;
 static char g_current_date[32] = {0};

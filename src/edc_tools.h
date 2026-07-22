@@ -26,7 +26,7 @@ struct edc_toolbox;
 struct edc_tool;
 struct edc_toolbox_call_ctx;
 typedef void (*edc_tool_exec_async_fn)(struct edc_toolbox_call_ctx *ctx, struct edc_tool *, cJSON *,
-                                       void (*callback)(struct edc_toolbox_call_ctx *ctx, sds , EdcError *));
+                                       void (*callback)(struct edc_toolbox_call_ctx *ctx, sds, EdcError *));
 
 struct edc_tool
 {

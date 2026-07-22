@@ -1,25 +1,25 @@
-﻿#include "edc_tools.h"
-#include "edc_toolbox.h"
-#include "edc_tools_device_file.h"
+﻿#include "edc_tools_device_file.h"
 #include "edc_config.h"
+#include "edc_toolbox.h"
+#include "edc_tools.h"
 #include "log.h"
 #include <edc_param_types.h>
 
 #ifndef _WIN32
 #include "lwip/api.h"
-#include "lwip/ip_addr.h"
 #include "lwip/err.h"
+#include "lwip/ip_addr.h"
 #endif
-#include <cJSON.h>
 #include "edc_compat.h"
+#include "edc_error.h"
 #include "edc_file_utils.h"
 #include "edc_string_utils.h"
 #include "sds.h"
-#include "edc_error.h"
+#include <cJSON.h>
 #include <fcntl.h>
 #include <stdarg.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <uv.h>
 
@@ -28,10 +28,10 @@
 struct device_file_ctx
 {
     struct edc_toolbox_call_ctx *tb_ctx;
-    void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *);
-    uv_async_t result_async;    /* async handle to marshal result back to main loop */
-    sds result;                  /* result from worker thread (consumed by main-loop callback) */
-    EdcError *error;             /* error from worker thread (consumed by main-loop callback) */
+    void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *);
+    uv_async_t result_async; /* async handle to marshal result back to main loop */
+    sds result;              /* result from worker thread (consumed by main-loop callback) */
+    EdcError *error;         /* error from worker thread (consumed by main-loop callback) */
     sds agent_ip;
     uint16_t agent_port;
 
@@ -157,7 +157,8 @@ static int parse_json_response(sds resp_buf, cJSON **out_json, EdcError **error)
             if (error_item && cJSON_IsString(error_item))
             {
                 *error = edc_error_new(EDC_ERR_EXEC, "device_file: %s", error_item->valuestring);
-                log_error("DEBUG parse_json_response: created error, message='%s', ptr=%p", (*error)->message, (void*)(*error));
+                log_error("DEBUG parse_json_response: created error, message='%s', ptr=%p", (*error)->message,
+                          (void *)(*error));
                 cJSON_Delete(*out_json);
                 *out_json = NULL;
                 return -1;
@@ -167,8 +168,7 @@ static int parse_json_response(sds resp_buf, cJSON **out_json, EdcError **error)
 
         cJSON *error_item = cJSON_GetObjectItem(*out_json, "error");
         if (error_item && cJSON_IsString(error_item))
-            *error = edc_error_new(EDC_ERR_EXEC, "device_file: HTTP %d: %s",
-                                   http_status, error_item->valuestring);
+            *error = edc_error_new(EDC_ERR_EXEC, "device_file: HTTP %d: %s", http_status, error_item->valuestring);
         else
             *error = edc_error_new(EDC_ERR_EXEC, "device_file: HTTP %d", http_status);
         cJSON_Delete(*out_json);
@@ -178,13 +178,17 @@ static int parse_json_response(sds resp_buf, cJSON **out_json, EdcError **error)
 
     /* Non-JSON body: include text in error message */
     char *trimmed = body;
-    while (*trimmed == ' ' || *trimmed == '\r' || *trimmed == '\n') trimmed++;
-    if (http_status != 200) {
+    while (*trimmed == ' ' || *trimmed == '\r' || *trimmed == '\n')
+        trimmed++;
+    if (http_status != 200)
+    {
         if (*trimmed)
             *error = edc_error_new(EDC_ERR_EXEC, "device_file: HTTP %d: %.200s", http_status, trimmed);
         else
             *error = edc_error_new(EDC_ERR_EXEC, "device_file: HTTP %d", http_status);
-    } else {
+    }
+    else
+    {
         if (*trimmed)
             *error = edc_error_new(EDC_ERR_EXEC, "device_file: invalid JSON response: %.200s", trimmed);
         else
@@ -193,7 +197,8 @@ static int parse_json_response(sds resp_buf, cJSON **out_json, EdcError **error)
     return -1;
 }
 
-struct device_file_uv_state {
+struct device_file_uv_state
+{
     uv_loop_t loop;
     uv_tcp_t tcp;
     uv_connect_t connect_req;
@@ -236,12 +241,14 @@ static void device_file_uv_on_read(uv_stream_t *stream, ssize_t nread, const uv_
 {
     struct device_file_uv_state *state = stream->data;
 
-    if (state->error || state->timed_out) {
+    if (state->error || state->timed_out)
+    {
         free(buf->base);
         return;
     }
 
-    if (nread > 0) {
+    if (nread > 0)
+    {
         state->resp_buf = sdscatlen(state->resp_buf, buf->base, nread);
         free(buf->base);
         return;
@@ -251,9 +258,9 @@ static void device_file_uv_on_read(uv_stream_t *stream, ssize_t nread, const uv_
     uv_timer_stop(&state->timeout_timer);
     uv_close((uv_handle_t *)stream, device_file_uv_close_cb);
 
-    if (nread < 0 && nread != UV_EOF) {
-        state->error = edc_error_new(EDC_ERR_EXEC,
-                            "device_file: recv failed: %s", uv_strerror((int)nread));
+    if (nread < 0 && nread != UV_EOF)
+    {
+        state->error = edc_error_new(EDC_ERR_EXEC, "device_file: recv failed: %s", uv_strerror((int)nread));
     }
 
     uv_stop(&state->loop);
@@ -266,20 +273,19 @@ static void device_file_uv_on_write(uv_write_t *req, int status)
     if (state->error || state->timed_out)
         return;
 
-    if (status < 0) {
-        state->error = edc_error_new(EDC_ERR_EXEC,
-                            "device_file: write failed: %s", uv_strerror(status));
+    if (status < 0)
+    {
+        state->error = edc_error_new(EDC_ERR_EXEC, "device_file: write failed: %s", uv_strerror(status));
         uv_timer_stop(&state->timeout_timer);
         uv_close((uv_handle_t *)&state->tcp, device_file_uv_close_cb);
         uv_stop(&state->loop);
         return;
     }
 
-    int r = uv_read_start((uv_stream_t *)&state->tcp,
-                          device_file_uv_alloc, device_file_uv_on_read);
-    if (r < 0) {
-        state->error = edc_error_new(EDC_ERR_EXEC,
-                            "device_file: read start failed: %s", uv_strerror(r));
+    int r = uv_read_start((uv_stream_t *)&state->tcp, device_file_uv_alloc, device_file_uv_on_read);
+    if (r < 0)
+    {
+        state->error = edc_error_new(EDC_ERR_EXEC, "device_file: read start failed: %s", uv_strerror(r));
         uv_timer_stop(&state->timeout_timer);
         uv_close((uv_handle_t *)&state->tcp, device_file_uv_close_cb);
         uv_stop(&state->loop);
@@ -293,9 +299,9 @@ static void device_file_uv_on_connect(uv_connect_t *req, int status)
     if (state->error || state->timed_out)
         return;
 
-    if (status < 0) {
-        state->error = edc_error_new(EDC_ERR_EXEC,
-                            "device_file: connect failed: %s", uv_strerror(status));
+    if (status < 0)
+    {
+        state->error = edc_error_new(EDC_ERR_EXEC, "device_file: connect failed: %s", uv_strerror(status));
         uv_timer_stop(&state->timeout_timer);
         uv_close((uv_handle_t *)&state->tcp, device_file_uv_close_cb);
         uv_stop(&state->loop);
@@ -303,8 +309,7 @@ static void device_file_uv_on_connect(uv_connect_t *req, int status)
     }
 
     uv_timer_stop(&state->timeout_timer);
-    uv_timer_start(&state->timeout_timer, device_file_uv_on_timeout,
-                   (uint64_t)state->timeout_sec * 1000, 0);
+    uv_timer_start(&state->timeout_timer, device_file_uv_on_timeout, (uint64_t)state->timeout_sec * 1000, 0);
 
     uv_buf_t bufs[2];
     bufs[0].base = state->header;
@@ -312,11 +317,10 @@ static void device_file_uv_on_connect(uv_connect_t *req, int status)
     bufs[1].base = state->body_sds;
     bufs[1].len = sdslen(state->body_sds);
 
-    int r = uv_write(&state->write_req, (uv_stream_t *)&state->tcp,
-                     bufs, 2, device_file_uv_on_write);
-    if (r < 0) {
-        state->error = edc_error_new(EDC_ERR_EXEC,
-                            "device_file: write failed: %s", uv_strerror(r));
+    int r = uv_write(&state->write_req, (uv_stream_t *)&state->tcp, bufs, 2, device_file_uv_on_write);
+    if (r < 0)
+    {
+        state->error = edc_error_new(EDC_ERR_EXEC, "device_file: write failed: %s", uv_strerror(r));
         uv_timer_stop(&state->timeout_timer);
         uv_close((uv_handle_t *)&state->tcp, device_file_uv_close_cb);
         uv_stop(&state->loop);
@@ -330,27 +334,26 @@ static void device_file_uv_close_walk(uv_handle_t *handle, void *arg)
         uv_close(handle, device_file_uv_close_cb);
 }
 
-static sds device_file_uv_send_recv(const char *agent_ip, uint16_t agent_port,
-                                     const char *path, cJSON *req_json,
-                                     int timeout_sec, EdcError **out_error)
+static sds device_file_uv_send_recv(const char *agent_ip, uint16_t agent_port, const char *path, cJSON *req_json,
+                                    int timeout_sec, EdcError **out_error)
 {
     char *req_body = cJSON_PrintUnformatted(req_json);
 
     sds header = sdscatprintf(sdsempty(),
-        "POST %s HTTP/1.1\r\n"
-        "Host: %s:%u\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: %zu\r\n"
-        "Connection: close\r\n"
-        "\r\n",
-        path, agent_ip, agent_port, strlen(req_body));
+                              "POST %s HTTP/1.1\r\n"
+                              "Host: %s:%u\r\n"
+                              "Content-Type: application/json\r\n"
+                              "Content-Length: %zu\r\n"
+                              "Connection: close\r\n"
+                              "\r\n",
+                              path, agent_ip, agent_port, strlen(req_body));
 
     struct device_file_uv_state *state = calloc(1, sizeof(*state));
-    if (!state) {
+    if (!state)
+    {
         sdsfree(header);
         cJSON_free(req_body);
-        *out_error = edc_error_new(EDC_ERR_EXEC,
-                            "device_file: failed to allocate state");
+        *out_error = edc_error_new(EDC_ERR_EXEC, "device_file: failed to allocate state");
         return NULL;
     }
 
@@ -374,12 +377,10 @@ static sds device_file_uv_send_recv(const char *agent_ip, uint16_t agent_port,
 
     uv_timer_start(&state->timeout_timer, device_file_uv_on_timeout, 5000, 0);
 
-    int r = uv_tcp_connect(&state->connect_req, &state->tcp,
-                           (const struct sockaddr *)&addr,
-                           device_file_uv_on_connect);
-    if (r < 0) {
-        *out_error = edc_error_new(EDC_ERR_EXEC,
-                            "device_file: connect failed: %s", uv_strerror(r));
+    int r = uv_tcp_connect(&state->connect_req, &state->tcp, (const struct sockaddr *)&addr, device_file_uv_on_connect);
+    if (r < 0)
+    {
+        *out_error = edc_error_new(EDC_ERR_EXEC, "device_file: connect failed: %s", uv_strerror(r));
         uv_timer_stop(&state->timeout_timer);
         uv_close((uv_handle_t *)&state->tcp, device_file_uv_close_cb);
         uv_close((uv_handle_t *)&state->timeout_timer, device_file_uv_close_cb);
@@ -400,13 +401,14 @@ static sds device_file_uv_send_recv(const char *agent_ip, uint16_t agent_port,
     sds resp = state->resp_buf;
     EdcError *err = state->error;
 
-    if (state->timed_out) {
+    if (state->timed_out)
+    {
         sdsfree(resp);
         resp = NULL;
-        *out_error = edc_error_new(EDC_ERR_EXEC,
-                            "device_file: request timed out after %ds",
-                            timeout_sec);
-    } else if (err) {
+        *out_error = edc_error_new(EDC_ERR_EXEC, "device_file: request timed out after %ds", timeout_sec);
+    }
+    else if (err)
+    {
         sdsfree(resp);
         resp = NULL;
         *out_error = err;
@@ -420,8 +422,8 @@ static sds device_file_uv_send_recv(const char *agent_ip, uint16_t agent_port,
     return resp;
 }
 
-static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_chunk,
-                                  size_t raw_chunk_len, size_t offset)
+static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_chunk, size_t raw_chunk_len,
+                                  size_t offset)
 {
     cJSON *req_json = cJSON_CreateObject();
     cJSON_AddStringToObject(req_json, "path", ctx->remote_path);
@@ -432,13 +434,14 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
         cJSON_AddNumberToObject(req_json, "offset", (double)offset);
 
     EdcError *error = NULL;
-    sds resp_buf = device_file_uv_send_recv(ctx->agent_ip, ctx->agent_port,
-                                             "/file/upload", req_json,
-                                             ctx->timeout_sec, &error);
+    sds resp_buf =
+        device_file_uv_send_recv(ctx->agent_ip, ctx->agent_port, "/file/upload", req_json, ctx->timeout_sec, &error);
     cJSON_Delete(req_json);
 
-    if (!resp_buf) {
-        if (error) {
+    if (!resp_buf)
+    {
+        if (error)
+        {
             log_error("device_upload: %s", error->message);
             if (ctx->last_error)
                 edc_error_free(ctx->last_error);
@@ -450,9 +453,11 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
     cJSON *resp_json = NULL;
     int ret = parse_json_response(resp_buf, &resp_json, &error);
     sdsfree(resp_buf);
-    if (ret != 0) {
+    if (ret != 0)
+    {
         log_error("device_upload: parse_json_response failed");
-        if (error) {
+        if (error)
+        {
             log_error("device_upload: %s", error->message);
             if (ctx->last_error)
                 edc_error_free(ctx->last_error);
@@ -466,8 +471,7 @@ static int do_upload_chunk_socket(struct device_file_ctx *ctx, const char *b64_c
 }
 
 #ifndef _WIN32
-static int do_upload_chunk_lwip(struct device_file_ctx *ctx, const char *b64_chunk,
-                                size_t raw_chunk_len, size_t offset)
+static int do_upload_chunk_lwip(struct device_file_ctx *ctx, const char *b64_chunk, size_t raw_chunk_len, size_t offset)
 {
     ip_addr_t addr;
     if (!ip4addr_aton(ctx->agent_ip, &addr))
@@ -527,7 +531,8 @@ static int do_upload_chunk_lwip(struct device_file_ctx *ctx, const char *b64_chu
     sdsfree(resp_buf);
     if (ret != 0)
     {
-        if (error) {
+        if (error)
+        {
             if (ctx->last_error)
                 edc_error_free(ctx->last_error);
             ctx->last_error = error;
@@ -541,7 +546,7 @@ static int do_upload_chunk_lwip(struct device_file_ctx *ctx, const char *b64_chu
 #endif
 
 static bool do_device_upload(struct device_file_ctx *ctx,
-                                 int (*do_chunk)(struct device_file_ctx *, const char *, size_t, size_t))
+                             int (*do_chunk)(struct device_file_ctx *, const char *, size_t, size_t))
 {
     struct stat st;
     if (stat(ctx->local_path, &st) != 0 || !S_ISREG(st.st_mode))
@@ -553,8 +558,7 @@ static bool do_device_upload(struct device_file_ctx *ctx,
     int fd = open(ctx->local_path, O_RDONLY);
     if (fd < 0)
     {
-        device_file_send_error(ctx, "device_upload: cannot open local file '%s': %s",
-                               ctx->local_path, strerror(errno));
+        device_file_send_error(ctx, "device_upload: cannot open local file '%s': %s", ctx->local_path, strerror(errno));
         return false;
     }
 
@@ -566,21 +570,24 @@ static bool do_device_upload(struct device_file_ctx *ctx,
     sds final_result = sdsempty();
 
     /* Handle empty file: send one empty chunk to create the file on device */
-    if (raw_len == 0) {
+    if (raw_len == 0)
+    {
         int ret = do_chunk(ctx, "", 0, 0);
-        if (ret != 0) {
-            if (ctx->last_error) {
+        if (ret != 0)
+        {
+            if (ctx->last_error)
+            {
                 device_file_send_error(ctx, "device_upload: %s", ctx->last_error->message);
-            } else {
-                device_file_send_error(ctx, "device_upload: failed to create empty file '%s'",
-                                       ctx->remote_path);
+            }
+            else
+            {
+                device_file_send_error(ctx, "device_upload: failed to create empty file '%s'", ctx->remote_path);
             }
             free(chunk_buf);
             close(fd);
             return false;
         }
-        final_result = sdscatprintf(final_result, "Uploaded 0 bytes in 1 chunk(s) to %s",
-                        ctx->remote_path);
+        final_result = sdscatprintf(final_result, "Uploaded 0 bytes in 1 chunk(s) to %s", ctx->remote_path);
         free(chunk_buf);
         close(fd);
         device_file_deliver_result(ctx, final_result, NULL);
@@ -613,17 +620,19 @@ static bool do_device_upload(struct device_file_ctx *ctx,
             return false;
         }
 
-        log_debug("device_upload: chunk %d offset=%zu len=%zu b64_len=%zu",
-                  chunk_idx, offset, this_len, strlen(b64));
+        log_debug("device_upload: chunk %d offset=%zu len=%zu b64_len=%zu", chunk_idx, offset, this_len, strlen(b64));
 
         int ret = do_chunk(ctx, b64, this_len, offset);
         sdsfree(b64);
 
         if (ret != 0)
         {
-            if (ctx->last_error) {
+            if (ctx->last_error)
+            {
                 device_file_send_error(ctx, "device_upload: %s", ctx->last_error->message);
-            } else {
+            }
+            else
+            {
                 device_file_send_error(ctx, "device_upload: chunk %d failed at offset %zu", chunk_idx, offset);
             }
             free(chunk_buf);
@@ -639,15 +648,15 @@ static bool do_device_upload(struct device_file_ctx *ctx,
     free(chunk_buf);
     close(fd);
 
-    final_result = sdscatprintf(final_result, "Uploaded %zu bytes in %d chunk(s) to %s",
-                    raw_len, chunk_idx, ctx->remote_path);
+    final_result =
+        sdscatprintf(final_result, "Uploaded %zu bytes in %d chunk(s) to %s", raw_len, chunk_idx, ctx->remote_path);
 
     device_file_deliver_result(ctx, final_result, NULL);
     return true;
 }
 
-static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
-                                    size_t *out_total_size, size_t *out_chunk_len, int fd)
+static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset, size_t *out_total_size,
+                                    size_t *out_chunk_len, int fd)
 {
     cJSON *req_json = cJSON_CreateObject();
     cJSON_AddStringToObject(req_json, "path", ctx->remote_path);
@@ -655,14 +664,15 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
     cJSON_AddNumberToObject(req_json, "length", (double)DEVICE_FILE_CHUNK_SIZE);
 
     EdcError *error = NULL;
-    sds resp_buf = device_file_uv_send_recv(ctx->agent_ip, ctx->agent_port,
-                                             "/file/download", req_json,
-                                             ctx->timeout_sec, &error);
+    sds resp_buf =
+        device_file_uv_send_recv(ctx->agent_ip, ctx->agent_port, "/file/download", req_json, ctx->timeout_sec, &error);
     cJSON_Delete(req_json);
 
-    if (!resp_buf) {
+    if (!resp_buf)
+    {
         log_error("device_download: send_recv failed");
-        if (error) {
+        if (error)
+        {
             log_error("device_download: %s", error->message);
             if (ctx->last_error)
                 edc_error_free(ctx->last_error);
@@ -672,11 +682,12 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
     }
 
     cJSON *resp_json = NULL;
-    if (parse_json_response(resp_buf, &resp_json, &error) != 0) {
-        log_error("device_download: parse error: %s",
-                  error ? error->message : "unknown");
+    if (parse_json_response(resp_buf, &resp_json, &error) != 0)
+    {
+        log_error("device_download: parse error: %s", error ? error->message : "unknown");
         sdsfree(resp_buf);
-        if (error) {
+        if (error)
+        {
             if (ctx->last_error)
                 edc_error_free(ctx->last_error);
             ctx->last_error = error;
@@ -692,11 +703,14 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
     size_t total_size = size_item ? (size_t)size_item->valuedouble : 0;
     size_t chunk_len = length_item ? (size_t)length_item->valuedouble : 0;
 
-    if (data_item && cJSON_IsString(data_item) && chunk_len > 0) {
+    if (data_item && cJSON_IsString(data_item) && chunk_len > 0)
+    {
         size_t decoded_len = 0;
         sds decoded = edc_base64_decode(data_item->valuestring, &decoded_len);
-        if (decoded) {
-            if (write(fd, decoded, decoded_len) != (ssize_t)decoded_len) {
+        if (decoded)
+        {
+            if (write(fd, decoded, decoded_len) != (ssize_t)decoded_len)
+            {
                 sdsfree(decoded);
                 cJSON_Delete(resp_json);
                 return -1;
@@ -716,8 +730,8 @@ static int do_download_chunk_socket(struct device_file_ctx *ctx, size_t offset,
 }
 
 #ifndef _WIN32
-static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
-                                  size_t *out_total_size, size_t *out_chunk_len, int fd)
+static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset, size_t *out_total_size,
+                                  size_t *out_chunk_len, int fd)
 {
     ip_addr_t addr;
     if (!ip4addr_aton(ctx->agent_ip, &addr))
@@ -772,10 +786,10 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
     EdcError *error = NULL;
     if (parse_json_response(resp_buf, &resp_json, &error) != 0)
     {
-        log_error("device_download: parse error: %s",
-                  error ? error->message : "unknown");
+        log_error("device_download: parse error: %s", error ? error->message : "unknown");
         sdsfree(resp_buf);
-        if (error) {
+        if (error)
+        {
             if (ctx->last_error)
                 edc_error_free(ctx->last_error);
             ctx->last_error = error;
@@ -819,13 +833,13 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset,
 #endif
 
 static bool do_device_download(struct device_file_ctx *ctx,
-                                   int (*do_chunk)(struct device_file_ctx *, size_t, size_t *, size_t *, int))
+                               int (*do_chunk)(struct device_file_ctx *, size_t, size_t *, size_t *, int))
 {
     int fd = open(ctx->local_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0)
     {
-        device_file_send_error(ctx, "device_download: cannot open local file '%s': %s",
-                               ctx->local_path, strerror(errno));
+        device_file_send_error(ctx, "device_download: cannot open local file '%s': %s", ctx->local_path,
+                               strerror(errno));
         return false;
     }
 
@@ -839,9 +853,12 @@ static bool do_device_download(struct device_file_ctx *ctx,
         int ret = do_chunk(ctx, received, &chunk_total, &chunk_len, fd);
         if (ret != 0)
         {
-            if (ctx->last_error) {
+            if (ctx->last_error)
+            {
                 device_file_send_error(ctx, "device_download: %s", ctx->last_error->message);
-            } else {
+            }
+            else
+            {
                 device_file_send_error(ctx, "device_download: chunk at offset %zu failed", received);
             }
             close(fd);
@@ -916,7 +933,7 @@ static void device_file_thread(void *data)
 }
 
 static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, cJSON *args,
-                                              void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
+                                              void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     (void)tool;
 
@@ -924,8 +941,8 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
     cJSON *remote = cJSON_GetObjectItem(args, "remote_path");
     if (!local || !cJSON_IsString(local) || !remote || !cJSON_IsString(remote))
     {
-        EdcError *error = edc_error_new(EDC_ERR_INVAL,
-                                    "device_upload: missing 'local_path' or 'remote_path' parameter");
+        EdcError *error =
+            edc_error_new(EDC_ERR_INVAL, "device_upload: missing 'local_path' or 'remote_path' parameter");
         callback(tb_ctx, NULL, error);
         return;
     }
@@ -933,8 +950,7 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
     struct edc_config *conf = tb_ctx->tb->conf;
     if (!conf->device_ip)
     {
-        EdcError *error = edc_error_new(EDC_ERR_INVAL,
-                                    "device_upload: device_ip not configured");
+        EdcError *error = edc_error_new(EDC_ERR_INVAL, "device_upload: device_ip not configured");
         callback(tb_ctx, NULL, error);
         return;
     }
@@ -956,8 +972,8 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
 
     if (!edc_file_is_regular(cJSON_GetStringValue(local)))
     {
-        EdcError *error = edc_error_new(EDC_ERR_EXEC,
-                                    "device_upload: local file not found: '%s'", cJSON_GetStringValue(local));
+        EdcError *error =
+            edc_error_new(EDC_ERR_EXEC, "device_upload: local file not found: '%s'", cJSON_GetStringValue(local));
         callback(tb_ctx, NULL, error);
         return;
     }
@@ -975,7 +991,8 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
 
     uv_loop_t *main_loop = tb_ctx->tb->scheduler->loop;
     int ar = uv_async_init(main_loop, &ctx->result_async, device_file_on_async_result);
-    if (ar < 0) {
+    if (ar < 0)
+    {
         EdcError *error = edc_error_new(EDC_ERR_EXEC, "device_upload: uv_async_init failed: %s", uv_strerror(ar));
         callback(tb_ctx, NULL, error);
         device_file_ctx_free(ctx);
@@ -988,7 +1005,7 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
 }
 
 static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, cJSON *args,
-                                                void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
+                                                void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     (void)tool;
 
@@ -996,8 +1013,8 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
     cJSON *local = cJSON_GetObjectItem(args, "local_path");
     if (!remote || !cJSON_IsString(remote) || !local || !cJSON_IsString(local))
     {
-        EdcError *error = edc_error_new(EDC_ERR_INVAL,
-                                    "device_download: missing 'remote_path' or 'local_path' parameter");
+        EdcError *error =
+            edc_error_new(EDC_ERR_INVAL, "device_download: missing 'remote_path' or 'local_path' parameter");
         callback(tb_ctx, NULL, error);
         return;
     }
@@ -1005,8 +1022,7 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
     struct edc_config *conf = tb_ctx->tb->conf;
     if (!conf->device_ip)
     {
-        EdcError *error = edc_error_new(EDC_ERR_INVAL,
-                                    "device_download: device_ip not configured");
+        EdcError *error = edc_error_new(EDC_ERR_INVAL, "device_download: device_ip not configured");
         callback(tb_ctx, NULL, error);
         return;
     }
@@ -1028,7 +1044,8 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
 
     uv_loop_t *main_loop = tb_ctx->tb->scheduler->loop;
     int ar = uv_async_init(main_loop, &ctx->result_async, device_file_on_async_result);
-    if (ar < 0) {
+    if (ar < 0)
+    {
         EdcError *error = edc_error_new(EDC_ERR_EXEC, "device_download: uv_async_init failed: %s", uv_strerror(ar));
         callback(tb_ctx, NULL, error);
         device_file_ctx_free(ctx);
@@ -1043,14 +1060,22 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
 static struct edc_tool *edc_tool_create_device_upload(struct edc_toolbox *tb)
 {
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params, edc_tool_param_new("local_path", edc_param_str_type("Local file path on host to upload", NULL), true));
-    LL_APPEND(params, edc_tool_param_new("remote_path", edc_param_str_type("Remote file path on device destination", NULL), true));
-    LL_APPEND(params, edc_tool_param_new("mode", edc_param_str_type("File permission mode in octal, e.g. \"644\" for rw-r--r-- (default \"644\")", NULL), false));
-    LL_APPEND(params, edc_tool_param_new("timeout", edc_param_int_type("Timeout per chunk in seconds (default 60)", 1, 3600), false));
+    LL_APPEND(params,
+              edc_tool_param_new("local_path", edc_param_str_type("Local file path on host to upload", NULL), true));
+    LL_APPEND(params, edc_tool_param_new("remote_path",
+                                         edc_param_str_type("Remote file path on device destination", NULL), true));
+    LL_APPEND(params, edc_tool_param_new(
+                          "mode",
+                          edc_param_str_type(
+                              "File permission mode in octal, e.g. \"644\" for rw-r--r-- (default \"644\")", NULL),
+                          false));
+    LL_APPEND(params, edc_tool_param_new(
+                          "timeout", edc_param_int_type("Timeout per chunk in seconds (default 60)", 1, 3600), false));
 
-    struct edc_tool *tool = edc_tool_new("device_upload",
-        "Upload a file from the host to a remote device agent (supports chunked transfer for large files)",
-        params, edc_tool_device_upload_exec_async);
+    struct edc_tool *tool =
+        edc_tool_new("device_upload",
+                     "Upload a file from the host to a remote device agent (supports chunked transfer for large files)",
+                     params, edc_tool_device_upload_exec_async);
     edc_toolbox_register(tb, tool);
     return tool;
 }
@@ -1058,13 +1083,17 @@ static struct edc_tool *edc_tool_create_device_upload(struct edc_toolbox *tb)
 static struct edc_tool *edc_tool_create_device_download(struct edc_toolbox *tb)
 {
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params, edc_tool_param_new("remote_path", edc_param_str_type("Remote file path on device to download", NULL), true));
-    LL_APPEND(params, edc_tool_param_new("local_path", edc_param_str_type("Local destination file path on host", NULL), true));
-    LL_APPEND(params, edc_tool_param_new("timeout", edc_param_int_type("Timeout per chunk in seconds (default 60)", 1, 3600), false));
+    LL_APPEND(params, edc_tool_param_new("remote_path",
+                                         edc_param_str_type("Remote file path on device to download", NULL), true));
+    LL_APPEND(params,
+              edc_tool_param_new("local_path", edc_param_str_type("Local destination file path on host", NULL), true));
+    LL_APPEND(params, edc_tool_param_new(
+                          "timeout", edc_param_int_type("Timeout per chunk in seconds (default 60)", 1, 3600), false));
 
-    struct edc_tool *tool = edc_tool_new("device_download",
-        "Download a file from a remote device agent to the host (supports chunked transfer for large files)",
-        params, edc_tool_device_download_exec_async);
+    struct edc_tool *tool = edc_tool_new(
+        "device_download",
+        "Download a file from a remote device agent to the host (supports chunked transfer for large files)", params,
+        edc_tool_device_download_exec_async);
     edc_toolbox_register(tb, tool);
     return tool;
 }

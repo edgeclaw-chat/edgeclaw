@@ -3,9 +3,9 @@
 
 #include "edc_actor.h"
 #include "edc_config.h"
+#include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
-#include "edc_scheduler.h"
 #include "edc_toolbox.h"
 #include <cJSON.h>
 #include <stdbool.h>

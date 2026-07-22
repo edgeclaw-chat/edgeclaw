@@ -7,14 +7,16 @@
 
 void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
 {
-    if (!opts) return;
+    if (!opts)
+        return;
     memset(opts, 0, sizeof(*opts));
-    if (!arg) return;
+    if (!arg)
+        return;
 
     sds remaining = sdsnew(arg);
 
     /* detect trailing & (background) */
-    if (sdslen(remaining) > 0 && remaining[sdslen(remaining)-1] == '&')
+    if (sdslen(remaining) > 0 && remaining[sdslen(remaining) - 1] == '&')
     {
         opts->bg = true;
         sdssetlen(remaining, sdslen(remaining) - 1);
@@ -44,10 +46,17 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
         char *p = remaining;
         while (*p)
         {
-            while (*p == ' ') p++;
-            if (*p == '\0') break;
-            if (*p == '-') { flag_start = p; break; }
-            while (*p && *p != ' ') p++;
+            while (*p == ' ')
+                p++;
+            if (*p == '\0')
+                break;
+            if (*p == '-')
+            {
+                flag_start = p;
+                break;
+            }
+            while (*p && *p != ' ')
+                p++;
         }
 
         if (!flag_start)
@@ -81,16 +90,25 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
         char *p = work;
         while (*p)
         {
-            while (*p == ' ') p++;
-            if (*p == '\0') break;
+            while (*p == ' ')
+                p++;
+            if (*p == '\0')
+                break;
 
             if (strncmp(p, "--bg", 4) == 0 && (p[4] == ' ' || p[4] == '\0'))
-                { opts->bg = true; p += 4; continue; }
+            {
+                opts->bg = true;
+                p += 4;
+                continue;
+            }
             if (strncmp(p, "-d ", 3) == 0)
             {
-                p += 3; while (*p == ' ') p++;
+                p += 3;
+                while (*p == ' ')
+                    p++;
                 char *start = p;
-                while (*p && *p != ' ') p++;
+                while (*p && *p != ' ')
+                    p++;
                 if (p > start)
                 {
                     opts->dep_count++;
@@ -100,20 +118,48 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
                 continue;
             }
             if (strncmp(p, "--group ", 8) == 0)
-                { p += 8; while (*p == ' ') p++;
-                  char *s = p; while (*p && *p != ' ') p++;
-                  if (p > s) opts->group_id = sdsnewlen(s, p - s); continue; }
+            {
+                p += 8;
+                while (*p == ' ')
+                    p++;
+                char *s = p;
+                while (*p && *p != ' ')
+                    p++;
+                if (p > s)
+                    opts->group_id = sdsnewlen(s, p - s);
+                continue;
+            }
             if (strncmp(p, "-g ", 3) == 0)
-                { p += 3; while (*p == ' ') p++;
-                  char *s = p; while (*p && *p != ' ') p++;
-                  if (p > s) { if (opts->group_id) sdsfree(opts->group_id);
-                               opts->group_id = sdsnewlen(s, p - s); } continue; }
+            {
+                p += 3;
+                while (*p == ' ')
+                    p++;
+                char *s = p;
+                while (*p && *p != ' ')
+                    p++;
+                if (p > s)
+                {
+                    if (opts->group_id)
+                        sdsfree(opts->group_id);
+                    opts->group_id = sdsnewlen(s, p - s);
+                }
+                continue;
+            }
             if (strncmp(p, "--prompt ", 9) == 0)
-                { p += 9; while (*p == ' ') p++;
-                  char *s = p; while (*p && *p != ' ') p++;
-                  if (p > s) opts->prompt_name = sdsnewlen(s, p - s); continue; }
+            {
+                p += 9;
+                while (*p == ' ')
+                    p++;
+                char *s = p;
+                while (*p && *p != ' ')
+                    p++;
+                if (p > s)
+                    opts->prompt_name = sdsnewlen(s, p - s);
+                continue;
+            }
             /* unrecognized token — skip until space */
-            while (*p && *p != ' ') p++;
+            while (*p && *p != ' ')
+                p++;
         }
         sdsfree(work);
         sdsfree(remaining);
@@ -122,12 +168,18 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
 
 void edc_cmd_task_opts_free(struct edc_cmd_task_opts *opts)
 {
-    if (!opts) return;
-    if (opts->desc) sdsfree(opts->desc);
-    if (opts->input) sdsfree(opts->input);
-    if (opts->group_id) sdsfree(opts->group_id);
-    if (opts->prompt_name) sdsfree(opts->prompt_name);
-    for (int i = 0; i < opts->dep_count; i++) sdsfree(opts->dep_ids[i]);
+    if (!opts)
+        return;
+    if (opts->desc)
+        sdsfree(opts->desc);
+    if (opts->input)
+        sdsfree(opts->input);
+    if (opts->group_id)
+        sdsfree(opts->group_id);
+    if (opts->prompt_name)
+        sdsfree(opts->prompt_name);
+    for (int i = 0; i < opts->dep_count; i++)
+        sdsfree(opts->dep_ids[i]);
     free(opts->dep_ids);
     memset(opts, 0, sizeof(*opts));
 }

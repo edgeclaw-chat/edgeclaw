@@ -2,11 +2,11 @@
 #ifndef __BC_CHANNEL_ACTOR_H__
 #define __BC_CHANNEL_ACTOR_H__
 
+#include "cJSON.h"
 #include "edc_actor.h"
 #include "edc_config.h"
 #include "edc_containers.h"
 #include "edc_terminal.h"
-#include "cJSON.h"
 #include "uthash.h"
 #include <uv.h>
 struct edc_channel

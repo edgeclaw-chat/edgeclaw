@@ -113,8 +113,8 @@ static sds edc_context_load_skills(const char *workspace)
     sdsfree(tmp);
 
     result = sdscatprintf(result, "## Skills\n\n"
-                                   "The following skills extend your capabilities. To use a skill, read its SKILL.md "
-                                   "file using the read_file tool.\n\n");
+                                  "The following skills extend your capabilities. To use a skill, read its SKILL.md "
+                                  "file using the read_file tool.\n\n");
 
     for (size_t i = 0; i < utarray_len(skills); i++)
     {

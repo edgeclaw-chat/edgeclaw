@@ -1,12 +1,12 @@
-﻿#include "sds.h"
+﻿#include "edc_channel_cli.h"
+#include "edc_agent.h"
 #include "edc_channel_actor.h"
-#include "edc_channel_cli.h"
 #include "edc_compat.h"
+#include "edc_completion.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
-#include "edc_agent.h"
 #include "edc_markdown_render.h"
-#include "edc_completion.h"
+#include "sds.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,8 +14,8 @@
 #include <sys/ioctl.h>
 #include <uv.h>
 
-#define CLI_RESET     "\e[0m"
-#define CLI_DIM       "\e[2m"
+#define CLI_RESET "\e[0m"
+#define CLI_DIM "\e[2m"
 #define CLI_HISTORY_MAX 1000
 
 /* ---- completion state (kept static to avoid header changes) ---- */
@@ -36,20 +36,24 @@ static void cli_history_load(edc_channel_actor_state_t *state)
 
     EdcError *error = NULL;
     sds contents = edc_file_read(state->cli.history_path, &error);
-    if (!contents) {
-        if (error) edc_error_free(error);
+    if (!contents)
+    {
+        if (error)
+            edc_error_free(error);
         return;
     }
 
     int count;
     sds *lines = sdssplitlen(contents, (ssize_t)sdslen(contents), "\n", 1, &count);
     sdsfree(contents);
-    if (!lines) return;
+    if (!lines)
+        return;
 
     state->cli.history_capacity = count + 32;
     state->cli.history = (sds *)malloc((size_t)state->cli.history_capacity * sizeof(sds));
 
-    for (int i = 0; i < count && state->cli.history_count < CLI_HISTORY_MAX; i++) {
+    for (int i = 0; i < count && state->cli.history_count < CLI_HISTORY_MAX; i++)
+    {
         if (sdslen(lines[i]) > 0)
             state->cli.history[state->cli.history_count++] = lines[i];
         else
@@ -69,29 +73,30 @@ static void cli_history_save(edc_channel_actor_state_t *state)
 
     EdcError *error = NULL;
     edc_file_write(state->cli.history_path, all, -1, &error);
-    if (error) edc_error_free(error);
+    if (error)
+        edc_error_free(error);
     sdsfree(all);
 }
 
 static void cli_history_add(edc_channel_actor_state_t *state, const char *line)
 {
-    if (!line || !line[0]) return;
-
-    if (state->cli.history_count > 0 &&
-        strcmp(state->cli.history[state->cli.history_count - 1], line) == 0)
+    if (!line || !line[0])
         return;
 
-    if (state->cli.history_count >= CLI_HISTORY_MAX) {
+    if (state->cli.history_count > 0 && strcmp(state->cli.history[state->cli.history_count - 1], line) == 0)
+        return;
+
+    if (state->cli.history_count >= CLI_HISTORY_MAX)
+    {
         sdsfree(state->cli.history[0]);
-        memmove(state->cli.history, state->cli.history + 1,
-                (size_t)(state->cli.history_count - 1) * sizeof(sds));
+        memmove(state->cli.history, state->cli.history + 1, (size_t)(state->cli.history_count - 1) * sizeof(sds));
         state->cli.history_count--;
     }
 
-    if (state->cli.history_count >= state->cli.history_capacity) {
+    if (state->cli.history_count >= state->cli.history_capacity)
+    {
         state->cli.history_capacity = state->cli.history_capacity ? state->cli.history_capacity * 2 : 32;
-        state->cli.history = (sds *)realloc(state->cli.history,
-                                             (size_t)state->cli.history_capacity * sizeof(sds));
+        state->cli.history = (sds *)realloc(state->cli.history, (size_t)state->cli.history_capacity * sizeof(sds));
     }
 
     state->cli.history[state->cli.history_count++] = sdsnew(line);
@@ -103,17 +108,31 @@ static int cli_display_width(const char *s, int byte_pos)
 {
     int w = 0;
     int i = 0;
-    while (i < byte_pos) {
+    while (i < byte_pos)
+    {
         unsigned char c = (unsigned char)s[i];
-        if (c <= 0x7F) {
-            w++; i++;
-        } else if ((c & 0xE0) == 0xC0) {
-            w += 2; i += 2;
-        } else if ((c & 0xF0) == 0xE0) {
-            w += 2; i += 3;
-        } else if ((c & 0xF8) == 0xF0) {
-            w += 2; i += 4;
-        } else {
+        if (c <= 0x7F)
+        {
+            w++;
+            i++;
+        }
+        else if ((c & 0xE0) == 0xC0)
+        {
+            w += 2;
+            i += 2;
+        }
+        else if ((c & 0xF0) == 0xE0)
+        {
+            w += 2;
+            i += 3;
+        }
+        else if ((c & 0xF8) == 0xF0)
+        {
+            w += 2;
+            i += 4;
+        }
+        else
+        {
             i++;
         }
     }
@@ -122,7 +141,8 @@ static int cli_display_width(const char *s, int byte_pos)
 
 static int cli_prev_char_pos(const char *s, int byte_pos)
 {
-    if (byte_pos <= 0) return 0;
+    if (byte_pos <= 0)
+        return 0;
     int pos = byte_pos - 1;
     while (pos > 0 && ((unsigned char)s[pos] & 0xC0) == 0x80)
         pos--;
@@ -131,12 +151,17 @@ static int cli_prev_char_pos(const char *s, int byte_pos)
 
 static int cli_next_char_pos(const char *s, int byte_pos, int total_len)
 {
-    if (byte_pos >= total_len) return total_len;
+    if (byte_pos >= total_len)
+        return total_len;
     unsigned char c = (unsigned char)s[byte_pos];
-    if ((c & 0x80) == 0)          return byte_pos + 1;
-    if ((c & 0xE0) == 0xC0)       return byte_pos + 2;
-    if ((c & 0xF0) == 0xE0)       return byte_pos + 3;
-    if ((c & 0xF8) == 0xF0)       return byte_pos + 4;
+    if ((c & 0x80) == 0)
+        return byte_pos + 1;
+    if ((c & 0xE0) == 0xC0)
+        return byte_pos + 2;
+    if ((c & 0xF0) == 0xE0)
+        return byte_pos + 3;
+    if ((c & 0xF8) == 0xF0)
+        return byte_pos + 4;
     return byte_pos + 1;
 }
 
@@ -170,9 +195,11 @@ static int cli_get_term_width(edc_channel_actor_state_t *state)
         return (int)ws.ws_col;
 
     const char *cols = getenv("COLUMNS");
-    if (cols) {
+    if (cols)
+    {
         int w = atoi(cols);
-        if (w > 0) return w;
+        if (w > 0)
+            return w;
     }
 
     return 80;
@@ -192,7 +219,8 @@ static void cli_redraw(edc_channel_actor_state_t *state)
     int new_lines = cli_calc_lines(state, state->cli.line_buffer);
 
     /* move cursor up to cover all previous lines of the input */
-    if (state->cli.prev_lines > 1) {
+    if (state->cli.prev_lines > 1)
+    {
         for (int l = 1; l < state->cli.prev_lines; l++)
             fprintf(stdout, "\e[A");
     }
@@ -211,10 +239,12 @@ static void cli_redraw(edc_channel_actor_state_t *state)
 
 static void cli_display_output(edc_channel_actor_state_t *state)
 {
-    if (!state->cli.pending_output) return;
+    if (!state->cli.pending_output)
+        return;
 
     sds fixed = sdsempty();
-    for (size_t i = 0; i < sdslen(state->cli.pending_output); i++) {
+    for (size_t i = 0; i < sdslen(state->cli.pending_output); i++)
+    {
         char c = state->cli.pending_output[i];
         if (c == '\n' && (i == 0 || state->cli.pending_output[i - 1] != '\r'))
             fixed = sdscat(fixed, "\r\n");
@@ -243,18 +273,19 @@ static void cli_commit_line(edc_actor_t *actor, const char *line)
     {
         cli_history_add(state, line);
         edc_completion_add_history(line);
-        if (g_active_agent) edc_agent_add_history(g_active_agent, line);
+        if (g_active_agent)
+            edc_agent_add_history(g_active_agent, line);
     }
 
     fprintf(stdout, "\r\n");
     fflush(stdout);
 
-    if (line && line[0] != '\0') {
+    if (line && line[0] != '\0')
+    {
         struct edc_channel *channel = edc_channel_cli_new();
         struct edc_channel_message *msg = edc_channel_message_new(channel, sdsnew(line));
-        edc_actor_msg_t *actor_msg =
-            edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, actor, NULL, msg,
-                              (edc_actor_data_free_fn)edc_channel_message_free);
+        edc_actor_msg_t *actor_msg = edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, actor, NULL, msg,
+                                                       (edc_actor_data_free_fn)edc_channel_message_free);
         edc_actor_send(state->observer, actor_msg);
     }
 
@@ -262,13 +293,15 @@ static void cli_commit_line(edc_actor_t *actor, const char *line)
     state->cli.line_buffer = sdsempty();
     state->cli.cursor_pos = 0;
 
-    if (state->cli.saved_line) {
+    if (state->cli.saved_line)
+    {
         sdsfree(state->cli.saved_line);
         state->cli.saved_line = NULL;
     }
     state->cli.history_pos = -1;
 
-    if (state->cli.running) {
+    if (state->cli.running)
+    {
         state->cli.prev_lines = 0;
         cli_redraw(state);
     }
@@ -278,33 +311,35 @@ static void cli_commit_line(edc_actor_t *actor, const char *line)
 
 static void cli_history_up(edc_channel_actor_state_t *state)
 {
-    if (state->cli.history_count == 0 ||
-        state->cli.history_pos >= state->cli.history_count - 1)
+    if (state->cli.history_count == 0 || state->cli.history_pos >= state->cli.history_count - 1)
         return;
 
-    if (state->cli.history_pos == -1) {
-        if (state->cli.saved_line) sdsfree(state->cli.saved_line);
+    if (state->cli.history_pos == -1)
+    {
+        if (state->cli.saved_line)
+            sdsfree(state->cli.saved_line);
         state->cli.saved_line = sdsdup(state->cli.line_buffer);
     }
 
     state->cli.history_pos++;
     sdsfree(state->cli.line_buffer);
-    state->cli.line_buffer =
-        sdsdup(state->cli.history[state->cli.history_count - 1 - state->cli.history_pos]);
+    state->cli.line_buffer = sdsdup(state->cli.history[state->cli.history_count - 1 - state->cli.history_pos]);
     state->cli.cursor_pos = (int)sdslen(state->cli.line_buffer);
     cli_redraw(state);
 }
 
 static void cli_history_down(edc_channel_actor_state_t *state)
 {
-    if (state->cli.history_pos > 0) {
+    if (state->cli.history_pos > 0)
+    {
         state->cli.history_pos--;
         sdsfree(state->cli.line_buffer);
-        state->cli.line_buffer =
-            sdsdup(state->cli.history[state->cli.history_count - 1 - state->cli.history_pos]);
+        state->cli.line_buffer = sdsdup(state->cli.history[state->cli.history_count - 1 - state->cli.history_pos]);
         state->cli.cursor_pos = (int)sdslen(state->cli.line_buffer);
         cli_redraw(state);
-    } else if (state->cli.history_pos == 0 && state->cli.saved_line) {
+    }
+    else if (state->cli.history_pos == 0 && state->cli.saved_line)
+    {
         state->cli.history_pos = -1;
         sdsfree(state->cli.line_buffer);
         state->cli.line_buffer = sdsdup(state->cli.saved_line);
@@ -321,24 +356,29 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
 {
     edc_actor_t *actor = state->actor;
 
-    for (ssize_t i = 0; i < len; i++) {
+    for (ssize_t i = 0; i < len; i++)
+    {
         unsigned char c = (unsigned char)data[i];
 
         /* 非 TAB 按键：重置补全状态 */
-        if (c != 9 && g_comp_active) {
+        if (c != 9 && g_comp_active)
+        {
             g_comp_active = false;
             edc_completion_result_free(&g_comp);
         }
 
         /* escape sequences */
-        if (c == '\x1b' && i + 1 < len) {
+        if (c == '\x1b' && i + 1 < len)
+        {
             i++;
             unsigned char c2 = (unsigned char)data[i];
-            if (c2 == '[' || c2 == 'O') {
+            if (c2 == '[' || c2 == 'O')
+            {
                 char seq[16] = {0};
                 seq[0] = (char)c2;
                 int si = 1;
-                while (i + 1 < len && si < 15) {
+                while (i + 1 < len && si < 15)
+                {
                     i++;
                     unsigned char nc = (unsigned char)data[i];
                     seq[si++] = (char)nc;
@@ -350,32 +390,41 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
                     cli_history_up(state);
                 else if (!strcmp(seq, "[B") || !strcmp(seq, "OB"))
                     cli_history_down(state);
-                else if (!strcmp(seq, "[C") || !strcmp(seq, "OC")) {
+                else if (!strcmp(seq, "[C") || !strcmp(seq, "OC"))
+                {
                     int total = (int)sdslen(state->cli.line_buffer);
-                    if (state->cli.cursor_pos < total) {
-                        state->cli.cursor_pos = cli_next_char_pos(
-                            state->cli.line_buffer, state->cli.cursor_pos, total);
+                    if (state->cli.cursor_pos < total)
+                    {
+                        state->cli.cursor_pos = cli_next_char_pos(state->cli.line_buffer, state->cli.cursor_pos, total);
                         cli_redraw(state);
                     }
-                } else if (!strcmp(seq, "[D") || !strcmp(seq, "OD")) {
-                    if (state->cli.cursor_pos > 0) {
-                        state->cli.cursor_pos = cli_prev_char_pos(
-                            state->cli.line_buffer, state->cli.cursor_pos);
+                }
+                else if (!strcmp(seq, "[D") || !strcmp(seq, "OD"))
+                {
+                    if (state->cli.cursor_pos > 0)
+                    {
+                        state->cli.cursor_pos = cli_prev_char_pos(state->cli.line_buffer, state->cli.cursor_pos);
                         cli_redraw(state);
                     }
-                } else if (!strcmp(seq, "[H") || !strcmp(seq, "OH") || !strcmp(seq, "[1~")) {
+                }
+                else if (!strcmp(seq, "[H") || !strcmp(seq, "OH") || !strcmp(seq, "[1~"))
+                {
                     state->cli.cursor_pos = 0;
                     cli_redraw(state);
-                } else if (!strcmp(seq, "[F") || !strcmp(seq, "OF") || !strcmp(seq, "[4~")) {
+                }
+                else if (!strcmp(seq, "[F") || !strcmp(seq, "OF") || !strcmp(seq, "[4~"))
+                {
                     state->cli.cursor_pos = (int)sdslen(state->cli.line_buffer);
                     cli_redraw(state);
-                } else if (!strcmp(seq, "[3~")) {
+                }
+                else if (!strcmp(seq, "[3~"))
+                {
                     int total = (int)sdslen(state->cli.line_buffer);
-                    if (state->cli.cursor_pos < total) {
-                        int next = cli_next_char_pos(state->cli.line_buffer,
-                                                     state->cli.cursor_pos, total);
-                        state->cli.line_buffer = cli_buf_delete(state,
-                            state->cli.cursor_pos, next - state->cli.cursor_pos);
+                    if (state->cli.cursor_pos < total)
+                    {
+                        int next = cli_next_char_pos(state->cli.line_buffer, state->cli.cursor_pos, total);
+                        state->cli.line_buffer =
+                            cli_buf_delete(state, state->cli.cursor_pos, next - state->cli.cursor_pos);
                         cli_redraw(state);
                     }
                     cli_redraw(state);
@@ -385,14 +434,17 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
         }
 
         /* enter */
-        if (c == '\r' || c == '\n') {
+        if (c == '\r' || c == '\n')
+        {
             cli_commit_line(actor, state->cli.line_buffer);
             continue;
         }
 
         /* Ctrl+C */
-        if (c == 3) {
-            if (sdslen(state->cli.line_buffer) == 0) {
+        if (c == 3)
+        {
+            if (sdslen(state->cli.line_buffer) == 0)
+            {
                 state->cli.running = 0;
                 fprintf(stdout, "\r\n");
                 cli_history_save(state);
@@ -407,8 +459,10 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
         }
 
         /* Ctrl+D */
-        if (c == 4) {
-            if (sdslen(state->cli.line_buffer) == 0) {
+        if (c == 4)
+        {
+            if (sdslen(state->cli.line_buffer) == 0)
+            {
                 state->cli.running = 0;
                 fprintf(stdout, "\r\n");
                 cli_history_save(state);
@@ -419,11 +473,12 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
         }
 
         /* backspace — delete one full UTF-8 character before cursor */
-        if (c == 127 || c == '\b') {
-            if (state->cli.cursor_pos > 0) {
+        if (c == 127 || c == '\b')
+        {
+            if (state->cli.cursor_pos > 0)
+            {
                 int pos = state->cli.cursor_pos - 1;
-                while (pos > 0 &&
-                       ((unsigned char)state->cli.line_buffer[pos] & 0xC0) == 0x80)
+                while (pos > 0 && ((unsigned char)state->cli.line_buffer[pos] & 0xC0) == 0x80)
                     pos--;
                 int count = state->cli.cursor_pos - pos;
                 state->cli.line_buffer = cli_buf_delete(state, pos, count);
@@ -434,8 +489,10 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
         }
 
         /* Ctrl+W - delete word backwards */
-        if (c == 23) {
-            if (state->cli.cursor_pos > 0) {
+        if (c == 23)
+        {
+            if (state->cli.cursor_pos > 0)
+            {
                 int pos = state->cli.cursor_pos;
                 while (pos > 0 && state->cli.line_buffer[pos - 1] == ' ')
                     pos--;
@@ -450,33 +507,39 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
         }
 
         /* Tab — completion (new engine) */
-        if (c == 9) {
+        if (c == 9)
+        {
             int len = (int)sdslen(state->cli.line_buffer);
-            if (len == 0) continue;
+            if (len == 0)
+                continue;
 
             int wstart = state->cli.cursor_pos;
             while (wstart > 0 && state->cli.line_buffer[wstart - 1] != ' ')
                 wstart--;
             int wlen = state->cli.cursor_pos - wstart;
-            if (wlen == 0) continue;
+            if (wlen == 0)
+                continue;
 
             /* 首次 TAB：收集候选项 */
-            if (!g_comp_active) {
+            if (!g_comp_active)
+            {
                 edc_completion_result_free(&g_comp);
-                edc_completion_collect(state->cli.line_buffer,
-                                       state->cli.cursor_pos, &g_comp);
+                edc_completion_collect(state->cli.line_buffer, state->cli.cursor_pos, &g_comp);
                 g_comp_active = true;
 
-                if (g_comp.count == 0) {
+                if (g_comp.count == 0)
+                {
                     /* 无匹配，重置 */
                     g_comp_active = false;
                     continue;
                 }
 
-                if (g_comp.count == 1) {
+                if (g_comp.count == 1)
+                {
                     /* 唯一匹配：直接补全 + 空格 */
                     const char *match = g_comp.items[0].text;
-                    for (size_t ci = (size_t)wlen; ci < strlen(match); ci++) {
+                    for (size_t ci = (size_t)wlen; ci < strlen(match); ci++)
+                    {
                         char tmp[2] = {match[ci], '\0'};
                         state->cli.line_buffer = cli_buf_insert(state, tmp, 1);
                     }
@@ -489,9 +552,11 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
                 }
 
                 /* 多个候选项：补全公共前缀 */
-                if (g_comp.common_prefix && sdslen(g_comp.common_prefix) > (size_t)wlen) {
+                if (g_comp.common_prefix && sdslen(g_comp.common_prefix) > (size_t)wlen)
+                {
                     size_t cp_len = sdslen(g_comp.common_prefix);
-                    for (size_t ci = (size_t)wlen; ci < cp_len; ci++) {
+                    for (size_t ci = (size_t)wlen; ci < cp_len; ci++)
+                    {
                         char tmp[2] = {g_comp.common_prefix[ci], '\0'};
                         state->cli.line_buffer = cli_buf_insert(state, tmp, 1);
                     }
@@ -502,7 +567,8 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
 
                 /* 公共前缀等于 token（各候选差异在后部）：展示候选列表 */
                 fprintf(stdout, "\r\n");
-                for (int ci = 0; ci < g_comp.count; ci++) {
+                for (int ci = 0; ci < g_comp.count; ci++)
+                {
                     fprintf(stdout, "  %s", g_comp.items[ci].text);
                     if ((ci + 1) % 4 == 0 || ci == g_comp.count - 1)
                         fprintf(stdout, "\r\n");
@@ -515,10 +581,10 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
             }
 
             /* 再次 TAB：循环选择候选项 */
-            if (g_comp_active && g_comp.count > 0) {
+            if (g_comp_active && g_comp.count > 0)
+            {
                 /* 回退当前 token 到 wstart */
-                state->cli.line_buffer = cli_buf_delete(state, wstart,
-                    state->cli.cursor_pos - wstart);
+                state->cli.line_buffer = cli_buf_delete(state, wstart, state->cli.cursor_pos - wstart);
                 state->cli.cursor_pos = wstart;
 
                 /* 选下一个 */
@@ -531,7 +597,8 @@ static void cli_process_input(edc_channel_actor_state_t *state, const char *data
         }
 
         /* printable ASCII + UTF-8 continuation bytes */
-        if (c >= 32) {
+        if (c >= 32)
+        {
             char ins[2] = {(char)c, '\0'};
             state->cli.line_buffer = cli_buf_insert(state, ins, 1);
             cli_redraw(state);
@@ -552,10 +619,12 @@ static void cli_alloc_cb(uv_handle_t *handle, size_t suggested, uv_buf_t *buf)
 static void cli_on_stdin_data(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 {
     edc_channel_actor_state_t *state = stream->data;
-    if (nread < 0) {
+    if (nread < 0)
+    {
         free(buf->base);
         state->cli.running = 0;
-        if (!state->cli.tty_stopped) {
+        if (!state->cli.tty_stopped)
+        {
             state->cli.tty_stopped = true;
             uv_read_stop(stream);
             uv_close((uv_handle_t *)stream, NULL);
@@ -567,7 +636,8 @@ static void cli_on_stdin_data(uv_stream_t *stream, ssize_t nread, const uv_buf_t
         cli_process_input(state, buf->base, nread);
     free(buf->base);
 
-    if (!state->cli.running && !state->cli.tty_stopped) {
+    if (!state->cli.running && !state->cli.tty_stopped)
+    {
         state->cli.tty_stopped = true;
         uv_read_stop(stream);
         uv_close((uv_handle_t *)stream, NULL);
@@ -584,10 +654,12 @@ static void edc_channel_cli_handle_send(edc_actor_t *actor, edc_actor_msg_t *msg
     if (state->cli.pending_output)
         sdsfree(state->cli.pending_output);
 
-    if (strncmp(message->content, "[思考]:", strlen("[思考]:")) == 0) {
-        state->cli.pending_output = sdscatprintf(sdsempty(), "%s%s%s",
-                                                  CLI_DIM, message->content, CLI_RESET);
-    } else {
+    if (strncmp(message->content, "[思考]:", strlen("[思考]:")) == 0)
+    {
+        state->cli.pending_output = sdscatprintf(sdsempty(), "%s%s%s", CLI_DIM, message->content, CLI_RESET);
+    }
+    else
+    {
         state->cli.pending_output = edc_markdown_render(message->content);
     }
 
@@ -600,10 +672,12 @@ static void edc_channel_cli_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
     edc_channel_actor_state_t *state = actor->state;
 
-    switch (msg->type) {
+    switch (msg->type)
+    {
     case BC_ACTOR_MSG_START: {
         edc_terminal_vt_enable();
-        if (edc_terminal_raw_mode(STDIN_FILENO, &state->cli.orig_term) != 0) {
+        if (edc_terminal_raw_mode(STDIN_FILENO, &state->cli.orig_term) != 0)
+        {
             fprintf(stderr, "Failed to set raw terminal mode\r\n");
             state->cli.running = 0;
             break;
@@ -651,17 +725,40 @@ void edc_channel_cli_init(edc_actor_t *channel_actor)
     edc_completion_init();
 
     /* 注册所有 slash 命令 */
-    static const char *cmds[] = {
-        "/new", "/stop", "/help", "/exit", "/jobs", "/tasks", "/cancel",
-        "/bg", "/fg", "/whoami", "/model", "/history",
-        "/task new", "/task fork", "/task list", "/task status",
-        "/task output", "/task fg", "/task bg", "/task switch",
-        "/task stop", "/task groups", "/task chain", "/task join",
-        "/task prompt", "/task suspend", "/task resume",
-        "/session new", "/session switch", "/session list",
-        "/session stop", "/session rename", "/session info",
-        NULL
-    };
+    static const char *cmds[] = {"/new",
+                                 "/stop",
+                                 "/help",
+                                 "/exit",
+                                 "/jobs",
+                                 "/tasks",
+                                 "/cancel",
+                                 "/bg",
+                                 "/fg",
+                                 "/whoami",
+                                 "/model",
+                                 "/history",
+                                 "/task new",
+                                 "/task fork",
+                                 "/task list",
+                                 "/task status",
+                                 "/task output",
+                                 "/task fg",
+                                 "/task bg",
+                                 "/task switch",
+                                 "/task stop",
+                                 "/task groups",
+                                 "/task chain",
+                                 "/task join",
+                                 "/task prompt",
+                                 "/task suspend",
+                                 "/task resume",
+                                 "/session new",
+                                 "/session switch",
+                                 "/session list",
+                                 "/session stop",
+                                 "/session rename",
+                                 "/session info",
+                                 NULL};
     for (const char **c = cmds; *c; c++)
         edc_completion_add_command(*c);
 

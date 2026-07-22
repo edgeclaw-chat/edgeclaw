@@ -1,9 +1,9 @@
 ﻿#include "edc_channel_feishu.h"
-#include "edc_actor.h"
-#include "edc_compat.h"
-#include "edc_channel_actor.h"
-#include "edc_network_async.h"
 #include "cJSON.h"
+#include "edc_actor.h"
+#include "edc_channel_actor.h"
+#include "edc_compat.h"
+#include "edc_network_async.h"
 #include "lark_api.pb.h"
 #include "log.h"
 #include "pb_decode.h"
@@ -134,8 +134,8 @@ static void edc_channel_feishu_handle_tenant_token_resp(struct mg_connection *c,
     edc_actor_t *actor = c->fn_data;
     cJSON *resp = cJSON_ParseWithLength(hm->body.buf, hm->body.len);
     edc_actor_send(actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_feishu, actor, NULL,
-                                                   edc_channel_feishu_tenant_token_resp_new(resp),
-                                                   (edc_actor_data_free_fn)edc_channel_feishu_resp_free));
+                                                     edc_channel_feishu_tenant_token_resp_new(resp),
+                                                     (edc_actor_data_free_fn)edc_channel_feishu_resp_free));
 }
 
 static void edc_channel_feishu_tenant_token_fn(struct mg_connection *c, int ev, void *ev_data)
@@ -184,8 +184,8 @@ static void edc_channel_feishu_handle_wss_endpoint_resp(struct mg_connection *c,
 
     cJSON *data = cJSON_ParseWithLength(hm->body.buf, hm->body.len);
     edc_actor_send(actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_feishu, actor, NULL,
-                                                   edc_channel_feishu_wss_endpoint_resp_new(data),
-                                                   (edc_actor_data_free_fn)edc_channel_feishu_resp_free));
+                                                     edc_channel_feishu_wss_endpoint_resp_new(data),
+                                                     (edc_actor_data_free_fn)edc_channel_feishu_resp_free));
 }
 
 static void edc_channel_feishu_wss_url_fn(struct mg_connection *c, int ev, void *ev_data)
@@ -480,17 +480,17 @@ static const char *edc_channel_feishu_wss_frame_get_header(pbbp2_Frame *frame, c
 }
 
 static void edc_channel_feishu_handle_event_payload(struct mg_connection *c, struct edc_channel_feishu_wss_conn *conn,
-                                                   const uint8_t *payload, const size_t len)
+                                                    const uint8_t *payload, const size_t len)
 {
     edc_actor_t *actor = conn->actor;
     cJSON *data = cJSON_ParseWithLength((const char *)payload, len);
     edc_actor_send(actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_feishu, actor, NULL,
-                                                   edc_channel_feishu_wss_event_resp_new(data),
-                                                   (edc_actor_data_free_fn)edc_channel_feishu_resp_free));
+                                                     edc_channel_feishu_wss_event_resp_new(data),
+                                                     (edc_actor_data_free_fn)edc_channel_feishu_resp_free));
 }
 
 static void edc_channel_feishu_on_wss_message(struct mg_connection *c, struct edc_channel_feishu_wss_conn *conn,
-                                             struct mg_ws_message *wm)
+                                              struct mg_ws_message *wm)
 {
     edc_actor_t *actor = conn->actor;
     edc_channel_actor_state_t *state = actor->state;
@@ -693,14 +693,14 @@ static void edc_channel_feishu_handle_wss_event_recv(edc_actor_t *actor, struct 
         goto format_error_exit;
     }
 
-    struct edc_channel_message *channel_message =
-        edc_channel_feishu_message_new(edc_channel_feishu_detach_str(chat_type), edc_channel_feishu_detach_str(chat_id),
-                                      edc_channel_feishu_detach_str(message_id), edc_channel_feishu_detach_str(open_id),
-                                      edc_channel_feishu_detach_str(message_content_text));
+    struct edc_channel_message *channel_message = edc_channel_feishu_message_new(
+        edc_channel_feishu_detach_str(chat_type), edc_channel_feishu_detach_str(chat_id),
+        edc_channel_feishu_detach_str(message_id), edc_channel_feishu_detach_str(open_id),
+        edc_channel_feishu_detach_str(message_content_text));
 
     edc_actor_send(state->observer,
-                  edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_feishu, actor, NULL, channel_message,
-                                            (edc_actor_data_free_fn)edc_channel_message_free));
+                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_feishu, actor, NULL,
+                                              channel_message, (edc_actor_data_free_fn)edc_channel_message_free));
 
     goto exit;
 
@@ -774,7 +774,8 @@ struct edc_channel_feishu_send_message_req
     const char *body;
 };
 
-struct edc_channel_feishu_send_message_req *edc_channel_feishu_send_message_req_new(edc_actor_t *actor, const char *body)
+struct edc_channel_feishu_send_message_req *edc_channel_feishu_send_message_req_new(edc_actor_t *actor,
+                                                                                    const char *body)
 {
     struct edc_channel_feishu_send_message_req *req = g_new0(struct edc_channel_feishu_send_message_req, 1);
     req->actor = actor;
@@ -805,8 +806,8 @@ static void edc_channel_feishu_make_send_message_req(struct mg_connection *c)
 }
 
 static void edc_channel_feishu_handle_send_message_resp(struct mg_connection *c,
-                                                       struct edc_channel_feishu_send_message_req *req,
-                                                       struct mg_http_message *hm)
+                                                        struct edc_channel_feishu_send_message_req *req,
+                                                        struct mg_http_message *hm)
 {
     cJSON *resp = cJSON_ParseWithLength(hm->body.buf, hm->body.len);
     if (!resp || !cJSON_IsObject(resp))
@@ -814,9 +815,9 @@ static void edc_channel_feishu_handle_send_message_resp(struct mg_connection *c,
         log_error("feishu channel send message resp format error: %.*s", (int)hm->body.len, hm->body.buf);
     }
 
-    edc_actor_send(req->actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_feishu, req->actor, NULL,
-                                                        edc_channel_feishu_send_message_resp_new(resp),
-                                                        (edc_actor_data_free_fn)edc_channel_feishu_resp_free));
+    edc_actor_send(req->actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_feishu, req->actor,
+                                                          NULL, edc_channel_feishu_send_message_resp_new(resp),
+                                                          (edc_actor_data_free_fn)edc_channel_feishu_resp_free));
 }
 
 static void edc_channel_feishu_send_msg_conn_fn(struct mg_connection *c, int ev, void *ev_data)
@@ -866,7 +867,7 @@ static void edc_channel_feishu_handle_send(edc_actor_t *actor, edc_actor_msg_t *
 
     char *body = cJSON_PrintUnformatted(send_req);
     edc_channel_feishu_http_connect(actor, FEISHU_SEND_MESSAGE_URL, edc_channel_feishu_send_msg_conn_fn,
-                                   edc_channel_feishu_send_message_req_new(actor, body));
+                                    edc_channel_feishu_send_message_req_new(actor, body));
 
     cJSON_free(content_text);
     cJSON_Delete(content);

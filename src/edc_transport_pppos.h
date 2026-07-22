@@ -3,7 +3,7 @@
 
 #include "edc_device_agent.h"
 
-struct edc_device_transport *edc_transport_pppos_create(int ppp_fd,
-    const char *my_ip, const char *peer_ip, uint16_t port);
+struct edc_device_transport *edc_transport_pppos_create(int ppp_fd, const char *my_ip, const char *peer_ip,
+                                                        uint16_t port);
 
 #endif

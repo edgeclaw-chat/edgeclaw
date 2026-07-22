@@ -1,13 +1,13 @@
 ﻿#include "edc_init_env.h"
-#include "edc_secret.h"
 #include "cJSON.h"
-#include "log.h"
-#include <dirent.h>
-#include <inttypes.h>
 #include "edc_compat.h"
 #include "edc_file_utils.h"
+#include "edc_secret.h"
 #include "edc_terminal.h"
+#include "log.h"
 #include "sds.h"
+#include <dirent.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -274,7 +274,7 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
         if (rw && cJSON_IsArray(rw))
         {
             int size = cJSON_GetArraySize(rw);
-                if (size > 0)
+            if (size > 0)
             {
                 cJSON *first = cJSON_GetArrayItem(rw, 0);
                 if (first && cJSON_IsString(first))
@@ -430,7 +430,7 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
 }
 
 static int edc_init_env_get_configure(struct edc_init_env_result *result, const struct edc_init_env_result *defaults,
-                                     const char *edc_home)
+                                      const char *edc_home)
 {
     if (!result)
         return -1;
@@ -504,9 +504,9 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     }
 
     {
-        sds def_rw_str =
-            sdscatprintf(sdsempty(), "%s/workspace/, /tmp, /dev", edc_home);
-        const char *def_rw = (defaults && sdslen(defaults->sandbox_rw_paths) > 0) ? defaults->sandbox_rw_paths : def_rw_str;
+        sds def_rw_str = sdscatprintf(sdsempty(), "%s/workspace/, /tmp, /dev", edc_home);
+        const char *def_rw =
+            (defaults && sdslen(defaults->sandbox_rw_paths) > 0) ? defaults->sandbox_rw_paths : def_rw_str;
         val = prompt_with_default("  Additional writable paths (comma-separated)", def_rw);
         sdsfree(def_rw_str);
         if (!val)
@@ -515,12 +515,10 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     }
 
     {
-        sds def_ro_str =
-            sdscatprintf(sdsempty(), "%s/workspace/ssl, /usr, /lib, /lib32, /lib64, /libx32, /bin, /sbin, /etc, /proc",
-                            edc_home);
-        const char *def_ro = (defaults && sdslen(defaults->sandbox_ro_paths) > 0)
-                                 ? defaults->sandbox_ro_paths
-                                 : def_ro_str;
+        sds def_ro_str = sdscatprintf(
+            sdsempty(), "%s/workspace/ssl, /usr, /lib, /lib32, /lib64, /libx32, /bin, /sbin, /etc, /proc", edc_home);
+        const char *def_ro =
+            (defaults && sdslen(defaults->sandbox_ro_paths) > 0) ? defaults->sandbox_ro_paths : def_ro_str;
         val = prompt_with_default("  Read-only paths (comma-separated)", def_ro);
         sdsfree(def_ro_str);
         if (!val)
@@ -554,7 +552,8 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
         printf("\n--- Email Settings ---\n");
         bool same_chan = (defaults && strcmp(defaults->channel_type, "email") == 0);
 
-        const char *def = (same_chan && sdslen(defaults->email.imap_host) > 0) ? defaults->email.imap_host : "imap.qq.com";
+        const char *def =
+            (same_chan && sdslen(defaults->email.imap_host) > 0) ? defaults->email.imap_host : "imap.qq.com";
         val = prompt_with_default("IMAP Host", def);
         if (!val)
             return -1;
@@ -572,8 +571,8 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
             return -1;
         result->email.user = val;
 
-        val =
-            prompt_password("Email Password", (same_chan && sdslen(defaults->email.passwd) > 0) ? defaults->email.passwd : NULL);
+        val = prompt_password("Email Password",
+                              (same_chan && sdslen(defaults->email.passwd) > 0) ? defaults->email.passwd : NULL);
         if (!val)
             return -1;
         result->email.passwd = val;
@@ -589,8 +588,8 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
         printf("\n--- Telegram Settings ---\n");
         bool same_chan = (defaults && strcmp(defaults->channel_type, "telegram") == 0);
 
-        val = prompt_password("Bot Key",
-                              (same_chan && sdslen(defaults->telegram.bot_key) > 0) ? defaults->telegram.bot_key : NULL);
+        val = prompt_password(
+            "Bot Key", (same_chan && sdslen(defaults->telegram.bot_key) > 0) ? defaults->telegram.bot_key : NULL);
         if (!val)
             return -1;
         result->telegram.bot_key = val;
@@ -629,8 +628,9 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
             return -1;
         result->feishu.app_id = val;
 
-        val = prompt_password("Feishu App Secret",
-                              (same_chan && sdslen(defaults->feishu.app_secret) > 0) ? defaults->feishu.app_secret : NULL);
+        val = prompt_password("Feishu App Secret", (same_chan && sdslen(defaults->feishu.app_secret) > 0)
+                                                       ? defaults->feishu.app_secret
+                                                       : NULL);
         if (!val)
             return -1;
         result->feishu.app_secret = val;
@@ -689,16 +689,16 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
         result->device_ip = val;
     }
 
-    ival = prompt_int("Device Port",
-                      (defaults && defaults->device_port > 0) ? defaults->device_port : 5000);
-    if (ival < 0) return -1;
+    ival = prompt_int("Device Port", (defaults && defaults->device_port > 0) ? defaults->device_port : 5000);
+    if (ival < 0)
+        return -1;
     result->device_port = ival;
 
     if (strcmp(result->device_transport, "tty") == 0)
     {
-        ival = prompt_int("Device Baud Rate",
-                          (defaults && defaults->device_baud > 0) ? defaults->device_baud : 115200);
-        if (ival < 0) return -1;
+        ival = prompt_int("Device Baud Rate", (defaults && defaults->device_baud > 0) ? defaults->device_baud : 115200);
+        if (ival < 0)
+            return -1;
         result->device_baud = ival;
     }
 
@@ -865,7 +865,7 @@ static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
 
     closedir(dir);
     return success;
-#endif  /* _WIN32 */
+#endif /* _WIN32 */
 }
 
 static bool edc_init_env_workspace(const char *dest_workspace)
@@ -1260,7 +1260,7 @@ bool edc_init_env(const char *edc_home, bool setup)
     }
 
 exit_:
-sdsfree(workspace);
-sdsfree(conf_file);
+    sdsfree(workspace);
+    sdsfree(conf_file);
     return ret;
 }

@@ -1,9 +1,9 @@
 ﻿#ifdef __linux__
 #define _GNU_SOURCE
 #include "edc_ns_sandbox.h"
-#include "log.h"
 #include "edc_compat.h"
 #include "edc_file_utils.h"
+#include "log.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <sched.h>

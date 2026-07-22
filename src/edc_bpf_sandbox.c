@@ -4,8 +4,8 @@
 #endif
 
 #include "edc_bpf_sandbox.h"
-#include "log.h"
 #include "edc_compat.h"
+#include "log.h"
 #include <errno.h>
 #include <stddef.h>
 #include <stdlib.h>

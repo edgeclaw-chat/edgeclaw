@@ -1,10 +1,10 @@
 #include "edc_scheduler.h"
+#include "edc_channel_actor.h"
 #include "edc_compat.h"
-#include "edc_session.h"
 #include "edc_config.h"
 #include "edc_context.h"
-#include "edc_channel_actor.h"
 #include "edc_llm_actor.h"
+#include "edc_session.h"
 #include "edc_toolbox_actor.h"
 #include "edc_turn.h"
 #include "uthash.h"
@@ -12,11 +12,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
 /* ── uthash wrapper: request_id → edc_task ──────────────────── */
 
-struct edc_sched_task_entry {
+struct edc_sched_task_entry
+{
     void *request_id;
     struct edc_task *task;
     UT_hash_handle hh;
@@ -43,7 +43,8 @@ struct edc_scheduler *edc_scheduler_new(struct edc_session *session, struct edc_
 
 void edc_scheduler_free(struct edc_scheduler *sched)
 {
-    if (!sched) return;
+    if (!sched)
+        return;
 
     struct edc_sched_task_entry *entry, *tmp;
     HASH_ITER(hh, sched->task_hash, entry, tmp)
@@ -62,7 +63,8 @@ void edc_scheduler_free(struct edc_scheduler *sched)
         }
     }
 
-    if (sched->self) edc_actor_free(sched->self);
+    if (sched->self)
+        edc_actor_free(sched->self);
     free(sched);
 }
 
@@ -80,16 +82,14 @@ char *edc_scheduler_gen_task_id(struct edc_scheduler *sched)
     return strdup(buf);
 }
 
-struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const char *desc,
-                                            struct edc_channel *channel)
+struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const char *desc, struct edc_channel *channel)
 {
-    if (!sched) return NULL;
+    if (!sched)
+        return NULL;
 
     char *tid = edc_scheduler_gen_task_id(sched);
     const char *sid = "sess-1"; /* Phase 4: from session */
-    const char *gid = sched->foreground_group
-                          ? sched->foreground_group->group_id
-                          : tid;
+    const char *gid = sched->foreground_group ? sched->foreground_group->group_id : tid;
 
     struct edc_task *task = edc_task_new(tid, sid, gid, desc, channel);
     task->state = TASK_WAITING_INPUT;
@@ -98,10 +98,10 @@ struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const ch
     return task;
 }
 
-struct edc_task_group *edc_scheduler_create_group(struct edc_scheduler *sched,
-                                                    struct edc_task *leader)
+struct edc_task_group *edc_scheduler_create_group(struct edc_scheduler *sched, struct edc_task *leader)
 {
-    if (!sched || !leader) return NULL;
+    if (!sched || !leader)
+        return NULL;
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_scheduler_add_group(sched, group);
     return group;
@@ -109,15 +109,18 @@ struct edc_task_group *edc_scheduler_create_group(struct edc_scheduler *sched,
 
 void edc_scheduler_add_group(struct edc_scheduler *sched, struct edc_task_group *group)
 {
-    if (!sched || !group) return;
-    if (sched->session) edc_session_add_group(sched->session, group);
+    if (!sched || !group)
+        return;
+    if (sched->session)
+        edc_session_add_group(sched->session, group);
 }
 
 /* ── 查找 ──────────────────────────────────────────────────── */
 
 struct edc_task *edc_scheduler_find_task(struct edc_scheduler *sched, void *request_id)
 {
-    if (!sched || !request_id) return NULL;
+    if (!sched || !request_id)
+        return NULL;
     struct edc_sched_task_entry *entry;
     HASH_FIND_PTR(sched->task_hash, &request_id, entry);
     return entry ? entry->task : NULL;
@@ -125,12 +128,14 @@ struct edc_task *edc_scheduler_find_task(struct edc_scheduler *sched, void *requ
 
 struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sched, const char *task_id)
 {
-    if (!sched || !task_id || !sched->session) return NULL;
+    if (!sched || !task_id || !sched->session)
+        return NULL;
     struct edc_task_group *group;
     DL_FOREACH(sched->session->groups, group)
     {
         struct edc_task *task = edc_task_group_find_task(group, task_id);
-        if (task) return task;
+        if (task)
+            return task;
     }
     return NULL;
 }
@@ -139,7 +144,8 @@ struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sched, cons
 
 void edc_scheduler_set_foreground(struct edc_scheduler *sched, struct edc_task_group *group)
 {
-    if (!sched) return;
+    if (!sched)
+        return;
     sched->foreground_group = group;
 }
 
@@ -150,8 +156,7 @@ struct edc_task_group *edc_scheduler_get_foreground(struct edc_scheduler *sched)
 
 /* ── 注册/注销 ──────────────────────────────────────────────── */
 
-void edc_scheduler_register_task(struct edc_scheduler *sched, struct edc_task *task,
-                                   void *request_id)
+void edc_scheduler_register_task(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
 {
     struct edc_sched_task_entry *e = g_new0(struct edc_sched_task_entry, 1);
     e->request_id = request_id;
@@ -163,16 +168,20 @@ void edc_scheduler_unregister_task(struct edc_scheduler *sched, void *request_id
 {
     struct edc_sched_task_entry *e;
     HASH_FIND_PTR(sched->task_hash, &request_id, e);
-    if (e) { HASH_DEL(sched->task_hash, e); free(e); }
+    if (e)
+    {
+        HASH_DEL(sched->task_hash, e);
+        free(e);
+    }
 }
 
 /* ── 信号 ──────────────────────────────────────────────────── */
 
-void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *task_id,
-                                        edc_task_signal sig)
+void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *task_id, edc_task_signal sig)
 {
     struct edc_task *task = edc_scheduler_find_task_by_id(sched, task_id);
-    if (!task) return;
+    if (!task)
+        return;
     if (task->current_request_id)
     {
         edc_scheduler_unregister_task(sched, task->current_request_id);
@@ -180,16 +189,18 @@ void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *
     edc_task_send_signal(task, sig);
 }
 
-void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, const char *group_id,
-                                         edc_task_signal sig)
+void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, const char *group_id, edc_task_signal sig)
 {
-    if (!sched || !sched->session) return;
+    if (!sched || !sched->session)
+        return;
     struct edc_task_group *group = NULL;
     DL_FOREACH(sched->session->groups, group)
     {
-        if (strcmp(group->group_id, group_id) == 0) break;
+        if (strcmp(group->group_id, group_id) == 0)
+            break;
     }
-    if (!group) return;
+    if (!group)
+        return;
 
     struct edc_task *task;
     LL_FOREACH2(group->members, task, group_next)
@@ -204,7 +215,8 @@ void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, const char 
 
 void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, edc_task_signal sig)
 {
-    if (!sched || !sched->session) return;
+    if (!sched || !sched->session)
+        return;
     struct edc_task_group *group, *tmp;
     DL_FOREACH_SAFE(sched->session->groups, group, tmp)
     {
@@ -217,7 +229,8 @@ void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, edc_task_sign
 static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg *msg)
 {
     struct edc_channel_message *input = msg->data;
-    if (!input) return;
+    if (!input)
+        return;
 
     if (sched->handle_command && sched->handle_command(sched, msg->from, input))
         return;
@@ -294,7 +307,8 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     else
     {
         edc_task_set_state(task, TASK_LLM_PROCESSING);
-        if (sched->send_llm) sched->send_llm(sched, task, msg->request_id);
+        if (sched->send_llm)
+            sched->send_llm(sched, task, msg->request_id);
     }
 }
 
@@ -305,7 +319,8 @@ static void sched_flush_redirects(struct edc_task *task)
         FILE *f = fopen(task->redirect_stdout, task->redirect_append ? "a" : "w");
         if (f)
         {
-            if (task->output) fputs(task->output, f);
+            if (task->output)
+                fputs(task->output, f);
             fclose(f);
         }
     }
@@ -314,7 +329,8 @@ static void sched_flush_redirects(struct edc_task *task)
         FILE *f = fopen(task->redirect_stderr, "w");
         if (f)
         {
-            if (task->output) fputs(task->output, f);
+            if (task->output)
+                fputs(task->output, f);
             fclose(f);
         }
     }
@@ -323,19 +339,23 @@ static void sched_flush_redirects(struct edc_task *task)
 static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_msg *msg)
 {
     struct edc_task *task = edc_scheduler_find_task(sched, msg->request_id);
-    if (!task || task->cancelled_request) return;
+    if (!task || task->cancelled_request)
+        return;
 
     struct edc_llm_actor_resp *r = msg->data;
-    if (!r) return;
+    if (!r)
+        return;
 
     if (r->error)
     {
         edc_scheduler_unregister_task(sched, msg->request_id);
         task->current_request_id = NULL;
         edc_task_set_state(task, TASK_ERROR);
-        if (r->content) edc_task_set_output(task, sdsnew(r->content));
+        if (r->content)
+            edc_task_set_output(task, sdsnew(r->content));
         sched_flush_redirects(task);
-        if (sched->send_reply) sched->send_reply(sched, task, r->error->message, msg->request_id);
+        if (sched->send_reply)
+            sched->send_reply(sched, task, r->error->message, msg->request_id);
         return;
     }
 
@@ -348,7 +368,8 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
             r->msg = NULL;
         }
         /* keep task registered — tool responses use same request_id */
-        if (sched->dispatch_tools) sched->dispatch_tools(sched, task, r, msg->request_id);
+        if (sched->dispatch_tools)
+            sched->dispatch_tools(sched, task, r, msg->request_id);
         return;
     }
 
@@ -364,8 +385,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
             /* sync turn messages to group history (context sharing) */
             if (task->group && task->active_turn)
             {
-                for (size_t qi = task->active_turn->messages.head;
-                     qi < task->active_turn->messages.tail; qi++)
+                for (size_t qi = task->active_turn->messages.head; qi < task->active_turn->messages.tail; qi++)
                 {
                     cJSON *item = task->active_turn->messages.data[qi];
                     cJSON_AddItemReferenceToArray(task->group->history, item);
@@ -376,7 +396,8 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
             edc_session_add_turn(sched->session, task->active_turn);
         }
         edc_task_commit_active_turn(task);
-        if (r->content) edc_task_set_output(task, sdsnew(r->content));
+        if (r->content)
+            edc_task_set_output(task, sdsnew(r->content));
         sched_flush_redirects(task);
         task->completion_seq = sched->session ? sched->session->next_completion_seq++ : 0;
         edc_task_set_state(task, TASK_COMPLETED);
@@ -391,19 +412,22 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
                 if (dt->active_turn && dt->state == TASK_WAITING_INPUT)
                 {
                     edc_task_set_state(dt, TASK_LLM_PROCESSING);
-                    if (sched->send_llm) sched->send_llm(sched, dt, dt->current_request_id);
+                    if (sched->send_llm)
+                        sched->send_llm(sched, dt, dt->current_request_id);
                 }
             }
         }
 
         /* send_reply internally checks active_task */
-        if (sched->send_reply) sched->send_reply(sched, task, r->content, msg->request_id);
+        if (sched->send_reply)
+            sched->send_reply(sched, task, r->content, msg->request_id);
 
         /* auto-reap disabled: tasks stay COMPLETED for cross-group join */
         /* to reclaim a task: use /task join <id> */
         (void)task;
 
-        if (sched->save_session) sched->save_session(sched);
+        if (sched->save_session)
+            sched->save_session(sched);
         return;
     }
 
@@ -417,10 +441,12 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
 static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor_msg *msg)
 {
     struct edc_task *task = edc_scheduler_find_task(sched, msg->request_id);
-    if (!task || task->cancelled_request) return;
+    if (!task || task->cancelled_request)
+        return;
 
     struct edc_toolbox_actor_req *tr = msg->data;
-    if (!tr) return;
+    if (!tr)
+        return;
 
     /* 添加 tool 消息到 active turn */
     if (task->active_turn && tr->result)
@@ -434,13 +460,14 @@ static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor
         edc_task_set_state(task, TASK_LLM_PROCESSING);
         if (sched->send_llm)
             sched->send_llm(sched, task, msg->request_id);
-         }
+    }
 }
 
 static void sched_handle_memory_done(struct edc_scheduler *sched, struct edc_actor_msg *msg)
 {
     (void)msg;
-    if (sched->session) edc_session_reload(sched->session, true);
+    if (sched->session)
+        edc_session_reload(sched->session, true);
 }
 
 /* ── Actor 入口 ────────────────────────────────────────────── */
@@ -448,15 +475,25 @@ static void sched_handle_memory_done(struct edc_scheduler *sched, struct edc_act
 void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
     struct edc_scheduler *sched = actor->state;
-    if (!sched || !msg) return;
+    if (!sched || !msg)
+        return;
 
     switch (msg->type)
     {
-    case BC_ACTOR_MSG_CHANNEL_RECV:  sched_handle_input(sched, msg);      break;
-    case BC_ACTOR_MSG_LLM_RESPONSE:  sched_handle_llm_resp(sched, msg);  break;
-    case BC_ACTOR_MSG_TOOL_RESPONSE: sched_handle_tool_resp(sched, msg); break;
-    case BC_ACTOR_MSG_MEMORY_DONE:   sched_handle_memory_done(sched, msg); break;
-    default: break;
+    case BC_ACTOR_MSG_CHANNEL_RECV:
+        sched_handle_input(sched, msg);
+        break;
+    case BC_ACTOR_MSG_LLM_RESPONSE:
+        sched_handle_llm_resp(sched, msg);
+        break;
+    case BC_ACTOR_MSG_TOOL_RESPONSE:
+        sched_handle_tool_resp(sched, msg);
+        break;
+    case BC_ACTOR_MSG_MEMORY_DONE:
+        sched_handle_memory_done(sched, msg);
+        break;
+    default:
+        break;
     }
 
     edc_actor_msg_free(msg);

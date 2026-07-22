@@ -24,6 +24,6 @@ struct edc_toolbox_actor_req
 extern edc_actor_t *edc_toolbox_actor_new(struct edc_toolbox *toolbox);
 extern void edc_toolbox_actor_free(edc_actor_t *actor);
 extern struct edc_toolbox_actor_req *edc_toolbox_actor_req_new(sds name, cJSON *args, sds call_id,
-                                                             struct edc_channel *call_from);
+                                                               struct edc_channel *call_from);
 extern void edc_toolbox_actor_req_free(struct edc_toolbox_actor_req *req);
 #endif

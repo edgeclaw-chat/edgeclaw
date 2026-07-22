@@ -7,7 +7,8 @@ extern "C" {
 
 #include "sds.h"
 
-typedef enum {
+typedef enum
+{
     EDC_ERR_NONE = 0,
     EDC_ERR_FAILED,
     EDC_ERR_INVAL,
@@ -16,18 +17,17 @@ typedef enum {
     EDC_ERR_SANDBOX,
 } EdcErrorCode;
 
-typedef struct {
+typedef struct
+{
     EdcErrorCode code;
     sds message;
 } EdcError;
 
-EdcError *edc_error_new(EdcErrorCode code, const char *fmt, ...)
-    __attribute__((format(printf, 2, 3)));
+EdcError *edc_error_new(EdcErrorCode code, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
 void edc_error_free(EdcError *error);
 
-void edc_error_set(EdcError **errp, EdcErrorCode code, const char *fmt, ...)
-    __attribute__((format(printf, 3, 4)));
+void edc_error_set(EdcError **errp, EdcErrorCode code, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 
 #ifdef __cplusplus
 }

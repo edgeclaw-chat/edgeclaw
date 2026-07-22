@@ -299,8 +299,8 @@ static void handle_file_upload(struct edc_device_request *req, struct edc_device
         }
     }
 
-    fprintf(stderr, "agent: upload: writing %zu bytes to %s offset=%zu (mode %o)\n",
-            decoded_len, req->file_path, req->file_offset, mode);
+    fprintf(stderr, "agent: upload: writing %zu bytes to %s offset=%zu (mode %o)\n", decoded_len, req->file_path,
+            req->file_offset, mode);
 
     ssize_t written = write(fd, decoded, decoded_len);
     close(fd);
@@ -316,8 +316,8 @@ static void handle_file_upload(struct edc_device_request *req, struct edc_device
 
     resp.file_status = 0;
     resp.file_size = req->file_offset + (size_t)written;
-    fprintf(stderr, "agent: upload: done (offset=%zu, wrote %zd, total=%zu)\n",
-            req->file_offset, written, resp.file_size);
+    fprintf(stderr, "agent: upload: done (offset=%zu, wrote %zd, total=%zu)\n", req->file_offset, written,
+            resp.file_size);
     transport->send(transport, &resp);
 }
 
@@ -380,8 +380,7 @@ static void handle_file_download(struct edc_device_request *req, struct edc_devi
         return;
     }
 
-    fprintf(stderr, "agent: download: reading %zu bytes from %s offset=%zu\n",
-            length, req->file_path, offset);
+    fprintf(stderr, "agent: download: reading %zu bytes from %s offset=%zu\n", length, req->file_path, offset);
 
     unsigned char *raw = malloc(length);
     if (!raw)
@@ -425,8 +424,7 @@ static void handle_file_download(struct edc_device_request *req, struct edc_devi
     resp.file_length = (size_t)total;
     resp.stdout_buf = encoded;
 
-    fprintf(stderr, "agent: download: done (offset=%zu, len=%zu, total=%zu)\n",
-            offset, length, total_size);
+    fprintf(stderr, "agent: download: done (offset=%zu, len=%zu, total=%zu)\n", offset, length, total_size);
     transport->send(transport, &resp);
 
     free(encoded);

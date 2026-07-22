@@ -4,8 +4,10 @@
 
 void edc_shell_token_free(edc_shell_token_t *tok)
 {
-    if (!tok) return;
-    if (tok->value) sdsfree(tok->value);
+    if (!tok)
+        return;
+    if (tok->value)
+        sdsfree(tok->value);
     tok->value = NULL;
 }
 
@@ -17,26 +19,41 @@ edc_shell_token_t *edc_shell_tokenize(const char *input, int *count)
     sds cur = sdsempty();
     bool in_dq = false, in_sq = false;
 
-#define EMIT_TEXT() do {            \
-    sdstrim(cur, " \t");             \
-    if (sdslen(cur) > 0) {          \
-        if (n >= cap) { cap *= 2; tokens = realloc(tokens, (size_t)(cap + 1) * sizeof(edc_shell_token_t)); } \
-        tokens[n].type = TOK_TEXT;  \
-        tokens[n].value = cur;      \
-        n++;                        \
-        cur = sdsempty();            \
-    } else {                         \
-        sdsfree(cur);                \
-        cur = sdsempty();            \
-    }                                \
-} while (0)
+#define EMIT_TEXT()                                                                                                    \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        sdstrim(cur, " \t");                                                                                           \
+        if (sdslen(cur) > 0)                                                                                           \
+        {                                                                                                              \
+            if (n >= cap)                                                                                              \
+            {                                                                                                          \
+                cap *= 2;                                                                                              \
+                tokens = realloc(tokens, (size_t)(cap + 1) * sizeof(edc_shell_token_t));                               \
+            }                                                                                                          \
+            tokens[n].type = TOK_TEXT;                                                                                 \
+            tokens[n].value = cur;                                                                                     \
+            n++;                                                                                                       \
+            cur = sdsempty();                                                                                          \
+        }                                                                                                              \
+        else                                                                                                           \
+        {                                                                                                              \
+            sdsfree(cur);                                                                                              \
+            cur = sdsempty();                                                                                          \
+        }                                                                                                              \
+    } while (0)
 
-#define EMIT_TOK(t) do {            \
-    if (n >= cap) { cap *= 2; tokens = realloc(tokens, (size_t)(cap + 1) * sizeof(edc_shell_token_t)); } \
-    tokens[n].type = (t);           \
-    tokens[n].value = NULL;           \
-    n++;                            \
-} while (0)
+#define EMIT_TOK(t)                                                                                                    \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if (n >= cap)                                                                                                  \
+        {                                                                                                              \
+            cap *= 2;                                                                                                  \
+            tokens = realloc(tokens, (size_t)(cap + 1) * sizeof(edc_shell_token_t));                                   \
+        }                                                                                                              \
+        tokens[n].type = (t);                                                                                          \
+        tokens[n].value = NULL;                                                                                        \
+        n++;                                                                                                           \
+    } while (0)
 
     for (const char *p = input; *p; p++)
     {
@@ -49,7 +66,7 @@ edc_shell_token_t *edc_shell_tokenize(const char *input, int *count)
             }
             else if (*p == '\\' && *(p + 1))
             {
-                p++; /* skip backslash */
+                p++;                        /* skip backslash */
                 cur = sdscatlen(cur, p, 1); /* add escaped char */
             }
             else
@@ -84,12 +101,14 @@ edc_shell_token_t *edc_shell_tokenize(const char *input, int *count)
             else if (*p == '&')
             {
                 const char *peek = p + 1;
-                while (*peek == ' ' || *peek == '\t') peek++;
+                while (*peek == ' ' || *peek == '\t')
+                    peek++;
                 if (*peek == '\0')
                 {
                     EMIT_TEXT();
                     EMIT_TOK(TOK_BG);
-                    while (*(p + 1) == ' ' || *(p + 1) == '\t') p++;
+                    while (*(p + 1) == ' ' || *(p + 1) == '\t')
+                        p++;
                 }
                 else
                 {
@@ -144,7 +163,8 @@ sds edc_shell_tokens_join(edc_shell_token_t *tokens, int start, int end)
     {
         if (tokens[i].type == TOK_TEXT && tokens[i].value)
         {
-            if (sdslen(result) > 0) result = sdscat(result, " ");
+            if (sdslen(result) > 0)
+                result = sdscat(result, " ");
             result = sdscatsds(result, tokens[i].value);
         }
         else if (tokens[i].type == TOK_BG)
@@ -167,14 +187,22 @@ int *edc_shell_tokens_split_pipe(edc_shell_token_t *tokens, int count, int *n)
     {
         if (tokens[i].type == TOK_PIPE)
         {
-            if (*n * 2 >= cap) { cap *= 2; ranges = realloc(ranges, (size_t)cap * 2 * sizeof(int)); }
+            if (*n * 2 >= cap)
+            {
+                cap *= 2;
+                ranges = realloc(ranges, (size_t)cap * 2 * sizeof(int));
+            }
             ranges[*n * 2] = seg_start;
             ranges[*n * 2 + 1] = i;
             (*n)++;
             seg_start = i + 1;
         }
     }
-    if (*n * 2 >= cap) { cap *= 2; ranges = realloc(ranges, (size_t)cap * 2 * sizeof(int)); }
+    if (*n * 2 >= cap)
+    {
+        cap *= 2;
+        ranges = realloc(ranges, (size_t)cap * 2 * sizeof(int));
+    }
     ranges[*n * 2] = seg_start;
     ranges[*n * 2 + 1] = count;
     (*n)++;
@@ -193,14 +221,22 @@ int *edc_shell_tokens_split_seq(edc_shell_token_t *tokens, int count, int *n)
     {
         if (tokens[i].type == TOK_SEQ)
         {
-            if (*n * 2 >= cap) { cap *= 2; ranges = realloc(ranges, (size_t)cap * 2 * sizeof(int)); }
+            if (*n * 2 >= cap)
+            {
+                cap *= 2;
+                ranges = realloc(ranges, (size_t)cap * 2 * sizeof(int));
+            }
             ranges[*n * 2] = seg_start;
             ranges[*n * 2 + 1] = i;
             (*n)++;
             seg_start = i + 1;
         }
     }
-    if (*n * 2 >= cap) { cap *= 2; ranges = realloc(ranges, (size_t)cap * 2 * sizeof(int)); }
+    if (*n * 2 >= cap)
+    {
+        cap *= 2;
+        ranges = realloc(ranges, (size_t)cap * 2 * sizeof(int));
+    }
     ranges[*n * 2] = seg_start;
     ranges[*n * 2 + 1] = count;
     (*n)++;

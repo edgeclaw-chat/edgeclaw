@@ -1,8 +1,8 @@
 #ifndef __BC_MEMORY_ACTOR_H__
 #define __BC_MEMORY_ACTOR_H__
 
-#include "edc_actor.h"
 #include "cJSON.h"
+#include "edc_actor.h"
 
 struct edc_memory_actor_state
 {

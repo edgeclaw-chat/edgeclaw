@@ -1,10 +1,10 @@
 ﻿#include "edc_config.h"
-#include "edc_error.h"
-#include "edc_secret.h"
-#include "edc_file_utils.h"
 #include "cJSON.h"
-#include "log.h"
 #include "edc_compat.h"
+#include "edc_error.h"
+#include "edc_file_utils.h"
+#include "edc_secret.h"
+#include "log.h"
 #include <errno.h>
 
 sds edc_config_resolve_bc_home(void)
@@ -319,7 +319,8 @@ struct edc_config *edc_config_load(const char *edc_home)
         edc_dir_create_with_parents(config->sandbox_rw_paths[0], 0755, NULL);
         char *rp = realpath(config->sandbox_rw_paths[0], NULL);
         config->sandbox_root_real = rp ? sdsnew(rp) : NULL;
-        if (rp) free(rp);
+        if (rp)
+            free(rp);
         if (!config->sandbox_root_real)
         {
             log_error("edc_config: cannot resolve sandbox root '%s': %s", config->sandbox_rw_paths[0], strerror(errno));
@@ -363,9 +364,11 @@ void edc_config_free(struct edc_config *config)
     sdsfree(config->device_transport);
     sdsfree(config->workspace);
     sdsfree(config->sandbox_root_real);
-    for (int _i = 0; config->sandbox_ro_paths && config->sandbox_ro_paths[_i]; _i++) sdsfree(config->sandbox_ro_paths[_i]);
+    for (int _i = 0; config->sandbox_ro_paths && config->sandbox_ro_paths[_i]; _i++)
+        sdsfree(config->sandbox_ro_paths[_i]);
     free(config->sandbox_ro_paths);
-    for (int _i = 0; config->sandbox_rw_paths && config->sandbox_rw_paths[_i]; _i++) sdsfree(config->sandbox_rw_paths[_i]);
+    for (int _i = 0; config->sandbox_rw_paths && config->sandbox_rw_paths[_i]; _i++)
+        sdsfree(config->sandbox_rw_paths[_i]);
     free(config->sandbox_rw_paths);
     free(config);
 }

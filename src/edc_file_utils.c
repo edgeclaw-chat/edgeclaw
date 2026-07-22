@@ -19,18 +19,18 @@ sds edc_file_read(const char *path, EdcError **error)
 {
     uv_fs_t req;
     int fd = (int)uv_fs_open(g_file_loop, &req, path, O_RDONLY, 0, NULL);
-    if (fd < 0) {
-        edc_error_set(error, EDC_ERR_FAILED, "open '%s' failed: %s",
-                      path, uv_strerror(fd));
+    if (fd < 0)
+    {
+        edc_error_set(error, EDC_ERR_FAILED, "open '%s' failed: %s", path, uv_strerror(fd));
         uv_fs_req_cleanup(&req);
         return NULL;
     }
     uv_fs_req_cleanup(&req);
 
     int r = (int)uv_fs_fstat(g_file_loop, &req, fd, NULL);
-    if (r < 0) {
-        edc_error_set(error, EDC_ERR_FAILED, "stat '%s' failed: %s",
-                      path, uv_strerror(r));
+    if (r < 0)
+    {
+        edc_error_set(error, EDC_ERR_FAILED, "stat '%s' failed: %s", path, uv_strerror(r));
         uv_fs_req_cleanup(&req);
         uv_fs_t cr;
         uv_fs_close(g_file_loop, &cr, fd, NULL);
@@ -41,7 +41,8 @@ sds edc_file_read(const char *path, EdcError **error)
     uv_fs_req_cleanup(&req);
 
     char *buf = malloc(file_size + 1);
-    if (!buf) {
+    if (!buf)
+    {
         edc_error_set(error, EDC_ERR_FAILED, "malloc failed for '%s'", path);
         uv_fs_t cr;
         uv_fs_close(g_file_loop, &cr, fd, NULL);
@@ -57,10 +58,10 @@ sds edc_file_read(const char *path, EdcError **error)
     uv_fs_close(g_file_loop, &cr, fd, NULL);
     uv_fs_req_cleanup(&cr);
 
-    if (r < 0) {
+    if (r < 0)
+    {
         free(buf);
-        edc_error_set(error, EDC_ERR_FAILED, "read '%s' failed: %s",
-                      path, uv_strerror(r));
+        edc_error_set(error, EDC_ERR_FAILED, "read '%s' failed: %s", path, uv_strerror(r));
         return NULL;
     }
 
@@ -70,17 +71,15 @@ sds edc_file_read(const char *path, EdcError **error)
     return result;
 }
 
-bool edc_file_write(const char *path, const char *content, ssize_t len,
-                    EdcError **error)
+bool edc_file_write(const char *path, const char *content, ssize_t len, EdcError **error)
 {
     size_t write_len = (len < 0) ? strlen(content) : (size_t)len;
 
     uv_fs_t req;
-    int fd = (int)uv_fs_open(g_file_loop, &req, path,
-                             O_WRONLY | O_CREAT | O_TRUNC, 0644, NULL);
-    if (fd < 0) {
-        edc_error_set(error, EDC_ERR_FAILED, "open '%s' for write failed: %s",
-                      path, uv_strerror(fd));
+    int fd = (int)uv_fs_open(g_file_loop, &req, path, O_WRONLY | O_CREAT | O_TRUNC, 0644, NULL);
+    if (fd < 0)
+    {
+        edc_error_set(error, EDC_ERR_FAILED, "open '%s' for write failed: %s", path, uv_strerror(fd));
         uv_fs_req_cleanup(&req);
         return false;
     }
@@ -94,9 +93,9 @@ bool edc_file_write(const char *path, const char *content, ssize_t len,
     uv_fs_close(g_file_loop, &cr, fd, NULL);
     uv_fs_req_cleanup(&cr);
 
-    if (r < 0) {
-        edc_error_set(error, EDC_ERR_FAILED, "write '%s' failed: %s",
-                      path, uv_strerror(r));
+    if (r < 0)
+    {
+        edc_error_set(error, EDC_ERR_FAILED, "write '%s' failed: %s", path, uv_strerror(r));
         return false;
     }
     return true;
@@ -131,16 +130,21 @@ bool edc_dir_create_with_parents(const char *path, int mode, EdcError **error)
     const char *p = path;
     bool is_absolute = (*p == '/');
 
-    if (is_absolute) {
+    if (is_absolute)
+    {
         partial = sdscat(partial, "/");
-        while (*p == '/') p++;
+        while (*p == '/')
+            p++;
     }
 
-    while (*p) {
-        while (*p == '/') p++;
+    while (*p)
+    {
+        while (*p == '/')
+            p++;
         const char *next = strchr(p, '/');
         size_t seg_len = next ? (size_t)(next - p) : strlen(p);
-        if (seg_len == 0) break;
+        if (seg_len == 0)
+            break;
 
         if (sdslen(partial) > 0 && partial[sdslen(partial) - 1] != '/')
             partial = sdscat(partial, "/");
@@ -149,9 +153,9 @@ bool edc_dir_create_with_parents(const char *path, int mode, EdcError **error)
         uv_fs_t req;
         int r = (int)uv_fs_mkdir(g_file_loop, &req, partial, mode, NULL);
         uv_fs_req_cleanup(&req);
-        if (r < 0 && r != -EEXIST) {
-            edc_error_set(error, EDC_ERR_FAILED, "mkdir '%s' failed: %s",
-                          partial, uv_strerror(r));
+        if (r < 0 && r != -EEXIST)
+        {
+            edc_error_set(error, EDC_ERR_FAILED, "mkdir '%s' failed: %s", partial, uv_strerror(r));
             sdsfree(partial);
             return false;
         }
@@ -163,8 +167,7 @@ bool edc_dir_create_with_parents(const char *path, int mode, EdcError **error)
     return true;
 }
 
-bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata,
-                     EdcError **error)
+bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata, EdcError **error)
 {
 #ifdef _WIN32
     sds pattern = edc_path_join(path, "*", NULL);
@@ -172,13 +175,14 @@ bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata,
     HANDLE hFind = FindFirstFile(pattern, &fd);
     sdsfree(pattern);
 
-    if (hFind == INVALID_HANDLE_VALUE) {
-        edc_error_set(error, EDC_ERR_FAILED, "FindFirstFile '%s' failed: %lu",
-                      path, GetLastError());
+    if (hFind == INVALID_HANDLE_VALUE)
+    {
+        edc_error_set(error, EDC_ERR_FAILED, "FindFirstFile '%s' failed: %lu", path, GetLastError());
         return false;
     }
 
-    do {
+    do
+    {
         int type = UV_DIRENT_UNKNOWN;
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
             type = UV_DIRENT_DIR;
@@ -191,14 +195,15 @@ bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata,
     return true;
 #else
     DIR *dir = opendir(path);
-    if (!dir) {
-        edc_error_set(error, EDC_ERR_FAILED, "opendir '%s' failed: %s",
-                      path, strerror(errno));
+    if (!dir)
+    {
+        edc_error_set(error, EDC_ERR_FAILED, "opendir '%s' failed: %s", path, strerror(errno));
         return false;
     }
 
     struct dirent *entry;
-    while ((entry = readdir(dir))) {
+    while ((entry = readdir(dir)))
+    {
         int type = UV_DIRENT_UNKNOWN;
         if (entry->d_type == DT_DIR)
             type = UV_DIRENT_DIR;
@@ -228,9 +233,12 @@ sds edc_path_join(const char *first, ...)
     sds result = sdsempty();
     bool need_sep = false;
 
-    for (const char *seg = first; seg; seg = va_arg(args, const char *)) {
-        if (*seg == '\0') continue;
-        if (need_sep) result = sdscat(result, sep);
+    for (const char *seg = first; seg; seg = va_arg(args, const char *))
+    {
+        if (*seg == '\0')
+            continue;
+        if (need_sep)
+            result = sdscat(result, sep);
         result = sdscat(result, seg);
         need_sep = true;
     }
@@ -240,7 +248,8 @@ sds edc_path_join(const char *first, ...)
     {
         size_t len = sdslen(result);
         for (size_t i = 0; i < len; i++)
-            if (result[i] == '/') result[i] = '\\';
+            if (result[i] == '/')
+                result[i] = '\\';
     }
 #endif
     return result;
@@ -248,7 +257,8 @@ sds edc_path_join(const char *first, ...)
 
 sds edc_path_dirname(const char *path)
 {
-    if (!path) return sdsempty();
+    if (!path)
+        return sdsempty();
 #ifdef _WIN32
     const char *last_slash = strrchr(path, '/');
     const char *last_bslash = strrchr(path, '\\');
@@ -256,8 +266,10 @@ sds edc_path_dirname(const char *path)
 #else
     const char *last = strrchr(path, '/');
 #endif
-    if (!last) return sdsnew(".");
-    if (last == path) return sdsnewlen(path, 1);
+    if (!last)
+        return sdsnew(".");
+    if (last == path)
+        return sdsnewlen(path, 1);
     return sdsnewlen(path, (size_t)(last - path));
 }
 
@@ -266,7 +278,8 @@ sds edc_cwd(void)
     char buf[4096];
     size_t size = sizeof(buf);
     int r = uv_cwd(buf, &size);
-    if (r != 0) return sdsempty();
+    if (r != 0)
+        return sdsempty();
     return sdsnewlen(buf, size);
 }
 
@@ -275,7 +288,8 @@ sds edc_homedir(void)
     char buf[4096];
     size_t size = sizeof(buf);
     int r = uv_os_homedir(buf, &size);
-    if (r != 0) return sdsempty();
+    if (r != 0)
+        return sdsempty();
     return sdsnewlen(buf, size);
 }
 
@@ -283,6 +297,7 @@ sds edc_os_name(void)
 {
     uv_utsname_t info;
     int r = uv_os_uname(&info);
-    if (r != 0) return sdsnew("Unknown");
+    if (r != 0)
+        return sdsnew("Unknown");
     return sdsnew(info.sysname);
 }

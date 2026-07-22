@@ -1,11 +1,11 @@
 #ifndef EDC_FILE_UTILS_H
 #define EDC_FILE_UTILS_H
 
+#include "edc_error.h"
+#include "sds.h"
 #include <stdbool.h>
 #include <sys/types.h>
 #include <uv.h>
-#include "sds.h"
-#include "edc_error.h"
 
 void edc_file_utils_init(uv_loop_t *loop);
 

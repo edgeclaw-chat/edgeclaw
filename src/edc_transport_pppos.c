@@ -95,11 +95,12 @@ static err_t recv_http_request(struct netconn *c, u8_t *buf, size_t *len, size_t
 
 static int parse_http_path(const char *req_buf, size_t req_len)
 {
-    static const struct {
+    static const struct
+    {
         const char *path;
         int type;
     } routes[] = {
-        {"/file/upload",   REQ_FILE_UPLOAD},
+        {"/file/upload", REQ_FILE_UPLOAD},
         {"/file/download", REQ_FILE_DOWNLOAD},
     };
     static const size_t n_routes = sizeof(routes) / sizeof(routes[0]);
@@ -120,8 +121,9 @@ static int parse_http_path(const char *req_buf, size_t req_len)
     for (size_t i = 0; i < n_routes; i++)
     {
         size_t route_len = strlen(routes[i].path);
-        if (path_len >= route_len && memcmp(path_start, routes[i].path, route_len) == 0
-            && (path_len == route_len || path_start[route_len] == ' ' || path_start[route_len] == '/' || path_start[route_len] == '?'))
+        if (path_len >= route_len && memcmp(path_start, routes[i].path, route_len) == 0 &&
+            (path_len == route_len || path_start[route_len] == ' ' || path_start[route_len] == '/' ||
+             path_start[route_len] == '?'))
             return routes[i].type;
     }
 
@@ -349,12 +351,12 @@ static int transport_pppos_send(struct edc_device_transport *base, const struct 
         fprintf(stderr, "agent: done (exit_code=%d)\n", resp->exit_code);
         break;
     case REQ_FILE_UPLOAD:
-        fprintf(stderr, "agent: done (upload %s, %zu bytes)\n",
-                resp->file_status == 0 ? "ok" : "failed", resp->file_size);
+        fprintf(stderr, "agent: done (upload %s, %zu bytes)\n", resp->file_status == 0 ? "ok" : "failed",
+                resp->file_size);
         break;
     case REQ_FILE_DOWNLOAD:
-        fprintf(stderr, "agent: done (download %s, %zu bytes)\n",
-                resp->file_status == 0 ? "ok" : "failed", resp->file_size);
+        fprintf(stderr, "agent: done (download %s, %zu bytes)\n", resp->file_status == 0 ? "ok" : "failed",
+                resp->file_size);
         break;
     default:
         break;
@@ -387,8 +389,8 @@ static void transport_pppos_cleanup(struct edc_device_transport *base)
     free(t);
 }
 
-struct edc_device_transport *edc_transport_pppos_create(int ppp_fd,
-    const char *my_ip, const char *peer_ip, uint16_t port)
+struct edc_device_transport *edc_transport_pppos_create(int ppp_fd, const char *my_ip, const char *peer_ip,
+                                                        uint16_t port)
 {
     struct edc_transport_pppos *t = (struct edc_transport_pppos *)calloc(1, sizeof(*t));
     if (!t)

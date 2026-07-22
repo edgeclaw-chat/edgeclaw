@@ -1,7 +1,7 @@
-#include "sds.h"
 #include "edc_tools.h"
-#include "edc_toolbox.h"
 #include "edc_compat.h"
+#include "edc_toolbox.h"
+#include "sds.h"
 
 struct edc_tool_param *edc_tool_param_new(char *name, struct edc_param_type *type, bool required)
 {
@@ -47,7 +47,7 @@ void edc_tool_free(struct edc_tool *tool)
 }
 
 struct edc_tool *edc_tool_new(const char *name, const char *desc, struct edc_tool_param *params,
-                                edc_tool_exec_async_fn exec)
+                              edc_tool_exec_async_fn exec)
 {
     struct edc_tool *tool = g_new0(struct edc_tool, 1);
     tool->name = sdsnew(name);

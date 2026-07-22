@@ -167,14 +167,18 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
                 if (role && cJSON_IsString(role))
                 {
                     const char *rs = role->valuestring;
-                    if (strcmp(rs, "user") == 0) n_user++;
-                    else if (strcmp(rs, "assistant") == 0) n_assistant++;
-                    else if (strcmp(rs, "system") == 0) n_system++;
-                    else if (strcmp(rs, "tool") == 0) n_tool++;
+                    if (strcmp(rs, "user") == 0)
+                        n_user++;
+                    else if (strcmp(rs, "assistant") == 0)
+                        n_assistant++;
+                    else if (strcmp(rs, "system") == 0)
+                        n_system++;
+                    else if (strcmp(rs, "tool") == 0)
+                        n_tool++;
                 }
             }
-            log_info("LLM request: %d msgs (sys=%d user=%d asst=%d tool=%d)",
-                     total, n_system, n_user, n_assistant, n_tool);
+            log_info("LLM request: %d msgs (sys=%d user=%d asst=%d tool=%d)", total, n_system, n_user, n_assistant,
+                     n_tool);
         }
     }
 

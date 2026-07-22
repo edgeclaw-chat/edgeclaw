@@ -1,13 +1,13 @@
-﻿#include "sds.h"
+﻿#include "edc_compat.h"
 #include "edc_error.h"
+#include "edc_file_utils.h"
 #include "edc_sandbox.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
-#include "edc_compat.h"
-#include "edc_file_utils.h"
+#include "sds.h"
+#include "utarray.h"
 #include <edc_param_types.h>
 #include <string.h>
-#include "utarray.h"
 
 static UT_icd ut_size_t_icd = {sizeof(size_t), NULL, NULL, NULL};
 static UT_icd ut_int64_icd = {sizeof(int64_t), NULL, NULL, NULL};
@@ -91,7 +91,7 @@ static sds edc_tool_exec_list_dir(struct edc_config *conf, cJSON *args, EdcError
     }
 
     EdcError *gerror = NULL;
-    struct edc_list_dir_ctx lctx = { .result = sdsnew("") };
+    struct edc_list_dir_ctx lctx = {.result = sdsnew("")};
     bool ok = edc_dir_foreach(safe_path, edc_tool_list_dir_cb, &lctx, &gerror);
     sdsfree(safe_path);
     if (!ok)
@@ -106,7 +106,7 @@ static sds edc_tool_exec_list_dir(struct edc_config *conf, cJSON *args, EdcError
 }
 
 static void edc_tool_exec_read_file_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
-                                          void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
+                                          void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     EdcError *error = NULL;
     sds result = edc_tool_exec_read_file(ctx->tb->conf, args, &error);
@@ -123,7 +123,7 @@ static void edc_tool_create_read_file(struct edc_toolbox *tb)
 }
 
 static void edc_tool_exec_write_file_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
-                                           void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
+                                           void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     EdcError *error = NULL;
     sds result = edc_tool_exec_write_file(ctx->tb->conf, args, &error);
@@ -143,7 +143,7 @@ static void edc_tool_create_write_file(struct edc_toolbox *tb)
 }
 
 static void edc_tool_exec_list_dir_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
-                                         void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
+                                         void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     EdcError *error = NULL;
     sds result = edc_tool_exec_list_dir(ctx->tb->conf, args, &error);
@@ -160,9 +160,8 @@ static void edc_tool_create_list_dir(struct edc_toolbox *tb)
     edc_toolbox_register(tb, edc_tool_new(name, desc, params, edc_tool_exec_list_dir_async));
 }
 
-static sds edc_edit_file_try_create(const char *path, sds safe_path,
-                                            const char *old_text, const char *new_text,
-                                            EdcError **error)
+static sds edc_edit_file_try_create(const char *path, sds safe_path, const char *old_text, const char *new_text,
+                                    EdcError **error)
 {
     if (!edc_file_exists(safe_path))
     {
@@ -178,8 +177,7 @@ static sds edc_edit_file_try_create(const char *path, sds safe_path,
             sds msg = sdscatprintf(sdsempty(), "Successfully created %s", path);
             return msg;
         }
-        edc_error_set(error, EDC_ERR_EXEC,
-                    "Error: File not found: %s", path);
+        edc_error_set(error, EDC_ERR_EXEC, "Error: File not found: %s", path);
         return NULL;
     }
 
@@ -200,8 +198,7 @@ static sds edc_edit_file_try_create(const char *path, sds safe_path,
         if (content[0] != '\0')
         {
             sdsfree(content);
-            edc_error_set(error, EDC_ERR_EXEC,
-                        "Error: Cannot create file — %s already exists and is not empty.", path);
+            edc_error_set(error, EDC_ERR_EXEC, "Error: Cannot create file — %s already exists and is not empty.", path);
             return NULL;
         }
         sdsfree(content);
@@ -216,8 +213,8 @@ static sds edc_edit_file_try_create(const char *path, sds safe_path,
     return NULL;
 }
 
-static void edc_edit_file_find_matches(const char *content, const char *old_text, size_t old_len,
-                                        UT_array **positions, UT_array **line_nums, unsigned int *out_count)
+static void edc_edit_file_find_matches(const char *content, const char *old_text, size_t old_len, UT_array **positions,
+                                       UT_array **line_nums, unsigned int *out_count)
 {
     utarray_new(*positions, &ut_size_t_icd);
     utarray_new(*line_nums, &ut_int64_icd);
@@ -249,16 +246,15 @@ static void edc_edit_file_find_matches(const char *content, const char *old_text
     *out_count = utarray_len(*positions);
 }
 
-static void edc_edit_file_format_match_list(const char *content, size_t content_len,
-                                              UT_array *positions, UT_array *line_nums,
-                                              size_t old_len, unsigned int count, unsigned int max_preview,
-                                              sds *out)
+static void edc_edit_file_format_match_list(const char *content, size_t content_len, UT_array *positions,
+                                            UT_array *line_nums, size_t old_len, unsigned int count,
+                                            unsigned int max_preview, sds *out)
 {
     unsigned int preview = MIN(count, max_preview);
     for (unsigned int i = 0; i < preview; i++)
     {
-        size_t pos = *(size_t*)utarray_eltptr(positions, (unsigned)i);
-        int64_t ln = *(int64_t*)utarray_eltptr(line_nums, (unsigned)i);
+        size_t pos = *(size_t *)utarray_eltptr(positions, (unsigned)i);
+        int64_t ln = *(int64_t *)utarray_eltptr(line_nums, (unsigned)i);
         size_t ctx_start = pos > 25 ? pos - 25 : 0;
         size_t ctx_end = pos + old_len + 25;
         if (ctx_end > content_len)
@@ -292,14 +288,13 @@ static bool edc_edit_file_select_all(unsigned int count, UT_array **selected, Ed
     return true;
 }
 
-static bool edc_edit_file_select_by_occurrence(unsigned int count, int64_t occurrence,
-                                                     UT_array **selected, EdcError **error)
+static bool edc_edit_file_select_by_occurrence(unsigned int count, int64_t occurrence, UT_array **selected,
+                                               EdcError **error)
 {
     if ((uint64_t)occurrence > count)
     {
-        edc_error_set(error, EDC_ERR_EXEC,
-                    "Error: occurrence %ld out of range; old_text appears %u times.",
-                    (long)occurrence, count);
+        edc_error_set(error, EDC_ERR_EXEC, "Error: occurrence %ld out of range; old_text appears %u times.",
+                      (long)occurrence, count);
         return false;
     }
     unsigned int idx = (unsigned int)(occurrence - 1);
@@ -307,11 +302,9 @@ static bool edc_edit_file_select_by_occurrence(unsigned int count, int64_t occur
     return true;
 }
 
-static bool edc_edit_file_select_by_line_hint(const char *content, size_t content_len,
-                                                    unsigned int count, UT_array *line_nums,
-                                                    UT_array *positions, size_t old_len,
-                                                    int64_t line_hint, UT_array **selected,
-                                                    EdcError **error)
+static bool edc_edit_file_select_by_line_hint(const char *content, size_t content_len, unsigned int count,
+                                              UT_array *line_nums, UT_array *positions, size_t old_len,
+                                              int64_t line_hint, UT_array **selected, EdcError **error)
 {
     int64_t best_dist = G_MAXINT64;
     unsigned int best_idx = 0;
@@ -319,7 +312,7 @@ static bool edc_edit_file_select_by_line_hint(const char *content, size_t conten
 
     for (unsigned int i = 0; i < count; i++)
     {
-        int64_t ln = *(int64_t*)utarray_eltptr(line_nums, (unsigned)i);
+        int64_t ln = *(int64_t *)utarray_eltptr(line_nums, (unsigned)i);
         int64_t dist = ln > line_hint ? ln - line_hint : line_hint - ln;
         if (dist < best_dist)
         {
@@ -334,11 +327,9 @@ static bool edc_edit_file_select_by_line_hint(const char *content, size_t conten
     if (ambiguous)
     {
         sds msg = sdsempty();
-        edc_edit_file_format_match_list(content, content_len, positions, line_nums,
-                                         old_len, count, 5, &msg);
-        edc_error_set(error, EDC_ERR_EXEC,
-                    "Error: line_hint %ld is ambiguous; old_text appears %u times.%s",
-                    (long)line_hint, count, msg);
+        edc_edit_file_format_match_list(content, content_len, positions, line_nums, old_len, count, 5, &msg);
+        edc_error_set(error, EDC_ERR_EXEC, "Error: line_hint %ld is ambiguous; old_text appears %u times.%s",
+                      (long)line_hint, count, msg);
         sdsfree(msg);
         return false;
     }
@@ -347,25 +338,21 @@ static bool edc_edit_file_select_by_line_hint(const char *content, size_t conten
     return true;
 }
 
-static bool edc_edit_file_select_matches(const char *content, size_t content_len,
-                                              unsigned int count, UT_array *line_nums,
-                                              UT_array *positions, size_t old_len,
-                                              bool replace_all, int64_t occurrence,
-                                              int64_t line_hint, UT_array **selected, EdcError **error)
+static bool edc_edit_file_select_matches(const char *content, size_t content_len, unsigned int count,
+                                         UT_array *line_nums, UT_array *positions, size_t old_len, bool replace_all,
+                                         int64_t occurrence, int64_t line_hint, UT_array **selected, EdcError **error)
 {
     utarray_new(*selected, &ut_uint_icd);
 
     if ((replace_all ? 1 : 0) + (occurrence > 0 ? 1 : 0) + (line_hint > 0 ? 1 : 0) > 1)
     {
-        edc_error_set(error, EDC_ERR_EXEC,
-                    "Error: occurrence, line_hint, and replace_all are mutually exclusive.");
+        edc_error_set(error, EDC_ERR_EXEC, "Error: occurrence, line_hint, and replace_all are mutually exclusive.");
         return false;
     }
 
     if (count == 0)
     {
-        edc_error_set(error, EDC_ERR_EXEC,
-                    "Error: internal error — no matches to select from.");
+        edc_error_set(error, EDC_ERR_EXEC, "Error: internal error — no matches to select from.");
         return false;
     }
 
@@ -376,19 +363,17 @@ static bool edc_edit_file_select_matches(const char *content, size_t content_len
         return edc_edit_file_select_by_occurrence(count, occurrence, selected, error);
 
     if (line_hint > 0)
-        return edc_edit_file_select_by_line_hint(content, content_len, count, line_nums,
-                                                  positions, old_len, line_hint,
-                                                  selected, error);
+        return edc_edit_file_select_by_line_hint(content, content_len, count, line_nums, positions, old_len, line_hint,
+                                                 selected, error);
 
     if (count > 1)
     {
         sds msg = sdsempty();
-        edc_edit_file_format_match_list(content, content_len, positions, line_nums,
-                                         old_len, count, 5, &msg);
+        edc_edit_file_format_match_list(content, content_len, positions, line_nums, old_len, count, 5, &msg);
         edc_error_set(error, EDC_ERR_EXEC,
-                    "Warning: old_text appears %u times. "
-                    "Provide more context, set occurrence, or set replace_all=true.%s",
-                    count, msg);
+                      "Warning: old_text appears %u times. "
+                      "Provide more context, set occurrence, or set replace_all=true.%s",
+                      count, msg);
         sdsfree(msg);
         return false;
     }
@@ -400,10 +385,9 @@ static bool edc_edit_file_select_matches(const char *content, size_t content_len
     return true;
 }
 
-static void edc_edit_file_apply_replacements(const char *content, size_t content_len,
-                                              const char *old_text, size_t old_len,
-                                              const char *new_text, UT_array *positions,
-                                              UT_array *selected, sds *out_content)
+static void edc_edit_file_apply_replacements(const char *content, size_t content_len, const char *old_text,
+                                             size_t old_len, const char *new_text, UT_array *positions,
+                                             UT_array *selected, sds *out_content)
 {
     size_t new_len = strlen(new_text);
     *out_content = sdsempty();
@@ -411,16 +395,15 @@ static void edc_edit_file_apply_replacements(const char *content, size_t content
 
     for (unsigned int si = 0; si < utarray_len(selected); si++)
     {
-        unsigned int idx = *(unsigned int*)utarray_eltptr(selected, si);
-        size_t start = *(size_t*)utarray_eltptr(positions, (unsigned)idx);
+        unsigned int idx = *(unsigned int *)utarray_eltptr(selected, si);
+        size_t start = *(size_t *)utarray_eltptr(positions, (unsigned)idx);
         size_t end = start + old_len;
 
         *out_content = sdscatlen(*out_content, content + prev_end, (ssize_t)(start - prev_end));
         *out_content = sdscat(*out_content, new_text);
         prev_end = end;
 
-        if (new_len == 0 && end < content_len
-            && content[end - 1] != '\n' && content[end] == '\n')
+        if (new_len == 0 && end < content_len && content[end - 1] != '\n' && content[end] == '\n')
             prev_end++;
     }
     *out_content = sdscatlen(*out_content, content + prev_end, (ssize_t)(content_len - prev_end));
@@ -434,8 +417,7 @@ static sds edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, EdcErro
 
     if (!path || !old_text || !new_text)
     {
-        edc_error_set(error, EDC_ERR_EXEC,
-                    "Error: missing required parameter 'path', 'old_text', or 'new_text'.");
+        edc_error_set(error, EDC_ERR_EXEC, "Error: missing required parameter 'path', 'old_text', or 'new_text'.");
         return NULL;
     }
 
@@ -460,7 +442,7 @@ static sds edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, EdcErro
     if (occurrence < 0 || line_hint < 0 || expected_replacements < 0)
     {
         edc_error_set(error, EDC_ERR_EXEC,
-                    "Error: occurrence, line_hint, and expected_replacements must be non-negative.");
+                      "Error: occurrence, line_hint, and expected_replacements must be non-negative.");
         return NULL;
     }
 
@@ -497,27 +479,24 @@ static sds edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, EdcErro
 
     if (count == 0)
     {
-        edc_error_set(error, EDC_ERR_EXEC,
-                    "Error: old_text not found in %s", path);
+        edc_error_set(error, EDC_ERR_EXEC, "Error: old_text not found in %s", path);
         goto cleanup;
     }
 
-    if (!edc_edit_file_select_matches(content, content_len, count, line_nums,
-                                       positions, old_len, replace_all, occurrence,
-                                       line_hint, &selected, error))
+    if (!edc_edit_file_select_matches(content, content_len, count, line_nums, positions, old_len, replace_all,
+                                      occurrence, line_hint, &selected, error))
         goto cleanup;
 
     if (expected_replacements > 0 && utarray_len(selected) != (unsigned int)expected_replacements)
     {
-        edc_error_set(error, EDC_ERR_EXEC,
-                    "Error: expected %ld replacements but would make %u.",
-                    (long)expected_replacements, (unsigned)utarray_len(selected));
+        edc_error_set(error, EDC_ERR_EXEC, "Error: expected %ld replacements but would make %u.",
+                      (long)expected_replacements, (unsigned)utarray_len(selected));
         goto cleanup;
     }
 
     sds new_content;
-    edc_edit_file_apply_replacements(content, content_len, old_text, old_len,
-                                      new_text, positions, selected, &new_content);
+    edc_edit_file_apply_replacements(content, content_len, old_text, old_len, new_text, positions, selected,
+                                     &new_content);
 
     if (!edc_file_write(safe_path, new_content, -1, error))
     {
@@ -543,7 +522,7 @@ cleanup:
 }
 
 static void edc_tool_exec_edit_file_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
-                                          void (*callback)(struct edc_toolbox_call_ctx *, sds , EdcError *))
+                                          void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     EdcError *error = NULL;
     sds result = edc_tool_exec_edit_file(ctx->tb->conf, args, &error);

@@ -8,7 +8,8 @@
 struct edc_config;
 struct edc_turn;
 
-struct edc_timestamp_node {
+struct edc_timestamp_node
+{
     sds ts;
     struct edc_timestamp_node *prev, *next;
 };
@@ -22,13 +23,13 @@ struct edc_task_group;
 struct edc_session
 {
     char *session_id;
-    char *name;               /* user-friendly display name */
-    sds created_at;           /* ISO 8601 creation timestamp */
-    sds last_active;          /* ISO 8601 last-active timestamp */
+    char *name;      /* user-friendly display name */
+    sds created_at;  /* ISO 8601 creation timestamp */
+    sds last_active; /* ISO 8601 last-active timestamp */
 
     /* Phase 4: 新旧双轨 — groups/tasks (新) + messages (旧, Phase 5 移除) */
-    struct edc_task_group *groups;      /* 双向链表: 所有 process groups */
-    struct edc_task *active_task;       /* foreground group 内的 active task */
+    struct edc_task_group *groups; /* 双向链表: 所有 process groups */
+    struct edc_task *active_task;  /* foreground group 内的 active task */
 
     /* backward compat — Phase 5 移除 */
     cJSON *messages;
@@ -36,17 +37,15 @@ struct edc_session
     int save_skip_count;
     struct edc_timestamp_node *timestamps;
 
-    sds history_dir;    /* workspace/<session_id> — 按 session 存历史 */
+    sds history_dir; /* workspace/<session_id> — 按 session 存历史 */
 
-    uint32_t next_completion_seq;  /* 完成顺序计数器 (从 1 开始) */
+    uint32_t next_completion_seq; /* 完成顺序计数器 (从 1 开始) */
 };
 
 /* ── 生命周期 ──────────────────────────────────────────────── */
 
 /** Create a session with a specific id and display name. */
-extern struct edc_session *edc_session_new(struct edc_config *config,
-                                            const char *session_id,
-                                            const char *name);
+extern struct edc_session *edc_session_new(struct edc_config *config, const char *session_id, const char *name);
 extern void edc_session_reload(struct edc_session *session, bool load_history);
 extern void edc_session_free(struct edc_session *session);
 
@@ -91,14 +90,12 @@ struct edc_scheduler;
  *  Atomic: writes to .tmp then rename().
  *  Prerequisite: edc_session_save_history() should be called first.
  *  Returns true on success. */
-extern bool edc_session_save_state(struct edc_session *session,
-                                   struct edc_scheduler *sched);
+extern bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *sched);
 
 /** Load session state from workspace/<session_id>/session.json.
  *  Rebuilds all groups, tasks, turns, and dependencies.
  *  Prerequisite: session->messages must already be loaded.
  *  Returns true on success, false if file missing or corrupt. */
-extern bool edc_session_load_state(struct edc_session *session,
-                                   struct edc_scheduler *sched);
+extern bool edc_session_load_state(struct edc_session *session, struct edc_scheduler *sched);
 
 #endif

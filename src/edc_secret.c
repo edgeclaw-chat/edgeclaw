@@ -1,11 +1,11 @@
-﻿#include "sds.h"
-#include "edc_secret.h"
+﻿#include "edc_secret.h"
+#include "edc_compat.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
 #include "edc_terminal.h"
 #include "log.h"
+#include "sds.h"
 #include <errno.h>
-#include "edc_compat.h"
 #include <mbedtls/base64.h>
 #include <mbedtls/cipher.h>
 #include <mbedtls/ctr_drbg.h>
@@ -39,8 +39,9 @@ static bool derive_key(const char *passphrase, size_t len)
         return false;
     }
 
-    int ret = mbedtls_hkdf(md, NULL, 0, (const unsigned char *)passphrase, len, (const unsigned char *)"edgeclaw_master_key", 19,
-                           (unsigned char *)g_master_key, BC_KEY_SIZE);
+    int ret =
+        mbedtls_hkdf(md, NULL, 0, (const unsigned char *)passphrase, len, (const unsigned char *)"edgeclaw_master_key",
+                     19, (unsigned char *)g_master_key, BC_KEY_SIZE);
     if (ret != 0)
     {
         log_error("HKDF key derivation failed: %d", ret);
@@ -108,8 +109,8 @@ static bool store_verify_hash(const char *edc_home)
     }
 
     unsigned char hash[32];
-    int ret =
-        mbedtls_md_hmac(md, (const unsigned char *)g_master_key, BC_KEY_SIZE, (const unsigned char *)"edgeclaw_verify", 15, hash);
+    int ret = mbedtls_md_hmac(md, (const unsigned char *)g_master_key, BC_KEY_SIZE,
+                              (const unsigned char *)"edgeclaw_verify", 15, hash);
     if (ret != 0)
     {
         log_error("HMAC for verification failed: %d", ret);
@@ -160,8 +161,8 @@ static bool verify_master_key(const char *edc_home)
     }
 
     unsigned char expected[32];
-    int ret =
-        mbedtls_md_hmac(md, (const unsigned char *)g_master_key, BC_KEY_SIZE, (const unsigned char *)"edgeclaw_verify", 15, expected);
+    int ret = mbedtls_md_hmac(md, (const unsigned char *)g_master_key, BC_KEY_SIZE,
+                              (const unsigned char *)"edgeclaw_verify", 15, expected);
     if (ret != 0)
     {
         sdsfree(contents);
@@ -333,7 +334,8 @@ sds edc_secret_encrypt(sds plaintext)
     mbedtls_entropy_init(&entropy);
     mbedtls_ctr_drbg_init(&ctr_drbg);
 
-    int ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *)"edgeclaw_enc", 12);
+    int ret =
+        mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *)"edgeclaw_enc", 12);
     if (ret != 0)
     {
         log_error("DRBG seed failed: %d", ret);
@@ -366,8 +368,8 @@ sds edc_secret_encrypt(sds plaintext)
     output = EDC_NEW(unsigned char, output_len);
     size_t olen = 0;
 
-    ret = mbedtls_cipher_auth_encrypt_ext(&cipher, iv, BC_GCM_IV_SIZE, NULL, 0, (const unsigned char *)plaintext, plain_len,
-                                          output, output_len, &olen, BC_GCM_TAG_SIZE);
+    ret = mbedtls_cipher_auth_encrypt_ext(&cipher, iv, BC_GCM_IV_SIZE, NULL, 0, (const unsigned char *)plaintext,
+                                          plain_len, output, output_len, &olen, BC_GCM_TAG_SIZE);
 
     if (ret != 0)
     {

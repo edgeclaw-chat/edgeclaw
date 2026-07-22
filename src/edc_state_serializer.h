@@ -1,8 +1,8 @@
 #ifndef __EDC_STATE_SERIALIZER_H__
 #define __EDC_STATE_SERIALIZER_H__
 
-#include "edc_session.h"
 #include "edc_scheduler.h"
+#include "edc_session.h"
 #include <cJSON.h>
 #include <stdbool.h>
 
@@ -31,8 +31,7 @@
  * @return          cJSON object (caller owns, must cJSON_Delete).
  *                  NULL on allocation failure.
  */
-cJSON *edc_state_serialize(struct edc_session *session,
-                           struct edc_scheduler *sched);
+cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sched);
 
 /**
  * Deserialize a cJSON tree back into live session + scheduler structures.
@@ -48,8 +47,6 @@ cJSON *edc_state_serialize(struct edc_session *session,
  *                  May be NULL if no scheduler exists yet.
  * @return          true on success, false on parse / allocation error.
  */
-bool edc_state_deserialize(cJSON *json,
-                           struct edc_session *session,
-                           struct edc_scheduler *sched);
+bool edc_state_deserialize(cJSON *json, struct edc_session *session, struct edc_scheduler *sched);
 
 #endif /* __EDC_STATE_SERIALIZER_H__ */

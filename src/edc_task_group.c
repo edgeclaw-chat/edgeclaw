@@ -8,7 +8,8 @@
 
 struct edc_task_group *edc_task_group_new(struct edc_task *leader)
 {
-    if (!leader) return NULL;
+    if (!leader)
+        return NULL;
 
     struct edc_task_group *group = g_new0(struct edc_task_group, 1);
     group->group_id = strdup(leader->task_id);
@@ -29,7 +30,8 @@ struct edc_task_group *edc_task_group_new(struct edc_task *leader)
 
 void edc_task_group_free(struct edc_task_group *group)
 {
-    if (!group) return;
+    if (!group)
+        return;
 
     struct edc_task *task, *tmp;
     LL_FOREACH_SAFE2(group->members, task, tmp, group_next)
@@ -39,7 +41,8 @@ void edc_task_group_free(struct edc_task_group *group)
     }
 
     free(group->group_id);
-    if (group->history) cJSON_Delete(group->history);
+    if (group->history)
+        cJSON_Delete(group->history);
     free(group);
 }
 
@@ -47,10 +50,12 @@ void edc_task_group_free(struct edc_task_group *group)
 
 void edc_task_group_add_task(struct edc_task_group *group, struct edc_task *task)
 {
-    if (!group || !task) return;
+    if (!group || !task)
+        return;
 
     /* already a member of this group */
-    if (task->group == group) return;
+    if (task->group == group)
+        return;
 
     free(task->group_id);
     task->group_id = strdup(group->group_id);
@@ -62,7 +67,8 @@ void edc_task_group_add_task(struct edc_task_group *group, struct edc_task *task
 
 void edc_task_group_remove_task(struct edc_task_group *group, struct edc_task *task)
 {
-    if (!group || !task) return;
+    if (!group || !task)
+        return;
 
     struct edc_task *m, *tmp;
     LL_FOREACH_SAFE2(group->members, m, tmp, group_next)
@@ -85,12 +91,14 @@ void edc_task_group_remove_task(struct edc_task_group *group, struct edc_task *t
 
 struct edc_task *edc_task_group_find_task(struct edc_task_group *group, const char *task_id)
 {
-    if (!group || !task_id) return NULL;
+    if (!group || !task_id)
+        return NULL;
 
     struct edc_task *task;
     LL_FOREACH2(group->members, task, group_next)
     {
-        if (strcmp(task->task_id, task_id) == 0) return task;
+        if (strcmp(task->task_id, task_id) == 0)
+            return task;
     }
     return NULL;
 }
@@ -99,7 +107,8 @@ struct edc_task *edc_task_group_find_task(struct edc_task_group *group, const ch
 
 void edc_task_group_set_leader(struct edc_task_group *group, struct edc_task *new_leader)
 {
-    if (!group || !new_leader) return;
+    if (!group || !new_leader)
+        return;
 
     if (group->leader)
     {
@@ -122,7 +131,8 @@ void edc_task_group_set_leader(struct edc_task_group *group, struct edc_task *ne
 
 void edc_task_group_mark_orphaned(struct edc_task_group *group)
 {
-    if (!group) return;
+    if (!group)
+        return;
     group->is_orphaned = true;
     if (group->leader)
     {
@@ -135,7 +145,8 @@ void edc_task_group_mark_orphaned(struct edc_task_group *group)
 
 void edc_task_group_send_signal(struct edc_task_group *group, edc_task_signal sig)
 {
-    if (!group) return;
+    if (!group)
+        return;
 
     struct edc_task *task, *tmp;
     LL_FOREACH_SAFE2(group->members, task, tmp, group_next)
@@ -153,16 +164,19 @@ void edc_task_group_send_signal(struct edc_task_group *group, edc_task_signal si
 
 bool edc_task_group_is_foreground_capable(struct edc_task_group *group)
 {
-    if (!group) return false;
+    if (!group)
+        return false;
     return group->member_count > 0;
 }
 
 const char *edc_task_group_status_label(struct edc_task_group *group)
 {
-    if (!group) return "";
+    if (!group)
+        return "";
     if (group->is_orphaned)
     {
-        if (group->member_count == 0) return "DEAD";
+        if (group->member_count == 0)
+            return "DEAD";
         return "ORPHANED";
     }
     return "ACTIVE";

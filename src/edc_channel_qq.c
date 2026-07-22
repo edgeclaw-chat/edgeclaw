@@ -1,12 +1,12 @@
-﻿#include "sds.h"
-#include "edc_channel_qq.h"
+﻿#include "edc_channel_qq.h"
+#include "cJSON.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
-#include "utlist_fix.h"
-#include "edc_network_async.h"
 #include "edc_compat.h"
-#include "cJSON.h"
+#include "edc_network_async.h"
 #include "log.h"
+#include "sds.h"
+#include "utlist_fix.h"
 #include <string.h>
 
 static const char *BC_CHANNEL_QQ_GET_ACCESS_TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
@@ -62,7 +62,7 @@ struct edc_channel_qq_network_req
 };
 
 struct edc_channel_qq_network_req *edc_channel_qq_network_wss_req_new(edc_actor_t *actor, int shard, sds session_id,
-                                                                    int64_t s)
+                                                                      int64_t s)
 {
     struct edc_channel_qq_network_req *req = g_new0(struct edc_channel_qq_network_req, 1);
     req->type = BC_CHANNEL_QQ_WSS_CONN_REQ;
@@ -200,8 +200,8 @@ static void edc_channel_qq_on_get_access_http_msg(struct mg_connection *c, struc
 
     edc_actor_t *actor = c->fn_data;
     edc_actor_send(actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_qq, actor, NULL,
-                                                   edc_channel_qq_get_access_token_network_resp_new(resp),
-                                                   (edc_actor_data_free_fn)edc_channel_qq_network_resp_free));
+                                                     edc_channel_qq_get_access_token_network_resp_new(resp),
+                                                     (edc_actor_data_free_fn)edc_channel_qq_network_resp_free));
 }
 
 static void edc_channel_qq_get_access_token_http_fn(struct mg_connection *c, int ev, void *ev_data)
@@ -221,7 +221,7 @@ static void edc_channel_qq_start_get_access_token(edc_actor_t *actor)
 {
     edc_channel_actor_state_t *state = actor->state;
     edc_http_async_connect(state->network, BC_CHANNEL_QQ_GET_ACCESS_TOKEN_URL, NULL,
-                          edc_channel_qq_get_access_token_http_fn, actor, 20);
+                           edc_channel_qq_get_access_token_http_fn, actor, 20);
 }
 
 static void edc_channel_qq_access_token_update(uv_timer_t *timer)
@@ -290,8 +290,8 @@ static void edc_channel_qq_on_get_wss_endpoint_http_msg(struct mg_connection *c,
 
     edc_actor_t *actor = c->fn_data;
     edc_actor_send(actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_qq, actor, NULL,
-                                                   edc_channel_qq_get_wss_endpoint_network_resp_new(resp),
-                                                   (edc_actor_data_free_fn)edc_channel_qq_network_resp_free));
+                                                     edc_channel_qq_get_wss_endpoint_network_resp_new(resp),
+                                                     (edc_actor_data_free_fn)edc_channel_qq_network_resp_free));
 }
 
 static void edc_channel_qq_get_wss_endpoint_http_fn(struct mg_connection *c, int ev, void *ev_data)
@@ -311,7 +311,7 @@ static void edc_channel_qq_start_get_wss_endpoint(edc_actor_t *actor)
 {
     edc_channel_actor_state_t *state = actor->state;
     edc_http_async_connect(state->network, BC_CHANNEL_QQ_GET_WSS_ENDPOINT_URL, NULL,
-                          edc_channel_qq_get_wss_endpoint_http_fn, actor, 20);
+                           edc_channel_qq_get_wss_endpoint_http_fn, actor, 20);
 }
 
 static bool edc_channel_qq_handle_get_wss_endpoint_resp(edc_actor_t *actor, edc_actor_msg_t *msg)
@@ -410,7 +410,7 @@ static void edc_channel_qq_wss_send_resume(struct mg_connection *c, edc_actor_t 
 }
 
 static void edc_channel_qq_handle_wss_dispatch_msg(struct mg_connection *c, struct edc_channel_qq_network_req *req,
-                                                  cJSON *data)
+                                                   cJSON *data)
 {
     cJSON *s = cJSON_GetObjectItem(data, "s");
     char *tmp = NULL;
@@ -445,9 +445,9 @@ static void edc_channel_qq_handle_wss_dispatch_msg(struct mg_connection *c, stru
     }
 
     edc_actor_send(req->wss.actor,
-                  edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_qq, req->wss.actor, NULL,
-                                            edc_channel_qq_wss_dispatch_network_resp_new(data, req->wss.shard),
-                                            (edc_actor_data_free_fn)edc_channel_qq_network_resp_free));
+                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_qq, req->wss.actor, NULL,
+                                              edc_channel_qq_wss_dispatch_network_resp_new(data, req->wss.shard),
+                                              (edc_actor_data_free_fn)edc_channel_qq_network_resp_free));
 
     return;
 format_error_exit:
@@ -480,8 +480,8 @@ static void edc_channel_qq_handle_wss_reconnect(struct mg_connection *c, struct 
     }
 
     edc_actor_send(req->wss.actor,
-                  edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_qq, req->wss.actor, NULL, resp,
-                                            (edc_actor_data_free_fn)edc_channel_qq_network_resp_free));
+                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_RECV, edc_channel_qq, req->wss.actor, NULL, resp,
+                                              (edc_actor_data_free_fn)edc_channel_qq_network_resp_free));
 }
 
 static void edc_channel_qq_on_wss_conn_msg(struct mg_connection *c, struct mg_ws_message *wm)
@@ -625,7 +625,7 @@ static void edc_channel_qq_start_wss_conn_shard(edc_actor_t *actor, sds session_
 {
     edc_channel_actor_state_t *state = actor->state;
     edc_wss_async_connect(state->network, state->qq.wss_url, edc_channel_qq_wss_fn,
-                         edc_channel_qq_network_wss_req_new(actor, shard, session_id, s), -1);
+                          edc_channel_qq_network_wss_req_new(actor, shard, session_id, s), -1);
 }
 
 static void edc_channel_qq_start_wss_conn(edc_actor_t *actor, sds session_id, int64_t s)
@@ -684,8 +684,8 @@ static void edc_channel_qq_handle_wss_dispatch(edc_actor_t *actor, struct edc_ch
         goto format_error_exit;
     }
 
-    struct edc_channel_message *message =
-        edc_channel_qq_message_new(sdsnew(id->valuestring), sdsnew(author_id->valuestring), sdsnew(content->valuestring));
+    struct edc_channel_message *message = edc_channel_qq_message_new(
+        sdsnew(id->valuestring), sdsnew(author_id->valuestring), sdsnew(content->valuestring));
 
     id->valuestring = NULL;
     author_id->valuestring = NULL;
@@ -693,7 +693,7 @@ static void edc_channel_qq_handle_wss_dispatch(edc_actor_t *actor, struct edc_ch
 
     edc_channel_actor_state_t *state = actor->state;
     edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, actor, NULL, message,
-                                           (edc_actor_data_free_fn)edc_channel_message_free);
+                                             (edc_actor_data_free_fn)edc_channel_message_free);
     edc_actor_send(state->observer, msg);
 
     return;
@@ -793,7 +793,7 @@ static void edc_channel_qq_handle_send(edc_actor_t *actor, edc_actor_msg_t *msg)
     cJSON_free(body);
 
     edc_http_async_connect(state->network, send_c2c_url, NULL, edc_channel_qq_send_message_http_fn,
-                          edc_channel_qq_network_send_msg_req_new(actor, sds_body, send_c2c_url), 20);
+                           edc_channel_qq_network_send_msg_req_new(actor, sds_body, send_c2c_url), 20);
 }
 
 static void edc_channel_qq_handler(edc_actor_t *actor, edc_actor_msg_t *msg)

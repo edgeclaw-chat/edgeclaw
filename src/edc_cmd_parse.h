@@ -6,14 +6,15 @@
 
 /* ── /task 命令解析结果 ────────────────────────────────────── */
 
-struct edc_cmd_task_opts {
-    sds desc;               /* 任务描述 (剩余文本) */
-    sds input;              /* "引号内输入" — @ 语法专用 */
-    bool bg;                /* --bg 后台 */
-    sds *dep_ids;           /* -d <id> 依赖列表 */
+struct edc_cmd_task_opts
+{
+    sds desc;     /* 任务描述 (剩余文本) */
+    sds input;    /* "引号内输入" — @ 语法专用 */
+    bool bg;      /* --bg 后台 */
+    sds *dep_ids; /* -d <id> 依赖列表 */
     int dep_count;
-    sds group_id;           /* --group <id> / -g <id> */
-    sds prompt_name;        /* --prompt <name> */
+    sds group_id;    /* --group <id> / -g <id> */
+    sds prompt_name; /* --prompt <name> */
 };
 
 /* ── API ───────────────────────────────────────────────────── */

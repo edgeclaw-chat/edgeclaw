@@ -1,11 +1,11 @@
 #include "edc_shell_ast.h"
-#include "edc_shell.h"
 #include "edc_agent.h"
 #include "edc_cmd_parse.h"
 #include "edc_commands.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
+#include "edc_shell.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -22,38 +22,38 @@ ast_node_t *ast_new(ast_type_t type)
 
 void ast_free(ast_node_t *node)
 {
-    if (!node) return;
+    if (!node)
+        return;
     ast_free(node->child);
     ast_free(node->next);
-    if (node->text) sdsfree(node->text);
-    if (node->filename) sdsfree(node->filename);
-    for (int i = 0; i < node->dep_count; i++) sdsfree(node->dep_ids[i]);
+    if (node->text)
+        sdsfree(node->text);
+    if (node->filename)
+        sdsfree(node->filename);
+    for (int i = 0; i < node->dep_count; i++)
+        sdsfree(node->dep_ids[i]);
     free(node->dep_ids);
-    if (node->group_id) sdsfree(node->group_id);
-    if (node->prompt_name) sdsfree(node->prompt_name);
+    if (node->group_id)
+        sdsfree(node->group_id);
+    if (node->prompt_name)
+        sdsfree(node->prompt_name);
     free(node);
 }
 
 /* ── AST executor ──────────────────────────────────────────── */
 
-typedef struct {
+typedef struct
+{
     struct edc_task_group *target_group;
     bool bg;
     edc_task_dep_type dep_type;
 } exec_ctx_t;
 
-static struct edc_task *exec_node(struct edc_agent *agent,
-                                   struct edc_actor *actor,
-                                   struct edc_channel *channel,
-                                   ast_node_t *node,
-                                   struct edc_task *prev_task,
-                                   exec_ctx_t *ctx);
+static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel *channel,
+                                  ast_node_t *node, struct edc_task *prev_task, exec_ctx_t *ctx);
 
-static struct edc_task *exec_chain(struct edc_agent *agent,
-                                    struct edc_actor *actor,
-                                    struct edc_channel *channel,
-                                    ast_node_t *first,
-                                    exec_ctx_t *ctx)
+static struct edc_task *exec_chain(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel *channel,
+                                   ast_node_t *first, exec_ctx_t *ctx)
 {
     struct edc_task *prev = NULL;
     ast_node_t *cur = first;
@@ -65,14 +65,11 @@ static struct edc_task *exec_chain(struct edc_agent *agent,
     return prev;
 }
 
-static struct edc_task *exec_node(struct edc_agent *agent,
-                                   struct edc_actor *actor,
-                                   struct edc_channel *channel,
-                                   ast_node_t *node,
-                                   struct edc_task *prev_task,
-                                   exec_ctx_t *ctx)
+static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel *channel,
+                                  ast_node_t *node, struct edc_task *prev_task, exec_ctx_t *ctx)
 {
-    if (!node) return prev_task;
+    if (!node)
+        return prev_task;
 
     switch (node->type)
     {
@@ -96,52 +93,49 @@ static struct edc_task *exec_node(struct edc_agent *agent,
     case AST_REDIR_OUT:
     case AST_REDIR_APPEND:
     case AST_REDIR_ERR:
-    case AST_REDIR_IN:
-    {
-        struct edc_task *task = exec_node(agent, actor, channel, node->child,
-                                           prev_task, ctx);
-        if (!task) return prev_task;
+    case AST_REDIR_IN: {
+        struct edc_task *task = exec_node(agent, actor, channel, node->child, prev_task, ctx);
+        if (!task)
+            return prev_task;
         if (node->filename)
         {
             switch (node->type)
             {
             case AST_REDIR_OUT:
-                if (task->redirect_stdout) sdsfree(task->redirect_stdout);
+                if (task->redirect_stdout)
+                    sdsfree(task->redirect_stdout);
                 task->redirect_stdout = sdsnew(node->filename);
                 task->redirect_append = false;
                 break;
             case AST_REDIR_APPEND:
-                if (task->redirect_stdout) sdsfree(task->redirect_stdout);
+                if (task->redirect_stdout)
+                    sdsfree(task->redirect_stdout);
                 task->redirect_stdout = sdsnew(node->filename);
                 task->redirect_append = true;
                 break;
             case AST_REDIR_ERR:
-                if (task->redirect_stderr) sdsfree(task->redirect_stderr);
+                if (task->redirect_stderr)
+                    sdsfree(task->redirect_stderr);
                 task->redirect_stderr = sdsnew(node->filename);
                 break;
-            case AST_REDIR_IN:
-            {
+            case AST_REDIR_IN: {
                 sds err = NULL;
                 sds content = edc_shell_read_file(node->filename, &err);
                 if (content)
                 {
                     if (task->active_turn)
                     {
-                        for (size_t mj = task->active_turn->messages.head;
-                             mj < task->active_turn->messages.tail; mj++)
+                        for (size_t mj = task->active_turn->messages.head; mj < task->active_turn->messages.tail; mj++)
                         {
                             cJSON *msg = task->active_turn->messages.data[mj];
                             cJSON *role = cJSON_GetObjectItem(msg, "role");
-                            if (role && cJSON_IsString(role) &&
-                                strcmp(role->valuestring, "user") == 0)
+                            if (role && cJSON_IsString(role) && strcmp(role->valuestring, "user") == 0)
                             {
                                 cJSON *c = cJSON_GetObjectItem(msg, "content");
                                 if (c && cJSON_IsString(c))
                                 {
-                                    sds merged = sdscatprintf(sdsempty(), "%s\n\n%s",
-                                        c->valuestring, content);
-                                    cJSON_ReplaceItemInObject(msg, "content",
-                                        cJSON_CreateString(merged));
+                                    sds merged = sdscatprintf(sdsempty(), "%s\n\n%s", c->valuestring, content);
+                                    cJSON_ReplaceItemInObject(msg, "content", cJSON_CreateString(merged));
                                     sdsfree(merged);
                                 }
                                 break;
@@ -157,14 +151,14 @@ static struct edc_task *exec_node(struct edc_agent *agent,
                 }
                 break;
             }
-            default: break;
+            default:
+                break;
             }
         }
         return task;
     }
 
-    case AST_CMD:
-    {
+    case AST_CMD: {
         struct edc_cmd_task_opts opts;
         memset(&opts, 0, sizeof(opts));
         opts.bg = ctx->bg;
@@ -175,14 +169,15 @@ static struct edc_task *exec_node(struct edc_agent *agent,
         for (int i = 0; i < node->dep_count; i++)
             opts.dep_ids[i] = sdsnew(node->dep_ids[i]);
         opts.dep_count = node->dep_count;
-        if (node->group_id) opts.group_id = sdsnew(node->group_id);
-        if (node->prompt_name) opts.prompt_name = sdsnew(node->prompt_name);
+        if (node->group_id)
+            opts.group_id = sdsnew(node->group_id);
+        if (node->prompt_name)
+            opts.prompt_name = sdsnew(node->prompt_name);
 
         struct edc_task_group *group = NULL;
         if (!node->at_group && opts.group_id)
         {
-            group = edc_session_find_group(
-                edc_session_manager_get_active(agent->session_manager), opts.group_id);
+            group = edc_session_find_group(edc_session_manager_get_active(agent->session_manager), opts.group_id);
             if (!group)
             {
                 sds reply = sdscatprintf(sdsempty(), "group %s not found", opts.group_id);
@@ -194,11 +189,9 @@ static struct edc_task *exec_node(struct edc_agent *agent,
             group = ctx->target_group;
 
         struct edc_task_group *out_group = NULL;
-        struct edc_task *task = edc_shell_spawn_task(agent, actor, channel,
-                                                      &opts, prev_task, group,
-                                                      node->at_group ? "@" : "task",
-                                                      &out_group,
-                                                      NULL, false, NULL, ctx->dep_type);
+        struct edc_task *task =
+            edc_shell_spawn_task(agent, actor, channel, &opts, prev_task, group, node->at_group ? "@" : "task",
+                                 &out_group, NULL, false, NULL, ctx->dep_type);
 
         if (task && node->has_deferred_vars)
             task->has_deferred_vars = 1;
@@ -214,8 +207,7 @@ static struct edc_task *exec_node(struct edc_agent *agent,
             if (!fg)
             {
                 edc_scheduler_set_foreground(agent->scheduler, out_group);
-                edc_session_set_active_task(
-                    edc_session_manager_get_active(agent->session_manager), task);
+                edc_session_set_active_task(edc_session_manager_get_active(agent->session_manager), task);
             }
         }
 
@@ -225,15 +217,14 @@ static struct edc_task *exec_node(struct edc_agent *agent,
     return prev_task;
 }
 
-void ast_execute(struct edc_agent *agent, struct edc_actor *actor,
-                 struct edc_channel *channel, ast_node_t *root)
+void ast_execute(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel *channel, ast_node_t *root)
 {
-    if (!root) return;
+    if (!root)
+        return;
     exec_ctx_t ctx = {0};
     ctx.dep_type = TASK_DEP_SEQUENCE;
     ctx.target_group = agent->scheduler->foreground_group;
-    if (!ctx.target_group || ctx.target_group->is_orphaned ||
-        ctx.target_group->member_count == 0)
+    if (!ctx.target_group || ctx.target_group->is_orphaned || ctx.target_group->member_count == 0)
         ctx.target_group = NULL;
     exec_node(agent, actor, channel, root, NULL, &ctx);
 }

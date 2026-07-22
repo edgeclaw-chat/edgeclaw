@@ -1,14 +1,13 @@
 #ifndef __BC_ACTOR_H__
 #define __BC_ACTOR_H__
 
-#include <uv.h>
-#include "sds.h"
 #include "edc_containers.h"
+#include "sds.h"
 #include <stdbool.h>
 #include <stddef.h>
+#include <uv.h>
 
-#define container_of(ptr, type, member) \
-    ((type *)((char *)(ptr) - offsetof(type, member)))
+#define container_of(ptr, type, member) ((type *)((char *)(ptr) - offsetof(type, member)))
 
 typedef struct edc_actor edc_actor_t;
 typedef struct edc_actor_msg edc_actor_msg_t;
@@ -35,7 +34,7 @@ struct edc_actor_msg
     edc_actor_msg_type_t type;
     int sub_type;
     edc_actor_t *from;
-    void* request_id;
+    void *request_id;
     void *data;
     edc_actor_data_free_fn data_free_fn;
 };
@@ -72,10 +71,10 @@ void edc_actor_runner_add(edc_actor_runner_t *runner, edc_actor_t *actor);
 edc_actor_t *edc_actor_new(const char *name, edc_actor_handler_t handler, void *state);
 void edc_actor_free(edc_actor_t *actor);
 void edc_actor_send(edc_actor_t *actor, edc_actor_msg_t *msg);
-edc_actor_msg_t *edc_actor_msg_new(edc_actor_msg_type_t type, edc_actor_t *from, void* request_id, void *data,
-                                 edc_actor_data_free_fn fn);
-edc_actor_msg_t *edc_actor_msg_new_sub_type(edc_actor_msg_type_t type, int sub_type, edc_actor_t *from, void* request_id,
-                                          void *data, edc_actor_data_free_fn fn);
+edc_actor_msg_t *edc_actor_msg_new(edc_actor_msg_type_t type, edc_actor_t *from, void *request_id, void *data,
+                                   edc_actor_data_free_fn fn);
+edc_actor_msg_t *edc_actor_msg_new_sub_type(edc_actor_msg_type_t type, int sub_type, edc_actor_t *from,
+                                            void *request_id, void *data, edc_actor_data_free_fn fn);
 void edc_actor_msg_free(edc_actor_msg_t *msg);
 
 #endif

@@ -1,10 +1,10 @@
-﻿#include "sds.h"
-#include "edc_history.h"
-#include "edc_session.h"
+﻿#include "edc_history.h"
+#include "edc_compat.h"
 #include "edc_datetime_utils.h"
 #include "edc_file_utils.h"
+#include "edc_session.h"
 #include "log.h"
-#include "edc_compat.h"
+#include "sds.h"
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -63,7 +63,8 @@ bool edc_history_save(const char *workspace, cJSON *msg_lst, struct edc_timestam
     {
         EdcError *mk_err = NULL;
         edc_dir_create_with_parents(workspace, 0755, &mk_err);
-        if (mk_err) {
+        if (mk_err)
+        {
             log_warn("history_save: mkdir %s: %s", workspace, mk_err->message);
             edc_error_free(mk_err);
         }

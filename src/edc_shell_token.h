@@ -4,20 +4,22 @@
 #include "sds.h"
 #include <stdbool.h>
 
-typedef enum {
-    TOK_TEXT,           /* ordinary text (unquoted or quoted) */
-    TOK_PIPE,           /* | */
-    TOK_SEQ,            /* ; */
-    TOK_BG,             /* & (trailing background) */
-    TOK_REDIR_OUT,      /* > */
-    TOK_REDIR_APPEND,   /* >> */
-    TOK_REDIR_ERR,      /* 2> */
-    TOK_REDIR_IN,       /* < */
+typedef enum
+{
+    TOK_TEXT,         /* ordinary text (unquoted or quoted) */
+    TOK_PIPE,         /* | */
+    TOK_SEQ,          /* ; */
+    TOK_BG,           /* & (trailing background) */
+    TOK_REDIR_OUT,    /* > */
+    TOK_REDIR_APPEND, /* >> */
+    TOK_REDIR_ERR,    /* 2> */
+    TOK_REDIR_IN,     /* < */
 } edc_tok_type_t;
 
-typedef struct {
+typedef struct
+{
     edc_tok_type_t type;
-    sds value;          /* text for TOK_TEXT, NULL for operator tokens */
+    sds value; /* text for TOK_TEXT, NULL for operator tokens */
 } edc_shell_token_t;
 
 void edc_shell_token_free(edc_shell_token_t *tok);

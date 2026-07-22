@@ -2,8 +2,8 @@
 #define __BC_HTTP_ASYNC_H__
 #include "edc_containers.h"
 #include "mongoose.h"
-#include <uv.h>
 #include <stdbool.h>
+#include <uv.h>
 
 typedef void (*network_async_task_fn)(void *);
 
@@ -25,9 +25,9 @@ typedef struct
 extern edc_network_async_t *edc_network_async_new(const char *cert_path);
 extern void edc_network_async_free(edc_network_async_t *async);
 extern void edc_http_async_connect(edc_network_async_t *async, const char *url, const char *proxy,
-                                  mg_event_handler_t fn, void *fn_data, int timeout);
+                                   mg_event_handler_t fn, void *fn_data, int timeout);
 extern void edc_wss_async_connect(edc_network_async_t *async, const char *url, mg_event_handler_t fn, void *fn_data,
-                                 int timeout);
+                                  int timeout);
 extern void edc_network_async_close_conn(edc_network_async_t *async, struct mg_connection *c);
 extern void edc_network_async_reset_dns(struct mg_mgr *mgr);
 

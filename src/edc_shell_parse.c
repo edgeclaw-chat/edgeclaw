@@ -5,8 +5,7 @@
 
 static bool is_flag(const char *s)
 {
-    return (strcmp(s, "--bg") == 0 || strcmp(s, "-d") == 0 ||
-            strcmp(s, "--group") == 0 || strcmp(s, "-g") == 0 ||
+    return (strcmp(s, "--bg") == 0 || strcmp(s, "-d") == 0 || strcmp(s, "--group") == 0 || strcmp(s, "-g") == 0 ||
             strcmp(s, "--prompt") == 0);
 }
 
@@ -23,10 +22,8 @@ static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos)
     {
         edc_shell_token_t *t = &tokens[*pos];
 
-        if (t->type == TOK_PIPE || t->type == TOK_SEQ ||
-            t->type == TOK_BG ||
-            t->type == TOK_REDIR_OUT || t->type == TOK_REDIR_APPEND ||
-            t->type == TOK_REDIR_IN)
+        if (t->type == TOK_PIPE || t->type == TOK_SEQ || t->type == TOK_BG || t->type == TOK_REDIR_OUT ||
+            t->type == TOK_REDIR_APPEND || t->type == TOK_REDIR_IN)
             break;
 
         if (t->type == TOK_TEXT && t->value)
@@ -41,18 +38,19 @@ static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos)
                     if (strcmp(flag, "-d") == 0)
                     {
                         cmd->dep_count++;
-                        cmd->dep_ids = realloc(cmd->dep_ids,
-                            (size_t)cmd->dep_count * sizeof(sds));
+                        cmd->dep_ids = realloc(cmd->dep_ids, (size_t)cmd->dep_count * sizeof(sds));
                         cmd->dep_ids[cmd->dep_count - 1] = sdsnew(arg);
                     }
                     else if (strcmp(flag, "-g") == 0 || strcmp(flag, "--group") == 0)
                     {
-                        if (cmd->group_id) sdsfree(cmd->group_id);
+                        if (cmd->group_id)
+                            sdsfree(cmd->group_id);
                         cmd->group_id = sdsnew(arg);
                     }
                     else if (strcmp(flag, "--prompt") == 0)
                     {
-                        if (cmd->prompt_name) sdsfree(cmd->prompt_name);
+                        if (cmd->prompt_name)
+                            sdsfree(cmd->prompt_name);
                         cmd->prompt_name = sdsnew(arg);
                     }
                     (*pos)++; /* consume arg */
@@ -60,7 +58,8 @@ static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos)
             }
             else
             {
-                if (sdslen(text) > 0) text = sdscat(text, " ");
+                if (sdslen(text) > 0)
+                    text = sdscat(text, " ");
                 text = sdscatsds(text, t->value);
                 (*pos)++;
             }
@@ -77,8 +76,7 @@ static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos)
 
 /* ── parse command with redirect modifiers ────────────────── */
 
-static ast_node_t *parse_redirects(edc_shell_token_t *tokens, int count,
-                                    int *pos, ast_node_t *inner)
+static ast_node_t *parse_redirects(edc_shell_token_t *tokens, int count, int *pos, ast_node_t *inner)
 {
     while (*pos < count)
     {
@@ -98,8 +96,7 @@ static ast_node_t *parse_redirects(edc_shell_token_t *tokens, int count,
                 size_t slen = inner->text ? sdslen(inner->text) : 0;
                 if (slen > 0 && inner->text[slen - 1] == '2')
                 {
-                    if (slen == 1 || inner->text[slen - 2] == ' ' ||
-                        inner->text[slen - 2] == '\t')
+                    if (slen == 1 || inner->text[slen - 2] == ' ' || inner->text[slen - 2] == '\t')
                     {
                         rtype = AST_REDIR_ERR;
                         sdssetlen(inner->text, slen - 1);
@@ -182,8 +179,7 @@ static ast_node_t *parse_redirects(edc_shell_token_t *tokens, int count,
 
 /* ── parse bg_cmd := redirects cmd '&'? ────────────────────── */
 
-static ast_node_t *parse_bg_cmd(edc_shell_token_t *tokens, int count,
-                                  int *pos, bool at_group)
+static ast_node_t *parse_bg_cmd(edc_shell_token_t *tokens, int count, int *pos, bool at_group)
 {
     ast_node_t *cmd = parse_cmd(tokens, count, pos);
     cmd->at_group = at_group;
@@ -221,12 +217,14 @@ ast_node_t *ast_parse(edc_shell_token_t *tokens, int count, bool is_at)
         if (pos < count && tokens[pos].type == TOK_PIPE)
         {
             pos++;
-            if (!pipe_chain) pipe_chain = cmd;
+            if (!pipe_chain)
+                pipe_chain = cmd;
             else
             {
                 /* append to pipe chain */
                 ast_node_t *c = pipe_chain;
-                while (c->next) c = c->next;
+                while (c->next)
+                    c = c->next;
                 c->next = cmd;
             }
         }
@@ -254,7 +252,8 @@ ast_node_t *ast_parse(edc_shell_token_t *tokens, int count, bool is_at)
             if (pipe_chain)
             {
                 ast_node_t *c = pipe_chain;
-                while (c->next) c = c->next;
+                while (c->next)
+                    c = c->next;
                 c->next = cmd;
 
                 ast_node_t *wrapper = ast_new(AST_PIPE);

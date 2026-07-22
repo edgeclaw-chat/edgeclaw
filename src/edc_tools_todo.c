@@ -1,10 +1,10 @@
-﻿#include "sds.h"
-#include "edc_tools_todo.h"
+﻿#include "edc_tools_todo.h"
 #include "edc_channel_actor.h"
+#include "edc_compat.h"
 #include "edc_param_types.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
-#include "edc_compat.h"
+#include "sds.h"
 #include <stdlib.h>
 
 static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
@@ -20,8 +20,7 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
     int total = cJSON_GetArraySize(items);
     if (total > 20)
     {
-        sds msg = sdscatprintf(sdsempty(),
-                               "Error: Maximum 20 items allowed, got %d.", total);
+        sds msg = sdscatprintf(sdsempty(), "Error: Maximum 20 items allowed, got %d.", total);
         EdcError *err = edc_error_new(EDC_ERR_INVAL, "%s", msg);
         callback(ctx, msg, err);
         return;
@@ -67,9 +66,8 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
     if (in_progress_count > 1)
     {
         sdsfree(lines);
-        sds msg = sdscatprintf(sdsempty(),
-                               "Error: Only ONE item can be in_progress at a time, got %d.",
-                               in_progress_count);
+        sds msg =
+            sdscatprintf(sdsempty(), "Error: Only ONE item can be in_progress at a time, got %d.", in_progress_count);
         EdcError *err = edc_error_new(EDC_ERR_INVAL, "%s", msg);
         callback(ctx, msg, err);
         return;
@@ -80,8 +78,8 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
     struct edc_channel_message *message = edc_channel_message_new(edc_channel_copy(ctx->call_from), sdsdup(lines));
 
     edc_actor_send(ctx->tb->channel_actor,
-                  edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, ctx->call_from->type, ctx->tb->scheduler, NULL,
-                                            message, (edc_actor_data_free_fn)edc_channel_message_free));
+                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, ctx->call_from->type, ctx->tb->scheduler, NULL,
+                                              message, (edc_actor_data_free_fn)edc_channel_message_free));
 
     callback(ctx, lines, NULL);
 }

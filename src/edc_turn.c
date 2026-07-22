@@ -1,6 +1,6 @@
 #include "edc_turn.h"
-#include "edc_history.h"
 #include "edc_compat.h"
+#include "edc_history.h"
 #include "edc_string_utils.h"
 
 static void edc_turn_add_message(struct edc_turn *turn, cJSON *msg)
@@ -68,4 +68,3 @@ void edc_turn_free(struct edc_turn *turn)
     free(turn->task_id);
     free(turn);
 }
-

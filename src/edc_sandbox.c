@@ -44,7 +44,8 @@ static bool path_is_under_any(const char *resolved_path, char **paths)
             continue;
 
         size_t len = strlen(entry_real);
-        if (strncmp(resolved_path, entry_real, strlen(entry_real)) == 0 && (resolved_path[len] == '\0' || resolved_path[len] == '/'))
+        if (strncmp(resolved_path, entry_real, strlen(entry_real)) == 0 &&
+            (resolved_path[len] == '\0' || resolved_path[len] == '/'))
         {
             free(entry_real);
             return true;
@@ -95,8 +96,7 @@ sds edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writ
 
         free(resolved);
         if (error)
-            *error =
-                edc_error_new(EDC_ERR_SANDBOX, "access denied: '%s' is outside sandbox", path);
+            *error = edc_error_new(EDC_ERR_SANDBOX, "access denied: '%s' is outside sandbox", path);
         return NULL;
     }
 
@@ -115,8 +115,7 @@ sds edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writ
     {
         free(parent_real);
         if (error)
-            *error =
-                edc_error_new(EDC_ERR_SANDBOX, "access denied: '%s' is outside sandbox", path);
+            *error = edc_error_new(EDC_ERR_SANDBOX, "access denied: '%s' is outside sandbox", path);
         return NULL;
     }
 

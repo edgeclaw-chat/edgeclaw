@@ -1,12 +1,10 @@
-﻿#include "sds.h"
-#include "edc_agent.h"
+﻿#include "edc_agent.h"
 #include "edc_actor.h"
-#include "edc_compat.h"
-#include "edc_file_utils.h"
-#include "uthash.h"
 #include "edc_channel_actor.h"
+#include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_context.h"
+#include "edc_file_utils.h"
 #include "edc_init_env.h"
 #include "edc_llm_actor.h"
 #include "edc_memory_actor.h"
@@ -19,11 +17,13 @@
 #include "edc_task_group.h"
 #include "edc_toolbox_actor.h"
 #include "edc_turn.h"
-#include "utlist_fix.h"
 #include "log.h"
+#include "sds.h"
+#include "uthash.h"
+#include "utlist_fix.h"
+#include <dirent.h>
 #include <edc_commands.h>
 #include <edc_shell.h>
-#include <dirent.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -41,11 +41,11 @@ static struct edc_agent *edc_scheduler_agent(struct edc_scheduler *sched)
 
 /* ── 回调: 发送 LLM 请求 ──────────────────────────────────── */
 
-static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *task,
-                                   void *request_id)
+static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
-    if (!agent || !task) return;
+    if (!agent || !task)
+        return;
 
     /* Group 级上下文: group history (可共享) + task 专属 (dep outputs) */
     cJSON *msgs;
@@ -53,8 +53,7 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
     {
         msgs = cJSON_CreateArray();
         /* fork 上下文切片: 只取 fork 点之前的 group history */
-        size_t end = task->forked_from ? task->fork_point_msg_count
-                                       : (size_t)cJSON_GetArraySize(task->group->history);
+        size_t end = task->forked_from ? task->fork_point_msg_count : (size_t)cJSON_GetArraySize(task->group->history);
         if (end > (size_t)cJSON_GetArraySize(task->group->history))
             end = (size_t)cJSON_GetArraySize(task->group->history);
         for (size_t i = 0; i < end; i++)
@@ -74,7 +73,8 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
             cJSON_AddStringToObject(sys, "role", "system");
             cJSON_AddStringToObject(sys, "content", prompt);
             cJSON_AddItemToArray(msgs, sys);
-            if (task->group) cJSON_AddItemToArray(task->group->history, cJSON_Duplicate(sys, 1));
+            if (task->group)
+                cJSON_AddItemToArray(task->group->history, cJSON_Duplicate(sys, 1));
             sdsfree(prompt);
         }
     }
@@ -83,10 +83,8 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
     struct edc_task_dep *dep;
     LL_FOREACH(task->deps, dep)
     {
-        log_info("send_llm task=%s dep src=%s completed=%d output=%s",
-                 task->task_id,
-                 dep->source ? dep->source->task_id : "(null)",
-                 dep->completed,
+        log_info("send_llm task=%s dep src=%s completed=%d output=%s", task->task_id,
+                 dep->source ? dep->source->task_id : "(null)", dep->completed,
                  (dep->source && dep->source->output) ? "yes" : "none");
         if (dep->completed && dep->source && !dep->injected && dep->type == TASK_DEP_JOIN)
         {
@@ -109,7 +107,8 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
                             cJSON *content = cJSON_GetObjectItem(msg, "content");
                             if (content && cJSON_IsString(content))
                             {
-                                if (last_user) sdsfree(last_user);
+                                if (last_user)
+                                    sdsfree(last_user);
                                 last_user = sdsnew(content->valuestring);
                             }
                         }
@@ -138,8 +137,7 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
     /* expand deferred $VAR references in the current turn's user messages */
     if (task->has_deferred_vars && task->active_turn)
     {
-        for (size_t mj = task->active_turn->messages.head;
-             mj < task->active_turn->messages.tail; mj++)
+        for (size_t mj = task->active_turn->messages.head; mj < task->active_turn->messages.tail; mj++)
         {
             cJSON *msg = task->active_turn->messages.data[mj];
             cJSON *role = cJSON_GetObjectItem(msg, "role");
@@ -151,8 +149,7 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
                     sds expanded = edc_shell_expand_vars(agent, content->valuestring, NULL);
                     if (expanded)
                     {
-                        cJSON_ReplaceItemInObject(msg, "content",
-                            cJSON_CreateString(expanded));
+                        cJSON_ReplaceItemInObject(msg, "content", cJSON_CreateString(expanded));
                         sdsfree(expanded);
                     }
                 }
@@ -161,53 +158,46 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
         task->has_deferred_vars = 0;
     }
 
-    struct edc_llm_actor_req *req =
-        edc_llm_actor_req_new(msgs,
-                              agent->toolbox ? agent->toolbox->schemas : NULL,
-                              task->active_turn ? &task->active_turn->messages : NULL);
+    struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, agent->toolbox ? agent->toolbox->schemas : NULL,
+                                                          task->active_turn ? &task->active_turn->messages : NULL);
     req->history_owned = true;
 
     edc_actor_send(agent->llm_actor,
-                   edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST,
-                                     edc_scheduler_get_actor(sched),
-                                     request_id, req,
+                   edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST, edc_scheduler_get_actor(sched), request_id, req,
                                      (edc_actor_data_free_fn)edc_llm_actor_req_free));
 }
 
 /* ── 回调: 发送 Channel 回复 ────────────────────────────────── */
 
-static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task *task,
-                                     const char *content, void *request_id)
+static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task *task, const char *content,
+                                    void *request_id)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
-    if (!agent || !task || !task->channel || !content) return;
+    if (!agent || !task || !task->channel || !content)
+        return;
 
     /* only active task outputs to terminal */
     if (!sched->session || edc_session_get_active_task(sched->session) != task)
         return;
 
-    struct edc_channel_message *reply =
-        edc_channel_message_new(edc_channel_copy(task->channel), sdsnew(content));
+    struct edc_channel_message *reply = edc_channel_message_new(edc_channel_copy(task->channel), sdsnew(content));
 
-    edc_actor_send(agent->channel_actor,
-                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND,
-                                              reply->channel->type,
-                                              edc_scheduler_get_actor(sched),
-                                              request_id, reply,
-                                              (edc_actor_data_free_fn)edc_channel_message_free));
+    edc_actor_send(agent->channel_actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->channel->type,
+                                                                    edc_scheduler_get_actor(sched), request_id, reply,
+                                                                    (edc_actor_data_free_fn)edc_channel_message_free));
 }
 
 /* ── 回调: 分发 Tool Calls ────────────────────────────────── */
 
 static void edc_agent_handle_tool_calls(struct edc_agent *agent, struct edc_channel *call_from,
-                                         struct edc_llm_actor_resp *resp, void *request_id,
-                                         edc_actor_t *from_actor);
+                                        struct edc_llm_actor_resp *resp, void *request_id, edc_actor_t *from_actor);
 
-static void edc_agent_cb_dispatch_tools(struct edc_scheduler *sched, struct edc_task *task,
-                                         void *llm_resp, void *request_id)
+static void edc_agent_cb_dispatch_tools(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
+                                        void *request_id)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
-    if (!agent || !task || !llm_resp) return;
+    if (!agent || !task || !llm_resp)
+        return;
 
     struct edc_llm_actor_resp *resp = llm_resp;
 
@@ -215,36 +205,31 @@ static void edc_agent_cb_dispatch_tools(struct edc_scheduler *sched, struct edc_
     if ((resp->reasoning_content && sdslen(resp->reasoning_content) > 0) ||
         (resp->content && sdslen(resp->content) > 0))
     {
-        sds content = (resp->content && sdslen(resp->content) > 0)
-                          ? resp->content
-                          : resp->reasoning_content;
+        sds content = (resp->content && sdslen(resp->content) > 0) ? resp->content : resp->reasoning_content;
         sds text = sdscatprintf(sdsempty(), "[思考]: %s", content);
         edc_agent_cb_send_reply(sched, task, text, request_id);
         sdsfree(text);
     }
 
-    edc_agent_handle_tool_calls(agent, task->channel, resp, request_id,
-                                 edc_scheduler_get_actor(sched));
+    edc_agent_handle_tool_calls(agent, task->channel, resp, request_id, edc_scheduler_get_actor(sched));
 }
 
 /* ── 工具分发逻辑 ──────────────────────────────────────────── */
 
 static void edc_agent_handle_tool_calls(struct edc_agent *agent, struct edc_channel *call_from,
-                                         struct edc_llm_actor_resp *resp, void *request_id,
-                                         edc_actor_t *from_actor)
+                                        struct edc_llm_actor_resp *resp, void *request_id, edc_actor_t *from_actor)
 {
     struct edc_toolbox_actor_req *req = edc_toolbox_actor_req_new(NULL, NULL, NULL, NULL);
     struct edc_toolbox_actor_req *head = req;
 
-    if (!resp->tool_calls) return;
+    if (!resp->tool_calls)
+        return;
     for (unsigned i = 0; i < utarray_len(resp->tool_calls); i++)
     {
-        struct edc_llm_chat_tool_call *tool_call =
-            (struct edc_llm_chat_tool_call *)utarray_eltptr(resp->tool_calls, i);
+        struct edc_llm_chat_tool_call *tool_call = (struct edc_llm_chat_tool_call *)utarray_eltptr(resp->tool_calls, i);
         if (tool_call->type == BC_LLM_TOOL_CALL_TYPE_FUNCTION)
         {
-            req->next = edc_toolbox_actor_req_new(tool_call->function.name,
-                                                  tool_call->function.arguments,
+            req->next = edc_toolbox_actor_req_new(tool_call->function.name, tool_call->function.arguments,
                                                   tool_call->id, call_from);
             req = req->next;
             tool_call->function.arguments = NULL;
@@ -257,21 +242,19 @@ static void edc_agent_handle_tool_calls(struct edc_agent *agent, struct edc_chan
     edc_toolbox_actor_req_free(head);
     if (req)
     {
-        edc_actor_send(agent->toolbox_actor,
-                       edc_actor_msg_new(BC_ACTOR_MSG_TOOL_REQUEST, from_actor,
-                                         request_id, req,
-                                         (edc_actor_data_free_fn)edc_toolbox_actor_req_free));
+        edc_actor_send(agent->toolbox_actor, edc_actor_msg_new(BC_ACTOR_MSG_TOOL_REQUEST, from_actor, request_id, req,
+                                                               (edc_actor_data_free_fn)edc_toolbox_actor_req_free));
     }
 }
 
 /* ── 回调: 命令处理 ────────────────────────────────────────── */
 
-static bool edc_agent_cb_handle_command(struct edc_scheduler *sched,
-                                         struct edc_actor *actor,
-                                         struct edc_channel_message *msg)
+static bool edc_agent_cb_handle_command(struct edc_scheduler *sched, struct edc_actor *actor,
+                                        struct edc_channel_message *msg)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
-    if (!agent || !msg) return false;
+    if (!agent || !msg)
+        return false;
     return edc_commands_handler(agent, actor, msg);
 }
 
@@ -280,12 +263,11 @@ static bool edc_agent_cb_handle_command(struct edc_scheduler *sched,
 static void edc_agent_cb_trigger_memory(struct edc_scheduler *sched)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
-    if (!agent || !agent->memory_actor) return;
+    if (!agent || !agent->memory_actor)
+        return;
 
     edc_actor_send(agent->memory_actor,
-                   edc_actor_msg_new(BC_ACTOR_MSG_MEMORY_COMPRESS,
-                                     edc_scheduler_get_actor(sched),
-                                     NULL, NULL, NULL));
+                   edc_actor_msg_new(BC_ACTOR_MSG_MEMORY_COMPRESS, edc_scheduler_get_actor(sched), NULL, NULL, NULL));
 }
 
 /* ── 回调: 保存 Session ────────────────────────────────────── */
@@ -293,7 +275,8 @@ static void edc_agent_cb_trigger_memory(struct edc_scheduler *sched)
 static void edc_agent_cb_save_session(struct edc_scheduler *sched)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
-    if (!agent || !agent->session_manager) return;
+    if (!agent || !agent->session_manager)
+        return;
 
     /* Save history for all sessions */
     edc_session_manager_save_all(agent->session_manager);
@@ -306,7 +289,8 @@ static void edc_agent_cb_save_session(struct edc_scheduler *sched)
 
 void edc_agent_remove_all_turns(struct edc_agent *agent)
 {
-    if (!agent || !agent->scheduler) return;
+    if (!agent || !agent->scheduler)
+        return;
     edc_scheduler_send_signal_to_all(agent->scheduler, TASK_SIGTERM);
 }
 
@@ -346,9 +330,8 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
 
     agent->channel_actor = edc_channel_actor_new(&agent->config->channel, agent->config->workspace);
     agent->llm_actor = edc_llm_actor_new(agent->config);
-    agent->memory_actor = edc_memory_actor_new(agent->config->workspace,
-                                                agent->config->memory_compress_threshold,
-                                                agent->llm_actor);
+    agent->memory_actor =
+        edc_memory_actor_new(agent->config->workspace, agent->config->memory_compress_threshold, agent->llm_actor);
     agent->session_manager = edc_session_manager_new(agent->config);
     if (!agent->session_manager)
     {
@@ -364,12 +347,12 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
     agent->scheduler->ctx = agent;
 
     /* 注入回调 */
-    agent->scheduler->send_llm       = edc_agent_cb_send_llm;
-    agent->scheduler->send_reply     = edc_agent_cb_send_reply;
+    agent->scheduler->send_llm = edc_agent_cb_send_llm;
+    agent->scheduler->send_reply = edc_agent_cb_send_reply;
     agent->scheduler->dispatch_tools = edc_agent_cb_dispatch_tools;
     agent->scheduler->handle_command = edc_agent_cb_handle_command;
     agent->scheduler->trigger_memory = edc_agent_cb_trigger_memory;
-    agent->scheduler->save_session   = edc_agent_cb_save_session;
+    agent->scheduler->save_session = edc_agent_cb_save_session;
 
     /* Phase 4: restore saved task/group state for active session */
     {
@@ -378,8 +361,7 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
             edc_session_load_state(active, agent->scheduler);
     }
 
-    edc_channel_actor_set_observer(agent->channel_actor,
-                                    edc_scheduler_get_actor(agent->scheduler));
+    edc_channel_actor_set_observer(agent->channel_actor, edc_scheduler_get_actor(agent->scheduler));
 
     agent->runner = edc_actor_runner_new();
     edc_file_utils_init(&agent->runner->loop);
@@ -388,9 +370,7 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
     edc_actor_runner_add(agent->runner, agent->llm_actor);
     edc_actor_runner_add(agent->runner, agent->memory_actor);
 
-    agent->toolbox = edc_toolbox_new(agent->config,
-                                      edc_scheduler_get_actor(agent->scheduler),
-                                      agent->channel_actor);
+    agent->toolbox = edc_toolbox_new(agent->config, edc_scheduler_get_actor(agent->scheduler), agent->channel_actor);
     agent->toolbox_actor = edc_toolbox_actor_new(agent->toolbox);
     edc_actor_runner_add(agent->runner, agent->toolbox_actor);
 
@@ -402,22 +382,23 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
 
 void edc_agent_add_history(struct edc_agent *agent, const char *line)
 {
-    if (!agent || !line || !*line) return;
-    if (agent->history_count > 0 &&
-        strcmp(agent->history[agent->history_count - 1], line) == 0)
+    if (!agent || !line || !*line)
+        return;
+    if (agent->history_count > 0 && strcmp(agent->history[agent->history_count - 1], line) == 0)
         return;
 
-    if (agent->history_count >= agent->history_capacity) {
+    if (agent->history_count >= agent->history_capacity)
+    {
         agent->history_capacity *= 2;
-        agent->history = realloc(agent->history,
-                                  (size_t)agent->history_capacity * sizeof(sds));
+        agent->history = realloc(agent->history, (size_t)agent->history_capacity * sizeof(sds));
     }
     agent->history[agent->history_count++] = sdsnew(line);
 }
 
 void edc_agent_free(struct edc_agent *agent)
 {
-    if (!agent) return;
+    if (!agent)
+        return;
 
     edc_actor_runner_free(agent->runner);
     edc_channel_actor_free(agent->channel_actor);
@@ -429,11 +410,15 @@ void edc_agent_free(struct edc_agent *agent)
 
     edc_scheduler_free(agent->scheduler);
 
-    if (agent->session_manager) edc_session_manager_free(agent->session_manager);
-    if (agent->config)  edc_config_free(agent->config);
-    if (agent->toolbox) edc_toolbox_free(agent->toolbox);
+    if (agent->session_manager)
+        edc_session_manager_free(agent->session_manager);
+    if (agent->config)
+        edc_config_free(agent->config);
+    if (agent->toolbox)
+        edc_toolbox_free(agent->toolbox);
 
-    for (int i = 0; i < agent->history_count; i++) sdsfree(agent->history[i]);
+    for (int i = 0; i < agent->history_count; i++)
+        sdsfree(agent->history[i]);
     free(agent->history);
 
     edc_secret_cleanup();

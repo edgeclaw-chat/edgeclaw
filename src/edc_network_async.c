@@ -1,6 +1,6 @@
-﻿#include "sds.h"
-#include "edc_network_async.h"
+﻿#include "edc_network_async.h"
 #include "log.h"
+#include "sds.h"
 #ifndef _WIN32
 #include <resolv.h>
 #endif
@@ -8,7 +8,7 @@
 typedef struct
 {
     network_async_task_fn fn;
-    void* data;
+    void *data;
 } edc_network_async_task_t;
 
 struct edc_network_async_request
@@ -36,7 +36,7 @@ struct edc_network_async_request
 
 static void edc_network_async_request_free(struct edc_network_async_request *req);
 
-static void edc_network_async_enqueue(edc_network_async_t *async, network_async_task_fn fn, void* data)
+static void edc_network_async_enqueue(edc_network_async_t *async, network_async_task_fn fn, void *data)
 {
     edc_network_async_task_t *task = calloc(1, sizeof(edc_network_async_task_t));
     task->fn = fn;
@@ -66,7 +66,7 @@ static void edc_network_async_pending_remove(edc_network_async_t *async, struct 
     }
 }
 
-static void network_async_thread(void* user_data)
+static void network_async_thread(void *user_data)
 {
     edc_network_async_t *async = (edc_network_async_t *)user_data;
     while (async->running)
@@ -202,10 +202,9 @@ void edc_network_async_free(edc_network_async_t *async)
     free(async);
 }
 
-
 static struct edc_network_async_request *edc_http_async_request_new(edc_network_async_t *async, const char *url,
-                                                                  const char *proxy, mg_event_handler_t fn,
-                                                                  void *fn_data, int timeout)
+                                                                    const char *proxy, mg_event_handler_t fn,
+                                                                    void *fn_data, int timeout)
 {
     struct edc_network_async_request *req = calloc(1, sizeof(struct edc_network_async_request));
     req->type = HTTP;
@@ -223,7 +222,7 @@ static struct edc_network_async_request *edc_http_async_request_new(edc_network_
 }
 
 static struct edc_network_async_request *edc_wss_async_request_new(edc_network_async_t *async, const char *url,
-                                                                  mg_event_handler_t fn, void *fn_data, int timeout)
+                                                                   mg_event_handler_t fn, void *fn_data, int timeout)
 {
     struct edc_network_async_request *req = calloc(1, sizeof(struct edc_network_async_request));
     req->type = WSS;
@@ -270,8 +269,8 @@ static void edc_network_async_fn_forward(struct mg_connection *c, int ev, void *
     }
 }
 
-static void mg_http_connect_wrapper(void* data);
-static void mg_wss_connect_wrapper(void* data);
+static void mg_http_connect_wrapper(void *data);
+static void mg_wss_connect_wrapper(void *data);
 void edc_network_async_reset_dns(struct mg_mgr *mgr)
 {
     if (mgr->dns4.c != NULL)
@@ -427,7 +426,7 @@ static void edc_network_async_conn_fn(struct mg_connection *c, int ev, void *ev_
     }
 }
 
-static void mg_http_connect_wrapper(void* data)
+static void mg_http_connect_wrapper(void *data)
 {
     struct edc_network_async_request *req = (struct edc_network_async_request *)data;
     const char *direct = req->proxy ? req->proxy : req->url;
@@ -448,7 +447,7 @@ static void mg_http_connect_wrapper(void* data)
     }
 }
 
-static void mg_wss_connect_wrapper(void* data)
+static void mg_wss_connect_wrapper(void *data)
 {
     struct edc_network_async_request *req = (struct edc_network_async_request *)data;
     struct mg_connection *c = mg_ws_connect(&req->network->mgr, req->url, edc_network_async_conn_fn, req, NULL);
@@ -462,14 +461,14 @@ static void mg_wss_connect_wrapper(void* data)
 }
 
 void edc_http_async_connect(edc_network_async_t *async, const char *url, const char *proxy, mg_event_handler_t fn,
-                           void *fn_data, int timeout)
+                            void *fn_data, int timeout)
 {
     struct edc_network_async_request *req = edc_http_async_request_new(async, url, proxy, fn, fn_data, timeout);
     edc_network_async_enqueue(async, mg_http_connect_wrapper, req);
 }
 
 void edc_wss_async_connect(edc_network_async_t *async, const char *url, mg_event_handler_t fn, void *fn_data,
-                          int timeout)
+                           int timeout)
 {
     struct edc_network_async_request *req = edc_wss_async_request_new(async, url, fn, fn_data, timeout);
     edc_network_async_enqueue(async, mg_wss_connect_wrapper, req);

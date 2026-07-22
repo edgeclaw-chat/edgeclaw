@@ -1,12 +1,12 @@
-﻿#include "sds.h"
+﻿#include "edc_skills.h"
 #include "edc_error.h"
-#include "edc_skills.h"
+#include "sds.h"
 
 #include "edc_compat.h"
 #include "edc_file_utils.h"
 #include "log.h"
-#include "uthash.h"
 #include "utarray.h"
+#include "uthash.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -33,7 +33,8 @@ void edc_skill_free(struct edc_skill *skill)
 
     {
         struct edc_skill_meta_entry *e, *tmp;
-        HASH_ITER(hh, skill->meta, e, tmp) {
+        HASH_ITER(hh, skill->meta, e, tmp)
+        {
             HASH_DEL(skill->meta, e);
             sdsfree(e->key);
             sdsfree(e->value);
@@ -81,8 +82,10 @@ static bool edc_extract_skill_meta_and_content(const char *content, struct edc_s
             sds *kv = sdssplitlen(lines[i], sdslen(lines[i]), ":", 1, &kv_count);
             if (kv && kv_count >= 2 && kv[0] && kv[1])
             {
-                sds k = sdsdup(kv[0]); k = sdstrim(k, " \t\r\n");
-                sds v = sdsdup(kv[1]); v = sdstrim(v, " \t\r\n");
+                sds k = sdsdup(kv[0]);
+                k = sdstrim(k, " \t\r\n");
+                sds v = sdsdup(kv[1]);
+                v = sdstrim(v, " \t\r\n");
                 struct edc_skill_meta_entry *e = malloc(sizeof(*e));
                 e->key = k;
                 e->value = v;
@@ -96,11 +99,11 @@ static bool edc_extract_skill_meta_and_content(const char *content, struct edc_s
 
     const char *body_start = meta_end;
     if (body_start[0] == '\n')
-        body_start++;  /* skip the leading \n of the delimiter */
+        body_start++; /* skip the leading \n of the delimiter */
     if (strncmp(body_start, "---\n", 4) == 0)
-        body_start += 4;  /* skip "---\n" */
+        body_start += 4; /* skip "---\n" */
     else if (strncmp(body_start, "---", 3) == 0)
-        body_start += 3;  /* skip "---" at end of file */
+        body_start += 3; /* skip "---" at end of file */
 
     sds tmp = sdsnew(body_start);
     skill->content = sdstrim(tmp, " \t\r\n");
@@ -160,7 +163,7 @@ UT_array *edc_skills_load(const char *dir_path)
     UT_array *skills;
     utarray_new(skills, &ut_skill_ptr_icd);
 
-    struct edc_skills_foreach_ctx ctx = { .skills = skills, .dir_path = sdsnew(dir_path) };
+    struct edc_skills_foreach_ctx ctx = {.skills = skills, .dir_path = sdsnew(dir_path)};
     edc_dir_foreach(dir_path, edc_skills_foreach_cb, &ctx, NULL);
     sdsfree(ctx.dir_path);
 

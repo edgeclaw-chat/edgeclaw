@@ -1,14 +1,14 @@
-#include "sds.h"
 #include "edc_session_manager.h"
+#include "edc_compat.h"
+#include "edc_config.h"
+#include "edc_datetime_utils.h"
+#include "edc_file_utils.h"
 #include "edc_session.h"
 #include "edc_state_serializer.h"
-#include "edc_config.h"
-#include "edc_compat.h"
-#include "edc_file_utils.h"
-#include "edc_datetime_utils.h"
 #include "log.h"
-#include <string.h>
+#include "sds.h"
 #include <errno.h>
+#include <string.h>
 
 /* ── Helpers ───────────────────────────────────────────────── */
 
@@ -19,12 +19,15 @@ static sds edc_sm_gen_session_id(struct edc_session_manager *sm)
     {
         const char *sid = sm->sessions[i]->session_id;
         const char *num = NULL;
-        if (strncmp(sid, "sess-", 5) == 0) num = sid + 5;
-        else if (sid[0] == 's') num = sid + 1;
+        if (strncmp(sid, "sess-", 5) == 0)
+            num = sid + 5;
+        else if (sid[0] == 's')
+            num = sid + 1;
         if (num && num[0] >= '0' && num[0] <= '9')
         {
             int n = atoi(num);
-            if (n > max_id) max_id = n;
+            if (n > max_id)
+                max_id = n;
         }
     }
     return sdscatprintf(sdsempty(), "s%d", max_id + 1);
@@ -40,7 +43,8 @@ static sds edc_sm_gen_session_name(struct edc_session_manager *sm)
         if (name && strncmp(name, "Session ", 8) == 0)
         {
             int n = atoi(name + 8);
-            if (n > max_n) max_n = n;
+            if (n > max_n)
+                max_n = n;
         }
     }
     return sdscatprintf(sdsempty(), "Session %d", max_n + 1);
@@ -61,15 +65,13 @@ static cJSON *edc_sm_build_index(struct edc_session_manager *sm)
         cJSON_AddStringToObject(obj, "name", s->name ? s->name : s->session_id);
         cJSON_AddStringToObject(obj, "created_at", s->created_at ? s->created_at : "");
         cJSON_AddStringToObject(obj, "last_active", edc_datetime_timestamp());
-        cJSON_AddNumberToObject(obj, "message_count",
-                                (int)edc_session_get_message_count(s));
+        cJSON_AddNumberToObject(obj, "message_count", (int)edc_session_get_message_count(s));
         cJSON_AddItemToArray(arr, obj);
     }
 
     cJSON_AddItemToObject(root, "sessions", arr);
     if (sm->active_index >= 0 && sm->active_index < sm->session_count)
-        cJSON_AddStringToObject(root, "active_session_id",
-                                sm->sessions[sm->active_index]->session_id);
+        cJSON_AddStringToObject(root, "active_session_id", sm->sessions[sm->active_index]->session_id);
 
     return root;
 }
@@ -88,7 +90,8 @@ static void edc_sm_save_index(struct edc_session_manager *sm)
     if (!edc_file_write(sm->index_path, json_str, (ssize_t)strlen(json_str), &err))
     {
         log_error("failed to save sessions.json: %s", err ? err->message : "unknown");
-        if (err) edc_error_free(err);
+        if (err)
+            edc_error_free(err);
     }
 
     cJSON_free(json_str);
@@ -152,7 +155,8 @@ bool edc_session_manager_load(struct edc_session_manager *sm)
         }
         /* No existing sessions — create default */
         struct edc_session *def = edc_session_manager_create(sm, "default");
-        if (!def) return false;
+        if (!def)
+            return false;
         edc_sm_save_index(sm);
         return true;
     }
@@ -163,7 +167,8 @@ bool edc_session_manager_load(struct edc_session_manager *sm)
         sdsfree(content);
         /* fallback: create default */
         struct edc_session *def = edc_session_manager_create(sm, "default");
-        if (!def) return false;
+        if (!def)
+            return false;
         return true;
     }
 
@@ -173,7 +178,8 @@ bool edc_session_manager_load(struct edc_session_manager *sm)
         cJSON_Delete(root);
         sdsfree(content);
         struct edc_session *def = edc_session_manager_create(sm, "default");
-        if (!def) return false;
+        if (!def)
+            return false;
         return true;
     }
 
@@ -183,7 +189,8 @@ bool edc_session_manager_load(struct edc_session_manager *sm)
         cJSON_Delete(root);
         sdsfree(content);
         struct edc_session *def = edc_session_manager_create(sm, "default");
-        if (!def) return false;
+        if (!def)
+            return false;
         return true;
     }
 
@@ -191,13 +198,14 @@ bool edc_session_manager_load(struct edc_session_manager *sm)
     sm->session_count = count;
 
     cJSON *active_id_json = cJSON_GetObjectItem(root, "active_session_id");
-    const char *active_id = active_id_json && cJSON_IsString(active_id_json)
-                                ? cJSON_GetStringValue(active_id_json) : NULL;
+    const char *active_id =
+        active_id_json && cJSON_IsString(active_id_json) ? cJSON_GetStringValue(active_id_json) : NULL;
 
     for (int i = 0; i < count; i++)
     {
         cJSON *obj = cJSON_GetArrayItem(arr, i);
-        if (!obj) continue;
+        if (!obj)
+            continue;
 
         cJSON *id_j = cJSON_GetObjectItem(obj, "id");
         cJSON *name_j = cJSON_GetObjectItem(obj, "name");
@@ -206,10 +214,12 @@ bool edc_session_manager_load(struct edc_session_manager *sm)
         const char *id = id_j && cJSON_IsString(id_j) ? cJSON_GetStringValue(id_j) : NULL;
         const char *name = name_j && cJSON_IsString(name_j) ? cJSON_GetStringValue(name_j) : NULL;
 
-        if (!id) continue;
+        if (!id)
+            continue;
 
         struct edc_session *s = edc_session_new(sm->config, id, name ? name : id);
-        if (!s) continue;
+        if (!s)
+            continue;
 
         /* restore timestamps */
         if (created_j && cJSON_IsString(created_j) && strlen(cJSON_GetStringValue(created_j)) > 0)
@@ -245,7 +255,12 @@ bool edc_session_manager_load(struct edc_session_manager *sm)
     if (sm->session_count == 0)
     {
         struct edc_session *def = edc_session_manager_create(sm, "default");
-        if (!def) { cJSON_Delete(root); sdsfree(content); return false; }
+        if (!def)
+        {
+            cJSON_Delete(root);
+            sdsfree(content);
+            return false;
+        }
     }
 
     cJSON_Delete(root);
@@ -282,7 +297,8 @@ struct edc_session_manager *edc_session_manager_new(struct edc_config *config)
 
 void edc_session_manager_free(struct edc_session_manager *sm)
 {
-    if (!sm) return;
+    if (!sm)
+        return;
 
     /* Save before freeing */
     edc_session_manager_save_all(sm);
@@ -305,49 +321,52 @@ struct edc_session *edc_session_manager_get_active(struct edc_session_manager *s
     return sm->sessions[sm->active_index];
 }
 
-struct edc_session *edc_session_manager_find(struct edc_session_manager *sm,
-                                              const char *name_or_id)
+struct edc_session *edc_session_manager_find(struct edc_session_manager *sm, const char *name_or_id)
 {
-    if (!sm || !name_or_id) return NULL;
+    if (!sm || !name_or_id)
+        return NULL;
     for (int i = 0; i < sm->session_count; i++)
     {
         struct edc_session *s = sm->sessions[i];
-        if (strcmp(s->session_id, name_or_id) == 0) return s;
-        if (s->name && strcmp(s->name, name_or_id) == 0) return s;
+        if (strcmp(s->session_id, name_or_id) == 0)
+            return s;
+        if (s->name && strcmp(s->name, name_or_id) == 0)
+            return s;
     }
     return NULL;
 }
 
-int edc_session_manager_index_of(struct edc_session_manager *sm,
-                                  const char *name_or_id)
+int edc_session_manager_index_of(struct edc_session_manager *sm, const char *name_or_id)
 {
-    if (!sm || !name_or_id) return -1;
+    if (!sm || !name_or_id)
+        return -1;
     for (int i = 0; i < sm->session_count; i++)
     {
         struct edc_session *s = sm->sessions[i];
-        if (strcmp(s->session_id, name_or_id) == 0) return i;
-        if (s->name && strcmp(s->name, name_or_id) == 0) return i;
+        if (strcmp(s->session_id, name_or_id) == 0)
+            return i;
+        if (s->name && strcmp(s->name, name_or_id) == 0)
+            return i;
     }
     return -1;
 }
 
 /* ── Operations ────────────────────────────────────────────── */
 
-struct edc_session *edc_session_manager_create(struct edc_session_manager *sm,
-                                                const char *name)
+struct edc_session *edc_session_manager_create(struct edc_session_manager *sm, const char *name)
 {
-    if (!sm) return NULL;
+    if (!sm)
+        return NULL;
 
     sds id = edc_sm_gen_session_id(sm);
-    sds sname = (name && strlen(name) > 0)
-                    ? sdsnew(name)
-                    : edc_sm_gen_session_name(sm);
+    sds sname = (name && strlen(name) > 0) ? sdsnew(name) : edc_sm_gen_session_name(sm);
 
     struct edc_session *s = edc_session_new(sm->config, id, sname);
     sdsfree(id);
     sdsfree(sname);
 
-    if (!s) return NULL;
+    if (!s)
+        return NULL;
 
     /* Add to array */
     int new_count = sm->session_count + 1;
@@ -368,10 +387,10 @@ struct edc_session *edc_session_manager_create(struct edc_session_manager *sm,
     return s;
 }
 
-bool edc_session_manager_switch(struct edc_session_manager *sm,
-                                 const char *name_or_id)
+bool edc_session_manager_switch(struct edc_session_manager *sm, const char *name_or_id)
 {
-    if (!sm || !name_or_id) return false;
+    if (!sm || !name_or_id)
+        return false;
 
     int idx = edc_session_manager_index_of(sm, name_or_id);
     if (idx < 0)
@@ -408,10 +427,10 @@ bool edc_session_manager_switch(struct edc_session_manager *sm,
     return true;
 }
 
-bool edc_session_manager_stop(struct edc_session_manager *sm,
-                               const char *name_or_id)
+bool edc_session_manager_stop(struct edc_session_manager *sm, const char *name_or_id)
 {
-    if (!sm || !name_or_id) return false;
+    if (!sm || !name_or_id)
+        return false;
     if (sm->session_count <= 1)
     {
         log_error("cannot stop the last session");
@@ -467,11 +486,10 @@ bool edc_session_manager_stop(struct edc_session_manager *sm,
     return true;
 }
 
-bool edc_session_manager_rename(struct edc_session_manager *sm,
-                                 const char *name_or_id,
-                                 const char *new_name)
+bool edc_session_manager_rename(struct edc_session_manager *sm, const char *name_or_id, const char *new_name)
 {
-    if (!sm || !name_or_id || !new_name || strlen(new_name) == 0) return false;
+    if (!sm || !name_or_id || !new_name || strlen(new_name) == 0)
+        return false;
 
     struct edc_session *s = edc_session_manager_find(sm, name_or_id);
     if (!s)
@@ -490,7 +508,8 @@ bool edc_session_manager_rename(struct edc_session_manager *sm,
 
 sds edc_session_manager_list(struct edc_session_manager *sm)
 {
-    if (!sm) return sdsnew("no sessions");
+    if (!sm)
+        return sdsnew("no sessions");
 
     sds result = sdscatprintf(sdsempty(), "## Sessions (%d)\n\n", sm->session_count);
 
@@ -500,11 +519,8 @@ sds edc_session_manager_list(struct edc_session_manager *sm)
         const char *marker = (i == sm->active_index) ? " *" : "  ";
         size_t msg_count = edc_session_get_message_count(s);
 
-        result = sdscatprintf(result, "%s [%s] %s\n",
-                              marker, s->session_id,
-                              s->name ? s->name : "(unnamed)");
-        result = sdscatprintf(result, "     messages: %zu, created: %s\n",
-                              msg_count,
+        result = sdscatprintf(result, "%s [%s] %s\n", marker, s->session_id, s->name ? s->name : "(unnamed)");
+        result = sdscatprintf(result, "     messages: %zu, created: %s\n", msg_count,
                               s->created_at ? s->created_at : "unknown");
 
         if (i < sm->session_count - 1)
@@ -518,7 +534,8 @@ sds edc_session_manager_list(struct edc_session_manager *sm)
 
 void edc_session_manager_save_all(struct edc_session_manager *sm)
 {
-    if (!sm) return;
+    if (!sm)
+        return;
 
     /* Save active session's history */
     struct edc_session *active = edc_session_manager_get_active(sm);

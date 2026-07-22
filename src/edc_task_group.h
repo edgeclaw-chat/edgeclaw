@@ -7,18 +7,19 @@
 
 /* ── Task Group (Process Group, PGID) ──────────────────────────── */
 
-struct edc_task_group {
-    char *group_id;                 /* PGID (= leader 的 task_id) */
-    struct edc_task *leader;        /* group leader task */
-    struct edc_task *members;       /* 链表头: group 内所有 task (含 leader) */
+struct edc_task_group
+{
+    char *group_id;           /* PGID (= leader 的 task_id) */
+    struct edc_task *leader;  /* group leader task */
+    struct edc_task *members; /* 链表头: group 内所有 task (含 leader) */
     int member_count;
 
-    struct edc_channel *channel;    /* 绑定的输出通道 */
-    bool is_orphaned;               /* leader 退出后置 true */
+    struct edc_channel *channel; /* 绑定的输出通道 */
+    bool is_orphaned;            /* leader 退出后置 true */
 
-    cJSON *history;                 /* 组内消息历史 (上下文共享) */
+    cJSON *history; /* 组内消息历史 (上下文共享) */
 
-    struct edc_task_group *prev, *next;  /* session 内 groups 链表 */
+    struct edc_task_group *prev, *next; /* session 内 groups 链表 */
 };
 
 /* ── API ────────────────────────────────────────────────────── */
