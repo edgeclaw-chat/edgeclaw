@@ -178,7 +178,12 @@ static bool edc_commands_handle_session_new(struct edc_agent *agent, edc_actor_t
         edc_commands_reply(agent, actor, channel, "[session] failed to create session");
         return true;
     }
+    {
+        struct edc_session *old = edc_session_manager_get_active(agent->session_manager);
+        if (old && old != sess) edc_session_save_state(old, agent->scheduler);
+    }
     agent->scheduler->session = sess;
+    agent->scheduler->foreground_group = NULL;
     edc_session_reload(sess, true);
     sds reply = sdscatprintf(sdsempty(), "[session] created and switched to [%s] %s",
                              sess->session_id, edc_session_get_name(sess));
@@ -195,7 +200,10 @@ static bool edc_commands_handle_session_switch(struct edc_agent *agent, edc_acto
         return true;
     }
     struct edc_session *old = edc_session_manager_get_active(agent->session_manager);
-    if (old) edc_session_save_history(old);
+    if (old) {
+        edc_session_save_history(old);
+        edc_session_save_state(old, agent->scheduler);
+    }
     if (!edc_session_manager_switch(agent->session_manager, arg)) {
         sds reply = sdscatprintf(sdsempty(), "[session] session not found: %s", arg);
         edc_commands_reply(agent, actor, channel, reply);
@@ -204,6 +212,8 @@ static bool edc_commands_handle_session_switch(struct edc_agent *agent, edc_acto
     }
     struct edc_session *new_sess = edc_session_manager_get_active(agent->session_manager);
     agent->scheduler->session = new_sess;
+    agent->scheduler->foreground_group = NULL;
+    edc_session_load_state(new_sess, agent->scheduler);
     edc_session_reload(new_sess, true);
     edc_agent_remove_all_turns(agent);
     sds reply = sdscatprintf(sdsempty(), "[session] switched to [%s] %s",

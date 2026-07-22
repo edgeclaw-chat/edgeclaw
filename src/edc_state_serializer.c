@@ -785,6 +785,9 @@ bool edc_state_deserialize(cJSON *json,
         return false;
     }
 
+    session->groups = NULL;
+    session->active_task = NULL;
+
     cJSON *messages_array = session->messages;
     if (!messages_array) {
         log_error("deserialize: session->messages is NULL");
@@ -797,9 +800,6 @@ bool edc_state_deserialize(cJSON *json,
     struct task_map_entry *id_map[TASK_MAP_BUCKETS] = {0};
     deser_create_tasks(json, id_map);
     deser_fork_chains(json, id_map);
-
-    /* drop old groups before rebuilding (session switch may reload) */
-    session->groups = NULL;
 
     struct group_map_entry *group_map[GROUP_MAP_BUCKETS] = {0};
     deser_create_groups(json, session, id_map, group_map);
