@@ -345,7 +345,7 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
     }
 
     agent->channel_actor = edc_channel_actor_new(&agent->config->channel, agent->config->workspace);
-    agent->llm_actor = edc_llm_actor_new(&agent->config->llm_api_conf);
+    agent->llm_actor = edc_llm_actor_new(agent->config);
     agent->memory_actor = edc_memory_actor_new(agent->config->workspace,
                                                 agent->config->memory_compress_threshold,
                                                 agent->llm_actor);

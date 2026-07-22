@@ -2,6 +2,7 @@
 #include "edc_actor.h"
 #include "edc_compat.h"
 #include "edc_error.h"
+#include "edc_file_utils.h"
 #include "edc_https_client.h"
 #include "log.h"
 #include "sds.h"
@@ -473,11 +474,13 @@ void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp)
     free(resp);
 }
 
-edc_actor_t *edc_llm_actor_new(struct llm_api_conf *api_conf)
+edc_actor_t *edc_llm_actor_new(struct edc_config *config)
 {
     edc_llm_actor_state_t *state = g_new0(edc_llm_actor_state_t, 1);
-    state->api_conf = *api_conf;
-    state->client = edc_https_client_new(NULL);
+    state->api_conf = config->llm_api_conf;
+    sds cacert = edc_path_join(config->workspace, "ssl", "cacert.pem", NULL);
+    state->client = edc_https_client_new(cacert);
+    sdsfree(cacert);
 
     edc_actor_t *actor = edc_actor_new("edc_llm_actor", edc_llm_actor_handler, state);
     return actor;

@@ -70,7 +70,7 @@ struct edc_llm_actor_resp
     EdcError *error;
 };
 
-extern edc_actor_t *edc_llm_actor_new(struct llm_api_conf *api_conf);
+extern edc_actor_t *edc_llm_actor_new(struct edc_config *config);
 extern void edc_llm_actor_free(edc_actor_t *actor);
 extern struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools, EdcQueue *turn);
 extern void edc_llm_actor_req_free(struct edc_llm_actor_req *req);
