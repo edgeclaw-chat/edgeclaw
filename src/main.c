@@ -166,6 +166,9 @@ int main(int argc, char *argv[])
         return -1;
     }
 
+    /* 注册命令处理器 (shell → agent 耦合解耦) */
+    edc_agent_set_command_handler(edc_commands_handler);
+
     // agent->network->mgr.dns4.url = "udp://114.114.114.114:53";
 
     /* PPPoS device link (optional, configured via config.json "device_pty") */

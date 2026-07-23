@@ -496,11 +496,12 @@ void edc_shell_strip_redirects(sds *segment, sds *out_stdout, bool *out_append, 
     *segment = clean;
 }
 
-static sds shell_expand_vars(struct edc_agent *agent, const char *input, sds *out_error);
+static sds shell_expand_vars(const char *input, edc_shell_var_resolver_fn resolver, void *user_data,
+                                   sds *out_error);
 
-sds edc_shell_expand_vars(struct edc_agent *agent, const char *input, sds *out_error)
+sds edc_shell_expand_vars(const char *input, edc_shell_var_resolver_fn resolver, void *user_data, sds *out_error)
 {
-    return shell_expand_vars(agent, input, out_error);
+    return shell_expand_vars(input, resolver, user_data, out_error);
 }
 
 static struct edc_task *shell_exec_pipeline(struct edc_agent *agent, struct edc_actor *actor,
@@ -742,7 +743,8 @@ sds edc_shell_expand_history(struct edc_agent *agent, const char *input)
     return result;
 }
 
-static sds shell_expand_vars(struct edc_agent *agent, const char *input, sds *out_error);
+static sds shell_expand_vars(const char *input, edc_shell_var_resolver_fn resolver, void *user_data,
+                                   sds *out_error);
 
 sds edc_shell_collect_var_refs(struct edc_agent *agent, const char *input, sds **out_deps, int *out_dep_count,
                                sds *out_error)
@@ -883,7 +885,7 @@ sds edc_shell_collect_var_refs(struct edc_agent *agent, const char *input, sds *
     return result;
 }
 
-static sds shell_expand_vars(struct edc_agent *agent, const char *input, sds *out_error)
+static sds shell_expand_vars(const char *input, edc_shell_var_resolver_fn resolver, void *user_data, sds *out_error)
 {
     sds result = sdsempty();
     bool in_dq = false, in_sq = false;
@@ -946,23 +948,26 @@ static sds shell_expand_vars(struct edc_agent *agent, const char *input, sds *ou
             if (*p == '$')
             {
                 p++;
-                struct edc_task *active =
-                    edc_session_get_active_task(edc_session_manager_get_active(agent->session_manager));
-                if (active)
-                    result = sdscat(result, active->task_id);
+                sds val = resolver("$", user_data);
+                if (val)
+                {
+                    result = sdscatsds(result, val);
+                    sdsfree(val);
+                }
             }
             else if (strncmp(p, "LAST", 4) == 0 && VAR_DELIM(p[4]))
             {
                 p += 4;
-                struct edc_task *last = shell_find_last_completed(agent);
-                if (!last || !last->output)
+                sds val = resolver("LAST", user_data);
+                if (!val)
                 {
                     if (out_error)
                         *out_error = sdscatprintf(sdsempty(), "$LAST: no completed task with output");
                     sdsfree(result);
                     return NULL;
                 }
-                result = sdscatsds(result, last->output);
+                result = sdscatsds(result, val);
+                sdsfree(val);
             }
             else if (*p >= '0' && *p <= '9')
             {
@@ -975,16 +980,16 @@ static sds shell_expand_vars(struct edc_agent *agent, const char *input, sds *ou
                 {
                     memcpy(buf, ns, nl);
                     buf[nl] = '\0';
-                    struct edc_task *t =
-                        edc_session_find_task(edc_session_manager_get_active(agent->session_manager), buf);
-                    if (!t || !t->output)
+                    sds val = resolver(buf, user_data);
+                    if (!val)
                     {
                         if (out_error)
                             *out_error = sdscatprintf(sdsempty(), "$%s: no output", buf);
                         sdsfree(result);
                         return NULL;
                     }
-                    result = sdscatsds(result, t->output);
+                    result = sdscatsds(result, val);
+                    sdsfree(val);
                 }
             }
             else
@@ -996,9 +1001,8 @@ static sds shell_expand_vars(struct edc_agent *agent, const char *input, sds *ou
                 if (il > 0)
                 {
                     sds id = sdsnewlen(is, il);
-                    struct edc_task *t =
-                        edc_session_find_task(edc_session_manager_get_active(agent->session_manager), id);
-                    if (!t || !t->output)
+                    sds val = resolver(id, user_data);
+                    if (!val)
                     {
                         if (out_error)
                             *out_error = sdscatprintf(sdsempty(), "$%s: no output", id);
@@ -1006,7 +1010,8 @@ static sds shell_expand_vars(struct edc_agent *agent, const char *input, sds *ou
                         sdsfree(result);
                         return NULL;
                     }
-                    result = sdscatsds(result, t->output);
+                    result = sdscatsds(result, val);
+                    sdsfree(val);
                     sdsfree(id);
                 }
             }

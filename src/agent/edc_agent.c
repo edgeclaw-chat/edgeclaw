@@ -22,7 +22,6 @@
 #include "uthash.h"
 #include "utlist_fix.h"
 #include <dirent.h>
-#include <edc_commands.h>
 #include <edc_shell.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -32,11 +31,63 @@
 
 struct edc_agent *g_active_agent = NULL;
 
+/* ── 命令处理钩子 (由外部注册，避免 agent → shell 依赖) ───── */
+
+typedef bool (*edc_agent_command_fn)(struct edc_agent *, struct edc_actor *, struct edc_channel_message *);
+static edc_agent_command_fn g_command_handler = NULL;
+
+void edc_agent_set_command_handler(edc_agent_command_fn fn)
+{
+    g_command_handler = fn;
+}
+
 /* ── 辅助: 获取 agent ──────────────────────────────────────── */
 
 static struct edc_agent *edc_scheduler_agent(struct edc_scheduler *sched)
 {
     return sched ? sched->ctx : NULL;
+}
+
+/* ── Shell 变量解析回调 ──────────────────────────────────── */
+
+static sds edc_agent_var_resolver(const char *name, void *user_data)
+{
+    struct edc_agent *agent = user_data;
+    if (!agent) return NULL;
+
+    /* $$ → 当前活跃 task ID */
+    if (strcmp(name, "$") == 0)
+    {
+        struct edc_task *active =
+            edc_session_get_active_task(edc_session_manager_get_active(agent->session_manager));
+        return active ? sdsnew(active->task_id) : NULL;
+    }
+
+    /* $LAST → 最后一个完成 task 的 output */
+    if (strcmp(name, "LAST") == 0)
+    {
+        struct edc_task *last = NULL;
+        uint32_t highest_seq = 0;
+        struct edc_task_group *g;
+        DL_FOREACH(agent->scheduler->session->groups, g)
+        {
+            struct edc_task *t;
+            LL_FOREACH2(g->members, t, group_next)
+            {
+                if (t->state == TASK_COMPLETED && t->completion_seq > highest_seq)
+                {
+                    highest_seq = t->completion_seq;
+                    last = t;
+                }
+            }
+        }
+        return (last && last->output) ? sdsdup(last->output) : NULL;
+    }
+
+    /* $NUMBER 或 $NAME → 按 task ID / job number 查找 */
+    struct edc_task *t =
+        edc_session_find_task(edc_session_manager_get_active(agent->session_manager), name);
+    return (t && t->output) ? sdsdup(t->output) : NULL;
 }
 
 /* ── 回调: 发送 LLM 请求 ──────────────────────────────────── */
@@ -146,7 +197,7 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
                 cJSON *content = cJSON_GetObjectItem(msg, "content");
                 if (content && cJSON_IsString(content))
                 {
-                    sds expanded = edc_shell_expand_vars(agent, content->valuestring, NULL);
+                    sds expanded = edc_shell_expand_vars(content->valuestring, edc_agent_var_resolver, agent, NULL);
                     if (expanded)
                     {
                         cJSON_ReplaceItemInObject(msg, "content", cJSON_CreateString(expanded));
@@ -255,7 +306,7 @@ static bool edc_agent_cb_handle_command(struct edc_scheduler *sched, struct edc_
     struct edc_agent *agent = edc_scheduler_agent(sched);
     if (!agent || !msg)
         return false;
-    return edc_commands_handler(agent, actor, msg);
+    return g_command_handler ? g_command_handler(agent, actor, msg) : false;
 }
 
 /* ── 回调: Memory Compress ──────────────────────────────────── */

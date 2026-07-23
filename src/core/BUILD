@@ -112,6 +112,7 @@ cc_library(
         "edc_markdown_render.h",
         "edc_param_types.h",
         "edc_string.h",
+        "edc_task_types.h",
     ],
     includes = ["."],
     deps = [

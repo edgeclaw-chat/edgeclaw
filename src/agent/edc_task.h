@@ -2,6 +2,7 @@
 #define __BC_TASK_H__
 
 #include "edc_containers.h"
+#include "edc_task_types.h"
 #include "edc_turn.h"
 #include "sds.h"
 #include <cJSON.h>
@@ -37,14 +38,8 @@ typedef enum
     TASK_SIGKILL, /* 强制取消：不通知依赖者，deps_total 不减 */
 } edc_task_signal;
 
-/* ── Task 间依赖 ───────────────────────────────────────────── */
-
-typedef enum
-{
-    TASK_DEP_JOIN,     /* 等待源 task 完成，将源 output 注入自己上下文 */
-    TASK_DEP_PIPE,     /* 流式传输（后续扩展） */
-    TASK_DEP_SEQUENCE, /* 等待源 task 完成，不注入 output（; 语义） */
-} edc_task_dep_type;
+/* ── Task 间依赖 ─────────────────────────────────────────────
+ * edc_task_dep_type 定义在 core/edc_task_types.h 中 */
 
 struct edc_task_dep
 {

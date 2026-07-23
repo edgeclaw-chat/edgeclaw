@@ -3,7 +3,6 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 cc_library(
     name = "agent",
     srcs = [
-        # ── Agent core ────────────────────────────────────────────────────
         "edc_actor.c",
         "edc_agent.c",
         "edc_bpf_sandbox.c",
@@ -33,17 +32,8 @@ cc_library(
         "edc_tools_shell.c",
         "edc_tools_todo.c",
         "edc_turn.c",
-        # ── Shell sub-module ──────────────────────────────────────────────
-        "shell/edc_cmd_parse.c",
-        "shell/edc_commands.c",
-        "shell/edc_completion.c",
-        "shell/edc_shell.c",
-        "shell/edc_shell_ast.c",
-        "shell/edc_shell_parse.c",
-        "shell/edc_shell_token.c",
     ],
     hdrs = [
-        # ── Agent core ────────────────────────────────────────────────────
         "edc_actor.h",
         "edc_agent.h",
         "edc_bpf_sandbox.h",
@@ -73,21 +63,13 @@ cc_library(
         "edc_tools_shell.h",
         "edc_tools_todo.h",
         "edc_turn.h",
-        # ── Shell sub-module ──────────────────────────────────────────────
-        "shell/edc_cmd_parse.h",
-        "shell/edc_commands.h",
-        "shell/edc_completion.h",
-        "shell/edc_shell.h",
-        "shell/edc_shell_ast.h",
-        "shell/edc_shell_token.h",
     ],
-    includes = [
-        ".",
-        "shell",
-    ],
+    includes = ["."],
     deps = [
         "//src/core:core",
         "//src/device:device",
+        "//src/shell:completion",
+        "//src/shell:shell_api",
         "//src:utlist_fix",
         "@uthash//:uthash",
         "@libyuarel//:libyuarel",

@@ -40,4 +40,8 @@ extern struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox);
 extern void edc_agent_remove_all_turns(struct edc_agent *agent);
 extern void edc_agent_free(struct edc_agent *agent);
 
+/* 注册命令处理器 (由 shell 模块在初始化时调用) */
+typedef bool (*edc_agent_command_fn)(struct edc_agent *, struct edc_actor *, struct edc_channel_message *);
+extern void edc_agent_set_command_handler(edc_agent_command_fn fn);
+
 #endif
