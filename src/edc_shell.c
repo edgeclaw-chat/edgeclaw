@@ -497,8 +497,6 @@ void edc_shell_strip_redirects(sds *segment, sds *out_stdout, bool *out_append, 
 }
 
 static sds shell_expand_vars(struct edc_agent *agent, const char *input, sds *out_error);
-static sds shell_collect_var_refs(struct edc_agent *agent, const char *input, sds **out_deps, int *out_dep_count,
-                                  sds *out_error);
 
 sds edc_shell_expand_vars(struct edc_agent *agent, const char *input, sds *out_error)
 {
@@ -533,7 +531,7 @@ static struct edc_task *shell_exec_pipeline(struct edc_agent *agent, struct edc_
         sds *var_deps = NULL;
         int var_dep_count = 0;
         sds var_err = NULL;
-        sds processed = shell_collect_var_refs(agent, segments[i], &var_deps, &var_dep_count, &var_err);
+        sds processed = edc_shell_collect_var_refs(agent, segments[i], &var_deps, &var_dep_count, &var_err);
         if (!processed)
         {
             edc_commands_reply(agent, actor, channel, var_err);
@@ -746,8 +744,8 @@ sds edc_shell_expand_history(struct edc_agent *agent, const char *input)
 
 static sds shell_expand_vars(struct edc_agent *agent, const char *input, sds *out_error);
 
-static sds shell_collect_var_refs(struct edc_agent *agent, const char *input, sds **out_deps, int *out_dep_count,
-                                  sds *out_error)
+sds edc_shell_collect_var_refs(struct edc_agent *agent, const char *input, sds **out_deps, int *out_dep_count,
+                               sds *out_error)
 {
     sds result = sdsempty();
     *out_deps = NULL;

@@ -45,6 +45,13 @@ sds edc_shell_read_file(const char *path, sds *err_out);
 /* 历史展开 (!n, !!)，需要 agent->history 中有缓存的历史记录 */
 sds edc_shell_expand_history(struct edc_agent *agent, const char *input);
 
+/* 收集 $VAR 引用（collect 阶段，创建 task 前调用）。
+ * 验证变量引用的 task 是否存在，返回处理后的文本（保留 $VAR 标记），
+ * 并通过 out_deps/out_dep_count 输出依赖 task ID 列表（调用方负责 free 数组和 sdsfree 各元素）。
+ * 失败时返回 NULL 并设置 *out_error。 */
+sds edc_shell_collect_var_refs(struct edc_agent *agent, const char *input, sds **out_deps, int *out_dep_count,
+                               sds *out_error);
+
 /* 展开 $VAR 引用（expand 阶段，deps 已完成后调用）。
  * out_error 非 NULL 时接收错误消息。成功返回 expanded string，失败返回 NULL。 */
 sds edc_shell_expand_vars(struct edc_agent *agent, const char *input, sds *out_error);

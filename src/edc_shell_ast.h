@@ -21,16 +21,21 @@ typedef enum
     AST_REDIR_ERR,    /* 2> file */
     AST_REDIR_IN,     /* < file */
     AST_CMD,          /* leaf: text + options */
+    AST_DEP,          /* dependency on a task (dep_ids[0] = task_id) */
+    AST_VAR_DEF,      /* $VAR reference definition (text = "$1", dep_ids[0] = task_id) */
+    AST_VAR_ASSIGN,   /* wraps a CMD with deferred var expansion (child = CMD, var_refs = DEP/VAR_DEF chain) */
 } ast_type_t;
 
 typedef struct ast_node
 {
     ast_type_t type;
-    struct ast_node *child; /* wrapped node (for BG/REDIR) */
-    struct ast_node *next;  /* sibling in chain (for SEQ/PIPE) */
+    struct ast_node *child;    /* wrapped node (for BG/REDIR/VAR_ASSIGN) */
+    struct ast_node *next;     /* sibling in chain (for SEQ/PIPE/DEP/VAR_DEF) */
+    struct ast_node *var_refs; /* for AST_VAR_ASSIGN: linked list of AST_DEP / AST_VAR_DEF (via next) */
 
     /* AST_CMD fields */
     bool at_group; /* @ prefix */
+    bool bg;       /* --bg flag */
     sds text;
     sds *dep_ids;
     int dep_count;
@@ -38,7 +43,7 @@ typedef struct ast_node
     sds prompt_name;
     bool has_deferred_vars;
 
-    /* AST_REDIR_* filename */
+    /* AST_REDIR_* / AST_VAR_DEF filename (repurposed as task_id for VAR_DEF) */
     sds filename;
 } ast_node_t;
 

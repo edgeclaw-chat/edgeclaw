@@ -1,13 +1,8 @@
 #include "edc_shell_ast.h"
 #include "edc_shell_token.h"
+#include "edc_cmd_parse.h"
 #include <stdlib.h>
 #include <string.h>
-
-static bool is_flag(const char *s)
-{
-    return (strcmp(s, "--bg") == 0 || strcmp(s, "-d") == 0 || strcmp(s, "--group") == 0 || strcmp(s, "-g") == 0 ||
-            strcmp(s, "--prompt") == 0);
-}
 
 static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos);
 
@@ -18,6 +13,9 @@ static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos)
     ast_node_t *cmd = ast_new(AST_CMD);
     sds text = sdsempty();
 
+    /* Collect all TOK_TEXT into one string. The tokenizer doesn't split on
+     * whitespace, so flags like -d / -g / --bg / --prompt end up embedded
+     * in text tokens. We defer all flag parsing to edc_cmd_parse_task_opts below. */
     while (*pos < count)
     {
         edc_shell_token_t *t = &tokens[*pos];
@@ -28,49 +26,61 @@ static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos)
 
         if (t->type == TOK_TEXT && t->value)
         {
-            if (is_flag(t->value))
-            {
-                const char *flag = t->value;
-                (*pos)++; /* consume flag */
-                if (*pos < count && tokens[*pos].type == TOK_TEXT && tokens[*pos].value)
-                {
-                    sds arg = tokens[*pos].value;
-                    if (strcmp(flag, "-d") == 0)
-                    {
-                        cmd->dep_count++;
-                        cmd->dep_ids = realloc(cmd->dep_ids, (size_t)cmd->dep_count * sizeof(sds));
-                        cmd->dep_ids[cmd->dep_count - 1] = sdsnew(arg);
-                    }
-                    else if (strcmp(flag, "-g") == 0 || strcmp(flag, "--group") == 0)
-                    {
-                        if (cmd->group_id)
-                            sdsfree(cmd->group_id);
-                        cmd->group_id = sdsnew(arg);
-                    }
-                    else if (strcmp(flag, "--prompt") == 0)
-                    {
-                        if (cmd->prompt_name)
-                            sdsfree(cmd->prompt_name);
-                        cmd->prompt_name = sdsnew(arg);
-                    }
-                    (*pos)++; /* consume arg */
-                }
-            }
-            else
-            {
-                if (sdslen(text) > 0)
-                    text = sdscat(text, " ");
-                text = sdscatsds(text, t->value);
-                (*pos)++;
-            }
+            if (sdslen(text) > 0)
+                text = sdscat(text, " ");
+            text = sdscatsds(text, t->value);
         }
-        else
+        (*pos)++;
+    }
+
+    /* Extract flags and input from the collected text string */
+    if (sdslen(text) > 0)
+    {
+        struct edc_cmd_task_opts t_opts;
+        edc_cmd_parse_task_opts(text, &t_opts);
+
+        /* Replace text with input portion (flags stripped) */
+        if (t_opts.input)
         {
-            (*pos)++;
+            sdsfree(text);
+            text = t_opts.input;
+            t_opts.input = NULL;
         }
+
+        cmd->bg = t_opts.bg;
+
+        /* Merge dependencies from -d flags */
+        if (t_opts.dep_count > 0)
+        {
+            cmd->dep_ids = t_opts.dep_ids;
+            cmd->dep_count = t_opts.dep_count;
+            t_opts.dep_ids = NULL;  /* transfer ownership */
+            t_opts.dep_count = 0;
+        }
+
+        /* Merge group_id */
+        if (t_opts.group_id)
+        {
+            cmd->group_id = t_opts.group_id;
+            t_opts.group_id = NULL;
+        }
+
+        /* Merge prompt_name */
+        if (t_opts.prompt_name)
+        {
+            cmd->prompt_name = t_opts.prompt_name;
+            t_opts.prompt_name = NULL;
+        }
+
+        edc_cmd_task_opts_free(&t_opts);
     }
 
     cmd->text = text;
+
+    /* detect $VAR references: mark for AST_VAR_ASSIGN wrapping */
+    if (text && strchr(text, '$'))
+        cmd->has_deferred_vars = true;
+
     return cmd;
 }
 
@@ -184,11 +194,31 @@ static ast_node_t *parse_bg_cmd(edc_shell_token_t *tokens, int count, int *pos, 
     ast_node_t *cmd = parse_cmd(tokens, count, pos);
     cmd->at_group = at_group;
 
+    /* save $VAR info before redirect wrapping may modify cmd->text */
+    bool has_vars = cmd->has_deferred_vars;
+    sds saved_text = has_vars ? sdsdup(cmd->text) : NULL;
+
     ast_node_t *inner = parse_redirects(tokens, count, pos, cmd);
+
+    /* wrap with AST_VAR_ASSIGN if this command has $VAR references */
+    if (has_vars)
+    {
+        ast_node_t *va = ast_new(AST_VAR_ASSIGN);
+        va->child = inner;
+        va->text = saved_text; /* original text with $VAR refs for executor */
+        inner = va;
+    }
+
+    bool is_bg = cmd->bg;
 
     if (*pos < count && tokens[*pos].type == TOK_BG)
     {
         (*pos)++;
+        is_bg = true;
+    }
+
+    if (is_bg)
+    {
         ast_node_t *bg = ast_new(AST_BG);
         bg->child = inner;
         return bg;

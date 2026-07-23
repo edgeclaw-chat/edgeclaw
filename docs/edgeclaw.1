@@ -103,20 +103,72 @@ SHELL SYNTAX
        --group <id>      Create in this group (-g is a shortcut).
        --prompt <name>   Use this subagent prompt template.
 
+SHELL ARCHITECTURE
+     Input processing follows a Unix-style pipeline:
+
+       User Input → History Expansion → Tokenizer → Parser → AST → Executor
+
+     Tokenizer
+       A quote-aware tokenizer respecting " and ' quoting.  Token types:
+       TOK_TEXT (regular text), TOK_PIPE (|), TOK_SEQ (;), TOK_BG (&),
+       TOK_REDIR_OUT (>), TOK_REDIR_APPEND (>>), TOK_REDIR_ERR (2>),
+       TOK_REDIR_IN (<).
+
+     Parser & AST
+       Recursive-descent parser building an AST (Abstract Syntax Tree):
+
+         AST_ROOT   — top-level wrapper
+           AST_SEQ  — ; chain (sequential dependency)
+             AST_PIPE — | chain (pipe dependency with injection)
+               AST_BG     — & background modifier
+               AST_REDIR_* — > / >> / 2> / < redirection
+               AST_CMD   — leaf node: text + options
+
+       The executor walks the tree recursively via exec_ctx_t, carrying
+       target_group (preserved across pipe segments), bg flag, and dep_type.
+
+     Variable expansion (two-phase)
+       Phase 1 (collect) — at task creation: validates $VAR references,
+       converts them to implicit dependencies, preserves $ text as-is.
+       Phase 2 (expand)  — when dependencies resolve: replaces $VAR with
+       the referenced task's actual output text, then sends to the LLM.
+       Expansion happens after pipe splitting and redirect stripping,
+       so any | or > in expanded output is treated as literal text.
+
+     Dependency system
+       Tasks form a DAG via dependency edges.  Each task maintains two
+       linked lists: deps (waits for) and dependents (waited by).  DFS
+       cycle detection runs on every new dependency to prevent deadlocks.
+
+       Dependency types:
+         JOIN      (|)       Source output injected into destination's LLM context.
+         SEQUENCE  (;)       Destination waits, no output injection.
+         PIPE      (reserved) Streaming mode — not yet implemented.
+
 TASK MODEL
      Three-layer Unix-like process model:
 
      Task     — A conversation sharing history with sibling tasks.
-                Like a Unix thread (shared address space).
+                Like a Unix thread (shared address space).  Each task
+                has a unique task_id (t1, t2, ...).
 
-     Group    — An isolated container.  Only active task outputs.
-                Cross-group uses | pipe or /task chain.  Like a Unix process.
+     Group    — An isolated container.  Only the active task outputs.
+                Cross-group communication uses | pipe or /task chain.
+                Like a Unix process.  Named by leader task's id.
 
      Session  — Per-session history storage.  Like a Unix login session.
+                Contains multiple groups in a linked list.
+
+     Fork     — /task fork <parent> <desc> creates a child in the parent's
+                group, inheriting a slice of the parent's conversation.
 
 TASK STATES
        IDLE → WAITING_DEPS → WAITING_INPUT → LLM_PROCESSING
-         → TOOL_CALLING → SUSPENDED → COMPLETED / CANCELLED / ERROR
+         ⇄ TOOL_CALLING → SUSPENDED → COMPLETED / CANCELLED / ERROR
+
+     LLM_PROCESSING and TOOL_CALLING alternate as tools are invoked.
+     Tasks reach COMPLETED on final LLM response; CANCELLED when stopped;
+     ERROR on failure.
 
      - COMPLETED tasks persist until reclaimed with /task join.
      - WAITING_DEPS tasks accept input and queue it until deps resolve.
@@ -222,7 +274,7 @@ WORKFLOW EXAMPLES
      @ syntax (new group + task)
            > @code "write a Python HTTP server"
 
-     Pipe chain (output injected)
+     Pipe chain (output injected at each step)
            > scan for vulns | create fix plan | apply patches
 
      Sequential (no output injection)
@@ -230,6 +282,11 @@ WORKFLOW EXAMPLES
 
      Sequential with redirect
            > review src/ ; run tests ; summarize findings > report.md
+
+     Combined pipes + redirects
+           > analyze codebase | find critical bugs | generate report > bugs.md
+           > build project 2> build-errors.log
+           > fix all issues < context.txt
 
      Background + pipeline
            > analyze the error logs &
@@ -239,9 +296,19 @@ WORKFLOW EXAMPLES
              [2] running  2  "audit API endpoints"      [bg]
            > merge both results -d 1 -d 2 > merged.md
 
-     Variable + history
-           > $LAST
-           > !3
+     Variable expansion (two-phase)
+           > find performance bottlenecks in src/
+           ... task 1 completes ...
+           > based on $LAST, create an optimization plan
+           ... task 2 waits for task 1, then sees its output ...
+
+     History expansion
+           > review the latest PR
+           > !!                    # repeats "review the latest PR"
+           > !3                    # repeats command #3 from history
+
+     Fork with subagent
+           > /task fork task-0 "audit the database schema" --prompt dba
 
      Single command (non-interactive)
            $ edgeclaw -c "check src/main.c for bugs"

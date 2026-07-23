@@ -26,6 +26,7 @@ void ast_free(ast_node_t *node)
         return;
     ast_free(node->child);
     ast_free(node->next);
+    ast_free(node->var_refs);
     if (node->text)
         sdsfree(node->text);
     if (node->filename)
@@ -161,7 +162,7 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
     case AST_CMD: {
         struct edc_cmd_task_opts opts;
         memset(&opts, 0, sizeof(opts));
-        opts.bg = ctx->bg;
+        opts.bg = ctx->bg || node->bg;
         ctx->bg = false; /* reset for next sibling */
         if (node->text && sdslen(node->text) > 0)
             opts.input = sdsnew(node->text);
@@ -210,6 +211,113 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
                 edc_session_set_active_task(edc_session_manager_get_active(agent->session_manager), task);
             }
         }
+
+        return task;
+    }
+
+    case AST_DEP: {
+        /* dependency declaration: add dep on dep_ids[0] to prev_task */
+        if (prev_task && node->dep_count > 0 && node->dep_ids[0])
+        {
+            struct edc_task *dt =
+                edc_session_find_task(edc_session_manager_get_active(agent->session_manager), node->dep_ids[0]);
+            if (dt)
+                edc_task_add_dependency(prev_task, dt, TASK_DEP_JOIN);
+        }
+        return prev_task;
+    }
+
+    case AST_VAR_DEF:
+        /* variable definition: informational, processed by AST_VAR_ASSIGN */
+        return prev_task;
+
+    case AST_VAR_ASSIGN: {
+        /* collect $VAR references: validate + get deps, then inject into inner CMD */
+        sds *var_deps = NULL;
+        int var_dep_count = 0;
+        sds var_err = NULL;
+        sds processed_text = NULL;
+
+        if (node->text && sdslen(node->text) > 0 && strchr(node->text, '$'))
+        {
+            processed_text =
+                edc_shell_collect_var_refs(agent, node->text, &var_deps, &var_dep_count, &var_err);
+            if (!processed_text)
+            {
+                edc_commands_reply(agent, actor, channel, var_err);
+                sdsfree(var_err);
+                return prev_task;
+            }
+        }
+
+        /* find the AST_CMD leaf and inject processed text + var deps */
+        ast_node_t *cmd = node->child;
+        while (cmd && cmd->type != AST_CMD)
+            cmd = cmd->child;
+
+        if (cmd && processed_text)
+        {
+            /* replace cmd text with processed (validated) version */
+            if (cmd->text)
+                sdsfree(cmd->text);
+            cmd->text = processed_text;
+            processed_text = NULL; /* ownership transferred */
+
+            /* merge var deps into cmd->dep_ids */
+            if (var_dep_count > 0)
+            {
+                int new_count = cmd->dep_count + var_dep_count;
+                cmd->dep_ids = realloc(cmd->dep_ids, (size_t)new_count * sizeof(sds));
+                for (int i = 0; i < var_dep_count; i++)
+                    cmd->dep_ids[cmd->dep_count + i] = var_deps[i];
+                cmd->dep_count = new_count;
+                free(var_deps);
+                var_deps = NULL;
+                var_dep_count = 0;
+            }
+        }
+
+        /* build var_refs chain: AST_DEP nodes for each dependency */
+        ast_node_t **vr_tail = &node->var_refs;
+        if (cmd)
+        {
+            for (int i = 0; i < cmd->dep_count; i++)
+            {
+                if (!cmd->dep_ids[i])
+                    continue;
+                /* AST_DEP: dependency declaration */
+                ast_node_t *dep = ast_new(AST_DEP);
+                dep->dep_ids = malloc(sizeof(sds));
+                dep->dep_ids[0] = sdsnew(cmd->dep_ids[i]);
+                dep->dep_count = 1;
+                *vr_tail = dep;
+                vr_tail = &dep->next;
+
+                /* AST_VAR_DEF: variable definition (track $VAR → task_id mapping) */
+                ast_node_t *vdef = ast_new(AST_VAR_DEF);
+                vdef->filename = sdsnew(cmd->dep_ids[i]); /* task_id */
+                *vr_tail = vdef;
+                vr_tail = &vdef->next;
+            }
+        }
+
+        /* execute the child CMD (now with injected text + deps) */
+        struct edc_task *task = exec_node(agent, actor, channel, node->child, prev_task, ctx);
+
+        /* mark for deferred expansion in edc_agent_cb_send_llm */
+        if (task && var_dep_count >= 0)
+        {
+            /* check if any $VAR references exist (even $LAST which has no deps) */
+            if (node->text && strstr(node->text, "$"))
+                task->has_deferred_vars = 1;
+        }
+
+        /* cleanup */
+        if (processed_text)
+            sdsfree(processed_text);
+        for (int i = 0; i < var_dep_count; i++)
+            sdsfree(var_deps[i]);
+        free(var_deps);
 
         return task;
     }
