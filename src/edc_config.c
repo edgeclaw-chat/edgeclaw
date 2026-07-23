@@ -31,58 +31,6 @@ sds edc_config_resolve_bc_home(void)
     return result;
 }
 
-static bool edc_config_parse_email_channel(struct edc_config *config, cJSON *channel)
-{
-    cJSON *imap_host = cJSON_GetObjectItem(channel, "imap_host");
-    if (!imap_host || !cJSON_IsString(imap_host))
-    {
-        log_error("channel.imap_host is not string type");
-        return false;
-    }
-
-    config->channel.email.imap_host = sdsnew(cJSON_GetStringValue(imap_host));
-
-    cJSON *smtp_host = cJSON_GetObjectItem(channel, "smtp_host");
-    if (!smtp_host || !cJSON_IsString(smtp_host))
-    {
-        log_error("channel.smtp_host is not string type");
-        return false;
-    }
-    config->channel.email.smtp_host = sdsnew(cJSON_GetStringValue(smtp_host));
-
-    cJSON *user = cJSON_GetObjectItem(channel, "user");
-    if (!user || !cJSON_IsString(user))
-    {
-        log_error("channel.user is not string type");
-        return false;
-    }
-    config->channel.email.user = sdsnew(cJSON_GetStringValue(user));
-
-    cJSON *password = cJSON_GetObjectItem(channel, "passwd");
-    if (!password || !cJSON_IsString(password))
-    {
-        log_error("channel.passwd is not string type");
-        return false;
-    }
-    sds _d = edc_secret_decrypt(cJSON_GetStringValue(password));
-    if (!_d)
-    {
-        log_error("channel.passwd decryption failed");
-        return false;
-    }
-    config->channel.email.passwd = _d;
-
-    cJSON *target = cJSON_GetObjectItem(channel, "target");
-    if (!target || !cJSON_IsString(target))
-    {
-        log_error("channel.target is not string type");
-        return false;
-    }
-    config->channel.email.target = sdsnew(cJSON_GetStringValue(target));
-
-    return true;
-}
-
 struct edc_config *edc_config_load(const char *edc_home)
 {
     EdcError *error = NULL;
@@ -225,17 +173,14 @@ struct edc_config *edc_config_load(const char *edc_home)
     }
 
     const char *type = cJSON_GetStringValue(channel_type);
-    if (strcmp(type, "email") == 0)
-    {
-        config->channel.type = edc_channel_email;
-        if (!edc_config_parse_email_channel(config, channel))
-        {
-            goto exit_free_config;
-        }
-    }
-    else if (strcmp(type, "cli") == 0)
+    if (strcmp(type, "cli") == 0)
     {
         config->channel.type = edc_channel_cli;
+    }
+    else
+    {
+        log_error("unknown channel type: %s, only 'cli' is supported", type);
+        goto exit_free_config;
     }
 
     config->workspace = edc_path_join(edc_home, "workspace", NULL);
@@ -354,11 +299,6 @@ void edc_config_free(struct edc_config *config)
     sdsfree(config->llm_api_conf.api_key);
     sdsfree(config->llm_api_conf.api_url);
     sdsfree(config->edc_home);
-    sdsfree(config->channel.email.imap_host);
-    sdsfree(config->channel.email.smtp_host);
-    sdsfree(config->channel.email.user);
-    sdsfree(config->channel.email.passwd);
-    sdsfree(config->channel.email.target);
     sdsfree(config->device_pty);
     sdsfree(config->device_ip);
     sdsfree(config->device_transport);

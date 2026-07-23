@@ -84,7 +84,7 @@ static err_t recv_http_request(struct netconn *c, u8_t *buf, size_t *len, size_t
             continue;
         if (content_length < 0)
         {
-            char *cl = strcasestr((char *)buf, "Content-Length:");
+            char *cl = strstr((char *)buf, "Content-Length:");
             content_length = cl ? atoi(cl + 15) : 0;
         }
         if (*len >= (size_t)(body + 4 - (char *)buf) + (size_t)content_length)

@@ -13,22 +13,11 @@ struct llm_api_conf
 
 typedef enum
 {
-    edc_channel_email,
     edc_channel_cli,
 } edc_channel_type;
 
 struct channel_conf
 {
-    struct
-    {
-        sds imap_host;
-        sds smtp_host;
-        sds user;
-        sds passwd;
-        sds target;
-
-    } email;
-
     edc_channel_type type;
 };
 

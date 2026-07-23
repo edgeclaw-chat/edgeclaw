@@ -1,5 +1,4 @@
 load('//thirdparty/log.c:repo.bzl', logc_repo = "repo")
-load('//thirdparty/mongoose:repo.bzl', mongoose_repo = "repo")
 load('//thirdparty/ccronexpr:repo.bzl', ccronexpr_repo = "repo")
 load('//thirdparty/md4c:repo.bzl', md4c_repo = "repo")
 load('//thirdparty/lwip:repo.bzl', lwip_repo = "repo")
@@ -15,7 +14,6 @@ load('//toolchain:mingw_toolchain_repo.bzl', 'mingw_toolchain_repo')
 
 def _bc_thirdparty_deps_impl(module_ctx):
     logc_repo()
-    mongoose_repo()
     ccronexpr_repo()
     md4c_repo()
     lwip_repo()

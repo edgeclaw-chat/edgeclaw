@@ -15,8 +15,8 @@
 #include <unistd.h>
 
 /* Channel type options */
-static const char *channel_types[] = {"cli", "telegram", "email", "feishu", "qq"};
-#define CHANNEL_TYPE_COUNT 5
+static const char *channel_types[] = {"cli"};
+#define CHANNEL_TYPE_COUNT 1
 
 static const char *device_transport_types[] = {"socket", "tty"};
 #define DEVICE_TRANSPORT_TYPE_COUNT 2
@@ -344,85 +344,6 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
         item = cJSON_GetObjectItem(channel, "type");
         if (item && cJSON_IsString(item))
             result->channel_type = sdsnew(item->valuestring);
-
-        const char *ctype = result->channel_type;
-
-        if (strcmp(ctype, "email") == 0)
-        {
-            item = cJSON_GetObjectItem(channel, "imap_host");
-            if (item && cJSON_IsString(item))
-                result->email.imap_host = sdsnew(item->valuestring);
-
-            item = cJSON_GetObjectItem(channel, "smtp_host");
-            if (item && cJSON_IsString(item))
-                result->email.smtp_host = sdsnew(item->valuestring);
-
-            item = cJSON_GetObjectItem(channel, "user");
-            if (item && cJSON_IsString(item))
-                result->email.user = sdsnew(item->valuestring);
-
-            item = cJSON_GetObjectItem(channel, "passwd");
-            if (item && cJSON_IsString(item))
-            {
-                sds decrypted = edc_secret_decrypt(item->valuestring);
-                if (decrypted)
-                {
-                    result->email.passwd = decrypted;
-                }
-            }
-
-            item = cJSON_GetObjectItem(channel, "target");
-            if (item && cJSON_IsString(item))
-                result->email.target = sdsnew(item->valuestring);
-        }
-        else if (strcmp(ctype, "telegram") == 0)
-        {
-            item = cJSON_GetObjectItem(channel, "bot_key");
-            if (item && cJSON_IsString(item))
-            {
-                sds decrypted = edc_secret_decrypt(item->valuestring);
-                if (decrypted)
-                {
-                    result->telegram.bot_key = decrypted;
-                }
-            }
-
-            item = cJSON_GetObjectItem(channel, "user_id");
-            if (item && cJSON_IsNumber(item))
-                result->telegram.user_id = (int64_t)item->valuedouble;
-        }
-        else if (strcmp(ctype, "feishu") == 0)
-        {
-            item = cJSON_GetObjectItem(channel, "app_id");
-            if (item && cJSON_IsString(item))
-                result->feishu.app_id = sdsnew(item->valuestring);
-
-            item = cJSON_GetObjectItem(channel, "app_secret");
-            if (item && cJSON_IsString(item))
-            {
-                sds decrypted = edc_secret_decrypt(item->valuestring);
-                if (decrypted)
-                {
-                    result->feishu.app_secret = decrypted;
-                }
-            }
-        }
-        else if (strcmp(ctype, "qq") == 0)
-        {
-            item = cJSON_GetObjectItem(channel, "app_id");
-            if (item && cJSON_IsString(item))
-                result->qq.app_id = sdsnew(item->valuestring);
-
-            item = cJSON_GetObjectItem(channel, "app_secret");
-            if (item && cJSON_IsString(item))
-            {
-                sds decrypted = edc_secret_decrypt(item->valuestring);
-                if (decrypted)
-                {
-                    result->qq.app_secret = decrypted;
-                }
-            }
-        }
     }
 
     cJSON_Delete(json);
@@ -527,131 +448,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     }
 
     /* --- Channel Type --- */
-    int default_channel = 0;
-    if (defaults && sdslen(defaults->channel_type) > 0)
-    {
-        for (int i = 0; i < CHANNEL_TYPE_COUNT; i++)
-        {
-            if (strcmp(defaults->channel_type, channel_types[i]) == 0)
-            {
-                default_channel = i;
-                break;
-            }
-        }
-    }
-    int channel_idx = prompt_channel_type(default_channel);
-    if (channel_idx < 0)
-        return -1;
-    result->channel_type = sdsnew(channel_types[channel_idx]);
-
-    /* --- Channel-specific settings --- */
-    const char *ctype = result->channel_type;
-
-    if (strcmp(ctype, "email") == 0)
-    {
-        printf("\n--- Email Settings ---\n");
-        bool same_chan = (defaults && strcmp(defaults->channel_type, "email") == 0);
-
-        const char *def =
-            (same_chan && sdslen(defaults->email.imap_host) > 0) ? defaults->email.imap_host : "imap.qq.com";
-        val = prompt_with_default("IMAP Host", def);
-        if (!val)
-            return -1;
-        result->email.imap_host = val;
-
-        def = (same_chan && sdslen(defaults->email.smtp_host) > 0) ? defaults->email.smtp_host : "smtp.qq.com";
-        val = prompt_with_default("SMTP Host", def);
-        if (!val)
-            return -1;
-        result->email.smtp_host = val;
-
-        def = (same_chan && sdslen(defaults->email.user) > 0) ? defaults->email.user : "";
-        val = prompt_with_default("Email User", def);
-        if (!val)
-            return -1;
-        result->email.user = val;
-
-        val = prompt_password("Email Password",
-                              (same_chan && sdslen(defaults->email.passwd) > 0) ? defaults->email.passwd : NULL);
-        if (!val)
-            return -1;
-        result->email.passwd = val;
-
-        def = (same_chan && sdslen(defaults->email.target) > 0) ? defaults->email.target : "";
-        val = prompt_with_default("Target Email", def);
-        if (!val)
-            return -1;
-        result->email.target = val;
-    }
-    else if (strcmp(ctype, "telegram") == 0)
-    {
-        printf("\n--- Telegram Settings ---\n");
-        bool same_chan = (defaults && strcmp(defaults->channel_type, "telegram") == 0);
-
-        val = prompt_password(
-            "Bot Key", (same_chan && sdslen(defaults->telegram.bot_key) > 0) ? defaults->telegram.bot_key : NULL);
-        if (!val)
-            return -1;
-        result->telegram.bot_key = val;
-
-        /* User ID is an integer */
-        while (1)
-        {
-            char uid_buf[64] = "";
-            const char *uid_def = uid_buf;
-            if (same_chan && defaults->telegram.user_id != 0)
-            {
-                snprintf(uid_buf, sizeof(uid_buf), "%" PRId64, defaults->telegram.user_id);
-            }
-            val = prompt_with_default("User ID", uid_def);
-            if (!val)
-                return -1;
-            int64_t uid = 0;
-            if (sscanf(val, "%" PRId64, &uid) == 1 && uid != 0)
-            {
-                result->telegram.user_id = uid;
-                sdsfree(val);
-                break;
-            }
-            fprintf(stderr, "  Invalid number, please try again.\n");
-            sdsfree(val);
-        }
-    }
-    else if (strcmp(ctype, "feishu") == 0)
-    {
-        printf("\n--- Feishu Settings ---\n");
-        bool same_chan = (defaults && strcmp(defaults->channel_type, "feishu") == 0);
-
-        const char *def = (same_chan && sdslen(defaults->feishu.app_id) > 0) ? defaults->feishu.app_id : "";
-        val = prompt_with_default("Feishu App ID", def);
-        if (!val)
-            return -1;
-        result->feishu.app_id = val;
-
-        val = prompt_password("Feishu App Secret", (same_chan && sdslen(defaults->feishu.app_secret) > 0)
-                                                       ? defaults->feishu.app_secret
-                                                       : NULL);
-        if (!val)
-            return -1;
-        result->feishu.app_secret = val;
-    }
-    else if (strcmp(ctype, "qq") == 0)
-    {
-        printf("\n--- QQ Settings ---\n");
-        bool same_chan = (defaults && strcmp(defaults->channel_type, "qq") == 0);
-
-        const char *def = (same_chan && sdslen(defaults->qq.app_id) > 0) ? defaults->qq.app_id : "";
-        val = prompt_with_default("QQ App ID", def);
-        if (!val)
-            return -1;
-        result->qq.app_id = val;
-
-        val = prompt_password("QQ App Secret",
-                              (same_chan && sdslen(defaults->qq.app_secret) > 0) ? defaults->qq.app_secret : NULL);
-        if (!val)
-            return -1;
-        result->qq.app_secret = val;
-    }
+    result->channel_type = sdsnew("cli");
 
     printf("\n--- Device Shell Configuration (optional) ---\n");
 
@@ -970,20 +767,6 @@ void edc_init_env_result_free(struct edc_init_env_result *result)
     sdsfree(result->device_pty);
     sdsfree(result->device_ip);
     sdsfree(result->device_transport);
-
-    sdsfree(result->email.imap_host);
-    sdsfree(result->email.smtp_host);
-    sdsfree(result->email.user);
-    sdsfree(result->email.passwd);
-    sdsfree(result->email.target);
-
-    sdsfree(result->telegram.bot_key);
-
-    sdsfree(result->feishu.app_id);
-    sdsfree(result->feishu.app_secret);
-
-    sdsfree(result->qq.app_id);
-    sdsfree(result->qq.app_secret);
 }
 
 static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
@@ -1046,76 +829,7 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
         goto exit_free_env;
     }
 
-    /* Validate channel-specific fields */
-    const char *ctype = env_result.channel_type;
-
-    if (strcmp(ctype, "email") == 0)
-    {
-        if (sdslen(env_result.email.imap_host) == 0)
-        {
-            log_error("IMAP Host is required for email channel.");
-            goto exit_free_env;
-        }
-        if (sdslen(env_result.email.smtp_host) == 0)
-        {
-            log_error("SMTP Host is required for email channel.");
-            goto exit_free_env;
-        }
-        if (sdslen(env_result.email.user) == 0)
-        {
-            log_error("Email User is required for email channel.");
-            goto exit_free_env;
-        }
-        if (sdslen(env_result.email.passwd) == 0)
-        {
-            log_error("Email Password is required for email channel.");
-            goto exit_free_env;
-        }
-        if (sdslen(env_result.email.target) == 0)
-        {
-            log_error("Target Email is required for email channel.");
-            goto exit_free_env;
-        }
-    }
-    else if (strcmp(ctype, "telegram") == 0)
-    {
-        if (sdslen(env_result.telegram.bot_key) == 0)
-        {
-            log_error("Bot Key is required for telegram channel.");
-            goto exit_free_env;
-        }
-        if (env_result.telegram.user_id == 0)
-        {
-            log_error("User ID is required for telegram channel.");
-            goto exit_free_env;
-        }
-    }
-    else if (strcmp(ctype, "feishu") == 0)
-    {
-        if (sdslen(env_result.feishu.app_id) == 0)
-        {
-            log_error("Feishu App ID is required for feishu channel.");
-            goto exit_free_env;
-        }
-        if (sdslen(env_result.feishu.app_secret) == 0)
-        {
-            log_error("Feishu App Secret is required for feishu channel.");
-            goto exit_free_env;
-        }
-    }
-    else if (strcmp(ctype, "qq") == 0)
-    {
-        if (sdslen(env_result.qq.app_id) == 0)
-        {
-            log_error("QQ App ID is required for qq channel.");
-            goto exit_free_env;
-        }
-        if (sdslen(env_result.qq.app_secret) == 0)
-        {
-            log_error("QQ App Secret is required for qq channel.");
-            goto exit_free_env;
-        }
-    }
+    /* CLI channel needs no additional validation */
 
     /* Build JSON config */
     cJSON *config = cJSON_CreateObject();
@@ -1152,44 +866,7 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     cJSON_AddItemToObject(config, "sandbox", sandbox);
 
     cJSON *channel = cJSON_CreateObject();
-    cJSON_AddStringToObject(channel, "type", ctype);
-
-    if (strcmp(ctype, "email") == 0)
-    {
-        cJSON_AddStringToObject(channel, "imap_host", env_result.email.imap_host);
-        cJSON_AddStringToObject(channel, "smtp_host", env_result.email.smtp_host);
-        cJSON_AddStringToObject(channel, "user", env_result.email.user);
-
-        sds encrypted_passwd = edc_secret_encrypt(env_result.email.passwd);
-        cJSON_AddStringToObject(channel, "passwd", encrypted_passwd ? encrypted_passwd : "");
-        sdsfree(encrypted_passwd);
-
-        cJSON_AddStringToObject(channel, "target", env_result.email.target);
-    }
-    else if (strcmp(ctype, "telegram") == 0)
-    {
-        sds encrypted_bot_key = edc_secret_encrypt(env_result.telegram.bot_key);
-        cJSON_AddStringToObject(channel, "bot_key", encrypted_bot_key ? encrypted_bot_key : "");
-        sdsfree(encrypted_bot_key);
-
-        cJSON_AddNumberToObject(channel, "user_id", env_result.telegram.user_id);
-    }
-    else if (strcmp(ctype, "feishu") == 0)
-    {
-        cJSON_AddStringToObject(channel, "app_id", env_result.feishu.app_id);
-
-        sds encrypted_app_secret = edc_secret_encrypt(env_result.feishu.app_secret);
-        cJSON_AddStringToObject(channel, "app_secret", encrypted_app_secret ? encrypted_app_secret : "");
-        sdsfree(encrypted_app_secret);
-    }
-    else if (strcmp(ctype, "qq") == 0)
-    {
-        cJSON_AddStringToObject(channel, "app_id", env_result.qq.app_id);
-
-        sds encrypted_app_secret = edc_secret_encrypt(env_result.qq.app_secret);
-        cJSON_AddStringToObject(channel, "app_secret", encrypted_app_secret ? encrypted_app_secret : "");
-        sdsfree(encrypted_app_secret);
-    }
+    cJSON_AddStringToObject(channel, "type", "cli");
 
     cJSON_AddItemToObject(config, "channel", channel);
 

@@ -101,13 +101,6 @@ cc_binary(
 )
 
 cc_library(
-    name = "lark_api_pb",
-    srcs = ["lark_api.pb.c"],
-    hdrs = ["lark_api.pb.h"],
-    deps = ["@nanopb//:nanopb"],
-)
-
-cc_library(
     name = "edc_error",
     srcs = ["edc_error.c"],
     hdrs = ["edc_error.h"],

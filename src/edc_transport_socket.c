@@ -52,10 +52,10 @@ static int recv_http_request(int fd, char *buf, size_t *len, size_t cap)
             continue;
         if (content_length < 0)
         {
-            char *cl = strcasestr(buf, "Content-Length:");
+            char *cl = strstr(buf, "Content-Length:");
             if (!cl)
             {
-                cl = strcasestr(buf, "content-length:");
+                cl = strstr(buf, "content-length:");
             }
             content_length = cl ? atoi(cl + 15) : 0;
         }
