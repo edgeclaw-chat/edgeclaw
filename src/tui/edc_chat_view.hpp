@@ -10,6 +10,7 @@ class Message : public ::ftxui::ComponentBase
     {
         User,
         Assistant,
+        Thought,
         Tool,
         System
     };
@@ -27,8 +28,6 @@ class Message : public ::ftxui::ComponentBase
     const std::string content_;
     Role role_;
     time_t ts_;
-    const char *label_;
-    ::ftxui::Color color_;
 };
 
 class ChatView : public ::ftxui::ComponentBase

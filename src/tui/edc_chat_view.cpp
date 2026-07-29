@@ -6,29 +6,9 @@ namespace edc
 {
 Message::Message(const std::string_view content, Role role, time_t ts) : content_(content), role_(role), ts_(ts)
 {
-    switch (role_)
-    {
-    case Role::User:
-        label_ = "▎you";
-        color_ = ::ftxui::Color::Yellow;
-        break;
-    case Role::Assistant:
-        label_ = "▎assistant";
-        color_ = ::ftxui::Color::Green;
-        break;
-    case Role::System:
-        label_ = "▎system";
-        color_ = ::ftxui::Color::GrayDark;
-        break;
-    case Role::Tool:
-        label_ = "▎tool";
-        color_ = ::ftxui::Color::Blue;
-        break;
-    }
 }
 
-Message::Message(Message &&rhs)
-    : content_(std::move(rhs.content_)), role_(rhs.role_), ts_(rhs.ts_), label_(rhs.label_), color_(rhs.color_)
+Message::Message(Message &&rhs) : content_(std::move(rhs.content_)), role_(rhs.role_), ts_(rhs.ts_)
 {
 }
 
@@ -39,10 +19,11 @@ bool Message::OnEvent(ftxui::Event)
 
 ::ftxui::Element Message::OnRender()
 {
-    ftxui::Element body = ftxui::paragraph(content_);
-    ftxui::Elements children = {ftxui::text(label_) | ftxui::bold | ftxui::color(color_), body};
-    children.push_back(ftxui::separatorEmpty());
+    auto body = ::ftxui::paragraph(content_) | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) |
+                ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
 
-    return ftxui::vbox(children);
+    auto header = ::ftxui::separatorHeavy() | ::ftxui::color(::ftxui::Color::Blue);
+    auto line = role_ == Role::User ? ::ftxui::hbox({header, body}) : body;
+    return ::ftxui::vbox({line, ftxui::separatorEmpty()});
 }
 } // namespace edc
