@@ -1,6 +1,8 @@
 #include "edc_chat_view.hpp"
+#include "ftxui/component/component.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/dom/elements.hpp"
+#include <memory>
 
 namespace edc
 {
@@ -19,11 +21,41 @@ bool Message::OnEvent(ftxui::Event)
 
 ::ftxui::Element Message::OnRender()
 {
-    auto body = ::ftxui::paragraph(content_) | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) |
-                ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
-
+    auto body = ::ftxui::paragraph(content_);
     auto header = ::ftxui::separatorHeavy() | ::ftxui::color(::ftxui::Color::Blue);
-    auto line = role_ == Role::User ? ::ftxui::hbox({header, body}) : body;
-    return ::ftxui::vbox({line, ftxui::separatorEmpty()});
+
+    if (role_ == Role::User)
+    {
+        body = ::ftxui::hbox({header, body | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY)}) |
+               ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
+    }
+    else
+    {
+        body = body | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) |
+               ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
+    }
+
+    return ::ftxui::vbox({body, ftxui::separatorEmpty()});
 }
+
+ChatView::ChatView()
+{
+    container_ = ::ftxui::Container::Vertical({});
+}
+
+void ChatView::AddMessage(std::shared_ptr<Message> message)
+{
+    container_->Add(message);
+}
+
+bool ChatView::OnEvent(::ftxui::Event event)
+{
+    return false;
+}
+
+::ftxui::Element ChatView::OnRender()
+{
+    return container_->Render() | ::ftxui::bgcolor(::ftxui::Color::RGB(10, 10, 10));
+}
+
 } // namespace edc

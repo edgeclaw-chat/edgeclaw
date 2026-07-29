@@ -1,5 +1,7 @@
 #include "ftxui/component/component_base.hpp"
+#include <memory>
 #include <string_view>
+#include <vector>
 
 namespace edc
 {
@@ -32,6 +34,19 @@ class Message : public ::ftxui::ComponentBase
 
 class ChatView : public ::ftxui::ComponentBase
 {
+  public:
+    ChatView();
+    ChatView(ChatView const &) = delete;
+    ChatView &operator=(ChatView const &) = delete;
+
+    void AddMessage(std::shared_ptr<Message> message);
+
+    bool OnEvent(ftxui::Event) override;
+    ftxui::Element OnRender() override;
+
+  private:
+    std::vector<std::shared_ptr<ftxui::ComponentBase>> messages_;
+    ::ftxui::Component container_;
 };
 } // namespace edc
 
