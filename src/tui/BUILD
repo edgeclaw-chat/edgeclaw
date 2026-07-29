@@ -10,4 +10,5 @@ cc_library(
     deps = [
         "@ftxui//:ftxui",
     ],
+    visibility = ["//tests:__pkg__"],
 )
