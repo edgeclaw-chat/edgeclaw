@@ -10,22 +10,41 @@ Message::Message(const std::string_view content, Role role, time_t ts) : content
 {
 }
 
-Message::Message(Message &&rhs) : content_(std::move(rhs.content_)), role_(rhs.role_), ts_(rhs.ts_)
-{
-}
-
 Message::Role Message::role() const
 {
     return role_;
 }
 
-bool Message::OnEvent(ftxui::Event event)
+bool Message::OnEvent(ftxui::Event)
 {
-    if (role_ != Role::Thought)
+    return false;
+}
+
+::ftxui::Element Message::OnRender()
+{
+    auto body = ::ftxui::paragraph(content_);
+    auto header = ::ftxui::separatorHeavy() | ::ftxui::color(::ftxui::Color::Blue);
+
+    if (role_ == Role::User)
     {
-        return false;
+        body = ::ftxui::hbox({header, body | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY)}) |
+               ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
+    }
+    else
+    {
+        body = body | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) |
+               ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
     }
 
+    return body;
+}
+
+ThoughtMessage::ThoughtMessage(const std::string_view content, time_t ts) : Message(content, Role::Assistant, ts)
+{
+}
+
+bool ThoughtMessage::OnEvent(ftxui::Event event)
+{
     if (event.is_mouse())
     {
         if (event.mouse().button == ::ftxui::Mouse::Left && event.mouse().motion == ::ftxui::Mouse::Pressed &&
@@ -45,7 +64,7 @@ bool Message::OnEvent(ftxui::Event event)
     return false;
 }
 
-::ftxui::Element Message::RenderThought()
+::ftxui::Element ThoughtMessage::OnRender()
 {
     auto arrow = thought_expanded_ ? "-" : "+";
     auto applied_color = thought_expanded_ ? ::ftxui::Color::RGB(151, 104, 44) : ::ftxui::Color::RGB(245, 167, 66);
@@ -61,30 +80,6 @@ bool Message::OnEvent(ftxui::Event event)
                 ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY);
 
     return ::ftxui::vbox({label, body});
-}
-
-::ftxui::Element Message::OnRender()
-{
-    if (role_ == Role::Thought)
-    {
-        return RenderThought();
-    }
-
-    auto body = ::ftxui::paragraph(content_);
-    auto header = ::ftxui::separatorHeavy() | ::ftxui::color(::ftxui::Color::Blue);
-
-    if (role_ == Role::User)
-    {
-        body = ::ftxui::hbox({header, body | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY)}) |
-               ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
-    }
-    else
-    {
-        body = body | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) |
-               ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
-    }
-
-    return body;
 }
 
 ChatWidget::ChatWidget()
