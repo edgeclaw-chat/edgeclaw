@@ -23,6 +23,8 @@ class Message : public ::ftxui::ComponentBase
     Message(const Message &rhs) = delete;
     Message &operator=(const Message &) = delete;
 
+    Role role() const;
+
     bool OnEvent(ftxui::Event) override;
     ftxui::Element OnRender() override;
 

@@ -2,6 +2,7 @@
 #include "ftxui/component/component.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/dom/elements.hpp"
+#include <iostream>
 #include <memory>
 
 namespace edc
@@ -12,6 +13,11 @@ Message::Message(const std::string_view content, Role role, time_t ts) : content
 
 Message::Message(Message &&rhs) : content_(std::move(rhs.content_)), role_(rhs.role_), ts_(rhs.ts_)
 {
+}
+
+Message::Role Message::role() const
+{
+    return role_;
 }
 
 bool Message::OnEvent(ftxui::Event)
@@ -35,7 +41,7 @@ bool Message::OnEvent(ftxui::Event)
                ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
     }
 
-    return ::ftxui::vbox({body, ftxui::separatorEmpty()});
+    return body;
 }
 
 ChatWidget::ChatWidget()
@@ -45,12 +51,33 @@ ChatWidget::ChatWidget()
 
 void ChatWidget::AddMessage(std::shared_ptr<Message> message)
 {
-    container_->Add(message);
+    ::ftxui::Component item = message;
+    if (message->role() == Message::Role::Thought)
+    {
+        auto show = std::make_shared<bool>(false);
+        auto collapsible = ::ftxui::Collapsible("Thought", message, show.get());
+
+        auto thought_ui = ::ftxui::Renderer([show, collapsible]() {
+            auto component = collapsible->ChildAt(0);
+            auto label = component->ChildAt(0);
+            auto content = component->ChildAt(1);
+
+            auto applied_color = *show ? ::ftxui::color(::ftxui::Color::RGB(151, 104, 44))
+                                       : ::ftxui::color(::ftxui::Color::RGB(245, 167, 66));
+
+            return ::ftxui::vbox({label->Render() | applied_color | ::ftxui::bold, content->Render()});
+        });
+
+        item = CatchEvent(thought_ui, [collapsible](::ftxui::Event event) { return collapsible->OnEvent(event); });
+    }
+
+    container_->Add(item);
+    container_->Add(::ftxui::Renderer([] { return ::ftxui::separatorEmpty(); }));
 }
 
 bool ChatWidget::OnEvent(::ftxui::Event event)
 {
-    return false;
+    return container_->OnEvent(event);
 }
 
 ::ftxui::Element ChatWidget::OnRender()

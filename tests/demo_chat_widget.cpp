@@ -20,6 +20,10 @@ int main()
         "paragraph wrapping works in the rendered output.",
         edc::Message::Role::Assistant, now));
     chat->AddMessage(std::make_shared<edc::Message>(
+        "Let me think about this... The user is asking about file listings. "
+        "I should run ls -la and show the output.",
+        edc::Message::Role::Thought, now));
+    chat->AddMessage(std::make_shared<edc::Message>(
         "ls -la\n-rw-r--r-- 1 user user 1024 Jan 01 12:00 file.txt\ndrwxr-xr-x 2 user user 4096 Jan 01 12:00 dir",
         edc::Message::Role::Tool, now));
     chat->AddMessage(
