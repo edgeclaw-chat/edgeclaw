@@ -285,6 +285,7 @@ int on_enter_block(MD_BLOCKTYPE type, void *det, void *ud)
         s->stack.push_back(std::make_unique<TableB>());
         break;
     case MD_BLOCK_THEAD:
+    case MD_BLOCK_TBODY:
         if (auto *t = dynamic_cast<TableB *>(&s->top()))
             t->in_head = true;
         break;
@@ -322,7 +323,8 @@ int on_leave_block(MD_BLOCKTYPE type, void * /*det*/, void *ud)
         }
         return 0;
     }
-    case MD_BLOCK_THEAD: {
+    case MD_BLOCK_THEAD:
+    case MD_BLOCK_TBODY: {
         auto *t = dynamic_cast<TableB *>(&s->top());
         if (t)
         {
