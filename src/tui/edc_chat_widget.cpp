@@ -1,9 +1,8 @@
 #include "edc_chat_widget.hpp"
 #include "ftxui/component/component.hpp"
 #include "ftxui/component/event.hpp"
+#include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
-#include <iostream>
-#include <memory>
 
 namespace edc
 {
@@ -20,13 +19,57 @@ Message::Role Message::role() const
     return role_;
 }
 
-bool Message::OnEvent(ftxui::Event)
+bool Message::OnEvent(ftxui::Event event)
 {
+    if (role_ != Role::Thought)
+    {
+        return false;
+    }
+
+    if (event.is_mouse())
+    {
+        if (event.mouse().button == ::ftxui::Mouse::Left && event.mouse().motion == ::ftxui::Mouse::Pressed &&
+            box_.Contain(event.mouse().x, event.mouse().y))
+        {
+            thought_expanded_ = !thought_expanded_;
+            return true;
+        }
+        return false;
+    }
+
+    if (event == ftxui::Event::Return)
+    {
+        thought_expanded_ = !thought_expanded_;
+        return true;
+    }
     return false;
+}
+
+::ftxui::Element Message::RenderThought()
+{
+    auto arrow = thought_expanded_ ? "-" : "+";
+    auto applied_color = thought_expanded_ ? ::ftxui::Color::RGB(151, 104, 44) : ::ftxui::Color::RGB(245, 167, 66);
+    auto label = ::ftxui::text(" " + std::string(arrow) + " Thought") | ::ftxui::color(applied_color) | ::ftxui::bold |
+                 ::ftxui::reflect(box_);
+
+    if (!thought_expanded_)
+    {
+        return label;
+    }
+
+    auto body = ::ftxui::paragraph(content_) | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) |
+                ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
+
+    return ::ftxui::vbox({label, body});
 }
 
 ::ftxui::Element Message::OnRender()
 {
+    if (role_ == Role::Thought)
+    {
+        return RenderThought();
+    }
+
     auto body = ::ftxui::paragraph(content_);
     auto header = ::ftxui::separatorHeavy() | ::ftxui::color(::ftxui::Color::Blue);
 
@@ -51,27 +94,7 @@ ChatWidget::ChatWidget()
 
 void ChatWidget::AddMessage(std::shared_ptr<Message> message)
 {
-    ::ftxui::Component item = message;
-    if (message->role() == Message::Role::Thought)
-    {
-        auto show = std::make_shared<bool>(false);
-        auto collapsible = ::ftxui::Collapsible("Thought", message, show.get());
-
-        auto thought_ui = ::ftxui::Renderer([show, collapsible]() {
-            auto component = collapsible->ChildAt(0);
-            auto label = component->ChildAt(0);
-            auto content = component->ChildAt(1);
-
-            auto applied_color = *show ? ::ftxui::color(::ftxui::Color::RGB(151, 104, 44))
-                                       : ::ftxui::color(::ftxui::Color::RGB(245, 167, 66));
-
-            return ::ftxui::vbox({label->Render() | applied_color | ::ftxui::bold, content->Render()});
-        });
-
-        item = CatchEvent(thought_ui, [collapsible](::ftxui::Event event) { return collapsible->OnEvent(event); });
-    }
-
-    container_->Add(item);
+    container_->Add(message);
     container_->Add(::ftxui::Renderer([] { return ::ftxui::separatorEmpty(); }));
 }
 

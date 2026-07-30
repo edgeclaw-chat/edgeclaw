@@ -1,4 +1,5 @@
 #include "ftxui/component/component_base.hpp"
+#include "ftxui/screen/box.hpp"
 #include <memory>
 #include <string_view>
 #include <vector>
@@ -29,9 +30,13 @@ class Message : public ::ftxui::ComponentBase
     ftxui::Element OnRender() override;
 
   private:
+    ftxui::Element RenderThought();
+
     const std::string content_;
     Role role_;
     time_t ts_;
+    bool thought_expanded_ = false;
+    ::ftxui::Box box_;
 };
 
 class ChatWidget : public ::ftxui::ComponentBase
