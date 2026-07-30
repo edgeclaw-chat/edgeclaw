@@ -26,8 +26,6 @@ int main()
     chat->AddMessage(std::make_shared<edc::ToolMessage>(
         "$ ls -a", "-rw-r--r-- 1 user user 1024 Jan 01 12:00 file.txt\ndrwxr-xr-x 2 user user 4096 Jan 01 12:00 dir",
         now));
-    chat->AddMessage(std::make_shared<edc::Message>("System: connection established.", now));
-
     auto root = Renderer(chat, [&] { return chat->Render() | flex; });
 
     root |= CatchEvent([&](Event e) -> bool {

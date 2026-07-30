@@ -2,6 +2,7 @@
 #include "ftxui/component/event.hpp"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
+#include "markdown.hpp"
 
 namespace edc
 {
@@ -17,7 +18,7 @@ bool Message::OnEvent(ftxui::Event)
 
 ::ftxui::Element Message::OnRender()
 {
-    auto body = ::ftxui::paragraph(content_);
+    auto body = RenderMarkdown(content_);
     body =
         body | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) | ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
 

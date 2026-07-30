@@ -1,28 +1,19 @@
 cc_library(
-    name = "message",
-    srcs = [
-        "edc_message.cpp",
-    ],
-    hdrs = [
-        "edc_message.hpp",
-    ],
-    deps = [
-        "@ftxui//:ftxui",
-    ],
-    visibility = ["//tests:__pkg__"],
-)
-
-cc_library(
     name = "tui",
     srcs = [
         "edc_chat_widget.cpp",
+        "edc_message.cpp",
+        "markdown.cpp",
     ],
 
     hdrs = [
         "edc_chat_widget.hpp",
+        "edc_message.hpp",
+        "markdown.hpp",
     ],
     deps = [
-        ":message",
+        "@md4c//:md4c",
+        "@ftxui//:ftxui",
     ],
     visibility = ["//tests:__pkg__"],
 )
