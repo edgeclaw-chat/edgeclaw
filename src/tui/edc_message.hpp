@@ -10,28 +10,17 @@ namespace edc
 class Message : public ::ftxui::ComponentBase
 {
   public:
-    enum class Role
-    {
-        User,
-        Assistant,
-        Tool,
-        System
-    };
-
-    Message(const std::string_view content, Role role, time_t ts);
+    Message(const std::string_view content, time_t ts);
     virtual ~Message() = default;
 
     Message(const Message &rhs) = delete;
     Message &operator=(const Message &) = delete;
-
-    Role role() const;
 
     bool OnEvent(ftxui::Event) override;
     ftxui::Element OnRender() override;
 
   protected:
     const std::string content_;
-    Role role_;
     time_t ts_;
 };
 
@@ -48,4 +37,24 @@ class ThoughtMessage : public Message
     ::ftxui::Box box_;
 };
 
+class UserMessage : public Message
+{
+  public:
+    UserMessage(const std::string_view content, time_t ts);
+    bool OnEvent(ftxui::Event) override;
+    ftxui::Element OnRender() override;
+};
+
+class ToolMessage : public Message
+{
+  public:
+    ToolMessage(const std::string_view header, const std::string_view content, time_t ts);
+    bool OnEvent(ftxui::Event) override;
+    ftxui::Element OnRender() override;
+
+  private:
+    std::string header_;
+};
+
 } // namespace edc
+

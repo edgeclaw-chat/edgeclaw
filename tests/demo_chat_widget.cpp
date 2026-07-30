@@ -1,8 +1,8 @@
-#include "src/tui/edc_chat_widget.hpp"
 #include "ftxui/component/component.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/component/screen_interactive.hpp"
 #include "ftxui/dom/elements.hpp"
+#include "src/tui/edc_chat_widget.hpp"
 #include <ctime>
 #include <memory>
 
@@ -14,20 +14,19 @@ int main()
 
     auto chat = std::make_shared<edc::ChatWidget>();
 
-    chat->AddMessage(std::make_shared<edc::Message>("你好，这是一个用户消息。", edc::Message::Role::User, now));
-    chat->AddMessage(std::make_shared<edc::Message>(
-        "Hello! I am the assistant. Here is a longer response to demonstrate how "
-        "paragraph wrapping works in the rendered output.",
-        edc::Message::Role::Assistant, now));
-    chat->AddMessage(std::make_shared<edc::ThoughtMessage>(
-        "Let me think about this... The user is asking about file listings. "
-        "I should run ls -la and show the output.",
-        now));
-    chat->AddMessage(std::make_shared<edc::Message>(
-        "ls -la\n-rw-r--r-- 1 user user 1024 Jan 01 12:00 file.txt\ndrwxr-xr-x 2 user user 4096 Jan 01 12:00 dir",
-        edc::Message::Role::Tool, now));
+    chat->AddMessage(std::make_shared<edc::UserMessage>("你好，这是一个用户消息。", now));
     chat->AddMessage(
-        std::make_shared<edc::Message>("System: connection established.", edc::Message::Role::System, now));
+        std::make_shared<edc::Message>("Hello! I am the assistant. Here is a longer response to demonstrate how "
+                                       "paragraph wrapping works in the rendered output.",
+                                       now));
+    chat->AddMessage(
+        std::make_shared<edc::ThoughtMessage>("Let me think about this... The user is asking about file listings. "
+                                              "I should run ls -la and show the output.",
+                                              now));
+    chat->AddMessage(std::make_shared<edc::ToolMessage>(
+        "$ ls -a", "-rw-r--r-- 1 user user 1024 Jan 01 12:00 file.txt\ndrwxr-xr-x 2 user user 4096 Jan 01 12:00 dir",
+        now));
+    chat->AddMessage(std::make_shared<edc::Message>("System: connection established.", now));
 
     auto root = Renderer(chat, [&] { return chat->Render() | flex; });
 
