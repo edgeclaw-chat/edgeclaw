@@ -2,7 +2,7 @@
 
 namespace edc
 {
-class StatusView : ftxui::ComponentBase
+class StatusWidget : ftxui::ComponentBase
 {
   public:
 };

@@ -32,12 +32,12 @@ class Message : public ::ftxui::ComponentBase
     time_t ts_;
 };
 
-class ChatView : public ::ftxui::ComponentBase
+class ChatWidget : public ::ftxui::ComponentBase
 {
   public:
-    ChatView();
-    ChatView(ChatView const &) = delete;
-    ChatView &operator=(ChatView const &) = delete;
+    ChatWidget();
+    ChatWidget(ChatWidget const &) = delete;
+    ChatWidget &operator=(ChatWidget const &) = delete;
 
     void AddMessage(std::shared_ptr<Message> message);
 

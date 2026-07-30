@@ -1,4 +1,4 @@
-#include "src/tui/edc_chat_view.hpp"
+#include "src/tui/edc_chat_widget.hpp"
 #include "ftxui/component/component.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/component/screen_interactive.hpp"
@@ -12,7 +12,7 @@ int main()
 {
     auto now = time(nullptr);
 
-    auto chat = std::make_shared<edc::ChatView>();
+    auto chat = std::make_shared<edc::ChatWidget>();
 
     chat->AddMessage(std::make_shared<edc::Message>("你好，这是一个用户消息。", edc::Message::Role::User, now));
     chat->AddMessage(std::make_shared<edc::Message>(

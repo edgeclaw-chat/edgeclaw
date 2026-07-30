@@ -1,4 +1,4 @@
-#include "src/tui/edc_chat_view.hpp"
+#include "src/tui/edc_chat_widget.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/dom/node.hpp"
 #include "ftxui/screen/screen.hpp"
