@@ -57,8 +57,8 @@ bool Message::OnEvent(ftxui::Event event)
         return label;
     }
 
-    auto body = ::ftxui::paragraph(content_) | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) |
-                ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
+    auto body = ::ftxui::paragraph(content_) | ::ftxui::color(::ftxui::Color::RGB(147, 147, 147)) |
+                ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY);
 
     return ::ftxui::vbox({label, body});
 }
