@@ -23,20 +23,9 @@ LINK_OPTS = select({
 })
 
 cc_test(
-    name = "test_mongoose_https_client",
-    srcs = ["test_mongoose_https_client.c"],
+    name = "test_containers",
+    srcs = ["test_containers.c"],
     deps = [
-        "@mongoose//:mongoose",
-        "//src:agent",
-    ],
-    linkopts = LINK_OPTS,
-)
-
-cc_test(
-    name = "test_mongoose_resolve",
-    srcs = ["test_mongoose_resolve.c"],
-    deps = [
-        "@mongoose//:mongoose",
         "//src:agent",
     ],
     linkopts = LINK_OPTS,
@@ -46,7 +35,6 @@ cc_test(
     name = "test_channel_actor",
     srcs = ["test_channel_actor.c"],
     deps = [
-        "@mongoose//:mongoose",
         "//src:agent",
     ],
     linkopts = LINK_OPTS,
@@ -56,7 +44,6 @@ cc_test(
     name = "test_llm_actor",
     srcs = ["test_llm_actor.c"],
     deps = [
-        "@mongoose//:mongoose",
         "//src:agent",
     ],
     linkopts = LINK_OPTS,
@@ -66,7 +53,6 @@ cc_test(
     name = "test_memory_actor",
     srcs = ["test_memory_actor.c"],
     deps = [
-        "@mongoose//:mongoose",
         "//src:agent",
     ],
     linkopts = LINK_OPTS,
@@ -154,4 +140,122 @@ cc_test(
         "//src:agent",
     ],
     linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_https_client_get",
+    srcs = ["test_https_client_get.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_edc_task",
+    srcs = ["test_edc_task.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_edc_task_group",
+    srcs = ["test_edc_task_group.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_edc_task_stress",
+    srcs = ["test_edc_task_stress.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_edc_scheduler",
+    srcs = ["test_edc_scheduler.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_edc_session_stress",
+    srcs = ["test_edc_session_stress.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_group_level",
+    srcs = ["test_group_level.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_edc_shell",
+    srcs = ["test_edc_shell.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_state_serializer",
+    srcs = ["test_state_serializer.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_session_state_file",
+    srcs = ["test_session_state_file.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_turn_history_integration",
+    srcs = ["test_turn_history_integration.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_lifecycle_integration",
+    srcs = ["test_lifecycle_integration.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "demo_chat_widget",
+    srcs = ["demo_chat_widget.cpp"],
+    deps = [
+        "//src:agent",
+        "//src/tui:tui",
+    ],
+    linkopts = LINK_OPTS + ["-lstdc++"],
 )

@@ -33,7 +33,7 @@ def _parse_builtin_includes(stderr):
 
 def _generate_android_config_bzl(tool_paths, include_dirs, arch_config):
     tool_paths_entries = []
-    for name in ["gcc", "ld", "ar", "cpp", "gcov", "nm", "objdump", "strip"]:
+    for name in ["gcc", "g++", "ld", "ar", "cpp", "gcov", "nm", "objdump", "strip"]:
         path = tool_paths.get(name, "")
         tool_paths_entries.append(
             '        tool_path(name = "{}", path = "{}"),'.format(name, path),
@@ -53,10 +53,10 @@ def _generate_android_config_bzl(tool_paths, include_dirs, arch_config):
     include_dirs_str = "\n".join(include_entries)
 
     features_str = ""
-    cc_toolchain_config_imports = 'load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path")'
+    cc_toolchain_config_imports = 'load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "action_config", "tool")'
     if arch_config.get("features"):
         features_str = arch_config["features"]
-        cc_toolchain_config_imports = 'load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "feature", "flag_set", "flag_group")'
+        cc_toolchain_config_imports = 'load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "action_config", "tool", "feature", "flag_set", "flag_group")'
 
     return """{cc_toolchain_config_imports}
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
@@ -64,6 +64,27 @@ load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 def _impl(ctx):
     tool_paths = [
 {tool_paths}
+    ]
+
+    action_configs = [
+        action_config(
+            action_name = "c++-compile",
+            tools = [
+                tool(path = "g++"),
+            ],
+        ),
+        action_config(
+            action_name = "c++-header-parsing",
+            tools = [
+                tool(path = "g++"),
+            ],
+        ),
+        action_config(
+            action_name = "c++-module-compile",
+            tools = [
+                tool(path = "g++"),
+            ],
+        ),
     ]
 
     features = [
@@ -81,6 +102,7 @@ def _impl(ctx):
         abi_version = "{abi_version}",
         abi_libc_version = "unknown",
         tool_paths = tool_paths,
+        action_configs = action_configs,
         features = features,
         cxx_builtin_include_directories = [
 {include_dirs}
@@ -137,6 +159,7 @@ def _android_toolchain_repo_impl(rctx, arch_config):
 
     tool_paths = {
         "gcc": clang_bin,
+        "g++": clang_bin,
         "ld": bin_dir + "ld.lld",
         "ar": bin_dir + "llvm-ar",
         "cpp": clang_bin,

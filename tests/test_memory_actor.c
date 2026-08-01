@@ -5,6 +5,15 @@
 #include "src/edc_llm_actor.h"
 #include "src/edc_memory_actor.h"
 #include "src/edc_secret.h"
+#include <stdbool.h>
+#include <unistd.h>
+
+#ifndef FALSE
+#define FALSE false
+#endif
+#ifndef TRUE
+#define TRUE true
+#endif
 
 static void observer_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
@@ -35,10 +44,7 @@ int main()
 
     edc_secret_lockdown();
 
-    sds cacert_path = edc_path_join(conf->workspace, "cacert.pem", NULL);
-    edc_network_async_t *http = edc_network_async_new(cacert_path);
-    sdsfree(cacert_path);
-    edc_actor_t *llm_actor = edc_llm_actor_new(&conf->llm_api_conf, http);
+    edc_actor_t *llm_actor = edc_llm_actor_new(&conf->llm_api_conf);
     edc_actor_t *actor = edc_memory_actor_new(conf->workspace, 9, llm_actor);
 
     edc_actor_t *observer = edc_actor_new("observer", observer_handler, NULL);
@@ -59,6 +65,5 @@ int main()
     edc_actor_free(actor);
     edc_actor_free(llm_actor);
     edc_actor_runner_free(runner);
-    edc_network_async_free(http);
     return 0;
 }

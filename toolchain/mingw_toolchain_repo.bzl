@@ -42,7 +42,7 @@ def _find_tool(rctx, bin_dir, tool_prefix, name):
     return None
 
 def _generate_config_bzl(bin_dir, tool_prefix, include_dirs, target_cpu, target_system_name, toolchain_identifier):
-    tool_names = ["gcc", "ld", "ar", "cpp", "gcov", "nm", "objdump", "strip"]
+    tool_names = ["gcc", "g++", "ld", "ar", "cpp", "gcov", "nm", "objdump", "strip"]
 
     tool_paths_entries = []
     for name in tool_names:
@@ -63,12 +63,33 @@ def _generate_config_bzl(bin_dir, tool_prefix, include_dirs, target_cpu, target_
         include_entries.append('            "{}",'.format(d))
     include_dirs_str = "\n".join(include_entries)
 
-    return """load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path")
+    return """load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "action_config", "tool")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 
 def _impl(ctx):
     tool_paths = [
 {tool_paths}
+    ]
+
+    action_configs = [
+        action_config(
+            action_name = "c++-compile",
+            tools = [
+                tool(path = "g++"),
+            ],
+        ),
+        action_config(
+            action_name = "c++-header-parsing",
+            tools = [
+                tool(path = "g++"),
+            ],
+        ),
+        action_config(
+            action_name = "c++-module-compile",
+            tools = [
+                tool(path = "g++"),
+            ],
+        ),
     ]
 
     return cc_common.create_cc_toolchain_config_info(
@@ -82,6 +103,7 @@ def _impl(ctx):
         abi_version = "unknown",
         abi_libc_version = "unknown",
         tool_paths = tool_paths,
+        action_configs = action_configs,
         cxx_builtin_include_directories = [
 {include_dirs}
         ],
