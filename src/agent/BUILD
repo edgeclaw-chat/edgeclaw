@@ -67,7 +67,6 @@ cc_library(
     includes = ["."],
     deps = [
         "//src/core:core",
-        "//src/device:device",
         "//src/shell:completion",
         "//src/shell:shell_api",
         "//src:utlist_fix",
@@ -80,6 +79,7 @@ cc_library(
     ] + select({
         "//:windows": [],
         "//conditions:default": [
+            "//src/device:device",
             "@lwip//:lwip",
             "//thirdparty/lwip:sys_arch",
         ],

@@ -24,10 +24,12 @@ cc_binary(
     deps = [
         "//src/agent:agent",
         "//src/core:core",
-        "//src/device:device",
         "//src/shell:shell",
         ":utlist_fix",
-    ],
+    ] + select({
+        "//:windows": [],
+        "//conditions:default": ["//src/device:device"],
+    }),
     linkstatic = True,
     linkopts = LINK_OPTS,
     local_defines = select({

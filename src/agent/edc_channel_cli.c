@@ -11,7 +11,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <sys/ioctl.h>
+#endif
 #include <uv.h>
 
 #define CLI_RESET "\e[0m"
@@ -190,9 +192,11 @@ static int cli_get_term_width(edc_channel_actor_state_t *state)
 {
     (void)state;
 
+#ifndef _WIN32
     struct winsize ws;
     if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
         return (int)ws.ws_col;
+#endif
 
     const char *cols = getenv("COLUMNS");
     if (cols)

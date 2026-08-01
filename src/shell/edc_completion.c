@@ -1,4 +1,5 @@
 #include "edc_completion.h"
+#include "edc_compat.h"
 #include <ctype.h>
 #include <dirent.h>
 #include <math.h>

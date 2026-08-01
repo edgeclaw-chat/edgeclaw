@@ -58,6 +58,7 @@ static inline char *win32_strndup(const char *s, size_t n)
 }
 #define strndup(s, n) win32_strndup(s, n)
 #endif
+#define mkdir(path, mode) _mkdir(path)
 
 /* ---- process ---- */
 #define getpid() GetCurrentProcessId()
