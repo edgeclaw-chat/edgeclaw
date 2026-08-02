@@ -1,8 +1,8 @@
 #include "edc_string_utils.h"
-#include "src/edc_actor.h"
-#include "src/edc_channel_actor.h"
-#include "src/edc_config.h"
-#include "src/edc_file_utils.h"
+#include "edc_actor.h"
+#include "edc_channel_actor.h"
+#include "edc_config.h"
+#include "edc_file_utils.h"
 #include <stdio.h>
 #include <unistd.h>
 

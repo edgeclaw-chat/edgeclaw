@@ -14,10 +14,10 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
-# ── Shell 公共 API (只有头文件，agent 可以安全依赖) ──────────
 
 cc_library(
     name = "shell_api",
+    srcs = ["edc_shell_vars.c"],
     hdrs = [
         "edc_commands.h",
         "edc_completion.h",

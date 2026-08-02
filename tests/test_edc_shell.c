@@ -1,5 +1,5 @@
-#include "src/edc_shell.h"
-#include "src/edc_agent.h"
+#include "edc_shell.h"
+#include "edc_agent.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>

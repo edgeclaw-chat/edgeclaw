@@ -1,6 +1,6 @@
-#include "src/edc_scheduler.h"
-#include "src/edc_session.h"
-#include "src/edc_config.h"
+#include "edc_scheduler.h"
+#include "edc_session.h"
+#include "edc_config.h"
 #include "log.h"
 #include <stdio.h>
 #include <string.h>

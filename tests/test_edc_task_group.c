@@ -1,4 +1,4 @@
-#include "src/edc_task_group.h"
+#include "edc_task_group.h"
 #include "log.h"
 #include <stdio.h>
 #include <string.h>

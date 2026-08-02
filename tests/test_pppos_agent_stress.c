@@ -1,4 +1,4 @@
-#include "src/edc_pppos_agent.h"
+#include "edc_pppos_agent.h"
 
 #include "lwip/tcpip.h"
 #include "lwip/netif.h"

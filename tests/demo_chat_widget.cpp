@@ -2,7 +2,7 @@
 #include "ftxui/component/event.hpp"
 #include "ftxui/component/screen_interactive.hpp"
 #include "ftxui/dom/elements.hpp"
-#include "src/tui/edc_chat_widget.hpp"
+#include "tui/edc_chat_widget.hpp"
 #include <ctime>
 #include <memory>
 
@@ -17,7 +17,7 @@ int main()
     // ---- User message (plain paragraph) ----
     chat->AddMessage(std::make_shared<edc::UserMessage>("你好，帮我看看这几个 markdown 特性渲染得对不对。", now));
 
-#if 0
+#if 1
     // ---- Base Message with headings ----
     chat->AddMessage(std::make_shared<edc::Message>("# 一级标题\n"
                                                     "这是一段正文。\n"

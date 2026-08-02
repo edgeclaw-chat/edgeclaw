@@ -1,5 +1,5 @@
-#include "src/edc_markdown_render.h"
-#include "src/edc_file_utils.h"
+#include "edc_markdown_render.h"
+#include "edc_file_utils.h"
 #include "edc_string.h"
 #include <stdio.h>
 

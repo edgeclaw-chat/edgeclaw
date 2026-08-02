@@ -1,6 +1,6 @@
-#include "src/edc_task.h"
-#include "src/edc_turn.h"
-#include "src/edc_config.h"
+#include "edc_task.h"
+#include "edc_turn.h"
+#include "edc_config.h"
 #include "log.h"
 #include <assert.h>
 #include <stdio.h>

@@ -1,5 +1,5 @@
 #include "log.h"
-#include "src/edc_https_client.h"
+#include "edc_https_client.h"
 #include "uv.h"
 #include <stdio.h>
 #include <stdlib.h>

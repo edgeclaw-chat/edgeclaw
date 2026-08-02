@@ -1,9 +1,9 @@
 #include "edc_string.h"
-#include "src/edc_actor.h"
-#include "src/edc_config.h"
-#include "src/edc_file_utils.h"
-#include "src/edc_llm_actor.h"
-#include "src/edc_secret.h"
+#include "edc_actor.h"
+#include "edc_config.h"
+#include "edc_file_utils.h"
+#include "edc_llm_actor.h"
+#include "edc_secret.h"
 #include <stdio.h>
 #include <unistd.h>
 
