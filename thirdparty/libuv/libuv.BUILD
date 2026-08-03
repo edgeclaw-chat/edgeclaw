@@ -139,7 +139,7 @@ cc_library(
         "//conditions:default": [],
     }),
     local_defines = _LOCAL_DEFINES,
-    strip_include_prefix = "include",
+    includes = ["include"],
     visibility = ["//visibility:public"],
     deps = [
         ":src_headers",
