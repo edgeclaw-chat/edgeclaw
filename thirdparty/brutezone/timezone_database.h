@@ -25,13 +25,13 @@ typedef struct {
 typedef struct {
     const time_t start;
     const short offset;
-} __attribute__((packed)) timezone_offset;
+} __attribute__((packed, aligned(8))) timezone_offset;
 
 typedef struct {
     const char *name;
     const timezone_offset *entries;
     const unsigned char n_entries;
-} __attribute__((packed)) tzdb_timezone;
+} __attribute__((packed, aligned(8))) tzdb_timezone;
 
 #endif
 
