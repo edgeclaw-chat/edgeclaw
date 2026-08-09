@@ -1,3 +1,1 @@
-CompileFlags:
-  Add: [-x, c]
-  CompilationDatabase: .
+CompilationDatabase: .

@@ -20,6 +20,10 @@ arm_android_toolchain = use_extension("//:extensions.bzl", "arm_android_toolchai
 use_repo(arm_android_toolchain, "arm_android_toolchain")
 register_toolchains("@arm_android_toolchain//:arm_android_toolchain")
 
+mingw_toolchain = use_extension("//:extensions.bzl", "mingw_toolchain")
+use_repo(mingw_toolchain, "mingw_toolchain")
+register_toolchains("@mingw_toolchain//:mingw_windows_toolchain")
+
 # Hermetic Python toolchain: downloads Python 3.8 for native builds, no system
 # Python required. Has platform constraints so it only matches native builds.
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
@@ -35,19 +39,10 @@ register_toolchains("@bazel_tools//tools/python:autodetecting_toolchain")
 bazel_dep(name = "platforms", version = "1.0.0")
 bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "rules_foreign_cc", version = "0.15.1")
-bazel_dep(name = "glib", version = "2.82.2.bcr.8")
 bazel_dep(name = "mbedtls", version = "3.6.5")
-bazel_dep(name = "nanopb", version = "0.4.9.1.bcr.2")
 bazel_dep(name = "rules_pkg", version = "1.2.0")
+bazel_dep(name = "ftxui", version = "7.0.0")
 
-single_version_override(
-    module_name = "glib",
-    patches = [
-        "//patches:glib-gmodule-fix.patch",
-        "//patches:glib-atomic-lock-free.patch",
-    ],
-    patch_strip = 1,
-)
 bazel_dep(name = "cjson", version = "1.7.19-0.20240923110858-12c4bf1986c2.bcr.4")
 
 bazel_dep(name = "rules_python", version = "1.7.0")
@@ -67,10 +62,12 @@ bc_thirdparty_deps = use_extension("//:extensions.bzl", "bc_thirdparty_deps")
 use_repo(
     bc_thirdparty_deps,
     "log.c",
-    "mongoose",
     "ccronexpr",
-    "linenoise",
     "md4c",
     "lwip",
     "sds",
+    "uthash",
+    "libuv",
+    "llhttp",
+    "libyuarel",
 )

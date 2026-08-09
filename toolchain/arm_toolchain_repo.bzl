@@ -41,7 +41,7 @@ def _get_sysroot_dirs(prefix, base_dir):
 
 def _generate_config_bzl(prefix, include_dirs, target_cpu, target_system_name, toolchain_identifier):
     tool_paths_entries = []
-    for name in ["gcc", "ld", "ar", "cpp", "gcov", "nm", "objdump", "strip"]:
+    for name in ["gcc", "g++", "ld", "ar", "cpp", "gcov", "nm", "objdump", "strip"]:
         tool_paths_entries.append(
             '        tool_path(name = "{}", path = prefix + "{}"),'.format(name, name),
         )
@@ -59,7 +59,7 @@ def _generate_config_bzl(prefix, include_dirs, target_cpu, target_system_name, t
         include_entries.append('            "{}",'.format(d))
     include_dirs_str = "\n".join(include_entries)
 
-    return """load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "feature", "flag_set", "flag_group")
+    return """load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "feature", "flag_set", "flag_group", "action_config", "tool")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 
 def _impl(ctx):
@@ -67,6 +67,27 @@ def _impl(ctx):
 
     tool_paths = [
 {tool_paths}
+    ]
+
+    action_configs = [
+        action_config(
+            action_name = "c++-compile",
+            tools = [
+                tool(path = prefix + "g++"),
+            ],
+        ),
+        action_config(
+            action_name = "c++-header-parsing",
+            tools = [
+                tool(path = prefix + "g++"),
+            ],
+        ),
+        action_config(
+            action_name = "c++-module-compile",
+            tools = [
+                tool(path = prefix + "g++"),
+            ],
+        ),
     ]
 
     features = [
@@ -102,6 +123,7 @@ def _impl(ctx):
         abi_version = "unknown",
         abi_libc_version = "unknown",
         tool_paths = tool_paths,
+        action_configs = action_configs,
         features = features,
         cxx_builtin_include_directories = [
 {include_dirs}
@@ -123,7 +145,8 @@ def _arm_toolchain_repo_impl(rctx):
         if gcc_bin:
             prefix = str(gcc_bin)[:str(gcc_bin).rfind("/")] + "/"
 
-    compiler_args = [prefix + "gcc", "-E", "-v", "-x", "c", "/dev/null"]
+    null_device = "NUL" if rctx.os.name.startswith("windows") else "/dev/null"
+    compiler_args = [prefix + "gcc", "-E", "-v", "-x", "c", null_device]
     result = rctx.execute(compiler_args, environment = {"LC_ALL": "C"})
     if result.return_code != 0:
         fail("Failed to query compiler: " + result.stderr)

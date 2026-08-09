@@ -1,9 +1,19 @@
 #include "log.h"
-#include "src/edc_actor.h"
-#include "src/edc_config.h"
-#include "src/edc_llm_actor.h"
-#include "src/edc_memory_actor.h"
-#include "src/edc_secret.h"
+#include "edc_actor.h"
+#include "edc_config.h"
+#include "edc_file_utils.h"
+#include "edc_llm_actor.h"
+#include "edc_memory_actor.h"
+#include "edc_secret.h"
+#include <stdbool.h>
+#include <unistd.h>
+
+#ifndef FALSE
+#define FALSE false
+#endif
+#ifndef TRUE
+#define TRUE true
+#endif
 
 static void observer_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
@@ -19,13 +29,14 @@ static void observer_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 
 int main()
 {
-    const gchar *home_dir = g_get_home_dir();
-    gchar *root = g_build_filename(home_dir, ".edgeclaw", NULL);
+    sds home_dir = edc_homedir();
+    sds root = edc_path_join(home_dir, ".edgeclaw", NULL);
 
     if (!edc_secret_init(FALSE, root))
     {
         log_error("Failed to initialize secret module");
-        g_free(root);
+        sdsfree(root);
+        sdsfree(home_dir);
         return -1;
     }
 
@@ -33,9 +44,7 @@ int main()
 
     edc_secret_lockdown();
 
-    gchar *cacert_path = g_build_filename(conf->workspace, "cacert.pem", NULL);
-    edc_network_async_t *http = edc_network_async_new(cacert_path);
-    edc_actor_t *llm_actor = edc_llm_actor_new(&conf->llm_api_conf, http);
+    edc_actor_t *llm_actor = edc_llm_actor_new(&conf->llm_api_conf);
     edc_actor_t *actor = edc_memory_actor_new(conf->workspace, 9, llm_actor);
 
     edc_actor_t *observer = edc_actor_new("observer", observer_handler, NULL);
@@ -56,6 +65,5 @@ int main()
     edc_actor_free(actor);
     edc_actor_free(llm_actor);
     edc_actor_runner_free(runner);
-    edc_network_async_free(http);
     return 0;
 }

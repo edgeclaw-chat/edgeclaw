@@ -1,7 +1,11 @@
-#include "src/edc_actor.h"
-#include "src/edc_config.h"
-#include "src/edc_llm_actor.h"
+#include "edc_string.h"
+#include "edc_actor.h"
+#include "edc_config.h"
+#include "edc_file_utils.h"
+#include "edc_llm_actor.h"
+#include "edc_secret.h"
 #include <stdio.h>
+#include <unistd.h>
 
 static void edc_observe_llm_handler(edc_actor_t *actor, edc_actor_msg_t *message)
 {
@@ -15,8 +19,8 @@ static void edc_observe_llm_handler(edc_actor_t *actor, edc_actor_msg_t *message
             break;
         }
 
-        GString *content = resp->content;
-        fprintf(stderr, "[ASSISTANT]: %s\n", content->str);
+        sds content = resp->content;
+        fprintf(stderr, "[ASSISTANT]: %s\n", content);
         break;
     }
     default:
@@ -26,22 +30,25 @@ static void edc_observe_llm_handler(edc_actor_t *actor, edc_actor_msg_t *message
     edc_actor_msg_free(message);
 }
 
-
 #ifndef DNS_SERVER_IP
 #define DNS_SERVER_IP "114.114.114.114"
 #endif
 int main(void)
 {
-    const gchar *home_dir = g_get_home_dir();
-    gchar *root = g_build_filename(home_dir, ".edgeclaw", NULL);
+    sds home_dir = edc_homedir();
+    sds root = edc_path_join(home_dir, ".edgeclaw", NULL);
+
+    if (!edc_secret_init(false, root))
+    {
+        fprintf(stderr, "Failed to initialize secret module");
+        sdsfree(root);
+        return -1;
+    }
     struct edc_config *conf = edc_config_load(root);
-    g_free(root);
+    sdsfree(root);
+    sdsfree(home_dir);
 
-    gchar *cert_pem = g_build_filename(conf->workspace, "cacert.pem", NULL);
-    edc_network_async_t *http = edc_network_async_new(cert_pem);
-    http->mgr.dns4.url = "udp://" DNS_SERVER_IP ":53";
-
-    edc_actor_t *llm_actor = edc_llm_actor_new(&conf->llm_api_conf, http);
+    edc_actor_t *llm_actor = edc_llm_actor_new(&conf->llm_api_conf);
     edc_actor_t *observe_actor = edc_actor_new("edc_observer", edc_observe_llm_handler, NULL);
 
     edc_actor_runner_t *runner = edc_actor_runner_new();
@@ -57,7 +64,7 @@ int main(void)
 
     struct edc_llm_actor_req *req = edc_llm_actor_req_new(msg_lst, NULL, NULL);
     edc_actor_send(llm_actor, edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST, observe_actor, NULL, req,
-                                              (edc_actor_data_free_fn)edc_llm_actor_req_free));
+                                                (edc_actor_data_free_fn)edc_llm_actor_req_free));
 
     while (1)
     {

@@ -2,7 +2,7 @@
 #define LWIP_LWIPOPTS_H
 
 #define NO_SYS                      0
-#define LWIP_SOCKET                 1
+#define LWIP_SOCKET                 0
 #define LWIP_NETCONN                1
 
 #define LWIP_IPV4                   1
@@ -30,11 +30,7 @@
 #define MEMP_NUM_TCP_SEG            64
 #define MEMP_NUM_TCP_PCB            64
 #define MEMP_NUM_TCP_PCB_LISTEN     8
-#define LWIP_SO_LINGER              1
 #define LWIP_SO_RCVTIMEO            1
-#define MEMP_NUM_UDP_PCB            8
-#define MEMP_NUM_RAW_PCB            4
-
 #define TCP_MSS                     1460
 #define TCP_WND                     (16 * TCP_MSS)
 #define TCP_SND_BUF                 (16 * TCP_MSS)
@@ -68,7 +64,7 @@
 
 #define LWIP_TIMEVAL_PRIVATE        0
 
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(_WIN32)
 #define SOCKLEN_T_DEFINED
 #endif
 

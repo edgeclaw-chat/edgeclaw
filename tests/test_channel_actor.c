@@ -1,8 +1,10 @@
-#include "src/edc_actor.h"
-#include "src/edc_channel_actor.h"
-#include "src/edc_config.h"
-#include "src/edc_network_async.h"
+#include "edc_string_utils.h"
+#include "edc_actor.h"
+#include "edc_channel_actor.h"
+#include "edc_config.h"
+#include "edc_file_utils.h"
 #include <stdio.h>
+#include <unistd.h>
 
 static void edc_observe_channel_handler(edc_actor_t *actor, edc_actor_msg_t *message)
 {
@@ -12,9 +14,9 @@ static void edc_observe_channel_handler(edc_actor_t *actor, edc_actor_msg_t *mes
         struct edc_channel_message *input = message->data;
         fprintf(stderr, "[USER]: %s\n", input->content);
 
-        gchar *content = input->content;
-        input->content = g_strdup_printf("%s%s", content, content);
-        g_free(content);
+        char *content = input->content;
+        input->content = edc_strdup_printf("%s%s", content, content);
+        free(content);
 
         message->type = BC_ACTOR_MSG_CHANNEL_SEND;
         edc_actor_send(message->from, message);
@@ -27,18 +29,13 @@ static void edc_observe_channel_handler(edc_actor_t *actor, edc_actor_msg_t *mes
 
 int main()
 {
-    mg_log_set(MG_LL_DEBUG);
-    const gchar *home_dir = g_get_home_dir();
-    gchar *root = g_build_filename(home_dir, ".edgeclaw", NULL);
+    sds home_dir = edc_homedir();
+    sds root = edc_path_join(home_dir, ".edgeclaw", NULL);
     struct edc_config *conf = edc_config_load(root);
-    g_free(root);
+    sdsfree(root);
+    sdsfree(home_dir);
 
-    gchar *cert_pem = g_build_filename(conf->workspace, "cacert.pem", NULL);
-    edc_network_async_t *http = edc_network_async_new(cert_pem);
-    // http->mgr.dns4.url = "udp://114.114.114.114:53";
-    http->mgr.dns4.url = "udp://10.33.25.62:53";
-
-    edc_actor_t *actor = edc_channel_actor_new(&conf->channel, http);
+    edc_actor_t *actor = edc_channel_actor_new(&conf->channel, conf->workspace);
     edc_actor_t *observer = edc_actor_new("observer", edc_observe_channel_handler, NULL);
     edc_channel_actor_set_observer(actor, observer);
 

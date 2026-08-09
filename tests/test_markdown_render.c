@@ -1,5 +1,6 @@
-#include "src/edc_markdown_render.h"
-#include <glib.h>
+#include "edc_markdown_render.h"
+#include "edc_file_utils.h"
+#include "edc_string.h"
 #include <stdio.h>
 
 int main(int argc, char *argv[])
@@ -9,21 +10,21 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    GError *error = NULL;
-    gchar *contents = NULL;
-    if (!g_file_get_contents(argv[1], &contents, NULL, &error)) {
-        fprintf(stderr, "read file failed: %s\n", error->message);
-        g_error_free(error);
+    EdcError *gerror = NULL;
+    sds contents = edc_file_read(argv[1], &gerror);
+    if (!contents) {
+        fprintf(stderr, "read file failed: %s\n", gerror ? gerror->message : "unknown");
+        edc_error_free(gerror);
         return 1;
     }
 
-    GString *rendered = edc_markdown_render(contents);
-    g_free(contents);
+    sds rendered = edc_markdown_render(contents);
+    sdsfree(contents);
 
-    if (rendered && rendered->str) {
-        printf("%s\n", rendered->str);
+    if (rendered && rendered) {
+        printf("%s\n", rendered);
     }
 
-    g_string_free(rendered, TRUE);
+    edc_str_free(rendered);
     return 0;
 }

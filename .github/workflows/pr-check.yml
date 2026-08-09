@@ -14,52 +14,67 @@ jobs:
           - target: edgeclaw_amd64_linux
             runner: ubuntu-latest
             platform: //:amd64_linux
-            bazel_target: //:edgeclaw
+            bazel_target: //src:edgeclaw.exe
+            package_target: //:edgeclaw
           - target: edgeclaw_arm_linux
             runner: ubuntu-latest
             platform: //:arm_linux
             cross_compile: arm-linux-gnueabi
             apt_package: gcc-arm-linux-gnueabi
-            bazel_target: //:edgeclaw
+            bazel_target: //src:edgeclaw.exe
+            package_target: //:edgeclaw
           - target: edgeclaw_aarch64_linux
             runner: ubuntu-latest
             platform: //:aarch64_linux
             cross_compile: aarch64-linux-gnu
             apt_package: gcc-aarch64-linux-gnu
-            bazel_target: //:edgeclaw
+            bazel_target: //src:edgeclaw.exe
+            package_target: //:edgeclaw
           - target: edgeclaw_aarch64_macos
             runner: macos-14
             platform: //:aarch64_macos
-            bazel_target: //:edgeclaw
+            bazel_target: //src:edgeclaw.exe
+            package_target: //:edgeclaw
+          - target: edgeclaw_amd64_windows
+            runner: windows-latest
+            platform: //:amd64_windows
+            bazel_target: //src:edgeclaw.exe
+            package_target: //:edgeclaw
 
           - target: device_agent_amd64_linux
             runner: ubuntu-latest
             platform: //:amd64_linux
             bazel_target: //:device_agent
+            package_target: //:device_agent
           - target: device_agent_arm_linux
             runner: ubuntu-latest
             platform: //:arm_linux
             cross_compile: arm-linux-gnueabi
             apt_package: gcc-arm-linux-gnueabi
             bazel_target: //:device_agent
+            package_target: //:device_agent
           - target: device_agent_aarch64_linux
             runner: ubuntu-latest
             platform: //:aarch64_linux
             cross_compile: aarch64-linux-gnu
             apt_package: gcc-aarch64-linux-gnu
             bazel_target: //:device_agent
+            package_target: //:device_agent
           - target: device_agent_aarch64_macos
             runner: macos-14
             platform: //:aarch64_macos
             bazel_target: //:device_agent
+            package_target: //:device_agent
           - target: device_agent_aarch64_android
             runner: ubuntu-latest
             platform: //:aarch64_android
             bazel_target: //:device_agent
+            package_target: //:device_agent
           - target: device_agent_arm_android
             runner: ubuntu-latest
             platform: //:arm_android
             bazel_target: //:device_agent
+            package_target: //:device_agent
 
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
@@ -92,4 +107,4 @@ jobs:
         env:
           CROSS_COMPILE: ${{ matrix.cross_compile && format('/usr/bin/{0}-', matrix.cross_compile) || '' }}
         run: |
-          bazel build --compilation_mode=opt --platforms=${{ matrix.platform }} ${{ matrix.bazel_target }}
+          bazel build --compilation_mode=opt --verbose_failures --platforms=${{ matrix.platform }} ${{ matrix.bazel_target }} ${{ matrix.package_target }}
