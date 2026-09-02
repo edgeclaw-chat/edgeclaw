@@ -1,10 +1,9 @@
 #pragma once
 
 #include "edc_message.hpp"
+#include "edc_scroll_view.hpp"
 #include "ftxui/component/component_base.hpp"
-#include "ftxui/screen/box.hpp"
 #include <memory>
-#include <vector>
 
 namespace edc
 {
@@ -37,17 +36,8 @@ class ChatWidget : public ::ftxui::ComponentBase
     bool ScrollToBottom();
 
   private:
-    int MaxScroll() const;
-
-    std::vector<std::shared_ptr<ftxui::ComponentBase>> messages_;
     ::ftxui::Component container_;
-
-    // Written by the scroll node during layout, read back when handling events.
-    int scroll_offset_ = 0;
-    int content_height_ = 0;
-    int viewport_height_ = 0;
-    bool stick_to_bottom_ = true;
-    ::ftxui::Box box_;
+    std::shared_ptr<ScrollView> scroll_view_;
 };
 
 } // namespace edc

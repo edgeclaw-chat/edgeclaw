@@ -3,12 +3,14 @@ cc_library(
     srcs = [
         "edc_chat_widget.cpp",
         "edc_message.cpp",
+        "edc_scroll_view.cpp",
         "markdown.cpp",
     ],
 
     hdrs = [
         "edc_chat_widget.hpp",
         "edc_message.hpp",
+        "edc_scroll_view.hpp",
         "markdown.hpp",
     ],
     deps = [
