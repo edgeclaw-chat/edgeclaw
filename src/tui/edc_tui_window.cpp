@@ -37,8 +37,9 @@ TUIWindow::TUIWindow() : input_text_("")
 
 void TUIWindow::Submit()
 {
-    // Trim first: even without the Input's own Return handling, a message may be
-    // all whitespace (e.g. Alt+Enter then Enter), which should not be sent.
+    // Whitespace-only input (spaces, or a bare Alt+Enter then Enter) is not a
+    // message. Input never inserts a '\n' on Return because OnEvent intercepts
+    // Enter before it reaches the box, so a trim is just a cheap guard.
     const auto first = input_text_.find_first_not_of(" \t\r\n");
     if (first == std::string::npos)
     {
@@ -56,7 +57,13 @@ void TUIWindow::Submit()
 
 ::ftxui::Element TUIWindow::OnRender()
 {
-    return ::ftxui::vbox({chat_widget_->Render() | ::ftxui::flex, ::ftxui::separator(), input_->Render(),
+    // The "❯" prompt marks the input row, mirroring the heavy blue rule that
+    // prefixes a UserMessage, so user-typed text and submitted text read as the
+    // same voice.
+    auto prompt = ::ftxui::text("❯ ") | ::ftxui::color(::ftxui::Color::Blue) | ::ftxui::bold;
+    auto input_row = ::ftxui::hbox({prompt, input_->Render() | ::ftxui::flex});
+
+    return ::ftxui::vbox({chat_widget_->Render() | ::ftxui::flex, ::ftxui::separator(), input_row,
                           ::ftxui::separator(), footer_->Render()});
 }
 
