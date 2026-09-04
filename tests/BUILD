@@ -269,3 +269,13 @@ cc_test(
     ],
     linkopts = LINK_OPTS + ["-lstdc++"],
 )
+
+cc_test(
+    name = "test_chat_scroll",
+    srcs = ["test_chat_scroll.cpp"],
+    deps = [
+        "//src:agent",
+        "//src/tui:tui",
+    ],
+    linkopts = LINK_OPTS + ["-lstdc++"],
+)
