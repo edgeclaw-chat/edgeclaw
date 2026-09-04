@@ -11,7 +11,9 @@ int main()
     auto screen = ScreenInteractive::Fullscreen();
 
     window |= CatchEvent([&](Event e) -> bool {
-        if (e == Event::Escape || e == Event::Character('q') || e == Event::CtrlC)
+        // No 'q' here: the window now has a text input, so a bare letter must
+        // reach the box instead of quitting.
+        if (e == Event::Escape || e == Event::CtrlC)
         {
             screen.Exit();
             return true;
