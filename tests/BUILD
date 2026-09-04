@@ -261,8 +261,8 @@ cc_test(
 )
 
 cc_test(
-    name = "test_chat_scroll",
-    srcs = ["test_chat_scroll.cpp"],
+    name = "demo_tui_window",
+    srcs = ["demo_tui_window.cpp"],
     deps = [
         "//src:agent",
         "//src/tui:tui",

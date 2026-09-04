@@ -79,15 +79,15 @@ int main()
 
     // ---- ToolMessage: a grey header line above the raw output ----
     chat->AddMessage(std::make_shared<edc::ToolMessage>("Read(src/tui/edc_chat_widget.cpp)",
-                                                       "     1\t#include \"edc_chat_widget.hpp\"\n"
-                                                       "     2\t#include \"ftxui/component/component.hpp\"\n"
-                                                       "     3\t#include \"ftxui/dom/elements.hpp\"\n"
-                                                       "     4\t\n"
-                                                       "     5\tnamespace edc\n"
-                                                       "     6\t{\n"
-                                                       "     7\t\n"
-                                                       "     8\tconstexpr int kWheelStep = 3;",
-                                                       now));
+                                                        "     1\t#include \"edc_chat_widget.hpp\"\n"
+                                                        "     2\t#include \"ftxui/component/component.hpp\"\n"
+                                                        "     3\t#include \"ftxui/dom/elements.hpp\"\n"
+                                                        "     4\t\n"
+                                                        "     5\tnamespace edc\n"
+                                                        "     6\t{\n"
+                                                        "     7\t\n"
+                                                        "     8\tconstexpr int kWheelStep = 3;",
+                                                        now));
 
     chat->AddMessage(std::make_shared<edc::UserMessage>("表格和分割线也一起看看。", now));
 
@@ -102,35 +102,32 @@ int main()
 
 #if 1
     // ---- Horizontal rule ----
-    chat->AddMessage(std::make_shared<edc::Message>(
-        "上面是一条分割线：\n\n"
-        "---\n\n"
-        "分割线下面的文字。",
-        now));
+    chat->AddMessage(std::make_shared<edc::Message>("上面是一条分割线：\n\n"
+                                                    "---\n\n"
+                                                    "分割线下面的文字。",
+                                                    now));
 
     // ---- Table ----
-    chat->AddMessage(std::make_shared<edc::Message>(
-        "表格：\n\n"
-        "| 列 A | 列 B | 列 C |\n"
-        "|------|------|------|\n"
-        "| a1   | b1   | c1   |\n"
-        "| a2   | b2   | c2   |",
-        now));
+    chat->AddMessage(std::make_shared<edc::Message>("表格：\n\n"
+                                                    "| 列 A | 列 B | 列 C |\n"
+                                                    "|------|------|------|\n"
+                                                    "| a1   | b1   | c1   |\n"
+                                                    "| a2   | b2   | c2   |",
+                                                    now));
 
     // ---- Mixed complex content ----
-    chat->AddMessage(std::make_shared<edc::Message>(
-        "## 综合测试\n"
-        "这是一段包含多种元素的段落：**粗体**、*斜体*、`code`、\n"
-        "[链接](https://example.com) 和 ~~删除线~~。\n\n"
-        "> 引用：这是最重要的部分。\n\n"
-        "有序：\n"
-        "1. 你好\n"
-        "2. 世界\n\n"
-        "```\n"
-        "$ echo hello\n"
-        "hello\n"
-        "```",
-        now));
+    chat->AddMessage(std::make_shared<edc::Message>("## 综合测试\n"
+                                                    "这是一段包含多种元素的段落：**粗体**、*斜体*、`code`、\n"
+                                                    "[链接](https://example.com) 和 ~~删除线~~。\n\n"
+                                                    "> 引用：这是最重要的部分。\n\n"
+                                                    "有序：\n"
+                                                    "1. 你好\n"
+                                                    "2. 世界\n\n"
+                                                    "```\n"
+                                                    "$ echo hello\n"
+                                                    "hello\n"
+                                                    "```",
+                                                    now));
 #endif
 
     // A second thought near the tail, so expanding one is visible without
@@ -147,8 +144,8 @@ int main()
     auto screen = ScreenInteractive::Fullscreen();
 
     auto root = Renderer(chat, [&] {
-        auto hint = text(" 滚轮/↑↓/PgUp/PgDn/Home/End 滚动   点击 Thought 展开   q 退出 ") |
-                    color(Color::RGB(147, 147, 147));
+        auto hint =
+            text(" 滚轮/↑↓/PgUp/PgDn/Home/End 滚动   点击 Thought 展开   q 退出 ") | color(Color::RGB(147, 147, 147));
         return vbox({chat->Render() | flex, separator(), hint});
     });
 

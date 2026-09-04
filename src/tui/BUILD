@@ -2,6 +2,7 @@ cc_library(
     name = "tui",
     srcs = [
         "edc_chat_widget.cpp",
+        "edc_tui_window.cpp",
         "edc_message.cpp",
         "edc_scroll_view.cpp",
         "markdown.cpp",
@@ -9,6 +10,7 @@ cc_library(
 
     hdrs = [
         "edc_chat_widget.hpp",
+        "edc_tui_window.hpp",
         "edc_message.hpp",
         "edc_scroll_view.hpp",
         "markdown.hpp",
