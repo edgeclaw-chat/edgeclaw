@@ -31,5 +31,10 @@ class TUIWindow : public ::ftxui::ComponentBase
     // outlive the container that borrows it, so it is declared first.
     int focused_ = 1;
     ::ftxui::Component container_;
+
+    // True while consuming a bracketed-paste block (between ESC[200~ and
+    // ESC[201~). Inside it, Return/Character("\n") are inserted as newlines
+    // rather than submitted, so a pasted multi-line block becomes one draft.
+    bool in_paste_ = false;
 };
 } // namespace edc

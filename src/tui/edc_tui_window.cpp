@@ -4,11 +4,30 @@
 #include "ftxui/component/component_options.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/dom/elements.hpp"
+#include <cstdio>
 #include <ctime>
 #include <memory>
 
 namespace edc
 {
+namespace
+{
+// Ask the terminal to wrap pasted content in ESC[200~ ... ESC[201~ so the
+// application can tell a paste apart from typed input. FTXUI does not enable
+// this itself, so the window does it on construction and disables it on exit.
+// Sent straight to stdout; harmless on terminals that do not understand it.
+void EnableBracketedPaste()
+{
+    std::fputs("\x1b[?2004h", stdout);
+    std::fflush(stdout);
+}
+void DisableBracketedPaste()
+{
+    std::fputs("\x1b[?2004l", stdout);
+    std::fflush(stdout);
+}
+} // namespace
+
 TUIWindow::TUIWindow() : input_text_("")
 {
     chat_widget_ = std::make_shared<ChatWidget>();
@@ -33,6 +52,8 @@ TUIWindow::TUIWindow() : input_text_("")
 
     container_ = ::ftxui::Container::Vertical({chat_widget_, input_}, &focused_);
     Add(container_);
+
+    EnableBracketedPaste();
 }
 
 void TUIWindow::Submit()
@@ -69,6 +90,38 @@ void TUIWindow::Submit()
 
 bool TUIWindow::OnEvent(::ftxui::Event event)
 {
+    // Bracketed paste: the terminal wraps pasted content in ESC[200~ ...
+    // ESC[201~. FTXUI delivers each marker as a single Event::Special, so the
+    // window can track paste state here. Inside a paste, Return and '\n' are
+    // inserted as newlines instead of submitted, so a multi-line block becomes
+    // one draft rather than one message per line.
+    static const ::ftxui::Event kPasteStart = ::ftxui::Event::Special("\x1b[200~");
+    static const ::ftxui::Event kPasteEnd = ::ftxui::Event::Special("\x1b[201~");
+
+    if (event == kPasteStart)
+    {
+        in_paste_ = true;
+        return true;
+    }
+    if (event == kPasteEnd)
+    {
+        in_paste_ = false;
+        return true;
+    }
+
+    if (in_paste_)
+    {
+        // Everything inside a paste is text. Return/newline becomes a line
+        // break; other characters flow straight through to the Input, which
+        // handles cursor movement and UTF-8. Nothing here submits.
+        if (event == ::ftxui::Event::Return)
+        {
+            input_->OnEvent(::ftxui::Event::Character("\n"));
+            return true;
+        }
+        return input_->OnEvent(event);
+    }
+
     // Alt+Enter arrives as ESC-prefixed Return: the terminal (raw mode, ICRNL
     // off) sends CR for Enter, and Alt adds the ESC prefix, so the parser emits
     // a single Special({27, 13}). ESC+LF is accepted too for terminals that
@@ -95,5 +148,6 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
 
 TUIWindow::~TUIWindow()
 {
+    DisableBracketedPaste();
 }
 } // namespace edc
