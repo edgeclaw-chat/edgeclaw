@@ -1,3 +1,12 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+
+LINK_OPTS = select({
+    "//:macos_debug": ["-lresolv", "-lc++"],
+    "//:macos": ["-lresolv", "-lc++"],
+    "//:windows": ["-lws2_32", "-lbcrypt", "-luserenv"],
+    "//conditions:default": ["-static", "-Wl,--no-gc-sections"],
+})
+
 cc_library(
     name = "tui",
     srcs = [
@@ -20,4 +29,28 @@ cc_library(
         "@ftxui//:ftxui",
     ],
     visibility = ["//tests:__pkg__"],
+)
+
+cc_binary(
+    name = "edgeclaw_tui",
+    srcs = [
+        "main.cpp",
+    ],
+    deps = [
+        "//src/agent:agent",
+        "//src/core:core",
+        "//src/shell:shell",
+        "//src:utlist_fix",
+        ":tui",
+    ] + select({
+        "//:windows": [],
+        "//conditions:default": ["//src/device:device"],
+    }),
+    linkstatic = True,
+    linkopts = LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+    visibility = ["//visibility:public"],
 )
