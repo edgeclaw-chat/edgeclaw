@@ -23,7 +23,8 @@ class TUIWindow : public ::ftxui::ComponentBase
 
     std::shared_ptr<edc::ChatWidget> chat_widget_;
     ::ftxui::Component input_;
-    ::ftxui::Component footer_;
+    ::ftxui::Element footer_;
+    ::ftxui::Element prompt_;
     std::string input_text_;
 
     // Routes keyboard focus between the chat log and the input; the input

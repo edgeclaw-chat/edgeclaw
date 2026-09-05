@@ -48,10 +48,10 @@ bool ChatWidget::OnEvent(::ftxui::Event event)
     // fallback; show a blank area instead so an empty chat is just empty.
     if (container_->ChildCount() == 0)
     {
-        return ::ftxui::filler() | ::ftxui::bgcolor(::ftxui::Color::RGB(10, 10, 10));
+        return ::ftxui::filler();
     }
 
-    return scroll_view_->Render() | ::ftxui::bgcolor(::ftxui::Color::RGB(10, 10, 10));
+    return scroll_view_->Render();
 }
 
 } // namespace edc

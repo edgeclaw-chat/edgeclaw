@@ -12,10 +12,6 @@ namespace edc
 {
 namespace
 {
-// Ask the terminal to wrap pasted content in ESC[200~ ... ESC[201~ so the
-// application can tell a paste apart from typed input. FTXUI does not enable
-// this itself, so the window does it on construction and disables it on exit.
-// Sent straight to stdout; harmless on terminals that do not understand it.
 void EnableBracketedPaste()
 {
     std::fputs("\x1b[?2004h", stdout);
@@ -32,10 +28,9 @@ TUIWindow::TUIWindow() : input_text_("")
 {
     chat_widget_ = std::make_shared<ChatWidget>();
 
-    footer_ = ::ftxui::Renderer([]() {
-        return ::ftxui::text(" Enter 发送   Alt+Enter 换行   Tab 切换输入/滚动   滚轮/↑↓ 滚动   Esc 退出 ") |
-               ::ftxui::color(::ftxui::Color::RGB(147, 147, 147));
-    });
+    footer_ = ::ftxui::text(" Enter 发送   Alt+Enter 换行   Tab 切换输入/滚动   滚轮/↑↓ 滚动   Esc 退出 ") |
+              ::ftxui::color(::ftxui::Color::RGB(147, 147, 147));
+    prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(::ftxui::Color::Blue) | ::ftxui::bold;
 
     ::ftxui::InputOption option;
     option.multiline = true;
@@ -58,9 +53,6 @@ TUIWindow::TUIWindow() : input_text_("")
 
 void TUIWindow::Submit()
 {
-    // Whitespace-only input (spaces, or a bare Alt+Enter then Enter) is not a
-    // message. Input never inserts a '\n' on Return because OnEvent intercepts
-    // Enter before it reaches the box, so a trim is just a cheap guard.
     const auto first = input_text_.find_first_not_of(" \t\r\n");
     if (first == std::string::npos)
     {
@@ -78,14 +70,11 @@ void TUIWindow::Submit()
 
 ::ftxui::Element TUIWindow::OnRender()
 {
-    // The "❯" prompt marks the input row, mirroring the heavy blue rule that
-    // prefixes a UserMessage, so user-typed text and submitted text read as the
-    // same voice.
-    auto prompt = ::ftxui::text("❯ ") | ::ftxui::color(::ftxui::Color::Blue) | ::ftxui::bold;
-    auto input_row = ::ftxui::hbox({prompt, input_->Render() | ::ftxui::flex});
+    auto input_row = ::ftxui::hbox({prompt_, input_->Render() | ::ftxui::flex});
 
-    return ::ftxui::vbox({chat_widget_->Render() | ::ftxui::flex, ::ftxui::separator(), input_row,
-                          ::ftxui::separator(), footer_->Render()});
+    return ::ftxui::vbox({chat_widget_->Render() | ::ftxui::flex, ::ftxui::separator(), input_row, ::ftxui::separator(),
+                          footer_}) |
+           ::ftxui::bgcolor(::ftxui::Color::RGB(10, 10, 10));
 }
 
 bool TUIWindow::OnEvent(::ftxui::Event event)
