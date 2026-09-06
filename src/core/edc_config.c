@@ -177,6 +177,10 @@ struct edc_config *edc_config_load(const char *edc_home)
     {
         config->channel.type = edc_channel_cli;
     }
+    else if (strcmp(type, "adapter") == 0)
+    {
+        config->channel.type = edc_channel_adapter;
+    }
     else
     {
         log_error("unknown channel type: %s, only 'cli' is supported", type);

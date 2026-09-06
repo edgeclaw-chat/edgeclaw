@@ -48,6 +48,7 @@ TUIWindow::TUIWindow() : input_text_("")
     container_ = ::ftxui::Container::Vertical({chat_widget_, input_}, &focused_);
     Add(container_);
 
+    agent = edc_tui_agent_new(false, false);
     EnableBracketedPaste();
 }
 
@@ -137,6 +138,7 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
 
 TUIWindow::~TUIWindow()
 {
+    edc_tui_agent_free(agent);
     DisableBracketedPaste();
 }
 } // namespace edc

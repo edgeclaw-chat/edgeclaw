@@ -25,6 +25,7 @@ cc_library(
         "markdown.hpp",
     ],
     deps = [
+        "//src/agent:agent",
         "@md4c//:md4c",
         "@ftxui//:ftxui",
     ],

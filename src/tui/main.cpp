@@ -1,5 +1,5 @@
-#include "ftxui/component/screen_interactive.hpp"
 #include "edc_tui_window.hpp"
+#include "ftxui/component/screen_interactive.hpp"
 #include <memory>
 
 using namespace ftxui;

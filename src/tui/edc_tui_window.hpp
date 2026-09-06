@@ -1,3 +1,4 @@
+#include "edc_tui_agent_bridge.h"
 #include <ftxui/component/component.hpp>
 #include <memory>
 #include <string>
@@ -37,5 +38,7 @@ class TUIWindow : public ::ftxui::ComponentBase
     // ESC[201~). Inside it, Return/Character("\n") are inserted as newlines
     // rather than submitted, so a pasted multi-line block becomes one draft.
     bool in_paste_ = false;
+
+    struct edc_agent *agent = NULL;
 };
 } // namespace edc

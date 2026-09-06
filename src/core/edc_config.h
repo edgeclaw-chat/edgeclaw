@@ -14,6 +14,7 @@ struct llm_api_conf
 typedef enum
 {
     edc_channel_cli,
+    edc_channel_adapter,
 } edc_channel_type;
 
 struct channel_conf

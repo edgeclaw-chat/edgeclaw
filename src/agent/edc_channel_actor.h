@@ -75,11 +75,7 @@ extern void edc_channel_actor_free(edc_actor_t *actor);
 extern void edc_channel_actor_set_observer(edc_actor_t *actor, edc_actor_t *observer);
 extern void edc_channel_actor_add(edc_actor_t *actor, edc_channel_type type, edc_actor_handler_t handler);
 
-extern struct edc_channel *edc_channel_cli_new(void);
-extern struct edc_channel *edc_channel_copy(struct edc_channel *channel);
-extern cJSON *edc_channel_to_json(struct edc_channel *channel);
 extern cJSON *edc_channel_type_to_json(edc_channel_type type);
-extern struct edc_channel *edc_channel_from_json(cJSON *channel);
 extern edc_channel_type edc_channel_type_from_json(cJSON *channel);
 extern void edc_channel_free(struct edc_channel *channel);
 

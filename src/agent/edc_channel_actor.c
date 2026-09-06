@@ -50,27 +50,6 @@ cJSON *edc_channel_type_to_json(edc_channel_type type)
     return data;
 }
 
-cJSON *edc_channel_to_json(struct edc_channel *channel)
-{
-    return edc_channel_type_to_json(channel->type);
-}
-
-struct edc_channel *edc_channel_from_json(cJSON *data)
-{
-    cJSON *type = cJSON_GetObjectItem(data, "type");
-    if (!type || !cJSON_IsString(type))
-    {
-        return NULL;
-    }
-
-    if (strcmp(cJSON_GetStringValue(type), "edc_channel_cli") == 0)
-    {
-        return edc_channel_cli_new();
-    }
-
-    return NULL;
-}
-
 edc_channel_type edc_channel_type_from_json(cJSON *data)
 {
     cJSON *type = cJSON_GetObjectItem(data, "type");
@@ -98,36 +77,6 @@ void edc_channel_free(struct edc_channel *channel)
 
     free(channel);
 }
-
-struct edc_channel *edc_channel_copy(struct edc_channel *rhs)
-{
-    if (!rhs)
-        return NULL;
-
-    if (rhs->type == edc_channel_cli)
-    {
-        return edc_channel_cli_new();
-    }
-
-    return NULL;
-}
-
-#define __MOVE(lhs, rhs, member)                                                                                       \
-    ((lhs)->member) = ((rhs)->member);                                                                                 \
-    ((rhs)->member) = NULL
-struct edc_channel *edc_channel_move(struct edc_channel *rhs)
-{
-    struct edc_channel *lhs = g_new0(struct edc_channel, 1);
-    lhs->type = rhs->type;
-
-    if (rhs->type == edc_channel_cli)
-    {
-    }
-
-    return lhs;
-}
-
-#undef __MOVE
 
 struct edc_channel_message *edc_channel_message_new(edc_channel_type type, sds content)
 {
@@ -159,6 +108,9 @@ edc_actor_t *edc_channel_actor_new(struct channel_conf *config, const char *work
     {
         edc_channel_cli_init(actor);
     }
+
+    state->adapter.instance = NULL;
+    state->adapter.on_actor_message_send_fn = NULL;
     return actor;
 }
 
