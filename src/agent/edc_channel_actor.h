@@ -62,6 +62,12 @@ typedef struct
             int term_width;
             int prev_lines;
         } cli;
+
+        struct
+        {
+            void *instance;
+            void (*on_actor_message_send_fn)(void *instance, struct edc_actor_msg *msg);
+        } adapter;
     };
 } edc_channel_actor_state_t;
 

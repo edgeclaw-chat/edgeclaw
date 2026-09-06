@@ -28,7 +28,7 @@ cc_library(
         "@md4c//:md4c",
         "@ftxui//:ftxui",
     ],
-    visibility = ["//tests:__pkg__"],
+    visibility = ["//visibility:private"],
 )
 
 cc_binary(
