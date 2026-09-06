@@ -14,7 +14,6 @@ struct edc_task_group
     struct edc_task *members; /* 链表头: group 内所有 task (含 leader) */
     int member_count;
 
-    struct edc_channel *channel; /* 绑定的输出通道 */
     bool is_orphaned;            /* leader 退出后置 true */
 
     cJSON *history; /* 组内消息历史 (上下文共享) */

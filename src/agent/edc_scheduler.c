@@ -82,7 +82,7 @@ char *edc_scheduler_gen_task_id(struct edc_scheduler *sched)
     return strdup(buf);
 }
 
-struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const char *desc, struct edc_channel *channel)
+struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const char *desc, edc_channel_type channel_type)
 {
     if (!sched)
         return NULL;
@@ -91,7 +91,7 @@ struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const ch
     const char *sid = "sess-1"; /* Phase 4: from session */
     const char *gid = sched->foreground_group ? sched->foreground_group->group_id : tid;
 
-    struct edc_task *task = edc_task_new(tid, sid, gid, desc, channel);
+    struct edc_task *task = edc_task_new(tid, sid, gid, desc, channel_type);
     task->state = TASK_WAITING_INPUT;
     free(tid);
 
@@ -276,8 +276,7 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     /* 没有可 attach 的 task → 创建新 task */
     if (!task)
     {
-        task = edc_scheduler_create_task(sched, input->content, input->channel);
-        input->channel = NULL;
+        task = edc_scheduler_create_task(sched, input->content, input->type);
         edc_session_set_active_task(sched->session, task);
 
         if (!fg || fg->is_orphaned || fg->member_count == 0)

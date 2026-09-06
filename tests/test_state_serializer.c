@@ -162,8 +162,7 @@ static void test_single_task(void)
     struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
 
     /* Build a task with one completed turn */
-    struct edc_channel *ch = edc_channel_cli_new();
-    struct edc_task *task = edc_task_new("task-1", "sess-st", "task-1", "do something", ch);
+    struct edc_task *task = edc_task_new("task-1", "sess-st", "task-1", "do something", edc_channel_cli);
     edc_task_set_state(task, TASK_WAITING_INPUT);
     edc_task_set_state(task, TASK_LLM_PROCESSING);
     edc_task_set_state(task, TASK_COMPLETED);
@@ -256,21 +255,20 @@ static void test_fork_chain(void)
     struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
 
     /* Create parent task */
-    struct edc_channel *ch = edc_channel_cli_new();
     struct edc_task *parent = edc_task_new("task-parent", "sess-fork", "task-parent",
-                                            "parent task", ch);
+                                            "parent task", edc_channel_cli);
     parent->is_group_leader = 1;
     edc_task_set_state(parent, TASK_WAITING_INPUT);
     edc_task_set_state(parent, TASK_LLM_PROCESSING);
     edc_task_set_state(parent, TASK_COMPLETED);
 
     /* Create fork children */
-    struct edc_task *child1 = edc_task_fork(parent, "task-child1", "child 1", 10, NULL);
+    struct edc_task *child1 = edc_task_fork(parent, "task-child1", "child 1", 10, edc_channel_cli);
     edc_task_set_state(child1, TASK_WAITING_INPUT);
     edc_task_set_state(child1, TASK_LLM_PROCESSING);
     edc_task_set_state(child1, TASK_COMPLETED);
 
-    struct edc_task *child2 = edc_task_fork(parent, "task-child2", "child 2", 10, NULL);
+    struct edc_task *child2 = edc_task_fork(parent, "task-child2", "child 2", 10, edc_channel_cli);
     edc_task_set_state(child2, TASK_WAITING_INPUT);
 
     /* Create group, add all tasks */
@@ -334,18 +332,17 @@ static void test_dependency_graph(void)
     struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
 
     /* Create tasks: A → (JOIN) → B → (JOIN) → C */
-    struct edc_channel *ch = edc_channel_cli_new();
-    struct edc_task *ta = edc_task_new("task-A", "sess-dep", "task-A", "source A", ch);
+    struct edc_task *ta = edc_task_new("task-A", "sess-dep", "task-A", "source A", edc_channel_cli);
     ta->is_group_leader = 1;
     edc_task_set_state(ta, TASK_WAITING_INPUT);
     edc_task_set_state(ta, TASK_LLM_PROCESSING);
     edc_task_set_state(ta, TASK_COMPLETED);
     ta->output = sdsnew("output from A");
 
-    struct edc_task *tb = edc_task_new("task-B", "sess-dep", "task-A", "middle B", NULL);
+    struct edc_task *tb = edc_task_new("task-B", "sess-dep", "task-A", "middle B", edc_channel_cli);
     edc_task_set_state(tb, TASK_WAITING_DEPS); /* must be set before adding deps */
 
-    struct edc_task *tc = edc_task_new("task-C", "sess-dep", "task-A", "sink C", NULL);
+    struct edc_task *tc = edc_task_new("task-C", "sess-dep", "task-A", "sink C", edc_channel_cli);
     edc_task_set_state(tc, TASK_WAITING_DEPS);
 
     /* Add dependencies: B depends on A, C depends on B */
@@ -430,7 +427,7 @@ static void test_complex_topology(void)
 
     /* Group 1: 3 tasks */
     struct edc_task *g1_leader = edc_task_new("g1-L", "sess-cplx", "g1-L",
-                                               "group1 leader", edc_channel_cli_new());
+                                               "group1 leader", edc_channel_cli);
     g1_leader->is_group_leader = 1;
     edc_task_set_state(g1_leader, TASK_WAITING_INPUT);
     edc_task_set_state(g1_leader, TASK_LLM_PROCESSING);
@@ -438,11 +435,11 @@ static void test_complex_topology(void)
     g1_leader->output = sdsnew("g1 leader done");
 
     struct edc_task *g1_m1 = edc_task_new("g1-M1", "sess-cplx", "g1-L",
-                                           "group1 member1", NULL);
+                                           "group1 member1", edc_channel_cli);
     edc_task_set_state(g1_m1, TASK_WAITING_INPUT);
 
     struct edc_task *g1_m2 = edc_task_new("g1-M2", "sess-cplx", "g1-L",
-                                           "group1 member2", NULL);
+                                           "group1 member2", edc_channel_cli);
     edc_task_set_state(g1_m2, TASK_IDLE); /* will be filtered out! */
 
     struct edc_task_group *group1 = edc_task_group_new(g1_leader);
@@ -452,14 +449,14 @@ static void test_complex_topology(void)
 
     /* Group 2: 2 tasks, normal group */
     struct edc_task *g2_leader = edc_task_new("g2-L", "sess-cplx", "g2-L",
-                                               "group2 leader", edc_channel_cli_new());
+                                               "group2 leader", edc_channel_cli);
     g2_leader->is_group_leader = 1;
     edc_task_set_state(g2_leader, TASK_WAITING_INPUT);
     edc_task_set_state(g2_leader, TASK_LLM_PROCESSING);
     edc_task_set_state(g2_leader, TASK_COMPLETED);
 
     struct edc_task *g2_m1 = edc_task_new("g2-M1", "sess-cplx", "g2-L",
-                                           "group2 member1", NULL);
+                                           "group2 member1", edc_channel_cli);
     edc_task_set_state(g2_m1, TASK_WAITING_INPUT);
 
     struct edc_task_group *group2 = edc_task_group_new(g2_leader);
@@ -538,14 +535,14 @@ static void test_state_degradation(void)
     struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
 
     struct edc_task *t1 = edc_task_new("t-llm", "sess-deg", "t-llm",
-                                        "llm processing", edc_channel_cli_new());
+                                        "llm processing", edc_channel_cli);
     t1->is_group_leader = 1;
     edc_task_set_state(t1, TASK_WAITING_INPUT);
     edc_task_set_state(t1, TASK_LLM_PROCESSING);
     /* stays in LLM_PROCESSING */
 
     struct edc_task *t2 = edc_task_new("t-tool", "sess-deg", "t-llm",
-                                        "tool calling", NULL);
+                                        "tool calling", edc_channel_cli);
     edc_task_set_state(t2, TASK_WAITING_INPUT);
     edc_task_set_state(t2, TASK_LLM_PROCESSING);
     edc_task_set_state(t2, TASK_TOOL_CALLING);
@@ -601,18 +598,18 @@ static void test_filter_transient_states(void)
     struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
 
     struct edc_task *leader = edc_task_new("t-ok", "sess-filt", "t-ok",
-                                            "good task", edc_channel_cli_new());
+                                            "good task", edc_channel_cli);
     leader->is_group_leader = 1;
     edc_task_set_state(leader, TASK_WAITING_INPUT);
     edc_task_set_state(leader, TASK_LLM_PROCESSING);
     edc_task_set_state(leader, TASK_COMPLETED);
 
     struct edc_task *idle_t = edc_task_new("t-idle", "sess-filt", "t-ok",
-                                            "idle task", NULL);
+                                            "idle task", edc_channel_cli);
     /* stays IDLE */
 
     struct edc_task *canc_t = edc_task_new("t-canc", "sess-filt", "t-ok",
-                                            "cancelled task", NULL);
+                                            "cancelled task", edc_channel_cli);
     edc_task_set_state(canc_t, TASK_WAITING_INPUT);
     edc_task_set_state(canc_t, TASK_CANCELLED);
 
@@ -662,7 +659,7 @@ static void test_active_turn(void)
     struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
 
     struct edc_task *task = edc_task_new("t-at", "sess-at", "t-at",
-                                          "has active turn", edc_channel_cli_new());
+                                          "has active turn", edc_channel_cli);
     task->is_group_leader = 1;
     edc_task_set_state(task, TASK_WAITING_INPUT);
     edc_task_set_state(task, TASK_LLM_PROCESSING);
@@ -738,7 +735,7 @@ static void test_extra_fields(void)
     struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
 
     struct edc_task *task = edc_task_new("t-extra", "sess-extra", "t-extra",
-                                          "extra fields", edc_channel_cli_new());
+                                          "extra fields", edc_channel_cli);
     task->is_group_leader = 1;
     edc_task_set_state(task, TASK_WAITING_INPUT);
     edc_task_set_state(task, TASK_LLM_PROCESSING);
@@ -997,7 +994,7 @@ static void test_compact_messages(void)
      * when edc_session_add_turn moves messages from turn to session. */
 
     struct edc_task *task = edc_task_new("t-cpt", "sess-cpt", "t-cpt",
-                                          "compact test", edc_channel_cli_new());
+                                          "compact test", edc_channel_cli);
     task->is_group_leader = 1;
     edc_task_set_state(task, TASK_WAITING_INPUT);
     edc_task_set_state(task, TASK_LLM_PROCESSING);
@@ -1115,7 +1112,7 @@ static void test_empty_turn(void)
     struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
 
     struct edc_task *task = edc_task_new("t-et", "sess-et", "t-et",
-                                          "empty turn task", edc_channel_cli_new());
+                                          "empty turn task", edc_channel_cli);
     task->is_group_leader = 1;
     edc_task_set_state(task, TASK_WAITING_INPUT);
     edc_task_set_state(task, TASK_LLM_PROCESSING);
@@ -1174,18 +1171,18 @@ static void test_orphaned_group(void)
 
     /* Create group with leader + 2 members */
     struct edc_task *leader = edc_task_new("t-leader", "sess-orph", "t-leader",
-                                            "group leader", edc_channel_cli_new());
+                                            "group leader", edc_channel_cli);
     leader->is_group_leader = 1;
     edc_task_set_state(leader, TASK_WAITING_INPUT);
     edc_task_set_state(leader, TASK_LLM_PROCESSING);
     edc_task_set_state(leader, TASK_COMPLETED);
 
     struct edc_task *m1 = edc_task_new("t-m1", "sess-orph", "t-leader",
-                                        "member 1", NULL);
+                                        "member 1", edc_channel_cli);
     edc_task_set_state(m1, TASK_WAITING_INPUT);
 
     struct edc_task *m2 = edc_task_new("t-m2", "sess-orph", "t-leader",
-                                        "member 2", NULL);
+                                        "member 2", edc_channel_cli);
     edc_task_set_state(m2, TASK_WAITING_INPUT);
 
     struct edc_task_group *group = edc_task_group_new(leader);

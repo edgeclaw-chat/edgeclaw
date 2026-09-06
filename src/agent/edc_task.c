@@ -94,7 +94,7 @@ static bool edc_task_is_valid_transition(edc_task_state from, edc_task_state to)
 /* ── 生命周期 ──────────────────────────────────────────────── */
 
 struct edc_task *edc_task_new(const char *task_id, const char *session_id, const char *group_id, const char *desc,
-                              struct edc_channel *channel)
+                              edc_channel_type channel_type)
 {
     struct edc_task *task = g_new0(struct edc_task, 1);
     task->task_id = strdup(task_id);
@@ -103,7 +103,7 @@ struct edc_task *edc_task_new(const char *task_id, const char *session_id, const
     task->description = strdup(desc ? desc : "");
     task->state = TASK_IDLE;
     task->is_group_leader = 0;
-    task->channel = channel;
+    task->channel_type = channel_type;
 
     edc_queue_init(&task->turns);
 
@@ -111,7 +111,7 @@ struct edc_task *edc_task_new(const char *task_id, const char *session_id, const
 }
 
 struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,
-                               size_t fork_point_msg_count, struct edc_channel *channel)
+                               size_t fork_point_msg_count, edc_channel_type channel_type)
 {
     if (!parent)
         return NULL;
@@ -124,7 +124,7 @@ struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, con
         task_id = auto_id;
     }
 
-    struct edc_task *child = edc_task_new(task_id, parent->session_id, parent->group_id, desc, channel);
+    struct edc_task *child = edc_task_new(task_id, parent->session_id, parent->group_id, desc, channel_type);
     child->forked_from = parent;
     child->fork_point_msg_count = fork_point_msg_count;
     child->state = TASK_WAITING_INPUT;

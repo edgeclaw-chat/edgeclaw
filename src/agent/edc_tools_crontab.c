@@ -45,12 +45,12 @@ struct edc_tool_crontab_state
     sds workspace;
     bool once;
     edc_actor_t *scheduler;
-    struct edc_channel *channel;
+    edc_channel_type channel_type;
 };
 
 static struct edc_tool_crontab_state *edc_tool_crontab_state_new(uint64_t timeout_at, sds job_id, sds job_name,
                                                                  sds message, sds workspace, bool once,
-                                                                 edc_actor_t *scheduler, struct edc_channel *channel,
+                                                                 edc_actor_t *scheduler, edc_channel_type channel_type,
                                                                  struct edc_tool *tool)
 {
     struct edc_tool_crontab_state *state = calloc(1, sizeof(struct edc_tool_crontab_state));
@@ -61,7 +61,7 @@ static struct edc_tool_crontab_state *edc_tool_crontab_state_new(uint64_t timeou
     state->message = message;
     state->once = once;
     state->scheduler = scheduler;
-    state->channel = channel;
+    state->channel_type = channel_type;
     state->workspace = workspace;
     return state;
 }
@@ -75,8 +75,6 @@ static void on_crontab_timer_close(uv_handle_t *handle)
         sdsfree(state->job_name);
     if (state->message)
         sdsfree(state->message);
-    if (state->channel)
-        edc_channel_free(state->channel);
     if (state->workspace)
         sdsfree(state->workspace);
     free(state);
@@ -94,8 +92,6 @@ static void edc_tool_crontab_state_free(struct edc_tool_crontab_state *state)
             sdsfree(state->job_name);
         if (state->message)
             sdsfree(state->message);
-        if (state->channel)
-            edc_channel_free(state->channel);
         if (state->workspace)
             sdsfree(state->workspace);
         free(state);
@@ -331,9 +327,8 @@ static void edc_tool_crontab_on_timeout(uv_timer_t *timer)
     struct edc_tool *tool = state->tool;
     tool->priv = NULL;
 
-    struct edc_channel_message *message = edc_channel_message_new(state->channel, state->message);
+    struct edc_channel_message *message = edc_channel_message_new(state->channel_type, state->message);
     state->message = NULL;
-    state->channel = NULL;
 
     edc_actor_send(state->scheduler, edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, NULL, message,
                                                        (edc_actor_data_free_fn)edc_channel_message_free));
@@ -366,7 +361,7 @@ static void edc_tool_crontab_on_timeout(uv_timer_t *timer)
     cJSON_Delete(db);
 }
 
-static void edc_tool_crontab_update_task(const char *workspace, struct edc_channel *call_from, edc_actor_t *scheduler,
+static void edc_tool_crontab_update_task(const char *workspace, edc_channel_type call_from_type, edc_actor_t *scheduler,
                                          struct edc_tool *tool, char *job_id, char *job_name, char *job_message,
                                          int64_t run_at, bool once)
 {
@@ -386,7 +381,7 @@ static void edc_tool_crontab_update_task(const char *workspace, struct edc_chann
 
     struct edc_tool_crontab_state *state = edc_tool_crontab_state_new(
         run_at, sdsnew(job_id), sdsnew(job_name), edc_tool_crontab_build_task_message(job_name, job_message),
-        sdsnew(workspace), once, scheduler, call_from, tool);
+        sdsnew(workspace), once, scheduler, call_from_type, tool);
 
     uv_timer_init(scheduler->loop, &state->timer);
     uv_timer_start(&state->timer, edc_tool_crontab_on_timeout, (uint64_t)interval * 1000, 0);
@@ -440,7 +435,7 @@ static void edc_tool_crontab_schedule(const char *workspace, edc_actor_t *schedu
     struct edc_tool_crontab_state *state = tool->priv;
     if (!state || (next_time < state->timeout_at && !strcmp(job_id, state->job_id) == 0))
     {
-        edc_tool_crontab_update_task(workspace, edc_channel_from_json(channel), scheduler, tool, job_id, job_name,
+        edc_tool_crontab_update_task(workspace, edc_channel_type_from_json(channel), scheduler, tool, job_id, job_name,
                                      job_message, next_time, once);
     }
 }
@@ -518,7 +513,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
     cJSON_AddStringToObject(job, "job_id", job_id);
     free(job_id);
 
-    cJSON_AddItemToObject(job, "channel", edc_channel_to_json(ctx->call_from));
+    cJSON_AddItemToObject(job, "channel", edc_channel_type_to_json(ctx->call_from_type));
 
     cJSON *schedule = cJSON_AddObjectToObject(job, "schedule");
     cJSON_AddStringToObject(schedule, "tz", tz_name ? tz_name : "");

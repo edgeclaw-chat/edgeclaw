@@ -9,7 +9,6 @@
 
 struct edc_session;
 struct edc_config;
-struct edc_channel;
 struct edc_channel_message;
 
 struct edc_sched_task_entry;
@@ -78,7 +77,7 @@ extern edc_actor_t *edc_scheduler_get_actor(struct edc_scheduler *sched);
 
 extern char *edc_scheduler_gen_task_id(struct edc_scheduler *sched);
 extern struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const char *desc,
-                                                  struct edc_channel *channel);
+                                                  edc_channel_type channel_type);
 extern struct edc_task_group *edc_scheduler_create_group(struct edc_scheduler *sched, struct edc_task *leader);
 extern void edc_scheduler_add_group(struct edc_scheduler *sched, struct edc_task_group *group);
 

@@ -1,13 +1,13 @@
 #ifndef __EDC_SHELL_H__
 #define __EDC_SHELL_H__
 
+#include "edc_config.h"
 #include "edc_task_types.h"
 #include "sds.h"
 #include <stdbool.h>
 
 struct edc_agent;
 struct edc_actor;
-struct edc_channel;
 struct edc_channel_message;
 struct edc_cmd_task_opts;
 struct edc_task;
@@ -30,7 +30,7 @@ bool edc_shell_execute(struct edc_agent *agent, struct edc_actor *actor, struct 
 bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel_message *message);
 
 /* 通用 task 创建 + group 管理 + deps + turn + LLM 发送 */
-struct edc_task *edc_shell_spawn_task(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel *channel,
+struct edc_task *edc_shell_spawn_task(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type,
                                       struct edc_cmd_task_opts *opts, struct edc_task *prev_task,
                                       struct edc_task_group *target_group, const char *reply_prefix,
                                       struct edc_task_group **out_group, sds redirect_stdout, bool redirect_append,

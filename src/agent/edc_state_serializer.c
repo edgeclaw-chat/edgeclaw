@@ -161,12 +161,9 @@ static cJSON *task_to_json(struct edc_task *task, cJSON *messages_array)
         cJSON_AddStringToObject(tj, "prompt", task->prompt);
 
     /* ── channel ── */
-    if (task->channel)
-    {
-        cJSON *ch = edc_channel_to_json(task->channel);
-        if (ch)
-            cJSON_AddItemToObject(tj, "channel", ch);
-    }
+    cJSON *ch = edc_channel_type_to_json(task->channel_type);
+    if (ch)
+        cJSON_AddItemToObject(tj, "channel", ch);
 
     /* ── fork chain ── */
     if (task->forked_from)
@@ -256,14 +253,6 @@ static cJSON *group_to_json(struct edc_task_group *group)
         cJSON_AddItemToArray(members, cJSON_CreateString(m->task_id ? m->task_id : ""));
     }
     cJSON_AddItemToObject(gj, "member_task_ids", members);
-
-    /* channel */
-    if (group->channel)
-    {
-        cJSON *ch = edc_channel_to_json(group->channel);
-        if (ch)
-            cJSON_AddItemToObject(gj, "channel", ch);
-    }
 
     return gj;
 }
@@ -612,11 +601,11 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             continue;
 
         cJSON *ch_json = cJSON_GetObjectItem(tj, "channel");
-        struct edc_channel *ch = ch_json ? edc_channel_from_json(ch_json) : NULL;
+        edc_channel_type ch_type = ch_json ? edc_channel_type_from_json(ch_json) : edc_channel_cli;
 
         struct edc_task *task = edc_task_new(task_id, cJSON_GetStringValue(cJSON_GetObjectItem(tj, "session_id")) ?: "",
                                              cJSON_GetStringValue(cJSON_GetObjectItem(tj, "group_id")) ?: "",
-                                             cJSON_GetStringValue(cJSON_GetObjectItem(tj, "description")) ?: "", ch);
+                                             cJSON_GetStringValue(cJSON_GetObjectItem(tj, "description")) ?: "", ch_type);
         if (!task)
             continue;
 

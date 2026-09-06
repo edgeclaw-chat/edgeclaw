@@ -224,23 +224,23 @@ static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task
                                     void *request_id)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
-    if (!agent || !task || !task->channel || !content)
+    if (!agent || !task || !content)
         return;
 
     /* only active task outputs to terminal */
     if (!sched->session || edc_session_get_active_task(sched->session) != task)
         return;
 
-    struct edc_channel_message *reply = edc_channel_message_new(edc_channel_copy(task->channel), sdsnew(content));
+    struct edc_channel_message *reply = edc_channel_message_new(task->channel_type, sdsnew(content));
 
-    edc_actor_send(agent->channel_actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->channel->type,
+    edc_actor_send(agent->channel_actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type,
                                                                     edc_scheduler_get_actor(sched), request_id, reply,
                                                                     (edc_actor_data_free_fn)edc_channel_message_free));
 }
 
 /* ── 回调: 分发 Tool Calls ────────────────────────────────── */
 
-static void edc_agent_handle_tool_calls(struct edc_agent *agent, struct edc_channel *call_from,
+static void edc_agent_handle_tool_calls(struct edc_agent *agent, edc_channel_type call_from_type,
                                         struct edc_llm_actor_resp *resp, void *request_id, edc_actor_t *from_actor);
 
 static void edc_agent_cb_dispatch_tools(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
@@ -262,15 +262,15 @@ static void edc_agent_cb_dispatch_tools(struct edc_scheduler *sched, struct edc_
         sdsfree(text);
     }
 
-    edc_agent_handle_tool_calls(agent, task->channel, resp, request_id, edc_scheduler_get_actor(sched));
+    edc_agent_handle_tool_calls(agent, task->channel_type, resp, request_id, edc_scheduler_get_actor(sched));
 }
 
 /* ── 工具分发逻辑 ──────────────────────────────────────────── */
 
-static void edc_agent_handle_tool_calls(struct edc_agent *agent, struct edc_channel *call_from,
+static void edc_agent_handle_tool_calls(struct edc_agent *agent, edc_channel_type call_from_type,
                                         struct edc_llm_actor_resp *resp, void *request_id, edc_actor_t *from_actor)
 {
-    struct edc_toolbox_actor_req *req = edc_toolbox_actor_req_new(NULL, NULL, NULL, NULL);
+    struct edc_toolbox_actor_req *req = edc_toolbox_actor_req_new(NULL, NULL, NULL, call_from_type);
     struct edc_toolbox_actor_req *head = req;
 
     if (!resp->tool_calls)
@@ -281,7 +281,7 @@ static void edc_agent_handle_tool_calls(struct edc_agent *agent, struct edc_chan
         if (tool_call->type == BC_LLM_TOOL_CALL_TYPE_FUNCTION)
         {
             req->next = edc_toolbox_actor_req_new(tool_call->function.name, tool_call->function.arguments,
-                                                  tool_call->id, call_from);
+                                                  tool_call->id, call_from_type);
             req = req->next;
             tool_call->function.arguments = NULL;
             tool_call->function.name = NULL;

@@ -50,23 +50,23 @@ typedef struct
     edc_task_dep_type dep_type;
 } exec_ctx_t;
 
-static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel *channel,
+static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type,
                                   ast_node_t *node, struct edc_task *prev_task, exec_ctx_t *ctx);
 
-static struct edc_task *exec_chain(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel *channel,
+static struct edc_task *exec_chain(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type,
                                    ast_node_t *first, exec_ctx_t *ctx)
 {
     struct edc_task *prev = NULL;
     ast_node_t *cur = first;
     while (cur)
     {
-        prev = exec_node(agent, actor, channel, cur, prev, ctx);
+        prev = exec_node(agent, actor, channel_type, cur, prev, ctx);
         cur = cur->next;
     }
     return prev;
 }
 
-static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel *channel,
+static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type,
                                   ast_node_t *node, struct edc_task *prev_task, exec_ctx_t *ctx)
 {
     if (!node)
@@ -76,26 +76,26 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
     {
     case AST_ROOT:
         if (node->child)
-            return exec_node(agent, actor, channel, node->child, prev_task, ctx);
+            return exec_node(agent, actor, channel_type, node->child, prev_task, ctx);
         return prev_task;
 
     case AST_SEQ:
         ctx->dep_type = TASK_DEP_SEQUENCE;
-        return exec_chain(agent, actor, channel, node->child, ctx);
+        return exec_chain(agent, actor, channel_type, node->child, ctx);
 
     case AST_PIPE:
         ctx->dep_type = TASK_DEP_JOIN;
-        return exec_chain(agent, actor, channel, node->child, ctx);
+        return exec_chain(agent, actor, channel_type, node->child, ctx);
 
     case AST_BG:
         ctx->bg = true;
-        return exec_node(agent, actor, channel, node->child, prev_task, ctx);
+        return exec_node(agent, actor, channel_type, node->child, prev_task, ctx);
 
     case AST_REDIR_OUT:
     case AST_REDIR_APPEND:
     case AST_REDIR_ERR:
     case AST_REDIR_IN: {
-        struct edc_task *task = exec_node(agent, actor, channel, node->child, prev_task, ctx);
+        struct edc_task *task = exec_node(agent, actor, channel_type, node->child, prev_task, ctx);
         if (!task)
             return prev_task;
         if (node->filename)
@@ -147,7 +147,7 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
                 }
                 else if (err)
                 {
-                    edc_commands_reply(agent, actor, channel, err);
+                    edc_commands_reply(agent, actor, channel_type, err);
                     sdsfree(err);
                 }
                 break;
@@ -182,7 +182,7 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
             if (!group)
             {
                 sds reply = sdscatprintf(sdsempty(), "group %s not found", opts.group_id);
-                edc_commands_reply(agent, actor, channel, reply);
+                edc_commands_reply(agent, actor, channel_type, reply);
                 sdsfree(reply);
             }
         }
@@ -191,7 +191,7 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
 
         struct edc_task_group *out_group = NULL;
         struct edc_task *task =
-            edc_shell_spawn_task(agent, actor, channel, &opts, prev_task, group, node->at_group ? "@" : "task",
+            edc_shell_spawn_task(agent, actor, channel_type, &opts, prev_task, group, node->at_group ? "@" : "task",
                                  &out_group, NULL, false, NULL, ctx->dep_type);
 
         if (task && node->has_deferred_vars)
@@ -244,7 +244,7 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
                 edc_shell_collect_var_refs(agent, node->text, &var_deps, &var_dep_count, &var_err);
             if (!processed_text)
             {
-                edc_commands_reply(agent, actor, channel, var_err);
+                edc_commands_reply(agent, actor, channel_type, var_err);
                 sdsfree(var_err);
                 return prev_task;
             }
@@ -302,7 +302,7 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
         }
 
         /* execute the child CMD (now with injected text + deps) */
-        struct edc_task *task = exec_node(agent, actor, channel, node->child, prev_task, ctx);
+        struct edc_task *task = exec_node(agent, actor, channel_type, node->child, prev_task, ctx);
 
         /* mark for deferred expansion in edc_agent_cb_send_llm */
         if (task && var_dep_count >= 0)
@@ -325,7 +325,7 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
     return prev_task;
 }
 
-void ast_execute(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel *channel, ast_node_t *root)
+void ast_execute(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type, ast_node_t *root)
 {
     if (!root)
         return;
@@ -334,5 +334,5 @@ void ast_execute(struct edc_agent *agent, struct edc_actor *actor, struct edc_ch
     ctx.target_group = agent->scheduler->foreground_group;
     if (!ctx.target_group || ctx.target_group->is_orphaned || ctx.target_group->member_count == 0)
         ctx.target_group = NULL;
-    exec_node(agent, actor, channel, root, NULL, &ctx);
+    exec_node(agent, actor, channel_type, root, NULL, &ctx);
 }

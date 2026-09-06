@@ -8,7 +8,6 @@
 #include <cJSON.h>
 
 struct edc_tool;
-struct edc_channel;
 
 struct edc_toolbox
 {
@@ -22,11 +21,11 @@ struct edc_toolbox
 struct edc_toolbox_call_ctx
 {
     struct edc_toolbox *tb;
-    struct edc_channel *call_from;
+    edc_channel_type call_from_type;
     void *priv;
 };
 
-extern struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, struct edc_channel *channel,
+extern struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, edc_channel_type channel_type,
                                                              void *priv);
 extern void edc_toolbox_call_ctx_free(struct edc_toolbox_call_ctx *);
 extern struct edc_toolbox *edc_toolbox_new(struct edc_config *conf, edc_actor_t *scheduler, edc_actor_t *channel_actor);

@@ -106,7 +106,7 @@ static void edc_toolbox_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
     {
     case BC_ACTOR_MSG_TOOL_REQUEST: {
         struct edc_toolbox_call_ctx *ctx =
-            edc_toolbox_call_ctx_new(state->toolbox, req->call_from, edc_toolbox_actor_exec_ctx_new(actor, msg, req));
+            edc_toolbox_call_ctx_new(state->toolbox, req->call_from_type, edc_toolbox_actor_exec_ctx_new(actor, msg, req));
         edc_toolbox_exec(ctx, req->name, req->args, edc_toolbox_actor_callback);
         break;
     }
@@ -150,14 +150,14 @@ void edc_toolbox_actor_req_free(struct edc_toolbox_actor_req *req)
 }
 
 struct edc_toolbox_actor_req *edc_toolbox_actor_req_new(sds name, cJSON *args, sds call_id,
-                                                        struct edc_channel *call_from)
+                                                        edc_channel_type call_from_type)
 {
     struct edc_toolbox_actor_req *req = g_new0(struct edc_toolbox_actor_req, 1);
     req->name = name;
     req->args = args;
     req->call_id = call_id;
     req->next = NULL;
-    req->call_from = call_from;
+    req->call_from_type = call_from_type;
     return req;
 }
 

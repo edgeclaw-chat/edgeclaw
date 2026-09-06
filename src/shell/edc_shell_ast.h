@@ -8,7 +8,6 @@
 
 struct edc_agent;
 struct edc_actor;
-struct edc_channel;
 
 typedef enum
 {
@@ -54,6 +53,6 @@ void ast_free(ast_node_t *node);
 ast_node_t *ast_parse(edc_shell_token_t *tokens, int count, bool is_at);
 
 /* Walk the AST and execute via agent. */
-void ast_execute(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel *channel, ast_node_t *root);
+void ast_execute(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type, ast_node_t *root);
 
 #endif

@@ -75,10 +75,10 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
 
     lines = sdscatprintf(lines, "\n%d/%d completed", completed, total);
 
-    struct edc_channel_message *message = edc_channel_message_new(edc_channel_copy(ctx->call_from), sdsdup(lines));
+    struct edc_channel_message *message = edc_channel_message_new(ctx->call_from_type, sdsdup(lines));
 
     edc_actor_send(ctx->tb->channel_actor,
-                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, ctx->call_from->type, ctx->tb->scheduler, NULL,
+                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, ctx->call_from_type, ctx->tb->scheduler, NULL,
                                               message, (edc_actor_data_free_fn)edc_channel_message_free));
 
     callback(ctx, lines, NULL);

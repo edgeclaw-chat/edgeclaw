@@ -286,8 +286,7 @@ static void cli_commit_line(edc_actor_t *actor, const char *line)
 
     if (line && line[0] != '\0')
     {
-        struct edc_channel *channel = edc_channel_cli_new();
-        struct edc_channel_message *msg = edc_channel_message_new(channel, sdsnew(line));
+        struct edc_channel_message *msg = edc_channel_message_new(edc_channel_cli, sdsnew(line));
         edc_actor_msg_t *actor_msg = edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, actor, NULL, msg,
                                                        (edc_actor_data_free_fn)edc_channel_message_free);
         edc_actor_send(state->observer, actor_msg);

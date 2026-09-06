@@ -187,13 +187,10 @@ int main(int argc, char *argv[])
     /* ── -c / script mode ─────────────────────────────── */
     if (command)
     {
-        struct edc_channel *ch = edc_channel_cli_new();
-        struct edc_channel_message *msg = edc_channel_message_new(ch, sdsnew(command));
-        msg->channel_ref = true;
+        struct edc_channel_message *msg = edc_channel_message_new(edc_channel_cli, sdsnew(command));
         edc_actor_t *actor = edc_scheduler_get_actor(agent->scheduler);
         edc_commands_handler(agent, actor, msg);
         edc_channel_message_free(msg);
-        edc_channel_free(ch);
 
         int timeout = 300;
         while (timeout-- > 0)
@@ -245,13 +242,10 @@ int main(int argc, char *argv[])
                     if (sdslen(lines[i]) == 0 || lines[i][0] == '#')
                         continue;
 
-                    struct edc_channel *ch = edc_channel_cli_new();
-                    struct edc_channel_message *msg = edc_channel_message_new(ch, sdsdup(lines[i]));
-                    msg->channel_ref = true;
+                    struct edc_channel_message *msg = edc_channel_message_new(edc_channel_cli, sdsdup(lines[i]));
                     edc_actor_t *actor = edc_scheduler_get_actor(agent->scheduler);
                     edc_commands_handler(agent, actor, msg);
                     edc_channel_message_free(msg);
-                    edc_channel_free(ch);
 
                     /* brief pause between commands */
                     int timeout = 30;

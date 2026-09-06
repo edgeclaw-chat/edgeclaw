@@ -39,15 +39,20 @@ struct edc_channel *edc_channel_cli_new(void)
     return channel;
 }
 
-cJSON *edc_channel_to_json(struct edc_channel *channel)
+cJSON *edc_channel_type_to_json(edc_channel_type type)
 {
     cJSON *data = cJSON_CreateObject();
-    if (channel->type == edc_channel_cli)
+    if (type == edc_channel_cli)
     {
         cJSON_AddStringToObject(data, "type", "edc_channel_cli");
     }
 
     return data;
+}
+
+cJSON *edc_channel_to_json(struct edc_channel *channel)
+{
+    return edc_channel_type_to_json(channel->type);
 }
 
 struct edc_channel *edc_channel_from_json(cJSON *data)
@@ -64,6 +69,22 @@ struct edc_channel *edc_channel_from_json(cJSON *data)
     }
 
     return NULL;
+}
+
+edc_channel_type edc_channel_type_from_json(cJSON *data)
+{
+    cJSON *type = cJSON_GetObjectItem(data, "type");
+    if (!type || !cJSON_IsString(type))
+    {
+        return edc_channel_cli;
+    }
+
+    if (strcmp(cJSON_GetStringValue(type), "edc_channel_cli") == 0)
+    {
+        return edc_channel_cli;
+    }
+
+    return edc_channel_cli;
 }
 
 void edc_channel_free(struct edc_channel *channel)
@@ -108,62 +129,20 @@ struct edc_channel *edc_channel_move(struct edc_channel *rhs)
 
 #undef __MOVE
 
-struct edc_channel_message *edc_channel_message_new(struct edc_channel *channel, sds content)
+struct edc_channel_message *edc_channel_message_new(edc_channel_type type, sds content)
 {
     struct edc_channel_message *message = g_new0(struct edc_channel_message, 1);
-    message->channel = channel;
+    message->type = type;
     message->content = content;
-    message->channel_ref = false;
     return message;
-}
-
-extern struct edc_channel_message *edc_channel_ref_message_new(struct edc_channel *channel, sds content)
-{
-    struct edc_channel_message *message = g_new0(struct edc_channel_message, 1);
-    message->channel = channel;
-    message->content = content;
-    message->channel_ref = true;
-
-    return message;
-}
-
-struct edc_channel_message *edc_channel_message_copy(struct edc_channel_message *rhs, sds content)
-{
-    if (!content)
-    {
-        content = sdsdup(rhs->content);
-    }
-
-    if (rhs->channel_ref)
-    {
-        return edc_channel_ref_message_new(edc_channel_copy(rhs->channel), content);
-    }
-    else
-    {
-        return edc_channel_message_new(edc_channel_copy(rhs->channel), content);
-    }
 }
 
 void edc_channel_message_free(struct edc_channel_message *msg)
 {
+    if (!msg)
+        return;
     sdsfree(msg->content);
-
-    if (msg->channel && !msg->channel_ref)
-    {
-        edc_channel_free(msg->channel);
-    }
     free(msg);
-}
-
-struct edc_channel_message *edc_channel_message_move(struct edc_channel_message *rhs)
-{
-    struct edc_channel_message *message = g_new0(struct edc_channel_message, 1);
-    message->channel = edc_channel_move(rhs->channel);
-    free(rhs->channel);
-    rhs->channel = NULL;
-    message->content = rhs->content;
-    rhs->content = NULL;
-    return message;
 }
 
 edc_actor_t *edc_channel_actor_new(struct channel_conf *config, const char *workspace)

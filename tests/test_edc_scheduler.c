@@ -80,8 +80,8 @@ static void test_scheduler_task_mgmt(void)
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
 
-    struct edc_task *t1 = edc_scheduler_create_task(sched, "task one", NULL);
-    struct edc_task *t2 = edc_scheduler_create_task(sched, "task two", NULL);
+    struct edc_task *t1 = edc_scheduler_create_task(sched, "task one", edc_channel_cli);
+    struct edc_task *t2 = edc_scheduler_create_task(sched, "task two", edc_channel_cli);
 
     CHECK(t1 != NULL, "task 1 created");
     CHECK(t2 != NULL, "task 2 created");
@@ -117,7 +117,7 @@ static void test_scheduler_group_mgmt(void)
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
 
-    struct edc_task *leader = edc_scheduler_create_task(sched, "group leader", NULL);
+    struct edc_task *leader = edc_scheduler_create_task(sched, "group leader", edc_channel_cli);
     struct edc_task_group *g = edc_scheduler_create_group(sched, leader);
 
     CHECK(g != NULL, "group created");
@@ -126,7 +126,7 @@ static void test_scheduler_group_mgmt(void)
     CHECK(strcmp(g->group_id, leader->task_id) == 0, "group_id = leader task_id");
 
     TEST("add_group appends");
-    struct edc_task *l2 = edc_scheduler_create_task(sched, "group 2 leader", NULL);
+    struct edc_task *l2 = edc_scheduler_create_task(sched, "group 2 leader", edc_channel_cli);
     struct edc_task_group *g2 = edc_scheduler_create_group(sched, l2);
     edc_scheduler_add_group(sched, g2);
     CHECK(sched->session->groups == g, "first group at head");
@@ -151,7 +151,7 @@ static void test_scheduler_fg_bg(void)
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
 
-    struct edc_task *l = edc_scheduler_create_task(sched, "fg leader", NULL);
+    struct edc_task *l = edc_scheduler_create_task(sched, "fg leader", edc_channel_cli);
     struct edc_task_group *g = edc_scheduler_create_group(sched, l);
 
     edc_scheduler_set_foreground(sched, g);
@@ -175,7 +175,7 @@ static void test_scheduler_signals(void)
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
 
-    struct edc_task *t = edc_scheduler_create_task(sched, "signal target", NULL);
+    struct edc_task *t = edc_scheduler_create_task(sched, "signal target", edc_channel_cli);
     struct edc_task_group *g = edc_scheduler_create_group(sched, t);
 
     CHECK(t->state == TASK_WAITING_INPUT, "task at WAITING_INPUT");
@@ -200,10 +200,10 @@ static void test_scheduler_group_signals(void)
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
 
-    struct edc_task *l = edc_scheduler_create_task(sched, "group L", NULL);
+    struct edc_task *l = edc_scheduler_create_task(sched, "group L", edc_channel_cli);
     struct edc_task_group *g = edc_scheduler_create_group(sched, l);
-    struct edc_task *m1 = edc_scheduler_create_task(sched, "member 1", NULL);
-    struct edc_task *m2 = edc_scheduler_create_task(sched, "member 2", NULL);
+    struct edc_task *m1 = edc_scheduler_create_task(sched, "member 1", edc_channel_cli);
+    struct edc_task *m2 = edc_scheduler_create_task(sched, "member 2", edc_channel_cli);
     edc_task_group_add_task(g, m1);
     edc_task_group_add_task(g, m2);
 
@@ -229,11 +229,11 @@ static void test_scheduler_signal_all(void)
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
 
-    struct edc_task *l1 = edc_scheduler_create_task(sched, "G1L", NULL);
+    struct edc_task *l1 = edc_scheduler_create_task(sched, "G1L", edc_channel_cli);
     struct edc_task_group *g1 = edc_scheduler_create_group(sched, l1);
-    edc_task_group_add_task(g1, edc_scheduler_create_task(sched, "G1M", NULL));
+    edc_task_group_add_task(g1, edc_scheduler_create_task(sched, "G1M", edc_channel_cli));
 
-    struct edc_task *l2 = edc_scheduler_create_task(sched, "G2L", NULL);
+    struct edc_task *l2 = edc_scheduler_create_task(sched, "G2L", edc_channel_cli);
     struct edc_task_group *g2 = edc_scheduler_create_group(sched, l2);
 
     CHECK(g1->member_count == 2, "group 1 has 2 members");

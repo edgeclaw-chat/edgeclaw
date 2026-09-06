@@ -47,7 +47,7 @@ static struct edc_task *shell_find_task_by_id_or_job(struct edc_agent *agent, co
     return edc_session_find_task(edc_session_manager_get_active(agent->session_manager), id_or_job);
 }
 
-static void shell_cmd_jobs(struct edc_agent *agent, edc_actor_t *actor, struct edc_channel *channel)
+static void shell_cmd_jobs(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type)
 {
     sds out = sdsempty();
     struct edc_task_group *fg = agent->scheduler->foreground_group;
@@ -70,28 +70,28 @@ static void shell_cmd_jobs(struct edc_agent *agent, edc_actor_t *actor, struct e
             out = sdscat(out, "\n");
         }
     }
-    edc_commands_reply(agent, actor, channel, out);
+    edc_commands_reply(agent, actor, channel_type, out);
     sdsfree(out);
 }
 
-static void shell_cmd_cancel(struct edc_agent *agent, edc_actor_t *actor, struct edc_channel *channel, sds arg)
+static void shell_cmd_cancel(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type, sds arg)
 {
     if (!arg || sdslen(arg) == 0)
     {
-        edc_commands_reply(agent, actor, channel, "/cancel <id>");
+        edc_commands_reply(agent, actor, channel_type, "/cancel <id>");
         return;
     }
     struct edc_task *t = shell_find_task_by_id_or_job(agent, arg);
     if (!t)
     {
         sds reply = sdscatprintf(sdsempty(), "task not found: %s", arg);
-        edc_commands_reply(agent, actor, channel, reply);
+        edc_commands_reply(agent, actor, channel_type, reply);
         sdsfree(reply);
         return;
     }
     edc_scheduler_send_signal_to_task(agent->scheduler, t->task_id, TASK_SIGTERM);
     sds reply = sdscatprintf(sdsempty(), "cancelled %s", t->task_id);
-    edc_commands_reply(agent, actor, channel, reply);
+    edc_commands_reply(agent, actor, channel_type, reply);
     sdsfree(reply);
 }
 
@@ -101,7 +101,7 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
 
     if (strcmp(content, "/jobs") == 0)
     {
-        shell_cmd_jobs(agent, actor, message->channel);
+        shell_cmd_jobs(agent, actor, message->type);
         sdsfree(content);
         return true;
     }
@@ -109,7 +109,7 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
     {
         sds arg = sdsnew(content + 8);
         sdstrim(arg, " \t");
-        shell_cmd_cancel(agent, actor, message->channel, arg);
+        shell_cmd_cancel(agent, actor, message->type, arg);
         sdsfree(arg);
         sdsfree(content);
         return true;
@@ -141,7 +141,7 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
         {
             out = sdscat(out, "foreground group: none");
         }
-        edc_commands_reply(agent, actor, message->channel, out);
+        edc_commands_reply(agent, actor, message->type, out);
         sdsfree(out);
         sdsfree(content);
         return true;
@@ -156,7 +156,7 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
                 sdsfree(agent->config->llm_api_conf.model);
             agent->config->llm_api_conf.model = sdsdup(arg);
             sds reply = sdscatprintf(sdsempty(), "model set to: %s", agent->config->llm_api_conf.model);
-            edc_commands_reply(agent, actor, message->channel, reply);
+            edc_commands_reply(agent, actor, message->type, reply);
             sdsfree(reply);
         }
         sdsfree(arg);
@@ -167,7 +167,7 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
     {
         sds reply = sdscatprintf(sdsempty(), "model: %s",
                                  agent->config->llm_api_conf.model ? agent->config->llm_api_conf.model : "default");
-        edc_commands_reply(agent, actor, message->channel, reply);
+        edc_commands_reply(agent, actor, message->type, reply);
         sdsfree(reply);
         sdsfree(content);
         return true;
@@ -187,13 +187,13 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
             int start = nlines > 20 ? nlines - 20 : 0;
             for (int i = start; i < nlines; i++)
                 out = sdscatprintf(out, "  %d  %s\n", i + 1, lines[i]);
-            edc_commands_reply(agent, actor, message->channel, sdslen(out) > 0 ? out : "(empty)");
+            edc_commands_reply(agent, actor, message->type, sdslen(out) > 0 ? out : "(empty)");
             sdsfree(out);
             sdsfreesplitres(lines, nlines);
         }
         else
         {
-            edc_commands_reply(agent, actor, message->channel, "(no history)");
+            edc_commands_reply(agent, actor, message->type, "(no history)");
         }
         if (contents)
             sdsfree(contents);
@@ -209,14 +209,14 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
     return false;
 }
 
-struct edc_task *edc_shell_spawn_task(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel *channel,
+struct edc_task *edc_shell_spawn_task(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type,
                                       struct edc_cmd_task_opts *opts, struct edc_task *prev_task,
                                       struct edc_task_group *target_group, const char *reply_prefix,
                                       struct edc_task_group **out_group, sds redirect_stdout, bool redirect_append,
                                       sds redirect_stderr, edc_task_dep_type prev_dep_type)
 {
     struct edc_task *task = edc_scheduler_create_task(
-        agent->scheduler, (opts->desc && sdslen(opts->desc) > 0) ? opts->desc : "New task", edc_channel_copy(channel));
+        agent->scheduler, (opts->desc && sdslen(opts->desc) > 0) ? opts->desc : "New task", channel_type);
     if (opts->prompt_name)
         edc_task_set_prompt(task, opts->prompt_name, NULL);
 
@@ -263,7 +263,7 @@ struct edc_task *edc_shell_spawn_task(struct edc_agent *agent, struct edc_actor 
                              redirect_stdout ? redirect_stdout : "", redirect_stderr ? " 2>" : "");
     if (redirect_stderr)
         reply = sdscatprintf(reply, "%s", redirect_stderr);
-    edc_commands_reply(agent, actor, channel, reply);
+    edc_commands_reply(agent, actor, channel_type, reply);
     sdsfree(reply);
 
     if (opts->input)
@@ -758,7 +758,7 @@ bool edc_shell_execute(struct edc_agent *agent, struct edc_actor *actor, struct 
     sdsfree(hist_expanded);
 
     ast_node_t *root = ast_parse(tokens, tok_count, is_at);
-    ast_execute(agent, actor, message->channel, root);
+    ast_execute(agent, actor, message->type, root);
     ast_free(root);
 
     for (int i = 0; i < tok_count; i++)

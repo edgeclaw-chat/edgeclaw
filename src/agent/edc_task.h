@@ -1,6 +1,7 @@
 #ifndef __BC_TASK_H__
 #define __BC_TASK_H__
 
+#include "edc_config.h"
 #include "edc_containers.h"
 #include "edc_task_types.h"
 #include "edc_turn.h"
@@ -9,7 +10,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-struct edc_channel;
 struct edc_session;
 struct edc_config;
 
@@ -74,7 +74,7 @@ struct edc_task
     void *current_request_id; /* 发往 actor 的 request_id */
     int cancelled_request;    /* 标记请求已取消 */
 
-    struct edc_channel *channel;
+    edc_channel_type channel_type;
 
     cJSON *todolist; /* JSON Array */
 
@@ -109,9 +109,9 @@ struct edc_task
 /* ── 生命周期 ──────────────────────────────────────────────── */
 
 extern struct edc_task *edc_task_new(const char *task_id, const char *session_id, const char *group_id,
-                                     const char *desc, struct edc_channel *channel);
+                                     const char *desc, edc_channel_type channel_type);
 extern struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,
-                                      size_t fork_point_msg_count, struct edc_channel *channel);
+                                      size_t fork_point_msg_count, edc_channel_type channel_type);
 extern void edc_task_free(struct edc_task *task);
 
 /* ── 状态机 ────────────────────────────────────────────────── */

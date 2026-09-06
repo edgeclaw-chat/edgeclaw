@@ -13,11 +13,11 @@
 #include "sds.h"
 #include "uthash.h"
 
-struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, struct edc_channel *channel, void *priv)
+struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, edc_channel_type channel_type, void *priv)
 {
     struct edc_toolbox_call_ctx *ctx = g_new0(struct edc_toolbox_call_ctx, 1);
     ctx->tb = tb;
-    ctx->call_from = channel;
+    ctx->call_from_type = channel_type;
     ctx->priv = priv;
     return ctx;
 }
