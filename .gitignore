@@ -279,3 +279,7 @@ _deps
 *.jsonl
 *json
 MODULE.bazel.lock
+
+# Terminal emulator stray files (accidental empty files in repo root)
+ghostty
+iTerm2
