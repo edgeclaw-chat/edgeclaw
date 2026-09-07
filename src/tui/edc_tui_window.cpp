@@ -308,6 +308,13 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
                 tui->SyncWorkingFromSnapshot(snap);
                 edc_c_task_snapshot_free(snap);
             }
+            // FTXUI only repaints when the frame was invalidated. Closures
+            // posted via screen_->Post() do NOT invalidate it, so while the
+            // TUI is idle (no spinner requesting frames) a refreshed sidebar
+            // would stay invisible until the next keypress. Ask for exactly
+            // one frame so the change paints immediately.
+            if (tui->screen_)
+                tui->screen_->RequestAnimationFrame();
         };
         if (tui->screen_)
             tui->screen_->Post(std::move(update));
@@ -383,6 +390,14 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
         // history, arriving messages must not yank them back down.
         // A message implies task state may have changed; refresh the sidebar.
         tui->RequestTaskSnapshot();
+
+        // The posted closure mutated the chat log but does not invalidate the
+        // FTXUI frame by itself; while the TUI is idle (working_ == false and
+        // nothing requests frames) the new message would never paint. Ask for
+        // one frame so it appears immediately (Submit() already does the same
+        // for locally typed messages).
+        if (tui->screen_)
+            tui->screen_->RequestAnimationFrame();
     };
 
     // Before Loop() starts there is no render thread, so mutating the tree
