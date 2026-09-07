@@ -393,9 +393,9 @@ static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *a
         else
         {
             edc_task_group_add_task(group, task);
-            sds reply = sdscatprintf(sdsempty(), "[task] created %s in group %s", task->task_id, group->group_id);
-            edc_commands_reply(agent, actor, channel_type, reply);
-            sdsfree(reply);
+            // sds reply = sdscatprintf(sdsempty(), "[task] created %s in group %s", task->task_id, group->group_id);
+            // edc_commands_reply(agent, actor, channel_type, reply);
+            // sdsfree(reply);
             goto done;
         }
     }
@@ -405,18 +405,18 @@ static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *a
 
         if (opts.bg)
         {
-            sds reply =
-                sdscatprintf(sdsempty(), "[task] created %s (group %s) in background", task->task_id, group->group_id);
-            edc_commands_reply(agent, actor, channel_type, reply);
-            sdsfree(reply);
+            // sds reply =
+            //     sdscatprintf(sdsempty(), "[task] created %s (group %s) in background", task->task_id, group->group_id);
+            // edc_commands_reply(agent, actor, channel_type, reply);
+            // sdsfree(reply);
         }
         else
         {
             edc_scheduler_set_foreground(agent->scheduler, group);
             edc_session_set_active_task(edc_session_manager_get_active(agent->session_manager), task);
-            sds reply = sdscatprintf(sdsempty(), "[task] created %s (group %s)", task->task_id, group->group_id);
-            edc_commands_reply(agent, actor, channel_type, reply);
-            sdsfree(reply);
+            // sds reply = sdscatprintf(sdsempty(), "[task] created %s (group %s)", task->task_id, group->group_id);
+            // edc_commands_reply(agent, actor, channel_type, reply);
+            // sdsfree(reply);
         }
     }
 
