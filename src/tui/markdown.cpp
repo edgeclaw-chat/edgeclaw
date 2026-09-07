@@ -89,7 +89,7 @@ struct HeadingB : ParaB
         }
         Element head = ParaB::Finish() | bold | color(c);
         if (level <= 2)
-            return vbox({head, separator()});
+            return vbox({head, separator() | color(Color::RGB(128, 128, 128))});
         return head;
     }
 };
@@ -193,6 +193,14 @@ struct ListB : Builder
     }
 };
 
+// Pad a table cell with one space on each side so adjacent columns don't run
+// into each other.
+Element PadTableCell(Element cell)
+{
+    auto gap_x = emptyElement() | size(WIDTH, EQUAL, 1);
+    return hbox({gap_x, std::move(cell), gap_x});
+}
+
 struct TableB : Builder
 {
     std::vector<std::vector<Element>> rows;
@@ -204,11 +212,12 @@ struct TableB : Builder
         if (rows.empty())
             return text("");
         Table t(std::move(rows));
-        t.SelectAll().Border(LIGHT);
+        t.SelectAll().Border(LIGHT, color(Color::RGB(128, 128, 128)));
+        t.SelectAll().DecorateCells(PadTableCell);
         if (head_end > 0)
         {
             t.SelectRow(0).Decorate(bold);
-            t.SelectRow(0).SeparatorHorizontal(LIGHT);
+            t.SelectRow(0).SeparatorHorizontal(LIGHT, color(Color::RGB(128, 128, 128)));
         }
         return t.Render();
     }
@@ -312,7 +321,7 @@ int on_leave_block(MD_BLOCKTYPE type, void * /*det*/, void *ud)
     switch (type)
     {
     case MD_BLOCK_HR:
-        s->top().AddBlock(separator());
+        s->top().AddBlock(separator() | color(Color::RGB(128, 128, 128)));
         return 0;
     case MD_BLOCK_TR: {
         auto *t = dynamic_cast<TableB *>(&s->top());
