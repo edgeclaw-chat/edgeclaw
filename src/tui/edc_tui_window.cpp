@@ -4,6 +4,7 @@
 #include "ftxui/component/component_options.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/dom/elements.hpp"
+#include <chrono>
 #include <cstdio>
 #include <ctime>
 #include <edc_channel_adapter.h>
@@ -72,15 +73,45 @@ void TUIWindow::Submit()
 
     edc_c_agent_send_user_message(agent, message.c_str());
     chat_widget_->ScrollToBottom();
+
+    // Start the "working" animation until the turn's final reply shows up.
+    working_ = true;
+    if (screen_)
+        screen_->RequestAnimationFrame();
 }
 
 ::ftxui::Element TUIWindow::OnRender()
 {
     auto input_row = ::ftxui::hbox({prompt_, input_->Render() | ::ftxui::flex});
 
-    return ::ftxui::vbox({chat_widget_->Render() | ::ftxui::flex, ::ftxui::separator(), input_row, ::ftxui::separator(),
-                          footer_}) |
-           ::ftxui::bgcolor(::ftxui::Color::RGB(10, 10, 10));
+    ::ftxui::Elements children = {chat_widget_->Render() | ::ftxui::flex, ::ftxui::separator(), input_row,
+                                  ::ftxui::separator()};
+
+    if (working_)
+    {
+        // While a turn is in flight the animated status replaces the footer
+        // line (so the bottom row keeps its height); when the final RESP/SYS
+        // message arrives the footer hint returns.
+        static const char *kFrames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
+        const auto now = std::chrono::steady_clock::now();
+        const auto ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+        const size_t frame = (static_cast<size_t>(ms) / 100) % (sizeof(kFrames) / sizeof(kFrames[0]));
+
+        auto spinner = ::ftxui::text(kFrames[frame]) | ::ftxui::color(::ftxui::Color::RGB(94, 151, 247)) |
+                       ::ftxui::bold;
+        auto label = ::ftxui::text(" 处理中...") | ::ftxui::color(::ftxui::Color::RGB(147, 147, 147));
+        children.push_back(::ftxui::hbox({spinner, label}));
+
+        if (screen_)
+            screen_->RequestAnimationFrame();
+    }
+    else
+    {
+        children.push_back(footer_);
+    }
+
+    return ::ftxui::vbox(std::move(children)) | ::ftxui::bgcolor(::ftxui::Color::RGB(10, 10, 10));
 }
 
 bool TUIWindow::OnEvent(::ftxui::Event event)
@@ -209,6 +240,9 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
         case Kind::Reply:
         case Kind::Sys:
             widget = std::make_shared<Message>(text, ts);
+            // A RESP marks the end of the turn; SYS (e.g. an error reply)
+            // means no RESP is coming, so stop the working animation too.
+            tui->working_ = false;
             break;
         default:
             return;

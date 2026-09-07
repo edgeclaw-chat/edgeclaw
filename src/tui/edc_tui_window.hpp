@@ -48,6 +48,11 @@ class TUIWindow : public ::ftxui::ComponentBase
     struct edc_agent *agent = NULL;
     ::ftxui::ScreenInteractive *screen_ = nullptr;
 
+    // True while an agent turn is in flight; shows an animated status row
+    // between the input and the footer. Cleared when the turn's final
+    // RESP/SYS message arrives.
+    bool working_ = false;
+
     static void on_channel_adapter_send(void *instance, struct edc_channel_message *message);
 };
 } // namespace edc
