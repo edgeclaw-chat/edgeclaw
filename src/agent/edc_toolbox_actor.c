@@ -105,8 +105,8 @@ static void edc_toolbox_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
     switch (msg->type)
     {
     case BC_ACTOR_MSG_TOOL_REQUEST: {
-        struct edc_toolbox_call_ctx *ctx =
-            edc_toolbox_call_ctx_new(state->toolbox, req->call_from_type, edc_toolbox_actor_exec_ctx_new(actor, msg, req));
+        struct edc_toolbox_call_ctx *ctx = edc_toolbox_call_ctx_new(
+            state->toolbox, req->call_from_type, msg->request_id, edc_toolbox_actor_exec_ctx_new(actor, msg, req));
         edc_toolbox_exec(ctx, req->name, req->args, edc_toolbox_actor_callback);
         break;
     }

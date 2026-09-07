@@ -238,6 +238,27 @@ static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task
                                                                     (edc_actor_data_free_fn)edc_channel_message_free));
 }
 
+/* ── 回调: 发送 Tool 消息 ───────────────────────────────────── */
+/* scheduler 已确认 task == session->active_task 后才走到这里，直接构造带
+ * header 的 TOOL 消息发给 channel_actor。 */
+
+static void edc_agent_cb_send_tool_message(struct edc_scheduler *sched, struct edc_task *task, const char *header,
+                                           const char *content, void *request_id)
+{
+    struct edc_agent *agent = edc_scheduler_agent(sched);
+    if (!agent || !task || !content)
+        return;
+
+    struct edc_channel_message *reply =
+        edc_channel_message_new(task->channel_type, EDC_CHANNEL_MESSAGE_TOOL_TYPE, sdsnew(content));
+    if (header && *header)
+        reply->header = sdsnew(header);
+
+    edc_actor_send(agent->channel_actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type,
+                                                                    edc_scheduler_get_actor(sched), request_id, reply,
+                                                                    (edc_actor_data_free_fn)edc_channel_message_free));
+}
+
 /* ── 回调: 分发 Tool Calls ────────────────────────────────── */
 
 static void edc_agent_handle_tool_calls(struct edc_agent *agent, edc_channel_type call_from_type,
@@ -423,6 +444,7 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
     /* 注入回调 */
     agent->scheduler->send_llm = edc_agent_cb_send_llm;
     agent->scheduler->send_reply = edc_agent_cb_send_reply;
+    agent->scheduler->send_tool_message = edc_agent_cb_send_tool_message;
     agent->scheduler->dispatch_tools = edc_agent_cb_dispatch_tools;
     agent->scheduler->handle_command = edc_agent_cb_handle_command;
     agent->scheduler->trigger_memory = edc_agent_cb_trigger_memory;

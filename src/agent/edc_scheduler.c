@@ -469,6 +469,26 @@ static void sched_handle_memory_done(struct edc_scheduler *sched, struct edc_act
         edc_session_reload(sched->session, true);
 }
 
+/* toolbox 请求把工具结果回显到终端 (TOOL 消息)。与 thought/RESP 一致，
+ * 只在调度线程上检查 session->active_task：后台任务的工具输出一律静默。 */
+static void sched_handle_tool_emit(struct edc_scheduler *sched, struct edc_actor_msg *msg)
+{
+    struct edc_toolbox_emit_msg *emit = msg->data;
+    if (!emit || !emit->content)
+        return;
+
+    struct edc_task *task = edc_scheduler_find_task(sched, msg->request_id);
+    if (!task || task->cancelled_request)
+        return;
+
+    /* only active task outputs to terminal */
+    if (!sched->session || edc_session_get_active_task(sched->session) != task)
+        return;
+
+    if (sched->send_tool_message)
+        sched->send_tool_message(sched, task, emit->header, emit->content, msg->request_id);
+}
+
 /* ── Actor 入口 ────────────────────────────────────────────── */
 
 /* 序列化当前 session 的 task 树 (group → members)，供 TUI 侧边栏渲染。
@@ -539,6 +559,9 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
         break;
     case BC_ACTOR_MSG_TOOL_RESPONSE:
         sched_handle_tool_resp(sched, msg);
+        break;
+    case BC_ACTOR_MSG_TOOL_EMIT:
+        sched_handle_tool_emit(sched, msg);
         break;
     case BC_ACTOR_MSG_MEMORY_DONE:
         sched_handle_memory_done(sched, msg);

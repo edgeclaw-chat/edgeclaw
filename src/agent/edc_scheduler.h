@@ -26,6 +26,10 @@ typedef void (*edc_scheduler_send_llm_fn)(struct edc_scheduler *sched, struct ed
 typedef void (*edc_scheduler_send_reply_fn)(struct edc_scheduler *sched, struct edc_task *task, const char *content,
                                             edc_channel_message_type message_type, void *request_id);
 
+/** 发送 TOOL 类型 channel 消息 (带 header)；仅由 active task 触发 */
+typedef void (*edc_scheduler_send_tool_fn)(struct edc_scheduler *sched, struct edc_task *task, const char *header,
+                                           const char *content, void *request_id);
+
 /** 分发 tool calls */
 typedef void (*edc_scheduler_dispatch_tools_fn)(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
                                                 void *request_id);
@@ -59,6 +63,7 @@ struct edc_scheduler
     /* 回调 (Phase 5 由 edc_agent 注入) */
     edc_scheduler_send_llm_fn send_llm;
     edc_scheduler_send_reply_fn send_reply;
+    edc_scheduler_send_tool_fn send_tool_message;
     edc_scheduler_dispatch_tools_fn dispatch_tools;
     edc_scheduler_command_fn handle_command;
     edc_scheduler_memory_fn trigger_memory;

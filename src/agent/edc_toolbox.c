@@ -20,24 +20,39 @@ void edc_toolbox_emit_tool_message(struct edc_toolbox_call_ctx *ctx, const char 
         return;
 
     struct edc_toolbox *tb = ctx->tb;
-    if (!tb->channel_actor)
+    if (!tb->scheduler)
         return;
 
-    struct edc_channel_message *message =
-        edc_channel_message_new(ctx->call_from_type, EDC_CHANNEL_MESSAGE_TOOL_TYPE, sdsnew(content));
-    if (header && *header)
-        message->header = sdsnew(header);
+    /* 不再直发 channel_actor：把工具结果交给 scheduler 做 active-task 闸门判定
+     * (scheduler 线程上检查 session->active_task)，避免后台任务的工具输出上屏。 */
+    struct edc_toolbox_emit_msg *emit = g_new0(struct edc_toolbox_emit_msg, 1);
+    emit->header = (header && *header) ? sdsnew(header) : NULL;
+    emit->content = sdsnew(content);
 
-    edc_actor_send(tb->channel_actor,
-                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, ctx->call_from_type, tb->scheduler, NULL,
-                                              message, (edc_actor_data_free_fn)edc_channel_message_free));
+    edc_actor_send(tb->scheduler,
+                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_TOOL_EMIT, ctx->call_from_type, tb->channel_actor,
+                                              ctx->request_id, emit, edc_toolbox_emit_msg_free));
 }
 
-struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, edc_channel_type channel_type, void *priv)
+void edc_toolbox_emit_msg_free(void *p)
+{
+    if (!p)
+        return;
+    struct edc_toolbox_emit_msg *emit = p;
+    if (emit->header)
+        sdsfree(emit->header);
+    if (emit->content)
+        sdsfree(emit->content);
+    free(emit);
+}
+
+struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, edc_channel_type channel_type,
+                                                      void *request_id, void *priv)
 {
     struct edc_toolbox_call_ctx *ctx = g_new0(struct edc_toolbox_call_ctx, 1);
     ctx->tb = tb;
     ctx->call_from_type = channel_type;
+    ctx->request_id = request_id;
     ctx->priv = priv;
     return ctx;
 }

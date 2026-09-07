@@ -25,6 +25,7 @@ typedef enum
     BC_ACTOR_MSG_MEMORY_COMPRESS,
     BC_ACTOR_MSG_MEMORY_DONE,
     BC_ACTOR_MSG_TASK_SNAPSHOT, /* TUI 请求当前 session 的 task 树快照 */
+    BC_ACTOR_MSG_TOOL_EMIT,     /* toolbox → scheduler: 工具结果需经 active-task 闸门后转发 */
 } edc_actor_msg_type_t;
 
 extern const char *edc_actor_msg_type_s(edc_actor_msg_type_t type);
