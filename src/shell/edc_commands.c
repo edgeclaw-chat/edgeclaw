@@ -762,8 +762,8 @@ static void edc_commands_handle_task_join(struct edc_agent *agent, edc_actor_t *
         /* auto-chain: inject output into active task */
         edc_task_add_dependency(active, t, TASK_DEP_JOIN);
 
-        sds reply = sdscatprintf(sdsempty(), "[task %s output]:\n%s\n\n→ injected into %s\n→ %s reaped", t->task_id,
-                                 t->output ? t->output : "(empty)", active->task_id, t->task_id);
+        /* 只回显原始输出，不加 "[task xxx output]" / "injected/reaped" 等元信息噪声 */
+        sds reply = t->output ? sdsnew(t->output) : sdsnew("(no output)");
         edc_commands_reply(agent, actor, channel_type, reply);
         sdsfree(reply);
 
@@ -776,7 +776,7 @@ static void edc_commands_handle_task_join(struct edc_agent *agent, edc_actor_t *
 
     if (t->state == TASK_CANCELLED || t->state == TASK_ERROR)
     {
-        sds reply = sdscatprintf(sdsempty(), "[task %s] %s, reaped", t->task_id, edc_task_state_name(t->state));
+        sds reply = sdscatprintf(sdsempty(), "task %s %s, reaped", t->task_id, edc_task_state_name(t->state));
         edc_commands_reply(agent, actor, channel_type, reply);
         sdsfree(reply);
         if (t->group)
