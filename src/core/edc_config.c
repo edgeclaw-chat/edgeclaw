@@ -263,6 +263,43 @@ struct edc_config *edc_config_load(const char *edc_home)
         config->sandbox_ro_paths[ro_count + 1] = NULL;
     }
 
+    /* Prepend the directory edgeclaw was launched from to rw_paths so that the
+     * current directory is always writable (even with the filesystem sandbox
+     * enabled) and becomes the sandbox root / default working directory for
+     * tool execution. rw_paths[0] below is resolved into sandbox_root_real. */
+    {
+        sds cwd = edc_cwd();
+        if (sdslen(cwd) > 0)
+        {
+            char *cwd_real = realpath(cwd, NULL);
+            const char *cwd_key = cwd_real ? cwd_real : cwd;
+            bool duplicate = false;
+            for (int i = 0; config->sandbox_rw_paths && config->sandbox_rw_paths[i] && !duplicate; i++)
+            {
+                char *entry_real = realpath(config->sandbox_rw_paths[i], NULL);
+                const char *entry_key = entry_real ? entry_real : config->sandbox_rw_paths[i];
+                if (strcmp(cwd_key, entry_key) == 0)
+                    duplicate = true;
+                if (entry_real)
+                    free(entry_real);
+            }
+            if (!duplicate)
+            {
+                int n = 0;
+                while (config->sandbox_rw_paths && config->sandbox_rw_paths[n])
+                    n++;
+                config->sandbox_rw_paths = realloc(config->sandbox_rw_paths, (size_t)(n + 2) * sizeof(sds));
+                for (int i = n; i > 0; i--)
+                    config->sandbox_rw_paths[i] = config->sandbox_rw_paths[i - 1];
+                config->sandbox_rw_paths[0] = sdsnew(cwd_key);
+                config->sandbox_rw_paths[n + 1] = NULL;
+            }
+            if (cwd_real)
+                free(cwd_real);
+        }
+        sdsfree(cwd);
+    }
+
     if (config->sandbox_rw_paths && config->sandbox_rw_paths[0])
     {
         edc_dir_create_with_parents(config->sandbox_rw_paths[0], 0755, NULL);
