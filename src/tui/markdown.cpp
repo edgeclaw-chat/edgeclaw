@@ -114,9 +114,11 @@ struct CodeB : Builder
             }
         }
         Element body = vbox(std::move(lines)) | color(Color::Cyan);
-        if (lang.empty())
-            return window(text("code"), body);
-        return window(text(lang), body);
+        Element title = text(lang.empty() ? "code" : lang) | color(Color::Cyan);
+        // Use the same LIGHT border style and gray color as horizontal
+        // separators and table lines, so code frames look consistent.
+        return window(std::move(title), std::move(body), LIGHT) |
+               color(Color::RGB(128, 128, 128));
     }
 };
 
