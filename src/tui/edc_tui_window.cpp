@@ -54,10 +54,19 @@ TUIWindow::TUIWindow() : input_text_("")
     container_ = ::ftxui::Container::Vertical({chat_widget_, input_}, &focused_);
 
     // Left pane = chat + input + footer (see RenderMain); right pane = task
-    // sidebar. ResizableSplitRight puts "main" on the right at a fixed,
+    // sidebar. ResizableSplit puts "main" on the right at a fixed,
     // drag-adjustable width and lets "back" (the chat area) take the rest.
+    // The separator is a thin blank column so the sidebar stays borderless
+    // (distinguished only by its background color) while keeping a drag grab
+    // area to resize it.
     auto main_area = ::ftxui::Renderer(container_, [this] { return RenderMain(); });
-    split_ = ::ftxui::ResizableSplitRight(task_widget_, main_area, &sidebar_width_);
+    split_ = ::ftxui::ResizableSplit({
+        task_widget_,                       // main (right pane)
+        main_area,                          // back (left pane)
+        ::ftxui::Direction::Right,          // direction
+        &sidebar_width_,                    // main_size
+        [] { return ::ftxui::text("  "); }, // subtle separator, drag grab area
+    });
     Add(split_);
 
     agent = edc_c_agent_new(false, false);

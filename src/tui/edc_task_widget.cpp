@@ -200,7 +200,7 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
         }
     }
 
-    return vbox(std::move(lines));
+    return vbox(std::move(lines)) | borderStyled(BorderStyle::EMPTY) | bgcolor(Color::RGB(30, 30, 30)) | flex;
 }
 
 } // namespace edc
