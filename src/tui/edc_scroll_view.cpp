@@ -41,10 +41,8 @@ class ScrollNode : public ::ftxui::Node
         Node::ComputeRequirement();
         requirement_ = children_[0]->requirement();
 
-        // Publish the height the content actually wants, then stop asking the
-        // parent for it: we render whatever height we are handed and scroll the
-        // remainder.
-        state_->content_height = requirement_.min_y;
+        // Stop asking the parent for the content's full height: we render
+        // whatever height we are handed and scroll the remainder.
         requirement_.min_y = 0;
         requirement_.flex_grow_y = 1;
         requirement_.flex_shrink_y = 1;
@@ -56,10 +54,11 @@ class ScrollNode : public ::ftxui::Node
 
         const int viewport = box.y_max - box.y_min + 1;
         state_->viewport_height = viewport;
-        state_->ClampForLayout();
 
-        // The child is always laid out at its full height; only the visible
-        // window moves.
+        // Layout the content at the offset we currently own. This is a
+        // provisional pass: ftxui iterates the layout several times per frame
+        // and the content height is only final once those iterations finish,
+        // so the authoritative clamp happens in Render() below.
         const int content = std::max(state_->content_height, viewport);
 
         ::ftxui::Box child = box;
@@ -70,6 +69,29 @@ class ScrollNode : public ::ftxui::Node
 
     void Render(::ftxui::Screen &screen) override
     {
+        // Layout has settled (or hit ftxui's iteration cap): children_[0]'s
+        // requirement now carries the height the content was really laid out
+        // at. Commit it and clamp the viewport once, against that final
+        // height. Clamping inside SetBox would lock the reader to whichever
+        // transient height a mid-iteration pass reported -- wrapping text
+        // reports several different heights while its flexbox converges, and
+        // the smallest one would reset the scroll offset every frame, making
+        // it impossible to scroll down past the first screenful.
+        const int viewport = state_->viewport_height;
+        const int content = std::max(children_[0]->requirement().min_y, viewport);
+        state_->content_height = content;
+        state_->ClampForLayout();
+
+        // The provisional SetBox passes ran against the previous frame's
+        // committed height and offset, so re-lay the content out against the
+        // committed values. This guarantees the drawing always matches the
+        // geometry the clamp decided (growing content while sticky, shrinking
+        // content, or the transient heights seen earlier in this frame).
+        ::ftxui::Box child = box_;
+        child.y_min = box_.y_min - state_->offset;
+        child.y_max = child.y_min + content - 1;
+        children_[0]->SetBox(child);
+
         const ::ftxui::AutoReset<::ftxui::Box> stencil(&screen.stencil,
                                                        ::ftxui::Box::Intersection(box_, screen.stencil));
         children_[0]->Render(screen);

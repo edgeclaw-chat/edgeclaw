@@ -38,6 +38,20 @@ cc_library(
     visibility = ["//visibility:private"],
 )
 
+cc_test(
+    name = "test_scroll_regression",
+    srcs = ["test_scroll_regression.cpp"],
+    deps = [
+        ":tui",
+    ],
+    linkstatic = True,
+    linkopts = LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+
 cc_binary(
     name = "edgeclaw_tui",
     srcs = [

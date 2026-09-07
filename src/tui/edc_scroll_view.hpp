@@ -34,8 +34,15 @@ struct ScrollState
         return std::max(0, content_height - viewport_height);
     }
 
-    // Layout: pin to the tail while following it, otherwise just keep the
-    // reader's position in range as the content grows.
+    // Called once per frame from ScrollNode::Render, i.e. after layout has
+    // finished iterating and the height reported by the content is final.
+    // Pin to the tail while following it, otherwise just keep the reader's
+    // position in range as the content grows or shrinks.
+    //
+    // It must NOT run inside SetBox: ftxui runs the layout several times per
+    // frame and wrapping content reports a different height on each pass while
+    // converging. Clamping against a transient mid-iteration height would wipe
+    // the reader's offset every frame.
     void ClampForLayout()
     {
         offset = stick_to_bottom ? MaxScroll() : std::max(0, std::min(offset, MaxScroll()));

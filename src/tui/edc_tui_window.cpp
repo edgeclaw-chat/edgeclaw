@@ -316,8 +316,10 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             return;
         }
         tui->chat_widget_->AddMessage(widget);
-        tui->chat_widget_->ScrollToBottom();
 
+        // No explicit ScrollToBottom() here: if the reader is already at the
+        // tail the view follows it automatically; if they scrolled up to read
+        // history, arriving messages must not yank them back down.
         // A message implies task state may have changed; refresh the sidebar.
         tui->RequestTaskSnapshot();
     };
