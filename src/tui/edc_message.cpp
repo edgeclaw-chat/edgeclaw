@@ -18,11 +18,17 @@ bool Message::OnEvent(ftxui::Event)
 
 ::ftxui::Element Message::OnRender()
 {
-    auto body = RenderMarkdown(content_);
-    body =
-        body | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) | ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
+    // RenderMarkdown is expensive (full md4c parse + element tree build) and
+    // the body is rendered again every frame, even when scrolled out of view.
+    // Parse once on first render and reuse the cached tree afterwards.
+    if (!body_)
+    {
+        body_ = RenderMarkdown(content_);
+        body_ =
+            body_ | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) | ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
+    }
 
-    return body;
+    return body_;
 }
 
 ThoughtMessage::ThoughtMessage(const std::string_view content, time_t ts) : Message(content, ts)

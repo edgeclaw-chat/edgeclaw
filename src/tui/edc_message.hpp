@@ -23,6 +23,13 @@ class Message : public ::ftxui::ComponentBase
   protected:
     const std::string content_;
     time_t ts_;
+
+  private:
+    // Markdown parse result. content_ never changes after construction, so the
+    // parse happens once, lazily, on the first render; later frames reuse the
+    // same element tree (ftxui re-runs layout every Render pass, so a cached
+    // tree is safe to draw repeatedly).
+    ::ftxui::Element body_;
 };
 
 class ThoughtMessage : public Message
