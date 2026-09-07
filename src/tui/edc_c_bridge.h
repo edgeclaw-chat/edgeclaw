@@ -32,6 +32,11 @@ struct uv_loop_s;
 struct edc_agent *edc_c_agent_new(bool setup, bool enable_sandbox);
 void edc_c_agent_free(struct edc_agent *agent);
 
+/* Register the shell command handler (edc_commands_handler) with the agent so
+ * slash commands (e.g. /task, /session) typed into the TUI are handled like in
+ * the CLI. Must be called after the agent exists and before sending messages. */
+void edc_c_agent_set_command_handler(void);
+
 /* The agent's channel actor, so the TUI can register itself as an adapter
  * channel (see edc_channel_adapter_init). Opaque pointer -- the TUI only
  * passes it back into C functions that take struct edc_actor*. */

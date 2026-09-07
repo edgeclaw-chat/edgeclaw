@@ -28,6 +28,7 @@ cc_library(
     ],
     deps = [
         "//src/agent:agent",
+        "//src/shell:shell",
         "@md4c//:md4c",
         "@ftxui//:ftxui",
     ],

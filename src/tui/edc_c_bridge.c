@@ -1,6 +1,7 @@
 #include "edc_c_bridge.h"
 #include "edc_agent.h"
 #include "edc_channel_actor.h"
+#include "edc_commands.h"
 #include "uv.h"
 #include <edc_actor.h>
 #include <edc_file_utils.h>
@@ -14,6 +15,11 @@
 struct edc_agent *edc_c_agent_new(bool setup, bool enable_sandbox)
 {
     return edc_agent_new(setup, enable_sandbox);
+}
+
+void edc_c_agent_set_command_handler(void)
+{
+    edc_agent_set_command_handler(edc_commands_handler);
 }
 
 void edc_c_agent_free(struct edc_agent *agent)

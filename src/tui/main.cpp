@@ -3,6 +3,11 @@
 #include "ftxui/component/screen_interactive.hpp"
 #include "uv.h"
 #include <memory>
+#include <signal.h>
+
+// Referenced by edc_commands.c (/exit etc.); the shell handler sets it to ask
+// the host binary to stop its run loop.
+volatile sig_atomic_t _run_loop = 1;
 
 using namespace ftxui;
 
@@ -16,6 +21,7 @@ int main()
 
     auto screen = ScreenInteractive::Fullscreen();
     auto window = std::make_shared<edc::TUIWindow>();
+    edc_c_agent_set_command_handler();
     window->SetScreen(&screen);
     ftxui::Component component = window;
     component |= CatchEvent([&](Event e) -> bool {
