@@ -4,6 +4,9 @@
 #include "sds.h"
 #include <stdbool.h>
 
+/* task 描述 (desc) 的最大 UTF-8 字符数，超出截断并追加 "..." */
+#define EDC_TASK_DESC_MAX 30
+
 /* ── /task 命令解析结果 ────────────────────────────────────── */
 
 struct edc_cmd_task_opts

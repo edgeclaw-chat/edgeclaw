@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define DESC_MAX 30
+#define DESC_MAX EDC_TASK_DESC_MAX
 
 void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
 {

@@ -6,6 +6,7 @@
 #include "edc_session.h"
 #include "edc_session_manager.h"
 #include "edc_shell.h"
+#include "edc_string_utils.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -165,7 +166,11 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
         opts.bg = ctx->bg || node->bg;
         ctx->bg = false; /* reset for next sibling */
         if (node->text && sdslen(node->text) > 0)
+        {
             opts.input = sdsnew(node->text);
+            /* derive the display description the same way /task does */
+            opts.desc = edc_str_utf8_truncate(node->text, EDC_TASK_DESC_MAX, true);
+        }
         opts.dep_ids = malloc((size_t)node->dep_count * sizeof(sds));
         for (int i = 0; i < node->dep_count; i++)
             opts.dep_ids[i] = sdsnew(node->dep_ids[i]);
