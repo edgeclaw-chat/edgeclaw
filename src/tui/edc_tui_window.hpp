@@ -31,6 +31,10 @@ class TUIWindow : public ::ftxui::ComponentBase
     void Submit();
     // Ask the agent (on its scheduler thread) for a fresh task-tree snapshot.
     void RequestTaskSnapshot();
+    // Re-evaluate the animated status from a freshly parsed task snapshot:
+    // "processing" is shown exactly while the foreground group's active task
+    // is running, regardless of which channel messages arrived.
+    void SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap);
     // Render the left pane (chat log + input + footer/spinner).
     ::ftxui::Element RenderMain();
 
@@ -60,9 +64,10 @@ class TUIWindow : public ::ftxui::ComponentBase
     struct edc_agent *agent = NULL;
     ::ftxui::ScreenInteractive *screen_ = nullptr;
 
-    // True while an agent turn is in flight; shows an animated status row
-    // between the input and the footer. Cleared only when the turn's final
-    // RESP message arrives.
+    // True while the foreground group's active task is running (the
+    // scheduler's task snapshot reports it busy); shows an animated status
+    // row between the input and the footer. Owned exclusively by
+    // SyncWorkingFromSnapshot() — never toggled from channel-message types.
     bool working_ = false;
 
     // Last time a task-tree snapshot was requested; throttles the periodic

@@ -25,6 +25,9 @@ struct edc_sched_task_entry
 /* ── 前向声明 ──────────────────────────────────────────────── */
 
 static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg);
+static void sched_handle_task_snapshot(struct edc_scheduler *sched);
+static void sched_notify_foreground_state(struct edc_scheduler *sched, struct edc_task *task);
+static void sched_set_task_state(struct edc_scheduler *sched, struct edc_task *task, edc_task_state state);
 
 /* ── 生命周期 ──────────────────────────────────────────────── */
 
@@ -224,6 +227,32 @@ void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, edc_task_sign
     }
 }
 
+/* ── 前台任务状态通知 ─────────────────────────────────────── */
+
+/* 前台 group 的 active task 状态变化后立即推送一次 task 树快照。很多这类
+ * 迁移不产生任何 channel 消息(依赖完成后自动触发、取消信号、LLM/工具链
+ * 内部切换等), 而 TUI 的 "处理中" 动画与侧边栏完全由快照驱动; 若不主动
+ * 推送, 空闲状态的 TUI 没有任何帧在跑轮询, 只能等下一条消息/按键才碰巧
+ * 发现状态变了。快照在 scheduler 线程同步生成, 与 TUI 拉取共用同一路径。 */
+static void sched_notify_foreground_state(struct edc_scheduler *sched, struct edc_task *task)
+{
+    if (!sched || !task || !sched->session || !sched->foreground_group)
+        return;
+    if (edc_session_get_active_task(sched->session) != task)
+        return;
+    if (task->group != sched->foreground_group)
+        return;
+    sched_handle_task_snapshot(sched);
+}
+
+/* 统一的状态迁移入口: 设置状态后, 若被改变的是前台 active task, 主动推送
+ * 快照, 使 TUI 的底部动画跟上真实进程状态, 而不是等轮询或消息到达。 */
+static void sched_set_task_state(struct edc_scheduler *sched, struct edc_task *task, edc_task_state state)
+{
+    edc_task_set_state(task, state);
+    sched_notify_foreground_state(sched, task);
+}
+
 /* ── 内部：消息路由 ────────────────────────────────────────── */
 
 static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg *msg)
@@ -305,7 +334,7 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     }
     else
     {
-        edc_task_set_state(task, TASK_LLM_PROCESSING);
+        sched_set_task_state(sched, task, TASK_LLM_PROCESSING);
         if (sched->send_llm)
             sched->send_llm(sched, task, msg->request_id);
     }
@@ -349,7 +378,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
     {
         edc_scheduler_unregister_task(sched, msg->request_id);
         task->current_request_id = NULL;
-        edc_task_set_state(task, TASK_ERROR);
+        sched_set_task_state(sched, task, TASK_ERROR);
         if (r->content)
             edc_task_set_output(task, sdsnew(r->content));
         sched_flush_redirects(task);
@@ -360,7 +389,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
 
     if (r->reason == BC_LLM_FINISH_REASON_TOOL_CALL)
     {
-        edc_task_set_state(task, TASK_TOOL_CALLING);
+        sched_set_task_state(sched, task, TASK_TOOL_CALLING);
         if (task->active_turn)
         {
             edc_turn_add_assistant_message(task->active_turn, r->msg);
@@ -399,7 +428,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
             edc_task_set_output(task, sdsnew(r->content));
         sched_flush_redirects(task);
         task->completion_seq = sched->session ? sched->session->next_completion_seq++ : 0;
-        edc_task_set_state(task, TASK_COMPLETED);
+        sched_set_task_state(sched, task, TASK_COMPLETED);
         edc_task_notify_dependents(task);
 
         /* auto-trigger dependents with queued input */
@@ -410,7 +439,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
                 struct edc_task *dt = dep->target;
                 if (dt->active_turn && dt->state == TASK_WAITING_INPUT)
                 {
-                    edc_task_set_state(dt, TASK_LLM_PROCESSING);
+                    sched_set_task_state(sched, dt, TASK_LLM_PROCESSING);
                     if (sched->send_llm)
                         sched->send_llm(sched, dt, dt->current_request_id);
                 }
@@ -432,7 +461,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
 
     edc_scheduler_unregister_task(sched, msg->request_id);
     task->current_request_id = NULL;
-    edc_task_set_state(task, TASK_ERROR);
+    sched_set_task_state(sched, task, TASK_ERROR);
     if (sched->send_reply)
         sched->send_reply(sched, task, "Internal error: unknown finish reason", EDC_CHANNEL_MESSAGE_SYS_TYPE, msg->request_id);
 }
@@ -456,7 +485,7 @@ static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor
     /* 若 tool chain 完成，发送续 LLM 请求 */
     if (!tr->next)
     {
-        edc_task_set_state(task, TASK_LLM_PROCESSING);
+        sched_set_task_state(sched, task, TASK_LLM_PROCESSING);
         if (sched->send_llm)
             sched->send_llm(sched, task, msg->request_id);
     }

@@ -7,6 +7,7 @@
 #include "ftxui/dom/elements.hpp"
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <edc_channel_adapter.h>
 #include <memory>
@@ -25,6 +26,41 @@ static void DisableBracketedPaste()
 {
     std::fputs("\x1b[?2004l", stdout);
     std::fflush(stdout);
+}
+
+// The animated "working" row must reflect the scheduler's process state, not
+// the channel-message stream: it spins exactly while the current foreground
+// process — the task marked active in the foreground group (fg) of the
+// snapshot — is running (LLM generating or a tool chain in flight). Other
+// members of the same group, background groups, completed tasks, and tasks
+// merely waiting for input/deps never count as busy, so a slash command
+// answered only with SYS (no RESP, no foreground task) stops the spinner as
+// soon as its snapshot arrives, and a background task's traffic can neither
+// start nor stop it.
+bool ForegroundProcessBusy(const ::edc_c_task_snapshot *snap)
+{
+    if (!snap)
+        return false;
+
+    for (int gi = 0; gi < snap->group_count; gi++)
+    {
+        const ::edc_c_task_group *g = &snap->groups[gi];
+        if (!g->fg)
+            continue;
+        // Only the foreground group's active task counts as the foreground
+        // process: a busy sibling in the same group must not light the
+        // spinner up.
+        for (int ti = 0; ti < g->task_count; ti++)
+        {
+            const ::edc_c_task_info *t = &g->tasks[ti];
+            if (!t->is_active)
+                continue;
+            return t->state && (std::strcmp(t->state, "LLM_PROCESSING") == 0 ||
+                                std::strcmp(t->state, "TOOL_CALLING") == 0);
+        }
+        return false; // foreground group exists but has no active task marked
+    }
+    return false; // no foreground group at all
 }
 
 } // namespace
@@ -95,11 +131,17 @@ void TUIWindow::Submit()
     edc_c_agent_send_user_message(agent, message.c_str());
     chat_widget_->ScrollToBottom();
 
-    // A new message may spawn/attach a task, so refresh the sidebar tree.
+    // A new message may spawn/attach a task, so refresh the sidebar tree. The
+    // request is queued behind the user message on the scheduler thread, so
+    // its snapshot already reflects the new foreground task's state.
     RequestTaskSnapshot();
 
-    // Start the "working" animation until the turn's final reply shows up.
-    working_ = true;
+    // The animated status is NOT started here and NOT tied to message types:
+    // when the snapshot above (or the next periodic one) reports the current
+    // foreground process as running, SyncWorkingFromSnapshot() flips the
+    // spinner on; it flips off again as soon as the process is no longer
+    // busy. Request one extra frame now so the just-submitted message paints
+    // immediately.
     if (screen_)
         screen_->RequestAnimationFrame();
 }
@@ -108,6 +150,19 @@ void TUIWindow::RequestTaskSnapshot()
 {
     last_snapshot_request_ = std::chrono::steady_clock::now();
     edc_c_agent_request_task_snapshot(agent);
+}
+
+void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
+{
+    const bool busy = ForegroundProcessBusy(snap);
+    if (busy == working_)
+        return;
+    working_ = busy;
+    // A transition here can happen while the render loop is otherwise idle
+    // (e.g. the first snapshot after a submit starts the animation), so ask
+    // for a frame to repaint the footer/spinner row.
+    if (screen_)
+        screen_->RequestAnimationFrame();
 }
 
 ::ftxui::Element TUIWindow::RenderMain()
@@ -119,9 +174,10 @@ void TUIWindow::RequestTaskSnapshot()
 
     if (working_)
     {
-        // While a turn is in flight the animated status replaces the footer
-        // line (so the bottom row keeps its height); when the final RESP
-        // message arrives the footer hint returns.
+        // While the foreground group's active task is running the animated
+        // status replaces the footer line (so the bottom row keeps its
+        // height); as soon as a task snapshot reports it is no longer busy,
+        // the footer hint returns.
         static const char *kFrames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
         const auto now = std::chrono::steady_clock::now();
         const auto ms =
@@ -247,6 +303,9 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             if (snap)
             {
                 tui->task_widget_->SetSnapshot(snap);
+                // The snapshot is the single source of truth for the status
+                // animation: re-derive it whenever the process tree refreshes.
+                tui->SyncWorkingFromSnapshot(snap);
                 edc_c_task_snapshot_free(snap);
             }
         };
@@ -303,14 +362,16 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             break;
         case Kind::Reply:
             widget = std::make_shared<Message>(text, ts);
-            // Only a RESP marks the end of the turn, so this is the single
-            // place that stops the "working" animation.
-            tui->working_ = false;
+            // RESP is just another chat message here: it neither starts nor
+            // stops the working animation. The animation follows the task
+            // snapshot (foreground group's active task running), which is
+            // re-requested below and refreshed by the periodic poll in
+            // OnRender().
             break;
         case Kind::Sys:
             widget = std::make_shared<Message>(text, ts);
-            // SYS (e.g. an error or command reply) does NOT end the turn:
-            // keep the working animation running until a RESP arrives.
+            // SYS (e.g. an error or a command reply) does not touch the
+            // status row either; the next snapshot decides it.
             break;
         default:
             return;
