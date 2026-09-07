@@ -215,6 +215,7 @@ struct edc_task *edc_shell_spawn_task(struct edc_agent *agent, struct edc_actor 
                                       struct edc_task_group **out_group, sds redirect_stdout, bool redirect_append,
                                       sds redirect_stderr, edc_task_dep_type prev_dep_type)
 {
+    (void)actor; /* task creation no longer echoes back to the actor */
     struct edc_task *task = edc_scheduler_create_task(
         agent->scheduler, (opts->desc && sdslen(opts->desc) > 0) ? opts->desc : "New task", channel_type);
     if (opts->prompt_name)
@@ -256,15 +257,13 @@ struct edc_task *edc_shell_spawn_task(struct edc_agent *agent, struct edc_actor 
     if (prev_task)
         edc_task_add_dependency(task, prev_task, prev_dep_type);
 
-    sds reply = sdscatprintf(sdsempty(), "[%s] created %s (group %s)%s%s%s%s%s%s", reply_prefix, task->task_id,
-                             group->group_id, opts->bg ? " [bg]" : "", opts->dep_count > 0 ? " [chained]" : "",
-                             prev_task ? (prev_dep_type == TASK_DEP_SEQUENCE ? " [seq]" : " [pipe]") : "",
-                             redirect_stdout ? (redirect_append ? " >> " : " > ") : "",
-                             redirect_stdout ? redirect_stdout : "", redirect_stderr ? " 2>" : "");
-    if (redirect_stderr)
-        reply = sdscatprintf(reply, "%s", redirect_stderr);
-    edc_commands_reply(agent, actor, channel_type, reply);
-    sdsfree(reply);
+    /* task creation is intentionally silent: no "[task] created" echo back
+     * to the channel. State transitions are still observable via /jobs,
+     * /task list, /whoami and the TUI task snapshot. */
+    log_info("%s created task=%s group=%s%s%s%s%s", reply_prefix, task->task_id, group->group_id,
+             opts->bg ? " [bg]" : "", opts->dep_count > 0 ? " [chained]" : "",
+             prev_task ? (prev_dep_type == TASK_DEP_SEQUENCE ? " [seq]" : " [pipe]") : "",
+             redirect_stdout ? (redirect_append ? " (>> redirect)" : " (> redirect)") : "");
 
     if (opts->input)
     {
