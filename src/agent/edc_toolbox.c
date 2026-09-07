@@ -1,4 +1,5 @@
 ﻿#include "edc_toolbox.h"
+#include "edc_channel_actor.h"
 #include "edc_compat.h"
 #include "edc_error.h"
 #include "edc_param_types.h"
@@ -12,6 +13,25 @@
 #include "log.h"
 #include "sds.h"
 #include "uthash.h"
+
+void edc_toolbox_emit_tool_message(struct edc_toolbox_call_ctx *ctx, const char *header, const char *content)
+{
+    if (!ctx || !ctx->tb || !content || !*content)
+        return;
+
+    struct edc_toolbox *tb = ctx->tb;
+    if (!tb->channel_actor)
+        return;
+
+    struct edc_channel_message *message =
+        edc_channel_message_new(ctx->call_from_type, EDC_CHANNEL_MESSAGE_TOOL_TYPE, sdsnew(content));
+    if (header && *header)
+        message->header = sdsnew(header);
+
+    edc_actor_send(tb->channel_actor,
+                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, ctx->call_from_type, tb->scheduler, NULL,
+                                              message, (edc_actor_data_free_fn)edc_channel_message_free));
+}
 
 struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, edc_channel_type channel_type, void *priv)
 {

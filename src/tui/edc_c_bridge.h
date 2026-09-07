@@ -37,6 +37,9 @@ void edc_c_agent_free(struct edc_agent *agent);
  * passes it back into C functions that take struct edc_actor*. */
 struct edc_actor *edc_c_agent_channel_actor(struct edc_agent *agent);
 const char *edc_c_channel_message_content(struct edc_channel_message *);
+/* Optional short description carried by a message (e.g. the executed command
+ * for tool messages). May return NULL when the sender provided no header. */
+const char *edc_c_channel_message_header(struct edc_channel_message *channel_message);
 int edc_c_channel_message_is_user(struct edc_channel_message *channel_message);
 int edc_c_channel_message_is_tool(struct edc_channel_message *channel_message);
 int edc_c_channel_message_is_thought(struct edc_channel_message *channel_message);

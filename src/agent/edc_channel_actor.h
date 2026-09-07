@@ -16,6 +16,7 @@ struct edc_channel
 struct edc_channel_message
 {
     sds content;
+    sds header; /* optional short description (e.g. executed command/tool name) shown above content */
     edc_channel_type type;
     edc_channel_message_type message_type;
 };

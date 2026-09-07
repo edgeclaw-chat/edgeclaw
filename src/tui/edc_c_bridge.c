@@ -31,6 +31,11 @@ const char *edc_c_channel_message_content(struct edc_channel_message *channel_me
     return channel_message ? channel_message->content : NULL;
 }
 
+const char *edc_c_channel_message_header(struct edc_channel_message *channel_message)
+{
+    return channel_message ? channel_message->header : NULL;
+}
+
 int edc_c_channel_message_is_user(struct edc_channel_message *channel_message)
 {
     return channel_message ? channel_message->message_type == EDC_CHANNEL_MESSAGE_USER_TYPE : 0;

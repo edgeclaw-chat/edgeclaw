@@ -77,6 +77,13 @@ static void device_file_on_async_result(uv_async_t *handle)
 {
     struct device_file_ctx *ctx = handle->data;
 
+    /* Surface the result in the originating channel before handing it back. */
+    const char *content = ctx->result ? ctx->result : (ctx->error && ctx->error->message ? ctx->error->message : NULL);
+    sds header = sdscatprintf(sdsempty(), "device_%s %s", ctx->is_upload ? "upload" : "download",
+                              ctx->local_path ? ctx->local_path : "");
+    edc_toolbox_emit_tool_message(ctx->tb_ctx, header, content);
+    sdsfree(header);
+
     /* Invoke the original callback on the main loop thread */
     ctx->callback(ctx->tb_ctx, ctx->result, ctx->error);
 

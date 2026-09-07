@@ -108,8 +108,16 @@ static sds edc_tool_exec_list_dir(struct edc_config *conf, cJSON *args, EdcError
 static void edc_tool_exec_read_file_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
                                           void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
+    (void)tool;
     EdcError *error = NULL;
     sds result = edc_tool_exec_read_file(ctx->tb->conf, args, &error);
+    if (result)
+    {
+        const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
+        sds header = sdscatprintf(sdsempty(), "read_file %s", path ? path : "");
+        edc_toolbox_emit_tool_message(ctx, header, result);
+        sdsfree(header);
+    }
     callback(ctx, result, error);
 }
 
@@ -125,8 +133,16 @@ static void edc_tool_create_read_file(struct edc_toolbox *tb)
 static void edc_tool_exec_write_file_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
                                            void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
+    (void)tool;
     EdcError *error = NULL;
     sds result = edc_tool_exec_write_file(ctx->tb->conf, args, &error);
+    if (result)
+    {
+        const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
+        sds header = sdscatprintf(sdsempty(), "write_file %s", path ? path : "");
+        edc_toolbox_emit_tool_message(ctx, header, result);
+        sdsfree(header);
+    }
     callback(ctx, result, error);
 }
 
@@ -145,8 +161,16 @@ static void edc_tool_create_write_file(struct edc_toolbox *tb)
 static void edc_tool_exec_list_dir_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
                                          void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
+    (void)tool;
     EdcError *error = NULL;
     sds result = edc_tool_exec_list_dir(ctx->tb->conf, args, &error);
+    if (result)
+    {
+        const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
+        sds header = sdscatprintf(sdsempty(), "list_dir %s", path ? path : "");
+        edc_toolbox_emit_tool_message(ctx, header, result);
+        sdsfree(header);
+    }
     callback(ctx, result, error);
 }
 

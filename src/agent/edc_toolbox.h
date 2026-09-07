@@ -36,4 +36,9 @@ extern void edc_toolbox_register_defaults(struct edc_toolbox *tb);
 
 extern void edc_toolbox_exec(struct edc_toolbox_call_ctx *, const char *name, cJSON *args,
                              void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *));
+
+/* Broadcast a TOOL-type channel message (header = short command/tool description,
+ * content = tool output) to the channel the call originated from. Each tool
+ * emits its own message when it has produced a user-visible result. */
+extern void edc_toolbox_emit_tool_message(struct edc_toolbox_call_ctx *ctx, const char *header, const char *content);
 #endif

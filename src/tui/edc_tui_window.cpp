@@ -188,9 +188,11 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
         kind = Kind::Sys;
 
     const std::string text = content;
+    const char *header_c = edc_c_channel_message_header(message);
+    const std::string header = header_c ? header_c : "";
     const time_t ts = ::time(nullptr);
 
-    auto add_message = [tui, kind, text, ts]() {
+    auto add_message = [tui, kind, text, header, ts]() {
         std::shared_ptr<Message> widget;
         switch (kind)
         {
@@ -198,12 +200,15 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             widget = std::make_shared<UserMessage>(text, ts);
             break;
         case Kind::Tool:
-        case Kind::Reply:
-        case Kind::Sys:
-            widget = std::make_shared<Message>(text, ts);
+            widget = header.empty() ? std::make_shared<Message>(text, ts)
+                                    : std::make_shared<ToolMessage>(header, text, ts);
             break;
         case Kind::Thought:
             widget = std::make_shared<ThoughtMessage>(text, ts);
+            break;
+        case Kind::Reply:
+        case Kind::Sys:
+            widget = std::make_shared<Message>(text, ts);
             break;
         default:
             return;

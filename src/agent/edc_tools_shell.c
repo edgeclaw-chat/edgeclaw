@@ -18,6 +18,7 @@
 struct edc_tool_shell_ctx
 {
     struct edc_tool *tool;
+    sds command;
     sds stderr_buf;
     sds stdout_buf;
     bool stderr_complete;
@@ -61,6 +62,8 @@ static void shell_ctx_close_handles(struct edc_tool_shell_ctx *ctx)
             sdsfree(ctx->stderr_buf);
         if (ctx->stdout_buf)
             sdsfree(ctx->stdout_buf);
+        if (ctx->command)
+            sdsfree(ctx->command);
         free(ctx);
     }
 }
@@ -148,6 +151,8 @@ static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
     if (ctx->stderr_buf && sdslen(ctx->stderr_buf) > 0)
         result = sdscatprintf(result, "stderr:\n%s\n", ctx->stderr_buf);
 
+    edc_toolbox_emit_tool_message(ctx->tb_ctx, ctx->command, result);
+
     ctx->callback(ctx->tb_ctx, result, NULL);
 
     uv_once(&active_mutex_once, active_mutex_init);
@@ -200,6 +205,7 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
     ctx->tb_ctx = tb_ctx;
     ctx->stderr_buf = sdsempty();
     ctx->stdout_buf = sdsempty();
+    ctx->command = sdsnew(cmd_s);
     ctx->callback = callback;
     ctx->tool = tool;
 
