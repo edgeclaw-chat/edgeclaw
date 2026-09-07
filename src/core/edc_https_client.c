@@ -438,7 +438,7 @@ static bool edc_https_client_drive_mbedtls_read(struct edc_https_request *req)
 
     if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
     {
-        log_info("mbedtls ssl read failed: peer close.");
+        log_info("mbedtls ssl : peer close notify.");
         uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
         return false;
     }
@@ -641,9 +641,9 @@ struct edc_https_client *edc_https_client_new(const char *cacert_path)
         {                                                                                                              \
             mbedtls_strerror(ret, buffer, sizeof(buffer));                                                             \
             log_error(#__fn " failed: %s", buffer);                                                                    \
+            free(client);                                                                                              \
+            return NULL;                                                                                               \
         }                                                                                                              \
-        free(client);                                                                                                  \
-        return NULL;                                                                                                   \
     } while (0)
 
     int ret = 0;

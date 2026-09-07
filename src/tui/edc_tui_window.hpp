@@ -1,5 +1,6 @@
 #include "edc_c_bridge.h"
 #include <ftxui/component/component.hpp>
+#include <ftxui/component/screen_interactive.hpp>
 #include <memory>
 #include <string>
 
@@ -17,6 +18,11 @@ class TUIWindow : public ::ftxui::ComponentBase
 
     bool OnEvent(ftxui::Event) override;
     ::ftxui::Element OnRender() override;
+
+    // The agent channel actor runs on its own thread; adapter callbacks are
+    // marshalled to the UI thread through this screen's task queue so the
+    // ftxui component tree is only touched from the render thread.
+    void SetScreen(::ftxui::ScreenInteractive *screen);
 
   private:
     // Append the current input as a user message and clear the box.
@@ -40,6 +46,7 @@ class TUIWindow : public ::ftxui::ComponentBase
     bool in_paste_ = false;
 
     struct edc_agent *agent = NULL;
+    ::ftxui::ScreenInteractive *screen_ = nullptr;
 
     static void on_channel_adapter_send(void *instance, struct edc_channel_message *message);
 };

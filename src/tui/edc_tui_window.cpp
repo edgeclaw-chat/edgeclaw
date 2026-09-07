@@ -147,6 +147,11 @@ TUIWindow::~TUIWindow()
     DisableBracketedPaste();
 }
 
+void TUIWindow::SetScreen(::ftxui::ScreenInteractive *screen)
+{
+    screen_ = screen;
+}
+
 void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_message *message)
 {
     if (!instance || !message)
@@ -154,25 +159,64 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
 
     auto *tui = static_cast<TUIWindow *>(instance);
     const auto *content = edc_c_channel_message_content(message);
+    if (!content)
+        return;
+
+    // The channel message is owned by the actor framework and is freed as soon
+    // as this callback returns, so classify it and copy the text now. Widget
+    // construction and AddMessage() mutate ftxui state shared with the
+    // renderer, so they must run on the UI thread via the screen task queue.
+    enum class Kind
+    {
+        None,
+        User,
+        Tool,
+        Thought,
+        Reply,
+        Sys,
+    };
+    Kind kind = Kind::None;
     if (edc_c_channel_message_is_user(message))
-    {
-        tui->chat_widget_->AddMessage(std::make_shared<UserMessage>(content, ::time(nullptr)));
-    }
+        kind = Kind::User;
     else if (edc_c_channel_message_is_tool(message))
-    {
-        tui->chat_widget_->AddMessage(std::make_shared<Message>(content, ::time(nullptr)));
-    }
+        kind = Kind::Tool;
     else if (edc_c_channel_message_is_thought(message))
-    {
-        tui->chat_widget_->AddMessage(std::make_shared<ThoughtMessage>(content, ::time(nullptr)));
-    }
+        kind = Kind::Thought;
     else if (edc_c_channel_message_is_resp(message))
-    {
-        tui->chat_widget_->AddMessage(std::make_shared<Message>(content, ::time(nullptr)));
-    }
+        kind = Kind::Reply;
     else if (edc_c_channel_message_is_sys(message))
-    {
-        tui->chat_widget_->AddMessage(std::make_shared<Message>(content, ::time(nullptr)));
-    }
+        kind = Kind::Sys;
+
+    const std::string text = content;
+    const time_t ts = ::time(nullptr);
+
+    auto add_message = [tui, kind, text, ts]() {
+        std::shared_ptr<Message> widget;
+        switch (kind)
+        {
+        case Kind::User:
+            widget = std::make_shared<UserMessage>(text, ts);
+            break;
+        case Kind::Tool:
+        case Kind::Reply:
+        case Kind::Sys:
+            widget = std::make_shared<Message>(text, ts);
+            break;
+        case Kind::Thought:
+            widget = std::make_shared<ThoughtMessage>(text, ts);
+            break;
+        default:
+            return;
+        }
+        tui->chat_widget_->AddMessage(widget);
+        tui->chat_widget_->ScrollToBottom();
+    };
+
+    // Before Loop() starts there is no render thread, so mutating the tree
+    // directly is safe (the agent cannot have produced channel traffic yet).
+    if (tui->screen_)
+        tui->screen_->Post(std::move(add_message));
+    else
+        add_message();
 }
 } // namespace edc

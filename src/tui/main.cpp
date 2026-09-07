@@ -15,8 +15,10 @@ int main()
     edc_c_file_utils_init(default_loop);
 
     auto screen = ScreenInteractive::Fullscreen();
-    ftxui::Component window = std::make_shared<edc::TUIWindow>();
-    window |= CatchEvent([&](Event e) -> bool {
+    auto window = std::make_shared<edc::TUIWindow>();
+    window->SetScreen(&screen);
+    ftxui::Component component = window;
+    component |= CatchEvent([&](Event e) -> bool {
         // No 'q' here: the window now has a text input, so a bare letter must
         // reach the box instead of quitting.
         if (e == Event::Escape || e == Event::CtrlC)
@@ -27,5 +29,5 @@ int main()
         return false;
     });
 
-    screen.Loop(window);
+    screen.Loop(component);
 }

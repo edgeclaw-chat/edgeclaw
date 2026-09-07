@@ -4,7 +4,7 @@ LINK_OPTS = select({
     "//:macos_debug": ["-lresolv", "-lc++"],
     "//:macos": ["-lresolv", "-lc++"],
     "//:windows": ["-lws2_32", "-lbcrypt", "-luserenv"],
-    "//conditions:default": ["-static", "-Wl,--no-gc-sections"],
+    "//conditions:default": ["-static", "-Wl,--no-gc-sections", "-lstdc++"],
 })
 
 cc_library(
