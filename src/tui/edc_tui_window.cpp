@@ -6,22 +6,25 @@
 #include "ftxui/dom/elements.hpp"
 #include <cstdio>
 #include <ctime>
+#include <edc_channel_adapter.h>
 #include <memory>
+#include <tui/edc_c_bridge.h>
 
 namespace edc
 {
 namespace
 {
-void EnableBracketedPaste()
+static void EnableBracketedPaste()
 {
     std::fputs("\x1b[?2004h", stdout);
     std::fflush(stdout);
 }
-void DisableBracketedPaste()
+static void DisableBracketedPaste()
 {
     std::fputs("\x1b[?2004l", stdout);
     std::fflush(stdout);
 }
+
 } // namespace
 
 TUIWindow::TUIWindow() : input_text_("")
@@ -48,7 +51,8 @@ TUIWindow::TUIWindow() : input_text_("")
     container_ = ::ftxui::Container::Vertical({chat_widget_, input_}, &focused_);
     Add(container_);
 
-    agent = edc_tui_agent_new(false, false);
+    agent = edc_c_agent_new(false, false);
+    edc_channel_adapter_init(edc_c_agent_channel_actor(agent), this, on_channel_adapter_send);
     EnableBracketedPaste();
 }
 
@@ -66,6 +70,7 @@ void TUIWindow::Submit()
     chat_widget_->AddMessage(std::make_shared<UserMessage>(message, ::time(nullptr)));
     input_text_.clear();
 
+    edc_c_agent_send_user_message(agent, message.c_str());
     chat_widget_->ScrollToBottom();
 }
 
@@ -85,8 +90,8 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
     // window can track paste state here. Inside a paste, Return and '\n' are
     // inserted as newlines instead of submitted, so a multi-line block becomes
     // one draft rather than one message per line.
-    static const ::ftxui::Event kPasteStart = ::ftxui::Event::Special("\x1b[200~");
-    static const ::ftxui::Event kPasteEnd = ::ftxui::Event::Special("\x1b[201~");
+    static const auto kPasteStart = ::ftxui::Event::Special("\x1b[200~");
+    static const auto kPasteEnd = ::ftxui::Event::Special("\x1b[201~");
 
     if (event == kPasteStart)
     {
@@ -117,8 +122,8 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
     // a single Special({27, 13}). ESC+LF is accepted too for terminals that
     // send LF. Insert a newline via a synthetic character event, which reuses
     // the Input's cursor and UTF-8 handling without firing on_enter.
-    static const ::ftxui::Event kAltEnterCR = ::ftxui::Event::Special(std::string({27, 13}));
-    static const ::ftxui::Event kAltEnterLF = ::ftxui::Event::Special(std::string({27, 10}));
+    static const auto kAltEnterCR = ::ftxui::Event::Special(std::string({27, 13}));
+    static const auto kAltEnterLF = ::ftxui::Event::Special(std::string({27, 10}));
     if (event == kAltEnterCR || event == kAltEnterLF)
     {
         input_->OnEvent(::ftxui::Event::Character("\n"));
@@ -138,7 +143,36 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
 
 TUIWindow::~TUIWindow()
 {
-    edc_tui_agent_free(agent);
+    edc_c_agent_free(agent);
     DisableBracketedPaste();
+}
+
+void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_message *message)
+{
+    if (!instance || !message)
+        return;
+
+    auto *tui = static_cast<TUIWindow *>(instance);
+    const auto *content = edc_c_channel_message_content(message);
+    if (edc_c_channel_message_is_user(message))
+    {
+        tui->chat_widget_->AddMessage(std::make_shared<UserMessage>(content, ::time(nullptr)));
+    }
+    else if (edc_c_channel_message_is_tool(message))
+    {
+        tui->chat_widget_->AddMessage(std::make_shared<Message>(content, ::time(nullptr)));
+    }
+    else if (edc_c_channel_message_is_thought(message))
+    {
+        tui->chat_widget_->AddMessage(std::make_shared<ThoughtMessage>(content, ::time(nullptr)));
+    }
+    else if (edc_c_channel_message_is_resp(message))
+    {
+        tui->chat_widget_->AddMessage(std::make_shared<Message>(content, ::time(nullptr)));
+    }
+    else if (edc_c_channel_message_is_sys(message))
+    {
+        tui->chat_widget_->AddMessage(std::make_shared<Message>(content, ::time(nullptr)));
+    }
 }
 } // namespace edc

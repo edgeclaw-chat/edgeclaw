@@ -78,10 +78,12 @@ void edc_channel_free(struct edc_channel *channel)
     free(channel);
 }
 
-struct edc_channel_message *edc_channel_message_new(edc_channel_type type, sds content)
+struct edc_channel_message *edc_channel_message_new(edc_channel_type type, edc_channel_message_type message_type,
+                                                    sds content)
 {
     struct edc_channel_message *message = g_new0(struct edc_channel_message, 1);
     message->type = type;
+    message->message_type = message_type;
     message->content = content;
     return message;
 }

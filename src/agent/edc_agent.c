@@ -221,7 +221,7 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
 /* ── 回调: 发送 Channel 回复 ────────────────────────────────── */
 
 static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task *task, const char *content,
-                                    void *request_id)
+                                    edc_channel_message_type message_type, void *request_id)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
     if (!agent || !task || !content)
@@ -231,7 +231,7 @@ static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task
     if (!sched->session || edc_session_get_active_task(sched->session) != task)
         return;
 
-    struct edc_channel_message *reply = edc_channel_message_new(task->channel_type, sdsnew(content));
+    struct edc_channel_message *reply = edc_channel_message_new(task->channel_type, message_type, sdsnew(content));
 
     edc_actor_send(agent->channel_actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type,
                                                                     edc_scheduler_get_actor(sched), request_id, reply,
@@ -258,7 +258,7 @@ static void edc_agent_cb_dispatch_tools(struct edc_scheduler *sched, struct edc_
     {
         sds content = (resp->content && sdslen(resp->content) > 0) ? resp->content : resp->reasoning_content;
         sds text = sdscatprintf(sdsempty(), "[思考]: %s", content);
-        edc_agent_cb_send_reply(sched, task, text, request_id);
+        edc_agent_cb_send_reply(sched, task, text, EDC_CHANNEL_MESSAGE_THOUGHT_TYPE, request_id);
         sdsfree(text);
     }
 

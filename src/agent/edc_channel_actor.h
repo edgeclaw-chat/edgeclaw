@@ -1,4 +1,3 @@
-#include "sds.h"
 #ifndef __BC_CHANNEL_ACTOR_H__
 #define __BC_CHANNEL_ACTOR_H__
 
@@ -12,21 +11,13 @@
 struct edc_channel
 {
     edc_channel_type type;
-    union {
-        struct
-        {
-            sds title;
-            sds message_id;
-            sds reply_to;
-            sds refs;
-        } email;
-    };
 };
 
 struct edc_channel_message
 {
     sds content;
     edc_channel_type type;
+    edc_channel_message_type message_type;
 };
 
 struct edc_handler_entry
@@ -65,7 +56,7 @@ typedef struct
         struct
         {
             void *instance;
-            void (*on_actor_message_send_fn)(void *instance, struct edc_actor_msg *msg);
+            void (*on_actor_message_send_fn)(void *instance, struct edc_channel_message *msg);
         } adapter;
     };
 } edc_channel_actor_state_t;
@@ -80,6 +71,7 @@ extern edc_channel_type edc_channel_type_from_json(cJSON *channel);
 extern void edc_channel_free(struct edc_channel *channel);
 
 extern void edc_channel_message_free(struct edc_channel_message *msg);
-extern struct edc_channel_message *edc_channel_message_new(edc_channel_type type, sds content);
+extern struct edc_channel_message *edc_channel_message_new(edc_channel_type type, edc_channel_message_type message_type,
+                                                           sds content);
 
 #endif

@@ -1,4 +1,4 @@
-#include "edc_tui_agent_bridge.h"
+#include "edc_c_bridge.h"
 #include <ftxui/component/component.hpp>
 #include <memory>
 #include <string>
@@ -40,5 +40,7 @@ class TUIWindow : public ::ftxui::ComponentBase
     bool in_paste_ = false;
 
     struct edc_agent *agent = NULL;
+
+    static void on_channel_adapter_send(void *instance, struct edc_channel_message *message);
 };
 } // namespace edc

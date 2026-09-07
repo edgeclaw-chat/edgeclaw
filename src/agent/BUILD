@@ -32,7 +32,6 @@ cc_library(
         "edc_tools_fs.c",
         "edc_tools_shell.c",
         "edc_tools_todo.c",
-        "edc_tui_agent_bridge.c",
         "edc_turn.c",
     ],
     hdrs = [
@@ -65,7 +64,6 @@ cc_library(
         "edc_tools_fs.h",
         "edc_tools_shell.h",
         "edc_tools_todo.h",
-        "edc_tui_agent_bridge.h",
         "edc_turn.h",
     ],
     includes = ["."],

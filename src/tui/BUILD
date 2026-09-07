@@ -10,6 +10,7 @@ LINK_OPTS = select({
 cc_library(
     name = "tui",
     srcs = [
+        "edc_c_bridge.c",
         "edc_chat_widget.cpp",
         "edc_tui_window.cpp",
         "edc_message.cpp",
@@ -18,6 +19,7 @@ cc_library(
     ],
 
     hdrs = [
+        "edc_c_bridge.h",
         "edc_chat_widget.hpp",
         "edc_tui_window.hpp",
         "edc_message.hpp",

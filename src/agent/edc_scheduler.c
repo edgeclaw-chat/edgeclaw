@@ -301,7 +301,7 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     {
         /* 排队等待: turn 已创建, deps 完成后自动触发 */
         if (sched->send_reply)
-            sched->send_reply(sched, task, "input queued — waiting for dependencies to complete...", msg->request_id);
+            sched->send_reply(sched, task, "input queued — waiting for dependencies to complete...", EDC_CHANNEL_MESSAGE_SYS_TYPE, msg->request_id);
     }
     else
     {
@@ -354,7 +354,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
             edc_task_set_output(task, sdsnew(r->content));
         sched_flush_redirects(task);
         if (sched->send_reply)
-            sched->send_reply(sched, task, r->error->message, msg->request_id);
+            sched->send_reply(sched, task, r->error->message, EDC_CHANNEL_MESSAGE_SYS_TYPE, msg->request_id);
         return;
     }
 
@@ -419,7 +419,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
 
         /* send_reply internally checks active_task */
         if (sched->send_reply)
-            sched->send_reply(sched, task, r->content, msg->request_id);
+            sched->send_reply(sched, task, r->content, EDC_CHANNEL_MESSAGE_RESP_TYPE, msg->request_id);
 
         /* auto-reap disabled: tasks stay COMPLETED for cross-group join */
         /* to reclaim a task: use /task join <id> */
@@ -434,7 +434,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
     task->current_request_id = NULL;
     edc_task_set_state(task, TASK_ERROR);
     if (sched->send_reply)
-        sched->send_reply(sched, task, "Internal error: unknown finish reason", msg->request_id);
+        sched->send_reply(sched, task, "Internal error: unknown finish reason", EDC_CHANNEL_MESSAGE_SYS_TYPE, msg->request_id);
 }
 
 static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor_msg *msg)

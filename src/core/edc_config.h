@@ -17,6 +17,18 @@ typedef enum
     edc_channel_adapter,
 } edc_channel_type;
 
+/* The kind of content a channel message carries. Defined here (rather than in
+ * edc_channel_actor.h) so headers that only need the type, like edc_scheduler,
+ * don't have to pull in sds/cJSON/uthash via edc_channel_actor.h. */
+typedef enum
+{
+    EDC_CHANNEL_MESSAGE_USER_TYPE = 0,
+    EDC_CHANNEL_MESSAGE_TOOL_TYPE,
+    EDC_CHANNEL_MESSAGE_THOUGHT_TYPE,
+    EDC_CHANNEL_MESSAGE_RESP_TYPE,
+    EDC_CHANNEL_MESSAGE_SYS_TYPE,
+} edc_channel_message_type;
+
 struct channel_conf
 {
     edc_channel_type type;

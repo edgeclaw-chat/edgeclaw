@@ -64,7 +64,7 @@ static bool edc_commands_arg(const char *content, const char *prefix, sds *out)
 
 void edc_commands_reply(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type, const char *text)
 {
-    struct edc_channel_message *reply = edc_channel_message_new(channel_type, sdsnew(text));
+    struct edc_channel_message *reply = edc_channel_message_new(channel_type, EDC_CHANNEL_MESSAGE_SYS_TYPE, sdsnew(text));
     edc_actor_send(agent->channel_actor,
                    edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type, actor, NULL, reply,
                                               (edc_actor_data_free_fn)edc_channel_message_free));

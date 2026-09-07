@@ -623,8 +623,8 @@ static void edc_https_on_stop_async(uv_async_t *handle)
 
 struct edc_https_client *edc_https_client_new(const char *cacert_path)
 {
-    struct edc_https_client *client = malloc(sizeof(struct edc_https_client));
 
+    struct edc_https_client *client = malloc(sizeof(struct edc_https_client));
     uv_loop_init(&client->loop);
     uv_async_init(&client->loop, &client->work_async, on_work_async);
     uv_async_init(&client->loop, &client->stop_async, edc_https_on_stop_async);
@@ -633,11 +633,28 @@ struct edc_https_client *edc_https_client_new(const char *cacert_path)
 
     mbedtls_entropy_init(&client->entropy);
     mbedtls_ctr_drbg_init(&client->ctr_drbg);
-    mbedtls_ctr_drbg_seed(&client->ctr_drbg, mbedtls_entropy_func, &client->entropy, NULL, 0);
+
+#define _MBEDTLS_CHECK(__fn)                                                                                           \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if ((ret = (__fn)) != 0)                                                                                       \
+        {                                                                                                              \
+            mbedtls_strerror(ret, buffer, sizeof(buffer));                                                             \
+            log_error(#__fn " failed: %s", buffer);                                                                    \
+        }                                                                                                              \
+        free(client);                                                                                                  \
+        return NULL;                                                                                                   \
+    } while (0)
+
+    int ret = 0;
+    char buffer[512];
+
+    _MBEDTLS_CHECK(mbedtls_ctr_drbg_seed(&client->ctr_drbg, mbedtls_entropy_func, &client->entropy, NULL, 0));
 
     mbedtls_ssl_config_init(&client->ssl_conf);
-    mbedtls_ssl_config_defaults(&client->ssl_conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
-                                MBEDTLS_SSL_PRESET_DEFAULT);
+    _MBEDTLS_CHECK(mbedtls_ssl_config_defaults(&client->ssl_conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
+                                               MBEDTLS_SSL_PRESET_DEFAULT));
+
     mbedtls_ssl_conf_rng(&client->ssl_conf, mbedtls_ctr_drbg_random, &client->ctr_drbg);
 
     mbedtls_x509_crt_init(&client->cacert);
@@ -663,7 +680,13 @@ struct edc_https_client *edc_https_client_new(const char *cacert_path)
         mbedtls_ssl_conf_authmode(&client->ssl_conf, MBEDTLS_SSL_VERIFY_NONE);
     }
 
-    uv_thread_create(&client->thread, edc_https_client_thread, client);
+    ret = uv_thread_create(&client->thread, edc_https_client_thread, client);
+    if (ret < 0)
+    {
+        log_error("uv_thread_create failed: %s", uv_strerror(ret));
+        free(client);
+        return NULL;
+    }
 
     return client;
 }

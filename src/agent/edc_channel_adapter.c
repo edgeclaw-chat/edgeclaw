@@ -11,7 +11,7 @@ static void edc_channel_adapter_handler(edc_actor_t *actor, edc_actor_msg_t *msg
     case BC_ACTOR_MSG_CHANNEL_SEND:
         if (state->adapter.on_actor_message_send_fn)
         {
-            state->adapter.on_actor_message_send_fn(state->adapter.instance, msg);
+            state->adapter.on_actor_message_send_fn(state->adapter.instance, msg->data);
         }
         break;
     default:
@@ -20,7 +20,7 @@ static void edc_channel_adapter_handler(edc_actor_t *actor, edc_actor_msg_t *msg
 }
 
 void edc_channel_adapter_init(edc_actor_t *channel_actor, void *instance,
-                              void (*on_actor_message_send_fn)(void *, edc_actor_msg_t *))
+                              void (*on_actor_message_send_fn)(void *, struct edc_channel_message *))
 {
     edc_channel_actor_state_t *state = channel_actor->state;
     state->adapter.instance = instance;

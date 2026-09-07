@@ -24,7 +24,7 @@ typedef void (*edc_scheduler_send_llm_fn)(struct edc_scheduler *sched, struct ed
 
 /** 发送 channel 回复 */
 typedef void (*edc_scheduler_send_reply_fn)(struct edc_scheduler *sched, struct edc_task *task, const char *content,
-                                            void *request_id);
+                                            edc_channel_message_type message_type, void *request_id);
 
 /** 分发 tool calls */
 typedef void (*edc_scheduler_dispatch_tools_fn)(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
