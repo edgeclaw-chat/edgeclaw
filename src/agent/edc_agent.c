@@ -257,7 +257,7 @@ static void edc_agent_cb_dispatch_tools(struct edc_scheduler *sched, struct edc_
         (resp->content && sdslen(resp->content) > 0))
     {
         sds content = (resp->content && sdslen(resp->content) > 0) ? resp->content : resp->reasoning_content;
-        sds text = sdscatprintf(sdsempty(), "[思考]: %s", content);
+        sds text = sdscatprintf(sdsempty(), "%s", content);
         edc_agent_cb_send_reply(sched, task, text, EDC_CHANNEL_MESSAGE_THOUGHT_TYPE, request_id);
         sdsfree(text);
     }
