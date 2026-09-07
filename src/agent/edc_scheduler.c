@@ -471,6 +471,58 @@ static void sched_handle_memory_done(struct edc_scheduler *sched, struct edc_act
 
 /* ── Actor 入口 ────────────────────────────────────────────── */
 
+/* 序列化当前 session 的 task 树 (group → members)，供 TUI 侧边栏渲染。
+ * 用 cJSON 生成 JSON 文本，在 scheduler 线程上执行，天然无并发。 */
+static void sched_handle_task_snapshot(struct edc_scheduler *sched)
+{
+    if (!sched || !sched->session)
+        return;
+
+    cJSON *root = cJSON_CreateObject();
+    struct edc_session *sess = sched->session;
+    cJSON_AddStringToObject(root, "session_id", sess->session_id ? sess->session_id : "");
+    cJSON_AddStringToObject(root, "session_name", edc_session_get_name(sess));
+
+    cJSON *groups = cJSON_AddArrayToObject(root, "groups");
+    struct edc_task_group *g;
+    DL_FOREACH(sched->session->groups, g)
+    {
+        cJSON *gj = cJSON_CreateObject();
+        cJSON_AddStringToObject(gj, "id", g->group_id ? g->group_id : "");
+        cJSON_AddNumberToObject(gj, "member_count", g->member_count);
+        cJSON_AddBoolToObject(gj, "orphaned", g->is_orphaned);
+        cJSON_AddBoolToObject(gj, "fg", sched->foreground_group == g);
+
+        cJSON *tasks = cJSON_AddArrayToObject(gj, "tasks");
+        struct edc_task *t;
+        LL_FOREACH2(g->members, t, group_next)
+        {
+            cJSON *tj = cJSON_CreateObject();
+            cJSON_AddStringToObject(tj, "id", t->task_id ? t->task_id : "");
+            cJSON_AddStringToObject(tj, "state", edc_task_state_name(t->state));
+            cJSON_AddBoolToObject(tj, "leader", t->is_group_leader);
+            cJSON_AddBoolToObject(tj, "active", sess->active_task == t);
+            cJSON_AddStringToObject(tj, "desc", t->description ? t->description : "");
+            cJSON_AddItemToArray(tasks, tj);
+        }
+
+        cJSON_AddItemToArray(groups, gj);
+    }
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json)
+        return;
+
+    sds out = sdsnew(json);
+    cJSON_free(json);
+
+    if (sched->snapshot_ready)
+        sched->snapshot_ready(sched, out);
+    else
+        sdsfree(out);
+}
+
 void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
     struct edc_scheduler *sched = actor->state;
@@ -490,6 +542,9 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
         break;
     case BC_ACTOR_MSG_MEMORY_DONE:
         sched_handle_memory_done(sched, msg);
+        break;
+    case BC_ACTOR_MSG_TASK_SNAPSHOT:
+        sched_handle_task_snapshot(sched);
         break;
     default:
         break;

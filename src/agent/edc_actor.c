@@ -8,7 +8,7 @@ const char *edc_actor_msg_type_s(edc_actor_msg_type_t type)
         "BC_ACTOR_MSG_START",        "BC_ACTOR_MSG_USER_INPUT",   "BC_ACTOR_MSG_LLM_REQUEST",
         "BC_ACTOR_MSG_LLM_RESPONSE", "BC_ACTOR_MSG_TOOL_REQUEST", "BC_ACTOR_MSG_TOOL_RESPONSE",
         "BC_ACTOR_MSG_CHANNEL_SEND", "BC_ACTOR_MSG_CHANNEL_RECV", "BC_ACTOR_MSG_MEMORY_COMPRESS",
-        "BC_ACTOR_MSG_MEMORY_DONE",
+        "BC_ACTOR_MSG_MEMORY_DONE",   "BC_ACTOR_MSG_TASK_SNAPSHOT",
     };
 
     return __msg_type_s[type];

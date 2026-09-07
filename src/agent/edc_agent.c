@@ -338,6 +338,29 @@ static void edc_agent_cb_save_session(struct edc_scheduler *sched)
         edc_session_save_state(active, sched);
 }
 
+/* ── 回调: task 树快照回传 ─────────────────────────────────── */
+
+static void edc_agent_cb_snapshot_ready(struct edc_scheduler *sched, sds serialized)
+{
+    struct edc_agent *agent = edc_scheduler_agent(sched);
+    if (!agent || !serialized || !agent->channel_actor)
+    {
+        if (serialized)
+            sdsfree(serialized);
+        return;
+    }
+
+    /* 通过 channel adapter 回传: 子类型 edc_channel_adapter 会让 channel
+     * actor 把消息路由到 TUI 注册的 on_actor_message_send_fn。 */
+    struct edc_channel_message *msg =
+        edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE, serialized);
+
+    edc_actor_send(agent->channel_actor,
+                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, edc_channel_adapter,
+                                              edc_scheduler_get_actor(sched), NULL, msg,
+                                              (edc_actor_data_free_fn)edc_channel_message_free));
+}
+
 void edc_agent_remove_all_turns(struct edc_agent *agent)
 {
     if (!agent || !agent->scheduler)
@@ -404,6 +427,7 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
     agent->scheduler->handle_command = edc_agent_cb_handle_command;
     agent->scheduler->trigger_memory = edc_agent_cb_trigger_memory;
     agent->scheduler->save_session = edc_agent_cb_save_session;
+    agent->scheduler->snapshot_ready = edc_agent_cb_snapshot_ready;
 
     /* Phase 4: restore saved task/group state for active session */
     {

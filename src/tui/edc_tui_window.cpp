@@ -1,5 +1,6 @@
 #include "edc_tui_window.hpp"
 #include "edc_chat_widget.hpp"
+#include "edc_task_widget.hpp"
 #include "ftxui/component/component.hpp"
 #include "ftxui/component/component_options.hpp"
 #include "ftxui/component/event.hpp"
@@ -31,6 +32,7 @@ static void DisableBracketedPaste()
 TUIWindow::TUIWindow() : input_text_("")
 {
     chat_widget_ = std::make_shared<ChatWidget>();
+    task_widget_ = std::make_shared<TaskWidget>();
 
     footer_ = ::ftxui::text(" Enter 发送   Alt+Enter 换行   Tab 切换输入/滚动   滚轮/↑↓ 滚动   Esc 退出 ") |
               ::ftxui::color(::ftxui::Color::RGB(147, 147, 147));
@@ -50,11 +52,21 @@ TUIWindow::TUIWindow() : input_text_("")
     input_ = ::ftxui::Input(&input_text_, "输入消息，Enter 发送，Alt+Enter 换行...", option);
 
     container_ = ::ftxui::Container::Vertical({chat_widget_, input_}, &focused_);
-    Add(container_);
+
+    // Left pane = chat + input + footer (see RenderMain); right pane = task
+    // sidebar. ResizableSplitRight puts "main" on the right at a fixed,
+    // drag-adjustable width and lets "back" (the chat area) take the rest.
+    auto main_area = ::ftxui::Renderer(container_, [this] { return RenderMain(); });
+    split_ = ::ftxui::ResizableSplitRight(task_widget_, main_area, &sidebar_width_);
+    Add(split_);
 
     agent = edc_c_agent_new(false, false);
     edc_channel_adapter_init(edc_c_agent_channel_actor(agent), this, on_channel_adapter_send);
     EnableBracketedPaste();
+
+    // Populate the sidebar once the agent is running (its response is routed
+    // through the adapter and handled by on_channel_adapter_send below).
+    RequestTaskSnapshot();
 }
 
 void TUIWindow::Submit()
@@ -74,13 +86,22 @@ void TUIWindow::Submit()
     edc_c_agent_send_user_message(agent, message.c_str());
     chat_widget_->ScrollToBottom();
 
+    // A new message may spawn/attach a task, so refresh the sidebar tree.
+    RequestTaskSnapshot();
+
     // Start the "working" animation until the turn's final reply shows up.
     working_ = true;
     if (screen_)
         screen_->RequestAnimationFrame();
 }
 
-::ftxui::Element TUIWindow::OnRender()
+void TUIWindow::RequestTaskSnapshot()
+{
+    last_snapshot_request_ = std::chrono::steady_clock::now();
+    edc_c_agent_request_task_snapshot(agent);
+}
+
+::ftxui::Element TUIWindow::RenderMain()
 {
     auto input_row = ::ftxui::hbox({prompt_, input_->Render() | ::ftxui::flex});
 
@@ -90,7 +111,7 @@ void TUIWindow::Submit()
     if (working_)
     {
         // While a turn is in flight the animated status replaces the footer
-        // line (so the bottom row keeps its height); when the final RESP/SYS
+        // line (so the bottom row keeps its height); when the final RESP
         // message arrives the footer hint returns.
         static const char *kFrames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
         const auto now = std::chrono::steady_clock::now();
@@ -111,7 +132,20 @@ void TUIWindow::Submit()
         children.push_back(footer_);
     }
 
-    return ::ftxui::vbox(std::move(children)) | ::ftxui::bgcolor(::ftxui::Color::RGB(10, 10, 10));
+    return ::ftxui::vbox(std::move(children));
+}
+
+::ftxui::Element TUIWindow::OnRender()
+{
+    // Periodic sidebar refresh: background tasks change state without any
+    // channel message (they are not the active task), so poll at a low rate.
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_snapshot_request_ > std::chrono::milliseconds(500))
+            RequestTaskSnapshot();
+    }
+
+    return split_->Render() | ::ftxui::bgcolor(::ftxui::Color::RGB(10, 10, 10));
 }
 
 bool TUIWindow::OnEvent(::ftxui::Event event)
@@ -169,7 +203,7 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
         return true;
     }
 
-    return container_->OnEvent(event);
+    return split_->OnEvent(event);
 }
 
 TUIWindow::~TUIWindow()
@@ -192,6 +226,27 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     const auto *content = edc_c_channel_message_content(message);
     if (!content)
         return;
+
+    // A task-tree snapshot is a control message for the sidebar, not chat
+    // text. Parse the JSON (via the bridge) and refresh the widget on the UI
+    // thread, then stop.
+    if (edc_c_channel_message_is_task_snapshot(message))
+    {
+        const std::string snapshot = content;
+        auto update = [tui, snapshot]() {
+            ::edc_c_task_snapshot *snap = edc_c_task_snapshot_parse(snapshot.c_str());
+            if (snap)
+            {
+                tui->task_widget_->SetSnapshot(snap);
+                edc_c_task_snapshot_free(snap);
+            }
+        };
+        if (tui->screen_)
+            tui->screen_->Post(std::move(update));
+        else
+            update();
+        return;
+    }
 
     // The channel message is owned by the actor framework and is freed as soon
     // as this callback returns, so classify it and copy the text now. Widget
@@ -238,17 +293,24 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             widget = std::make_shared<ThoughtMessage>(text, ts);
             break;
         case Kind::Reply:
+            widget = std::make_shared<Message>(text, ts);
+            // Only a RESP marks the end of the turn, so this is the single
+            // place that stops the "working" animation.
+            tui->working_ = false;
+            break;
         case Kind::Sys:
             widget = std::make_shared<Message>(text, ts);
-            // A RESP marks the end of the turn; SYS (e.g. an error reply)
-            // means no RESP is coming, so stop the working animation too.
-            tui->working_ = false;
+            // SYS (e.g. an error or command reply) does NOT end the turn:
+            // keep the working animation running until a RESP arrives.
             break;
         default:
             return;
         }
         tui->chat_widget_->AddMessage(widget);
         tui->chat_widget_->ScrollToBottom();
+
+        // A message implies task state may have changed; refresh the sidebar.
+        tui->RequestTaskSnapshot();
     };
 
     // Before Loop() starts there is no render thread, so mutating the tree

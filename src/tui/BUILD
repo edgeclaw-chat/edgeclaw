@@ -15,6 +15,7 @@ cc_library(
         "edc_tui_window.cpp",
         "edc_message.cpp",
         "edc_scroll_view.cpp",
+        "edc_task_widget.cpp",
         "markdown.cpp",
     ],
 
@@ -24,6 +25,7 @@ cc_library(
         "edc_tui_window.hpp",
         "edc_message.hpp",
         "edc_scroll_view.hpp",
+        "edc_task_widget.hpp",
         "markdown.hpp",
     ],
     deps = [
@@ -31,6 +33,7 @@ cc_library(
         "//src/shell:shell",
         "@md4c//:md4c",
         "@ftxui//:ftxui",
+        "@cjson//:cjson",
     ],
     visibility = ["//visibility:private"],
 )

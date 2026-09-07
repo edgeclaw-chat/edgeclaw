@@ -27,6 +27,7 @@ typedef enum
     EDC_CHANNEL_MESSAGE_THOUGHT_TYPE,
     EDC_CHANNEL_MESSAGE_RESP_TYPE,
     EDC_CHANNEL_MESSAGE_SYS_TYPE,
+    EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE, /* serialized task-tree snapshot for the TUI */
 } edc_channel_message_type;
 
 struct channel_conf

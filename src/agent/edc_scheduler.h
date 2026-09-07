@@ -40,6 +40,9 @@ typedef void (*edc_scheduler_memory_fn)(struct edc_scheduler *sched);
 /** 保存 session */
 typedef void (*edc_scheduler_save_fn)(struct edc_scheduler *sched);
 
+/** task 树快照已就绪，交由上层 (agent) 回传给 TUI 的 channel adapter */
+typedef void (*edc_scheduler_snapshot_fn)(struct edc_scheduler *sched, sds serialized);
+
 /* ── 调度器 ────────────────────────────────────────────────── */
 
 struct edc_scheduler
@@ -60,6 +63,7 @@ struct edc_scheduler
     edc_scheduler_command_fn handle_command;
     edc_scheduler_memory_fn trigger_memory;
     edc_scheduler_save_fn save_session;
+    edc_scheduler_snapshot_fn snapshot_ready;
 
     int64_t next_task_id;
 
