@@ -92,17 +92,104 @@ ToolMessage::ToolMessage(const std::string_view header, const std::string_view c
 {
 }
 
-bool ToolMessage::OnEvent(::ftxui::Event)
+bool ToolMessage::OnEvent(::ftxui::Event event)
 {
+    if (event.is_mouse())
+    {
+        if (event.mouse().button == ::ftxui::Mouse::Left && event.mouse().motion == ::ftxui::Mouse::Pressed &&
+            box_.Contain(event.mouse().x, event.mouse().y))
+        {
+            expanded_ = !expanded_;
+            return true;
+        }
+        return false;
+    }
+
+    if (event == ftxui::Event::Return)
+    {
+        expanded_ = !expanded_;
+        return true;
+    }
     return false;
 }
 
+namespace
+{
+// Number of logical lines in text (a trailing '\n' does not count as an extra
+// empty line).
+size_t CountLines(const std::string &text)
+{
+    if (text.empty())
+        return 0;
+    size_t count = 1;
+    for (char c : text)
+        if (c == '\n')
+            count++;
+    if (!text.empty() && text.back() == '\n')
+        count--;
+    return count;
+}
+
+// First kPreviewLines lines of text, separated by '\n'.
+std::string FirstLines(const std::string &text, size_t max_lines)
+{
+    size_t end = std::string::npos;
+    size_t newlines_seen = 0;
+    for (size_t i = 0; i < text.size(); i++)
+    {
+        if (text[i] == '\n')
+        {
+            newlines_seen++;
+            if (newlines_seen == max_lines)
+            {
+                end = i;
+                break;
+            }
+        }
+    }
+    if (end == std::string::npos)
+        return text;
+    return text.substr(0, end);
+}
+} // namespace
+
 ::ftxui::Element ToolMessage::OnRender()
 {
-    auto header = ::ftxui::paragraph(header_) | ftxui::color(::ftxui::Color::RGB(147, 147, 147));
-    auto body = ::ftxui::paragraph(content_);
-    return ::ftxui::vbox({header, ::ftxui::separatorEmpty(), body}) |
-           ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) | ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
+    const auto dim_gray = ::ftxui::Color::RGB(147, 147, 147);
+    const auto accent = ::ftxui::Color::RGB(94, 151, 247);
+
+    // Only messages whose content is truncated on the collapsed view carry the
+    // toggle; short outputs are shown verbatim without a footer.
+    const bool truncated = !expanded_ && CountLines(content_) > ToolMessage::kPreviewLines;
+    const bool toggleable = expanded_ || CountLines(content_) > ToolMessage::kPreviewLines;
+
+    auto header = ::ftxui::paragraph(header_) | ::ftxui::color(dim_gray);
+
+    ::ftxui::Element body;
+    if (!truncated)
+    {
+        body = ::ftxui::paragraph(content_);
+    }
+    else
+    {
+        // First kPreviewLines lines, with the line after them replaced by "...".
+        std::string preview = FirstLines(content_, ToolMessage::kPreviewLines);
+        if (!preview.empty())
+            preview += "\n";
+        preview += "...";
+        body = ::ftxui::paragraph(preview);
+    }
+
+    ::ftxui::Elements children = {header, ::ftxui::separatorEmpty(), body};
+    if (toggleable)
+    {
+        auto toggle = expanded_ ? ::ftxui::text("- Collapse") : ::ftxui::text("+ Click to expand");
+        auto footer = ::ftxui::hbox({toggle | ::ftxui::color(accent) | ::ftxui::reflect(box_)}) | ::ftxui::flex;
+        children.push_back(footer);
+    }
+
+    return ::ftxui::vbox(children) | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) |
+           ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
 }
 
 } // namespace edc

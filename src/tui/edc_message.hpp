@@ -2,6 +2,7 @@
 
 #include "ftxui/component/component_base.hpp"
 #include "ftxui/screen/box.hpp"
+#include <cstddef>
 #include <string_view>
 
 namespace edc
@@ -53,7 +54,13 @@ class ToolMessage : public Message
     ftxui::Element OnRender() override;
 
   private:
+    // Collapsed content shows the first kPreviewLines lines, then a "..."
+    // line and a clickable expand label; clicking toggles to the full text.
+    static constexpr size_t kPreviewLines = 14;
+
     std::string header_;
+    bool expanded_ = false;
+    ::ftxui::Box box_;
 };
 
 } // namespace edc
