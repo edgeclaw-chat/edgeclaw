@@ -12,8 +12,9 @@
 struct edc_cmd_task_opts
 {
     sds desc;     /* 任务描述 (剩余文本) */
-    sds input;    /* "引号内输入" — @ 语法专用 */
+    sds input;    /* 引号内输入 — @ 语法专用 */
     bool bg;      /* --bg 后台 */
+    bool literal; /* input 来自 '''/''' 块或单引号：不解析 $ 变量 */
     sds *dep_ids; /* -d <id> 依赖列表 */
     int dep_count;
     sds group_id;    /* --group <id> / -g <id> */
