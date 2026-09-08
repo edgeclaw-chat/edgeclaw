@@ -479,6 +479,27 @@ sds edc_task_get_output(struct edc_task *task)
     return task->output;
 }
 
+/* ── 折叠 ────────────────────────────────────────────────── */
+
+bool edc_task_is_foldable(struct edc_task *task)
+{
+    return task && task->state == TASK_COMPLETED && !task->turns_folded;
+}
+
+size_t edc_task_turn_msg_count(struct edc_task *task)
+{
+    if (!task)
+        return 0;
+
+    size_t n = 0;
+    for (size_t qi = task->turns.head; qi < task->turns.tail; qi++)
+    {
+        struct edc_turn *turn = task->turns.data[qi];
+        n += edc_queue_length(&turn->messages);
+    }
+    return n;
+}
+
 /* ── Prompt ────────────────────────────────────────────────── */
 
 void edc_task_set_prompt(struct edc_task *task, const char *prompt_name, const char *prompt_text)

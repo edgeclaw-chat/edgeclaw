@@ -18,6 +18,10 @@ struct edc_task_group
 
     cJSON *history; /* 组内消息历史 (上下文共享) */
 
+    /* ── L1 折叠 ── */
+    sds memory;      /* GROUP 记忆摘要 (已折叠 turns 的浓缩) */
+    size_t fold_cursor; /* 已折叠的历史消息数 (history[1+fold_cursor:] 为未折叠历史) */
+
     struct edc_task_group *prev, *next; /* session 内 groups 链表 */
 };
 
@@ -37,5 +41,10 @@ extern void edc_task_group_send_signal(struct edc_task_group *group, edc_task_si
 
 extern bool edc_task_group_is_foreground_capable(struct edc_task_group *group);
 extern const char *edc_task_group_status_label(struct edc_task_group *group);
+
+/* 组内可折叠 (COMPLETED && !turns_folded) 的 task 数 */
+extern size_t edc_task_group_count_foldable(struct edc_task_group *group);
+/* 组内未折叠的消息条数 (history 总消息数 - system prompt - 已折叠) */
+extern size_t edc_task_group_unfolded_msg_count(struct edc_task_group *group);
 
 #endif

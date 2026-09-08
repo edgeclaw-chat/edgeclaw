@@ -19,6 +19,8 @@ struct edc_task_group *edc_task_group_new(struct edc_task *leader)
     group->member_count = 1;
     group->is_orphaned = false;
     group->history = cJSON_CreateArray();
+    group->memory = NULL;
+    group->fold_cursor = 0;
 
     leader->is_group_leader = 1;
     leader->group = group;
@@ -43,6 +45,8 @@ void edc_task_group_free(struct edc_task_group *group)
     free(group->group_id);
     if (group->history)
         cJSON_Delete(group->history);
+    if (group->memory)
+        sdsfree(group->memory);
     free(group);
 }
 
@@ -180,4 +184,32 @@ const char *edc_task_group_status_label(struct edc_task_group *group)
         return "ORPHANED";
     }
     return "ACTIVE";
+}
+
+size_t edc_task_group_count_foldable(struct edc_task_group *group)
+{
+    if (!group)
+        return 0;
+
+    size_t n = 0;
+    struct edc_task *t;
+    LL_FOREACH2(group->members, t, group_next)
+    {
+        if (edc_task_is_foldable(t))
+            n++;
+    }
+    return n;
+}
+
+size_t edc_task_group_unfolded_msg_count(struct edc_task_group *group)
+{
+    if (!group || !group->history)
+        return 0;
+
+    size_t total = cJSON_GetArraySize(group->history);
+    /* history[0] 是 system prompt, 不计入历史消息; 剩余减去已折叠消息 */
+    size_t hist_msgs = (total > 0) ? total - 1 : 0;
+    if (group->fold_cursor >= hist_msgs)
+        return 0;
+    return hist_msgs - group->fold_cursor;
 }

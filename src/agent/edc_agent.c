@@ -98,24 +98,50 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
     if (!agent || !task)
         return;
 
-    /* Group 级上下文: group history (可共享) + task 专属 (dep outputs) */
-    cJSON *msgs;
+    /* Group 级上下文: group memory (摘要) + 最近 K 条未折叠历史 + task 专属 (dep outputs) */
+    cJSON *msgs = cJSON_CreateArray();
+
+    /* 1. GROUP 记忆摘要 (已折叠 turns 的浓缩), 注入所有新 task */
+    if (task->group && task->group->memory && sdslen(task->group->memory) > 0)
+    {
+        cJSON *mem = cJSON_CreateObject();
+        cJSON_AddStringToObject(mem, "role", "system");
+        sds mc = sdscatprintf(sdsempty(), "## Group Memory\n%s", task->group->memory);
+        cJSON_AddStringToObject(mem, "content", mc);
+        cJSON_AddItemToArray(msgs, mem);
+        sdsfree(mc);
+    }
+
     if (task->group && cJSON_GetArraySize(task->group->history) > 0)
     {
-        msgs = cJSON_CreateArray();
-        /* fork 上下文切片: 只取 fork 点之前的 group history */
-        size_t end = task->forked_from ? task->fork_point_msg_count : (size_t)cJSON_GetArraySize(task->group->history);
-        if (end > (size_t)cJSON_GetArraySize(task->group->history))
-            end = (size_t)cJSON_GetArraySize(task->group->history);
-        for (size_t i = 0; i < end; i++)
+        size_t total = cJSON_GetArraySize(task->group->history);
+
+        /* fork 上下文切片终点: 只取 fork 点之前的 group history */
+        size_t end = task->forked_from && task->fork_point_msg_count < total ? task->fork_point_msg_count : total;
+
+        /* 未折叠历史起点: 跳过 system prompt (history[0]) + 已折叠消息 */
+        size_t hist_begin = 1 + task->group->fold_cursor;
+        if (hist_begin > end)
+            hist_begin = end;
+
+        /* 最近 K 条窗口 (K = load_n_histories) */
+        size_t k = agent->config ? (size_t)agent->config->load_n_histories : 10;
+        size_t from = hist_begin;
+        if (end > hist_begin && end - hist_begin > k)
+            from = end - k;
+
+        /* 注入 system prompt (恒为 history[0]) */
+        cJSON_AddItemReferenceToArray(msgs, cJSON_GetArrayItem(task->group->history, 0));
+
+        /* 注入未折叠历史消息 [max(from,1), end) */
+        size_t start = from > 0 ? from : 1;
+        for (size_t i = start; i < end; i++)
         {
-            cJSON *item = cJSON_GetArrayItem(task->group->history, i);
-            cJSON_AddItemReferenceToArray(msgs, item);
+            cJSON_AddItemReferenceToArray(msgs, cJSON_GetArrayItem(task->group->history, i));
         }
     }
     else
     {
-        msgs = cJSON_CreateArray();
         /* 若 group 无历史，注入 system prompt */
         if (agent->config)
         {
@@ -335,11 +361,38 @@ static bool edc_agent_cb_handle_command(struct edc_scheduler *sched, struct edc_
 static void edc_agent_cb_trigger_memory(struct edc_scheduler *sched)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
-    if (!agent || !agent->memory_actor)
+    if (!agent || !agent->memory_actor || !sched->session)
         return;
 
-    edc_actor_send(agent->memory_actor,
-                   edc_actor_msg_new(BC_ACTOR_MSG_MEMORY_COMPRESS, edc_scheduler_get_actor(sched), NULL, NULL, NULL));
+    int task_threshold = agent->config ? agent->config->group_fold_task_threshold : 20;
+    if (task_threshold <= 0)
+        task_threshold = 20;
+    int msg_threshold = agent->config ? agent->config->group_fold_msg_threshold : 200;
+    if (msg_threshold <= 0)
+        msg_threshold = 200;
+
+    /* L1 折叠触发: 组内可折叠 task 数 ≥ 阈值, 或 有可折叠 task 且未折叠消息条数 ≥ 阈值 */
+    struct edc_task_group *g;
+    DL_FOREACH(sched->session->groups, g)
+    {
+        size_t foldable = edc_task_group_count_foldable(g);
+        size_t unfolded = edc_task_group_unfolded_msg_count(g);
+        bool should_fold = foldable >= (size_t)task_threshold ||
+                           (foldable > 0 && unfolded >= (size_t)msg_threshold);
+
+        if (should_fold)
+        {
+            log_info("L1 fold trigger: group %s foldable=%zu (task_thr=%d) unfolded=%zu (msg_thr=%d)",
+                     g->group_id, foldable, task_threshold, unfolded, msg_threshold);
+            edc_actor_send(agent->memory_actor,
+                           edc_actor_msg_new(BC_ACTOR_MSG_GROUP_FOLD, edc_scheduler_get_actor(sched), NULL, g, NULL));
+            break; /* 一次只折叠一个 group */
+        }
+        else if (foldable > 0 || unfolded > 0)
+        {
+            log_debug("L1 fold check: group %s foldable=%zu unfolded=%zu", g->group_id, foldable, unfolded);
+        }
+    }
 }
 
 /* ── 回调: 保存 Session ────────────────────────────────────── */

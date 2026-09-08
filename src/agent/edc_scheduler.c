@@ -454,6 +454,10 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         /* to reclaim a task: use /task join <id> */
         (void)task;
 
+        /* 触发 L1 折叠检查 (task 完成后可能达到 group fold 阈值) */
+        if (sched->trigger_memory)
+            sched->trigger_memory(sched);
+
         if (sched->save_session)
             sched->save_session(sched);
         return;
@@ -594,6 +598,11 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
         break;
     case BC_ACTOR_MSG_MEMORY_DONE:
         sched_handle_memory_done(sched, msg);
+        break;
+    case BC_ACTOR_MSG_GROUP_FOLD_DONE:
+        /* L1 折叠完成, 持久化 state (turns_folded/memory/fold_cursor) */
+        if (sched->save_session)
+            sched->save_session(sched);
         break;
     case BC_ACTOR_MSG_TASK_SNAPSHOT:
         sched_handle_task_snapshot(sched);

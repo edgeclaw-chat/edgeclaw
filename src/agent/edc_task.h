@@ -95,6 +95,7 @@ struct edc_task
 
     uint32_t completion_seq; /* 完成顺序 (0=未完成) */
     int has_deferred_vars;   /* $VAR 引用待展开 */
+    bool turns_folded;       /* turns 已折叠进 group memory (摘要) */
 
     /* ── 输出重定向 ── */
     sds redirect_stdout;  /* > / >> file */
@@ -139,6 +140,13 @@ extern void edc_task_send_signal(struct edc_task *task, edc_task_signal sig);
 
 extern void edc_task_set_output(struct edc_task *task, sds output);
 extern sds edc_task_get_output(struct edc_task *task);
+
+/* ── 折叠 ────────────────────────────────────────────────── */
+
+/** task 是否可折叠: 已完成且 turns 尚未折叠进 group memory */
+extern bool edc_task_is_foldable(struct edc_task *task);
+/** task 的已提交 turn 消息总数 (用于 fold_cursor 推进) */
+extern size_t edc_task_turn_msg_count(struct edc_task *task);
 
 /* ── Prompt ────────────────────────────────────────────────── */
 

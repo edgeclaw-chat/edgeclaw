@@ -263,6 +263,14 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
     if (item && cJSON_IsNumber(item))
         result->memory_compress_threshold = item->valueint;
 
+    item = cJSON_GetObjectItem(json, "group_fold_task_threshold");
+    if (item && cJSON_IsNumber(item))
+        result->group_fold_task_threshold = item->valueint;
+
+    item = cJSON_GetObjectItem(json, "group_fold_msg_threshold");
+    if (item && cJSON_IsNumber(item))
+        result->group_fold_msg_threshold = item->valueint;
+
     item = cJSON_GetObjectItem(json, "tool_max_output_size");
     if (item && cJSON_IsNumber(item))
         result->tool_max_output_size = item->valueint;
@@ -403,6 +411,20 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     if (ival < 0)
         return -1;
     result->memory_compress_threshold = ival;
+
+    /* Group Fold Task Threshold */
+    ival = prompt_int("Group Fold Task Threshold",
+                      defaults && defaults->group_fold_task_threshold > 0 ? defaults->group_fold_task_threshold : 20);
+    if (ival < 0)
+        return -1;
+    result->group_fold_task_threshold = ival;
+
+    /* Group Fold Message Threshold */
+    ival = prompt_int("Group Fold Message Threshold",
+                      defaults && defaults->group_fold_msg_threshold > 0 ? defaults->group_fold_msg_threshold : 200);
+    if (ival < 0)
+        return -1;
+    result->group_fold_msg_threshold = ival;
 
     /* Tool Max Output Size */
     ival = prompt_int("Tool Max Output Size",
@@ -843,6 +865,8 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     cJSON_AddNumberToObject(config, "max_iter", env_result.max_iter);
     cJSON_AddNumberToObject(config, "load_n_histories", env_result.load_n_histories);
     cJSON_AddNumberToObject(config, "memory_compress_threshold", env_result.memory_compress_threshold);
+    cJSON_AddNumberToObject(config, "group_fold_task_threshold", env_result.group_fold_task_threshold);
+    cJSON_AddNumberToObject(config, "group_fold_msg_threshold", env_result.group_fold_msg_threshold);
     cJSON_AddNumberToObject(config, "tool_max_output_size", env_result.tool_max_output_size);
 
     cJSON *sandbox = cJSON_CreateObject();

@@ -189,6 +189,7 @@ static cJSON *task_to_json(struct edc_task *task, cJSON *messages_array)
     if (task->output)
         cJSON_AddStringToObject(tj, "output", task->output);
     cJSON_AddNumberToObject(tj, "completion_seq", task->completion_seq);
+    cJSON_AddBoolToObject(tj, "turns_folded", task->turns_folded);
 
     /* ── redirect ── */
     if (task->redirect_stdout)
@@ -244,6 +245,9 @@ static cJSON *group_to_json(struct edc_task_group *group)
     else if (group->group_id)
         cJSON_AddStringToObject(gj, "leader_task_id", group->group_id);
     cJSON_AddBoolToObject(gj, "is_orphaned", group->is_orphaned);
+    if (group->memory)
+        cJSON_AddStringToObject(gj, "memory", group->memory);
+    cJSON_AddNumberToObject(gj, "fold_cursor", (int)group->fold_cursor);
 
     /* member task ids */
     cJSON *members = cJSON_CreateArray();
@@ -626,6 +630,8 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->output = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "completion_seq")) && cJSON_IsNumber(v))
             task->completion_seq = (uint32_t)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "turns_folded")))
+            task->turns_folded = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "redirect_stdout")) && cJSON_IsString(v))
             task->redirect_stdout = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "redirect_stderr")) && cJSON_IsString(v))
@@ -695,6 +701,17 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
             continue;
         if (is_orph)
             group->is_orphaned = true;
+
+        {
+            cJSON *mem = cJSON_GetObjectItem(gj, "memory");
+            if (mem && cJSON_IsString(mem))
+                group->memory = sdsnew(cJSON_GetStringValue(mem));
+        }
+        {
+            cJSON *fc = cJSON_GetObjectItem(gj, "fold_cursor");
+            if (fc && cJSON_IsNumber(fc))
+                group->fold_cursor = (size_t)cJSON_GetNumberValue(fc);
+        }
 
         cJSON *members = cJSON_GetObjectItem(gj, "member_task_ids");
         if (members && cJSON_IsArray(members))
