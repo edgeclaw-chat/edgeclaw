@@ -53,21 +53,20 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
     cJSON *items = cJSON_GetObjectItem(args, "items");
     int total = items ? cJSON_GetArraySize(items) : 0;
 
-    /* 无论清单是否为空，回显都附带原始 args JSON ({"items":[...]})。TUI 对
-     * update_todolist 消息只消费 payload 更新右侧 TodoWidget，不再渲染进对话
-     * 消息列表；content 仍作为 tool result 回给 LLM，CLI 等无侧栏渲染端也
-     * 照常显示。 */
+    /* 无论清单是否为空都回显一条带 header 的 md TOOL 消息 (文本 = 渲染后的
+     * checklist)。TUI 对 update_todolist 消息不进对话区 —— TODO 展示完全走
+     * 任务快照 (见 scheduler: 每次回显推送一次快照, active task 的 todolist
+     * 渲染到右侧 TodoWidget)；content 仍作为 tool result 回给 LLM，CLI 等
+     * 无侧栏渲染端也照常显示。 */
 
     if (!total)
     {
-        /* 空清单同样回显一次 ({"items":[]} payload)：TUI 借此把 TodoWidget
-         * 清成 0/0。这里只发展示消息，callback 结果仍是 "No todos"，LLM
-         * 看到的 tool result 与原来一致。 */
-        char *payload = cJSON_PrintUnformatted(args);
+        /* 空清单同样回显一次：TUI 借此推送快照把 TodoWidget 清成 0/0
+         * (active task 的 todolist 已被摘除)。这里只发展示消息，callback
+         * 结果仍是 "No todos"，LLM 看到的 tool result 与原来一致。 */
         sds empty = sdsnew("# TODO\n\n0/0 completed");
-        edc_toolbox_emit_tool_message_md_payload(ctx, "update_todolist", empty, payload);
+        edc_toolbox_emit_tool_message_md(ctx, "update_todolist", empty);
         sdsfree(empty);
-        cJSON_free(payload);
 
         /* 清单被清空 → 该 task 不再持有 todo（后续请求不再向 system prompt 追加） */
         if (ctx->task && ctx->task->todolist)
@@ -115,11 +114,11 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
 
     sds lines = edc_tools_todo_render_md(items);
 
-    /* 把这份 todo 清单挂到调用它的 task 上 (整体替换)。task->todolist 已被
-     * state_serializer 持久化；之后每次为该 task 组装 LLM 请求时 (见 agent
-     * send_llm)，若清单非空会把渲染 md 追加到该 task 的 system prompt 尾部，
-     * 让多轮工具循环中的模型始终能看到当前清单，而不依赖窗口内残留的
-     * update_todolist tool 消息。 */
+    /* 把这份 todo 清单挂到调用它的 task 上 (整体替换)。todo list 是 task
+     * 状态的一部分: task->todolist 已被 state_serializer 持久化；之后每次为
+     * 该 task 组装 LLM 请求时 (见 agent send_llm)，若清单非空会把渲染 md
+     * 追加到该 task 的 system prompt 尾部，让多轮工具循环中的模型始终能
+     * 看到当前清单，而不依赖窗口内残留的 update_todolist tool 消息。 */
     if (ctx->task)
     {
         if (ctx->task->todolist)
@@ -127,9 +126,7 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
         ctx->task->todolist = cJSON_Duplicate(items, 1);
     }
 
-    char *payload = cJSON_PrintUnformatted(args);
-    edc_toolbox_emit_tool_message_md_payload(ctx, "update_todolist", lines, payload);
-    cJSON_free(payload);
+    edc_toolbox_emit_tool_message_md(ctx, "update_todolist", lines);
 
     callback(ctx, lines, NULL);
 }

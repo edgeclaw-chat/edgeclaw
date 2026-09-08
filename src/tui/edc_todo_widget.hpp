@@ -8,19 +8,20 @@
 
 namespace edc
 {
-// Right-sidebar widget below the task tree: renders the latest todo-list
-// status driven by the update_todolist tool. The tool emits a structured JSON
-// payload (its raw args, {"items":[{content,status,activeForm},...]}) next to
-// the Markdown checklist it echoes into the chat log; the TUI window parses
-// that payload (C side, edc_c_todo_payload_parse) and hands the widget plain
-// items here. Each emission carries the full list — this widget replaces its
-// state wholesale, there is no incremental update.
+// Right-sidebar widget below the task tree: renders the todo list of the
+// current foreground task — the task marked active in the foreground group of
+// the task-tree snapshot. The list is part of the task state (update_todolist
+// attaches the items it validated to the calling task; the snapshot JSON
+// carries every task's "todolist" and the C bridge parses it back). The TUI
+// window therefore feeds this widget from each snapshot it renders
+// (ActiveTaskTodoItems), never from a side channel on the tool's chat
+// message: one source of truth for the whole sidebar.
 //
 // Like the task tree it forms an independent, collapsible sidebar section:
 // the "▾/▸ Todos" header row is clickable and toggles the item list while the
 // header (with its progress summary) always stays visible. The section is
-// always present in the pane: when no list has arrived yet — or the tool
-// reports an empty one — the header renders a "0/0" summary. The section
+// always present in the pane: when no active task holds a list yet — or its
+// list is empty — the header renders a "0/0" summary. The section
 // starts collapsed at startup (an empty body has nothing worth showing); if
 // the user expands an empty section it shows a dim "(empty)" row. The first
 // non-empty list that arrives auto-expands the section, after which the fold

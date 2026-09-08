@@ -37,7 +37,17 @@ struct uv_loop_s;
 /* ── Task-tree snapshot (parsed from the scheduler's JSON) ─────
  * The scheduler serializes the active session's task tree to JSON and the
  * TUI requests a parse through edc_c_task_snapshot_parse(); the result is a
- * plain-C tree of malloc'd strings so the C++ TUI never touches cJSON. */
+ * plain-C tree of malloc'd strings so the C++ TUI never touches cJSON. Each
+ * task node also carries the todo list it holds (the update_todolist items,
+ * NULL/0 when the task has none) — the TodoWidget renders the foreground
+ * group's active task's todo straight from the snapshot. */
+
+struct edc_c_todo_item
+{
+    const char *content;
+    const char *status;      /* pending | in_progress | completed */
+    const char *active_form; /* "" when not in_progress */
+};
 
 struct edc_c_task_info
 {
@@ -46,6 +56,8 @@ struct edc_c_task_info
     int is_leader;
     int is_active;
     const char *description;
+    int todo_count;                 /* 0 when the task holds no todo list */
+    struct edc_c_todo_item *todo_items;
 };
 
 struct edc_c_task_group
@@ -73,26 +85,6 @@ struct edc_c_task_snapshot
 struct edc_c_task_snapshot *edc_c_task_snapshot_parse(const char *json);
 void edc_c_task_snapshot_free(struct edc_c_task_snapshot *snap);
 
-/* ── Todo payload (update_todolist tool args JSON) ─────────── */
-
-struct edc_c_todo_item
-{
-    const char *content;
-    const char *status;      /* pending | in_progress | completed */
-    const char *active_form; /* "" when not in_progress */
-};
-
-struct edc_c_todo_payload
-{
-    int item_count;
-    struct edc_c_todo_item *items;
-};
-
-/* Parse an update_todolist payload: {"items":[{content,status,activeForm}]}.
- * Returns NULL on parse failure. Free with edc_c_todo_payload_free(). */
-struct edc_c_todo_payload *edc_c_todo_payload_parse(const char *json);
-void edc_c_todo_payload_free(struct edc_c_todo_payload *payload);
-
 /* Create / destroy an agent. The returned pointer is opaque to the TUI; it is
  * only passed back into other bridge functions. Mirrors edc_agent_new/free. */
 struct edc_agent *edc_c_agent_new(bool setup, bool enable_sandbox);
@@ -111,10 +103,6 @@ const char *edc_c_channel_message_content(struct edc_channel_message *);
 /* Optional short description carried by a message (e.g. the executed command
  * for tool messages). May return NULL when the sender provided no header. */
 const char *edc_c_channel_message_header(struct edc_channel_message *channel_message);
-/* Optional structured JSON carried by a message (e.g. the raw update_todolist
- * arguments). May return NULL. Parse with edc_c_todo_payload_parse() or any
- * JSON consumer on the C side. */
-const char *edc_c_channel_message_payload(struct edc_channel_message *channel_message);
 int edc_c_channel_message_is_user(struct edc_channel_message *channel_message);
 int edc_c_channel_message_is_tool(struct edc_channel_message *channel_message);
 int edc_c_channel_message_is_thought(struct edc_channel_message *channel_message);

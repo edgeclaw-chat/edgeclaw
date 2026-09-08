@@ -94,8 +94,6 @@ void edc_channel_message_free(struct edc_channel_message *msg)
         return;
     if (msg->header)
         sdsfree(msg->header);
-    if (msg->payload)
-        sdsfree(msg->payload);
     sdsfree(msg->content);
     free(msg);
 }

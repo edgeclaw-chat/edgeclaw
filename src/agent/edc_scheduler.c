@@ -537,8 +537,14 @@ static void sched_handle_tool_emit(struct edc_scheduler *sched, struct edc_actor
         return;
 
     if (sched->send_tool_message)
-        sched->send_tool_message(sched, task, emit->header, emit->content, emit->render_pref, emit->payload,
-                                 msg->request_id);
+        sched->send_tool_message(sched, task, emit->header, emit->content, emit->render_pref, msg->request_id);
+
+    /* update_todolist 每次成功更新 (含清空) 都会回显一条 TOOL 消息; 该消息只
+     * 携带文本, todo 本身已挂到 task->todolist。多轮工具链内 task 状态不再
+     * 变化 (TOOL_CALLING 期间), 不会触发状态通知快照 —— 这里主动补推一次,
+     * 让 TUI 的 TodoWidget 立即按新清单刷新 (规则3)。 */
+    if (emit->header && strcmp(emit->header, "update_todolist") == 0)
+        sched_handle_task_snapshot(sched);
 }
 
 /* ── Actor 入口 ────────────────────────────────────────────── */
@@ -577,6 +583,12 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched)
             cJSON_AddBoolToObject(tj, "leader", t->is_group_leader);
             cJSON_AddBoolToObject(tj, "active", sess->active_task == t);
             cJSON_AddStringToObject(tj, "desc", t->description ? t->description : "");
+            /* todo 清单是 task 状态的一部分: 快照携带每个持有清单的 task 的
+             * todolist (item 数组, 同 update_todolist 参数形状)。TUI 借此把
+             * fg 组 active task 的清单渲染到右侧 TodoWidget —— 快照是侧边栏
+             * (任务树 + todo) 的唯一数据源, 不再需要旁路 payload 通道。 */
+            if (t->todolist && cJSON_GetArraySize(t->todolist) > 0)
+                cJSON_AddItemToObject(tj, "todolist", cJSON_Duplicate(t->todolist, 1));
             cJSON_AddItemToArray(tasks, tj);
         }
 

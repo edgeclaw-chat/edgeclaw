@@ -30,11 +30,11 @@ static void DisableBracketedPaste()
 }
 
 // update_todolist 工具的 TOOL 消息头（与 edc_tools_todo.c 注册名保持一致）。
-// 该工具每次调用都携带结构化 payload（原始 args JSON {"items":[...]}）与
-// Markdown checklist 正文。TODO 状态只由右侧 TodoWidget 展示（直接解析
-// JSON，整体替换），这类消息不再渲染进对话消息列表——聊天区重复一条
-// checklist 纯属噪音；正文仍随消息传递，供无侧栏的渲染端（CLI）与
-// tool result（LLM）使用。
+// 该工具的文本回显（Markdown checklist）在 TUI 里不进对话消息列表——TODO
+// 状态只由右侧 TodoWidget 展示，其数据源是任务快照里 active task 的 todo
+// （快照由 scheduler 在每次工具回显后主动补推），聊天区重复一条 checklist
+// 纯属噪音；文本仍随消息传递，供无侧栏的渲染端（CLI）与 tool result（LLM）
+// 使用。
 constexpr char kTodoToolHeader[] = "update_todolist";
 
 // The animated "working" row must reflect the scheduler's process state, not
@@ -70,6 +70,44 @@ bool ForegroundProcessBusy(const ::edc_c_task_snapshot *snap)
         return false; // foreground group exists but has no active task marked
     }
     return false; // no foreground group at all
+}
+
+// Todo sidebar content: the foreground group's active task's own todo list.
+// The list is part of the task state (update_todolist attaches it to the
+// task that called it), so the snapshot — which already tells us which task
+// is active — is the single source of truth for the TodoWidget, just as it
+// is for the task tree and the working spinner. A task without a list (or
+// the fg group without an active task) renders an empty TodoWidget.
+std::vector<TodoWidget::Item> ActiveTaskTodoItems(const ::edc_c_task_snapshot *snap)
+{
+    std::vector<TodoWidget::Item> items;
+    if (!snap)
+        return items;
+
+    for (int gi = 0; gi < snap->group_count; gi++)
+    {
+        const ::edc_c_task_group *g = &snap->groups[gi];
+        if (!g->fg)
+            continue;
+        for (int ti = 0; ti < g->task_count; ti++)
+        {
+            const ::edc_c_task_info *t = &g->tasks[ti];
+            if (!t->is_active)
+                continue;
+            items.reserve(static_cast<size_t>(t->todo_count));
+            for (int i = 0; i < t->todo_count; i++)
+            {
+                TodoWidget::Item item;
+                item.content = t->todo_items[i].content ? t->todo_items[i].content : "";
+                item.status = t->todo_items[i].status ? t->todo_items[i].status : "";
+                item.active_form = t->todo_items[i].active_form ? t->todo_items[i].active_form : "";
+                items.push_back(std::move(item));
+            }
+            return items;
+        }
+        return items; // foreground group exists but has no active task marked
+    }
+    return items; // no foreground group at all
 }
 
 } // namespace
@@ -343,6 +381,11 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
                 // The snapshot is the single source of truth for the status
                 // animation: re-derive it whenever the process tree refreshes.
                 tui->SyncWorkingFromSnapshot(snap);
+                // And for the todo section: it shows the foreground group's
+                // active task's own todo list (part of the task state), so it
+                // refreshes on every snapshot — not via a side channel on the
+                // update_todolist chat message.
+                tui->todo_widget_->SetItems(ActiveTaskTodoItems(snap));
                 edc_c_task_snapshot_free(snap);
             }
             // FTXUI only repaints when the frame was invalidated. Closures
@@ -388,19 +431,19 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     const std::string text = content;
     const char *header_c = edc_c_channel_message_header(message);
     const std::string header = header_c ? header_c : "";
-    // Structured JSON payload (e.g. update_todolist's raw args). Read here
-    // while the message is still alive; NULL when the sender attached none.
-    const char *payload_c = edc_c_channel_message_payload(message);
-    const std::string payload = payload_c ? payload_c : "";
     // Sender-declared render preference (PLAIN/MARKDOWN). Read here while
     // the message is still alive; the closure below only needs the int.
     const int render_pref = edc_c_channel_message_render_pref(message);
     const time_t ts = ::time(nullptr);
 
-    auto add_message = [tui, kind, text, header, payload, render_pref, ts]() {
+    auto add_message = [tui, kind, text, header, render_pref, ts]() {
         std::shared_ptr<Message> widget;
-        // update_todolist 的 TOOL 消息是"仅侧栏"消息：payload 驱动右侧
-        // TodoWidget，不追加进对话消息列表（见下方 Kind::Tool 分支）。
+        // update_todolist 的 TOOL 消息不进对话区：TODO 状态已由右侧
+        // TodoWidget 展示，而它的数据源是任务快照里 active task 的 todo
+        // （见 on_channel_adapter_send 的快照分支；工具每次回显都会让
+        // scheduler 补推一次快照），聊天里再排一条 checklist 纯属噪音。
+        // 消息文本仍随消息传递，供无侧栏的渲染端（CLI）与 tool result
+        // （LLM）使用。
         bool skip_chat = false;
         switch (kind)
         {
@@ -408,28 +451,8 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             widget = std::make_shared<UserMessage>(text, ts);
             break;
         case Kind::Tool:
-            // update_todolist 的消息携带结构化 payload（原始 args JSON）：
-            // 右侧 TodoWidget 直接解析 JSON 整体替换渲染，且不进对话区
-            // （TODO 状态已有专属面板，聊天里再排一条 checklist 是噪音）。
-            // 空清单 ({"items":[]}) 同样走这条路，用于把侧栏清成 0/0。
-            if (header == kTodoToolHeader && !payload.empty())
+            if (header == kTodoToolHeader)
             {
-                ::edc_c_todo_payload *todo = edc_c_todo_payload_parse(payload.c_str());
-                if (todo)
-                {
-                    std::vector<TodoWidget::Item> items;
-                    items.reserve(static_cast<size_t>(todo->item_count));
-                    for (int i = 0; i < todo->item_count; i++)
-                    {
-                        TodoWidget::Item item;
-                        item.content = todo->items[i].content ? todo->items[i].content : "";
-                        item.status = todo->items[i].status ? todo->items[i].status : "";
-                        item.active_form = todo->items[i].active_form ? todo->items[i].active_form : "";
-                        items.push_back(std::move(item));
-                    }
-                    tui->todo_widget_->SetItems(items);
-                    edc_c_todo_payload_free(todo);
-                }
                 skip_chat = true;
                 break;
             }

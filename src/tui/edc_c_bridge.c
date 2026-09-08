@@ -45,11 +45,6 @@ const char *edc_c_channel_message_header(struct edc_channel_message *channel_mes
     return channel_message ? channel_message->header : NULL;
 }
 
-const char *edc_c_channel_message_payload(struct edc_channel_message *channel_message)
-{
-    return channel_message ? channel_message->payload : NULL;
-}
-
 int edc_c_channel_message_is_user(struct edc_channel_message *channel_message)
 {
     return channel_message ? channel_message->message_type == EDC_CHANNEL_MESSAGE_USER_TYPE : 0;
@@ -113,6 +108,10 @@ static const char *snap_str(const cJSON *item)
     return cJSON_IsString(item) ? item->valuestring : "";
 }
 
+/* forward: per-task todo items live in the snapshot tree (defined below) */
+static struct edc_c_todo_item *snap_todo_parse(const cJSON *arr, int *count_out);
+static void snap_todo_free(struct edc_c_todo_item *items, int count);
+
 struct edc_c_task_snapshot *edc_c_task_snapshot_parse(const char *json)
 {
     if (!json)
@@ -168,6 +167,9 @@ struct edc_c_task_snapshot *edc_c_task_snapshot_parse(const char *json)
                     t->is_leader = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(tj, "leader")) ? 1 : 0;
                     t->is_active = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(tj, "active")) ? 1 : 0;
                     t->description = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(tj, "desc")));
+                    cJSON *todo = cJSON_GetObjectItemCaseSensitive(tj, "todolist");
+                    if (cJSON_IsArray(todo))
+                        t->todo_items = snap_todo_parse(todo, &t->todo_count);
                 }
             }
         }
@@ -195,6 +197,7 @@ void edc_c_task_snapshot_free(struct edc_c_task_snapshot *snap)
             free((void *)t->task_id);
             free((void *)t->state);
             free((void *)t->description);
+            snap_todo_free(t->todo_items, t->todo_count);
         }
         free(g->tasks);
     }
@@ -202,69 +205,50 @@ void edc_c_task_snapshot_free(struct edc_c_task_snapshot *snap)
     free(snap);
 }
 
-/* ── Todo payload JSON parsing ─────────────────────────────── */
+/* ── Todo item array parsing (per-task "todolist" in a snapshot) ─ */
 
-/* Parse the structured payload of an update_todolist tool message — the raw
- * tool arguments {"items":[{content,status,activeForm},...]}. Accepts either
- * that object form or a bare items array. Returns NULL on parse failure.
- * Free with edc_c_todo_payload_free(). */
-struct edc_c_todo_payload *edc_c_todo_payload_parse(const char *json)
+/* Parse a JSON items array (update_todolist items: each with content/status/
+ * activeForm) into a malloc'd array of edc_c_todo_item. Returns NULL and sets
+ * *count_out = 0 when arr is not an array or has no elements. The caller
+ * frees the result with snap_todo_free(). */
+static struct edc_c_todo_item *snap_todo_parse(const cJSON *arr, int *count_out)
 {
-    if (!json)
+    *count_out = 0;
+    if (!cJSON_IsArray(arr))
         return NULL;
 
-    cJSON *root = cJSON_Parse(json);
-    if (!root)
+    const int n = cJSON_GetArraySize(arr);
+    if (n <= 0)
         return NULL;
 
-    cJSON *items = root;
-    if (cJSON_IsObject(root))
-    {
-        cJSON *arr = cJSON_GetObjectItemCaseSensitive(root, "items");
-        if (!cJSON_IsArray(arr))
-        {
-            cJSON_Delete(root);
-            return NULL;
-        }
-        items = arr;
-    }
-    if (!cJSON_IsArray(items))
-    {
-        cJSON_Delete(root);
+    struct edc_c_todo_item *items = calloc((size_t)n, sizeof(*items));
+    if (!items)
         return NULL;
-    }
-
-    struct edc_c_todo_payload *out = calloc(1, sizeof(*out));
-    out->item_count = cJSON_GetArraySize(items);
-    if (out->item_count > 0)
-        out->items = calloc((size_t)out->item_count, sizeof(struct edc_c_todo_item));
 
     int i = 0;
     cJSON *it;
-    cJSON_ArrayForEach(it, items)
+    cJSON_ArrayForEach(it, arr)
     {
-        struct edc_c_todo_item *dst = &out->items[i++];
+        struct edc_c_todo_item *dst = &items[i++];
         dst->content = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(it, "content")));
         dst->status = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(it, "status")));
         dst->active_form = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(it, "activeForm")));
     }
-
-    cJSON_Delete(root);
-    return out;
+    *count_out = n;
+    return items;
 }
 
-void edc_c_todo_payload_free(struct edc_c_todo_payload *payload)
+static void snap_todo_free(struct edc_c_todo_item *items, int count)
 {
-    if (!payload)
+    if (!items)
         return;
-    for (int i = 0; i < payload->item_count; i++)
+    for (int i = 0; i < count; i++)
     {
-        free((void *)payload->items[i].content);
-        free((void *)payload->items[i].status);
-        free((void *)payload->items[i].active_form);
+        free((void *)items[i].content);
+        free((void *)items[i].status);
+        free((void *)items[i].active_form);
     }
-    free(payload->items);
-    free(payload);
+    free(items);
 }
 
 void edc_c_file_utils_init(struct uv_loop_s *loop)
