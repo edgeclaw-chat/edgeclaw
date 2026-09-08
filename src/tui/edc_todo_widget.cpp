@@ -121,18 +121,13 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             const bool done = item.status == "completed";
             const bool doing = item.status == "in_progress";
 
-            // The checkbox glyph never encodes completion: whether a todo is
-            // done is already shown by the content styling (dim green +
-            // strikethrough) alone, so a finished item keeps the exact same
-            // "[ ]" box it had while pending — the marker column only varies
-            // for the single item being worked on right now (transient
-            // activity cue "[•]", not a state marker). Color follows suit:
-            // green stays on the struck-through text, not on the box.
-            const std::string mark = doing ? "[•]" : "[ ]";
-            Element marker = text("  " + mark + " ");
-            if (doing)
-                marker |= bold;
-            marker |= color(doing ? kBlue : kGray);
+            // The leading bullet is pure decoration and never encodes state:
+            // pending / in-progress / completed are all conveyed by the text
+            // styling alone (dim gray / bright white / dim green with
+            // strikethrough), so the marker column stays byte-identical for
+            // every row — no checkbox toggling, no glyph swap, no color
+            // shift on the dot itself.
+            const Element marker = text("  ●   ") | bold | color(kGray);
 
             // Content wraps to the whole row width minus the marker column;
             // single-line ellipsis truncation is only a last resort for a
