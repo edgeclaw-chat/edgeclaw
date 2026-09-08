@@ -189,11 +189,11 @@ bool ScrollView::OnEvent(::ftxui::Event event)
 
 ::ftxui::Element ScrollView::OnRender()
 {
-    // vscroll_indicator sits inside the scroll node so that it sees the full
-    // content height as its own box and the visible window as the stencil,
-    // which is what it measures the thumb against. Outside, the two would be
-    // equal and it would draw nothing.
-    auto content = content_->Render() | ::ftxui::vscroll_indicator;
+    // No vscroll_indicator: the widget is deliberately borderless, and a thumb
+    // down the right edge would read as a frame slicing the pane in two. The
+    // ScrollNode below scrolls the content; the indicator only *drew* where
+    // the viewport was, so dropping it loses nothing but the bar.
+    auto content = content_->Render();
 
     ::ftxui::Element scrollable = std::make_shared<ScrollNode>(std::move(content), state_);
 
