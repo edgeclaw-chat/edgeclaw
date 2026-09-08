@@ -434,6 +434,19 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         sched_flush_redirects(task);
         task->completion_seq = sched->session ? sched->session->next_completion_seq++ : 0;
         sched_set_task_state(sched, task, TASK_COMPLETED);
+
+        /* session 消息数刚因 turn 提交而增长。sched_set_task_state 里的
+         * notify 只在前台 active task 上触发；被更新输入顶替、或在后台/
+         * 依赖链中完成的任务其 turn 是"静默"的（send_reply 会丢弃非
+         * active task 的输出，不产生任何 channel 消息），若不在状态迁移
+         * 之外主动补推一次快照，TUI 侧边栏的 session 统计会一直停留在
+         * 旧值。快照带 COMPLETED 状态 + 新 message_count 一并刷新。 */
+        if (!sched->session || edc_session_get_active_task(sched->session) != task ||
+            task->group != sched->foreground_group)
+        {
+            sched_handle_task_snapshot(sched);
+        }
+
         edc_task_notify_dependents(task);
 
         /* auto-trigger dependents with queued input */
