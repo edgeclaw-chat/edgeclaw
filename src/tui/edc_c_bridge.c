@@ -131,6 +131,9 @@ struct edc_c_task_snapshot *edc_c_task_snapshot_parse(const char *json)
 
     snap->session_id = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(root, "session_id")));
     snap->session_name = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(root, "session_name")));
+    cJSON *mc = cJSON_GetObjectItemCaseSensitive(root, "message_count");
+    snap->message_count = cJSON_IsNumber(mc) ? mc->valueint : 0;
+    snap->created_at = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(root, "created_at")));
 
     cJSON *groups = cJSON_GetObjectItemCaseSensitive(root, "groups");
     if (cJSON_IsArray(groups))
@@ -181,6 +184,7 @@ void edc_c_task_snapshot_free(struct edc_c_task_snapshot *snap)
 
     free((void *)snap->session_id);
     free((void *)snap->session_name);
+    free((void *)snap->created_at);
     for (int gi = 0; gi < snap->group_count; gi++)
     {
         struct edc_c_task_group *g = &snap->groups[gi];

@@ -15,6 +15,12 @@ namespace edc
 // that payload (C side, edc_c_todo_payload_parse) and hands the widget plain
 // items here. Each emission carries the full list — this widget replaces its
 // state wholesale, there is no incremental update.
+//
+// Like the task tree it forms an independent, collapsible sidebar section:
+// the "▾/▸ Todos" header row is clickable and toggles the item list while the
+// header (with its progress summary) always stays visible. The section is
+// laid out in natural order directly below the task section — the enclosing
+// pane does not pin it to the bottom edge.
 class TodoWidget : public ::ftxui::ComponentBase
 {
   public:
@@ -39,10 +45,7 @@ class TodoWidget : public ::ftxui::ComponentBase
     }
 
     ::ftxui::Element OnRender() override;
-    bool OnEvent(::ftxui::Event event) override
-    {
-        return false;
-    }
+    bool OnEvent(::ftxui::Event event) override;
     bool Focusable() const override
     {
         return false;
@@ -51,6 +54,13 @@ class TodoWidget : public ::ftxui::ComponentBase
   private:
     std::vector<Item> items_;
     int completed_ = 0;
+
+    // Collapse state for the whole section; preserved across SetItems() so a
+    // user's manual fold survives background list refreshes.
+    bool collapsed_ = false;
+
+    // Click target of the section header row, populated during OnRender.
+    ::ftxui::Box header_box_;
 
     // Cap the rows drawn so a huge list cannot swallow the task tree above;
     // leftovers are summarized with a "+N more" line.

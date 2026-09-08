@@ -62,6 +62,8 @@ struct edc_c_task_snapshot
 {
     const char *session_id;
     const char *session_name;
+    int message_count;    /* messages in the session history */
+    const char *created_at;  /* "YYYY-MM-DD HH:MM:SS" or "" */
     int group_count;
     struct edc_c_task_group *groups;
 };

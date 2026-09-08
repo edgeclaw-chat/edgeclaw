@@ -541,6 +541,8 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched)
     struct edc_session *sess = sched->session;
     cJSON_AddStringToObject(root, "session_id", sess->session_id ? sess->session_id : "");
     cJSON_AddStringToObject(root, "session_name", edc_session_get_name(sess));
+    cJSON_AddNumberToObject(root, "message_count", (double)edc_session_get_message_count(sess));
+    cJSON_AddStringToObject(root, "created_at", sess->created_at ? sess->created_at : "");
 
     cJSON *groups = cJSON_AddArrayToObject(root, "groups");
     struct edc_task_group *g;

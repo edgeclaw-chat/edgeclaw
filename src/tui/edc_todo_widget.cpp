@@ -22,6 +22,26 @@ void TodoWidget::SetItems(const std::vector<Item> &items)
     }
 }
 
+bool TodoWidget::OnEvent(::ftxui::Event event)
+{
+    if (!event.is_mouse())
+        return false;
+
+    if (event.mouse().button != ::ftxui::Mouse::Left || event.mouse().motion != ::ftxui::Mouse::Pressed)
+        return false;
+
+    // Clicking the section header toggles the whole item list. The box is
+    // recorded by reflect() on the full-width header row of the previous
+    // frame, so the whole row is a click target (same scheme as the group
+    // headers in TaskWidget).
+    if (header_box_.Contain(event.mouse().x, event.mouse().y))
+    {
+        collapsed_ = !collapsed_;
+        return true;
+    }
+    return false;
+}
+
 ::ftxui::Element TodoWidget::OnRender()
 {
     using namespace ::ftxui;
@@ -41,15 +61,23 @@ void TodoWidget::SetItems(const std::vector<Item> &items)
 
     Elements lines;
     {
-        // Header carries the progress summary ("2/5"); it turns green when
-        // every listed item is done.
+        // Collapsible section header: the arrow shows the fold state and the
+        // summary always reflects the whole list. The header row is full
+        // width so a click anywhere on it toggles the section (header_box_
+        // is filled by reflect below; click targets are consumed in OnEvent).
         const std::string summary = std::to_string(completed_) + "/" + std::to_string(total);
-        Element header = hbox({
-            text(" Todo ") | bold | color(kBlue),
+        lines.push_back(hbox({
+            text((collapsed_ ? "▸ " : "▾ ") + std::string(" Todos ")) | bold | color(kBlue),
             filler(),
             text(summary) | color(completed_ == static_cast<int>(total) ? kGreen : kGray) | bold,
-        });
-        lines.push_back(std::move(header));
+        }) | reflect(header_box_));
+    }
+
+    // A collapsed section keeps only its header row; the separator and the
+    // item rows below are skipped entirely (the enclosing pane reclaims the
+    // space for whatever sits underneath in the sidebar column).
+    if (!collapsed_)
+    {
         lines.push_back(separator() | color(kDimLine));
     }
 
@@ -63,58 +91,61 @@ void TodoWidget::SetItems(const std::vector<Item> &items)
     // Fixed cells per row: 2 indent + 3 marker + 1 gap after the marker.
     constexpr int kFixedCells = 6;
 
-    for (size_t i = 0; i < shown; i++)
+    if (!collapsed_)
     {
-        const Item &item = items_[i];
-        const bool done = item.status == "completed";
-        const bool doing = item.status == "in_progress";
-
-        const std::string mark = done ? "[x]" : (doing ? "[•]" : "[ ]");
-        Element marker = text("  " + mark + " ");
-        if (doing)
-            marker |= bold;
-        marker |= color(done ? kGreen : (doing ? kBlue : kGray));
-
-        // The in_progress item may carry a dim " <- <activeForm>" tail.
-        std::string active_trunc;
-        if (doing && !item.active_form.empty())
-            active_trunc = TruncateToWidth(item.active_form, 24);
-
-        const int active_cells = active_trunc.empty() ? 0 : 4 + StringWidth(active_trunc);
-        const int budget = row_width - kFixedCells - active_cells;
-        const std::string content = (budget > 4) ? TruncateToWidth(item.content, budget) : std::string();
-
-        Elements row;
-        row.push_back(std::move(marker));
-
-        if (!content.empty())
+        for (size_t i = 0; i < shown; i++)
         {
-            Element content_el = text(content);
-            if (done)
+            const Item &item = items_[i];
+            const bool done = item.status == "completed";
+            const bool doing = item.status == "in_progress";
+
+            const std::string mark = done ? "[x]" : (doing ? "[•]" : "[ ]");
+            Element marker = text("  " + mark + " ");
+            if (doing)
+                marker |= bold;
+            marker |= color(done ? kGreen : (doing ? kBlue : kGray));
+
+            // The in_progress item may carry a dim " <- <activeForm>" tail.
+            std::string active_trunc;
+            if (doing && !item.active_form.empty())
+                active_trunc = TruncateToWidth(item.active_form, 24);
+
+            const int active_cells = active_trunc.empty() ? 0 : 4 + StringWidth(active_trunc);
+            const int budget = row_width - kFixedCells - active_cells;
+            const std::string content = (budget > 4) ? TruncateToWidth(item.content, budget) : std::string();
+
+            Elements row;
+            row.push_back(std::move(marker));
+
+            if (!content.empty())
             {
-                content_el |= dim;
-                content_el |= strikethrough;
-                content_el |= color(kGreen);
+                Element content_el = text(content);
+                if (done)
+                {
+                    content_el |= dim;
+                    content_el |= strikethrough;
+                    content_el |= color(kGreen);
+                }
+                else if (doing)
+                {
+                    content_el |= color(Color::RGB(229, 229, 229));
+                }
+                else
+                {
+                    content_el |= dim;
+                }
+                row.push_back(std::move(content_el));
             }
-            else if (doing)
-            {
-                content_el |= color(Color::RGB(229, 229, 229));
-            }
-            else
-            {
-                content_el |= dim;
-            }
-            row.push_back(std::move(content_el));
+            if (!active_trunc.empty())
+                row.push_back(text(" <- " + active_trunc) | dim | color(kBlue));
+
+            lines.push_back(hbox(std::move(row)));
         }
-        if (!active_trunc.empty())
-            row.push_back(text(" <- " + active_trunc) | dim | color(kBlue));
 
-        lines.push_back(hbox(std::move(row)));
-    }
-
-    if (total > shown)
-    {
-        lines.push_back(text("  … +" + std::to_string(total - shown) + " more") | dim | color(kGray));
+        if (total > shown)
+        {
+            lines.push_back(text("  … +" + std::to_string(total - shown) + " more") | dim | color(kGray));
+        }
     }
 
     return vbox(std::move(lines)) | reflect(content_box_) | borderStyled(BorderStyle::EMPTY) | bgcolor(kTodoBg);

@@ -46,6 +46,8 @@ void TaskWidget::SetSnapshot(const ::edc_c_task_snapshot *snap)
 {
     session_id_.clear();
     session_name_.clear();
+    created_at_.clear();
+    message_count_ = 0;
     groups_.clear();
 
     if (!snap)
@@ -56,6 +58,8 @@ void TaskWidget::SetSnapshot(const ::edc_c_task_snapshot *snap)
 
     session_id_ = snap->session_id ? snap->session_id : "";
     session_name_ = snap->session_name ? snap->session_name : "";
+    created_at_ = snap->created_at ? snap->created_at : "";
+    message_count_ = snap->message_count;
 
     std::string active_group_id;
     for (int gi = 0; gi < snap->group_count; gi++)
@@ -105,6 +109,15 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
     if (event.mouse().button != ::ftxui::Mouse::Left || event.mouse().motion != ::ftxui::Mouse::Pressed)
         return false;
 
+    // Clicking the Tasks section header folds/unfolds the whole tree. The
+    // header box is recorded by reflect() over the full-width header row, so
+    // a click anywhere on that row toggles the section.
+    if (section_header_box_.Contain(event.mouse().x, event.mouse().y))
+    {
+        section_collapsed_ = !section_collapsed_;
+        return true;
+    }
+
     for (size_t i = 0; i < group_header_boxes_.size() && i < groups_.size(); i++)
     {
         if (group_header_boxes_[i].Contain(event.mouse().x, event.mouse().y))
@@ -123,25 +136,30 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
 
     Elements lines;
 
-    lines.push_back(text(" Tasks ") | bold | color(Color::RGB(94, 151, 247)));
-
-    if (!session_name_.empty() || !session_id_.empty())
+    // Collapsible Tasks section header: the arrow shows the fold state, the
+    // counts on the right summarize what a collapsed section hides. The row
+    // is full width (reflect below records its box) so clicking anywhere on
+    // it toggles the whole tree (see OnEvent).
     {
-        std::string sid = session_name_.empty() ? session_id_ : session_name_;
-        if (!session_id_.empty() && session_name_ != session_id_)
-            sid += " [" + session_id_ + "]";
-        lines.push_back(text(" " + sid) | dim);
+        int group_count = static_cast<int>(groups_.size());
+        int task_count = 0;
+        for (const auto &g : groups_)
+            task_count += static_cast<int>(g.tasks.size());
+
+        Elements head = {
+            text((section_collapsed_ ? "▸ " : "▾ ") + std::string(" Tasks ")) | bold |
+                color(Color::RGB(94, 151, 247)),
+            filler(),
+        };
+        if (group_count > 0)
+        {
+            head.push_back(text(std::to_string(group_count) + "g · " + std::to_string(task_count) + "t") |
+                           dim | color(Color::RGB(147, 147, 147)));
+        }
+        lines.push_back(hbox(std::move(head)) | reflect(section_header_box_));
     }
-    lines.push_back(separator());
 
-    if (groups_.empty())
-    {
-        lines.push_back(text(" (no tasks)") | dim | color(Color::RGB(147, 147, 147)));
-    }
-
-    group_header_boxes_.resize(groups_.size());
-
-    // Width available for a task row. reflect() below sits on the vbox
+    // Width available for a text row. reflect() below sits on the vbox
     // *inside* the (empty-style) border, because ftxui's Border node insets
     // its child by one column on each side even for BorderStyle::EMPTY — the
     // outer box would overestimate the row width by 2 and the extra-wide
@@ -153,58 +171,99 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
     if (content_box_.x_min != 0 || content_box_.x_max != 0 || content_box_.y_min != 0 || content_box_.y_max != 0)
         row_width = content_box_.x_max - content_box_.x_min + 1;
 
-    for (size_t i = 0; i < groups_.size(); i++)
+    if (section_collapsed_)
     {
-        const auto &g = groups_[i];
-        const bool expanded = group_expanded_[g.group_id];
-
-        // Collapsible group header: an arrow shows the state; foreground is
-        // highlighted with a warm color, orphaned groups are marked.
-        std::string header = (expanded ? "▾ " : "▸ ") + g.group_id;
-        if (g.orphaned)
-            header += " ~";
-        header += " (" + std::to_string(g.member_count) + ")";
-
-        lines.push_back(hbox({text(header), filler()}) | bold |
-                        color(g.fg ? Color::RGB(229, 192, 123) : Color::RGB(147, 147, 147)) |
-                        reflect(group_header_boxes_[i]));
-
-        if (!expanded)
-            continue;
-
-        for (const auto &t : g.tasks)
+        // A collapsed section keeps only its header row; the session stats,
+        // separator and the group list are skipped entirely. No group
+        // headers are drawn, so drop their click boxes to avoid stale hit
+        // targets lingering from the expanded frame.
+        group_header_boxes_.clear();
+    }
+    else
+    {
+        if (!session_name_.empty() || !session_id_.empty())
         {
-            // Left part: indent, active/leader markers and the task id. The
-            // description is appended separately so its length can be
-            // computed against the real row width.
-            std::string left = "  ";
-            left += t.is_active ? "*" : " ";
-            left += t.is_leader ? "●" : " ";
-            left += " " + t.task_id;
+            // Session line: display name, then the id in brackets when distinct.
+            std::string sid = session_name_.empty() ? session_id_ : session_name_;
+            if (!session_id_.empty() && session_name_ != session_id_)
+                sid += " [" + session_id_ + "]";
+            lines.push_back(text(" " + TruncateToWidth(sid, row_width - 1)) | dim);
 
-            const int state_cells = StringWidth(t.state);
+            // Session stats, mirroring /session list: message count and the
+            // date the session was created ("YYYY-MM-DD HH:MM:SS" → date only).
+            std::string stats = std::to_string(message_count_) + " msgs";
+            if (created_at_.size() >= 10)
+                stats += " · created " + created_at_.substr(0, 10);
+            lines.push_back(text(" " + TruncateToWidth(stats, row_width - 1)) | dim |
+                            color(Color::RGB(147, 147, 147)));
+        }
+        lines.push_back(separator());
 
-            if (!t.description.empty())
+        if (groups_.empty())
+        {
+            lines.push_back(text(" (no tasks)") | dim | color(Color::RGB(147, 147, 147)));
+        }
+
+        group_header_boxes_.resize(groups_.size());
+
+        for (size_t i = 0; i < groups_.size(); i++)
+        {
+            const auto &g = groups_[i];
+            const bool expanded = group_expanded_[g.group_id];
+
+            // Collapsible group header: an arrow shows the state; foreground
+            // is highlighted with a warm color, orphaned groups are marked.
+            std::string header = (expanded ? "▾ " : "▸ ") + g.group_id;
+            if (g.orphaned)
+                header += " ~";
+            header += " (" + std::to_string(g.member_count) + ")";
+
+            lines.push_back(hbox({text(header), filler()}) | bold |
+                            color(g.fg ? Color::RGB(229, 192, 123) : Color::RGB(147, 147, 147)) |
+                            reflect(group_header_boxes_[i]));
+
+            if (!expanded)
+                continue;
+
+            for (const auto &t : g.tasks)
             {
-                // Two cells separate the id from the description (kept from
-                // the previous layout), then kDescStateGapCells stay free
-                // before the state label.
-                const int budget = row_width - StringWidth(left) - 2 - kDescStateGapCells - state_cells;
-                if (budget > 0)
-                    left += "  " + TruncateToWidth(t.description, budget);
-            }
+                // Left part: indent, active/leader markers and the task id.
+                // The description is appended separately so its length can be
+                // computed against the real row width.
+                std::string left = "  ";
+                left += t.is_active ? "*" : " ";
+                left += t.is_leader ? "●" : " ";
+                left += " " + t.task_id;
 
-            auto row = hbox({
-                text(left) | flex,
-                text(std::string(kDescStateGapCells, ' ')),
-                text(t.state) | color(StateColor(t.state)),
-            });
-            lines.push_back(row);
+                const int state_cells = StringWidth(t.state);
+
+                if (!t.description.empty())
+                {
+                    // Two cells separate the id from the description (kept
+                    // from the previous layout), then kDescStateGapCells stay
+                    // free before the state label.
+                    const int budget = row_width - StringWidth(left) - 2 - kDescStateGapCells - state_cells;
+                    if (budget > 0)
+                        left += "  " + TruncateToWidth(t.description, budget);
+                }
+
+                auto row = hbox({
+                    text(left) | flex,
+                    text(std::string(kDescStateGapCells, ' ')),
+                    text(t.state) | color(StateColor(t.state)),
+                });
+                lines.push_back(row);
+            }
         }
     }
 
+    // No flex here: the enclosing right-pane column owns the vertical space
+    // and stacks this section above the Todo section in natural order. This
+    // widget only ever occupies its own content height (plus its own EMPTY
+    // border/background), so the todo list below is never pushed to the pane
+    // bottom by a greedy task tree.
     return vbox(std::move(lines)) | reflect(content_box_) | borderStyled(BorderStyle::EMPTY) |
-           bgcolor(Color::RGB(30, 30, 30)) | flex;
+           bgcolor(Color::RGB(30, 30, 30));
 }
 
 } // namespace edc

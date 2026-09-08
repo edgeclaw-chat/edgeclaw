@@ -97,27 +97,37 @@ TUIWindow::TUIWindow() : input_text_("")
 
     container_ = ::ftxui::Container::Vertical({chat_widget_, input_}, &focused_);
 
-    // Left pane = chat + input + footer (see RenderMain); right pane = task
-    // sidebar with the todo-list status pinned underneath. ResizableSplit
-    // puts "main" on the right at a fixed, drag-adjustable width and lets
-    // "back" (the chat area) take the rest. The separator is a thin blank
-    // column so the sidebar stays borderless (distinguished only by its
-    // background color) while keeping a drag grab area to resize it.
+    // Left pane = chat + input + footer (see RenderMain); right pane = two
+    // collapsible sidebar sections stacked top to bottom: the task tree
+    // (TaskWidget) and, directly below it, the todo list (TodoWidget — hidden
+    // until the first update_todolist emission gives it items). Each section
+    // has its own clickable "▾/▸" header and takes only its natural content
+    // height; neither is pinned to the pane bottom, so a short task tree
+    // leaves the Todo section sitting right underneath it instead of gluing
+    // it to the bottom edge. ResizableSplit puts "main" on the right at a
+    // fixed, drag-adjustable width and lets "back" (the chat area) take the
+    // rest. The separator is a thin blank column so the sidebar stays
+    // borderless (distinguished only by its background color) while keeping a
+    // drag grab area to resize it.
     auto main_area = ::ftxui::Renderer(container_, [this] { return RenderMain(); });
     // The container child exists so mouse/key events keep reaching the two
     // widgets (a childless Renderer would swallow them — TaskWidget needs
-    // them for its group-header expand/collapse clicks).
+    // them for its group-header expand/collapse clicks, TodoWidget for its
+    // section header).
     auto right_column = ::ftxui::Container::Vertical({task_widget_, todo_widget_});
     auto right_pane = ::ftxui::Renderer(right_column, [this] {
-        // Task tree takes the flexible space; the todo widget is hidden until
-        // the first update_todolist emission gives it items.
-        ::ftxui::Elements col = {task_widget_->Render() | ::ftxui::flex};
+        ::ftxui::Elements col = {task_widget_->Render()};
         if (todo_widget_->HasItems())
         {
             col.push_back(::ftxui::separator() | ::ftxui::color(::ftxui::Color::RGB(60, 60, 60)));
             col.push_back(todo_widget_->Render());
         }
-        return ::ftxui::vbox(std::move(col));
+        // The column itself flexes so the sidebar background covers the whole
+        // pane, but its children stay at natural height and are laid out from
+        // the top: leftover vertical space remains at the bottom instead of
+        // being absorbed by the task tree to push the todo section down.
+        return ::ftxui::vbox(std::move(col)) |
+               ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30)) | ::ftxui::flex;
     });
     split_ = ::ftxui::ResizableSplit({
         right_pane,                         // main (right pane)
