@@ -12,8 +12,9 @@ namespace edc
 {
 // Right-sidebar widget that renders the active session's task tree (process
 // groups and their member tasks). Groups are collapsible: clicking a group
-// header toggles its task list. Only the group containing the active task is
-// expanded by default; user toggles are remembered across snapshot refreshes.
+// header toggles its task list. On every snapshot refresh the widget resets
+// the collapse state so that only the group containing the active task is
+// expanded and all other groups are folded.
 class TaskWidget : public ::ftxui::ComponentBase
 {
   public:
@@ -54,8 +55,9 @@ class TaskWidget : public ::ftxui::ComponentBase
     std::string session_name_;
     std::vector<GroupInfo> groups_;
 
-    // group_id → whether its task list is expanded. Persisted across snapshot
-    // refreshes so a user's manual toggles survive background updates.
+    // group_id → whether its task list is expanded. Reset on every snapshot
+    // refresh so only the active task's group remains expanded; a manual
+    // toggle holds only until the next snapshot.
     std::map<std::string, bool> group_expanded_;
 
     // Per-group header click targets, populated during OnRender.
