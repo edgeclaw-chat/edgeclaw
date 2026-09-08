@@ -20,9 +20,6 @@ struct edc_init_env_result
     sds sandbox_rw_paths;
     sds sandbox_ro_paths;
 
-    /* channel type: "cli" */
-    sds channel_type;
-
     sds device_pty;
     sds device_ip;
     int device_port;

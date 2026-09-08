@@ -52,7 +52,7 @@ static void test_lifecycle(void)
     C(s->timestamps == NULL, "timestamps starts NULL");
 
     T("edc_session_free cleans groups and active_task");
-    struct edc_task *t = edc_task_new("t1", s->session_id, "t1", "test", edc_channel_cli);
+    struct edc_task *t = edc_task_new("t1", s->session_id, "t1", "test", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
     edc_session_add_group(s, g);
     edc_session_set_active_task(s, t);
@@ -78,12 +78,12 @@ static void test_group_mgmt(void)
     struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
     T("add_group / remove_group basic");
-    struct edc_task *l1 = edc_task_new("t-a1", s->session_id, "t-a1", "G1L", edc_channel_cli);
+    struct edc_task *l1 = edc_task_new("t-a1", s->session_id, "t-a1", "G1L", edc_channel_adapter);
     struct edc_task_group *g1 = edc_task_group_new(l1);
     edc_session_add_group(s, g1);
     C(s->groups == g1, "first group at head");
 
-    struct edc_task *l2 = edc_task_new("t-a2", s->session_id, "t-a2", "G2L", edc_channel_cli);
+    struct edc_task *l2 = edc_task_new("t-a2", s->session_id, "t-a2", "G2L", edc_channel_adapter);
     struct edc_task_group *g2 = edc_task_group_new(l2);
     edc_session_add_group(s, g2);
     C(s->groups == g1, "g1 still head");
@@ -120,7 +120,7 @@ static void test_find(void)
     struct edc_task_group *groups[10];
     for (int i = 0; i < 10; i++) {
         char id[32]; snprintf(id, sizeof(id), "task-%d", i);
-        struct edc_task *l = edc_task_new(id, s->session_id, id, "leader", edc_channel_cli);
+        struct edc_task *l = edc_task_new(id, s->session_id, id, "leader", edc_channel_adapter);
         groups[i] = edc_task_group_new(l);
         edc_session_add_group(s, groups[i]);
     }
@@ -130,7 +130,7 @@ static void test_find(void)
     C(edc_session_find_group(s, "nonexistent") == NULL, "find nonexistent group");
 
     T("find_task cross-group");
-    struct edc_task *m2 = edc_task_new("member-2", s->session_id, "task-2", "member", edc_channel_cli);
+    struct edc_task *m2 = edc_task_new("member-2", s->session_id, "task-2", "member", edc_channel_adapter);
     edc_task_group_add_task(groups[2], m2);
     C(edc_session_find_task(s, "member-2") == m2, "find member in group 2");
     C(edc_session_find_task(s, "task-7") == groups[7]->leader, "find leader in group 7");
@@ -157,11 +157,11 @@ static void test_active_task(void)
     T("set/get active_task");
     C(edc_session_get_active_task(s) == NULL, "initially NULL");
 
-    struct edc_task *t = edc_task_new("at1", s->session_id, "at1", "active", edc_channel_cli);
+    struct edc_task *t = edc_task_new("at1", s->session_id, "at1", "active", edc_channel_adapter);
     edc_session_set_active_task(s, t);
     C(edc_session_get_active_task(s) == t, "get returns set value");
 
-    struct edc_task *t2 = edc_task_new("at2", s->session_id, "at2", "active 2", edc_channel_cli);
+    struct edc_task *t2 = edc_task_new("at2", s->session_id, "at2", "active 2", edc_channel_adapter);
     edc_session_set_active_task(s, t2);
     C(edc_session_get_active_task(s) == t2, "overwrite works");
 
@@ -305,14 +305,14 @@ static void test_mixed_scenario(void)
 
     for (int i = 0; i < 3; i++) {
         char id[32]; snprintf(id, sizeof(id), "sc-%d-leader", i);
-        struct edc_task *l = edc_task_new(id, s->session_id, id, "leader", edc_channel_cli);
+        struct edc_task *l = edc_task_new(id, s->session_id, id, "leader", edc_channel_adapter);
         g[i] = edc_task_group_new(l);
         edc_session_add_group(s, g[i]);
         tasks[t_idx++] = l;
 
         for (int j = 0; j < 2; j++) {
             snprintf(id, sizeof(id), "sc-%d-m%d", i, j);
-            struct edc_task *m = edc_task_new(id, s->session_id, g[i]->group_id, "member", edc_channel_cli);
+            struct edc_task *m = edc_task_new(id, s->session_id, g[i]->group_id, "member", edc_channel_adapter);
             edc_task_group_add_task(g[i], m);
             tasks[t_idx++] = m;
         }
@@ -353,14 +353,14 @@ static void test_stress(void)
     struct edc_task_group *first = NULL;
     for (int i = 0; i < 100; i++) {
         char id[32]; snprintf(id, sizeof(id), "s-%d", i);
-        struct edc_task *l = edc_task_new(id, s->session_id, id, "leader", edc_channel_cli);
+        struct edc_task *l = edc_task_new(id, s->session_id, id, "leader", edc_channel_adapter);
         struct edc_task_group *g = edc_task_group_new(l);
         edc_session_add_group(s, g);
         if (i == 0) first = g;
 
         for (int j = 0; j < 4; j++) {
             snprintf(id, sizeof(id), "s-%d-m%d", i, j);
-            struct edc_task *m = edc_task_new(id, s->session_id, g->group_id, "m", edc_channel_cli);
+            struct edc_task *m = edc_task_new(id, s->session_id, g->group_id, "m", edc_channel_adapter);
             edc_task_group_add_task(g, m);
         }
     }
@@ -428,7 +428,7 @@ static void test_active_task_lifetime(void)
     struct edc_config *cfg = make_cfg();
     struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
-    struct edc_task *t = edc_task_new("at-life", s->session_id, "at-life", "test", edc_channel_cli);
+    struct edc_task *t = edc_task_new("at-life", s->session_id, "at-life", "test", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
     edc_session_add_group(s, g);
     edc_session_set_active_task(s, t);
@@ -450,9 +450,9 @@ static void test_orphan_cleanup(void)
     struct edc_config *cfg = make_cfg();
     struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
-    struct edc_task *l = edc_task_new("orph-l", s->session_id, "orph-l", "L", edc_channel_cli);
+    struct edc_task *l = edc_task_new("orph-l", s->session_id, "orph-l", "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
-    struct edc_task *m = edc_task_new("orph-m", s->session_id, "orph-l", "M", edc_channel_cli);
+    struct edc_task *m = edc_task_new("orph-m", s->session_id, "orph-l", "M", edc_channel_adapter);
     edc_task_group_add_task(g, m);
     edc_session_add_group(s, g);
 

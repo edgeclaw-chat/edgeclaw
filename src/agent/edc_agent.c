@@ -29,8 +29,6 @@
 
 #define CLI_HISTORY_MAX 1000
 
-struct edc_agent *g_active_agent = NULL;
-
 /* ── 命令处理钩子 (由外部注册，避免 agent → shell 依赖) ───── */
 
 typedef bool (*edc_agent_command_fn)(struct edc_agent *, struct edc_actor *, struct edc_channel_message *);
@@ -506,7 +504,6 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
     }
 
     struct edc_agent *agent = g_new0(struct edc_agent, 1);
-    g_active_agent = agent;
     agent->history_capacity = 8;
     agent->history = malloc((size_t)agent->history_capacity * sizeof(sds));
     agent->config = edc_config_load(edc_home);

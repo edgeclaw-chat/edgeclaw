@@ -34,8 +34,6 @@ struct edc_agent
     int history_capacity;
 };
 
-extern struct edc_agent *g_active_agent;
-
 extern void edc_agent_add_history(struct edc_agent *agent, const char *line);
 
 extern char *edc_agent_run_turn(struct edc_agent *agent, const char *input);

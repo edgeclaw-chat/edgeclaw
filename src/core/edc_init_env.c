@@ -14,10 +14,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* Channel type options */
-static const char *channel_types[] = {"adapter"};
-#define CHANNEL_TYPE_COUNT 1
-
+/* Device transport type options */
 static const char *device_transport_types[] = {"socket", "tty"};
 #define DEVICE_TRANSPORT_TYPE_COUNT 2
 
@@ -139,42 +136,6 @@ static int prompt_int(const char *label, int default_val)
     }
 }
 
-/* Prompt for channel type selection. Returns index, or -1 on cancel. */
-static int prompt_channel_type(int default_idx)
-{
-    if (default_idx < 0 || default_idx >= CHANNEL_TYPE_COUNT)
-        default_idx = 0;
-
-    printf("\n--- Channel Type ---\n");
-    for (int i = 0; i < CHANNEL_TYPE_COUNT; i++)
-    {
-        printf("  %d) %s\n", i + 1, channel_types[i]);
-    }
-
-    char default_str[32];
-    snprintf(default_str, sizeof(default_str), "%d", default_idx + 1);
-
-    while (1)
-    {
-        sds line = prompt_with_default("Select channel", default_str);
-        if (line == NULL)
-        {
-            return -1;
-        }
-
-        int choice = 0;
-        if (sscanf(line, "%d", &choice) == 1 && choice >= 1 && choice <= CHANNEL_TYPE_COUNT)
-        {
-            sdsfree(line);
-            return choice - 1;
-        }
-
-        sdsfree(line);
-        fprintf(stderr, "  Invalid choice, enter 1-%d.\n", CHANNEL_TYPE_COUNT);
-    }
-}
-
-/* Prompt for device transport type selection. Returns index, or -1 on cancel. */
 static int prompt_device_transport(int default_idx)
 {
     if (default_idx < 0 || default_idx >= DEVICE_TRANSPORT_TYPE_COUNT)
@@ -347,12 +308,7 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
         result->device_transport = sdsnew(item->valuestring);
 
     cJSON *channel = cJSON_GetObjectItem(json, "channel");
-    if (channel)
-    {
-        item = cJSON_GetObjectItem(channel, "type");
-        if (item && cJSON_IsString(item))
-            result->channel_type = sdsnew(item->valuestring);
-    }
+    (void)channel; /* 通道固定为 adapter, 无需从旧配置读取 */
 
     cJSON_Delete(json);
     return result;
@@ -469,10 +425,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
         result->sandbox_ro_paths = val;
     }
 
-    /* --- Channel Type --- */
-    result->channel_type = sdsnew("adapter");
-
-    printf("\n--- Device Shell Configuration (optional) ---\n");
+    /* --- Device Shell Configuration (optional) --- */
 
     int default_transport = 0;
     if (defaults && sdslen(defaults->device_transport) > 0)
@@ -785,7 +738,6 @@ void edc_init_env_result_free(struct edc_init_env_result *result)
     sdsfree(result->sandbox_root);
     sdsfree(result->sandbox_rw_paths);
     sdsfree(result->sandbox_ro_paths);
-    sdsfree(result->channel_type);
     sdsfree(result->device_pty);
     sdsfree(result->device_ip);
     sdsfree(result->device_transport);
@@ -851,7 +803,7 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
         goto exit_free_env;
     }
 
-    /* CLI channel needs no additional validation */
+    /* Channel is fixed to adapter; no additional validation */
 
     /* Build JSON config */
     cJSON *config = cJSON_CreateObject();

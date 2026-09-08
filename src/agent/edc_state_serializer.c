@@ -637,7 +637,7 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             continue;
 
         cJSON *ch_json = cJSON_GetObjectItem(tj, "channel");
-        edc_channel_type ch_type = ch_json ? edc_channel_type_from_json(ch_json) : edc_channel_cli;
+        edc_channel_type ch_type = ch_json ? edc_channel_type_from_json(ch_json) : edc_channel_adapter;
 
         struct edc_task *task = edc_task_new(task_id, cJSON_GetStringValue(cJSON_GetObjectItem(tj, "session_id")) ?: "",
                                              cJSON_GetStringValue(cJSON_GetObjectItem(tj, "group_id")) ?: "",

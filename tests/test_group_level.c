@@ -20,7 +20,7 @@ static int passed = 0;
 static void test_group_history_lifecycle(void)
 {
     T("group_new creates empty history array");
-    struct edc_task *l = edc_task_new("gh-1", "s-1", "gh-1", "leader", edc_channel_cli);
+    struct edc_task *l = edc_task_new("gh-1", "s-1", "gh-1", "leader", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
     C(g->history != NULL, "history non-NULL");
     C(cJSON_GetArraySize(g->history) == 0, "history starts empty");
@@ -32,7 +32,7 @@ static void test_group_history_lifecycle(void)
 static void test_group_history_accumulation(void)
 {
     T("STOP sync adds messages to group->history");
-    struct edc_task *l = edc_task_new("gh-acc-1", "s-2", "gh-acc-1", "L", edc_channel_cli);
+    struct edc_task *l = edc_task_new("gh-acc-1", "s-2", "gh-acc-1", "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
 
     /* Simulate turn completion sync (as done in STOP handler) */
@@ -74,10 +74,10 @@ static void test_group_history_accumulation(void)
 static void test_group_isolation(void)
 {
     T("different groups have independent history");
-    struct edc_task *l1 = edc_task_new("iso-1", "s-3", "iso-1", "G1L", edc_channel_cli);
+    struct edc_task *l1 = edc_task_new("iso-1", "s-3", "iso-1", "G1L", edc_channel_adapter);
     struct edc_task_group *g1 = edc_task_group_new(l1);
 
-    struct edc_task *l2 = edc_task_new("iso-2", "s-3", "iso-2", "G2L", edc_channel_cli);
+    struct edc_task *l2 = edc_task_new("iso-2", "s-3", "iso-2", "G2L", edc_channel_adapter);
     struct edc_task_group *g2 = edc_task_group_new(l2);
 
     /* Add message to g1 only */
@@ -99,11 +99,11 @@ static void test_group_isolation(void)
 static void test_task_group_pointer(void)
 {
     T("task->group pointer set on add, cleared on remove");
-    struct edc_task *l = edc_task_new("gp-1", "s-4", "gp-1", "L", edc_channel_cli);
+    struct edc_task *l = edc_task_new("gp-1", "s-4", "gp-1", "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
     C(l->group == g, "leader task->group set");
 
-    struct edc_task *m = edc_task_new("gp-2", "s-4", "gp-1", "M", edc_channel_cli);
+    struct edc_task *m = edc_task_new("gp-2", "s-4", "gp-1", "M", edc_channel_adapter);
     edc_task_group_add_task(g, m);
     C(m->group == g, "member task->group set");
 
@@ -119,8 +119,8 @@ static void test_task_group_pointer(void)
 static void test_auto_reap(void)
 {
     T("JOIN source is reaped after notify_dependents");
-    struct edc_task *src = edc_task_new("ar-src", "s-5", "ar-src", "source", edc_channel_cli);
-    struct edc_task *dst = edc_task_new("ar-dst", "s-5", "ar-dst", "dest", edc_channel_cli);
+    struct edc_task *src = edc_task_new("ar-src", "s-5", "ar-src", "source", edc_channel_adapter);
+    struct edc_task *dst = edc_task_new("ar-dst", "s-5", "ar-dst", "dest", edc_channel_adapter);
 
     /* Set up groups */
     struct edc_task_group *g_src = edc_task_group_new(src);
@@ -163,7 +163,7 @@ static void test_auto_reap(void)
 static void test_no_dep_stays(void)
 {
     T("task without dependents stays COMPLETED for join");
-    struct edc_task *t = edc_task_new("nd-1", "s-6", "nd-1", "standalone", edc_channel_cli);
+    struct edc_task *t = edc_task_new("nd-1", "s-6", "nd-1", "standalone", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
 
     sds out = sdsnew("standalone result");
@@ -185,7 +185,7 @@ static void test_no_dep_stays(void)
 static void test_context_messages_iteration(void)
 {
     T("context_messages includes turn messages via EdcQueue iteration");
-    struct edc_task *t = edc_task_new("ctx-1", "s-7", "ctx-1", "ctx test", edc_channel_cli);
+    struct edc_task *t = edc_task_new("ctx-1", "s-7", "ctx-1", "ctx test", edc_channel_adapter);
     edc_task_set_prompt(t, "test", "You are a test assistant.");
 
     /* Add completed turns to the queue */
@@ -223,7 +223,7 @@ static void test_context_messages_iteration(void)
 static void test_large_group_history(void)
 {
     T("group history with 100 turns (200 messages)");
-    struct edc_task *l = edc_task_new("big-1", "s-8", "big-1", "L", edc_channel_cli);
+    struct edc_task *l = edc_task_new("big-1", "s-8", "big-1", "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
 
     for (int i = 0; i < 100; i++)

@@ -83,7 +83,7 @@ static void test_exit_save(void)
     struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
 
     struct edc_task *t1 = edc_task_new("task-exit1", "sess-exit", "task-exit1",
-                                        "exit task 1", edc_channel_cli);
+                                        "exit task 1", edc_channel_adapter);
     t1->is_group_leader = 1;
     edc_task_set_state(t1, TASK_WAITING_INPUT);
     edc_task_set_state(t1, TASK_LLM_PROCESSING);
@@ -149,7 +149,7 @@ static void test_startup_load(void)
         struct edc_scheduler *sc1 = edc_scheduler_new(s1, cfg);
 
         struct edc_task *t1 = edc_task_new("task-start1", "sess-start", "task-start1",
-                                            "startup task", edc_channel_cli);
+                                            "startup task", edc_channel_adapter);
         t1->is_group_leader = 1;
         edc_task_set_state(t1, TASK_WAITING_INPUT);
         edc_task_set_state(t1, TASK_LLM_PROCESSING);
@@ -236,7 +236,7 @@ static void test_switch_save(void)
     struct edc_scheduler *scA = edc_scheduler_new(sA, cfg);
 
     struct edc_task *tA = edc_task_new("task-A", "sess-A", "task-A",
-                                        "task in A", edc_channel_cli);
+                                        "task in A", edc_channel_adapter);
     tA->is_group_leader = 1;
     edc_task_set_state(tA, TASK_WAITING_INPUT);
     edc_task_set_state(tA, TASK_LLM_PROCESSING);
@@ -257,7 +257,7 @@ static void test_switch_save(void)
     struct edc_scheduler *scB = edc_scheduler_new(sB, cfg);
 
     struct edc_task *tB = edc_task_new("task-B", "sess-B", "task-B",
-                                        "task in B", edc_channel_cli);
+                                        "task in B", edc_channel_adapter);
     tB->is_group_leader = 1;
     edc_task_set_state(tB, TASK_WAITING_INPUT);
     edc_task_set_state(tB, TASK_LLM_PROCESSING);
@@ -327,7 +327,7 @@ static void test_repeated_cycle(void)
 
         struct edc_task *t = edc_task_new(tid, "sess-cycle",
                                            cycle == 0 ? tid : "task-cycle0",
-                                           tdesc, edc_channel_cli);
+                                           tdesc, edc_channel_adapter);
         if (cycle == 0) t->is_group_leader = 1;
         edc_task_set_state(t, TASK_WAITING_INPUT);
         edc_task_set_state(t, TASK_LLM_PROCESSING);
@@ -423,7 +423,7 @@ static void test_missing_history(void)
         struct edc_scheduler *sc = edc_scheduler_new(s, cfg);
 
         struct edc_task *t = edc_task_new("t-mh", "sess-mh", "t-mh",
-                                           "missing hist task", edc_channel_cli);
+                                           "missing hist task", edc_channel_adapter);
         t->is_group_leader = 1;
         edc_task_set_state(t, TASK_WAITING_INPUT);
         edc_task_set_state(t, TASK_LLM_PROCESSING);
@@ -513,7 +513,7 @@ static void test_truncated_history(void)
         struct edc_scheduler *sc = edc_scheduler_new(s, cfg);
 
         struct edc_task *t = edc_task_new("t-trunc", "sess-trunc", "t-trunc",
-                                           "trunc task", edc_channel_cli);
+                                           "trunc task", edc_channel_adapter);
         t->is_group_leader = 1;
         edc_task_set_state(t, TASK_WAITING_INPUT);
         edc_task_set_state(t, TASK_LLM_PROCESSING);

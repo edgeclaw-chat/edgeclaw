@@ -163,7 +163,7 @@ static void test_flushed_turn_compact_serialize(void)
 
     /* Create task */
     struct edc_task *task = edc_task_new("task-1", "sess-cpt2", "task-1",
-                                          "compact via flush", edc_channel_cli);
+                                          "compact via flush", edc_channel_adapter);
     task->is_group_leader = 1;
     edc_task_set_state(task, TASK_WAITING_INPUT);
     edc_task_set_state(task, TASK_LLM_PROCESSING);
@@ -256,7 +256,7 @@ static void test_multi_turn_ranges(void)
     struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
 
     struct edc_task *task = edc_task_new("task-mt", "sess-mt", "task-mt",
-                                          "multi turn", edc_channel_cli);
+                                          "multi turn", edc_channel_adapter);
     task->is_group_leader = 1;
     edc_task_set_state(task, TASK_WAITING_INPUT);
     edc_task_set_state(task, TASK_LLM_PROCESSING);
@@ -393,7 +393,7 @@ static void test_full_file_roundtrip(void)
     struct edc_scheduler *sc1 = edc_scheduler_new(s1, cfg);
 
     struct edc_task *task = edc_task_new("task-ft", "sess-full", "task-ft",
-                                          "full test", edc_channel_cli);
+                                          "full test", edc_channel_adapter);
     task->is_group_leader = 1;
     edc_task_set_state(task, TASK_WAITING_INPUT);
     edc_task_set_state(task, TASK_LLM_PROCESSING);

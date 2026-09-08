@@ -802,7 +802,6 @@ static void edc_commands_handle_task_join(struct edc_agent *agent, edc_actor_t *
         {
             /* no usable active task — create one in foreground group */
             struct edc_task_group *fg = agent->scheduler->foreground_group;
-            edc_channel_type channel_type = edc_channel_cli;
             if (fg && fg->members)
                 channel_type = fg->members->channel_type;
             active = edc_scheduler_create_task(agent->scheduler, "Joined task", channel_type);
@@ -1061,7 +1060,9 @@ static bool edc_commands_handle_task(struct edc_agent *agent, edc_actor_t *actor
 
 bool edc_commands_handler(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel_message *message)
 {
-    if (!message || !message->type || !message->content)
+    /* 有效性门只检查消息本身; 不检查 message->type —— 历史上 edc_channel_cli==0
+     * 曾让 CLI 消息被误判为"无类型"而整体丢弃 (类型是路由键, 不是有效性标志)。 */
+    if (!message || !message->content)
         return false;
 
     /* / commands: shell builtins first, then shortcuts, then existing handlers */

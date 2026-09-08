@@ -13,8 +13,7 @@ struct llm_api_conf
 
 typedef enum
 {
-    edc_channel_cli,
-    edc_channel_adapter,
+    edc_channel_adapter, /* 唯一通道实现: TUI/adapter 消息回调 */
 } edc_channel_type;
 
 /* The kind of content a channel message carries. Defined here (rather than in

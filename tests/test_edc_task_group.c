@@ -21,7 +21,7 @@ static int test_passed = 0;
 static void test_group_lifecycle(void)
 {
     TEST("group_new creates group with leader");
-    struct edc_task *leader = edc_task_new("task-L", "sess-1", "task-L", "leader", edc_channel_cli);
+    struct edc_task *leader = edc_task_new("task-L", "sess-1", "task-L", "leader", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(leader);
 
     CHECK(g != NULL, "group_new returns non-NULL");
@@ -43,10 +43,10 @@ static void test_group_lifecycle(void)
 static void test_member_management(void)
 {
     TEST("add_task adds member to group");
-    struct edc_task *leader = edc_task_new("task-A", "sess-2", "task-A", "leader A", edc_channel_cli);
+    struct edc_task *leader = edc_task_new("task-A", "sess-2", "task-A", "leader A", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(leader);
 
-    struct edc_task *member = edc_task_new("task-B", "sess-2", "task-old", "member B", edc_channel_cli);
+    struct edc_task *member = edc_task_new("task-B", "sess-2", "task-old", "member B", edc_channel_adapter);
     edc_task_group_add_task(g, member);
 
     CHECK(g->member_count == 2, "member_count = 2 after add");
@@ -65,7 +65,7 @@ static void test_member_management(void)
     edc_task_free(member);
 
     TEST("remove_task with leader → orphaned");
-    struct edc_task *m2 = edc_task_new("task-C", "sess-2", "task-A", "member C", edc_channel_cli);
+    struct edc_task *m2 = edc_task_new("task-C", "sess-2", "task-A", "member C", edc_channel_adapter);
     edc_task_group_add_task(g, m2);
     CHECK(g->member_count == 2, "member_count = 2");
 
@@ -84,13 +84,13 @@ static void test_member_management(void)
 static void test_leader_management(void)
 {
     TEST("set_leader changes group_id and updates all members");
-    struct edc_task *old_l = edc_task_new("task-L1", "sess-3", "task-L1", "old leader", edc_channel_cli);
+    struct edc_task *old_l = edc_task_new("task-L1", "sess-3", "task-L1", "old leader", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(old_l);
 
-    struct edc_task *m = edc_task_new("task-M", "sess-3", "task-L1", "member", edc_channel_cli);
+    struct edc_task *m = edc_task_new("task-M", "sess-3", "task-L1", "member", edc_channel_adapter);
     edc_task_group_add_task(g, m);
 
-    struct edc_task *new_l = edc_task_new("task-L2", "sess-3", "task-L1", "new leader", edc_channel_cli);
+    struct edc_task *new_l = edc_task_new("task-L2", "sess-3", "task-L1", "new leader", edc_channel_adapter);
     /* Add to group first so it can be set as leader */
     edc_task_group_add_task(g, new_l);
 
@@ -112,18 +112,18 @@ static void test_leader_management(void)
 static void test_group_signals(void)
 {
     TEST("group SIGTERM sends signal to all members");
-    struct edc_task *leader = edc_task_new("task-GL", "sess-4", "task-GL", "grp leader", edc_channel_cli);
+    struct edc_task *leader = edc_task_new("task-GL", "sess-4", "task-GL", "grp leader", edc_channel_adapter);
     edc_task_set_state(leader, TASK_WAITING_INPUT);
     struct edc_task_group *g = edc_task_group_new(leader);
 
-    struct edc_task *m1 = edc_task_new("task-GM1", "sess-4", "task-GL", "grp member 1", edc_channel_cli);
+    struct edc_task *m1 = edc_task_new("task-GM1", "sess-4", "task-GL", "grp member 1", edc_channel_adapter);
     edc_task_set_state(m1, TASK_LLM_PROCESSING);
     /* need WAITING_INPUT→LLM_PROCESSING transition first */
     edc_task_set_state(m1, TASK_WAITING_INPUT);
     edc_task_set_state(m1, TASK_LLM_PROCESSING);
     edc_task_group_add_task(g, m1);
 
-    struct edc_task *m2 = edc_task_new("task-GM2", "sess-4", "task-GL", "grp member 2", edc_channel_cli);
+    struct edc_task *m2 = edc_task_new("task-GM2", "sess-4", "task-GL", "grp member 2", edc_channel_adapter);
     edc_task_set_state(m2, TASK_WAITING_INPUT);
     edc_task_set_state(m2, TASK_LLM_PROCESSING);
     edc_task_group_add_task(g, m2);
@@ -136,11 +136,11 @@ static void test_group_signals(void)
     CHECK(g->is_orphaned == true, "group orphaned after leader cancelled");
 
     TEST("group SIGKILL also signals all members");
-    struct edc_task *l2 = edc_task_new("task-GL2", "sess-5", "task-GL2", "grp leader 2", edc_channel_cli);
+    struct edc_task *l2 = edc_task_new("task-GL2", "sess-5", "task-GL2", "grp leader 2", edc_channel_adapter);
     edc_task_set_state(l2, TASK_WAITING_INPUT);
     struct edc_task_group *g2 = edc_task_group_new(l2);
 
-    struct edc_task *m = edc_task_new("task-GM3", "sess-5", "task-GL2", "grp member 3", edc_channel_cli);
+    struct edc_task *m = edc_task_new("task-GM3", "sess-5", "task-GL2", "grp member 3", edc_channel_adapter);
     edc_task_set_state(m, TASK_WAITING_INPUT);
     edc_task_set_state(m, TASK_LLM_PROCESSING);
     edc_task_group_add_task(g2, m);
@@ -159,7 +159,7 @@ static void test_group_signals(void)
 static void test_status_queries(void)
 {
     TEST("is_foreground_capable");
-    struct edc_task *leader = edc_task_new("task-QL", "sess-6", "task-QL", "query leader", edc_channel_cli);
+    struct edc_task *leader = edc_task_new("task-QL", "sess-6", "task-QL", "query leader", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(leader);
     CHECK(edc_task_group_is_foreground_capable(g), "group with members is capable");
 
@@ -170,11 +170,11 @@ static void test_status_queries(void)
     edc_task_group_free(g);
 
     TEST("status_label");
-    struct edc_task *l2 = edc_task_new("task-QL2", "sess-6", "task-QL2", "query leader 2", edc_channel_cli);
+    struct edc_task *l2 = edc_task_new("task-QL2", "sess-6", "task-QL2", "query leader 2", edc_channel_adapter);
     g = edc_task_group_new(l2);
     CHECK(strcmp(edc_task_group_status_label(g), "ACTIVE") == 0, "active group → ACTIVE");
 
-    struct edc_task *m = edc_task_new("task-QM", "sess-6", "task-QL2", "query member", edc_channel_cli);
+    struct edc_task *m = edc_task_new("task-QM", "sess-6", "task-QL2", "query member", edc_channel_adapter);
     edc_task_group_add_task(g, m);
     edc_task_group_remove_task(g, l2);
     edc_task_free(l2);
@@ -188,11 +188,11 @@ static void test_status_queries(void)
 static void test_scenario_orphan(void)
 {
     TEST("scenario: leader exits → orphan → remove remaining → dead");
-    struct edc_task *leader = edc_task_new("task-OL", "sess-7", "task-OL", "orphan L", edc_channel_cli);
+    struct edc_task *leader = edc_task_new("task-OL", "sess-7", "task-OL", "orphan L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(leader);
 
-    struct edc_task *m1 = edc_task_new("task-OM1", "sess-7", "task-OL", "orphan M1", edc_channel_cli);
-    struct edc_task *m2 = edc_task_new("task-OM2", "sess-7", "task-OL", "orphan M2", edc_channel_cli);
+    struct edc_task *m1 = edc_task_new("task-OM1", "sess-7", "task-OL", "orphan M1", edc_channel_adapter);
+    struct edc_task *m2 = edc_task_new("task-OM2", "sess-7", "task-OL", "orphan M2", edc_channel_adapter);
     edc_task_group_add_task(g, m1);
     edc_task_group_add_task(g, m2);
     CHECK(g->member_count == 3, "3 members initially");

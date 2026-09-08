@@ -135,7 +135,7 @@ static void test_write_read(void)
 
     /* Build some state */
     struct edc_task *task = edc_task_new("task-1", "sess-wr", "task-1",
-                                          "hello world", edc_channel_cli);
+                                          "hello world", edc_channel_adapter);
     task->is_group_leader = 1;
     edc_task_set_state(task, TASK_WAITING_INPUT);
     edc_task_set_state(task, TASK_LLM_PROCESSING);
@@ -216,7 +216,7 @@ static void test_overwrite(void)
 
     /* First save: 1 task */
     struct edc_task *t1 = edc_task_new("task-A", "sess-ow", "task-A",
-                                        "first task", edc_channel_cli);
+                                        "first task", edc_channel_adapter);
     t1->is_group_leader = 1;
     edc_task_set_state(t1, TASK_WAITING_INPUT);
     edc_task_set_state(t1, TASK_LLM_PROCESSING);
@@ -228,7 +228,7 @@ static void test_overwrite(void)
 
     /* Add second task */
     struct edc_task *t2 = edc_task_new("task-B", "sess-ow", "task-A",
-                                        "second task", edc_channel_cli);
+                                        "second task", edc_channel_adapter);
     edc_task_set_state(t2, TASK_WAITING_INPUT);
     edc_task_group_add_task(g1, t2);
 
@@ -302,7 +302,7 @@ static void test_atomic_write(void)
     struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
 
     struct edc_task *t1 = edc_task_new("task-A", "sess-atom", "task-A",
-                                        "task A", edc_channel_cli);
+                                        "task A", edc_channel_adapter);
     t1->is_group_leader = 1;
     edc_task_set_state(t1, TASK_WAITING_INPUT);
     edc_task_set_state(t1, TASK_LLM_PROCESSING);
@@ -392,7 +392,7 @@ static void test_load_onto_nonempty(void)
     struct edc_scheduler *sc1 = edc_scheduler_new(s1, cfg);
 
     struct edc_task *t1 = edc_task_new("task-A", "sess-ne", "task-A",
-                                        "first", edc_channel_cli);
+                                        "first", edc_channel_adapter);
     t1->is_group_leader = 1;
     edc_task_set_state(t1, TASK_WAITING_INPUT);
     edc_task_set_state(t1, TASK_LLM_PROCESSING);
@@ -413,7 +413,7 @@ static void test_load_onto_nonempty(void)
 
     /* Pre-populate with a task */
     struct edc_task *pre = edc_task_new("pre-existing", "sess-ne", "pre-existing",
-                                         "pre", edc_channel_cli);
+                                         "pre", edc_channel_adapter);
     pre->is_group_leader = 1;
     edc_task_set_state(pre, TASK_WAITING_INPUT);
     struct edc_task_group *pre_g = edc_task_group_new(pre);

@@ -24,7 +24,7 @@ static int test_passed = 0;
 static void test_lifecycle(void)
 {
     TEST("task_new / task_free");
-    struct edc_task *t = edc_task_new("task-1", "sess-1", "task-1", "test task", edc_channel_cli);
+    struct edc_task *t = edc_task_new("task-1", "sess-1", "task-1", "test task", edc_channel_adapter);
     CHECK(t != NULL, "task_new returns non-NULL");
     CHECK(strcmp(t->task_id, "task-1") == 0, "task_id set");
     CHECK(strcmp(t->session_id, "sess-1") == 0, "session_id set");
@@ -44,7 +44,7 @@ static void test_lifecycle(void)
     edc_task_free(t);
 
     TEST("task_new with NULL description");
-    t = edc_task_new("task-2", "sess-1", "task-1", NULL, edc_channel_cli);
+    t = edc_task_new("task-2", "sess-1", "task-1", NULL, edc_channel_adapter);
     CHECK(strcmp(t->description, "") == 0, "NULL desc becomes empty string");
     edc_task_free(t);
 
@@ -58,8 +58,8 @@ static void test_lifecycle(void)
 static void test_fork(void)
 {
     TEST("task_fork inherits parent session_id and group_id");
-    struct edc_task *parent = edc_task_new("task-parent", "sess-2", "task-parent", "parent", edc_channel_cli);
-    struct edc_task *child = edc_task_fork(parent, "task-child", "child task", 42, edc_channel_cli);
+    struct edc_task *parent = edc_task_new("task-parent", "sess-2", "task-parent", "parent", edc_channel_adapter);
+    struct edc_task *child = edc_task_fork(parent, "task-child", "child task", 42, edc_channel_adapter);
 
     CHECK(child != NULL, "fork returns non-NULL");
     CHECK(strcmp(child->session_id, "sess-2") == 0, "child inherits session_id");
@@ -78,7 +78,7 @@ static void test_fork(void)
 
 static void test_state_machine(void)
 {
-    struct edc_task *t = edc_task_new("task-sm", "sess-1", "task-sm", "sm test", edc_channel_cli);
+    struct edc_task *t = edc_task_new("task-sm", "sess-1", "task-sm", "sm test", edc_channel_adapter);
 
     TEST("valid transitions from IDLE");
     CHECK(edc_task_set_state(t, TASK_WAITING_DEPS), "IDLE → WAITING_DEPS");
@@ -86,16 +86,16 @@ static void test_state_machine(void)
 
     /* Reset to IDLE via new task for next test */
     edc_task_free(t);
-    t = edc_task_new("task-sm2", "sess-1", "task-sm2", "sm test", edc_channel_cli);
+    t = edc_task_new("task-sm2", "sess-1", "task-sm2", "sm test", edc_channel_adapter);
     CHECK(edc_task_set_state(t, TASK_WAITING_INPUT), "IDLE → WAITING_INPUT");
     edc_task_free(t);
 
-    t = edc_task_new("task-sm3", "sess-1", "task-sm3", "sm test", edc_channel_cli);
+    t = edc_task_new("task-sm3", "sess-1", "task-sm3", "sm test", edc_channel_adapter);
     CHECK(edc_task_set_state(t, TASK_CANCELLED), "IDLE → CANCELLED");
     edc_task_free(t);
 
     TEST("invalid transitions from IDLE");
-    t = edc_task_new("task-sm4", "sess-1", "task-sm4", "sm test", edc_channel_cli);
+    t = edc_task_new("task-sm4", "sess-1", "task-sm4", "sm test", edc_channel_adapter);
     CHECK(!edc_task_set_state(t, TASK_COMPLETED), "IDLE → COMPLETED rejected");
     CHECK(!edc_task_set_state(t, TASK_ERROR), "IDLE → ERROR rejected");
     CHECK(!edc_task_set_state(t, TASK_LLM_PROCESSING), "IDLE → LLM_PROCESSING rejected");
@@ -104,7 +104,7 @@ static void test_state_machine(void)
     edc_task_free(t);
 
     TEST("transitions from WAITING_DEPS");
-    t = edc_task_new("task-sm5", "sess-1", "task-sm5", "sm test", edc_channel_cli);
+    t = edc_task_new("task-sm5", "sess-1", "task-sm5", "sm test", edc_channel_adapter);
     edc_task_set_state(t, TASK_WAITING_DEPS);
     CHECK(edc_task_set_state(t, TASK_WAITING_INPUT), "WAITING_DEPS → WAITING_INPUT");
     edc_task_set_state(t, TASK_WAITING_DEPS);
@@ -112,7 +112,7 @@ static void test_state_machine(void)
     edc_task_free(t);
 
     TEST("transitions from WAITING_INPUT");
-    t = edc_task_new("task-sm6", "sess-1", "task-sm6", "sm test", edc_channel_cli);
+    t = edc_task_new("task-sm6", "sess-1", "task-sm6", "sm test", edc_channel_adapter);
     edc_task_set_state(t, TASK_WAITING_INPUT);
     CHECK(edc_task_set_state(t, TASK_LLM_PROCESSING), "WAITING_INPUT → LLM_PROCESSING");
     edc_task_set_state(t, TASK_WAITING_INPUT);
@@ -120,7 +120,7 @@ static void test_state_machine(void)
     edc_task_free(t);
 
     TEST("transitions from LLM_PROCESSING");
-    t = edc_task_new("task-sm7", "sess-1", "task-sm7", "sm test", edc_channel_cli);
+    t = edc_task_new("task-sm7", "sess-1", "task-sm7", "sm test", edc_channel_adapter);
     edc_task_set_state(t, TASK_WAITING_INPUT);
     edc_task_set_state(t, TASK_LLM_PROCESSING);
     CHECK(edc_task_set_state(t, TASK_TOOL_CALLING), "LLM_PROCESSING → TOOL_CALLING");
@@ -129,21 +129,21 @@ static void test_state_machine(void)
 
     /* new task: LLM_PROCESSING → CANCELLED */
     edc_task_free(t);
-    t = edc_task_new("task-sm7b", "sess-1", "task-sm7b", "sm test", edc_channel_cli);
+    t = edc_task_new("task-sm7b", "sess-1", "task-sm7b", "sm test", edc_channel_adapter);
     edc_task_set_state(t, TASK_WAITING_INPUT);
     edc_task_set_state(t, TASK_LLM_PROCESSING);
     CHECK(edc_task_set_state(t, TASK_CANCELLED), "LLM_PROCESSING → CANCELLED");
 
     /* new task: LLM_PROCESSING → ERROR */
     edc_task_free(t);
-    t = edc_task_new("task-sm7c", "sess-1", "task-sm7c", "sm test", edc_channel_cli);
+    t = edc_task_new("task-sm7c", "sess-1", "task-sm7c", "sm test", edc_channel_adapter);
     edc_task_set_state(t, TASK_WAITING_INPUT);
     edc_task_set_state(t, TASK_LLM_PROCESSING);
     CHECK(edc_task_set_state(t, TASK_ERROR), "LLM_PROCESSING → ERROR");
     edc_task_free(t);
 
     TEST("transitions from TOOL_CALLING");
-    t = edc_task_new("task-sm8", "sess-1", "task-sm8", "sm test", edc_channel_cli);
+    t = edc_task_new("task-sm8", "sess-1", "task-sm8", "sm test", edc_channel_adapter);
     edc_task_set_state(t, TASK_WAITING_INPUT);
     edc_task_set_state(t, TASK_LLM_PROCESSING);
     edc_task_set_state(t, TASK_TOOL_CALLING);
@@ -152,7 +152,7 @@ static void test_state_machine(void)
 
     /* new task: TOOL_CALLING → CANCELLED */
     edc_task_free(t);
-    t = edc_task_new("task-sm8b", "sess-1", "task-sm8b", "sm test", edc_channel_cli);
+    t = edc_task_new("task-sm8b", "sess-1", "task-sm8b", "sm test", edc_channel_adapter);
     edc_task_set_state(t, TASK_WAITING_INPUT);
     edc_task_set_state(t, TASK_LLM_PROCESSING);
     edc_task_set_state(t, TASK_TOOL_CALLING);
@@ -160,7 +160,7 @@ static void test_state_machine(void)
 
     /* new task: TOOL_CALLING → ERROR */
     edc_task_free(t);
-    t = edc_task_new("task-sm8c", "sess-1", "task-sm8c", "sm test", edc_channel_cli);
+    t = edc_task_new("task-sm8c", "sess-1", "task-sm8c", "sm test", edc_channel_adapter);
     edc_task_set_state(t, TASK_WAITING_INPUT);
     edc_task_set_state(t, TASK_LLM_PROCESSING);
     edc_task_set_state(t, TASK_TOOL_CALLING);
@@ -168,7 +168,7 @@ static void test_state_machine(void)
     edc_task_free(t);
 
     TEST("COMPLETED is terminal");
-    t = edc_task_new("task-sm9", "sess-1", "task-sm9", "sm test", edc_channel_cli);
+    t = edc_task_new("task-sm9", "sess-1", "task-sm9", "sm test", edc_channel_adapter);
     edc_task_set_state(t, TASK_WAITING_INPUT);
     edc_task_set_state(t, TASK_LLM_PROCESSING);
     edc_task_set_state(t, TASK_COMPLETED);
@@ -178,14 +178,14 @@ static void test_state_machine(void)
     edc_task_free(t);
 
     TEST("CANCELLED can be resumed");
-    t = edc_task_new("task-sm10", "sess-1", "task-sm10", "sm test", edc_channel_cli);
+    t = edc_task_new("task-sm10", "sess-1", "task-sm10", "sm test", edc_channel_adapter);
     edc_task_set_state(t, TASK_CANCELLED);
     CHECK(edc_task_set_state(t, TASK_WAITING_INPUT), "CANCELLED → WAITING_INPUT (resume)");
     CHECK(!edc_task_set_state(t, TASK_IDLE), "CANCELLED → IDLE rejected");
     edc_task_free(t);
 
     TEST("ERROR can be resumed or cancelled");
-    t = edc_task_new("task-sm11", "sess-1", "task-sm11", "sm test", edc_channel_cli);
+    t = edc_task_new("task-sm11", "sess-1", "task-sm11", "sm test", edc_channel_adapter);
     edc_task_set_state(t, TASK_WAITING_INPUT);
     edc_task_set_state(t, TASK_LLM_PROCESSING);
     edc_task_set_state(t, TASK_ERROR);
@@ -223,7 +223,7 @@ static void test_state_names(void)
 static void test_turns(void)
 {
     TEST("add_turn and commit_active_turn");
-    struct edc_task *t = edc_task_new("task-turn", "sess-1", "task-turn", "turn test", edc_channel_cli);
+    struct edc_task *t = edc_task_new("task-turn", "sess-1", "task-turn", "turn test", edc_channel_adapter);
 
     /* Add turn via add_turn */
     struct edc_turn *turn1 = edc_turn_new();
@@ -258,8 +258,8 @@ static void test_turns(void)
 static void test_dependencies(void)
 {
     TEST("add_dependency basic");
-    struct edc_task *target = edc_task_new("task-target", "sess-1", "task-target", "target", edc_channel_cli);
-    struct edc_task *source = edc_task_new("task-source", "sess-1", "task-target", "source", edc_channel_cli);
+    struct edc_task *target = edc_task_new("task-target", "sess-1", "task-target", "target", edc_channel_adapter);
+    struct edc_task *source = edc_task_new("task-source", "sess-1", "task-target", "source", edc_channel_adapter);
 
     bool ok = edc_task_add_dependency(target, source, TASK_DEP_JOIN);
     CHECK(ok, "add_dependency returns true");
@@ -278,9 +278,9 @@ static void test_dependencies(void)
 
     TEST("transitive cycle rejected");
     {
-        struct edc_task *a = edc_task_new("ta-cyc", "sess-1", "ta-cyc", "A", edc_channel_cli);
-        struct edc_task *b = edc_task_new("tb-cyc", "sess-1", "ta-cyc", "B", edc_channel_cli);
-        struct edc_task *c = edc_task_new("tc-cyc", "sess-1", "ta-cyc", "C", edc_channel_cli);
+        struct edc_task *a = edc_task_new("ta-cyc", "sess-1", "ta-cyc", "A", edc_channel_adapter);
+        struct edc_task *b = edc_task_new("tb-cyc", "sess-1", "ta-cyc", "B", edc_channel_adapter);
+        struct edc_task *c = edc_task_new("tc-cyc", "sess-1", "ta-cyc", "C", edc_channel_adapter);
         CHECK(edc_task_add_dependency(a, b, TASK_DEP_JOIN), "a→b");
         CHECK(edc_task_add_dependency(b, c, TASK_DEP_JOIN), "b→c");
         CHECK(!edc_task_add_dependency(c, a, TASK_DEP_JOIN), "c→a rejected (cycle)");
@@ -290,9 +290,9 @@ static void test_dependencies(void)
     }
 
     TEST("dep_completed advances state when all deps done");
-    struct edc_task *target2 = edc_task_new("task-target2", "sess-1", "task-target2", "target2", edc_channel_cli);
-    struct edc_task *sourceA = edc_task_new("task-srcA", "sess-1", "task-target2", "srcA", edc_channel_cli);
-    struct edc_task *sourceB = edc_task_new("task-srcB", "sess-1", "task-target2", "srcB", edc_channel_cli);
+    struct edc_task *target2 = edc_task_new("task-target2", "sess-1", "task-target2", "target2", edc_channel_adapter);
+    struct edc_task *sourceA = edc_task_new("task-srcA", "sess-1", "task-target2", "srcA", edc_channel_adapter);
+    struct edc_task *sourceB = edc_task_new("task-srcB", "sess-1", "task-target2", "srcB", edc_channel_adapter);
 
     CHECK(target2->state == TASK_IDLE, "target2 starts IDLE");
     edc_task_add_dependency(target2, sourceA, TASK_DEP_JOIN);
@@ -329,8 +329,8 @@ static void test_dependencies(void)
 static void test_dep_cancelled(void)
 {
     TEST("dep_cancelled removes dependency and decrements total");
-    struct edc_task *target = edc_task_new("task-tgt-c", "sess-1", "task-tgt-c", "target-c", edc_channel_cli);
-    struct edc_task *source = edc_task_new("task-src-c", "sess-1", "task-tgt-c", "source-c", edc_channel_cli);
+    struct edc_task *target = edc_task_new("task-tgt-c", "sess-1", "task-tgt-c", "target-c", edc_channel_adapter);
+    struct edc_task *source = edc_task_new("task-src-c", "sess-1", "task-tgt-c", "source-c", edc_channel_adapter);
 
     edc_task_add_dependency(target, source, TASK_DEP_JOIN);
     CHECK(target->deps_total == 1, "deps_total=1 before cancel");
@@ -350,8 +350,8 @@ static void test_dep_cancelled(void)
 static void test_signals(void)
 {
     TEST("SIGTERM: notifies dependents and cancels task");
-    struct edc_task *target = edc_task_new("task-sig1", "sess-1", "task-sig1", "sig test target", edc_channel_cli);
-    struct edc_task *source = edc_task_new("task-sig2", "sess-1", "task-sig1", "sig test source", edc_channel_cli);
+    struct edc_task *target = edc_task_new("task-sig1", "sess-1", "task-sig1", "sig test target", edc_channel_adapter);
+    struct edc_task *source = edc_task_new("task-sig2", "sess-1", "task-sig1", "sig test source", edc_channel_adapter);
 
     edc_task_add_dependency(target, source, TASK_DEP_JOIN);
     CHECK(target->deps_total == 1, "target waits for source");
@@ -369,8 +369,8 @@ static void test_signals(void)
     edc_task_free(source);
 
     TEST("SIGKILL: does NOT notify dependents");
-    struct edc_task *target2 = edc_task_new("task-sig3", "sess-2", "task-sig3", "sig test target2", edc_channel_cli);
-    struct edc_task *source2 = edc_task_new("task-sig4", "sess-2", "task-sig3", "sig test source2", edc_channel_cli);
+    struct edc_task *target2 = edc_task_new("task-sig3", "sess-2", "task-sig3", "sig test target2", edc_channel_adapter);
+    struct edc_task *source2 = edc_task_new("task-sig4", "sess-2", "task-sig3", "sig test source2", edc_channel_adapter);
 
     edc_task_add_dependency(target2, source2, TASK_DEP_JOIN);
     CHECK(target2->deps_total == 1, "target2 waits for source2");
@@ -392,7 +392,7 @@ static void test_signals(void)
 static void test_output(void)
 {
     TEST("output set and get");
-    struct edc_task *t = edc_task_new("task-out", "sess-1", "task-out", "output test", edc_channel_cli);
+    struct edc_task *t = edc_task_new("task-out", "sess-1", "task-out", "output test", edc_channel_adapter);
 
     CHECK(edc_task_get_output(t) == NULL, "initial output is NULL");
 
@@ -415,7 +415,7 @@ static void test_output(void)
 static void test_prompt(void)
 {
     TEST("prompt set with name and text");
-    struct edc_task *t = edc_task_new("task-prompt", "sess-1", "task-prompt", "prompt test", edc_channel_cli);
+    struct edc_task *t = edc_task_new("task-prompt", "sess-1", "task-prompt", "prompt test", edc_channel_adapter);
 
     edc_task_set_prompt(t, "code-reviewer", "You are a code reviewer.");
     CHECK(strcmp(t->prompt_name, "code-reviewer") == 0, "prompt_name set");
@@ -441,7 +441,7 @@ static void test_prompt(void)
 static void test_context_messages(void)
 {
     TEST("context with custom prompt");
-    struct edc_task *t = edc_task_new("task-ctx", "sess-1", "task-ctx", "ctx test", edc_channel_cli);
+    struct edc_task *t = edc_task_new("task-ctx", "sess-1", "task-ctx", "ctx test", edc_channel_adapter);
     edc_task_set_prompt(t, "test-role", "You are a test assistant.");
 
     cJSON *msgs = edc_task_get_context_messages(t, NULL);
@@ -457,7 +457,7 @@ static void test_context_messages(void)
     edc_task_free(t);
 
     TEST("context without prompt falls back to default");
-    t = edc_task_new("task-ctx2", "sess-1", "task-ctx2", "ctx test 2", edc_channel_cli);
+    t = edc_task_new("task-ctx2", "sess-1", "task-ctx2", "ctx test 2", edc_channel_adapter);
     /* Pass NULL config → no default prompt either, just dep output (none) */
     msgs = edc_task_get_context_messages(t, NULL);
     CHECK(cJSON_GetArraySize(msgs) == 0, "no messages without prompt or config");
@@ -465,8 +465,8 @@ static void test_context_messages(void)
     edc_task_free(t);
 
     TEST("context includes dependency outputs");
-    struct edc_task *parent = edc_task_new("task-ctx-p", "sess-3", "task-ctx-p", "parent ctx", edc_channel_cli);
-    struct edc_task *child = edc_task_new("task-ctx-c", "sess-3", "task-ctx-p", "child ctx", edc_channel_cli);
+    struct edc_task *parent = edc_task_new("task-ctx-p", "sess-3", "task-ctx-p", "parent ctx", edc_channel_adapter);
+    struct edc_task *child = edc_task_new("task-ctx-c", "sess-3", "task-ctx-p", "child ctx", edc_channel_adapter);
 
     sds child_out = sdsnew("Analysis: found 3 bugs");
     edc_task_set_output(child, child_out);
@@ -494,8 +494,8 @@ static void test_scenario_fork_join(void)
 {
     TEST("scenario: fork + join + complete chain");
     /* Simulate: Task-Main forks Task-Sub, waits for it, Sub completes */
-    struct edc_task *main = edc_task_new("task-main", "sess-scenario", "task-main", "main task", edc_channel_cli);
-    struct edc_task *sub = edc_task_fork(main, "task-sub", "sub task", 10, edc_channel_cli);
+    struct edc_task *main = edc_task_new("task-main", "sess-scenario", "task-main", "main task", edc_channel_adapter);
+    struct edc_task *sub = edc_task_fork(main, "task-sub", "sub task", 10, edc_channel_adapter);
 
     CHECK(sub->forked_from == main, "sub forked from main");
     CHECK(sub->state == TASK_WAITING_INPUT, "sub starts WAITING_INPUT");
@@ -530,10 +530,10 @@ static void test_scenario_fork_join(void)
 static void test_scenario_multi_deps(void)
 {
     TEST("scenario: multiple dependencies with partial completion");
-    struct edc_task *target = edc_task_new("task-tgt", "sess-multi", "task-tgt", "aggregator", edc_channel_cli);
-    struct edc_task *a = edc_task_new("task-a", "sess-multi", "task-tgt", "worker A", edc_channel_cli);
-    struct edc_task *b = edc_task_new("task-b", "sess-multi", "task-tgt", "worker B", edc_channel_cli);
-    struct edc_task *c = edc_task_new("task-c", "sess-multi", "task-tgt", "worker C", edc_channel_cli);
+    struct edc_task *target = edc_task_new("task-tgt", "sess-multi", "task-tgt", "aggregator", edc_channel_adapter);
+    struct edc_task *a = edc_task_new("task-a", "sess-multi", "task-tgt", "worker A", edc_channel_adapter);
+    struct edc_task *b = edc_task_new("task-b", "sess-multi", "task-tgt", "worker B", edc_channel_adapter);
+    struct edc_task *c = edc_task_new("task-c", "sess-multi", "task-tgt", "worker C", edc_channel_adapter);
 
     edc_task_add_dependency(target, a, TASK_DEP_JOIN);
     edc_task_add_dependency(target, b, TASK_DEP_JOIN);

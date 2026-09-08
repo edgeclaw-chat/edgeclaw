@@ -35,32 +35,11 @@ typedef struct
     struct channel_conf config;
     edc_actor_t *observer;
     struct edc_handler_entry *handlers;
-    union {
-        struct
-        {
-            struct edc_terminal_state orig_term;
-            uv_tty_t stdin_tty;
-            sds line_buffer;
-            int cursor_pos;
-            sds pending_output;
-            sds *history;
-            int history_count;
-            int history_capacity;
-            int history_pos;
-            sds saved_line;
-            sds history_path;
-            volatile int running;
-            bool tty_stopped;
-            int term_width;
-            int prev_lines;
-        } cli;
-
-        struct
-        {
-            void *instance;
-            void (*on_actor_message_send_fn)(void *instance, struct edc_channel_message *msg);
-        } adapter;
-    };
+    struct
+    {
+        void *instance;
+        void (*on_actor_message_send_fn)(void *instance, struct edc_channel_message *msg);
+    } adapter;
 } edc_channel_actor_state_t;
 
 extern edc_actor_t *edc_channel_actor_new(struct channel_conf *config, const char *workspace);
