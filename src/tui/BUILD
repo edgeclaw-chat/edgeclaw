@@ -12,6 +12,7 @@ cc_library(
     srcs = [
         "edc_c_bridge.c",
         "edc_chat_widget.cpp",
+        "edc_input.cpp",
         "edc_tui_window.cpp",
         "edc_message.cpp",
         "edc_scroll_view.cpp",
@@ -23,6 +24,7 @@ cc_library(
     hdrs = [
         "edc_c_bridge.h",
         "edc_chat_widget.hpp",
+        "edc_input.hpp",
         "edc_tui_window.hpp",
         "edc_message.hpp",
         "edc_scroll_view.hpp",
@@ -58,6 +60,20 @@ cc_test(
 cc_test(
     name = "test_text_wrap",
     srcs = ["test_text_wrap.cpp"],
+    deps = [
+        ":tui",
+    ],
+    linkstatic = True,
+    linkopts = LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+
+cc_test(
+    name = "test_edc_input",
+    srcs = ["test_edc_input.cpp"],
     deps = [
         ":tui",
     ],

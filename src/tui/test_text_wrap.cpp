@@ -1,8 +1,11 @@
 // Unit tests for the CJK-aware text helpers in edc_text_util.hpp
-// (WrapToWidth in particular). These protect the TodoWidget multi-line
-// layout: every wrapped line must fit the given cell budget, spaces must not
-// be swallowed in the middle of prose, and long unbroken runs (CJK, paths)
-// must still break so lines never overflow the sidebar column.
+// (WrapToWidth and VisualWrapRows in particular). WrapToWidth protects the
+// TodoWidget multi-line layout: every wrapped line must fit the given cell
+// budget, spaces must not be swallowed in the middle of prose, and long
+// unbroken runs (CJK, paths) must still break so lines never overflow the
+// sidebar column. VisualWrapRows protects the soft-wrapping EdcInput editor:
+// its rows are lossless byte partitions of an editable line (only a single
+// boundary separator may be dropped) that never split a UTF-8 sequence.
 
 #include "edc_text_util.hpp"
 
@@ -112,6 +115,118 @@ static void test_whitespace_collapse(void)
         CHECK(lines[0] == "alpha beta gamma", "got '%s'", lines[0].c_str());
 }
 
+static void test_visual_wrap_rows_fit(void)
+{
+    TEST("editor soft-wrap: every row fits the budget, text is preserved");
+    const std::string s = "hello world this is a slightly longer sentence";
+    const auto rows = edc::VisualWrapRows(s, 12);
+    std::printf("    rows (width 12):\n");
+    for (const auto &sp : rows)
+        std::printf("      [%d,%d) '%s' (width %d)\n", sp.first, sp.second,
+                    s.substr(sp.first, sp.second - sp.first).c_str(),
+                    edc::StringWidth(s.substr(sp.first, sp.second - sp.first)));
+    CHECK(!rows.empty(), "expected rows");
+    for (const auto &sp : rows)
+    {
+        CHECK(sp.second > sp.first, "empty row span [%d,%d)", sp.first, sp.second);
+        CHECK(edc::StringWidth(s.substr(sp.first, sp.second - sp.first)) <= 12,
+              "row exceeds budget");
+    }
+}
+
+static void test_visual_wrap_boundary_space(void)
+{
+    TEST("editor soft-wrap: boundary space behavior");
+    {
+        // Row exactly full when the separator is met -> the space is dropped
+        // so no row starts/ends with a lone separator.
+        const std::string s = "hello world";
+        const auto rows = edc::VisualWrapRows(s, 5);
+        CHECK(rows.size() == 2, "expected 2 rows, got %zu", rows.size());
+        if (rows.size() == 2)
+        {
+            const std::string r0 = s.substr(rows[0].first, rows[0].second - rows[0].first);
+            const std::string r1 = s.substr(rows[1].first, rows[1].second - rows[1].first);
+            CHECK(r0 == "hello", "row0 '%s'", r0.c_str());
+            CHECK(r1 == "world", "row1 '%s'", r1.c_str());
+        }
+    }
+    {
+        // Word does not quite fill the row -> the space stays at the end of
+        // the previous row and the text concatenates back losslessly.
+        const std::string s = "hello world";
+        const auto rows = edc::VisualWrapRows(s, 8);
+        std::string joined;
+        for (const auto &sp : rows)
+            joined += s.substr(sp.first, sp.second - sp.first);
+        CHECK(joined == s, "lossless wrap expected, got '%s'", joined.c_str());
+        if (rows.size() == 2)
+        {
+            const std::string r0 = s.substr(rows[0].first, rows[0].second - rows[0].first);
+            CHECK(r0 == "hello ", "row0 '%s'", r0.c_str());
+        }
+    }
+}
+
+static void test_visual_wrap_cjk_and_wide(void)
+{
+    TEST("editor soft-wrap: CJK/wide chars hard-break but never split a glyph");
+    {
+        const std::string s = "你好世界你好世界";
+        const auto rows = edc::VisualWrapRows(s, 6); // 3 CJK chars per row
+        std::string joined;
+        for (const auto &sp : rows)
+            joined += s.substr(sp.first, sp.second - sp.first);
+        CHECK(joined == s, "CJK wrap lost characters: '%s'", joined.c_str());
+        CHECK(rows.size() == 3, "expected 3 rows (8 chars / 3 per row), got %zu", rows.size());
+        for (const auto &sp : rows)
+            CHECK(edc::StringWidth(s.substr(sp.first, sp.second - sp.first)) <= 6,
+                  "CJK row exceeds budget");
+    }
+    {
+        // Emoji (2 cells each) must not be split when a 3-cell budget only
+        // fits one per row.
+        const std::string s = "😀😀😀";
+        const auto rows = edc::VisualWrapRows(s, 3);
+        std::string joined;
+        for (const auto &sp : rows)
+            joined += s.substr(sp.first, sp.second - sp.first);
+        CHECK(joined == s, "wide-char wrap lost characters");
+        CHECK(rows.size() == 3, "expected 3 rows, got %zu", rows.size());
+    }
+}
+
+static void test_visual_wrap_mixed_and_edges(void)
+{
+    TEST("editor soft-wrap: mixed prose, empty input, degenerate budgets");
+    {
+        const std::string s = "abc 你好 def 中文内容 ghi";
+        const auto rows = edc::VisualWrapRows(s, 10);
+        std::string joined;
+        for (const auto &sp : rows)
+            joined += s.substr(sp.first, sp.second - sp.first);
+        CHECK(joined == s, "mixed wrap lost characters: '%s'", joined.c_str());
+        for (const auto &sp : rows)
+            CHECK(edc::StringWidth(s.substr(sp.first, sp.second - sp.first)) <= 10,
+                  "mixed row exceeds budget");
+    }
+    CHECK(edc::VisualWrapRows("", 10).empty(), "empty input yields no rows");
+    {
+        const auto rows = edc::VisualWrapRows("abcdef", 0);
+        CHECK(rows.size() == 1, "degenerate budget still yields one row");
+    }
+    {
+        // Long word hard-breaks in the middle without losing bytes.
+        const std::string s = "https://example.com/very/long/path";
+        const auto rows = edc::VisualWrapRows(s, 10);
+        std::string joined;
+        for (const auto &sp : rows)
+            joined += s.substr(sp.first, sp.second - sp.first);
+        CHECK(joined == s, "long-word wrap lost characters: '%s'", joined.c_str());
+        CHECK(rows.size() >= 3, "expected several rows, got %zu", rows.size());
+    }
+}
+
 int main(void)
 {
     test_ascii_word_wrap();
@@ -120,6 +235,10 @@ int main(void)
     test_long_word_breaks();
     test_empty_and_whitespace();
     test_whitespace_collapse();
+    test_visual_wrap_rows_fit();
+    test_visual_wrap_boundary_space();
+    test_visual_wrap_cjk_and_wide();
+    test_visual_wrap_mixed_and_edges();
 
     if (g_failures)
     {

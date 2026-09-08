@@ -2,6 +2,7 @@
 
 #include <ftxui/screen/string.hpp>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace edc
@@ -228,6 +229,100 @@ inline std::vector<std::string> WrapToWidth(const std::string &s, int max_cells)
     if (!line.empty())
         lines.push_back(std::move(line));
     return lines;
+}
+
+// Soft (visual) line wrap for an editable line: returns the byte ranges
+// [begin, end) of the rows |s| is split into when displayed at most
+// |max_cells| wide. Unlike WrapToWidth this is a *lossless partition* of the
+// text for an editor — no whitespace is collapsed or trimmed, and the ranges
+// concatenate back to exactly |s| except that the single space sitting on a
+// wrap boundary (the separator between two words when the row is exactly
+// full) is dropped from both rows. It is CJK/wide-char safe: a run without
+// spaces (Chinese, a long URL, …) is hard-broken between code points, never
+// in the middle of one. A trailing ASCII space at a word-wrap boundary stays
+// at the end of the previous row (invisible, but the byte range stays
+// contiguous so a caret sitting on it maps back cleanly). Empty input yields
+// no rows — callers wanting to display an empty line add one themselves.
+inline std::vector<std::pair<int, int>> VisualWrapRows(const std::string &s, int max_cells)
+{
+    std::vector<std::pair<int, int>> rows;
+    if (max_cells <= 0)
+    {
+        if (!s.empty())
+            rows.push_back({0, static_cast<int>(s.size())});
+        return rows;
+    }
+
+    const int n = static_cast<int>(s.size());
+    int seg = 0;
+    while (seg < n)
+    {
+        int width = 0;
+        int last_space = -1; // byte index of the last ' ' that fits this row
+        int j = seg;
+        int row_end = n;
+        bool skip_space = false; // drop the overflowing boundary space
+        while (j < n)
+        {
+            const unsigned char c = static_cast<unsigned char>(s[j]);
+            size_t len = Utf8SeqLen(c);
+            if (j + static_cast<int>(len) > n)
+                len = static_cast<size_t>(n - j); // truncated tail
+            const int w = StringWidth(s.substr(j, len));
+            if (w > max_cells)
+            {
+                // A single glyph wider than a whole row (degenerate narrow
+                // budget): emit it alone rather than looping forever.
+                if (width == 0)
+                {
+                    row_end = j + static_cast<int>(len);
+                }
+                else
+                {
+                    row_end = j;
+                }
+                break;
+            }
+            if (width + w > max_cells)
+            {
+                if (c == ' ' && width == max_cells)
+                {
+                    // Row exactly full, next char is the word separator:
+                    // end here and skip the boundary space.
+                    row_end = j;
+                    skip_space = true;
+                }
+                else if (last_space != -1)
+                {
+                    // Word wrap: end after the last space that fit, so the
+                    // next row starts at the following word.
+                    row_end = last_space + 1;
+                }
+                else
+                {
+                    // No interior space (CJK run / long word): hard break.
+                    row_end = j;
+                }
+                break;
+            }
+            width += w;
+            if (c == ' ')
+                last_space = j;
+            j += static_cast<int>(len);
+        }
+        if (row_end > seg)
+        {
+            rows.push_back({seg, row_end});
+            seg = row_end + (skip_space ? 1 : 0);
+        }
+        else
+        {
+            // Safety net: always make progress.
+            rows.push_back({seg, j});
+            seg = j > seg ? j : seg + 1;
+        }
+    }
+    return rows;
 }
 
 } // namespace edc

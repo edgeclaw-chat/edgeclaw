@@ -1,5 +1,6 @@
 #include "edc_tui_window.hpp"
 #include "edc_chat_widget.hpp"
+#include "edc_input.hpp"
 #include "edc_task_widget.hpp"
 #include "edc_todo_widget.hpp"
 #include "ftxui/component/component.hpp"
@@ -122,18 +123,12 @@ TUIWindow::TUIWindow() : input_text_("")
               ::ftxui::color(::ftxui::Color::RGB(147, 147, 147));
     prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(::ftxui::Color::Blue) | ::ftxui::bold;
 
-    ::ftxui::InputOption option;
-    option.multiline = true;
-
-    option.transform = [](::ftxui::InputState state) {
-        if (state.is_placeholder)
-        {
-            state.element |= ::ftxui::dim;
-        }
-        return state.element;
-    };
-
-    input_ = ::ftxui::Input(&input_text_, "输入消息，Enter 发送，Alt+Enter 换行...", option);
+    // Multiline chat draft with soft (visual) wrapping. Long unbroken lines
+    // wrap onto following rows instead of overflowing the input width;
+    // Alt+Enter / pasted newlines still create real '\n' in the content. The
+    // placeholder is dimmed by the widget itself (no InputOption transform).
+    input_ = std::make_shared<edc::EdcInput>(
+        &input_text_, "输入消息，Enter 发送，Alt+Enter 换行...");
 
     container_ = ::ftxui::Container::Vertical({chat_widget_, input_}, &focused_);
 
@@ -202,6 +197,7 @@ void TUIWindow::Submit()
 
     chat_widget_->AddMessage(std::make_shared<UserMessage>(message, ::time(nullptr)));
     input_text_.clear();
+    input_->Reset(); // caret/scroll back to the start after the external clear
 
     edc_c_agent_send_user_message(agent, message.c_str());
     chat_widget_->ScrollToBottom();

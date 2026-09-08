@@ -8,6 +8,7 @@
 namespace edc
 {
 class ChatWidget;
+class EdcInput;
 class TaskWidget;
 class TodoWidget;
 class TUIWindow : public ::ftxui::ComponentBase
@@ -42,7 +43,10 @@ class TUIWindow : public ::ftxui::ComponentBase
     std::shared_ptr<edc::ChatWidget> chat_widget_;
     std::shared_ptr<edc::TaskWidget> task_widget_;
     std::shared_ptr<edc::TodoWidget> todo_widget_;
-    ::ftxui::Component input_;
+    // Multi-line input with soft (visual) line wrapping: long drafts wrap to
+    // the input width instead of overflowing, and the caret navigates the
+    // wrapped rows. Owned here; also handed to |container_| for focus/events.
+    std::shared_ptr<edc::EdcInput> input_;
     ::ftxui::Element footer_;
     ::ftxui::Element prompt_;
     std::string input_text_;
