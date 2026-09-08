@@ -59,9 +59,13 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
     // TaskWidget): ftxui::Color's constructor queries terminal state, which
     // is not ready during C++ static initialization — file-scope const Color
     // objects would run before main() and segfault.
-    const Color kBlue = Color::RGB(94, 151, 247);
-    const Color kGreen = Color::RGB(64, 168, 96);
-    const Color kGray = Color::RGB(147, 147, 147);
+    // State colors reuse the exact RGB of the task-tree palette
+    // (TaskWidget::StateColor) so a color means the same thing in both
+    // sidebar sections: waiting is yellow, executing is blue, done is green.
+    const Color kBlue = Color::RGB(94, 151, 247);   // LLM_PROCESSING / TOOL_CALLING
+    const Color kGreen = Color::RGB(64, 168, 96);   // COMPLETED
+    const Color kYellow = Color::RGB(229, 192, 123); // IDLE / WAITING_DEPS / WAITING_INPUT
+    const Color kGray = Color::RGB(147, 147, 147);  // neutral chrome (counts, "(empty)", "+N more")
     const Color kDimLine = Color::RGB(60, 60, 60);
     const Color kTodoBg = Color::RGB(30, 30, 30); // must match TaskWidget's pane background
 
@@ -122,23 +126,24 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             const bool doing = item.status == "in_progress";
 
             // Leading bullet, one flat glyph for every state — never a
-            // checkbox, never a per-state glyph swap. The sidebar palette
-            // itself carries the state, so the dot always agrees with its
-            // text instead of fighting it (a bright gray blob on every row
-            // read as noise against the flat #1e1e1e pane):
-            //   pending      dim gray dot   · dim gray text
-            //   in_progress  blue dot       · bright white text   ← single accent
-            //   completed    dim green dot  · dim green + strikethrough text
-            // The dot is deliberately not bold; it stays quiet except for the
-            // one in-progress row, mirroring how only the active task stands
-            // out in the task tree above.
+            // checkbox, never a per-state glyph swap. Each state borrows the
+            // exact RGB of its task-tree counterpart (TaskWidget::StateColor),
+            // so the dot and its text always carry the same meaning as the
+            // task rows above and never fight each other:
+            //   pending      dim yellow dot  · dim yellow text   (task: waiting)
+            //   in_progress  blue dot        · blue text         (task: executing)
+            //   completed    dim green dot   · dim green + strikethrough (task: done)
+            // The dot is deliberately not bold; completed rows are dimmed and
+            // struck through and pending rows are dimmed, so only the single
+            // in-progress row stays bright — mirroring how only the active
+            // task stands out in the task tree above.
             Element marker;
             if (done)
                 marker = text("  ● ") | color(kGreen) | dim;
             else if (doing)
                 marker = text("  ● ") | color(kBlue);
             else
-                marker = text("  ● ") | color(kGray) | dim;
+                marker = text("  ● ") | color(kYellow) | dim;
 
             // Content wraps to the whole row width minus the marker column;
             // single-line ellipsis truncation is only a last resort for a
@@ -155,14 +160,17 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
                     last += "…";
             }
 
-            // Content styling depends on the item state; every wrapped line
-            // of the item gets the same treatment.
+            // Content styling depends on the item state and mirrors the
+            // task-tree palette: pending is dim yellow (waiting), the single
+            // in_progress row is plain blue (executing, same RGB as its dot)
+            // and completed rows are dim green with strikethrough. Every
+            // wrapped line of the item gets the same treatment.
             auto style_content = [&](Element e) -> Element {
                 if (done)
                     return e | dim | strikethrough | color(kGreen);
                 if (doing)
-                    return e | color(Color::RGB(229, 229, 229));
-                return e | dim;
+                    return e | color(kBlue);
+                return e | dim | color(kYellow);
             };
 
             Elements item_lines;
