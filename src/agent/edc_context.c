@@ -205,105 +205,54 @@ sds edc_context_build_system_prompt(struct edc_config *conf)
 
     return system_prompt;
 }
-
 /* ── task todo list → 运行时 reminder (请求队尾) ────────────────
  * (2026-09-09: 从"头部 system prompt 尾部注入"改为"每次请求消息列表最末尾
  * 追加绝对新鲜的 system reminder"——头部注入在长上下文里易被模型遗忘; 队尾
  * 紧贴模型开始生成的位置, 每轮 tool 循环都重新计算、保持最新。)
- * reminder 主旨只有两条 (2026-09-09 再次精简): (1) 告诉模型当前 todo 列表
- * 的状态——整个列表什么样、执行到哪一步 (清单行 + 状态摘要); (2) 完成/
- * 切换步骤时及时调用 update_todolist 同步 (kTodoSysGuide 一句话带过)。
+ * reminder 采用"系统状态 + 本轮指令"两段式 (2026-09-09, 参照用户模板重构):
+ *   ① ## 🚨 CURRENT TASK SYSTEM STATE —— 当前 todo 清单全貌 (与工具回显
+ *      同格式的清单行), 让模型看到整个计划与执行到哪一步;
+ *   ② ## 🛠️ INSTRUCTIONS FOR THIS TURN —— 每轮必须遵守的节拍: 检查上一个
+ *     工具的执行结果; 当前条目干完后的【下一个动作必须是调用 update_todolist】
+ *     同步状态; 当前条目未标 [x] 不得跳到下一项。逐轮强约束, 解决"执行完
+ *     好几步才想起来更新一次清单"的滞后问题。
  * 副本语义: 生成新 system 消息, 绝不改动组内共享的 history[0] / task。
  *
- * 两条引导互补、互斥出现 (都在队尾, 见 edc_context_make_todo_reminder):
- *  - task 尚无清单 → kTodoPlanningGuide (短): 鼓励多步任务先建清单规划;
- *  - task 已有清单 → kTodoSysGuide + 状态摘要 + 清单行。 */
+ * 两个分支 (见 edc_context_make_todo_reminder) 共用同一两段式骨架、互斥出现:
+ *  - task 已有非空清单 → 状态段 = 清单行; 指令段 = 逐轮同步节拍;
+ *  - task 尚无/已清空清单 → 状态段 = "尚无清单"; 指令段 = 多步任务先建计划。 */
 
-/* 规划引导: 任务还没建 todo 清单时追加 (位于请求队尾的 reminder), 让 LLM
- * 面对多步任务主动先用 update_todolist 建计划, 而不是等清单存在后才被告知
- * 维护规则。短小为宜——一旦建了清单, 后续每轮自然切换到 kTodoSysGuide +
- * state + 清单行。 */
+/* 状态段标题 / 指令段标题 (两分支共用) */
+static const char *kTodoStateHeader = "## 🚨 CURRENT TASK SYSTEM STATE\n";
+static const char *kTodoTurnHeader = "## 🛠️ INSTRUCTIONS FOR THIS TURN\n";
+
+/* 逐轮同步节拍 (任务已持有 todo 清单时注入)。核心诉求: 不许干完好几步才
+ * 更新一次 todo——当前条目一完成, 下一步就强制 update_todolist 同步。 */
+static const char *kTodoTurnGuide =
+    "- Check the execution result of the last tool call.\n"
+    "- If the item you are working on is fully finished, your NEXT SINGLE ACTION must be calling "
+    "update_todolist to update the state (mark it \"completed\", promote the next pending item to "
+    "\"in_progress\" with activeForm set to the concrete action you are doing now, send the FULL "
+    "updated list).\n"
+    "- Do NOT jump to the next item until the current one is marked as [x].\n"
+    "- When the whole list is done, keep the completed list — do not clear it or invent items.\n";
+
+/* 建清单引导 (任务尚无 todo 清单时注入)。多步任务先把计划落到 update_todolist,
+ * 之后每轮自然切换到 kTodoTurnGuide 的逐轮同步节拍。 */
 static const char *kTodoPlanningGuide =
-    "## Task Planning — plan multi-step work with a todo list\n"
-    "\n"
-    "When the user's request needs several distinct steps or will likely involve "
-    "multiple tool calls (research, coding, debugging, batch edits, ...), FIRST "
-    "call the update_todolist tool to create a step-by-step plan, then execute it:\n"
-    "- Split the work into concrete, verifiable, ordered items — one action each, "
-    "max 20 items.\n"
-    "- Mark the item you are currently working on \"in_progress\" and set its "
-    "activeForm to the concrete action you are doing right now; mark finished "
-    "items \"completed\"; keep exactly ONE item in_progress.\n"
-    "- Keep the list as your live progress record: call update_todolist with the "
-    "FULL updated list whenever the state changes, and keep it when everything "
-    "is done.\n"
-    "\n"
-    "Simple single-step requests or direct conversation do NOT need a todo list — "
-    "just answer without creating one.\n";
-
-/* 维护引导 (2026-09-09 紧凑版): 任务已持有 todo 清单时注入, 与状态摘要 +
- * 清单行组成完整 reminder。主旨只有两条——① 让模型看到当前清单长什么样、
- * 执行到哪一步 (清单行 + 状态摘要负责); ② 完成/切换步骤时及时调用
- * update_todolist 同步 (本引导负责)。删去了冗长的"权威记录/防裁剪"论证与
- * 逐条维护规则, 只保留一次调用必须遵守的语义: 全量替换、状态迁移、
- * 单一 in_progress、全部完成时保留清单不清空。 */
-static const char *kTodoSysGuide = "## Task Todo List\n"
-                                   "\n"
-                                   "Whenever you finish a step or switch to another one, call update_todolist "
-                                   "with the full updated list to keep this list in sync: set the finished item "
-                                   "to \"completed\" and the item you are working on now to \"in_progress\" "
-                                   "(activeForm = what you are doing right now), keeping exactly one item "
-                                   "in_progress. When the whole list is done, keep the completed list — do not "
-                                   "clear it.\n";
-
-/* 从 items 推导当前执行状态摘要 (计数 / 正在做的项)。items 非空。
- * 返回新 sds, 调用方负责 sdsfree。 */
-static sds edc_context_todo_state_block(cJSON *items)
-{
-    int total = cJSON_GetArraySize(items);
-    int completed = 0;
-    const char *ip_content = NULL, *ip_form = NULL;
-    for (int i = 0; i < total; i++)
-    {
-        cJSON *item = cJSON_GetArrayItem(items, i);
-        const char *st = cJSON_GetStringValue(cJSON_GetObjectItem(item, "status"));
-        const char *ct = cJSON_GetStringValue(cJSON_GetObjectItem(item, "content"));
-        const char *af = cJSON_GetStringValue(cJSON_GetObjectItem(item, "activeForm"));
-        if (!st)
-            st = "pending";
-        if (!ct)
-            ct = "";
-        if (!af)
-            af = "";
-        if (strcmp(st, "completed") == 0)
-        {
-            completed++;
-        }
-        else if (strcmp(st, "in_progress") == 0 && !ip_content)
-        {
-            ip_content = ct;
-            ip_form = af;
-        }
-    }
-
-    sds b = sdsnew("Current state:\n");
-    b = sdscatprintf(b, "- %d/%d completed\n", completed, total);
-    if (ip_content)
-    {
-        b = sdscatprintf(b, "- in progress: \"%s\"", ip_content);
-        if (ip_form && *ip_form)
-            b = sdscatprintf(b, " (%s)", ip_form);
-        b = sdscat(b, "\n");
-    }
-    return b;
-}
+    "- If the request is multi-step — several distinct steps or multiple tool calls (research, coding, "
+    "debugging, batch edits, ...) — your FIRST action must be calling update_todolist to create a "
+    "step-by-step plan, then execute it.\n"
+    "- Simple single-step requests or direct conversation do NOT need a todo list — just answer "
+    "without creating one.\n";
 
 /* 运行时 todo reminder (role=system 的新消息, 每次请求重新计算、绝对新鲜),
  * 由 edc_agent_cb_send_llm 塞到本次 LLM 请求消息列表的最末尾 (req->tail_system,
  * 真正队尾: llm actor 在 history + 当前 turn 之后追加)。返回三种形态:
- *  - task 持有非空 todo 清单 → 维护引导 + 状态摘要 + 清单行 (内容不带 base,
- *    独立成一条 system 消息, 不再拼进头部 system prompt);
- *  - task 非 NULL 但尚无清单 → 短规划引导 (## Task Planning);
+ *  - task 持有非空 todo 清单 → <system-reminder> 内: 状态段 (清单行) + 指令段
+ *    (逐轮同步节拍)。内容不带 base, 独立成一条 system 消息;
+ *  - task 非 NULL 但尚无/已清空清单 → 同骨架: 状态段 "尚无清单" + 指令段
+ *    (建计划引导);
  *  - task 为 NULL → NULL。
  * 副本语义: 返回未挂到任何数组的新消息对象, 随请求释放; 不改 task/group。 */
 cJSON *edc_context_make_todo_reminder(struct edc_task *task)
@@ -311,35 +260,37 @@ cJSON *edc_context_make_todo_reminder(struct edc_task *task)
     if (!task)
         return NULL;
 
-    if (task->todolist && cJSON_GetArraySize(task->todolist) > 0)
-    {
-        sds content = sdsnew("<system-reminder>\n");
-        content = sdscat(content, kTodoSysGuide); /* 尾部以 "\n" 结尾 */
-        content = sdscat(content, "\n");          /* 引导与状态块之间留空行 */
-        sds state = edc_context_todo_state_block(task->todolist);
-        content = sdscatprintf(content, "%s\n", state); /* 状态块后留空行 */
-        sdsfree(state);
-        sds body = edc_tools_todo_render_body(task->todolist, NULL);
-        content = sdscat(content, body);
-        sdsfree(body);
+    int has_list = task->todolist && cJSON_GetArraySize(task->todolist) > 0;
 
-        content = sdscat(content, "\n</system-reminder>"); /* 清单行后空一行再收尾闭标签 */
-        cJSON *sys = cJSON_CreateObject();
-        cJSON_AddStringToObject(sys, "role", "system");
-        cJSON_AddStringToObject(sys, "content", content);
-        sdsfree(content);
-        return sys;
+    sds content = sdsnew("<system-reminder>\n");
+    content = sdscat(content, kTodoStateHeader);
+
+    if (has_list)
+    {
+        sds body = edc_tools_todo_render_body(task->todolist, NULL);
+        content = sdscat(content, body); /* 清单行, 每行以 \n 结尾 */
+        sdsfree(body);
+    }
+    else
+    {
+        content = sdscat(content, "No todo list exists for this task yet.\n");
     }
 
-    /* task 尚无清单 → 规划引导 */
-    cJSON *guide = cJSON_CreateObject();
-    cJSON_AddStringToObject(guide, "role", "system");
+    content = sdscat(content, "\n"); /* 状态段与指令段之间留空行 */
+    content = sdscat(content, kTodoTurnHeader);
 
-    sds content = sdsnew(NULL);
-    content = sdscatprintf(content, "<system-reminder>\n%s\n</system-reminder>", kTodoPlanningGuide);
-    cJSON_AddStringToObject(guide, "content", content);
+    if (has_list)
+        content = sdscat(content, kTodoTurnGuide);
+    else
+        content = sdscat(content, kTodoPlanningGuide);
+
+    content = sdscat(content, "\n</system-reminder>");
+
+    cJSON *sys = cJSON_CreateObject();
+    cJSON_AddStringToObject(sys, "role", "system");
+    cJSON_AddStringToObject(sys, "content", content);
     sdsfree(content);
-    return guide;
+    return sys;
 }
 
 /* 本次 LLM 请求 "system 部分" (头部) 的唯一组装入口: group memory + system

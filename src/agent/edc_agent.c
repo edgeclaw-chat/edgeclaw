@@ -256,9 +256,11 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
     struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, agent->toolbox ? agent->toolbox->schemas : NULL,
                                                           task->active_turn ? &task->active_turn->messages : NULL);
     req->history_owned = true;
-    /* 绝对队尾: 运行时重新计算的 todo reminder (有清单→维护引导+状态摘要+
-     * 清单行; 无清单→规划引导)。llm actor 在 history + turn 之后追加, 每轮
-     * 请求都是最新状态。req 持有并随请求释放 (副本, 不改 task/group)。 */
+    /* 绝对队尾: 运行时重新计算的 todo reminder (两段式: CURRENT TASK SYSTEM
+     * STATE 状态段 + INSTRUCTIONS FOR THIS TURN 指令段; 有清单→清单行+逐轮
+     * 同步节拍, 无清单→"尚无清单"+建计划引导)。llm actor 在 history + turn
+     * 之后追加, 每轮请求都是最新状态。req 持有并随请求释放 (副本, 不改
+     * task/group)。 */
     req->tail_system = edc_context_make_todo_reminder(task);
 
     edc_actor_send(agent->llm_actor,
