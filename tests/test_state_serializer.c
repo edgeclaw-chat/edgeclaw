@@ -591,7 +591,7 @@ static void test_state_degradation(void)
 
 static void test_filter_transient_states(void)
 {
-    TEST("IDLE and CANCELLED tasks are filtered out");
+    TEST("IDLE filtered out, CANCELLED is persisted");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-filt", "Filter");
@@ -625,18 +625,154 @@ static void test_filter_transient_states(void)
     CHECK(json != NULL, "serialize returns non-NULL");
 
     cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
-    CHECK(cJSON_GetArraySize(tasks_j) == 1, "only 1 task serialized (t-ok)");
-
-    cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "task_id")),
-                "t-ok", "the one task is t-ok");
+    CHECK(cJSON_GetArraySize(tasks_j) == 2, "2 tasks serialized (t-ok + t-canc; IDLE dropped)");
 
     /* Deserialize */
     struct edc_session *session2 = edc_session_new(cfg, "sess-filt", "Filter");
     struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
     bool ok = edc_state_deserialize(json, session2, sched2);
     CHECK(ok, "deserialize succeeds");
-    CHECK(count_tasks(session2) == 1, "1 task restored");
+    CHECK(count_tasks(session2) == 2, "2 tasks restored");
+
+    struct edc_task *rcanc = find_task(session2, "t-canc");
+    CHECK(rcanc != NULL, "cancelled task restored");
+    CHECK(rcanc->state == TASK_CANCELLED, "cancelled state survives restart");
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(session2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Test 7b: CANCELLED mid-flight task roundtrip
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_cancelled_midflight_roundtrip(void)
+{
+    TEST("CANCELLED mid-flight task (active_turn) roundtrip");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-cmid", "CancelledMid");
+    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+
+    /* Task was running (LLM_PROCESSING) with a partial active turn, then got
+     * a stop signal → CANCELLED.  Simulates /task stop during a run. */
+    struct edc_task *task = edc_task_new("c-mid", "sess-cmid", "c-mid",
+                                         "running then stopped", edc_channel_cli);
+    task->is_group_leader = 1;
+    edc_task_set_state(task, TASK_WAITING_INPUT);
+    edc_task_set_state(task, TASK_LLM_PROCESSING);
+
+    struct edc_turn *at = edc_turn_new();
+    at->task_id = strdup("c-mid");
+    turn_add_msg(at, "user", "please do the long task");
+    task->active_turn = at;
+
+    edc_task_send_signal(task, TASK_SIGTERM);
+    CHECK(task->state == TASK_CANCELLED, "signal puts task into CANCELLED");
+
+    struct edc_task_group *group = edc_task_group_new(task);
+    edc_session_add_group(session, group);
+    session->active_task = task;
+
+    /* Serialize: CANCELLED task must be present */
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize returns non-NULL");
+    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
+    CHECK(cJSON_GetArraySize(tasks_j) == 1, "CANCELLED task is serialized");
+    cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "state")),
+                "CANCELLED", "JSON keeps CANCELLED state");
+    CHECK(cJSON_GetObjectItem(t0, "active_turn") != NULL, "active_turn serialized");
+
+    /* Deserialize */
+    struct edc_session *session2 = edc_session_new(cfg, "sess-cmid", "CancelledMid");
+    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    bool ok = edc_state_deserialize(json, session2, sched2);
+    CHECK(ok, "deserialize succeeds");
+
+    struct edc_task *rt = find_task(session2, "c-mid");
+    CHECK(rt != NULL, "cancelled task restored");
+    CHECK(rt->state == TASK_CANCELLED, "state stays CANCELLED after restart (no WAITING_INPUT degrade)");
+    CHECK(rt->active_turn != NULL, "active_turn restored");
+    struct edc_turn *rturn = rt->active_turn;
+    CHECK(edc_queue_length(&rturn->messages) == 1, "active turn has 1 message");
+    cJSON *m0 = (cJSON *)rturn->messages.data[rturn->messages.head];
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "role")), "user", "active turn msg role=user");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "please do the long task",
+                "active turn msg content");
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(session2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Test 7c: cancelled dependency edges survive roundtrip
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_cancelled_dep_roundtrip(void)
+{
+    TEST("dependency edge of a cancelled source survives roundtrip");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-cdep", "CancelledDep");
+    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+
+    /* src: group leader, runs and then gets cancelled.
+     * tgt: depends on src; when src is cancelled the dep is marked cancelled
+     *      and tgt returns to WAITING_INPUT. */
+    struct edc_task *src = edc_task_new("src", "sess-cdep", "src", "source task", edc_channel_cli);
+    src->is_group_leader = 1;
+    edc_task_set_state(src, TASK_WAITING_INPUT);
+    edc_task_set_state(src, TASK_LLM_PROCESSING);
+
+    struct edc_task *tgt = edc_task_new("tgt", "sess-cdep", "src", "dependent task", edc_channel_cli);
+    edc_task_set_state(tgt, TASK_WAITING_INPUT);
+
+    struct edc_task_group *group = edc_task_group_new(src);
+    edc_task_group_add_task(group, tgt);
+    edc_session_add_group(session, group);
+
+    /* wire dep, then cancel the source (runtime order) */
+    bool ok_add = edc_task_add_dependency(tgt, src, TASK_DEP_JOIN);
+    CHECK(ok_add, "add dependency succeeds");
+    CHECK(tgt->state == TASK_WAITING_DEPS, "tgt waits on deps");
+    edc_task_send_signal(src, TASK_SIGTERM);
+    CHECK(src->state == TASK_CANCELLED, "src cancelled");
+    CHECK(tgt->state == TASK_WAITING_INPUT, "tgt released back to WAITING_INPUT");
+
+    /* Serialize: both tasks must be present */
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize returns non-NULL");
+    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
+    CHECK(cJSON_GetArraySize(tasks_j) == 2, "both src(CANCELLED) and tgt serialized");
+
+    /* Deserialize */
+    struct edc_session *session2 = edc_session_new(cfg, "sess-cdep", "CancelledDep");
+    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    bool ok = edc_state_deserialize(json, session2, sched2);
+    CHECK(ok, "deserialize succeeds");
+
+    struct edc_task *rsrc = find_task(session2, "src");
+    struct edc_task *rtgt = find_task(session2, "tgt");
+    CHECK(rsrc != NULL && rsrc->state == TASK_CANCELLED, "cancelled source restored as CANCELLED");
+    CHECK(rtgt != NULL, "dependent restored");
+    CHECK(rtgt->state == TASK_WAITING_INPUT, "dependent not stuck in WAITING_DEPS");
+    CHECK(rtgt->deps_total == 0, "deps_total reconciled to 0");
+    CHECK(rtgt->deps_completed == 0, "deps_completed reconciled to 0");
+    CHECK(rtgt->deps != NULL, "cancelled dep edge preserved");
+    if (rtgt->deps)
+    {
+        CHECK(rtgt->deps->cancelled, "dep edge marked cancelled");
+        CHECK(rtgt->deps->source == rsrc, "dep edge points at restored source");
+    }
 
     cJSON_Delete(json);
     edc_session_free(session);
@@ -1447,6 +1583,8 @@ int main(void)
     test_complex_topology();
     test_state_degradation();
     test_filter_transient_states();
+    test_cancelled_midflight_roundtrip();
+    test_cancelled_dep_roundtrip();
     test_active_turn();
     test_extra_fields();
     test_null_inputs();

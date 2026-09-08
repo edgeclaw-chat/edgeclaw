@@ -94,7 +94,7 @@ static bool edc_commands_handle_new(struct edc_agent *agent, edc_actor_t *actor,
 static bool edc_commands_handle_stop(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type)
 {
     edc_session_reload(edc_session_manager_get_active(agent->session_manager), true);
-    edc_agent_remove_all_turns(agent);
+    edc_agent_stop_all_turns(agent);
 
     edc_commands_reply(agent, actor, channel_type, "[system] stop all turns.");
     return true;

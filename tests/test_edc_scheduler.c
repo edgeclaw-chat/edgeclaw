@@ -169,6 +169,13 @@ static void test_scheduler_fg_bg(void)
 
 /* ── 5. 信号发送 ──────────────────────────────────────────── */
 
+static int g_save_calls = 0;
+static void fake_save_session(struct edc_scheduler *sched)
+{
+    (void)sched;
+    g_save_calls++;
+}
+
 static void test_scheduler_signals(void)
 {
     TEST("send_signal_to_task");
@@ -187,6 +194,30 @@ static void test_scheduler_signals(void)
     TEST("send_signal_to_task nonexistent");
     edc_scheduler_send_signal_to_task(sched, "nonexistent", TASK_SIGTERM);
     CHECK(1, "signal to nonexistent task survived");
+
+    TEST("send_signal_to_task triggers save_session on cancel");
+    g_save_calls = 0;
+    sched->save_session = fake_save_session;
+
+    /* WAITING_INPUT task: cancel → must persist */
+    struct edc_task *t2 = edc_scheduler_create_task(sched, "signal target 2", edc_channel_cli);
+    edc_task_group_add_task(g, t2);
+    edc_scheduler_send_signal_to_task(sched, t2->task_id, TASK_SIGTERM);
+    CHECK(t2->state == TASK_CANCELLED, "t2 cancelled");
+    CHECK(g_save_calls == 1, "save_session called once after explicit cancel");
+
+    /* COMPLETED task is terminal: cancel is a no-op → no save */
+    struct edc_task *t3 = edc_scheduler_create_task(sched, "done task", edc_channel_cli);
+    edc_task_group_add_task(g, t3);
+    edc_task_set_state(t3, TASK_LLM_PROCESSING);
+    edc_task_set_state(t3, TASK_COMPLETED);
+    edc_scheduler_send_signal_to_task(sched, t3->task_id, TASK_SIGTERM);
+    CHECK(t3->state == TASK_COMPLETED, "completed task stays COMPLETED");
+    CHECK(g_save_calls == 1, "no extra save for no-op cancel on completed task");
+
+    /* nonexistent task → no save */
+    edc_scheduler_send_signal_to_task(sched, "nonexistent", TASK_SIGTERM);
+    CHECK(g_save_calls == 1, "no save for nonexistent task");
 
     edc_scheduler_free(sched);
     if (sess->messages) cJSON_Delete(sess->messages);

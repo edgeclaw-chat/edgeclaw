@@ -41,6 +41,7 @@ extern void edc_agent_add_history(struct edc_agent *agent, const char *line);
 extern char *edc_agent_run_turn(struct edc_agent *agent, const char *input);
 extern struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox);
 extern void edc_agent_remove_all_turns(struct edc_agent *agent);
+extern void edc_agent_stop_all_turns(struct edc_agent *agent);
 extern void edc_agent_free(struct edc_agent *agent);
 
 /* 注册命令处理器 (由 shell 模块在初始化时调用) */

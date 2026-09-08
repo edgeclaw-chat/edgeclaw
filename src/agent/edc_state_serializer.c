@@ -315,8 +315,11 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
             struct edc_task *t;
             LL_FOREACH2(g->members, t, group_next)
             {
-                /* filter transient states */
-                if (t->state == TASK_IDLE || t->state == TASK_CANCELLED)
+                /* filter transient states: 刚创建未开始的 IDLE 任务不落盘。
+                 * CANCELLED 必须持久化 —— 用户显式 stop 的任务要跨重启保留,
+                 * 否则重启后会按旧状态恢复 (如 LLM_PROCESSING 降级 WAITING_INPUT),
+                 * 让取消看起来"没生效"。 */
+                if (t->state == TASK_IDLE)
                     continue;
                 cJSON_AddItemToArray(tasks_json, task_to_json(t, messages));
             }
@@ -800,6 +803,8 @@ static void deser_deps(cJSON *json, struct task_map_entry **id_map)
 
             if (comp && cJSON_IsTrue(comp))
                 edc_task_on_dep_completed(target, source);
+            if (canc && cJSON_IsTrue(canc))
+                edc_task_on_dep_cancelled(target, source);
             if (inj && cJSON_IsTrue(inj))
             {
                 struct edc_task_dep *dep;
@@ -810,6 +815,41 @@ static void deser_deps(cJSON *json, struct task_map_entry **id_map)
                     break;
                 }
             }
+        }
+    }
+}
+
+/* 依赖重建后的最终对账: 按 dep 标志 (completed/cancelled) 重算每个 task 的
+ * deps_total / deps_completed, 并在所有依赖已满足时把 WAITING_DEPS 收敛到
+ * WAITING_INPUT。运行时取消/完成事件按时间序触发, 恢复时 JSON 里的 deps
+ * 顺序不定, 逐条 replay on_dep_cancelled/on_dep_completed 会产生与运行时
+ * 不一致的中间状态, 这里一次性收敛, 保证确定性。 */
+static void deser_reconcile_deps(struct task_map_entry **id_map)
+{
+    for (int b = 0; b < TASK_MAP_BUCKETS; b++)
+    {
+        struct task_map_entry *e = id_map[b];
+        while (e)
+        {
+            struct edc_task *task = e->task;
+            if (task)
+            {
+                size_t total = 0, completed = 0;
+                struct edc_task_dep *dep;
+                LL_FOREACH(task->deps, dep)
+                {
+                    if (dep->cancelled)
+                        continue;
+                    total++;
+                    if (dep->completed)
+                        completed++;
+                }
+                task->deps_total = total;
+                task->deps_completed = completed;
+                if (task->state == TASK_WAITING_DEPS && completed >= total)
+                    edc_task_set_state(task, TASK_WAITING_INPUT);
+            }
+            e = e->next;
         }
     }
 }
@@ -906,6 +946,7 @@ bool edc_state_deserialize(cJSON *json, struct edc_session *session, struct edc_
     struct group_map_entry *group_map[GROUP_MAP_BUCKETS] = {0};
     deser_create_groups(json, session, id_map, group_map);
     deser_deps(json, id_map);
+    deser_reconcile_deps(id_map);
     deser_turns(json, messages_array, id_map);
     deser_global_ptrs(sj, session, sched, id_map, group_map);
     deser_rebuild_group_history(session, sched);

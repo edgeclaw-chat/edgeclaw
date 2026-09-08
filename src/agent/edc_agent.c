@@ -470,6 +470,19 @@ void edc_agent_remove_all_turns(struct edc_agent *agent)
     edc_scheduler_send_signal_to_all(agent->scheduler, TASK_SIGTERM);
 }
 
+/* 用户 /stop: 取消全部 turns 后立即保存 session 状态, 使取消结果跨重启保留。
+ * 与 remove_all_turns 不同 —— 后者是进程 teardown / /new / session 切换等
+ * 清理路径, 若在那里落盘会把退出时所有运行中任务写成 CANCELLED, 改变既有
+ * "中断任务重启后降级 WAITING_INPUT" 的语义。 */
+void edc_agent_stop_all_turns(struct edc_agent *agent)
+{
+    if (!agent || !agent->scheduler)
+        return;
+    edc_scheduler_send_signal_to_all(agent->scheduler, TASK_SIGTERM);
+    if (agent->scheduler->save_session)
+        agent->scheduler->save_session(agent->scheduler);
+}
+
 /* ── 生命周期 ──────────────────────────────────────────────── */
 
 struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
