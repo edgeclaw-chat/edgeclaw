@@ -534,16 +534,45 @@ static void deser_rebuild_group_history(struct edc_session *session, struct edc_
             sdsfree(prompt);
         }
 
+        /* 按 completion_seq 升序重建 history，与运行时 (STOP/完成顺序) 保持一致。
+         * 成员链表是创建顺序，若任务完成顺序与创建顺序不同，直接遍历会导致
+         * fold_cursor 错位，进而让切片切断 assistant(tool_calls)+tool 序列。 */
+        size_t n = 0, cap = 0;
+        struct edc_task **arr = NULL;
         struct edc_task *t;
         LL_FOREACH2(g->members, t, group_next)
         {
-            for (size_t qi = t->turns.head; qi < t->turns.tail; qi++)
+            if (n == cap)
             {
-                struct edc_turn *turn = t->turns.data[qi];
+                cap = cap ? cap * 2 : 8;
+                arr = realloc(arr, cap * sizeof(*arr));
+            }
+            arr[n++] = t;
+        }
+
+        for (size_t i = 1; i < n; i++)
+        {
+            struct edc_task *key = arr[i];
+            size_t j = i;
+            while (j > 0 && arr[j - 1]->completion_seq > key->completion_seq)
+            {
+                arr[j] = arr[j - 1];
+                j--;
+            }
+            arr[j] = key;
+        }
+
+        for (size_t i = 0; i < n; i++)
+        {
+            struct edc_task *task = arr[i];
+            for (size_t qi = task->turns.head; qi < task->turns.tail; qi++)
+            {
+                struct edc_turn *turn = task->turns.data[qi];
                 for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
                     cJSON_AddItemReferenceToArray(g->history, turn->messages.data[mj]);
             }
         }
+        free(arr);
     }
 
     if (sched)

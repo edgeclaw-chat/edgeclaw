@@ -92,6 +92,29 @@ static sds edc_agent_var_resolver(const char *name, void *user_data)
 
 /* ── 回调: 发送 LLM 请求 ──────────────────────────────────── */
 
+/* 确保 group history 切片起点不落在 tool 消息上。
+ * OpenAI 要求每个 role=tool 消息前面必须有对应的 assistant(tool_calls) 消息；
+ * 若窗口起点正好切在 assistant(tool_calls)+tool 序列中间，会导致 tool 消息孤儿化，
+ * 从而报 "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"。
+ * 这里把起点向前回退到第一个非 tool 消息（即其 assistant），保证序列完整。 */
+static size_t edc_agent_history_safe_start(cJSON *history, size_t start, size_t lower_bound)
+{
+    while (start > lower_bound)
+    {
+        cJSON *m = cJSON_GetArrayItem(history, start);
+        cJSON *role = cJSON_GetObjectItem(m, "role");
+        if (role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0)
+        {
+            start--;
+        }
+        else
+        {
+            break;
+        }
+    }
+    return start;
+}
+
 static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
@@ -123,12 +146,16 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
         size_t hist_begin = 1 + task->group->fold_cursor;
         if (hist_begin > end)
             hist_begin = end;
+        /* fold_cursor 边界也可能切在 tool 消息上, 回退到安全边界 */
+        hist_begin = edc_agent_history_safe_start(task->group->history, hist_begin, 1);
 
         /* 最近 K 条窗口 (K = load_n_histories) */
         size_t k = agent->config ? (size_t)agent->config->load_n_histories : 10;
         size_t from = hist_begin;
         if (end > hist_begin && end - hist_begin > k)
             from = end - k;
+        /* 窗口起点不要切断 assistant(tool_calls)+tool 序列 */
+        from = edc_agent_history_safe_start(task->group->history, from, hist_begin);
 
         /* 注入 system prompt (恒为 history[0]) */
         cJSON_AddItemReferenceToArray(msgs, cJSON_GetArrayItem(task->group->history, 0));
