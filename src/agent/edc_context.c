@@ -245,29 +245,28 @@ static const char *kTodoPlanningGuide =
  * reminder)。说明清单是权威记录、提醒何时调用 update_todolist 同步进度。
  * 注意: 本引导随 reminder 出现在请求【最末尾】, 措辞不再说"注入到 system
  * prompt 头部"。 */
-static const char *kTodoSysGuide =
-    "## Task Todo List — live progress record\n"
-    "\n"
-    "The todo list below is the authoritative, up-to-date record of the task you "
-    "are executing. This reminder is recomputed and appended as a fresh system "
-    "message at the end of every request, so trust it over update_todolist echoes "
-    "in the conversation history — those tool messages may be trimmed out of the "
-    "context window.\n"
-    "\n"
-    "Keep this list accurate: call the update_todolist tool with the FULL updated "
-    "list whenever the state changes.\n"
-    "- When you start an item, mark it \"in_progress\" and set its activeForm to the "
-    "concrete action you are doing right now.\n"
-    "- When you finish an item, mark it \"completed\" and promote the next pending "
-    "item to \"in_progress\" (only ONE item may be in_progress at a time).\n"
-    "- While a step runs long, keep refreshing its activeForm as your actual work "
-    "changes.\n"
-    "- When the whole list is done, keep the completed list as the record — do not "
-    "clear it and do not invent items.\n"
-    "- If the user changes the plan, update the list to mirror the new plan.\n"
-    "\n"
-    "Every call replaces the entire list (max 20 items). The list belongs to this "
-    "task and persists with it.\n";
+static const char *kTodoSysGuide = "## Task Todo List — live progress record\n"
+                                   "\n"
+                                   "The todo list below is the authoritative, up-to-date record of the task you "
+                                   "are executing. This reminder is recomputed and appended as a fresh system "
+                                   "message at the end of every request, so trust it over update_todolist echoes "
+                                   "in the conversation history — those tool messages may be trimmed out of the "
+                                   "context window.\n"
+                                   "\n"
+                                   "Keep this list accurate: call the update_todolist tool with the FULL updated "
+                                   "list whenever the state changes.\n"
+                                   "- When you start an item, mark it \"in_progress\" and set its activeForm to the "
+                                   "concrete action you are doing right now.\n"
+                                   "- When you finish an item, mark it \"completed\" and promote the next pending "
+                                   "item to \"in_progress\" (only ONE item may be in_progress at a time).\n"
+                                   "- While a step runs long, keep refreshing its activeForm as your actual work "
+                                   "changes.\n"
+                                   "- When the whole list is done, keep the completed list as the record — do not "
+                                   "clear it and do not invent items.\n"
+                                   "- If the user changes the plan, update the list to mirror the new plan.\n"
+                                   "\n"
+                                   "Every call replaces the entire list (max 20 items). The list belongs to this "
+                                   "task and persists with it.\n";
 
 /* 从 items 推导当前执行状态摘要 (计数 / 正在做 / 下一个待办)。
  * items 非空。返回新 sds, 调用方负责 sdsfree。 */
@@ -283,9 +282,12 @@ static sds edc_context_todo_state_block(cJSON *items)
         const char *st = cJSON_GetStringValue(cJSON_GetObjectItem(item, "status"));
         const char *ct = cJSON_GetStringValue(cJSON_GetObjectItem(item, "content"));
         const char *af = cJSON_GetStringValue(cJSON_GetObjectItem(item, "activeForm"));
-        if (!st) st = "pending";
-        if (!ct) ct = "";
-        if (!af) af = "";
+        if (!st)
+            st = "pending";
+        if (!ct)
+            ct = "";
+        if (!af)
+            af = "";
         if (strcmp(st, "completed") == 0)
         {
             completed++;
@@ -336,8 +338,9 @@ cJSON *edc_context_make_todo_reminder(struct edc_task *task)
 
     if (task->todolist && cJSON_GetArraySize(task->todolist) > 0)
     {
-        sds content = sdsnew(kTodoSysGuide); /* 尾部以 "\n" 结尾 */
-        content = sdscat(content, "\n");     /* 引导与状态块之间留空行 */
+        sds content = sdsnew("<system-reminder>\n");
+        content = sdscat(content, kTodoSysGuide); /* 尾部以 "\n" 结尾 */
+        content = sdscat(content, "\n");          /* 引导与状态块之间留空行 */
         sds state = edc_context_todo_state_block(task->todolist);
         content = sdscatprintf(content, "%s\n", state); /* 状态块后留空行 */
         sdsfree(state);
@@ -345,6 +348,7 @@ cJSON *edc_context_make_todo_reminder(struct edc_task *task)
         content = sdscat(content, body);
         sdsfree(body);
 
+        content = sdscat(content, "\n</system-reminder>"); /* 清单行后空一行再收尾闭标签 */
         cJSON *sys = cJSON_CreateObject();
         cJSON_AddStringToObject(sys, "role", "system");
         cJSON_AddStringToObject(sys, "content", content);
@@ -355,7 +359,11 @@ cJSON *edc_context_make_todo_reminder(struct edc_task *task)
     /* task 尚无清单 → 规划引导 */
     cJSON *guide = cJSON_CreateObject();
     cJSON_AddStringToObject(guide, "role", "system");
-    cJSON_AddStringToObject(guide, "content", kTodoPlanningGuide);
+
+    sds content = sdsnew(NULL);
+    content = sdscatprintf(content, "<system-reminder>\n%s\n</system-reminder>", kTodoPlanningGuide);
+    cJSON_AddStringToObject(guide, "content", content);
+    sdsfree(content);
     return guide;
 }
 
@@ -363,8 +371,8 @@ cJSON *edc_context_make_todo_reminder(struct edc_task *task)
  * prompt。不含任何 todo 内容——todo 引导一律由 edc_context_make_todo_reminder
  * 生成并塞到请求最末尾。引用/副本/现拼语义见 edc_context.h 注释——与迁移前
  * edc_agent_cb_send_llm 的行为字节级一致。 */
-int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf,
-                                   struct edc_task_group *group, sds *out_pristine)
+int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct edc_task_group *group,
+                                   sds *out_pristine)
 {
     int appended = 0;
     if (!msgs)

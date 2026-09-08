@@ -82,6 +82,41 @@ static void reset_capture(void)
     }
 }
 
+/* reminder 内容以 <system-reminder> 标签包裹 (与平台原生 system reminder 同构:
+ * 开标签后紧跟章节标题, 内容末尾空一行后闭标签)。断言辅助只认"开标签 + 对应
+ * 标题 + 闭标签收尾"的完整形态, 防止半截包裹 / 标签错位回归。 */
+static int content_starts_with(const char *c, const char *prefix)
+{
+    return c && strncmp(c, prefix, strlen(prefix)) == 0;
+}
+
+static int content_ends_with(const char *c, const char *suffix)
+{
+    size_t cl = c ? strlen(c) : 0;
+    size_t sl = strlen(suffix);
+    return cl >= sl && strcmp(c + cl - sl, suffix) == 0;
+}
+
+static int is_todo_reminder(const char *c)
+{
+    return content_starts_with(c, "<system-reminder>\n## Task Todo List") &&
+           content_ends_with(c, "\n</system-reminder>");
+}
+
+static int is_planning_reminder(const char *c)
+{
+    return content_starts_with(c, "<system-reminder>\n## Task Planning") &&
+           content_ends_with(c, "\n</system-reminder>");
+}
+
+/* 头部 system 部分必须连 reminder 标签都不出现 (标签即提醒的标记, 头部只准
+ * 有 group memory + 纯净 system prompt)。 */
+static int head_has_no_reminder(const char *c)
+{
+    return c && strstr(c, "<system-reminder>") == NULL && strstr(c, "## Task Todo List") == NULL &&
+           strstr(c, "## Task Planning") == NULL;
+}
+
 /* ── 1. 真实 update_todolist 执行: 挂载 task->todolist; reminder 组装 ── */
 
 static void test_attach_and_reminder(void)
@@ -130,9 +165,10 @@ static void test_attach_and_reminder(void)
     const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(sys, "content"));
     C(content != NULL, "content present");
 
-    /* (a) 消息从标题开始 (独立成条, 不再是 base 的追加尾巴) */
-    C(strncmp(content, "## Task Todo List — live progress record", 41) == 0,
-      "reminder content starts with its own section title");
+    /* (a) 消息以 <system-reminder> 标签包裹, 开标签后第一行即本清单的章节
+     *     标题 (独立成条, 不再是 base 的追加尾巴) */
+    C(is_todo_reminder(content),
+      "reminder wrapped in <system-reminder> tags, opens with its own section title");
     C(strstr(content, "SYSTEM_BASE") == NULL, "no base prompt text inside reminder");
     C(strstr(content, "live progress record") != NULL, "section framed as live progress record");
     C(strstr(content, "recomputed and appended as a fresh system message at the end of every request") != NULL &&
@@ -182,7 +218,7 @@ static void test_attach_and_reminder(void)
     cJSON *g2 = edc_context_make_todo_reminder(task);
     C(g2 != NULL, "cleared task still gets a tail reminder");
     const char *gc = cJSON_GetStringValue(cJSON_GetObjectItem(g2, "content"));
-    C(gc && strncmp(gc, "## Task Planning", 16) == 0,
+    C(is_planning_reminder(gc),
       "cleared list -> planning guide (encourages creating a fresh plan)");
     C(strstr(gc, "## Task Todo List") == NULL, "planning guide carries no maintenance block");
     cJSON_Delete(g2);
@@ -204,7 +240,7 @@ static void test_no_list_planning_guide(void)
     cJSON *r = edc_context_make_todo_reminder(task);
     C(r != NULL, "task without list still gets a tail message (planning guide)");
     const char *c = cJSON_GetStringValue(cJSON_GetObjectItem(r, "content"));
-    C(c && strncmp(c, "## Task Planning", 16) == 0, "no list -> planning guide");
+    C(is_planning_reminder(c), "no list -> planning guide");
     C(strstr(c, "update_todolist") != NULL && strstr(c, "multi-step") != NULL,
       "planning guide mentions creating list for multi-step work");
     C(strstr(c, "## Task Todo List") == NULL, "planning guide has no maintenance block");
@@ -218,7 +254,7 @@ static void test_no_list_planning_guide(void)
     struct edc_task *t2 = edc_task_new("t-empty", "s", "g", "empty", edc_channel_cli);
     t2->todolist = cJSON_CreateArray();
     r = edc_context_make_todo_reminder(t2);
-    C(r != NULL && strncmp(cJSON_GetStringValue(cJSON_GetObjectItem(r, "content")), "## Task Planning", 16) == 0,
+    C(r != NULL && is_planning_reminder(cJSON_GetStringValue(cJSON_GetObjectItem(r, "content"))),
       "empty array -> planning guide");
     cJSON_Delete(r);
     edc_task_free(t2);
@@ -245,7 +281,7 @@ static void test_validation_gate(void)
     C(g_result == NULL || strstr(g_result, "invalid") != NULL, "error text mentions invalid status");
     C(task->todolist == NULL, "list NOT attached after validation failure");
     cJSON *r = edc_context_make_todo_reminder(task);
-    C(r != NULL && strncmp(cJSON_GetStringValue(cJSON_GetObjectItem(r, "content")), "## Task Planning", 16) == 0,
+    C(r != NULL && is_planning_reminder(cJSON_GetStringValue(cJSON_GetObjectItem(r, "content"))),
       "invalid list never attached -> planning guide only");
     cJSON_Delete(r);
     reset_capture();
@@ -295,7 +331,7 @@ static void test_state_summary_all_done(void)
 
     cJSON *sys = edc_context_make_todo_reminder(task);
     const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(sys, "content"));
-    C(content && strncmp(content, "## Task Todo List", 17) == 0, "all-done reminder has own title");
+    C(is_todo_reminder(content), "all-done reminder wrapped, opens with its own title");
     C(strstr(content, "Current state:\n- 2/2 completed\n- all items completed") != NULL,
       "state shows full completion");
     C(strstr(content, "nothing left to do") != NULL, "explicit no-work-left note");
@@ -344,8 +380,9 @@ static void test_append_system_part(void)
     C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "SYS0_BASE") == 0,
       "referenced content readable through array");
     C(strstr(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "## Task Planning") == NULL &&
-          strstr(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "## Task Todo List") == NULL,
-      "head message stays pure (no todo sections)");
+          strstr(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "## Task Todo List") == NULL &&
+          strstr(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "<system-reminder>") == NULL,
+      "head message stays pure (no todo sections, no reminder marker)");
     cJSON_Delete(msgs);
     C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g1->history, 0), "content")),
              "SYS0_BASE") == 0,
@@ -355,7 +392,7 @@ static void test_append_system_part(void)
      * agent 把它作为队尾消息塞进请求数组 → 落在 base 引用之后 */
     cJSON *tail = edc_context_make_todo_reminder(t1);
     C(tail != NULL && !(tail->type & cJSON_IsReference), "planning-guide reminder is an owned msg");
-    C(strncmp(cJSON_GetStringValue(cJSON_GetObjectItem(tail, "content")), "## Task Planning", 16) == 0,
+    C(is_planning_reminder(cJSON_GetStringValue(cJSON_GetObjectItem(tail, "content"))),
       "no-list tail message is the task-planning guide");
     C(strstr(cJSON_GetStringValue(cJSON_GetObjectItem(tail, "content")), "update_todolist") != NULL &&
           strstr(cJSON_GetStringValue(cJSON_GetObjectItem(tail, "content")), "multi-step") != NULL,
@@ -388,13 +425,14 @@ static void test_append_system_part(void)
       "base attached by reference (not a todo-injected copy)");
     const char *h1 = cJSON_GetStringValue(cJSON_GetObjectItem(m1b, "content"));
     C(h1 && strcmp(h1, "SYS0_BASE") == 0, "head base stays PURE even when task has a todo list");
-    C(strstr(h1, "## Task Todo List") == NULL && strstr(h1, "## Task Planning") == NULL,
-      "no todo sections anywhere in the head");
+    C(strstr(h1, "## Task Todo List") == NULL && strstr(h1, "## Task Planning") == NULL &&
+          strstr(h1, "<system-reminder>") == NULL,
+      "no todo sections / reminder marker anywhere in the head");
 
     cJSON *r2 = edc_context_make_todo_reminder(t1);
     C(r2 != NULL && !(r2->type & cJSON_IsReference), "todo reminder is an owned msg");
     const char *rc = cJSON_GetStringValue(cJSON_GetObjectItem(r2, "content"));
-    C(rc && strncmp(rc, "## Task Todo List", 17) == 0, "todo reminder starts with its title");
+    C(is_todo_reminder(rc), "todo reminder wrapped, opens with its title");
     C(strstr(rc, "Current state:\n- 0/1 completed\n- next pending: \"do it\"") != NULL,
       "fresh state summary inside reminder");
     C(strstr(rc, "## Task Planning") == NULL,
@@ -426,14 +464,12 @@ static void test_append_system_part(void)
     C(!(m0->type & cJSON_IsReference), "fallback msg is owned");
     const char *f0 = cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content"));
     C(f0 && strcmp(f0, pristine) == 0, "fallback request content == pristine");
-    C(strstr(f0, "## Task Todo List") == NULL && strstr(f0, "## Task Planning") == NULL,
-      "pure prompt has no todo section at all");
+    C(head_has_no_reminder(f0), "pure prompt has no todo section or reminder marker at all");
     C(cJSON_GetArraySize(g2->history) == 0, "context does NOT write group history (caller's job)");
 
     /* fallback + 无清单: 队尾 reminder = 规划引导 */
     cJSON *pg = edc_context_make_todo_reminder(t2);
-    C(pg != NULL && strncmp(cJSON_GetStringValue(cJSON_GetObjectItem(pg, "content")),
-                            "## Task Planning", 16) == 0,
+    C(pg != NULL && is_planning_reminder(cJSON_GetStringValue(cJSON_GetObjectItem(pg, "content"))),
       "fallback no-list tail reminder is the planning guide");
     cJSON_AddItemToArray(msgs, pg);
     C(cJSON_GetArraySize(msgs) == 2 && cJSON_GetArrayItem(msgs, 1) == pg,
@@ -449,10 +485,11 @@ static void test_append_system_part(void)
     C(n == 1, "fallback+todo head: one pure sys msg");
     m0 = cJSON_GetArrayItem(msgs, 0);
     const char *ft = cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content"));
-    C(ft && strncmp(ft, "# EdgeClaw", 10) == 0 && strstr(ft, "## Task Todo List") == NULL,
+    C(ft && strncmp(ft, "# EdgeClaw", 10) == 0 && strstr(ft, "## Task Todo List") == NULL &&
+          strstr(ft, "<system-reminder>") == NULL,
       "fallback+todo request head = fresh pure base (no todo section)");
     C(pristine && strstr(pristine, "## Task Todo List") == NULL &&
-          strstr(pristine, "## Task Planning") == NULL,
+          strstr(pristine, "## Task Planning") == NULL && strstr(pristine, "<system-reminder>") == NULL,
       "pristine stays pure even when request will carry the todo reminder");
 
     /* 模拟调用方编排: 把纯净 prompt 写回 group history[0] */
@@ -469,8 +506,7 @@ static void test_append_system_part(void)
       "caller-side write-back keeps shared history pure");
 
     cJSON *tm = edc_context_make_todo_reminder(t2);
-    C(tm != NULL && strncmp(cJSON_GetStringValue(cJSON_GetObjectItem(tm, "content")),
-                            "## Task Todo List", 17) == 0,
+    C(tm != NULL && is_todo_reminder(cJSON_GetStringValue(cJSON_GetObjectItem(tm, "content"))),
       "fallback+todo tail reminder carries the list state");
     C(strstr(cJSON_GetStringValue(cJSON_GetObjectItem(tm, "content")),
              "Current state:\n- 0/1 completed\n- in progress: \"plan\" (working)") != NULL,
@@ -486,8 +522,7 @@ static void test_append_system_part(void)
     C(m0 != NULL && (m0->type & cJSON_IsReference) && m0->child == cJSON_GetArrayItem(g2->history, 0)->child,
       "post-write-back request references history[0]");
     const char *pw = cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content"));
-    C(pw && strstr(pw, "## Task Todo List") == NULL && strstr(pw, "## Task Planning") == NULL,
-      "referenced history[0] is pure (todo only at tail)");
+    C(head_has_no_reminder(pw), "referenced history[0] is pure (todo only at tail)");
     cJSON_Delete(msgs);
     sdsfree(pristine);
     edc_task_group_free(g2); /* 连带释放 t2 / todolist */
