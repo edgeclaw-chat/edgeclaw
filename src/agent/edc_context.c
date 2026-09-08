@@ -211,7 +211,32 @@ sds edc_context_build_system_prompt(struct edc_config *conf)
  * 目标不只是让模型"看见"清单: (1) 说明清单是权威、每请求刷新的进度记录;
  * (2) 提醒何时调用 update_todolist 同步进度; (3) 给一眼可读的当前执行状态
  * 摘要; (4) 附上与工具回显同格式的清单行 (单一渲染源 render_body)。
- * 副本语义不变: 生成新 system 消息, 绝不改动组内共享的 history[0]。 */
+ * 副本语义不变: 生成新 system 消息, 绝不改动组内共享的 history[0]。
+ *
+ * 两条引导互补、互斥出现:
+ *  - task 尚无清单 → 注入 kTodoPlanningGuide (短): 鼓励多步任务先建清单规划;
+ *  - task 已有清单 → kTodoSysGuide + 状态摘要 + 清单行 (见 make_sys_with_todo)。 */
+
+/* 规划引导: 任务还没建 todo 清单时注入, 让 LLM 面对多步任务主动先用
+ * update_todolist 建计划, 而不是等清单存在后才被告知维护规则。短小为宜——
+ * 一旦建了清单, 后续每轮自然切换到 kTodoSysGuide + state + 清单行。 */
+static const char *kTodoPlanningGuide =
+    "## Task Planning — plan multi-step work with a todo list\n"
+    "\n"
+    "When the user's request needs several distinct steps or will likely involve "
+    "multiple tool calls (research, coding, debugging, batch edits, ...), FIRST "
+    "call the update_todolist tool to create a step-by-step plan, then execute it:\n"
+    "- Split the work into concrete, verifiable, ordered items — one action each, "
+    "max 20 items.\n"
+    "- Mark the item you are currently working on \"in_progress\" and set its "
+    "activeForm to the concrete action you are doing right now; mark finished "
+    "items \"completed\"; keep exactly ONE item in_progress.\n"
+    "- Keep the list as your live progress record: call update_todolist with the "
+    "FULL updated list whenever the state changes, and keep it when everything "
+    "is done.\n"
+    "\n"
+    "Simple single-step requests or direct conversation do NOT need a todo list — "
+    "just answer without creating one.\n";
 
 static const char *kTodoSysGuide =
     "## Task Todo List — live progress record\n"
@@ -339,9 +364,11 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf,
 
     /* 2. system prompt
      * - group 有历史: base 恒为 history[0]; task 带 todo → 注入副本 (owned),
-     *   否则引用 history[0] (不复制)
+     *   否则引用 history[0] (不复制) 并在 task 存在时另附一条规划引导 (提醒
+     *   多步任务先建 todo 清单)
      * - group 无历史 / group 为空: 现拼纯净 prompt; todo 注入副本发请求,
-     *   纯净文本经 out_pristine 交还调用方 (由其决定写回 group history) */
+     *   纯净文本经 out_pristine 交还调用方 (由其决定写回 group history);
+     *   无 todo 时同样附带规划引导 */
     if (group && cJSON_GetArraySize(group->history) > 0)
     {
         cJSON *sys0 = cJSON_GetArrayItem(group->history, 0);
@@ -355,20 +382,40 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf,
         else
         {
             cJSON_AddItemReferenceToArray(msgs, sys0);
+            if (task)
+            {
+                cJSON *guide = cJSON_CreateObject();
+                cJSON_AddStringToObject(guide, "role", "system");
+                cJSON_AddStringToObject(guide, "content", kTodoPlanningGuide);
+                cJSON_AddItemToArray(msgs, guide);
+                appended++;
+            }
         }
         appended++;
     }
     else if (conf)
     {
         sds prompt = edc_context_build_system_prompt(conf);
-        cJSON *sys = edc_context_make_sys_with_todo(prompt, task);
-        if (!sys)
+        cJSON *sys_todo = edc_context_make_sys_with_todo(prompt, task);
+        if (sys_todo)
         {
-            sys = cJSON_CreateObject();
+            cJSON_AddItemToArray(msgs, sys_todo);
+        }
+        else
+        {
+            cJSON *sys = cJSON_CreateObject();
             cJSON_AddStringToObject(sys, "role", "system");
             cJSON_AddStringToObject(sys, "content", prompt);
+            cJSON_AddItemToArray(msgs, sys);
+            if (task)
+            {
+                cJSON *guide = cJSON_CreateObject();
+                cJSON_AddStringToObject(guide, "role", "system");
+                cJSON_AddStringToObject(guide, "content", kTodoPlanningGuide);
+                cJSON_AddItemToArray(msgs, guide);
+                appended++;
+            }
         }
-        cJSON_AddItemToArray(msgs, sys);
         appended++;
         if (out_pristine)
             *out_pristine = sdsdup(prompt);

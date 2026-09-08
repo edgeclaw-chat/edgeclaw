@@ -29,6 +29,10 @@ extern cJSON *edc_context_make_sys_with_todo(const char *base_content, struct ed
  *         edc_context_build_system_prompt 现拼; task 带 todo 时请求里发注入
  *         副本, 否则发纯净文本; 纯净文本同时经 *out_pristine (可 NULL) 带回,
  *         由调用方决定是否写回 group->history (保持组内共享 prompt 纯净)
+ *   [2] (可选) todo 规划引导 (## Task Planning, 短 system 消息): 仅当
+ *       task 非 NULL 且尚无 todo 清单时追加——提醒 LLM 面对多步任务先用
+ *       update_todolist 建清单规划; 已有清单时该引导不出现 (换由 [1] 副本里
+ *       的 kTodoSysGuide 维护规则接管)。task 为 NULL (非任务请求) 不追加。
  * 引用/副本/写回语义与迁移前的 edc_agent_cb_send_llm 完全一致。 */
 extern int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf,
                                           struct edc_task_group *group, struct edc_task *task,

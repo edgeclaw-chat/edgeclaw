@@ -286,9 +286,11 @@ static void test_state_summary_all_done(void)
 
 /* ── 6. append_system_part: system 部分组装语义 ──
  * 直接驱动生产入口 edc_context_append_system_part, 验证迁移前后承诺的语义:
- *   - 有 history[0] + 无 todo → 引用 history[0] (不复制, msgs 删除后原消息还在)
+ *   - 有 history[0] + 无 todo + task → 引用 history[0] (不复制, msgs 删除后
+ *     原消息还在) + 一条 todo 规划引导 (## Task Planning)
  *   - 有 history[0] + 有 todo → 生成注入副本 (owned), history[0] 不被改动
  *   - group memory 摘要永远排在 system prompt 之前
+ *   - task 为 NULL → 只发 base, 不附规划引导
  *   - group 无历史 + conf → 现拼纯净 prompt; todo 注入只进请求副本,
  *     *out_pristine 交还纯净文本 (写回 group history 是调用方编排职责) */
 
@@ -296,7 +298,7 @@ static void test_append_system_part(void)
 {
     T("append_system_part: reference vs copy, group memory order, fallback pristine");
 
-    /* ── history 分支: 无 todo → 引用 ── */
+    /* ── history 分支: 无 todo + task → 引用 base + 规划引导 ── */
     struct edc_task *t1 = edc_task_new("ap-1", "s", "g", "no list", edc_channel_cli);
     struct edc_task_group *g1 = edc_task_group_new(t1);
     cJSON *sys0 = cJSON_CreateObject();
@@ -311,20 +313,37 @@ static void test_append_system_part(void)
     cJSON *msgs = cJSON_CreateArray();
     sds pristine = NULL;
     int n = edc_context_append_system_part(msgs, NULL, g1, t1, &pristine);
-    C(n == 1, "history branch appends one sys msg (conf not needed)");
+    C(n == 2, "no-todo task: base reference + planning guide -> 2 appends");
     C(pristine == NULL, "no pristine in history branch");
     cJSON *m0 = cJSON_GetArrayItem(msgs, 0);
     C(m0 != NULL && (m0->type & cJSON_IsReference) && m0->child == sys0->child,
       "no-todo: history[0] attached by REFERENCE (aliases role/content), not deep copy");
     C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "SYS0_BASE") == 0,
       "referenced content readable through array");
+    cJSON *m1 = cJSON_GetArrayItem(msgs, 1);
+    C(m1 != NULL && !(m1->type & cJSON_IsReference), "planning guide is an owned msg");
+    const char *pg = cJSON_GetStringValue(cJSON_GetObjectItem(m1, "content"));
+    C(pg != NULL && strncmp(pg, "## Task Planning", 16) == 0,
+      "no-todo msg is the task-planning guide (encourages creating a list)");
+    C(strstr(pg, "update_todolist") != NULL && strstr(pg, "multi-step") != NULL,
+      "planning guide mentions creating list for multi-step work");
+    C(strstr(pg, "## Task Todo List") == NULL,
+      "planning guide must not carry the maintenance-only sys guide");
     cJSON_Delete(msgs);
     C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g1->history, 0), "content")),
              "SYS0_BASE") == 0,
       "history[0] survives msgs delete (reference did not transfer/copy)");
 
+    /* ── history 分支: 无 todo + task == NULL → 只引用, 无规划引导 ── */
+    msgs = cJSON_CreateArray();
+    n = edc_context_append_system_part(msgs, NULL, g1, NULL, &pristine);
+    C(n == 1, "NULL task: only base reference, no planning guide");
+    m0 = cJSON_GetArrayItem(msgs, 0);
+    C(m0 != NULL && (m0->type & cJSON_IsReference), "NULL task still references history[0]");
+    cJSON_Delete(msgs);
+
     /* ── history 分支: group memory + 有 todo → memory 在前, todo 副本在后,
-     *    共享 history[0] 不被改动 ── */
+     *    共享 history[0] 不被改动, 不再出现规划引导 ── */
     g1->memory = sdsnew("MEM-SUMMARY");
     t1->todolist = cJSON_Parse("[{\"content\":\"do it\",\"status\":\"pending\",\"activeForm\":\"\"}]");
     C(t1->todolist != NULL && cJSON_GetArraySize(t1->todolist) == 1, "attached 1 todo item");
@@ -336,11 +355,14 @@ static void test_append_system_part(void)
     cJSON *mem0 = cJSON_GetArrayItem(msgs, 0);
     C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(mem0, "content")), "## Group Memory\nMEM-SUMMARY") == 0,
       "group memory message comes first");
-    cJSON *m1 = cJSON_GetArrayItem(msgs, 1);
-    C(m1 != NULL && !(m1->type & cJSON_IsReference), "todo: sys msg is an owned copy");
-    const char *c1 = cJSON_GetStringValue(cJSON_GetObjectItem(m1, "content"));
+    cJSON *m1b = cJSON_GetArrayItem(msgs, 1);
+    C(m1b != NULL && !(m1b->type & cJSON_IsReference), "todo: sys msg is an owned copy");
+    const char *c1 = cJSON_GetStringValue(cJSON_GetObjectItem(m1b, "content"));
     C(c1 != NULL && strncmp(c1, "SYS0_BASE\n\n## Task Todo List", 28) == 0,
       "todo copy = history[0] base + injected section");
+    C(strstr(c1, "## Task Planning") == NULL,
+      "todo present: planning guide NOT duplicated (maintenance guide takes over)");
+    C(cJSON_GetArraySize(msgs) == 2, "no extra planning msg when list exists");
     C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(sys0, "content")), "SYS0_BASE") == 0,
       "shared history[0] untouched by todo injection");
     cJSON_Delete(msgs);
@@ -356,18 +378,23 @@ static void test_append_system_part(void)
     msgs = cJSON_CreateArray();
     pristine = NULL;
     n = edc_context_append_system_part(msgs, conf, g2, t2, &pristine);
-    C(n == 1, "fallback appends one sys msg");
+    C(n == 2, "fallback no-todo: pristine sys msg + planning guide");
     C(pristine != NULL && strncmp(pristine, "# EdgeClaw", 10) == 0, "pristine = fresh base prompt");
     m0 = cJSON_GetArrayItem(msgs, 0);
     C(!(m0->type & cJSON_IsReference), "fallback msg is owned");
     const char *f0 = cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content"));
     C(f0 && strcmp(f0, pristine) == 0, "no-todo fallback request content == pristine");
-    C(strstr(f0, "## Task Todo List") == NULL, "pure prompt has no todo section");
+    C(strstr(f0, "## Task Todo List") == NULL && strstr(f0, "## Task Planning") == NULL,
+      "pure prompt has no todo section at all");
+    m1 = cJSON_GetArrayItem(msgs, 1);
+    C(m1 != NULL && strstr(cJSON_GetStringValue(cJSON_GetObjectItem(m1, "content")),
+                           "## Task Planning") != NULL,
+      "fallback no-todo also gets the planning guide");
     C(cJSON_GetArraySize(g2->history) == 0, "context does NOT write group history (caller's job)");
     cJSON_Delete(msgs);
     sdsfree(pristine);
 
-    /* fallback + todo: 请求里是注入副本, pristine 仍纯净 */
+    /* fallback + todo: 请求里是注入副本 (无规划引导), pristine 仍纯净 */
     t2->todolist = cJSON_Parse("[{\"content\":\"plan\",\"status\":\"in_progress\",\"activeForm\":\"working\"}]");
     msgs = cJSON_CreateArray();
     pristine = NULL;
@@ -377,7 +404,10 @@ static void test_append_system_part(void)
     const char *ft = cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content"));
     C(ft && strncmp(ft, "# EdgeClaw", 10) == 0 && strstr(ft, "## Task Todo List") != NULL,
       "fallback+todo request content = fresh base + injected section");
-    C(pristine && strstr(pristine, "## Task Todo List") == NULL,
+    C(strstr(ft, "## Task Planning") == NULL,
+      "fallback+todo: planning guide not duplicated");
+    C(pristine && strstr(pristine, "## Task Todo List") == NULL &&
+          strstr(pristine, "## Task Planning") == NULL,
       "pristine stays pure even when request got the todo copy");
 
     /* 模拟调用方编排: 把纯净 prompt 写回 group history[0] */
