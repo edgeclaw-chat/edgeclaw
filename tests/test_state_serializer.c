@@ -1358,6 +1358,80 @@ static void test_fork_new_group_snapshot(void)
     edc_config_free(cfg);
 }
 
+/* ══════════════════════════════════════════════════════════════
+ *  Test: fork snapshot retrieves folded parent turns (rule 2)
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_fork_snapshot_turns_flushed(void)
+{
+    TEST("edc_task_snapshot_turns retrieves flushed turns (rule 2)");
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-snapfl", "SnapFlush");
+
+    /* 建 task + turn, flush 到 session->messages (模拟运行态 STOP 路径) */
+    struct edc_task *task = edc_task_new("task-parent", "sess-snapfl", "task-parent",
+                                          "parent", edc_channel_cli);
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup("task-parent");
+    turn_add_msg(turn, "user", "folded query");
+    turn_add_msg(turn, "assistant", "folded answer");
+    edc_session_add_turn(session, turn); /* flush: 消息移到 session->messages, range 记录 */
+    edc_task_add_turn(task, turn);       /* commit 到 task->turns */
+
+    CHECK(edc_queue_length(&turn->messages) == 0, "turn messages flushed");
+    CHECK(turn->range_valid, "range recorded after flush");
+
+    /* 模拟 L1 折叠 */
+    task->turns_folded = true;
+
+    /* 规则 2 捞回 */
+    struct edc_turn *snap = edc_task_snapshot_turns(task, session, "task-child");
+    CHECK(snap != NULL, "snapshot non-null");
+    if (snap)
+    {
+        CHECK(edc_queue_length(&snap->messages) == 2, "snapshot has 2 msgs");
+        CHECK_STREQ(snap->task_id, "task-child", "snapshot task_id is child");
+        cJSON *m0 = (cJSON *)snap->messages.data[snap->messages.head];
+        cJSON *m1 = (cJSON *)snap->messages.data[snap->messages.head + 1];
+        CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "role")), "user", "msg0 role user");
+        CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m1, "content")), "folded answer", "msg1 content");
+        edc_turn_free(snap);
+    }
+
+    edc_turn_free(turn);
+    edc_session_free(session);
+    edc_config_free(cfg);
+}
+
+static void test_fork_snapshot_turns_unflushed(void)
+{
+    TEST("edc_task_snapshot_turns copies unflushed turns");
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-snapun", "SnapUnfl");
+
+    struct edc_task *task = edc_task_new("task-parent", "sess-snapun", "task-parent",
+                                          "parent", edc_channel_cli);
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup("task-parent");
+    turn_add_msg(turn, "user", "unflushed q");
+    turn_add_msg(turn, "assistant", "unflushed a");
+    edc_task_add_turn(task, turn); /* 未 flush */
+
+    struct edc_turn *snap = edc_task_snapshot_turns(task, session, "task-child");
+    CHECK(snap != NULL, "snapshot non-null");
+    if (snap)
+    {
+        CHECK(edc_queue_length(&snap->messages) == 2, "snapshot has 2 msgs");
+        cJSON *m1 = (cJSON *)snap->messages.data[snap->messages.head + 1];
+        CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m1, "content")), "unflushed a", "msg1 content");
+        edc_turn_free(snap);
+    }
+
+    edc_turn_free(turn);
+    edc_session_free(session);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     log_info("=== Phase 1: edc_state_serializer module tests ===");
@@ -1367,6 +1441,8 @@ int main(void)
     test_single_task();
     test_fork_chain();
     test_fork_new_group_snapshot();
+    test_fork_snapshot_turns_flushed();
+    test_fork_snapshot_turns_unflushed();
     test_dependency_graph();
     test_complex_topology();
     test_state_degradation();

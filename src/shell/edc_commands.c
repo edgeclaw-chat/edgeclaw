@@ -586,7 +586,8 @@ static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *
         return;
     }
 
-    struct edc_task *parent = edc_session_find_task(edc_session_manager_get_active(agent->session_manager), tokens[0]);
+    struct edc_session *session = edc_session_manager_get_active(agent->session_manager);
+    struct edc_task *parent = edc_session_find_task(session, tokens[0]);
     if (!parent)
     {
         sds reply = sdscatprintf(sdsempty(), "parent task %s not found", tokens[0]);
@@ -640,25 +641,48 @@ static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *
 
         /* 合成 turn: 深拷贝父 group 未折叠消息 [1+fold_cursor .. fork_point) */
         size_t snap_begin = 1 + parent->group->fold_cursor;
-        struct edc_turn *snap = edc_turn_new();
-        snap->task_id = strdup(child->task_id);
-        for (size_t i = snap_begin; i < fork_point; i++)
+        struct edc_turn *snap = NULL;
+
+        if (parent->turns_folded)
         {
-            cJSON *src = cJSON_GetArrayItem(parent->group->history, i);
-            if (!src)
-                break;
-            cJSON *msg = cJSON_Duplicate(src, 1);
-            edc_queue_push(&snap->messages, msg);             /* turn 拥有它 */
-            cJSON_AddItemReferenceToArray(child_group->history, msg); /* history 引用, 不重复 */
+            /* 规则 2: parent 的 turns 已被 L1 折叠, 捞回 parent 自己的 turns 全文,
+             * 保证 fork 点本身的上下文完整。其余已折叠前文仍只靠 memory 摘要。 */
+            snap = edc_task_snapshot_turns(parent, session, child->task_id);
         }
-        if (edc_queue_length(&snap->messages) > 0)
-            edc_task_add_turn(child, snap);
         else
+        {
+            /* 规则 1: 未折叠区间 [1+fold_cursor, fork_point) 作为快照 */
+            snap = edc_turn_new();
+            snap->task_id = strdup(child->task_id);
+            if (snap_begin > fork_point)
+                snap_begin = fork_point;
+            for (size_t i = snap_begin; i < fork_point; i++)
+            {
+                cJSON *src = cJSON_GetArrayItem(parent->group->history, i);
+                if (!src)
+                    break;
+                cJSON *msg = cJSON_Duplicate(src, 1);
+                edc_queue_push(&snap->messages, msg); /* turn 拥有它 */
+            }
+        }
+
+        if (snap && edc_queue_length(&snap->messages) > 0)
+        {
+            /* 快照消息引用到 child group history (不重复拥有) */
+            for (size_t mj = snap->messages.head; mj < snap->messages.tail; mj++)
+                cJSON_AddItemReferenceToArray(child_group->history, snap->messages.data[mj]);
+            edc_task_add_turn(child, snap);
+        }
+        else if (snap)
+        {
             edc_turn_free(snap);
+        }
     }
 
-    /* 前台切到新 group, 否则 WAITING_INPUT 的子任务收不到输入 */
+    /* 前台切到新 group, 并立即把子任务设为 active task。这样后续普通输入
+     * 会被路由 attach 到这个 WAITING_INPUT 的 leader, 而不是再新建一个 task。 */
     edc_scheduler_set_foreground(agent->scheduler, child_group);
+    edc_session_set_active_task(edc_session_manager_get_active(agent->session_manager), child);
 
     sds reply = sdscatprintf(sdsempty(), "[fork] created %s from %s (group %s, fork_point=%zu)%s", child->task_id,
                              parent->task_id, child->group_id, fork_point, prompt_name ? " prompt=" : "");

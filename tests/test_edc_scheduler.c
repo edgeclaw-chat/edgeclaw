@@ -1,6 +1,7 @@
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_config.h"
+#include "edc_channel_actor.h"
 #include "log.h"
 #include <stdio.h>
 #include <string.h>
@@ -249,6 +250,133 @@ static void test_scheduler_signal_all(void)
     free_config(cfg);
 }
 
+/* ── 6. 输入路由: 普通输入 attach 到 WAITING_INPUT 的 leader ── */
+
+static int g_cmd_calls = 0;
+static int g_llm_calls = 0;
+static struct edc_task *g_llm_task = NULL;
+
+static bool mock_handle_command(struct edc_scheduler *sched, struct edc_actor *actor,
+                                struct edc_channel_message *message)
+{
+    (void)sched;
+    (void)actor;
+    (void)message;
+    g_cmd_calls++;
+    return true;
+}
+
+static void mock_send_llm(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
+{
+    (void)sched;
+    (void)request_id;
+    g_llm_calls++;
+    g_llm_task = task;
+}
+
+/* 直接驱动 scheduler actor handler 投递一条 CHANNEL_RECV 消息 (模拟 TUI 输入)。 */
+static void drive_input(struct edc_scheduler *sched, const char *content, long req_id)
+{
+    edc_actor_t *sched_actor = edc_scheduler_get_actor(sched);
+    struct edc_channel_message *cm =
+        edc_channel_message_new(edc_channel_cli, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsnew(content));
+    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, (void *)(intptr_t)req_id, cm,
+                                             (edc_actor_data_free_fn)edc_channel_message_free);
+    sched_actor->handler(sched_actor, msg); /* dispatches + frees msg */
+}
+
+static void test_input_routes_to_waiting_leader(void)
+{
+    TEST("plain input attaches to WAITING_INPUT leader (fork)");
+    struct edc_config *cfg = make_config();
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
+
+    /* fork 语义: leader 在自己的(前台) group 中处于 WAITING_INPUT */
+    struct edc_task *leader = edc_scheduler_create_task(sched, "fork leader", edc_channel_cli);
+    struct edc_task_group *g = edc_scheduler_create_group(sched, leader);
+    edc_scheduler_set_foreground(sched, g);
+    edc_session_set_active_task(sess, leader);
+    CHECK(leader->state == TASK_WAITING_INPUT, "leader starts WAITING_INPUT");
+
+    g_cmd_calls = 0;
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    sched->handle_command = mock_handle_command;
+    sched->send_llm = mock_send_llm;
+
+    drive_input(sched, "hello", 1);
+
+    CHECK(g_llm_calls == 1, "send_llm called once (attached, not spawned)");
+    CHECK(g_llm_task == leader, "input attached to leader task");
+    CHECK(g_cmd_calls == 0, "shell not invoked (no new task)");
+    CHECK(leader->state == TASK_LLM_PROCESSING, "leader advanced to LLM_PROCESSING");
+    CHECK(leader->active_turn != NULL, "leader has active turn");
+
+    edc_scheduler_free(sched);
+    if (sess->messages)
+        cJSON_Delete(sess->messages);
+    free(sess);
+    free_config(cfg);
+
+    TEST("plain input spawns via shell when no WAITING_INPUT task");
+    cfg = make_config();
+    sess = make_session(cfg);
+    sched = edc_scheduler_new(sess, cfg);
+
+    /* 已完成(非等待)的前台 task → 不再 attach, 走 shell 新建 task */
+    struct edc_task *done = edc_scheduler_create_task(sched, "done", edc_channel_cli);
+    struct edc_task_group *g2 = edc_scheduler_create_group(sched, done);
+    edc_scheduler_set_foreground(sched, g2);
+    edc_session_set_active_task(sess, done);
+    edc_task_set_state(done, TASK_LLM_PROCESSING);
+    edc_task_set_state(done, TASK_COMPLETED);
+
+    g_cmd_calls = 0;
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    sched->handle_command = mock_handle_command;
+    sched->send_llm = mock_send_llm;
+
+    drive_input(sched, "hello", 2);
+
+    CHECK(g_cmd_calls == 1, "shell invoked when no waiting task");
+    CHECK(g_llm_calls == 0, "send_llm NOT called (shell handles spawn)");
+
+    edc_scheduler_free(sched);
+    if (sess->messages)
+        cJSON_Delete(sess->messages);
+    free(sess);
+    free_config(cfg);
+
+    TEST("slash command bypasses attach and reaches shell");
+    cfg = make_config();
+    sess = make_session(cfg);
+    sched = edc_scheduler_new(sess, cfg);
+
+    struct edc_task *leader2 = edc_scheduler_create_task(sched, "waiting", edc_channel_cli);
+    struct edc_task_group *g3 = edc_scheduler_create_group(sched, leader2);
+    edc_scheduler_set_foreground(sched, g3);
+    edc_session_set_active_task(sess, leader2); /* WAITING_INPUT */
+
+    g_cmd_calls = 0;
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    sched->handle_command = mock_handle_command;
+    sched->send_llm = mock_send_llm;
+
+    drive_input(sched, "/task list", 3);
+
+    CHECK(g_cmd_calls == 1, "slash command reached shell");
+    CHECK(g_llm_calls == 0, "slash command did NOT attach to waiting leader");
+
+    edc_scheduler_free(sched);
+    if (sess->messages)
+        cJSON_Delete(sess->messages);
+    free(sess);
+    free_config(cfg);
+}
+
 /* ── main ──────────────────────────────────────────────────── */
 
 int main(void)
@@ -263,6 +391,7 @@ int main(void)
     test_scheduler_signals();
     test_scheduler_group_signals();
     test_scheduler_signal_all();
+    test_input_routes_to_waiting_leader();
 
     log_info("");
     log_info("=== 测试结果: %d passed, %d failed ===", test_passed, test_failed);

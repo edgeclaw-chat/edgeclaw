@@ -1,6 +1,7 @@
 #include "edc_task.h"
 #include "edc_compat.h"
 #include "edc_context.h"
+#include "edc_session.h"
 #include "utlist_fix.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -129,6 +130,52 @@ struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, con
     child->fork_point_msg_count = fork_point_msg_count;
     child->state = TASK_WAITING_INPUT;
     return child;
+}
+
+/* ── fork 快照 ────────────────────────────────────────────── */
+
+struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, struct edc_session *session,
+                                         const char *snapshot_task_id)
+{
+    if (!task)
+        return NULL;
+
+    struct edc_turn *snap = edc_turn_new();
+    if (snapshot_task_id)
+        snap->task_id = strdup(snapshot_task_id);
+
+    for (size_t qi = task->turns.head; qi < task->turns.tail; qi++)
+    {
+        struct edc_turn *turn = task->turns.data[qi];
+        if (!turn)
+            continue;
+
+        if (edc_queue_length(&turn->messages) > 0)
+        {
+            for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
+                edc_queue_push(&snap->messages, cJSON_Duplicate((cJSON *)turn->messages.data[mj], 1));
+        }
+        else if (turn->range_valid && turn->msg_range_count > 0 && session)
+        {
+            size_t begin = turn->msg_range_start;
+            size_t end = begin + turn->msg_range_count;
+            size_t total = cJSON_GetArraySize(session->messages);
+            for (size_t i = begin; i < end && i < total; i++)
+            {
+                cJSON *src = cJSON_GetArrayItem(session->messages, (int)i);
+                if (!src)
+                    break;
+                edc_queue_push(&snap->messages, cJSON_Duplicate(src, 1));
+            }
+        }
+    }
+
+    if (edc_queue_length(&snap->messages) == 0)
+    {
+        edc_turn_free(snap);
+        return NULL;
+    }
+    return snap;
 }
 
 static void edc_task_free_turns(struct edc_task *task)

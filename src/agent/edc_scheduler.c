@@ -261,15 +261,16 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     if (!input)
         return;
 
-    if (sched->handle_command && sched->handle_command(sched, msg->from, input))
-        return;
-
     struct edc_task_group *fg = sched->foreground_group;
     struct edc_task *task = NULL;
     bool task_is_waiting_deps = false;
 
-    /* 优先：session->active_task 在前台 group 且为 WAITING_INPUT/WAITING_DEPS */
-    if (sched->session && fg)
+    /* 斜杠命令 / @组寻址 交给命令处理器 (shell); 普通输入先尝试 attach 到
+     * 前台 group 中等待输入的任务 (fork leader、/task new 无输入等)。 */
+    const bool is_plain = input->content && input->content[0] != '/' && input->content[0] != '@';
+
+    /* 优先：active_task 在前台 group 且为 WAITING_INPUT/WAITING_DEPS */
+    if (is_plain && sched->session && fg)
     {
         struct edc_task *at = edc_session_get_active_task(sched->session);
         if (at && (at->state == TASK_WAITING_INPUT || at->state == TASK_WAITING_DEPS))
@@ -288,7 +289,7 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     }
 
     /* 其次：扫描前台 group 中第一个 WAITING_INPUT (不含 WAITING_DEPS) */
-    if (!task && fg && !fg->is_orphaned && fg->member_count > 0)
+    if (is_plain && !task && fg && !fg->is_orphaned && fg->member_count > 0)
     {
         struct edc_task *m;
         LL_FOREACH2(fg->members, m, group_next)
@@ -302,9 +303,13 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
         }
     }
 
-    /* 没有可 attach 的 task → 创建新 task */
+    /* 斜杠/@ 或没有可 attach 的等待任务 → 命令处理器 (shell 会新建 task) */
     if (!task)
     {
+        if (sched->handle_command && sched->handle_command(sched, msg->from, input))
+            return;
+
+        /* 无命令处理器 (或未处理) → 兜底新建 task */
         task = edc_scheduler_create_task(sched, input->content, input->type);
         edc_session_set_active_task(sched->session, task);
 

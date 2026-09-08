@@ -115,6 +115,15 @@ extern struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_
                                       size_t fork_point_msg_count, edc_channel_type channel_type);
 extern void edc_task_free(struct edc_task *task);
 
+/* ── fork 快照 ────────────────────────────────────────────── */
+
+/** 深拷贝 task 的全部 turn 消息到一个合成快照 turn。
+ *  兼容两种态: 未 flush (消息在 turn->messages) 与已 flush (消息在 session->messages,
+ *  用 recorded msg_range 定位)。返回 NULL 表示 task 无消息; 调用方负责 edc_turn_free。
+ *  用于 fork 规则 2: 当 parent 的 turns 已被 L1 折叠时, 捞回 parent 自己的 turns 全文。 */
+extern struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, struct edc_session *session,
+                                                const char *snapshot_task_id);
+
 /* ── 状态机 ────────────────────────────────────────────────── */
 
 extern bool edc_task_set_state(struct edc_task *task, edc_task_state new_state);
