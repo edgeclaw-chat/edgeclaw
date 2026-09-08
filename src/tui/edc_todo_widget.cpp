@@ -111,11 +111,11 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
     if (content_box_.x_min != 0 || content_box_.x_max != 0 || content_box_.y_min != 0 || content_box_.y_max != 0)
         row_width = content_box_.x_max - content_box_.x_min + 1;
 
-    // Fixed cells per row: 2 indent + 1 bullet + 1 gap after the bullet.
-    // Content wraps across several lines at the full remaining width; every
-    // continuation line is indented by the same 4 cells so text aligns under
-    // the first line's content column.
-    constexpr int kFixedCells = 4;
+    // Fixed cells per row: 2 indent + a 3-cell bracket marker ("[ ]", "[●]"
+    // or "[✓]") + 1 gap after the marker. Content wraps across several lines
+    // at the full remaining width; every continuation line is indented by the
+    // same kFixedCells so text aligns under the first line's content column.
+    constexpr int kFixedCells = 6;
     const std::string cont_prefix(kFixedCells, ' ');
 
     if (!collapsed_)
@@ -126,15 +126,21 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             const bool done = item.status == "completed";
             const bool doing = item.status == "in_progress";
 
-            // Leading bullet, one flat glyph for every state — never a
-            // checkbox, never a per-state glyph swap. Scheme A keeps the dot
-            // quiet: it is blue only on the in_progress row (matching its
-            // text) and neutral dim gray everywhere else, so the bullet never
-            // adds a second hue of its own to a row. Completed and pending
-            // dots look alike on purpose; their rows are told apart by the
-            // strikethrough on completed text.
-            Element marker = doing ? (text("  ● ") | color(kBlue))
-                                   : (text("  ● ") | color(kGray) | dim);
+            // Leading per-state marker inside a bracket box: "[ ]" for a
+            // pending item, "[●]" for the in_progress one, "[✓]" once the
+            // item is completed. Scheme A's palette still governs the glyph
+            // colors: the box is blue only on the in_progress row (matching
+            // its text) and neutral dim gray for pending/completed, so a
+            // marker never adds a second hue of its own to a row; completed
+            // rows are additionally told apart by the strikethrough on their
+            // text.
+            Element marker;
+            if (doing)
+                marker = text("  [●] ") | color(kBlue);
+            else if (done)
+                marker = text("  [✓] ") | color(kGray) | dim;
+            else
+                marker = text("  [ ] ") | color(kGray) | dim;
 
             // Content wraps to the whole row width minus the marker column;
             // single-line ellipsis truncation is only a last resort for a
