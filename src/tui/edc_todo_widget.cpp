@@ -111,7 +111,7 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
     if (content_box_.x_min != 0 || content_box_.x_max != 0 || content_box_.y_min != 0 || content_box_.y_max != 0)
         row_width = content_box_.x_max - content_box_.x_min + 1;
 
-    // Fixed cells per row: 2 indent + a 3-cell bracket marker ("[ ]", "[●]"
+    // Fixed cells per row: 2 indent + a 3-cell bracket marker ("[ ]", "[•]"
     // or "[✓]") + 1 gap after the marker. Content wraps across several lines
     // at the full remaining width; every continuation line is indented by the
     // same kFixedCells so text aligns under the first line's content column.
@@ -127,7 +127,7 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             const bool doing = item.status == "in_progress";
 
             // Leading per-state marker inside a bracket box: "[ ]" for a
-            // pending item, "[●]" for the in_progress one, "[✓]" once the
+            // pending item, "[•]" for the in_progress one, "[✓]" once the
             // item is completed. Scheme A's palette still governs the glyph
             // colors: the box is blue only on the in_progress row (matching
             // its text) and neutral dim gray for pending/completed, so a
@@ -136,7 +136,7 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             // text.
             Element marker;
             if (doing)
-                marker = text("  [●] ") | color(kBlue);
+                marker = text("  [•] ") | color(kBlue);
             else if (done)
                 marker = text("  [✓] ") | color(kGray) | dim;
             else

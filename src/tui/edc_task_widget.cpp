@@ -232,7 +232,7 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
                 // computed against the real row width.
                 std::string left = "  ";
                 left += t.is_active ? "*" : " ";
-                left += t.is_leader ? "●" : " ";
+                left += t.is_leader ? "•" : " ";
                 left += " " + t.task_id;
 
                 const int state_cells = StringWidth(t.state);
