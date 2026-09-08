@@ -138,9 +138,7 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
     if (task->group && cJSON_GetArraySize(task->group->history) > 0)
     {
         size_t total = cJSON_GetArraySize(task->group->history);
-
-        /* fork 上下文切片终点: 只取 fork 点之前的 group history */
-        size_t end = task->forked_from && task->fork_point_msg_count < total ? task->fork_point_msg_count : total;
+        size_t end = total;
 
         /* 未折叠历史起点: 跳过 system prompt (history[0]) + 已折叠消息 */
         size_t hist_begin = 1 + task->group->fold_cursor;

@@ -622,8 +622,43 @@ static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *
     if (prompt_name)
         edc_task_set_prompt(child, prompt_name, NULL);
 
+    /* 新语义: 子任务另起独立 group (成为 leader), 继承父 group 的前文快照,
+     * 而非塞进父 group。快照作为子任务的一条合成初始 turn 存在,
+     * 随子任务一起持久化/折叠, 父 group 不受影响。 */
+    struct edc_task_group *child_group = edc_scheduler_create_group(agent->scheduler, child);
+
     if (parent->group)
-        edc_task_group_add_task(parent->group, child);
+    {
+        /* 继承父 group 的 memory 摘要 */
+        if (parent->group->memory)
+            child_group->memory = sdsdup(parent->group->memory);
+
+        /* system prompt 先占 history[0], 避免快照第一条被 cb_send_llm 误当 system */
+        cJSON *sys = cJSON_GetArrayItem(parent->group->history, 0);
+        if (sys)
+            cJSON_AddItemToArray(child_group->history, cJSON_Duplicate(sys, 1));
+
+        /* 合成 turn: 深拷贝父 group 未折叠消息 [1+fold_cursor .. fork_point) */
+        size_t snap_begin = 1 + parent->group->fold_cursor;
+        struct edc_turn *snap = edc_turn_new();
+        snap->task_id = strdup(child->task_id);
+        for (size_t i = snap_begin; i < fork_point; i++)
+        {
+            cJSON *src = cJSON_GetArrayItem(parent->group->history, i);
+            if (!src)
+                break;
+            cJSON *msg = cJSON_Duplicate(src, 1);
+            edc_queue_push(&snap->messages, msg);             /* turn 拥有它 */
+            cJSON_AddItemReferenceToArray(child_group->history, msg); /* history 引用, 不重复 */
+        }
+        if (edc_queue_length(&snap->messages) > 0)
+            edc_task_add_turn(child, snap);
+        else
+            edc_turn_free(snap);
+    }
+
+    /* 前台切到新 group, 否则 WAITING_INPUT 的子任务收不到输入 */
+    edc_scheduler_set_foreground(agent->scheduler, child_group);
 
     sds reply = sdscatprintf(sdsempty(), "[fork] created %s from %s (group %s, fork_point=%zu)%s", child->task_id,
                              parent->task_id, child->group_id, fork_point, prompt_name ? " prompt=" : "");

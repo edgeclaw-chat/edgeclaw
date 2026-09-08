@@ -80,7 +80,7 @@ struct edc_task
 
     /* ── Fork 上下文继承 ── */
     struct edc_task *forked_from; /* 父 task (NULL = 非 fork) */
-    size_t fork_point_msg_count;  /* fork 时刻 session 消息总数 (切片点) */
+    size_t fork_point_msg_count;  /* fork 时刻父 group 消息总数 (仅元数据, 上下文切片由合成 turn 快照负责) */
 
     /* ── Subagent / Prompt 绑定 ── */
     sds prompt;      /* 自定义 system prompt (NULL = 用默认) */

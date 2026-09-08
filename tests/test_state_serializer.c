@@ -1252,6 +1252,112 @@ static void test_orphaned_group(void)
  *  main
  *  ══════════════════════════════════════════════════════════════ */
 
+/* ══════════════════════════════════════════════════════════════
+ *  Test: fork → child gets independent group + snapshot turn
+ *  (mirrors the /task fork command logic)
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_fork_new_group_snapshot(void)
+{
+    TEST("fork: child gets independent group with snapshot turn");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-forkgrp", "ForkGrp");
+    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+
+    /* parent group with history: [system, user1, assistant1] */
+    struct edc_task *parent = edc_task_new("task-parent", "sess-forkgrp", "task-parent",
+                                            "parent task", edc_channel_cli);
+    edc_task_set_state(parent, TASK_WAITING_INPUT);
+    edc_task_set_state(parent, TASK_LLM_PROCESSING);
+    edc_task_set_state(parent, TASK_COMPLETED);
+    struct edc_task_group *pg = edc_scheduler_create_group(sched, parent);
+
+    cJSON *sys = cJSON_CreateObject();
+    cJSON_AddStringToObject(sys, "role", "system");
+    cJSON_AddStringToObject(sys, "content", "You are EdgeClaw.");
+    cJSON_AddItemToArray(pg->history, sys);
+
+    struct edc_turn *pt = edc_turn_new();
+    pt->task_id = strdup("task-parent");
+    turn_add_msg(pt, "user", "hello");
+    turn_add_msg(pt, "assistant", "hi there");
+    edc_task_add_turn(parent, pt);
+    for (size_t m = 0; m < edc_queue_length(&pt->messages); m++)
+        cJSON_AddItemReferenceToArray(pg->history, pt->messages.data[m]); /* STOP sync */
+
+    /* ── fork (mirror edc_commands_handle_task_fork) ── */
+    size_t fork_point = (size_t)cJSON_GetArraySize(pg->history);
+    struct edc_task *child = edc_task_fork(parent, "task-child", "child", fork_point, edc_channel_cli);
+    struct edc_task_group *cg = edc_scheduler_create_group(sched, child);
+
+    if (pg->memory)
+        cg->memory = sdsdup(pg->memory);
+    cJSON *psys = cJSON_GetArrayItem(pg->history, 0);
+    if (psys)
+        cJSON_AddItemToArray(cg->history, cJSON_Duplicate(psys, 1));
+
+    size_t snap_begin = 1 + pg->fold_cursor;
+    struct edc_turn *snap = edc_turn_new();
+    snap->task_id = strdup(child->task_id);
+    for (size_t i = snap_begin; i < fork_point; i++)
+    {
+        cJSON *src = cJSON_GetArrayItem(pg->history, i);
+        if (!src)
+            break;
+        cJSON *msg = cJSON_Duplicate(src, 1);
+        edc_queue_push(&snap->messages, msg);
+        cJSON_AddItemReferenceToArray(cg->history, msg);
+    }
+    if (edc_queue_length(&snap->messages) > 0)
+        edc_task_add_turn(child, snap);
+    else
+        edc_turn_free(snap);
+
+    /* ── runtime invariants ── */
+    CHECK(child->group == cg, "child in own group");
+    CHECK(child->group != pg, "child not in parent group");
+    CHECK(child->is_group_leader == 1, "child is group leader");
+    CHECK_STREQ(child->group_id, "task-child", "child group_id is its own id");
+    CHECK(cJSON_GetArraySize(cg->history) == 3, "child group history = system + 2 snapshot msgs");
+    CHECK(cJSON_GetArraySize(pg->history) == 3, "parent group history unchanged");
+    cJSON *csys = cJSON_GetArrayItem(cg->history, 0);
+    CHECK(csys && cJSON_GetObjectItem(csys, "role") &&
+              strcmp(cJSON_GetObjectItem(csys, "role")->valuestring, "system") == 0,
+          "child history[0] is system");
+    CHECK(edc_queue_length(&child->turns) == 1, "child has 1 synthetic turn");
+    struct edc_turn *c0 = child->turns.data[child->turns.head];
+    CHECK(edc_queue_length(&c0->messages) == 2, "snapshot turn has 2 messages");
+
+    /* ── serialize + deserialize ── */
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize ok");
+    struct edc_session *session2 = edc_session_new(cfg, "sess-forkgrp", "ForkGrp");
+    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    CHECK(edc_state_deserialize(json, session2, sched2), "deserialize ok");
+
+    CHECK(count_groups(session2) == 2, "2 groups after roundtrip");
+    struct edc_task *rp = find_task(session2, "task-parent");
+    struct edc_task *rc = find_task(session2, "task-child");
+    CHECK(rp != NULL && rc != NULL, "parent and child restored");
+    if (rp && rc)
+    {
+        CHECK(rc->group != NULL && rp->group != NULL, "both have groups");
+        CHECK(rc->group != rp->group, "child group distinct from parent group");
+        CHECK_STREQ(rc->group->group_id, "task-child", "child restored in own group");
+        CHECK(rc->forked_from == rp, "forked_from preserved");
+        CHECK(rc->group->history != NULL, "child group history rebuilt");
+        CHECK(cJSON_GetArraySize(rc->group->history) == 3, "child group history rebuilt to 3 msgs");
+    }
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(session2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     log_info("=== Phase 1: edc_state_serializer module tests ===");
@@ -1260,6 +1366,7 @@ int main(void)
     test_empty_session();
     test_single_task();
     test_fork_chain();
+    test_fork_new_group_snapshot();
     test_dependency_graph();
     test_complex_topology();
     test_state_degradation();
