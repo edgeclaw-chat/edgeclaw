@@ -13,15 +13,16 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
     cJSON *items = cJSON_GetObjectItem(args, "items");
     int total = items ? cJSON_GetArraySize(items) : 0;
 
-    /* 无论清单是否为空，回显都附带原始 args JSON ({"items":[...]})：对话区照常按
-     * Markdown checklist 显示，TUI 右侧 TodoWidget 则直接解析 payload，不再依赖
-     * 从 markdown 正文反推状态。 */
+    /* 无论清单是否为空，回显都附带原始 args JSON ({"items":[...]})。TUI 对
+     * update_todolist 消息只消费 payload 更新右侧 TodoWidget，不再渲染进对话
+     * 消息列表；content 仍作为 tool result 回给 LLM，CLI 等无侧栏渲染端也
+     * 照常显示。 */
 
     if (!total)
     {
-        /* 空清单同样回显一次 markdown：对话区与右侧 TodoWidget 都显示为已清空。
-         * 这里只发展示消息，callback 结果仍是 "No todos"，LLM 看到的 tool result
-         * 与原来一致。 */
+        /* 空清单同样回显一次 ({"items":[]} payload)：TUI 借此把 TodoWidget
+         * 清成 0/0。这里只发展示消息，callback 结果仍是 "No todos"，LLM
+         * 看到的 tool result 与原来一致。 */
         char *payload = cJSON_PrintUnformatted(args);
         sds empty = sdsnew("# TODO\n\n0/0 completed");
         edc_toolbox_emit_tool_message_md_payload(ctx, "update_todolist", empty, payload);

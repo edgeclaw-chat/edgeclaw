@@ -19,8 +19,15 @@ namespace edc
 // Like the task tree it forms an independent, collapsible sidebar section:
 // the "▾/▸ Todos" header row is clickable and toggles the item list while the
 // header (with its progress summary) always stays visible. The section is
-// laid out in natural order directly below the task section — the enclosing
-// pane does not pin it to the bottom edge.
+// always present in the pane: when no list has arrived yet — or the tool
+// reports an empty one — the header renders a "0/0" summary and an expanded
+// section shows a dim "(empty)" row, so the sidebar keeps a stable layout
+// from startup instead of the block appearing/disappearing.
+//
+// Item text is word-wrapped over several lines (CJK-safe, edc_text_util) so
+// long descriptions use the full sidebar width instead of one truncated row;
+// the single in_progress item may render an "↳ <activeForm>" sub-line under
+// its own text so the running action never squeezes the item content.
 class TodoWidget : public ::ftxui::ComponentBase
 {
   public:
@@ -33,16 +40,9 @@ class TodoWidget : public ::ftxui::ComponentBase
 
     TodoWidget();
 
-    // Replace the whole displayed list. A call with no items clears the
-    // widget (the agent reported an empty list).
+    // Replace the whole displayed list. A call with no items clears the rows
+    // (and resets the summary to 0/0) but the section header stays visible.
     void SetItems(const std::vector<Item> &items);
-
-    // True while a non-empty list is displayed; the enclosing pane only
-    // reserves space for the widget while it has something to show.
-    bool HasItems() const
-    {
-        return !items_.empty();
-    }
 
     ::ftxui::Element OnRender() override;
     bool OnEvent(::ftxui::Event event) override;
@@ -65,6 +65,11 @@ class TodoWidget : public ::ftxui::ComponentBase
     // Cap the rows drawn so a huge list cannot swallow the task tree above;
     // leftovers are summarized with a "+N more" line.
     static constexpr size_t kMaxVisibleRows = 10;
+
+    // Cap the wrapped lines drawn for one item's content; an over-long
+    // description is clipped with a trailing "…" so a single item cannot
+    // dominate the sidebar.
+    static constexpr size_t kMaxContentLines = 4;
 
     // Content box of this widget's inner vbox (rows), written by reflect()
     // during the previous render pass. OnRender reads it to truncate item

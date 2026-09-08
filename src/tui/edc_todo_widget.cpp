@@ -54,7 +54,7 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
     const Color kGreen = Color::RGB(64, 168, 96);
     const Color kGray = Color::RGB(147, 147, 147);
     const Color kDimLine = Color::RGB(60, 60, 60);
-    const Color kTodoBg = Color::RGB(27, 27, 27);
+    const Color kTodoBg = Color::RGB(30, 30, 30); // must match TaskWidget's pane background
 
     const size_t total = items_.size();
     const size_t shown = std::min(total, kMaxVisibleRows);
@@ -65,20 +65,29 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
         // summary always reflects the whole list. The header row is full
         // width so a click anywhere on it toggles the section (header_box_
         // is filled by reflect below; click targets are consumed in OnEvent).
+        // "All done" green is reserved for a non-empty list that completed:
+        // an empty list (0/0) stays neutral gray, not triumphant green.
         const std::string summary = std::to_string(completed_) + "/" + std::to_string(total);
+        const bool all_done = total > 0 && completed_ == static_cast<int>(total);
         lines.push_back(hbox({
             text((collapsed_ ? "▸ " : "▾ ") + std::string(" Todos ")) | bold | color(kBlue),
             filler(),
-            text(summary) | color(completed_ == static_cast<int>(total) ? kGreen : kGray) | bold,
+            text(summary) | color(all_done ? kGreen : kGray) | bold,
         }) | reflect(header_box_));
     }
 
     // A collapsed section keeps only its header row; the separator and the
     // item rows below are skipped entirely (the enclosing pane reclaims the
-    // space for whatever sits underneath in the sidebar column).
+    // space for whatever sits underneath in the sidebar column). An expanded
+    // but empty section — before the first update_todolist emission or after
+    // the tool cleared the list — still draws its separator plus a dim
+    // "(empty)" marker, so the fold keeps a visible body and the sidebar
+    // layout stays stable instead of the section collapsing to a lone header.
     if (!collapsed_)
     {
         lines.push_back(separator() | color(kDimLine));
+        if (items_.empty())
+            lines.push_back(text("  (empty)") | dim | color(kGray));
     }
 
     // Width available for an item row. reflect() below sits on the vbox
@@ -89,7 +98,11 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
         row_width = content_box_.x_max - content_box_.x_min + 1;
 
     // Fixed cells per row: 2 indent + 3 marker + 1 gap after the marker.
+    // Content wraps across several lines at the full remaining width; every
+    // continuation line is indented by the same 6 cells so text aligns under
+    // the first line's content column.
     constexpr int kFixedCells = 6;
+    const std::string cont_prefix(kFixedCells, ' ');
 
     if (!collapsed_)
     {
@@ -105,41 +118,47 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
                 marker |= bold;
             marker |= color(done ? kGreen : (doing ? kBlue : kGray));
 
-            // The in_progress item may carry a dim " <- <activeForm>" tail.
-            std::string active_trunc;
-            if (doing && !item.active_form.empty())
-                active_trunc = TruncateToWidth(item.active_form, 24);
-
-            const int active_cells = active_trunc.empty() ? 0 : 4 + StringWidth(active_trunc);
-            const int budget = row_width - kFixedCells - active_cells;
-            const std::string content = (budget > 4) ? TruncateToWidth(item.content, budget) : std::string();
-
-            Elements row;
-            row.push_back(std::move(marker));
-
-            if (!content.empty())
+            // Content wraps to the whole row width minus the marker column;
+            // single-line ellipsis truncation is only a last resort for a
+            // description longer than kMaxContentLines wrapped lines.
+            const int budget = row_width - kFixedCells;
+            std::vector<std::string> wrapped = WrapToWidth(item.content, budget);
+            if (wrapped.empty())
+                wrapped.push_back(std::string());
+            if (wrapped.size() > kMaxContentLines)
             {
-                Element content_el = text(content);
-                if (done)
-                {
-                    content_el |= dim;
-                    content_el |= strikethrough;
-                    content_el |= color(kGreen);
-                }
-                else if (doing)
-                {
-                    content_el |= color(Color::RGB(229, 229, 229));
-                }
-                else
-                {
-                    content_el |= dim;
-                }
-                row.push_back(std::move(content_el));
+                wrapped.resize(kMaxContentLines);
+                std::string &last = wrapped.back();
+                if (budget - StringWidth(last) >= 1)
+                    last += "…";
             }
-            if (!active_trunc.empty())
-                row.push_back(text(" <- " + active_trunc) | dim | color(kBlue));
 
-            lines.push_back(hbox(std::move(row)));
+            // Content styling depends on the item state; every wrapped line
+            // of the item gets the same treatment.
+            auto style_content = [&](Element e) -> Element {
+                if (done)
+                    return e | dim | strikethrough | color(kGreen);
+                if (doing)
+                    return e | color(Color::RGB(229, 229, 229));
+                return e | dim;
+            };
+
+            Elements item_lines;
+            item_lines.push_back(hbox({std::move(marker), style_content(text(wrapped[0]))}));
+            for (size_t ln = 1; ln < wrapped.size(); ln++)
+                item_lines.push_back(hbox({text(cont_prefix), style_content(text(wrapped[ln]))}));
+
+            // The single in_progress item may additionally report what it is
+            // doing right now. It gets its own indented sub-line ("↳ <form>")
+            // instead of a " <- <activeForm>" tail squeezed next to the
+            // content, so it never steals width from the item text.
+            if (doing && !item.active_form.empty())
+            {
+                const std::string sub = TruncateToWidth("↳ " + item.active_form, budget);
+                item_lines.push_back(hbox({text(cont_prefix), text(sub) | dim | color(kBlue)}));
+            }
+
+            lines.push_back(vbox(std::move(item_lines)));
         }
 
         if (total > shown)

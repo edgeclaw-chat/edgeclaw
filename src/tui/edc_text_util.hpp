@@ -2,6 +2,7 @@
 
 #include <ftxui/screen/string.hpp>
 #include <string>
+#include <vector>
 
 namespace edc
 {
@@ -95,6 +96,138 @@ inline std::string TruncateToWidth(const std::string &s, int max_cells)
     }
     out += "…";
     return out;
+}
+
+// Byte length of the UTF-8 sequence starting at the first byte |c|.
+inline size_t Utf8SeqLen(unsigned char c)
+{
+    if (c >= 0xF0)
+        return 4;
+    if (c >= 0xE0)
+        return 3;
+    if (c >= 0xC0)
+        return 2;
+    return 1;
+}
+
+// Greedy word-wrap that is safe for CJK text. Words are split on ASCII
+// whitespace, but a word longer than a whole line (typically an unbroken CJK
+// run, a long path or a URL) is hard-broken between code points, so every
+// returned line occupies at most |max_cells| terminal cells. Whitespace runs
+// collapse to a single space between words; leading/trailing whitespace is
+// dropped. Empty input, or a non-positive budget, yields no lines — callers
+// decide what to draw when nothing fits.
+inline std::vector<std::string> WrapToWidth(const std::string &s, int max_cells)
+{
+    std::vector<std::string> lines;
+    if (max_cells <= 0 || s.empty())
+        return lines;
+
+    // 1. Split the text on whitespace into words (whole UTF-8 sequences).
+    std::vector<std::string> words;
+    std::string word;
+    size_t i = 0;
+    while (i < s.size())
+    {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v')
+        {
+            if (!word.empty())
+            {
+                words.push_back(std::move(word));
+                word.clear();
+            }
+            ++i;
+            continue;
+        }
+        size_t len = Utf8SeqLen(c);
+        if (i + len > s.size())
+            len = s.size() - i; // truncated tail: take what remains
+        word.append(s, i, len);
+        i += len;
+    }
+    if (!word.empty())
+        words.push_back(std::move(word));
+    if (words.empty())
+        return lines;
+
+    // 2. Pre-split words wider than a line into segments that each fit.
+    std::vector<std::string> segs;
+    segs.reserve(words.size());
+    for (const std::string &w : words)
+    {
+        if (StringWidth(w) <= max_cells)
+        {
+            segs.push_back(w);
+            continue;
+        }
+        std::string chunk;
+        int used = 0;
+        size_t k = 0;
+        while (k < w.size())
+        {
+            const unsigned char c = static_cast<unsigned char>(w[k]);
+            size_t len = Utf8SeqLen(c);
+            if (k + len > w.size())
+                len = w.size() - k;
+            const std::string piece = w.substr(k, len);
+            const int cw = StringWidth(piece);
+            if (cw > max_cells)
+            {
+                // A single glyph wider than the whole line (degenerate very
+                // narrow budgets): emit it alone rather than loop forever.
+                if (!chunk.empty())
+                {
+                    segs.push_back(std::move(chunk));
+                    chunk.clear();
+                    used = 0;
+                }
+                segs.push_back(piece);
+                k += len;
+                continue;
+            }
+            if (used + cw > max_cells)
+            {
+                segs.push_back(std::move(chunk));
+                chunk.clear();
+                used = 0;
+            }
+            chunk.append(piece);
+            used += cw;
+            k += len;
+        }
+        if (!chunk.empty())
+            segs.push_back(std::move(chunk));
+    }
+
+    // 3. Greedy fill: join segments with single spaces, flush when full.
+    std::string line;
+    int lw = 0;
+    for (const std::string &seg : segs)
+    {
+        const int sw = StringWidth(seg);
+        if (lw == 0)
+        {
+            line = seg;
+            lw = sw;
+            continue;
+        }
+        if (lw + 1 + sw <= max_cells)
+        {
+            line += ' ';
+            line += seg;
+            lw += 1 + sw;
+        }
+        else
+        {
+            lines.push_back(std::move(line));
+            line = seg;
+            lw = sw;
+        }
+    }
+    if (!line.empty())
+        lines.push_back(std::move(line));
+    return lines;
 }
 
 } // namespace edc

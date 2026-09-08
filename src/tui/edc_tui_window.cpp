@@ -31,8 +31,10 @@ static void DisableBracketedPaste()
 
 // update_todolist 工具的 TOOL 消息头（与 edc_tools_todo.c 注册名保持一致）。
 // 该工具每次调用都携带结构化 payload（原始 args JSON {"items":[...]}）与
-// Markdown checklist 回显；对话区渲染 checklist，右侧 TodoWidget 直接按
-// JSON 解析刷新状态（每次都整体替换）。
+// Markdown checklist 正文。TODO 状态只由右侧 TodoWidget 展示（直接解析
+// JSON，整体替换），这类消息不再渲染进对话消息列表——聊天区重复一条
+// checklist 纯属噪音；正文仍随消息传递，供无侧栏的渲染端（CLI）与
+// tool result（LLM）使用。
 constexpr char kTodoToolHeader[] = "update_todolist";
 
 // The animated "working" row must reflect the scheduler's process state, not
@@ -99,16 +101,19 @@ TUIWindow::TUIWindow() : input_text_("")
 
     // Left pane = chat + input + footer (see RenderMain); right pane = two
     // collapsible sidebar sections stacked top to bottom: the task tree
-    // (TaskWidget) and, directly below it, the todo list (TodoWidget — hidden
-    // until the first update_todolist emission gives it items). Each section
-    // has its own clickable "▾/▸" header and takes only its natural content
-    // height; neither is pinned to the pane bottom, so a short task tree
-    // leaves the Todo section sitting right underneath it instead of gluing
-    // it to the bottom edge. ResizableSplit puts "main" on the right at a
-    // fixed, drag-adjustable width and lets "back" (the chat area) take the
-    // rest. The separator is a thin blank column so the sidebar stays
-    // borderless (distinguished only by its background color) while keeping a
-    // drag grab area to resize it.
+    // (TaskWidget) and, directly below it, the todo list (TodoWidget). Both
+    // sections are always present — an empty todo list still shows its
+    // collapsible "▾/▸ Todos 0/0" header so the sidebar layout is stable
+    // from startup instead of the Todo block popping in after the first
+    // update_todolist call. Each section has its own clickable "▾/▸" header
+    // and takes only its natural content height; neither is pinned to the
+    // pane bottom, so a short task tree leaves the Todo section sitting
+    // right underneath it instead of gluing it to the bottom edge.
+    // ResizableSplit puts "main" on the right at a fixed, drag-adjustable
+    // width and lets "back" (the chat area) take the rest. The separator is
+    // a thin blank column so the sidebar stays borderless (distinguished
+    // only by its background color) while keeping a drag grab area to resize
+    // it.
     auto main_area = ::ftxui::Renderer(container_, [this] { return RenderMain(); });
     // The container child exists so mouse/key events keep reaching the two
     // widgets (a childless Renderer would swallow them — TaskWidget needs
@@ -116,12 +121,11 @@ TUIWindow::TUIWindow() : input_text_("")
     // section header).
     auto right_column = ::ftxui::Container::Vertical({task_widget_, todo_widget_});
     auto right_pane = ::ftxui::Renderer(right_column, [this] {
-        ::ftxui::Elements col = {task_widget_->Render()};
-        if (todo_widget_->HasItems())
-        {
-            col.push_back(::ftxui::separator() | ::ftxui::color(::ftxui::Color::RGB(60, 60, 60)));
-            col.push_back(todo_widget_->Render());
-        }
+        // The two sections stack directly on each other with no divider
+        // between them: a separator line would visually slice the sidebar
+        // into fragments. The task tree simply ends where the Todo header
+        // row begins; the identical pane background keeps them one surface.
+        ::ftxui::Elements col = {task_widget_->Render(), todo_widget_->Render()};
         // The column itself flexes so the sidebar background covers the whole
         // pane, but its children stay at natural height and are laid out from
         // the top: leftover vertical space remains at the bottom instead of
@@ -395,31 +399,19 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
 
     auto add_message = [tui, kind, text, header, payload, render_pref, ts]() {
         std::shared_ptr<Message> widget;
+        // update_todolist 的 TOOL 消息是"仅侧栏"消息：payload 驱动右侧
+        // TodoWidget，不追加进对话消息列表（见下方 Kind::Tool 分支）。
+        bool skip_chat = false;
         switch (kind)
         {
         case Kind::User:
             widget = std::make_shared<UserMessage>(text, ts);
             break;
         case Kind::Tool:
-            // 完全由发送方声明的 render_pref 决定，渲染端零猜测：
-            //  - MARKDOWN: 内容按 Markdown 渲染；有 header 时保留
-            //    ToolMessage 的折叠 chrome，无 header 直接进 md 消息样式
-            //  - 默认/PLAIN（未声明即纯文本）: 一律纯文本 ToolMessage
-            if (render_pref == EDC_C_RENDER_MARKDOWN)
-            {
-                if (!header.empty())
-                    widget = std::make_shared<ToolMessage>(header, text, ts, /*markdown=*/true);
-                else
-                    widget = std::make_shared<Message>(text, ts);
-            }
-            else
-            {
-                widget = std::make_shared<ToolMessage>(header, text, ts);
-            }
-
             // update_todolist 的消息携带结构化 payload（原始 args JSON）：
-            // 右侧 TodoWidget 直接解析 JSON 渲染，不再从 markdown 正文反推。
-            // 与对话消息同一条消息、同一 UI 线程，状态整体替换。
+            // 右侧 TodoWidget 直接解析 JSON 整体替换渲染，且不进对话区
+            // （TODO 状态已有专属面板，聊天里再排一条 checklist 是噪音）。
+            // 空清单 ({"items":[]}) 同样走这条路，用于把侧栏清成 0/0。
             if (header == kTodoToolHeader && !payload.empty())
             {
                 ::edc_c_todo_payload *todo = edc_c_todo_payload_parse(payload.c_str());
@@ -438,6 +430,25 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
                     tui->todo_widget_->SetItems(items);
                     edc_c_todo_payload_free(todo);
                 }
+                skip_chat = true;
+                break;
+            }
+
+            // 其余工具消息仍渲染进对话区，完全由发送方声明的 render_pref
+            // 决定，渲染端零猜测：
+            //  - MARKDOWN: 内容按 Markdown 渲染；有 header 时保留
+            //    ToolMessage 的折叠 chrome，无 header 直接进 md 消息样式
+            //  - 默认/PLAIN（未声明即纯文本）: 一律纯文本 ToolMessage
+            if (render_pref == EDC_C_RENDER_MARKDOWN)
+            {
+                if (!header.empty())
+                    widget = std::make_shared<ToolMessage>(header, text, ts, /*markdown=*/true);
+                else
+                    widget = std::make_shared<Message>(text, ts);
+            }
+            else
+            {
+                widget = std::make_shared<ToolMessage>(header, text, ts);
             }
             break;
         case Kind::Thought:
@@ -459,12 +470,14 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
         default:
             return;
         }
-        tui->chat_widget_->AddMessage(widget);
+        if (!skip_chat && widget)
+            tui->chat_widget_->AddMessage(widget);
 
         // No explicit ScrollToBottom() here: if the reader is already at the
         // tail the view follows it automatically; if they scrolled up to read
         // history, arriving messages must not yank them back down.
-        // A message implies task state may have changed; refresh the sidebar.
+        // A message (or a sidebar-only todo refresh) implies task state may
+        // have changed; refresh the sidebar.
         tui->RequestTaskSnapshot();
 
         // The posted closure mutated the chat log but does not invalidate the
