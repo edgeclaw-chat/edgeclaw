@@ -201,6 +201,8 @@ static cJSON *task_to_json(struct edc_task *task, cJSON *messages_array)
     /* ── todolist ── */
     if (task->todolist)
         cJSON_AddItemToObject(tj, "todolist", cJSON_Duplicate(task->todolist, 1));
+    /* todo 同步节流计数 (距上次 update_todolist 的 LLM 请求数, 跨会话保持) */
+    cJSON_AddNumberToObject(tj, "todo_sync_gap", task->todo_sync_gap);
 
     /* ── turns (committed) ── */
     cJSON *turns_json = cJSON_CreateArray();
@@ -672,6 +674,8 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->redirect_append = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "todolist")) && cJSON_IsArray(v))
             task->todolist = cJSON_Duplicate(v, 1);
+        if ((v = cJSON_GetObjectItem(tj, "todo_sync_gap")) && cJSON_IsNumber(v))
+            task->todo_sync_gap = (int)cJSON_GetNumberValue(v);
 
         task_map_put(id_map, task_id, task);
     }

@@ -899,6 +899,9 @@ static void test_extra_fields(void)
     cJSON_AddStringToObject(item2, "activeForm", "writing...");
     cJSON_AddItemToArray(task->todolist, item2);
 
+    /* Set todo sync throttle gap (距上次 update_todolist 的 LLM 请求数) */
+    task->todo_sync_gap = 7;
+
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(session, group);
 
@@ -932,6 +935,9 @@ static void test_extra_fields(void)
                 "review code", "todolist item1 content");
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(ri1, "status")),
                 "completed", "todolist item1 status");
+
+    /* Verify todo sync throttle gap */
+    CHECK(rt->todo_sync_gap == 7, "todo_sync_gap preserved");
 
     cJSON_Delete(json);
     edc_session_free(session);

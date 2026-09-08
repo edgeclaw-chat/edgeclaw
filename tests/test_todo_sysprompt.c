@@ -1,22 +1,29 @@
-/* 验证: task 的 todo 状态以"运行时 reminder"的形式、在每次 LLM 请求的消息
+/* 验证: task 的 todo 状态以"运行时 reminder"的形式、在 LLM 请求的消息
  * 列表【最末尾】追加为 role=system 消息 (req->tail_system, llm actor 在
- * history + 当前 turn 之后发出) —— 而不是拼进头部 system prompt。这样每轮
- * 请求都是重新计算、绝对新鲜的提醒, 紧贴模型开始生成的位置, 长上下文里
- * 不易被遗忘。
+ * history + 当前 turn 之后发出) —— 而不是拼进头部 system prompt。队尾紧贴
+ * 模型开始生成的位置, 每次都是重新计算的当前状态, 长上下文里不易被遗忘。
+ *
+ * 节流 (2026-09-09): reminder 不每轮请求都发 —— 只有"隔了
+ * EDC_TODO_SYNC_REMIND_GAP (10) 条对话 (LLM 请求) 都没调用过
+ * update_todolist"时, 该次请求才 append 一次提醒 (并清零重计); update_todolist
+ * 工具成功调用同样清零。
  *
  * 链路 (生产代码, 本测试逐一验证可直接验证的环节):
  *   1. update_todolist 工具 (edc_tools_todo.c) 经真实 toolbox 执行后把校验
- *      通过的 items 挂到 ctx->task->todolist (整体替换) —— 本测试执行真实工具。
+ *      通过的 items 挂到 ctx->task->todolist (整体替换), 并重置 todo 同步
+ *      节流计数 (task->todo_sync_gap = 0) —— 本测试执行真实工具。
  *   2. 工具返回的 result == task->todolist 经 edc_tools_todo_render_reminder
  *      生成的 todo reminder 文本 (同一渲染函数, 两段式骨架 + <system-reminder>
  *      包裹, 不再是独立的 "# TODO" checklist markdown)。
- *   3. edc_agent_cb_send_llm 每次组装请求时调用
+ *   3. edc_task_llm_request_poke 的节流状态机 (每次 send_llm 前调用): 计
+ *      数累加, 达阈值返回 true 并清零 —— 直测。
+ *   4. edc_agent_cb_send_llm 仅在 poke 返回 true 时调用
  *      edc_context_make_todo_reminder (edc_context.c, 实现于生产代码, 在此
  *      直测): 有清单 → role=system 的 reminder 消息, content 与工具 result
  *      逐字节一致 (单一渲染源 edc_tools_todo_render_reminder), 不带 base,
  *      独立成消息; 无清单且 task 非空 → 短规划引导; task 为 NULL → NULL。
  *      副本语义: 不改共享 history[0] / task。
- *   4. 头部 edc_context_append_system_part 恢复纯净: 只挂 group memory +
+ *   5. 头部 edc_context_append_system_part 恢复纯净: 只挂 group memory +
  *      system prompt (引用/现拼), 不含任何 todo 内容。
  *
  * 本测试不依赖 secret/网络/真实 home: 不构造 agent, 直接驱动 toolbox 与 task。
@@ -130,7 +137,7 @@ static void test_attach_and_reminder(void)
 
     struct edc_config *conf = g_new0(struct edc_config, 1);
     struct edc_toolbox *tb = edc_toolbox_new(conf, NULL, NULL);
-    struct edc_task *task = edc_task_new("t-attach", "s", "g", "test", edc_channel_cli);
+    struct edc_task *task = edc_task_new("t-attach", "s", "g", "test", edc_channel_adapter);
     C(task->todolist == NULL, "fresh task has no todolist");
 
     cJSON *args = cJSON_Parse("{"
@@ -142,7 +149,7 @@ static void test_attach_and_reminder(void)
     C(args != NULL, "args json parses");
 
     struct edc_toolbox_call_ctx *ctx =
-        edc_toolbox_call_ctx_new(tb, edc_channel_cli, (void *)(intptr_t)1, task, NULL);
+        edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)1, task, NULL);
     edc_toolbox_exec(ctx, "update_todolist", args, capture_cb);
 
     C(g_err == NULL, "no validation error");
@@ -231,7 +238,7 @@ static void test_attach_and_reminder(void)
     T("empty update_todolist detaches list; reminder becomes planning guide");
     cJSON *empty_args = cJSON_Parse("{\"items\":[]}");
     struct edc_toolbox_call_ctx *ctx2 =
-        edc_toolbox_call_ctx_new(tb, edc_channel_cli, (void *)(intptr_t)2, task, NULL);
+        edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)2, task, NULL);
     edc_toolbox_exec(ctx2, "update_todolist", empty_args, capture_cb);
     C(g_err == NULL, "no error on empty list");
     C(g_result && strcmp(g_result, "No todos") == 0, "empty list tool result is 'No todos'");
@@ -259,7 +266,7 @@ static void test_attach_and_reminder(void)
 static void test_no_list_planning_guide(void)
 {
     T("task without list / empty list -> planning guide; NULL task -> NULL");
-    struct edc_task *task = edc_task_new("t-nolist", "s", "g", "no list", edc_channel_cli);
+    struct edc_task *task = edc_task_new("t-nolist", "s", "g", "no list", edc_channel_adapter);
     cJSON *r = edc_context_make_todo_reminder(task);
     C(r != NULL, "task without list still gets a tail message (planning guide)");
     const char *c = cJSON_GetStringValue(cJSON_GetObjectItem(r, "content"));
@@ -275,7 +282,7 @@ static void test_no_list_planning_guide(void)
     /* 空数组挂载 (防御路径): 等价于无清单 → 规划引导 */
     struct edc_config *conf = g_new0(struct edc_config, 1);
     struct edc_toolbox *tb = edc_toolbox_new(conf, NULL, NULL);
-    struct edc_task *t2 = edc_task_new("t-empty", "s", "g", "empty", edc_channel_cli);
+    struct edc_task *t2 = edc_task_new("t-empty", "s", "g", "empty", edc_channel_adapter);
     t2->todolist = cJSON_CreateArray();
     r = edc_context_make_todo_reminder(t2);
     C(r != NULL && is_planning_reminder(cJSON_GetStringValue(cJSON_GetObjectItem(r, "content"))),
@@ -293,11 +300,11 @@ static void test_validation_gate(void)
     T("failed validation does NOT attach the list");
     struct edc_config *conf = g_new0(struct edc_config, 1);
     struct edc_toolbox *tb = edc_toolbox_new(conf, NULL, NULL);
-    struct edc_task *task = edc_task_new("t-bad", "s", "g", "bad", edc_channel_cli);
+    struct edc_task *task = edc_task_new("t-bad", "s", "g", "bad", edc_channel_adapter);
 
     cJSON *bad = cJSON_Parse("{\"items\":[{\"content\":\"x\",\"status\":\"bogus\",\"activeForm\":\"\"}]}");
     struct edc_toolbox_call_ctx *ctx =
-        edc_toolbox_call_ctx_new(tb, edc_channel_cli, (void *)(intptr_t)3, task, NULL);
+        edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)3, task, NULL);
     edc_toolbox_exec(ctx, "update_todolist", bad, capture_cb);
     C(g_err != NULL, "invalid status produces error");
     if (g_err)
@@ -345,7 +352,7 @@ static void test_state_summary_all_done(void)
     T("state summary when every item completed");
     struct edc_config *conf = g_new0(struct edc_config, 1);
     struct edc_toolbox *tb = edc_toolbox_new(conf, NULL, NULL);
-    struct edc_task *task = edc_task_new("t-done", "s", "g", "all done", edc_channel_cli);
+    struct edc_task *task = edc_task_new("t-done", "s", "g", "all done", edc_channel_adapter);
 
     task->todolist = cJSON_Parse("["
                                  "{\"content\":\"pack\",\"status\":\"completed\",\"activeForm\":\"\"},"
@@ -379,12 +386,113 @@ static void test_state_summary_all_done(void)
  *   - group 无历史 + conf → 现拼纯净 prompt, *out_pristine 交还纯净文本
  *     (写回 group history 是调用方编排职责) */
 
+/* ── 5. todo 同步节流: reminder 不再每轮请求都发 (2026-09-09) ──
+ * 语义: 距上次 update_todolist 成功调用 (或上次提醒) 累计 EDC_TODO_SYNC_REMIND_GAP
+ * 次 LLM 请求 (每次组装请求 = 对话里模型生成一条消息/一次决策, 含工具链续发)
+ * 仍未同步 → 该次请求 append 一次 reminder 并清零重计; update_todolist 成功
+ * 调用同样清零。 */
+
+static void test_todo_sync_gap_throttle(void)
+{
+    T("llm_request_poke accumulates; fires once at gap then resets; note_todo_sync resets");
+
+    struct edc_task *task = edc_task_new("t-gap", "s", "g", "gap", edc_channel_adapter);
+    C(task->todo_sync_gap == 0, "fresh task gap == 0");
+
+    /* 前 gap-1 次请求 (对话) 未达阈值 → 从不提醒 */
+    bool any = false;
+    for (int i = 0; i < EDC_TODO_SYNC_REMIND_GAP - 1; i++)
+        if (edc_task_llm_request_poke(task))
+            any = true;
+    C(!any, "no reminder within the first gap-1 requests");
+    C(task->todo_sync_gap == EDC_TODO_SYNC_REMIND_GAP - 1, "gap accumulates to gap-1");
+
+    /* 第 gap 次请求仍没 update_todolist → 达阈值: 提醒一次, 清零重计 */
+    C(edc_task_llm_request_poke(task), "reminder fires on the gap-th request");
+    C(task->todo_sync_gap == 0, "gap reset right after the reminder fires");
+
+    /* 提醒后不会紧接着每轮都提醒 */
+    C(!edc_task_llm_request_poke(task), "no immediate re-reminder next request");
+    C(task->todo_sync_gap == 1, "counting restarts from 1 after reminder");
+
+    /* update_todolist 成功调用清零 (工具清零在 test_tools_todo_resets_gap) */
+    task->todo_sync_gap = 6;
+    edc_task_note_todo_sync(task);
+    C(task->todo_sync_gap == 0, "note_todo_sync resets gap");
+
+    /* 清零后再隔整整一个 gap 又会提醒一次 */
+    for (int i = 0; i < EDC_TODO_SYNC_REMIND_GAP - 1; i++)
+        edc_task_llm_request_poke(task);
+    C(task->todo_sync_gap == EDC_TODO_SYNC_REMIND_GAP - 1, "counting again after reset");
+    C(edc_task_llm_request_poke(task), "second reminder fires after another full gap");
+
+    /* NULL 安全 */
+    C(!edc_task_llm_request_poke(NULL), "poke(NULL) is safely false");
+    edc_task_note_todo_sync(NULL); /* must not crash */
+
+    edc_task_free(task);
+}
+
+static void test_tools_todo_resets_gap(void)
+{
+    T("update_todolist tool success (set & clear) resets gap; validation failure keeps it");
+
+    struct edc_config *conf = g_new0(struct edc_config, 1);
+    struct edc_toolbox *tb = edc_toolbox_new(conf, NULL, NULL);
+    struct edc_task *task = edc_task_new("t-reset", "s", "g", "reset", edc_channel_adapter);
+
+    /* 模拟已隔了 7 次请求没同步 */
+    task->todo_sync_gap = 7;
+
+    cJSON *args =
+        cJSON_Parse("{\"items\":[{\"content\":\"a\",\"status\":\"pending\",\"activeForm\":\"\"}]}");
+    struct edc_toolbox_call_ctx *ctx =
+        edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)1, task, NULL);
+    edc_toolbox_exec(ctx, "update_todolist", args, capture_cb);
+    C(g_err == NULL, "no validation error");
+    C(task->todolist != NULL && cJSON_GetArraySize(task->todolist) == 1, "list attached");
+    C(task->todo_sync_gap == 0, "successful set resets gap (a sync just happened)");
+    reset_capture();
+    edc_toolbox_call_ctx_free(ctx);
+    cJSON_Delete(args);
+
+    /* 清空清单同样是一次成功的 update_todolist 调用 → 清零 */
+    task->todo_sync_gap = 5;
+    cJSON *empty_args = cJSON_Parse("{\"items\":[]}");
+    struct edc_toolbox_call_ctx *ctx2 =
+        edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)2, task, NULL);
+    edc_toolbox_exec(ctx2, "update_todolist", empty_args, capture_cb);
+    C(g_err == NULL, "no error on clear");
+    C(task->todolist == NULL, "list detached on clear");
+    C(task->todo_sync_gap == 0, "successful clear also resets gap");
+    reset_capture();
+    edc_toolbox_call_ctx_free(ctx2);
+    cJSON_Delete(empty_args);
+
+    /* 校验失败 (status 非法) → 不构成同步, 不清零 */
+    task->todo_sync_gap = 8;
+    cJSON *bad_args =
+        cJSON_Parse("{\"items\":[{\"content\":\"b\",\"status\":\"bogus\",\"activeForm\":\"\"}]}");
+    struct edc_toolbox_call_ctx *ctx3 =
+        edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)3, task, NULL);
+    edc_toolbox_exec(ctx3, "update_todolist", bad_args, capture_cb);
+    C(g_err != NULL, "invalid status rejected");
+    C(task->todo_sync_gap == 8, "failed validation does NOT reset gap");
+    reset_capture();
+    edc_toolbox_call_ctx_free(ctx3);
+    cJSON_Delete(bad_args);
+
+    edc_task_free(task);
+    edc_toolbox_free(tb);
+    free(conf);
+}
+
 static void test_append_system_part(void)
 {
     T("append_system_part: pure head (ref/copy), group memory order, fallback pristine");
 
     /* ── history 分支: 引用 history[0], 头部无规划引导 ── */
-    struct edc_task *t1 = edc_task_new("ap-1", "s", "g", "no list", edc_channel_cli);
+    struct edc_task *t1 = edc_task_new("ap-1", "s", "g", "no list", edc_channel_adapter);
     struct edc_task_group *g1 = edc_task_group_new(t1);
     cJSON *sys0 = cJSON_CreateObject();
     cJSON_AddStringToObject(sys0, "role", "system");
@@ -480,7 +588,7 @@ static void test_append_system_part(void)
      *    写回 group history 属调用方; todo 仍只在队尾 reminder ── */
     struct edc_config *conf = g_new0(struct edc_config, 1);
     conf->workspace = sdsnew("/tmp/test-session");
-    struct edc_task *t2 = edc_task_new("ap-2", "s", "g", "no list", edc_channel_cli);
+    struct edc_task *t2 = edc_task_new("ap-2", "s", "g", "no list", edc_channel_adapter);
     struct edc_task_group *g2 = edc_task_group_new(t2);
 
     msgs = cJSON_CreateArray();
@@ -569,6 +677,8 @@ int main(void)
     test_validation_gate();
     test_render_boundaries();
     test_state_summary_all_done();
+    test_todo_sync_gap_throttle();
+    test_tools_todo_resets_gap();
     test_append_system_part();
 
     printf("\n%d passed, %d failed\n", passed, failed);

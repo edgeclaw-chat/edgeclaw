@@ -12,10 +12,12 @@ struct edc_task_group;
  * 返回新 sds, 调用方负责 sdsfree。 */
 extern sds edc_context_build_system_prompt(struct edc_config *conf);
 
-/* 运行时 todo reminder (role=system 的新消息, 绝对新鲜):
- * 每次 LLM 请求组装时由调用方调用本函数重新计算, 并把返回的消息塞到该请求
- * 消息列表的【最末尾】(新的队尾, 见 edc_llm_actor_req.tail_system), 避免
- * 头部注入的 todo 状态在长上下文里被模型遗忘。content 即两段式骨架文本
+/* 运行时 todo reminder (role=system 的新消息, 绝对新鲜)。调用方
+ * (edc_agent_cb_send_llm) 按节流规则决定是否调用本函数: 只在"隔了
+ * EDC_TODO_SYNC_REMIND_GAP 条对话 (LLM 请求) 都没调用过 update_todolist"时
+ * 调用 (edc_task_llm_request_poke 达阈值), 并把返回的消息塞到该请求消息列表
+ * 的【最末尾】(新的队尾, 见 edc_llm_actor_req.tail_system), 避免头部注入的
+ * todo 状态在长上下文里被模型遗忘。content 即两段式骨架文本
  * (含 <system-reminder> 包裹, 由 edc_tools_todo_render_reminder 统一生成,
  * 与 update_todolist 工具返回的 result 逐字节一致——同一渲染源):
  *   ① ## 🚨 CURRENT TASK SYSTEM STATE: 状态段——当前清单全貌 (清单行);

@@ -151,6 +151,10 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
             cJSON_Delete(ctx->task->todolist);
             ctx->task->todolist = NULL;
         }
+        /* 一次成功的 update_todolist 调用 (含清空): 重置 todo 同步节流计数,
+         * 后续 LLM 请求重新从"隔了多少条对话"计起 */
+        if (ctx->task)
+            edc_task_note_todo_sync(ctx->task);
         callback(ctx, sdsnew("No todos"), NULL);
         return;
     }
@@ -192,17 +196,21 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
     sds lines = edc_tools_todo_render_reminder(items);
 
     /* 把这份 todo 清单挂到调用它的 task 上 (整体替换)。todo list 是 task
-     * 状态的一部分: task->todolist 已被 state_serializer 持久化；之后每次为
-     * 该 task 组装 LLM 请求时 (见 agent send_llm), agent 会把当前清单重新
-     * 计算成队尾 todo reminder (edc_context_make_todo_reminder) 注入请求 ——
-     * 与本次工具返回的文本同源 (edc_tools_todo_render_reminder), 让多轮工具
-     * 循环中的模型始终能看到与工具结果逐字节一致的当前清单, 而不依赖窗口内
-     * 残留的 update_todolist tool 消息。 */
+     * 状态的一部分: task->todolist 已被 state_serializer 持久化；之后为该
+     * task 组装 LLM 请求时 (见 agent send_llm), agent 按节流规则 (隔了
+     * EDC_TODO_SYNC_REMIND_GAP 条对话都没再调用 update_todolist) 把当前
+     * 清单重新计算成队尾 todo reminder (edc_context_make_todo_reminder)
+     * 注入请求 —— 与本次工具返回的文本同源 (edc_tools_todo_render_reminder),
+     * 让多轮工具循环中的模型始终能看到与工具结果逐字节一致的当前清单, 而
+     * 不依赖窗口内残留的 update_todolist tool 消息。 */
     if (ctx->task)
     {
         if (ctx->task->todolist)
             cJSON_Delete(ctx->task->todolist);
         ctx->task->todolist = cJSON_Duplicate(items, 1);
+        /* update_todolist 成功: 重置 todo 同步节流计数 (每次工具调用本身
+         * 就是一次清单同步) */
+        edc_task_note_todo_sync(ctx->task);
     }
 
     edc_toolbox_emit_tool_message_md(ctx, "update_todolist", lines);

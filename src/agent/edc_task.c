@@ -301,6 +301,30 @@ void edc_task_commit_active_turn(struct edc_task *task)
     task->active_turn = NULL;
 }
 
+/* ── Todo 同步节流 ────────────────────────────────────────── */
+
+void edc_task_note_todo_sync(struct edc_task *task)
+{
+    if (!task)
+        return;
+    task->todo_sync_gap = 0;
+}
+
+bool edc_task_llm_request_poke(struct edc_task *task)
+{
+    if (!task)
+        return false;
+    task->todo_sync_gap++;
+    if (task->todo_sync_gap >= EDC_TODO_SYNC_REMIND_GAP)
+    {
+        /* 达阈值: 本次请求 append reminder 提醒一次, 清零重计 —— 避免后续
+         * 每次请求都重复提醒 (直到模型调用 update_todolist 或再次超距) */
+        task->todo_sync_gap = 0;
+        return true;
+    }
+    return false;
+}
+
 /* ── 依赖 (IPC) ────────────────────────────────────────────── */
 
 /*
