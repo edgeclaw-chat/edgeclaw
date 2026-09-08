@@ -1,4 +1,5 @@
 ﻿#include "edc_agent.h"
+#include "edc_agent_todo_inject.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
 #include "edc_compat.h"
@@ -116,31 +117,108 @@ static size_t edc_agent_history_safe_start(cJSON *history, size_t start, size_t 
     return start;
 }
 
-/* task 通过 update_todolist 工具持有 todo 清单 (task->todolist) 时，返回其
- * 渲染 markdown (供追加到 system prompt 尾部)；无清单/空清单返回 NULL。
- * 调用方负责 sdsfree。 */
-static sds edc_agent_task_todo_md(struct edc_task *task)
+/* ── task todo list → system prompt 注入 ─────────────────────────
+ * 目标不只是让模型"看见"清单: (1) 说明清单是权威、每请求刷新的进度记录;
+ * (2) 提醒何时调用 update_todolist 同步进度; (3) 给一眼可读的当前执行状态
+ * 摘要; (4) 附上与工具回显同格式的清单行 (单一渲染源 render_body)。
+ * 副本语义不变: 生成新 system 消息, 绝不改动组内共享的 history[0]。 */
+
+static const char *kTodoSysGuide =
+    "## Task Todo List — live progress record\n"
+    "\n"
+    "The todo list below is the authoritative, up-to-date record of the task you "
+    "are executing. It is re-injected into this system prompt at the start of every "
+    "request, so trust it over update_todolist echoes in the conversation history — "
+    "those tool messages may be trimmed out of the context window.\n"
+    "\n"
+    "Keep this list accurate: call the update_todolist tool with the FULL updated "
+    "list whenever the state changes.\n"
+    "- When you start an item, mark it \"in_progress\" and set its activeForm to the "
+    "concrete action you are doing right now.\n"
+    "- When you finish an item, mark it \"completed\" and promote the next pending "
+    "item to \"in_progress\" (only ONE item may be in_progress at a time).\n"
+    "- While a step runs long, keep refreshing its activeForm as your actual work "
+    "changes.\n"
+    "- When the whole list is done, keep the completed list as the record — do not "
+    "clear it and do not invent items.\n"
+    "- If the user changes the plan, update the list to mirror the new plan.\n"
+    "\n"
+    "Every call replaces the entire list (max 20 items). The list belongs to this "
+    "task and persists with it.\n";
+
+/* 从 items 推导当前执行状态摘要 (计数 / 正在做 / 下一个待办)。
+ * items 非空。返回新 sds, 调用方负责 sdsfree。 */
+static sds edc_agent_todo_state_block(cJSON *items)
+{
+    int total = cJSON_GetArraySize(items);
+    int completed = 0;
+    const char *ip_content = NULL, *ip_form = NULL;
+    const char *next_pending = NULL;
+    for (int i = 0; i < total; i++)
+    {
+        cJSON *item = cJSON_GetArrayItem(items, i);
+        const char *st = cJSON_GetStringValue(cJSON_GetObjectItem(item, "status"));
+        const char *ct = cJSON_GetStringValue(cJSON_GetObjectItem(item, "content"));
+        const char *af = cJSON_GetStringValue(cJSON_GetObjectItem(item, "activeForm"));
+        if (!st) st = "pending";
+        if (!ct) ct = "";
+        if (!af) af = "";
+        if (strcmp(st, "completed") == 0)
+        {
+            completed++;
+        }
+        else if (strcmp(st, "in_progress") == 0 && !ip_content)
+        {
+            ip_content = ct;
+            ip_form = af;
+        }
+        else if (strcmp(st, "pending") == 0 && !next_pending)
+        {
+            next_pending = ct;
+        }
+    }
+
+    sds b = sdsnew("Current state:\n");
+    b = sdscatprintf(b, "- %d/%d completed\n", completed, total);
+    if (ip_content)
+    {
+        b = sdscatprintf(b, "- in progress: \"%s\"", ip_content);
+        if (ip_form && *ip_form)
+            b = sdscatprintf(b, " (%s)", ip_form);
+        b = sdscat(b, "\n");
+    }
+    if (next_pending)
+    {
+        b = sdscatprintf(b, "- next pending: \"%s\"\n", next_pending);
+    }
+    else if (!ip_content && completed == total)
+    {
+        b = sdscat(b, "- all items completed — nothing left to do\n");
+    }
+    return b;
+}
+
+/* 把 task 的 todo 清单以"引导 + 状态摘要 + 清单行"区块追加到 base 系统提示
+ * 文本尾部。返回新分配的系统消息对象 (role=system)；无 todo 时返回 NULL。
+ * 调用方负责加入消息数组并释放。 */
+cJSON *edc_agent_make_sys_with_todo(const char *base_content, struct edc_task *task)
 {
     if (!task || !task->todolist || cJSON_GetArraySize(task->todolist) <= 0)
         return NULL;
-    return edc_tools_todo_render_md(task->todolist);
-}
 
-/* 把 task 的 todo markdown 追加到 base 系统提示文本尾部。
- * 返回新分配的系统消息对象 (role=system, content = base + todo)；无 todo 时
- * 返回 NULL。调用方负责加入消息数组并释放。 */
-static cJSON *edc_agent_make_sys_with_todo(const char *base_content, struct edc_task *task)
-{
-    sds todo_md = edc_agent_task_todo_md(task);
-    if (!todo_md)
-        return NULL;
+    sds content = sdsnew(base_content ? base_content : "");
+    content = sdscatprintf(content, "\n\n%s\n", kTodoSysGuide);
+    sds state = edc_agent_todo_state_block(task->todolist);
+    content = sdscatprintf(content, "%s\n", state); /* 状态块与清单行之间留一空行 */
+    sdsfree(state);
+    sds body = edc_tools_todo_render_body(task->todolist, NULL);
+    content = sdscat(content, body);
+    sdsfree(body);
 
     cJSON *sys = cJSON_CreateObject();
     cJSON_AddStringToObject(sys, "role", "system");
-    sds content = sdscatprintf(sdsnew(base_content ? base_content : ""), "\n\n%s", todo_md);
     cJSON_AddStringToObject(sys, "content", content);
     sdsfree(content);
-    sdsfree(todo_md);
     return sys;
 }
 
@@ -184,9 +262,9 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
         /* 窗口起点不要切断 assistant(tool_calls)+tool 序列 */
         from = edc_agent_history_safe_start(task->group->history, from, hist_begin);
 
-        /* 注入 system prompt (恒为 history[0])。task 若带 todo 清单，把渲染的
-         * markdown 追加到该 task 的 system prompt 尾部——用副本，不改动组内
-         * 共享的 history[0] */
+        /* 注入 system prompt (恒为 history[0])。task 若带 todo 清单，把
+         * "引导 + 当前状态 + 清单行"区块追加到该 task 的 system prompt 副本
+         * 尾部——不改动组内共享的 history[0] */
         cJSON *sys0 = cJSON_GetArrayItem(task->group->history, 0);
         cJSON *sys0_c = cJSON_GetObjectItem(sys0, "content");
         const char *sys0_text = (sys0_c && cJSON_IsString(sys0_c)) ? sys0_c->valuestring : "";
@@ -210,7 +288,7 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
         {
             sds prompt = edc_context_build_system_prompt(agent->config);
 
-            /* 发给 LLM 的 system 消息: task 带 todo 时在 prompt 尾部追加清单 */
+            /* 发给 LLM 的 system 消息: task 带 todo 时注入进度区块 (副本) */
             cJSON *sys = edc_agent_make_sys_with_todo(prompt, task);
             if (!sys)
             {

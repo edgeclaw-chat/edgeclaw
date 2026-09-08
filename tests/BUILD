@@ -249,3 +249,12 @@ cc_test(
     ],
     linkopts = LINK_OPTS,
 )
+
+cc_test(
+    name = "test_todo_sysprompt",
+    srcs = ["test_todo_sysprompt.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)

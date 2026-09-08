@@ -8,13 +8,15 @@
 #include "sds.h"
 #include <stdlib.h>
 
-/* 纯渲染：items 已在工具入口校验过 (status 合法、至多一个 in_progress)。
- * 对缺失字段做保守兜底 (缺省视为 pending / 空文本)，避免 agent 侧读取
- * 历史数据时因脏数据崩溃。 */
-sds edc_tools_todo_render_md(cJSON *items)
+/* 纯渲染"- [ ]/- [x]" 清单行 (无 "# TODO" 头、无统计尾巴) —— 与 render_md
+ * 共用同一行格式源, 供 system prompt 注入方按需拼装。items 已在工具入口
+ * 校验过 (status 合法、至多一个 in_progress)。对缺失字段做保守兜底 (缺省
+ * 视为 pending / 空文本)，避免 agent 侧读取历史数据时因脏数据崩溃。
+ * *out_completed (可为 NULL) 返回已完成条数。返回 sds，调用方负责 sdsfree。 */
+sds edc_tools_todo_render_body(cJSON *items, int *out_completed)
 {
     int total = items ? cJSON_GetArraySize(items) : 0;
-    sds lines = sdsnew("# TODO\n");
+    sds lines = sdsempty();
     int completed = 0;
     for (int i = 0; i < total; ++i)
     {
@@ -42,8 +44,21 @@ sds edc_tools_todo_render_md(cJSON *items)
             lines = sdscatprintf(lines, "- [ ] %s\n", ct);
         }
     }
+    if (out_completed)
+        *out_completed = completed;
+    return lines;
+}
 
+/* 完整 checklist markdown: "# TODO\n" + 清单行 + "\nN/M completed"。
+ * 工具回显 (update_todolist 的消息 content / tool result) 使用。 */
+sds edc_tools_todo_render_md(cJSON *items)
+{
+    int completed = 0;
+    sds body = edc_tools_todo_render_body(items, &completed);
+    int total = items ? cJSON_GetArraySize(items) : 0;
+    sds lines = sdscatprintf(sdsnew("# TODO\n"), "%s", body);
     lines = sdscatprintf(lines, "\n%d/%d completed", completed, total);
+    sdsfree(body);
     return lines;
 }
 

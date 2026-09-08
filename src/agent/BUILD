@@ -37,6 +37,7 @@ cc_library(
     hdrs = [
         "edc_actor.h",
         "edc_agent.h",
+        "edc_agent_todo_inject.h",
         "edc_bpf_sandbox.h",
         "edc_channel_actor.h",
         "edc_channel_cli.h",
