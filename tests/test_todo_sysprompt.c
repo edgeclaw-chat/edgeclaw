@@ -166,29 +166,36 @@ static void test_attach_and_reminder(void)
     C(content != NULL, "content present");
 
     /* (a) 消息以 <system-reminder> 标签包裹, 开标签后第一行即本清单的章节
-     *     标题 (独立成条, 不再是 base 的追加尾巴) */
+     *     标题 (独立成条, 不再是 base 的追加尾巴); 引导是紧凑的一句同步
+     *     规则, 冗长的"权威记录/防裁剪"论证与逐条维护规则已删 */
     C(is_todo_reminder(content),
       "reminder wrapped in <system-reminder> tags, opens with its own section title");
     C(strstr(content, "SYSTEM_BASE") == NULL, "no base prompt text inside reminder");
-    C(strstr(content, "live progress record") != NULL, "section framed as live progress record");
-    C(strstr(content, "recomputed and appended as a fresh system message at the end of every request") != NULL &&
-          strstr(content, "trust it over update_todolist echoes") != NULL,
-      "tail-reminder note (fresh at end of every request; echoes may be trimmed)");
+    C(strstr(content, "## Task Todo List\n") != NULL, "opens with short section title");
+    C(strstr(content, "keep this list in sync") != NULL,
+      "compact sync instruction: update on every state change");
+    C(strstr(content, "recomputed and appended as a fresh system message") == NULL &&
+          strstr(content, "trust it over update_todolist echoes") == NULL &&
+          strstr(content, "trimmed out of the context window") == NULL,
+      "verbose authority/anti-trimming essay removed");
 
-    /* (b) 提醒规则: 何时调用 update_todolist、状态如何迁移 */
+    /* (b) 提醒规则 (一条话带过): 何时调用 update_todolist、状态如何迁移 */
     C(strstr(content, "update_todolist") != NULL, "reminder to call update_todolist present");
-    C(strstr(content, "FULL updated list") != NULL, "whole-list replacement stated");
+    C(strstr(content, "full updated list") != NULL, "whole-list replacement stated");
     C(strstr(content, "\"in_progress\"") != NULL && strstr(content, "activeForm") != NULL,
       "start-item guidance (in_progress + activeForm) present");
     C(strstr(content, "\"completed\"") != NULL, "finish-item guidance present");
-    C(strstr(content, "ONE item may be in_progress") != NULL, "single-in_progress rule present");
-    C(strstr(content, "replaces the entire list (max 20 items)") != NULL,
-      "max-20 + replace-all rule present");
+    C(strstr(content, "keeping exactly one item in_progress") != NULL, "single-in_progress rule present");
+    C(strstr(content, "do not clear it") != NULL, "keep-finished-list rule present");
+    C(strstr(content, "replaces the entire list (max 20 items)") == NULL &&
+          strstr(content, "Every call replaces") == NULL,
+      "tool-contract trivia (max-20 / replace-all essay) left out of the reminder");
 
-    /* (c) 当前执行状态摘要: 一眼可读的计数 + 正在做 + 下一个待办 */
-    C(strstr(content, "Current state:\n- 1/3 completed\n- in progress: \"step two\" (reading code)\n"
-                      "- next pending: \"step one\"") != NULL,
-      "state summary shows counts / in-progress w/ activeForm / next pending");
+    /* (c) 当前执行状态摘要: 一眼可读的计数 + 正在做 (不再附 next pending,
+     *     首个未勾选行在清单里一眼可见) */
+    C(strstr(content, "Current state:\n- 1/3 completed\n- in progress: \"step two\" (reading code)\n") != NULL,
+      "state summary shows counts / in-progress w/ activeForm");
+    C(strstr(content, "next pending") == NULL, "next-pending hint dropped (visible in list order)");
 
     /* (d) 清单行与工具回显同格式 (共享 render_body) */
     C(strstr(content, "- [ ] step one\n- [ ] step two <- reading code\n- [x] step three\n") != NULL,
@@ -332,9 +339,9 @@ static void test_state_summary_all_done(void)
     cJSON *sys = edc_context_make_todo_reminder(task);
     const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(sys, "content"));
     C(is_todo_reminder(content), "all-done reminder wrapped, opens with its own title");
-    C(strstr(content, "Current state:\n- 2/2 completed\n- all items completed") != NULL,
-      "state shows full completion");
-    C(strstr(content, "nothing left to do") != NULL, "explicit no-work-left note");
+    C(strstr(content, "Current state:\n- 2/2 completed\n") != NULL,
+      "state shows full completion (count line suffices)");
+    C(strstr(content, "in progress") == NULL, "no in-progress line when everything is completed");
     C(strstr(content, "- [x] pack\n- [x] ship\n") != NULL, "completed checklist lines present");
     C(strstr(content, "do not clear it") != NULL, "keep-finished-list rule still present");
 
@@ -433,8 +440,8 @@ static void test_append_system_part(void)
     C(r2 != NULL && !(r2->type & cJSON_IsReference), "todo reminder is an owned msg");
     const char *rc = cJSON_GetStringValue(cJSON_GetObjectItem(r2, "content"));
     C(is_todo_reminder(rc), "todo reminder wrapped, opens with its title");
-    C(strstr(rc, "Current state:\n- 0/1 completed\n- next pending: \"do it\"") != NULL,
-      "fresh state summary inside reminder");
+    C(strstr(rc, "Current state:\n- 0/1 completed\n") != NULL,
+      "fresh state summary inside reminder (count line; item still pending, no in-progress line)");
     C(strstr(rc, "## Task Planning") == NULL,
       "list present: planning guide NOT duplicated (maintenance guide takes over)");
     C(strstr(rc, "- [ ] do it\n") != NULL, "checklist line present");
