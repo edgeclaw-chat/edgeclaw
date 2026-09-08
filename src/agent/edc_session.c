@@ -335,7 +335,9 @@ bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *s
         return false;
     }
 
-    char *json_str = cJSON_Print(root);
+    /* 紧凑序列化: cJSON_Print 会生成带缩进换行的美化 JSON,体积大数倍;
+       session.json 只用于程序内部加载,无需人类可读,故用 Unformatted。 */
+    char *json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (!json_str)
         return false;
