@@ -23,6 +23,8 @@ void edc_llm_actor_req_free(struct edc_llm_actor_req *req)
         return;
     if (req->history_owned && req->history)
         cJSON_Delete(req->history);
+    if (req->tail_system)
+        cJSON_Delete(req->tail_system);
     free(req);
 }
 
@@ -146,6 +148,13 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
             cJSON *item = req->turn->data[qi];
             cJSON_AddItemReferenceToArray(messages, item);
         }
+    }
+
+    /* 绝对队尾: 运行时追加的 system 提醒 (如最新 todo reminder) —— 在已提交
+     * 历史窗口与当前 turn 之后, 紧贴模型开始生成的位置, 每轮请求重新计算 */
+    if (req->tail_system)
+    {
+        cJSON_AddItemReferenceToArray(messages, req->tail_system);
     }
 
     if (req->tools)

@@ -121,16 +121,19 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
     if (!agent || !task)
         return;
 
-    /* Group 级上下文: system 部分 (group memory + system prompt, 含 todo 注入
-     * 决策) 由 edc_context_append_system_part 统一组装; 余下为最近 K 条未折叠
-     * 历史窗口 + task 专属 (dep outputs / $VAR 展开) */
+    /* Group 级上下文: system 部分 (group memory + system prompt, 纯净、不含
+     * todo) 由 edc_context_append_system_part 统一组装; 余下为最近 K 条未折叠
+     * 历史窗口 + task 专属 (dep outputs / $VAR 展开)。todo 状态提醒不放在
+     * 头部——每次请求由 edc_context_make_todo_reminder 重新计算, 经
+     * req->tail_system 追加为消息列表的绝对队尾 (llm actor 在 history + 当前
+     * turn 之后发出), 避免长上下文里被遗忘 */
     cJSON *msgs = cJSON_CreateArray();
 
     sds pristine = NULL;
-    edc_context_append_system_part(msgs, agent->config, task->group, task, &pristine);
+    edc_context_append_system_part(msgs, agent->config, task->group, &pristine);
 
     /* group 无历史时 context 现拼的纯净 prompt: 写回 group history[0] (组内
-     * 所有 task 共享、保持纯净); 请求里发的若是 todo 注入副本则不受影响 */
+     * 所有 task 共享、保持纯净) */
     if (pristine)
     {
         if (task->group)
@@ -253,6 +256,10 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
     struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, agent->toolbox ? agent->toolbox->schemas : NULL,
                                                           task->active_turn ? &task->active_turn->messages : NULL);
     req->history_owned = true;
+    /* 绝对队尾: 运行时重新计算的 todo reminder (有清单→维护引导+状态摘要+
+     * 清单行; 无清单→规划引导)。llm actor 在 history + turn 之后追加, 每轮
+     * 请求都是最新状态。req 持有并随请求释放 (副本, 不改 task/group)。 */
+    req->tail_system = edc_context_make_todo_reminder(task);
 
     edc_actor_send(agent->llm_actor,
                    edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST, edc_scheduler_get_actor(sched), request_id, req,

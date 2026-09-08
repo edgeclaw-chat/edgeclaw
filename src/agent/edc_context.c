@@ -206,20 +206,23 @@ sds edc_context_build_system_prompt(struct edc_config *conf)
     return system_prompt;
 }
 
-/* ── task todo list → system prompt 注入 ─────────────────────────
- * (自 edc_agent.c 迁入, 2026-09-09 system prompt 拼接收拢重构)
+/* ── task todo list → 运行时 reminder (请求队尾) ────────────────
+ * (2026-09-09: 从"头部 system prompt 尾部注入"改为"每次请求消息列表最末尾
+ * 追加绝对新鲜的 system reminder"——头部注入在长上下文里易被模型遗忘; 队尾
+ * 紧贴模型开始生成的位置, 每轮 tool 循环都重新计算、保持最新。)
  * 目标不只是让模型"看见"清单: (1) 说明清单是权威、每请求刷新的进度记录;
  * (2) 提醒何时调用 update_todolist 同步进度; (3) 给一眼可读的当前执行状态
  * 摘要; (4) 附上与工具回显同格式的清单行 (单一渲染源 render_body)。
- * 副本语义不变: 生成新 system 消息, 绝不改动组内共享的 history[0]。
+ * 副本语义: 生成新 system 消息, 绝不改动组内共享的 history[0] / task。
  *
- * 两条引导互补、互斥出现:
- *  - task 尚无清单 → 注入 kTodoPlanningGuide (短): 鼓励多步任务先建清单规划;
- *  - task 已有清单 → kTodoSysGuide + 状态摘要 + 清单行 (见 make_sys_with_todo)。 */
+ * 两条引导互补、互斥出现 (都在队尾, 见 edc_context_make_todo_reminder):
+ *  - task 尚无清单 → kTodoPlanningGuide (短): 鼓励多步任务先建清单规划;
+ *  - task 已有清单 → kTodoSysGuide + 状态摘要 + 清单行。 */
 
-/* 规划引导: 任务还没建 todo 清单时注入, 让 LLM 面对多步任务主动先用
- * update_todolist 建计划, 而不是等清单存在后才被告知维护规则。短小为宜——
- * 一旦建了清单, 后续每轮自然切换到 kTodoSysGuide + state + 清单行。 */
+/* 规划引导: 任务还没建 todo 清单时追加 (位于请求队尾的 reminder), 让 LLM
+ * 面对多步任务主动先用 update_todolist 建计划, 而不是等清单存在后才被告知
+ * 维护规则。短小为宜——一旦建了清单, 后续每轮自然切换到 kTodoSysGuide +
+ * state + 清单行。 */
 static const char *kTodoPlanningGuide =
     "## Task Planning — plan multi-step work with a todo list\n"
     "\n"
@@ -238,13 +241,18 @@ static const char *kTodoPlanningGuide =
     "Simple single-step requests or direct conversation do NOT need a todo list — "
     "just answer without creating one.\n";
 
+/* 维护引导: 任务已持有 todo 清单时注入 (与状态摘要 + 清单行组成完整
+ * reminder)。说明清单是权威记录、提醒何时调用 update_todolist 同步进度。
+ * 注意: 本引导随 reminder 出现在请求【最末尾】, 措辞不再说"注入到 system
+ * prompt 头部"。 */
 static const char *kTodoSysGuide =
     "## Task Todo List — live progress record\n"
     "\n"
     "The todo list below is the authoritative, up-to-date record of the task you "
-    "are executing. It is re-injected into this system prompt at the start of every "
-    "request, so trust it over update_todolist echoes in the conversation history — "
-    "those tool messages may be trimmed out of the context window.\n"
+    "are executing. This reminder is recomputed and appended as a fresh system "
+    "message at the end of every request, so trust it over update_todolist echoes "
+    "in the conversation history — those tool messages may be trimmed out of the "
+    "context window.\n"
     "\n"
     "Keep this list accurate: call the update_todolist tool with the FULL updated "
     "list whenever the state changes.\n"
@@ -313,36 +321,50 @@ static sds edc_context_todo_state_block(cJSON *items)
     return b;
 }
 
-/* 把 task 的 todo 清单以"引导 + 状态摘要 + 清单行"区块追加到 base 系统提示
- * 文本尾部。返回新分配的系统消息对象 (role=system)；无 todo 时返回 NULL。
- * 调用方负责加入消息数组并释放。 */
-cJSON *edc_context_make_sys_with_todo(const char *base_content, struct edc_task *task)
+/* 运行时 todo reminder (role=system 的新消息, 每次请求重新计算、绝对新鲜),
+ * 由 edc_agent_cb_send_llm 塞到本次 LLM 请求消息列表的最末尾 (req->tail_system,
+ * 真正队尾: llm actor 在 history + 当前 turn 之后追加)。返回三种形态:
+ *  - task 持有非空 todo 清单 → 维护引导 + 状态摘要 + 清单行 (内容不带 base,
+ *    独立成一条 system 消息, 不再拼进头部 system prompt);
+ *  - task 非 NULL 但尚无清单 → 短规划引导 (## Task Planning);
+ *  - task 为 NULL → NULL。
+ * 副本语义: 返回未挂到任何数组的新消息对象, 随请求释放; 不改 task/group。 */
+cJSON *edc_context_make_todo_reminder(struct edc_task *task)
 {
-    if (!task || !task->todolist || cJSON_GetArraySize(task->todolist) <= 0)
+    if (!task)
         return NULL;
 
-    sds content = sdsnew(base_content ? base_content : "");
-    content = sdscatprintf(content, "\n\n%s\n", kTodoSysGuide);
-    sds state = edc_context_todo_state_block(task->todolist);
-    content = sdscatprintf(content, "%s\n", state); /* 状态块与清单行之间留一空行 */
-    sdsfree(state);
-    sds body = edc_tools_todo_render_body(task->todolist, NULL);
-    content = sdscat(content, body);
-    sdsfree(body);
+    if (task->todolist && cJSON_GetArraySize(task->todolist) > 0)
+    {
+        sds content = sdsnew(kTodoSysGuide); /* 尾部以 "\n" 结尾 */
+        content = sdscat(content, "\n");     /* 引导与状态块之间留空行 */
+        sds state = edc_context_todo_state_block(task->todolist);
+        content = sdscatprintf(content, "%s\n", state); /* 状态块后留空行 */
+        sdsfree(state);
+        sds body = edc_tools_todo_render_body(task->todolist, NULL);
+        content = sdscat(content, body);
+        sdsfree(body);
 
-    cJSON *sys = cJSON_CreateObject();
-    cJSON_AddStringToObject(sys, "role", "system");
-    cJSON_AddStringToObject(sys, "content", content);
-    sdsfree(content);
-    return sys;
+        cJSON *sys = cJSON_CreateObject();
+        cJSON_AddStringToObject(sys, "role", "system");
+        cJSON_AddStringToObject(sys, "content", content);
+        sdsfree(content);
+        return sys;
+    }
+
+    /* task 尚无清单 → 规划引导 */
+    cJSON *guide = cJSON_CreateObject();
+    cJSON_AddStringToObject(guide, "role", "system");
+    cJSON_AddStringToObject(guide, "content", kTodoPlanningGuide);
+    return guide;
 }
 
-/* 本次 LLM 请求 "system 部分" 的唯一组装入口: group memory + system prompt
- * (todo 注入决策含在内)。引用/副本/现拼语义见 edc_context.h 注释——与迁移前
+/* 本次 LLM 请求 "system 部分" (头部) 的唯一组装入口: group memory + system
+ * prompt。不含任何 todo 内容——todo 引导一律由 edc_context_make_todo_reminder
+ * 生成并塞到请求最末尾。引用/副本/现拼语义见 edc_context.h 注释——与迁移前
  * edc_agent_cb_send_llm 的行为字节级一致。 */
 int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf,
-                                   struct edc_task_group *group, struct edc_task *task,
-                                   sds *out_pristine)
+                                   struct edc_task_group *group, sds *out_pristine)
 {
     int appended = 0;
     if (!msgs)
@@ -362,60 +384,23 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf,
         appended++;
     }
 
-    /* 2. system prompt
-     * - group 有历史: base 恒为 history[0]; task 带 todo → 注入副本 (owned),
-     *   否则引用 history[0] (不复制) 并在 task 存在时另附一条规划引导 (提醒
-     *   多步任务先建 todo 清单)
-     * - group 无历史 / group 为空: 现拼纯净 prompt; todo 注入副本发请求,
-     *   纯净文本经 out_pristine 交还调用方 (由其决定写回 group history);
-     *   无 todo 时同样附带规划引导 */
+    /* 2. system prompt (纯净, 无 todo 注入)
+     * - group 有历史: 以引用挂 history[0] (不复制)
+     * - group 无历史 / group 为空: 现拼纯净 prompt, 经 out_pristine 交还调用
+     *   方 (由其决定写回 group history; 写回后后续请求即走引用分支) */
     if (group && cJSON_GetArraySize(group->history) > 0)
     {
         cJSON *sys0 = cJSON_GetArrayItem(group->history, 0);
-        cJSON *sys0_c = cJSON_GetObjectItem(sys0, "content");
-        const char *sys0_text = (sys0_c && cJSON_IsString(sys0_c)) ? sys0_c->valuestring : "";
-        cJSON *sys_todo = edc_context_make_sys_with_todo(sys0_text, task);
-        if (sys_todo)
-        {
-            cJSON_AddItemToArray(msgs, sys_todo);
-        }
-        else
-        {
-            cJSON_AddItemReferenceToArray(msgs, sys0);
-            if (task)
-            {
-                cJSON *guide = cJSON_CreateObject();
-                cJSON_AddStringToObject(guide, "role", "system");
-                cJSON_AddStringToObject(guide, "content", kTodoPlanningGuide);
-                cJSON_AddItemToArray(msgs, guide);
-                appended++;
-            }
-        }
+        cJSON_AddItemReferenceToArray(msgs, sys0);
         appended++;
     }
     else if (conf)
     {
         sds prompt = edc_context_build_system_prompt(conf);
-        cJSON *sys_todo = edc_context_make_sys_with_todo(prompt, task);
-        if (sys_todo)
-        {
-            cJSON_AddItemToArray(msgs, sys_todo);
-        }
-        else
-        {
-            cJSON *sys = cJSON_CreateObject();
-            cJSON_AddStringToObject(sys, "role", "system");
-            cJSON_AddStringToObject(sys, "content", prompt);
-            cJSON_AddItemToArray(msgs, sys);
-            if (task)
-            {
-                cJSON *guide = cJSON_CreateObject();
-                cJSON_AddStringToObject(guide, "role", "system");
-                cJSON_AddStringToObject(guide, "content", kTodoPlanningGuide);
-                cJSON_AddItemToArray(msgs, guide);
-                appended++;
-            }
-        }
+        cJSON *sys = cJSON_CreateObject();
+        cJSON_AddStringToObject(sys, "role", "system");
+        cJSON_AddStringToObject(sys, "content", prompt);
+        cJSON_AddItemToArray(msgs, sys);
         appended++;
         if (out_pristine)
             *out_pristine = sdsdup(prompt);

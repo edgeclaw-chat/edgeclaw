@@ -20,6 +20,9 @@ struct edc_llm_actor_req
     cJSON *history;
     cJSON *tools;
     bool history_owned; /* Phase 5: true = history needs cJSON_Delete */
+    cJSON *tail_system; /* owned by req: role=system 消息, send_req 时追加为
+                           messages 绝对队尾 (在 turn 之后); 用于运行时重新
+                           计算的最新 todo reminder 等。NULL = 不追加 */
 };
 
 typedef enum
