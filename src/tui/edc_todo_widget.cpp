@@ -13,6 +13,7 @@ TodoWidget::TodoWidget()
 
 void TodoWidget::SetItems(const std::vector<Item> &items)
 {
+    const bool was_empty = items_.empty();
     items_ = items;
     completed_ = 0;
     for (const Item &item : items_)
@@ -20,6 +21,14 @@ void TodoWidget::SetItems(const std::vector<Item> &items)
         if (item.status == "completed")
             completed_++;
     }
+
+    // Surface the first real content: the section starts collapsed (empty
+    // list → nothing to show), so an empty → non-empty transition expands it
+    // automatically. A fold the user made while the list was *visible* still
+    // survives refreshes — this only fires when the previous state had no
+    // rows to fold anyway.
+    if (was_empty && !items_.empty())
+        collapsed_ = false;
 }
 
 bool TodoWidget::OnEvent(::ftxui::Event event)

@@ -20,9 +20,11 @@ namespace edc
 // the "▾/▸ Todos" header row is clickable and toggles the item list while the
 // header (with its progress summary) always stays visible. The section is
 // always present in the pane: when no list has arrived yet — or the tool
-// reports an empty one — the header renders a "0/0" summary and an expanded
-// section shows a dim "(empty)" row, so the sidebar keeps a stable layout
-// from startup instead of the block appearing/disappearing.
+// reports an empty one — the header renders a "0/0" summary. The section
+// starts collapsed at startup (an empty body has nothing worth showing); if
+// the user expands an empty section it shows a dim "(empty)" row. The first
+// non-empty list that arrives auto-expands the section, after which the fold
+// state follows the user's clicks across refreshes.
 //
 // Item text is word-wrapped over several lines (CJK-safe, edc_text_util) so
 // long descriptions use the full sidebar width instead of one truncated row;
@@ -55,9 +57,13 @@ class TodoWidget : public ::ftxui::ComponentBase
     std::vector<Item> items_;
     int completed_ = 0;
 
-    // Collapse state for the whole section; preserved across SetItems() so a
-    // user's manual fold survives background list refreshes.
-    bool collapsed_ = false;
+    // Collapse state for the whole section. Starts collapsed: at startup (and
+    // after the tool cleared the list) there is nothing to show, so the
+    // section keeps only its "Todos c/n" header row instead of an expanded
+    // "(empty)" body. Once a real list is visible the state is preserved
+    // across SetItems() so a user's manual fold survives background refreshes;
+    // SetItems() auto-expands only on an empty → non-empty transition.
+    bool collapsed_ = true;
 
     // Click target of the section header row, populated during OnRender.
     ::ftxui::Box header_box_;
