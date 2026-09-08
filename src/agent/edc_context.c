@@ -209,42 +209,12 @@ sds edc_context_build_system_prompt(struct edc_config *conf)
  * (2026-09-09: 从"头部 system prompt 尾部注入"改为"每次请求消息列表最末尾
  * 追加绝对新鲜的 system reminder"——头部注入在长上下文里易被模型遗忘; 队尾
  * 紧贴模型开始生成的位置, 每轮 tool 循环都重新计算、保持最新。)
- * reminder 采用"系统状态 + 本轮指令"两段式 (2026-09-09, 参照用户模板重构):
- *   ① ## 🚨 CURRENT TASK SYSTEM STATE —— 当前 todo 清单全貌 (与工具回显
- *      同格式的清单行), 让模型看到整个计划与执行到哪一步;
- *   ② ## 🛠️ INSTRUCTIONS FOR THIS TURN —— 每轮必须遵守的节拍: 检查上一个
- *     工具的执行结果; 当前条目干完后的【下一个动作必须是调用 update_todolist】
- *     同步状态; 当前条目未标 [x] 不得跳到下一项。逐轮强约束, 解决"执行完
- *     好几步才想起来更新一次清单"的滞后问题。
- * 副本语义: 生成新 system 消息, 绝不改动组内共享的 history[0] / task。
- *
- * 两个分支 (见 edc_context_make_todo_reminder) 共用同一两段式骨架、互斥出现:
- *  - task 已有非空清单 → 状态段 = 清单行; 指令段 = 逐轮同步节拍;
- *  - task 尚无/已清空清单 → 状态段 = "尚无清单"; 指令段 = 多步任务先建计划。 */
-
-/* 状态段标题 / 指令段标题 (两分支共用) */
-static const char *kTodoStateHeader = "## 🚨 CURRENT TASK SYSTEM STATE\n";
-static const char *kTodoTurnHeader = "## 🛠️ INSTRUCTIONS FOR THIS TURN\n";
-
-/* 逐轮同步节拍 (任务已持有 todo 清单时注入)。核心诉求: 不许干完好几步才
- * 更新一次 todo——当前条目一完成, 下一步就强制 update_todolist 同步。 */
-static const char *kTodoTurnGuide =
-    "- Check the execution result of the last tool call.\n"
-    "- If the item you are working on is fully finished, your NEXT SINGLE ACTION must be calling "
-    "update_todolist to update the state (mark it \"completed\", promote the next pending item to "
-    "\"in_progress\" with activeForm set to the concrete action you are doing now, send the FULL "
-    "updated list).\n"
-    "- Do NOT jump to the next item until the current one is marked as [x].\n"
-    "- When the whole list is done, keep the completed list — do not clear it or invent items.\n";
-
-/* 建清单引导 (任务尚无 todo 清单时注入)。多步任务先把计划落到 update_todolist,
- * 之后每轮自然切换到 kTodoTurnGuide 的逐轮同步节拍。 */
-static const char *kTodoPlanningGuide =
-    "- If the request is multi-step — several distinct steps or multiple tool calls (research, coding, "
-    "debugging, batch edits, ...) — your FIRST action must be calling update_todolist to create a "
-    "step-by-step plan, then execute it.\n"
-    "- Simple single-step requests or direct conversation do NOT need a todo list — just answer "
-    "without creating one.\n";
+ * 两段式骨架文本 (含 <system-reminder> 包裹、状态段内容选择、逐轮同步节拍/
+ * 建计划引导两个分支) 由 edc_tools_todo_render_reminder 统一生成 —— 与
+ * update_todolist 工具每次成功返回的 result 逐字节一致 (同一渲染源, 不再有
+ * 独立的 "# TODO" checklist md 形态)。本函数只负责把这份文本包成一条
+ * role=system 消息。
+ * 副本语义: 生成新 system 消息, 绝不改动组内共享的 history[0] / task。 */
 
 /* 运行时 todo reminder (role=system 的新消息, 每次请求重新计算、绝对新鲜),
  * 由 edc_agent_cb_send_llm 塞到本次 LLM 请求消息列表的最末尾 (req->tail_system,
@@ -260,31 +230,7 @@ cJSON *edc_context_make_todo_reminder(struct edc_task *task)
     if (!task)
         return NULL;
 
-    int has_list = task->todolist && cJSON_GetArraySize(task->todolist) > 0;
-
-    sds content = sdsnew("<system-reminder>\n");
-    content = sdscat(content, kTodoStateHeader);
-
-    if (has_list)
-    {
-        sds body = edc_tools_todo_render_body(task->todolist, NULL);
-        content = sdscat(content, body); /* 清单行, 每行以 \n 结尾 */
-        sdsfree(body);
-    }
-    else
-    {
-        content = sdscat(content, "No todo list exists for this task yet.\n");
-    }
-
-    content = sdscat(content, "\n"); /* 状态段与指令段之间留空行 */
-    content = sdscat(content, kTodoTurnHeader);
-
-    if (has_list)
-        content = sdscat(content, kTodoTurnGuide);
-    else
-        content = sdscat(content, kTodoPlanningGuide);
-
-    content = sdscat(content, "\n</system-reminder>");
+    sds content = edc_tools_todo_render_reminder(task->todolist);
 
     cJSON *sys = cJSON_CreateObject();
     cJSON_AddStringToObject(sys, "role", "system");

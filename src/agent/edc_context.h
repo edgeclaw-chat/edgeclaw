@@ -15,13 +15,14 @@ extern sds edc_context_build_system_prompt(struct edc_config *conf);
 /* 运行时 todo reminder (role=system 的新消息, 绝对新鲜):
  * 每次 LLM 请求组装时由调用方调用本函数重新计算, 并把返回的消息塞到该请求
  * 消息列表的【最末尾】(新的队尾, 见 edc_llm_actor_req.tail_system), 避免
- * 头部注入的 todo 状态在长上下文里被模型遗忘。reminder 为两段式骨架:
- *   ① ## 🚨 CURRENT TASK SYSTEM STATE: 状态段——当前清单全貌 (有清单时是
- *      与工具回显同格式的清单行, 单一渲染源 edc_tools_todo_render_body);
+ * 头部注入的 todo 状态在长上下文里被模型遗忘。content 即两段式骨架文本
+ * (含 <system-reminder> 包裹, 由 edc_tools_todo_render_reminder 统一生成,
+ * 与 update_todolist 工具返回的 result 逐字节一致——同一渲染源):
+ *   ① ## 🚨 CURRENT TASK SYSTEM STATE: 状态段——当前清单全貌 (清单行);
  *   ② ## 🛠️ INSTRUCTIONS FOR THIS TURN: 指令段——逐轮强约束的同步节拍
  *      (检查上个工具结果; 当前条目干完 → 下一动作必须是 update_todolist;
  *      未标 [x] 不得跳下一项)。解决"执行完好几步才更新一次清单"的滞后。
- * 两个分支 (同一骨架、互斥出现):
+ * 两个分支 (同一骨架、互斥出现, 由 render_reminder 按 task->todolist 选择):
  *   - task 持有非空 todo 清单 → 状态段 = 清单行; 指令段 = 逐轮同步节拍;
  *   - task 非 NULL 但尚无/已清空清单 → 状态段 = "尚无清单"; 指令段 =
  *     多步任务先调用 update_todolist 建计划;

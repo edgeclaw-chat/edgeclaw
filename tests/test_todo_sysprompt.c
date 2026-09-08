@@ -7,13 +7,15 @@
  * 链路 (生产代码, 本测试逐一验证可直接验证的环节):
  *   1. update_todolist 工具 (edc_tools_todo.c) 经真实 toolbox 执行后把校验
  *      通过的 items 挂到 ctx->task->todolist (整体替换) —— 本测试执行真实工具。
- *   2. 工具回显 content == task->todolist 经 edc_tools_todo_render_md 的渲染
- *      文本 (同一渲染函数); reminder 里的清单行与其同格式 (共享 render_body)。
+ *   2. 工具返回的 result == task->todolist 经 edc_tools_todo_render_reminder
+ *      生成的 todo reminder 文本 (同一渲染函数, 两段式骨架 + <system-reminder>
+ *      包裹, 不再是独立的 "# TODO" checklist markdown)。
  *   3. edc_agent_cb_send_llm 每次组装请求时调用
  *      edc_context_make_todo_reminder (edc_context.c, 实现于生产代码, 在此
- *      直测): 有清单 → role=system 的 reminder 消息 (维护引导 + 状态摘要 +
- *      清单行, 不带 base, 独立成消息); 无清单且 task 非空 → 短规划引导;
- *      task 为 NULL → NULL。副本语义: 不改共享 history[0] / task。
+ *      直测): 有清单 → role=system 的 reminder 消息, content 与工具 result
+ *      逐字节一致 (单一渲染源 edc_tools_todo_render_reminder), 不带 base,
+ *      独立成消息; 无清单且 task 非空 → 短规划引导; task 为 NULL → NULL。
+ *      副本语义: 不改共享 history[0] / task。
  *   4. 头部 edc_context_append_system_part 恢复纯净: 只挂 group memory +
  *      system prompt (引用/现拼), 不含任何 todo 内容。
  *
@@ -151,14 +153,15 @@ static void test_attach_and_reminder(void)
              "in_progress") == 0,
       "item 2 kept in_progress status");
 
-    /* 工具回显 == task->todolist 的完整渲染 (同一 render_md) */
-    sds md = edc_tools_todo_render_md(task->todolist);
-    C(md != NULL, "render_md returns md for attached list");
-    C(strcmp(md, g_result) == 0, "tool result == render of attached list (same renderer)");
-    C(strstr(md, "- [ ] step one") != NULL, "pending item rendered");
-    C(strstr(md, "- [ ] step two <- reading code") != NULL, "in_progress with activeForm rendered");
-    C(strstr(md, "- [x] step three") != NULL, "completed item rendered");
-    C(strstr(md, "1/3 completed") != NULL, "summary rendered");
+    /* 工具 result == task->todolist 经 edc_tools_todo_render_reminder 的完整
+     * todo reminder 文本 (不再是独立的 "# TODO" checklist markdown) */
+    sds rem = edc_tools_todo_render_reminder(task->todolist);
+    C(rem != NULL, "render_reminder returns reminder text for attached list");
+    C(strcmp(rem, g_result) == 0, "tool result == todo reminder text (same renderer)");
+    C(strstr(rem, "- [ ] step one") != NULL, "pending item rendered");
+    C(strstr(rem, "- [ ] step two <- reading code") != NULL, "in_progress with activeForm rendered");
+    C(strstr(rem, "- [x] step three") != NULL, "completed item rendered");
+    C(strstr(rem, "# TODO") == NULL, "no standalone '# TODO' checklist header anymore");
 
     /* make_todo_reminder: 独立 role=system 消息, content 即 reminder (无 base
      * 前缀 —— 不再拼进头部 system prompt) */
@@ -202,18 +205,24 @@ static void test_attach_and_reminder(void)
           strstr(content, "N/M completed") == NULL,
       "no derived count/next-pending block — the checklist itself is the state");
 
-    /* (d) 清单行与工具回显同格式 (共享 render_body) */
+    /* (c) 单一渲染源: 工具 result 与队尾 reminder 逐字节一致 —— update_todolist
+     *     返回的正是这条 todo reminder 本身 (edc_context_make_todo_reminder 只
+     *     包 role=system, 文本来自 edc_tools_todo_render_reminder) */
+    C(strcmp(content, g_result) == 0, "tail reminder content == tool result (byte-identical)");
+    C(strcmp(content, rem) == 0, "tail reminder content == render_reminder(todolist) (same renderer)");
+
+    /* (d) 清单行 (共享 render_body) */
     C(strstr(content, "- [ ] step one\n- [ ] step two <- reading code\n- [x] step three\n") != NULL,
       "checklist lines identical to tool rendering");
 
-    /* (e) 不是 render_md 的干贴: 无裸 "# TODO" 头 */
-    C(strstr(content, "# TODO\n") == NULL, "bare render_md header is NOT duplicated");
+    /* (e) reminder 不含独立的 "# TODO" checklist 头 (该 md 形态已删除) */
+    C(strstr(content, "# TODO\n") == NULL, "no bare '# TODO' header inside reminder");
 
     /* 副本语义: 返回的是未挂到任何数组的新对象 */
     C(sys->prev == NULL && sys->next == NULL, "sys msg is detached (owned by caller)");
 
     cJSON_Delete(sys);
-    sdsfree(md);
+    sdsfree(rem);
     reset_capture();
     edc_toolbox_call_ctx_free(ctx);
     cJSON_Delete(args);
@@ -311,14 +320,14 @@ static void test_validation_gate(void)
 
 static void test_render_boundaries(void)
 {
-    T("render_md(NULL / empty array) renders an empty checklist");
-    sds md = edc_tools_todo_render_md(NULL);
-    C(strcmp(md, "# TODO\n\n0/0 completed") == 0, "NULL items renders empty checklist");
-    sdsfree(md);
+    T("render_reminder(NULL / empty array) falls into the no-list planning branch");
+    sds rem = edc_tools_todo_render_reminder(NULL);
+    C(rem != NULL && is_planning_reminder(rem), "NULL items -> planning reminder (no-list branch)");
+    sdsfree(rem);
     cJSON *arr = cJSON_CreateArray();
-    md = edc_tools_todo_render_md(arr);
-    C(strcmp(md, "# TODO\n\n0/0 completed") == 0, "empty array renders empty checklist");
-    sdsfree(md);
+    rem = edc_tools_todo_render_reminder(arr);
+    C(rem != NULL && is_planning_reminder(rem), "empty array -> planning reminder (no-list branch)");
+    sdsfree(rem);
     cJSON_Delete(arr);
 
     T("render_body(NULL) returns empty sds, count 0");
