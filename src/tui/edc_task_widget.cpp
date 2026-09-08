@@ -110,13 +110,13 @@ void TaskWidget::SetSnapshot(const ::edc_c_task_snapshot *snap)
         groups_.push_back(std::move(group));
     }
 
-    // Every snapshot refresh resets collapse state: only the group holding the
-    // active task stays expanded; all other groups collapse. A user's manual
-    // toggle is therefore in effect only until the next snapshot arrives.
+    // Refresh collapse state: keep user toggles for groups that still exist;
+    // a newly-seen group is expanded only when it holds the active task.
     std::map<std::string, bool> next;
     for (const auto &g : groups_)
     {
-        next[g.group_id] = (g.group_id == active_group_id);
+        const auto it = group_expanded_.find(g.group_id);
+        next[g.group_id] = (it != group_expanded_.end()) ? it->second : (g.group_id == active_group_id);
     }
     group_expanded_ = std::move(next);
 }
