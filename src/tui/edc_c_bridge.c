@@ -75,6 +75,12 @@ int edc_c_channel_message_is_task_snapshot(struct edc_channel_message *channel_m
     return channel_message ? channel_message->message_type == EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE : 0;
 }
 
+int edc_c_channel_message_render_pref(struct edc_channel_message *channel_message)
+{
+    /* 返回 EDC_C_RENDER_PLAIN/MARKDOWN；发送方未声明时为 PLAIN（零值默认） */
+    return channel_message ? (int)channel_message->render_pref : EDC_C_RENDER_PLAIN;
+}
+
 void edc_c_agent_request_task_snapshot(struct edc_agent *agent)
 {
     if (!agent || !agent->channel_actor)

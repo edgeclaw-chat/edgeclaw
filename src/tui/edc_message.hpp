@@ -56,17 +56,21 @@ class UserMessage : public Message
 class ToolMessage : public Message
 {
   public:
-    ToolMessage(const std::string_view header, const std::string_view content, time_t ts);
+    ToolMessage(const std::string_view header, const std::string_view content, time_t ts, bool markdown = false);
     bool OnEvent(ftxui::Event) override;
     ftxui::Element OnRender() override;
 
   private:
     // Collapsed content shows the first kPreviewLines lines, then a "..."
     // line and a clickable expand label; clicking toggles to the full text.
+    // Markdown bodies are collapsed on the raw source (cheap, no parse) and
+    // rendered only when shown in full.
     static constexpr size_t kPreviewLines = 14;
 
     std::string header_;
     bool expanded_ = false;
+    bool markdown_ = false;
+    ::ftxui::Element md_body_; /* lazy RenderMarkdown cache, only when markdown_ */
     ::ftxui::Box box_;
 };
 

@@ -30,6 +30,15 @@ typedef enum
     EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE, /* serialized task-tree snapshot for the TUI */
 } edc_channel_message_type;
 
+/* 消息内容的渲染偏好：由发送方(tool/agent)显式声明，渲染端(CLI/TUI)
+ * 不再按消息类型/header 有无去猜测。零值 PLAIN 即默认——发送方未声明时
+ * 消息一律按纯文本显示，想按 Markdown 渲染必须显式声明 EDC_RENDER_MARKDOWN。 */
+typedef enum
+{
+    EDC_RENDER_PLAIN = 0,
+    EDC_RENDER_MARKDOWN,
+} edc_render_pref_t;
+
 struct channel_conf
 {
     edc_channel_type type;

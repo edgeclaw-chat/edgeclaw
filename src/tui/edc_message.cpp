@@ -93,8 +93,8 @@ bool UserMessage::OnEvent(ftxui::Event)
     return false;
 }
 
-ToolMessage::ToolMessage(const std::string_view header, const std::string_view content, time_t ts)
-    : Message(content, ts), header_(header)
+ToolMessage::ToolMessage(const std::string_view header, const std::string_view content, time_t ts, bool markdown)
+    : Message(content, ts), header_(header), markdown_(markdown)
 {
 }
 
@@ -169,10 +169,26 @@ std::string FirstLines(const std::string &text, size_t max_lines)
     const bool truncated = !expanded_ && CountLines(content_) > ToolMessage::kPreviewLines;
     const bool toggleable = expanded_ || CountLines(content_) > ToolMessage::kPreviewLines;
 
-    auto header = ::ftxui::paragraph(header_) | ::ftxui::color(dim_gray);
+    ::ftxui::Elements children;
+    if (!header_.empty())
+    {
+        children.push_back(::ftxui::paragraph(header_) | ::ftxui::color(dim_gray));
+        children.push_back(::ftxui::separatorEmpty());
+    }
 
     ::ftxui::Element body;
-    if (!truncated)
+    if (markdown_ && !truncated)
+    {
+        // Full markdown body: parse once on first render, reuse afterwards.
+        // (While collapsed over a long body the raw source preview is shown
+        // instead — cheaper and keeps the truncation UX identical to plain.)
+        if (!md_body_)
+        {
+            md_body_ = RenderMarkdown(content_);
+        }
+        body = md_body_;
+    }
+    else if (!truncated)
     {
         body = ::ftxui::paragraph(content_);
     }
@@ -186,7 +202,7 @@ std::string FirstLines(const std::string &text, size_t max_lines)
         body = ::ftxui::paragraph(preview);
     }
 
-    ::ftxui::Elements children = {header, ::ftxui::separatorEmpty(), body};
+    children.push_back(body);
     if (toggleable)
     {
         auto toggle = expanded_ ? ::ftxui::text("- Collapse") : ::ftxui::text("+ Click to expand");

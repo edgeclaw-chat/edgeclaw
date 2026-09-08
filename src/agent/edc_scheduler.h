@@ -2,6 +2,7 @@
 #define __BC_SCHEDULER_H__
 
 #include "edc_actor.h"
+#include "edc_config.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "sds.h"
@@ -26,9 +27,10 @@ typedef void (*edc_scheduler_send_llm_fn)(struct edc_scheduler *sched, struct ed
 typedef void (*edc_scheduler_send_reply_fn)(struct edc_scheduler *sched, struct edc_task *task, const char *content,
                                             edc_channel_message_type message_type, void *request_id);
 
-/** 发送 TOOL 类型 channel 消息 (带 header)；仅由 active task 触发 */
+/** 发送 TOOL 类型 channel 消息 (带 header)；仅由 active task 触发。
+ *  render_pref 由发送方(tool)声明，渲染端据此决定是否按 Markdown 渲染。 */
 typedef void (*edc_scheduler_send_tool_fn)(struct edc_scheduler *sched, struct edc_task *task, const char *header,
-                                           const char *content, void *request_id);
+                                           const char *content, edc_render_pref_t render_pref, void *request_id);
 
 /** 分发 tool calls */
 typedef void (*edc_scheduler_dispatch_tools_fn)(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,

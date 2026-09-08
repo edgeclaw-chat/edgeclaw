@@ -75,7 +75,7 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
 
     lines = sdscatprintf(lines, "\n%d/%d completed", completed, total);
 
-    edc_toolbox_emit_tool_message(ctx, "update_todolist", lines);
+    edc_toolbox_emit_tool_message_md(ctx, "update_todolist", lines);
 
     callback(ctx, lines, NULL);
 }

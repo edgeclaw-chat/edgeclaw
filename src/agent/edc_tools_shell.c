@@ -151,7 +151,7 @@ static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
     if (ctx->stderr_buf && sdslen(ctx->stderr_buf) > 0)
         result = sdscatprintf(result, "stderr:\n%s\n", ctx->stderr_buf);
 
-    edc_toolbox_emit_tool_message(ctx->tb_ctx, ctx->command, result);
+    edc_toolbox_emit_tool_message_plain(ctx->tb_ctx, ctx->command, result);
 
     ctx->callback(ctx->tb_ctx, result, NULL);
 

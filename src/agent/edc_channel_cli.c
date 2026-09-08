@@ -560,13 +560,20 @@ static void edc_channel_cli_handle_send(edc_actor_t *actor, edc_actor_msg_t *msg
     if (state->cli.pending_output)
         sdsfree(state->cli.pending_output);
 
-    if (strncmp(message->content, "[思考]:", strlen("[思考]:")) == 0)
+    if (message->message_type == EDC_CHANNEL_MESSAGE_THOUGHT_TYPE)
     {
+        /* 思考内容：弱化显示（渲染端固有的视觉样式，与 md 无关） */
         state->cli.pending_output = sdscatprintf(sdsempty(), "%s%s%s", CLI_DIM, message->content, CLI_RESET);
+    }
+    else if (message->render_pref == EDC_RENDER_MARKDOWN)
+    {
+        /* 发送方显式声明 Markdown（工具 *_md 输出、LLM 回复）：按 md 渲染 */
+        state->cli.pending_output = edc_markdown_render(message->content);
     }
     else
     {
-        state->cli.pending_output = edc_markdown_render(message->content);
+        /* 默认/PLAIN：原样输出，不做 Markdown 转换 */
+        state->cli.pending_output = sdsnewlen(message->content, sdslen(message->content));
     }
 
     cli_display_output(state);

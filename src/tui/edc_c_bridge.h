@@ -25,6 +25,13 @@ extern "C" {
 struct edc_agent;
 struct edc_actor;
 struct edc_channel_message;
+/* render_pref 取值（与 C 侧 edc_render_pref_t 对应；此处内联以免 C++ 侧
+ * include sds 系 C 头）。零值即默认 PLAIN：发送方未声明一律按纯文本显示。 */
+enum
+{
+    EDC_C_RENDER_PLAIN = 0,
+    EDC_C_RENDER_MARKDOWN = 1,
+};
 struct uv_loop_s;
 
 /* ── Task-tree snapshot (parsed from the scheduler's JSON) ─────
@@ -92,6 +99,11 @@ int edc_c_channel_message_is_sys(struct edc_channel_message *channel_message);
  * chat text; the TUI parses edc_c_channel_message_content() to refresh its
  * task sidebar. */
 int edc_c_channel_message_is_task_snapshot(struct edc_channel_message *channel_message);
+
+/* Renderer preference declared by the sender (EDC_C_RENDER_PLAIN/MARKDOWN).
+ * PLAIN is the default (zero value): an undeclared message renders as plain
+ * text; only explicitly declared MARKDOWN content is run through markdown. */
+int edc_c_channel_message_render_pref(struct edc_channel_message *channel_message);
 
 /* Request a snapshot of the active session's task tree. The scheduler builds
  * it on its own thread and delivers it back through the channel adapter as an

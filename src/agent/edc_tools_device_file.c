@@ -81,7 +81,7 @@ static void device_file_on_async_result(uv_async_t *handle)
     const char *content = ctx->result ? ctx->result : (ctx->error && ctx->error->message ? ctx->error->message : NULL);
     sds header = sdscatprintf(sdsempty(), "device_%s %s", ctx->is_upload ? "upload" : "download",
                               ctx->local_path ? ctx->local_path : "");
-    edc_toolbox_emit_tool_message(ctx->tb_ctx, header, content);
+    edc_toolbox_emit_tool_message_plain(ctx->tb_ctx, header, content);
     sdsfree(header);
 
     /* Invoke the original callback on the main loop thread */

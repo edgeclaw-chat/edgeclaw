@@ -14,7 +14,8 @@
 #include "sds.h"
 #include "uthash.h"
 
-void edc_toolbox_emit_tool_message(struct edc_toolbox_call_ctx *ctx, const char *header, const char *content)
+static void edc_toolbox_emit_tool_message_internal(struct edc_toolbox_call_ctx *ctx, const char *header,
+                                                   const char *content, edc_render_pref_t render_pref)
 {
     if (!ctx || !ctx->tb || !content || !*content)
         return;
@@ -28,10 +29,23 @@ void edc_toolbox_emit_tool_message(struct edc_toolbox_call_ctx *ctx, const char 
     struct edc_toolbox_emit_msg *emit = g_new0(struct edc_toolbox_emit_msg, 1);
     emit->header = (header && *header) ? sdsnew(header) : NULL;
     emit->content = sdsnew(content);
+    emit->render_pref = render_pref;
 
     edc_actor_send(tb->scheduler,
                    edc_actor_msg_new_sub_type(BC_ACTOR_MSG_TOOL_EMIT, ctx->call_from_type, tb->channel_actor,
                                               ctx->request_id, emit, edc_toolbox_emit_msg_free));
+}
+
+void edc_toolbox_emit_tool_message_plain(struct edc_toolbox_call_ctx *ctx, const char *header, const char *content)
+{
+    /* 工具显式声明输出为纯文本（代码/命令输出/确认等），渲染端原样显示 */
+    edc_toolbox_emit_tool_message_internal(ctx, header, content, EDC_RENDER_PLAIN);
+}
+
+void edc_toolbox_emit_tool_message_md(struct edc_toolbox_call_ctx *ctx, const char *header, const char *content)
+{
+    /* 工具显式声明输出按 Markdown 渲染 */
+    edc_toolbox_emit_tool_message_internal(ctx, header, content, EDC_RENDER_MARKDOWN);
 }
 
 void edc_toolbox_emit_msg_free(void *p)

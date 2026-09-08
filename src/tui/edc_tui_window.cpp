@@ -351,9 +351,12 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     const std::string text = content;
     const char *header_c = edc_c_channel_message_header(message);
     const std::string header = header_c ? header_c : "";
+    // Sender-declared render preference (PLAIN/MARKDOWN). Read here while
+    // the message is still alive; the closure below only needs the int.
+    const int render_pref = edc_c_channel_message_render_pref(message);
     const time_t ts = ::time(nullptr);
 
-    auto add_message = [tui, kind, text, header, ts]() {
+    auto add_message = [tui, kind, text, header, render_pref, ts]() {
         std::shared_ptr<Message> widget;
         switch (kind)
         {
@@ -361,8 +364,21 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             widget = std::make_shared<UserMessage>(text, ts);
             break;
         case Kind::Tool:
-            widget = header.empty() ? std::make_shared<Message>(text, ts)
-                                    : std::make_shared<ToolMessage>(header, text, ts);
+            // 完全由发送方声明的 render_pref 决定，渲染端零猜测：
+            //  - MARKDOWN: 内容按 Markdown 渲染；有 header 时保留
+            //    ToolMessage 的折叠 chrome，无 header 直接进 md 消息样式
+            //  - 默认/PLAIN（未声明即纯文本）: 一律纯文本 ToolMessage
+            if (render_pref == EDC_C_RENDER_MARKDOWN)
+            {
+                if (!header.empty())
+                    widget = std::make_shared<ToolMessage>(header, text, ts, /*markdown=*/true);
+                else
+                    widget = std::make_shared<Message>(text, ts);
+            }
+            else
+            {
+                widget = std::make_shared<ToolMessage>(header, text, ts);
+            }
             break;
         case Kind::Thought:
             widget = std::make_shared<ThoughtMessage>(text, ts);

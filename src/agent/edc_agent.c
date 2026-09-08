@@ -283,6 +283,11 @@ static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task
         return;
 
     struct edc_channel_message *reply = edc_channel_message_new(task->channel_type, message_type, sdsnew(content));
+    /* 发送方显式声明渲染偏好，渲染端(CLI/TUI)不再猜测：
+     * 只有 LLM 回复 (RESP) 声明按 Markdown 渲染；思考/系统等内部文本保持
+     * 默认 PLAIN（零值），原样显示。 */
+    if (message_type == EDC_CHANNEL_MESSAGE_RESP_TYPE)
+        reply->render_pref = EDC_RENDER_MARKDOWN;
 
     edc_actor_send(agent->channel_actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type,
                                                                     edc_scheduler_get_actor(sched), request_id, reply,
@@ -294,7 +299,7 @@ static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task
  * header 的 TOOL 消息发给 channel_actor。 */
 
 static void edc_agent_cb_send_tool_message(struct edc_scheduler *sched, struct edc_task *task, const char *header,
-                                           const char *content, void *request_id)
+                                           const char *content, edc_render_pref_t render_pref, void *request_id)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
     if (!agent || !task || !content)
@@ -302,6 +307,7 @@ static void edc_agent_cb_send_tool_message(struct edc_scheduler *sched, struct e
 
     struct edc_channel_message *reply =
         edc_channel_message_new(task->channel_type, EDC_CHANNEL_MESSAGE_TOOL_TYPE, sdsnew(content));
+    reply->render_pref = render_pref;
     if (header && *header)
         reply->header = sdsnew(header);
 

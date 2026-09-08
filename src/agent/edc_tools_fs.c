@@ -115,7 +115,7 @@ static void edc_tool_exec_read_file_async(struct edc_toolbox_call_ctx *ctx, stru
     {
         const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
         sds header = sdscatprintf(sdsempty(), "read_file %s", path ? path : "");
-        edc_toolbox_emit_tool_message(ctx, header, result);
+        edc_toolbox_emit_tool_message_plain(ctx, header, result);
         sdsfree(header);
     }
     callback(ctx, result, error);
@@ -140,7 +140,7 @@ static void edc_tool_exec_write_file_async(struct edc_toolbox_call_ctx *ctx, str
     {
         const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
         sds header = sdscatprintf(sdsempty(), "write_file %s", path ? path : "");
-        edc_toolbox_emit_tool_message(ctx, header, result);
+        edc_toolbox_emit_tool_message_plain(ctx, header, result);
         sdsfree(header);
     }
     callback(ctx, result, error);
@@ -168,7 +168,7 @@ static void edc_tool_exec_list_dir_async(struct edc_toolbox_call_ctx *ctx, struc
     {
         const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
         sds header = sdscatprintf(sdsempty(), "list_dir %s", path ? path : "");
-        edc_toolbox_emit_tool_message(ctx, header, result);
+        edc_toolbox_emit_tool_message_plain(ctx, header, result);
         sdsfree(header);
     }
     callback(ctx, result, error);

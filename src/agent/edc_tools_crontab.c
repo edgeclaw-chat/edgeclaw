@@ -212,7 +212,7 @@ static void edc_tool_crontab_exec_list_async(struct edc_toolbox_call_ctx *ctx, s
     }
 
     cJSON_Delete(db);
-    edc_toolbox_emit_tool_message(ctx, "crontab list", result);
+    edc_toolbox_emit_tool_message_plain(ctx, "crontab list", result);
     callback(ctx, result, NULL);
 }
 
@@ -258,7 +258,7 @@ static void edc_tool_crontab_exec_remove_async(struct edc_toolbox_call_ctx *ctx,
         sds result = sdsempty();
         result = sdscatprintf(result, "Remove job %s done. (exit code: 0)", cJSON_GetStringValue(job_id));
         sds header = sdscatprintf(sdsempty(), "crontab remove %s", cJSON_GetStringValue(job_id));
-        edc_toolbox_emit_tool_message(ctx, header, result);
+        edc_toolbox_emit_tool_message_plain(ctx, header, result);
         sdsfree(header);
         callback(ctx, result, NULL);
     }
@@ -632,7 +632,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
         result = sdscatprintf(result, "Add job %s done. (exit code: 0)", s);
         cJSON_free(s);
         sds header = sdscatprintf(sdsempty(), "crontab add");
-        edc_toolbox_emit_tool_message(ctx, header, result);
+        edc_toolbox_emit_tool_message_plain(ctx, header, result);
         sdsfree(header);
         callback(ctx, result, NULL);
     }
