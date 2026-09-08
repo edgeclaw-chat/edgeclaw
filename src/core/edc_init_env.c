@@ -15,7 +15,7 @@
 #include <unistd.h>
 
 /* Channel type options */
-static const char *channel_types[] = {"cli"};
+static const char *channel_types[] = {"adapter"};
 #define CHANNEL_TYPE_COUNT 1
 
 static const char *device_transport_types[] = {"socket", "tty"};
@@ -448,7 +448,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     }
 
     /* --- Channel Type --- */
-    result->channel_type = sdsnew("cli");
+    result->channel_type = sdsnew("adapter");
 
     printf("\n--- Device Shell Configuration (optional) ---\n");
 
@@ -866,7 +866,7 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     cJSON_AddItemToObject(config, "sandbox", sandbox);
 
     cJSON *channel = cJSON_CreateObject();
-    cJSON_AddStringToObject(channel, "type", "cli");
+    cJSON_AddStringToObject(channel, "type", "adapter");
 
     cJSON_AddItemToObject(config, "channel", channel);
 

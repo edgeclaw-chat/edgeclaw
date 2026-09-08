@@ -183,7 +183,7 @@ struct edc_config *edc_config_load(const char *edc_home)
     }
     else
     {
-        log_error("unknown channel type: %s, only 'cli' is supported", type);
+        log_error("unknown channel type: %s, only 'cli' or 'adapter' is supported", type);
         goto exit_free_config;
     }
 
