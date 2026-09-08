@@ -65,6 +65,30 @@ bool AnyRowContains(const std::string &frame, const char *needle)
     return frame.find(needle) != std::string::npos;
 }
 
+// Compare two frames ignoring the scroll-indicator column on the right: the
+// thumb legitimately moves when content is added (the log grew, so the bar
+// gets shorter), but the reader's slice of the messages must not.
+std::string StripIndicator(const std::string &frame)
+{
+    std::string out;
+    int col = 0;
+    for (char c : frame)
+    {
+        if (c == '\n')
+        {
+            out += c;
+            col = 0;
+        }
+        else
+        {
+            if (col < kW - 1)
+                out += c;
+            col++;
+        }
+    }
+    return out;
+}
+
 // Chat whose last message is long prose, so the log overflows and the prose
 // wraps into dozens of rows. Before the fix this content made the content
 // height unstable across layout passes and locked the viewport to the top.
@@ -212,12 +236,14 @@ static void test_new_message_does_not_disturb_reader(void)
     auto chat = MakeWrappingChat();
     (void)Draw(chat);
     ScrollToTop(chat);
-    // The chat has no scroll indicator, so a scrolled-up reader must see a
-    // byte-identical frame when a message arrives below the viewport.
-    const std::string before = Draw(chat);
+    // The thumb at the right edge legitimately changes when the log grows
+    // below the viewport, so compare everything but the indicator column: a
+    // scrolled-up reader's slice of the messages must stay byte-identical
+    // when a message arrives.
+    const std::string before = StripIndicator(Draw(chat));
 
     chat->AddMessage(std::make_shared<edc::Message>("arrival", ::time(nullptr)));
-    const std::string after = Draw(chat);
+    const std::string after = StripIndicator(Draw(chat));
 
     ASSERT(before == after, "viewport jumped when a message arrived for a scrolled-up reader");
     PASS();
