@@ -12,11 +12,11 @@ namespace
 ::ftxui::Color StateColor(const std::string &state)
 {
     if (state == "COMPLETED")
-        return ::ftxui::Color::RGB(64, 168, 96);   // green
+        return ::ftxui::Color::RGB(64, 168, 96); // green
     if (state == "ERROR")
         return ::ftxui::Color::RGB(224, 108, 117); // red
     if (state == "LLM_PROCESSING" || state == "TOOL_CALLING")
-        return ::ftxui::Color::RGB(94, 151, 247);  // blue
+        return ::ftxui::Color::RGB(94, 151, 247); // blue
     if (state == "SUSPENDED")
         return ::ftxui::Color::RGB(198, 120, 221); // magenta
     if (state == "CANCELLED")
@@ -60,6 +60,70 @@ std::string TruncateUtf8(const std::string &s, size_t max_codepoints)
     return s.substr(0, byte_pos) + "…";
 }
 
+// Number of terminal cells |s| occupies when printed. Wide characters (CJK
+// fullwidth, emoji, …) count as two cells — this is what ftxui itself uses
+// when laying out and rendering text, so it is the right unit for deciding
+// how much of a description fits on a row.
+int StringWidth(const std::string &s)
+{
+    return ::ftxui::string_width(s);
+}
+
+// Truncate |s| so it occupies at most |max_cells| terminal cells, appending
+// "…" when something had to be cut. Truncation happens on UTF-8 code-point
+// boundaries and accounts for wide characters, so the result really fits:
+// the caller no longer has to rely on flex-shrink, which would hard-clip the
+// description flush against the following state label.
+std::string TruncateToWidth(const std::string &s, int max_cells)
+{
+    if (max_cells <= 0)
+        return std::string();
+    if (StringWidth(s) <= max_cells)
+        return s;
+
+    std::string out;
+    out.reserve(s.size());
+    size_t i = 0;
+    int used = 0;
+    while (i < s.size())
+    {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        size_t len = 1;
+        if (c >= 0xF0)
+            len = 4;
+        else if (c >= 0xE0)
+            len = 3;
+        else if (c >= 0xC0)
+            len = 2;
+
+        // A truncated or overlong sequence ends the scan at the last whole
+        // code point.
+        if (i + len > s.size())
+            break;
+
+        // Reserve the last cell for the ellipsis.
+        const int w = StringWidth(s.substr(i, len));
+        if (used + w > max_cells - 1)
+            break;
+
+        out.append(s, i, len);
+        used += w;
+        i += len;
+    }
+    out += "…";
+    return out;
+}
+
+// Cells guaranteed to stay free between a task's description and its state
+// label. Kept as a fixed non-flex element so the state never glues itself to
+// a long (truncated) description.
+constexpr int kDescStateGapCells = 2;
+
+// Upper bound (in code points) kept per task when importing a snapshot. The
+// exact per-row fit is decided at render time by TruncateToWidth(); this cap
+// only stops a pathological description from being copied/stored in full.
+constexpr size_t kMaxDescCodepoints = 200;
+
 } // namespace
 
 TaskWidget::TaskWidget()
@@ -101,7 +165,7 @@ void TaskWidget::SetSnapshot(const ::edc_c_task_snapshot *snap)
             task.state = t->state ? t->state : "";
             task.is_leader = t->is_leader != 0;
             task.is_active = t->is_active != 0;
-            task.description = TruncateUtf8(t->description ? t->description : "", 24);
+            task.description = TruncateUtf8(t->description ? t->description : "", kMaxDescCodepoints);
             if (task.is_active)
                 active_group_id = group.group_id;
             group.tasks.push_back(std::move(task));
@@ -164,6 +228,19 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
     }
 
     group_header_boxes_.resize(groups_.size());
+
+    // Width available for a task row. reflect() below sits on the vbox
+    // *inside* the (empty-style) border, because ftxui's Border node insets
+    // its child by one column on each side even for BorderStyle::EMPTY — the
+    // outer box would overestimate the row width by 2 and the extra-wide
+    // description would then be flex-shrunk, clipping the trailing "…".
+    // reflect() fills content_box_ during the render pass, so this reads the
+    // previous frame's width; before the first measurement fall back to the
+    // default sidebar width (36) minus the 2 border columns.
+    int row_width = 34;
+    if (content_box_.x_min != 0 || content_box_.x_max != 0 || content_box_.y_min != 0 || content_box_.y_max != 0)
+        row_width = content_box_.x_max - content_box_.x_min + 1;
+
     for (size_t i = 0; i < groups_.size(); i++)
     {
         const auto &g = groups_[i];
@@ -185,22 +262,37 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
 
         for (const auto &t : g.tasks)
         {
+            // Left part: indent, active/leader markers and the task id. The
+            // description is appended separately so its length can be
+            // computed against the real row width.
             std::string left = "  ";
             left += t.is_active ? "*" : " ";
             left += t.is_leader ? "●" : " ";
             left += " " + t.task_id;
+
+            const int state_cells = StringWidth(t.state);
+
             if (!t.description.empty())
-                left += "  " + t.description;
+            {
+                // Two cells separate the id from the description (kept from
+                // the previous layout), then kDescStateGapCells stay free
+                // before the state label.
+                const int budget = row_width - StringWidth(left) - 2 - kDescStateGapCells - state_cells;
+                if (budget > 0)
+                    left += "  " + TruncateToWidth(t.description, budget);
+            }
 
             auto row = hbox({
                 text(left) | flex,
+                text(std::string(kDescStateGapCells, ' ')),
                 text(t.state) | color(StateColor(t.state)),
             });
             lines.push_back(row);
         }
     }
 
-    return vbox(std::move(lines)) | borderStyled(BorderStyle::EMPTY) | bgcolor(Color::RGB(30, 30, 30)) | flex;
+    return vbox(std::move(lines)) | reflect(content_box_) | borderStyled(BorderStyle::EMPTY) |
+           bgcolor(Color::RGB(30, 30, 30)) | flex;
 }
 
 } // namespace edc

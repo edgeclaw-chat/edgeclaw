@@ -60,5 +60,13 @@ class TaskWidget : public ::ftxui::ComponentBase
 
     // Per-group header click targets, populated during OnRender.
     std::vector<::ftxui::Box> group_header_boxes_;
+
+    // Content box of this widget's inner vbox (rows), written by reflect()
+    // during the previous render pass. OnRender reads it to truncate task
+    // descriptions to the real row width (instead of letting flex-shrink
+    // hard-clip them flush against the state label). Note the box is measured
+    // inside the border, whose EMPTY style still insets its child by one
+    // column per side. All-zero means "not measured yet".
+    ::ftxui::Box content_box_;
 };
 } // namespace edc
