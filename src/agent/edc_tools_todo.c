@@ -1,11 +1,51 @@
-﻿#include "edc_tools_todo.h"
+#include "edc_tools_todo.h"
 #include "edc_channel_actor.h"
 #include "edc_compat.h"
 #include "edc_param_types.h"
+#include "edc_task.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
 #include "sds.h"
 #include <stdlib.h>
+
+/* 纯渲染：items 已在工具入口校验过 (status 合法、至多一个 in_progress)。
+ * 对缺失字段做保守兜底 (缺省视为 pending / 空文本)，避免 agent 侧读取
+ * 历史数据时因脏数据崩溃。 */
+sds edc_tools_todo_render_md(cJSON *items)
+{
+    int total = items ? cJSON_GetArraySize(items) : 0;
+    sds lines = sdsnew("# TODO\n");
+    int completed = 0;
+    for (int i = 0; i < total; ++i)
+    {
+        cJSON *item = cJSON_GetArrayItem(items, i);
+        char *status = cJSON_GetStringValue(cJSON_GetObjectItem(item, "status"));
+        char *content = cJSON_GetStringValue(cJSON_GetObjectItem(item, "content"));
+        char *activeForm = cJSON_GetStringValue(cJSON_GetObjectItem(item, "activeForm"));
+        const char *st = status ? status : "pending";
+        const char *ct = content ? content : "";
+
+        if (strcmp(st, "completed") == 0)
+        {
+            lines = sdscatprintf(lines, "- [x] %s\n", ct);
+            completed += 1;
+        }
+        else if (strcmp(st, "in_progress") == 0)
+        {
+            if (activeForm && *activeForm)
+                lines = sdscatprintf(lines, "- [ ] %s <- %s\n", ct, activeForm);
+            else
+                lines = sdscatprintf(lines, "- [ ] %s\n", ct);
+        }
+        else
+        {
+            lines = sdscatprintf(lines, "- [ ] %s\n", ct);
+        }
+    }
+
+    lines = sdscatprintf(lines, "\n%d/%d completed", completed, total);
+    return lines;
+}
 
 static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
                                       void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
@@ -28,6 +68,13 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
         edc_toolbox_emit_tool_message_md_payload(ctx, "update_todolist", empty, payload);
         sdsfree(empty);
         cJSON_free(payload);
+
+        /* 清单被清空 → 该 task 不再持有 todo（后续请求不再向 system prompt 追加） */
+        if (ctx->task && ctx->task->todolist)
+        {
+            cJSON_Delete(ctx->task->todolist);
+            ctx->task->todolist = NULL;
+        }
         callback(ctx, sdsnew("No todos"), NULL);
         return;
     }
@@ -39,19 +86,14 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
         return;
     }
 
-    sds lines = sdsnew("# TODO\n");
-    int completed = 0;
+    /* 校验 (渲染函数假设输入已合法) */
     int in_progress_count = 0;
     for (int i = 0; i < total; ++i)
     {
         cJSON *item = cJSON_GetArrayItem(items, i);
         char *status = cJSON_GetStringValue(cJSON_GetObjectItem(item, "status"));
-        char *content = cJSON_GetStringValue(cJSON_GetObjectItem(item, "content"));
-        char *activeForm = cJSON_GetStringValue(cJSON_GetObjectItem(item, "activeForm"));
-
         if (!status || (strcmp(status, "pending") && strcmp(status, "in_progress") && strcmp(status, "completed")))
         {
-            sdsfree(lines);
             sds msg = sdscatprintf(sdsempty(),
                                    "Error: invalid status '%s' at item %d. Must be pending, in_progress, or completed.",
                                    status ? status : "(null)", i + 1);
@@ -59,26 +101,11 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
             callback(ctx, msg, err);
             return;
         }
-
-        if (strcmp(status, "completed") == 0)
-        {
-            lines = sdscatprintf(lines, "- [x] %s\n", content);
-            completed += 1;
-        }
-        else if (strcmp(status, "in_progress") == 0)
-        {
-            in_progress_count++;
-            lines = sdscatprintf(lines, "- [ ] %s <- %s\n", content, activeForm);
-        }
-        else
-        {
-            lines = sdscatprintf(lines, "- [ ] %s\n", content);
-        }
+        if (strcmp(status, "in_progress") == 0)
+            in_progress_count += 1;
     }
-
     if (in_progress_count > 1)
     {
-        sdsfree(lines);
         sds msg =
             sdscatprintf(sdsempty(), "Error: Only ONE item can be in_progress at a time, got %d.", in_progress_count);
         EdcError *err = edc_error_new(EDC_ERR_INVAL, "%s", msg);
@@ -86,7 +113,19 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
         return;
     }
 
-    lines = sdscatprintf(lines, "\n%d/%d completed", completed, total);
+    sds lines = edc_tools_todo_render_md(items);
+
+    /* 把这份 todo 清单挂到调用它的 task 上 (整体替换)。task->todolist 已被
+     * state_serializer 持久化；之后每次为该 task 组装 LLM 请求时 (见 agent
+     * send_llm)，若清单非空会把渲染 md 追加到该 task 的 system prompt 尾部，
+     * 让多轮工具循环中的模型始终能看到当前清单，而不依赖窗口内残留的
+     * update_todolist tool 消息。 */
+    if (ctx->task)
+    {
+        if (ctx->task->todolist)
+            cJSON_Delete(ctx->task->todolist);
+        ctx->task->todolist = cJSON_Duplicate(items, 1);
+    }
 
     char *payload = cJSON_PrintUnformatted(args);
     edc_toolbox_emit_tool_message_md_payload(ctx, "update_todolist", lines, payload);

@@ -8,6 +8,7 @@
 #include <cJSON.h>
 
 struct edc_tool;
+struct edc_task; /* fwd: 发起工具调用的 task，经 ctx->task 提供给工具 */
 
 struct edc_toolbox
 {
@@ -22,7 +23,8 @@ struct edc_toolbox_call_ctx
 {
     struct edc_toolbox *tb;
     edc_channel_type call_from_type;
-    void *request_id; /* 发起该次工具调用的 task 的 request_id (由 toolbox actor 注入) */
+    void *request_id;        /* 发起该次工具调用的 task 的 request_id (由 toolbox actor 注入) */
+    struct edc_task *task;   /* 发起该次工具调用的 task (与 request_id 同源；agent 构建请求链时注入，非 task 路径为 NULL) */
     void *priv;
 };
 
@@ -38,7 +40,7 @@ struct edc_toolbox_emit_msg
 };
 
 extern struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, edc_channel_type channel_type,
-                                                             void *request_id, void *priv);
+                                                             void *request_id, struct edc_task *task, void *priv);
 extern void edc_toolbox_call_ctx_free(struct edc_toolbox_call_ctx *);
 extern void edc_toolbox_emit_msg_free(void *p);
 extern struct edc_toolbox *edc_toolbox_new(struct edc_config *conf, edc_actor_t *scheduler, edc_actor_t *channel_actor);

@@ -77,12 +77,13 @@ void edc_toolbox_emit_msg_free(void *p)
 }
 
 struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, edc_channel_type channel_type,
-                                                      void *request_id, void *priv)
+                                                      void *request_id, struct edc_task *task, void *priv)
 {
     struct edc_toolbox_call_ctx *ctx = g_new0(struct edc_toolbox_call_ctx, 1);
     ctx->tb = tb;
     ctx->call_from_type = channel_type;
     ctx->request_id = request_id;
+    ctx->task = task;
     ctx->priv = priv;
     return ctx;
 }
