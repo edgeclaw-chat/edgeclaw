@@ -9,6 +9,7 @@ namespace edc
 {
 class ChatWidget;
 class TaskWidget;
+class TodoWidget;
 class TUIWindow : public ::ftxui::ComponentBase
 {
   public:
@@ -40,6 +41,7 @@ class TUIWindow : public ::ftxui::ComponentBase
 
     std::shared_ptr<edc::ChatWidget> chat_widget_;
     std::shared_ptr<edc::TaskWidget> task_widget_;
+    std::shared_ptr<edc::TodoWidget> todo_widget_;
     ::ftxui::Component input_;
     ::ftxui::Element footer_;
     ::ftxui::Element prompt_;

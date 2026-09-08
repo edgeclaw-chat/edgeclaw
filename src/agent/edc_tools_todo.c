@@ -11,13 +11,25 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
                                       void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     cJSON *items = cJSON_GetObjectItem(args, "items");
-    if (!items || !cJSON_GetArraySize(items))
+    int total = items ? cJSON_GetArraySize(items) : 0;
+
+    /* 无论清单是否为空，回显都附带原始 args JSON ({"items":[...]})：对话区照常按
+     * Markdown checklist 显示，TUI 右侧 TodoWidget 则直接解析 payload，不再依赖
+     * 从 markdown 正文反推状态。 */
+
+    if (!total)
     {
+        /* 空清单同样回显一次 markdown：对话区与右侧 TodoWidget 都显示为已清空。
+         * 这里只发展示消息，callback 结果仍是 "No todos"，LLM 看到的 tool result
+         * 与原来一致。 */
+        char *payload = cJSON_PrintUnformatted(args);
+        sds empty = sdsnew("# TODO\n\n0/0 completed");
+        edc_toolbox_emit_tool_message_md_payload(ctx, "update_todolist", empty, payload);
+        sdsfree(empty);
+        cJSON_free(payload);
         callback(ctx, sdsnew("No todos"), NULL);
         return;
     }
-
-    int total = cJSON_GetArraySize(items);
     if (total > 20)
     {
         sds msg = sdscatprintf(sdsempty(), "Error: Maximum 20 items allowed, got %d.", total);
@@ -75,7 +87,9 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
 
     lines = sdscatprintf(lines, "\n%d/%d completed", completed, total);
 
-    edc_toolbox_emit_tool_message_md(ctx, "update_todolist", lines);
+    char *payload = cJSON_PrintUnformatted(args);
+    edc_toolbox_emit_tool_message_md_payload(ctx, "update_todolist", lines, payload);
+    cJSON_free(payload);
 
     callback(ctx, lines, NULL);
 }

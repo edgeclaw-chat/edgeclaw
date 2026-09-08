@@ -17,6 +17,8 @@ struct edc_channel_message
 {
     sds content;
     sds header; /* optional short description (e.g. executed command/tool name) shown above content */
+    sds payload; /* optional structured JSON (e.g. update_todolist 的原始 args)；
+                    对话渲染仍用 content；TUI 等结构化消费者直接解析 payload；可为 NULL */
     edc_channel_type type;
     edc_channel_message_type message_type;
     edc_render_pref_t render_pref; /* 发送方声明的渲染偏好；零值 PLAIN，未声明即纯文本 */

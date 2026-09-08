@@ -33,6 +33,8 @@ struct edc_toolbox_emit_msg
     sds header;
     sds content;
     edc_render_pref_t render_pref; /* 发送方声明的渲染偏好 (默认/PLAIN = 纯文本) */
+    sds payload;                   /* 可选结构化 JSON (如 update_todolist 的原始 args)；
+                                      给 TUI 等结构化消费者直接解析，对话回显仍用 content；可为 NULL */
 };
 
 extern struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, edc_channel_type channel_type,
@@ -56,9 +58,15 @@ extern void edc_toolbox_exec(struct edc_toolbox_call_ctx *, const char *name, cJ
  * render_pref 由发送方（工具）按输出内容显式声明，渲染端零猜测：
  *   - emit_tool_message_plain：纯文本输出（代码/命令输出/确认消息等），渲染端原样显示；
  *   - emit_tool_message_md：输出本身是 Markdown（如 checklist/表格），按 Markdown 渲染。
+ * _payload 变体额外携带一份结构化 JSON（原始工具参数等），随消息一路传到渲染端；
+ * 对话回显仍是 content，payload 仅供结构化消费者（如 TUI TodoWidget）解析。
  * 消息经 scheduler 转发，仅在来源 task 仍为 active task 时显示——后台任务保持静默。 */
 extern void edc_toolbox_emit_tool_message_plain(struct edc_toolbox_call_ctx *ctx, const char *header,
                                                  const char *content);
 extern void edc_toolbox_emit_tool_message_md(struct edc_toolbox_call_ctx *ctx, const char *header,
                                              const char *content);
+extern void edc_toolbox_emit_tool_message_plain_payload(struct edc_toolbox_call_ctx *ctx, const char *header,
+                                                        const char *content, const char *payload);
+extern void edc_toolbox_emit_tool_message_md_payload(struct edc_toolbox_call_ctx *ctx, const char *header,
+                                                     const char *content, const char *payload);
 #endif

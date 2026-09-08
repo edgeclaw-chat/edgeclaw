@@ -15,7 +15,8 @@
 #include "uthash.h"
 
 static void edc_toolbox_emit_tool_message_internal(struct edc_toolbox_call_ctx *ctx, const char *header,
-                                                   const char *content, edc_render_pref_t render_pref)
+                                                   const char *content, edc_render_pref_t render_pref,
+                                                   const char *payload)
 {
     if (!ctx || !ctx->tb || !content || !*content)
         return;
@@ -30,6 +31,7 @@ static void edc_toolbox_emit_tool_message_internal(struct edc_toolbox_call_ctx *
     emit->header = (header && *header) ? sdsnew(header) : NULL;
     emit->content = sdsnew(content);
     emit->render_pref = render_pref;
+    emit->payload = (payload && *payload) ? sdsnew(payload) : NULL;
 
     edc_actor_send(tb->scheduler,
                    edc_actor_msg_new_sub_type(BC_ACTOR_MSG_TOOL_EMIT, ctx->call_from_type, tb->channel_actor,
@@ -39,13 +41,25 @@ static void edc_toolbox_emit_tool_message_internal(struct edc_toolbox_call_ctx *
 void edc_toolbox_emit_tool_message_plain(struct edc_toolbox_call_ctx *ctx, const char *header, const char *content)
 {
     /* 工具显式声明输出为纯文本（代码/命令输出/确认等），渲染端原样显示 */
-    edc_toolbox_emit_tool_message_internal(ctx, header, content, EDC_RENDER_PLAIN);
+    edc_toolbox_emit_tool_message_internal(ctx, header, content, EDC_RENDER_PLAIN, NULL);
 }
 
 void edc_toolbox_emit_tool_message_md(struct edc_toolbox_call_ctx *ctx, const char *header, const char *content)
 {
     /* 工具显式声明输出按 Markdown 渲染 */
-    edc_toolbox_emit_tool_message_internal(ctx, header, content, EDC_RENDER_MARKDOWN);
+    edc_toolbox_emit_tool_message_internal(ctx, header, content, EDC_RENDER_MARKDOWN, NULL);
+}
+
+void edc_toolbox_emit_tool_message_plain_payload(struct edc_toolbox_call_ctx *ctx, const char *header,
+                                                 const char *content, const char *payload)
+{
+    edc_toolbox_emit_tool_message_internal(ctx, header, content, EDC_RENDER_PLAIN, payload);
+}
+
+void edc_toolbox_emit_tool_message_md_payload(struct edc_toolbox_call_ctx *ctx, const char *header, const char *content,
+                                              const char *payload)
+{
+    edc_toolbox_emit_tool_message_internal(ctx, header, content, EDC_RENDER_MARKDOWN, payload);
 }
 
 void edc_toolbox_emit_msg_free(void *p)
@@ -57,6 +71,8 @@ void edc_toolbox_emit_msg_free(void *p)
         sdsfree(emit->header);
     if (emit->content)
         sdsfree(emit->content);
+    if (emit->payload)
+        sdsfree(emit->payload);
     free(emit);
 }
 

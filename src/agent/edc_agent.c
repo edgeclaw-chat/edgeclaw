@@ -299,7 +299,8 @@ static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task
  * header 的 TOOL 消息发给 channel_actor。 */
 
 static void edc_agent_cb_send_tool_message(struct edc_scheduler *sched, struct edc_task *task, const char *header,
-                                           const char *content, edc_render_pref_t render_pref, void *request_id)
+                                           const char *content, edc_render_pref_t render_pref, const char *payload,
+                                           void *request_id)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
     if (!agent || !task || !content)
@@ -308,6 +309,7 @@ static void edc_agent_cb_send_tool_message(struct edc_scheduler *sched, struct e
     struct edc_channel_message *reply =
         edc_channel_message_new(task->channel_type, EDC_CHANNEL_MESSAGE_TOOL_TYPE, sdsnew(content));
     reply->render_pref = render_pref;
+    reply->payload = (payload && *payload) ? sdsnew(payload) : NULL;
     if (header && *header)
         reply->header = sdsnew(header);
 

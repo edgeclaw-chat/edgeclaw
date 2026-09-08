@@ -1,0 +1,100 @@
+#pragma once
+
+#include <ftxui/screen/string.hpp>
+#include <string>
+
+namespace edc
+{
+
+/* UTF-8 / 终端宽度工具，右侧栏各 widget（任务树、todo 列表）共用。 */
+
+// Truncate by UTF-8 code points so a multi-byte character is never cut in
+// half (which would otherwise render as a replacement/garbage glyph).
+inline std::string TruncateUtf8(const std::string &s, size_t max_codepoints)
+{
+    if (s.empty())
+        return s;
+
+    size_t byte_pos = 0;
+    size_t count = 0;
+    while (byte_pos < s.size() && count < max_codepoints)
+    {
+        const unsigned char c = static_cast<unsigned char>(s[byte_pos]);
+        size_t len = 1;
+        if (c >= 0xF0)
+            len = 4;
+        else if (c >= 0xE0)
+            len = 3;
+        else if (c >= 0xC0)
+            len = 2;
+
+        // A truncated or overlong sequence ends the scan at the last whole
+        // code point.
+        if (byte_pos + len > s.size())
+            break;
+
+        byte_pos += len;
+        count++;
+    }
+
+    if (byte_pos >= s.size())
+        return s;
+
+    return s.substr(0, byte_pos) + "…";
+}
+
+// Number of terminal cells |s| occupies when printed. Wide characters (CJK
+// fullwidth, emoji, …) count as two cells — this is what ftxui itself uses
+// when laying out and rendering text, so it is the right unit for deciding
+// how much of a description fits on a row.
+inline int StringWidth(const std::string &s)
+{
+    return ::ftxui::string_width(s);
+}
+
+// Truncate |s| so it occupies at most |max_cells| terminal cells, appending
+// "…" when something had to be cut. Truncation happens on UTF-8 code-point
+// boundaries and accounts for wide characters, so the result really fits:
+// the caller no longer has to rely on flex-shrink, which would hard-clip the
+// text flush against whatever follows it.
+inline std::string TruncateToWidth(const std::string &s, int max_cells)
+{
+    if (max_cells <= 0)
+        return std::string();
+    if (StringWidth(s) <= max_cells)
+        return s;
+
+    std::string out;
+    out.reserve(s.size());
+    size_t i = 0;
+    int used = 0;
+    while (i < s.size())
+    {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        size_t len = 1;
+        if (c >= 0xF0)
+            len = 4;
+        else if (c >= 0xE0)
+            len = 3;
+        else if (c >= 0xC0)
+            len = 2;
+
+        // A truncated or overlong sequence ends the scan at the last whole
+        // code point.
+        if (i + len > s.size())
+            break;
+
+        // Reserve the last cell for the ellipsis.
+        const int w = StringWidth(s.substr(i, len));
+        if (used + w > max_cells - 1)
+            break;
+
+        out.append(s, i, len);
+        used += w;
+        i += len;
+    }
+    out += "…";
+    return out;
+}
+
+} // namespace edc

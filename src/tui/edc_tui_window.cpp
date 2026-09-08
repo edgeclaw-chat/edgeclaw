@@ -1,6 +1,7 @@
 #include "edc_tui_window.hpp"
 #include "edc_chat_widget.hpp"
 #include "edc_task_widget.hpp"
+#include "edc_todo_widget.hpp"
 #include "ftxui/component/component.hpp"
 #include "ftxui/component/component_options.hpp"
 #include "ftxui/component/event.hpp"
@@ -27,6 +28,12 @@ static void DisableBracketedPaste()
     std::fputs("\x1b[?2004l", stdout);
     std::fflush(stdout);
 }
+
+// update_todolist 工具的 TOOL 消息头（与 edc_tools_todo.c 注册名保持一致）。
+// 该工具每次调用都携带结构化 payload（原始 args JSON {"items":[...]}）与
+// Markdown checklist 回显；对话区渲染 checklist，右侧 TodoWidget 直接按
+// JSON 解析刷新状态（每次都整体替换）。
+constexpr char kTodoToolHeader[] = "update_todolist";
 
 // The animated "working" row must reflect the scheduler's process state, not
 // the channel-message stream: it spins exactly while the current foreground
@@ -69,6 +76,7 @@ TUIWindow::TUIWindow() : input_text_("")
 {
     chat_widget_ = std::make_shared<ChatWidget>();
     task_widget_ = std::make_shared<TaskWidget>();
+    todo_widget_ = std::make_shared<TodoWidget>();
 
     footer_ = ::ftxui::text(" Enter 发送   Alt+Enter 换行   Tab 切换输入/滚动   滚轮/↑↓ 滚动   Esc 退出 ") |
               ::ftxui::color(::ftxui::Color::RGB(147, 147, 147));
@@ -90,14 +98,29 @@ TUIWindow::TUIWindow() : input_text_("")
     container_ = ::ftxui::Container::Vertical({chat_widget_, input_}, &focused_);
 
     // Left pane = chat + input + footer (see RenderMain); right pane = task
-    // sidebar. ResizableSplit puts "main" on the right at a fixed,
-    // drag-adjustable width and lets "back" (the chat area) take the rest.
-    // The separator is a thin blank column so the sidebar stays borderless
-    // (distinguished only by its background color) while keeping a drag grab
-    // area to resize it.
+    // sidebar with the todo-list status pinned underneath. ResizableSplit
+    // puts "main" on the right at a fixed, drag-adjustable width and lets
+    // "back" (the chat area) take the rest. The separator is a thin blank
+    // column so the sidebar stays borderless (distinguished only by its
+    // background color) while keeping a drag grab area to resize it.
     auto main_area = ::ftxui::Renderer(container_, [this] { return RenderMain(); });
+    // The container child exists so mouse/key events keep reaching the two
+    // widgets (a childless Renderer would swallow them — TaskWidget needs
+    // them for its group-header expand/collapse clicks).
+    auto right_column = ::ftxui::Container::Vertical({task_widget_, todo_widget_});
+    auto right_pane = ::ftxui::Renderer(right_column, [this] {
+        // Task tree takes the flexible space; the todo widget is hidden until
+        // the first update_todolist emission gives it items.
+        ::ftxui::Elements col = {task_widget_->Render() | ::ftxui::flex};
+        if (todo_widget_->HasItems())
+        {
+            col.push_back(::ftxui::separator() | ::ftxui::color(::ftxui::Color::RGB(60, 60, 60)));
+            col.push_back(todo_widget_->Render());
+        }
+        return ::ftxui::vbox(std::move(col));
+    });
     split_ = ::ftxui::ResizableSplit({
-        task_widget_,                       // main (right pane)
+        right_pane,                         // main (right pane)
         main_area,                          // back (left pane)
         ::ftxui::Direction::Right,          // direction
         &sidebar_width_,                    // main_size
@@ -351,12 +374,16 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     const std::string text = content;
     const char *header_c = edc_c_channel_message_header(message);
     const std::string header = header_c ? header_c : "";
+    // Structured JSON payload (e.g. update_todolist's raw args). Read here
+    // while the message is still alive; NULL when the sender attached none.
+    const char *payload_c = edc_c_channel_message_payload(message);
+    const std::string payload = payload_c ? payload_c : "";
     // Sender-declared render preference (PLAIN/MARKDOWN). Read here while
     // the message is still alive; the closure below only needs the int.
     const int render_pref = edc_c_channel_message_render_pref(message);
     const time_t ts = ::time(nullptr);
 
-    auto add_message = [tui, kind, text, header, render_pref, ts]() {
+    auto add_message = [tui, kind, text, header, payload, render_pref, ts]() {
         std::shared_ptr<Message> widget;
         switch (kind)
         {
@@ -378,6 +405,29 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             else
             {
                 widget = std::make_shared<ToolMessage>(header, text, ts);
+            }
+
+            // update_todolist 的消息携带结构化 payload（原始 args JSON）：
+            // 右侧 TodoWidget 直接解析 JSON 渲染，不再从 markdown 正文反推。
+            // 与对话消息同一条消息、同一 UI 线程，状态整体替换。
+            if (header == kTodoToolHeader && !payload.empty())
+            {
+                ::edc_c_todo_payload *todo = edc_c_todo_payload_parse(payload.c_str());
+                if (todo)
+                {
+                    std::vector<TodoWidget::Item> items;
+                    items.reserve(static_cast<size_t>(todo->item_count));
+                    for (int i = 0; i < todo->item_count; i++)
+                    {
+                        TodoWidget::Item item;
+                        item.content = todo->items[i].content ? todo->items[i].content : "";
+                        item.status = todo->items[i].status ? todo->items[i].status : "";
+                        item.active_form = todo->items[i].active_form ? todo->items[i].active_form : "";
+                        items.push_back(std::move(item));
+                    }
+                    tui->todo_widget_->SetItems(items);
+                    edc_c_todo_payload_free(todo);
+                }
             }
             break;
         case Kind::Thought:

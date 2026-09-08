@@ -16,6 +16,7 @@ cc_library(
         "edc_message.cpp",
         "edc_scroll_view.cpp",
         "edc_task_widget.cpp",
+        "edc_todo_widget.cpp",
         "markdown.cpp",
     ],
 
@@ -26,6 +27,8 @@ cc_library(
         "edc_message.hpp",
         "edc_scroll_view.hpp",
         "edc_task_widget.hpp",
+        "edc_text_util.hpp",
+        "edc_todo_widget.hpp",
         "markdown.hpp",
     ],
     deps = [

@@ -524,7 +524,8 @@ static void sched_handle_tool_emit(struct edc_scheduler *sched, struct edc_actor
         return;
 
     if (sched->send_tool_message)
-        sched->send_tool_message(sched, task, emit->header, emit->content, emit->render_pref, msg->request_id);
+        sched->send_tool_message(sched, task, emit->header, emit->content, emit->render_pref, emit->payload,
+                                 msg->request_id);
 }
 
 /* ── Actor 入口 ────────────────────────────────────────────── */
