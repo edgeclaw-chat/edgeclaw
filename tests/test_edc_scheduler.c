@@ -2,6 +2,8 @@
 #include "edc_session.h"
 #include "edc_config.h"
 #include "edc_channel_actor.h"
+#include "edc_llm_actor.h"
+#include "edc_toolbox_actor.h"
 #include "log.h"
 #include <stdio.h>
 #include <string.h>
@@ -408,6 +410,175 @@ static void test_input_routes_to_waiting_leader(void)
     free_config(cfg);
 }
 
+/* ── 7. max_iter: LLM 工具循环迭代预算 ────────────────────── */
+
+static int g_dispatch_calls = 0;
+static int g_reply_calls = 0;
+static char g_reply_content[512];
+
+static void mock_dispatch_tools(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
+                                void *request_id)
+{
+    (void)sched;
+    (void)task;
+    (void)llm_resp;
+    (void)request_id;
+    g_dispatch_calls++;
+}
+
+static void mock_send_reply(struct edc_scheduler *sched, struct edc_task *task, const char *content,
+                            edc_channel_message_type message_type, void *request_id)
+{
+    (void)sched;
+    (void)task;
+    (void)message_type;
+    (void)request_id;
+    g_reply_calls++;
+    snprintf(g_reply_content, sizeof(g_reply_content), "%s", content ? content : "");
+}
+
+/* 投递一条 TOOL_CALL 的 LLM_RESPONSE (模拟模型又请求了一次工具)。 */
+static void deliver_llm_tool_call(struct edc_scheduler *sched, long req_id)
+{
+    edc_actor_t *actor = edc_scheduler_get_actor(sched);
+    struct edc_llm_actor_resp *r = edc_llm_actor_resp_new();
+    r->reason = BC_LLM_FINISH_REASON_TOOL_CALL;
+    r->content = sdsnew("tool round");
+    r->msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(r->msg, "role", "assistant");
+    cJSON_AddStringToObject(r->msg, "content", "let me run a tool");
+    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, (void *)(intptr_t)req_id, r,
+                                             (edc_actor_data_free_fn)edc_llm_actor_resp_free);
+    actor->handler(actor, msg); /* dispatches + frees msg (and resp) */
+}
+
+/* 投递一条单工具链 (tr->next == NULL) 的 TOOL_RESPONSE, 模拟工具已执行完。 */
+static void deliver_tool_resp(struct edc_scheduler *sched, long req_id)
+{
+    edc_actor_t *actor = edc_scheduler_get_actor(sched);
+    struct edc_toolbox_actor_req *tr = calloc(1, sizeof(*tr));
+    tr->name = sdsnew("exec_shell");
+    tr->call_id = sdsnew("call_1");
+    tr->result = sdsnew("tool result");
+    tr->next = NULL;
+    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TOOL_RESPONSE, NULL, (void *)(intptr_t)req_id, tr, NULL);
+    actor->handler(actor, msg); /* dispatches + frees msg (not data) */
+    sdsfree(tr->name);
+    sdsfree(tr->call_id);
+    sdsfree(tr->result);
+    free(tr);
+}
+
+/* 一轮工具循环: LLM 要工具 → 派发 → 工具结果回链尾。返回后由 send_llm
+ * 决定是否续发 (或到 max_iter 被截断)。 */
+static void run_one_tool_round(struct edc_scheduler *sched, long req_id)
+{
+    deliver_llm_tool_call(sched, req_id);
+    deliver_tool_resp(sched, req_id);
+}
+
+static void test_scheduler_max_iter_cap(void)
+{
+    TEST("max_iter=2 caps tool loop after 2 rounds");
+    struct edc_config *cfg = make_config();
+    cfg->max_iter = 2;
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
+
+    struct edc_task *leader = edc_scheduler_create_task(sched, "leader", edc_channel_adapter);
+    struct edc_task_group *g = edc_scheduler_create_group(sched, leader);
+    edc_scheduler_set_foreground(sched, g);
+    edc_session_set_active_task(sess, leader);
+
+    g_llm_calls = 0;
+    g_dispatch_calls = 0;
+    g_reply_calls = 0;
+    g_llm_task = NULL;
+    sched->send_llm = mock_send_llm;
+    sched->dispatch_tools = mock_dispatch_tools;
+    sched->send_reply = mock_send_reply;
+
+    drive_input(sched, "hello", 101);
+    CHECK(leader->llm_rounds == 1, "first llm request consumes one round");
+    CHECK(g_llm_calls == 1, "first llm request sent");
+
+    run_one_tool_round(sched, 101); /* 第1轮: 链尾 rounds=1 < 2 → 续发 */
+    CHECK(leader->llm_rounds == 2, "chain-end resend consumes round 2");
+    CHECK(g_dispatch_calls == 1, "tools dispatched in round 1");
+    CHECK(leader->state == TASK_LLM_PROCESSING, "round 1 continues to llm");
+    CHECK(g_llm_calls == 2, "round 1 chain end re-sends llm");
+
+    run_one_tool_round(sched, 101); /* rounds=2 >= 2 → 截断 */
+    CHECK(leader->llm_rounds == 2, "rounds consumed up to the cap");
+    CHECK(g_llm_calls == 2, "no third llm request after budget exhausted");
+    CHECK(leader->state == TASK_COMPLETED, "task completed at cap");
+    CHECK(leader->active_turn == NULL, "active turn committed");
+    CHECK(leader->output && strstr(leader->output, "max_iter=2") != NULL, "output carries cap notice");
+    CHECK(g_reply_calls == 1, "cap notice replied once");
+    CHECK(strstr(g_reply_content, "max_iter=2") != NULL, "reply content explains budget");
+
+    edc_scheduler_free(sched);
+    if (sess->messages) cJSON_Delete(sess->messages);
+    free(sess);
+    free_config(cfg);
+
+    TEST("max_iter=1 stops immediately after first tool chain");
+    cfg = make_config();
+    cfg->max_iter = 1;
+    sess = make_session(cfg);
+    sched = edc_scheduler_new(sess, cfg);
+
+    leader = edc_scheduler_create_task(sched, "leader", edc_channel_adapter);
+    g = edc_scheduler_create_group(sched, leader);
+    edc_scheduler_set_foreground(sched, g);
+    edc_session_set_active_task(sess, leader);
+
+    g_llm_calls = 0;
+    g_reply_calls = 0;
+    sched->send_llm = mock_send_llm;
+    sched->dispatch_tools = mock_dispatch_tools;
+    sched->send_reply = mock_send_reply;
+
+    drive_input(sched, "hello", 102);
+    run_one_tool_round(sched, 102);
+    CHECK(g_llm_calls == 1, "only the initial llm request");
+    CHECK(leader->state == TASK_COMPLETED, "capped right after first chain");
+    CHECK(g_reply_calls == 1, "cap notice replied");
+
+    edc_scheduler_free(sched);
+    if (sess->messages) cJSON_Delete(sess->messages);
+    free(sess);
+    free_config(cfg);
+
+    TEST("max_iter<=0 keeps unlimited loop (legacy behavior)");
+    cfg = make_config(); /* calloc → max_iter == 0 */
+    sess = make_session(cfg);
+    sched = edc_scheduler_new(sess, cfg);
+
+    leader = edc_scheduler_create_task(sched, "leader", edc_channel_adapter);
+    g = edc_scheduler_create_group(sched, leader);
+    edc_scheduler_set_foreground(sched, g);
+    edc_session_set_active_task(sess, leader);
+
+    g_llm_calls = 0;
+    sched->send_llm = mock_send_llm;
+    sched->dispatch_tools = mock_dispatch_tools;
+    sched->send_reply = mock_send_reply;
+
+    drive_input(sched, "hello", 103);
+    run_one_tool_round(sched, 103);
+    run_one_tool_round(sched, 103);
+    run_one_tool_round(sched, 103);
+    CHECK(leader->llm_rounds == 4, "rounds counted while unlimited");
+    CHECK(g_llm_calls == 4, "llm keeps being re-sent (no cap)");
+    CHECK(leader->active_turn != NULL, "turn stays open while looping");
+
+    edc_scheduler_free(sched);
+    if (sess->messages) cJSON_Delete(sess->messages);
+    free(sess);
+    free_config(cfg);
+}
+
 /* ── main ──────────────────────────────────────────────────── */
 
 int main(void)
@@ -423,6 +594,7 @@ int main(void)
     test_scheduler_group_signals();
     test_scheduler_signal_all();
     test_input_routes_to_waiting_leader();
+    test_scheduler_max_iter_cap();
 
     log_info("");
     log_info("=== 测试结果: %d passed, %d failed ===", test_passed, test_failed);

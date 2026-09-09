@@ -376,6 +376,7 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     turn->task_id = strdup(task->task_id);
     edc_turn_add_user_message(turn, input->content);
     task->active_turn = turn;
+    task->llm_rounds = 0; /* 新一轮输入: 重置 max_iter 迭代预算 */
     task->current_request_id = msg->request_id;
     edc_scheduler_register_task(sched, task, msg->request_id);
 
@@ -389,7 +390,10 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     {
         sched_set_task_state(sched, task, TASK_LLM_PROCESSING);
         if (sched->send_llm)
+        {
+            task->llm_rounds++; /* 发出一条 LLM 请求 → 消耗一轮迭代预算 */
             sched->send_llm(sched, task, msg->request_id);
+        }
     }
 }
 
@@ -507,7 +511,10 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
                 {
                     sched_set_task_state(sched, dt, TASK_LLM_PROCESSING);
                     if (sched->send_llm)
+                    {
+                        dt->llm_rounds++; /* 排队的依赖输入开始消耗预算 */
                         sched->send_llm(sched, dt, dt->current_request_id);
+                    }
                 }
             }
         }
@@ -536,6 +543,43 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         sched->send_reply(sched, task, "Internal error: unknown finish reason", EDC_CHANNEL_MESSAGE_SYS_TYPE, msg->request_id);
 }
 
+/* 到达 max_iter 上限: 构造一条 STOP 语义的 LLM 响应 (内容为收尾说明),
+ * 复用 sched_handle_llm_resp 的完整终结路径 —— turn (用户消息 + assistant
+ * tool_call + 工具结果) 整体入库、任务置 COMPLETED、通知依赖者、触发 L1
+ * 折叠与 save_session, 保证被打断的上下文仍是连贯的。 */
+static void sched_stop_at_iteration_cap(struct edc_scheduler *sched, struct edc_task *task, struct edc_actor_msg *msg)
+{
+    int max_iter = (sched->config && sched->config->max_iter > 0) ? sched->config->max_iter : 0;
+
+    sds notice = sdsempty();
+    notice = sdscatprintf(
+        notice,
+        "[stopped: reached max_iter=%d LLM/tool rounds without a final answer — iteration budget exhausted. "
+        "Send a follow-up message to continue.]",
+        max_iter);
+
+    cJSON *assistant = cJSON_CreateObject();
+    cJSON_AddStringToObject(assistant, "role", "assistant");
+    cJSON_AddStringToObject(assistant, "content", notice);
+
+    struct edc_llm_actor_resp fake;
+    memset(&fake, 0, sizeof(fake));
+    fake.reason = BC_LLM_FINISH_REASON_STOP;
+    fake.content = notice; /* STOP 分支用 sdsnew 拷贝, 不会持有 */
+    fake.msg = assistant;  /* 所有权转入 active_turn (与真实响应一致) */
+
+    struct edc_actor_msg evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.type = BC_ACTOR_MSG_LLM_RESPONSE;
+    evt.from = msg->from;
+    evt.request_id = msg->request_id; /* task 此刻仍注册在该 request_id 下 */
+    evt.data = &fake;
+
+    sched_handle_llm_resp(sched, &evt);
+
+    sdsfree(notice);
+}
+
 static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor_msg *msg)
 {
     struct edc_task *task = edc_scheduler_find_task(sched, msg->request_id);
@@ -555,9 +599,21 @@ static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor
     /* 若 tool chain 完成，发送续 LLM 请求 */
     if (!tr->next)
     {
+        /* max_iter 治理: 工具链结束后若已耗尽本轮 LLM 迭代预算, 不再续发
+         * LLM —— 模型已拿到最后一轮工具结果仍要继续时, 说明大概率在工具
+         * 循环里空转。max_iter <= 0 (默认/测试) 表示不限制。 */
+        if (sched->config->max_iter > 0 && task->llm_rounds >= sched->config->max_iter)
+        {
+            sched_stop_at_iteration_cap(sched, task, msg);
+            return;
+        }
+
         sched_set_task_state(sched, task, TASK_LLM_PROCESSING);
         if (sched->send_llm)
+        {
+            task->llm_rounds++; /* 工具链结束后续发 → 再消耗一轮预算 */
             sched->send_llm(sched, task, msg->request_id);
+        }
     }
 }
 
