@@ -70,6 +70,15 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
     const Color kDimLine = Color::RGB(60, 60, 60);
     const Color kTodoBg = Color::RGB(30, 30, 30); // must match TaskWidget's pane background
 
+    // Blank cells reserved at the right edge of every full-width row. The
+    // sidebar pane is the window's rightmost element: rows used to wrap /
+    // truncate right up to the inner border, so long text butted against the
+    // terminal edge while the left side kept a visible gutter (split
+    // separator + border inset). Keeping this much of every text row free on
+    // the right restores a balanced inset; the background is uniform so the
+    // reserved cells just read as quiet margin.
+    constexpr int kRightPad = 2;
+
     const size_t total = items_.size();
     const size_t shown = std::min(total, kMaxVisibleRows);
 
@@ -87,6 +96,7 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             text((collapsed_ ? "▸ " : "▾ ") + std::string(" Todos ")) | bold | color(kBlue),
             filler(),
             text(summary) | color(all_done ? kGreen : kGray) | bold,
+            text(std::string(kRightPad, ' ')),
         }) | reflect(header_box_));
     }
 
@@ -145,18 +155,50 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             else
                 marker = text("  [ ] ") | color(kGray) | dim;
 
-            // Content wraps to the whole row width minus the marker column;
-            // single-line ellipsis truncation is only a last resort for a
-            // description longer than kMaxContentLines wrapped lines.
-            const int budget = row_width - kFixedCells;
+            // Content wraps to the whole row width minus the marker column
+            // and the right margin; single-line ellipsis truncation is only
+            // a last resort for a description longer than kMaxContentLines
+            // wrapped lines.
+            const int budget = row_width - kFixedCells - kRightPad;
+
+            // The priority tag ("[high]" / "[medium]" / "[low]") is docked
+            // at the right edge of the *first* content line, right-aligned
+            // across every item — the mirror image of the marker column on
+            // the left. The first line must therefore leave kTagGapCells
+            // plus the tag's own width free next to the tag; when the first
+            // wrapped segment would not fit beside it, the whole content is
+            // re-wrapped at the narrower budget so no line ever collides
+            // with the docked tag. When the pane is so narrow that the tag
+            // would leave too little room for ordinary words (hard-splitting
+            // them into "Mediu" + "m"), the tag is dropped and the content
+            // keeps the full width instead.
+            const bool has_tag = !item.priority.empty();
+            bool dock_tag = false;
+            int wrap_budget = budget;
+            if (has_tag)
+            {
+                const int tagw = StringWidth("[" + item.priority + "]");
+                constexpr int kTagGapCells = 2;
+                constexpr int kMinTagLineBudget = 8;
+                const int room = budget - tagw - kTagGapCells;
+                dock_tag = room >= kMinTagLineBudget;
+                if (dock_tag)
+                    wrap_budget = room;
+            }
             std::vector<std::string> wrapped = WrapToWidth(item.content, budget);
+            int used_budget = budget;
+            if (dock_tag && !wrapped.empty() && StringWidth(wrapped[0]) > wrap_budget)
+            {
+                wrapped = WrapToWidth(item.content, wrap_budget);
+                used_budget = wrap_budget;
+            }
             if (wrapped.empty())
                 wrapped.push_back(std::string());
             if (wrapped.size() > kMaxContentLines)
             {
                 wrapped.resize(kMaxContentLines);
                 std::string &last = wrapped.back();
-                if (budget - StringWidth(last) >= 1)
+                if (used_budget - StringWidth(last) >= 1)
                     last += "…";
             }
 
@@ -174,10 +216,19 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             };
 
             Elements item_lines;
-            Element first_line = hbox({std::move(marker), style_content(text(wrapped[0]))});
-            if (!item.priority.empty())
-                first_line = hbox({std::move(first_line), text(" [" + item.priority + "]") | dim | color(kGray)});
-            item_lines.push_back(std::move(first_line));
+            // First content line: the marker stays glued to the left, the
+            // content takes the middle and the priority tag (when docked)
+            // sits at the far right, its right edge held kRightPad off the
+            // pane border. flex() on the content pushes the tag across, so
+            // every item's tag lands in the same right-aligned column no
+            // matter how long the content is.
+            Elements first_children;
+            first_children.push_back(std::move(marker));
+            first_children.push_back(style_content(text(wrapped[0])) | flex);
+            if (dock_tag)
+                first_children.push_back(text("[" + item.priority + "]") | dim | color(kGray));
+            first_children.push_back(text(std::string(kRightPad, ' ')));
+            item_lines.push_back(hbox(std::move(first_children)));
             for (size_t ln = 1; ln < wrapped.size(); ln++)
                 item_lines.push_back(hbox({text(cont_prefix), style_content(text(wrapped[ln]))}));
 

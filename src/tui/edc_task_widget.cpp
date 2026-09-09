@@ -31,6 +31,14 @@ namespace
 // a long (truncated) description.
 constexpr int kDescStateGapCells = 2;
 
+// Blank cells reserved at the right edge of every full-width row. The
+// sidebar pane is the window's rightmost element: rows used to truncate /
+// right-align right up to the inner border, so long text and the state
+// labels butted against the terminal edge while the left side kept a visible
+// gutter (split separator + border inset). Keeping this much of every text
+// row free on the right restores a balanced inset.
+constexpr int kRightPad = 2;
+
 // Upper bound (in code points) kept per task when importing a snapshot. The
 // exact per-row fit is decided at render time by TruncateToWidth(); this cap
 // only stops a pathological description from being copied/stored in full.
@@ -156,6 +164,7 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
             head.push_back(text(std::to_string(group_count) + "g · " + std::to_string(task_count) + "t") |
                            dim | color(Color::RGB(147, 147, 147)));
         }
+        head.push_back(text(std::string(kRightPad, ' ')));
         lines.push_back(hbox(std::move(head)) | reflect(section_header_box_));
     }
 
@@ -187,14 +196,14 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
             std::string sid = session_name_.empty() ? session_id_ : session_name_;
             if (!session_id_.empty() && session_name_ != session_id_)
                 sid += " [" + session_id_ + "]";
-            lines.push_back(text(" " + TruncateToWidth(sid, row_width - 1)) | dim);
+            lines.push_back(text(" " + TruncateToWidth(sid, row_width - 1 - kRightPad)) | dim);
 
             // Session stats, mirroring /session list: message count and the
             // date the session was created ("YYYY-MM-DD HH:MM:SS" → date only).
             std::string stats = std::to_string(message_count_) + " msgs";
             if (created_at_.size() >= 10)
                 stats += " · created " + created_at_.substr(0, 10);
-            lines.push_back(text(" " + TruncateToWidth(stats, row_width - 1)) | dim |
+            lines.push_back(text(" " + TruncateToWidth(stats, row_width - 1 - kRightPad)) | dim |
                             color(Color::RGB(147, 147, 147)));
         }
         lines.push_back(separator());
@@ -241,8 +250,10 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
                 {
                     // Two cells separate the id from the description (kept
                     // from the previous layout), then kDescStateGapCells stay
-                    // free before the state label.
-                    const int budget = row_width - StringWidth(left) - 2 - kDescStateGapCells - state_cells;
+                    // free before the state label; kRightPad keeps the state
+                    // label itself off the pane's right edge.
+                    const int budget = row_width - StringWidth(left) - 2 - kDescStateGapCells - state_cells -
+                                       kRightPad;
                     if (budget > 0)
                         left += "  " + TruncateToWidth(t.description, budget);
                 }
@@ -251,6 +262,7 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
                     text(left) | flex,
                     text(std::string(kDescStateGapCells, ' ')),
                     text(t.state) | color(StateColor(t.state)),
+                    text(std::string(kRightPad, ' ')),
                 });
                 lines.push_back(row);
             }
