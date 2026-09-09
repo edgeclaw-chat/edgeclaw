@@ -197,7 +197,18 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
     struct edc_llm_actor_http_req *httpreq =
         edc_llm_actor_http_req_new(actor, body_s, &state->api_conf, from, request_id);
 
-    edc_https_client_connect(state->client, state->api_conf.api_url, edc_llm_actor_on_http_fn, httpreq);
+    if (edc_https_client_connect(state->client, state->api_conf.api_url, edc_llm_actor_on_http_fn, httpreq) < 0)
+    {
+        log_error("llm actor: invalid api url: %s", state->api_conf.api_url);
+        edc_llm_actor_http_req_free(httpreq);
+        if (from)
+        {
+            struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
+            resp->error = edc_error_new(EDC_ERR_INVAL, "invalid LLM API URL: %s", state->api_conf.api_url);
+            edc_actor_send(from, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, request_id, resp,
+                                                   (edc_actor_data_free_fn)edc_llm_actor_resp_free));
+        }
+    }
 }
 
 static UT_icd ut_tool_call_icd = {sizeof(struct edc_llm_chat_tool_call), NULL, NULL, NULL};

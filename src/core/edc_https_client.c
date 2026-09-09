@@ -235,10 +235,43 @@ static void edc_https_request_free(struct edc_https_request *req)
     free(req);
 }
 
-void edc_https_client_connect(struct edc_https_client *client, const char *url, edc_https_event_fn fn, void *priv)
+int edc_https_client_connect(struct edc_https_client *client, const char *url, edc_https_event_fn fn, void *priv)
 {
+    if (!client || !url || !fn)
+    {
+        return -1;
+    }
+
+    /* Validate the URL up front so that ownership of @p priv is only taken when
+     * the request can actually be created. yuarel_parse() is destructive, so it
+     * must run on a throwaway copy rather than the caller's string. */
+    {
+        struct yuarel tmp;
+        char *copy = strdup(url);
+        if (!copy)
+        {
+            return -1;
+        }
+        int invalid = yuarel_parse(&tmp, copy) < 0;
+        free(copy);
+        if (invalid)
+        {
+            log_error("edc_https_client: invalid url: %s", url);
+            return -1;
+        }
+    }
+
     struct edc_work *work = malloc(sizeof(struct edc_work));
+    if (!work)
+    {
+        return -1;
+    }
     work->url = strdup(url);
+    if (!work->url)
+    {
+        free(work);
+        return -1;
+    }
     work->fn = fn;
     work->priv = priv;
     work->next = NULL;
@@ -248,6 +281,7 @@ void edc_https_client_connect(struct edc_https_client *client, const char *url, 
     uv_mutex_unlock(&client->work_mutex);
 
     uv_async_send(&client->work_async);
+    return 0;
 }
 
 static void edc_https_on_tcp_close(uv_handle_t *handle);
@@ -259,7 +293,10 @@ const char *edc_https_request_get_host(struct edc_https_request *req)
 
 const char *edc_https_request_get_path(struct edc_https_request *req)
 {
-    return req->url_parser.path;
+    /* yuarel_parse() leaves path as NULL when the URL has no path component
+     * (e.g. "https://host"). Return "" so callers that do "POST /%s" produce a
+     * valid request line instead of passing NULL to %s. */
+    return req->url_parser.path ? req->url_parser.path : "";
 }
 
 void *edc_https_request_get_priv(struct edc_https_request *req)
@@ -495,7 +532,12 @@ void edc_https_client_on_tcp_read(uv_stream_t *stream, ssize_t nread, const uv_b
             free(buf->base);
         }
         edc_https_client_drive_mbedtls(req);
-        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+        /* drive_mbedtls() may already have closed the handle (e.g. on
+         * MBEDTLS_ERR_SSL_CONN_EOF or PEER_CLOSE_NOTIFY); closing twice is UB. */
+        if (!uv_is_closing((uv_handle_t *)req))
+        {
+            uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+        }
     }
     else if (nread < 0)
     {
@@ -582,9 +624,10 @@ static void on_work_async(uv_async_t *handle)
         struct edc_https_request *http_req = edc_https_request_new(client, work->url, work->fn, work->priv);
         if (!http_req)
         {
-            sds message = sdscatprintf(sdsnew(NULL), "invalid url: %s", work->url);
-            work->fn(NULL, EDC_HTTPS_EVENT_ERROR, message);
-            sdsfree(message);
+            /* The URL was already validated in edc_https_client_connect(), so this
+             * can only be reached on allocation/uv_tcp_init failure. Never invoke
+             * fn() with a NULL request (the callback dereferences it). */
+            log_error("edc_https_client: failed to create request for %s", work->url);
             free(work->url);
             free(work);
             continue;

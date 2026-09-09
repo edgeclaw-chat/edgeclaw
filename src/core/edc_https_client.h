@@ -23,8 +23,16 @@ typedef void (*edc_https_event_fn)(struct edc_https_request *req, int ev, void *
 
 extern struct edc_https_client *edc_https_client_new(const char *cacert_path);
 extern void edc_https_client_free(struct edc_https_client *client);
-extern void edc_https_client_connect(struct edc_https_client *client, const char *url, edc_https_event_fn fn,
-                                     void *priv);
+
+/**
+ * Queue an HTTPS request for @p url.
+ *
+ * The URL is validated synchronously; @p priv is only taken ownership of when
+ * this function returns 0. On failure (-1) @p priv is left untouched and the
+ * caller must release it.
+ */
+extern int edc_https_client_connect(struct edc_https_client *client, const char *url, edc_https_event_fn fn,
+                                    void *priv);
 
 extern const char *edc_https_request_get_host(struct edc_https_request *req);
 extern const char *edc_https_request_get_path(struct edc_https_request *req);
