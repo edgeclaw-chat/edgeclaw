@@ -5,10 +5,6 @@
 #include <memory>
 #include <signal.h>
 
-// Referenced by edc_commands.c (/exit etc.); the shell handler sets it to ask
-// the host binary to stop its run loop.
-volatile sig_atomic_t _run_loop = 1;
-
 using namespace ftxui;
 
 namespace

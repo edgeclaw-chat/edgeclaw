@@ -15,10 +15,7 @@
 #include "sds.h"
 #include "utlist_fix.h"
 #include <log.h>
-#include <signal.h>
 #include <string.h>
-
-extern volatile sig_atomic_t _run_loop;
 
 static bool edc_commands_is_target(const char *content, const char *target)
 {
@@ -34,6 +31,22 @@ static bool edc_commands_is_prefix(const char *content, const char *prefix)
     sds cmd = sdsnew(content);
     cmd = sdstrim(cmd, " \t\r\n");
     bool is = strncmp(cmd, prefix, strlen(prefix)) == 0;
+    sdsfree(cmd);
+    return is;
+}
+
+/* 严格命令前缀: content 去空白后等于 prefix, 或以 prefix + 空格 开头。
+ * 专用于命令路由 —— 宽松前缀会把 "/tasks", "/sessions" 之类误吞成
+ * "/task"/"/session" 的子命令, 报出误导性的 "Unknown subcommand"。 */
+static bool edc_commands_is_command(const char *content, const char *prefix)
+{
+    sds cmd = sdstrim(sdsnew(content), " \t\r\n");
+    bool is = strcmp(cmd, prefix) == 0;
+    if (!is)
+    {
+        size_t plen = strlen(prefix);
+        is = strncmp(cmd, prefix, plen) == 0 && cmd[plen] == ' ';
+    }
     sdsfree(cmd);
     return is;
 }
@@ -70,14 +83,16 @@ void edc_commands_reply(struct edc_agent *agent, edc_actor_t *actor, edc_channel
                                               (edc_actor_data_free_fn)edc_channel_message_free));
 }
 
-/* ── /stop ─────────────────────────────────────────────────── */
+/* ── /session stop ─────────────────────────────────────────── */
 
-static bool edc_commands_handle_stop(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type)
+/* 取消当前 session 的全部非终结 turns 并立即落盘。原顶层 /stop 命令, 现收归
+ * /session 命名空间 (无参数)。移除某个 session 请用 /session remove <name>。 */
+static bool edc_commands_handle_session_stop(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type)
 {
     edc_session_reload(edc_session_manager_get_active(agent->session_manager), true);
     edc_agent_stop_all_turns(agent);
 
-    edc_commands_reply(agent, actor, channel_type, "[system] stop all turns.");
+    edc_commands_reply(agent, actor, channel_type, "[session] stop all turns.");
     return true;
 }
 
@@ -87,22 +102,21 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
 {
     const char *text = "## EdgeClaw Commands\n"
                        "\n"
-                       "- /stop  ·  /help  ·  /exit\n"
+                       "- /help\n"
                        "- /session new [name]  ·  /session switch <name>\n"
-                       "- /session list  ·  /session stop <name>\n"
-                       "- /session rename <old> <new>  ·  /session info\n"
+                       "- /session list  ·  /session info\n"
+                       "- /session save  ·  /session stop\n"
+                       "- /session remove <name>  ·  /session rename <old> <new>\n"
                        "\n"
                        "- /task new <desc>   [--bg]\n"
                        "- /task fork <parent> <desc>\n"
                        "- /task list  ·  /task status [id]  ·  /task output <id>\n"
                        "- /task groups  ·  /task fg <id>  ·  /task bg [id]\n"
-                       "- /task switch <id>  ·  /task stop <id>  [--force]\n"
-                       "- /task suspend <id>  ·  /task resume <id>\n"
+                       "- /task stop <id>\n"
                        "- /task chain <src> <dst>  ·  /task join <id>\n"
-                       "- /task prompt <id> <name>\n"
                        "\n"
-                       "- /jobs  ·  /tasks  ·  /cancel <id>  ·  /whoami\n"
-                       "- /bg [id]  ·  /fg <id>  ·  /model [name]  ·  /history\n"
+                       "- /whoami\n"
+                       "- /model [name]  ·  /history\n"
                        "\n"
                        "## Shell Syntax\n"
                        "\n"
@@ -119,31 +133,22 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
     return true;
 }
 
-/* ── /save ─────────────────────────────────────────────────── */
+/* ── /session save ─────────────────────────────────────────── */
 
-static bool edc_commands_handle_save(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type)
+/* 持久化当前 session 的 history + state。原顶层 /save 命令, 现收归 /session。 */
+static bool edc_commands_handle_session_save(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type)
 {
     struct edc_session *active = edc_session_manager_get_active(agent->session_manager);
     if (!active)
     {
-        edc_commands_reply(agent, actor, channel_type, "[save] no active session");
+        edc_commands_reply(agent, actor, channel_type, "[session] no active session");
         return true;
     }
 
     edc_session_save_history(active);
     edc_session_save_state(active, agent->scheduler);
-    edc_commands_reply(agent, actor, channel_type, "[save] session saved.");
-    log_info("receive /save command");
-    return true;
-}
-
-/* ── /exit ─────────────────────────────────────────────────── */
-
-static bool edc_commands_handle_exit(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type)
-{
-    edc_commands_reply(agent, actor, channel_type, "[system] shutting down...");
-    log_info("received /exit command");
-    _run_loop = 0;
+    edc_commands_reply(agent, actor, channel_type, "[session] saved.");
+    log_info("receive /session save command");
     return true;
 }
 
@@ -250,12 +255,12 @@ static bool edc_commands_handle_session_list(struct edc_agent *agent, edc_actor_
     return true;
 }
 
-static bool edc_commands_handle_session_stop(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
-                                             sds arg)
+static bool edc_commands_handle_session_remove(struct edc_agent *agent, edc_actor_t *actor,
+                                               edc_channel_type channel_type, sds arg)
 {
     if (!arg || sdslen(arg) == 0)
     {
-        edc_commands_reply(agent, actor, channel_type, "[session] usage: /session stop <name_or_id>");
+        edc_commands_reply(agent, actor, channel_type, "[session] usage: /session remove <name_or_id>");
         return true;
     }
     struct edc_session *target = edc_session_manager_find(agent->session_manager, arg);
@@ -266,11 +271,11 @@ static bool edc_commands_handle_session_stop(struct edc_agent *agent, edc_actor_
         sdsfree(reply);
         return true;
     }
-    /* 最后一个 session 不能 stop。先于取消任务拦住, 否则一次失败的 stop 会把
+    /* 最后一个 session 不能 remove。先于取消任务拦住, 否则一次失败的 remove 会把
      * 当前 session 的任务白白打成 CANCELLED。 */
     if (agent->session_manager->session_count <= 1)
     {
-        edc_commands_reply(agent, actor, channel_type, "[session] cannot stop the last session");
+        edc_commands_reply(agent, actor, channel_type, "[session] cannot remove the last session");
         return true;
     }
 
@@ -287,13 +292,13 @@ static bool edc_commands_handle_session_stop(struct edc_agent *agent, edc_actor_
     {
         sdsfree(stopped_id);
         sdsfree(stopped_name);
-        edc_commands_reply(agent, actor, channel_type, "[session] cannot stop the last session");
+        edc_commands_reply(agent, actor, channel_type, "[session] cannot remove the last session");
         return true;
     }
     struct edc_session *new_active = edc_session_manager_get_active(agent->session_manager);
     edc_scheduler_set_session(agent->scheduler, new_active);
     edc_session_reload(new_active, true);
-    sds reply = sdscatprintf(sdsempty(), "[session] stopped [%s] %s", stopped_id, stopped_name);
+    sds reply = sdscatprintf(sdsempty(), "[session] removed [%s] %s", stopped_id, stopped_name);
     edc_commands_reply(agent, actor, channel_type, reply);
     sdsfree(reply);
     sdsfree(stopped_id);
@@ -360,7 +365,12 @@ static bool edc_commands_handle_session_info(struct edc_agent *agent, edc_actor_
 
 static bool edc_commands_handle_session(struct edc_agent *agent, edc_actor_t *actor, struct edc_channel_message *msg)
 {
-    sds rest;
+    sds rest = NULL;
+    /* /session new 的 name 可选 —— 无参也要能建匿名 session。edc_commands_arg
+     * 在无参时返回 false, 所以必须先做一次精确匹配, 否则裸 /session new 会掉到
+     * 末尾的 unknown subcommand。 */
+    if (edc_commands_is_target(msg->content, "/session new"))
+        return edc_commands_handle_session_new(agent, actor, msg->type, NULL);
     if (edc_commands_arg(msg->content, "/session new", &rest))
     {
         bool ret = edc_commands_handle_session_new(agent, actor, msg->type, rest);
@@ -375,21 +385,37 @@ static bool edc_commands_handle_session(struct edc_agent *agent, edc_actor_t *ac
     }
     if (edc_commands_is_target(msg->content, "/session list"))
         return edc_commands_handle_session_list(agent, actor, msg->type);
-    if (edc_commands_arg(msg->content, "/session stop", &rest))
+    if (edc_commands_is_target(msg->content, "/session info"))
+        return edc_commands_handle_session_info(agent, actor, msg->type);
+    if (edc_commands_is_target(msg->content, "/session save"))
+        return edc_commands_handle_session_save(agent, actor, msg->type);
+    if (edc_commands_is_target(msg->content, "/session stop"))
+        return edc_commands_handle_session_stop(agent, actor, msg->type);
+    if (edc_commands_arg(msg->content, "/session remove", &rest))
     {
-        bool ret = edc_commands_handle_session_stop(agent, actor, msg->type, rest);
+        bool ret = edc_commands_handle_session_remove(agent, actor, msg->type, rest);
         sdsfree(rest);
         return ret;
     }
+    if (edc_commands_is_target(msg->content, "/session remove"))
+        return edc_commands_handle_session_remove(agent, actor, msg->type, NULL);
     if (edc_commands_arg(msg->content, "/session rename", &rest))
     {
         bool ret = edc_commands_handle_session_rename(agent, actor, msg->type, rest);
         sdsfree(rest);
         return ret;
     }
-    if (edc_commands_is_target(msg->content, "/session info"))
-        return edc_commands_handle_session_info(agent, actor, msg->type);
-    sds reply = sdscatprintf(sdsempty(), "[session] unknown subcommand. Try: new, switch, list, stop, rename, info");
+    if (edc_commands_is_target(msg->content, "/session rename"))
+        return edc_commands_handle_session_rename(agent, actor, msg->type, NULL);
+    /* /session stop 不接受参数 —— 移除 session 已改用 /session remove。 */
+    if (edc_commands_is_prefix(msg->content, "/session stop"))
+    {
+        edc_commands_reply(agent, actor, msg->type,
+                           "[session] /session stop takes no arguments; to remove a session use /session remove <name_or_id>");
+        return true;
+    }
+    sds reply = sdscatprintf(sdsempty(),
+                             "[session] unknown subcommand. Try: new, switch, list, info, save, stop, remove, rename");
     edc_commands_reply(agent, actor, msg->type, reply);
     sdsfree(reply);
     return true;
@@ -495,35 +521,26 @@ static void edc_commands_handle_task_list(struct edc_agent *agent, edc_actor_t *
     sdsfree(out);
 }
 
-static void edc_commands_handle_task_switch(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
-                                            sds arg)
-{
-    if (!arg)
-    {
-        edc_commands_reply(agent, actor, channel_type, "/task switch <id>");
-        return;
-    }
-    struct edc_task *t = edc_session_find_task(edc_session_manager_get_active(agent->session_manager), arg);
-    if (!t)
-    {
-        edc_commands_reply(agent, actor, channel_type, "task not found");
-        return;
-    }
-    edc_session_set_active_task(edc_session_manager_get_active(agent->session_manager), t);
-    sds reply = sdscatprintf(sdsempty(), "switched to task %s", t->task_id);
-    edc_commands_reply(agent, actor, channel_type, reply);
-    sdsfree(reply);
-}
-
 static void edc_commands_handle_task_stop(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
                                           sds arg)
 {
-    if (!arg)
+    if (!arg || sdslen(arg) == 0)
     {
         edc_commands_reply(agent, actor, channel_type, "/task stop <id>");
         return;
     }
-    edc_scheduler_send_signal_to_task(agent->scheduler, arg, TASK_SIGTERM);
+    /* 先校验任务存在再发信号: 盲发时对不存在的 id 也会回 "stop signal sent",
+     * 与实际效果不符。旧 /cancel <id> 提供的正是这层校验 (该命令已删除, 校验
+     * 归并到 /task stop)。查找范围 = 当前 session 的任意 group。 */
+    struct edc_task *t = edc_session_find_task(edc_session_manager_get_active(agent->session_manager), arg);
+    if (!t)
+    {
+        sds reply = sdscatprintf(sdsempty(), "task not found: %s", arg);
+        edc_commands_reply(agent, actor, channel_type, reply);
+        sdsfree(reply);
+        return;
+    }
+    edc_scheduler_send_signal_to_task(agent->scheduler, t->task_id, TASK_SIGTERM);
     edc_commands_reply(agent, actor, channel_type, "stop signal sent");
 }
 
@@ -881,55 +898,6 @@ static void edc_commands_handle_task_join(struct edc_agent *agent, edc_actor_t *
     sdsfree(reply);
 }
 
-static void edc_commands_handle_task_suspend(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
-                                             sds arg)
-{
-    struct edc_task *t;
-    if (arg)
-        t = edc_session_find_task(edc_session_manager_get_active(agent->session_manager), arg);
-    else
-        t = edc_session_get_active_task(edc_session_manager_get_active(agent->session_manager));
-    if (!t)
-    {
-        edc_commands_reply(agent, actor, channel_type, "task not found");
-        return;
-    }
-    if (!edc_task_set_state(t, TASK_SUSPENDED))
-    {
-        edc_commands_reply(agent, actor, channel_type, "cannot suspend in current state");
-        return;
-    }
-    sds reply = sdscatprintf(sdsempty(), "task %s suspended", t->task_id);
-    edc_commands_reply(agent, actor, channel_type, reply);
-    sdsfree(reply);
-}
-
-static void edc_commands_handle_task_resume(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
-                                            sds arg)
-{
-    struct edc_task *t;
-    if (arg)
-        t = edc_session_find_task(edc_session_manager_get_active(agent->session_manager), arg);
-    else
-        t = edc_session_get_active_task(edc_session_manager_get_active(agent->session_manager));
-    if (!t)
-    {
-        edc_commands_reply(agent, actor, channel_type, "task not found");
-        return;
-    }
-    if (t->state != TASK_SUSPENDED)
-    {
-        sds reply = sdscatprintf(sdsempty(), "task %s is %s, not SUSPENDED", t->task_id, edc_task_state_name(t->state));
-        edc_commands_reply(agent, actor, channel_type, reply);
-        sdsfree(reply);
-        return;
-    }
-    edc_task_set_state(t, TASK_WAITING_INPUT);
-    sds reply = sdscatprintf(sdsempty(), "task %s resumed", t->task_id);
-    edc_commands_reply(agent, actor, channel_type, reply);
-    sdsfree(reply);
-}
-
 static void edc_commands_handle_task_chain(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
                                            sds arg)
 {
@@ -978,19 +946,6 @@ static void edc_commands_handle_task_chain(struct edc_agent *agent, edc_actor_t 
     }
 }
 
-static void edc_commands_handle_task_prompt(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
-                                            sds arg)
-{
-    /* /task prompt <id> <name>  or  /task prompt <id> --text "..." */
-    if (!arg)
-    {
-        edc_commands_reply(agent, actor, channel_type, "/task prompt <id> [name|--text \"...\"]");
-        return;
-    }
-    /* simplified: not parsing --text for now */
-    edc_commands_reply(agent, actor, channel_type, "prompt set (stub)");
-}
-
 static bool edc_commands_handle_task(struct edc_agent *agent, edc_actor_t *actor, struct edc_channel_message *message)
 {
     const char *content = message->content;
@@ -1011,11 +966,6 @@ static bool edc_commands_handle_task(struct edc_agent *agent, edc_actor_t *actor
     else if (strcmp(content_trim, "/task list") == 0)
     {
         edc_commands_handle_task_list(agent, actor, message->type);
-    }
-    else if (strncmp(content_trim, "/task switch ", 13) == 0)
-    {
-        arg = sdsnew(content_trim + 13);
-        edc_commands_handle_task_switch(agent, actor, message->type, arg);
     }
     else if (strncmp(content_trim, "/task stop ", 11) == 0)
     {
@@ -1064,11 +1014,6 @@ static bool edc_commands_handle_task(struct edc_agent *agent, edc_actor_t *actor
         arg = sdsnew(content_trim + 11);
         edc_commands_handle_task_join(agent, actor, message->type, arg);
     }
-    else if (strncmp(content_trim, "/task prompt ", 13) == 0)
-    {
-        arg = sdsnew(content_trim + 13);
-        edc_commands_handle_task_prompt(agent, actor, message->type, arg);
-    }
     else
     {
         /* Unknown /task subcommand — report error instead of falling through */
@@ -1100,54 +1045,16 @@ bool edc_commands_handler(struct edc_agent *agent, struct edc_actor *actor, stru
         if (edc_shell_handle_builtin(agent, actor, message))
             return true;
 
-        {
-            sds trimmed = sdstrim(sdsnew(message->content), " \t\r\n");
+        /* 顶层快捷别名 (/tasks, /bg, /fg) 已移除 —— 统一走 /task 子命令。 */
 
-            if (strcmp(trimmed, "/tasks") == 0)
-            {
-                edc_commands_handle_task_list(agent, actor, message->type);
-                sdsfree(trimmed);
-                return true;
-            }
-            if (strcmp(trimmed, "/bg") == 0)
-            {
-                edc_commands_handle_task_bg(agent, actor, message->type, NULL);
-                sdsfree(trimmed);
-                return true;
-            }
-            if (strncmp(trimmed, "/bg ", 4) == 0)
-            {
-                sds arg = sdsnew(trimmed + 4);
-                sdstrim(arg, " \t");
-                edc_commands_handle_task_bg(agent, actor, message->type, arg);
-                sdsfree(trimmed);
-                return true;
-            }
-            if (strncmp(trimmed, "/fg ", 4) == 0)
-            {
-                sds arg = sdsnew(trimmed + 4);
-                sdstrim(arg, " \t");
-                edc_commands_handle_task_fg(agent, actor, message->type, arg);
-                sdsfree(trimmed);
-                return true;
-            }
-            sdsfree(trimmed);
-        }
-
-        if (edc_commands_is_prefix(message->content, "/task"))
+        if (edc_commands_is_command(message->content, "/task"))
             return edc_commands_handle_task(agent, actor, message);
 
-        if (edc_commands_is_prefix(message->content, "/session"))
+        if (edc_commands_is_command(message->content, "/session"))
             return edc_commands_handle_session(agent, actor, message);
 
-        if (edc_commands_is_target(message->content, "/stop"))
-            return edc_commands_handle_stop(agent, actor, message->type);
         if (edc_commands_is_target(message->content, "/help"))
             return edc_commands_handle_help(agent, actor, message->type);
-        if (edc_commands_is_target(message->content, "/exit"))
-            return edc_commands_handle_exit(agent, actor, message->type);
-        if (edc_commands_is_target(message->content, "/save"))
-            return edc_commands_handle_save(agent, actor, message->type);
 
         sds reply =
             sdscatprintf(sdsempty(), "Unknown command: %s\nType /help for available commands.", message->content);

@@ -184,31 +184,30 @@ SHELL-LIKE JOB CONTROL
      cmd >> file      task >> log    (append output)
      cmd 2> file      task 2> err    (stderr redirect)
      cmd < file       task < in.txt  (input from file)
-     jobs             /jobs  (current group only)
-     fg %n            /fg <id>
-     bg %n            /bg [id]
-     kill %n          /cancel <id>
-     Ctrl+Z           /task suspend <id>
-     fg / bg (resume) /task resume <id>
+     jobs             /task list
+     fg %n            /task fg <id>
+     bg %n            /task bg [id]
+     kill %n          /task stop <id>
      !!   !n          !!  !3  (history expansion)
      $LAST  $1  $$    variable expansion
 
 COMMAND REFERENCE
      Session
-     /new          Start a new session.
-     /stop         Cancel all active tasks in foreground group.
-     /help         Show help message.
-     /exit         Exit edgeclaw.
-     /whoami       Show current session, model, and group info.
-     /model [name] Show or set the current LLM model name.
-     /history      Show the last 20 CLI history entries.
-
-     Job control
-     /jobs         List tasks in the current foreground group with IDs.
-     /tasks        List all tasks in all groups (alias: /task list).
-     /cancel <id>  Cancel a task by id.
-     /fg <id>      Bring a task to the foreground.
-     /bg [id]      Move a task to the background (no arg: current fg).
+     /session new [name]           Start a new session (optionally named).
+     /session switch <name_or_id>  Switch to another session.
+     /session list                 List all sessions.
+     /session info                 Show current session details.
+     /session save                 Persist the current session's history
+                                   and state.
+     /session stop                 Cancel all active tasks in the current
+                                   session.
+     /session remove <name_or_id>  Remove a session (the last one cannot
+                                   be removed).
+     /session rename <old> <new>   Rename a session.
+     /help                         Show help message.
+     /whoami                       Show current session, model, and group info.
+     /model [name]                 Show or set the current LLM model name.
+     /history                      Show the last 20 CLI history entries.
 
      Task creation
      /task new <desc>                  Create new group + task (foreground).
@@ -229,19 +228,12 @@ COMMAND REFERENCE
      Foreground / active
      /task fg <tid>           Foreground + set as active task.
      /task bg                 Move current foreground to background.
-     /task switch <tid>       Set active task within foreground group.
-                               Only the active task outputs to terminal.
 
      Task control
-     /task stop <tid>         Cancel (SIGTERM — notifies deps).
-     /task stop --force <id>  Force-kill (SIGKILL — no dep notification).
-     /task stop --group <id>  Cancel all tasks in a process group.
-     /task suspend <tid>      Pause a task (Ctrl+Z).
-     /task resume <tid>       Resume a suspended task.
+     /task stop <tid>         Cancel a task by id (SIGTERM — notifies deps;
+                              errors if the id is not found).
      /task join <tid>         Show output, auto-inject into active task
                                (or create one), then reclaim.
-     /task prompt <tid> <name>
-                               Set subagent prompt.
 
      Pipelines
      /task chain <src> <dst>  dst waits for src.  When src completes,
@@ -251,8 +243,8 @@ COMMAND REFERENCE
 
 OUTPUT
      Only the session's active task outputs to the terminal.  Other tasks
-     complete silently; use /task join to retrieve output.  /task fg and
-     /task switch change the active task.
+     complete silently; use /task join to retrieve output.  /task fg
+     changes the active task.
 
 CONTEXT SHARING
      Within a group: all tasks share the full conversation history.
@@ -291,9 +283,10 @@ WORKFLOW EXAMPLES
      Background + pipeline
            > analyze the error logs &
            > audit API endpoints &
-           > /jobs
-             [1] running  1  "analyze the error logs"   [bg]
-             [2] running  2  "audit API endpoints"      [bg]
+           > /task list
+             - [fg] 1 (2)
+                 - [L]* 1   LLM_PROCESSING  analyze the error logs
+                 - [M]  2   LLM_PROCESSING  audit API endpoints
            > merge both results -d 1 -d 2 > merged.md
 
      Variable expansion (two-phase)

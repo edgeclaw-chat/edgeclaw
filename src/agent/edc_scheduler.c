@@ -234,7 +234,7 @@ void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *
         /* 显式取消必须立即持久化 + 推送快照: CANCELLED 目前只在内存里, 若不
          * 保存, 重启后任务会按 session.json 里的旧状态恢复 (运行中任务会被
          * 降级成 WAITING_INPUT), 取消看起来像没生效。此函数只被用户命令
-         * (/task stop、/cancel) 调用, 不涉及 teardown 的 remove_all_turns。 */
+         * (/task stop) 调用, 不涉及 teardown 的 remove_all_turns。 */
         sched_notify_foreground_state(sched, task);
         if (sched->save_session)
             sched->save_session(sched);

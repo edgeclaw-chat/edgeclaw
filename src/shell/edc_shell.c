@@ -42,78 +42,10 @@ sds *edc_shell_split_pipeline(const char *input, int *count)
     return segs;
 }
 
-static struct edc_task *shell_find_task_by_id_or_job(struct edc_agent *agent, const char *id_or_job)
-{
-    return edc_session_find_task(edc_session_manager_get_active(agent->session_manager), id_or_job);
-}
-
-static void shell_cmd_jobs(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type)
-{
-    sds out = sdsempty();
-    struct edc_task_group *fg = agent->scheduler->foreground_group;
-
-    if (!fg || fg->member_count == 0)
-    {
-        out = sdscat(out, "no jobs");
-    }
-    else
-    {
-        struct edc_task *t;
-        LL_FOREACH2(fg->members, t, group_next)
-        {
-            out = sdscatprintf(out, "  [%s] %-12s", t->task_id, edc_task_state_name(t->state));
-            if (*t->description)
-                out = sdscatprintf(out, "  \"%s\"", t->description);
-            if (edc_session_manager_get_active(agent->session_manager) &&
-                edc_session_manager_get_active(agent->session_manager)->active_task == t)
-                out = sdscat(out, "  [fg]");
-            out = sdscat(out, "\n");
-        }
-    }
-    edc_commands_reply(agent, actor, channel_type, out);
-    sdsfree(out);
-}
-
-static void shell_cmd_cancel(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type, sds arg)
-{
-    if (!arg || sdslen(arg) == 0)
-    {
-        edc_commands_reply(agent, actor, channel_type, "/cancel <id>");
-        return;
-    }
-    struct edc_task *t = shell_find_task_by_id_or_job(agent, arg);
-    if (!t)
-    {
-        sds reply = sdscatprintf(sdsempty(), "task not found: %s", arg);
-        edc_commands_reply(agent, actor, channel_type, reply);
-        sdsfree(reply);
-        return;
-    }
-    edc_scheduler_send_signal_to_task(agent->scheduler, t->task_id, TASK_SIGTERM);
-    sds reply = sdscatprintf(sdsempty(), "cancelled %s", t->task_id);
-    edc_commands_reply(agent, actor, channel_type, reply);
-    sdsfree(reply);
-}
-
 bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel_message *message)
 {
     sds content = sdstrim(sdsnew(message->content), " \t\r\n");
 
-    if (strcmp(content, "/jobs") == 0)
-    {
-        shell_cmd_jobs(agent, actor, message->type);
-        sdsfree(content);
-        return true;
-    }
-    if (strncmp(content, "/cancel ", 8) == 0)
-    {
-        sds arg = sdsnew(content + 8);
-        sdstrim(arg, " \t");
-        shell_cmd_cancel(agent, actor, message->type, arg);
-        sdsfree(arg);
-        sdsfree(content);
-        return true;
-    }
     if (strcmp(content, "/whoami") == 0)
     {
         struct edc_session *sess = edc_session_manager_get_active(agent->session_manager);
@@ -258,8 +190,8 @@ struct edc_task *edc_shell_spawn_task(struct edc_agent *agent, struct edc_actor 
         edc_task_add_dependency(task, prev_task, prev_dep_type);
 
     /* task creation is intentionally silent: no "[task] created" echo back
-     * to the channel. State transitions are still observable via /jobs,
-     * /task list, /whoami and the TUI task snapshot. */
+     * to the channel. State transitions are still observable via
+     * /task list, /task status, /whoami and the TUI task snapshot. */
     log_info("%s created task=%s group=%s%s%s%s%s", reply_prefix, task->task_id, group->group_id,
              opts->bg ? " [bg]" : "", opts->dep_count > 0 ? " [chained]" : "",
              prev_task ? (prev_dep_type == TASK_DEP_SEQUENCE ? " [seq]" : " [pipe]") : "",

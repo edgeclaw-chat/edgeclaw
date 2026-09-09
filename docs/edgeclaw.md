@@ -139,8 +139,6 @@ The child inherits a slice of the parent's conversation context. Use
 | `fg %1`           | `/task fg <task_id>`          |
 | `bg %1`           | `/task bg`                    |
 | `kill %1`         | `/task stop <task_id>`        |
-| `Ctrl+Z`          | `/task suspend <task_id>`     |
-| `fg / bg (resume)`| `/task resume <task_id>`      |
 | `cmd1 \| cmd2`    | `/task chain <src> <dst>`     |
 | `pthread_join()`  | `/task join <task_id>`        |
 | `fork()`          | `/task fork <parent> <desc>`  |
@@ -154,9 +152,14 @@ The child inherits a slice of the parent's conversation context. Use
 | Command | Description |
 |---------|-------------|
 | `/session new [name]` | Start a new session (optionally named) |
-| `/stop` | Cancel all active tasks in foreground group |
+| `/session switch <name_or_id>` | Switch to another session |
+| `/session list` | List all sessions |
+| `/session info` | Show current session details |
+| `/session save` | Persist the current session's history and state |
+| `/session stop` | Cancel all active tasks in the current session |
+| `/session remove <name_or_id>` | Remove a session (the last one cannot be removed) |
+| `/session rename <old> <new>` | Rename a session |
 | `/help` | Show help message |
-| `/exit` | Exit edgeclaw |
 
 ### Task Creation
 
@@ -184,19 +187,13 @@ The child inherits a slice of the parent's conversation context. Use
 |---------|-------------|
 | `/task fg <tid>` | Foreground + set as active. **Only the active task outputs to terminal.** |
 | `/task bg` | Move current foreground group to background |
-| `/task switch <tid>` | Set active task within foreground group |
 
 ### Task Control
 
 | Command | Description |
 |---------|-------------|
-| `/task stop <tid>` | Cancel a task (SIGTERM — notifies dependents) |
-| `/task stop --force <id>` | Force-kill (SIGKILL — no dep notification) |
-| `/task stop --group <id>` | Cancel all tasks in a process group |
-| `/task suspend <tid>` | Pause a task (like Ctrl+Z) |
-| `/task resume <tid>` | Resume a suspended task |
+| `/task stop <tid>` | Cancel a task by id (SIGTERM — notifies dependents; errors if the id is not found) |
 | `/task join <tid>` | Show output, auto-inject into active task (or create one), then reclaim |
-| `/task prompt <tid> <name>` | Set a subagent prompt for the task |
 
 ### Pipelines
 
@@ -208,8 +205,8 @@ The child inherits a slice of the parent's conversation context. Use
 
 ## Output
 
-Only the session's **active task** outputs to the terminal. `/task fg` and
-`/task switch` change the active task. Other tasks complete silently; use
+Only the session's **active task** outputs to the terminal. `/task fg` changes
+the active task. Other tasks complete silently; use
 `/task join` to retrieve their output.
 
 ---
@@ -337,7 +334,7 @@ text before `<`, they are joined with a newline.
 
 ... task-1, task-2 complete ...
 
-> /task switch task-3
+> /task fg task-3
 > please summarize both reports
 → LLM sees task-1 and task-2 Q&A injected as context
 ```
@@ -347,13 +344,6 @@ text before `<`, they are joined with a newline.
 ```
 > /task join task-1
 [task-1 output]: ... → injected into active task → task-1 reaped
-```
-
-### Suspend and Resume
-
-```
-> /task suspend task-3
-> /task resume task-3
 ```
 
 ### Fork with Subagent

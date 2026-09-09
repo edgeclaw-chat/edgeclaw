@@ -196,7 +196,7 @@ single-threaded helper process) on Linux. macOS builds skip kernel isolation.
 - **Skills system**: markdown skill definitions with YAML frontmatter augment
   the system prompt
 - **Markdown rendering**: md4c-based rendering in the TUI/CLI frontends
-- **Internal commands**: slash commands (`/stop`, `/session ...`,
+- **Internal commands**: slash commands (`/session ...`,
   `/task ...`) and shell-like syntax (`|`, `;`, `&`, redirection, `$VAR`,
   `!n`/`!!`)
 - **Cron scheduling**: one-shot (`at`) or recurring (`cron_expr`/
