@@ -179,10 +179,14 @@ Tools are registered dynamically; see "Adding a New Tool" below.
 
 Tool execution enforces **sandbox path verification** (`edc_sandbox_verify_path`)
 against the configured sandbox root in the fs/shell/device tools on all
-platforms. Linux kernel isolation backends (Landlock LSM, mount namespaces,
-seccomp-BPF) are implemented in `src/agent/edc_sandbox*.c` but are not yet
-wired into process spawning — `edc_sandbox_apply()` currently has no caller.
-macOS builds skip kernel isolation.
+platforms (enabled with `--sandbox` or `enable_sandbox`). Linux kernel
+isolation backends (Landlock LSM, mount namespaces, seccomp-BPF) are
+implemented in `src/agent/edc_sandbox*.c`, but are **deliberately not wired**
+into process spawning: `edc_sandbox_apply()` must run post-fork in a
+single-threaded child before exec, while `uv_spawn` offers no pre-exec hook and
+the sandbox backends are not async-signal-safe for a multi-threaded process.
+Safe wiring would require allocation-free backends plus a fork/exec path (or a
+single-threaded helper process) on Linux. macOS builds skip kernel isolation.
 
 ### Additional Features
 

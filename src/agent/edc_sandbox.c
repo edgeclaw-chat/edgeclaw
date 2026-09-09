@@ -23,6 +23,17 @@ bool edc_sandbox_init(struct edc_config *conf)
         return false;
     }
 
+#ifdef __linux__
+    if (conf->enable_sandbox)
+    {
+        /* Linux 上有 Landlock/NS/seccomp-BPF 三个内核隔离后端, 但受多线程
+         * fork 安全性限制尚未接线 (见 edc_sandbox_apply 注释)。当前生效的
+         * 是 fs/shell/device 工具层的 sandbox_root 路径校验。 */
+        log_info("edc_sandbox: kernel isolation backends present but not wired; "
+                 "path validation is the active enforcement");
+    }
+#endif
+
     log_info("edc_sandbox: initialized, root = %s", conf->sandbox_root_real);
     return true;
 }
@@ -125,6 +136,24 @@ sds edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writ
     return result;
 }
 
+/*
+ * Apply kernel sandbox layers to the *current process*. This is meant to run
+ * in a child process right after fork() and before exec() — it must never run
+ * in the main EdgeClaw process (it would sandbox the agent itself).
+ *
+ * ⚠️ Wiring decision (2026-09): NOT yet called from the tool layer. exec_shell
+ * spawns /bin/sh through uv_spawn on the shared actor-runner thread while the
+ * HTTPS worker thread is alive; the backends below (logging plus sds/calloc
+ * allocation) are not async-signal-safe, so running them post-fork in a
+ * multi-threaded process risks allocator deadlock. uv_spawn also offers no
+ * pre-exec hook. Safe wiring paths for later:
+ *   1. Harden backends to allocation-free/log-free operation and switch
+ *      exec_shell to fork()+sandbox_apply()+exec on Linux, or
+ *   2. Spawn a dedicated single-threaded helper process (re-exec self with a
+ *      hidden flag) that applies the sandbox then execs the command.
+ * Until then, sandbox_root path verification in the fs/shell/device tools is
+ * the active enforcement layer on every platform.
+ */
 bool edc_sandbox_apply(struct edc_config *conf)
 {
 #ifdef __linux__
