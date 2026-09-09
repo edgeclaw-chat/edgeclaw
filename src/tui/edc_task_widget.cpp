@@ -253,21 +253,19 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
             const bool expanded = group_expanded_[g.group_id];
 
             // Collapsible group header. Left side: disclosure arrow plus
-            // "Group <id> (N tasks)" — the task count rides on the label, so
-            // the row reads "▸ Group 150 (7 tasks)". Right side: the live
-            // message count (committed group messages plus the in-flight
-            // turns of its tasks, so the number ticks up while any member
-            // streams), flushed as a whole block against the pane's right
-            // edge so every row's "… msgs" shares one straight margin.
-            // Foreground groups keep the warm highlight; orphaned groups are
-            // flagged with a trailing "~".
+            // "Group <id>" with the task count as a fixed three-cell field,
+            // so rows line up whether a group holds one task or a hundred:
+            // "(  1 tasks)" / "( 88 tasks)" / "(99+ tasks)". Counts beyond
+            // 99 clamp to "99+" so the field never grows a digit, and the
+            // whole suffix keeps the same dim secondary style as the live
+            // message count on the right.
             std::string core = g.group_id.empty() ? "(group)" : "Group " + g.group_id;
             if (g.orphaned)
                 core += " ~";
 
             const int task_n = g.member_count;
-            const std::string suffix =
-                " (" + std::to_string(task_n) + (task_n == 1 ? " task)" : " tasks)");
+            const std::string suffix = " (" + (task_n > 99 ? std::string("99+") : PadCount(task_n, 3)) +
+                                       " tasks)";
             const std::string arrow = expanded ? "▾ " : "▸ ";
             const std::string right =
                 std::to_string(g.msg_count) + (g.msg_count == 1 ? " msg" : " msgs");
@@ -280,13 +278,15 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
                                     static_cast<int>(suffix.size()) - StringWidth(right) - 1;
             std::string visible_core = core_budget > 0 ? TruncateToWidth(core, core_budget) : "";
 
-            lines.push_back(hbox({
-                                text(arrow + visible_core + (core_budget > 0 ? suffix : "")) |
-                                    bold | color(g.fg ? pal.warn : pal.text_dim),
-                                filler(),
-                                text(right) | dim | color(pal.text_dim),
-                                text(std::string(kRightPad, ' ')),
-                            }) | reflect(group_header_boxes_[i]));
+            Elements row_el = {
+                text(arrow + visible_core) | bold | color(g.fg ? pal.warn : pal.text_dim),
+            };
+            if (core_budget > 0)
+                row_el.push_back(text(suffix) | dim | color(pal.text_dim));
+            row_el.push_back(filler());
+            row_el.push_back(text(right) | dim | color(pal.text_dim));
+            row_el.push_back(text(std::string(kRightPad, ' ')));
+            lines.push_back(hbox(std::move(row_el)) | reflect(group_header_boxes_[i]));
 
             if (!expanded)
                 continue;
