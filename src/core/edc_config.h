@@ -58,7 +58,6 @@ struct edc_config
     int max_iter;            /* LLM/tool 迭代预算: -1 = 无限, N > 0 = 上限, <= 0 (含 0) = 不限制 */
     int load_n_histories;
     int memory_compress_threshold;
-    int group_fold_task_threshold;
     int group_fold_msg_threshold;
     int tool_max_output_size;
 

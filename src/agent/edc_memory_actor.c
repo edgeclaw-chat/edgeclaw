@@ -406,8 +406,12 @@ exit_:
 
 /* ══════════════════════════════════════════════════════════════
  * L1 折叠: task turns → group memory
- * 收集组内可折叠 task, 按 completion_seq 升序, 拼摘要 prompt,
- * 交给 LLM 生成 group memory 摘要。完成后置 turns_folded 并推进 fold_cursor。
+ * 触发 (edc_agent_cb_trigger_memory) 只看未折叠消息数 ≥ 阈值 (默认 200);
+ * 真正折叠时按半量策略: 只把最老的一半未折叠消息 (≈ 阈值/2, 即 ~100 条)
+ * 交给 LLM 做摘要, 新的一半保持未折叠细节 —— 每次总是一半记忆被压缩、
+ * 一半记忆留细节, 上下文里仍有明细消息可读, 不会整批全被摘要化。
+ * 完成后置 turns_folded 并推进 fold_cursor; max_seq 只覆盖被选中的最老
+ * task, 未选中的 task 保持 turns_folded=false, 下一轮再压。
  * 注意: 折叠只处理 turns, 绝不触碰 task->output (JOIN 仍可消费)。
  * ══════════════════════════════════════════════════════════════ */
 
@@ -451,15 +455,41 @@ static sds edc_memory_build_fold_prompt(struct edc_task_group *group, uint32_t *
         tasks[j] = key;
     }
 
+    /* 半量策略: 触发后不是把攒满的未折叠消息整批全压, 而是只压最老的
+     * 一半 (≈ unfolded/2; 攒满 200 即压 ~100), 剩下一半保持未折叠细节。
+     * 折叠粒度为 task (整段 turns 一起摘要), 故按 completion_seq 升序取
+     * "最老、且累计消息数不超过预算"的 task 前缀; max_seq 取边界 task,
+     * finish 阶段只会折叠 seq ≤ max_seq 的 task, 新的一半自然留下。 */
+    size_t budget = edc_task_group_unfolded_msg_count(group) / 2;
+    size_t sel = 0, folded_msgs = 0, total_msgs = 0;
+    for (size_t i = 0; i < n; i++)
+        total_msgs += edc_task_turn_msg_count(tasks[i]);
+    while (sel < n)
+    {
+        size_t m = edc_task_turn_msg_count(tasks[sel]);
+        if (sel > 0 && folded_msgs + m > budget)
+            break; /* 再加就超过一半 → 留给下一轮当细节 */
+        folded_msgs += m;
+        sel++;
+    }
+    if (sel == 0 && n > 0)
+    {
+        /* 兜底: 最老单个 task 就超预算 (正常触发时 unfolded ≥ 200, 不会走到) */
+        folded_msgs = edc_task_turn_msg_count(tasks[0]);
+        sel = 1;
+    }
+    log_info("L1 fold: group %s fold oldest %zu/%zu tasks (%zu/%zu msgs), keep %zu msgs as detail", group->group_id,
+             sel, n, folded_msgs, total_msgs, total_msgs - folded_msgs);
+
     if (out_max_seq)
-        *out_max_seq = tasks[n - 1]->completion_seq;
+        *out_max_seq = tasks[sel - 1]->completion_seq;
 
     sds prompt = sdsempty();
     prompt = sdscat(prompt, "## Existing Group Memory\n");
     prompt = sdscat(prompt, (group->memory && sdslen(group->memory) > 0) ? group->memory : "(empty)");
     prompt = sdscat(prompt, "\n\n## New Completed Tasks\n");
 
-    for (size_t i = 0; i < n; i++)
+    for (size_t i = 0; i < sel; i++)
     {
         struct edc_task *tk = tasks[i];
         prompt = sdscatprintf(prompt, "\n### [task %s] %s\n", tk->task_id, tk->description ? tk->description : "");

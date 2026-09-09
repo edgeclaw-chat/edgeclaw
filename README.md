@@ -369,7 +369,6 @@ Create `~/.edgeclaw/config.json`:
   "max_iter": -1,
   "load_n_histories": 10,
   "memory_compress_threshold": 200,
-  "group_fold_task_threshold": 20,
   "group_fold_msg_threshold": 200,
   "tool_max_output_size": 10000
 }

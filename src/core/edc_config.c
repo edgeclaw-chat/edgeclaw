@@ -132,16 +132,6 @@ struct edc_config *edc_config_load(const char *edc_home)
         config->memory_compress_threshold = memory_compress_threshold->valueint;
     }
 
-    cJSON *group_fold_task_threshold = cJSON_GetObjectItem(conf, "group_fold_task_threshold");
-    if (!group_fold_task_threshold || !cJSON_IsNumber(group_fold_task_threshold))
-    {
-        config->group_fold_task_threshold = 20;
-    }
-    else
-    {
-        config->group_fold_task_threshold = group_fold_task_threshold->valueint;
-    }
-
     cJSON *group_fold_msg_threshold = cJSON_GetObjectItem(conf, "group_fold_msg_threshold");
     if (!group_fold_msg_threshold || !cJSON_IsNumber(group_fold_msg_threshold))
     {

@@ -397,26 +397,23 @@ static void edc_agent_cb_trigger_memory(struct edc_scheduler *sched)
     if (!agent || !agent->memory_actor || !sched->session)
         return;
 
-    int task_threshold = agent->config ? agent->config->group_fold_task_threshold : 20;
-    if (task_threshold <= 0)
-        task_threshold = 20;
     int msg_threshold = agent->config ? agent->config->group_fold_msg_threshold : 200;
     if (msg_threshold <= 0)
         msg_threshold = 200;
 
-    /* L1 折叠触发: 组内可折叠 task 数 ≥ 阈值, 或 有可折叠 task 且未折叠消息条数 ≥ 阈值 */
+    /* L1 折叠触发: 组内存在可折叠 task 且未折叠消息条数 ≥ 阈值。
+     * 触发时机只由对话条数驱动 —— 不再看可折叠 task 个数。 */
     struct edc_task_group *g;
     DL_FOREACH(sched->session->groups, g)
     {
         size_t foldable = edc_task_group_count_foldable(g);
         size_t unfolded = edc_task_group_unfolded_msg_count(g);
-        bool should_fold = foldable >= (size_t)task_threshold ||
-                           (foldable > 0 && unfolded >= (size_t)msg_threshold);
+        bool should_fold = foldable > 0 && unfolded >= (size_t)msg_threshold;
 
         if (should_fold)
         {
-            log_info("L1 fold trigger: group %s foldable=%zu (task_thr=%d) unfolded=%zu (msg_thr=%d)",
-                     g->group_id, foldable, task_threshold, unfolded, msg_threshold);
+            log_info("L1 fold trigger: group %s foldable=%zu unfolded=%zu (msg_thr=%d)",
+                     g->group_id, foldable, unfolded, msg_threshold);
             edc_actor_send(agent->memory_actor,
                            edc_actor_msg_new(BC_ACTOR_MSG_GROUP_FOLD, edc_scheduler_get_actor(sched), NULL, g, NULL));
             break; /* 一次只折叠一个 group */
