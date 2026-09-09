@@ -1,3 +1,4 @@
+#include "edc_style.hpp"
 #include "markdown.hpp"
 
 #include <ftxui/dom/table.hpp>
@@ -71,25 +72,27 @@ struct HeadingB : ParaB
     int level = 1;
     Element Finish() override
     {
+        // Heading colors come from the central style palette (edc_style.hpp).
+        const auto &pal = style::palette();
         Color c;
         switch (level)
         {
         case 1:
-            c = Color::Yellow;
+            c = pal.md_h1;
             break;
         case 2:
-            c = Color::Cyan;
+            c = pal.md_h2;
             break;
         case 3:
-            c = Color::Green;
+            c = pal.md_h3;
             break;
         default:
-            c = Color::GrayLight;
+            c = pal.md_h4;
             break;
         }
         Element head = ParaB::Finish() | bold | color(c);
         if (level <= 2)
-            return vbox({head, separator() | color(Color::RGB(128, 128, 128))});
+            return vbox({head, separator() | color(pal.md_rule)});
         return head;
     }
 };
@@ -113,12 +116,13 @@ struct CodeB : Builder
                 start = i + 1;
             }
         }
-        Element body = vbox(std::move(lines)) | color(Color::Cyan);
-        Element title = text(lang.empty() ? "code" : lang) | color(Color::Cyan);
-        // Use the same LIGHT border style and gray color as horizontal
+        const auto &pal = style::palette();
+        Element body = vbox(std::move(lines)) | color(pal.md_code);
+        Element title = text(lang.empty() ? "code" : lang) | color(pal.md_code);
+        // Use the same LIGHT border style and rule color as horizontal
         // separators and table lines, so code frames look consistent.
         return window(std::move(title), std::move(body), LIGHT) |
-               color(Color::RGB(128, 128, 128));
+               color(pal.md_rule);
     }
 };
 
@@ -131,8 +135,9 @@ struct QuoteB : Builder
     }
     Element Finish() override
     {
+        const auto &pal = style::palette();
         return hbox({
-            text("│ ") | color(Color::GrayDark),
+            text("│ ") | color(pal.md_quote),
             vbox(std::move(children)) | flex,
         });
     }
@@ -182,8 +187,9 @@ struct ListB : Builder
     void AddBlock(Element e) override
     {
         std::string bullet = ordered ? (std::to_string(index++) + ". ") : "• ";
+        const auto &pal = style::palette();
         items.push_back(hbox({
-            text(bullet) | color(Color::Blue),
+            text(bullet) | color(pal.md_list),
             std::move(e) | flex,
         }));
     }
@@ -213,13 +219,14 @@ struct TableB : Builder
     {
         if (rows.empty())
             return text("");
+        const auto &pal = style::palette();
         Table t(std::move(rows));
-        t.SelectAll().Border(LIGHT, color(Color::RGB(128, 128, 128)));
+        t.SelectAll().Border(LIGHT, color(pal.md_rule));
         t.SelectAll().DecorateCells(PadTableCell);
         if (head_end > 0)
         {
             t.SelectRow(0).Decorate(bold);
-            t.SelectRow(0).SeparatorHorizontal(LIGHT, color(Color::RGB(128, 128, 128)));
+            t.SelectRow(0).SeparatorHorizontal(LIGHT, color(pal.md_rule));
         }
         return t.Render();
     }
@@ -240,9 +247,10 @@ struct State
 
     Element StyledWord(std::string s)
     {
+        const auto &pal = style::palette();
         Element e = text(std::move(s));
         if (style.code)
-            e = e | bgcolor(Color::GrayDark);
+            e = e | bgcolor(pal.md_code_bg);
         if (style.bold)
             e = e | bold;
         if (style.italic)
@@ -250,7 +258,7 @@ struct State
         if (style.strike)
             e = e | strikethrough;
         if (!style.href.empty())
-            e = e | color(Color::Blue) | underlined | hyperlink(style.href);
+            e = e | color(pal.md_link) | underlined | hyperlink(style.href);
         return e;
     }
 };
@@ -323,7 +331,7 @@ int on_leave_block(MD_BLOCKTYPE type, void * /*det*/, void *ud)
     switch (type)
     {
     case MD_BLOCK_HR:
-        s->top().AddBlock(separator() | color(Color::RGB(128, 128, 128)));
+        s->top().AddBlock(separator() | color(style::palette().md_rule));
         return 0;
     case MD_BLOCK_TR: {
         auto *t = dynamic_cast<TableB *>(&s->top());

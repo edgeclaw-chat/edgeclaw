@@ -1,4 +1,5 @@
 #include "edc_todo_widget.hpp"
+#include "edc_style.hpp"
 #include "edc_text_util.hpp"
 #include "ftxui/dom/elements.hpp"
 #include <algorithm>
@@ -55,20 +56,15 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
 {
     using namespace ::ftxui;
 
-    // Palette is constructed inline at render time (same style as
-    // TaskWidget): ftxui::Color's constructor queries terminal state, which
-    // is not ready during C++ static initialization — file-scope const Color
-    // objects would run before main() and segfault.
+    // All colors come from the central style palette (edc_style.hpp); the
+    // palette is the single source of truth for chrome, accents and the pane
+    // background shared with TaskWidget / the chat surface.
+    const auto &pal = style::palette();
     // Scheme A: the todo list no longer re-uses the task-tree palette state
     // by state. Only one item is ever accented — the in_progress row, in
     // blue; pending and completed rows are neutral gray (completed keeps its
     // strikethrough). One quiet block with at most one bright row, instead
     // of a second rainbow beside the Tasks tree.
-    const Color kBlue = Color::RGB(94, 151, 247);   // the single accent: in_progress
-    const Color kGray = Color::RGB(147, 147, 147);  // neutral rows + chrome (counts, "(empty)", "+N more")
-    const Color kGreen = Color::RGB(64, 168, 96);   // summary n/n, only when the whole list is completed
-    const Color kDimLine = Color::RGB(60, 60, 60);
-    const Color kTodoBg = Color::RGB(30, 30, 30); // must match TaskWidget's pane background
 
     // Blank cells reserved at the right edge of every full-width row. The
     // sidebar pane is the window's rightmost element: rows used to wrap /
@@ -93,9 +89,9 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
         const std::string summary = std::to_string(completed_) + "/" + std::to_string(total);
         const bool all_done = total > 0 && completed_ == static_cast<int>(total);
         lines.push_back(hbox({
-            text((collapsed_ ? "▸ " : "▾ ") + std::string(" Todos ")) | bold | color(kBlue),
+            text((collapsed_ ? "▸ " : "▾ ") + std::string(" Todos ")) | bold | color(pal.accent),
             filler(),
-            text(summary) | color(all_done ? kGreen : kGray) | bold,
+            text(summary) | color(all_done ? pal.ok : pal.text_dim) | bold,
             text(std::string(kRightPad, ' ')),
         }) | reflect(header_box_));
     }
@@ -109,9 +105,9 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
     // layout stays stable instead of the section collapsing to a lone header.
     if (!collapsed_)
     {
-        lines.push_back(separator() | color(kDimLine));
+        lines.push_back(separator() | color(pal.line_dim));
         if (items_.empty())
-            lines.push_back(text("  (empty)") | dim | color(kGray));
+            lines.push_back(text("  (empty)") | dim | color(pal.text_dim));
     }
 
     // Width available for an item row. reflect() below sits on the vbox
@@ -147,13 +143,13 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             // text.
             Element marker;
             if (doing)
-                marker = text("  [•] ") | color(kBlue);
+                marker = text("  [•] ") | color(pal.accent);
             else if (done)
-                marker = text("  [✓] ") | color(kGray) | dim;
+                marker = text("  [✓] ") | color(pal.text_dim) | dim;
             else if (cancelled)
-                marker = text("  [~] ") | color(kGray) | dim;
+                marker = text("  [~] ") | color(pal.text_dim) | dim;
             else
-                marker = text("  [ ] ") | color(kGray) | dim;
+                marker = text("  [ ] ") | color(pal.text_dim) | dim;
 
             // Content wraps to the whole row width minus the marker column
             // and the right margin; single-line ellipsis truncation is only
@@ -209,10 +205,10 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             // of the item gets the same treatment.
             auto style_content = [&](Element e) -> Element {
                 if (doing)
-                    return e | color(kBlue);
+                    return e | color(pal.accent);
                 if (done || cancelled)
-                    return e | dim | strikethrough | color(kGray);
-                return e | dim | color(kGray);
+                    return e | dim | strikethrough | color(pal.text_dim);
+                return e | dim | color(pal.text_dim);
             };
 
             Elements item_lines;
@@ -226,7 +222,7 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             first_children.push_back(std::move(marker));
             first_children.push_back(style_content(text(wrapped[0])) | flex);
             if (dock_tag)
-                first_children.push_back(text("[" + item.priority + "]") | dim | color(kGray));
+                first_children.push_back(text("[" + item.priority + "]") | dim | color(pal.text_dim));
             first_children.push_back(text(std::string(kRightPad, ' ')));
             item_lines.push_back(hbox(std::move(first_children)));
             for (size_t ln = 1; ln < wrapped.size(); ln++)
@@ -237,11 +233,11 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
 
         if (total > shown)
         {
-            lines.push_back(text("  … +" + std::to_string(total - shown) + " more") | dim | color(kGray));
+            lines.push_back(text("  … +" + std::to_string(total - shown) + " more") | dim | color(pal.text_dim));
         }
     }
 
-    return vbox(std::move(lines)) | reflect(content_box_) | borderStyled(BorderStyle::EMPTY) | bgcolor(kTodoBg);
+    return vbox(std::move(lines)) | reflect(content_box_) | borderStyled(BorderStyle::EMPTY) | bgcolor(pal.pane_bg);
 }
 
 } // namespace edc

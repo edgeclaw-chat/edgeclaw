@@ -2,6 +2,7 @@
 #include "edc_chat_widget.hpp"
 #include "edc_input.hpp"
 #include "edc_scroll_view.hpp"
+#include "edc_style.hpp"
 #include "edc_task_widget.hpp"
 #include "edc_todo_widget.hpp"
 #include "ftxui/component/component.hpp"
@@ -120,9 +121,10 @@ TUIWindow::TUIWindow() : input_text_("")
     task_widget_ = std::make_shared<TaskWidget>();
     todo_widget_ = std::make_shared<TodoWidget>();
 
+    const auto &pal = style::palette();
     footer_ = ::ftxui::text(" Enter 发送   Alt+Enter 换行   Tab 切换输入/滚动   滚轮/↑↓ 滚动   Esc 退出 ") |
-              ::ftxui::color(::ftxui::Color::RGB(147, 147, 147));
-    prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(::ftxui::Color::Blue) | ::ftxui::bold;
+              ::ftxui::color(pal.text_dim);
+    prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(pal.prompt) | ::ftxui::bold;
 
     // Multiline chat draft with soft (visual) wrapping. Long unbroken lines
     // wrap onto following rows instead of overflowing the input width;
@@ -180,7 +182,7 @@ TUIWindow::TUIWindow() : input_text_("")
         // the top: leftover vertical space remains at the bottom instead of
         // being absorbed by the task tree to push the todo section down.
         return ::ftxui::vbox(std::move(col)) |
-               ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30)) | ::ftxui::flex;
+               ::ftxui::bgcolor(style::palette().pane_bg) | ::ftxui::flex;
     });
     split_ = ::ftxui::ResizableSplit({
         right_pane,                         // main (right pane)
@@ -271,9 +273,9 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
             std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
         const size_t frame = (static_cast<size_t>(ms) / 100) % (sizeof(kFrames) / sizeof(kFrames[0]));
 
-        auto spinner = ::ftxui::text(kFrames[frame]) | ::ftxui::color(::ftxui::Color::RGB(94, 151, 247)) |
-                       ::ftxui::bold;
-        auto label = ::ftxui::text(" 处理中...") | ::ftxui::color(::ftxui::Color::RGB(147, 147, 147));
+        const auto &pal = style::palette();
+        auto spinner = ::ftxui::text(kFrames[frame]) | ::ftxui::color(pal.accent) | ::ftxui::bold;
+        auto label = ::ftxui::text(" 处理中...") | ::ftxui::color(pal.text_dim);
         children.push_back(::ftxui::hbox({spinner, label}));
 
         if (screen_)
@@ -297,7 +299,7 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
             RequestTaskSnapshot();
     }
 
-    return split_->Render() | ::ftxui::bgcolor(::ftxui::Color::RGB(10, 10, 10));
+    return split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
 }
 
 bool TUIWindow::OnEvent(::ftxui::Event event)

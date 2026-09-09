@@ -1,4 +1,5 @@
 #include "edc_message.hpp"
+#include "edc_style.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -23,9 +24,9 @@ bool Message::OnEvent(ftxui::Event)
     // Parse once on first render and reuse the cached tree afterwards.
     if (!body_)
     {
+        const auto &pal = style::palette();
         body_ = RenderMarkdown(content_);
-        body_ =
-            body_ | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) | ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
+        body_ = body_ | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) | ::ftxui::bgcolor(pal.pane_bg);
     }
 
     return body_;
@@ -59,7 +60,8 @@ bool ThoughtMessage::OnEvent(ftxui::Event event)
 ::ftxui::Element ThoughtMessage::OnRender()
 {
     auto arrow = thought_expanded_ ? "-" : "+";
-    auto applied_color = thought_expanded_ ? ::ftxui::Color::RGB(151, 104, 44) : ::ftxui::Color::RGB(245, 167, 66);
+    const auto &pal = style::palette();
+    auto applied_color = thought_expanded_ ? pal.thought_open : pal.thought_closed;
     auto label = ::ftxui::text(" " + std::string(arrow) + " Thought") | ::ftxui::color(applied_color) | ::ftxui::bold |
                  ::ftxui::reflect(box_);
 
@@ -68,7 +70,7 @@ bool ThoughtMessage::OnEvent(ftxui::Event event)
         return label;
     }
 
-    auto body = ::ftxui::paragraph(content_) | ::ftxui::color(::ftxui::Color::RGB(147, 147, 147)) |
+    auto body = ::ftxui::paragraph(content_) | ::ftxui::color(pal.text_dim) |
                 ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY);
 
     return ::ftxui::vbox({label, body});
@@ -80,11 +82,12 @@ UserMessage::UserMessage(const std::string_view content, time_t ts) : Message(co
 
 ::ftxui::Element UserMessage::OnRender()
 {
+    const auto &pal = style::palette();
     auto body = ::ftxui::paragraph(content_);
-    auto header = ::ftxui::separatorHeavy() | ::ftxui::color(::ftxui::Color::Blue);
+    auto header = ::ftxui::separatorHeavy() | ::ftxui::color(pal.user_rule);
 
     body = ::ftxui::hbox({header, body | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY)}) |
-           ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
+           ::ftxui::bgcolor(pal.pane_bg);
     return body;
 }
 
@@ -161,8 +164,7 @@ std::string FirstLines(const std::string &text, size_t max_lines)
 
 ::ftxui::Element ToolMessage::OnRender()
 {
-    const auto dim_gray = ::ftxui::Color::RGB(147, 147, 147);
-    const auto accent = ::ftxui::Color::RGB(94, 151, 247);
+    const auto &pal = style::palette();
 
     // Only messages whose content is truncated on the collapsed view carry the
     // toggle; short outputs are shown verbatim without a footer.
@@ -172,7 +174,7 @@ std::string FirstLines(const std::string &text, size_t max_lines)
     ::ftxui::Elements children;
     if (!header_.empty())
     {
-        children.push_back(::ftxui::paragraph(header_) | ::ftxui::color(dim_gray));
+        children.push_back(::ftxui::paragraph(header_) | ::ftxui::color(pal.text_dim));
         children.push_back(::ftxui::separatorEmpty());
     }
 
@@ -206,12 +208,12 @@ std::string FirstLines(const std::string &text, size_t max_lines)
     if (toggleable)
     {
         auto toggle = expanded_ ? ::ftxui::text("- Collapse") : ::ftxui::text("+ Click to expand");
-        auto footer = ::ftxui::hbox({toggle | ::ftxui::color(accent) | ::ftxui::reflect(box_)}) | ::ftxui::flex;
+        auto footer = ::ftxui::hbox({toggle | ::ftxui::color(pal.accent) | ::ftxui::reflect(box_)}) | ::ftxui::flex;
         children.push_back(footer);
     }
 
     return ::ftxui::vbox(children) | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) |
-           ::ftxui::bgcolor(::ftxui::Color::RGB(30, 30, 30));
+           ::ftxui::bgcolor(pal.pane_bg);
 }
 
 } // namespace edc

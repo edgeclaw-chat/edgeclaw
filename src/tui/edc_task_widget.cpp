@@ -1,4 +1,5 @@
 #include "edc_task_widget.hpp"
+#include "edc_style.hpp"
 #include "edc_text_util.hpp"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -12,18 +13,20 @@ namespace
 // Map a scheduler task-state name to its sidebar color.
 ::ftxui::Color StateColor(const std::string &state)
 {
+    // Task states map onto the central style palette (edc_style.hpp).
+    const auto &pal = style::palette();
     if (state == "COMPLETED")
-        return ::ftxui::Color::RGB(64, 168, 96); // green
+        return pal.ok;
     if (state == "ERROR")
-        return ::ftxui::Color::RGB(224, 108, 117); // red
+        return pal.error;
     if (state == "LLM_PROCESSING" || state == "TOOL_CALLING")
-        return ::ftxui::Color::RGB(94, 151, 247); // blue
+        return pal.accent;
     if (state == "SUSPENDED")
-        return ::ftxui::Color::RGB(198, 120, 221); // magenta
+        return pal.suspended;
     if (state == "CANCELLED")
-        return ::ftxui::Color::RGB(147, 147, 147); // gray
+        return pal.text_dim;
     // IDLE / WAITING_DEPS / WAITING_INPUT
-    return ::ftxui::Color::RGB(229, 192, 123); // yellow
+    return pal.warn;
 }
 
 // Cells guaranteed to stay free between a task's description and its state
@@ -142,6 +145,10 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
 {
     using namespace ::ftxui;
 
+    // All colors come from the central style palette (edc_style.hpp); the
+    // pane background must stay identical to TodoWidget and the chat surface.
+    const auto &pal = style::palette();
+
     Elements lines;
 
     // Collapsible Tasks section header: the arrow shows the fold state, the
@@ -156,13 +163,13 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
 
         Elements head = {
             text((section_collapsed_ ? "▸ " : "▾ ") + std::string(" Tasks ")) | bold |
-                color(Color::RGB(94, 151, 247)),
+                color(pal.accent),
             filler(),
         };
         if (group_count > 0)
         {
             head.push_back(text(std::to_string(group_count) + "g · " + std::to_string(task_count) + "t") |
-                           dim | color(Color::RGB(147, 147, 147)));
+                           dim | color(pal.text_dim));
         }
         head.push_back(text(std::string(kRightPad, ' ')));
         lines.push_back(hbox(std::move(head)) | reflect(section_header_box_));
@@ -204,13 +211,13 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
             if (created_at_.size() >= 10)
                 stats += " · created " + created_at_.substr(0, 10);
             lines.push_back(text(" " + TruncateToWidth(stats, row_width - 1 - kRightPad)) | dim |
-                            color(Color::RGB(147, 147, 147)));
+                            color(pal.text_dim));
         }
         lines.push_back(separator());
 
         if (groups_.empty())
         {
-            lines.push_back(text(" (no tasks)") | dim | color(Color::RGB(147, 147, 147)));
+            lines.push_back(text(" (no tasks)") | dim | color(pal.text_dim));
         }
 
         group_header_boxes_.resize(groups_.size());
@@ -228,7 +235,7 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
             header += " (" + std::to_string(g.member_count) + ")";
 
             lines.push_back(hbox({text(header), filler()}) | bold |
-                            color(g.fg ? Color::RGB(229, 192, 123) : Color::RGB(147, 147, 147)) |
+                            color(g.fg ? pal.warn : pal.text_dim) |
                             reflect(group_header_boxes_[i]));
 
             if (!expanded)
@@ -275,7 +282,7 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
     // border/background), so the todo list below is never pushed to the pane
     // bottom by a greedy task tree.
     return vbox(std::move(lines)) | reflect(content_box_) | borderStyled(BorderStyle::EMPTY) |
-           bgcolor(Color::RGB(30, 30, 30));
+           bgcolor(pal.pane_bg);
 }
 
 } // namespace edc
