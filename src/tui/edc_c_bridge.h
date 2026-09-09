@@ -64,6 +64,8 @@ struct edc_c_task_group
 {
     const char *group_id;
     int member_count;
+    int msg_count; /* messages in this group: committed (no system prompt) +
+                      in-flight turns of its tasks */
     int orphaned;
     int fg;
     int task_count;

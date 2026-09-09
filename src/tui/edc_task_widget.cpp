@@ -42,6 +42,18 @@ constexpr int kDescStateGapCells = 2;
 // row free on the right restores a balanced inset.
 constexpr int kRightPad = 2;
 
+// Right-align a count into a fixed-width cell so numeric columns line up
+// across rows and live increments (9 → 10 → 21) do not reflow the layout.
+// Beyond the width the string simply grows one cell per extra digit (rare)
+// and the row's filler absorbs it instead of clipping the number.
+std::string PadCount(int value, int width)
+{
+    std::string s = std::to_string(value);
+    if (static_cast<int>(s.size()) >= width)
+        return s;
+    return std::string(width - static_cast<int>(s.size()), ' ') + s;
+}
+
 // Upper bound (in code points) kept per task when importing a snapshot. The
 // exact per-row fit is decided at render time by TruncateToWidth(); this cap
 // only stops a pathological description from being copied/stored in full.
@@ -80,6 +92,7 @@ void TaskWidget::SetSnapshot(const ::edc_c_task_snapshot *snap)
         GroupInfo group;
         group.group_id = g->group_id ? g->group_id : "";
         group.member_count = g->member_count;
+        group.msg_count = g->msg_count;
         group.orphaned = g->orphaned != 0;
         group.fg = g->fg != 0;
 
@@ -151,6 +164,18 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
 
     Elements lines;
 
+    // Width available for a text row. reflect() below sits on the vbox
+    // *inside* the (empty-style) border, because ftxui's Border node insets
+    // its child by one column on each side even for BorderStyle::EMPTY — the
+    // outer box would overestimate the row width by 2 and the extra-wide
+    // description would then be flex-shrunk, clipping the trailing "…".
+    // reflect() fills content_box_ during the render pass, so this reads the
+    // previous frame's width; before the first measurement fall back to the
+    // default sidebar width (36) minus the 2 border columns.
+    int row_width = 34;
+    if (content_box_.x_min != 0 || content_box_.x_max != 0 || content_box_.y_min != 0 || content_box_.y_max != 0)
+        row_width = content_box_.x_max - content_box_.x_min + 1;
+
     // Collapsible Tasks section header: the arrow shows the fold state, the
     // counts on the right summarize what a collapsed section hides. The row
     // is full width (reflect below records its box) so clicking anywhere on
@@ -168,24 +193,21 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
         };
         if (group_count > 0)
         {
-            head.push_back(text(std::to_string(group_count) + "g · " + std::to_string(task_count) + "t") |
-                           dim | color(pal.text_dim));
+            const std::string gc =
+                PadCount(group_count, 2) + (group_count == 1 ? " group" : " groups");
+            const std::string tc =
+                PadCount(task_count, 2) + (task_count == 1 ? " task" : " tasks");
+            // Truncate the summary to the room left after the fixed header
+            // label and the right pad, instead of letting it clip at the
+            // pane edge on a narrow sidebar.
+            const int left_cells = 2 /* arrow */ + static_cast<int>(std::string(" Tasks ").size());
+            const int summary_budget = row_width - kRightPad - left_cells;
+            head.push_back(text(TruncateToWidth(gc + " · " + tc, summary_budget)) | dim |
+                           color(pal.text_dim));
         }
         head.push_back(text(std::string(kRightPad, ' ')));
         lines.push_back(hbox(std::move(head)) | reflect(section_header_box_));
     }
-
-    // Width available for a text row. reflect() below sits on the vbox
-    // *inside* the (empty-style) border, because ftxui's Border node insets
-    // its child by one column on each side even for BorderStyle::EMPTY — the
-    // outer box would overestimate the row width by 2 and the extra-wide
-    // description would then be flex-shrunk, clipping the trailing "…".
-    // reflect() fills content_box_ during the render pass, so this reads the
-    // previous frame's width; before the first measurement fall back to the
-    // default sidebar width (36) minus the 2 border columns.
-    int row_width = 34;
-    if (content_box_.x_min != 0 || content_box_.x_max != 0 || content_box_.y_min != 0 || content_box_.y_max != 0)
-        row_width = content_box_.x_max - content_box_.x_min + 1;
 
     if (section_collapsed_)
     {
@@ -210,7 +232,7 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
             // the live total, so the count tracks any task's streaming tool /
             // assistant messages and queued inputs — not just the active task —
             // and settles to the committed total once all turns flush).
-            std::string stats = std::to_string(message_count_) + " msgs";
+            std::string stats = PadCount(message_count_, 3) + " msgs";
             if (created_at_.size() >= 10)
                 stats += " · created " + created_at_.substr(0, 10);
             lines.push_back(text(" " + TruncateToWidth(stats, row_width - 1 - kRightPad)) | dim |
@@ -230,16 +252,40 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
             const auto &g = groups_[i];
             const bool expanded = group_expanded_[g.group_id];
 
-            // Collapsible group header: an arrow shows the state; foreground
-            // is highlighted with a warm color, orphaned groups are marked.
-            std::string header = (expanded ? "▾ " : "▸ ") + g.group_id;
+            // Collapsible group header: a disclosure arrow plus "Group <id>"
+            // on the left; the right edge carries the group summary — task
+            // count and the live message count (committed group messages plus
+            // the in-flight turns of its tasks, so the number ticks up while
+            // any member streams). Foreground groups keep the warm highlight;
+            // orphaned groups are flagged with a trailing "~".
+            std::string id_part = g.group_id.empty() ? "(group)" : "Group " + g.group_id;
             if (g.orphaned)
-                header += " ~";
-            header += " (" + std::to_string(g.member_count) + ")";
+                id_part += " ~";
 
-            lines.push_back(hbox({text(header), filler()}) | bold |
-                            color(g.fg ? pal.warn : pal.text_dim) |
-                            reflect(group_header_boxes_[i]));
+            const int task_n = g.member_count;
+            // Two right-aligned fixed-width numeric columns (tasks ≤ 2 cells,
+            // messages ≤ 3): digit columns stay put while a live group count
+            // grows 9 → 10 → 21, so the sidebar does not reflow every frame.
+            std::string stats = PadCount(task_n, 2) + (task_n == 1 ? " task" : " tasks");
+            stats += " · " + PadCount(g.msg_count, 3) + (g.msg_count == 1 ? " msg" : " msgs");
+
+            // The numeric block on the right is the live information, so it
+            // is never truncated: shrink the "Group <id>" label (with an
+            // ellipsis when needed) to whatever the fixed count columns leave
+            // on a narrow sidebar, rather than clipping the digits.
+            const int label_budget = row_width - kRightPad - 2 /* arrow */ - StringWidth(stats);
+            if (label_budget > 0)
+                id_part = TruncateToWidth(id_part, label_budget);
+            else
+                id_part.clear();
+
+            lines.push_back(hbox({
+                                text((expanded ? "▾ " : "▸ ") + id_part) | bold |
+                                    color(g.fg ? pal.warn : pal.text_dim),
+                                filler(),
+                                text(stats) | dim | color(pal.text_dim),
+                                text(std::string(kRightPad, ' ')),
+                            }) | reflect(group_header_boxes_[i]));
 
             if (!expanded)
                 continue;

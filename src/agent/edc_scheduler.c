@@ -713,6 +713,22 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched)
         cJSON_AddNumberToObject(gj, "member_count", g->member_count);
         cJSON_AddBoolToObject(gj, "orphaned", g->is_orphaned);
         cJSON_AddBoolToObject(gj, "fg", sched->foreground_group == g);
+        /* 组消息数: group history 已提交消息 (不含 history[0] 的组 system
+         * prompt) + 组内各 task 在途 turn 的消息。history 在 task turn STOP
+         * 提交前同步引用 (提交后 active_turn 清空), 因此不重复计数; 侧边栏
+         * 借此能看到组内任意 task 流式消息的实时增长。 */
+        size_t g_msg_count = g->history ? (size_t)cJSON_GetArraySize(g->history) : 0;
+        if (g_msg_count > 0)
+            g_msg_count -= 1;
+        {
+            struct edc_task *mt;
+            LL_FOREACH2(g->members, mt, group_next)
+            {
+                if (mt->active_turn)
+                    g_msg_count += edc_queue_length(&mt->active_turn->messages);
+            }
+        }
+        cJSON_AddNumberToObject(gj, "msg_count", (double)g_msg_count);
 
         cJSON *tasks = cJSON_AddArrayToObject(gj, "tasks");
         struct edc_task *t;

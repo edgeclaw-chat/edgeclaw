@@ -146,8 +146,10 @@ struct edc_c_task_snapshot *edc_c_task_snapshot_parse(const char *json)
         {
             struct edc_c_task_group *g = &snap->groups[gi++];
             cJSON *mc = cJSON_GetObjectItemCaseSensitive(gj, "member_count");
+            cJSON *gmc = cJSON_GetObjectItemCaseSensitive(gj, "msg_count");
             g->group_id = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(gj, "id")));
             g->member_count = cJSON_IsNumber(mc) ? mc->valueint : 0;
+            g->msg_count = cJSON_IsNumber(gmc) ? gmc->valueint : 0;
             g->orphaned = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(gj, "orphaned")) ? 1 : 0;
             g->fg = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(gj, "fg")) ? 1 : 0;
 
