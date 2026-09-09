@@ -380,7 +380,12 @@ static int edc_https_ssl_bio_send(void *ctx, const unsigned char *buf, size_t le
     char *data = malloc(len);
     memcpy(data, buf, len);
     uv_buf_t wbuf = uv_buf_init(data, (unsigned int)len);
-    LL_APPEND(req->mbedtls_send_bufs, edc_https_buf_list_node(&wbuf, 0));
+    /* utlist's LL_APPEND evaluates its `add` argument twice; passing the
+     * edc_https_buf_list_node() call directly allocates two nodes and leaks
+     * the first one on every send. Hoist the call so the node is created
+     * exactly once. */
+    struct edc_https_buf_list *node = edc_https_buf_list_node(&wbuf, 0);
+    LL_APPEND(req->mbedtls_send_bufs, node);
 
     if (!req->writing)
     {
@@ -553,7 +558,9 @@ void edc_https_client_on_tcp_read(uv_stream_t *stream, ssize_t nread, const uv_b
     else
     {
         uv_buf_t actual = uv_buf_init(buf->base, (unsigned int)nread);
-        LL_APPEND(req->mbedtls_recv_bufs, edc_https_buf_list_node(&actual, 0));
+        /* See edc_https_ssl_bio_send(): LL_APPEND double-evaluates `add`. */
+        struct edc_https_buf_list *node = edc_https_buf_list_node(&actual, 0);
+        LL_APPEND(req->mbedtls_recv_bufs, node);
         edc_https_client_drive_mbedtls(req);
     }
 }
