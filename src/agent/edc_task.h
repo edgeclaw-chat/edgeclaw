@@ -152,9 +152,9 @@ extern edc_task_state edc_task_classify_state(const char *name);
  * EDC_TODO_SYNC_REMIND_GAP 条对话 (LLM 请求) 都没调用过 todowrite"
  * 时, 才在该次请求的消息列表末尾 append 一条 system reminder 提醒同步。 */
 
-/* 阈值: 距上次 todowrite 调用 (或上次提醒) 满 10 次 LLM 请求仍未
- * 同步, 则提醒一次。 */
-#define EDC_TODO_SYNC_REMIND_GAP 10
+/* 阈值: 距上次 todowrite 调用 (或上次提醒) 满 EDC_TODO_SYNC_REMIND_GAP
+ * 次 LLM 请求仍未同步, 则提醒一次。 */
+#define EDC_TODO_SYNC_REMIND_GAP 5
 
 /** todowrite 工具成功调用后调用: 清零节流计数 (重新从 0 计"隔了
  *  多少条对话")。 */
