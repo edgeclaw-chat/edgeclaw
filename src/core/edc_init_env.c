@@ -330,14 +330,14 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     /* API URL */
     const char *def_api_url = (defaults && sdslen(defaults->api_url) > 0)
                                   ? defaults->api_url
-                                  : "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions";
+                                  : "https://api.deepseek.com/chat/completions";
     sds val = prompt_with_default("API URL", def_api_url);
     if (!val)
         return -1;
     result->api_url = val;
 
     /* Model */
-    const char *def_model = (defaults && sdslen(defaults->model) > 0) ? defaults->model : "glm-5";
+    const char *def_model = (defaults && sdslen(defaults->model) > 0) ? defaults->model : "deepseek-v4-flash";
     val = prompt_with_default("Model", def_model);
     if (!val)
         return -1;
@@ -350,7 +350,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     result->api_key = val;
 
     /* Max Iterations */
-    int ival = prompt_int("Max Iterations", defaults && defaults->max_iter > 0 ? defaults->max_iter : 20);
+    int ival = prompt_int("Max Iterations", defaults && defaults->max_iter > 0 ? defaults->max_iter : 100);
     if (ival < 0)
         return -1;
     result->max_iter = ival;
@@ -454,7 +454,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     }
 
     {
-        const char *def = (defaults && sdslen(defaults->device_ip) > 0) ? defaults->device_ip : "192.168.4.1";
+        const char *def = (defaults && sdslen(defaults->device_ip) > 0) ? defaults->device_ip : "127.0.0.1";
         val = prompt_with_default("Device IP", def);
         if (!val)
             return -1;

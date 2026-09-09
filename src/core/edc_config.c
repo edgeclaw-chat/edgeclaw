@@ -125,7 +125,7 @@ struct edc_config *edc_config_load(const char *edc_home)
     cJSON *memory_compress_threshold = cJSON_GetObjectItem(conf, "memory_compress_threshold");
     if (!memory_compress_threshold || !cJSON_IsNumber(memory_compress_threshold))
     {
-        config->memory_compress_threshold = 100;
+        config->memory_compress_threshold = 200;
     }
     else
     {
