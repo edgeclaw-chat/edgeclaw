@@ -43,6 +43,10 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
     if (strncmp(s, "\"\"\"", 3) == 0 || strncmp(s, "'''", 3) == 0)
     {
         const char *delim = (*s == '"') ? "\"\"\"" : "'''";
+        /* Python semantics: ''' is raw — no $variable expansion inside.
+         * Capture BEFORE sdsrange() below rewrites the buffer s points into
+         * (it null-terminates at the new end, clobbering the opening quote). */
+        opts->literal = (*s == '\'');
         char *q_end = strstr(s + 3, delim);
         if (q_end)
         {
@@ -50,14 +54,15 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
             sdsrange(remaining, (int)(q_end + 3 - remaining), -1);
             sdstrim(remaining, " \t");
             input_consumed = true;
-            /* Python semantics: ''' is raw — no $variable expansion inside */
-            opts->literal = (*s == '\'');
         }
     }
 
     if (!input_consumed && (*s == '"' || *s == '\''))
     {
         char quote = *s;
+        /* single-quoted input is raw too (no $ expansion). Same as above:
+         * capture before sdsrange() clobbers the buffer s points into. */
+        opts->literal = (quote == '\'');
         char *q_end = strchr(s + 1, quote);
         if (q_end)
         {
@@ -65,8 +70,6 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
             sdsrange(remaining, (int)(q_end - remaining + 1), -1);
             sdstrim(remaining, " \t");
             input_consumed = true;
-            /* single-quoted input is raw too (no $ expansion) */
-            opts->literal = (*s == '\'');
         }
     }
 

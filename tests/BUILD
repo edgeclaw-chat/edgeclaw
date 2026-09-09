@@ -258,3 +258,12 @@ cc_test(
     ],
     linkopts = LINK_OPTS,
 )
+
+cc_test(
+    name = "test_cmd_parse",
+    srcs = ["test_cmd_parse.c"],
+    deps = [
+        "//src/shell:shell_api",
+    ],
+    linkopts = LINK_OPTS,
+)

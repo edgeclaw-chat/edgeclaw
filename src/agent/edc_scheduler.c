@@ -1,5 +1,6 @@
 #include "edc_scheduler.h"
 #include "edc_channel_actor.h"
+#include "edc_cmd_parse.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_context.h"
@@ -372,9 +373,24 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
         }
     }
 
+    /* 普通输入也遵循 python-like 引号解析："""…""" / '''…''' / '…' / "…" 的
+     * 引号在 attach 到等待任务时也要剥掉，与 @ 新建 task 的 shell 路径一致。
+     * (/ 与 @ 输入不走到这里，已在上方交给命令处理器。) */
+    sds effective_input = NULL;
+    if (is_plain)
+    {
+        struct edc_cmd_task_opts popts;
+        edc_cmd_parse_task_opts(input->content, &popts);
+        if (popts.input && sdslen(popts.input) > 0)
+            effective_input = sdsdup(popts.input);
+        edc_cmd_task_opts_free(&popts);
+    }
+
     struct edc_turn *turn = edc_turn_new();
     turn->task_id = strdup(task->task_id);
-    edc_turn_add_user_message(turn, input->content);
+    edc_turn_add_user_message(turn, effective_input ? effective_input : input->content);
+    if (effective_input)
+        sdsfree(effective_input);
     task->active_turn = turn;
     task->llm_rounds = 0; /* 新一轮输入: 重置 max_iter 迭代预算 */
     task->current_request_id = msg->request_id;

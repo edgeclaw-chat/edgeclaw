@@ -17,8 +17,12 @@ cc_library(
 
 cc_library(
     name = "shell_api",
-    srcs = ["edc_shell_vars.c"],
+    srcs = [
+        "edc_cmd_parse.c",
+        "edc_shell_vars.c",
+    ],
     hdrs = [
+        "edc_cmd_parse.h",
         "edc_commands.h",
         "edc_completion.h",
         "edc_shell.h",
@@ -35,7 +39,6 @@ cc_library(
 cc_library(
     name = "shell",
     srcs = [
-        "edc_cmd_parse.c",
         "edc_commands.c",
         "edc_shell.c",
         "edc_shell_ast.c",
@@ -43,7 +46,6 @@ cc_library(
         "edc_shell_token.c",
     ],
     hdrs = [
-        "edc_cmd_parse.h",
         "edc_commands.h",
         "edc_completion.h",
         "edc_shell.h",
