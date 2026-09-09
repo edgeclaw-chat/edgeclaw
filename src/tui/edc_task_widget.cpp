@@ -70,7 +70,6 @@ void TaskWidget::SetSnapshot(const ::edc_c_task_snapshot *snap)
     session_id_.clear();
     session_name_.clear();
     created_at_.clear();
-    message_count_ = 0;
     groups_.clear();
 
     if (!snap)
@@ -82,7 +81,6 @@ void TaskWidget::SetSnapshot(const ::edc_c_task_snapshot *snap)
     session_id_ = snap->session_id ? snap->session_id : "";
     session_name_ = snap->session_name ? snap->session_name : "";
     created_at_ = snap->created_at ? snap->created_at : "";
-    message_count_ = snap->message_count;
 
     std::string active_group_id;
     for (int gi = 0; gi < snap->group_count; gi++)
@@ -220,22 +218,46 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
     {
         if (!session_name_.empty() || !session_id_.empty())
         {
-            // Session line: display name, then the id in brackets when distinct.
-            std::string sid = session_name_.empty() ? session_id_ : session_name_;
-            if (!session_id_.empty() && session_name_ != session_id_)
-                sid += " [" + session_id_ + "]";
-            lines.push_back(text(" " + TruncateToWidth(sid, row_width - 1 - kRightPad)) | dim);
+            // Session meta, kept on one row: the session name (its id added
+            // in brackets when distinct) on the left, the creation date
+            // flushed right into the same edge column the per-group message
+            // counts below share, so the meta block lines up with the tree.
+            // There is no session message counter anymore — live counts sit
+            // on each group row already. The date block is never truncated:
+            // a narrow sidebar ellipsizes the name instead, dropping the
+            // bracketed id before the bare name gives way.
+            const std::string created =
+                created_at_.size() >= 10 ? "created " + created_at_.substr(0, 10) : "";
+            const std::string name = session_name_.empty() ? session_id_ : session_name_;
+            // The id is bracketed only when a distinct session *name* exists;
+            // with no name the id stands alone and must not repeat itself.
+            const bool distinct =
+                !session_name_.empty() && !session_id_.empty() && session_name_ != session_id_;
+            const std::string sid = distinct ? name + " [" + session_id_ + "]" : name;
 
-            // Session stats: committed session messages PLUS the in-flight
-            // turn messages of every task in the session (the snapshot carries
-            // the live total, so the count tracks any task's streaming tool /
-            // assistant messages and queued inputs — not just the active task —
-            // and settles to the committed total once all turns flush).
-            std::string stats = PadCount(message_count_, 3) + " msgs";
-            if (created_at_.size() >= 10)
-                stats += " · created " + created_at_.substr(0, 10);
-            lines.push_back(text(" " + TruncateToWidth(stats, row_width - 1 - kRightPad)) | dim |
-                            color(pal.text_dim));
+            // Room for the name after the leading gutter, the fixed created
+            // block, the reserved right pad and a one-cell spacer that keeps
+            // the two sides apart even when the flex label gets no leftover.
+            const int created_cells = created.empty() ? 0 : StringWidth(created);
+            const int gap_cells = created.empty() ? 0 : 1;
+            const int name_budget =
+                row_width - 1 - kRightPad - created_cells - gap_cells;
+
+            std::string left = name;
+            if (name_budget > 0 && StringWidth(sid) <= name_budget)
+                left = sid; /* full name + id fits: keep the id too */
+            else if (name_budget > 0)
+                left = TruncateToWidth(name, name_budget);
+            else
+                left.clear();
+
+            lines.push_back(hbox({
+                                text(" " + left) | flex | dim,
+                                text(created.empty() ? "" : " ") | dim |
+                                    color(pal.text_dim),
+                                text(created) | dim | color(pal.text_dim),
+                                text(std::string(kRightPad, ' ')),
+                            }));
         }
         lines.push_back(separator());
 

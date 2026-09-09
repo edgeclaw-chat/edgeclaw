@@ -55,7 +55,6 @@ class TaskWidget : public ::ftxui::ComponentBase
     std::string session_id_;
     std::string session_name_;
     std::string created_at_;  /* "YYYY-MM-DD HH:MM:SS" or "" */
-    int message_count_ = 0;
     std::vector<GroupInfo> groups_;
 
     // Collapse state for the whole Tasks section; preserved across snapshot
