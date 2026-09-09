@@ -17,6 +17,26 @@ namespace edc
 //   - retheming the UI is a one-place change instead of a grep across
 //     widgets.
 //
+// The palette is a single, coherent theme: Monokai. The chrome (pane
+// backgrounds, sidebar, prompt, status colors) and the Markdown syntax
+// colors are drawn from the same token set, so the chat pane and the
+// sidebar can never look like two different applications.
+//
+// Monokai tokens
+// --------------
+//   background      #272822  (39, 40, 34)    editor background
+//   background dark #1E1F1C  (30, 31, 28)    outermost backdrop
+//   background lite #3E3D32  (62, 61, 50)    current line / chip surface
+//   selection       #49483E  (73, 72, 62)    rules, inactive surfaces
+//   comment         #75715E  (117, 113, 94)  muted / secondary text
+//   foreground      #F8F8F2  (248, 248, 242) body text, code
+//   pink            #F92672  (249, 38, 114)  keywords, emphasis, errors
+//   orange          #FD971F  (253, 151, 31)  numbers, constants
+//   yellow          #E6DB74  (230, 219, 116) classes, types
+//   green           #A6E22E  (166, 226, 46)  strings, success
+//   cyan            #66D9EF  (102, 217, 239) functions, primary accent
+//   purple          #AE81FF  (174, 129, 255) statements, suspended
+//
 // Initialization note: palette() is a function-local static, deliberately
 // NOT a namespace-scope object. ftxui::Color::RGB(...) resolves the color
 // against the current terminal (it calls Terminal::ColorSupport(), see
@@ -40,7 +60,7 @@ struct Palette
     ::ftxui::Color line_dim;    // subtle separator lines (todo list divider).
 
     // ---- accents & status ----------------------------------------------
-    ::ftxui::Color accent;      // main blue accent: headers, in_progress,
+    ::ftxui::Color accent;      // main cyan accent: headers, in_progress,
                                 // spinner, active/tool-calling emphasis.
     ::ftxui::Color ok;          // success: completed todo summary, COMPLETED.
     ::ftxui::Color warn;        // warm yellow: foreground group, IDLE/WAITING.
@@ -54,18 +74,21 @@ struct Palette
     ::ftxui::Color user_rule; // heavy rule marking user messages.
 
     // ---- Markdown syntax colors -----------------------------------------
-    // Aligned with glow/glamour's "dark" look (xterm indices from
-    // glamour/styles/dark.json): headings 39, h1 banner 228 on 63,
-    // code 244/251, quote bar & body 252.
-    ::ftxui::Color md_h1;      // ATX heading level 1 text (banner).
+    // Markdown uses the same Monokai tokens as the chrome, mapped the way
+    // Monokai themes map syntax: h1 is an emphasis (pink) banner whose
+    // text is punched out in the editor background color, then the heading
+    // ladder walks yellow -> green -> cyan, code and links follow the
+    // string/function tokens, and quotes/rules use the comment and
+    // selection grays.
+    ::ftxui::Color md_h1;      // ATX heading level 1 text (banner knockout).
     ::ftxui::Color md_h1_bg;   // ATX heading level 1 banner background.
     ::ftxui::Color md_h2;      // ATX heading level 2.
     ::ftxui::Color md_h3;      // ATX heading level 3.
     ::ftxui::Color md_h4;      // ATX headings level 4+.
-    ::ftxui::Color md_code;        // fenced code block text (glow: plain gray).
-    ::ftxui::Color md_code_inline; // inline code text (glow-style coral).
-    ::ftxui::Color md_code_bg;     // inline code chip background (glow-style faint).
-    ::ftxui::Color md_rule;        // hr / table / code frame / heading underline.
+    ::ftxui::Color md_code;        // fenced code block text.
+    ::ftxui::Color md_code_inline; // inline code text.
+    ::ftxui::Color md_code_bg;     // inline code chip background.
+    ::ftxui::Color md_rule;        // hr / table / heading rule.
     ::ftxui::Color md_quote;   // blockquote bar.
     ::ftxui::Color md_list;    // list bullet glyphs.
     ::ftxui::Color md_link;    // hyperlink text.
@@ -74,39 +97,41 @@ struct Palette
 inline const Palette &palette()
 {
     static const Palette k = {
-        // window chrome
-        ::ftxui::Color::RGB(10, 10, 10),     // window_bg
-        ::ftxui::Color::RGB(30, 30, 30),     // pane_bg
-        ::ftxui::Color::RGB(147, 147, 147),  // text_dim
-        ::ftxui::Color::RGB(60, 60, 60),     // line_dim
-        // accents & status
-        ::ftxui::Color::RGB(94, 151, 247),   // accent
-        ::ftxui::Color::RGB(64, 168, 96),    // ok
-        ::ftxui::Color::RGB(229, 192, 123),  // warn
-        ::ftxui::Color::RGB(224, 108, 117),  // error
-        ::ftxui::Color::RGB(198, 120, 221),  // suspended
-        ::ftxui::Color::RGB(245, 167, 66),   // thought_open
-        ::ftxui::Color::RGB(151, 104, 44),   // thought_closed
+        // window chrome — Monokai backgrounds
+        ::ftxui::Color::RGB(30, 31, 28),     // window_bg   (#1E1F1C)
+        ::ftxui::Color::RGB(39, 40, 34),     // pane_bg     (#272822)
+        ::ftxui::Color::RGB(117, 113, 94),   // text_dim    (#75715E comment)
+        ::ftxui::Color::RGB(73, 72, 62),     // line_dim    (#49483E selection)
+        // accents & status — Monokai syntax tokens
+        ::ftxui::Color::RGB(102, 217, 239),  // accent      (#66D9EF cyan)
+        ::ftxui::Color::RGB(166, 226, 46),   // ok          (#A6E22E green)
+        ::ftxui::Color::RGB(230, 219, 116),  // warn        (#E6DB74 yellow)
+        ::ftxui::Color::RGB(249, 38, 114),   // error       (#F92672 pink)
+        ::ftxui::Color::RGB(174, 129, 255),  // suspended   (#AE81FF purple)
+        ::ftxui::Color::RGB(253, 151, 31),   // thought_open   (#FD971F orange)
+        ::ftxui::Color::RGB(117, 113, 94),   // thought_closed (#75715E comment)
         // input & chat rules
-        ::ftxui::Color::Blue,                // prompt
-        ::ftxui::Color::Blue,                // user_rule
-        // Markdown syntax colors (glow/glamour "dark" style)
-        ::ftxui::Color::RGB(255, 255, 135),  // md_h1 (228)
-        ::ftxui::Color::RGB(95, 95, 255),    // md_h1_bg (63)
-        ::ftxui::Color::RGB(0, 175, 255),    // md_h2 (39)
-        ::ftxui::Color::RGB(0, 175, 255),    // md_h3 (39)
-        ::ftxui::Color::RGB(0, 175, 255),    // md_h4 (39)
-        ::ftxui::Color::RGB(196, 196, 196),  // md_code (251-ish)
-        // Inline code follows the glow/glamour "dark" look: coral text on a
-        // near-black chip (glamour 256-color 203 over 236). The chip sits
-        // only one step above the pane background, so code reads as tinted
-        // text rather than a loud highlighted block.
-        ::ftxui::Color::RGB(255, 95, 135),   // md_code_inline
-        ::ftxui::Color::RGB(48, 48, 48),     // md_code_bg
-        ::ftxui::Color::RGB(128, 128, 128),  // md_rule
-        ::ftxui::Color::RGB(208, 208, 208),  // md_quote (252)
-        ::ftxui::Color::Blue,                // md_list
-        ::ftxui::Color::Blue,                // md_link
+        ::ftxui::Color::RGB(249, 38, 114),   // prompt      (#F92672 pink)
+        ::ftxui::Color::RGB(249, 38, 114),   // user_rule   (#F92672 pink)
+        // Markdown syntax colors (Monokai tokens)
+        // h1 banner: pink band with the text punched out in the editor
+        // background color, i.e. dark-on-pink — maximum contrast, and it
+        // matches the surface the Markdown is rendered on.
+        ::ftxui::Color::RGB(39, 40, 34),     // md_h1       (#272822)
+        ::ftxui::Color::RGB(249, 38, 114),   // md_h1_bg    (#F92672 pink)
+        ::ftxui::Color::RGB(230, 219, 116),  // md_h2       (#E6DB74 yellow)
+        ::ftxui::Color::RGB(166, 226, 46),   // md_h3       (#A6E22E green)
+        ::ftxui::Color::RGB(102, 217, 239),  // md_h4       (#66D9EF cyan)
+        ::ftxui::Color::RGB(248, 248, 242),  // md_code     (#F8F8F2 foreground)
+        // Inline code is a "string"-flavored chip: green text on the
+        // Monokai current-line surface, one step above the pane background,
+        // so code reads as tinted text rather than a loud highlighted block.
+        ::ftxui::Color::RGB(166, 226, 46),   // md_code_inline (#A6E22E green)
+        ::ftxui::Color::RGB(62, 61, 50),     // md_code_bg     (#3E3D32 lite)
+        ::ftxui::Color::RGB(73, 72, 62),     // md_rule        (#49483E selection)
+        ::ftxui::Color::RGB(117, 113, 94),   // md_quote       (#75715E comment)
+        ::ftxui::Color::RGB(249, 38, 114),   // md_list        (#F92672 pink)
+        ::ftxui::Color::RGB(102, 217, 239),  // md_link        (#66D9EF cyan)
     };
     return k;
 }

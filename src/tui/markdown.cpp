@@ -72,10 +72,11 @@ struct HeadingB : ParaB
     int level = 1;
     Element Finish() override
     {
-        // Heading colors come from the central style palette (edc_style.hpp),
-        // tuned to the glow/glamour "dark" look: every ATX level keeps its
-        // markdown prefix ("## ", "### ", ...) and h1 is a reversed banner
-        // whose background only hugs the text, like glow's h1 style.
+        // Heading colors come from the central Monokai palette
+        // (edc_style.hpp): every ATX level keeps its markdown prefix
+        // ("## ", "### ", ...) and h1 is a reversed banner whose
+        // background only hugs the text, walking the Monokai token
+        // ladder pink -> yellow -> green -> cyan.
         const auto &pal = style::palette();
         Color c;
         switch (level)
@@ -111,7 +112,7 @@ struct HeadingB : ParaB
         }
         words.clear();
         Element head = hflow(std::move(els)) | bold | color(c);
-        // Blank line above and below, mirroring glow's block spacing.
+        // Blank line above and below, so the banner breathes in the flow.
         return vbox({text(""), std::move(head), text("")});
     }
 };
@@ -131,8 +132,8 @@ struct CodeB : Builder
         {
             if (i == buf.size() || buf[i] == '\n')
             {
-                // Glow renders fenced code as an indented, borderless,
-                // unlabeled block in plain gray, not a framed window.
+                // Fenced code is an indented, borderless, unlabeled block
+                // in the Monokai foreground color, not a framed window.
                 lines.push_back(text("  " + buf.substr(start, i - start)));
                 start = i + 1;
             }
@@ -468,8 +469,8 @@ int on_text(MD_TEXTTYPE type, const MD_CHAR *txt, MD_SIZE sz, void *ud)
     }
 
     // Inline code: keep the whole span in ONE text element so multi-word
-    // code (e.g. `bazel build`) renders as a single continuous glow-style
-    // chip instead of one highlight block per word.
+    // code (e.g. `bazel build`) renders as a single continuous Monokai chip
+    // instead of one highlight block per word.
     if (s->style.code)
     {
         s->top().AddInline(s->StyledWord(std::string(sv)));
