@@ -266,6 +266,27 @@ void edc_c_file_utils_init(struct uv_loop_s *loop)
     edc_file_utils_init(loop);
 }
 
+bool edc_c_history_path(char *buf, size_t cap)
+{
+    if (!buf || cap == 0)
+        return false;
+    buf[0] = '\0';
+
+    sds home = edc_config_resolve_bc_home();
+    if (!home)
+        return false;
+    sds path = edc_path_join(home, ".tui_history", NULL);
+    sdsfree(home);
+    if (!path)
+        return false;
+
+    const bool ok = sdslen(path) < cap;
+    if (ok)
+        memcpy(buf, path, sdslen(path) + 1);
+    sdsfree(path);
+    return ok;
+}
+
 void edc_c_agent_send_user_message(struct edc_agent *agent, const char *content)
 {
     if (!agent)

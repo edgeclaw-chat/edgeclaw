@@ -236,6 +236,141 @@ static void test_internal_scroll_follows_caret(void)
     }
 }
 
+static void test_history_recall_up_down(void)
+{
+    std::printf("  history: up recalls older, down returns to the draft\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+    input.AddHistory("first");
+    input.AddHistory("second");
+    input.AddHistory("third");
+    render_twice(input, 20, 8); // measure the box -> wrap budget 19
+
+    // Empty box: the first Up recalls the newest entry (caret at its end).
+    CHECK(input.OnEvent(::ftxui::Event::ArrowUp), "up handled");
+    CHECK(text == "third", "up -> newest, got '%s'", text.c_str());
+    CHECK(input.CursorPosition() == 5, "caret at end of recalled entry, got %d",
+          input.CursorPosition());
+
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    CHECK(text == "second", "up -> second, got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    CHECK(text == "first", "up -> first, got '%s'", text.c_str());
+    CHECK(input.OnEvent(::ftxui::Event::ArrowUp), "up at oldest consumed");
+    CHECK(text == "first", "up at oldest stays put, got '%s'", text.c_str());
+
+    input.OnEvent(::ftxui::Event::ArrowDown);
+    CHECK(text == "second", "down -> second, got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::ArrowDown);
+    CHECK(text == "third", "down -> third, got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::ArrowDown); // past the newest: back to the draft
+    CHECK(text.empty(), "down past newest restores the empty draft, got '%s'",
+          text.c_str());
+    // No longer browsing: Down is plain caret movement again.
+    CHECK(!input.OnEvent(::ftxui::Event::ArrowDown), "down at end not handled");
+}
+
+static void test_history_preserves_draft(void)
+{
+    std::printf("  history: a typed draft is stashed and restored on the way back\n");
+    std::string text = "my draft";
+    edc::EdcInput input(&text, "");
+    input.AddHistory("alpha");
+    input.AddHistory("beta");
+    render_twice(input, 20, 8);
+    input.OnEvent(::ftxui::Event::End); // caret at the end (single visual row)
+
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    CHECK(text == "beta", "up recalls beta, got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    CHECK(text == "alpha", "up recalls alpha, got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::ArrowDown);
+    CHECK(text == "beta", "down -> beta, got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::ArrowDown);
+    CHECK(text == "my draft", "down restores the draft, got '%s'", text.c_str());
+    CHECK(input.CursorPosition() == 8, "draft caret restored, got %d",
+          input.CursorPosition());
+}
+
+static void test_history_dedupes_consecutive(void)
+{
+    std::printf("  history: consecutive duplicates collapse\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+    input.AddHistory("dup");
+    input.AddHistory("dup");
+    input.AddHistory("other");
+    input.AddHistory("other");
+    render_twice(input, 20, 8);
+
+    CHECK(input.History().size() == 2, "history size %zu", input.History().size());
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    CHECK(text == "other", "newest is 'other', got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    CHECK(text == "dup", "then 'dup', got '%s'", text.c_str());
+}
+
+static void test_history_edit_leaves_browsing(void)
+{
+    std::printf("  history: editing a recalled entry leaves history mode\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+    input.AddHistory("old1");
+    input.AddHistory("old2");
+    render_twice(input, 20, 8);
+
+    input.OnEvent(::ftxui::Event::ArrowUp); // recall old2, caret at its end
+    CHECK(text == "old2", "recalled old2, got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::Character("!"));
+    CHECK(text == "old2!", "edited recalled entry, got '%s'", text.c_str());
+
+    // The edit leaves history mode; the edited text becomes the current draft
+    // (so the next Up browses afresh from the newest entry) and Down brings the
+    // edited draft back instead of losing it.
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    CHECK(text == "old2", "up after edit browses from newest, got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::ArrowDown);
+    CHECK(text == "old2!", "down restores the edited draft, got '%s'", text.c_str());
+}
+
+static void test_history_up_from_lower_row_moves_caret(void)
+{
+    std::printf("  history: up on a lower visual row moves the caret, not history\n");
+    std::string text = "abcdefghijklmnopqrstuvwxyz"; // soft-wraps at width 10
+    edc::EdcInput input(&text, "");
+    input.AddHistory("hist");
+    render_twice(input, 10, 8);
+
+    input.OnEvent(::ftxui::Event::End); // caret on the last visual row
+    const int before = input.CursorPosition();
+    CHECK(input.OnEvent(::ftxui::Event::ArrowUp), "up handled");
+    CHECK(text == "abcdefghijklmnopqrstuvwxyz", "content untouched by caret up");
+    CHECK(input.CursorPosition() != before, "caret moved up within the draft");
+
+    // Once the caret reaches the first visual row, Up recalls history and the
+    // draft is stashed for ArrowDown to bring back.
+    input.OnEvent(::ftxui::Event::Home);
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    CHECK(text == "hist", "up from the first row recalls history, got '%s'",
+          text.c_str());
+    input.OnEvent(::ftxui::Event::ArrowDown);
+    CHECK(text == "abcdefghijklmnopqrstuvwxyz", "down restores the stashed draft, got '%s'",
+          text.c_str());
+}
+
+static void test_history_clear(void)
+{
+    std::printf("  history: ClearHistory empties the recall list\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+    input.AddHistory("a");
+    render_twice(input, 20, 4);
+    CHECK(!input.History().empty(), "history seeded");
+    input.ClearHistory();
+    CHECK(input.History().empty(), "history cleared");
+    CHECK(!input.OnEvent(::ftxui::Event::ArrowUp), "up with no history not handled");
+}
+
 int main(void)
 {
     test_long_word_wraps();
@@ -245,6 +380,12 @@ int main(void)
     test_arrow_navigation_across_rows();
     test_typing_and_deletion();
     test_internal_scroll_follows_caret();
+    test_history_recall_up_down();
+    test_history_preserves_draft();
+    test_history_dedupes_consecutive();
+    test_history_edit_leaves_browsing();
+    test_history_up_from_lower_row_moves_caret();
+    test_history_clear();
 
     if (g_failures)
     {

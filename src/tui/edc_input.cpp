@@ -14,6 +14,10 @@ namespace edc
 {
 namespace
 {
+// Upper bound on recalled entries; older ones fall off the front. Only the
+// last few dozen are ever useful, but a generous cap keeps the whole session.
+constexpr size_t kMaxHistory = 500;
+
 // Byte length of the UTF-8 sequence whose first byte sits at |at| (clamped to
 // |limit|). Returns 1 on an overlong/truncated tail so we never stall.
 int GlyphLenAt(const std::string &s, int at, int limit)
@@ -55,6 +59,36 @@ void EdcInput::Reset()
     scroll_ = 0;
     desired_col_ = -1;
     hovered_ = false;
+    StopBrowsing();
+}
+
+void EdcInput::AddHistory(const std::string &entry)
+{
+    // Appending is the owner's signal that the draft was consumed: leave any
+    // recall so the next ArrowUp starts from the entry just added.
+    StopBrowsing();
+    if (entry.empty())
+        return;
+    // Consecutive duplicates (a re-send, a stray Enter) collapse into one.
+    if (!history_.empty() && history_.back() == entry)
+        return;
+    history_.push_back(entry);
+    if (history_.size() > kMaxHistory)
+        history_.erase(history_.begin());
+}
+
+void EdcInput::ClearHistory()
+{
+    StopBrowsing();
+    history_.clear();
+}
+
+void EdcInput::StopBrowsing()
+{
+    browsing_ = false;
+    history_pos_ = history_.size();
+    draft_.clear();
+    draft_cursor_ = 0;
 }
 
 int EdcInput::WrapColumns() const
@@ -295,9 +329,9 @@ bool EdcInput::OnEvent(::ftxui::Event event)
     if (event == ::ftxui::Event::ArrowRight)
         return MoveRight();
     if (event == ::ftxui::Event::ArrowUp)
-        return MoveUp();
+        return HandleUp();
     if (event == ::ftxui::Event::ArrowDown)
-        return MoveDown();
+        return HandleDown();
     if (event == ::ftxui::Event::Home)
         return HandleHome();
     if (event == ::ftxui::Event::End)
@@ -311,6 +345,9 @@ bool EdcInput::HandleCharacter(const std::string &character)
 {
     if (character.empty())
         return true;
+    // Typing abandons a recall: the recalled entry becomes an ordinary draft,
+    // and there is no longer one to restore on ArrowDown.
+    StopBrowsing();
     if (!insert_mode_ && cursor_ < static_cast<int>(content_->size()) &&
         (*content_)[cursor_] != '\n')
     {
@@ -328,6 +365,7 @@ bool EdcInput::HandleBackspace()
 {
     if (cursor_ == 0)
         return false;
+    StopBrowsing();
     const int p = PrevGlyph(*content_, cursor_);
     content_->erase(p, static_cast<size_t>(cursor_ - p));
     cursor_ = p;
@@ -342,6 +380,7 @@ bool EdcInput::HandleDelete()
     const int len = GlyphLenAt(*content_, cursor_, static_cast<int>(content_->size()));
     if (len == 0)
         return false;
+    StopBrowsing();
     content_->erase(cursor_, static_cast<size_t>(len));
     desired_col_ = -1;
     return true;
@@ -420,6 +459,80 @@ bool EdcInput::MoveDown()
         desired_col_ = -1;
     }
     return true;
+}
+
+bool EdcInput::HandleUp()
+{
+    // While browsing, ArrowUp always steps through history (the recalled
+    // entry's caret row must not swallow the key).
+    if (browsing_)
+        return HistoryPrev();
+    if (history_.empty())
+        return MoveUp();
+    // Recall only from the first visual row; anywhere lower ArrowUp keeps its
+    // caret-navigation meaning inside a (possibly wrapped) draft.
+    const Layout layout = MakeLayout(*content_, WrapColumns());
+    int lo = cursor_;
+    const int row = FindCaretRow(layout, cursor_, &lo);
+    if (row > 0)
+        return MoveUp();
+    return HistoryPrev();
+}
+
+bool EdcInput::HandleDown()
+{
+    // Only history mode turns ArrowDown into "next entry"; otherwise it keeps
+    // moving the caret down the draft (jumping to the end on the last row).
+    if (browsing_)
+        return HistoryNext();
+    return MoveDown();
+}
+
+bool EdcInput::HistoryPrev()
+{
+    if (history_.empty())
+        return false;
+    if (!browsing_)
+    {
+        // Entering history mode: stash whatever the user was typing so it can
+        // be brought back with ArrowDown past the newest entry.
+        draft_ = *content_;
+        draft_cursor_ = cursor_;
+        browsing_ = true;
+        history_pos_ = history_.size();
+    }
+    if (history_pos_ == 0)
+        return true; // already at the oldest entry: consume, no change
+    RecallHistory(history_pos_ - 1);
+    return true;
+}
+
+bool EdcInput::HistoryNext()
+{
+    if (!browsing_)
+        return false;
+    if (history_pos_ + 1 < history_.size())
+    {
+        RecallHistory(history_pos_ + 1);
+        return true;
+    }
+    // Stepped past the newest entry: restore the draft and leave history mode.
+    *content_ = draft_;
+    cursor_ = std::min(draft_cursor_, static_cast<int>(content_->size()));
+    StopBrowsing();
+    scroll_ = 0;
+    desired_col_ = -1;
+    return true;
+}
+
+void EdcInput::RecallHistory(size_t index)
+{
+    history_pos_ = index;
+    *content_ = history_[index];
+    // Like a shell, the caret lands at the end of the recalled entry so it can
+    // be edited or re-sent; OnRender() then scrolls the caret row into view.
+    cursor_ = static_cast<int>(content_->size());
+    desired_col_ = -1;
 }
 
 bool EdcInput::HandleHome()

@@ -249,6 +249,17 @@ static void test_new_message_does_not_disturb_reader(void)
     PASS();
 }
 
+// The chat log scrolls by mouse wheel only: it must stay out of the keyboard
+// focus cycle so ↑/↓ always reach the message editor (caret move / history
+// recall) and are never consumed to scroll the log.
+static void test_chat_is_not_keyboard_focusable(void)
+{
+    TEST("chat is not keyboard focusable (wheel-only scrolling)");
+    auto chat = std::make_shared<edc::ChatWidget>();
+    ASSERT(!chat->Focusable(), "ChatWidget must stay out of the keyboard focus cycle");
+    PASS();
+}
+
 } // namespace
 
 int main()
@@ -261,6 +272,7 @@ int main()
     test_cannot_scroll_past_top_with_wrapping();
     test_new_message_follows_tail_after_fix();
     test_new_message_does_not_disturb_reader();
+    test_chat_is_not_keyboard_focusable();
 
     printf("\n=== Results: %d/%d tests passed ===\n", tests_passed, tests_run);
     return tests_run == tests_passed ? EXIT_SUCCESS : EXIT_FAILURE;

@@ -110,9 +110,11 @@ struct ScrollOptions
     // Pin new content to the tail while at the bottom (chat semantics). The
     // task tree turns it off: refreshes must never yank the viewport.
     bool follow_tail = true;
-    // Whether the view can take keyboard focus (arrow scrolling). The chat
-    // log wants it (Tab cycles into it); the mouse-driven sidebar must stay
-    // out of the Tab/arrow cycle so keys never get stolen from the editor.
+    // Whether the view can take keyboard focus (arrow/page scrolling). Both
+    // current users opt out — the chat log is mouse-wheel-only and the
+    // sidebar task tree is mouse-driven too — so ↑/↓ never get stolen from
+    // the message editor. Kept as an option so a future keyboard-scrollable
+    // view can enable it.
     bool focusable = true;
 };
 
@@ -132,9 +134,10 @@ class ScrollView : public ::ftxui::ComponentBase
     bool OnEvent(::ftxui::Event) override;
     ::ftxui::Element OnRender() override;
 
-    // Whether the view is reachable by keyboard. kFill chat scrolls with the
-    // arrows once focused (Focusable by default); a sidebar section that is
-    // interacted with by mouse only opts out so it never hijacks Tab/arrows.
+    // Whether the view is reachable by keyboard (arrow/page scrolling).
+    // Both current users opt out: the chat log and the sidebar are driven by
+    // the mouse wheel, so keyboard focus (and hence Tab/arrows) always stays
+    // with the message editor.
     bool Focusable() const override
     {
         return options_.focusable;

@@ -21,11 +21,10 @@ class ChatWidget : public ::ftxui::ComponentBase
     ftxui::Element OnRender() override;
 
     // The chat log fills whatever height its parent grants and scrolls the
-    // overflow, so it must be reachable by keyboard on its own.
-    bool Focusable() const override
-    {
-        return true;
-    }
+    // overflow with the mouse wheel, but it is deliberately NOT keyboard
+    // focusable: ↑/↓ are reserved for the message editor, and no key needs
+    // to reach the log. Focusable() is therefore omitted — it inherits
+    // false from the (non-focusable) ScrollView the widget wraps.
 
     // Move the viewport by |delta| lines. Scrolling away from the bottom
     // releases the auto-follow, reaching the bottom again re-arms it.

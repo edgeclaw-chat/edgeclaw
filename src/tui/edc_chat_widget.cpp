@@ -9,7 +9,15 @@ namespace edc
 ChatWidget::ChatWidget()
 {
     container_ = ::ftxui::Container::Vertical({});
-    scroll_view_ = std::make_shared<ScrollView>(container_);
+    // Mouse-wheel-only: the log stays out of the keyboard focus cycle so the
+    // arrow keys always belong to the input box (caret movement / history
+    // recall) and are never stolen to scroll chat. The wheel still scrolls
+    // wherever the pointer is, and clicking collapsible entries still works
+    // (mouse events route by hit-testing, independent of focus).
+    scroll_view_ = std::make_shared<ScrollView>(
+        container_,
+        ScrollOptions{ScrollMode::kFill, /*show_indicator=*/true, /*follow_tail=*/true,
+                      /*focusable=*/false});
     Add(scroll_view_);
 }
 

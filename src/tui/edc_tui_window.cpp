@@ -14,8 +14,11 @@
 #include <cstring>
 #include <ctime>
 #include <edc_channel_adapter.h>
+#include <fstream>
 #include <memory>
+#include <string>
 #include <tui/edc_c_bridge.h>
+#include <vector>
 
 namespace edc
 {
@@ -113,6 +116,55 @@ std::vector<TodoWidget::Item> ActiveTaskTodoItems(const ::edc_c_task_snapshot *s
     return items; // no foreground group at all
 }
 
+// $EDC_HOME/.tui_history stores one recalled entry per line. Backslash and the
+// control characters that would break the one-line format are escaped so a
+// multi-line message (Alt+Enter newlines) round-trips as a single line.
+std::string EscapeHistoryEntry(const std::string &entry)
+{
+    std::string out;
+    out.reserve(entry.size());
+    for (char c : entry)
+    {
+        switch (c)
+        {
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        default: out += c; break;
+        }
+    }
+    return out;
+}
+
+std::string UnescapeHistoryLine(const std::string &line)
+{
+    std::string out;
+    out.reserve(line.size());
+    for (size_t i = 0; i < line.size(); ++i)
+    {
+        if (line[i] != '\\')
+        {
+            out += line[i];
+            continue;
+        }
+        if (i + 1 >= line.size())
+            break; // dangling escape at EOF: drop it
+        const char n = line[++i];
+        switch (n)
+        {
+        case 'n': out += '\n'; break;
+        case 'r': out += '\r'; break;
+        case '\\': out += '\\'; break;
+        default:
+            // Unknown escape: keep both bytes verbatim.
+            out += '\\';
+            out += n;
+            break;
+        }
+    }
+    return out;
+}
+
 } // namespace
 
 TUIWindow::TUIWindow() : input_text_("")
@@ -122,7 +174,7 @@ TUIWindow::TUIWindow() : input_text_("")
     todo_widget_ = std::make_shared<TodoWidget>();
 
     const auto &pal = style::palette();
-    footer_ = ::ftxui::text(" Enter 发送   Alt+Enter 换行   Tab 切换输入/滚动   滚轮/↑↓ 滚动   Esc 退出 ") |
+    footer_ = ::ftxui::text(" Enter 发送   Alt+Enter 换行   ↑↓ 历史/光标   滚轮 滚动   Esc 退出 ") |
               ::ftxui::color(pal.text_dim);
     prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(pal.prompt) | ::ftxui::bold;
 
@@ -132,6 +184,10 @@ TUIWindow::TUIWindow() : input_text_("")
     // placeholder is dimmed by the widget itself (no InputOption transform).
     input_ = std::make_shared<edc::EdcInput>(
         &input_text_, "输入消息，Enter 发送，Alt+Enter 换行...");
+
+    // Restore the recall history saved by previous runs (ArrowUp/ArrowDown in
+    // the box). Missing file on first run just leaves the box with no history.
+    LoadInputHistory();
 
     container_ = ::ftxui::Container::Vertical({chat_widget_, input_}, &focused_);
 
@@ -216,6 +272,10 @@ void TUIWindow::Submit()
     chat_widget_->AddMessage(std::make_shared<UserMessage>(message, ::time(nullptr)));
     input_text_.clear();
     input_->Reset(); // caret/scroll back to the start after the external clear
+    // Record the submitted text for ArrowUp recall and persist it so history
+    // survives a restart.
+    input_->AddHistory(message);
+    SaveInputHistory();
 
     edc_c_agent_send_user_message(agent, message.c_str());
     chat_widget_->ScrollToBottom();
@@ -233,6 +293,41 @@ void TUIWindow::Submit()
     // immediately.
     if (screen_)
         screen_->RequestAnimationFrame();
+}
+
+void TUIWindow::LoadInputHistory()
+{
+    char path[4096];
+    if (!edc_c_history_path(path, sizeof(path)))
+        return;
+
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+        return; // first run (or unreadable): start with an empty history
+
+    input_->ClearHistory();
+    std::string line;
+    while (std::getline(file, line))
+    {
+        if (!line.empty() && line.back() == '\r') // tolerate CRLF files
+            line.pop_back();
+        if (line.empty())
+            continue;
+        input_->AddHistory(UnescapeHistoryLine(line));
+    }
+}
+
+void TUIWindow::SaveInputHistory()
+{
+    char path[4096];
+    if (!edc_c_history_path(path, sizeof(path)))
+        return;
+
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file)
+        return; // best effort: a failed save must not disturb the UI
+    for (const std::string &entry : input_->History())
+        file << EscapeHistoryEntry(entry) << '\n';
 }
 
 void TUIWindow::RequestTaskSnapshot()

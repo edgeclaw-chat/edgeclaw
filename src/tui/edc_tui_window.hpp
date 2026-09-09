@@ -31,6 +31,11 @@ class TUIWindow : public ::ftxui::ComponentBase
   private:
     // Append the current input as a user message and clear the box.
     void Submit();
+    // Seed the input box's recall history from $EDC_HOME/.tui_history (tolerates
+    // a missing file).
+    void LoadInputHistory();
+    // Rewrite $EDC_HOME/.tui_history from the input box's current history.
+    void SaveInputHistory();
     // Ask the agent (on its scheduler thread) for a fresh task-tree snapshot.
     void RequestTaskSnapshot();
     // Re-evaluate the animated status from a freshly parsed task snapshot:

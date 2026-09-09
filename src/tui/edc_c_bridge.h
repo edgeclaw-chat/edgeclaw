@@ -17,6 +17,7 @@
  */
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -132,6 +133,12 @@ void edc_c_agent_request_task_snapshot(struct edc_agent *agent);
 
 void edc_c_file_utils_init(struct uv_loop_s *loop);
 void edc_c_agent_send_user_message(struct edc_agent *agent, const char *content);
+
+/* Copy the path of the TUI input-history file ($EDC_HOME/.tui_history) into
+ * |buf| (NUL-terminated, at most |cap| bytes). Returns true when the path fit;
+ * false leaves |buf| empty. Only the path is resolved here so the C++ TUI can
+ * read/write the file with the standard stream API without touching sds. */
+bool edc_c_history_path(char *buf, size_t cap);
 
 #ifdef __cplusplus
 }
