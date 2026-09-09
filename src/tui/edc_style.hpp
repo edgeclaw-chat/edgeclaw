@@ -58,9 +58,10 @@ struct Palette
     ::ftxui::Color md_h2;      // ATX heading level 2.
     ::ftxui::Color md_h3;      // ATX heading level 3.
     ::ftxui::Color md_h4;      // ATX headings level 4+.
-    ::ftxui::Color md_code;    // fenced code block text and language title.
-    ::ftxui::Color md_code_bg; // inline code background.
-    ::ftxui::Color md_rule;    // hr / table / code frame / heading underline.
+    ::ftxui::Color md_code;        // fenced code block text and language title.
+    ::ftxui::Color md_code_inline; // inline code text (glow-style coral).
+    ::ftxui::Color md_code_bg;     // inline code chip background (glow-style faint).
+    ::ftxui::Color md_rule;        // hr / table / code frame / heading underline.
     ::ftxui::Color md_quote;   // blockquote bar.
     ::ftxui::Color md_list;    // list bullet glyphs.
     ::ftxui::Color md_link;    // hyperlink text.
@@ -91,7 +92,12 @@ inline const Palette &palette()
         ::ftxui::Color::Green,               // md_h3
         ::ftxui::Color::GrayLight,           // md_h4
         ::ftxui::Color::Cyan,                // md_code
-        ::ftxui::Color::GrayDark,            // md_code_bg
+        // Inline code follows the glow/glamour "dark" look: coral text on a
+        // near-black chip (glamour 256-color 203 over 236). The chip sits
+        // only one step above the pane background, so code reads as tinted
+        // text rather than a loud highlighted block.
+        ::ftxui::Color::RGB(255, 95, 135),   // md_code_inline
+        ::ftxui::Color::RGB(48, 48, 48),     // md_code_bg
         ::ftxui::Color::RGB(128, 128, 128),  // md_rule
         ::ftxui::Color::GrayDark,            // md_quote
         ::ftxui::Color::Blue,                // md_list

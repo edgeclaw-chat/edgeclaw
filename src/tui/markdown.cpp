@@ -250,7 +250,7 @@ struct State
         const auto &pal = style::palette();
         Element e = text(std::move(s));
         if (style.code)
-            e = e | bgcolor(pal.md_code_bg);
+            e = e | color(pal.md_code_inline) | bgcolor(pal.md_code_bg);
         if (style.bold)
             e = e | bold;
         if (style.italic)
@@ -434,6 +434,15 @@ int on_text(MD_TEXTTYPE type, const MD_CHAR *txt, MD_SIZE sz, void *ud)
     if (auto *cb = dynamic_cast<CodeB *>(&s->top()))
     {
         cb->AddText(sv);
+        return 0;
+    }
+
+    // Inline code: keep the whole span in ONE text element so multi-word
+    // code (e.g. `bazel build`) renders as a single continuous glow-style
+    // chip instead of one highlight block per word.
+    if (s->style.code)
+    {
+        s->top().AddInline(s->StyledWord(std::string(sv)));
         return 0;
     }
 
