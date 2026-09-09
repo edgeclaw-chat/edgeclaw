@@ -681,7 +681,27 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched)
     struct edc_session *sess = sched->session;
     cJSON_AddStringToObject(root, "session_id", sess->session_id ? sess->session_id : "");
     cJSON_AddStringToObject(root, "session_name", edc_session_get_name(sess));
-    cJSON_AddNumberToObject(root, "message_count", (double)edc_session_get_message_count(sess));
+    /* 统计口径 = 已提交 session 消息 + session 内所有 task 在途 turn 的消息数。
+     * 语义: session 总消息数。任何 task (前台 active、被顶替、后台/依赖链中、
+     * WAITING_DEPS 排队) 的 turn 在 STOP 时都会整体提交进 session, 其提交前
+     * 的消息同样属于 session; 只统计 active task 会漏掉其余在途 turn 的消息,
+     * 侧边栏数字仍会在多 task 并发/排队时停滞。逐 task 累加 active_turn 后,
+     * 计数随任意 task 消息流增长; 提交时 edc_session_add_turn 把消息移入
+     * session、active_turn 随即清空, 不会重复计数。 */
+    size_t msg_count = edc_session_get_message_count(sess);
+    {
+        struct edc_task_group *g;
+        DL_FOREACH(sess->groups, g)
+        {
+            struct edc_task *t;
+            LL_FOREACH2(g->members, t, group_next)
+            {
+                if (t->active_turn)
+                    msg_count += edc_queue_length(&t->active_turn->messages);
+            }
+        }
+    }
+    cJSON_AddNumberToObject(root, "message_count", (double)msg_count);
     cJSON_AddStringToObject(root, "created_at", sess->created_at ? sess->created_at : "");
 
     cJSON *groups = cJSON_AddArrayToObject(root, "groups");

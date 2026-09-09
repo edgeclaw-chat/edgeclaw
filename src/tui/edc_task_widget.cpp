@@ -205,8 +205,11 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
                 sid += " [" + session_id_ + "]";
             lines.push_back(text(" " + TruncateToWidth(sid, row_width - 1 - kRightPad)) | dim);
 
-            // Session stats, mirroring /session list: message count and the
-            // date the session was created ("YYYY-MM-DD HH:MM:SS" → date only).
+            // Session stats: committed session messages PLUS the in-flight
+            // turn messages of every task in the session (the snapshot carries
+            // the live total, so the count tracks any task's streaming tool /
+            // assistant messages and queued inputs — not just the active task —
+            // and settles to the committed total once all turns flush).
             std::string stats = std::to_string(message_count_) + " msgs";
             if (created_at_.size() >= 10)
                 stats += " · created " + created_at_.substr(0, 10);
