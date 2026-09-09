@@ -147,7 +147,7 @@ void edc_task_group_mark_orphaned(struct edc_task_group *group)
 
 /* ── 信号 ──────────────────────────────────────────────────── */
 
-void edc_task_group_send_signal(struct edc_task_group *group, edc_task_signal sig)
+static void group_send_signal_impl(struct edc_task_group *group, edc_task_signal sig, bool running_only)
 {
     if (!group)
         return;
@@ -155,6 +155,8 @@ void edc_task_group_send_signal(struct edc_task_group *group, edc_task_signal si
     struct edc_task *task, *tmp;
     LL_FOREACH_SAFE2(group->members, task, tmp, group_next)
     {
+        if (running_only && !edc_task_is_running(task))
+            continue;
         edc_task_send_signal(task, sig);
     }
 
@@ -162,6 +164,16 @@ void edc_task_group_send_signal(struct edc_task_group *group, edc_task_signal si
     {
         edc_task_group_mark_orphaned(group);
     }
+}
+
+void edc_task_group_send_signal(struct edc_task_group *group, edc_task_signal sig)
+{
+    group_send_signal_impl(group, sig, false);
+}
+
+void edc_task_group_send_signal_running(struct edc_task_group *group, edc_task_signal sig)
+{
+    group_send_signal_impl(group, sig, true);
 }
 
 /* ── 状态查询 ──────────────────────────────────────────────── */

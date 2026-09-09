@@ -153,7 +153,7 @@ The child inherits a slice of the parent's conversation context. Use
 
 | Command | Description |
 |---------|-------------|
-| `/new`  | Start a new session |
+| `/session new [name]` | Start a new session (optionally named) |
 | `/stop` | Cancel all active tasks in foreground group |
 | `/help` | Show help message |
 | `/exit` | Exit edgeclaw |

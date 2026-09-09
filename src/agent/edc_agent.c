@@ -478,15 +478,31 @@ void edc_agent_remove_all_turns(struct edc_agent *agent)
     edc_scheduler_send_signal_to_all(agent->scheduler, TASK_SIGTERM);
 }
 
-/* 用户 /stop: 取消全部 turns 后立即保存 session 状态, 使取消结果跨重启保留。
- * 与 remove_all_turns 不同 —— 后者是进程 teardown / /new / session 切换等
- * 清理路径, 若在那里落盘会把退出时所有运行中任务写成 CANCELLED, 改变既有
- * "中断任务重启后降级 WAITING_INPUT" 的语义。 */
+/* 用户 /stop: 取消当前 session 全部非终结 turns 后立即保存状态, 使 CANCELLED
+ * 跨重启保留。
+ * 与 remove_all_turns 不同 —— 后者只剩进程 teardown 一个调用点, 那里故意不落盘
+ * (teardown 若落盘会把退出瞬间所有非终结任务都写死)。
+ * 注: 目标不是当前 active session 时 (如 /session stop <other>), 走
+ * edc_scheduler_send_signal_to_session(sched, target, sig, true), 因为此时
+ * sched->session 不是目标。 */
 void edc_agent_stop_all_turns(struct edc_agent *agent)
 {
     if (!agent || !agent->scheduler)
         return;
     edc_scheduler_send_signal_to_all(agent->scheduler, TASK_SIGTERM);
+    if (agent->scheduler->save_session)
+        agent->scheduler->save_session(agent->scheduler);
+}
+
+/* "离开 session" (/session switch): 只取消当前 session 里**正在执行**的任务
+ * (LLM_PROCESSING / TOOL_CALLING), 其余 (WAITING_INPUT / WAITING_DEPS /
+ * SUSPENDED) 原样保留 —— task 是什么状态就是什么状态, 离开不等于把它们都停掉。
+ * 取消后立即落盘。目标始终是当前 active session。 */
+void edc_agent_stop_running_turns(struct edc_agent *agent)
+{
+    if (!agent || !agent->scheduler)
+        return;
+    edc_scheduler_send_signal_to_session(agent->scheduler, agent->scheduler->session, TASK_SIGTERM, true);
     if (agent->scheduler->save_session)
         agent->scheduler->save_session(agent->scheduler);
 }

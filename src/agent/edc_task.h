@@ -179,6 +179,12 @@ extern void edc_task_notify_dependents(struct edc_task *task);
 
 /* ── 信号 ──────────────────────────────────────────────────── */
 
+/** 任务是否"正在执行": 只有当进程正跑这个 turn 时才会出现的状态
+ *  (LLM_PROCESSING / TOOL_CALLING)。与 edc_state_serializer 的中断归一化
+ *  (normalize_interrupted_state) 用同一集合 —— 离开 session 时只取消这类任务,
+ *  WAITING_INPUT / WAITING_DEPS / SUSPENDED 等原样保留。 */
+extern bool edc_task_is_running(const struct edc_task *task);
+
 extern void edc_task_send_signal(struct edc_task *task, edc_task_signal sig);
 
 /* ── 输出 ──────────────────────────────────────────────────── */

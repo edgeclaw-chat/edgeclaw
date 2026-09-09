@@ -489,6 +489,13 @@ void edc_task_notify_dependents(struct edc_task *task)
 
 /* ── 信号 ──────────────────────────────────────────────────── */
 
+bool edc_task_is_running(const struct edc_task *task)
+{
+    if (!task)
+        return false;
+    return task->state == TASK_LLM_PROCESSING || task->state == TASK_TOOL_CALLING;
+}
+
 void edc_task_send_signal(struct edc_task *task, edc_task_signal sig)
 {
     if (!task)

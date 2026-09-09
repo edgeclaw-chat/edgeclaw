@@ -523,12 +523,12 @@ static void test_complex_topology(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Test 6: State degradation
+ *  Test 6: Interrupted-state normalization
  *  ══════════════════════════════════════════════════════════════ */
 
 static void test_state_degradation(void)
 {
-    TEST("state degradation (LLM_PROCESSING/TOOL_CALLING → WAITING_INPUT)");
+    TEST("interrupted states (LLM_PROCESSING/TOOL_CALLING → CANCELLED)");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-deg", "Degrade");
@@ -574,8 +574,8 @@ static void test_state_degradation(void)
     struct edc_task *rt1 = find_task(session2, "t-llm");
     struct edc_task *rt2 = find_task(session2, "t-tool");
 
-    CHECK(rt1->state == TASK_WAITING_INPUT, "LLM_PROCESSING degraded to WAITING_INPUT");
-    CHECK(rt2->state == TASK_WAITING_INPUT, "TOOL_CALLING degraded to WAITING_INPUT");
+    CHECK(rt1->state == TASK_CANCELLED, "interrupted LLM_PROCESSING restored as CANCELLED");
+    CHECK(rt2->state == TASK_CANCELLED, "interrupted TOOL_CALLING restored as CANCELLED");
 
     cJSON_Delete(json);
     edc_session_free(session);

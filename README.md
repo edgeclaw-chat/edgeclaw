@@ -72,7 +72,7 @@ ownership callback.
 | **Channel Actor** | `edc_channel_actor.c`, `edc_channel_adapter.c` | Routes outbound `CHANNEL_SEND` messages to the connected frontend via a registered adapter callback; delivers inbound input to the scheduler |
 | **LLM Actor** | `edc_llm_actor.c` | Sends chat-completions requests through the async HTTPS client; reports finish reasons and tool calls |
 | **Toolbox Actor** | `edc_toolbox_actor.c` | Executes tool-call chains one by one (`edc_toolbox_actor_req` linked list), echoing each result back as `TOOL_RESPONSE` |
-| **Memory Actor** | `edc_memory_actor.c` | Two compression paths: global memory compress (`/new`, writes MEMORY.md/HISTORY.md) and per-group L1 fold (summarizes completed task turns into `group->memory`) |
+| **Memory Actor** | `edc_memory_actor.c` | Two compression paths: global memory compress (`/session new`, writes MEMORY.md/HISTORY.md) and per-group L1 fold (summarizes completed task turns into `group->memory`) |
 
 ### Message Types
 
@@ -196,7 +196,7 @@ single-threaded helper process) on Linux. macOS builds skip kernel isolation.
 - **Skills system**: markdown skill definitions with YAML frontmatter augment
   the system prompt
 - **Markdown rendering**: md4c-based rendering in the TUI/CLI frontends
-- **Internal commands**: slash commands (`/new`, `/stop`, `/session ...`,
+- **Internal commands**: slash commands (`/stop`, `/session ...`,
   `/task ...`) and shell-like syntax (`|`, `;`, `&`, redirection, `$VAR`,
   `!n`/`!!`)
 - **Cron scheduling**: one-shot (`at`) or recurring (`cron_expr`/

@@ -38,6 +38,8 @@ extern void edc_task_group_set_leader(struct edc_task_group *group, struct edc_t
 extern void edc_task_group_mark_orphaned(struct edc_task_group *group);
 
 extern void edc_task_group_send_signal(struct edc_task_group *group, edc_task_signal sig);
+/** 只对"正在执行"的成员发信号 (edc_task_is_running), 其余成员原样保留。 */
+extern void edc_task_group_send_signal_running(struct edc_task_group *group, edc_task_signal sig);
 
 extern bool edc_task_group_is_foreground_capable(struct edc_task_group *group);
 extern const char *edc_task_group_status_label(struct edc_task_group *group);

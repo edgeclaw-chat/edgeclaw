@@ -123,6 +123,13 @@ extern void edc_scheduler_unregister_task(struct edc_scheduler *sched, void *req
 
 extern void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *task_id, edc_task_signal sig);
 extern void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, const char *group_id, edc_task_signal sig);
+/** 对**指定** session 下所有 group 发信号 (不依赖 sched->session)。
+ *  /session switch|stop 需要在切换/移除**之前**, 对即将离开的那个 session
+ *  发取消信号 (离开即取消), 此时 sched->session 可能已不是它。
+ *  running_only=true 只命中 edc_task_is_running() 的任务 (LLM_PROCESSING /
+ *  TOOL_CALLING) —— 离开 session 只取消"正在跑的", WAITING_INPUT 等原样保留。 */
+extern void edc_scheduler_send_signal_to_session(struct edc_scheduler *sched, struct edc_session *session,
+                                                 edc_task_signal sig, bool running_only);
 extern void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, edc_task_signal sig);
 
 #endif

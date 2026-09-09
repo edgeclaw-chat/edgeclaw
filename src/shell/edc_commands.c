@@ -70,25 +70,6 @@ void edc_commands_reply(struct edc_agent *agent, edc_actor_t *actor, edc_channel
                                               (edc_actor_data_free_fn)edc_channel_message_free));
 }
 
-/* ── /new ──────────────────────────────────────────────────── */
-
-static bool edc_commands_handle_new(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type)
-{
-    edc_session_reload(edc_session_manager_get_active(agent->session_manager), false);
-    edc_agent_remove_all_turns(agent);
-
-    if (!edc_memory_actor_is_compressing(agent->memory_actor))
-    {
-        edc_actor_send(agent->memory_actor,
-                       edc_actor_msg_new(BC_ACTOR_MSG_MEMORY_COMPRESS, edc_scheduler_get_actor(agent->scheduler), NULL,
-                                         (void *)(intptr_t)1, NULL));
-    }
-
-    edc_commands_reply(agent, actor, channel_type, "[system] start new session now.");
-    log_info("receive /new command");
-    return true;
-}
-
 /* ── /stop ─────────────────────────────────────────────────── */
 
 static bool edc_commands_handle_stop(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type)
@@ -106,7 +87,7 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
 {
     const char *text = "## EdgeClaw Commands\n"
                        "\n"
-                       "- /new  ·  /stop  ·  /help  ·  /exit\n"
+                       "- /stop  ·  /help  ·  /exit\n"
                        "- /session new [name]  ·  /session switch <name>\n"
                        "- /session list  ·  /session stop <name>\n"
                        "- /session rename <old> <new>  ·  /session info\n"
@@ -171,6 +152,9 @@ static bool edc_commands_handle_exit(struct edc_agent *agent, edc_actor_t *actor
 static bool edc_commands_handle_session_new(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
                                             sds arg)
 {
+    /* edc_session_manager_create 会把 active 直接切到新 session, 所以 "旧
+     * session" 必须在 create 之前取到, 否则拿到的是它自己。 */
+    struct edc_session *old = edc_session_manager_get_active(agent->session_manager);
     const char *name = (arg && sdslen(arg) > 0) ? arg : NULL;
     struct edc_session *sess = edc_session_manager_create(agent->session_manager, name);
     if (!sess)
@@ -178,13 +162,30 @@ static bool edc_commands_handle_session_new(struct edc_agent *agent, edc_actor_t
         edc_commands_reply(agent, actor, channel_type, "[session] failed to create session");
         return true;
     }
+    /* 离开即取消: 旧 session 的**运行中**任务 (LLM/工具调用) 打成 CANCELLED 并
+     * 立即落盘; WAITING_INPUT / WAITING_DEPS / SUSPENDED 保持原状。此处
+     * sched->session 仍指向 old (set_session 尚未调用), 所以落盘要走显式的
+     * save_state(old, sched) —— 不能用 save_session 回调, 它保存的是已经被
+     * create 切过去的 "当前" session。 */
+    if (old && old != sess)
     {
-        struct edc_session *old = edc_session_manager_get_active(agent->session_manager);
-        if (old && old != sess)
-            edc_session_save_state(old, agent->scheduler);
+        edc_scheduler_send_signal_to_session(agent->scheduler, old, TASK_SIGTERM, true);
+        edc_session_save_history(old);
+        edc_session_save_state(old, agent->scheduler);
     }
     edc_scheduler_set_session(agent->scheduler, sess);
     edc_session_reload(sess, true);
+
+    /* 新建 session 时把历史压进长期记忆 (MEMORY.md / HISTORY.md, force=true)。
+     * 这是原 /new 命令的职责 —— 该命令已删除, 由 /session new 承接, 否则全局
+     * 记忆压缩将再无运行时触发点。 */
+    if (!edc_memory_actor_is_compressing(agent->memory_actor))
+    {
+        edc_actor_send(agent->memory_actor,
+                       edc_actor_msg_new(BC_ACTOR_MSG_MEMORY_COMPRESS, edc_scheduler_get_actor(agent->scheduler), NULL,
+                                         (void *)(intptr_t)1, NULL));
+    }
+
     sds reply = sdscatprintf(sdsempty(), "[session] created and switched to [%s] %s", sess->session_id,
                              edc_session_get_name(sess));
     edc_commands_reply(agent, actor, channel_type, reply);
@@ -200,12 +201,30 @@ static bool edc_commands_handle_session_switch(struct edc_agent *agent, edc_acto
         edc_commands_reply(agent, actor, channel_type, "[session] usage: /session switch <name_or_id>");
         return true;
     }
-    struct edc_session *old = edc_session_manager_get_active(agent->session_manager);
-    if (old)
+    struct edc_session *new_sess = edc_session_manager_find(agent->session_manager, arg);
+    if (!new_sess)
     {
-        edc_session_save_history(old);
-        edc_session_save_state(old, agent->scheduler);
+        sds reply = sdscatprintf(sdsempty(), "[session] session not found: %s", arg);
+        edc_commands_reply(agent, actor, channel_type, reply);
+        sdsfree(reply);
+        return true;
     }
+    struct edc_session *old = edc_session_manager_get_active(agent->session_manager);
+    if (old == new_sess)
+    {
+        sds reply = sdscatprintf(sdsempty(), "[session] already on [%s] %s", new_sess->session_id,
+                                 edc_session_get_name(new_sess));
+        edc_commands_reply(agent, actor, channel_type, reply);
+        sdsfree(reply);
+        return true;
+    }
+    /* 离开即取消: 切走前把旧 session 的**运行中**任务 (LLM_PROCESSING /
+     * TOOL_CALLING) 打成 CANCELLED 并立即落盘; WAITING_INPUT 等原样保留。
+     * 必须在 set_session 之前做 —— 之后 sched->session 已指向新 session,
+     * 信号会打到新 session 的任务上。 */
+    if (old)
+        edc_agent_stop_running_turns(agent);
+
     if (!edc_session_manager_switch(agent->session_manager, arg))
     {
         sds reply = sdscatprintf(sdsempty(), "[session] session not found: %s", arg);
@@ -213,11 +232,9 @@ static bool edc_commands_handle_session_switch(struct edc_agent *agent, edc_acto
         sdsfree(reply);
         return true;
     }
-    struct edc_session *new_sess = edc_session_manager_get_active(agent->session_manager);
     edc_scheduler_set_session(agent->scheduler, new_sess);
     edc_session_load_state(new_sess, agent->scheduler);
     edc_session_reload(new_sess, true);
-    edc_agent_remove_all_turns(agent);
     sds reply =
         sdscatprintf(sdsempty(), "[session] switched to [%s] %s", new_sess->session_id, edc_session_get_name(new_sess));
     edc_commands_reply(agent, actor, channel_type, reply);
@@ -249,8 +266,23 @@ static bool edc_commands_handle_session_stop(struct edc_agent *agent, edc_actor_
         sdsfree(reply);
         return true;
     }
+    /* 最后一个 session 不能 stop。先于取消任务拦住, 否则一次失败的 stop 会把
+     * 当前 session 的任务白白打成 CANCELLED。 */
+    if (agent->session_manager->session_count <= 1)
+    {
+        edc_commands_reply(agent, actor, channel_type, "[session] cannot stop the last session");
+        return true;
+    }
+
     sds stopped_id = sdsnew(target->session_id);
     sds stopped_name = sdsnew(edc_session_get_name(target));
+
+    /* 离开即取消: 移除前把该 session 的**运行中**任务打成 CANCELLED
+     * (WAITING_INPUT 等原样保留)。随后 edc_session_manager_stop 内部的 save
+     * 会把内存里的 CANCELLED 落盘。目标可能不是当前 active session, 故用
+     * session 版信号显式指定目标, 不依赖 sched->session。 */
+    edc_scheduler_send_signal_to_session(agent->scheduler, target, TASK_SIGTERM, true);
+
     if (!edc_session_manager_stop(agent->session_manager, arg))
     {
         sdsfree(stopped_id);
@@ -261,7 +293,6 @@ static bool edc_commands_handle_session_stop(struct edc_agent *agent, edc_actor_
     struct edc_session *new_active = edc_session_manager_get_active(agent->session_manager);
     edc_scheduler_set_session(agent->scheduler, new_active);
     edc_session_reload(new_active, true);
-    edc_agent_remove_all_turns(agent);
     sds reply = sdscatprintf(sdsempty(), "[session] stopped [%s] %s", stopped_id, stopped_name);
     edc_commands_reply(agent, actor, channel_type, reply);
     sdsfree(reply);
@@ -1109,8 +1140,6 @@ bool edc_commands_handler(struct edc_agent *agent, struct edc_actor *actor, stru
         if (edc_commands_is_prefix(message->content, "/session"))
             return edc_commands_handle_session(agent, actor, message);
 
-        if (edc_commands_is_target(message->content, "/new"))
-            return edc_commands_handle_new(agent, actor, message->type);
         if (edc_commands_is_target(message->content, "/stop"))
             return edc_commands_handle_stop(agent, actor, message->type);
         if (edc_commands_is_target(message->content, "/help"))

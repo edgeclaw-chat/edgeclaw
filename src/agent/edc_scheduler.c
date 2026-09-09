@@ -241,6 +241,31 @@ void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *
     }
 }
 
+/* 对单个 group 发信号: 先反注册要取消的 in-flight 请求 (否则已作废的 LLM/
+ * 工具响应回来时仍能命中 task_hash), 再交给 task 层逐成员发送。
+ * running_only=true 时只处理 edc_task_is_running() 的成员 (离开 session 的
+ * "只取消正在跑的"), 其余成员的状态与注册都原样保留。 */
+static void sched_signal_group_members(struct edc_scheduler *sched, struct edc_task_group *group, edc_task_signal sig,
+                                       bool running_only)
+{
+    if (!sched || !group)
+        return;
+    struct edc_task *task;
+    LL_FOREACH2(group->members, task, group_next)
+    {
+        if (running_only && !edc_task_is_running(task))
+            continue;
+        if (task->current_request_id)
+        {
+            edc_scheduler_unregister_task(sched, task->current_request_id);
+        }
+    }
+    if (running_only)
+        edc_task_group_send_signal_running(group, sig);
+    else
+        edc_task_group_send_signal(group, sig);
+}
+
 void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, const char *group_id, edc_task_signal sig)
 {
     if (!sched || !sched->session)
@@ -251,29 +276,24 @@ void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, const char 
         if (strcmp(group->group_id, group_id) == 0)
             break;
     }
-    if (!group)
-        return;
+    sched_signal_group_members(sched, group, sig, false);
+}
 
-    struct edc_task *task;
-    LL_FOREACH2(group->members, task, group_next)
+void edc_scheduler_send_signal_to_session(struct edc_scheduler *sched, struct edc_session *session, edc_task_signal sig,
+                                          bool running_only)
+{
+    if (!sched || !session)
+        return;
+    struct edc_task_group *group, *tmp;
+    DL_FOREACH_SAFE(session->groups, group, tmp)
     {
-        if (task->current_request_id)
-        {
-            edc_scheduler_unregister_task(sched, task->current_request_id);
-        }
+        sched_signal_group_members(sched, group, sig, running_only);
     }
-    edc_task_group_send_signal(group, sig);
 }
 
 void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, edc_task_signal sig)
 {
-    if (!sched || !sched->session)
-        return;
-    struct edc_task_group *group, *tmp;
-    DL_FOREACH_SAFE(sched->session->groups, group, tmp)
-    {
-        edc_scheduler_send_signal_to_group(sched, group->group_id, sig);
-    }
+    edc_scheduler_send_signal_to_session(sched, sched ? sched->session : NULL, sig, false);
 }
 
 /* ── 前台任务状态通知 ─────────────────────────────────────── */

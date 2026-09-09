@@ -319,8 +319,7 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
             {
                 /* filter transient states: 刚创建未开始的 IDLE 任务不落盘。
                  * CANCELLED 必须持久化 —— 用户显式 stop 的任务要跨重启保留,
-                 * 否则重启后会按旧状态恢复 (如 LLM_PROCESSING 降级 WAITING_INPUT),
-                 * 让取消看起来"没生效"。 */
+                 * 否则重启后会按旧状态恢复, 让取消看起来"没生效"。 */
                 if (t->state == TASK_IDLE)
                     continue;
                 cJSON_AddItemToArray(tasks_json, task_to_json(t, messages));
@@ -337,15 +336,23 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
  *  ══════════════════════════════════════════════════════════════ */
 
 /**
- * Degrade runtime-only states to a restorable state.
+ * Normalize a state read back from disk.
+ *
+ * A state that only exists while a turn is actively running (LLM_PROCESSING /
+ * TOOL_CALLING) means the process was interrupted mid-execution.  The old
+ * behaviour turned those into WAITING_INPUT, which pretended the task had never
+ * started and made an interrupted task resumable as if nothing happened.
+ * There is no such semantic: an interrupted task is a stopped task, so it
+ * comes back as CANCELLED.  Every other state is exactly what it is — no
+ * rewriting (only WAITING_DEPS gets reconciled once deps are replayed).
  */
-static edc_task_state degrade_state(edc_task_state s)
+static edc_task_state normalize_interrupted_state(edc_task_state s)
 {
     switch (s)
     {
     case TASK_LLM_PROCESSING:
     case TASK_TOOL_CALLING:
-        return TASK_WAITING_INPUT;
+        return TASK_CANCELLED;
     default:
         return s;
     }
@@ -647,7 +654,7 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
         if (!task)
             continue;
 
-        task->state = degrade_state(edc_task_classify_state(cJSON_GetStringValue(cJSON_GetObjectItem(tj, "state"))));
+        task->state = normalize_interrupted_state(edc_task_classify_state(cJSON_GetStringValue(cJSON_GetObjectItem(tj, "state"))));
 
         cJSON *v;
         if ((v = cJSON_GetObjectItem(tj, "is_group_leader")))

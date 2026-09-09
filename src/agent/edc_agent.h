@@ -40,6 +40,8 @@ extern char *edc_agent_run_turn(struct edc_agent *agent, const char *input);
 extern struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox);
 extern void edc_agent_remove_all_turns(struct edc_agent *agent);
 extern void edc_agent_stop_all_turns(struct edc_agent *agent);
+/** 离开 session: 只取消当前 session 中正在执行 (LLM/工具调用) 的任务后落盘。 */
+extern void edc_agent_stop_running_turns(struct edc_agent *agent);
 extern void edc_agent_free(struct edc_agent *agent);
 
 /* 注册命令处理器 (由 shell 模块在初始化时调用) */
