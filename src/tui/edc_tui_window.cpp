@@ -1,6 +1,7 @@
 #include "edc_tui_window.hpp"
 #include "edc_chat_widget.hpp"
 #include "edc_input.hpp"
+#include "edc_scroll_view.hpp"
 #include "edc_task_widget.hpp"
 #include "edc_todo_widget.hpp"
 #include "ftxui/component/component.hpp"
@@ -152,13 +153,28 @@ TUIWindow::TUIWindow() : input_text_("")
     // widgets (a childless Renderer would swallow them — TaskWidget needs
     // them for its group-header expand/collapse clicks, TodoWidget for its
     // section header).
-    auto right_column = ::ftxui::Container::Vertical({task_widget_, todo_widget_});
-    auto right_pane = ::ftxui::Renderer(right_column, [this] {
+    //
+    // The task tree is the only section that can legitimately outgrow the
+    // pane (a long expanded session), so it lives inside a fit-content
+    // ScrollView: while the tree is short it occupies exactly its natural
+    // height and the Todo section sits right underneath; once the tree would
+    // overflow, the view shrinks to the space the Todo section leaves and
+    // scrolls the overflow inside it (mouse wheel over the tree). The Todo
+    // section is never shrunk, so it stays visible at the bottom instead of
+    // being squeezed out of the pane. The view opts out of keyboard focus and
+    // of the tail-follow: a snapshot refresh must neither steal Tab/arrows
+    // from the editor nor yank the viewport to the bottom of the tree.
+    auto task_scroll = std::make_shared<ScrollView>(
+        task_widget_,
+        ScrollOptions{ScrollMode::kFitContent, /*show_indicator=*/false, /*follow_tail=*/false,
+                      /*focusable=*/false});
+    auto right_column = ::ftxui::Container::Vertical({task_scroll, todo_widget_});
+    auto right_pane = ::ftxui::Renderer(right_column, [this, task_scroll] {
         // The two sections stack directly on each other with no divider
         // between them: a separator line would visually slice the sidebar
         // into fragments. The task tree simply ends where the Todo header
         // row begins; the identical pane background keeps them one surface.
-        ::ftxui::Elements col = {task_widget_->Render(), todo_widget_->Render()};
+        ::ftxui::Elements col = {task_scroll->Render(), todo_widget_->Render()};
         // The column itself flexes so the sidebar background covers the whole
         // pane, but its children stay at natural height and are laid out from
         // the top: leftover vertical space remains at the bottom instead of

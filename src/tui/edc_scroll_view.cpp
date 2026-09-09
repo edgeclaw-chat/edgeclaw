@@ -31,8 +31,8 @@ constexpr int kWheelStep = 3;
 class ScrollNode : public ::ftxui::Node
 {
   public:
-    ScrollNode(::ftxui::Element child, std::shared_ptr<ScrollState> state)
-        : Node({std::move(child)}), state_(std::move(state))
+    ScrollNode(::ftxui::Element child, std::shared_ptr<ScrollState> state, ScrollMode mode)
+        : Node({std::move(child)}), state_(std::move(state)), mode_(mode)
     {
     }
 
@@ -40,6 +40,17 @@ class ScrollNode : public ::ftxui::Node
     {
         Node::ComputeRequirement();
         requirement_ = children_[0]->requirement();
+
+        if (mode_ == ScrollMode::kFitContent)
+        {
+            // Report the content's natural height (no zero-minimum, no grow):
+            // the view claims exactly as much as its content when the column
+            // has room. When the siblings below leave less, the vbox shrinks
+            // this (flex_shrink_y = 1) before touching them, and the view
+            // scrolls the overflow inside the smaller viewport.
+            requirement_.flex_shrink_y = 1;
+            return;
+        }
 
         // Stop asking the parent for the content's full height: we render
         // whatever height we are handed and scroll the remainder.
@@ -99,13 +110,19 @@ class ScrollNode : public ::ftxui::Node
 
   private:
     std::shared_ptr<ScrollState> state_;
+    ScrollMode mode_;
 };
 
 } // namespace
 
-ScrollView::ScrollView(::ftxui::Component content) : content_(std::move(content))
+ScrollView::ScrollView(::ftxui::Component content, ScrollOptions options)
+    : content_(std::move(content)), options_(std::move(options))
 {
     Add(content_);
+    // A chat log opens pinned to its tail; a sidebar section opens at its top
+    // (the active task) and never auto-follows refreshes.
+    state_->stick_to_bottom = options_.follow_tail;
+    state_->follow_tail = options_.follow_tail;
 }
 
 bool ScrollView::Scroll(int delta)
@@ -198,9 +215,16 @@ bool ScrollView::OnEvent(::ftxui::Event event)
     // dropped because it read as a frame slicing the pane in two. In practice
     // the bar is the only cue that the log continues past the viewport and
     // where in it the reader is, so it is drawn deliberately again.
-    auto content = content_->Render() | ::ftxui::vscroll_indicator;
+    //
+    // Sidebar sections turn the indicator off: it permanently reserves a
+    // column, and two stacked sections would otherwise end up with different
+    // row widths (one losing a column to the thumb, the other not).
+    auto content = content_->Render();
+    if (options_.show_indicator)
+        content = std::move(content) | ::ftxui::vscroll_indicator;
 
-    ::ftxui::Element scrollable = std::make_shared<ScrollNode>(std::move(content), state_);
+    ::ftxui::Element scrollable =
+        std::make_shared<ScrollNode>(std::move(content), state_, options_.mode);
 
     return std::move(scrollable) | ::ftxui::reflect(box_);
 }
