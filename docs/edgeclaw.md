@@ -65,7 +65,7 @@ The AST executor (`exec_ctx_t`) walks the tree recursively, carrying context:
 
 Before tokenization, `!n` and `!!` patterns are expanded:
 - `!!` — repeat the last command
-- `!n` — repeat the nth command from history (see `/history`)
+- `!n` — repeat the nth command from history
 
 ---
 
@@ -192,7 +192,7 @@ The child inherits a slice of the parent's conversation context. Use
 
 | Command | Description |
 |---------|-------------|
-| `/task stop <tid>` | Cancel a task by id (SIGTERM — notifies dependents; errors if the id is not found) |
+| `/task stop [tid]` | Cancel a task (SIGTERM — notifies dependents). Without an id, stops the active task of the foreground group; errors if the id is not found |
 | `/task join <tid>` | Show output, auto-inject into active task (or create one), then reclaim |
 
 ### Pipelines

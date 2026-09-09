@@ -112,11 +112,11 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
                        "- /task fork <parent> <desc>\n"
                        "- /task list  ·  /task status [id]  ·  /task output <id>\n"
                        "- /task groups  ·  /task fg <id>  ·  /task bg [id]\n"
-                       "- /task stop <id>\n"
+                       "- /task stop [id]   (default: active task of the foreground group)\n"
                        "- /task chain <src> <dst>  ·  /task join <id>\n"
                        "\n"
                        "- /whoami\n"
-                       "- /model [name]  ·  /history\n"
+                       "- /model [name]\n"
                        "\n"
                        "## Shell Syntax\n"
                        "\n"
@@ -524,21 +524,38 @@ static void edc_commands_handle_task_list(struct edc_agent *agent, edc_actor_t *
 static void edc_commands_handle_task_stop(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
                                           sds arg)
 {
+    struct edc_session *sess = edc_session_manager_get_active(agent->session_manager);
+    struct edc_task *t = NULL;
+
     if (!arg || sdslen(arg) == 0)
     {
-        edc_commands_reply(agent, actor, channel_type, "/task stop <id>");
-        return;
+        /* 不带 id: 默认停当前前台进程组里的 active 任务 (组内"正在说话"的那个)。
+         * active 概念上应属于前台组, 但代码并不强制 —— 这里显式校验成员关系,
+         * 免得 session 切换残留的 active 指到别的组去。 */
+        struct edc_task_group *fg = edc_scheduler_get_foreground(agent->scheduler);
+        struct edc_task *active = sess ? sess->active_task : NULL;
+        if (active && (!fg || active->group == fg))
+            t = active;
+        if (!t)
+        {
+            edc_commands_reply(agent, actor, channel_type,
+                               fg ? "no active task to stop in the foreground group" : "no foreground group");
+            return;
+        }
     }
-    /* 先校验任务存在再发信号: 盲发时对不存在的 id 也会回 "stop signal sent",
-     * 与实际效果不符。旧 /cancel <id> 提供的正是这层校验 (该命令已删除, 校验
-     * 归并到 /task stop)。查找范围 = 当前 session 的任意 group。 */
-    struct edc_task *t = edc_session_find_task(edc_session_manager_get_active(agent->session_manager), arg);
-    if (!t)
+    else
     {
-        sds reply = sdscatprintf(sdsempty(), "task not found: %s", arg);
-        edc_commands_reply(agent, actor, channel_type, reply);
-        sdsfree(reply);
-        return;
+        /* 先校验任务存在再发信号: 盲发时对不存在的 id 也会回 "stop signal sent",
+         * 与实际效果不符。旧 /cancel <id> 提供的正是这层校验 (该命令已删除,
+         * 校验归并到 /task stop)。查找范围 = 当前 session 的任意 group。 */
+        t = edc_session_find_task(sess, arg);
+        if (!t)
+        {
+            sds reply = sdscatprintf(sdsempty(), "task not found: %s", arg);
+            edc_commands_reply(agent, actor, channel_type, reply);
+            sdsfree(reply);
+            return;
+        }
     }
     edc_scheduler_send_signal_to_task(agent->scheduler, t->task_id, TASK_SIGTERM);
     edc_commands_reply(agent, actor, channel_type, "stop signal sent");
@@ -966,6 +983,10 @@ static bool edc_commands_handle_task(struct edc_agent *agent, edc_actor_t *actor
     else if (strcmp(content_trim, "/task list") == 0)
     {
         edc_commands_handle_task_list(agent, actor, message->type);
+    }
+    else if (strcmp(content_trim, "/task stop") == 0)
+    {
+        edc_commands_handle_task_stop(agent, actor, message->type, NULL);
     }
     else if (strncmp(content_trim, "/task stop ", 11) == 0)
     {

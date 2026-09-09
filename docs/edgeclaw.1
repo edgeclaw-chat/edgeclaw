@@ -93,7 +93,7 @@ SHELL SYNTAX
            > !!
            > !3
        !!  — repeat the last command.
-       !n  — repeat the nth command from history (see /history).
+       !n  — repeat the nth command from history.
 
      Options on any shell command
            > "input text" --bg -d task1 --group dev --prompt reviewer
@@ -207,7 +207,6 @@ COMMAND REFERENCE
      /help                         Show help message.
      /whoami                       Show current session, model, and group info.
      /model [name]                 Show or set the current LLM model name.
-     /history                      Show the last 20 CLI history entries.
 
      Task creation
      /task new <desc>                  Create new group + task (foreground).
@@ -230,8 +229,10 @@ COMMAND REFERENCE
      /task bg                 Move current foreground to background.
 
      Task control
-     /task stop <tid>         Cancel a task by id (SIGTERM — notifies deps;
-                              errors if the id is not found).
+     /task stop [tid]         Cancel a task (SIGTERM — notifies deps).
+                              Without an id, stops the active task of the
+                              foreground group; errors if the id is not
+                              found.
      /task join <tid>         Show output, auto-inject into active task
                                (or create one), then reclaim.
 

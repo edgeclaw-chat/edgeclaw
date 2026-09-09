@@ -26,7 +26,7 @@ typedef sds (*edc_shell_var_resolver_fn)(const char *name, void *user_data);
 /* 执行非 / 开头的 shell 输入（@ 和普通文本），返回 true 表示已处理 */
 bool edc_shell_execute(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel_message *message);
 
-/* 处理内置命令 (/whoami, /model, /history)，返回 true=已处理 */
+/* 处理内置命令 (/whoami, /model)，返回 true=已处理 */
 bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel_message *message);
 
 /* 通用 task 创建 + group 管理 + deps + turn + LLM 发送 */

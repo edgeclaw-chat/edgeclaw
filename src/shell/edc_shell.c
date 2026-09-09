@@ -4,9 +4,6 @@
 #include "edc_channel_actor.h"
 #include "edc_cmd_parse.h"
 #include "edc_commands.h"
-#include "edc_config.h"
-#include "edc_error.h"
-#include "edc_file_utils.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
@@ -104,39 +101,6 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
         sdsfree(content);
         return true;
     }
-    if (strcmp(content, "/history") == 0)
-    {
-        sds edc_home = edc_config_resolve_bc_home();
-        sds history_path = edc_path_join(edc_home, ".cli_history", NULL);
-        EdcError *err = NULL;
-        sds contents = edc_file_read(history_path, &err);
-        if (contents && sdslen(contents) > 0)
-        {
-            /* show last 20 entries */
-            int nlines = 0;
-            sds *lines = sdssplitlen(contents, sdslen(contents), "\n", 1, &nlines);
-            sds out = sdsempty();
-            int start = nlines > 20 ? nlines - 20 : 0;
-            for (int i = start; i < nlines; i++)
-                out = sdscatprintf(out, "  %d  %s\n", i + 1, lines[i]);
-            edc_commands_reply(agent, actor, message->type, sdslen(out) > 0 ? out : "(empty)");
-            sdsfree(out);
-            sdsfreesplitres(lines, nlines);
-        }
-        else
-        {
-            edc_commands_reply(agent, actor, message->type, "(no history)");
-        }
-        if (contents)
-            sdsfree(contents);
-        if (err)
-            edc_error_free(err);
-        sdsfree(history_path);
-        sdsfree(edc_home);
-        sdsfree(content);
-        return true;
-    }
-
     sdsfree(content);
     return false;
 }
