@@ -54,11 +54,15 @@ struct Palette
     ::ftxui::Color user_rule; // heavy rule marking user messages.
 
     // ---- Markdown syntax colors -----------------------------------------
-    ::ftxui::Color md_h1;      // ATX heading level 1.
+    // Aligned with glow/glamour's "dark" look (xterm indices from
+    // glamour/styles/dark.json): headings 39, h1 banner 228 on 63,
+    // code 244/251, quote bar & body 252.
+    ::ftxui::Color md_h1;      // ATX heading level 1 text (banner).
+    ::ftxui::Color md_h1_bg;   // ATX heading level 1 banner background.
     ::ftxui::Color md_h2;      // ATX heading level 2.
     ::ftxui::Color md_h3;      // ATX heading level 3.
     ::ftxui::Color md_h4;      // ATX headings level 4+.
-    ::ftxui::Color md_code;        // fenced code block text and language title.
+    ::ftxui::Color md_code;        // fenced code block text (glow: plain gray).
     ::ftxui::Color md_code_inline; // inline code text (glow-style coral).
     ::ftxui::Color md_code_bg;     // inline code chip background (glow-style faint).
     ::ftxui::Color md_rule;        // hr / table / code frame / heading underline.
@@ -86,12 +90,13 @@ inline const Palette &palette()
         // input & chat rules
         ::ftxui::Color::Blue,                // prompt
         ::ftxui::Color::Blue,                // user_rule
-        // Markdown syntax colors
-        ::ftxui::Color::Yellow,              // md_h1
-        ::ftxui::Color::Cyan,                // md_h2
-        ::ftxui::Color::Green,               // md_h3
-        ::ftxui::Color::GrayLight,           // md_h4
-        ::ftxui::Color::Cyan,                // md_code
+        // Markdown syntax colors (glow/glamour "dark" style)
+        ::ftxui::Color::RGB(255, 255, 135),  // md_h1 (228)
+        ::ftxui::Color::RGB(95, 95, 255),    // md_h1_bg (63)
+        ::ftxui::Color::RGB(0, 175, 255),    // md_h2 (39)
+        ::ftxui::Color::RGB(0, 175, 255),    // md_h3 (39)
+        ::ftxui::Color::RGB(0, 175, 255),    // md_h4 (39)
+        ::ftxui::Color::RGB(196, 196, 196),  // md_code (251-ish)
         // Inline code follows the glow/glamour "dark" look: coral text on a
         // near-black chip (glamour 256-color 203 over 236). The chip sits
         // only one step above the pane background, so code reads as tinted
@@ -99,7 +104,7 @@ inline const Palette &palette()
         ::ftxui::Color::RGB(255, 95, 135),   // md_code_inline
         ::ftxui::Color::RGB(48, 48, 48),     // md_code_bg
         ::ftxui::Color::RGB(128, 128, 128),  // md_rule
-        ::ftxui::Color::GrayDark,            // md_quote
+        ::ftxui::Color::RGB(208, 208, 208),  // md_quote (252)
         ::ftxui::Color::Blue,                // md_list
         ::ftxui::Color::Blue,                // md_link
     };

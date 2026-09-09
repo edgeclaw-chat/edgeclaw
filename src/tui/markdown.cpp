@@ -72,7 +72,10 @@ struct HeadingB : ParaB
     int level = 1;
     Element Finish() override
     {
-        // Heading colors come from the central style palette (edc_style.hpp).
+        // Heading colors come from the central style palette (edc_style.hpp),
+        // tuned to the glow/glamour "dark" look: every ATX level keeps its
+        // markdown prefix ("## ", "### ", ...) and h1 is a reversed banner
+        // whose background only hugs the text, like glow's h1 style.
         const auto &pal = style::palette();
         Color c;
         switch (level)
@@ -90,16 +93,32 @@ struct HeadingB : ParaB
             c = pal.md_h4;
             break;
         }
-        Element head = ParaB::Finish() | bold | color(c);
-        if (level <= 2)
-            return vbox({head, separator() | color(pal.md_rule)});
-        return head;
+        Elements els;
+        if (level == 1)
+        {
+            // Band padding: words were given the banner background while the
+            // inline text was built (State::h1); pad the two ends here.
+            els.push_back(text(" ") | bgcolor(pal.md_h1_bg));
+            for (auto &w : words)
+                els.push_back(std::move(w));
+            els.push_back(text(" ") | bgcolor(pal.md_h1_bg));
+        }
+        else
+        {
+            els.push_back(text(std::string(level, '#') + " "));
+            for (auto &w : words)
+                els.push_back(std::move(w));
+        }
+        words.clear();
+        Element head = hflow(std::move(els)) | bold | color(c);
+        // Blank line above and below, mirroring glow's block spacing.
+        return vbox({text(""), std::move(head), text("")});
     }
 };
 
 struct CodeB : Builder
 {
-    std::string lang, buf;
+    std::string buf;
     void AddText(std::string_view s)
     {
         buf.append(s);
@@ -112,17 +131,16 @@ struct CodeB : Builder
         {
             if (i == buf.size() || buf[i] == '\n')
             {
-                lines.push_back(text(buf.substr(start, i - start)));
+                // Glow renders fenced code as an indented, borderless,
+                // unlabeled block in plain gray, not a framed window.
+                lines.push_back(text("  " + buf.substr(start, i - start)));
                 start = i + 1;
             }
         }
         const auto &pal = style::palette();
         Element body = vbox(std::move(lines)) | color(pal.md_code);
-        Element title = text(lang.empty() ? "code" : lang) | color(pal.md_code);
-        // Use the same LIGHT border style and rule color as horizontal
-        // separators and table lines, so code frames look consistent.
-        return window(std::move(title), std::move(body), LIGHT) |
-               color(pal.md_rule);
+        // Blank lines above and below keep the borderless block readable.
+        return vbox({text(""), std::move(body), text("")});
     }
 };
 
@@ -240,16 +258,28 @@ struct State
 {
     std::vector<std::unique_ptr<Builder>> stack;
     Style style;
+    bool h1 = false; // currently inside an ATX level-1 heading (banner).
     Builder &top()
     {
         return *stack.back();
+    }
+
+    // Inter-word space: uncolored normally, but inside an h1 banner the
+    // space cell must keep the banner background so the band is continuous.
+    Element GapSpace()
+    {
+        if (h1)
+            return text(" ") | bgcolor(style::palette().md_h1_bg);
+        return text(" ");
     }
 
     Element StyledWord(std::string s)
     {
         const auto &pal = style::palette();
         Element e = text(std::move(s));
-        if (style.code)
+        if (h1)
+            e = e | bgcolor(pal.md_h1_bg);
+        else if (style.code)
             e = e | color(pal.md_code_inline) | bgcolor(pal.md_code_bg);
         if (style.bold)
             e = e | bold;
@@ -271,6 +301,7 @@ int on_enter_block(MD_BLOCKTYPE type, void *det, void *ud)
     case MD_BLOCK_H: {
         auto h = std::make_unique<HeadingB>();
         h->level = static_cast<MD_BLOCK_H_DETAIL *>(det)->level;
+        s->h1 = (h->level == 1);
         s->stack.push_back(std::move(h));
         break;
     }
@@ -278,11 +309,7 @@ int on_enter_block(MD_BLOCKTYPE type, void *det, void *ud)
         s->stack.push_back(std::make_unique<ParaB>());
         break;
     case MD_BLOCK_CODE: {
-        auto c = std::make_unique<CodeB>();
-        auto *d = static_cast<MD_BLOCK_CODE_DETAIL *>(det);
-        if (d->lang.text && d->lang.size > 0)
-            c->lang.assign(d->lang.text, d->lang.size);
-        s->stack.push_back(std::move(c));
+        s->stack.push_back(std::make_unique<CodeB>());
         break;
     }
     case MD_BLOCK_QUOTE:
@@ -330,6 +357,9 @@ int on_leave_block(MD_BLOCKTYPE type, void * /*det*/, void *ud)
     auto *s = static_cast<State *>(ud);
     switch (type)
     {
+    case MD_BLOCK_H:
+        s->h1 = false;
+        break;
     case MD_BLOCK_HR:
         s->top().AddBlock(separator() | color(style::palette().md_rule));
         return 0;
@@ -448,7 +478,7 @@ int on_text(MD_TEXTTYPE type, const MD_CHAR *txt, MD_SIZE sz, void *ud)
 
     if (type == MD_TEXT_SOFTBR || type == MD_TEXT_BR)
     {
-        s->top().AddInline(text(" "));
+        s->top().AddInline(s->GapSpace());
         return 0;
     }
 
@@ -460,7 +490,7 @@ int on_text(MD_TEXTTYPE type, const MD_CHAR *txt, MD_SIZE sz, void *ud)
             if (i > start)
                 s->top().AddInline(s->StyledWord(std::string(sv.substr(start, i - start))));
             if (i < sv.size())
-                s->top().AddInline(text(" "));
+                s->top().AddInline(s->GapSpace());
             start = i + 1;
         }
     }
