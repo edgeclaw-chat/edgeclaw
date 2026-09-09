@@ -91,7 +91,6 @@ void TaskWidget::SetSnapshot(const ::edc_c_task_snapshot *snap)
 
         GroupInfo group;
         group.group_id = g->group_id ? g->group_id : "";
-        group.member_count = g->member_count;
         group.msg_count = g->msg_count;
         group.orphaned = g->orphaned != 0;
         group.fg = g->fg != 0;
@@ -253,40 +252,33 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
             const bool expanded = group_expanded_[g.group_id];
 
             // Collapsible group header. Left side: disclosure arrow plus
-            // "Group <id>" with the task count as a fixed three-cell field,
-            // so rows line up whether a group holds one task or a hundred:
-            // "(  1 tasks)" / "( 88 tasks)" / "(99+ tasks)". Counts beyond
-            // 99 clamp to "99+" so the field never grows a digit, and the
-            // whole suffix keeps the same dim secondary style as the live
-            // message count on the right.
+            // "Group <id>" (orphaned groups keep their trailing "~"), styled
+            // bold with the foreground warm highlight. Right side: the live
+            // message count (committed group messages plus the in-flight
+            // turns of its tasks, so the number ticks up while any member
+            // streams), flushed as a whole block against the pane's right
+            // edge so every row's "… msgs" shares one straight margin. The
+            // count is never truncated: on a narrow sidebar the "Group <id>"
+            // part ellipsizes to whatever width the right block leaves.
             std::string core = g.group_id.empty() ? "(group)" : "Group " + g.group_id;
             if (g.orphaned)
                 core += " ~";
 
-            const int task_n = g.member_count;
-            const std::string suffix = " (" + (task_n > 99 ? std::string("99+") : PadCount(task_n, 3)) +
-                                       " tasks)";
             const std::string arrow = expanded ? "▾ " : "▸ ";
             const std::string right =
                 std::to_string(g.msg_count) + (g.msg_count == 1 ? " msg" : " msgs");
 
-            // The message count on the right is the live information, so it
-            // is never truncated: give "Group <id>" (and, when there is
-            // really no room, the task-count suffix) whatever width the right
-            // block leaves on a narrow sidebar.
-            const int core_budget = row_width - kRightPad - StringWidth(arrow) -
-                                    static_cast<int>(suffix.size()) - StringWidth(right) - 1;
-            std::string visible_core = core_budget > 0 ? TruncateToWidth(core, core_budget) : "";
+            const int core_budget =
+                row_width - kRightPad - StringWidth(arrow) - StringWidth(right) - 1;
+            const std::string visible_core =
+                core_budget > 0 ? TruncateToWidth(core, core_budget) : "";
 
-            Elements row_el = {
-                text(arrow + visible_core) | bold | color(g.fg ? pal.warn : pal.text_dim),
-            };
-            if (core_budget > 0)
-                row_el.push_back(text(suffix) | dim | color(pal.text_dim));
-            row_el.push_back(filler());
-            row_el.push_back(text(right) | dim | color(pal.text_dim));
-            row_el.push_back(text(std::string(kRightPad, ' ')));
-            lines.push_back(hbox(std::move(row_el)) | reflect(group_header_boxes_[i]));
+            lines.push_back(hbox({
+                                text(arrow + visible_core) | flex |
+                                    bold | color(g.fg ? pal.warn : pal.text_dim),
+                                text(right) | dim | color(pal.text_dim),
+                                text(std::string(kRightPad, ' ')),
+                            }) | reflect(group_header_boxes_[i]));
 
             if (!expanded)
                 continue;

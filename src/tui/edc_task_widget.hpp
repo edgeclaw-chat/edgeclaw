@@ -46,7 +46,6 @@ class TaskWidget : public ::ftxui::ComponentBase
     struct GroupInfo
     {
         std::string group_id;
-        int member_count = 0;
         int msg_count = 0; /* live group messages (committed + in-flight) */
         bool orphaned = false;
         bool fg = false;
