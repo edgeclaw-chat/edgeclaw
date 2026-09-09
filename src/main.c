@@ -6,9 +6,6 @@
 #include "edc_file_utils.h"
 #include "edc_init_env.h"
 #include "edc_log.h"
-#include "edc_task.h"
-#include "edc_task_group.h"
-#include "utlist_fix.h"
 #ifndef _WIN32
 #include "edc_lwip.h"
 #endif
@@ -195,24 +192,7 @@ int main(int argc, char *argv[])
         int timeout = 300;
         while (timeout-- > 0)
         {
-            int has_active = 0;
-            struct edc_task_group *g;
-            DL_FOREACH(agent->scheduler->session->groups, g)
-            {
-                struct edc_task *t;
-                LL_FOREACH2(g->members, t, group_next)
-                {
-                    if (t->state != TASK_COMPLETED && t->state != TASK_CANCELLED && t->state != TASK_ERROR &&
-                        t->state != TASK_SUSPENDED)
-                    {
-                        has_active = 1;
-                        break;
-                    }
-                }
-                if (has_active)
-                    break;
-            }
-            if (!has_active)
+            if (!edc_scheduler_has_active_tasks(agent->scheduler))
                 break;
             usleep(100000);
         }
@@ -251,24 +231,7 @@ int main(int argc, char *argv[])
                     int timeout = 30;
                     while (timeout-- > 0)
                     {
-                        int has_active = 0;
-                        struct edc_task_group *g;
-                        DL_FOREACH(agent->scheduler->session->groups, g)
-                        {
-                            struct edc_task *t;
-                            LL_FOREACH2(g->members, t, group_next)
-                            {
-                                if (t->state != TASK_COMPLETED && t->state != TASK_CANCELLED &&
-                                    t->state != TASK_ERROR && t->state != TASK_SUSPENDED)
-                                {
-                                    has_active = 1;
-                                    break;
-                                }
-                            }
-                            if (has_active)
-                                break;
-                        }
-                        if (!has_active)
+                        if (!edc_scheduler_has_active_tasks(agent->scheduler))
                             break;
                         usleep(100000);
                     }

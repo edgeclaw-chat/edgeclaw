@@ -91,7 +91,10 @@ struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const ch
         return NULL;
 
     char *tid = edc_scheduler_gen_task_id(sched);
-    const char *sid = "sess-1"; /* Phase 4: from session */
+    /* 任务归属调度器当前绑定的 session (经 edc_scheduler_set_session 切换),
+     * 不再硬编码 "sess-1"。无 session 时 (测试/极端情况) 才回退占位 id。 */
+    const char *sid =
+        (sched->session && sched->session->session_id) ? sched->session->session_id : "sess-1";
     const char *gid = sched->foreground_group ? sched->foreground_group->group_id : tid;
 
     struct edc_task *task = edc_task_new(tid, sid, gid, desc, channel_type);
@@ -155,6 +158,40 @@ void edc_scheduler_set_foreground(struct edc_scheduler *sched, struct edc_task_g
 struct edc_task_group *edc_scheduler_get_foreground(struct edc_scheduler *sched)
 {
     return sched ? sched->foreground_group : NULL;
+}
+
+/* ── 当前 session ──────────────────────────────────────────── */
+
+struct edc_session *edc_scheduler_get_session(struct edc_scheduler *sched)
+{
+    return sched ? sched->session : NULL;
+}
+
+void edc_scheduler_set_session(struct edc_scheduler *sched, struct edc_session *session)
+{
+    if (!sched)
+        return;
+    sched->session = session;
+    /* 切换 session 后旧 session 的前台组不再有效; 命令层随后按需 reload/恢复 */
+    sched->foreground_group = NULL;
+}
+
+bool edc_scheduler_has_active_tasks(struct edc_scheduler *sched)
+{
+    if (!sched || !sched->session)
+        return false;
+    struct edc_task_group *g;
+    DL_FOREACH(sched->session->groups, g)
+    {
+        struct edc_task *t;
+        LL_FOREACH2(g->members, t, group_next)
+        {
+            if (t->state != TASK_COMPLETED && t->state != TASK_CANCELLED && t->state != TASK_ERROR &&
+                t->state != TASK_SUSPENDED)
+                return true;
+        }
+    }
+    return false;
 }
 
 /* ── 注册/注销 ──────────────────────────────────────────────── */

@@ -100,6 +100,20 @@ extern struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sche
 extern void edc_scheduler_set_foreground(struct edc_scheduler *sched, struct edc_task_group *group);
 extern struct edc_task_group *edc_scheduler_get_foreground(struct edc_scheduler *sched);
 
+/* ── 当前 session ───────────────────────────────────────────── */
+
+/** 获取调度器当前绑定的 session (task 树/前台组都挂在它上面)。 */
+extern struct edc_session *edc_scheduler_get_session(struct edc_scheduler *sched);
+
+/** 切换调度器绑定的 session。切换后前台组清空 (旧 session 的前台概念失效),
+ *  由命令层随后按需 reload/恢复。外部代码 (shell 命令、入口) 必须经此 API
+ *  切换, 禁止直接写 scheduler->session。 */
+extern void edc_scheduler_set_session(struct edc_scheduler *sched, struct edc_session *session);
+
+/** 当前 session 中是否存在未终结 (非 COMPLETED/CANCELLED/ERROR/SUSPENDED)
+ *  的任务。供入口层 (main.c 的 -c/脚本模式) 轮询等待使用, 无需遍历内部结构。 */
+extern bool edc_scheduler_has_active_tasks(struct edc_scheduler *sched);
+
 /* ── 注册/反注册 ──────────────────────────────────────────────── */
 
 extern void edc_scheduler_register_task(struct edc_scheduler *sched, struct edc_task *task, void *request_id);

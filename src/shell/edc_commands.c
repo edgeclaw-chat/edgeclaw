@@ -183,8 +183,7 @@ static bool edc_commands_handle_session_new(struct edc_agent *agent, edc_actor_t
         if (old && old != sess)
             edc_session_save_state(old, agent->scheduler);
     }
-    agent->scheduler->session = sess;
-    agent->scheduler->foreground_group = NULL;
+    edc_scheduler_set_session(agent->scheduler, sess);
     edc_session_reload(sess, true);
     sds reply = sdscatprintf(sdsempty(), "[session] created and switched to [%s] %s", sess->session_id,
                              edc_session_get_name(sess));
@@ -215,8 +214,7 @@ static bool edc_commands_handle_session_switch(struct edc_agent *agent, edc_acto
         return true;
     }
     struct edc_session *new_sess = edc_session_manager_get_active(agent->session_manager);
-    agent->scheduler->session = new_sess;
-    agent->scheduler->foreground_group = NULL;
+    edc_scheduler_set_session(agent->scheduler, new_sess);
     edc_session_load_state(new_sess, agent->scheduler);
     edc_session_reload(new_sess, true);
     edc_agent_remove_all_turns(agent);
@@ -261,7 +259,7 @@ static bool edc_commands_handle_session_stop(struct edc_agent *agent, edc_actor_
         return true;
     }
     struct edc_session *new_active = edc_session_manager_get_active(agent->session_manager);
-    agent->scheduler->session = new_active;
+    edc_scheduler_set_session(agent->scheduler, new_active);
     edc_session_reload(new_active, true);
     edc_agent_remove_all_turns(agent);
     sds reply = sdscatprintf(sdsempty(), "[session] stopped [%s] %s", stopped_id, stopped_name);
@@ -438,13 +436,13 @@ static void edc_commands_handle_task_list(struct edc_agent *agent, edc_actor_t *
     sds out = sdsempty();
     struct edc_task_group *g;
     bool first = true;
-    DL_FOREACH(agent->scheduler->session->groups, g)
+    DL_FOREACH(edc_scheduler_get_session(agent->scheduler)->groups, g)
     {
         if (!first)
             out = sdscat(out, "\n");
         first = false;
 
-        bool fg = agent->scheduler->foreground_group == g;
+        bool fg = edc_scheduler_get_foreground(agent->scheduler) == g;
         out = sdscatprintf(out, "- %s%s%s (%d)\n", fg ? "[fg] " : "", g->is_orphaned ? "[orphan] " : "", g->group_id,
                            g->member_count);
 
@@ -544,7 +542,7 @@ static void edc_commands_handle_task_bg(struct edc_agent *agent, edc_actor_t *ac
             edc_commands_reply(agent, actor, channel_type, "group not found");
             return;
         }
-        if (agent->scheduler->foreground_group == g)
+        if (edc_scheduler_get_foreground(agent->scheduler) == g)
         {
             edc_scheduler_set_foreground(agent->scheduler, NULL);
             edc_session_set_active_task(edc_session_manager_get_active(agent->session_manager), NULL);
@@ -699,10 +697,10 @@ static void edc_commands_handle_task_groups(struct edc_agent *agent, edc_actor_t
 {
     sds out = sdsnew("## Groups\n\n");
     struct edc_task_group *g;
-    DL_FOREACH(agent->scheduler->session->groups, g)
+    DL_FOREACH(edc_scheduler_get_session(agent->scheduler)->groups, g)
     {
         out = sdscatprintf(
-            out, "- %s%s  **%s**  %d members  _%s_\n", agent->scheduler->foreground_group == g ? "`[fg]` " : "",
+            out, "- %s%s  **%s**  %d members  _%s_\n", edc_scheduler_get_foreground(agent->scheduler) == g ? "`[fg]` " : "",
             g->is_orphaned ? "`[orphan]` " : "", g->group_id, g->member_count, edc_task_group_status_label(g));
     }
     edc_commands_reply(agent, actor, channel_type, out);
@@ -801,7 +799,7 @@ static void edc_commands_handle_task_join(struct edc_agent *agent, edc_actor_t *
         if (!active || (active->state != TASK_WAITING_INPUT && active->state != TASK_WAITING_DEPS))
         {
             /* no usable active task — create one in foreground group */
-            struct edc_task_group *fg = agent->scheduler->foreground_group;
+            struct edc_task_group *fg = edc_scheduler_get_foreground(agent->scheduler);
             if (fg && fg->members)
                 channel_type = fg->members->channel_type;
             active = edc_scheduler_create_task(agent->scheduler, "Joined task", channel_type);
