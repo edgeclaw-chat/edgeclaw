@@ -36,7 +36,11 @@ static int failed = 0;
 static void check(const char *arg, const char *want_input, int want_literal, int want_bg, const char *label)
 {
     struct edc_cmd_task_opts o;
-    edc_cmd_parse_task_opts(sdsnew(arg), &o);
+    /* edc_cmd_parse_task_opts borrows its argument (it makes its own copy), so
+     * the caller-side sds has to be released. */
+    sds a = sdsnew(arg);
+    edc_cmd_parse_task_opts(a, &o);
+    sdsfree(a);
     T_STREQ(o.input, want_input, label);
     T_CHECK(o.literal == want_literal, label);
     T_CHECK(o.bg == want_bg, label);
@@ -69,7 +73,9 @@ static void test_triple_multiline_bg(void)
 {
     /* multi-line """ block with trailing --bg flag */
     struct edc_cmd_task_opts o;
-    edc_cmd_parse_task_opts(sdsnew("\"\"\"line1\nline2\"\"\" --bg"), &o);
+    sds a = sdsnew("\"\"\"line1\nline2\"\"\" --bg");
+    edc_cmd_parse_task_opts(a, &o);
+    sdsfree(a);
     T_STREQ(o.input, "line1\nline2", "\"\"\" multiline input");
     T_CHECK(o.bg == 1, "\"\"\" multiline --bg");
     T_CHECK(o.literal == 0, "\"\"\" multiline literal=0");
@@ -86,7 +92,9 @@ static void test_flags_after_quotes(void)
 {
     /* flags are parsed from text after the closing quote */
     struct edc_cmd_task_opts o;
-    edc_cmd_parse_task_opts(sdsnew("\"\"\"work\"\"\" -d dep1 --group g1"), &o);
+    sds a = sdsnew("\"\"\"work\"\"\" -d dep1 --group g1");
+    edc_cmd_parse_task_opts(a, &o);
+    sdsfree(a);
     T_STREQ(o.input, "work", "\"\"\" flags input");
     T_CHECK(o.dep_count == 1, "\"\"\" flags dep_count");
     T_CHECK(o.dep_ids != NULL && strcmp(o.dep_ids[0], "dep1") == 0, "\"\"\" flags dep id");

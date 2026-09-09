@@ -11,6 +11,29 @@ volatile sig_atomic_t _run_loop = 1;
 
 using namespace ftxui;
 
+namespace
+{
+
+// ftxui treats SIGINT/SIGTERM as a *deferred* exit: its signal handler only
+// records the signal, the main loop then quits normally, and ~Loop re-raises
+// the signal after restoring whichever disposition was installed before ftxui
+// took over (see ftxui App::Internal::PostMain -> RestoreSignalHandlerAndRaise).
+// With the default disposition that final raise() kills the process from
+// inside screen.Loop(), so screen.Loop() never returns and the local `window`
+// shared_ptr is never destroyed -- ~TUIWindow(), the one place that calls
+// edc_c_agent_free(), is skipped. Every agent resource (uv loop, worker
+// threads, sockets, in-flight HTTPS buffers) leaks and the process dies by
+// signal instead of exiting cleanly (valgrind then reports the whole live heap
+// as still-reachable/possibly-lost).
+//
+// Install a benign handler *before* screen.Loop() so ftxui records it as the
+// "previous" disposition and restores it right before its post-loop raise():
+// the re-raise now lands here, returns immediately, and control falls through
+// to a normal return from main() with full teardown.
+void HandleTerminationSignal(int) {}
+
+} // namespace
+
 int main()
 {
 
@@ -35,5 +58,22 @@ int main()
         return false;
     });
 
+    // See HandleTerminationSignal(): swallow ftxui's post-loop re-raise so
+    // Ctrl-C (and `kill`) exit through ~TUIWindow() -> edc_c_agent_free()
+    // instead of terminating the process before teardown can run. Installed
+    // here, before Loop() calls PreMain()/Install() and takes over SIGINT.
+    ::signal(SIGINT, HandleTerminationSignal);
+    ::signal(SIGTERM, HandleTerminationSignal);
+
     screen.Loop(component);
+
+    // Reached only after a normal loop exit (Esc / Ctrl-C / Ctrl-D), now that
+    // the re-raise above is neutralised: `window` is destroyed here, running
+    // edc_c_agent_free() (uv walk + thread joins) before the process returns.
+    // ftxui's deferred-exit re-raise has already happened inside Loop(), so
+    // from here on hand the signals back to their default disposition: a second
+    // Ctrl-C / kill during a slow teardown must still be able to terminate us.
+    ::signal(SIGINT, SIG_DFL);
+    ::signal(SIGTERM, SIG_DFL);
+    return 0;
 }

@@ -87,8 +87,12 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
         opts->desc = edc_str_utf8_truncate(opts->input, DESC_MAX, true);
     }
 
-    /* parse flags from remaining */
-    if (remaining && sdslen(remaining) > 0)
+    /* Parse flags from remaining. The block runs even when `remaining` is an
+     * empty sds (which happens once a quoted input has consumed the whole
+     * argument); the token loop is a no-op then, but `remaining` still has to
+     * be released — the old `sdslen(...) > 0` guard skipped the free and leaked
+     * one sds per such parse. */
+    if (remaining)
     {
         sds work = sdsdup(remaining);
         char *p = work;
@@ -167,6 +171,7 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
         }
         sdsfree(work);
         sdsfree(remaining);
+        remaining = NULL;
     }
 }
 

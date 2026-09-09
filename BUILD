@@ -49,6 +49,14 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
+# Build with `--define=valgrind=1` to drop `-static` and produce a dynamically
+# linked binary, so valgrind can intercept malloc/free and track the heap.
+config_setting(
+    name = "valgrind",
+    define_values = {"valgrind": "1"},
+    visibility = ["//visibility:public"],
+)
+
 platform(
     name = "arm_linux",
     constraint_values = [

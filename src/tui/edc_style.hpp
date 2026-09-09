@@ -37,6 +37,12 @@ namespace edc
 //   cyan            #66D9EF  (102, 217, 239) functions, primary accent
 //   purple          #AE81FF  (174, 129, 255) statements, suspended
 //
+// The Thought toggle is the one role pair derived from a token instead of
+// used as-is: the collapsed label is a dimmed Monokai yellow (60% of
+// #E6DB74 => #8A8345) so a folded thought reads as a quiet yellow marker,
+// and it expands to the full-brightness yellow so the open thought reads
+// as active.
+//
 // Initialization note: palette() is a function-local static, deliberately
 // NOT a namespace-scope object. ftxui::Color::RGB(...) resolves the color
 // against the current terminal (it calls Terminal::ColorSupport(), see
@@ -66,8 +72,8 @@ struct Palette
     ::ftxui::Color warn;        // warm yellow: foreground group, IDLE/WAITING.
     ::ftxui::Color error;       // ERROR states.
     ::ftxui::Color suspended;   // SUSPENDED states.
-    ::ftxui::Color thought_open;   // expanded "Thought" toggle.
-    ::ftxui::Color thought_closed; // collapsed "Thought" toggle.
+    ::ftxui::Color thought_open;   // expanded "Thought" toggle: bright yellow.
+    ::ftxui::Color thought_closed; // collapsed "Thought" toggle: dim yellow.
 
     // ---- input & chat rules ---------------------------------------------
     ::ftxui::Color prompt;    // the "❯ " input prompt glyph.
@@ -108,8 +114,8 @@ inline const Palette &palette()
         ::ftxui::Color::RGB(230, 219, 116),  // warn        (#E6DB74 yellow)
         ::ftxui::Color::RGB(249, 38, 114),   // error       (#F92672 pink)
         ::ftxui::Color::RGB(174, 129, 255),  // suspended   (#AE81FF purple)
-        ::ftxui::Color::RGB(253, 151, 31),   // thought_open   (#FD971F orange)
-        ::ftxui::Color::RGB(117, 113, 94),   // thought_closed (#75715E comment)
+        ::ftxui::Color::RGB(230, 219, 116),  // thought_open   (#E6DB74 yellow)
+        ::ftxui::Color::RGB(138, 131, 69),   // thought_closed (#8A8345 dim yellow)
         // input & chat rules
         ::ftxui::Color::RGB(249, 38, 114),   // prompt      (#F92672 pink)
         ::ftxui::Color::RGB(249, 38, 114),   // user_rule   (#F92672 pink)

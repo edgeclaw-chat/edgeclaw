@@ -179,13 +179,21 @@ static void on_timeout(uv_timer_t *timer)
     struct edc_tool_shell_ctx *ctx = timer->data;
     if (!ctx->child_exited)
     {
-        uv_process_kill(&ctx->process,
 #ifdef _WIN32
-                        SIGTERM
+        uv_process_kill(&ctx->process, SIGTERM);
 #else
-                        SIGKILL
+        /*
+         * The child was spawned with UV_PROCESS_DETACHED, so setsid() made it
+         * the leader of its own process group (pgid == pid). Signal the whole
+         * group, not just the direct child: for `sh -c 'a && sudo b'` killing
+         * only `/bin/sh` would leave the grandchild running and holding the
+         * stdout/stderr pipes open. uv_process_kill() is kept as a fallback in
+         * case the group signal did not land (e.g. the group is already gone).
+         */
+        if (ctx->process.pid > 0)
+            kill(-ctx->process.pid, SIGKILL);
+        uv_process_kill(&ctx->process, SIGKILL);
 #endif
-        );
         ctx->child_exited = true;
         ctx->exit_status = -1;
         ctx->stderr_buf = sdscat(ctx->stderr_buf, "\n[command timed out]");
@@ -221,6 +229,13 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
      *   UV_WRITABLE_PIPE → UV_HANDLE_READABLE  (parent can read  = stdout/stderr)
      * Therefore stdout/stderr use UV_WRITABLE_PIPE so that uv_read_start
      * sees UV_HANDLE_READABLE and starts polling POLLIN.
+     *
+     * stdin is deliberately left at UV_IGNORE: libuv then opens /dev/null and
+     * dup2()s it onto fd 0 (src/unix/process.c, "Redirect stdin, stdout and
+     * stderr to /dev/null even if UV_IGNORE is set"), so anything that reads
+     * stdin gets an immediate EOF. Do NOT switch this to UV_INHERIT_STDIO:
+     * the agent has no way to type into the child, so sharing our stdin would
+     * only let the command steal TUI keystrokes.
      */
     uv_stdio_container_t stdio[3];
     stdio[0].flags = UV_IGNORE;
@@ -231,6 +246,19 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
 
     uv_process_options_t options = {0};
     options.exit_cb = on_shell_exit;
+    /*
+     * Run the child in its own session (setsid, via libuv UV_PROCESS_DETACHED)
+     * so that it has NO controlling terminal. stdin is already /dev/null, but
+     * interactive tools ignore stdin and prompt on /dev/tty instead (sudo,
+     * ssh, git without GIT_TERMINAL_PROMPT=0, apt, ...). While the child
+     * inherited our terminal those prompts were written straight over the TUI
+     * and then blocked on a read nobody could answer, so the tool call hung
+     * until its timeout and the screen was left garbled. Detached,
+     * open("/dev/tty") fails and the command aborts immediately with a message
+     * ("sudo: no tty present and no askpass program specified") that reaches
+     * the model on stderr, which can then retry without an interactive step.
+     */
+    options.flags |= UV_PROCESS_DETACHED;
 #ifdef _WIN32
     options.file = "cmd.exe";
     char *args[] = {"cmd.exe", "/c", (char *)cmd_s, NULL};

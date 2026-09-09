@@ -64,7 +64,11 @@ static cJSON *edc_sm_build_index(struct edc_session_manager *sm)
         cJSON_AddStringToObject(obj, "id", s->session_id);
         cJSON_AddStringToObject(obj, "name", s->name ? s->name : s->session_id);
         cJSON_AddStringToObject(obj, "created_at", s->created_at ? s->created_at : "");
-        cJSON_AddStringToObject(obj, "last_active", edc_datetime_timestamp());
+        /* cJSON copies the string, so the freshly-allocated timestamp sds must
+         * be released here (or it leaks once per session on every index save). */
+        sds last_active = edc_datetime_timestamp();
+        cJSON_AddStringToObject(obj, "last_active", last_active);
+        sdsfree(last_active);
         cJSON_AddNumberToObject(obj, "message_count", (int)edc_session_get_message_count(s));
         cJSON_AddItemToArray(arr, obj);
     }

@@ -151,6 +151,10 @@ edc_shell_token_t *edc_shell_tokenize(const char *input, int *count)
     }
 
     EMIT_TEXT();
+    /* EMIT_TEXT() always leaves `cur` pointing at a fresh sds (emitted above,
+     * or a new empty one); this final one is never handed to a token, so
+     * release it here. */
+    sdsfree(cur);
     memset(&tokens[n], 0, sizeof(edc_shell_token_t));
     *count = n;
     return tokens;

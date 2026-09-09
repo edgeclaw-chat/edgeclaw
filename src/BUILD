@@ -4,6 +4,8 @@ LINK_OPTS = select({
     "//:macos_debug": ["-lresolv"],
     "//:macos": ["-lresolv"],
     "//:windows": ["-lws2_32", "-lbcrypt", "-luserenv"],
+    # `--define=valgrind=1`: dynamic link so valgrind can intercept malloc.
+    "//:valgrind": [],
     "//conditions:default": ["-static", "-Wl,--no-gc-sections"],
 })
 
