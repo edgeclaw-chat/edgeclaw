@@ -252,38 +252,39 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
             const auto &g = groups_[i];
             const bool expanded = group_expanded_[g.group_id];
 
-            // Collapsible group header: a disclosure arrow plus "Group <id>"
-            // on the left; the right edge carries the group summary — task
-            // count and the live message count (committed group messages plus
-            // the in-flight turns of its tasks, so the number ticks up while
-            // any member streams). Foreground groups keep the warm highlight;
-            // orphaned groups are flagged with a trailing "~".
-            std::string id_part = g.group_id.empty() ? "(group)" : "Group " + g.group_id;
+            // Collapsible group header. Left side: disclosure arrow plus
+            // "Group <id> (N tasks)" — the task count rides on the label, so
+            // the row reads "▸ Group 150 (7 tasks)". Right side: the live
+            // message count (committed group messages plus the in-flight
+            // turns of its tasks, so the number ticks up while any member
+            // streams), flushed as a whole block against the pane's right
+            // edge so every row's "… msgs" shares one straight margin.
+            // Foreground groups keep the warm highlight; orphaned groups are
+            // flagged with a trailing "~".
+            std::string core = g.group_id.empty() ? "(group)" : "Group " + g.group_id;
             if (g.orphaned)
-                id_part += " ~";
+                core += " ~";
 
             const int task_n = g.member_count;
-            // Two right-aligned fixed-width numeric columns (tasks ≤ 2 cells,
-            // messages ≤ 3): digit columns stay put while a live group count
-            // grows 9 → 10 → 21, so the sidebar does not reflow every frame.
-            std::string stats = PadCount(task_n, 2) + (task_n == 1 ? " task" : " tasks");
-            stats += " · " + PadCount(g.msg_count, 3) + (g.msg_count == 1 ? " msg" : " msgs");
+            const std::string suffix =
+                " (" + std::to_string(task_n) + (task_n == 1 ? " task)" : " tasks)");
+            const std::string arrow = expanded ? "▾ " : "▸ ";
+            const std::string right =
+                std::to_string(g.msg_count) + (g.msg_count == 1 ? " msg" : " msgs");
 
-            // The numeric block on the right is the live information, so it
-            // is never truncated: shrink the "Group <id>" label (with an
-            // ellipsis when needed) to whatever the fixed count columns leave
-            // on a narrow sidebar, rather than clipping the digits.
-            const int label_budget = row_width - kRightPad - 2 /* arrow */ - StringWidth(stats);
-            if (label_budget > 0)
-                id_part = TruncateToWidth(id_part, label_budget);
-            else
-                id_part.clear();
+            // The message count on the right is the live information, so it
+            // is never truncated: give "Group <id>" (and, when there is
+            // really no room, the task-count suffix) whatever width the right
+            // block leaves on a narrow sidebar.
+            const int core_budget = row_width - kRightPad - StringWidth(arrow) -
+                                    static_cast<int>(suffix.size()) - StringWidth(right) - 1;
+            std::string visible_core = core_budget > 0 ? TruncateToWidth(core, core_budget) : "";
 
             lines.push_back(hbox({
-                                text((expanded ? "▾ " : "▸ ") + id_part) | bold |
-                                    color(g.fg ? pal.warn : pal.text_dim),
+                                text(arrow + visible_core + (core_budget > 0 ? suffix : "")) |
+                                    bold | color(g.fg ? pal.warn : pal.text_dim),
                                 filler(),
-                                text(stats) | dim | color(pal.text_dim),
+                                text(right) | dim | color(pal.text_dim),
                                 text(std::string(kRightPad, ' ')),
                             }) | reflect(group_header_boxes_[i]));
 
