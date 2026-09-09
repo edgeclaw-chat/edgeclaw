@@ -617,7 +617,8 @@ static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor
     {
         /* max_iter 治理: 工具链结束后若已耗尽本轮 LLM 迭代预算, 不再续发
          * LLM —— 模型已拿到最后一轮工具结果仍要继续时, 说明大概率在工具
-         * 循环里空转。max_iter <= 0 (默认/测试) 表示不限制。 */
+         * 循环里空转。max_iter <= 0 (如 -1 = 无限/默认, 或 0 兼容旧行为)
+         * 表示不限制。 */
         if (sched->config->max_iter > 0 && task->llm_rounds >= sched->config->max_iter)
         {
             sched_stop_at_iteration_cap(sched, task, msg);

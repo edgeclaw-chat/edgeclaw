@@ -78,8 +78,9 @@ struct edc_task
      * llm_rounds: 当前 turn (一次用户输入) 已发出的 LLM 请求数 —— 调度器
      * 每次调用 send_llm 时加一 (入口输入、依赖排队的自动触发、工具链续发)。
      * 工具链结束后若达到 config->max_iter 上限 (max_iter > 0), 调度器不再
-     * 续发 LLM, 以收尾消息终结本轮, 防止模型在工具循环里空转烧预算。新
-     * 输入开始新一轮时清零 (scheduler)。 */
+     * 续发 LLM, 以收尾消息终结本轮, 防止模型在工具循环里空转烧预算。
+     * max_iter <= 0 (含 -1 = 无限, 默认) 表示不限制。新一轮输入开始时
+     * 清零 (scheduler)。 */
     int llm_rounds;
 
     edc_channel_type channel_type;

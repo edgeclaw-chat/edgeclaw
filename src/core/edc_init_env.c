@@ -349,9 +349,9 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
         return -1;
     result->api_key = val;
 
-    /* Max Iterations */
-    int ival = prompt_int("Max Iterations", defaults && defaults->max_iter > 0 ? defaults->max_iter : 100);
-    if (ival < 0)
+    /* Max Iterations: -1 = unlimited; positive N = at most N LLM/tool rounds per input */
+    int ival = prompt_int("Max Iterations", defaults && defaults->max_iter > 0 ? defaults->max_iter : -1);
+    if (ival < -1)
         return -1;
     result->max_iter = ival;
 
@@ -787,9 +787,9 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
         log_error("Model is required.");
         goto exit_free_env;
     }
-    if (env_result.max_iter <= 0)
+    if (env_result.max_iter == 0 || env_result.max_iter < -1)
     {
-        log_error("Max Iterations must be greater than 0.");
+        log_error("Max Iterations must be -1 (unlimited) or a positive integer.");
         goto exit_free_env;
     }
     if (env_result.load_n_histories < 0)

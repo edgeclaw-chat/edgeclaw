@@ -55,7 +55,7 @@ struct edc_config
     sds sandbox_root_real;
     sds *sandbox_ro_paths;
     sds *sandbox_rw_paths;
-    int max_iter;
+    int max_iter;            /* LLM/tool 迭代预算: -1 = 无限, N > 0 = 上限, <= 0 (含 0) = 不限制 */
     int load_n_histories;
     int memory_compress_threshold;
     int group_fold_task_threshold;

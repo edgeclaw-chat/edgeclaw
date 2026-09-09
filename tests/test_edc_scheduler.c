@@ -577,6 +577,34 @@ static void test_scheduler_max_iter_cap(void)
     if (sess->messages) cJSON_Delete(sess->messages);
     free(sess);
     free_config(cfg);
+
+    TEST("max_iter=-1 keeps unlimited loop (default sentinel)");
+    cfg = make_config();
+    cfg->max_iter = -1;
+    sess = make_session(cfg);
+    sched = edc_scheduler_new(sess, cfg);
+
+    leader = edc_scheduler_create_task(sched, "leader", edc_channel_adapter);
+    g = edc_scheduler_create_group(sched, leader);
+    edc_scheduler_set_foreground(sched, g);
+    edc_session_set_active_task(sess, leader);
+
+    g_llm_calls = 0;
+    sched->send_llm = mock_send_llm;
+    sched->dispatch_tools = mock_dispatch_tools;
+    sched->send_reply = mock_send_reply;
+
+    drive_input(sched, "hello", 104);
+    run_one_tool_round(sched, 104);
+    run_one_tool_round(sched, 104);
+    CHECK(leader->llm_rounds == 3, "rounds counted while unlimited (-1)");
+    CHECK(g_llm_calls == 3, "llm keeps being re-sent with -1 (no cap)");
+    CHECK(leader->active_turn != NULL, "turn stays open while looping (-1)");
+
+    edc_scheduler_free(sched);
+    if (sess->messages) cJSON_Delete(sess->messages);
+    free(sess);
+    free_config(cfg);
 }
 
 /* ── main ──────────────────────────────────────────────────── */

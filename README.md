@@ -366,7 +366,7 @@ Create `~/.edgeclaw/config.json`:
   },
   "workspace": "~/.edgeclaw",
   "sandbox_root_real": "~/.edgeclaw/sandbox",
-  "max_iter": 10,
+  "max_iter": -1,
   "load_n_histories": 10,
   "memory_compress_threshold": 200,
   "group_fold_task_threshold": 20,
@@ -374,6 +374,11 @@ Create `~/.edgeclaw/config.json`:
   "tool_max_output_size": 10000
 }
 ```
+
+`max_iter` controls the LLM/tool iteration budget per user input: `-1`
+(default) means **unlimited** (the agent loop keeps running until the model
+produces a final answer), while a positive integer caps the number of
+LLM/tool rounds before the scheduler stops and asks for a follow-up.
 
 #### Channel Configuration
 
