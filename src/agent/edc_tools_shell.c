@@ -54,18 +54,21 @@ static void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *b
     buf->len = suggested_size;
 }
 
+static void shell_ctx_destroy(struct edc_tool_shell_ctx *ctx)
+{
+    if (ctx->stderr_buf)
+        sdsfree(ctx->stderr_buf);
+    if (ctx->stdout_buf)
+        sdsfree(ctx->stdout_buf);
+    if (ctx->command)
+        sdsfree(ctx->command);
+    free(ctx);
+}
+
 static void shell_ctx_close_handles(struct edc_tool_shell_ctx *ctx)
 {
     if (--ctx->pending_handles == 0)
-    {
-        if (ctx->stderr_buf)
-            sdsfree(ctx->stderr_buf);
-        if (ctx->stdout_buf)
-            sdsfree(ctx->stdout_buf);
-        if (ctx->command)
-            sdsfree(ctx->command);
-        free(ctx);
-    }
+        shell_ctx_destroy(ctx);
 }
 
 static void on_stdout_close(uv_handle_t *handle)
@@ -362,11 +365,51 @@ void edc_tool_shell_abort_all(void)
             );
         }
         uv_timer_stop(&ctx->timeout_timer);
-        ctx->pending_handles = 4;
-        uv_close((uv_handle_t *)&ctx->stdout_pipe, on_stdout_close);
-        uv_close((uv_handle_t *)&ctx->stderr_pipe, on_stderr_close);
-        uv_close((uv_handle_t *)&ctx->timeout_timer, on_timer_close);
-        uv_close((uv_handle_t *)&ctx->process, on_process_close);
+
+        /* Only close handles that are still open. Teardown order in
+         * edc_agent_free() runs edc_actor_runner_free() (which stops the actor
+         * loop and uv_walk()s every handle on it shut with a NULL callback)
+         * *before* edc_toolbox_free() lands here, so by now these handles are
+         * usually already closed. Calling uv_close() on a closing/closed handle
+         * trips libuv's assert(!uv__is_closing(handle)) and aborts the whole
+         * process (SIGABRT during teardown).
+         *
+         * count only the handles we close here: those are the only ones whose
+         * close callback will decrement ctx->pending_handles, so the context is
+         * released exactly when the last of *our* callbacks fires. */
+        int to_close = 0;
+        if (!uv_is_closing((uv_handle_t *)&ctx->stdout_pipe))
+        {
+            uv_close((uv_handle_t *)&ctx->stdout_pipe, on_stdout_close);
+            to_close++;
+        }
+        if (!uv_is_closing((uv_handle_t *)&ctx->stderr_pipe))
+        {
+            uv_close((uv_handle_t *)&ctx->stderr_pipe, on_stderr_close);
+            to_close++;
+        }
+        if (!uv_is_closing((uv_handle_t *)&ctx->timeout_timer))
+        {
+            uv_close((uv_handle_t *)&ctx->timeout_timer, on_timer_close);
+            to_close++;
+        }
+        if (!uv_is_closing((uv_handle_t *)&ctx->process))
+        {
+            uv_close((uv_handle_t *)&ctx->process, on_process_close);
+            to_close++;
+        }
+
+        if (to_close == 0)
+        {
+            /* Every handle was already closed elsewhere (the runner walk closed
+             * them with a NULL callback), so no callback will run to release the
+             * context: do it here. */
+            shell_ctx_destroy(ctx);
+        }
+        else
+        {
+            ctx->pending_handles = to_close;
+        }
     }
     uv_mutex_unlock(&active_mutex);
 }
