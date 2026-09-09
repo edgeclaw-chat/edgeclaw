@@ -11,6 +11,17 @@ class ChatWidget;
 class EdcInput;
 class TaskWidget;
 class TodoWidget;
+
+// The animated "working" row shown in place of the footer while the
+// foreground process runs: a bar of blocks that sweeps back and forth, its
+// brightness flowing along the lit run, with the "处理中" label trailing it.
+// |elapsed_ms| is the time since the process went busy; it drives both the
+// sweep position and the flow phase. Declared here (rather than staying local
+// to the window) so tests can render the row without a live agent. The bar has
+// a fixed number of cells and is one line tall, so showing it in place of the
+// footer never moves the layout.
+::ftxui::Element WorkingIndicatorElement(long long elapsed_ms);
+
 class TUIWindow : public ::ftxui::ComponentBase
 {
   public:
@@ -77,9 +88,14 @@ class TUIWindow : public ::ftxui::ComponentBase
 
     // True while the foreground group's active task is running (the
     // scheduler's task snapshot reports it busy); shows an animated status
-    // row between the input and the footer. Owned exclusively by
+    // row in place of the footer. Owned exclusively by
     // SyncWorkingFromSnapshot() — never toggled from channel-message types.
     bool working_ = false;
+
+    // When working_ last flipped to true; the status row turns this into the
+    // animation phase, so the run starts at the first cell each time a process
+    // goes busy. Only meaningful while working_ is true.
+    std::chrono::steady_clock::time_point working_started_;
 
     // Last time a task-tree snapshot was requested; throttles the periodic
     // refresh that catches background-task state changes (which send no

@@ -78,6 +78,89 @@ bool ForegroundProcessBusy(const ::edc_c_task_snapshot *snap)
     return false; // no foreground group at all
 }
 
+// The "working" row: a bar of blocks that sweeps back and forth — left to
+// right, then right to left — while the brightness inside the lit run flows
+// along it, so the row reads as moving water rather than a static progress
+// bar. The run does not turn around while it is still on screen: it travels
+// until it has left the bar completely, tail and all, and only then comes
+// back, so the light enters at one edge, crosses, leaves, and returns.
+//
+// Constraints kept from every earlier attempt: exactly one text line (the row
+// replaces the footer, so it must never change the layout height), a fixed
+// number of cells (never change the width), no background fill, and medium
+// block glyphs — not the full-height █▓▒░, which tower over the surrounding
+// text.
+constexpr int kBarCells = 10; // cells in the bar
+constexpr int kBarLit = 5;    // lit cells: the sliding run
+constexpr long long kStepMs = 120; // per cell of travel
+// The run slides from completely past the left edge to completely past the
+// right edge before the sweep reverses, so the ends of the bar are genuine
+// turning points (a few frames of empty bar) rather than bumpers.
+constexpr int kRunFirst = -kBarLit;  // run fully off the left edge
+constexpr int kRunLast = kBarCells;  // run fully off the right edge
+constexpr int kRunPositions = kRunLast - kRunFirst + 1;
+// First frame: the run fully on screen at the left, so the row looks busy
+// straight away instead of opening on an empty bar.
+constexpr int kRunStart = 0;
+
+// Where the lit run sits at |elapsed_ms|, and which way it is travelling.
+struct BarState
+{
+    int pos;      // leftmost lit cell; may be negative or past the right edge
+    bool forward; // true while the run sweeps right
+};
+
+// The run slides out past one edge — tail included — then comes back in from
+// that same edge and crosses to the other side, where the same thing happens
+// again (ping-pong): the step index within the cycle maps onto the outward
+// leg, then mirrors on the way home, so consecutive frames never jump and the
+// turning points are not held for an extra frame. Integer arithmetic on
+// purpose: a float phase can land between two cells at the turning points and
+// make the run stutter.
+BarState BarAt(long long elapsed_ms)
+{
+    const long long step = (elapsed_ms < 0 ? 0 : elapsed_ms) / kStepMs; // clamp: clock skew
+    const long long cycle = 2 * (kRunPositions - 1);
+    const long long phase = (step + (kRunStart - kRunFirst)) % cycle;
+    if (phase < kRunPositions)
+        return {kRunFirst + static_cast<int>(phase), true};
+    return {kRunFirst + static_cast<int>(cycle - phase), false};
+}
+
+// The depth of the block |i| cells into the lit run. The leading edge — the
+// edge the run is travelling towards — is the brightest, and the run fades
+// away behind it, so the gradient always points the way the light moves and
+// swaps ends when the sweep turns around. Every cell the run passes over
+// therefore changes depth as it goes by, which is what makes the bar read as
+// water flowing rather than a slab sliding.
+int FlowTier(int i, bool forward)
+{
+    return forward ? (kBarLit - 1 - i) : i;
+}
+
+// A lit block, shaded by depth: the terminal cannot fade opacity, so the ramp
+// is a handful of discrete steps from a bold accent head down to a barely
+// there gray — the closest text-mode equivalent of a brightness keyframe.
+// Same glyph at every depth: only the colour intensity changes.
+::ftxui::Element LitBlock(int tier, const style::Palette &pal)
+{
+    switch (tier)
+    {
+    case 0: return ::ftxui::text("■") | ::ftxui::color(pal.accent) | ::ftxui::bold;
+    case 1: return ::ftxui::text("■") | ::ftxui::color(pal.accent);
+    case 2: return ::ftxui::text("■") | ::ftxui::color(pal.accent) | ::ftxui::dim;
+    case 3: return ::ftxui::text("■") | ::ftxui::color(pal.text_dim);
+    default: return ::ftxui::text("■") | ::ftxui::color(pal.text_dim) | ::ftxui::dim;
+    }
+}
+
+// An unlit cell: the small square that keeps the bar's full length visible, so
+// the eye can see the run move rather than a floating blob.
+::ftxui::Element OffBlock(const style::Palette &pal)
+{
+    return ::ftxui::text("⬝") | ::ftxui::color(pal.text_dim) | ::ftxui::dim;
+}
+
 // Todo sidebar content: the foreground group's active task's own todo list.
 // The list is part of the task state (todowrite attaches it to the
 // task that called it), so the snapshot — which already tells us which task
@@ -166,6 +249,35 @@ std::string UnescapeHistoryLine(const std::string &line)
 }
 
 } // namespace
+
+// The animated "working" row: the sweeping block bar, then the label. Defined
+// here (outside the anonymous namespace, declared in the header) so tests can
+// render the row for a given elapsed time without a live agent. The bar has a
+// fixed number of cells, so showing it in place of the footer never changes the
+// row's width, and it is one line tall, so it never changes the layout either.
+::ftxui::Element WorkingIndicatorElement(long long elapsed_ms)
+{
+    const auto &pal = style::palette();
+
+    // BarAt clamps a negative elapsed (a clock adjustment between the start
+    // stamp and the frame must not rewind the bar).
+    const BarState bar = BarAt(elapsed_ms);
+
+    // The bar leads the row and the label trails it, so the animated part —
+    // the thing the eye should be drawn to — sits where the text starts.
+    ::ftxui::Elements row;
+    row.reserve(static_cast<size_t>(kBarCells) + 2);
+    for (int i = 0; i < kBarCells; i++)
+    {
+        if (i >= bar.pos && i < bar.pos + kBarLit)
+            row.push_back(LitBlock(FlowTier(i - bar.pos, bar.forward), pal));
+        else
+            row.push_back(OffBlock(pal));
+    }
+    row.push_back(::ftxui::text(" "));
+    row.push_back(::ftxui::text("处理中") | ::ftxui::color(pal.text_dim));
+    return ::ftxui::hbox(std::move(row));
+}
 
 TUIWindow::TUIWindow() : input_text_("")
 {
@@ -342,6 +454,8 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
     if (busy == working_)
         return;
     working_ = busy;
+    if (busy)
+        working_started_ = std::chrono::steady_clock::now();
     // A transition here can happen while the render loop is otherwise idle
     // (e.g. the first snapshot after a submit starts the animation), so ask
     // for a frame to repaint the footer/spinner row.
@@ -361,17 +475,12 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
         // While the foreground group's active task is running the animated
         // status replaces the footer line (so the bottom row keeps its
         // height); as soon as a task snapshot reports it is no longer busy,
-        // the footer hint returns.
-        static const char *kFrames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
+        // the footer hint returns. The bar animates off the elapsed time, so
+        // keep asking for frames while it is visible.
         const auto now = std::chrono::steady_clock::now();
-        const auto ms =
-            std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-        const size_t frame = (static_cast<size_t>(ms) / 100) % (sizeof(kFrames) / sizeof(kFrames[0]));
-
-        const auto &pal = style::palette();
-        auto spinner = ::ftxui::text(kFrames[frame]) | ::ftxui::color(pal.accent) | ::ftxui::bold;
-        auto label = ::ftxui::text(" 处理中...") | ::ftxui::color(pal.text_dim);
-        children.push_back(::ftxui::hbox({spinner, label}));
+        const auto elapsed_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - working_started_).count();
+        children.push_back(WorkingIndicatorElement(elapsed_ms));
 
         if (screen_)
             screen_->RequestAnimationFrame();
