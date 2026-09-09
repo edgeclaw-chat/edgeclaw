@@ -170,7 +170,7 @@ generation (typed params via `edc_param_types`):
 | Filesystem | `read_file`, `write_file`, `edit_file`, `list_dir` |
 | Shell | `exec_shell` (async `uv_process` with timeout) |
 | Cron | `crontab` schedule/manage one-shot & recurring jobs (`jobs.json`) |
-| Todo | `update_todolist` (persisted on the calling task, live in snapshots) |
+| Todo | `todowrite` (persisted on the calling task, live in snapshots) |
 | Device | `device_shell`, `device_upload`, `device_download` |
 
 Tools are registered dynamically; see "Adding a New Tool" below.
@@ -232,7 +232,7 @@ edgeclaw/
 │   │   ├── edc_tools_fs.c/h          # 文件工具
 │   │   ├── edc_tools_shell.c/h       # shell 工具
 │   │   ├── edc_tools_crontab.c/h     # cron 工具
-│   │   ├── edc_tools_todo.c/h        # update_todolist 工具
+│   │   ├── edc_tools_todo.c/h        # todowrite 工具
 │   │   ├── edc_tools_device_*.c/h    # 远程设备工具
 │   │   ├── edc_task.c/h              # Task (Unix 进程式任务)
 │   │   ├── edc_task_group.c/h        # Group (进程组)

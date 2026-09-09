@@ -38,15 +38,15 @@ struct uv_loop_s;
  * The scheduler serializes the active session's task tree to JSON and the
  * TUI requests a parse through edc_c_task_snapshot_parse(); the result is a
  * plain-C tree of malloc'd strings so the C++ TUI never touches cJSON. Each
- * task node also carries the todo list it holds (the update_todolist items,
+ * task node also carries the todo list it holds (the todowrite items,
  * NULL/0 when the task has none) — the TodoWidget renders the foreground
  * group's active task's todo straight from the snapshot. */
 
 struct edc_c_todo_item
 {
     const char *content;
-    const char *status;      /* pending | in_progress | completed */
-    const char *active_form; /* "" when not in_progress */
+    const char *status;   /* pending | in_progress | completed | cancelled */
+    const char *priority; /* high | medium | low ("" when unset) */
 };
 
 struct edc_c_task_info

@@ -207,8 +207,8 @@ void edc_c_task_snapshot_free(struct edc_c_task_snapshot *snap)
 
 /* ── Todo item array parsing (per-task "todolist" in a snapshot) ─ */
 
-/* Parse a JSON items array (update_todolist items: each with content/status/
- * activeForm) into a malloc'd array of edc_c_todo_item. Returns NULL and sets
+/* Parse a JSON items array (todowrite items: each with content/status/
+ * priority) into a malloc'd array of edc_c_todo_item. Returns NULL and sets
  * *count_out = 0 when arr is not an array or has no elements. The caller
  * frees the result with snap_todo_free(). */
 static struct edc_c_todo_item *snap_todo_parse(const cJSON *arr, int *count_out)
@@ -232,7 +232,7 @@ static struct edc_c_todo_item *snap_todo_parse(const cJSON *arr, int *count_out)
         struct edc_c_todo_item *dst = &items[i++];
         dst->content = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(it, "content")));
         dst->status = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(it, "status")));
-        dst->active_form = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(it, "activeForm")));
+        dst->priority = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(it, "priority")));
     }
     *count_out = n;
     return items;
@@ -246,7 +246,7 @@ static void snap_todo_free(struct edc_c_todo_item *items, int count)
     {
         free((void *)items[i].content);
         free((void *)items[i].status);
-        free((void *)items[i].active_form);
+        free((void *)items[i].priority);
     }
     free(items);
 }

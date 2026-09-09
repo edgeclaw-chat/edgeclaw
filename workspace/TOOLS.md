@@ -78,17 +78,17 @@ device_download(remote_path: str, timeout: int = 60) -> str
 
 ## Task Management
 
-### update_todolist
+### todowrite
 Validate and update the todo list. Send a complete new list each time.
 ```
-update_todolist(items: list[Todo]) -> str
+todowrite(items: list[Todo]) -> str
 ```
 
 Each Todo item:
 ```
-content: str     — Task description
-status: str      — "pending" | "in_progress" | "completed"
-activeForm: str  — Current action being performed (if any)
+content: str   — Task description
+status: str    — "pending" | "in_progress" | "completed" | "cancelled"
+priority: str  — "high" | "medium" | "low"
 ```
 
 Rules: max 20 items, only one `in_progress` at a time.

@@ -210,10 +210,10 @@ sds edc_context_build_system_prompt(struct edc_config *conf)
  * 绝对新鲜的 system reminder"——头部注入在长上下文里易被模型遗忘; 队尾紧贴
  * 模型开始生成的位置。同年同日再改: 不每轮请求都发, 由 edc_agent_cb_send_llm
  * 按 edc_task_llm_request_poke 节流 —— 隔了 EDC_TODO_SYNC_REMIND_GAP 条对话
- * (LLM 请求) 都没调用过 update_todolist 才生成一次 (达阈值清零重计)。
+ * (LLM 请求) 都没调用过 todowrite 才生成一次 (达阈值清零重计)。
  * 两段式骨架文本 (含 <system-reminder> 包裹、状态段内容选择、逐轮同步节拍/
  * 建计划引导两个分支) 由 edc_tools_todo_render_reminder 统一生成 —— 与
- * update_todolist 工具每次成功返回的 result 逐字节一致 (同一渲染源, 不再有
+ * todowrite 工具每次成功返回的 result 逐字节一致 (同一渲染源, 不再有
  * 独立的 "# TODO" checklist md 形态)。本函数只负责把这份文本包成一条
  * role=system 消息。
  * 副本语义: 生成新 system 消息, 绝不改动组内共享的 history[0] / task。 */

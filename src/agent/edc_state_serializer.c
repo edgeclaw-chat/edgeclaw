@@ -201,7 +201,7 @@ static cJSON *task_to_json(struct edc_task *task, cJSON *messages_array)
     /* ── todolist ── */
     if (task->todolist)
         cJSON_AddItemToObject(tj, "todolist", cJSON_Duplicate(task->todolist, 1));
-    /* todo 同步节流计数 (距上次 update_todolist 的 LLM 请求数, 跨会话保持) */
+    /* todo 同步节流计数 (距上次 todowrite 的 LLM 请求数, 跨会话保持) */
     cJSON_AddNumberToObject(tj, "todo_sync_gap", task->todo_sync_gap);
 
     /* ── turns (committed) ── */

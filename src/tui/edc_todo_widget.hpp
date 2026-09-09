@@ -10,7 +10,7 @@ namespace edc
 {
 // Right-sidebar widget below the task tree: renders the todo list of the
 // current foreground task — the task marked active in the foreground group of
-// the task-tree snapshot. The list is part of the task state (update_todolist
+// the task-tree snapshot. The list is part of the task state (todowrite
 // attaches the items it validated to the calling task; the snapshot JSON
 // carries every task's "todolist" and the C bridge parses it back). The TUI
 // window therefore feeds this widget from each snapshot it renders
@@ -29,16 +29,16 @@ namespace edc
 //
 // Item text is word-wrapped over several lines (CJK-safe, edc_text_util) so
 // long descriptions use the full sidebar width instead of one truncated row;
-// the single in_progress item may render an "↳ <activeForm>" sub-line under
-// its own text so the running action never squeezes the item content.
+// each item carries a compact priority tag ("[high]" / "[medium]" / "[low]"),
+// and cancelled items are struck through like completed ones.
 class TodoWidget : public ::ftxui::ComponentBase
 {
   public:
     struct Item
     {
         std::string content;
-        std::string status; /* pending | in_progress | completed */
-        std::string active_form;
+        std::string status;   /* pending | in_progress | completed | cancelled */
+        std::string priority; /* high | medium | low ("" when unset) */
     };
 
     TodoWidget();

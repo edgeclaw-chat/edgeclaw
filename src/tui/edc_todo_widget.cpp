@@ -93,7 +93,7 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
     // A collapsed section keeps only its header row; the separator and the
     // item rows below are skipped entirely (the enclosing pane reclaims the
     // space for whatever sits underneath in the sidebar column). An expanded
-    // but empty section — before the first update_todolist emission or after
+    // but empty section — before the first todowrite emission or after
     // the tool cleared the list — still draws its separator plus a dim
     // "(empty)" marker, so the fold keeps a visible body and the sidebar
     // layout stays stable instead of the section collapsing to a lone header.
@@ -125,6 +125,7 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             const Item &item = items_[i];
             const bool done = item.status == "completed";
             const bool doing = item.status == "in_progress";
+            const bool cancelled = item.status == "cancelled";
 
             // Leading per-state marker inside a bracket box: "[ ]" for a
             // pending item, "[•]" for the in_progress one, "[✓]" once the
@@ -139,6 +140,8 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
                 marker = text("  [•] ") | color(kBlue);
             else if (done)
                 marker = text("  [✓] ") | color(kGray) | dim;
+            else if (cancelled)
+                marker = text("  [~] ") | color(kGray) | dim;
             else
                 marker = text("  [ ] ") | color(kGray) | dim;
 
@@ -165,25 +168,18 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             auto style_content = [&](Element e) -> Element {
                 if (doing)
                     return e | color(kBlue);
-                if (done)
+                if (done || cancelled)
                     return e | dim | strikethrough | color(kGray);
                 return e | dim | color(kGray);
             };
 
             Elements item_lines;
-            item_lines.push_back(hbox({std::move(marker), style_content(text(wrapped[0]))}));
+            Element first_line = hbox({std::move(marker), style_content(text(wrapped[0]))});
+            if (!item.priority.empty())
+                first_line = hbox({std::move(first_line), text(" [" + item.priority + "]") | dim | color(kGray)});
+            item_lines.push_back(std::move(first_line));
             for (size_t ln = 1; ln < wrapped.size(); ln++)
                 item_lines.push_back(hbox({text(cont_prefix), style_content(text(wrapped[ln]))}));
-
-            // The single in_progress item may additionally report what it is
-            // doing right now. It gets its own indented sub-line ("↳ <form>")
-            // instead of a " <- <activeForm>" tail squeezed next to the
-            // content, so it never steals width from the item text.
-            if (doing && !item.active_form.empty())
-            {
-                const std::string sub = TruncateToWidth("↳ " + item.active_form, budget);
-                item_lines.push_back(hbox({text(cont_prefix), text(sub) | dim | color(kBlue)}));
-            }
 
             lines.push_back(vbox(std::move(item_lines)));
         }

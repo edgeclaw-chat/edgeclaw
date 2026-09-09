@@ -30,13 +30,13 @@ static void DisableBracketedPaste()
     std::fflush(stdout);
 }
 
-// update_todolist 工具的 TOOL 消息头（与 edc_tools_todo.c 注册名保持一致）。
+// todowrite 工具的 TOOL 消息头（与 edc_tools_todo.c 注册名保持一致）。
 // 该工具的文本回显（Markdown checklist）在 TUI 里不进对话消息列表——TODO
 // 状态只由右侧 TodoWidget 展示，其数据源是任务快照里 active task 的 todo
 // （快照由 scheduler 在每次工具回显后主动补推），聊天区重复一条 checklist
 // 纯属噪音；文本仍随消息传递，供无侧栏的渲染端（CLI）与 tool result（LLM）
 // 使用。
-constexpr char kTodoToolHeader[] = "update_todolist";
+constexpr char kTodoToolHeader[] = "todowrite";
 
 // The animated "working" row must reflect the scheduler's process state, not
 // the channel-message stream: it spins exactly while the current foreground
@@ -74,7 +74,7 @@ bool ForegroundProcessBusy(const ::edc_c_task_snapshot *snap)
 }
 
 // Todo sidebar content: the foreground group's active task's own todo list.
-// The list is part of the task state (update_todolist attaches it to the
+// The list is part of the task state (todowrite attaches it to the
 // task that called it), so the snapshot — which already tells us which task
 // is active — is the single source of truth for the TodoWidget, just as it
 // is for the task tree and the working spinner. A task without a list (or
@@ -101,7 +101,7 @@ std::vector<TodoWidget::Item> ActiveTaskTodoItems(const ::edc_c_task_snapshot *s
                 TodoWidget::Item item;
                 item.content = t->todo_items[i].content ? t->todo_items[i].content : "";
                 item.status = t->todo_items[i].status ? t->todo_items[i].status : "";
-                item.active_form = t->todo_items[i].active_form ? t->todo_items[i].active_form : "";
+                item.priority = t->todo_items[i].priority ? t->todo_items[i].priority : "";
                 items.push_back(std::move(item));
             }
             return items;
@@ -138,7 +138,7 @@ TUIWindow::TUIWindow() : input_text_("")
     // sections are always present — an empty todo list still shows its
     // collapsible "▾/▸ Todos 0/0" header so the sidebar layout is stable
     // from startup instead of the Todo block popping in after the first
-    // update_todolist call. Each section has its own clickable "▾/▸" header
+    // todowrite call. Each section has its own clickable "▾/▸" header
     // and takes only its natural content height; neither is pinned to the
     // pane bottom, so a short task tree leaves the Todo section sitting
     // right underneath it instead of gluing it to the bottom edge.
@@ -380,7 +380,7 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
                 // And for the todo section: it shows the foreground group's
                 // active task's own todo list (part of the task state), so it
                 // refreshes on every snapshot — not via a side channel on the
-                // update_todolist chat message.
+                // todowrite chat message.
                 tui->todo_widget_->SetItems(ActiveTaskTodoItems(snap));
                 edc_c_task_snapshot_free(snap);
             }
@@ -434,7 +434,7 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
 
     auto add_message = [tui, kind, text, header, render_pref, ts]() {
         std::shared_ptr<Message> widget;
-        // update_todolist 的 TOOL 消息不进对话区：TODO 状态已由右侧
+        // todowrite 的 TOOL 消息不进对话区：TODO 状态已由右侧
         // TodoWidget 展示，而它的数据源是任务快照里 active task 的 todo
         // （见 on_channel_adapter_send 的快照分支；工具每次回显都会让
         // scheduler 补推一次快照），聊天里再排一条 checklist 纯属噪音。

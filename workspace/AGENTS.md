@@ -9,7 +9,7 @@ You have access to these function-call tools:
 - **Shell**: `exec_shell` (sh -c, subprocess with sandbox)
 - **Web**: `web_search` (Brave API), `web_fetch` (readability extraction)
 - **Device**: `device_shell` (remote exec), `device_upload`, `device_download` (file transfer via TCP/PPPoS)
-- **Tasks**: `update_todolist`, `crontab` (scheduling)
+- **Tasks**: `todowrite`, `crontab` (scheduling)
 - **Comm**: `message` (send to channel), `spawn` (background subagents)
 
 See `TOOLS.md` for complete API documentation.
@@ -36,7 +36,7 @@ When user asks you to remember something, write to MEMORY.md.
 ## Guidelines
 
 - Always explain what you're doing before taking actions
-- Use `update_todolist` for multi-step tasks — plan first, execute step by step
+- Use `todowrite` for multi-step tasks — plan first, execute step by step
 - Verify results after changes (re-read file, run test, check output)
 - When a tool fails, diagnose the error and retry with a different approach
 - Look up information with tools first; only ask user when tools cannot answer

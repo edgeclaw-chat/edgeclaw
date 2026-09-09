@@ -5,11 +5,11 @@
  *
  * 节流 (2026-09-09): reminder 不每轮请求都发 —— 只有"隔了
  * EDC_TODO_SYNC_REMIND_GAP (10) 条对话 (LLM 请求) 都没调用过
- * update_todolist"时, 该次请求才 append 一次提醒 (并清零重计); update_todolist
+ * todowrite"时, 该次请求才 append 一次提醒 (并清零重计); todowrite
  * 工具成功调用同样清零。
  *
  * 链路 (生产代码, 本测试逐一验证可直接验证的环节):
- *   1. update_todolist 工具 (edc_tools_todo.c) 经真实 toolbox 执行后把校验
+ *   1. todowrite 工具 (edc_tools_todo.c) 经真实 toolbox 执行后把校验
  *      通过的 items 挂到 ctx->task->todolist (整体替换), 并重置 todo 同步
  *      节流计数 (task->todo_sync_gap = 0) —— 本测试执行真实工具。
  *   2. 工具返回的 result == task->todolist 经 edc_tools_todo_render_reminder
@@ -129,11 +129,11 @@ static int head_has_no_reminder(const char *c)
            strstr(c, "INSTRUCTIONS FOR THIS TURN") == NULL;
 }
 
-/* ── 1. 真实 update_todolist 执行: 挂载 task->todolist; reminder 组装 ── */
+/* ── 1. 真实 todowrite 执行: 挂载 task->todolist; reminder 组装 ── */
 
 static void test_attach_and_reminder(void)
 {
-    T("update_todolist attaches items to task; make_todo_reminder builds tail reminder");
+    T("todowrite attaches items to task; make_todo_reminder builds tail reminder");
 
     struct edc_config *conf = g_new0(struct edc_config, 1);
     struct edc_toolbox *tb = edc_toolbox_new(conf, NULL, NULL);
@@ -142,20 +142,21 @@ static void test_attach_and_reminder(void)
 
     cJSON *args = cJSON_Parse("{"
                               "\"items\":["
-                              "{\"content\":\"step one\",\"status\":\"pending\",\"activeForm\":\"\"},"
-                              "{\"content\":\"step two\",\"status\":\"in_progress\",\"activeForm\":\"reading code\"},"
-                              "{\"content\":\"step three\",\"status\":\"completed\",\"activeForm\":\"\"}"
+                              "{\"content\":\"step one\",\"status\":\"pending\",\"priority\":\"low\"},"
+                              "{\"content\":\"step two\",\"status\":\"in_progress\",\"priority\":\"high\"},"
+                              "{\"content\":\"step three\",\"status\":\"completed\",\"priority\":\"medium\"},"
+                              "{\"content\":\"step four\",\"status\":\"cancelled\",\"priority\":\"low\"}"
                               "]}");
     C(args != NULL, "args json parses");
 
     struct edc_toolbox_call_ctx *ctx =
         edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)1, task, NULL);
-    edc_toolbox_exec(ctx, "update_todolist", args, capture_cb);
+    edc_toolbox_exec(ctx, "todowrite", args, capture_cb);
 
     C(g_err == NULL, "no validation error");
     C(g_result != NULL, "tool returned a result");
     C(task->todolist != NULL, "items attached to task->todolist");
-    C(cJSON_GetArraySize(task->todolist) == 3, "todolist has 3 items");
+    C(cJSON_GetArraySize(task->todolist) == 4, "todolist has 4 items");
     C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(task->todolist, 1), "status")),
              "in_progress") == 0,
       "item 2 kept in_progress status");
@@ -165,9 +166,10 @@ static void test_attach_and_reminder(void)
     sds rem = edc_tools_todo_render_reminder(task->todolist);
     C(rem != NULL, "render_reminder returns reminder text for attached list");
     C(strcmp(rem, g_result) == 0, "tool result == todo reminder text (same renderer)");
-    C(strstr(rem, "- [ ] step one") != NULL, "pending item rendered");
-    C(strstr(rem, "- [ ] step two <- reading code") != NULL, "in_progress with activeForm rendered");
-    C(strstr(rem, "- [x] step three") != NULL, "completed item rendered");
+    C(strstr(rem, "- [ ] step one [low]") != NULL, "pending item rendered with priority tag");
+    C(strstr(rem, "- [•] step two [high]") != NULL, "in_progress item rendered with marker + priority tag");
+    C(strstr(rem, "- [x] step three [medium]") != NULL, "completed item rendered with priority tag");
+    C(strstr(rem, "- [-] step four [low]") != NULL, "cancelled item rendered with dash marker");
     C(strstr(rem, "# TODO") == NULL, "no standalone '# TODO' checklist header anymore");
 
     /* make_todo_reminder: 独立 role=system 消息, content 即 reminder (无 base
@@ -188,20 +190,20 @@ static void test_attach_and_reminder(void)
     C(strstr(content, "## 🚨 CURRENT TASK SYSTEM STATE\n") != NULL, "opens with state header");
     C(strstr(content, "## 🛠️ INSTRUCTIONS FOR THIS TURN\n") != NULL, "has per-turn instructions header");
     C(strstr(content, "recomputed and appended as a fresh system message") == NULL &&
-          strstr(content, "trust it over update_todolist echoes") == NULL &&
+          strstr(content, "trust it over todowrite echoes") == NULL &&
           strstr(content, "trimmed out of the context window") == NULL,
       "verbose authority/anti-trimming essay removed");
 
     /* (b) 指令段 (逐轮同步节拍): 先检查上个工具结果; 当前条目干完 → 下一动作
-     *     必须是 update_todolist (状态迁移 + 全量替换); 未标 [x] 不得跳项 */
+     *     必须是 todowrite (状态迁移 + 全量替换); 未标 [x] 不得跳项 */
     C(strstr(content, "Check the execution result of the last tool call.") != NULL,
       "turn instruction: check last tool result first");
-    C(strstr(content, "NEXT SINGLE ACTION must be calling update_todolist") != NULL,
-      "finished item forces immediate update_todolist call (next single action)");
-    C(strstr(content, "update_todolist") != NULL, "reminder to call update_todolist present");
+    C(strstr(content, "NEXT SINGLE ACTION must be calling todowrite") != NULL,
+      "finished item forces immediate todowrite call (next single action)");
+    C(strstr(content, "todowrite") != NULL, "reminder to call todowrite present");
     C(strstr(content, "\"completed\"") != NULL &&
-          strstr(content, "\"in_progress\"") != NULL && strstr(content, "activeForm") != NULL,
-      "state transition guidance (completed -> in_progress w/ activeForm) present");
+          strstr(content, "\"in_progress\"") != NULL,
+      "state transition guidance (completed -> in_progress) present");
     C(strstr(content, "FULL updated list") != NULL, "whole-list replacement stated");
     C(strstr(content, "marked as [x]") != NULL, "must-not-jump-ahead rule (mark [x] first)");
     C(strstr(content, "do not clear it") != NULL, "keep-finished-list rule present");
@@ -212,14 +214,15 @@ static void test_attach_and_reminder(void)
           strstr(content, "N/M completed") == NULL,
       "no derived count/next-pending block — the checklist itself is the state");
 
-    /* (c) 单一渲染源: 工具 result 与队尾 reminder 逐字节一致 —— update_todolist
+    /* (c) 单一渲染源: 工具 result 与队尾 reminder 逐字节一致 —— todowrite
      *     返回的正是这条 todo reminder 本身 (edc_context_make_todo_reminder 只
      *     包 role=system, 文本来自 edc_tools_todo_render_reminder) */
     C(strcmp(content, g_result) == 0, "tail reminder content == tool result (byte-identical)");
     C(strcmp(content, rem) == 0, "tail reminder content == render_reminder(todolist) (same renderer)");
 
     /* (d) 清单行 (共享 render_body) */
-    C(strstr(content, "- [ ] step one\n- [ ] step two <- reading code\n- [x] step three\n") != NULL,
+    C(strstr(content,
+             "- [ ] step one [low]\n- [•] step two [high]\n- [x] step three [medium]\n- [-] step four [low]\n") != NULL,
       "checklist lines identical to tool rendering");
 
     /* (e) reminder 不含独立的 "# TODO" checklist 头 (该 md 形态已删除) */
@@ -235,11 +238,11 @@ static void test_attach_and_reminder(void)
     cJSON_Delete(args);
 
     /* ── 清空清单 → 摘除挂载; 之后 reminder 退回"规划引导"形态 ── */
-    T("empty update_todolist detaches list; reminder becomes planning guide");
+    T("empty todowrite detaches list; reminder becomes planning guide");
     cJSON *empty_args = cJSON_Parse("{\"items\":[]}");
     struct edc_toolbox_call_ctx *ctx2 =
         edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)2, task, NULL);
-    edc_toolbox_exec(ctx2, "update_todolist", empty_args, capture_cb);
+    edc_toolbox_exec(ctx2, "todowrite", empty_args, capture_cb);
     C(g_err == NULL, "no error on empty list");
     C(g_result && strcmp(g_result, "No todos") == 0, "empty list tool result is 'No todos'");
     C(task->todolist == NULL, "todolist detached after clearing");
@@ -271,7 +274,7 @@ static void test_no_list_planning_guide(void)
     C(r != NULL, "task without list still gets a tail message (planning guide)");
     const char *c = cJSON_GetStringValue(cJSON_GetObjectItem(r, "content"));
     C(is_planning_reminder(c), "no list -> planning guide");
-    C(strstr(c, "update_todolist") != NULL && strstr(c, "multi-step") != NULL,
+    C(strstr(c, "todowrite") != NULL && strstr(c, "multi-step") != NULL,
       "planning branch tells to create a list first for multi-step work");
     C(strstr(c, "- [ ]") == NULL && strstr(c, "- [x]") == NULL,
       "planning branch has no checklist lines");
@@ -302,10 +305,10 @@ static void test_validation_gate(void)
     struct edc_toolbox *tb = edc_toolbox_new(conf, NULL, NULL);
     struct edc_task *task = edc_task_new("t-bad", "s", "g", "bad", edc_channel_adapter);
 
-    cJSON *bad = cJSON_Parse("{\"items\":[{\"content\":\"x\",\"status\":\"bogus\",\"activeForm\":\"\"}]}");
+    cJSON *bad = cJSON_Parse("{\"items\":[{\"content\":\"x\",\"status\":\"bogus\",\"priority\":\"high\"}]}");
     struct edc_toolbox_call_ctx *ctx =
         edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)3, task, NULL);
-    edc_toolbox_exec(ctx, "update_todolist", bad, capture_cb);
+    edc_toolbox_exec(ctx, "todowrite", bad, capture_cb);
     C(g_err != NULL, "invalid status produces error");
     if (g_err)
         printf("      (validation error: %s)\n", g_err->message ? g_err->message : "(null)");
@@ -318,6 +321,18 @@ static void test_validation_gate(void)
     reset_capture();
     edc_toolbox_call_ctx_free(ctx);
     cJSON_Delete(bad);
+
+    /* priority 非法同样被拒 (enum: high | medium | low) */
+    cJSON *badpri = cJSON_Parse("{\"items\":[{\"content\":\"x\",\"status\":\"pending\",\"priority\":\"urgent\"}]}");
+    struct edc_toolbox_call_ctx *ctxp =
+        edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)4, task, NULL);
+    edc_toolbox_exec(ctxp, "todowrite", badpri, capture_cb);
+    C(g_err != NULL, "invalid priority produces error");
+    C(task->todolist == NULL, "list NOT attached after invalid priority");
+    reset_capture();
+    edc_toolbox_call_ctx_free(ctxp);
+    cJSON_Delete(badpri);
+
     edc_task_free(task);
     edc_toolbox_free(tb);
     free(conf);
@@ -355,19 +370,19 @@ static void test_state_summary_all_done(void)
     struct edc_task *task = edc_task_new("t-done", "s", "g", "all done", edc_channel_adapter);
 
     task->todolist = cJSON_Parse("["
-                                 "{\"content\":\"pack\",\"status\":\"completed\",\"activeForm\":\"\"},"
-                                 "{\"content\":\"ship\",\"status\":\"completed\",\"activeForm\":\"\"}"
+                                 "{\"content\":\"pack\",\"status\":\"completed\",\"priority\":\"low\"},"
+                                 "{\"content\":\"ship\",\"status\":\"completed\",\"priority\":\"high\"}"
                                  "]");
     C(task->todolist != NULL && cJSON_GetArraySize(task->todolist) == 2, "attached 2 completed items");
 
     cJSON *sys = edc_context_make_todo_reminder(task);
     const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(sys, "content"));
     C(is_todo_reminder(content), "all-done reminder wrapped, opens with its own title");
-    C(strstr(content, "## 🚨 CURRENT TASK SYSTEM STATE\n- [x] pack\n- [x] ship\n") != NULL,
+    C(strstr(content, "## 🚨 CURRENT TASK SYSTEM STATE\n- [x] pack [low]\n- [x] ship [high]\n") != NULL,
       "state section = full list with all items marked [x] (list itself is the state)");
     C(strstr(content, "No todo list exists for this task yet.") == NULL,
       "list present: not the no-list branch");
-    C(strstr(content, "NEXT SINGLE ACTION must be calling update_todolist") != NULL &&
+    C(strstr(content, "NEXT SINGLE ACTION must be calling todowrite") != NULL &&
           strstr(content, "do not clear it") != NULL,
       "turn instructions still present when all items done (keep completed list)");
 
@@ -387,9 +402,9 @@ static void test_state_summary_all_done(void)
  *     (写回 group history 是调用方编排职责) */
 
 /* ── 5. todo 同步节流: reminder 不再每轮请求都发 (2026-09-09) ──
- * 语义: 距上次 update_todolist 成功调用 (或上次提醒) 累计 EDC_TODO_SYNC_REMIND_GAP
+ * 语义: 距上次 todowrite 成功调用 (或上次提醒) 累计 EDC_TODO_SYNC_REMIND_GAP
  * 次 LLM 请求 (每次组装请求 = 对话里模型生成一条消息/一次决策, 含工具链续发)
- * 仍未同步 → 该次请求 append 一次 reminder 并清零重计; update_todolist 成功
+ * 仍未同步 → 该次请求 append 一次 reminder 并清零重计; todowrite 成功
  * 调用同样清零。 */
 
 static void test_todo_sync_gap_throttle(void)
@@ -407,7 +422,7 @@ static void test_todo_sync_gap_throttle(void)
     C(!any, "no reminder within the first gap-1 requests");
     C(task->todo_sync_gap == EDC_TODO_SYNC_REMIND_GAP - 1, "gap accumulates to gap-1");
 
-    /* 第 gap 次请求仍没 update_todolist → 达阈值: 提醒一次, 清零重计 */
+    /* 第 gap 次请求仍没 todowrite → 达阈值: 提醒一次, 清零重计 */
     C(edc_task_llm_request_poke(task), "reminder fires on the gap-th request");
     C(task->todo_sync_gap == 0, "gap reset right after the reminder fires");
 
@@ -415,7 +430,7 @@ static void test_todo_sync_gap_throttle(void)
     C(!edc_task_llm_request_poke(task), "no immediate re-reminder next request");
     C(task->todo_sync_gap == 1, "counting restarts from 1 after reminder");
 
-    /* update_todolist 成功调用清零 (工具清零在 test_tools_todo_resets_gap) */
+    /* todowrite 成功调用清零 (工具清零在 test_tools_todo_resets_gap) */
     task->todo_sync_gap = 6;
     edc_task_note_todo_sync(task);
     C(task->todo_sync_gap == 0, "note_todo_sync resets gap");
@@ -435,7 +450,7 @@ static void test_todo_sync_gap_throttle(void)
 
 static void test_tools_todo_resets_gap(void)
 {
-    T("update_todolist tool success (set & clear) resets gap; validation failure keeps it");
+    T("todowrite tool success (set & clear) resets gap; validation failure keeps it");
 
     struct edc_config *conf = g_new0(struct edc_config, 1);
     struct edc_toolbox *tb = edc_toolbox_new(conf, NULL, NULL);
@@ -445,10 +460,10 @@ static void test_tools_todo_resets_gap(void)
     task->todo_sync_gap = 7;
 
     cJSON *args =
-        cJSON_Parse("{\"items\":[{\"content\":\"a\",\"status\":\"pending\",\"activeForm\":\"\"}]}");
+        cJSON_Parse("{\"items\":[{\"content\":\"a\",\"status\":\"pending\",\"priority\":\"medium\"}]}");
     struct edc_toolbox_call_ctx *ctx =
         edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)1, task, NULL);
-    edc_toolbox_exec(ctx, "update_todolist", args, capture_cb);
+    edc_toolbox_exec(ctx, "todowrite", args, capture_cb);
     C(g_err == NULL, "no validation error");
     C(task->todolist != NULL && cJSON_GetArraySize(task->todolist) == 1, "list attached");
     C(task->todo_sync_gap == 0, "successful set resets gap (a sync just happened)");
@@ -456,12 +471,12 @@ static void test_tools_todo_resets_gap(void)
     edc_toolbox_call_ctx_free(ctx);
     cJSON_Delete(args);
 
-    /* 清空清单同样是一次成功的 update_todolist 调用 → 清零 */
+    /* 清空清单同样是一次成功的 todowrite 调用 → 清零 */
     task->todo_sync_gap = 5;
     cJSON *empty_args = cJSON_Parse("{\"items\":[]}");
     struct edc_toolbox_call_ctx *ctx2 =
         edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)2, task, NULL);
-    edc_toolbox_exec(ctx2, "update_todolist", empty_args, capture_cb);
+    edc_toolbox_exec(ctx2, "todowrite", empty_args, capture_cb);
     C(g_err == NULL, "no error on clear");
     C(task->todolist == NULL, "list detached on clear");
     C(task->todo_sync_gap == 0, "successful clear also resets gap");
@@ -472,10 +487,10 @@ static void test_tools_todo_resets_gap(void)
     /* 校验失败 (status 非法) → 不构成同步, 不清零 */
     task->todo_sync_gap = 8;
     cJSON *bad_args =
-        cJSON_Parse("{\"items\":[{\"content\":\"b\",\"status\":\"bogus\",\"activeForm\":\"\"}]}");
+        cJSON_Parse("{\"items\":[{\"content\":\"b\",\"status\":\"bogus\",\"priority\":\"medium\"}]}");
     struct edc_toolbox_call_ctx *ctx3 =
         edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)3, task, NULL);
-    edc_toolbox_exec(ctx3, "update_todolist", bad_args, capture_cb);
+    edc_toolbox_exec(ctx3, "todowrite", bad_args, capture_cb);
     C(g_err != NULL, "invalid status rejected");
     C(task->todo_sync_gap == 8, "failed validation does NOT reset gap");
     reset_capture();
@@ -528,7 +543,7 @@ static void test_append_system_part(void)
     C(tail != NULL && !(tail->type & cJSON_IsReference), "planning-guide reminder is an owned msg");
     C(is_planning_reminder(cJSON_GetStringValue(cJSON_GetObjectItem(tail, "content"))),
       "no-list tail message is the task-planning guide");
-    C(strstr(cJSON_GetStringValue(cJSON_GetObjectItem(tail, "content")), "update_todolist") != NULL &&
+    C(strstr(cJSON_GetStringValue(cJSON_GetObjectItem(tail, "content")), "todowrite") != NULL &&
           strstr(cJSON_GetStringValue(cJSON_GetObjectItem(tail, "content")), "multi-step") != NULL,
       "planning guide mentions creating list for multi-step work");
     msgs = cJSON_CreateArray();
@@ -544,7 +559,7 @@ static void test_append_system_part(void)
     /* ── history 分支: group memory 在前 + 有 todo → 头部仍纯净, todo 只在
      *    队尾 reminder; 共享 history[0] 不被改动 ── */
     g1->memory = sdsnew("MEM-SUMMARY");
-    t1->todolist = cJSON_Parse("[{\"content\":\"do it\",\"status\":\"pending\",\"activeForm\":\"\"}]");
+    t1->todolist = cJSON_Parse("[{\"content\":\"do it\",\"status\":\"pending\",\"priority\":\"high\"}]");
     C(t1->todolist != NULL && cJSON_GetArraySize(t1->todolist) == 1, "attached 1 todo item");
     msgs = cJSON_CreateArray();
     pristine = NULL;
@@ -568,11 +583,11 @@ static void test_append_system_part(void)
     C(r2 != NULL && !(r2->type & cJSON_IsReference), "todo reminder is an owned msg");
     const char *rc = cJSON_GetStringValue(cJSON_GetObjectItem(r2, "content"));
     C(is_todo_reminder(rc), "todo reminder wrapped, opens with its title");
-    C(strstr(rc, "## 🚨 CURRENT TASK SYSTEM STATE\n- [ ] do it\n") != NULL,
+    C(strstr(rc, "## 🚨 CURRENT TASK SYSTEM STATE\n- [ ] do it [high]\n") != NULL,
       "fresh list rendered right under the state header");
     C(strstr(rc, "No todo list exists for this task yet.") == NULL,
       "list present: no-list branch NOT used");
-    C(strstr(rc, "NEXT SINGLE ACTION must be calling update_todolist") != NULL,
+    C(strstr(rc, "NEXT SINGLE ACTION must be calling todowrite") != NULL,
       "per-turn sync instruction present in the list branch");
 
     /* 模拟 agent: reminder 经 req->tail_system 成为请求数组队尾 */
@@ -614,7 +629,7 @@ static void test_append_system_part(void)
     sdsfree(pristine);
 
     /* fallback + todo: 头部纯净, todo 只在队尾 reminder */
-    t2->todolist = cJSON_Parse("[{\"content\":\"plan\",\"status\":\"in_progress\",\"activeForm\":\"working\"}]");
+    t2->todolist = cJSON_Parse("[{\"content\":\"plan\",\"status\":\"in_progress\",\"priority\":\"high\"}]");
     msgs = cJSON_CreateArray();
     pristine = NULL;
     n = edc_context_append_system_part(msgs, conf, g2, &pristine);
@@ -647,9 +662,9 @@ static void test_append_system_part(void)
     C(tm != NULL && is_todo_reminder(cJSON_GetStringValue(cJSON_GetObjectItem(tm, "content"))),
       "fallback+todo tail reminder carries the list state");
     C(strstr(cJSON_GetStringValue(cJSON_GetObjectItem(tm, "content")),
-             "## 🚨 CURRENT TASK SYSTEM STATE\n- [ ] plan <- working\n") != NULL &&
+             "## 🚨 CURRENT TASK SYSTEM STATE\n- [•] plan [high]\n") != NULL &&
           strstr(cJSON_GetStringValue(cJSON_GetObjectItem(tm, "content")),
-                 "NEXT SINGLE ACTION must be calling update_todolist") != NULL,
+                 "NEXT SINGLE ACTION must be calling todowrite") != NULL,
       "tail reminder carries fresh list state + per-turn sync instruction");
     cJSON_Delete(tm);
 

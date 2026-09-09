@@ -13,7 +13,7 @@ extern void edc_tools_todo_register(struct edc_toolbox *tb);
  * 调用方负责 sdsfree。 */
 extern sds edc_tools_todo_render_body(cJSON *items, int *out_completed);
 
-/* 完整 todo reminder 文本 (两段式骨架 + <system-reminder> 包裹)——update_todolist
+/* 完整 todo reminder 文本 (两段式骨架 + <system-reminder> 包裹)——todowrite
  * 工具 result/回显 与 LLM 请求队尾 reminder (edc_context_make_todo_reminder
  * 的 content) 的【单一渲染源】, 两者逐字节一致:
  *   <system-reminder>

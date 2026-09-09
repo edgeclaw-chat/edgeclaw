@@ -123,7 +123,7 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
      * todo) 由 edc_context_append_system_part 统一组装; 余下为最近 K 条未折叠
      * 历史窗口 + task 专属 (dep outputs / $VAR 展开)。todo 状态提醒不放在
      * 头部——也不每轮请求都塞: 由 edc_task_llm_request_poke 节流, 只有"隔了
-     * EDC_TODO_SYNC_REMIND_GAP 条对话 (LLM 请求) 都没调用过 update_todolist"
+     * EDC_TODO_SYNC_REMIND_GAP 条对话 (LLM 请求) 都没调用过 todowrite"
      * 时, 才经 edc_context_make_todo_reminder 重新计算并追加到消息列表绝对
      * 队尾 (req->tail_system, llm actor 在 history + 当前 turn 之后发出)。 */
     cJSON *msgs = cJSON_CreateArray();
@@ -257,7 +257,7 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
     req->history_owned = true;
     /* 绝对队尾: todo reminder —— 不再每轮请求都塞 (避免唠叨), 只在
      * "隔了 EDC_TODO_SYNC_REMIND_GAP 条对话 (LLM 请求) 都没调用过
-     * update_todolist" 时生成 (edc_task_llm_request_poke 达阈值返回 true,
+     * todowrite" 时生成 (edc_task_llm_request_poke 达阈值返回 true,
      * 内部已清零重计)。两段式: CURRENT TASK SYSTEM STATE 状态段 +
      * INSTRUCTIONS FOR THIS TURN 指令段; 有清单→清单行+逐轮同步节拍, 无清
      * 单→"尚无清单"+建计划引导。llm actor 在 history + turn 之后追加, 每

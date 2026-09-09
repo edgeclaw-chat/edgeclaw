@@ -891,15 +891,15 @@ static void test_extra_fields(void)
     cJSON *item1 = cJSON_CreateObject();
     cJSON_AddStringToObject(item1, "content", "review code");
     cJSON_AddStringToObject(item1, "status", "completed");
-    cJSON_AddStringToObject(item1, "activeForm", "");
+    cJSON_AddStringToObject(item1, "priority", "low");
     cJSON_AddItemToArray(task->todolist, item1);
     cJSON *item2 = cJSON_CreateObject();
     cJSON_AddStringToObject(item2, "content", "write tests");
     cJSON_AddStringToObject(item2, "status", "in_progress");
-    cJSON_AddStringToObject(item2, "activeForm", "writing...");
+    cJSON_AddStringToObject(item2, "priority", "high");
     cJSON_AddItemToArray(task->todolist, item2);
 
-    /* Set todo sync throttle gap (距上次 update_todolist 的 LLM 请求数) */
+    /* Set todo sync throttle gap (距上次 todowrite 的 LLM 请求数) */
     task->todo_sync_gap = 7;
 
     struct edc_task_group *group = edc_task_group_new(task);

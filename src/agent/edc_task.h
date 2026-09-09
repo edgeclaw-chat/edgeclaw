@@ -87,10 +87,10 @@ struct edc_task
     cJSON *todolist; /* JSON Array */
 
     /* ── Todo 同步节流 ──
-     * todo_sync_gap: 距上次 update_todolist 成功调用以来的 LLM 请求数
+     * todo_sync_gap: 距上次 todowrite 成功调用以来的 LLM 请求数
      * (每次为该 task 组装一次 LLM 请求即 +1, 见 edc_task_llm_request_poke)。
      * 达 EDC_TODO_SYNC_REMIND_GAP 仍未同步 → 该次请求队尾 append 一条
-     * system reminder 提醒调用 update_todolist, 并清零重新计数 —— 避免
+     * system reminder 提醒调用 todowrite, 并清零重新计数 —— 避免
      * 每轮请求都带 reminder 的唠叨, 也保证模型长时间闷头干活不更新清单时
      * 能被周期性唤醒。 */
     int todo_sync_gap; /* >= EDC_TODO_SYNC_REMIND_GAP 时触发提醒 (达阈值自动清零) */
@@ -148,20 +148,20 @@ extern edc_task_state edc_task_classify_state(const char *name);
 
 /* ── Todo 同步节流 ──────────────────────────────────────────
  * todo reminder 不再每轮请求都塞 (用户 2026-09-09 要求降频): 只有"隔了
- * EDC_TODO_SYNC_REMIND_GAP 条对话 (LLM 请求) 都没调用过 update_todolist"
+ * EDC_TODO_SYNC_REMIND_GAP 条对话 (LLM 请求) 都没调用过 todowrite"
  * 时, 才在该次请求的消息列表末尾 append 一条 system reminder 提醒同步。 */
 
-/* 阈值: 距上次 update_todolist 调用 (或上次提醒) 满 10 次 LLM 请求仍未
+/* 阈值: 距上次 todowrite 调用 (或上次提醒) 满 10 次 LLM 请求仍未
  * 同步, 则提醒一次。 */
 #define EDC_TODO_SYNC_REMIND_GAP 10
 
-/** update_todolist 工具成功调用后调用: 清零节流计数 (重新从 0 计"隔了
+/** todowrite 工具成功调用后调用: 清零节流计数 (重新从 0 计"隔了
  *  多少条对话")。 */
 extern void edc_task_note_todo_sync(struct edc_task *task);
 
 /** 每次为该 task 组装 LLM 请求 (send_llm) 前调用: 计数 +1; 返回 true 表示
  *  已达阈值、本次请求应 append todo reminder (内部已清零, 提醒一次后重新
- *  计数, 直到模型再次调用 update_todolist 或再次超距)。 */
+ *  计数, 直到模型再次调用 todowrite 或再次超距)。 */
 extern bool edc_task_llm_request_poke(struct edc_task *task);
 
 /* ── Turn ──────────────────────────────────────────────────── */
