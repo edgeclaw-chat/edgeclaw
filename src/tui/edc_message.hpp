@@ -11,7 +11,11 @@ namespace edc
 class Message : public ::ftxui::ComponentBase
 {
   public:
-    Message(const std::string_view content, time_t ts);
+    // task_id: id of the task that produced this message ("1", "2", ...), or
+    // empty when the sender is not a task (e.g. user input). Non-empty ids
+    // render as a small "task N" tag above the body so interleaved tasks in
+    // one session stay distinguishable.
+    Message(const std::string_view content, time_t ts, const std::string_view task_id = "");
     virtual ~Message() = default;
 
     Message(const Message &rhs) = delete;
@@ -21,8 +25,13 @@ class Message : public ::ftxui::ComponentBase
     ftxui::Element OnRender() override;
 
   protected:
+    /* "task N" tag for task-produced messages (dim accent). Null when this
+     * message carries no task id; callers must guard on task_id_.empty(). */
+    ::ftxui::Element TaskTag() const;
+
     const std::string content_;
     time_t ts_;
+    const std::string task_id_;
 
   private:
     // Markdown parse result. content_ never changes after construction, so the
@@ -35,7 +44,7 @@ class Message : public ::ftxui::ComponentBase
 class ThoughtMessage : public Message
 {
   public:
-    ThoughtMessage(const std::string_view content, time_t ts);
+    ThoughtMessage(const std::string_view content, time_t ts, const std::string_view task_id = "");
 
     bool OnEvent(ftxui::Event) override;
     ftxui::Element OnRender() override;
@@ -48,7 +57,7 @@ class ThoughtMessage : public Message
 class UserMessage : public Message
 {
   public:
-    UserMessage(const std::string_view content, time_t ts);
+    UserMessage(const std::string_view content, time_t ts, const std::string_view task_id = "");
     bool OnEvent(ftxui::Event) override;
     ftxui::Element OnRender() override;
 };
@@ -56,7 +65,8 @@ class UserMessage : public Message
 class ToolMessage : public Message
 {
   public:
-    ToolMessage(const std::string_view header, const std::string_view content, time_t ts, bool markdown = false);
+    ToolMessage(const std::string_view header, const std::string_view content, time_t ts, bool markdown = false,
+                const std::string_view task_id = "");
     bool OnEvent(ftxui::Event) override;
     ftxui::Element OnRender() override;
 

@@ -445,12 +445,16 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     const std::string text = content;
     const char *header_c = edc_c_channel_message_header(message);
     const std::string header = header_c ? header_c : "";
+    // Task that produced this message (NULL for user input / snapshots). The
+    // chat widgets render it as a "task N" tag.
+    const char *task_id_c = edc_c_channel_message_task_id(message);
+    const std::string task_id = task_id_c ? task_id_c : "";
     // Sender-declared render preference (PLAIN/MARKDOWN). Read here while
     // the message is still alive; the closure below only needs the int.
     const int render_pref = edc_c_channel_message_render_pref(message);
     const time_t ts = ::time(nullptr);
 
-    auto add_message = [tui, kind, text, header, render_pref, ts]() {
+    auto add_message = [tui, kind, text, header, task_id, render_pref, ts]() {
         std::shared_ptr<Message> widget;
         // todowrite 的 TOOL 消息不进对话区：TODO 状态已由右侧
         // TodoWidget 展示，而它的数据源是任务快照里 active task 的 todo
@@ -479,20 +483,20 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             if (render_pref == EDC_C_RENDER_MARKDOWN)
             {
                 if (!header.empty())
-                    widget = std::make_shared<ToolMessage>(header, text, ts, /*markdown=*/true);
+                    widget = std::make_shared<ToolMessage>(header, text, ts, /*markdown=*/true, task_id);
                 else
-                    widget = std::make_shared<Message>(text, ts);
+                    widget = std::make_shared<Message>(text, ts, task_id);
             }
             else
             {
-                widget = std::make_shared<ToolMessage>(header, text, ts);
+                widget = std::make_shared<ToolMessage>(header, text, ts, /*markdown=*/false, task_id);
             }
             break;
         case Kind::Thought:
-            widget = std::make_shared<ThoughtMessage>(text, ts);
+            widget = std::make_shared<ThoughtMessage>(text, ts, task_id);
             break;
         case Kind::Reply:
-            widget = std::make_shared<Message>(text, ts);
+            widget = std::make_shared<Message>(text, ts, task_id);
             // RESP is just another chat message here: it neither starts nor
             // stops the working animation. The animation follows the task
             // snapshot (foreground group's active task running), which is

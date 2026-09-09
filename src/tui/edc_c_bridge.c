@@ -45,6 +45,14 @@ const char *edc_c_channel_message_header(struct edc_channel_message *channel_mes
     return channel_message ? channel_message->header : NULL;
 }
 
+/* Id of the task that produced this message (see struct edc_channel_message).
+ * NULL when the sender is not a task (user input, snapshot, ...). The TUI uses
+ * it to label chat messages with their task ("task 1"). */
+const char *edc_c_channel_message_task_id(struct edc_channel_message *channel_message)
+{
+    return channel_message ? channel_message->task_id : NULL;
+}
+
 int edc_c_channel_message_is_user(struct edc_channel_message *channel_message)
 {
     return channel_message ? channel_message->message_type == EDC_CHANNEL_MESSAGE_USER_TYPE : 0;

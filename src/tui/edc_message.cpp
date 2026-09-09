@@ -8,13 +8,22 @@
 namespace edc
 {
 
-Message::Message(const std::string_view content, time_t ts) : content_(content), ts_(ts)
+Message::Message(const std::string_view content, time_t ts, const std::string_view task_id)
+    : content_(content), ts_(ts), task_id_(task_id)
 {
 }
 
 bool Message::OnEvent(ftxui::Event)
 {
     return false;
+}
+
+::ftxui::Element Message::TaskTag() const
+{
+    const auto &pal = style::palette();
+    // Dim accent: present enough to scan for "which task", quiet enough not to
+    // compete with the message body or the pink user rule.
+    return ::ftxui::text("task " + task_id_) | ::ftxui::color(pal.accent) | ::ftxui::dim;
 }
 
 ::ftxui::Element Message::OnRender()
@@ -29,10 +38,15 @@ bool Message::OnEvent(ftxui::Event)
         body_ = body_ | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) | ::ftxui::bgcolor(pal.pane_bg);
     }
 
-    return body_;
+    if (task_id_.empty())
+        return body_;
+
+    const auto &pal = style::palette();
+    return ::ftxui::vbox({TaskTag(), body_}) | ::ftxui::bgcolor(pal.pane_bg);
 }
 
-ThoughtMessage::ThoughtMessage(const std::string_view content, time_t ts) : Message(content, ts)
+ThoughtMessage::ThoughtMessage(const std::string_view content, time_t ts, const std::string_view task_id)
+    : Message(content, ts, task_id)
 {
 }
 
@@ -62,8 +76,12 @@ bool ThoughtMessage::OnEvent(ftxui::Event event)
     auto arrow = thought_expanded_ ? "-" : "+";
     const auto &pal = style::palette();
     auto applied_color = thought_expanded_ ? pal.thought_open : pal.thought_closed;
-    auto label = ::ftxui::text(" " + std::string(arrow) + " Thought") | ::ftxui::color(applied_color) | ::ftxui::bold |
-                 ::ftxui::reflect(box_);
+    // The thought toggle doubles as the message's task tag: "task N" rides on
+    // the same clickable label instead of becoming a second line.
+    std::string label_text = " " + std::string(arrow) + " Thought";
+    if (!task_id_.empty())
+        label_text += " · task " + task_id_;
+    auto label = ::ftxui::text(label_text) | ::ftxui::color(applied_color) | ::ftxui::bold | ::ftxui::reflect(box_);
 
     if (!thought_expanded_)
     {
@@ -76,7 +94,8 @@ bool ThoughtMessage::OnEvent(ftxui::Event event)
     return ::ftxui::vbox({label, body});
 }
 
-UserMessage::UserMessage(const std::string_view content, time_t ts) : Message(content, ts)
+UserMessage::UserMessage(const std::string_view content, time_t ts, const std::string_view task_id)
+    : Message(content, ts, task_id)
 {
 }
 
@@ -96,8 +115,9 @@ bool UserMessage::OnEvent(ftxui::Event)
     return false;
 }
 
-ToolMessage::ToolMessage(const std::string_view header, const std::string_view content, time_t ts, bool markdown)
-    : Message(content, ts), header_(header), markdown_(markdown)
+ToolMessage::ToolMessage(const std::string_view header, const std::string_view content, time_t ts, bool markdown,
+                         const std::string_view task_id)
+    : Message(content, ts, task_id), header_(header), markdown_(markdown)
 {
 }
 
@@ -172,6 +192,8 @@ std::string FirstLines(const std::string &text, size_t max_lines)
     const bool toggleable = expanded_ || CountLines(content_) > ToolMessage::kPreviewLines;
 
     ::ftxui::Elements children;
+    if (!task_id_.empty())
+        children.push_back(TaskTag());
     if (!header_.empty())
     {
         children.push_back(::ftxui::paragraph(header_) | ::ftxui::color(pal.text_dim));

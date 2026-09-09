@@ -285,6 +285,10 @@ static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task
         return;
 
     struct edc_channel_message *reply = edc_channel_message_new(task->channel_type, message_type, sdsnew(content));
+    /* Tag the message with its producing task so the frontend can show which
+     * task a chat message belongs to (interleaved tasks in one session). */
+    if (task->task_id)
+        reply->task_id = sdsnew(task->task_id);
     /* 发送方显式声明渲染偏好，渲染端(CLI/TUI)不再猜测：
      * 只有 LLM 回复 (RESP) 声明按 Markdown 渲染；思考/系统等内部文本保持
      * 默认 PLAIN（零值），原样显示。 */
@@ -310,6 +314,8 @@ static void edc_agent_cb_send_tool_message(struct edc_scheduler *sched, struct e
     struct edc_channel_message *reply =
         edc_channel_message_new(task->channel_type, EDC_CHANNEL_MESSAGE_TOOL_TYPE, sdsnew(content));
     reply->render_pref = render_pref;
+    if (task->task_id)
+        reply->task_id = sdsnew(task->task_id);
     if (header && *header)
         reply->header = sdsnew(header);
 

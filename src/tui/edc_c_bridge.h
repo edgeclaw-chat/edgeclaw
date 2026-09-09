@@ -105,6 +105,10 @@ const char *edc_c_channel_message_content(struct edc_channel_message *);
 /* Optional short description carried by a message (e.g. the executed command
  * for tool messages). May return NULL when the sender provided no header. */
 const char *edc_c_channel_message_header(struct edc_channel_message *channel_message);
+/* Id of the task that produced this message ("1", "2", ...) or NULL when the
+ * sender is not a task (user input, task snapshot, ...). Lets the chat view
+ * label messages with their task. */
+const char *edc_c_channel_message_task_id(struct edc_channel_message *channel_message);
 int edc_c_channel_message_is_user(struct edc_channel_message *channel_message);
 int edc_c_channel_message_is_tool(struct edc_channel_message *channel_message);
 int edc_c_channel_message_is_thought(struct edc_channel_message *channel_message);
