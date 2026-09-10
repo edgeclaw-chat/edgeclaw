@@ -83,16 +83,21 @@ struct Palette
     // Markdown uses the same Monokai tokens as the chrome, mapped the way
     // Monokai themes map syntax: h1 is an emphasis (pink) banner whose
     // text is punched out in the editor background color, then the heading
-    // ladder walks yellow -> green -> cyan, code and links follow the
-    // string/function tokens, and quotes/rules use the comment and
-    // selection grays.
+    // ladder walks yellow -> orange -> cyan, inline code is a purple chip
+    // (the violet token sits between the cyan accent and the pink used by
+    // the prompt, so a highlight reads as "one of ours"), links follow the
+    // function token, and quotes/rules use the comment and selection grays.
+    //
+    // Note: no Markdown role uses the green token. Green is reserved for
+    // the success/COMPLETED status (Palette::ok) so that "done" is the only
+    // thing in the UI painted green.
     ::ftxui::Color md_h1;      // ATX heading level 1 text (banner knockout).
     ::ftxui::Color md_h1_bg;   // ATX heading level 1 banner background.
     ::ftxui::Color md_h2;      // ATX heading level 2.
-    ::ftxui::Color md_h3;      // ATX heading level 3.
+    ::ftxui::Color md_h3;      // ATX heading level 3 (orange).
     ::ftxui::Color md_h4;      // ATX headings level 4+.
     ::ftxui::Color md_code;        // fenced code block text.
-    ::ftxui::Color md_code_inline; // inline code text.
+    ::ftxui::Color md_code_inline; // inline code text (violet highlight).
     ::ftxui::Color md_code_bg;     // inline code chip background.
     ::ftxui::Color md_rule;        // hr / table / heading rule.
     ::ftxui::Color md_quote;   // blockquote bar.
@@ -126,13 +131,15 @@ inline const Palette &palette()
         ::ftxui::Color::RGB(39, 40, 34),     // md_h1       (#272822)
         ::ftxui::Color::RGB(249, 38, 114),   // md_h1_bg    (#F92672 pink)
         ::ftxui::Color::RGB(230, 219, 116),  // md_h2       (#E6DB74 yellow)
-        ::ftxui::Color::RGB(166, 226, 46),   // md_h3       (#A6E22E green)
+        ::ftxui::Color::RGB(253, 151, 31),   // md_h3       (#FD971F orange)
         ::ftxui::Color::RGB(102, 217, 239),  // md_h4       (#66D9EF cyan)
         ::ftxui::Color::RGB(248, 248, 242),  // md_code     (#F8F8F2 foreground)
-        // Inline code is a "string"-flavored chip: green text on the
-        // Monokai current-line surface, one step above the pane background,
-        // so code reads as tinted text rather than a loud highlighted block.
-        ::ftxui::Color::RGB(166, 226, 46),   // md_code_inline (#A6E22E green)
+        // Inline code is a violet chip: the Monokai purple token on the
+        // current-line surface, one step above the pane background. Violet
+        // sits between the cyan accent (headers/spinner) and the pink prompt,
+        // so a code highlight reads as part of the same family instead of
+        // borrowing the green that is reserved for success.
+        ::ftxui::Color::RGB(174, 129, 255),  // md_code_inline (#AE81FF purple)
         ::ftxui::Color::RGB(62, 61, 50),     // md_code_bg     (#3E3D32 lite)
         ::ftxui::Color::RGB(73, 72, 62),     // md_rule        (#49483E selection)
         ::ftxui::Color::RGB(117, 113, 94),   // md_quote       (#75715E comment)
