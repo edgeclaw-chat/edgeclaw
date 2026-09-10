@@ -404,9 +404,10 @@ static void edc_agent_cb_trigger_memory(struct edc_scheduler *sched)
     if (!agent || !agent->memory_actor || !sched->session)
         return;
 
-    int msg_threshold = agent->config ? agent->config->group_fold_msg_threshold : 200;
+    int msg_threshold = agent->config ? agent->config->group_fold_msg_threshold
+                                      : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
     if (msg_threshold <= 0)
-        msg_threshold = 200;
+        msg_threshold = EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
 
     /* L1 折叠触发: 组内存在可折叠 task 且未折叠消息条数 ≥ 阈值。
      * 触发时机只由对话条数驱动 —— 不再看可折叠 task 个数。 */
