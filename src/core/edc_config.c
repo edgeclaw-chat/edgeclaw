@@ -3,6 +3,7 @@
 #include "edc_compat.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
+#include "edc_init_env.h"
 #include "edc_secret.h"
 #include "log.h"
 #include <errno.h>
@@ -122,10 +123,14 @@ struct edc_config *edc_config_load(const char *edc_home)
     }
     config->load_n_histories = load_n_histories->valueint;
 
+    /* The optional tunables below are all materialized into config.json by
+     * edc_init_env() (EDC_CONFIG_DEFAULT_* in edc_init_env.h is the single
+     * source of truth). The fallbacks here only cover a key that was removed
+     * from the file by hand. */
     cJSON *memory_compress_threshold = cJSON_GetObjectItem(conf, "memory_compress_threshold");
     if (!memory_compress_threshold || !cJSON_IsNumber(memory_compress_threshold))
     {
-        config->memory_compress_threshold = 200;
+        config->memory_compress_threshold = EDC_CONFIG_DEFAULT_MEMORY_COMPRESS_THRESHOLD;
     }
     else
     {
@@ -135,7 +140,7 @@ struct edc_config *edc_config_load(const char *edc_home)
     cJSON *group_fold_msg_threshold = cJSON_GetObjectItem(conf, "group_fold_msg_threshold");
     if (!group_fold_msg_threshold || !cJSON_IsNumber(group_fold_msg_threshold))
     {
-        config->group_fold_msg_threshold = 200;
+        config->group_fold_msg_threshold = EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
     }
     else
     {
@@ -150,22 +155,26 @@ struct edc_config *edc_config_load(const char *edc_home)
     }
     config->tool_max_output_size = tool_max_output_size->valueint;
 
+    /* An empty device_pty means "no serial link"; store NULL so callers can
+     * simply test the pointer (main.c guards PPPoS init on it). */
     cJSON *device_pty = cJSON_GetObjectItem(conf, "device_pty");
-    if (device_pty && cJSON_IsString(device_pty))
+    if (device_pty && cJSON_IsString(device_pty) && strlen(device_pty->valuestring) > 0)
         config->device_pty = sdsnew(device_pty->valuestring);
 
     cJSON *device_ip = cJSON_GetObjectItem(conf, "device_ip");
-    if (device_ip && cJSON_IsString(device_ip))
+    if (device_ip && cJSON_IsString(device_ip) && strlen(device_ip->valuestring) > 0)
         config->device_ip = sdsnew(device_ip->valuestring);
 
     cJSON *device_port = cJSON_GetObjectItem(conf, "device_port");
-    config->device_port = (device_port && cJSON_IsNumber(device_port)) ? device_port->valueint : 5000;
+    config->device_port =
+        (device_port && cJSON_IsNumber(device_port)) ? device_port->valueint : EDC_CONFIG_DEFAULT_DEVICE_PORT;
 
     cJSON *device_baud = cJSON_GetObjectItem(conf, "device_baud");
-    config->device_baud = (device_baud && cJSON_IsNumber(device_baud)) ? device_baud->valueint : 115200;
+    config->device_baud =
+        (device_baud && cJSON_IsNumber(device_baud)) ? device_baud->valueint : EDC_CONFIG_DEFAULT_DEVICE_BAUD;
 
     cJSON *device_transport = cJSON_GetObjectItem(conf, "device_transport");
-    if (device_transport && cJSON_IsString(device_transport))
+    if (device_transport && cJSON_IsString(device_transport) && strlen(device_transport->valuestring) > 0)
         config->device_transport = sdsnew(device_transport->valuestring);
 
     cJSON *channel = cJSON_GetObjectItem(conf, "channel");

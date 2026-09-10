@@ -170,8 +170,22 @@ static int prompt_device_transport(int default_idx)
     }
 }
 
+/* Default "additional writable paths" — everything after the sandbox root. */
+static sds default_sandbox_rw_extra(const char *edc_home)
+{
+    return sdscatprintf(sdsempty(), "%s/workspace/, /tmp, /dev", edc_home);
+}
+
+/* Default read-only paths. The workspace itself is appended by the writer. */
+static sds default_sandbox_ro(const char *edc_home)
+{
+    return sdscatprintf(sdsempty(), "%s/workspace/ssl, /usr, /lib, /lib32, /lib64, /libx32, /bin, /sbin, /etc, /proc",
+                        edc_home);
+}
+
 /* Parse existing config.json into a edc_init_env_result.
- * Returns a newly allocated struct, or NULL if the file doesn't exist or can't be parsed. */
+ * Missing keys are filled with the canonical defaults so the interactive setup
+ * always shows a complete picture. */
 static struct edc_init_env_result *load_existing_config(const char *conf_file)
 {
     if (!edc_file_is_regular(conf_file))
@@ -213,24 +227,22 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
         result->model = sdsnew(item->valuestring);
 
     item = cJSON_GetObjectItem(json, "max_iter");
-    if (item && cJSON_IsNumber(item))
-        result->max_iter = item->valueint;
+    result->max_iter = (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_MAX_ITER;
 
     item = cJSON_GetObjectItem(json, "load_n_histories");
-    if (item && cJSON_IsNumber(item))
-        result->load_n_histories = item->valueint;
+    result->load_n_histories = (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_LOAD_N_HISTORIES;
 
     item = cJSON_GetObjectItem(json, "memory_compress_threshold");
-    if (item && cJSON_IsNumber(item))
-        result->memory_compress_threshold = item->valueint;
+    result->memory_compress_threshold =
+        (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_MEMORY_COMPRESS_THRESHOLD;
 
     item = cJSON_GetObjectItem(json, "group_fold_msg_threshold");
-    if (item && cJSON_IsNumber(item))
-        result->group_fold_msg_threshold = item->valueint;
+    result->group_fold_msg_threshold =
+        (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
 
     item = cJSON_GetObjectItem(json, "tool_max_output_size");
-    if (item && cJSON_IsNumber(item))
-        result->tool_max_output_size = item->valueint;
+    result->tool_max_output_size =
+        (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_TOOL_MAX_OUTPUT_SIZE;
 
     item = cJSON_GetObjectItem(json, "sandbox");
     if (item && cJSON_IsObject(item))
@@ -294,14 +306,16 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
         result->device_ip = sdsnew(item->valuestring);
 
     item = cJSON_GetObjectItem(json, "device_port");
-    result->device_port = (item && cJSON_IsNumber(item)) ? item->valueint : 5000;
+    result->device_port = (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_DEVICE_PORT;
 
     item = cJSON_GetObjectItem(json, "device_baud");
-    result->device_baud = (item && cJSON_IsNumber(item)) ? item->valueint : 115200;
+    result->device_baud = (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_DEVICE_BAUD;
 
     item = cJSON_GetObjectItem(json, "device_transport");
-    if (item && cJSON_IsString(item))
+    if (item && cJSON_IsString(item) && item->valuestring[0])
         result->device_transport = sdsnew(item->valuestring);
+    else
+        result->device_transport = sdsnew(EDC_CONFIG_DEFAULT_DEVICE_TRANSPORT);
 
     cJSON *channel = cJSON_GetObjectItem(json, "channel");
     (void)channel; /* 通道固定为 adapter, 无需从旧配置读取 */
@@ -324,16 +338,15 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     printf("\n--- LLM API Configuration ---\n");
 
     /* API URL */
-    const char *def_api_url = (defaults && sdslen(defaults->api_url) > 0)
-                                  ? defaults->api_url
-                                  : "https://api.deepseek.com/chat/completions";
+    const char *def_api_url =
+        (defaults && sdslen(defaults->api_url) > 0) ? defaults->api_url : EDC_CONFIG_DEFAULT_API_URL;
     sds val = prompt_with_default("API URL", def_api_url);
     if (!val)
         return -1;
     result->api_url = val;
 
     /* Model */
-    const char *def_model = (defaults && sdslen(defaults->model) > 0) ? defaults->model : "deepseek-v4-flash";
+    const char *def_model = (defaults && sdslen(defaults->model) > 0) ? defaults->model : EDC_CONFIG_DEFAULT_MODEL;
     val = prompt_with_default("Model", def_model);
     if (!val)
         return -1;
@@ -346,34 +359,38 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     result->api_key = val;
 
     /* Max Iterations: -1 = unlimited; positive N = at most N LLM/tool rounds per input */
-    int ival = prompt_int("Max Iterations", defaults && defaults->max_iter > 0 ? defaults->max_iter : -1);
+    int ival = prompt_int("Max Iterations",
+                          defaults && defaults->max_iter > 0 ? defaults->max_iter : EDC_CONFIG_DEFAULT_MAX_ITER);
     if (ival < -1)
         return -1;
     result->max_iter = ival;
 
     /* Load N Histories */
-    ival = prompt_int("Load N Histories", defaults ? defaults->load_n_histories : 10);
+    ival = prompt_int("Load N Histories", defaults ? defaults->load_n_histories : EDC_CONFIG_DEFAULT_LOAD_N_HISTORIES);
     if (ival < 0)
         return -1;
     result->load_n_histories = ival;
 
     /* Memory Compress Threshold */
-    ival = prompt_int("Memory Compress Threshold",
-                      defaults && defaults->memory_compress_threshold > 0 ? defaults->memory_compress_threshold : 200);
+    ival = prompt_int("Memory Compress Threshold", defaults && defaults->memory_compress_threshold > 0
+                                                       ? defaults->memory_compress_threshold
+                                                       : EDC_CONFIG_DEFAULT_MEMORY_COMPRESS_THRESHOLD);
     if (ival < 0)
         return -1;
     result->memory_compress_threshold = ival;
 
     /* Group Fold Message Threshold (L1: only conversation count drives fold) */
-    ival = prompt_int("Group Fold Message Threshold",
-                      defaults && defaults->group_fold_msg_threshold > 0 ? defaults->group_fold_msg_threshold : 200);
+    ival = prompt_int("Group Fold Message Threshold", defaults && defaults->group_fold_msg_threshold > 0
+                                                          ? defaults->group_fold_msg_threshold
+                                                          : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD);
     if (ival < 0)
         return -1;
     result->group_fold_msg_threshold = ival;
 
     /* Tool Max Output Size */
-    ival = prompt_int("Tool Max Output Size",
-                      defaults && defaults->tool_max_output_size > 0 ? defaults->tool_max_output_size : 10000);
+    ival = prompt_int("Tool Max Output Size", defaults && defaults->tool_max_output_size > 0
+                                                  ? defaults->tool_max_output_size
+                                                  : EDC_CONFIG_DEFAULT_TOOL_MAX_OUTPUT_SIZE);
     if (ival < 0)
         return -1;
     result->tool_max_output_size = ival;
@@ -392,7 +409,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     }
 
     {
-        sds def_rw_str = sdscatprintf(sdsempty(), "%s/workspace/, /tmp, /dev", edc_home);
+        sds def_rw_str = default_sandbox_rw_extra(edc_home);
         const char *def_rw =
             (defaults && sdslen(defaults->sandbox_rw_paths) > 0) ? defaults->sandbox_rw_paths : def_rw_str;
         val = prompt_with_default("  Additional writable paths (comma-separated)", def_rw);
@@ -403,8 +420,7 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     }
 
     {
-        sds def_ro_str = sdscatprintf(
-            sdsempty(), "%s/workspace/ssl, /usr, /lib, /lib32, /lib64, /libx32, /bin, /sbin, /etc, /proc", edc_home);
+        sds def_ro_str = default_sandbox_ro(edc_home);
         const char *def_ro =
             (defaults && sdslen(defaults->sandbox_ro_paths) > 0) ? defaults->sandbox_ro_paths : def_ro_str;
         val = prompt_with_default("  Read-only paths (comma-separated)", def_ro);
@@ -443,24 +459,34 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     }
 
     {
-        const char *def = (defaults && sdslen(defaults->device_ip) > 0) ? defaults->device_ip : "127.0.0.1";
+        const char *def =
+            (defaults && sdslen(defaults->device_ip) > 0) ? defaults->device_ip : EDC_CONFIG_DEFAULT_DEVICE_IP;
         val = prompt_with_default("Device IP", def);
         if (!val)
             return -1;
         result->device_ip = val;
     }
 
-    ival = prompt_int("Device Port", (defaults && defaults->device_port > 0) ? defaults->device_port : 5000);
+    ival = prompt_int("Device Port",
+                      (defaults && defaults->device_port > 0) ? defaults->device_port : EDC_CONFIG_DEFAULT_DEVICE_PORT);
     if (ival < 0)
         return -1;
     result->device_port = ival;
 
     if (strcmp(result->device_transport, "tty") == 0)
     {
-        ival = prompt_int("Device Baud Rate", (defaults && defaults->device_baud > 0) ? defaults->device_baud : 115200);
+        ival = prompt_int("Device Baud Rate", (defaults && defaults->device_baud > 0) ? defaults->device_baud
+                                                                                      : EDC_CONFIG_DEFAULT_DEVICE_BAUD);
         if (ival < 0)
             return -1;
         result->device_baud = ival;
+    }
+    else
+    {
+        /* Baud is meaningless without a serial link, but it is still written to
+         * config.json (see below) to keep the panorama complete. */
+        result->device_baud =
+            (defaults && defaults->device_baud > 0) ? defaults->device_baud : EDC_CONFIG_DEFAULT_DEVICE_BAUD;
     }
 
     printf("\n===================================================\n");
@@ -732,6 +758,152 @@ void edc_init_env_result_free(struct edc_init_env_result *result)
     sdsfree(result->device_transport);
 }
 
+/* ── Silent top-up of an existing config.json ───────────────────────────────
+ *
+ * config.json files written by older versions are missing keys that used to be
+ * supplied by implicit "if absent, use default" fallbacks scattered around
+ * edc_config.c (group_fold_msg_threshold, device_baud, device_pty, ...). Those
+ * keys were therefore invisible and could not be edited.
+ *
+ * On startup we fill in every missing key with its canonical default so the
+ * file always shows the full configuration panorama. Only absent keys are
+ * added: existing values, key order and user-added keys are untouched, and the
+ * file is rewritten only when something was actually missing, so a complete
+ * config never churns. */
+
+static void ensure_int_key(cJSON *obj, const char *key, int def, bool *changed)
+{
+    if (cJSON_GetObjectItem(obj, key))
+        return;
+    cJSON_AddNumberToObject(obj, key, def);
+    *changed = true;
+}
+
+static void ensure_str_key(cJSON *obj, const char *key, const char *def, bool *changed)
+{
+    if (cJSON_GetObjectItem(obj, key))
+        return;
+    cJSON_AddStringToObject(obj, key, def);
+    *changed = true;
+}
+
+/* Make sure the sandbox object exists and carries both path arrays. */
+static void ensure_sandbox(cJSON *conf, const char *edc_home, bool *changed)
+{
+    cJSON *sandbox = cJSON_GetObjectItem(conf, "sandbox");
+    if (!sandbox || !cJSON_IsObject(sandbox))
+    {
+        if (sandbox)
+            cJSON_DeleteItemFromObject(conf, "sandbox");
+        sandbox = cJSON_AddObjectToObject(conf, "sandbox");
+        *changed = true;
+    }
+
+    if (!cJSON_GetObjectItem(sandbox, "rw_paths"))
+    {
+        sds root = edc_path_join(edc_home, "sandbox", NULL);
+        sds extra = default_sandbox_rw_extra(edc_home);
+        build_sandbox_rw(sandbox, root, extra);
+        sdsfree(root);
+        sdsfree(extra);
+        *changed = true;
+    }
+
+    if (!cJSON_GetObjectItem(sandbox, "ro_paths"))
+    {
+        sds workspace = edc_path_join(edc_home, "workspace", NULL);
+        sds ro_defaults = default_sandbox_ro(edc_home);
+        sds *ro = split_paths(ro_defaults);
+        cJSON *arr = cJSON_CreateArray();
+        if (ro)
+        {
+            for (int i = 0; ro[i]; i++)
+                cJSON_AddItemToArray(arr, cJSON_CreateString(ro[i]));
+            for (int i = 0; ro[i]; i++)
+                sdsfree(ro[i]);
+            free(ro);
+        }
+        cJSON_AddItemToArray(arr, cJSON_CreateString(workspace));
+        cJSON_AddItemToObject(sandbox, "ro_paths", arr);
+        sdsfree(ro_defaults);
+        sdsfree(workspace);
+        *changed = true;
+    }
+}
+
+static void edc_init_env_conf_topup(const char *conf_file, const char *edc_home)
+{
+    if (!edc_file_is_regular(conf_file))
+        return;
+
+    EdcError *error = NULL;
+    sds contents = edc_file_read(conf_file, &error);
+    if (!contents)
+    {
+        log_error("read %s failed: %s", conf_file, error ? error->message : "Unknown");
+        if (error)
+            edc_error_free(error);
+        return;
+    }
+
+    cJSON *conf = cJSON_Parse(contents);
+    sdsfree(contents);
+    if (!conf || !cJSON_IsObject(conf))
+    {
+        if (conf)
+            cJSON_Delete(conf);
+        log_warn("%s is not a JSON object, skipping config top-up", conf_file);
+        return;
+    }
+
+    bool changed = false;
+
+    ensure_str_key(conf, "api_url", EDC_CONFIG_DEFAULT_API_URL, &changed);
+    ensure_str_key(conf, "model", EDC_CONFIG_DEFAULT_MODEL, &changed);
+    ensure_int_key(conf, "max_iter", EDC_CONFIG_DEFAULT_MAX_ITER, &changed);
+    ensure_int_key(conf, "load_n_histories", EDC_CONFIG_DEFAULT_LOAD_N_HISTORIES, &changed);
+    ensure_int_key(conf, "memory_compress_threshold", EDC_CONFIG_DEFAULT_MEMORY_COMPRESS_THRESHOLD, &changed);
+    ensure_int_key(conf, "group_fold_msg_threshold", EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD, &changed);
+    ensure_int_key(conf, "tool_max_output_size", EDC_CONFIG_DEFAULT_TOOL_MAX_OUTPUT_SIZE, &changed);
+
+    ensure_sandbox(conf, edc_home, &changed);
+
+    cJSON *channel = cJSON_GetObjectItem(conf, "channel");
+    if (!channel || !cJSON_IsObject(channel))
+    {
+        if (channel)
+            cJSON_DeleteItemFromObject(conf, "channel");
+        channel = cJSON_AddObjectToObject(conf, "channel");
+        changed = true;
+    }
+    ensure_str_key(channel, "type", EDC_CONFIG_DEFAULT_CHANNEL_TYPE, &changed);
+
+    ensure_str_key(conf, "device_transport", EDC_CONFIG_DEFAULT_DEVICE_TRANSPORT, &changed);
+    ensure_str_key(conf, "device_ip", EDC_CONFIG_DEFAULT_DEVICE_IP, &changed);
+    ensure_int_key(conf, "device_port", EDC_CONFIG_DEFAULT_DEVICE_PORT, &changed);
+    ensure_int_key(conf, "device_baud", EDC_CONFIG_DEFAULT_DEVICE_BAUD, &changed);
+    ensure_str_key(conf, "device_pty", EDC_CONFIG_DEFAULT_DEVICE_PTY, &changed);
+
+    if (changed)
+    {
+        char *config_str = cJSON_Print(conf);
+        EdcError *werr = NULL;
+        if (!edc_file_write(conf_file, config_str, -1, &werr))
+        {
+            log_error("save config to %s failed: %s", conf_file, werr ? werr->message : "Unknown");
+            if (werr)
+                edc_error_free(werr);
+        }
+        else
+        {
+            log_info("config.json topped up with default keys");
+        }
+        cJSON_free(config_str);
+    }
+
+    cJSON_Delete(conf);
+}
+
 static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
 {
     bool is_create = !edc_file_is_regular(conf_file);
@@ -834,15 +1006,16 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
 
     cJSON_AddItemToObject(config, "channel", channel);
 
+    /* Device link. Every key is written unconditionally so that config.json
+     * stays a complete panorama of the configurables: device_pty is empty when
+     * the transport is a plain socket. */
     cJSON_AddStringToObject(config, "device_transport", env_result.device_transport);
     cJSON_AddStringToObject(config, "device_ip", env_result.device_ip);
     cJSON_AddNumberToObject(config, "device_port", env_result.device_port);
-
-    if (env_result.device_pty && sdslen(env_result.device_pty) > 0)
-    {
-        cJSON_AddStringToObject(config, "device_pty", env_result.device_pty);
-        cJSON_AddNumberToObject(config, "device_baud", env_result.device_baud);
-    }
+    cJSON_AddNumberToObject(config, "device_baud",
+                            env_result.device_baud > 0 ? env_result.device_baud : EDC_CONFIG_DEFAULT_DEVICE_BAUD);
+    cJSON_AddStringToObject(config, "device_pty",
+                            (env_result.device_pty && sdslen(env_result.device_pty) > 0) ? env_result.device_pty : "");
 
     char *config_str = cJSON_Print(config);
     EdcError *error = NULL;
@@ -891,6 +1064,12 @@ bool edc_init_env(const char *edc_home, bool setup)
             ret = false;
             goto exit_;
         }
+    }
+    else
+    {
+        /* Existing config: materialize any key this version knows about but the
+         * file predates, so config.json always shows the full panorama. */
+        edc_init_env_conf_topup(conf_file, edc_home);
     }
 
     if (!edc_init_env_workspace(workspace))
