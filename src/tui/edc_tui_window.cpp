@@ -250,11 +250,12 @@ std::string UnescapeHistoryLine(const std::string &line)
 
 } // namespace
 
-// The animated "working" row: the sweeping block bar, then the label. Defined
-// here (outside the anonymous namespace, declared in the header) so tests can
-// render the row for a given elapsed time without a live agent. The bar has a
-// fixed number of cells, so showing it in place of the footer never changes the
-// row's width, and it is one line tall, so it never changes the layout either.
+// The animated "working" row: the sweeping block bar on its own, no text.
+// Defined here (outside the anonymous namespace, declared in the header) so
+// tests can render the row for a given elapsed time without a live agent. The
+// bar has a fixed number of cells, so showing it in place of the footer never
+// changes the row's width, and it is one line tall, so it never changes the
+// layout either.
 ::ftxui::Element WorkingIndicatorElement(long long elapsed_ms)
 {
     const auto &pal = style::palette();
@@ -263,10 +264,10 @@ std::string UnescapeHistoryLine(const std::string &line)
     // stamp and the frame must not rewind the bar).
     const BarState bar = BarAt(elapsed_ms);
 
-    // The bar leads the row and the label trails it, so the animated part —
-    // the thing the eye should be drawn to — sits where the text starts.
+    // The bar is the whole row: the animation alone says "working", so the
+    // row carries no label and its width is just the bar's.
     ::ftxui::Elements row;
-    row.reserve(static_cast<size_t>(kBarCells) + 2);
+    row.reserve(static_cast<size_t>(kBarCells));
     for (int i = 0; i < kBarCells; i++)
     {
         if (i >= bar.pos && i < bar.pos + kBarLit)
@@ -274,8 +275,6 @@ std::string UnescapeHistoryLine(const std::string &line)
         else
             row.push_back(OffBlock(pal));
     }
-    row.push_back(::ftxui::text(" "));
-    row.push_back(::ftxui::text("处理中") | ::ftxui::color(pal.text_dim));
     return ::ftxui::hbox(std::move(row));
 }
 

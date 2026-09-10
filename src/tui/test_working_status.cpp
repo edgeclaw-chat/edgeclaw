@@ -41,7 +41,6 @@ void Check(bool ok, const std::string &what)
 constexpr int kScreenWidth = 40;
 constexpr int kBarCells = 10; // must match the row
 constexpr int kBarLit = 5;
-constexpr int kLabelX = kBarCells + 1; // bar, a space, then the label
 constexpr long long kStepMs = 120;     // must match the row
 // The run travels from completely past the left edge to completely past the
 // right edge, so the ends of the bar are real turning points.
@@ -143,14 +142,6 @@ int TierOf(const ::ftxui::Cell &cell, const edc::style::Palette &pal)
     return -1;
 }
 
-int LabelX(const std::vector<::ftxui::Cell> &cells)
-{
-    for (int x = 0; x < kScreenWidth; x++)
-        if (cells[x].character == "处")
-            return x;
-    return -1;
-}
-
 int BarX(const std::vector<::ftxui::Cell> &cells)
 {
     const auto bar = BarColumns(cells);
@@ -161,7 +152,7 @@ int BarX(const std::vector<::ftxui::Cell> &cells)
 
 void TestBarFrameIsFixed()
 {
-    std::cout << "the bar is always 10 cells, the label always behind it\n";
+    std::cout << "the bar is always 10 cells and is the whole row\n";
     for (int step : {0, 6, 9, 10, 12, 20, 26})
     {
         const auto cells = FrameAtStep(step);
@@ -174,13 +165,13 @@ void TestBarFrameIsFixed()
                 contiguous = false;
         Check(contiguous, "the visible lit blocks are contiguous at step " + std::to_string(step));
         std::string odd;
-        for (int x = 0; x < kLabelX + 6; x++)
+        for (int x = 0; x < kScreenWidth; x++)
         {
             const std::string &c = cells[x].character;
-            if (!IsBarGlyph(c) && !c.empty() && c != " " && c != "处" && c != "理" && c != "中")
+            if (!IsBarGlyph(c) && !c.empty() && c != " ")
                 odd += "[x" + std::to_string(x) + "='" + c + "']";
         }
-        Check(odd.empty(), "only the bar and label glyphs at step " + std::to_string(step) +
+        Check(odd.empty(), "only bar glyphs, no label text, at step " + std::to_string(step) +
                                (odd.empty() ? "" : " (odd: " + odd + ")"));
     }
 }
@@ -332,9 +323,10 @@ void TestRowWidthIsConstant()
     for (int step = 0; step < kCycleSteps; step++)
     {
         const auto cells = FrameAtStep(step);
-        Check(LabelX(cells) == LabelX(reference), "label stays put at step " + std::to_string(step));
         Check(BarColumns(cells) == BarColumns(reference),
               "bar columns unchanged at step " + std::to_string(step));
+        Check(BarX(cells) == BarX(reference),
+              "the bar starts at the same column at step " + std::to_string(step));
     }
 }
 
@@ -390,21 +382,19 @@ void TestOnlyPaletteRolesAndNoBackground()
           "the empty frame still draws all 10 cells");
 }
 
-void TestLabelIsUnchanged()
+void TestRowHasNoLabel()
 {
-    std::cout << "the label trails the bar, as plain dim text\n";
-    const edc::style::Palette &pal = edc::style::palette();
+    std::cout << "the row is the bare bar: no trailing label\n";
+    for (long long ms : {0LL, 120LL, 240LL, 1200LL})
+    {
+        const auto cells = RenderRow(ms);
+        for (int x = kBarCells; x < kScreenWidth; x++)
+            Check(cells[x].character.empty() || cells[x].character == " ",
+                  "nothing after the bar at x=" + std::to_string(x) + " (t=" + std::to_string(ms) +
+                      "ms)");
+    }
     const auto a = FrameAtStep(0);
-    const auto b = FrameAtStep(17);
-    const int x = LabelX(a);
-    Check(x == kLabelX, "label sits after the bar (got x=" + std::to_string(x) + ")");
-    Check(x == LabelX(b), "label does not move");
-    Check(a[x].foreground_color == pal.text_dim, "label uses the dim text role");
-    Check(!a[x].bold && !a[x].dim, "label is neither bold nor extra-dim");
-    const std::string label = a[x].character + a[x + 2].character + a[x + 4].character;
-    Check(label == "处理中", "label text is 处理中 (got " + label + ")");
     Check(BarX(a) == 0, "the bar starts at the left edge of the row");
-    Check(a[kBarCells].character == " ", "a space separates the bar from the label");
 }
 
 void TestNegativeElapsedIsClamped()
@@ -441,7 +431,7 @@ int main()
     TestRowWidthIsConstant();
     TestNeverUsesTheHeavyBlockGlyphs();
     TestOnlyPaletteRolesAndNoBackground();
-    TestLabelIsUnchanged();
+    TestRowHasNoLabel();
     TestNegativeElapsedIsClamped();
     TestRowIsOneLineTall();
 

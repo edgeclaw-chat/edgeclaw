@@ -14,12 +14,12 @@ class TodoWidget;
 
 // The animated "working" row shown in place of the footer while the
 // foreground process runs: a bar of blocks that sweeps back and forth, its
-// brightness flowing along the lit run, with the "处理中" label trailing it.
-// |elapsed_ms| is the time since the process went busy; it drives both the
-// sweep position and the flow phase. Declared here (rather than staying local
-// to the window) so tests can render the row without a live agent. The bar has
-// a fixed number of cells and is one line tall, so showing it in place of the
-// footer never moves the layout.
+// brightness flowing along the lit run. The animation is the whole row — no
+// label text. |elapsed_ms| is the time since the process went busy; it drives
+// both the sweep position and the flow phase. Declared here (rather than
+// staying local to the window) so tests can render the row without a live
+// agent. The bar has a fixed number of cells and is one line tall, so showing
+// it in place of the footer never moves the layout.
 ::ftxui::Element WorkingIndicatorElement(long long elapsed_ms);
 
 class TUIWindow : public ::ftxui::ComponentBase
