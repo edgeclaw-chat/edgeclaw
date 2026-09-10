@@ -26,7 +26,11 @@ struct edc_sched_task_entry
 /* ── 前向声明 ──────────────────────────────────────────────── */
 
 static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg);
-static void sched_handle_task_snapshot(struct edc_scheduler *sched);
+/* include_group_history: 为 true 时, 快照额外携带前台进程组的对话消息列表
+ * (group->history, 去掉 history[0] 的组 system prompt), 供 TUI 启动时把历史
+ * 会话回填到聊天区。普通轮询快照不带该字段, 避免长会话每隔 500ms 重传全量
+ * 历史。 */
+static void sched_handle_task_snapshot(struct edc_scheduler *sched, bool include_group_history);
 static void sched_notify_foreground_state(struct edc_scheduler *sched, struct edc_task *task);
 static void sched_set_task_state(struct edc_scheduler *sched, struct edc_task *task, edc_task_state state);
 
@@ -311,7 +315,7 @@ static void sched_notify_foreground_state(struct edc_scheduler *sched, struct ed
         return;
     if (task->group != sched->foreground_group)
         return;
-    sched_handle_task_snapshot(sched);
+    sched_handle_task_snapshot(sched, false);
 }
 
 /* 统一的状态迁移入口: 设置状态后, 若被改变的是前台 active task, 主动推送
@@ -509,7 +513,8 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
                 for (size_t qi = task->active_turn->messages.head; qi < task->active_turn->messages.tail; qi++)
                 {
                     cJSON *item = task->active_turn->messages.data[qi];
-                    cJSON_AddItemReferenceToArray(task->group->history, item);
+                    /* 带归属写入: 回填历史时每条消息可标注 "task N" */
+                    edc_task_group_history_add_ref(task->group, item, task->task_id);
                 }
             }
 
@@ -532,7 +537,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         if (!sched->session || edc_session_get_active_task(sched->session) != task ||
             task->group != sched->foreground_group)
         {
-            sched_handle_task_snapshot(sched);
+            sched_handle_task_snapshot(sched, false);
         }
 
         edc_task_notify_dependents(task);
@@ -685,14 +690,14 @@ static void sched_handle_tool_emit(struct edc_scheduler *sched, struct edc_actor
      * 变化 (TOOL_CALLING 期间), 不会触发状态通知快照 —— 这里主动补推一次,
      * 让 TUI 的 TodoWidget 立即按新清单刷新 (规则3)。 */
     if (emit->header && strcmp(emit->header, "todowrite") == 0)
-        sched_handle_task_snapshot(sched);
+        sched_handle_task_snapshot(sched, false);
 }
 
 /* ── Actor 入口 ────────────────────────────────────────────── */
 
 /* 序列化当前 session 的 task 树 (group → members)，供 TUI 侧边栏渲染。
  * 用 cJSON 生成 JSON 文本，在 scheduler 线程上执行，天然无并发。 */
-static void sched_handle_task_snapshot(struct edc_scheduler *sched)
+static void sched_handle_task_snapshot(struct edc_scheduler *sched, bool include_group_history)
 {
     if (!sched || !sched->session)
         return;
@@ -749,6 +754,34 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched)
             }
         }
         cJSON_AddNumberToObject(gj, "msg_count", (double)g_msg_count);
+
+        /* 启动回填: 仅当被请求 (TUI 冷启动) 且该组是前台进程组时, 把组的
+         * 对话消息列表随快照回传。history[0] 是组 system prompt, 不作为对话
+         * 消息回放, 从下标 1 开始。条目按原样深拷贝 (role/content/tool_calls/
+         * name 等), 并附上产生它的 task_id (组归属数组, 见
+         * edc_task_group_history_task_id), 渲染端按 role 映射 UI 组件、
+         * 按 task_id 打 "task N" 标签。 */
+        if (include_group_history && sched->foreground_group == g && g->history)
+        {
+            cJSON *hist = cJSON_AddArrayToObject(gj, "messages");
+            const int htotal = cJSON_GetArraySize(g->history);
+            for (int hi = 1; hi < htotal; hi++)
+            {
+                cJSON *hm = cJSON_GetArrayItem(g->history, hi);
+                if (!hm || !hist)
+                    continue;
+                cJSON *dup = cJSON_Duplicate(hm, 1);
+                if (!dup)
+                    continue;
+                /* 归属: 该消息由哪个 task 产生 (组 system prompt 及无主消息为
+                 * NULL)。只加在快照副本上——原消息对象会作为 LLM 请求体的
+                 * 一部分, 不能引入非标准字段。TUI 据此渲染 "task N" 标签。 */
+                const char *tid = edc_task_group_history_task_id(g, (size_t)hi);
+                if (tid)
+                    cJSON_AddStringToObject(dup, "task_id", tid);
+                cJSON_AddItemToArray(hist, dup);
+            }
+        }
 
         cJSON *tasks = cJSON_AddArrayToObject(gj, "tasks");
         struct edc_task *t;
@@ -815,7 +848,9 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
             sched->save_session(sched);
         break;
     case BC_ACTOR_MSG_TASK_SNAPSHOT:
-        sched_handle_task_snapshot(sched);
+        /* sub_type == 1: 请求携带前台组对话历史 (TUI 启动回填), 其余为普通
+         * 轮询快照。 */
+        sched_handle_task_snapshot(sched, msg->sub_type == 1);
         break;
     default:
         break;

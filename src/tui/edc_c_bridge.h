@@ -61,6 +61,23 @@ struct edc_c_task_info
     struct edc_c_todo_item *todo_items;
 };
 
+/* One conversation message of a process group, carried by a snapshot requested
+ * with edc_c_agent_request_task_snapshot_history(). Projected from the group's
+ * OpenAI-style history entries: a user turn, an assistant turn (content plus
+ * optional tool_calls), or a tool result (name + content). The TUI maps role
+ * (+has_tool_calls) onto its chat widgets; content/name are never NULL (empty
+ * string when absent). */
+struct edc_c_history_message
+{
+    const char *role;    /* "user" | "assistant" | "tool" */
+    const char *content; /* message body, "" when the entry has none */
+    const char *name;    /* tool name for role "tool", else "" */
+    int has_tool_calls;  /* 1 when an assistant entry carries tool_calls */
+    const char *task_id; /* id of the task that produced this entry ("1", ...)
+                            or "" when it has no owner; lets the chat view tag
+                            seeded entries with their originating task */
+};
+
 struct edc_c_task_group
 {
     const char *group_id;
@@ -69,6 +86,10 @@ struct edc_c_task_group
                       in-flight turns of its tasks */
     int orphaned;
     int fg;
+    int has_history; /* 1 when the snapshot carried this group's "messages"
+                        (only the foreground group, on a history request) */
+    int history_count;
+    struct edc_c_history_message *history;
     int task_count;
     struct edc_c_task_info *tasks;
 };
@@ -130,6 +151,14 @@ int edc_c_channel_message_render_pref(struct edc_channel_message *channel_messag
  * it on its own thread and delivers it back through the channel adapter as an
  * EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE message. */
 void edc_c_agent_request_task_snapshot(struct edc_agent *agent);
+
+/* Like edc_c_agent_request_task_snapshot(), but the returned snapshot also
+ * carries the foreground process group's conversation messages (see
+ * edc_c_task_group::has_history/history). One-shot, meant to be used once at
+ * TUI startup to refill the chat log after the agent restored a saved session;
+ * ordinary polling must use the plain request so the whole history is not
+ * re-serialized on every refresh. */
+void edc_c_agent_request_task_snapshot_history(struct edc_agent *agent);
 
 void edc_c_file_utils_init(struct uv_loop_s *loop);
 void edc_c_agent_send_user_message(struct edc_agent *agent, const char *content);

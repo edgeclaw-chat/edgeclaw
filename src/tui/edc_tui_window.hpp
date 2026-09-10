@@ -49,6 +49,15 @@ class TUIWindow : public ::ftxui::ComponentBase
     void SaveInputHistory();
     // Ask the agent (on its scheduler thread) for a fresh task-tree snapshot.
     void RequestTaskSnapshot();
+    // Ask for a snapshot that also carries the foreground group's conversation
+    // messages, then refill the chat log from it (once, at startup, so a
+    // restored session shows its history instead of an empty log).
+    void RequestHistorySnapshot();
+    // Seed the chat log from a snapshot's foreground-group history. Each entry
+    // carries the id of the task that produced it, so the refilled messages
+    // keep their "task N" tags. No-op after the first snapshot that carried a
+    // "messages" array (history_seeded_).
+    void SeedChatFromSnapshot(const ::edc_c_task_snapshot *snap);
     // Re-evaluate the animated status from a freshly parsed task snapshot:
     // "processing" is shown exactly while the foreground group's active task
     // is running, regardless of which channel messages arrived.
@@ -82,6 +91,12 @@ class TUIWindow : public ::ftxui::ComponentBase
     // ESC[201~). Inside it, Return/Character("\n") are inserted as newlines
     // rather than submitted, so a pasted multi-line block becomes one draft.
     bool in_paste_ = false;
+
+    // True once the chat log has been refilled from the foreground group's
+    // history. The history arrives attached to a one-shot snapshot requested
+    // in the constructor; polling snapshots carry no messages, so this must
+    // latch on the first snapshot that does.
+    bool history_seeded_ = false;
 
     struct edc_agent *agent = NULL;
     ::ftxui::ScreenInteractive *screen_ = nullptr;

@@ -366,8 +366,10 @@ TUIWindow::TUIWindow() : input_text_("")
     EnableBracketedPaste();
 
     // Populate the sidebar once the agent is running (its response is routed
-    // through the adapter and handled by on_channel_adapter_send below).
-    RequestTaskSnapshot();
+    // through the adapter and handled by on_channel_adapter_send below). This
+    // first request also asks for the foreground group's conversation history,
+    // so a restored session's chat log is refilled instead of starting empty.
+    RequestHistorySnapshot();
 }
 
 void TUIWindow::Submit()
@@ -446,6 +448,75 @@ void TUIWindow::RequestTaskSnapshot()
 {
     last_snapshot_request_ = std::chrono::steady_clock::now();
     edc_c_agent_request_task_snapshot(agent);
+}
+
+void TUIWindow::RequestHistorySnapshot()
+{
+    last_snapshot_request_ = std::chrono::steady_clock::now();
+    edc_c_agent_request_task_snapshot_history(agent);
+}
+
+// Map the foreground group's stored conversation onto chat widgets, mirroring
+// the live channel path in on_channel_adapter_send(): a user turn becomes a
+// UserMessage; an assistant turn is a ThoughtMessage when it carries tool
+// calls (it is the "thinking" that preceded them) and a plain (Markdown)
+// message otherwise (a final reply); a tool turn becomes a ToolMessage headed
+// by the tool name. todowrite echoes are skipped for the same reason as live
+// ones — they live in the sidebar's TodoWidget, not the chat log. Each entry
+// is tagged with the task that produced it ("task N"), matching the live path.
+// Message timestamps are not persisted, so seeded entries share one "now".
+void TUIWindow::SeedChatFromSnapshot(const ::edc_c_task_snapshot *snap)
+{
+    if (history_seeded_ || !snap)
+        return;
+
+    for (int gi = 0; gi < snap->group_count; gi++)
+    {
+        const ::edc_c_task_group *g = &snap->groups[gi];
+        if (!g->fg || !g->has_history)
+            continue;
+
+        history_seeded_ = true;
+        const time_t ts = ::time(nullptr);
+        for (int mi = 0; mi < g->history_count; mi++)
+        {
+            const ::edc_c_history_message &m = g->history[mi];
+            const std::string role = m.role ? m.role : "";
+            const std::string content = m.content ? m.content : "";
+            const std::string name = m.name ? m.name : "";
+            const std::string task_id = m.task_id ? m.task_id : "";
+
+            std::shared_ptr<Message> widget;
+            if (role == "user")
+            {
+                if (content.empty())
+                    continue;
+                widget = std::make_shared<UserMessage>(content, ts, task_id);
+            }
+            else if (role == "assistant")
+            {
+                if (content.empty())
+                    continue; // tool-call turn with no visible thought
+                if (m.has_tool_calls)
+                    widget = std::make_shared<ThoughtMessage>(content, ts, task_id);
+                else
+                    widget = std::make_shared<Message>(content, ts, task_id);
+            }
+            else if (role == "tool")
+            {
+                if (name == kTodoToolHeader)
+                    continue; // mirror the live skip; TodoWidget owns it
+                widget = std::make_shared<ToolMessage>(name, content, ts, /*markdown=*/false, task_id);
+            }
+            else
+            {
+                continue;
+            }
+            chat_widget_->AddMessage(widget);
+        }
+        chat_widget_->ScrollToBottom();
+        return; // only the (single) foreground group carries history
+    }
 }
 
 void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
@@ -596,6 +667,10 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             if (snap)
             {
                 tui->task_widget_->SetSnapshot(snap);
+                // Refill the chat log from the foreground group's history when
+                // this snapshot carries it (the startup history request); a
+                // later polling snapshot never has it and is ignored.
+                tui->SeedChatFromSnapshot(snap);
                 // The snapshot is the single source of truth for the status
                 // animation: re-derive it whenever the process tree refreshes.
                 tui->SyncWorkingFromSnapshot(snap);

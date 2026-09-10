@@ -542,7 +542,7 @@ static void deser_rebuild_group_history(struct edc_session *session, struct edc_
             cJSON *sys = cJSON_CreateObject();
             cJSON_AddStringToObject(sys, "role", "system");
             cJSON_AddStringToObject(sys, "content", prompt);
-            cJSON_AddItemToArray(g->history, sys);
+            edc_task_group_history_add_owned(g, sys, NULL);
             sdsfree(prompt);
         }
 
@@ -580,8 +580,11 @@ static void deser_rebuild_group_history(struct edc_session *session, struct edc_
             for (size_t qi = task->turns.head; qi < task->turns.tail; qi++)
             {
                 struct edc_turn *turn = task->turns.data[qi];
+                /* 归属取 turn->task_id (重建时 turn 已从 task 反填), 与运行时
+                 * 路径 (sched_handle_llm_resp 的 STOP 同步) 保持一致。 */
                 for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
-                    cJSON_AddItemReferenceToArray(g->history, turn->messages.data[mj]);
+                    edc_task_group_history_add_ref(g, turn->messages.data[mj],
+                                                   turn->task_id ? turn->task_id : task->task_id);
             }
         }
         free(arr);

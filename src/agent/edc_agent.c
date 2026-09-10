@@ -140,7 +140,8 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
             cJSON *sys_hist = cJSON_CreateObject();
             cJSON_AddStringToObject(sys_hist, "role", "system");
             cJSON_AddStringToObject(sys_hist, "content", pristine);
-            cJSON_AddItemToArray(task->group->history, sys_hist);
+            /* 组 system prompt 不属于任何 task */
+            edc_task_group_history_add_owned(task->group, sys_hist, NULL);
         }
         sdsfree(pristine);
     }
