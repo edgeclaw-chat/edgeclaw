@@ -9,15 +9,19 @@
 #include "ftxui/component/component_options.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/dom/elements.hpp"
+#include "ftxui/screen/string.hpp"
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <edc_channel_adapter.h>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <sys/ioctl.h>
 #include <tui/edc_c_bridge.h>
+#include <unistd.h>
 #include <vector>
 
 namespace edc
@@ -248,6 +252,28 @@ std::string UnescapeHistoryLine(const std::string &line)
     return out;
 }
 
+// The only hint the footer shows: instead of spelling out every key binding in
+// the status line, point users at the slash command that lists them. Placed at
+// the right end of the footer, after the model name.
+constexpr char kFooterHelp[] = "/help 帮助";
+
+// Replace a leading $HOME with "~" so a deep directory stays readable in the
+// one-line footer. Falls back to the raw path when HOME is unset or the path
+// is not under it.
+std::string ShortenHome(const char *path)
+{
+    if (!path || !*path)
+        return "";
+    const char *home = std::getenv("HOME");
+    if (home && *home)
+    {
+        const size_t n = std::strlen(home);
+        if (std::strncmp(path, home, n) == 0 && (path[n] == '/' || path[n] == '\0'))
+            return std::string("~") + (path + n);
+    }
+    return path;
+}
+
 } // namespace
 
 // The animated "working" row: the sweeping block bar on its own, no text.
@@ -285,8 +311,6 @@ TUIWindow::TUIWindow() : input_text_("")
     todo_widget_ = std::make_shared<TodoWidget>();
 
     const auto &pal = style::palette();
-    footer_ = ::ftxui::text(" Enter 发送   Alt+Enter 换行   ↑↓ 历史/光标   滚轮 滚动   Esc 退出 ") |
-              ::ftxui::color(pal.text_dim);
     prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(pal.prompt) | ::ftxui::bold;
 
     // Multiline chat draft with soft (visual) wrapping. Long unbroken lines
@@ -363,6 +387,14 @@ TUIWindow::TUIWindow() : input_text_("")
     agent = edc_c_agent_new(false, false);
     edc_channel_adapter_init(edc_c_agent_channel_actor(agent), this, on_channel_adapter_send);
     EnableBracketedPaste();
+
+    // Read the model once for the footer (the agent has just loaded its
+    // config); the footer itself is built per frame so it can fit the pane.
+    {
+        char model[256];
+        if (edc_c_agent_model(agent, model, sizeof(model)))
+            model_ = model;
+    }
 
     // Populate the sidebar once the agent is running (its response is routed
     // through the adapter and handled by on_channel_adapter_send below). This
@@ -537,16 +569,17 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
 {
     auto input_row = ::ftxui::hbox({prompt_, input_->Render() | ::ftxui::flex});
 
+    // The status row shares this pane's width (the input's width), so the
+    // right-aligned model + "/help" stop at the input's right edge and never
+    // run into the sidebar: the task/todo pane stays a full-height column.
     ::ftxui::Elements children = {chat_widget_->Render() | ::ftxui::flex, ::ftxui::separator(), input_row,
                                   ::ftxui::separator()};
 
     if (working_)
     {
-        // While the foreground group's active task is running the animated
-        // status replaces the footer line (so the bottom row keeps its
-        // height); as soon as a task snapshot reports it is no longer busy,
-        // the footer hint returns. The bar animates off the elapsed time, so
-        // keep asking for frames while it is visible.
+        // While the foreground group's active task is running the animated bar
+        // replaces the footer line (so the bottom row keeps its height); as
+        // soon as a snapshot reports it is no longer busy, the footer returns.
         const auto now = std::chrono::steady_clock::now();
         const auto elapsed_ms =
             std::chrono::duration_cast<std::chrono::milliseconds>(now - working_started_).count();
@@ -557,10 +590,44 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
     }
     else
     {
-        children.push_back(footer_);
+        children.push_back(RenderFooter());
     }
 
     return ::ftxui::vbox(std::move(children));
+}
+
+::ftxui::Element TUIWindow::RenderFooter() const
+{
+    const auto &pal = style::palette();
+
+    char cwd[4096];
+    const std::string dir = ::getcwd(cwd, sizeof(cwd)) ? ShortenHome(cwd) : std::string();
+    const std::string left = " " + dir;
+
+    // Columns available to the footer: the chat pane, i.e. the terminal minus
+    // the sidebar and the two-cell split separator. The footer never uses more
+    // than this, so its right-aligned model/"help" stop at the input's right
+    // edge instead of running under the sidebar.
+    int term_w = 80;
+    struct winsize ws;
+    if (::ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+        term_w = ws.ws_col;
+    const int pane_w = term_w - sidebar_width_ - 2;
+
+    // Right end: the model in use and the "/help" pointer, joined by a middle
+    // dot so the two read as one compact unit. Flush to the pane's right edge
+    // with the filler; if the model will not fit alongside "/help", show
+    // "/help" alone.
+    const int budget = pane_w - ::ftxui::string_width(left) - 1;
+    std::string right = kFooterHelp;
+    if (!model_.empty() && ::ftxui::string_width(model_ + " · " + kFooterHelp) <= budget)
+        right = model_ + " · " + kFooterHelp;
+
+    return ::ftxui::hbox({
+        ::ftxui::text(left) | ::ftxui::color(pal.text_dim),
+        ::ftxui::filler(),
+        ::ftxui::text(right + " ") | ::ftxui::color(pal.text_dim),
+    });
 }
 
 ::ftxui::Element TUIWindow::OnRender()

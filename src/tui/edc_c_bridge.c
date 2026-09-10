@@ -317,6 +317,24 @@ void edc_c_file_utils_init(struct uv_loop_s *loop)
     edc_file_utils_init(loop);
 }
 
+bool edc_c_agent_model(struct edc_agent *agent, char *buf, size_t cap)
+{
+    if (!buf || cap == 0)
+        return false;
+    buf[0] = '\0';
+    if (!agent || !agent->config)
+        return false;
+
+    const sds model = agent->config->llm_api_conf.model;
+    if (!model)
+        return false;
+
+    const bool ok = sdslen(model) < cap;
+    if (ok)
+        memcpy(buf, model, sdslen(model) + 1);
+    return ok;
+}
+
 bool edc_c_history_path(char *buf, size_t cap)
 {
     if (!buf || cap == 0)

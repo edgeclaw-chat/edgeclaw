@@ -163,6 +163,12 @@ void edc_c_agent_request_task_snapshot_history(struct edc_agent *agent);
 void edc_c_file_utils_init(struct uv_loop_s *loop);
 void edc_c_agent_send_user_message(struct edc_agent *agent, const char *content);
 
+/* Copy the configured LLM model name (config->llm_api_conf.model) into |buf|
+ * (NUL-terminated, at most |cap| bytes). Returns true when a model is
+ * configured and fit the buffer; false leaves |buf| empty. Lets the TUI show
+ * the active model without pulling in the sds-based config header. */
+bool edc_c_agent_model(struct edc_agent *agent, char *buf, size_t cap);
+
 /* Copy the path of the TUI input-history file ($EDC_HOME/.tui_history) into
  * |buf| (NUL-terminated, at most |cap| bytes). Returns true when the path fit;
  * false leaves |buf| empty. Only the path is resolved here so the C++ TUI can

@@ -64,6 +64,10 @@ class TUIWindow : public ::ftxui::ComponentBase
     void SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap);
     // Render the left pane (chat log + input + footer/spinner).
     ::ftxui::Element RenderMain();
+    // Build the footer row: the working directory on the left, the active
+    // model plus the "/help" pointer on the right, right-aligned within the
+    // chat pane's width (never spilling into the sidebar).
+    ::ftxui::Element RenderFooter() const;
 
     std::shared_ptr<edc::ChatWidget> chat_widget_;
     std::shared_ptr<edc::TaskWidget> task_widget_;
@@ -72,9 +76,11 @@ class TUIWindow : public ::ftxui::ComponentBase
     // the input width instead of overflowing, and the caret navigates the
     // wrapped rows. Owned here; also handed to |container_| for focus/events.
     std::shared_ptr<edc::EdcInput> input_;
-    ::ftxui::Element footer_;
     ::ftxui::Element prompt_;
     std::string input_text_;
+    // The LLM model in use, read once from the agent's config; shown at the
+    // right end of the footer (dropped only when the pane is too narrow).
+    std::string model_;
 
     // Routes keyboard focus between the chat log and the input; the input
     // starts focused so typing works without a Tab first. The selector int must
