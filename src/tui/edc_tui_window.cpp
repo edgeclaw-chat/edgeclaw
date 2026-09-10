@@ -593,6 +593,12 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
         children.push_back(RenderFooter());
     }
 
+    // A blank line under the status row so its text does not sit flush against
+    // the terminal's bottom edge (which reads as cramped). Kept in both
+    // branches, so swapping the footer for the working bar still never changes
+    // the layout height.
+    children.push_back(::ftxui::text(""));
+
     return ::ftxui::vbox(std::move(children));
 }
 
