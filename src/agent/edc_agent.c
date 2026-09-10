@@ -120,8 +120,8 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
         return;
 
     /* Group 级上下文: system 部分 (group memory + system prompt, 纯净、不含
-     * todo) 由 edc_context_append_system_part 统一组装; 余下为最近 K 条未折叠
-     * 历史窗口 + task 专属 (dep outputs / $VAR 展开)。todo 状态提醒不放在
+     * todo) 由 edc_context_append_system_part 统一组装; 余下为全部未折叠历史
+     * + task 专属 (dep outputs / $VAR 展开)。todo 状态提醒不放在
      * 头部——也不每轮请求都塞: 由 edc_task_llm_request_poke 节流, 只有"隔了
      * EDC_TODO_SYNC_REMIND_GAP 条对话 (LLM 请求) 都没调用过 todowrite"
      * 时, 才经 edc_context_make_todo_reminder 重新计算并追加到消息列表绝对
@@ -158,17 +158,11 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
         /* fold_cursor 边界也可能切在 tool 消息上, 回退到安全边界 */
         hist_begin = edc_agent_history_safe_start(task->group->history, hist_begin, 1);
 
-        /* 最近 K 条窗口 (K = load_n_histories) */
-        size_t k = agent->config ? (size_t)agent->config->load_n_histories : 10;
-        size_t from = hist_begin;
-        if (end > hist_begin && end - hist_begin > k)
-            from = end - k;
-        /* 窗口起点不要切断 assistant(tool_calls)+tool 序列 */
-        from = edc_agent_history_safe_start(task->group->history, from, hist_begin);
-
-        /* 注入未折叠历史消息 [max(from,1), end) */
-        size_t start = from > 0 ? from : 1;
-        for (size_t i = start; i < end; i++)
+        /* 注入全部未折叠历史 [hist_begin, end): fold 采用"半量"策略 (见
+         * edc_memory_actor 的 L1 fold), 触发时只压最老的一半, 剩下的未折叠
+         * 消息正是模型该看到的近期细节, 因此整段注入、不再截断。请求体量的
+         * 上界由 group_fold_msg_threshold 决定 (fold 触发即把它压回去)。 */
+        for (size_t i = hist_begin; i < end; i++)
         {
             cJSON_AddItemReferenceToArray(msgs, cJSON_GetArrayItem(task->group->history, i));
         }

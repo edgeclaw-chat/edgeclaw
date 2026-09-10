@@ -229,9 +229,6 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
     item = cJSON_GetObjectItem(json, "max_iter");
     result->max_iter = (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_MAX_ITER;
 
-    item = cJSON_GetObjectItem(json, "load_n_histories");
-    result->load_n_histories = (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_LOAD_N_HISTORIES;
-
     item = cJSON_GetObjectItem(json, "memory_compress_threshold");
     result->memory_compress_threshold =
         (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_MEMORY_COMPRESS_THRESHOLD;
@@ -364,12 +361,6 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     if (ival < -1)
         return -1;
     result->max_iter = ival;
-
-    /* Load N Histories */
-    ival = prompt_int("Load N Histories", defaults ? defaults->load_n_histories : EDC_CONFIG_DEFAULT_LOAD_N_HISTORIES);
-    if (ival < 0)
-        return -1;
-    result->load_n_histories = ival;
 
     /* Memory Compress Threshold */
     ival = prompt_int("Memory Compress Threshold", defaults && defaults->memory_compress_threshold > 0
@@ -769,7 +760,11 @@ void edc_init_env_result_free(struct edc_init_env_result *result)
  * file always shows the full configuration panorama. Only absent keys are
  * added: existing values, key order and user-added keys are untouched, and the
  * file is rewritten only when something was actually missing, so a complete
- * config never churns. */
+ * config never churns.
+ *
+ * The mirror case is handled too: keys that lost their last consumer are
+ * dropped (see drop_obsolete_keys), so a retired knob does not linger in
+ * everyone's config.json forever. */
 
 static void ensure_int_key(cJSON *obj, const char *key, int def, bool *changed)
 {
@@ -785,6 +780,23 @@ static void ensure_str_key(cJSON *obj, const char *key, const char *def, bool *c
         return;
     cJSON_AddStringToObject(obj, key, def);
     *changed = true;
+}
+
+/* Keys that older versions materialized but that no longer have any consumer.
+ * They are dropped from existing files so config.json only advertises live
+ * knobs (dead keys invite pointless edits). */
+static void drop_obsolete_keys(cJSON *conf, bool *changed)
+{
+    static const char *const obsolete[] = {"load_n_histories", NULL};
+
+    for (int i = 0; obsolete[i]; i++)
+    {
+        if (!cJSON_GetObjectItem(conf, obsolete[i]))
+            continue;
+        cJSON_DeleteItemFromObject(conf, obsolete[i]);
+        *changed = true;
+        log_info("config.json: dropped obsolete key '%s'", obsolete[i]);
+    }
 }
 
 /* Make sure the sandbox object exists and carries both path arrays. */
@@ -861,7 +873,6 @@ static void edc_init_env_conf_topup(const char *conf_file, const char *edc_home)
     ensure_str_key(conf, "api_url", EDC_CONFIG_DEFAULT_API_URL, &changed);
     ensure_str_key(conf, "model", EDC_CONFIG_DEFAULT_MODEL, &changed);
     ensure_int_key(conf, "max_iter", EDC_CONFIG_DEFAULT_MAX_ITER, &changed);
-    ensure_int_key(conf, "load_n_histories", EDC_CONFIG_DEFAULT_LOAD_N_HISTORIES, &changed);
     ensure_int_key(conf, "memory_compress_threshold", EDC_CONFIG_DEFAULT_MEMORY_COMPRESS_THRESHOLD, &changed);
     ensure_int_key(conf, "group_fold_msg_threshold", EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD, &changed);
     ensure_int_key(conf, "tool_max_output_size", EDC_CONFIG_DEFAULT_TOOL_MAX_OUTPUT_SIZE, &changed);
@@ -884,6 +895,8 @@ static void edc_init_env_conf_topup(const char *conf_file, const char *edc_home)
     ensure_int_key(conf, "device_baud", EDC_CONFIG_DEFAULT_DEVICE_BAUD, &changed);
     ensure_str_key(conf, "device_pty", EDC_CONFIG_DEFAULT_DEVICE_PTY, &changed);
 
+    drop_obsolete_keys(conf, &changed);
+
     if (changed)
     {
         char *config_str = cJSON_Print(conf);
@@ -896,7 +909,7 @@ static void edc_init_env_conf_topup(const char *conf_file, const char *edc_home)
         }
         else
         {
-            log_info("config.json topped up with default keys");
+            log_info("config.json updated with default keys / obsolete keys removed");
         }
         cJSON_free(config_str);
     }
@@ -953,11 +966,6 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
         log_error("Max Iterations must be -1 (unlimited) or a positive integer.");
         goto exit_free_env;
     }
-    if (env_result.load_n_histories < 0)
-    {
-        log_error("Load N Histories must be >= 0.");
-        goto exit_free_env;
-    }
     if (env_result.tool_max_output_size <= 0)
     {
         log_error("Tool Max Output Size must be greater than 0.");
@@ -976,7 +984,6 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     cJSON_AddStringToObject(config, "model", env_result.model);
     cJSON_AddStringToObject(config, "api_url", env_result.api_url);
     cJSON_AddNumberToObject(config, "max_iter", env_result.max_iter);
-    cJSON_AddNumberToObject(config, "load_n_histories", env_result.load_n_histories);
     cJSON_AddNumberToObject(config, "memory_compress_threshold", env_result.memory_compress_threshold);
     cJSON_AddNumberToObject(config, "group_fold_msg_threshold", env_result.group_fold_msg_threshold);
     cJSON_AddNumberToObject(config, "tool_max_output_size", env_result.tool_max_output_size);

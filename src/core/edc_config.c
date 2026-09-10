@@ -115,14 +115,6 @@ struct edc_config *edc_config_load(const char *edc_home)
     }
     config->max_iter = max_iter->valueint;
 
-    cJSON *load_n_histories = cJSON_GetObjectItem(conf, "load_n_histories");
-    if (!load_n_histories || !cJSON_IsNumber(load_n_histories))
-    {
-        log_error("load_n_histories is not number type");
-        goto exit_free_config;
-    }
-    config->load_n_histories = load_n_histories->valueint;
-
     /* The optional tunables below are all materialized into config.json by
      * edc_init_env() (EDC_CONFIG_DEFAULT_* in edc_init_env.h is the single
      * source of truth). The fallbacks here only cover a key that was removed

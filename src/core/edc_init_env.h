@@ -18,7 +18,6 @@
 #define EDC_CONFIG_DEFAULT_API_URL "https://api.deepseek.com/chat/completions"
 #define EDC_CONFIG_DEFAULT_MODEL "deepseek-v4-flash"
 #define EDC_CONFIG_DEFAULT_MAX_ITER (-1) /* -1 = unlimited */
-#define EDC_CONFIG_DEFAULT_LOAD_N_HISTORIES 10
 #define EDC_CONFIG_DEFAULT_MEMORY_COMPRESS_THRESHOLD 200
 #define EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD 500
 #define EDC_CONFIG_DEFAULT_TOOL_MAX_OUTPUT_SIZE 10000
@@ -35,7 +34,6 @@ struct edc_init_env_result
     sds api_url;
     sds model;
     int max_iter;
-    int load_n_histories;
     int memory_compress_threshold;
     int group_fold_msg_threshold;
     int tool_max_output_size;
