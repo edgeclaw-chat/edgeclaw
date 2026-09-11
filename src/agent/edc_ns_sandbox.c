@@ -284,6 +284,40 @@ static bool ns_mount_dir_as_rw(const char *path)
     return true;
 }
 
+/* Make an existing mount read-only without discarding its contents. This is
+ * the read-only counterpart of ns_mount_dir_as_rw, but it does NOT bind first.
+ *
+ * It is what /run needs. Recreating a fresh empty tmpfs there erased
+ * /run/systemd/resolve, so the /etc/resolv.conf symlink into it dangled and
+ * name resolution broke.
+ *
+ * A bind of /run is refused outright -- the mount's superblock belongs to an
+ * ancestor user namespace, so MS_BIND fails with EINVAL ("wrong fs type") --
+ * while the read-only remount of the existing mount is allowed. That remount
+ * only flips the flags of this namespace's copy of the mount (the sandbox has
+ * already made every mount private), so the host is untouched. */
+static bool ns_mount_dir_as_ro(const char *path)
+{
+    if (mount(NULL, path, NULL, MS_REMOUNT | MS_BIND | MS_RDONLY, NULL) != 0)
+    {
+        /* Some mounts may need the bind first; keep that as a fallback. */
+        if (mount(path, path, NULL, MS_BIND, NULL) != 0 ||
+            mount(NULL, path, NULL, MS_REMOUNT | MS_BIND | MS_RDONLY, NULL) != 0)
+        {
+            log_debug("edc_ns_sandbox: cannot remount %s read-only: %s", path, strerror(errno));
+        }
+    }
+
+    struct statvfs vfs;
+    if (statvfs(path, &vfs) == 0 && (vfs.f_flag & ST_RDONLY))
+        return true;
+
+    /* Could not make it read-only. The mount did keep its contents, so the
+     * caller leaves it in place rather than recreating an empty filesystem. */
+    log_debug("edc_ns_sandbox: %s kept writable (read-only remount not permitted)", path);
+    return false;
+}
+
 /* Mask a path so its contents become unreachable: overlay an empty mode-000
  * tmpfs on a directory, or bind an empty file over a regular file. Landlock
  * cannot express a deny inside an allowed parent, so masking is done here, in
@@ -415,8 +449,16 @@ bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths, const ch
         if (!is_special_fs(ro_paths[i]))
             continue;
 
-        if (!ns_mount_special_fs(ro_paths[i], MS_RDONLY))
+        /* Bind the existing mount onto itself and remount it read-only, so it
+         * keeps its contents (/run in particular carries the resolv.conf
+         * target). The old code replaced these with a fresh empty filesystem,
+         * which silently discarded what was there and broke DNS. */
+        if (!ns_mount_dir_as_ro(ro_paths[i]))
         {
+            /* Left as a writable bind on purpose: the contents are preserved,
+             * and dropping them to force the read-only flag would do more
+             * damage than it prevents. */
+            log_debug("edc_ns_sandbox: %s left read-only not enforced", ro_paths[i]);
             continue;
         }
 
