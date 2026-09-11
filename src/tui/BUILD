@@ -14,6 +14,7 @@ cc_library(
     srcs = [
         "edc_c_bridge.c",
         "edc_chat_widget.cpp",
+        "edc_clipboard.cpp",
         "edc_input.cpp",
         "edc_message.cpp",
         "edc_message_list.cpp",
@@ -27,6 +28,7 @@ cc_library(
     hdrs = [
         "edc_c_bridge.h",
         "edc_chat_widget.hpp",
+        "edc_clipboard.hpp",
         "edc_input.hpp",
         "edc_message.hpp",
         "edc_message_list.hpp",

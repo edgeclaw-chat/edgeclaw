@@ -41,17 +41,6 @@ static void DisableBracketedPaste()
     std::fflush(stdout);
 }
 
-// How long the "Copied to clipboard" chip stays on screen: long enough to be
-// noticed after a drag, short enough not to linger.
-constexpr auto kClipboardToastDuration = std::chrono::milliseconds(2000);
-
-static void CopyToClipboard(const std::string &text)
-{
-    const std::string sequence = Osc52ClipboardSequence(text);
-    std::fwrite(sequence.data(), 1, sequence.size(), stdout);
-    std::fflush(stdout);
-}
-
 // todowrite 工具的 TOOL 消息头（与 edc_tools_todo.c 注册名保持一致）。
 // 该工具的文本回显（Markdown checklist）在 TUI 里不进对话消息列表——TODO
 // 状态只由右侧 TodoWidget 展示，其数据源是任务快照里 active task 的 todo
@@ -322,74 +311,6 @@ std::string ShortenHome(const char *path)
 }
 
 } // namespace
-
-// Put |text| on the terminal's clipboard with OSC 52: ESC ] 52 ; c ; <base64> BEL.
-//
-// This is the only clipboard a TUI can reach without a helper program (xclip,
-// wl-copy, pbcopy), and it works over SSH: the sequence travels in the same
-// stream as the drawing and the terminal in front of the user performs the
-// copy. Terminals that do not implement it ignore the sequence.
-//
-// It also matters that we do this ourselves: mouse reporting is on (the log
-// scrolls on the wheel), so a plain drag is delivered to the app instead of
-// starting the terminal's own selection.
-//
-// Defined here (outside the anonymous namespace, declared in the header) so
-// tests can pin the exact bytes without a terminal.
-std::string Osc52ClipboardSequence(const std::string &text)
-{
-    static constexpr char kBase64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    std::string encoded;
-    encoded.reserve((text.size() + 2) / 3 * 4);
-    for (size_t i = 0; i < text.size(); i += 3)
-    {
-        const size_t remaining = text.size() - i;
-        const unsigned b0 = static_cast<unsigned char>(text[i]);
-        const unsigned b1 = remaining > 1 ? static_cast<unsigned char>(text[i + 1]) : 0;
-        const unsigned b2 = remaining > 2 ? static_cast<unsigned char>(text[i + 2]) : 0;
-        const unsigned triple = (b0 << 16) | (b1 << 8) | b2;
-
-        encoded += kBase64[(triple >> 18) & 0x3f];
-        encoded += kBase64[(triple >> 12) & 0x3f];
-        encoded += remaining > 1 ? kBase64[(triple >> 6) & 0x3f] : '=';
-        encoded += remaining > 2 ? kBase64[triple & 0x3f] : '=';
-    }
-
-    return std::string("\x1b]52;c;") + encoded + '\a';
-}
-
-// The "Copied to clipboard" chip: flat and borderless like the Tasks/Todos
-// section headers, but on the palette's raised surface -- dialog_bg is the one
-// step above pane_bg, the surface a floating panel uses, so the block reads as a
-// surface of its own instead of vanishing into the message background behind it.
-// A blank row above and below the label lives inside the surface, so the block
-// is taller than its text and the label has room to breathe. One cell of margin
-// on the top and right keeps the block off the corner.
-//
-// The heavy rule on the left is the same one UserMessage carries (user_rule), so
-// the chip reads as something the user just did, and it spans the surface's full
-// height.
-::ftxui::Element ClipboardToastElement()
-{
-    const auto &pal = style::palette();
-    auto bar = ::ftxui::separatorHeavy() | ::ftxui::color(pal.user_rule);
-    auto label = ::ftxui::text(" Copied to clipboard ") | ::ftxui::bold | ::ftxui::color(pal.accent);
-    auto chip = ::ftxui::hbox({
-                    std::move(bar),
-                    ::ftxui::vbox({
-                        ::ftxui::text(""), // breathing room above the label
-                        std::move(label),
-                        ::ftxui::text(""), // and below it
-                    }),
-                }) |
-                ::ftxui::bgcolor(pal.dialog_bg);
-    return ::ftxui::vbox({
-        ::ftxui::text(""),                                                       // one blank row below the top edge
-        ::ftxui::hbox({::ftxui::filler(), std::move(chip), ::ftxui::text(" ")}), // one blank column off the right edge
-        ::ftxui::filler(),
-    });
-}
 
 // The animated "working" row: the sweeping block bar on its own, no text.
 // Defined here (outside the anonymous namespace, declared in the header) so
@@ -887,15 +808,16 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
     // right-aligned model + "/help" stop at the input's right edge and never
     // run into the sidebar: the task/todo pane stays a full-height column.
     // The "Copied to clipboard" chip floats over the chat pane's own top-right
-    // corner -- the pane the selection was made in, not the whole window -- one
-    // cell in from each edge, the way the Tasks/Todos headers sit in the
-    // sidebar. Drawing it as an overlay keeps it out of the layout, and asking
-    // for a frame while it is up is also what clears it: the frame after the
-    // deadline draws without it, and an idle screen is not redrawn otherwise.
+    // corner -- the pane the selection was made in, not the whole window -- the
+    // way the Tasks/Todos headers sit in the sidebar. Drawing it as an overlay
+    // keeps it out of the layout, and asking for a frame while it is up is what
+    // keeps the fade moving and finally lets the chip go: an idle screen is not
+    // redrawn otherwise. All of that lives in edc_clipboard.*.
     auto chat = chat_widget_->Render();
-    if (std::chrono::steady_clock::now() < clipboard_toast_until_)
+    const auto toast_now = std::chrono::steady_clock::now();
+    if (clipboard_toast_.Visible(toast_now))
     {
-        chat = ::ftxui::dbox({std::move(chat), ClipboardToastElement()});
+        chat = ::ftxui::dbox({std::move(chat), ClipboardToastElement(clipboard_toast_.Fade(toast_now))});
         if (screen_)
             screen_->RequestAnimationFrame();
     }
@@ -975,6 +897,16 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
 
 ::ftxui::Element TUIWindow::OnRender()
 {
+    // The drag that just ended copies on this frame, not on the release itself:
+    // FTXUI rebuilds its selection *while* a frame is drawn, so the text under
+    // the cursor only settles once the frame the release belongs to has been
+    // rendered.
+    if (copy_pending_)
+    {
+        copy_pending_ = false;
+        CopySelectionToClipboard();
+    }
+
     // Periodic sidebar refresh: background tasks change state without any
     // channel message (they are not the active task), so poll at a low rate.
     {
@@ -1041,6 +973,27 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
 
 bool TUIWindow::OnEvent(::ftxui::Event event)
 {
+    // A drag is copied when it is let go, not while it is being made: mid-drag
+    // the selection is still moving, and a click has to stay a click. This is an
+    // observation only -- returning true here would make FTXUI cancel the
+    // selection outright (see HandleSelection: a handled mouse event clears it),
+    // so the event still has to travel on to the rest of the tree.
+    if (event.is_mouse() && event.mouse().button == ::ftxui::Mouse::Left)
+    {
+        if (event.mouse().motion == ::ftxui::Mouse::Pressed)
+        {
+            press_x_ = event.mouse().x;
+            press_y_ = event.mouse().y;
+        }
+        else if (event.mouse().motion == ::ftxui::Mouse::Released &&
+                 IsSelectionDrag(press_x_, press_y_, event.mouse().x, event.mouse().y))
+        {
+            copy_pending_ = true;
+            if (screen_)
+                screen_->RequestAnimationFrame();
+        }
+    }
+
     // The /connect dialog, when open, owns every event: Esc closes it, Enter
     // submits, everything else goes to its fields.
     if (connect_open_)
@@ -1123,32 +1076,22 @@ TUIWindow::~TUIWindow()
 void TUIWindow::SetScreen(::ftxui::ScreenInteractive *screen)
 {
     screen_ = screen;
+}
 
-    // Selecting text copies it straight to the clipboard: no second keystroke,
-    // and no terminal-side selection (mouse reporting rules that out). FTXUI
-    // calls this once per frame in which the selection changed, after that frame
-    // was drawn, so GetSelection() already holds the text under the cursor.
-    screen_->SelectionChange(
-        [this]
-        {
-            const std::string selected = screen_->GetSelection();
-            if (selected.empty())
-            {
-                // The selection went away: forget it, so selecting the same text
-                // again copies it again.
-                last_copied_.clear();
-                return;
-            }
-            if (selected == last_copied_)
-                return;
-            last_copied_ = selected;
-            CopyToClipboard(selected);
+void TUIWindow::CopySelectionToClipboard()
+{
+    if (!screen_)
+        return;
 
-            // The write is invisible, so acknowledge it on screen.
-            clipboard_toast_until_ = std::chrono::steady_clock::now() + kClipboardToastDuration;
-            if (screen_)
-                screen_->RequestAnimationFrame();
-        });
+    const std::string selected = screen_->GetSelection();
+    if (selected.empty())
+        return;
+
+    CopyToClipboard(selected);
+
+    // The write is invisible, so acknowledge it on screen.
+    clipboard_toast_.Raise(std::chrono::steady_clock::now());
+    screen_->RequestAnimationFrame();
 }
 
 void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_message *message)

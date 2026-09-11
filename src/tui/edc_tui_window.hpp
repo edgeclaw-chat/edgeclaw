@@ -1,4 +1,5 @@
 #include "edc_c_bridge.h"
+#include "edc_clipboard.hpp"
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <chrono>
@@ -21,15 +22,6 @@ class TodoWidget;
 // agent. The bar has a fixed number of cells and is one line tall, so showing
 // it in place of the footer never moves the layout.
 ::ftxui::Element WorkingIndicatorElement(long long elapsed_ms);
-
-// The OSC 52 sequence that puts |text| on the terminal's clipboard: the base64
-// of the text wrapped in ESC ] 52 ; c ; ... BEL. Exposed (like the working row)
-// so tests can pin the exact bytes without needing a terminal.
-std::string Osc52ClipboardSequence(const std::string &text);
-
-// The transient "Copied to clipboard" chip, drawn as an overlay in the window's
-// top-right corner. Exposed so tests can render it without a live agent.
-::ftxui::Element ClipboardToastElement();
 
 class TUIWindow : public ::ftxui::ComponentBase
 {
@@ -95,6 +87,9 @@ class TUIWindow : public ::ftxui::ComponentBase
     // active model, the sandbox state and the "/help" pointer, right-aligned
     // within the chat pane's width (never spilling into the sidebar).
     ::ftxui::Element RenderFooter() const;
+    // Put whatever is selected on the clipboard and raise the chip. Runs on the
+    // frame after the drag was released, once FTXUI's selection is complete.
+    void CopySelectionToClipboard();
 
     std::shared_ptr<edc::ChatWidget> chat_widget_;
     std::shared_ptr<edc::TaskWidget> task_widget_;
@@ -136,12 +131,16 @@ class TUIWindow : public ::ftxui::ComponentBase
 
     struct edc_agent *agent = NULL;
     ::ftxui::ScreenInteractive *screen_ = nullptr;
-    // Last text pushed to the clipboard, so a frame that did not change the
-    // selection does not rewrite the same payload.
-    std::string last_copied_;
-    // The "Copied to clipboard" chip is drawn while now < this. The default
-    // (epoch) means "never".
-    std::chrono::steady_clock::time_point clipboard_toast_until_;
+    // The "Copied to clipboard" chip's own clock: a copy raises it and it fades
+    // out by itself (see edc_clipboard.hpp).
+    ClipboardToast clipboard_toast_;
+    // Where the current left-button drag started, and whether it has been let go
+    // with a copy still to take. The copy waits for the next frame: FTXUI
+    // rebuilds its selection while that frame is drawn, and a click (no
+    // movement) is not a selection at all.
+    int press_x_ = 0;
+    int press_y_ = 0;
+    bool copy_pending_ = false;
 
     // /connect dialog: an overlay with three fields (API URL / Model / API
     // Key), built once in the constructor. While it is open the dialog owns
