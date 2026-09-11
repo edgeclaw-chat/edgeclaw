@@ -50,6 +50,13 @@ class TUIWindow : public ::ftxui::ComponentBase
     // instead of dereferencing a NULL agent.
     bool Ready() const { return agent != nullptr; }
 
+    // Advance the window's own animations. Called once per main-loop iteration
+    // (see main.cpp): the loop returns every animation tick, and this is the
+    // only UI-thread moment the window gets that is not a repaint. It asks for
+    // a frame only when the working spinner's cadence is due, which is what
+    // keeps a running task from repainting the whole TUI at the loop's rate.
+    void TickAnimations();
+
   private:
     // Append the current input as a user message and clear the box. A bare
     // "/connect" opens the provider dialog instead of sending anything.
@@ -178,6 +185,10 @@ class TUIWindow : public ::ftxui::ComponentBase
     // animation phase, so the run starts at the first cell each time a process
     // goes busy. Only meaningful while working_ is true.
     std::chrono::steady_clock::time_point working_started_;
+
+    // The spinner's own repaint cadence (see TickAnimations): when a frame was
+    // last requested for it. UI thread only.
+    std::chrono::steady_clock::time_point last_spinner_frame_;
 
     // Last time a task-tree snapshot was requested; throttles the periodic
     // refresh that catches background-task state changes (which send no

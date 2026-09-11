@@ -166,6 +166,13 @@ bool ScrollView::OnEvent(::ftxui::Event event)
 
         if (event.mouse().button == ::ftxui::Mouse::WheelUp)
         {
+            // Against an end this reports unhandled (Scroll() returns false),
+            // which is the view's contract: the wheel does not move, so the
+            // event is not ours. It buys nothing to claim it instead -- ftxui
+            // invalidates the frame when the event is *delivered*, in
+            // App::Internal::HandleTask, before this code runs, so the repaint
+            // happens either way (measured: same render count whether the
+            // component returns true, false, or does nothing at all).
             return Scroll(-kWheelStep);
         }
 

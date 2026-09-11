@@ -1,11 +1,13 @@
 #include "edc_log.h"
 #include "edc_tui_window.hpp"
+#include "ftxui/component/loop.hpp"
 #include "ftxui/component/screen_interactive.hpp"
 #include "uv.h"
 #include <memory>
 #include <signal.h>
 #include <stdio.h>
 #include <string>
+#include <thread>
 
 using namespace ftxui;
 
@@ -103,8 +105,14 @@ int main(int argc, char **argv)
         {
             edc_c_agent_set_command_handler();
             window->SetScreen(&screen);
+            // Every input event the loop takes off the terminal, counted. The
+            // loop below uses it to tell "there was work this iteration" from
+            // "idle", so a burst of input can drain back to back instead of
+            // paying ftxui's once-per-iteration sleep for every batch of it.
+            uint64_t events_seen = 0;
             ftxui::Component component = window;
             component |= CatchEvent([&](Event e) -> bool {
+                events_seen++;
                 // No 'q' here: the window now has a text input, so a bare letter must
                 // reach the box instead of quitting.
                 if (e == Event::Escape || e == Event::CtrlC)
@@ -122,7 +130,35 @@ int main(int argc, char **argv)
             ::signal(SIGINT, HandleTerminationSignal);
             ::signal(SIGTERM, HandleTerminationSignal);
 
-            screen.Loop(component);
+            // Drive the loop explicitly instead of screen.Loop(component) (which
+            // is Loop::Run():
+            //
+            //   while (!HasQuitted()) RunOnceBlocking();
+            //
+            // RunOnceBlocking() sleeps ~16.6ms at the end of EVERY iteration --
+            // including the ones that just handled input -- so it caps the whole
+            // UI at ~59 event batches/s (measured: 59.3/s blocking vs 2.0M/s
+            // without the sleep). ftxui reads at most 128 bytes of terminal input
+            // per iteration, and one mouse-wheel report is ~11 bytes, so a scroll
+            // flick that emits a few hundred wheel events needs seconds to drain;
+            // every drained event also forces a full repaint (ftxui invalidates
+            // the frame for every event, handled or not), and while the viewport
+            // is already pinned at the top the screen does not change, so the TUI
+            // reads as frozen rather than as scrolling.
+            //
+            // Running RunOnce() and sleeping only when an iteration saw NO input
+            // keeps the idle cost exactly where it was (one wake-up per ~16ms,
+            // ~59/s) while letting a burst drain as fast as the frames it forces
+            // can be drawn. TickAnimations() still gets its per-iteration tick.
+            ftxui::Loop loop(&screen, component);
+            while (!loop.HasQuitted())
+            {
+                const uint64_t before = events_seen;
+                loop.RunOnce();
+                window->TickAnimations();
+                if (events_seen == before)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            }
         }
     }
 

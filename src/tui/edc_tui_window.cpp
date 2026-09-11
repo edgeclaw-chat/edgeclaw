@@ -109,6 +109,19 @@ constexpr int kRunPositions = kRunLast - kRunFirst + 1;
 // straight away instead of opening on an empty bar.
 constexpr int kRunStart = 0;
 
+// How often the working spinner repaints, in milliseconds.
+//
+// The bar advances one cell every kStepMs, so a frame per loop tick redraws the
+// entire tree -- chat log included -- for sub-cell movement nobody can see, for
+// as long as a task runs. Pacing it here (~20fps target; the loop's own tick
+// quantizes it to about 17fps, a 2-4x cut depending on how fast the terminal
+// can render a frame) still slides the run about one cell per repaint, which is
+// what a sweeping bar looks like anyway. One constant to tune.
+//
+// See TUIWindow::TickAnimations for why the pacing cannot live in the spinner's
+// own render.
+constexpr long long kSpinnerFrameMs = 33;
+
 // Where the lit run sits at |elapsed_ms|, and which way it is travelling.
 // The position is fractional so the run can slide *between* cells instead of
 // snapping a whole cell per step; at whole-cell times it lands exactly on the
@@ -825,12 +838,42 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
         return;
     working_ = busy;
     if (busy)
+    {
         working_started_ = std::chrono::steady_clock::now();
+        // Start the spinner's repaint cadence from the frame the
+        // RequestAnimationFrame below draws (see TickAnimations).
+        last_spinner_frame_ = working_started_;
+    }
     // A transition here can happen while the render loop is otherwise idle
     // (e.g. the first snapshot after a submit starts the animation), so ask
     // for a frame to repaint the footer/spinner row.
     if (screen_)
         screen_->RequestAnimationFrame();
+}
+
+void TUIWindow::TickAnimations()
+{
+    // Called once per main-loop iteration (see main.cpp) -- the one UI-thread
+    // tick the window gets that is not a repaint.
+    //
+    // The spinner must not ask for a frame from inside its own render: a frame
+    // that asks for another one pins the whole TUI to the loop's frame rate for
+    // as long as a task runs, redrawing the entire tree (chat log included) for
+    // sub-cell movement of a ten-cell bar. ftxui offers no "repaint in n ms", and
+    // a component cannot sleep either -- a closure that re-posts itself starves
+    // TaskRunner::RunUntilIdle(), which only returns when the queue drains, and
+    // the UI freezes outright. Pacing from the loop iteration, which returns
+    // every animation tick, is what is left.
+    if (!working_ || !screen_)
+        return;
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_spinner_frame_).count();
+    if (since < kSpinnerFrameMs)
+        return;
+
+    last_spinner_frame_ = now;
+    screen_->RequestAnimationFrame();
 }
 
 ::ftxui::Element TUIWindow::RenderMain()
@@ -866,8 +909,9 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
         const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - working_started_).count();
         children.push_back(WorkingIndicatorElement(elapsed_ms));
 
-        if (screen_)
-            screen_->RequestAnimationFrame();
+        // The next repaint is NOT requested here: the spinner's own cadence
+        // owns it (see TickAnimations), so one bar costs a frame every
+        // kSpinnerFrameMs instead of one per loop tick.
     }
     else
     {
