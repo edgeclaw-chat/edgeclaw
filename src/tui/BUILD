@@ -104,6 +104,20 @@ cc_test(
     }),
 )
 
+cc_test(
+    name = "test_clipboard",
+    srcs = ["test_clipboard.cpp"],
+    deps = [
+        ":tui",
+    ],
+    linkstatic = True,
+    linkopts = LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+
 cc_binary(
     name = "edgeclaw_tui",
     srcs = [

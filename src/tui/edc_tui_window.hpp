@@ -22,6 +22,11 @@ class TodoWidget;
 // it in place of the footer never moves the layout.
 ::ftxui::Element WorkingIndicatorElement(long long elapsed_ms);
 
+// The OSC 52 sequence that puts |text| on the terminal's clipboard: the base64
+// of the text wrapped in ESC ] 52 ; c ; ... BEL. Exposed (like the working row)
+// so tests can pin the exact bytes without needing a terminal.
+std::string Osc52ClipboardSequence(const std::string &text);
+
 class TUIWindow : public ::ftxui::ComponentBase
 {
   public:
@@ -127,6 +132,9 @@ class TUIWindow : public ::ftxui::ComponentBase
 
     struct edc_agent *agent = NULL;
     ::ftxui::ScreenInteractive *screen_ = nullptr;
+    // Last text pushed to the clipboard, so a frame that did not change the
+    // selection does not rewrite the same payload.
+    std::string last_copied_;
 
     // /connect dialog: an overlay with three fields (API URL / Model / API
     // Key), built once in the constructor. While it is open the dialog owns

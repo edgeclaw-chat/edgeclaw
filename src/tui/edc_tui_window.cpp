@@ -41,6 +41,13 @@ static void DisableBracketedPaste()
     std::fflush(stdout);
 }
 
+static void CopyToClipboard(const std::string &text)
+{
+    const std::string sequence = Osc52ClipboardSequence(text);
+    std::fwrite(sequence.data(), 1, sequence.size(), stdout);
+    std::fflush(stdout);
+}
+
 // todowrite 工具的 TOOL 消息头（与 edc_tools_todo.c 注册名保持一致）。
 // 该工具的文本回显（Markdown checklist）在 TUI 里不进对话消息列表——TODO
 // 状态只由右侧 TodoWidget 展示，其数据源是任务快照里 active task 的 todo
@@ -311,6 +318,42 @@ std::string ShortenHome(const char *path)
 }
 
 } // namespace
+
+// Put |text| on the terminal's clipboard with OSC 52: ESC ] 52 ; c ; <base64> BEL.
+//
+// This is the only clipboard a TUI can reach without a helper program (xclip,
+// wl-copy, pbcopy), and it works over SSH: the sequence travels in the same
+// stream as the drawing and the terminal in front of the user performs the
+// copy. Terminals that do not implement it ignore the sequence.
+//
+// It also matters that we do this ourselves: mouse reporting is on (the log
+// scrolls on the wheel), so a plain drag is delivered to the app instead of
+// starting the terminal's own selection.
+//
+// Defined here (outside the anonymous namespace, declared in the header) so
+// tests can pin the exact bytes without a terminal.
+std::string Osc52ClipboardSequence(const std::string &text)
+{
+    static constexpr char kBase64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    std::string encoded;
+    encoded.reserve((text.size() + 2) / 3 * 4);
+    for (size_t i = 0; i < text.size(); i += 3)
+    {
+        const size_t remaining = text.size() - i;
+        const unsigned b0 = static_cast<unsigned char>(text[i]);
+        const unsigned b1 = remaining > 1 ? static_cast<unsigned char>(text[i + 1]) : 0;
+        const unsigned b2 = remaining > 2 ? static_cast<unsigned char>(text[i + 2]) : 0;
+        const unsigned triple = (b0 << 16) | (b1 << 8) | b2;
+
+        encoded += kBase64[(triple >> 18) & 0x3f];
+        encoded += kBase64[(triple >> 12) & 0x3f];
+        encoded += remaining > 1 ? kBase64[(triple >> 6) & 0x3f] : '=';
+        encoded += remaining > 2 ? kBase64[triple & 0x3f] : '=';
+    }
+
+    return std::string("\x1b]52;c;") + encoded + '\a';
+}
 
 // The animated "working" row: the sweeping block bar on its own, no text.
 // Defined here (outside the anonymous namespace, declared in the header) so
@@ -1031,6 +1074,27 @@ TUIWindow::~TUIWindow()
 void TUIWindow::SetScreen(::ftxui::ScreenInteractive *screen)
 {
     screen_ = screen;
+
+    // Selecting text copies it straight to the clipboard: no second keystroke,
+    // and no terminal-side selection (mouse reporting rules that out). FTXUI
+    // calls this once per frame in which the selection changed, after that frame
+    // was drawn, so GetSelection() already holds the text under the cursor.
+    screen_->SelectionChange(
+        [this]
+        {
+            const std::string selected = screen_->GetSelection();
+            if (selected.empty())
+            {
+                // The selection went away: forget it, so selecting the same text
+                // again copies it again.
+                last_copied_.clear();
+                return;
+            }
+            if (selected == last_copied_)
+                return;
+            last_copied_ = selected;
+            CopyToClipboard(selected);
+        });
 }
 
 void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_message *message)
