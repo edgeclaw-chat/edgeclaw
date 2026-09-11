@@ -312,12 +312,12 @@ static void test_turns(void)
     /* edc_task_user_input: user messages across turns + active_turn. */
     TEST("edc_task_user_input collects user messages");
     struct edc_task *ut = edc_task_new("task-uin", "sess-1", "task-uin", "u test", edc_channel_adapter);
-    CHECK(edc_task_user_input(ut) == NULL, "no input -> NULL");
+    CHECK(edc_task_user_input(ut, NULL) == NULL, "no input -> NULL");
 
     struct edc_turn *t1 = edc_turn_new();
     edc_turn_add_user_message(t1, "hello");
     edc_task_add_turn(ut, t1);
-    sds u1 = edc_task_user_input(ut);
+    sds u1 = edc_task_user_input(ut, NULL);
     CHECK(u1 && strcmp(u1, "hello") == 0, "single user input");
     sdsfree(u1);
 
@@ -325,17 +325,33 @@ static void test_turns(void)
     edc_turn_add_user_message(t2, "world");
     edc_turn_add_assistant_message(t2, cJSON_Parse("{\"role\":\"assistant\",\"content\":\"ignored\"}"));
     edc_task_add_turn(ut, t2);
-    sds u2 = edc_task_user_input(ut);
+    sds u2 = edc_task_user_input(ut, NULL);
     CHECK(u2 && strcmp(u2, "hello\nworld") == 0, "inputs joined, assistant ignored");
     sdsfree(u2);
 
     struct edc_turn *ta = edc_turn_new();
     edc_turn_add_user_message(ta, "inflight");
     ut->active_turn = ta;
-    sds u3 = edc_task_user_input(ut);
+    sds u3 = edc_task_user_input(ut, NULL);
     CHECK(u3 && strcmp(u3, "hello\nworld\ninflight") == 0, "active_turn input included");
     sdsfree(u3);
-    CHECK(edc_task_user_input(NULL) == NULL, "edc_task_user_input(NULL) is NULL");
+    CHECK(edc_task_user_input(NULL, NULL) == NULL, "edc_task_user_input(NULL) is NULL");
+
+    /* 已 flush 的 turn: edc_session_add_turn 把消息 pop 进 session, 本地队列
+     * 为空, 只留 msg_range —— 应能从 session 消息数组按 range 取回 user 输入
+     * (assistant 仍被忽略), 否则 /task status 完成后再看不到 input。 */
+    struct edc_turn *t3 = edc_turn_new();
+    t3->range_valid = true;
+    t3->msg_range_start = 0;
+    t3->msg_range_count = 2; /* user + assistant: 只应取回 user */
+    edc_task_add_turn(ut, t3);
+    cJSON *sess_msgs = cJSON_Parse("[{\"role\":\"user\",\"content\":\"flushed\"},"
+                                   " {\"role\":\"assistant\",\"content\":\"ignored\"}]");
+    sds u4 = edc_task_user_input(ut, sess_msgs);
+    CHECK(u4 && strcmp(u4, "hello\nworld\nflushed\ninflight") == 0,
+          "flushed turn input recovered from session range");
+    sdsfree(u4);
+    cJSON_Delete(sess_msgs);
     edc_task_free(ut);
 }
 

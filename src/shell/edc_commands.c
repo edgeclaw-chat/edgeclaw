@@ -862,8 +862,12 @@ static void edc_commands_handle_task_status(struct edc_agent *agent, edc_actor_t
                            t->task_id, edc_task_state_name(t->state), t->group_id, t->description);
 
     /* 展示 task 实际收到的用户输入（而不只是 description）。多行输入把换行
-     * 后的内容缩进两格，作为 markdown 列表项的续行，避免撑破列表。 */
-    sds user_input = edc_task_user_input(t);
+     * 后的内容缩进两格，作为 markdown 列表项的续行，避免撑破列表。
+     * 传入 session 消息数组: 已提交进 session 的 turn 本地消息队列已空，
+     * 需要按 turn 的 msg_range 从 session 里取回 user 输入（见
+     * edc_task_user_input 注释），否则完成后的 task 只显示 desc、看不到输入。 */
+    struct edc_session *sess = edc_session_manager_get_active(agent->session_manager);
+    sds user_input = edc_task_user_input(t, sess ? edc_session_get_messages(sess) : NULL);
     if (user_input)
     {
         sds indented = sdsempty();
@@ -883,6 +887,15 @@ static void edc_commands_handle_task_status(struct edc_agent *agent, edc_actor_t
                        "- **deps**: %zu/%zu completed\n"
                        "- **messages**: %zu\n",
                        t->deps_completed, t->deps_total, edc_task_message_count(t));
+    /* token 消耗: 该 task 生命周期内所有 LLM 响应 usage 的累计值。为 0
+     * (尚未发生任何 LLM 调用, 或 provider 未返回 usage) 时不打印, 免得
+     * 给刚创建、还在 WAITING_DEPS 的 task 挂一行 "0 total" 的噪音。 */
+    if (t->tokens_total > 0)
+    {
+        out = sdscatprintf(out,
+                           "- **tokens**: %lld total (%lld prompt · %lld completion · %lld cached)\n",
+                           t->tokens_total, t->tokens_prompt, t->tokens_completion, t->tokens_cached);
+    }
     if (t->output)
     {
         out = sdscatprintf(out, "- **output**: %s\n", t->output);

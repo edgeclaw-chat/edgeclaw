@@ -105,6 +105,16 @@ struct edc_task
      * 清零 (scheduler)。 */
     int llm_rounds;
 
+    /* ── Token 消耗统计 ──
+     * 该 task 生命周期内所有 LLM 响应的 usage 累加值。一次用户输入可能触发
+     * 多轮请求 (工具链续发、依赖触发), 同 turn 内每次 API 调用的 usage 都
+     * 计入本 task; 跨 turn 持续累加, 直到 task 被回收。纯本地统计, 用于
+     * 侧边栏按 task 展示 token 消耗, 不参与调度决策。 */
+    long long tokens_prompt;     /* 累计 prompt tokens */
+    long long tokens_completion; /* 累计 completion tokens */
+    long long tokens_total;      /* 累计 total tokens */
+    long long tokens_cached;     /* 累计命中 provider 缓存的 prompt tokens */
+
     edc_channel_type channel_type;
 
     cJSON *todolist; /* JSON Array */
@@ -190,6 +200,14 @@ extern void edc_task_note_todo_sync(struct edc_task *task);
  *  计数, 直到模型再次调用 todowrite 或再次超距)。 */
 extern bool edc_task_llm_request_poke(struct edc_task *task);
 
+/* ── Token 统计 ──
+ * 累加一次 LLM 响应的 usage 到 task 的 token 账。四元组任一为正即累加;
+ * 全 0 (provider 未返回 usage, 或错误响应) 时无操作。total <= 0 时用
+ * prompt + completion 兜底 (与解析端一致)。线程/actor 语义: 只由调度器在
+ * 处理该 task 的 LLM 响应时调用, 与 task 状态同线程。 */
+extern void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long long completion_tokens,
+                               long long total_tokens, long long cached_tokens);
+
 /* ── Turn ──────────────────────────────────────────────────── */
 
 extern void edc_task_add_turn(struct edc_task *task, struct edc_turn *turn);
@@ -204,7 +222,7 @@ extern size_t edc_task_message_count(const struct edc_task *task);
 /** 该 task 收到的所有用户输入 (各 turn 里 role=="user" 的消息 content, 以 '\n'
  *  连接)。返回新分配的 sds, 无输入返回 NULL, 调用方负责 sdsfree。用于
  *  /task status 展示 task 实际收到的输入, 而不只是 description。 */
-extern sds edc_task_user_input(const struct edc_task *task);
+extern sds edc_task_user_input(const struct edc_task *task, const cJSON *session_messages);
 
 /* ── 依赖 (IPC) ────────────────────────────────────────────── */
 

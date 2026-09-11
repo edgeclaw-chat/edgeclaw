@@ -116,6 +116,14 @@ static const char *snap_str(const cJSON *item)
     return cJSON_IsString(item) ? item->valuestring : "";
 }
 
+/* Read a 64-bit integer from a snapshot node; 0 when absent or not a number.
+ * cJSON has no integer type, so counts arrive as doubles and are narrowed
+ * back here (token totals stay far below 2^53). */
+static long long snap_ll(const cJSON *item)
+{
+    return cJSON_IsNumber(item) ? (long long)item->valuedouble : 0;
+}
+
 /* forward: per-task todo items live in the snapshot tree (defined below) */
 static struct edc_c_todo_item *snap_todo_parse(const cJSON *arr, int *count_out);
 static void snap_todo_free(struct edc_c_todo_item *items, int count);
@@ -160,6 +168,7 @@ struct edc_c_task_snapshot *edc_c_task_snapshot_parse(const char *json)
             g->msg_count = cJSON_IsNumber(gmc) ? gmc->valueint : 0;
             g->orphaned = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(gj, "orphaned")) ? 1 : 0;
             g->fg = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(gj, "fg")) ? 1 : 0;
+            g->tokens_total = snap_ll(cJSON_GetObjectItemCaseSensitive(gj, "tokens_total"));
 
             cJSON *tasks = cJSON_GetObjectItemCaseSensitive(gj, "tasks");
             if (cJSON_IsArray(tasks))
@@ -177,6 +186,10 @@ struct edc_c_task_snapshot *edc_c_task_snapshot_parse(const char *json)
                     t->is_leader = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(tj, "leader")) ? 1 : 0;
                     t->is_active = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(tj, "active")) ? 1 : 0;
                     t->description = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(tj, "desc")));
+                    t->tokens_prompt = snap_ll(cJSON_GetObjectItemCaseSensitive(tj, "tokens_prompt"));
+                    t->tokens_completion = snap_ll(cJSON_GetObjectItemCaseSensitive(tj, "tokens_completion"));
+                    t->tokens_total = snap_ll(cJSON_GetObjectItemCaseSensitive(tj, "tokens_total"));
+                    t->tokens_cached = snap_ll(cJSON_GetObjectItemCaseSensitive(tj, "tokens_cached"));
                     cJSON *todo = cJSON_GetObjectItemCaseSensitive(tj, "todolist");
                     if (cJSON_IsArray(todo))
                         t->todo_items = snap_todo_parse(todo, &t->todo_count);

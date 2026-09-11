@@ -213,9 +213,53 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
 
 static UT_icd ut_tool_call_icd = {sizeof(struct edc_llm_chat_tool_call), NULL, NULL, NULL};
 
+/* Read an integer field from a cJSON object; returns 0 when the object or the
+ * field is missing or not a number. Token counts can exceed INT_MAX, so the
+ * value is taken through `valuedouble` into a 64-bit integer. */
+static long long edc_llm_json_int(cJSON *obj, const char *key)
+{
+    if (!obj)
+        return 0;
+    cJSON *v = cJSON_GetObjectItem(obj, key);
+    if (!v || !cJSON_IsNumber(v))
+        return 0;
+    return (long long)v->valuedouble;
+}
+
+/* Parse the optional top-level `usage` object into resp->usage. Providers
+ * differ on where the cached-prompt count lives: DeepSeek reports
+ * `prompt_cache_hit_tokens` at the top level, OpenAI nests it under
+ * `prompt_tokens_details.cached_tokens`; accept either. A missing or
+ * non-object usage leaves the (already zeroed) struct untouched. */
+static void edc_llm_actor_parse_usage(cJSON *response, struct edc_llm_actor_resp *resp)
+{
+    cJSON *usage = cJSON_GetObjectItem(response, "usage");
+    if (!usage || !cJSON_IsObject(usage))
+        return;
+
+    resp->usage.prompt_tokens = edc_llm_json_int(usage, "prompt_tokens");
+    resp->usage.completion_tokens = edc_llm_json_int(usage, "completion_tokens");
+    resp->usage.total_tokens = edc_llm_json_int(usage, "total_tokens");
+    resp->usage.cached_tokens = edc_llm_json_int(usage, "prompt_cache_hit_tokens");
+
+    cJSON *details = cJSON_GetObjectItem(usage, "prompt_tokens_details");
+    if (details && cJSON_IsObject(details))
+    {
+        long long cached = edc_llm_json_int(details, "cached_tokens");
+        if (cached > 0)
+            resp->usage.cached_tokens = cached;
+    }
+
+    /* Some providers omit total_tokens; reconstruct it so consumers that only
+     * read `total` still see a meaningful number. */
+    if (resp->usage.total_tokens <= 0)
+        resp->usage.total_tokens = resp->usage.prompt_tokens + resp->usage.completion_tokens;
+}
+
 static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp *resp)
 {
     resp->error = NULL;
+    edc_llm_actor_parse_usage(response, resp);
     cJSON *choices = cJSON_GetObjectItem(response, "choices");
     if (!choices || !cJSON_IsArray(choices) || cJSON_GetArraySize(choices) == 0)
     {

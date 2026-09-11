@@ -573,6 +573,12 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
     if (!r)
         return;
 
+    /* Token 账: 把本次响应的 usage 累加到 task。放在分支之前, 让 STOP、
+     * TOOL_CALLING 以及 error 三条路径都计入 —— 一次用户输入常触发多轮
+     * 请求 (工具链续发), 每轮都要算, 否则会漏掉中间轮。 */
+    edc_task_add_usage(task, r->usage.prompt_tokens, r->usage.completion_tokens, r->usage.total_tokens,
+                       r->usage.cached_tokens);
+
     if (r->error)
     {
         edc_scheduler_unregister_task(sched, msg->request_id);
@@ -894,15 +900,18 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched)
         size_t g_msg_count = g->history ? (size_t)cJSON_GetArraySize(g->history) : 0;
         if (g_msg_count > 0)
             g_msg_count -= 1;
+        long long g_tokens_total = 0;
         {
             struct edc_task *mt;
             LL_FOREACH2(g->members, mt, group_next)
             {
                 if (mt->active_turn)
                     g_msg_count += edc_queue_length(&mt->active_turn->messages);
+                g_tokens_total += mt->tokens_total;
             }
         }
         cJSON_AddNumberToObject(gj, "msg_count", (double)g_msg_count);
+        cJSON_AddNumberToObject(gj, "tokens_total", (double)g_tokens_total);
 
         cJSON *tasks = cJSON_AddArrayToObject(gj, "tasks");
         struct edc_task *t;
@@ -914,6 +923,12 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched)
             cJSON_AddBoolToObject(tj, "leader", t->is_group_leader);
             cJSON_AddBoolToObject(tj, "active", sess->active_task == t);
             cJSON_AddStringToObject(tj, "desc", t->description ? t->description : "");
+            /* token 消耗随快照下发, 供侧边栏按 task 展示. 数值用 double 承载
+             * (cJSON 无 64 位整型), 计数远小于 2^53, 无精度损失. */
+            cJSON_AddNumberToObject(tj, "tokens_prompt", (double)t->tokens_prompt);
+            cJSON_AddNumberToObject(tj, "tokens_completion", (double)t->tokens_completion);
+            cJSON_AddNumberToObject(tj, "tokens_total", (double)t->tokens_total);
+            cJSON_AddNumberToObject(tj, "tokens_cached", (double)t->tokens_cached);
             /* todo 清单是 task 状态的一部分: 快照携带每个持有清单的 task 的
              * todolist (item 数组, 同 todowrite 参数形状)。TUI 借此把
              * fg 组 active task 的清单渲染到右侧 TodoWidget —— 快照是侧边栏

@@ -187,6 +187,14 @@ static cJSON *task_to_json(struct edc_task *task, cJSON *messages_array)
     cJSON_AddNumberToObject(tj, "completion_seq", task->completion_seq);
     cJSON_AddBoolToObject(tj, "turns_folded", task->turns_folded);
 
+    /* ── token 统计 ──
+     * 跨会话/进程中断保持: resume 后侧边栏的 per-task token 计数不归零。
+     * cJSON 无 64 位整型, 用 double 承载 (计数远小于 2^53)。 */
+    cJSON_AddNumberToObject(tj, "tokens_prompt", (double)task->tokens_prompt);
+    cJSON_AddNumberToObject(tj, "tokens_completion", (double)task->tokens_completion);
+    cJSON_AddNumberToObject(tj, "tokens_total", (double)task->tokens_total);
+    cJSON_AddNumberToObject(tj, "tokens_cached", (double)task->tokens_cached);
+
     /* ── redirect ── */
     if (task->redirect_stdout)
         cJSON_AddStringToObject(tj, "redirect_stdout", task->redirect_stdout);
@@ -694,6 +702,14 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->completion_seq = (uint32_t)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "turns_folded")))
             task->turns_folded = cJSON_IsTrue(v);
+        if ((v = cJSON_GetObjectItem(tj, "tokens_prompt")) && cJSON_IsNumber(v))
+            task->tokens_prompt = (long long)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "tokens_completion")) && cJSON_IsNumber(v))
+            task->tokens_completion = (long long)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "tokens_total")) && cJSON_IsNumber(v))
+            task->tokens_total = (long long)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "tokens_cached")) && cJSON_IsNumber(v))
+            task->tokens_cached = (long long)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "redirect_stdout")) && cJSON_IsString(v))
             task->redirect_stdout = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "redirect_stderr")) && cJSON_IsString(v))

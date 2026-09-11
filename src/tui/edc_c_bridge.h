@@ -59,6 +59,11 @@ struct edc_c_task_info
     const char *description;
     int todo_count;                 /* 0 when the task holds no todo list */
     struct edc_c_todo_item *todo_items;
+    /* Accumulated LLM token usage for this task (0 when none reported yet). */
+    long long tokens_prompt;
+    long long tokens_completion;
+    long long tokens_total;
+    long long tokens_cached;
 };
 
 struct edc_c_task_group
@@ -70,6 +75,7 @@ struct edc_c_task_group
     int orphaned;
     int fg;
     int task_count;
+    long long tokens_total; /* sum of member tasks' total tokens */
     struct edc_c_task_info *tasks;
 };
 

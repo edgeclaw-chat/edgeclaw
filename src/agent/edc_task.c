@@ -325,35 +325,56 @@ size_t edc_task_message_count(const struct edc_task *task)
     return n;
 }
 
-/* 把一个 turn 里所有 role=="user" 的消息 content 追加到 *out (以 '\n' 连接;
- * *out 为 NULL 时新建)。turn 的第一条消息即该轮用户提交的输入。 */
-static void collect_user_msgs(const struct edc_turn *turn, sds *out)
+/* 把一条 role=="user" 消息的 content 追加到 *out (以 '\n' 连接; *out 为
+ * NULL 时新建)。 */
+static void append_user_msg(const cJSON *msg, sds *out)
+{
+    if (!msg || !out)
+        return;
+    const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "role"));
+    if (!role || strcmp(role, "user") != 0)
+        return;
+    const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
+    if (!content)
+        return;
+    *out = *out ? sdscatprintf(*out, "\n%s", content) : sdsnew(content);
+}
+
+/* 收集一个 turn 里的 user 输入（'\n' 连接）。turn 未提交时消息还在
+ * turn->messages; 一旦提交进 session（edc_session_add_turn 会把消息 pop 进
+ * session->messages，只在 turn 上留下 msg_range 记录），本地队列就空了 ——
+ * 此时回退到 session 消息数组按 range 读取，否则已完成任务的输入会丢失，
+ * `/task status` 只剩 desc 看不到 input。 */
+static void collect_user_msgs(const struct edc_turn *turn, const cJSON *session_messages, sds *out)
 {
     if (!turn || !out)
         return;
-    for (size_t j = turn->messages.head; j < turn->messages.tail; j++)
+
+    if (turn->messages.tail > turn->messages.head)
     {
-        cJSON *msg = (cJSON *)turn->messages.data[j];
-        if (!msg)
-            continue;
-        const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "role"));
-        if (!role || strcmp(role, "user") != 0)
-            continue;
-        const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
-        if (!content)
-            continue;
-        *out = *out ? sdscatprintf(*out, "\n%s", content) : sdsnew(content);
+        for (size_t j = turn->messages.head; j < turn->messages.tail; j++)
+            append_user_msg((const cJSON *)turn->messages.data[j], out);
+        return;
+    }
+
+    /* 已 flush 的 turn: 消息在 session 数组里, 按记录的 range 取回 */
+    if (!turn->range_valid || !session_messages || !cJSON_IsArray(session_messages))
+        return;
+    for (size_t k = 0; k < turn->msg_range_count; k++)
+    {
+        cJSON *msg = cJSON_GetArrayItem(session_messages, (int)(turn->msg_range_start + k));
+        append_user_msg(msg, out);
     }
 }
 
-sds edc_task_user_input(const struct edc_task *task)
+sds edc_task_user_input(const struct edc_task *task, const cJSON *session_messages)
 {
     if (!task)
         return NULL;
     sds out = NULL;
     for (size_t i = task->turns.head; i < task->turns.tail; i++)
-        collect_user_msgs((const struct edc_turn *)task->turns.data[i], &out);
-    collect_user_msgs(task->active_turn, &out);
+        collect_user_msgs((const struct edc_turn *)task->turns.data[i], session_messages, &out);
+    collect_user_msgs(task->active_turn, session_messages, &out);
     return out;
 }
 
@@ -379,6 +400,33 @@ bool edc_task_llm_request_poke(struct edc_task *task)
         return true;
     }
     return false;
+}
+
+/* ── Token 统计 ────────────────────────────────────────────── */
+
+void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long long completion_tokens,
+                        long long total_tokens, long long cached_tokens)
+{
+    if (!task)
+        return;
+
+    /* 全 0 = provider 没给 usage (或错误响应), 不写任何字段, 保持计数干净 */
+    if (prompt_tokens <= 0 && completion_tokens <= 0 && total_tokens <= 0 && cached_tokens <= 0)
+        return;
+
+    if (prompt_tokens < 0)
+        prompt_tokens = 0;
+    if (completion_tokens < 0)
+        completion_tokens = 0;
+    if (cached_tokens < 0)
+        cached_tokens = 0;
+    if (total_tokens <= 0)
+        total_tokens = prompt_tokens + completion_tokens;
+
+    task->tokens_prompt += prompt_tokens;
+    task->tokens_completion += completion_tokens;
+    task->tokens_total += total_tokens;
+    task->tokens_cached += cached_tokens;
 }
 
 /* ── 依赖 (IPC) ────────────────────────────────────────────── */

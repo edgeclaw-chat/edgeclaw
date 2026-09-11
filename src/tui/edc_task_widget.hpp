@@ -54,6 +54,10 @@ class TaskWidget : public ::ftxui::ComponentBase
         bool is_leader = false;
         bool is_active = false;
         std::string description;
+        long long tokens_prompt = 0;
+        long long tokens_completion = 0;
+        long long tokens_total = 0;
+        long long tokens_cached = 0;
     };
 
     struct GroupInfo
@@ -62,6 +66,7 @@ class TaskWidget : public ::ftxui::ComponentBase
         int msg_count = 0; /* live group messages (committed + in-flight) */
         bool orphaned = false;
         bool fg = false;
+        long long tokens_total = 0; /* sum of member tasks' total tokens */
         std::vector<TaskInfo> tasks;
     };
 

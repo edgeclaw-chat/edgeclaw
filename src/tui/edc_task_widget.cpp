@@ -3,6 +3,7 @@
 #include "edc_text_util.hpp"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
+#include <cstdio>
 
 namespace edc
 {
@@ -54,6 +55,33 @@ std::string PadCount(int value, int width)
     return std::string(width - static_cast<int>(s.size()), ' ') + s;
 }
 
+// Compact token count for the sidebar: 942 -> "942", 12345 -> "12.3k",
+// 1_250_000 -> "1.2M". One decimal reads the magnitude at a glance; below
+// 100 units a whole number is used so the block does not wobble in width,
+// and a trailing ".0" is dropped so round values stay short.
+std::string FormatTokens(long long n)
+{
+    if (n <= 0)
+        return "";
+    if (n < 1000)
+        return std::to_string(n);
+
+    const double v = n < 1000000 ? static_cast<double>(n) / 1000.0 : static_cast<double>(n) / 1000000.0;
+    const char *suffix = n < 1000000 ? "k" : "M";
+
+    char buf[32];
+    if (v < 100.0)
+        std::snprintf(buf, sizeof(buf), "%.1f%s", v, suffix);
+    else
+        std::snprintf(buf, sizeof(buf), "%.0f%s", v, suffix);
+
+    std::string s(buf);
+    const std::string trailing = std::string(".0") + suffix;
+    if (s.size() > trailing.size() && s.compare(s.size() - trailing.size(), trailing.size(), trailing) == 0)
+        s.erase(s.size() - trailing.size(), 2); // drop the ".0", keep the suffix
+    return s;
+}
+
 // Upper bound (in code points) kept per task when importing a snapshot. The
 // exact per-row fit is decided at render time by TruncateToWidth(); this cap
 // only stops a pathological description from being copied/stored in full.
@@ -92,6 +120,7 @@ void TaskWidget::SetSnapshot(const ::edc_c_task_snapshot *snap)
         group.msg_count = g->msg_count;
         group.orphaned = g->orphaned != 0;
         group.fg = g->fg != 0;
+        group.tokens_total = g->tokens_total;
 
         for (int ti = 0; ti < g->task_count; ti++)
         {
@@ -103,6 +132,10 @@ void TaskWidget::SetSnapshot(const ::edc_c_task_snapshot *snap)
             task.is_leader = t->is_leader != 0;
             task.is_active = t->is_active != 0;
             task.description = TruncateUtf8(t->description ? t->description : "", kMaxDescCodepoints);
+            task.tokens_prompt = t->tokens_prompt;
+            task.tokens_completion = t->tokens_completion;
+            task.tokens_total = t->tokens_total;
+            task.tokens_cached = t->tokens_cached;
             if (task.is_active)
                 active_group_id = group.group_id;
             group.tasks.push_back(std::move(task));
@@ -303,20 +336,20 @@ int TaskWidget::RowWidth() const
 
             // Collapsible group header. Left side: disclosure arrow plus
             // "Group <id>" (orphaned groups keep their trailing "~"), styled
-            // bold with the foreground warm highlight. Right side: the live
-            // message count (committed group messages plus the in-flight
-            // turns of its tasks, so the number ticks up while any member
-            // streams), flushed as a whole block against the pane's right
-            // edge so every row's "… msgs" shares one straight margin. The
-            // count is never truncated: on a narrow sidebar the "Group <id>"
-            // part ellipsizes to whatever width the right block leaves.
+            // bold with the foreground warm highlight. Right side: the group's
+            // token cost (the message count was dropped), flushed against the
+            // pane's right edge so every row's "… tok" shares one margin. It is
+            // never truncated: on a narrow sidebar the "Group <id>" part
+            // ellipsizes to whatever width the right block leaves.
             std::string core = g.group_id.empty() ? "(group)" : "Group " + g.group_id;
             if (g.orphaned)
                 core += " ~";
 
             const std::string arrow = expanded ? "▾ " : "▸ ";
+            // Only the token total is shown now; a group that has not spent
+            // anything yet keeps an empty right column (no "0 tok" padding).
             const std::string right =
-                std::to_string(g.msg_count) + (g.msg_count == 1 ? " msg" : " msgs");
+                g.tokens_total > 0 ? FormatTokens(g.tokens_total) + " tok" : "";
 
             const int core_budget =
                 row_width - kRightPad - StringWidth(arrow) - StringWidth(right) - 1;
@@ -348,22 +381,22 @@ int TaskWidget::RowWidth() const
                 if (!t.description.empty())
                 {
                     // Two cells separate the id from the description (kept
-                    // from the previous layout), then kDescStateGapCells stay
-                    // free before the state label; kRightPad keeps the state
-                    // label itself off the pane's right edge.
-                    const int budget = row_width - StringWidth(left) - 2 - kDescStateGapCells - state_cells -
-                                       kRightPad;
+                    // from the previous layout), then a gap before the state
+                    // label; kRightPad keeps the state label off the pane's
+                    // right edge. Per-task tokens are intentionally not shown:
+                    // the group header carries the whole group's cost.
+                    const int budget = row_width - StringWidth(left) - 2 - kDescStateGapCells -
+                                       state_cells - kRightPad;
                     if (budget > 0)
                         left += "  " + TruncateToWidth(t.description, budget);
                 }
 
-                auto row = hbox({
-                    text(left) | flex,
-                    text(std::string(kDescStateGapCells, ' ')),
-                    text(t.state) | color(StateColor(t.state)),
-                    text(std::string(kRightPad, ' ')),
-                });
-                lines.push_back(row);
+                Elements cells;
+                cells.push_back(text(left) | flex);
+                cells.push_back(text(std::string(kDescStateGapCells, ' ')));
+                cells.push_back(text(t.state) | color(StateColor(t.state)));
+                cells.push_back(text(std::string(kRightPad, ' ')));
+                lines.push_back(hbox(std::move(cells)));
             }
         }
     }
