@@ -27,6 +27,10 @@ class TodoWidget;
 // so tests can pin the exact bytes without needing a terminal.
 std::string Osc52ClipboardSequence(const std::string &text);
 
+// The transient "Copied to clipboard" chip, drawn as an overlay in the window's
+// top-right corner. Exposed so tests can render it without a live agent.
+::ftxui::Element ClipboardToastElement();
+
 class TUIWindow : public ::ftxui::ComponentBase
 {
   public:
@@ -135,6 +139,9 @@ class TUIWindow : public ::ftxui::ComponentBase
     // Last text pushed to the clipboard, so a frame that did not change the
     // selection does not rewrite the same payload.
     std::string last_copied_;
+    // The "Copied to clipboard" chip is drawn while now < this. The default
+    // (epoch) means "never".
+    std::chrono::steady_clock::time_point clipboard_toast_until_;
 
     // /connect dialog: an overlay with three fields (API URL / Model / API
     // Key), built once in the constructor. While it is open the dialog owns

@@ -6,7 +6,10 @@
 // its exact bytes are pinned below: a subtle encoding bug would put silently
 // garbled text on the user's clipboard, which is hard to notice and hard to
 // debug.
+#include "edc_style.hpp"
 #include "edc_tui_window.hpp"
+#include "ftxui/dom/elements.hpp"
+#include "ftxui/screen/screen.hpp"
 #include <iostream>
 #include <string>
 
@@ -52,12 +55,34 @@ void TestRawBytes()
     Check(edc::Osc52ClipboardSequence("\xff\xff\xff") == Expected("////"), "0xFF bytes stay unsigned");
 }
 
+void TestToast()
+{
+    std::cout << "the chip is right-aligned and lets the pane behind it show through\n";
+
+    const int width = 40;
+    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(width), ::ftxui::Dimension::Fixed(3));
+    auto base = ::ftxui::vbox({::ftxui::text("BASE-MARK"), ::ftxui::filler()});
+    ::ftxui::Render(screen, ::ftxui::dbox({std::move(base), edc::ClipboardToastElement()}));
+
+    std::string row0;
+    for (int x = 0; x < width; x++)
+        row0 += screen.CellAt(x, 0).character;
+
+    const size_t chip = row0.find("Copied to clipboard");
+    Check(chip != std::string::npos, "the label is drawn on the first row");
+    Check(row0.find("BASE-MARK") != std::string::npos, "the overlay does not paint over what is behind it");
+    Check(chip != std::string::npos && row0.find("BASE-MARK") < chip, "the label sits on the right");
+    Check(screen.CellAt(width - 1, 0).background_color == edc::style::palette().dialog_bg,
+          "the chip carries the raised surface colour");
+}
+
 } // namespace
 
 int main()
 {
     TestBase64Payload();
     TestRawBytes();
+    TestToast();
 
     if (g_failures == 0)
     {

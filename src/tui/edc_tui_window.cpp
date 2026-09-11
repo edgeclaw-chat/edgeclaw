@@ -41,6 +41,10 @@ static void DisableBracketedPaste()
     std::fflush(stdout);
 }
 
+// How long the "Copied to clipboard" chip stays on screen: long enough to be
+// noticed after a drag, short enough not to linger.
+constexpr auto kClipboardToastDuration = std::chrono::milliseconds(2000);
+
 static void CopyToClipboard(const std::string &text)
 {
     const std::string sequence = Osc52ClipboardSequence(text);
@@ -353,6 +357,19 @@ std::string Osc52ClipboardSequence(const std::string &text)
     }
 
     return std::string("\x1b]52;c;") + encoded + '\a';
+}
+
+// The "Copied to clipboard" chip: a small raised label pinned to the top-right
+// corner. The transparent fillers let the pane behind it show through, so it
+// only paints the label itself.
+::ftxui::Element ClipboardToastElement()
+{
+    const auto &pal = style::palette();
+    auto chip = ::ftxui::text(" Copied to clipboard ") | ::ftxui::color(pal.text) | ::ftxui::bgcolor(pal.dialog_bg);
+    return ::ftxui::vbox({
+        ::ftxui::hbox({::ftxui::filler(), std::move(chip)}),
+        ::ftxui::filler(),
+    });
 }
 
 // The animated "working" row: the sweeping block bar on its own, no text.
@@ -935,23 +952,37 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
     }
 
     auto base = split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
-    if (!connect_open_)
-        return base;
-    // The /connect dialog is borderless, so the backdrop is dimmed while it is
-    // open: the raised dialog surface then reads as the one lit panel on a
-    // muted screen instead of relying on a frame to stand out.
-    //
-    // clear_under is load-bearing, not cosmetic: ftxui's `dim` is a per-cell
-    // flag (see Dim in dom/dim.cpp) that the backdrop stamps over its whole
-    // box, and an overlaid element only rewrites character/colours — it never
-    // clears that flag. Without clear_under the dialog inherits the backdrop's
-    // dim and renders gray regardless of its text colour. Clearing the cells
-    // first (what the ftxui modal example does) resets the flag before the
-    // panel draws, so only the backdrop stays dim.
-    return ::ftxui::dbox(
-        {base | ::ftxui::dim,
-         connect_modal_->Render() | ::ftxui::clear_under | ::ftxui::size(::ftxui::WIDTH, ::ftxui::LESS_THAN, 80) |
-             ::ftxui::center});
+    // The "Copied to clipboard" chip: a transient overlay in the top-right
+    // corner, so it never moves the layout. While it is up it asks for a frame,
+    // and that is also what clears it -- the frame after the deadline draws
+    // without it, and an idle screen is not redrawn otherwise.
+    const bool toast = std::chrono::steady_clock::now() < clipboard_toast_until_;
+    if (toast && screen_)
+        screen_->RequestAnimationFrame();
+
+    if (connect_open_)
+    {
+        // The /connect dialog is borderless, so the backdrop is dimmed while it
+        // is open: the raised dialog surface then reads as the one lit panel on
+        // a muted screen instead of relying on a frame to stand out.
+        //
+        // clear_under is load-bearing, not cosmetic: ftxui's `dim` is a per-cell
+        // flag (see Dim in dom/dim.cpp) that the backdrop stamps over its whole
+        // box, and an overlaid element only rewrites character/colours — it
+        // never clears that flag. Without clear_under the dialog inherits the
+        // backdrop's dim and renders gray regardless of its text colour.
+        // Clearing the cells first (what the ftxui modal example does) resets
+        // the flag before the panel draws, so only the backdrop stays dim.
+        base = ::ftxui::dbox(
+            {base | ::ftxui::dim,
+             connect_modal_->Render() | ::ftxui::clear_under | ::ftxui::size(::ftxui::WIDTH, ::ftxui::LESS_THAN, 80) |
+                 ::ftxui::center});
+    }
+
+    if (toast)
+        base = ::ftxui::dbox({std::move(base), ClipboardToastElement()});
+
+    return base;
 }
 
 ::ftxui::Element TUIWindow::RenderConnectModal()
@@ -1094,6 +1125,11 @@ void TUIWindow::SetScreen(::ftxui::ScreenInteractive *screen)
                 return;
             last_copied_ = selected;
             CopyToClipboard(selected);
+
+            // The write is invisible, so acknowledge it on screen.
+            clipboard_toast_until_ = std::chrono::steady_clock::now() + kClipboardToastDuration;
+            if (screen_)
+                screen_->RequestAnimationFrame();
         });
 }
 
