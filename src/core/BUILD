@@ -134,6 +134,12 @@ cc_library(
         "@uthash//:uthash",
         "//thirdparty/utf8proc",
     ],
+    # Debug builds keep trace/debug logging; normal builds clamp to INFO
+    # (see edc_log_init). Same signal as the rest of the tree.
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
     linkstatic = True,
     visibility = ["//visibility:public"],
 )

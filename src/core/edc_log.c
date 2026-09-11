@@ -75,8 +75,21 @@ void edc_log_init(void)
 {
     uv_mutex_init(&g_log_mutex);
     log_set_quiet(true);
+#ifdef EDGECLAW_DEBUG
+    /* Debug build (bazel -c dbg): keep every level, trace/debug included. */
+    const int level = LOG_TRACE;
+#else
+    /* Release/fastbuild: INFO and above only; log_debug/log_trace are dropped
+     * so debug breadcrumbs never reach the log file in normal builds. */
+    const int level = LOG_INFO;
+#endif
+    log_set_level(level);
     edc_log_rotate();
-    log_add_callback(edc_log_file_callback, NULL, LOG_TRACE);
+    /* NB: in this pinned log.c, log_set_level() only gates the (quiet) stderr
+     * path — a callback is filtered solely by the level it is registered with.
+     * The file callback therefore has to be registered at |level|, not
+     * LOG_TRACE, or log_debug/log_trace would still land in the file. */
+    log_add_callback(edc_log_file_callback, NULL, level);
 }
 
 void edc_log_check_rotate(void)
