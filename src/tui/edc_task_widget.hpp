@@ -25,6 +25,15 @@ class TaskWidget : public ::ftxui::ComponentBase
     // the caller and freed after this call.
     void SetSnapshot(const ::edc_c_task_snapshot *snap);
 
+    // The section in two halves. RenderHeader() is everything above the list --
+    // the "Tasks" row, the session meta row and the rule under them -- and
+    // RenderBody() is the group rows themselves. The sidebar pins the first
+    // above a ScrollView that owns the second, so the wheel moves the tree while
+    // the section's own heading (and the session it belongs to) stays put.
+    // OnRender() draws the two stacked, which is the widget on its own.
+    ::ftxui::Element RenderHeader();
+    ::ftxui::Element RenderBody();
+
     ::ftxui::Element OnRender() override;
     bool OnEvent(::ftxui::Event event) override;
 
@@ -34,6 +43,10 @@ class TaskWidget : public ::ftxui::ComponentBase
     }
 
   private:
+    // Row width both halves truncate against, from the box the previous render
+    // measured (the default sidebar width before the first measurement).
+    int RowWidth() const;
+
     struct TaskInfo
     {
         std::string task_id;

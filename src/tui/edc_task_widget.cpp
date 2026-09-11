@@ -151,16 +151,8 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
     return false;
 }
 
-::ftxui::Element TaskWidget::OnRender()
+int TaskWidget::RowWidth() const
 {
-    using namespace ::ftxui;
-
-    // All colors come from the central style palette (edc_style.hpp); the
-    // pane background must stay identical to TodoWidget and the chat surface.
-    const auto &pal = style::palette();
-
-    Elements lines;
-
     // Width available for a text row. reflect() below sits on the vbox
     // *inside* the (empty-style) border, because ftxui's Border node insets
     // its child by one column on each side even for BorderStyle::EMPTY — the
@@ -169,9 +161,24 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
     // reflect() fills content_box_ during the render pass, so this reads the
     // previous frame's width; before the first measurement fall back to the
     // default sidebar width (36) minus the 2 border columns.
-    int row_width = 34;
     if (content_box_.x_min != 0 || content_box_.x_max != 0 || content_box_.y_min != 0 || content_box_.y_max != 0)
-        row_width = content_box_.x_max - content_box_.x_min + 1;
+        return content_box_.x_max - content_box_.x_min + 1;
+    return 34;
+}
+
+// The section's heading: the fold arrow, the "Tasks" label and the counts, then
+// the session meta row and the rule that closes it off. Drawn apart from the
+// group rows so the sidebar can pin all of it above the scrolling tree -- the
+// wheel has to move the tree without taking the heading with it.
+::ftxui::Element TaskWidget::RenderHeader()
+{
+    using namespace ::ftxui;
+
+    // All colors come from the central style palette (edc_style.hpp); the
+    // pane background must stay identical to TodoWidget and the chat surface.
+    const auto &pal = style::palette();
+    const int row_width = RowWidth();
+    Elements lines;
 
     // Collapsible Tasks section header: the arrow shows the fold state, the
     // counts on the right summarize what a collapsed section hides. The row
@@ -208,59 +215,80 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
 
     if (section_collapsed_)
     {
-        // A collapsed section keeps only its header row; the session stats,
-        // separator and the group list are skipped entirely. No group
-        // headers are drawn, so drop their click boxes to avoid stale hit
-        // targets lingering from the expanded frame.
+        // A collapsed section is its header row alone: the session meta and
+        // the rule under it introduce the list, so they fold away with it.
+        return vbox(std::move(lines));
+    }
+
+    if (!session_name_.empty() || !session_id_.empty())
+    {
+        // Session meta, kept on one row: the session name (its id added
+        // in brackets when distinct) on the left, the creation date
+        // flushed right into the same edge column the per-group message
+        // counts below share, so the meta block lines up with the tree.
+        // There is no session message counter anymore — live counts sit
+        // on each group row already. The date block is never truncated:
+        // a narrow sidebar ellipsizes the name instead, dropping the
+        // bracketed id before the bare name gives way.
+        const std::string created =
+            created_at_.size() >= 10 ? "created " + created_at_.substr(0, 10) : "";
+        const std::string name = session_name_.empty() ? session_id_ : session_name_;
+        // The id is bracketed only when a distinct session *name* exists;
+        // with no name the id stands alone and must not repeat itself.
+        const bool distinct =
+            !session_name_.empty() && !session_id_.empty() && session_name_ != session_id_;
+        const std::string sid = distinct ? name + " [" + session_id_ + "]" : name;
+
+        // Room for the name after the leading gutter, the fixed created
+        // block, the reserved right pad and a one-cell spacer that keeps
+        // the two sides apart even when the flex label gets no leftover.
+        const int created_cells = created.empty() ? 0 : StringWidth(created);
+        const int gap_cells = created.empty() ? 0 : 1;
+        const int name_budget =
+            row_width - 1 - kRightPad - created_cells - gap_cells;
+
+        std::string left = name;
+        if (name_budget > 0 && StringWidth(sid) <= name_budget)
+            left = sid; /* full name + id fits: keep the id too */
+        else if (name_budget > 0)
+            left = TruncateToWidth(name, name_budget);
+        else
+            left.clear();
+
+        lines.push_back(hbox({
+                            text(" " + left) | flex | dim,
+                            text(created.empty() ? "" : " ") | dim |
+                                color(pal.text_dim),
+                            text(created) | dim | color(pal.text_dim),
+                            text(std::string(kRightPad, ' ')),
+                        }));
+    }
+    lines.push_back(separator());
+
+    return vbox(std::move(lines));
+}
+
+// The group rows: everything under the heading's rule, and the half the sidebar
+// hands to a ScrollView. It carries the body's reflect(content_box_) -- the row
+// width both halves truncate against.
+::ftxui::Element TaskWidget::RenderBody()
+{
+    using namespace ::ftxui;
+
+    const auto &pal = style::palette();
+    const int row_width = RowWidth();
+    Elements lines;
+
+    if (section_collapsed_)
+    {
+        // A collapsed section keeps only its header row: the session meta and
+        // the rule that introduce the list fold away with it (they are part of
+        // RenderHeader). No group headers are drawn either, so drop their click
+        // boxes to avoid stale hit targets lingering from the expanded frame.
         group_header_boxes_.clear();
     }
     else
     {
-        if (!session_name_.empty() || !session_id_.empty())
-        {
-            // Session meta, kept on one row: the session name (its id added
-            // in brackets when distinct) on the left, the creation date
-            // flushed right into the same edge column the per-group message
-            // counts below share, so the meta block lines up with the tree.
-            // There is no session message counter anymore — live counts sit
-            // on each group row already. The date block is never truncated:
-            // a narrow sidebar ellipsizes the name instead, dropping the
-            // bracketed id before the bare name gives way.
-            const std::string created =
-                created_at_.size() >= 10 ? "created " + created_at_.substr(0, 10) : "";
-            const std::string name = session_name_.empty() ? session_id_ : session_name_;
-            // The id is bracketed only when a distinct session *name* exists;
-            // with no name the id stands alone and must not repeat itself.
-            const bool distinct =
-                !session_name_.empty() && !session_id_.empty() && session_name_ != session_id_;
-            const std::string sid = distinct ? name + " [" + session_id_ + "]" : name;
-
-            // Room for the name after the leading gutter, the fixed created
-            // block, the reserved right pad and a one-cell spacer that keeps
-            // the two sides apart even when the flex label gets no leftover.
-            const int created_cells = created.empty() ? 0 : StringWidth(created);
-            const int gap_cells = created.empty() ? 0 : 1;
-            const int name_budget =
-                row_width - 1 - kRightPad - created_cells - gap_cells;
-
-            std::string left = name;
-            if (name_budget > 0 && StringWidth(sid) <= name_budget)
-                left = sid; /* full name + id fits: keep the id too */
-            else if (name_budget > 0)
-                left = TruncateToWidth(name, name_budget);
-            else
-                left.clear();
-
-            lines.push_back(hbox({
-                                text(" " + left) | flex | dim,
-                                text(created.empty() ? "" : " ") | dim |
-                                    color(pal.text_dim),
-                                text(created) | dim | color(pal.text_dim),
-                                text(std::string(kRightPad, ' ')),
-                            }));
-        }
-        lines.push_back(separator());
-
         if (groups_.empty())
         {
             lines.push_back(text(" (no tasks)") | dim | color(pal.text_dim));
@@ -345,8 +373,18 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
     // widget only ever occupies its own content height (plus its own EMPTY
     // border/background), so the todo list below is never pushed to the pane
     // bottom by a greedy task tree.
-    return vbox(std::move(lines)) | reflect(content_box_) | borderStyled(BorderStyle::EMPTY) |
-           bgcolor(pal.pane_bg);
+    return vbox(std::move(lines)) | reflect(content_box_);
 }
+
+// The section as one block: header over body, inside the section's single EMPTY
+// border. The sidebar builds the same two halves itself -- pinning the header
+// above a ScrollView that owns the body -- so a wheel scrolls only the tree;
+// this keeps the widget whole for standalone use and for its tests.
+::ftxui::Element TaskWidget::OnRender()
+{
+    return ::ftxui::vbox({RenderHeader(), RenderBody()}) | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) |
+           ::ftxui::bgcolor(style::palette().pane_bg);
+}
+
 
 } // namespace edc

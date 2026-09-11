@@ -115,10 +115,12 @@ class ScrollNode : public ::ftxui::Node
 
 } // namespace
 
-ScrollView::ScrollView(::ftxui::Component content, ScrollOptions options)
-    : content_(std::move(content)), options_(std::move(options))
+ScrollView::ScrollView(::ftxui::Component content, ScrollOptions options, ::ftxui::Component pinned)
+    : content_(std::move(content)), pinned_(std::move(pinned)), options_(std::move(options))
 {
     Add(content_);
+    if (pinned_)
+        Add(pinned_);
     // A chat log opens pinned to its tail; a sidebar section opens at its top
     // (the active task) and never auto-follows refreshes.
     state_->stick_to_bottom = options_.follow_tail;
@@ -144,8 +146,14 @@ bool ScrollView::OnEvent(::ftxui::Event event)
 {
     if (event.is_mouse())
     {
-        // The content owns its clicks (a collapsible entry toggles on press),
-        // so it gets first refusal before the wheel becomes a scroll.
+        // The pinned header owns its own clicks (it folds the section) and the
+        // content owns its (a collapsible entry toggles on press), so both get
+        // first refusal before the wheel becomes a scroll.
+        if (pinned_ && pinned_->OnEvent(event))
+        {
+            return true;
+        }
+
         if (content_->OnEvent(event))
         {
             return true;
@@ -226,7 +234,24 @@ bool ScrollView::OnEvent(::ftxui::Event event)
     ::ftxui::Element scrollable =
         std::make_shared<ScrollNode>(std::move(content), state_, options_.mode);
 
-    return std::move(scrollable) | ::ftxui::reflect(box_);
+    if (!pinned_)
+        return std::move(scrollable) | ::ftxui::reflect(box_);
+
+    // The pinned part is not part of the viewport: it keeps its own height above
+    // it and the scroll node takes what is left. reflect() stays on the whole
+    // block, so a wheel over the heading is still a wheel over this view.
+    //
+    // yflex_shrink is restated deliberately: a vbox does not propagate its
+    // children's flex flags (see VBox::ComputeRequirement), so without it the
+    // section would report itself as unable to shrink and would hold on to its
+    // full height -- pushing whatever sits below it in the sidebar column off the
+    // pane. With it the section gives space back and scrolls its overflow, which
+    // is what keeps the Todo section under it fully visible.
+    return ::ftxui::vbox({
+               pinned_->Render(),
+               std::move(scrollable),
+           }) |
+           ::ftxui::yflex_shrink | ::ftxui::reflect(box_);
 }
 
 } // namespace edc

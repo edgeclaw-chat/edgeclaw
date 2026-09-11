@@ -428,16 +428,29 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
     // being squeezed out of the pane. The view opts out of keyboard focus and
     // of the tail-follow: a snapshot refresh must neither steal Tab/arrows
     // from the editor nor yank the viewport to the bottom of the tree.
+    // The task tree scrolls; the section's heading above it does not -- the
+    // "Tasks" row, the session meta row and the rule under them all stay put,
+    // so the list is the only thing that moves. The pinned part is still part of
+    // the view: the wheel scrolls the tree even when the pointer sits over it.
+    // One widget, two renderers: the heading, and the rows the ScrollView owns.
+    auto task_header = ::ftxui::Renderer(task_widget_, [this] { return task_widget_->RenderHeader(); });
+    auto task_body = ::ftxui::Renderer(task_widget_, [this] { return task_widget_->RenderBody(); });
     auto task_scroll = std::make_shared<ScrollView>(
-        task_widget_, ScrollOptions{ScrollMode::kFitContent, /*show_indicator=*/false, /*follow_tail=*/false,
-                                    /*focusable=*/false});
+        task_body, ScrollOptions{ScrollMode::kFitContent, /*show_indicator=*/false, /*follow_tail=*/false,
+                                 /*focusable=*/false},
+        task_header);
     auto right_column = ::ftxui::Container::Vertical({task_scroll, todo_widget_});
     auto right_pane = ::ftxui::Renderer(right_column, [this, task_scroll] {
         // The two sections stack directly on each other with no divider
         // between them: a separator line would visually slice the sidebar
         // into fragments. The task tree simply ends where the Todo header
         // row begins; the identical pane background keeps them one surface.
-        ::ftxui::Elements col = {task_scroll->Render(), todo_widget_->Render()};
+        //
+        // The Tasks section keeps one EMPTY border around both halves, so the
+        // pinned header and the rows under it share an inset (and the row width
+        // both truncate against is what it always was).
+        ::ftxui::Elements col = {task_scroll->Render() | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY),
+                                 todo_widget_->Render()};
         // The column itself flexes so the sidebar background covers the whole
         // pane, but its children stay at natural height and are laid out from
         // the top: leftover vertical space remains at the bottom instead of

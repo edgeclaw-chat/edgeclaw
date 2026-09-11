@@ -127,7 +127,11 @@ struct ScrollOptions
 class ScrollView : public ::ftxui::ComponentBase
 {
   public:
-    explicit ScrollView(::ftxui::Component content, ScrollOptions options = {});
+    // |pinned|, when given, is drawn above the viewport and never scrolls: the
+    // wheel moves the content whenever the pointer is anywhere in the view, the
+    // pinned part included. The sidebar passes its section header here, so the
+    // label stays put while the tree it names scrolls under it.
+    explicit ScrollView(::ftxui::Component content, ScrollOptions options = {}, ::ftxui::Component pinned = nullptr);
     ScrollView(ScrollView const &) = delete;
     ScrollView &operator=(ScrollView const &) = delete;
 
@@ -159,6 +163,8 @@ class ScrollView : public ::ftxui::ComponentBase
 
   private:
     ::ftxui::Component content_;
+    // Drawn above the viewport, outside the scroll offset (usually empty).
+    ::ftxui::Component pinned_;
     ScrollOptions options_;
     std::shared_ptr<ScrollState> state_ = std::make_shared<ScrollState>();
     ::ftxui::Box box_;

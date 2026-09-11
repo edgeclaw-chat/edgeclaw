@@ -10,6 +10,10 @@
 // screenful and the tail of the last message stayed hidden. The offset is now
 // clamped once, from ScrollNode::Render, after layout has settled.
 #include "edc_chat_widget.hpp"
+#include "edc_scroll_view.hpp"
+#include "edc_task_widget.hpp"
+#include "edc_todo_widget.hpp"
+#include "ftxui/component/component.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -63,6 +67,30 @@ std::string Draw(const std::shared_ptr<edc::ChatWidget> &chat)
 bool AnyRowContains(const std::string &frame, const char *needle)
 {
     return frame.find(needle) != std::string::npos;
+}
+
+// One screen row of a rendered frame, without its line ending. The sidebar test
+// uses it to tell "the header row" from "the rows under it".
+std::string LineOf(const std::string &frame, int row)
+{
+    int current = 0;
+    size_t start = 0;
+    while (start <= frame.size())
+    {
+        size_t eol = frame.find('\n', start);
+        if (eol == std::string::npos)
+            eol = frame.size();
+        if (current == row)
+        {
+            std::string line = frame.substr(start, eol - start);
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            return line;
+        }
+        current++;
+        start = eol + 1;
+    }
+    return "";
 }
 
 // Compare two frames ignoring the scroll-indicator column on the right: the
@@ -260,6 +288,144 @@ static void test_chat_is_not_keyboard_focusable(void)
     PASS();
 }
 
+// A TaskWidget holding 24 collapsed groups: taller than any viewport the tests
+// below hand it, so it always has something to scroll.
+std::shared_ptr<edc::TaskWidget> MakeTallTaskWidget()
+{
+    std::vector<std::string> group_ids;
+    std::vector<std::string> task_ids;
+    for (int i = 0; i < 24; i++)
+    {
+        group_ids.push_back("g" + std::to_string(i));
+        task_ids.push_back("t" + std::to_string(i));
+    }
+    std::vector<edc_c_task_info> infos(24);
+    std::vector<edc_c_task_group> groups(24);
+    for (int i = 0; i < 24; i++)
+    {
+        infos[i] = edc_c_task_info{};
+        infos[i].task_id = task_ids[i].c_str();
+        infos[i].state = "COMPLETED";
+        infos[i].description = "";
+        groups[i] = edc_c_task_group{};
+        groups[i].group_id = group_ids[i].c_str();
+        groups[i].member_count = 1;
+        groups[i].msg_count = 1;
+        groups[i].task_count = 1;
+        groups[i].tasks = &infos[i];
+    }
+    edc_c_task_snapshot snap{};
+    snap.session_id = "s";
+    snap.session_name = "session";
+    snap.group_count = 24;
+    snap.groups = groups.data();
+
+    auto task = std::make_shared<edc::TaskWidget>();
+    task->SetSnapshot(&snap);
+    return task;
+}
+
+// The sidebar's Tasks section is split in two: everything above the group rows
+// -- the "Tasks" header row, the session meta row and the rule under them -- is
+// pinned above a ScrollView that owns the list, so a wheel moves the tree
+// without taking the section's heading with it. The pinned part stays part of
+// the view, too: a wheel over it scrolls the tree instead of hitting dead space.
+void test_pinned_section_header_stays_put()
+{
+    TEST("pinned Tasks heading does not scroll with the tree");
+
+    auto task = MakeTallTaskWidget();
+
+    auto header = ftxui::Renderer(task, [task] { return task->RenderHeader(); });
+    auto body = ftxui::Renderer(task, [task] { return task->RenderBody(); });
+    auto view = std::make_shared<edc::ScrollView>(
+        body,
+        edc::ScrollOptions{edc::ScrollMode::kFitContent, /*show_indicator=*/false, /*follow_tail=*/false,
+                           /*focusable=*/false},
+        header);
+    // The sidebar wraps the section in its own EMPTY border, which puts the
+    // header row on screen row 1 -- where the wheel is aimed below.
+    auto pane = ftxui::Renderer(view, [view] {
+        return view->Render() | ftxui::borderStyled(ftxui::BorderStyle::EMPTY) | ftxui::flex;
+    });
+
+    const int width = 40;
+    const int height = 14;
+    auto draw = [&]
+    {
+        auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(width), ftxui::Dimension::Fixed(height));
+        ftxui::Render(screen, pane->Render() | ftxui::flex);
+        return screen.ToString();
+    };
+
+    const std::string before = draw();
+    // Rows 1..3 are the pinned part -- the section title, the session meta row
+    // and the rule under them (row 0 is the section's EMPTY border).
+    const std::string title_before = LineOf(before, 1);
+    const std::string meta_before = LineOf(before, 2);
+    const std::string rule_before = LineOf(before, 3);
+    ASSERT(title_before.find("Tasks") != std::string::npos, "no section title to check");
+    ASSERT(meta_before.find("session") != std::string::npos, "no session meta row to check");
+    ASSERT(rule_before.find("─") != std::string::npos, "no rule to check");
+    ASSERT(before.find("Group g0") != std::string::npos, "the tree does not start at the first group");
+
+    // Wheel over the pinned heading itself.
+    auto wheel_down = ftxui::Event::Mouse(
+        "", ftxui::Mouse{ftxui::Mouse::WheelDown, ftxui::Mouse::Pressed, false, false, false, 5, 1});
+    view->OnEvent(wheel_down);
+    const std::string after = draw();
+
+    ASSERT(LineOf(after, 1) == title_before, "the section title moved with the tree");
+    ASSERT(LineOf(after, 2) == meta_before, "the session meta row moved with the tree");
+    ASSERT(LineOf(after, 3) == rule_before, "the rule moved with the tree");
+    ASSERT(after.find("Group g0") == std::string::npos, "the tree did not scroll under the pinned heading");
+    PASS();
+}
+
+// The sidebar column stacks the Tasks section above the Todo section. A long task
+// tree must not push the todos out of the pane: the Tasks section gives space back
+// (and scrolls its overflow), which is what keeps the Todo section fully visible.
+void test_long_task_tree_keeps_the_todos_visible()
+{
+    TEST("a long task tree shrinks instead of pushing the todos out");
+
+    auto task = MakeTallTaskWidget();
+    auto header = ftxui::Renderer(task, [task] { return task->RenderHeader(); });
+    auto body = ftxui::Renderer(task, [task] { return task->RenderBody(); });
+    auto view = std::make_shared<edc::ScrollView>(
+        body,
+        edc::ScrollOptions{edc::ScrollMode::kFitContent, /*show_indicator=*/false, /*follow_tail=*/false,
+                           /*focusable=*/false},
+        header);
+
+    auto todo = std::make_shared<edc::TodoWidget>();
+    std::vector<edc::TodoWidget::Item> items(3);
+    for (int i = 0; i < 3; i++)
+    {
+        items[i].content = "TODO-" + std::to_string(i);
+        items[i].status = "pending";
+    }
+    todo->SetItems(items, "1");
+
+    const int width = 40;
+    const int height = 16;
+    auto draw = [&]
+    {
+        auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(width), ftxui::Dimension::Fixed(height));
+        ftxui::Render(screen, ftxui::vbox({
+                                   view->Render() | ftxui::borderStyled(ftxui::BorderStyle::EMPTY),
+                                   todo->Render(),
+                               }) |
+                                   ftxui::flex);
+        return screen.ToString();
+    };
+
+    const std::string frame = draw();
+    ASSERT(frame.find("TODO-2") != std::string::npos, "the last todo was pushed out of the pane");
+    ASSERT(frame.find("Group g23") == std::string::npos, "the task tree kept its full height instead of shrinking");
+    PASS();
+}
+
 } // namespace
 
 int main()
@@ -273,6 +439,8 @@ int main()
     test_new_message_follows_tail_after_fix();
     test_new_message_does_not_disturb_reader();
     test_chat_is_not_keyboard_focusable();
+    test_pinned_section_header_stays_put();
+    test_long_task_tree_keeps_the_todos_visible();
 
     printf("\n=== Results: %d/%d tests passed ===\n", tests_passed, tests_run);
     return tests_run == tests_passed ? EXIT_SUCCESS : EXIT_FAILURE;
