@@ -70,4 +70,9 @@ struct edc_config
 extern sds edc_config_resolve_bc_home(void);
 extern struct edc_config *edc_config_load(const char *edc_home);
 extern void edc_config_free(struct edc_config *config);
+
+/* Rewrite api_url / model / api_key in <edc_home>/config.json. The key is
+ * encrypted before writing. A NULL argument leaves that field unchanged.
+ * Returns true on success. Used by the runtime /connect command. */
+extern bool edc_config_update_llm(const char *edc_home, const char *api_url, const char *model, const char *api_key);
 #endif

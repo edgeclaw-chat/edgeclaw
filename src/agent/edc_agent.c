@@ -565,7 +565,9 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
     agent->history = malloc((size_t)agent->history_capacity * sizeof(sds));
     agent->config = edc_config_load(edc_home);
 
-    edc_secret_lockdown();
+    /* The master key is intentionally NOT wiped here: the /connect command
+     * re-encrypts the API key when the user updates the provider at runtime,
+     * so the key must stay available (it remains mlock()ed). */
 
     agent->config->enable_sandbox = enable_sandbox;
     if (enable_sandbox)
@@ -641,6 +643,46 @@ void edc_agent_add_history(struct edc_agent *agent, const char *line)
         agent->history = realloc(agent->history, (size_t)agent->history_capacity * sizeof(sds));
     }
     agent->history[agent->history_count++] = sdsnew(line);
+}
+
+bool edc_agent_set_llm_config(struct edc_agent *agent, const char *api_url, const char *model, const char *api_key)
+{
+    if (!agent || !agent->config)
+        return false;
+
+    /* Persist first: if the file cannot be written, leave the running agent
+     * untouched so memory and disk stay in agreement. */
+    if (!edc_config_update_llm(agent->config->edc_home, api_url, model, api_key))
+        return false;
+
+    struct llm_api_conf *c = &agent->config->llm_api_conf;
+    if (api_url && api_url[0])
+    {
+        sdsfree(c->api_url);
+        c->api_url = sdsnew(api_url);
+    }
+    if (model && model[0])
+    {
+        sdsfree(c->model);
+        c->model = sdsnew(model);
+    }
+    if (api_key && api_key[0])
+    {
+        sdsfree(c->api_key);
+        c->api_key = sdsnew(api_key);
+    }
+
+    /* The llm_actor keeps its own copy of the provider settings and runs on the
+     * actor-runner thread, so hand it the new values through its mailbox. */
+    struct edc_llm_api_conf_update *u = calloc(1, sizeof(*u));
+    if (!u)
+        return true; /* config is already updated; actor refresh is best-effort */
+    u->api_url = api_url ? sdsnew(api_url) : NULL;
+    u->model = model ? sdsnew(model) : NULL;
+    u->api_key = api_key ? sdsnew(api_key) : NULL;
+    edc_actor_send(agent->llm_actor, edc_actor_msg_new(BC_ACTOR_MSG_LLM_SET_CONFIG, NULL, NULL, u,
+                                                       (edc_actor_data_free_fn)edc_llm_api_conf_update_free));
+    return true;
 }
 
 void edc_agent_free(struct edc_agent *agent)

@@ -117,6 +117,7 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
                        "\n"
                        "- /whoami\n"
                        "- /model [name]\n"
+                       "- /connect   (configure the LLM provider)\n"
                        "\n"
                        "## Shell Syntax\n"
                        "\n"

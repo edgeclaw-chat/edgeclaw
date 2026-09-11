@@ -40,8 +40,16 @@ class TUIWindow : public ::ftxui::ComponentBase
     void SetScreen(::ftxui::ScreenInteractive *screen);
 
   private:
-    // Append the current input as a user message and clear the box.
+    // Append the current input as a user message and clear the box. A bare
+    // "/connect" opens the provider dialog instead of sending anything.
     void Submit();
+    // Open the /connect dialog, prefilled with the current provider settings.
+    void OpenConnect();
+    // Persist + hot-apply whatever is in the /connect dialog. Returns true on
+    // success (the dialog then closes).
+    bool SubmitConnect();
+    // Render the centered /connect dialog (overlaid on the normal UI).
+    ::ftxui::Element RenderConnectModal();
     // Seed the input box's recall history from $EDC_HOME/.tui_history (tolerates
     // a missing file).
     void LoadInputHistory();
@@ -115,6 +123,22 @@ class TUIWindow : public ::ftxui::ComponentBase
 
     struct edc_agent *agent = NULL;
     ::ftxui::ScreenInteractive *screen_ = nullptr;
+
+    // /connect dialog: an overlay with three fields (API URL / Model / API
+    // Key), built once in the constructor. While it is open the dialog owns
+    // all keyboard/mouse events. The values live in the strings above; the
+    // components render from them directly.
+    bool connect_open_ = false;
+    std::string connect_url_;
+    std::string connect_model_;
+    std::string connect_key_;
+    ::ftxui::Component connect_modal_;
+    ::ftxui::Component connect_url_input_;
+    ::ftxui::Component connect_model_input_;
+    ::ftxui::Component connect_key_input_;
+    ::ftxui::Component connect_buttons_;
+    int connect_focus_ = 0;
+    int connect_button_focus_ = 0;
 
     // True while the foreground group's active task is running (the
     // scheduler's task snapshot reports it busy); shows an animated status

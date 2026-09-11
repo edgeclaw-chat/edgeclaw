@@ -142,6 +142,16 @@ void edc_c_agent_send_user_message(struct edc_agent *agent, const char *content)
  * the active model without pulling in the sds-based config header. */
 bool edc_c_agent_model(struct edc_agent *agent, char *buf, size_t cap);
 
+/* Same contract as edc_c_agent_model, for the configured API URL / API key.
+ * Used to prefill the /connect dialog with the current values. */
+bool edc_c_agent_api_url(struct edc_agent *agent, char *buf, size_t cap);
+bool edc_c_agent_api_key(struct edc_agent *agent, char *buf, size_t cap);
+
+/* Apply new LLM provider settings at runtime: persist them to config.json and
+ * hot-update the running agent (config + llm_actor). Any argument may be NULL
+ * or empty to leave that field unchanged. Returns true on success. */
+bool edc_c_agent_connect(struct edc_agent *agent, const char *api_url, const char *model, const char *api_key);
+
 /* Copy the path of the TUI input-history file ($EDC_HOME/.tui_history) into
  * |buf| (NUL-terminated, at most |cap| bytes). Returns true when the path fit;
  * false leaves |buf| empty. Only the path is resolved here so the C++ TUI can

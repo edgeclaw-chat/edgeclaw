@@ -411,6 +411,17 @@ exit:
     }
 }
 
+void edc_llm_api_conf_update_free(void *ptr)
+{
+    struct edc_llm_api_conf_update *u = ptr;
+    if (!u)
+        return;
+    sdsfree(u->api_url);
+    sdsfree(u->model);
+    sdsfree(u->api_key);
+    free(u);
+}
+
 static void edc_llm_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
     switch (msg->type)
@@ -422,6 +433,31 @@ static void edc_llm_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
     }
     case BC_ACTOR_MSG_LLM_RESPONSE: {
         edc_llm_actor_handle_respone(actor, msg);
+        break;
+    }
+    case BC_ACTOR_MSG_LLM_SET_CONFIG: {
+        /* Runtime provider update (from the TUI /connect menu). Copy the new
+         * values into this actor's own api_conf; the message owns its payload. */
+        edc_llm_actor_state_t *state = actor->state;
+        struct edc_llm_api_conf_update *u = msg->data;
+        if (u)
+        {
+            if (u->api_url && u->api_url[0])
+            {
+                sdsfree(state->api_conf.api_url);
+                state->api_conf.api_url = sdsnew(u->api_url);
+            }
+            if (u->model && u->model[0])
+            {
+                sdsfree(state->api_conf.model);
+                state->api_conf.model = sdsnew(u->model);
+            }
+            if (u->api_key && u->api_key[0])
+            {
+                sdsfree(state->api_conf.api_key);
+                state->api_conf.api_key = sdsnew(u->api_key);
+            }
+        }
         break;
     }
     default:

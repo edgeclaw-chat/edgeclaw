@@ -214,11 +214,11 @@ model can read the user's files (configs, sources, ...) but cannot modify them.
   the system prompt
 - **Markdown rendering**: md4c-based rendering in the TUI frontend
 - **Internal commands**: slash commands (`/session ...`,
-  `/task ...`) and shell-like syntax (`|`, `;`, `&`, redirection, `$VAR`,
+  `/task ...`, `/connect`) and shell-like syntax (`|`, `;`, `&`, redirection, `$VAR`,
   `!n`/`!!`)
 - **Cron scheduling**: one-shot (`at`) or recurring (`cron_expr`/
   `every_seconds`) agent tasks via `ccronexpr`
-- **Setup wizard**: interactive configuration on first run
+- **First-run setup**: ask only for the API URL and model; set the API key later with `/connect`
 - **Cross-compilation**: armv7/aarch64/amd64 for Linux; aarch64 for macOS;
   amd64 for Windows
 - **Static binary**: statically linked on Linux for portable deployment
@@ -358,10 +358,7 @@ The released binary is the TUI. On first run (no `config.json`) it launches the 
 ./edgeclaw
 ```
 
-The wizard guides you through:
-- LLM API key, URL, and model
-- Channel type and workspace path
-- Sandbox root and other options
+The first run only asks for the **API URL** and the **model** (and a master passphrase, unless `EDGECLAW_MASTER_KEY` is set); every other setting uses its default. The **API key** is entered later with the **`/connect`** command: it opens a dialog (prefilled with the current values) for the API URL, model and key, and both persists them to `config.json` and applies them to the running agent.
 
 Configuration is saved to `~/.edgeclaw/config.json`. The default `workspace/` tree is embedded into the binary at build time and released to `~/.edgeclaw/workspace/` on first run, so no source `workspace/` directory is required next to the executable.
 
@@ -449,7 +446,7 @@ EdgeClaw derives the encryption key from a master passphrase using HKDF-SHA256. 
 1. **Environment variable** (`EDGECLAW_MASTER_KEY`) — for scripting / Docker deployments. The variable is cleared from the environment after reading.
 2. **Interactive TTY prompt** — prompted on startup if no env var is set.
 
-On first setup, you will be prompted to create a passphrase. A verification hash is stored in `~/.edgeclaw/.key_hash` to validate the passphrase on subsequent runs. The master key is locked in memory with `mlock()` to prevent swapping and is wiped after config is loaded.
+On first setup, you will be prompted to create a passphrase. A verification hash is stored in `~/.edgeclaw/.key_hash` to validate the passphrase on subsequent runs. The master key is locked in memory with `mlock()` and kept for the lifetime of the process, so the `/connect` command can re-encrypt the API key when you change it at runtime.
 
 **Format in `config.json`:**
 

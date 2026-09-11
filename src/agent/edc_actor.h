@@ -31,6 +31,8 @@ typedef enum
     BC_ACTOR_MSG_TOOL_STARTED,    /* toolbox → scheduler: 某个工具**真正开始执行**
                                    * (data = strdup(call_id)); 供 resume 账本精确
                                    * 区分"未执行"(PENDING) 与"执行中"(EXECUTING) */
+    BC_ACTOR_MSG_LLM_SET_CONFIG,  /* agent → llm_actor: 运行时更新 api_url/model/key
+                                   * (data = struct edc_llm_api_conf_update *) */
 } edc_actor_msg_type_t;
 
 extern const char *edc_actor_msg_type_s(edc_actor_msg_type_t type);

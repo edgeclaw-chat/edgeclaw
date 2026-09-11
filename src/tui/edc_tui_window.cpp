@@ -400,6 +400,18 @@ TUIWindow::TUIWindow() : input_text_("")
     });
     Add(split_);
 
+    // /connect dialog: three text fields plus Connect/Cancel. Built once; the
+    // window overlays it while open and routes all events to it.
+    connect_url_input_ = ::ftxui::Input(&connect_url_, "https://api.example.com/v1/chat/completions");
+    connect_model_input_ = ::ftxui::Input(&connect_model_, "model name");
+    connect_key_input_ = ::ftxui::Input(&connect_key_, "API key");
+    auto connect_ok = ::ftxui::Button("Connect", [this] { SubmitConnect(); }, ::ftxui::ButtonOption::Simple());
+    auto connect_cancel = ::ftxui::Button("Cancel", [this] { connect_open_ = false; }, ::ftxui::ButtonOption::Simple());
+    connect_buttons_ = ::ftxui::Container::Horizontal({connect_ok, connect_cancel}, &connect_button_focus_);
+    auto connect_fields = ::ftxui::Container::Vertical(
+        {connect_url_input_, connect_model_input_, connect_key_input_, connect_buttons_}, &connect_focus_);
+    connect_modal_ = ::ftxui::Renderer(connect_fields, [this] { return RenderConnectModal(); });
+
     agent = edc_c_agent_new(false, true);
     edc_channel_adapter_init(edc_c_agent_channel_actor(agent), this, on_channel_adapter_send);
     EnableBracketedPaste();
@@ -447,6 +459,16 @@ void TUIWindow::Submit()
     const auto last = input_text_.find_last_not_of(" \t\r\n");
     std::string message = input_text_.substr(first, last - first + 1);
 
+    // "/connect" is handled locally: open the provider dialog and do not send
+    // anything to the agent or record it as a chat message.
+    if (message == "/connect")
+    {
+        input_text_.clear();
+        input_->Reset();
+        OpenConnect();
+        return;
+    }
+
     chat_widget_->AddMessage(std::make_shared<UserMessage>(message, ::time(nullptr)));
     AppendChatTranscript("user", "", message, "", EDC_C_RENDER_PLAIN);
     input_text_.clear();
@@ -472,6 +494,32 @@ void TUIWindow::Submit()
     // immediately.
     if (screen_)
         screen_->RequestAnimationFrame();
+}
+
+void TUIWindow::OpenConnect()
+{
+    char buf[4096];
+    connect_url_ = edc_c_agent_api_url(agent, buf, sizeof(buf)) ? buf : "";
+    connect_model_ = edc_c_agent_model(agent, buf, sizeof(buf)) ? buf : "";
+    connect_key_ = edc_c_agent_api_key(agent, buf, sizeof(buf)) ? buf : "";
+    connect_open_ = true;
+    connect_focus_ = 0;
+    connect_button_focus_ = 0;
+    if (screen_)
+        screen_->RequestAnimationFrame();
+}
+
+bool TUIWindow::SubmitConnect()
+{
+    if (connect_url_.empty() || connect_model_.empty() || connect_key_.empty())
+        return false;
+    if (!edc_c_agent_connect(agent, connect_url_.c_str(), connect_model_.c_str(), connect_key_.c_str()))
+        return false;
+    model_ = connect_model_; // refresh the footer's model label
+    connect_open_ = false;
+    if (screen_)
+        screen_->RequestAnimationFrame();
+    return true;
 }
 
 void TUIWindow::LoadInputHistory()
@@ -776,11 +824,51 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
             RequestTaskSnapshot();
     }
 
-    return split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
+    auto base = split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
+    if (!connect_open_)
+        return base;
+    return ::ftxui::dbox(
+        {base, connect_modal_->Render() | ::ftxui::size(::ftxui::WIDTH, ::ftxui::LESS_THAN, 80) | ::ftxui::center});
+}
+
+::ftxui::Element TUIWindow::RenderConnectModal()
+{
+    const auto &pal = style::palette();
+    return ::ftxui::vbox({
+               ::ftxui::text(" Connect LLM provider ") | ::ftxui::bold | ::ftxui::color(pal.accent),
+               ::ftxui::separator(),
+               ::ftxui::hbox({::ftxui::text("API URL  ") | ::ftxui::dim,
+                              connect_url_input_->Render() | ::ftxui::flex}),
+               ::ftxui::hbox({::ftxui::text("Model    ") | ::ftxui::dim,
+                              connect_model_input_->Render() | ::ftxui::flex}),
+               ::ftxui::hbox({::ftxui::text("API Key  ") | ::ftxui::dim,
+                              connect_key_input_->Render() | ::ftxui::flex}),
+               ::ftxui::separator(),
+               ::ftxui::hbox({::ftxui::text(" Enter connect · Esc cancel") | ::ftxui::dim, ::ftxui::filler(),
+                              connect_buttons_->Render()}),
+           }) |
+           ::ftxui::border | ::ftxui::bgcolor(pal.pane_bg);
 }
 
 bool TUIWindow::OnEvent(::ftxui::Event event)
 {
+    // The /connect dialog, when open, owns every event: Esc closes it, Enter
+    // submits, everything else goes to its fields.
+    if (connect_open_)
+    {
+        if (event == ::ftxui::Event::Escape)
+        {
+            connect_open_ = false;
+            return true;
+        }
+        if (event == ::ftxui::Event::Return)
+        {
+            SubmitConnect();
+            return true;
+        }
+        return connect_modal_->OnEvent(event);
+    }
+
     // Bracketed paste: the terminal wraps pasted content in ESC[200~ ...
     // ESC[201~. FTXUI delivers each marker as a single Event::Special, so the
     // window can track paste state here. Inside a paste, Return and '\n' are

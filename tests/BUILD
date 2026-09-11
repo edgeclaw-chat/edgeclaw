@@ -304,3 +304,13 @@ cc_test(
     ],
     linkopts = LINK_OPTS,
 )
+
+cc_test(
+    name = "test_connect",
+    srcs = ["test_connect.c"],
+    deps = [
+        "//src/core:core",
+        "@libuv",
+    ],
+    linkopts = LINK_OPTS,
+)

@@ -284,6 +284,46 @@ bool edc_c_agent_model(struct edc_agent *agent, char *buf, size_t cap)
     return ok;
 }
 
+static bool edc_c_copy_sds(const sds value, char *buf, size_t cap)
+{
+    if (!buf || cap == 0)
+        return false;
+    buf[0] = '\0';
+    if (!value)
+        return false;
+    const bool ok = sdslen(value) < cap;
+    if (ok)
+        memcpy(buf, value, sdslen(value) + 1);
+    return ok;
+}
+
+bool edc_c_agent_api_url(struct edc_agent *agent, char *buf, size_t cap)
+{
+    if (!agent || !agent->config)
+    {
+        if (buf && cap)
+            buf[0] = '\0';
+        return false;
+    }
+    return edc_c_copy_sds(agent->config->llm_api_conf.api_url, buf, cap);
+}
+
+bool edc_c_agent_api_key(struct edc_agent *agent, char *buf, size_t cap)
+{
+    if (!agent || !agent->config)
+    {
+        if (buf && cap)
+            buf[0] = '\0';
+        return false;
+    }
+    return edc_c_copy_sds(agent->config->llm_api_conf.api_key, buf, cap);
+}
+
+bool edc_c_agent_connect(struct edc_agent *agent, const char *api_url, const char *model, const char *api_key)
+{
+    return edc_agent_set_llm_config(agent, api_url, model, api_key);
+}
+
 bool edc_c_history_path(char *buf, size_t cap)
 {
     if (!buf || cap == 0)

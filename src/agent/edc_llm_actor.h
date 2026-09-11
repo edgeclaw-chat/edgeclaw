@@ -73,6 +73,16 @@ struct edc_llm_actor_resp
     EdcError *error;
 };
 
+/* Payload for BC_ACTOR_MSG_LLM_SET_CONFIG: new provider settings. Any field
+ * may be NULL/empty to leave it unchanged. Owned by the message. */
+struct edc_llm_api_conf_update
+{
+    sds api_url;
+    sds model;
+    sds api_key;
+};
+void edc_llm_api_conf_update_free(void *ptr);
+
 extern edc_actor_t *edc_llm_actor_new(struct edc_config *config);
 extern void edc_llm_actor_free(edc_actor_t *actor);
 extern struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools, EdcQueue *turn);

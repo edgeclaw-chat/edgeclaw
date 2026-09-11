@@ -582,7 +582,25 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
             edc_task_set_output(task, sdsnew(r->content));
         sched_flush_redirects(task);
         if (sched->send_reply)
-            sched->send_reply(sched, task, r->error->message, EDC_CHANNEL_MESSAGE_SYS_TYPE, msg->request_id);
+        {
+            const char *err = r->error->message ? r->error->message : "LLM request failed";
+            bool no_key = sched->config && (!sched->config->llm_api_conf.api_key ||
+                                            sdslen(sched->config->llm_api_conf.api_key) == 0);
+            if (no_key)
+            {
+                /* First run: with no API key the request can only fail, so
+                 * point the user at the /connect dialog instead of just
+                 * reporting the error. */
+                sds combined = sdscatprintf(
+                    sdsempty(), "%s\n\nNo API key configured — run /connect to set the API URL, model and key.", err);
+                sched->send_reply(sched, task, combined, EDC_CHANNEL_MESSAGE_SYS_TYPE, msg->request_id);
+                sdsfree(combined);
+            }
+            else
+            {
+                sched->send_reply(sched, task, err, EDC_CHANNEL_MESSAGE_SYS_TYPE, msg->request_id);
+            }
+        }
         return;
     }
 

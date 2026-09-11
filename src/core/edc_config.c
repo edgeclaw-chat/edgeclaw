@@ -404,3 +404,70 @@ void edc_config_free(struct edc_config *config)
     free(config->sandbox_rw_paths);
     free(config);
 }
+
+bool edc_config_update_llm(const char *edc_home, const char *api_url, const char *model, const char *api_key)
+{
+    if (!edc_home)
+        return false;
+
+    sds path = edc_path_join(edc_home, "config.json", NULL);
+    EdcError *error = NULL;
+    sds contents = edc_file_read(path, &error);
+    if (!contents)
+    {
+        log_error("edc_config: cannot read %s: %s", path, error ? error->message : "unknown");
+        if (error)
+            edc_error_free(error);
+        sdsfree(path);
+        return false;
+    }
+
+    cJSON *conf = cJSON_Parse(contents);
+    sdsfree(contents);
+    if (!conf || !cJSON_IsObject(conf))
+    {
+        if (conf)
+            cJSON_Delete(conf);
+        sdsfree(path);
+        return false;
+    }
+
+    if (api_url && api_url[0])
+    {
+        cJSON_DeleteItemFromObject(conf, "api_url");
+        cJSON_AddStringToObject(conf, "api_url", api_url);
+    }
+    if (model && model[0])
+    {
+        cJSON_DeleteItemFromObject(conf, "model");
+        cJSON_AddStringToObject(conf, "model", model);
+    }
+    if (api_key && api_key[0])
+    {
+        sds plain = sdsnew(api_key);
+        sds enc = edc_secret_encrypt(plain);
+        sdsfree(plain);
+        cJSON_DeleteItemFromObject(conf, "api_key");
+        cJSON_AddStringToObject(conf, "api_key", enc ? enc : "");
+        sdsfree(enc);
+    }
+
+    char *out = cJSON_Print(conf);
+    cJSON_Delete(conf);
+    if (!out)
+    {
+        sdsfree(path);
+        return false;
+    }
+
+    bool ok = edc_file_write(path, out, -1, &error);
+    if (!ok)
+    {
+        log_error("edc_config: cannot write %s: %s", path, error ? error->message : "unknown");
+        if (error)
+            edc_error_free(error);
+    }
+    cJSON_free(out);
+    sdsfree(path);
+    return ok;
+}

@@ -44,6 +44,13 @@ extern void edc_agent_stop_all_turns(struct edc_agent *agent);
 extern void edc_agent_stop_running_turns(struct edc_agent *agent);
 extern void edc_agent_free(struct edc_agent *agent);
 
+/* Update the LLM provider settings at runtime (from the TUI /connect menu):
+ * persist api_url/model/api_key to config.json, update the in-memory config,
+ * and refresh the llm_actor's copy. A NULL/empty argument leaves that field
+ * unchanged. Returns true when the config was persisted. */
+extern bool edc_agent_set_llm_config(struct edc_agent *agent, const char *api_url, const char *model,
+                                     const char *api_key);
+
 /* 注册命令处理器 (由 shell 模块在初始化时调用) */
 typedef bool (*edc_agent_command_fn)(struct edc_agent *, struct edc_actor *, struct edc_channel_message *);
 extern void edc_agent_set_command_handler(edc_agent_command_fn fn);

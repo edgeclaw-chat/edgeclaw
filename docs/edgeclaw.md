@@ -9,8 +9,13 @@ control for orchestrating multiple parallel agent tasks.
 ## Quick Start
 
 ```bash
-$ edgeclaw              # start the interactive TUI (first run walks you through setup)
+$ edgeclaw              # start the interactive TUI
 ```
+
+On first run EdgeClaw asks only for the LLM **API URL** and **model**; every other
+setting uses its default. Set the **API key** at any time with `/connect`, which
+opens a dialog (prefilled with the current values) for the API URL, model and key
+and applies them immediately.
 
 Type a message in the input box and press Enter. Conversations are saved per session under `workspace/<session_id>/`.
 
@@ -174,6 +179,7 @@ The child inherits a slice of the parent's conversation context. Use
 | `/session remove <name_or_id>` | Remove a session (the last one cannot be removed) |
 | `/session rename <old> <new>` | Rename a session |
 | `/help` | Show help message |
+| `/connect` | Configure the LLM provider (API URL, model, key) — opens a dialog |
 
 ### Task Creation
 
