@@ -4,11 +4,38 @@
 #include "uv.h"
 #include <memory>
 #include <signal.h>
+#include <string>
 
 using namespace ftxui;
 
 namespace
 {
+
+// Parse the sandbox flag from argv into a per-run override: -1 = no flag (keep
+// the persisted config.json value), 0 = force off, 1 = force on. The sandbox is
+// on by default in config.json; "--no-sandbox" / "--sandbox=off|0|false|no"
+// force it off (for gdb/strace/perf/valgrind and other tools the seccomp policy
+// blocks), while "--sandbox" / "--sandbox=on" force it on. Unknown arguments
+// are ignored. The override is never persisted -- only the in-TUI /sandbox
+// command writes config.json.
+int ParseSandboxFlag(int argc, char **argv)
+{
+    int sandbox_override = -1;
+    for (int i = 1; i < argc; i++)
+    {
+        const std::string arg = argv[i];
+        if (arg == "--no-sandbox")
+            sandbox_override = 0;
+        else if (arg == "--sandbox")
+            sandbox_override = 1;
+        else if (arg.rfind("--sandbox=", 0) == 0)
+        {
+            const std::string v = arg.substr(10);
+            sandbox_override = (v == "off" || v == "0" || v == "false" || v == "no") ? 0 : 1;
+        }
+    }
+    return sandbox_override;
+}
 
 // ftxui treats SIGINT/SIGTERM as a *deferred* exit: its signal handler only
 // records the signal, the main loop then quits normally, and ~Loop re-raises
@@ -30,8 +57,10 @@ void HandleTerminationSignal(int) {}
 
 } // namespace
 
-int main()
+int main(int argc, char **argv)
 {
+
+    const int sandbox_override = ParseSandboxFlag(argc, argv);
 
     edc_log_init();
 
@@ -39,7 +68,7 @@ int main()
     edc_c_file_utils_init(default_loop);
 
     auto screen = ScreenInteractive::Fullscreen();
-    auto window = std::make_shared<edc::TUIWindow>();
+    auto window = std::make_shared<edc::TUIWindow>(sandbox_override);
     edc_c_agent_set_command_handler();
     window->SetScreen(&screen);
     ftxui::Component component = window;

@@ -323,7 +323,7 @@ std::string ShortenHome(const char *path)
     return ::ftxui::hbox(std::move(row));
 }
 
-TUIWindow::TUIWindow() : input_text_("")
+TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
 {
     chat_widget_ = std::make_shared<ChatWidget>();
     task_widget_ = std::make_shared<TaskWidget>();
@@ -412,7 +412,7 @@ TUIWindow::TUIWindow() : input_text_("")
         {connect_url_input_, connect_model_input_, connect_key_input_, connect_buttons_}, &connect_focus_);
     connect_modal_ = ::ftxui::Renderer(connect_fields, [this] { return RenderConnectModal(); });
 
-    agent = edc_c_agent_new(false, true);
+    agent = edc_c_agent_new(false, sandbox_override);
     edc_channel_adapter_init(edc_c_agent_channel_actor(agent), this, on_channel_adapter_send);
     EnableBracketedPaste();
 
@@ -798,14 +798,25 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
         term_w = ws.ws_col;
     const int pane_w = term_w - sidebar_width_ - 2;
 
-    // Right end: the model in use and the "/help" pointer, joined by a middle
-    // dot so the two read as one compact unit. Flush to the pane's right edge
-    // with the filler; if the model will not fit alongside "/help", show
-    // "/help" alone.
+    // Right end: the model in use, the sandbox state and the "/help" pointer,
+    // joined by middle dots so they read as one compact unit -- model first,
+    // then the sandbox state, then "/help". Flush to the pane's right edge with
+    // the filler; when the pane is narrow drop fields from the middle outward:
+    // first the model, then the sandbox state, leaving "/help" alone.
     const int budget = pane_w - ::ftxui::string_width(left) - 1;
+    const std::string sandbox =
+        std::string("sandbox:") + (edc_c_agent_sandbox_enabled(agent) ? "on" : "off");
+
     std::string right = kFooterHelp;
-    if (!model_.empty() && ::ftxui::string_width(model_ + " · " + kFooterHelp) <= budget)
-        right = model_ + " · " + kFooterHelp;
+    const std::string sandbox_help = sandbox + " · " + kFooterHelp;
+    if (::ftxui::string_width(sandbox_help) <= budget)
+        right = sandbox_help;
+    if (!model_.empty())
+    {
+        const std::string full = model_ + " · " + sandbox + " · " + kFooterHelp;
+        if (::ftxui::string_width(full) <= budget)
+            right = full;
+    }
 
     return ::ftxui::hbox({
         ::ftxui::text(left) | ::ftxui::color(pal.text_dim),

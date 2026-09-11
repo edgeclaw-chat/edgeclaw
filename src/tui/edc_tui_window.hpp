@@ -25,7 +25,11 @@ class TodoWidget;
 class TUIWindow : public ::ftxui::ComponentBase
 {
   public:
-    TUIWindow();
+    // |sandbox_override| mirrors the --sandbox/--no-sandbox command-line flag:
+    // -1 keeps the persisted config.json value, 0 forces off, 1 forces on. It is
+    // passed straight to edc_c_agent_new() (per-run only, never persisted) and
+    // can still be toggled at runtime with /sandbox on|off.
+    explicit TUIWindow(int sandbox_override = -1);
     virtual ~TUIWindow();
 
     TUIWindow(const TUIWindow &) = delete;
@@ -78,9 +82,9 @@ class TUIWindow : public ::ftxui::ComponentBase
     void SyncChatSession(const char *session_id);
     // Render the left pane (chat log + input + footer/spinner).
     ::ftxui::Element RenderMain();
-    // Build the footer row: the working directory on the left, the active
-    // model plus the "/help" pointer on the right, right-aligned within the
-    // chat pane's width (never spilling into the sidebar).
+    // Build the footer row: the working directory on the left; on the right the
+    // active model, the sandbox state and the "/help" pointer, right-aligned
+    // within the chat pane's width (never spilling into the sidebar).
     ::ftxui::Element RenderFooter() const;
 
     std::shared_ptr<edc::ChatWidget> chat_widget_;

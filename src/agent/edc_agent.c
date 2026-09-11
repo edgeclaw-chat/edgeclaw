@@ -542,7 +542,7 @@ void edc_agent_stop_running_turns(struct edc_agent *agent)
 
 /* ── 生命周期 ──────────────────────────────────────────────── */
 
-struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
+struct edc_agent *edc_agent_new(bool setup, int sandbox_override)
 {
     sds edc_home = edc_config_resolve_bc_home();
 
@@ -569,8 +569,13 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
      * re-encrypts the API key when the user updates the provider at runtime,
      * so the key must stay available (it remains mlock()ed). */
 
-    agent->config->enable_sandbox = enable_sandbox;
-    if (enable_sandbox)
+    /* The master switch was loaded from config.json (default on). The CLI flag,
+     * when given, overrides it for this run only: sandbox_override < 0 keeps the
+     * persisted value, 0 forces off, 1 forces on. It is deliberately not
+     * written back -- only the in-TUI /sandbox command persists the state. */
+    if (sandbox_override >= 0)
+        agent->config->enable_sandbox = (sandbox_override != 0);
+    if (agent->config->enable_sandbox)
     {
         edc_sandbox_init(agent->config);
     }
@@ -682,6 +687,20 @@ bool edc_agent_set_llm_config(struct edc_agent *agent, const char *api_url, cons
     u->api_key = api_key ? sdsnew(api_key) : NULL;
     edc_actor_send(agent->llm_actor, edc_actor_msg_new(BC_ACTOR_MSG_LLM_SET_CONFIG, NULL, NULL, u,
                                                        (edc_actor_data_free_fn)edc_llm_api_conf_update_free));
+    return true;
+}
+
+bool edc_agent_set_sandbox_enabled(struct edc_agent *agent, bool enable)
+{
+    if (!agent || !agent->config)
+        return false;
+
+    /* Persist first (mirrors edc_agent_set_llm_config): if config.json cannot
+     * be written, leave the running agent untouched so memory and disk agree. */
+    if (!edc_config_update_sandbox_enabled(agent->config->edc_home, enable))
+        return false;
+
+    agent->config->enable_sandbox = enable;
     return true;
 }
 

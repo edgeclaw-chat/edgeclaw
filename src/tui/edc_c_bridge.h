@@ -89,8 +89,10 @@ struct edc_c_task_snapshot *edc_c_task_snapshot_parse(const char *json);
 void edc_c_task_snapshot_free(struct edc_c_task_snapshot *snap);
 
 /* Create / destroy an agent. The returned pointer is opaque to the TUI; it is
- * only passed back into other bridge functions. Mirrors edc_agent_new/free. */
-struct edc_agent *edc_c_agent_new(bool setup, bool enable_sandbox);
+ * only passed back into other bridge functions. Mirrors edc_agent_new/free.
+ * |sandbox_override|: -1 = keep the persisted config.json value, 0 = force off,
+ * 1 = force on (per-run only; not persisted). */
+struct edc_agent *edc_c_agent_new(bool setup, int sandbox_override);
 void edc_c_agent_free(struct edc_agent *agent);
 
 /* Register the shell command handler (edc_commands_handler) with the agent so
@@ -146,6 +148,10 @@ bool edc_c_agent_model(struct edc_agent *agent, char *buf, size_t cap);
  * Used to prefill the /connect dialog with the current values. */
 bool edc_c_agent_api_url(struct edc_agent *agent, char *buf, size_t cap);
 bool edc_c_agent_api_key(struct edc_agent *agent, char *buf, size_t cap);
+
+/* True when the filesystem sandbox is currently enabled (toggled at runtime
+ * with /sandbox). Lets the TUI show the sandbox state in the footer. */
+bool edc_c_agent_sandbox_enabled(struct edc_agent *agent);
 
 /* Apply new LLM provider settings at runtime: persist them to config.json and
  * hot-update the running agent (config + llm_actor). Any argument may be NULL

@@ -37,7 +37,10 @@ struct edc_agent
 extern void edc_agent_add_history(struct edc_agent *agent, const char *line);
 
 extern char *edc_agent_run_turn(struct edc_agent *agent, const char *input);
-extern struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox);
+/* |sandbox_override|: -1 = keep the persisted config.json value (the default
+ * at startup), 0 = force off, 1 = force on. The override is per-run and is NOT
+ * persisted; only the in-TUI /sandbox command writes config.json. */
+extern struct edc_agent *edc_agent_new(bool setup, int sandbox_override);
 extern void edc_agent_remove_all_turns(struct edc_agent *agent);
 extern void edc_agent_stop_all_turns(struct edc_agent *agent);
 /** 离开 session: 只取消当前 session 中正在执行 (LLM/工具调用) 的任务后落盘。 */
@@ -50,6 +53,10 @@ extern void edc_agent_free(struct edc_agent *agent);
  * unchanged. Returns true when the config was persisted. */
 extern bool edc_agent_set_llm_config(struct edc_agent *agent, const char *api_url, const char *model,
                                      const char *api_key);
+
+/* Toggle the filesystem sandbox at runtime and persist the choice to
+ * config.json (from the TUI /sandbox command). Returns true when persisted. */
+extern bool edc_agent_set_sandbox_enabled(struct edc_agent *agent, bool enable);
 
 /* 注册命令处理器 (由 shell 模块在初始化时调用) */
 typedef bool (*edc_agent_command_fn)(struct edc_agent *, struct edc_actor *, struct edc_channel_message *);

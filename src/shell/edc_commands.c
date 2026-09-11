@@ -118,6 +118,7 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
                        "- /whoami\n"
                        "- /model [name]\n"
                        "- /connect   (configure the LLM provider)\n"
+                       "- /sandbox [on|off]   (enable/disable the filesystem sandbox)\n"
                        "\n"
                        "## Shell Syntax\n"
                        "\n"

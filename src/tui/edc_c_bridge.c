@@ -15,9 +15,9 @@
  * edc_c_bridge.h, which uses plain C types.
  */
 
-struct edc_agent *edc_c_agent_new(bool setup, bool enable_sandbox)
+struct edc_agent *edc_c_agent_new(bool setup, int sandbox_override)
 {
-    return edc_agent_new(setup, enable_sandbox);
+    return edc_agent_new(setup, sandbox_override);
 }
 
 void edc_c_agent_set_command_handler(void)
@@ -295,6 +295,11 @@ static bool edc_c_copy_sds(const sds value, char *buf, size_t cap)
     if (ok)
         memcpy(buf, value, sdslen(value) + 1);
     return ok;
+}
+
+bool edc_c_agent_sandbox_enabled(struct edc_agent *agent)
+{
+    return agent && agent->config && agent->config->enable_sandbox;
 }
 
 bool edc_c_agent_api_url(struct edc_agent *agent, char *buf, size_t cap)

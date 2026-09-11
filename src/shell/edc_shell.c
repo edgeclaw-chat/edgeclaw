@@ -101,6 +101,36 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
         sdsfree(content);
         return true;
     }
+    if (strcmp(content, "/sandbox") == 0 || strncmp(content, "/sandbox ", 9) == 0)
+    {
+        sds arg = sdstrim(sdsnew(content + 8), " \t");
+        if (sdslen(arg) == 0)
+        {
+            sds reply = sdscatprintf(sdsempty(),
+                                     "sandbox: %s\n"
+                                     "(writable: cwd, workspace, /tmp, /dev; everything else is read-only)",
+                                     agent->config->enable_sandbox ? "on" : "off");
+            edc_commands_reply(agent, actor, message->type, reply);
+            sdsfree(reply);
+        }
+        else if (strcmp(arg, "on") == 0 || strcmp(arg, "off") == 0)
+        {
+            bool enable = strcmp(arg, "on") == 0;
+            bool saved = edc_agent_set_sandbox_enabled(agent, enable);
+            sds reply = sdscatprintf(sdsempty(), "sandbox: %s%s", enable ? "on" : "off",
+                                     saved ? "" : " (not persisted: config.json write failed)");
+            edc_commands_reply(agent, actor, message->type, reply);
+            sdsfree(reply);
+            log_info("/sandbox: filesystem sandbox %s (persisted=%d)", enable ? "enabled" : "disabled", saved);
+        }
+        else
+        {
+            edc_commands_reply(agent, actor, message->type, "Usage: /sandbox [on|off]");
+        }
+        sdsfree(arg);
+        sdsfree(content);
+        return true;
+    }
     sdsfree(content);
     return false;
 }
