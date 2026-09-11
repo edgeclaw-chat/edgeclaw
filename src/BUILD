@@ -1,13 +1,4 @@
-load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
-
-LINK_OPTS = select({
-    "//:macos_debug": ["-lresolv"],
-    "//:macos": ["-lresolv"],
-    "//:windows": ["-lws2_32", "-lbcrypt", "-luserenv"],
-    # `--define=valgrind=1`: dynamic link so valgrind can intercept malloc.
-    "//:valgrind": [],
-    "//conditions:default": ["-static", "-Wl,--no-gc-sections"],
-})
+load("@rules_cc//cc:defs.bzl", "cc_library")
 
 # ── Top-level utilities ───────────────────────────────────────────────────
 
@@ -15,29 +6,6 @@ cc_library(
     name = "utlist_fix",
     hdrs = ["utlist_fix.h"],
     includes = ["."],
-    visibility = ["//visibility:public"],
-)
-
-# ── Main binary ───────────────────────────────────────────────────────────
-
-cc_binary(
-    name = "edgeclaw.exe",
-    srcs = ["main.c"],
-    deps = [
-        "//src/agent:agent",
-        "//src/core:core",
-        "//src/shell:shell",
-        ":utlist_fix",
-    ] + select({
-        "//:windows": [],
-        "//conditions:default": ["//src/device:device"],
-    }),
-    linkstatic = True,
-    linkopts = LINK_OPTS,
-    local_defines = select({
-        "//:debug": ["EDGECLAW_DEBUG"],
-        "//conditions:default": [],
-    }),
     visibility = ["//visibility:public"],
 )
 

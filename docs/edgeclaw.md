@@ -2,19 +2,17 @@
 
 ## Overview
 
-EdgeClaw is a command-line AI assistant offering shell-like task management.
+EdgeClaw is an interactive terminal AI assistant offering shell-like task management.
 It supports multi-turn conversations, tool calling, and Unix-inspired process
 control for orchestrating multiple parallel agent tasks.
 
 ## Quick Start
 
 ```bash
-$ edgeclaw              # start interactive CLI
-$ edgeclaw --setup       # first-time setup wizard
-$ edgeclaw --sandbox     # enable filesystem sandbox
+$ edgeclaw              # start the interactive TUI (first run walks you through setup)
 ```
 
-Type and press Enter. Conversations are saved per session under `workspace/<session_id>/`.
+Type a message in the input box and press Enter. Conversations are saved per session under `workspace/<session_id>/`.
 
 ---
 

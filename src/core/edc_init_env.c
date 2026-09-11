@@ -1,12 +1,12 @@
 ﻿#include "edc_init_env.h"
 #include "cJSON.h"
+#include "edc_bundled_workspace.h"
 #include "edc_compat.h"
 #include "edc_file_utils.h"
 #include "edc_secret.h"
 #include "edc_terminal.h"
 #include "log.h"
 #include "sds.h"
-#include <dirent.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -484,168 +484,8 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     return 0;
 }
 
-/* Copy directory recursively */
-static bool copy_directory_recursive(const char *src_dir, const char *dest_dir)
-{
-#ifdef _WIN32
-    sds pattern = edc_path_join(src_dir, "*", NULL);
-    WIN32_FIND_DATA fd;
-    HANDLE hFind = FindFirstFile(pattern, &fd);
-    sdsfree(pattern);
-
-    if (hFind == INVALID_HANDLE_VALUE)
-    {
-        log_error("Failed to open source directory %s", src_dir);
-        return false;
-    }
-
-    if (!edc_dir_create_with_parents(dest_dir, 0755, NULL))
-    {
-        log_error("Failed to create destination directory %s", dest_dir);
-        FindClose(hFind);
-        return false;
-    }
-
-    bool success = true;
-    do
-    {
-        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0)
-            continue;
-
-        sds src_path = edc_path_join(src_dir, fd.cFileName, NULL);
-        sds dest_path = edc_path_join(dest_dir, fd.cFileName, NULL);
-
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-        {
-            if (!copy_directory_recursive(src_path, dest_path))
-            {
-                success = false;
-                sdsfree(src_path);
-                sdsfree(dest_path);
-                break;
-            }
-        }
-        else
-        {
-            EdcError *error = NULL;
-            sds contents = edc_file_read(src_path, &error);
-
-            if (!contents)
-            {
-                log_error("Failed to read %s: %s", src_path, error ? error->message : "Unknown");
-                if (error)
-                    edc_error_free(error);
-                success = false;
-                sdsfree(src_path);
-                sdsfree(dest_path);
-                break;
-            }
-
-            if (!edc_file_write(dest_path, contents, -1, &error))
-            {
-                log_error("Failed to write %s: %s", dest_path, error ? error->message : "Unknown");
-                if (error)
-                    edc_error_free(error);
-                success = false;
-                sdsfree(contents);
-                sdsfree(src_path);
-                sdsfree(dest_path);
-                break;
-            }
-            sdsfree(contents);
-        }
-
-        sdsfree(src_path);
-        sdsfree(dest_path);
-    } while (FindNextFile(hFind, &fd));
-
-    FindClose(hFind);
-    return success;
-#else  /* POSIX */
-    DIR *dir = opendir(src_dir);
-    if (!dir)
-    {
-        log_error("Failed to open source directory %s", src_dir);
-        return false;
-    }
-
-    if (!edc_dir_create_with_parents(dest_dir, 0755, NULL))
-    {
-        log_error("Failed to create destination directory %s", dest_dir);
-        closedir(dir);
-        return false;
-    }
-
-    struct dirent *entry;
-    bool success = true;
-
-    while ((entry = readdir(dir)) != NULL)
-    {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
-            continue;
-
-        sds src_path = edc_path_join(src_dir, entry->d_name, NULL);
-        sds dest_path = edc_path_join(dest_dir, entry->d_name, NULL);
-
-        struct stat st;
-        if (lstat(src_path, &st) != 0)
-        {
-            log_error("Failed to stat %s", src_path);
-            success = false;
-            sdsfree(src_path);
-            sdsfree(dest_path);
-            break;
-        }
-
-        if (S_ISDIR(st.st_mode))
-        {
-            if (!copy_directory_recursive(src_path, dest_path))
-            {
-                success = false;
-                sdsfree(src_path);
-                sdsfree(dest_path);
-                break;
-            }
-        }
-        else
-        {
-            EdcError *error = NULL;
-            sds contents = edc_file_read(src_path, &error);
-
-            if (!contents)
-            {
-                log_error("Failed to read %s: %s", src_path, error ? error->message : "Unknown");
-                if (error)
-                    edc_error_free(error);
-                success = false;
-                sdsfree(src_path);
-                sdsfree(dest_path);
-                break;
-            }
-
-            if (!edc_file_write(dest_path, contents, -1, &error))
-            {
-                log_error("Failed to write %s: %s", dest_path, error ? error->message : "Unknown");
-                if (error)
-                    edc_error_free(error);
-                success = false;
-                sdsfree(contents);
-                sdsfree(src_path);
-                sdsfree(dest_path);
-                break;
-            }
-            sdsfree(contents);
-        }
-
-        sdsfree(src_path);
-        sdsfree(dest_path);
-    }
-
-    closedir(dir);
-    return success;
-#endif /* _WIN32 */
-}
-
+/* Release the workspace tree embedded in the binary (see
+ * edc_bundled_workspace.h) into dest_workspace. */
 static bool edc_init_env_workspace(const char *dest_workspace)
 {
     if (edc_file_is_dir(dest_workspace))
@@ -653,29 +493,43 @@ static bool edc_init_env_workspace(const char *dest_workspace)
         return true;
     }
 
-    sds current_dir = edc_cwd();
-    sds src_workspace = edc_path_join(current_dir, "workspace", NULL);
-    sdsfree(current_dir);
+    log_info("Releasing bundled workspace (%zu files) to %s", edc_bundled_workspace_count, dest_workspace);
 
-    if (!edc_file_is_dir(src_workspace))
+    if (!edc_dir_create_with_parents(dest_workspace, 0755, NULL))
     {
-        log_error("Source workspace directory %s does not exist", src_workspace);
-        sdsfree(src_workspace);
+        log_error("Failed to create workspace directory %s", dest_workspace);
         return false;
     }
 
-    log_info("Copying workspace from %s to %s", src_workspace, dest_workspace);
-
-    bool success = copy_directory_recursive(src_workspace, dest_workspace);
-    sdsfree(src_workspace);
-
-    if (!success)
+    for (size_t i = 0; i < edc_bundled_workspace_count; i++)
     {
-        log_error("Failed to copy workspace directory");
-        return false;
+        const struct edc_bundled_file *file = &edc_bundled_workspace_entries[i];
+        sds dest_path = edc_path_join(dest_workspace, file->path, NULL);
+
+        /* Recreate the parent directories of nested entries (skills/<name>/...). */
+        sds parent = edc_path_dirname(dest_path);
+        bool parent_ok = edc_dir_create_with_parents(parent, 0755, NULL);
+        sdsfree(parent);
+        if (!parent_ok)
+        {
+            log_error("Failed to create parent directory for %s", dest_path);
+            sdsfree(dest_path);
+            return false;
+        }
+
+        EdcError *error = NULL;
+        if (!edc_file_write(dest_path, (const char *)file->data, (ssize_t)file->size, &error))
+        {
+            log_error("Failed to write %s: %s", dest_path, error ? error->message : "Unknown");
+            if (error)
+                edc_error_free(error);
+            sdsfree(dest_path);
+            return false;
+        }
+        sdsfree(dest_path);
     }
 
-    log_info("Workspace directory copied successfully");
+    log_info("Bundled workspace released successfully");
     return true;
 }
 

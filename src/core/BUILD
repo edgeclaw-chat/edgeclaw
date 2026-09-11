@@ -89,11 +89,26 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+# ── Bundled workspace ─────────────────────────────────────────────────────
+
+# Generates a C file that carries the default workspace/ tree as a byte table,
+# so the binary is self-contained and edc_init_env() does not need a
+# `workspace/` directory on disk (see edc_bundled_workspace.h).
+genrule(
+    name = "workspace_embedded_c",
+    srcs = ["//:workspace_files"],
+    outs = ["workspace_embedded.c"],
+    cmd = "$(execpath //tools:embed_workspace) --out $@ --prefix workspace --name edc_bundled_workspace $(SRCS)",
+    tools = ["//tools:embed_workspace"],
+    visibility = ["//visibility:public"],
+)
+
 # ── Combined core library (remaining utility modules) ─────────────────────
 
 cc_library(
     name = "core",
     srcs = [
+        ":workspace_embedded.c",
         "edc_config.c",
         "edc_containers.c",
         "edc_https_client.c",
@@ -103,6 +118,7 @@ cc_library(
         "edc_param_types.c",
     ],
     hdrs = [
+        "edc_bundled_workspace.h",
         "edc_compat.h",
         "edc_config.h",
         "edc_containers.h",

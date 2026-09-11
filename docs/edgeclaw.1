@@ -4,35 +4,25 @@ NAME
      edgeclaw — AI-powered personal assistant agent with shell-like syntax
 
 SYNOPSIS
-     edgeclaw [--setup] [--sandbox] [-c CMD] [--help] [--version] [SCRIPT]
+     edgeclaw
 
 DESCRIPTION
-     EdgeClaw is a command-line AI assistant offering bash-inspired task man-
-     agement.  It supports multi-turn conversations, tool calling, pipeline
-     chaining, I/O redirection, variable expansion, and Unix-style job con-
-     trol for orchestrating multiple parallel agent tasks.
+     EdgeClaw is an interactive terminal AI assistant offering bash-inspired
+     task management.  It supports multi-turn conversations, tool calling,
+     pipeline chaining, I/O redirection, variable expansion, and Unix-style
+     job control for orchestrating multiple parallel agent tasks.
 
 OPTIONS
-     -s, --setup        Run initial setup wizard and exit.
-     -S, --sandbox      Enable filesystem sandbox for tool execution.
-     -c, --command CMD  Execute a single command and exit (non-interactive).
-     -h, --help         Display help and exit.
-     -V, --version      Output version information and exit.
-
-     If a file path is given as the final argument and it is not an option,
-     edgeclaw executes each non-empty, non-comment line as a command
-     (shell script mode), then exits.
+     The interactive TUI takes no command-line arguments.  On first run,
+     when config.json does not exist, it launches the setup wizard.
 
 GETTING STARTED
            $ edgeclaw
-           EdgeClaw CLI ready.  Type /help for commands.
-           > explain this code
-           [task] created 1 (group 1)
-           ...
+           EdgeClaw TUI ready.
 
-     Type and press Enter.  All non-/ input creates a task in the current
-     foreground group and sends it to the LLM.  Conversations are saved per
-     session under workspace/<session_id>/.
+     Type a message in the input box and press Enter.  All non-/ input
+     creates a task in the current foreground group and sends it to the LLM.
+     Conversations are saved per session under workspace/<session_id>/.
 
      Tab completion is available for commands (type / then Tab) and will
      cycle through matching completions on subsequent Tab presses.
@@ -328,16 +318,9 @@ WORKFLOW EXAMPLES
      Fork with subagent
            > /task fork task-0 "audit the database schema" --prompt dba
 
-     Single command (non-interactive)
-           $ edgeclaw -c "check src/main.c for bugs"
-
-     Script file
-           $ edgeclaw review.ecs
-
 FILES
      ~/.edgeclaw/                        EdgeClaw home directory.
      ~/.edgeclaw/config.json             Configuration (API key, model).
-     ~/.edgeclaw/.cli_history            CLI command history.
      ~/.edgeclaw/workspace/              Workspace root.
      ~/.edgeclaw/workspace/<sid>/        Per-session directory.
      ~/.edgeclaw/workspace/<sid>/history.jsonl  Session history.

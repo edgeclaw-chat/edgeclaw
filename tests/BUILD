@@ -285,3 +285,12 @@ cc_test(
     ],
     linkopts = LINK_OPTS,
 )
+
+cc_test(
+    name = "test_bundled_workspace",
+    srcs = ["test_bundled_workspace.c"],
+    deps = [
+        "//src/core:core",
+    ],
+    linkopts = LINK_OPTS,
+)

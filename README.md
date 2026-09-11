@@ -10,8 +10,7 @@
 **EdgeClaw** is a personal AI assistant agent written in C. It runs an LLM with
 tool-calling capabilities and executes filesystem operations, shell commands,
 scheduled tasks, remote-device commands, and to-do management. Input arrives
-from a terminal frontend (FTXUI TUI), from the headless CLI (`-c` / script
-mode), or from scheduled cron jobs.
+from the terminal frontend (FTXUI TUI) or from scheduled cron jobs.
 
 Built with an actor-model architecture for clean concurrency, modular design
 for extensibility, and static linking for portable deployment.
@@ -98,7 +97,7 @@ Defined in `src/agent/edc_actor.h` (`edc_actor_msg_type_t`):
 ### Data Flow
 
 1. A user message arrives at the **Channel Actor** — from the TUI adapter
-   callback, or directly through the command handler in `-c`/script mode.
+   callback or a scheduled cron job.
 2. The Channel Actor delivers it to the **Scheduler** as `CHANNEL_RECV`.
 3. The Scheduler attaches the input to a waiting task (or creates one): plain
    text creates/attaches an LLM task; `/`-prefixed input and `@group`
@@ -146,8 +145,7 @@ A task that failed mid-run is `ERROR` but keeps its half-finished turn;
 
 | Interface | Binary | Description |
 |-----------|--------|-------------|
-| **TUI** | `//src/tui:edgeclaw_tui` | Interactive terminal UI (FTXUI): chat pane + task/todo sidebar, driven by scheduler task-tree snapshots. Primary daily driver |
-| **Headless CLI** | `//src:edgeclaw.exe` | `--setup`, `--sandbox`, `-c COMMAND`, and file-script mode for automation |
+| **TUI** | `//src/tui:edgeclaw_tui` | Interactive terminal UI (FTXUI): chat pane + task/todo sidebar, driven by scheduler task-tree snapshots. Primary daily driver — **this is the released binary** (packaged as `edgeclaw`) |
 | **Device agent** | `//src:device_agent` | Remote shell/file execution over TCP socket or PPPoS/lwIP |
 
 There is currently **one** channel implementation (`edc_channel_adapter`); the
@@ -182,7 +180,7 @@ Tools are registered dynamically; see "Adding a New Tool" below.
 
 Tool execution enforces **sandbox path verification** (`edc_sandbox_verify_path`)
 against the configured sandbox root in the fs/shell/device tools on all
-platforms (enabled with `--sandbox` or `enable_sandbox`). Linux kernel
+platforms (gated by the agent's `enable_sandbox` flag). Linux kernel
 isolation backends (Landlock LSM, mount namespaces, seccomp-BPF) are
 implemented in `src/agent/edc_sandbox*.c`, but are **deliberately not wired**
 into process spawning: `edc_sandbox_apply()` must run post-fork in a
@@ -198,13 +196,13 @@ single-threaded helper process) on Linux. macOS builds skip kernel isolation.
 - **Encrypted secrets**: AES-256-GCM for config secrets via mbedtls
 - **Skills system**: markdown skill definitions with YAML frontmatter augment
   the system prompt
-- **Markdown rendering**: md4c-based rendering in the TUI/CLI frontends
+- **Markdown rendering**: md4c-based rendering in the TUI frontend
 - **Internal commands**: slash commands (`/session ...`,
   `/task ...`) and shell-like syntax (`|`, `;`, `&`, redirection, `$VAR`,
   `!n`/`!!`)
 - **Cron scheduling**: one-shot (`at`) or recurring (`cron_expr`/
   `every_seconds`) agent tasks via `ccronexpr`
-- **Setup wizard**: interactive configuration via `--setup` flag
+- **Setup wizard**: interactive configuration on first run
 - **Cross-compilation**: armv7/aarch64/amd64 for Linux; aarch64 for macOS;
   amd64 for Windows
 - **Static binary**: statically linked on Linux for portable deployment
@@ -214,12 +212,11 @@ single-threaded helper process) on Linux. macOS builds skip kernel isolation.
 ```
 edgeclaw/
 ├── src/
-│   ├── main.c                        # Headless entry (setup / -c / script / daemon)
 │   ├── core/                         # 基础层 (无 agent 依赖)
 │   │   ├── edc_config.c/h            # config.json 解析
 │   │   ├── edc_secret.c/h            # 加密配置值 (AES-256-GCM, mbedtls)
 │   │   ├── edc_https_client.c/h      # 异步 HTTPS 客户端 (libuv+mbedtls+llhttp+yuarel)
-│   │   ├── edc_init_env.c/h          # --setup 向导
+│   │   ├── edc_init_env.c/h          # 首启向导 + 释放内嵌 workspace
 │   │   ├── edc_containers.c/h        # EdcQueue 等容器
 │   │   ├── edc_markdown_render.c/h   # Markdown 渲染 (md4c)
 │   │   ├── edc_param_types.c/h       # 工具参数类型 / schema 生成
@@ -282,7 +279,7 @@ edgeclaw/
 ├── patches/                          # 依赖补丁
 ├── toolchain/                        # 交叉编译工具链
 ├── docs/                             # 用户手册 (edgeclaw.md) + man page
-├── workspace/                        # 运行时数据 (首次运行复制到 ~/.edgeclaw/)
+├── workspace/                        # 默认工作区 (编译期打包进二进制, 首次运行释放到 ~/.edgeclaw/)
 │   ├── AGENTS.md  SOUL.md  USER.md  TOOLS.md  HEARTBEAT.md
 │   ├── memory/   skills/   ssl/
 ├── MODULE.bazel                      # Bazel 模块 (bzlmod)
@@ -295,6 +292,8 @@ edgeclaw/
 
 Pre-built static binaries for Linux (amd64, armv7, aarch64) and macOS (aarch64) are available on the [Releases](https://github.com/edgeclaw-chat/edgeclaw/releases) page. Download the tarball matching your platform:
 
+Each tarball holds a single self-contained binary — the default workspace is embedded in it and released to `~/.edgeclaw/` on first run, so nothing else needs to be unpacked.
+
 | Platform | Tarball |
 |----------|---------|
 | Linux x86_64 | `edgeclaw_amd64_linux.tar.gz` |
@@ -306,10 +305,10 @@ Pre-built static binaries for Linux (amd64, armv7, aarch64) and macOS (aarch64) 
 # Replace {ARCH}_{OS} with your platform, e.g. edgeclaw_amd64_linux.tar.gz
 curl -LO https://github.com/edgeclaw-chat/edgeclaw/releases/latest/download/edgeclaw_{ARCH}_{OS}.tar.gz
 
-# Extract and run
+# Extract and run (first run walks you through setup)
 tar -xzf edgeclaw_*.tar.gz
 cd edgeclaw_*/
-./edgeclaw --setup
+./edgeclaw
 ```
 
 ### Build from Source
@@ -325,25 +324,22 @@ cd edgeclaw_*/
 git clone https://github.com/edgeclaw-chat/edgeclaw.git
 cd edgeclaw
 
-# Build the headless CLI/daemon for the host platform
-bazel build //src:edgeclaw.exe
-
-# Build the interactive TUI
+# Build the interactive TUI (the released binary) for the host platform
 bazel build //src/tui:edgeclaw_tui
 
-# Cross-compile for aarch64 Linux
-bazel build //src:edgeclaw.exe --platforms=//:aarch64_linux
+# Cross-compile the TUI for aarch64 Linux
+bazel build //src/tui:edgeclaw_tui --platforms=//:aarch64_linux
 
-# Build release tarball (headless binary + workspace)
+# Build release tarball (a single self-contained TUI binary; workspace is embedded)
 bazel build //:edgeclaw
 ```
 
 ### Setup
 
-Run the binary with `--setup` to launch the interactive setup wizard:
+The released binary is the TUI. On first run (no `config.json`) it launches the setup wizard automatically:
 
 ```bash
-./edgeclaw --setup
+./edgeclaw
 ```
 
 The wizard guides you through:
@@ -351,7 +347,7 @@ The wizard guides you through:
 - Channel type and workspace path
 - Sandbox root and other options
 
-Configuration is saved to `~/.edgeclaw/config.json`. The bundled `workspace/` directory is also automatically copied to `~/.edgeclaw/workspace/`.
+Configuration is saved to `~/.edgeclaw/config.json`. The default `workspace/` tree is embedded into the binary at build time and released to `~/.edgeclaw/workspace/` on first run, so no source `workspace/` directory is required next to the executable.
 
 ### Manual Configuration
 
@@ -398,7 +394,7 @@ Optional remote-device settings for the `device_shell` / `device_file` tools:
 
 ### Run
 
-On first run, EdgeClaw automatically copies the bundled `workspace/` directory to `~/.edgeclaw/workspace`. Use `--setup` if `config.json` does not exist.
+On first run, EdgeClaw releases the default workspace (embedded in the binary at build time) to `~/.edgeclaw/workspace`; if `config.json` is missing the TUI walks you through setup.
 
 **Interactive TUI:**
 
@@ -406,66 +402,27 @@ On first run, EdgeClaw automatically copies the bundled `workspace/` directory t
 bazel run //src/tui:edgeclaw_tui
 ```
 
-**Headless mode (`-c` / script / automation):**
+**Production / release tarball (the TUI):**
 
 ```bash
-bazel run //src:edgeclaw.exe -- -c "write a haiku about the sea"
-bazel run //src:edgeclaw.exe -- script.txt
-```
-
-**Production / release tarball:**
-
-```bash
-# Build the release tarball (includes headless binary + workspace/)
+# Build the release tarball (a single self-contained TUI binary; workspace is embedded)
 bazel build //:edgeclaw
 
 # Extract and run
 tar -xzf bazel-bin/edgeclaw_*.tar.gz
 cd edgeclaw_*/
-./edgeclaw --setup
-./edgeclaw -c "list files in the workspace"
+./edgeclaw
 ```
 
 ---
 
 ## Usage
 
-### Command-Line Arguments
-
-```
-Usage: edgeclaw [OPTION]... [SCRIPT|FILE]
-
-Options:
-  -s, --setup         run initial setup wizard and exit
-  -S, --sandbox       enable filesystem sandbox
-  -c, --command CMD   execute a single command and exit
-  -h, --help          display this help and exit
-  -V, --version       output version information and exit
-```
-
-A file path given as the final argument is treated as a shell script: each
-line is executed as a command.
-
 ### Running the Agent
 
 **Interactive TUI** (recommended): type messages in the chat pane; the agent
 responds and updates the task/todo sidebar. See the quick-start section of
-`docs/edgeclaw.md`.
-
-**Headless one-shot / script:**
-
-```bash
-edgeclaw -c "research the weather and summarize it"
-echo "summarize docs/edgeclaw.md" > script.txt
-edgeclaw script.txt
-```
-
-**With filesystem sandbox** — restricts tool paths to the configured sandbox
-root:
-
-```bash
-edgeclaw --sandbox
-```
+`docs/edgeclaw.md`. The TUI binary takes no command-line arguments.
 
 ### Master Key & Encrypted Secrets
 
@@ -476,7 +433,7 @@ EdgeClaw derives the encryption key from a master passphrase using HKDF-SHA256. 
 1. **Environment variable** (`EDGECLAW_MASTER_KEY`) — for scripting / Docker deployments. The variable is cleared from the environment after reading.
 2. **Interactive TTY prompt** — prompted on startup if no env var is set.
 
-On first setup (via `--setup`), you will be prompted to create a passphrase. A verification hash is stored in `~/.edgeclaw/.key_hash` to validate the passphrase on subsequent runs. The master key is locked in memory with `mlock()` to prevent swapping and is wiped after config is loaded.
+On first setup, you will be prompted to create a passphrase. A verification hash is stored in `~/.edgeclaw/.key_hash` to validate the passphrase on subsequent runs. The master key is locked in memory with `mlock()` to prevent swapping and is wiped after config is loaded.
 
 **Format in `config.json`:**
 
@@ -599,7 +556,7 @@ Vendored under `thirdparty/` or fetched as Bazel modules (`MODULE.bazel`):
 | **uthash / utlist** | Hash table & linked-list macros |
 | **ccronexpr** | Cron expression parsing |
 | **log.c** | Logging |
-| **md4c** | Markdown parsing (TUI/CLI rendering) |
+| **md4c** | Markdown parsing (TUI rendering) |
 | **utf8proc** | Unicode width handling (TUI text layout) |
 | **lwip** | PPPoS transport for the device agent |
 | **brutezone** | Timezone database (`tz` support in crontab) |
