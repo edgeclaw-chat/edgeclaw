@@ -405,8 +405,19 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
     connect_url_input_ = ::ftxui::Input(&connect_url_, "https://api.example.com/v1/chat/completions");
     connect_model_input_ = ::ftxui::Input(&connect_model_, "model name");
     connect_key_input_ = ::ftxui::Input(&connect_key_, "API key");
-    auto connect_ok = ::ftxui::Button("Connect", [this] { SubmitConnect(); }, ::ftxui::ButtonOption::Simple());
-    auto connect_cancel = ::ftxui::Button("Cancel", [this] { connect_open_ = false; }, ::ftxui::ButtonOption::Simple());
+    // Flat, borderless buttons. ButtonOption::Simple()/Border() draw a boxed
+    // frame around the label, which reads as heavy next to the flat dialog;
+    // focus is shown as the accent highlight instead, matching the active
+    // Tasks/Todos rows.
+    ::ftxui::ButtonOption flat_button;
+    flat_button.transform = [&pal](const ::ftxui::EntryState &s) {
+        auto label = ::ftxui::text(" " + s.label + " ");
+        if (s.focused)
+            return label | ::ftxui::bold | ::ftxui::color(pal.accent);
+        return label | ::ftxui::dim | ::ftxui::color(pal.text_dim);
+    };
+    auto connect_ok = ::ftxui::Button("Connect", [this] { SubmitConnect(); }, flat_button);
+    auto connect_cancel = ::ftxui::Button("Cancel", [this] { connect_open_ = false; }, flat_button);
     connect_buttons_ = ::ftxui::Container::Horizontal({connect_ok, connect_cancel}, &connect_button_focus_);
     auto connect_fields = ::ftxui::Container::Vertical(
         {connect_url_input_, connect_model_input_, connect_key_input_, connect_buttons_}, &connect_focus_);
@@ -841,27 +852,46 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
     auto base = split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
     if (!connect_open_)
         return base;
+    // The /connect dialog is borderless, so the backdrop is dimmed while it is
+    // open: the raised dialog surface then reads as the one lit panel on a
+    // muted screen instead of relying on a frame to stand out.
     return ::ftxui::dbox(
-        {base, connect_modal_->Render() | ::ftxui::size(::ftxui::WIDTH, ::ftxui::LESS_THAN, 80) | ::ftxui::center});
+        {base | ::ftxui::dim,
+         connect_modal_->Render() | ::ftxui::size(::ftxui::WIDTH, ::ftxui::LESS_THAN, 80) | ::ftxui::center});
 }
 
 ::ftxui::Element TUIWindow::RenderConnectModal()
 {
+    // Flat, borderless dialog. It borrows the sidebar's visual language -- a
+    // bold accent heading, dim rules and dim field labels -- but floats on
+    // the raised dialog surface instead of drawing a frame. BorderStyle::EMPTY
+    // reserves a one-cell inset on every side (so the fields keep their
+    // breathing room) while drawing no box lines at all; the window-level
+    // overlay dims the backdrop behind it (see OnRender).
+    using namespace ::ftxui;
     const auto &pal = style::palette();
-    return ::ftxui::vbox({
-               ::ftxui::text(" Connect LLM provider ") | ::ftxui::bold | ::ftxui::color(pal.accent),
-               ::ftxui::separator(),
-               ::ftxui::hbox({::ftxui::text("API URL  ") | ::ftxui::dim,
-                              connect_url_input_->Render() | ::ftxui::flex}),
-               ::ftxui::hbox({::ftxui::text("Model    ") | ::ftxui::dim,
-                              connect_model_input_->Render() | ::ftxui::flex}),
-               ::ftxui::hbox({::ftxui::text("API Key  ") | ::ftxui::dim,
-                              connect_key_input_->Render() | ::ftxui::flex}),
-               ::ftxui::separator(),
-               ::ftxui::hbox({::ftxui::text(" Enter connect · Esc cancel") | ::ftxui::dim, ::ftxui::filler(),
-                              connect_buttons_->Render()}),
+
+    auto field = [&](const char *label, const Component &input) {
+        return hbox({
+            text(label) | dim | color(pal.text_dim),
+            input->Render() | flex,
+        });
+    };
+
+    return vbox({
+               text(" Connect provider ") | bold | color(pal.accent),
+               separator() | color(pal.line_dim),
+               field("API URL  ", connect_url_input_),
+               field("Model    ", connect_model_input_),
+               field("API Key  ", connect_key_input_),
+               separator() | color(pal.line_dim),
+               hbox({
+                   text(" ") | dim | color(pal.text_dim),
+                   filler(),
+                   connect_buttons_->Render(),
+               }),
            }) |
-           ::ftxui::border | ::ftxui::bgcolor(pal.pane_bg);
+           borderStyled(BorderStyle::EMPTY) | bgcolor(pal.dialog_bg);
 }
 
 bool TUIWindow::OnEvent(::ftxui::Event event)

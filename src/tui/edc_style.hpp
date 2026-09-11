@@ -64,6 +64,9 @@ struct Palette
     ::ftxui::Color pane_bg;     // sidebar pane + chat message surface.
     ::ftxui::Color text_dim;    // quiet secondary text / neutral rows.
     ::ftxui::Color line_dim;    // subtle separator lines (todo list divider).
+    ::ftxui::Color dialog_bg;   // raised dialog surface for borderless modals
+                                // (one step above pane_bg so a flat /connect
+                                // panel still reads as a floating surface).
 
     // ---- accents & status ----------------------------------------------
     ::ftxui::Color accent;      // main cyan accent: headers, in_progress,
@@ -113,6 +116,7 @@ inline const Palette &palette()
         ::ftxui::Color::RGB(39, 40, 34),     // pane_bg     (#272822)
         ::ftxui::Color::RGB(117, 113, 94),   // text_dim    (#75715E comment)
         ::ftxui::Color::RGB(73, 72, 62),     // line_dim    (#49483E selection)
+        ::ftxui::Color::RGB(62, 61, 50),     // dialog_bg   (#3E3D32 lite)
         // accents & status — Monokai syntax tokens
         ::ftxui::Color::RGB(102, 217, 239),  // accent      (#66D9EF cyan)
         ::ftxui::Color::RGB(166, 226, 46),   // ok          (#A6E22E green)
