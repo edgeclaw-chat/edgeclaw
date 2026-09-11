@@ -306,6 +306,15 @@ cc_test(
 )
 
 cc_test(
+    name = "test_shell_env",
+    srcs = ["test_shell_env.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_connect",
     srcs = ["test_connect.c"],
     deps = [

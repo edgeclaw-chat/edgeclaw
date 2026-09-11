@@ -3,6 +3,7 @@
 #include "edc_sandbox_helper.h"
 #include "edc_sandbox_helper_blob.h"
 #include "sds.h"
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,6 +43,32 @@ static int run_helper(const char *file, char **args)
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
+/* Same as run_helper(), but capture the helper's stderr into |errpath| with
+ * EDC_SANDBOX_DEBUG=1 so the caller can read which kernel layers were actually
+ * enforced (the namespace layer is only reported as "enforced" when it really
+ * remounted "/" read-only). */
+static int run_helper_capture(const char *file, char **args, const char *errpath)
+{
+    pid_t pid = fork();
+    if (pid == 0)
+    {
+        int fd = open(errpath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (fd >= 0)
+        {
+            dup2(fd, 2);
+            close(fd);
+        }
+        setenv("EDC_SANDBOX_DEBUG", "1", 1);
+        execv(file, args);
+        _exit(127);
+    }
+    if (pid < 0)
+        return -1;
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
 static struct edc_config *make_conf(const char *home, const char *rw)
 {
     struct edc_config *c = calloc(1, sizeof(*c));
@@ -69,6 +96,21 @@ int main(void)
     }
 
     struct edc_config *conf = make_conf(home, rw);
+
+    /* A deny directory inside the rw parent: normally readable, but masked by
+     * the namespace layer (deny wins over rw). */
+    sds deny_dir = sdscatprintf(sdsempty(), "%s/deny", rw);
+    mkdir(deny_dir, 0700);
+    sds deny_secret = sdscatprintf(sdsempty(), "%s/secret", deny_dir);
+    (void)deny_secret; /* only read on Linux, in the exec block below */
+    FILE *secret_f = fopen(deny_secret, "w");
+    if (secret_f)
+    {
+        fputs("TOPSECRET", secret_f);
+        fclose(secret_f);
+    }
+    conf->sandbox_deny_paths = calloc(2, sizeof(sds));
+    conf->sandbox_deny_paths[0] = sdsnew(deny_dir);
 
     /* 1. Extraction: returns a path to an executable whose bytes equal the blob. */
     sds path = edc_sandbox_helper_path(conf);
@@ -115,6 +157,21 @@ int main(void)
         while (args[i] && strcmp(args[i], "--") != 0)
             i++;
         T_CHECK(args[i] && strcmp(args[i], "--") == 0, "argv has --");
+
+        /* The deny group must be present and carry the deny path. */
+        bool has_deny = false;
+        const char *deny_val = NULL;
+        for (int k = 0; args[k]; k++)
+        {
+            if (strcmp(args[k], "--deny") == 0)
+            {
+                has_deny = true;
+                deny_val = args[k + 1];
+                break;
+            }
+        }
+        T_CHECK(has_deny, "argv has --deny");
+        T_CHECK(deny_val && strcmp(deny_val, deny_dir) == 0, "argv carries the deny path");
         T_CHECK(args[i + 1] && strcmp(args[i + 1], "echo hi") == 0, "argv carries the command");
         T_CHECK(args[i + 2] == NULL, "argv is NULL-terminated");
     }
@@ -167,6 +224,50 @@ int main(void)
         sdsfree(dfile);
         free(dargs);
         sdsfree(dcmd);
+
+        /* Deny masking comes from the namespace layer only, so first learn from
+         * the helper's debug output whether that layer was enforced. */
+        bool ns_enforced = false;
+        char dbg_tmpl[] = "/tmp/edc_helper_dbg_XXXXXX";
+        int dbg_fd = mkstemp(dbg_tmpl);
+        if (dbg_fd >= 0)
+            close(dbg_fd);
+        sds pfile = NULL;
+        char **pargs = NULL;
+        if (edc_sandbox_helper_prepare(conf, "true", &pfile, &pargs))
+        {
+            run_helper_capture(pfile, pargs, dbg_tmpl);
+            char buf[512] = {0};
+            FILE *df = fopen(dbg_tmpl, "r");
+            if (df)
+            {
+                size_t n = fread(buf, 1, sizeof(buf) - 1, df);
+                buf[n] = '\0';
+                fclose(df);
+            }
+            ns_enforced = strstr(buf, "ns=on(enforced)") != NULL;
+        }
+        sdsfree(pfile);
+        free(pargs);
+        unlink(dbg_tmpl);
+
+        if (!ns_enforced)
+        {
+            printf("test_sandbox_helper: ns not enforced, skipping deny masking assertions\n");
+        }
+        else
+        {
+            sds dcfile = NULL;
+            char **dcargs = NULL;
+            sds dccmd = sdscatprintf(sdsempty(), "cat %s", deny_secret);
+            if (edc_sandbox_helper_prepare(conf, dccmd, &dcfile, &dcargs))
+            {
+                T_CHECK(run_helper(dcfile, dcargs) != 0, "deny path is masked inside the sandbox");
+            }
+            sdsfree(dcfile);
+            free(dcargs);
+            sdsfree(dccmd);
+        }
     }
 #endif
 

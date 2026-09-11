@@ -51,6 +51,24 @@ static sds *edc_config_default_ro_paths(void)
     return edc_config_split_paths(EDC_SANDBOX_DEFAULT_RO_PATHS);
 }
 
+/* Fresh copy of the default writable set: the agent workspace, /tmp, /dev and
+ * the user's cache directory (~/.cache). The cache is writable so the tools a
+ * shell command may run keep working under the sandbox -- package managers and
+ * build systems (bazel, pip, cargo, ...) write their caches there. Follows the
+ * same shape as edc_config_default_ro_paths(). */
+static sds *edc_config_default_rw_paths(const char *workspace)
+{
+    sds *out = g_new0(sds, 5);
+    out[0] = sdsnew(workspace);
+    out[1] = sdsnew("/tmp");
+    out[2] = sdsnew("/dev");
+    sds home = edc_homedir();
+    if (home && sdslen(home) > 0)
+        out[3] = edc_path_join(home, ".cache", NULL);
+    sdsfree(home);
+    return out;
+}
+
 static bool sds_array_contains(sds *arr, const char *s)
 {
     if (!arr)
@@ -295,10 +313,7 @@ after_channel:
         }
         else
         {
-            config->sandbox_rw_paths = g_new0(sds, 3 + 1);
-            config->sandbox_rw_paths[0] = sdsnew(config->workspace);
-            config->sandbox_rw_paths[1] = sdsnew("/tmp");
-            config->sandbox_rw_paths[2] = sdsnew("/dev");
+            config->sandbox_rw_paths = edc_config_default_rw_paths(config->workspace);
         }
 
         cJSON *ro = cJSON_GetObjectItem(sandbox, "ro_paths");
@@ -325,10 +340,7 @@ after_channel:
     }
     else
     {
-        config->sandbox_rw_paths = g_new0(sds, 3 + 1);
-        config->sandbox_rw_paths[0] = sdsnew(config->workspace);
-        config->sandbox_rw_paths[1] = sdsnew("/tmp");
-        config->sandbox_rw_paths[2] = sdsnew("/dev");
+        config->sandbox_rw_paths = edc_config_default_rw_paths(config->workspace);
 
         config->sandbox_ro_paths = edc_config_default_ro_paths();
     }

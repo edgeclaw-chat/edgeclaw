@@ -27,11 +27,15 @@ bool edc_sandbox_init(struct edc_config *conf)
 #ifdef __linux__
     if (conf->enable_sandbox)
     {
-        /* Linux 上有 Landlock/NS/seccomp-BPF 三个内核隔离后端, 但受多线程
-         * fork 安全性限制尚未接线 (见 edc_sandbox_apply 注释)。当前生效的
-         * 是 fs/shell/device 工具层的 sandbox_root 路径校验。 */
-        log_info("edc_sandbox: kernel isolation backends present but not wired; "
-                 "path validation is the active enforcement");
+        /* Kernel isolation is applied per-command inside the embedded sandbox
+         * helper (see src/agent/sandbox_helper.c), NOT in the agent process:
+         * the layers are irreversible and inherited, so applying them here
+         * would sandbox the agent itself. In-process enforcement is the
+         * tool-layer path verification in edc_sandbox_verify_path().
+         * edc_sandbox_apply() below is reserved for a confined single-threaded
+         * child and is currently unused. */
+        log_info("edc_sandbox: kernel isolation runs in the per-command helper; "
+                 "path validation is the in-process enforcement");
     }
 #endif
 
@@ -170,22 +174,24 @@ sds edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writ
 }
 
 /*
- * Apply kernel sandbox layers to the *current process*. This is meant to run
- * in a child process right after fork() and before exec() — it must never run
- * in the main EdgeClaw process (it would sandbox the agent itself).
+ * Apply every kernel sandbox layer to the *current process*: mount-namespace
+ * (with deny masking), Landlock, then seccomp-BPF.
  *
- * ⚠️ Wiring decision (2026-09): NOT yet called from the tool layer. exec_shell
- * spawns /bin/sh through uv_spawn on the shared actor-runner thread while the
- * HTTPS worker thread is alive; the backends below (logging plus sds/calloc
- * allocation) are not async-signal-safe, so running them post-fork in a
- * multi-threaded process risks allocator deadlock. uv_spawn also offers no
- * pre-exec hook. Safe wiring paths for later:
- *   1. Harden backends to allocation-free/log-free operation and switch
- *      exec_shell to fork()+sandbox_apply()+exec on Linux, or
- *   2. Spawn a dedicated single-threaded helper process (re-exec self with a
- *      hidden flag) that applies the sandbox then execs the command.
- * Until then, sandbox_root path verification in the fs/shell/device tools is
- * the active enforcement layer on every platform.
+ * ⚠️ Reserved, currently UNUSED. The layers are irreversible and inherited, so
+ * this must only ever run in the confined process -- never in the agent (it
+ * would sandbox the agent itself), and never between fork() and exec() in the
+ * multithreaded agent (only async-signal-safe calls are allowed there, and
+ * these backends log and allocate). The active path applies the same sequence
+ * in the separate, single-threaded sandbox helper right before it execs /bin/sh
+ * (see src/agent/sandbox_helper.c); that code cannot call this function because
+ * the helper links only the tiny //src/agent:sandbox_backends library, not
+ * //src/agent:agent. Keep the two sequences in sync: namespace first (it needs
+ * unshare()/mount(), which the seccomp filter denies), then Landlock, then
+ * seccomp with block_metadata = !ns_enforced.
+ *
+ * Returns true when the sandbox is disabled or at least one kernel layer took
+ * effect; false only when nothing could be applied and enforcement falls back
+ * to path validation alone.
  */
 bool edc_sandbox_apply(struct edc_config *conf)
 {
@@ -196,41 +202,29 @@ bool edc_sandbox_apply(struct edc_config *conf)
         return true;
     }
 
+    /* seccomp filter installation requires CAP_SYS_ADMIN or NO_NEW_PRIVS; set
+     * it here so the seccomp layer works even when Landlock is unavailable.
+     * (The sandbox helper does the same.) */
+    prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+
     /*
-     * Apply sandbox layers:
-     *   1. Landlock (Linux 5.13+) — filesystem isolation
-     *   2. Namespace (Linux 3.8+) — fallback filesystem isolation via user+mount namespace
-     *   3. seccomp-bpf (always) — block dangerous syscalls (ptrace, mount, etc.)
-     *
-     * Apply BPF last so that the filesystem sandbox can use mount/unshare/etc.
-     * syscalls during its setup. Once the BPF filter is installed, those syscalls
-     * are locked down.
+     * Layer order matters: the mount-namespace backend needs unshare()/mount(),
+     * which the seccomp filter denies, so it runs FIRST. When it is enforced the
+     * read-only paths are immutable at the VFS level (EROFS) and the path-blind
+     * seccomp metadata rules are unnecessary; otherwise the seccomp filter
+     * blocks those mutators globally as a fallback.
      */
+    bool ns_enforced = false;
+    bool ns_ok = edc_ns_sandbox_apply((const char **)conf->sandbox_ro_paths, (const char **)conf->sandbox_rw_paths,
+                                     (const char **)conf->sandbox_deny_paths, &ns_enforced);
+    bool landlock_ok = edc_landlock_sandbox_apply((const char **)conf->sandbox_ro_paths,
+                                                  (const char **)conf->sandbox_rw_paths);
+    bool seccomp_ok = edc_bpf_sandbox_apply_ex(conf->sandbox_root_real, !ns_enforced);
 
-    bool fs_ok = false;
+    log_info("edc_sandbox: kernel layers ns=%s(%s) landlock=%s seccomp=%s", ns_ok ? "on" : "off",
+             ns_enforced ? "enforced" : "not-enforced", landlock_ok ? "on" : "off", seccomp_ok ? "on" : "off");
 
-    if (edc_landlock_sandbox_apply((const char **)conf->sandbox_ro_paths, (const char **)conf->sandbox_rw_paths))
-    {
-        fs_ok = true;
-    }
-    else
-    {
-        log_info("edc_sandbox: Landlock not available, trying namespace sandbox...");
-        bool ns_enforced = false;
-        if (edc_ns_sandbox_apply((const char **)conf->sandbox_ro_paths, (const char **)conf->sandbox_rw_paths,
-                                 (const char **)conf->sandbox_deny_paths, &ns_enforced))
-        {
-            fs_ok = true;
-        }
-    }
-
-    bool bpfs_ok = edc_bpf_sandbox_apply(conf->sandbox_root_real);
-    if (!bpfs_ok)
-    {
-        log_info("edc_sandbox: seccomp-bpf not available, continuing without syscall filter");
-    }
-
-    if (!fs_ok && !bpfs_ok)
+    if (!ns_enforced && !landlock_ok && !seccomp_ok)
     {
         log_warn("edc_sandbox: no kernel sandbox available; relying on path validation only");
         return false;
@@ -238,6 +232,7 @@ bool edc_sandbox_apply(struct edc_config *conf)
 
     return true;
 #else
+    (void)conf;
     return true;
 #endif
 }

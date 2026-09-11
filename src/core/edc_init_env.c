@@ -17,10 +17,17 @@
 /* --- Helper functions --- */
 
 /* Default writable paths. The launch directory is prepended when the config
- * is loaded, so it is not listed here. */
+ * is loaded, so it is not listed here. ~/.cache is included so tool/build
+ * caches (bazel, pip, ...) keep working under the sandbox; see
+ * edc_config_default_rw_paths(). */
 static sds default_sandbox_rw_extra(const char *edc_home)
 {
-    return sdscatprintf(sdsempty(), "%s/workspace/, /tmp, /dev", edc_home);
+    sds base = sdscatprintf(sdsempty(), "%s/workspace/, /tmp, /dev", edc_home);
+    sds home = edc_homedir();
+    if (home && sdslen(home) > 0)
+        base = sdscatprintf(base, ", %s/.cache", home);
+    sdsfree(home);
+    return base;
 }
 
 /* Default read-only paths: the system whitelist only (see
