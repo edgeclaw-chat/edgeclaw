@@ -422,6 +422,15 @@ static void ensure_sandbox(cJSON *conf, const char *edc_home, bool *changed)
         *changed = true;
     }
 
+    /* Materialize the sandbox master switch so it is discoverable and editable
+     * in config.json. Defaults to on; the in-TUI /sandbox command rewrites it
+     * (the --sandbox CLI flag intentionally does not). */
+    if (!cJSON_GetObjectItem(sandbox, "enable"))
+    {
+        cJSON_AddBoolToObject(sandbox, "enable", true);
+        *changed = true;
+    }
+
     /* The dedicated sandbox directory is gone: the launch directory is the
      * sandbox root now. Drop its stale entry so an existing config.json stops
      * advertising it. */

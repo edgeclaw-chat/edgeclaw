@@ -75,4 +75,10 @@ extern void edc_config_free(struct edc_config *config);
  * encrypted before writing. A NULL argument leaves that field unchanged.
  * Returns true on success. Used by the runtime /connect command. */
 extern bool edc_config_update_llm(const char *edc_home, const char *api_url, const char *model, const char *api_key);
+
+/* Persist the sandbox master switch ("sandbox.enable") in config.json,
+ * preserving all other settings. Used by the in-TUI /sandbox command; the CLI
+ * --sandbox flag is a per-run override and is intentionally not persisted.
+ * Returns true on success. */
+extern bool edc_config_update_sandbox_enabled(const char *edc_home, bool enable);
 #endif

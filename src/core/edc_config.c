@@ -205,9 +205,19 @@ after_channel:
 
     config->workspace = edc_path_join(edc_home, "workspace", NULL);
 
+    /* Sandbox master switch, persisted under "sandbox.enable". It defaults to
+     * on when the key is absent (first run / older config files). The CLI flag
+     * overrides this for the current run only (see edc_agent_new), whereas the
+     * in-TUI /sandbox command persists it back to config.json. */
+    config->enable_sandbox = true;
+
     cJSON *sandbox = cJSON_GetObjectItem(conf, "sandbox");
     if (sandbox && cJSON_IsObject(sandbox))
     {
+        cJSON *enable = cJSON_GetObjectItem(sandbox, "enable");
+        if (enable && cJSON_IsBool(enable))
+            config->enable_sandbox = cJSON_IsTrue(enable);
+
         cJSON *rw = cJSON_GetObjectItem(sandbox, "rw_paths");
         if (rw && cJSON_IsArray(rw) && cJSON_GetArraySize(rw) > 0)
         {
@@ -489,6 +499,69 @@ bool edc_config_update_llm(const char *edc_home, const char *api_url, const char
         cJSON_AddStringToObject(conf, "api_key", enc ? enc : "");
         sdsfree(enc);
     }
+
+    char *out = cJSON_Print(conf);
+    cJSON_Delete(conf);
+    if (!out)
+    {
+        sdsfree(path);
+        return false;
+    }
+
+    bool ok = edc_file_write(path, out, -1, &error);
+    if (!ok)
+    {
+        log_error("edc_config: cannot write %s: %s", path, error ? error->message : "unknown");
+        if (error)
+            edc_error_free(error);
+    }
+    cJSON_free(out);
+    sdsfree(path);
+    return ok;
+}
+
+/* Persist the sandbox master switch to <edc_home>/config.json, under
+ * "sandbox.enable". Merges into the existing file so rw_paths/ro_paths and all
+ * other settings are preserved. Used by the in-TUI /sandbox command; the
+ * command-line flag deliberately does NOT go through here (it is a per-run
+ * override only). Returns true on success. */
+bool edc_config_update_sandbox_enabled(const char *edc_home, bool enable)
+{
+    if (!edc_home)
+        return false;
+
+    sds path = edc_path_join(edc_home, "config.json", NULL);
+    EdcError *error = NULL;
+    sds contents = edc_file_read(path, &error);
+    if (!contents)
+    {
+        log_error("edc_config: cannot read %s: %s", path, error ? error->message : "unknown");
+        if (error)
+            edc_error_free(error);
+        sdsfree(path);
+        return false;
+    }
+
+    cJSON *conf = cJSON_Parse(contents);
+    sdsfree(contents);
+    if (!conf || !cJSON_IsObject(conf))
+    {
+        if (conf)
+            cJSON_Delete(conf);
+        sdsfree(path);
+        return false;
+    }
+
+    /* Reuse the existing "sandbox" object when present so its rw_paths /
+     * ro_paths survive; otherwise create it (edc_init_env normally writes it). */
+    cJSON *sandbox = cJSON_GetObjectItem(conf, "sandbox");
+    if (!sandbox || !cJSON_IsObject(sandbox))
+    {
+        cJSON_DeleteItemFromObject(conf, "sandbox");
+        sandbox = cJSON_AddObjectToObject(conf, "sandbox");
+    }
+    cJSON_DeleteItemFromObject(sandbox, "enable");
+    cJSON_AddBoolToObject(sandbox, "enable", enable);
 
     char *out = cJSON_Print(conf);
     cJSON_Delete(conf);
