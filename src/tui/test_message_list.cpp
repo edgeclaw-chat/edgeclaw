@@ -506,6 +506,31 @@ static void test_selection_highlight_clears(void)
     PASS();
 }
 
+// FTXUI hands Select() a stack temporary as soon as a container sits above us:
+// VBox::Select builds `Selection selection_saturated = SaturateVertical(box_)`
+// and passes a reference to that local down the tree. The chat log always lives
+// inside a layout, so this shape is what catches a selection that outlives the
+// call -- remembering the reference and using it during Render segfaulted here.
+// Rendering the element bare (no wrapping container) passes the caller's own
+// Selection instead, which is why the tests above could not see that.
+static void test_selection_survives_nested_containers(void)
+{
+    TEST("selecting through a wrapping layout still collects the text");
+    const auto now = ::time(nullptr);
+    auto chat = std::make_shared<edc::ChatWidget>();
+    chat->AddMessage(std::make_shared<edc::Message>("ZEBRAFISH", now));
+
+    ftxui::Element element = ftxui::vbox({chat->Render() | ftxui::flex}) | ftxui::flex;
+    auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(kW), ftxui::Dimension::Fixed(kH));
+    ftxui::Selection selection(0, 0, kW - 1, kH - 1);
+    ftxui::Render(screen, element.get(), selection);
+
+    const std::string selected = selection.GetParts();
+    ASSERT(selected.find("ZEBRAFISH") != std::string::npos,
+           "selection did not survive a wrapping layout (got \"%s\")", selected.c_str());
+    PASS();
+}
+
 } // namespace
 
 int main(void)
@@ -525,6 +550,7 @@ int main(void)
     test_unbroken_run_rewraps_on_resize();
     test_selection_collects_message_text();
     test_selection_highlight_clears();
+    test_selection_survives_nested_containers();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
