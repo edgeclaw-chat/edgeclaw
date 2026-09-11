@@ -359,15 +359,17 @@ std::string Osc52ClipboardSequence(const std::string &text)
     return std::string("\x1b]52;c;") + encoded + '\a';
 }
 
-// The "Copied to clipboard" chip: a small raised label pinned to the top-right
-// corner. The transparent fillers let the pane behind it show through, so it
-// only paints the label itself.
+// The "Copied to clipboard" chip: flat and borderless, exactly like the Tasks
+// and Todos section headers -- bold accent text straight on the pane background,
+// no border and no second surface. It is pinned near the top-right corner with
+// a one-cell margin, so it does not touch the edge.
 ::ftxui::Element ClipboardToastElement()
 {
     const auto &pal = style::palette();
-    auto chip = ::ftxui::text(" Copied to clipboard ") | ::ftxui::color(pal.text) | ::ftxui::bgcolor(pal.dialog_bg);
+    auto chip = ::ftxui::text(" Copied to clipboard ") | ::ftxui::bold | ::ftxui::color(pal.accent);
     return ::ftxui::vbox({
-        ::ftxui::hbox({::ftxui::filler(), std::move(chip)}),
+        ::ftxui::text(""),                                                       // one blank row below the top edge
+        ::ftxui::hbox({::ftxui::filler(), std::move(chip), ::ftxui::text(" ")}), // one blank column off the right edge
         ::ftxui::filler(),
     });
 }
@@ -867,8 +869,21 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
     // The status row shares this pane's width (the input's width), so the
     // right-aligned model + "/help" stop at the input's right edge and never
     // run into the sidebar: the task/todo pane stays a full-height column.
-    ::ftxui::Elements children = {chat_widget_->Render() | ::ftxui::flex, ::ftxui::separator(), input_row,
-                                  ::ftxui::separator()};
+    // The "Copied to clipboard" chip floats over the chat pane's own top-right
+    // corner -- the pane the selection was made in, not the whole window -- one
+    // cell in from each edge, the way the Tasks/Todos headers sit in the
+    // sidebar. Drawing it as an overlay keeps it out of the layout, and asking
+    // for a frame while it is up is also what clears it: the frame after the
+    // deadline draws without it, and an idle screen is not redrawn otherwise.
+    auto chat = chat_widget_->Render();
+    if (std::chrono::steady_clock::now() < clipboard_toast_until_)
+    {
+        chat = ::ftxui::dbox({std::move(chat), ClipboardToastElement()});
+        if (screen_)
+            screen_->RequestAnimationFrame();
+    }
+
+    ::ftxui::Elements children = {chat | ::ftxui::flex, ::ftxui::separator(), input_row, ::ftxui::separator()};
 
     if (working_)
     {
@@ -952,37 +967,23 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
     }
 
     auto base = split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
-    // The "Copied to clipboard" chip: a transient overlay in the top-right
-    // corner, so it never moves the layout. While it is up it asks for a frame,
-    // and that is also what clears it -- the frame after the deadline draws
-    // without it, and an idle screen is not redrawn otherwise.
-    const bool toast = std::chrono::steady_clock::now() < clipboard_toast_until_;
-    if (toast && screen_)
-        screen_->RequestAnimationFrame();
-
-    if (connect_open_)
-    {
-        // The /connect dialog is borderless, so the backdrop is dimmed while it
-        // is open: the raised dialog surface then reads as the one lit panel on
-        // a muted screen instead of relying on a frame to stand out.
-        //
-        // clear_under is load-bearing, not cosmetic: ftxui's `dim` is a per-cell
-        // flag (see Dim in dom/dim.cpp) that the backdrop stamps over its whole
-        // box, and an overlaid element only rewrites character/colours — it
-        // never clears that flag. Without clear_under the dialog inherits the
-        // backdrop's dim and renders gray regardless of its text colour.
-        // Clearing the cells first (what the ftxui modal example does) resets
-        // the flag before the panel draws, so only the backdrop stays dim.
-        base = ::ftxui::dbox(
-            {base | ::ftxui::dim,
-             connect_modal_->Render() | ::ftxui::clear_under | ::ftxui::size(::ftxui::WIDTH, ::ftxui::LESS_THAN, 80) |
-                 ::ftxui::center});
-    }
-
-    if (toast)
-        base = ::ftxui::dbox({std::move(base), ClipboardToastElement()});
-
-    return base;
+    if (!connect_open_)
+        return base;
+    // The /connect dialog is borderless, so the backdrop is dimmed while it is
+    // open: the raised dialog surface then reads as the one lit panel on a
+    // muted screen instead of relying on a frame to stand out.
+    //
+    // clear_under is load-bearing, not cosmetic: ftxui's `dim` is a per-cell
+    // flag (see Dim in dom/dim.cpp) that the backdrop stamps over its whole
+    // box, and an overlaid element only rewrites character/colours — it never
+    // clears that flag. Without clear_under the dialog inherits the backdrop's
+    // dim and renders gray regardless of its text colour. Clearing the cells
+    // first (what the ftxui modal example does) resets the flag before the
+    // panel draws, so only the backdrop stays dim.
+    return ::ftxui::dbox(
+        {base | ::ftxui::dim,
+         connect_modal_->Render() | ::ftxui::clear_under | ::ftxui::size(::ftxui::WIDTH, ::ftxui::LESS_THAN, 80) |
+             ::ftxui::center});
 }
 
 ::ftxui::Element TUIWindow::RenderConnectModal()

@@ -57,23 +57,45 @@ void TestRawBytes()
 
 void TestToast()
 {
-    std::cout << "the chip is right-aligned and lets the pane behind it show through\n";
+    std::cout << "the chip is flat, right-aligned and keeps a margin\n";
 
     const int width = 40;
+    const char *kLabel = "Copied to clipboard";
     auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(width), ::ftxui::Dimension::Fixed(3));
     auto base = ::ftxui::vbox({::ftxui::text("BASE-MARK"), ::ftxui::filler()});
     ::ftxui::Render(screen, ::ftxui::dbox({std::move(base), edc::ClipboardToastElement()}));
 
-    std::string row0;
-    for (int x = 0; x < width; x++)
-        row0 += screen.CellAt(x, 0).character;
+    // Cells nobody drew on hold an empty string, not a space, so fold them to
+    // spaces first: otherwise the columns before the label vanish and its real
+    // position cannot be read off the row.
+    auto row_text = [&](int y)
+    {
+        std::string s;
+        for (int x = 0; x < width; x++)
+        {
+            const std::string &c = screen.CellAt(x, y).character;
+            s += c.empty() ? " " : c;
+        }
+        return s;
+    };
+    const std::string row0 = row_text(0);
+    const std::string row1 = row_text(1);
+    const size_t label = row1.find(kLabel);
 
-    const size_t chip = row0.find("Copied to clipboard");
-    Check(chip != std::string::npos, "the label is drawn on the first row");
-    Check(row0.find("BASE-MARK") != std::string::npos, "the overlay does not paint over what is behind it");
-    Check(chip != std::string::npos && row0.find("BASE-MARK") < chip, "the label sits on the right");
-    Check(screen.CellAt(width - 1, 0).background_color == edc::style::palette().dialog_bg,
-          "the chip carries the raised surface colour");
+    Check(label != std::string::npos, "the label is drawn on the row below the edge");
+    Check(row0.find("Copied") == std::string::npos, "one blank row is kept from the top edge");
+    Check(row0.find("BASE-MARK") != std::string::npos, "the overlay leaves the pane behind it alone");
+    // Right-aligned, ending one chip pad plus one margin column short of the
+    // edge: it must hug neither the left nor the right edge.
+    Check(label != std::string::npos && label + std::string(kLabel).size() == static_cast<size_t>(width) - 2,
+          "the label ends a pad and a margin short of the right edge");
+
+    // Flat like the Tasks/Todos headers: coloured text on the pane background,
+    // no border and no second surface behind it.
+    const auto &pal = edc::style::palette();
+    const auto cell = screen.CellAt(static_cast<int>(label), 1);
+    Check(cell.background_color == ::ftxui::Color::Default, "no background band");
+    Check(cell.foreground_color == pal.accent && cell.bold, "bold accent, like the section headers");
 }
 
 } // namespace
