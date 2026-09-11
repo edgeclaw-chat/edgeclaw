@@ -187,17 +187,25 @@ BarState BarAt(long long elapsed_ms)
     return ::ftxui::text("⬝") | ::ftxui::color(pal.text_dim) | ::ftxui::dim;
 }
 
-// Todo sidebar content: the foreground group's active task's own todo list.
-// The list is part of the task state (todowrite attaches it to the
-// task that called it), so the snapshot — which already tells us which task
-// is active — is the single source of truth for the TodoWidget, just as it
-// is for the task tree and the working spinner. A task without a list (or
-// the fg group without an active task) renders an empty TodoWidget.
-std::vector<TodoWidget::Item> ActiveTaskTodoItems(const ::edc_c_task_snapshot *snap)
+// Todo sidebar content: the foreground group's active task — its id, and its
+// own todo list. The list is part of the task state (todowrite attaches it to
+// the task that called it), so the snapshot — which already tells us which task
+// is active — is the single source of truth for the TodoWidget, just as it is
+// for the task tree and the working spinner. A task without a list (or the fg
+// group without an active task) renders an empty TodoWidget, and the id is what
+// keeps the section readable once it is collapsed or when several tasks have
+// run in one session.
+struct ActiveTaskTodos
 {
+    std::string task_id;
     std::vector<TodoWidget::Item> items;
+};
+
+ActiveTaskTodos ActiveTaskTodosOf(const ::edc_c_task_snapshot *snap)
+{
+    ActiveTaskTodos todos;
     if (!snap)
-        return items;
+        return todos;
 
     for (int gi = 0; gi < snap->group_count; gi++)
     {
@@ -209,20 +217,23 @@ std::vector<TodoWidget::Item> ActiveTaskTodoItems(const ::edc_c_task_snapshot *s
             const ::edc_c_task_info *t = &g->tasks[ti];
             if (!t->is_active)
                 continue;
-            items.reserve(static_cast<size_t>(t->todo_count));
+            // The id honesty: this is the task the section follows. Whether it is
+            // worth showing is the widget's call -- an empty list shows none.
+            todos.task_id = t->task_id ? t->task_id : "";
+            todos.items.reserve(static_cast<size_t>(t->todo_count));
             for (int i = 0; i < t->todo_count; i++)
             {
                 TodoWidget::Item item;
                 item.content = t->todo_items[i].content ? t->todo_items[i].content : "";
                 item.status = t->todo_items[i].status ? t->todo_items[i].status : "";
                 item.priority = t->todo_items[i].priority ? t->todo_items[i].priority : "";
-                items.push_back(std::move(item));
+                todos.items.push_back(std::move(item));
             }
-            return items;
+            return todos;
         }
-        return items; // foreground group exists but has no active task marked
+        return todos; // foreground group exists but has no active task marked
     }
-    return items; // no foreground group at all
+    return todos; // no foreground group at all
 }
 
 // $EDC_HOME/.tui_history stores one recalled entry per line. Backslash and the
@@ -1125,8 +1136,10 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
                 // And for the todo section: it shows the foreground group's
                 // active task's own todo list (part of the task state), so it
                 // refreshes on every snapshot — not via a side channel on the
-                // todowrite chat message.
-                tui->todo_widget_->SetItems(ActiveTaskTodoItems(snap));
+                // todowrite chat message. The task id is passed along so the
+                // section can name whose list it is.
+                const ActiveTaskTodos todos = ActiveTaskTodosOf(snap);
+                tui->todo_widget_->SetItems(todos.items, todos.task_id);
                 edc_c_task_snapshot_free(snap);
             }
             // FTXUI only repaints when the frame was invalidated. Closures

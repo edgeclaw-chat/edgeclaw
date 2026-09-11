@@ -43,9 +43,12 @@ class TodoWidget : public ::ftxui::ComponentBase
 
     TodoWidget();
 
-    // Replace the whole displayed list. A call with no items clears the rows
-    // (and resets the summary to 0/0) but the section header stays visible.
-    void SetItems(const std::vector<Item> &items);
+    // Replace the whole displayed list. |task_id| names the task the items
+    // belong to and is shown as "#<id>" in the section header while the list has
+    // items to label; pass "" when the list does not belong to a known task. A
+    // call with no items clears the rows (and resets the summary to 0/0, with no
+    // id) but the section header stays visible.
+    void SetItems(const std::vector<Item> &items, const std::string &task_id);
 
     ::ftxui::Element OnRender() override;
     bool OnEvent(::ftxui::Event event) override;
@@ -57,6 +60,10 @@ class TodoWidget : public ::ftxui::ComponentBase
   private:
     std::vector<Item> items_;
     int completed_ = 0;
+    // The active task whose list this is, shown as "#<id>" in the section
+    // header so the reader can tell whose todos these are at a glance. Empty
+    // when the list is not attached to a known task.
+    std::string task_id_;
 
     // Collapse state for the whole section. Starts collapsed: at startup (and
     // after the tool cleared the list) there is nothing to show, so the

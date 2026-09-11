@@ -12,10 +12,11 @@ TodoWidget::TodoWidget()
 {
 }
 
-void TodoWidget::SetItems(const std::vector<Item> &items)
+void TodoWidget::SetItems(const std::vector<Item> &items, const std::string &task_id)
 {
     const bool was_empty = items_.empty();
     items_ = items;
+    task_id_ = task_id;
     completed_ = 0;
     for (const Item &item : items_)
     {
@@ -78,6 +79,13 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
     const size_t total = items_.size();
     const size_t shown = std::min(total, kMaxVisibleRows);
 
+    // Width available for a row. reflect() below sits on the vbox *inside* the
+    // (empty-style) border; before the first measurement fall back to the
+    // default sidebar width (36) minus the 2 border columns.
+    int row_width = 34;
+    if (content_box_.x_min != 0 || content_box_.x_max != 0 || content_box_.y_min != 0 || content_box_.y_max != 0)
+        row_width = content_box_.x_max - content_box_.x_min + 1;
+
     Elements lines;
     {
         // Collapsible section header: the arrow shows the fold state and the
@@ -88,12 +96,42 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
         // an empty list (0/0) stays neutral gray, not triumphant green.
         const std::string summary = std::to_string(completed_) + "/" + std::to_string(total);
         const bool all_done = total > 0 && completed_ == static_cast<int>(total);
-        lines.push_back(hbox({
-            text((collapsed_ ? "▸ " : "▾ ") + std::string(" Todos ")) | bold | color(pal.accent),
-            filler(),
-            text(summary) | color(all_done ? pal.ok : pal.text_dim) | bold,
-            text(std::string(kRightPad, ' ')),
-        }) | reflect(header_box_));
+        const std::string title = (collapsed_ ? "▸ " : "▾ ") + std::string(" Todos ");
+
+        // The list belongs to the foreground group's active task, so the header
+        // names it: "#<id>" right after the section title, in the section's own
+        // accent. That is what answers "whose todos are these?" at a glance, and
+        // it holds while the section is collapsed too.
+        //
+        // Only while there is a list to name, though: an empty section labels
+        // nothing, and the id would be one more thing on a header whose only
+        // news is "0/0".
+        //
+        // The progress summary keeps its slot on the right and the id yields to
+        // it: the id is truncated, never allowed to push the summary out of the
+        // pane.
+        std::string id_text;
+        if (!task_id_.empty() && total > 0)
+        {
+            const int room = row_width - kRightPad - StringWidth(summary) - StringWidth(title) - 1;
+            if (room >= 3) // room for "#1" once the separating space is paid for
+                id_text = " " + TruncateToWidth("#" + task_id_, room - 1);
+        }
+
+        Elements header;
+        header.push_back(text(title) | bold | color(pal.accent));
+        if (!id_text.empty())
+        {
+            // The same accent as the section title, and nothing else: the header
+            // reads as one label naming both the section and the task it is
+            // following, instead of a bright white number pulling the eye off it.
+            // Not dimmed either -- that would take the accent straight back out.
+            header.push_back(text(id_text) | color(pal.accent));
+        }
+        header.push_back(filler());
+        header.push_back(text(summary) | color(all_done ? pal.ok : pal.text_dim) | bold);
+        header.push_back(text(std::string(kRightPad, ' ')));
+        lines.push_back(hbox(std::move(header)) | reflect(header_box_));
     }
 
     // A collapsed section keeps only its header row; the separator and the
@@ -109,13 +147,6 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
         if (items_.empty())
             lines.push_back(text("  (empty)") | dim | color(pal.text_dim));
     }
-
-    // Width available for an item row. reflect() below sits on the vbox
-    // *inside* the (empty-style) border; before the first measurement fall
-    // back to the default sidebar width (36) minus the 2 border columns.
-    int row_width = 34;
-    if (content_box_.x_min != 0 || content_box_.x_max != 0 || content_box_.y_min != 0 || content_box_.y_max != 0)
-        row_width = content_box_.x_max - content_box_.x_min + 1;
 
     // Fixed cells per row: 2 indent + a 3-cell bracket marker ("[ ]", "[•]"
     // or "[✓]") + 1 gap after the marker. Content wraps across several lines
