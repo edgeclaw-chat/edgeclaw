@@ -200,10 +200,19 @@ the release stays a single file. The mount-namespace backend
 unavailable in containers). macOS/Windows skip kernel isolation (path
 verification only).
 
-The agent's own workspace (`$EDC_HOME/workspace`) and the directory EdgeClaw was
-launched from are always in the **writable** set, so the model can edit the
-files it owns. The user's home directory is added to the **read-only** set: the
-model can read the user's files (configs, sources, ...) but cannot modify them.
+The **writable** set is the agent's own workspace (`$EDC_HOME/workspace`), the
+directory EdgeClaw was launched from, `/tmp` and `/dev`. Every other path —
+including the user's home directory and `$EDC_HOME` itself (`config.json`, the
+key verifier) — is **read-only** for writes but freely readable. Access is
+decided by the **most specific matching path** (longest prefix wins), so the
+workspace stays writable even though it lives under the read-only home.
+
+There is no dedicated sandbox directory: the launch directory is the sandbox
+root and the default working directory for tools. The kernel **Landlock** layer
+used for shell commands applies the same writable/read-only sets. Landlock only
+unions access rights, so it cannot carve a read-only subtree out of a writable
+parent; that is why the home is kept read-only rather than writable with
+`~/.edgeclaw` excluded.
 
 ### Additional Features
 
@@ -368,20 +377,20 @@ Create `~/.edgeclaw/config.json`:
 
 ```json
 {
-  "llm_api_conf": {
-    "api_key": "sk-your-api-key",
-    "api_url": "https://api.openai.com/v1",
-    "model": "gpt-4o"
-  },
-  "channel": {
-    "type": "adapter"
-  },
-  "workspace": "~/.edgeclaw",
-  "sandbox_root_real": "~/.edgeclaw/sandbox",
+  "api_key": "",
+  "api_url": "https://api.openai.com/v1/chat/completions",
+  "model": "gpt-4o",
   "max_iter": -1,
   "memory_compress_threshold": 200,
   "group_fold_msg_threshold": 500,
-  "tool_max_output_size": 10000
+  "tool_max_output_size": 10000,
+  "sandbox": {
+    "rw_paths": ["/home/<user>/.edgeclaw/workspace", "/tmp", "/dev"],
+    "ro_paths": ["/"]
+  },
+  "channel": {
+    "type": "adapter"
+  }
 }
 ```
 

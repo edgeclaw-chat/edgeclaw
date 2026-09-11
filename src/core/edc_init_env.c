@@ -15,7 +15,8 @@
 
 /* --- Helper functions --- */
 
-/* Default "additional writable paths" — everything after the sandbox root. */
+/* Default writable paths. The launch directory is prepended when the config
+ * is loaded, so it is not listed here. */
 static sds default_sandbox_rw_extra(const char *edc_home)
 {
     return sdscatprintf(sdsempty(), "%s/workspace/, /tmp, /dev", edc_home);
@@ -98,25 +99,18 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
             int size = cJSON_GetArraySize(rw);
             if (size > 0)
             {
-                cJSON *first = cJSON_GetArrayItem(rw, 0);
-                if (first && cJSON_IsString(first))
-                    result->sandbox_root = sdsnew(first->valuestring);
-
-                if (size > 1)
+                sds joined = sdsempty();
+                for (int i = 0; i < size; i++)
                 {
-                    sds joined = sdsempty();
-                    for (int i = 1; i < size; i++)
+                    cJSON *elem = cJSON_GetArrayItem(rw, i);
+                    if (elem && cJSON_IsString(elem))
                     {
-                        cJSON *elem = cJSON_GetArrayItem(rw, i);
-                        if (elem && cJSON_IsString(elem))
-                        {
-                            if (sdslen(joined) > 0)
-                                joined = sdscat(joined, ", ");
-                            joined = sdscat(joined, elem->valuestring);
-                        }
+                        if (sdslen(joined) > 0)
+                            joined = sdscat(joined, ", ");
+                        joined = sdscat(joined, elem->valuestring);
                     }
-                    result->sandbox_rw_paths = joined;
                 }
+                result->sandbox_rw_paths = joined;
             }
         }
 
@@ -198,9 +192,9 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
                                        ? defaults->tool_max_output_size
                                        : EDC_CONFIG_DEFAULT_TOOL_MAX_OUTPUT_SIZE;
 
-    result->sandbox_root = (defaults && sdslen(defaults->sandbox_root) > 0)
-                               ? sdsnew(defaults->sandbox_root)
-                               : edc_path_join(edc_home, "sandbox", NULL);
+    /* No dedicated sandbox directory: the sandbox root is the launch directory
+     * (prepended to rw_paths when the config is loaded), and the writable set
+     * is the path list below. */
     result->sandbox_rw_paths = (defaults && sdslen(defaults->sandbox_rw_paths) > 0)
                                    ? sdsnew(defaults->sandbox_rw_paths)
                                    : default_sandbox_rw_extra(edc_home);
@@ -307,20 +301,18 @@ static sds *split_paths(const char *input)
     return result;
 }
 
-static void build_sandbox_rw(cJSON *sandbox, const char *root, const char *rw_paths_str)
+static void build_sandbox_rw(cJSON *sandbox, const char *rw_paths_str)
 {
     cJSON *arr = cJSON_CreateArray();
-    if (root && root[0])
-        cJSON_AddItemToArray(arr, cJSON_CreateString(root));
 
-    sds *extra = split_paths(rw_paths_str);
-    if (extra)
+    sds *paths = split_paths(rw_paths_str);
+    if (paths)
     {
-        for (int i = 0; extra[i]; i++)
-            cJSON_AddItemToArray(arr, cJSON_CreateString(extra[i]));
-        for (int i = 0; extra[i]; i++)
-            sdsfree(extra[i]);
-        free(extra);
+        for (int i = 0; paths[i]; i++)
+            cJSON_AddItemToArray(arr, cJSON_CreateString(paths[i]));
+        for (int i = 0; paths[i]; i++)
+            sdsfree(paths[i]);
+        free(paths);
     }
 
     cJSON_AddItemToObject(sandbox, "rw_paths", arr);
@@ -334,7 +326,6 @@ void edc_init_env_result_free(struct edc_init_env_result *result)
     sdsfree(result->api_key);
     sdsfree(result->api_url);
     sdsfree(result->model);
-    sdsfree(result->sandbox_root);
     sdsfree(result->sandbox_rw_paths);
     sdsfree(result->sandbox_ro_paths);
     sdsfree(result->device_pty);
@@ -392,7 +383,8 @@ static void drop_obsolete_keys(cJSON *conf, bool *changed)
     }
 }
 
-/* Make sure the sandbox object exists and carries both path arrays. */
+/* Make sure the sandbox object exists and carries both path arrays, and drop
+ * the retired ~/.edgeclaw/sandbox root from existing files. */
 static void ensure_sandbox(cJSON *conf, const char *edc_home, bool *changed)
 {
     cJSON *sandbox = cJSON_GetObjectItem(conf, "sandbox");
@@ -406,17 +398,14 @@ static void ensure_sandbox(cJSON *conf, const char *edc_home, bool *changed)
 
     if (!cJSON_GetObjectItem(sandbox, "rw_paths"))
     {
-        sds root = edc_path_join(edc_home, "sandbox", NULL);
-        sds extra = default_sandbox_rw_extra(edc_home);
-        build_sandbox_rw(sandbox, root, extra);
-        sdsfree(root);
-        sdsfree(extra);
+        sds paths = default_sandbox_rw_extra(edc_home);
+        build_sandbox_rw(sandbox, paths);
+        sdsfree(paths);
         *changed = true;
     }
 
     if (!cJSON_GetObjectItem(sandbox, "ro_paths"))
     {
-        sds workspace = edc_path_join(edc_home, "workspace", NULL);
         sds ro_defaults = default_sandbox_ro(edc_home);
         sds *ro = split_paths(ro_defaults);
         cJSON *arr = cJSON_CreateArray();
@@ -428,11 +417,31 @@ static void ensure_sandbox(cJSON *conf, const char *edc_home, bool *changed)
                 sdsfree(ro[i]);
             free(ro);
         }
-        cJSON_AddItemToArray(arr, cJSON_CreateString(workspace));
         cJSON_AddItemToObject(sandbox, "ro_paths", arr);
         sdsfree(ro_defaults);
-        sdsfree(workspace);
         *changed = true;
+    }
+
+    /* The dedicated sandbox directory is gone: the launch directory is the
+     * sandbox root now. Drop its stale entry so an existing config.json stops
+     * advertising it. */
+    {
+        sds retired = edc_path_join(edc_home, "sandbox", NULL);
+        cJSON *rw = cJSON_GetObjectItem(sandbox, "rw_paths");
+        if (rw && cJSON_IsArray(rw))
+        {
+            for (int i = cJSON_GetArraySize(rw) - 1; i >= 0; i--)
+            {
+                cJSON *e = cJSON_GetArrayItem(rw, i);
+                if (e && cJSON_IsString(e) && strcmp(e->valuestring, retired) == 0)
+                {
+                    cJSON_DeleteItemFromArray(rw, i);
+                    *changed = true;
+                    log_info("config.json: dropped retired sandbox path '%s'", retired);
+                }
+            }
+        }
+        sdsfree(retired);
     }
 }
 
@@ -579,7 +588,7 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     cJSON_AddNumberToObject(config, "tool_max_output_size", env_result.tool_max_output_size);
 
     cJSON *sandbox = cJSON_CreateObject();
-    build_sandbox_rw(sandbox, env_result.sandbox_root, env_result.sandbox_rw_paths);
+    build_sandbox_rw(sandbox, env_result.sandbox_rw_paths);
     {
         sds *ro = split_paths(env_result.sandbox_ro_paths);
         cJSON *ro_arr = cJSON_CreateArray();

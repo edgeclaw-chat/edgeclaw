@@ -219,7 +219,7 @@ after_channel:
         else
         {
             config->sandbox_rw_paths = g_new0(sds, 3 + 1);
-            config->sandbox_rw_paths[0] = edc_path_join(edc_home, "sandbox", NULL);
+            config->sandbox_rw_paths[0] = sdsnew(config->workspace);
             config->sandbox_rw_paths[1] = sdsnew("/tmp");
             config->sandbox_rw_paths[2] = sdsnew("/dev");
         }
@@ -250,7 +250,7 @@ after_channel:
     else
     {
         config->sandbox_rw_paths = g_new0(sds, 3 + 1);
-        config->sandbox_rw_paths[0] = edc_path_join(edc_home, "sandbox", NULL);
+        config->sandbox_rw_paths[0] = sdsnew(config->workspace);
         config->sandbox_rw_paths[1] = sdsnew("/tmp");
         config->sandbox_rw_paths[2] = sdsnew("/dev");
 
@@ -268,21 +268,59 @@ after_channel:
     }
 
     /* The agent's own workspace must be writable: the model edits files there
-     * (AGENTS.md, skills/, ...). Add it to rw_paths -- which grants read too --
-     * instead of ro_paths, so it is writable in every configuration, not only
-     * when the setup wizard happened to list it under rw_paths. rw_paths[0]
-     * stays the launch directory (prepended below), so the sandbox root is
-     * unchanged. */
+     * (AGENTS.md, skills/, ...). Make sure it is in rw_paths -- which grants
+     * read too -- rather than relying on config.json, and skip it when it is
+     * already present (the default list includes it). rw_paths[0] stays the
+     * launch directory (prepended below), so the sandbox root is unchanged. */
     {
-        int rw_count = 0;
-        if (config->sandbox_rw_paths)
+        bool have_workspace = false;
+        for (int i = 0; config->sandbox_rw_paths && config->sandbox_rw_paths[i] && !have_workspace; i++)
         {
-            while (config->sandbox_rw_paths[rw_count])
-                rw_count++;
+            char *entry_real = realpath(config->sandbox_rw_paths[i], NULL);
+            const char *entry_key = entry_real ? entry_real : config->sandbox_rw_paths[i];
+            if (strcmp(config->workspace, entry_key) == 0)
+                have_workspace = true;
+            if (entry_real)
+                free(entry_real);
         }
-        config->sandbox_rw_paths = realloc(config->sandbox_rw_paths, (rw_count + 2) * sizeof(sds));
-        config->sandbox_rw_paths[rw_count] = sdsnew(config->workspace);
-        config->sandbox_rw_paths[rw_count + 1] = NULL;
+        if (!have_workspace)
+        {
+            int rw_count = 0;
+            if (config->sandbox_rw_paths)
+            {
+                while (config->sandbox_rw_paths[rw_count])
+                    rw_count++;
+            }
+            config->sandbox_rw_paths = realloc(config->sandbox_rw_paths, (rw_count + 2) * sizeof(sds));
+            config->sandbox_rw_paths[rw_count] = sdsnew(config->workspace);
+            config->sandbox_rw_paths[rw_count + 1] = NULL;
+        }
+    }
+
+    /* The user's home directory is read-only: the model may read the user's
+     * files but must not modify them. The workspace and the launch directory
+     * are in rw_paths above; path_allowed()'s longest-prefix-wins rule lets
+     * those more specific entries win, so they stay writable even though they
+     * live inside the read-only home. This also covers ~/.edgeclaw (config.json
+     * and the key verifier) without a separate entry. */
+    {
+        sds home = edc_homedir();
+        if (home && sdslen(home) > 0)
+        {
+            int ro_count = 0;
+            if (config->sandbox_ro_paths)
+            {
+                while (config->sandbox_ro_paths[ro_count])
+                    ro_count++;
+            }
+            config->sandbox_ro_paths = realloc(config->sandbox_ro_paths, (ro_count + 2) * sizeof(sds));
+            config->sandbox_ro_paths[ro_count] = home;
+            config->sandbox_ro_paths[ro_count + 1] = NULL;
+        }
+        else
+        {
+            sdsfree(home);
+        }
     }
 
     /* The whole filesystem is readable: tools need to read system files

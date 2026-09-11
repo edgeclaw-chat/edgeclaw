@@ -38,7 +38,6 @@ struct edc_init_env_result
     int memory_compress_threshold;
     int group_fold_msg_threshold;
     int tool_max_output_size;
-    sds sandbox_root;
     sds sandbox_rw_paths;
     sds sandbox_ro_paths;
 
