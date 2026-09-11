@@ -620,20 +620,12 @@ struct edc_tool_call_record *edc_task_tool_call_find(struct edc_task *task, cons
     return NULL;
 }
 
-struct edc_tool_call_record *edc_task_tool_call_mark_head_executing(struct edc_task *task)
+struct edc_tool_call_record *edc_task_tool_call_mark_executing(struct edc_task *task, const char *call_id)
 {
-    if (!task)
-        return NULL;
-    struct edc_tool_call_record *rec;
-    LL_FOREACH(task->tool_calls, rec)
-    {
-        if (rec->status == TOOL_CALL_PENDING)
-        {
-            rec->status = TOOL_CALL_EXECUTING;
-            return rec;
-        }
-    }
-    return NULL;
+    struct edc_tool_call_record *rec = edc_task_tool_call_find(task, call_id);
+    if (rec)
+        rec->status = TOOL_CALL_EXECUTING;
+    return rec;
 }
 
 bool edc_task_tool_call_remove(struct edc_task *task, const char *call_id)
@@ -651,23 +643,6 @@ bool edc_task_tool_call_remove(struct edc_task *task, const char *call_id)
         }
     }
     return false;
-}
-
-struct edc_tool_call_record *edc_task_tool_call_complete(struct edc_task *task, const char *call_id)
-{
-    if (!edc_task_tool_call_remove(task, call_id))
-        return NULL;
-    /* 下一条 PENDING 提升为 EXECUTING (链序即执行序; toolbox 顺序执行) */
-    struct edc_tool_call_record *rec;
-    LL_FOREACH(task->tool_calls, rec)
-    {
-        if (rec->status == TOOL_CALL_PENDING)
-        {
-            rec->status = TOOL_CALL_EXECUTING;
-            return rec;
-        }
-    }
-    return NULL;
 }
 
 void edc_task_tool_calls_clear(struct edc_task *task)

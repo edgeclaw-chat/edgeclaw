@@ -2,7 +2,8 @@
  * "所有未完成任务加载后 → SUSPENDED, /task resume 重新判定":
  *
  *   1. tool-call 账本 (task->tool_calls) 的增删查改语义:
- *      PENDING (未派发) / EXECUTING (已派发未回) 的推进与删除, 链序即执行序;
+ *      PENDING (未执行) / EXECUTING (执行中) —— 由 toolbox 上报"开始执行"
+ *      (BC_ACTOR_MSG_TOOL_STARTED) 按 call_id 置位, 完成后删除, 不依赖链序;
  *   2. 账本随 session.json 往返: EXECUTING/PENDING 状态与 args 保留;
  *      同时验证未完成任务 (TOOL_CALLING) 加载后收敛为 SUSPENDED;
  *   3. edc_scheduler_resume_task 的重新判定:
@@ -159,7 +160,7 @@ static int stub_redispatch(struct edc_scheduler *sched, struct edc_task *task, v
 
 static void test_ledger_ops(void)
 {
-    TEST("ledger: add/find/mark/complete/remove/clear (链序即执行序)");
+    TEST("ledger: add/find/mark-executing/remove/clear (call_id 精准置位)");
     struct edc_task *t = edc_task_new("t1", "s", "g", "task", edc_channel_adapter);
 
     edc_task_tool_call_add(t, "call-a", "shell", NULL);
@@ -169,20 +170,18 @@ static void test_ledger_ops(void)
     CHECK(edc_task_tool_call_find(t, "call-b") != NULL, "find call-b");
     CHECK(edc_task_tool_call_find(t, "nope") == NULL, "find missing -> NULL");
 
-    struct edc_tool_call_record *h1 = edc_task_tool_call_mark_head_executing(t);
-    CHECK(h1 && strcmp(h1->call_id, "call-a") == 0, "head executing = call-a");
-    struct edc_tool_call_record *h2 = edc_task_tool_call_mark_head_executing(t);
-    CHECK(h2 && strcmp(h2->call_id, "call-b") == 0, "next head executing = call-b");
+    /* toolbox 上报"开始执行": 按 call_id 置位, 与链序无关 */
+    struct edc_tool_call_record *m = edc_task_tool_call_mark_executing(t, "call-b");
+    CHECK(m && m->status == TOOL_CALL_EXECUTING, "call-b -> EXECUTING by call_id");
+    CHECK(edc_task_tool_call_find(t, "call-a")->status == TOOL_CALL_PENDING, "call-a still PENDING");
+    CHECK(edc_task_tool_call_find(t, "call-c")->status == TOOL_CALL_PENDING, "call-c still PENDING");
+    CHECK(edc_task_tool_call_mark_executing(t, "nope") == NULL, "mark unknown call_id -> NULL");
 
-    /* complete call-b -> delete it, promote call-c */
-    struct edc_tool_call_record *promoted = edc_task_tool_call_complete(t, "call-b");
-    CHECK(edc_task_tool_call_find(t, "call-b") == NULL, "call-b deleted on completion");
-    CHECK(promoted && strcmp(promoted->call_id, "call-c") == 0, "call-c promoted to EXECUTING");
-    CHECK(edc_task_tool_call_find(t, "call-a") != NULL, "call-a untouched");
-
-    /* pure remove (no promotion) */
-    CHECK(edc_task_tool_call_remove(t, "call-a"), "remove call-a");
-    CHECK(!edc_task_tool_call_remove(t, "call-a"), "double remove -> false");
+    /* 完成即删除, 不发生链序推进 */
+    CHECK(edc_task_tool_call_remove(t, "call-b"), "remove call-b");
+    CHECK(edc_task_tool_call_find(t, "call-b") == NULL, "call-b deleted");
+    CHECK(edc_task_tool_call_find(t, "call-c")->status == TOOL_CALL_PENDING, "call-c stays PENDING (no promotion)");
+    CHECK(!edc_task_tool_call_remove(t, "call-b"), "double remove -> false");
 
     edc_task_tool_calls_clear(t);
     CHECK(t->tool_calls == NULL, "ledger cleared");
@@ -213,7 +212,7 @@ static void test_ledger_serialize(void)
     edc_task_tool_call_add(t, "c1", "shell", args);
     edc_task_tool_call_add(t, "c2", "read_file", NULL);
     cJSON_Delete(args);
-    edc_task_tool_call_mark_head_executing(t); /* c1 -> EXECUTING */
+    edc_task_tool_call_mark_executing(t, "c1"); /* c1 -> EXECUTING (toolbox 上报) */
 
     struct edc_task_group *g = edc_task_group_new(t);
     edc_session_add_group(s, g);
@@ -331,7 +330,7 @@ static void test_resume_executing_synthesizes(void)
     edc_task_set_state(t, TASK_TOOL_CALLING);
     seed_tool_turn(t, "c1", "shell");
     edc_task_tool_call_add(t, "c1", "shell", NULL);
-    edc_task_tool_call_mark_head_executing(t); /* c1 EXECUTING */
+    edc_task_tool_call_mark_executing(t, "c1"); /* c1 EXECUTING */
     force_suspended(t);
 
     struct edc_task_group *g = edc_task_group_new(t);
@@ -384,7 +383,7 @@ static void test_resume_pending_redispatches(void)
     CHECK(g_redispatch_calls == 1, "redispatch callback invoked once");
     struct edc_tool_call_record *r = edc_task_tool_call_find(t, "c1");
     CHECK(r != NULL, "c1 record still present");
-    CHECK(r && r->status == TOOL_CALL_EXECUTING, "c1 marked EXECUTING after redispatch");
+    CHECK(r && r->status == TOOL_CALL_PENDING, "c1 stays PENDING until toolbox reports started");
     CHECK(g_send_llm_calls == 0, "no LLM yet (waiting for tool result)");
 
     edc_session_free(s);

@@ -5,6 +5,19 @@
 #include "edc_toolbox.h"
 #include "log.h"
 #include "sds.h"
+#include <stdlib.h>
+#include <string.h>
+
+/* 向请求方 (scheduler) 上报"某个工具开始执行": data = strdup(call_id), 由 free
+ * 释放。scheduler 收到后把该 call_id 的账本记录标为 EXECUTING —— 这样 resume
+ * 时能精确区分"未执行"(PENDING) 与"执行中"(EXECUTING), 不再依赖链序推断。 */
+static void toolbox_notify_tool_started(edc_actor_t *actor, edc_actor_t *to, void *request_id,
+                                        struct edc_toolbox_actor_req *req)
+{
+    if (!to || !req || !req->call_id)
+        return;
+    edc_actor_send(to, edc_actor_msg_new(BC_ACTOR_MSG_TOOL_STARTED, actor, request_id, strdup(req->call_id), free));
+}
 
 struct edc_toolbox_actor_exec_ctx
 {
@@ -85,6 +98,7 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
     {
         req = next;
         ctx->req = req;
+        toolbox_notify_tool_started(actor, msg->from, msg->request_id, req);
         edc_toolbox_exec(tb_ctx, req->name, req->args, edc_toolbox_actor_callback);
     }
     else
@@ -108,6 +122,7 @@ static void edc_toolbox_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
         struct edc_toolbox_call_ctx *ctx = edc_toolbox_call_ctx_new(
             state->toolbox, req->call_from_type, msg->request_id, req->task,
             edc_toolbox_actor_exec_ctx_new(actor, msg, req));
+        toolbox_notify_tool_started(actor, msg->from, msg->request_id, req);
         edc_toolbox_exec(ctx, req->name, req->args, edc_toolbox_actor_callback);
         break;
     }

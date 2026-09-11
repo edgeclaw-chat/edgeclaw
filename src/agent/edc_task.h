@@ -213,9 +213,10 @@ extern bool edc_task_is_running(const struct edc_task *task);
 extern void edc_task_send_signal(struct edc_task *task, edc_task_signal sig);
 
 /* ── 未完成工具调用表 (resume 账本) ─────────────────────────
- * 生命周期: LLM 返回 tool_calls 时逐条 add (PENDING); 派发时把头一条 PENDING
- * 提升 EXECUTING (链序即执行序); 工具返回结果时 complete (删记录 + 把下一条
- * PENDING 提升 EXECUTING); turn 提交/取消时 clear。 */
+ * 生命周期: LLM 返回 tool_calls 时逐条 add (PENDING); toolbox 真正开始执行
+ * 某个工具时经 BC_ACTOR_MSG_TOOL_STARTED 上报 → mark_executing(call_id) 置
+ * EXECUTING; 工具返回结果时 remove (删记录); turn 提交/取消时 clear。
+ * EXECUTING 由 toolbox 真实上报, 不再按链序推断。 */
 
 /** 链尾追加一条 PENDING 记录。call_id/name 复制 (可为 NULL); args 深拷贝 (可为 NULL)。 */
 extern struct edc_tool_call_record *edc_task_tool_call_add(struct edc_task *task, const char *call_id,
@@ -224,14 +225,10 @@ extern struct edc_tool_call_record *edc_task_tool_call_add(struct edc_task *task
 /** 按 call_id 查找记录 (NULL = 无)。 */
 extern struct edc_tool_call_record *edc_task_tool_call_find(struct edc_task *task, const char *call_id);
 
-/** 把首条 PENDING 提升为 EXECUTING, 返回之; 无 PENDING 返回 NULL。 */
-extern struct edc_tool_call_record *edc_task_tool_call_mark_head_executing(struct edc_task *task);
+/** toolbox 上报"开始执行": 按 call_id 把记录置为 EXECUTING。返回该记录 (无则 NULL)。 */
+extern struct edc_tool_call_record *edc_task_tool_call_mark_executing(struct edc_task *task, const char *call_id);
 
-/** 工具返回结果: 按 call_id 删除记录; 并把下一条 PENDING 提升 EXECUTING。
- *  返回被提升的记录 (无则 NULL)。 */
-extern struct edc_tool_call_record *edc_task_tool_call_complete(struct edc_task *task, const char *call_id);
-
-/** 纯删除 (不推进链首): resume 补中断响应时用。返回是否删掉了一条。 */
+/** 删除记录 (工具返回结果 / resume 补中断响应)。返回是否删掉了一条。 */
 extern bool edc_task_tool_call_remove(struct edc_task *task, const char *call_id);
 
 /** 清空整张表。 */

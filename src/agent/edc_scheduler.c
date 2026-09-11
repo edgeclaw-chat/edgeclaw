@@ -365,11 +365,9 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
             sched_set_task_state(sched, task, TASK_TOOL_CALLING);
             edc_scheduler_register_task(sched, task, req_id);
             task->current_request_id = req_id;
-            if (sched->redispatch_tools && sched->redispatch_tools(sched, task, req_id) > 0)
-            {
-                edc_task_tool_call_mark_head_executing(task);
-            }
-            else
+            /* 重发成功即等 toolbox 回来; 各工具的 EXECUTING 由 toolbox 的
+             * TOOL_STARTED 上报后按 call_id 置位 —— 不再按链序预标。 */
+            if (!sched->redispatch_tools || sched->redispatch_tools(sched, task, req_id) <= 0)
             {
                 /* 无重发通道 / 无可派发 → 退回等待输入, 避免卡死 */
                 edc_scheduler_unregister_task(sched, req_id);
@@ -615,7 +613,6 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         /* keep task registered — tool responses use same request_id */
         if (sched->dispatch_tools)
             sched->dispatch_tools(sched, task, r, msg->request_id);
-        edc_task_tool_call_mark_head_executing(task);
         return;
     }
 
@@ -758,8 +755,8 @@ static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor
         edc_turn_add_tool_message(task->active_turn, tr->call_id, tr->name, tr->result);
     }
 
-    /* 账本: 该工具已完成 → 删除记录; 下一条 PENDING 提升 EXECUTING */
-    edc_task_tool_call_complete(task, tr->call_id);
+    /* 账本: 该工具已完成 → 删除该条记录 (EXECUTING 由 toolbox 的 TOOL_STARTED 上报置位) */
+    edc_task_tool_call_remove(task, tr->call_id);
 
     /* 若 tool chain 完成，发送续 LLM 请求 */
     if (!tr->next)
@@ -781,6 +778,18 @@ static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor
             sched->send_llm(sched, task, msg->request_id);
         }
     }
+}
+
+/* toolbox 上报"某个工具真正开始执行" (data = call_id): 把账本里对应记录置
+ * EXECUTING。这样中断后 resume 能精确区分"未执行"与"执行中", 不再依赖链序。 */
+static void sched_handle_tool_started(struct edc_scheduler *sched, struct edc_actor_msg *msg)
+{
+    struct edc_task *task = edc_scheduler_find_task(sched, msg->request_id);
+    if (!task || task->cancelled_request)
+        return;
+    const char *call_id = (const char *)msg->data;
+    if (call_id)
+        edc_task_tool_call_mark_executing(task, call_id);
 }
 
 static void sched_handle_memory_done(struct edc_scheduler *sched, struct edc_actor_msg *msg)
@@ -959,6 +968,9 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
         break;
     case BC_ACTOR_MSG_TOOL_RESPONSE:
         sched_handle_tool_resp(sched, msg);
+        break;
+    case BC_ACTOR_MSG_TOOL_STARTED:
+        sched_handle_tool_started(sched, msg);
         break;
     case BC_ACTOR_MSG_TOOL_EMIT:
         sched_handle_tool_emit(sched, msg);
