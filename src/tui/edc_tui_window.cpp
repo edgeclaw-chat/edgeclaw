@@ -98,7 +98,7 @@ bool ForegroundProcessBusy(const ::edc_c_task_snapshot *snap)
 // text.
 constexpr int kBarCells = 10;      // cells in the bar
 constexpr int kBarLit = 5;         // lit cells: the sliding run
-constexpr long long kStepMs = 120; // per cell of travel
+constexpr long long kStepMs = 60;  // per cell of travel
 // The run slides from completely past the left edge to completely past the
 // right edge before the sweep reverses, so the ends of the bar are genuine
 // turning points (a few frames of empty bar) rather than bumpers.

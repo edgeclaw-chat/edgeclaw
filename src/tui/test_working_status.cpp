@@ -41,13 +41,13 @@ void Check(bool ok, const std::string &what)
 constexpr int kScreenWidth = 40;
 constexpr int kBarCells = 10; // must match the row
 constexpr int kBarLit = 5;
-constexpr long long kStepMs = 120;     // must match the row
+constexpr long long kStepMs = 60;      // must match the row
 // The run travels from completely past the left edge to completely past the
 // right edge, so the ends of the bar are real turning points.
 constexpr int kRunFirst = -kBarLit; // -5: run fully off the left edge
 constexpr int kRunLast = kBarCells; // 10: run fully off the right edge
 constexpr int kRunPositions = kRunLast - kRunFirst + 1;
-constexpr int kCycleSteps = 2 * (kRunPositions - 1); // 30 steps = 3.6s
+constexpr int kCycleSteps = 2 * (kRunPositions - 1); // 30 steps = 1.8s
 
 std::vector<::ftxui::Cell> RenderRow(long long elapsed_ms)
 {
@@ -192,7 +192,7 @@ void TestRunSlidesOutAndComesBack()
                                          std::to_string(lit) + ")");
     }
     Check(SameFrame(FrameAtStep(0), FrameAtStep(kCycleSteps)),
-          "the cycle closes: frame at 3600ms equals frame at 0ms");
+          "the cycle closes: frame at 1800ms equals frame at 0ms");
     Check(SameFrame(FrameAtStep(1), FrameAtStep(kCycleSteps + 1)),
           "and the frame after that matches too");
 }
