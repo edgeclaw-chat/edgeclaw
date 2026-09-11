@@ -14,10 +14,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* Device transport type options */
-static const char *device_transport_types[] = {"socket", "tty"};
-#define DEVICE_TRANSPORT_TYPE_COUNT 2
-
 /* --- Helper functions --- */
 
 static sds prompt_with_default(const char *label, const char *default_val)
@@ -48,126 +44,6 @@ static sds prompt_with_default(const char *label, const char *default_val)
         return sdsnew(default_val);
 
     return sdsnew(buf);
-}
-
-/* Read a password (no echo). If default_val is non-empty, shows [***unchanged***]
- * and returns a copy of it when the user enters nothing.
- * Returns sds, or NULL on error. */
-static sds prompt_password(const char *label, const char *default_val)
-{
-    char prompt[1024];
-    if (default_val && default_val[0] != '\0')
-    {
-        snprintf(prompt, sizeof(prompt), "%s [***unchanged***]: ", label);
-    }
-    else
-    {
-        snprintf(prompt, sizeof(prompt), "%s: ", label);
-    }
-    fprintf(stdout, "%s", prompt);
-    fflush(stdout);
-
-    struct edc_terminal_state saved = {{0}};
-    if (edc_terminal_echo_off(STDIN_FILENO, &saved) != 0)
-    {
-        return NULL;
-    }
-
-    sds result = NULL;
-#ifdef _WIN32
-    char buf[4096];
-    if (fgets(buf, sizeof(buf), stdin) != NULL)
-    {
-        size_t len = strlen(buf);
-        if (len > 0 && buf[len - 1] == '\n')
-            buf[len - 1] = '\0';
-        result = sdsnew(buf);
-    }
-#else
-    char *raw = NULL;
-    size_t raw_cap = 0;
-    ssize_t raw_len = getline(&raw, &raw_cap, stdin);
-    if (raw_len != -1)
-    {
-        if (raw_len > 0 && raw[raw_len - 1] == '\n')
-            raw[raw_len - 1] = '\0';
-        result = sdsnew(raw);
-    }
-    free(raw);
-#endif
-
-    edc_terminal_echo_restore(STDIN_FILENO, &saved);
-    fprintf(stdout, "\n");
-    fflush(stdout);
-
-    /* If user entered nothing and a default exists, keep the old value */
-    if (result && sdslen(result) == 0 && default_val && default_val[0] != '\0')
-    {
-        sdsfree(result);
-        return sdsnew(default_val);
-    }
-
-    return result;
-}
-
-/* Prompt for an integer with validation. Returns the value, or -1 on cancel. */
-static int prompt_int(const char *label, int default_val)
-{
-    char default_str[32];
-    snprintf(default_str, sizeof(default_str), "%d", default_val);
-
-    while (1)
-    {
-        sds line = prompt_with_default(label, default_str);
-        if (line == NULL)
-        {
-            return -1;
-        }
-
-        int val = 0;
-        if (sscanf(line, "%d", &val) == 1)
-        {
-            sdsfree(line);
-            return val;
-        }
-
-        fprintf(stderr, "  Invalid number, please try again.\n");
-        sdsfree(line);
-    }
-}
-
-static int prompt_device_transport(int default_idx)
-{
-    if (default_idx < 0 || default_idx >= DEVICE_TRANSPORT_TYPE_COUNT)
-        default_idx = 0;
-
-    printf("\n--- Device Transport ---\n");
-    for (int i = 0; i < DEVICE_TRANSPORT_TYPE_COUNT; i++)
-    {
-        printf("  %d) %s\n", i + 1, device_transport_types[i]);
-    }
-
-    char default_str[32];
-    snprintf(default_str, sizeof(default_str), "%d", default_idx + 1);
-
-    while (1)
-    {
-        sds line = prompt_with_default("Select transport", default_str);
-        if (line == NULL)
-        {
-            return -1;
-        }
-
-        int choice = 0;
-        if (sscanf(line, "%d", &choice) == 1 && choice >= 1 && choice <= DEVICE_TRANSPORT_TYPE_COUNT)
-        {
-            sdsfree(line);
-            return choice - 1;
-        }
-
-        sdsfree(line);
-        fprintf(stderr, "  Invalid choice, enter 1-%d.\n", DEVICE_TRANSPORT_TYPE_COUNT);
-    }
 }
 
 /* Default "additional writable paths" — everything after the sandbox root. */
@@ -352,136 +228,42 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
         return -1;
     result->model = val;
 
-    /* API Key (password) */
-    val = prompt_password("API Key", (defaults && sdslen(defaults->api_key) > 0) ? defaults->api_key : NULL);
-    if (!val)
-        return -1;
-    result->api_key = val;
+    /* Everything below uses the canonical defaults: the first run only asks for
+     * the API URL and model. The API key is left empty and can be set later
+     * with /connect. */
+    result->api_key = (defaults && sdslen(defaults->api_key) > 0) ? sdsnew(defaults->api_key) : NULL;
+    result->max_iter = (defaults && defaults->max_iter > 0) ? defaults->max_iter : EDC_CONFIG_DEFAULT_MAX_ITER;
+    result->memory_compress_threshold = (defaults && defaults->memory_compress_threshold > 0)
+                                            ? defaults->memory_compress_threshold
+                                            : EDC_CONFIG_DEFAULT_MEMORY_COMPRESS_THRESHOLD;
+    result->group_fold_msg_threshold = (defaults && defaults->group_fold_msg_threshold > 0)
+                                           ? defaults->group_fold_msg_threshold
+                                           : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
+    result->tool_max_output_size = (defaults && defaults->tool_max_output_size > 0)
+                                       ? defaults->tool_max_output_size
+                                       : EDC_CONFIG_DEFAULT_TOOL_MAX_OUTPUT_SIZE;
 
-    /* Max Iterations: -1 = unlimited; positive N = at most N LLM/tool rounds per input */
-    int ival = prompt_int("Max Iterations",
-                          defaults && defaults->max_iter > 0 ? defaults->max_iter : EDC_CONFIG_DEFAULT_MAX_ITER);
-    if (ival < -1)
-        return -1;
-    result->max_iter = ival;
+    result->sandbox_root = (defaults && sdslen(defaults->sandbox_root) > 0)
+                               ? sdsnew(defaults->sandbox_root)
+                               : edc_path_join(edc_home, "sandbox", NULL);
+    result->sandbox_rw_paths = (defaults && sdslen(defaults->sandbox_rw_paths) > 0)
+                                   ? sdsnew(defaults->sandbox_rw_paths)
+                                   : default_sandbox_rw_extra(edc_home);
+    result->sandbox_ro_paths = (defaults && sdslen(defaults->sandbox_ro_paths) > 0)
+                                   ? sdsnew(defaults->sandbox_ro_paths)
+                                   : default_sandbox_ro(edc_home);
 
-    /* Memory Compress Threshold */
-    ival = prompt_int("Memory Compress Threshold", defaults && defaults->memory_compress_threshold > 0
-                                                       ? defaults->memory_compress_threshold
-                                                       : EDC_CONFIG_DEFAULT_MEMORY_COMPRESS_THRESHOLD);
-    if (ival < 0)
-        return -1;
-    result->memory_compress_threshold = ival;
-
-    /* Group Fold Message Threshold (L1: only conversation count drives fold) */
-    ival = prompt_int("Group Fold Message Threshold", defaults && defaults->group_fold_msg_threshold > 0
-                                                          ? defaults->group_fold_msg_threshold
-                                                          : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD);
-    if (ival < 0)
-        return -1;
-    result->group_fold_msg_threshold = ival;
-
-    /* Tool Max Output Size */
-    ival = prompt_int("Tool Max Output Size", defaults && defaults->tool_max_output_size > 0
-                                                  ? defaults->tool_max_output_size
-                                                  : EDC_CONFIG_DEFAULT_TOOL_MAX_OUTPUT_SIZE);
-    if (ival < 0)
-        return -1;
-    result->tool_max_output_size = ival;
-
-    /* Sandbox Configuration */
-    printf("\n--- Sandbox Configuration ---\n");
-
-    {
-        sds default_sandbox = edc_path_join(edc_home, "sandbox", NULL);
-        const char *def = (defaults && sdslen(defaults->sandbox_root) > 0) ? defaults->sandbox_root : default_sandbox;
-        val = prompt_with_default("Sandbox Root (working directory, writable)", def);
-        sdsfree(default_sandbox);
-        if (!val)
-            return -1;
-        result->sandbox_root = val;
-    }
-
-    {
-        sds def_rw_str = default_sandbox_rw_extra(edc_home);
-        const char *def_rw =
-            (defaults && sdslen(defaults->sandbox_rw_paths) > 0) ? defaults->sandbox_rw_paths : def_rw_str;
-        val = prompt_with_default("  Additional writable paths (comma-separated)", def_rw);
-        sdsfree(def_rw_str);
-        if (!val)
-            return -1;
-        result->sandbox_rw_paths = val;
-    }
-
-    {
-        sds def_ro_str = default_sandbox_ro(edc_home);
-        const char *def_ro =
-            (defaults && sdslen(defaults->sandbox_ro_paths) > 0) ? defaults->sandbox_ro_paths : def_ro_str;
-        val = prompt_with_default("  Read-only paths (comma-separated)", def_ro);
-        sdsfree(def_ro_str);
-        if (!val)
-            return -1;
-        result->sandbox_ro_paths = val;
-    }
-
-    /* --- Device Shell Configuration (optional) --- */
-
-    int default_transport = 0;
-    if (defaults && sdslen(defaults->device_transport) > 0)
-    {
-        for (int i = 0; i < DEVICE_TRANSPORT_TYPE_COUNT; i++)
-        {
-            if (strcmp(defaults->device_transport, device_transport_types[i]) == 0)
-            {
-                default_transport = i;
-                break;
-            }
-        }
-    }
-    int transport_idx = prompt_device_transport(default_transport);
-    if (transport_idx < 0)
-        return -1;
-    result->device_transport = sdsnew(device_transport_types[transport_idx]);
-
-    if (strcmp(result->device_transport, "tty") == 0)
-    {
-        const char *def = (defaults && sdslen(defaults->device_pty) > 0) ? defaults->device_pty : "";
-        val = prompt_with_default("Device PTY/Serial Path", def);
-        if (!val)
-            return -1;
-        result->device_pty = val;
-    }
-
-    {
-        const char *def =
-            (defaults && sdslen(defaults->device_ip) > 0) ? defaults->device_ip : EDC_CONFIG_DEFAULT_DEVICE_IP;
-        val = prompt_with_default("Device IP", def);
-        if (!val)
-            return -1;
-        result->device_ip = val;
-    }
-
-    ival = prompt_int("Device Port",
-                      (defaults && defaults->device_port > 0) ? defaults->device_port : EDC_CONFIG_DEFAULT_DEVICE_PORT);
-    if (ival < 0)
-        return -1;
-    result->device_port = ival;
-
-    if (strcmp(result->device_transport, "tty") == 0)
-    {
-        ival = prompt_int("Device Baud Rate", (defaults && defaults->device_baud > 0) ? defaults->device_baud
-                                                                                      : EDC_CONFIG_DEFAULT_DEVICE_BAUD);
-        if (ival < 0)
-            return -1;
-        result->device_baud = ival;
-    }
-    else
-    {
-        /* Baud is meaningless without a serial link, but it is still written to
-         * config.json (see below) to keep the panorama complete. */
-        result->device_baud =
-            (defaults && defaults->device_baud > 0) ? defaults->device_baud : EDC_CONFIG_DEFAULT_DEVICE_BAUD;
-    }
+    /* Device link defaults (configurable by hand in config.json). */
+    result->device_transport =
+        sdsnew((defaults && sdslen(defaults->device_transport) > 0) ? defaults->device_transport
+                                                                     : EDC_CONFIG_DEFAULT_DEVICE_TRANSPORT);
+    result->device_ip =
+        sdsnew((defaults && sdslen(defaults->device_ip) > 0) ? defaults->device_ip : EDC_CONFIG_DEFAULT_DEVICE_IP);
+    result->device_port =
+        (defaults && defaults->device_port > 0) ? defaults->device_port : EDC_CONFIG_DEFAULT_DEVICE_PORT;
+    result->device_baud =
+        (defaults && defaults->device_baud > 0) ? defaults->device_baud : EDC_CONFIG_DEFAULT_DEVICE_BAUD;
+    result->device_pty = sdsnew((defaults && sdslen(defaults->device_pty) > 0) ? defaults->device_pty : "");
 
     printf("\n===================================================\n");
     return 0;
@@ -802,12 +584,8 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     edc_init_env_result_free(existing);
     free(existing);
 
-    /* Validate required fields */
-    if (sdslen(env_result.api_key) == 0)
-    {
-        log_error("API Key is required.");
-        goto exit_free_env;
-    }
+    /* Validate required fields. The API key may be empty: it is set later via
+     * the /connect command. */
     if (sdslen(env_result.api_url) == 0)
     {
         log_error("API URL is required.");
@@ -834,7 +612,8 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     /* Build JSON config */
     cJSON *config = cJSON_CreateObject();
 
-    sds encrypted_api_key = edc_secret_encrypt(env_result.api_key);
+    sds encrypted_api_key =
+        (env_result.api_key && sdslen(env_result.api_key) > 0) ? edc_secret_encrypt(env_result.api_key) : NULL;
     cJSON_AddStringToObject(config, "api_key", encrypted_api_key ? encrypted_api_key : "");
     sdsfree(encrypted_api_key);
 
