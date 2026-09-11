@@ -65,24 +65,25 @@ void TestToast()
     auto base = ::ftxui::vbox({::ftxui::text("BASE-MARK"), ::ftxui::filler()});
     ::ftxui::Render(screen, ::ftxui::dbox({std::move(base), edc::ClipboardToastElement()}));
 
-    // Cells nobody drew on hold an empty string, not a space, so fold them to
-    // spaces first: otherwise the columns before the label vanish and its real
-    // position cannot be read off the row.
-    auto row_text = [&](int y)
+    // One character per cell. Undrawn cells hold an empty string (not a space,
+    // which would shift the columns along), and the bar is multi-byte UTF-8
+    // (which would turn find() into a byte offset rather than a column), so the
+    // row is built from the first byte of every cell.
+    auto columns = [&](int y)
     {
         std::string s;
         for (int x = 0; x < width; x++)
         {
             const std::string &c = screen.CellAt(x, y).character;
-            s += c.empty() ? " " : c;
+            s += c.empty() ? ' ' : c[0];
         }
         return s;
     };
 
     // Row 0 is the margin below the pane's top edge, rows 1..3 are the surface
     // (blank, label, blank), row 4 is the pane again.
-    const std::string row0 = row_text(0);
-    const std::string row2 = row_text(2);
+    const std::string row0 = columns(0);
+    const std::string row2 = columns(2);
     const size_t label = row2.find(kLabel);
 
     Check(label != std::string::npos, "the label is drawn below the top edge");
@@ -100,6 +101,15 @@ void TestToast()
 
     // The surface is taller than the text: the blank rows above and below the
     // label are painted with it too, and the block stops before the edges.
+    // The heavy rule the user's own messages carry, on the surface's left edge
+    // and spanning its full height.
+    const int bar_x = static_cast<int>(label) - 2; // the bar, then the label's leading pad
+    Check(screen.CellAt(bar_x, 2).character == "┃" && screen.CellAt(bar_x, 2).foreground_color == pal.user_rule,
+          "a user-rule bar flanks the label");
+    Check(screen.CellAt(bar_x, 1).character == "┃" && screen.CellAt(bar_x, 3).character == "┃",
+          "the bar spans the full surface height");
+    Check(screen.CellAt(bar_x, 0).character != "┃", "the bar does not reach the top edge");
+
     const int surface_x = static_cast<int>(label) - 1; // on the surface, over its leading pad
     Check(screen.CellAt(surface_x, 1).background_color == pal.dialog_bg, "a blank row of surface above the label");
     Check(screen.CellAt(surface_x, 3).background_color == pal.dialog_bg, "a blank row of surface below the label");

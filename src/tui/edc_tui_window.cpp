@@ -366,14 +366,22 @@ std::string Osc52ClipboardSequence(const std::string &text)
 // A blank row above and below the label lives inside the surface, so the block
 // is taller than its text and the label has room to breathe. One cell of margin
 // on the top and right keeps the block off the corner.
+//
+// The heavy rule on the left is the same one UserMessage carries (user_rule), so
+// the chip reads as something the user just did, and it spans the surface's full
+// height.
 ::ftxui::Element ClipboardToastElement()
 {
     const auto &pal = style::palette();
+    auto bar = ::ftxui::separatorHeavy() | ::ftxui::color(pal.user_rule);
     auto label = ::ftxui::text(" Copied to clipboard ") | ::ftxui::bold | ::ftxui::color(pal.accent);
-    auto chip = ::ftxui::vbox({
-                    ::ftxui::text(""), // breathing room above the label
-                    std::move(label),
-                    ::ftxui::text(""), // and below it
+    auto chip = ::ftxui::hbox({
+                    std::move(bar),
+                    ::ftxui::vbox({
+                        ::ftxui::text(""), // breathing room above the label
+                        std::move(label),
+                        ::ftxui::text(""), // and below it
+                    }),
                 }) |
                 ::ftxui::bgcolor(pal.dialog_bg);
     return ::ftxui::vbox({
