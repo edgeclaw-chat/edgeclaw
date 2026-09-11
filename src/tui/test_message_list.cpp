@@ -16,6 +16,7 @@
 #include "ftxui/component/event.hpp"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
+#include "ftxui/dom/selection.hpp"
 #include "ftxui/screen/color.hpp"
 #include "ftxui/screen/screen.hpp"
 #include <cstdio>
@@ -439,6 +440,30 @@ static void test_unbroken_run_rewraps_on_resize(void)
     PASS();
 }
 
+// FTXUI collects the selected text by walking the node tree and asking every
+// node which of its cells the selection covers. The list draws its items itself
+// instead of holding them as child components, so it must forward Select() down
+// to them; otherwise dragging over the log selects nothing. Regression: the
+// virtualization rewrite dropped that forwarding, so message text could no
+// longer be selected at all.
+static void test_selection_collects_message_text(void)
+{
+    TEST("dragging over the log collects the message text");
+    const auto now = ::time(nullptr);
+    auto chat = std::make_shared<edc::ChatWidget>();
+    chat->AddMessage(std::make_shared<edc::Message>("ZEBRAFISH", now));
+
+    ftxui::Element element = chat->Render() | ftxui::flex;
+    auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(kW), ftxui::Dimension::Fixed(kH));
+    ftxui::Selection selection(0, 0, kW - 1, kH - 1);
+    ftxui::Render(screen, element.get(), selection);
+
+    const std::string selected = selection.GetParts();
+    ASSERT(selected.find("ZEBRAFISH") != std::string::npos,
+           "selection did not collect the message text (got \"%s\")", selected.c_str());
+    PASS();
+}
+
 } // namespace
 
 int main(void)
@@ -456,6 +481,7 @@ int main(void)
     test_spacer_row_is_not_painted();
     test_unbroken_run_wraps_in_every_message_type();
     test_unbroken_run_rewraps_on_resize();
+    test_selection_collects_message_text();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

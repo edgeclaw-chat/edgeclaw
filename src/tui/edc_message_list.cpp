@@ -4,6 +4,7 @@
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/dom/node.hpp"
 #include "ftxui/dom/requirement.hpp"
+#include "ftxui/dom/selection.hpp"
 #include "ftxui/screen/screen.hpp"
 
 #include <algorithm>
@@ -99,6 +100,43 @@ class MessageListNode : public ::ftxui::Node
             const ::ftxui::Box visible = ::ftxui::Box::Intersection(item, stencil);
             if (!visible.IsEmpty())
                 list_.hits_.push_back({i, visible});
+        }
+    }
+
+    void Select(::ftxui::Selection &selection) override
+    {
+        // FTXUI collects the selected text by walking the node tree and asking
+        // every node which of its cells the selection covers (Text::Select adds
+        // the glyphs). This node draws the items itself instead of holding them
+        // as children, so it must forward the call: without this no message text
+        // is selectable at all.
+        //
+        // Only the items the selection touches are built. A drag spans a few
+        // rows, so this stays cheap, and it is the only way to get the items'
+        // boxes right -- Select runs before Render, so the frame's elements do
+        // not exist yet and are rebuilt here the same way Render builds them.
+        if (list_.items_.empty())
+            return;
+
+        const ::ftxui::Box &sel = selection.GetBox();
+        if (::ftxui::Box::Intersection(sel, box_).IsEmpty())
+            return;
+
+        const int first_row = sel.y_min - box_.y_min;
+        const int last_row = sel.y_max - box_.y_min;
+
+        for (size_t i = list_.FirstVisible(first_row); i < list_.items_.size(); i++)
+        {
+            if (list_.prefix_[i] > last_row)
+                break;
+
+            ::ftxui::Box item = box_;
+            item.y_min = box_.y_min + list_.prefix_[i];
+            item.y_max = item.y_min + list_.heights_[i] - 1;
+
+            ::ftxui::Element element = list_.items_[i]->Render();
+            element->SetBox(item);
+            element->Select(selection);
         }
     }
 
