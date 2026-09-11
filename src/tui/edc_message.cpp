@@ -21,10 +21,9 @@ bool Message::OnEvent(ftxui::Event)
 ::ftxui::Element Message::TaskTag() const
 {
     const auto &pal = style::palette();
-    // "task N" cross-references the sidebar task tree, so it wants its own hue:
-    // gray was too quiet, and accent already means "user / interactive". Violet
-    // keeps it legible without competing with the user blue or the thought
-    // yellow.
+    // "task N" cross-references the sidebar task tree. Gray was too quiet and
+    // violet too muted; this brighter blue keeps the tag legible on the dark
+    // pane without reaching for a status color.
     return ::ftxui::text("task " + task_id_) | ::ftxui::color(pal.task_tag);
 }
 
