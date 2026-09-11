@@ -57,11 +57,11 @@ void TestRawBytes()
 
 void TestToast()
 {
-    std::cout << "the chip is flat, right-aligned and keeps a margin\n";
+    std::cout << "the chip is a right-aligned surface taller than its text\n";
 
     const int width = 40;
     const char *kLabel = "Copied to clipboard";
-    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(width), ::ftxui::Dimension::Fixed(3));
+    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(width), ::ftxui::Dimension::Fixed(6));
     auto base = ::ftxui::vbox({::ftxui::text("BASE-MARK"), ::ftxui::filler()});
     ::ftxui::Render(screen, ::ftxui::dbox({std::move(base), edc::ClipboardToastElement()}));
 
@@ -78,11 +78,14 @@ void TestToast()
         }
         return s;
     };
-    const std::string row0 = row_text(0);
-    const std::string row1 = row_text(1);
-    const size_t label = row1.find(kLabel);
 
-    Check(label != std::string::npos, "the label is drawn on the row below the edge");
+    // Row 0 is the margin below the pane's top edge, rows 1..3 are the surface
+    // (blank, label, blank), row 4 is the pane again.
+    const std::string row0 = row_text(0);
+    const std::string row2 = row_text(2);
+    const size_t label = row2.find(kLabel);
+
+    Check(label != std::string::npos, "the label is drawn below the top edge");
     Check(row0.find("Copied") == std::string::npos, "one blank row is kept from the top edge");
     Check(row0.find("BASE-MARK") != std::string::npos, "the overlay leaves the pane behind it alone");
     // Right-aligned, ending one chip pad plus one margin column short of the
@@ -90,14 +93,21 @@ void TestToast()
     Check(label != std::string::npos && label + std::string(kLabel).size() == static_cast<size_t>(width) - 2,
           "the label ends a pad and a margin short of the right edge");
 
-    // Flat, but a surface of its own: the label sits on the raised dialog
-    // surface, which is what keeps it from vanishing into the message
-    // background, and the surface stops before the edge.
     const auto &pal = edc::style::palette();
-    const auto cell = screen.CellAt(static_cast<int>(label), 1);
+    const auto cell = screen.CellAt(static_cast<int>(label), 2);
     Check(cell.background_color == pal.dialog_bg, "the chip has a visible surface");
     Check(cell.foreground_color == pal.accent && cell.bold, "bold accent text on it");
-    Check(screen.CellAt(width - 1, 1).background_color == ::ftxui::Color::Default,
+
+    // The surface is taller than the text: the blank rows above and below the
+    // label are painted with it too, and the block stops before the edges.
+    const int surface_x = static_cast<int>(label) - 1; // on the surface, over its leading pad
+    Check(screen.CellAt(surface_x, 1).background_color == pal.dialog_bg, "a blank row of surface above the label");
+    Check(screen.CellAt(surface_x, 3).background_color == pal.dialog_bg, "a blank row of surface below the label");
+    Check(screen.CellAt(surface_x, 0).background_color == ::ftxui::Color::Default,
+          "the surface does not reach the top edge");
+    Check(screen.CellAt(surface_x, 4).background_color == ::ftxui::Color::Default,
+          "the surface ends just below the label");
+    Check(screen.CellAt(width - 1, 2).background_color == ::ftxui::Color::Default,
           "the surface stops short of the right edge");
 }
 

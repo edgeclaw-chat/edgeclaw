@@ -363,11 +363,18 @@ std::string Osc52ClipboardSequence(const std::string &text)
 // section headers, but on the palette's raised surface -- dialog_bg is the one
 // step above pane_bg, the surface a floating panel uses, so the block reads as a
 // surface of its own instead of vanishing into the message background behind it.
-// One cell of margin on the top and right keeps it off the corner.
+// A blank row above and below the label lives inside the surface, so the block
+// is taller than its text and the label has room to breathe. One cell of margin
+// on the top and right keeps the block off the corner.
 ::ftxui::Element ClipboardToastElement()
 {
     const auto &pal = style::palette();
-    auto chip = ::ftxui::text(" Copied to clipboard ") | ::ftxui::bold | ::ftxui::color(pal.accent) |
+    auto label = ::ftxui::text(" Copied to clipboard ") | ::ftxui::bold | ::ftxui::color(pal.accent);
+    auto chip = ::ftxui::vbox({
+                    ::ftxui::text(""), // breathing room above the label
+                    std::move(label),
+                    ::ftxui::text(""), // and below it
+                }) |
                 ::ftxui::bgcolor(pal.dialog_bg);
     return ::ftxui::vbox({
         ::ftxui::text(""),                                                       // one blank row below the top edge
