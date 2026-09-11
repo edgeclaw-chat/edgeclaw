@@ -43,11 +43,15 @@ const char *edc_sandbox_get_root(struct edc_config *conf)
     return conf->sandbox_root_real;
 }
 
-static bool path_is_under_any(const char *resolved_path, char **paths)
+/* Length of the longest real-path prefix in `paths` that contains
+ * `resolved_path` (the match must end at a path boundary), or -1 when no entry
+ * matches. */
+static int path_prefix_match_len(const char *resolved_path, char **paths)
 {
     if (!paths || !resolved_path)
-        return false;
+        return -1;
 
+    int best = -1;
     for (int i = 0; paths[i]; i++)
     {
         char *entry_real = realpath(paths[i], NULL);
@@ -55,16 +59,16 @@ static bool path_is_under_any(const char *resolved_path, char **paths)
             continue;
 
         size_t len = strlen(entry_real);
-        if (strncmp(resolved_path, entry_real, strlen(entry_real)) == 0 &&
+        if (strncmp(resolved_path, entry_real, len) == 0 &&
             (resolved_path[len] == '\0' || resolved_path[len] == '/'))
         {
-            free(entry_real);
-            return true;
+            if ((int)len > best)
+                best = (int)len;
         }
         free(entry_real);
     }
 
-    return false;
+    return best;
 }
 
 static bool path_allowed(struct edc_config *conf, const char *resolved_path, bool writable)
@@ -72,13 +76,20 @@ static bool path_allowed(struct edc_config *conf, const char *resolved_path, boo
     if (!conf->sandbox_root_real)
         return true;
 
-    if (path_is_under_any(resolved_path, conf->sandbox_rw_paths))
-        return true;
+    int rw_len = path_prefix_match_len(resolved_path, conf->sandbox_rw_paths);
+    int ro_len = path_prefix_match_len(resolved_path, conf->sandbox_ro_paths);
 
-    if (!writable && path_is_under_any(resolved_path, conf->sandbox_ro_paths))
-        return true;
+    /* Reads are granted by either set (rw also grants read). */
+    if (!writable)
+        return rw_len >= 0 || ro_len >= 0;
 
-    return false;
+    /* Writes are decided by the most specific (longest) matching entry, so an
+     * explicit read-write path carves a writable hole inside a read-only
+     * subtree, and a deeper read-only entry keeps that subtree read-only even
+     * when its parent is writable. A tie (the same directory in both sets)
+     * resolves to read-only -- deny wins -- so e.g. launching from the home
+     * directory does not silently make the whole home writable. */
+    return rw_len >= 0 && rw_len > ro_len;
 }
 
 sds edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writable, EdcError **error)
