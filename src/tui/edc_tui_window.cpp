@@ -10,7 +10,9 @@
 #include "ftxui/component/event.hpp"
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/string.hpp"
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -108,59 +110,74 @@ constexpr int kRunPositions = kRunLast - kRunFirst + 1;
 constexpr int kRunStart = 0;
 
 // Where the lit run sits at |elapsed_ms|, and which way it is travelling.
+// The position is fractional so the run can slide *between* cells instead of
+// snapping a whole cell per step; at whole-cell times it lands exactly on the
+// integer the old discrete sweep used, so the sampled frames are unchanged.
 struct BarState
 {
-    int pos;      // leftmost lit cell; may be negative or past the right edge
+    float pos;    // leftmost lit cell; may be negative or past the right edge
     bool forward; // true while the run sweeps right
 };
 
 // The run slides out past one edge — tail included — then comes back in from
 // that same edge and crosses to the other side, where the same thing happens
-// again (ping-pong): the step index within the cycle maps onto the outward
-// leg, then mirrors on the way home, so consecutive frames never jump and the
-// turning points are not held for an extra frame. Integer arithmetic on
-// purpose: a float phase can land between two cells at the turning points and
-// make the run stutter.
+// again (ping-pong): the phase within the cycle maps onto the outward leg,
+// then mirrors on the way home, so the motion never jumps and the turning
+// points are not held for an extra frame. Float throughout so the position can
+// sit between two cells and let the edge cells fade (see
+// WorkingIndicatorElement); at whole steps it evaluates to the same integer the
+// discrete model used.
 BarState BarAt(long long elapsed_ms)
 {
-    const long long step = (elapsed_ms < 0 ? 0 : elapsed_ms) / kStepMs; // clamp: clock skew
-    const long long cycle = 2 * (kRunPositions - 1);
-    const long long phase = (step + (kRunStart - kRunFirst)) % cycle;
-    if (phase < kRunPositions)
-        return {kRunFirst + static_cast<int>(phase), true};
-    return {kRunFirst + static_cast<int>(cycle - phase), false};
+    const float step = static_cast<float>(elapsed_ms < 0 ? 0 : elapsed_ms) / static_cast<float>(kStepMs);
+    const float cycle = static_cast<float>(2 * (kRunPositions - 1));
+    // Negative elapsed is clamped above, so the phase is never negative.
+    const float phase = std::fmod(static_cast<float>(kRunStart - kRunFirst) + step, cycle);
+    if (phase < static_cast<float>(kRunPositions))
+        return {static_cast<float>(kRunFirst) + phase, true};
+    return {static_cast<float>(kRunFirst) + (cycle - phase), false};
 }
 
-// The depth of the block |i| cells into the lit run. The leading edge — the
-// edge the run is travelling towards — is the brightest, and the run fades
-// away behind it, so the gradient always points the way the light moves and
-// swaps ends when the sweep turns around. Every cell the run passes over
-// therefore changes depth as it goes by, which is what makes the bar read as
-// water flowing rather than a slab sliding.
-int FlowTier(int i, bool forward)
+// The shade an unlit cell uses; the run's edge cells fade towards it.
+::ftxui::Color UnlitColor(const style::Palette &pal)
 {
-    return forward ? (kBarLit - 1 - i) : i;
+    return pal.text_dim;
 }
 
 // A lit block, shaded by depth: the terminal cannot fade opacity, so the ramp
 // is a handful of discrete steps from a bold accent head down to a barely
-// there gray — the closest text-mode equivalent of a brightness keyframe.
-// Same glyph at every depth: only the colour intensity changes.
+// there gray. Same glyph at every depth: only the colour intensity changes.
+// |tier| 0 is the brightest (bold accent) and 4 the darkest lit shade.
 ::ftxui::Element LitBlock(int tier, const style::Palette &pal)
 {
-    switch (tier)
+    if (tier <= 2)
     {
-    case 0:
-        return ::ftxui::text("■") | ::ftxui::color(pal.accent) | ::ftxui::bold;
-    case 1:
-        return ::ftxui::text("■") | ::ftxui::color(pal.accent);
-    case 2:
-        return ::ftxui::text("■") | ::ftxui::color(pal.accent) | ::ftxui::dim;
-    case 3:
-        return ::ftxui::text("■") | ::ftxui::color(pal.text_dim);
-    default:
-        return ::ftxui::text("■") | ::ftxui::color(pal.text_dim) | ::ftxui::dim;
+        auto e = ::ftxui::text("■") | ::ftxui::color(pal.accent);
+        if (tier == 0)
+            e = e | ::ftxui::bold;
+        else if (tier == 2)
+            e = e | ::ftxui::dim;
+        return e;
     }
+    auto e = ::ftxui::text("■") | ::ftxui::color(pal.text_dim);
+    if (tier >= 4)
+        e = e | ::ftxui::dim;
+    return e;
+}
+
+// A cell the run's edge is only part-way across: same lit glyph, but its shade
+// is faded towards the unlit colour by how much of the cell is covered, so the
+// head and tail of the run dissolve in and out instead of popping one whole
+// cell at a time. |cover| is in (0, 1); whole cells never take this path.
+::ftxui::Element PartialLitBlock(int tier, float cover, const style::Palette &pal)
+{
+    const ::ftxui::Color lit = (tier <= 2) ? pal.accent : pal.text_dim;
+    auto e = ::ftxui::text("■") | ::ftxui::color(::ftxui::Color::Interpolate(cover, UnlitColor(pal), lit));
+    if (tier == 0)
+        e = e | ::ftxui::bold;
+    else if (tier == 2 || tier == 4)
+        e = e | ::ftxui::dim;
+    return e;
 }
 
 // An unlit cell: the small square that keeps the bar's full length visible, so
@@ -308,6 +325,8 @@ std::string ShortenHome(const char *path)
     // BarAt clamps a negative elapsed (a clock adjustment between the start
     // stamp and the frame must not rewind the bar).
     const BarState bar = BarAt(elapsed_ms);
+    const float run_begin = bar.pos;
+    const float run_end = bar.pos + static_cast<float>(kBarLit);
 
     // The bar is the whole row: the animation alone says "working", so the
     // row carries no label and its width is just the bar's.
@@ -315,10 +334,33 @@ std::string ShortenHome(const char *path)
     row.reserve(static_cast<size_t>(kBarCells));
     for (int i = 0; i < kBarCells; i++)
     {
-        if (i >= bar.pos && i < bar.pos + kBarLit)
-            row.push_back(LitBlock(FlowTier(i - bar.pos, bar.forward), pal));
-        else
+        // How much of cell |i| (the span [i, i+1]) the run currently covers.
+        // At a whole-cell position every cell is either fully covered or not at
+        // all, so the frame matches the old discrete sweep exactly; between
+        // positions the edge cells are partially covered.
+        const float cover = std::min(static_cast<float>(i + 1), run_end) -
+                            std::max(static_cast<float>(i), run_begin);
+        if (cover <= 0.0f)
+        {
             row.push_back(OffBlock(pal));
+            continue;
+        }
+
+        // Depth from the leading edge: the edge the run travels towards is the
+        // brightest and the shade falls off behind it, so the gradient points
+        // the way the light moves and swaps ends when the sweep turns around.
+        const float into_run = static_cast<float>(i) - bar.pos;
+        float depth = bar.forward ? (static_cast<float>(kBarLit - 1) - into_run) : into_run;
+        depth = std::min(std::max(depth, 0.0f), static_cast<float>(kBarLit - 1));
+        const int tier = static_cast<int>(std::lround(depth));
+
+        // A whole cell draws its exact depth shade; a part-covered edge cell
+        // fades that shade towards the unlit colour by its coverage, so the run
+        // slips between cells instead of snapping one whole cell per step.
+        if (cover >= 1.0f)
+            row.push_back(LitBlock(tier, pal));
+        else
+            row.push_back(PartialLitBlock(tier, cover, pal));
     }
     return ::ftxui::hbox(std::move(row));
 }

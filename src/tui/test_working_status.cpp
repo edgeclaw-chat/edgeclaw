@@ -418,6 +418,27 @@ void TestRowIsOneLineTall()
     Check(!overflow, "nothing is drawn below the first line");
 }
 
+void TestSlidesBetweenCells()
+{
+    std::cout << "the run slides between cells instead of snapping\n";
+    const edc::style::Palette &pal = edc::style::palette();
+    // Half a step in, the run's leading edge sits half-way across a cell. That
+    // edge cell carries a colour blended between the lit and unlit shades, so
+    // the motion reads as a slide rather than a one-cell jump...
+    const auto mid = RenderRow(kStepMs / 2);
+    int blended = 0;
+    for (int x : BarColumns(mid))
+        if (mid[x].character == "■" && mid[x].foreground_color != pal.accent &&
+            mid[x].foreground_color != pal.text_dim)
+            blended++;
+    Check(blended >= 1,
+          "a mid-step edge cell carries a blended colour (got " + std::to_string(blended) + ")");
+    // ...and that mid-step frame is really distinct from both whole-cell frames
+    // it sits between.
+    Check(!SameFrame(mid, FrameAtStep(0)) && !SameFrame(mid, FrameAtStep(1)),
+          "the mid-step frame differs from both neighbouring whole-cell frames");
+}
+
 } // namespace
 
 int main()
@@ -426,6 +447,7 @@ int main()
     TestRunSlidesOutAndComesBack();
     TestTurnsAroundOnlyWhenOffScreen();
     TestNeverJumps();
+    TestSlidesBetweenCells();
     TestDepthLadderMatchesDirection();
     TestDepthChangesAsTheRunPassesOverACell();
     TestRowWidthIsConstant();
