@@ -1,6 +1,7 @@
 ﻿#include "edc_compat.h"
 #include "edc_error.h"
 #include "edc_sandbox.h"
+#include "edc_sandbox_helper.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
 #include "log.h"
@@ -262,14 +263,43 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
      * the model on stderr, which can then retry without an interactive step.
      */
     options.flags |= UV_PROCESS_DETACHED;
+
+    const char *spawn_file = NULL;
+    char **spawn_args = NULL;
+    char *plain_args[4] = {0};
+    sds sandbox_helper_file = NULL;
+    char **sandbox_helper_args = NULL;
 #ifdef _WIN32
-    options.file = "cmd.exe";
-    char *args[] = {"cmd.exe", "/c", (char *)cmd_s, NULL};
+    plain_args[0] = (char *)"cmd.exe";
+    plain_args[1] = (char *)"/c";
+    plain_args[2] = (char *)cmd_s;
+    spawn_file = "cmd.exe";
+    spawn_args = plain_args;
 #else
-    options.file = "/bin/sh";
-    char *args[] = {"sh", "-c", (char *)cmd_s, NULL};
+    /* When the filesystem sandbox is enabled, run the command through the
+     * embedded sandbox helper: it applies the kernel sandbox (Landlock/seccomp)
+     * in its own fresh process and then execs /bin/sh. We cannot apply it here
+     * (it would sandbox the agent) nor between fork/exec (not async-signal-safe
+     * in this multithreaded process). exec keeps the pid, so the timeout kill
+     * and exit handling below are unaffected. Falls back to /bin/sh when the
+     * helper cannot be materialized. */
+    if (tb_ctx->tb->conf && tb_ctx->tb->conf->enable_sandbox &&
+        edc_sandbox_helper_prepare(tb_ctx->tb->conf, cmd_s, &sandbox_helper_file, &sandbox_helper_args))
+    {
+        spawn_file = sandbox_helper_file;
+        spawn_args = sandbox_helper_args;
+    }
+    else
+    {
+        plain_args[0] = (char *)"sh";
+        plain_args[1] = (char *)"-c";
+        plain_args[2] = (char *)cmd_s;
+        spawn_file = "/bin/sh";
+        spawn_args = plain_args;
+    }
 #endif
-    options.args = args;
+    options.file = spawn_file;
+    options.args = spawn_args;
     options.env = NULL;
     options.cwd = cwd;
     options.stdio = stdio;
@@ -277,6 +307,12 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
 
     ctx->process.data = ctx;
     int r = uv_spawn(loop, &ctx->process, &options);
+
+    /* libuv has consumed argv/envp by now. */
+    if (sandbox_helper_file)
+        sdsfree(sandbox_helper_file);
+    free(sandbox_helper_args);
+
     if (r != 0)
     {
         EdcError *error = edc_error_new(EDC_ERR_EXEC, "uv_spawn failed: %s", uv_strerror(r));

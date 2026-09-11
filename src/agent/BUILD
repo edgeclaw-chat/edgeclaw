@@ -1,20 +1,20 @@
-load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 
 cc_library(
     name = "agent",
     srcs = [
+        ":sandbox_helper_embedded.c",
         "edc_actor.c",
         "edc_agent.c",
-        "edc_bpf_sandbox.c",
         "edc_channel_actor.c",
         "edc_channel_adapter.c",
         "edc_context.c",
         "edc_history.c",
-        "edc_landlock_sandbox.c",
         "edc_llm_actor.c",
         "edc_memory_actor.c",
         "edc_ns_sandbox.c",
         "edc_sandbox.c",
+        "edc_sandbox_helper.c",
         "edc_scheduler.c",
         "edc_session.c",
         "edc_session_manager.c",
@@ -36,16 +36,16 @@ cc_library(
     hdrs = [
         "edc_actor.h",
         "edc_agent.h",
-        "edc_bpf_sandbox.h",
         "edc_channel_actor.h",
         "edc_channel_adapter.h",
         "edc_context.h",
         "edc_history.h",
-        "edc_landlock_sandbox.h",
         "edc_llm_actor.h",
         "edc_memory_actor.h",
         "edc_ns_sandbox.h",
         "edc_sandbox.h",
+        "edc_sandbox_helper.h",
+        "edc_sandbox_helper_blob.h",
         "edc_scheduler.h",
         "edc_session.h",
         "edc_session_manager.h",
@@ -66,6 +66,7 @@ cc_library(
     ],
     includes = ["."],
     deps = [
+        ":sandbox_backends",
         "//src/core:core",
         "//src/shell:completion",
         "//src/shell:shell_api",
@@ -90,5 +91,55 @@ cc_library(
         "//conditions:default": ["-lpthread"],
     }),
     linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
+# ── Kernel sandbox: backends + helper ─────────────────────────────────────
+
+# Kept separate from //src/agent:agent so the tiny sandbox helper can link just
+# these two backends without dragging in libuv / mbedtls / ftxui.
+cc_library(
+    name = "sandbox_backends",
+    srcs = [
+        "edc_bpf_sandbox.c",
+        "edc_landlock_sandbox.c",
+    ],
+    hdrs = [
+        "edc_bpf_sandbox.h",
+        "edc_landlock_sandbox.h",
+    ],
+    includes = ["."],
+    deps = [
+        "//src/core:edc_compat",
+        "@log.c//:log.c",
+    ],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
+# Tiny helper exec'd by the shell tool: applies the kernel sandbox in its own
+# fresh single-threaded process and then execs /bin/sh. See sandbox_helper.c.
+cc_binary(
+    name = "sandbox_helper",
+    srcs = ["sandbox_helper.c"],
+    deps = [":sandbox_backends"],
+    linkstatic = True,
+    linkopts = select({
+        "//:windows": [],
+        "//:macos": [],
+        "//conditions:default": ["-static"],
+    }),
+    visibility = ["//visibility:public"],
+)
+
+# Embed the helper executable into the main binary as a byte array, so the
+# release stays a single self-contained file (see edc_sandbox_helper.c).
+genrule(
+    name = "sandbox_helper_embedded_c",
+    srcs = [":sandbox_helper"],
+    outs = ["sandbox_helper_embedded.c"],
+    cmd = "$(execpath //tools:embed_blob) --in $(location :sandbox_helper) --out $@ " +
+          "--name edc_sandbox_helper_blob --header edc_sandbox_helper_blob.h",
+    tools = ["//tools:embed_blob"],
     visibility = ["//visibility:public"],
 )

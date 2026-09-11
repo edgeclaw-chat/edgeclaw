@@ -180,14 +180,30 @@ Tools are registered dynamically; see "Adding a New Tool" below.
 
 Tool execution enforces **sandbox path verification** (`edc_sandbox_verify_path`)
 against the configured sandbox root in the fs/shell/device tools on all
-platforms (gated by the agent's `enable_sandbox` flag). Linux kernel
-isolation backends (Landlock LSM, mount namespaces, seccomp-BPF) are
-implemented in `src/agent/edc_sandbox*.c`, but are **deliberately not wired**
-into process spawning: `edc_sandbox_apply()` must run post-fork in a
-single-threaded child before exec, while `uv_spawn` offers no pre-exec hook and
-the sandbox backends are not async-signal-safe for a multi-threaded process.
-Safe wiring would require allocation-free backends plus a fork/exec path (or a
-single-threaded helper process) on Linux. macOS builds skip kernel isolation.
+platforms (gated by the agent's `enable_sandbox` flag).
+
+On Linux, when the sandbox is enabled, the shell tool additionally runs each
+command through a tiny embedded **sandbox helper**
+(`src/agent/sandbox_helper.c`): the agent execs the helper, which applies the
+kernel sandbox — **Landlock** and **seccomp-BPF** (see
+`src/agent/edc_landlock_sandbox.c`, `edc_bpf_sandbox.c`) — in its own fresh,
+single-threaded process and then execs `/bin/sh`. This is the one place kernel
+isolation can be applied safely: `edc_sandbox_apply()` must run in the confined
+process (it is irreversible and inherited, so it must never run in the agent),
+and doing it between `fork()` and `exec()` in the multithreaded agent is unsafe
+(only async-signal-safe calls are allowed there) — applying it after an `exec`
+sidesteps both. `exec` keeps the pid, so the existing process-group kill / exit
+handling is unchanged. The helper is embedded in the binary at build time
+(`tools/embed_blob.py`) and extracted to `$EDC_HOME/.cache/` on first use, so
+the release stays a single file. The mount-namespace backend
+(`edc_ns_sandbox.c`) is not used by the helper (it needs libuv/heap and is often
+unavailable in containers). macOS/Windows skip kernel isolation (path
+verification only).
+
+The agent's own workspace (`$EDC_HOME/workspace`) and the directory EdgeClaw was
+launched from are always in the **writable** set, so the model can edit the
+files it owns. The user's home directory is added to the **read-only** set: the
+model can read the user's files (configs, sources, ...) but cannot modify them.
 
 ### Additional Features
 

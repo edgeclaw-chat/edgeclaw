@@ -294,3 +294,13 @@ cc_test(
     ],
     linkopts = LINK_OPTS,
 )
+
+cc_test(
+    name = "test_sandbox_helper",
+    srcs = ["test_sandbox_helper.c"],
+    deps = [
+        "//src:agent",
+        "@libuv",
+    ],
+    linkopts = LINK_OPTS,
+)

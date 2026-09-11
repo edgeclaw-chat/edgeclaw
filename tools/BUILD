@@ -7,3 +7,11 @@ py_binary(
     srcs = ["embed_workspace.py"],
     visibility = ["//visibility:public"],
 )
+
+# Build-time tool: embeds a single file (the sandbox helper executable) as a C
+# byte array (see //src/agent:sandbox_helper_embedded_c).
+py_binary(
+    name = "embed_blob",
+    srcs = ["embed_blob.py"],
+    visibility = ["//visibility:public"],
+)

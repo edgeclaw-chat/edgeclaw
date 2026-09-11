@@ -2,6 +2,16 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 
 # ── Individual utility libraries (externally visible) ──────────────────────
 
+# Header-only platform/GLib compatibility shim. Exposed on its own so very
+# small binaries (e.g. //src/agent:sandbox_helper) can use it without pulling
+# the whole //src/core:core library.
+cc_library(
+    name = "edc_compat",
+    hdrs = ["edc_compat.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+
 cc_library(
     name = "edc_error",
     srcs = ["edc_error.c"],
