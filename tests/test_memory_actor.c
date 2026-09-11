@@ -44,7 +44,7 @@ int main()
 
     edc_secret_lockdown();
 
-    edc_actor_t *llm_actor = edc_llm_actor_new(&conf->llm_api_conf);
+    edc_actor_t *llm_actor = edc_llm_actor_new(conf);
     edc_actor_t *actor = edc_memory_actor_new(conf->workspace, 9, llm_actor);
 
     edc_actor_t *observer = edc_actor_new("observer", observer_handler, NULL);

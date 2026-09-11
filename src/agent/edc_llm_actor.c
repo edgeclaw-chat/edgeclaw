@@ -537,7 +537,13 @@ void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp)
 edc_actor_t *edc_llm_actor_new(struct edc_config *config)
 {
     edc_llm_actor_state_t *state = g_new0(edc_llm_actor_state_t, 1);
-    state->api_conf = config->llm_api_conf;
+    /* Deep copy: the actor owns its own provider settings. A shallow struct
+     * copy would share the sds pointers with config->llm_api_conf, so when the
+     * agent frees/replaces the config strings (runtime /connect) the actor's
+     * copy dangles and the next sdsfree() double-frees -> abort(). */
+    state->api_conf.model = config->llm_api_conf.model ? sdsdup(config->llm_api_conf.model) : NULL;
+    state->api_conf.api_key = config->llm_api_conf.api_key ? sdsdup(config->llm_api_conf.api_key) : NULL;
+    state->api_conf.api_url = config->llm_api_conf.api_url ? sdsdup(config->llm_api_conf.api_url) : NULL;
     sds cacert = edc_path_join(config->workspace, "ssl", "cacert.pem", NULL);
     state->client = edc_https_client_new(cacert);
     sdsfree(cacert);
@@ -550,6 +556,9 @@ void edc_llm_actor_free(edc_actor_t *actor)
 {
     edc_llm_actor_state_t *state = actor->state;
     edc_https_client_free(state->client);
+    sdsfree(state->api_conf.model);
+    sdsfree(state->api_conf.api_key);
+    sdsfree(state->api_conf.api_url);
     free(state);
     edc_actor_free(actor);
 }
