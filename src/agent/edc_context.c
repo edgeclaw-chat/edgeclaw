@@ -172,6 +172,28 @@ static sds edc_context_load_memory(const char *workspace)
     return buf;
 }
 
+/* Compact description of the sandbox's writable / read-only path sets, so the
+ * model knows up front which directories it can write and does not waste tool
+ * calls probing paths that will be denied. */
+static sds edc_context_build_permissions(struct edc_config *conf)
+{
+    sds out = sdsnew("## Filesystem Permissions\n\n"
+                     "File and shell tools are sandboxed: writes are allowed only under the "
+                     "writable paths below. Every other path is read-only (reads are "
+                     "unrestricted, writes elsewhere are denied), so do not try to create or "
+                     "modify files outside the writable set.\n\n"
+                     "- Writable:\n");
+    for (int i = 0; conf->sandbox_rw_paths && conf->sandbox_rw_paths[i]; i++)
+        out = sdscatprintf(out, "  - %s\n", conf->sandbox_rw_paths[i]);
+
+    out = sdscat(out, "- Read-only (writes denied):\n");
+    for (int i = 0; conf->sandbox_ro_paths && conf->sandbox_ro_paths[i]; i++)
+        out = sdscatprintf(out, "  - %s\n", conf->sandbox_ro_paths[i]);
+
+    out = sdscat(out, "\nA path matched by both lists takes the more specific (longer) entry.\n\n");
+    return out;
+}
+
 sds edc_context_build_system_prompt(struct edc_config *conf)
 {
     const char *workspace = conf->workspace;
@@ -179,12 +201,14 @@ sds edc_context_build_system_prompt(struct edc_config *conf)
 
     sds time = edc_get_timestamp();
     sds identity = edc_context_get_identity(os_name, time, workspace);
+    sds permissions = edc_context_build_permissions(conf);
     sds bootstrap = edc_context_load_bootstrap_files(workspace);
     sds memory = edc_context_load_memory(workspace);
     sds skills = edc_context_load_skills(workspace);
 
     sds system_prompt = sdsempty();
     system_prompt = sdscat(system_prompt, identity);
+    system_prompt = sdscat(system_prompt, permissions);
     system_prompt = sdscat(system_prompt, bootstrap);
     if (memory)
     {
@@ -196,6 +220,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf)
 
     sdsfree(time);
     sdsfree(identity);
+    sdsfree(permissions);
     sdsfree(bootstrap);
     if (memory)
     {
