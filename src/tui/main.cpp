@@ -14,13 +14,11 @@ using namespace ftxui;
 namespace
 {
 
-// Parse the sandbox flag from argv into a per-run override: -1 = no flag (keep
-// the persisted config.json value), 0 = force off, 1 = force on. The sandbox is
-// on by default in config.json; "--no-sandbox" / "--sandbox=off|0|false|no"
-// force it off (for gdb/strace/perf/valgrind and other tools the seccomp policy
-// blocks), while "--sandbox" / "--sandbox=on" force it on. Unknown arguments
-// are ignored. The override is never persisted -- only the in-TUI /sandbox
-// command writes config.json.
+// Parse the sandbox flag into a per-run override: -1 = keep the persisted config.json
+// value, 0 = force off, 1 = force on. "--no-sandbox"/"--sandbox=off|0|false|no" turn it
+// off (for gdb/strace/perf and other tools the seccomp policy blocks) and
+// "--sandbox"/"--sandbox=on" turn it on; unknown arguments are ignored. Never persisted:
+// only the in-TUI /sandbox command writes config.json.
 int ParseSandboxFlag(int argc, char **argv)
 {
     int sandbox_override = -1;
@@ -40,22 +38,13 @@ int ParseSandboxFlag(int argc, char **argv)
     return sandbox_override;
 }
 
-// ftxui treats SIGINT/SIGTERM as a *deferred* exit: its signal handler only
-// records the signal, the main loop then quits normally, and ~Loop re-raises
-// the signal after restoring whichever disposition was installed before ftxui
-// took over (see ftxui App::Internal::PostMain -> RestoreSignalHandlerAndRaise).
-// With the default disposition that final raise() kills the process from
-// inside screen.Loop(), so screen.Loop() never returns and the local `window`
-// shared_ptr is never destroyed -- ~TUIWindow(), the one place that calls
-// edc_c_agent_free(), is skipped. Every agent resource (uv loop, worker
-// threads, sockets, in-flight HTTPS buffers) leaks and the process dies by
-// signal instead of exiting cleanly (valgrind then reports the whole live heap
-// as still-reachable/possibly-lost).
-//
-// Install a benign handler *before* screen.Loop() so ftxui records it as the
-// "previous" disposition and restores it right before its post-loop raise():
-// the re-raise now lands here, returns immediately, and control falls through
-// to a normal return from main() with full teardown.
+// ftxui treats SIGINT/SIGTERM as a *deferred* exit: its handler only records the signal,
+// the loop quits normally, and ~Loop re-raises it after restoring the previous
+// disposition. With the default disposition that raise() kills the process from inside
+// screen.Loop(), so Loop() never returns and ~TUIWindow() -- the one place calling
+// edc_c_agent_free() -- is skipped, leaking every agent resource. Installing a benign
+// handler *before* Loop() makes ftxui record it as "previous", so the re-raise lands here
+// and control falls through to a normal return from main().
 void HandleTerminationSignal(int) {}
 
 // 关闭 uv_default_loop: 把 loop 上残留的句柄全部 uv_close, 跑完关闭回调后
@@ -105,10 +94,9 @@ int main(int argc, char **argv)
         {
             edc_c_agent_set_command_handler();
             window->SetScreen(&screen);
-            // Every input event the loop takes off the terminal, counted. The
-            // loop below uses it to tell "there was work this iteration" from
-            // "idle", so a burst of input can drain back to back instead of
-            // paying ftxui's once-per-iteration sleep for every batch of it.
+            // ftxui's Loop::Run() sleeps ~16.6ms after every iteration, even the
+            // ones that just handled input (~59 batches/s). Counting events lets
+            // the loop below sleep only on an iteration that saw none.
             uint64_t events_seen = 0;
             ftxui::Component component = window;
             component |= CatchEvent([&](Event e) -> bool {
@@ -130,26 +118,9 @@ int main(int argc, char **argv)
             ::signal(SIGINT, HandleTerminationSignal);
             ::signal(SIGTERM, HandleTerminationSignal);
 
-            // Drive the loop explicitly instead of screen.Loop(component) (which
-            // is Loop::Run():
-            //
-            //   while (!HasQuitted()) RunOnceBlocking();
-            //
-            // RunOnceBlocking() sleeps ~16.6ms at the end of EVERY iteration --
-            // including the ones that just handled input -- so it caps the whole
-            // UI at ~59 event batches/s (measured: 59.3/s blocking vs 2.0M/s
-            // without the sleep). ftxui reads at most 128 bytes of terminal input
-            // per iteration, and one mouse-wheel report is ~11 bytes, so a scroll
-            // flick that emits a few hundred wheel events needs seconds to drain;
-            // every drained event also forces a full repaint (ftxui invalidates
-            // the frame for every event, handled or not), and while the viewport
-            // is already pinned at the top the screen does not change, so the TUI
-            // reads as frozen rather than as scrolling.
-            //
-            // Running RunOnce() and sleeping only when an iteration saw NO input
-            // keeps the idle cost exactly where it was (one wake-up per ~16ms,
-            // ~59/s) while letting a burst drain as fast as the frames it forces
-            // can be drawn. TickAnimations() still gets its per-iteration tick.
+            // Loop::Run() with one change: sleep only on an iteration that saw
+            // no input, so a burst (a scroll flick is hundreds of wheel events)
+            // drains back to back instead of one batch per 16.6ms.
             ftxui::Loop loop(&screen, component);
             while (!loop.HasQuitted())
             {
@@ -162,13 +133,9 @@ int main(int argc, char **argv)
         }
     }
 
-    // Reached only after a normal loop exit (Esc / Ctrl-C / Ctrl-D), now that
-    // the re-raise above is neutralised: the TUI objects above are destroyed
-    // here, running edc_c_agent_free() (uv walk + thread joins) before the
-    // process returns. ftxui's deferred-exit re-raise has already happened
-    // inside Loop(), so from here on hand the signals back to their default
-    // disposition: a second Ctrl-C / kill during a slow teardown must still be
-    // able to terminate us.
+    // Normal loop exit only (Esc / Ctrl-C / Ctrl-D): the TUI objects above are destroyed
+    // here, running edc_c_agent_free() before the process returns. Hand the signals back
+    // to their default disposition so a second Ctrl-C during a slow teardown still works.
     ::signal(SIGINT, SIG_DFL);
     ::signal(SIGTERM, SIG_DFL);
 

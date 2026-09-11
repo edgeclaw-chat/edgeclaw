@@ -41,23 +41,15 @@ static void DisableBracketedPaste()
     std::fflush(stdout);
 }
 
-// todowrite 工具的 TOOL 消息头（与 edc_tools_todo.c 注册名保持一致）。
-// 该工具的文本回显（Markdown checklist）在 TUI 里不进对话消息列表——TODO
-// 状态只由右侧 TodoWidget 展示，其数据源是任务快照里 active task 的 todo
-// （快照由 scheduler 在每次工具回显后主动补推），聊天区重复一条 checklist
-// 纯属噪音；文本仍随消息传递，供无侧栏的渲染端（CLI）与 tool result（LLM）
-// 使用。
+// todowrite 工具的 TOOL 消息头（与 edc_tools_todo.c 注册名一致）。它的文本回显
+// （Markdown checklist）不进对话区：TODO 状态只由右侧 TodoWidget 展示，数据源是
+// 任务快照里 active task 的 todo；文本仍随消息传递，供 CLI 与 tool result（LLM）用。
 constexpr char kTodoToolHeader[] = "todowrite";
 
-// The animated "working" row must reflect the scheduler's process state, not
-// the channel-message stream: it spins exactly while the current foreground
-// process — the task marked active in the foreground group (fg) of the
-// snapshot — is running (LLM generating or a tool chain in flight). Other
-// members of the same group, background groups, completed tasks, and tasks
-// merely waiting for input/deps never count as busy, so a slash command
-// answered only with SYS (no RESP, no foreground task) stops the spinner as
-// soon as its snapshot arrives, and a background task's traffic can neither
-// start nor stop it.
+// The animated row reflects the scheduler's process state, not the channel
+// stream: it spins exactly while the foreground group's active task runs (LLM
+// generating or a tool chain in flight). Other members of the group, background
+// groups, completed tasks and tasks waiting for input/deps never count as busy.
 bool ForegroundProcessBusy(const ::edc_c_task_snapshot *snap)
 {
     if (!snap)
@@ -84,18 +76,11 @@ bool ForegroundProcessBusy(const ::edc_c_task_snapshot *snap)
     return false; // no foreground group at all
 }
 
-// The "working" row: a bar of blocks that sweeps back and forth — left to
-// right, then right to left — while the brightness inside the lit run flows
-// along it, so the row reads as moving water rather than a static progress
-// bar. The run does not turn around while it is still on screen: it travels
-// until it has left the bar completely, tail and all, and only then comes
-// back, so the light enters at one edge, crosses, leaves, and returns.
-//
-// Constraints kept from every earlier attempt: exactly one text line (the row
-// replaces the footer, so it must never change the layout height), a fixed
-// number of cells (never change the width), no background fill, and medium
-// block glyphs — not the full-height █▓▒░, which tower over the surrounding
-// text.
+// The "working" row: a bar of blocks that sweeps back and forth while the
+// brightness inside the lit run flows along it. Exactly one text line (it
+// replaces the footer, so the layout height must not change), a fixed cell count
+// (never the width), no background fill, and medium block glyphs -- not the
+// full-height █▓▒░, which tower over the surrounding text.
 constexpr int kBarCells = 10;      // cells in the bar
 constexpr int kBarLit = 5;         // lit cells: the sliding run
 constexpr long long kStepMs = 60;  // per cell of travel
@@ -109,17 +94,9 @@ constexpr int kRunPositions = kRunLast - kRunFirst + 1;
 // straight away instead of opening on an empty bar.
 constexpr int kRunStart = 0;
 
-// How often the working spinner repaints, in milliseconds.
-//
-// The bar advances one cell every kStepMs, so a frame per loop tick redraws the
-// entire tree -- chat log included -- for sub-cell movement nobody can see, for
-// as long as a task runs. Pacing it here (~20fps target; the loop's own tick
-// quantizes it to about 17fps, a 2-4x cut depending on how fast the terminal
-// can render a frame) still slides the run about one cell per repaint, which is
-// what a sweeping bar looks like anyway. One constant to tune.
-//
-// See TUIWindow::TickAnimations for why the pacing cannot live in the spinner's
-// own render.
+// How often the working spinner repaints. The bar moves one cell per kStepMs, so
+// a frame per loop tick redraws the whole tree for sub-cell movement nobody can
+// see; see TickAnimations() for why the pacing cannot live in the render.
 constexpr long long kSpinnerFrameMs = 33;
 
 // Where the lit run sits at |elapsed_ms|, and which way it is travelling.
@@ -132,14 +109,10 @@ struct BarState
     bool forward; // true while the run sweeps right
 };
 
-// The run slides out past one edge — tail included — then comes back in from
-// that same edge and crosses to the other side, where the same thing happens
-// again (ping-pong): the phase within the cycle maps onto the outward leg,
-// then mirrors on the way home, so the motion never jumps and the turning
-// points are not held for an extra frame. Float throughout so the position can
-// sit between two cells and let the edge cells fade (see
-// WorkingIndicatorElement); at whole steps it evaluates to the same integer the
-// discrete model used.
+// The run slides out past one edge -- tail included -- then re-enters from it and
+// crosses to the other, ping-ponging, so the motion never jumps and no turning
+// point is held for an extra frame. Float, so the position can sit between two
+// cells and the edge cells can fade (see WorkingIndicatorElement).
 BarState BarAt(long long elapsed_ms)
 {
     const float step = static_cast<float>(elapsed_ms < 0 ? 0 : elapsed_ms) / static_cast<float>(kStepMs);
@@ -200,14 +173,11 @@ BarState BarAt(long long elapsed_ms)
     return ::ftxui::text("⬝") | ::ftxui::color(pal.text_dim) | ::ftxui::dim;
 }
 
-// Todo sidebar content: the foreground group's active task — its id, and its
-// own todo list. The list is part of the task state (todowrite attaches it to
-// the task that called it), so the snapshot — which already tells us which task
-// is active — is the single source of truth for the TodoWidget, just as it is
-// for the task tree and the working spinner. A task without a list (or the fg
-// group without an active task) renders an empty TodoWidget, and the id is what
-// keeps the section readable once it is collapsed or when several tasks have
-// run in one session.
+// Todo sidebar content: the foreground group's active task -- its id and its own
+// todo list, which is part of the task state (todowrite attaches it to the task
+// that called it). The snapshot already says which task is active, so it is the
+// single source of truth here too; the id keeps the section readable once it is
+// collapsed.
 struct ActiveTaskTodos
 {
     std::string task_id;
@@ -336,12 +306,9 @@ std::string ShortenHome(const char *path)
 
 } // namespace
 
-// The animated "working" row: the sweeping block bar on its own, no text.
-// Defined here (outside the anonymous namespace, declared in the header) so
-// tests can render the row for a given elapsed time without a live agent. The
-// bar has a fixed number of cells, so showing it in place of the footer never
-// changes the row's width, and it is one line tall, so it never changes the
-// layout either.
+// The animated "working" row: the sweeping bar on its own, no text. Defined here
+// (declared in the header) so tests can render it for a given elapsed time without
+// a live agent. Fixed cell count and one line tall, so it never changes the layout.
 ::ftxui::Element WorkingIndicatorElement(long long elapsed_ms)
 {
     const auto &pal = style::palette();
@@ -410,42 +377,19 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
 
     container_ = ::ftxui::Container::Vertical({chat_widget_, input_}, &focused_);
 
-    // Left pane = chat + input + footer (see RenderMain); right pane = two
-    // collapsible sidebar sections stacked top to bottom: the task tree
-    // (TaskWidget) and, directly below it, the todo list (TodoWidget). Both
-    // sections are always present — an empty todo list still shows its
-    // collapsible "▾/▸ Todos 0/0" header so the sidebar layout is stable
-    // from startup instead of the Todo block popping in after the first
-    // todowrite call. Each section has its own clickable "▾/▸" header
-    // and takes only its natural content height; neither is pinned to the
-    // pane bottom, so a short task tree leaves the Todo section sitting
-    // right underneath it instead of gluing it to the bottom edge.
-    // ResizableSplit puts "main" on the right at a fixed, drag-adjustable
-    // width and lets "back" (the chat area) take the rest. The separator is
-    // a thin blank column so the sidebar stays borderless (distinguished
-    // only by its background color) while keeping a drag grab area to resize
-    // it.
+    // Left pane = chat + input + footer (see RenderMain); right pane = the task tree
+    // (TaskWidget) with the todo list (TodoWidget) stacked under it. Both sections
+    // are always present (an empty list still shows its "▾/▸ Todos 0/0" header, so
+    // the sidebar is stable from startup) and take only their natural height.
+    // ResizableSplit keeps "main" on the right at a drag-adjustable width; the
+    // separator is a blank column, so the sidebar stays borderless but grabbable.
     auto main_area = ::ftxui::Renderer(container_, [this] { return RenderMain(); });
-    // The container child exists so mouse/key events keep reaching the two
-    // widgets (a childless Renderer would swallow them — TaskWidget needs
-    // them for its group-header expand/collapse clicks, TodoWidget for its
-    // section header).
-    //
-    // The task tree is the only section that can legitimately outgrow the
-    // pane (a long expanded session), so it lives inside a fit-content
-    // ScrollView: while the tree is short it occupies exactly its natural
-    // height and the Todo section sits right underneath; once the tree would
-    // overflow, the view shrinks to the space the Todo section leaves and
-    // scrolls the overflow inside it (mouse wheel over the tree). The Todo
-    // section is never shrunk, so it stays visible at the bottom instead of
-    // being squeezed out of the pane. The view opts out of keyboard focus and
-    // of the tail-follow: a snapshot refresh must neither steal Tab/arrows
-    // from the editor nor yank the viewport to the bottom of the tree.
-    // The task tree scrolls; the section's heading above it does not -- the
-    // "Tasks" row, the session meta row and the rule under them all stay put,
-    // so the list is the only thing that moves. The pinned part is still part of
-    // the view: the wheel scrolls the tree even when the pointer sits over it.
-    // One widget, two renderers: the heading, and the rows the ScrollView owns.
+    // The container child keeps mouse/key events reaching both widgets (a childless
+    // Renderer would swallow them: TaskWidget needs its group-header clicks, the todo
+    // section its header). The task tree is the only section that can outgrow the pane,
+    // so it lives in a fit-content ScrollView: natural height while it fits, then it
+    // shrinks to what the Todo section leaves and scrolls the overflow. No keyboard
+    // focus, no tail-follow: a refresh must not steal Tab/arrows or yank the viewport.
     auto task_header = ::ftxui::Renderer(task_widget_, [this] { return task_widget_->RenderHeader(); });
     auto task_body = ::ftxui::Renderer(task_widget_, [this] { return task_widget_->RenderBody(); });
     auto task_scroll = std::make_shared<ScrollView>(
@@ -454,14 +398,9 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
         task_header);
     auto right_column = ::ftxui::Container::Vertical({task_scroll, todo_widget_});
     auto right_pane = ::ftxui::Renderer(right_column, [this, task_scroll] {
-        // The two sections stack directly on each other with no divider
-        // between them: a separator line would visually slice the sidebar
-        // into fragments. The task tree simply ends where the Todo header
-        // row begins; the identical pane background keeps them one surface.
-        //
-        // The Tasks section keeps one EMPTY border around both halves, so the
-        // pinned header and the rows under it share an inset (and the row width
-        // both truncate against is what it always was).
+        // The sections stack with no divider (a separator would slice the sidebar
+        // into fragments); one EMPTY border keeps the pinned header and the rows
+        // under it sharing an inset.
         ::ftxui::Elements col = {task_scroll->Render() | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY),
                                  todo_widget_->Render()};
         // The column itself flexes so the sidebar background covers the whole
@@ -585,12 +524,9 @@ void TUIWindow::Submit()
     // its snapshot already reflects the new foreground task's state.
     RequestTaskSnapshot();
 
-    // The animated status is NOT started here and NOT tied to message types:
-    // when the snapshot above (or the next periodic one) reports the current
-    // foreground process as running, SyncWorkingFromSnapshot() flips the
-    // spinner on; it flips off again as soon as the process is no longer
-    // busy. Request one extra frame now so the just-submitted message paints
-    // immediately.
+    // The animated status is not started here and not tied to message types: the
+    // snapshot (this one or the next periodic one) flips the spinner through
+    // SyncWorkingFromSnapshot(). Ask for a frame so the submitted message paints now.
     if (screen_)
         screen_->RequestAnimationFrame();
 }
@@ -662,15 +598,10 @@ void TUIWindow::RequestTaskSnapshot()
     edc_c_agent_request_task_snapshot(agent);
 }
 
-// The chat transcript is a line-oriented file the TUI owns end to end, so its
-// format is a private contract: one bubble per line, tab-separated
-//   kind \t render_pref \t task_id \t header \t content
-// with `\\`, `\n`, `\r` and `\t` backslash-escaped inside every field (so a
-// field never contains a raw tab/newline). It records exactly what was shown,
-// which is why replay reproduces the pre-exit log verbatim — unlike deriving
-// it from the agent's LLM message history, whose entries differ from the
-// display stream (tool header text, SYS/command bubbles, suppressed
-// background-task traffic).
+// The chat transcript is a private, line-oriented format: one bubble per line,
+// tab-separated kind/render_pref/task_id/header/content, with `\\`, `\n`, `\r` and
+// `\t` escaped inside every field. It records exactly what was shown, so replaying
+// it reproduces the pre-exit log verbatim.
 static std::string EscapeTranscriptField(const std::string &s)
 {
     std::string out;
@@ -840,8 +771,7 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
     if (busy)
     {
         working_started_ = std::chrono::steady_clock::now();
-        // Start the spinner's repaint cadence from the frame the
-        // RequestAnimationFrame below draws (see TickAnimations).
+        // Start the spinner's cadence from the frame requested just below.
         last_spinner_frame_ = working_started_;
     }
     // A transition here can happen while the render loop is otherwise idle
@@ -853,17 +783,9 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
 
 void TUIWindow::TickAnimations()
 {
-    // Called once per main-loop iteration (see main.cpp) -- the one UI-thread
-    // tick the window gets that is not a repaint.
-    //
-    // The spinner must not ask for a frame from inside its own render: a frame
-    // that asks for another one pins the whole TUI to the loop's frame rate for
-    // as long as a task runs, redrawing the entire tree (chat log included) for
-    // sub-cell movement of a ten-cell bar. ftxui offers no "repaint in n ms", and
-    // a component cannot sleep either -- a closure that re-posts itself starves
-    // TaskRunner::RunUntilIdle(), which only returns when the queue drains, and
-    // the UI freezes outright. Pacing from the loop iteration, which returns
-    // every animation tick, is what is left.
+    // The spinner must not ask for a frame from inside its own render: that pins
+    // the whole TUI to the loop's rate for as long as a task runs. Its repaints
+    // are paced from this once-per-iteration hook (see main.cpp) instead.
     if (!working_ || !screen_)
         return;
 
@@ -880,15 +802,11 @@ void TUIWindow::TickAnimations()
 {
     auto input_row = ::ftxui::hbox({prompt_, input_->Render() | ::ftxui::flex});
 
-    // The status row shares this pane's width (the input's width), so the
-    // right-aligned model + "/help" stop at the input's right edge and never
-    // run into the sidebar: the task/todo pane stays a full-height column.
-    // The "Copied to clipboard" chip floats over the chat pane's own top-right
-    // corner -- the pane the selection was made in, not the whole window -- the
-    // way the Tasks/Todos headers sit in the sidebar. Drawing it as an overlay
-    // keeps it out of the layout, and asking for a frame while it is up is what
-    // keeps the fade moving and finally lets the chip go: an idle screen is not
-    // redrawn otherwise. All of that lives in edc_clipboard.*.
+    // The status row shares this pane's width (the input's), so the right-aligned
+    // model + "/help" stop at the input's right edge and never spill into the
+    // sidebar. The "Copied to clipboard" chip floats over the chat pane's own
+    // top-right corner as an overlay, and asking for a frame while it is up is what
+    // keeps the fade moving (an idle screen is not redrawn otherwise).
     auto chat = chat_widget_->Render();
     const auto toast_now = std::chrono::steady_clock::now();
     if (clipboard_toast_.Visible(toast_now))
@@ -909,9 +827,7 @@ void TUIWindow::TickAnimations()
         const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - working_started_).count();
         children.push_back(WorkingIndicatorElement(elapsed_ms));
 
-        // The next repaint is NOT requested here: the spinner's own cadence
-        // owns it (see TickAnimations), so one bar costs a frame every
-        // kSpinnerFrameMs instead of one per loop tick.
+        // Repaints are paced by TickAnimations(), not requested here.
     }
     else
     {
@@ -995,17 +911,11 @@ void TUIWindow::TickAnimations()
     auto base = split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
     if (!connect_open_)
         return base;
-    // The /connect dialog is borderless, so the backdrop is dimmed while it is
-    // open: the raised dialog surface then reads as the one lit panel on a
-    // muted screen instead of relying on a frame to stand out.
-    //
-    // clear_under is load-bearing, not cosmetic: ftxui's `dim` is a per-cell
-    // flag (see Dim in dom/dim.cpp) that the backdrop stamps over its whole
-    // box, and an overlaid element only rewrites character/colours — it never
-    // clears that flag. Without clear_under the dialog inherits the backdrop's
-    // dim and renders gray regardless of its text colour. Clearing the cells
-    // first (what the ftxui modal example does) resets the flag before the
-    // panel draws, so only the backdrop stays dim.
+    // The dialog is borderless, so the backdrop is dimmed while it is open: the
+    // raised surface then reads as the one lit panel on a muted screen.
+    // clear_under is load-bearing: ftxui's `dim` is a per-cell flag the backdrop
+    // stamps over its box and an overlaid element never clears it, so without it the
+    // dialog renders gray whatever its text colour.
     return ::ftxui::dbox(
         {base | ::ftxui::dim,
          connect_modal_->Render() | ::ftxui::clear_under | ::ftxui::size(::ftxui::WIDTH, ::ftxui::LESS_THAN, 80) |
@@ -1014,14 +924,10 @@ void TUIWindow::TickAnimations()
 
 ::ftxui::Element TUIWindow::RenderConnectModal()
 {
-    // Flat, borderless dialog. It borrows the sidebar's visual language -- a
-    // bold accent heading, dim rules and flat field labels -- but floats on
-    // the raised dialog surface instead of drawing a frame. The labels use the
-    // bright foreground (not text_dim, which washes out on dialog_bg), so the
-    // panel stays legible without a box to lean on. BorderStyle::EMPTY
-    // reserves a one-cell inset on every side (so the fields keep their
-    // breathing room) while drawing no box lines at all; the window-level
-    // overlay dims the backdrop behind it (see OnRender).
+    // Flat, borderless dialog borrowing the sidebar's visual language (accent
+    // heading, dim rules, flat labels) but floating on dialog_bg. Labels use the
+    // bright foreground, not text_dim, which washes out on that surface.
+    // BorderStyle::EMPTY reserves the inset without drawing box lines.
     using namespace ::ftxui;
     const auto &pal = style::palette();
 
@@ -1263,12 +1169,9 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
 
     auto add_message = [tui, kind, text, header, task_id, render_pref, ts]() {
         std::shared_ptr<Message> widget;
-        // todowrite 的 TOOL 消息不进对话区：TODO 状态已由右侧
-        // TodoWidget 展示，而它的数据源是任务快照里 active task 的 todo
-        // （见 on_channel_adapter_send 的快照分支；工具每次回显都会让
-        // scheduler 补推一次快照），聊天里再排一条 checklist 纯属噪音。
-        // 消息文本仍随消息传递，供无侧栏的渲染端（CLI）与 tool result
-        // （LLM）使用。
+        // todowrite 的 TOOL 消息不进对话区：TODO 状态已由右侧 TodoWidget 展示，
+        // 数据源是任务快照里 active task 的 todo（工具每次回显都会补推快照）。
+        // 文本仍随消息传递，供无侧栏的渲染端（CLI）与 tool result（LLM）使用。
         bool skip_chat = false;
         const char *kind_str = "sys";
         switch (kind)

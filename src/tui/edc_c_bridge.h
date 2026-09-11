@@ -2,18 +2,11 @@
 #define EDC_C_BRIDGE_H
 
 /*
- * Thin C interface between the TUI (C++) and the rest of the project (C).
- *
- * The project's C headers pull in sds.h, cJSON, uthash -- C headers that
- * don't compile under C++ (sds uses void* -> struct* implicit conversions).
- * Rather than patch third-party C headers, the TUI talks to the project only
- * through this bridge: signatures use plain C types (const char*, size_t,
- * bool), never sds/cJSON. The bridge is implemented in edc_c_bridge.c (compiled
- * as C, so it can include sds-based headers freely).
- *
- * Add a function here when the TUI needs a new C-side capability, and
- * implement it in edc_c_bridge.c. This is a general C API surface, not
- * agent-specific: prefix all functions with edc_c_.
+ * Thin C interface between the TUI (C++) and the rest of the project (C): the
+ * project's headers pull in sds.h/cJSON/uthash, which do not compile under C++,
+ * so the TUI never includes them -- signatures use plain C types only and the
+ * implementation (edc_c_bridge.c, compiled as C) includes whatever it needs.
+ * Add new C-side capabilities here, prefixed edc_c_.
  */
 
 #include <stdbool.h>
@@ -36,12 +29,9 @@ enum
 struct uv_loop_s;
 
 /* ── Task-tree snapshot (parsed from the scheduler's JSON) ─────
- * The scheduler serializes the active session's task tree to JSON and the
- * TUI requests a parse through edc_c_task_snapshot_parse(); the result is a
- * plain-C tree of malloc'd strings so the C++ TUI never touches cJSON. Each
- * task node also carries the todo list it holds (the todowrite items,
- * NULL/0 when the task has none) — the TodoWidget renders the foreground
- * group's active task's todo straight from the snapshot. */
+ * edc_c_task_snapshot_parse() turns the scheduler's JSON into a plain-C tree of
+ * malloc'd strings, so the C++ TUI never touches cJSON. Each task node carries the
+ * todo list it holds (the todowrite items; NULL/0 when it has none). */
 
 struct edc_c_todo_item
 {
@@ -170,13 +160,10 @@ bool edc_c_agent_connect(struct edc_agent *agent, const char *api_url, const cha
  * read/write the file with the standard stream API without touching sds. */
 bool edc_c_history_path(char *buf, size_t cap);
 
-/* Copy the path of the active session's chat-transcript file
- * (<session_history_dir>/chat.jsonl) into |buf| (NUL-terminated, at most |cap|
- * bytes). Returns true when a path was resolved and fit; false leaves |buf|
- * empty. The transcript is the exact stream of chat bubbles the TUI has shown
- * for that session, so restarting shows exactly what was on screen before.
- * The TUI owns the file format and does the I/O with the standard stream API;
- * only the path is resolved here. */
+/* Copy the active session's chat-transcript path (<session_history_dir>/chat.jsonl)
+ * into |buf| (NUL-terminated, at most |cap| bytes); true when resolved and it fit,
+ * false leaves |buf| empty. Only the path is resolved here -- the TUI owns the file
+ * format and does the I/O. */
 bool edc_c_session_chat_log_path(struct edc_agent *agent, char *buf, size_t cap);
 
 /* Write |data| to |path| with symlink safety: the final component must not be a

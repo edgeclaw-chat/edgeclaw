@@ -297,13 +297,10 @@ struct State
         return e;
     }
 
-    // Hand one word to the current block. Normally a word is a single flow
-    // item, so the flow breaks between words. A word that cannot fit on a line
-    // of its own — an unbroken CJK run, a long URL or path — is instead broken
-    // between code points, one item per code point, so the flow can wrap at any
-    // of those boundaries. A flow only breaks *between* its children, so
-    // without this the word is one unbreakable item that overflows the box and
-    // is clipped by the stencil.
+    // Hand one word to the current block, normally as a single flow item. A word that cannot
+    // fit on a line of its own -- an unbroken CJK run, a long URL or path -- is instead broken
+    // between code points, one item each, so the flow can wrap there: a flow only breaks
+    // *between* its children, so otherwise the word overflows the box and is clipped.
     void AddWord(const std::string &word)
     {
         if (wrap_cols > 0 && StringWidth(word) > wrap_cols)

@@ -10,27 +10,24 @@
 
 namespace edc
 {
-// Right-sidebar widget that renders the active session's task tree (process
-// groups and their member tasks). It forms a collapsible sidebar section on
-// its own ("▾/▸ Tasks" header toggles the whole tree) and the groups inside
-// are individually collapsible too: clicking a group header toggles its task
-// list. Only the group containing the active task is expanded by default;
-// user toggles are remembered across snapshot refreshes.
+// Right-sidebar widget rendering the active session's task tree (process groups
+// and their member tasks) as a collapsible section: the "▾/▸ Tasks" header folds
+// the whole tree and each group header folds its own tasks. Only the group
+// holding the active task starts expanded, and user toggles survive snapshot
+// refreshes.
 class TaskWidget : public ::ftxui::ComponentBase
 {
   public:
     TaskWidget();
 
-    // Copy the parsed snapshot into display state. The snapshot is owned by
-    // the caller and freed after this call.
+    // Copy the parsed snapshot into display state. The snapshot stays owned by
+    // the caller and is freed after this call.
     void SetSnapshot(const ::edc_c_task_snapshot *snap);
 
-    // The section in two halves. RenderHeader() is everything above the list --
-    // the "Tasks" row, the session meta row and the rule under them -- and
-    // RenderBody() is the group rows themselves. The sidebar pins the first
-    // above a ScrollView that owns the second, so the wheel moves the tree while
-    // the section's own heading (and the session it belongs to) stays put.
-    // OnRender() draws the two stacked, which is the widget on its own.
+    // The section in two halves: RenderHeader() is everything above the list (the
+    // "Tasks" row, the session meta and the rule), RenderBody() the group rows.
+    // The sidebar pins the header above a ScrollView owning the body, so the
+    // wheel moves the tree while the heading stays put.
     ::ftxui::Element RenderHeader();
     ::ftxui::Element RenderBody();
 
@@ -44,7 +41,7 @@ class TaskWidget : public ::ftxui::ComponentBase
 
   private:
     // Row width both halves truncate against, from the box the previous render
-    // measured (the default sidebar width before the first measurement).
+    // measured (the default sidebar width before that).
     int RowWidth() const;
 
     struct TaskInfo
@@ -72,29 +69,28 @@ class TaskWidget : public ::ftxui::ComponentBase
 
     std::string session_id_;
     std::string session_name_;
-    std::string created_at_;  /* "YYYY-MM-DD HH:MM:SS" or "" */
+    std::string created_at_; /* "YYYY-MM-DD HH:MM:SS" or "" */
     std::vector<GroupInfo> groups_;
 
-    // Collapse state for the whole Tasks section; preserved across snapshot
-    // refreshes so a user's manual fold is not undone by background updates.
+    // Fold state of the whole Tasks section, preserved across snapshot refreshes
+    // so a manual fold is not undone by a background update.
     bool section_collapsed_ = false;
 
-    // Click target of the Tasks section header row, populated during OnRender.
+    // Click target of the Tasks header row, populated during OnRender.
     ::ftxui::Box section_header_box_;
 
-    // group_id → whether its task list is expanded. Persisted across snapshot
-    // refreshes so a user's manual toggles survive background updates.
+    // group_id -> whether its task list is expanded, also preserved across
+    // refreshes.
     std::map<std::string, bool> group_expanded_;
 
     // Per-group header click targets, populated during OnRender.
     std::vector<::ftxui::Box> group_header_boxes_;
 
-    // Content box of this widget's inner vbox (rows), written by reflect()
-    // during the previous render pass. OnRender reads it to truncate task
-    // descriptions to the real row width (instead of letting flex-shrink
-    // hard-clip them flush against the state label). Note the box is measured
-    // inside the border, whose EMPTY style still insets its child by one
-    // column per side. All-zero means "not measured yet".
+    // Content box of this widget's inner vbox, written by reflect() during the
+    // previous render and read to truncate descriptions to the real row width
+    // (instead of letting flex-shrink clip them flush against the state label).
+    // The box is measured inside the border, whose EMPTY style still insets its
+    // child by one column per side. All-zero means "not measured yet".
     ::ftxui::Box content_box_;
 };
 } // namespace edc

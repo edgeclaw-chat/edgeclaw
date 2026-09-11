@@ -186,14 +186,11 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
 
 int TaskWidget::RowWidth() const
 {
-    // Width available for a text row. reflect() below sits on the vbox
-    // *inside* the (empty-style) border, because ftxui's Border node insets
-    // its child by one column on each side even for BorderStyle::EMPTY — the
-    // outer box would overestimate the row width by 2 and the extra-wide
-    // description would then be flex-shrunk, clipping the trailing "…".
-    // reflect() fills content_box_ during the render pass, so this reads the
-    // previous frame's width; before the first measurement fall back to the
-    // default sidebar width (36) minus the 2 border columns.
+    // Width available for a text row. reflect() sits on the vbox *inside* the
+    // EMPTY-style border, which still insets its child by one column per side (the
+    // outer box would overestimate by 2 and a wide description would be flex-shrunk,
+    // clipping the trailing "…"). Reads the previous frame's width; before the first
+    // measurement, the default sidebar width minus those columns.
     if (content_box_.x_min != 0 || content_box_.x_max != 0 || content_box_.y_min != 0 || content_box_.y_max != 0)
         return content_box_.x_max - content_box_.x_min + 1;
     return 34;
@@ -255,14 +252,10 @@ int TaskWidget::RowWidth() const
 
     if (!session_name_.empty() || !session_id_.empty())
     {
-        // Session meta, kept on one row: the session name (its id added
-        // in brackets when distinct) on the left, the creation date
-        // flushed right into the same edge column the per-group message
-        // counts below share, so the meta block lines up with the tree.
-        // There is no session message counter anymore — live counts sit
-        // on each group row already. The date block is never truncated:
-        // a narrow sidebar ellipsizes the name instead, dropping the
-        // bracketed id before the bare name gives way.
+        // Session meta on one row: the name (with its id in brackets when distinct) on
+        // the left, the creation date flushed right into the same edge column as the
+        // group rows. The date is never truncated: a narrow sidebar ellipsizes the name
+        // instead, dropping the bracketed id first.
         const std::string created =
             created_at_.size() >= 10 ? "created " + created_at_.substr(0, 10) : "";
         const std::string name = session_name_.empty() ? session_id_ : session_name_;
@@ -334,13 +327,9 @@ int TaskWidget::RowWidth() const
             const auto &g = groups_[i];
             const bool expanded = group_expanded_[g.group_id];
 
-            // Collapsible group header. Left side: disclosure arrow plus
-            // "Group <id>" (orphaned groups keep their trailing "~"), styled
-            // bold with the foreground warm highlight. Right side: the group's
-            // token cost (the message count was dropped), flushed against the
-            // pane's right edge so every row's "… tok" shares one margin. It is
-            // never truncated: on a narrow sidebar the "Group <id>" part
-            // ellipsizes to whatever width the right block leaves.
+            // Collapsible group header: the arrow plus "Group <id>" ("~" when orphaned)
+            // on the left, the group's token cost flushed right. The right block is
+            // never truncated; the left ellipsizes into whatever width it leaves.
             std::string core = g.group_id.empty() ? "(group)" : "Group " + g.group_id;
             if (g.orphaned)
                 core += " ~";

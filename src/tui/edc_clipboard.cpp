@@ -8,18 +8,11 @@ namespace edc
 {
 
 // Put |text| on the terminal's clipboard with OSC 52: ESC ] 52 ; c ; <base64> BEL.
-//
-// This is the only clipboard a TUI can reach without a helper program (xclip,
-// wl-copy, pbcopy), and it works over SSH: the sequence travels in the same
-// stream as the drawing and the terminal in front of the user performs the
-// copy. Terminals that do not implement it ignore the sequence.
-//
-// It also matters that we do this ourselves: mouse reporting is on (the log
-// scrolls on the wheel), so a plain drag is delivered to the app instead of
-// starting the terminal's own selection.
-//
-// Defined here (outside the anonymous namespace, declared in the header) so
-// tests can pin the exact bytes without a terminal.
+// It is the only clipboard a TUI can reach without a helper program, and it works
+// over SSH: the sequence travels with the drawing and the terminal performs the
+// copy. We have to do it ourselves anyway -- mouse reporting is on, so a drag reaches
+// the app instead of starting the terminal's own selection. Defined here (declared in
+// the header) so tests can pin the exact bytes.
 std::string Osc52ClipboardSequence(const std::string &text)
 {
     static constexpr char kBase64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -115,20 +108,12 @@ class ToastFadeNode : public ::ftxui::Node
 };
 } // namespace
 
-// The "Copied to clipboard" chip: flat and borderless like the Tasks/Todos
-// section headers, but on the palette's raised surface -- dialog_bg is the one
-// step above pane_bg, the surface a floating panel uses, so the block reads as a
-// surface of its own instead of vanishing into the message background behind it.
-// A blank row above and below the label lives inside the surface, so the block
-// is taller than its text and the label has room to breathe. One cell of margin
-// on the top and right keeps the block off the corner.
-//
-// The heavy rule on the left is the same one UserMessage carries (user_rule), so
-// the chip reads as something the user just did, and it spans the surface's full
-// height.
-//
-// |fade| runs from 0 (fully painted) to 1 (gone), so the chip dissolves into the
-// pane instead of blinking out.
+// The "Copied to clipboard" chip: flat and borderless like the section headers, but
+// on the palette's raised surface (dialog_bg) so it reads as a surface of its own
+// instead of vanishing into the message background. A blank row above and below the
+// label lives inside it, and one cell of margin keeps it off the corner. The heavy
+// left rule is the one UserMessage carries, so the chip reads as something the user
+// just did. |fade| runs from 0 (fully painted) to 1 (gone).
 ::ftxui::Element ClipboardToastElement(float fade)
 {
     const auto &pal = style::palette();

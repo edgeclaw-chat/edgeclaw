@@ -67,13 +67,9 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
     // strikethrough). One quiet block with at most one bright row, instead
     // of a second rainbow beside the Tasks tree.
 
-    // Blank cells reserved at the right edge of every full-width row. The
-    // sidebar pane is the window's rightmost element: rows used to wrap /
-    // truncate right up to the inner border, so long text butted against the
-    // terminal edge while the left side kept a visible gutter (split
-    // separator + border inset). Keeping this much of every text row free on
-    // the right restores a balanced inset; the background is uniform so the
-    // reserved cells just read as quiet margin.
+    // Blank cells kept free at the right edge of every full-width row: the sidebar is
+    // the window's rightmost element, so rows would otherwise butt against the
+    // terminal edge while the left side kept its gutter.
     constexpr int kRightPad = 2;
 
     const size_t total = items_.size();
@@ -98,18 +94,10 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
         const bool all_done = total > 0 && completed_ == static_cast<int>(total);
         const std::string title = (collapsed_ ? "▸ " : "▾ ") + std::string(" Todos ");
 
-        // The list belongs to the foreground group's active task, so the header
-        // names it: "#<id>" right after the section title, in the section's own
-        // accent. That is what answers "whose todos are these?" at a glance, and
-        // it holds while the section is collapsed too.
-        //
-        // Only while there is a list to name, though: an empty section labels
-        // nothing, and the id would be one more thing on a header whose only
-        // news is "0/0".
-        //
-        // The progress summary keeps its slot on the right and the id yields to
-        // it: the id is truncated, never allowed to push the summary out of the
-        // pane.
+        // The list belongs to the foreground group's active task, so the header names
+        // it ("#<id>" after the title, in the section's accent) while there is a list
+        // to name. The progress summary keeps its slot on the right: the id is
+        // truncated rather than allowed to push the summary out of the pane.
         std::string id_text;
         if (!task_id_.empty() && total > 0)
         {
@@ -134,13 +122,9 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
         lines.push_back(hbox(std::move(header)) | reflect(header_box_));
     }
 
-    // A collapsed section keeps only its header row; the separator and the
-    // item rows below are skipped entirely (the enclosing pane reclaims the
-    // space for whatever sits underneath in the sidebar column). An expanded
-    // but empty section — before the first todowrite emission or after
-    // the tool cleared the list — still draws its separator plus a dim
-    // "(empty)" marker, so the fold keeps a visible body and the sidebar
-    // layout stays stable instead of the section collapsing to a lone header.
+    // A collapsed section keeps only its header row. An expanded but empty one still
+    // draws its separator plus a dim "(empty)" marker, so the fold keeps a visible
+    // body and the sidebar layout stays stable.
     if (!collapsed_)
     {
         lines.push_back(separator() | color(pal.line_dim));
@@ -164,14 +148,10 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             const bool doing = item.status == "in_progress";
             const bool cancelled = item.status == "cancelled";
 
-            // Leading per-state marker inside a bracket box: "[ ]" for a
-            // pending item, "[•]" for the in_progress one, "[✓]" once the
-            // item is completed. Scheme A's palette still governs the glyph
-            // colors: the box is blue only on the in_progress row (matching
-            // its text) and neutral dim gray for pending/completed, so a
-            // marker never adds a second hue of its own to a row; completed
-            // rows are additionally told apart by the strikethrough on their
-            // text.
+            // Per-state marker in a bracket box: "[ ]" pending, "[•]" in_progress,
+            // "[✓]" completed. The box is blue only on the in_progress row (matching
+            // its text) and dim gray otherwise, so a marker adds no second hue;
+            // completed rows are also struck through.
             Element marker;
             if (doing)
                 marker = text("  [•] ") | color(pal.accent);
@@ -188,17 +168,10 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             // wrapped lines.
             const int budget = row_width - kFixedCells - kRightPad;
 
-            // The priority tag ("[high]" / "[medium]" / "[low]") is docked
-            // at the right edge of the *first* content line, right-aligned
-            // across every item — the mirror image of the marker column on
-            // the left. The first line must therefore leave kTagGapCells
-            // plus the tag's own width free next to the tag; when the first
-            // wrapped segment would not fit beside it, the whole content is
-            // re-wrapped at the narrower budget so no line ever collides
-            // with the docked tag. When the pane is so narrow that the tag
-            // would leave too little room for ordinary words (hard-splitting
-            // them into "Mediu" + "m"), the tag is dropped and the content
-            // keeps the full width instead.
+            // The priority tag is docked right-aligned on the *first* content line, so
+            // that line leaves room for it (re-wrapping at a narrower budget when it
+            // would collide). When the pane is too narrow for the tag, it is dropped and
+            // the content keeps the full width.
             const bool has_tag = !item.priority.empty();
             bool dock_tag = false;
             int wrap_budget = budget;

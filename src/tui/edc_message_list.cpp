@@ -118,20 +118,13 @@ class MessageListNode : public ::ftxui::Node
 
     void Select(::ftxui::Selection &selection) override
     {
-        // FTXUI collects the selected text by walking the node tree and asking
-        // every node which of its cells the selection covers (Text::Select adds
-        // the glyphs). This node draws the items itself instead of holding them
-        // as children, so it must forward the call or no message text is
-        // selectable.
-        //
-        // It has to happen here, during the Select phase: the Selection handed
-        // down the tree is a stack temporary (VBox::Select calls
-        // SaturateVertical and passes a reference to the local), so it is only
-        // valid for the duration of this call.
-        //
-        // Only the items the selection touches are built: a drag spans a few
-        // rows, so this stays cheap. The items it painted are remembered so the
-        // next frame can clear the highlight again (see ComputeRequirement).
+        // FTXUI collects the selection by walking the tree and asking every node which
+        // cells it covers (Text::Select adds the glyphs). This node draws its items
+        // itself instead of holding them as children, so it must forward the call or no
+        // message text is selectable. It has to happen here, during Select: the
+        // Selection handed down is a stack temporary, valid only for this call. Only the
+        // touched items are built, and those painted are remembered so the next frame
+        // clears the highlight.
         if (list_.items_.empty())
             return;
 

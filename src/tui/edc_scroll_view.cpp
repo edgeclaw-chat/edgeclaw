@@ -17,17 +17,13 @@ namespace
 
 constexpr int kWheelStep = 3;
 
-// Shifts its child up by the view's offset and clips it to the box it was
-// given, so the content can be taller than the space available on screen.
-//
-// Three things have to happen together for this to scroll:
-//   ComputeRequirement  stop asking the parent for the content's full height,
-//                       or the parent would size us to it and push our siblings
-//                       off screen
-//   SetBox              lay the child out at that full height, shifted up by
-//                       the offset -- the child never learns it was scrolled
-//   Render              narrow the screen stencil, or the rows we pushed past
-//                       the viewport would still be drawn over our siblings
+// Shifts its child up by the view's offset and clips it to the box it was given, so
+// the content can be taller than the space on screen. Three hooks have to move
+// together: ComputeRequirement stops asking for the content's full height (or the
+// parent sizes us to it and pushes our siblings off screen), SetBox lays the child
+// out at that full height shifted by the offset (the child never learns it was
+// scrolled), and Render narrows the stencil (or the rows pushed past the viewport
+// would still be drawn over our siblings).
 class ScrollNode : public ::ftxui::Node
 {
   public:
@@ -80,14 +76,12 @@ class ScrollNode : public ::ftxui::Node
 
     void Render(::ftxui::Screen &screen) override
     {
-        // Layout has settled (or hit ftxui's iteration cap): children_[0]'s
-        // requirement now carries the height the content was really laid out
-        // at. Commit it and clamp the viewport once, against that final
-        // height. Clamping inside SetBox would lock the reader to whichever
-        // transient height a mid-iteration pass reported -- wrapping text
-        // reports several different heights while its flexbox converges, and
-        // the smallest one would reset the scroll offset every frame, making
-        // it impossible to scroll down past the first screenful.
+        // Layout has settled: children_[0]'s requirement now carries the height the
+        // content was really laid out at, so commit it and clamp once against that
+        // final height. Clamping inside SetBox would lock the reader to whichever
+        // transient height a mid-iteration pass reported -- wrapping text reports
+        // several while its flexbox converges, and the smallest would reset the
+        // offset every frame.
         const int viewport = state_->viewport_height;
         const int content = std::max(children_[0]->requirement().min_y, viewport);
         state_->content_height = content;
@@ -166,13 +160,9 @@ bool ScrollView::OnEvent(::ftxui::Event event)
 
         if (event.mouse().button == ::ftxui::Mouse::WheelUp)
         {
-            // Against an end this reports unhandled (Scroll() returns false),
-            // which is the view's contract: the wheel does not move, so the
-            // event is not ours. It buys nothing to claim it instead -- ftxui
-            // invalidates the frame when the event is *delivered*, in
-            // App::Internal::HandleTask, before this code runs, so the repaint
-            // happens either way (measured: same render count whether the
-            // component returns true, false, or does nothing at all).
+            // At an end Scroll() reports unhandled, the contract the arrow keys
+            // below rely on. Claiming it would not save a repaint: ftxui
+            // invalidates the frame before OnEvent is called.
             return Scroll(-kWheelStep);
         }
 
@@ -221,19 +211,11 @@ bool ScrollView::OnEvent(::ftxui::Event event)
 
 ::ftxui::Element ScrollView::OnRender()
 {
-    // vscroll_indicator sits inside the scroll node so that it sees the full
-    // content height as its own box and the visible window as the stencil,
-    // which is what it measures the thumb against. Outside, the two would be
-    // equal and it would draw nothing.
-    //
-    // The pane has no border, and the thumb down the right edge was once
-    // dropped because it read as a frame slicing the pane in two. In practice
-    // the bar is the only cue that the log continues past the viewport and
-    // where in it the reader is, so it is drawn deliberately again.
-    //
-    // Sidebar sections turn the indicator off: it permanently reserves a
-    // column, and two stacked sections would otherwise end up with different
-    // row widths (one losing a column to the thumb, the other not).
+    // vscroll_indicator sits inside the scroll node so it sees the full content
+    // height as its box and the visible window as the stencil, which is what it
+    // measures the thumb against; outside, the two would be equal and it would draw
+    // nothing. Sidebar sections turn it off: it permanently reserves a column, and
+    // two stacked sections would end up with different row widths.
     auto content = content_->Render();
     if (options_.show_indicator)
         content = std::move(content) | ::ftxui::vscroll_indicator;
@@ -244,16 +226,13 @@ bool ScrollView::OnEvent(::ftxui::Event event)
     if (!pinned_)
         return std::move(scrollable) | ::ftxui::reflect(box_);
 
-    // The pinned part is not part of the viewport: it keeps its own height above
-    // it and the scroll node takes what is left. reflect() stays on the whole
-    // block, so a wheel over the heading is still a wheel over this view.
+    // The pinned part is outside the viewport: it keeps its own height and the scroll
+    // node takes what is left. reflect() stays on the whole block, so a wheel over the
+    // heading is still a wheel over this view.
     //
-    // yflex_shrink is restated deliberately: a vbox does not propagate its
-    // children's flex flags (see VBox::ComputeRequirement), so without it the
-    // section would report itself as unable to shrink and would hold on to its
-    // full height -- pushing whatever sits below it in the sidebar column off the
-    // pane. With it the section gives space back and scrolls its overflow, which
-    // is what keeps the Todo section under it fully visible.
+    // yflex_shrink is restated deliberately: a vbox does not propagate its children's
+    // flex flags (see VBox::ComputeRequirement), so without it the section would hold on
+    // to its full height and push the Todo section out of the pane.
     return ::ftxui::vbox({
                pinned_->Render(),
                std::move(scrollable),

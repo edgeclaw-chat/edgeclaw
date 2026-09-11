@@ -8,29 +8,13 @@
 
 namespace edc
 {
-// Right-sidebar widget below the task tree: renders the todo list of the
-// current foreground task — the task marked active in the foreground group of
-// the task-tree snapshot. The list is part of the task state (todowrite
-// attaches the items it validated to the calling task; the snapshot JSON
-// carries every task's "todolist" and the C bridge parses it back). The TUI
-// window therefore feeds this widget from each snapshot it renders
-// (ActiveTaskTodoItems), never from a side channel on the tool's chat
-// message: one source of truth for the whole sidebar.
+// Right-sidebar section under the task tree: the todo list of the current foreground task.
+// The list is part of the task state (todowrite attaches the items to the calling task, the
+// snapshot JSON carries them), so there is no side channel from the tool's chat message.
 //
-// Like the task tree it forms an independent, collapsible sidebar section:
-// the "▾/▸ Todos" header row is clickable and toggles the item list while the
-// header (with its progress summary) always stays visible. The section is
-// always present in the pane: when no active task holds a list yet — or its
-// list is empty — the header renders a "0/0" summary. The section
-// starts collapsed at startup (an empty body has nothing worth showing); if
-// the user expands an empty section it shows a dim "(empty)" row. The first
-// non-empty list that arrives auto-expands the section, after which the fold
-// state follows the user's clicks across refreshes.
-//
-// Item text is word-wrapped over several lines (CJK-safe, edc_text_util) so
-// long descriptions use the full sidebar width instead of one truncated row;
-// each item carries a compact priority tag ("[high]" / "[medium]" / "[low]"),
-// and cancelled items are struck through like completed ones.
+// Its "▾/▸ Todos" header toggles the items and always stays visible with the progress
+// summary. It starts collapsed and auto-expands on the first non-empty list. Item text is
+// word-wrapped, each item carries a priority tag, cancelled items are struck through.
 class TodoWidget : public ::ftxui::ComponentBase
 {
   public:
@@ -43,15 +27,14 @@ class TodoWidget : public ::ftxui::ComponentBase
 
     TodoWidget();
 
-    // Replace the whole displayed list. |task_id| names the task the items
-    // belong to and is shown as "#<id>" in the section header while the list has
-    // items to label; pass "" when the list does not belong to a known task. A
-    // call with no items clears the rows (and resets the summary to 0/0, with no
-    // id) but the section header stays visible.
+    // Replace the whole displayed list. |task_id| names the task the items belong
+    // to and is shown as "#<id>" in the header while the list has items; pass ""
+    // when the list belongs to no known task. No items clears the rows and
+    // resets the summary to 0/0, but the header stays visible.
     void SetItems(const std::vector<Item> &items, const std::string &task_id);
 
     ::ftxui::Element OnRender() override;
-    bool OnEvent(::ftxui::Event event) override;
+    bool OnEvent(::ftxui::Event) override;
     bool Focusable() const override
     {
         return false;
@@ -60,17 +43,12 @@ class TodoWidget : public ::ftxui::ComponentBase
   private:
     std::vector<Item> items_;
     int completed_ = 0;
-    // The active task whose list this is, shown as "#<id>" in the section
-    // header so the reader can tell whose todos these are at a glance. Empty
-    // when the list is not attached to a known task.
+    // The task whose list this is, shown as "#<id>" so the reader can tell at a
+    // glance; empty when unattached.
     std::string task_id_;
 
-    // Collapse state for the whole section. Starts collapsed: at startup (and
-    // after the tool cleared the list) there is nothing to show, so the
-    // section keeps only its "Todos c/n" header row instead of an expanded
-    // "(empty)" body. Once a real list is visible the state is preserved
-    // across SetItems() so a user's manual fold survives background refreshes;
-    // SetItems() auto-expands only on an empty → non-empty transition.
+    // Collapse state, preserved across SetItems() so a manual fold survives
+    // background refreshes; SetItems() auto-expands only on empty -> non-empty.
     bool collapsed_ = true;
 
     // Click target of the section header row, populated during OnRender.
@@ -80,14 +58,13 @@ class TodoWidget : public ::ftxui::ComponentBase
     // leftovers are summarized with a "+N more" line.
     static constexpr size_t kMaxVisibleRows = 10;
 
-    // Cap the wrapped lines drawn for one item's content; an over-long
-    // description is clipped with a trailing "…" so a single item cannot
-    // dominate the sidebar.
+    // Cap the wrapped lines per item, clipped with a trailing "…" so one item
+    // cannot dominate the sidebar.
     static constexpr size_t kMaxContentLines = 4;
 
-    // Content box of this widget's inner vbox (rows), written by reflect()
-    // during the previous render pass. OnRender reads it to truncate item
-    // contents to the real row width. All-zero means "not measured yet".
+    // Content box of the inner vbox, written by reflect() during the previous
+    // render pass and read to truncate contents to the real row width. All-zero
+    // means "not measured yet".
     ::ftxui::Box content_box_;
 };
 } // namespace edc

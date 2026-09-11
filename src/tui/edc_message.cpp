@@ -18,15 +18,11 @@ namespace
 constexpr int kUserRuleChrome = 3;
 
 // The body of |text| wrapped to |cols| cells, one text element per display row.
-//
-// Messages cannot leave wrapping to ftxui: a paragraph is a flow of per-word
-// elements and a flow only breaks *between* its children, so an unbroken run
-// (CJK text, a long URL or path) is a single child that overflows and is
-// clipped. VisualWrapLines is the same lossless, wide-char-safe wrap the input
-// editor uses, so a body wraps exactly as it looked while being typed.
-//
-// |cols| == 0 means the width is not known (rendered outside a MessageList):
-// fall back to ftxui's own wrapping.
+// Messages cannot leave wrapping to ftxui: a flow only breaks *between* its
+// children, so an unbroken run (CJK text, a long URL or path) is a single child that
+// overflows and gets clipped. VisualWrapLines is the same lossless, wide-char-safe
+// wrap the input editor uses. |cols| == 0 (rendered outside a MessageList) falls
+// back to ftxui's own wrapping.
 ::ftxui::Element WrappedText(const std::string &text, int cols)
 {
     if (cols <= 0)

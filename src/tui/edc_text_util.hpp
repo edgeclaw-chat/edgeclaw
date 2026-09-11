@@ -111,13 +111,11 @@ inline size_t Utf8SeqLen(unsigned char c)
     return 1;
 }
 
-// Greedy word-wrap that is safe for CJK text. Words are split on ASCII
-// whitespace, but a word longer than a whole line (typically an unbroken CJK
-// run, a long path or a URL) is hard-broken between code points, so every
-// returned line occupies at most |max_cells| terminal cells. Whitespace runs
-// collapse to a single space between words; leading/trailing whitespace is
-// dropped. Empty input, or a non-positive budget, yields no lines — callers
-// decide what to draw when nothing fits.
+// Greedy word-wrap that is safe for CJK text: words split on ASCII whitespace, but a
+// word longer than a line (an unbroken CJK run, a long path or URL) is hard-broken
+// between code points, so every returned line occupies at most |max_cells| cells.
+// Whitespace runs collapse to one space, leading/trailing whitespace is dropped, and
+// empty input or a non-positive budget yields no lines.
 inline std::vector<std::string> WrapToWidth(const std::string &s, int max_cells)
 {
     std::vector<std::string> lines;
@@ -231,18 +229,13 @@ inline std::vector<std::string> WrapToWidth(const std::string &s, int max_cells)
     return lines;
 }
 
-// Soft (visual) line wrap for an editable line: returns the byte ranges
-// [begin, end) of the rows |s| is split into when displayed at most
-// |max_cells| wide. Unlike WrapToWidth this is a *lossless partition* of the
-// text for an editor — no whitespace is collapsed or trimmed, and the ranges
-// concatenate back to exactly |s| except that the single space sitting on a
-// wrap boundary (the separator between two words when the row is exactly
-// full) is dropped from both rows. It is CJK/wide-char safe: a run without
-// spaces (Chinese, a long URL, …) is hard-broken between code points, never
-// in the middle of one. A trailing ASCII space at a word-wrap boundary stays
-// at the end of the previous row (invisible, but the byte range stays
-// contiguous so a caret sitting on it maps back cleanly). Empty input yields
-// no rows — callers wanting to display an empty line add one themselves.
+// Soft (visual) wrap for an editable line: the byte ranges [begin, end) |s| splits into
+// at most |max_cells| wide. Unlike WrapToWidth this is a *lossless partition* for an
+// editor -- nothing is collapsed or trimmed and the ranges concatenate back to exactly
+// |s|, except that the single space on a wrap boundary is dropped from both rows.
+// CJK/wide-char safe: a run without spaces is hard-broken between code points. A trailing
+// space at a word boundary stays on the previous row (invisible, but contiguous so a
+// caret on it maps back). Empty input yields no rows.
 inline std::vector<std::pair<int, int>> VisualWrapRows(const std::string &s, int max_cells)
 {
     std::vector<std::pair<int, int>> rows;
@@ -325,14 +318,11 @@ inline std::vector<std::pair<int, int>> VisualWrapRows(const std::string &s, int
     return rows;
 }
 
-// Display rows of a possibly multi-line string at |max_cells| wide: an
-// explicit '\n' is a hard break, and each source line is then soft-wrapped
-// with VisualWrapRows (lossless, CJK/wide-char safe, word-wrap preferred with
-// a hard break for runs that have no space). An empty source line yields one
-// empty row, so blank lines survive; a single trailing '\n' is treated as a
-// terminator rather than an extra blank row. A non-positive budget keeps each
-// source line as one row. This is what the chat messages wrap with, so a body
-// wraps exactly the way the input editor showed it while typing.
+// Display rows of a possibly multi-line string at |max_cells| wide: an explicit '\n' is a
+// hard break and each source line is soft-wrapped with VisualWrapRows. An empty source line
+// yields one empty row, a single trailing '\n' is a terminator rather than an extra row, and
+// a non-positive budget keeps each source line as one row. This is what chat messages wrap
+// with, so a body wraps exactly as the input editor showed it.
 inline std::vector<std::string> VisualWrapLines(const std::string &s, int max_cells)
 {
     std::vector<std::string> rows;
