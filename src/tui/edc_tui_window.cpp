@@ -1069,8 +1069,8 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     const std::string text = content;
     const char *header_c = edc_c_channel_message_header(message);
     const std::string header = header_c ? header_c : "";
-    // Task that produced this message (NULL for user input / snapshots). The
-    // chat widgets render it as a "task N" tag.
+    // Task that produced this message (NULL for user input / snapshots). Kept
+    // for callers; the chat widgets no longer render a "task N" tag.
     const char *task_id_c = edc_c_channel_message_task_id(message);
     const std::string task_id = task_id_c ? task_id_c : "";
     // Sender-declared render preference (PLAIN/MARKDOWN). Read here while

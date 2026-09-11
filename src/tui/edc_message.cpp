@@ -18,15 +18,6 @@ bool Message::OnEvent(ftxui::Event)
     return false;
 }
 
-::ftxui::Element Message::TaskTag() const
-{
-    const auto &pal = style::palette();
-    // "task N" cross-references the sidebar task tree, but a touch softer than
-    // the tree's bright white: pal.task_tag is a dim off-white so the tag reads
-    // as an aside instead of competing with the message body.
-    return ::ftxui::text("task " + task_id_) | ::ftxui::color(pal.task_tag);
-}
-
 ::ftxui::Element Message::OnRender()
 {
     // RenderMarkdown is expensive (full md4c parse + element tree build) and
@@ -39,11 +30,7 @@ bool Message::OnEvent(ftxui::Event)
         body_ = body_ | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) | ::ftxui::bgcolor(pal.pane_bg);
     }
 
-    if (task_id_.empty())
-        return body_;
-
-    const auto &pal = style::palette();
-    return ::ftxui::vbox({TaskTag(), body_}) | ::ftxui::bgcolor(pal.pane_bg);
+    return body_;
 }
 
 ThoughtMessage::ThoughtMessage(const std::string_view content, time_t ts, const std::string_view task_id)
@@ -77,11 +64,9 @@ bool ThoughtMessage::OnEvent(ftxui::Event event)
     auto arrow = thought_expanded_ ? "-" : "+";
     const auto &pal = style::palette();
     auto applied_color = thought_expanded_ ? pal.thought_open : pal.thought_closed;
-    // The thought toggle doubles as the message's task tag: "task N" rides on
-    // the same clickable label instead of becoming a second line.
+    // The thought toggle is the message's only visible header; it carries no
+    // task tag, so no "task N" rides on the label.
     std::string label_text = " " + std::string(arrow) + " Thought";
-    if (!task_id_.empty())
-        label_text += " · task " + task_id_;
     auto label = ::ftxui::text(label_text) | ::ftxui::color(applied_color) | ::ftxui::bold | ::ftxui::reflect(box_);
 
     if (!thought_expanded_)
@@ -193,8 +178,6 @@ std::string FirstLines(const std::string &text, size_t max_lines)
     const bool toggleable = expanded_ || CountLines(content_) > ToolMessage::kPreviewLines;
 
     ::ftxui::Elements children;
-    if (!task_id_.empty())
-        children.push_back(TaskTag());
     if (!header_.empty())
     {
         children.push_back(::ftxui::paragraph(header_) | ::ftxui::color(pal.text_dim));

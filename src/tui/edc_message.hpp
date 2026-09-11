@@ -12,9 +12,8 @@ class Message : public ::ftxui::ComponentBase
 {
   public:
     // task_id: id of the task that produced this message ("1", "2", ...), or
-    // empty when the sender is not a task (e.g. user input). Non-empty ids
-    // render as a small "task N" tag above the body so interleaved tasks in
-    // one session stay distinguishable.
+    // empty when the sender is not a task (e.g. user input). Kept for callers;
+    // messages no longer render a "task N" tag.
     Message(const std::string_view content, time_t ts, const std::string_view task_id = "");
     virtual ~Message() = default;
 
@@ -25,10 +24,6 @@ class Message : public ::ftxui::ComponentBase
     ftxui::Element OnRender() override;
 
   protected:
-    /* "task N" tag for task-produced messages (dim accent). Null when this
-     * message carries no task id; callers must guard on task_id_.empty(). */
-    ::ftxui::Element TaskTag() const;
-
     const std::string content_;
     time_t ts_;
     const std::string task_id_;
