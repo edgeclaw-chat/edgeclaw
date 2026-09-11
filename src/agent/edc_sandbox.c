@@ -8,6 +8,7 @@
 #include "log.h"
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #ifdef __linux__
 #include <sys/prctl.h>
@@ -76,6 +77,12 @@ static bool path_allowed(struct edc_config *conf, const char *resolved_path, boo
     if (!conf->sandbox_root_real)
         return true;
 
+    /* Deny wins over every allow entry, for reads and writes alike. This covers
+     * the file tools (which run in the agent process and have no kernel
+     * sandbox); exec_shell is additionally masked at the mount level. */
+    if (path_prefix_match_len(resolved_path, conf->sandbox_deny_paths) >= 0)
+        return false;
+
     int rw_len = path_prefix_match_len(resolved_path, conf->sandbox_rw_paths);
     int ro_len = path_prefix_match_len(resolved_path, conf->sandbox_ro_paths);
 
@@ -104,6 +111,21 @@ sds edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writ
         if (error)
             *error = edc_error_new(EDC_ERR_SANDBOX, "empty path");
         return NULL;
+    }
+
+    /* Never write through a symlink. A dangling target makes realpath() fail,
+     * and the fallback below would then return the symlink path itself, so a
+     * planted link (e.g. workspace/x -> ~/.edgeclaw/config.json) could redirect
+     * the write into a read-only location. Reads may follow symlinks. */
+    if (writable)
+    {
+        struct stat lst;
+        if (lstat(path, &lst) == 0 && S_ISLNK(lst.st_mode))
+        {
+            if (error)
+                *error = edc_error_new(EDC_ERR_SANDBOX, "access denied: refusing to write through symlink '%s'", path);
+            return NULL;
+        }
     }
 
     char *resolved = realpath(path, NULL);
@@ -194,7 +216,9 @@ bool edc_sandbox_apply(struct edc_config *conf)
     else
     {
         log_info("edc_sandbox: Landlock not available, trying namespace sandbox...");
-        if (edc_ns_sandbox_apply((const char **)conf->sandbox_ro_paths, (const char **)conf->sandbox_rw_paths))
+        bool ns_enforced = false;
+        if (edc_ns_sandbox_apply((const char **)conf->sandbox_ro_paths, (const char **)conf->sandbox_rw_paths,
+                                 (const char **)conf->sandbox_deny_paths, &ns_enforced))
         {
             fs_ok = true;
         }

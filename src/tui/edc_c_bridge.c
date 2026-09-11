@@ -400,6 +400,22 @@ bool edc_c_session_chat_log_path(struct edc_agent *agent, char *buf, size_t cap)
     return ok;
 }
 
+bool edc_c_agent_write_file(struct edc_agent *agent, const char *path, const char *data, size_t len, bool append,
+                            bool under_workspace)
+{
+    if (!path || (!data && len > 0))
+        return false;
+
+    const char *root = (under_workspace && agent && agent->config) ? agent->config->workspace : NULL;
+    FILE *f = edc_file_fopen_safe(path, append ? "a" : "w", root);
+    if (!f)
+        return false;
+
+    bool ok = (len == 0) || (fwrite(data, 1, len, f) == len);
+    fclose(f);
+    return ok;
+}
+
 void edc_c_agent_send_user_message(struct edc_agent *agent, const char *content)
 {
     if (!agent)

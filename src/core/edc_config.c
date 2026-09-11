@@ -7,6 +7,73 @@
 #include "edc_secret.h"
 #include "log.h"
 #include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Build a NULL-terminated sds array from a comma-separated path list. */
+static sds *edc_config_split_paths(const char *csv)
+{
+    if (!csv || !csv[0])
+        return NULL;
+
+    int cap = 8, n = 0;
+    sds *out = g_new0(sds, cap + 1);
+    const char *p = csv;
+    while (*p)
+    {
+        while (*p == ' ' || *p == '\t' || *p == ',')
+            p++;
+        if (!*p)
+            break;
+        const char *start = p;
+        while (*p && *p != ',')
+            p++;
+        const char *end = p;
+        while (end > start && (end[-1] == ' ' || end[-1] == '\t'))
+            end--;
+        if (end > start)
+        {
+            if (n == cap)
+            {
+                cap *= 2;
+                out = realloc(out, (size_t)(cap + 1) * sizeof(sds));
+            }
+            out[n++] = sdsnewlen(start, (size_t)(end - start));
+        }
+    }
+    out[n] = NULL;
+    return out;
+}
+
+/* Fresh copy of the default read-only whitelist (EDC_SANDBOX_DEFAULT_RO_PATHS). */
+static sds *edc_config_default_ro_paths(void)
+{
+    return edc_config_split_paths(EDC_SANDBOX_DEFAULT_RO_PATHS);
+}
+
+static bool sds_array_contains(sds *arr, const char *s)
+{
+    if (!arr)
+        return false;
+    for (int i = 0; arr[i]; i++)
+        if (strcmp(arr[i], s) == 0)
+            return true;
+    return false;
+}
+
+/* Append |s| to a NULL-terminated sds array unless it is already present. */
+static void sds_array_add_unique(sds **arrp, const char *s)
+{
+    if (sds_array_contains(*arrp, s))
+        return;
+    int n = 0;
+    if (*arrp)
+        while ((*arrp)[n])
+            n++;
+    *arrp = realloc(*arrp, (size_t)(n + 2) * sizeof(sds));
+    (*arrp)[n] = sdsnew(s);
+    (*arrp)[n + 1] = NULL;
+}
 
 sds edc_config_resolve_bc_home(void)
 {
@@ -244,17 +311,16 @@ after_channel:
         }
         else
         {
-            config->sandbox_ro_paths = g_new0(sds, 10 + 1);
-            config->sandbox_ro_paths[0] = sdsnew("/");
-            config->sandbox_ro_paths[1] = sdsnew("/usr");
-            config->sandbox_ro_paths[2] = sdsnew("/lib");
-            config->sandbox_ro_paths[3] = sdsnew("/lib32");
-            config->sandbox_ro_paths[4] = sdsnew("/lib64");
-            config->sandbox_ro_paths[5] = sdsnew("/libx32");
-            config->sandbox_ro_paths[6] = sdsnew("/bin");
-            config->sandbox_ro_paths[7] = sdsnew("/sbin");
-            config->sandbox_ro_paths[8] = sdsnew("/etc");
-            config->sandbox_ro_paths[9] = sdsnew("/proc");
+            config->sandbox_ro_paths = edc_config_default_ro_paths();
+        }
+
+        cJSON *deny = cJSON_GetObjectItem(sandbox, "deny_paths");
+        if (deny && cJSON_IsArray(deny) && cJSON_GetArraySize(deny) > 0)
+        {
+            int size = cJSON_GetArraySize(deny);
+            config->sandbox_deny_paths = g_new0(sds, size + 1);
+            for (int i = 0; i < size; i++)
+                config->sandbox_deny_paths[i] = sdsnew(cJSON_GetStringValue(cJSON_GetArrayItem(deny, i)));
         }
     }
     else
@@ -264,17 +330,7 @@ after_channel:
         config->sandbox_rw_paths[1] = sdsnew("/tmp");
         config->sandbox_rw_paths[2] = sdsnew("/dev");
 
-        config->sandbox_ro_paths = g_new0(sds, 10 + 1);
-        config->sandbox_ro_paths[0] = sdsnew("/");
-        config->sandbox_ro_paths[1] = sdsnew("/usr");
-        config->sandbox_ro_paths[2] = sdsnew("/lib");
-        config->sandbox_ro_paths[3] = sdsnew("/lib32");
-        config->sandbox_ro_paths[4] = sdsnew("/lib64");
-        config->sandbox_ro_paths[5] = sdsnew("/libx32");
-        config->sandbox_ro_paths[6] = sdsnew("/bin");
-        config->sandbox_ro_paths[7] = sdsnew("/sbin");
-        config->sandbox_ro_paths[8] = sdsnew("/etc");
-        config->sandbox_ro_paths[9] = sdsnew("/proc");
+        config->sandbox_ro_paths = edc_config_default_ro_paths();
     }
 
     /* The agent's own workspace must be writable: the model edits files there
@@ -333,32 +389,38 @@ after_channel:
         }
     }
 
-    /* The whole filesystem is readable: tools need to read system files
-     * (/etc, /run, /proc, ...; note /etc/resolv.conf is often a symlink into
-     * /run, which DNS resolution needs) and the user's own files. Writes stay
-     * confined to the writable set above. '/' may already be present from the
-     * built-in default, so only add it when missing. */
+    /* Migrate the legacy "whole filesystem readable" default: older config.json
+     * files carry "/" in ro_paths, which makes Landlock grant READ to the
+     * entire filesystem. Strip it and top up the system whitelist so reads are
+     * confined to that whitelist (plus the read-only home appended above). A
+     * user who really wants the whole root readable can re-add it with
+     * `/sandbox add-ro /`. */
+    if (config->sandbox_ro_paths)
     {
-        bool have_root = false;
-        for (int i = 0; config->sandbox_ro_paths && config->sandbox_ro_paths[i]; i++)
+        bool removed_root = false;
+        int n = 0;
+        for (int i = 0; config->sandbox_ro_paths[i]; i++)
         {
             if (strcmp(config->sandbox_ro_paths[i], "/") == 0)
             {
-                have_root = true;
-                break;
+                sdsfree(config->sandbox_ro_paths[i]);
+                removed_root = true;
+                continue;
             }
+            config->sandbox_ro_paths[n++] = config->sandbox_ro_paths[i];
         }
-        if (!have_root)
+        config->sandbox_ro_paths[n] = NULL;
+
+        if (removed_root)
         {
-            int ro_count = 0;
-            if (config->sandbox_ro_paths)
+            sds *defs = edc_config_default_ro_paths();
+            for (int i = 0; defs && defs[i]; i++)
             {
-                while (config->sandbox_ro_paths[ro_count])
-                    ro_count++;
+                sds_array_add_unique(&config->sandbox_ro_paths, defs[i]);
+                sdsfree(defs[i]);
             }
-            config->sandbox_ro_paths = realloc(config->sandbox_ro_paths, (ro_count + 2) * sizeof(sds));
-            config->sandbox_ro_paths[ro_count] = sdsnew("/");
-            config->sandbox_ro_paths[ro_count + 1] = NULL;
+            free(defs);
+            log_info("edc_config: sandbox ro_paths: dropped legacy '/' (whole-filesystem read), using system whitelist");
         }
     }
 
@@ -450,6 +512,9 @@ void edc_config_free(struct edc_config *config)
     for (int _i = 0; config->sandbox_rw_paths && config->sandbox_rw_paths[_i]; _i++)
         sdsfree(config->sandbox_rw_paths[_i]);
     free(config->sandbox_rw_paths);
+    for (int _i = 0; config->sandbox_deny_paths && config->sandbox_deny_paths[_i]; _i++)
+        sdsfree(config->sandbox_deny_paths[_i]);
+    free(config->sandbox_deny_paths);
     free(config);
 }
 
@@ -580,5 +645,137 @@ bool edc_config_update_sandbox_enabled(const char *edc_home, bool enable)
     }
     cJSON_free(out);
     sdsfree(path);
+    return ok;
+}
+
+/* Index of the first string element equal to |s| in a cJSON array, or -1. */
+static int cjson_array_index_of(cJSON *arr, const char *s)
+{
+    if (!arr || !cJSON_IsArray(arr))
+        return -1;
+    int n = cJSON_GetArraySize(arr);
+    for (int i = 0; i < n; i++)
+    {
+        cJSON *e = cJSON_GetArrayItem(arr, i);
+        if (e && cJSON_IsString(e) && strcmp(e->valuestring, s) == 0)
+            return i;
+    }
+    return -1;
+}
+
+/* Return the "sandbox"."<key>" array, creating an empty one if missing. */
+static cJSON *cjson_ensure_array(cJSON *sandbox, const char *key)
+{
+    cJSON *arr = cJSON_GetObjectItem(sandbox, key);
+    if (arr && cJSON_IsArray(arr))
+        return arr;
+    cJSON_DeleteItemFromObject(sandbox, key);
+    arr = cJSON_CreateArray();
+    cJSON_AddItemToObject(sandbox, key, arr);
+    return arr;
+}
+
+bool edc_config_update_sandbox_path(const char *edc_home, const char *path, edc_sandbox_path_kind kind, bool add)
+{
+    if (!edc_home || !path || path[0] != '/')
+        return false;
+
+    sds conf_path = edc_path_join(edc_home, "config.json", NULL);
+    EdcError *error = NULL;
+    sds contents = edc_file_read(conf_path, &error);
+    if (!contents)
+    {
+        log_error("edc_config: cannot read %s: %s", conf_path, error ? error->message : "unknown");
+        if (error)
+            edc_error_free(error);
+        sdsfree(conf_path);
+        return false;
+    }
+
+    cJSON *conf = cJSON_Parse(contents);
+    sdsfree(contents);
+    if (!conf || !cJSON_IsObject(conf))
+    {
+        if (conf)
+            cJSON_Delete(conf);
+        sdsfree(conf_path);
+        return false;
+    }
+
+    cJSON *sandbox = cJSON_GetObjectItem(conf, "sandbox");
+    if (!sandbox || !cJSON_IsObject(sandbox))
+    {
+        cJSON_DeleteItemFromObject(conf, "sandbox");
+        sandbox = cJSON_AddObjectToObject(conf, "sandbox");
+    }
+
+    /* Normalize a legacy whole-filesystem ro_paths entry so an edit can never
+     * leave "/" behind: strip it, and top up the whitelist if that emptied it. */
+    {
+        cJSON *roarr = cJSON_GetObjectItem(sandbox, "ro_paths");
+        if (roarr && cJSON_IsArray(roarr))
+        {
+            int i;
+            while ((i = cjson_array_index_of(roarr, "/")) >= 0)
+                cJSON_DeleteItemFromArray(roarr, i);
+            if (cJSON_GetArraySize(roarr) == 0)
+            {
+                sds *defs = edc_config_default_ro_paths();
+                for (int k = 0; defs && defs[k]; k++)
+                {
+                    cJSON_AddItemToArray(roarr, cJSON_CreateString(defs[k]));
+                    sdsfree(defs[k]);
+                }
+                free(defs);
+            }
+        }
+    }
+
+    static const char *const lists[3] = {"ro_paths", "rw_paths", "deny_paths"};
+    const char *key = lists[(int)kind];
+    cJSON *arr = cjson_ensure_array(sandbox, key);
+
+    if (add)
+    {
+        /* Keep a path in exactly one list: adding it here drops it from the
+         * other two, so an explicit allow overrides a previous deny and vice
+         * versa. (A deny that is a *sub-directory* of an allowed parent is left
+         * in place -- that is exactly the mask use case.) */
+        for (int i = 0; i < 3; i++)
+        {
+            if (strcmp(lists[i], key) == 0)
+                continue;
+            cJSON *other = cjson_ensure_array(sandbox, lists[i]);
+            int oi = cjson_array_index_of(other, path);
+            if (oi >= 0)
+                cJSON_DeleteItemFromArray(other, oi);
+        }
+        if (cjson_array_index_of(arr, path) < 0)
+            cJSON_AddItemToArray(arr, cJSON_CreateString(path));
+    }
+    else
+    {
+        int i = cjson_array_index_of(arr, path);
+        if (i >= 0)
+            cJSON_DeleteItemFromArray(arr, i);
+    }
+
+    char *out = cJSON_Print(conf);
+    cJSON_Delete(conf);
+    if (!out)
+    {
+        sdsfree(conf_path);
+        return false;
+    }
+
+    bool ok = edc_file_write(conf_path, out, -1, &error);
+    if (!ok)
+    {
+        log_error("edc_config: cannot write %s: %s", conf_path, error ? error->message : "unknown");
+        if (error)
+            edc_error_free(error);
+    }
+    cJSON_free(out);
+    sdsfree(conf_path);
     return ok;
 }

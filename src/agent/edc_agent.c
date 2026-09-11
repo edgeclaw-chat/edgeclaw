@@ -23,7 +23,10 @@
 #include "utlist_fix.h"
 #include <dirent.h>
 #include <edc_shell.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -701,6 +704,117 @@ bool edc_agent_set_sandbox_enabled(struct edc_agent *agent, bool enable)
         return false;
 
     agent->config->enable_sandbox = enable;
+    return true;
+}
+
+/* ── sandbox path whitelist (ro/rw) management ─────────────────────────── */
+
+static bool sds_path_list_contains(sds *arr, const char *p)
+{
+    if (!arr)
+        return false;
+    for (int i = 0; arr[i]; i++)
+        if (strcmp(arr[i], p) == 0)
+            return true;
+    return false;
+}
+
+static void sds_path_list_add(sds **arrp, const char *p)
+{
+    if (sds_path_list_contains(*arrp, p))
+        return;
+    int n = 0;
+    if (*arrp)
+        while ((*arrp)[n])
+            n++;
+    *arrp = realloc(*arrp, (size_t)(n + 2) * sizeof(sds));
+    (*arrp)[n] = sdsnew(p);
+    (*arrp)[n + 1] = NULL;
+}
+
+static void sds_path_list_remove(sds **arrp, const char *p)
+{
+    if (!arrp || !*arrp)
+        return;
+    int n = 0;
+    for (int i = 0; (*arrp)[i]; i++)
+    {
+        if (strcmp((*arrp)[i], p) == 0)
+        {
+            sdsfree((*arrp)[i]);
+            continue;
+        }
+        (*arrp)[n++] = (*arrp)[i];
+    }
+    (*arrp)[n] = NULL;
+}
+
+bool edc_agent_set_sandbox_path(struct edc_agent *agent, const char *path, edc_sandbox_path_kind kind, bool add,
+                                sds *msg)
+{
+    if (msg)
+        *msg = NULL;
+    if (!agent || !agent->config)
+    {
+        if (msg)
+            *msg = sdsnew("agent not ready");
+        return false;
+    }
+    if (!path || path[0] != '/')
+    {
+        if (msg)
+            *msg = sdsnew("path must be absolute");
+        return false;
+    }
+
+    char *resolved = realpath(path, NULL);
+    if (!resolved)
+    {
+        if (msg)
+            *msg = sdscatprintf(sdsempty(), "no such directory: %s", path);
+        return false;
+    }
+    struct stat st;
+    if (stat(resolved, &st) != 0 || !S_ISDIR(st.st_mode))
+    {
+        if (msg)
+            *msg = sdscatprintf(sdsempty(), "not a directory: %s", resolved);
+        free(resolved);
+        return false;
+    }
+
+    /* Persist first (mirrors edc_agent_set_sandbox_enabled): on failure leave
+     * the running config untouched so memory and disk agree. */
+    if (!edc_config_update_sandbox_path(agent->config->edc_home, resolved, kind, add))
+    {
+        if (msg)
+            *msg = sdsnew("failed to write config.json");
+        free(resolved);
+        return false;
+    }
+
+    /* A path lives in exactly one list; mirror the persist step in memory. */
+    sds **ro = &agent->config->sandbox_ro_paths;
+    sds **rw = &agent->config->sandbox_rw_paths;
+    sds **dn = &agent->config->sandbox_deny_paths;
+    sds **target = (kind == EDC_SANDBOX_PATH_RW) ? rw : (kind == EDC_SANDBOX_PATH_DENY) ? dn : ro;
+
+    if (add)
+    {
+        sds_path_list_add(target, resolved);
+        if (target != ro)
+            sds_path_list_remove(ro, resolved);
+        if (target != rw)
+            sds_path_list_remove(rw, resolved);
+        if (target != dn)
+            sds_path_list_remove(dn, resolved);
+    }
+    else
+    {
+        sds_path_list_remove(target, resolved);
+    }
+
+    free(resolved);
     return true;
 }
 

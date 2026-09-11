@@ -2,15 +2,17 @@
 #define _GNU_SOURCE
 #include "edc_ns_sandbox.h"
 #include "edc_compat.h"
-#include "edc_file_utils.h"
 #include "log.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <sched.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
+#include <sys/statvfs.h>
 #include <sys/syscall.h>
 #include <sys/vfs.h>
 #include <unistd.h>
@@ -98,9 +100,23 @@ static bool path_is_mount_point(const char *path)
     if (stat(path, &st1) != 0)
         return false;
 
-    sds parent = edc_path_dirname(path);
+    /* Parent directory, computed inline: this file must stay linkable into the
+     * tiny sandbox_helper binary, so it avoids the sds-based edc_file_utils. */
+    char parent[4096];
+    if (snprintf(parent, sizeof(parent), "%s", path) >= (int)sizeof(parent))
+        return false;
+    size_t n = strlen(parent);
+    while (n > 1 && parent[n - 1] == '/')
+        parent[--n] = '\0';
+    char *slash = strrchr(parent, '/');
+    if (!slash)
+        strcpy(parent, ".");
+    else if (slash == parent)
+        slash[1] = '\0'; /* keep "/" */
+    else
+        *slash = '\0';
+
     int ret = stat(parent, &st2);
-    sdsfree(parent);
     if (ret != 0)
         return false;
 
@@ -250,15 +266,74 @@ static bool ns_mount_dir_as_rw(const char *path)
 
     if (mount(NULL, path, NULL, MS_REMOUNT | MS_BIND, NULL) != 0)
     {
-        log_debug("edc_ns_sandbox: MS_REMOUNT | MS_BIND on %s failed: %s", path, strerror(errno));
-        return false;
+        /* The remount can fail with EPERM for a mount whose superblock lives in
+         * an ancestor user namespace (notably the tmpfs /tmp), even though the
+         * bind already inherited read-write access. Only treat it as an error
+         * when the path really is still read-only -- otherwise the caller would
+         * fall back to recreating the filesystem and silently discard its
+         * contents. */
+        struct statvfs vfs;
+        if (statvfs(path, &vfs) == 0 && (vfs.f_flag & ST_RDONLY))
+        {
+            log_debug("edc_ns_sandbox: MS_REMOUNT | MS_BIND on %s failed: %s", path, strerror(errno));
+            return false;
+        }
+        log_debug("edc_ns_sandbox: remount of %s not needed (bind already rw)", path);
     }
 
     return true;
 }
 
-bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths)
+/* Mask a path so its contents become unreachable: overlay an empty mode-000
+ * tmpfs on a directory, or bind an empty file over a regular file. Landlock
+ * cannot express a deny inside an allowed parent, so masking is done here, in
+ * the mount namespace, where the last mount on a path wins. */
+static bool ns_mask_path(const char *path)
 {
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return false; /* nothing there to mask */
+
+    if (S_ISDIR(st.st_mode))
+    {
+        if (mount("tmpfs", path, "tmpfs", MS_RDONLY | MS_NOSUID | MS_NODEV, "size=1k,mode=000") != 0)
+        {
+            log_debug("edc_ns_sandbox: mask tmpfs on %s failed: %s", path, strerror(errno));
+            return false;
+        }
+    }
+    else
+    {
+        /* Bind an empty file over the target. Do NOT use /dev/null here: the rw
+         * handling above may have replaced /dev with a fresh empty tmpfs, so
+         * /dev/null is not necessarily present in this namespace. /tmp is
+         * writable, so create the blank there and drop its name afterwards --
+         * the bind mount keeps the inode alive. */
+        char tmpl[] = "/tmp/.edc-mask-XXXXXX";
+        int fd = mkstemp(tmpl);
+        if (fd < 0)
+        {
+            log_debug("edc_ns_sandbox: cannot create mask file: %s", strerror(errno));
+            return false;
+        }
+        close(fd);
+        if (mount(tmpl, path, NULL, MS_BIND, NULL) != 0)
+        {
+            log_debug("edc_ns_sandbox: mask empty file on %s failed: %s", path, strerror(errno));
+            unlink(tmpl);
+            return false;
+        }
+        unlink(tmpl);
+    }
+
+    log_info("edc_ns_sandbox: masked %s", path);
+    return true;
+}
+
+bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths, const char **deny_paths, bool *enforced)
+{
+    if (enforced)
+        *enforced = false;
     if (!rw_paths || !rw_paths[0])
     {
         log_error("edc_ns_sandbox: requires at least one rw_path");
@@ -360,32 +435,75 @@ bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths)
      */
     for (int i = 0; rw_paths[i]; i++)
     {
-        if (is_special_fs(rw_paths[i]))
+        /* Already writable? Leave it alone. The read-only remount of "/" above
+         * is not recursive, so every separate submount -- the devtmpfs /dev,
+         * the tmpfs /tmp, a bind-mounted workspace, ... -- keeps its own rw
+         * flag. Binding such a path is pointless, and the "recreate a special
+         * filesystem" fallback below is actively harmful: for /dev it replaces
+         * the populated devtmpfs with an empty tmpfs, so every node drops out
+         * (/dev/null, /dev/zero, /dev/urandom, /dev/pts, /dev/shm) and tools
+         * that need /dev/null (git, ssh, ...) break. */
+        struct statvfs pre;
+        if (statvfs(rw_paths[i], &pre) == 0 && !(pre.f_flag & ST_RDONLY))
+            continue;
+
+        /* Under the read-only rootfs: prefer a bind mount, which keeps the
+         * directory's contents, then fall back to recreating a special
+         * filesystem (devtmpfs, pts, some cgroup mounts). */
+        if (ns_mount_dir_as_rw(rw_paths[i]))
+            continue;
+        if (is_special_fs(rw_paths[i]) && ns_mount_special_fs(rw_paths[i], 0))
+            continue;
+        log_debug("edc_ns_sandbox: could not make %s writable", rw_paths[i]);
+    }
+
+    /* Mask denied paths last so they win over any ro/rw mount above. */
+    if (deny_paths)
+    {
+        for (int i = 0; deny_paths[i]; i++)
         {
-            if (!ns_mount_special_fs(rw_paths[i], 0))
-            {
-                continue;
-            }
-        }
-        else
-        {
-            if (!ns_mount_dir_as_rw(rw_paths[i]))
-            {
-                continue;
-            }
+            if (!ns_mask_path(deny_paths[i]))
+                log_debug("edc_ns_sandbox: deny path %s not masked", deny_paths[i]);
         }
     }
 
-    log_info("edc_ns_sandbox: namespace sandbox enforced (userns=%s)", have_userns ? "yes" : "no");
+    /* Verify rather than trust: only report "enforced" when "/" really is
+     * read-only and every writable path really is writable. The caller uses
+     * this to decide whether the seccomp metadata deny-list is still needed. */
+    bool root_ro = false;
+    struct statvfs vfs;
+    if (statvfs("/", &vfs) == 0)
+        root_ro = (vfs.f_flag & ST_RDONLY) != 0;
+
+    bool rw_ok = true;
+    for (int i = 0; rw_paths[i]; i++)
+    {
+        struct statvfs rv;
+        if (statvfs(rw_paths[i], &rv) == 0 && (rv.f_flag & ST_RDONLY))
+        {
+            log_debug("edc_ns_sandbox: rw path %s is still read-only", rw_paths[i]);
+            rw_ok = false;
+            break;
+        }
+    }
+
+    if (enforced)
+        *enforced = root_ro && rw_ok;
+
+    log_info("edc_ns_sandbox: namespace sandbox applied (userns=%s, root_ro=%d, rw_ok=%d)", have_userns ? "yes" : "no",
+             root_ro, rw_ok);
     return true;
 }
 
 #else /* !__linux__ */
 #include "edc_ns_sandbox.h"
-bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths)
+bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths, const char **deny_paths, bool *enforced)
 {
     (void)ro_paths;
     (void)rw_paths;
+    (void)deny_paths;
+    if (enforced)
+        *enforced = false;
     return false;
 }
 

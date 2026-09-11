@@ -83,9 +83,12 @@ bool edc_sandbox_helper_prepare(struct edc_config *conf, const char *cmd, sds *o
     size_t nrw = 0;
     for (int i = 0; conf->sandbox_rw_paths && conf->sandbox_rw_paths[i]; i++)
         nrw++;
+    size_t ndeny = 0;
+    for (int i = 0; conf->sandbox_deny_paths && conf->sandbox_deny_paths[i]; i++)
+        ndeny++;
 
-    /* prog --ro <p>... --rw <p>... -- <cmd> NULL */
-    size_t count = 1 + 1 + nro + 1 + nrw + 1 + 1 + 1;
+    /* prog --ro <p>... --rw <p>... --deny <p>... -- <cmd> NULL */
+    size_t count = 1 + 1 + nro + 1 + nrw + 1 + ndeny + 1 + 1 + 1;
     char **argv = calloc(count, sizeof(char *));
     if (!argv)
     {
@@ -101,6 +104,9 @@ bool edc_sandbox_helper_prepare(struct edc_config *conf, const char *cmd, sds *o
     argv[k++] = "--rw";
     for (int i = 0; conf->sandbox_rw_paths && conf->sandbox_rw_paths[i]; i++)
         argv[k++] = conf->sandbox_rw_paths[i];
+    argv[k++] = "--deny";
+    for (int i = 0; conf->sandbox_deny_paths && conf->sandbox_deny_paths[i]; i++)
+        argv[k++] = conf->sandbox_deny_paths[i];
     argv[k++] = "--";
     argv[k++] = (char *)cmd;
     argv[k] = NULL;

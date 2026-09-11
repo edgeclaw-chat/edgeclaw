@@ -58,6 +58,15 @@ extern bool edc_agent_set_llm_config(struct edc_agent *agent, const char *api_ur
  * config.json (from the TUI /sandbox command). Returns true when persisted. */
 extern bool edc_agent_set_sandbox_enabled(struct edc_agent *agent, bool enable);
 
+/* Add (|add|=true) or remove (|add|=false) |path| from a sandbox path list,
+ * used by /sandbox add-ro|rm-ro|add-rw|rm-rw|add-deny|rm-deny. |kind| selects
+ * the ro / rw / deny list. |path| must be an absolute path to an existing
+ * directory; it is canonicalized with realpath(). Persists to config.json and
+ * updates the live config. Returns true on success; on failure writes a reason
+ * into *msg when non-NULL (caller frees the sds). */
+extern bool edc_agent_set_sandbox_path(struct edc_agent *agent, const char *path, edc_sandbox_path_kind kind,
+                                       bool add, sds *msg);
+
 /* 注册命令处理器 (由 shell 模块在初始化时调用) */
 typedef bool (*edc_agent_command_fn)(struct edc_agent *, struct edc_actor *, struct edc_channel_message *);
 extern void edc_agent_set_command_handler(edc_agent_command_fn fn);

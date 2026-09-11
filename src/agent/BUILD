@@ -12,7 +12,6 @@ cc_library(
         "edc_history.c",
         "edc_llm_actor.c",
         "edc_memory_actor.c",
-        "edc_ns_sandbox.c",
         "edc_sandbox.c",
         "edc_sandbox_helper.c",
         "edc_scheduler.c",
@@ -42,7 +41,6 @@ cc_library(
         "edc_history.h",
         "edc_llm_actor.h",
         "edc_memory_actor.h",
-        "edc_ns_sandbox.h",
         "edc_sandbox.h",
         "edc_sandbox_helper.h",
         "edc_sandbox_helper_blob.h",
@@ -103,10 +101,12 @@ cc_library(
     srcs = [
         "edc_bpf_sandbox.c",
         "edc_landlock_sandbox.c",
+        "edc_ns_sandbox.c",
     ],
     hdrs = [
         "edc_bpf_sandbox.h",
         "edc_landlock_sandbox.h",
+        "edc_ns_sandbox.h",
     ],
     includes = ["."],
     deps = [

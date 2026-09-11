@@ -284,7 +284,7 @@ static bool edc_memory_save_memory_file(const char *workspace, const char *memor
 {
     sds memory_file = edc_path_join(workspace, "memory", "MEMORY.md", NULL);
     EdcError *gerror = NULL;
-    if (!edc_file_write(memory_file, memory, -1, &gerror))
+    if (!edc_file_write_safe(memory_file, memory, -1, workspace, &gerror))
     {
         log_error("save memory file failed: %s", gerror->message);
         sdsfree(memory_file);
@@ -299,7 +299,7 @@ static bool edc_memory_save_memory_file(const char *workspace, const char *memor
 static bool edc_memory_save_history_file(const char *workspace, const char *history)
 {
     sds history_file = edc_path_join(workspace, "memory", "HISTORY.md", NULL);
-    FILE *fout = fopen(history_file, "a+");
+    FILE *fout = edc_file_fopen_safe(history_file, "a+", workspace);
     sdsfree(history_file);
 
     if (fout == NULL)

@@ -7,6 +7,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
+
+#ifndef O_NOFOLLOW
+#define O_NOFOLLOW 0
+#endif
 
 static uv_loop_t *g_file_loop = NULL;
 
@@ -76,7 +81,7 @@ bool edc_file_write(const char *path, const char *content, ssize_t len, EdcError
     size_t write_len = (len < 0) ? strlen(content) : (size_t)len;
 
     uv_fs_t req;
-    int fd = (int)uv_fs_open(g_file_loop, &req, path, O_WRONLY | O_CREAT | O_TRUNC, 0644, NULL);
+    int fd = (int)uv_fs_open(g_file_loop, &req, path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644, NULL);
     if (fd < 0)
     {
         edc_error_set(error, EDC_ERR_FAILED, "open '%s' for write failed: %s", path, uv_strerror(fd));
@@ -99,6 +104,89 @@ bool edc_file_write(const char *path, const char *content, ssize_t len, EdcError
         return false;
     }
     return true;
+}
+
+/* True when the resolved parent directory of |path| lives inside |root|.
+ * |root| == NULL/"" disables the check. A parent that cannot be resolved (e.g.
+ * does not exist yet) fails closed. */
+static bool edc_path_parent_within(const char *path, const char *root)
+{
+    if (!root || !root[0])
+        return true;
+
+    sds parent = edc_path_dirname(path);
+    char *pr = realpath(parent, NULL);
+    char *rr = realpath(root, NULL);
+    sdsfree(parent);
+
+    bool ok = false;
+    if (pr && rr)
+    {
+        size_t rl = strlen(rr);
+        ok = strncmp(pr, rr, rl) == 0 && (pr[rl] == '\0' || pr[rl] == '/');
+    }
+    free(pr);
+    free(rr);
+    return ok;
+}
+
+static int edc_fopen_flags_from_mode(const char *mode)
+{
+    bool plus = strchr(mode, '+') != NULL;
+    int flags;
+    if (mode[0] == 'a')
+        flags = O_WRONLY | O_CREAT | O_APPEND;
+    else if (mode[0] == 'w')
+        flags = O_WRONLY | O_CREAT | O_TRUNC;
+    else
+        flags = O_WRONLY | O_CREAT;
+    return plus ? ((flags & ~O_WRONLY) | O_RDWR) : flags;
+}
+
+FILE *edc_file_fopen_safe(const char *path, const char *mode, const char *root)
+{
+    if (!path || !mode)
+        return NULL;
+
+    struct stat lst;
+    if (lstat(path, &lst) == 0 && S_ISLNK(lst.st_mode))
+    {
+        errno = ELOOP;
+        return NULL;
+    }
+    if (!edc_path_parent_within(path, root))
+    {
+        errno = EACCES;
+        return NULL;
+    }
+
+    int fd = open(path, edc_fopen_flags_from_mode(mode) | O_NOFOLLOW, 0644);
+    if (fd < 0)
+        return NULL;
+
+    FILE *f = fdopen(fd, mode);
+    if (!f)
+        close(fd);
+    return f;
+}
+
+bool edc_file_write_safe(const char *path, const char *content, ssize_t len, const char *root, EdcError **error)
+{
+    if (!path || !content)
+        return false;
+
+    struct stat lst;
+    if (lstat(path, &lst) == 0 && S_ISLNK(lst.st_mode))
+    {
+        edc_error_set(error, EDC_ERR_SANDBOX, "refusing to write through symlink '%s'", path);
+        return false;
+    }
+    if (!edc_path_parent_within(path, root))
+    {
+        edc_error_set(error, EDC_ERR_SANDBOX, "refusing to write outside '%s': '%s'", root, path);
+        return false;
+    }
+    return edc_file_write(path, content, len, error);
 }
 
 static int edc_file_test_flags(const char *path)

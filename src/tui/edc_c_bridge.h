@@ -173,6 +173,15 @@ bool edc_c_history_path(char *buf, size_t cap);
  * only the path is resolved here. */
 bool edc_c_session_chat_log_path(struct edc_agent *agent, char *buf, size_t cap);
 
+/* Write |data| to |path| with symlink safety: the final component must not be a
+ * symlink (opened with O_NOFOLLOW), and when |under_workspace| is true the
+ * resolved parent directory must live inside the agent workspace. |append|
+ * selects append vs truncate. Returns true on success. Used by the TUI for the
+ * chat transcript and the input history, whose paths can sit next to
+ * model-writable files. */
+bool edc_c_agent_write_file(struct edc_agent *agent, const char *path, const char *data, size_t len, bool append,
+                            bool under_workspace);
+
 /* Copy the active session's id into |buf| (NUL-terminated, at most |cap|
  * bytes). Returns true when it fit; false leaves |buf| empty. Used to key the
  * chat transcript to the session that is active at startup, before the first

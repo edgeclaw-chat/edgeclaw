@@ -4,6 +4,17 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* Canonical read-only sandbox whitelist: only these system directories are
+ * readable inside the sandbox. '/' is intentionally absent -- the whole
+ * filesystem is NOT readable any more. The user's home directory is appended
+ * as read-only at load time, and the writable set is sandbox_rw_paths.
+ *
+ * Kept as a comma-separated string so edc_init_env (which persists the list as
+ * text) and edc_config (which stores it as an array) share one source of
+ * truth. /run is needed because /etc/resolv.conf is usually a symlink into it
+ * (DNS), and /sys for the many tools that inspect kernel state read-only. */
+#define EDC_SANDBOX_DEFAULT_RO_PATHS "/usr,/lib,/lib32,/lib64,/libx32,/bin,/sbin,/etc,/proc,/sys,/run"
+
 struct llm_api_conf
 {
     sds model;
@@ -43,6 +54,14 @@ struct channel_conf
     edc_channel_type type;
 };
 
+/* Which sandbox path list a /sandbox add-* / rm-* command targets. */
+typedef enum
+{
+    EDC_SANDBOX_PATH_RO = 0,  /* readable only */
+    EDC_SANDBOX_PATH_RW = 1,  /* readable and writable */
+    EDC_SANDBOX_PATH_DENY = 2 /* masked out of the namespace; wins over ro/rw */
+} edc_sandbox_path_kind;
+
 struct edc_config
 {
     sds edc_home;
@@ -55,6 +74,7 @@ struct edc_config
     sds sandbox_root_real;
     sds *sandbox_ro_paths;
     sds *sandbox_rw_paths;
+    sds *sandbox_deny_paths;
     int max_iter;            /* LLM/tool 迭代预算: -1 = 无限, N > 0 = 上限, <= 0 (含 0) = 不限制 */
     int memory_compress_threshold;
     int group_fold_msg_threshold;
@@ -81,4 +101,13 @@ extern bool edc_config_update_llm(const char *edc_home, const char *api_url, con
  * --sandbox flag is a per-run override and is intentionally not persisted.
  * Returns true on success. */
 extern bool edc_config_update_sandbox_enabled(const char *edc_home, bool enable);
+
+/* Add (add=true) or remove (add=false) a directory from a sandbox path list
+ * and persist it to <edc_home>/config.json, preserving all other settings.
+ * |kind| selects ro_paths / rw_paths / deny_paths. A path is kept in exactly
+ * one list: adding it to one drops it from the other two. |path| must be
+ * absolute. Returns true on success. Used by /sandbox add-ro|add-rw|add-deny
+ * and the matching rm-* commands. */
+extern bool edc_config_update_sandbox_path(const char *edc_home, const char *path, edc_sandbox_path_kind kind,
+                                           bool add);
 #endif

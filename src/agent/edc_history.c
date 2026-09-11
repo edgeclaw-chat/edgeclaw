@@ -70,7 +70,7 @@ bool edc_history_save(const char *workspace, cJSON *msg_lst, struct edc_timestam
         }
     }
 
-    FILE *fout = fopen(hist_file, "a+");
+    FILE *fout = edc_file_fopen_safe(hist_file, "a+", workspace);
     if (fout == NULL)
     {
         char *s = strerror(errno);
@@ -179,7 +179,7 @@ exit_:
 bool edc_history_set_info(const char *workspace, size_t compress_index, const char *update_time)
 {
     sds history_info_path = edc_path_join(workspace, "history_info.json", NULL);
-    FILE *fout = fopen(history_info_path, "w+");
+    FILE *fout = edc_file_fopen_safe(history_info_path, "w+", workspace);
     sdsfree(history_info_path);
 
     if (fout == NULL)

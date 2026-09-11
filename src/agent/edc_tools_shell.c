@@ -9,6 +9,7 @@
 #include <edc_param_types.h>
 #include <errno.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <uv.h>
@@ -207,6 +208,69 @@ static void on_timeout(uv_timer_t *timer)
     shell_ctx_try_complete(ctx);
 }
 
+/*
+ * Minimal environment whitelist for spawned commands.
+ *
+ * libuv's uv_spawn() inherits the *entire* parent environment when
+ * options.env == NULL. The agent is normally started from the user's login
+ * shell, so that environment carries things a command has no business seeing
+ * -- API tokens (e.g. an LLM_API_TOKEN exported from ~/.zshrc), SSH_* session
+ * info, DBUS/XDG handles, cloud credentials, ... -- which then leaked into
+ * every `sh -c` child. Forward only the variables a command actually needs to
+ * locate binaries, its home, its locale and its temp dir; everything else is
+ * dropped. Names that are not set in the parent are simply skipped.
+ */
+static const char *const shell_env_allowlist[] = {
+    /* POSIX */
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL",
+    "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ", "TMPDIR",
+#ifdef _WIN32
+    /* Windows: cmd.exe and friends fail without these */
+    "SystemRoot", "windir", "ComSpec", "PATHEXT", "TEMP", "TMP",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "USERNAME",
+    "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
+#endif
+    NULL,
+};
+
+/* Build a NULL-terminated envp of "NAME=value" entries for the allowlisted
+ * variables present in the current environment. Returns NULL only on
+ * allocation failure (callers may then fall back to inheriting the
+ * environment). Free the result with shell_env_free(). */
+static char **shell_env_build(void)
+{
+    size_t cap = sizeof(shell_env_allowlist) / sizeof(shell_env_allowlist[0]);
+    char **envp = calloc(cap, sizeof(*envp));
+    if (!envp)
+        return NULL;
+
+    size_t n = 0;
+    for (size_t i = 0; shell_env_allowlist[i]; i++)
+    {
+        const char *name = shell_env_allowlist[i];
+        const char *val = getenv(name);
+        if (!val)
+            continue;
+        size_t len = strlen(name) + 1 + strlen(val) + 1;
+        char *entry = malloc(len);
+        if (!entry)
+            break;
+        snprintf(entry, len, "%s=%s", name, val);
+        envp[n++] = entry;
+    }
+    envp[n] = NULL;
+    return envp;
+}
+
+static void shell_env_free(char **envp)
+{
+    if (!envp)
+        return;
+    for (size_t i = 0; envp[i]; i++)
+        free(envp[i]);
+    free(envp);
+}
+
 static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, const char *cmd_s,
                             const char *cwd, unsigned int timeout_sec,
                             void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
@@ -269,6 +333,7 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
     char *plain_args[4] = {0};
     sds sandbox_helper_file = NULL;
     char **sandbox_helper_args = NULL;
+    char **spawn_env = NULL;
 #ifdef _WIN32
     plain_args[0] = (char *)"cmd.exe";
     plain_args[1] = (char *)"/c";
@@ -300,7 +365,10 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
 #endif
     options.file = spawn_file;
     options.args = spawn_args;
-    options.env = NULL;
+    /* Minimal whitelist, never NULL: NULL makes uv_spawn inherit the agent's
+     * entire environment (see shell_env_allowlist for why that leaked secrets). */
+    spawn_env = shell_env_build();
+    options.env = spawn_env;
     options.cwd = cwd;
     options.stdio = stdio;
     options.stdio_count = 3;
@@ -312,6 +380,7 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
     if (sandbox_helper_file)
         sdsfree(sandbox_helper_file);
     free(sandbox_helper_args);
+    shell_env_free(spawn_env);
 
     if (r != 0)
     {

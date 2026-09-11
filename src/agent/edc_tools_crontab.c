@@ -130,7 +130,10 @@ out:
 static bool edc_tool_crontab_save_jobs_db(const char *workspace, cJSON *db, EdcError **error)
 {
     sds jobs_path = edc_path_join(workspace, "jobs.json", NULL);
-    FILE *fout = fopen(jobs_path, "w+");
+    /* jobs.json lives in the model-writable workspace: refuse to follow a
+     * symlink (or write outside the workspace) so it cannot be used to redirect
+     * this unsandboxed write into a protected path. */
+    FILE *fout = edc_file_fopen_safe(jobs_path, "w+", workspace);
 
     if (!fout)
     {

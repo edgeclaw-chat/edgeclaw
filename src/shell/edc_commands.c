@@ -119,6 +119,8 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
                        "- /model [name]\n"
                        "- /connect   (configure the LLM provider)\n"
                        "- /sandbox [on|off]   (enable/disable the filesystem sandbox)\n"
+                       "- /sandbox list   ·  /sandbox add-ro|rm-ro <dir>  ·  /sandbox add-rw|rm-rw <dir>\n"
+                       "- /sandbox add-deny|rm-deny <dir>   (mask a dir: wins over ro/rw; e.g. ~/.ssh)\n"
                        "\n"
                        "## Shell Syntax\n"
                        "\n"

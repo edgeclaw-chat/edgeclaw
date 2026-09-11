@@ -30,6 +30,13 @@
 
 #if defined(ARCH_NR)
 
+/* ioctl() request that sets inode flags (the chattr path). Landlock does not
+ * mediate ioctl, so this single request is denied by argument in
+ * build_filter(). Computed with the kernel's _IOW encoding (dir = WRITE << 30,
+ * size << 16, type << 8, nr) so it is correct for both LP64 (0x40086602) and
+ * ILP32 (0x40046602). */
+#define EDC_FS_IOC_SETFLAGS ((1u << 30) | ((unsigned int)sizeof(long) << 16) | ((unsigned int)'f' << 8) | 2u)
+
 /*
  * ---- Syscall fallback definitions ----
  *
@@ -312,6 +319,15 @@
 #ifndef SYS_kcmp
 #define SYS_kcmp 0
 #endif
+#ifndef SYS_pidfd_getfd
+#define SYS_pidfd_getfd 0
+#endif
+#ifndef SYS_process_madvise
+#define SYS_process_madvise 0
+#endif
+#ifndef SYS_process_mrelease
+#define SYS_process_mrelease 0
+#endif
 #ifndef SYS_userfaultfd
 #define SYS_userfaultfd 0
 #endif
@@ -331,6 +347,17 @@
 /* Syscalls added after ~Linux 5.x */
 #ifndef SYS_openat2
 #define SYS_openat2 0
+#endif
+/* fchmodat2 (452) and the *at variants of the xattr mutators (Linux 6.13+).
+ * Older headers lack them; the filter skips a rule whose number is 0. */
+#ifndef SYS_fchmodat2
+#define SYS_fchmodat2 0
+#endif
+#ifndef SYS_setxattrat
+#define SYS_setxattrat 0
+#endif
+#ifndef SYS_removexattrat
+#define SYS_removexattrat 0
 #endif
 #ifndef SYS_clone3
 #define SYS_clone3 0
@@ -508,6 +535,7 @@
 #define NR_chmod SYS_chmod
 #define NR_fchmod SYS_fchmod
 #define NR_fchmodat SYS_fchmodat
+#define NR_fchmodat2 SYS_fchmodat2
 #define NR_chown SYS_chown
 #define NR_fchown SYS_fchown
 #define NR_lchown SYS_lchown
@@ -550,6 +578,10 @@
 #define NR_removexattr SYS_removexattr
 #define NR_lremovexattr SYS_lremovexattr
 #define NR_fremovexattr SYS_fremovexattr
+/* Linux 6.13+ *at variants of the mutators (the read-only get/list ones above
+ * stay permitted). */
+#define NR_setxattrat SYS_setxattrat
+#define NR_removexattrat SYS_removexattrat
 
 /* Memory management */
 #define NR_mmap SYS_mmap
@@ -764,6 +796,9 @@
 #define NR_seccomp SYS_seccomp
 #define NR_capget SYS_capget
 #define NR_kcmp SYS_kcmp
+#define NR_pidfd_getfd SYS_pidfd_getfd
+#define NR_process_madvise SYS_process_madvise
+#define NR_process_mrelease SYS_process_mrelease
 #define NR_lookup_dcookie SYS_lookup_dcookie
 
 /* Filesystem mount API (Linux 5.2+) */
@@ -870,7 +905,7 @@ static int count_nonzero(const int *arr)
 #define HDR_LEN 4
 #define TAIL_LEN 0
 
-static struct sock_filter *build_filter(size_t *out_len)
+static struct sock_filter *build_filter(size_t *out_len, bool block_metadata)
 {
     static const int safe_syscalls[] = {
         NR_read,
@@ -888,7 +923,6 @@ static struct sock_filter *build_filter(size_t *out_len)
         NR_rt_sigaction,
         NR_rt_sigprocmask,
         NR_rt_sigreturn,
-        NR_ioctl,
         NR_pread64,
         NR_pwrite64,
         NR_readv,
@@ -1093,15 +1127,8 @@ static struct sock_filter *build_filter(size_t *out_len)
         NR_msgrcv,
         NR_msgctl,
         NR_lookup_dcookie,
-        NR_kcmp,
         NR_perf_event_open,
         NR_userfaultfd,
-        NR_setxattr,
-        NR_fsetxattr,
-        NR_lsetxattr,
-        NR_removexattr,
-        NR_fremovexattr,
-        NR_lremovexattr,
         NR_preadv,
         NR_pwritev,
         NR_preadv2,
@@ -1150,6 +1177,10 @@ static struct sock_filter *build_filter(size_t *out_len)
         NR_ptrace,
         NR_process_vm_readv,
         NR_process_vm_writev,
+        NR_process_madvise,
+        NR_process_mrelease,
+        NR_pidfd_getfd,
+        NR_kcmp,
         NR_bpf,
         NR_kexec_load,
         NR_kexec_file_load,
@@ -1193,12 +1224,19 @@ static struct sock_filter *build_filter(size_t *out_len)
         NR_vserver,
         NR_open_tree,
         NR_move_mount,
-        /* Metadata mutators: Landlock does not mediate these, so without a
-         * seccomp rule the model could still retime/chmod/chown files in the
-         * read-only set. Deny them so the read-only paths are truly immutable. */
+        -1,
+    };
+
+/* Metadata mutators that Landlock does not mediate, so they need a seccomp
+ * backstop -- but only when the mount-namespace sandbox is NOT active: it makes
+ * the read-only paths immutable (EROFS) while leaving writable paths alone,
+ * whereas these rules are path-blind and would also break chmod/xattr on
+ * writable paths. */
+static const int deny_metadata_syscalls[] = {
         NR_chmod,
         NR_fchmod,
         NR_fchmodat,
+        NR_fchmodat2,
         NR_chown,
         NR_fchown,
         NR_fchownat,
@@ -1207,11 +1245,44 @@ static struct sock_filter *build_filter(size_t *out_len)
         NR_utimes,
         NR_futimesat,
         NR_utime,
+        NR_setxattr,
+        NR_fsetxattr,
+        NR_lsetxattr,
+        NR_removexattr,
+        NR_fremovexattr,
+        NR_lremovexattr,
+        NR_setxattrat,
+        NR_removexattrat,
         -1,
     };
 
     int safe_n = count_nonzero(safe_syscalls);
-    int deny_n = count_nonzero(deny_syscalls);
+    int deny_n = count_nonzero(deny_syscalls) + (block_metadata ? count_nonzero(deny_metadata_syscalls) : 0);
+
+    /*
+     * Deny rules that must also match a syscall argument. seccomp can read the
+     * argument registers, so a single ioctl() request can be forbidden without
+     * banning ioctl() itself (terminals, sockets, ... all use it). Each entry
+     * is {syscall, arg index, value}; the ioctl request is argument 1.
+     * FS_IOC_SETFLAGS is the chattr-style inode-flag setter, which Landlock
+     * does not mediate. Terminated by nr == -1. */
+    static const struct
+    {
+        int nr;
+        int arg;
+        unsigned int val;
+    } deny_arg_syscalls[] = {
+        {NR_ioctl, 1, EDC_FS_IOC_SETFLAGS},
+        {-1, 0, 0},
+    };
+
+    int arg_n = 0;
+    if (block_metadata)
+    {
+        for (int a = 0; deny_arg_syscalls[a].nr != -1; a++)
+            if (deny_arg_syscalls[a].nr != 0)
+                arg_n++;
+    }
 
     /*
      * Layout:
@@ -1234,8 +1305,9 @@ static struct sock_filter *build_filter(size_t *out_len)
     int nchains = safe_n > 0 ? (safe_n + SAFE_CHUNK - 1) / SAFE_CHUNK : 0;
 
     /* header (4) + safe entries + 2 (JA + ALLOW stub) per chunk + deny entries
-     * + default ALLOW + DENY_TARGET. */
-    size_t cap = HDR_LEN + (size_t)safe_n + 2 * (size_t)nchains + (size_t)deny_n + 2 + 8;
+     * + arg-nr checks + 4 per arg rule block + default ALLOW + DENY_TARGET. */
+    size_t cap = HDR_LEN + (size_t)safe_n + 2 * (size_t)nchains + (size_t)deny_n +
+                 (size_t)arg_n + 4 * (size_t)arg_n + 2 + 8;
     struct sock_filter *f = calloc(cap, sizeof(struct sock_filter));
     if (!f)
         return NULL;
@@ -1275,8 +1347,20 @@ static struct sock_filter *build_filter(size_t *out_len)
         f[pos++] = BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW); /* stub */
     }
 
-    /* Deny checks -> jump to DENY_TARGET on match. */
-    int deny_target_pos = (int)pos + deny_n + 1; /* skip the default ALLOW */
+    /*
+     * Tail layout (every jump is forward -- classic BPF jumps cannot go back):
+     *   [deny_n plain checks]     -> DENY_TARGET
+     *   [arg_n nr checks]         -> that rule's block below
+     *   [default ALLOW]
+     *   [4 * arg_n rule blocks]   self-contained: LD args[i]; JEQ value (skip
+     *                             next); RET ALLOW; RET ERRNO
+     *   [DENY_TARGET]
+     */
+    int deny_target_pos = (int)pos + deny_n + arg_n + 4 * arg_n + 1;
+    int default_allow_pos = (int)pos + deny_n + arg_n;
+    int blocks_base = default_allow_pos + 1;
+
+    /* Plain deny checks -> DENY_TARGET. */
     for (int d = 0; deny_syscalls[d] != -1; d++)
     {
         if (deny_syscalls[d] == 0)
@@ -1285,8 +1369,52 @@ static struct sock_filter *build_filter(size_t *out_len)
         f[pos++] = BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)deny_syscalls[d], (unsigned char)jt, 0);
     }
 
+    /* Metadata deny checks (fallback only) -> DENY_TARGET. */
+    if (block_metadata)
+    {
+        for (int d = 0; deny_metadata_syscalls[d] != -1; d++)
+        {
+            if (deny_metadata_syscalls[d] == 0)
+                continue;
+            int jt = deny_target_pos - (int)pos - 1;
+            f[pos++] =
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)deny_metadata_syscalls[d], (unsigned char)jt, 0);
+        }
+    }
+
+    /* Arg-aware deny checks -> the matching rule block. */
+    {
+        int r = 0;
+        for (int a = 0; r < arg_n && deny_arg_syscalls[a].nr != -1; a++)
+        {
+            if (deny_arg_syscalls[a].nr == 0)
+                continue;
+            int block = blocks_base + 4 * r;
+            int jt = block - (int)pos - 1;
+            f[pos++] = BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)deny_arg_syscalls[a].nr,
+                                (unsigned char)jt, 0);
+            r++;
+        }
+    }
+
     /* default: unknown syscall -> ALLOW (fail-open) */
     f[pos++] = BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+
+    /* One self-contained block per arg rule. args[] start at offset 16 in
+     * struct seccomp_data (8 bytes each); the low 32 bits hold the request. */
+    {
+        int r = 0;
+        for (int a = 0; r < arg_n && deny_arg_syscalls[a].nr != -1; a++)
+        {
+            if (deny_arg_syscalls[a].nr == 0)
+                continue;
+            f[pos++] = BPF_STMT(BPF_LD | BPF_W | BPF_ABS, 16 + 8 * (unsigned int)deny_arg_syscalls[a].arg);
+            f[pos++] = BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, deny_arg_syscalls[a].val, 1, 0);
+            f[pos++] = BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+            f[pos++] = BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO_EPERM);
+            r++;
+        }
+    }
 
     /* DENY_TARGET */
     f[pos++] = BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO_EPERM);
@@ -1295,10 +1423,10 @@ static struct sock_filter *build_filter(size_t *out_len)
     return f;
 }
 
-bool edc_bpf_sandbox_apply(const char *sandbox_root)
+bool edc_bpf_sandbox_apply_ex(const char *sandbox_root, bool block_metadata)
 {
     size_t filter_len = 0;
-    struct sock_filter *filter = build_filter(&filter_len);
+    struct sock_filter *filter = build_filter(&filter_len, block_metadata);
     if (!filter)
     {
         return false;
@@ -1317,27 +1445,45 @@ bool edc_bpf_sandbox_apply(const char *sandbox_root)
     }
 
     free(filter);
-    log_info("edc_bpf_sandbox: seccomp-bpf sandbox enforced, root='%s'", sandbox_root);
+    log_info("edc_bpf_sandbox: seccomp-bpf sandbox enforced, root='%s', metadata=%s", sandbox_root,
+             block_metadata ? "blocked" : "advisory(ns)");
     return true;
+}
+
+bool edc_bpf_sandbox_apply(const char *sandbox_root)
+{
+    return edc_bpf_sandbox_apply_ex(sandbox_root, true);
 }
 
 #else /* !defined(ARCH_NR) */
 
-bool edc_bpf_sandbox_apply(const char *sandbox_root)
+bool edc_bpf_sandbox_apply_ex(const char *sandbox_root, bool block_metadata)
 {
     (void)sandbox_root;
+    (void)block_metadata;
     log_debug("edc_bpf_sandbox: unsupported architecture, BPF sandbox disabled");
     return false;
+}
+
+bool edc_bpf_sandbox_apply(const char *sandbox_root)
+{
+    return edc_bpf_sandbox_apply_ex(sandbox_root, true);
 }
 
 #endif /* ARCH_NR */
 
 #else /* !__linux__ */
 
-bool edc_bpf_sandbox_apply(const char *sandbox_root)
+bool edc_bpf_sandbox_apply_ex(const char *sandbox_root, bool block_metadata)
 {
     (void)sandbox_root;
+    (void)block_metadata;
     return false;
+}
+
+bool edc_bpf_sandbox_apply(const char *sandbox_root)
+{
+    return edc_bpf_sandbox_apply_ex(sandbox_root, true);
 }
 
 #endif /* __linux__ */

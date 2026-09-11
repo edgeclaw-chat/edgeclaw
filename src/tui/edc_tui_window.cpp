@@ -550,11 +550,11 @@ void TUIWindow::SaveInputHistory()
     if (!edc_c_history_path(path, sizeof(path)))
         return;
 
-    std::ofstream file(path, std::ios::binary | std::ios::trunc);
-    if (!file)
-        return; // best effort: a failed save must not disturb the UI
+    std::string out;
     for (const std::string &entry : input_->History())
-        file << EscapeHistoryEntry(entry) << '\n';
+        out += EscapeHistoryEntry(entry) + "\n";
+    // Symlink-safe (the file sits in $EDC_HOME; still never follow a link).
+    edc_c_agent_write_file(agent, path, out.data(), out.size(), /*append=*/false, /*under_workspace=*/false);
 }
 
 void TUIWindow::RequestTaskSnapshot()
@@ -634,11 +634,14 @@ void TUIWindow::AppendChatTranscript(const std::string &kind, const std::string 
 {
     if (chat_log_path_.empty())
         return;
-    std::ofstream file(chat_log_path_, std::ios::binary | std::ios::app);
-    if (!file)
-        return; // best effort: a failed write must not disturb the UI
-    file << EscapeTranscriptField(kind) << '\t' << render_pref << '\t' << EscapeTranscriptField(task_id) << '\t'
-         << EscapeTranscriptField(header) << '\t' << EscapeTranscriptField(content) << '\n';
+    // Symlink-safe append: the transcript lives under the model-writable
+    // workspace, so refuse to follow a planted symlink (see
+    // edc_c_agent_write_file / edc_file_fopen_safe).
+    std::string line = EscapeTranscriptField(kind) + "\t" + std::to_string(render_pref) + "\t" +
+                       EscapeTranscriptField(task_id) + "\t" + EscapeTranscriptField(header) + "\t" +
+                       EscapeTranscriptField(content) + "\n";
+    edc_c_agent_write_file(agent, chat_log_path_.c_str(), line.data(), line.size(), /*append=*/true,
+                           /*under_workspace=*/true);
 }
 
 void TUIWindow::LoadChatTranscript()

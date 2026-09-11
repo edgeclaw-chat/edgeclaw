@@ -2,6 +2,7 @@
 #include "cJSON.h"
 #include "edc_bundled_workspace.h"
 #include "edc_compat.h"
+#include "edc_config.h"
 #include "edc_file_utils.h"
 #include "edc_secret.h"
 #include "log.h"
@@ -22,14 +23,14 @@ static sds default_sandbox_rw_extra(const char *edc_home)
     return sdscatprintf(sdsempty(), "%s/workspace/, /tmp, /dev", edc_home);
 }
 
-/* Default read-only paths. The whole filesystem is readable so tools can read
- * system files (/etc, /run, /proc, ...) and the user's own files; writes stay
- * confined to the writable set below. The loader also ensures '/' is present
- * and adds the workspace to the writable set. */
+/* Default read-only paths: the system whitelist only (see
+ * EDC_SANDBOX_DEFAULT_RO_PATHS). '/' is intentionally absent so the whole
+ * filesystem is NOT readable; the loader appends the user's home as read-only,
+ * and the workspace is in the writable set below. */
 static sds default_sandbox_ro(const char *edc_home)
 {
     (void)edc_home;
-    return sdsnew("/");
+    return sdsnew(EDC_SANDBOX_DEFAULT_RO_PATHS);
 }
 
 /* Parse existing config.json into a edc_init_env_result.
@@ -422,12 +423,67 @@ static void ensure_sandbox(cJSON *conf, const char *edc_home, bool *changed)
         *changed = true;
     }
 
+    /* Migrate the legacy "whole filesystem readable" ro_paths (a bare "/") to
+     * the system whitelist, so an existing config.json stops granting the model
+     * read access to the entire filesystem. */
+    {
+        cJSON *ro = cJSON_GetObjectItem(sandbox, "ro_paths");
+        if (ro && cJSON_IsArray(ro))
+        {
+            bool had_root = false;
+            for (int i = cJSON_GetArraySize(ro) - 1; i >= 0; i--)
+            {
+                cJSON *e = cJSON_GetArrayItem(ro, i);
+                if (e && cJSON_IsString(e) && strcmp(e->valuestring, "/") == 0)
+                {
+                    cJSON_DeleteItemFromArray(ro, i);
+                    had_root = true;
+                }
+            }
+            if (had_root)
+            {
+                sds ro_defaults = default_sandbox_ro(edc_home);
+                sds *ro_paths = split_paths(ro_defaults);
+                for (int i = 0; ro_paths && ro_paths[i]; i++)
+                {
+                    bool present = false;
+                    for (int j = 0; j < cJSON_GetArraySize(ro); j++)
+                    {
+                        cJSON *e = cJSON_GetArrayItem(ro, j);
+                        if (e && cJSON_IsString(e) && strcmp(e->valuestring, ro_paths[i]) == 0)
+                        {
+                            present = true;
+                            break;
+                        }
+                    }
+                    if (!present)
+                        cJSON_AddItemToArray(ro, cJSON_CreateString(ro_paths[i]));
+                }
+                for (int i = 0; ro_paths && ro_paths[i]; i++)
+                    sdsfree(ro_paths[i]);
+                free(ro_paths);
+                sdsfree(ro_defaults);
+                *changed = true;
+                log_info("config.json: migrated sandbox ro_paths away from '/' to the system whitelist");
+            }
+        }
+    }
+
     /* Materialize the sandbox master switch so it is discoverable and editable
      * in config.json. Defaults to on; the in-TUI /sandbox command rewrites it
      * (the --sandbox CLI flag intentionally does not). */
     if (!cJSON_GetObjectItem(sandbox, "enable"))
     {
         cJSON_AddBoolToObject(sandbox, "enable", true);
+        *changed = true;
+    }
+
+    /* Materialize the deny list (empty by default) so the knob is visible and
+     * editable. Entries are masked out of the namespace by the sandbox helper
+     * (Landlock cannot express deny) and rejected by the tool path check. */
+    if (!cJSON_GetObjectItem(sandbox, "deny_paths"))
+    {
+        cJSON_AddItemToObject(sandbox, "deny_paths", cJSON_CreateArray());
         *changed = true;
     }
 

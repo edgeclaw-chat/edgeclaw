@@ -104,18 +104,33 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
     if (strcmp(content, "/sandbox") == 0 || strncmp(content, "/sandbox ", 9) == 0)
     {
         sds arg = sdstrim(sdsnew(content + 8), " \t");
-        if (sdslen(arg) == 0)
+
+        /* Split "<verb> [path]". */
+        char *sp = strchr(arg, ' ');
+        sds verb = sp ? sdsnewlen(arg, (size_t)(sp - arg)) : sdsdup(arg);
+        sds rest = sp ? sdstrim(sdsnew(sp + 1), " \t") : sdsempty();
+
+        struct edc_config *conf = agent->config;
+
+        if (sdslen(verb) == 0)
         {
-            sds reply = sdscatprintf(sdsempty(),
-                                     "sandbox: %s\n"
-                                     "(writable: cwd, workspace, /tmp, /dev; everything else is read-only)",
-                                     agent->config->enable_sandbox ? "on" : "off");
+            sds reply = sdscatprintf(sdsempty(), "sandbox: %s\n", conf->enable_sandbox ? "on" : "off");
+            reply = sdscat(reply, "read-write:\n");
+            for (int i = 0; conf->sandbox_rw_paths && conf->sandbox_rw_paths[i]; i++)
+                reply = sdscatprintf(reply, "  %s\n", conf->sandbox_rw_paths[i]);
+            reply = sdscat(reply, "read-only:\n");
+            for (int i = 0; conf->sandbox_ro_paths && conf->sandbox_ro_paths[i]; i++)
+                reply = sdscatprintf(reply, "  %s\n", conf->sandbox_ro_paths[i]);
+            reply = sdscat(reply, "denied (masked):\n");
+            for (int i = 0; conf->sandbox_deny_paths && conf->sandbox_deny_paths[i]; i++)
+                reply = sdscatprintf(reply, "  %s\n", conf->sandbox_deny_paths[i]);
+            reply = sdscat(reply, "manage: /sandbox add-rw|add-ro|add-deny <dir> | rm-rw|rm-ro|rm-deny <dir>");
             edc_commands_reply(agent, actor, message->type, reply);
             sdsfree(reply);
         }
-        else if (strcmp(arg, "on") == 0 || strcmp(arg, "off") == 0)
+        else if (strcmp(verb, "on") == 0 || strcmp(verb, "off") == 0)
         {
-            bool enable = strcmp(arg, "on") == 0;
+            bool enable = strcmp(verb, "on") == 0;
             bool saved = edc_agent_set_sandbox_enabled(agent, enable);
             sds reply = sdscatprintf(sdsempty(), "sandbox: %s%s", enable ? "on" : "off",
                                      saved ? "" : " (not persisted: config.json write failed)");
@@ -123,10 +138,59 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
             sdsfree(reply);
             log_info("/sandbox: filesystem sandbox %s (persisted=%d)", enable ? "enabled" : "disabled", saved);
         }
+        else if (strcmp(verb, "list") == 0)
+        {
+            sds reply = sdscat(sdsempty(), "read-write:\n");
+            for (int i = 0; conf->sandbox_rw_paths && conf->sandbox_rw_paths[i]; i++)
+                reply = sdscatprintf(reply, "  %s\n", conf->sandbox_rw_paths[i]);
+            reply = sdscat(reply, "read-only:\n");
+            for (int i = 0; conf->sandbox_ro_paths && conf->sandbox_ro_paths[i]; i++)
+                reply = sdscatprintf(reply, "  %s\n", conf->sandbox_ro_paths[i]);
+            reply = sdscat(reply, "denied (masked):\n");
+            for (int i = 0; conf->sandbox_deny_paths && conf->sandbox_deny_paths[i]; i++)
+                reply = sdscatprintf(reply, "  %s\n", conf->sandbox_deny_paths[i]);
+            edc_commands_reply(agent, actor, message->type, reply);
+            sdsfree(reply);
+        }
+        else if (strcmp(verb, "add-rw") == 0 || strcmp(verb, "rm-rw") == 0 || strcmp(verb, "add-ro") == 0 ||
+                 strcmp(verb, "rm-ro") == 0 || strcmp(verb, "add-deny") == 0 || strcmp(verb, "rm-deny") == 0)
+        {
+            edc_sandbox_path_kind kind = strstr(verb, "-rw")   ? EDC_SANDBOX_PATH_RW
+                                         : strstr(verb, "-ro") ? EDC_SANDBOX_PATH_RO
+                                                               : EDC_SANDBOX_PATH_DENY;
+            const char *klabel = (kind == EDC_SANDBOX_PATH_RW)   ? "rw"
+                                 : (kind == EDC_SANDBOX_PATH_DENY) ? "deny"
+                                                                   : "ro";
+            bool add = (strncmp(verb, "add-", 4) == 0);
+            if (sdslen(rest) == 0)
+            {
+                edc_commands_reply(agent, actor, message->type,
+                                   "Usage: /sandbox add-rw|add-ro|add-deny <dir> | rm-rw|rm-ro|rm-deny <dir>");
+            }
+            else
+            {
+                sds msg = NULL;
+                bool ok = edc_agent_set_sandbox_path(agent, rest, kind, add, &msg);
+                sds reply;
+                if (ok)
+                    reply = sdscatprintf(sdsempty(), "%s %s: %s", add ? "added" : "removed", klabel, rest);
+                else
+                    reply = sdscatprintf(sdsempty(), "sandbox: cannot %s %s: %s", add ? "add" : "remove", rest,
+                                         msg ? msg : "unknown error");
+                edc_commands_reply(agent, actor, message->type, reply);
+                sdsfree(reply);
+                if (msg)
+                    sdsfree(msg);
+            }
+        }
         else
         {
-            edc_commands_reply(agent, actor, message->type, "Usage: /sandbox [on|off]");
+            edc_commands_reply(agent, actor, message->type,
+                               "Usage: /sandbox [on|off|list] | add-rw|add-ro|add-deny|rm-rw|rm-ro|rm-deny <dir>");
         }
+
+        sdsfree(verb);
+        sdsfree(rest);
         sdsfree(arg);
         sdsfree(content);
         return true;
