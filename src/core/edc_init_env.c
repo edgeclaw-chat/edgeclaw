@@ -176,7 +176,8 @@ static sds default_sandbox_rw_extra(const char *edc_home)
     return sdscatprintf(sdsempty(), "%s/workspace/, /tmp, /dev", edc_home);
 }
 
-/* Default read-only paths. The workspace itself is appended by the writer. */
+/* Default read-only paths. The workspace is writable (it is in the rw defaults
+ * below), so it is not listed here; only its ssl/ subtree stays read-only. */
 static sds default_sandbox_ro(const char *edc_home)
 {
     return sdscatprintf(sdsempty(), "%s/workspace/ssl, /usr, /lib, /lib32, /lib64, /libx32, /bin, /sbin, /etc, /proc",
@@ -845,7 +846,6 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     cJSON *sandbox = cJSON_CreateObject();
     build_sandbox_rw(sandbox, env_result.sandbox_root, env_result.sandbox_rw_paths);
     {
-        sds workspace_path = edc_path_join(edc_home, "workspace", NULL);
         sds *ro = split_paths(env_result.sandbox_ro_paths);
         cJSON *ro_arr = cJSON_CreateArray();
         if (ro)
@@ -856,9 +856,7 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
                 sdsfree(ro[i]);
             free(ro);
         }
-        cJSON_AddItemToArray(ro_arr, cJSON_CreateString(workspace_path));
         cJSON_AddItemToObject(sandbox, "ro_paths", ro_arr);
-        sdsfree(workspace_path);
     }
     cJSON_AddItemToObject(config, "sandbox", sandbox);
 

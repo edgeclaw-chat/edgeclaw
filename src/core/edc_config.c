@@ -267,16 +267,45 @@ after_channel:
         config->sandbox_ro_paths[9] = sdsnew("/proc");
     }
 
+    /* The agent's own workspace must be writable: the model edits files there
+     * (AGENTS.md, skills/, ...). Add it to rw_paths -- which grants read too --
+     * instead of ro_paths, so it is writable in every configuration, not only
+     * when the setup wizard happened to list it under rw_paths. rw_paths[0]
+     * stays the launch directory (prepended below), so the sandbox root is
+     * unchanged. */
     {
-        int ro_count = 0;
-        if (config->sandbox_ro_paths)
+        int rw_count = 0;
+        if (config->sandbox_rw_paths)
         {
-            while (config->sandbox_ro_paths[ro_count])
-                ro_count++;
+            while (config->sandbox_rw_paths[rw_count])
+                rw_count++;
         }
-        config->sandbox_ro_paths = realloc(config->sandbox_ro_paths, (ro_count + 2) * sizeof(sds));
-        config->sandbox_ro_paths[ro_count] = sdsnew(config->workspace);
-        config->sandbox_ro_paths[ro_count + 1] = NULL;
+        config->sandbox_rw_paths = realloc(config->sandbox_rw_paths, (rw_count + 2) * sizeof(sds));
+        config->sandbox_rw_paths[rw_count] = sdsnew(config->workspace);
+        config->sandbox_rw_paths[rw_count + 1] = NULL;
+    }
+
+    /* The user's home directory is added to the read-only set: the model may
+     * read the user's files (configs, sources, ...) but cannot write them,
+     * except under the paths explicitly allowed above (workspace, cwd, ...). */
+    {
+        sds home = edc_homedir();
+        if (home && sdslen(home) > 0)
+        {
+            int ro_count = 0;
+            if (config->sandbox_ro_paths)
+            {
+                while (config->sandbox_ro_paths[ro_count])
+                    ro_count++;
+            }
+            config->sandbox_ro_paths = realloc(config->sandbox_ro_paths, (ro_count + 2) * sizeof(sds));
+            config->sandbox_ro_paths[ro_count] = home;
+            config->sandbox_ro_paths[ro_count + 1] = NULL;
+        }
+        else
+        {
+            sdsfree(home);
+        }
     }
 
     /* Prepend the directory edgeclaw was launched from to rw_paths so that the
