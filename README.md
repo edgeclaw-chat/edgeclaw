@@ -218,7 +218,7 @@ model can read the user's files (configs, sources, ...) but cannot modify them.
   `!n`/`!!`)
 - **Cron scheduling**: one-shot (`at`) or recurring (`cron_expr`/
   `every_seconds`) agent tasks via `ccronexpr`
-- **First-run setup**: ask only for the API URL and model; set the API key later with `/connect`
+- **First-run setup**: `config.json` is created with sensible defaults (no prompts); configure the provider — API URL, model, key — later with `/connect`
 - **Cross-compilation**: armv7/aarch64/amd64 for Linux; aarch64 for macOS;
   amd64 for Windows
 - **Static binary**: statically linked on Linux for portable deployment
@@ -321,7 +321,7 @@ Each tarball holds a single self-contained binary — the default workspace is e
 # Replace {ARCH}_{OS} with your platform, e.g. edgeclaw_amd64_linux.tar.gz
 curl -LO https://github.com/edgeclaw-chat/edgeclaw/releases/latest/download/edgeclaw_{ARCH}_{OS}.tar.gz
 
-# Extract and run (first run walks you through setup)
+# Extract and run (first run creates config with defaults)
 tar -xzf edgeclaw_*.tar.gz
 cd edgeclaw_*/
 ./edgeclaw
@@ -352,13 +352,13 @@ bazel build //:edgeclaw
 
 ### Setup
 
-The released binary is the TUI. On first run (no `config.json`) it launches the setup wizard automatically:
+The released binary is the TUI. On first run (no `config.json`) it creates the config with defaults automatically:
 
 ```bash
 ./edgeclaw
 ```
 
-The first run only asks for the **API URL** and the **model** (and a master passphrase, unless `EDGECLAW_MASTER_KEY` is set); every other setting uses its default. The **API key** is entered later with the **`/connect`** command: it opens a dialog (prefilled with the current values) for the API URL, model and key, and both persists them to `config.json` and applies them to the running agent.
+The first run does not ask for configuration: `config.json` is written with the canonical defaults (the built-in default provider for the API URL and model, an empty API key). The only prompt is for the master passphrase, unless `EDGECLAW_MASTER_KEY` is set. Configure the provider with the **`/connect`** command: it opens a dialog (prefilled with the current values) for the API URL, model and key, and both persists them to `config.json` and applies them to the running agent.
 
 Configuration is saved to `~/.edgeclaw/config.json`. The default `workspace/` tree is embedded into the binary at build time and released to `~/.edgeclaw/workspace/` on first run, so no source `workspace/` directory is required next to the executable.
 
@@ -407,7 +407,7 @@ Optional remote-device settings for the `device_shell` / `device_file` tools:
 
 ### Run
 
-On first run, EdgeClaw releases the default workspace (embedded in the binary at build time) to `~/.edgeclaw/workspace`; if `config.json` is missing the TUI walks you through setup.
+On first run, EdgeClaw releases the default workspace (embedded in the binary at build time) to `~/.edgeclaw/workspace`; if `config.json` is missing it is created with defaults.
 
 **Interactive TUI:**
 

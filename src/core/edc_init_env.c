@@ -4,7 +4,6 @@
 #include "edc_compat.h"
 #include "edc_file_utils.h"
 #include "edc_secret.h"
-#include "edc_terminal.h"
 #include "log.h"
 #include "sds.h"
 #include <inttypes.h>
@@ -15,36 +14,6 @@
 #include <unistd.h>
 
 /* --- Helper functions --- */
-
-static sds prompt_with_default(const char *label, const char *default_val)
-{
-    char prompt[1024];
-    if (default_val && default_val[0] != '\0')
-    {
-        snprintf(prompt, sizeof(prompt), "%s [%s]: ", label, default_val);
-    }
-    else
-    {
-        snprintf(prompt, sizeof(prompt), "%s: ", label);
-    }
-
-    char buf[4096];
-    printf("%s", prompt);
-    fflush(stdout);
-    if (fgets(buf, sizeof(buf), stdin) == NULL)
-    {
-        return NULL;
-    }
-
-    size_t len = strlen(buf);
-    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r' || buf[len - 1] == ' '))
-        buf[--len] = '\0';
-
-    if (buf[0] == '\0' && default_val && default_val[0] != '\0')
-        return sdsnew(default_val);
-
-    return sdsnew(buf);
-}
 
 /* Default "additional writable paths" — everything after the sandbox root. */
 static sds default_sandbox_rw_extra(const char *edc_home)
@@ -63,8 +32,8 @@ static sds default_sandbox_ro(const char *edc_home)
 }
 
 /* Parse existing config.json into a edc_init_env_result.
- * Missing keys are filled with the canonical defaults so the interactive setup
- * always shows a complete picture. */
+ * Missing keys are filled with the canonical defaults so a rewrite (setup=true)
+ * always materializes a complete config. */
 static struct edc_init_env_result *load_existing_config(const char *conf_file)
 {
     if (!edc_file_is_regular(conf_file))
@@ -208,29 +177,15 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
 
     memset(result, 0, sizeof(*result));
 
-    printf("\n========== EdgeClaw Configuration Setup ==========\n");
+    /* Creation is non-interactive. The provider — API URL, model and key — is
+     * configured at runtime with the /connect command (which also re-encrypts
+     * the key), so every value is materialized from the canonical defaults
+     * (carrying over an existing value when there is one), exactly like the
+     * other tunables. The API key starts empty until /connect sets it. */
+    result->api_url =
+        sdsnew((defaults && sdslen(defaults->api_url) > 0) ? defaults->api_url : EDC_CONFIG_DEFAULT_API_URL);
+    result->model = sdsnew((defaults && sdslen(defaults->model) > 0) ? defaults->model : EDC_CONFIG_DEFAULT_MODEL);
 
-    /* --- LLM API Configuration --- */
-    printf("\n--- LLM API Configuration ---\n");
-
-    /* API URL */
-    const char *def_api_url =
-        (defaults && sdslen(defaults->api_url) > 0) ? defaults->api_url : EDC_CONFIG_DEFAULT_API_URL;
-    sds val = prompt_with_default("API URL", def_api_url);
-    if (!val)
-        return -1;
-    result->api_url = val;
-
-    /* Model */
-    const char *def_model = (defaults && sdslen(defaults->model) > 0) ? defaults->model : EDC_CONFIG_DEFAULT_MODEL;
-    val = prompt_with_default("Model", def_model);
-    if (!val)
-        return -1;
-    result->model = val;
-
-    /* Everything below uses the canonical defaults: the first run only asks for
-     * the API URL and model. The API key is left empty and can be set later
-     * with /connect. */
     result->api_key = (defaults && sdslen(defaults->api_key) > 0) ? sdsnew(defaults->api_key) : NULL;
     result->max_iter = (defaults && defaults->max_iter > 0) ? defaults->max_iter : EDC_CONFIG_DEFAULT_MAX_ITER;
     result->memory_compress_threshold = (defaults && defaults->memory_compress_threshold > 0)
@@ -265,7 +220,6 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
         (defaults && defaults->device_baud > 0) ? defaults->device_baud : EDC_CONFIG_DEFAULT_DEVICE_BAUD;
     result->device_pty = sdsnew((defaults && sdslen(defaults->device_pty) > 0) ? defaults->device_pty : "");
 
-    printf("\n===================================================\n");
     return 0;
 }
 

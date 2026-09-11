@@ -12,8 +12,8 @@ control for orchestrating multiple parallel agent tasks.
 $ edgeclaw              # start the interactive TUI
 ```
 
-On first run EdgeClaw asks only for the LLM **API URL** and **model**; every other
-setting uses its default. Set the **API key** at any time with `/connect`, which
+On first run EdgeClaw creates `config.json` with defaults and does not prompt;
+every setting uses its default. Configure the provider with `/connect`, which
 opens a dialog (prefilled with the current values) for the API URL, model and key
 and applies them immediately.
 

@@ -9,7 +9,8 @@
  *
  * Single source of truth for every tunable in config.json. edc_init_env()
  * materializes all of them into the file at startup — both when it is created
- * (interactive setup) and when it already exists but is missing keys (silent
+ * on first run (non-interactive; the provider is set later with /connect) and
+ * when it already exists but is missing keys (silent
  * top-up) — so config.json always shows the full configuration panorama and
  * can be edited by hand.
  *
