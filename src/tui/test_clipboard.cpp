@@ -90,12 +90,15 @@ void TestToast()
     Check(label != std::string::npos && label + std::string(kLabel).size() == static_cast<size_t>(width) - 2,
           "the label ends a pad and a margin short of the right edge");
 
-    // Flat like the Tasks/Todos headers: coloured text on the pane background,
-    // no border and no second surface behind it.
+    // Flat, but a surface of its own: the label sits on the raised dialog
+    // surface, which is what keeps it from vanishing into the message
+    // background, and the surface stops before the edge.
     const auto &pal = edc::style::palette();
     const auto cell = screen.CellAt(static_cast<int>(label), 1);
-    Check(cell.background_color == ::ftxui::Color::Default, "no background band");
-    Check(cell.foreground_color == pal.accent && cell.bold, "bold accent, like the section headers");
+    Check(cell.background_color == pal.dialog_bg, "the chip has a visible surface");
+    Check(cell.foreground_color == pal.accent && cell.bold, "bold accent text on it");
+    Check(screen.CellAt(width - 1, 1).background_color == ::ftxui::Color::Default,
+          "the surface stops short of the right edge");
 }
 
 } // namespace

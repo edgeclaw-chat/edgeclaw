@@ -359,14 +359,16 @@ std::string Osc52ClipboardSequence(const std::string &text)
     return std::string("\x1b]52;c;") + encoded + '\a';
 }
 
-// The "Copied to clipboard" chip: flat and borderless, exactly like the Tasks
-// and Todos section headers -- bold accent text straight on the pane background,
-// no border and no second surface. It is pinned near the top-right corner with
-// a one-cell margin, so it does not touch the edge.
+// The "Copied to clipboard" chip: flat and borderless like the Tasks/Todos
+// section headers, but on the palette's raised surface -- dialog_bg is the one
+// step above pane_bg, the surface a floating panel uses, so the block reads as a
+// surface of its own instead of vanishing into the message background behind it.
+// One cell of margin on the top and right keeps it off the corner.
 ::ftxui::Element ClipboardToastElement()
 {
     const auto &pal = style::palette();
-    auto chip = ::ftxui::text(" Copied to clipboard ") | ::ftxui::bold | ::ftxui::color(pal.accent);
+    auto chip = ::ftxui::text(" Copied to clipboard ") | ::ftxui::bold | ::ftxui::color(pal.accent) |
+                ::ftxui::bgcolor(pal.dialog_bg);
     return ::ftxui::vbox({
         ::ftxui::text(""),                                                       // one blank row below the top edge
         ::ftxui::hbox({::ftxui::filler(), std::move(chip), ::ftxui::text(" ")}), // one blank column off the right edge
