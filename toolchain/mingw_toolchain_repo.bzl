@@ -1,5 +1,10 @@
 load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
+load(
+    ":compilation_mode_features.bzl",
+    "COMPILATION_MODE_ACTIONS",
+    "COMPILATION_MODE_FEATURES",
+)
 
 def _normalize_path(path):
     parts = path.replace("\\", "/").split("/")
@@ -63,7 +68,7 @@ def _generate_config_bzl(bin_dir, tool_prefix, include_dirs, target_cpu, target_
         include_entries.append('            "{}",'.format(d))
     include_dirs_str = "\n".join(include_entries)
 
-    return """load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "action_config", "tool")
+    return """load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "action_config", "tool", "feature", "flag_set", "flag_group", "with_feature_set")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 
 def _impl(ctx):
@@ -92,6 +97,11 @@ def _impl(ctx):
         ),
     ]
 
+{all_compile_actions}
+    features = [
+{compilation_mode_features}
+    ]
+
     return cc_common.create_cc_toolchain_config_info(
         ctx = ctx,
         toolchain_identifier = "{toolchain_identifier}",
@@ -104,6 +114,7 @@ def _impl(ctx):
         abi_libc_version = "unknown",
         tool_paths = tool_paths,
         action_configs = action_configs,
+        features = features,
         cxx_builtin_include_directories = [
 {include_dirs}
         ],
@@ -113,7 +124,7 @@ mingw_toolchain_config = rule(
     implementation = _impl,
     attrs = {{}},
 )
-""".format(tool_paths = tool_paths_str, include_dirs = include_dirs_str, target_cpu = target_cpu, target_system_name = target_system_name, toolchain_identifier = toolchain_identifier)
+""".format(tool_paths = tool_paths_str, include_dirs = include_dirs_str, target_cpu = target_cpu, target_system_name = target_system_name, toolchain_identifier = toolchain_identifier, all_compile_actions = COMPILATION_MODE_ACTIONS, compilation_mode_features = COMPILATION_MODE_FEATURES)
 
 def _generate_stub(rctx):
     rctx.file("mingw_compiler_config.bzl", content = """load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
