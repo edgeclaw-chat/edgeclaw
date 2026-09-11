@@ -21,9 +21,9 @@ bool Message::OnEvent(ftxui::Event)
 ::ftxui::Element Message::TaskTag() const
 {
     const auto &pal = style::palette();
-    // Dim accent: present enough to scan for "which task", quiet enough not to
-    // compete with the message body or the violet user rule.
-    return ::ftxui::text("task " + task_id_) | ::ftxui::color(pal.accent) | ::ftxui::dim;
+    // "task N" cross-references the sidebar task tree, so it keeps its own hue
+    // (violet): gray was too faint and the accent blue now means the user turn.
+    return ::ftxui::text("task " + task_id_) | ::ftxui::color(pal.task_tag);
 }
 
 ::ftxui::Element Message::OnRender()
