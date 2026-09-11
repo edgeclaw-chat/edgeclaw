@@ -69,6 +69,11 @@ class MessageList : public ::ftxui::ComponentBase
     int total_ = 0;            // total content rows
     int measured_width_ = 0;   // width heights_ were measured at
     std::vector<Hit> hits_;    // geometry of the last drawn frame
+    // Whether the last drawn frame applied a selection highlight. The node is
+    // rebuilt every frame, and Text clears its highlight state in
+    // ComputeRequirement, which a steady frame skips -- so the frame *after* a
+    // selection needs one without a selection to notice and clear it.
+    bool had_selection_ = false;
 
     // Lay one item out at |width| and return the height of its own body. The
     // blank row separating consecutive messages is added as a stride in

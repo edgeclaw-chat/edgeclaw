@@ -43,6 +43,8 @@ class MessageListNode : public ::ftxui::Node
         requirement_.flex_grow_y = 1;
         requirement_.flex_shrink_y = 1;
         remeasured_ = false;
+        // Refreshed by Select() below whenever this frame has a selection.
+        selection_ = nullptr;
     }
 
     void SetBox(::ftxui::Box box) override
@@ -74,6 +76,15 @@ class MessageListNode : public ::ftxui::Node
     {
         list_.hits_.clear();
 
+        // A selection highlight lives in the nodes ftxui walked with Select().
+        // Those are the same cached trees drawn here, and Text() resets its
+        // highlight state only in ComputeRequirement(), which a steady frame
+        // skips. So on any frame that has -- or just had -- a selection the
+        // items must be re-required, or the highlight painted last frame would
+        // stay on screen forever.
+        const bool selecting = selection_ != nullptr || list_.had_selection_;
+        list_.had_selection_ = selection_ != nullptr;
+
         const ::ftxui::Box &stencil = screen.stencil;
         if (list_.items_.empty() || stencil.IsEmpty())
             return;
@@ -94,7 +105,11 @@ class MessageListNode : public ::ftxui::Node
             item.y_max = item.y_min + list_.heights_[i] - 1;
 
             ::ftxui::Element element = list_.items_[i]->Render();
+            if (selecting)
+                element->ComputeRequirement(); // clears a stale highlight
             element->SetBox(item);
+            if (selection_)
+                element->Select(*selection_);
             element->Render(screen);
 
             const ::ftxui::Box visible = ::ftxui::Box::Intersection(item, stencil);
@@ -105,44 +120,23 @@ class MessageListNode : public ::ftxui::Node
 
     void Select(::ftxui::Selection &selection) override
     {
-        // FTXUI collects the selected text by walking the node tree and asking
-        // every node which of its cells the selection covers (Text::Select adds
-        // the glyphs). This node draws the items itself instead of holding them
-        // as children, so it must forward the call: without this no message text
-        // is selectable at all.
-        //
-        // Only the items the selection touches are built. A drag spans a few
-        // rows, so this stays cheap, and it is the only way to get the items'
-        // boxes right -- Select runs before Render, so the frame's elements do
-        // not exist yet and are rebuilt here the same way Render builds them.
-        if (list_.items_.empty())
-            return;
-
-        const ::ftxui::Box &sel = selection.GetBox();
-        if (::ftxui::Box::Intersection(sel, box_).IsEmpty())
-            return;
-
-        const int first_row = sel.y_min - box_.y_min;
-        const int last_row = sel.y_max - box_.y_min;
-
-        for (size_t i = list_.FirstVisible(first_row); i < list_.items_.size(); i++)
-        {
-            if (list_.prefix_[i] > last_row)
-                break;
-
-            ::ftxui::Box item = box_;
-            item.y_min = box_.y_min + list_.prefix_[i];
-            item.y_max = item.y_min + list_.heights_[i] - 1;
-
-            ::ftxui::Element element = list_.items_[i]->Render();
-            element->SetBox(item);
-            element->Select(selection);
-        }
+        // FTXUI collects the selected text by walking the node tree (Text::Select
+        // adds the glyphs), and it calls Select *before* Render. This node draws
+        // its items itself instead of holding them as children, so it has to
+        // forward the selection -- but it does so *while* drawing: Text only
+        // highlights during Render, after ComputeRequirement() has cleared the
+        // previous frame's state (see Render). Painting here would be erased by
+        // that very ComputeRequirement.
+        selection_ = &selection;
     }
 
   private:
     MessageList &list_;
     bool remeasured_ = false;
+    // This frame's selection, if it has one. Valid until Render() returns: the
+    // App builds one Selection per frame and keeps it alive across the
+    // Select/Render steps.
+    ::ftxui::Selection *selection_ = nullptr;
 };
 
 void MessageList::AddMessage(std::shared_ptr<Message> message)

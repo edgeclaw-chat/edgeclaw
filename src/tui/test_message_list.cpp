@@ -464,6 +464,48 @@ static void test_selection_collects_message_text(void)
     PASS();
 }
 
+// A selection must highlight only while it is active. Text clears its highlight
+// in ComputeRequirement(), which a steady frame skips, so the highlight painted
+// while selecting used to stay on screen after the selection was gone.
+// Regression for that: draw with a selection, then without, and the frame must
+// look exactly like it did before any selection.
+static int InvertedCells(const std::shared_ptr<edc::ChatWidget> &chat, bool with_selection, int w = kW, int h = kH)
+{
+    auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(w), ftxui::Dimension::Fixed(h));
+    ftxui::Element element = chat->Render() | ftxui::flex;
+    if (with_selection)
+    {
+        ftxui::Selection selection(0, 0, w - 1, h - 1);
+        ftxui::Render(screen, element.get(), selection);
+    }
+    else
+    {
+        ftxui::Render(screen, element.get());
+    }
+
+    int inverted = 0;
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            inverted += screen.CellAt(x, y).inverted ? 1 : 0;
+    return inverted;
+}
+
+static void test_selection_highlight_clears(void)
+{
+    TEST("the selection highlight goes away with the selection");
+    const auto now = ::time(nullptr);
+    auto chat = std::make_shared<edc::ChatWidget>();
+    chat->AddMessage(std::make_shared<edc::Message>("ZEBRAFISH", now));
+
+    const int before = InvertedCells(chat, false);
+    const int during = InvertedCells(chat, true);
+    const int after = InvertedCells(chat, false);
+
+    ASSERT(during > before, "selecting did not highlight anything (%d -> %d)", before, during);
+    ASSERT(after == before, "the highlight stayed painted after the selection went away (%d -> %d)", before, after);
+    PASS();
+}
+
 } // namespace
 
 int main(void)
@@ -482,6 +524,7 @@ int main(void)
     test_unbroken_run_wraps_in_every_message_type();
     test_unbroken_run_rewraps_on_resize();
     test_selection_collects_message_text();
+    test_selection_highlight_clears();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
