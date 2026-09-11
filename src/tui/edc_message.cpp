@@ -21,9 +21,10 @@ bool Message::OnEvent(ftxui::Event)
 ::ftxui::Element Message::TaskTag() const
 {
     const auto &pal = style::palette();
-    // Dim accent: present enough to scan for "which task", quiet enough not to
-    // compete with the message body or the pink user rule.
-    return ::ftxui::text("task " + task_id_) | ::ftxui::color(pal.accent) | ::ftxui::dim;
+    // Metadata, so it stays gray: accent now means "user / interactive"
+    // (the prompt, the user-message rule, the expand toggles), and a task tag
+    // painted in it would read as part of that same group.
+    return ::ftxui::text("task " + task_id_) | ::ftxui::color(pal.text_dim);
 }
 
 ::ftxui::Element Message::OnRender()

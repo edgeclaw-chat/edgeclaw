@@ -85,6 +85,9 @@ struct Palette
     ::ftxui::Color thought_closed; // collapsed "Thought" toggle: dim yellow.
 
     // ---- input & chat rules ---------------------------------------------
+    // Both share the accent hue (blue) so the input prompt and the
+    // user-message rule read as one family with the task/todo accents,
+    // instead of the earlier pink that clashed with them.
     ::ftxui::Color prompt;    // the "❯ " input prompt glyph.
     ::ftxui::Color user_rule; // heavy rule marking user messages.
 
@@ -93,8 +96,8 @@ struct Palette
     // Monokai themes map syntax: h1 is an emphasis (pink) banner whose
     // text is punched out in the editor background color, then the heading
     // ladder walks yellow -> orange -> cyan, inline code is a purple chip
-    // (the violet token sits between the cyan accent and the pink used by
-    // the prompt, so a highlight reads as "one of ours"), links follow the
+    // (the violet token sits between the cyan accent and the pink emphasis
+    // and list tokens, so a highlight reads as "one of ours"), links follow the
     // function token, and quotes/rules use the comment and selection grays.
     //
     // Note: no Markdown role uses the green token. Green is reserved for
@@ -133,8 +136,8 @@ inline const Palette &palette()
         ::ftxui::Color::RGB(230, 219, 116),  // thought_open   (#E6DB74 yellow)
         ::ftxui::Color::RGB(138, 131, 69),   // thought_closed (#8A8345 dim yellow)
         // input & chat rules
-        ::ftxui::Color::RGB(249, 38, 114),   // prompt      (#F92672 pink)
-        ::ftxui::Color::RGB(249, 38, 114),   // user_rule   (#F92672 pink)
+        ::ftxui::Color::RGB(102, 217, 239),  // prompt      (#66D9EF accent)
+        ::ftxui::Color::RGB(102, 217, 239),  // user_rule   (#66D9EF accent)
         // Markdown syntax colors (Monokai tokens)
         // h1 banner: pink band with the text punched out in the editor
         // background color, i.e. dark-on-pink — maximum contrast, and it
@@ -147,9 +150,9 @@ inline const Palette &palette()
         ::ftxui::Color::RGB(248, 248, 242),  // md_code     (#F8F8F2 foreground)
         // Inline code is a violet chip: the Monokai purple token on the
         // current-line surface, one step above the pane background. Violet
-        // sits between the cyan accent (headers/spinner) and the pink prompt,
-        // so a code highlight reads as part of the same family instead of
-        // borrowing the green that is reserved for success.
+        // sits between the cyan accent (headers/spinner) and the pink
+        // emphasis/list tokens, so a code highlight reads as part of the same
+        // family instead of borrowing the green that is reserved for success.
         ::ftxui::Color::RGB(174, 129, 255),  // md_code_inline (#AE81FF purple)
         ::ftxui::Color::RGB(62, 61, 50),     // md_code_bg     (#3E3D32 lite)
         ::ftxui::Color::RGB(73, 72, 62),     // md_rule        (#49483E selection)
