@@ -88,9 +88,6 @@ struct Palette
     // The user turn uses the accent (blue), matching the task/todo accents.
     ::ftxui::Color prompt;    // the "❯ " input prompt glyph.
     ::ftxui::Color user_rule; // heavy rule marking user messages.
-    ::ftxui::Color task_tag;  // "task N" metadata on a message: violet, its own
-                              // hue so it stays legible without fading into gray
-                              // or colliding with the blue user turn.
 
     // ---- Markdown syntax colors -----------------------------------------
     // Markdown uses the same Monokai tokens as the chrome, mapped the way
@@ -139,7 +136,6 @@ inline const Palette &palette()
         // input & chat rules
         ::ftxui::Color::RGB(102, 217, 239),  // prompt      (#66D9EF accent)
         ::ftxui::Color::RGB(102, 217, 239),  // user_rule   (#66D9EF accent)
-        ::ftxui::Color::RGB(174, 129, 255),  // task_tag    (#AE81FF violet)
         // Markdown syntax colors (Monokai tokens)
         // h1 banner: pink band with the text punched out in the editor
         // background color, i.e. dark-on-pink — maximum contrast, and it

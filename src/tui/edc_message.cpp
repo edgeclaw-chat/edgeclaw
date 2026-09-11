@@ -21,9 +21,10 @@ bool Message::OnEvent(ftxui::Event)
 ::ftxui::Element Message::TaskTag() const
 {
     const auto &pal = style::palette();
-    // "task N" cross-references the sidebar task tree, so it keeps its own hue
-    // (violet): gray was too faint and the accent blue now means the user turn.
-    return ::ftxui::text("task " + task_id_) | ::ftxui::color(pal.task_tag);
+    // "task N" cross-references the sidebar task tree, which renders its task
+    // ids in the terminal foreground; using the same color makes the tag read
+    // as the same identifier.
+    return ::ftxui::text("task " + task_id_) | ::ftxui::color(pal.text);
 }
 
 ::ftxui::Element Message::OnRender()
