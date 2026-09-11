@@ -251,6 +251,63 @@ static void test_turns(void)
     CHECK(edc_queue_length(&t->turns) == 3, "add_turn NULL does nothing");
 
     edc_task_free(t);
+
+    /* edc_task_message_count: message total = sum over committed turns +
+     * in-flight active_turn (contrast with turns, which counts rounds). */
+    TEST("edc_task_message_count sums committed turns + active_turn");
+    struct edc_task *mt = edc_task_new("task-msg", "sess-1", "task-msg", "msg test", edc_channel_adapter);
+    CHECK(edc_task_message_count(mt) == 0, "empty task has 0 messages");
+
+    struct edc_turn *a = edc_turn_new();
+    edc_turn_add_user_message(a, "u1");
+    edc_task_add_turn(mt, a);
+    CHECK(edc_task_message_count(mt) == 1, "1 message after 1 committed turn");
+
+    struct edc_turn *b = edc_turn_new();
+    edc_turn_add_user_message(b, "u2");
+    edc_turn_add_assistant_message(b, cJSON_Parse("{\"role\":\"assistant\",\"content\":\"ok\"}"));
+    edc_task_add_turn(mt, b);
+    CHECK(edc_queue_length(&mt->turns) == 2, "2 turns committed");
+    CHECK(edc_task_message_count(mt) == 3, "3 messages across 2 turns");
+
+    struct edc_turn *act = edc_turn_new();
+    edc_turn_add_user_message(act, "u3");
+    mt->active_turn = act;
+    CHECK(edc_task_message_count(mt) == 4, "in-flight active_turn message counted");
+    edc_task_commit_active_turn(mt);
+    CHECK(edc_task_message_count(mt) == 4, "count stable after commit");
+
+    CHECK(edc_task_message_count(NULL) == 0, "edc_task_message_count(NULL) is 0");
+    edc_task_free(mt);
+
+    /* edc_task_user_input: user messages across turns + active_turn. */
+    TEST("edc_task_user_input collects user messages");
+    struct edc_task *ut = edc_task_new("task-uin", "sess-1", "task-uin", "u test", edc_channel_adapter);
+    CHECK(edc_task_user_input(ut) == NULL, "no input -> NULL");
+
+    struct edc_turn *t1 = edc_turn_new();
+    edc_turn_add_user_message(t1, "hello");
+    edc_task_add_turn(ut, t1);
+    sds u1 = edc_task_user_input(ut);
+    CHECK(u1 && strcmp(u1, "hello") == 0, "single user input");
+    sdsfree(u1);
+
+    struct edc_turn *t2 = edc_turn_new();
+    edc_turn_add_user_message(t2, "world");
+    edc_turn_add_assistant_message(t2, cJSON_Parse("{\"role\":\"assistant\",\"content\":\"ignored\"}"));
+    edc_task_add_turn(ut, t2);
+    sds u2 = edc_task_user_input(ut);
+    CHECK(u2 && strcmp(u2, "hello\nworld") == 0, "inputs joined, assistant ignored");
+    sdsfree(u2);
+
+    struct edc_turn *ta = edc_turn_new();
+    edc_turn_add_user_message(ta, "inflight");
+    ut->active_turn = ta;
+    sds u3 = edc_task_user_input(ut);
+    CHECK(u3 && strcmp(u3, "hello\nworld\ninflight") == 0, "active_turn input included");
+    sdsfree(u3);
+    CHECK(edc_task_user_input(NULL) == NULL, "edc_task_user_input(NULL) is NULL");
+    edc_task_free(ut);
 }
 
 /* ── 6. 依赖管理 ───────────────────────────────────────────── */

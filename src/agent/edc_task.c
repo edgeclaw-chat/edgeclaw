@@ -306,6 +306,54 @@ void edc_task_commit_active_turn(struct edc_task *task)
     task->active_turn = NULL;
 }
 
+size_t edc_task_message_count(const struct edc_task *task)
+{
+    if (!task)
+        return 0;
+    size_t n = 0;
+    for (size_t i = task->turns.head; i < task->turns.tail; i++)
+    {
+        struct edc_turn *turn = (struct edc_turn *)task->turns.data[i];
+        if (turn)
+            n += edc_queue_length(&turn->messages);
+    }
+    if (task->active_turn)
+        n += edc_queue_length(&task->active_turn->messages);
+    return n;
+}
+
+/* 把一个 turn 里所有 role=="user" 的消息 content 追加到 *out (以 '\n' 连接;
+ * *out 为 NULL 时新建)。turn 的第一条消息即该轮用户提交的输入。 */
+static void collect_user_msgs(const struct edc_turn *turn, sds *out)
+{
+    if (!turn || !out)
+        return;
+    for (size_t j = turn->messages.head; j < turn->messages.tail; j++)
+    {
+        cJSON *msg = (cJSON *)turn->messages.data[j];
+        if (!msg)
+            continue;
+        const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "role"));
+        if (!role || strcmp(role, "user") != 0)
+            continue;
+        const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
+        if (!content)
+            continue;
+        *out = *out ? sdscatprintf(*out, "\n%s", content) : sdsnew(content);
+    }
+}
+
+sds edc_task_user_input(const struct edc_task *task)
+{
+    if (!task)
+        return NULL;
+    sds out = NULL;
+    for (size_t i = task->turns.head; i < task->turns.tail; i++)
+        collect_user_msgs((const struct edc_turn *)task->turns.data[i], &out);
+    collect_user_msgs(task->active_turn, &out);
+    return out;
+}
+
 /* ── Todo 同步节流 ────────────────────────────────────────── */
 
 void edc_task_note_todo_sync(struct edc_task *task)

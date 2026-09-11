@@ -848,11 +848,31 @@ static void edc_commands_handle_task_status(struct edc_agent *agent, edc_actor_t
                            "## Task `%s`\n\n"
                            "- **state**: %s\n"
                            "- **group**: %s\n"
-                           "- **desc**: %s\n"
-                           "- **deps**: %zu/%zu completed\n"
-                           "- **turns**: %zu\n",
-                           t->task_id, edc_task_state_name(t->state), t->group_id, t->description, t->deps_completed,
-                           t->deps_total, (size_t)edc_queue_length(&t->turns));
+                           "- **desc**: %s\n",
+                           t->task_id, edc_task_state_name(t->state), t->group_id, t->description);
+
+    /* 展示 task 实际收到的用户输入（而不只是 description）。多行输入把换行
+     * 后的内容缩进两格，作为 markdown 列表项的续行，避免撑破列表。 */
+    sds user_input = edc_task_user_input(t);
+    if (user_input)
+    {
+        sds indented = sdsempty();
+        for (const char *p = user_input; *p; p++)
+        {
+            if (*p == '\n')
+                indented = sdscat(indented, "\n  ");
+            else
+                indented = sdscatlen(indented, p, 1);
+        }
+        out = sdscatprintf(out, "- **input**: %s\n", indented);
+        sdsfree(indented);
+    }
+    sdsfree(user_input);
+
+    out = sdscatprintf(out,
+                       "- **deps**: %zu/%zu completed\n"
+                       "- **messages**: %zu\n",
+                       t->deps_completed, t->deps_total, edc_task_message_count(t));
     if (t->output)
     {
         out = sdscatprintf(out, "- **output**: %s\n", t->output);

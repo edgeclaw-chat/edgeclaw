@@ -195,6 +195,17 @@ extern bool edc_task_llm_request_poke(struct edc_task *task);
 extern void edc_task_add_turn(struct edc_task *task, struct edc_turn *turn);
 extern void edc_task_commit_active_turn(struct edc_task *task);
 
+/** 该 task 目前持有的 message 总数: 所有已提交 turn 的 messages 之和, 加上
+ *  在途 active_turn 的 messages (若有)。一个 turn 可含多条 message (user +
+ *  多轮 assistant/tool 往返), 因此这个数才是"消息数"; 与之相对,
+ *  edc_queue_length(&task->turns) 只是已提交的轮数 (当前状态机下恒为 0/1)。 */
+extern size_t edc_task_message_count(const struct edc_task *task);
+
+/** 该 task 收到的所有用户输入 (各 turn 里 role=="user" 的消息 content, 以 '\n'
+ *  连接)。返回新分配的 sds, 无输入返回 NULL, 调用方负责 sdsfree。用于
+ *  /task status 展示 task 实际收到的输入, 而不只是 description。 */
+extern sds edc_task_user_input(const struct edc_task *task);
+
 /* ── 依赖 (IPC) ────────────────────────────────────────────── */
 
 extern bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, edc_task_dep_type type);
