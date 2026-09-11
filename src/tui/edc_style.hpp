@@ -85,14 +85,10 @@ struct Palette
     ::ftxui::Color thought_closed; // collapsed "Thought" toggle: dim yellow.
 
     // ---- input & chat rules ---------------------------------------------
-    // Both share the accent hue (blue) so the input prompt and the
-    // user-message rule read as one family with the task/todo accents,
-    // instead of the earlier pink that clashed with them.
+    // The user turn gets its own hue (violet) so it is distinct from both the
+    // pink that means error and the accent blue the task tags and headers use.
     ::ftxui::Color prompt;    // the "❯ " input prompt glyph.
     ::ftxui::Color user_rule; // heavy rule marking user messages.
-    ::ftxui::Color task_tag;  // "task N" metadata on a message. Monokai Pro's
-                              // blue: legible on the dark pane without the gray
-                              // fading out or a status color being reused.
 
     // ---- Markdown syntax colors -----------------------------------------
     // Markdown uses the same Monokai tokens as the chrome, mapped the way
@@ -139,9 +135,8 @@ inline const Palette &palette()
         ::ftxui::Color::RGB(230, 219, 116),  // thought_open   (#E6DB74 yellow)
         ::ftxui::Color::RGB(138, 131, 69),   // thought_closed (#8A8345 dim yellow)
         // input & chat rules
-        ::ftxui::Color::RGB(102, 217, 239),  // prompt      (#66D9EF accent)
-        ::ftxui::Color::RGB(102, 217, 239),  // user_rule   (#66D9EF accent)
-        ::ftxui::Color::RGB(120, 220, 232),  // task_tag    (#78DCE8 Monokai Pro blue)
+        ::ftxui::Color::RGB(174, 129, 255),  // prompt      (#AE81FF violet)
+        ::ftxui::Color::RGB(174, 129, 255),  // user_rule   (#AE81FF violet)
         // Markdown syntax colors (Monokai tokens)
         // h1 banner: pink band with the text punched out in the editor
         // background color, i.e. dark-on-pink — maximum contrast, and it
