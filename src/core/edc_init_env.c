@@ -176,12 +176,14 @@ static sds default_sandbox_rw_extra(const char *edc_home)
     return sdscatprintf(sdsempty(), "%s/workspace/, /tmp, /dev", edc_home);
 }
 
-/* Default read-only paths. The workspace is writable (it is in the rw defaults
- * below), so it is not listed here; only its ssl/ subtree stays read-only. */
+/* Default read-only paths. The whole filesystem is readable so tools can read
+ * system files (/etc, /run, /proc, ...) and the user's own files; writes stay
+ * confined to the writable set below. The loader also ensures '/' is present
+ * and adds the workspace to the writable set. */
 static sds default_sandbox_ro(const char *edc_home)
 {
-    return sdscatprintf(sdsempty(), "%s/workspace/ssl, /usr, /lib, /lib32, /lib64, /libx32, /bin, /sbin, /etc, /proc",
-                        edc_home);
+    (void)edc_home;
+    return sdsnew("/");
 }
 
 /* Parse existing config.json into a edc_init_env_result.
