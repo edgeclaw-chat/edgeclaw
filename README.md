@@ -179,40 +179,84 @@ Tools are registered dynamically; see "Adding a New Tool" below.
 ### Sandboxing
 
 Tool execution enforces **sandbox path verification** (`edc_sandbox_verify_path`)
-against the configured sandbox root in the fs/shell/device tools on all
-platforms (gated by the agent's `enable_sandbox` flag).
+against the configured sandbox policy in the fs/shell/device tools on all
+platforms (gated by the agent's `enable_sandbox` flag). The policy is three path
+lists — **read-only**, **read-write** and **deny** — stored under the `sandbox`
+key in `config.json` and editable at runtime with `/sandbox` (see below). A path
+is decided by the **most specific matching entry** (longest prefix wins), and a
+**deny** entry beats every allow entry, for reads and writes alike.
 
 On Linux, when the sandbox is enabled, the shell tool additionally runs each
 command through a tiny embedded **sandbox helper**
 (`src/agent/sandbox_helper.c`): the agent execs the helper, which applies the
-kernel sandbox — **Landlock** and **seccomp-BPF** (see
-`src/agent/edc_landlock_sandbox.c`, `edc_bpf_sandbox.c`) — in its own fresh,
-single-threaded process and then execs `/bin/sh`. This is the one place kernel
-isolation can be applied safely: `edc_sandbox_apply()` must run in the confined
-process (it is irreversible and inherited, so it must never run in the agent),
-and doing it between `fork()` and `exec()` in the multithreaded agent is unsafe
-(only async-signal-safe calls are allowed there) — applying it after an `exec`
-sidesteps both. `exec` keeps the pid, so the existing process-group kill / exit
-handling is unchanged. The helper is embedded in the binary at build time
-(`tools/embed_blob.py`) and extracted to `$EDC_HOME/.cache/` on first use, so
-the release stays a single file. The mount-namespace backend
-(`edc_ns_sandbox.c`) is not used by the helper (it needs libuv/heap and is often
-unavailable in containers). macOS/Windows skip kernel isolation (path
-verification only).
+kernel sandbox in its own fresh, single-threaded process and then execs
+`/bin/sh`. This is the one place kernel isolation can be applied safely:
+`edc_sandbox_apply()` must run in the confined process (it is irreversible and
+inherited, so it must never run in the agent), and doing it between `fork()` and
+`exec()` in the multithreaded agent is unsafe (only async-signal-safe calls are
+allowed there) — applying it after an `exec` sidesteps both. `exec` keeps the
+pid, so the existing process-group kill / exit handling is unchanged. The helper
+is embedded in the binary at build time (`tools/embed_blob.py`) and extracted to
+`$EDC_HOME/.cache/` on first use, so the release stays a single file.
 
-The **writable** set is the agent's own workspace (`$EDC_HOME/workspace`), the
-directory EdgeClaw was launched from, `/tmp` and `/dev`. Every other path —
-including the user's home directory and `$EDC_HOME` itself (`config.json`, the
-key verifier) — is **read-only** for writes but freely readable. Access is
-decided by the **most specific matching path** (longest prefix wins), so the
-workspace stays writable even though it lives under the read-only home.
+The helper applies, in order:
 
-There is no dedicated sandbox directory: the launch directory is the sandbox
-root and the default working directory for tools. The kernel **Landlock** layer
-used for shell commands applies the same writable/read-only sets. Landlock only
+1. **Mount namespace** (`edc_ns_sandbox.c`) — unshares a user + mount namespace,
+   remounts `/` read-only and bind-mounts every read-write path back. This makes
+   the read-only set immutable at the VFS level (unlink/chmod/chown/xattr on it
+   fail with `EROFS`) and **masks deny paths** (an empty mode-000 tmpfs over each
+   denied directory, an empty file over each denied file) — the only layer that
+   can deny a path inside an allowed parent. It then verifies the outcome (`/`
+   really read-only, every rw path really writable).
+2. **Landlock** (`edc_landlock_sandbox.c`) — an additive allow-list over the
+   same read-only / read-write sets.
+3. **seccomp-BPF** (`edc_bpf_sandbox.c`) — denies the capability/escape class
+   (ptrace, bpf, module loading, mount/setns, io_uring, keyring, `pidfd_getfd`,
+   cross-process memory access, ...) plus the metadata mutators Landlock cannot
+   mediate (chmod/chown/utimes/xattr, `ioctl(FS_IOC_SETFLAGS)`). Those metadata
+   rules are path-blind, so they are installed only as a **fallback** when the
+   mount namespace is not enforced; with it active the read-only paths already
+   return `EROFS`.
+
+`edc_sandbox_apply()` runs the same three layers but is **reserved and currently
+unused** — the active path is the helper. macOS/Windows skip kernel isolation
+(path verification only).
+
+The **default writable** set is the agent's own workspace
+(`$EDC_HOME/workspace`), the directory EdgeClaw was launched from, `/tmp`,
+`/dev`, and the user's `~/.cache` (so build/package-manager caches such as
+bazel's keep working under the sandbox). The **default read-only** set is a
+system whitelist (`EDC_SANDBOX_DEFAULT_RO_PATHS`: `/usr`, `/lib*`, `/bin`,
+`/sbin`, `/etc`, `/proc`, `/sys`, `/run`) plus the user's home directory; `/run`
+is included because `/etc/resolv.conf` is usually a symlink into it. The whole
+filesystem is **not** readable by default — `/` is intentionally absent.
+
+The launch directory is the sandbox root and the default working directory for
+tools; there is no separate sandbox directory. The read-only home stays
+read-only while the workspace (which lives under it) stays writable, because the
+longest-prefix rule lets the more specific writable entry win. Landlock only
 unions access rights, so it cannot carve a read-only subtree out of a writable
-parent; that is why the home is kept read-only rather than writable with
-`~/.edgeclaw` excluded.
+parent — the deny list plus the namespace masking cover that case instead.
+
+Writes the agent itself performs into model-writable directories (chat
+transcript, input history, `history.json`, crontab `jobs.json`, `MEMORY.md` /
+`HISTORY.md`) go through symlink-safe helpers (`edc_file_fopen_safe()` /
+`edc_file_write_safe()`: `O_NOFOLLOW`, confined to the workspace) so a planted
+symlink cannot redirect them into a protected path. Commands spawned by the
+shell tool receive a **minimal environment whitelist** (`edc_shell_env.c`:
+`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, locale, `TERM`, `TZ`, `TMPDIR`)
+instead of the agent's full environment, so secrets exported in the user's shell
+(e.g. an API token) do not leak into every child.
+
+Manage the policy at runtime (persisted to `config.json`, effective for
+subsequently spawned commands):
+
+- `/sandbox` — show status plus the read-write / read-only / denied lists
+- `/sandbox list` — list the three lists
+- `/sandbox on|off` — enable/disable the sandbox
+- `/sandbox add-ro|rm-ro <dir>` — add/remove a read-only directory
+- `/sandbox add-rw|rm-rw <dir>` — add/remove a read-write directory
+- `/sandbox add-deny|rm-deny <dir>` — mask a directory (wins over ro/rw, e.g. `~/.ssh`)
 
 ### Additional Features
 
@@ -223,7 +267,7 @@ parent; that is why the home is kept read-only rather than writable with
   the system prompt
 - **Markdown rendering**: md4c-based rendering in the TUI frontend
 - **Internal commands**: slash commands (`/session ...`,
-  `/task ...`, `/connect`) and shell-like syntax (`|`, `;`, `&`, redirection, `$VAR`,
+  `/task ...`, `/connect`, `/sandbox ...`) and shell-like syntax (`|`, `;`, `&`, redirection, `$VAR`,
   `!n`/`!!`)
 - **Cron scheduling**: one-shot (`at`) or recurring (`cron_expr`/
   `every_seconds`) agent tasks via `ccronexpr`
@@ -385,8 +429,10 @@ Create `~/.edgeclaw/config.json`:
   "group_fold_msg_threshold": 500,
   "tool_max_output_size": 10000,
   "sandbox": {
-    "rw_paths": ["/home/<user>/.edgeclaw/workspace", "/tmp", "/dev"],
-    "ro_paths": ["/"]
+    "enable": true,
+    "rw_paths": ["/home/<user>/.edgeclaw/workspace", "/tmp", "/dev", "/home/<user>/.cache"],
+    "ro_paths": ["/usr", "/lib", "/lib32", "/lib64", "/libx32", "/bin", "/sbin", "/etc", "/proc", "/sys", "/run"],
+    "deny_paths": []
   },
   "channel": {
     "type": "adapter"
