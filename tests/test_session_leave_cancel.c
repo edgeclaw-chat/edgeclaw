@@ -10,8 +10,14 @@
  *   1. edc_scheduler_send_signal_to_session(..., running_only=true) 只命中指定
  *      session 的运行中任务: 不碰别的 session, 不碰终态 (COMPLETED), 不碰
  *      WAITING_INPUT; running_only=false (显式 /stop) 仍然全清;
- *   2. 信号 + save 之后反序列化回来确实得到 CANCELLED (WAITING_INPUT 保持原状);
- *   3. 重启安全网: 即使没来得及显式取消, 在途任务也不会变回 WAITING_INPUT。
+ *   2. 信号 + save 之后反序列化回来: 终态 CANCELLED 原样保留; 未完成的
+ *      WAITING_INPUT 落地后加载时统一收敛为 SUSPENDED (由用户 resume 再判定);
+ *   3. 重启安全网: 中断的在途任务 (LLM_PROCESSING) 加载后为 SUSPENDED, 而不是
+ *      变回 WAITING_INPUT 假装什么都没发生。
+ *
+ *  注: 加载归一化 (edc_state_serializer 的 normalize_interrupted_state) 现在把
+ *  **所有非终态** (WAITING_INPUT / WAITING_DEPS / LLM_PROCESSING / TOOL_CALLING)
+ *  统一变成 SUSPENDED —— 打开后先全部停住, 由 /task resume 重新判定。
  */
 
 #include "edc_channel_actor.h"
@@ -171,7 +177,7 @@ static void test_signal_scoped_to_session(void)
 
 static void test_leave_persists_cancelled(void)
 {
-    TEST("cancel + save -> reload gives CANCELLED (WAITING_INPUT untouched)");
+    TEST("cancel + save -> reload: CANCELLED stays, non-terminal -> SUSPENDED");
     clean_workspace();
 
     struct edc_config *cfg = make_config();
@@ -198,9 +204,9 @@ static void test_leave_persists_cancelled(void)
 
     struct edc_task *rt = find_task(sa2, "t1");
     CHECK(rt != NULL, "cancelled task restored");
-    CHECK(rt != NULL && rt->state == TASK_CANCELLED, "restored as CANCELLED (not WAITING_INPUT)");
+    CHECK(rt != NULL && rt->state == TASK_CANCELLED, "terminal CANCELLED passes through unchanged");
     struct edc_task *rt2 = find_task(sa2, "t2");
-    CHECK(rt2 != NULL && rt2->state == TASK_WAITING_INPUT, "WAITING_INPUT restored verbatim");
+    CHECK(rt2 != NULL && rt2->state == TASK_SUSPENDED, "WAITING_INPUT -> SUSPENDED on load");
 
     edc_scheduler_free(sched_a);
     edc_scheduler_free(sched_a2);
@@ -217,7 +223,7 @@ static void test_leave_persists_cancelled(void)
 
 static void test_interrupted_restores_cancelled(void)
 {
-    TEST("interrupted in-flight task reloads as CANCELLED (no WAITING_INPUT degrade)");
+    TEST("interrupted in-flight task reloads as SUSPENDED (resume re-derives)");
     clean_workspace();
 
     struct edc_config *cfg = make_config();
@@ -237,7 +243,7 @@ static void test_interrupted_restores_cancelled(void)
     CHECK(edc_session_load_state(sa2, sched_a2), "load_state succeeds");
 
     struct edc_task *rt = find_task(sa2, "t1");
-    CHECK(rt != NULL && rt->state == TASK_CANCELLED, "restored as CANCELLED, not WAITING_INPUT");
+    CHECK(rt != NULL && rt->state == TASK_SUSPENDED, "restored as SUSPENDED");
 
     edc_scheduler_free(sched_a);
     edc_scheduler_free(sched_a2);

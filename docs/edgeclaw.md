@@ -103,9 +103,20 @@ The LLM_PROCESSING and TOOL_CALLING states alternate as the LLM invokes tools
 and receives results. Tasks reach COMPLETED when the LLM produces a final
 response; CANCELLED when stopped; ERROR on failure.
 
+**Restart behavior**: on exit, every unfinished task is persisted *as-is*
+(including LLM_PROCESSING / TOOL_CALLING). On load, every unfinished task is
+parked as **SUSPENDED**; `/task resume [tid]` re-derives the state it should
+return to:
+
+- unsatisfied dependencies → `WAITING_DEPS`
+- an unfinished tool call → `TOOL_CALLING` (not-yet-started tools are re-run; a
+  tool that was interrupted mid-flight gets a synthesized "interrupted" result)
+- a pending turn (input not yet answered) → `LLM_PROCESSING`
+- otherwise → `WAITING_INPUT`
+
 - **COMPLETED**: persists until reclaimed with `/task join`.
 - **WAITING_DEPS**: accepts input and queues it until dependencies resolve.
-- **SUSPENDED**: can be resumed.
+- **SUSPENDED**: parked (e.g. after a restart); `/task resume` revives it.
 
 ### Dependency System
 
@@ -114,13 +125,12 @@ maintains two linked lists: `deps` (tasks it waits for) and `dependents`
 (tasks waiting for it). **DFS cycle detection** runs on every new dependency
 to prevent deadlocks.
 
-Three dependency types:
+Two dependency types:
 
-| Type | Syntax | Behavior |
-|------|--------|----------|
-| **JOIN** | `\|` (pipe) | Source output is injected into destination's LLM context |
-| **SEQUENCE** | `;` | Destination waits for source, but no output injection |
-| **PIPE** | (reserved) | Streaming mode — not yet implemented |
+| Type | Syntax | Behavior | On source CANCELLED |
+|------|--------|----------|---------------------|
+| **JOIN** | `\|` (pipe) | Source output is injected into destination's LLM context | Destination is CANCELLED too — the dependency can never be satisfied |
+| **SEQUENCE** | `;` | Destination waits for source, but no output injection | Only this dependency edge is dropped; destination stays runnable |
 
 ### Fork
 
@@ -193,6 +203,7 @@ The child inherits a slice of the parent's conversation context. Use
 | Command | Description |
 |---------|-------------|
 | `/task stop [tid]` | Cancel a task (SIGTERM — notifies dependents). Without an id, stops the active task of the foreground group; errors if the id is not found |
+| `/task resume [tid]` | Resume a SUSPENDED task: re-derives state (deps / tool chain / turn) and drives it. Without an id, resumes the active task of the foreground group |
 | `/task join <tid>` | Show output, auto-inject into active task (or create one), then reclaim |
 
 ### Pipelines

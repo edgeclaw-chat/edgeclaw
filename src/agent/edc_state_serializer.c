@@ -22,8 +22,6 @@ static const char *dep_type_name(edc_task_dep_type t)
     {
     case TASK_DEP_JOIN:
         return "JOIN";
-    case TASK_DEP_PIPE:
-        return "PIPE";
     case TASK_DEP_SEQUENCE:
         return "SEQUENCE";
     default:
@@ -37,8 +35,6 @@ static edc_task_dep_type dep_type_from_name(const char *name)
         return TASK_DEP_JOIN;
     if (strcmp(name, "JOIN") == 0)
         return TASK_DEP_JOIN;
-    if (strcmp(name, "PIPE") == 0)
-        return TASK_DEP_PIPE;
     if (strcmp(name, "SEQUENCE") == 0)
         return TASK_DEP_SEQUENCE;
     return TASK_DEP_JOIN;
@@ -204,6 +200,27 @@ static cJSON *task_to_json(struct edc_task *task, cJSON *messages_array)
     /* todo 同步节流计数 (距上次 todowrite 的 LLM 请求数, 跨会话保持) */
     cJSON_AddNumberToObject(tj, "todo_sync_gap", task->todo_sync_gap);
 
+    /* ── 未完成工具调用 (resume 账本) ── */
+    if (task->tool_calls)
+    {
+        cJSON *tc = cJSON_CreateArray();
+        struct edc_tool_call_record *rec;
+        for (rec = task->tool_calls; rec; rec = rec->next)
+        {
+            cJSON *o = cJSON_CreateObject();
+            if (rec->call_id)
+                cJSON_AddStringToObject(o, "call_id", rec->call_id);
+            if (rec->name)
+                cJSON_AddStringToObject(o, "name", rec->name);
+            if (rec->args)
+                cJSON_AddItemToObject(o, "args", cJSON_Duplicate(rec->args, 1));
+            cJSON_AddStringToObject(o, "status",
+                                    rec->status == TOOL_CALL_EXECUTING ? "executing" : "pending");
+            cJSON_AddItemToArray(tc, o);
+        }
+        cJSON_AddItemToObject(tj, "tool_calls", tc);
+    }
+
     /* ── turns (committed) ── */
     cJSON *turns_json = cJSON_CreateArray();
     {
@@ -338,21 +355,22 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
 /**
  * Normalize a state read back from disk.
  *
- * A state that only exists while a turn is actively running (LLM_PROCESSING /
- * TOOL_CALLING) means the process was interrupted mid-execution.  The old
- * behaviour turned those into WAITING_INPUT, which pretended the task had never
- * started and made an interrupted task resumable as if nothing happened.
- * There is no such semantic: an interrupted task is a stopped task, so it
- * comes back as CANCELLED.  Every other state is exactly what it is — no
- * rewriting (only WAITING_DEPS gets reconciled once deps are replayed).
+ * 进程退出时所有未完成任务都被原样落盘 (WAITING_INPUT / WAITING_DEPS /
+ * LLM_PROCESSING / TOOL_CALLING)。加载时一律收敛为 SUSPENDED —— 即"重新
+ * 打开后先全部停住, 由用户对单个 task 发 resume 再重新判定该回到
+ * WAITING_DEPS / WAITING_INPUT / LLM_PROCESSING 还是继续工具链"。
+ * 终态 (COMPLETED / CANCELLED / ERROR) 与已 SUSPENDED 的原样保留。
  */
 static edc_task_state normalize_interrupted_state(edc_task_state s)
 {
     switch (s)
     {
+    case TASK_IDLE:
+    case TASK_WAITING_DEPS:
+    case TASK_WAITING_INPUT:
     case TASK_LLM_PROCESSING:
     case TASK_TOOL_CALLING:
-        return TASK_CANCELLED;
+        return TASK_SUSPENDED;
     default:
         return s;
     }
@@ -686,6 +704,27 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->todolist = cJSON_Duplicate(v, 1);
         if ((v = cJSON_GetObjectItem(tj, "todo_sync_gap")) && cJSON_IsNumber(v))
             task->todo_sync_gap = (int)cJSON_GetNumberValue(v);
+
+        /* ── 未完成工具调用 (resume 账本) ── */
+        if ((v = cJSON_GetObjectItem(tj, "tool_calls")) && cJSON_IsArray(v))
+        {
+            size_t tcn = cJSON_GetArraySize(v);
+            for (size_t k = 0; k < tcn; k++)
+            {
+                cJSON *o = cJSON_GetArrayItem(v, k);
+                if (!o)
+                    continue;
+                const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(o, "call_id"));
+                const char *nm = cJSON_GetStringValue(cJSON_GetObjectItem(o, "name"));
+                cJSON *targs = cJSON_GetObjectItem(o, "args");
+                struct edc_tool_call_record *rec = edc_task_tool_call_add(task, cid, nm, targs);
+                if (rec)
+                {
+                    const char *st = cJSON_GetStringValue(cJSON_GetObjectItem(o, "status"));
+                    rec->status = (st && strcmp(st, "executing") == 0) ? TOOL_CALL_EXECUTING : TOOL_CALL_PENDING;
+                }
+            }
+        }
 
         task_map_put(id_map, task_id, task);
     }

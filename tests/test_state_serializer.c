@@ -309,7 +309,7 @@ static void test_fork_chain(void)
     /* Verify states */
     CHECK(rp->state == TASK_COMPLETED, "parent COMPLETED");
     CHECK(rc1->state == TASK_COMPLETED, "child1 COMPLETED");
-    CHECK(rc2->state == TASK_WAITING_INPUT, "child2 WAITING_INPUT");
+    CHECK(rc2->state == TASK_SUSPENDED, "child2 non-terminal -> SUSPENDED");
 
     cJSON_Delete(json);
     edc_session_free(session);
@@ -385,7 +385,7 @@ static void test_dependency_graph(void)
     /* Verify dependencies */
     CHECK(rb->deps_total == 1, "B deps_total = 1");
     CHECK(rb->deps_completed == 1, "B deps_completed = 1");
-    CHECK(rb->state == TASK_WAITING_INPUT, "B in WAITING_INPUT");
+    CHECK(rb->state == TASK_SUSPENDED, "B non-terminal -> SUSPENDED on load");
 
     CHECK(rc->deps_total == 1, "C deps_total = 1");
     CHECK(rc->deps_completed == 0, "C deps_completed = 0 (B not done)");
@@ -528,7 +528,7 @@ static void test_complex_topology(void)
 
 static void test_state_degradation(void)
 {
-    TEST("interrupted states (LLM_PROCESSING/TOOL_CALLING → CANCELLED)");
+    TEST("interrupted states (all non-terminal -> SUSPENDED)");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-deg", "Degrade");
@@ -574,8 +574,8 @@ static void test_state_degradation(void)
     struct edc_task *rt1 = find_task(session2, "t-llm");
     struct edc_task *rt2 = find_task(session2, "t-tool");
 
-    CHECK(rt1->state == TASK_CANCELLED, "interrupted LLM_PROCESSING restored as CANCELLED");
-    CHECK(rt2->state == TASK_CANCELLED, "interrupted TOOL_CALLING restored as CANCELLED");
+    CHECK(rt1->state == TASK_SUSPENDED, "interrupted LLM_PROCESSING restored as SUSPENDED");
+    CHECK(rt2->state == TASK_SUSPENDED, "interrupted TOOL_CALLING restored as SUSPENDED");
 
     cJSON_Delete(json);
     edc_session_free(session);
@@ -726,8 +726,8 @@ static void test_cancelled_dep_roundtrip(void)
     struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
 
     /* src: group leader, runs and then gets cancelled.
-     * tgt: depends on src; when src is cancelled the dep is marked cancelled
-     *      and tgt returns to WAITING_INPUT. */
+     * tgt: SEQUENCE-depends on src; when src is cancelled only this dependency
+     *      edge is dropped and tgt returns to WAITING_INPUT. */
     struct edc_task *src = edc_task_new("src", "sess-cdep", "src", "source task", edc_channel_adapter);
     src->is_group_leader = 1;
     edc_task_set_state(src, TASK_WAITING_INPUT);
@@ -741,7 +741,7 @@ static void test_cancelled_dep_roundtrip(void)
     edc_session_add_group(session, group);
 
     /* wire dep, then cancel the source (runtime order) */
-    bool ok_add = edc_task_add_dependency(tgt, src, TASK_DEP_JOIN);
+    bool ok_add = edc_task_add_dependency(tgt, src, TASK_DEP_SEQUENCE);
     CHECK(ok_add, "add dependency succeeds");
     CHECK(tgt->state == TASK_WAITING_DEPS, "tgt waits on deps");
     edc_task_send_signal(src, TASK_SIGTERM);
@@ -764,7 +764,7 @@ static void test_cancelled_dep_roundtrip(void)
     struct edc_task *rtgt = find_task(session2, "tgt");
     CHECK(rsrc != NULL && rsrc->state == TASK_CANCELLED, "cancelled source restored as CANCELLED");
     CHECK(rtgt != NULL, "dependent restored");
-    CHECK(rtgt->state == TASK_WAITING_INPUT, "dependent not stuck in WAITING_DEPS");
+    CHECK(rtgt->state == TASK_SUSPENDED, "dependent returns SUSPENDED (not stuck in WAITING_DEPS)");
     CHECK(rtgt->deps_total == 0, "deps_total reconciled to 0");
     CHECK(rtgt->deps_completed == 0, "deps_completed reconciled to 0");
     CHECK(rtgt->deps != NULL, "cancelled dep edge preserved");
@@ -773,6 +773,51 @@ static void test_cancelled_dep_roundtrip(void)
         CHECK(rtgt->deps->cancelled, "dep edge marked cancelled");
         CHECK(rtgt->deps->source == rsrc, "dep edge points at restored source");
     }
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(session2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Test 7d: JOIN cascade — cancelling a source cancels dependents
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_join_cascade_roundtrip(void)
+{
+    TEST("JOIN cancel cascades the dependent to CANCELLED across roundtrip");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-jcas", "JoinCascade");
+    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+
+    struct edc_task *src = edc_task_new("jsrc", "sess-jcas", "jsrc", "source", edc_channel_adapter);
+    src->is_group_leader = 1;
+    edc_task_set_state(src, TASK_WAITING_INPUT);
+    struct edc_task *tgt = edc_task_new("jtgt", "sess-jcas", "jsrc", "dependent", edc_channel_adapter);
+    edc_task_set_state(tgt, TASK_WAITING_INPUT);
+
+    struct edc_task_group *group = edc_task_group_new(src);
+    edc_task_group_add_task(group, tgt);
+    edc_session_add_group(session, group);
+
+    CHECK(edc_task_add_dependency(tgt, src, TASK_DEP_JOIN), "tgt -JOIN-> src");
+    edc_task_send_signal(src, TASK_SIGTERM);
+    CHECK(src->state == TASK_CANCELLED, "src cancelled");
+    CHECK(tgt->state == TASK_CANCELLED, "JOIN dependent cascaded to CANCELLED");
+
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize returns non-NULL");
+
+    struct edc_session *session2 = edc_session_new(cfg, "sess-jcas", "JoinCascade");
+    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    bool ok = edc_state_deserialize(json, session2, sched2);
+    CHECK(ok, "deserialize succeeds");
+    struct edc_task *rtgt = find_task(session2, "jtgt");
+    CHECK(rtgt != NULL && rtgt->state == TASK_CANCELLED, "dependent restored as CANCELLED");
 
     cJSON_Delete(json);
     edc_session_free(session);
@@ -1591,6 +1636,7 @@ int main(void)
     test_filter_transient_states();
     test_cancelled_midflight_roundtrip();
     test_cancelled_dep_roundtrip();
+    test_join_cascade_roundtrip();
     test_active_turn();
     test_extra_fields();
     test_null_inputs();

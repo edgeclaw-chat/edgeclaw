@@ -52,6 +52,28 @@ struct edc_task_dep
     struct edc_task_dep *next; /* 单链表 (在 target 的 deps 链上) */
 };
 
+/* ── Tool 调用跟踪 (resume 账本) ─────────────────────────────
+ * 只记录"尚未执行完"的工具调用, 供进程中断后 resume 判定:
+ *   - PENDING   : 尚未派发给工具箱 → 重新执行;
+ *   - EXECUTING : 已派发、结果未回 → 补一条"中途被中断"的响应。
+ * 工具一旦返回结果即从表中删除 —— 表只跟踪未完成的工具。
+ * 链序即执行序 (toolbox 顺序执行), 故任一时刻至多一条头部为 EXECUTING。 */
+
+typedef enum
+{
+    TOOL_CALL_PENDING = 0,   /* 未派发 */
+    TOOL_CALL_EXECUTING = 1, /* 已派发, 结果未回 */
+} edc_tool_call_status;
+
+struct edc_tool_call_record
+{
+    sds call_id; /* LLM 侧 tool_call_id, 用于响应回填/查表 */
+    sds name;    /* 工具名 */
+    cJSON *args; /* 调用参数 (重新执行时重建 req 用, 可为 NULL) */
+    edc_tool_call_status status;
+    struct edc_tool_call_record *next; /* 单链表, 顺序即派发顺序 */
+};
+
 /* ── Task ──────────────────────────────────────────────────── */
 
 struct edc_task
@@ -114,6 +136,9 @@ struct edc_task
     uint32_t completion_seq; /* 完成顺序 (0=未完成) */
     int has_deferred_vars;   /* $VAR 引用待展开 */
     bool turns_folded;       /* turns 已折叠进 group memory (摘要) */
+
+    /* ── 未完成工具调用 (resume 账本) ── */
+    struct edc_tool_call_record *tool_calls;
 
     /* ── 输出重定向 ── */
     sds redirect_stdout;  /* > / >> file */
@@ -186,6 +211,34 @@ extern void edc_task_notify_dependents(struct edc_task *task);
 extern bool edc_task_is_running(const struct edc_task *task);
 
 extern void edc_task_send_signal(struct edc_task *task, edc_task_signal sig);
+
+/* ── 未完成工具调用表 (resume 账本) ─────────────────────────
+ * 生命周期: LLM 返回 tool_calls 时逐条 add (PENDING); 派发时把头一条 PENDING
+ * 提升 EXECUTING (链序即执行序); 工具返回结果时 complete (删记录 + 把下一条
+ * PENDING 提升 EXECUTING); turn 提交/取消时 clear。 */
+
+/** 链尾追加一条 PENDING 记录。call_id/name 复制 (可为 NULL); args 深拷贝 (可为 NULL)。 */
+extern struct edc_tool_call_record *edc_task_tool_call_add(struct edc_task *task, const char *call_id,
+                                                           const char *name, cJSON *args);
+
+/** 按 call_id 查找记录 (NULL = 无)。 */
+extern struct edc_tool_call_record *edc_task_tool_call_find(struct edc_task *task, const char *call_id);
+
+/** 把首条 PENDING 提升为 EXECUTING, 返回之; 无 PENDING 返回 NULL。 */
+extern struct edc_tool_call_record *edc_task_tool_call_mark_head_executing(struct edc_task *task);
+
+/** 工具返回结果: 按 call_id 删除记录; 并把下一条 PENDING 提升 EXECUTING。
+ *  返回被提升的记录 (无则 NULL)。 */
+extern struct edc_tool_call_record *edc_task_tool_call_complete(struct edc_task *task, const char *call_id);
+
+/** 纯删除 (不推进链首): resume 补中断响应时用。返回是否删掉了一条。 */
+extern bool edc_task_tool_call_remove(struct edc_task *task, const char *call_id);
+
+/** 清空整张表。 */
+extern void edc_task_tool_calls_clear(struct edc_task *task);
+
+/** 表中是否还有记录 (PENDING 或 EXECUTING)。 */
+extern bool edc_task_has_pending_tool_calls(const struct edc_task *task);
 
 /* ── 输出 ──────────────────────────────────────────────────── */
 

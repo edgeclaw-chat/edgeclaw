@@ -300,6 +300,112 @@ void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, edc_task_sign
     edc_scheduler_send_signal_to_session(sched, sched ? sched->session : NULL, sig, false);
 }
 
+/* ── resume ────────────────────────────────────────────────── */
+
+/* resume 是低频且不与输入路径并发触发 (统一在 scheduler actor 线程上跑), 用一个
+ * 高位起步的进程内计数器生成 request_id, 避免与 shell 输入路径的小整数 counter
+ * 发生指针碰撞。 */
+static int64_t g_resume_req_seq = (int64_t)1 << 40;
+
+static void *sched_gen_resume_request_id(void)
+{
+    return (void *)(intptr_t)(++g_resume_req_seq);
+}
+
+void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *task)
+{
+    if (!sched || !task)
+        return;
+
+    /* 1. 依赖未满足 (排除已取消的边) → 回 WAITING_DEPS */
+    {
+        size_t total = 0, completed = 0;
+        struct edc_task_dep *dep;
+        LL_FOREACH(task->deps, dep)
+        {
+            if (dep->cancelled)
+                continue;
+            total++;
+            if (dep->completed)
+                completed++;
+        }
+        task->deps_total = total;
+        task->deps_completed = completed;
+        if (completed < total)
+        {
+            sched_set_task_state(sched, task, TASK_WAITING_DEPS);
+            return;
+        }
+    }
+
+    /* 2. 账本里还有未完成的工具调用 */
+    if (edc_task_has_pending_tool_calls(task))
+    {
+        /* 2a. EXECUTING (已派发、结果未回, 即中断时正在执行的): 人工补一条
+         *     "执行到一半被中断"的 tool 响应, 并从账本删除。 */
+        struct edc_tool_call_record *rec, *tmp;
+        LL_FOREACH_SAFE(task->tool_calls, rec, tmp)
+        {
+            if (rec->status != TOOL_CALL_EXECUTING)
+                continue;
+            if (task->active_turn && rec->call_id)
+            {
+                const char *note =
+                    "[interrupted: this tool was still running when the process restarted; "
+                    "it did not produce a result]";
+                edc_turn_add_tool_message(task->active_turn, rec->call_id, rec->name ? rec->name : "", note);
+            }
+            edc_task_tool_call_remove(task, rec->call_id);
+        }
+
+        /* 2b. 仍未执行 (PENDING) 的: 重新派发 */
+        if (edc_task_has_pending_tool_calls(task))
+        {
+            void *req_id = sched_gen_resume_request_id();
+            sched_set_task_state(sched, task, TASK_TOOL_CALLING);
+            edc_scheduler_register_task(sched, task, req_id);
+            task->current_request_id = req_id;
+            if (sched->redispatch_tools && sched->redispatch_tools(sched, task, req_id) > 0)
+            {
+                edc_task_tool_call_mark_head_executing(task);
+            }
+            else
+            {
+                /* 无重发通道 / 无可派发 → 退回等待输入, 避免卡死 */
+                edc_scheduler_unregister_task(sched, req_id);
+                task->current_request_id = NULL;
+                sched_set_task_state(sched, task, TASK_WAITING_INPUT);
+            }
+            return;
+        }
+        /* 2c. 只有 EXECUTING 且已补完响应 → 所有工具都有结果, 落到下面续 LLM */
+    }
+
+    /* 3. 有待跑的 turn → LLM_PROCESSING, 重发 LLM */
+    if (task->active_turn)
+    {
+        void *req_id = sched_gen_resume_request_id();
+        sched_set_task_state(sched, task, TASK_LLM_PROCESSING);
+        edc_scheduler_register_task(sched, task, req_id);
+        task->current_request_id = req_id;
+        if (sched->send_llm)
+        {
+            task->llm_rounds++;
+            sched->send_llm(sched, task, req_id);
+        }
+        else
+        {
+            edc_scheduler_unregister_task(sched, req_id);
+            task->current_request_id = NULL;
+            sched_set_task_state(sched, task, TASK_WAITING_INPUT);
+        }
+        return;
+    }
+
+    /* 4. 无待跑内容 → WAITING_INPUT */
+    sched_set_task_state(sched, task, TASK_WAITING_INPUT);
+}
+
 /* ── 前台任务状态通知 ─────────────────────────────────────── */
 
 /* 前台 group 的 active task 状态变化后立即推送一次 task 树快照。很多这类
@@ -492,9 +598,24 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
             edc_turn_add_assistant_message(task->active_turn, r->msg);
             r->msg = NULL;
         }
+        /* 账本: 先把本轮 tool_calls 全部登记为 PENDING (dispatch 会转移
+         * r->tool_calls 里 name/args/id 的所有权, 故必须先复制登记), 派发后
+         * 再把链首提升 EXECUTING —— 中断后 resume 据此判定哪些工具需要重新
+         * 执行、哪些只需补一条"中断"响应。 */
+        if (r->tool_calls)
+        {
+            for (unsigned i = 0; i < utarray_len(r->tool_calls); i++)
+            {
+                struct edc_llm_chat_tool_call *tcall =
+                    (struct edc_llm_chat_tool_call *)utarray_eltptr(r->tool_calls, i);
+                if (tcall && tcall->type == BC_LLM_TOOL_CALL_TYPE_FUNCTION)
+                    edc_task_tool_call_add(task, tcall->id, tcall->function.name, tcall->function.arguments);
+            }
+        }
         /* keep task registered — tool responses use same request_id */
         if (sched->dispatch_tools)
             sched->dispatch_tools(sched, task, r, msg->request_id);
+        edc_task_tool_call_mark_head_executing(task);
         return;
     }
 
@@ -636,6 +757,9 @@ static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor
     {
         edc_turn_add_tool_message(task->active_turn, tr->call_id, tr->name, tr->result);
     }
+
+    /* 账本: 该工具已完成 → 删除记录; 下一条 PENDING 提升 EXECUTING */
+    edc_task_tool_call_complete(task, tr->call_id);
 
     /* 若 tool chain 完成，发送续 LLM 请求 */
     if (!tr->next)

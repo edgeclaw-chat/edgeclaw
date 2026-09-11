@@ -328,11 +328,12 @@ static void test_dependencies(void)
 
 static void test_dep_cancelled(void)
 {
-    TEST("dep_cancelled removes dependency and decrements total");
+    /* SEQUENCE (`;`) 语义: 源被取消只抹去这条依赖, 目标照常可运行。 */
+    TEST("SEQUENCE dep cancelled: edge dropped, target stays runnable");
     struct edc_task *target = edc_task_new("task-tgt-c", "sess-1", "task-tgt-c", "target-c", edc_channel_adapter);
     struct edc_task *source = edc_task_new("task-src-c", "sess-1", "task-tgt-c", "source-c", edc_channel_adapter);
 
-    edc_task_add_dependency(target, source, TASK_DEP_JOIN);
+    edc_task_add_dependency(target, source, TASK_DEP_SEQUENCE);
     CHECK(target->deps_total == 1, "deps_total=1 before cancel");
 
     edc_task_on_dep_cancelled(target, source);
@@ -345,11 +346,35 @@ static void test_dep_cancelled(void)
     edc_task_free(source);
 }
 
+static void test_dep_cancel_cascade(void)
+{
+    /* chain: a --SEQ--> b --JOIN--> c  (a 依赖 b, b 依赖 c)
+     * 取消 c: b 是 JOIN 依赖者 → 级联取消; a 是 b 的 SEQ 依赖者 → 只抹边、保持可运行。 */
+    TEST("JOIN cancel cascades, SEQUENCE cancel only drops the edge");
+    struct edc_task *a = edc_task_new("cas-a", "sess-cas", "cas-a", "A", edc_channel_adapter);
+    struct edc_task *b = edc_task_new("cas-b", "sess-cas", "cas-a", "B", edc_channel_adapter);
+    struct edc_task *c = edc_task_new("cas-c", "sess-cas", "cas-a", "C", edc_channel_adapter);
+
+    CHECK(edc_task_add_dependency(a, b, TASK_DEP_SEQUENCE), "a -SEQ-> b");
+    CHECK(edc_task_add_dependency(b, c, TASK_DEP_JOIN), "b -JOIN-> c");
+    CHECK(a->state == TASK_WAITING_DEPS && b->state == TASK_WAITING_DEPS, "a,b waiting on deps");
+
+    edc_task_send_signal(c, TASK_SIGTERM);
+    CHECK(c->state == TASK_CANCELLED, "c cancelled");
+    CHECK(b->state == TASK_CANCELLED, "b cascaded to CANCELLED (JOIN)");
+    CHECK(a->state == TASK_WAITING_INPUT, "a released to WAITING_INPUT (SEQ drop), not cancelled");
+    CHECK(a->deps_total == 0, "a's dropped dep no longer counted");
+
+    edc_task_free(a);
+    edc_task_free(b);
+    edc_task_free(c);
+}
+
 /* ── 7. 信号系统 ───────────────────────────────────────────── */
 
 static void test_signals(void)
 {
-    TEST("SIGTERM: notifies dependents and cancels task");
+    TEST("SIGTERM on JOIN source cascades the cancel to its dependent");
     struct edc_task *target = edc_task_new("task-sig1", "sess-1", "task-sig1", "sig test target", edc_channel_adapter);
     struct edc_task *source = edc_task_new("task-sig2", "sess-1", "task-sig1", "sig test source", edc_channel_adapter);
 
@@ -360,13 +385,25 @@ static void test_signals(void)
     edc_task_send_signal(source, TASK_SIGTERM);
     CHECK(source->cancelled_request == 1, "source cancelled_request set");
     CHECK(source->state == TASK_CANCELLED, "source is CANCELLED");
-    /* target should be notified: deps_total decremented to 0 */
-    CHECK(target->deps_total == 0, "target deps_total decremented to 0 by SIGTERM");
-    CHECK(target->deps_completed == 0, "target deps_completed unchanged by cancels");
-    CHECK(target->state == TASK_WAITING_INPUT, "target advanced to WAITING_INPUT (all deps resolved)");
+    /* JOIN 依赖不可满足 → 依赖者也随之取消 */
+    CHECK(target->state == TASK_CANCELLED, "JOIN dependent cascaded to CANCELLED");
+    CHECK(target->deps_total == 0, "dependent deps cleared by cascade");
 
     edc_task_free(target);
     edc_task_free(source);
+
+    TEST("SIGTERM on SEQUENCE source only drops the dependency");
+    struct edc_task *starget = edc_task_new("task-sig5", "sess-1", "task-sig5", "seq target", edc_channel_adapter);
+    struct edc_task *ssource = edc_task_new("task-sig6", "sess-1", "task-sig5", "seq source", edc_channel_adapter);
+
+    edc_task_add_dependency(starget, ssource, TASK_DEP_SEQUENCE);
+    edc_task_send_signal(ssource, TASK_SIGTERM);
+    CHECK(ssource->state == TASK_CANCELLED, "seq source CANCELLED");
+    CHECK(starget->state == TASK_WAITING_INPUT, "SEQUENCE dependent released, not cancelled");
+    CHECK(starget->deps_total == 0, "dropped dep no longer counted");
+
+    edc_task_free(starget);
+    edc_task_free(ssource);
 
     TEST("SIGKILL: does NOT notify dependents");
     struct edc_task *target2 = edc_task_new("task-sig3", "sess-2", "task-sig3", "sig test target2", edc_channel_adapter);
@@ -535,9 +572,9 @@ static void test_scenario_multi_deps(void)
     struct edc_task *b = edc_task_new("task-b", "sess-multi", "task-tgt", "worker B", edc_channel_adapter);
     struct edc_task *c = edc_task_new("task-c", "sess-multi", "task-tgt", "worker C", edc_channel_adapter);
 
-    edc_task_add_dependency(target, a, TASK_DEP_JOIN);
-    edc_task_add_dependency(target, b, TASK_DEP_JOIN);
-    edc_task_add_dependency(target, c, TASK_DEP_JOIN);
+    edc_task_add_dependency(target, a, TASK_DEP_SEQUENCE);
+    edc_task_add_dependency(target, b, TASK_DEP_SEQUENCE);
+    edc_task_add_dependency(target, c, TASK_DEP_SEQUENCE);
     CHECK(target->deps_total == 3, "target has 3 deps");
 
     /* A completes */
@@ -584,6 +621,7 @@ int main(void)
     test_turns();
     test_dependencies();
     test_dep_cancelled();
+    test_dep_cancel_cascade();
     test_signals();
     test_output();
     test_prompt();

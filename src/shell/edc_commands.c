@@ -112,7 +112,7 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
                        "- /task fork <parent> <desc>\n"
                        "- /task list  ·  /task status [id]  ·  /task output <id>\n"
                        "- /task groups  ·  /task fg <id>  ·  /task bg [id]\n"
-                       "- /task stop [id]   (default: active task of the foreground group)\n"
+                       "- /task stop [id]  ·  /task resume [id]   (default: active task of the foreground group)\n"
                        "- /task chain <src> <dst>  ·  /task join <id>\n"
                        "\n"
                        "- /whoami\n"
@@ -561,6 +561,55 @@ static void edc_commands_handle_task_stop(struct edc_agent *agent, edc_actor_t *
     edc_commands_reply(agent, actor, channel_type, "stop signal sent");
 }
 
+/* /task resume [id]: 对 SUSPENDED 任务重新判定并驱动 (依赖/工具/turn)。
+ * 不带 id 时默认当前前台组的 active 任务, 与 /task stop 一致。 */
+static void edc_commands_handle_task_resume(struct edc_agent *agent, edc_actor_t *actor,
+                                            edc_channel_type channel_type, sds arg)
+{
+    struct edc_session *sess = edc_session_manager_get_active(agent->session_manager);
+    struct edc_task *t = NULL;
+
+    if (!arg || sdslen(arg) == 0)
+    {
+        struct edc_task_group *fg = edc_scheduler_get_foreground(agent->scheduler);
+        struct edc_task *active = sess ? sess->active_task : NULL;
+        if (active && (!fg || active->group == fg))
+            t = active;
+        if (!t)
+        {
+            edc_commands_reply(agent, actor, channel_type,
+                               fg ? "no active task to resume in the foreground group" : "no foreground group");
+            return;
+        }
+    }
+    else
+    {
+        t = edc_session_find_task(sess, arg);
+        if (!t)
+        {
+            sds reply = sdscatprintf(sdsempty(), "task not found: %s", arg);
+            edc_commands_reply(agent, actor, channel_type, reply);
+            sdsfree(reply);
+            return;
+        }
+    }
+
+    if (t->state != TASK_SUSPENDED)
+    {
+        sds reply = sdscatprintf(sdsempty(), "task %s is %s, not SUSPENDED", t->task_id,
+                                 edc_task_state_name(t->state));
+        edc_commands_reply(agent, actor, channel_type, reply);
+        sdsfree(reply);
+        return;
+    }
+
+    edc_scheduler_resume_task(agent->scheduler, t);
+    sds reply = sdscatprintf(sdsempty(), "resume signal sent to task %s (%s)", t->task_id,
+                             edc_task_state_name(t->state));
+    edc_commands_reply(agent, actor, channel_type, reply);
+    sdsfree(reply);
+}
+
 static void edc_commands_handle_task_fg(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
                                         sds arg)
 {
@@ -992,6 +1041,15 @@ static bool edc_commands_handle_task(struct edc_agent *agent, edc_actor_t *actor
     {
         arg = sdsnew(content_trim + 11);
         edc_commands_handle_task_stop(agent, actor, message->type, arg);
+    }
+    else if (strcmp(content_trim, "/task resume") == 0)
+    {
+        edc_commands_handle_task_resume(agent, actor, message->type, NULL);
+    }
+    else if (strncmp(content_trim, "/task resume ", 13) == 0)
+    {
+        arg = sdsnew(content_trim + 13);
+        edc_commands_handle_task_resume(agent, actor, message->type, arg);
     }
     else if (strcmp(content_trim, "/task status") == 0)
     {

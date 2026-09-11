@@ -129,7 +129,7 @@ static void test_idempotent_operations(void)
     TEST("double cancel is idempotent");
     target = edc_task_new("idc-1", "s", "g", "target", edc_channel_adapter);
     source = edc_task_new("idc-2", "s", "g", "source", edc_channel_adapter);
-    edc_task_add_dependency(target, source, TASK_DEP_JOIN);
+    edc_task_add_dependency(target, source, TASK_DEP_SEQUENCE);
     CHECK(target->deps_total == 1, "deps_total=1");
 
     edc_task_on_dep_cancelled(target, source);
@@ -213,7 +213,7 @@ static void test_many_dependencies(void)
         char id[32];
         snprintf(id, sizeof(id), "mix-s%d", i);
         sources[i] = edc_task_new(id, "s", "g", "worker", edc_channel_adapter);
-        edc_task_add_dependency(target, sources[i], TASK_DEP_JOIN);
+        edc_task_add_dependency(target, sources[i], TASK_DEP_SEQUENCE);
     }
 
     /* Cancel odd-indexed ones */
@@ -291,20 +291,13 @@ static void test_dependency_chain(void)
     CHECK(a->deps_total == 1, "A has 1 dep");
     CHECK(b->deps_total == 1, "B has 1 dep");
 
-    /* SIGTERM B → A should be notified (B cancelled → A deps_total=0) */
+    /* SIGTERM B → A 是 JOIN 依赖者 → 级联取消 (A→B 是 JOIN) */
     edc_task_send_signal(b, TASK_SIGTERM);
     CHECK(b->state == TASK_CANCELLED, "B cancelled");
-    CHECK(a->deps_total == 0, "A deps_total=0 after B SIGTERM");
-    CHECK(a->state == TASK_WAITING_INPUT, "A advanced (no more deps)");
+    CHECK(a->state == TASK_CANCELLED, "A cascaded to CANCELLED (JOIN dependent)");
+    CHECK(a->deps_total == 0, "A deps cleared by cascade");
 
-    /* C's dep on B is also cancelled? Actually no - B is the SOURCE of C's dep.
-       C depends on B, not the other way. B cancelled → on_dep_cancelled
-       is called on B's dependents. We need to check what B's dependents are.
-       B's dependents = A (because A depends on B).
-       B's deps = C (because B depends on C).
-       When B gets SIGTERM, it notifies only dependents (A), not deps (C).
-       C's deps list still has B as a source, but B's state is CANCELLED.
-       C's deps_total should still be 1. Let me check: */
+    /* C 是 B 的依赖源 (B→C), 不是 B 的依赖者 → 取消 B 不触碰 C。 */
     CHECK(c->deps_total == 0, "C has no deps (B depends on C, not the other way)");
 
     /* B was C's dependent (b depends on c). B was cancelled.

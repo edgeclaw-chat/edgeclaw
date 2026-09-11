@@ -135,7 +135,8 @@ Task states: `IDLE → WAITING_DEPS → WAITING_INPUT → LLM_PROCESSING ⇄
 TOOL_CALLING → COMPLETED / CANCELLED / ERROR / SUSPENDED`. Tasks form a DAG
 through `deps`/`dependents` with cycle detection; `|`/`;`/`&` and redirections
 map onto dependency types (`JOIN`/`SEQUENCE`) and output files, mirroring a
-Unix shell.
+Unix shell. Unfinished tasks are persisted on exit and parked as `SUSPENDED` on
+load; `/task resume [tid]` re-derives their state (deps / tool chain / turn).
 
 ## Features
 

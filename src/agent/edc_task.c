@@ -80,7 +80,9 @@ static bool edc_task_is_valid_transition(edc_task_state from, edc_task_state to)
         return to == TASK_LLM_PROCESSING || to == TASK_COMPLETED || to == TASK_CANCELLED || to == TASK_ERROR ||
                to == TASK_SUSPENDED;
     case TASK_SUSPENDED:
-        return to == TASK_LLM_PROCESSING || to == TASK_TOOL_CALLING || to == TASK_CANCELLED; /* resume */
+        /* resume 重新判定: 回依赖等待 / 等待输入 / 重新处理 / 继续工具链, 或取消 */
+        return to == TASK_WAITING_DEPS || to == TASK_WAITING_INPUT || to == TASK_LLM_PROCESSING ||
+               to == TASK_TOOL_CALLING || to == TASK_CANCELLED;
     case TASK_COMPLETED:
         return false; /* terminal */
     case TASK_CANCELLED:
@@ -244,6 +246,7 @@ void edc_task_free(struct edc_task *task)
 
     edc_task_free_turns(task);
     edc_task_free_deps(task);
+    edc_task_tool_calls_clear(task);
 
     free(task->task_id);
     free(task->group_id);
@@ -297,6 +300,8 @@ void edc_task_commit_active_turn(struct edc_task *task)
 {
     if (!task || !task->active_turn)
         return;
+    /* turn 提交 = 本轮所有工具都已完成 (记录已在响应时删除); 账本清空 */
+    edc_task_tool_calls_clear(task);
     edc_queue_push(&task->turns, task->active_turn);
     task->active_turn = NULL;
 }
@@ -435,32 +440,47 @@ void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source)
     if (!target || !source)
         return;
 
-    struct edc_task_dep *dep;
+    /* 找到这条尚在等待的依赖，按类型决定语义 (完成/已取消/不存在 → 无事可做) */
+    struct edc_task_dep *dep = NULL;
     LL_FOREACH(target->deps, dep)
     {
         if (dep->source == source && !dep->completed && !dep->cancelled)
-        {
-            dep->cancelled = true;
+            break;
+    }
+    if (!dep)
+        return;
 
-            /* 同时标记 source->dependents 中的对应节点 */
-            struct edc_task_dep *sd;
-            LL_FOREACH(source->dependents, sd)
-            {
-                if (sd->target == target && !sd->cancelled)
-                {
-                    sd->cancelled = true;
-                    break;
-                }
-            }
+    if (dep->type == TASK_DEP_JOIN)
+    {
+        /* JOIN: 源的 output 永远不会来了 —— 这条依赖无法满足，本 task 也就
+         * 无法作为完整输入运行，于是级联取消。edc_task_send_signal 会递归
+         * 取消本 task 自己的依赖者，并清空它的 deps；因此 dep 随后即失效，
+         * 必须立即 return，不能再解引用。 */
+        edc_task_send_signal(target, TASK_SIGTERM);
+        return;
+    }
+
+    /* SEQUENCE(`;`): 只是顺序约束，不需要源 output —— 抹去这条依赖即可，
+     * 本 task 仍可运行。 */
+    dep->cancelled = true;
+
+    /* 同时标记 source->dependents 中的对应节点 */
+    struct edc_task_dep *sd;
+    LL_FOREACH(source->dependents, sd)
+    {
+        if (sd->target == target && !sd->cancelled)
+        {
+            sd->cancelled = true;
             break;
         }
     }
 
     /* 重算: 只计算未取消的依赖 */
     size_t active_deps = 0;
-    LL_FOREACH(target->deps, dep)
+    struct edc_task_dep *d;
+    LL_FOREACH(target->deps, d)
     {
-        if (!dep->cancelled)
+        if (!d->cancelled)
             active_deps++;
     }
     target->deps_total = active_deps;
@@ -505,10 +525,27 @@ void edc_task_send_signal(struct edc_task *task, edc_task_signal sig)
 
     if (sig == TASK_SIGTERM)
     {
-        struct edc_task_dep *dep, *tmp;
-        LL_FOREACH_SAFE(task->dependents, dep, tmp)
+        /* 先把依赖者快照成数组再逐个处理: JOIN 的级联取消会在回调里递归清理
+         * 各 task 的 deps, 因而把节点从 task->dependents 上摘掉 —— 边遍历边
+         * 改这条链表, LL_FOREACH_SAFE 也救不了 (它只缓存当前节点的 next,
+         * 而 next 本身可能被更深的递归 freeing)。取消过程不会释放 task 本身
+         * (只释放 dep 节点), 所以暂存裸指针是安全的。 */
+        size_t n = 0;
+        struct edc_task_dep *dep;
+        LL_FOREACH(task->dependents, dep)
+            n++;
+        if (n > 0)
         {
-            edc_task_on_dep_cancelled(dep->target, task);
+            struct edc_task **targets = malloc(n * sizeof(*targets));
+            if (targets)
+            {
+                size_t i = 0;
+                LL_FOREACH(task->dependents, dep)
+                    targets[i++] = dep->target;
+                for (size_t k = 0; k < i; k++)
+                    edc_task_on_dep_cancelled(targets[k], task);
+                free(targets);
+            }
         }
     }
 
@@ -536,7 +573,119 @@ void edc_task_send_signal(struct edc_task *task, edc_task_signal sig)
         task->deps_total = 0;
     }
 
+    /* 任务被取消: 在途工具追账已无意义, 丢弃账本 */
+    edc_task_tool_calls_clear(task);
     edc_task_set_state(task, TASK_CANCELLED);
+}
+
+/* ── 未完成工具调用表 (resume 账本) ────────────────────────── */
+
+static void edc_task_tool_call_record_free(struct edc_tool_call_record *rec)
+{
+    if (!rec)
+        return;
+    if (rec->call_id)
+        sdsfree(rec->call_id);
+    if (rec->name)
+        sdsfree(rec->name);
+    if (rec->args)
+        cJSON_Delete(rec->args);
+    free(rec);
+}
+
+struct edc_tool_call_record *edc_task_tool_call_add(struct edc_task *task, const char *call_id, const char *name,
+                                                    cJSON *args)
+{
+    if (!task)
+        return NULL;
+    struct edc_tool_call_record *rec = g_new0(struct edc_tool_call_record, 1);
+    rec->call_id = call_id ? sdsnew(call_id) : NULL;
+    rec->name = name ? sdsnew(name) : NULL;
+    rec->args = args ? cJSON_Duplicate(args, 1) : NULL;
+    rec->status = TOOL_CALL_PENDING;
+    LL_APPEND(task->tool_calls, rec);
+    return rec;
+}
+
+struct edc_tool_call_record *edc_task_tool_call_find(struct edc_task *task, const char *call_id)
+{
+    if (!task || !call_id)
+        return NULL;
+    struct edc_tool_call_record *rec;
+    LL_FOREACH(task->tool_calls, rec)
+    {
+        if (rec->call_id && strcmp(rec->call_id, call_id) == 0)
+            return rec;
+    }
+    return NULL;
+}
+
+struct edc_tool_call_record *edc_task_tool_call_mark_head_executing(struct edc_task *task)
+{
+    if (!task)
+        return NULL;
+    struct edc_tool_call_record *rec;
+    LL_FOREACH(task->tool_calls, rec)
+    {
+        if (rec->status == TOOL_CALL_PENDING)
+        {
+            rec->status = TOOL_CALL_EXECUTING;
+            return rec;
+        }
+    }
+    return NULL;
+}
+
+bool edc_task_tool_call_remove(struct edc_task *task, const char *call_id)
+{
+    if (!task || !call_id)
+        return false;
+    struct edc_tool_call_record *rec, *tmp;
+    LL_FOREACH_SAFE(task->tool_calls, rec, tmp)
+    {
+        if (rec->call_id && strcmp(rec->call_id, call_id) == 0)
+        {
+            LL_DELETE(task->tool_calls, rec);
+            edc_task_tool_call_record_free(rec);
+            return true;
+        }
+    }
+    return false;
+}
+
+struct edc_tool_call_record *edc_task_tool_call_complete(struct edc_task *task, const char *call_id)
+{
+    if (!edc_task_tool_call_remove(task, call_id))
+        return NULL;
+    /* 下一条 PENDING 提升为 EXECUTING (链序即执行序; toolbox 顺序执行) */
+    struct edc_tool_call_record *rec;
+    LL_FOREACH(task->tool_calls, rec)
+    {
+        if (rec->status == TOOL_CALL_PENDING)
+        {
+            rec->status = TOOL_CALL_EXECUTING;
+            return rec;
+        }
+    }
+    return NULL;
+}
+
+void edc_task_tool_calls_clear(struct edc_task *task)
+{
+    if (!task)
+        return;
+    struct edc_tool_call_record *rec, *tmp;
+    LL_FOREACH_SAFE(task->tool_calls, rec, tmp)
+    {
+        LL_DELETE(task->tool_calls, rec);
+        edc_task_tool_call_record_free(rec);
+    }
+    task->tool_calls = NULL;
+}
+
+bool edc_task_has_pending_tool_calls(const struct edc_task *task)
+{
+    return task && task->tool_calls != NULL;
 }
 
 /* ── 输出 ──────────────────────────────────────────────────── */

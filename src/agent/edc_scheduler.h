@@ -36,6 +36,12 @@ typedef void (*edc_scheduler_send_tool_fn)(struct edc_scheduler *sched, struct e
 typedef void (*edc_scheduler_dispatch_tools_fn)(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
                                                 void *request_id);
 
+/** resume 时重发未完成的 tool 调用 (由 agent 注入): 把 task 账本里 PENDING 的记录
+ *  重建 toolbox 请求链并投递 (首条 PENDING 由调用方提升 EXECUTING)。
+ *  返回投递的条数 (0 = 无)。 */
+typedef int (*edc_scheduler_redispatch_tools_fn)(struct edc_scheduler *sched, struct edc_task *task,
+                                                 void *request_id);
+
 /** 检查/处理命令 (返回 true=已处理) */
 typedef bool (*edc_scheduler_command_fn)(struct edc_scheduler *sched, struct edc_actor *actor,
                                          struct edc_channel_message *msg);
@@ -67,6 +73,7 @@ struct edc_scheduler
     edc_scheduler_send_reply_fn send_reply;
     edc_scheduler_send_tool_fn send_tool_message;
     edc_scheduler_dispatch_tools_fn dispatch_tools;
+    edc_scheduler_redispatch_tools_fn redispatch_tools;
     edc_scheduler_command_fn handle_command;
     edc_scheduler_memory_fn trigger_memory;
     edc_scheduler_save_fn save_session;
@@ -131,5 +138,15 @@ extern void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, cons
 extern void edc_scheduler_send_signal_to_session(struct edc_scheduler *sched, struct edc_session *session,
                                                  edc_task_signal sig, bool running_only);
 extern void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, edc_task_signal sig);
+
+/* ── resume ────────────────────────────────────────────────── */
+
+/** 用户 resume 一个 SUSPENDED 任务: 按账本重新判定并驱动 ——
+ *    1. 依赖未满足 → WAITING_DEPS;
+ *    2. 账本有未完成工具 → EXECUTING 补一条"中断"响应 / PENDING 重新派发;
+ *    3. 有待跑的 active_turn → LLM_PROCESSING 重发 LLM;
+ *    4. 否则 → WAITING_INPUT。
+ *  调用方需保证 task 属于本 sched 且当前状态为 SUSPENDED。 */
+extern void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *task);
 
 #endif

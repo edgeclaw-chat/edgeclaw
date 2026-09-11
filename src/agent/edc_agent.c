@@ -379,6 +379,43 @@ static void edc_agent_handle_tool_calls(struct edc_agent *agent, struct edc_task
     }
 }
 
+/* resume: 把 task 工具账本里仍为 PENDING (尚未执行) 的记录重建 toolbox 请求链
+ * 并投递。EXECUTING 的记录由 scheduler 在 resume 时补中断响应, 不在此列。
+ * 返回投递的条数。 */
+static int edc_agent_cb_redispatch_tools(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
+{
+    struct edc_agent *agent = edc_scheduler_agent(sched);
+    if (!agent || !task || !agent->toolbox_actor)
+        return 0;
+
+    /* dummy head, 与原 dispatch 路径一致 (空 req 不入链) */
+    struct edc_toolbox_actor_req *head = edc_toolbox_actor_req_new(NULL, NULL, NULL, task->channel_type, task);
+    struct edc_toolbox_actor_req *tail = head;
+    int count = 0;
+
+    struct edc_tool_call_record *rec;
+    for (rec = task->tool_calls; rec; rec = rec->next)
+    {
+        if (rec->status != TOOL_CALL_PENDING)
+            continue;
+        tail->next = edc_toolbox_actor_req_new(rec->name ? sdsdup(rec->name) : sdsempty(),
+                                               rec->args ? cJSON_Duplicate(rec->args, 1) : NULL,
+                                               rec->call_id ? sdsdup(rec->call_id) : NULL, task->channel_type, task);
+        tail = tail->next;
+        count++;
+    }
+
+    struct edc_toolbox_actor_req *chain = head->next;
+    edc_toolbox_actor_req_free(head);
+    if (!chain)
+        return 0;
+
+    edc_actor_send(agent->toolbox_actor,
+                   edc_actor_msg_new(BC_ACTOR_MSG_TOOL_REQUEST, edc_scheduler_get_actor(sched), request_id, chain,
+                                     (edc_actor_data_free_fn)edc_toolbox_actor_req_free));
+    return count;
+}
+
 /* ── 回调: 命令处理 ────────────────────────────────────────── */
 
 static bool edc_agent_cb_handle_command(struct edc_scheduler *sched, struct edc_actor *actor,
@@ -559,6 +596,7 @@ struct edc_agent *edc_agent_new(bool setup, bool enable_sandbox)
     agent->scheduler->send_reply = edc_agent_cb_send_reply;
     agent->scheduler->send_tool_message = edc_agent_cb_send_tool_message;
     agent->scheduler->dispatch_tools = edc_agent_cb_dispatch_tools;
+    agent->scheduler->redispatch_tools = edc_agent_cb_redispatch_tools;
     agent->scheduler->handle_command = edc_agent_cb_handle_command;
     agent->scheduler->trigger_memory = edc_agent_cb_trigger_memory;
     agent->scheduler->save_session = edc_agent_cb_save_session;
@@ -615,6 +653,13 @@ void edc_agent_free(struct edc_agent *agent)
     edc_toolbox_actor_free(agent->toolbox_actor);
     edc_llm_actor_free(agent->llm_actor);
     edc_memory_actor_free(agent->memory_actor);
+
+    /* 退出前完整落盘 (history + index + task/group state): 让中断任务以
+     * LLM_PROCESSING/TOOL_CALLING + 工具账本原样保存, 而不是被下面的
+     * remove_all_turns 先取消成 CANCELLED。加载时统一收敛为 SUSPENDED。
+     * 放在 actor runner 停掉之后调用, 避免与 actor 线程并发写。 */
+    if (agent->scheduler && agent->scheduler->save_session)
+        agent->scheduler->save_session(agent->scheduler);
 
     edc_agent_remove_all_turns(agent);
 

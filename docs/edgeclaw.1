@@ -141,9 +141,13 @@ SHELL ARCHITECTURE
        cycle detection runs on every new dependency to prevent deadlocks.
 
        Dependency types:
-         JOIN      (|)       Source output injected into destination's LLM context.
-         SEQUENCE  (;)       Destination waits, no output injection.
-         PIPE      (reserved) Streaming mode — not yet implemented.
+         JOIN      (|)       Source output injected into destination's LLM
+                             context.  If the source is CANCELLED the
+                             dependency can never be satisfied, so the
+                             destination is CANCELLED too (cascades).
+         SEQUENCE  (;)       Destination waits, no output injection.  If the
+                             source is CANCELLED only this edge is dropped;
+                             the destination stays runnable.
 
 TASK MODEL
      Three-layer Unix-like process model:
@@ -170,9 +174,19 @@ TASK STATES
      Tasks reach COMPLETED on final LLM response; CANCELLED when stopped;
      ERROR on failure.
 
+     Restart behavior: unfinished tasks are persisted as-is on exit; on load
+     every unfinished task is parked as SUSPENDED.  /task resume [tid]
+     re-derives the state to return to:
+       - unsatisfied deps            -> WAITING_DEPS
+       - unfinished tool call        -> TOOL_CALLING (re-run not-yet-started
+                                        tools; a mid-flight tool gets a
+                                        synthesized "interrupted" result)
+       - pending turn (no LLM reply) -> LLM_PROCESSING
+       - otherwise                   -> WAITING_INPUT
+
      - COMPLETED tasks persist until reclaimed with /task join.
      - WAITING_DEPS tasks accept input and queue it until deps resolve.
-     - SUSPENDED tasks can be resumed.
+     - SUSPENDED tasks are parked (e.g. after a restart); /task resume revives.
 
 SHELL-LIKE JOB CONTROL
      Shell            EdgeClaw
@@ -233,6 +247,10 @@ COMMAND REFERENCE
                               Without an id, stops the active task of the
                               foreground group; errors if the id is not
                               found.
+     /task resume [tid]       Resume a SUSPENDED task: re-derives state
+                              (deps / tool chain / turn) and drives it.
+                              Without an id, resumes the active task of the
+                              foreground group.
      /task join <tid>         Show output, auto-inject into active task
                                (or create one), then reclaim.
 
