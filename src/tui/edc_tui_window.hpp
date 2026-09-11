@@ -44,6 +44,12 @@ class TUIWindow : public ::ftxui::ComponentBase
     // ftxui component tree is only touched from the render thread.
     void SetScreen(::ftxui::ScreenInteractive *screen);
 
+    // False when the agent failed to start (missing/corrupt config.json, bad
+    // master key, no terminal for the passphrase, ...). The error is logged by
+    // edc_agent_new(); main() checks this and exits without entering the loop
+    // instead of dereferencing a NULL agent.
+    bool Ready() const { return agent != nullptr; }
+
   private:
     // Append the current input as a user message and clear the box. A bare
     // "/connect" opens the provider dialog instead of sending anything.
@@ -130,6 +136,10 @@ class TUIWindow : public ::ftxui::ComponentBase
     std::string current_session_id_ = "\x01";
 
     struct edc_agent *agent = NULL;
+    // True once bracketed paste has actually been turned on, so the destructor
+    // only emits the "disable" sequence when the matching "enable" ran (a
+    // failed startup returns from the constructor before enabling it).
+    bool bracketed_paste_on_ = false;
     ::ftxui::ScreenInteractive *screen_ = nullptr;
     // The "Copied to clipboard" chip's own clock: a copy raises it and it fades
     // out by itself (see edc_clipboard.hpp).

@@ -490,8 +490,17 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
     connect_modal_ = ::ftxui::Renderer(connect_fields, [this] { return RenderConnectModal(); });
 
     agent = edc_c_agent_new(false, sandbox_override);
+
+    // edc_agent_new() returns NULL (after logging the reason) when it cannot
+    // start: unreadable config, undecryptable API key, no terminal for the
+    // passphrase, env init failure. Every call below dereferences the agent, so
+    // stop here. main() sees Ready() == false and exits cleanly.
+    if (!agent)
+        return;
+
     edc_channel_adapter_init(edc_c_agent_channel_actor(agent), this, on_channel_adapter_send);
     EnableBracketedPaste();
+    bracketed_paste_on_ = true;
 
     // Read the model once for the footer (the agent has just loaded its
     // config); the footer itself is built per frame so it can fit the pane.
@@ -1094,7 +1103,8 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
 TUIWindow::~TUIWindow()
 {
     edc_c_agent_free(agent);
-    DisableBracketedPaste();
+    if (bracketed_paste_on_)
+        DisableBracketedPaste();
 }
 
 void TUIWindow::SetScreen(::ftxui::ScreenInteractive *screen)

@@ -568,6 +568,19 @@ struct edc_agent *edc_agent_new(bool setup, int sandbox_override)
     agent->history = malloc((size_t)agent->history_capacity * sizeof(sds));
     agent->config = edc_config_load(edc_home);
 
+    /* edc_config_load() returns NULL on a missing/corrupt config.json or when
+     * the stored API key cannot be decrypted (e.g. wrong passphrase / master
+     * key). Everything below dereferences agent->config, so bail out cleanly
+     * instead of crashing. The concrete reason is already logged by the loader. */
+    if (!agent->config)
+    {
+        log_error("Failed to load configuration (%s); aborting startup", edc_home);
+        free(agent->history);
+        free(agent);
+        sdsfree(edc_home);
+        return NULL;
+    }
+
     /* The master key is intentionally NOT wiped here: the /connect command
      * re-encrypts the API key when the user updates the provider at runtime,
      * so the key must stay available (it remains mlock()ed). */

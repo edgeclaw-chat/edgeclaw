@@ -96,3 +96,17 @@ void edc_log_check_rotate(void)
 {
     edc_log_rotate();
 }
+
+/* 关闭日志文件句柄。必须在所有 actor 线程停止之后调用 (否则并发 log 会写已
+ * 关闭的 FILE*)。置空 g_log_file 后, 迟到的 log 回调会安全地 no-op —— 因此
+ * 保留 mutex 不 destroy, 以免迟到回调锁到已销毁的 mutex。 */
+void edc_log_close(void)
+{
+    uv_mutex_lock(&g_log_mutex);
+    if (g_log_file)
+    {
+        fclose(g_log_file);
+        g_log_file = NULL;
+    }
+    uv_mutex_unlock(&g_log_mutex);
+}

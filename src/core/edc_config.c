@@ -493,7 +493,11 @@ after_channel:
     return config;
 
 exit_free_config:
-    free(config);
+    /* Free through the real destructor: by the time any of the goto
+     * exit_free_config sites fire, fields such as edc_home (and possibly
+     * model/api_url) are already allocated. A bare free(config) leaked them.
+     * edc_config_free() is NULL-safe for the not-yet-filled fields. */
+    edc_config_free(config);
 exit_free_conf:
     cJSON_Delete(conf);
 exit_free_content:

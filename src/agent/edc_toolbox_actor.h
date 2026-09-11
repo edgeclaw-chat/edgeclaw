@@ -8,6 +8,12 @@
 typedef struct
 {
     struct edc_toolbox *toolbox;
+    /* 仍在执行中的工具调用 (异步工具回调还没触发)。teardown 时 actor loop
+     * 会被直接停掉, 这些回调用永远不会再跑, 若不在此登记释放, 调用上下文
+     * (及其持有的 req 链 / actor msg) 就会随进程退出泄漏。 */
+    struct edc_toolbox_call_ctx **inflight;
+    size_t inflight_count;
+    size_t inflight_cap;
 } edc_toolbox_actor_state_t;
 
 struct edc_task; /* fwd */

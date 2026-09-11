@@ -4,6 +4,7 @@
 #include "uv.h"
 #include <memory>
 #include <signal.h>
+#include <stdio.h>
 #include <string>
 
 using namespace ftxui;
@@ -55,6 +56,22 @@ int ParseSandboxFlag(int argc, char **argv)
 // to a normal return from main() with full teardown.
 void HandleTerminationSignal(int) {}
 
+// 关闭 uv_default_loop: 把 loop 上残留的句柄全部 uv_close, 跑完关闭回调后
+// uv_loop_close, 释放 libuv 内部 (epoll / eventfd / io_uring) 的句柄与堆内存。
+// 必须在 TUIWindow 析构 (edc_c_agent_free) 之后调用。
+void CloseDefaultLoop(uv_loop_t *loop)
+{
+    uv_walk(
+        loop,
+        [](uv_handle_t *handle, void *) {
+            if (!uv_is_closing(handle))
+                uv_close(handle, nullptr);
+        },
+        nullptr);
+    uv_run(loop, UV_RUN_DEFAULT);
+    uv_loop_close(loop);
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -67,38 +84,62 @@ int main(int argc, char **argv)
     uv_loop_t *default_loop = uv_default_loop();
     edc_c_file_utils_init(default_loop);
 
-    auto screen = ScreenInteractive::Fullscreen();
-    auto window = std::make_shared<edc::TUIWindow>(sandbox_override);
-    edc_c_agent_set_command_handler();
-    window->SetScreen(&screen);
-    ftxui::Component component = window;
-    component |= CatchEvent([&](Event e) -> bool {
-        // No 'q' here: the window now has a text input, so a bare letter must
-        // reach the box instead of quitting.
-        if (e == Event::Escape || e == Event::CtrlC)
+    int exit_code = 0;
+    {
+        // TUI 对象放在显式作用域里: 作用域退出时 screen/window 的 shared_ptr
+        // 一同释放 (~TUIWindow -> edc_c_agent_free, 停 actor 线程 + 关句柄),
+        // 之后才能安全地关日志与 default loop。
+        auto screen = ScreenInteractive::Fullscreen();
+        auto window = std::make_shared<edc::TUIWindow>(sandbox_override);
+
+        if (!window->Ready())
         {
-            screen.Exit();
-            return true;
+            // 配置损坏 / 主密钥不对 / 无终端输入口令等, edc_agent_new() 已写日志。
+            // 没有 agent 就什么都做不了, 直接非零退出, 不进 TUI 循环。
+            fprintf(stderr, "edgeclaw: failed to start, see the log for details\n");
+            exit_code = 1;
         }
-        return false;
-    });
+        else
+        {
+            edc_c_agent_set_command_handler();
+            window->SetScreen(&screen);
+            ftxui::Component component = window;
+            component |= CatchEvent([&](Event e) -> bool {
+                // No 'q' here: the window now has a text input, so a bare letter must
+                // reach the box instead of quitting.
+                if (e == Event::Escape || e == Event::CtrlC)
+                {
+                    screen.Exit();
+                    return true;
+                }
+                return false;
+            });
 
-    // See HandleTerminationSignal(): swallow ftxui's post-loop re-raise so
-    // Ctrl-C (and `kill`) exit through ~TUIWindow() -> edc_c_agent_free()
-    // instead of terminating the process before teardown can run. Installed
-    // here, before Loop() calls PreMain()/Install() and takes over SIGINT.
-    ::signal(SIGINT, HandleTerminationSignal);
-    ::signal(SIGTERM, HandleTerminationSignal);
+            // See HandleTerminationSignal(): swallow ftxui's post-loop re-raise so
+            // Ctrl-C (and `kill`) exit through ~TUIWindow() -> edc_c_agent_free()
+            // instead of terminating the process before teardown can run. Installed
+            // here, before Loop() calls PreMain()/Install() and takes over SIGINT.
+            ::signal(SIGINT, HandleTerminationSignal);
+            ::signal(SIGTERM, HandleTerminationSignal);
 
-    screen.Loop(component);
+            screen.Loop(component);
+        }
+    }
 
     // Reached only after a normal loop exit (Esc / Ctrl-C / Ctrl-D), now that
-    // the re-raise above is neutralised: `window` is destroyed here, running
-    // edc_c_agent_free() (uv walk + thread joins) before the process returns.
-    // ftxui's deferred-exit re-raise has already happened inside Loop(), so
-    // from here on hand the signals back to their default disposition: a second
-    // Ctrl-C / kill during a slow teardown must still be able to terminate us.
+    // the re-raise above is neutralised: the TUI objects above are destroyed
+    // here, running edc_c_agent_free() (uv walk + thread joins) before the
+    // process returns. ftxui's deferred-exit re-raise has already happened
+    // inside Loop(), so from here on hand the signals back to their default
+    // disposition: a second Ctrl-C / kill during a slow teardown must still be
+    // able to terminate us.
     ::signal(SIGINT, SIG_DFL);
     ::signal(SIGTERM, SIG_DFL);
-    return 0;
+
+    // All actor threads are stopped and every handle they owned is closed: safe
+    // now to release the one remaining fd (the log file) and to tear down the
+    // default loop itself.
+    edc_log_close();
+    CloseDefaultLoop(default_loop);
+    return exit_code;
 }
