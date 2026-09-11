@@ -1,5 +1,6 @@
-#include "edc_style.hpp"
 #include "markdown.hpp"
+#include "edc_style.hpp"
+#include "edc_text_util.hpp"
 
 #include <ftxui/dom/table.hpp>
 #include <md4c.h>
@@ -260,6 +261,9 @@ struct State
     std::vector<std::unique_ptr<Builder>> stack;
     Style style;
     bool h1 = false; // currently inside an ATX level-1 heading (banner).
+    // Width the element tree will be laid out at, or 0 when unknown. See
+    // RenderMarkdown() and AddWord().
+    int wrap_cols = 0;
     Builder &top()
     {
         return *stack.back();
@@ -291,6 +295,31 @@ struct State
         if (!style.href.empty())
             e = e | color(pal.md_link) | underlined | hyperlink(style.href);
         return e;
+    }
+
+    // Hand one word to the current block. Normally a word is a single flow
+    // item, so the flow breaks between words. A word that cannot fit on a line
+    // of its own — an unbroken CJK run, a long URL or path — is instead broken
+    // between code points, one item per code point, so the flow can wrap at any
+    // of those boundaries. A flow only breaks *between* its children, so
+    // without this the word is one unbreakable item that overflows the box and
+    // is clipped by the stencil.
+    void AddWord(const std::string &word)
+    {
+        if (wrap_cols > 0 && StringWidth(word) > wrap_cols)
+        {
+            size_t i = 0;
+            while (i < word.size())
+            {
+                size_t len = Utf8SeqLen(static_cast<unsigned char>(word[i]));
+                if (i + len > word.size())
+                    len = word.size() - i;
+                top().AddInline(StyledWord(word.substr(i, len)));
+                i += len;
+            }
+            return;
+        }
+        top().AddInline(StyledWord(word));
     }
 };
 
@@ -470,10 +499,12 @@ int on_text(MD_TEXTTYPE type, const MD_CHAR *txt, MD_SIZE sz, void *ud)
 
     // Inline code: keep the whole span in ONE text element so multi-word
     // code (e.g. `bazel build`) renders as a single continuous Monokai chip
-    // instead of one highlight block per word.
+    // instead of one highlight block per word. (An over-wide span is still
+    // broken up by AddWord, but the pieces stay adjacent so the chip reads as
+    // one block.)
     if (s->style.code)
     {
-        s->top().AddInline(s->StyledWord(std::string(sv)));
+        s->AddWord(std::string(sv));
         return 0;
     }
 
@@ -489,7 +520,7 @@ int on_text(MD_TEXTTYPE type, const MD_CHAR *txt, MD_SIZE sz, void *ud)
         if (i == sv.size() || sv[i] == ' ')
         {
             if (i > start)
-                s->top().AddInline(s->StyledWord(std::string(sv.substr(start, i - start))));
+                s->AddWord(std::string(sv.substr(start, i - start)));
             if (i < sv.size())
                 s->top().AddInline(s->GapSpace());
             start = i + 1;
@@ -500,9 +531,10 @@ int on_text(MD_TEXTTYPE type, const MD_CHAR *txt, MD_SIZE sz, void *ud)
 
 } // namespace
 
-Element RenderMarkdown(std::string_view md)
+Element RenderMarkdown(std::string_view md, int wrap_cols)
 {
     State st;
+    st.wrap_cols = wrap_cols;
     st.stack.push_back(std::make_unique<RootB>());
 
     MD_PARSER parser{};

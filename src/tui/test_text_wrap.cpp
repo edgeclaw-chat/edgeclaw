@@ -15,23 +15,23 @@
 
 static int g_failures = 0;
 
-#define TEST(name)                                                     \
-    do                                                                 \
-    {                                                                  \
-        std::printf("  %s\n", name);                                   \
+#define TEST(name)                                                                                                     \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        std::printf("  %s\n", name);                                                                                   \
     } while (0)
 
-#define CHECK(cond, ...)                                               \
-    do                                                                 \
-    {                                                                  \
-        if (!(cond))                                                   \
-        {                                                              \
-            std::printf("    FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-            std::printf("    ");                                       \
-            std::printf(__VA_ARGS__);                                  \
-            std::printf("\n");                                         \
-            g_failures++;                                              \
-        }                                                              \
+#define CHECK(cond, ...)                                                                                               \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if (!(cond))                                                                                                   \
+        {                                                                                                              \
+            std::printf("    FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);                                            \
+            std::printf("    ");                                                                                       \
+            std::printf(__VA_ARGS__);                                                                                  \
+            std::printf("\n");                                                                                         \
+            g_failures++;                                                                                              \
+        }                                                                                                              \
     } while (0)
 
 static void dump_lines(const std::vector<std::string> &lines)
@@ -129,8 +129,7 @@ static void test_visual_wrap_rows_fit(void)
     for (const auto &sp : rows)
     {
         CHECK(sp.second > sp.first, "empty row span [%d,%d)", sp.first, sp.second);
-        CHECK(edc::StringWidth(s.substr(sp.first, sp.second - sp.first)) <= 12,
-              "row exceeds budget");
+        CHECK(edc::StringWidth(s.substr(sp.first, sp.second - sp.first)) <= 12, "row exceeds budget");
     }
 }
 
@@ -180,8 +179,7 @@ static void test_visual_wrap_cjk_and_wide(void)
         CHECK(joined == s, "CJK wrap lost characters: '%s'", joined.c_str());
         CHECK(rows.size() == 3, "expected 3 rows (8 chars / 3 per row), got %zu", rows.size());
         for (const auto &sp : rows)
-            CHECK(edc::StringWidth(s.substr(sp.first, sp.second - sp.first)) <= 6,
-                  "CJK row exceeds budget");
+            CHECK(edc::StringWidth(s.substr(sp.first, sp.second - sp.first)) <= 6, "CJK row exceeds budget");
     }
     {
         // Emoji (2 cells each) must not be split when a 3-cell budget only
@@ -207,8 +205,7 @@ static void test_visual_wrap_mixed_and_edges(void)
             joined += s.substr(sp.first, sp.second - sp.first);
         CHECK(joined == s, "mixed wrap lost characters: '%s'", joined.c_str());
         for (const auto &sp : rows)
-            CHECK(edc::StringWidth(s.substr(sp.first, sp.second - sp.first)) <= 10,
-                  "mixed row exceeds budget");
+            CHECK(edc::StringWidth(s.substr(sp.first, sp.second - sp.first)) <= 10, "mixed row exceeds budget");
     }
     CHECK(edc::VisualWrapRows("", 10).empty(), "empty input yields no rows");
     {
@@ -227,6 +224,62 @@ static void test_visual_wrap_mixed_and_edges(void)
     }
 }
 
+static void test_visual_wrap_lines(void)
+{
+    TEST("message wrap: hard lines survive, unbroken runs fit the budget");
+    {
+        // Explicit newlines are hard breaks, and the rows concatenate back to
+        // the source line by line.
+        const std::vector<std::string> rows = edc::VisualWrapLines("alpha\nbeta", 20);
+        CHECK(rows.size() == 2, "expected 2 rows, got %zu", rows.size());
+        CHECK(rows[0] == "alpha", "row 0 is '%s'", rows[0].c_str());
+        CHECK(rows[1] == "beta", "row 1 is '%s'", rows[1].c_str());
+    }
+    {
+        // A trailing newline terminates the last line, it does not add a blank.
+        const std::vector<std::string> rows = edc::VisualWrapLines("alpha\n", 20);
+        CHECK(rows.size() == 1, "trailing newline added a row (got %zu)", rows.size());
+    }
+    {
+        // An interior blank line is a real (empty) row.
+        const std::vector<std::string> rows = edc::VisualWrapLines("alpha\n\nbeta", 20);
+        CHECK(rows.size() == 3, "blank line lost (got %zu rows)", rows.size());
+        CHECK(rows[1].empty(), "middle row should be empty, got '%s'", rows[1].c_str());
+    }
+    {
+        // The case this exists for: an unbroken CJK run has no space to break
+        // at, so it must be hard-broken between code points instead of
+        // overflowing the box.
+        const std::string s = "这是一段没有任何空格的中文文本用来测试换行行为是否正确无误";
+        const std::vector<std::string> rows = edc::VisualWrapLines(s, 12);
+        // 29 wide chars = 58 cells, 12 per row -> 5 rows.
+        CHECK(rows.size() >= 5, "expected the run to wrap, got %zu rows", rows.size());
+        std::string joined;
+        for (const std::string &r : rows)
+        {
+            joined += r;
+            CHECK(edc::StringWidth(r) <= 12, "row '%s' exceeds the budget", r.c_str());
+        }
+        CHECK(joined == s, "wrap lost characters");
+    }
+    {
+        // Same for an unbroken ASCII token (a path or URL).
+        const std::string s = "https://example.com/a/very/long/path/that/continues";
+        const std::vector<std::string> rows = edc::VisualWrapLines(s, 10);
+        std::string joined;
+        for (const std::string &r : rows)
+        {
+            joined += r;
+            CHECK(edc::StringWidth(r) <= 10, "row '%s' exceeds the budget", r.c_str());
+        }
+        CHECK(joined == s, "wrap lost characters");
+    }
+    {
+        // Empty input still yields something drawable.
+        CHECK(edc::VisualWrapLines("", 10).size() == 1, "empty input should yield one blank row");
+    }
+}
+
 int main(void)
 {
     test_ascii_word_wrap();
@@ -239,6 +292,7 @@ int main(void)
     test_visual_wrap_boundary_space();
     test_visual_wrap_cjk_and_wide();
     test_visual_wrap_mixed_and_edges();
+    test_visual_wrap_lines();
 
     if (g_failures)
     {

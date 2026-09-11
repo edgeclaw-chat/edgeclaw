@@ -325,4 +325,39 @@ inline std::vector<std::pair<int, int>> VisualWrapRows(const std::string &s, int
     return rows;
 }
 
+// Display rows of a possibly multi-line string at |max_cells| wide: an
+// explicit '\n' is a hard break, and each source line is then soft-wrapped
+// with VisualWrapRows (lossless, CJK/wide-char safe, word-wrap preferred with
+// a hard break for runs that have no space). An empty source line yields one
+// empty row, so blank lines survive; a single trailing '\n' is treated as a
+// terminator rather than an extra blank row. A non-positive budget keeps each
+// source line as one row. This is what the chat messages wrap with, so a body
+// wraps exactly the way the input editor showed it while typing.
+inline std::vector<std::string> VisualWrapLines(const std::string &s, int max_cells)
+{
+    std::vector<std::string> rows;
+    size_t start = 0;
+    while (true)
+    {
+        const size_t nl = s.find('\n', start);
+        const std::string line = (nl == std::string::npos) ? s.substr(start) : s.substr(start, nl - start);
+        const std::vector<std::pair<int, int>> spans = VisualWrapRows(line, max_cells);
+        if (spans.empty())
+            rows.emplace_back();
+        else
+            for (const std::pair<int, int> &span : spans)
+                rows.push_back(line.substr(span.first, span.second - span.first));
+
+        if (nl == std::string::npos)
+            break;
+        start = nl + 1;
+    }
+
+    if (rows.size() > 1 && rows.back().empty())
+        rows.pop_back(); // trailing '\n' terminates, it does not add a row
+    if (rows.empty())
+        rows.emplace_back();
+    return rows;
+}
+
 } // namespace edc

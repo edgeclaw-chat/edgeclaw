@@ -127,6 +127,11 @@ void MessageList::Clear()
 
 int MessageList::MeasureItem(size_t index, int width)
 {
+    // A message whose text cannot be wrapped by ftxui alone (an unbroken CJK
+    // run, a long URL) needs the width to wrap itself, and it must know it
+    // before it builds its element tree.
+    items_[index]->SetRenderWidth(width);
+
     ::ftxui::Element element = items_[index]->Render();
 
     ::ftxui::Box box;

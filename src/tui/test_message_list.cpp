@@ -389,6 +389,56 @@ static void test_spacer_row_is_not_painted(void)
     PASS();
 }
 
+// ftxui's flow containers only break *between* their children, so a run with no
+// space in it (CJK text, a long URL or path) is a single unbreakable child that
+// used to overflow its box and be clipped by the stencil — the text past the
+// right edge simply vanished. Every message type now wraps its own text against
+// the width the list measured it at.
+static void test_unbroken_run_wraps_in_every_message_type(void)
+{
+    TEST("an unbroken CJK run wraps instead of being clipped");
+    const auto now = ::time(nullptr);
+    // No space anywhere, so there is no word boundary to break at; the TAIL
+    // marker can only show up if the run was hard-broken between code points.
+    const std::string text = "这是一段没有任何空格的中文文本用来测试消息正文在宽度不足时会不会把尾巴裁掉TAIL";
+
+    struct Case
+    {
+        const char *label;
+        std::shared_ptr<edc::Message> message;
+    };
+    const Case cases[] = {
+        {"user", std::make_shared<edc::UserMessage>(text, now)},
+        {"assistant", std::make_shared<edc::Message>(text, now)},
+        {"tool", std::make_shared<edc::ToolMessage>("shell", text, now, false)},
+    };
+
+    for (const Case &c : cases)
+    {
+        auto chat = std::make_shared<edc::ChatWidget>();
+        chat->AddMessage(c.message);
+        const std::string frame = Draw(chat, 40, kH);
+        ASSERT(AnyRowContains(frame, "TAIL"), "%s message lost the tail of an unbroken run", c.label);
+        ASSERT(AnyRowContains(frame, "这是一段"), "%s message lost the head of an unbroken run", c.label);
+    }
+    PASS();
+}
+
+// Wrapping is width-dependent, so narrowing the pane has to re-wrap rather than
+// leave the text as it was measured at the old width.
+static void test_unbroken_run_rewraps_on_resize(void)
+{
+    TEST("narrowing the pane re-wraps an unbroken run without losing text");
+    const auto now = ::time(nullptr);
+    const std::string text = "这是一段没有任何空格的中文文本用来测试收窄面板之后正文能否重新换行并且不丢字TAIL";
+    auto chat = std::make_shared<edc::ChatWidget>();
+    chat->AddMessage(std::make_shared<edc::UserMessage>(text, now));
+
+    for (int width : {80, 40, 24})
+        ASSERT(AnyRowContains(Draw(chat, width, kH), "TAIL"), "tail lost at width %d", width);
+    PASS();
+}
+
 } // namespace
 
 int main(void)
@@ -404,6 +454,8 @@ int main(void)
     test_expand_grows_the_item();
     test_clear_resets_the_log();
     test_spacer_row_is_not_painted();
+    test_unbroken_run_wraps_in_every_message_type();
+    test_unbroken_run_rewraps_on_resize();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

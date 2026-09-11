@@ -1,16 +1,65 @@
 #include "edc_message.hpp"
 #include "edc_style.hpp"
+#include "edc_text_util.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
 #include "markdown.hpp"
 
+#include <algorithm>
+
 namespace edc
 {
+
+namespace
+{
+// Columns UserMessage draws to the left of its body: the heavy rule plus the
+// two columns of the EMPTY border around the body.
+constexpr int kUserRuleChrome = 3;
+
+// The body of |text| wrapped to |cols| cells, one text element per display row.
+//
+// Messages cannot leave wrapping to ftxui: a paragraph is a flow of per-word
+// elements and a flow only breaks *between* its children, so an unbroken run
+// (CJK text, a long URL or path) is a single child that overflows and is
+// clipped. VisualWrapLines is the same lossless, wide-char-safe wrap the input
+// editor uses, so a body wraps exactly as it looked while being typed.
+//
+// |cols| == 0 means the width is not known (rendered outside a MessageList):
+// fall back to ftxui's own wrapping.
+::ftxui::Element WrappedText(const std::string &text, int cols)
+{
+    if (cols <= 0)
+        return ::ftxui::paragraph(text);
+
+    ::ftxui::Elements rows;
+    const std::vector<std::string> lines = VisualWrapLines(text, cols);
+    rows.reserve(lines.size());
+    for (const std::string &line : lines)
+        rows.push_back(::ftxui::text(line));
+
+    if (rows.size() == 1)
+        return std::move(rows.front());
+    return ::ftxui::vbox(std::move(rows));
+}
+} // namespace
 
 Message::Message(const std::string_view content, time_t ts, const std::string_view task_id)
     : content_(content), ts_(ts), task_id_(task_id)
 {
+}
+
+void Message::SetRenderWidth(int cols)
+{
+    if (cols == render_width_)
+        return;
+    render_width_ = cols;
+    OnWidthChanged();
+}
+
+void Message::OnWidthChanged()
+{
+    body_ = nullptr;
 }
 
 bool Message::OnEvent(ftxui::Event)
@@ -26,7 +75,7 @@ bool Message::OnEvent(ftxui::Event)
     if (!body_)
     {
         const auto &pal = style::palette();
-        body_ = RenderMarkdown(content_);
+        body_ = RenderMarkdown(content_, BodyWidth());
         body_ = body_ | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) | ::ftxui::bgcolor(pal.pane_bg);
     }
 
@@ -84,7 +133,7 @@ bool ThoughtMessage::OnEvent(ftxui::Event event)
         return body_;
     }
 
-    auto body = ::ftxui::paragraph(content_) | ::ftxui::color(pal.text_dim) |
+    auto body = WrappedText(content_, BodyWidth()) | ::ftxui::color(pal.text_dim) |
                 ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY);
 
     body_ = ::ftxui::vbox({std::move(label), std::move(body)});
@@ -105,7 +154,7 @@ UserMessage::UserMessage(const std::string_view content, time_t ts, const std::s
         return body_;
 
     const auto &pal = style::palette();
-    auto body = ::ftxui::paragraph(content_);
+    auto body = WrappedText(content_, BodyWidth(kUserRuleChrome));
     auto header = ::ftxui::separatorHeavy() | ::ftxui::color(pal.user_rule);
 
     body_ = ::ftxui::hbox({header, body | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY)}) |
@@ -164,6 +213,14 @@ ToolMessage::ToolMessage(const std::string_view header, const std::string_view c
 {
 }
 
+void ToolMessage::OnWidthChanged()
+{
+    Message::OnWidthChanged();
+    // The full markdown body is parsed for a specific width too; preview_ is
+    // plain text and does not depend on it.
+    md_body_ = nullptr;
+}
+
 bool ToolMessage::OnEvent(::ftxui::Event event)
 {
     if (event.is_mouse())
@@ -217,13 +274,13 @@ bool ToolMessage::OnEvent(::ftxui::Event event)
         // instead — cheaper and keeps the truncation UX identical to plain.)
         if (!md_body_)
         {
-            md_body_ = RenderMarkdown(content_);
+            md_body_ = RenderMarkdown(content_, BodyWidth());
         }
         body = md_body_;
     }
     else if (!truncated)
     {
-        body = ::ftxui::paragraph(content_);
+        body = WrappedText(content_, BodyWidth());
     }
     else
     {
@@ -236,7 +293,7 @@ bool ToolMessage::OnEvent(::ftxui::Event event)
             preview_ += "...";
             preview_ready_ = true;
         }
-        body = ::ftxui::paragraph(preview_);
+        body = WrappedText(preview_, BodyWidth());
     }
 
     children.push_back(body);

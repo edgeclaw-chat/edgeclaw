@@ -2,6 +2,7 @@
 
 #include "ftxui/component/component_base.hpp"
 #include "ftxui/screen/box.hpp"
+#include <algorithm>
 #include <cstddef>
 #include <string_view>
 
@@ -16,6 +17,18 @@ class Message : public ::ftxui::ComponentBase
     // messages no longer render a "task N" tag.
     Message(const std::string_view content, time_t ts, const std::string_view task_id = "");
     virtual ~Message() = default;
+
+    // The chat list knows a message's width before it renders (layout hands it
+    // the box) and reports it here, because some content cannot be laid out
+    // without it: ftxui's flow containers only break *between* their children,
+    // so an unbroken run (CJK text, a long URL or path) is a single
+    // unbreakable item that overflows its box and is clipped by the stencil.
+    // Subclasses wrap their own text against BodyWidth().
+    //
+    // 0 means "width unknown"; the widget then leaves wrapping to ftxui, which
+    // is what happens when a message is rendered outside a MessageList (unit
+    // tests, previews).
+    void SetRenderWidth(int cols);
 
     Message(const Message &rhs) = delete;
     Message &operator=(const Message &) = delete;
@@ -34,14 +47,31 @@ class Message : public ::ftxui::ComponentBase
     const std::string content_;
     time_t ts_;
     const std::string task_id_;
+    int render_width_ = 0; // columns the item's box will have; 0 = unknown
 
-    // Cached rendered element. content_ never changes after construction and
-    // the element tree does not depend on the layout width (wrapping happens
-    // during layout, not while the tree is built), so a subclass builds its
-    // tree once and hands the same element back on every later frame. The
+    // Cached rendered element. content_ never changes after construction, so a
+    // subclass builds its tree once and hands the same element back on every
+    // later frame — but the tree *does* depend on the render width now (see
+    // SetRenderWidth), so OnWidthChanged() drops it when that changes. The
     // subclasses that toggle between two shapes (Thought/Tool) drop the cache
     // when they switch.
     ::ftxui::Element body_;
+
+    // Columns a subclass draws around its body (borders, rules, bullets); the
+    // rest is what the body text may use. The default is the EMPTY border.
+    static constexpr int kChromeCols = 2;
+
+    // Width the body text may use at |chrome| columns of surrounding chrome,
+    // or 0 when the render width is not known yet.
+    int BodyWidth(int chrome = kChromeCols) const
+    {
+        return render_width_ > 0 ? std::max(1, render_width_ - chrome) : 0;
+    }
+
+    // Wrapping depends on the render width, so every cached element tree is
+    // dropped when it changes. Subclasses with extra width-dependent caches
+    // (ToolMessage's markdown body) extend this.
+    virtual void OnWidthChanged();
 };
 
 class ThoughtMessage : public Message
@@ -72,6 +102,10 @@ class ToolMessage : public Message
                 const std::string_view task_id = "");
     bool OnEvent(ftxui::Event) override;
     ftxui::Element OnRender() override;
+
+  protected:
+    // The cached markdown body depends on the render width as well.
+    void OnWidthChanged() override;
 
   private:
     // Collapsed content shows the first kPreviewLines lines, then a "..."
