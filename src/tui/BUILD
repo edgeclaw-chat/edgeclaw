@@ -15,8 +15,9 @@ cc_library(
         "edc_c_bridge.c",
         "edc_chat_widget.cpp",
         "edc_input.cpp",
-        "edc_tui_window.cpp",
         "edc_message.cpp",
+        "edc_message_list.cpp",
+        "edc_tui_window.cpp",
         "edc_scroll_view.cpp",
         "edc_task_widget.cpp",
         "edc_todo_widget.cpp",
@@ -27,8 +28,9 @@ cc_library(
         "edc_c_bridge.h",
         "edc_chat_widget.hpp",
         "edc_input.hpp",
-        "edc_tui_window.hpp",
         "edc_message.hpp",
+        "edc_message_list.hpp",
+        "edc_tui_window.hpp",
         "edc_scroll_view.hpp",
         "edc_style.hpp",
         "edc_task_widget.hpp",
@@ -124,4 +126,18 @@ cc_binary(
         "//conditions:default": [],
     }),
     visibility = ["//visibility:public"],
+)
+
+cc_test(
+    name = "test_message_list",
+    srcs = ["test_message_list.cpp"],
+    deps = [
+        ":tui",
+    ],
+    linkstatic = True,
+    linkopts = LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
 )

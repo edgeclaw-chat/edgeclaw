@@ -23,16 +23,24 @@ class Message : public ::ftxui::ComponentBase
     bool OnEvent(ftxui::Event) override;
     ftxui::Element OnRender() override;
 
+    // Blank rows the list reserves below each item, outside the item's own
+    // box. The chat log used to append a separator element after every message;
+    // the virtualized list (edc_message_list.*) adds this as a layout stride
+    // instead of rendering a child for it, so the spacing costs no DOM node and
+    // never gets painted with the message background.
+    static constexpr int kSpacingRows = 1;
+
   protected:
     const std::string content_;
     time_t ts_;
     const std::string task_id_;
 
-  private:
-    // Markdown parse result. content_ never changes after construction, so the
-    // parse happens once, lazily, on the first render; later frames reuse the
-    // same element tree (ftxui re-runs layout every Render pass, so a cached
-    // tree is safe to draw repeatedly).
+    // Cached rendered element. content_ never changes after construction and
+    // the element tree does not depend on the layout width (wrapping happens
+    // during layout, not while the tree is built), so a subclass builds its
+    // tree once and hands the same element back on every later frame. The
+    // subclasses that toggle between two shapes (Thought/Tool) drop the cache
+    // when they switch.
     ::ftxui::Element body_;
 };
 
@@ -75,9 +83,15 @@ class ToolMessage : public Message
     std::string header_;
     bool expanded_ = false;
     bool markdown_ = false;
+    // Line count of content_, computed once at construction: the collapsed
+    // view needs it on every frame, and rescanning the whole body per frame was
+    // O(content) work repeated for every tool message on screen.
+    size_t line_count_ = 0;
+    // First kPreviewLines lines plus the trailing "...", built once on demand.
+    std::string preview_;
+    bool preview_ready_ = false;
     ::ftxui::Element md_body_; /* lazy RenderMarkdown cache, only when markdown_ */
     ::ftxui::Box box_;
 };
 
 } // namespace edc
-

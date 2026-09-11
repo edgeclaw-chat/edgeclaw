@@ -8,23 +8,21 @@ namespace edc
 
 ChatWidget::ChatWidget()
 {
-    container_ = ::ftxui::Container::Vertical({});
     // Mouse-wheel-only: the log stays out of the keyboard focus cycle so the
     // arrow keys always belong to the input box (caret movement / history
     // recall) and are never stolen to scroll chat. The wheel still scrolls
     // wherever the pointer is, and clicking collapsible entries still works
     // (mouse events route by hit-testing, independent of focus).
-    scroll_view_ = std::make_shared<ScrollView>(
-        container_,
-        ScrollOptions{ScrollMode::kFill, /*show_indicator=*/true, /*follow_tail=*/true,
-                      /*focusable=*/false});
+    list_ = std::make_shared<MessageList>();
+    scroll_view_ = std::make_shared<ScrollView>(list_, ScrollOptions{ScrollMode::kFill, /*show_indicator=*/true,
+                                                                     /*follow_tail=*/true,
+                                                                     /*focusable=*/false});
     Add(scroll_view_);
 }
 
 void ChatWidget::AddMessage(std::shared_ptr<Message> message)
 {
-    container_->Add(message);
-    container_->Add(::ftxui::Renderer([] { return ::ftxui::separatorEmpty(); }));
+    list_->AddMessage(std::move(message));
 
     // Leave the scroll offset alone: if we are following the tail, layout pins
     // it to the new bottom, otherwise the reader stays where they were.
@@ -32,7 +30,7 @@ void ChatWidget::AddMessage(std::shared_ptr<Message> message)
 
 void ChatWidget::Clear()
 {
-    container_->DetachAllChildren();
+    list_->Clear();
 }
 
 bool ChatWidget::Scroll(int delta)
@@ -57,9 +55,9 @@ bool ChatWidget::OnEvent(::ftxui::Event event)
 
 ::ftxui::Element ChatWidget::OnRender()
 {
-    // An empty Container::Vertical renders "Empty container" as a debug
-    // fallback; show a blank area instead so an empty chat is just empty.
-    if (container_->ChildCount() == 0)
+    // An empty list would render as an empty box of nothing; show a blank area
+    // instead so an empty chat is just empty.
+    if (list_->Empty())
     {
         return ::ftxui::filler();
     }

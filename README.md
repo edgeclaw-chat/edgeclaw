@@ -347,7 +347,7 @@ edgeclaw/
 #   注: cJSON / mbedtls / ftxui 经 MODULE.bazel (bzlmod) 拉取, 非 vendored
 ├── patches/                          # 依赖补丁
 ├── toolchain/                        # 交叉编译工具链
-├── docs/                             # 用户手册 (edgeclaw.md) + man page
+├── docs/                             # 用户手册 (edgeclaw.md) + man page + TUI 设计文档
 ├── workspace/                        # 默认工作区 (编译期打包进二进制, 首次运行释放到 ~/.edgeclaw/)
 │   ├── AGENTS.md  SOUL.md  USER.md  TOOLS.md  HEARTBEAT.md
 │   ├── memory/   skills/   ssl/

@@ -46,6 +46,7 @@ bool ThoughtMessage::OnEvent(ftxui::Event event)
             box_.Contain(event.mouse().x, event.mouse().y))
         {
             thought_expanded_ = !thought_expanded_;
+            body_ = nullptr; // the two shapes have different heights
             return true;
         }
         return false;
@@ -54,6 +55,7 @@ bool ThoughtMessage::OnEvent(ftxui::Event event)
     if (event == ftxui::Event::Return)
     {
         thought_expanded_ = !thought_expanded_;
+        body_ = nullptr;
         return true;
     }
     return false;
@@ -61,6 +63,13 @@ bool ThoughtMessage::OnEvent(ftxui::Event event)
 
 ::ftxui::Element ThoughtMessage::OnRender()
 {
+    // Waiting for a frame is what used to make this expensive: the label and
+    // the body were rebuilt (and re-measured by ftxui) on every single frame,
+    // including the ~66fps of the working animation. content_ is immutable, so
+    // the tree only changes when the toggle does.
+    if (body_)
+        return body_;
+
     auto arrow = thought_expanded_ ? "-" : "+";
     const auto &pal = style::palette();
     auto applied_color = thought_expanded_ ? pal.thought_open : pal.thought_closed;
@@ -71,13 +80,15 @@ bool ThoughtMessage::OnEvent(ftxui::Event event)
 
     if (!thought_expanded_)
     {
-        return label;
+        body_ = std::move(label);
+        return body_;
     }
 
     auto body = ::ftxui::paragraph(content_) | ::ftxui::color(pal.text_dim) |
                 ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY);
 
-    return ::ftxui::vbox({label, body});
+    body_ = ::ftxui::vbox({std::move(label), std::move(body)});
+    return body_;
 }
 
 UserMessage::UserMessage(const std::string_view content, time_t ts, const std::string_view task_id)
@@ -87,44 +98,23 @@ UserMessage::UserMessage(const std::string_view content, time_t ts, const std::s
 
 ::ftxui::Element UserMessage::OnRender()
 {
+    // Built once: the user turn is created from immutable text and never
+    // toggles, so rebuilding the paragraph on every frame only served to make
+    // ftxui re-split the whole message into words ~66 times a second.
+    if (body_)
+        return body_;
+
     const auto &pal = style::palette();
     auto body = ::ftxui::paragraph(content_);
     auto header = ::ftxui::separatorHeavy() | ::ftxui::color(pal.user_rule);
 
-    body = ::ftxui::hbox({header, body | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY)}) |
-           ::ftxui::bgcolor(pal.pane_bg);
-    return body;
+    body_ = ::ftxui::hbox({header, body | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY)}) |
+            ::ftxui::bgcolor(pal.pane_bg);
+    return body_;
 }
 
 bool UserMessage::OnEvent(ftxui::Event)
 {
-    return false;
-}
-
-ToolMessage::ToolMessage(const std::string_view header, const std::string_view content, time_t ts, bool markdown,
-                         const std::string_view task_id)
-    : Message(content, ts, task_id), header_(header), markdown_(markdown)
-{
-}
-
-bool ToolMessage::OnEvent(::ftxui::Event event)
-{
-    if (event.is_mouse())
-    {
-        if (event.mouse().button == ::ftxui::Mouse::Left && event.mouse().motion == ::ftxui::Mouse::Pressed &&
-            box_.Contain(event.mouse().x, event.mouse().y))
-        {
-            expanded_ = !expanded_;
-            return true;
-        }
-        return false;
-    }
-
-    if (event == ftxui::Event::Return)
-    {
-        expanded_ = !expanded_;
-        return true;
-    }
     return false;
 }
 
@@ -168,14 +158,49 @@ std::string FirstLines(const std::string &text, size_t max_lines)
 }
 } // namespace
 
+ToolMessage::ToolMessage(const std::string_view header, const std::string_view content, time_t ts, bool markdown,
+                         const std::string_view task_id)
+    : Message(content, ts, task_id), header_(header), markdown_(markdown), line_count_(CountLines(content_))
+{
+}
+
+bool ToolMessage::OnEvent(::ftxui::Event event)
+{
+    if (event.is_mouse())
+    {
+        if (event.mouse().button == ::ftxui::Mouse::Left && event.mouse().motion == ::ftxui::Mouse::Pressed &&
+            box_.Contain(event.mouse().x, event.mouse().y))
+        {
+            expanded_ = !expanded_;
+            body_ = nullptr; // collapsed and expanded are different trees
+            return true;
+        }
+        return false;
+    }
+
+    if (event == ftxui::Event::Return)
+    {
+        expanded_ = !expanded_;
+        body_ = nullptr;
+        return true;
+    }
+    return false;
+}
+
 ::ftxui::Element ToolMessage::OnRender()
 {
+    // Cached like the other messages: the tree is immutable unless the toggle
+    // flips. Before this the collapsed view was rebuilt — and the body rescanned
+    // line by line, twice — on every frame.
+    if (body_)
+        return body_;
+
     const auto &pal = style::palette();
 
     // Only messages whose content is truncated on the collapsed view carry the
     // toggle; short outputs are shown verbatim without a footer.
-    const bool truncated = !expanded_ && CountLines(content_) > ToolMessage::kPreviewLines;
-    const bool toggleable = expanded_ || CountLines(content_) > ToolMessage::kPreviewLines;
+    const bool truncated = !expanded_ && line_count_ > kPreviewLines;
+    const bool toggleable = expanded_ || line_count_ > kPreviewLines;
 
     ::ftxui::Elements children;
     if (!header_.empty())
@@ -203,11 +228,15 @@ std::string FirstLines(const std::string &text, size_t max_lines)
     else
     {
         // First kPreviewLines lines, with the line after them replaced by "...".
-        std::string preview = FirstLines(content_, ToolMessage::kPreviewLines);
-        if (!preview.empty())
-            preview += "\n";
-        preview += "...";
-        body = ::ftxui::paragraph(preview);
+        if (!preview_ready_)
+        {
+            preview_ = FirstLines(content_, kPreviewLines);
+            if (!preview_.empty())
+                preview_ += "\n";
+            preview_ += "...";
+            preview_ready_ = true;
+        }
+        body = ::ftxui::paragraph(preview_);
     }
 
     children.push_back(body);
@@ -218,8 +247,9 @@ std::string FirstLines(const std::string &text, size_t max_lines)
         children.push_back(footer);
     }
 
-    return ::ftxui::vbox(children) | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) |
-           ::ftxui::bgcolor(pal.pane_bg);
+    body_ =
+        ::ftxui::vbox(children) | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) | ::ftxui::bgcolor(pal.pane_bg);
+    return body_;
 }
 
 } // namespace edc

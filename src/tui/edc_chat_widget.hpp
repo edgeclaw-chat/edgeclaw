@@ -1,6 +1,7 @@
 #pragma once
 
 #include "edc_message.hpp"
+#include "edc_message_list.hpp"
 #include "edc_scroll_view.hpp"
 #include "ftxui/component/component_base.hpp"
 #include <memory>
@@ -40,7 +41,9 @@ class ChatWidget : public ::ftxui::ComponentBase
     bool ScrollToBottom();
 
   private:
-    ::ftxui::Component container_;
+    // Holds the messages and draws only the ones inside the viewport; see
+    // edc_message_list.hpp for why the log is not a plain component container.
+    std::shared_ptr<MessageList> list_;
     std::shared_ptr<ScrollView> scroll_view_;
 };
 
