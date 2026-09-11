@@ -561,7 +561,10 @@ static void edc_commands_handle_task_stop(struct edc_agent *agent, edc_actor_t *
     edc_commands_reply(agent, actor, channel_type, "stop signal sent");
 }
 
-/* /task resume [id]: 对 SUSPENDED 任务重新判定并驱动 (依赖/工具/turn)。
+/* /task resume [id]: 对可恢复任务重新判定并驱动 (依赖/工具/turn)。接受两类:
+ *   - SUSPENDED: 重启后被停住的任务, 按持久化状态重新判定该回到哪一步;
+ *   - ERROR:    执行中失败的任务, 续跑失败的那一轮 (复用残留 active_turn /
+ *               工具账本, 不整轮重来)。
  * 不带 id 时默认当前前台组的 active 任务, 与 /task stop 一致。 */
 static void edc_commands_handle_task_resume(struct edc_agent *agent, edc_actor_t *actor,
                                             edc_channel_type channel_type, sds arg)
@@ -594,9 +597,12 @@ static void edc_commands_handle_task_resume(struct edc_agent *agent, edc_actor_t
         }
     }
 
-    if (t->state != TASK_SUSPENDED)
+    /* SUSPENDED = 重启后被停住的任务 (resume 重新判定并驱动);
+     * ERROR = 执行中失败的任务 (resume 续跑失败的那一轮, 复用残留的
+     * active_turn / 工具账本)。其余状态都不可 resume。 */
+    if (t->state != TASK_SUSPENDED && t->state != TASK_ERROR)
     {
-        sds reply = sdscatprintf(sdsempty(), "task %s is %s, not SUSPENDED", t->task_id,
+        sds reply = sdscatprintf(sdsempty(), "task %s is %s, not resumable", t->task_id,
                                  edc_task_state_name(t->state));
         edc_commands_reply(agent, actor, channel_type, reply);
         sdsfree(reply);

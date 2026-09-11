@@ -391,6 +391,85 @@ static void test_resume_pending_redispatches(void)
     edc_config_free(cfg);
 }
 
+/* ══════════════════════════════════════════════════════════════
+ *  Test 7: resume an ERROR task -> continue the failed turn
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_resume_error_continues_turn(void)
+{
+    TEST("resume ERROR: continues the failed turn (reuses active_turn)");
+    struct edc_config *cfg = make_config();
+    struct edc_session *s = edc_session_new(cfg, "sess-r5", "R5");
+    struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+    sched->send_llm = stub_send_llm;
+
+    struct edc_task *t = edc_task_new("r5", "sess-r5", "r5", "task", edc_channel_adapter);
+    edc_task_set_state(t, TASK_WAITING_INPUT);
+    edc_task_set_state(t, TASK_LLM_PROCESSING);
+    /* 失败前的半成品: 这轮已有 user 消息, LLM 请求失败没产出 assistant。 */
+    t->active_turn = edc_turn_new();
+    edc_turn_add_user_message(t->active_turn, "do the thing");
+    edc_task_set_state(t, TASK_ERROR); /* LLM_PROCESSING → ERROR */
+    CHECK(t->state == TASK_ERROR, "task is ERROR");
+
+    struct edc_task_group *g = edc_task_group_new(t);
+    edc_session_add_group(s, g);
+
+    g_send_llm_calls = 0;
+    g_redispatch_calls = 0;
+    edc_scheduler_resume_task(sched, t);
+
+    CHECK(t->state == TASK_LLM_PROCESSING, "resumed ERROR -> LLM_PROCESSING");
+    CHECK(g_send_llm_calls == 1, "LLM re-dispatched once");
+    CHECK(g_redispatch_calls == 0, "nothing redispatched");
+    CHECK(t->active_turn != NULL, "active_turn preserved (continue, not restart)");
+    CHECK(t->active_turn && edc_queue_length(&t->active_turn->messages) == 1,
+          "half-finished round still intact");
+
+    edc_session_free(s);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Test 8: resume an ERROR task that still has a pending tool call
+ *          -> TOOL_CALLING + redispatch (ERROR → TOOL_CALLING now valid)
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_resume_error_pending_tool_redispatches(void)
+{
+    TEST("resume ERROR: pending tool -> TOOL_CALLING + redispatch");
+    struct edc_config *cfg = make_config();
+    struct edc_session *s = edc_session_new(cfg, "sess-r6", "R6");
+    struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+    sched->redispatch_tools = stub_redispatch;
+
+    struct edc_task *t = edc_task_new("r6", "sess-r6", "r6", "task", edc_channel_adapter);
+    edc_task_set_state(t, TASK_WAITING_INPUT);
+    edc_task_set_state(t, TASK_LLM_PROCESSING);
+    edc_task_set_state(t, TASK_TOOL_CALLING);
+    seed_tool_turn(t, "c1", "shell");
+    edc_task_tool_call_add(t, "c1", "shell", NULL);
+    edc_task_set_state(t, TASK_ERROR); /* TOOL_CALLING → ERROR */
+    CHECK(t->state == TASK_ERROR, "task is ERROR");
+
+    struct edc_task_group *g = edc_task_group_new(t);
+    edc_session_add_group(s, g);
+
+    g_send_llm_calls = 0;
+    g_redispatch_calls = 0;
+    edc_scheduler_resume_task(sched, t);
+
+    CHECK(t->state == TASK_TOOL_CALLING, "resumed ERROR -> TOOL_CALLING");
+    CHECK(g_redispatch_calls == 1, "redispatch callback invoked once");
+    CHECK(t->active_turn != NULL, "active_turn preserved");
+    CHECK(g_send_llm_calls == 0, "no LLM yet (waiting for tool result)");
+
+    edc_session_free(s);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     log_info("=== task resume / tool ledger tests ===");
@@ -402,6 +481,8 @@ int main(void)
     test_resume_waiting_deps();
     test_resume_executing_synthesizes();
     test_resume_pending_redispatches();
+    test_resume_error_continues_turn();
+    test_resume_error_pending_tool_redispatches();
 
     log_info("");
     log_info("=== Results: %d passed, %d failed ===", test_passed, test_failed);

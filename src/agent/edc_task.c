@@ -88,7 +88,10 @@ static bool edc_task_is_valid_transition(edc_task_state from, edc_task_state to)
     case TASK_CANCELLED:
         return to == TASK_WAITING_INPUT; /* resume */
     case TASK_ERROR:
-        return to == TASK_WAITING_INPUT || to == TASK_CANCELLED; /* resume or cancel */
+        /* resume 续跑失败的那一轮: 重新判定后可能回依赖等待 / 等输入 / 重新
+         * 请求 LLM / 继续工具链 (与 SUSPENDED 同一组目标); 或取消。 */
+        return to == TASK_WAITING_DEPS || to == TASK_WAITING_INPUT || to == TASK_LLM_PROCESSING ||
+               to == TASK_TOOL_CALLING || to == TASK_CANCELLED;
     default:
         return false;
     }

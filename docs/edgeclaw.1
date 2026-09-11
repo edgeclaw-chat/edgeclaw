@@ -184,9 +184,14 @@ TASK STATES
        - pending turn (no LLM reply) -> LLM_PROCESSING
        - otherwise                   -> WAITING_INPUT
 
+     Failed tasks: a task that failed mid-run is ERROR but keeps its
+     half-finished turn (and any interrupted tool ledger).  /task resume
+     [tid] continues that turn instead of starting over.
+
      - COMPLETED tasks persist until reclaimed with /task join.
      - WAITING_DEPS tasks accept input and queue it until deps resolve.
      - SUSPENDED tasks are parked (e.g. after a restart); /task resume revives.
+     - ERROR tasks failed mid-run; /task resume continues their unfinished turn.
 
 SHELL-LIKE JOB CONTROL
      Shell            EdgeClaw
@@ -247,8 +252,9 @@ COMMAND REFERENCE
                               Without an id, stops the active task of the
                               foreground group; errors if the id is not
                               found.
-     /task resume [tid]       Resume a SUSPENDED task: re-derives state
-                              (deps / tool chain / turn) and drives it.
+     /task resume [tid]       Resume a SUSPENDED or ERROR task: re-derives
+                              state (deps / tool chain / turn) and drives it;
+                              an ERROR task continues its failed turn.
                               Without an id, resumes the active task of the
                               foreground group.
      /task join <tid>         Show output, auto-inject into active task

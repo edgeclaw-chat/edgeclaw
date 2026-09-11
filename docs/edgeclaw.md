@@ -114,9 +114,15 @@ return to:
 - a pending turn (input not yet answered) → `LLM_PROCESSING`
 - otherwise → `WAITING_INPUT`
 
+**Failed tasks**: a task that failed mid-run is `ERROR` but keeps its half-finished
+turn (and any interrupted tool ledger). `/task resume [tid]` continues that turn
+instead of starting over — it re-derives the same way (deps / tool chain / turn)
+and re-drives it.
+
 - **COMPLETED**: persists until reclaimed with `/task join`.
 - **WAITING_DEPS**: accepts input and queues it until dependencies resolve.
 - **SUSPENDED**: parked (e.g. after a restart); `/task resume` revives it.
+- **ERROR**: a failed task; `/task resume` continues its unfinished turn.
 
 ### Dependency System
 
@@ -203,7 +209,7 @@ The child inherits a slice of the parent's conversation context. Use
 | Command | Description |
 |---------|-------------|
 | `/task stop [tid]` | Cancel a task (SIGTERM — notifies dependents). Without an id, stops the active task of the foreground group; errors if the id is not found |
-| `/task resume [tid]` | Resume a SUSPENDED task: re-derives state (deps / tool chain / turn) and drives it. Without an id, resumes the active task of the foreground group |
+| `/task resume [tid]` | Resume a SUSPENDED or ERROR task: re-derives state (deps / tool chain / turn) and drives it; an ERROR task continues its failed turn. Without an id, resumes the active task of the foreground group |
 | `/task join <tid>` | Show output, auto-inject into active task (or create one), then reclaim |
 
 ### Pipelines

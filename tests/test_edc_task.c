@@ -185,11 +185,40 @@ static void test_state_machine(void)
     edc_task_free(t);
 
     TEST("ERROR can be resumed or cancelled");
+    /* ERROR → WAITING_INPUT */
     t = edc_task_new("task-sm11", "sess-1", "task-sm11", "sm test", edc_channel_adapter);
     edc_task_set_state(t, TASK_WAITING_INPUT);
     edc_task_set_state(t, TASK_LLM_PROCESSING);
     edc_task_set_state(t, TASK_ERROR);
     CHECK(edc_task_set_state(t, TASK_WAITING_INPUT), "ERROR → WAITING_INPUT (resume)");
+    edc_task_free(t);
+
+    /* ERROR → LLM_PROCESSING / TOOL_CALLING / WAITING_DEPS: resume 续跑失败那轮
+     * 可能重新请求 LLM、继续工具链或回依赖等待。 */
+    const edc_task_state resume_targets[] = {TASK_LLM_PROCESSING, TASK_TOOL_CALLING, TASK_WAITING_DEPS};
+    for (size_t ri = 0; ri < sizeof(resume_targets) / sizeof(resume_targets[0]); ri++)
+    {
+        t = edc_task_new("task-sm11r", "sess-1", "task-sm11r", "sm test", edc_channel_adapter);
+        edc_task_set_state(t, TASK_WAITING_INPUT);
+        edc_task_set_state(t, TASK_LLM_PROCESSING);
+        edc_task_set_state(t, TASK_ERROR);
+        CHECK(edc_task_set_state(t, resume_targets[ri]), "ERROR → resume target allowed");
+        edc_task_free(t);
+    }
+
+    /* 仍然不可从 ERROR 跳到 SUSPENDED / COMPLETED */
+    t = edc_task_new("task-sm11x", "sess-1", "task-sm11x", "sm test", edc_channel_adapter);
+    edc_task_set_state(t, TASK_WAITING_INPUT);
+    edc_task_set_state(t, TASK_LLM_PROCESSING);
+    edc_task_set_state(t, TASK_ERROR);
+    CHECK(!edc_task_set_state(t, TASK_SUSPENDED), "ERROR → SUSPENDED rejected");
+    CHECK(!edc_task_set_state(t, TASK_COMPLETED), "ERROR → COMPLETED rejected");
+    edc_task_free(t);
+
+    /* ERROR → CANCELLED */
+    t = edc_task_new("task-sm11c", "sess-1", "task-sm11c", "sm test", edc_channel_adapter);
+    edc_task_set_state(t, TASK_WAITING_INPUT);
+    edc_task_set_state(t, TASK_LLM_PROCESSING);
     edc_task_set_state(t, TASK_ERROR);
     CHECK(edc_task_set_state(t, TASK_CANCELLED), "ERROR → CANCELLED");
     edc_task_free(t);
