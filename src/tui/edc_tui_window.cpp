@@ -74,8 +74,8 @@ bool ForegroundProcessBusy(const ::edc_c_task_snapshot *snap)
             const ::edc_c_task_info *t = &g->tasks[ti];
             if (!t->is_active)
                 continue;
-            return t->state && (std::strcmp(t->state, "LLM_PROCESSING") == 0 ||
-                                std::strcmp(t->state, "TOOL_CALLING") == 0);
+            return t->state &&
+                   (std::strcmp(t->state, "LLM_PROCESSING") == 0 || std::strcmp(t->state, "TOOL_CALLING") == 0);
         }
         return false; // foreground group exists but has no active task marked
     }
@@ -94,14 +94,14 @@ bool ForegroundProcessBusy(const ::edc_c_task_snapshot *snap)
 // number of cells (never change the width), no background fill, and medium
 // block glyphs — not the full-height █▓▒░, which tower over the surrounding
 // text.
-constexpr int kBarCells = 10; // cells in the bar
-constexpr int kBarLit = 5;    // lit cells: the sliding run
+constexpr int kBarCells = 10;      // cells in the bar
+constexpr int kBarLit = 5;         // lit cells: the sliding run
 constexpr long long kStepMs = 120; // per cell of travel
 // The run slides from completely past the left edge to completely past the
 // right edge before the sweep reverses, so the ends of the bar are genuine
 // turning points (a few frames of empty bar) rather than bumpers.
-constexpr int kRunFirst = -kBarLit;  // run fully off the left edge
-constexpr int kRunLast = kBarCells;  // run fully off the right edge
+constexpr int kRunFirst = -kBarLit; // run fully off the left edge
+constexpr int kRunLast = kBarCells; // run fully off the right edge
 constexpr int kRunPositions = kRunLast - kRunFirst + 1;
 // First frame: the run fully on screen at the left, so the row looks busy
 // straight away instead of opening on an empty bar.
@@ -150,11 +150,16 @@ int FlowTier(int i, bool forward)
 {
     switch (tier)
     {
-    case 0: return ::ftxui::text("■") | ::ftxui::color(pal.accent) | ::ftxui::bold;
-    case 1: return ::ftxui::text("■") | ::ftxui::color(pal.accent);
-    case 2: return ::ftxui::text("■") | ::ftxui::color(pal.accent) | ::ftxui::dim;
-    case 3: return ::ftxui::text("■") | ::ftxui::color(pal.text_dim);
-    default: return ::ftxui::text("■") | ::ftxui::color(pal.text_dim) | ::ftxui::dim;
+    case 0:
+        return ::ftxui::text("■") | ::ftxui::color(pal.accent) | ::ftxui::bold;
+    case 1:
+        return ::ftxui::text("■") | ::ftxui::color(pal.accent);
+    case 2:
+        return ::ftxui::text("■") | ::ftxui::color(pal.accent) | ::ftxui::dim;
+    case 3:
+        return ::ftxui::text("■") | ::ftxui::color(pal.text_dim);
+    default:
+        return ::ftxui::text("■") | ::ftxui::color(pal.text_dim) | ::ftxui::dim;
     }
 }
 
@@ -214,10 +219,18 @@ std::string EscapeHistoryEntry(const std::string &entry)
     {
         switch (c)
         {
-        case '\\': out += "\\\\"; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        default: out += c; break;
+        case '\\':
+            out += "\\\\";
+            break;
+        case '\n':
+            out += "\\n";
+            break;
+        case '\r':
+            out += "\\r";
+            break;
+        default:
+            out += c;
+            break;
         }
     }
     return out;
@@ -239,9 +252,15 @@ std::string UnescapeHistoryLine(const std::string &line)
         const char n = line[++i];
         switch (n)
         {
-        case 'n': out += '\n'; break;
-        case 'r': out += '\r'; break;
-        case '\\': out += '\\'; break;
+        case 'n':
+            out += '\n';
+            break;
+        case 'r':
+            out += '\r';
+            break;
+        case '\\':
+            out += '\\';
+            break;
         default:
             // Unknown escape: keep both bytes verbatim.
             out += '\\';
@@ -317,8 +336,7 @@ TUIWindow::TUIWindow() : input_text_("")
     // wrap onto following rows instead of overflowing the input width;
     // Alt+Enter / pasted newlines still create real '\n' in the content. The
     // placeholder is dimmed by the widget itself (no InputOption transform).
-    input_ = std::make_shared<edc::EdcInput>(
-        &input_text_, "输入消息，Enter 发送，Alt+Enter 换行...");
+    input_ = std::make_shared<edc::EdcInput>(&input_text_, "输入消息，Enter 发送，Alt+Enter 换行...");
 
     // Restore the recall history saved by previous runs (ArrowUp/ArrowDown in
     // the box). Missing file on first run just leaves the box with no history.
@@ -358,9 +376,8 @@ TUIWindow::TUIWindow() : input_text_("")
     // of the tail-follow: a snapshot refresh must neither steal Tab/arrows
     // from the editor nor yank the viewport to the bottom of the tree.
     auto task_scroll = std::make_shared<ScrollView>(
-        task_widget_,
-        ScrollOptions{ScrollMode::kFitContent, /*show_indicator=*/false, /*follow_tail=*/false,
-                      /*focusable=*/false});
+        task_widget_, ScrollOptions{ScrollMode::kFitContent, /*show_indicator=*/false, /*follow_tail=*/false,
+                                    /*focusable=*/false});
     auto right_column = ::ftxui::Container::Vertical({task_scroll, todo_widget_});
     auto right_pane = ::ftxui::Renderer(right_column, [this, task_scroll] {
         // The two sections stack directly on each other with no divider
@@ -372,8 +389,7 @@ TUIWindow::TUIWindow() : input_text_("")
         // pane, but its children stay at natural height and are laid out from
         // the top: leftover vertical space remains at the bottom instead of
         // being absorbed by the task tree to push the todo section down.
-        return ::ftxui::vbox(std::move(col)) |
-               ::ftxui::bgcolor(style::palette().pane_bg) | ::ftxui::flex;
+        return ::ftxui::vbox(std::move(col)) | ::ftxui::bgcolor(style::palette().pane_bg) | ::ftxui::flex;
     });
     split_ = ::ftxui::ResizableSplit({
         right_pane,                         // main (right pane)
@@ -384,7 +400,7 @@ TUIWindow::TUIWindow() : input_text_("")
     });
     Add(split_);
 
-    agent = edc_c_agent_new(false, false);
+    agent = edc_c_agent_new(false, true);
     edc_channel_adapter_init(edc_c_agent_channel_actor(agent), this, on_channel_adapter_send);
     EnableBracketedPaste();
 
@@ -565,8 +581,8 @@ static std::string UnescapeTranscriptField(const std::string &s)
     return out;
 }
 
-void TUIWindow::AppendChatTranscript(const std::string &kind, const std::string &header,
-                                     const std::string &content, const std::string &task_id, int render_pref)
+void TUIWindow::AppendChatTranscript(const std::string &kind, const std::string &header, const std::string &content,
+                                     const std::string &task_id, int render_pref)
 {
     if (chat_log_path_.empty())
         return;
@@ -696,8 +712,7 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
         // replaces the footer line (so the bottom row keeps its height); as
         // soon as a snapshot reports it is no longer busy, the footer returns.
         const auto now = std::chrono::steady_clock::now();
-        const auto elapsed_ms =
-            std::chrono::duration_cast<std::chrono::milliseconds>(now - working_started_).count();
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - working_started_).count();
         children.push_back(WorkingIndicatorElement(elapsed_ms));
 
         if (screen_)
