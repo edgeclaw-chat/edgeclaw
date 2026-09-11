@@ -77,7 +77,8 @@ static bool edc_commands_arg(const char *content, const char *prefix, sds *out)
 
 void edc_commands_reply(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type, const char *text)
 {
-    struct edc_channel_message *reply = edc_channel_message_new(channel_type, EDC_CHANNEL_MESSAGE_SYS_TYPE, sdsnew(text));
+    struct edc_channel_message *reply =
+        edc_channel_message_new(channel_type, EDC_CHANNEL_MESSAGE_SYS_TYPE, sdsnew(text));
     edc_actor_send(agent->channel_actor,
                    edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type, actor, NULL, reply,
                                               (edc_actor_data_free_fn)edc_channel_message_free));
@@ -202,8 +203,8 @@ static bool edc_commands_handle_session_new(struct edc_agent *agent, edc_actor_t
     return true;
 }
 
-static bool edc_commands_handle_session_switch(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
-                                               sds arg)
+static bool edc_commands_handle_session_switch(struct edc_agent *agent, edc_actor_t *actor,
+                                               edc_channel_type channel_type, sds arg)
 {
     if (!arg || sdslen(arg) == 0)
     {
@@ -310,8 +311,8 @@ static bool edc_commands_handle_session_remove(struct edc_agent *agent, edc_acto
     return true;
 }
 
-static bool edc_commands_handle_session_rename(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
-                                               sds arg)
+static bool edc_commands_handle_session_rename(struct edc_agent *agent, edc_actor_t *actor,
+                                               edc_channel_type channel_type, sds arg)
 {
     if (!arg || sdslen(arg) == 0)
     {
@@ -414,8 +415,9 @@ static bool edc_commands_handle_session(struct edc_agent *agent, edc_actor_t *ac
     /* /session stop 不接受参数 —— 移除 session 已改用 /session remove。 */
     if (edc_commands_is_prefix(msg->content, "/session stop"))
     {
-        edc_commands_reply(agent, actor, msg->type,
-                           "[session] /session stop takes no arguments; to remove a session use /session remove <name_or_id>");
+        edc_commands_reply(
+            agent, actor, msg->type,
+            "[session] /session stop takes no arguments; to remove a session use /session remove <name_or_id>");
         return true;
     }
     sds reply = sdscatprintf(sdsempty(),
@@ -465,7 +467,8 @@ static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *a
         if (opts.bg)
         {
             // sds reply =
-            //     sdscatprintf(sdsempty(), "[task] created %s (group %s) in background", task->task_id, group->group_id);
+            //     sdscatprintf(sdsempty(), "[task] created %s (group %s) in background", task->task_id,
+            //     group->group_id);
             // edc_commands_reply(agent, actor, channel_type, reply);
             // sdsfree(reply);
         }
@@ -570,8 +573,8 @@ static void edc_commands_handle_task_stop(struct edc_agent *agent, edc_actor_t *
  *   - ERROR:    执行中失败的任务, 续跑失败的那一轮 (复用残留 active_turn /
  *               工具账本, 不整轮重来)。
  * 不带 id 时默认当前前台组的 active 任务, 与 /task stop 一致。 */
-static void edc_commands_handle_task_resume(struct edc_agent *agent, edc_actor_t *actor,
-                                            edc_channel_type channel_type, sds arg)
+static void edc_commands_handle_task_resume(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
+                                            sds arg)
 {
     struct edc_session *sess = edc_session_manager_get_active(agent->session_manager);
     struct edc_task *t = NULL;
@@ -606,16 +609,15 @@ static void edc_commands_handle_task_resume(struct edc_agent *agent, edc_actor_t
      * active_turn / 工具账本)。其余状态都不可 resume。 */
     if (t->state != TASK_SUSPENDED && t->state != TASK_ERROR)
     {
-        sds reply = sdscatprintf(sdsempty(), "task %s is %s, not resumable", t->task_id,
-                                 edc_task_state_name(t->state));
+        sds reply = sdscatprintf(sdsempty(), "task %s is %s, not resumable", t->task_id, edc_task_state_name(t->state));
         edc_commands_reply(agent, actor, channel_type, reply);
         sdsfree(reply);
         return;
     }
 
     edc_scheduler_resume_task(agent->scheduler, t);
-    sds reply = sdscatprintf(sdsempty(), "resume signal sent to task %s (%s)", t->task_id,
-                             edc_task_state_name(t->state));
+    sds reply =
+        sdscatprintf(sdsempty(), "resume signal sent to task %s (%s)", t->task_id, edc_task_state_name(t->state));
     edc_commands_reply(agent, actor, channel_type, reply);
     sdsfree(reply);
 }
@@ -823,9 +825,10 @@ static void edc_commands_handle_task_groups(struct edc_agent *agent, edc_actor_t
     struct edc_task_group *g;
     DL_FOREACH(edc_scheduler_get_session(agent->scheduler)->groups, g)
     {
-        out = sdscatprintf(
-            out, "- %s%s  **%s**  %d members  _%s_\n", edc_scheduler_get_foreground(agent->scheduler) == g ? "`[fg]` " : "",
-            g->is_orphaned ? "`[orphan]` " : "", g->group_id, g->member_count, edc_task_group_status_label(g));
+        out = sdscatprintf(out, "- %s%s  **%s**  %d members  _%s_\n",
+                           edc_scheduler_get_foreground(agent->scheduler) == g ? "`[fg]` " : "",
+                           g->is_orphaned ? "`[orphan]` " : "", g->group_id, g->member_count,
+                           edc_task_group_status_label(g));
     }
     edc_commands_reply(agent, actor, channel_type, out);
     sdsfree(out);
@@ -892,8 +895,7 @@ static void edc_commands_handle_task_status(struct edc_agent *agent, edc_actor_t
      * 给刚创建、还在 WAITING_DEPS 的 task 挂一行 "0 total" 的噪音。 */
     if (t->tokens_total > 0)
     {
-        out = sdscatprintf(out,
-                           "- **tokens**: %lld total (%lld prompt · %lld completion · %lld cached)\n",
+        out = sdscatprintf(out, "- **tokens**: %lld total (%lld prompt · %lld completion · %lld cached)\n",
                            t->tokens_total, t->tokens_prompt, t->tokens_completion, t->tokens_cached);
     }
     if (t->output)

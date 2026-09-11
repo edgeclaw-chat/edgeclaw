@@ -99,8 +99,7 @@ void edc_c_agent_request_task_snapshot(struct edc_agent *agent)
         return;
 
     /* observer = scheduler actor; the snapshot is built on its thread. */
-    edc_actor_msg_t *msg =
-        edc_actor_msg_new(BC_ACTOR_MSG_TASK_SNAPSHOT, agent->channel_actor, NULL, NULL, NULL);
+    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TASK_SNAPSHOT, agent->channel_actor, NULL, NULL, NULL);
     edc_actor_send(state->observer, msg);
 }
 

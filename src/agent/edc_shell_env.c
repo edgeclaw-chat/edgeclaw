@@ -9,13 +9,32 @@
  */
 static const char *const shell_env_allowlist[] = {
     /* POSIX */
-    "PATH", "HOME", "USER", "LOGNAME", "SHELL",
-    "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ", "TMPDIR",
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TZ",
+    "TMPDIR",
 #ifdef _WIN32
     /* Windows: cmd.exe and friends fail without these */
-    "SystemRoot", "windir", "ComSpec", "PATHEXT", "TEMP", "TMP",
-    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "USERNAME",
-    "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
+    "SystemRoot",
+    "windir",
+    "ComSpec",
+    "PATHEXT",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "USERNAME",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "OS",
 #endif
     NULL,
 };

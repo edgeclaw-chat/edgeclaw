@@ -45,7 +45,7 @@ extern cJSON *edc_context_make_todo_reminder(struct edc_task *task);
  *         (可 NULL) 带回, 由调用方决定是否写回 group->history (保持组内共享
  *         prompt 纯净; 调用方写回后后续请求即走引用分支)
  * 引用/副本/写回语义与迁移前的 edc_agent_cb_send_llm 完全一致。 */
-extern int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf,
-                                          struct edc_task_group *group, sds *out_pristine);
+extern int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct edc_task_group *group,
+                                          sds *out_pristine);
 
 #endif

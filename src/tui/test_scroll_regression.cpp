@@ -338,21 +338,19 @@ void test_pinned_section_header_stays_put()
 
     auto header = ftxui::Renderer(task, [task] { return task->RenderHeader(); });
     auto body = ftxui::Renderer(task, [task] { return task->RenderBody(); });
-    auto view = std::make_shared<edc::ScrollView>(
-        body,
-        edc::ScrollOptions{edc::ScrollMode::kFitContent, /*show_indicator=*/false, /*follow_tail=*/false,
-                           /*focusable=*/false},
-        header);
+    auto view = std::make_shared<edc::ScrollView>(body,
+                                                  edc::ScrollOptions{edc::ScrollMode::kFitContent,
+                                                                     /*show_indicator=*/false, /*follow_tail=*/false,
+                                                                     /*focusable=*/false},
+                                                  header);
     // The sidebar wraps the section in its own EMPTY border, which puts the
     // header row on screen row 1 -- where the wheel is aimed below.
-    auto pane = ftxui::Renderer(view, [view] {
-        return view->Render() | ftxui::borderStyled(ftxui::BorderStyle::EMPTY) | ftxui::flex;
-    });
+    auto pane = ftxui::Renderer(
+        view, [view] { return view->Render() | ftxui::borderStyled(ftxui::BorderStyle::EMPTY) | ftxui::flex; });
 
     const int width = 40;
     const int height = 14;
-    auto draw = [&]
-    {
+    auto draw = [&] {
         auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(width), ftxui::Dimension::Fixed(height));
         ftxui::Render(screen, pane->Render() | ftxui::flex);
         return screen.ToString();
@@ -392,11 +390,11 @@ void test_long_task_tree_keeps_the_todos_visible()
     auto task = MakeTallTaskWidget();
     auto header = ftxui::Renderer(task, [task] { return task->RenderHeader(); });
     auto body = ftxui::Renderer(task, [task] { return task->RenderBody(); });
-    auto view = std::make_shared<edc::ScrollView>(
-        body,
-        edc::ScrollOptions{edc::ScrollMode::kFitContent, /*show_indicator=*/false, /*follow_tail=*/false,
-                           /*focusable=*/false},
-        header);
+    auto view = std::make_shared<edc::ScrollView>(body,
+                                                  edc::ScrollOptions{edc::ScrollMode::kFitContent,
+                                                                     /*show_indicator=*/false, /*follow_tail=*/false,
+                                                                     /*focusable=*/false},
+                                                  header);
 
     auto todo = std::make_shared<edc::TodoWidget>();
     std::vector<edc::TodoWidget::Item> items(3);
@@ -409,14 +407,12 @@ void test_long_task_tree_keeps_the_todos_visible()
 
     const int width = 40;
     const int height = 16;
-    auto draw = [&]
-    {
+    auto draw = [&] {
         auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(width), ftxui::Dimension::Fixed(height));
         ftxui::Render(screen, ftxui::vbox({
-                                   view->Render() | ftxui::borderStyled(ftxui::BorderStyle::EMPTY),
-                                   todo->Render(),
-                               }) |
-                                   ftxui::flex);
+                                  view->Render() | ftxui::borderStyled(ftxui::BorderStyle::EMPTY),
+                                  todo->Render(),
+                              }) | ftxui::flex);
         return screen.ToString();
     };
 

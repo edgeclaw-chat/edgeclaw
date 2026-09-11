@@ -1227,33 +1227,15 @@ static struct sock_filter *build_filter(size_t *out_len, bool block_metadata)
         -1,
     };
 
-/* Metadata mutators that Landlock does not mediate, so they need a seccomp
- * backstop -- but only when the mount-namespace sandbox is NOT active: it makes
- * the read-only paths immutable (EROFS) while leaving writable paths alone,
- * whereas these rules are path-blind and would also break chmod/xattr on
- * writable paths. */
-static const int deny_metadata_syscalls[] = {
-        NR_chmod,
-        NR_fchmod,
-        NR_fchmodat,
-        NR_fchmodat2,
-        NR_chown,
-        NR_fchown,
-        NR_fchownat,
-        NR_lchown,
-        NR_utimensat,
-        NR_utimes,
-        NR_futimesat,
-        NR_utime,
-        NR_setxattr,
-        NR_fsetxattr,
-        NR_lsetxattr,
-        NR_removexattr,
-        NR_fremovexattr,
-        NR_lremovexattr,
-        NR_setxattrat,
-        NR_removexattrat,
-        -1,
+    /* Metadata mutators that Landlock does not mediate, so they need a seccomp
+     * backstop -- but only when the mount-namespace sandbox is NOT active: it makes
+     * the read-only paths immutable (EROFS) while leaving writable paths alone,
+     * whereas these rules are path-blind and would also break chmod/xattr on
+     * writable paths. */
+    static const int deny_metadata_syscalls[] = {
+        NR_chmod,     NR_fchmod,      NR_fchmodat,     NR_fchmodat2,    NR_chown,      NR_fchown,        NR_fchownat,
+        NR_lchown,    NR_utimensat,   NR_utimes,       NR_futimesat,    NR_utime,      NR_setxattr,      NR_fsetxattr,
+        NR_lsetxattr, NR_removexattr, NR_fremovexattr, NR_lremovexattr, NR_setxattrat, NR_removexattrat, -1,
     };
 
     int safe_n = count_nonzero(safe_syscalls);
@@ -1306,8 +1288,8 @@ static const int deny_metadata_syscalls[] = {
 
     /* header (4) + safe entries + 2 (JA + ALLOW stub) per chunk + deny entries
      * + arg-nr checks + 4 per arg rule block + default ALLOW + DENY_TARGET. */
-    size_t cap = HDR_LEN + (size_t)safe_n + 2 * (size_t)nchains + (size_t)deny_n +
-                 (size_t)arg_n + 4 * (size_t)arg_n + 2 + 8;
+    size_t cap =
+        HDR_LEN + (size_t)safe_n + 2 * (size_t)nchains + (size_t)deny_n + (size_t)arg_n + 4 * (size_t)arg_n + 2 + 8;
     struct sock_filter *f = calloc(cap, sizeof(struct sock_filter));
     if (!f)
         return NULL;
@@ -1391,8 +1373,7 @@ static const int deny_metadata_syscalls[] = {
                 continue;
             int block = blocks_base + 4 * r;
             int jt = block - (int)pos - 1;
-            f[pos++] = BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)deny_arg_syscalls[a].nr,
-                                (unsigned char)jt, 0);
+            f[pos++] = BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)deny_arg_syscalls[a].nr, (unsigned char)jt, 0);
             r++;
         }
     }

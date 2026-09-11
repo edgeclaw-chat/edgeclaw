@@ -54,13 +54,13 @@ static struct edc_agent *edc_scheduler_agent(struct edc_scheduler *sched)
 static sds edc_agent_var_resolver(const char *name, void *user_data)
 {
     struct edc_agent *agent = user_data;
-    if (!agent) return NULL;
+    if (!agent)
+        return NULL;
 
     /* $$ → 当前活跃 task ID */
     if (strcmp(name, "$") == 0)
     {
-        struct edc_task *active =
-            edc_session_get_active_task(edc_session_manager_get_active(agent->session_manager));
+        struct edc_task *active = edc_session_get_active_task(edc_session_manager_get_active(agent->session_manager));
         return active ? sdsnew(active->task_id) : NULL;
     }
 
@@ -86,8 +86,7 @@ static sds edc_agent_var_resolver(const char *name, void *user_data)
     }
 
     /* $NUMBER 或 $NAME → 按 task ID / job number 查找 */
-    struct edc_task *t =
-        edc_session_find_task(edc_session_manager_get_active(agent->session_manager), name);
+    struct edc_task *t = edc_session_find_task(edc_session_manager_get_active(agent->session_manager), name);
     return (t && t->output) ? sdsdup(t->output) : NULL;
 }
 
@@ -293,9 +292,9 @@ static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task
     if (message_type == EDC_CHANNEL_MESSAGE_RESP_TYPE)
         reply->render_pref = EDC_RENDER_MARKDOWN;
 
-    edc_actor_send(agent->channel_actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type,
-                                                                    edc_scheduler_get_actor(sched), request_id, reply,
-                                                                    (edc_actor_data_free_fn)edc_channel_message_free));
+    edc_actor_send(agent->channel_actor,
+                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type, edc_scheduler_get_actor(sched),
+                                              request_id, reply, (edc_actor_data_free_fn)edc_channel_message_free));
 }
 
 /* ── 回调: 发送 Tool 消息 ───────────────────────────────────── */
@@ -317,9 +316,9 @@ static void edc_agent_cb_send_tool_message(struct edc_scheduler *sched, struct e
     if (header && *header)
         reply->header = sdsnew(header);
 
-    edc_actor_send(agent->channel_actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type,
-                                                                    edc_scheduler_get_actor(sched), request_id, reply,
-                                                                    (edc_actor_data_free_fn)edc_channel_message_free));
+    edc_actor_send(agent->channel_actor,
+                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type, edc_scheduler_get_actor(sched),
+                                              request_id, reply, (edc_actor_data_free_fn)edc_channel_message_free));
 }
 
 /* ── 回调: 分发 Tool Calls ────────────────────────────────── */
@@ -438,8 +437,8 @@ static void edc_agent_cb_trigger_memory(struct edc_scheduler *sched)
     if (!agent || !agent->memory_actor || !sched->session)
         return;
 
-    int msg_threshold = agent->config ? agent->config->group_fold_msg_threshold
-                                      : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
+    int msg_threshold =
+        agent->config ? agent->config->group_fold_msg_threshold : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
     if (msg_threshold <= 0)
         msg_threshold = EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
 
@@ -454,8 +453,8 @@ static void edc_agent_cb_trigger_memory(struct edc_scheduler *sched)
 
         if (should_fold)
         {
-            log_info("L1 fold trigger: group %s foldable=%zu unfolded=%zu (msg_thr=%d)",
-                     g->group_id, foldable, unfolded, msg_threshold);
+            log_info("L1 fold trigger: group %s foldable=%zu unfolded=%zu (msg_thr=%d)", g->group_id, foldable,
+                     unfolded, msg_threshold);
             edc_actor_send(agent->memory_actor,
                            edc_actor_msg_new(BC_ACTOR_MSG_GROUP_FOLD, edc_scheduler_get_actor(sched), NULL, g, NULL));
             break; /* 一次只折叠一个 group */
@@ -501,10 +500,9 @@ static void edc_agent_cb_snapshot_ready(struct edc_scheduler *sched, sds seriali
     struct edc_channel_message *msg =
         edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE, serialized);
 
-    edc_actor_send(agent->channel_actor,
-                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, edc_channel_adapter,
-                                              edc_scheduler_get_actor(sched), NULL, msg,
-                                              (edc_actor_data_free_fn)edc_channel_message_free));
+    edc_actor_send(agent->channel_actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, edc_channel_adapter,
+                                                                    edc_scheduler_get_actor(sched), NULL, msg,
+                                                                    (edc_actor_data_free_fn)edc_channel_message_free));
 }
 
 void edc_agent_remove_all_turns(struct edc_agent *agent)

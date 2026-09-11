@@ -14,7 +14,7 @@ struct edc_task_group
     struct edc_task *members; /* 链表头: group 内所有 task (含 leader) */
     int member_count;
 
-    bool is_orphaned;            /* leader 退出后置 true */
+    bool is_orphaned; /* leader 退出后置 true */
 
     cJSON *history; /* 组内消息历史 (上下文共享) */
 
@@ -27,7 +27,7 @@ struct edc_task_group
     size_t history_task_ids_cap;
 
     /* ── L1 折叠 ── */
-    sds memory;      /* GROUP 记忆摘要 (已折叠 turns 的浓缩) */
+    sds memory;         /* GROUP 记忆摘要 (已折叠 turns 的浓缩) */
     size_t fold_cursor; /* 已折叠的历史消息数 (history[1+fold_cursor:] 为未折叠历史) */
 
     struct edc_task_group *prev, *next; /* session 内 groups 链表 */

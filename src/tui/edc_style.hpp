@@ -15,14 +15,14 @@ namespace style
 struct Palette
 {
     // ---- window chrome -------------------------------------------------
-    ::ftxui::Color window_bg;   // outermost backdrop.
-    ::ftxui::Color pane_bg;     // sidebar pane + chat message surface.
-    ::ftxui::Color text_dim;    // quiet secondary text / neutral rows.
-    ::ftxui::Color text;        // body/label text: the terminal's default
-                                // foreground. An explicit near-white RGB gets
-                                // downsampled to gray on low-color terminals.
-    ::ftxui::Color line_dim;    // subtle separator lines.
-    ::ftxui::Color dialog_bg;   // raised surface for borderless modals.
+    ::ftxui::Color window_bg; // outermost backdrop.
+    ::ftxui::Color pane_bg;   // sidebar pane + chat message surface.
+    ::ftxui::Color text_dim;  // quiet secondary text / neutral rows.
+    ::ftxui::Color text;      // body/label text: the terminal's default
+                              // foreground. An explicit near-white RGB gets
+                              // downsampled to gray on low-color terminals.
+    ::ftxui::Color line_dim;  // subtle separator lines.
+    ::ftxui::Color dialog_bg; // raised surface for borderless modals.
 
     // ---- accents & status ----------------------------------------------
     ::ftxui::Color accent;         // cyan: headers, in_progress, spinner.
@@ -63,33 +63,33 @@ struct Palette
 inline const Palette &palette()
 {
     static const Palette k = {
-        ::ftxui::Color::RGB(30, 31, 28),     // window_bg      #1E1F1C
-        ::ftxui::Color::RGB(39, 40, 34),     // pane_bg        #272822
-        ::ftxui::Color::RGB(117, 113, 94),   // text_dim       #75715E comment
-        ::ftxui::Color::Default,             // text           terminal foreground
-        ::ftxui::Color::RGB(73, 72, 62),     // line_dim       #49483E selection
-        ::ftxui::Color::RGB(62, 61, 50),     // dialog_bg      #3E3D32 lite
-        ::ftxui::Color::RGB(102, 217, 239),  // accent         #66D9EF cyan
-        ::ftxui::Color::RGB(166, 226, 46),   // ok             #A6E22E green
-        ::ftxui::Color::RGB(230, 219, 116),  // warn           #E6DB74 yellow
-        ::ftxui::Color::RGB(249, 38, 114),   // error          #F92672 pink
-        ::ftxui::Color::RGB(174, 129, 255),  // suspended      #AE81FF purple
-        ::ftxui::Color::RGB(230, 219, 116),  // thought_open   #E6DB74 yellow
-        ::ftxui::Color::RGB(138, 131, 69),   // thought_closed #8A8345 dim yellow
-        ::ftxui::Color::RGB(102, 217, 239),  // prompt         #66D9EF accent
-        ::ftxui::Color::RGB(102, 217, 239),  // user_rule      #66D9EF accent
-        ::ftxui::Color::RGB(39, 40, 34),     // md_h1          #272822
-        ::ftxui::Color::RGB(249, 38, 114),   // md_h1_bg       #F92672 pink
-        ::ftxui::Color::RGB(230, 219, 116),  // md_h2          #E6DB74 yellow
-        ::ftxui::Color::RGB(253, 151, 31),   // md_h3          #FD971F orange
-        ::ftxui::Color::RGB(102, 217, 239),  // md_h4          #66D9EF cyan
-        ::ftxui::Color::RGB(248, 248, 242),  // md_code        #F8F8F2 foreground
-        ::ftxui::Color::RGB(174, 129, 255),  // md_code_inline #AE81FF purple
-        ::ftxui::Color::RGB(62, 61, 50),     // md_code_bg     #3E3D32 lite
-        ::ftxui::Color::RGB(73, 72, 62),     // md_rule        #49483E selection
-        ::ftxui::Color::RGB(117, 113, 94),   // md_quote       #75715E comment
-        ::ftxui::Color::RGB(249, 38, 114),   // md_list        #F92672 pink
-        ::ftxui::Color::RGB(102, 217, 239),  // md_link        #66D9EF cyan
+        ::ftxui::Color::RGB(30, 31, 28),    // window_bg      #1E1F1C
+        ::ftxui::Color::RGB(39, 40, 34),    // pane_bg        #272822
+        ::ftxui::Color::RGB(117, 113, 94),  // text_dim       #75715E comment
+        ::ftxui::Color::Default,            // text           terminal foreground
+        ::ftxui::Color::RGB(73, 72, 62),    // line_dim       #49483E selection
+        ::ftxui::Color::RGB(62, 61, 50),    // dialog_bg      #3E3D32 lite
+        ::ftxui::Color::RGB(102, 217, 239), // accent         #66D9EF cyan
+        ::ftxui::Color::RGB(166, 226, 46),  // ok             #A6E22E green
+        ::ftxui::Color::RGB(230, 219, 116), // warn           #E6DB74 yellow
+        ::ftxui::Color::RGB(249, 38, 114),  // error          #F92672 pink
+        ::ftxui::Color::RGB(174, 129, 255), // suspended      #AE81FF purple
+        ::ftxui::Color::RGB(230, 219, 116), // thought_open   #E6DB74 yellow
+        ::ftxui::Color::RGB(138, 131, 69),  // thought_closed #8A8345 dim yellow
+        ::ftxui::Color::RGB(102, 217, 239), // prompt         #66D9EF accent
+        ::ftxui::Color::RGB(102, 217, 239), // user_rule      #66D9EF accent
+        ::ftxui::Color::RGB(39, 40, 34),    // md_h1          #272822
+        ::ftxui::Color::RGB(249, 38, 114),  // md_h1_bg       #F92672 pink
+        ::ftxui::Color::RGB(230, 219, 116), // md_h2          #E6DB74 yellow
+        ::ftxui::Color::RGB(253, 151, 31),  // md_h3          #FD971F orange
+        ::ftxui::Color::RGB(102, 217, 239), // md_h4          #66D9EF cyan
+        ::ftxui::Color::RGB(248, 248, 242), // md_code        #F8F8F2 foreground
+        ::ftxui::Color::RGB(174, 129, 255), // md_code_inline #AE81FF purple
+        ::ftxui::Color::RGB(62, 61, 50),    // md_code_bg     #3E3D32 lite
+        ::ftxui::Color::RGB(73, 72, 62),    // md_rule        #49483E selection
+        ::ftxui::Color::RGB(117, 113, 94),  // md_quote       #75715E comment
+        ::ftxui::Color::RGB(249, 38, 114),  // md_list        #F92672 pink
+        ::ftxui::Color::RGB(102, 217, 239), // md_link        #66D9EF cyan
     };
     return k;
 }

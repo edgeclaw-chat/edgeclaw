@@ -64,8 +64,8 @@ extern bool edc_agent_set_sandbox_enabled(struct edc_agent *agent, bool enable);
  * directory; it is canonicalized with realpath(). Persists to config.json and
  * updates the live config. Returns true on success; on failure writes a reason
  * into *msg when non-NULL (caller frees the sds). */
-extern bool edc_agent_set_sandbox_path(struct edc_agent *agent, const char *path, edc_sandbox_path_kind kind,
-                                       bool add, sds *msg);
+extern bool edc_agent_set_sandbox_path(struct edc_agent *agent, const char *path, edc_sandbox_path_kind kind, bool add,
+                                       sds *msg);
 
 /* 注册命令处理器 (由 shell 模块在初始化时调用) */
 typedef bool (*edc_agent_command_fn)(struct edc_agent *, struct edc_actor *, struct edc_channel_message *);

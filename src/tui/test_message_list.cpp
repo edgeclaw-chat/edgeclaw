@@ -459,8 +459,8 @@ static void test_selection_collects_message_text(void)
     ftxui::Render(screen, element.get(), selection);
 
     const std::string selected = selection.GetParts();
-    ASSERT(selected.find("ZEBRAFISH") != std::string::npos,
-           "selection did not collect the message text (got \"%s\")", selected.c_str());
+    ASSERT(selected.find("ZEBRAFISH") != std::string::npos, "selection did not collect the message text (got \"%s\")",
+           selected.c_str());
     PASS();
 }
 
@@ -526,8 +526,8 @@ static void test_selection_survives_nested_containers(void)
     ftxui::Render(screen, element.get(), selection);
 
     const std::string selected = selection.GetParts();
-    ASSERT(selected.find("ZEBRAFISH") != std::string::npos,
-           "selection did not survive a wrapping layout (got \"%s\")", selected.c_str());
+    ASSERT(selected.find("ZEBRAFISH") != std::string::npos, "selection did not survive a wrapping layout (got \"%s\")",
+           selected.c_str());
     PASS();
 }
 

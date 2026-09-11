@@ -1,8 +1,8 @@
 #include "edc_c_bridge.h"
 #include "edc_clipboard.hpp"
+#include <chrono>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
-#include <chrono>
 #include <memory>
 #include <string>
 
@@ -43,7 +43,10 @@ class TUIWindow : public ::ftxui::ComponentBase
     // False when the agent failed to start (bad/missing config, bad master key,
     // no terminal for the passphrase). main() checks this and exits instead of
     // dereferencing a NULL agent.
-    bool Ready() const { return agent != nullptr; }
+    bool Ready() const
+    {
+        return agent != nullptr;
+    }
 
     // Pace the window's own animations (the working spinner) from the main-loop
     // iteration; see TickAnimations().

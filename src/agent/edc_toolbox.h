@@ -23,8 +23,9 @@ struct edc_toolbox_call_ctx
 {
     struct edc_toolbox *tb;
     edc_channel_type call_from_type;
-    void *request_id;        /* 发起该次工具调用的 task 的 request_id (由 toolbox actor 注入) */
-    struct edc_task *task;   /* 发起该次工具调用的 task (与 request_id 同源；agent 构建请求链时注入，非 task 路径为 NULL) */
+    void *request_id; /* 发起该次工具调用的 task 的 request_id (由 toolbox actor 注入) */
+    struct edc_task
+        *task; /* 发起该次工具调用的 task (与 request_id 同源；agent 构建请求链时注入，非 task 路径为 NULL) */
     void *priv;
 };
 
@@ -60,7 +61,6 @@ extern void edc_toolbox_exec(struct edc_toolbox_call_ctx *, const char *name, cJ
  *   - emit_tool_message_md：输出本身是 Markdown（如 checklist/表格），按 Markdown 渲染。
  * 消息经 scheduler 转发，仅在来源 task 仍为 active task 时显示——后台任务保持静默。 */
 extern void edc_toolbox_emit_tool_message_plain(struct edc_toolbox_call_ctx *ctx, const char *header,
-                                                 const char *content);
-extern void edc_toolbox_emit_tool_message_md(struct edc_toolbox_call_ctx *ctx, const char *header,
-                                             const char *content);
+                                                const char *content);
+extern void edc_toolbox_emit_tool_message_md(struct edc_toolbox_call_ctx *ctx, const char *header, const char *content);
 #endif

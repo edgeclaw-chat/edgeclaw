@@ -220,8 +220,7 @@ bool ScrollView::OnEvent(::ftxui::Event event)
     if (options_.show_indicator)
         content = std::move(content) | ::ftxui::vscroll_indicator;
 
-    ::ftxui::Element scrollable =
-        std::make_shared<ScrollNode>(std::move(content), state_, options_.mode);
+    ::ftxui::Element scrollable = std::make_shared<ScrollNode>(std::move(content), state_, options_.mode);
 
     if (!pinned_)
         return std::move(scrollable) | ::ftxui::reflect(box_);

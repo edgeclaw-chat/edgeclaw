@@ -28,4 +28,3 @@ void edc_channel_adapter_init(edc_actor_t *channel_actor, void *instance,
 
     edc_channel_actor_add(channel_actor, edc_channel_adapter, edc_channel_adapter_handler);
 }
-

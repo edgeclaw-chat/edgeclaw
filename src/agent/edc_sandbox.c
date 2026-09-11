@@ -64,8 +64,7 @@ static int path_prefix_match_len(const char *resolved_path, char **paths)
             continue;
 
         size_t len = strlen(entry_real);
-        if (strncmp(resolved_path, entry_real, len) == 0 &&
-            (resolved_path[len] == '\0' || resolved_path[len] == '/'))
+        if (strncmp(resolved_path, entry_real, len) == 0 && (resolved_path[len] == '\0' || resolved_path[len] == '/'))
         {
             if ((int)len > best)
                 best = (int)len;
@@ -216,9 +215,9 @@ bool edc_sandbox_apply(struct edc_config *conf)
      */
     bool ns_enforced = false;
     bool ns_ok = edc_ns_sandbox_apply((const char **)conf->sandbox_ro_paths, (const char **)conf->sandbox_rw_paths,
-                                     (const char **)conf->sandbox_deny_paths, &ns_enforced);
-    bool landlock_ok = edc_landlock_sandbox_apply((const char **)conf->sandbox_ro_paths,
-                                                  (const char **)conf->sandbox_rw_paths);
+                                      (const char **)conf->sandbox_deny_paths, &ns_enforced);
+    bool landlock_ok =
+        edc_landlock_sandbox_apply((const char **)conf->sandbox_ro_paths, (const char **)conf->sandbox_rw_paths);
     bool seccomp_ok = edc_bpf_sandbox_apply_ex(conf->sandbox_root_real, !ns_enforced);
 
     log_info("edc_sandbox: kernel layers ns=%s(%s) landlock=%s seccomp=%s", ns_ok ? "on" : "off",

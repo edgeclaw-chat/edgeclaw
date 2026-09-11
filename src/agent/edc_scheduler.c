@@ -96,8 +96,7 @@ struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const ch
     char *tid = edc_scheduler_gen_task_id(sched);
     /* 任务归属调度器当前绑定的 session (经 edc_scheduler_set_session 切换),
      * 不再硬编码 "sess-1"。无 session 时 (测试/极端情况) 才回退占位 id。 */
-    const char *sid =
-        (sched->session && sched->session->session_id) ? sched->session->session_id : "sess-1";
+    const char *sid = (sched->session && sched->session->session_id) ? sched->session->session_id : "sess-1";
     const char *gid = sched->foreground_group ? sched->foreground_group->group_id : tid;
 
     struct edc_task *task = edc_task_new(tid, sid, gid, desc, channel_type);
@@ -348,9 +347,8 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
                 continue;
             if (task->active_turn && rec->call_id)
             {
-                const char *note =
-                    "[interrupted: this tool was still running when the process restarted; "
-                    "it did not produce a result]";
+                const char *note = "[interrupted: this tool was still running when the process restarted; "
+                                   "it did not produce a result]";
                 edc_turn_add_tool_message(task->active_turn, rec->call_id, rec->name ? rec->name : "", note);
             }
             edc_task_tool_call_remove(task, rec->call_id);
@@ -526,7 +524,8 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     {
         /* 排队等待: turn 已创建, deps 完成后自动触发 */
         if (sched->send_reply)
-            sched->send_reply(sched, task, "input queued — waiting for dependencies to complete...", EDC_CHANNEL_MESSAGE_SYS_TYPE, msg->request_id);
+            sched->send_reply(sched, task, "input queued — waiting for dependencies to complete...",
+                              EDC_CHANNEL_MESSAGE_SYS_TYPE, msg->request_id);
     }
     else
     {
@@ -590,8 +589,8 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         if (sched->send_reply)
         {
             const char *err = r->error->message ? r->error->message : "LLM request failed";
-            bool no_key = sched->config && (!sched->config->llm_api_conf.api_key ||
-                                            sdslen(sched->config->llm_api_conf.api_key) == 0);
+            bool no_key = sched->config &&
+                          (!sched->config->llm_api_conf.api_key || sdslen(sched->config->llm_api_conf.api_key) == 0);
             if (no_key)
             {
                 /* First run: with no API key the request can only fail, so
@@ -721,7 +720,8 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
     task->current_request_id = NULL;
     sched_set_task_state(sched, task, TASK_ERROR);
     if (sched->send_reply)
-        sched->send_reply(sched, task, "Internal error: unknown finish reason", EDC_CHANNEL_MESSAGE_SYS_TYPE, msg->request_id);
+        sched->send_reply(sched, task, "Internal error: unknown finish reason", EDC_CHANNEL_MESSAGE_SYS_TYPE,
+                          msg->request_id);
 }
 
 /* 到达 max_iter 上限: 构造一条 STOP 语义的 LLM 响应 (内容为收尾说明),

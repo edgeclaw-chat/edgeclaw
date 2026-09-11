@@ -158,9 +158,7 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
             edc_sandbox_path_kind kind = strstr(verb, "-rw")   ? EDC_SANDBOX_PATH_RW
                                          : strstr(verb, "-ro") ? EDC_SANDBOX_PATH_RO
                                                                : EDC_SANDBOX_PATH_DENY;
-            const char *klabel = (kind == EDC_SANDBOX_PATH_RW)   ? "rw"
-                                 : (kind == EDC_SANDBOX_PATH_DENY) ? "deny"
-                                                                   : "ro";
+            const char *klabel = (kind == EDC_SANDBOX_PATH_RW) ? "rw" : (kind == EDC_SANDBOX_PATH_DENY) ? "deny" : "ro";
             bool add = (strncmp(verb, "add-", 4) == 0);
             if (sdslen(rest) == 0)
             {

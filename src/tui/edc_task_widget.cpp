@@ -221,23 +221,19 @@ int TaskWidget::RowWidth() const
             task_count += static_cast<int>(g.tasks.size());
 
         Elements head = {
-            text((section_collapsed_ ? "▸ " : "▾ ") + std::string(" Tasks ")) | bold |
-                color(pal.accent),
+            text((section_collapsed_ ? "▸ " : "▾ ") + std::string(" Tasks ")) | bold | color(pal.accent),
             filler(),
         };
         if (group_count > 0)
         {
-            const std::string gc =
-                PadCount(group_count, 2) + (group_count == 1 ? " group" : " groups");
-            const std::string tc =
-                PadCount(task_count, 2) + (task_count == 1 ? " task" : " tasks");
+            const std::string gc = PadCount(group_count, 2) + (group_count == 1 ? " group" : " groups");
+            const std::string tc = PadCount(task_count, 2) + (task_count == 1 ? " task" : " tasks");
             // Truncate the summary to the room left after the fixed header
             // label and the right pad, instead of letting it clip at the
             // pane edge on a narrow sidebar.
             const int left_cells = 2 /* arrow */ + static_cast<int>(std::string(" Tasks ").size());
             const int summary_budget = row_width - kRightPad - left_cells;
-            head.push_back(text(TruncateToWidth(gc + " · " + tc, summary_budget)) | dim |
-                           color(pal.text_dim));
+            head.push_back(text(TruncateToWidth(gc + " · " + tc, summary_budget)) | dim | color(pal.text_dim));
         }
         head.push_back(text(std::string(kRightPad, ' ')));
         lines.push_back(hbox(std::move(head)) | reflect(section_header_box_));
@@ -256,13 +252,11 @@ int TaskWidget::RowWidth() const
         // the left, the creation date flushed right into the same edge column as the
         // group rows. The date is never truncated: a narrow sidebar ellipsizes the name
         // instead, dropping the bracketed id first.
-        const std::string created =
-            created_at_.size() >= 10 ? "created " + created_at_.substr(0, 10) : "";
+        const std::string created = created_at_.size() >= 10 ? "created " + created_at_.substr(0, 10) : "";
         const std::string name = session_name_.empty() ? session_id_ : session_name_;
         // The id is bracketed only when a distinct session *name* exists;
         // with no name the id stands alone and must not repeat itself.
-        const bool distinct =
-            !session_name_.empty() && !session_id_.empty() && session_name_ != session_id_;
+        const bool distinct = !session_name_.empty() && !session_id_.empty() && session_name_ != session_id_;
         const std::string sid = distinct ? name + " [" + session_id_ + "]" : name;
 
         // Room for the name after the leading gutter, the fixed created
@@ -270,8 +264,7 @@ int TaskWidget::RowWidth() const
         // the two sides apart even when the flex label gets no leftover.
         const int created_cells = created.empty() ? 0 : StringWidth(created);
         const int gap_cells = created.empty() ? 0 : 1;
-        const int name_budget =
-            row_width - 1 - kRightPad - created_cells - gap_cells;
+        const int name_budget = row_width - 1 - kRightPad - created_cells - gap_cells;
 
         std::string left = name;
         if (name_budget > 0 && StringWidth(sid) <= name_budget)
@@ -282,12 +275,11 @@ int TaskWidget::RowWidth() const
             left.clear();
 
         lines.push_back(hbox({
-                            text(" " + left) | flex | dim,
-                            text(created.empty() ? "" : " ") | dim |
-                                color(pal.text_dim),
-                            text(created) | dim | color(pal.text_dim),
-                            text(std::string(kRightPad, ' ')),
-                        }));
+            text(" " + left) | flex | dim,
+            text(created.empty() ? "" : " ") | dim | color(pal.text_dim),
+            text(created) | dim | color(pal.text_dim),
+            text(std::string(kRightPad, ' ')),
+        }));
     }
     lines.push_back(separator());
 
@@ -337,20 +329,17 @@ int TaskWidget::RowWidth() const
             const std::string arrow = expanded ? "▾ " : "▸ ";
             // Only the token total is shown now; a group that has not spent
             // anything yet keeps an empty right column (no "0 tok" padding).
-            const std::string right =
-                g.tokens_total > 0 ? FormatTokens(g.tokens_total) + " tok" : "";
+            const std::string right = g.tokens_total > 0 ? FormatTokens(g.tokens_total) + " tok" : "";
 
-            const int core_budget =
-                row_width - kRightPad - StringWidth(arrow) - StringWidth(right) - 1;
-            const std::string visible_core =
-                core_budget > 0 ? TruncateToWidth(core, core_budget) : "";
+            const int core_budget = row_width - kRightPad - StringWidth(arrow) - StringWidth(right) - 1;
+            const std::string visible_core = core_budget > 0 ? TruncateToWidth(core, core_budget) : "";
 
             lines.push_back(hbox({
-                                text(arrow + visible_core) | flex |
-                                    bold | color(g.fg ? pal.warn : pal.text_dim),
+                                text(arrow + visible_core) | flex | bold | color(g.fg ? pal.warn : pal.text_dim),
                                 text(right) | dim | color(pal.text_dim),
                                 text(std::string(kRightPad, ' ')),
-                            }) | reflect(group_header_boxes_[i]));
+                            }) |
+                            reflect(group_header_boxes_[i]));
 
             if (!expanded)
                 continue;
@@ -374,8 +363,7 @@ int TaskWidget::RowWidth() const
                     // label; kRightPad keeps the state label off the pane's
                     // right edge. Per-task tokens are intentionally not shown:
                     // the group header carries the whole group's cost.
-                    const int budget = row_width - StringWidth(left) - 2 - kDescStateGapCells -
-                                       state_cells - kRightPad;
+                    const int budget = row_width - StringWidth(left) - 2 - kDescStateGapCells - state_cells - kRightPad;
                     if (budget > 0)
                         left += "  " + TruncateToWidth(t.description, budget);
                 }
@@ -407,6 +395,5 @@ int TaskWidget::RowWidth() const
     return ::ftxui::vbox({RenderHeader(), RenderBody()}) | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) |
            ::ftxui::bgcolor(style::palette().pane_bg);
 }
-
 
 } // namespace edc

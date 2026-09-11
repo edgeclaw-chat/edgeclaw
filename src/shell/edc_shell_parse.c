@@ -1,6 +1,6 @@
+#include "edc_cmd_parse.h"
 #include "edc_shell_ast.h"
 #include "edc_shell_token.h"
-#include "edc_cmd_parse.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -59,7 +59,7 @@ static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos)
         {
             cmd->dep_ids = t_opts.dep_ids;
             cmd->dep_count = t_opts.dep_count;
-            t_opts.dep_ids = NULL;  /* transfer ownership */
+            t_opts.dep_ids = NULL; /* transfer ownership */
             t_opts.dep_count = 0;
         }
 

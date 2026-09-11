@@ -245,8 +245,7 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
 
         if (node->text && sdslen(node->text) > 0 && strchr(node->text, '$'))
         {
-            processed_text =
-                edc_shell_collect_var_refs(agent, node->text, &var_deps, &var_dep_count, &var_err);
+            processed_text = edc_shell_collect_var_refs(agent, node->text, &var_deps, &var_dep_count, &var_err);
             if (!processed_text)
             {
                 edc_commands_reply(agent, actor, channel_type, var_err);

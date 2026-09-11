@@ -16,7 +16,7 @@ struct edc_channel
 struct edc_channel_message
 {
     sds content;
-    sds header; /* optional short description (e.g. executed command/tool name) shown above content */
+    sds header;  /* optional short description (e.g. executed command/tool name) shown above content */
     sds task_id; /* id of the task that produced this message (NULL when the
                   * sender is not a task, e.g. user input or a snapshot).
                   * Rendering ends use it to label which task a chat message

@@ -222,8 +222,7 @@ static cJSON *task_to_json(struct edc_task *task, cJSON *messages_array)
                 cJSON_AddStringToObject(o, "name", rec->name);
             if (rec->args)
                 cJSON_AddItemToObject(o, "args", cJSON_Duplicate(rec->args, 1));
-            cJSON_AddStringToObject(o, "status",
-                                    rec->status == TOOL_CALL_EXECUTING ? "executing" : "pending");
+            cJSON_AddStringToObject(o, "status", rec->status == TOOL_CALL_EXECUTING ? "executing" : "pending");
             cJSON_AddItemToArray(tc, o);
         }
         cJSON_AddItemToObject(tj, "tool_calls", tc);
@@ -677,13 +676,15 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
         cJSON *ch_json = cJSON_GetObjectItem(tj, "channel");
         edc_channel_type ch_type = ch_json ? edc_channel_type_from_json(ch_json) : edc_channel_adapter;
 
-        struct edc_task *task = edc_task_new(task_id, cJSON_GetStringValue(cJSON_GetObjectItem(tj, "session_id")) ?: "",
-                                             cJSON_GetStringValue(cJSON_GetObjectItem(tj, "group_id")) ?: "",
-                                             cJSON_GetStringValue(cJSON_GetObjectItem(tj, "description")) ?: "", ch_type);
+        struct edc_task *task =
+            edc_task_new(task_id, cJSON_GetStringValue(cJSON_GetObjectItem(tj, "session_id")) ?: "",
+                         cJSON_GetStringValue(cJSON_GetObjectItem(tj, "group_id")) ?: "",
+                         cJSON_GetStringValue(cJSON_GetObjectItem(tj, "description")) ?: "", ch_type);
         if (!task)
             continue;
 
-        task->state = normalize_interrupted_state(edc_task_classify_state(cJSON_GetStringValue(cJSON_GetObjectItem(tj, "state"))));
+        task->state = normalize_interrupted_state(
+            edc_task_classify_state(cJSON_GetStringValue(cJSON_GetObjectItem(tj, "state"))));
 
         cJSON *v;
         if ((v = cJSON_GetObjectItem(tj, "is_group_leader")))

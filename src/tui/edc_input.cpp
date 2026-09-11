@@ -44,8 +44,7 @@ int PrevGlyph(const std::string &s, int pos)
 } // namespace
 
 EdcInput::EdcInput(std::string *content, std::string placeholder, int max_visible_rows)
-    : content_(content), placeholder_(std::move(placeholder)),
-      max_visible_rows_(std::max(1, max_visible_rows))
+    : content_(content), placeholder_(std::move(placeholder)), max_visible_rows_(std::max(1, max_visible_rows))
 {
     box_.x_min = 0;
     box_.x_max = -1; // not measured yet: no valid width until first layout
@@ -222,11 +221,10 @@ int EdcInput::CaretColumn()
 ::ftxui::Element EdcInput::OnRender()
 {
     const bool is_focused = Focused();
-    const ::ftxui::Decorator caret =
-        (!is_focused && !hovered_)
-            ? ::ftxui::Decorator(::ftxui::focus)
-            : (insert_mode_ ? ::ftxui::Decorator(::ftxui::focusCursorBarBlinking)
-                            : ::ftxui::Decorator(::ftxui::focusCursorBlockBlinking));
+    const ::ftxui::Decorator caret = (!is_focused && !hovered_)
+                                         ? ::ftxui::Decorator(::ftxui::focus)
+                                         : (insert_mode_ ? ::ftxui::Decorator(::ftxui::focusCursorBarBlinking)
+                                                         : ::ftxui::Decorator(::ftxui::focusCursorBlockBlinking));
 
     if (content_->empty())
     {
@@ -239,8 +237,7 @@ int EdcInput::CaretColumn()
     const int cols = WrapColumns();
     const Layout layout = MakeLayout(*content_, cols);
     if (layout.rows.empty())
-        return ::ftxui::text(placeholder_) | ::ftxui::dim | ::ftxui::xflex |
-               ::ftxui::reflect(box_);
+        return ::ftxui::text(placeholder_) | ::ftxui::dim | ::ftxui::xflex | ::ftxui::reflect(box_);
 
     const int total = static_cast<int>(layout.rows.size());
     int caret_lo = cursor_;
@@ -270,8 +267,7 @@ int EdcInput::CaretColumn()
         const Row &r = layout.rows[row_index];
         if (row_index != caret_row)
         {
-            elements.push_back(
-                ::ftxui::text(content_->substr(r.begin, r.end - r.begin)));
+            elements.push_back(::ftxui::text(content_->substr(r.begin, r.end - r.begin)));
             continue;
         }
 
@@ -291,8 +287,7 @@ int EdcInput::CaretColumn()
             // Caret sits on a glyph of this row: block/bar over that glyph.
             const int len = GlyphLenAt(*content_, caret_lo, r.end);
             const std::string at = content_->substr(caret_lo, len);
-            const std::string after = content_->substr(
-                caret_lo + len, r.end - (caret_lo + len));
+            const std::string after = content_->substr(caret_lo + len, r.end - (caret_lo + len));
             elements.push_back(::ftxui::hbox({
                 ::ftxui::text(before),
                 ::ftxui::text(at) | caret,
@@ -348,8 +343,7 @@ bool EdcInput::HandleCharacter(const std::string &character)
     // Typing abandons a recall: the recalled entry becomes an ordinary draft,
     // and there is no longer one to restore on ArrowDown.
     StopBrowsing();
-    if (!insert_mode_ && cursor_ < static_cast<int>(content_->size()) &&
-        (*content_)[cursor_] != '\n')
+    if (!insert_mode_ && cursor_ < static_cast<int>(content_->size()) && (*content_)[cursor_] != '\n')
     {
         // Overwrite mode: replace the glyph under the caret.
         const int len = GlyphLenAt(*content_, cursor_, static_cast<int>(content_->size()));
@@ -572,8 +566,7 @@ bool EdcInput::HandleMouse(::ftxui::Event event)
     if (layout.rows.empty())
         return false;
 
-    const int visible = std::min(max_visible_rows_,
-                                 static_cast<int>(layout.rows.size()) - scroll_);
+    const int visible = std::min(max_visible_rows_, static_cast<int>(layout.rows.size()) - scroll_);
     int vrow = event.mouse().y - box_.y_min;
     vrow = std::max(0, std::min(vrow, std::max(0, visible - 1)));
     const int row = scroll_ + vrow;

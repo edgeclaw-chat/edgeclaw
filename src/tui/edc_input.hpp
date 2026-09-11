@@ -36,12 +36,21 @@ class EdcInput : public ::ftxui::ComponentBase
     void ClearHistory();
 
     // Entries oldest-first, exactly as handed to AddHistory.
-    const std::vector<std::string> &History() const { return history_; }
+    const std::vector<std::string> &History() const
+    {
+        return history_;
+    }
 
-    bool Focusable() const override { return true; }
+    bool Focusable() const override
+    {
+        return true;
+    }
 
     // Caret byte offset into the edited content (tests/debugging).
-    int CursorPosition() const { return cursor_; }
+    int CursorPosition() const
+    {
+        return cursor_;
+    }
 
     // Overrides of ComponentBase's public interface; kept public so callers
     // holding this component directly can feed it events and render it.

@@ -39,8 +39,7 @@ typedef void (*edc_scheduler_dispatch_tools_fn)(struct edc_scheduler *sched, str
 /** resume 时重发未完成的 tool 调用 (由 agent 注入): 把 task 账本里 PENDING 的记录
  *  重建 toolbox 请求链并投递 (首条 PENDING 由调用方提升 EXECUTING)。
  *  返回投递的条数 (0 = 无)。 */
-typedef int (*edc_scheduler_redispatch_tools_fn)(struct edc_scheduler *sched, struct edc_task *task,
-                                                 void *request_id);
+typedef int (*edc_scheduler_redispatch_tools_fn)(struct edc_scheduler *sched, struct edc_task *task, void *request_id);
 
 /** 检查/处理命令 (返回 true=已处理) */
 typedef bool (*edc_scheduler_command_fn)(struct edc_scheduler *sched, struct edc_actor *actor,

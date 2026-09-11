@@ -182,9 +182,9 @@ static void edc_toolbox_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
     switch (msg->type)
     {
     case BC_ACTOR_MSG_TOOL_REQUEST: {
-        struct edc_toolbox_call_ctx *ctx = edc_toolbox_call_ctx_new(
-            state->toolbox, req->call_from_type, msg->request_id, req->task,
-            edc_toolbox_actor_exec_ctx_new(actor, msg, req));
+        struct edc_toolbox_call_ctx *ctx =
+            edc_toolbox_call_ctx_new(state->toolbox, req->call_from_type, msg->request_id, req->task,
+                                     edc_toolbox_actor_exec_ctx_new(actor, msg, req));
         if (ctx)
             edc_toolbox_actor_inflight_add(state, ctx);
         toolbox_notify_tool_started(actor, msg->from, msg->request_id, req);

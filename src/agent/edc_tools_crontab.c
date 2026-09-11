@@ -334,7 +334,8 @@ static void edc_tool_crontab_on_timeout(uv_timer_t *timer)
     struct edc_tool *tool = state->tool;
     tool->priv = NULL;
 
-    struct edc_channel_message *message = edc_channel_message_new(state->channel_type, EDC_CHANNEL_MESSAGE_USER_TYPE, state->message);
+    struct edc_channel_message *message =
+        edc_channel_message_new(state->channel_type, EDC_CHANNEL_MESSAGE_USER_TYPE, state->message);
     state->message = NULL;
 
     edc_actor_send(state->scheduler, edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, NULL, message,

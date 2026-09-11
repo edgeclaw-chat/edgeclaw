@@ -432,7 +432,8 @@ after_channel:
                 sdsfree(defs[i]);
             }
             free(defs);
-            log_info("edc_config: sandbox ro_paths: dropped legacy '/' (whole-filesystem read), using system whitelist");
+            log_info(
+                "edc_config: sandbox ro_paths: dropped legacy '/' (whole-filesystem read), using system whitelist");
         }
     }
 

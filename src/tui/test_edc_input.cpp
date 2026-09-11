@@ -8,39 +8,37 @@
 
 #include "edc_input.hpp"
 
+#include <cstdio>
+#include <ftxui/component/event.hpp>
 #include <ftxui/dom/node.hpp> // Render
 #include <ftxui/screen/screen.hpp>
-#include <ftxui/component/event.hpp>
-#include <cstdio>
 #include <string>
 
 static int g_failures = 0;
 
-#define CHECK(cond, ...)                                                    \
-    do                                                                      \
-    {                                                                       \
-        if (!(cond))                                                        \
-        {                                                                   \
-            std::printf("    FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-            std::printf("    ");                                            \
-            std::printf(__VA_ARGS__);                                       \
-            std::printf("\n");                                              \
-            g_failures++;                                                   \
-        }                                                                   \
+#define CHECK(cond, ...)                                                                                               \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if (!(cond))                                                                                                   \
+        {                                                                                                              \
+            std::printf("    FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);                                            \
+            std::printf("    ");                                                                                       \
+            std::printf(__VA_ARGS__);                                                                                  \
+            std::printf("\n");                                                                                         \
+            g_failures++;                                                                                              \
+        }                                                                                                              \
     } while (0)
 
 // Render |input| into a |width|x|height| screen twice (converge the wrap
 // width), returning the filled screen.
 static ftxui::Screen render_twice(edc::EdcInput &input, int width, int height)
 {
-    auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(width),
-                                        ftxui::Dimension::Fixed(height));
+    auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(width), ftxui::Dimension::Fixed(height));
     {
         auto doc = input.Render();
         Render(screen, doc);
     }
-    screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(width),
-                                   ftxui::Dimension::Fixed(height));
+    screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(width), ftxui::Dimension::Fixed(height));
     {
         auto doc = input.Render();
         Render(screen, doc);
@@ -67,14 +65,10 @@ static void test_long_word_wraps(void)
     const ftxui::Screen screen = render_twice(input, 10, 8);
     // Wrap budget is width - 1 (one column reserved for the caret cell), so
     // 30 cells of 'a' become 9 + 9 + 9 + 3.
-    CHECK(row_text(screen, 0, 10) == std::string(9, 'a'), "row0 '%s'",
-          row_text(screen, 0, 10).c_str());
-    CHECK(row_text(screen, 1, 10) == std::string(9, 'a'), "row1 '%s'",
-          row_text(screen, 1, 10).c_str());
-    CHECK(row_text(screen, 2, 10) == std::string(9, 'a'), "row2 '%s'",
-          row_text(screen, 2, 10).c_str());
-    CHECK(row_text(screen, 3, 10) == "aaa", "row3 '%s'",
-          row_text(screen, 3, 10).c_str());
+    CHECK(row_text(screen, 0, 10) == std::string(9, 'a'), "row0 '%s'", row_text(screen, 0, 10).c_str());
+    CHECK(row_text(screen, 1, 10) == std::string(9, 'a'), "row1 '%s'", row_text(screen, 1, 10).c_str());
+    CHECK(row_text(screen, 2, 10) == std::string(9, 'a'), "row2 '%s'", row_text(screen, 2, 10).c_str());
+    CHECK(row_text(screen, 3, 10) == "aaa", "row3 '%s'", row_text(screen, 3, 10).c_str());
     CHECK(row_text(screen, 4, 10).empty(), "row4 should be empty");
     // The reserved column is never painted over by text.
     const auto &blank0 = screen.CellAt(9, 0).character;
@@ -98,12 +92,10 @@ static void test_words_wrap_and_rows_fit(void)
         if (r.empty())
             break;
         ++occupied;
-        CHECK(static_cast<int>(r.size()) <= 19, "row %d width %zu > 19", y,
-              r.size());
+        CHECK(static_cast<int>(r.size()) <= 19, "row %d width %zu > 19", y, r.size());
         if (y == 0)
         {
-            CHECK(r.rfind("the quick", 0) == 0, "row0 starts with prose, got '%s'",
-                  r.c_str());
+            CHECK(r.rfind("the quick", 0) == 0, "row0 starts with prose, got '%s'", r.c_str());
             saw_prefix = true;
         }
         if (r.rfind("dog", r.size() - 3) != std::string::npos)
@@ -120,8 +112,7 @@ static void test_empty_shows_placeholder(void)
     std::string text;
     edc::EdcInput input(&text, "type here");
     const ftxui::Screen screen = render_twice(input, 20, 1);
-    CHECK(row_text(screen, 0, 20) == "type here", "got '%s'",
-          row_text(screen, 0, 20).c_str());
+    CHECK(row_text(screen, 0, 20) == "type here", "got '%s'", row_text(screen, 0, 20).c_str());
 }
 
 static void test_multiline_content(void)
@@ -130,10 +121,8 @@ static void test_multiline_content(void)
     std::string text = "abc\ndef";
     edc::EdcInput input(&text, "");
     const ftxui::Screen screen = render_twice(input, 20, 2);
-    CHECK(row_text(screen, 0, 20) == "abc", "row0 '%s'",
-          row_text(screen, 0, 20).c_str());
-    CHECK(row_text(screen, 1, 20) == "def", "row1 '%s'",
-          row_text(screen, 1, 20).c_str());
+    CHECK(row_text(screen, 0, 20) == "abc", "row0 '%s'", row_text(screen, 0, 20).c_str());
+    CHECK(row_text(screen, 1, 20) == "def", "row1 '%s'", row_text(screen, 1, 20).c_str());
 }
 
 static void test_arrow_navigation_across_rows(void)
@@ -153,8 +142,7 @@ static void test_arrow_navigation_across_rows(void)
     CHECK(input.OnEvent(::ftxui::Event::ArrowDown), "down handled");
     CHECK(input.CursorPosition() == 22, "down row2 col4 -> %d", input.CursorPosition());
     CHECK(input.OnEvent(::ftxui::Event::ArrowDown), "down to end handled");
-    CHECK(input.CursorPosition() == 25, "down on last row -> end %d",
-          input.CursorPosition());
+    CHECK(input.CursorPosition() == 25, "down on last row -> end %d", input.CursorPosition());
     CHECK(!input.OnEvent(::ftxui::Event::ArrowDown), "down at end not handled");
 
     CHECK(input.OnEvent(::ftxui::Event::ArrowUp), "up handled");
@@ -187,8 +175,7 @@ static void test_typing_and_deletion(void)
 
     input.OnEvent(::ftxui::Event::Character("你"));
     CHECK(text == "你", "CJK char inserted, got '%s'", text.c_str());
-    CHECK(input.CursorPosition() == 3, "cursor after CJK char %d",
-          input.CursorPosition());
+    CHECK(input.CursorPosition() == 3, "cursor after CJK char %d", input.CursorPosition());
     input.OnEvent(::ftxui::Event::Character("\n")); // Alt+Enter path
     input.OnEvent(::ftxui::Event::Character('b'));
     CHECK(text == "你\nb", "newline + char, got '%s'", text.c_str());
@@ -249,8 +236,7 @@ static void test_history_recall_up_down(void)
     // Empty box: the first Up recalls the newest entry (caret at its end).
     CHECK(input.OnEvent(::ftxui::Event::ArrowUp), "up handled");
     CHECK(text == "third", "up -> newest, got '%s'", text.c_str());
-    CHECK(input.CursorPosition() == 5, "caret at end of recalled entry, got %d",
-          input.CursorPosition());
+    CHECK(input.CursorPosition() == 5, "caret at end of recalled entry, got %d", input.CursorPosition());
 
     input.OnEvent(::ftxui::Event::ArrowUp);
     CHECK(text == "second", "up -> second, got '%s'", text.c_str());
@@ -264,8 +250,7 @@ static void test_history_recall_up_down(void)
     input.OnEvent(::ftxui::Event::ArrowDown);
     CHECK(text == "third", "down -> third, got '%s'", text.c_str());
     input.OnEvent(::ftxui::Event::ArrowDown); // past the newest: back to the draft
-    CHECK(text.empty(), "down past newest restores the empty draft, got '%s'",
-          text.c_str());
+    CHECK(text.empty(), "down past newest restores the empty draft, got '%s'", text.c_str());
     // No longer browsing: Down is plain caret movement again.
     CHECK(!input.OnEvent(::ftxui::Event::ArrowDown), "down at end not handled");
 }
@@ -288,8 +273,7 @@ static void test_history_preserves_draft(void)
     CHECK(text == "beta", "down -> beta, got '%s'", text.c_str());
     input.OnEvent(::ftxui::Event::ArrowDown);
     CHECK(text == "my draft", "down restores the draft, got '%s'", text.c_str());
-    CHECK(input.CursorPosition() == 8, "draft caret restored, got %d",
-          input.CursorPosition());
+    CHECK(input.CursorPosition() == 8, "draft caret restored, got %d", input.CursorPosition());
 }
 
 static void test_history_dedupes_consecutive(void)
@@ -351,11 +335,9 @@ static void test_history_up_from_lower_row_moves_caret(void)
     // draft is stashed for ArrowDown to bring back.
     input.OnEvent(::ftxui::Event::Home);
     input.OnEvent(::ftxui::Event::ArrowUp);
-    CHECK(text == "hist", "up from the first row recalls history, got '%s'",
-          text.c_str());
+    CHECK(text == "hist", "up from the first row recalls history, got '%s'", text.c_str());
     input.OnEvent(::ftxui::Event::ArrowDown);
-    CHECK(text == "abcdefghijklmnopqrstuvwxyz", "down restores the stashed draft, got '%s'",
-          text.c_str());
+    CHECK(text == "abcdefghijklmnopqrstuvwxyz", "down restores the stashed draft, got '%s'", text.c_str());
 }
 
 static void test_history_clear(void)

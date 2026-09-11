@@ -148,7 +148,6 @@ bool IsSelectionDrag(int press_x, int press_y, int release_x, int release_y)
     return press_x != release_x || press_y != release_y;
 }
 
-
 void ClipboardToast::Raise(std::chrono::steady_clock::time_point now)
 {
     until_ = now + kHold + kFade;

@@ -47,7 +47,7 @@ struct edc_c_task_info
     int is_leader;
     int is_active;
     const char *description;
-    int todo_count;                 /* 0 when the task holds no todo list */
+    int todo_count; /* 0 when the task holds no todo list */
     struct edc_c_todo_item *todo_items;
     /* Accumulated LLM token usage for this task (0 when none reported yet). */
     long long tokens_prompt;
@@ -73,8 +73,8 @@ struct edc_c_task_snapshot
 {
     const char *session_id;
     const char *session_name;
-    int message_count;    /* messages in the session history */
-    const char *created_at;  /* "YYYY-MM-DD HH:MM:SS" or "" */
+    int message_count;      /* messages in the session history */
+    const char *created_at; /* "YYYY-MM-DD HH:MM:SS" or "" */
     int group_count;
     struct edc_c_task_group *groups;
 };

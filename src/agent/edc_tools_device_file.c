@@ -610,8 +610,8 @@ static bool do_device_upload(struct device_file_ctx *ctx,
         ssize_t n = read(fd, chunk_buf, this_len);
         if (n <= 0 || (size_t)n != this_len)
         {
-            device_file_send_error(ctx, "device_upload: read failed at offset %zu: %s (n=%zd, expected=%zu)",
-                                   offset, strerror(errno), n, this_len);
+            device_file_send_error(ctx, "device_upload: read failed at offset %zu: %s (n=%zd, expected=%zu)", offset,
+                                   strerror(errno), n, this_len);
             free(chunk_buf);
             sdsfree(final_result);
             close(fd);
@@ -1019,8 +1019,7 @@ static void edc_tool_device_upload_exec_async(struct edc_toolbox_call_ctx *tb_ct
     if (tr != 0)
     {
         log_error("device_upload: uv_thread_create failed: %s", uv_strerror(tr));
-        EdcError *error = edc_error_new(EDC_ERR_EXEC,
-                                     "device_upload: failed to create thread: %s", uv_strerror(tr));
+        EdcError *error = edc_error_new(EDC_ERR_EXEC, "device_upload: failed to create thread: %s", uv_strerror(tr));
         callback(tb_ctx, NULL, error);
         device_file_ctx_free(ctx);
         return;
@@ -1081,8 +1080,7 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
     if (tr != 0)
     {
         log_error("device_upload: uv_thread_create failed: %s", uv_strerror(tr));
-        EdcError *error = edc_error_new(EDC_ERR_EXEC,
-                                     "device_upload: failed to create thread: %s", uv_strerror(tr));
+        EdcError *error = edc_error_new(EDC_ERR_EXEC, "device_upload: failed to create thread: %s", uv_strerror(tr));
         callback(tb_ctx, NULL, error);
         device_file_ctx_free(ctx);
         return;

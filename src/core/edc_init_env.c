@@ -206,14 +206,13 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     result->sandbox_rw_paths = (defaults && sdslen(defaults->sandbox_rw_paths) > 0)
                                    ? sdsnew(defaults->sandbox_rw_paths)
                                    : default_sandbox_rw_extra(edc_home);
-    result->sandbox_ro_paths = (defaults && sdslen(defaults->sandbox_ro_paths) > 0)
-                                   ? sdsnew(defaults->sandbox_ro_paths)
-                                   : default_sandbox_ro(edc_home);
+    result->sandbox_ro_paths = (defaults && sdslen(defaults->sandbox_ro_paths) > 0) ? sdsnew(defaults->sandbox_ro_paths)
+                                                                                    : default_sandbox_ro(edc_home);
 
     /* Device link defaults (configurable by hand in config.json). */
     result->device_transport =
         sdsnew((defaults && sdslen(defaults->device_transport) > 0) ? defaults->device_transport
-                                                                     : EDC_CONFIG_DEFAULT_DEVICE_TRANSPORT);
+                                                                    : EDC_CONFIG_DEFAULT_DEVICE_TRANSPORT);
     result->device_ip =
         sdsnew((defaults && sdslen(defaults->device_ip) > 0) ? defaults->device_ip : EDC_CONFIG_DEFAULT_DEVICE_IP);
     result->device_port =

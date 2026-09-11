@@ -511,9 +511,9 @@ static sds edc_memory_build_fold_prompt(struct edc_task_group *group, uint32_t *
             prompt = sdscatprintf(prompt, "output: %s\n", tk->output);
     }
 
-    prompt = sdscat(prompt,
-                    "\nMerge the tasks above into the Group Memory. Output ONLY the merged Group Memory as concise "
-                    "markdown.");
+    prompt =
+        sdscat(prompt, "\nMerge the tasks above into the Group Memory. Output ONLY the merged Group Memory as concise "
+                       "markdown.");
 
     free(tasks);
     return prompt;
@@ -535,8 +535,8 @@ static bool edc_memory_do_group_fold(edc_actor_t *actor, edc_actor_msg_t *msg)
 
     cJSON *system = cJSON_CreateObject();
     cJSON_AddStringToObject(system, "role", "system");
-    cJSON_AddStringToObject(system, "content",
-                            "You are a memory summarizer. Merge new task history into a concise Group Memory markdown.");
+    cJSON_AddStringToObject(
+        system, "content", "You are a memory summarizer. Merge new task history into a concise Group Memory markdown.");
 
     cJSON *user = cJSON_CreateObject();
     cJSON_AddStringToObject(user, "role", "user");
@@ -553,9 +553,8 @@ static bool edc_memory_do_group_fold(edc_actor_t *actor, edc_actor_msg_t *msg)
     state->fold_group = group;
     state->fold_max_seq = max_seq;
 
-    edc_actor_send(state->llm_actor,
-                   edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST, actor, msg->request_id, req,
-                                     (edc_actor_data_free_fn)edc_llm_actor_req_free));
+    edc_actor_send(state->llm_actor, edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST, actor, msg->request_id, req,
+                                                       (edc_actor_data_free_fn)edc_llm_actor_req_free));
     return true;
 }
 

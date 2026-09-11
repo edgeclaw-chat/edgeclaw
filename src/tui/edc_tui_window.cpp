@@ -81,9 +81,9 @@ bool ForegroundProcessBusy(const ::edc_c_task_snapshot *snap)
 // replaces the footer, so the layout height must not change), a fixed cell count
 // (never the width), no background fill, and medium block glyphs -- not the
 // full-height █▓▒░, which tower over the surrounding text.
-constexpr int kBarCells = 10;      // cells in the bar
-constexpr int kBarLit = 5;         // lit cells: the sliding run
-constexpr long long kStepMs = 60;  // per cell of travel
+constexpr int kBarCells = 10;     // cells in the bar
+constexpr int kBarLit = 5;        // lit cells: the sliding run
+constexpr long long kStepMs = 60; // per cell of travel
 // The run slides from completely past the left edge to completely past the
 // right edge before the sweep reverses, so the ends of the bar are genuine
 // turning points (a few frames of empty bar) rather than bumpers.
@@ -329,8 +329,7 @@ std::string ShortenHome(const char *path)
         // At a whole-cell position every cell is either fully covered or not at
         // all, so the frame matches the old discrete sweep exactly; between
         // positions the edge cells are partially covered.
-        const float cover = std::min(static_cast<float>(i + 1), run_end) -
-                            std::max(static_cast<float>(i), run_begin);
+        const float cover = std::min(static_cast<float>(i + 1), run_end) - std::max(static_cast<float>(i), run_begin);
         if (cover <= 0.0f)
         {
             row.push_back(OffBlock(pal));
@@ -392,10 +391,11 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
     // focus, no tail-follow: a refresh must not steal Tab/arrows or yank the viewport.
     auto task_header = ::ftxui::Renderer(task_widget_, [this] { return task_widget_->RenderHeader(); });
     auto task_body = ::ftxui::Renderer(task_widget_, [this] { return task_widget_->RenderBody(); });
-    auto task_scroll = std::make_shared<ScrollView>(
-        task_body, ScrollOptions{ScrollMode::kFitContent, /*show_indicator=*/false, /*follow_tail=*/false,
-                                 /*focusable=*/false},
-        task_header);
+    auto task_scroll = std::make_shared<ScrollView>(task_body,
+                                                    ScrollOptions{ScrollMode::kFitContent, /*show_indicator=*/false,
+                                                                  /*follow_tail=*/false,
+                                                                  /*focusable=*/false},
+                                                    task_header);
     auto right_column = ::ftxui::Container::Vertical({task_scroll, todo_widget_});
     auto right_pane = ::ftxui::Renderer(right_column, [this, task_scroll] {
         // The sections stack with no divider (a separator would slice the sidebar
@@ -867,8 +867,7 @@ void TUIWindow::TickAnimations()
     // the filler; when the pane is narrow drop fields from the middle outward:
     // first the model, then the sandbox state, leaving "/help" alone.
     const int budget = pane_w - ::ftxui::string_width(left) - 1;
-    const std::string sandbox =
-        std::string("sandbox:") + (edc_c_agent_sandbox_enabled(agent) ? "on" : "off");
+    const std::string sandbox = std::string("sandbox:") + (edc_c_agent_sandbox_enabled(agent) ? "on" : "off");
 
     std::string right = kFooterHelp;
     const std::string sandbox_help = sandbox + " · " + kFooterHelp;
@@ -916,10 +915,9 @@ void TUIWindow::TickAnimations()
     // clear_under is load-bearing: ftxui's `dim` is a per-cell flag the backdrop
     // stamps over its box and an overlaid element never clears it, so without it the
     // dialog renders gray whatever its text colour.
-    return ::ftxui::dbox(
-        {base | ::ftxui::dim,
-         connect_modal_->Render() | ::ftxui::clear_under | ::ftxui::size(::ftxui::WIDTH, ::ftxui::LESS_THAN, 80) |
-             ::ftxui::center});
+    return ::ftxui::dbox({base | ::ftxui::dim, connect_modal_->Render() | ::ftxui::clear_under |
+                                                   ::ftxui::size(::ftxui::WIDTH, ::ftxui::LESS_THAN, 80) |
+                                                   ::ftxui::center});
 }
 
 ::ftxui::Element TUIWindow::RenderConnectModal()

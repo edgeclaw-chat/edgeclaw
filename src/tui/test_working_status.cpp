@@ -41,7 +41,7 @@ void Check(bool ok, const std::string &what)
 constexpr int kScreenWidth = 40;
 constexpr int kBarCells = 10; // must match the row
 constexpr int kBarLit = 5;
-constexpr long long kStepMs = 60;      // must match the row
+constexpr long long kStepMs = 60; // must match the row
 // The run travels from completely past the left edge to completely past the
 // right edge, so the ends of the bar are real turning points.
 constexpr int kRunFirst = -kBarLit; // -5: run fully off the left edge
@@ -51,8 +51,7 @@ constexpr int kCycleSteps = 2 * (kRunPositions - 1); // 30 steps = 1.8s
 
 std::vector<::ftxui::Cell> RenderRow(long long elapsed_ms)
 {
-    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(kScreenWidth),
-                                          ::ftxui::Dimension::Fixed(1));
+    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(kScreenWidth), ::ftxui::Dimension::Fixed(1));
     ::ftxui::Render(screen, edc::WorkingIndicatorElement(elapsed_ms));
     std::vector<::ftxui::Cell> cells;
     cells.reserve(kScreenWidth);
@@ -156,8 +155,7 @@ void TestBarFrameIsFixed()
     for (int step : {0, 6, 9, 10, 12, 20, 26})
     {
         const auto cells = FrameAtStep(step);
-        Check(static_cast<int>(BarColumns(cells).size()) == kBarCells,
-              "10 bar cells at step " + std::to_string(step));
+        Check(static_cast<int>(BarColumns(cells).size()) == kBarCells, "10 bar cells at step " + std::to_string(step));
         const auto lit = LitCells(cells);
         bool contiguous = true;
         for (size_t i = 1; i < lit.size(); i++)
@@ -187,14 +185,11 @@ void TestRunSlidesOutAndComesBack()
     for (int step = 0; step < kCycleSteps; step++)
     {
         const int lit = LitCount(FrameAtStep(step));
-        Check(lit == expected[step], "step " + std::to_string(step) + " has " +
-                                         std::to_string(expected[step]) + " lit blocks (got " +
-                                         std::to_string(lit) + ")");
+        Check(lit == expected[step], "step " + std::to_string(step) + " has " + std::to_string(expected[step]) +
+                                         " lit blocks (got " + std::to_string(lit) + ")");
     }
-    Check(SameFrame(FrameAtStep(0), FrameAtStep(kCycleSteps)),
-          "the cycle closes: frame at 1800ms equals frame at 0ms");
-    Check(SameFrame(FrameAtStep(1), FrameAtStep(kCycleSteps + 1)),
-          "and the frame after that matches too");
+    Check(SameFrame(FrameAtStep(0), FrameAtStep(kCycleSteps)), "the cycle closes: frame at 1800ms equals frame at 0ms");
+    Check(SameFrame(FrameAtStep(1), FrameAtStep(kCycleSteps + 1)), "and the frame after that matches too");
 }
 
 void TestTurnsAroundOnlyWhenOffScreen()
@@ -205,8 +200,7 @@ void TestTurnsAroundOnlyWhenOffScreen()
     // way out — tail included — instead of bouncing off the edge.
     for (int step : {10, 25})
     {
-        Check(LitCount(FrameAtStep(step)) == 0, "bar is empty at the turn (step " + std::to_string(step) +
-                                                    ")");
+        Check(LitCount(FrameAtStep(step)) == 0, "bar is empty at the turn (step " + std::to_string(step) + ")");
     }
     // Exactly two empty frames per cycle, both of them the turning points.
     int empties = 0;
@@ -290,8 +284,7 @@ void TestDepthLadderMatchesDirection()
         const int next = LightSum(FrameAtStep(step + 1));
         const int motion = (next > now) ? 1 : (next < now ? -1 : 0);
         if (motion != 0)
-            Check(ramp == motion, "the gradient points the way the run moves at step " +
-                                      std::to_string(step));
+            Check(ramp == motion, "the gradient points the way the run moves at step " + std::to_string(step));
     }
 }
 
@@ -311,8 +304,8 @@ void TestDepthChangesAsTheRunPassesOverACell()
             if (tier >= 0)
                 seen.insert(tier);
         }
-        Check(seen.size() >= 3, "bar cell " + std::to_string(offset) + " shows " +
-                                    std::to_string(seen.size()) + " different depths over a cycle");
+        Check(seen.size() >= 3, "bar cell " + std::to_string(offset) + " shows " + std::to_string(seen.size()) +
+                                    " different depths over a cycle");
     }
 }
 
@@ -323,10 +316,8 @@ void TestRowWidthIsConstant()
     for (int step = 0; step < kCycleSteps; step++)
     {
         const auto cells = FrameAtStep(step);
-        Check(BarColumns(cells) == BarColumns(reference),
-              "bar columns unchanged at step " + std::to_string(step));
-        Check(BarX(cells) == BarX(reference),
-              "the bar starts at the same column at step " + std::to_string(step));
+        Check(BarColumns(cells) == BarColumns(reference), "bar columns unchanged at step " + std::to_string(step));
+        Check(BarX(cells) == BarX(reference), "the bar starts at the same column at step " + std::to_string(step));
     }
 }
 
@@ -390,8 +381,7 @@ void TestRowHasNoLabel()
         const auto cells = RenderRow(ms);
         for (int x = kBarCells; x < kScreenWidth; x++)
             Check(cells[x].character.empty() || cells[x].character == " ",
-                  "nothing after the bar at x=" + std::to_string(x) + " (t=" + std::to_string(ms) +
-                      "ms)");
+                  "nothing after the bar at x=" + std::to_string(x) + " (t=" + std::to_string(ms) + "ms)");
     }
     const auto a = FrameAtStep(0);
     Check(BarX(a) == 0, "the bar starts at the left edge of the row");
@@ -407,8 +397,7 @@ void TestNegativeElapsedIsClamped()
 void TestRowIsOneLineTall()
 {
     std::cout << "the row is exactly one line tall\n";
-    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(kScreenWidth),
-                                          ::ftxui::Dimension::Fixed(3));
+    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(kScreenWidth), ::ftxui::Dimension::Fixed(3));
     ::ftxui::Render(screen, edc::WorkingIndicatorElement(240));
     bool overflow = false;
     for (int y = 1; y < 3; y++)
@@ -428,11 +417,9 @@ void TestSlidesBetweenCells()
     const auto mid = RenderRow(kStepMs / 2);
     int blended = 0;
     for (int x : BarColumns(mid))
-        if (mid[x].character == "■" && mid[x].foreground_color != pal.accent &&
-            mid[x].foreground_color != pal.text_dim)
+        if (mid[x].character == "■" && mid[x].foreground_color != pal.accent && mid[x].foreground_color != pal.text_dim)
             blended++;
-    Check(blended >= 1,
-          "a mid-step edge cell carries a blended colour (got " + std::to_string(blended) + ")");
+    Check(blended >= 1, "a mid-step edge cell carries a blended colour (got " + std::to_string(blended) + ")");
     // ...and that mid-step frame is really distinct from both whole-cell frames
     // it sits between.
     Check(!SameFrame(mid, FrameAtStep(0)) && !SameFrame(mid, FrameAtStep(1)),

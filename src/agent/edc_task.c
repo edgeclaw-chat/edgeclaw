@@ -632,7 +632,7 @@ void edc_task_send_signal(struct edc_task *task, edc_task_signal sig)
         size_t n = 0;
         struct edc_task_dep *dep;
         LL_FOREACH(task->dependents, dep)
-            n++;
+        n++;
         if (n > 0)
         {
             struct edc_task **targets = malloc(n * sizeof(*targets));
@@ -640,7 +640,7 @@ void edc_task_send_signal(struct edc_task *task, edc_task_signal sig)
             {
                 size_t i = 0;
                 LL_FOREACH(task->dependents, dep)
-                    targets[i++] = dep->target;
+                targets[i++] = dep->target;
                 for (size_t k = 0; k < i; k++)
                     edc_task_on_dep_cancelled(targets[k], task);
                 free(targets);

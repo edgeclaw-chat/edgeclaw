@@ -45,7 +45,9 @@ int ParseSandboxFlag(int argc, char **argv)
 // edc_c_agent_free() -- is skipped, leaking every agent resource. Installing a benign
 // handler *before* Loop() makes ftxui record it as "previous", so the re-raise lands here
 // and control falls through to a normal return from main().
-void HandleTerminationSignal(int) {}
+void HandleTerminationSignal(int)
+{
+}
 
 // 关闭 uv_default_loop: 把 loop 上残留的句柄全部 uv_close, 跑完关闭回调后
 // uv_loop_close, 释放 libuv 内部 (epoll / eventfd / io_uring) 的句柄与堆内存。

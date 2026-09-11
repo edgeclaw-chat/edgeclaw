@@ -248,8 +248,8 @@ extern void edc_task_send_signal(struct edc_task *task, edc_task_signal sig);
  * EXECUTING 由 toolbox 真实上报, 不再按链序推断。 */
 
 /** 链尾追加一条 PENDING 记录。call_id/name 复制 (可为 NULL); args 深拷贝 (可为 NULL)。 */
-extern struct edc_tool_call_record *edc_task_tool_call_add(struct edc_task *task, const char *call_id,
-                                                           const char *name, cJSON *args);
+extern struct edc_tool_call_record *edc_task_tool_call_add(struct edc_task *task, const char *call_id, const char *name,
+                                                           cJSON *args);
 
 /** 按 call_id 查找记录 (NULL = 无)。 */
 extern struct edc_tool_call_record *edc_task_tool_call_find(struct edc_task *task, const char *call_id);

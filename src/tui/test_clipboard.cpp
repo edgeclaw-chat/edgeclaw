@@ -70,8 +70,7 @@ void TestToast()
     // which would shift the columns along), and the bar is multi-byte UTF-8
     // (which would turn find() into a byte offset rather than a column), so the
     // row is built from the first byte of every cell.
-    auto columns = [&](int y)
-    {
+    auto columns = [&](int y) {
         std::string s;
         for (int x = 0; x < width; x++)
         {
@@ -147,8 +146,7 @@ void TestToastFade()
         std::vector<::ftxui::Color> bg;
     };
 
-    auto draw = [&](bool with_toast, float fade, const ::ftxui::Color &pane)
-    {
+    auto draw = [&](bool with_toast, float fade, const ::ftxui::Color &pane) {
         auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(width), ::ftxui::Dimension::Fixed(height));
         auto base = ::ftxui::vbox({::ftxui::text("BASE-MARK"), ::ftxui::filler()}) | ::ftxui::bgcolor(pane);
         if (with_toast)
@@ -180,8 +178,7 @@ void TestToastFade()
 
     // A finished fade leaves no trace: not even the characters under it, which
     // blending alone would still have overwritten.
-    Check(gone.chars == plain.chars && gone.fg == plain.fg && gone.bg == plain.bg,
-          "fade 1 leaves the pane untouched");
+    Check(gone.chars == plain.chars && gone.fg == plain.fg && gone.bg == plain.bg, "fade 1 leaves the pane untouched");
 
     size_t label = half.chars.size();
     for (size_t i = 0; i < half.chars.size(); i++)
