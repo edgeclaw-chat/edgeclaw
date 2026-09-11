@@ -1033,8 +1033,6 @@ static struct sock_filter *build_filter(size_t *out_len)
         NR_listxattr,
         NR_flistxattr,
         NR_llistxattr,
-        NR_utimensat,
-        NR_futimesat,
         NR_mq_open,
         NR_mq_unlink,
         NR_mq_timedsend,
@@ -1063,14 +1061,12 @@ static struct sock_filter *build_filter(size_t *out_len)
         NR_migrate_pages,
         NR_move_pages,
         NR_seccomp,
-        NR_utimes,
         NR_waitid,
         NR_fanotify_init,
         NR_fanotify_mark,
         NR_afs_syscall,
         NR_tuxcall,
         NR_security,
-        NR_utime,
         NR_syslog,
         NR_ustat,
         NR_sysfs,
@@ -1147,13 +1143,6 @@ static struct sock_filter *build_filter(size_t *out_len)
         NR_rmdir,
         NR_rename,
         NR_truncate,
-        NR_chmod,
-        NR_fchmodat,
-        NR_chown,
-        NR_fchownat,
-        NR_fchmod,
-        NR_fchown,
-        NR_lchown,
         -1,
     };
 
@@ -1204,6 +1193,20 @@ static struct sock_filter *build_filter(size_t *out_len)
         NR_vserver,
         NR_open_tree,
         NR_move_mount,
+        /* Metadata mutators: Landlock does not mediate these, so without a
+         * seccomp rule the model could still retime/chmod/chown files in the
+         * read-only set. Deny them so the read-only paths are truly immutable. */
+        NR_chmod,
+        NR_fchmod,
+        NR_fchmodat,
+        NR_chown,
+        NR_fchown,
+        NR_fchownat,
+        NR_lchown,
+        NR_utimensat,
+        NR_utimes,
+        NR_futimesat,
+        NR_utime,
         -1,
     };
 
@@ -1211,17 +1214,31 @@ static struct sock_filter *build_filter(size_t *out_len)
     int deny_n = count_nonzero(deny_syscalls);
 
     /*
-     * Split safe checks into chunks of at most CHUNK_SIZE entries so no BPF
-     * jump exceeds 255 instructions (jt/jf are u8).  Each chunk ends with a
-     * BPF_JA chain instruction that unconditionally forwards to the next
-     * chunk (or to FINAL_ALLOW_TARGET for the last chunk).
+     * Layout:
+     *   [arch check][load nr]
+     *   safe block: chunks of <= SAFE_CHUNK JEQ entries. Each chunk's matches
+     *       jump forward to an inline ALLOW stub at the end of the chunk, while
+     *       the fall-through runs an unconditional JA placed *before* that stub
+     *       to skip over it and continue with the next chunk (or the deny
+     *       block). The JA is essential: without it the fall-through lands on
+     *       the stub and returns ALLOW for every syscall not in the safe list,
+     *       which made the deny block unreachable.
+     *   deny block: one JEQ per denied syscall -> jump to DENY_TARGET.
+     *   default: ALLOW (fail-open for unknown syscalls).
+     *   DENY_TARGET: return EPERM.
+     * JEQ jt/jf are u8, so every jump must stay within 255 instructions of its
+     * source; the chunk size keeps safe jumps <= SAFE_CHUNK and deny_n stays
+     * small (< 255).
      */
 #define SAFE_CHUNK 200
     int nchains = safe_n > 0 ? (safe_n + SAFE_CHUNK - 1) / SAFE_CHUNK : 0;
-    int total = safe_n + nchains + deny_n;
 
-    size_t cap = HDR_LEN + total + TAIL_LEN + 3 + 8;
+    /* header (4) + safe entries + 2 (JA + ALLOW stub) per chunk + deny entries
+     * + default ALLOW + DENY_TARGET. */
+    size_t cap = HDR_LEN + (size_t)safe_n + 2 * (size_t)nchains + (size_t)deny_n + 2 + 8;
     struct sock_filter *f = calloc(cap, sizeof(struct sock_filter));
+    if (!f)
+        return NULL;
     size_t pos = 0;
 
     /* arch check */
@@ -1232,65 +1249,43 @@ static struct sock_filter *build_filter(size_t *out_len)
     /* load syscall number */
     f[pos++] = BPF_STMT(BPF_LD | BPF_W | BPF_ABS, 0);
 
-    /* Pre-compute key positions */
-    int deny_start = HDR_LEN + safe_n + nchains;
-    int final_allow_pos = deny_start + deny_n + 1;
-    int deny_target_pos = deny_start + deny_n + 2;
-
-    /* Emit safe checks in chunks with chain jumps */
+    /* Emit the safe block, chunk by chunk. */
     int emitted = 0;
-    int chain = 0;
-
-    for (int i = 0; safe_syscalls[i] != -1; i++)
+    int i = 0;
+    while (emitted < safe_n)
     {
-        if (safe_syscalls[i] == 0)
-            continue;
-
-        if (emitted > 0 && (emitted % SAFE_CHUNK) == 0)
+        int count = (safe_n - emitted) > SAFE_CHUNK ? SAFE_CHUNK : (safe_n - emitted);
+        int stub_pos = (int)pos + count + 1; /* after the count JEQs + the JA */
+        int j = 0;
+        for (; safe_syscalls[i] != -1 && j < count; i++)
         {
-            int next_target;
-            if (chain + 1 < nchains)
-            {
-                int next_sz = (safe_n - emitted) > SAFE_CHUNK ? SAFE_CHUNK : (safe_n - emitted);
-                next_target = (int)pos + next_sz + 1;
-            }
-            else
-            {
-                next_target = final_allow_pos;
-            }
-            int jt = next_target - (int)pos - 1;
-            f[pos++] = BPF_JUMP(BPF_JMP | BPF_JA, (unsigned int)jt, 0, 0);
-            chain++;
+            if (safe_syscalls[i] == 0)
+                continue;
+            int jt = stub_pos - (int)pos - 1;
+            f[pos++] = BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)safe_syscalls[i], (unsigned char)jt, 0);
+            j++;
+            emitted++;
         }
-
-        int chunk_sz = (safe_n - chain * SAFE_CHUNK) > SAFE_CHUNK ? SAFE_CHUNK : (safe_n - chain * SAFE_CHUNK);
-        int offset = emitted - chain * SAFE_CHUNK;
-        int jt = chunk_sz - offset - 1;
-
-        f[pos++] = BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)safe_syscalls[i], (unsigned char)jt, 0);
-        emitted++;
+        /* Fall-through: skip the ALLOW stub and continue with the next block.
+         * Compute the offset first: using `pos` in the RHS of `f[pos++] = ...`
+         * is unsequenced (UB) and the compiler may read the post-increment value. */
+        int next_pos = stub_pos + 1;
+        int ja = next_pos - (int)pos - 1;
+        f[pos++] = BPF_JUMP(BPF_JMP | BPF_JA, (unsigned int)ja, 0, 0);
+        f[pos++] = BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW); /* stub */
     }
 
-    /* Emit the last chain JA if there is an unfinished chunk */
-    if (chain < nchains)
+    /* Deny checks -> jump to DENY_TARGET on match. */
+    int deny_target_pos = (int)pos + deny_n + 1; /* skip the default ALLOW */
+    for (int d = 0; deny_syscalls[d] != -1; d++)
     {
-        int jt = final_allow_pos - (int)pos - 1;
-        f[pos++] = BPF_JUMP(BPF_JMP | BPF_JA, (unsigned int)jt, 0, 0);
-    }
-
-    /* Emit deny checks -> jump to DENY_TARGET on match */
-    for (int i = 0; deny_syscalls[i] != -1; i++)
-    {
-        if (deny_syscalls[i] == 0)
+        if (deny_syscalls[d] == 0)
             continue;
         int jt = deny_target_pos - (int)pos - 1;
-        f[pos++] = BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)deny_syscalls[i], (unsigned char)jt, 0);
+        f[pos++] = BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)deny_syscalls[d], (unsigned char)jt, 0);
     }
 
     /* default: unknown syscall -> ALLOW (fail-open) */
-    f[pos++] = BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
-
-    /* FINAL_ALLOW_TARGET */
     f[pos++] = BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
 
     /* DENY_TARGET */
