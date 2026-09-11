@@ -90,6 +90,9 @@ struct Palette
     // instead of the earlier pink that clashed with them.
     ::ftxui::Color prompt;    // the "❯ " input prompt glyph.
     ::ftxui::Color user_rule; // heavy rule marking user messages.
+    ::ftxui::Color task_tag;  // "task N" metadata on a message. Violet so it
+                              // stays legible without borrowing the user accent
+                              // (blue) or a color reserved for status.
 
     // ---- Markdown syntax colors -----------------------------------------
     // Markdown uses the same Monokai tokens as the chrome, mapped the way
@@ -138,6 +141,7 @@ inline const Palette &palette()
         // input & chat rules
         ::ftxui::Color::RGB(102, 217, 239),  // prompt      (#66D9EF accent)
         ::ftxui::Color::RGB(102, 217, 239),  // user_rule   (#66D9EF accent)
+        ::ftxui::Color::RGB(174, 129, 255),  // task_tag    (#AE81FF purple)
         // Markdown syntax colors (Monokai tokens)
         // h1 banner: pink band with the text punched out in the editor
         // background color, i.e. dark-on-pink — maximum contrast, and it

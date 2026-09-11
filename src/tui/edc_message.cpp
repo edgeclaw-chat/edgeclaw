@@ -21,10 +21,11 @@ bool Message::OnEvent(ftxui::Event)
 ::ftxui::Element Message::TaskTag() const
 {
     const auto &pal = style::palette();
-    // Metadata, so it stays gray: accent now means "user / interactive"
-    // (the prompt, the user-message rule, the expand toggles), and a task tag
-    // painted in it would read as part of that same group.
-    return ::ftxui::text("task " + task_id_) | ::ftxui::color(pal.text_dim);
+    // "task N" cross-references the sidebar task tree, so it wants its own hue:
+    // gray was too quiet, and accent already means "user / interactive". Violet
+    // keeps it legible without competing with the user blue or the thought
+    // yellow.
+    return ::ftxui::text("task " + task_id_) | ::ftxui::color(pal.task_tag);
 }
 
 ::ftxui::Element Message::OnRender()
