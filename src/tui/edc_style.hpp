@@ -63,6 +63,12 @@ struct Palette
     ::ftxui::Color window_bg;   // outermost backdrop behind everything.
     ::ftxui::Color pane_bg;     // sidebar pane + chat message surface.
     ::ftxui::Color text_dim;    // quiet secondary text / neutral rows.
+    ::ftxui::Color text;        // primary body/label text: the terminal's
+                                // default foreground (the same bright white the
+                                // task tree uses), so a flat dialog stays fully
+                                // legible. An explicit near-white RGB can be
+                                // downsampled to gray on low-color terminals,
+                                // which is what made the labels look dark.
     ::ftxui::Color line_dim;    // subtle separator lines (todo list divider).
     ::ftxui::Color dialog_bg;   // raised dialog surface for borderless modals
                                 // (one step above pane_bg so a flat /connect
@@ -115,6 +121,7 @@ inline const Palette &palette()
         ::ftxui::Color::RGB(30, 31, 28),     // window_bg   (#1E1F1C)
         ::ftxui::Color::RGB(39, 40, 34),     // pane_bg     (#272822)
         ::ftxui::Color::RGB(117, 113, 94),   // text_dim    (#75715E comment)
+        ::ftxui::Color::Default,             // text        (terminal foreground)
         ::ftxui::Color::RGB(73, 72, 62),     // line_dim    (#49483E selection)
         ::ftxui::Color::RGB(62, 61, 50),     // dialog_bg   (#3E3D32 lite)
         // accents & status — Monokai syntax tokens

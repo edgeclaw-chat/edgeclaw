@@ -414,7 +414,7 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
         auto label = ::ftxui::text(" " + s.label + " ");
         if (s.focused)
             return label | ::ftxui::bold | ::ftxui::color(pal.accent);
-        return label | ::ftxui::dim | ::ftxui::color(pal.text_dim);
+        return label | ::ftxui::color(pal.text);
     };
     auto connect_ok = ::ftxui::Button("Connect", [this] { SubmitConnect(); }, flat_button);
     auto connect_cancel = ::ftxui::Button("Cancel", [this] { connect_open_ = false; }, flat_button);
@@ -855,16 +855,27 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
     // The /connect dialog is borderless, so the backdrop is dimmed while it is
     // open: the raised dialog surface then reads as the one lit panel on a
     // muted screen instead of relying on a frame to stand out.
+    //
+    // clear_under is load-bearing, not cosmetic: ftxui's `dim` is a per-cell
+    // flag (see Dim in dom/dim.cpp) that the backdrop stamps over its whole
+    // box, and an overlaid element only rewrites character/colours — it never
+    // clears that flag. Without clear_under the dialog inherits the backdrop's
+    // dim and renders gray regardless of its text colour. Clearing the cells
+    // first (what the ftxui modal example does) resets the flag before the
+    // panel draws, so only the backdrop stays dim.
     return ::ftxui::dbox(
         {base | ::ftxui::dim,
-         connect_modal_->Render() | ::ftxui::size(::ftxui::WIDTH, ::ftxui::LESS_THAN, 80) | ::ftxui::center});
+         connect_modal_->Render() | ::ftxui::clear_under | ::ftxui::size(::ftxui::WIDTH, ::ftxui::LESS_THAN, 80) |
+             ::ftxui::center});
 }
 
 ::ftxui::Element TUIWindow::RenderConnectModal()
 {
     // Flat, borderless dialog. It borrows the sidebar's visual language -- a
-    // bold accent heading, dim rules and dim field labels -- but floats on
-    // the raised dialog surface instead of drawing a frame. BorderStyle::EMPTY
+    // bold accent heading, dim rules and flat field labels -- but floats on
+    // the raised dialog surface instead of drawing a frame. The labels use the
+    // bright foreground (not text_dim, which washes out on dialog_bg), so the
+    // panel stays legible without a box to lean on. BorderStyle::EMPTY
     // reserves a one-cell inset on every side (so the fields keep their
     // breathing room) while drawing no box lines at all; the window-level
     // overlay dims the backdrop behind it (see OnRender).
@@ -873,7 +884,7 @@ void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
 
     auto field = [&](const char *label, const Component &input) {
         return hbox({
-            text(label) | dim | color(pal.text_dim),
+            text(label) | color(pal.text),
             input->Render() | flex,
         });
     };
