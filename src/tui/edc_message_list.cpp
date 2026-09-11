@@ -43,8 +43,19 @@ class MessageListNode : public ::ftxui::Node
         requirement_.flex_grow_y = 1;
         requirement_.flex_shrink_y = 1;
         remeasured_ = false;
-        // Refreshed by Select() below whenever this frame has a selection.
-        selection_ = nullptr;
+
+        // Text's selection highlight lives in a member that only
+        // ComputeRequirement resets, and a steady frame deliberately never
+        // re-requires the items (that is what the cached heights buy). So clear
+        // the highlight the last Select() phase painted here, which is the one
+        // phase that runs before this frame's Select(): the highlight then
+        // disappears the moment the selection does.
+        for (size_t index : list_.highlighted_)
+        {
+            if (index < list_.items_.size())
+                list_.items_[index]->Render()->ComputeRequirement();
+        }
+        list_.highlighted_.clear();
     }
 
     void SetBox(::ftxui::Box box) override
@@ -76,15 +87,6 @@ class MessageListNode : public ::ftxui::Node
     {
         list_.hits_.clear();
 
-        // A selection highlight lives in the nodes ftxui walked with Select().
-        // Those are the same cached trees drawn here, and Text() resets its
-        // highlight state only in ComputeRequirement(), which a steady frame
-        // skips. So on any frame that has -- or just had -- a selection the
-        // items must be re-required, or the highlight painted last frame would
-        // stay on screen forever.
-        const bool selecting = selection_ != nullptr || list_.had_selection_;
-        list_.had_selection_ = selection_ != nullptr;
-
         const ::ftxui::Box &stencil = screen.stencil;
         if (list_.items_.empty() || stencil.IsEmpty())
             return;
@@ -105,11 +107,7 @@ class MessageListNode : public ::ftxui::Node
             item.y_max = item.y_min + list_.heights_[i] - 1;
 
             ::ftxui::Element element = list_.items_[i]->Render();
-            if (selecting)
-                element->ComputeRequirement(); // clears a stale highlight
             element->SetBox(item);
-            if (selection_)
-                element->Select(*selection_);
             element->Render(screen);
 
             const ::ftxui::Box visible = ::ftxui::Box::Intersection(item, stencil);
@@ -120,23 +118,49 @@ class MessageListNode : public ::ftxui::Node
 
     void Select(::ftxui::Selection &selection) override
     {
-        // FTXUI collects the selected text by walking the node tree (Text::Select
-        // adds the glyphs), and it calls Select *before* Render. This node draws
-        // its items itself instead of holding them as children, so it has to
-        // forward the selection -- but it does so *while* drawing: Text only
-        // highlights during Render, after ComputeRequirement() has cleared the
-        // previous frame's state (see Render). Painting here would be erased by
-        // that very ComputeRequirement.
-        selection_ = &selection;
+        // FTXUI collects the selected text by walking the node tree and asking
+        // every node which of its cells the selection covers (Text::Select adds
+        // the glyphs). This node draws the items itself instead of holding them
+        // as children, so it must forward the call or no message text is
+        // selectable.
+        //
+        // It has to happen here, during the Select phase: the Selection handed
+        // down the tree is a stack temporary (VBox::Select calls
+        // SaturateVertical and passes a reference to the local), so it is only
+        // valid for the duration of this call.
+        //
+        // Only the items the selection touches are built: a drag spans a few
+        // rows, so this stays cheap. The items it painted are remembered so the
+        // next frame can clear the highlight again (see ComputeRequirement).
+        if (list_.items_.empty())
+            return;
+
+        const ::ftxui::Box &sel = selection.GetBox();
+        if (::ftxui::Box::Intersection(sel, box_).IsEmpty())
+            return;
+
+        const int first_row = sel.y_min - box_.y_min;
+        const int last_row = sel.y_max - box_.y_min;
+
+        for (size_t i = list_.FirstVisible(first_row); i < list_.items_.size(); i++)
+        {
+            if (list_.prefix_[i] > last_row)
+                break;
+
+            ::ftxui::Box item = box_;
+            item.y_min = box_.y_min + list_.prefix_[i];
+            item.y_max = item.y_min + list_.heights_[i] - 1;
+
+            ::ftxui::Element element = list_.items_[i]->Render();
+            element->SetBox(item);
+            element->Select(selection);
+            list_.highlighted_.push_back(i);
+        }
     }
 
   private:
     MessageList &list_;
     bool remeasured_ = false;
-    // This frame's selection, if it has one. Valid until Render() returns: the
-    // App builds one Selection per frame and keeps it alive across the
-    // Select/Render steps.
-    ::ftxui::Selection *selection_ = nullptr;
 };
 
 void MessageList::AddMessage(std::shared_ptr<Message> message)
