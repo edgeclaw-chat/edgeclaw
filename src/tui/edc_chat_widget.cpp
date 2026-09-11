@@ -30,6 +30,11 @@ void ChatWidget::AddMessage(std::shared_ptr<Message> message)
     // it to the new bottom, otherwise the reader stays where they were.
 }
 
+void ChatWidget::Clear()
+{
+    container_->DetachAllChildren();
+}
+
 bool ChatWidget::Scroll(int delta)
 {
     return scroll_view_->Scroll(delta);

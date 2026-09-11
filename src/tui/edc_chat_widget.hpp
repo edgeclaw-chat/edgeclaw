@@ -17,6 +17,11 @@ class ChatWidget : public ::ftxui::ComponentBase
 
     void AddMessage(std::shared_ptr<Message> message);
 
+    // Remove every message (used when the chat log is re-pointed at a different
+    // session's transcript). The scroll state survives; the next render shows
+    // an empty log.
+    void Clear();
+
     bool OnEvent(ftxui::Event) override;
     ftxui::Element OnRender() override;
 

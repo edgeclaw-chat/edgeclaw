@@ -49,19 +49,25 @@ class TUIWindow : public ::ftxui::ComponentBase
     void SaveInputHistory();
     // Ask the agent (on its scheduler thread) for a fresh task-tree snapshot.
     void RequestTaskSnapshot();
-    // Ask for a snapshot that also carries the foreground group's conversation
-    // messages, then refill the chat log from it (once, at startup, so a
-    // restored session shows its history instead of an empty log).
-    void RequestHistorySnapshot();
-    // Seed the chat log from a snapshot's foreground-group history. Each entry
-    // carries the id of the task that produced it, so the refilled messages
-    // keep their "task N" tags. No-op after the first snapshot that carried a
-    // "messages" array (history_seeded_).
-    void SeedChatFromSnapshot(const ::edc_c_task_snapshot *snap);
+    // Replay this session's persisted chat transcript (the exact bubbles shown
+    // before the last exit) into the chat log, after clearing it. Called when
+    // the active session is (re)identified from a snapshot. Best-effort: a
+    // missing/unreadable file just leaves the chat empty.
+    void LoadChatTranscript();
+    // Append one shown chat bubble to the current session's transcript file so
+    // the next start replays it verbatim. |render_pref| is EDC_C_RENDER_*.
+    // Best-effort: a failed write must not disturb the UI.
+    void AppendChatTranscript(const std::string &kind, const std::string &header, const std::string &content,
+                              const std::string &task_id, int render_pref);
     // Re-evaluate the animated status from a freshly parsed task snapshot:
     // "processing" is shown exactly while the foreground group's active task
     // is running, regardless of which channel messages arrived.
     void SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap);
+    // Point the chat log at |session_id|'s own transcript. When the id changes
+    // (first snapshot after start, /session switch or /session new) the log is
+    // cleared and that session's persisted bubbles are replayed, so the log
+    // always belongs to the active session and survives a restart verbatim.
+    void SyncChatSession(const char *session_id);
     // Render the left pane (chat log + input + footer/spinner).
     ::ftxui::Element RenderMain();
     // Build the footer row: the working directory on the left, the active
@@ -98,11 +104,14 @@ class TUIWindow : public ::ftxui::ComponentBase
     // rather than submitted, so a pasted multi-line block becomes one draft.
     bool in_paste_ = false;
 
-    // True once the chat log has been refilled from the foreground group's
-    // history. The history arrives attached to a one-shot snapshot requested
-    // in the constructor; polling snapshots carry no messages, so this must
-    // latch on the first snapshot that does.
-    bool history_seeded_ = false;
+    // The active session's chat-transcript path and id, refreshed whenever a
+    // snapshot reports a (possibly new) session. The transcript is the exact
+    // stream of chat bubbles shown for that session; when the id changes the
+    // chat log is cleared and the new session's transcript replayed, so the
+    // log always reflects the active session.
+    std::string chat_log_path_;
+    // Sentinel: no session seen yet, so the first snapshot triggers a load.
+    std::string current_session_id_ = "\x01";
 
     struct edc_agent *agent = NULL;
     ::ftxui::ScreenInteractive *screen_ = nullptr;

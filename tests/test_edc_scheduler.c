@@ -4,6 +4,7 @@
 #include "edc_channel_actor.h"
 #include "edc_llm_actor.h"
 #include "edc_toolbox_actor.h"
+#include "edc_task_group.h"
 #include "log.h"
 #include <stdio.h>
 #include <string.h>
@@ -609,7 +610,7 @@ static void test_scheduler_max_iter_cap(void)
 
 /* ── main ──────────────────────────────────────────────────── */
 
-/* ── 快照回填: 历史归属 ───────────────────────────────────── */
+/* ── 任务树快照: 只带侧边栏数据, 不再携带对话消息 ───────────── */
 
 static sds g_snapshot_json = NULL;
 
@@ -644,17 +645,17 @@ static cJSON *snap_find_fg(cJSON *root)
     return NULL;
 }
 
-static void drive_snapshot(struct edc_scheduler *sched, int sub_type)
+static void drive_snapshot(struct edc_scheduler *sched)
 {
     edc_actor_t *actor = edc_scheduler_get_actor(sched);
     edc_actor_msg_t *msg =
-        edc_actor_msg_new_sub_type(BC_ACTOR_MSG_TASK_SNAPSHOT, sub_type, NULL, NULL, NULL, NULL);
+        edc_actor_msg_new_sub_type(BC_ACTOR_MSG_TASK_SNAPSHOT, 0, NULL, NULL, NULL, NULL);
     actor->handler(actor, msg); /* dispatches + frees msg */
 }
 
-static void test_snapshot_history_task_ownership(void)
+static void test_snapshot_carries_no_chat_messages(void)
 {
-    TEST("history snapshot tags each message with its owning task");
+    TEST("task snapshot carries sidebar data, never chat messages");
     struct edc_config *cfg = make_config();
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
@@ -665,43 +666,21 @@ static void test_snapshot_history_task_ownership(void)
     edc_task_group_add_task(g, member);
     edc_scheduler_set_foreground(sched, g);
 
+    /* 组历史里有消息, 但快照不应把对话内容下发 —— 聊天区由 TUI 自己持久化。 */
     edc_task_group_history_add_owned(g, snap_mk_msg("system", "group prompt"), NULL);
-    edc_task_group_history_add_owned(g, snap_mk_msg("user", "q from leader"), leader->task_id);
-    edc_task_group_history_add_owned(g, snap_mk_msg("assistant", "a from member"), member->task_id);
+    edc_task_group_history_add_owned(g, snap_mk_msg("user", "q"), leader->task_id);
 
     g_snapshot_json = NULL;
     sched->snapshot_ready = capture_snapshot;
-
-    drive_snapshot(sched, 1); /* sub_type == 1 → 携带前台组历史 */
-    CHECK(g_snapshot_json != NULL, "history snapshot serialized");
+    drive_snapshot(sched);
 
     cJSON *root = g_snapshot_json ? cJSON_Parse(g_snapshot_json) : NULL;
     CHECK(root != NULL, "snapshot parses as JSON");
 
     cJSON *fg = snap_find_fg(root);
     CHECK(fg != NULL, "foreground group present");
-    cJSON *hist = fg ? cJSON_GetObjectItem(fg, "messages") : NULL;
-    CHECK(cJSON_IsArray(hist), "foreground group carries messages[]");
-    CHECK(cJSON_IsArray(hist) && cJSON_GetArraySize(hist) == 2,
-          "two conversation entries (system prompt skipped)");
-
-    if (cJSON_IsArray(hist) && cJSON_GetArraySize(hist) == 2)
-    {
-        const char *t0 = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(hist, 0), "task_id"));
-        const char *t1 = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(hist, 1), "task_id"));
-        CHECK(t0 && strcmp(t0, leader->task_id) == 0, "entry 0 tagged with leader task id");
-        CHECK(t1 && strcmp(t1, member->task_id) == 0, "entry 1 tagged with member task id");
-    }
-    cJSON_Delete(root);
-
-    /* 普通轮询快照 (sub_type == 0) 不带 messages, 避免长会话每 500ms 全量重传 */
-    sdsfree(g_snapshot_json);
-    g_snapshot_json = NULL;
-    drive_snapshot(sched, 0);
-    root = g_snapshot_json ? cJSON_Parse(g_snapshot_json) : NULL;
-    fg = snap_find_fg(root);
-    CHECK(fg != NULL, "foreground group present on poll snapshot");
-    CHECK(fg && cJSON_GetObjectItem(fg, "messages") == NULL, "poll snapshot omits messages[]");
+    CHECK(fg && cJSON_GetObjectItem(fg, "messages") == NULL, "snapshot has no messages[]");
+    CHECK(fg && cJSON_GetArraySize(cJSON_GetObjectItem(fg, "tasks")) == 2, "both tasks present");
     cJSON_Delete(root);
 
     if (g_snapshot_json)
@@ -729,7 +708,7 @@ int main(void)
     test_scheduler_signal_all();
     test_input_routes_to_waiting_leader();
     test_scheduler_max_iter_cap();
-    test_snapshot_history_task_ownership();
+    test_snapshot_carries_no_chat_messages();
 
     log_info("");
     log_info("=== 测试结果: %d passed, %d failed ===", test_passed, test_failed);

@@ -104,22 +104,6 @@ void edc_c_agent_request_task_snapshot(struct edc_agent *agent)
     edc_actor_send(state->observer, msg);
 }
 
-void edc_c_agent_request_task_snapshot_history(struct edc_agent *agent)
-{
-    if (!agent || !agent->channel_actor)
-        return;
-
-    edc_channel_actor_state_t *state = agent->channel_actor->state;
-    if (!state || !state->observer)
-        return;
-
-    /* sub_type == 1 asks the scheduler to attach the foreground group's
-     * conversation messages to the snapshot (one-shot startup refill). */
-    edc_actor_msg_t *msg =
-        edc_actor_msg_new_sub_type(BC_ACTOR_MSG_TASK_SNAPSHOT, 1, agent->channel_actor, NULL, NULL, NULL);
-    edc_actor_send(state->observer, msg);
-}
-
 /* ── Task-tree snapshot JSON parsing ───────────────────────── */
 
 static char *snap_dup(const char *s)
@@ -177,33 +161,6 @@ struct edc_c_task_snapshot *edc_c_task_snapshot_parse(const char *json)
             g->orphaned = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(gj, "orphaned")) ? 1 : 0;
             g->fg = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(gj, "fg")) ? 1 : 0;
 
-            /* 对话消息列表: 只有被请求的 (前台) 组带 "messages" 字段。字段存在
-             * 即置 has_history, 即使数组为空 —— 渲染端据此判定"历史已回填",
-             * 只做一次。 */
-            cJSON *msgs = cJSON_GetObjectItemCaseSensitive(gj, "messages");
-            if (cJSON_IsArray(msgs))
-            {
-                g->has_history = 1;
-                g->history_count = cJSON_GetArraySize(msgs);
-                if (g->history_count > 0)
-                {
-                    g->history = calloc((size_t)g->history_count, sizeof(struct edc_c_history_message));
-                    int mi = 0;
-                    cJSON *mj;
-                    cJSON_ArrayForEach(mj, msgs)
-                    {
-                        struct edc_c_history_message *m = &g->history[mi++];
-                        cJSON *content = cJSON_GetObjectItemCaseSensitive(mj, "content");
-                        m->role = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(mj, "role")));
-                        m->content = snap_dup(cJSON_IsString(content) ? content->valuestring : "");
-                        m->name = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(mj, "name")));
-                        m->has_tool_calls =
-                            cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(mj, "tool_calls")) ? 1 : 0;
-                        m->task_id = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(mj, "task_id")));
-                    }
-                }
-            }
-
             cJSON *tasks = cJSON_GetObjectItemCaseSensitive(gj, "tasks");
             if (cJSON_IsArray(tasks))
             {
@@ -244,14 +201,6 @@ void edc_c_task_snapshot_free(struct edc_c_task_snapshot *snap)
     {
         struct edc_c_task_group *g = &snap->groups[gi];
         free((void *)g->group_id);
-        for (int mi = 0; mi < g->history_count; mi++)
-        {
-            free((void *)g->history[mi].role);
-            free((void *)g->history[mi].content);
-            free((void *)g->history[mi].name);
-            free((void *)g->history[mi].task_id);
-        }
-        free(g->history);
         for (int ti = 0; ti < g->task_count; ti++)
         {
             struct edc_c_task_info *t = &g->tasks[ti];
@@ -346,6 +295,56 @@ bool edc_c_history_path(char *buf, size_t cap)
         return false;
     sds path = edc_path_join(home, ".tui_history", NULL);
     sdsfree(home);
+    if (!path)
+        return false;
+
+    const bool ok = sdslen(path) < cap;
+    if (ok)
+        memcpy(buf, path, sdslen(path) + 1);
+    sdsfree(path);
+    return ok;
+}
+
+bool edc_c_agent_session_id(struct edc_agent *agent, char *buf, size_t cap)
+{
+    if (!buf || cap == 0)
+        return false;
+    buf[0] = '\0';
+
+    if (!agent || !agent->session_manager)
+        return false;
+    struct edc_session *session = edc_session_manager_get_active(agent->session_manager);
+    if (!session || !session->session_id)
+        return false;
+
+    const size_t n = strlen(session->session_id);
+    if (n >= cap)
+        return false;
+    memcpy(buf, session->session_id, n + 1);
+    return true;
+}
+
+bool edc_c_session_chat_log_path(struct edc_agent *agent, char *buf, size_t cap)
+{
+    if (!buf || cap == 0)
+        return false;
+    buf[0] = '\0';
+
+    if (!agent || !agent->session_manager)
+        return false;
+    struct edc_session *session = edc_session_manager_get_active(agent->session_manager);
+    if (!session || !session->history_dir)
+        return false;
+
+    /* The transcript lives beside the session's state; make sure the session
+     * directory exists so the TUI can append to it before the first state
+     * save has run (a fresh session has no directory yet). Best-effort. */
+    EdcError *err = NULL;
+    edc_dir_create_with_parents(session->history_dir, 0755, &err);
+    if (err)
+        edc_error_free(err);
+
+    sds path = edc_path_join(session->history_dir, "chat.jsonl", NULL);
     if (!path)
         return false;
 

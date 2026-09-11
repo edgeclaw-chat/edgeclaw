@@ -396,11 +396,28 @@ TUIWindow::TUIWindow() : input_text_("")
             model_ = model;
     }
 
+    // The agent has already restored its active session, so resolve the chat
+    // transcript now — before any input can arrive — and replay it. This keys
+    // the transcript to the active session without waiting for the first task
+    // snapshot, so even the very first typed message is persisted. Later
+    // snapshots only reload when /session switch/new changes the session.
+    {
+        char sid[256];
+        if (edc_c_agent_session_id(agent, sid, sizeof(sid)))
+        {
+            current_session_id_ = sid;
+            char path[4096];
+            if (edc_c_session_chat_log_path(agent, path, sizeof(path)))
+                chat_log_path_ = path;
+            LoadChatTranscript();
+        }
+    }
+
     // Populate the sidebar once the agent is running (its response is routed
-    // through the adapter and handled by on_channel_adapter_send below). This
-    // first request also asks for the foreground group's conversation history,
-    // so a restored session's chat log is refilled instead of starting empty.
-    RequestHistorySnapshot();
+    // through the adapter and handled by on_channel_adapter_send below). The
+    // chat log is NOT refilled from any agent state: the TUI persists and
+    // replays its own transcript (see LoadChatTranscript).
+    RequestTaskSnapshot();
 }
 
 void TUIWindow::Submit()
@@ -415,6 +432,7 @@ void TUIWindow::Submit()
     std::string message = input_text_.substr(first, last - first + 1);
 
     chat_widget_->AddMessage(std::make_shared<UserMessage>(message, ::time(nullptr)));
+    AppendChatTranscript("user", "", message, "", EDC_C_RENDER_PLAIN);
     input_text_.clear();
     input_->Reset(); // caret/scroll back to the start after the external clear
     // Record the submitted text for ArrowUp recall and persist it so history
@@ -481,73 +499,170 @@ void TUIWindow::RequestTaskSnapshot()
     edc_c_agent_request_task_snapshot(agent);
 }
 
-void TUIWindow::RequestHistorySnapshot()
+// The chat transcript is a line-oriented file the TUI owns end to end, so its
+// format is a private contract: one bubble per line, tab-separated
+//   kind \t render_pref \t task_id \t header \t content
+// with `\\`, `\n`, `\r` and `\t` backslash-escaped inside every field (so a
+// field never contains a raw tab/newline). It records exactly what was shown,
+// which is why replay reproduces the pre-exit log verbatim — unlike deriving
+// it from the agent's LLM message history, whose entries differ from the
+// display stream (tool header text, SYS/command bubbles, suppressed
+// background-task traffic).
+static std::string EscapeTranscriptField(const std::string &s)
 {
-    last_snapshot_request_ = std::chrono::steady_clock::now();
-    edc_c_agent_request_task_snapshot_history(agent);
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s)
+    {
+        switch (c)
+        {
+        case '\\':
+            out += "\\\\";
+            break;
+        case '\n':
+            out += "\\n";
+            break;
+        case '\r':
+            out += "\\r";
+            break;
+        case '\t':
+            out += "\\t";
+            break;
+        default:
+            out += c;
+        }
+    }
+    return out;
 }
 
-// Map the foreground group's stored conversation onto chat widgets, mirroring
-// the live channel path in on_channel_adapter_send(): a user turn becomes a
-// UserMessage; an assistant turn is a ThoughtMessage when it carries tool
-// calls (it is the "thinking" that preceded them) and a plain (Markdown)
-// message otherwise (a final reply); a tool turn becomes a ToolMessage headed
-// by the tool name. todowrite echoes are skipped for the same reason as live
-// ones — they live in the sidebar's TodoWidget, not the chat log. Each entry
-// is tagged with the task that produced it ("task N"), matching the live path.
-// Message timestamps are not persisted, so seeded entries share one "now".
-void TUIWindow::SeedChatFromSnapshot(const ::edc_c_task_snapshot *snap)
+static std::string UnescapeTranscriptField(const std::string &s)
 {
-    if (history_seeded_ || !snap)
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); i++)
+    {
+        if (s[i] != '\\' || i + 1 >= s.size())
+        {
+            out += s[i];
+            continue;
+        }
+        char n = s[++i];
+        switch (n)
+        {
+        case 'n':
+            out += '\n';
+            break;
+        case 'r':
+            out += '\r';
+            break;
+        case 't':
+            out += '\t';
+            break;
+        default:
+            out += n; // covers "\\" and any stray escape
+        }
+    }
+    return out;
+}
+
+void TUIWindow::AppendChatTranscript(const std::string &kind, const std::string &header,
+                                     const std::string &content, const std::string &task_id, int render_pref)
+{
+    if (chat_log_path_.empty())
+        return;
+    std::ofstream file(chat_log_path_, std::ios::binary | std::ios::app);
+    if (!file)
+        return; // best effort: a failed write must not disturb the UI
+    file << EscapeTranscriptField(kind) << '\t' << render_pref << '\t' << EscapeTranscriptField(task_id) << '\t'
+         << EscapeTranscriptField(header) << '\t' << EscapeTranscriptField(content) << '\n';
+}
+
+void TUIWindow::LoadChatTranscript()
+{
+    chat_widget_->Clear();
+    if (chat_log_path_.empty())
         return;
 
-    for (int gi = 0; gi < snap->group_count; gi++)
+    std::ifstream file(chat_log_path_, std::ios::binary);
+    if (!file)
+        return; // no transcript yet (fresh session)
+
+    const time_t ts = ::time(nullptr);
+    std::string line;
+    while (std::getline(file, line))
     {
-        const ::edc_c_task_group *g = &snap->groups[gi];
-        if (!g->fg || !g->has_history)
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.empty())
             continue;
 
-        history_seeded_ = true;
-        const time_t ts = ::time(nullptr);
-        for (int mi = 0; mi < g->history_count; mi++)
+        // Split on the first four raw tabs; fields are escape-free per tab.
+        std::string parts[5];
+        int field = 0;
+        for (char c : line)
         {
-            const ::edc_c_history_message &m = g->history[mi];
-            const std::string role = m.role ? m.role : "";
-            const std::string content = m.content ? m.content : "";
-            const std::string name = m.name ? m.name : "";
-            const std::string task_id = m.task_id ? m.task_id : "";
-
-            std::shared_ptr<Message> widget;
-            if (role == "user")
+            if (c == '\t' && field < 4)
             {
-                if (content.empty())
-                    continue;
-                widget = std::make_shared<UserMessage>(content, ts, task_id);
+                field++;
+                continue;
             }
-            else if (role == "assistant")
+            parts[field] += c;
+        }
+        if (field < 4)
+            continue; // malformed line
+
+        const std::string kind = UnescapeTranscriptField(parts[0]);
+        const int render_pref = std::atoi(parts[1].c_str());
+        const std::string task_id = UnescapeTranscriptField(parts[2]);
+        const std::string header = UnescapeTranscriptField(parts[3]);
+        const std::string content = UnescapeTranscriptField(parts[4]);
+
+        std::shared_ptr<Message> widget;
+        if (kind == "user")
+        {
+            widget = std::make_shared<UserMessage>(content, ts, task_id);
+        }
+        else if (kind == "tool")
+        {
+            if (render_pref == EDC_C_RENDER_MARKDOWN)
             {
-                if (content.empty())
-                    continue; // tool-call turn with no visible thought
-                if (m.has_tool_calls)
-                    widget = std::make_shared<ThoughtMessage>(content, ts, task_id);
+                if (!header.empty())
+                    widget = std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/true, task_id);
                 else
                     widget = std::make_shared<Message>(content, ts, task_id);
             }
-            else if (role == "tool")
-            {
-                if (name == kTodoToolHeader)
-                    continue; // mirror the live skip; TodoWidget owns it
-                widget = std::make_shared<ToolMessage>(name, content, ts, /*markdown=*/false, task_id);
-            }
             else
             {
-                continue;
+                widget = std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/false, task_id);
             }
-            chat_widget_->AddMessage(widget);
         }
-        chat_widget_->ScrollToBottom();
-        return; // only the (single) foreground group carries history
+        else if (kind == "thought")
+        {
+            widget = std::make_shared<ThoughtMessage>(content, ts, task_id);
+        }
+        else // "reply" | "sys"
+        {
+            widget = std::make_shared<Message>(content, ts, task_id);
+        }
+        if (widget)
+            chat_widget_->AddMessage(widget);
     }
+    chat_widget_->ScrollToBottom();
+}
+
+void TUIWindow::SyncChatSession(const char *session_id)
+{
+    const std::string sid = session_id ? session_id : "";
+    if (sid == current_session_id_)
+        return;
+    current_session_id_ = sid;
+
+    chat_log_path_.clear();
+    char path[4096];
+    if (edc_c_session_chat_log_path(agent, path, sizeof(path)))
+        chat_log_path_ = path;
+
+    LoadChatTranscript();
 }
 
 void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
@@ -739,10 +854,10 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             if (snap)
             {
                 tui->task_widget_->SetSnapshot(snap);
-                // Refill the chat log from the foreground group's history when
-                // this snapshot carries it (the startup history request); a
-                // later polling snapshot never has it and is ignored.
-                tui->SeedChatFromSnapshot(snap);
+                // The snapshot identifies the active session; when it changes
+                // (first snapshot, /session switch/new) swap the chat log over
+                // to that session's own persisted transcript.
+                tui->SyncChatSession(snap->session_id);
                 // The snapshot is the single source of truth for the status
                 // animation: re-derive it whenever the process tree refreshes.
                 tui->SyncWorkingFromSnapshot(snap);
@@ -814,12 +929,15 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
         // 消息文本仍随消息传递，供无侧栏的渲染端（CLI）与 tool result
         // （LLM）使用。
         bool skip_chat = false;
+        const char *kind_str = "sys";
         switch (kind)
         {
         case Kind::User:
+            kind_str = "user";
             widget = std::make_shared<UserMessage>(text, ts);
             break;
         case Kind::Tool:
+            kind_str = "tool";
             if (header == kTodoToolHeader)
             {
                 skip_chat = true;
@@ -844,9 +962,11 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             }
             break;
         case Kind::Thought:
+            kind_str = "thought";
             widget = std::make_shared<ThoughtMessage>(text, ts, task_id);
             break;
         case Kind::Reply:
+            kind_str = "reply";
             widget = std::make_shared<Message>(text, ts, task_id);
             // RESP is just another chat message here: it neither starts nor
             // stops the working animation. The animation follows the task
@@ -863,7 +983,11 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             return;
         }
         if (!skip_chat && widget)
+        {
+            // Persist exactly what is shown so the next start replays it.
+            tui->AppendChatTranscript(kind_str, header, text, task_id, render_pref);
             tui->chat_widget_->AddMessage(widget);
+        }
 
         // No explicit ScrollToBottom() here: if the reader is already at the
         // tail the view follows it automatically; if they scrolled up to read
