@@ -261,7 +261,16 @@ void edc_session_free(struct edc_session *session)
         free(n);
     }
 
-    /* groups freed by edc_scheduler_free (shared list) */
+    /* Groups (and the tasks they own) belong to the session now — free them
+     * here so every session's groups are released, not just the one the
+     * scheduler happened to be bound to. */
+    struct edc_task_group *group, *gtmp;
+    DL_FOREACH_SAFE(session->groups, group, gtmp)
+    {
+        DL_DELETE(session->groups, group);
+        edc_task_group_free(group);
+    }
+    session->groups = NULL;
 
     free(session->session_id);
     sdsfree(session->name);
@@ -660,8 +669,18 @@ void edc_session_reset(struct edc_session *session)
     /* Clear active task */
     session->active_task = NULL;
 
-    /* groups are owned by scheduler — just clear the list */
+    /* Groups (and their tasks) belong to the session — drop them for real, not
+     * just unlink the head pointer. */
+    struct edc_task_group *group, *gtmp;
+    DL_FOREACH_SAFE(session->groups, group, gtmp)
+    {
+        DL_DELETE(session->groups, group);
+        edc_task_group_free(group);
+    }
     session->groups = NULL;
+
+    /* 前台组随 groups 一起没了 */
+    session->foreground_group = NULL;
 }
 
 const char *edc_session_get_name(struct edc_session *session)

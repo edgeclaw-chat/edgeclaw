@@ -69,15 +69,9 @@ void edc_scheduler_free(struct edc_scheduler *sched)
         free(entry);
     }
 
-    struct edc_task_group *group, *gtmp;
-    if (sched->session)
-    {
-        DL_FOREACH_SAFE(sched->session->groups, group, gtmp)
-        {
-            DL_DELETE(sched->session->groups, group);
-            edc_task_group_free(group);
-        }
-    }
+    /* Groups (and their tasks) are owned by their session and freed in
+     * edc_session_free — the scheduler must not free them here, or sessions
+     * other than the currently bound one would leak. */
 
     if (sched->self)
         edc_actor_free(sched->self);

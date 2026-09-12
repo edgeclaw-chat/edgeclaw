@@ -79,8 +79,7 @@ static void test_current_session_status(void)
     CHECK(strstr(out, "**Working Directory**: (default)") != NULL, "default workdir");
     sdsfree(out);
 
-    edc_task_group_free(g1);
-    edc_task_group_free(g2);
+    /* g1/g2 are owned by the session; edc_session_free releases them. */
     edc_session_free(s);
     edc_config_free(cfg);
 }
