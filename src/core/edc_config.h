@@ -91,6 +91,12 @@ extern sds edc_config_resolve_bc_home(void);
 extern struct edc_config *edc_config_load(const char *edc_home);
 extern void edc_config_free(struct edc_config *config);
 
+/* Grant read+write inside the filesystem sandbox to |path| (dedup by realpath,
+ * prepended to sandbox_rw_paths). Used by a session binding a working
+ * directory so the bound directory is admissible under both the kernel sandbox
+ * and in-process path validation. Returns true when the path is in the set. */
+extern bool edc_config_add_sandbox_rw(struct edc_config *conf, const char *path);
+
 /* Rewrite api_url / model / api_key in <edc_home>/config.json. The key is
  * encrypted before writing. A NULL argument leaves that field unchanged.
  * Returns true on success. Used by the runtime /connect command. */

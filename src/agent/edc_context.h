@@ -9,8 +9,10 @@ struct edc_task;
 struct edc_task_group;
 
 /* 基础 system prompt: identity 模板 + bootstrap 文件 + MEMORY + skills。
+ * |workdir| 是 session 绑定的工作目录 (绝对路径), 作为 identity 里
+ * "## Current Running Directory" 的值; NULL/空则回退到进程 cwd。
  * 返回新 sds, 调用方负责 sdsfree。 */
-extern sds edc_context_build_system_prompt(struct edc_config *conf);
+extern sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir);
 
 /* 运行时 todo reminder (role=system 的新消息, 绝对新鲜)。调用方
  * (edc_agent_cb_send_llm) 按节流规则决定是否调用本函数: 只在"隔了
@@ -46,6 +48,6 @@ extern cJSON *edc_context_make_todo_reminder(struct edc_task *task);
  *         prompt 纯净; 调用方写回后后续请求即走引用分支)
  * 引用/副本/写回语义与迁移前的 edc_agent_cb_send_llm 完全一致。 */
 extern int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct edc_task_group *group,
-                                          sds *out_pristine);
+                                          const char *workdir, sds *out_pristine);
 
 #endif

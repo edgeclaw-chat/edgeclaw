@@ -172,6 +172,18 @@ sds edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writ
     return result;
 }
 
+sds edc_sandbox_verify_path_at(struct edc_config *conf, const char *base, const char *path, bool writable,
+                               EdcError **error)
+{
+    if (!path || !path[0] || !base || !base[0] || path[0] == '/')
+        return edc_sandbox_verify_path(conf, path, writable, error);
+
+    sds joined = edc_path_join(base, path, NULL);
+    sds result = edc_sandbox_verify_path(conf, joined, writable, error);
+    sdsfree(joined);
+    return result;
+}
+
 /*
  * Apply every kernel sandbox layer to the *current process*: mount-namespace
  * (with deny masking), Landlock, then seccomp-BPF.

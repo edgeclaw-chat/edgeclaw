@@ -310,6 +310,8 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
     cJSON_AddStringToObject(sj, "name", session->name ? session->name : "");
     cJSON_AddStringToObject(sj, "created_at", session->created_at ? session->created_at : "");
     cJSON_AddStringToObject(sj, "last_active", session->last_active ? session->last_active : "");
+    if (session->workdir)
+        cJSON_AddStringToObject(sj, "workdir", session->workdir);
     if (session->active_task)
         cJSON_AddStringToObject(sj, "active_task_id", session->active_task->task_id);
     if (sched && sched->foreground_group)
@@ -563,7 +565,7 @@ static void deser_rebuild_group_history(struct edc_session *session, struct edc_
     {
         if (session->config)
         {
-            sds prompt = edc_context_build_system_prompt(session->config);
+            sds prompt = edc_context_build_system_prompt(session->config, session->workdir);
             cJSON *sys = cJSON_CreateObject();
             cJSON_AddStringToObject(sys, "role", "system");
             cJSON_AddStringToObject(sys, "content", prompt);
@@ -655,6 +657,21 @@ static void deser_session_meta(struct edc_session *session, cJSON *sj)
     cJSON *ncs_j = cJSON_GetObjectItem(sj, "next_completion_seq");
     if (ncs_j && cJSON_IsNumber(ncs_j))
         session->next_completion_seq = (uint32_t)cJSON_GetNumberValue(ncs_j);
+
+    /* Restore the bound working directory. Tolerate a missing/deleted directory
+     * (e.g. an unmounted path): keep the session unbound rather than failing the
+     * whole load. edc_session_set_workdir re-grants it in the sandbox. */
+    cJSON *wd_j = cJSON_GetObjectItem(sj, "workdir");
+    if (wd_j && cJSON_IsString(wd_j) && strlen(cJSON_GetStringValue(wd_j)) > 0)
+    {
+        EdcError *werr = NULL;
+        if (!edc_session_set_workdir(session, cJSON_GetStringValue(wd_j), &werr) && werr)
+        {
+            log_warn("session %s: cannot restore working directory '%s': %s", session->session_id,
+                     cJSON_GetStringValue(wd_j), werr->message);
+            edc_error_free(werr);
+        }
+    }
 }
 
 static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)

@@ -178,6 +178,15 @@ void edc_scheduler_set_session(struct edc_scheduler *sched, struct edc_session *
     sched->foreground_group = NULL;
 }
 
+/* 从 scheduler actor 取当前 session 绑定的工作目录 (未绑定返回 NULL)。
+ * 工具层拿到的只有 actor 指针 (tb->scheduler), actor->state 即 scheduler 结构
+ * (见 edc_scheduler_new)。 */
+const char *edc_scheduler_session_workdir(edc_actor_t *scheduler_actor)
+{
+    struct edc_scheduler *sched = scheduler_actor ? (struct edc_scheduler *)scheduler_actor->state : NULL;
+    return (sched && sched->session) ? edc_session_get_workdir(sched->session) : NULL;
+}
+
 bool edc_scheduler_has_active_tasks(struct edc_scheduler *sched)
 {
     if (!sched || !sched->session)

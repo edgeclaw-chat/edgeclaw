@@ -509,6 +509,55 @@ exit_free_path:
     return NULL;
 }
 
+/* Grant read+write inside the filesystem sandbox to |path| by prepending it to
+ * sandbox_rw_paths. Used when a session binds a working directory: the bound
+ * directory must be admissible under the kernel sandbox (the helper receives
+ * sandbox_rw_paths as its --rw set) and under the in-process path validation
+ * (edc_sandbox_verify_path), exactly like the launch directory is.
+ *
+ * Deduplicated by realpath, so binding the launch directory (or a directory
+ * already in the set) is a no-op. Prepending keeps the most recently bound
+ * directory ahead of broader entries; path_allowed() ultimately decides by
+ * longest-prefix match, so order alone never widens access -- a read-only
+ * subtree still wins over a shorter writable parent. Returns true when the
+ * path is now in the set (or was already), false on a NULL/empty path or a
+ * path that cannot be resolved. */
+bool edc_config_add_sandbox_rw(struct edc_config *conf, const char *path)
+{
+    if (!conf || !path || !path[0])
+        return false;
+
+    char *resolved = realpath(path, NULL);
+    if (!resolved)
+        return false;
+
+    bool duplicate = false;
+    for (int i = 0; conf->sandbox_rw_paths && conf->sandbox_rw_paths[i] && !duplicate; i++)
+    {
+        char *entry_real = realpath(conf->sandbox_rw_paths[i], NULL);
+        const char *entry_key = entry_real ? entry_real : conf->sandbox_rw_paths[i];
+        if (strcmp(resolved, entry_key) == 0)
+            duplicate = true;
+        if (entry_real)
+            free(entry_real);
+    }
+
+    if (!duplicate)
+    {
+        int n = 0;
+        while (conf->sandbox_rw_paths && conf->sandbox_rw_paths[n])
+            n++;
+        conf->sandbox_rw_paths = realloc(conf->sandbox_rw_paths, (size_t)(n + 2) * sizeof(sds));
+        for (int i = n; i > 0; i--)
+            conf->sandbox_rw_paths[i] = conf->sandbox_rw_paths[i - 1];
+        conf->sandbox_rw_paths[0] = sdsnew(resolved);
+        conf->sandbox_rw_paths[n + 1] = NULL;
+    }
+
+    free(resolved);
+    return true;
+}
+
 void edc_config_free(struct edc_config *config)
 {
     if (!config)

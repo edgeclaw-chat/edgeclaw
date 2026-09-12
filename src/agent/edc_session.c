@@ -15,6 +15,7 @@
 #include "sds.h"
 #include "utlist_fix.h"
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -50,7 +51,7 @@ static void edc_session_merge_history(struct edc_session *session, cJSON *histor
 
 static void edc_session_build_messages(struct edc_session *session, const char *user_input, bool load_history)
 {
-    sds system_prompt = edc_context_build_system_prompt(session->config);
+    sds system_prompt = edc_context_build_system_prompt(session->config, session->workdir);
 
     cJSON *system_msg = cJSON_CreateObject();
     sds valid_utf8 = edc_str_utf8_make_valid(system_prompt, -1);
@@ -85,6 +86,118 @@ static void edc_session_build_messages(struct edc_session *session, const char *
 
 struct edc_session *edc_session_new(struct edc_config *config, const char *session_id, const char *name)
 {
+    return edc_session_new_with_workdir(config, session_id, name, NULL);
+}
+
+const char *edc_session_get_workdir(struct edc_session *session)
+{
+    if (!session)
+        return NULL;
+    return session->workdir;
+}
+
+bool edc_session_set_workdir(struct edc_session *session, const char *workdir, EdcError **error)
+{
+    if (!session)
+        return false;
+
+    /* NULL/empty unbinds: back to the launch directory. */
+    if (!workdir || !workdir[0])
+    {
+        if (session->workdir)
+        {
+            sdsfree(session->workdir);
+            session->workdir = NULL;
+        }
+        return true;
+    }
+
+    /* A relative |workdir| resolves against the process cwd here (callers that
+     * want a different anchor pre-resolve with edc_session_resolve_workdir). */
+    sds resolved = edc_session_resolve_workdir(NULL, workdir, error);
+    if (!resolved)
+        return false;
+
+    /* The bound directory must be writable inside the sandbox, same as the
+     * launch directory: grant it before storing it, so tool execution there
+     * cannot be denied by path validation or the kernel sandbox. */
+    edc_config_add_sandbox_rw(session->config, resolved);
+
+    if (session->workdir)
+        sdsfree(session->workdir);
+    session->workdir = sdsnew(resolved);
+    sdsfree(resolved);
+
+    log_info("session %s bound to working directory %s", session->session_id, session->workdir);
+    return true;
+}
+
+sds edc_session_resolve_workdir(const char *base, const char *workdir, EdcError **error)
+{
+    if (!workdir || !workdir[0])
+    {
+        if (error)
+            *error = edc_error_new(EDC_ERR_INVAL, "empty working directory");
+        return NULL;
+    }
+
+    /* Absolute paths are used as-is; a leading "~" expands to the home
+     * directory; any other relative path is anchored at |base| (a session's
+     * current working directory), or the process cwd when none. */
+    sds candidate;
+    if (workdir[0] == '~' && (workdir[1] == '/' || workdir[1] == '\0'))
+    {
+        sds home = edc_homedir();
+        candidate = workdir[1] ? edc_path_join(home, workdir + 2, NULL) : sdsnew(home);
+        sdsfree(home);
+    }
+    else if (workdir[0] == '/')
+    {
+        candidate = sdsnew(workdir);
+    }
+    else
+    {
+        sds anchor;
+        if (base && base[0])
+        {
+            anchor = sdsnew(base);
+        }
+        else
+        {
+            anchor = edc_cwd();
+        }
+        candidate = edc_path_join(anchor, workdir, NULL);
+        sdsfree(anchor);
+    }
+
+    char *resolved = realpath(candidate, NULL);
+    if (!resolved)
+    {
+        if (error)
+            *error = edc_error_new(EDC_ERR_INVAL, "working directory does not exist: %s", candidate);
+        sdsfree(candidate);
+        return NULL;
+    }
+
+    struct stat st;
+    if (stat(resolved, &st) != 0 || !S_ISDIR(st.st_mode))
+    {
+        if (error)
+            *error = edc_error_new(EDC_ERR_INVAL, "not a directory: %s", candidate);
+        free(resolved);
+        sdsfree(candidate);
+        return NULL;
+    }
+
+    sds out = sdsnew(resolved);
+    free(resolved);
+    sdsfree(candidate);
+    return out;
+}
+
+struct edc_session *edc_session_new_with_workdir(struct edc_config *config, const char *session_id, const char *name,
+                                                 const char *workdir)
+{
     struct edc_session *session = g_new0(struct edc_session, 1);
     session->session_id = strdup(session_id ? session_id : "sess-1");
     session->name = sdsnew(name && strlen(name) > 0 ? name : session->session_id);
@@ -94,6 +207,23 @@ struct edc_session *edc_session_new(struct edc_config *config, const char *sessi
     session->messages = cJSON_CreateArray();
     session->history_dir = edc_path_join(config->workspace, session->session_id, NULL);
     session->next_completion_seq = 1;
+
+    if (workdir && workdir[0])
+    {
+        /* An explicitly requested working directory is a precondition, not a
+         * hint: if it cannot be resolved to an existing directory, fail the
+         * creation rather than silently falling back to the launch directory. */
+        EdcError *error = NULL;
+        if (!edc_session_set_workdir(session, workdir, &error))
+        {
+            log_warn("session %s: cannot bind working directory '%s': %s", session->session_id, workdir,
+                     error ? error->message : "unknown");
+            edc_error_free(error);
+            edc_session_free(session);
+            return NULL;
+        }
+    }
+
     edc_session_build_messages(session, NULL, true);
     session->save_skip_count = edc_session_get_message_count(session);
     return session;
@@ -138,6 +268,7 @@ void edc_session_free(struct edc_session *session)
     sdsfree(session->created_at);
     sdsfree(session->last_active);
     sdsfree(session->history_dir);
+    sdsfree(session->workdir);
     free(session);
 }
 
@@ -249,6 +380,73 @@ void edc_session_set_active_task(struct edc_session *session, struct edc_task *t
 struct edc_task *edc_session_get_active_task(struct edc_session *session)
 {
     return session ? session->active_task : NULL;
+}
+
+sds edc_session_status_text(struct edc_session *session, bool is_current, const char *foreground_group_id)
+{
+    if (!session)
+        return sdsnew("[session] no session");
+
+    /* Tally groups and per-state tasks. */
+    int group_count = 0, orphan_count = 0, task_count = 0;
+    int state_counts[TASK_ERROR + 1] = {0};
+    struct edc_task_group *g;
+    DL_FOREACH(session->groups, g)
+    {
+        group_count++;
+        if (g->is_orphaned)
+            orphan_count++;
+        struct edc_task *t;
+        LL_FOREACH2(g->members, t, group_next)
+        {
+            task_count++;
+            if (t->state >= TASK_IDLE && t->state <= TASK_ERROR)
+                state_counts[t->state]++;
+        }
+    }
+
+    sds out = sdscatprintf(sdsempty(), "## Session Status `[%s] %s`%s\n\n", session->session_id,
+                           edc_session_get_name(session), is_current ? " · current" : " · background");
+    out = sdscatprintf(out, "- **State**: %s\n", is_current ? "current (live)" : "background");
+    out = sdscatprintf(out, "- **Working Directory**: %s\n",
+                       edc_session_get_workdir(session) ? edc_session_get_workdir(session) : "(default)");
+    out = sdscatprintf(out, "- **Groups**: %d", group_count);
+    if (orphan_count > 0)
+        out = sdscatprintf(out, " (%d orphaned)", orphan_count);
+    out = sdscat(out, "\n");
+    out = sdscatprintf(out, "- **Tasks**: %d", task_count);
+
+    /* Per-state breakdown, in enum order, only for non-zero buckets. */
+    bool first_state = true;
+    for (int s = TASK_IDLE; s <= TASK_ERROR; s++)
+    {
+        if (state_counts[s] == 0)
+            continue;
+        out = sdscatprintf(out, "%s %s %d", first_state ? " —" : " ·", edc_task_state_name((edc_task_state)s),
+                           state_counts[s]);
+        first_state = false;
+    }
+    out = sdscat(out, "\n");
+
+    if (is_current)
+    {
+        out = sdscatprintf(out, "- **Foreground group**: %s\n", foreground_group_id ? foreground_group_id : "(none)");
+        struct edc_task *active = session->active_task;
+        if (active)
+            out = sdscatprintf(out, "- **Active task**: %s%s%s\n", active->task_id,
+                               (active->description && *active->description) ? " — " : "",
+                               active->description ? active->description : "");
+        else
+            out = sdscat(out, "- **Active task**: (none)\n");
+    }
+    else if (group_count == 0)
+    {
+        out = sdscat(out, "- _live task state not loaded (switch to this session to load it)_\n");
+    }
+
+    out = sdscatprintf(out, "- **Messages**: %zu\n", edc_session_get_message_count(session));
+    out = sdscatprintf(out, "- **Last Active**: %s\n", session->last_active ? session->last_active : "unknown");
+    return out;
 }
 
 /* ── 消息切片 ──────────────────────────────────────────────── */

@@ -131,7 +131,8 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
     cJSON *msgs = cJSON_CreateArray();
 
     sds pristine = NULL;
-    edc_context_append_system_part(msgs, agent->config, task->group, &pristine);
+    const char *workdir = edc_scheduler_session_workdir(edc_scheduler_get_actor(sched));
+    edc_context_append_system_part(msgs, agent->config, task->group, workdir, &pristine);
 
     /* group 无历史时 context 现拼的纯净 prompt: 写回 group history[0] (组内
      * 所有 task 共享、保持纯净) */

@@ -238,6 +238,23 @@ longest-prefix rule lets the more specific writable entry win. Landlock only
 unions access rights, so it cannot carve a read-only subtree out of a writable
 parent — the deny list plus the namespace masking cover that case instead.
 
+**Working directory is session-scoped.** Every session binds a working
+directory when it is created — `/session new [name] [dir]`. With no `dir` the
+session binds the launch directory (today's behavior); with a `dir` it binds
+that directory instead. A relative `dir` is resolved to an absolute path
+against the **process launch directory** (today's cwd), not the active
+session's workdir, so the anchor is stable no matter which session is current;
+`~` expands to the home directory. If it does not resolve to an existing
+directory the command **fails** and no session is created — it never silently
+falls back to the default. The bound directory is granted read+write in the
+sandbox (`edc_config_add_sandbox_rw()`, deduplicated like the launch
+directory), persisted in the session's `session.json`, and restored (re-granted)
+when the session is switched back to. It then becomes the `exec_shell` default
+`cwd`, the base that the fs tools resolve **relative** paths against, and the
+value of `{{cwd}}` (the identity prompt's "Current Running Directory").
+Different sessions therefore operate in different directories, giving the
+session abstraction a concrete meaning.
+
 Writes the agent itself performs into model-writable directories (chat
 transcript, input history, `history.json`, crontab `jobs.json`, `MEMORY.md` /
 `HISTORY.md`) go through symlink-safe helpers (`edc_file_fopen_safe()` /

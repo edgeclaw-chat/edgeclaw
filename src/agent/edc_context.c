@@ -27,7 +27,7 @@ static void sds_replace_all(sds *s, const char *find, const char *replacement)
     *s = result;
 }
 
-static sds edc_context_get_identity(const char *os_name, const char *time, const char *workspace)
+static sds edc_context_get_identity(const char *os_name, const char *time, const char *workspace, const char *workdir)
 {
     const char *identity_fmt = "# EdgeClaw\n"
                                "You are EdgeClaw, a helpful AI assistant. You have access to tools "
@@ -63,7 +63,9 @@ static sds edc_context_get_identity(const char *os_name, const char *time, const
                                "When remembering something, write to "
                                "{{workspace}}/memory/MEMORY.md\n\n";
 
-    sds cwd = edc_cwd();
+    /* The session's bound working directory is the "current directory" the
+     * model is told about; unbound sessions fall back to the process cwd. */
+    sds cwd = (workdir && workdir[0]) ? sdsnew(workdir) : edc_cwd();
     sds identity = sdsnew(identity_fmt);
     sds_replace_all(&identity, "{{os_name}}", os_name);
     sds_replace_all(&identity, "{{cwd}}", cwd);
@@ -194,13 +196,13 @@ static sds edc_context_build_permissions(struct edc_config *conf)
     return out;
 }
 
-sds edc_context_build_system_prompt(struct edc_config *conf)
+sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir)
 {
     const char *workspace = conf->workspace;
     sds os_name = edc_os_name();
 
     sds time = edc_get_timestamp();
-    sds identity = edc_context_get_identity(os_name, time, workspace);
+    sds identity = edc_context_get_identity(os_name, time, workspace, workdir);
     sds permissions = edc_context_build_permissions(conf);
     sds bootstrap = edc_context_load_bootstrap_files(workspace);
     sds memory = edc_context_load_memory(workspace);
@@ -272,7 +274,7 @@ cJSON *edc_context_make_todo_reminder(struct edc_task *task)
  * 生成并塞到请求最末尾。引用/副本/现拼语义见 edc_context.h 注释——与迁移前
  * edc_agent_cb_send_llm 的行为字节级一致。 */
 int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct edc_task_group *group,
-                                   sds *out_pristine)
+                                   const char *workdir, sds *out_pristine)
 {
     int appended = 0;
     if (!msgs)
@@ -304,7 +306,7 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
     }
     else if (conf)
     {
-        sds prompt = edc_context_build_system_prompt(conf);
+        sds prompt = edc_context_build_system_prompt(conf, workdir);
         cJSON *sys = cJSON_CreateObject();
         cJSON_AddStringToObject(sys, "role", "system");
         cJSON_AddStringToObject(sys, "content", prompt);

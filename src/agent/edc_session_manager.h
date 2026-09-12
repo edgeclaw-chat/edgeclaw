@@ -37,6 +37,12 @@ extern int edc_session_manager_index_of(struct edc_session_manager *sm, const ch
  *  The new session becomes active. Returns the created session. */
 extern struct edc_session *edc_session_manager_create(struct edc_session_manager *sm, const char *name);
 
+/** Like edc_session_manager_create, but binds the session to |workdir| (an
+ *  existing directory; NULL/empty keeps the default launch directory). A
+ *  given-but-unusable directory makes creation fail (returns NULL). */
+extern struct edc_session *edc_session_manager_create_ex(struct edc_session_manager *sm, const char *name,
+                                                         const char *workdir);
+
 /** Switch to a session by name or id. Saves current session first. */
 extern bool edc_session_manager_switch(struct edc_session_manager *sm, const char *name_or_id);
 

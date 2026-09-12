@@ -1,6 +1,7 @@
 #ifndef __BC_SESSION_H__
 #define __BC_SESSION_H__
 
+#include "edc_error.h"
 #include "sds.h"
 #include <cJSON.h>
 #include <stdbool.h>
@@ -39,6 +40,11 @@ struct edc_session
 
     sds history_dir; /* workspace/<session_id> — 按 session 存历史 */
 
+    /* 绑定的工作目录 (绝对 realpath)。NULL = 未指定 → 回退到启动目录
+     * (config->sandbox_root_real)。工具执行 (exec_shell 默认 cwd、fs 工具相对
+     * 路径) 与 system prompt 的 {{cwd}} 都以它为准。 */
+    sds workdir;
+
     uint32_t next_completion_seq; /* 完成顺序计数器 (从 1 开始) */
 };
 
@@ -46,8 +52,43 @@ struct edc_session
 
 /** Create a session with a specific id and display name. */
 extern struct edc_session *edc_session_new(struct edc_config *config, const char *session_id, const char *name);
+
+/** Create a session bound to a working directory. |workdir| is resolved with
+ *  realpath() and must name an existing directory; NULL/empty keeps the
+ *  default (the launch directory). If |workdir| is given but unusable, creation
+ *  FAILS (returns NULL) rather than silently binding the default. */
+extern struct edc_session *edc_session_new_with_workdir(struct edc_config *config, const char *session_id,
+                                                        const char *name, const char *workdir);
+
+/** The session's bound working directory as an absolute realpath, or NULL when
+ *  the session is unbound (callers then fall back to the launch directory,
+ *  config->sandbox_root_real). */
+extern const char *edc_session_get_workdir(struct edc_session *session);
+
+/** Resolve |workdir| to the absolute realpath of an existing directory.
+ *  An absolute path is used as-is; a leading "~"/"~/" expands to the home
+ *  directory; any other relative path resolves against |base| (NULL/empty → the
+ *  process cwd), so a caller can anchor it at a session's current working
+ *  directory. Returns a new sds (caller frees), or NULL with *error (when
+ *  non-NULL) set to the reason: empty path, nonexistent path, or not a
+ *  directory. This is the single place the "relative → absolute + must exist"
+ *  rule lives. */
+extern sds edc_session_resolve_workdir(const char *base, const char *workdir, EdcError **error);
+
+/** Bind the session to |workdir| (absolute or relative to the process cwd).
+ *  Resolves it with realpath(), requires an existing directory, and grants it
+ *  read+write in the sandbox (edc_config_add_sandbox_rw). Pass NULL/empty to
+ *  unbind (revert to the launch directory). Returns true on success; on failure
+ *  *error (when non-NULL) carries the reason and the binding is unchanged. */
+extern bool edc_session_set_workdir(struct edc_session *session, const char *workdir, EdcError **error);
 extern void edc_session_reload(struct edc_session *session, bool load_history);
 extern void edc_session_free(struct edc_session *session);
+
+/** Build the "/session status" report for |session|: group/task counts, the
+ *  per-state task breakdown, and — when |is_current| — the foreground group
+ *  (|foreground_group_id|, may be NULL) and the session's active task. Returns
+ *  a new sds (caller frees). */
+extern sds edc_session_status_text(struct edc_session *session, bool is_current, const char *foreground_group_id);
 
 /** Reset session to empty state (clear messages, tasks, groups),
  *  keeping the same id/name. Does NOT save or load. */

@@ -359,13 +359,18 @@ int edc_session_manager_index_of(struct edc_session_manager *sm, const char *nam
 
 struct edc_session *edc_session_manager_create(struct edc_session_manager *sm, const char *name)
 {
+    return edc_session_manager_create_ex(sm, name, NULL);
+}
+
+struct edc_session *edc_session_manager_create_ex(struct edc_session_manager *sm, const char *name, const char *workdir)
+{
     if (!sm)
         return NULL;
 
     sds id = edc_sm_gen_session_id(sm);
     sds sname = (name && strlen(name) > 0) ? sdsnew(name) : edc_sm_gen_session_name(sm);
 
-    struct edc_session *s = edc_session_new(sm->config, id, sname);
+    struct edc_session *s = edc_session_new_with_workdir(sm->config, id, sname, workdir);
     sdsfree(id);
     sdsfree(sname);
 

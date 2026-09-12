@@ -2,6 +2,7 @@
 #include "edc_error.h"
 #include "edc_sandbox.h"
 #include "edc_sandbox_helper.h"
+#include "edc_scheduler.h"
 #include "edc_shell_env.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
@@ -373,10 +374,14 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
 
     struct edc_config *conf = tb_ctx->tb->conf;
     sds allocated_cwd = NULL;
-    const char *cwd = edc_sandbox_get_root(conf);
+    /* Default cwd: the session's bound working directory, falling back to the
+     * launch directory (sandbox root) when the session is unbound. */
+    const char *cwd = edc_scheduler_session_workdir(tb_ctx->tb->scheduler);
+    if (!cwd)
+        cwd = edc_sandbox_get_root(conf);
     if (working_dir)
     {
-        allocated_cwd = edc_sandbox_verify_path(conf, working_dir, false, &error);
+        allocated_cwd = edc_sandbox_verify_path_at(conf, cwd, working_dir, false, &error);
         if (!allocated_cwd)
         {
             callback(tb_ctx, NULL, error);

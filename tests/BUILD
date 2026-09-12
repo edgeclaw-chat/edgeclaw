@@ -233,6 +233,24 @@ cc_test(
 )
 
 cc_test(
+    name = "test_session_workdir",
+    srcs = ["test_session_workdir.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_session_status",
+    srcs = ["test_session_status.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_turn_history_integration",
     srcs = ["test_turn_history_integration.c"],
     deps = [

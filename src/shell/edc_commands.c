@@ -104,8 +104,8 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
     const char *text = "## EdgeClaw Commands\n"
                        "\n"
                        "- /help\n"
-                       "- /session new [name]  ·  /session switch <name>\n"
-                       "- /session list  ·  /session info\n"
+                       "- /session new [name] [dir]  ·  /session switch <name>\n"
+                       "- /session list  ·  /session info  ·  /session status [id]\n"
                        "- /session save  ·  /session stop\n"
                        "- /session remove <name>  ·  /session rename <old> <new>\n"
                        "\n"
@@ -159,19 +159,87 @@ static bool edc_commands_handle_session_save(struct edc_agent *agent, edc_actor_
 
 /* ── /session commands ─────────────────────────────────────── */
 
+/* Split "/session new" arguments into an optional name and an optional working
+ * directory: "<name> [dir]". Leading/trailing whitespace is trimmed; the
+ * directory may itself contain spaces (everything after the first token).
+ * Either output may be NULL. Callers sdsfree both. */
+static void edc_commands_split_name_dir(const char *rest, sds *out_name, sds *out_dir)
+{
+    *out_name = NULL;
+    *out_dir = NULL;
+    if (!rest)
+        return;
+
+    const char *p = rest;
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (*p == '\0')
+        return;
+
+    const char *name_start = p;
+    while (*p && *p != ' ' && *p != '\t')
+        p++;
+    *out_name = sdsnewlen(name_start, (size_t)(p - name_start));
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (*p == '\0')
+        return;
+
+    const char *dir_start = p;
+    const char *dir_end = p + strlen(p);
+    while (dir_end > dir_start && (dir_end[-1] == ' ' || dir_end[-1] == '\t'))
+        dir_end--;
+    if (dir_end > dir_start)
+        *out_dir = sdsnewlen(dir_start, (size_t)(dir_end - dir_start));
+}
+
 static bool edc_commands_handle_session_new(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
                                             sds arg)
 {
     /* edc_session_manager_create 会把 active 直接切到新 session, 所以 "旧
      * session" 必须在 create 之前取到, 否则拿到的是它自己。 */
     struct edc_session *old = edc_session_manager_get_active(agent->session_manager);
-    const char *name = (arg && sdslen(arg) > 0) ? arg : NULL;
-    struct edc_session *sess = edc_session_manager_create(agent->session_manager, name);
+    sds name = NULL, dir = NULL;
+    edc_commands_split_name_dir(arg, &name, &dir);
+
+    /* A given working directory is resolved up front and must name an existing
+     * directory. Relative paths are anchored at the process launch directory
+     * (the process cwd), not at the active session's workdir, so the anchor is
+     * stable regardless of which session is current. If it does not resolve,
+     * fail the whole command: never silently create the session bound to the
+     * default directory instead. */
+    if (dir && sdslen(dir) > 0)
+    {
+        EdcError *werr = NULL;
+        sds resolved = edc_session_resolve_workdir(NULL, dir, &werr);
+        if (!resolved)
+        {
+            sds reply = sdscatprintf(sdsempty(), "[session] failed: %s", werr ? werr->message : "invalid directory");
+            edc_commands_reply(agent, actor, channel_type, reply);
+            sdsfree(reply);
+            edc_error_free(werr);
+            sdsfree(name);
+            sdsfree(dir);
+            return true;
+        }
+        sdsfree(dir);
+        dir = resolved;
+    }
+
+    struct edc_session *sess = edc_session_manager_create_ex(agent->session_manager, name, dir);
+    sdsfree(name);
     if (!sess)
     {
-        edc_commands_reply(agent, actor, channel_type, "[session] failed to create session");
+        sds reply =
+            sdscatprintf(sdsempty(), "[session] failed to create session%s%s", dir ? " bound to " : "", dir ? dir : "");
+        edc_commands_reply(agent, actor, channel_type, reply);
+        sdsfree(reply);
+        sdsfree(dir);
         return true;
     }
+    const char *bound = edc_session_get_workdir(sess);
+    sdsfree(dir);
     /* 离开即取消: 旧 session 的**运行中**任务 (LLM/工具调用) 打成 CANCELLED 并
      * 立即落盘; WAITING_INPUT / WAITING_DEPS / SUSPENDED 保持原状。此处
      * sched->session 仍指向 old (set_session 尚未调用), 所以落盘要走显式的
@@ -196,8 +264,8 @@ static bool edc_commands_handle_session_new(struct edc_agent *agent, edc_actor_t
                                          (void *)(intptr_t)1, NULL));
     }
 
-    sds reply = sdscatprintf(sdsempty(), "[session] created and switched to [%s] %s", sess->session_id,
-                             edc_session_get_name(sess));
+    sds reply = sdscatprintf(sdsempty(), "[session] created and switched to [%s] %s (workdir: %s)", sess->session_id,
+                             edc_session_get_name(sess), bound ? bound : "default");
     edc_commands_reply(agent, actor, channel_type, reply);
     sdsfree(reply);
     return true;
@@ -359,12 +427,55 @@ static bool edc_commands_handle_session_info(struct edc_agent *agent, edc_actor_
                      "- **Created**: %s\n"
                      "- **Last Active**: %s\n"
                      "- **Messages**: %zu\n"
-                     "- **Directory**: %s\n",
+                     "- **Directory**: %s\n"
+                     "- **Working Directory**: %s\n",
                      sess->session_id, edc_session_get_name(sess), sess->created_at ? sess->created_at : "unknown",
                      sess->last_active ? sess->last_active : "unknown", edc_session_get_message_count(sess),
-                     sess->history_dir ? sess->history_dir : "");
+                     sess->history_dir ? sess->history_dir : "",
+                     edc_session_get_workdir(sess) ? edc_session_get_workdir(sess) : "(default)");
     edc_commands_reply(agent, actor, channel_type, info);
     sdsfree(info);
+    return true;
+}
+
+/* /session status [name_or_id]: live runtime status of a session — group/task
+ * counts, the per-state task breakdown, and (for the current session) the
+ * foreground group and active task. Without an argument it reports the current
+ * session. Static metadata (id/name/created/…) stays in /session info; the
+ * per-task detail stays in /task list. */
+static bool edc_commands_handle_session_status(struct edc_agent *agent, edc_actor_t *actor,
+                                               edc_channel_type channel_type, sds arg)
+{
+    struct edc_session *sess = NULL;
+    if (arg && sdslen(arg) > 0)
+    {
+        sess = edc_session_manager_find(agent->session_manager, arg);
+        if (!sess)
+        {
+            sds reply = sdscatprintf(sdsempty(), "[session] session not found: %s", arg);
+            edc_commands_reply(agent, actor, channel_type, reply);
+            sdsfree(reply);
+            return true;
+        }
+    }
+    else
+    {
+        sess = edc_scheduler_get_session(agent->scheduler);
+        if (!sess)
+            sess = edc_session_manager_get_active(agent->session_manager);
+        if (!sess)
+        {
+            edc_commands_reply(agent, actor, channel_type, "[session] no current session");
+            return true;
+        }
+    }
+
+    bool is_current = (sess == edc_scheduler_get_session(agent->scheduler));
+    struct edc_task_group *fg = is_current ? edc_scheduler_get_foreground(agent->scheduler) : NULL;
+
+    sds out = edc_session_status_text(sess, is_current, fg ? fg->group_id : NULL);
+    edc_commands_reply(agent, actor, channel_type, out);
+    sdsfree(out);
     return true;
 }
 
@@ -392,6 +503,14 @@ static bool edc_commands_handle_session(struct edc_agent *agent, edc_actor_t *ac
         return edc_commands_handle_session_list(agent, actor, msg->type);
     if (edc_commands_is_target(msg->content, "/session info"))
         return edc_commands_handle_session_info(agent, actor, msg->type);
+    if (edc_commands_is_target(msg->content, "/session status"))
+        return edc_commands_handle_session_status(agent, actor, msg->type, NULL);
+    if (edc_commands_arg(msg->content, "/session status", &rest))
+    {
+        bool ret = edc_commands_handle_session_status(agent, actor, msg->type, rest);
+        sdsfree(rest);
+        return ret;
+    }
     if (edc_commands_is_target(msg->content, "/session save"))
         return edc_commands_handle_session_save(agent, actor, msg->type);
     if (edc_commands_is_target(msg->content, "/session stop"))
@@ -421,7 +540,8 @@ static bool edc_commands_handle_session(struct edc_agent *agent, edc_actor_t *ac
         return true;
     }
     sds reply = sdscatprintf(sdsempty(),
-                             "[session] unknown subcommand. Try: new, switch, list, info, save, stop, remove, rename");
+                             "[session] unknown subcommand. Try: new, switch, list, info, status, save, stop, remove, "
+                             "rename");
     edc_commands_reply(agent, actor, msg->type, reply);
     sdsfree(reply);
     return true;

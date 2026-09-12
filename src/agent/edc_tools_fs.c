@@ -2,6 +2,7 @@
 #include "edc_error.h"
 #include "edc_file_utils.h"
 #include "edc_sandbox.h"
+#include "edc_scheduler.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
 #include "sds.h"
@@ -13,11 +14,11 @@ static UT_icd ut_size_t_icd = {sizeof(size_t), NULL, NULL, NULL};
 static UT_icd ut_int64_icd = {sizeof(int64_t), NULL, NULL, NULL};
 static UT_icd ut_uint_icd = {sizeof(unsigned int), NULL, NULL, NULL};
 
-static sds edc_tool_exec_read_file(struct edc_config *conf, cJSON *args, EdcError **error)
+static sds edc_tool_exec_read_file(struct edc_config *conf, const char *base, cJSON *args, EdcError **error)
 {
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
 
-    sds safe_path = edc_sandbox_verify_path(conf, path, false, error);
+    sds safe_path = edc_sandbox_verify_path_at(conf, base, path, false, error);
     if (!safe_path)
     {
         return NULL;
@@ -36,12 +37,12 @@ static sds edc_tool_exec_read_file(struct edc_config *conf, cJSON *args, EdcErro
     return content;
 }
 
-static sds edc_tool_exec_write_file(struct edc_config *conf, cJSON *args, EdcError **error)
+static sds edc_tool_exec_write_file(struct edc_config *conf, const char *base, cJSON *args, EdcError **error)
 {
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
     const char *content = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "content"));
 
-    sds safe_path = edc_sandbox_verify_path(conf, path, true, error);
+    sds safe_path = edc_sandbox_verify_path_at(conf, base, path, true, error);
     if (!safe_path)
     {
         return NULL;
@@ -80,11 +81,11 @@ static void edc_tool_list_dir_cb(const char *name, int type, void *userdata)
     lctx->result = sdscatprintf(lctx->result, "%s%s\n", prefix, name);
 }
 
-static sds edc_tool_exec_list_dir(struct edc_config *conf, cJSON *args, EdcError **error)
+static sds edc_tool_exec_list_dir(struct edc_config *conf, const char *base, cJSON *args, EdcError **error)
 {
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
 
-    sds safe_path = edc_sandbox_verify_path(conf, path, false, error);
+    sds safe_path = edc_sandbox_verify_path_at(conf, base, path, false, error);
     if (!safe_path)
     {
         return NULL;
@@ -110,7 +111,8 @@ static void edc_tool_exec_read_file_async(struct edc_toolbox_call_ctx *ctx, stru
 {
     (void)tool;
     EdcError *error = NULL;
-    sds result = edc_tool_exec_read_file(ctx->tb->conf, args, &error);
+    sds result =
+        edc_tool_exec_read_file(ctx->tb->conf, edc_scheduler_session_workdir(ctx->tb->scheduler), args, &error);
     if (result)
     {
         const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
@@ -135,7 +137,8 @@ static void edc_tool_exec_write_file_async(struct edc_toolbox_call_ctx *ctx, str
 {
     (void)tool;
     EdcError *error = NULL;
-    sds result = edc_tool_exec_write_file(ctx->tb->conf, args, &error);
+    sds result =
+        edc_tool_exec_write_file(ctx->tb->conf, edc_scheduler_session_workdir(ctx->tb->scheduler), args, &error);
     if (result)
     {
         const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
@@ -163,7 +166,7 @@ static void edc_tool_exec_list_dir_async(struct edc_toolbox_call_ctx *ctx, struc
 {
     (void)tool;
     EdcError *error = NULL;
-    sds result = edc_tool_exec_list_dir(ctx->tb->conf, args, &error);
+    sds result = edc_tool_exec_list_dir(ctx->tb->conf, edc_scheduler_session_workdir(ctx->tb->scheduler), args, &error);
     if (result)
     {
         const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
@@ -433,7 +436,7 @@ static void edc_edit_file_apply_replacements(const char *content, size_t content
     *out_content = sdscatlen(*out_content, content + prev_end, (ssize_t)(content_len - prev_end));
 }
 
-static sds edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, EdcError **error)
+static sds edc_tool_exec_edit_file(struct edc_config *conf, const char *base, cJSON *args, EdcError **error)
 {
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
     const char *old_text = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "old_text"));
@@ -470,7 +473,7 @@ static sds edc_tool_exec_edit_file(struct edc_config *conf, cJSON *args, EdcErro
         return NULL;
     }
 
-    sds safe_path = edc_sandbox_verify_path(conf, path, true, error);
+    sds safe_path = edc_sandbox_verify_path_at(conf, base, path, true, error);
     if (!safe_path)
         return NULL;
 
@@ -549,7 +552,8 @@ static void edc_tool_exec_edit_file_async(struct edc_toolbox_call_ctx *ctx, stru
                                           void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     EdcError *error = NULL;
-    sds result = edc_tool_exec_edit_file(ctx->tb->conf, args, &error);
+    sds result =
+        edc_tool_exec_edit_file(ctx->tb->conf, edc_scheduler_session_workdir(ctx->tb->scheduler), args, &error);
     callback(ctx, result, error);
 }
 

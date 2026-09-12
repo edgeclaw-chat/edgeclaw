@@ -28,10 +28,10 @@
  *
  * 本测试不依赖 secret/网络/真实 home: 不构造 agent, 直接驱动 toolbox 与 task。
  */
-#include "edc_context.h"
 #include "edc_channel_actor.h"
 #include "edc_compat.h"
 #include "edc_config.h"
+#include "edc_context.h"
 #include "edc_error.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -47,19 +47,19 @@ static int failed = 0;
 static int passed = 0;
 
 #define T(name) printf("  TEST: %s\n", name)
-#define C(cond, ...)                                                       \
-    do                                                                     \
-    {                                                                      \
-        if (!(cond))                                                       \
-        {                                                                  \
-            printf("    FAIL: " __VA_ARGS__);                              \
-            printf("\n");                                                  \
-            failed++;                                                      \
-        }                                                                  \
-        else                                                               \
-        {                                                                  \
-            passed++;                                                      \
-        }                                                                  \
+#define C(cond, ...)                                                                                                   \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if (!(cond))                                                                                                   \
+        {                                                                                                              \
+            printf("    FAIL: " __VA_ARGS__);                                                                          \
+            printf("\n");                                                                                              \
+            failed++;                                                                                                  \
+        }                                                                                                              \
+        else                                                                                                           \
+        {                                                                                                              \
+            passed++;                                                                                                  \
+        }                                                                                                              \
     } while (0)
 
 /* 工具回调: 拥有 result/error 的所有权 (真实 actor 里由回调方释放)。 */
@@ -108,9 +108,8 @@ static int content_ends_with(const char *c, const char *suffix)
 
 static int is_todo_reminder(const char *c)
 {
-    return content_starts_with(c, "<system-reminder>\n## 🚨 CURRENT TASK SYSTEM STATE\n") &&
-           c && strstr(c, "No todo list exists for this task yet.") == NULL &&
-           content_ends_with(c, "\n</system-reminder>");
+    return content_starts_with(c, "<system-reminder>\n## 🚨 CURRENT TASK SYSTEM STATE\n") && c &&
+           strstr(c, "No todo list exists for this task yet.") == NULL && content_ends_with(c, "\n</system-reminder>");
 }
 
 static int is_planning_reminder(const char *c)
@@ -124,8 +123,7 @@ static int is_planning_reminder(const char *c)
  * 有 group memory + 纯净 system prompt)。 */
 static int head_has_no_reminder(const char *c)
 {
-    return c && strstr(c, "<system-reminder>") == NULL &&
-           strstr(c, "CURRENT TASK SYSTEM STATE") == NULL &&
+    return c && strstr(c, "<system-reminder>") == NULL && strstr(c, "CURRENT TASK SYSTEM STATE") == NULL &&
            strstr(c, "INSTRUCTIONS FOR THIS TURN") == NULL;
 }
 
@@ -184,8 +182,7 @@ static void test_attach_and_reminder(void)
      *     base 的追加尾巴): ① ## 🚨 CURRENT TASK SYSTEM STATE 状态段 = 清单行;
      *     ② ## 🛠️ INSTRUCTIONS FOR THIS TURN 指令段 = 逐轮同步节拍。冗长的
      *     "权威记录/防裁剪"论证与逐条维护规则已删 */
-    C(is_todo_reminder(content),
-      "reminder wrapped in <system-reminder> tags, opens with state header");
+    C(is_todo_reminder(content), "reminder wrapped in <system-reminder> tags, opens with state header");
     C(strstr(content, "SYSTEM_BASE") == NULL, "no base prompt text inside reminder");
     C(strstr(content, "## 🚨 CURRENT TASK SYSTEM STATE\n") != NULL, "opens with state header");
     C(strstr(content, "## 🛠️ INSTRUCTIONS FOR THIS TURN\n") != NULL, "has per-turn instructions header");
@@ -201,8 +198,7 @@ static void test_attach_and_reminder(void)
     C(strstr(content, "NEXT SINGLE ACTION must be calling todowrite") != NULL,
       "finished item forces immediate todowrite call (next single action)");
     C(strstr(content, "todowrite") != NULL, "reminder to call todowrite present");
-    C(strstr(content, "\"completed\"") != NULL &&
-          strstr(content, "\"in_progress\"") != NULL,
+    C(strstr(content, "\"completed\"") != NULL && strstr(content, "\"in_progress\"") != NULL,
       "state transition guidance (completed -> in_progress) present");
     C(strstr(content, "FULL updated list") != NULL, "whole-list replacement stated");
     C(strstr(content, "marked as [x]") != NULL, "must-not-jump-ahead rule (mark [x] first)");
@@ -249,11 +245,9 @@ static void test_attach_and_reminder(void)
     cJSON *g2 = edc_context_make_todo_reminder(task);
     C(g2 != NULL, "cleared task still gets a tail reminder");
     const char *gc = cJSON_GetStringValue(cJSON_GetObjectItem(g2, "content"));
-    C(is_planning_reminder(gc),
-      "cleared list -> planning reminder (no-list branch of the same skeleton)");
+    C(is_planning_reminder(gc), "cleared list -> planning reminder (no-list branch of the same skeleton)");
     C(strstr(gc, "No todo list exists for this task yet.") != NULL, "state section says no list yet");
-    C(strstr(gc, "- [ ]") == NULL && strstr(gc, "- [x]") == NULL,
-      "planning branch carries no checklist lines");
+    C(strstr(gc, "- [ ]") == NULL && strstr(gc, "- [x]") == NULL, "planning branch carries no checklist lines");
     cJSON_Delete(g2);
     reset_capture();
     edc_toolbox_call_ctx_free(ctx2);
@@ -276,8 +270,7 @@ static void test_no_list_planning_guide(void)
     C(is_planning_reminder(c), "no list -> planning guide");
     C(strstr(c, "todowrite") != NULL && strstr(c, "multi-step") != NULL,
       "planning branch tells to create a list first for multi-step work");
-    C(strstr(c, "- [ ]") == NULL && strstr(c, "- [x]") == NULL,
-      "planning branch has no checklist lines");
+    C(strstr(c, "- [ ]") == NULL && strstr(c, "- [x]") == NULL, "planning branch has no checklist lines");
     cJSON_Delete(r);
     C(edc_context_make_todo_reminder(NULL) == NULL, "NULL task -> NULL (no reminder)");
     edc_task_free(task);
@@ -380,8 +373,7 @@ static void test_state_summary_all_done(void)
     C(is_todo_reminder(content), "all-done reminder wrapped, opens with its own title");
     C(strstr(content, "## 🚨 CURRENT TASK SYSTEM STATE\n- [x] pack [low]\n- [x] ship [high]\n") != NULL,
       "state section = full list with all items marked [x] (list itself is the state)");
-    C(strstr(content, "No todo list exists for this task yet.") == NULL,
-      "list present: not the no-list branch");
+    C(strstr(content, "No todo list exists for this task yet.") == NULL, "list present: not the no-list branch");
     C(strstr(content, "NEXT SINGLE ACTION must be calling todowrite") != NULL &&
           strstr(content, "do not clear it") != NULL,
       "turn instructions still present when all items done (keep completed list)");
@@ -459,8 +451,7 @@ static void test_tools_todo_resets_gap(void)
     /* 模拟已隔了 7 次请求没同步 */
     task->todo_sync_gap = 7;
 
-    cJSON *args =
-        cJSON_Parse("{\"items\":[{\"content\":\"a\",\"status\":\"pending\",\"priority\":\"medium\"}]}");
+    cJSON *args = cJSON_Parse("{\"items\":[{\"content\":\"a\",\"status\":\"pending\",\"priority\":\"medium\"}]}");
     struct edc_toolbox_call_ctx *ctx =
         edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)1, task, NULL);
     edc_toolbox_exec(ctx, "todowrite", args, capture_cb);
@@ -486,8 +477,7 @@ static void test_tools_todo_resets_gap(void)
 
     /* 校验失败 (status 非法) → 不构成同步, 不清零 */
     task->todo_sync_gap = 8;
-    cJSON *bad_args =
-        cJSON_Parse("{\"items\":[{\"content\":\"b\",\"status\":\"bogus\",\"priority\":\"medium\"}]}");
+    cJSON *bad_args = cJSON_Parse("{\"items\":[{\"content\":\"b\",\"status\":\"bogus\",\"priority\":\"medium\"}]}");
     struct edc_toolbox_call_ctx *ctx3 =
         edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)3, task, NULL);
     edc_toolbox_exec(ctx3, "todowrite", bad_args, capture_cb);
@@ -520,7 +510,7 @@ static void test_append_system_part(void)
 
     cJSON *msgs = cJSON_CreateArray();
     sds pristine = NULL;
-    int n = edc_context_append_system_part(msgs, NULL, g1, &pristine);
+    int n = edc_context_append_system_part(msgs, NULL, g1, NULL, &pristine);
     C(n == 1, "head = base reference only (no planning guide in head anymore)");
     C(pristine == NULL, "no pristine in history branch");
     cJSON *m0 = cJSON_GetArrayItem(msgs, 0);
@@ -533,8 +523,8 @@ static void test_append_system_part(void)
           strstr(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "<system-reminder>") == NULL,
       "head message stays pure (no reminder sections/marker)");
     cJSON_Delete(msgs);
-    C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g1->history, 0), "content")),
-             "SYS0_BASE") == 0,
+    C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g1->history, 0), "content")), "SYS0_BASE") ==
+          0,
       "history[0] survives msgs delete (reference did not transfer/copy)");
 
     /* todo 引导独立于头部: no-list task 的 reminder = 规划引导 (owned), 模拟
@@ -547,7 +537,7 @@ static void test_append_system_part(void)
           strstr(cJSON_GetStringValue(cJSON_GetObjectItem(tail, "content")), "multi-step") != NULL,
       "planning guide mentions creating list for multi-step work");
     msgs = cJSON_CreateArray();
-    edc_context_append_system_part(msgs, NULL, g1, &pristine);
+    edc_context_append_system_part(msgs, NULL, g1, NULL, &pristine);
     cJSON_AddItemToArray(msgs, tail); /* req->tail_system 位置 (请求数组队尾) */
     C(cJSON_GetArraySize(msgs) == 2, "request = head ref + tail reminder");
     C(cJSON_GetArrayItem(msgs, 1) == tail, "reminder is the LAST message of the request");
@@ -563,7 +553,7 @@ static void test_append_system_part(void)
     C(t1->todolist != NULL && cJSON_GetArraySize(t1->todolist) == 1, "attached 1 todo item");
     msgs = cJSON_CreateArray();
     pristine = NULL;
-    n = edc_context_append_system_part(msgs, NULL, g1, &pristine);
+    n = edc_context_append_system_part(msgs, NULL, g1, NULL, &pristine);
     C(n == 2, "group memory + base ref -> 2 head appends");
     C(pristine == NULL, "still no pristine (history exists)");
     cJSON *mem0 = cJSON_GetArrayItem(msgs, 0);
@@ -574,8 +564,7 @@ static void test_append_system_part(void)
       "base attached by reference (not a todo-injected copy)");
     const char *h1 = cJSON_GetStringValue(cJSON_GetObjectItem(m1b, "content"));
     C(h1 && strcmp(h1, "SYS0_BASE") == 0, "head base stays PURE even when task has a todo list");
-    C(strstr(h1, "CURRENT TASK SYSTEM STATE") == NULL &&
-          strstr(h1, "INSTRUCTIONS FOR THIS TURN") == NULL &&
+    C(strstr(h1, "CURRENT TASK SYSTEM STATE") == NULL && strstr(h1, "INSTRUCTIONS FOR THIS TURN") == NULL &&
           strstr(h1, "<system-reminder>") == NULL,
       "no reminder sections/marker anywhere in the head");
 
@@ -585,8 +574,7 @@ static void test_append_system_part(void)
     C(is_todo_reminder(rc), "todo reminder wrapped, opens with its title");
     C(strstr(rc, "## 🚨 CURRENT TASK SYSTEM STATE\n- [ ] do it [high]\n") != NULL,
       "fresh list rendered right under the state header");
-    C(strstr(rc, "No todo list exists for this task yet.") == NULL,
-      "list present: no-list branch NOT used");
+    C(strstr(rc, "No todo list exists for this task yet.") == NULL, "list present: no-list branch NOT used");
     C(strstr(rc, "NEXT SINGLE ACTION must be calling todowrite") != NULL,
       "per-turn sync instruction present in the list branch");
 
@@ -608,7 +596,7 @@ static void test_append_system_part(void)
 
     msgs = cJSON_CreateArray();
     pristine = NULL;
-    n = edc_context_append_system_part(msgs, conf, g2, &pristine);
+    n = edc_context_append_system_part(msgs, conf, g2, NULL, &pristine);
     C(n == 1, "fallback: one pure sys msg (no planning guide in head)");
     C(pristine != NULL && strncmp(pristine, "# EdgeClaw", 10) == 0, "pristine = fresh base prompt");
     m0 = cJSON_GetArrayItem(msgs, 0);
@@ -623,8 +611,7 @@ static void test_append_system_part(void)
     C(pg != NULL && is_planning_reminder(cJSON_GetStringValue(cJSON_GetObjectItem(pg, "content"))),
       "fallback no-list tail reminder is the planning guide");
     cJSON_AddItemToArray(msgs, pg);
-    C(cJSON_GetArraySize(msgs) == 2 && cJSON_GetArrayItem(msgs, 1) == pg,
-      "planning guide is the request tail");
+    C(cJSON_GetArraySize(msgs) == 2 && cJSON_GetArrayItem(msgs, 1) == pg, "planning guide is the request tail");
     cJSON_Delete(msgs);
     sdsfree(pristine);
 
@@ -632,17 +619,15 @@ static void test_append_system_part(void)
     t2->todolist = cJSON_Parse("[{\"content\":\"plan\",\"status\":\"in_progress\",\"priority\":\"high\"}]");
     msgs = cJSON_CreateArray();
     pristine = NULL;
-    n = edc_context_append_system_part(msgs, conf, g2, &pristine);
+    n = edc_context_append_system_part(msgs, conf, g2, NULL, &pristine);
     C(n == 1, "fallback+todo head: one pure sys msg");
     m0 = cJSON_GetArrayItem(msgs, 0);
     const char *ft = cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content"));
-    C(ft && strncmp(ft, "# EdgeClaw", 10) == 0 &&
-          strstr(ft, "CURRENT TASK SYSTEM STATE") == NULL &&
+    C(ft && strncmp(ft, "# EdgeClaw", 10) == 0 && strstr(ft, "CURRENT TASK SYSTEM STATE") == NULL &&
           strstr(ft, "INSTRUCTIONS FOR THIS TURN") == NULL && strstr(ft, "<system-reminder>") == NULL,
       "fallback+todo request head = fresh pure base (no reminder sections/marker)");
     C(pristine && strstr(pristine, "CURRENT TASK SYSTEM STATE") == NULL &&
-          strstr(pristine, "INSTRUCTIONS FOR THIS TURN") == NULL &&
-          strstr(pristine, "<system-reminder>") == NULL,
+          strstr(pristine, "INSTRUCTIONS FOR THIS TURN") == NULL && strstr(pristine, "<system-reminder>") == NULL,
       "pristine stays pure even when request will carry the todo reminder");
 
     /* 模拟调用方编排: 把纯净 prompt 写回 group history[0] */
@@ -654,8 +639,8 @@ static void test_append_system_part(void)
         cJSON_AddItemToArray(g2->history, sys_hist);
     }
     C(cJSON_GetArraySize(g2->history) == 1 &&
-          strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g2->history, 0), "content")),
-                 pristine) == 0,
+          strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g2->history, 0), "content")), pristine) ==
+              0,
       "caller-side write-back keeps shared history pure");
 
     cJSON *tm = edc_context_make_todo_reminder(t2);
@@ -671,7 +656,7 @@ static void test_append_system_part(void)
     /* 写回后再次组装 → 走引用分支 (history[0] 纯净), 且仍无 todo 混入头部 */
     msgs = cJSON_CreateArray();
     pristine = NULL;
-    n = edc_context_append_system_part(msgs, conf, g2, &pristine);
+    n = edc_context_append_system_part(msgs, conf, g2, NULL, &pristine);
     C(n == 1 && pristine == NULL, "after write-back: head = reference, no pristine");
     m0 = cJSON_GetArrayItem(msgs, 0);
     C(m0 != NULL && (m0->type & cJSON_IsReference) && m0->child == cJSON_GetArrayItem(g2->history, 0)->child,

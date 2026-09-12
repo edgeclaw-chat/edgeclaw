@@ -116,6 +116,11 @@ extern struct edc_session *edc_scheduler_get_session(struct edc_scheduler *sched
  *  切换, 禁止直接写 scheduler->session。 */
 extern void edc_scheduler_set_session(struct edc_scheduler *sched, struct edc_session *session);
 
+/** 从 scheduler actor 取当前 session 绑定的工作目录 (绝对路径); 未绑定或
+ *  session 缺失时返回 NULL。工具层据此决定 exec_shell 默认 cwd 与 fs 工具
+ *  相对路径的解析基准。 */
+extern const char *edc_scheduler_session_workdir(edc_actor_t *scheduler_actor);
+
 /** 当前 session 中是否存在未终结 (非 COMPLETED/CANCELLED/ERROR/SUSPENDED)
  *  的任务。供入口层 (main.c 的 -c/脚本模式) 轮询等待使用, 无需遍历内部结构。 */
 extern bool edc_scheduler_has_active_tasks(struct edc_scheduler *sched);

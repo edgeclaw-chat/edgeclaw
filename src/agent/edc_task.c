@@ -844,7 +844,7 @@ cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *c
     }
     else if (config)
     {
-        sds default_prompt = edc_context_build_system_prompt(config);
+        sds default_prompt = edc_context_build_system_prompt(config, NULL);
         cJSON *sys_msg = cJSON_CreateObject();
         cJSON_AddStringToObject(sys_msg, "role", "system");
         cJSON_AddStringToObject(sys_msg, "content", default_prompt);
