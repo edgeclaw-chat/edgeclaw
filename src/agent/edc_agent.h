@@ -14,6 +14,8 @@ extern "C" {
 #include <cJSON.h>
 #include <stdbool.h>
 
+struct edc_task;
+
 struct edc_agent
 {
     struct edc_config *config;
@@ -35,6 +37,21 @@ struct edc_agent
 };
 
 extern void edc_agent_add_history(struct edc_agent *agent, const char *line);
+
+/** Resolve a task id across sessions, activating its owning session on demand.
+ *
+ *  Task ids are globally unique (see edc_session_manager_find_task_any), so a
+ *  hit is unambiguous. Unlike the plain in-memory lookup, this also handles the
+ *  case where the owning session exists on disk but has not been activated this
+ *  run: it probes the unloaded sessions' session.json, and on a match loads that
+ *  session (lazy activation) before retrying.
+ *
+ *  Returns NULL when the id is unknown on disk either (callers then fail the
+ *  command — no fallback). |owner_out| (optional) receives the owning session,
+ *  or NULL on miss. Loading is side-effect-free with respect to the active
+ *  session: the foreground group lives on each session, not on the scheduler. */
+extern struct edc_task *edc_agent_resolve_task(struct edc_agent *agent, const char *task_id,
+                                               struct edc_session **owner_out);
 
 extern char *edc_agent_run_turn(struct edc_agent *agent, const char *input);
 /* |sandbox_override|: -1 = keep the persisted config.json value (the default

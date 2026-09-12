@@ -176,6 +176,49 @@ int main(void)
     sdsfree(chain_cmd);
     CHECK(at2->deps_total == deps_before + 1, "chain added a cross-session dependency");
 
+    /* ── S2: dependency onto a task in a session that was not activated ──
+     * Simulate "the owner session exists on disk but was never activated this
+     * run": save B's state, then drop B's live groups. The resolver must find
+     * the id by probing B's session.json and load B on demand. */
+    TEST("dependency onto a task in an unloaded session activates it on demand");
+    switch_to(&agent, sb->session_id);
+    struct edc_task *bt2 = edc_scheduler_create_task(agent.scheduler, "b2-task", edc_channel_adapter);
+    edc_scheduler_create_group(agent.scheduler, bt2);
+    edc_session_set_active_task(sb, bt2);
+    sds bt2_id = sdsnew(bt2->task_id);
+    CHECK(edc_session_save_state(sb, agent.scheduler), "B state saved to disk");
+    switch_to(&agent, sa->session_id);
+
+    /* Drop B's in-memory groups (freeing bt/bt2 also detaches their reverse
+     * edges, so nothing dangles) and mark it unloaded. */
+    struct edc_task_group *bg, *bgt;
+    DL_FOREACH_SAFE(sb->groups, bg, bgt)
+    {
+        edc_session_remove_group(sb, bg);
+        edc_task_group_free(bg);
+    }
+    sb->groups = NULL;
+    sb->active_task = NULL;
+    sb->foreground_group = NULL;
+    sb->state_loaded = false;
+    CHECK(edc_session_manager_find_task_any(sm, bt2_id, NULL) == NULL, "bt2 absent from memory");
+
+    int before2 = count_tasks(sa);
+    sds load_cmd = sdscatprintf(sdsempty(), "/task new \"\"\"needs-b2\"\"\" -d %s", bt2_id);
+    send_cmd(&agent, load_cmd);
+    sdsfree(load_cmd);
+
+    struct edc_task *at3 = edc_session_get_active_task(sa);
+    CHECK(count_tasks(sa) == before2 + 1, "a task was created in A");
+    CHECK(at3 && at3->deps_total == 1 && at3->deps->source &&
+              strcmp(at3->deps->source->task_id, bt2_id) == 0,
+          "dependency resolved against B, loaded on demand");
+    CHECK(sb->state_loaded, "B was activated on demand");
+    CHECK(agent.scheduler->session == sa, "active session unchanged by the on-demand load");
+    CHECK(edc_scheduler_get_foreground(agent.scheduler) == at3->group,
+          "active session's foreground group is A's, not hijacked by the load");
+    sdsfree(bt2_id);
+
     edc_scheduler_free(agent.scheduler);
     edc_channel_actor_free(agent.channel_actor);
     edc_session_manager_free(sm);

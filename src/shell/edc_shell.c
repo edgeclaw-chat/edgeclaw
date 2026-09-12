@@ -228,7 +228,7 @@ struct edc_task *edc_shell_spawn_task(struct edc_agent *agent, struct edc_actor 
         deps = calloc((size_t)opts->dep_count, sizeof(*deps));
         for (int i = 0; i < opts->dep_count; i++)
         {
-            deps[i] = edc_session_manager_find_task_any(agent->session_manager, opts->dep_ids[i], NULL);
+            deps[i] = edc_agent_resolve_task(agent, opts->dep_ids[i], NULL);
             if (!deps[i])
             {
                 sds reply = sdscatprintf(sdsempty(), "Task not found: `%s`", opts->dep_ids[i]);
@@ -702,8 +702,7 @@ sds edc_shell_collect_var_refs(struct edc_agent *agent, const char *input, sds *
                 {
                     memcpy(buf, ns, nl);
                     buf[nl] = '\0';
-                    struct edc_task *t =
-                        edc_session_manager_find_task_any(agent->session_manager, buf, NULL);
+                    struct edc_task *t = edc_agent_resolve_task(agent, buf, NULL);
                     if (!t)
                     {
                         *out_error = sdscatprintf(sdsempty(), "$%s: task not found", buf);
@@ -725,8 +724,7 @@ sds edc_shell_collect_var_refs(struct edc_agent *agent, const char *input, sds *
                 if (il > 0)
                 {
                     sds id = sdsnewlen(is, il);
-                    struct edc_task *t =
-                        edc_session_manager_find_task_any(agent->session_manager, id, NULL);
+                    struct edc_task *t = edc_agent_resolve_task(agent, id, NULL);
                     if (!t)
                     {
                         *out_error = sdscatprintf(sdsempty(), "$%s: task not found", id);

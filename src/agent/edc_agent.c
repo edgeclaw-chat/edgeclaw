@@ -49,6 +49,96 @@ static struct edc_agent *edc_scheduler_agent(struct edc_scheduler *sched)
     return sched ? sched->ctx : NULL;
 }
 
+/* ── 跨 session task 解析 (S2) ───────────────────────────────
+ * task id 全局唯一 (见 edc_session_manager_find_task_any), 所以命中唯一。
+ * 内存查找只覆盖"本 run 已激活"的 session; 若任务属于一个只在磁盘上、尚未
+ * 激活的 session, 就先扫它的 session.json 定位属主, 再按需加载。 */
+
+/* 只读探测: |session| 的 session.json 里是否有 |task_id|? 不修改任何状态。 */
+static bool edc_agent_session_file_has_task(struct edc_session *session, const char *task_id)
+{
+    if (!session || !session->history_dir)
+        return false;
+    sds path = edc_path_join(session->history_dir, "session.json", NULL);
+    if (!edc_file_exists(path))
+    {
+        sdsfree(path);
+        return false;
+    }
+    EdcError *err = NULL;
+    sds content = edc_file_read(path, &err);
+    sdsfree(path);
+    if (!content)
+    {
+        if (err)
+            edc_error_free(err);
+        return false;
+    }
+    cJSON *json = cJSON_Parse(content);
+    sdsfree(content);
+    if (!json)
+        return false;
+
+    bool hit = false;
+    cJSON *tasks = cJSON_GetObjectItem(json, "tasks");
+    if (cJSON_IsArray(tasks))
+    {
+        int n = cJSON_GetArraySize(tasks);
+        for (int i = 0; i < n; i++)
+        {
+            cJSON *tj = cJSON_GetArrayItem(tasks, i);
+            const char *tid = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "task_id"));
+            if (tid && strcmp(tid, task_id) == 0)
+            {
+                hit = true;
+                break;
+            }
+        }
+    }
+    cJSON_Delete(json);
+    return hit;
+}
+
+struct edc_task *edc_agent_resolve_task(struct edc_agent *agent, const char *task_id, struct edc_session **owner_out)
+{
+    if (owner_out)
+        *owner_out = NULL;
+    if (!agent || !task_id || !agent->session_manager)
+        return NULL;
+
+    /* 1. 内存优先: 本 run 已激活的 session 里直接找。 */
+    struct edc_session *owner = NULL;
+    struct edc_task *t = edc_session_manager_find_task_any(agent->session_manager, task_id, &owner);
+    if (t)
+    {
+        if (owner_out)
+            *owner_out = owner;
+        return t;
+    }
+
+    /* 2. 未命中: 定位一个"未加载"的 session, 其存档里含该 id → 按需加载。
+     *    加载不再有全局副作用 (前台组是 session 自己的属性)。 */
+    struct edc_session_manager *sm = agent->session_manager;
+    for (int i = 0; i < sm->session_count; i++)
+    {
+        struct edc_session *s = sm->sessions[i];
+        if (!s || s->state_loaded)
+            continue;
+        if (!edc_agent_session_file_has_task(s, task_id))
+            continue;
+
+        if (!edc_session_load_state(s, agent->scheduler))
+            return NULL; /* 存档损坏/读取失败 → 视作未命中, 命令失败 (D5) */
+        s->state_loaded = true;
+
+        t = edc_session_manager_find_task_any(sm, task_id, &owner);
+        if (owner_out)
+            *owner_out = owner;
+        return t;
+    }
+    return NULL;
+}
+
 /* ── Shell 变量解析回调 ──────────────────────────────────── */
 
 static sds edc_agent_var_resolver(const char *name, void *user_data)
@@ -85,8 +175,8 @@ static sds edc_agent_var_resolver(const char *name, void *user_data)
         return (last && last->output) ? sdsdup(last->output) : NULL;
     }
 
-    /* $NUMBER 或 $NAME → 按 task ID / job number 查找 (全局: task id 唯一, 可跨 session) */
-    struct edc_task *t = edc_session_manager_find_task_any(agent->session_manager, name, NULL);
+    /* $NUMBER 或 $NAME → 按 task ID / job number 查找 (全局; 必要时按需激活属主 session) */
+    struct edc_task *t = edc_agent_resolve_task(agent, name, NULL);
     return (t && t->output) ? sdsdup(t->output) : NULL;
 }
 

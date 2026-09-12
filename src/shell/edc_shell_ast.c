@@ -226,8 +226,7 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
          * (task ids are globally unique). An unknown id fails the command. */
         if (prev_task && node->dep_count > 0 && node->dep_ids[0])
         {
-            struct edc_task *dt =
-                edc_session_manager_find_task_any(agent->session_manager, node->dep_ids[0], NULL);
+            struct edc_task *dt = edc_agent_resolve_task(agent, node->dep_ids[0], NULL);
             if (dt)
                 edc_task_add_dependency(prev_task, dt, TASK_DEP_JOIN);
             else
