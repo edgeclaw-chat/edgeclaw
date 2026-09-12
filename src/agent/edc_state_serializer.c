@@ -627,20 +627,13 @@ static void deser_rebuild_group_history(struct edc_session *session, struct edc_
 
     if (sched)
     {
-        uint64_t max_id = 0;
         struct edc_task_group *g;
         DL_FOREACH(session->groups, g)
         {
             struct edc_task *t;
             LL_FOREACH2(g->members, t, group_next)
-            {
-                uint64_t id = strtoull(t->task_id, NULL, 10);
-                if (id > max_id)
-                    max_id = id;
-            }
+                edc_scheduler_observe_task_id(sched, t->task_id);
         }
-        if (max_id >= (uint64_t)sched->next_task_id)
-            sched->next_task_id = (int64_t)(max_id + 1);
     }
 }
 

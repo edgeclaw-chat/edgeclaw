@@ -4,15 +4,19 @@
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_context.h"
+#include "edc_file_utils.h"
 #include "edc_llm_actor.h"
 #include "edc_session.h"
 #include "edc_toolbox_actor.h"
 #include "edc_turn.h"
+#include "log.h"
 #include "uthash.h"
 #include "utlist_fix.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 /* ── uthash wrapper: request_id → edc_task ──────────────────── */
 
@@ -42,6 +46,91 @@ static struct edc_session *sched_task_session(struct edc_scheduler *sched, struc
     return sched ? sched->session : NULL;
 }
 
+/* ── Task 序号持久化 ─────────────────────────────────────────
+ * next_task_id 是**进程级**单调递增的发号器 (跨 session 共用): 一台机器上
+ * 任何时刻都不该再发出已经用过的 task_id。但它的值不能只靠"扫存活任务取最
+ * 大值"来恢复 —— 任务被 /task join 回收、或发号发生在当时未激活的其它
+ * session 里时, 这些编号在重启后都无从反推, 计数器会退回起点而重复发号。
+ * 故把发号高水位单独落盘到 workspace 下一个极小文件, 每次发号即续写; 加载
+ * 时取"文件值"与"存活任务最大值 + 1"的较大者 (后者兼容改动前的旧存档)。
+ * 写失败 (只读 fs / 目录未建) 不致命: 退化为改动前的行为, 仍是内存内单调。 */
+
+static sds sched_task_seq_path(struct edc_scheduler *sched)
+{
+    if (!sched || !sched->config || !sched->config->workspace || sdslen(sched->config->workspace) == 0)
+        return NULL;
+    return edc_path_join(sched->config->workspace, ".task_seq", NULL);
+}
+
+static void sched_persist_task_seq(struct edc_scheduler *sched)
+{
+    sds path = sched_task_seq_path(sched);
+    if (!path)
+        return;
+
+    sds tmp = sdscatprintf(sdsempty(), "%s.tmp", path);
+    /* 纯 stdio, 不依赖 uv file loop: scheduler 单测不初始化 file utils, 用
+     * edc_file_* 会触发空 loop 解引用; 计数器文件极小, stdio 足够。 */
+    FILE *f = fopen(tmp, "w");
+    if (!f && errno == ENOENT && sched->config && sched->config->workspace)
+    {
+        /* 全新环境里 workspace 目录可能还没建立 (首个 session 落盘时才会建),
+         * 补建后重试一次, 否则首批 task_id 会静默丢掉持久化。 */
+        mkdir(sched->config->workspace, 0755);
+        f = fopen(tmp, "w");
+    }
+    if (!f)
+    {
+        log_debug("task_seq: open %s for write failed: %s", tmp, strerror(errno));
+    }
+    else
+    {
+        if (fprintf(f, "%lld\n", (long long)sched->next_task_id) < 0)
+            log_debug("task_seq: write %s failed: %s", tmp, strerror(errno));
+        fclose(f);
+        if (rename(tmp, path) != 0)
+            log_warn("task_seq: rename %s -> %s failed: %s", tmp, path, strerror(errno));
+    }
+
+    sdsfree(tmp);
+    sdsfree(path);
+}
+
+static void sched_load_task_seq(struct edc_scheduler *sched)
+{
+    sds path = sched_task_seq_path(sched);
+    if (!path)
+        return;
+
+    FILE *f = fopen(path, "r");
+    sdsfree(path);
+    if (!f)
+        return; /* 首次运行 / 文件缺失: 保留内存初值 */
+
+    long long v = 0;
+    if (fscanf(f, "%lld", &v) == 1 && v > sched->next_task_id)
+        sched->next_task_id = v;
+    fclose(f);
+}
+
+void edc_scheduler_observe_task_id(struct edc_scheduler *sched, const char *task_id)
+{
+    if (!sched || !task_id || !*task_id)
+        return;
+
+    /* 只认纯十进制编号; 旧存档/测试里的 "task-1" 之类按 0 处理, 不影响。 */
+    char *end = NULL;
+    long long id = strtoll(task_id, &end, 10);
+    if (end == task_id || (end && *end != '\0'))
+        return;
+
+    if (id >= sched->next_task_id)
+    {
+        sched->next_task_id = id + 1;
+        sched_persist_task_seq(sched);
+    }
+}
+
 /* ── 生命周期 ──────────────────────────────────────────────── */
 
 struct edc_scheduler *edc_scheduler_new(struct edc_session *session, struct edc_config *config)
@@ -51,6 +140,9 @@ struct edc_scheduler *edc_scheduler_new(struct edc_session *session, struct edc_
     sched->config = config;
     sched->task_hash = NULL;
     sched->next_task_id = 1;
+
+    /* 恢复上次运行的发号高水位, 保证重启后 task_id 不倒退、不重复。 */
+    sched_load_task_seq(sched);
 
     sched->self = edc_actor_new("edc_scheduler", edc_scheduler_actor_handler, sched);
 
@@ -89,6 +181,9 @@ char *edc_scheduler_gen_task_id(struct edc_scheduler *sched)
 {
     char buf[64];
     snprintf(buf, sizeof(buf), "%lld", (long long)sched->next_task_id++);
+    /* 发号即落盘高水位: 即便该编号所在任务随后被回收、进程被 kill, 重启后也
+     * 不会再把它发出去。 */
+    sched_persist_task_seq(sched);
     return strdup(buf);
 }
 

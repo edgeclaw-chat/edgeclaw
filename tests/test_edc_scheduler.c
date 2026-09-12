@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <sys/stat.h>
 
 volatile sig_atomic_t _run_loop;
 
@@ -51,12 +52,24 @@ static void free_config(struct edc_config *c)
     free(c);
 }
 
+/* Remove the persisted task-id high-water file so a test starts from a clean
+ * counter. Also make sure the workspace dir exists (writes need it). */
+static void clean_task_seq(struct edc_config *cfg)
+{
+    if (!cfg || !cfg->workspace) return;
+    mkdir(cfg->workspace, 0755); /* EEXIST is fine */
+    sds seq = sdscatprintf(sdsempty(), "%s/.task_seq", cfg->workspace);
+    remove(seq);
+    sdsfree(seq);
+}
+
 /* ── 1. 生命周期 ──────────────────────────────────────────── */
 
 static void test_scheduler_lifecycle(void)
 {
     TEST("scheduler_new / free");
     struct edc_config *cfg = make_config();
+    clean_task_seq(cfg);
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
 
@@ -695,6 +708,87 @@ static void test_snapshot_carries_no_chat_messages(void)
     free_config(cfg);
 }
 
+/* ── Task 序号跨重启持久化 ────────────────────────────────── */
+
+static void test_task_id_survives_restart(void)
+{
+    TEST("task_id does not restart from 1 after a restart");
+    struct edc_config *cfg = make_config();
+    clean_task_seq(cfg);
+
+    /* 第一次运行: 连发 3 个编号, 随后把它们全部回收 (/task join 的典型路径:
+     * 编号已发出但任务对象不再存活), 再"退出"。 */
+    {
+        struct edc_session *sess = make_session(cfg);
+        struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
+        struct edc_task *t1 = edc_scheduler_create_task(sched, "a", edc_channel_adapter);
+        struct edc_task *t2 = edc_scheduler_create_task(sched, "b", edc_channel_adapter);
+        struct edc_task *t3 = edc_scheduler_create_task(sched, "c", edc_channel_adapter);
+        CHECK(t1 && strcmp(t1->task_id, "1") == 0, "first id is 1");
+        CHECK(t3 && strcmp(t3->task_id, "3") == 0, "third id is 3");
+        edc_task_free(t1);
+        edc_task_free(t2);
+        edc_task_free(t3);
+        edc_scheduler_free(sched);
+        if (sess->messages) cJSON_Delete(sess->messages);
+        free(sess);
+    }
+
+    /* 重启: 存活任务为空 (全部被回收), 发号器仍必须从 4 续, 不能退回 1。 */
+    {
+        struct edc_session *sess = make_session(cfg);
+        struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
+        struct edc_task *t = edc_scheduler_create_task(sched, "d", edc_channel_adapter);
+        CHECK(t && strcmp(t->task_id, "4") == 0, "id continues at 4 after restart (no reuse)");
+        edc_task_free(t);
+        edc_scheduler_free(sched);
+        if (sess->messages) cJSON_Delete(sess->messages);
+        free(sess);
+    }
+
+    /* 收尾: 清掉高水位文件, 免得污染其它测试 / 重复运行。 */
+    clean_task_seq(cfg);
+    free_config(cfg);
+}
+
+/* 反序列化旧存档时, 存活任务的编号要 "喂" 进发号器 (并落盘高水位), 否则
+ * 从没有 .task_seq 的旧版本升级上来会重复发号。 */
+static void test_observe_task_id_raises_high_water(void)
+{
+    TEST("observe_task_id raises and persists the high-water mark");
+    struct edc_config *cfg = make_config();
+    clean_task_seq(cfg);
+
+    {
+        struct edc_session *sess = make_session(cfg);
+        struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
+        CHECK(sched->next_task_id == 1, "fresh counter is 1");
+        edc_scheduler_observe_task_id(sched, "7");
+        CHECK(sched->next_task_id == 8, "observed id 7 raises counter to 8");
+        edc_scheduler_observe_task_id(sched, "task-3"); /* non-numeric: ignored */
+        CHECK(sched->next_task_id == 8, "non-numeric id is ignored");
+        edc_scheduler_free(sched);
+        if (sess->messages) cJSON_Delete(sess->messages);
+        free(sess);
+    }
+
+    /* 重启: 高水位从磁盘恢复。 */
+    {
+        struct edc_session *sess = make_session(cfg);
+        struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
+        CHECK(sched->next_task_id == 8, "high-water survives restart");
+        char *id = edc_scheduler_gen_task_id(sched);
+        CHECK(strcmp(id, "8") == 0, "next generated id is 8");
+        free(id);
+        edc_scheduler_free(sched);
+        if (sess->messages) cJSON_Delete(sess->messages);
+        free(sess);
+    }
+
+    clean_task_seq(cfg);
+    free_config(cfg);
+}
+
 int main(void)
 {
     log_info("=== Phase 3: edc_scheduler 模块测试 ===");
@@ -710,6 +804,8 @@ int main(void)
     test_input_routes_to_waiting_leader();
     test_scheduler_max_iter_cap();
     test_snapshot_carries_no_chat_messages();
+    test_task_id_survives_restart();
+    test_observe_task_id_raises_high_water();
 
     log_info("");
     log_info("=== 测试结果: %d passed, %d failed ===", test_passed, test_failed);

@@ -95,6 +95,9 @@ extern edc_actor_t *edc_scheduler_get_actor(struct edc_scheduler *sched);
 /* ── Task 管理 ─────────────────────────────────────────────── */
 
 extern char *edc_scheduler_gen_task_id(struct edc_scheduler *sched);
+/** 把已存在的 task_id (十进制) 纳入发号器高水位并落盘: 反序列化存活任务时
+ *  调用, 保证重启后新编号越过旧存档里的最大编号。非纯十进制 id 忽略。 */
+extern void edc_scheduler_observe_task_id(struct edc_scheduler *sched, const char *task_id);
 extern struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const char *desc,
                                                   edc_channel_type channel_type);
 extern struct edc_task_group *edc_scheduler_create_group(struct edc_scheduler *sched, struct edc_task *leader);
