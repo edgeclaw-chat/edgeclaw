@@ -60,10 +60,8 @@ typedef void (*edc_scheduler_snapshot_fn)(struct edc_scheduler *sched, sds seria
 
 struct edc_scheduler
 {
-    struct edc_session *session;
+    struct edc_session *session; /* 当前绑定的 session; 前台组是 session 的属性 */
     struct edc_config *config;
-
-    struct edc_task_group *foreground_group;
 
     struct edc_sched_task_entry *task_hash; /* uthash: request_id → edc_task */
 
@@ -108,6 +106,10 @@ extern struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sche
 
 /* ── 前台/后台 ─────────────────────────────────────────────── */
 
+/** Foreground group is a **session** property (see edc_session.foreground_group);
+ *  the scheduler holds no copy. set_foreground writes it to the group's owning
+ *  session (or clears the bound session's when |group| is NULL). get_foreground
+ *  reads the currently bound session's value (NULL when unbound). */
 extern void edc_scheduler_set_foreground(struct edc_scheduler *sched, struct edc_task_group *group);
 extern struct edc_task_group *edc_scheduler_get_foreground(struct edc_scheduler *sched);
 

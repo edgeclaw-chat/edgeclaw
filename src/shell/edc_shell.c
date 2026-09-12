@@ -74,7 +74,7 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
     if (strcmp(content, "/whoami") == 0)
     {
         struct edc_session *sess = edc_session_manager_get_active(agent->session_manager);
-        struct edc_task_group *fg = agent->scheduler->foreground_group;
+        struct edc_task_group *fg = edc_scheduler_get_foreground(agent->scheduler);
         struct edc_task *active = sess ? sess->active_task : NULL;
         sds out = sdscatprintf(sdsempty(),
                                "## Whoami\n\n"

@@ -411,7 +411,7 @@ static void test_full_file_roundtrip(void)
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(s1, group);
     s1->active_task = task;
-    sc1->foreground_group = group;
+    edc_scheduler_set_foreground(sc1, group);
 
     /* Save history first, then state */
     CHECK(edc_session_save_history(s1), "save_history succeeds");

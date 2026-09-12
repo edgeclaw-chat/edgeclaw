@@ -196,7 +196,8 @@ struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const ch
     /* 任务归属调度器当前绑定的 session (经 edc_scheduler_set_session 切换),
      * 不再硬编码 "sess-1"。无 session 时 (测试/极端情况) 才回退占位 id。 */
     const char *sid = (sched->session && sched->session->session_id) ? sched->session->session_id : "sess-1";
-    const char *gid = sched->foreground_group ? sched->foreground_group->group_id : tid;
+    struct edc_task_group *fg = edc_scheduler_get_foreground(sched);
+    const char *gid = fg ? fg->group_id : tid;
 
     struct edc_task *task = edc_task_new(tid, sid, gid, desc, channel_type);
     task->state = TASK_WAITING_INPUT;
@@ -253,9 +254,8 @@ void edc_scheduler_set_foreground(struct edc_scheduler *sched, struct edc_task_g
 {
     if (!sched)
         return;
-    sched->foreground_group = group;
-    /* 同步到属主 session: 前台组随 session 保留, 切换/落盘都不丢。group 为
-     * NULL (如 /task bg) 时清掉当前 session 的前台组。 */
+    /* 前台组是 session 的属性 (terminal tab), scheduler 不再持有副本。这里只
+     * 写属主 session: group 为 NULL (如 /task bg) 时清掉当前 session 的前台组。 */
     struct edc_session *owner = group ? group->session : sched->session;
     if (owner)
         owner->foreground_group = group;
@@ -263,7 +263,9 @@ void edc_scheduler_set_foreground(struct edc_scheduler *sched, struct edc_task_g
 
 struct edc_task_group *edc_scheduler_get_foreground(struct edc_scheduler *sched)
 {
-    return sched ? sched->foreground_group : NULL;
+    if (!sched || !sched->session)
+        return NULL;
+    return sched->session->foreground_group;
 }
 
 /* ── 当前 session ──────────────────────────────────────────── */
@@ -277,10 +279,9 @@ void edc_scheduler_set_session(struct edc_scheduler *sched, struct edc_session *
 {
     if (!sched)
         return;
+    /* 前台组是目标 session 自己的属性, 绑定 session 即恢复其前台组 ——
+     * 无需再拷贝到 scheduler (新建 session 为 NULL, 首个任务会自建)。 */
     sched->session = session;
-    /* 恢复目标 session 自己的前台组 (随 session 保留); 新建 session 时为
-     * NULL —— 首个任务会自建一个前台组。 */
-    sched->foreground_group = session ? session->foreground_group : NULL;
 }
 
 /* 从 scheduler actor 取当前 session 绑定的工作目录 (未绑定返回 NULL)。
@@ -531,11 +532,11 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
  * 发现状态变了。快照在 scheduler 线程同步生成, 与 TUI 拉取共用同一路径。 */
 static void sched_notify_foreground_state(struct edc_scheduler *sched, struct edc_task *task)
 {
-    if (!sched || !task || !sched->session || !sched->foreground_group)
+    if (!sched || !task || !sched->session)
         return;
     if (edc_session_get_active_task(sched->session) != task)
         return;
-    if (task->group != sched->foreground_group)
+    if (task->group != sched->session->foreground_group)
         return;
     sched_handle_task_snapshot(sched);
 }
@@ -556,7 +557,7 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     if (!input)
         return;
 
-    struct edc_task_group *fg = sched->foreground_group;
+    struct edc_task_group *fg = edc_scheduler_get_foreground(sched);
     struct edc_task *task = NULL;
     bool task_is_waiting_deps = false;
 
@@ -799,7 +800,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
          * 之外主动补推一次快照，TUI 侧边栏的 session 统计会一直停留在
          * 旧值。快照带 COMPLETED 状态 + 新 message_count 一并刷新。 */
         if (!sched->session || edc_session_get_active_task(sched->session) != task ||
-            task->group != sched->foreground_group)
+            task->group != sched->session->foreground_group)
         {
             sched_handle_task_snapshot(sched);
         }
@@ -1014,7 +1015,7 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched)
         cJSON_AddStringToObject(gj, "id", g->group_id ? g->group_id : "");
         cJSON_AddNumberToObject(gj, "member_count", g->member_count);
         cJSON_AddBoolToObject(gj, "orphaned", g->is_orphaned);
-        cJSON_AddBoolToObject(gj, "fg", sched->foreground_group == g);
+        cJSON_AddBoolToObject(gj, "fg", edc_scheduler_get_foreground(sched) == g);
         /* 组消息数: group history 已提交消息 (不含 history[0] 的组 system
          * prompt) + 组内各 task 在途 turn 的消息。history 在 task turn STOP
          * 提交前同步引用 (提交后 active_turn 清空), 因此不重复计数; 侧边栏

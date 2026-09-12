@@ -293,6 +293,7 @@ static cJSON *group_to_json(struct edc_task_group *group)
 
 cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sched)
 {
+    (void)sched; /* 前台组现在只存在 session 上, 序列化不再需要 scheduler */
     if (!session)
         return NULL;
     if (!session->messages)
@@ -314,16 +315,10 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
         cJSON_AddStringToObject(sj, "workdir", session->workdir);
     if (session->active_task)
         cJSON_AddStringToObject(sj, "active_task_id", session->active_task->task_id);
-    /* 前台组优先取 session 自己的 (后台 session 落盘也带得回正确 id); 兼容
-     * 直接设 sched->foreground_group 的旧调用方, 仅当 sched 正绑定本 session
-     * 时才回退到它。 */
-    {
-        struct edc_task_group *fg = session->foreground_group;
-        if (!fg && sched && sched->session == session)
-            fg = sched->foreground_group;
-        if (fg)
-            cJSON_AddStringToObject(sj, "foreground_group_id", fg->group_id);
-    }
+    /* 前台组是 session 自己的属性 —— 直接读它, 后台 session 落盘也带得回正确 id。
+     * (scheduler 不再持有副本, 故无需回退。) */
+    if (session->foreground_group)
+        cJSON_AddStringToObject(sj, "foreground_group_id", session->foreground_group->group_id);
     cJSON_AddNumberToObject(sj, "next_completion_seq", (int)session->next_completion_seq);
     cJSON_AddNumberToObject(sj, "message_count", (int)cJSON_GetArraySize(session->messages));
     cJSON_AddItemToObject(root, "session", sj);
@@ -986,7 +981,7 @@ static void deser_turns(cJSON *json, cJSON *messages_array, struct task_map_entr
     }
 }
 
-static void deser_global_ptrs(cJSON *sj, struct edc_session *session, struct edc_scheduler *sched,
+static void deser_global_ptrs(cJSON *sj, struct edc_session *session,
                               struct task_map_entry **id_map, struct group_map_entry **group_map)
 {
     if (!sj)
@@ -994,16 +989,11 @@ static void deser_global_ptrs(cJSON *sj, struct edc_session *session, struct edc
     const char *at_id = cJSON_GetStringValue(cJSON_GetObjectItem(sj, "active_task_id"));
     if (at_id)
         session->active_task = task_map_get(id_map, at_id);
-    /* 前台组同时记到 session (属主) 和 sched (当前视图), 使切换 session 时
-     * 能各自恢复。 */
+    /* 前台组只记到属主 session —— 它本就是 session 的属性, scheduler 不持有
+     * 副本 (装载 session 不再有副作用, 无需恢复当前视图)。 */
     const char *fg_id = cJSON_GetStringValue(cJSON_GetObjectItem(sj, "foreground_group_id"));
     if (fg_id)
-    {
-        struct edc_task_group *fg = group_map_get(group_map, fg_id);
-        session->foreground_group = fg;
-        if (sched)
-            sched->foreground_group = fg;
-    }
+        session->foreground_group = group_map_get(group_map, fg_id);
 }
 
 bool edc_state_deserialize(cJSON *json, struct edc_session *session, struct edc_scheduler *sched)
@@ -1040,7 +1030,7 @@ bool edc_state_deserialize(cJSON *json, struct edc_session *session, struct edc_
     deser_deps(json, id_map);
     deser_reconcile_deps(id_map);
     deser_turns(json, messages_array, id_map);
-    deser_global_ptrs(sj, session, sched, id_map, group_map);
+    deser_global_ptrs(sj, session, id_map, group_map);
     deser_rebuild_group_history(session, sched);
 
     task_map_free(id_map);

@@ -343,7 +343,7 @@ void ast_execute(struct edc_agent *agent, struct edc_actor *actor, edc_channel_t
         return;
     exec_ctx_t ctx = {0};
     ctx.dep_type = TASK_DEP_SEQUENCE;
-    ctx.target_group = agent->scheduler->foreground_group;
+    ctx.target_group = edc_scheduler_get_foreground(agent->scheduler);
     if (!ctx.target_group || ctx.target_group->is_orphaned || ctx.target_group->member_count == 0)
         ctx.target_group = NULL;
     exec_node(agent, actor, channel_type, root, NULL, &ctx);

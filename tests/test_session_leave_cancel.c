@@ -192,7 +192,7 @@ static void test_leave_persists_cancelled(void)
     edc_session_add_group(sa, ga);
     struct edc_task *a_wait = make_task("t2", "sess-lv", "waiting", TASK_WAITING_INPUT);
     edc_task_group_add_task(ga, a_wait);
-    sched_a->foreground_group = ga;
+    edc_scheduler_set_foreground(sched_a, ga);
 
     /* "Leave" = cancel running + persist before switching away. */
     edc_scheduler_send_signal_to_session(sched_a, sa, TASK_SIGTERM, true);

@@ -27,7 +27,8 @@
  * Serialize session + scheduler state into a cJSON tree.
  *
  * @param session   Must be non-NULL.  session->messages must be populated.
- * @param sched     May be NULL (foreground_group is then omitted).
+ * @param sched     Unused (kept for call-site compatibility); the foreground
+ *                  group lives on the session now.
  * @return          cJSON object (caller owns, must cJSON_Delete).
  *                  NULL on allocation failure.
  */
@@ -43,7 +44,9 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
  *                  contain the messages array (loaded from history.jsonl).
  *                  Existing groups in the session are NOT freed —
  *                  the caller should start from a fresh session.
- * @param sched     Target scheduler.  foreground_group will be set.
+ * @param sched     Target scheduler (used to observe task ids for the
+ *                  high-water mark).  The session's foreground group is set on
+ *                  the session itself, not mirrored onto the scheduler.
  *                  May be NULL if no scheduler exists yet.
  * @return          true on success, false on parse / allocation error.
  */

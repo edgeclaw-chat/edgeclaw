@@ -112,7 +112,7 @@ static void test_exit_save(void)
     struct edc_task_group *g1 = edc_task_group_new(t1);
     edc_session_add_group(session, g1);
     session->active_task = t1;
-    sched->foreground_group = g1;
+    edc_scheduler_set_foreground(sched, g1);
 
     /* Simulate exit: save_history + save_state */
     CHECK(edc_session_save_history(session), "save_history succeeds on exit");
@@ -171,7 +171,7 @@ static void test_startup_load(void)
         edc_session_add_group(s1, g1);
         s1->active_task = t1;
         s1->next_completion_seq = 100;
-        sc1->foreground_group = g1;
+        edc_scheduler_set_foreground(sc1, g1);
 
         edc_session_save_history(s1);
         edc_session_save_state(s1, sc1);
@@ -200,7 +200,7 @@ static void test_startup_load(void)
         CHECK(rt->completion_seq == 99, "completion_seq restored");
         CHECK(s2->next_completion_seq == 100, "next_completion_seq restored");
         CHECK(s2->active_task == rt, "active_task restored");
-        CHECK(sc2->foreground_group != NULL, "foreground_group restored");
+        CHECK(edc_scheduler_get_foreground(sc2) != NULL, "foreground_group restored");
 
         /* Verify turn messages loaded from history.jsonl */
         CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
@@ -246,7 +246,7 @@ static void test_switch_save(void)
     struct edc_task_group *gA = edc_task_group_new(tA);
     edc_session_add_group(sA, gA);
     sA->active_task = tA;
-    scA->foreground_group = gA;
+    edc_scheduler_set_foreground(scA, gA);
 
     /* Save session A's state */
     edc_session_save_history(sA);
@@ -283,8 +283,9 @@ static void test_switch_save(void)
      * of spawning its own group (the old bug dropped foreground_group_id when
      * the outgoing session was saved without a scheduler, so create_task fell
      * back to gid == tid, i.e. a brand-new group). */
-    CHECK(scA2->foreground_group != NULL, "foreground group restored after switch-back");
-    CHECK(scA2->foreground_group != NULL && strcmp(scA2->foreground_group->group_id, "task-A") == 0,
+    CHECK(edc_scheduler_get_foreground(scA2) != NULL, "foreground group restored after switch-back");
+    CHECK(edc_scheduler_get_foreground(scA2) != NULL &&
+              strcmp(edc_scheduler_get_foreground(scA2)->group_id, "task-A") == 0,
           "restored foreground group has the original group id");
     struct edc_task *fresh = edc_scheduler_create_task(scA2, "next task", edc_channel_adapter);
     CHECK(fresh != NULL, "new task created after switch-back");
@@ -339,17 +340,17 @@ static void test_switch_keeps_background_running(void)
     edc_session_set_active_task(sA, tA);
 
     CHECK(gA->session == sA, "group records its owning session");
-    CHECK(sA->foreground_group == gA, "set_foreground mirrors to the owning session");
+    CHECK(sA->foreground_group == gA, "set_foreground stores on the owning session");
 
     /* "Switch" to an empty session B (what /session switch does with the
      * scheduler), then switch back. */
     struct edc_session *sB = edc_session_new(cfg, "sess-B", "SessionB");
     edc_scheduler_set_session(sc, sB);
     CHECK(tA->state == TASK_LLM_PROCESSING, "outgoing session's running task is NOT cancelled");
-    CHECK(sc->foreground_group == NULL, "a fresh session starts with no foreground group");
+    CHECK(edc_scheduler_get_foreground(sc) == NULL, "a fresh session starts with no foreground group");
 
     edc_scheduler_set_session(sc, sA);
-    CHECK(sc->foreground_group == gA, "foreground group restored on switch-back");
+    CHECK(edc_scheduler_get_foreground(sc) == gA, "foreground group restored on switch-back");
 
     struct edc_task *fresh = edc_scheduler_create_task(sc, "next task", edc_channel_adapter);
     CHECK(fresh != NULL && strcmp(fresh->group_id, "task-A") == 0,

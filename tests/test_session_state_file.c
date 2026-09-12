@@ -154,7 +154,7 @@ static void test_write_read(void)
     edc_session_add_group(session, group);
     session->active_task = task;
     session->next_completion_seq = 8;
-    sched->foreground_group = group;
+    edc_scheduler_set_foreground(sched, group);
 
     /* Save */
     bool saved = edc_session_save_state(session, sched);
@@ -185,7 +185,7 @@ static void test_write_read(void)
     CHECK(rt->completion_seq == 7, "completion_seq restored");
     CHECK(session2->next_completion_seq == 8, "next_completion_seq restored");
     CHECK(session2->active_task == rt, "active_task restored");
-    CHECK(sched2->foreground_group != NULL, "foreground_group restored");
+    CHECK(edc_scheduler_get_foreground(sched2) != NULL, "foreground_group restored");
 
     /* Verify turn messages */
     CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
