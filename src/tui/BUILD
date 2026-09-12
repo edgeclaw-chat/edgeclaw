@@ -18,6 +18,7 @@ cc_library(
         "edc_input.cpp",
         "edc_message.cpp",
         "edc_message_list.cpp",
+        "edc_theme.cpp",
         "edc_tui_window.cpp",
         "edc_scroll_view.cpp",
         "edc_task_widget.cpp",
@@ -32,6 +33,7 @@ cc_library(
         "edc_input.hpp",
         "edc_message.hpp",
         "edc_message_list.hpp",
+        "edc_theme.hpp",
         "edc_tui_window.hpp",
         "edc_scroll_view.hpp",
         "edc_style.hpp",
@@ -48,6 +50,20 @@ cc_library(
         "@cjson//:cjson",
     ],
     visibility = ["//visibility:private"],
+)
+
+cc_test(
+    name = "test_theme",
+    srcs = ["test_theme.cpp"],
+    deps = [
+        ":tui",
+    ],
+    linkstatic = True,
+    linkopts = LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
 )
 
 cc_test(

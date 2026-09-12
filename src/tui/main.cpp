@@ -1,4 +1,5 @@
 #include "edc_log.h"
+#include "edc_theme.hpp"
 #include "edc_tui_window.hpp"
 #include "ftxui/component/loop.hpp"
 #include "ftxui/component/screen_interactive.hpp"
@@ -73,6 +74,11 @@ int main(int argc, char **argv)
     const int sandbox_override = ParseSandboxFlag(argc, argv);
 
     edc_log_init();
+
+    // Pick the palette before anything renders: the probe asks the terminal for
+    // its background colour, which needs the tty still in cooked mode and
+    // unclaimed (see edc_theme.hpp).
+    edc::theme::Init();
 
     uv_loop_t *default_loop = uv_default_loop();
     edc_c_file_utils_init(default_loop);
