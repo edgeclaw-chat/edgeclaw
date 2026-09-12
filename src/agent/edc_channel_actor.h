@@ -16,11 +16,15 @@ struct edc_channel
 struct edc_channel_message
 {
     sds content;
-    sds header;  /* optional short description (e.g. executed command/tool name) shown above content */
-    sds task_id; /* id of the task that produced this message (NULL when the
-                  * sender is not a task, e.g. user input or a snapshot).
-                  * Rendering ends use it to label which task a chat message
-                  * belongs to ("task 1"), so interleaved tasks stay readable. */
+    sds header;     /* optional short description (e.g. executed command/tool name) shown above content */
+    sds task_id;    /* id of the task that produced this message (NULL when the
+                     * sender is not a task, e.g. user input or a snapshot).
+                     * Rendering ends use it to label which task a chat message
+                     * belongs to ("task 1"), so interleaved tasks stay readable. */
+    sds session_id; /* id of the session that owns the producing task (NULL when
+                     * the sender is not a task). Lets the frontend route a
+                     * background session's output into *its own* transcript
+                     * instead of the currently displayed one. */
     edc_channel_type type;
     edc_channel_message_type message_type;
     edc_render_pref_t render_pref; /* 发送方声明的渲染偏好；零值 PLAIN，未声明即纯文本 */

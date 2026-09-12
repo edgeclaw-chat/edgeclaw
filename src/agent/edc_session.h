@@ -32,6 +32,16 @@ struct edc_session
     struct edc_task_group *groups; /* 双向链表: 所有 process groups */
     struct edc_task *active_task;  /* foreground group 内的 active task */
 
+    /* 该 session 自己的前台 group (与 group->session 一样是"属主"信息)。切换
+     * session 时前台组随 session 保留, 后台 session 的落盘也能带回正确的
+     * foreground_group_id —— 不再依赖 scheduler 只认一个前台组。 */
+    struct edc_task_group *foreground_group;
+
+    /* 内存里的 groups/tasks 是否已就绪。首次激活 (启动或切到未加载过的
+     * session) 时从 session.json 反序列化一次; 之后内存即为权威, 再次切回来
+     * 绝不能再 load_state —— 否则会用磁盘副本覆盖正在后台执行的活动对象。 */
+    bool state_loaded;
+
     /* backward compat — Phase 5 移除 */
     cJSON *messages;
     struct edc_config *config;

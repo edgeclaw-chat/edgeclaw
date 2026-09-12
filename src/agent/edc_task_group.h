@@ -5,6 +5,8 @@
 #include "sds.h"
 #include <stdbool.h>
 
+struct edc_session;
+
 /* ── Task Group (Process Group, PGID) ──────────────────────────── */
 
 struct edc_task_group
@@ -13,6 +15,7 @@ struct edc_task_group
     struct edc_task *leader;  /* group leader task */
     struct edc_task *members; /* 链表头: group 内所有 task (含 leader) */
     int member_count;
+    struct edc_session *session; /* 属主 session (由 edc_session_add_group 绑定) */
 
     bool is_orphaned; /* leader 退出后置 true */
 

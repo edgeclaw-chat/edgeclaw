@@ -48,8 +48,10 @@ typedef bool (*edc_scheduler_command_fn)(struct edc_scheduler *sched, struct edc
 /** 触发 memory compress */
 typedef void (*edc_scheduler_memory_fn)(struct edc_scheduler *sched);
 
-/** 保存 session */
-typedef void (*edc_scheduler_save_fn)(struct edc_scheduler *sched);
+/** 保存 session 状态 (实现里 history 全量落盘)。
+ *  |session| 指定要落 state 的 session; NULL = 当前绑定的 sched->session。
+ *  后台 session 里的任务完成时要显式传它, 否则状态会写进前台 session。 */
+typedef void (*edc_scheduler_save_fn)(struct edc_scheduler *sched, struct edc_session *session);
 
 /** task 树快照已就绪，交由上层 (agent) 回传给 TUI 的 channel adapter */
 typedef void (*edc_scheduler_snapshot_fn)(struct edc_scheduler *sched, sds serialized);
@@ -135,10 +137,12 @@ extern void edc_scheduler_unregister_task(struct edc_scheduler *sched, void *req
 extern void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *task_id, edc_task_signal sig);
 extern void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, const char *group_id, edc_task_signal sig);
 /** 对**指定** session 下所有 group 发信号 (不依赖 sched->session)。
- *  /session switch|stop 需要在切换/移除**之前**, 对即将离开的那个 session
- *  发取消信号 (离开即取消), 此时 sched->session 可能已不是它。
+ *  用于"明确要收尾"的路径: 进程退出用 running_only=true 只掐在途执行;
+ *  /session remove 用 running_only=false 全取消 (用户明确要移除)。
+ *  切换 session 不再取消任何任务 —— 被切走的 session 继续在后台执行
+ *  (见 edc_commands_handle_session_switch)。
  *  running_only=true 只命中 edc_task_is_running() 的任务 (LLM_PROCESSING /
- *  TOOL_CALLING) —— 离开 session 只取消"正在跑的", WAITING_INPUT 等原样保留。 */
+ *  TOOL_CALLING), 其余状态原样保留; false 则清掉所有非终态任务。 */
 extern void edc_scheduler_send_signal_to_session(struct edc_scheduler *sched, struct edc_session *session,
                                                  edc_task_signal sig, bool running_only);
 extern void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, edc_task_signal sig);

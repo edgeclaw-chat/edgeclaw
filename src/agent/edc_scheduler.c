@@ -32,6 +32,16 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched);
 static void sched_notify_foreground_state(struct edc_scheduler *sched, struct edc_task *task);
 static void sched_set_task_state(struct edc_scheduler *sched, struct edc_task *task, edc_task_state state);
 
+/* 任务的属主 session: 被切到后台的 session 里的任务完成/取消时, turn、快照与
+ * 落盘都要写回**它自己**, 而不是当前绑定的 sched->session (否则串台)。group
+ * 没有属主时 (极端/测试) 回退到当前 session。 */
+static struct edc_session *sched_task_session(struct edc_scheduler *sched, struct edc_task *task)
+{
+    if (task && task->group && task->group->session)
+        return task->group->session;
+    return sched ? sched->session : NULL;
+}
+
 /* ── 生命周期 ──────────────────────────────────────────────── */
 
 struct edc_scheduler *edc_scheduler_new(struct edc_session *session, struct edc_config *config)
@@ -155,6 +165,11 @@ void edc_scheduler_set_foreground(struct edc_scheduler *sched, struct edc_task_g
     if (!sched)
         return;
     sched->foreground_group = group;
+    /* 同步到属主 session: 前台组随 session 保留, 切换/落盘都不丢。group 为
+     * NULL (如 /task bg) 时清掉当前 session 的前台组。 */
+    struct edc_session *owner = group ? group->session : sched->session;
+    if (owner)
+        owner->foreground_group = group;
 }
 
 struct edc_task_group *edc_scheduler_get_foreground(struct edc_scheduler *sched)
@@ -174,8 +189,9 @@ void edc_scheduler_set_session(struct edc_scheduler *sched, struct edc_session *
     if (!sched)
         return;
     sched->session = session;
-    /* 切换 session 后旧 session 的前台组不再有效; 命令层随后按需 reload/恢复 */
-    sched->foreground_group = NULL;
+    /* 恢复目标 session 自己的前台组 (随 session 保留); 新建 session 时为
+     * NULL —— 首个任务会自建一个前台组。 */
+    sched->foreground_group = session ? session->foreground_group : NULL;
 }
 
 /* 从 scheduler actor 取当前 session 绑定的工作目录 (未绑定返回 NULL)。
@@ -247,7 +263,7 @@ void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *
          * (/task stop) 调用, 不涉及 teardown 的 remove_all_turns。 */
         sched_notify_foreground_state(sched, task);
         if (sched->save_session)
-            sched->save_session(sched);
+            sched->save_session(sched, sched_task_session(sched, task));
     }
 }
 
@@ -650,6 +666,9 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
     {
         edc_scheduler_unregister_task(sched, msg->request_id);
         task->current_request_id = NULL;
+        /* 属主 session: 后台 session 里的任务完成时, turn 与 completion_seq 必须
+         * 落回它自己, 不能用当前绑定的 sched->session。 */
+        struct edc_session *own = sched_task_session(sched, task);
         if (task->active_turn)
         {
             edc_turn_add_assistant_message(task->active_turn, r->msg);
@@ -667,13 +686,13 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
             }
 
             /* sync to session (persistence) */
-            edc_session_add_turn(sched->session, task->active_turn);
+            edc_session_add_turn(own, task->active_turn);
         }
         edc_task_commit_active_turn(task);
         if (r->content)
             edc_task_set_output(task, sdsnew(r->content));
         sched_flush_redirects(task);
-        task->completion_seq = sched->session ? sched->session->next_completion_seq++ : 0;
+        task->completion_seq = own ? own->next_completion_seq++ : 0;
         sched_set_task_state(sched, task, TASK_COMPLETED);
 
         /* session 消息数刚因 turn 提交而增长。sched_set_task_state 里的
@@ -721,7 +740,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
             sched->trigger_memory(sched);
 
         if (sched->save_session)
-            sched->save_session(sched);
+            sched->save_session(sched, own);
         return;
     }
 
@@ -842,8 +861,12 @@ static void sched_handle_tool_emit(struct edc_scheduler *sched, struct edc_actor
     if (!task || task->cancelled_request)
         return;
 
-    /* only active task outputs to terminal */
-    if (!sched->session || edc_session_get_active_task(sched->session) != task)
+    /* 当前显示的 session 只放行 active task; 后台 session 的工具输出照发,
+     * 由前端按其 session_id 静默写进它自己的流。 */
+    struct edc_session *own = sched_task_session(sched, task);
+    if (!own)
+        return;
+    if (own == sched->session && edc_session_get_active_task(own) != task)
         return;
 
     if (sched->send_tool_message)
@@ -991,9 +1014,11 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
         sched_handle_memory_done(sched, msg);
         break;
     case BC_ACTOR_MSG_GROUP_FOLD_DONE:
-        /* L1 折叠完成, 持久化 state (turns_folded/memory/fold_cursor) */
+        /* L1 折叠完成, 持久化 state (turns_folded/memory/fold_cursor)。
+         * 折叠消息不带 group, 无法定位属主 session, 退化为保存当前 session;
+         * 后台 session 的折叠结果会在它下次被保存时落盘。 */
         if (sched->save_session)
-            sched->save_session(sched);
+            sched->save_session(sched, sched->session);
         break;
     case BC_ACTOR_MSG_TASK_SNAPSHOT:
         sched_handle_task_snapshot(sched);

@@ -108,6 +108,10 @@ const char *edc_c_channel_message_header(struct edc_channel_message *channel_mes
  * sender is not a task (user input, task snapshot, ...). Lets the chat view
  * label messages with their task. */
 const char *edc_c_channel_message_task_id(struct edc_channel_message *channel_message);
+/* Id of the session that owns the producing task, or NULL when the sender is
+ * not a task. Lets the chat view append a background session's output to that
+ * session's own transcript instead of the currently displayed one. */
+const char *edc_c_channel_message_session_id(struct edc_channel_message *channel_message);
 int edc_c_channel_message_is_user(struct edc_channel_message *channel_message);
 int edc_c_channel_message_is_tool(struct edc_channel_message *channel_message);
 int edc_c_channel_message_is_thought(struct edc_channel_message *channel_message);
@@ -165,6 +169,12 @@ bool edc_c_history_path(char *buf, size_t cap);
  * false leaves |buf| empty. Only the path is resolved here -- the TUI owns the file
  * format and does the I/O. */
 bool edc_c_session_chat_log_path(struct edc_agent *agent, char *buf, size_t cap);
+
+/* Copy the chat-transcript path of the session with |session_id| into |buf|.
+ * Like edc_c_session_chat_log_path, but for an arbitrary session — the TUI uses
+ * it to persist a background session's output into its own transcript. Returns
+ * false (buf left empty) when the id names no known session or it didn't fit. */
+bool edc_c_session_chat_log_path_for(struct edc_agent *agent, const char *session_id, char *buf, size_t cap);
 
 /* Write |data| to |path| with symlink safety: the final component must not be a
  * symlink (opened with O_NOFOLLOW), and when |under_workspace| is true the

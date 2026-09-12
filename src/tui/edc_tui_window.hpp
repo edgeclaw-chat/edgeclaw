@@ -73,6 +73,11 @@ class TUIWindow : public ::ftxui::ComponentBase
     // |render_pref| is EDC_C_RENDER_*. A failed write must not disturb the UI.
     void AppendChatTranscript(const std::string &kind, const std::string &header, const std::string &content,
                               const std::string &task_id, int render_pref);
+    // Append to an explicit transcript path (not necessarily the active
+    // session's). Used to persist a background session's output into its own
+    // transcript while another session is on screen.
+    void AppendChatTranscriptTo(const std::string &path, const std::string &kind, const std::string &header,
+                                const std::string &content, const std::string &task_id, int render_pref);
     // Show "processing" exactly while the foreground group's active task runs.
     void SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap);
     // Switch the log to |session_id|'s transcript: when the id changes the log

@@ -278,6 +278,21 @@ static void test_switch_save(void)
     CHECK(rtA != NULL, "task-A still in session A");
     CHECK_STREQ(rtA->output, "output from A", "session A output intact");
 
+    /* Switch-back regression: A's foreground group must survive the round trip
+     * through session.json, and a task created afterwards must join it instead
+     * of spawning its own group (the old bug dropped foreground_group_id when
+     * the outgoing session was saved without a scheduler, so create_task fell
+     * back to gid == tid, i.e. a brand-new group). */
+    CHECK(scA2->foreground_group != NULL, "foreground group restored after switch-back");
+    CHECK(scA2->foreground_group != NULL && strcmp(scA2->foreground_group->group_id, "task-A") == 0,
+          "restored foreground group has the original group id");
+    struct edc_task *fresh = edc_scheduler_create_task(scA2, "next task", edc_channel_adapter);
+    CHECK(fresh != NULL, "new task created after switch-back");
+    CHECK(fresh != NULL && strcmp(fresh->group_id, "task-A") == 0, "new task joins the restored foreground group");
+    CHECK(fresh != NULL && strcmp(fresh->group_id, fresh->task_id) != 0, "new task does not spawn its own group");
+    if (fresh)
+        edc_task_free(fresh);
+
     /* Verify session B's file has correct data */
     struct edc_session *sB2 = edc_session_new(cfg, "sess-B", "SessionB");
     struct edc_scheduler *scB2 = edc_scheduler_new(sB2, cfg);
@@ -295,6 +310,60 @@ static void test_switch_save(void)
     edc_session_free(sA2); edc_scheduler_free(scA2);
     edc_session_free(sB); edc_scheduler_free(scB);
     edc_session_free(sB2); edc_scheduler_free(scB2);
+    edc_config_free(cfg);
+    clean_workspace();
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Test 3b: switching away keeps the session running
+ *  ══════════════════════════════════════════════════════════════ */
+
+/* Sessions are terminal tabs: switching away must NOT cancel the outgoing
+ * session's tasks, and its foreground group must be restored on switch-back so
+ * newly created tasks rejoin it instead of spawning a group of their own. */
+static void test_switch_keeps_background_running(void)
+{
+    TEST("switch: outgoing session keeps running; foreground group restored on return");
+    clean_workspace();
+
+    struct edc_config *cfg = make_config();
+
+    /* Session A with a running task + a foreground group. */
+    struct edc_session *sA = edc_session_new(cfg, "sess-A", "SessionA");
+    struct edc_scheduler *sc = edc_scheduler_new(sA, cfg);
+    struct edc_task *tA = edc_task_new("task-A", "sess-A", "task-A", "task in A", edc_channel_adapter);
+    edc_task_set_state(tA, TASK_WAITING_INPUT);
+    edc_task_set_state(tA, TASK_LLM_PROCESSING);
+    struct edc_task_group *gA = edc_scheduler_create_group(sc, tA);
+    edc_scheduler_set_foreground(sc, gA);
+    edc_session_set_active_task(sA, tA);
+
+    CHECK(gA->session == sA, "group records its owning session");
+    CHECK(sA->foreground_group == gA, "set_foreground mirrors to the owning session");
+
+    /* "Switch" to an empty session B (what /session switch does with the
+     * scheduler), then switch back. */
+    struct edc_session *sB = edc_session_new(cfg, "sess-B", "SessionB");
+    edc_scheduler_set_session(sc, sB);
+    CHECK(tA->state == TASK_LLM_PROCESSING, "outgoing session's running task is NOT cancelled");
+    CHECK(sc->foreground_group == NULL, "a fresh session starts with no foreground group");
+
+    edc_scheduler_set_session(sc, sA);
+    CHECK(sc->foreground_group == gA, "foreground group restored on switch-back");
+
+    struct edc_task *fresh = edc_scheduler_create_task(sc, "next task", edc_channel_adapter);
+    CHECK(fresh != NULL && strcmp(fresh->group_id, "task-A") == 0,
+          "new task joins the restored foreground group, not its own");
+    if (fresh)
+        edc_task_free(fresh);
+
+    cJSON_Delete(sA->messages);
+    sA->messages = NULL;
+    cJSON_Delete(sB->messages);
+    sB->messages = NULL;
+    edc_scheduler_free(sc);
+    edc_session_free(sA);
+    edc_session_free(sB);
     edc_config_free(cfg);
     clean_workspace();
 }
@@ -597,6 +666,7 @@ int main(void)
     test_exit_save();
     test_startup_load();
     test_switch_save();
+    test_switch_keeps_background_running();
     test_repeated_cycle();
     test_save_empty();
     test_missing_history();

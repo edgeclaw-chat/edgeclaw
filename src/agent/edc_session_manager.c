@@ -414,12 +414,14 @@ bool edc_session_manager_switch(struct edc_session_manager *sm, const char *name
         return true;
     }
 
-    /* Save current session */
+    /* Save the outgoing session's history. Its *state* is persisted by the
+     * caller before switching (see edc_commands_handle_session_switch) — the
+     * manager has no scheduler handle, so saving state here would drop the
+     * foreground group id and a new task would later spawn its own group. */
     struct edc_session *old = edc_session_manager_get_active(sm);
     if (old)
     {
         edc_session_save_history(old);
-        edc_session_save_state(old, NULL);
         sdsfree(old->last_active);
         old->last_active = edc_datetime_timestamp();
     }

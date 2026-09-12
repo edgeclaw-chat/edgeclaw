@@ -173,9 +173,10 @@ static void test_scheduler_fg_bg(void)
 /* ── 5. 信号发送 ──────────────────────────────────────────── */
 
 static int g_save_calls = 0;
-static void fake_save_session(struct edc_scheduler *sched)
+static void fake_save_session(struct edc_scheduler *sched, struct edc_session *session)
 {
     (void)sched;
+    (void)session;
     g_save_calls++;
 }
 

@@ -241,18 +241,19 @@ static bool edc_commands_handle_session_new(struct edc_agent *agent, edc_actor_t
     }
     const char *bound = edc_session_get_workdir(sess);
     sdsfree(dir);
-    /* 离开即取消: 旧 session 的**运行中**任务 (LLM/工具调用) 打成 CANCELLED 并
-     * 立即落盘; WAITING_INPUT / WAITING_DEPS / SUSPENDED 保持原状。此处
-     * sched->session 仍指向 old (set_session 尚未调用), 所以落盘要走显式的
-     * save_state(old, sched) —— 不能用 save_session 回调, 它保存的是已经被
-     * create 切过去的 "当前" session。 */
+    /* 切到新 session: 旧 session **继续在后台执行**, 不取消任何任务 (session
+     * 像终端 tab —— 切走不停进程)。但要在 set_session 之前把旧 session 落盘,
+     * 因为此后 sched->session 已指向新 session; 用显式 save_state(old, sched) ——
+     * 不能用 save_session 回调, 它保存的是已经被 create 切过去的 "当前" session。 */
     if (old && old != sess)
     {
-        edc_scheduler_send_signal_to_session(agent->scheduler, old, TASK_SIGTERM, true);
         edc_session_save_history(old);
         edc_session_save_state(old, agent->scheduler);
     }
     edc_scheduler_set_session(agent->scheduler, sess);
+    /* 全新 session: 内存状态即权威, 标记已加载, 避免日后切回时被（此时可能
+     * 已存在的）session.json 反序列化覆盖。 */
+    sess->state_loaded = true;
     edc_session_reload(sess, true);
 
     /* 新建 session 时把历史压进长期记忆 (MEMORY.md / HISTORY.md, force=true)。
@@ -297,12 +298,15 @@ static bool edc_commands_handle_session_switch(struct edc_agent *agent, edc_acto
         sdsfree(reply);
         return true;
     }
-    /* 离开即取消: 切走前把旧 session 的**运行中**任务 (LLM_PROCESSING /
-     * TOOL_CALLING) 打成 CANCELLED 并立即落盘; WAITING_INPUT 等原样保留。
-     * 必须在 set_session 之前做 —— 之后 sched->session 已指向新 session,
-     * 信号会打到新 session 的任务上。 */
+    /* 切走时旧 session **继续在后台执行** (session 像终端 tab, 切走切 tab 不停
+     * 进程), 因此不取消任何任务 —— 前台组随 session 保留 (session->foreground_group),
+     * 切回来时 set_session 会恢复。这里显式落一次盘: 旧 session 之后在后台继续
+     * 推进, 先保证已产生的内容持久 (前台组已随 session 落盘, 不再丢失)。 */
     if (old)
-        edc_agent_stop_running_turns(agent);
+    {
+        edc_session_save_history(old);
+        edc_session_save_state(old, agent->scheduler);
+    }
 
     if (!edc_session_manager_switch(agent->session_manager, arg))
     {
@@ -312,7 +316,13 @@ static bool edc_commands_handle_session_switch(struct edc_agent *agent, edc_acto
         return true;
     }
     edc_scheduler_set_session(agent->scheduler, new_sess);
-    edc_session_load_state(new_sess, agent->scheduler);
+    /* 只在本 run 首次激活该 session 时反序列化磁盘状态; 已加载过的 session
+     * (可能正在后台执行) 直接沿用内存对象, 避免被磁盘副本覆盖。 */
+    if (!new_sess->state_loaded)
+    {
+        edc_session_load_state(new_sess, agent->scheduler);
+        new_sess->state_loaded = true;
+    }
     edc_session_reload(new_sess, true);
     sds reply =
         sdscatprintf(sdsempty(), "**Switched** — `[%s]` %s", new_sess->session_id, edc_session_get_name(new_sess));
@@ -356,11 +366,11 @@ static bool edc_commands_handle_session_remove(struct edc_agent *agent, edc_acto
     sds stopped_id = sdsnew(target->session_id);
     sds stopped_name = sdsnew(edc_session_get_name(target));
 
-    /* 离开即取消: 移除前把该 session 的**运行中**任务打成 CANCELLED
-     * (WAITING_INPUT 等原样保留)。随后 edc_session_manager_stop 内部的 save
-     * 会把内存里的 CANCELLED 落盘。目标可能不是当前 active session, 故用
-     * session 版信号显式指定目标, 不依赖 sched->session。 */
-    edc_scheduler_send_signal_to_session(agent->scheduler, target, TASK_SIGTERM, true);
+    /* /session remove = 用户明确表达移除意愿 (相当于关掉这个 tab): 全取消该
+     * session 的所有非终态任务 (含 WAITING_INPUT), 而非只掐在途执行。随后
+     * edc_session_manager_stop 内部的 save 会把内存里的 CANCELLED 落盘。目标
+     * 可能不是当前 active session, 故用 session 版信号显式指定目标。 */
+    edc_scheduler_send_signal_to_session(agent->scheduler, target, TASK_SIGTERM, false);
 
     if (!edc_session_manager_stop(agent->session_manager, arg))
     {
@@ -371,6 +381,11 @@ static bool edc_commands_handle_session_remove(struct edc_agent *agent, edc_acto
     }
     struct edc_session *new_active = edc_session_manager_get_active(agent->session_manager);
     edc_scheduler_set_session(agent->scheduler, new_active);
+    if (new_active && !new_active->state_loaded)
+    {
+        edc_session_load_state(new_active, agent->scheduler);
+        new_active->state_loaded = true;
+    }
     edc_session_reload(new_active, true);
     sds reply = sdscatprintf(sdsempty(), "**Session removed** — `[%s]` %s", stopped_id, stopped_name);
     edc_commands_reply(agent, actor, channel_type, reply);

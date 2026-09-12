@@ -43,7 +43,9 @@ extern struct edc_session *edc_session_manager_create(struct edc_session_manager
 extern struct edc_session *edc_session_manager_create_ex(struct edc_session_manager *sm, const char *name,
                                                          const char *workdir);
 
-/** Switch to a session by name or id. Saves current session first. */
+/** Switch to a session by name or id. Saves the outgoing session's history;
+ *  its state (which needs the scheduler for the foreground group) must be
+ *  persisted by the caller before switching. */
 extern bool edc_session_manager_switch(struct edc_session_manager *sm, const char *name_or_id);
 
 /** Stop (close) a session: save history, remove from active list.

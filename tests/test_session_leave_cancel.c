@@ -1,15 +1,18 @@
-/* Regression tests for "离开即取消" semantics:
+/* Regression tests for the session "leave / teardown" cancel semantics:
  *
- *   离开一个 session (/session switch / /session new / /session stop) 时, 只把
- *   该 session 里**正在执行**的任务 (LLM_PROCESSING / TOOL_CALLING) 打成
- *   CANCELLED 并落盘 —— 中断 = stop = cancelled。WAITING_INPUT / WAITING_DEPS /
- *   SUSPENDED 等非运行态任务原样保留: task 是什么状态就是什么状态, 离开不等于
- *   把它们都停掉。
+ *   切换 session (/session switch|new) **不取消**任何任务 —— session 像终端
+ *   tab, 切走继续在后台执行 (见 edc_commands_handle_session_switch)。
+ *   真正会取消任务的只有:
+ *     - 进程退出: running_only=true, 只把该 session 里**正在执行**的任务
+ *       (LLM_PROCESSING / TOOL_CALLING) 打成 CANCELLED; WAITING_INPUT /
+ *       WAITING_DEPS / SUSPENDED 原样保留。退出前先落盘, 磁盘留在途态, 加载
+ *       时统一收敛为 SUSPENDED (用户可选择 resume)。
+ *     - /session remove: running_only=false, 用户明确要移除 → 全取消。
  *
  * 覆盖三个层面:
  *   1. edc_scheduler_send_signal_to_session(..., running_only=true) 只命中指定
  *      session 的运行中任务: 不碰别的 session, 不碰终态 (COMPLETED), 不碰
- *      WAITING_INPUT; running_only=false (显式 /stop) 仍然全清;
+ *      WAITING_INPUT; running_only=false 仍然全清;
  *   2. 信号 + save 之后反序列化回来: 终态 CANCELLED 原样保留; 未完成的
  *      WAITING_INPUT 落地后加载时统一收敛为 SUSPENDED (由用户 resume 再判定);
  *   3. 重启安全网: 中断的在途任务 (LLM_PROCESSING) 加载后为 SUSPENDED, 而不是

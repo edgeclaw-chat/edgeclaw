@@ -662,7 +662,13 @@ static std::string UnescapeTranscriptField(const std::string &s)
 void TUIWindow::AppendChatTranscript(const std::string &kind, const std::string &header, const std::string &content,
                                      const std::string &task_id, int render_pref)
 {
-    if (chat_log_path_.empty())
+    AppendChatTranscriptTo(chat_log_path_, kind, header, content, task_id, render_pref);
+}
+
+void TUIWindow::AppendChatTranscriptTo(const std::string &path, const std::string &kind, const std::string &header,
+                                       const std::string &content, const std::string &task_id, int render_pref)
+{
+    if (path.empty())
         return;
     // Symlink-safe append: the transcript lives under the model-writable
     // workspace, so refuse to follow a planted symlink (see
@@ -670,7 +676,7 @@ void TUIWindow::AppendChatTranscript(const std::string &kind, const std::string 
     std::string line = EscapeTranscriptField(kind) + "\t" + std::to_string(render_pref) + "\t" +
                        EscapeTranscriptField(task_id) + "\t" + EscapeTranscriptField(header) + "\t" +
                        EscapeTranscriptField(content) + "\n";
-    edc_c_agent_write_file(agent, chat_log_path_.c_str(), line.data(), line.size(), /*append=*/true,
+    edc_c_agent_write_file(agent, path.c_str(), line.data(), line.size(), /*append=*/true,
                            /*under_workspace=*/true);
 }
 
@@ -1160,12 +1166,16 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     // for callers; the chat widgets no longer render a "task N" tag.
     const char *task_id_c = edc_c_channel_message_task_id(message);
     const std::string task_id = task_id_c ? task_id_c : "";
+    // Session that owns the producing task (NULL for user input / snapshots).
+    // Lets a background session's output be persisted to *its own* transcript.
+    const char *session_id_c = edc_c_channel_message_session_id(message);
+    const std::string session_id = session_id_c ? session_id_c : "";
     // Sender-declared render preference (PLAIN/MARKDOWN). Read here while
     // the message is still alive; the closure below only needs the int.
     const int render_pref = edc_c_channel_message_render_pref(message);
     const time_t ts = ::time(nullptr);
 
-    auto add_message = [tui, kind, text, header, task_id, render_pref, ts]() {
+    auto add_message = [tui, kind, text, header, task_id, session_id, render_pref, ts]() {
         std::shared_ptr<Message> widget;
         // todowrite 的 TOOL 消息不进对话区：TODO 状态已由右侧 TodoWidget 展示，
         // 数据源是任务快照里 active task 的 todo（工具每次回显都会补推快照）。
@@ -1226,6 +1236,18 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
         }
         if (!skip_chat && widget)
         {
+            // A background session's output must not appear in the tab that is
+            // currently displayed; persist it into *that* session's transcript
+            // so it shows up when the user switches back. The current tab (and
+            // its sidebar) is left untouched.
+            if (!session_id.empty() && session_id != tui->current_session_id_)
+            {
+                char path[4096];
+                if (edc_c_session_chat_log_path_for(tui->agent, session_id.c_str(), path, sizeof(path)))
+                    tui->AppendChatTranscriptTo(path, kind_str, header, text, task_id, render_pref);
+                return;
+            }
+
             // Persist exactly what is shown so the next start replays it.
             tui->AppendChatTranscript(kind_str, header, text, task_id, render_pref);
             tui->chat_widget_->AddMessage(widget);

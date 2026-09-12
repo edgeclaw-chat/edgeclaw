@@ -333,6 +333,9 @@ void edc_session_add_group(struct edc_session *session, struct edc_task_group *g
 {
     if (!session || !group)
         return;
+    /* 属主反向指针: 任务在后台 session 里跑完时, 调度器靠它把 turn/快照/落盘
+     * 写回正确的 session, 而不是当前绑定的 sched->session。 */
+    group->session = session;
     DL_APPEND(session->groups, group);
 }
 
@@ -341,6 +344,7 @@ void edc_session_remove_group(struct edc_session *session, struct edc_task_group
     if (!session || !group)
         return;
     DL_DELETE(session->groups, group);
+    group->session = NULL;
 }
 
 struct edc_task_group *edc_session_find_group(struct edc_session *session, const char *group_id)

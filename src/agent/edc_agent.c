@@ -131,7 +131,10 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
     cJSON *msgs = cJSON_CreateArray();
 
     sds pristine = NULL;
-    const char *workdir = edc_scheduler_session_workdir(edc_scheduler_get_actor(sched));
+    /* 属主 session 的 workdir: 后台 session 里的任务续跑时系统提示里的
+     * {{cwd}} 必须是它自己的目录, 不是当前显示 session 的。 */
+    struct edc_session *own = (task->group && task->group->session) ? task->group->session : sched->session;
+    const char *workdir = own ? edc_session_get_workdir(own) : NULL;
     edc_context_append_system_part(msgs, agent->config, task->group, workdir, &pristine);
 
     /* group 无历史时 context 现拼的纯净 prompt: 写回 group history[0] (组内
@@ -278,8 +281,13 @@ static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task
     if (!agent || !task || !content)
         return;
 
-    /* only active task outputs to terminal */
-    if (!sched->session || edc_session_get_active_task(sched->session) != task)
+    /* 属主 session: 当前显示的 session 只放行 active task 的输出 (保持原样);
+     * 被切到后台的 session 照发, 由前端按 session_id 静默写进它自己的显示流
+     * (静默 = 不在当前 tab 冒泡)。 */
+    struct edc_session *own = (task->group && task->group->session) ? task->group->session : sched->session;
+    if (!own)
+        return;
+    if (own == sched->session && edc_session_get_active_task(own) != task)
         return;
 
     struct edc_channel_message *reply = edc_channel_message_new(task->channel_type, message_type, sdsnew(content));
@@ -287,6 +295,9 @@ static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task
      * task a chat message belongs to (interleaved tasks in one session). */
     if (task->task_id)
         reply->task_id = sdsnew(task->task_id);
+    /* And with its owning session, so a background session's output lands in
+     * that session's transcript rather than the one on screen. */
+    reply->session_id = sdsnew(own->session_id);
     /* 发送方显式声明渲染偏好，渲染端(CLI/TUI)不再猜测：
      * 只有 LLM 回复 (RESP) 声明按 Markdown 渲染；思考/系统等内部文本保持
      * 默认 PLAIN（零值），原样显示。 */
@@ -314,6 +325,13 @@ static void edc_agent_cb_send_tool_message(struct edc_scheduler *sched, struct e
     reply->render_pref = render_pref;
     if (task->task_id)
         reply->task_id = sdsnew(task->task_id);
+    /* Owning session (see edc_agent_cb_send_reply): routes a background
+     * session's tool output into its own transcript. */
+    {
+        struct edc_session *own = (task->group && task->group->session) ? task->group->session : sched->session;
+        if (own && own->session_id)
+            reply->session_id = sdsnew(own->session_id);
+    }
     if (header && *header)
         reply->header = sdsnew(header);
 
@@ -444,32 +462,41 @@ static void edc_agent_cb_trigger_memory(struct edc_scheduler *sched)
         msg_threshold = EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
 
     /* L1 折叠触发: 组内存在可折叠 task 且未折叠消息条数 ≥ 阈值。
-     * 触发时机只由对话条数驱动 —— 不再看可折叠 task 个数。 */
-    struct edc_task_group *g;
-    DL_FOREACH(sched->session->groups, g)
+     * 触发时机只由对话条数驱动 —— 不再看可折叠 task 个数。
+     * 扫描**所有** session: 后台 session 里的任务完成后也要能触发折叠, 否则
+     * 只有切回来才折叠。一次只折叠一个 group。 */
+    struct edc_session_manager *sm = agent->session_manager;
+    for (int si = 0; si < sm->session_count; si++)
     {
-        size_t foldable = edc_task_group_count_foldable(g);
-        size_t unfolded = edc_task_group_unfolded_msg_count(g);
-        bool should_fold = foldable > 0 && unfolded >= (size_t)msg_threshold;
+        struct edc_session *sess = sm->sessions[si];
+        if (!sess)
+            continue;
+        struct edc_task_group *g;
+        DL_FOREACH(sess->groups, g)
+        {
+            size_t foldable = edc_task_group_count_foldable(g);
+            size_t unfolded = edc_task_group_unfolded_msg_count(g);
+            bool should_fold = foldable > 0 && unfolded >= (size_t)msg_threshold;
 
-        if (should_fold)
-        {
-            log_info("L1 fold trigger: group %s foldable=%zu unfolded=%zu (msg_thr=%d)", g->group_id, foldable,
-                     unfolded, msg_threshold);
-            edc_actor_send(agent->memory_actor,
-                           edc_actor_msg_new(BC_ACTOR_MSG_GROUP_FOLD, edc_scheduler_get_actor(sched), NULL, g, NULL));
-            break; /* 一次只折叠一个 group */
-        }
-        else if (foldable > 0 || unfolded > 0)
-        {
-            log_debug("L1 fold check: group %s foldable=%zu unfolded=%zu", g->group_id, foldable, unfolded);
+            if (should_fold)
+            {
+                log_info("L1 fold trigger: group %s foldable=%zu unfolded=%zu (msg_thr=%d)", g->group_id, foldable,
+                         unfolded, msg_threshold);
+                edc_actor_send(agent->memory_actor, edc_actor_msg_new(BC_ACTOR_MSG_GROUP_FOLD,
+                                                                      edc_scheduler_get_actor(sched), NULL, g, NULL));
+                return; /* 一次只折叠一个 group */
+            }
+            else if (foldable > 0 || unfolded > 0)
+            {
+                log_debug("L1 fold check: group %s foldable=%zu unfolded=%zu", g->group_id, foldable, unfolded);
+            }
         }
     }
 }
 
 /* ── 回调: 保存 Session ────────────────────────────────────── */
 
-static void edc_agent_cb_save_session(struct edc_scheduler *sched)
+static void edc_agent_cb_save_session(struct edc_scheduler *sched, struct edc_session *session)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
     if (!agent || !agent->session_manager)
@@ -478,10 +505,12 @@ static void edc_agent_cb_save_session(struct edc_scheduler *sched)
     /* Save history for all sessions */
     edc_session_manager_save_all(agent->session_manager);
 
-    /* Save state for the current (active) session */
-    struct edc_session *active = edc_session_manager_get_active(agent->session_manager);
-    if (active)
-        edc_session_save_state(active, sched);
+    /* Save state for the requested session (NULL = the active one). Background
+     * task completions pass the owning session so their progress is persisted
+     * even while a different session is displayed. */
+    struct edc_session *target = session ? session : edc_session_manager_get_active(agent->session_manager);
+    if (target)
+        edc_session_save_state(target, sched);
 }
 
 /* ── 回调: task 树快照回传 ─────────────────────────────────── */
@@ -513,10 +542,8 @@ void edc_agent_remove_all_turns(struct edc_agent *agent)
     edc_scheduler_send_signal_to_all(agent->scheduler, TASK_SIGTERM);
 }
 
-/* 用户 /stop: 取消当前 session 全部非终结 turns 后立即保存状态, 使 CANCELLED
- * 跨重启保留。
- * 与 remove_all_turns 不同 —— 后者只剩进程 teardown 一个调用点, 那里故意不落盘
- * (teardown 若落盘会把退出瞬间所有非终结任务都写死)。
+/* 用户 /stop (/session stop): 取消当前 session 全部非终结 turns 后立即保存状态,
+ * 使 CANCELLED 跨重启保留。
  * 注: 目标不是当前 active session 时 (如 /session stop <other>), 走
  * edc_scheduler_send_signal_to_session(sched, target, sig, true), 因为此时
  * sched->session 不是目标。 */
@@ -526,20 +553,7 @@ void edc_agent_stop_all_turns(struct edc_agent *agent)
         return;
     edc_scheduler_send_signal_to_all(agent->scheduler, TASK_SIGTERM);
     if (agent->scheduler->save_session)
-        agent->scheduler->save_session(agent->scheduler);
-}
-
-/* "离开 session" (/session switch): 只取消当前 session 里**正在执行**的任务
- * (LLM_PROCESSING / TOOL_CALLING), 其余 (WAITING_INPUT / WAITING_DEPS /
- * SUSPENDED) 原样保留 —— task 是什么状态就是什么状态, 离开不等于把它们都停掉。
- * 取消后立即落盘。目标始终是当前 active session。 */
-void edc_agent_stop_running_turns(struct edc_agent *agent)
-{
-    if (!agent || !agent->scheduler)
-        return;
-    edc_scheduler_send_signal_to_session(agent->scheduler, agent->scheduler->session, TASK_SIGTERM, true);
-    if (agent->scheduler->save_session)
-        agent->scheduler->save_session(agent->scheduler);
+        agent->scheduler->save_session(agent->scheduler, agent->scheduler->session);
 }
 
 /* ── 生命周期 ──────────────────────────────────────────────── */
@@ -628,7 +642,12 @@ struct edc_agent *edc_agent_new(bool setup, int sandbox_override)
     {
         struct edc_session *active = edc_session_manager_get_active(agent->session_manager);
         if (active)
+        {
             edc_session_load_state(active, agent->scheduler);
+            /* 内存即权威: 之后再次切回本 session 不再 load_state (否则会覆盖
+             * 可能正在后台执行的活动对象)。 */
+            active->state_loaded = true;
+        }
     }
 
     edc_channel_actor_set_observer(agent->channel_actor, edc_scheduler_get_actor(agent->scheduler));
@@ -830,6 +849,22 @@ bool edc_agent_set_sandbox_path(struct edc_agent *agent, const char *path, edc_s
     return true;
 }
 
+/* 退出落盘辅助: 全量 history + **每个** session 的 state (含后台 session)。
+ * 前台组已随 session 保存 (session->foreground_group), 逐 session save_state
+ * 不会互相污染。 */
+static void edc_agent_save_all_sessions_state(struct edc_agent *agent)
+{
+    if (!agent || !agent->session_manager || !agent->scheduler)
+        return;
+    edc_session_manager_save_all(agent->session_manager);
+    for (int i = 0; i < agent->session_manager->session_count; i++)
+    {
+        struct edc_session *s = agent->session_manager->sessions[i];
+        if (s)
+            edc_session_save_state(s, agent->scheduler);
+    }
+}
+
 void edc_agent_free(struct edc_agent *agent)
 {
     if (!agent)
@@ -841,12 +876,13 @@ void edc_agent_free(struct edc_agent *agent)
     edc_llm_actor_free(agent->llm_actor);
     edc_memory_actor_free(agent->memory_actor);
 
-    /* 退出前完整落盘 (history + index + task/group state): 让中断任务以
-     * LLM_PROCESSING/TOOL_CALLING + 工具账本原样保存, 而不是被下面的
-     * remove_all_turns 先取消成 CANCELLED。加载时统一收敛为 SUSPENDED。
-     * 放在 actor runner 停掉之后调用, 避免与 actor 线程并发写。 */
-    if (agent->scheduler && agent->scheduler->save_session)
-        agent->scheduler->save_session(agent->scheduler);
+    /* 退出 = 关闭进程, 不是用户要 remove session: 尽量保留原状态。把所有
+     * session 完整落盘 (history + state + task/group), 让中断任务以
+     * LLM_PROCESSING/TOOL_CALLING + 工具账本**原样**保存, 加载时统一收敛为
+     * SUSPENDED, 用户可选择是否 resume —— 因此不写 CANCELLED, 也不在取消后
+     * 再落盘。放在 actor runner 停掉之后调用, 避免与 actor 线程并发写。 */
+    if (agent->scheduler)
+        edc_agent_save_all_sessions_state(agent);
 
     edc_agent_remove_all_turns(agent);
 

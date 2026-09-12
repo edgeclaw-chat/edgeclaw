@@ -53,6 +53,14 @@ const char *edc_c_channel_message_task_id(struct edc_channel_message *channel_me
     return channel_message ? channel_message->task_id : NULL;
 }
 
+/* Id of the session that owns the producing task (see struct edc_channel_message).
+ * NULL when the sender is not a task. The TUI uses it to route a background
+ * session's output into that session's transcript instead of the displayed one. */
+const char *edc_c_channel_message_session_id(struct edc_channel_message *channel_message)
+{
+    return channel_message ? channel_message->session_id : NULL;
+}
+
 int edc_c_channel_message_is_user(struct edc_channel_message *channel_message)
 {
     return channel_message ? channel_message->message_type == EDC_CHANNEL_MESSAGE_USER_TYPE : 0;
@@ -381,15 +389,11 @@ bool edc_c_agent_session_id(struct edc_agent *agent, char *buf, size_t cap)
     return true;
 }
 
-bool edc_c_session_chat_log_path(struct edc_agent *agent, char *buf, size_t cap)
+static bool chat_log_path_for_session(struct edc_session *session, char *buf, size_t cap)
 {
     if (!buf || cap == 0)
         return false;
     buf[0] = '\0';
-
-    if (!agent || !agent->session_manager)
-        return false;
-    struct edc_session *session = edc_session_manager_get_active(agent->session_manager);
     if (!session || !session->history_dir)
         return false;
 
@@ -410,6 +414,31 @@ bool edc_c_session_chat_log_path(struct edc_agent *agent, char *buf, size_t cap)
         memcpy(buf, path, sdslen(path) + 1);
     sdsfree(path);
     return ok;
+}
+
+bool edc_c_session_chat_log_path(struct edc_agent *agent, char *buf, size_t cap)
+{
+    if (!agent || !agent->session_manager)
+    {
+        if (buf && cap > 0)
+            buf[0] = '\0';
+        return false;
+    }
+    return chat_log_path_for_session(edc_session_manager_get_active(agent->session_manager), buf, cap);
+}
+
+/* Like edc_c_session_chat_log_path, but for an arbitrary session id — lets the
+ * TUI append a background session's output to *its own* transcript even while a
+ * different session is displayed. */
+bool edc_c_session_chat_log_path_for(struct edc_agent *agent, const char *session_id, char *buf, size_t cap)
+{
+    if (!agent || !agent->session_manager || !session_id)
+    {
+        if (buf && cap > 0)
+            buf[0] = '\0';
+        return false;
+    }
+    return chat_log_path_for_session(edc_session_manager_find(agent->session_manager, session_id), buf, cap);
 }
 
 bool edc_c_agent_write_file(struct edc_agent *agent, const char *path, const char *data, size_t len, bool append,
