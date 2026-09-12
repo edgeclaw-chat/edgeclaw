@@ -39,6 +39,34 @@ sds *edc_shell_split_pipeline(const char *input, int *count)
     return segs;
 }
 
+/* Append the sandbox allow/deny path lists as one markdown sub-list per section. */
+static sds edc_shell_sandbox_paths_md(sds out, struct edc_config *conf)
+{
+    struct
+    {
+        const char *label;
+        sds *paths;
+    } sections[] = {
+        {"read-write", conf->sandbox_rw_paths},
+        {"read-only", conf->sandbox_ro_paths},
+        {"denied (masked)", conf->sandbox_deny_paths},
+    };
+
+    for (size_t i = 0; i < sizeof(sections) / sizeof(sections[0]); i++)
+    {
+        out = sdscatprintf(out, "- **%s**\n", sections[i].label);
+        bool any = false;
+        for (int j = 0; sections[i].paths && sections[i].paths[j]; j++)
+        {
+            out = sdscatprintf(out, "  - `%s`\n", sections[i].paths[j]);
+            any = true;
+        }
+        if (!any)
+            out = sdscat(out, "  - _(none)_\n");
+    }
+    return out;
+}
+
 bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel_message *message)
 {
     sds content = sdstrim(sdsnew(message->content), " \t\r\n");
@@ -49,26 +77,25 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
         struct edc_task_group *fg = agent->scheduler->foreground_group;
         struct edc_task *active = sess ? sess->active_task : NULL;
         sds out = sdscatprintf(sdsempty(),
-                               "session: %s\n"
-                               "model: %s\n",
+                               "## Whoami\n\n"
+                               "- **session**: `%s`\n"
+                               "- **model**: `%s`\n",
                                sess ? edc_session_get_name(sess) : "none",
                                agent->config->llm_api_conf.model ? agent->config->llm_api_conf.model : "default");
         if (fg)
         {
             struct edc_task *leader = fg->leader;
-            out = sdscatprintf(out,
-                               "[fg] group: %s (%d tasks)\n"
-                               "      leader: %s  %s\n"
-                               "      active: %s",
-                               fg->group_id, fg->member_count, leader ? leader->task_id : "?",
-                               (leader && *leader->description) ? leader->description : "",
-                               active ? active->task_id : "none");
-            if (active && *active->description)
-                out = sdscatprintf(out, "  %s", active->description);
+            out = sdscatprintf(out, "- **foreground group**: `%s` · %d tasks\n", fg->group_id, fg->member_count);
+            out = sdscatprintf(out, "  - **leader**: `%s`%s%s\n", leader ? leader->task_id : "?",
+                               (leader && *leader->description) ? " — " : "",
+                               (leader && *leader->description) ? leader->description : "");
+            out = sdscatprintf(out, "  - **active**: `%s`%s%s\n", active ? active->task_id : "none",
+                               (active && *active->description) ? " — " : "",
+                               (active && *active->description) ? active->description : "");
         }
         else
         {
-            out = sdscat(out, "foreground group: none");
+            out = sdscat(out, "- **foreground group**: _(none)_\n");
         }
         edc_commands_reply(agent, actor, message->type, out);
         sdsfree(out);
@@ -84,7 +111,7 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
             if (agent->config->llm_api_conf.model)
                 sdsfree(agent->config->llm_api_conf.model);
             agent->config->llm_api_conf.model = sdsdup(arg);
-            sds reply = sdscatprintf(sdsempty(), "model set to: %s", agent->config->llm_api_conf.model);
+            sds reply = sdscatprintf(sdsempty(), "**Model** — set to `%s`.", agent->config->llm_api_conf.model);
             edc_commands_reply(agent, actor, message->type, reply);
             sdsfree(reply);
         }
@@ -94,7 +121,7 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
     }
     if (strcmp(content, "/model") == 0)
     {
-        sds reply = sdscatprintf(sdsempty(), "model: %s",
+        sds reply = sdscatprintf(sdsempty(), "**Model** — `%s`",
                                  agent->config->llm_api_conf.model ? agent->config->llm_api_conf.model : "default");
         edc_commands_reply(agent, actor, message->type, reply);
         sdsfree(reply);
@@ -114,17 +141,10 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
 
         if (sdslen(verb) == 0)
         {
-            sds reply = sdscatprintf(sdsempty(), "sandbox: %s\n", conf->enable_sandbox ? "on" : "off");
-            reply = sdscat(reply, "read-write:\n");
-            for (int i = 0; conf->sandbox_rw_paths && conf->sandbox_rw_paths[i]; i++)
-                reply = sdscatprintf(reply, "  %s\n", conf->sandbox_rw_paths[i]);
-            reply = sdscat(reply, "read-only:\n");
-            for (int i = 0; conf->sandbox_ro_paths && conf->sandbox_ro_paths[i]; i++)
-                reply = sdscatprintf(reply, "  %s\n", conf->sandbox_ro_paths[i]);
-            reply = sdscat(reply, "denied (masked):\n");
-            for (int i = 0; conf->sandbox_deny_paths && conf->sandbox_deny_paths[i]; i++)
-                reply = sdscatprintf(reply, "  %s\n", conf->sandbox_deny_paths[i]);
-            reply = sdscat(reply, "manage: /sandbox add-rw|add-ro|add-deny <dir> | rm-rw|rm-ro|rm-deny <dir>");
+            sds reply = sdscatprintf(sdsempty(), "## Sandbox `%s`\n\n", conf->enable_sandbox ? "on" : "off");
+            reply = edc_shell_sandbox_paths_md(reply, conf);
+            reply = sdscat(reply, "\nManage: `/sandbox add-rw|add-ro|add-deny <dir>` · "
+                                  "`/sandbox rm-rw|rm-ro|rm-deny <dir>`\n");
             edc_commands_reply(agent, actor, message->type, reply);
             sdsfree(reply);
         }
@@ -132,7 +152,7 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
         {
             bool enable = strcmp(verb, "on") == 0;
             bool saved = edc_agent_set_sandbox_enabled(agent, enable);
-            sds reply = sdscatprintf(sdsempty(), "sandbox: %s%s", enable ? "on" : "off",
+            sds reply = sdscatprintf(sdsempty(), "**Sandbox** — %s%s", enable ? "on" : "off",
                                      saved ? "" : " (not persisted: config.json write failed)");
             edc_commands_reply(agent, actor, message->type, reply);
             sdsfree(reply);
@@ -140,15 +160,7 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
         }
         else if (strcmp(verb, "list") == 0)
         {
-            sds reply = sdscat(sdsempty(), "read-write:\n");
-            for (int i = 0; conf->sandbox_rw_paths && conf->sandbox_rw_paths[i]; i++)
-                reply = sdscatprintf(reply, "  %s\n", conf->sandbox_rw_paths[i]);
-            reply = sdscat(reply, "read-only:\n");
-            for (int i = 0; conf->sandbox_ro_paths && conf->sandbox_ro_paths[i]; i++)
-                reply = sdscatprintf(reply, "  %s\n", conf->sandbox_ro_paths[i]);
-            reply = sdscat(reply, "denied (masked):\n");
-            for (int i = 0; conf->sandbox_deny_paths && conf->sandbox_deny_paths[i]; i++)
-                reply = sdscatprintf(reply, "  %s\n", conf->sandbox_deny_paths[i]);
+            sds reply = edc_shell_sandbox_paths_md(sdsempty(), conf);
             edc_commands_reply(agent, actor, message->type, reply);
             sdsfree(reply);
         }
@@ -171,9 +183,10 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
                 bool ok = edc_agent_set_sandbox_path(agent, rest, kind, add, &msg);
                 sds reply;
                 if (ok)
-                    reply = sdscatprintf(sdsempty(), "%s %s: %s", add ? "added" : "removed", klabel, rest);
+                    reply = sdscatprintf(sdsempty(), "**Sandbox** — %s %s path: `%s`", add ? "added" : "removed",
+                                         klabel, rest);
                 else
-                    reply = sdscatprintf(sdsempty(), "sandbox: cannot %s %s: %s", add ? "add" : "remove", rest,
+                    reply = sdscatprintf(sdsempty(), "**Sandbox** — cannot %s `%s`: %s", add ? "add" : "remove", rest,
                                          msg ? msg : "unknown error");
                 edc_commands_reply(agent, actor, message->type, reply);
                 sdsfree(reply);

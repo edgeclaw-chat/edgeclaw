@@ -518,23 +518,23 @@ bool edc_session_manager_rename(struct edc_session_manager *sm, const char *name
 sds edc_session_manager_list(struct edc_session_manager *sm)
 {
     if (!sm)
-        return sdsnew("no sessions");
+        return sdsnew("**Sessions** — none.");
 
     sds result = sdscatprintf(sdsempty(), "## Sessions (%d)\n\n", sm->session_count);
 
     for (int i = 0; i < sm->session_count; i++)
     {
         struct edc_session *s = sm->sessions[i];
-        const char *marker = (i == sm->active_index) ? " *" : "  ";
         size_t msg_count = edc_session_get_message_count(s);
+        bool active = (i == sm->active_index);
 
-        result = sdscatprintf(result, "%s [%s] %s\n", marker, s->session_id, s->name ? s->name : "(unnamed)");
-        result = sdscatprintf(result, "     messages: %zu, created: %s\n", msg_count,
+        result = sdscatprintf(result, "- `[%s]` **%s**%s\n", s->session_id, s->name ? s->name : "(unnamed)",
+                              active ? " · **current**" : "");
+        result = sdscatprintf(result, "  - messages: %zu · created: %s\n", msg_count,
                               s->created_at ? s->created_at : "unknown");
-
-        if (i < sm->session_count - 1)
-            result = sdscat(result, "\n");
     }
+    if (sm->session_count == 0)
+        result = sdscat(result, "_No sessions._\n");
 
     return result;
 }
