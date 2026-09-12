@@ -138,6 +138,11 @@ extern void edc_scheduler_unregister_task(struct edc_scheduler *sched, void *req
 /* ── 信号 ──────────────────────────────────────────────────── */
 
 extern void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *task_id, edc_task_signal sig);
+/** Signal a specific task by pointer (already resolved, possibly belonging to a
+ *  non-active session). Same semantics as the id-based variant; the id-based one
+ *  delegates here after a session-scoped lookup. */
+extern void edc_scheduler_send_signal_to_task_ptr(struct edc_scheduler *sched, struct edc_task *task,
+                                                  edc_task_signal sig);
 extern void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, const char *group_id, edc_task_signal sig);
 /** 对**指定** session 下所有 group 发信号 (不依赖 sched->session)。
  *  用于"明确要收尾"的路径: 进程退出用 running_only=true 只掐在途执行;

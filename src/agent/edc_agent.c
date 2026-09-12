@@ -85,8 +85,8 @@ static sds edc_agent_var_resolver(const char *name, void *user_data)
         return (last && last->output) ? sdsdup(last->output) : NULL;
     }
 
-    /* $NUMBER 或 $NAME → 按 task ID / job number 查找 */
-    struct edc_task *t = edc_session_find_task(edc_session_manager_get_active(agent->session_manager), name);
+    /* $NUMBER 或 $NAME → 按 task ID / job number 查找 (全局: task id 唯一, 可跨 session) */
+    struct edc_task *t = edc_session_manager_find_task_any(agent->session_manager, name, NULL);
     return (t && t->output) ? sdsdup(t->output) : NULL;
 }
 

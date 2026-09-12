@@ -221,13 +221,21 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
     }
 
     case AST_DEP: {
-        /* dependency declaration: add dep on dep_ids[0] to prev_task */
+        /* dependency declaration: add dep on dep_ids[0] to prev_task.
+         * Resolution is global — the dependency may live in another session
+         * (task ids are globally unique). An unknown id fails the command. */
         if (prev_task && node->dep_count > 0 && node->dep_ids[0])
         {
             struct edc_task *dt =
-                edc_session_find_task(edc_session_manager_get_active(agent->session_manager), node->dep_ids[0]);
+                edc_session_manager_find_task_any(agent->session_manager, node->dep_ids[0], NULL);
             if (dt)
                 edc_task_add_dependency(prev_task, dt, TASK_DEP_JOIN);
+            else
+            {
+                sds reply = sdscatprintf(sdsempty(), "Task not found: `%s`", node->dep_ids[0]);
+                edc_commands_reply(agent, actor, channel_type, reply);
+                sdsfree(reply);
+            }
         }
         return prev_task;
     }

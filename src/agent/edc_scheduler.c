@@ -333,10 +333,9 @@ void edc_scheduler_unregister_task(struct edc_scheduler *sched, void *request_id
 
 /* ── 信号 ──────────────────────────────────────────────────── */
 
-void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *task_id, edc_task_signal sig)
+void edc_scheduler_send_signal_to_task_ptr(struct edc_scheduler *sched, struct edc_task *task, edc_task_signal sig)
 {
-    struct edc_task *task = edc_scheduler_find_task_by_id(sched, task_id);
-    if (!task)
+    if (!sched || !task)
         return;
     if (task->current_request_id)
     {
@@ -349,11 +348,20 @@ void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *
         /* 显式取消必须立即持久化 + 推送快照: CANCELLED 目前只在内存里, 若不
          * 保存, 重启后任务会按 session.json 里的旧状态恢复 (运行中任务会被
          * 降级成 WAITING_INPUT), 取消看起来像没生效。此函数只被用户命令
-         * (/task stop) 调用, 不涉及 teardown 的 remove_all_turns。 */
+         * (/task stop) 调用, 不涉及 teardown 的 remove_all_turns。
+         * 落盘走任务的属主 session —— 跨 session 取消时同样写回源 session。 */
         sched_notify_foreground_state(sched, task);
         if (sched->save_session)
             sched->save_session(sched, sched_task_session(sched, task));
     }
+}
+
+void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *task_id, edc_task_signal sig)
+{
+    struct edc_task *task = edc_scheduler_find_task_by_id(sched, task_id);
+    if (!task)
+        return;
+    edc_scheduler_send_signal_to_task_ptr(sched, task, sig);
 }
 
 /* 对单个 group 发信号: 先反注册要取消的 in-flight 请求 (否则已作废的 LLM/

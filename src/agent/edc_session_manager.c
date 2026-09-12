@@ -355,6 +355,33 @@ int edc_session_manager_index_of(struct edc_session_manager *sm, const char *nam
     return -1;
 }
 
+struct edc_task *edc_session_manager_find_task_any(struct edc_session_manager *sm, const char *task_id,
+                                                   struct edc_session **owner_out)
+{
+    if (owner_out)
+        *owner_out = NULL;
+    if (!sm || !task_id)
+        return NULL;
+
+    /* Task ids are globally unique, so the first hit is the only hit. Search
+     * every in-memory session; a session that has not been activated yet has no
+     * groups loaded and therefore nothing to match. */
+    for (int i = 0; i < sm->session_count; i++)
+    {
+        struct edc_session *s = sm->sessions[i];
+        if (!s)
+            continue;
+        struct edc_task *t = edc_session_find_task(s, task_id);
+        if (t)
+        {
+            if (owner_out)
+                *owner_out = s;
+            return t;
+        }
+    }
+    return NULL;
+}
+
 /* ── Operations ────────────────────────────────────────────── */
 
 struct edc_session *edc_session_manager_create(struct edc_session_manager *sm, const char *name)
