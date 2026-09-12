@@ -139,6 +139,23 @@ load; `/task resume [tid]` re-derives their state (deps / tool chain / turn).
 A task that failed mid-run is `ERROR` but keeps its half-finished turn;
 `/task resume` continues it.
 
+Task ids are **globally unique across sessions** (persisted high-water mark in
+`<workspace>/.task_seq`), so a dependency may point at a task living in a
+**different session**. Every dependency-creating path — `/task new -d <id>`,
+`/task chain`, `/task join`, `$N` / `$VAR`, and `|` / `&&` — resolves the id
+globally, and so do `/task status`, `/task output`, `/task stop` and
+`/task resume` (the latter report the owning session). A referenced session that
+exists on disk but has not been loaded in this run is **activated on demand**
+(its `session.json` is probed and lazy-loaded). An id that cannot be resolved
+fails the command — dependencies are never silently dropped. Commands that
+change the *active session's* foreground view (`/task fg`, `/task bg`,
+`/task fork`) instead require the task to belong to the active session and
+refuse otherwise. The **foreground group** is a property of the session (its own
+tab), never mirrored on the scheduler.
+
+> Note: `/task new` parses flags only after a quoted input, so a cross-session
+> dependency is written `/task new """<description>""" -d <task_id>`.
+
 ## Features
 
 ### Frontends & Interfaces
@@ -286,6 +303,11 @@ subsequently spawned commands):
 - **Internal commands**: slash commands (`/session ...`,
   `/task ...`, `/connect`, `/sandbox ...`) and shell-like syntax (`|`, `;`, `&`, redirection, `$VAR`,
   `!n`/`!!`)
+- **Cross-session task dependencies**: task ids are globally unique, so
+  `-d`/`|`/`&&`/`$N` plus `/task chain` and `/task join` can reference a task in
+  another session; its session is activated on demand. `fg`/`bg`/`fork` remain
+  scoped to the active session, while `status`/`output`/`stop`/`resume` work
+  across sessions.
 - **Cron scheduling**: one-shot (`at`) or recurring (`cron_expr`/
   `every_seconds`) agent tasks via `ccronexpr`
 - **First-run setup**: `config.json` is created with sensible defaults (no prompts); configure the provider — API URL, model, key — later with `/connect`
