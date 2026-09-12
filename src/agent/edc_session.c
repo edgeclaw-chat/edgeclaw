@@ -229,9 +229,22 @@ struct edc_session *edc_session_new_with_workdir(struct edc_config *config, cons
     return session;
 }
 
+/* 强制按持久化历史重建 session->messages。**注意**: 会话生命周期 (switch/new/
+ * remove/stop/memory_done) 已不再调用它 —— LLM 上下文来自 group->history,
+ * session->messages 只是持久化用的 legacy 副本, 激活 session 时直接沿用内存
+ * 对象即可。保留为工具函数, 但必须带下面这道护栏: 组历史以**引用**方式共享
+ * session->messages 里的对象 (task 完成时 add_ref 记录, 紧接着 add_turn 把对象
+ * 移进 session->messages), 只要 session 还有 live groups, 清空重建就会让
+ * group->history 里的引用全部悬空, 下一次 LLM 请求遍历组历史即段错误。 */
 void edc_session_reload(struct edc_session *session, bool load_history)
 {
+    if (!session)
+        return;
+
     edc_session_save_history(session);
+
+    if (session->groups != NULL)
+        return;
 
     while (cJSON_GetArraySize(session->messages) > 0)
     {

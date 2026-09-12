@@ -91,6 +91,10 @@ extern sds edc_session_resolve_workdir(const char *base, const char *workdir, Ed
  *  unbind (revert to the launch directory). Returns true on success; on failure
  *  *error (when non-NULL) carries the reason and the binding is unchanged. */
 extern bool edc_session_set_workdir(struct edc_session *session, const char *workdir, EdcError **error);
+/** Rebuild session->messages from persisted history. NOTE: the session lifecycle
+ *  no longer calls this (LLM context lives in group->history, not
+ *  session->messages). It is a no-op rebuild while the session has live groups,
+ *  whose history references the current messages — rebuilding would dangle. */
 extern void edc_session_reload(struct edc_session *session, bool load_history);
 extern void edc_session_free(struct edc_session *session);
 

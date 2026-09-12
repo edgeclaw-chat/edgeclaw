@@ -87,10 +87,12 @@ void edc_commands_reply(struct edc_agent *agent, edc_actor_t *actor, edc_channel
 /* ── /session stop ─────────────────────────────────────────── */
 
 /* 取消当前 session 的全部非终结 turns 并立即落盘。原顶层 /stop 命令, 现收归
- * /session 命名空间 (无参数)。移除某个 session 请用 /session remove <name>。 */
+ * /session 命名空间 (无参数)。移除某个 session 请用 /session remove <name>。
+ * 不再 reload session: LLM 上下文来自 group->history, session->messages 只是
+ * 持久化用的 legacy 副本, stop 不需要重建它 (重建反而会释放 group history
+ * 引用的对象)。edc_agent_stop_all_turns 内部会落盘。 */
 static bool edc_commands_handle_session_stop(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type)
 {
-    edc_session_reload(edc_session_manager_get_active(agent->session_manager), true);
     edc_agent_stop_all_turns(agent);
 
     edc_commands_reply(agent, actor, channel_type, "**Session** — stop signal sent to all running turns.");
@@ -252,9 +254,9 @@ static bool edc_commands_handle_session_new(struct edc_agent *agent, edc_actor_t
     }
     edc_scheduler_set_session(agent->scheduler, sess);
     /* 全新 session: 内存状态即权威, 标记已加载, 避免日后切回时被（此时可能
-     * 已存在的）session.json 反序列化覆盖。 */
+     * 已存在的）session.json 反序列化覆盖。edc_session_new 已装配好 messages
+     * (system prompt), 无需再 reload。 */
     sess->state_loaded = true;
-    edc_session_reload(sess, true);
 
     /* 新建 session 时把历史压进长期记忆 (MEMORY.md / HISTORY.md, force=true)。
      * 这是原 /new 命令的职责 —— 该命令已删除, 由 /session new 承接, 否则全局
@@ -317,13 +319,14 @@ static bool edc_commands_handle_session_switch(struct edc_agent *agent, edc_acto
     }
     edc_scheduler_set_session(agent->scheduler, new_sess);
     /* 只在本 run 首次激活该 session 时反序列化磁盘状态; 已加载过的 session
-     * (可能正在后台执行) 直接沿用内存对象, 避免被磁盘副本覆盖。 */
+     * (可能正在后台执行) 直接沿用内存对象, 避免被磁盘副本覆盖。messages 由
+     * edc_session_new 在启动时按 history.jsonl 装配、运行期随 turn 增长, 一并
+     * 沿用内存副本 —— 不再 reload (重建会释放 group->history 引用的对象)。 */
     if (!new_sess->state_loaded)
     {
         edc_session_load_state(new_sess, agent->scheduler);
         new_sess->state_loaded = true;
     }
-    edc_session_reload(new_sess, true);
     sds reply =
         sdscatprintf(sdsempty(), "**Switched** — `[%s]` %s", new_sess->session_id, edc_session_get_name(new_sess));
     edc_commands_reply(agent, actor, channel_type, reply);
@@ -386,7 +389,6 @@ static bool edc_commands_handle_session_remove(struct edc_agent *agent, edc_acto
         edc_session_load_state(new_active, agent->scheduler);
         new_active->state_loaded = true;
     }
-    edc_session_reload(new_active, true);
     sds reply = sdscatprintf(sdsempty(), "**Session removed** — `[%s]` %s", stopped_id, stopped_name);
     edc_commands_reply(agent, actor, channel_type, reply);
     sdsfree(reply);

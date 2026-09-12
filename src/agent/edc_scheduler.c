@@ -836,13 +836,6 @@ static void sched_handle_tool_started(struct edc_scheduler *sched, struct edc_ac
         edc_task_tool_call_mark_executing(task, call_id);
 }
 
-static void sched_handle_memory_done(struct edc_scheduler *sched, struct edc_actor_msg *msg)
-{
-    (void)msg;
-    if (sched->session)
-        edc_session_reload(sched->session, true);
-}
-
 /* toolbox 请求把工具结果回显到终端 (TOOL 消息)。与 thought/RESP 一致，
  * 只在调度线程上检查 session->active_task：后台任务的工具输出一律静默。 */
 static void sched_handle_tool_emit(struct edc_scheduler *sched, struct edc_actor_msg *msg)
@@ -1005,7 +998,12 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
         sched_handle_tool_emit(sched, msg);
         break;
     case BC_ACTOR_MSG_MEMORY_DONE:
-        sched_handle_memory_done(sched, msg);
+        /* 长期记忆压缩完成 (MEMORY.md / HISTORY.md 已写)。这里刻意不做任何
+         * session 侧动作: LLM 上下文来自 group->history, 且新 group 的 system
+         * prompt 每次请求都由 edc_context_append_system_part 现拼 (直接读
+         * MEMORY.md), session->messages 只是持久化 legacy 副本。旧的
+         * edc_session_reload 既刷新不到 group history[0], 又会释放它引用的
+         * 对象, 故移除。 */
         break;
     case BC_ACTOR_MSG_GROUP_FOLD_DONE:
         /* L1 折叠完成, 持久化 state (turns_folded/memory/fold_cursor)。
