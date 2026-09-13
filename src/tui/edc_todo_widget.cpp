@@ -254,7 +254,16 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             first_children.push_back(std::move(marker));
             first_children.push_back(style_content(text(wrapped[0])) | flex);
             if (dock_tag)
-                first_children.push_back(text("[" + item.priority + "]") | dim | color(pal.text_dim));
+            {
+                // The tag wears the item's own styling, exactly like the content:
+                // it is part of the item, not a separate column that happens to
+                // share a row. A highlighted row highlights it (and it breathes
+                // with the text), a struck-through row strikes it, so the line
+                // runs unbroken from the first word to the closing bracket -- the
+                // flex gap between them already carries the content's attributes
+                // across (pinned in test_todo_widget.cpp).
+                first_children.push_back(style_content(text("[" + item.priority + "]")));
+            }
             first_children.push_back(text(std::string(kRightPad, ' ')));
             item_lines.push_back(hbox(std::move(first_children)));
             for (size_t ln = 1; ln < wrapped.size(); ln++)

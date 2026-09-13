@@ -60,13 +60,14 @@ std::vector<edc::TodoWidget::Item> MixedItems()
 
 // The widget wraps its content in an EMPTY border, so its first content row is
 // the screen's row 1. Two passes: it sizes its rows from the box a previous
-// render measured, so the first pass only primes it.
-::ftxui::Screen RenderWidget(edc::TodoWidget &widget, int width)
+// render measured, so the first pass only primes it. The screen height caps how
+// many item rows are on screen (the inset costs one row top and bottom).
+::ftxui::Screen RenderWidget(edc::TodoWidget &widget, int width, int height = 6)
 {
-    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(width), ::ftxui::Dimension::Fixed(6));
+    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(width), ::ftxui::Dimension::Fixed(height));
     for (int pass = 0; pass < 2; pass++)
     {
-        screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(width), ::ftxui::Dimension::Fixed(6));
+        screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(width), ::ftxui::Dimension::Fixed(height));
         ::ftxui::Render(screen, widget.Render() | ::ftxui::flex);
     }
     return screen;
@@ -233,6 +234,148 @@ void TestStaleInProgressItemDoesNotBreathe()
     Check(running_dim != running_peak, "a running task's row does breathe");
 }
 
+// The x of the first cell of |tag| on row |y|, or -1 when it is not there.
+int FindTag(const ::ftxui::Screen &screen, int y, int width, const std::string &tag)
+{
+    for (int x = 0; x + static_cast<int>(tag.size()) <= width; x++)
+    {
+        bool hit = true;
+        for (size_t i = 0; i < tag.size() && hit; i++)
+            hit = screen.CellAt(x + static_cast<int>(i), y).character == std::string(1, tag[i]);
+        if (hit)
+            return x;
+    }
+    return -1;
+}
+
+// One list with a row of each kind, each carrying the same priority tag.
+std::vector<edc::TodoWidget::Item> TaggedItems()
+{
+    std::vector<edc::TodoWidget::Item> items(3);
+    items[0].content = "done one";
+    items[0].status = "completed";
+    items[0].priority = "high";
+    items[1].content = "running one";
+    items[1].status = "in_progress";
+    items[1].priority = "high";
+    items[2].content = "later one";
+    items[2].status = "pending";
+    items[2].priority = "high";
+    return items;
+}
+
+// The item rows are the three after the header and the separator.
+constexpr int kFirstItemRow = 3;
+constexpr int kContentColumn = 6; // 2 indent + "[x] " marker
+
+void TestPriorityIsPartOfTheItem()
+{
+    std::cout << "the priority tag wears the item's own styling\n";
+
+    edc::TodoWidget widget;
+    widget.SetItems(TaggedItems(), "7");
+    widget.SetBreath(0, false); // not running: the in_progress row rides the plain accent
+    const auto screen = RenderWidget(widget, 36, 8); // tall enough for all three item rows
+    const auto &pal = edc::style::palette();
+    const std::string tag = "[high]";
+
+    // Completed: struck through, tag included, and unbroken across the gap the
+    // flexible content leaves before it. A tag that stayed unstruck would read as
+    // a separate thing parked on the row.
+    {
+        const int y = kFirstItemRow;
+        const int tag_x = FindTag(screen, y, 36, tag);
+        Check(tag_x > 0, "the completed row docks its tag");
+        if (tag_x > 0)
+        {
+            const auto &text_cell = screen.CellAt(kContentColumn, y);
+            const auto &tag_cell = screen.CellAt(tag_x, y);
+            Check(tag_cell.strikethrough, "and the tag is struck through with the text");
+            Check(tag_cell.foreground_color == text_cell.foreground_color, "the tag wears the text's colour");
+            Check(tag_cell.dim == text_cell.dim, "and the text's dim flag");
+
+            int last_glyph = tag_x - 1;
+            while (last_glyph > kContentColumn && screen.CellAt(last_glyph, y).character == " ")
+                last_glyph--;
+            bool unbroken = true;
+            for (int x = last_glyph; x < tag_x + static_cast<int>(tag.size()); x++)
+                if (!screen.CellAt(x, y).strikethrough)
+                    unbroken = false;
+            Check(unbroken, "the strike runs unbroken from the last word into the tag");
+        }
+    }
+
+    // In progress: the row's single accent covers the tag too (not the dim gray it
+    // used to wear, which split the highlighted row in two).
+    {
+        const int y = kFirstItemRow + 1;
+        const int tag_x = FindTag(screen, y, 36, tag);
+        Check(tag_x > 0, "the in_progress row docks its tag");
+        if (tag_x > 0)
+        {
+            const auto &text_cell = screen.CellAt(kContentColumn, y);
+            const auto &tag_cell = screen.CellAt(tag_x, y);
+            Check(text_cell.foreground_color == pal.accent, "the running row's text is the accent");
+            Check(tag_cell.foreground_color == text_cell.foreground_color, "the tag is highlighted with it");
+            Check(!tag_cell.dim && tag_cell.dim == text_cell.dim, "and is not dimmed away from the text");
+            Check(!tag_cell.strikethrough, "and carries no strike");
+        }
+    }
+
+    // Pending: still the quiet neutral row, tag included (nothing changed here).
+    {
+        const int y = kFirstItemRow + 2;
+        const int tag_x = FindTag(screen, y, 36, tag);
+        Check(tag_x > 0, "the pending row docks its tag");
+        if (tag_x > 0)
+        {
+            const auto &text_cell = screen.CellAt(kContentColumn, y);
+            const auto &tag_cell = screen.CellAt(tag_x, y);
+            Check(tag_cell.foreground_color == text_cell.foreground_color, "the tag wears the text's colour");
+            Check(tag_cell.dim && !tag_cell.strikethrough, "dim, not struck");
+        }
+    }
+}
+
+void TestPriorityBreathesWithTheRow()
+{
+    std::cout << "the tag breathes with the row it belongs to\n";
+
+    edc::TodoWidget widget;
+    widget.SetItems(TaggedItems(), "7");
+
+    ::ftxui::Color text_dim, tag_dim, text_peak, tag_peak;
+    for (int phase = 0; phase < 2; phase++)
+    {
+        const long long ms = phase == 0 ? 0 : 900;
+        widget.SetBreath(ms, true);
+        const auto screen = RenderWidget(widget, 36, 8);
+        const int y = kFirstItemRow + 1; // the running row
+        const int tag_x = FindTag(screen, y, 36, "[high]");
+        if (tag_x <= 0)
+        {
+            Check(false, "the tag is on screen");
+            return;
+        }
+        if (phase == 0)
+        {
+            text_dim = screen.CellAt(kContentColumn, y).foreground_color;
+            tag_dim = screen.CellAt(tag_x, y).foreground_color;
+        }
+        else
+        {
+            text_peak = screen.CellAt(kContentColumn, y).foreground_color;
+            tag_peak = screen.CellAt(tag_x, y).foreground_color;
+        }
+        Check(screen.CellAt(kContentColumn, y).foreground_color == screen.CellAt(tag_x, y).foreground_color,
+              phase == 0 ? "at the dim phase the tag matches the text" : "at the peak phase too");
+    }
+    // The pair moves: the comparison above would also hold if both were frozen.
+    Check(text_dim != text_peak && tag_dim != tag_peak, "and both move over the cycle");
+    Check(text_peak == edc::style::palette().accent, "the peak is the plain accent");
+    Check(tag_dim == text_dim, "the tag is the text's colour at every phase");
+}
+
 void TestHasInProgressItem()
 {
     std::cout << "the widget reports whether an item is running\n";
@@ -245,6 +388,8 @@ void TestHasInProgressItem()
     Check(!idle.HasInProgressItem(), "completed/pending only is not");
 }
 
+
+
 } // namespace
 
 int main()
@@ -255,6 +400,8 @@ int main()
     TestInProgressRowBreathes();
     TestOtherRowsDoNotBreathe();
     TestStaleInProgressItemDoesNotBreathe();
+    TestPriorityIsPartOfTheItem();
+    TestPriorityBreathesWithTheRow();
     TestHasInProgressItem();
 
     if (g_failures == 0)
