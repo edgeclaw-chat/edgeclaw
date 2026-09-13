@@ -137,6 +137,14 @@ class ScrollView : public ::ftxui::ComponentBase
         return state_->stick_to_bottom;
     }
 
+    // Viewport height the last frame laid out (0 before the first frame). Lets a
+    // caller -- a test, mainly -- see how much height this section was granted
+    // instead of re-deriving the layout's arbitration.
+    int ViewportHeight() const
+    {
+        return state_->viewport_height;
+    }
+
   private:
     ::ftxui::Component content_;
     // Drawn above the viewport, outside the scroll offset (usually empty).

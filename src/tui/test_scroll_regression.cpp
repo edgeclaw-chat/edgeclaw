@@ -486,7 +486,10 @@ void test_squeezed_sidebar_keeps_the_working_row_and_both_headings()
     sidebar.sidebar = edc::MakeSidebar(task, todo);
 
     const int width = 40;
-    const int height = 16;
+    // Small enough that the tree cannot fit, large enough that the share it keeps
+    // (a third of the column) is more than its own chrome: the empty border plus the
+    // pinned heading and rule.
+    const int height = 22;
     const std::string plain = Plain(sidebar.Draw(width, height));
 
     ASSERT(plain.find("■ t23") != std::string::npos, "the active task's row was pushed out of the pane");
@@ -497,6 +500,11 @@ void test_squeezed_sidebar_keeps_the_working_row_and_both_headings()
     // At a pane this short the list keeps its natural height: the *tree* is the one
     // that gives rows back (the cap is a ceiling, not a target, and the list is not
     // squeezed together with the tree as it would be if both were flexible).
+    // ViewportHeight() counts the rows granted to the *body* -- the pinned heading is
+    // outside it -- so a list of eight one-line items shows eight.
+    ASSERT(sidebar.sidebar.todos->ViewportHeight() == 8,
+           "the todo list was squeezed instead of the tree yielding rows");
+
     // With a little more room both sections are readable, and the todo list's own
     // rows are not lost either: it keeps its first rows and scrolls the rest.
     const int roomier = height + 8;
@@ -511,6 +519,41 @@ void test_squeezed_sidebar_keeps_the_working_row_and_both_headings()
            "the todo list's hidden rows are not reachable by scrolling");
     ASSERT(scrolled.find("■ t23") != std::string::npos,
            "scrolling the todos disturbed the task tree's bottom anchor");
+
+    // A long list -- ten items of three wrapped lines each, so it asks for far more
+    // than two thirds of the pane -- must not be allowed to swallow the tree. The cap
+    // is what leaves the tree the rest of the column, and the bottom anchor is what
+    // puts the active row inside what is left.
+    std::vector<edc::TodoWidget::Item> long_items(10);
+    for (int i = 0; i < 10; i++)
+    {
+        long_items[i].content = "TODO-" + std::to_string(i) + " " + std::string(70, 'x');
+        long_items[i].status = "pending";
+    }
+    auto long_todo = std::make_shared<edc::TodoWidget>();
+    long_todo->SetItems(long_items, "t23");
+    SidebarHarness capped;
+    capped.sidebar = edc::MakeSidebar(task, long_todo);
+    const int tall = 36;
+    const std::string capped_frame = Plain(capped.Draw(width, tall));
+    // The section's height: its empty border (2 rows) + the pinned heading and rule
+    // (2) + the rows granted to the body.
+    // ftxui's size(LESS_THAN) hands the child one row more than the value it was
+    // given, so the rule to measure against is "two thirds, plus one".
+    const int todo_section = 4 + capped.sidebar.todos->ViewportHeight();
+    ASSERT(todo_section <= (2 * tall) / 3 + 1, "the todo list took more than two thirds of the sidebar");
+    ASSERT(capped.sidebar.tasks->ViewportHeight() > 3,
+           "the tree was left with almost no body rows by the todo list");
+    ASSERT(capped_frame.find("■ t23") != std::string::npos, "the active row was pushed out of the capped sidebar");
+
+    // With no list at all the tree stretches into the column: an empty section costs
+    // only its own heading.
+    auto empty_todo = std::make_shared<edc::TodoWidget>();
+    SidebarHarness bare;
+    bare.sidebar = edc::MakeSidebar(task, empty_todo);
+    bare.Draw(width, tall);
+    ASSERT(bare.sidebar.tasks->ViewportHeight() > capped.sidebar.tasks->ViewportHeight() + 10,
+           "an empty todo list did not give the tree its rows back");
 
     // And the tree's own rows above stay reachable too: scrolling up releases the
     // bottom anchor, so the older groups can be read.
