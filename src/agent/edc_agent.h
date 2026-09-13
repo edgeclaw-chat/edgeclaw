@@ -34,6 +34,11 @@ struct edc_agent
     sds *history;
     int history_count;
     int history_capacity;
+
+    /* Guards edc_agent_reconcile_pending_deps against re-entry: resolving a dep
+     * may lazy-load another session, whose own deps must be drained by the
+     * outer loop rather than recursively. */
+    bool reconciling;
 };
 
 extern void edc_agent_add_history(struct edc_agent *agent, const char *line);
@@ -52,6 +57,19 @@ extern void edc_agent_add_history(struct edc_agent *agent, const char *line);
  *  session: the foreground group lives on each session, not on the scheduler. */
 extern struct edc_task *edc_agent_resolve_task(struct edc_agent *agent, const char *task_id,
                                                struct edc_session **owner_out);
+
+/** Load a session's persisted state and reconcile any cross-session dependency
+ *  edges it revealed. Marks the session loaded (memory is authoritative even for
+ *  a brand-new session with no state file). This is the single entry point for
+ *  activating a session; call it from every load site. */
+extern bool edc_agent_load_session(struct edc_agent *agent, struct edc_session *session);
+
+/** Resolve and wire pending cross-session dependency edges (recorded during
+ *  deserialize when a dep's source was not in the loaded session). Each pass may
+ *  lazy-load another session, revealing more pending edges; the loop runs to a
+ *  fixpoint. Entries that stay unresolved hold their target task (resume gate).
+ *  Safe to call repeatedly; re-entrant calls are ignored. */
+extern void edc_agent_reconcile_pending_deps(struct edc_agent *agent);
 
 extern char *edc_agent_run_turn(struct edc_agent *agent, const char *input);
 /* |sandbox_override|: -1 = keep the persisted config.json value (the default

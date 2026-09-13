@@ -314,6 +314,24 @@ cc_test(
 )
 
 cc_test(
+    name = "test_cross_dep_restart",
+    srcs = ["test_cross_dep_restart.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_task_index",
+    srcs = ["test_task_index.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_task_resume",
     srcs = ["test_task_resume.c"],
     deps = [

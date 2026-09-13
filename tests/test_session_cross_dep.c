@@ -201,6 +201,9 @@ int main(void)
     sb->active_task = NULL;
     sb->foreground_group = NULL;
     sb->state_loaded = false;
+    /* The cached task-id index may have been built earlier while B was loaded;
+     * drop it so the next lookup re-derives B's owner from its tasks.idx. */
+    edc_session_manager_reset_task_index(sm);
     CHECK(edc_session_manager_find_task_any(sm, bt2_id, NULL) == NULL, "bt2 absent from memory");
 
     int before2 = count_tasks(sa);

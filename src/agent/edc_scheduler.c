@@ -165,9 +165,67 @@ void edc_scheduler_free(struct edc_scheduler *sched)
      * edc_session_free — the scheduler must not free them here, or sessions
      * other than the currently bound one would leak. */
 
+    struct edc_pending_dep *pd, *pd_tmp;
+    for (pd = sched->pending_deps; pd; pd = pd_tmp)
+    {
+        pd_tmp = pd->next;
+        sdsfree(pd->target_task_id);
+        sdsfree(pd->source_task_id);
+        free(pd);
+    }
+
     if (sched->self)
         edc_actor_free(sched->self);
     free(sched);
+}
+
+/* ── 未解析的跨 session 依赖 ───────────────────────────────── */
+
+void edc_scheduler_add_pending_dep(struct edc_scheduler *sched, const char *target_task_id,
+                                   const char *source_task_id, edc_task_dep_type type, bool completed, bool cancelled,
+                                   bool injected)
+{
+    if (!sched || !target_task_id || !source_task_id)
+        return;
+    struct edc_pending_dep *pd = g_new0(struct edc_pending_dep, 1);
+    pd->target_task_id = sdsnew(target_task_id);
+    pd->source_task_id = sdsnew(source_task_id);
+    pd->type = type;
+    pd->completed = completed;
+    pd->cancelled = cancelled;
+    pd->injected = injected;
+    pd->next = NULL;
+
+    /* Append at the tail: the reconcile loop walks the list with a `*link`
+     * cursor, and resolving an entry may append new entries (loaded sessions
+     * reveal more deps). Prepending would move the head under that cursor and
+     * corrupt the list. */
+    if (!sched->pending_deps)
+    {
+        sched->pending_deps = pd;
+        return;
+    }
+    struct edc_pending_dep *tail = sched->pending_deps;
+    while (tail->next)
+        tail = tail->next;
+    tail->next = pd;
+}
+
+bool edc_scheduler_task_has_unresolved_deps(struct edc_scheduler *sched, struct edc_task *task)
+{
+    return edc_scheduler_first_unresolved_dep(sched, task) != NULL;
+}
+
+const char *edc_scheduler_first_unresolved_dep(struct edc_scheduler *sched, struct edc_task *task)
+{
+    if (!sched || !task || !task->task_id)
+        return NULL;
+    for (struct edc_pending_dep *pd = sched->pending_deps; pd; pd = pd->next)
+    {
+        if (pd->target_task_id && strcmp(pd->target_task_id, task->task_id) == 0)
+            return pd->source_task_id;
+    }
+    return NULL;
 }
 
 edc_actor_t *edc_scheduler_get_actor(struct edc_scheduler *sched)
@@ -435,6 +493,12 @@ static void *sched_gen_resume_request_id(void)
 void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *task)
 {
     if (!sched || !task)
+        return;
+
+    /* Resume gate: an unresolved cross-session dependency (source not restorable)
+     * must hold the task. Resuming here would recompute deps_total without that
+     * edge and run the task before its dependency. */
+    if (edc_scheduler_task_has_unresolved_deps(sched, task))
         return;
 
     /* 1. 依赖未满足 (排除已取消的边) → 回 WAITING_DEPS */

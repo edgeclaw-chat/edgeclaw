@@ -547,6 +547,43 @@ void edc_session_reload_tasks(struct edc_session *session)
 
 /* ── Phase 2: 完整状态持久化 ───────────────────────────────── */
 
+/* session.json 很大 (每个 turn 都内嵌消息体、prompt、output), 跨 session 查
+ * 一个 task id 时若逐个解析它代价太高。落 state 时顺手写一份只含 task id 的
+ * tasks.idx, 供 edc_session_manager_session_for_task 做 O(1) 查找。原子写。 */
+static void session_write_task_index(struct edc_session *session)
+{
+    sds buf = sdsempty();
+    struct edc_task_group *g;
+    DL_FOREACH(session->groups, g)
+    {
+        struct edc_task *t;
+        LL_FOREACH2(g->members, t, group_next)
+        {
+            if (t && t->task_id && t->task_id[0])
+                buf = sdscatprintf(buf, "%s\n", t->task_id);
+        }
+    }
+
+    sds path = edc_path_join(session->history_dir, "tasks.idx", NULL);
+    sds tmp = edc_path_join(session->history_dir, "tasks.idx.tmp", NULL);
+
+    EdcError *err = NULL;
+    if (!edc_file_write(tmp, buf, (ssize_t)sdslen(buf), &err))
+    {
+        log_warn("save_state: write task index %s failed: %s", tmp, err ? err->message : "unknown");
+        if (err)
+            edc_error_free(err);
+    }
+    else if (rename(tmp, path) != 0)
+    {
+        log_warn("save_state: rename %s -> %s failed: %s", tmp, path, strerror(errno));
+    }
+
+    sdsfree(buf);
+    sdsfree(path);
+    sdsfree(tmp);
+}
+
 bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *sched)
 {
     if (!session || !session->history_dir)
@@ -605,6 +642,8 @@ bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *s
 
     sdsfree(path);
     sdsfree(tmp);
+
+    session_write_task_index(session);
     return true;
 }
 

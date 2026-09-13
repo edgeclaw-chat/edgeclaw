@@ -323,10 +323,7 @@ static bool edc_commands_handle_session_switch(struct edc_agent *agent, edc_acto
      * edc_session_new 在启动时按 history.jsonl 装配、运行期随 turn 增长, 一并
      * 沿用内存副本 —— 不再 reload (重建会释放 group->history 引用的对象)。 */
     if (!new_sess->state_loaded)
-    {
-        edc_session_load_state(new_sess, agent->scheduler);
-        new_sess->state_loaded = true;
-    }
+        edc_agent_load_session(agent, new_sess);
     sds reply =
         sdscatprintf(sdsempty(), "**Switched** — `[%s]` %s", new_sess->session_id, edc_session_get_name(new_sess));
     edc_commands_reply(agent, actor, channel_type, reply);
@@ -385,10 +382,7 @@ static bool edc_commands_handle_session_remove(struct edc_agent *agent, edc_acto
     struct edc_session *new_active = edc_session_manager_get_active(agent->session_manager);
     edc_scheduler_set_session(agent->scheduler, new_active);
     if (new_active && !new_active->state_loaded)
-    {
-        edc_session_load_state(new_active, agent->scheduler);
-        new_active->state_loaded = true;
-    }
+        edc_agent_load_session(agent, new_active);
     sds reply = sdscatprintf(sdsempty(), "**Session removed** — `[%s]` %s", stopped_id, stopped_name);
     edc_commands_reply(agent, actor, channel_type, reply);
     sdsfree(reply);
@@ -780,6 +774,22 @@ static void edc_commands_handle_task_resume(struct edc_agent *agent, edc_actor_t
         return;
     }
 
+    /* Resume gate: try to restore any cross-session dependency right now (this
+     * may lazy-load its owner session). If it still cannot be resolved, hold the
+     * task — resuming would run it with an incomplete dependency view. */
+    edc_agent_reconcile_pending_deps(agent);
+    const char *missing = edc_scheduler_first_unresolved_dep(agent->scheduler, t);
+    if (missing)
+    {
+        sds reply = sdscatprintf(sdsempty(),
+                                 "**Task `%s` is held** — it depends on `%s`, which could not be restored "
+                                 "(no loaded session provides it). It will not run until that dependency is available.",
+                                 t->task_id, missing);
+        edc_commands_reply(agent, actor, channel_type, reply);
+        sdsfree(reply);
+        return;
+    }
+
     edc_scheduler_resume_task(agent->scheduler, t);
     sds reply =
         sdscatprintf(sdsempty(), "**Task `%s`** — resume signal sent (%s).", t->task_id, edc_task_state_name(t->state));
@@ -1068,6 +1078,13 @@ static void edc_commands_handle_task_status(struct edc_agent *agent, edc_actor_t
         struct edc_session *active = edc_session_manager_get_active(agent->session_manager);
         if (owner && owner != active)
             out = sdscatprintf(out, "- **session**: `[%s]`\n", owner->session_id);
+    }
+
+    /* 未解析的跨 session 依赖: 任务被"卡住", resume 会被 gate 拒绝。 */
+    {
+        const char *missing = edc_scheduler_first_unresolved_dep(agent->scheduler, t);
+        if (missing)
+            out = sdscatprintf(out, "- **held**: waiting on `%s` (unresolved cross-session dependency)\n", missing);
     }
 
     /* 展示 task 实际收到的用户输入（而不只是 description）。多行输入把换行

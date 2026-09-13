@@ -849,7 +849,7 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
     }
 }
 
-static void deser_deps(cJSON *json, struct task_map_entry **id_map)
+static void deser_deps(cJSON *json, struct task_map_entry **id_map, struct edc_scheduler *sched)
 {
     cJSON *tasks_json = cJSON_GetObjectItem(json, "tasks");
     if (!tasks_json || !cJSON_IsArray(tasks_json))
@@ -873,11 +873,23 @@ static void deser_deps(cJSON *json, struct task_map_entry **id_map)
         {
             cJSON *dj = cJSON_GetArrayItem(deps_json, j);
             const char *src_id = cJSON_GetStringValue(cJSON_GetObjectItem(dj, "source_task_id"));
-            struct edc_task *source = task_map_get(id_map, src_id);
-            if (!source)
-                continue;
-
             edc_task_dep_type dt = dep_type_from_name(cJSON_GetStringValue(cJSON_GetObjectItem(dj, "type")));
+            struct edc_task *source = (src_id && src_id[0]) ? task_map_get(id_map, src_id) : NULL;
+            if (!source)
+            {
+                /* Source not in this session → a cross-session edge (or a stale
+                 * one). Record it for the agent-level reconcile instead of
+                 * silently dropping it: without the edge the target's
+                 * deps_total would omit the dependency and it could be resumed
+                 * before the source completes. */
+                cJSON *comp0 = cJSON_GetObjectItem(dj, "completed");
+                cJSON *canc0 = cJSON_GetObjectItem(dj, "cancelled");
+                cJSON *inj0 = cJSON_GetObjectItem(dj, "injected");
+                edc_scheduler_add_pending_dep(sched, task_id, src_id, dt, comp0 && cJSON_IsTrue(comp0),
+                                              canc0 && cJSON_IsTrue(canc0), inj0 && cJSON_IsTrue(inj0));
+                continue;
+            }
+
             edc_task_add_dependency(target, source, dt);
 
             cJSON *comp = cJSON_GetObjectItem(dj, "completed");
@@ -1027,7 +1039,7 @@ bool edc_state_deserialize(cJSON *json, struct edc_session *session, struct edc_
 
     struct group_map_entry *group_map[GROUP_MAP_BUCKETS] = {0};
     deser_create_groups(json, session, id_map, group_map);
-    deser_deps(json, id_map);
+    deser_deps(json, id_map, sched);
     deser_reconcile_deps(id_map);
     deser_turns(json, messages_array, id_map);
     deser_global_ptrs(sj, session, id_map, group_map);

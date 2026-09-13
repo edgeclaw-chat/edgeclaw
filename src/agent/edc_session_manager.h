@@ -8,6 +8,7 @@
 struct edc_session;
 struct edc_config;
 struct edc_task;
+struct edc_task_index_entry; /* uthash entry: task_id → session_id */
 
 /* ── Session Manager ───────────────────────────────────────── */
 
@@ -19,6 +20,14 @@ struct edc_session_manager
     sds sessions_dir;              /* workspace/ — session dirs live here */
     sds index_path;                /* workspace/sessions.json */
     struct edc_config *config;
+
+    /* task_id → session_id for sessions NOT loaded this run, built lazily from
+     * their tasks.idx sidecars. Only ever describes the frozen on-disk state of
+     * unloaded sessions (a session cannot be modified without being loaded), so
+     * loaded sessions always win via the in-memory lookup and this needs no
+     * write-side synchronisation. */
+    struct edc_task_index_entry *task_index;
+    bool task_index_built;
 };
 
 /* ── Lifecycle ─────────────────────────────────────────────── */
@@ -46,6 +55,20 @@ extern int edc_session_manager_index_of(struct edc_session_manager *sm, const ch
  *  NULL and NULL is returned. */
 extern struct edc_task *edc_session_manager_find_task_any(struct edc_session_manager *sm, const char *task_id,
                                                           struct edc_session **owner_out);
+
+/** Owning session of |task_id| when it is not loaded in memory yet, resolved via
+ *  a lazily-built in-memory index (task_id → session_id) read from each unloaded
+ *  session's small `tasks.idx` sidecar — never by parsing the large
+ *  `session.json` (except as a one-time migration when `tasks.idx` is absent,
+ *  after which the sidecar is rewritten). Returns NULL if no unloaded session
+ *  provides the id. Loaded sessions are intentionally NOT indexed here; callers
+ *  search memory first. */
+extern struct edc_session *edc_session_manager_session_for_task(struct edc_session_manager *sm, const char *task_id);
+
+/** Drop the cached task-id index; it is rebuilt on the next lookup. Only needed
+ *  when persisted session state changed behind the manager's back (tests /
+ *  external tooling) — normal flows never invalidate it. */
+extern void edc_session_manager_reset_task_index(struct edc_session_manager *sm);
 
 /* ── Operations ────────────────────────────────────────────── */
 

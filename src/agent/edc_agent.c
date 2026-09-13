@@ -52,52 +52,8 @@ static struct edc_agent *edc_scheduler_agent(struct edc_scheduler *sched)
 /* ── 跨 session task 解析 (S2) ───────────────────────────────
  * task id 全局唯一 (见 edc_session_manager_find_task_any), 所以命中唯一。
  * 内存查找只覆盖"本 run 已激活"的 session; 若任务属于一个只在磁盘上、尚未
- * 激活的 session, 就先扫它的 session.json 定位属主, 再按需加载。 */
-
-/* 只读探测: |session| 的 session.json 里是否有 |task_id|? 不修改任何状态。 */
-static bool edc_agent_session_file_has_task(struct edc_session *session, const char *task_id)
-{
-    if (!session || !session->history_dir)
-        return false;
-    sds path = edc_path_join(session->history_dir, "session.json", NULL);
-    if (!edc_file_exists(path))
-    {
-        sdsfree(path);
-        return false;
-    }
-    EdcError *err = NULL;
-    sds content = edc_file_read(path, &err);
-    sdsfree(path);
-    if (!content)
-    {
-        if (err)
-            edc_error_free(err);
-        return false;
-    }
-    cJSON *json = cJSON_Parse(content);
-    sdsfree(content);
-    if (!json)
-        return false;
-
-    bool hit = false;
-    cJSON *tasks = cJSON_GetObjectItem(json, "tasks");
-    if (cJSON_IsArray(tasks))
-    {
-        int n = cJSON_GetArraySize(tasks);
-        for (int i = 0; i < n; i++)
-        {
-            cJSON *tj = cJSON_GetArrayItem(tasks, i);
-            const char *tid = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "task_id"));
-            if (tid && strcmp(tid, task_id) == 0)
-            {
-                hit = true;
-                break;
-            }
-        }
-    }
-    cJSON_Delete(json);
-    return hit;
-}
+ * 激活的 session, 就用 session_manager 的小索引 (task_id → session_id, 读
+ * tasks.idx) 定位属主, 再按需加载 —— 不解析庞大的 session.json。 */
 
 struct edc_task *edc_agent_resolve_task(struct edc_agent *agent, const char *task_id, struct edc_session **owner_out)
 {
@@ -116,27 +72,135 @@ struct edc_task *edc_agent_resolve_task(struct edc_agent *agent, const char *tas
         return t;
     }
 
-    /* 2. 未命中: 定位一个"未加载"的 session, 其存档里含该 id → 按需加载。
-     *    加载不再有全局副作用 (前台组是 session 自己的属性)。 */
-    struct edc_session_manager *sm = agent->session_manager;
-    for (int i = 0; i < sm->session_count; i++)
+    /* 2. 未命中: 用 session_manager 的小索引定位属主 session (只读各未加载
+     *    session 的 tasks.idx, 不解析大文件), 命中则按需加载。 */
+    struct edc_session *s = edc_session_manager_session_for_task(agent->session_manager, task_id);
+    if (!s)
+        return NULL;
+    if (!s->state_loaded)
     {
-        struct edc_session *s = sm->sessions[i];
-        if (!s || s->state_loaded)
-            continue;
-        if (!edc_agent_session_file_has_task(s, task_id))
-            continue;
-
-        if (!edc_session_load_state(s, agent->scheduler))
-            return NULL; /* 存档损坏/读取失败 → 视作未命中, 命令失败 (D5) */
-        s->state_loaded = true;
-
-        t = edc_session_manager_find_task_any(sm, task_id, &owner);
-        if (owner_out)
-            *owner_out = owner;
-        return t;
+        /* Activate the owner session (also reconciles any cross-session deps it
+         * reveals). Loading is side-effect-free for the active session. */
+        edc_agent_load_session(agent, s);
     }
-    return NULL;
+
+    t = edc_session_manager_find_task_any(agent->session_manager, task_id, &owner);
+    if (owner_out)
+        *owner_out = owner;
+    return t;
+}
+
+/* ── 未解析依赖对账 (S3) ───────────────────────────────────── */
+
+/* Re-apply a persisted dep edge's flags once the edge is wired late. Mirrors the
+ * logic in deser_deps for the local path. */
+static void edc_agent_apply_dep_flags(struct edc_task *target, struct edc_task *source, bool completed,
+                                      bool cancelled, bool injected)
+{
+    if (completed)
+        edc_task_on_dep_completed(target, source);
+    if (cancelled)
+        edc_task_on_dep_cancelled(target, source);
+    if (injected)
+    {
+        struct edc_task_dep *dep;
+        LL_FOREACH(target->deps, dep)
+        {
+            if (dep->source == source)
+            {
+                dep->injected = true;
+                break;
+            }
+        }
+    }
+}
+
+static void edc_agent_free_pending_dep(struct edc_pending_dep *pd)
+{
+    sdsfree(pd->target_task_id);
+    sdsfree(pd->source_task_id);
+    free(pd);
+}
+
+bool edc_agent_load_session(struct edc_agent *agent, struct edc_session *session)
+{
+    if (!agent || !session)
+        return false;
+    bool ok = edc_session_load_state(session, agent->scheduler);
+    /* 内存即权威: 即使没有存档 (全新 session) 也标记为已加载, 之后不再重载。 */
+    session->state_loaded = true;
+    if (!agent->reconciling)
+        edc_agent_reconcile_pending_deps(agent);
+    return ok;
+}
+
+void edc_agent_reconcile_pending_deps(struct edc_agent *agent)
+{
+    if (!agent || !agent->scheduler || !agent->session_manager)
+        return;
+    if (agent->reconciling)
+        return; /* re-entrant call from resolve_task: let the outer loop drain */
+    agent->reconciling = true;
+
+    struct edc_scheduler *sched = agent->scheduler;
+
+    /* Each pass resolves what it can; loading an owner session may reveal more
+     * pending edges, so loop until a pass makes no progress. */
+    bool progress = true;
+    while (progress)
+    {
+        progress = false;
+        struct edc_pending_dep **link = &sched->pending_deps;
+        while (*link)
+        {
+            struct edc_pending_dep *pd = *link;
+
+            struct edc_task *target =
+                edc_session_manager_find_task_any(agent->session_manager, pd->target_task_id, NULL);
+            if (!target)
+            {
+                /* Dependent task is gone (e.g. its session was removed). */
+                *link = pd->next;
+                edc_agent_free_pending_dep(pd);
+                progress = true;
+                continue;
+            }
+
+            struct edc_task *source = edc_agent_resolve_task(agent, pd->source_task_id, NULL);
+            if (source)
+            {
+                /* add_dependency returns false for an already-wired edge or a
+                 * cycle; either way there is nothing more to do for this entry. */
+                if (edc_task_add_dependency(target, source, pd->type))
+                    edc_agent_apply_dep_flags(target, source, pd->completed, pd->cancelled, pd->injected);
+                *link = pd->next;
+                edc_agent_free_pending_dep(pd);
+                progress = true;
+                continue;
+            }
+
+            /* Unresolved. A completed/cancelled edge was already satisfied when
+             * saved, so dropping it cannot cause a premature run. Anything else
+             * must HOLD the target (resume gate) — never run with a missing dep. */
+            if (pd->completed || pd->cancelled)
+            {
+                *link = pd->next;
+                edc_agent_free_pending_dep(pd);
+                progress = true;
+                continue;
+            }
+
+            link = &pd->next;
+        }
+    }
+
+    /* Whatever is left is genuinely unresolvable: surface it, and rely on the
+     * resume gate to keep the target from running. */
+    for (struct edc_pending_dep *pd = sched->pending_deps; pd; pd = pd->next)
+        log_warn("cross-session dep unresolved: task `%s` waits on `%s` (owner session not found)", pd->target_task_id,
+                 pd->source_task_id);
+
+    agent->reconciling = false;
 }
 
 /* ── Shell 变量解析回调 ──────────────────────────────────── */
@@ -732,12 +796,7 @@ struct edc_agent *edc_agent_new(bool setup, int sandbox_override)
     {
         struct edc_session *active = edc_session_manager_get_active(agent->session_manager);
         if (active)
-        {
-            edc_session_load_state(active, agent->scheduler);
-            /* 内存即权威: 之后再次切回本 session 不再 load_state (否则会覆盖
-             * 可能正在后台执行的活动对象)。 */
-            active->state_loaded = true;
-        }
+            edc_agent_load_session(agent, active); /* also reconciles cross-session deps */
     }
 
     edc_channel_actor_set_observer(agent->channel_actor, edc_scheduler_get_actor(agent->scheduler));

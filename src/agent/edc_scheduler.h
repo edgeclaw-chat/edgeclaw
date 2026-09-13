@@ -56,6 +56,23 @@ typedef void (*edc_scheduler_save_fn)(struct edc_scheduler *sched, struct edc_se
 /** task 树快照已就绪，交由上层 (agent) 回传给 TUI 的 channel adapter */
 typedef void (*edc_scheduler_snapshot_fn)(struct edc_scheduler *sched, sds serialized);
 
+/* ── 待解析的跨 session 依赖 ───────────────────────────────── */
+
+/** A cross-session dependency edge read back from disk whose source task was
+ *  not in the loaded session's id_map. Reconcile resolves it later (possibly
+ *  lazy-loading the owner session) and wires the edge. Stored **by id** so it
+ *  can never dangle when a session/task is freed. */
+struct edc_pending_dep
+{
+    sds target_task_id; /* the dependent task (in the session being loaded) */
+    sds source_task_id; /* the missing dependency (may live in another session) */
+    edc_task_dep_type type;
+    bool completed;
+    bool cancelled;
+    bool injected;
+    struct edc_pending_dep *next;
+};
+
 /* ── 调度器 ────────────────────────────────────────────────── */
 
 struct edc_scheduler
@@ -64,6 +81,11 @@ struct edc_scheduler
     struct edc_config *config;
 
     struct edc_sched_task_entry *task_hash; /* uthash: request_id → edc_task */
+
+    /* 未解析的跨 session 依赖边 (重启后对账用); owned by the scheduler.
+     * Drained by edc_agent_reconcile_pending_deps(); entries that cannot be
+     * resolved hold their target task (see the resume gate). */
+    struct edc_pending_dep *pending_deps;
 
     edc_actor_t *self;
 
@@ -84,6 +106,20 @@ struct edc_scheduler
 };
 
 /* ── API ───────────────────────────────────────────────────── */
+
+/* Record an unresolved cross-session dependency edge (its source was absent from
+ * the loaded session's id_map). Copied by id. Drained by the agent reconcile. */
+extern void edc_scheduler_add_pending_dep(struct edc_scheduler *sched, const char *target_task_id,
+                                          const char *source_task_id, edc_task_dep_type type, bool completed,
+                                          bool cancelled, bool injected);
+
+/** True when |task| still has an unresolved cross-session dependency, i.e. it
+ *  must not be resumed yet (the resume gate). */
+extern bool edc_scheduler_task_has_unresolved_deps(struct edc_scheduler *sched, struct edc_task *task);
+
+/** Source task id of the first unresolved cross-session dep for |task| (for a
+ *  user-facing note), or NULL when there is none. */
+extern const char *edc_scheduler_first_unresolved_dep(struct edc_scheduler *sched, struct edc_task *task);
 
 extern struct edc_scheduler *edc_scheduler_new(struct edc_session *session, struct edc_config *config);
 extern void edc_scheduler_free(struct edc_scheduler *sched);
