@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <ftxui/screen/color.hpp>
+#include <string>
 
 namespace edc
 {
@@ -165,6 +166,45 @@ inline const Palette &light_palette()
 inline const Palette &palette()
 {
     return theme::IsLight() ? light_palette() : dark_palette();
+}
+
+// ---- task states ------------------------------------------------------
+// One vocabulary for the scheduler's task-state names, for every widget that has
+// to show them. Hoisted here for the same reason as the block glyph below: the
+// task tree paints its markers with this table and the todo list takes the
+// failure colour of its current step from it, so the two panes cannot drift into
+// two different reds for "the task failed".
+
+// A task is "processing" (working right now) in exactly these two states: the
+// ones the sidebar's markers animate for, and the ones edc_task_is_running marks
+// in the scheduler.
+inline bool TaskStateProcessing(const std::string &state)
+{
+    return state == "LLM_PROCESSING" || state == "TOOL_CALLING";
+}
+
+// A task ended in failure: the state whose rows and markers wear the failure
+// colour, and the one the todo list mirrors on the step it was on.
+inline bool TaskStateFailed(const std::string &state)
+{
+    return state == "ERROR";
+}
+
+// Map a scheduler task-state name to the colour of its marker.
+inline ::ftxui::Color TaskStateColor(const Palette &pal, const std::string &state)
+{
+    if (state == "COMPLETED")
+        return pal.ok;
+    if (TaskStateFailed(state))
+        return pal.error;
+    if (TaskStateProcessing(state))
+        return pal.accent;
+    if (state == "SUSPENDED")
+        return pal.suspended;
+    if (state == "CANCELLED")
+        return pal.text_dim;
+    // IDLE / WAITING_DEPS / WAITING_INPUT
+    return pal.warn;
 }
 
 // ---- the "working" animation ------------------------------------------

@@ -47,34 +47,41 @@ static void DisableBracketedPaste()
 // 任务快照里 active task 的 todo；文本仍随消息传递，供 CLI 与 tool result（LLM）用。
 constexpr char kTodoToolHeader[] = "todowrite";
 
-// The animated row reflects the scheduler's process state, not the channel
-// stream: it spins exactly while the foreground group's active task runs (LLM
-// generating or a tool chain in flight). Other members of the group, background
-// groups, completed tasks and tasks waiting for input/deps never count as busy.
-bool ForegroundProcessBusy(const ::edc_c_task_snapshot *snap)
+// The state of the foreground group's active task -- the task whose todo list
+// the sidebar shows -- or "" when there is none. Only the foreground group's
+// active task counts: a busy sibling in the same group is not the foreground
+// process, so it must not light the spinner up or repaint the todo list, which
+// belongs to this one task. Both ForegroundProcessBusy below and the todo widget
+// read this, so they cannot disagree about which task owns the list.
+const char *ForegroundActiveTaskState(const ::edc_c_task_snapshot *snap)
 {
     if (!snap)
-        return false;
+        return "";
 
     for (int gi = 0; gi < snap->group_count; gi++)
     {
         const ::edc_c_task_group *g = &snap->groups[gi];
         if (!g->fg)
             continue;
-        // Only the foreground group's active task counts as the foreground
-        // process: a busy sibling in the same group must not light the
-        // spinner up.
         for (int ti = 0; ti < g->task_count; ti++)
         {
             const ::edc_c_task_info *t = &g->tasks[ti];
             if (!t->is_active)
                 continue;
-            return t->state &&
-                   (std::strcmp(t->state, "LLM_PROCESSING") == 0 || std::strcmp(t->state, "TOOL_CALLING") == 0);
+            return t->state ? t->state : "";
         }
-        return false; // foreground group exists but has no active task marked
+        return ""; // foreground group exists but has no active task marked
     }
-    return false; // no foreground group at all
+    return ""; // no foreground group at all
+}
+
+// The animated row reflects the scheduler's process state, not the channel
+// stream: it spins exactly while the foreground group's active task runs (LLM
+// generating or a tool chain in flight). Other members of the group, background
+// groups, completed tasks and tasks waiting for input/deps never count as busy.
+bool ForegroundProcessBusy(const ::edc_c_task_snapshot *snap)
+{
+    return style::TaskStateProcessing(ForegroundActiveTaskState(snap));
 }
 
 // The "working" row: a bar of blocks that sweeps back and forth while the
@@ -735,29 +742,23 @@ void TUIWindow::TickAnimations()
     // render path; a run that starts after nothing was breathing begins at the
     // dim end and blooms in.
     //
-    // Both halves of that are "work in flight", not "state on file": the task
-    // tree answers for itself (its rows carry the state), but the todo list only
-    // holds items, so the window adds the verdict it alone has -- the task that
-    // owns the list is the foreground active task, and it is running exactly
-    // when the working bar says so. Without that, an item left in_progress by a
-    // task that errored (or finished, or is waiting for input) would pulse for
-    // ever and keep the TUI repainting with it.
-    const bool task_running = task_widget_ && task_widget_->HasProcessingTask();
-    const bool todo_running = working_ && todo_widget_ && todo_widget_->HasInProgressItem();
-    const bool processing = task_running || todo_running;
-
+    // The task tree answers for itself (its rows carry the state); the todo list
+    // only holds items, so the window hands it the owning task's state -- the one
+    // it already read to decide whether the foreground process is busy. A
+    // leftover in_progress item therefore stops pulsing the moment its task does,
+    // and turns into the failure colour if that is how the task ended.
+    const bool processing = task_widget_ && task_widget_->HasProcessingTask();
     if (processing && !dot_breathing_)
         breath_started_ = now;
     dot_breathing_ = processing;
     const auto breath_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - breath_started_).count();
 
-    // Fed every tick, not just while animating: switching the todo row back to
-    // the plain accent is what stops the pulse on error, and that transition
-    // happens on the very tick the work stops.
     if (task_widget_)
         task_widget_->SetBreath(breath_ms);
+    // Fed every tick, not just while animating: the row's tint follows the
+    // owner's state, and that transition happens on the very tick the work ends.
     if (todo_widget_)
-        todo_widget_->SetBreath(breath_ms, todo_running);
+        todo_widget_->SetOwnerState(fg_active_state_, breath_ms);
 
     // A background task can process while the foreground process is idle, so the
     // sidebar's breathing, not just the spinner, keeps requesting frames.
@@ -1085,6 +1086,10 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
                 // The snapshot is the single source of truth for the status
                 // animation: re-derive it whenever the process tree refreshes.
                 tui->SyncWorkingFromSnapshot(snap);
+                // The todo list's current step mirrors the owning task's state
+                // (a failed task's step turns red), so record it from the same
+                // snapshot the items come from.
+                tui->fg_active_state_ = ForegroundActiveTaskState(snap);
                 // And for the todo section: it shows the foreground group's
                 // active task's own todo list (part of the task state), so it
                 // refreshes on every snapshot — not via a side channel on the

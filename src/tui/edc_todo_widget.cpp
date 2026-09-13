@@ -33,23 +33,10 @@ void TodoWidget::SetItems(const std::vector<Item> &items, const std::string &tas
         collapsed_ = false;
 }
 
-void TodoWidget::SetBreath(long long elapsed_ms, bool running)
+void TodoWidget::SetOwnerState(const std::string &task_state, long long elapsed_ms)
 {
+    owner_state_ = task_state;
     breath_ms_ = elapsed_ms;
-    // A stale in_progress item (a task that errored, finished or is waiting for
-    // input left it behind) must not keep pulsing: "running" is the caller's
-    // verdict on whether the task that owns this list is actually processing,
-    // and without it the row falls back to the plain accent. The window decides
-    // it -- it holds the task's state; this widget only holds the items.
-    breath_running_ = running;
-}
-
-bool TodoWidget::HasInProgressItem() const
-{
-    for (const Item &item : items_)
-        if (item.status == "in_progress")
-            return true;
-    return false;
 }
 
 bool TodoWidget::OnEvent(::ftxui::Event event)
@@ -86,13 +73,20 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
     // strikethrough). One quiet block with at most one bright row, instead
     // of a second rainbow beside the Tasks tree.
     //
-    // That one accent breathes while an item is running: the same shared
-    // working animation as the processing task dot (style::breath_accent), so
-    // the sidebar pulses as one thing rather than several. It breathes only
-    // while the task that owns the list is *actually* processing; otherwise the
-    // row keeps the plain accent, so an item left in_progress by a task that
-    // errored or finished is quiet (see SetBreath).
-    const ::ftxui::Color doing_accent = breath_running_ ? style::breath_accent(breath_ms_) : pal.accent;
+    // That row follows the state of the task that owns the list, read through the
+    // same table the task tree paints its markers with (style::TaskState*), so
+    // the two panes cannot disagree about what is running or what failed:
+    // processing -> breathe (the shared working animation, so the sidebar pulses
+    // as one thing); ERROR -> the failure colour, the very red the task's own
+    // marker wears, because a run that failed must not leave its last step
+    // looking merely "current"; anything else -> the plain accent, held still, so
+    // an item left in_progress by a task that finished or is waiting for input is
+    // quiet rather than pulsing for ever.
+    ::ftxui::Color doing_tint = pal.accent;
+    if (style::TaskStateProcessing(owner_state_))
+        doing_tint = style::breath_accent(breath_ms_);
+    else if (style::TaskStateFailed(owner_state_))
+        doing_tint = style::TaskStateColor(pal, owner_state_);
 
     // Blank cells kept free at the right edge of every full-width row: the sidebar is
     // the window's rightmost element, so rows would otherwise butt against the
@@ -177,12 +171,12 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             const bool cancelled = item.status == "cancelled";
 
             // Per-state marker in a bracket box: "[ ]" pending, "[•]" in_progress,
-            // "[✓]" completed. The box is blue only on the in_progress row (matching
-            // its text) and dim gray otherwise, so a marker adds no second hue;
-            // completed rows are also struck through.
+            // "[✓]" completed. The box wears the row's one tint only on the
+            // in_progress row (matching its text) and dim gray otherwise, so a
+            // marker adds no second hue; completed rows are also struck through.
             Element marker;
             if (doing)
-                marker = text("  [•] ") | color(doing_accent);
+                marker = text("  [•] ") | color(doing_tint);
             else if (done)
                 marker = text("  [✓] ") | color(pal.text_dim) | dim;
             else if (cancelled)
@@ -230,14 +224,14 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
                     last += "…";
             }
 
-            // Content styling: only the in_progress row is bright blue — the
-            // single accent of the whole list. Pending and completed rows
+            // Content styling: only the in_progress row carries the tint — the
+            // single bright row of the whole list. Pending and completed rows
             // are dim neutral gray; completed adds strikethrough so "done"
             // stays legible without a color of its own. Every wrapped line
             // of the item gets the same treatment.
             auto style_content = [&](Element e) -> Element {
                 if (doing)
-                    return e | color(doing_accent);
+                    return e | color(doing_tint);
                 if (done || cancelled)
                     return e | dim | strikethrough | color(pal.text_dim);
                 return e | dim | color(pal.text_dim);

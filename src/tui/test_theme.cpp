@@ -442,6 +442,50 @@ void test_breath_endpoints(void)
           "the rise passes through an intermediate shade on the way up");
 }
 
+// The one task-state vocabulary the widgets share: the tree paints its markers
+// with this table and the todo list reads its current step's failure colour from
+// it, so a test here is what keeps "the task failed" meaning one colour in both
+// panes.
+void test_task_state_table(void)
+{
+    TEST("task states: one predicate set, one colour table");
+
+    // Processing: exactly the two states the scheduler calls running.
+    CHECK(edc::style::TaskStateProcessing("LLM_PROCESSING"), "LLM_PROCESSING is processing");
+    CHECK(edc::style::TaskStateProcessing("TOOL_CALLING"), "TOOL_CALLING is processing");
+    CHECK(!edc::style::TaskStateProcessing("IDLE"), "IDLE is not");
+    CHECK(!edc::style::TaskStateProcessing("ERROR"), "and neither is a failed task");
+
+    // Failure: the one state whose rows and markers turn red.
+    CHECK(edc::style::TaskStateFailed("ERROR"), "ERROR is the failure state");
+    CHECK(!edc::style::TaskStateFailed("CANCELLED"), "a cancelled task did not fail");
+    CHECK(!edc::style::TaskStateFailed(""), "an unknown owner (no task) did not fail either");
+
+    for (const auto mode : {Mode::kDark, Mode::kLight})
+    {
+        edc::theme::SetMode(mode);
+        const auto &pal = edc::style::palette();
+
+        // The mapping the task tree draws with. COMPLETED ok, ERROR error,
+        // processing accent, SUSPENDED suspended, CANCELLED neutral dim, and the
+        // three waiting/idle states share warn (a known trade-off).
+        CHECK(edc::style::TaskStateColor(pal, "COMPLETED") == pal.ok, "COMPLETED -> ok");
+        CHECK(edc::style::TaskStateColor(pal, "ERROR") == pal.error, "ERROR -> error");
+        CHECK(edc::style::TaskStateColor(pal, "LLM_PROCESSING") == pal.accent, "processing -> accent");
+        CHECK(edc::style::TaskStateColor(pal, "TOOL_CALLING") == pal.accent, "tool calls -> accent too");
+        CHECK(edc::style::TaskStateColor(pal, "SUSPENDED") == pal.suspended, "SUSPENDED -> suspended");
+        CHECK(edc::style::TaskStateColor(pal, "CANCELLED") == pal.text_dim, "CANCELLED -> neutral dim");
+        CHECK(edc::style::TaskStateColor(pal, "IDLE") == pal.warn, "IDLE -> warn");
+        CHECK(edc::style::TaskStateColor(pal, "WAITING_DEPS") == pal.warn, "WAITING_DEPS -> warn");
+        CHECK(edc::style::TaskStateColor(pal, "WAITING_INPUT") == pal.warn, "WAITING_INPUT -> warn");
+
+        // The failure colour is not the accent, so the todo list's current step
+        // cannot be mistaken for a running one when its task has failed.
+        CHECK(pal.error != pal.accent, "failure and the running accent are distinct");
+    }
+    edc::theme::SetMode(Mode::kDark);
+}
+
 } // namespace
 
 int main(void)
@@ -460,6 +504,7 @@ int main(void)
     test_light_palette_contrast();
     test_breath_curve();
     test_breath_endpoints();
+    test_task_state_table();
 #if !defined(_WIN32)
     test_query_terminal_background();
     test_init_env_override();

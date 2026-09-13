@@ -163,6 +163,10 @@ class TUIWindow : public ::ftxui::ComponentBase
     // True while the foreground group's active task runs. Owned exclusively by
     // SyncWorkingFromSnapshot(), never toggled by channel messages.
     bool working_ = false;
+    // The foreground active task's scheduler state as of the last snapshot ("" when
+    // there is none): the todo list's current step follows it, so a step whose task
+    // failed turns red with the task's own marker instead of staying "current".
+    std::string fg_active_state_;
     // When working_ last flipped to true: the animation phase, so the run starts
     // at the first cell each time.
     std::chrono::steady_clock::time_point working_started_;

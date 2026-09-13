@@ -35,19 +35,20 @@ class TodoWidget : public ::ftxui::ComponentBase
     // resets the summary to 0/0, but the header stays visible.
     void SetItems(const std::vector<Item> &items, const std::string &task_id);
 
-    // Phase the in_progress row's breathing, in ms on the window's animation
-    // clock (see TUIWindow::TickAnimations). Same clock and tempo as the
-    // processing task dot, so the sidebar pulses as one thing. |running| is the
-    // window's verdict on whether the task that owns this list is processing
-    // right now (the widget cannot tell: it holds items, not task state). When
-    // it is false -- the task errored, finished or is waiting for input, leaving
-    // an in_progress item behind -- the row is drawn with the plain accent, so
-    // nothing pulses once the work has stopped.
-    void SetBreath(long long elapsed_ms, bool running);
-
-    // True while any item is in_progress. The window ANDs this with the owning
-    // task's own running state to decide whether anything has to breathe.
-    bool HasInProgressItem() const;
+    // The owning task's scheduler state ("" when unattached or unknown) plus the
+    // animation clock for the in_progress row, in ms (see
+    // TUIWindow::TickAnimations). The widget holds items, not task state, so the
+    // window supplies what only it knows -- and the row is painted through the
+    // same task-state table the task tree uses (style::TaskState*), so the two
+    // panes cannot disagree about what is running or what failed:
+    //   processing -> the row breathes (the shared working animation);
+    //   ERROR      -> the row takes the failure colour, exactly like the task's
+    //                 own marker above -- a failed run must not leave its step
+    //                 looking merely "current";
+    //   anything else -> the section's plain accent, held still, so an item left
+    //                 in_progress by a task that finished or is waiting for input
+    //                 does not pulse for ever.
+    void SetOwnerState(const std::string &task_state, long long elapsed_ms);
 
     ::ftxui::Element OnRender() override;
     bool OnEvent(::ftxui::Event) override;
@@ -67,11 +68,12 @@ class TodoWidget : public ::ftxui::ComponentBase
     // background refreshes; SetItems() auto-expands only on empty -> non-empty.
     bool collapsed_ = true;
 
+    // The owning task's state, as last set by the window (see SetOwnerState);
+    // only the in_progress row's tint reads it.
+    std::string owner_state_;
     // Phase of the in_progress row's breathing, in ms on the window's animation
-    // clock, and whether the owning task is actually running (see SetBreath).
-    // Only read for an item whose status is in_progress.
+    // clock. Only read while the owner is processing.
     long long breath_ms_ = 0;
-    bool breath_running_ = false;
 
     // Click target of the section header row, populated during OnRender.
     ::ftxui::Box header_box_;

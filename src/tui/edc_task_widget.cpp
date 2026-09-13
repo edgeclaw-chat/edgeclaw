@@ -11,41 +11,23 @@ namespace edc
 namespace
 {
 
-// A task is "processing" (working right now) in exactly these two states; they
-// are the ones the dot animates for, and the ones `edc_task_is_running` marks
-// in the scheduler.
+// The state predicates and the state -> colour table live in edc_style.hpp
+// (style::TaskStateProcessing / TaskStateFailed / TaskStateColor): the todo
+// list mirrors the tree's failure colour on its current step, so both read the
+// same one. The names below keep this file's call sites short.
 bool StateIsProcessing(const std::string &state)
 {
-    return state == "LLM_PROCESSING" || state == "TOOL_CALLING";
-}
-
-// Map a scheduler task-state name to the color of its sidebar dot.
-::ftxui::Color StateColor(const std::string &state)
-{
-    // Task states map onto the central style palette (edc_style.hpp).
-    const auto &pal = style::palette();
-    if (state == "COMPLETED")
-        return pal.ok;
-    if (state == "ERROR")
-        return pal.error;
-    if (StateIsProcessing(state))
-        return pal.accent;
-    if (state == "SUSPENDED")
-        return pal.suspended;
-    if (state == "CANCELLED")
-        return pal.text_dim;
-    // IDLE / WAITING_DEPS / WAITING_INPUT
-    return pal.warn;
+    return style::TaskStateProcessing(state);
 }
 
 // The glyphs that stand in for a task's state in the tree. One marker column
 // carries two facts at once: the shape says whether this is the *active* task
 // (the one the chat surface is talking to) -- a block for that one, a filled
-// dot for every other -- and the color says which state it is in (StateColor
-// below). The state used to be spelled out, which cost each row as many cells
-// as the longest name ("LLM_PROCESSING") and made the right edge ragged; a
-// single fixed-column glyph keeps every row's right edge still and hands the
-// freed cells to the description.
+// dot for every other -- and the color says which state it is in (the shared
+// style::TaskStateColor table). The state used to be spelled out, which cost
+// each row as many cells as the longest name ("LLM_PROCESSING") and made the
+// right edge ragged; a single fixed-column glyph keeps every row's right edge
+// still and hands the freed cells to the description.
 //
 // A block rather than an arrow: it is style::kBlockGlyph, the very glyph the
 // working bar's lit cells are made of, so the row the session is working on and
@@ -411,7 +393,7 @@ int TaskWidget::RowWidth() const
                 // description stay in the terminal's default foreground, so the
                 // row does not turn into a block of state colour.
                 const ::ftxui::Color tint = StateIsProcessing(t.state) ? style::breath_accent(breath_ms_)
-                                                                       : StateColor(t.state);
+                                                                       : style::TaskStateColor(pal, t.state);
                 lines.push_back(hbox({
                                     text("  " + std::string(marker)) | color(tint),
                                     text(left) | flex,
