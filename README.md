@@ -629,7 +629,7 @@ The `~/.edgeclaw/` workspace directory contains:
 | `ssl/cacert.pem` | TLS CA certificate bundle for HTTPS connections |
 | `sessions.json` | Multi-session index (id / name / created_at + active) |
 | `<session_id>/session.json` | Per-session state — the single source of truth (schema v3: groups/tasks/turns/messages) |
-| `<session_id>/chat.jsonl` | Legacy per-session TUI chat transcript — **no longer read or written**; the chat log is derived from `session.json` (`edc_session_chat_replay`, see `docs/session-model-v3.md`) |
+| `<session_id>/chat.jsonl` | Per-session TUI chat transcript: one line per bubble that was shown. The TUI writes it as messages are displayed and replays it on start, so the log is what was on screen — not what `session.json` holds (a background task's output never reaches the tab and is absent here). A session without one simply shows an empty log — nothing is derived; see `docs/session-model-v3.md` §12 |
 | `jobs.json` | Scheduled cron jobs (created by the `crontab` tool) |
 
 ### Skills
