@@ -384,23 +384,17 @@ ftxui::Color RgbColor(Rgb c)
     return ftxui::Color::RGB(c.r, c.g, c.b);
 }
 
-// HSV saturation: 0 is a gray (or white), 1 a fully saturated hue. Used to keep
-// the breath's bright end from washing out -- a peak with too little saturation
-// stops reading as the accent's blue and just looks white.
-double Saturation(Rgb c)
-{
-    const int hi = std::max({c.r, c.g, c.b});
-    const int lo = std::min({c.r, c.g, c.b});
-    return hi == 0 ? 0.0 : double(hi - lo) / double(hi);
-}
-
-// The breath has to swing: the accent on its own was too subtle, so each end is
-// pushed past it. This pins both ends, that the bright one is still the accent's
-// blue rather than white, and the contrast between them, per palette (the pane
-// is dark on one and white on the other, so "brighter" points opposite ways).
+// The breath swings between the pane surface and the theme's own accent: the
+// trough is the accent faded into the surface, the peak is the accent untouched
+// -- never brighter. That keeps the top of every cycle the same blue the section
+// titles, the input prompt and the working bar wear, and it keeps the glyph from
+// washing out to white, which is what pushing past the accent did (the accent
+// already sits at HSV value 0.94, so extra brightness is paid for in
+// saturation). Pinned per palette, since the pane is dark on one and white on
+// the other.
 void test_breath_endpoints(void)
 {
-    TEST("the breath endpoints swing far enough to read");
+    TEST("the breath swings between the pane surface and the theme accent");
 
     struct Case
     {
@@ -408,11 +402,10 @@ void test_breath_endpoints(void)
         const edc::style::Palette &pal;
         Rgb pane;
         Rgb accent;
-        Rgb text;
     };
     const Case cases[] = {
-        {"dark", edc::style::dark_palette(), Hex("272822"), Hex("66d9ef"), Hex("f8f8f2")},
-        {"light", edc::style::light_palette(), Hex("ffffff"), Hex("28c6e4"), Hex("000000")},
+        {"dark", edc::style::dark_palette(), Hex("272822"), Hex("66d9ef")},
+        {"light", edc::style::light_palette(), Hex("ffffff"), Hex("28c6e4")},
     };
 
     for (const Case &c : cases)
@@ -421,26 +414,32 @@ void test_breath_endpoints(void)
         // draws with, or the measurement would drift away from the screen.
         CHECK(RgbColor(c.pane) == c.pal.pane_bg, "the test's pane colour drifted from the palette");
         CHECK(RgbColor(c.accent) == c.pal.accent, "the test's accent drifted from the palette");
-        CHECK(RgbColor(c.text) == c.pal.text, "the test's text colour drifted from the palette");
 
         const Rgb dim = Blend(edc::style::kBreathDimFade, c.accent, c.pane);
-        const Rgb peak = Blend(edc::style::kBreathBrightPush, c.accent, c.text);
         CHECK(edc::style::breath_dim(c.pal) == RgbColor(dim), "the dim end is not the accent faded into the surface");
-        CHECK(edc::style::breath_bright(c.pal) == RgbColor(peak), "the peak is not the accent pushed towards the text");
 
         const double plain = Contrast(c.accent, c.pane);
         const double lowest = Contrast(dim, c.pane);
-        const double highest = Contrast(peak, c.pane);
-        CHECK(highest > plain, "the peak is no further from the pane than the plain accent");
+        // The trough really is dimmer, and by a fixed fraction of the way to the
+        // pane: the equality above pins kBreathDimFade, so the swing's size is
+        // pinned with it (measuring it as a contrast *ratio* instead would just
+        // re-encode the palette -- the light theme's trough is nearly white, so
+        // its ratio is much smaller than the dark one's for the same fade).
         CHECK(lowest < plain, "the trough is no closer to the pane than the plain accent");
-        CHECK(highest / lowest > 2.0, "the swing does not even double the peak-to-trough contrast");
-
-        // The bright end is a lighter accent, not a white one: it must keep most
-        // of the accent's saturation. Pushing towards the text colour further
-        // than this washes the blue out (at 0.50 the peak keeps barely a third).
-        CHECK(Saturation(peak) >= 0.6 * Saturation(c.accent),
-              "the peak has lost the accent's blue (saturation %.2f vs %.2f)", Saturation(peak), Saturation(c.accent));
     }
+
+    // The end of the rise is the plain accent -- exactly, not nearly: ftxui's
+    // per-channel gamma round-trip lands a unit short at t = 1, so the two
+    // extremes are returned outright. Read back through palette(), which is what
+    // the widgets call, so the whole path from the theme to the colour is
+    // covered rather than just the helpers.
+    edc::theme::SetMode(Mode::kDark);
+    const auto &dark = edc::style::palette();
+    CHECK(edc::style::breath_accent(0) == edc::style::breath_dim(dark), "the cycle starts at the dim end");
+    CHECK(edc::style::breath_accent(edc::style::kBreathPeriodMs / 2) == dark.accent,
+          "the peak is exactly the theme's accent, not a brighter shade of it");
+    CHECK(edc::style::breath_accent(edc::style::kBreathPeriodMs / 4) != dark.accent,
+          "the rise passes through an intermediate shade on the way up");
 }
 
 } // namespace

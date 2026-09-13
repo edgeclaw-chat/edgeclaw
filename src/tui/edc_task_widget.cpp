@@ -38,24 +38,25 @@ bool StateIsProcessing(const std::string &state)
     return pal.warn;
 }
 
-// The breathing dot of a processing task: the shared working accent, pulsed by
-// the window's animation clock (style::breath_accent in edc_style.hpp -- the
-// same colour and tempo as the in_progress todo row and the working bar).
-
-// The glyph that stands in for a task's state in the tree: one filled dot,
-// tinted with that state's color (StateColor above). The state used to be
-// spelled out, which cost each row as many cells as the longest name
-// ("LLM_PROCESSING") and made the right edge ragged. A single dot in a fixed
-// column keeps every row's right edge still and hands the freed cells to the
-// description; the color alone carries the state. A processing task's dot
-// breathes through that color instead of sitting static (BreathColor above).
-constexpr char kStateDot[] = "●";
-constexpr int kStateDotCells = 1; // a single terminal cell
-
-// Cells guaranteed to stay free between a task's description and its state
-// dot. Kept as a fixed non-flex element so the dot never glues itself to a
-// long (truncated) description.
-constexpr int kDescStateGapCells = 2;
+// The glyphs that stand in for a task's state in the tree. One marker column
+// carries two facts at once: the shape says whether this is the *active* task
+// (the one the chat surface is talking to) -- a block for that one, a filled
+// dot for every other -- and the color says which state it is in (StateColor
+// below). The state used to be spelled out, which cost each row as many cells
+// as the longest name ("LLM_PROCESSING") and made the right edge ragged; a
+// single fixed-column glyph keeps every row's right edge still and hands the
+// freed cells to the description.
+//
+// A block rather than an arrow: it is style::kBlockGlyph, the very glyph the
+// working bar's lit cells are made of, so the row the session is working on and
+// the bar that says it is working read as one signal -- a processing active task
+// lights up as a lit block of that bar. It stays distinct from the thin fold
+// arrows the group headers wear (▾ / ▸) and from the round ● of every other row.
+// A processing task's marker breathes through its colour instead of sitting
+// static (style::breath_accent).
+constexpr const char *kStateDot = "●";
+constexpr const char *kActiveMarker = style::kBlockGlyph;
+constexpr int kMarkerCells = 1; // either glyph is a single terminal cell
 
 // Blank cells reserved at the right edge of every full-width row. The
 // sidebar pane is the window's rightmost element: rows used to truncate /
@@ -382,36 +383,40 @@ int TaskWidget::RowWidth() const
 
             for (const auto &t : g.tasks)
             {
-                // Left part: indent, active/leader markers and the task id.
+                // Left part: indent, the single marker glyph and the task id.
                 // The description is appended separately so its length can be
-                // computed against the real row width.
-                std::string left = "  ";
-                left += t.is_active ? "*" : " ";
-                left += t.is_leader ? "•" : " ";
-                left += " " + t.task_id;
+                // computed against the real row width. The group used to carry a
+                // `•` on its leader's row as well, but a group's id *is* its
+                // leader's task id (edc_task_group_new), so the group header
+                // above already names it -- the cell went to the marker instead.
+                const char *marker = t.is_active ? kActiveMarker : kStateDot;
+                const std::string head = " " + t.task_id;
+                std::string left = head;
 
                 if (!t.description.empty())
                 {
-                    // Two cells separate the id from the description (kept
-                    // from the previous layout), then a gap before the state
-                    // dot; kRightPad keeps the dot off the pane's right edge.
-                    // Per-task tokens are intentionally not shown: the group
-                    // header carries the whole group's cost.
-                    const int budget = row_width - StringWidth(left) - 2 - kDescStateGapCells - kStateDotCells - kRightPad;
+                    // Two cells separate the id from the description; kRightPad
+                    // keeps the row off the pane's right edge. Per-task tokens are
+                    // intentionally not shown: the group header carries the whole
+                    // group's cost.
+                    const int budget =
+                        row_width - (2 + kMarkerCells) - StringWidth(head) - 2 - kRightPad;
                     if (budget > 0)
                         left += "  " + TruncateToWidth(t.description, budget);
                 }
 
-                Elements cells;
-                cells.push_back(text(left) | flex);
-                cells.push_back(text(std::string(kDescStateGapCells, ' ')));
-                // A processing task breathes (its dot pulses with the working
-                // bar's tempo); every other state is a fixed color.
-                const ::ftxui::Color dot = StateIsProcessing(t.state) ? style::breath_accent(breath_ms_)
-                                                                      : StateColor(t.state);
-                cells.push_back(text(kStateDot) | color(dot));
-                cells.push_back(text(std::string(kRightPad, ' ')));
-                lines.push_back(hbox(std::move(cells)));
+                // A processing task breathes (its marker pulses with the working
+                // bar's tempo, peaking at the plain accent); every other state is
+                // a fixed color. Only the marker is tinted -- the id and the
+                // description stay in the terminal's default foreground, so the
+                // row does not turn into a block of state colour.
+                const ::ftxui::Color tint = StateIsProcessing(t.state) ? style::breath_accent(breath_ms_)
+                                                                       : StateColor(t.state);
+                lines.push_back(hbox({
+                                    text("  " + std::string(marker)) | color(tint),
+                                    text(left) | flex,
+                                    text(std::string(kRightPad, ' ')),
+                                }));
             }
         }
     }

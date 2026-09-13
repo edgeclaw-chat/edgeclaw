@@ -168,6 +168,12 @@ inline const Palette &palette()
 }
 
 // ---- the "working" animation ------------------------------------------
+// The one glyph the working bar is built from: its lit cells and the active
+// task's marker in the sidebar are the same block, so "the task the session is
+// working on" and "the bar that says it is working" read as one signal. Shared
+// here rather than spelled out twice.
+constexpr const char *kBlockGlyph = "■";
+
 // One accent, one tempo, for everything that says "this is running right now":
 // a processing task's state dot and the in_progress todo row both breathe with
 // it, so the sidebar pulses as a single thing rather than several.
@@ -191,44 +197,43 @@ inline float breath_phase(long long elapsed_ms)
     return 0.5f * (1.0f - static_cast<float>(std::cos(radians)));
 }
 
-// The two ends the breath swings between. The accent alone is not enough of a
-// swing to read at a glance, so each end is pushed past it:
+// The breath: the accent dimmed towards the pane surface and back, so the bright
+// end of every cycle is exactly the theme's blue -- the same colour the section
+// titles, the input prompt and the working spinner wear. It never goes brighter
+// than the accent: the accent already sits at HSV value 0.94, so any push past it
+// just trades saturation for brightness and the glyph stops reading as blue.
 //
 //   dim    the accent all but drowned in the pane surface (nearly the surface
 //          colour, so the glyph almost dies at the trough);
-//   bright the accent nudged towards the body text colour -- a lighter, still
-//          unmistakably cyan accent on a dark terminal, a deeper one on a light
-//          terminal, which is the direction that raises contrast against a
-//          white surface.
+//   bright exactly the theme's accent, untouched.
 //
-// Both keep the accent's hue (fading to gray would read as the state changing,
-// not as work in progress). The bright push stays small on purpose: the accent
-// sits at value 0.94 already, so there is almost no headroom, and every step
-// towards the text colour trades saturation for a brightness no one asked for
-// -- pushed far enough the peak stops being blue and just looks white.
-// Measured WCAG contrast against the pane the glyphs sit on: dark 2.2:1 ->
-// 9.9:1, light 1.1:1 -> 2.5:1, against 2.9:1 -> 9.0:1 for the plain accent, so
-// most of the added swing comes from the trough. Both ends are parameterised so
-// the effect can be tuned in one place, and take the palette explicitly so tests
-// can measure them per theme.
-constexpr float kBreathDimFade = 0.85f;    // the accent's fade into the pane surface
-constexpr float kBreathBrightPush = 0.20f; // the accent's push towards the body text
+// The dim end keeps the accent's hue (fading to gray would read as the state
+// changing, not as work in progress). Measured WCAG contrast against the pane
+// the glyphs sit on: dark 2.2:1 -> 9.0:1, light 1.1:1 -> 2.0:1, against
+// 2.9:1 -> 9.0:1 for a static accent -- all of the added swing is the trough.
+// The fade is parameterised so the effect can be tuned in one place, and takes
+// the palette explicitly so tests can measure it per theme.
+constexpr float kBreathDimFade = 0.85f; // the accent's fade into the pane surface
 
 inline ::ftxui::Color breath_dim(const Palette &pal)
 {
     return ::ftxui::Color::Interpolate(kBreathDimFade, pal.accent, pal.pane_bg);
 }
 
-inline ::ftxui::Color breath_bright(const Palette &pal)
-{
-    return ::ftxui::Color::Interpolate(kBreathBrightPush, pal.accent, pal.text);
-}
-
-// The accent mid-breath.
+// The accent mid-breath: the dim end and the plain accent, nothing brighter.
+// The two extremes are returned exactly rather than interpolated into: ftxui's
+// per-channel gamma round-trip (pow(x, 2.2) then pow(., 1/2.2)) lands a unit low
+// at t = 0 and t = 1, which would leave the peak at (101,216,238) instead of the
+// accent's (102,217,239) -- invisible, but it is not "the theme's blue" either.
 inline ::ftxui::Color breath_accent(long long elapsed_ms)
 {
     const Palette &pal = palette();
-    return ::ftxui::Color::Interpolate(breath_phase(elapsed_ms), breath_dim(pal), breath_bright(pal));
+    const float phase = breath_phase(elapsed_ms);
+    if (phase <= 0.0f)
+        return breath_dim(pal);
+    if (phase >= 1.0f)
+        return pal.accent;
+    return ::ftxui::Color::Interpolate(phase, breath_dim(pal), pal.accent);
 }
 
 } // namespace style

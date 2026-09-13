@@ -139,14 +139,14 @@ BarState BarAt(long long elapsed_ms)
 {
     if (tier <= 2)
     {
-        auto e = ::ftxui::text("■") | ::ftxui::color(pal.accent);
+        auto e = ::ftxui::text(style::kBlockGlyph) | ::ftxui::color(pal.accent);
         if (tier == 0)
             e = e | ::ftxui::bold;
         else if (tier == 2)
             e = e | ::ftxui::dim;
         return e;
     }
-    auto e = ::ftxui::text("■") | ::ftxui::color(pal.text_dim);
+    auto e = ::ftxui::text(style::kBlockGlyph) | ::ftxui::color(pal.text_dim);
     if (tier >= 4)
         e = e | ::ftxui::dim;
     return e;
@@ -159,7 +159,7 @@ BarState BarAt(long long elapsed_ms)
 ::ftxui::Element PartialLitBlock(int tier, float cover, const style::Palette &pal)
 {
     const ::ftxui::Color lit = (tier <= 2) ? pal.accent : pal.text_dim;
-    auto e = ::ftxui::text("■") | ::ftxui::color(::ftxui::Color::Interpolate(cover, UnlitColor(pal), lit));
+    auto e = ::ftxui::text(style::kBlockGlyph) | ::ftxui::color(::ftxui::Color::Interpolate(cover, UnlitColor(pal), lit));
     if (tier == 0)
         e = e | ::ftxui::bold;
     else if (tier == 2 || tier == 4)
@@ -730,7 +730,7 @@ void TUIWindow::TickAnimations()
 
     const auto now = std::chrono::steady_clock::now();
 
-    // The sidebar's breathing (a processing task's dot, an in_progress todo
+    // The sidebar's breathing (a processing task's marker, an in_progress todo
     // row) runs on the working bar's tempo. Feed it the clock here, off the
     // render path; a run that starts after nothing was breathing begins at the
     // dim end and blooms in.
