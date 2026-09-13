@@ -4,6 +4,8 @@
 #include "edc_channel_actor.h"
 #include "edc_llm_actor.h"
 #include "edc_toolbox_actor.h"
+#include "edc_toolbox.h"
+#include "edc_tools.h"
 #include "edc_task_group.h"
 #include "log.h"
 #include <stdio.h>
@@ -765,6 +767,153 @@ static void test_observe_task_id_raises_high_water(void)
     free_config(cfg);
 }
 
+/* ── 8. tool 消息的显示元数据 (回放据此重现实时气泡) ──────── */
+
+/* 投递一条带显示元数据的 TOOL_RESPONSE, 返回刚追加进 active_turn 的 tool 消息。 */
+static cJSON *deliver_tool_resp_meta(struct edc_scheduler *sched, struct edc_task *task, long req_id, bool displayed,
+                                     const char *header, edc_render_pref_t render)
+{
+    edc_actor_t *actor = edc_scheduler_get_actor(sched);
+    struct edc_toolbox_actor_req *tr = calloc(1, sizeof(*tr));
+    tr->name = sdsnew("exec_shell");
+    tr->call_id = sdsnew("call_meta");
+    tr->result = sdsnew("tool result");
+    tr->displayed = displayed;
+    tr->display_header = header ? sdsnew(header) : NULL;
+    tr->display_render = render;
+    tr->next = NULL;
+    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TOOL_RESPONSE, NULL, (void *)(intptr_t)req_id, tr, NULL);
+    actor->handler(actor, msg); /* dispatches + frees msg (not data) */
+
+    cJSON *found = NULL;
+    if (task->active_turn && edc_queue_length(&task->active_turn->messages) > 0)
+        found = task->active_turn->messages.data[task->active_turn->messages.tail - 1];
+
+    sdsfree(tr->name);
+    sdsfree(tr->call_id);
+    sdsfree(tr->result);
+    if (tr->display_header)
+        sdsfree(tr->display_header);
+    free(tr);
+    return found;
+}
+
+static void test_tool_display_metadata(void)
+{
+    TEST("tool result persists the display header/render the tool emitted");
+    struct edc_config *cfg = make_config();
+    cfg->max_iter = 0; /* 不设上限: 链尾续发, task 不完成, active turn 留着 */
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
+
+    struct edc_task *leader = edc_scheduler_create_task(sched, "leader", edc_channel_adapter);
+    struct edc_task_group *g = edc_scheduler_create_group(sched, leader);
+    edc_scheduler_set_foreground(sched, g);
+    edc_session_set_active_task(sess, leader);
+
+    g_llm_calls = 0;
+    g_dispatch_calls = 0;
+    g_reply_calls = 0;
+    g_llm_task = NULL;
+    sched->send_llm = mock_send_llm;
+    sched->dispatch_tools = mock_dispatch_tools;
+    sched->send_reply = mock_send_reply;
+
+    drive_input(sched, "run it", 201);
+
+    /* 上屏的调用: header 是工具声明的标题 (如 shell 命令原文), render 是它声明的偏好 */
+    cJSON *m = deliver_tool_resp_meta(sched, leader, 201, true, "git status --short", EDC_RENDER_MARKDOWN);
+    CHECK(m != NULL, "tool message appended to the active turn");
+    if (m)
+    {
+        cJSON *role = cJSON_GetObjectItem(m, "role");
+        CHECK(role && strcmp(cJSON_GetStringValue(role), "tool") == 0, "role is tool");
+        CHECK(cJSON_IsTrue(cJSON_GetObjectItem(m, "displayed")), "displayed=true persisted");
+        cJSON *hdr = cJSON_GetObjectItem(m, "header");
+        CHECK(hdr && strcmp(cJSON_GetStringValue(hdr), "git status --short") == 0, "header persisted");
+        cJSON *rnd = cJSON_GetObjectItem(m, "render");
+        CHECK(rnd && strcmp(cJSON_GetStringValue(rnd), "markdown") == 0, "render persisted");
+    }
+
+    /* 没上屏的调用 (如中断补记的那条 tool 消息): displayed=false, 且不写 header */
+    cJSON *m2 = deliver_tool_resp_meta(sched, leader, 201, false, "ignored", EDC_RENDER_PLAIN);
+    CHECK(m2 != NULL, "second tool message appended");
+    if (m2)
+    {
+        CHECK(cJSON_IsFalse(cJSON_GetObjectItem(m2, "displayed")), "displayed=false persisted");
+        CHECK(cJSON_GetObjectItem(m2, "header") == NULL, "off-screen call writes no header");
+        CHECK(cJSON_GetObjectItem(m2, "render") != NULL, "render key still present (turn adds the default)");
+    }
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
+/* ── 9. 工具侧: emit 的显示元数据记在 call ctx 上 ─────────── */
+
+static void fake_tool_cb(struct edc_toolbox_call_ctx *ctx, sds result, EdcError *error)
+{
+    (void)ctx;
+    (void)error;
+    if (result)
+        sdsfree(result);
+}
+
+static void fake_emit_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
+                            void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
+{
+    (void)tool;
+    (void)args;
+    edc_toolbox_emit_tool_message_plain(ctx, "git status --short", "on branch tui");
+    callback(ctx, sdsnew("on branch tui"), NULL);
+}
+
+static void fake_quiet_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
+                            void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
+{
+    (void)tool;
+    (void)args;
+    callback(ctx, sdsnew("nothing on screen"), NULL);
+}
+
+static void test_tool_display_ctx_recording(void)
+{
+    TEST("call ctx records the emitted header/render and resets between calls");
+    struct edc_config *cfg = make_config();
+
+    /* 这些单测不跑 actor loop, 所以 emit 只发到 dummy actor 的 mailbox 上就停了 ——
+     * 这里只看 emit → call ctx 这一段 (落盘见 test_tool_display_metadata,
+     * 回放见 test_chat_replay)。 */
+    edc_actor_t *dummy = edc_actor_new("dummy_scheduler", NULL, NULL);
+    struct edc_toolbox *tb = edc_toolbox_new(cfg, dummy, NULL);
+    edc_toolbox_register(tb, edc_tool_new("fake_emit", "", NULL, fake_emit_exec));
+    edc_toolbox_register(tb, edc_tool_new("fake_quiet", "", NULL, fake_quiet_exec));
+
+    struct edc_toolbox_call_ctx *ctx = edc_toolbox_call_ctx_new(tb, edc_channel_adapter, NULL, NULL, NULL);
+
+    cJSON *args = cJSON_CreateObject();
+    edc_toolbox_exec(ctx, "fake_emit", args, fake_tool_cb);
+    CHECK(ctx->displayed, "emit recorded: displayed");
+    CHECK(ctx->display_header && strcmp(ctx->display_header, "git status --short") == 0, "emit header recorded");
+    CHECK(ctx->display_render == EDC_RENDER_PLAIN, "declared render recorded");
+
+    /* 同一个 call ctx 上的下一次调用 (req 链复用): 元数据必须清空, 不能把上一次
+     * 调用的 header 带进它的 tool 消息 */
+    cJSON *args2 = cJSON_CreateObject();
+    edc_toolbox_exec(ctx, "fake_quiet", args2, fake_tool_cb);
+    CHECK(!ctx->displayed, "call that emitted nothing: displayed=false");
+    CHECK(ctx->display_header == NULL, "call that emitted nothing: header cleared");
+    CHECK(ctx->display_render == EDC_RENDER_PLAIN, "render back to the default");
+
+    cJSON_Delete(args);
+    cJSON_Delete(args2);
+    edc_toolbox_call_ctx_free(ctx);
+    edc_toolbox_free(tb);
+    edc_actor_free(dummy);
+    free_config(cfg);
+}
+
 int main(void)
 {
     log_info("=== Phase 3: edc_scheduler 模块测试 ===");
@@ -782,6 +931,8 @@ int main(void)
     test_snapshot_carries_no_chat_messages();
     test_task_id_survives_restart();
     test_observe_task_id_raises_high_water();
+    test_tool_display_metadata();
+    test_tool_display_ctx_recording();
 
     log_info("");
     log_info("=== 测试结果: %d passed, %d failed ===", test_passed, test_failed);

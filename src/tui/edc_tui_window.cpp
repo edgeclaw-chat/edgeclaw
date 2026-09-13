@@ -472,17 +472,14 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
         if (edc_c_agent_session_id(agent, sid, sizeof(sid)))
         {
             current_session_id_ = sid;
-            char path[4096];
-            if (edc_c_session_chat_log_path(agent, path, sizeof(path)))
-                chat_log_path_ = path;
-            LoadChatTranscript();
+            RebuildChatFromSession(sid);
         }
     }
 
     // Populate the sidebar once the agent is running (its response is routed
     // through the adapter and handled by on_channel_adapter_send below). The
-    // chat log is NOT refilled from any agent state: the TUI persists and
-    // replays its own transcript (see LoadChatTranscript).
+    // chat log is derived from the session's messages, never refilled from a
+    // private transcript file (see RebuildChatFromSession).
     RequestTaskSnapshot();
 }
 
@@ -508,7 +505,6 @@ void TUIWindow::Submit()
     }
 
     chat_widget_->AddMessage(std::make_shared<UserMessage>(message, ::time(nullptr)));
-    AppendChatTranscript("user", "", message, "", EDC_C_RENDER_PLAIN);
     input_text_.clear();
     input_->Reset(); // caret/scroll back to the start after the external clear
     // Record the submitted text for ArrowUp recall and persist it so history
@@ -598,158 +594,59 @@ void TUIWindow::RequestTaskSnapshot()
     edc_c_agent_request_task_snapshot(agent);
 }
 
-// The chat transcript is a private, line-oriented format: one bubble per line,
-// tab-separated kind/render_pref/task_id/header/content, with `\\`, `\n`, `\r` and
-// `\t` escaped inside every field. It records exactly what was shown, so replaying
-// it reproduces the pre-exit log verbatim.
-static std::string EscapeTranscriptField(const std::string &s)
+// Build one chat bubble. Shared by the live channel path and the restart replay
+// so a message looks the same whether it just arrived or was re-derived from
+// session.json. |kind| is the bridge's tag: user | tool | thought | reply | sys.
+static std::shared_ptr<Message> MakeChatWidget(const std::string &kind, const std::string &header,
+                                               const std::string &content, const std::string &task_id,
+                                               int render_pref, time_t ts)
 {
-    std::string out;
-    out.reserve(s.size());
-    for (char c : s)
+    if (kind == "user")
+        return std::make_shared<UserMessage>(content, ts, task_id);
+
+    if (kind == "tool")
     {
-        switch (c)
+        // 工具消息的渲染完全由发送方声明的 render_pref 决定，渲染端零猜测：
+        //  - MARKDOWN: 内容按 Markdown 渲染；有 header 时保留 ToolMessage 的
+        //    折叠 chrome，无 header 直接进 md 消息样式
+        //  - 默认/PLAIN（未声明即纯文本）: 一律纯文本 ToolMessage
+        if (render_pref == EDC_C_RENDER_MARKDOWN)
         {
-        case '\\':
-            out += "\\\\";
-            break;
-        case '\n':
-            out += "\\n";
-            break;
-        case '\r':
-            out += "\\r";
-            break;
-        case '\t':
-            out += "\\t";
-            break;
-        default:
-            out += c;
+            if (!header.empty())
+                return std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/true, task_id);
+            return std::make_shared<Message>(content, ts, task_id);
         }
+        return std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/false, task_id);
     }
-    return out;
+
+    if (kind == "thought")
+        return std::make_shared<ThoughtMessage>(content, ts, task_id);
+
+    // "reply" | "sys"
+    return std::make_shared<Message>(content, ts, task_id);
 }
 
-static std::string UnescapeTranscriptField(const std::string &s)
+void TUIWindow::OnChatReplay(void *user, const char *kind, const char *header, const char *content,
+                             const char *task_id, int render_pref)
 {
-    std::string out;
-    out.reserve(s.size());
-    for (size_t i = 0; i < s.size(); i++)
-    {
-        if (s[i] != '\\' || i + 1 >= s.size())
-        {
-            out += s[i];
-            continue;
-        }
-        char n = s[++i];
-        switch (n)
-        {
-        case 'n':
-            out += '\n';
-            break;
-        case 'r':
-            out += '\r';
-            break;
-        case 't':
-            out += '\t';
-            break;
-        default:
-            out += n; // covers "\\" and any stray escape
-        }
-    }
-    return out;
-}
-
-void TUIWindow::AppendChatTranscript(const std::string &kind, const std::string &header, const std::string &content,
-                                     const std::string &task_id, int render_pref)
-{
-    AppendChatTranscriptTo(chat_log_path_, kind, header, content, task_id, render_pref);
-}
-
-void TUIWindow::AppendChatTranscriptTo(const std::string &path, const std::string &kind, const std::string &header,
-                                       const std::string &content, const std::string &task_id, int render_pref)
-{
-    if (path.empty())
+    auto *tui = static_cast<TUIWindow *>(user);
+    if (!tui || !tui->chat_widget_ || !content)
         return;
-    // Symlink-safe append: the transcript lives under the model-writable
-    // workspace, so refuse to follow a planted symlink (see
-    // edc_c_agent_write_file / edc_file_fopen_safe).
-    std::string line = EscapeTranscriptField(kind) + "\t" + std::to_string(render_pref) + "\t" +
-                       EscapeTranscriptField(task_id) + "\t" + EscapeTranscriptField(header) + "\t" +
-                       EscapeTranscriptField(content) + "\n";
-    edc_c_agent_write_file(agent, path.c_str(), line.data(), line.size(), /*append=*/true,
-                           /*under_workspace=*/true);
+
+    // todowrite 的输出不进对话区（与实时路径同一条规则）：TODO 状态由右侧
+    // TodoWidget 展示。
+    if (kind && std::strcmp(kind, "tool") == 0 && header && std::strcmp(header, kTodoToolHeader) == 0)
+        return;
+
+    tui->chat_widget_->AddMessage(MakeChatWidget(kind ? kind : "", header ? header : "", content,
+                                                 task_id ? task_id : "", render_pref, ::time(nullptr)));
 }
 
-void TUIWindow::LoadChatTranscript()
+void TUIWindow::RebuildChatFromSession(const char *session_id)
 {
     chat_widget_->Clear();
-    if (chat_log_path_.empty())
-        return;
-
-    std::ifstream file(chat_log_path_, std::ios::binary);
-    if (!file)
-        return; // no transcript yet (fresh session)
-
-    const time_t ts = ::time(nullptr);
-    std::string line;
-    while (std::getline(file, line))
-    {
-        if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        if (line.empty())
-            continue;
-
-        // Split on the first four raw tabs; fields are escape-free per tab.
-        std::string parts[5];
-        int field = 0;
-        for (char c : line)
-        {
-            if (c == '\t' && field < 4)
-            {
-                field++;
-                continue;
-            }
-            parts[field] += c;
-        }
-        if (field < 4)
-            continue; // malformed line
-
-        const std::string kind = UnescapeTranscriptField(parts[0]);
-        const int render_pref = std::atoi(parts[1].c_str());
-        const std::string task_id = UnescapeTranscriptField(parts[2]);
-        const std::string header = UnescapeTranscriptField(parts[3]);
-        const std::string content = UnescapeTranscriptField(parts[4]);
-
-        std::shared_ptr<Message> widget;
-        if (kind == "user")
-        {
-            widget = std::make_shared<UserMessage>(content, ts, task_id);
-        }
-        else if (kind == "tool")
-        {
-            if (render_pref == EDC_C_RENDER_MARKDOWN)
-            {
-                if (!header.empty())
-                    widget = std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/true, task_id);
-                else
-                    widget = std::make_shared<Message>(content, ts, task_id);
-            }
-            else
-            {
-                widget = std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/false, task_id);
-            }
-        }
-        else if (kind == "thought")
-        {
-            widget = std::make_shared<ThoughtMessage>(content, ts, task_id);
-        }
-        else // "reply" | "sys"
-        {
-            widget = std::make_shared<Message>(content, ts, task_id);
-        }
-        if (widget)
-            chat_widget_->AddMessage(widget);
-    }
+    // session.json 是聊天记录的唯一真相：按消息的显示顺序重放一遍。
+    edc_c_session_chat_replay(agent, session_id, &TUIWindow::OnChatReplay, this);
     chat_widget_->ScrollToBottom();
 }
 
@@ -759,13 +656,7 @@ void TUIWindow::SyncChatSession(const char *session_id)
     if (sid == current_session_id_)
         return;
     current_session_id_ = sid;
-
-    chat_log_path_.clear();
-    char path[4096];
-    if (edc_c_session_chat_log_path(agent, path, sizeof(path)))
-        chat_log_path_ = path;
-
-    LoadChatTranscript();
+    RebuildChatFromSession(sid.c_str());
 }
 
 void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
@@ -1174,7 +1065,8 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     const char *task_id_c = edc_c_channel_message_task_id(message);
     const std::string task_id = task_id_c ? task_id_c : "";
     // Session that owns the producing task (NULL for user input / snapshots).
-    // Lets a background session's output be persisted to *its own* transcript.
+    // Lets output of a background session be kept out of the visible tab (the
+    // agent already persisted it into that session's own messages).
     const char *session_id_c = edc_c_channel_message_session_id(message);
     const std::string session_id = session_id_c ? session_id_c : "";
     // Sender-declared render preference (PLAIN/MARKDOWN). Read here while
@@ -1183,50 +1075,25 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     const time_t ts = ::time(nullptr);
 
     auto add_message = [tui, kind, text, header, task_id, session_id, render_pref, ts]() {
-        std::shared_ptr<Message> widget;
         // todowrite 的 TOOL 消息不进对话区：TODO 状态已由右侧 TodoWidget 展示，
         // 数据源是任务快照里 active task 的 todo（工具每次回显都会补推快照）。
         // 文本仍随消息传递，供无侧栏的渲染端（CLI）与 tool result（LLM）使用。
-        bool skip_chat = false;
         const char *kind_str = "sys";
         switch (kind)
         {
         case Kind::User:
             kind_str = "user";
-            widget = std::make_shared<UserMessage>(text, ts);
             break;
         case Kind::Tool:
-            kind_str = "tool";
             if (header == kTodoToolHeader)
-            {
-                skip_chat = true;
-                break;
-            }
-
-            // 其余工具消息仍渲染进对话区，完全由发送方声明的 render_pref
-            // 决定，渲染端零猜测：
-            //  - MARKDOWN: 内容按 Markdown 渲染；有 header 时保留
-            //    ToolMessage 的折叠 chrome，无 header 直接进 md 消息样式
-            //  - 默认/PLAIN（未声明即纯文本）: 一律纯文本 ToolMessage
-            if (render_pref == EDC_C_RENDER_MARKDOWN)
-            {
-                if (!header.empty())
-                    widget = std::make_shared<ToolMessage>(header, text, ts, /*markdown=*/true, task_id);
-                else
-                    widget = std::make_shared<Message>(text, ts, task_id);
-            }
-            else
-            {
-                widget = std::make_shared<ToolMessage>(header, text, ts, /*markdown=*/false, task_id);
-            }
+                return;
+            kind_str = "tool";
             break;
         case Kind::Thought:
             kind_str = "thought";
-            widget = std::make_shared<ThoughtMessage>(text, ts, task_id);
             break;
         case Kind::Reply:
             kind_str = "reply";
-            widget = std::make_shared<Message>(text, ts, task_id);
             // RESP is just another chat message here: it neither starts nor
             // stops the working animation. The animation follows the task
             // snapshot (foreground group's active task running), which is
@@ -1234,31 +1101,22 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             // OnRender().
             break;
         case Kind::Sys:
-            widget = std::make_shared<Message>(text, ts);
             // SYS (e.g. an error or a command reply) does not touch the
             // status row either; the next snapshot decides it.
             break;
         default:
             return;
         }
-        if (!skip_chat && widget)
-        {
-            // A background session's output must not appear in the tab that is
-            // currently displayed; persist it into *that* session's transcript
-            // so it shows up when the user switches back. The current tab (and
-            // its sidebar) is left untouched.
-            if (!session_id.empty() && session_id != tui->current_session_id_)
-            {
-                char path[4096];
-                if (edc_c_session_chat_log_path_for(tui->agent, session_id.c_str(), path, sizeof(path)))
-                    tui->AppendChatTranscriptTo(path, kind_str, header, text, task_id, render_pref);
-                return;
-            }
 
-            // Persist exactly what is shown so the next start replays it.
-            tui->AppendChatTranscript(kind_str, header, text, task_id, render_pref);
+        // A background session's output must not appear in the tab that is
+        // currently displayed. It already lives in that session's own messages
+        // (the agent persisted it there), so switching back re-derives it --
+        // there is nothing to accumulate here, and the current tab stays as is.
+        if (!session_id.empty() && session_id != tui->current_session_id_)
+            return;
+
+        if (std::shared_ptr<Message> widget = MakeChatWidget(kind_str, header, text, task_id, render_pref, ts))
             tui->chat_widget_->AddMessage(widget);
-        }
 
         // No explicit ScrollToBottom() here: if the reader is already at the
         // tail the view follows it automatically; if they scrolled up to read

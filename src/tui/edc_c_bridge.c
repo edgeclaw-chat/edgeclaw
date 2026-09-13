@@ -409,56 +409,40 @@ bool edc_c_session_workdir(struct edc_agent *agent, char *buf, size_t cap)
     return true;
 }
 
-static bool chat_log_path_for_session(struct edc_session *session, char *buf, size_t cap)
+/* ── Chat log: thin wrapper over the session's derived replay ───
+ * session.json is the single source of truth for the chat log; the walk itself
+ * lives in edc_session_chat_replay (agent layer). Here we only resolve the
+ * session and translate the agent-side emit (render = "plain"/"markdown") into
+ * the bridge's EDC_C_RENDER_* int for the C++ caller. */
+
+struct chat_replay_bridge_ctx
 {
-    if (!buf || cap == 0)
-        return false;
-    buf[0] = '\0';
-    if (!session || !session->history_dir)
-        return false;
+    edc_c_chat_replay_fn cb;
+    void *user;
+};
 
-    /* The transcript lives beside the session's state; make sure the session
-     * directory exists so the TUI can append to it before the first state
-     * save has run (a fresh session has no directory yet). Best-effort. */
-    EdcError *err = NULL;
-    edc_dir_create_with_parents(session->history_dir, 0755, &err);
-    if (err)
-        edc_error_free(err);
-
-    sds path = edc_path_join(session->history_dir, "chat.jsonl", NULL);
-    if (!path)
-        return false;
-
-    const bool ok = sdslen(path) < cap;
-    if (ok)
-        memcpy(buf, path, sdslen(path) + 1);
-    sdsfree(path);
-    return ok;
+static void chat_replay_bridge_emit(void *user, const char *kind, const char *header, const char *content,
+                                    const char *task_id, const char *render)
+{
+    struct chat_replay_bridge_ctx *ctx = user;
+    const int render_pref =
+        (render && strcmp(render, "markdown") == 0) ? EDC_C_RENDER_MARKDOWN : EDC_C_RENDER_PLAIN;
+    ctx->cb(ctx->user, kind, header, content, task_id, render_pref);
 }
 
-bool edc_c_session_chat_log_path(struct edc_agent *agent, char *buf, size_t cap)
+bool edc_c_session_chat_replay(struct edc_agent *agent, const char *session_id, edc_c_chat_replay_fn cb, void *user)
 {
-    if (!agent || !agent->session_manager)
-    {
-        if (buf && cap > 0)
-            buf[0] = '\0';
+    if (!agent || !agent->session_manager || !cb)
         return false;
-    }
-    return chat_log_path_for_session(edc_session_manager_get_active(agent->session_manager), buf, cap);
-}
 
-/* Like edc_c_session_chat_log_path, but for an arbitrary session id — lets the
- * TUI append a background session's output to *its own* transcript even while a
- * different session is displayed. */
-bool edc_c_session_chat_log_path_for(struct edc_agent *agent, const char *session_id, char *buf, size_t cap)
-{
-    if (!agent || !agent->session_manager || !session_id)
-    {
-        if (buf && cap > 0)
-            buf[0] = '\0';
+    struct edc_session *session = session_id ? edc_session_manager_find(agent->session_manager, session_id)
+                                             : edc_session_manager_get_active(agent->session_manager);
+    if (!session)
         return false;
-    }
-    return chat_log_path_for_session(edc_session_manager_find(agent->session_manager, session_id), buf, cap);
+
+    struct chat_replay_bridge_ctx ctx = {cb, user};
+    edc_session_chat_replay(session, chat_replay_bridge_emit, &ctx);
+    return true;
 }
 
 bool edc_c_agent_write_file(struct edc_agent *agent, const char *path, const char *data, size_t len, bool append,

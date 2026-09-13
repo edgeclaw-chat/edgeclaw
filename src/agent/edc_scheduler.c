@@ -546,7 +546,8 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
             {
                 const char *note = "[interrupted: this tool was still running when the process restarted; "
                                    "it did not produce a result]";
-                edc_turn_add_tool_message(task->active_turn, rec->call_id, rec->name ? rec->name : "", note);
+                edc_turn_add_tool_message(task->active_turn, rec->call_id, rec->name ? rec->name : "", note,
+                                          /*displayed=*/false, NULL, NULL);
             }
             edc_task_tool_call_remove(task, rec->call_id);
         }
@@ -843,6 +844,10 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
         struct edc_session *own = sched_task_session(sched, task);
         if (task->active_turn)
         {
+            /* 最终回复就是渲染端按 Markdown 显示的那条 (send_reply 走 RESP) ——
+             * 把偏好写进消息本身, 重启后从消息派生回放才能同样渲染。 */
+            if (r->msg)
+                cJSON_ReplaceItemInObjectCaseSensitive(r->msg, "render", cJSON_CreateString("markdown"));
             edc_turn_add_assistant_message(task->active_turn, r->msg);
             r->msg = NULL;
 
@@ -971,7 +976,11 @@ static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor
     /* 添加 tool 消息到 active turn */
     if (task->active_turn && tr->result)
     {
-        edc_turn_add_tool_message(task->active_turn, tr->call_id, tr->name, tr->result);
+        /* 带上这次调用 emit 的显示元数据 (回放重现实时气泡); 未上屏的调用
+         * displayed=false, 回放与实时一致地不显示。 */
+        const char *display_render = (tr->display_render == EDC_RENDER_MARKDOWN) ? "markdown" : "plain";
+        edc_turn_add_tool_message(task->active_turn, tr->call_id, tr->name, tr->result, tr->displayed,
+                                  tr->display_header, display_render);
     }
 
     /* 账本: 该工具已完成 → 删除该条记录 (EXECUTING 由 toolbox 的 TOOL_STARTED 上报置位) */
@@ -1070,6 +1079,8 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched)
             struct edc_task *t;
             LL_FOREACH2(g->members, t, group_next)
             {
+                if (t->is_system)
+                    continue;
                 if (t->active_turn)
                     msg_count += edc_queue_length(&t->active_turn->messages);
             }
@@ -1082,6 +1093,11 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched)
     struct edc_task_group *g;
     DL_FOREACH(sched->session->groups, g)
     {
+        /* system group 是内部载体 (命令回显、会话级消息), 不是用户的任务树节点,
+         * 不进侧边栏 (is_system task 恒为 IDLE、不参与调度)。 */
+        if (g->leader && g->leader->is_system)
+            continue;
+
         cJSON *gj = cJSON_CreateObject();
         cJSON_AddStringToObject(gj, "id", g->group_id ? g->group_id : "");
         cJSON_AddNumberToObject(gj, "member_count", g->member_count);

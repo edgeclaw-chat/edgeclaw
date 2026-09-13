@@ -66,23 +66,19 @@ class TUIWindow : public ::ftxui::ComponentBase
     void SaveInputHistory();
     // Ask the agent (on its scheduler thread) for a fresh task-tree snapshot.
     void RequestTaskSnapshot();
-    // Replay the session's persisted bubbles into the log, which is cleared
-    // first. Best-effort: a missing/unreadable file just leaves the chat empty.
-    void LoadChatTranscript();
-    // Append one shown bubble to the transcript so the next start replays it.
-    // |render_pref| is EDC_C_RENDER_*. A failed write must not disturb the UI.
-    void AppendChatTranscript(const std::string &kind, const std::string &header, const std::string &content,
-                              const std::string &task_id, int render_pref);
-    // Append to an explicit transcript path (not necessarily the active
-    // session's). Used to persist a background session's output into its own
-    // transcript while another session is on screen.
-    void AppendChatTranscriptTo(const std::string &path, const std::string &kind, const std::string &header,
-                                const std::string &content, const std::string &task_id, int render_pref);
+    // Rebuild the chat log from the session's persisted messages: session.json
+    // is the single source of truth, so there is no private transcript file any
+    // more. The log is cleared first; a session with no messages stays empty.
+    void RebuildChatFromSession(const char *session_id);
+    // Bridge replay callback (one bubble per persisted message, in display
+    // order). |user| is the TUIWindow; see edc_c_session_chat_replay.
+    static void OnChatReplay(void *user, const char *kind, const char *header, const char *content, const char *task_id,
+                             int render_pref);
     // Show "processing" exactly while the foreground group's active task runs.
     void SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap);
-    // Switch the log to |session_id|'s transcript: when the id changes the log
-    // is cleared and that session's bubbles replayed, so it always belongs to
-    // the active session. See SyncWorkingFromSnapshot for the snapshot source.
+    // Switch the log to |session_id|: when the id changes the log is cleared and
+    // that session's messages re-derived, so the log always belongs to the
+    // active session. See SyncWorkingFromSnapshot for the snapshot source.
     void SyncChatSession(const char *session_id);
     // The left pane: chat log + input + footer/spinner.
     ::ftxui::Element RenderMain();
@@ -120,9 +116,8 @@ class TUIWindow : public ::ftxui::ComponentBase
     // inserted as a newline instead of submitting.
     bool in_paste_ = false;
 
-    // The active session's transcript path and id. |current_session_id_| starts
-    // at a sentinel so the first snapshot triggers a load.
-    std::string chat_log_path_;
+    // The active session's id, used to detect /session switches. Starts at a
+    // sentinel so the first snapshot triggers a rebuild.
     std::string current_session_id_ = "\x01";
 
     struct edc_agent *agent = NULL;

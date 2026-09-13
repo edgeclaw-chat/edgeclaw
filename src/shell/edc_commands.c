@@ -77,6 +77,11 @@ static bool edc_commands_arg(const char *content, const char *prefix, sds *out)
 
 void edc_commands_reply(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type, const char *text)
 {
+    /* 命令输出不经过 turn (命令不产生 task), 但它是会话级内容: 落到 system task,
+     * 前端重启后才能只靠 session.json 重建聊天记录。 */
+    if (agent && agent->session_manager)
+        edc_session_add_system_text(edc_session_manager_get_active(agent->session_manager), "system", text);
+
     struct edc_channel_message *reply =
         edc_channel_message_new(channel_type, EDC_CHANNEL_MESSAGE_SYS_TYPE, sdsnew(text));
     edc_actor_send(agent->channel_actor,
@@ -632,6 +637,13 @@ done:
     edc_cmd_task_opts_free(&opts);
 }
 
+/* system group/task 是内部载体 (命令回显、会话级消息), 不是用户的任务树节点:
+ * 面向用户的枚举一律跳过它。 */
+static bool edc_commands_is_system_group(const struct edc_task_group *g)
+{
+    return g && g->leader && g->leader->is_system;
+}
+
 static void edc_commands_handle_task_list(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type)
 {
     sds out = sdsnew("## Tasks\n\n");
@@ -639,6 +651,8 @@ static void edc_commands_handle_task_list(struct edc_agent *agent, edc_actor_t *
     bool any = false;
     DL_FOREACH(edc_scheduler_get_session(agent->scheduler)->groups, g)
     {
+        if (edc_commands_is_system_group(g))
+            continue;
         any = true;
         bool fg = edc_scheduler_get_foreground(agent->scheduler) == g;
         out =
@@ -1027,6 +1041,8 @@ static void edc_commands_handle_task_groups(struct edc_agent *agent, edc_actor_t
     struct edc_task_group *g;
     DL_FOREACH(edc_scheduler_get_session(agent->scheduler)->groups, g)
     {
+        if (edc_commands_is_system_group(g))
+            continue;
         out = sdscatprintf(out, "- %s%s  **%s**  %d members  _%s_\n",
                            edc_scheduler_get_foreground(agent->scheduler) == g ? "`[fg]` " : "",
                            g->is_orphaned ? "`[orphan]` " : "", g->group_id, g->member_count,
@@ -1390,6 +1406,13 @@ bool edc_commands_handler(struct edc_agent *agent, struct edc_actor *actor, stru
     /* / commands: shell builtins first, then shortcuts, then existing handlers */
     if (message->content[0] == '/')
     {
+        /* 回显这条命令 (前端本地会立刻显示一条 user 气泡)。/ 输入永远不会变成
+         * task (下面每条分支都 return true), 所以这里不会和 turn 里的 user
+         * 消息重复 —— 落进 system task, 重启后的派生回放才看得到这条命令。 */
+        if (agent && agent->session_manager)
+            edc_session_add_system_text(edc_session_manager_get_active(agent->session_manager), "user",
+                                        message->content);
+
         if (edc_shell_handle_builtin(agent, actor, message))
             return true;
 

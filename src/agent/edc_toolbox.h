@@ -6,6 +6,7 @@
 #include "edc_config.h"
 #include "edc_error.h"
 #include <cJSON.h>
+#include <stdbool.h>
 
 struct edc_tool;
 struct edc_task; /* fwd: 发起工具调用的 task，经 ctx->task 提供给工具 */
@@ -27,6 +28,14 @@ struct edc_toolbox_call_ctx
     struct edc_task
         *task; /* 发起该次工具调用的 task (与 request_id 同源；agent 构建请求链时注入，非 task 路径为 NULL) */
     void *priv;
+
+    /* 本次工具调用 emit 出去的显示元数据 (header/render 由工具自己声明)。它不属于
+     * LLM 语义, 但要随 tool result 一起落进 turn —— 重启后回放才能重现实时那个气泡
+     * (header 形如 shell 命令原文)。每次 edc_toolbox_exec 开始时重置: 一个 call ctx
+     * 会被同一轮的多个工具调用复用 (req 链), 不能把上一个调用的 header 带过去。 */
+    sds display_header;               /* emit 的 header, 可为 NULL/空 */
+    edc_render_pref_t display_render; /* emit 声明的渲染偏好 (默认 PLAIN = 纯文本) */
+    bool displayed;                   /* 该次调用是否 emit 过 (false = 实时也不上屏) */
 };
 
 /* 工具结果先发给 scheduler actor，由 scheduler 在自身线程上做 active-task 闸门判定，

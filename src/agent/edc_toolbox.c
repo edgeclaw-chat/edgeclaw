@@ -24,6 +24,17 @@ static void edc_toolbox_emit_tool_message_internal(struct edc_toolbox_call_ctx *
     if (!tb->scheduler)
         return;
 
+    /* 记下这次显示的 header/render: 同一份元数据随后随 tool result 落进 turn,
+     * 重启后的回放才能重现实时这个气泡。以首次 emit 为准 (一次调用若显示多条,
+     * 持久化侧只有一条 tool 消息, 取主气泡那条)。 */
+    if (!ctx->displayed)
+    {
+        ctx->displayed = true;
+        ctx->display_render = render_pref;
+        if (header && *header)
+            ctx->display_header = sdsnew(header);
+    }
+
     /* 不再直发 channel_actor：把工具结果交给 scheduler 做 active-task 闸门判定
      * (scheduler 线程上检查 session->active_task)，避免后台任务的工具输出上屏。 */
     struct edc_toolbox_emit_msg *emit = g_new0(struct edc_toolbox_emit_msg, 1);
@@ -74,6 +85,10 @@ struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, ed
 
 void edc_toolbox_call_ctx_free(struct edc_toolbox_call_ctx *ctx)
 {
+    if (!ctx)
+        return;
+    if (ctx->display_header)
+        sdsfree(ctx->display_header);
     free(ctx);
 }
 
@@ -206,6 +221,13 @@ void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON 
 {
 
     EdcError *error = NULL;
+
+    /* 每次工具调用重新开始记录显示元数据 (call ctx 在 req 链上被复用) */
+    if (ctx->display_header)
+        sdsfree(ctx->display_header);
+    ctx->display_header = NULL;
+    ctx->display_render = EDC_RENDER_PLAIN;
+    ctx->displayed = false;
 
     struct edc_tool *tool;
     HASH_FIND_STR(ctx->tb->tools, name, tool);

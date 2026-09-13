@@ -324,8 +324,7 @@ cc_test(
 
 cc_test(
     name = "test_state_guardrail",
-    srcs = ["test_state_guardrail.c"],
-    deps = [
+    srcs = ["test_state_guardrail.c"],    deps = [
         "//src:agent",
     ],
     linkopts = LINK_OPTS,
@@ -381,6 +380,15 @@ cc_test(
 cc_test(
     name = "test_llm_actor_config",
     srcs = ["test_llm_actor_config.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_chat_replay",
+    srcs = ["test_chat_replay.c"],
     deps = [
         "//src:agent",
     ],

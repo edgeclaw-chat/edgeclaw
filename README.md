@@ -629,7 +629,7 @@ The `~/.edgeclaw/` workspace directory contains:
 | `ssl/cacert.pem` | TLS CA certificate bundle for HTTPS connections |
 | `sessions.json` | Multi-session index (id / name / created_at + active) |
 | `<session_id>/session.json` | Per-session state — the single source of truth (schema v3: groups/tasks/turns/messages) |
-| `<session_id>/chat.jsonl` | Per-session TUI chat transcript (to be derived from `session.json`; see `docs/session-model-v3.md`) |
+| `<session_id>/chat.jsonl` | Legacy per-session TUI chat transcript — **no longer read or written**; the chat log is derived from `session.json` (`edc_session_chat_replay`, see `docs/session-model-v3.md`) |
 | `jobs.json` | Scheduled cron jobs (created by the `crontab` tool) |
 
 ### Skills
