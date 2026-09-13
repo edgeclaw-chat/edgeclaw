@@ -33,6 +33,19 @@ void TodoWidget::SetItems(const std::vector<Item> &items, const std::string &tas
         collapsed_ = false;
 }
 
+void TodoWidget::SetBreath(long long elapsed_ms)
+{
+    breath_ms_ = elapsed_ms;
+}
+
+bool TodoWidget::HasInProgressItem() const
+{
+    for (const Item &item : items_)
+        if (item.status == "in_progress")
+            return true;
+    return false;
+}
+
 bool TodoWidget::OnEvent(::ftxui::Event event)
 {
     if (!event.is_mouse())
@@ -66,6 +79,11 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
     // blue; pending and completed rows are neutral gray (completed keeps its
     // strikethrough). One quiet block with at most one bright row, instead
     // of a second rainbow beside the Tasks tree.
+    //
+    // That one accent breathes while an item is running: the same shared
+    // working animation as the processing task dot (style::breath_accent), so
+    // the sidebar pulses as one thing rather than several.
+    const ::ftxui::Color doing_accent = style::breath_accent(breath_ms_);
 
     // Blank cells kept free at the right edge of every full-width row: the sidebar is
     // the window's rightmost element, so rows would otherwise butt against the
@@ -154,7 +172,7 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             // completed rows are also struck through.
             Element marker;
             if (doing)
-                marker = text("  [•] ") | color(pal.accent);
+                marker = text("  [•] ") | color(doing_accent);
             else if (done)
                 marker = text("  [✓] ") | color(pal.text_dim) | dim;
             else if (cancelled)
@@ -209,7 +227,7 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             // of the item gets the same treatment.
             auto style_content = [&](Element e) -> Element {
                 if (doing)
-                    return e | color(pal.accent);
+                    return e | color(doing_accent);
                 if (done || cancelled)
                     return e | dim | strikethrough | color(pal.text_dim);
                 return e | dim | color(pal.text_dim);

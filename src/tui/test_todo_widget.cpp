@@ -1,9 +1,13 @@
-// Tests for the Todos section header (edc_todo_widget.*).
+// Tests for the Todos section (edc_todo_widget.*).
 //
 // The displayed list belongs to the foreground group's active task, and several
 // tasks run in a session, so the header names the one it is showing ("#<id>").
 // These tests pin that, and pin that the name never costs the progress summary
 // its place: the pane is narrow and the id is the part that gives way.
+//
+// The list's one accent is the in_progress row, and while an item is running it
+// breathes (the shared working animation): the tests pin that highlight moving
+// over a cycle and that no other row moves with it.
 #include "edc_style.hpp"
 #include "edc_todo_widget.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -35,6 +39,20 @@ std::vector<edc::TodoWidget::Item> TwoItems()
     items[0].status = "completed";
     items[1].content = "second";
     items[1].status = "pending";
+    return items;
+}
+
+// One list with a row of each kind; the middle one is the running item whose
+// highlight must breathe.
+std::vector<edc::TodoWidget::Item> MixedItems()
+{
+    std::vector<edc::TodoWidget::Item> items(3);
+    items[0].content = "done";
+    items[0].status = "completed";
+    items[1].content = "running";
+    items[1].status = "in_progress";
+    items[2].content = "later";
+    items[2].status = "pending";
     return items;
 }
 
@@ -121,6 +139,76 @@ void TestNarrowPaneKeepsTheSummary()
     Check(row.find("#") != std::string::npos, "the id is still named, just shortened");
 }
 
+// The foreground color of the "•" in the in_progress marker after rendering the
+// widget at |breath_ms|; false when no such row is on screen.
+bool InProgressMarkerColor(edc::TodoWidget &widget, long long breath_ms, ::ftxui::Color *out)
+{
+    widget.SetBreath(breath_ms);
+    const auto screen = RenderWidget(widget, 36);
+    for (int y = 0; y < 6; y++)
+        for (int x = 0; x < 36; x++)
+            if (screen.CellAt(x, y).character == "•")
+            {
+                *out = screen.CellAt(x, y).foreground_color;
+                return true;
+            }
+    return false;
+}
+
+// Whether two frames draw every cell in the same color.
+bool SameColors(const ::ftxui::Screen &a, const ::ftxui::Screen &b)
+{
+    for (int y = 0; y < 6; y++)
+        for (int x = 0; x < 36; x++)
+            if (!(a.CellAt(x, y).foreground_color == b.CellAt(x, y).foreground_color))
+                return false;
+    return true;
+}
+
+void TestInProgressRowBreathes()
+{
+    std::cout << "the in_progress todo row breathes\n";
+
+    edc::TodoWidget widget;
+    widget.SetItems(MixedItems(), "7");
+
+    ::ftxui::Color dim, rising, peak, again;
+    Check(InProgressMarkerColor(widget, 0, &dim), "the in_progress row is on screen");
+    Check(InProgressMarkerColor(widget, 450, &rising), "a mid-rise phase draws");
+    Check(InProgressMarkerColor(widget, 900, &peak), "the peak phase draws");
+    Check(InProgressMarkerColor(widget, 1800, &again), "the next cycle draws");
+    Check(dim != peak, "the highlight changes color over a cycle");
+    Check(dim != rising && rising != peak, "the rise passes through a mid shade");
+    Check(dim == again, "the breath repeats every period");
+}
+
+void TestOtherRowsDoNotBreathe()
+{
+    std::cout << "rows that are not running do not breathe\n";
+
+    edc::TodoWidget widget;
+    widget.SetItems(TwoItems(), "7"); // completed + pending, nothing running
+    widget.SetBreath(0);
+    const auto dim = RenderWidget(widget, 36);
+    widget.SetBreath(900);
+    const auto peak = RenderWidget(widget, 36);
+
+    Check(SameColors(dim, peak), "a list with nothing running is identical at both phases");
+    Check(!widget.HasInProgressItem(), "and reports nothing in progress");
+}
+
+void TestHasInProgressItem()
+{
+    std::cout << "the widget reports whether an item is running\n";
+
+    edc::TodoWidget busy;
+    busy.SetItems(MixedItems(), "7");
+    Check(busy.HasInProgressItem(), "an in_progress item is reported");
+    edc::TodoWidget idle;
+    idle.SetItems(TwoItems(), "7");
+    Check(!idle.HasInProgressItem(), "completed/pending only is not");
+}
+
 } // namespace
 
 int main()
@@ -128,6 +216,9 @@ int main()
     TestHeaderNamesTheTask();
     TestEmptyListHasNoId();
     TestNarrowPaneKeepsTheSummary();
+    TestInProgressRowBreathes();
+    TestOtherRowsDoNotBreathe();
+    TestHasInProgressItem();
 
     if (g_failures == 0)
     {

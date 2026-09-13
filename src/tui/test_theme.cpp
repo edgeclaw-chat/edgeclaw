@@ -351,6 +351,21 @@ void test_light_palette_contrast(void)
     CHECK(Contrast(pane, window) > 1.0, "pane and window collapsed into one tone");
 }
 
+// The shared "working" animation curve (style::breath_phase), used by both the
+// processing task dot and the in_progress todo row.
+void test_breath_curve(void)
+{
+    TEST("breath curve");
+    const long long period = edc::style::kBreathPeriodMs;
+    CHECK(edc::style::breath_phase(0) == 0.0f, "the cycle starts at the dim end");
+    CHECK(std::fabs(edc::style::breath_phase(period / 2) - 1.0f) < 1e-6f, "it peaks mid-cycle");
+    const float quarter = edc::style::breath_phase(period / 4);
+    CHECK(quarter > 0.0f && quarter < 1.0f, "the rise passes through the middle");
+    CHECK(edc::style::breath_phase(period) == edc::style::breath_phase(0), "it repeats each period");
+    CHECK(edc::style::breath_phase(-100) == edc::style::breath_phase(period - 100),
+          "a negative clock wraps into the same phase");
+}
+
 } // namespace
 
 int main(void)
@@ -360,6 +375,7 @@ int main(void)
     test_light_background();
     test_palette_selection();
     test_light_palette_contrast();
+    test_breath_curve();
 #if !defined(_WIN32)
     test_query_terminal_background();
     test_init_env_override();

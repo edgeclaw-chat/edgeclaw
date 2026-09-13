@@ -730,20 +730,27 @@ void TUIWindow::TickAnimations()
 
     const auto now = std::chrono::steady_clock::now();
 
-    // A processing task's dot breathes on the same tempo as the working bar.
-    // Feed it the clock here, off the render path; a run that starts after no
-    // task was processing begins at the dim end and blooms in.
-    const bool processing = task_widget_ && task_widget_->HasProcessingTask();
+    // The sidebar's breathing (a processing task's dot, an in_progress todo
+    // row) runs on the working bar's tempo. Feed it the clock here, off the
+    // render path; a run that starts after nothing was breathing begins at the
+    // dim end and blooms in.
+    const bool processing = (task_widget_ && task_widget_->HasProcessingTask()) ||
+                            (todo_widget_ && todo_widget_->HasInProgressItem());
     if (processing)
     {
         if (!dot_breathing_)
             breath_started_ = now;
-        task_widget_->SetBreath(std::chrono::duration_cast<std::chrono::milliseconds>(now - breath_started_).count());
+        const auto breath_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - breath_started_).count();
+        if (task_widget_)
+            task_widget_->SetBreath(breath_ms);
+        if (todo_widget_)
+            todo_widget_->SetBreath(breath_ms);
     }
     dot_breathing_ = processing;
 
     // A background task can process while the foreground process is idle, so the
-    // dots, not just the spinner, keep requesting frames.
+    // sidebar's breathing, not just the spinner, keeps requesting frames.
     if (!working_ && !processing)
         return;
 

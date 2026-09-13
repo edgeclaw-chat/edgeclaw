@@ -2,6 +2,7 @@
 
 #include "edc_theme.hpp"
 
+#include <cmath>
 #include <ftxui/screen/color.hpp>
 
 namespace edc
@@ -164,6 +165,40 @@ inline const Palette &light_palette()
 inline const Palette &palette()
 {
     return theme::IsLight() ? light_palette() : dark_palette();
+}
+
+// ---- the "working" animation ------------------------------------------
+// One accent, one tempo, for everything that says "this is running right now":
+// a processing task's state dot and the in_progress todo row both breathe with
+// it, so the sidebar pulses as a single thing rather than several.
+//
+// The period matches the working bar's full sweep in TUIWindow
+// (2 * (kRunPositions - 1) * kStepMs = 1800 ms), so the sidebar and the footer
+// animate at the same rate. The clock is the window's animation time in ms;
+// any value works, it wraps.
+constexpr long long kBreathPeriodMs = 1800;
+
+// The breathing curve at |elapsed_ms|, in [0, 1]: 1-cos, so a run starts and
+// ends at the dim end and is brightest mid-cycle. Exposed so tests can pin the
+// shape without re-deriving it from colours.
+inline float breath_phase(long long elapsed_ms)
+{
+    long long phase = elapsed_ms % kBreathPeriodMs;
+    if (phase < 0)
+        phase += kBreathPeriodMs; // a momentarily negative clock must not rewind
+    constexpr double kPi = 3.14159265358979323846;
+    const double radians = 2.0 * kPi * static_cast<double>(phase) / static_cast<double>(kBreathPeriodMs);
+    return 0.5f * (1.0f - static_cast<float>(std::cos(radians)));
+}
+
+// The accent mid-breath. The dim end is the pane surface blended partway
+// towards the accent rather than gray, so the hue survives the fade -- a fade
+// to gray would read as the state changing, not as work in progress.
+inline ::ftxui::Color breath_accent(long long elapsed_ms)
+{
+    const Palette &pal = palette();
+    const ::ftxui::Color dim = ::ftxui::Color::Interpolate(0.25f, pal.pane_bg, pal.accent);
+    return ::ftxui::Color::Interpolate(breath_phase(elapsed_ms), dim, pal.accent);
 }
 
 } // namespace style

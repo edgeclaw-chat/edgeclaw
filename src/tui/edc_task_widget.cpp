@@ -3,7 +3,6 @@
 #include "edc_text_util.hpp"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
-#include <cmath>
 #include <cstdio>
 
 namespace edc
@@ -39,28 +38,9 @@ bool StateIsProcessing(const std::string &state)
     return pal.warn;
 }
 
-// The breathing dot of a processing task: the accent pulsing between a dim and
-// a bright shade. |elapsed_ms| is the window's animation clock. The period
-// matches the working bar's full sweep (see kBreathPeriodMs).
-constexpr long long kBreathPeriodMs = 1800;
-constexpr double kPi = 3.14159265358979323846;
-
-::ftxui::Color BreathColor(long long elapsed_ms, const style::Palette &pal)
-{
-    long long phase = elapsed_ms % kBreathPeriodMs;
-    if (phase < 0)
-        phase += kBreathPeriodMs;
-    // 1 - cos: starts and ends dim, peaks bright mid-period, so the dot waxes and
-    // wanes smoothly instead of snapping.
-    const double radians = 2.0 * kPi * static_cast<double>(phase) / static_cast<double>(kBreathPeriodMs);
-    const float t = 0.5f * (1.0f - static_cast<float>(std::cos(radians)));
-
-    // The dim end is the pane surface blended partway towards the accent, so the
-    // dot keeps the accent's hue as it fades -- a fade to gray would read as the
-    // state changing rather than as work in progress.
-    const ::ftxui::Color dim = ::ftxui::Color::Interpolate(0.25f, pal.pane_bg, pal.accent);
-    return ::ftxui::Color::Interpolate(t, dim, pal.accent);
-}
+// The breathing dot of a processing task: the shared working accent, pulsed by
+// the window's animation clock (style::breath_accent in edc_style.hpp -- the
+// same colour and tempo as the in_progress todo row and the working bar).
 
 // The glyph that stands in for a task's state in the tree: one filled dot,
 // tinted with that state's color (StateColor above). The state used to be
@@ -427,7 +407,7 @@ int TaskWidget::RowWidth() const
                 cells.push_back(text(std::string(kDescStateGapCells, ' ')));
                 // A processing task breathes (its dot pulses with the working
                 // bar's tempo); every other state is a fixed color.
-                const ::ftxui::Color dot = StateIsProcessing(t.state) ? BreathColor(breath_ms_, pal)
+                const ::ftxui::Color dot = StateIsProcessing(t.state) ? style::breath_accent(breath_ms_)
                                                                       : StateColor(t.state);
                 cells.push_back(text(kStateDot) | color(dot));
                 cells.push_back(text(std::string(kRightPad, ' ')));

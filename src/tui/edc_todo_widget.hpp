@@ -15,6 +15,8 @@ namespace edc
 // Its "▾/▸ Todos" header toggles the items and always stays visible with the progress
 // summary. It starts collapsed and auto-expands on the first non-empty list. Item text is
 // word-wrapped, each item carries a priority tag, cancelled items are struck through.
+// The single accent of the list is the in_progress row, and while an item is running that
+// accent breathes (shared working animation, see style::breath_accent).
 class TodoWidget : public ::ftxui::ComponentBase
 {
   public:
@@ -33,6 +35,15 @@ class TodoWidget : public ::ftxui::ComponentBase
     // resets the summary to 0/0, but the header stays visible.
     void SetItems(const std::vector<Item> &items, const std::string &task_id);
 
+    // Phase the in_progress row's breathing, in ms on the window's animation
+    // clock (see TUIWindow::TickAnimations). Same clock and tempo as the
+    // processing task dot, so the sidebar pulses as one thing.
+    void SetBreath(long long elapsed_ms);
+
+    // True while any item is in_progress, i.e. while something in the list has
+    // to breathe. The window uses it to keep animation frames coming.
+    bool HasInProgressItem() const;
+
     ::ftxui::Element OnRender() override;
     bool OnEvent(::ftxui::Event) override;
     bool Focusable() const override
@@ -50,6 +61,10 @@ class TodoWidget : public ::ftxui::ComponentBase
     // Collapse state, preserved across SetItems() so a manual fold survives
     // background refreshes; SetItems() auto-expands only on empty -> non-empty.
     bool collapsed_ = true;
+
+    // Phase of the in_progress row's breathing, in ms on the window's animation
+    // clock. Only read for an item whose status is in_progress.
+    long long breath_ms_ = 0;
 
     // Click target of the section header row, populated during OnRender.
     ::ftxui::Box header_box_;
