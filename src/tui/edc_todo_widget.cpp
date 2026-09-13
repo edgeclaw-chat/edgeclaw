@@ -33,9 +33,15 @@ void TodoWidget::SetItems(const std::vector<Item> &items, const std::string &tas
         collapsed_ = false;
 }
 
-void TodoWidget::SetBreath(long long elapsed_ms)
+void TodoWidget::SetBreath(long long elapsed_ms, bool running)
 {
     breath_ms_ = elapsed_ms;
+    // A stale in_progress item (a task that errored, finished or is waiting for
+    // input left it behind) must not keep pulsing: "running" is the caller's
+    // verdict on whether the task that owns this list is actually processing,
+    // and without it the row falls back to the plain accent. The window decides
+    // it -- it holds the task's state; this widget only holds the items.
+    breath_running_ = running;
 }
 
 bool TodoWidget::HasInProgressItem() const
@@ -82,8 +88,11 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
     //
     // That one accent breathes while an item is running: the same shared
     // working animation as the processing task dot (style::breath_accent), so
-    // the sidebar pulses as one thing rather than several.
-    const ::ftxui::Color doing_accent = style::breath_accent(breath_ms_);
+    // the sidebar pulses as one thing rather than several. It breathes only
+    // while the task that owns the list is *actually* processing; otherwise the
+    // row keeps the plain accent, so an item left in_progress by a task that
+    // errored or finished is quiet (see SetBreath).
+    const ::ftxui::Color doing_accent = breath_running_ ? style::breath_accent(breath_ms_) : pal.accent;
 
     // Blank cells kept free at the right edge of every full-width row: the sidebar is
     // the window's rightmost element, so rows would otherwise butt against the

@@ -37,11 +37,16 @@ class TodoWidget : public ::ftxui::ComponentBase
 
     // Phase the in_progress row's breathing, in ms on the window's animation
     // clock (see TUIWindow::TickAnimations). Same clock and tempo as the
-    // processing task dot, so the sidebar pulses as one thing.
-    void SetBreath(long long elapsed_ms);
+    // processing task dot, so the sidebar pulses as one thing. |running| is the
+    // window's verdict on whether the task that owns this list is processing
+    // right now (the widget cannot tell: it holds items, not task state). When
+    // it is false -- the task errored, finished or is waiting for input, leaving
+    // an in_progress item behind -- the row is drawn with the plain accent, so
+    // nothing pulses once the work has stopped.
+    void SetBreath(long long elapsed_ms, bool running);
 
-    // True while any item is in_progress, i.e. while something in the list has
-    // to breathe. The window uses it to keep animation frames coming.
+    // True while any item is in_progress. The window ANDs this with the owning
+    // task's own running state to decide whether anything has to breathe.
     bool HasInProgressItem() const;
 
     ::ftxui::Element OnRender() override;
@@ -63,8 +68,10 @@ class TodoWidget : public ::ftxui::ComponentBase
     bool collapsed_ = true;
 
     // Phase of the in_progress row's breathing, in ms on the window's animation
-    // clock. Only read for an item whose status is in_progress.
+    // clock, and whether the owning task is actually running (see SetBreath).
+    // Only read for an item whose status is in_progress.
     long long breath_ms_ = 0;
+    bool breath_running_ = false;
 
     // Click target of the section header row, populated during OnRender.
     ::ftxui::Box header_box_;

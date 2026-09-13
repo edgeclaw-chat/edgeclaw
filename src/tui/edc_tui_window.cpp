@@ -734,20 +734,30 @@ void TUIWindow::TickAnimations()
     // row) runs on the working bar's tempo. Feed it the clock here, off the
     // render path; a run that starts after nothing was breathing begins at the
     // dim end and blooms in.
-    const bool processing = (task_widget_ && task_widget_->HasProcessingTask()) ||
-                            (todo_widget_ && todo_widget_->HasInProgressItem());
-    if (processing)
-    {
-        if (!dot_breathing_)
-            breath_started_ = now;
-        const auto breath_ms =
-            std::chrono::duration_cast<std::chrono::milliseconds>(now - breath_started_).count();
-        if (task_widget_)
-            task_widget_->SetBreath(breath_ms);
-        if (todo_widget_)
-            todo_widget_->SetBreath(breath_ms);
-    }
+    //
+    // Both halves of that are "work in flight", not "state on file": the task
+    // tree answers for itself (its rows carry the state), but the todo list only
+    // holds items, so the window adds the verdict it alone has -- the task that
+    // owns the list is the foreground active task, and it is running exactly
+    // when the working bar says so. Without that, an item left in_progress by a
+    // task that errored (or finished, or is waiting for input) would pulse for
+    // ever and keep the TUI repainting with it.
+    const bool task_running = task_widget_ && task_widget_->HasProcessingTask();
+    const bool todo_running = working_ && todo_widget_ && todo_widget_->HasInProgressItem();
+    const bool processing = task_running || todo_running;
+
+    if (processing && !dot_breathing_)
+        breath_started_ = now;
     dot_breathing_ = processing;
+    const auto breath_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - breath_started_).count();
+
+    // Fed every tick, not just while animating: switching the todo row back to
+    // the plain accent is what stops the pulse on error, and that transition
+    // happens on the very tick the work stops.
+    if (task_widget_)
+        task_widget_->SetBreath(breath_ms);
+    if (todo_widget_)
+        todo_widget_->SetBreath(breath_ms, todo_running);
 
     // A background task can process while the foreground process is idle, so the
     // sidebar's breathing, not just the spinner, keeps requesting frames.

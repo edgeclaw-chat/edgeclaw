@@ -7,7 +7,9 @@
 //
 // The list's one accent is the in_progress row, and while an item is running it
 // breathes (the shared working animation): the tests pin that highlight moving
-// over a cycle and that no other row moves with it.
+// over a cycle, that no other row moves with it, and that the pulse is tied to
+// the *task* running rather than to an item merely saying in_progress -- an item
+// left behind by a task that errored or finished must go quiet.
 #include "edc_style.hpp"
 #include "edc_todo_widget.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -146,10 +148,11 @@ void TestNarrowPaneKeepsTheSummary()
 }
 
 // The foreground color of the "•" in the in_progress marker after rendering the
-// widget at |breath_ms|; false when no such row is on screen.
-bool InProgressMarkerColor(edc::TodoWidget &widget, long long breath_ms, ::ftxui::Color *out)
+// widget at |breath_ms| (with the owning task running or not); false when no
+// such row is on screen.
+bool InProgressMarkerColor(edc::TodoWidget &widget, long long breath_ms, ::ftxui::Color *out, bool running = true)
 {
-    widget.SetBreath(breath_ms);
+    widget.SetBreath(breath_ms, running);
     const auto screen = RenderWidget(widget, 36);
     for (int y = 0; y < 6; y++)
         for (int x = 0; x < 36; x++)
@@ -194,13 +197,40 @@ void TestOtherRowsDoNotBreathe()
 
     edc::TodoWidget widget;
     widget.SetItems(TwoItems(), "7"); // completed + pending, nothing running
-    widget.SetBreath(0);
+    widget.SetBreath(0, false);
     const auto dim = RenderWidget(widget, 36);
-    widget.SetBreath(900);
+    widget.SetBreath(900, false);
     const auto peak = RenderWidget(widget, 36);
 
     Check(SameColors(dim, peak), "a list with nothing running is identical at both phases");
     Check(!widget.HasInProgressItem(), "and reports nothing in progress");
+}
+
+void TestStaleInProgressItemDoesNotBreathe()
+{
+    std::cout << "an in_progress item left behind by a stopped task does not breathe\n";
+
+    // The task errored (or finished, or is waiting for input) and left an
+    // in_progress item behind. The list still holds it, but nothing is running,
+    // so the row must sit on the plain accent instead of pulsing for ever --
+    // and the window must have a reason to stop asking for frames.
+    edc::TodoWidget widget;
+    widget.SetItems(MixedItems(), "7");
+    Check(widget.HasInProgressItem(), "the stale item is still reported (the window ANDs in the task's state)");
+
+    const auto &pal = edc::style::palette();
+    ::ftxui::Color dim, peak;
+    Check(InProgressMarkerColor(widget, 0, &dim, false), "the in_progress row is on screen");
+    Check(InProgressMarkerColor(widget, 900, &peak, false), "and draws at the peak phase too");
+    Check(dim == peak, "the row is identical at both phases (the breath is off)");
+    Check(dim == pal.accent, "and it wears the plain accent, not a frozen mid-breath shade");
+
+    // The very same list, with the task running, does breathe: the difference is
+    // the task's state, not the items.
+    ::ftxui::Color running_dim, running_peak;
+    Check(InProgressMarkerColor(widget, 0, &running_dim), "running: dim phase");
+    Check(InProgressMarkerColor(widget, 900, &running_peak), "running: peak phase");
+    Check(running_dim != running_peak, "a running task's row does breathe");
 }
 
 void TestHasInProgressItem()
@@ -224,6 +254,7 @@ int main()
     TestNarrowPaneKeepsTheSummary();
     TestInProgressRowBreathes();
     TestOtherRowsDoNotBreathe();
+    TestStaleInProgressItemDoesNotBreathe();
     TestHasInProgressItem();
 
     if (g_failures == 0)
