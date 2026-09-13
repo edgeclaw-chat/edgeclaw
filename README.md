@@ -464,7 +464,6 @@ Create `~/.edgeclaw/config.json`:
   "api_url": "https://api.openai.com/v1/chat/completions",
   "model": "gpt-4o",
   "max_iter": -1,
-  "memory_compress_threshold": 200,
   "group_fold_msg_threshold": 500,
   "tool_max_output_size": 10000,
   "sandbox": {
@@ -628,9 +627,9 @@ The `~/.edgeclaw/` workspace directory contains:
 | `memory/` | Long-term memory storage |
 | `skills/` | Custom skill definitions (markdown + YAML frontmatter) |
 | `ssl/cacert.pem` | TLS CA certificate bundle for HTTPS connections |
-| `sessions.json` | Multi-session index |
-| `<session_id>/history.jsonl` | Per-session conversation history |
-| `<session_id>/session.json` | Per-session state (tasks/groups/fold cursors) |
+| `sessions.json` | Multi-session index (id / name / created_at + active) |
+| `<session_id>/session.json` | Per-session state — the single source of truth (schema v3: groups/tasks/turns/messages) |
+| `<session_id>/chat.jsonl` | Per-session TUI chat transcript (to be derived from `session.json`; see `docs/session-model-v3.md`) |
 | `jobs.json` | Scheduled cron jobs (created by the `crontab` tool) |
 
 ### Skills

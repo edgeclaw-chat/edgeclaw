@@ -204,16 +204,6 @@ struct edc_config *edc_config_load(const char *edc_home)
      * edc_init_env() (EDC_CONFIG_DEFAULT_* in edc_init_env.h is the single
      * source of truth). The fallbacks here only cover a key that was removed
      * from the file by hand. */
-    cJSON *memory_compress_threshold = cJSON_GetObjectItem(conf, "memory_compress_threshold");
-    if (!memory_compress_threshold || !cJSON_IsNumber(memory_compress_threshold))
-    {
-        config->memory_compress_threshold = EDC_CONFIG_DEFAULT_MEMORY_COMPRESS_THRESHOLD;
-    }
-    else
-    {
-        config->memory_compress_threshold = memory_compress_threshold->valueint;
-    }
-
     cJSON *group_fold_msg_threshold = cJSON_GetObjectItem(conf, "group_fold_msg_threshold");
     if (!group_fold_msg_threshold || !cJSON_IsNumber(group_fold_msg_threshold))
     {

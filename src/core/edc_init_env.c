@@ -86,10 +86,6 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
     item = cJSON_GetObjectItem(json, "max_iter");
     result->max_iter = (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_MAX_ITER;
 
-    item = cJSON_GetObjectItem(json, "memory_compress_threshold");
-    result->memory_compress_threshold =
-        (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_MEMORY_COMPRESS_THRESHOLD;
-
     item = cJSON_GetObjectItem(json, "group_fold_msg_threshold");
     result->group_fold_msg_threshold =
         (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
@@ -190,9 +186,6 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
 
     result->api_key = (defaults && sdslen(defaults->api_key) > 0) ? sdsnew(defaults->api_key) : NULL;
     result->max_iter = (defaults && defaults->max_iter > 0) ? defaults->max_iter : EDC_CONFIG_DEFAULT_MAX_ITER;
-    result->memory_compress_threshold = (defaults && defaults->memory_compress_threshold > 0)
-                                            ? defaults->memory_compress_threshold
-                                            : EDC_CONFIG_DEFAULT_MEMORY_COMPRESS_THRESHOLD;
     result->group_fold_msg_threshold = (defaults && defaults->group_fold_msg_threshold > 0)
                                            ? defaults->group_fold_msg_threshold
                                            : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
@@ -546,7 +539,6 @@ static void edc_init_env_conf_topup(const char *conf_file, const char *edc_home)
     ensure_str_key(conf, "api_url", EDC_CONFIG_DEFAULT_API_URL, &changed);
     ensure_str_key(conf, "model", EDC_CONFIG_DEFAULT_MODEL, &changed);
     ensure_int_key(conf, "max_iter", EDC_CONFIG_DEFAULT_MAX_ITER, &changed);
-    ensure_int_key(conf, "memory_compress_threshold", EDC_CONFIG_DEFAULT_MEMORY_COMPRESS_THRESHOLD, &changed);
     ensure_int_key(conf, "group_fold_msg_threshold", EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD, &changed);
     ensure_int_key(conf, "tool_max_output_size", EDC_CONFIG_DEFAULT_TOOL_MAX_OUTPUT_SIZE, &changed);
 
@@ -654,7 +646,6 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     cJSON_AddStringToObject(config, "model", env_result.model);
     cJSON_AddStringToObject(config, "api_url", env_result.api_url);
     cJSON_AddNumberToObject(config, "max_iter", env_result.max_iter);
-    cJSON_AddNumberToObject(config, "memory_compress_threshold", env_result.memory_compress_threshold);
     cJSON_AddNumberToObject(config, "group_fold_msg_threshold", env_result.group_fold_msg_threshold);
     cJSON_AddNumberToObject(config, "tool_max_output_size", env_result.tool_max_output_size);
 

@@ -252,7 +252,6 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
     if (session->foreground_group)
         cJSON_AddStringToObject(sj, "foreground_group_id", session->foreground_group->group_id);
     cJSON_AddNumberToObject(sj, "next_completion_seq", (int)session->next_completion_seq);
-    cJSON_AddNumberToObject(sj, "message_count", (int)edc_session_get_message_count(session));
     cJSON_AddItemToObject(root, "session", sj);
 
     /* ── groups block ── */
