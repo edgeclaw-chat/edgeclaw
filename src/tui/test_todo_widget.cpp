@@ -102,6 +102,12 @@ void TestHeaderNamesTheTask()
     Check(id_at != std::string::npos && screen.CellAt(static_cast<int>(id_at), 1).foreground_color == pal.accent,
           "drawn in the same accent as the section title");
     Check(id_at != std::string::npos && !screen.CellAt(static_cast<int>(id_at), 1).dim, "and not dimmed");
+
+    // The progress counter is part of that same label -- it used to be green
+    // when complete and gray otherwise, which split the header into two voices.
+    const size_t sum_at = row.find("1/2");
+    Check(sum_at != std::string::npos && screen.CellAt(static_cast<int>(sum_at), 1).foreground_color == pal.accent,
+          "the progress counter is drawn in the section accent");
 }
 
 void TestEmptyListHasNoId()

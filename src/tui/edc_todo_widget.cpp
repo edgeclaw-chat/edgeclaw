@@ -106,10 +106,7 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
         // summary always reflects the whole list. The header row is full
         // width so a click anywhere on it toggles the section (header_box_
         // is filled by reflect below; click targets are consumed in OnEvent).
-        // "All done" green is reserved for a non-empty list that completed:
-        // an empty list (0/0) stays neutral gray, not triumphant green.
         const std::string summary = std::to_string(completed_) + "/" + std::to_string(total);
-        const bool all_done = total > 0 && completed_ == static_cast<int>(total);
         const std::string title = (collapsed_ ? "▸ " : "▾ ") + std::string(" Todos ");
 
         // The list belongs to the foreground group's active task, so the header names
@@ -135,7 +132,11 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             header.push_back(text(id_text) | color(pal.accent));
         }
         header.push_back(filler());
-        header.push_back(text(summary) | color(all_done ? pal.ok : pal.text_dim) | bold);
+        // The progress counter wears the section's own accent, like the title
+        // and the task id: the whole header reads as one label instead of
+        // splitting into a second voice (an "all done" green or a neutral
+        // gray). Bold is what keeps it readable as a number rather than chrome.
+        header.push_back(text(summary) | color(pal.accent) | bold);
         header.push_back(text(std::string(kRightPad, ' ')));
         lines.push_back(hbox(std::move(header)) | reflect(header_box_));
     }
