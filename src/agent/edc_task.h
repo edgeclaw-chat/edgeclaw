@@ -87,7 +87,6 @@ struct edc_task
 
     int is_group_leader; /* 是否是 group leader */
     int auto_reap;       /* 完成后自动回收 (前台输入任务) */
-    int is_system;       /* system task: 承载无主/会话级消息, 不参与调度 */
 
     struct edc_task_group *group; /* 所属 group */
 

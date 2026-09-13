@@ -1698,88 +1698,6 @@ static void test_fold_watermark(void)
     edc_config_free(cfg);
 }
 
-/* ══════════════════════════════════════════════════════════════
- *  v3: system task carries orphan messages
- *  ══════════════════════════════════════════════════════════════ */
-
-static void test_system_task(void)
-{
-    TEST("system task carries orphan messages (lazy, persisted)");
-
-    struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-sys", "Sys");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
-
-    /* Lazily absent until a message needs a home. */
-    CHECK(edc_session_find_task(session, "system") == NULL, "no system task initially");
-    CHECK(count_groups(session) == 0, "no groups initially");
-
-    cJSON *m1 = cJSON_CreateObject();
-    cJSON_AddStringToObject(m1, "role", "system");
-    cJSON_AddStringToObject(m1, "content", "legacy note");
-    edc_session_add_system_message(session, m1);
-
-    struct edc_task *st = edc_session_find_task(session, "system");
-    CHECK(st != NULL, "system task created on demand");
-    if (st)
-    {
-        CHECK(st->is_system == 1, "is_system set");
-        CHECK(st->state == TASK_IDLE, "system task stays IDLE");
-        CHECK(count_groups(session) == 1, "system group created");
-        CHECK(st->active_turn && edc_queue_length(&st->active_turn->messages) == 1, "1 orphan message");
-        CHECK(edc_task_is_foldable(st) == false, "system task is never foldable");
-    }
-
-    cJSON *m2 = cJSON_CreateObject();
-    cJSON_AddStringToObject(m2, "role", "user");
-    cJSON_AddStringToObject(m2, "content", "another orphan");
-    edc_session_add_system_message(session, m2);
-    st = edc_session_find_task(session, "system");
-    CHECK(st && st->active_turn && edc_queue_length(&st->active_turn->messages) == 2, "2 orphan messages");
-    CHECK(edc_session_get_or_create_system_task(session) == st, "get_or_create is idempotent");
-
-    /* Serialize: the IDLE system task must survive the IDLE filter. */
-    cJSON *json = edc_state_serialize(session, sched);
-    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
-    CHECK(cJSON_GetArraySize(tasks_j) == 1, "system task serialized despite IDLE");
-    cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
-    CHECK(cJSON_IsTrue(cJSON_GetObjectItem(t0, "is_system")), "is_system serialized");
-
-    /* A plain IDLE task is still filtered out. */
-    struct edc_task *idle = edc_task_new("idle-1", "sess-sys", "idle-1", "idle", edc_channel_adapter);
-    struct edc_task_group *ig = edc_task_group_new(idle);
-    edc_session_add_group(session, ig);
-    cJSON *json2 = edc_state_serialize(session, sched);
-    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(json2, "tasks")) == 1, "plain IDLE task still filtered");
-    cJSON_Delete(json2);
-    edc_session_remove_group(session, ig);
-    edc_task_group_free(ig);
-
-    /* Roundtrip. */
-    struct edc_session *s2 = edc_session_new(cfg, "sess-sys", "Sys");
-    struct edc_scheduler *sched2 = edc_scheduler_new(s2, cfg);
-    CHECK(edc_state_deserialize(json, s2, sched2), "deserialize");
-
-    struct edc_task *rst = edc_session_find_task(s2, "system");
-    CHECK(rst != NULL, "system task restored");
-    if (rst)
-    {
-        CHECK(rst->is_system == 1, "is_system restored");
-        CHECK(rst->active_turn != NULL, "active turn restored");
-        CHECK(rst->active_turn && edc_queue_length(&rst->active_turn->messages) == 2, "2 messages restored");
-        /* 消息归属 active_turn (未提交), 不进 group 历史 —— 与运行时一致。 */
-        CHECK(rst->group && cJSON_GetArraySize(rst->group->history) == 1,
-              "system group history = prompt only (messages stay in the turn)");
-    }
-
-    cJSON_Delete(json);
-    edc_session_free(session);
-    edc_scheduler_free(sched);
-    edc_session_free(s2);
-    edc_scheduler_free(sched2);
-    edc_config_free(cfg);
-}
-
 int main(void)
 {
     log_info("=== Phase 1: edc_state_serializer module tests ===");
@@ -1807,7 +1725,6 @@ int main(void)
     test_orphaned_group();
     test_message_provenance();
     test_fold_watermark();
-    test_system_task();
 
     log_info("");
     log_info("=== Results: %d passed, %d failed ===", test_passed, test_failed);

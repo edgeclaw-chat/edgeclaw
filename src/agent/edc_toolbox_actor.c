@@ -150,13 +150,6 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
         req->result = result;
     }
 
-    /* 把本次调用 emit 声明的显示元数据一并交给 scheduler 落盘: 重启后回放
-     * 要重现实时那个气泡 (header 如 shell 命令原文)。 */
-    req->displayed = tb_ctx->displayed;
-    req->display_render = tb_ctx->display_render;
-    if (tb_ctx->display_header)
-        req->display_header = sdsdup(tb_ctx->display_header);
-
     struct edc_toolbox_actor_req *next = req->next;
     edc_actor_send(msg->from, edc_actor_msg_new(BC_ACTOR_MSG_TOOL_RESPONSE, actor, msg->request_id, req,
                                                 (edc_actor_data_free_fn)edc_toolbox_actor_req_free));
@@ -237,10 +230,6 @@ void edc_toolbox_actor_req_free(struct edc_toolbox_actor_req *req)
     if (req->result)
     {
         sdsfree(req->result);
-    }
-    if (req->display_header)
-    {
-        sdsfree(req->display_header);
     }
     free(req);
 }

@@ -85,7 +85,6 @@ static cJSON *task_to_json(struct edc_task *task)
     cJSON_AddStringToObject(tj, "state", edc_task_state_name(task->state));
     cJSON_AddBoolToObject(tj, "is_group_leader", task->is_group_leader);
     cJSON_AddBoolToObject(tj, "auto_reap", task->auto_reap);
-    cJSON_AddBoolToObject(tj, "is_system", task->is_system);
 
     /* ── prompt ── */
     if (task->prompt_name)
@@ -270,10 +269,9 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
             LL_FOREACH2(g->members, t, group_next)
             {
                 /* filter transient states: 刚创建未开始的 IDLE 任务不落盘。
-                 * 例外: system task (is_system, 恒为 IDLE) 必须落盘, 否则它承载
-                 * 的无主消息会丢。CANCELLED 也必须持久化 —— 用户显式 stop 的
-                 * 任务要跨重启保留, 否则重启后会按旧状态恢复, 让取消看起来"没生效"。 */
-                if (t->state == TASK_IDLE && !t->is_system)
+                 * CANCELLED 也必须持久化 —— 用户显式 stop 的任务要跨重启保留,
+                 * 否则重启后会按旧状态恢复, 让取消看起来"没生效"。 */
+                if (t->state == TASK_IDLE)
                     continue;
                 cJSON_AddItemToArray(tasks_json, task_to_json(t));
             }
@@ -590,8 +588,6 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->is_group_leader = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "auto_reap")))
             task->auto_reap = cJSON_IsTrue(v);
-        if ((v = cJSON_GetObjectItem(tj, "is_system")))
-            task->is_system = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "prompt_name")) && cJSON_IsString(v))
             task->prompt_name = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "prompt")) && cJSON_IsString(v))

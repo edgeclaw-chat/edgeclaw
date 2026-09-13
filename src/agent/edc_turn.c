@@ -38,29 +38,13 @@ void edc_turn_add_assistant_message(struct edc_turn *turn, cJSON *msg)
     edc_turn_add_message(turn, msg);
 }
 
-void edc_turn_add_tool_message(struct edc_turn *turn, const char *tool_call_id, const char *name, const char *content,
-                               bool displayed, const char *header, const char *render)
+void edc_turn_add_tool_message(struct edc_turn *turn, const char *tool_call_id, const char *name, const char *content)
 {
     cJSON *msg = cJSON_CreateObject();
     cJSON_AddStringToObject(msg, "role", "tool");
     cJSON_AddStringToObject(msg, "tool_call_id", tool_call_id);
     cJSON_AddStringToObject(msg, "name", name);
     cJSON_AddStringToObject(msg, "content", content);
-
-    /* 显示元数据: 与 ts/render 一样随消息持久化 —— 回放端据此重现实时气泡,
-     * 不再拿工具名凑 header。displayed=false 表示"这条工具结果没上屏"。 */
-    cJSON_AddBoolToObject(msg, "displayed", displayed);
-    if (displayed && header && *header)
-        cJSON_AddStringToObject(msg, "header", header);
-    if (displayed && render && *render)
-    {
-        /* 这个键此刻通常还不存在 (edc_turn_add_message 的默认值是稍后才补的),
-         * 所以不能只 Replace —— 那会静默丢掉工具声明的 render。 */
-        cJSON *r = cJSON_CreateString(render);
-        if (!cJSON_ReplaceItemInObjectCaseSensitive(msg, "render", r))
-            cJSON_AddItemToObject(msg, "render", r);
-    }
-
     edc_turn_add_message(turn, msg);
 }
 

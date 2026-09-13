@@ -385,12 +385,3 @@ cc_test(
     ],
     linkopts = LINK_OPTS,
 )
-
-cc_test(
-    name = "test_chat_replay",
-    srcs = ["test_chat_replay.c"],
-    deps = [
-        "//src:agent",
-    ],
-    linkopts = LINK_OPTS,
-)

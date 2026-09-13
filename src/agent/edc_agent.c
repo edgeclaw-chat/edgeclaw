@@ -458,9 +458,6 @@ static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task
      * 默认 PLAIN（零值），原样显示。 */
     if (message_type == EDC_CHANNEL_MESSAGE_RESP_TYPE)
         reply->render_pref = EDC_RENDER_MARKDOWN;
-    else if (message_type == EDC_CHANNEL_MESSAGE_SYS_TYPE)
-        /* 调度器发出的会话级提示 (报错等) 同样落进 session, 供前端派生出聊天记录 */
-        edc_session_add_system_text(own, "system", content);
 
     edc_actor_send(agent->channel_actor,
                    edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type, edc_scheduler_get_actor(sched),

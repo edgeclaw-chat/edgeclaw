@@ -752,8 +752,7 @@ sds edc_task_get_output(struct edc_task *task)
 
 bool edc_task_is_foldable(struct edc_task *task)
 {
-    /* system task 是消息承载位, 永不折叠。 */
-    return task && !task->is_system && task->state == TASK_COMPLETED && !task->turns_folded;
+    return task && task->state == TASK_COMPLETED && !task->turns_folded;
 }
 
 size_t edc_task_turn_msg_count(struct edc_task *task)

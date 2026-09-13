@@ -26,12 +26,6 @@ struct edc_toolbox_actor_req
     edc_channel_type call_from_type;
     struct edc_task *task; /* 发起本次工具调用的 task (agent 注入；NULL = 非 task 路径) */
     sds result;
-    /* 显示元数据: 本次工具调用 emit 声明的 header/render, 随 result 一起回给
-     * scheduler 落进 turn (chat 回放借此重现实时气泡)。displayed=false 表示
-     * 该次调用实时就没上屏 (如中断补记的 tool 消息)。 */
-    sds display_header;
-    edc_render_pref_t display_render;
-    bool displayed;
     struct edc_toolbox_actor_req *next;
 };
 

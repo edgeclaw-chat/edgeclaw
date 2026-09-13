@@ -113,29 +113,6 @@ extern void edc_session_remove_group(struct edc_session *session, struct edc_tas
 extern struct edc_task_group *edc_session_find_group(struct edc_session *session, const char *group_id);
 extern struct edc_task *edc_session_find_task(struct edc_session *session, const char *task_id);
 
-/* ── system task: 承载无主/会话级消息 ────────────────────────
- * 惰性创建: 只有在真有无主消息要落位时才建 ("system" group + "system" task,
- * is_system=true), 不参与调度与折叠。 */
-extern struct edc_task *edc_session_get_or_create_system_task(struct edc_session *session);
-/* 把一条无主消息放进 system task 的回合 (不存在则新建); 接管 |msg| 所有权。 */
-extern void edc_session_add_system_message(struct edc_session *session, cJSON *msg);
-/* 便捷包装: 以 role/content 记一条会话级消息 (render 缺省即 plain)。
- * 命令回显、命令输出、调度器错误提示等都走这里 —— 它们不属于任何 turn,
- * 但必须落在 session.json 里, 前端才能只靠消息重建聊天记录。 */
-extern void edc_session_add_system_text(struct edc_session *session, const char *role, const char *content);
-
-/* ── 聊天记录派生 (供前端回放) ─────────────────────────────────
- * session.json 是聊天记录的唯一真相: 把 session 内所有 task 的回合消息按显示
- * 顺序 (message.ts 升序, 同刻按遍历序) 摊平, 逐个交给 |cb|。
- *   kind   "user" | "tool" | "thought" | "reply" | "sys"
- *   header 工具名 (tool 才有), 其余为 ""
- *   render 发送方声明的渲染偏好 "plain" | "markdown"
- * 映射与实时发送路径一致: assistant+tool_calls → thought, assistant → reply,
- * system(命令回显/输出) → sys。|session| 为空则什么都不发。 */
-typedef void (*edc_session_chat_emit_fn)(void *user, const char *kind, const char *header, const char *content,
-                                         const char *task_id, const char *render);
-extern void edc_session_chat_replay(struct edc_session *session, edc_session_chat_emit_fn cb, void *user);
-
 extern void edc_session_set_active_task(struct edc_session *session, struct edc_task *task);
 extern struct edc_task *edc_session_get_active_task(struct edc_session *session);
 
