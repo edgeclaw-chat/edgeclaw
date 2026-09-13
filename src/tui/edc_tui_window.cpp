@@ -725,10 +725,28 @@ void TUIWindow::TickAnimations()
     // The spinner must not ask for a frame from inside its own render: that pins
     // the whole TUI to the loop's rate for as long as a task runs. Its repaints
     // are paced from this once-per-iteration hook (see main.cpp) instead.
-    if (!working_ || !screen_)
+    if (!screen_)
         return;
 
     const auto now = std::chrono::steady_clock::now();
+
+    // A processing task's dot breathes on the same tempo as the working bar.
+    // Feed it the clock here, off the render path; a run that starts after no
+    // task was processing begins at the dim end and blooms in.
+    const bool processing = task_widget_ && task_widget_->HasProcessingTask();
+    if (processing)
+    {
+        if (!dot_breathing_)
+            breath_started_ = now;
+        task_widget_->SetBreath(std::chrono::duration_cast<std::chrono::milliseconds>(now - breath_started_).count());
+    }
+    dot_breathing_ = processing;
+
+    // A background task can process while the foreground process is idle, so the
+    // dots, not just the spinner, keep requesting frames.
+    if (!working_ && !processing)
+        return;
+
     const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_spinner_frame_).count();
     if (since < kSpinnerFrameMs)
         return;

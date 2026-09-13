@@ -24,6 +24,16 @@ class TaskWidget : public ::ftxui::ComponentBase
     // the caller and is freed after this call.
     void SetSnapshot(const ::edc_c_task_snapshot *snap);
 
+    // Phase the breathing dot of a task in a processing state. |elapsed_ms| is
+    // the window's animation clock (see TUIWindow::TickAnimations), so the dot
+    // breathes on the same tempo as the working bar. Static states ignore it.
+    void SetBreath(long long elapsed_ms);
+
+    // True while any task in the tree is in a processing state. The window uses
+    // it to keep asking for animation frames even when the foreground process
+    // itself is idle (a background task still has to breathe).
+    bool HasProcessingTask() const;
+
     // The section in two halves: RenderHeader() is everything above the list (the
     // "Tasks" row, the session meta and the rule), RenderBody() the group rows.
     // The sidebar pins the header above a ScrollView owning the body, so the
@@ -71,6 +81,10 @@ class TaskWidget : public ::ftxui::ComponentBase
     std::string session_name_;
     std::string created_at_; /* "YYYY-MM-DD HH:MM:SS" or "" */
     std::vector<GroupInfo> groups_;
+
+    // Phase of the processing dots' breathing, in ms on the window's animation
+    // clock. Only read for tasks in a processing state (see SetBreath).
+    long long breath_ms_ = 0;
 
     // Fold state of the whole Tasks section, preserved across snapshot refreshes
     // so a manual fold is not undone by a background update.

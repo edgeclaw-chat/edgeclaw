@@ -3,6 +3,7 @@
 #include "edc_text_util.hpp"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
+#include <cmath>
 #include <cstdio>
 
 namespace edc
@@ -10,6 +11,14 @@ namespace edc
 
 namespace
 {
+
+// A task is "processing" (working right now) in exactly these two states; they
+// are the ones the dot animates for, and the ones `edc_task_is_running` marks
+// in the scheduler.
+bool StateIsProcessing(const std::string &state)
+{
+    return state == "LLM_PROCESSING" || state == "TOOL_CALLING";
+}
 
 // Map a scheduler task-state name to the color of its sidebar dot.
 ::ftxui::Color StateColor(const std::string &state)
@@ -20,7 +29,7 @@ namespace
         return pal.ok;
     if (state == "ERROR")
         return pal.error;
-    if (state == "LLM_PROCESSING" || state == "TOOL_CALLING")
+    if (StateIsProcessing(state))
         return pal.accent;
     if (state == "SUSPENDED")
         return pal.suspended;
@@ -30,12 +39,36 @@ namespace
     return pal.warn;
 }
 
+// The breathing dot of a processing task: the accent pulsing between a dim and
+// a bright shade. |elapsed_ms| is the window's animation clock. The period
+// matches the working bar's full sweep (see kBreathPeriodMs).
+constexpr long long kBreathPeriodMs = 1800;
+constexpr double kPi = 3.14159265358979323846;
+
+::ftxui::Color BreathColor(long long elapsed_ms, const style::Palette &pal)
+{
+    long long phase = elapsed_ms % kBreathPeriodMs;
+    if (phase < 0)
+        phase += kBreathPeriodMs;
+    // 1 - cos: starts and ends dim, peaks bright mid-period, so the dot waxes and
+    // wanes smoothly instead of snapping.
+    const double radians = 2.0 * kPi * static_cast<double>(phase) / static_cast<double>(kBreathPeriodMs);
+    const float t = 0.5f * (1.0f - static_cast<float>(std::cos(radians)));
+
+    // The dim end is the pane surface blended partway towards the accent, so the
+    // dot keeps the accent's hue as it fades -- a fade to gray would read as the
+    // state changing rather than as work in progress.
+    const ::ftxui::Color dim = ::ftxui::Color::Interpolate(0.25f, pal.pane_bg, pal.accent);
+    return ::ftxui::Color::Interpolate(t, dim, pal.accent);
+}
+
 // The glyph that stands in for a task's state in the tree: one filled dot,
 // tinted with that state's color (StateColor above). The state used to be
 // spelled out, which cost each row as many cells as the longest name
 // ("LLM_PROCESSING") and made the right edge ragged. A single dot in a fixed
 // column keeps every row's right edge still and hands the freed cells to the
-// description; the color alone carries the state.
+// description; the color alone carries the state. A processing task's dot
+// breathes through that color instead of sitting static (BreathColor above).
 constexpr char kStateDot[] = "●";
 constexpr int kStateDotCells = 1; // a single terminal cell
 
@@ -162,6 +195,20 @@ void TaskWidget::SetSnapshot(const ::edc_c_task_snapshot *snap)
         next[g.group_id] = (it != group_expanded_.end()) ? it->second : (g.group_id == active_group_id);
     }
     group_expanded_ = std::move(next);
+}
+
+void TaskWidget::SetBreath(long long elapsed_ms)
+{
+    breath_ms_ = elapsed_ms;
+}
+
+bool TaskWidget::HasProcessingTask() const
+{
+    for (const auto &g : groups_)
+        for (const auto &t : g.tasks)
+            if (StateIsProcessing(t.state))
+                return true;
+    return false;
 }
 
 bool TaskWidget::OnEvent(::ftxui::Event event)
@@ -378,7 +425,11 @@ int TaskWidget::RowWidth() const
                 Elements cells;
                 cells.push_back(text(left) | flex);
                 cells.push_back(text(std::string(kDescStateGapCells, ' ')));
-                cells.push_back(text(kStateDot) | color(StateColor(t.state)));
+                // A processing task breathes (its dot pulses with the working
+                // bar's tempo); every other state is a fixed color.
+                const ::ftxui::Color dot = StateIsProcessing(t.state) ? BreathColor(breath_ms_, pal)
+                                                                      : StateColor(t.state);
+                cells.push_back(text(kStateDot) | color(dot));
                 cells.push_back(text(std::string(kRightPad, ' ')));
                 lines.push_back(hbox(std::move(cells)));
             }

@@ -3,8 +3,9 @@
 // A task's state used to be spelled out on its row ("… COMPLETED"), which cost
 // every row as many cells as the longest state name and left the right edge
 // ragged. It is now a single filled dot in a fixed right-hand column, tinted
-// with the state's color: these tests pin the glyph, the per-state tint and
-// the shared column.
+// with the state's color, and a processing task's dot breathes (pulses) on the
+// working bar's tempo: these tests pin the glyph, the per-state tint, the
+// shared column and the breath.
 #include "edc_style.hpp"
 #include "edc_task_widget.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -118,14 +119,27 @@ std::vector<std::pair<int, int>> DotCells(const ::ftxui::Screen &screen)
     return cells;
 }
 
+// Render `widget` at a given breath phase and return the color of its first dot.
+::ftxui::Color FirstDotColor(edc::TaskWidget &widget, long long breath_ms)
+{
+    widget.SetBreath(breath_ms);
+    const auto screen = Render(widget);
+    const auto dots = DotCells(screen);
+    if (dots.empty())
+        return ::ftxui::Color();
+    return screen.CellAt(dots[0].first, dots[0].second).foreground_color;
+}
+
 void TestDotPerStateInItsColor(void)
 {
     std::cout << "each task shows one dot, tinted with its state's color\n";
 
+    // Processing states are excluded here: they breathe, so their color is not
+    // a fixed value (see TestProcessingDotBreathes).
     const std::vector<TaskSpec> specs = {
-        {"1", "IDLE", "idle task"},          {"2", "LLM_PROCESSING", "busy task"},
-        {"3", "COMPLETED", "done task"},     {"4", "ERROR", "failed task"},
-        {"5", "SUSPENDED", "paused task"},   {"6", "CANCELLED", "dropped task"},
+        {"1", "IDLE", "idle task"},        {"3", "COMPLETED", "done task"},
+        {"4", "ERROR", "failed task"},     {"5", "SUSPENDED", "paused task"},
+        {"6", "CANCELLED", "dropped task"},
     };
     auto widget = MakeWidget(specs);
     const auto screen = Render(*widget);
@@ -134,7 +148,6 @@ void TestDotPerStateInItsColor(void)
     const auto &pal = edc::style::palette();
     const std::vector<::ftxui::Color> expected = {
         pal.warn,       // IDLE
-        pal.accent,     // LLM_PROCESSING
         pal.ok,         // COMPLETED
         pal.error,      // ERROR
         pal.suspended,  // SUSPENDED
@@ -147,6 +160,51 @@ void TestDotPerStateInItsColor(void)
         const auto &cell = screen.CellAt(dots[i].first, dots[i].second);
         Check(cell.foreground_color == expected[i], std::string("dot for ") + specs[i].state + " wears its state color");
     }
+}
+
+void TestProcessingDotBreathes(void)
+{
+    std::cout << "a processing dot breathes instead of holding one color\n";
+
+    const std::vector<const char *> states = {"LLM_PROCESSING", "TOOL_CALLING"};
+    for (const char *state : states)
+    {
+        auto widget = MakeWidget({{"1", state, "busy"}});
+        const auto dim = FirstDotColor(*widget, 0);
+        const auto rising = FirstDotColor(*widget, 450);
+        const auto peak = FirstDotColor(*widget, 900);
+        const auto again = FirstDotColor(*widget, 1800);
+        Check(dim != peak, std::string(state) + ": the dot changes color over a cycle");
+        Check(dim != rising && rising != peak, std::string(state) + ": the rise passes a mid shade");
+        Check(dim == again, std::string(state) + ": the breath repeats every period");
+    }
+
+    // A clock that is momentarily negative (a wall-clock adjustment) must wrap
+    // into the same phase, not clamp to a different shade.
+    auto widget = MakeWidget({{"1", "LLM_PROCESSING", "busy"}});
+    Check(FirstDotColor(*widget, -100) == FirstDotColor(*widget, 1700), "a negative clock wraps to the same phase");
+}
+
+void TestStaticStatesIgnoreBreath(void)
+{
+    std::cout << "states that are not processing do not breathe\n";
+
+    const auto &pal = edc::style::palette();
+    auto widget = MakeWidget({{"1", "COMPLETED", "done"}});
+    const auto at_dim = FirstDotColor(*widget, 0);
+    const auto at_peak = FirstDotColor(*widget, 900);
+    Check(at_dim == at_peak, "the color is the same at both phases");
+    Check(at_dim == pal.ok, "and it is the state's own color");
+}
+
+void TestHasProcessingTask(void)
+{
+    std::cout << "the widget reports whether anything is processing\n";
+
+    auto busy = MakeWidget({{"1", "IDLE", "a"}, {"2", "TOOL_CALLING", "b"}});
+    Check(busy->HasProcessingTask(), "a processing task is reported");
+    auto idle = MakeWidget({{"1", "IDLE", "a"}, {"2", "COMPLETED", "b"}});
+    Check(!idle->HasProcessingTask(), "idle/completed only is not");
 }
 
 void TestDotsShareOneColumn(void)
@@ -187,6 +245,9 @@ void TestStateNameIsGone(void)
 int main()
 {
     TestDotPerStateInItsColor();
+    TestProcessingDotBreathes();
+    TestStaticStatesIgnoreBreath();
+    TestHasProcessingTask();
     TestDotsShareOneColumn();
     TestStateNameIsGone();
 

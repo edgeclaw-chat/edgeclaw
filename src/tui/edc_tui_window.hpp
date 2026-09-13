@@ -48,8 +48,8 @@ class TUIWindow : public ::ftxui::ComponentBase
         return agent != nullptr;
     }
 
-    // Pace the window's own animations (the working spinner) from the main-loop
-    // iteration; see TickAnimations().
+    // Pace the window's own animations (the working spinner and the processing
+    // dots' breathing) from the main-loop iteration; see TickAnimations().
     void TickAnimations();
 
   private:
@@ -167,6 +167,11 @@ class TUIWindow : public ::ftxui::ComponentBase
     std::chrono::steady_clock::time_point working_started_;
     // When the spinner's next repaint is due (see TickAnimations).
     std::chrono::steady_clock::time_point last_spinner_frame_;
+    // Whether a processing task's dot is currently breathing, and when that run
+    // started: the breath blooms in from its dim end whenever the smooth run
+    // begins again after no task was processing (see TickAnimations).
+    bool dot_breathing_ = false;
+    std::chrono::steady_clock::time_point breath_started_;
     // Throttles the periodic snapshot refresh, which is what catches
     // background-task state changes (they send no channel message).
     std::chrono::steady_clock::time_point last_snapshot_request_;
