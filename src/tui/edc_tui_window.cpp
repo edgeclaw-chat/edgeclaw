@@ -853,8 +853,15 @@ void TUIWindow::TickAnimations()
 {
     const auto &pal = style::palette();
 
-    char cwd[4096];
-    const std::string dir = ::getcwd(cwd, sizeof(cwd)) ? ShortenHome(cwd) : std::string();
+    char cwd_buf[4096];
+    char wd_buf[4096];
+    /* Prefer the active session's bound working directory (what the model is
+     * told via {{cwd}} and where tools run); fall back to the process launch
+     * directory for an unbound session. */
+    const char *dir_src = edc_c_session_workdir(agent, wd_buf, sizeof(wd_buf))
+                              ? wd_buf
+                              : (::getcwd(cwd_buf, sizeof(cwd_buf)) ? cwd_buf : nullptr);
+    const std::string dir = dir_src ? ShortenHome(dir_src) : std::string();
     const std::string left = " " + dir;
 
     // Columns available to the footer: the chat pane, i.e. the terminal minus

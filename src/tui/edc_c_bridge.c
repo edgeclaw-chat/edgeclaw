@@ -389,6 +389,26 @@ bool edc_c_agent_session_id(struct edc_agent *agent, char *buf, size_t cap)
     return true;
 }
 
+bool edc_c_session_workdir(struct edc_agent *agent, char *buf, size_t cap)
+{
+    if (!buf || cap == 0)
+        return false;
+    buf[0] = '\0';
+
+    if (!agent || !agent->session_manager)
+        return false;
+    struct edc_session *session = edc_session_manager_get_active(agent->session_manager);
+    const char *workdir = session ? edc_session_get_workdir(session) : NULL;
+    if (!workdir || !workdir[0])
+        return false;
+
+    const size_t n = strlen(workdir);
+    if (n >= cap)
+        return false;
+    memcpy(buf, workdir, n + 1);
+    return true;
+}
+
 static bool chat_log_path_for_session(struct edc_session *session, char *buf, size_t cap)
 {
     if (!buf || cap == 0)

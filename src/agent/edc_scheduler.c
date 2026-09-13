@@ -351,6 +351,16 @@ const char *edc_scheduler_session_workdir(edc_actor_t *scheduler_actor)
     return (sched && sched->session) ? edc_session_get_workdir(sched->session) : NULL;
 }
 
+const char *edc_scheduler_task_workdir(edc_actor_t *scheduler_actor, struct edc_task *task)
+{
+    /* 属主 session 优先: 后台 session 的任务在"切走"后仍应按自己的绑定目录
+     * 执行, 而不是当前正在显示的 session 的目录。 */
+    struct edc_session *own = (task && task->group) ? task->group->session : NULL;
+    if (own)
+        return edc_session_get_workdir(own);
+    return edc_scheduler_session_workdir(scheduler_actor);
+}
+
 bool edc_scheduler_has_active_tasks(struct edc_scheduler *sched)
 {
     if (!sched || !sched->session)

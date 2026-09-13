@@ -1,6 +1,7 @@
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_context.h"
+#include "edc_channel_actor.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
 #include "edc_sandbox.h"
@@ -255,6 +256,42 @@ static void test_system_prompt_cwd(void)
     rmdir(dir);
 }
 
+/* ── 7. Tool calls use the task's OWNER session workdir ── */
+static void test_task_workdir_owner(void)
+{
+    TEST("tool workdir follows the task's owner session");
+    char dirA[256], dirB[256];
+    make_tmpdir(dirA, sizeof(dirA));
+    make_tmpdir(dirB, sizeof(dirB));
+    char realA[PATH_MAX], realB[PATH_MAX];
+    CHECK(realpath(dirA, realA) != NULL, "realpath(A)");
+    CHECK(realpath(dirB, realB) != NULL, "realpath(B)");
+
+    struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
+    struct edc_session *A = edc_session_new_with_workdir(cfg, "sess-A", "A", dirA);
+    struct edc_session *B = edc_session_new_with_workdir(cfg, "sess-B", "B", dirB);
+
+    /* Scheduler displays A, but the task belongs to B (its group is bound to B).
+     * A tool call from that task must resolve against B's directory, not A's. */
+    struct edc_scheduler *sched = edc_scheduler_new(A, cfg);
+    edc_actor_t *actor = edc_scheduler_get_actor(sched);
+
+    struct edc_task *tB = edc_task_new("tB", "sess-B", "tB", "desc", edc_channel_adapter);
+    struct edc_task_group *gB = edc_task_group_new(tB);
+    edc_session_add_group(B, gB);
+
+    CHECK(strcmp(edc_scheduler_session_workdir(actor), realA) == 0, "active session dir = A");
+    CHECK(strcmp(edc_scheduler_task_workdir(actor, tB), realB) == 0, "task owner dir = B");
+    CHECK(strcmp(edc_scheduler_task_workdir(actor, NULL), realA) == 0, "non-task caller falls back to active (A)");
+
+    edc_scheduler_free(sched);
+    edc_session_free(A);
+    edc_session_free(B);
+    edc_config_free(cfg);
+    rmdir(dirA);
+    rmdir(dirB);
+}
+
 int main(void)
 {
     log_info("== test_session_workdir ==");
@@ -267,6 +304,7 @@ int main(void)
     test_persist_roundtrip();
     test_verify_path_at();
     test_system_prompt_cwd();
+    test_task_workdir_owner();
 
     log_info("passed=%d failed=%d", test_passed, test_failed);
     return test_failed == 0 ? 0 : 1;

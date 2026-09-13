@@ -112,7 +112,7 @@ static void edc_tool_exec_read_file_async(struct edc_toolbox_call_ctx *ctx, stru
     (void)tool;
     EdcError *error = NULL;
     sds result =
-        edc_tool_exec_read_file(ctx->tb->conf, edc_scheduler_session_workdir(ctx->tb->scheduler), args, &error);
+        edc_tool_exec_read_file(ctx->tb->conf, edc_scheduler_task_workdir(ctx->tb->scheduler, ctx->task), args, &error);
     if (result)
     {
         const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
@@ -138,7 +138,7 @@ static void edc_tool_exec_write_file_async(struct edc_toolbox_call_ctx *ctx, str
     (void)tool;
     EdcError *error = NULL;
     sds result =
-        edc_tool_exec_write_file(ctx->tb->conf, edc_scheduler_session_workdir(ctx->tb->scheduler), args, &error);
+        edc_tool_exec_write_file(ctx->tb->conf, edc_scheduler_task_workdir(ctx->tb->scheduler, ctx->task), args, &error);
     if (result)
     {
         const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
@@ -166,7 +166,7 @@ static void edc_tool_exec_list_dir_async(struct edc_toolbox_call_ctx *ctx, struc
 {
     (void)tool;
     EdcError *error = NULL;
-    sds result = edc_tool_exec_list_dir(ctx->tb->conf, edc_scheduler_session_workdir(ctx->tb->scheduler), args, &error);
+    sds result = edc_tool_exec_list_dir(ctx->tb->conf, edc_scheduler_task_workdir(ctx->tb->scheduler, ctx->task), args, &error);
     if (result)
     {
         const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
@@ -553,7 +553,7 @@ static void edc_tool_exec_edit_file_async(struct edc_toolbox_call_ctx *ctx, stru
 {
     EdcError *error = NULL;
     sds result =
-        edc_tool_exec_edit_file(ctx->tb->conf, edc_scheduler_session_workdir(ctx->tb->scheduler), args, &error);
+        edc_tool_exec_edit_file(ctx->tb->conf, edc_scheduler_task_workdir(ctx->tb->scheduler, ctx->task), args, &error);
     callback(ctx, result, error);
 }
 

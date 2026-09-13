@@ -191,6 +191,13 @@ bool edc_c_agent_write_file(struct edc_agent *agent, const char *path, const cha
  * task snapshot arrives. */
 bool edc_c_agent_session_id(struct edc_agent *agent, char *buf, size_t cap);
 
+/* Copy the active session's bound working directory into |buf| (NUL-terminated,
+ * at most |cap| bytes). Returns true when the session is bound to a directory
+ * and it fit; false (buf left empty) for an unbound session or on failure — the
+ * caller then falls back to the process working directory. Mirrors the {{cwd}}
+ * the model is told about, so the footer reflects the session actually shown. */
+bool edc_c_session_workdir(struct edc_agent *agent, char *buf, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif

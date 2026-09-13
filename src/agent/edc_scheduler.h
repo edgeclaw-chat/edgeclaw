@@ -164,6 +164,12 @@ extern void edc_scheduler_set_session(struct edc_scheduler *sched, struct edc_se
  *  相对路径的解析基准。 */
 extern const char *edc_scheduler_session_workdir(edc_actor_t *scheduler_actor);
 
+/** 单次工具调用应使用的工作目录: 优先取 **发起该调用的 task 所属 session**
+ *  绑定的 workdir, 这样后台 session 里的任务即使当前显示的是别的 session,
+ *  也在自己的目录里执行。|task| 为 NULL (非 task 路径) 或 task 无 group 时
+ *  回退到 scheduler 的当前 session —— 与 edc_scheduler_session_workdir 一致。 */
+extern const char *edc_scheduler_task_workdir(edc_actor_t *scheduler_actor, struct edc_task *task);
+
 /** 当前 session 中是否存在未终结 (非 COMPLETED/CANCELLED/ERROR/SUSPENDED)
  *  的任务。供入口层 (main.c 的 -c/脚本模式) 轮询等待使用, 无需遍历内部结构。 */
 extern bool edc_scheduler_has_active_tasks(struct edc_scheduler *sched);
