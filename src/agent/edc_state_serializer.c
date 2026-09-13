@@ -85,6 +85,7 @@ static cJSON *task_to_json(struct edc_task *task)
     cJSON_AddStringToObject(tj, "state", edc_task_state_name(task->state));
     cJSON_AddBoolToObject(tj, "is_group_leader", task->is_group_leader);
     cJSON_AddBoolToObject(tj, "auto_reap", task->auto_reap);
+    cJSON_AddBoolToObject(tj, "is_system", task->is_system);
 
     /* ── prompt ── */
     if (task->prompt_name)
@@ -100,7 +101,7 @@ static cJSON *task_to_json(struct edc_task *task)
     /* ── fork chain ── */
     if (task->forked_from)
         cJSON_AddStringToObject(tj, "forked_from_task_id", task->forked_from->task_id);
-    cJSON_AddNumberToObject(tj, "fork_point_msg_count", (int)task->fork_point_msg_count);
+    cJSON_AddNumberToObject(tj, "fork_point_completion_seq", (int)task->fork_point_completion_seq);
 
     /* ── deps (outgoing only) ── */
     cJSON *deps = cJSON_CreateArray();
@@ -138,9 +139,9 @@ static cJSON *task_to_json(struct edc_task *task)
         cJSON_AddStringToObject(tj, "redirect_stderr", task->redirect_stderr);
     cJSON_AddBoolToObject(tj, "redirect_append", task->redirect_append);
 
-    /* ── todolist ── */
-    if (task->todolist)
-        cJSON_AddItemToObject(tj, "todolist", cJSON_Duplicate(task->todolist, 1));
+    /* ── todos ── */
+    if (task->todos)
+        cJSON_AddItemToObject(tj, "todos", cJSON_Duplicate(task->todos, 1));
     /* todo 同步节流计数 (距上次 todowrite 的 LLM 请求数, 跨会话保持) */
     cJSON_AddNumberToObject(tj, "todo_sync_gap", task->todo_sync_gap);
 
@@ -209,7 +210,7 @@ static cJSON *group_to_json(struct edc_task_group *group)
     cJSON_AddBoolToObject(gj, "is_orphaned", group->is_orphaned);
     if (group->memory)
         cJSON_AddStringToObject(gj, "memory", group->memory);
-    cJSON_AddNumberToObject(gj, "fold_cursor", (int)group->fold_cursor);
+    cJSON_AddNumberToObject(gj, "folded_through_completion_seq", (int)group->folded_through_completion_seq);
 
     /* member task ids */
     cJSON *members = cJSON_CreateArray();
@@ -234,7 +235,7 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
         return NULL;
 
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "version", 2);
+    cJSON_AddNumberToObject(root, "version", 3);
 
     /* ── session block ── */
     cJSON *sj = cJSON_CreateObject();
@@ -277,9 +278,10 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
             LL_FOREACH2(g->members, t, group_next)
             {
                 /* filter transient states: 刚创建未开始的 IDLE 任务不落盘。
-                 * CANCELLED 必须持久化 —— 用户显式 stop 的任务要跨重启保留,
-                 * 否则重启后会按旧状态恢复, 让取消看起来"没生效"。 */
-                if (t->state == TASK_IDLE)
+                 * 例外: system task (is_system, 恒为 IDLE) 必须落盘, 否则它承载
+                 * 的无主消息会丢。CANCELLED 也必须持久化 —— 用户显式 stop 的
+                 * 任务要跨重启保留, 否则重启后会按旧状态恢复, 让取消看起来"没生效"。 */
+                if (t->state == TASK_IDLE && !t->is_system)
                     continue;
                 cJSON_AddItemToArray(tasks_json, task_to_json(t));
             }
@@ -321,7 +323,7 @@ static edc_task_state normalize_interrupted_state(edc_task_state s)
 /**
  * Rebuild a turn from JSON: its embedded "messages" array.
  *
- * Returns a new edc_turn with messages and timestamps populated.
+ * Returns a new edc_turn with messages populated.
  */
 static struct edc_turn *turn_from_json(cJSON *tj)
 {
@@ -335,11 +337,10 @@ static struct edc_turn *turn_from_json(cJSON *tj)
         {
             cJSON *msg = cJSON_GetArrayItem(embedded, i);
             cJSON *copy = cJSON_Duplicate(msg, 1);
+            /* v2 → v3: 老消息可能没有 render, 统一补默认 plain (ts 缺省即空)。 */
+            if (!cJSON_GetObjectItem(copy, "render"))
+                cJSON_AddStringToObject(copy, "render", "plain");
             edc_queue_push(&turn->messages, copy);
-
-            cJSON *ts_obj = cJSON_GetObjectItem(msg, "timestamp");
-            sds ts = ts_obj && cJSON_IsString(ts_obj) ? sdsnew(cJSON_GetStringValue(ts_obj)) : sdsempty();
-            edc_queue_push(&turn->timestamps, ts);
         }
     }
 
@@ -471,13 +472,25 @@ static void deser_rebuild_group_history(struct edc_session *session, struct edc_
             cJSON *sys = cJSON_CreateObject();
             cJSON_AddStringToObject(sys, "role", "system");
             cJSON_AddStringToObject(sys, "content", prompt);
-            edc_task_group_history_add_owned(g, sys, NULL);
+            edc_task_group_history_add_owned(g, sys);
             sdsfree(prompt);
         }
 
+        /* v2 兼容: 旧存档没有折叠水位, 由 per-task turns_folded 推导
+         * (= 已折叠 task 的最大 completion_seq)。 */
+        if (g->folded_through_completion_seq == 0)
+        {
+            struct edc_task *ft;
+            LL_FOREACH2(g->members, ft, group_next)
+            {
+                if (ft->turns_folded && ft->completion_seq > g->folded_through_completion_seq)
+                    g->folded_through_completion_seq = ft->completion_seq;
+            }
+        }
+
         /* 按 completion_seq 升序重建 history，与运行时 (STOP/完成顺序) 保持一致。
-         * 成员链表是创建顺序，若任务完成顺序与创建顺序不同，直接遍历会导致
-         * fold_cursor 错位，进而让切片切断 assistant(tool_calls)+tool 序列。 */
+         * 成员链表是创建顺序，若任务完成顺序与创建顺序不同，直接遍历会让
+         * 折叠水位与切片错位，进而切断 assistant(tool_calls)+tool 序列。 */
         size_t n = 0, cap = 0;
         struct edc_task **arr = NULL;
         struct edc_task *t;
@@ -509,11 +522,8 @@ static void deser_rebuild_group_history(struct edc_session *session, struct edc_
             for (size_t qi = task->turns.head; qi < task->turns.tail; qi++)
             {
                 struct edc_turn *turn = task->turns.data[qi];
-                /* 归属取 turn->task_id (重建时 turn 已从 task 反填), 与运行时
-                 * 路径 (sched_handle_llm_resp 的 STOP 同步) 保持一致。 */
                 for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
-                    edc_task_group_history_add_ref(g, turn->messages.data[mj],
-                                                   turn->task_id ? turn->task_id : task->task_id);
+                    edc_task_group_history_add_ref(g, turn->messages.data[mj]);
             }
         }
         free(arr);
@@ -603,12 +613,14 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->is_group_leader = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "auto_reap")))
             task->auto_reap = cJSON_IsTrue(v);
+        if ((v = cJSON_GetObjectItem(tj, "is_system")))
+            task->is_system = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "prompt_name")) && cJSON_IsString(v))
             task->prompt_name = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "prompt")) && cJSON_IsString(v))
             task->prompt = sdsnew(cJSON_GetStringValue(v));
-        if ((v = cJSON_GetObjectItem(tj, "fork_point_msg_count")) && cJSON_IsNumber(v))
-            task->fork_point_msg_count = (size_t)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "fork_point_completion_seq")) && cJSON_IsNumber(v))
+            task->fork_point_completion_seq = (uint32_t)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "output")) && cJSON_IsString(v))
             task->output = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "completion_seq")) && cJSON_IsNumber(v))
@@ -629,8 +641,10 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->redirect_stderr = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "redirect_append")))
             task->redirect_append = cJSON_IsTrue(v);
-        if ((v = cJSON_GetObjectItem(tj, "todolist")) && cJSON_IsArray(v))
-            task->todolist = cJSON_Duplicate(v, 1);
+        if ((v = cJSON_GetObjectItem(tj, "todos")) == NULL)
+            v = cJSON_GetObjectItem(tj, "todolist"); /* v2 旧键 */
+        if (v && cJSON_IsArray(v))
+            task->todos = cJSON_Duplicate(v, 1);
         if ((v = cJSON_GetObjectItem(tj, "todo_sync_gap")) && cJSON_IsNumber(v))
             task->todo_sync_gap = (int)cJSON_GetNumberValue(v);
 
@@ -722,9 +736,11 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
                 group->memory = sdsnew(cJSON_GetStringValue(mem));
         }
         {
-            cJSON *fc = cJSON_GetObjectItem(gj, "fold_cursor");
-            if (fc && cJSON_IsNumber(fc))
-                group->fold_cursor = (size_t)cJSON_GetNumberValue(fc);
+            /* v3: 折叠水位 (completion_seq)。旧存档只有 fold_cursor(下标),
+             * 由 deser_rebuild_group_history 依 turns_folded 推导, 这里不读。 */
+            cJSON *fw = cJSON_GetObjectItem(gj, "folded_through_completion_seq");
+            if (fw && cJSON_IsNumber(fw))
+                group->folded_through_completion_seq = (uint32_t)cJSON_GetNumberValue(fw);
         }
 
         cJSON *members = cJSON_GetObjectItem(gj, "member_task_ids");
@@ -907,6 +923,16 @@ static void deser_global_ptrs(cJSON *sj, struct edc_session *session,
         session->foreground_group = group_map_get(group_map, fg_id);
 }
 
+int edc_state_json_version(cJSON *json)
+{
+    if (!json)
+        return 0;
+    cJSON *ver = cJSON_GetObjectItem(json, "version");
+    if (!ver || !cJSON_IsNumber(ver))
+        return 0;
+    return (int)cJSON_GetNumberValue(ver);
+}
+
 bool edc_state_deserialize(cJSON *json, struct edc_session *session, struct edc_scheduler *sched)
 {
     if (!json || !session)
@@ -919,9 +945,11 @@ bool edc_state_deserialize(cJSON *json, struct edc_session *session, struct edc_
         return false;
     }
     double ver_num = cJSON_GetNumberValue(ver);
-    if (ver_num != 2)
+    /* v2 文件就地迁移到 v3 内存模型 (旧键有回退/派生), 下次 save_state 写回 version 3;
+     * v3 直接读。其它版本拒绝。 */
+    if (ver_num != 2 && ver_num != 3)
     {
-        log_error("deserialize: unsupported version %g (expected 2)", ver_num);
+        log_error("deserialize: unsupported version %g (expected 2 or 3)", ver_num);
         return false;
     }
 

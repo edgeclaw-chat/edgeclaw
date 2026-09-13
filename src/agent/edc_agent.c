@@ -52,8 +52,8 @@ static struct edc_agent *edc_scheduler_agent(struct edc_scheduler *sched)
 /* ── 跨 session task 解析 (S2) ───────────────────────────────
  * task id 全局唯一 (见 edc_session_manager_find_task_any), 所以命中唯一。
  * 内存查找只覆盖"本 run 已激活"的 session; 若任务属于一个只在磁盘上、尚未
- * 激活的 session, 就用 session_manager 的小索引 (task_id → session_id, 读
- * tasks.idx) 定位属主, 再按需加载 —— 不解析庞大的 session.json。 */
+ * 激活的 session, 就用 session_manager 的索引 (task_id → session_id, 由各
+ * 未加载 session.json 解析一次而来) 定位属主, 再按需加载。 */
 
 struct edc_task *edc_agent_resolve_task(struct edc_agent *agent, const char *task_id, struct edc_session **owner_out)
 {
@@ -72,8 +72,8 @@ struct edc_task *edc_agent_resolve_task(struct edc_agent *agent, const char *tas
         return t;
     }
 
-    /* 2. 未命中: 用 session_manager 的小索引定位属主 session (只读各未加载
-     *    session 的 tasks.idx, 不解析大文件), 命中则按需加载。 */
+    /* 2. 未命中: 用 session_manager 的索引定位属主 session (解析各未加载
+     *    session.json 一次), 命中则按需加载。 */
     struct edc_session *s = edc_session_manager_session_for_task(agent->session_manager, task_id);
     if (!s)
         return NULL;
@@ -301,7 +301,7 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
             cJSON_AddStringToObject(sys_hist, "role", "system");
             cJSON_AddStringToObject(sys_hist, "content", pristine);
             /* 组 system prompt 不属于任何 task */
-            edc_task_group_history_add_owned(task->group, sys_hist, NULL);
+            edc_task_group_history_add_owned(task->group, sys_hist);
         }
         sdsfree(pristine);
     }
@@ -311,11 +311,12 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
         size_t total = cJSON_GetArraySize(task->group->history);
         size_t end = total;
 
-        /* 未折叠历史起点: 跳过 system prompt (history[0]) + 已折叠消息 */
-        size_t hist_begin = 1 + task->group->fold_cursor;
+        /* 未折叠历史起点: 跳过 system prompt (history[0]) + 已折叠消息。
+         * 已折叠消息数 = 折叠水位 (completion_seq) 之前的 task 的消息总数。 */
+        size_t hist_begin = 1 + edc_task_group_folded_msg_count(task->group);
         if (hist_begin > end)
             hist_begin = end;
-        /* fold_cursor 边界也可能切在 tool 消息上, 回退到安全边界 */
+        /* 水位边界也可能切在 tool 消息上, 回退到安全边界 */
         hist_begin = edc_agent_history_safe_start(task->group->history, hist_begin, 1);
 
         /* 注入全部未折叠历史 [hist_begin, end): fold 采用"半量"策略 (见
@@ -765,8 +766,7 @@ struct edc_agent *edc_agent_new(bool setup, int sandbox_override)
 
     agent->channel_actor = edc_channel_actor_new(&agent->config->channel, agent->config->workspace);
     agent->llm_actor = edc_llm_actor_new(agent->config);
-    agent->memory_actor =
-        edc_memory_actor_new(agent->config->workspace, agent->config->memory_compress_threshold, agent->llm_actor);
+    agent->memory_actor = edc_memory_actor_new(agent->config->workspace, agent->llm_actor);
     agent->session_manager = edc_session_manager_new(agent->config);
     if (!agent->session_manager)
     {

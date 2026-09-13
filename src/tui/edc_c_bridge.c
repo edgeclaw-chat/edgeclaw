@@ -197,7 +197,7 @@ struct edc_c_task_snapshot *edc_c_task_snapshot_parse(const char *json)
                     t->tokens_completion = snap_ll(cJSON_GetObjectItemCaseSensitive(tj, "tokens_completion"));
                     t->tokens_total = snap_ll(cJSON_GetObjectItemCaseSensitive(tj, "tokens_total"));
                     t->tokens_cached = snap_ll(cJSON_GetObjectItemCaseSensitive(tj, "tokens_cached"));
-                    cJSON *todo = cJSON_GetObjectItemCaseSensitive(tj, "todolist");
+                    cJSON *todo = cJSON_GetObjectItemCaseSensitive(tj, "todos");
                     if (cJSON_IsArray(todo))
                         t->todo_items = snap_todo_parse(todo, &t->todo_count);
                 }
@@ -235,7 +235,7 @@ void edc_c_task_snapshot_free(struct edc_c_task_snapshot *snap)
     free(snap);
 }
 
-/* ── Todo item array parsing (per-task "todolist" in a snapshot) ─ */
+/* ── Todo item array parsing (per-task "todos" in a snapshot) ─ */
 
 /* Parse a JSON items array (todowrite items: each with content/status/
  * priority) into a malloc'd array of edc_c_todo_item. Returns NULL and sets

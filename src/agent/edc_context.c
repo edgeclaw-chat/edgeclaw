@@ -1,6 +1,6 @@
 #include "edc_context.h"
+#include "edc_datetime_utils.h"
 #include "edc_file_utils.h"
-#include "edc_history.h"
 #include "edc_skills.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -201,7 +201,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
     const char *workspace = conf->workspace;
     sds os_name = edc_os_name();
 
-    sds time = edc_get_timestamp();
+    sds time = edc_datetime_timestamp();
     sds identity = edc_context_get_identity(os_name, time, workspace, workdir);
     sds permissions = edc_context_build_permissions(conf);
     sds bootstrap = edc_context_load_bootstrap_files(workspace);
@@ -260,7 +260,7 @@ cJSON *edc_context_make_todo_reminder(struct edc_task *task)
     if (!task)
         return NULL;
 
-    sds content = edc_tools_todo_render_reminder(task->todolist);
+    sds content = edc_tools_todo_render_reminder(task->todos);
 
     cJSON *sys = cJSON_CreateObject();
     cJSON_AddStringToObject(sys, "role", "system");

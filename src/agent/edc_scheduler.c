@@ -852,8 +852,7 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
                 for (size_t qi = task->active_turn->messages.head; qi < task->active_turn->messages.tail; qi++)
                 {
                     cJSON *item = task->active_turn->messages.data[qi];
-                    /* 带归属写入: 回填历史时每条消息可标注 "task N" */
-                    edc_task_group_history_add_ref(task->group, item, task->task_id);
+                    edc_task_group_history_add_ref(task->group, item);
                 }
             }
 
@@ -1036,7 +1035,7 @@ static void sched_handle_tool_emit(struct edc_scheduler *sched, struct edc_actor
         sched->send_tool_message(sched, task, emit->header, emit->content, emit->render_pref, msg->request_id);
 
     /* todowrite 每次成功更新 (含清空) 都会回显一条 TOOL 消息; 该消息只
-     * 携带文本, todo 本身已挂到 task->todolist。多轮工具链内 task 状态不再
+     * 携带文本, todo 本身已挂到 task->todos。多轮工具链内 task 状态不再
      * 变化 (TOOL_CALLING 期间), 不会触发状态通知快照 —— 这里主动补推一次,
      * 让 TUI 的 TodoWidget 立即按新清单刷新 (规则3)。 */
     if (emit->header && strcmp(emit->header, "todowrite") == 0)
@@ -1125,11 +1124,11 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched)
             cJSON_AddNumberToObject(tj, "tokens_total", (double)t->tokens_total);
             cJSON_AddNumberToObject(tj, "tokens_cached", (double)t->tokens_cached);
             /* todo 清单是 task 状态的一部分: 快照携带每个持有清单的 task 的
-             * todolist (item 数组, 同 todowrite 参数形状)。TUI 借此把
+             * todos (item 数组, 同 todowrite 参数形状)。TUI 借此把
              * fg 组 active task 的清单渲染到右侧 TodoWidget —— 快照是侧边栏
              * (任务树 + todo) 的唯一数据源, 不再需要旁路 payload 通道。 */
-            if (t->todolist && cJSON_GetArraySize(t->todolist) > 0)
-                cJSON_AddItemToObject(tj, "todolist", cJSON_Duplicate(t->todolist, 1));
+            if (t->todos && cJSON_GetArraySize(t->todos) > 0)
+                cJSON_AddItemToObject(tj, "todos", cJSON_Duplicate(t->todos, 1));
             cJSON_AddItemToArray(tasks, tj);
         }
 
@@ -1173,16 +1172,8 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
     case BC_ACTOR_MSG_TOOL_EMIT:
         sched_handle_tool_emit(sched, msg);
         break;
-    case BC_ACTOR_MSG_MEMORY_DONE:
-        /* 长期记忆压缩完成 (MEMORY.md / HISTORY.md 已写)。这里刻意不做任何
-         * session 侧动作: LLM 上下文来自 group->history, 且新 group 的 system
-         * prompt 每次请求都由 edc_context_append_system_part 现拼 (直接读
-         * MEMORY.md), session->messages 只是持久化 legacy 副本。旧的
-         * edc_session_reload 既刷新不到 group history[0], 又会释放它引用的
-         * 对象, 故移除。 */
-        break;
     case BC_ACTOR_MSG_GROUP_FOLD_DONE:
-        /* L1 折叠完成, 持久化 state (turns_folded/memory/fold_cursor)。
+        /* L1 折叠完成, 持久化 state (turns_folded/memory/折叠水位)。
          * 折叠消息不带 group, 无法定位属主 session, 退化为保存当前 session;
          * 后台 session 的折叠结果会在它下次被保存时落盘。 */
         if (sched->save_session)

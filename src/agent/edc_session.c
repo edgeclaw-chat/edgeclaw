@@ -4,7 +4,6 @@
 #include "edc_context.h"
 #include "edc_datetime_utils.h"
 #include "edc_file_utils.h"
-#include "edc_history.h"
 #include "edc_scheduler.h"
 #include "edc_state_serializer.h"
 #include "edc_string_utils.h"
@@ -15,24 +14,11 @@
 #include "sds.h"
 #include "utlist_fix.h"
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-static void edc_session_build_messages(struct edc_session *session)
-{
-    sds system_prompt = edc_context_build_system_prompt(session->config, session->workdir);
-
-    cJSON *system_msg = cJSON_CreateObject();
-    sds valid_utf8 = edc_str_utf8_make_valid(system_prompt, -1);
-    cJSON_AddStringToObject(system_msg, "role", "system");
-    cJSON_AddStringToObject(system_msg, "content", valid_utf8);
-    sdsfree(valid_utf8);
-    sdsfree(system_prompt);
-
-    cJSON_AddItemToArray(session->messages, system_msg);
-}
 
 struct edc_session *edc_session_new(struct edc_config *config, const char *session_id, const char *name)
 {
@@ -154,7 +140,6 @@ struct edc_session *edc_session_new_with_workdir(struct edc_config *config, cons
     session->created_at = edc_datetime_timestamp();
     session->last_active = edc_datetime_timestamp();
     session->config = config;
-    session->messages = cJSON_CreateArray();
     session->history_dir = edc_path_join(config->workspace, session->session_id, NULL);
     session->next_completion_seq = 1;
 
@@ -174,7 +159,6 @@ struct edc_session *edc_session_new_with_workdir(struct edc_config *config, cons
         }
     }
 
-    edc_session_build_messages(session);
     return session;
 }
 
@@ -182,11 +166,6 @@ void edc_session_free(struct edc_session *session)
 {
     if (!session)
         return;
-
-    if (session->messages)
-    {
-        cJSON_Delete(session->messages);
-    }
 
     /* Groups (and the tasks they own) belong to the session now — free them
      * here so every session's groups are released, not just the one the
@@ -206,21 +185,6 @@ void edc_session_free(struct edc_session *session)
     sdsfree(session->history_dir);
     sdsfree(session->workdir);
     free(session);
-}
-
-void edc_session_add_turn(struct edc_session *sess, struct edc_turn *turn)
-{
-    /* P4: turn 运行时持有消息。不再把消息搬进 session->messages, 也不再记录
-     * range —— 消息随 turn 一起序列化 (单一模式内联), 顺序由 task 的
-     * completion_seq 决定 (见 deser_rebuild_group_history)。
-     * 保留函数签名以兼容旧调用点; 现为空操作。 */
-    (void)sess;
-    (void)turn;
-}
-
-cJSON *edc_session_get_messages(struct edc_session *session)
-{
-    return session->messages;
 }
 
 size_t edc_session_get_message_count(struct edc_session *session)
@@ -246,14 +210,6 @@ size_t edc_session_get_message_count(struct edc_session *session)
         }
     }
     return n;
-}
-
-bool edc_session_save_history(struct edc_session *session)
-{
-    /* P4: 消息归属 turn, 随 session.json 一起持久化; 不再写 history.jsonl。
-     * (旧存档的 history.jsonl 仍在加载侧读取, 供迁移期使用。) */
-    (void)session;
-    return true;
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -303,6 +259,53 @@ struct edc_task *edc_session_find_task(struct edc_session *session, const char *
             return t;
     }
     return NULL;
+}
+
+/* ── system task: 承载无主/会话级消息 ──────────────────────── */
+
+struct edc_task *edc_session_get_or_create_system_task(struct edc_session *session)
+{
+    if (!session)
+        return NULL;
+
+    struct edc_task *t = edc_session_find_task(session, "system");
+    if (t)
+        return t;
+
+    /* 固定 id "system" (与全局 task 计数器无关); group_id 由 leader 派生。 */
+    t = edc_task_new("system", session->session_id, "system", "system", edc_channel_adapter);
+    if (!t)
+        return NULL;
+    t->is_system = 1;
+
+    struct edc_task_group *g = edc_task_group_new(t);
+    if (!g)
+    {
+        edc_task_free(t);
+        return NULL;
+    }
+    edc_session_add_group(session, g);
+    return t;
+}
+
+void edc_session_add_system_message(struct edc_session *session, cJSON *msg)
+{
+    if (!session || !msg)
+        return;
+
+    struct edc_task *t = edc_session_get_or_create_system_task(session);
+    if (!t)
+    {
+        cJSON_Delete(msg);
+        return;
+    }
+
+    if (!t->active_turn)
+    {
+        t->active_turn = edc_turn_new();
+        t->active_turn->task_id = strdup(t->task_id);
+    }
+    edc_turn_add_message(t->active_turn, msg); /* 接管 |msg| */
 }
 
 void edc_session_set_active_task(struct edc_session *session, struct edc_task *task)
@@ -384,68 +387,7 @@ sds edc_session_status_text(struct edc_session *session, bool is_current, const 
     return out;
 }
 
-/* ── 消息切片 ──────────────────────────────────────────────── */
-
-cJSON *edc_session_get_messages_slice(struct edc_session *session, size_t from, size_t count)
-{
-    cJSON *slice = cJSON_CreateArray();
-    if (!session || !session->messages)
-        return slice;
-
-    size_t total = cJSON_GetArraySize(session->messages);
-    if (from >= total)
-        return slice;
-
-    size_t end = from + count;
-    if (count == 0 || end > total)
-        end = total;
-
-    for (size_t i = from; i < end; i++)
-    {
-        cJSON *msg = cJSON_GetArrayItem(session->messages, i);
-        cJSON_AddItemReferenceToArray(slice, msg);
-    }
-    return slice;
-}
-
 /* ── Phase 2: 完整状态持久化 ───────────────────────────────── */
-
-/* session.json 很大 (每个 turn 都内嵌消息体、prompt、output), 跨 session 查
- * 一个 task id 时若逐个解析它代价太高。落 state 时顺手写一份只含 task id 的
- * tasks.idx, 供 edc_session_manager_session_for_task 做 O(1) 查找。原子写。 */
-static void session_write_task_index(struct edc_session *session)
-{
-    sds buf = sdsempty();
-    struct edc_task_group *g;
-    DL_FOREACH(session->groups, g)
-    {
-        struct edc_task *t;
-        LL_FOREACH2(g->members, t, group_next)
-        {
-            if (t && t->task_id && t->task_id[0])
-                buf = sdscatprintf(buf, "%s\n", t->task_id);
-        }
-    }
-
-    sds path = edc_path_join(session->history_dir, "tasks.idx", NULL);
-    sds tmp = edc_path_join(session->history_dir, "tasks.idx.tmp", NULL);
-
-    EdcError *err = NULL;
-    if (!edc_file_write(tmp, buf, (ssize_t)sdslen(buf), &err))
-    {
-        log_warn("save_state: write task index %s failed: %s", tmp, err ? err->message : "unknown");
-        if (err)
-            edc_error_free(err);
-    }
-    else if (rename(tmp, path) != 0)
-    {
-        log_warn("save_state: rename %s -> %s failed: %s", tmp, path, strerror(errno));
-    }
-
-    sdsfree(buf);
-    sdsfree(path);
-    sdsfree(tmp);
-}
 
 bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *sched)
 {
@@ -506,8 +448,54 @@ bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *s
     sdsfree(path);
     sdsfree(tmp);
 
-    session_write_task_index(session);
     return true;
+}
+
+/* ── 加载护栏 (v1→v2 事故的教训) ─────────────────────────────
+ * 无法解析/迁移的 session.json 先改名隔离, 免得进程随后用空 session 把它
+ * 覆盖掉 —— 那次事故正是"加载失败后仍照常落盘"抹掉了 s7 的任务结构。 */
+static void session_quarantine_state(struct edc_session *session, const char *path, const char *why)
+{
+    sds broken = edc_path_join(session->history_dir, "session.json.broken", NULL);
+    if (rename(path, broken) == 0)
+        log_warn("load_state: quarantined %s -> %s (%s)", path, broken, why);
+    else
+        log_error("load_state: cannot quarantine %s (%s): %s", path, why, strerror(errno));
+    sdsfree(broken);
+}
+
+/* v2 → v3 迁移前备份。幂等: 已有备份则不覆盖, 永远保留最早的 v2 原件。 */
+static void session_backup_v2_state(struct edc_session *session, const char *path)
+{
+    sds bak = edc_path_join(session->history_dir, "session.json.v2.bak", NULL);
+    if (edc_file_exists(bak))
+    {
+        sdsfree(bak);
+        return;
+    }
+
+    EdcError *err = NULL;
+    sds content = edc_file_read(path, &err);
+    if (!content)
+    {
+        log_warn("load_state: v2 backup read failed: %s", err ? err->message : "unknown");
+        if (err)
+            edc_error_free(err);
+        sdsfree(bak);
+        return;
+    }
+
+    EdcError *werr = NULL;
+    if (edc_file_write(bak, content, (ssize_t)sdslen(content), &werr))
+        log_info("load_state: backed up v2 state to %s", bak);
+    else
+    {
+        log_warn("load_state: v2 backup write failed: %s", werr ? werr->message : "unknown");
+        if (werr)
+            edc_error_free(werr);
+    }
+    sdsfree(content);
+    sdsfree(bak);
 }
 
 bool edc_session_load_state(struct edc_session *session, struct edc_scheduler *sched)
@@ -541,18 +529,30 @@ bool edc_session_load_state(struct edc_session *session, struct edc_scheduler *s
     if (!json)
     {
         log_error("load_state: failed to parse %s (corrupt JSON)", path);
+        session_quarantine_state(session, path, "corrupt JSON");
         sdsfree(path);
         return false;
     }
 
+    int src_version = edc_state_json_version(json);
     bool ok = edc_state_deserialize(json, session, sched);
     cJSON_Delete(json);
 
     if (!ok)
-        log_error("load_state: deserialize failed for %s", path);
+    {
+        log_error("load_state: deserialize failed for %s (version %d)", path, src_version);
+        session_quarantine_state(session, path, "deserialize failed");
+        sdsfree(path);
+        return false;
+    }
+
+    /* v2 → v3: 首次成功加载 v2 文件时留一份原始备份; 之后任何 save_state 都会
+     * 把它改写成 version 3。v3 文件无需备份。 */
+    if (src_version == 2)
+        session_backup_v2_state(session, path);
 
     sdsfree(path);
-    return ok;
+    return true;
 }
 
 /* ── Multi-session support ─────────────────────────────────── */
@@ -562,11 +562,6 @@ void edc_session_reset(struct edc_session *session)
     if (!session)
         return;
 
-    /* Clear messages */
-    while (cJSON_GetArraySize(session->messages) > 0)
-        cJSON_DeleteItemFromArray(session->messages, 0);
-
-    /* Clear timestamps (none) — no-op */
     /* Clear active task */
     session->active_task = NULL;
 

@@ -66,7 +66,6 @@ static void turn_add_msg(struct edc_turn *turn, const char *role, const char *co
     cJSON_AddStringToObject(msg, "role", role);
     cJSON_AddStringToObject(msg, "content", content);
     edc_queue_push(&turn->messages, msg);
-    edc_queue_push(&turn->timestamps, sdsnew("2026-01-01T00:00:00"));
 }
 
 /* ── Helper: count tasks ── */
@@ -191,8 +190,6 @@ static void test_write_read(void)
     CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
 
     sdsfree(state_path);
-    cJSON_Delete(session->messages);
-    session->messages = NULL; /* prevent double-free since session2 loaded it */
     edc_session_free(session);
     edc_scheduler_free(sched);
     edc_session_free(session2);
@@ -241,8 +238,6 @@ static void test_overwrite(void)
     CHECK(edc_session_load_state(session2, sched2), "load succeeds");
     CHECK(count_tasks(session2) == 2, "2 tasks after second save");
 
-    cJSON_Delete(session->messages);
-    session->messages = NULL;
     edc_session_free(session);
     edc_scheduler_free(sched);
     edc_session_free(session2);
@@ -279,7 +274,6 @@ static void test_corrupt_file(void)
     CHECK(!ok, "load_state returns false for corrupt JSON");
     CHECK(count_tasks(session) == 0, "no tasks loaded from corrupt file");
     /* session should still be usable */
-    CHECK(session->messages != NULL, "session still has messages array");
 
     sdsfree(path);
     edc_session_free(session);
@@ -402,8 +396,6 @@ static void test_load_onto_nonempty(void)
     edc_session_add_group(s1, g1);
     CHECK(edc_session_save_state(s1, sc1), "save succeeds");
 
-    cJSON_Delete(s1->messages);
-    s1->messages = NULL;
     edc_session_free(s1);
     edc_scheduler_free(sc1);
 
@@ -432,8 +424,6 @@ static void test_load_onto_nonempty(void)
     struct edc_task *rpre = find_task(s2, "pre-existing");
     CHECK(rpre != NULL, "pre-existing task still present");
 
-    cJSON_Delete(s2->messages);
-    s2->messages = NULL;
     edc_session_free(s2);
     edc_scheduler_free(sc2);
     edc_config_free(cfg);

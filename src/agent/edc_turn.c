@@ -1,9 +1,9 @@
 #include "edc_turn.h"
+#include "edc_datetime_utils.h"
 #include "edc_compat.h"
-#include "edc_history.h"
 #include "edc_string_utils.h"
 
-static void edc_turn_add_message(struct edc_turn *turn, cJSON *msg)
+void edc_turn_add_message(struct edc_turn *turn, cJSON *msg)
 {
     cJSON *content = cJSON_GetObjectItem(msg, "content");
     sds valid_utf8 = edc_str_utf8_make_valid(cJSON_GetStringValue(content), -1);
@@ -11,8 +11,18 @@ static void edc_turn_add_message(struct edc_turn *turn, cJSON *msg)
     sdsfree(valid_utf8);
     cJSON_ReplaceItemInObject(msg, "content", valid_content);
 
+    /* v3: 消息自带产生时间与渲染偏好, 随消息一起持久化 —— 不再用平行的
+     * timestamps 队列 (那样重启即丢, 且下标需与 messages 对齐)。 */
+    if (!cJSON_HasObjectItem(msg, "ts"))
+    {
+        sds ts = edc_datetime_timestamp();
+        cJSON_AddStringToObject(msg, "ts", ts ? ts : "");
+        sdsfree(ts);
+    }
+    if (!cJSON_HasObjectItem(msg, "render"))
+        cJSON_AddStringToObject(msg, "render", "plain");
+
     edc_queue_push(&turn->messages, msg);
-    edc_queue_push(&turn->timestamps, edc_get_timestamp());
 }
 
 void edc_turn_add_user_message(struct edc_turn *turn, const char *content)
@@ -42,7 +52,6 @@ struct edc_turn *edc_turn_new()
 {
     struct edc_turn *turn = g_new0(struct edc_turn, 1);
     edc_queue_init(&turn->messages);
-    edc_queue_init(&turn->timestamps);
     return turn;
 }
 
@@ -56,11 +65,8 @@ void edc_turn_free(struct edc_turn *turn)
     void *item;
     while ((item = edc_queue_pop(&turn->messages)))
         cJSON_Delete((cJSON *)item);
-    while ((item = edc_queue_pop(&turn->timestamps)))
-        sdsfree((sds)item);
 
     edc_queue_destroy(&turn->messages);
-    edc_queue_destroy(&turn->timestamps);
 
     free(turn->task_id);
     free(turn);

@@ -50,15 +50,6 @@ cc_test(
 )
 
 cc_test(
-    name = "test_memory_actor",
-    srcs = ["test_memory_actor.c"],
-    deps = [
-        "//src:agent",
-    ],
-    linkopts = LINK_OPTS,
-)
-
-cc_test(
     name = "test_lwip_http",
     srcs = ["test_lwip_http.c"],
     deps = [
@@ -325,6 +316,15 @@ cc_test(
 cc_test(
     name = "test_task_index",
     srcs = ["test_task_index.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_v2_migration",
+    srcs = ["test_v2_migration.c"],
     deps = [
         "//src:agent",
     ],

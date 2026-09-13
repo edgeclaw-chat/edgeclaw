@@ -65,12 +65,6 @@ static cJSON *edc_sm_build_index(struct edc_session_manager *sm)
         cJSON_AddStringToObject(obj, "id", s->session_id);
         cJSON_AddStringToObject(obj, "name", s->name ? s->name : s->session_id);
         cJSON_AddStringToObject(obj, "created_at", s->created_at ? s->created_at : "");
-        /* cJSON copies the string, so the freshly-allocated timestamp sds must
-         * be released here (or it leaks once per session on every index save). */
-        sds last_active = edc_datetime_timestamp();
-        cJSON_AddStringToObject(obj, "last_active", last_active);
-        sdsfree(last_active);
-        cJSON_AddNumberToObject(obj, "message_count", (int)edc_session_get_message_count(s));
         cJSON_AddItemToArray(arr, obj);
     }
 
@@ -387,10 +381,9 @@ struct edc_task *edc_session_manager_find_task_any(struct edc_session_manager *s
 }
 
 /* ── task id 索引 (未加载 session) ───────────────────────────
- * 跨 session 查找 task id 时, 若 owner 未加载, 我们只需要"它在哪个 session",
- * 不需要解析庞大的 session.json (里面每个 turn 都内嵌消息体/prompt/output)。
- * 各 session 落 state 时同目录写了只含 task id 的 tasks.idx; 这里读进一个
- * uthash, 之后 O(1) 定位 owner session。
+ * 跨 session 查找 task id 时, 若 owner 未加载, 我们只需要"它在哪个 session"。
+ * v3 起不再有 tasks.idx 侧车 (单一真相源 = session.json): 首次查找时解析一次
+ * 每个未加载 session 的 session.json, 收进一个 uthash, 之后 O(1) 定位。
  *
  * 不变式: 一个未加载的 session 整个 run 都不会被修改 (要改它就得先 load), 所以
  * 这张表恒等于"未加载 session 的磁盘冻结态"; 已加载 session 一律由内存查找
@@ -417,8 +410,8 @@ static void sm_task_index_add(struct edc_session_manager *sm, const char *task_i
     HASH_ADD_KEYPTR(hh, sm->task_index, e->task_id, sdslen(e->task_id), e);
 }
 
-/* 迁移回退: 解析一次 session.json 收集 id, 并补写 tasks.idx, 之后走索引。 */
-static void sm_task_index_ingest_state_file(struct edc_session_manager *sm, struct edc_session *s)
+/* 解析一次 session.json 收集 task id, 供未加载 session 的 owner 定位。 */
+static void sm_task_index_ingest_session_json(struct edc_session_manager *sm, struct edc_session *s)
 {
     sds path = edc_path_join(s->history_dir, "session.json", NULL);
     if (!edc_file_exists(path))
@@ -440,7 +433,6 @@ static void sm_task_index_ingest_state_file(struct edc_session_manager *sm, stru
     if (!json)
         return;
 
-    sds ids = sdsempty();
     cJSON *tasks = cJSON_GetObjectItem(json, "tasks");
     if (cJSON_IsArray(tasks))
     {
@@ -449,62 +441,10 @@ static void sm_task_index_ingest_state_file(struct edc_session_manager *sm, stru
         {
             const char *tid = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(tasks, i), "task_id"));
             if (tid && tid[0])
-            {
                 sm_task_index_add(sm, tid, s->session_id);
-                ids = sdscatprintf(ids, "%s\n", tid);
-            }
         }
     }
     cJSON_Delete(json);
-
-    sds sidecar = edc_path_join(s->history_dir, "tasks.idx", NULL);
-    sds tmp = edc_path_join(s->history_dir, "tasks.idx.tmp", NULL);
-    EdcError *werr = NULL;
-    if (edc_file_write(tmp, ids, (ssize_t)sdslen(ids), &werr))
-    {
-        if (rename(tmp, sidecar) != 0)
-            log_warn("task index: rename %s failed: %s", tmp, strerror(errno));
-    }
-    else
-    {
-        log_warn("task index: write %s failed: %s", tmp, werr ? werr->message : "unknown");
-        if (werr)
-            edc_error_free(werr);
-    }
-    sdsfree(ids);
-    sdsfree(sidecar);
-    sdsfree(tmp);
-}
-
-/* 读一份 tasks.idx (每行一个 id)。返回 false = 不存在/读失败 → 调用方回退。 */
-static bool sm_task_index_ingest_sidecar(struct edc_session_manager *sm, struct edc_session *s)
-{
-    sds path = edc_path_join(s->history_dir, "tasks.idx", NULL);
-    if (!edc_file_exists(path))
-    {
-        sdsfree(path);
-        return false;
-    }
-    EdcError *err = NULL;
-    sds content = edc_file_read(path, &err);
-    sdsfree(path);
-    if (!content)
-    {
-        if (err)
-            edc_error_free(err);
-        return false;
-    }
-    int n = 0;
-    sds *lines = sdssplitlen(content, (int)sdslen(content), "\n", 1, &n);
-    for (int i = 0; i < n; i++)
-    {
-        sds t = sdstrim(lines[i], " \t\r\n");
-        if (sdslen(t) > 0)
-            sm_task_index_add(sm, t, s->session_id);
-    }
-    sdsfreesplitres(lines, n);
-    sdsfree(content);
-    return true;
 }
 
 static void sm_task_index_build(struct edc_session_manager *sm)
@@ -514,8 +454,7 @@ static void sm_task_index_build(struct edc_session_manager *sm)
         struct edc_session *s = sm->sessions[i];
         if (!s || s->state_loaded)
             continue; /* 已加载 → 内存优先, 不入表 */
-        if (!sm_task_index_ingest_sidecar(sm, s))
-            sm_task_index_ingest_state_file(sm, s); /* 老 workspace 迁移 */
+        sm_task_index_ingest_session_json(sm, s);
     }
     sm->task_index_built = true;
 }
@@ -620,7 +559,6 @@ bool edc_session_manager_switch(struct edc_session_manager *sm, const char *name
     struct edc_session *old = edc_session_manager_get_active(sm);
     if (old)
     {
-        edc_session_save_history(old);
         sdsfree(old->last_active);
         old->last_active = edc_datetime_timestamp();
     }
@@ -657,7 +595,6 @@ bool edc_session_manager_stop(struct edc_session_manager *sm, const char *name_o
     struct edc_session *to_stop = sm->sessions[idx];
 
     /* Save history one final time */
-    edc_session_save_history(to_stop);
     edc_session_save_state(to_stop, NULL);
 
     /* Remove from array */
@@ -750,7 +687,6 @@ void edc_session_manager_save_all(struct edc_session_manager *sm)
     /* Save active session's history */
     struct edc_session *active = edc_session_manager_get_active(sm);
     if (active)
-        edc_session_save_history(active);
 
     /* Save index */
     edc_sm_save_index(sm);

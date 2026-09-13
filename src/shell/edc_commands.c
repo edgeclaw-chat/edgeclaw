@@ -152,7 +152,6 @@ static bool edc_commands_handle_session_save(struct edc_agent *agent, edc_actor_
         return true;
     }
 
-    edc_session_save_history(active);
     edc_session_save_state(active, agent->scheduler);
     edc_commands_reply(agent, actor, channel_type, "**Session saved** — history and state persisted.");
     log_info("receive /session save command");
@@ -249,24 +248,12 @@ static bool edc_commands_handle_session_new(struct edc_agent *agent, edc_actor_t
      * 不能用 save_session 回调, 它保存的是已经被 create 切过去的 "当前" session。 */
     if (old && old != sess)
     {
-        edc_session_save_history(old);
         edc_session_save_state(old, agent->scheduler);
     }
     edc_scheduler_set_session(agent->scheduler, sess);
     /* 全新 session: 内存状态即权威, 标记已加载, 避免日后切回时被（此时可能
-     * 已存在的）session.json 反序列化覆盖。edc_session_new 已装配好 messages
-     * (system prompt), 无需再 reload。 */
+     * 已存在的）session.json 反序列化覆盖。 */
     sess->state_loaded = true;
-
-    /* 新建 session 时把历史压进长期记忆 (MEMORY.md / HISTORY.md, force=true)。
-     * 这是原 /new 命令的职责 —— 该命令已删除, 由 /session new 承接, 否则全局
-     * 记忆压缩将再无运行时触发点。 */
-    if (!edc_memory_actor_is_compressing(agent->memory_actor))
-    {
-        edc_actor_send(agent->memory_actor,
-                       edc_actor_msg_new(BC_ACTOR_MSG_MEMORY_COMPRESS, edc_scheduler_get_actor(agent->scheduler), NULL,
-                                         (void *)(intptr_t)1, NULL));
-    }
 
     sds reply = sdscatprintf(sdsempty(), "**Session created** — `[%s]` %s  ·  workdir: `%s`", sess->session_id,
                              edc_session_get_name(sess), bound ? bound : "default");
@@ -306,7 +293,6 @@ static bool edc_commands_handle_session_switch(struct edc_agent *agent, edc_acto
      * 推进, 先保证已产生的内容持久 (前台组已随 session 落盘, 不再丢失)。 */
     if (old)
     {
-        edc_session_save_history(old);
         edc_session_save_state(old, agent->scheduler);
     }
 
@@ -947,8 +933,19 @@ static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *
     sdsfreesplitres(tokens, count);
 
     size_t fork_point = parent->group ? (size_t)cJSON_GetArraySize(parent->group->history) : 0;
+    /* fork 点用"提交序水位"表达: 父组中已提交成员的最大 completion_seq。 */
+    uint32_t fork_point_seq = 0;
+    if (parent->group)
+    {
+        struct edc_task *m;
+        LL_FOREACH2(parent->group->members, m, group_next)
+        {
+            if (m->completion_seq > fork_point_seq)
+                fork_point_seq = m->completion_seq;
+        }
+    }
     char *fork_tid = edc_scheduler_gen_task_id(agent->scheduler);
-    struct edc_task *child = edc_task_fork(parent, fork_tid, desc, fork_point, channel_type);
+    struct edc_task *child = edc_task_fork(parent, fork_tid, desc, fork_point_seq, channel_type);
     free(fork_tid);
     if (prompt_name)
         edc_task_set_prompt(child, prompt_name, NULL);
@@ -969,8 +966,8 @@ static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *
         if (sys)
             cJSON_AddItemToArray(child_group->history, cJSON_Duplicate(sys, 1));
 
-        /* 合成 turn: 深拷贝父 group 未折叠消息 [1+fold_cursor .. fork_point) */
-        size_t snap_begin = 1 + parent->group->fold_cursor;
+        /* 合成 turn: 深拷贝父 group 未折叠消息 [1+已折叠数 .. fork_point) */
+        size_t snap_begin = 1 + edc_task_group_folded_msg_count(parent->group);
         struct edc_turn *snap = NULL;
 
         if (parent->turns_folded)
@@ -981,7 +978,7 @@ static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *
         }
         else
         {
-            /* 规则 1: 未折叠区间 [1+fold_cursor, fork_point) 作为快照 */
+            /* 规则 1: 未折叠区间 [1+已折叠数, fork_point) 作为快照 */
             snap = edc_turn_new();
             snap->task_id = strdup(child->task_id);
             if (snap_begin > fork_point)

@@ -42,7 +42,6 @@ struct edc_session
      * 绝不能再 load_state —— 否则会用磁盘副本覆盖正在后台执行的活动对象。 */
     bool state_loaded;
 
-    cJSON *messages; /* 仅持有 system prompt; 对话消息归属各 turn */
     struct edc_config *config;
 
     sds history_dir; /* workspace/<session_id> — 按 session 存历史 */
@@ -103,12 +102,9 @@ extern void edc_session_reset(struct edc_session *session);
 /** Get the display name (falls back to session_id). */
 extern const char *edc_session_get_name(struct edc_session *session);
 
-/* ── 消息 / 历史 (不变签名) ───────────────────────────────── */
+/* ── 消息 / 历史 ───────────────────────────────────────────── */
 
-extern void edc_session_add_turn(struct edc_session *sess, struct edc_turn *turn);
-extern cJSON *edc_session_get_messages(struct edc_session *session);
 extern size_t edc_session_get_message_count(struct edc_session *session);
-extern bool edc_session_save_history(struct edc_session *session);
 
 /* ── Phase 4 新增: Task/Group 管理 ──────────────────────────── */
 
@@ -117,12 +113,15 @@ extern void edc_session_remove_group(struct edc_session *session, struct edc_tas
 extern struct edc_task_group *edc_session_find_group(struct edc_session *session, const char *group_id);
 extern struct edc_task *edc_session_find_task(struct edc_session *session, const char *task_id);
 
+/* ── system task: 承载无主/会话级消息 ────────────────────────
+ * 惰性创建: 只有在真有无主消息要落位时才建 ("system" group + "system" task,
+ * is_system=true), 不参与调度与折叠。 */
+extern struct edc_task *edc_session_get_or_create_system_task(struct edc_session *session);
+/* 把一条无主消息放进 system task 的回合 (不存在则新建); 接管 |msg| 所有权。 */
+extern void edc_session_add_system_message(struct edc_session *session, cJSON *msg);
+
 extern void edc_session_set_active_task(struct edc_session *session, struct edc_task *task);
 extern struct edc_task *edc_session_get_active_task(struct edc_session *session);
-
-/* ── Phase 4 新增: 消息切片 (fork 上下文) ──────────────────── */
-
-extern cJSON *edc_session_get_messages_slice(struct edc_session *session, size_t from, size_t count);
 
 /* ── Phase 2: 完整状态持久化 ───────────────────────────────── */
 
@@ -130,13 +129,11 @@ struct edc_scheduler;
 
 /** Save complete session state to workspace/<session_id>/session.json.
  *  Atomic: writes to .tmp then rename().
- *  Prerequisite: edc_session_save_history() should be called first.
  *  Returns true on success. */
 extern bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *sched);
 
 /** Load session state from workspace/<session_id>/session.json.
  *  Rebuilds all groups, tasks, turns, and dependencies.
- *  Prerequisite: session->messages must already be loaded.
  *  Returns true on success, false if file missing or corrupt. */
 extern bool edc_session_load_state(struct edc_session *session, struct edc_scheduler *sched);
 

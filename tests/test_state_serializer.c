@@ -53,8 +53,6 @@ static void turn_add_msg(struct edc_turn *turn, const char *role, const char *co
     cJSON_AddStringToObject(msg, "role", role);
     cJSON_AddStringToObject(msg, "content", content);
     edc_queue_push(&turn->messages, msg);
-    /* add a dummy timestamp too */
-    edc_queue_push(&turn->timestamps, sdsnew("2026-01-01T00:00:00"));
 }
 
 /* ── Helper: count tasks in a session (across all groups) ── */
@@ -304,7 +302,7 @@ static void test_fork_chain(void)
     CHECK(rc1->forked_from == rp, "child1->forked_from == parent");
     CHECK(rc2->forked_from == rp, "child2->forked_from == parent");
     CHECK(rp->forked_from == NULL, "parent has no forked_from");
-    CHECK(rc1->fork_point_msg_count == 10, "fork_point_msg_count preserved");
+    CHECK(rc1->fork_point_completion_seq == 10, "fork_point_completion_seq preserved");
 
     /* Verify states */
     CHECK(rp->state == TASK_COMPLETED, "parent COMPLETED");
@@ -904,12 +902,12 @@ static void test_active_turn(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Test 9: todolist, prompt, redirect fields
+ *  Test 9: todos, prompt, redirect fields
  *  ══════════════════════════════════════════════════════════════ */
 
 static void test_extra_fields(void)
 {
-    TEST("todolist, prompt, redirect roundtrip");
+    TEST("todos, prompt, redirect roundtrip");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-extra", "Extra");
@@ -931,18 +929,18 @@ static void test_extra_fields(void)
     task->redirect_stderr = sdsnew("/tmp/err.log");
     task->redirect_append = true;
 
-    /* Set todolist */
-    task->todolist = cJSON_CreateArray();
+    /* Set todos */
+    task->todos = cJSON_CreateArray();
     cJSON *item1 = cJSON_CreateObject();
     cJSON_AddStringToObject(item1, "content", "review code");
     cJSON_AddStringToObject(item1, "status", "completed");
     cJSON_AddStringToObject(item1, "priority", "low");
-    cJSON_AddItemToArray(task->todolist, item1);
+    cJSON_AddItemToArray(task->todos, item1);
     cJSON *item2 = cJSON_CreateObject();
     cJSON_AddStringToObject(item2, "content", "write tests");
     cJSON_AddStringToObject(item2, "status", "in_progress");
     cJSON_AddStringToObject(item2, "priority", "high");
-    cJSON_AddItemToArray(task->todolist, item2);
+    cJSON_AddItemToArray(task->todos, item2);
 
     /* Set todo sync throttle gap (距上次 todowrite 的 LLM 请求数) */
     task->todo_sync_gap = 7;
@@ -972,14 +970,14 @@ static void test_extra_fields(void)
     CHECK_STREQ(rt->redirect_stderr, "/tmp/err.log", "redirect_stderr preserved");
     CHECK(rt->redirect_append == true, "redirect_append preserved");
 
-    /* Verify todolist */
-    CHECK(rt->todolist != NULL, "todolist restored");
-    CHECK(cJSON_GetArraySize(rt->todolist) == 2, "todolist has 2 items");
-    cJSON *ri1 = cJSON_GetArrayItem(rt->todolist, 0);
+    /* Verify todos */
+    CHECK(rt->todos != NULL, "todos restored");
+    CHECK(cJSON_GetArraySize(rt->todos) == 2, "todos has 2 items");
+    cJSON *ri1 = cJSON_GetArrayItem(rt->todos, 0);
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(ri1, "content")),
-                "review code", "todolist item1 content");
+                "review code", "todos item1 content");
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(ri1, "status")),
-                "completed", "todolist item1 status");
+                "completed", "todos item1 status");
 
     /* Verify todo sync throttle gap */
     CHECK(rt->todo_sync_gap == 7, "todo_sync_gap preserved");
@@ -1077,7 +1075,7 @@ static void test_malformed_inputs(void)
         "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
         "     \"description\":\"task 1\",\"state\":\"COMPLETED\","
         "     \"is_group_leader\":true,\"auto_reap\":false,"
-        "     \"fork_point_msg_count\":0,\"completion_seq\":0,"
+        "     \"fork_point_completion_seq\":0,\"completion_seq\":0,"
         "     \"redirect_append\":false,"
         "     \"deps\":[{\"source_task_id\":\"NOBODY\",\"type\":\"JOIN\","
         "                \"completed\":false,\"cancelled\":false,\"injected\":false}],"
@@ -1102,7 +1100,7 @@ static void test_malformed_inputs(void)
         "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
         "     \"description\":\"task 1\",\"state\":\"COMPLETED\","
         "     \"is_group_leader\":true,\"auto_reap\":false,"
-        "     \"fork_point_msg_count\":0,\"completion_seq\":0,"
+        "     \"fork_point_completion_seq\":0,\"completion_seq\":0,"
         "     \"redirect_append\":false,"
         "     \"deps\":[],\"turns\":[]}"
         "  ]"
@@ -1125,7 +1123,7 @@ static void test_malformed_inputs(void)
         "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
         "     \"description\":\"task 1\",\"state\":\"COMPLETED\","
         "     \"is_group_leader\":true,\"auto_reap\":false,"
-        "     \"fork_point_msg_count\":0,\"completion_seq\":0,"
+        "     \"fork_point_completion_seq\":0,\"completion_seq\":0,"
         "     \"redirect_append\":false,"
         "     \"deps\":[],"
         "     \"turns\":[{\"turn_index\":0,\"message_start\":999,\"message_count\":5}]}"
@@ -1146,7 +1144,7 @@ static void test_malformed_inputs(void)
         "    {\"task_id\":\"\",\"group_id\":\"g1\",\"session_id\":\"s\","
         "     \"description\":\"\",\"state\":\"COMPLETED\","
         "     \"is_group_leader\":false,\"auto_reap\":false,"
-        "     \"fork_point_msg_count\":0,\"completion_seq\":0,"
+        "     \"fork_point_completion_seq\":0,\"completion_seq\":0,"
         "     \"redirect_append\":false,\"deps\":[],\"turns\":[]}"
         "  ]"
         "}";
@@ -1166,112 +1164,59 @@ static void test_malformed_inputs(void)
 
 static void test_compact_messages(void)
 {
-    TEST("compact message reference (messages in session->messages)");
+    TEST("single inline mode: turn embeds its messages");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-cpt", "Compact");
     struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
 
-    /* Build turn messages that also exist in session->messages.
-     * We add messages to session->messages first, then add the SAME
-     * pointers to a turn via cJSON_AddItemReferenceToArray
-     * (which doesn't take ownership).  This simulates what happens
-     * when edc_session_add_turn moves messages from turn to session. */
-
-    struct edc_task *task = edc_task_new("t-cpt", "sess-cpt", "t-cpt",
-                                          "compact test", edc_channel_adapter);
+    struct edc_task *task = edc_task_new("t-cpt", "sess-cpt", "t-cpt", "inline test", edc_channel_adapter);
     task->is_group_leader = 1;
     edc_task_set_state(task, TASK_WAITING_INPUT);
     edc_task_set_state(task, TASK_LLM_PROCESSING);
     edc_task_set_state(task, TASK_COMPLETED);
 
-    /* Create messages and add to session->messages */
-    cJSON *msg1 = cJSON_CreateObject();
-    cJSON_AddStringToObject(msg1, "role", "user");
-    cJSON_AddStringToObject(msg1, "content", "compact query");
-    cJSON_AddItemToArray(session->messages, msg1);
-
-    cJSON *msg2 = cJSON_CreateObject();
-    cJSON_AddStringToObject(msg2, "role", "assistant");
-    cJSON_AddStringToObject(msg2, "content", "compact answer");
-    cJSON_AddItemToArray(session->messages, msg2);
-
-    /* Build turn with references to the same objects */
+    /* The turn owns its messages (single inline mode). */
     struct edc_turn *turn = edc_turn_new();
     turn->task_id = strdup("t-cpt");
-    /* Push references (not owned by turn) */
-    edc_queue_push(&turn->messages, msg1);
-    edc_queue_push(&turn->messages, msg2);
-    edc_queue_push(&turn->timestamps, sdsnew("2026-01-01T00:00:00"));
-    edc_queue_push(&turn->timestamps, sdsnew("2026-01-01T00:00:01"));
+    edc_turn_add_user_message(turn, "compact query");
+    cJSON *am = cJSON_CreateObject();
+    cJSON_AddStringToObject(am, "role", "assistant");
+    cJSON_AddStringToObject(am, "content", "compact answer");
+    edc_turn_add_assistant_message(turn, am);
     edc_task_add_turn(task, turn);
 
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(session, group);
 
-    /* SERIALIZE — should take compact path (pointer match) */
     cJSON *json = edc_state_serialize(session, sched);
-    CHECK(json != NULL, "serialize succeeds with compact path");
+    CHECK(json != NULL, "serialize succeeds");
 
-    /* Verify compact mode was used */
-    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
-    cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
-    cJSON *turns_j = cJSON_GetObjectItem(t0, "turns");
-    cJSON *turn_j = cJSON_GetArrayItem(turns_j, 0);
-
-    cJSON *embedded  = cJSON_GetObjectItem(turn_j, "messages");
-    cJSON *msg_start = cJSON_GetObjectItem(turn_j, "message_start");
-    cJSON *msg_count = cJSON_GetObjectItem(turn_j, "message_count");
+    cJSON *t0 = cJSON_GetArrayItem(cJSON_GetObjectItem(json, "tasks"), 0);
+    cJSON *turn_j = cJSON_GetArrayItem(cJSON_GetObjectItem(t0, "turns"), 0);
+    cJSON *embedded = cJSON_GetObjectItem(turn_j, "messages");
 
     /* v2 单一模式: 一律内联 messages, 不再有 start/count */
     CHECK(embedded != NULL, "single mode: embedded messages array");
     CHECK(cJSON_GetArraySize(embedded) == 2, "embedded 2 messages");
-    CHECK(msg_start == NULL, "single mode: no message_start");
-    CHECK(msg_count == NULL, "single mode: no message_count");
+    CHECK(cJSON_GetObjectItem(turn_j, "message_start") == NULL, "single mode: no message_start");
+    CHECK(cJSON_GetObjectItem(turn_j, "message_count") == NULL, "single mode: no message_count");
 
-    /* DESERIALIZE — need matching messages in target session */
     struct edc_session *session2 = edc_session_new(cfg, "sess-cpt", "Compact");
     struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
-
-    /* Put identical-content messages at the same positions in session2 */
-    cJSON *msg1b = cJSON_CreateObject();
-    cJSON_AddStringToObject(msg1b, "role", "user");
-    cJSON_AddStringToObject(msg1b, "content", "compact query");
-    cJSON_AddItemToArray(session2->messages, msg1b);
-
-    cJSON *msg2b = cJSON_CreateObject();
-    cJSON_AddStringToObject(msg2b, "role", "assistant");
-    cJSON_AddStringToObject(msg2b, "content", "compact answer");
-    cJSON_AddItemToArray(session2->messages, msg2b);
-
     bool ok = edc_state_deserialize(json, session2, sched2);
-    CHECK(ok, "deserialize succeeds from compact mode");
+    CHECK(ok, "deserialize succeeds");
 
     struct edc_task *rt = find_task(session2, "t-cpt");
-    CHECK(rt != NULL, "task restored from compact mode");
-    CHECK(edc_queue_length(&rt->turns) == 1, "1 turn from compact mode");
+    CHECK(rt != NULL, "task restored");
+    CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
 
     struct edc_turn *rturn = (struct edc_turn *)rt->turns.data[rt->turns.head];
-    CHECK(edc_queue_length(&rturn->messages) == 2, "2 messages from compact range");
+    CHECK(edc_queue_length(&rturn->messages) == 2, "2 messages restored");
 
     cJSON *m0 = (cJSON *)rturn->messages.data[rturn->messages.head];
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")),
-                "compact query", "msg0 content correct in compact roundtrip");
-
-    /* Cleanup: clear turn queues manually to avoid double-free
-     * (msg1/msg2 are owned by session->messages, not by turn) */
-    while (edc_queue_length(&turn->messages) > 0)
-        edc_queue_pop(&turn->messages);
-    while (edc_queue_length(&turn->timestamps) > 0)
-        sdsfree((sds)edc_queue_pop(&turn->timestamps));
-    /* Also clear task->turns to prevent edc_task_free from freeing the turn */
-    while (edc_queue_length(&task->turns) > 0) {
-        struct edc_turn *t = edc_queue_pop(&task->turns);
-        while (edc_queue_length(&t->messages) > 0) edc_queue_pop(&t->messages);
-        while (edc_queue_length(&t->timestamps) > 0) sdsfree(edc_queue_pop(&t->timestamps));
-        free(t->task_id);
-        free(t);
-    }
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "compact query",
+                "msg0 content correct");
 
     cJSON_Delete(json);
     edc_session_free(session);
@@ -1479,7 +1424,7 @@ static void test_fork_new_group_snapshot(void)
     if (psys)
         cJSON_AddItemToArray(cg->history, cJSON_Duplicate(psys, 1));
 
-    size_t snap_begin = 1 + pg->fold_cursor;
+    size_t snap_begin = 1 + edc_task_group_folded_msg_count(pg);
     struct edc_turn *snap = edc_turn_new();
     snap->task_id = strdup(child->task_id);
     for (size_t i = snap_begin; i < fork_point; i++)
@@ -1612,6 +1557,228 @@ static void test_fork_snapshot_turns_unflushed(void)
     edc_config_free(cfg);
 }
 
+/* ══════════════════════════════════════════════════════════════
+ *  v3: message provenance (ts + render) persists across a roundtrip
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_message_provenance(void)
+{
+    TEST("message ts/render persist across roundtrip");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-prov", "Prov");
+    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+
+    struct edc_task *task = edc_task_new("tp", "sess-prov", "tp", "d", edc_channel_adapter);
+    edc_task_set_state(task, TASK_WAITING_INPUT); /* serialize skips IDLE tasks */
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup("tp");
+    /* Real creation path: edc_turn_add_user_message stamps ts + render. */
+    edc_turn_add_user_message(turn, "hi");
+    edc_task_add_turn(task, turn);
+    struct edc_task_group *group = edc_task_group_new(task);
+    edc_session_add_group(session, group);
+
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize");
+
+    cJSON *t0 = cJSON_GetArrayItem(cJSON_GetObjectItem(json, "tasks"), 0);
+    CHECK(t0 != NULL, "task serialized");
+    cJSON *turn0 = t0 ? cJSON_GetArrayItem(cJSON_GetObjectItem(t0, "turns"), 0) : NULL;
+    cJSON *m0 = turn0 ? cJSON_GetArrayItem(cJSON_GetObjectItem(turn0, "messages"), 0) : NULL;
+    CHECK(m0 != NULL, "message serialized");
+    CHECK(m0 && cJSON_GetObjectItem(m0, "ts") != NULL, "ts serialized");
+    CHECK(m0 && cJSON_IsString(cJSON_GetObjectItem(m0, "ts")), "ts is a string");
+    CHECK_STREQ(m0 ? cJSON_GetStringValue(cJSON_GetObjectItem(m0, "render")) : NULL, "plain",
+                "render serialized (default plain)");
+
+    struct edc_session *s2 = edc_session_new(cfg, "sess-prov", "Prov");
+    struct edc_scheduler *sched2 = edc_scheduler_new(s2, cfg);
+    CHECK(edc_state_deserialize(json, s2, sched2), "deserialize");
+
+    struct edc_task *rt = find_task(s2, "tp");
+    CHECK(rt != NULL, "task restored");
+    struct edc_turn *rturn = rt ? (struct edc_turn *)rt->turns.data[rt->turns.head] : NULL;
+    cJSON *rm = rturn ? (cJSON *)rturn->messages.data[rturn->messages.head] : NULL;
+    CHECK(rm && cJSON_GetObjectItem(rm, "ts") != NULL, "ts roundtrips");
+    CHECK_STREQ(rm ? cJSON_GetStringValue(cJSON_GetObjectItem(rm, "render")) : NULL, "plain", "render roundtrips");
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(s2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  v3: fold watermark (completion_seq) — serialize + v2 derivation
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_fold_watermark(void)
+{
+    TEST("fold watermark (completion_seq) roundtrip + v2 derivation");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-fold", "Fold");
+    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+
+    /* t1 (completion_seq=1) folded; t2 (completion_seq=2) not folded. */
+    struct edc_task *t1 = edc_task_new("t1", "sess-fold", "t1", "one", edc_channel_adapter);
+    edc_task_set_state(t1, TASK_WAITING_INPUT);
+    edc_task_set_state(t1, TASK_LLM_PROCESSING);
+    edc_task_set_state(t1, TASK_COMPLETED);
+    t1->completion_seq = 1;
+    t1->turns_folded = true;
+    struct edc_turn *turn1 = edc_turn_new();
+    turn1->task_id = strdup("t1");
+    turn_add_msg(turn1, "user", "a");
+    turn_add_msg(turn1, "assistant", "b");
+    edc_task_add_turn(t1, turn1);
+
+    struct edc_task_group *group = edc_task_group_new(t1);
+    edc_session_add_group(session, group);
+
+    struct edc_task *t2 = edc_task_new("t2", "sess-fold", "t1", "two", edc_channel_adapter);
+    edc_task_set_state(t2, TASK_WAITING_INPUT);
+    edc_task_set_state(t2, TASK_LLM_PROCESSING);
+    edc_task_set_state(t2, TASK_COMPLETED);
+    t2->completion_seq = 2;
+    struct edc_turn *turn2 = edc_turn_new();
+    turn2->task_id = strdup("t2");
+    turn_add_msg(turn2, "user", "c");
+    edc_task_add_turn(t2, turn2);
+    edc_task_group_add_task(group, t2);
+
+    group->folded_through_completion_seq = 1;
+    session->next_completion_seq = 3;
+
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize");
+    cJSON *gj = cJSON_GetArrayItem(cJSON_GetObjectItem(json, "groups"), 0);
+    CHECK(gj != NULL, "group serialized");
+    cJSON *fw = gj ? cJSON_GetObjectItem(gj, "folded_through_completion_seq") : NULL;
+    CHECK(fw && cJSON_GetNumberValue(fw) == 1, "watermark serialized = 1");
+
+    /* (a) v3 file: watermark read back verbatim. */
+    struct edc_session *s2 = edc_session_new(cfg, "sess-fold", "Fold");
+    struct edc_scheduler *sched2 = edc_scheduler_new(s2, cfg);
+    CHECK(edc_state_deserialize(json, s2, sched2), "deserialize v3");
+    struct edc_task_group *g2 = find_group(s2, "t1");
+    CHECK(g2 != NULL, "group restored");
+    if (g2)
+    {
+        CHECK(g2->folded_through_completion_seq == 1, "watermark preserved");
+        CHECK(edc_task_group_folded_msg_count(g2) == 2, "folded prefix = 2 msgs");
+        CHECK(edc_task_group_unfolded_msg_count(g2) == 1, "unfolded = 1 msg");
+    }
+
+    /* (b) v2 file: no watermark key, derive it from per-task turns_folded. */
+    cJSON_DeleteItemFromObject(gj, "folded_through_completion_seq");
+    struct edc_session *s3 = edc_session_new(cfg, "sess-fold", "Fold");
+    struct edc_scheduler *sched3 = edc_scheduler_new(s3, cfg);
+    CHECK(edc_state_deserialize(json, s3, sched3), "deserialize v2 (no watermark)");
+    struct edc_task_group *g3 = find_group(s3, "t1");
+    CHECK(g3 != NULL, "group restored (v2)");
+    if (g3)
+    {
+        CHECK(g3->folded_through_completion_seq == 1, "watermark derived from turns_folded");
+        CHECK(edc_task_group_folded_msg_count(g3) == 2, "derived folded prefix = 2 msgs");
+        CHECK(edc_task_group_unfolded_msg_count(g3) == 1, "derived unfolded = 1 msg");
+    }
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(s2);
+    edc_scheduler_free(sched2);
+    edc_session_free(s3);
+    edc_scheduler_free(sched3);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  v3: system task carries orphan messages
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_system_task(void)
+{
+    TEST("system task carries orphan messages (lazy, persisted)");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-sys", "Sys");
+    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+
+    /* Lazily absent until a message needs a home. */
+    CHECK(edc_session_find_task(session, "system") == NULL, "no system task initially");
+    CHECK(count_groups(session) == 0, "no groups initially");
+
+    cJSON *m1 = cJSON_CreateObject();
+    cJSON_AddStringToObject(m1, "role", "system");
+    cJSON_AddStringToObject(m1, "content", "legacy note");
+    edc_session_add_system_message(session, m1);
+
+    struct edc_task *st = edc_session_find_task(session, "system");
+    CHECK(st != NULL, "system task created on demand");
+    if (st)
+    {
+        CHECK(st->is_system == 1, "is_system set");
+        CHECK(st->state == TASK_IDLE, "system task stays IDLE");
+        CHECK(count_groups(session) == 1, "system group created");
+        CHECK(st->active_turn && edc_queue_length(&st->active_turn->messages) == 1, "1 orphan message");
+        CHECK(edc_task_is_foldable(st) == false, "system task is never foldable");
+    }
+
+    cJSON *m2 = cJSON_CreateObject();
+    cJSON_AddStringToObject(m2, "role", "user");
+    cJSON_AddStringToObject(m2, "content", "another orphan");
+    edc_session_add_system_message(session, m2);
+    st = edc_session_find_task(session, "system");
+    CHECK(st && st->active_turn && edc_queue_length(&st->active_turn->messages) == 2, "2 orphan messages");
+    CHECK(edc_session_get_or_create_system_task(session) == st, "get_or_create is idempotent");
+
+    /* Serialize: the IDLE system task must survive the IDLE filter. */
+    cJSON *json = edc_state_serialize(session, sched);
+    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
+    CHECK(cJSON_GetArraySize(tasks_j) == 1, "system task serialized despite IDLE");
+    cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
+    CHECK(cJSON_IsTrue(cJSON_GetObjectItem(t0, "is_system")), "is_system serialized");
+
+    /* A plain IDLE task is still filtered out. */
+    struct edc_task *idle = edc_task_new("idle-1", "sess-sys", "idle-1", "idle", edc_channel_adapter);
+    struct edc_task_group *ig = edc_task_group_new(idle);
+    edc_session_add_group(session, ig);
+    cJSON *json2 = edc_state_serialize(session, sched);
+    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(json2, "tasks")) == 1, "plain IDLE task still filtered");
+    cJSON_Delete(json2);
+    edc_session_remove_group(session, ig);
+    edc_task_group_free(ig);
+
+    /* Roundtrip. */
+    struct edc_session *s2 = edc_session_new(cfg, "sess-sys", "Sys");
+    struct edc_scheduler *sched2 = edc_scheduler_new(s2, cfg);
+    CHECK(edc_state_deserialize(json, s2, sched2), "deserialize");
+
+    struct edc_task *rst = edc_session_find_task(s2, "system");
+    CHECK(rst != NULL, "system task restored");
+    if (rst)
+    {
+        CHECK(rst->is_system == 1, "is_system restored");
+        CHECK(rst->active_turn != NULL, "active turn restored");
+        CHECK(rst->active_turn && edc_queue_length(&rst->active_turn->messages) == 2, "2 messages restored");
+        /* 消息归属 active_turn (未提交), 不进 group 历史 —— 与运行时一致。 */
+        CHECK(rst->group && cJSON_GetArraySize(rst->group->history) == 1,
+              "system group history = prompt only (messages stay in the turn)");
+    }
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(s2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     log_info("=== Phase 1: edc_state_serializer module tests ===");
@@ -1637,6 +1804,9 @@ int main(void)
     test_compact_messages();
     test_empty_turn();
     test_orphaned_group();
+    test_message_provenance();
+    test_fold_watermark();
+    test_system_task();
 
     log_info("");
     log_info("=== Results: %d passed, %d failed ===", test_passed, test_failed);

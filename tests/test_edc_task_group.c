@@ -227,51 +227,29 @@ static cJSON *mk_msg(const char *role, const char *content)
     return m;
 }
 
-static void test_history_ownership(void)
+static void test_history_append(void)
 {
-    TEST("history append records task ownership aligned with history[]");
+    TEST("history append (_owned / _ref)");
     struct edc_task *leader = edc_task_new("task-HL", "sess-8", "task-HL", "hist leader", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(leader);
 
-    /* 组 system prompt: 无主 (NULL) */
-    edc_task_group_history_add_owned(g, mk_msg("system", "group prompt"), NULL);
-
     /* _owned: 接管所有权 (新构造的消息) */
-    edc_task_group_history_add_owned(g, mk_msg("user", "hi"), "task-HL");
+    edc_task_group_history_add_owned(g, mk_msg("system", "group prompt"));
+    edc_task_group_history_add_owned(g, mk_msg("user", "hi"));
 
     /* _ref: 只存引用 (消息归 turn 所有) */
     cJSON *borrowed = mk_msg("assistant", "hello");
-    edc_task_group_history_add_ref(g, borrowed, "task-HL");
+    edc_task_group_history_add_ref(g, borrowed);
 
-    /* 另一个 task 的消息, 归属各不相同 */
     cJSON *borrowed2 = mk_msg("user", "second");
-    edc_task_group_history_add_ref(g, borrowed2, "task-HM");
+    edc_task_group_history_add_ref(g, borrowed2);
 
     CHECK(cJSON_GetArraySize(g->history) == 4, "history has 4 entries");
-    CHECK(edc_task_group_history_task_id(g, 0) == NULL, "system prompt has no owner");
-    CHECK(edc_task_group_history_task_id(g, 1) != NULL &&
-              strcmp(edc_task_group_history_task_id(g, 1), "task-HL") == 0,
-          "entry 1 owned by task-HL");
-    CHECK(edc_task_group_history_task_id(g, 2) != NULL &&
-              strcmp(edc_task_group_history_task_id(g, 2), "task-HL") == 0,
-          "entry 2 owned by task-HL");
-    CHECK(edc_task_group_history_task_id(g, 3) != NULL &&
-              strcmp(edc_task_group_history_task_id(g, 3), "task-HM") == 0,
-          "entry 3 owned by task-HM");
-    CHECK(edc_task_group_history_task_id(g, 4) == NULL, "out-of-range returns NULL");
-    CHECK(edc_task_group_history_task_id(g, 0) == NULL, "entry 0 (system) has no owner");
 
-    TEST("history ownership survives growth past initial capacity");
+    TEST("history survives growth past initial capacity");
     for (int i = 0; i < 40; i++)
-    {
-        char tid[16];
-        snprintf(tid, sizeof(tid), "task-%d", i);
-        edc_task_group_history_add_owned(g, mk_msg("user", "x"), tid);
-    }
+        edc_task_group_history_add_owned(g, mk_msg("user", "x"));
     CHECK(cJSON_GetArraySize(g->history) == 44, "history grew to 44 entries");
-    CHECK(edc_task_group_history_task_id(g, 43) != NULL &&
-              strcmp(edc_task_group_history_task_id(g, 43), "task-39") == 0,
-          "last appended entry keeps its owner after array growth");
 
     /* borrowed 消息不被 group 释放, 单独回收 */
     edc_task_group_free(g);
@@ -292,7 +270,7 @@ int main(void)
     test_group_signals();
     test_status_queries();
     test_scenario_orphan();
-    test_history_ownership();
+    test_history_append();
 
     log_info("");
     log_info("=== 测试结果: %d passed, %d failed ===", test_passed, test_failed);

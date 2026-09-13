@@ -87,6 +87,7 @@ struct edc_task
 
     int is_group_leader; /* 是否是 group leader */
     int auto_reap;       /* 完成后自动回收 (前台输入任务) */
+    int is_system;       /* system task: 承载无主/会话级消息, 不参与调度 */
 
     struct edc_task_group *group; /* 所属 group */
 
@@ -117,7 +118,7 @@ struct edc_task
 
     edc_channel_type channel_type;
 
-    cJSON *todolist; /* JSON Array */
+    cJSON *todos; /* JSON Array */
 
     /* ── Todo 同步节流 ──
      * todo_sync_gap: 距上次 todowrite 成功调用以来的 LLM 请求数
@@ -130,7 +131,7 @@ struct edc_task
 
     /* ── Fork 上下文继承 ── */
     struct edc_task *forked_from; /* 父 task (NULL = 非 fork) */
-    size_t fork_point_msg_count;  /* fork 时刻父 group 消息总数 (仅元数据, 上下文切片由合成 turn 快照负责) */
+    uint32_t fork_point_completion_seq; /* fork 点: 父组的提交序水位 (仅元数据, 上下文切片由合成 turn 快照负责) */
 
     /* ── Subagent / Prompt 绑定 ── */
     sds prompt;      /* 自定义 system prompt (NULL = 用默认) */
@@ -165,7 +166,7 @@ struct edc_task
 extern struct edc_task *edc_task_new(const char *task_id, const char *session_id, const char *group_id,
                                      const char *desc, edc_channel_type channel_type);
 extern struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,
-                                      size_t fork_point_msg_count, edc_channel_type channel_type);
+                                      uint32_t fork_point_completion_seq, edc_channel_type channel_type);
 extern void edc_task_free(struct edc_task *task);
 
 /* ── fork 快照 ────────────────────────────────────────────── */
@@ -275,7 +276,7 @@ extern sds edc_task_get_output(struct edc_task *task);
 
 /** task 是否可折叠: 已完成且 turns 尚未折叠进 group memory */
 extern bool edc_task_is_foldable(struct edc_task *task);
-/** task 的已提交 turn 消息总数 (用于 fold_cursor 推进) */
+/** task 的已提交 turn 消息总数 (用于折叠水位推进) */
 extern size_t edc_task_turn_msg_count(struct edc_task *task);
 
 /* ── Prompt ────────────────────────────────────────────────── */

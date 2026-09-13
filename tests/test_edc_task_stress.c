@@ -419,7 +419,7 @@ static void test_deep_fork(void)
         children[i] = cur;
         CHECK(cur->forked_from == children[i-1], "fork chain link %d correct", i);
     }
-    CHECK(children[4]->fork_point_msg_count == 50, "leaf fork_point_msg_count = 50");
+    CHECK(children[4]->fork_point_completion_seq == 50, "leaf fork_point_completion_seq = 50");
 
     /* Free root (should free all via ownership? No - each is independent) */
     for (int i = 0; i < 5; i++) edc_task_free(children[i]);

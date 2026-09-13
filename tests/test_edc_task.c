@@ -39,7 +39,7 @@ static void test_lifecycle(void)
     CHECK(t->output == NULL, "output is NULL");
     CHECK(t->prompt == NULL, "prompt is NULL");
     CHECK(t->prompt_name == NULL, "prompt_name is NULL");
-    CHECK(t->todolist == NULL, "todolist is NULL");
+    CHECK(t->todos == NULL, "todos is NULL");
     CHECK(t->forked_from == NULL, "forked_from is NULL");
     edc_task_free(t);
 
@@ -67,7 +67,7 @@ static void test_fork(void)
     CHECK(strcmp(child->task_id, "task-child") == 0, "child has own task_id");
     CHECK(strcmp(child->description, "child task") == 0, "child has own description");
     CHECK(child->forked_from == parent, "forked_from set to parent");
-    CHECK(child->fork_point_msg_count == 42, "fork_point_msg_count set");
+    CHECK(child->fork_point_completion_seq == 42, "fork_point_completion_seq set");
     CHECK(child->state == TASK_WAITING_INPUT, "forked task starts at WAITING_INPUT");
 
     edc_task_free(parent);

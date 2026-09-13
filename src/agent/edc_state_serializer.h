@@ -7,26 +7,32 @@
 #include <stdbool.h>
 
 /* ─────────────────────────────────────────────────────────────
- *  Phase 1: Pure in-memory serialize / deserialize engine.
+ *  Pure in-memory serialize / deserialize engine.
  *
  *  edc_state_serialize()  converts a live session + scheduler
- *  into a self-contained cJSON tree.
+ *  into a self-contained cJSON tree (schema `version: 3`).
  *
  *  edc_state_deserialize() rebuilds all groups, tasks, turns,
  *  dependencies, and fork chains from that tree back into a
- *  (possibly fresh) session + scheduler.
+ *  (possibly fresh) session + scheduler.  `version: 2` files are
+ *  accepted and migrated in memory (missing keys fall back to
+ *  derived/legacy equivalents).
  *
  *  No file I/O — the caller owns the cJSON object and the
  *  rebuilt structures.
- *
- *  Turn messages are referenced by index into session->messages
- *  (the cJSON Array loaded from history.jsonl).
  * ───────────────────────────────────────────────────────────── */
+
+/**
+ * Schema version of a serialized tree.
+ *
+ * @return the `version` number, or 0 if the tree/field is missing or invalid.
+ */
+int edc_state_json_version(cJSON *json);
 
 /**
  * Serialize session + scheduler state into a cJSON tree.
  *
- * @param session   Must be non-NULL.  session->messages must be populated.
+ * @param session   Must be non-NULL.
  * @param sched     Unused (kept for call-site compatibility); the foreground
  *                  group lives on the session now.
  * @return          cJSON object (caller owns, must cJSON_Delete).
@@ -38,10 +44,10 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
  * Deserialize a cJSON tree back into live session + scheduler structures.
  *
  * All groups, tasks, turns, dependencies, and fork chains are rebuilt.
+ * Accepts `version` 2 (migrated in memory) and 3; other versions fail.
  *
  * @param json      cJSON tree from edc_state_serialize().
- * @param session   Target session.  session->messages MUST already
- *                  contain the messages array (loaded from history.jsonl).
+ * @param session   Target session.
  *                  Existing groups in the session are NOT freed —
  *                  the caller should start from a fresh session.
  * @param sched     Target scheduler (used to observe task ids for the

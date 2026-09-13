@@ -19,11 +19,8 @@ struct edc_task_group *edc_task_group_new(struct edc_task *leader)
     group->member_count = 1;
     group->is_orphaned = false;
     group->history = cJSON_CreateArray();
-    group->history_task_ids = NULL;
-    group->history_task_ids_count = 0;
-    group->history_task_ids_cap = 0;
     group->memory = NULL;
-    group->fold_cursor = 0;
+    group->folded_through_completion_seq = 0;
 
     leader->is_group_leader = 1;
     leader->group = group;
@@ -48,59 +45,29 @@ void edc_task_group_free(struct edc_task_group *group)
     free(group->group_id);
     if (group->history)
         cJSON_Delete(group->history);
-    if (group->history_task_ids)
-    {
-        for (size_t i = 0; i < group->history_task_ids_count; i++)
-        {
-            if (group->history_task_ids[i])
-                sdsfree(group->history_task_ids[i]);
-        }
-        free(group->history_task_ids);
-    }
     if (group->memory)
         sdsfree(group->memory);
     free(group);
 }
 
-/* ── 组历史 (含归属) ──────────────────────────────────────── */
+/* ── 组历史 ───────────────────────────────────────────────── */
 
-/* 记录归属: 扩容后追加, 与 history 下标对齐。 */
-static void group_history_record(struct edc_task_group *group, const char *task_id)
-{
-    if (group->history_task_ids_count == group->history_task_ids_cap)
-    {
-        size_t cap = group->history_task_ids_cap ? group->history_task_ids_cap * 2 : 8;
-        group->history_task_ids = realloc(group->history_task_ids, cap * sizeof(sds));
-        group->history_task_ids_cap = cap;
-    }
-    group->history_task_ids[group->history_task_ids_count++] = task_id ? sdsnew(task_id) : NULL;
-}
-
-void edc_task_group_history_add_owned(struct edc_task_group *group, cJSON *msg, const char *task_id)
+void edc_task_group_history_add_owned(struct edc_task_group *group, cJSON *msg)
 {
     if (!group || !msg)
         return;
     if (!group->history)
         group->history = cJSON_CreateArray();
     cJSON_AddItemToArray(group->history, msg);
-    group_history_record(group, task_id);
 }
 
-void edc_task_group_history_add_ref(struct edc_task_group *group, cJSON *msg, const char *task_id)
+void edc_task_group_history_add_ref(struct edc_task_group *group, cJSON *msg)
 {
     if (!group || !msg)
         return;
     if (!group->history)
         group->history = cJSON_CreateArray();
     cJSON_AddItemReferenceToArray(group->history, msg);
-    group_history_record(group, task_id);
-}
-
-const char *edc_task_group_history_task_id(struct edc_task_group *group, size_t index)
-{
-    if (!group || !group->history_task_ids || index >= group->history_task_ids_count)
-        return NULL;
-    return group->history_task_ids[index];
 }
 
 /* ── 成员管理 ──────────────────────────────────────────────── */
@@ -266,15 +233,32 @@ size_t edc_task_group_count_foldable(struct edc_task_group *group)
     return n;
 }
 
-size_t edc_task_group_unfolded_msg_count(struct edc_task_group *group)
+size_t edc_task_group_folded_msg_count(struct edc_task_group *group)
 {
-    if (!group || !group->history)
+    if (!group)
         return 0;
 
-    size_t total = cJSON_GetArraySize(group->history);
-    /* history[0] 是 system prompt, 不计入历史消息; 剩余减去已折叠消息 */
-    size_t hist_msgs = (total > 0) ? total - 1 : 0;
-    if (group->fold_cursor >= hist_msgs)
+    size_t n = 0;
+    struct edc_task *t;
+    LL_FOREACH2(group->members, t, group_next)
+    {
+        /* completion_seq == 0 的 task 尚未提交, 永不算已折叠。 */
+        if (t->completion_seq > 0 && t->completion_seq <= group->folded_through_completion_seq)
+            n += edc_task_turn_msg_count(t);
+    }
+    return n;
+}
+
+size_t edc_task_group_unfolded_msg_count(struct edc_task_group *group)
+{
+    if (!group)
         return 0;
-    return hist_msgs - group->fold_cursor;
+
+    size_t total = 0;
+    struct edc_task *t;
+    LL_FOREACH2(group->members, t, group_next)
+        total += edc_task_turn_msg_count(t);
+
+    size_t folded = edc_task_group_folded_msg_count(group);
+    return total > folded ? total - folded : 0;
 }

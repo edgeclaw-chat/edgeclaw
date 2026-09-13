@@ -97,16 +97,13 @@ static void test_exit_save(void)
     cJSON_AddStringToObject(um, "role", "user");
     cJSON_AddStringToObject(um, "content", "exit query");
     edc_queue_push(&turn->messages, um);
-    edc_queue_push(&turn->timestamps, sdsnew("2026-01-01T00:00:00"));
 
     cJSON *am = cJSON_CreateObject();
     cJSON_AddStringToObject(am, "role", "assistant");
     cJSON_AddStringToObject(am, "content", "exit answer");
     edc_queue_push(&turn->messages, am);
-    edc_queue_push(&turn->timestamps, sdsnew("2026-01-01T00:00:01"));
 
     /* Flush turn to session (simulating real flow) */
-    edc_session_add_turn(session, turn);
     edc_task_add_turn(t1, turn);
 
     struct edc_task_group *g1 = edc_task_group_new(t1);
@@ -114,8 +111,8 @@ static void test_exit_save(void)
     session->active_task = t1;
     edc_scheduler_set_foreground(sched, g1);
 
-    /* Simulate exit: save_history + save_state */
-    CHECK(edc_session_save_history(session), "save_history succeeds on exit");
+    /* Simulate exit: save_state */
+
     CHECK(edc_session_save_state(session, sched), "save_state succeeds on exit");
 
     /* Verify files: P4 起不再写 history.jsonl, session.json 自包含 */
@@ -160,8 +157,6 @@ static void test_startup_load(void)
         cJSON_AddStringToObject(um, "role", "user");
         cJSON_AddStringToObject(um, "content", "startup query");
         edc_queue_push(&turn->messages, um);
-        edc_queue_push(&turn->timestamps, sdsnew("2026-01-01T00:00:00"));
-        edc_session_add_turn(s1, turn);
         edc_task_add_turn(t1, turn);
 
         struct edc_task_group *g1 = edc_task_group_new(t1);
@@ -170,11 +165,8 @@ static void test_startup_load(void)
         s1->next_completion_seq = 100;
         edc_scheduler_set_foreground(sc1, g1);
 
-        edc_session_save_history(s1);
         edc_session_save_state(s1, sc1);
 
-        cJSON_Delete(s1->messages);
-        s1->messages = NULL;
         edc_session_free(s1);
         edc_scheduler_free(sc1);
     }
@@ -207,8 +199,6 @@ static void test_startup_load(void)
         CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(rm0, "content")),
                     "startup query", "message content correct");
 
-        cJSON_Delete(s2->messages);
-        s2->messages = NULL;
         edc_session_free(s2);
         edc_scheduler_free(sc2);
     }
@@ -246,7 +236,6 @@ static void test_switch_save(void)
     edc_scheduler_set_foreground(scA, gA);
 
     /* Save session A's state */
-    edc_session_save_history(sA);
     edc_session_save_state(sA, scA);
 
     /* Create session B (simulating switch) */
@@ -264,7 +253,6 @@ static void test_switch_save(void)
     struct edc_task_group *gB = edc_task_group_new(tB);
     edc_session_add_group(sB, gB);
 
-    edc_session_save_history(sB);
     edc_session_save_state(sB, scB);
 
     /* Verify session A's file still has correct data */
@@ -300,10 +288,6 @@ static void test_switch_save(void)
     CHECK_STREQ(rtB->output, "output from B", "session B output intact");
 
     /* Cleanup */
-    cJSON_Delete(sA->messages); sA->messages = NULL;
-    cJSON_Delete(sA2->messages); sA2->messages = NULL;
-    cJSON_Delete(sB->messages); sB->messages = NULL;
-    cJSON_Delete(sB2->messages); sB2->messages = NULL;
     edc_session_free(sA); edc_scheduler_free(scA);
     edc_session_free(sA2); edc_scheduler_free(scA2);
     edc_session_free(sB); edc_scheduler_free(scB);
@@ -355,10 +339,6 @@ static void test_switch_keeps_background_running(void)
     if (fresh)
         edc_task_free(fresh);
 
-    cJSON_Delete(sA->messages);
-    sA->messages = NULL;
-    cJSON_Delete(sB->messages);
-    sB->messages = NULL;
     edc_scheduler_free(sc);
     edc_session_free(sA);
     edc_session_free(sB);
@@ -416,11 +396,8 @@ static void test_repeated_cycle(void)
               "correct task count after cycle");
 
         /* Save and free */
-        edc_session_save_history(s);
         edc_session_save_state(s, sc);
 
-        cJSON_Delete(s->messages);
-        s->messages = NULL;
         edc_session_free(s);
         edc_scheduler_free(sc);
     }
@@ -436,7 +413,6 @@ static void test_repeated_cycle(void)
     CHECK(find_task(sf, "task-cycle1") != NULL, "cycle1 task exists");
     CHECK(find_task(sf, "task-cycle2") != NULL, "cycle2 task exists");
 
-    cJSON_Delete(sf->messages); sf->messages = NULL;
     edc_session_free(sf);
     edc_scheduler_free(scf);
     edc_config_free(cfg);
@@ -465,8 +441,6 @@ static void test_save_empty(void)
     CHECK(edc_session_load_state(s2, sc2), "load_state on empty session succeeds");
     CHECK(count_tasks(s2) == 0, "0 tasks");
 
-    cJSON_Delete(session->messages); session->messages = NULL;
-    cJSON_Delete(s2->messages); s2->messages = NULL;
     edc_session_free(session); edc_scheduler_free(sched);
     edc_session_free(s2); edc_scheduler_free(sc2);
     edc_config_free(cfg);
@@ -502,18 +476,13 @@ static void test_missing_history(void)
         cJSON_AddStringToObject(um, "role", "user");
         cJSON_AddStringToObject(um, "content", "will be deleted");
         edc_queue_push(&turn->messages, um);
-        edc_queue_push(&turn->timestamps, sdsnew("2026-01-01T00:00:00"));
-        edc_session_add_turn(s, turn);
         edc_task_add_turn(t, turn);
 
         struct edc_task_group *g = edc_task_group_new(t);
         edc_session_add_group(s, g);
 
-        edc_session_save_history(s);
         edc_session_save_state(s, sc);
 
-        cJSON_Delete(s->messages);
-        s->messages = NULL;
         edc_session_free(s);
         edc_scheduler_free(sc);
     }
@@ -546,8 +515,6 @@ static void test_missing_history(void)
         CHECK(edc_queue_length(&rturn->messages) == 1,
               "turn keeps its 1 embedded message despite missing history");
 
-        cJSON_Delete(s2->messages);
-        s2->messages = NULL;
         edc_session_free(s2);
         edc_scheduler_free(sc2);
     }
@@ -589,19 +556,14 @@ static void test_truncated_history(void)
             snprintf(buf, sizeof(buf), "msg %d", i);
             cJSON_AddStringToObject(m, "content", buf);
             edc_queue_push(&turn->messages, m);
-            edc_queue_push(&turn->timestamps, sdsnew("2026-01-01T00:00:00"));
         }
-        edc_session_add_turn(s, turn);
         edc_task_add_turn(t, turn);
 
         struct edc_task_group *g = edc_task_group_new(t);
         edc_session_add_group(s, g);
 
-        edc_session_save_history(s);
         edc_session_save_state(s, sc);
 
-        cJSON_Delete(s->messages);
-        s->messages = NULL;
         edc_session_free(s);
         edc_scheduler_free(sc);
     }
@@ -623,8 +585,6 @@ static void test_truncated_history(void)
         CHECK(edc_queue_length(&rturn->messages) == 3,
               "turn keeps all 3 embedded messages despite truncated history");
 
-        cJSON_Delete(s2->messages);
-        s2->messages = NULL;
         edc_session_free(s2);
         edc_scheduler_free(sc2);
     }

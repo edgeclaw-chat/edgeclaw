@@ -1,16 +1,14 @@
-/* Task-id index (workspace/<session>/tasks.idx).
+/* Cross-session task-id index (v3: single source of truth = session.json).
  *
- * session.json is large (every turn embeds its messages), so cross-session
- * lookups must not parse it. save_state also writes a tiny tasks.idx listing the
- * session's task ids; the session manager resolves an unloaded session's task id
- * from that sidecar.
+ * v3 removed the per-session `tasks.idx` sidecar. The session manager builds the
+ * task_id → session_id index lazily by parsing each *unloaded* session's
+ * session.json once, then caches it in memory for the rest of the run.
  *
  * Verified here:
- *   a. save_state writes tasks.idx containing the task id;
- *   b. with session.json corrupted but tasks.idx present, the lookup still
- *      resolves the owner — proving it did NOT parse session.json;
- *   c. when tasks.idx is absent (old workspace), the lookup falls back to parsing
- *      session.json once and rewrites tasks.idx.
+ *   a. save_state writes NO tasks.idx (only session.json);
+ *   b. an unloaded session's task id resolves to its owner via session.json;
+ *   c. with session.json corrupt, the id cannot be resolved (returns NULL) —
+ *      there is no sidecar to fall back on any more.
  */
 
 #include "edc_agent.h"
@@ -67,21 +65,6 @@ static bool file_exists(const char *p)
     return false;
 }
 
-static char *read_all(const char *p)
-{
-    FILE *f = fopen(p, "rb");
-    if (!f)
-        return NULL;
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc((size_t)n + 1);
-    size_t rd = fread(buf, 1, (size_t)n, f);
-    fclose(f);
-    buf[rd] = '\0';
-    return buf;
-}
-
 static void write_str(const char *p, const char *s)
 {
     FILE *f = fopen(p, "wb");
@@ -130,13 +113,9 @@ int main(void)
     sds idx_path = edc_path_join(b_dir, "tasks.idx", NULL);
     sds json_path = edc_path_join(b_dir, "session.json", NULL);
 
-    TEST("save_state writes a tiny tasks.idx with the task id");
-    CHECK(file_exists(idx_path), "tasks.idx exists");
-    char *idx = read_all(idx_path);
-    sds expect = sdscatprintf(sdsempty(), "%s\n", bt_id);
-    CHECK(idx && strcmp(idx, expect) == 0, "tasks.idx contains exactly the task id");
-    free(idx);
-    sdsfree(expect);
+    TEST("save_state writes session.json but no tasks.idx sidecar");
+    CHECK(file_exists(json_path), "session.json exists");
+    CHECK(!file_exists(idx_path), "tasks.idx is NOT written any more");
 
     edc_scheduler_free(agent.scheduler);
     edc_channel_actor_free(agent.channel_actor);
@@ -144,31 +123,30 @@ int main(void)
     edc_session_manager_free(sm);
     edc_config_free(cfg);
 
-    /* ── Phase 2 (fallback): tasks.idx missing, session.json intact ───── */
-    unlink(idx_path);
-    TEST("missing tasks.idx → migrate from session.json and rewrite the sidecar");
+    /* ── Phase 2: fresh manager → owner resolved from session.json ────── */
+    TEST("unloaded session's task id resolves via session.json (lazy index)");
     {
         struct edc_config *c = g_new0(struct edc_config, 1);
         struct edc_session_manager *m = open_sm(c, ws);
         struct edc_session *b = edc_session_manager_find(m, "B");
         CHECK(b != NULL && !b->state_loaded, "B present but unloaded");
         struct edc_session *owner = edc_session_manager_session_for_task(m, bt_id);
-        CHECK(owner == b, "owner resolved via the session.json fallback");
-        CHECK(file_exists(idx_path), "tasks.idx rewritten during migration");
+        CHECK(owner == b, "owner resolved by parsing session.json");
+        /* cached: a second lookup must still work */
+        CHECK(edc_session_manager_session_for_task(m, bt_id) == b, "cached lookup stable");
         edc_session_manager_free(m);
         edc_config_free(c);
     }
 
-    /* ── Phase 3 (index): session.json corrupt, tasks.idx present ─────── */
+    /* ── Phase 3: session.json corrupt → nothing to resolve from ──────── */
     write_str(json_path, "{ this is not valid json");
-    TEST("tasks.idx present → owner resolved without parsing session.json");
+    TEST("corrupt session.json → unresolved (no sidecar fallback)");
     {
         struct edc_config *c = g_new0(struct edc_config, 1);
         struct edc_session_manager *m = open_sm(c, ws);
         struct edc_session *b = edc_session_manager_find(m, "B");
         CHECK(b != NULL, "B present");
-        struct edc_session *owner = edc_session_manager_session_for_task(m, bt_id);
-        CHECK(owner == b, "owner resolved from tasks.idx despite corrupt session.json");
+        CHECK(edc_session_manager_session_for_task(m, bt_id) == NULL, "unresolvable without session.json");
         edc_session_manager_free(m);
         edc_config_free(c);
     }

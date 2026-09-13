@@ -41,7 +41,6 @@ static struct edc_session *make_session(struct edc_config *config)
     /* 直接分配 session 结构，跳过 edc_session_new 的初始化 */
     struct edc_session *s = calloc(1, sizeof(struct edc_session));
     s->config = config;
-    s->messages = cJSON_CreateArray();
     return s;
 }
 
@@ -79,7 +78,6 @@ static void test_scheduler_lifecycle(void)
     CHECK(edc_scheduler_get_foreground(sched) == NULL, "no foreground group initially");
 
     edc_scheduler_free(sched);
-    if (sess->messages) cJSON_Delete(sess->messages);
     free(sess);
     free_config(cfg);
 
@@ -120,7 +118,6 @@ static void test_scheduler_task_mgmt(void)
     CHECK(edc_scheduler_find_task_by_id(NULL, "x") == NULL, "NULL sched → NULL");
 
     edc_scheduler_free(sched);
-    if (sess->messages) cJSON_Delete(sess->messages);
     free(sess);
     free_config(cfg);
 }
@@ -154,7 +151,6 @@ static void test_scheduler_group_mgmt(void)
     CHECK(1, "add_group(NULL) survived");
 
     edc_scheduler_free(sched);
-    if (sess->messages) cJSON_Delete(sess->messages);
     free(sess);
     free_config(cfg);
 }
@@ -178,7 +174,6 @@ static void test_scheduler_fg_bg(void)
     CHECK(edc_scheduler_get_foreground(sched) == NULL, "foreground cleared");
 
     edc_scheduler_free(sched);
-    if (sess->messages) cJSON_Delete(sess->messages);
     free(sess);
     free_config(cfg);
 }
@@ -237,7 +232,6 @@ static void test_scheduler_signals(void)
     CHECK(g_save_calls == 1, "no save for nonexistent task");
 
     edc_scheduler_free(sched);
-    if (sess->messages) cJSON_Delete(sess->messages);
     free(sess);
     free_config(cfg);
 }
@@ -266,7 +260,6 @@ static void test_scheduler_group_signals(void)
     CHECK(1, "signal to nonexistent group survived");
 
     edc_scheduler_free(sched);
-    if (sess->messages) cJSON_Delete(sess->messages);
     free(sess);
     free_config(cfg);
 }
@@ -293,7 +286,6 @@ static void test_scheduler_signal_all(void)
     CHECK(l2->state == TASK_CANCELLED, "G2 leader cancelled");
 
     edc_scheduler_free(sched);
-    if (sess->messages) cJSON_Delete(sess->messages);
     free(sess);
     free_config(cfg);
 }
@@ -362,8 +354,6 @@ static void test_input_routes_to_waiting_leader(void)
     CHECK(leader->active_turn != NULL, "leader has active turn");
 
     edc_scheduler_free(sched);
-    if (sess->messages)
-        cJSON_Delete(sess->messages);
     free(sess);
     free_config(cfg);
 
@@ -392,8 +382,6 @@ static void test_input_routes_to_waiting_leader(void)
     CHECK(g_llm_calls == 0, "send_llm NOT called (shell handles spawn)");
 
     edc_scheduler_free(sched);
-    if (sess->messages)
-        cJSON_Delete(sess->messages);
     free(sess);
     free_config(cfg);
 
@@ -419,8 +407,6 @@ static void test_input_routes_to_waiting_leader(void)
     CHECK(g_llm_calls == 0, "slash command did NOT attach to waiting leader");
 
     edc_scheduler_free(sched);
-    if (sess->messages)
-        cJSON_Delete(sess->messages);
     free(sess);
     free_config(cfg);
 }
@@ -533,7 +519,6 @@ static void test_scheduler_max_iter_cap(void)
     CHECK(strstr(g_reply_content, "max_iter=2") != NULL, "reply content explains budget");
 
     edc_scheduler_free(sched);
-    if (sess->messages) cJSON_Delete(sess->messages);
     free(sess);
     free_config(cfg);
 
@@ -561,7 +546,6 @@ static void test_scheduler_max_iter_cap(void)
     CHECK(g_reply_calls == 1, "cap notice replied");
 
     edc_scheduler_free(sched);
-    if (sess->messages) cJSON_Delete(sess->messages);
     free(sess);
     free_config(cfg);
 
@@ -589,7 +573,6 @@ static void test_scheduler_max_iter_cap(void)
     CHECK(leader->active_turn != NULL, "turn stays open while looping");
 
     edc_scheduler_free(sched);
-    if (sess->messages) cJSON_Delete(sess->messages);
     free(sess);
     free_config(cfg);
 
@@ -617,7 +600,6 @@ static void test_scheduler_max_iter_cap(void)
     CHECK(leader->active_turn != NULL, "turn stays open while looping (-1)");
 
     edc_scheduler_free(sched);
-    if (sess->messages) cJSON_Delete(sess->messages);
     free(sess);
     free_config(cfg);
 }
@@ -681,8 +663,8 @@ static void test_snapshot_carries_no_chat_messages(void)
     edc_scheduler_set_foreground(sched, g);
 
     /* 组历史里有消息, 但快照不应把对话内容下发 —— 聊天区由 TUI 自己持久化。 */
-    edc_task_group_history_add_owned(g, snap_mk_msg("system", "group prompt"), NULL);
-    edc_task_group_history_add_owned(g, snap_mk_msg("user", "q"), leader->task_id);
+    edc_task_group_history_add_owned(g, snap_mk_msg("system", "group prompt"));
+    edc_task_group_history_add_owned(g, snap_mk_msg("user", "q"));
 
     g_snapshot_json = NULL;
     sched->snapshot_ready = capture_snapshot;
@@ -702,8 +684,6 @@ static void test_snapshot_carries_no_chat_messages(void)
     g_snapshot_json = NULL;
 
     edc_scheduler_free(sched);
-    if (sess->messages)
-        cJSON_Delete(sess->messages);
     free(sess);
     free_config(cfg);
 }
@@ -730,7 +710,6 @@ static void test_task_id_survives_restart(void)
         edc_task_free(t2);
         edc_task_free(t3);
         edc_scheduler_free(sched);
-        if (sess->messages) cJSON_Delete(sess->messages);
         free(sess);
     }
 
@@ -742,7 +721,6 @@ static void test_task_id_survives_restart(void)
         CHECK(t && strcmp(t->task_id, "4") == 0, "id continues at 4 after restart (no reuse)");
         edc_task_free(t);
         edc_scheduler_free(sched);
-        if (sess->messages) cJSON_Delete(sess->messages);
         free(sess);
     }
 
@@ -768,7 +746,6 @@ static void test_observe_task_id_raises_high_water(void)
         edc_scheduler_observe_task_id(sched, "task-3"); /* non-numeric: ignored */
         CHECK(sched->next_task_id == 8, "non-numeric id is ignored");
         edc_scheduler_free(sched);
-        if (sess->messages) cJSON_Delete(sess->messages);
         free(sess);
     }
 
@@ -781,7 +758,6 @@ static void test_observe_task_id_raises_high_water(void)
         CHECK(strcmp(id, "8") == 0, "next generated id is 8");
         free(id);
         edc_scheduler_free(sched);
-        if (sess->messages) cJSON_Delete(sess->messages);
         free(sess);
     }
 

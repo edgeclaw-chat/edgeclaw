@@ -10,9 +10,9 @@
  *
  * 链路 (生产代码, 本测试逐一验证可直接验证的环节):
  *   1. todowrite 工具 (edc_tools_todo.c) 经真实 toolbox 执行后把校验
- *      通过的 items 挂到 ctx->task->todolist (整体替换), 并重置 todo 同步
+ *      通过的 items 挂到 ctx->task->todos (整体替换), 并重置 todo 同步
  *      节流计数 (task->todo_sync_gap = 0) —— 本测试执行真实工具。
- *   2. 工具返回的 result == task->todolist 经 edc_tools_todo_render_reminder
+ *   2. 工具返回的 result == task->todos 经 edc_tools_todo_render_reminder
  *      生成的 todo reminder 文本 (同一渲染函数, 两段式骨架 + <system-reminder>
  *      包裹, 不再是独立的 "# TODO" checklist markdown)。
  *   3. edc_task_llm_request_poke 的节流状态机 (每次 send_llm 前调用): 计
@@ -127,7 +127,7 @@ static int head_has_no_reminder(const char *c)
            strstr(c, "INSTRUCTIONS FOR THIS TURN") == NULL;
 }
 
-/* ── 1. 真实 todowrite 执行: 挂载 task->todolist; reminder 组装 ── */
+/* ── 1. 真实 todowrite 执行: 挂载 task->todos; reminder 组装 ── */
 
 static void test_attach_and_reminder(void)
 {
@@ -136,7 +136,7 @@ static void test_attach_and_reminder(void)
     struct edc_config *conf = g_new0(struct edc_config, 1);
     struct edc_toolbox *tb = edc_toolbox_new(conf, NULL, NULL);
     struct edc_task *task = edc_task_new("t-attach", "s", "g", "test", edc_channel_adapter);
-    C(task->todolist == NULL, "fresh task has no todolist");
+    C(task->todos == NULL, "fresh task has no todos");
 
     cJSON *args = cJSON_Parse("{"
                               "\"items\":["
@@ -153,15 +153,15 @@ static void test_attach_and_reminder(void)
 
     C(g_err == NULL, "no validation error");
     C(g_result != NULL, "tool returned a result");
-    C(task->todolist != NULL, "items attached to task->todolist");
-    C(cJSON_GetArraySize(task->todolist) == 4, "todolist has 4 items");
-    C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(task->todolist, 1), "status")),
+    C(task->todos != NULL, "items attached to task->todos");
+    C(cJSON_GetArraySize(task->todos) == 4, "todos has 4 items");
+    C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(task->todos, 1), "status")),
              "in_progress") == 0,
       "item 2 kept in_progress status");
 
-    /* 工具 result == task->todolist 经 edc_tools_todo_render_reminder 的完整
+    /* 工具 result == task->todos 经 edc_tools_todo_render_reminder 的完整
      * todo reminder 文本 (不再是独立的 "# TODO" checklist markdown) */
-    sds rem = edc_tools_todo_render_reminder(task->todolist);
+    sds rem = edc_tools_todo_render_reminder(task->todos);
     C(rem != NULL, "render_reminder returns reminder text for attached list");
     C(strcmp(rem, g_result) == 0, "tool result == todo reminder text (same renderer)");
     C(strstr(rem, "- [ ] step one [low]") != NULL, "pending item rendered with priority tag");
@@ -214,7 +214,7 @@ static void test_attach_and_reminder(void)
      *     返回的正是这条 todo reminder 本身 (edc_context_make_todo_reminder 只
      *     包 role=system, 文本来自 edc_tools_todo_render_reminder) */
     C(strcmp(content, g_result) == 0, "tail reminder content == tool result (byte-identical)");
-    C(strcmp(content, rem) == 0, "tail reminder content == render_reminder(todolist) (same renderer)");
+    C(strcmp(content, rem) == 0, "tail reminder content == render_reminder(todos) (same renderer)");
 
     /* (d) 清单行 (共享 render_body) */
     C(strstr(content,
@@ -241,7 +241,7 @@ static void test_attach_and_reminder(void)
     edc_toolbox_exec(ctx2, "todowrite", empty_args, capture_cb);
     C(g_err == NULL, "no error on empty list");
     C(g_result && strcmp(g_result, "No todos") == 0, "empty list tool result is 'No todos'");
-    C(task->todolist == NULL, "todolist detached after clearing");
+    C(task->todos == NULL, "todos detached after clearing");
     cJSON *g2 = edc_context_make_todo_reminder(task);
     C(g2 != NULL, "cleared task still gets a tail reminder");
     const char *gc = cJSON_GetStringValue(cJSON_GetObjectItem(g2, "content"));
@@ -279,7 +279,7 @@ static void test_no_list_planning_guide(void)
     struct edc_config *conf = g_new0(struct edc_config, 1);
     struct edc_toolbox *tb = edc_toolbox_new(conf, NULL, NULL);
     struct edc_task *t2 = edc_task_new("t-empty", "s", "g", "empty", edc_channel_adapter);
-    t2->todolist = cJSON_CreateArray();
+    t2->todos = cJSON_CreateArray();
     r = edc_context_make_todo_reminder(t2);
     C(r != NULL && is_planning_reminder(cJSON_GetStringValue(cJSON_GetObjectItem(r, "content"))),
       "empty array -> planning guide");
@@ -306,7 +306,7 @@ static void test_validation_gate(void)
     if (g_err)
         printf("      (validation error: %s)\n", g_err->message ? g_err->message : "(null)");
     C(g_result == NULL || strstr(g_result, "invalid") != NULL, "error text mentions invalid status");
-    C(task->todolist == NULL, "list NOT attached after validation failure");
+    C(task->todos == NULL, "list NOT attached after validation failure");
     cJSON *r = edc_context_make_todo_reminder(task);
     C(r != NULL && is_planning_reminder(cJSON_GetStringValue(cJSON_GetObjectItem(r, "content"))),
       "invalid list never attached -> planning guide only");
@@ -321,7 +321,7 @@ static void test_validation_gate(void)
         edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)4, task, NULL);
     edc_toolbox_exec(ctxp, "todowrite", badpri, capture_cb);
     C(g_err != NULL, "invalid priority produces error");
-    C(task->todolist == NULL, "list NOT attached after invalid priority");
+    C(task->todos == NULL, "list NOT attached after invalid priority");
     reset_capture();
     edc_toolbox_call_ctx_free(ctxp);
     cJSON_Delete(badpri);
@@ -362,11 +362,11 @@ static void test_state_summary_all_done(void)
     struct edc_toolbox *tb = edc_toolbox_new(conf, NULL, NULL);
     struct edc_task *task = edc_task_new("t-done", "s", "g", "all done", edc_channel_adapter);
 
-    task->todolist = cJSON_Parse("["
+    task->todos = cJSON_Parse("["
                                  "{\"content\":\"pack\",\"status\":\"completed\",\"priority\":\"low\"},"
                                  "{\"content\":\"ship\",\"status\":\"completed\",\"priority\":\"high\"}"
                                  "]");
-    C(task->todolist != NULL && cJSON_GetArraySize(task->todolist) == 2, "attached 2 completed items");
+    C(task->todos != NULL && cJSON_GetArraySize(task->todos) == 2, "attached 2 completed items");
 
     cJSON *sys = edc_context_make_todo_reminder(task);
     const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(sys, "content"));
@@ -456,7 +456,7 @@ static void test_tools_todo_resets_gap(void)
         edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)1, task, NULL);
     edc_toolbox_exec(ctx, "todowrite", args, capture_cb);
     C(g_err == NULL, "no validation error");
-    C(task->todolist != NULL && cJSON_GetArraySize(task->todolist) == 1, "list attached");
+    C(task->todos != NULL && cJSON_GetArraySize(task->todos) == 1, "list attached");
     C(task->todo_sync_gap == 0, "successful set resets gap (a sync just happened)");
     reset_capture();
     edc_toolbox_call_ctx_free(ctx);
@@ -469,7 +469,7 @@ static void test_tools_todo_resets_gap(void)
         edc_toolbox_call_ctx_new(tb, edc_channel_adapter, (void *)(intptr_t)2, task, NULL);
     edc_toolbox_exec(ctx2, "todowrite", empty_args, capture_cb);
     C(g_err == NULL, "no error on clear");
-    C(task->todolist == NULL, "list detached on clear");
+    C(task->todos == NULL, "list detached on clear");
     C(task->todo_sync_gap == 0, "successful clear also resets gap");
     reset_capture();
     edc_toolbox_call_ctx_free(ctx2);
@@ -549,8 +549,8 @@ static void test_append_system_part(void)
     /* ── history 分支: group memory 在前 + 有 todo → 头部仍纯净, todo 只在
      *    队尾 reminder; 共享 history[0] 不被改动 ── */
     g1->memory = sdsnew("MEM-SUMMARY");
-    t1->todolist = cJSON_Parse("[{\"content\":\"do it\",\"status\":\"pending\",\"priority\":\"high\"}]");
-    C(t1->todolist != NULL && cJSON_GetArraySize(t1->todolist) == 1, "attached 1 todo item");
+    t1->todos = cJSON_Parse("[{\"content\":\"do it\",\"status\":\"pending\",\"priority\":\"high\"}]");
+    C(t1->todos != NULL && cJSON_GetArraySize(t1->todos) == 1, "attached 1 todo item");
     msgs = cJSON_CreateArray();
     pristine = NULL;
     n = edc_context_append_system_part(msgs, NULL, g1, NULL, &pristine);
@@ -585,7 +585,7 @@ static void test_append_system_part(void)
     C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(sys0, "content")), "SYS0_BASE") == 0,
       "shared history[0] untouched by reminder");
     cJSON_Delete(msgs);
-    edc_task_group_free(g1); /* 连带释放 t1 / sys0 / usr / todolist / memory */
+    edc_task_group_free(g1); /* 连带释放 t1 / sys0 / usr / todos / memory */
 
     /* ── fallback: group 空历史 + conf → 现拼纯净 prompt 经 out_pristine 交还;
      *    写回 group history 属调用方; todo 仍只在队尾 reminder ── */
@@ -616,7 +616,7 @@ static void test_append_system_part(void)
     sdsfree(pristine);
 
     /* fallback + todo: 头部纯净, todo 只在队尾 reminder */
-    t2->todolist = cJSON_Parse("[{\"content\":\"plan\",\"status\":\"in_progress\",\"priority\":\"high\"}]");
+    t2->todos = cJSON_Parse("[{\"content\":\"plan\",\"status\":\"in_progress\",\"priority\":\"high\"}]");
     msgs = cJSON_CreateArray();
     pristine = NULL;
     n = edc_context_append_system_part(msgs, conf, g2, NULL, &pristine);
@@ -665,7 +665,7 @@ static void test_append_system_part(void)
     C(head_has_no_reminder(pw), "referenced history[0] is pure (todo only at tail)");
     cJSON_Delete(msgs);
     sdsfree(pristine);
-    edc_task_group_free(g2); /* 连带释放 t2 / todolist */
+    edc_task_group_free(g2); /* 连带释放 t2 / todos */
     sdsfree(conf->workspace);
     free(conf);
 }

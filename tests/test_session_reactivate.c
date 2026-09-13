@@ -89,10 +89,9 @@ static void commit_turn_into_group(struct edc_session *sess, struct edc_task *ta
         for (size_t qi = task->active_turn->messages.head; qi < task->active_turn->messages.tail; qi++)
         {
             cJSON *item = task->active_turn->messages.data[qi];
-            edc_task_group_history_add_ref(task->group, item, task->task_id);
+            edc_task_group_history_add_ref(task->group, item);
         }
     }
-    edc_session_add_turn(sess, task->active_turn);
     edc_task_commit_active_turn(task);
 }
 

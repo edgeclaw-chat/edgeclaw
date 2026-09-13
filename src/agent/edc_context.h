@@ -26,13 +26,13 @@ extern sds edc_context_build_system_prompt(struct edc_config *conf, const char *
  *   ② ## 🛠️ INSTRUCTIONS FOR THIS TURN: 指令段——逐轮强约束的同步节拍
  *      (检查上个工具结果; 当前条目干完 → 下一动作必须是 todowrite;
  *      未标 [x] 不得跳下一项)。解决"执行完好几步才更新一次清单"的滞后。
- * 两个分支 (同一骨架、互斥出现, 由 render_reminder 按 task->todolist 选择):
+ * 两个分支 (同一骨架、互斥出现, 由 render_reminder 按 task->todos 选择):
  *   - task 持有非空 todo 清单 → 状态段 = 清单行; 指令段 = 逐轮同步节拍;
  *   - task 非 NULL 但尚无/已清空清单 → 状态段 = "尚无清单"; 指令段 =
  *     多步任务先调用 todowrite 建计划;
  *   - task 为 NULL (非任务请求) → NULL (不打扰)。
  * 副本语义: 返回未挂到任何数组的新 cJSON 对象, 随请求释放; 绝不改动
- * task/group 共享数据 (task->todolist 只读)。调用方负责加入请求并释放。 */
+ * task/group 共享数据 (task->todos 只读)。调用方负责加入请求并释放。 */
 extern cJSON *edc_context_make_todo_reminder(struct edc_task *task);
 
 /* 把本次 LLM 请求的 "system 部分" (头部) 组装并追加到 msgs 数组, 返回追加

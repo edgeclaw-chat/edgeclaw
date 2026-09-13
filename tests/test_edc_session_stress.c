@@ -48,7 +48,6 @@ static void test_lifecycle(void)
     C(s->groups == NULL, "groups starts NULL");
     C(s->active_task == NULL, "active_task starts NULL");
     C(s->config == cfg, "config set");
-    C(s->messages != NULL, "messages array exists");
 
     T("edc_session_free cleans groups and active_task");
     struct edc_task *t = edc_task_new("t1", s->session_id, "t1", "test", edc_channel_adapter);
@@ -177,66 +176,6 @@ static void test_active_task(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
-   5. get_messages_slice
-   ══════════════════════════════════════════════════════════════ */
-
-static void test_messages_slice(void)
-{
-    struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
-
-    T("slice from new session (has system prompt)");
-    cJSON *ms = edc_session_get_messages_slice(s, 0, 10);
-    size_t t = (size_t)cJSON_GetArraySize(edc_session_get_messages(s));
-    /* new session has system prompt */
-    C(cJSON_GetArraySize(ms) == t, "slice(0,10) returns all msgs for small session");
-    cJSON_Delete(ms);
-
-    T("slice out of range → empty");
-    ms = edc_session_get_messages_slice(s, 999, 10);
-    C(cJSON_GetArraySize(ms) == 0, "from > total → empty");
-    cJSON_Delete(ms);
-
-    T("slice first N items");
-    /* session has system prompt */
-    size_t total = (size_t)cJSON_GetArraySize(edc_session_get_messages(s));
-    C(total > 0, "session has messages");
-    ms = edc_session_get_messages_slice(s, 0, 1);
-    C(cJSON_GetArraySize(ms) == 1, "slice 1 item");
-    cJSON_Delete(ms);
-
-    T("slice count=0 → all");
-    ms = edc_session_get_messages_slice(s, 0, 0);
-    C(cJSON_GetArraySize(ms) == total, "count=0 gives all items");
-    cJSON_Delete(ms);
-
-    T("slice NULL session");
-    ms = edc_session_get_messages_slice(NULL, 0, 10);
-    C(ms != NULL, "NULL session → non-NULL empty array");
-    C(cJSON_GetArraySize(ms) == 0, "empty");
-    cJSON_Delete(ms);
-
-    T("slice with partial range");
-    if (total >= 2) {
-        ms = edc_session_get_messages_slice(s, 1, 1);
-        C(cJSON_GetArraySize(ms) == 1, "exact 1 from index 1");
-        cJSON_Delete(ms);
-    }
-
-    T("slice returns valid messages");
-    ms = edc_session_get_messages_slice(s, 0, 1);
-    if (cJSON_GetArraySize(ms) > 0) {
-        cJSON *item = cJSON_GetArrayItem(ms, 0);
-        cJSON *role = cJSON_GetObjectItem(item, "role");
-        C(role != NULL && cJSON_IsString(role), "sliced item has role field");
-    }
-    cJSON_Delete(ms);
-
-    edc_session_free(s);
-    free_cfg(cfg);
-}
-
-/* ══════════════════════════════════════════════════════════════
    7. 混合场景: groups + tasks + active + messages 共存
    ══════════════════════════════════════════════════════════════ */
 
@@ -322,9 +261,6 @@ static void test_stress(void)
     /* Find random task */
     C(edc_session_find_task(s, "s-33-m2") != NULL, "find nested task");
 
-    /* Verify message system still works */
-    C(cJSON_GetArraySize(s->messages) >= 1, "messages intact");
-
     edc_session_free(s);
     free_cfg(cfg);
     C(1, "500-task stress test survived");
@@ -339,24 +275,14 @@ static void test_backward_compat(void)
     struct edc_config *cfg = make_cfg();
     struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
-    T("get_messages returns session->messages (system prompt holder)");
-    cJSON *msgs = edc_session_get_messages(s);
-    C(msgs != NULL, "get_messages returns non-NULL");
-    C(msgs == s->messages, "returns same pointer");
-
     T("get_message_count is turn-derived (0 with no tasks)");
     C(edc_session_get_message_count(s) == 0, "count 0 for session without tasks");
 
-    T("add_turn is a no-op (turn owns messages)");
+    T("standalone turn does not count (messages belong to a task)");
     struct edc_turn *turn = edc_turn_new();
     edc_turn_add_user_message(turn, "msg from turn");
-    edc_session_add_turn(s, turn);
     C(edc_session_get_message_count(s) == 0, "count unchanged (turn not in any task)");
     edc_turn_free(turn);
-
-    T("save_history (no-op, no crash)");
-    edc_session_save_history(s);
-    C(1, "save_history survived");
 
     edc_session_free(s);
     free_cfg(cfg);
@@ -422,7 +348,6 @@ int main(void)
     test_group_mgmt();
     test_find();
     test_active_task();
-    test_messages_slice();
     test_mixed_scenario();
     test_stress();
     test_backward_compat();

@@ -345,8 +345,6 @@ static void test_state_file_roundtrip(void)
     CHECK(edc_file_exists(state_path), "session.json exists");
     sdsfree(state_path);
 
-    cJSON_Delete(s1->messages);
-    s1->messages = NULL;
     edc_session_free(s1);
     edc_scheduler_free(sc1);
 
@@ -371,8 +369,6 @@ static void test_state_file_roundtrip(void)
 
     CHECK(s2->active_task == rt, "active_task restored");
 
-    cJSON_Delete(s2->messages);
-    s2->messages = NULL;
     edc_session_free(s2);
     edc_scheduler_free(sc2);
     edc_config_free(cfg);

@@ -139,13 +139,13 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
      * edc_tools_todo_render_reminder), 它就是工具返回的 result 本身; 空清单
      * 时这里只发展示用的空 checklist (callback 结果仍是 "No todos")。TUI 对
      * todowrite 消息不进对话区 —— TODO 展示完全走任务快照 (见 scheduler:
-     * 每次回显推送一次快照, active task 的 todolist 渲染到右侧 TodoWidget)；
+     * 每次回显推送一次快照, active task 的 todos 渲染到右侧 TodoWidget)；
      * content 同时作为 tool result 回给 LLM，CLI 等无侧栏渲染端也照常显示。 */
 
     if (!total)
     {
         /* 空清单同样回显一次：TUI 借此推送快照把 TodoWidget 清成 0/0
-         * (active task 的 todolist 已被摘除)。这里只发展示消息，callback
+         * (active task 的 todos 已被摘除)。这里只发展示消息，callback
          * 结果仍是 "No todos"，LLM 看到的 tool result 与原来一致。 */
         sds empty = sdsnew("# TODO\n\n0/0 completed");
         edc_toolbox_emit_tool_message_md(ctx, "todowrite", empty);
@@ -153,10 +153,10 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
 
         /* 清单被清空 → 该 task 不再持有 todo（后续请求的队尾 reminder 自动
          * 退回"尚无清单"的建计划引导） */
-        if (ctx->task && ctx->task->todolist)
+        if (ctx->task && ctx->task->todos)
         {
-            cJSON_Delete(ctx->task->todolist);
-            ctx->task->todolist = NULL;
+            cJSON_Delete(ctx->task->todos);
+            ctx->task->todos = NULL;
         }
         /* 一次成功的 todowrite 调用 (含清空): 重置 todo 同步节流计数,
          * 后续 LLM 请求重新从"隔了多少条对话"计起 */
@@ -205,7 +205,7 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
     sds lines = edc_tools_todo_render_reminder(items);
 
     /* 把这份 todo 清单挂到调用它的 task 上 (整体替换)。todo list 是 task
-     * 状态的一部分: task->todolist 已被 state_serializer 持久化；之后为该
+     * 状态的一部分: task->todos 已被 state_serializer 持久化；之后为该
      * task 组装 LLM 请求时 (见 agent send_llm), agent 按节流规则 (隔了
      * EDC_TODO_SYNC_REMIND_GAP 条对话都没再调用 todowrite) 把当前
      * 清单重新计算成队尾 todo reminder (edc_context_make_todo_reminder)
@@ -214,9 +214,9 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
      * 不依赖窗口内残留的 todowrite tool 消息。 */
     if (ctx->task)
     {
-        if (ctx->task->todolist)
-            cJSON_Delete(ctx->task->todolist);
-        ctx->task->todolist = cJSON_Duplicate(items, 1);
+        if (ctx->task->todos)
+            cJSON_Delete(ctx->task->todos);
+        ctx->task->todos = cJSON_Duplicate(items, 1);
         /* todowrite 成功: 重置 todo 同步节流计数 (每次工具调用本身
          * 就是一次清单同步) */
         edc_task_note_todo_sync(ctx->task);

@@ -117,7 +117,7 @@ struct edc_task *edc_task_new(const char *task_id, const char *session_id, const
 }
 
 struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,
-                               size_t fork_point_msg_count, edc_channel_type channel_type)
+                               uint32_t fork_point_completion_seq, edc_channel_type channel_type)
 {
     if (!parent)
         return NULL;
@@ -132,7 +132,7 @@ struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, con
 
     struct edc_task *child = edc_task_new(task_id, parent->session_id, parent->group_id, desc, channel_type);
     child->forked_from = parent;
-    child->fork_point_msg_count = fork_point_msg_count;
+    child->fork_point_completion_seq = fork_point_completion_seq;
     child->state = TASK_WAITING_INPUT;
     return child;
 }
@@ -253,8 +253,8 @@ void edc_task_free(struct edc_task *task)
     if (task->redirect_stderr)
         sdsfree(task->redirect_stderr);
 
-    if (task->todolist)
-        cJSON_Delete(task->todolist);
+    if (task->todos)
+        cJSON_Delete(task->todos);
 
     free(task);
 }
@@ -752,7 +752,8 @@ sds edc_task_get_output(struct edc_task *task)
 
 bool edc_task_is_foldable(struct edc_task *task)
 {
-    return task && task->state == TASK_COMPLETED && !task->turns_folded;
+    /* system task 是消息承载位, 永不折叠。 */
+    return task && !task->is_system && task->state == TASK_COMPLETED && !task->turns_folded;
 }
 
 size_t edc_task_turn_msg_count(struct edc_task *task)
