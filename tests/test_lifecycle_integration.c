@@ -115,7 +115,7 @@ static void test_exit_save(void)
 
     CHECK(edc_session_save_state(session, sched), "save_state succeeds on exit");
 
-    /* Verify files: P4 起不再写 history.jsonl, session.json 自包含 */
+    /* Verify files: session.json is the single source of truth */
     sds sp = edc_path_join(TEST_WS, "sess-exit", "session.json", NULL);
     CHECK(edc_file_exists(sp), "session.json exists after exit save");
     sdsfree(sp);
@@ -191,7 +191,7 @@ static void test_startup_load(void)
         CHECK(s2->active_task == rt, "active_task restored");
         CHECK(edc_scheduler_get_foreground(sc2) != NULL, "foreground_group restored");
 
-        /* Verify turn messages loaded from history.jsonl */
+        /* Verify turn messages restored from session.json */
         CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
         struct edc_turn *rturn = (struct edc_turn *)rt->turns.data[rt->turns.head];
         CHECK(edc_queue_length(&rturn->messages) == 1, "1 message in restored turn");
@@ -448,152 +448,6 @@ static void test_save_empty(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Test 6: session.json exists but history.jsonl is missing
- *  ══════════════════════════════════════════════════════════════ */
-
-static void test_missing_history(void)
-{
-    TEST("session.json with missing history.jsonl: graceful degradation");
-    clean_workspace();
-
-    struct edc_config *cfg = make_config();
-
-    /* Step 1: create and save both state and history */
-    {
-        struct edc_session *s = edc_session_new(cfg, "sess-mh", "MissingHist");
-        struct edc_scheduler *sc = edc_scheduler_new(s, cfg);
-
-        struct edc_task *t = edc_task_new("t-mh", "sess-mh", "t-mh",
-                                           "missing hist task", edc_channel_adapter);
-        t->is_group_leader = 1;
-        edc_task_set_state(t, TASK_WAITING_INPUT);
-        edc_task_set_state(t, TASK_LLM_PROCESSING);
-        edc_task_set_state(t, TASK_COMPLETED);
-
-        struct edc_turn *turn = edc_turn_new();
-        turn->task_id = strdup("t-mh");
-        cJSON *um = cJSON_CreateObject();
-        cJSON_AddStringToObject(um, "role", "user");
-        cJSON_AddStringToObject(um, "content", "will be deleted");
-        edc_queue_push(&turn->messages, um);
-        edc_task_add_turn(t, turn);
-
-        struct edc_task_group *g = edc_task_group_new(t);
-        edc_session_add_group(s, g);
-
-        edc_session_save_state(s, sc);
-
-        edc_session_free(s);
-        edc_scheduler_free(sc);
-    }
-
-    /* Step 2: P4 起不再写 history.jsonl —— session.json 自包含。 */
-    sds sp = edc_path_join(TEST_WS, "sess-mh", "session.json", NULL);
-    CHECK(edc_file_exists(sp), "session.json still exists");
-    sdsfree(sp);
-
-    /* Step 3: load — should not crash, should restore task structure
-     * but turns will have empty messages (since history is gone) */
-    {
-        struct edc_session *s2 = edc_session_new(cfg, "sess-mh", "MissingHist");
-        struct edc_scheduler *sc2 = edc_scheduler_new(s2, cfg);
-
-        /* load_state should succeed (task structure is in session.json) */
-        bool loaded = edc_session_load_state(s2, sc2);
-        CHECK(loaded, "load_state succeeds even with missing history");
-
-        /* Task structure restored */
-        CHECK(count_tasks(s2) == 1, "1 task restored from session.json");
-        struct edc_task *rt = find_task(s2, "t-mh");
-        CHECK(rt != NULL, "task found despite missing history");
-        CHECK(rt->state == TASK_COMPLETED, "state preserved");
-
-        /* v2: session.json 自包含 —— turn 内联消息, 与 history.jsonl 无关,
-         * 因此即使 history.jsonl 缺失也完整恢复。 */
-        CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
-        struct edc_turn *rturn = (struct edc_turn *)rt->turns.data[rt->turns.head];
-        CHECK(edc_queue_length(&rturn->messages) == 1,
-              "turn keeps its 1 embedded message despite missing history");
-
-        edc_session_free(s2);
-        edc_scheduler_free(sc2);
-    }
-
-    edc_config_free(cfg);
-    clean_workspace();
-}
-
-/* ══════════════════════════════════════════════════════════════
- *  Test 7: session.json with turn range beyond history.jsonl
- *  ══════════════════════════════════════════════════════════════ */
-
-static void test_truncated_history(void)
-{
-    TEST("session.json with turn range beyond truncated history: graceful");
-    clean_workspace();
-
-    struct edc_config *cfg = make_config();
-
-    /* Step 1: create and save */
-    {
-        struct edc_session *s = edc_session_new(cfg, "sess-trunc", "Truncated");
-        struct edc_scheduler *sc = edc_scheduler_new(s, cfg);
-
-        struct edc_task *t = edc_task_new("t-trunc", "sess-trunc", "t-trunc",
-                                           "trunc task", edc_channel_adapter);
-        t->is_group_leader = 1;
-        edc_task_set_state(t, TASK_WAITING_INPUT);
-        edc_task_set_state(t, TASK_LLM_PROCESSING);
-        edc_task_set_state(t, TASK_COMPLETED);
-
-        /* Add 3 messages to create a turn with range [1, 4) */
-        struct edc_turn *turn = edc_turn_new();
-        turn->task_id = strdup("t-trunc");
-        for (int i = 0; i < 3; i++) {
-            cJSON *m = cJSON_CreateObject();
-            cJSON_AddStringToObject(m, "role", "user");
-            char buf[32];
-            snprintf(buf, sizeof(buf), "msg %d", i);
-            cJSON_AddStringToObject(m, "content", buf);
-            edc_queue_push(&turn->messages, m);
-        }
-        edc_task_add_turn(t, turn);
-
-        struct edc_task_group *g = edc_task_group_new(t);
-        edc_session_add_group(s, g);
-
-        edc_session_save_state(s, sc);
-
-        edc_session_free(s);
-        edc_scheduler_free(sc);
-    }
-
-    /* Step 2: P4 起消息不再经 history.jsonl, 无需截断/操作历史文件。 */
-    {
-        struct edc_session *s2 = edc_session_new(cfg, "sess-trunc", "Truncated");
-        struct edc_scheduler *sc2 = edc_scheduler_new(s2, cfg);
-
-        bool loaded = edc_session_load_state(s2, sc2);
-        CHECK(loaded, "load_state succeeds (state self-contained)");
-
-        struct edc_task *rt = find_task(s2, "t-trunc");
-        CHECK(rt != NULL, "task restored");
-        CHECK(edc_queue_length(&rt->turns) == 1, "1 turn");
-
-        struct edc_turn *rturn = (struct edc_turn *)rt->turns.data[rt->turns.head];
-        /* v2: turn 内联消息, 不依赖 history.jsonl; 截断 history 不影响其内容。 */
-        CHECK(edc_queue_length(&rturn->messages) == 3,
-              "turn keeps all 3 embedded messages despite truncated history");
-
-        edc_session_free(s2);
-        edc_scheduler_free(sc2);
-    }
-
-    edc_config_free(cfg);
-    clean_workspace();
-}
-
-/* ══════════════════════════════════════════════════════════════
  *  main
  *  ══════════════════════════════════════════════════════════════ */
 
@@ -608,8 +462,6 @@ int main(void)
     test_switch_keeps_background_running();
     test_repeated_cycle();
     test_save_empty();
-    test_missing_history();
-    test_truncated_history();
 
     log_info("");
     log_info("=== Results: %d passed, %d failed ===", test_passed, test_failed);

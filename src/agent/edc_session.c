@@ -464,40 +464,6 @@ static void session_quarantine_state(struct edc_session *session, const char *pa
     sdsfree(broken);
 }
 
-/* v2 → v3 迁移前备份。幂等: 已有备份则不覆盖, 永远保留最早的 v2 原件。 */
-static void session_backup_v2_state(struct edc_session *session, const char *path)
-{
-    sds bak = edc_path_join(session->history_dir, "session.json.v2.bak", NULL);
-    if (edc_file_exists(bak))
-    {
-        sdsfree(bak);
-        return;
-    }
-
-    EdcError *err = NULL;
-    sds content = edc_file_read(path, &err);
-    if (!content)
-    {
-        log_warn("load_state: v2 backup read failed: %s", err ? err->message : "unknown");
-        if (err)
-            edc_error_free(err);
-        sdsfree(bak);
-        return;
-    }
-
-    EdcError *werr = NULL;
-    if (edc_file_write(bak, content, (ssize_t)sdslen(content), &werr))
-        log_info("load_state: backed up v2 state to %s", bak);
-    else
-    {
-        log_warn("load_state: v2 backup write failed: %s", werr ? werr->message : "unknown");
-        if (werr)
-            edc_error_free(werr);
-    }
-    sdsfree(content);
-    sdsfree(bak);
-}
-
 bool edc_session_load_state(struct edc_session *session, struct edc_scheduler *sched)
 {
     if (!session || !session->history_dir)
@@ -545,11 +511,6 @@ bool edc_session_load_state(struct edc_session *session, struct edc_scheduler *s
         sdsfree(path);
         return false;
     }
-
-    /* v2 → v3: 首次成功加载 v2 文件时留一份原始备份; 之后任何 save_state 都会
-     * 把它改写成 version 3。v3 文件无需备份。 */
-    if (src_version == 2)
-        session_backup_v2_state(session, path);
 
     sdsfree(path);
     return true;

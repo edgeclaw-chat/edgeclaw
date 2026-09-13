@@ -305,9 +305,8 @@ static bool edc_commands_handle_session_switch(struct edc_agent *agent, edc_acto
     }
     edc_scheduler_set_session(agent->scheduler, new_sess);
     /* 只在本 run 首次激活该 session 时反序列化磁盘状态; 已加载过的 session
-     * (可能正在后台执行) 直接沿用内存对象, 避免被磁盘副本覆盖。messages 由
-     * edc_session_new 在启动时按 history.jsonl 装配、运行期随 turn 增长, 一并
-     * 沿用内存副本 —— 不再 reload (重建会释放 group->history 引用的对象)。 */
+     * (可能正在后台执行) 直接沿用内存对象, 避免被磁盘副本覆盖 —— 不再 reload
+     * (重建会释放 group->history 引用的对象)。 */
     if (!new_sess->state_loaded)
         edc_agent_load_session(agent, new_sess);
     sds reply =

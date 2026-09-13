@@ -170,24 +170,17 @@ static cJSON *task_to_json(struct edc_task *task)
     {
         size_t head = task->turns.head;
         size_t tail = task->turns.tail;
-        int turn_idx = 0;
         for (size_t i = head; i < tail; i++)
         {
             struct edc_turn *t = (struct edc_turn *)task->turns.data[i];
-            cJSON *tj_inner = turn_to_json(t);
-            cJSON_AddNumberToObject(tj_inner, "turn_index", turn_idx++);
-            cJSON_AddItemToArray(turns_json, tj_inner);
+            cJSON_AddItemToArray(turns_json, turn_to_json(t));
         }
     }
     cJSON_AddItemToObject(tj, "turns", turns_json);
 
-    /* ── active_turn ── */
+    /* ── active_turn (在途回合, 独立字段) ── */
     if (task->active_turn)
-    {
-        cJSON *at = turn_to_json(task->active_turn);
-        cJSON_AddNumberToObject(at, "turn_index", -1);
-        cJSON_AddItemToObject(tj, "active_turn", at);
-    }
+        cJSON_AddItemToObject(tj, "active_turn", turn_to_json(task->active_turn));
 
     return tj;
 }
@@ -336,9 +329,6 @@ static struct edc_turn *turn_from_json(cJSON *tj)
         {
             cJSON *msg = cJSON_GetArrayItem(embedded, i);
             cJSON *copy = cJSON_Duplicate(msg, 1);
-            /* v2 → v3: 老消息可能没有 render, 统一补默认 plain (ts 缺省即空)。 */
-            if (!cJSON_GetObjectItem(copy, "render"))
-                cJSON_AddStringToObject(copy, "render", "plain");
             edc_queue_push(&turn->messages, copy);
         }
     }
@@ -473,18 +463,6 @@ static void deser_rebuild_group_history(struct edc_session *session, struct edc_
             cJSON_AddStringToObject(sys, "content", prompt);
             edc_task_group_history_add_owned(g, sys);
             sdsfree(prompt);
-        }
-
-        /* v2 兼容: 旧存档没有折叠水位, 由 per-task turns_folded 推导
-         * (= 已折叠 task 的最大 completion_seq)。 */
-        if (g->folded_through_completion_seq == 0)
-        {
-            struct edc_task *ft;
-            LL_FOREACH2(g->members, ft, group_next)
-            {
-                if (ft->turns_folded && ft->completion_seq > g->folded_through_completion_seq)
-                    g->folded_through_completion_seq = ft->completion_seq;
-            }
         }
 
         /* 按 completion_seq 升序重建 history，与运行时 (STOP/完成顺序) 保持一致。
@@ -640,9 +618,7 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->redirect_stderr = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "redirect_append")))
             task->redirect_append = cJSON_IsTrue(v);
-        if ((v = cJSON_GetObjectItem(tj, "todos")) == NULL)
-            v = cJSON_GetObjectItem(tj, "todolist"); /* v2 旧键 */
-        if (v && cJSON_IsArray(v))
+        if ((v = cJSON_GetObjectItem(tj, "todos")) && cJSON_IsArray(v))
             task->todos = cJSON_Duplicate(v, 1);
         if ((v = cJSON_GetObjectItem(tj, "todo_sync_gap")) && cJSON_IsNumber(v))
             task->todo_sync_gap = (int)cJSON_GetNumberValue(v);
@@ -944,11 +920,10 @@ bool edc_state_deserialize(cJSON *json, struct edc_session *session, struct edc_
         return false;
     }
     double ver_num = cJSON_GetNumberValue(ver);
-    /* v2 文件就地迁移到 v3 内存模型 (旧键有回退/派生), 下次 save_state 写回 version 3;
-     * v3 直接读。其它版本拒绝。 */
-    if (ver_num != 2 && ver_num != 3)
+    /* 只接受当前 schema。老版本必须在升级前先跑迁移 (见 docs/session-model-v3.md §10)。 */
+    if (ver_num != 3)
     {
-        log_error("deserialize: unsupported version %g (expected 2 or 3)", ver_num);
+        log_error("deserialize: unsupported version %g (expected 3)", ver_num);
         return false;
     }
 

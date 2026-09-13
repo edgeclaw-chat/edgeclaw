@@ -100,8 +100,7 @@ extern sds edc_session_manager_list(struct edc_session_manager *sm);
 /** Save the index (sessions.json) and call save on active session. */
 extern void edc_session_manager_save_all(struct edc_session_manager *sm);
 
-/** Load sessions from sessions.json. On first run, migrates legacy
- *  workspace/sess-1/ into the multi-session index. */
+/** Load sessions from sessions.json; creates a `default` session on first run. */
 extern bool edc_session_manager_load(struct edc_session_manager *sm);
 
 #endif

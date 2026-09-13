@@ -99,44 +99,6 @@ static void edc_sm_save_index(struct edc_session_manager *sm)
 
 /* ── Load ──────────────────────────────────────────────────── */
 
-static bool edc_sm_migrate_legacy(struct edc_session_manager *sm)
-{
-    /* Check if legacy workspace/sess-1/ exists */
-    sds legacy_dir = edc_path_join(sm->sessions_dir, "sess-1", NULL);
-    sds legacy_hist = edc_path_join(legacy_dir, "history.jsonl", NULL);
-    bool exists = edc_file_exists(legacy_hist);
-    sdsfree(legacy_hist);
-
-    if (!exists)
-    {
-        sdsfree(legacy_dir);
-        return false; /* no legacy data to migrate */
-    }
-
-    log_info("migrating legacy session sess-1 to multi-session index");
-
-    struct edc_session *s = edc_session_new(sm->config, "sess-1", "Session 1");
-    if (!s)
-    {
-        sdsfree(legacy_dir);
-        return false;
-    }
-
-    /* update metadata from filesystem timestamps */
-    sdsfree(s->created_at);
-    sdsfree(s->last_active);
-    s->created_at = edc_datetime_timestamp();
-    s->last_active = edc_datetime_timestamp();
-
-    sm->sessions = g_new0(struct edc_session *, 1);
-    sm->sessions[0] = s;
-    sm->session_count = 1;
-    sm->active_index = 0;
-
-    sdsfree(legacy_dir);
-    return true;
-}
-
 bool edc_session_manager_load(struct edc_session_manager *sm)
 {
     /* 1. Try to load index */
@@ -146,12 +108,6 @@ bool edc_session_manager_load(struct edc_session_manager *sm)
     if (!content)
     {
         edc_error_free(err);
-        /* Try legacy migration */
-        if (edc_sm_migrate_legacy(sm))
-        {
-            edc_sm_save_index(sm);
-            return true;
-        }
         /* No existing sessions — create default */
         struct edc_session *def = edc_session_manager_create(sm, "default");
         if (!def)

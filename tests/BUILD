@@ -323,8 +323,8 @@ cc_test(
 )
 
 cc_test(
-    name = "test_v2_migration",
-    srcs = ["test_v2_migration.c"],
+    name = "test_state_guardrail",
+    srcs = ["test_state_guardrail.c"],
     deps = [
         "//src:agent",
     ],

@@ -1016,7 +1016,7 @@ static void test_null_inputs(void)
     CHECK(!ok1, "deserialize(NULL json) returns false");
 
     /* deserialize with NULL session */
-    cJSON *valid = cJSON_Parse("{\"version\":2,\"session\":{},\"groups\":[],\"tasks\":[]}");
+    cJSON *valid = cJSON_Parse("{\"version\":3,\"session\":{},\"groups\":[],\"tasks\":[]}");
     bool ok2 = edc_state_deserialize(valid, NULL, NULL);
     CHECK(!ok2, "deserialize(NULL session) returns false");
     cJSON_Delete(valid);
@@ -1028,19 +1028,19 @@ static void test_null_inputs(void)
     cJSON_Delete(no_ver);
 
     /* deserialize with missing tasks array */
-    cJSON *no_tasks = cJSON_Parse("{\"version\":2,\"session\":{},\"groups\":[]}");
+    cJSON *no_tasks = cJSON_Parse("{\"version\":3,\"session\":{},\"groups\":[]}");
     bool ok4 = edc_state_deserialize(no_tasks, session, sched);
     CHECK(ok4, "deserialize without tasks array succeeds (treated as empty)");
     cJSON_Delete(no_tasks);
 
     /* deserialize with tasks not an array */
-    cJSON *bad_tasks = cJSON_Parse("{\"version\":2,\"session\":{},\"groups\":[],\"tasks\":\"not_array\"}");
+    cJSON *bad_tasks = cJSON_Parse("{\"version\":3,\"session\":{},\"groups\":[],\"tasks\":\"not_array\"}");
     bool ok5 = edc_state_deserialize(bad_tasks, session, sched);
     CHECK(ok5, "deserialize with non-array tasks succeeds (ignored)");
     cJSON_Delete(bad_tasks);
 
     /* deserialize with groups not an array */
-    cJSON *bad_groups = cJSON_Parse("{\"version\":2,\"session\":{},\"groups\":123,\"tasks\":[]}");
+    cJSON *bad_groups = cJSON_Parse("{\"version\":3,\"session\":{},\"groups\":123,\"tasks\":[]}");
     bool ok6 = edc_state_deserialize(bad_groups, session, sched);
     CHECK(ok6, "deserialize with non-array groups succeeds (ignored)");
     cJSON_Delete(bad_groups);
@@ -1065,7 +1065,7 @@ static void test_malformed_inputs(void)
     /* dep referencing nonexistent task */
     const char *bad_dep_json =
         "{"
-        "  \"version\":2,"
+        "  \"version\":3,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1090,7 +1090,7 @@ static void test_malformed_inputs(void)
     /* group member referencing nonexistent task */
     const char *bad_member_json =
         "{"
-        "  \"version\":2,"
+        "  \"version\":3,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1110,10 +1110,10 @@ static void test_malformed_inputs(void)
     CHECK(ok2, "deserialize with bad member reference succeeds (skipped)");
     cJSON_Delete(j2);
 
-    /* turn message_start out of range */
+    /* turn with no embedded messages (unknown/legacy keys are ignored) */
     const char *bad_range_json =
         "{"
-        "  \"version\":2,"
+        "  \"version\":3,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1131,13 +1131,13 @@ static void test_malformed_inputs(void)
         "}";
     cJSON *j3 = cJSON_Parse(bad_range_json);
     bool ok3 = edc_state_deserialize(j3, session, sched);
-    CHECK(ok3, "deserialize with out-of-range message_start succeeds (turn empty)");
+    CHECK(ok3, "deserialize tolerates a turn with unknown keys (empty turn)");
     cJSON_Delete(j3);
 
     /* task with empty task_id */
     const char *empty_id_json =
         "{"
-        "  \"version\":2,"
+        "  \"version\":3,"
         "  \"session\":{},"
         "  \"groups\":[],"
         "  \"tasks\":["
@@ -1673,18 +1673,19 @@ static void test_fold_watermark(void)
         CHECK(edc_task_group_unfolded_msg_count(g2) == 1, "unfolded = 1 msg");
     }
 
-    /* (b) v2 file: no watermark key, derive it from per-task turns_folded. */
+    /* (b) missing watermark key: v3 keeps it at 0 — no derivation from
+     * per-task turns_folded any more (v2 compat was dropped). */
     cJSON_DeleteItemFromObject(gj, "folded_through_completion_seq");
     struct edc_session *s3 = edc_session_new(cfg, "sess-fold", "Fold");
     struct edc_scheduler *sched3 = edc_scheduler_new(s3, cfg);
-    CHECK(edc_state_deserialize(json, s3, sched3), "deserialize v2 (no watermark)");
+    CHECK(edc_state_deserialize(json, s3, sched3), "deserialize without a watermark key");
     struct edc_task_group *g3 = find_group(s3, "t1");
-    CHECK(g3 != NULL, "group restored (v2)");
+    CHECK(g3 != NULL, "group restored (no watermark key)");
     if (g3)
     {
-        CHECK(g3->folded_through_completion_seq == 1, "watermark derived from turns_folded");
-        CHECK(edc_task_group_folded_msg_count(g3) == 2, "derived folded prefix = 2 msgs");
-        CHECK(edc_task_group_unfolded_msg_count(g3) == 1, "derived unfolded = 1 msg");
+        CHECK(g3->folded_through_completion_seq == 0, "missing watermark stays 0 (no v2 derivation)");
+        CHECK(edc_task_group_folded_msg_count(g3) == 0, "nothing folded");
+        CHECK(edc_task_group_unfolded_msg_count(g3) == 3, "all 3 msgs unfolded");
     }
 
     cJSON_Delete(json);
