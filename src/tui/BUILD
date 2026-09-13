@@ -162,6 +162,20 @@ cc_test(
     }),
 )
 
+cc_test(
+    name = "test_task_widget",
+    srcs = ["test_task_widget.cpp"],
+    deps = [
+        ":tui",
+    ],
+    linkstatic = True,
+    linkopts = LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+
 cc_binary(
     name = "edgeclaw_tui",
     srcs = [

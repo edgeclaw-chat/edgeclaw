@@ -11,7 +11,7 @@ namespace edc
 namespace
 {
 
-// Map a scheduler task-state name to its sidebar color.
+// Map a scheduler task-state name to the color of its sidebar dot.
 ::ftxui::Color StateColor(const std::string &state)
 {
     // Task states map onto the central style palette (edc_style.hpp).
@@ -30,9 +30,18 @@ namespace
     return pal.warn;
 }
 
+// The glyph that stands in for a task's state in the tree: one filled dot,
+// tinted with that state's color (StateColor above). The state used to be
+// spelled out, which cost each row as many cells as the longest name
+// ("LLM_PROCESSING") and made the right edge ragged. A single dot in a fixed
+// column keeps every row's right edge still and hands the freed cells to the
+// description; the color alone carries the state.
+constexpr char kStateDot[] = "●";
+constexpr int kStateDotCells = 1; // a single terminal cell
+
 // Cells guaranteed to stay free between a task's description and its state
-// label. Kept as a fixed non-flex element so the state never glues itself to
-// a long (truncated) description.
+// dot. Kept as a fixed non-flex element so the dot never glues itself to a
+// long (truncated) description.
 constexpr int kDescStateGapCells = 2;
 
 // Blank cells reserved at the right edge of every full-width row. The
@@ -354,16 +363,14 @@ int TaskWidget::RowWidth() const
                 left += t.is_leader ? "•" : " ";
                 left += " " + t.task_id;
 
-                const int state_cells = StringWidth(t.state);
-
                 if (!t.description.empty())
                 {
                     // Two cells separate the id from the description (kept
                     // from the previous layout), then a gap before the state
-                    // label; kRightPad keeps the state label off the pane's
-                    // right edge. Per-task tokens are intentionally not shown:
-                    // the group header carries the whole group's cost.
-                    const int budget = row_width - StringWidth(left) - 2 - kDescStateGapCells - state_cells - kRightPad;
+                    // dot; kRightPad keeps the dot off the pane's right edge.
+                    // Per-task tokens are intentionally not shown: the group
+                    // header carries the whole group's cost.
+                    const int budget = row_width - StringWidth(left) - 2 - kDescStateGapCells - kStateDotCells - kRightPad;
                     if (budget > 0)
                         left += "  " + TruncateToWidth(t.description, budget);
                 }
@@ -371,7 +378,7 @@ int TaskWidget::RowWidth() const
                 Elements cells;
                 cells.push_back(text(left) | flex);
                 cells.push_back(text(std::string(kDescStateGapCells, ' ')));
-                cells.push_back(text(t.state) | color(StateColor(t.state)));
+                cells.push_back(text(kStateDot) | color(StateColor(t.state)));
                 cells.push_back(text(std::string(kRightPad, ' ')));
                 lines.push_back(hbox(std::move(cells)));
             }
