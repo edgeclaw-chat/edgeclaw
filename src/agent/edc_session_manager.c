@@ -550,8 +550,11 @@ bool edc_session_manager_stop(struct edc_session_manager *sm, const char *name_o
 
     struct edc_session *to_stop = sm->sessions[idx];
 
-    /* Save history one final time */
-    edc_session_save_state(to_stop, NULL);
+    /* Save history one final time — but only when this run actually loaded the
+     * session's state. For an id/name-only shell (never activated in this run)
+     * the file on disk is the newer copy, and writing the shell would wipe it. */
+    if (to_stop->state_loaded)
+        edc_session_save_state(to_stop, NULL);
 
     /* Remove from array */
     int new_count = sm->session_count - 1;
@@ -646,4 +649,23 @@ void edc_session_manager_save_all(struct edc_session_manager *sm)
 
     /* Save index */
     edc_sm_save_index(sm);
+}
+
+void edc_session_manager_save_loaded_states(struct edc_session_manager *sm, struct edc_scheduler *sched)
+{
+    if (!sm)
+        return;
+
+    for (int i = 0; i < sm->session_count; i++)
+    {
+        struct edc_session *s = sm->sessions[i];
+        /* An unloaded session is the id/name-only shell built from
+         * sessions.json: this run never read its groups/tasks/workdir back from
+         * disk, so the file is the newer copy. Saving the shell here would wipe
+         * the real state — and with it the bound working directory, which is
+         * exactly how a session "loses" its workdir after a restart. */
+        if (!s || !s->state_loaded)
+            continue;
+        edc_session_save_state(s, sched);
+    }
 }

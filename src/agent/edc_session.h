@@ -122,6 +122,11 @@ struct edc_scheduler;
 
 /** Save complete session state to workspace/<session_id>/session.json.
  *  Atomic: writes to .tmp then rename().
+ *  The caller must only save a session whose state was loaded in this run
+ *  (session->state_loaded): an unloaded session is just an id/name shell built
+ *  from sessions.json, so writing it would clobber the newer on-disk state
+ *  (groups, tasks, and the bound working directory). See
+ *  edc_session_manager_save_loaded_states() for the exit path.
  *  Returns true on success. */
 extern bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *sched);
 

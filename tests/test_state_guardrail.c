@@ -8,7 +8,12 @@
  *      as `session.json.broken` (no silent overwrite of unknown data);
  *   c. a corrupt session.json is quarantined the same way — the v1→v2 incident
  *      lesson: a failed load must never be followed by an empty-state save that
- *      clobbers the original.
+ *      clobbers the original;
+ *   d. a session that was never LOADED in this run is an id/name-only shell
+ *      built from sessions.json, and the exit save must skip it — writing the
+ *      shell would clobber the newer on-disk state (groups, tasks and the bound
+ *      working directory), which is how a switched-to session could come back
+ *      unbound and run its tools in the launch directory.
  */
 
 #include "edc_channel_actor.h"
@@ -17,6 +22,7 @@
 #include "edc_file_utils.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_session_manager.h"
 #include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -24,6 +30,7 @@
 #include "log.h"
 #include "sds.h"
 #include "utlist_fix.h"
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -184,6 +191,69 @@ int main(void)
         CHECK(!file_exists(json_path), "no session.json left behind");
         edc_scheduler_free(sched);
         edc_session_free(s);
+    }
+
+    /* ── Phase 4: the exit save must not clobber an unloaded session ──── */
+    TEST("exit save keeps an unloaded session's on-disk state");
+    {
+        /* A manager holding A (loaded) and B (created from the index, never
+         * activated → an id/name-only shell). */
+        struct edc_session_manager *sm = edc_session_manager_new(cfg);
+        struct edc_session *a = edc_session_manager_get_active(sm);
+        CHECK(a != NULL, "manager has an active session A");
+        a->state_loaded = true;
+
+        struct edc_session *b = edc_session_manager_create_ex(sm, "B", NULL);
+        CHECK(b != NULL, "session B created (becomes active)");
+        sm->active_index = edc_session_manager_index_of(sm, a->session_id);
+
+        /* B's REAL state on disk, as a previous run left it: a bound workdir
+         * and a completed task in a group. */
+        char bdir[64];
+        snprintf(bdir, sizeof(bdir), "/tmp/edc_guard_b_XXXXXX");
+        char *made = mkdtemp(bdir);
+        CHECK(made != NULL, "mkdtemp for B's workdir");
+
+        char breal[PATH_MAX];
+        CHECK(made && realpath(bdir, breal) != NULL, "realpath(B's workdir)");
+
+        struct edc_session *b_real = edc_session_new_with_workdir(cfg, b->session_id, "B", bdir);
+        CHECK(b_real != NULL, "B's real state session built");
+        struct edc_task *bt =
+            edc_task_new("b-task", b->session_id, "b-task", "real work", edc_channel_adapter);
+        bt->is_group_leader = 1;
+        edc_task_set_state(bt, TASK_WAITING_INPUT);
+        edc_task_set_state(bt, TASK_LLM_PROCESSING);
+        edc_task_set_state(bt, TASK_COMPLETED);
+        edc_session_add_group(b_real, edc_task_group_new(bt));
+        CHECK(edc_session_save_state(b_real, NULL), "B's real state written to disk");
+        edc_session_free(b_real);
+
+        /* The in-memory B is the shell: unbound, no groups. */
+        CHECK(!b->state_loaded, "in-memory B is unloaded (never activated this run)");
+        CHECK(edc_session_get_workdir(b) == NULL, "in-memory B shell has no workdir");
+        CHECK(b->groups == NULL, "in-memory B shell has no groups");
+
+        /* The exit save. */
+        edc_session_manager_save_loaded_states(sm, NULL);
+
+        /* B's file must still describe the real session. */
+        struct edc_session *b2 = edc_session_new(cfg, b->session_id, "B");
+        struct edc_scheduler *sc = edc_scheduler_new(b2, cfg);
+        CHECK(edc_session_load_state(b2, sc), "B's file still loads");
+        const char *wd = edc_session_get_workdir(b2);
+        CHECK(wd != NULL && strcmp(wd, breal) == 0, "B's bound workdir survived the exit save");
+        CHECK(edc_session_find_task(b2, "b-task") != NULL, "B's task survived the exit save");
+        edc_scheduler_free(sc);
+        edc_session_free(b2);
+
+        /* Positive control: a loaded session is still written. */
+        char apath[512];
+        snprintf(apath, sizeof(apath), "%s/%s/session.json", ws, a->session_id);
+        CHECK(file_exists(apath), "loaded session A is still saved");
+
+        edc_session_manager_free(sm);
+        rmdir(bdir);
     }
 
     sdsfree(json_path);

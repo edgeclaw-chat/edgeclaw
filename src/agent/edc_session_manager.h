@@ -8,6 +8,7 @@
 struct edc_session;
 struct edc_config;
 struct edc_task;
+struct edc_scheduler;
 struct edc_task_index_entry; /* uthash entry: task_id → session_id */
 
 /* ── Session Manager ───────────────────────────────────────── */
@@ -99,6 +100,13 @@ extern sds edc_session_manager_list(struct edc_session_manager *sm);
 
 /** Save the index (sessions.json) and call save on active session. */
 extern void edc_session_manager_save_all(struct edc_session_manager *sm);
+
+/** Persist the state of every session that was LOADED in this run (exit path).
+ *  Sessions created from the index but never activated are skipped on purpose:
+ *  their in-memory object is an id/name-only shell, so writing it would clobber
+ *  the newer on-disk state — including the session's bound working directory
+ *  and all of its groups/tasks. |sched| may be NULL. */
+extern void edc_session_manager_save_loaded_states(struct edc_session_manager *sm, struct edc_scheduler *sched);
 
 /** Load sessions from sessions.json; creates a `default` session on first run. */
 extern bool edc_session_manager_load(struct edc_session_manager *sm);

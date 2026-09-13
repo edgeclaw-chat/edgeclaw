@@ -998,20 +998,17 @@ bool edc_agent_set_sandbox_path(struct edc_agent *agent, const char *path, edc_s
     return true;
 }
 
-/* 退出落盘辅助: 全量 history + **每个** session 的 state (含后台 session)。
+/* 退出落盘辅助: 全量 history + **每个已加载** session 的 state (含后台 session)。
  * 前台组已随 session 保存 (session->foreground_group), 逐 session save_state
- * 不会互相污染。 */
+ * 不会互相污染。本 run 从未激活过的 session 会被跳过 —— 它们的内存对象只是
+ * 由 sessions.json 拼出的 id/name 空壳, 写盘会覆盖磁盘上更新的状态 (含绑定
+ * 的工作目录), 见 edc_session_manager_save_loaded_states。 */
 static void edc_agent_save_all_sessions_state(struct edc_agent *agent)
 {
     if (!agent || !agent->session_manager || !agent->scheduler)
         return;
     edc_session_manager_save_all(agent->session_manager);
-    for (int i = 0; i < agent->session_manager->session_count; i++)
-    {
-        struct edc_session *s = agent->session_manager->sessions[i];
-        if (s)
-            edc_session_save_state(s, agent->scheduler);
-    }
+    edc_session_manager_save_loaded_states(agent->session_manager, agent->scheduler);
 }
 
 void edc_agent_free(struct edc_agent *agent)
