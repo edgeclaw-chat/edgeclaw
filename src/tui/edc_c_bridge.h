@@ -131,8 +131,8 @@ int edc_c_channel_message_render_pref(struct edc_channel_message *channel_messag
 /* Request a snapshot of the active session's task tree. The scheduler builds
  * it on its own thread and delivers it back through the channel adapter as an
  * EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE message. The snapshot carries only
- * sidebar data (task tree + todos + counts); the chat log is derived from the
- * session's messages (see edc_c_session_chat_replay). */
+ * sidebar data (task tree + todos + counts) — never chat text, which the TUI
+ * records itself (see edc_chat_transcript.hpp). */
 void edc_c_agent_request_task_snapshot(struct edc_agent *agent);
 
 void edc_c_file_utils_init(struct uv_loop_s *loop);
@@ -164,19 +164,19 @@ bool edc_c_agent_connect(struct edc_agent *agent, const char *api_url, const cha
  * read/write the file with the standard stream API without touching sds. */
 bool edc_c_history_path(char *buf, size_t cap);
 
-/* ── Chat log replay (derived from session.json) ───────────────────────────
- * The TUI no longer keeps a private chat.jsonl transcript: session.json is the
- * single source of truth. |cb| is invoked once per displayed message, in
- * display order (message.ts, ties by traversal order); |kind| is one of
- * "user" | "tool" | "thought" | "reply" | "sys", |header| is the tool name for
- * tool bubbles ("" otherwise), |content| the bubble text and |render_pref| the
- * sender-declared render preference (EDC_C_RENDER_PLAIN/MARKDOWN).
- * |session_id| NULL means the active session. Returns false when the session
- * is unknown (|cb| is then never called). */
-typedef void (*edc_c_chat_replay_fn)(void *user, const char *kind, const char *header, const char *content,
-                                     const char *task_id, int render_pref);
+/* ── Chat log ──────────────────────────────────────────────────────────────
+ * The chat log is the TUI's own transcript, not a view derived from session.json
+ * (see edc_chat_transcript.hpp). Only the file's location is resolved here. */
+/* Copy the chat-transcript path (<session_history_dir>/chat.jsonl) of |session_id|
+ * into |buf|. The TUI owns that file: it appends one line per bubble it shows and
+ * replays the file on the next start (see edc_chat_transcript.hpp). Returns false
+ * when the session is unknown or |buf| is too small. */
+bool edc_c_session_chat_log_path_for(struct edc_agent *agent, const char *session_id, char *buf, size_t cap);
 
-bool edc_c_session_chat_replay(struct edc_agent *agent, const char *session_id, edc_c_chat_replay_fn cb, void *user);
+/* Create the parent directory of |path| (a file under the workspace) when it does
+ * not exist yet. A session's directory only appears once the session is saved,
+ * so the transcript of a session that has not been saved still needs one. */
+bool edc_c_agent_ensure_parent_dir(struct edc_agent *agent, const char *path);
 
 /* Write |data| to |path| with symlink safety: the final component must not be a
  * symlink (opened with O_NOFOLLOW), and when |under_workspace| is true the

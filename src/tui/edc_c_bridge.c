@@ -6,6 +6,7 @@
 #include <cJSON.h>
 #include <edc_actor.h>
 #include <edc_file_utils.h>
+#include "log.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -409,40 +410,59 @@ bool edc_c_session_workdir(struct edc_agent *agent, char *buf, size_t cap)
     return true;
 }
 
-/* ── Chat log: thin wrapper over the session's derived replay ───
- * session.json is the single source of truth for the chat log; the walk itself
- * lives in edc_session_chat_replay (agent layer). Here we only resolve the
- * session and translate the agent-side emit (render = "plain"/"markdown") into
- * the bridge's EDC_C_RENDER_* int for the C++ caller. */
+/* ── Chat log: the TUI's own transcript ────────────────────────
+ * The chat log is not derived from session.json: it is the view's own record of
+ * what it showed (see edc_chat_transcript.hpp). The bridge only resolves where
+ * that file lives — the codec, the appending and the replay are the TUI's. */
 
-struct chat_replay_bridge_ctx
+bool edc_c_session_chat_log_path_for(struct edc_agent *agent, const char *session_id, char *buf, size_t cap)
 {
-    edc_c_chat_replay_fn cb;
-    void *user;
-};
+    if (buf && cap > 0)
+        buf[0] = '\0';
+    if (!agent || !agent->session_manager || !session_id || !buf || cap == 0)
+        return false;
 
-static void chat_replay_bridge_emit(void *user, const char *kind, const char *header, const char *content,
-                                    const char *task_id, const char *render)
-{
-    struct chat_replay_bridge_ctx *ctx = user;
-    const int render_pref =
-        (render && strcmp(render, "markdown") == 0) ? EDC_C_RENDER_MARKDOWN : EDC_C_RENDER_PLAIN;
-    ctx->cb(ctx->user, kind, header, content, task_id, render_pref);
+    struct edc_session *session = edc_session_manager_find(agent->session_manager, session_id);
+    if (!session || !session->history_dir)
+        return false;
+
+    sds path = edc_path_join(session->history_dir, "chat.jsonl", NULL);
+    const bool ok = path && strlen(path) < cap;
+    if (ok)
+        memcpy(buf, path, strlen(path) + 1);
+    if (path)
+        sdsfree(path);
+    return ok;
 }
 
-bool edc_c_session_chat_replay(struct edc_agent *agent, const char *session_id, edc_c_chat_replay_fn cb, void *user)
+bool edc_c_agent_ensure_parent_dir(struct edc_agent *agent, const char *path)
 {
-    if (!agent || !agent->session_manager || !cb)
+    if (!path)
         return false;
 
-    struct edc_session *session = session_id ? edc_session_manager_find(agent->session_manager, session_id)
-                                             : edc_session_manager_get_active(agent->session_manager);
-    if (!session)
+    sds parent = edc_path_dirname(path);
+    if (!parent || !parent[0])
+    {
+        if (parent)
+            sdsfree(parent);
         return false;
+    }
 
-    struct chat_replay_bridge_ctx ctx = {cb, user};
-    edc_session_chat_replay(session, chat_replay_bridge_emit, &ctx);
-    return true;
+    /* Only inside the workspace: everything this bridge writes lives under it. */
+    const char *root = (agent && agent->config) ? agent->config->workspace : NULL;
+    bool ok = root && root[0] && strncmp(parent, root, strlen(root)) == 0;
+    if (ok)
+    {
+        EdcError *err = NULL;
+        ok = edc_dir_create_with_parents(parent, 0755, &err);
+        if (err)
+        {
+            log_warn("ensure_parent_dir: mkdir %s: %s", parent, err->message);
+            edc_error_free(err);
+        }
+    }
+    sdsfree(parent);
+    return ok;
 }
 
 bool edc_c_agent_write_file(struct edc_agent *agent, const char *path, const char *data, size_t len, bool append,
@@ -454,7 +474,9 @@ bool edc_c_agent_write_file(struct edc_agent *agent, const char *path, const cha
     const char *root = (under_workspace && agent && agent->config) ? agent->config->workspace : NULL;
     FILE *f = edc_file_fopen_safe(path, append ? "a" : "w", root);
     if (!f)
+    {
         return false;
+    }
 
     bool ok = (len == 0) || (fwrite(data, 1, len, f) == len);
     fclose(f);

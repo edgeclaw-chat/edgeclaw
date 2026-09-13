@@ -1,4 +1,5 @@
 #include "edc_tui_window.hpp"
+#include "edc_chat_transcript.hpp"
 #include "edc_chat_widget.hpp"
 #include "edc_input.hpp"
 #include "edc_scroll_view.hpp"
@@ -470,16 +471,13 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
     {
         char sid[256];
         if (edc_c_agent_session_id(agent, sid, sizeof(sid)))
-        {
-            current_session_id_ = sid;
-            RebuildChatFromSession(sid);
-        }
+            LoadChatTranscript(sid);
     }
 
     // Populate the sidebar once the agent is running (its response is routed
     // through the adapter and handled by on_channel_adapter_send below). The
-    // chat log is derived from the session's messages, never refilled from a
-    // private transcript file (see RebuildChatFromSession).
+    // chat log comes from the session's own transcript file, which the live path
+    // below appends to (see LoadChatTranscript for the one-time bootstrap).
     RequestTaskSnapshot();
 }
 
@@ -505,6 +503,10 @@ void TUIWindow::Submit()
     }
 
     chat_widget_->AddMessage(std::make_shared<UserMessage>(message, ::time(nullptr)));
+    // The submitted text is part of what is on screen (a slash command included),
+    // so it goes into the transcript too — replaying the file after a restart
+    // shows the same log, typed input and all.
+    AppendChatTranscript("user", "", message, "", EDC_C_RENDER_PLAIN);
     input_text_.clear();
     input_->Reset(); // caret/scroll back to the start after the external clear
     // Record the submitted text for ArrowUp recall and persist it so history
@@ -626,28 +628,69 @@ static std::shared_ptr<Message> MakeChatWidget(const std::string &kind, const st
     return std::make_shared<Message>(content, ts, task_id);
 }
 
-void TUIWindow::OnChatReplay(void *user, const char *kind, const char *header, const char *content,
-                             const char *task_id, int render_pref)
-{
-    auto *tui = static_cast<TUIWindow *>(user);
-    if (!tui || !tui->chat_widget_ || !content)
-        return;
-
-    // todowrite 的输出不进对话区（与实时路径同一条规则）：TODO 状态由右侧
-    // TodoWidget 展示。
-    if (kind && std::strcmp(kind, "tool") == 0 && header && std::strcmp(header, kTodoToolHeader) == 0)
-        return;
-
-    tui->chat_widget_->AddMessage(MakeChatWidget(kind ? kind : "", header ? header : "", content,
-                                                 task_id ? task_id : "", render_pref, ::time(nullptr)));
-}
-
-void TUIWindow::RebuildChatFromSession(const char *session_id)
+void TUIWindow::LoadChatTranscript(const char *session_id)
 {
     chat_widget_->Clear();
-    // session.json 是聊天记录的唯一真相：按消息的显示顺序重放一遍。
-    edc_c_session_chat_replay(agent, session_id, &TUIWindow::OnChatReplay, this);
-    chat_widget_->ScrollToBottom();
+    chat_log_path_.clear();
+    current_session_id_ = session_id ? session_id : "";
+
+    // The transcript belongs to the session, not to the tab: it records what this
+    // frontend displayed for that session, so it survives switches and restarts.
+    char path[4096];
+    if (!current_session_id_.empty() &&
+        edc_c_session_chat_log_path_for(agent, current_session_id_.c_str(), path, sizeof(path)))
+        chat_log_path_ = path;
+
+    LoadChatTranscriptFile(chat_log_path_);
+}
+
+void TUIWindow::LoadChatTranscriptFile(const std::string &path)
+{
+    const size_t entries = LoadTranscript(path, [this](const ChatTranscriptEntry &entry) {
+        const std::shared_ptr<Message> widget = MakeChatWidget(entry.kind, entry.header, entry.content, entry.task_id,
+                                                               entry.render_pref, ::time(nullptr));
+        if (widget)
+            chat_widget_->AddMessage(widget);
+    });
+    if (entries > 0)
+        chat_widget_->ScrollToBottom();
+}
+
+void TUIWindow::AppendChatTranscript(const std::string &kind, const std::string &header, const std::string &content,
+                                     const std::string &task_id, int render_pref)
+{
+    AppendChatTranscriptTo(chat_log_path_, kind, header, content, task_id, render_pref);
+}
+
+void TUIWindow::AppendChatTranscriptTo(const std::string &path, const std::string &kind, const std::string &header,
+                                       const std::string &content, const std::string &task_id, int render_pref)
+{
+    if (path.empty())
+        return;
+
+    ChatTranscriptEntry entry;
+    entry.kind = kind;
+    entry.render_pref = render_pref;
+    entry.task_id = task_id;
+    entry.header = header;
+    entry.content = content;
+
+    // A session's directory only exists once the session has been saved, and a
+    // command-only session (e.g. /help) may never be saved before its first line
+    // is displayed — make sure the parent is there before appending.
+    edc_c_agent_ensure_parent_dir(agent, path.c_str());
+
+    // A previous process may have died mid-append, leaving a fragment without
+    // its newline. Re-terminate it first: otherwise this line lands on top of it
+    // and the two bubbles merge into one undecodable line.
+    std::string line = EncodeTranscriptLine(entry);
+    if (TranscriptEndsMidLine(path))
+        line.insert(line.begin(), '\n');
+
+    // Symlink-safe append: the transcript lives under the model-writable
+    // workspace, so refuse to follow a planted symlink (see
+    // edc_file_fopen_safe / edc_c_agent_write_file).
+    edc_c_agent_write_file(agent, path.c_str(), line.data(), line.size(), /*append=*/true, /*under_workspace=*/true);
 }
 
 void TUIWindow::SyncChatSession(const char *session_id)
@@ -655,8 +698,7 @@ void TUIWindow::SyncChatSession(const char *session_id)
     const std::string sid = session_id ? session_id : "";
     if (sid == current_session_id_)
         return;
-    current_session_id_ = sid;
-    RebuildChatFromSession(sid.c_str());
+    LoadChatTranscript(sid.c_str());
 }
 
 void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
@@ -1109,11 +1151,20 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
         }
 
         // A background session's output must not appear in the tab that is
-        // currently displayed. It already lives in that session's own messages
-        // (the agent persisted it there), so switching back re-derives it --
-        // there is nothing to accumulate here, and the current tab stays as is.
+        // currently displayed — but it is still part of *that* session's screen
+        // history, so it goes into that session's own transcript and shows up
+        // when the user switches back. The current tab (and its sidebar) is left
+        // untouched.
         if (!session_id.empty() && session_id != tui->current_session_id_)
+        {
+            char path[4096];
+            if (edc_c_session_chat_log_path_for(tui->agent, session_id.c_str(), path, sizeof(path)))
+                tui->AppendChatTranscriptTo(path, kind_str, header, text, task_id, render_pref);
             return;
+        }
+
+        // Persist exactly what is shown, so the next start replays this log.
+        tui->AppendChatTranscript(kind_str, header, text, task_id, render_pref);
 
         if (std::shared_ptr<Message> widget = MakeChatWidget(kind_str, header, text, task_id, render_pref, ts))
             tui->chat_widget_->AddMessage(widget);

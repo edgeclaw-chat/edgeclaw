@@ -13,6 +13,7 @@ cc_library(
     name = "tui",
     srcs = [
         "edc_c_bridge.c",
+        "edc_chat_transcript.cpp",
         "edc_chat_widget.cpp",
         "edc_clipboard.cpp",
         "edc_input.cpp",
@@ -28,6 +29,7 @@ cc_library(
 
     hdrs = [
         "edc_c_bridge.h",
+        "edc_chat_transcript.hpp",
         "edc_chat_widget.hpp",
         "edc_clipboard.hpp",
         "edc_input.hpp",
@@ -120,6 +122,16 @@ cc_test(
         "//:debug": ["EDGECLAW_DEBUG"],
         "//conditions:default": [],
     }),
+)
+
+cc_test(
+    name = "test_chat_transcript",
+    srcs = ["test_chat_transcript.cpp"],
+    deps = [
+        ":tui",
+    ],
+    linkstatic = True,
+    linkopts = LINK_OPTS,
 )
 
 cc_test(

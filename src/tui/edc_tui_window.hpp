@@ -66,14 +66,21 @@ class TUIWindow : public ::ftxui::ComponentBase
     void SaveInputHistory();
     // Ask the agent (on its scheduler thread) for a fresh task-tree snapshot.
     void RequestTaskSnapshot();
-    // Rebuild the chat log from the session's persisted messages: session.json
-    // is the single source of truth, so there is no private transcript file any
-    // more. The log is cleared first; a session with no messages stays empty.
-    void RebuildChatFromSession(const char *session_id);
-    // Bridge replay callback (one bubble per persisted message, in display
-    // order). |user| is the TUIWindow; see edc_c_session_chat_replay.
-    static void OnChatReplay(void *user, const char *kind, const char *header, const char *content, const char *task_id,
-                             int render_pref);
+    // Show |session_id|'s chat log: the TUI's own transcript
+    // (<session>/chat.jsonl, one line per bubble it showed) is replayed into the
+    // cleared log. A session without one shows an empty log — nothing is derived
+    // (see edc_chat_transcript.hpp for why the view keeps its own record).
+    void LoadChatTranscript(const char *session_id);
+    // Replay |path| into the (already cleared) log.
+    void LoadChatTranscriptFile(const std::string &path);
+    // Record one displayed bubble at the tail of the (current session's)
+    // transcript, so the next start replays exactly what was on screen.
+    void AppendChatTranscript(const std::string &kind, const std::string &header, const std::string &content,
+                              const std::string &task_id, int render_pref);
+    // Same, into an explicit path: a background session's output never lands in
+    // the tab on screen, but it does belong in that session's own transcript.
+    void AppendChatTranscriptTo(const std::string &path, const std::string &kind, const std::string &header,
+                                const std::string &content, const std::string &task_id, int render_pref);
     // Show "processing" exactly while the foreground group's active task runs.
     void SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap);
     // Switch the log to |session_id|: when the id changes the log is cleared and
@@ -119,6 +126,9 @@ class TUIWindow : public ::ftxui::ComponentBase
     // The active session's id, used to detect /session switches. Starts at a
     // sentinel so the first snapshot triggers a rebuild.
     std::string current_session_id_ = "\x01";
+    // That session's chat-transcript path (<workspace>/<session_id>/chat.jsonl),
+    // resolved with the log. Empty when the session is unknown.
+    std::string chat_log_path_;
 
     struct edc_agent *agent = NULL;
     // True once bracketed paste was actually enabled, so the destructor only
