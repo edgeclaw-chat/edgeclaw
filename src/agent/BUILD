@@ -64,10 +64,8 @@ cc_library(
     ],
     includes = ["."],
     deps = [
-        ":sandbox_backends",
         "//src/core:core",
-        "//src/shell:completion",
-        "//src/shell:shell_api",
+        "//src/shell:shell_parse",
         "//src:utlist_fix",
         "@uthash//:uthash",
         "@libyuarel//:libyuarel",

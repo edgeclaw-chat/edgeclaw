@@ -1,11 +1,13 @@
-/* Session state load guardrails (schema v3 only).
+/* Session state load guardrails (schema v4 only).
  *
- * v2 support has been dropped now that every workspace is migrated, so the
+ * Older schemas are dropped now that every workspace is migrated, so the
  * contract is:
- *   a. a fresh save_state writes `version: 3` and round-trips (no `.v2.bak`
- *      legacy backup files are produced any more);
- *   b. a well-formed but outdated `version: 2` file is REJECTED and quarantined
- *      as `session.json.broken` (no silent overwrite of unknown data);
+ *   a. a fresh save_state writes `version: 4` and round-trips (no legacy
+ *      backup files are produced any more);
+ *   b. a well-formed but outdated `version: 3` file is REJECTED and quarantined
+ *      as `session.json.broken` (no silent overwrite of unknown data); the
+ *      v3 -> v4 one-shot migration (tools/migrate_session_v3_to_v4.py) must run
+ *      before an older file can be loaded;
  *   c. a corrupt session.json is quarantined the same way — the v1→v2 incident
  *      lesson: a failed load must never be followed by an empty-state save that
  *      clobbers the original;
@@ -103,8 +105,8 @@ int main(void)
     sds bak_path = sdscatprintf(sdsempty(), "%s/session.json.v2.bak", dir);
     sds broken_path = sdscatprintf(sdsempty(), "%s/session.json.broken", dir);
 
-    /* ── Phase 1: v3 round-trip ───────────────────────────────────────── */
-    TEST("v3 state round-trips and produces no legacy backup");
+    /* ── Phase 1: v4 round-trip ───────────────────────────────────────── */
+    TEST("v4 state round-trips and produces no legacy backup");
     {
         struct edc_session *s = edc_session_new(cfg, sid, "Guard");
         struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
@@ -132,7 +134,7 @@ int main(void)
         if (txt)
         {
             cJSON *root = cJSON_Parse(txt);
-            CHECK(edc_state_json_version(root) == 3, "on-disk version is 3");
+            CHECK(edc_state_json_version(root) == 4, "on-disk version is 4");
             cJSON_Delete(root);
             sdsfree(txt);
         }
@@ -153,17 +155,17 @@ int main(void)
     }
 
     /* ── Phase 2: an outdated version is rejected, not silently upgraded ─ */
-    TEST("version 2 file is rejected and quarantined");
+    TEST("version 3 file is rejected and quarantined");
     {
         EdcError *err = NULL;
         sds txt = edc_file_read(json_path, &err);
         if (err)
             edc_error_free(err);
-        CHECK(txt != NULL, "read back the v3 file to downgrade it");
+        CHECK(txt != NULL, "read back the v4 file to downgrade it");
         if (txt)
         {
             cJSON *root = cJSON_Parse(txt);
-            cJSON_ReplaceItemInObject(root, "version", cJSON_CreateNumber(2));
+            cJSON_ReplaceItemInObject(root, "version", cJSON_CreateNumber(3));
             char *out = cJSON_Print(root);
             write_str(json_path, out);
             free(out);
@@ -173,8 +175,8 @@ int main(void)
 
         struct edc_session *s = edc_session_new(cfg, sid, "Guard");
         struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
-        CHECK(!edc_session_load_state(s, sched), "load_state fails for version 2");
-        CHECK(file_exists(broken_path), "v2 file renamed to .broken");
+        CHECK(!edc_session_load_state(s, sched), "load_state fails for version 3");
+        CHECK(file_exists(broken_path), "v3 file renamed to .broken");
         CHECK(!file_exists(json_path), "no session.json left behind");
         edc_scheduler_free(sched);
         edc_session_free(s);

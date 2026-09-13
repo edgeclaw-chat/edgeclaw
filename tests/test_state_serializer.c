@@ -1016,7 +1016,7 @@ static void test_null_inputs(void)
     CHECK(!ok1, "deserialize(NULL json) returns false");
 
     /* deserialize with NULL session */
-    cJSON *valid = cJSON_Parse("{\"version\":3,\"session\":{},\"groups\":[],\"tasks\":[]}");
+    cJSON *valid = cJSON_Parse("{\"version\":4,\"session\":{},\"groups\":[],\"tasks\":[]}");
     bool ok2 = edc_state_deserialize(valid, NULL, NULL);
     CHECK(!ok2, "deserialize(NULL session) returns false");
     cJSON_Delete(valid);
@@ -1028,19 +1028,19 @@ static void test_null_inputs(void)
     cJSON_Delete(no_ver);
 
     /* deserialize with missing tasks array */
-    cJSON *no_tasks = cJSON_Parse("{\"version\":3,\"session\":{},\"groups\":[]}");
+    cJSON *no_tasks = cJSON_Parse("{\"version\":4,\"session\":{},\"groups\":[]}");
     bool ok4 = edc_state_deserialize(no_tasks, session, sched);
     CHECK(ok4, "deserialize without tasks array succeeds (treated as empty)");
     cJSON_Delete(no_tasks);
 
     /* deserialize with tasks not an array */
-    cJSON *bad_tasks = cJSON_Parse("{\"version\":3,\"session\":{},\"groups\":[],\"tasks\":\"not_array\"}");
+    cJSON *bad_tasks = cJSON_Parse("{\"version\":4,\"session\":{},\"groups\":[],\"tasks\":\"not_array\"}");
     bool ok5 = edc_state_deserialize(bad_tasks, session, sched);
     CHECK(ok5, "deserialize with non-array tasks succeeds (ignored)");
     cJSON_Delete(bad_tasks);
 
     /* deserialize with groups not an array */
-    cJSON *bad_groups = cJSON_Parse("{\"version\":3,\"session\":{},\"groups\":123,\"tasks\":[]}");
+    cJSON *bad_groups = cJSON_Parse("{\"version\":4,\"session\":{},\"groups\":123,\"tasks\":[]}");
     bool ok6 = edc_state_deserialize(bad_groups, session, sched);
     CHECK(ok6, "deserialize with non-array groups succeeds (ignored)");
     cJSON_Delete(bad_groups);
@@ -1065,7 +1065,7 @@ static void test_malformed_inputs(void)
     /* dep referencing nonexistent task */
     const char *bad_dep_json =
         "{"
-        "  \"version\":3,"
+        "  \"version\":4,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1090,7 +1090,7 @@ static void test_malformed_inputs(void)
     /* group member referencing nonexistent task */
     const char *bad_member_json =
         "{"
-        "  \"version\":3,"
+        "  \"version\":4,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1113,7 +1113,7 @@ static void test_malformed_inputs(void)
     /* turn with no embedded messages (unknown/legacy keys are ignored) */
     const char *bad_range_json =
         "{"
-        "  \"version\":3,"
+        "  \"version\":4,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1137,7 +1137,7 @@ static void test_malformed_inputs(void)
     /* task with empty task_id */
     const char *empty_id_json =
         "{"
-        "  \"version\":3,"
+        "  \"version\":4,"
         "  \"session\":{},"
         "  \"groups\":[],"
         "  \"tasks\":["
@@ -1699,78 +1699,57 @@ static void test_fold_watermark(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  legacy: the pre-transcript "system" container is dropped on load
+ *  schema version: only the current one is accepted
  *  ══════════════════════════════════════════════════════════════ */
 
-static void test_legacy_system_container_dropped(void)
+static void test_schema_version_is_current(void)
 {
-    TEST("legacy system group/task is dropped on load, not shown as a task");
+    TEST("serialize writes version 4; older versions fail loudly instead of being patched up");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-legacy", "Legacy");
+    struct edc_session *session = edc_session_new(cfg, "sess-ver", "Ver");
     struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
 
-    struct edc_task *leader = edc_task_new("1", "sess-legacy", "1", "real task", edc_channel_adapter);
-    leader->is_group_leader = 1;
-    edc_task_set_state(leader, TASK_WAITING_INPUT);
-    edc_task_set_state(leader, TASK_SUSPENDED);
-    struct edc_task_group *group = edc_task_group_new(leader);
-    edc_session_add_group(session, group);
+    struct edc_task *task = edc_task_new("1", "sess-ver", "1", "task", edc_channel_adapter);
+    task->is_group_leader = 1;
+    edc_task_set_state(task, TASK_WAITING_INPUT);
+    edc_task_set_state(task, TASK_SUSPENDED);
+    edc_session_add_group(session, edc_task_group_new(task));
 
     cJSON *json = edc_state_serialize(session, sched);
     CHECK(json != NULL, "serialize returns non-NULL");
+    CHECK(edc_state_json_version(json) == 4, "on-disk version is 4");
 
-    /* Splice in what an old file carries: a session-level group + task named
-     * "system" (with the is_system flag such files had). */
-    cJSON *sys_g = cJSON_CreateObject();
-    cJSON_AddStringToObject(sys_g, "group_id", "system");
-    cJSON_AddStringToObject(sys_g, "leader_task_id", "system");
-    cJSON *members = cJSON_AddArrayToObject(sys_g, "member_task_ids");
-    cJSON_AddItemToArray(members, cJSON_CreateString("system"));
-    cJSON_AddBoolToObject(sys_g, "is_orphaned", false);
-    cJSON_AddBoolToObject(sys_g, "is_system", true);
-    cJSON_AddItemToArray(cJSON_GetObjectItem(json, "groups"), sys_g);
-
-    cJSON *sys_t = cJSON_CreateObject();
-    cJSON_AddStringToObject(sys_t, "task_id", "system");
-    cJSON_AddStringToObject(sys_t, "session_id", "sess-legacy");
-    cJSON_AddStringToObject(sys_t, "group_id", "system");
-    cJSON_AddStringToObject(sys_t, "description", "system");
-    cJSON_AddStringToObject(sys_t, "state", "SUSPENDED");
-    cJSON_AddBoolToObject(sys_t, "is_system", true);
-    cJSON_AddItemToArray(cJSON_GetObjectItem(json, "tasks"), sys_t);
-
-    struct edc_session *s2 = edc_session_new(cfg, "sess-legacy", "Legacy");
+    struct edc_session *s2 = edc_session_new(cfg, "sess-ver", "Ver");
     struct edc_scheduler *sched2 = edc_scheduler_new(s2, cfg);
-    CHECK(edc_state_deserialize(json, s2, sched2), "deserialize");
-    CHECK(edc_session_find_task(s2, "system") == NULL, "system task dropped");
-    CHECK(edc_session_find_group(s2, "system") == NULL, "system group dropped");
-    CHECK(edc_session_find_task(s2, "1") != NULL, "unrelated task kept");
-    CHECK(edc_session_find_group(s2, "1") != NULL, "unrelated group kept");
-
-    /* And the next save writes it out of the file for good. */
-    cJSON *json2 = edc_state_serialize(s2, sched2);
-    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(json2, "groups")) == 1, "one group saved");
-    cJSON *t0 = cJSON_GetArrayItem(cJSON_GetObjectItem(json2, "tasks"), 0);
-    cJSON *saved_id = t0 ? cJSON_GetObjectItem(t0, "task_id") : NULL;
-    CHECK(saved_id && strcmp(cJSON_GetStringValue(saved_id), "1") == 0, "only the real task is saved");
-    cJSON_Delete(json2);
-
-    cJSON_Delete(json);
+    CHECK(edc_state_deserialize(json, s2, sched2), "the current schema round-trips");
+    CHECK(edc_session_find_task(s2, "1") != NULL, "task restored");
     edc_session_free(s2);
     edc_scheduler_free(sched2);
+
+    /* A pre-migration file must be rejected: the load path no longer carries the
+     * v3 compatibility branches (system-container drop, displayed/header strip)
+     * -- those moved into tools/migrate_session_v3_to_v4.py. */
+    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(3));
+    struct edc_session *s3 = edc_session_new(cfg, "sess-ver", "Ver");
+    struct edc_scheduler *sched3 = edc_scheduler_new(s3, cfg);
+    CHECK(!edc_state_deserialize(json, s3, sched3), "a v3 tree is rejected");
+    edc_session_free(s3);
+    edc_scheduler_free(sched3);
+
+    cJSON_Delete(json);
     edc_session_free(session);
     edc_scheduler_free(sched);
     edc_config_free(cfg);
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  legacy: the 5c tool display metadata is not written back
+ *  message unknown keys round-trip verbatim
  *  ══════════════════════════════════════════════════════════════ */
 
-static void test_legacy_display_keys_stripped(void)
+static void test_message_unknown_keys_round_trip(void)
 {
-    TEST("5c display metadata (displayed/header) is not written back");
+    TEST("message unknown keys round-trip verbatim (the runtime no longer strips them)");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-disp", "Disp");
@@ -1811,8 +1790,10 @@ static void test_legacy_display_keys_stripped(void)
     cJSON *msgs2 = cJSON_GetObjectItem(cJSON_GetObjectItem(t0, "active_turn"), "messages");
     cJSON *msg2 = cJSON_GetArrayItem(msgs2, 0);
     CHECK(msg2 != NULL, "message written back");
-    CHECK(msg2 && cJSON_GetObjectItem(msg2, "displayed") == NULL, "displayed not written back");
-    CHECK(msg2 && cJSON_GetObjectItem(msg2, "header") == NULL, "header not written back");
+    /* Raw JSON round-trip: keys the runtime does not know are preserved.  Removing
+     * pre-transcript leftovers is the one-shot migration's job, not save's. */
+    CHECK(msg2 && cJSON_GetObjectItem(msg2, "displayed") != NULL, "displayed round-trips");
+    CHECK(msg2 && cJSON_GetObjectItem(msg2, "header") != NULL, "header round-trips");
     CHECK(msg2 && cJSON_GetObjectItem(msg2, "role") != NULL, "role kept");
     CHECK(msg2 && cJSON_GetObjectItem(msg2, "ts") != NULL, "ts kept");
 
@@ -1839,8 +1820,8 @@ int main(void)
     test_dependency_graph();
     test_complex_topology();
     test_state_degradation();
-    test_legacy_system_container_dropped();
-    test_legacy_display_keys_stripped();
+    test_schema_version_is_current();
+    test_message_unknown_keys_round_trip();
     test_filter_transient_states();
     test_cancelled_midflight_roundtrip();
     test_cancelled_dep_roundtrip();

@@ -124,7 +124,6 @@ cc_library(
         "edc_https_client.c",
         "edc_init_env.c",
         "edc_log.c",
-        "edc_markdown_render.c",
         "edc_param_types.c",
     ],
     hdrs = [
@@ -135,7 +134,6 @@ cc_library(
         "edc_https_client.h",
         "edc_init_env.h",
         "edc_log.h",
-        "edc_markdown_render.h",
         "edc_param_types.h",
         "edc_string.h",
         "edc_task_types.h",
@@ -155,7 +153,6 @@ cc_library(
         "@llhttp//:llhttp",
         "@log.c//:log.c",
         "@mbedtls//:mbedtls",
-        "@md4c//:md4c",
         "@sds//:sds",
         "@uthash//:uthash",
         "//thirdparty/utf8proc",

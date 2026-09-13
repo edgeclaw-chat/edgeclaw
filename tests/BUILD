@@ -125,15 +125,6 @@ cc_test(
 )
 
 cc_test(
-    name = "test_markdown_render",
-    srcs = ["test_markdown_render.c"],
-    deps = [
-        "//src:agent",
-    ],
-    linkopts = LINK_OPTS,
-)
-
-cc_test(
     name = "test_https_client_get",
     srcs = ["test_https_client_get.c"],
     deps = [
@@ -272,7 +263,7 @@ cc_test(
     name = "test_cmd_parse",
     srcs = ["test_cmd_parse.c"],
     deps = [
-        "//src/shell:shell_api",
+        "//src/shell:shell_parse",
     ],
     linkopts = LINK_OPTS,
 )

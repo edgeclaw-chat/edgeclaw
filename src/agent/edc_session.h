@@ -28,7 +28,8 @@ struct edc_session
     sds created_at;  /* ISO 8601 creation timestamp */
     sds last_active; /* ISO 8601 last-active timestamp */
 
-    /* Phase 4: 新旧双轨 — groups/tasks (新) + messages (旧, Phase 5 移除) */
+    /* 任务状态的唯一表示 (v3 起): groups/tasks。旧的 session->messages 轨道
+     * 与 v2 的读取兼容都已移除, 这里不再是"新旧双轨"。 */
     struct edc_task_group *groups; /* 双向链表: 所有 process groups */
     struct edc_task *active_task;  /* foreground group 内的 active task */
 

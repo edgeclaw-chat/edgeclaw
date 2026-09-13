@@ -16,10 +16,5 @@ extern sds edc_sandbox_verify_path(struct edc_config *conf, const char *path, bo
  * edc_sandbox_verify_path. */
 extern sds edc_sandbox_verify_path_at(struct edc_config *conf, const char *base, const char *path, bool writable,
                                       EdcError **error);
-/* Apply all kernel isolation layers to the current process (NS → Landlock →
- * seccomp). Reserved for a confined single-threaded child; currently unused --
- * the active path is the sandbox helper (src/agent/sandbox_helper.c), which
- * applies the same sequence itself. See the decision note in edc_sandbox.c. */
-extern bool edc_sandbox_apply(struct edc_config *conf);
 
 #endif

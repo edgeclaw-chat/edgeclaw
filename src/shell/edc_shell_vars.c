@@ -1,12 +1,12 @@
-#include "edc_shell.h"
+#include "edc_shell_vars.h"
 #include "sds.h"
 #include <stdlib.h>
 #include <string.h>
 
 /* ── $VAR 展开 (expand 阶段, deps 已完成后调用) ──────────────
  * 纯字符串处理, 不依赖 agent/session/scheduler —
- * 放在 shell_api 中使 //src/agent:agent 可以直接依赖, 避免
- * agent ↔ shell 的静态链接循环。 */
+ * 放在 //src/shell:shell_parse 中使 //src/agent:agent 可以直接依赖,
+ * 避免 agent ↔ shell 的静态链接循环。 */
 
 sds edc_shell_expand_vars(const char *input, edc_shell_var_resolver_fn resolver, void *user_data, sds *out_error)
 {

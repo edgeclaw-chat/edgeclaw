@@ -22,7 +22,7 @@
 #include "uthash.h"
 #include "utlist_fix.h"
 #include <dirent.h>
-#include <edc_shell.h>
+#include <edc_shell_vars.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>

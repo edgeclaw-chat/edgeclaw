@@ -15,22 +15,28 @@ cc_library(
 )
 
 
+# ── Shell 解析原语 (leaf: 只依赖 core，agent 可直接依赖) ──────
+#
+# 刻意不依赖 //src/agent:agent：agent 侧需要 cmd_parse（/task 参数解析）
+# 与 shell_vars（$VAR 展开），而下面的 shell 执行器又依赖 agent。把这
+# 两个 leaf 抽到本 target 后，依赖方向是 agent → shell_parse 单向，原来的
+# agent ↔ shell 环被断开（`bazel query 'somepath(//src/agent:agent,//src/shell:shell)'`
+# 为空）。不要往这里加任何依赖 agent 的源文件。
 cc_library(
-    name = "shell_api",
+    name = "shell_parse",
     srcs = [
         "edc_cmd_parse.c",
         "edc_shell_vars.c",
     ],
     hdrs = [
         "edc_cmd_parse.h",
-        "edc_commands.h",
-        "edc_completion.h",
-        "edc_shell.h",
+        "edc_shell_vars.h",
     ],
     includes = ["."],
     deps = [
         "//src/core:core",
     ],
+    linkstatic = True,
     visibility = ["//visibility:public"],
 )
 
@@ -57,7 +63,7 @@ cc_library(
     ],
     deps = [
         ":completion",
-        ":shell_api",
+        ":shell_parse",
         "//src/agent:agent",
         "//src/core:core",
         "//src:utlist_fix",

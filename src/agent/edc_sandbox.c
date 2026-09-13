@@ -1,10 +1,7 @@
 ﻿#include "edc_sandbox.h"
-#include "edc_bpf_sandbox.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
-#include "edc_landlock_sandbox.h"
-#include "edc_ns_sandbox.h"
 #include "log.h"
 #include <stdlib.h>
 #include <string.h>
@@ -31,9 +28,7 @@ bool edc_sandbox_init(struct edc_config *conf)
          * helper (see src/agent/sandbox_helper.c), NOT in the agent process:
          * the layers are irreversible and inherited, so applying them here
          * would sandbox the agent itself. In-process enforcement is the
-         * tool-layer path verification in edc_sandbox_verify_path().
-         * edc_sandbox_apply() below is reserved for a confined single-threaded
-         * child and is currently unused. */
+         * tool-layer path verification in edc_sandbox_verify_path(). */
         log_info("edc_sandbox: kernel isolation runs in the per-command helper; "
                  "path validation is the in-process enforcement");
     }
@@ -182,68 +177,4 @@ sds edc_sandbox_verify_path_at(struct edc_config *conf, const char *base, const 
     sds result = edc_sandbox_verify_path(conf, joined, writable, error);
     sdsfree(joined);
     return result;
-}
-
-/*
- * Apply every kernel sandbox layer to the *current process*: mount-namespace
- * (with deny masking), Landlock, then seccomp-BPF.
- *
- * ⚠️ Reserved, currently UNUSED. The layers are irreversible and inherited, so
- * this must only ever run in the confined process -- never in the agent (it
- * would sandbox the agent itself), and never between fork() and exec() in the
- * multithreaded agent (only async-signal-safe calls are allowed there, and
- * these backends log and allocate). The active path applies the same sequence
- * in the separate, single-threaded sandbox helper right before it execs /bin/sh
- * (see src/agent/sandbox_helper.c); that code cannot call this function because
- * the helper links only the tiny //src/agent:sandbox_backends library, not
- * //src/agent:agent. Keep the two sequences in sync: namespace first (it needs
- * unshare()/mount(), which the seccomp filter denies), then Landlock, then
- * seccomp with block_metadata = !ns_enforced.
- *
- * Returns true when the sandbox is disabled or at least one kernel layer took
- * effect; false only when nothing could be applied and enforcement falls back
- * to path validation alone.
- */
-bool edc_sandbox_apply(struct edc_config *conf)
-{
-#ifdef __linux__
-    if (!conf->enable_sandbox || !conf->sandbox_root_real)
-    {
-        log_info("edc_sandbox: sandbox not enabled, not applied");
-        return true;
-    }
-
-    /* seccomp filter installation requires CAP_SYS_ADMIN or NO_NEW_PRIVS; set
-     * it here so the seccomp layer works even when Landlock is unavailable.
-     * (The sandbox helper does the same.) */
-    prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
-
-    /*
-     * Layer order matters: the mount-namespace backend needs unshare()/mount(),
-     * which the seccomp filter denies, so it runs FIRST. When it is enforced the
-     * read-only paths are immutable at the VFS level (EROFS) and the path-blind
-     * seccomp metadata rules are unnecessary; otherwise the seccomp filter
-     * blocks those mutators globally as a fallback.
-     */
-    bool ns_enforced = false;
-    bool ns_ok = edc_ns_sandbox_apply((const char **)conf->sandbox_ro_paths, (const char **)conf->sandbox_rw_paths,
-                                      (const char **)conf->sandbox_deny_paths, &ns_enforced);
-    bool landlock_ok =
-        edc_landlock_sandbox_apply((const char **)conf->sandbox_ro_paths, (const char **)conf->sandbox_rw_paths);
-    bool seccomp_ok = edc_bpf_sandbox_apply_ex(conf->sandbox_root_real, !ns_enforced);
-
-    log_info("edc_sandbox: kernel layers ns=%s(%s) landlock=%s seccomp=%s", ns_ok ? "on" : "off",
-             ns_enforced ? "enforced" : "not-enforced", landlock_ok ? "on" : "off", seccomp_ok ? "on" : "off");
-
-    if (!ns_enforced && !landlock_ok && !seccomp_ok)
-    {
-        log_warn("edc_sandbox: no kernel sandbox available; relying on path validation only");
-        return false;
-    }
-
-    return true;
-#else
-    (void)conf;
-    return true;
-#endif
 }
