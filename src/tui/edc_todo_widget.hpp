@@ -51,6 +51,15 @@ class TodoWidget : public ::ftxui::ComponentBase
     // renders as a pure function of items + owner state.
     void SetOwnerState(const std::string &task_state);
 
+    // The section in two halves, the way the task tree is split (see
+    // TUIWindow): the header row owns the title, the task it names and the
+    // progress counter, and the body owns the items. The window pins the header
+    // above a ScrollView so a short sidebar can squeeze the list without taking
+    // the section's heading (or the rule under it) away with it. Render() is the
+    // two halves stacked and inset -- what a caller that wants the whole block
+    // uses.
+    ::ftxui::Element RenderHeader();
+    ::ftxui::Element RenderBody();
     ::ftxui::Element OnRender() override;
     bool OnEvent(::ftxui::Event) override;
     bool Focusable() const override
@@ -59,6 +68,12 @@ class TodoWidget : public ::ftxui::ComponentBase
     }
 
   private:
+    // Width a section row may use: the content box measured on the previous frame
+    // (reflect() inside the section's own inset), or the default sidebar width
+    // before the first measurement. Shared by the two halves so their rows line
+    // up on one grid.
+    int RowWidth() const;
+
     std::vector<Item> items_;
     int completed_ = 0;
     // The task whose list this is, shown as "#<id>" so the reader can tell at a

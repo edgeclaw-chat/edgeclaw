@@ -264,6 +264,55 @@ std::vector<edc::TodoWidget::Item> TaggedItems()
 constexpr int kFirstItemRow = 3;
 constexpr int kContentColumn = 6; // 2 indent + "[x] " marker
 
+
+// The section is built in two halves because the window pins the header above a
+// scrolling list (edc_sidebar.cpp, same shape as the task tree). These pin that
+// the split is faithful -- rendering the halves is rendering the section -- and
+// that each half carries only its own part, which is what makes the pinning work.
+void TestHeaderAndBodyHalves()
+{
+    std::cout << "the section renders as a pinned header plus a list\n";
+
+    edc::TodoWidget widget;
+    widget.SetItems(MixedItems(), "7");
+    widget.SetOwnerState("LLM_PROCESSING");
+
+    auto whole = RenderWidget(widget, 36, 10);
+
+    // Rendering the halves the way the window composes them must produce the same
+    // frame, cell for cell: a split that silently changed the section would show up
+    // in every sidebar screenshot.
+    auto halves = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(36), ::ftxui::Dimension::Fixed(10));
+    for (int pass = 0; pass < 2; pass++)
+    {
+        halves = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(36), ::ftxui::Dimension::Fixed(10));
+        ::ftxui::Render(halves, ::ftxui::vbox({widget.RenderHeader(), widget.RenderBody()}) |
+                                    ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) | ::ftxui::flex);
+    }
+    Check(SameColors(whole, halves), "the two halves compose to exactly the whole section");
+
+    // The header half holds the title, the task it names and the summary, and none
+    // of the items; the body holds the items and none of the chrome. (The header is
+    // what the window pins, so it must not need the list rows to make sense.)
+    auto header_only = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(36), ::ftxui::Dimension::Fixed(3));
+    ::ftxui::Render(header_only, widget.RenderHeader() | ::ftxui::flex);
+    const std::string header_text = header_only.ToString();
+    Check(header_text.find("Todos") != std::string::npos, "the header names the section");
+    Check(header_text.find("#7") != std::string::npos, "and the task it belongs to");
+    Check(header_text.find("1/3") != std::string::npos, "and the progress summary");
+    Check(header_text.find("running") == std::string::npos, "the header carries no item text");
+
+    auto body_only = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(36), ::ftxui::Dimension::Fixed(8));
+    for (int pass = 0; pass < 2; pass++)
+    {
+        body_only = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(36), ::ftxui::Dimension::Fixed(8));
+        ::ftxui::Render(body_only, widget.RenderBody() | ::ftxui::flex);
+    }
+    const std::string body_text = body_only.ToString();
+    Check(body_text.find("running") != std::string::npos, "the body carries the items");
+    Check(body_text.find("Todos") == std::string::npos, "the body carries no section title");
+}
+
 void TestPriorityIsPartOfTheItem()
 {
     std::cout << "the priority tag wears the item's own styling\n";
@@ -385,6 +434,7 @@ int main()
     TestInProgressRowHoldsItsAccent();
     TestOtherRowsDoNotMove();
     TestPriorityIsPartOfTheItem();
+    TestHeaderAndBodyHalves();
     TestFailedOwnerTurnsTheStepRed();
 
     if (g_failures == 0)

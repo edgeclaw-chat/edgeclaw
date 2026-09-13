@@ -58,7 +58,18 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
     return false;
 }
 
-::ftxui::Element TodoWidget::OnRender()
+int TodoWidget::RowWidth() const
+{
+    // Width available for a row. reflect() sits on each half *inside* the
+    // (empty-style) inset the window or Render() applies; before the first
+    // measurement fall back to the default sidebar width (36) minus the 2 inset
+    // columns.
+    if (content_box_.x_min != 0 || content_box_.x_max != 0 || content_box_.y_min != 0 || content_box_.y_max != 0)
+        return content_box_.x_max - content_box_.x_min + 1;
+    return 34;
+}
+
+::ftxui::Element TodoWidget::RenderHeader()
 {
     using namespace ::ftxui;
 
@@ -66,46 +77,20 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
     // palette is the single source of truth for chrome, accents and the pane
     // background shared with TaskWidget / the chat surface.
     const auto &pal = style::palette();
-    // Scheme A: the todo list no longer re-uses the task-tree palette state
-    // by state. Only one item is ever highlighted — the in_progress row; pending
-    // and completed rows are neutral gray (completed keeps its strikethrough).
-    // One quiet block with at most one bright row, instead of a second rainbow
-    // beside the Tasks tree.
-    //
-    // The in_progress row's one colour, read through the same table the task tree
-    // paints its markers with (style::TaskState*), so the two panes cannot
-    // disagree about what a failure looks like: ERROR -> the failure colour, the
-    // very red the task's own marker wears, because a run that failed must not
-    // leave its last step looking merely "current"; anything else -> the plain
-    // accent.
-    //
-    // The row is a *static* highlight. It used to breathe with the working bar,
-    // but that motion carried nothing the screen did not already say: the task's
-    // own marker a few rows above breathes on the same condition (the window
-    // derives both from this one state string), so the row blinking meant "that
-    // marker is blinking", and it blinked the body text -- the most important text
-    // in the sidebar -- down to near-invisibility in the light theme. The widget
-    // therefore takes no clock at all (see SetOwnerState): the list is a pure
-    // function of its items and the owner's state.
-    const ::ftxui::Color doing_tint =
-        style::TaskStateFailed(owner_state_) ? style::TaskStateColor(pal, owner_state_) : pal.accent;
 
     // Blank cells kept free at the right edge of every full-width row: the sidebar is
     // the window's rightmost element, so rows would otherwise butt against the
     // terminal edge while the left side kept its gutter.
     constexpr int kRightPad = 2;
-
     const size_t total = items_.size();
-    const size_t shown = std::min(total, kMaxVisibleRows);
 
-    // Width available for a row. reflect() below sits on the vbox *inside* the
-    // (empty-style) border; before the first measurement fall back to the
-    // default sidebar width (36) minus the 2 border columns.
-    int row_width = 34;
-    if (content_box_.x_min != 0 || content_box_.x_max != 0 || content_box_.y_min != 0 || content_box_.y_max != 0)
-        row_width = content_box_.x_max - content_box_.x_min + 1;
+    // Row width comes from the previous frame's measurement of this section
+    // (reflect() below), falling back to the default sidebar width before the
+    // first pass. Shared with the body so both halves line their rows up on the
+    // same grid.
+    const int row_width = RowWidth();
 
-    Elements lines;
+    Elements header_row;
     {
         // Collapsible section header: the arrow shows the fold state and the
         // summary always reflects the whole list. The header row is full
@@ -143,18 +128,66 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
         // gray). Bold is what keeps it readable as a number rather than chrome.
         header.push_back(text(summary) | color(pal.accent) | bold);
         header.push_back(text(std::string(kRightPad, ' ')));
-        lines.push_back(hbox(std::move(header)) | reflect(header_box_));
+        header_row.push_back(hbox(std::move(header)) | reflect(header_box_));
     }
 
-    // A collapsed section keeps only its header row. An expanded but empty one still
-    // draws its separator plus a dim "(empty)" marker, so the fold keeps a visible
-    // body and the sidebar layout stays stable.
-    if (!collapsed_)
-    {
-        lines.push_back(separator() | color(pal.line_dim));
-        if (items_.empty())
-            lines.push_back(text("  (empty)") | dim | color(pal.text_dim));
-    }
+    // The rule under the title belongs to the header, not the scrolling body:
+    // the window can pin this half above the list (the task tree pins its rule
+    // the same way), and a pinned rule must not drift with the items.
+    if (collapsed_)
+        return vbox(std::move(header_row)) | reflect(content_box_);
+    header_row.push_back(separator() | color(pal.line_dim));
+    return vbox(std::move(header_row)) | reflect(content_box_);
+}
+
+::ftxui::Element TodoWidget::RenderBody()
+{
+    using namespace ::ftxui;
+
+    // All colors come from the central style palette (edc_style.hpp); the
+    // palette is the single source of truth for chrome, accents and the pane
+    // background shared with TaskWidget / the chat surface.
+    const auto &pal = style::palette();
+
+    // Scheme A: the todo list no longer re-uses the task-tree palette state
+    // by state. Only one item is ever highlighted — the in_progress row; pending
+    // and completed rows are neutral gray (completed keeps its strikethrough).
+    // One quiet block with at most one bright row, instead of a second rainbow
+    // beside the Tasks tree.
+    //
+    // The in_progress row's one colour, read through the same table the task tree
+    // paints its markers with (style::TaskState*), so the two panes cannot
+    // disagree about what a failure looks like: ERROR -> the failure colour, the
+    // very red the task's own marker wears, because a run that failed must not
+    // leave its last step looking merely "current"; anything else -> the plain
+    // accent.
+    //
+    // The row is a *static* highlight. It used to breathe with the working bar,
+    // but that motion carried nothing the screen did not already say: the task's
+    // own marker a few rows above breathes on the same condition (the window
+    // derives both from this one state string), so the row blinking meant "that
+    // marker is blinking", and it blinked the body text -- the most important text
+    // in the sidebar -- down to near-invisibility in the light theme. The widget
+    // therefore takes no clock at all (see SetOwnerState): the list is a pure
+    // function of its items and the owner's state.
+    const ::ftxui::Color doing_tint =
+        style::TaskStateFailed(owner_state_) ? style::TaskStateColor(pal, owner_state_) : pal.accent;
+
+    // Blank cells kept free at the right edge of every full-width row: the sidebar is
+    // the window's rightmost element, so rows would otherwise butt against the
+    // terminal edge while the left side kept its gutter.
+    constexpr int kRightPad = 2;
+    const size_t total = items_.size();
+    const size_t shown = std::min(total, kMaxVisibleRows);
+    const int row_width = RowWidth();
+
+    Elements lines;
+    if (collapsed_)
+        return vbox(std::move(lines)) | reflect(content_box_);
+    // An expanded but empty section still draws a dim marker, so the fold keeps a
+    // visible body and the sidebar layout stays stable.
+    if (items_.empty())
+        lines.push_back(text("  (empty)") | dim | color(pal.text_dim));
 
     // Fixed cells per row: 2 indent + a 3-cell bracket marker ("[ ]", "[•]"
     // or "[✓]") + 1 gap after the marker. Content wraps across several lines
@@ -163,118 +196,128 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
     constexpr int kFixedCells = 6;
     const std::string cont_prefix(kFixedCells, ' ');
 
-    if (!collapsed_)
+    for (size_t i = 0; i < shown; i++)
     {
-        for (size_t i = 0; i < shown; i++)
+        const Item &item = items_[i];
+        const bool done = item.status == "completed";
+        const bool doing = item.status == "in_progress";
+        const bool cancelled = item.status == "cancelled";
+
+        // Per-state marker in a bracket box: "[ ]" pending, "[•]" in_progress,
+        // "[✓]" completed. The box wears the row's one tint only on the
+        // in_progress row (matching its text) and dim gray otherwise, so a
+        // marker adds no second hue; completed rows are also struck through.
+        Element marker;
+        if (doing)
+            marker = text("  [•] ") | color(doing_tint);
+        else if (done)
+            marker = text("  [✓] ") | color(pal.text_dim) | dim;
+        else if (cancelled)
+            marker = text("  [~] ") | color(pal.text_dim) | dim;
+        else
+            marker = text("  [ ] ") | color(pal.text_dim) | dim;
+
+        // Content wraps to the whole row width minus the marker column
+        // and the right margin; single-line ellipsis truncation is only
+        // a last resort for a description longer than kMaxContentLines
+        // wrapped lines.
+        const int budget = row_width - kFixedCells - kRightPad;
+
+        // The priority tag is docked right-aligned on the *first* content line, so
+        // that line leaves room for it (re-wrapping at a narrower budget when it
+        // would collide). When the pane is too narrow for the tag, it is dropped and
+        // the content keeps the full width.
+        const bool has_tag = !item.priority.empty();
+        bool dock_tag = false;
+        int wrap_budget = budget;
+        if (has_tag)
         {
-            const Item &item = items_[i];
-            const bool done = item.status == "completed";
-            const bool doing = item.status == "in_progress";
-            const bool cancelled = item.status == "cancelled";
-
-            // Per-state marker in a bracket box: "[ ]" pending, "[•]" in_progress,
-            // "[✓]" completed. The box wears the row's one tint only on the
-            // in_progress row (matching its text) and dim gray otherwise, so a
-            // marker adds no second hue; completed rows are also struck through.
-            Element marker;
-            if (doing)
-                marker = text("  [•] ") | color(doing_tint);
-            else if (done)
-                marker = text("  [✓] ") | color(pal.text_dim) | dim;
-            else if (cancelled)
-                marker = text("  [~] ") | color(pal.text_dim) | dim;
-            else
-                marker = text("  [ ] ") | color(pal.text_dim) | dim;
-
-            // Content wraps to the whole row width minus the marker column
-            // and the right margin; single-line ellipsis truncation is only
-            // a last resort for a description longer than kMaxContentLines
-            // wrapped lines.
-            const int budget = row_width - kFixedCells - kRightPad;
-
-            // The priority tag is docked right-aligned on the *first* content line, so
-            // that line leaves room for it (re-wrapping at a narrower budget when it
-            // would collide). When the pane is too narrow for the tag, it is dropped and
-            // the content keeps the full width.
-            const bool has_tag = !item.priority.empty();
-            bool dock_tag = false;
-            int wrap_budget = budget;
-            if (has_tag)
-            {
-                const int tagw = StringWidth("[" + item.priority + "]");
-                constexpr int kTagGapCells = 2;
-                constexpr int kMinTagLineBudget = 8;
-                const int room = budget - tagw - kTagGapCells;
-                dock_tag = room >= kMinTagLineBudget;
-                if (dock_tag)
-                    wrap_budget = room;
-            }
-            std::vector<std::string> wrapped = WrapToWidth(item.content, budget);
-            int used_budget = budget;
-            if (dock_tag && !wrapped.empty() && StringWidth(wrapped[0]) > wrap_budget)
-            {
-                wrapped = WrapToWidth(item.content, wrap_budget);
-                used_budget = wrap_budget;
-            }
-            if (wrapped.empty())
-                wrapped.push_back(std::string());
-            if (wrapped.size() > kMaxContentLines)
-            {
-                wrapped.resize(kMaxContentLines);
-                std::string &last = wrapped.back();
-                if (used_budget - StringWidth(last) >= 1)
-                    last += "…";
-            }
-
-            // Content styling: only the in_progress row carries the tint — the
-            // single bright row of the whole list. Pending and completed rows
-            // are dim neutral gray; completed adds strikethrough so "done"
-            // stays legible without a color of its own. Every wrapped line
-            // of the item gets the same treatment.
-            auto style_content = [&](Element e) -> Element {
-                if (doing)
-                    return e | color(doing_tint);
-                if (done || cancelled)
-                    return e | dim | strikethrough | color(pal.text_dim);
-                return e | dim | color(pal.text_dim);
-            };
-
-            Elements item_lines;
-            // First content line: the marker stays glued to the left, the
-            // content takes the middle and the priority tag (when docked)
-            // sits at the far right, its right edge held kRightPad off the
-            // pane border. flex() on the content pushes the tag across, so
-            // every item's tag lands in the same right-aligned column no
-            // matter how long the content is.
-            Elements first_children;
-            first_children.push_back(std::move(marker));
-            first_children.push_back(style_content(text(wrapped[0])) | flex);
+            const int tagw = StringWidth("[" + item.priority + "]");
+            constexpr int kTagGapCells = 2;
+            constexpr int kMinTagLineBudget = 8;
+            const int room = budget - tagw - kTagGapCells;
+            dock_tag = room >= kMinTagLineBudget;
             if (dock_tag)
-            {
-                // The tag wears the item's own styling, exactly like the content:
-                // it is part of the item, not a separate column that happens to
-                // share a row. A highlighted row highlights it (in the same
-                // colour, failure red included), a struck-through row strikes it,
-                // so the line runs unbroken from the first word to the closing
-                // bracket -- the flex gap between them already carries the
-                // content's attributes across (pinned in test_todo_widget.cpp).
-                first_children.push_back(style_content(text("[" + item.priority + "]")));
-            }
-            first_children.push_back(text(std::string(kRightPad, ' ')));
-            item_lines.push_back(hbox(std::move(first_children)));
-            for (size_t ln = 1; ln < wrapped.size(); ln++)
-                item_lines.push_back(hbox({text(cont_prefix), style_content(text(wrapped[ln]))}));
-
-            lines.push_back(vbox(std::move(item_lines)));
+                wrap_budget = room;
         }
-
-        if (total > shown)
+        std::vector<std::string> wrapped = WrapToWidth(item.content, budget);
+        int used_budget = budget;
+        if (dock_tag && !wrapped.empty() && StringWidth(wrapped[0]) > wrap_budget)
         {
-            lines.push_back(text("  … +" + std::to_string(total - shown) + " more") | dim | color(pal.text_dim));
+            wrapped = WrapToWidth(item.content, wrap_budget);
+            used_budget = wrap_budget;
         }
+        if (wrapped.empty())
+            wrapped.push_back(std::string());
+        if (wrapped.size() > kMaxContentLines)
+        {
+            wrapped.resize(kMaxContentLines);
+            std::string &last = wrapped.back();
+            if (used_budget - StringWidth(last) >= 1)
+                last += "…";
+        }
+
+        // Content styling: only the in_progress row carries the tint — the
+        // single bright row of the whole list. Pending and completed rows
+        // are dim neutral gray; completed adds strikethrough so "done"
+        // stays legible without a color of its own. Every wrapped line
+        // of the item gets the same treatment.
+        auto style_content = [&](Element e) -> Element {
+            if (doing)
+                return e | color(doing_tint);
+            if (done || cancelled)
+                return e | dim | strikethrough | color(pal.text_dim);
+            return e | dim | color(pal.text_dim);
+        };
+
+        Elements item_lines;
+        // First content line: the marker stays glued to the left, the
+        // content takes the middle and the priority tag (when docked)
+        // sits at the far right, its right edge held kRightPad off the
+        // pane border. flex() on the content pushes the tag across, so
+        // every item's tag lands in the same right-aligned column no
+        // matter how long the content is.
+        Elements first_children;
+        first_children.push_back(std::move(marker));
+        first_children.push_back(style_content(text(wrapped[0])) | flex);
+        if (dock_tag)
+        {
+            // The tag wears the item's own styling, exactly like the content:
+            // it is part of the item, not a separate column that happens to
+            // share a row. A highlighted row highlights it (in the same
+            // colour, failure red included), a struck-through row strikes it,
+            // so the line runs unbroken from the first word to the closing
+            // bracket -- the flex gap between them already carries the
+            // content's attributes across (pinned in test_todo_widget.cpp).
+            first_children.push_back(style_content(text("[" + item.priority + "]")));
+        }
+        first_children.push_back(text(std::string(kRightPad, ' ')));
+        item_lines.push_back(hbox(std::move(first_children)));
+        for (size_t ln = 1; ln < wrapped.size(); ln++)
+            item_lines.push_back(hbox({text(cont_prefix), style_content(text(wrapped[ln]))}));
+
+        lines.push_back(vbox(std::move(item_lines)));
     }
 
-    return vbox(std::move(lines)) | reflect(content_box_) | borderStyled(BorderStyle::EMPTY) | bgcolor(pal.pane_bg);
+    if (total > shown)
+    {
+        lines.push_back(text("  … +" + std::to_string(total - shown) + " more") | dim | color(pal.text_dim));
+    }
+
+    return vbox(std::move(lines)) | reflect(content_box_);
+}
+
+::ftxui::Element TodoWidget::OnRender()
+{
+    using namespace ::ftxui;
+
+    // The whole section, as one element: the window splits it in two instead
+    // (RenderHeader / RenderBody) so it can pin the header above a viewport
+    // that scrolls when the sidebar is short. Rendering it whole is exactly
+    // that composition with the section's own inset around it, kept for
+    // callers and tests that want the section as a single block.
+    return vbox({RenderHeader(), RenderBody()}) |
+           borderStyled(::ftxui::BorderStyle::EMPTY) | bgcolor(style::palette().pane_bg);
 }
 
 } // namespace edc

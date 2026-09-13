@@ -11,6 +11,7 @@
 // clamped once, from ScrollNode::Render, after layout has settled.
 #include "edc_chat_widget.hpp"
 #include "edc_scroll_view.hpp"
+#include "edc_sidebar.hpp"
 #include "edc_task_widget.hpp"
 #include "edc_todo_widget.hpp"
 #include "ftxui/component/component.hpp"
@@ -325,6 +326,88 @@ std::shared_ptr<edc::TaskWidget> MakeTallTaskWidget()
     return task;
 }
 
+
+// The same tall tree, but with the session's active task at the very end: the
+// sidebar anchors this widget's viewport to its bottom (follow_tail), so the
+// row the window is pointed at is the last one the tree draws.
+std::shared_ptr<edc::TaskWidget> MakeDeepActiveTaskWidget()
+{
+    std::vector<std::string> group_ids;
+    std::vector<std::string> task_ids;
+    const int kGroups = 24;
+    for (int i = 0; i < kGroups; i++)
+    {
+        group_ids.push_back("g" + std::to_string(i));
+        task_ids.push_back("t" + std::to_string(i));
+    }
+    std::vector<edc_c_task_info> infos(kGroups);
+    std::vector<edc_c_task_group> groups(kGroups);
+    for (int i = 0; i < kGroups; i++)
+    {
+        infos[i] = edc_c_task_info{};
+        infos[i].task_id = task_ids[i].c_str();
+        infos[i].state = "COMPLETED";
+        infos[i].description = "";
+        infos[i].is_active = (i == kGroups - 1); // the newest task is the one running
+        groups[i] = edc_c_task_group{};
+        groups[i].group_id = group_ids[i].c_str();
+        groups[i].member_count = 1;
+        groups[i].msg_count = 1;
+        groups[i].task_count = 1;
+        groups[i].tasks = &infos[i];
+    }
+    edc_c_task_snapshot snap{};
+    snap.session_id = "s";
+    snap.session_name = "session";
+    snap.group_count = kGroups;
+    snap.groups = groups.data();
+
+    auto task = std::make_shared<edc::TaskWidget>();
+    task->SetSnapshot(&snap);
+    return task;
+}
+
+// The frame without ANSI styling. These assertions are about which rows are on
+// screen, not their colours -- and whether ftxui emits colour depends on the
+// terminal it thinks it is talking to, which a test process has none of.
+std::string Plain(const std::string &frame)
+{
+    std::string out;
+    for (size_t i = 0; i < frame.size(); i++)
+    {
+        if (frame[i] != 0x1b)
+        {
+            out += frame[i];
+            continue;
+        }
+        while (i < frame.size() && !isalpha(static_cast<unsigned char>(frame[i])))
+            i++;
+    }
+    return out;
+}
+
+// The sidebar as the application builds it: edc::MakeSidebar is the very factory
+// TUIWindow uses, so these assertions pin the real layout rather than a copy of it.
+struct SidebarHarness
+{
+    edc::Sidebar sidebar;
+
+    // The ScrollViews commit their offset during the render pass, so the frame a
+    // fresh harness draws is provisional (in the TUI the next frame corrects it and
+    // nobody sees it). Drawing a few times is what a running window does.
+    std::string Draw(int width, int height)
+    {
+        std::string frame;
+        for (int pass = 0; pass < 3; pass++)
+        {
+            auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(width), ftxui::Dimension::Fixed(height));
+            ftxui::Render(screen, sidebar.pane->Render() | ftxui::flex);
+            frame = screen.ToString();
+        }
+        return frame;
+    }
+};
+
 // The sidebar's Tasks section is split in two: everything above the group rows
 // -- the "Tasks" header row, the session meta row and the rule under them -- is
 // pinned above a ScrollView that owns the list, so a wheel moves the tree
@@ -380,45 +463,63 @@ void test_pinned_section_header_stays_put()
     PASS();
 }
 
-// The sidebar column stacks the Tasks section above the Todo section. A long task
-// tree must not push the todos out of the pane: the Tasks section gives space back
-// (and scrolls its overflow), which is what keeps the Todo section fully visible.
-void test_long_task_tree_keeps_the_todos_visible()
+// A sidebar too short for both sections used to hand the todo list everything it
+// asked for -- ftxui's flex_shrink starts at 0, so the todo section never gave a
+// row back and the task tree (which does shrink) was squeezed until its own
+// section header was gone. Both sections are fit-content ScrollViews now, so a
+// short pane is shared, and the tree is anchored to its bottom: what leaves the
+// window is the oldest rows, never the row the session is working on.
+void test_squeezed_sidebar_keeps_the_working_row_and_both_headings()
 {
-    TEST("a long task tree shrinks instead of pushing the todos out");
+    TEST("a squeezed sidebar keeps the active task's row and both section headings");
 
-    auto task = MakeTallTaskWidget();
-    auto header = ftxui::Renderer(task, [task] { return task->RenderHeader(); });
-    auto body = ftxui::Renderer(task, [task] { return task->RenderBody(); });
-    auto view = std::make_shared<edc::ScrollView>(body,
-                                                  edc::ScrollOptions{edc::ScrollMode::kFitContent,
-                                                                     /*show_indicator=*/false, /*follow_tail=*/false,
-                                                                     /*focusable=*/false},
-                                                  header);
-
+    auto task = MakeDeepActiveTaskWidget();
     auto todo = std::make_shared<edc::TodoWidget>();
-    std::vector<edc::TodoWidget::Item> items(3);
-    for (int i = 0; i < 3; i++)
+    std::vector<edc::TodoWidget::Item> items(8);
+    for (int i = 0; i < 8; i++)
     {
         items[i].content = "TODO-" + std::to_string(i);
-        items[i].status = "pending";
+        items[i].status = i < 3 ? "completed" : (i == 3 ? "in_progress" : "pending");
     }
-    todo->SetItems(items, "1");
+    todo->SetItems(items, "t23");
+    SidebarHarness sidebar;
+    sidebar.sidebar = edc::MakeSidebar(task, todo);
 
     const int width = 40;
     const int height = 16;
-    auto draw = [&] {
-        auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(width), ftxui::Dimension::Fixed(height));
-        ftxui::Render(screen, ftxui::vbox({
-                                  view->Render() | ftxui::borderStyled(ftxui::BorderStyle::EMPTY),
-                                  todo->Render(),
-                              }) | ftxui::flex);
-        return screen.ToString();
-    };
+    const std::string plain = Plain(sidebar.Draw(width, height));
 
-    const std::string frame = draw();
-    ASSERT(frame.find("TODO-2") != std::string::npos, "the last todo was pushed out of the pane");
-    ASSERT(frame.find("Group g23") == std::string::npos, "the task tree kept its full height instead of shrinking");
+    ASSERT(plain.find("■ t23") != std::string::npos, "the active task's row was pushed out of the pane");
+    ASSERT(plain.find("Group g0") == std::string::npos, "the oldest rows did not scroll out: the top was kept");
+    ASSERT(plain.find("Tasks") != std::string::npos, "the pinned Tasks heading was squeezed out");
+    ASSERT(plain.find("Todos") != std::string::npos, "the pinned Todos heading was squeezed out");
+
+    // At a pane this short the list keeps its natural height: the *tree* is the one
+    // that gives rows back (the cap is a ceiling, not a target, and the list is not
+    // squeezed together with the tree as it would be if both were flexible).
+    // With a little more room both sections are readable, and the todo list's own
+    // rows are not lost either: it keeps its first rows and scrolls the rest.
+    const int roomier = height + 8;
+    const std::string roomier_frame = Plain(sidebar.Draw(width, roomier));
+    ASSERT(roomier_frame.find("TODO-0") != std::string::npos, "the todo list lost its first row");
+    auto wheel_down = ftxui::Event::Mouse(
+        "", ftxui::Mouse{ftxui::Mouse::WheelDown, ftxui::Mouse::Pressed, false, false, false, 5, roomier - 3});
+    for (int i = 0; i < 8; i++)
+        sidebar.sidebar.todos->OnEvent(wheel_down);
+    const std::string scrolled = Plain(sidebar.Draw(width, roomier));
+    ASSERT(scrolled.find("TODO-7") != std::string::npos || scrolled.find("TODO-6") != std::string::npos,
+           "the todo list's hidden rows are not reachable by scrolling");
+    ASSERT(scrolled.find("■ t23") != std::string::npos,
+           "scrolling the todos disturbed the task tree's bottom anchor");
+
+    // And the tree's own rows above stay reachable too: scrolling up releases the
+    // bottom anchor, so the older groups can be read.
+    auto wheel_up = ftxui::Event::Mouse(
+        "", ftxui::Mouse{ftxui::Mouse::WheelUp, ftxui::Mouse::Pressed, false, false, false, 5, 4});
+    for (int i = 0; i < 20; i++)
+        sidebar.sidebar.tasks->OnEvent(wheel_up);
+    ASSERT(Plain(sidebar.Draw(width, roomier)).find("Group g0") != std::string::npos,
+           "scrolling up did not release the bottom anchor");
     PASS();
 }
 
@@ -436,7 +537,7 @@ int main()
     test_new_message_does_not_disturb_reader();
     test_chat_is_not_keyboard_focusable();
     test_pinned_section_header_stays_put();
-    test_long_task_tree_keeps_the_todos_visible();
+    test_squeezed_sidebar_keeps_the_working_row_and_both_headings();
 
     printf("\n=== Results: %d/%d tests passed ===\n", tests_passed, tests_run);
     return tests_run == tests_passed ? EXIT_SUCCESS : EXIT_FAILURE;

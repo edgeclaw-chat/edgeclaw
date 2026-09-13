@@ -1,4 +1,5 @@
 #include "edc_tui_window.hpp"
+#include "edc_sidebar.hpp"
 #include "edc_chat_transcript.hpp"
 #include "edc_chat_widget.hpp"
 #include "edc_input.hpp"
@@ -391,32 +392,12 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
     // ResizableSplit keeps "main" on the right at a drag-adjustable width; the
     // separator is a blank column, so the sidebar stays borderless but grabbable.
     auto main_area = ::ftxui::Renderer(container_, [this] { return RenderMain(); });
-    // The container child keeps mouse/key events reaching both widgets (a childless
-    // Renderer would swallow them: TaskWidget needs its group-header clicks, the todo
-    // section its header). The task tree is the only section that can outgrow the pane,
-    // so it lives in a fit-content ScrollView: natural height while it fits, then it
-    // shrinks to what the Todo section leaves and scrolls the overflow. No keyboard
-    // focus, no tail-follow: a refresh must not steal Tab/arrows or yank the viewport.
-    auto task_header = ::ftxui::Renderer(task_widget_, [this] { return task_widget_->RenderHeader(); });
-    auto task_body = ::ftxui::Renderer(task_widget_, [this] { return task_widget_->RenderBody(); });
-    auto task_scroll = std::make_shared<ScrollView>(task_body,
-                                                    ScrollOptions{ScrollMode::kFitContent, /*show_indicator=*/false,
-                                                                  /*follow_tail=*/false,
-                                                                  /*focusable=*/false},
-                                                    task_header);
-    auto right_column = ::ftxui::Container::Vertical({task_scroll, todo_widget_});
-    auto right_pane = ::ftxui::Renderer(right_column, [this, task_scroll] {
-        // The sections stack with no divider (a separator would slice the sidebar
-        // into fragments); one EMPTY border keeps the pinned header and the rows
-        // under it sharing an inset.
-        ::ftxui::Elements col = {task_scroll->Render() | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY),
-                                 todo_widget_->Render()};
-        // The column itself flexes so the sidebar background covers the whole
-        // pane, but its children stay at natural height and are laid out from
-        // the top: leftover vertical space remains at the bottom instead of
-        // being absorbed by the task tree to push the todo section down.
-        return ::ftxui::vbox(std::move(col)) | ::ftxui::bgcolor(style::palette().pane_bg) | ::ftxui::flex;
-    });
+    // The sidebar column is built in edc_sidebar.cpp so a test can compose the
+    // very same layout (see MakeSidebar: both sections fit-content with their
+    // headers pinned, the tree anchored to its bottom -- that anchoring is what
+    // keeps the active task's row on screen when the todo list has a lot to say).
+    const Sidebar sidebar = MakeSidebar(task_widget_, todo_widget_);
+    auto right_pane = sidebar.pane;
     split_ = ::ftxui::ResizableSplit({
         right_pane,                         // main (right pane)
         main_area,                          // back (left pane)
