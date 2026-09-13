@@ -15,8 +15,9 @@ namespace edc
 // Its "▾/▸ Todos" header toggles the items and always stays visible with the progress
 // summary. It starts collapsed and auto-expands on the first non-empty list. Item text is
 // word-wrapped, each item carries a priority tag, cancelled items are struck through.
-// The single accent of the list is the in_progress row, and while an item is running that
-// accent breathes (shared working animation, see style::breath_accent).
+// The single highlight of the list is the in_progress row -- a static colour, never a
+// pulse -- and it takes the failure colour when the task that owns the list failed
+// (see SetOwnerState).
 class TodoWidget : public ::ftxui::ComponentBase
 {
   public:
@@ -35,20 +36,20 @@ class TodoWidget : public ::ftxui::ComponentBase
     // resets the summary to 0/0, but the header stays visible.
     void SetItems(const std::vector<Item> &items, const std::string &task_id);
 
-    // The owning task's scheduler state ("" when unattached or unknown) plus the
-    // animation clock for the in_progress row, in ms (see
-    // TUIWindow::TickAnimations). The widget holds items, not task state, so the
-    // window supplies what only it knows -- and the row is painted through the
-    // same task-state table the task tree uses (style::TaskState*), so the two
-    // panes cannot disagree about what is running or what failed:
-    //   processing -> the row breathes (the shared working animation);
-    //   ERROR      -> the row takes the failure colour, exactly like the task's
-    //                 own marker above -- a failed run must not leave its step
-    //                 looking merely "current";
-    //   anything else -> the section's plain accent, held still, so an item left
-    //                 in_progress by a task that finished or is waiting for input
-    //                 does not pulse for ever.
-    void SetOwnerState(const std::string &task_state, long long elapsed_ms);
+    // The owning task's scheduler state ("" when unattached or unknown). The
+    // widget holds items, not task state, so the window supplies what only it
+    // knows -- from the same snapshot the items come from, so the two cannot
+    // disagree about whose list this is. It decides the in_progress row's one
+    // colour (and nothing else), read through the same task-state table the task
+    // tree paints its markers with (style::TaskState*):
+    //   ERROR -> the failure colour, exactly like the task's own marker above -- a
+    //            failed run must not leave the step it died on looking merely
+    //            "current";
+    //   anything else -> the section's plain accent.
+    // Deliberately *not* animated: no clock is taken and none is read. Motion has
+    // to be evidence the data can back (see the note in edc_style.hpp); this widget
+    // renders as a pure function of items + owner state.
+    void SetOwnerState(const std::string &task_state);
 
     ::ftxui::Element OnRender() override;
     bool OnEvent(::ftxui::Event) override;
@@ -69,11 +70,10 @@ class TodoWidget : public ::ftxui::ComponentBase
     bool collapsed_ = true;
 
     // The owning task's state, as last set by the window (see SetOwnerState);
-    // only the in_progress row's tint reads it.
+    // only the in_progress row's colour reads it. The widget deliberately holds
+    // no clock: the row is a static highlight, so its render is a pure function of
+    // the items and this string.
     std::string owner_state_;
-    // Phase of the in_progress row's breathing, in ms on the window's animation
-    // clock. Only read while the owner is processing.
-    long long breath_ms_ = 0;
 
     // Click target of the section header row, populated during OnRender.
     ::ftxui::Box header_box_;

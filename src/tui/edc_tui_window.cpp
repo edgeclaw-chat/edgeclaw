@@ -737,16 +737,14 @@ void TUIWindow::TickAnimations()
 
     const auto now = std::chrono::steady_clock::now();
 
-    // The sidebar's breathing (a processing task's marker, an in_progress todo
-    // row) runs on the working bar's tempo. Feed it the clock here, off the
-    // render path; a run that starts after nothing was breathing begins at the
-    // dim end and blooms in.
+    // The sidebar's breathing (a processing task's marker) runs on the working
+    // bar's tempo. Feed it the clock here, off the render path; a run that starts
+    // after nothing was breathing begins at the dim end and blooms in.
     //
-    // The task tree answers for itself (its rows carry the state); the todo list
-    // only holds items, so the window hands it the owning task's state -- the one
-    // it already read to decide whether the foreground process is busy. A
-    // leftover in_progress item therefore stops pulsing the moment its task does,
-    // and turns into the failure colour if that is how the task ended.
+    // The task tree answers for itself (its rows carry the state). The todo list
+    // is deliberately *not* animated: its in_progress row is a static highlight
+    // whose colour comes from the owning task's state, so it is set with the items
+    // (see the snapshot handler) rather than fed a clock here.
     const bool processing = task_widget_ && task_widget_->HasProcessingTask();
     if (processing && !dot_breathing_)
         breath_started_ = now;
@@ -755,10 +753,6 @@ void TUIWindow::TickAnimations()
 
     if (task_widget_)
         task_widget_->SetBreath(breath_ms);
-    // Fed every tick, not just while animating: the row's tint follows the
-    // owner's state, and that transition happens on the very tick the work ends.
-    if (todo_widget_)
-        todo_widget_->SetOwnerState(fg_active_state_, breath_ms);
 
     // A background task can process while the foreground process is idle, so the
     // sidebar's breathing, not just the spinner, keeps requesting frames.
@@ -1086,17 +1080,17 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
                 // The snapshot is the single source of truth for the status
                 // animation: re-derive it whenever the process tree refreshes.
                 tui->SyncWorkingFromSnapshot(snap);
-                // The todo list's current step mirrors the owning task's state
-                // (a failed task's step turns red), so record it from the same
-                // snapshot the items come from.
-                tui->fg_active_state_ = ForegroundActiveTaskState(snap);
-                // And for the todo section: it shows the foreground group's
-                // active task's own todo list (part of the task state), so it
+                // And for the todo section: the list shows the foreground group's
+                // active task's own todos (part of the task state), so it
                 // refreshes on every snapshot — not via a side channel on the
                 // todowrite chat message. The task id is passed along so the
-                // section can name whose list it is.
+                // section can name whose list it is, and the task's state so its
+                // current step wears the failure colour if the task failed (read
+                // from the very same snapshot, so items and state cannot
+                // disagree).
                 const ActiveTaskTodos todos = ActiveTaskTodosOf(snap);
                 tui->todo_widget_->SetItems(todos.items, todos.task_id);
+                tui->todo_widget_->SetOwnerState(ForegroundActiveTaskState(snap));
                 edc_c_task_snapshot_free(snap);
             }
             // FTXUI only repaints when the frame was invalidated. Closures

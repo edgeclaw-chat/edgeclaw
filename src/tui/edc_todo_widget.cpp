@@ -33,10 +33,9 @@ void TodoWidget::SetItems(const std::vector<Item> &items, const std::string &tas
         collapsed_ = false;
 }
 
-void TodoWidget::SetOwnerState(const std::string &task_state, long long elapsed_ms)
+void TodoWidget::SetOwnerState(const std::string &task_state)
 {
     owner_state_ = task_state;
-    breath_ms_ = elapsed_ms;
 }
 
 bool TodoWidget::OnEvent(::ftxui::Event event)
@@ -68,25 +67,28 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
     // background shared with TaskWidget / the chat surface.
     const auto &pal = style::palette();
     // Scheme A: the todo list no longer re-uses the task-tree palette state
-    // by state. Only one item is ever accented — the in_progress row, in
-    // blue; pending and completed rows are neutral gray (completed keeps its
-    // strikethrough). One quiet block with at most one bright row, instead
-    // of a second rainbow beside the Tasks tree.
+    // by state. Only one item is ever highlighted — the in_progress row; pending
+    // and completed rows are neutral gray (completed keeps its strikethrough).
+    // One quiet block with at most one bright row, instead of a second rainbow
+    // beside the Tasks tree.
     //
-    // That row follows the state of the task that owns the list, read through the
-    // same table the task tree paints its markers with (style::TaskState*), so
-    // the two panes cannot disagree about what is running or what failed:
-    // processing -> breathe (the shared working animation, so the sidebar pulses
-    // as one thing); ERROR -> the failure colour, the very red the task's own
-    // marker wears, because a run that failed must not leave its last step
-    // looking merely "current"; anything else -> the plain accent, held still, so
-    // an item left in_progress by a task that finished or is waiting for input is
-    // quiet rather than pulsing for ever.
-    ::ftxui::Color doing_tint = pal.accent;
-    if (style::TaskStateProcessing(owner_state_))
-        doing_tint = style::breath_accent(breath_ms_);
-    else if (style::TaskStateFailed(owner_state_))
-        doing_tint = style::TaskStateColor(pal, owner_state_);
+    // The in_progress row's one colour, read through the same table the task tree
+    // paints its markers with (style::TaskState*), so the two panes cannot
+    // disagree about what a failure looks like: ERROR -> the failure colour, the
+    // very red the task's own marker wears, because a run that failed must not
+    // leave its last step looking merely "current"; anything else -> the plain
+    // accent.
+    //
+    // The row is a *static* highlight. It used to breathe with the working bar,
+    // but that motion carried nothing the screen did not already say: the task's
+    // own marker a few rows above breathes on the same condition (the window
+    // derives both from this one state string), so the row blinking meant "that
+    // marker is blinking", and it blinked the body text -- the most important text
+    // in the sidebar -- down to near-invisibility in the light theme. The widget
+    // therefore takes no clock at all (see SetOwnerState): the list is a pure
+    // function of its items and the owner's state.
+    const ::ftxui::Color doing_tint =
+        style::TaskStateFailed(owner_state_) ? style::TaskStateColor(pal, owner_state_) : pal.accent;
 
     // Blank cells kept free at the right edge of every full-width row: the sidebar is
     // the window's rightmost element, so rows would otherwise butt against the
@@ -251,11 +253,11 @@ bool TodoWidget::OnEvent(::ftxui::Event event)
             {
                 // The tag wears the item's own styling, exactly like the content:
                 // it is part of the item, not a separate column that happens to
-                // share a row. A highlighted row highlights it (and it breathes
-                // with the text), a struck-through row strikes it, so the line
-                // runs unbroken from the first word to the closing bracket -- the
-                // flex gap between them already carries the content's attributes
-                // across (pinned in test_todo_widget.cpp).
+                // share a row. A highlighted row highlights it (in the same
+                // colour, failure red included), a struck-through row strikes it,
+                // so the line runs unbroken from the first word to the closing
+                // bracket -- the flex gap between them already carries the
+                // content's attributes across (pinned in test_todo_widget.cpp).
                 first_children.push_back(style_content(text("[" + item.priority + "]")));
             }
             first_children.push_back(text(std::string(kRightPad, ' ')));

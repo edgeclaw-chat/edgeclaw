@@ -5,18 +5,21 @@
 // These tests pin that, and pin that the name never costs the progress summary
 // its place: the pane is narrow and the id is the part that gives way.
 //
-// The list's one bright row is the in_progress item, and its tint follows the
-// state of the task that owns the list -- supplied by the window through the
-// same style::TaskState* table the task tree paints its markers with. These
-// tests pin the three cases: processing breathes (the shared working
-// animation), ERROR wears the failure colour of the task's own marker, and
-// anything else sits still in the section accent, so an item left in_progress by
-// a task that finished or is waiting for input cannot pulse for ever.
+// The list's one bright row is the in_progress item, and its colour follows the
+// state of the task that owns the list -- supplied by the window through the same
+// style::TaskState* table the task tree paints its markers with. These tests pin
+// that the highlight is *static* (the widget holds no clock at all: it used to
+// breathe, but the task's own marker above already breathes on the same
+// condition and the pulse cost the sidebar's most important text its contrast),
+// that a *failed* owner repaints the row in the failure colour of the task's own
+// marker, and that no other row is touched either way.
 #include "edc_style.hpp"
 #include "edc_todo_widget.hpp"
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/screen.hpp"
+#include <chrono>
 #include <iostream>
+#include <thread>
 #include <string>
 #include <vector>
 
@@ -151,12 +154,11 @@ void TestNarrowPaneKeepsTheSummary()
 }
 
 // The foreground color of the "•" in the in_progress marker after rendering the
-// widget with its owner task in |owner_state| at clock |breath_ms|; false when
-// no such row is on screen.
-bool InProgressMarkerColor(edc::TodoWidget &widget, const std::string &owner_state, long long breath_ms,
-                           ::ftxui::Color *out)
+// widget with its owner task in |owner_state|; false when no such row is on
+// screen.
+bool InProgressMarkerColor(edc::TodoWidget &widget, const std::string &owner_state, ::ftxui::Color *out)
 {
-    widget.SetOwnerState(owner_state, breath_ms);
+    widget.SetOwnerState(owner_state);
     const auto screen = RenderWidget(widget, 36);
     for (int y = 0; y < 6; y++)
         for (int x = 0; x < 36; x++)
@@ -178,62 +180,54 @@ bool SameColors(const ::ftxui::Screen &a, const ::ftxui::Screen &b)
     return true;
 }
 
-void TestInProgressRowBreathes()
+void TestInProgressRowHoldsItsAccent()
 {
-    std::cout << "the in_progress todo row breathes\n";
+    std::cout << "the in_progress row is a static highlight\n";
 
+    // One bright row, and it does not move: the list holds no clock, so its
+    // render is a pure function of the items and the owner's state. Whatever
+    // shade the shared breath is at, the row wears the plain accent -- the same
+    // blue as the section title, the task id and the working bar.
     edc::TodoWidget widget;
     widget.SetItems(MixedItems(), "7");
+    const auto &pal = edc::style::palette();
 
-    ::ftxui::Color dim, rising, peak, again;
-    Check(InProgressMarkerColor(widget, "LLM_PROCESSING", 0, &dim), "the in_progress row is on screen");
-    Check(InProgressMarkerColor(widget, "TOOL_CALLING", 450, &rising),
-          "a mid-rise phase draws (a tool run breathes too)");
-    Check(InProgressMarkerColor(widget, "LLM_PROCESSING", 900, &peak), "the peak phase draws");
-    Check(InProgressMarkerColor(widget, "LLM_PROCESSING", 1800, &again), "the next cycle draws");
-    Check(dim != peak, "the highlight changes color over a cycle");
-    Check(dim != rising && rising != peak, "the rise passes through a mid shade");
-    Check(dim == again, "the breath repeats every period");
+    ::ftxui::Color mark;
+    Check(InProgressMarkerColor(widget, "LLM_PROCESSING", &mark), "the in_progress row is on screen");
+    Check(mark == pal.accent, "it wears the plain accent");
+    Check(mark != edc::style::breath_accent(0), "not the breath's dim end");
+    Check(mark != edc::style::breath_accent(edc::style::kBreathPeriodMs / 4), "and not a mid-rise shade");
+    Check(mark != pal.text_dim, "and it is not one of the neutral rows");
+
+    // The whole frame is stable: nothing in the render reads a clock, so two
+    // renders far apart in time are identical cell for cell.
+    const auto first = RenderWidget(widget, 36);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    const auto second = RenderWidget(widget, 36);
+    Check(SameColors(first, second), "two renders 150ms apart are identical (no clock in the render)");
+
+    // A task that is not running -- finished, or unknown -- draws the same row:
+    // there is no such thing as a "stale" pulse left to distinguish.
+    for (const char *owner : {"COMPLETED", "SUSPENDED", "WAITING_INPUT", ""})
+    {
+        ::ftxui::Color other;
+        Check(InProgressMarkerColor(widget, owner, &other), std::string("row is on screen (owner=") + owner + ")");
+        Check(other == mark, std::string("owner=") + owner + " draws the identical row");
+    }
 }
 
-void TestOtherRowsDoNotBreathe()
+void TestOtherRowsDoNotMove()
 {
-    std::cout << "rows that are not running do not breathe\n";
+    std::cout << "no row of the list moves\n";
 
     edc::TodoWidget widget;
     widget.SetItems(TwoItems(), "7"); // completed + pending, nothing running
-    widget.SetOwnerState("COMPLETED", 0);
+    widget.SetOwnerState("COMPLETED");
     const auto dim = RenderWidget(widget, 36);
-    widget.SetOwnerState("COMPLETED", 900);
+    widget.SetOwnerState("WAITING_INPUT");
     const auto peak = RenderWidget(widget, 36);
 
-    Check(SameColors(dim, peak), "a list with nothing running is identical at both phases");
-}
-
-void TestStaleInProgressItemDoesNotBreathe()
-{
-    std::cout << "an in_progress item left behind by a stopped task does not breathe\n";
-
-    // The task errored (or finished, or is waiting for input) and left an
-    // in_progress item behind. The list still holds it, but nothing is running,
-    // so the row must sit on a still colour instead of pulsing for ever -- and the
-    // window must have a reason to stop asking for frames.
-    edc::TodoWidget widget;
-    widget.SetItems(MixedItems(), "7");
-
-    const auto &pal = edc::style::palette();
-    ::ftxui::Color finished_dim, finished_peak;
-    Check(InProgressMarkerColor(widget, "COMPLETED", 0, &finished_dim), "the in_progress row is on screen");
-    Check(InProgressMarkerColor(widget, "COMPLETED", 900, &finished_peak), "and draws at the peak phase too");
-    Check(finished_dim == finished_peak, "the row is identical at both phases (the breath is off)");
-    Check(finished_dim == pal.accent, "and it wears the plain accent, not a frozen mid-breath shade");
-
-    // The very same list, with the task running, does breathe: the difference is
-    // the task's state, not the items.
-    ::ftxui::Color running_dim, running_peak;
-    Check(InProgressMarkerColor(widget, "LLM_PROCESSING", 0, &running_dim), "running: dim phase");
-    Check(InProgressMarkerColor(widget, "LLM_PROCESSING", 900, &running_peak), "running: peak phase");
-    Check(running_dim != running_peak, "a running task's row does breathe");
+    Check(SameColors(dim, peak), "a list with nothing running is identical frame for frame");
 }
 
 // The x of the first cell of |tag| on row |y|, or -1 when it is not there.
@@ -276,7 +270,7 @@ void TestPriorityIsPartOfTheItem()
 
     edc::TodoWidget widget;
     widget.SetItems(TaggedItems(), "7");
-    widget.SetOwnerState("COMPLETED", 0); // nothing running: the in_progress row is the plain accent
+    widget.SetOwnerState("COMPLETED"); // the in_progress row rides the plain accent
     const auto screen = RenderWidget(widget, 36, 8); // tall enough for all three item rows
     const auto &pal = edc::style::palette();
     const std::string tag = "[high]";
@@ -355,7 +349,7 @@ void TestFailedOwnerTurnsTheStepRed()
     Check(failure == pal.error, "the failure colour is the palette's error role");
 
     ::ftxui::Color mark;
-    Check(InProgressMarkerColor(widget, "ERROR", 0, &mark), "the in_progress row is on screen");
+    Check(InProgressMarkerColor(widget, "ERROR", &mark), "the in_progress row is on screen");
     Check(mark == failure, "its marker wears the task tree's ERROR colour");
     Check(mark != pal.accent, "so it no longer reads as just the current step");
     Check(!edc::style::TaskStateProcessing("ERROR"), "and a failed task is not processing");
@@ -374,49 +368,11 @@ void TestFailedOwnerTurnsTheStepRed()
     Check(screen.CellAt(kContentColumn, kFirstItemRow + 2).foreground_color == pal.text_dim,
           "the pending row below stays neutral");
 
-    // A failed task is not running, so the row is still: two phases, one frame.
-    const auto dim = [&] { widget.SetOwnerState("ERROR", 0); return RenderWidget(widget, 36, 8); }();
-    const auto peak = [&] { widget.SetOwnerState("ERROR", 900); return RenderWidget(widget, 36, 8); }();
-    Check(SameColors(dim, peak), "and it does not pulse (nothing is running)");
-}
-
-void TestPriorityBreathesWithTheRow()
-{
-    std::cout << "the tag breathes with the row it belongs to\n";
-
-    edc::TodoWidget widget;
-    widget.SetItems(TaggedItems(), "7");
-
-    ::ftxui::Color text_dim, tag_dim, text_peak, tag_peak;
-    for (int phase = 0; phase < 2; phase++)
-    {
-        const long long ms = phase == 0 ? 0 : 900;
-        widget.SetOwnerState("LLM_PROCESSING", ms);
-        const auto screen = RenderWidget(widget, 36, 8);
-        const int y = kFirstItemRow + 1; // the running row
-        const int tag_x = FindTag(screen, y, 36, "[high]");
-        if (tag_x <= 0)
-        {
-            Check(false, "the tag is on screen");
-            return;
-        }
-        if (phase == 0)
-        {
-            text_dim = screen.CellAt(kContentColumn, y).foreground_color;
-            tag_dim = screen.CellAt(tag_x, y).foreground_color;
-        }
-        else
-        {
-            text_peak = screen.CellAt(kContentColumn, y).foreground_color;
-            tag_peak = screen.CellAt(tag_x, y).foreground_color;
-        }
-        Check(screen.CellAt(kContentColumn, y).foreground_color == screen.CellAt(tag_x, y).foreground_color,
-              phase == 0 ? "at the dim phase the tag matches the text" : "at the peak phase too");
-    }
-    // The pair moves: the comparison above would also hold if both were frozen.
-    Check(text_dim != text_peak && tag_dim != tag_peak, "and both move over the cycle");
-    Check(text_peak == edc::style::palette().accent, "the peak is the plain accent");
-    Check(tag_dim == text_dim, "the tag is the text's colour at every phase");
+    // Red is the *only* thing failure changes: the item is still in_progress, so
+    // the marker is still the "•" and the row is not struck through -- a failed
+    // run must read as failed, not as done.
+    Check(screen.CellAt(kContentColumn, y).strikethrough == false, "the failed step is not struck through as done");
+    Check(screen.CellAt(kContentColumn, y).dim == false, "and it keeps the highlight's weight");
 }
 
 } // namespace
@@ -426,12 +382,10 @@ int main()
     TestHeaderNamesTheTask();
     TestEmptyListHasNoId();
     TestNarrowPaneKeepsTheSummary();
-    TestInProgressRowBreathes();
-    TestOtherRowsDoNotBreathe();
-    TestStaleInProgressItemDoesNotBreathe();
+    TestInProgressRowHoldsItsAccent();
+    TestOtherRowsDoNotMove();
     TestPriorityIsPartOfTheItem();
     TestFailedOwnerTurnsTheStepRed();
-    TestPriorityBreathesWithTheRow();
 
     if (g_failures == 0)
     {

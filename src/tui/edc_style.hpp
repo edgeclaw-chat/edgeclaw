@@ -214,9 +214,13 @@ inline ::ftxui::Color TaskStateColor(const Palette &pal, const std::string &stat
 // here rather than spelled out twice.
 constexpr const char *kBlockGlyph = "■";
 
-// One accent, one tempo, for everything that says "this is running right now":
-// a processing task's state dot and the in_progress todo row both breathe with
-// it, so the sidebar pulses as a single thing rather than several.
+// One accent, one tempo, for everything that says "this is running right now".
+// Exactly one consumer is left: a processing task's marker in the sidebar tree.
+// The in_progress todo row used to breathe with it and no longer does (see
+// TodoWidget::SetOwnerState) -- with the task's own marker breathing a few rows
+// above on the same condition, the row's pulse told the eye nothing new and cost
+// the sidebar's most important text its contrast; it is a static highlight now.
+// Motion is evidence, not decoration.
 //
 // The period matches the working bar's full sweep in TUIWindow
 // (2 * (kRunPositions - 1) * kStepMs = 1800 ms), so the sidebar and the footer
