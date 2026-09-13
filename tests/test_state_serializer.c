@@ -1698,6 +1698,133 @@ static void test_fold_watermark(void)
     edc_config_free(cfg);
 }
 
+/* ══════════════════════════════════════════════════════════════
+ *  legacy: the pre-transcript "system" container is dropped on load
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_legacy_system_container_dropped(void)
+{
+    TEST("legacy system group/task is dropped on load, not shown as a task");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-legacy", "Legacy");
+    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+
+    struct edc_task *leader = edc_task_new("1", "sess-legacy", "1", "real task", edc_channel_adapter);
+    leader->is_group_leader = 1;
+    edc_task_set_state(leader, TASK_WAITING_INPUT);
+    edc_task_set_state(leader, TASK_SUSPENDED);
+    struct edc_task_group *group = edc_task_group_new(leader);
+    edc_session_add_group(session, group);
+
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize returns non-NULL");
+
+    /* Splice in what an old file carries: a session-level group + task named
+     * "system" (with the is_system flag such files had). */
+    cJSON *sys_g = cJSON_CreateObject();
+    cJSON_AddStringToObject(sys_g, "group_id", "system");
+    cJSON_AddStringToObject(sys_g, "leader_task_id", "system");
+    cJSON *members = cJSON_AddArrayToObject(sys_g, "member_task_ids");
+    cJSON_AddItemToArray(members, cJSON_CreateString("system"));
+    cJSON_AddBoolToObject(sys_g, "is_orphaned", false);
+    cJSON_AddBoolToObject(sys_g, "is_system", true);
+    cJSON_AddItemToArray(cJSON_GetObjectItem(json, "groups"), sys_g);
+
+    cJSON *sys_t = cJSON_CreateObject();
+    cJSON_AddStringToObject(sys_t, "task_id", "system");
+    cJSON_AddStringToObject(sys_t, "session_id", "sess-legacy");
+    cJSON_AddStringToObject(sys_t, "group_id", "system");
+    cJSON_AddStringToObject(sys_t, "description", "system");
+    cJSON_AddStringToObject(sys_t, "state", "SUSPENDED");
+    cJSON_AddBoolToObject(sys_t, "is_system", true);
+    cJSON_AddItemToArray(cJSON_GetObjectItem(json, "tasks"), sys_t);
+
+    struct edc_session *s2 = edc_session_new(cfg, "sess-legacy", "Legacy");
+    struct edc_scheduler *sched2 = edc_scheduler_new(s2, cfg);
+    CHECK(edc_state_deserialize(json, s2, sched2), "deserialize");
+    CHECK(edc_session_find_task(s2, "system") == NULL, "system task dropped");
+    CHECK(edc_session_find_group(s2, "system") == NULL, "system group dropped");
+    CHECK(edc_session_find_task(s2, "1") != NULL, "unrelated task kept");
+    CHECK(edc_session_find_group(s2, "1") != NULL, "unrelated group kept");
+
+    /* And the next save writes it out of the file for good. */
+    cJSON *json2 = edc_state_serialize(s2, sched2);
+    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(json2, "groups")) == 1, "one group saved");
+    cJSON *t0 = cJSON_GetArrayItem(cJSON_GetObjectItem(json2, "tasks"), 0);
+    cJSON *saved_id = t0 ? cJSON_GetObjectItem(t0, "task_id") : NULL;
+    CHECK(saved_id && strcmp(cJSON_GetStringValue(saved_id), "1") == 0, "only the real task is saved");
+    cJSON_Delete(json2);
+
+    cJSON_Delete(json);
+    edc_session_free(s2);
+    edc_scheduler_free(sched2);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  legacy: the 5c tool display metadata is not written back
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_legacy_display_keys_stripped(void)
+{
+    TEST("5c display metadata (displayed/header) is not written back");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-disp", "Disp");
+    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+
+    struct edc_task *task = edc_task_new("1", "sess-disp", "1", "task", edc_channel_adapter);
+    task->is_group_leader = 1;
+    edc_task_set_state(task, TASK_WAITING_INPUT);
+    edc_task_set_state(task, TASK_SUSPENDED);
+    struct edc_task_group *group = edc_task_group_new(task);
+    edc_session_add_group(session, group);
+
+    struct edc_turn *turn = edc_turn_new();
+    edc_turn_add_user_message(turn, "hi");
+    task->active_turn = turn;
+
+    cJSON *json = edc_state_serialize(session, sched);
+
+    /* Splice the 5c keys into the stored message, the way an old file has them. */
+    cJSON *json_task = cJSON_GetArrayItem(cJSON_GetObjectItem(json, "tasks"), 0);
+    cJSON *json_msgs = cJSON_GetObjectItem(cJSON_GetObjectItem(json_task, "active_turn"), "messages");
+    cJSON *json_msg = cJSON_GetArrayItem(json_msgs, 0);
+    CHECK(json_msg != NULL, "message found in the serialized turn");
+    cJSON_AddBoolToObject(json_msg, "displayed", true);
+    cJSON_AddStringToObject(json_msg, "header", "exec_shell");
+
+    struct edc_session *s2 = edc_session_new(cfg, "sess-disp", "Disp");
+    struct edc_scheduler *sched2 = edc_scheduler_new(s2, cfg);
+    CHECK(edc_state_deserialize(json, s2, sched2), "deserialize");
+
+    struct edc_task *t2 = edc_session_find_task(s2, "1");
+    CHECK(t2 && t2->active_turn, "turn restored");
+    CHECK(t2 && t2->active_turn && cJSON_GetObjectItem((cJSON *)t2->active_turn->messages.data[0], "displayed") != NULL,
+          "messages keep unknown keys in memory (raw JSON, not rebuilt field by field)");
+
+    cJSON *json2 = edc_state_serialize(s2, sched2);
+    cJSON *t0 = cJSON_GetArrayItem(cJSON_GetObjectItem(json2, "tasks"), 0);
+    cJSON *msgs2 = cJSON_GetObjectItem(cJSON_GetObjectItem(t0, "active_turn"), "messages");
+    cJSON *msg2 = cJSON_GetArrayItem(msgs2, 0);
+    CHECK(msg2 != NULL, "message written back");
+    CHECK(msg2 && cJSON_GetObjectItem(msg2, "displayed") == NULL, "displayed not written back");
+    CHECK(msg2 && cJSON_GetObjectItem(msg2, "header") == NULL, "header not written back");
+    CHECK(msg2 && cJSON_GetObjectItem(msg2, "role") != NULL, "role kept");
+    CHECK(msg2 && cJSON_GetObjectItem(msg2, "ts") != NULL, "ts kept");
+
+    cJSON_Delete(json2);
+    cJSON_Delete(json);
+    edc_session_free(s2);
+    edc_scheduler_free(sched2);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     log_info("=== Phase 1: edc_state_serializer module tests ===");
@@ -1712,6 +1839,8 @@ int main(void)
     test_dependency_graph();
     test_complex_topology();
     test_state_degradation();
+    test_legacy_system_container_dropped();
+    test_legacy_display_keys_stripped();
     test_filter_transient_states();
     test_cancelled_midflight_roundtrip();
     test_cancelled_dep_roundtrip();

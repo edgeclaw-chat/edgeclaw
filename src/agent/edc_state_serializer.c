@@ -55,8 +55,18 @@ static cJSON *turn_to_json(struct edc_turn *turn)
     for (size_t i = turn->messages.head; i < turn->messages.tail; i++)
     {
         cJSON *msg = (cJSON *)turn->messages.data[i];
-        if (msg)
-            cJSON_AddItemToArray(embedded, cJSON_Duplicate(msg, 1));
+        if (!msg)
+            continue;
+
+        cJSON *copy = cJSON_Duplicate(msg, 1);
+        /* 5c 时代的 tool 消息显示元数据 (displayed/header, 供"派生聊天记录"用):
+         * 消息是**整体往返的原始 JSON** (见 turn_from_json 的 cJSON_Duplicate),
+         * 不象 task/group 那样逐字段重建, 所以未知键会在旧存档里一直跟着走。
+         * 这两个键在这里的副本上摘掉 —— 保存一次即从文件消失, 内存副本不动。
+         * 没有早于 2026-09 的存档后可以删掉。 */
+        cJSON_DeleteItemFromObject(copy, "displayed");
+        cJSON_DeleteItemFromObject(copy, "header");
+        cJSON_AddItemToArray(embedded, copy);
     }
 
     if (cJSON_GetArraySize(embedded) > 0)
@@ -285,6 +295,20 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
 /* ══════════════════════════════════════════════════════════════
  *  Deserialize helpers
  *  ══════════════════════════════════════════════════════════════ */
+
+/**
+ * 遗留 "system" 容器 (pre-transcript 存档) 的保留 id。
+ *
+ * 旧存档里有一个会话级 group/task 名叫 "system" (is_system), 承载命令回显、
+ * 命令输出、调度器 SYS 提示 —— 那时聊天记录是从 session.json 派生的。TUI 自持
+ * 转录后没有任何代码再创建它, 而且它从来不是用户可见的任务树节点 (枚举一律跳过)
+ * ⇒ **加载时直接丢弃**, 而不是让它作为一个 SUSPENDED 任务出现在侧边栏。
+ *
+ * id 是唯一残留的标记: `is_system` 键随容器一起被删掉后, 新存档不再写它 (旧存档
+ * 重存一次也就没了)。丢弃是幂等的 —— 保存一次之后文件里就不再有它。
+ * 等没有早于 2026-09 的存档时, 这段可以删掉。
+ */
+#define EDC_LEGACY_SYSTEM_ID "system"
 
 /**
  * Normalize a state read back from disk.
@@ -570,6 +594,11 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
         if (!task_id)
             continue;
 
+        const char *task_group_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "group_id"));
+        if (strcmp(task_id, EDC_LEGACY_SYSTEM_ID) == 0 ||
+            (task_group_id && strcmp(task_group_id, EDC_LEGACY_SYSTEM_ID) == 0))
+            continue; /* 遗留 system 容器: 见 EDC_LEGACY_SYSTEM_ID */
+
         cJSON *ch_json = cJSON_GetObjectItem(tj, "channel");
         edc_channel_type ch_type = ch_json ? edc_channel_type_from_json(ch_json) : edc_channel_adapter;
 
@@ -678,6 +707,8 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
     {
         cJSON *gj = cJSON_GetArrayItem(groups_json, i);
         const char *group_id = cJSON_GetStringValue(cJSON_GetObjectItem(gj, "group_id"));
+        if (group_id && strcmp(group_id, EDC_LEGACY_SYSTEM_ID) == 0)
+            continue; /* 遗留 system 容器: 见 EDC_LEGACY_SYSTEM_ID */
         const char *leader_id = cJSON_GetStringValue(cJSON_GetObjectItem(gj, "leader_task_id"));
         cJSON *orph = cJSON_GetObjectItem(gj, "is_orphaned");
         bool is_orph = orph && cJSON_IsTrue(orph);
