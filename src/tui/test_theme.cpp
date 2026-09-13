@@ -11,6 +11,7 @@
 
 #include "edc_style.hpp"
 #include "edc_theme.hpp"
+#include "ftxui/screen/terminal.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -366,16 +367,100 @@ void test_breath_curve(void)
           "a negative clock wraps into the same phase");
 }
 
+// ftxui's Color::Interpolate (a per-channel gamma-2.2 lerp truncated to 8 bit)
+// re-stated here, so the endpoint colours the breath paints can be measured
+// rather than eyeballed.
+Rgb Blend(double t, Rgb a, Rgb b)
+{
+    auto one = [t](unsigned char x, unsigned char y) {
+        const double c = std::pow(static_cast<double>(x), 2.2) * (1.0 - t) + std::pow(static_cast<double>(y), 2.2) * t;
+        return static_cast<unsigned char>(std::pow(c, 1.0 / 2.2));
+    };
+    return Rgb{one(a.r, b.r), one(a.g, b.g), one(a.b, b.b)};
+}
+
+ftxui::Color RgbColor(Rgb c)
+{
+    return ftxui::Color::RGB(c.r, c.g, c.b);
+}
+
+// HSV saturation: 0 is a gray (or white), 1 a fully saturated hue. Used to keep
+// the breath's bright end from washing out -- a peak with too little saturation
+// stops reading as the accent's blue and just looks white.
+double Saturation(Rgb c)
+{
+    const int hi = std::max({c.r, c.g, c.b});
+    const int lo = std::min({c.r, c.g, c.b});
+    return hi == 0 ? 0.0 : double(hi - lo) / double(hi);
+}
+
+// The breath has to swing: the accent on its own was too subtle, so each end is
+// pushed past it. This pins both ends, that the bright one is still the accent's
+// blue rather than white, and the contrast between them, per palette (the pane
+// is dark on one and white on the other, so "brighter" points opposite ways).
+void test_breath_endpoints(void)
+{
+    TEST("the breath endpoints swing far enough to read");
+
+    struct Case
+    {
+        const char *name;
+        const edc::style::Palette &pal;
+        Rgb pane;
+        Rgb accent;
+        Rgb text;
+    };
+    const Case cases[] = {
+        {"dark", edc::style::dark_palette(), Hex("272822"), Hex("66d9ef"), Hex("f8f8f2")},
+        {"light", edc::style::light_palette(), Hex("ffffff"), Hex("28c6e4"), Hex("000000")},
+    };
+
+    for (const Case &c : cases)
+    {
+        // The palette constants restated above must stay the ones the widget
+        // draws with, or the measurement would drift away from the screen.
+        CHECK(RgbColor(c.pane) == c.pal.pane_bg, "the test's pane colour drifted from the palette");
+        CHECK(RgbColor(c.accent) == c.pal.accent, "the test's accent drifted from the palette");
+        CHECK(RgbColor(c.text) == c.pal.text, "the test's text colour drifted from the palette");
+
+        const Rgb dim = Blend(edc::style::kBreathDimFade, c.accent, c.pane);
+        const Rgb peak = Blend(edc::style::kBreathBrightPush, c.accent, c.text);
+        CHECK(edc::style::breath_dim(c.pal) == RgbColor(dim), "the dim end is not the accent faded into the surface");
+        CHECK(edc::style::breath_bright(c.pal) == RgbColor(peak), "the peak is not the accent pushed towards the text");
+
+        const double plain = Contrast(c.accent, c.pane);
+        const double lowest = Contrast(dim, c.pane);
+        const double highest = Contrast(peak, c.pane);
+        CHECK(highest > plain, "the peak is no further from the pane than the plain accent");
+        CHECK(lowest < plain, "the trough is no closer to the pane than the plain accent");
+        CHECK(highest / lowest > 2.0, "the swing does not even double the peak-to-trough contrast");
+
+        // The bright end is a lighter accent, not a white one: it must keep most
+        // of the accent's saturation. Pushing towards the text colour further
+        // than this washes the blue out (at 0.50 the peak keeps barely a third).
+        CHECK(Saturation(peak) >= 0.6 * Saturation(c.accent),
+              "the peak has lost the accent's blue (saturation %.2f vs %.2f)", Saturation(peak), Saturation(c.accent));
+    }
+}
+
 } // namespace
 
 int main(void)
 {
+    // Pin truecolor before anything builds a palette (the palette's statics take
+    // their colours at first use). Without this, ftxui snaps every RGB to the
+    // nearest entry of its 256-colour table, and the breath endpoints -- which
+    // are read back as exact RGB -- would be measured against a different
+    // quantisation than the one the palette was built with.
+    ftxui::Terminal::SetColorSupport(ftxui::Terminal::Color::TrueColor);
+
     test_parse_mode();
     test_parse_osc11();
     test_light_background();
     test_palette_selection();
     test_light_palette_contrast();
     test_breath_curve();
+    test_breath_endpoints();
 #if !defined(_WIN32)
     test_query_terminal_background();
     test_init_env_override();
