@@ -69,8 +69,9 @@ static int test_passed = 0;
 #define TEST_WS "/tmp/test_edc_reactivate_ws"
 
 /* Simulate the STOP path of sched_handle_llm_resp for a finished turn:
- * record the turn's messages into group history *by reference*, then move the
- * same objects into session->messages (edc_session_add_turn) and commit. */
+ * record the turn's messages into group history *by reference*, then commit
+ * the turn to the task (P4: the turn owns its messages; session->messages no
+ * longer receives them). */
 static void commit_turn_into_group(struct edc_session *sess, struct edc_task *task, const char *user,
                                    const char *assistant)
 {
@@ -140,13 +141,36 @@ static void switch_to(struct edc_agent *agent, const char *target)
 
 static int count_messages_containing(struct edc_session *s, const char *needle)
 {
+    /* P4: 消息归属 turn; 遍历所有 turn 的队列统计。 */
     int n = 0;
-    size_t total = cJSON_GetArraySize(s->messages);
-    for (size_t i = 0; i < total; i++)
+    struct edc_task_group *g;
+    DL_FOREACH(s->groups, g)
     {
-        cJSON *content = cJSON_GetObjectItem(cJSON_GetArrayItem(s->messages, i), "content");
-        if (content && cJSON_IsString(content) && strstr(content->valuestring, needle))
-            n++;
+        struct edc_task *t;
+        LL_FOREACH2(g->members, t, group_next)
+        {
+            for (size_t i = t->turns.head; i < t->turns.tail; i++)
+            {
+                struct edc_turn *turn = (struct edc_turn *)t->turns.data[i];
+                if (!turn)
+                    continue;
+                for (size_t j = turn->messages.head; j < turn->messages.tail; j++)
+                {
+                    cJSON *content = cJSON_GetObjectItem((cJSON *)turn->messages.data[j], "content");
+                    if (content && cJSON_IsString(content) && strstr(content->valuestring, needle))
+                        n++;
+                }
+            }
+            if (t->active_turn)
+            {
+                for (size_t j = t->active_turn->messages.head; j < t->active_turn->messages.tail; j++)
+                {
+                    cJSON *content = cJSON_GetObjectItem((cJSON *)t->active_turn->messages.data[j], "content");
+                    if (content && cJSON_IsString(content) && strstr(content->valuestring, needle))
+                        n++;
+                }
+            }
+        }
     }
     return n;
 }

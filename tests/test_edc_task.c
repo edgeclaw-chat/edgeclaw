@@ -337,21 +337,18 @@ static void test_turns(void)
     sdsfree(u3);
     CHECK(edc_task_user_input(NULL, NULL) == NULL, "edc_task_user_input(NULL) is NULL");
 
-    /* 已 flush 的 turn: edc_session_add_turn 把消息 pop 进 session, 本地队列
-     * 为空, 只留 msg_range —— 应能从 session 消息数组按 range 取回 user 输入
-     * (assistant 仍被忽略), 否则 /task status 完成后再看不到 input。 */
+    /* turn 持有消息: 新 turn 直接从其队列取 user 输入 (assistant 忽略) */
     struct edc_turn *t3 = edc_turn_new();
-    t3->range_valid = true;
-    t3->msg_range_start = 0;
-    t3->msg_range_count = 2; /* user + assistant: 只应取回 user */
+    edc_turn_add_user_message(t3, "flushed");
+    cJSON *am3 = cJSON_CreateObject();
+    cJSON_AddStringToObject(am3, "role", "assistant");
+    cJSON_AddStringToObject(am3, "content", "ignored");
+    edc_turn_add_assistant_message(t3, am3);
     edc_task_add_turn(ut, t3);
-    cJSON *sess_msgs = cJSON_Parse("[{\"role\":\"user\",\"content\":\"flushed\"},"
-                                   " {\"role\":\"assistant\",\"content\":\"ignored\"}]");
-    sds u4 = edc_task_user_input(ut, sess_msgs);
+    sds u4 = edc_task_user_input(ut, NULL);
     CHECK(u4 && strcmp(u4, "hello\nworld\nflushed\ninflight") == 0,
-          "flushed turn input recovered from session range");
+          "turn-owned input recovered from turn queue");
     sdsfree(u4);
-    cJSON_Delete(sess_msgs);
     edc_task_free(ut);
 }
 

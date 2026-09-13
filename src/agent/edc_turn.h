@@ -6,14 +6,9 @@
 
 struct edc_turn
 {
-    char *task_id; /* Phase 6: 序列化时标记归属 */
+    char *task_id; /* 序列化时标记归属 */
     EdcQueue messages;
     EdcQueue timestamps;
-
-    /* Phase 3: message range in session->messages (recorded at flush time) */
-    size_t msg_range_start; /* index of first message in session->messages */
-    size_t msg_range_count; /* number of messages */
-    bool range_valid;       /* true if range has been recorded */
 };
 
 extern struct edc_turn *edc_turn_new();

@@ -118,12 +118,9 @@ static void test_exit_save(void)
     CHECK(edc_session_save_history(session), "save_history succeeds on exit");
     CHECK(edc_session_save_state(session, sched), "save_state succeeds on exit");
 
-    /* Verify files */
-    sds hp = edc_path_join(TEST_WS, "sess-exit", "history.jsonl", NULL);
+    /* Verify files: P4 起不再写 history.jsonl, session.json 自包含 */
     sds sp = edc_path_join(TEST_WS, "sess-exit", "session.json", NULL);
-    CHECK(edc_file_exists(hp), "history.jsonl exists after exit save");
     CHECK(edc_file_exists(sp), "session.json exists after exit save");
-    sdsfree(hp);
     sdsfree(sp);
 
     edc_session_free(session);
@@ -521,13 +518,7 @@ static void test_missing_history(void)
         edc_scheduler_free(sc);
     }
 
-    /* Step 2: delete history.jsonl, keep session.json */
-    sds hp = edc_path_join(TEST_WS, "sess-mh", "history.jsonl", NULL);
-    CHECK(edc_file_exists(hp), "history.jsonl exists before delete");
-    unlink(hp);
-    CHECK(!edc_file_exists(hp), "history.jsonl deleted");
-    sdsfree(hp);
-
+    /* Step 2: P4 起不再写 history.jsonl —— session.json 自包含。 */
     sds sp = edc_path_join(TEST_WS, "sess-mh", "session.json", NULL);
     CHECK(edc_file_exists(sp), "session.json still exists");
     sdsfree(sp);
@@ -548,13 +539,12 @@ static void test_missing_history(void)
         CHECK(rt != NULL, "task found despite missing history");
         CHECK(rt->state == TASK_COMPLETED, "state preserved");
 
-        /* Turn exists but messages are empty (history.jsonl was missing) */
-        CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored (structure only)");
+        /* v2: session.json 自包含 —— turn 内联消息, 与 history.jsonl 无关,
+         * 因此即使 history.jsonl 缺失也完整恢复。 */
+        CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
         struct edc_turn *rturn = (struct edc_turn *)rt->turns.data[rt->turns.head];
-        /* The turn's message_range points beyond the truncated messages array,
-         * so the turn should have 0 messages. */
-        CHECK(edc_queue_length(&rturn->messages) == 0,
-              "turn has 0 messages (history missing, range out of bounds)");
+        CHECK(edc_queue_length(&rturn->messages) == 1,
+              "turn keeps its 1 embedded message despite missing history");
 
         cJSON_Delete(s2->messages);
         s2->messages = NULL;
@@ -616,34 +606,22 @@ static void test_truncated_history(void)
         edc_scheduler_free(sc);
     }
 
-    /* Step 2: verify file sizes, then truncate history.jsonl to just system prompt */
-    sds hp = edc_path_join(TEST_WS, "sess-trunc", "history.jsonl", NULL);
-    CHECK(edc_file_exists(hp), "history.jsonl exists");
-
-    /* Replace history.jsonl with just a system prompt (simulating compression) */
-    FILE *f = fopen(hp, "w");
-    fprintf(f, "{\"role\":\"system\",\"content\":\"truncated system prompt\"}\n");
-    fclose(f);
-    sdsfree(hp);
-
-    /* Step 3: load — turns should have fewer/no messages */
+    /* Step 2: P4 起消息不再经 history.jsonl, 无需截断/操作历史文件。 */
     {
         struct edc_session *s2 = edc_session_new(cfg, "sess-trunc", "Truncated");
         struct edc_scheduler *sc2 = edc_scheduler_new(s2, cfg);
 
         bool loaded = edc_session_load_state(s2, sc2);
-        CHECK(loaded, "load_state succeeds with truncated history");
+        CHECK(loaded, "load_state succeeds (state self-contained)");
 
         struct edc_task *rt = find_task(s2, "t-trunc");
         CHECK(rt != NULL, "task restored");
         CHECK(edc_queue_length(&rt->turns) == 1, "1 turn");
 
         struct edc_turn *rturn = (struct edc_turn *)rt->turns.data[rt->turns.head];
-        /* The turn had message_range [1, 4), but history now has only
-         * 2 messages total (system [0] + history line [1]).
-         * So only 1 message (index 1) can be restored; indices 2,3 are truncated. */
-        CHECK(edc_queue_length(&rturn->messages) == 1,
-              "turn has 1 message (partial range within truncated history)");
+        /* v2: turn 内联消息, 不依赖 history.jsonl; 截断 history 不影响其内容。 */
+        CHECK(edc_queue_length(&rturn->messages) == 3,
+              "turn keeps all 3 embedded messages despite truncated history");
 
         cJSON_Delete(s2->messages);
         s2->messages = NULL;

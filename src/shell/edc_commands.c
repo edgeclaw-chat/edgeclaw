@@ -1089,10 +1089,8 @@ static void edc_commands_handle_task_status(struct edc_agent *agent, edc_actor_t
 
     /* 展示 task 实际收到的用户输入（而不只是 description）。多行输入把换行
      * 后的内容缩进两格，作为 markdown 列表项的续行，避免撑破列表。
-     * 传入属主 session 的消息数组: 已提交进 session 的 turn 本地消息队列已空，
-     * 需要按 turn 的 msg_range 从 session 里取回 user 输入（见
-     * edc_task_user_input 注释），否则完成后的 task 只显示 desc、看不到输入。 */
-    sds user_input = edc_task_user_input(t, owner ? edc_session_get_messages(owner) : NULL);
+     * P4: 消息归属 turn, user 输入直接从 turn 队列取 (不再需要 session 消息数组)。 */
+    sds user_input = edc_task_user_input(t, NULL);
     if (user_input)
     {
         sds indented = sdsempty();

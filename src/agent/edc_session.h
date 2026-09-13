@@ -42,11 +42,8 @@ struct edc_session
      * 绝不能再 load_state —— 否则会用磁盘副本覆盖正在后台执行的活动对象。 */
     bool state_loaded;
 
-    /* backward compat — Phase 5 移除 */
-    cJSON *messages;
+    cJSON *messages; /* 仅持有 system prompt; 对话消息归属各 turn */
     struct edc_config *config;
-    int save_skip_count;
-    struct edc_timestamp_node *timestamps;
 
     sds history_dir; /* workspace/<session_id> — 按 session 存历史 */
 
@@ -91,11 +88,6 @@ extern sds edc_session_resolve_workdir(const char *base, const char *workdir, Ed
  *  unbind (revert to the launch directory). Returns true on success; on failure
  *  *error (when non-NULL) carries the reason and the binding is unchanged. */
 extern bool edc_session_set_workdir(struct edc_session *session, const char *workdir, EdcError **error);
-/** Rebuild session->messages from persisted history. NOTE: the session lifecycle
- *  no longer calls this (LLM context lives in group->history, not
- *  session->messages). It is a no-op rebuild while the session has live groups,
- *  whose history references the current messages — rebuilding would dangle. */
-extern void edc_session_reload(struct edc_session *session, bool load_history);
 extern void edc_session_free(struct edc_session *session);
 
 /** Build the "/session status" report for |session|: group/task counts, the
@@ -131,11 +123,6 @@ extern struct edc_task *edc_session_get_active_task(struct edc_session *session)
 /* ── Phase 4 新增: 消息切片 (fork 上下文) ──────────────────── */
 
 extern cJSON *edc_session_get_messages_slice(struct edc_session *session, size_t from, size_t count);
-
-/* ── Phase 4 新增: Task 结构持久化 ─────────────────────────── */
-
-extern bool edc_session_save_tasks(struct edc_session *session);
-extern void edc_session_reload_tasks(struct edc_session *session);
 
 /* ── Phase 2: 完整状态持久化 ───────────────────────────────── */
 

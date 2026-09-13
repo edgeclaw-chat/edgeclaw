@@ -18,38 +18,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
-static void edc_session_trim_orphan_tool_messages(cJSON *history)
-{
-    while (cJSON_GetArraySize(history) > 0)
-    {
-        cJSON *first = cJSON_GetArrayItem(history, 0);
-        cJSON *role = cJSON_GetObjectItem(first, "role");
-        if (role && cJSON_IsString(role) && strcmp(cJSON_GetStringValue(role), "tool") == 0)
-        {
-            cJSON_DeleteItemFromArray(history, 0);
-        }
-        else
-        {
-            break;
-        }
-    }
-}
-
-static void edc_session_merge_history(struct edc_session *session, cJSON *history)
-{
-    while (cJSON_GetArraySize(history) > 0)
-    {
-        cJSON *msg = cJSON_DetachItemFromArray(history, 0);
-        if (cJSON_HasObjectItem(msg, "timestamp"))
-        {
-            cJSON_DeleteItemFromObject(msg, "timestamp");
-        }
-        cJSON_AddItemToArray(session->messages, msg);
-    }
-}
-
-static void edc_session_build_messages(struct edc_session *session, const char *user_input, bool load_history)
+static void edc_session_build_messages(struct edc_session *session)
 {
     sds system_prompt = edc_context_build_system_prompt(session->config, session->workdir);
 
@@ -61,27 +32,6 @@ static void edc_session_build_messages(struct edc_session *session, const char *
     sdsfree(system_prompt);
 
     cJSON_AddItemToArray(session->messages, system_msg);
-
-    if (load_history)
-    {
-        size_t compress_index = 0;
-        edc_history_get_info(session->history_dir, &compress_index, NULL);
-        cJSON *history = edc_history_load(session->history_dir, compress_index);
-        if (history != NULL)
-        {
-            edc_session_trim_orphan_tool_messages(history);
-            edc_session_merge_history(session, history);
-            cJSON_Delete(history);
-        }
-    }
-
-    if (user_input)
-    {
-        cJSON *user_msg = cJSON_CreateObject();
-        cJSON_AddStringToObject(user_msg, "role", "user");
-        cJSON_AddStringToObject(user_msg, "content", user_input);
-        cJSON_AddItemToArray(session->messages, user_msg);
-    }
 }
 
 struct edc_session *edc_session_new(struct edc_config *config, const char *session_id, const char *name)
@@ -224,36 +174,8 @@ struct edc_session *edc_session_new_with_workdir(struct edc_config *config, cons
         }
     }
 
-    edc_session_build_messages(session, NULL, true);
-    session->save_skip_count = edc_session_get_message_count(session);
+    edc_session_build_messages(session);
     return session;
-}
-
-/* 强制按持久化历史重建 session->messages。**注意**: 会话生命周期 (switch/new/
- * remove/stop/memory_done) 已不再调用它 —— LLM 上下文来自 group->history,
- * session->messages 只是持久化用的 legacy 副本, 激活 session 时直接沿用内存
- * 对象即可。保留为工具函数, 但必须带下面这道护栏: 组历史以**引用**方式共享
- * session->messages 里的对象 (task 完成时 add_ref 记录, 紧接着 add_turn 把对象
- * 移进 session->messages), 只要 session 还有 live groups, 清空重建就会让
- * group->history 里的引用全部悬空, 下一次 LLM 请求遍历组历史即段错误。 */
-void edc_session_reload(struct edc_session *session, bool load_history)
-{
-    if (!session)
-        return;
-
-    edc_session_save_history(session);
-
-    if (session->groups != NULL)
-        return;
-
-    while (cJSON_GetArraySize(session->messages) > 0)
-    {
-        cJSON_DeleteItemFromArray(session->messages, 0);
-    }
-
-    edc_session_build_messages(session, NULL, load_history);
-
-    session->save_skip_count = edc_session_get_message_count(session);
 }
 
 void edc_session_free(struct edc_session *session)
@@ -264,14 +186,6 @@ void edc_session_free(struct edc_session *session)
     if (session->messages)
     {
         cJSON_Delete(session->messages);
-    }
-
-    struct edc_timestamp_node *n, *tmp;
-    DL_FOREACH_SAFE(session->timestamps, n, tmp)
-    {
-        DL_DELETE(session->timestamps, n);
-        sdsfree(n->ts);
-        free(n);
     }
 
     /* Groups (and the tasks they own) belong to the session now — free them
@@ -296,26 +210,12 @@ void edc_session_free(struct edc_session *session)
 
 void edc_session_add_turn(struct edc_session *sess, struct edc_turn *turn)
 {
-    /* Phase 3: record message range before moving messages out */
-    size_t msg_count = edc_queue_length(&turn->messages);
-    if (msg_count > 0)
-    {
-        turn->msg_range_start = cJSON_GetArraySize(sess->messages);
-        turn->msg_range_count = msg_count;
-        turn->range_valid = true;
-    }
-
-    EdcQueue *m = &turn->messages;
-    EdcQueue *t = &turn->timestamps;
-    while (edc_queue_length(m) > 0 && edc_queue_length(t) > 0)
-    {
-        cJSON *message = edc_queue_pop(m);
-        sds ts = edc_queue_pop(t);
-        cJSON_AddItemToArray(sess->messages, message);
-        struct edc_timestamp_node *n = g_new0(struct edc_timestamp_node, 1);
-        n->ts = ts;
-        DL_APPEND(sess->timestamps, n);
-    }
+    /* P4: turn 运行时持有消息。不再把消息搬进 session->messages, 也不再记录
+     * range —— 消息随 turn 一起序列化 (单一模式内联), 顺序由 task 的
+     * completion_seq 决定 (见 deser_rebuild_group_history)。
+     * 保留函数签名以兼容旧调用点; 现为空操作。 */
+    (void)sess;
+    (void)turn;
 }
 
 cJSON *edc_session_get_messages(struct edc_session *session)
@@ -325,26 +225,35 @@ cJSON *edc_session_get_messages(struct edc_session *session)
 
 size_t edc_session_get_message_count(struct edc_session *session)
 {
-    return cJSON_GetArraySize(session->messages);
+    /* P4: 消息归属 turn, 计数按所有 turn 的消息数求和 (含在途 active_turn)。 */
+    if (!session)
+        return 0;
+    size_t n = 0;
+    struct edc_task_group *g;
+    DL_FOREACH(session->groups, g)
+    {
+        struct edc_task *t;
+        LL_FOREACH2(g->members, t, group_next)
+        {
+            for (size_t i = t->turns.head; i < t->turns.tail; i++)
+            {
+                struct edc_turn *turn = (struct edc_turn *)t->turns.data[i];
+                if (turn)
+                    n += edc_queue_length(&turn->messages);
+            }
+            if (t->active_turn)
+                n += edc_queue_length(&t->active_turn->messages);
+        }
+    }
+    return n;
 }
 
 bool edc_session_save_history(struct edc_session *session)
 {
-    bool ok = edc_history_save(session->history_dir, session->messages, session->timestamps, session->save_skip_count);
-    if (ok)
-    {
-        session->save_skip_count = edc_session_get_message_count(session);
-        struct edc_timestamp_node *n, *tmp;
-        DL_FOREACH_SAFE(session->timestamps, n, tmp)
-        {
-            DL_DELETE(session->timestamps, n);
-            sdsfree(n->ts);
-            free(n);
-        }
-        session->timestamps = NULL;
-    }
-
-    return ok;
+    /* P4: 消息归属 turn, 随 session.json 一起持久化; 不再写 history.jsonl。
+     * (旧存档的 history.jsonl 仍在加载侧读取, 供迁移期使用。) */
+    (void)session;
+    return true;
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -499,52 +408,6 @@ cJSON *edc_session_get_messages_slice(struct edc_session *session, size_t from, 
     return slice;
 }
 
-/* ── Task 结构持久化 ──────────────────────────────────────── */
-
-bool edc_session_save_tasks(struct edc_session *session)
-{
-    if (!session)
-        return false;
-
-    /* 给 messages 中每条 non-system non-tool 消息追加 task_id */
-    /* system 消息和 tool 消息不标记 (属于所有 task 共享) */
-
-    cJSON *messages = session->messages;
-    size_t count = cJSON_GetArraySize(messages);
-
-    for (size_t i = 0; i < count; i++)
-    {
-        cJSON *msg = cJSON_GetArrayItem(messages, i);
-        cJSON *role = cJSON_GetObjectItem(msg, "role");
-        if (!role || !cJSON_IsString(role))
-            continue;
-
-        const char *role_s = cJSON_GetStringValue(role);
-        if (strcmp(role_s, "system") == 0 || strcmp(role_s, "tool") == 0)
-            continue;
-
-        if (!cJSON_HasObjectItem(msg, "task_id"))
-        {
-            /* 使用默认 "legacy" task_id */
-            cJSON_AddStringToObject(msg, "task_id", "legacy");
-            cJSON_AddStringToObject(msg, "group_id", "legacy");
-        }
-    }
-
-    return edc_session_save_history(session);
-}
-
-void edc_session_reload_tasks(struct edc_session *session)
-{
-    if (!session || !session->messages)
-        return;
-
-    /* 从 messages 中提取所有 unique task_id，为每个创建一个 task */
-    /* 简化为: 扫描 messages, 收集唯一 task_id */
-    /* 完整实现留 Phase 5 在 edc_agent 中处理 */
-    (void)session;
-}
-
 /* ── Phase 2: 完整状态持久化 ───────────────────────────────── */
 
 /* session.json 很大 (每个 turn 都内嵌消息体、prompt、output), 跨 session 查
@@ -686,9 +549,7 @@ bool edc_session_load_state(struct edc_session *session, struct edc_scheduler *s
     cJSON_Delete(json);
 
     if (!ok)
-    {
         log_error("load_state: deserialize failed for %s", path);
-    }
 
     sdsfree(path);
     return ok;
@@ -705,19 +566,7 @@ void edc_session_reset(struct edc_session *session)
     while (cJSON_GetArraySize(session->messages) > 0)
         cJSON_DeleteItemFromArray(session->messages, 0);
 
-    /* Clear timestamps */
-    struct edc_timestamp_node *n, *tmp;
-    DL_FOREACH_SAFE(session->timestamps, n, tmp)
-    {
-        DL_DELETE(session->timestamps, n);
-        sdsfree(n->ts);
-        free(n);
-    }
-    session->timestamps = NULL;
-
-    /* Reset save skip count */
-    session->save_skip_count = 0;
-
+    /* Clear timestamps (none) — no-op */
     /* Clear active task */
     session->active_task = NULL;
 

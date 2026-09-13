@@ -142,6 +142,7 @@ struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, con
 struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, struct edc_session *session,
                                          const char *snapshot_task_id)
 {
+    (void)session; /* turn 现在自己持有消息 */
     if (!task)
         return NULL;
 
@@ -155,24 +156,8 @@ struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, struct edc_sessi
         if (!turn)
             continue;
 
-        if (edc_queue_length(&turn->messages) > 0)
-        {
-            for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
-                edc_queue_push(&snap->messages, cJSON_Duplicate((cJSON *)turn->messages.data[mj], 1));
-        }
-        else if (turn->range_valid && turn->msg_range_count > 0 && session)
-        {
-            size_t begin = turn->msg_range_start;
-            size_t end = begin + turn->msg_range_count;
-            size_t total = cJSON_GetArraySize(session->messages);
-            for (size_t i = begin; i < end && i < total; i++)
-            {
-                cJSON *src = cJSON_GetArrayItem(session->messages, (int)i);
-                if (!src)
-                    break;
-                edc_queue_push(&snap->messages, cJSON_Duplicate(src, 1));
-            }
-        }
+        for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
+            edc_queue_push(&snap->messages, cJSON_Duplicate((cJSON *)turn->messages.data[mj], 1));
     }
 
     if (edc_queue_length(&snap->messages) == 0)
@@ -340,41 +325,24 @@ static void append_user_msg(const cJSON *msg, sds *out)
     *out = *out ? sdscatprintf(*out, "\n%s", content) : sdsnew(content);
 }
 
-/* 收集一个 turn 里的 user 输入（'\n' 连接）。turn 未提交时消息还在
- * turn->messages; 一旦提交进 session（edc_session_add_turn 会把消息 pop 进
- * session->messages，只在 turn 上留下 msg_range 记录），本地队列就空了 ——
- * 此时回退到 session 消息数组按 range 读取，否则已完成任务的输入会丢失，
- * `/task status` 只剩 desc 看不到 input。 */
-static void collect_user_msgs(const struct edc_turn *turn, const cJSON *session_messages, sds *out)
+/* 收集一个 turn 里的 user 输入（'\n' 连接）。turn 自己持有消息。 */
+static void collect_user_msgs(const struct edc_turn *turn, sds *out)
 {
     if (!turn || !out)
         return;
-
-    if (turn->messages.tail > turn->messages.head)
-    {
-        for (size_t j = turn->messages.head; j < turn->messages.tail; j++)
-            append_user_msg((const cJSON *)turn->messages.data[j], out);
-        return;
-    }
-
-    /* 已 flush 的 turn: 消息在 session 数组里, 按记录的 range 取回 */
-    if (!turn->range_valid || !session_messages || !cJSON_IsArray(session_messages))
-        return;
-    for (size_t k = 0; k < turn->msg_range_count; k++)
-    {
-        cJSON *msg = cJSON_GetArrayItem(session_messages, (int)(turn->msg_range_start + k));
-        append_user_msg(msg, out);
-    }
+    for (size_t j = turn->messages.head; j < turn->messages.tail; j++)
+        append_user_msg((const cJSON *)turn->messages.data[j], out);
 }
 
 sds edc_task_user_input(const struct edc_task *task, const cJSON *session_messages)
 {
+    (void)session_messages; /* turn 持有消息, 不再需要 session 消息数组 */
     if (!task)
         return NULL;
     sds out = NULL;
     for (size_t i = task->turns.head; i < task->turns.tail; i++)
-        collect_user_msgs((const struct edc_turn *)task->turns.data[i], session_messages, &out);
-    collect_user_msgs(task->active_turn, session_messages, &out);
+        collect_user_msgs((const struct edc_turn *)task->turns.data[i], &out);
+    collect_user_msgs(task->active_turn, &out);
     return out;
 }
 

@@ -847,8 +847,6 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
                 }
             }
 
-            /* sync to session (persistence) */
-            edc_session_add_turn(own, task->active_turn);
         }
         edc_task_commit_active_turn(task);
         if (r->content)

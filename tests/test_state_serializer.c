@@ -1008,19 +1008,17 @@ static void test_null_inputs(void)
     cJSON *j1 = edc_state_serialize(NULL, NULL);
     CHECK(j1 == NULL, "serialize(NULL, NULL) returns NULL");
 
-    /* serialize with NULL messages */
-    cJSON *saved = session->messages;
-    session->messages = NULL;
+    /* serialize no longer depends on session->messages */
     cJSON *j2 = edc_state_serialize(session, NULL);
-    CHECK(j2 == NULL, "serialize with NULL messages returns NULL");
-    session->messages = saved;
+    CHECK(j2 != NULL, "serialize does not require session->messages");
+    cJSON_Delete(j2);
 
     /* deserialize with NULL json */
     bool ok1 = edc_state_deserialize(NULL, session, NULL);
     CHECK(!ok1, "deserialize(NULL json) returns false");
 
     /* deserialize with NULL session */
-    cJSON *valid = cJSON_Parse("{\"version\":1,\"session\":{},\"groups\":[],\"tasks\":[]}");
+    cJSON *valid = cJSON_Parse("{\"version\":2,\"session\":{},\"groups\":[],\"tasks\":[]}");
     bool ok2 = edc_state_deserialize(valid, NULL, NULL);
     CHECK(!ok2, "deserialize(NULL session) returns false");
     cJSON_Delete(valid);
@@ -1032,19 +1030,19 @@ static void test_null_inputs(void)
     cJSON_Delete(no_ver);
 
     /* deserialize with missing tasks array */
-    cJSON *no_tasks = cJSON_Parse("{\"version\":1,\"session\":{},\"groups\":[]}");
+    cJSON *no_tasks = cJSON_Parse("{\"version\":2,\"session\":{},\"groups\":[]}");
     bool ok4 = edc_state_deserialize(no_tasks, session, sched);
     CHECK(ok4, "deserialize without tasks array succeeds (treated as empty)");
     cJSON_Delete(no_tasks);
 
     /* deserialize with tasks not an array */
-    cJSON *bad_tasks = cJSON_Parse("{\"version\":1,\"session\":{},\"groups\":[],\"tasks\":\"not_array\"}");
+    cJSON *bad_tasks = cJSON_Parse("{\"version\":2,\"session\":{},\"groups\":[],\"tasks\":\"not_array\"}");
     bool ok5 = edc_state_deserialize(bad_tasks, session, sched);
     CHECK(ok5, "deserialize with non-array tasks succeeds (ignored)");
     cJSON_Delete(bad_tasks);
 
     /* deserialize with groups not an array */
-    cJSON *bad_groups = cJSON_Parse("{\"version\":1,\"session\":{},\"groups\":123,\"tasks\":[]}");
+    cJSON *bad_groups = cJSON_Parse("{\"version\":2,\"session\":{},\"groups\":123,\"tasks\":[]}");
     bool ok6 = edc_state_deserialize(bad_groups, session, sched);
     CHECK(ok6, "deserialize with non-array groups succeeds (ignored)");
     cJSON_Delete(bad_groups);
@@ -1069,7 +1067,7 @@ static void test_malformed_inputs(void)
     /* dep referencing nonexistent task */
     const char *bad_dep_json =
         "{"
-        "  \"version\":1,"
+        "  \"version\":2,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1094,7 +1092,7 @@ static void test_malformed_inputs(void)
     /* group member referencing nonexistent task */
     const char *bad_member_json =
         "{"
-        "  \"version\":1,"
+        "  \"version\":2,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1117,7 +1115,7 @@ static void test_malformed_inputs(void)
     /* turn message_start out of range */
     const char *bad_range_json =
         "{"
-        "  \"version\":1,"
+        "  \"version\":2,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1141,7 +1139,7 @@ static void test_malformed_inputs(void)
     /* task with empty task_id */
     const char *empty_id_json =
         "{"
-        "  \"version\":1,"
+        "  \"version\":2,"
         "  \"session\":{},"
         "  \"groups\":[],"
         "  \"tasks\":["
@@ -1225,14 +1223,11 @@ static void test_compact_messages(void)
     cJSON *msg_start = cJSON_GetObjectItem(turn_j, "message_start");
     cJSON *msg_count = cJSON_GetObjectItem(turn_j, "message_count");
 
-    CHECK(embedded == NULL, "compact mode: no embedded messages array");
-    CHECK(msg_start != NULL, "compact mode: has message_start");
-    CHECK(msg_count != NULL, "compact mode: has message_count");
-    CHECK((int)cJSON_GetNumberValue(msg_count) == 2, "message_count = 2");
-
-    /* Verify the start index (should be after system prompt, so >= 1) */
-    int start = (int)cJSON_GetNumberValue(msg_start);
-    CHECK(start >= 1, "message_start >= 1 (after system prompt)");
+    /* v2 单一模式: 一律内联 messages, 不再有 start/count */
+    CHECK(embedded != NULL, "single mode: embedded messages array");
+    CHECK(cJSON_GetArraySize(embedded) == 2, "embedded 2 messages");
+    CHECK(msg_start == NULL, "single mode: no message_start");
+    CHECK(msg_count == NULL, "single mode: no message_count");
 
     /* DESERIALIZE — need matching messages in target session */
     struct edc_session *session2 = edc_session_new(cfg, "sess-cpt", "Compact");
@@ -1322,8 +1317,8 @@ static void test_empty_turn(void)
     cJSON *turns_j = cJSON_GetObjectItem(t0, "turns");
     cJSON *turn_j = cJSON_GetArrayItem(turns_j, 0);
     CHECK(turn_j != NULL, "empty turn present in JSON");
-    CHECK(cJSON_GetNumberValue(cJSON_GetObjectItem(turn_j, "message_count")) == 0,
-          "message_count = 0");
+    CHECK(cJSON_GetObjectItem(turn_j, "messages") == NULL,
+          "empty turn has no messages array");
 
     struct edc_session *session2 = edc_session_new(cfg, "sess-et", "EmptyTurn");
     struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
@@ -1551,22 +1546,20 @@ static void test_fork_new_group_snapshot(void)
 
 static void test_fork_snapshot_turns_flushed(void)
 {
-    TEST("edc_task_snapshot_turns retrieves flushed turns (rule 2)");
+    TEST("edc_task_snapshot_turns retrieves committed turns (rule 2)");
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-snapfl", "SnapFlush");
 
-    /* 建 task + turn, flush 到 session->messages (模拟运行态 STOP 路径) */
+    /* 建 task + turn (P4: 消息留在 turn, 不再 move 到 session) */
     struct edc_task *task = edc_task_new("task-parent", "sess-snapfl", "task-parent",
                                           "parent", edc_channel_adapter);
     struct edc_turn *turn = edc_turn_new();
     turn->task_id = strdup("task-parent");
     turn_add_msg(turn, "user", "folded query");
     turn_add_msg(turn, "assistant", "folded answer");
-    edc_session_add_turn(session, turn); /* flush: 消息移到 session->messages, range 记录 */
-    edc_task_add_turn(task, turn);       /* commit 到 task->turns */
+    edc_task_add_turn(task, turn); /* commit 到 task->turns */
 
-    CHECK(edc_queue_length(&turn->messages) == 0, "turn messages flushed");
-    CHECK(turn->range_valid, "range recorded after flush");
+    CHECK(edc_queue_length(&turn->messages) == 2, "turn retains messages");
 
     /* 模拟 L1 折叠 */
     task->turns_folded = true;

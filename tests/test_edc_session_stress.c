@@ -49,7 +49,6 @@ static void test_lifecycle(void)
     C(s->active_task == NULL, "active_task starts NULL");
     C(s->config == cfg, "config set");
     C(s->messages != NULL, "messages array exists");
-    C(s->timestamps == NULL, "timestamps starts NULL");
 
     T("edc_session_free cleans groups and active_task");
     struct edc_task *t = edc_task_new("t1", s->session_id, "t1", "test", edc_channel_adapter);
@@ -188,8 +187,8 @@ static void test_messages_slice(void)
 
     T("slice from new session (has system prompt)");
     cJSON *ms = edc_session_get_messages_slice(s, 0, 10);
-    size_t t = edc_session_get_message_count(s);
-    /* new session has system prompt + optionally history → at least 1 msg */
+    size_t t = (size_t)cJSON_GetArraySize(edc_session_get_messages(s));
+    /* new session has system prompt */
     C(cJSON_GetArraySize(ms) == t, "slice(0,10) returns all msgs for small session");
     cJSON_Delete(ms);
 
@@ -199,8 +198,8 @@ static void test_messages_slice(void)
     cJSON_Delete(ms);
 
     T("slice first N items");
-    /* session has system prompt + potential history — at least 1 message */
-    size_t total = edc_session_get_message_count(s);
+    /* session has system prompt */
+    size_t total = (size_t)cJSON_GetArraySize(edc_session_get_messages(s));
     C(total > 0, "session has messages");
     ms = edc_session_get_messages_slice(s, 0, 1);
     C(cJSON_GetArraySize(ms) == 1, "slice 1 item");
@@ -232,56 +231,6 @@ static void test_messages_slice(void)
         C(role != NULL && cJSON_IsString(role), "sliced item has role field");
     }
     cJSON_Delete(ms);
-
-    edc_session_free(s);
-    free_cfg(cfg);
-}
-
-/* ══════════════════════════════════════════════════════════════
-   6. save_tasks / reload_tasks
-   ══════════════════════════════════════════════════════════════ */
-
-static void test_persistence(void)
-{
-    struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
-
-    T("save_tasks tags messages with task_id/group_id");
-    /* Add some messages directly */
-    cJSON *u1 = cJSON_CreateObject();
-    cJSON_AddStringToObject(u1, "role", "user");
-    cJSON_AddStringToObject(u1, "content", "hello");
-    cJSON_AddItemToArray(s->messages, u1);
-
-    cJSON *u2 = cJSON_CreateObject();
-    cJSON_AddStringToObject(u2, "role", "assistant");
-    cJSON_AddStringToObject(u2, "content", "hi there");
-    cJSON_AddItemToArray(s->messages, u2);
-
-    edc_session_save_tasks(s);
-
-    /* Check that user and assistant messages have task_id */
-    cJSON *r1 = cJSON_GetObjectItem(u1, "task_id");
-    cJSON *r2 = cJSON_GetObjectItem(u2, "task_id");
-    C(r1 != NULL && cJSON_IsString(r1), "user msg tagged task_id");
-    C(r2 != NULL && cJSON_IsString(r2), "assistant msg tagged task_id");
-    C(strcmp(cJSON_GetStringValue(r1), "legacy") == 0, "task_id = legacy");
-
-    T("save_tasks skips system/tool messages");
-    /* system msg was added by edc_session_new — check it's untagged */
-    cJSON *sys_msg = cJSON_GetArrayItem(s->messages, 0);
-    cJSON *sr = cJSON_GetObjectItem(sys_msg, "role");
-    if (sr && strcmp(cJSON_GetStringValue(sr), "system") == 0) {
-        C(!cJSON_HasObjectItem(sys_msg, "task_id"), "system msg untagged");
-    }
-
-    T("save_tasks NULL session");
-    C(!edc_session_save_tasks(NULL), "NULL session → false");
-
-    T("reload_tasks NULL safety");
-    edc_session_reload_tasks(NULL);
-    edc_session_reload_tasks(s);  /* stub, no crash */
-    C(1, "reload_tasks survived");
 
     edc_session_free(s);
     free_cfg(cfg);
@@ -390,29 +339,24 @@ static void test_backward_compat(void)
     struct edc_config *cfg = make_cfg();
     struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
-    T("old API: get_messages returns cJSON*");
+    T("get_messages returns session->messages (system prompt holder)");
     cJSON *msgs = edc_session_get_messages(s);
     C(msgs != NULL, "get_messages returns non-NULL");
     C(msgs == s->messages, "returns same pointer");
 
-    T("old API: get_message_count");
-    size_t cnt = edc_session_get_message_count(s);
-    C(cnt == (size_t)cJSON_GetArraySize(s->messages), "count matches array size");
+    T("get_message_count is turn-derived (0 with no tasks)");
+    C(edc_session_get_message_count(s) == 0, "count 0 for session without tasks");
 
-    T("old API: add_turn");
+    T("add_turn is a no-op (turn owns messages)");
     struct edc_turn *turn = edc_turn_new();
     edc_turn_add_user_message(turn, "msg from turn");
     edc_session_add_turn(s, turn);
-    C(cJSON_GetArraySize(s->messages) > cnt, "messages grew after add_turn");
+    C(edc_session_get_message_count(s) == 0, "count unchanged (turn not in any task)");
+    edc_turn_free(turn);
 
-    T("old API: save_history (no crash)");
-    /* May fail on missing filesystem — just check no crash */
+    T("save_history (no-op, no crash)");
     edc_session_save_history(s);
     C(1, "save_history survived");
-
-    T("old API: reload (no crash)");
-    edc_session_reload(s, false);
-    C(1, "reload survived");
 
     edc_session_free(s);
     free_cfg(cfg);
@@ -479,7 +423,6 @@ int main(void)
     test_find();
     test_active_task();
     test_messages_slice();
-    test_persistence();
     test_mixed_scenario();
     test_stress();
     test_backward_compat();

@@ -41,92 +41,28 @@ static edc_task_dep_type dep_type_from_name(const char *name)
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Helpers: find message index in session->messages by pointer
- *  ══════════════════════════════════════════════════════════════ */
-
-/** Return the index of `msg` in `messages_array`, or -1 if not found. */
-static int find_msg_index(cJSON *messages_array, cJSON *msg)
-{
-    size_t n = cJSON_GetArraySize(messages_array);
-    for (size_t i = 0; i < n; i++)
-    {
-        if (cJSON_GetArrayItem(messages_array, i) == msg)
-            return (int)i;
-    }
-    return -1;
-}
-
-/* ══════════════════════════════════════════════════════════════
  *  Serialize a single turn
  *
- *  Strategy: first try to locate each message in session->messages
- *  by pointer.  If every message is found, write a compact
- *  message_start / message_count pair (indices into the
- *  messages array).  Otherwise embed the message content
- *  directly in a "messages" array as a fallback.
+ *  单一模式: 把消息体内联进 turn (消息归属 turn)。顺序由 task 的
+ *  completion_seq + turn/消息内序决定 (见 deser_rebuild_group_history)。
  *  ══════════════════════════════════════════════════════════════ */
 
-static cJSON *turn_to_json(struct edc_turn *turn, cJSON *messages_array)
+static cJSON *turn_to_json(struct edc_turn *turn)
 {
     cJSON *tj = cJSON_CreateObject();
-    size_t msg_count = edc_queue_length(&turn->messages);
 
-    /* Phase 3: if the turn has a recorded range (from edc_session_add_turn),
-     * use it directly — this is the common path for flushed turns.
-     * The messages are already in session->messages at the recorded indices. */
-    if (turn->range_valid && turn->msg_range_count > 0)
-    {
-        cJSON_AddNumberToObject(tj, "message_start", (int)turn->msg_range_start);
-        cJSON_AddNumberToObject(tj, "message_count", (int)turn->msg_range_count);
-        return tj;
-    }
-
-    /* Fallback for turns that still have messages in their queue
-     * (not yet flushed via edc_session_add_turn). */
-
-    if (msg_count == 0)
-    {
-        cJSON_AddNumberToObject(tj, "message_start", 0);
-        cJSON_AddNumberToObject(tj, "message_count", 0);
-        return tj;
-    }
-
-    size_t head = turn->messages.head;
-    size_t tail = turn->messages.tail;
-
-    /* Try pointer-based lookup first */
-    bool all_found = true;
-    int first_idx = -1;
-    for (size_t i = head; i < tail; i++)
+    cJSON *embedded = cJSON_CreateArray();
+    for (size_t i = turn->messages.head; i < turn->messages.tail; i++)
     {
         cJSON *msg = (cJSON *)turn->messages.data[i];
-        int idx = find_msg_index(messages_array, msg);
-        if (idx < 0)
-        {
-            all_found = false;
-            break;
-        }
-        if (first_idx < 0)
-            first_idx = idx;
+        if (msg)
+            cJSON_AddItemToArray(embedded, cJSON_Duplicate(msg, 1));
     }
 
-    if (all_found)
-    {
-        /* Compact: just the range */
-        cJSON_AddNumberToObject(tj, "message_start", first_idx);
-        cJSON_AddNumberToObject(tj, "message_count", (int)msg_count);
-    }
-    else
-    {
-        /* Fallback: embed messages directly */
-        cJSON *embedded = cJSON_CreateArray();
-        for (size_t i = head; i < tail; i++)
-        {
-            cJSON *msg = (cJSON *)turn->messages.data[i];
-            cJSON_AddItemToArray(embedded, cJSON_Duplicate(msg, 1));
-        }
+    if (cJSON_GetArraySize(embedded) > 0)
         cJSON_AddItemToObject(tj, "messages", embedded);
-    }
+    else
+        cJSON_Delete(embedded);
 
     return tj;
 }
@@ -135,7 +71,7 @@ static cJSON *turn_to_json(struct edc_turn *turn, cJSON *messages_array)
  *  Serialize a single task
  *  ══════════════════════════════════════════════════════════════ */
 
-static cJSON *task_to_json(struct edc_task *task, cJSON *messages_array)
+static cJSON *task_to_json(struct edc_task *task)
 {
     cJSON *tj = cJSON_CreateObject();
 
@@ -237,7 +173,7 @@ static cJSON *task_to_json(struct edc_task *task, cJSON *messages_array)
         for (size_t i = head; i < tail; i++)
         {
             struct edc_turn *t = (struct edc_turn *)task->turns.data[i];
-            cJSON *tj_inner = turn_to_json(t, messages_array);
+            cJSON *tj_inner = turn_to_json(t);
             cJSON_AddNumberToObject(tj_inner, "turn_index", turn_idx++);
             cJSON_AddItemToArray(turns_json, tj_inner);
         }
@@ -247,7 +183,7 @@ static cJSON *task_to_json(struct edc_task *task, cJSON *messages_array)
     /* ── active_turn ── */
     if (task->active_turn)
     {
-        cJSON *at = turn_to_json(task->active_turn, messages_array);
+        cJSON *at = turn_to_json(task->active_turn);
         cJSON_AddNumberToObject(at, "turn_index", -1);
         cJSON_AddItemToObject(tj, "active_turn", at);
     }
@@ -296,14 +232,9 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
     (void)sched; /* 前台组现在只存在 session 上, 序列化不再需要 scheduler */
     if (!session)
         return NULL;
-    if (!session->messages)
-    {
-        log_error("edc_state_serialize: session->messages is NULL");
-        return NULL;
-    }
 
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "version", 1);
+    cJSON_AddNumberToObject(root, "version", 2);
 
     /* ── session block ── */
     cJSON *sj = cJSON_CreateObject();
@@ -320,7 +251,7 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
     if (session->foreground_group)
         cJSON_AddStringToObject(sj, "foreground_group_id", session->foreground_group->group_id);
     cJSON_AddNumberToObject(sj, "next_completion_seq", (int)session->next_completion_seq);
-    cJSON_AddNumberToObject(sj, "message_count", (int)cJSON_GetArraySize(session->messages));
+    cJSON_AddNumberToObject(sj, "message_count", (int)edc_session_get_message_count(session));
     cJSON_AddItemToObject(root, "session", sj);
 
     /* ── groups block ── */
@@ -339,7 +270,6 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
     /* ── tasks block ── */
     cJSON *tasks_json = cJSON_CreateArray();
     {
-        cJSON *messages = session->messages;
         struct edc_task_group *g;
         DL_FOREACH(session->groups, g)
         {
@@ -351,7 +281,7 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
                  * 否则重启后会按旧状态恢复, 让取消看起来"没生效"。 */
                 if (t->state == TASK_IDLE)
                     continue;
-                cJSON_AddItemToArray(tasks_json, task_to_json(t, messages));
+                cJSON_AddItemToArray(tasks_json, task_to_json(t));
             }
         }
     }
@@ -389,17 +319,14 @@ static edc_task_state normalize_interrupted_state(edc_task_state s)
 }
 
 /**
- * Rebuild a turn from JSON.  Two modes:
- *   1. Compact:  message_start + message_count → slice session->messages
- *   2. Embedded: "messages" array → use directly (fallback)
+ * Rebuild a turn from JSON: its embedded "messages" array.
  *
  * Returns a new edc_turn with messages and timestamps populated.
  */
-static struct edc_turn *turn_from_json(cJSON *tj, cJSON *messages_array)
+static struct edc_turn *turn_from_json(cJSON *tj)
 {
     struct edc_turn *turn = edc_turn_new();
 
-    /* ── Mode 2: embedded messages (fallback) ── */
     cJSON *embedded = cJSON_GetObjectItem(tj, "messages");
     if (embedded && cJSON_IsArray(embedded))
     {
@@ -414,34 +341,6 @@ static struct edc_turn *turn_from_json(cJSON *tj, cJSON *messages_array)
             sds ts = ts_obj && cJSON_IsString(ts_obj) ? sdsnew(cJSON_GetStringValue(ts_obj)) : sdsempty();
             edc_queue_push(&turn->timestamps, ts);
         }
-        return turn;
-    }
-
-    /* ── Mode 1: compact range ── */
-    int start = cJSON_GetObjectItem(tj, "message_start")
-                    ? (int)cJSON_GetNumberValue(cJSON_GetObjectItem(tj, "message_start"))
-                    : 0;
-    int count = cJSON_GetObjectItem(tj, "message_count")
-                    ? (int)cJSON_GetNumberValue(cJSON_GetObjectItem(tj, "message_count"))
-                    : 0;
-
-    if (count <= 0 || start < 0)
-        return turn;
-
-    size_t total = cJSON_GetArraySize(messages_array);
-    for (int i = 0; i < count; i++)
-    {
-        size_t idx = (size_t)(start + i);
-        if (idx >= total)
-            break;
-
-        cJSON *msg = cJSON_GetArrayItem(messages_array, idx);
-        cJSON *copy = cJSON_Duplicate(msg, 1);
-        edc_queue_push(&turn->messages, copy);
-
-        cJSON *ts_obj = cJSON_GetObjectItem(msg, "timestamp");
-        sds ts = ts_obj && cJSON_IsString(ts_obj) ? sdsnew(cJSON_GetStringValue(ts_obj)) : sdsempty();
-        edc_queue_push(&turn->timestamps, ts);
     }
 
     return turn;
@@ -949,7 +848,7 @@ static void deser_reconcile_deps(struct task_map_entry **id_map)
     }
 }
 
-static void deser_turns(cJSON *json, cJSON *messages_array, struct task_map_entry **id_map)
+static void deser_turns(cJSON *json, struct task_map_entry **id_map)
 {
     cJSON *tasks_json = cJSON_GetObjectItem(json, "tasks");
     if (!tasks_json || !cJSON_IsArray(tasks_json))
@@ -970,7 +869,7 @@ static void deser_turns(cJSON *json, cJSON *messages_array, struct task_map_entr
             size_t trc = cJSON_GetArraySize(turns_json);
             for (size_t j = 0; j < trc; j++)
             {
-                struct edc_turn *turn = turn_from_json(cJSON_GetArrayItem(turns_json, j), messages_array);
+                struct edc_turn *turn = turn_from_json(cJSON_GetArrayItem(turns_json, j));
                 if (!turn)
                     continue;
                 free(turn->task_id);
@@ -982,7 +881,7 @@ static void deser_turns(cJSON *json, cJSON *messages_array, struct task_map_entr
         cJSON *at_json = cJSON_GetObjectItem(tj, "active_turn");
         if (at_json)
         {
-            struct edc_turn *turn = turn_from_json(at_json, messages_array);
+            struct edc_turn *turn = turn_from_json(at_json);
             if (turn)
             {
                 free(turn->task_id);
@@ -1014,21 +913,20 @@ bool edc_state_deserialize(cJSON *json, struct edc_session *session, struct edc_
         return false;
 
     cJSON *ver = cJSON_GetObjectItem(json, "version");
-    if (!ver || !cJSON_IsNumber(ver) || cJSON_GetNumberValue(ver) != 1)
+    if (!ver || !cJSON_IsNumber(ver))
     {
         log_error("deserialize: unsupported or missing version");
+        return false;
+    }
+    double ver_num = cJSON_GetNumberValue(ver);
+    if (ver_num != 2)
+    {
+        log_error("deserialize: unsupported version %g (expected 2)", ver_num);
         return false;
     }
 
     session->groups = NULL;
     session->active_task = NULL;
-
-    cJSON *messages_array = session->messages;
-    if (!messages_array)
-    {
-        log_error("deserialize: session->messages is NULL");
-        return false;
-    }
 
     cJSON *sj = cJSON_GetObjectItem(json, "session");
     deser_session_meta(session, sj);
@@ -1041,7 +939,7 @@ bool edc_state_deserialize(cJSON *json, struct edc_session *session, struct edc_
     deser_create_groups(json, session, id_map, group_map);
     deser_deps(json, id_map, sched);
     deser_reconcile_deps(id_map);
-    deser_turns(json, messages_array, id_map);
+    deser_turns(json, id_map);
     deser_global_ptrs(sj, session, id_map, group_map);
     deser_rebuild_group_history(session, sched);
 
