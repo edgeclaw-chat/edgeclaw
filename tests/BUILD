@@ -331,6 +331,15 @@ cc_test(
 )
 
 cc_test(
+    name = "test_session_id",
+    srcs = ["test_session_id.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_task_resume",
     srcs = ["test_task_resume.c"],
     deps = [

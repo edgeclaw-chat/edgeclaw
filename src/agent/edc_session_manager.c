@@ -8,30 +8,132 @@
 #include "log.h"
 #include "sds.h"
 #include "uthash.h"
+#include <dirent.h>
 #include <errno.h>
 #include <string.h>
 
 /* ── Helpers ───────────────────────────────────────────────── */
 
+/* ── Session 序号持久化 ──────────────────────────────────────
+ * session id 必须**永不复用**。若 /session remove 之后再次 /session new 拿回
+ * 同一个 id, 新 session 就落在被删 session 的目录上 —— session.json /
+ * chat.jsonl / tasks.idx 全是上一个生命周期的残留: TUI 回放旧对话、跨 session
+ * 的 task 索引把旧任务归到错误的属主。
+ *
+ * id 只在"当前存活 session 的最大编号 + 1"上取号 (旧实现) 不足以防复用:
+ * 被删 session 的编号一旦成为最大号, 下一次创建就会把它拿回来; 跨重启时若被
+ * 删的是最大号, 同样会倒退。故把发号高水位单独落盘 workspace/.session_seq,
+ * 每次取号即续写; 加载时取 "文件值 / 索引里的 id / workspace 下已存在的
+ * session 目录" 三者的最大值 —— 后两者兼容升级前的旧存档与残留的孤儿目录。
+ * 纯 stdio, 不依赖 uv file loop (session manager 单测不初始化 file utils)。 */
+
+static sds edc_sm_session_seq_path(struct edc_session_manager *sm)
+{
+    if (!sm || !sm->config || !sm->config->workspace || sdslen(sm->config->workspace) == 0)
+        return NULL;
+    return edc_path_join(sm->config->workspace, ".session_seq", NULL);
+}
+
+static void edc_sm_persist_session_seq(struct edc_session_manager *sm)
+{
+    sds path = edc_sm_session_seq_path(sm);
+    if (!path)
+        return;
+
+    sds tmp = sdscatprintf(sdsempty(), "%s.tmp", path);
+    FILE *f = fopen(tmp, "w");
+    if (!f && errno == ENOENT && sm->config && sm->config->workspace)
+    {
+        /* 全新环境里 workspace 目录可能还没建立, 补建后重试一次。 */
+        mkdir(sm->config->workspace, 0755);
+        f = fopen(tmp, "w");
+    }
+    if (!f)
+    {
+        log_debug("session_seq: open %s for write failed: %s", tmp, strerror(errno));
+    }
+    else
+    {
+        if (fprintf(f, "%lld\n", sm->next_session_id) < 0)
+            log_debug("session_seq: write %s failed: %s", tmp, strerror(errno));
+        fclose(f);
+        if (rename(tmp, path) != 0)
+            log_warn("session_seq: rename %s -> %s failed: %s", tmp, path, strerror(errno));
+    }
+    sdsfree(tmp);
+    sdsfree(path);
+}
+
+static void edc_sm_load_session_seq(struct edc_session_manager *sm)
+{
+    sds path = edc_sm_session_seq_path(sm);
+    if (!path)
+        return;
+
+    FILE *f = fopen(path, "r");
+    sdsfree(path);
+    if (!f)
+        return; /* 首次运行 / 文件缺失: 保留内存初值 */
+
+    long long v = 0;
+    if (fscanf(f, "%lld", &v) == 1 && v > sm->next_session_id)
+        sm->next_session_id = v;
+    fclose(f);
+}
+
+/* 把一个已知编号 (索引里的 id, 或磁盘上残留的 session 目录名) 计入高水位。
+ * 只认 "s<N>" / "sess-<N>" 的纯十进制尾号, 与发号格式一致。 */
+static void edc_sm_observe_session_id(struct edc_session_manager *sm, const char *id)
+{
+    if (!sm || !id || !*id)
+        return;
+
+    const char *num = NULL;
+    if (strncmp(id, "sess-", 5) == 0)
+        num = id + 5;
+    else if (id[0] == 's')
+        num = id + 1;
+    if (!num || num[0] < '0' || num[0] > '9')
+        return;
+
+    char *end = NULL;
+    long long n = strtoll(num, &end, 10);
+    if (end == num || (end && *end != '\0'))
+        return;
+
+    if (n >= sm->next_session_id)
+    {
+        sm->next_session_id = n + 1;
+        edc_sm_persist_session_seq(sm);
+    }
+}
+
+/* 把 workspace 下已存在的 session 目录也计入高水位: /session remove 只把
+ * session 移出索引, 目录会留下, 升级到本改动前删掉的最大号 session 就属于
+ * 这种"索引里没有、目录还在"的情况。 */
+static void edc_sm_observe_session_dirs(struct edc_session_manager *sm)
+{
+    if (!sm || !sm->config || !sm->config->workspace || sdslen(sm->config->workspace) == 0)
+        return;
+
+    DIR *d = opendir(sm->config->workspace);
+    if (!d)
+        return;
+
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL)
+        edc_sm_observe_session_id(sm, e->d_name);
+    closedir(d);
+}
+
 static sds edc_sm_gen_session_id(struct edc_session_manager *sm)
 {
-    int max_id = 0;
-    for (int i = 0; i < sm->session_count; i++)
-    {
-        const char *sid = sm->sessions[i]->session_id;
-        const char *num = NULL;
-        if (strncmp(sid, "sess-", 5) == 0)
-            num = sid + 5;
-        else if (sid[0] == 's')
-            num = sid + 1;
-        if (num && num[0] >= '0' && num[0] <= '9')
-        {
-            int n = atoi(num);
-            if (n > max_id)
-                max_id = n;
-        }
-    }
-    return sdscatprintf(sdsempty(), "s%d", max_id + 1);
+    long long id = sm->next_session_id > 0 ? sm->next_session_id : 1;
+    sm->next_session_id = id + 1;
+    /* 取号即落盘高水位: 即便该 session 随后被 /session remove, 重启后也不会
+     * 再把同一个编号发出去。 */
+    edc_sm_persist_session_seq(sm);
+    return sdscatprintf(sdsempty(), "s%lld", id);
 }
 
 static sds edc_sm_gen_session_name(struct edc_session_manager *sm)
@@ -206,6 +308,11 @@ bool edc_session_manager_load(struct edc_session_manager *sm)
     if (sm->active_index < 0 || sm->active_index >= sm->session_count)
         sm->active_index = 0;
 
+    /* 索引里出现过的编号一并计入发号高水位: 兼容没有 .session_seq 的旧存档
+     * (首次运行本改动时, 索引里的最大号不能被重新发出去)。 */
+    for (int i = 0; i < sm->session_count; i++)
+        edc_sm_observe_session_id(sm, sm->sessions[i]->session_id);
+
     /* If nothing loaded, create default */
     if (sm->session_count == 0)
     {
@@ -232,6 +339,13 @@ struct edc_session_manager *edc_session_manager_new(struct edc_config *config)
     sm->active_index = -1;
     sm->sessions_dir = sdsnew(config->workspace);
     sm->index_path = edc_path_join(config->workspace, "sessions.json", NULL);
+    sm->next_session_id = 1;
+
+    /* 恢复上次运行的发号高水位, 再加载索引 (load 会把索引里的编号也计入),
+     * 最后把磁盘上残留的 session 目录一并计入 —— 顺序保证 next_session_id
+     * 在任何创建动作之前已经大于所有用过的编号。 */
+    edc_sm_load_session_seq(sm);
+    edc_sm_observe_session_dirs(sm);
 
     if (!edc_session_manager_load(sm))
     {

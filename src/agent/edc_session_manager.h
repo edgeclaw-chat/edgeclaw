@@ -18,6 +18,13 @@ struct edc_session_manager
     struct edc_session **sessions; /* dynamic array of session pointers */
     int session_count;             /* number of active sessions */
     int active_index;              /* index into sessions[] */
+
+    /* Monotonic high-water for session ids, persisted in <workspace>/.session_seq
+     * and advanced by every creation, so an id is NEVER reused — not after
+     * /session remove, not across restarts. Reuse would make a new session land
+     * on a removed one's directory, inheriting its session.json, chat.jsonl and
+     * tasks.idx (stale transcript replay, wrong cross-session task owner). */
+    long long next_session_id;
     sds sessions_dir;              /* workspace/ — session dirs live here */
     sds index_path;                /* workspace/sessions.json */
     struct edc_config *config;
