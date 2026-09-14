@@ -109,6 +109,13 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
                 p += 4;
                 continue;
             }
+            /* --suspended: 建任务但**不立即执行**。放 --bg 之后, 两者互不前缀。 */
+            if (strncmp(p, "--suspended", 11) == 0 && (p[11] == ' ' || p[11] == '\0'))
+            {
+                opts->suspended = true;
+                p += 11;
+                continue;
+            }
             if (strncmp(p, "-d ", 3) == 0)
             {
                 p += 3;

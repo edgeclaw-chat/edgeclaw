@@ -19,6 +19,8 @@
 #include "edc_session.h"
 #include "edc_session_manager.h"
 #include "edc_task.h"
+#include "edc_task_group.h"
+#include "utlist_fix.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -64,6 +66,22 @@ static void drive_command(struct edc_agent *agent, const char *content)
     edc_commands_handler(agent, NULL, cm);
 }
 
+/* 挂起的任务不会进 send_llm, 所以只能自己去 session 的组里找。 */
+static struct edc_task *find_task_by_desc(struct edc_session *sess, const char *desc)
+{
+    struct edc_task_group *g;
+    DL_FOREACH(sess->groups, g)
+    {
+        struct edc_task *t;
+        LL_FOREACH2(g->members, t, group_next)
+        {
+            if (t->description && strcmp(t->description, desc) == 0)
+                return t;
+        }
+    }
+    return NULL;
+}
+
 int main(void)
 {
     const char *ws = "/tmp/test_commands_task_new_ws";
@@ -103,6 +121,40 @@ int main(void)
         CHECK(g_llm_task->current_request_id != NULL, "request registered (late events can be dropped)");
         CHECK(g_llm_task->description && strcmp(g_llm_task->description, "probe") == 0,
               "description is the desc argument");
+    }
+
+    /* ── /task new --suspended: 建, 但不立即执行 ─────────────────── */
+
+    TEST("/task new <desc> --suspended creates it without running it");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    /* 注意 /task new 的 flag **只有在引号输入之后才被解析** —— 不加引号时整个
+     * 剩余文本都成为 desc, flag 被忽略 (这个陷阱会让人以为新 flag 没生效)。 */
+    drive_command(agent, "/task new \"\"\"shelved\"\"\" --suspended");
+
+    struct edc_task *susp = find_task_by_desc(sess, "shelved");
+    CHECK(g_llm_calls == 0, "send_llm NOT called (nothing executed)");
+    CHECK(susp != NULL, "the task exists");
+    if (susp)
+    {
+        CHECK(susp->state == TASK_SUSPENDED, "state is SUSPENDED");
+        /* 初始相位与普通新建任务相同 —— 输入已经装上了, 只是没跑。 */
+        CHECK(susp->active_turn != NULL, "input is attached (same initial phase as a normal task)");
+        CHECK(susp->current_request_id == NULL, "no request registered (nothing is in flight)");
+        /* 决定 1: 挂起的任务不算 active task。 */
+        CHECK(edc_session_get_active_task(sess) != susp, "does not become the active task");
+    }
+
+    /* ── resume 之后就走普通路径 ─────────────────────────────────── */
+
+    TEST("/task resume runs a task that was created suspended");
+    if (susp)
+    {
+        g_llm_calls = 0;
+        g_llm_task = NULL;
+        edc_scheduler_resume_task(sched, susp);
+        CHECK(g_llm_calls == 1, "send_llm called once (it runs now)");
+        CHECK(susp->state == TASK_LLM_PROCESSING, "resume advances to LLM_PROCESSING");
     }
 
     printf("\n  %d passed, %d failed\n", passed, failed);

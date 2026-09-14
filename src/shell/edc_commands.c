@@ -112,7 +112,7 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
                        "- /session save  ·  /session stop\n"
                        "- /session remove <name>  ·  /session rename <old> <new>\n"
                        "\n"
-                       "- /task new <desc>   [--bg]\n"
+                       "- /task new <desc>   [--bg] [--suspended]\n"
                        "- /task fork <parent> <desc>\n"
                        "- /task list  ·  /task status [id]  ·  /task output <id>\n"
                        "- /task groups  ·  /task fg <id>  ·  /task bg [id]\n"
@@ -611,7 +611,8 @@ static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *a
     {
         struct edc_task_group *group = edc_scheduler_create_group(agent->scheduler, task);
 
-        if (opts.bg)
+        /* 挂起的任务不算 active task, 也不抢前台 —— 与 --bg 同样只建组。 */
+        if (opts.bg || opts.suspended)
         {
             // sds reply =
             //     sdscatprintf(sdsempty(), "[task] created %s (group %s) in background", task->task_id,
@@ -637,13 +638,32 @@ done:
      *
      * 放在 `done:` **之后**: 指定已存在 group 的那条路是 `goto done` 过来的,
      * 放前面会被跳过, 于是 `--group` 创建的任务又不跑了。 */
-    if (task && opts.desc && sdslen(opts.desc) > 0 && task->state != TASK_WAITING_DEPS)
+    if (task && opts.desc && sdslen(opts.desc) > 0)
     {
+        /* desc 就是 input: 先把 turn 装上 —— 普通任务与 --suspended 任务在**这一点
+         * 上完全一样** (初始相位相同), 区别只在下面那一步"立即执行"。 */
         struct edc_turn *turn = edc_turn_new();
         turn->task_id = strdup(task->task_id);
         edc_turn_add_user_message(turn, opts.desc);
         task->active_turn = turn;
 
+        if (opts.suspended)
+        {
+            /* --suspended: 到此为止。不注册请求、不进 LLM_PROCESSING —— 停在
+             * SUSPENDED, 等 /task resume。有依赖的照样等依赖 (resume 之后走的
+             * 就是普通路径)。 */
+            bool ok = edc_task_set_state(task, TASK_SUSPENDED);
+            log_info("/task new: task=%s created SUSPENDED -> %s (awaiting /task resume)", task->task_id,
+                     ok ? "ok" : "FAILED");
+        }
+        else if (task->state == TASK_WAITING_DEPS)
+        {
+            log_info("/task new spawn: task %s blocked in WAITING_DEPS, turn queued", task->task_id);
+            edc_cmd_task_opts_free(&opts);
+            return;
+        }
+        else
+        {
         static int64_t counter = 0;
         void *req_id = (void *)(intptr_t)(++counter);
         edc_scheduler_register_task(agent->scheduler, task, req_id);
@@ -655,10 +675,7 @@ done:
                  (agent->scheduler && agent->scheduler->send_llm) ? "ready" : "NULL");
         if (ok && agent->scheduler && agent->scheduler->send_llm)
             agent->scheduler->send_llm(agent->scheduler, task, req_id);
-    }
-    else if (task && task->state == TASK_WAITING_DEPS)
-    {
-        log_info("/task new spawn: task %s blocked in WAITING_DEPS, turn not queued", task->task_id);
+        }
     }
 
     edc_cmd_task_opts_free(&opts);

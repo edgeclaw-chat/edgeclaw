@@ -73,7 +73,13 @@ static bool edc_task_is_valid_transition(edc_task_state from, edc_task_state to)
     case TASK_WAITING_DEPS:
         return to == TASK_WAITING_INPUT || to == TASK_CANCELLED || to == TASK_ERROR;
     case TASK_WAITING_INPUT:
-        return to == TASK_LLM_PROCESSING || to == TASK_CANCELLED || to == TASK_WAITING_DEPS;
+        /* TASK_SUSPENDED 也在内: "以挂起状态创建" (2026-09-14)。一个还没开始跑、
+         * 但输入已经装好的任务需要一条进入挂起的入口 —— 在此之前 SUSPENDED 只能
+         * 从 TOOL_CALLING 到达, 那是"跑到一半挂起"。SUSPENDED 那一行本来就允许
+         * resume 回 WAITING_INPUT / WAITING_DEPS / LLM_PROCESSING, 所以这个往返
+         * 是对称的: 挂起 -> resume -> 重新判定 (有依赖就等依赖)。 */
+        return to == TASK_LLM_PROCESSING || to == TASK_CANCELLED || to == TASK_WAITING_DEPS ||
+               to == TASK_SUSPENDED;
     case TASK_LLM_PROCESSING:
         return to == TASK_TOOL_CALLING || to == TASK_COMPLETED || to == TASK_CANCELLED || to == TASK_ERROR;
     case TASK_TOOL_CALLING:
