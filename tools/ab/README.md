@@ -27,7 +27,7 @@
 tools/ab/
   README.md            本文件
   fake_llm.py          自签 TLS + 固定响应序列
-  ab.py                驱动：run / compare / selftest
+  ab.py                驱动：run / compare / selftest / gate
   scripts/*.txt        输入序列（DSL 见下）
   responses/*.json     假 LLM 的响应序列
 ```
@@ -93,7 +93,7 @@ resize 100x40         # 改终端尺寸
 | `workspace/.task_seq` / `.session_seq` | **逐字节**（数字，无时钟） |
 | `llm_requests.jsonl` | 掩 clock 后一致 —— raw 差 system prompt 里的 `## Current Time` 与请求 `ts` |
 | `log/*.log` | 去掉时间戳后逐行 |
-| `session.json.broken` | **不应存在** —— `run` 与 `compare` 都有**闸门**：产物里出现 `*.broken`、或日志里出现 `quarantin*` → **直接失败**（退出码 **4**），不进入比对（两边可能同样残缺，那样 compare 会说"一致"） |
+| `session.json.broken` | **不应存在** —— `run` 与 `compare` 都有**闸门**：`artifacts/` 下出现 `*.broken`、或 **`_log/` 下任何文件**（含轮转过的 `.log.1`）出现 `quarantin*` → **直接失败**（退出码 **4**），不进入比对（两边可能同样残缺，那样 compare 会说"一致"）。闸门自己的回归见 `ab.py gate` |
 | **终端帧** | **不比** —— 见下 |
 
 ### 归一化（非确定性的来源）
@@ -135,10 +135,15 @@ python3 tools/ab/ab.py compare --a /tmp/ab/out/a --b /tmp/ab/out/b
 
 # 3. 自证确定性（**必做**）
 python3 tools/ab/ab.py selftest --bin /tmp/ab/bin/a --fixture smoke
+
+# 4. 自证**闸门**还在（不跑二进制，秒级）
+python3 tools/ab/ab.py gate
 ```
 
 **`selftest` 不过 = 夹具本身不确定 = A/B 的结论无效。** 这是使用夹具的前置条件。
 同理，若运行**没有任何 LLM 请求**，`run` 会以退出码 3 失败 —— 那说明 LLM 回路没被覆盖。
+`gate` 验的是**闸门自己**（造脏物断言判得对）—— 它是给下面那条"脏产物"规定的回归：
+C 侧的隔离日志文案一改、`_log/` 布局一变，闸门就会静默失效，而那种失效**看起来像"一致"**。
 
 ### 落地细节（实测）
 
@@ -165,3 +170,4 @@ python3 tools/ab/ab.py selftest --bin /tmp/ab/bin/a --fixture smoke
 | `compare` | 0 / 1 | 一致 / 有差异 |
 | | 4 | 任何一侧产物不干净 → **不比对** |
 | `selftest` | 同 `run` | 某一次自证运行不干净时立即失败（不再假装"一致"） |
+| `gate` | 0 / 1 | 闸门自测通过 / 闸门自己坏了（先修它，再看任何 A/B 结论） |

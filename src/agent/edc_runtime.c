@@ -608,20 +608,6 @@ static void edc_runtime_cb_snapshot_changed(struct edc_scheduler *sched, const c
 
 
 /* 会话信号与落盘 (stop_all_turns / remove_all_turns) → edc_session_store.{c,h} */
-/* ── 测试/嵌入式装配缝 ──────────────────────────────────────── */
-
-struct edc_runtime *edc_runtime_attach(struct edc_config *cfg, struct edc_session_manager *sm,
-                                       struct edc_scheduler *sched, edc_actor_t *channel_actor)
-{
-    struct edc_runtime *rt = g_new0(struct edc_runtime, 1);
-    rt->config = cfg;
-    rt->session_manager = sm;
-    rt->scheduler = sched;
-    rt->channel_actor = channel_actor;
-    if (sched)
-        sched->ctx = rt; /* 回调上下文指回装配根 (scheduler 只透传, 不认识它) */
-    return rt;
-}
 
 /* ── 边界访问器 ────────────────────────────────────────────── */
 

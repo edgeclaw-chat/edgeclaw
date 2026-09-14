@@ -43,14 +43,6 @@ typedef bool (*edc_runtime_command_fn)(struct edc_config *cfg, struct edc_sessio
 extern struct edc_runtime *edc_runtime_new(bool setup, int sandbox_override);
 extern void edc_runtime_free(struct edc_runtime *rt);
 
-/* ── 测试/嵌入式装配缝 ────────────────────────────────────────
- * 只把零件装上 —— **不**初始化环境、不建 actor、不启 runner, 也不接管任何零件的
- * 所有权 (config/session_manager/scheduler/channel_actor 仍归调用方)。测试要的
- * 正是"只挑它需要的那几件", 所以它不该再手工造一把伞。
- * |sched| 非空时它的 ctx 会被指向这个 runtime (回调上下文)。 */
-extern struct edc_runtime *edc_runtime_attach(struct edc_config *cfg, struct edc_session_manager *sm,
-                                              struct edc_scheduler *sched, edc_actor_t *channel_actor);
-
 /* ── 边界访问器 (只服务上面那一个读者: TUI 的 C bridge) ──────── */
 extern struct edc_config *edc_runtime_config(const struct edc_runtime *rt);
 extern struct edc_session_manager *edc_runtime_sessions(const struct edc_runtime *rt);

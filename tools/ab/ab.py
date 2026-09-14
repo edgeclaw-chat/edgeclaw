@@ -286,8 +286,22 @@ def collect(home: Path, out: Path):
 # 为什么必须拦：这不是"某个字段不一样"，而是**这次运行从残缺状态开始**了。它甚至
 # 不会表现为产物差异 —— 两个二进制可能同样地丢掉了加载不上的东西，于是 compare
 # 高高兴兴说"一致"。v4→v5 夹具当时就是这样（每次生成一个 `s8/session.json.broken`）。
+# 措辞与 C 侧**必须一致**：`edc_session.c` 的 `session_quarantine_state()`
+#   log_warn("load_state: quarantined %s -> %s (%s)", old, broken, why);
+# C 那边改文案，这里就会**静默失效**（比对照样说"一致"）。所以 `ab.py gate` 自带一条
+# "日志里出现 quarantined"的用例 —— 闸门自己也要有回归。
 BREAK_SUFFIX = ".broken"
 QUARANTINE_RE = re.compile(r"quarantin", re.I)
+LOG_DIR = "_log"
+
+
+def _log_files(art: Path):
+    """`_log/` 下的**全部**常规文件（不只 `*.log`：轮转过就是 `.log.1` / `.log.gz`）。
+    只看日志目录，不看正文 —— 否则夹具对话里出现 "quarantined" 这个词就会误报。"""
+    d = art / LOG_DIR
+    if not d.is_dir():
+        return []
+    return [p for p in sorted(d.rglob("*")) if p.is_file()]
 
 
 def breakage(out: Path):
@@ -298,7 +312,7 @@ def breakage(out: Path):
         return hits
     for p in sorted(art.rglob("*" + BREAK_SUFFIX)):
         hits.append("隔离文件: %s" % p.relative_to(out))
-    for p in sorted(art.rglob("*.log")):
+    for p in _log_files(art):
         try:
             text = p.read_text(errors="replace")
         except OSError:
@@ -426,6 +440,55 @@ def cmd_compare(args):
     return compare(Path(args.a), Path(args.b))
 
 
+def cmd_gate(args):
+    """**闸门自己的**自测：在临时目录里造出各种产物，断言它判得对。
+
+    它不跑被测二进制 —— 验的是 `breakage()`（否则闸门会静默腐烂：C 侧的日志文案一改、
+    或者 `_log/` 的布局一变，"闸门还在"就只是错觉）。"""
+    import tempfile
+    cases = []
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+
+        def mk(name):
+            d = base / name
+            (d / "artifacts").mkdir(parents=True)
+            return d
+
+        d = mk("clean"); (d / "artifacts" / "chat.jsonl").write_text('{"t":"hi"}\n')
+        cases.append(("干净产物", d, False))
+
+        d = mk("broken_file"); (d / "artifacts" / "s8").mkdir()
+        (d / "artifacts" / "s8" / "session.json.broken").write_text("{}")
+        cases.append(("产物里有 .broken", d, True))
+
+        d = mk("broken_log"); (d / "artifacts" / LOG_DIR).mkdir()
+        (d / "artifacts" / LOG_DIR / "edgeclaw-2026-09-15.log").write_text(
+            "INFO ok\nWARN load_state: quarantined a/session.json -> a/session.json.broken (deserialize failed)\n")
+        cases.append(("日志里的 quarantined", d, True))
+
+        d = mk("rotated_log"); (d / "artifacts" / LOG_DIR).mkdir()
+        (d / "artifacts" / LOG_DIR / "edgeclaw-2026-09-15.log.1").write_text(
+            "WARN load_state: quarantined a -> b\n")
+        cases.append(("轮转过的日志 .log.1", d, True))
+
+        d = mk("word_in_chat"); (d / "artifacts" / LOG_DIR).mkdir()
+        (d / "artifacts" / LOG_DIR / "edgeclaw-2026-09-15.log").write_text("INFO ok\n")
+        (d / "artifacts" / "chat.jsonl").write_text('{"t":"正文里提到 quarantined 不算脏"}\n')
+        cases.append(("正文里有这个词（日志干净）", d, False))
+
+        bad = 0
+        for label, d, want in cases:
+            got = bool(breakage(d))
+            ok = got == want
+            bad += 0 if ok else 1
+            print("  %s %-26s 期望 %s，得到 %s"
+                  % ("✓" if ok else "✗", label, "脏" if want else "干净", "脏" if got else "干净"))
+    print("gate selftest: %s" % ("通过（闸门能判 .broken / quarantined / 轮转日志，且不误报正文）"
+                                 if not bad else "**失败** —— 闸门本身坏了，先修它再看 A/B"))
+    return 0 if not bad else 1
+
+
 def cmd_selftest(args):
     for lbl in ("self1", "self2"):
         args.label, args.out = lbl, str(OUT_BASE / lbl)
@@ -467,6 +530,10 @@ def main():
 
     p = sub.add_parser("selftest"); common(p)
     p.set_defaults(func=cmd_selftest)
+
+    # 不跑二进制、不需要 --bin：验的是闸门自己（见 cmd_gate）。
+    p = sub.add_parser("gate", help="自测产物闸门本身（造脏物，断言判得对）")
+    p.set_defaults(func=cmd_gate)
 
     args = ap.parse_args()
     sys.exit(args.func(args))
