@@ -76,6 +76,7 @@ struct edc_https_request
 {
     uv_tcp_t socket;
     uv_connect_t conn;
+    uv_timer_t timer; /* 在途兜底期限：对端连上却不回时必须是它来出口 */
     mbedtls_ssl_context ssl;
     struct edc_https_buf_list *mbedtls_recv_bufs;
     struct edc_https_buf_list *mbedtls_send_bufs;
@@ -168,6 +169,30 @@ static int edc_https_on_message_complete(llhttp_t *http)
     return 0;
 }
 
+/* 在途请求的兜底期限。见 docs/runtime-model.md §2.9: task 的每一步都必须有一个
+ * 由内核保证的出口 —— 对端连上却不回，今天会**永远等下去**（HTTPS 侧此前连一
+ * 个定时器都没有，是全仓库唯一没有出口的在途操作）。
+ *
+ * 这是**总时限**而不是空闲时限：响应是非流式的（edc_llm_actor.c 收完整 JSON 才
+ * 算完），生成期间没有数据流动可供保活。所以默认取得很松（2 分钟）—— 宁可不
+ * 误杀；要更严用 `EDGECLAW_HTTPS_TIMEOUT_MS` 覆盖（也对测试友好：夹具能在几
+ * 秒内跑到期限，不必真等两分钟）。 */
+#define EDC_HTTPS_DEFAULT_TIMEOUT_MS 120000
+
+static int edc_https_timeout_ms(void)
+{
+    const char *env = getenv("EDGECLAW_HTTPS_TIMEOUT_MS");
+    if (env && *env)
+    {
+        long v = strtol(env, NULL, 10);
+        if (v > 0)
+            return (int)v;
+    }
+    return EDC_HTTPS_DEFAULT_TIMEOUT_MS;
+}
+
+static void edc_https_on_timeout(uv_timer_t *timer);
+
 static struct edc_https_request *edc_https_request_new(struct edc_https_client *client, const char *url,
                                                        edc_https_event_fn fn, void *priv)
 {
@@ -205,11 +230,24 @@ static struct edc_https_request *edc_https_request_new(struct edc_https_client *
     }
 
     uv_tcp_init(&client->loop, &req->socket);
+
+    /* 一创建就起表：连不上、握不上手、发出去了没人回 —— 三种挂起都由它兜底。
+     * 一次性（repeat=0）：完成路径会把它关掉，到期路径自己回**和失败完全相同**
+     * 的那条路。 */
+    uv_timer_init(&client->loop, &req->timer);
+    req->timer.data = req;
+    uv_timer_start(&req->timer, edc_https_on_timeout, edc_https_timeout_ms(), 0);
     return req;
 }
 
 static void edc_https_request_free(struct edc_https_request *req)
 {
+    /* 正常收尾时把期限撤掉 —— 否则它会在 req 被 free 之后开火（use-after-free）。
+     * 到期路径已经 close 过它，uv_is_closing 挡住二次 close。 */
+    uv_timer_stop(&req->timer);
+    if (!uv_is_closing((uv_handle_t *)&req->timer))
+        uv_close((uv_handle_t *)&req->timer, NULL);
+
     struct edc_https_buf_list *node = req->mbedtls_recv_bufs;
     while (node)
     {
@@ -330,6 +368,23 @@ static void edc_https_on_tcp_close(uv_handle_t *handle)
     struct edc_https_request *req = (struct edc_https_request *)handle;
     req->fn(req, EDC_HTTPS_EVENT_CLOSE, NULL);
     edc_https_request_free((struct edc_https_request *)handle);
+}
+
+/* 期限到了。**故意复用失败那条路**（ERROR 然后 CLOSE），于是上层不需要为超时
+ * 新增任何分支，收尾顺序（先 error、再 close、free 时撤期限）也与其它失败一致。 */
+static void edc_https_on_timeout(uv_timer_t *timer)
+{
+    struct edc_https_request *req = (struct edc_https_request *)timer->data;
+    int ms = edc_https_timeout_ms();
+    log_error("edc_https_client: request timed out after %d ms: %s", ms, req->url ? req->url : "(no url)");
+
+    sds message = sdscatprintf(sdsnew(NULL), "request timed out after %d ms", ms);
+    req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
+    sdsfree(message);
+
+    uv_timer_stop(timer);
+    uv_close((uv_handle_t *)timer, NULL);
+    uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
 }
 
 static void edc_https_client_drive_mbedtls(struct edc_https_request *req);

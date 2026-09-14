@@ -40,8 +40,14 @@ TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}")
 BOOTSTRAP = ["AGENTS.md", "SOUL.md", "TOOLS.md", "USER.md", "HEARTBEAT.md"]
 
 
+# 行号：往"会打日志的文件"里加一行，日志里的 `file.c:NNN` 就会位移 —— 那是
+# 编辑的副作用，不是行为。不归一化的话，每次改代码 A/B 都会假红
+# （实测：往 edc_https_client.c 里加 55 行 → cacert 那行 724 变 779）。
+LINE_RE = re.compile(r"(\.(?:c|h|cpp|hpp):)\d+")
+
+
 def mask_ts(s: str) -> str:
-    return TS_RE.sub("<TS>", s)
+    return LINE_RE.sub(r"\1<LINE>", TS_RE.sub("<TS>", s))
 
 
 # ---------------------------------------------------------------- fixture
@@ -180,13 +186,15 @@ def _preexec():
 
 
 def run_binary(binary: Path, home: Path, script: Path, out: Path, fake: Path,
-               responses: Path):
+               responses: Path, extra_env=None):
     out.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env.update(HOME=str(home), TERM="xterm-256color", COLORTERM="truecolor",
                LANG="C.UTF-8", LC_ALL="C.UTF-8",
                EDGECLAW_MASTER_KEY=MASTER_KEY)
     env.pop("EDGECLAW_ENC", None)
+    if extra_env:
+        env.update(extra_env)
 
     llm = subprocess.Popen(
         [sys.executable, str(HERE / "fake_llm.py"), "--port", str(PORT),
@@ -335,7 +343,8 @@ def cmd_run(args):
     shutil.copytree(pristine, home, symlinks=True)
 
     rc = run_binary(Path(args.bin), home, HERE / "scripts" / (args.fixture + ".txt"),
-                    out, home, HERE / "responses" / (args.fixture + ".json"))
+                    out, home, HERE / "responses" / (args.fixture + ".json"),
+                    extra_env=dict(kv.split("=", 1) for kv in (args.env or [])))
     print("run %s: 退出码 %s，产物在 %s" % (args.label, rc, out))
     return 0
 
@@ -364,6 +373,8 @@ def main():
         p.add_argument("--sessions", default="s8")
         p.add_argument("--refreeze", action="store_true",
                        help="重建冻结夹具（默认复用第一次冻结的结果）")
+        p.add_argument("--env", action="append", metavar="K=V",
+                       help="额外传一传环境变量给**被测二进制**（可重复）")
 
     p = sub.add_parser("run"); common(p)
     p.add_argument("--label", required=True)
