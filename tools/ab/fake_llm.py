@@ -18,6 +18,7 @@ import ssl
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 RESPONSES = []
@@ -68,12 +69,26 @@ class Handler(BaseHTTPRequestHandler):
                                     "body": body}, ensure_ascii=False,
                                    sort_keys=True) + "\n")
 
+        # `__delay`: 应答前睡这么久。作用是在客户端**在途**时制造一个窗口，
+        # 好让脚本在那个窗口里取消（否则立即应答就没有可取消的东西）。
+        # 请求先记盘再睡 —— 即使客户端随后断连，请求记录也留得下。
+        # 该键是夹具私有的，不发给客户端。
+        resp = dict(resp)
+        delay = resp.pop("__delay", 0)
+        if delay:
+            time.sleep(delay)
+
         data = json.dumps(resp).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError):
+            # 客户端已经取消并关掉了连接 —— 这正是取消场景要覆盖的情形，
+            # 不该让服务器崩掉。应答被丢弃 = "迟到事件必须无害" 的上游一半。
+            pass
 
 
 def main():
