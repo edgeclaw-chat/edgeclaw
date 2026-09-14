@@ -11,6 +11,7 @@
 #include "edc_shell.h"
 #include "edc_state_serializer.h"
 #include "edc_task.h"
+#include "edc_turn.h"
 #include "edc_task_group.h"
 #include "sds.h"
 #include "utlist_fix.h"
@@ -629,6 +630,37 @@ static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *a
     }
 
 done:
+    /* desc 就是 input, 任务**创建即运行** (2026-09-14 决定)。此前这里只建不派发,
+     * 任务停在 WAITING_INPUT 且**永远等不到输入** —— 没有任何代码会给它,
+     * 那是个死胡同。派发与 shell 的创建路径 (edc_shell.c) 走同一条:
+     * 建 turn -> 注册 -> 置 LLM_PROCESSING -> send_llm。
+     *
+     * 放在 `done:` **之后**: 指定已存在 group 的那条路是 `goto done` 过来的,
+     * 放前面会被跳过, 于是 `--group` 创建的任务又不跑了。 */
+    if (task && opts.desc && sdslen(opts.desc) > 0 && task->state != TASK_WAITING_DEPS)
+    {
+        struct edc_turn *turn = edc_turn_new();
+        turn->task_id = strdup(task->task_id);
+        edc_turn_add_user_message(turn, opts.desc);
+        task->active_turn = turn;
+
+        static int64_t counter = 0;
+        void *req_id = (void *)(intptr_t)(++counter);
+        edc_scheduler_register_task(agent->scheduler, task, req_id);
+        task->current_request_id = req_id;
+
+        bool ok = edc_task_set_state(task, TASK_LLM_PROCESSING);
+        log_info("/task new spawn: task=%s set_state LLM_PROCESSING -> %s, send_llm=%s", task->task_id,
+                 ok ? "ok" : "FAILED",
+                 (agent->scheduler && agent->scheduler->send_llm) ? "ready" : "NULL");
+        if (ok && agent->scheduler && agent->scheduler->send_llm)
+            agent->scheduler->send_llm(agent->scheduler, task, req_id);
+    }
+    else if (task && task->state == TASK_WAITING_DEPS)
+    {
+        log_info("/task new spawn: task %s blocked in WAITING_DEPS, turn not queued", task->task_id);
+    }
+
     edc_cmd_task_opts_free(&opts);
 }
 

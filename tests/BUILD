@@ -197,6 +197,15 @@ cc_test(
 )
 
 cc_test(
+    name = "test_commands_task_new",
+    srcs = ["test_commands_task_new.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_state_serializer",
     srcs = ["test_state_serializer.c"],
     deps = [

@@ -30,7 +30,7 @@ struct edc_sched_task_entry
 static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg);
 /* 任务树快照: 只服务侧边栏 (任务树 + todo + 计数)。对话内容不再随快照下发
  * —— 聊天区由 TUI 自己持久化/回放显示流 (见 edc_tui_window.cpp)。 */
-static void sched_handle_task_snapshot(struct edc_scheduler *sched);
+static void sched_handle_task_snapshot(struct edc_scheduler *sched, const char *reason);
 static void sched_notify_foreground_state(struct edc_scheduler *sched, struct edc_task *task);
 static void sched_set_task_state(struct edc_scheduler *sched, struct edc_task *task, edc_task_state state);
 /* executor 的出站 ops 表（定义在文件后半；这里前向声明，供 new 里 init 用）。 */
@@ -607,7 +607,7 @@ static void sched_notify_foreground_state(struct edc_scheduler *sched, struct ed
         return;
     if (task->group != sched->session->foreground_group)
         return;
-    sched_handle_task_snapshot(sched);
+    sched_handle_task_snapshot(sched, "state");
 }
 
 /* 统一的状态迁移入口: 设置状态后, 若被改变的是前台 active task, 主动推送
@@ -812,7 +812,7 @@ static void ex_flush_redirects(void *ctx, struct edc_task *task)
 
 static void ex_task_snapshot(void *ctx)
 {
-    sched_handle_task_snapshot((struct edc_scheduler *)ctx);
+    sched_handle_task_snapshot((struct edc_scheduler *)ctx, "tool");
 }
 
 /* 展示逻辑: 这个 task 此刻在被显示吗 (规则 8 的 active-task 闸门)。 */
@@ -963,14 +963,36 @@ static void sched_handle_tool_emit(struct edc_scheduler *sched, struct edc_actor
      * 变化 (TOOL_CALLING 期间), 不会触发状态通知快照 —— 这里主动补推一次,
      * 让 TUI 的 TodoWidget 立即按新清单刷新 (规则3)。 */
     if (v.header && strcmp(v.header, "todowrite") == 0)
-        sched_handle_task_snapshot(sched);
+        sched_handle_task_snapshot(sched, "todo");
 }
 
 /* ── Actor 入口 ────────────────────────────────────────────── */
 
 /* 序列化当前 session 的 task 树 (group → members)，供 TUI 侧边栏渲染。
  * 用 cJSON 生成 JSON 文本，在 scheduler 线程上执行，天然无并发。 */
-static void sched_handle_task_snapshot(struct edc_scheduler *sched)
+/* 端到端检查钩子。设了 `EDGECLAW_SNAPSHOT_TRACE=<path>` 就把每次快照推送追加
+ * 一行：原因 + **实际下发的 JSON**（即侧栏被告诉的全部内容）。
+ *
+ * 为什么需要它：TUI 那个 500ms 轮询是后台任务状态变化的唯一通路（推送只覆盖
+ * 前台 active task）。要删掉轮询，就得证明后台任务的变化改由**状态变化**送达 ——
+ * 那是渲染层的性质，比对产物看不出来。原因标记让检查具备判别性：删轮询之前，
+ * 后台任务的变化只会以 reason=poll 出现；之后必须出现 reason=state。
+ *
+ * 不设该变量时：一次 getenv，零输出，零开销。 */
+static void sched_trace_snapshot(const char *reason, sds json)
+{
+    const char *path = getenv("EDGECLAW_SNAPSHOT_TRACE");
+    if (!path || !*path)
+        return;
+    FILE *f = fopen(path, "a");
+    if (!f)
+        return;
+    fprintf(f, "push reason=%s %s\n", reason ? reason : "?", json ? json : "");
+    fclose(f);
+}
+
+
+static void sched_handle_task_snapshot(struct edc_scheduler *sched, const char *reason)
 {
     if (!sched || !sched->session)
         return;
@@ -1067,6 +1089,8 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched)
     sds out = sdsnew(json);
     cJSON_free(json);
 
+    sched_trace_snapshot(reason, out);
+
     if (sched->snapshot_ready)
         sched->snapshot_ready(sched, out);
     else
@@ -1104,7 +1128,7 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
             sched->save_session(sched, sched->session);
         break;
     case BC_ACTOR_MSG_TASK_SNAPSHOT:
-        sched_handle_task_snapshot(sched);
+        sched_handle_task_snapshot(sched, "poll");
         break;
     default:
         break;
