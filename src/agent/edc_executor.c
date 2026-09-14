@@ -1,0 +1,262 @@
+/* edc_executor.c —— task 之内的推进器。见 edc_executor.h 与 docs/runtime-model.md §2。
+ *
+ * P1：本文件**原样搬来** sched_handle_llm_resp / sched_handle_tool_resp /
+ * sched_handle_tool_started / sched_stop_at_iteration_cap 的**决策**部分，
+ * 副作用改为经由 ops 出站。**行为不变**（搬迁纪律：逐行核对）。
+ */
+#include "edc_executor.h"
+#include "edc_config.h"
+#include "edc_session.h"
+#include "edc_task_group.h"
+#include "edc_turn.h"
+#include "sds.h"
+#include <string.h>
+
+void edc_executor_init(struct edc_executor *ex, const struct edc_executor_ops *ops, void *ctx)
+{
+    ex->ops = ops;
+    ex->ctx = ctx;
+}
+
+/* ── EXEC_DONE：LLM 响应到达 ───────────────────────────────── */
+
+static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task, const struct edc_event *ev)
+{
+    const struct edc_executor_ops *ops = ex->ops;
+    const struct edc_event_exec *e = &ev->as.exec;
+    void *req_id = (void *)ev->request_id;
+
+    /* Token 账: 把本次响应的 usage 累加到 task。放在分支之前, 让 STOP、
+     * TOOL_CALLING 以及 error 三条路径都计入 —— 一次用户输入常触发多轮
+     * 请求 (工具链续发), 每轮都要算, 否则会漏掉中间轮。 */
+    edc_task_add_usage(task, e->prompt_tokens, e->completion_tokens, e->total_tokens, e->cached_tokens);
+
+    if (e->failed)
+    {
+        if (ops->unregister_task)
+            ops->unregister_task(ex->ctx, req_id);
+        task->current_request_id = NULL;
+        if (ops->set_task_state)
+            ops->set_task_state(ex->ctx, task, TASK_ERROR);
+        if (e->content)
+            edc_task_set_output(task, sdsnew(e->content));
+        if (ops->flush_redirects)
+            ops->flush_redirects(ex->ctx, task);
+        if (ops->send_reply)
+        {
+            const char *err = e->error_message ? e->error_message : "LLM request failed";
+            bool no_key = ops->has_api_key && !ops->has_api_key(ex->ctx);
+            if (no_key)
+            {
+                /* First run: with no API key the request can only fail, so
+                 * point the user at the /connect dialog instead of just
+                 * reporting the error. */
+                sds combined = sdscatprintf(
+                    sdsempty(), "%s\n\nNo API key configured — run /connect to set the API URL, model and key.", err);
+                ops->send_reply(ex->ctx, task, combined, EDC_CHANNEL_MESSAGE_SYS_TYPE, req_id);
+                sdsfree(combined);
+            }
+            else
+            {
+                ops->send_reply(ex->ctx, task, err, EDC_CHANNEL_MESSAGE_SYS_TYPE, req_id);
+            }
+        }
+        return EDC_STEP_ERROR;
+    }
+
+    if (e->reason == EDC_REASON_TOOL_CALL)
+    {
+        if (ops->set_task_state)
+            ops->set_task_state(ex->ctx, task, TASK_TOOL_CALLING);
+        if (task->active_turn)
+        {
+            /* 所有权转入 turn（调用方随后把 e->msg 置 NULL，与今天一致）。 */
+            edc_turn_add_assistant_message(task->active_turn, e->msg);
+        }
+        /* 账本: 先把本轮 tool_calls 全部登记为 PENDING (dispatch 会转移
+         * name/args/id 的所有权, 故必须先登记), 派发后再把链首提升 EXECUTING
+         * —— 中断后 resume 据此判定哪些工具需要重新执行。 */
+        for (int i = 0; i < e->n_calls; i++)
+        {
+            const struct edc_tool_call *tc = &e->calls[i];
+            edc_task_tool_call_add(task, tc->id, tc->name, tc->args);
+        }
+        /* keep task registered — tool responses use same request_id */
+        if (ops->dispatch_tools)
+            ops->dispatch_tools(ex->ctx, task, e->tool_calls_raw, req_id);
+        return EDC_STEP_BLOCKED;
+    }
+
+    if (e->reason == EDC_REASON_STOP)
+    {
+        if (ops->unregister_task)
+            ops->unregister_task(ex->ctx, req_id);
+        task->current_request_id = NULL;
+
+        /* 属主 session: 后台 session 里的任务完成时, turn 与 completion_seq 必须
+         * 落回它自己, 不能用当前绑定的 session。 */
+        struct edc_session *own = ops->task_session ? ops->task_session(ex->ctx, task) : NULL;
+        if (task->active_turn)
+        {
+            /* 最终回复就是渲染端按 Markdown 显示的那条 (send_reply 走 RESP) ——
+             * 把偏好写进消息本身。 */
+            if (e->msg)
+                cJSON_ReplaceItemInObjectCaseSensitive(e->msg, "render", cJSON_CreateString("markdown"));
+            edc_turn_add_assistant_message(task->active_turn, e->msg);
+
+            /* sync turn messages to group history (context sharing) */
+            for (size_t qi = task->active_turn->messages.head; qi < task->active_turn->messages.tail; qi++)
+            {
+                cJSON *item = task->active_turn->messages.data[qi];
+                edc_task_group_history_add_ref(task->group, item);
+            }
+        }
+        edc_task_commit_active_turn(task);
+        if (e->content)
+            edc_task_set_output(task, sdsnew(e->content));
+        if (ops->flush_redirects)
+            ops->flush_redirects(ex->ctx, task);
+        task->completion_seq = own ? own->next_completion_seq++ : 0;
+        if (ops->set_task_state)
+            ops->set_task_state(ex->ctx, task, TASK_COMPLETED);
+
+        /* session 消息数刚因 turn 提交而增长。被更新输入顶替、或在后台/
+         * 依赖链中完成的任务其 turn 是"静默"的, 需要主动补推一次快照,
+         * 否则侧边栏的 session 统计会停在旧值。 */
+        if (ops->should_snapshot_on_complete && ops->should_snapshot_on_complete(ex->ctx, task))
+        {
+            if (ops->task_snapshot)
+                ops->task_snapshot(ex->ctx);
+        }
+
+        if (ops->notify_dependents)
+            ops->notify_dependents(ex->ctx, task);
+
+        /* auto-trigger dependents with queued input */
+        if (ops->start_queued_dependents)
+            ops->start_queued_dependents(ex->ctx, task);
+
+        /* send_reply internally checks active_task */
+        if (ops->send_reply)
+            ops->send_reply(ex->ctx, task, e->content, EDC_CHANNEL_MESSAGE_RESP_TYPE, req_id);
+
+        /* auto-reap disabled: tasks stay COMPLETED for cross-group join */
+
+        /* 触发 L1 折叠检查 (task 完成后可能达到 group fold 阈值) */
+        if (ops->trigger_memory)
+            ops->trigger_memory(ex->ctx);
+
+        if (ops->save_session)
+            ops->save_session(ex->ctx, own);
+        return EDC_STEP_DONE;
+    }
+
+    /* 未知 finish reason：与今天一致 —— ERROR + 系统消息。 */
+    if (ops->unregister_task)
+        ops->unregister_task(ex->ctx, req_id);
+    task->current_request_id = NULL;
+    if (ops->set_task_state)
+        ops->set_task_state(ex->ctx, task, TASK_ERROR);
+    if (ops->send_reply)
+        ops->send_reply(ex->ctx, task, "Internal error: unknown finish reason", EDC_CHANNEL_MESSAGE_SYS_TYPE, req_id);
+    return EDC_STEP_ERROR;
+}
+
+/* ── 到达 max_iter 上限 ──────────────────────────────────────
+ * 构造一条 STOP 语义的事件 (内容为收尾说明), 复用 exec_done 的完整终结
+ * 路径 —— turn 整体入库、任务置 COMPLETED、通知依赖者、触发 L1 折叠与
+ * save_session, 保证被打断的上下文仍是连贯的。
+ * （今天这步是伪造一个 edc_llm_actor_resp；归一化之后它就是一个事件。） */
+static void stop_at_iteration_cap(struct edc_executor *ex, struct edc_task *task, const char *request_id)
+{
+    int max_iter = ex->ops->max_iter ? ex->ops->max_iter(ex->ctx) : 0;
+
+    sds notice = sdscatprintf(
+        sdsempty(),
+        "[stopped: reached max_iter=%d LLM/tool rounds without a final answer — iteration budget exhausted. "
+        "Send a follow-up message to continue.]",
+        max_iter);
+
+    cJSON *assistant = cJSON_CreateObject();
+    cJSON_AddStringToObject(assistant, "role", "assistant");
+    cJSON_AddStringToObject(assistant, "content", notice);
+
+    struct edc_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.kind = EDC_EVENT_EXEC_DONE;
+    ev.request_id = request_id;
+    ev.as.exec.reason = EDC_REASON_STOP;
+    ev.as.exec.content = notice;  /* STOP 分支用 sdsnew 拷贝, 不持有 */
+    ev.as.exec.msg = assistant;   /* 所有权转入 active_turn (与真实响应一致) */
+
+    (void)edc_executor_advance(ex, task, &ev);
+
+    sdsfree(notice);
+}
+
+/* ── TOOL_DONE：某个工具完成 ───────────────────────────────── */
+
+static edc_step_outcome tool_done(struct edc_executor *ex, struct edc_task *task, const struct edc_event *ev)
+{
+    const struct edc_executor_ops *ops = ex->ops;
+    const struct edc_event_tool_done *t = &ev->as.tool_done;
+
+    /* 添加 tool 消息到 active turn */
+    if (task->active_turn && t->result)
+        edc_turn_add_tool_message(task->active_turn, t->call_id, t->name, t->result);
+
+    /* 账本: 该工具已完成 → 删除该条记录 */
+    edc_task_tool_call_remove(task, t->call_id);
+
+    /* 若 tool chain 完成，发送续 LLM 请求 */
+    if (!t->has_next)
+    {
+        /* max_iter 治理: 工具链结束后若已耗尽本轮 LLM 迭代预算, 不再续发
+         * LLM。max_iter <= 0 表示不限制。 */
+        int max_iter = ops->max_iter ? ops->max_iter(ex->ctx) : 0;
+        if (max_iter > 0 && task->llm_rounds >= max_iter)
+        {
+            stop_at_iteration_cap(ex, task, ev->request_id);
+            return EDC_STEP_ERROR; /* 已转入终结路径 */
+        }
+
+        if (ops->set_task_state)
+            ops->set_task_state(ex->ctx, task, TASK_LLM_PROCESSING);
+        if (ops->send_llm)
+        {
+            task->llm_rounds++; /* 工具链结束后续发 → 再消耗一轮预算 */
+            ops->send_llm(ex->ctx, task, (void *)ev->request_id);
+        }
+        return EDC_STEP_BLOCKED;
+    }
+    return EDC_STEP_BLOCKED;
+}
+
+/* ── TOOL_STARTED：某个工具真正开始执行 ────────────────────── */
+
+static edc_step_outcome tool_started(struct edc_executor *ex, struct edc_task *task, const struct edc_event *ev)
+{
+    const char *call_id = ev->as.call_id;
+    if (call_id)
+        edc_task_tool_call_mark_executing(task, call_id);
+    return EDC_STEP_BLOCKED;
+}
+
+/* ── 步进 ──────────────────────────────────────────────────── */
+
+edc_step_outcome edc_executor_advance(struct edc_executor *ex, struct edc_task *task, const struct edc_event *ev)
+{
+    if (!ex || !task || !ev)
+        return EDC_STEP_BLOCKED;
+
+    switch (ev->kind)
+    {
+    case EDC_EVENT_EXEC_DONE:
+        return exec_done(ex, task, ev);
+    case EDC_EVENT_TOOL_DONE:
+        return tool_done(ex, task, ev);
+    case EDC_EVENT_TOOL_STARTED:
+        return tool_started(ex, task, ev);
+    }
+    return EDC_STEP_BLOCKED;
+}
