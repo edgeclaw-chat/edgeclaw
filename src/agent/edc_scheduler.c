@@ -259,7 +259,7 @@ struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const ch
     const char *gid = fg ? fg->group_id : tid;
 
     struct edc_task *task = edc_task_new(tid, sid, gid, desc, channel_type);
-    task->state = TASK_WAITING_INPUT;
+    edc_task_force_state(task, TASK_WAITING_INPUT);
     free(tid);
 
     return task;

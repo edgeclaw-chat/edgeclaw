@@ -30,6 +30,43 @@ typedef enum
 
 extern const char *edc_task_state_name(edc_task_state state);
 
+/* ── step / life: 把"在哪一步"和"活着吗"拆开 ──────────────────
+ *
+ * runtime-model.md §1.4: 这两件事今天挤在 edc_task_state **一个** enum 里, 于是
+ * 落盘时只能靠**粗化**保存 —— 一个正在等工具结果的 task 和一个刚建好还没跑的
+ * task, 存下来变成同一个 SUSPENDED, 相位就丢了。resume 只能靠残留物 (工具账本 /
+ * active_turn) 顺序探测把相位猜回来。
+ *
+ * 拆开之后: step 如实落盘、如实读回; life 回答"还活着吗" —— 重启后没有任何东西
+ * 在跑, 于是 life 统一成 SUSPENDED, 但**不再动 step**。这是这次改动的全部要点。
+ *
+ * 两者正交: (step=DONE, life=COMPLETED) 与 (step=AWAIT_EXEC, life=SUSPENDED) 都合法。 */
+typedef enum
+{
+    EDC_TASKSTEP_READY,          /* 就绪, 可以开始 */
+    EDC_TASKSTEP_AWAIT_DEPS,     /* 在等依赖 */
+    EDC_TASKSTEP_AWAIT_INPUT,    /* 在等用户输入 */
+    EDC_TASKSTEP_AWAIT_EXEC,     /* 在等 LLM (executor) 回话 */
+    EDC_TASKSTEP_AWAIT_TOOLS,    /* 在等工具结果 */
+    EDC_TASKSTEP_AWAIT_RESOURCE, /* 在等资源锁 (P1 起预留) */
+    EDC_TASKSTEP_DONE,           /* 这一步走完了 */
+} edc_task_step;
+
+typedef enum
+{
+    EDC_LIFE_ALIVE,     /* 活着 */
+    EDC_LIFE_SUSPENDED, /* 挂起: 用户 Ctrl+Z, 或重启后没有东西在跑 */
+    EDC_LIFE_COMPLETED,
+    EDC_LIFE_CANCELLED,
+    EDC_LIFE_ERROR,
+} edc_task_life;
+
+extern const char *edc_task_step_name(edc_task_step step);
+extern const char *edc_task_life_name(edc_task_life life);
+extern edc_task_step edc_task_classify_step(const char *name);
+extern edc_task_life edc_task_classify_life(const char *name);
+
+
 /* ── 信号 ──────────────────────────────────────────────────── */
 
 typedef enum
@@ -83,7 +120,13 @@ struct edc_task
     char *session_id; /* SID — 所属 session */
 
     char *description;    /* 用户可见描述 */
-    edc_task_state state; /* 当前状态 */
+    /* 在哪一步 / 活着吗 —— 拆开之后相位才能如实保存, 且落盘时不再被粗化。 */
+    edc_task_step step;
+    edc_task_life life;
+    /* ⚠️ **过渡期镜像**: 由 (step, life) 导出, 唯一写入口是 edc_task_force_state
+     * (edc_task_set_state 走它)。**不要直接写它** —— 读侧逐文件迁完之后就删。
+     * 保留它只是为了让 60 多处旧读法一行不用改、并让迁移的每一步都能编译。 */
+    edc_task_state state;
 
     int is_group_leader; /* 是否是 group leader */
     int auto_reap;       /* 完成后自动回收 (前台输入任务) */
@@ -180,6 +223,19 @@ extern struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, struct ed
 /* ── 状态机 ────────────────────────────────────────────────── */
 
 extern bool edc_task_set_state(struct edc_task *task, edc_task_state new_state);
+
+/* 旧常量 -> (step, life) 的**唯一**写入点。**不做合法性检查** (需要绕过状态机的
+ * 三条路径: 新建 / fork 子任务 / resume 兜底, 它们本来就直写 state); 校验过的
+ * 路径请走 edc_task_set_state。
+ *
+ * 注意这两个声明必须在 struct edc_task 的**定义之后**: 出现在函数原型里的
+ * `struct edc_task` 其 tag 是"函数原型作用域", 与文件作用域的那个**不是同一个
+ * 类型** —— 放在前面会得到一个很难懂的 conflicting types。 */
+extern void edc_task_force_state(struct edc_task *task, edc_task_state s);
+
+/* (step, life) -> 旧常量。life 不是 ALIVE 时**看不出**原来的 step —— 有损, 只服务于
+ * 尚未迁移到 step/life 的旧读法。它是过渡脚手架, 读侧迁完即删。 */
+extern edc_task_state edc_task_state_of(const struct edc_task *task);
 extern edc_task_state edc_task_classify_state(const char *name);
 
 /* ── Todo 同步节流 ──────────────────────────────────────────

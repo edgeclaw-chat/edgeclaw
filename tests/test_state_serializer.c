@@ -191,7 +191,8 @@ static void test_single_task(void)
 
     cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "task_id")), "task-1", "task_id preserved");
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "state")), "COMPLETED", "state COMPLETED");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "life")), "COMPLETED", "life COMPLETED");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "step")), "DONE", "step DONE");
     CHECK(cJSON_IsTrue(cJSON_GetObjectItem(t0, "is_group_leader")), "is_group_leader");
 
     cJSON *turns_j = cJSON_GetObjectItem(t0, "turns");
@@ -526,7 +527,7 @@ static void test_complex_topology(void)
 
 static void test_state_degradation(void)
 {
-    TEST("interrupted states (all non-terminal -> SUSPENDED)");
+    TEST("interrupted STEPS are preserved; only life collapses to SUSPENDED");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-deg", "Degrade");
@@ -558,10 +559,10 @@ static void test_state_degradation(void)
     cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
     cJSON *j1 = cJSON_GetArrayItem(tasks_j, 0);
     cJSON *j2 = cJSON_GetArrayItem(tasks_j, 1);
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(j1, "state")),
-                "LLM_PROCESSING", "JSON keeps LLM_PROCESSING");
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(j2, "state")),
-                "TOOL_CALLING", "JSON keeps TOOL_CALLING");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(j1, "step")),
+                "AWAIT_EXEC", "JSON keeps step AWAIT_EXEC");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(j2, "step")),
+                "AWAIT_TOOLS", "JSON keeps step AWAIT_TOOLS");
 
     /* Deserialize */
     struct edc_session *session2 = edc_session_new(cfg, "sess-deg", "Degrade");
@@ -572,8 +573,14 @@ static void test_state_degradation(void)
     struct edc_task *rt1 = find_task(session2, "t-llm");
     struct edc_task *rt2 = find_task(session2, "t-tool");
 
-    CHECK(rt1->state == TASK_SUSPENDED, "interrupted LLM_PROCESSING restored as SUSPENDED");
-    CHECK(rt2->state == TASK_SUSPENDED, "interrupted TOOL_CALLING restored as SUSPENDED");
+    /* P2 之前这里断言的是"相位被丢掉": 两个 task 都变成 SUSPENDED, 分不出谁在哪一步。
+     * 现在 life 仍然收敛 (重启后没有东西在跑), 但 **step 原样保留** —— 这正是能够让
+     * resume 不再靠残留物猜的那份信息。 */
+    CHECK(rt1->step == EDC_TASKSTEP_AWAIT_EXEC, "step AWAIT_EXEC preserved");
+    CHECK(rt2->step == EDC_TASKSTEP_AWAIT_TOOLS, "step AWAIT_TOOLS preserved");
+    CHECK(rt1->life == EDC_LIFE_SUSPENDED && rt2->life == EDC_LIFE_SUSPENDED,
+          "life collapses to SUSPENDED for both");
+    CHECK(rt1->step != rt2->step, "the two are still distinguishable");
 
     cJSON_Delete(json);
     edc_session_free(session);
@@ -682,8 +689,8 @@ static void test_cancelled_midflight_roundtrip(void)
     cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
     CHECK(cJSON_GetArraySize(tasks_j) == 1, "CANCELLED task is serialized");
     cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "state")),
-                "CANCELLED", "JSON keeps CANCELLED state");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "life")),
+                "CANCELLED", "JSON keeps life CANCELLED");
     CHECK(cJSON_GetObjectItem(t0, "active_turn") != NULL, "active_turn serialized");
 
     /* Deserialize */
@@ -1016,7 +1023,7 @@ static void test_null_inputs(void)
     CHECK(!ok1, "deserialize(NULL json) returns false");
 
     /* deserialize with NULL session */
-    cJSON *valid = cJSON_Parse("{\"version\":4,\"session\":{},\"groups\":[],\"tasks\":[]}");
+    cJSON *valid = cJSON_Parse("{\"version\":5,\"session\":{},\"groups\":[],\"tasks\":[]}");
     bool ok2 = edc_state_deserialize(valid, NULL, NULL);
     CHECK(!ok2, "deserialize(NULL session) returns false");
     cJSON_Delete(valid);
@@ -1028,19 +1035,19 @@ static void test_null_inputs(void)
     cJSON_Delete(no_ver);
 
     /* deserialize with missing tasks array */
-    cJSON *no_tasks = cJSON_Parse("{\"version\":4,\"session\":{},\"groups\":[]}");
+    cJSON *no_tasks = cJSON_Parse("{\"version\":5,\"session\":{},\"groups\":[]}");
     bool ok4 = edc_state_deserialize(no_tasks, session, sched);
     CHECK(ok4, "deserialize without tasks array succeeds (treated as empty)");
     cJSON_Delete(no_tasks);
 
     /* deserialize with tasks not an array */
-    cJSON *bad_tasks = cJSON_Parse("{\"version\":4,\"session\":{},\"groups\":[],\"tasks\":\"not_array\"}");
+    cJSON *bad_tasks = cJSON_Parse("{\"version\":5,\"session\":{},\"groups\":[],\"tasks\":\"not_array\"}");
     bool ok5 = edc_state_deserialize(bad_tasks, session, sched);
     CHECK(ok5, "deserialize with non-array tasks succeeds (ignored)");
     cJSON_Delete(bad_tasks);
 
     /* deserialize with groups not an array */
-    cJSON *bad_groups = cJSON_Parse("{\"version\":4,\"session\":{},\"groups\":123,\"tasks\":[]}");
+    cJSON *bad_groups = cJSON_Parse("{\"version\":5,\"session\":{},\"groups\":123,\"tasks\":[]}");
     bool ok6 = edc_state_deserialize(bad_groups, session, sched);
     CHECK(ok6, "deserialize with non-array groups succeeds (ignored)");
     cJSON_Delete(bad_groups);
@@ -1065,7 +1072,7 @@ static void test_malformed_inputs(void)
     /* dep referencing nonexistent task */
     const char *bad_dep_json =
         "{"
-        "  \"version\":4,"
+        "  \"version\":5,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1090,7 +1097,7 @@ static void test_malformed_inputs(void)
     /* group member referencing nonexistent task */
     const char *bad_member_json =
         "{"
-        "  \"version\":4,"
+        "  \"version\":5,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1113,7 +1120,7 @@ static void test_malformed_inputs(void)
     /* turn with no embedded messages (unknown/legacy keys are ignored) */
     const char *bad_range_json =
         "{"
-        "  \"version\":4,"
+        "  \"version\":5,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1137,7 +1144,7 @@ static void test_malformed_inputs(void)
     /* task with empty task_id */
     const char *empty_id_json =
         "{"
-        "  \"version\":4,"
+        "  \"version\":5,"
         "  \"session\":{},"
         "  \"groups\":[],"
         "  \"tasks\":["
@@ -1704,7 +1711,7 @@ static void test_fold_watermark(void)
 
 static void test_schema_version_is_current(void)
 {
-    TEST("serialize writes version 4; older versions fail loudly instead of being patched up");
+    TEST("serialize writes version 5; older versions fail loudly instead of being patched up");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-ver", "Ver");
@@ -1718,7 +1725,7 @@ static void test_schema_version_is_current(void)
 
     cJSON *json = edc_state_serialize(session, sched);
     CHECK(json != NULL, "serialize returns non-NULL");
-    CHECK(edc_state_json_version(json) == 4, "on-disk version is 4");
+    CHECK(edc_state_json_version(json) == 5, "on-disk version is 4");
 
     struct edc_session *s2 = edc_session_new(cfg, "sess-ver", "Ver");
     struct edc_scheduler *sched2 = edc_scheduler_new(s2, cfg);
@@ -1806,6 +1813,82 @@ static void test_message_unknown_keys_round_trip(void)
     edc_config_free(cfg);
 }
 
+/* ══════════════════════════════════════════════════════════════
+ *  continuation: 相位必须在往返中**幸存**
+ *  ══════════════════════════════════════════════════════════════ */
+
+/* 这条是 P2 的第一块砖, 而且它**今天就是红的** —— 那正是它存在的意义。
+ *
+ * 现状 (runtime-model.md §1.4, 台账第 4 条): 相位**存得下来** —— 上面
+ * test_state_degradation 自己就断言了 JSON 里写着 "LLM_PROCESSING"/"TOOL_CALLING"
+ * —— 但**读不回**: normalize_interrupted_state 把五个相位一起塌成 SUSPENDED,
+ * resume 再靠顺序探测 (deps -> 工具账本 -> active_turn) 把相位猜回来。
+ *
+ * 丢的不只是"叫什么名字": 一个正在等工具结果的 task, 和一个刚建好还没跑的
+ * task, 落盘后变成同一个状态。resume 只能靠残留物反推; 推不出来就退化到
+ * WAITING_INPUT —— "任务到哪了"散在多处、且会丢, 就是这么来的。
+ *
+ * P2 之后: 相位原样回来, 下面的断言全绿; 而 test_state_degradation 要改成
+ * 表达新契约 (它现在钉的是旧行为, 这正是"行为变更先补测试"要面对的东西)。
+ *
+ * 变异测试: 把 step 再粗化回 SUSPENDED, 这条必须**红**。 */
+static void test_continuation_preserved(void)
+{
+    TEST("interrupted phases survive the round trip");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-cont", "Continuation");
+    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+
+    struct edc_task *t_llm = edc_task_new("t-llm", "sess-cont", "t-llm", "llm processing", edc_channel_adapter);
+    t_llm->is_group_leader = 1;
+    edc_task_set_state(t_llm, TASK_WAITING_INPUT);
+    edc_task_set_state(t_llm, TASK_LLM_PROCESSING);
+
+    struct edc_task *t_tool = edc_task_new("t-tool", "sess-cont", "t-llm", "tool calling", edc_channel_adapter);
+    edc_task_set_state(t_tool, TASK_WAITING_INPUT);
+    edc_task_set_state(t_tool, TASK_LLM_PROCESSING);
+    edc_task_set_state(t_tool, TASK_TOOL_CALLING);
+
+    struct edc_task *t_input = edc_task_new("t-input", "sess-cont", "t-llm", "waiting input", edc_channel_adapter);
+    edc_task_set_state(t_input, TASK_WAITING_INPUT);
+
+    struct edc_task_group *group = edc_task_group_new(t_llm);
+    edc_task_group_add_task(group, t_tool);
+    edc_task_group_add_task(group, t_input);
+    edc_session_add_group(session, group);
+
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize returns non-NULL");
+
+    struct edc_session *session2 = edc_session_new(cfg, "sess-cont", "Continuation");
+    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    bool ok = edc_state_deserialize(json, session2, sched2);
+    CHECK(ok, "deserialize succeeds");
+
+    struct edc_task *r_llm = find_task(session2, "t-llm");
+    struct edc_task *r_tool = find_task(session2, "t-tool");
+    struct edc_task *r_input = find_task(session2, "t-input");
+
+    CHECK(r_llm && r_llm->step == EDC_TASKSTEP_AWAIT_EXEC, "step AWAIT_EXEC survives");
+    CHECK(r_tool && r_tool->step == EDC_TASKSTEP_AWAIT_TOOLS, "step AWAIT_TOOLS survives");
+    CHECK(r_input && r_input->step == EDC_TASKSTEP_AWAIT_INPUT, "step AWAIT_INPUT survives");
+
+    /* 活着吗统一收敛 (重启后没有任何东西在跑) —— 但那是**另一件事**, 不该把 step 带走。 */
+    CHECK(r_llm && r_llm->life == EDC_LIFE_SUSPENDED, "life collapses to SUSPENDED");
+
+    /* 而且三个必须**互不相同** —— 否则"存下来"没有意义。 */
+    CHECK(r_llm && r_tool && r_input && r_llm->step != r_tool->step && r_tool->step != r_input->step,
+          "the three steps are still distinct");
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(session2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     log_info("=== Phase 1: edc_state_serializer module tests ===");
@@ -1820,6 +1903,7 @@ int main(void)
     test_dependency_graph();
     test_complex_topology();
     test_state_degradation();
+    test_continuation_preserved();
     test_schema_version_is_current();
     test_message_unknown_keys_round_trip();
     test_filter_transient_states();

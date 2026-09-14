@@ -64,6 +64,176 @@ edc_task_state edc_task_classify_state(const char *name)
 
 /* ── 状态转换校验 ──────────────────────────────────────────── */
 
+/* ── step / life: 名称、解析、映射 ─────────────────────────── */
+
+const char *edc_task_step_name(edc_task_step step)
+{
+    switch (step)
+    {
+    case EDC_TASKSTEP_READY:
+        return "READY";
+    case EDC_TASKSTEP_AWAIT_DEPS:
+        return "AWAIT_DEPS";
+    case EDC_TASKSTEP_AWAIT_INPUT:
+        return "AWAIT_INPUT";
+    case EDC_TASKSTEP_AWAIT_EXEC:
+        return "AWAIT_EXEC";
+    case EDC_TASKSTEP_AWAIT_TOOLS:
+        return "AWAIT_TOOLS";
+    case EDC_TASKSTEP_AWAIT_RESOURCE:
+        return "AWAIT_RESOURCE";
+    case EDC_TASKSTEP_DONE:
+        return "DONE";
+    }
+    return "READY";
+}
+
+const char *edc_task_life_name(edc_task_life life)
+{
+    switch (life)
+    {
+    case EDC_LIFE_ALIVE:
+        return "ALIVE";
+    case EDC_LIFE_SUSPENDED:
+        return "SUSPENDED";
+    case EDC_LIFE_COMPLETED:
+        return "COMPLETED";
+    case EDC_LIFE_CANCELLED:
+        return "CANCELLED";
+    case EDC_LIFE_ERROR:
+        return "ERROR";
+    }
+    return "ALIVE";
+}
+
+edc_task_step edc_task_classify_step(const char *name)
+{
+    if (!name)
+        return EDC_TASKSTEP_READY;
+    if (strcmp(name, "AWAIT_DEPS") == 0)
+        return EDC_TASKSTEP_AWAIT_DEPS;
+    if (strcmp(name, "AWAIT_INPUT") == 0)
+        return EDC_TASKSTEP_AWAIT_INPUT;
+    if (strcmp(name, "AWAIT_EXEC") == 0)
+        return EDC_TASKSTEP_AWAIT_EXEC;
+    if (strcmp(name, "AWAIT_TOOLS") == 0)
+        return EDC_TASKSTEP_AWAIT_TOOLS;
+    if (strcmp(name, "AWAIT_RESOURCE") == 0)
+        return EDC_TASKSTEP_AWAIT_RESOURCE;
+    if (strcmp(name, "DONE") == 0)
+        return EDC_TASKSTEP_DONE;
+    return EDC_TASKSTEP_READY;
+}
+
+edc_task_life edc_task_classify_life(const char *name)
+{
+    if (!name)
+        return EDC_LIFE_ALIVE;
+    if (strcmp(name, "SUSPENDED") == 0)
+        return EDC_LIFE_SUSPENDED;
+    if (strcmp(name, "COMPLETED") == 0)
+        return EDC_LIFE_COMPLETED;
+    if (strcmp(name, "CANCELLED") == 0)
+        return EDC_LIFE_CANCELLED;
+    if (strcmp(name, "ERROR") == 0)
+        return EDC_LIFE_ERROR;
+    return EDC_LIFE_ALIVE;
+}
+
+/* 旧常量 -> (step, life)。SUSPENDED **只动 life, 不动 step** —— 那正是这次改动要
+ * 保住的东西: 挂起/重启改变"活着吗", 不改变"在哪一步"。 */
+static void legacy_to_step_life(edc_task_state s, edc_task_step *step, edc_task_life *life)
+{
+    switch (s)
+    {
+    case TASK_IDLE:
+        *step = EDC_TASKSTEP_READY;
+        *life = EDC_LIFE_ALIVE;
+        break;
+    case TASK_WAITING_DEPS:
+        *step = EDC_TASKSTEP_AWAIT_DEPS;
+        *life = EDC_LIFE_ALIVE;
+        break;
+    case TASK_WAITING_INPUT:
+        *step = EDC_TASKSTEP_AWAIT_INPUT;
+        *life = EDC_LIFE_ALIVE;
+        break;
+    case TASK_LLM_PROCESSING:
+        *step = EDC_TASKSTEP_AWAIT_EXEC;
+        *life = EDC_LIFE_ALIVE;
+        break;
+    case TASK_TOOL_CALLING:
+        *step = EDC_TASKSTEP_AWAIT_TOOLS;
+        *life = EDC_LIFE_ALIVE;
+        break;
+    case TASK_SUSPENDED:
+        *life = EDC_LIFE_SUSPENDED; /* step 保持不动 */
+        break;
+    case TASK_COMPLETED:
+        *step = EDC_TASKSTEP_DONE;
+        *life = EDC_LIFE_COMPLETED;
+        break;
+    case TASK_CANCELLED:
+        *step = EDC_TASKSTEP_DONE;
+        *life = EDC_LIFE_CANCELLED;
+        break;
+    case TASK_ERROR:
+        *step = EDC_TASKSTEP_DONE;
+        *life = EDC_LIFE_ERROR;
+        break;
+    }
+}
+
+edc_task_state edc_task_state_of(const struct edc_task *task)
+{
+    if (!task)
+        return TASK_IDLE;
+    switch (task->life)
+    {
+    case EDC_LIFE_SUSPENDED:
+        return TASK_SUSPENDED;
+    case EDC_LIFE_COMPLETED:
+        return TASK_COMPLETED;
+    case EDC_LIFE_CANCELLED:
+        return TASK_CANCELLED;
+    case EDC_LIFE_ERROR:
+        return TASK_ERROR;
+    case EDC_LIFE_ALIVE:
+        break;
+    }
+    switch (task->step)
+    {
+    case EDC_TASKSTEP_READY:
+        return TASK_IDLE;
+    case EDC_TASKSTEP_AWAIT_DEPS:
+        return TASK_WAITING_DEPS;
+    case EDC_TASKSTEP_AWAIT_INPUT:
+        return TASK_WAITING_INPUT;
+    case EDC_TASKSTEP_AWAIT_EXEC:
+        return TASK_LLM_PROCESSING;
+    case EDC_TASKSTEP_AWAIT_TOOLS:
+        return TASK_TOOL_CALLING;
+    case EDC_TASKSTEP_AWAIT_RESOURCE:
+        return TASK_WAITING_DEPS; /* 旧枚举没有对应值 */
+    case EDC_TASKSTEP_DONE:
+        break;
+    }
+    return TASK_WAITING_INPUT;
+}
+
+/* 唯一的写入点: 置 (step, life) 并据此刷新镜像。
+ *
+ * force 的语义 = **不做合法性检查**。需要绕过状态机的路径有三条: 新建 (IDLE)、
+ * fork 出来的子任务 (WAITING_INPUT)、resume 的兜底 —— 它们本来就直写 state, 现在
+ * 统一走这里, 免得三个字段各写各的、日后漂移。edc_task_set_state 校验之后也走它。 */
+void edc_task_force_state(struct edc_task *task, edc_task_state s)
+{
+    if (!task)
+        return;
+    legacy_to_step_life(s, &task->step, &task->life);
+    task->state = edc_task_state_of(task); /* 镜像 */
+}
+
 static bool edc_task_is_valid_transition(edc_task_state from, edc_task_state to)
 {
     switch (from)
@@ -113,7 +283,7 @@ struct edc_task *edc_task_new(const char *task_id, const char *session_id, const
     task->session_id = strdup(session_id);
     task->group_id = strdup(group_id);
     task->description = strdup(desc ? desc : "");
-    task->state = TASK_IDLE;
+    edc_task_force_state(task, TASK_IDLE);
     task->is_group_leader = 0;
     task->channel_type = channel_type;
 
@@ -139,7 +309,7 @@ struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, con
     struct edc_task *child = edc_task_new(task_id, parent->session_id, parent->group_id, desc, channel_type);
     child->forked_from = parent;
     child->fork_point_completion_seq = fork_point_completion_seq;
-    child->state = TASK_WAITING_INPUT;
+    edc_task_force_state(child, TASK_WAITING_INPUT);
     return child;
 }
 
@@ -277,7 +447,7 @@ bool edc_task_set_state(struct edc_task *task, edc_task_state new_state)
         return false;
     }
 
-    task->state = new_state;
+    edc_task_force_state(task, new_state);
     return true;
 }
 

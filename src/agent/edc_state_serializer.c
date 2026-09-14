@@ -17,7 +17,7 @@
  * the shape changes, or a legacy shape is finally retired, bump it and ship a
  * one-shot migration under tools/ (e.g. migrate_session_v3_to_v4.py) instead of
  * teaching the load path to patch old data up on every load. */
-#define EDC_STATE_SCHEMA_VERSION 4
+#define EDC_STATE_SCHEMA_VERSION 5
 
 /* ══════════════════════════════════════════════════════════════
  *  Internal helpers — dep type ↔ string
@@ -97,7 +97,10 @@ static cJSON *task_to_json(struct edc_task *task)
 
     /* ── description & state ── */
     cJSON_AddStringToObject(tj, "description", task->description ? task->description : "");
-    cJSON_AddStringToObject(tj, "state", edc_task_state_name(task->state));
+    /* v5: 存**两件正交的事**, 而不是把五个相位塌成一个常量。
+     * step = 在哪一步 (原样存, 读回也原样), life = 活着吗。 */
+    cJSON_AddStringToObject(tj, "step", edc_task_step_name(task->step));
+    cJSON_AddStringToObject(tj, "life", edc_task_life_name(task->life));
     cJSON_AddBoolToObject(tj, "is_group_leader", task->is_group_leader);
     cJSON_AddBoolToObject(tj, "auto_reap", task->auto_reap);
 
@@ -310,21 +313,6 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
  * WAITING_DEPS / WAITING_INPUT / LLM_PROCESSING 还是继续工具链"。
  * 终态 (COMPLETED / CANCELLED / ERROR) 与已 SUSPENDED 的原样保留。
  */
-static edc_task_state normalize_interrupted_state(edc_task_state s)
-{
-    switch (s)
-    {
-    case TASK_IDLE:
-    case TASK_WAITING_DEPS:
-    case TASK_WAITING_INPUT:
-    case TASK_LLM_PROCESSING:
-    case TASK_TOOL_CALLING:
-        return TASK_SUSPENDED;
-    default:
-        return s;
-    }
-}
-
 /**
  * Rebuild a turn from JSON: its embedded "messages" array.
  *
@@ -595,8 +583,17 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
         if (!task)
             continue;
 
-        task->state = normalize_interrupted_state(
-            edc_task_classify_state(cJSON_GetStringValue(cJSON_GetObjectItem(tj, "state"))));
+        /* v5: step 与 life 分别读回 —— 相位**不再被粗化**。
+         *
+         * 唯一收敛的是 life: 重启之后没有任何东西在跑, 所以 ALIVE 落地成
+         * SUSPENDED。但 **step 原样保留** —— 这正是这次改动要保住的东西: 以前
+         * normalize_interrupted_state 把五个相位一起塌成 SUSPENDED, "任务到哪了"
+         * 就此丢失, resume 只能靠工具账本 / active_turn 顺序探测把它猜回来。 */
+        task->step = edc_task_classify_step(cJSON_GetStringValue(cJSON_GetObjectItem(tj, "step")));
+        task->life = edc_task_classify_life(cJSON_GetStringValue(cJSON_GetObjectItem(tj, "life")));
+        if (task->life == EDC_LIFE_ALIVE)
+            task->life = EDC_LIFE_SUSPENDED;
+        task->state = edc_task_state_of(task); /* 过渡期镜像 */
 
         cJSON *v;
         if ((v = cJSON_GetObjectItem(tj, "is_group_leader")))

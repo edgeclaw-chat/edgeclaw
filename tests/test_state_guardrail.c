@@ -134,7 +134,7 @@ int main(void)
         if (txt)
         {
             cJSON *root = cJSON_Parse(txt);
-            CHECK(edc_state_json_version(root) == 4, "on-disk version is 4");
+            CHECK(edc_state_json_version(root) == 5, "on-disk version is 5");
             cJSON_Delete(root);
             sdsfree(txt);
         }
