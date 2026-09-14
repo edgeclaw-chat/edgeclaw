@@ -388,6 +388,18 @@ bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *s
     if (!session || !session->history_dir)
         return false;
 
+    /* 隔离过的 session 禁止落盘 (见 struct edc_session.state_quarantined): 内存
+     * 里的它只是加载失败后的空壳, 写出去就会占掉 session.json 这个槽, 让事后
+     * 恢复的文件在下一次退出时被覆盖。堵在这里是因为 save_state 是所有落盘路径
+     * 的公共出口 (含 edc_session_store_stop_all_turns 那条不走 state_loaded 闸门
+     * 的直调)。 */
+    if (session->state_quarantined)
+    {
+        log_warn("save_state: refusing to persist quarantined session %s (session.json.broken holds the real state)",
+                 session->session_id ? session->session_id : "?");
+        return false;
+    }
+
     cJSON *root = edc_state_serialize(session, sched);
     if (!root)
     {
@@ -456,6 +468,11 @@ static void session_quarantine_state(struct edc_session *session, const char *pa
     else
         log_error("load_state: cannot quarantine %s (%s): %s", path, why, strerror(errno));
     sdsfree(broken);
+    /* 无论改名成功与否, 这个 session 的槽位都不再由本进程负责: 改名失败时原
+     * 文件还在 path 上, 落盘会把它盖掉; 改名成功时落盘会写出一个空壳假状态。 */
+    session->state_quarantined = true;
+    log_error("load_state: %s is quarantined — this run will NOT persist it; restore %s/session.json.broken and restart",
+              session->session_id ? session->session_id : "?", session->history_dir ? session->history_dir : "?");
 }
 
 bool edc_session_load_state(struct edc_session *session, struct edc_scheduler *sched)

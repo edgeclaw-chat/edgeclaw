@@ -43,6 +43,14 @@ struct edc_session
      * 绝不能再 load_state —— 否则会用磁盘副本覆盖正在后台执行的活动对象。 */
     bool state_loaded;
 
+    /* 隔离标记: 本次 load_state 发现 session.json 存在却读不动 (版本不认识 /
+     * JSON 坏), 已把它改名成 session.json.broken 时置位。置位后本进程**拒绝
+     * 落盘** —— 否则内存里的空壳会被写进 session.json 这个槽, 于是 .broken 之
+     * 外又多出一个"看起来有效"的假状态, 事后放进这个槽的恢复文件会被它在下
+     * 一次退出时覆盖 (2026-09-15 二次覆盖事故: 隔离本身保住了字节, 却没保住
+     * 槽位)。 */
+    bool state_quarantined;
+
     struct edc_config *config;
 
     sds history_dir; /* workspace/<session_id> — 按 session 存历史 */

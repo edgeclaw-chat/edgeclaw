@@ -16,6 +16,9 @@
  *      shell would clobber the newer on-disk state (groups, tasks and the bound
  *      working directory), which is how a switched-to session could come back
  *      unbound and run its tools in the launch directory.
+ *   e. a session whose load FAILED (quarantined) is never persisted either —
+ *      otherwise the empty shell lands in session.json and a later restore into
+ *      that slot gets clobbered by the next exit save (the 2026-09-15 incident).
  */
 
 #include "edc_channel_actor.h"
@@ -25,6 +28,7 @@
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
+#include "edc_session_store.h"
 #include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -279,6 +283,29 @@ int main(void)
 
         edc_session_manager_free(sm);
         rmdir(bdir);
+    }
+
+    /* ── Phase 5: a quarantined session is never persisted ───────────── */
+    TEST("a quarantined session is not saved, so the slot stays empty");
+    write_str(json_path, "{ yet another broken file");
+    {
+        struct edc_session *s = edc_session_new(cfg, sid, "Guard");
+        struct edc_scheduler *sched = edc_scheduler_new(cfg);
+        install_resolver(sched, s);
+
+        /* The real entry point marks state_loaded=true even on failure — that is
+         * exactly the shell that used to be written back over the slot. */
+        CHECK(!edc_session_store_load_session(NULL, sched, s), "load_session reports failure");
+        CHECK(s->state_loaded, "in-memory session is still marked loaded");
+        CHECK(s->state_quarantined, "session is marked quarantined");
+
+        /* The exit save must refuse, and must not leave a session.json behind. */
+        CHECK(!edc_session_save_state(s, sched), "save_state refuses a quarantined session");
+        CHECK(!file_exists(json_path), "no session.json reappeared in the slot");
+        CHECK(file_exists(broken_path), ".broken still holds the original bytes");
+
+        edc_scheduler_free(sched);
+        edc_session_free(s);
     }
 
     sdsfree(json_path);
