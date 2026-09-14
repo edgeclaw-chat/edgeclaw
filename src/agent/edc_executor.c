@@ -6,10 +6,15 @@
  */
 #include "edc_executor.h"
 #include "edc_config.h"
+#include "edc_llm_actor.h"
 #include "edc_session.h"
 #include "edc_task_group.h"
+#include "edc_toolbox.h"
+#include "edc_toolbox_actor.h"
 #include "edc_turn.h"
 #include "sds.h"
+#include "utlist_fix.h"
+#include <stdlib.h>
 #include <string.h>
 
 void edc_executor_init(struct edc_executor *ex, const struct edc_executor_ops *ops, void *ctx)
@@ -20,10 +25,10 @@ void edc_executor_init(struct edc_executor *ex, const struct edc_executor_ops *o
 
 /* ── EXEC_DONE：LLM 响应到达 ───────────────────────────────── */
 
-static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task, const struct edc_event *ev)
+static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
 {
     const struct edc_executor_ops *ops = ex->ops;
-    const struct edc_event_exec *e = &ev->as.exec;
+    struct edc_event_exec *e = &ev->as.exec;
     void *req_id = (void *)ev->request_id;
 
     /* Token 账: 把本次响应的 usage 累加到 task。放在分支之前, 让 STOP、
@@ -45,7 +50,7 @@ static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task
         if (ops->send_reply)
         {
             const char *err = e->error_message ? e->error_message : "LLM request failed";
-            bool no_key = ops->has_api_key && !ops->has_api_key(ex->ctx);
+            bool no_key = ops->no_api_key && ops->no_api_key(ex->ctx);
             if (no_key)
             {
                 /* First run: with no API key the request can only fail, so
@@ -70,8 +75,9 @@ static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task
             ops->set_task_state(ex->ctx, task, TASK_TOOL_CALLING);
         if (task->active_turn)
         {
-            /* 所有权转入 turn（调用方随后把 e->msg 置 NULL，与今天一致）。 */
+            /* 所有权转入 turn；被接手才消掉源指针（与今天逐字一致）。 */
             edc_turn_add_assistant_message(task->active_turn, e->msg);
+            e->msg = NULL;
         }
         /* 账本: 先把本轮 tool_calls 全部登记为 PENDING (dispatch 会转移
          * name/args/id 的所有权, 故必须先登记), 派发后再把链首提升 EXECUTING
@@ -103,6 +109,7 @@ static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task
             if (e->msg)
                 cJSON_ReplaceItemInObjectCaseSensitive(e->msg, "render", cJSON_CreateString("markdown"));
             edc_turn_add_assistant_message(task->active_turn, e->msg);
+            e->msg = NULL;
 
             /* sync turn messages to group history (context sharing) */
             for (size_t qi = task->active_turn->messages.head; qi < task->active_turn->messages.tail; qi++)
@@ -196,7 +203,7 @@ static void stop_at_iteration_cap(struct edc_executor *ex, struct edc_task *task
 
 /* ── TOOL_DONE：某个工具完成 ───────────────────────────────── */
 
-static edc_step_outcome tool_done(struct edc_executor *ex, struct edc_task *task, const struct edc_event *ev)
+static edc_step_outcome tool_done(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
 {
     const struct edc_executor_ops *ops = ex->ops;
     const struct edc_event_tool_done *t = &ev->as.tool_done;
@@ -234,7 +241,7 @@ static edc_step_outcome tool_done(struct edc_executor *ex, struct edc_task *task
 
 /* ── TOOL_STARTED：某个工具真正开始执行 ────────────────────── */
 
-static edc_step_outcome tool_started(struct edc_executor *ex, struct edc_task *task, const struct edc_event *ev)
+static edc_step_outcome tool_started(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
 {
     const char *call_id = ev->as.call_id;
     if (call_id)
@@ -244,7 +251,7 @@ static edc_step_outcome tool_started(struct edc_executor *ex, struct edc_task *t
 
 /* ── 步进 ──────────────────────────────────────────────────── */
 
-edc_step_outcome edc_executor_advance(struct edc_executor *ex, struct edc_task *task, const struct edc_event *ev)
+edc_step_outcome edc_executor_advance(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
 {
     if (!ex || !task || !ev)
         return EDC_STEP_BLOCKED;
@@ -259,4 +266,95 @@ edc_step_outcome edc_executor_advance(struct edc_executor *ex, struct edc_task *
         return tool_started(ex, task, ev);
     }
     return EDC_STEP_BLOCKED;
+}
+
+/* ── 边界适配（本文件里唯一认识 actor 负载的地方）────────────
+ * 负载以 void* 传入 —— 适配是**类型无关的调用约定**，scheduler 侧连结构体
+ * 名字都不必出现（§8 验收判据 3）。 */
+
+edc_step_outcome edc_executor_advance_llm_resp(struct edc_executor *ex, struct edc_task *task, void *request_id,
+                                               void *resp)
+{
+    struct edc_llm_actor_resp *r = resp;
+    if (!r)
+        return EDC_STEP_BLOCKED;
+
+    struct edc_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.kind = EDC_EVENT_EXEC_DONE;
+    ev.request_id = request_id;
+    ev.as.exec.failed = (r->error != NULL);
+    ev.as.exec.error_message = r->error ? r->error->message : NULL;
+    ev.as.exec.reason = (r->reason == BC_LLM_FINISH_REASON_STOP)        ? EDC_REASON_STOP
+                        : (r->reason == BC_LLM_FINISH_REASON_TOOL_CALL) ? EDC_REASON_TOOL_CALL
+                                                                        : EDC_REASON_OTHER;
+    ev.as.exec.content = r->content;
+    ev.as.exec.msg = r->msg;
+    ev.as.exec.tool_calls_raw = r; /* 不透明：今天 dispatch_tools 收到的就是 resp 本身 */
+    ev.as.exec.prompt_tokens = (int)r->usage.prompt_tokens;
+    ev.as.exec.completion_tokens = (int)r->usage.completion_tokens;
+    ev.as.exec.total_tokens = (int)r->usage.total_tokens;
+    ev.as.exec.cached_tokens = (int)r->usage.cached_tokens;
+
+    /* 账本要的归一化视图；只认 FUNCTION（与今天登记时的过滤一致）。
+     * 纯借用：id/name/args 的所有权仍在 tool_calls 里，dispatch 之后不再触碰。 */
+    struct edc_tool_call *calls = NULL;
+    if (r->tool_calls)
+    {
+        unsigned n = utarray_len(r->tool_calls);
+        calls = n ? calloc(n, sizeof(*calls)) : NULL;
+        int m = 0;
+        for (unsigned i = 0; calls && i < n; i++)
+        {
+            struct edc_llm_chat_tool_call *tc = utarray_eltptr(r->tool_calls, i);
+            if (tc && tc->type == BC_LLM_TOOL_CALL_TYPE_FUNCTION)
+            {
+                calls[m].id = tc->id;
+                calls[m].name = tc->function.name;
+                calls[m].args = tc->function.arguments;
+                m++;
+            }
+        }
+        ev.as.exec.calls = calls;
+        ev.as.exec.n_calls = m;
+    }
+
+    edc_step_outcome out = edc_executor_advance(ex, task, &ev);
+
+    /* 被接手则回写 NULL（"消掉即置 NULL" 的约定）；未被接手就保持原样，
+     * 让 resp 自己释放 —— 与今天逐字一致。
+     * 注意 **不碰 r->tool_calls**：今天也不碰。 */
+    r->msg = ev.as.exec.msg;
+    free(calls);
+    return out;
+}
+
+edc_step_outcome edc_executor_advance_tool_resp(struct edc_executor *ex, struct edc_task *task, void *request_id,
+                                                void *req)
+{
+    struct edc_toolbox_actor_req *tr = req;
+    if (!tr)
+        return EDC_STEP_BLOCKED;
+
+    struct edc_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.kind = EDC_EVENT_TOOL_DONE;
+    ev.request_id = request_id;
+    ev.as.tool_done.call_id = tr->call_id;
+    ev.as.tool_done.name = tr->name;
+    ev.as.tool_done.result = tr->result;
+    ev.as.tool_done.has_next = (tr->next != NULL);
+
+    return edc_executor_advance(ex, task, &ev);
+}
+
+bool edc_executor_view_tool_emit(void *emit_msg, struct edc_tool_emit_view *out)
+{
+    struct edc_toolbox_emit_msg *emit = emit_msg;
+    if (!emit || !out)
+        return false;
+    out->header = emit->header;
+    out->content = emit->content;
+    out->render_pref = emit->render_pref;
+    return true;
 }

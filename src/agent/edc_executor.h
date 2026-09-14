@@ -13,10 +13,15 @@
 #ifndef EDC_EXECUTOR_H
 #define EDC_EXECUTOR_H
 
+#include "edc_config.h"
 #include "edc_task.h"
 #include "sds.h"
 #include "cJSON.h"
 #include <stdbool.h>
+
+/* 前置声明：下面多处只用到指针。缺了它，原型里出现的 `struct edc_executor *`
+ * 会在参数表作用域里自成一个类型，与后面的真正定义冲突（C 的经典坑）。 */
+struct edc_executor;
 
 /* ── 事件（向内）──────────────────────────────────────────── */
 
@@ -55,8 +60,9 @@ struct edc_event_exec
     edc_reason reason;
     sds content;              /* 最终文本（可 NULL） */
     cJSON *msg;               /* assistant 消息对象（所有权转入 turn） */
-    /* 本轮 tool_calls：原样透传给 dispatch_tools（`void*` 保持类型无关，
-     * 所有权随 dispatch 转移）；同时给一份归一化视图供账本登记。 */
+    /* 本轮 tool_calls：原样透传给 dispatch_tools 的**不透明负载**（今天传的
+     * 就是整个 LLM 响应指针，所有权随 dispatch 转移）；同时给一份归一化视图
+     * 供账本登记。 */
     void *tool_calls_raw;
     const struct edc_tool_call *calls;
     int n_calls;
@@ -106,12 +112,13 @@ struct edc_executor_ops
     /* 派发一轮 LLM 请求。调用方负责已自增 llm_rounds（与今天一致）。 */
     void (*send_llm)(void *ctx, struct edc_task *task, void *request_id);
 
-    /* 向 channel 发一条消息。msg_type: EDC_CHANNEL_MESSAGE_*_TYPE。 */
-    void (*send_reply)(void *ctx, struct edc_task *task, const char *content, int msg_type, void *request_id);
+    /* 向 channel 发一条消息。 */
+    void (*send_reply)(void *ctx, struct edc_task *task, const char *content, edc_channel_message_type msg_type,
+                       void *request_id);
 
-    /* 把本轮 tool_calls 交给 toolbox；返回 tool chain 里是否还有下一个。 */
+    /* 把工具结果回显成一条 TOOL 消息（仅 active task 会触发）。 */
     void (*send_tool_message)(void *ctx, struct edc_task *task, const char *header, const char *content,
-                              const char *render_pref, void *request_id);
+                              edc_render_pref_t render_pref, void *request_id);
 
     void (*dispatch_tools)(void *ctx, struct edc_task *task, void *tool_calls, void *request_id);
 
@@ -130,13 +137,42 @@ struct edc_executor_ops
 
     /* ── 环境查询 ── */
     struct edc_session *(*task_session)(void *ctx, struct edc_task *task); /* task 的属主 session */
-    bool (*has_api_key)(void *ctx);
+    /* 今天 sched_handle_llm_resp 里的 `no_key` 表达式原样搬来（含 config 为
+     * NULL 时判 false 的语义）—— 命名成 no_api_key 就是为了不含糊。 */
+    bool (*no_api_key)(void *ctx);
     int (*max_iter)(void *ctx); /* <= 0 = 不限制 */
 
     /* ── 其它出站 ── */
     void (*trigger_memory)(void *ctx);
     void (*save_session)(void *ctx, struct edc_session *s);
 };
+
+/* ── 边界适配 ────────────────────────────────────────────────
+ * actor 消息的负载类型（edc_llm_actor_resp / edc_toolbox_actor_req /
+ * edc_toolbox_emit_msg）只在这里被认识 —— 这样 scheduler 不再需要
+ * include edc_llm_actor.h / edc_toolbox_actor.h（§8 验收判据 3）。
+ *
+ * 负载一律以 `void *` 传入：适配是**类型无关的调用约定**，调用方
+ *（scheduler 的分发器）连结构体名字都不必写。 */
+
+/* BC_ACTOR_MSG_LLM_RESPONSE */
+edc_step_outcome edc_executor_advance_llm_resp(struct edc_executor *ex, struct edc_task *task, void *request_id,
+                                               void *resp);
+
+/* BC_ACTOR_MSG_TOOL_RESPONSE */
+edc_step_outcome edc_executor_advance_tool_resp(struct edc_executor *ex, struct edc_task *task, void *request_id,
+                                                void *req);
+
+/* TOOL_EMIT 的展示字段。emit 的负载被当成不透明指针，字段在这里取出 ——
+ * 于是"该不该显示"的判断可以留在 scheduler（它是展示逻辑），
+ * 而**结构体知识**留在这里。 */
+struct edc_tool_emit_view
+{
+    const char *header;
+    const char *content;
+    edc_render_pref_t render_pref;
+};
+bool edc_executor_view_tool_emit(void *emit_msg, struct edc_tool_emit_view *out);
 
 /* ── 推进 ──────────────────────────────────────────────────── */
 
@@ -152,7 +188,9 @@ void edc_executor_init(struct edc_executor *ex, const struct edc_executor_ops *o
  * 调用前提：task 已由 scheduler 按 request_id 找到，且未被取消
  *（`task->cancelled_request` 的丢弃逻辑留在 scheduler —— 它是 task 之间的
  * 取消状态，不是 task 之内的推进）。
- * **不消费 ev**（其中 msg / tool_calls 的所有权按上面的约定转移）。 */
-edc_step_outcome edc_executor_advance(struct edc_executor *ex, struct edc_task *task, const struct edc_event *ev);
+ * **ev 非 const**：其中 `msg` / `tool_calls_raw` 的所有权会按需**转移**，
+ * 被接手后 advance 把它们置 NULL —— 与今天 sched_handle_llm_resp 的
+ * "消掉即置 NULL" 约定逐字一致（适配器据此回写源结构，避免双重释放）。 */
+edc_step_outcome edc_executor_advance(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev);
 
 #endif /* EDC_EXECUTOR_H */

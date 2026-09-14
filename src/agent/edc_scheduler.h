@@ -3,6 +3,7 @@
 
 #include "edc_actor.h"
 #include "edc_config.h"
+#include "edc_executor.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "sds.h"
@@ -79,6 +80,10 @@ struct edc_scheduler
 {
     struct edc_session *session; /* 当前绑定的 session; 前台组是 session 的属性 */
     struct edc_config *config;
+
+    /* task 之内的推进器（无状态步进函数 + 出站 ops）。见 edc_executor.h。
+     * scheduler 只做"归一化 + 转发"，不再需要认识 edc_llm_actor / edc_toolbox。 */
+    struct edc_executor executor;
 
     struct edc_sched_task_entry *task_hash; /* uthash: request_id → edc_task */
 

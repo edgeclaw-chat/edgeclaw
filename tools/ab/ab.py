@@ -93,8 +93,14 @@ def gen_config(ecl: Path, extra_rw=()):
     (ecl / "config.json").write_text(json.dumps(cfg, indent="\t"))
 
 
-def freeze(home: Path, source: Path, sessions):
-    """把一份真实工作区冻结成夹具。大文件/备份不入夹具。"""
+def freeze(home: Path, source: Path, sessions, refreeze=False):
+    """把一份真实工作区冻结成夹具。大文件/备份不入夹具。
+
+    **冻结一次、之后复用**：源工作区是活的（.task_seq 等高水位会变），
+    每次重新冻结会让两次运行从不同的起点出发 —— 那样 A/B 的差异里就混进了
+    夹具自身的漂移。`--refreeze` 才重建。"""
+    if home.exists() and not refreeze:
+        return
     if home.exists():
         shutil.rmtree(home)
     ecl = home / ".edgeclaw"
@@ -317,10 +323,17 @@ def compare(a: Path, b: Path) -> int:
 
 
 def cmd_run(args):
-    home = RUN_BASE / args.fixture / "home"
+    sess = args.sessions.split(",")
+    src = Path(args.source).expanduser()
+    pristine = RUN_BASE / args.fixture / "pristine"  # 冻结的**原始**夹具
+    home = RUN_BASE / args.fixture / "home"          # 每次运行的工作副本
     out = Path(args.out) if args.out else OUT_BASE / args.label
-    sessions = args.sessions.split(",")
-    freeze(home, Path(args.source).expanduser(), sessions)
+
+    freeze(pristine, src, sess, refreeze=args.refreeze)
+    if home.exists():
+        shutil.rmtree(home)
+    shutil.copytree(pristine, home, symlinks=True)
+
     rc = run_binary(Path(args.bin), home, HERE / "scripts" / (args.fixture + ".txt"),
                     out, home, HERE / "responses" / (args.fixture + ".json"))
     print("run %s: 退出码 %s，产物在 %s" % (args.label, rc, out))
@@ -349,6 +362,8 @@ def main():
         p.add_argument("--fixture", default="smoke")
         p.add_argument("--source", default="~/.edgeclaw/workspace")
         p.add_argument("--sessions", default="s8")
+        p.add_argument("--refreeze", action="store_true",
+                       help="重建冻结夹具（默认复用第一次冻结的结果）")
 
     p = sub.add_parser("run"); common(p)
     p.add_argument("--label", required=True)

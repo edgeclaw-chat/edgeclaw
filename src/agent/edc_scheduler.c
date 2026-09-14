@@ -5,9 +5,7 @@
 #include "edc_config.h"
 #include "edc_context.h"
 #include "edc_file_utils.h"
-#include "edc_llm_actor.h"
 #include "edc_session.h"
-#include "edc_toolbox_actor.h"
 #include "edc_turn.h"
 #include "log.h"
 #include "uthash.h"
@@ -35,6 +33,8 @@ static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg
 static void sched_handle_task_snapshot(struct edc_scheduler *sched);
 static void sched_notify_foreground_state(struct edc_scheduler *sched, struct edc_task *task);
 static void sched_set_task_state(struct edc_scheduler *sched, struct edc_task *task, edc_task_state state);
+/* executor 的出站 ops 表（定义在文件后半；这里前向声明，供 new 里 init 用）。 */
+static const struct edc_executor_ops sched_executor_ops;
 
 /* 任务的属主 session: 被切到后台的 session 里的任务完成/取消时, turn、快照与
  * 落盘都要写回**它自己**, 而不是当前绑定的 sched->session (否则串台)。group
@@ -143,6 +143,8 @@ struct edc_scheduler *edc_scheduler_new(struct edc_session *session, struct edc_
 
     /* 恢复上次运行的发号高水位, 保证重启后 task_id 不倒退、不重复。 */
     sched_load_task_seq(sched);
+
+    edc_executor_init(&sched->executor, &sched_executor_ops, sched);
 
     sched->self = edc_actor_new("edc_scheduler", edc_scheduler_actor_handler, sched);
 
@@ -759,207 +761,157 @@ static void sched_flush_redirects(struct edc_task *task)
     }
 }
 
+/* ── executor 的出站 ops ─────────────────────────────────────
+ * 每条都对应今天在 sched_handle_* 里的那个调用点，逐条搬过来。
+ * 一律先查回调是否注入（与今天 `if (sched->send_llm)` 的形状一致）。 */
+
+static void ex_send_llm(void *ctx, struct edc_task *task, void *request_id)
+{
+    struct edc_scheduler *sched = ctx;
+    if (sched->send_llm)
+        sched->send_llm(sched, task, request_id);
+}
+
+static void ex_send_reply(void *ctx, struct edc_task *task, const char *content, edc_channel_message_type type,
+                          void *request_id)
+{
+    struct edc_scheduler *sched = ctx;
+    if (sched->send_reply)
+        sched->send_reply(sched, task, content, type, request_id);
+}
+
+static void ex_send_tool_message(void *ctx, struct edc_task *task, const char *header, const char *content,
+                                 edc_render_pref_t render_pref, void *request_id)
+{
+    struct edc_scheduler *sched = ctx;
+    if (sched->send_tool_message)
+        sched->send_tool_message(sched, task, header, content, render_pref, request_id);
+}
+
+static void ex_dispatch_tools(void *ctx, struct edc_task *task, void *llm_resp, void *request_id)
+{
+    struct edc_scheduler *sched = ctx;
+    if (sched->dispatch_tools)
+        sched->dispatch_tools(sched, task, llm_resp, request_id);
+}
+
+static void ex_set_task_state(void *ctx, struct edc_task *task, edc_task_state state)
+{
+    sched_set_task_state((struct edc_scheduler *)ctx, task, state);
+}
+
+static void ex_unregister_task(void *ctx, void *request_id)
+{
+    edc_scheduler_unregister_task((struct edc_scheduler *)ctx, request_id);
+}
+
+static void ex_notify_dependents(void *ctx, struct edc_task *task)
+{
+    (void)ctx;
+    edc_task_notify_dependents(task);
+}
+
+static void ex_flush_redirects(void *ctx, struct edc_task *task)
+{
+    (void)ctx;
+    sched_flush_redirects(task);
+}
+
+static void ex_task_snapshot(void *ctx)
+{
+    sched_handle_task_snapshot((struct edc_scheduler *)ctx);
+}
+
+/* 展示逻辑: 这个 task 此刻在被显示吗 (规则 8 的 active-task 闸门)。 */
+static bool ex_should_snapshot_on_complete(void *ctx, struct edc_task *task)
+{
+    struct edc_scheduler *sched = ctx;
+    return !sched->session || edc_session_get_active_task(sched->session) != task ||
+           task->group != sched->session->foreground_group;
+}
+
+/* task 之间的事: 依赖链上排队的输入自动启动。 */
+static void ex_start_queued_dependents(void *ctx, struct edc_task *task)
+{
+    struct edc_scheduler *sched = ctx;
+    struct edc_task_dep *dep;
+    LL_FOREACH(task->dependents, dep)
+    {
+        struct edc_task *dt = dep->target;
+        if (dt->active_turn && dt->state == TASK_WAITING_INPUT)
+        {
+            sched_set_task_state(sched, dt, TASK_LLM_PROCESSING);
+            if (sched->send_llm)
+            {
+                dt->llm_rounds++; /* 排队的依赖输入开始消耗预算 */
+                sched->send_llm(sched, dt, dt->current_request_id);
+            }
+        }
+    }
+}
+
+static struct edc_session *ex_task_session(void *ctx, struct edc_task *task)
+{
+    return sched_task_session((struct edc_scheduler *)ctx, task);
+}
+
+/* 表达式原样搬自 sched_handle_llm_resp 的 `no_key`（含 config 为 NULL 时判 false）。 */
+static bool ex_no_api_key(void *ctx)
+{
+    struct edc_scheduler *sched = ctx;
+    return sched->config &&
+           (!sched->config->llm_api_conf.api_key || sdslen(sched->config->llm_api_conf.api_key) == 0);
+}
+
+static int ex_max_iter(void *ctx)
+{
+    struct edc_scheduler *sched = ctx;
+    return (sched->config && sched->config->max_iter > 0) ? sched->config->max_iter : 0;
+}
+
+static void ex_trigger_memory(void *ctx)
+{
+    struct edc_scheduler *sched = ctx;
+    if (sched->trigger_memory)
+        sched->trigger_memory(sched);
+}
+
+static void ex_save_session(void *ctx, struct edc_session *s)
+{
+    struct edc_scheduler *sched = ctx;
+    if (sched->save_session)
+        sched->save_session(sched, s);
+}
+
+static const struct edc_executor_ops sched_executor_ops = {
+    .send_llm = ex_send_llm,
+    .send_reply = ex_send_reply,
+    .send_tool_message = ex_send_tool_message,
+    .dispatch_tools = ex_dispatch_tools,
+    .set_task_state = ex_set_task_state,
+    .unregister_task = ex_unregister_task,
+    .notify_dependents = ex_notify_dependents,
+    .flush_redirects = ex_flush_redirects,
+    .task_snapshot = ex_task_snapshot,
+    .should_snapshot_on_complete = ex_should_snapshot_on_complete,
+    .start_queued_dependents = ex_start_queued_dependents,
+    .task_session = ex_task_session,
+    .no_api_key = ex_no_api_key,
+    .max_iter = ex_max_iter,
+    .trigger_memory = ex_trigger_memory,
+    .save_session = ex_save_session,
+};
+
+/* ── actor 事件 → 归一化 → executor ──────────────────────────
+ * scheduler 只负责"按 request_id 找 task"与"丢弃已取消的迟到事件" ——
+ * 前者是 task 之间的索引，后者是取消状态（task 之间），都不属于 task 之内。 */
+
 static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_msg *msg)
 {
     struct edc_task *task = edc_scheduler_find_task(sched, msg->request_id);
     if (!task || task->cancelled_request)
         return;
-
-    struct edc_llm_actor_resp *r = msg->data;
-    if (!r)
-        return;
-
-    /* Token 账: 把本次响应的 usage 累加到 task。放在分支之前, 让 STOP、
-     * TOOL_CALLING 以及 error 三条路径都计入 —— 一次用户输入常触发多轮
-     * 请求 (工具链续发), 每轮都要算, 否则会漏掉中间轮。 */
-    edc_task_add_usage(task, r->usage.prompt_tokens, r->usage.completion_tokens, r->usage.total_tokens,
-                       r->usage.cached_tokens);
-
-    if (r->error)
-    {
-        edc_scheduler_unregister_task(sched, msg->request_id);
-        task->current_request_id = NULL;
-        sched_set_task_state(sched, task, TASK_ERROR);
-        if (r->content)
-            edc_task_set_output(task, sdsnew(r->content));
-        sched_flush_redirects(task);
-        if (sched->send_reply)
-        {
-            const char *err = r->error->message ? r->error->message : "LLM request failed";
-            bool no_key = sched->config &&
-                          (!sched->config->llm_api_conf.api_key || sdslen(sched->config->llm_api_conf.api_key) == 0);
-            if (no_key)
-            {
-                /* First run: with no API key the request can only fail, so
-                 * point the user at the /connect dialog instead of just
-                 * reporting the error. */
-                sds combined = sdscatprintf(
-                    sdsempty(), "%s\n\nNo API key configured — run /connect to set the API URL, model and key.", err);
-                sched->send_reply(sched, task, combined, EDC_CHANNEL_MESSAGE_SYS_TYPE, msg->request_id);
-                sdsfree(combined);
-            }
-            else
-            {
-                sched->send_reply(sched, task, err, EDC_CHANNEL_MESSAGE_SYS_TYPE, msg->request_id);
-            }
-        }
-        return;
-    }
-
-    if (r->reason == BC_LLM_FINISH_REASON_TOOL_CALL)
-    {
-        sched_set_task_state(sched, task, TASK_TOOL_CALLING);
-        if (task->active_turn)
-        {
-            edc_turn_add_assistant_message(task->active_turn, r->msg);
-            r->msg = NULL;
-        }
-        /* 账本: 先把本轮 tool_calls 全部登记为 PENDING (dispatch 会转移
-         * r->tool_calls 里 name/args/id 的所有权, 故必须先复制登记), 派发后
-         * 再把链首提升 EXECUTING —— 中断后 resume 据此判定哪些工具需要重新
-         * 执行、哪些只需补一条"中断"响应。 */
-        if (r->tool_calls)
-        {
-            for (unsigned i = 0; i < utarray_len(r->tool_calls); i++)
-            {
-                struct edc_llm_chat_tool_call *tcall =
-                    (struct edc_llm_chat_tool_call *)utarray_eltptr(r->tool_calls, i);
-                if (tcall && tcall->type == BC_LLM_TOOL_CALL_TYPE_FUNCTION)
-                    edc_task_tool_call_add(task, tcall->id, tcall->function.name, tcall->function.arguments);
-            }
-        }
-        /* keep task registered — tool responses use same request_id */
-        if (sched->dispatch_tools)
-            sched->dispatch_tools(sched, task, r, msg->request_id);
-        return;
-    }
-
-    if (r->reason == BC_LLM_FINISH_REASON_STOP)
-    {
-        edc_scheduler_unregister_task(sched, msg->request_id);
-        task->current_request_id = NULL;
-        /* 属主 session: 后台 session 里的任务完成时, turn 与 completion_seq 必须
-         * 落回它自己, 不能用当前绑定的 sched->session。 */
-        struct edc_session *own = sched_task_session(sched, task);
-        if (task->active_turn)
-        {
-            /* 最终回复就是渲染端按 Markdown 显示的那条 (send_reply 走 RESP) ——
-             * 把偏好写进消息本身, 重启后从消息派生回放才能同样渲染。 */
-            if (r->msg)
-                cJSON_ReplaceItemInObjectCaseSensitive(r->msg, "render", cJSON_CreateString("markdown"));
-            edc_turn_add_assistant_message(task->active_turn, r->msg);
-            r->msg = NULL;
-
-            /* sync turn messages to group history (context sharing) */
-            if (task->group && task->active_turn)
-            {
-                for (size_t qi = task->active_turn->messages.head; qi < task->active_turn->messages.tail; qi++)
-                {
-                    cJSON *item = task->active_turn->messages.data[qi];
-                    edc_task_group_history_add_ref(task->group, item);
-                }
-            }
-
-        }
-        edc_task_commit_active_turn(task);
-        if (r->content)
-            edc_task_set_output(task, sdsnew(r->content));
-        sched_flush_redirects(task);
-        task->completion_seq = own ? own->next_completion_seq++ : 0;
-        sched_set_task_state(sched, task, TASK_COMPLETED);
-
-        /* session 消息数刚因 turn 提交而增长。sched_set_task_state 里的
-         * notify 只在前台 active task 上触发；被更新输入顶替、或在后台/
-         * 依赖链中完成的任务其 turn 是"静默"的（send_reply 会丢弃非
-         * active task 的输出，不产生任何 channel 消息），若不在状态迁移
-         * 之外主动补推一次快照，TUI 侧边栏的 session 统计会一直停留在
-         * 旧值。快照带 COMPLETED 状态 + 新 message_count 一并刷新。 */
-        if (!sched->session || edc_session_get_active_task(sched->session) != task ||
-            task->group != sched->session->foreground_group)
-        {
-            sched_handle_task_snapshot(sched);
-        }
-
-        edc_task_notify_dependents(task);
-
-        /* auto-trigger dependents with queued input */
-        {
-            struct edc_task_dep *dep;
-            LL_FOREACH(task->dependents, dep)
-            {
-                struct edc_task *dt = dep->target;
-                if (dt->active_turn && dt->state == TASK_WAITING_INPUT)
-                {
-                    sched_set_task_state(sched, dt, TASK_LLM_PROCESSING);
-                    if (sched->send_llm)
-                    {
-                        dt->llm_rounds++; /* 排队的依赖输入开始消耗预算 */
-                        sched->send_llm(sched, dt, dt->current_request_id);
-                    }
-                }
-            }
-        }
-
-        /* send_reply internally checks active_task */
-        if (sched->send_reply)
-            sched->send_reply(sched, task, r->content, EDC_CHANNEL_MESSAGE_RESP_TYPE, msg->request_id);
-
-        /* auto-reap disabled: tasks stay COMPLETED for cross-group join */
-        /* to reclaim a task: use /task join <id> */
-        (void)task;
-
-        /* 触发 L1 折叠检查 (task 完成后可能达到 group fold 阈值) */
-        if (sched->trigger_memory)
-            sched->trigger_memory(sched);
-
-        if (sched->save_session)
-            sched->save_session(sched, own);
-        return;
-    }
-
-    edc_scheduler_unregister_task(sched, msg->request_id);
-    task->current_request_id = NULL;
-    sched_set_task_state(sched, task, TASK_ERROR);
-    if (sched->send_reply)
-        sched->send_reply(sched, task, "Internal error: unknown finish reason", EDC_CHANNEL_MESSAGE_SYS_TYPE,
-                          msg->request_id);
-}
-
-/* 到达 max_iter 上限: 构造一条 STOP 语义的 LLM 响应 (内容为收尾说明),
- * 复用 sched_handle_llm_resp 的完整终结路径 —— turn (用户消息 + assistant
- * tool_call + 工具结果) 整体入库、任务置 COMPLETED、通知依赖者、触发 L1
- * 折叠与 save_session, 保证被打断的上下文仍是连贯的。 */
-static void sched_stop_at_iteration_cap(struct edc_scheduler *sched, struct edc_task *task, struct edc_actor_msg *msg)
-{
-    int max_iter = (sched->config && sched->config->max_iter > 0) ? sched->config->max_iter : 0;
-
-    sds notice = sdsempty();
-    notice = sdscatprintf(
-        notice,
-        "[stopped: reached max_iter=%d LLM/tool rounds without a final answer — iteration budget exhausted. "
-        "Send a follow-up message to continue.]",
-        max_iter);
-
-    cJSON *assistant = cJSON_CreateObject();
-    cJSON_AddStringToObject(assistant, "role", "assistant");
-    cJSON_AddStringToObject(assistant, "content", notice);
-
-    struct edc_llm_actor_resp fake;
-    memset(&fake, 0, sizeof(fake));
-    fake.reason = BC_LLM_FINISH_REASON_STOP;
-    fake.content = notice; /* STOP 分支用 sdsnew 拷贝, 不会持有 */
-    fake.msg = assistant;  /* 所有权转入 active_turn (与真实响应一致) */
-
-    struct edc_actor_msg evt;
-    memset(&evt, 0, sizeof(evt));
-    evt.type = BC_ACTOR_MSG_LLM_RESPONSE;
-    evt.from = msg->from;
-    evt.request_id = msg->request_id; /* task 此刻仍注册在该 request_id 下 */
-    evt.data = &fake;
-
-    sched_handle_llm_resp(sched, &evt);
-
-    sdsfree(notice);
+    edc_executor_advance_llm_resp(&sched->executor, task, msg->request_id, msg->data);
 }
 
 static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor_msg *msg)
@@ -967,60 +919,29 @@ static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor
     struct edc_task *task = edc_scheduler_find_task(sched, msg->request_id);
     if (!task || task->cancelled_request)
         return;
-
-    struct edc_toolbox_actor_req *tr = msg->data;
-    if (!tr)
-        return;
-
-    /* 添加 tool 消息到 active turn */
-    if (task->active_turn && tr->result)
-    {
-        edc_turn_add_tool_message(task->active_turn, tr->call_id, tr->name, tr->result);
-    }
-
-    /* 账本: 该工具已完成 → 删除该条记录 (EXECUTING 由 toolbox 的 TOOL_STARTED 上报置位) */
-    edc_task_tool_call_remove(task, tr->call_id);
-
-    /* 若 tool chain 完成，发送续 LLM 请求 */
-    if (!tr->next)
-    {
-        /* max_iter 治理: 工具链结束后若已耗尽本轮 LLM 迭代预算, 不再续发
-         * LLM —— 模型已拿到最后一轮工具结果仍要继续时, 说明大概率在工具
-         * 循环里空转。max_iter <= 0 (如 -1 = 无限/默认, 或 0 兼容旧行为)
-         * 表示不限制。 */
-        if (sched->config->max_iter > 0 && task->llm_rounds >= sched->config->max_iter)
-        {
-            sched_stop_at_iteration_cap(sched, task, msg);
-            return;
-        }
-
-        sched_set_task_state(sched, task, TASK_LLM_PROCESSING);
-        if (sched->send_llm)
-        {
-            task->llm_rounds++; /* 工具链结束后续发 → 再消耗一轮预算 */
-            sched->send_llm(sched, task, msg->request_id);
-        }
-    }
+    edc_executor_advance_tool_resp(&sched->executor, task, msg->request_id, msg->data);
 }
 
-/* toolbox 上报"某个工具真正开始执行" (data = call_id): 把账本里对应记录置
- * EXECUTING。这样中断后 resume 能精确区分"未执行"与"执行中", 不再依赖链序。 */
 static void sched_handle_tool_started(struct edc_scheduler *sched, struct edc_actor_msg *msg)
 {
     struct edc_task *task = edc_scheduler_find_task(sched, msg->request_id);
     if (!task || task->cancelled_request)
         return;
-    const char *call_id = (const char *)msg->data;
-    if (call_id)
-        edc_task_tool_call_mark_executing(task, call_id);
+
+    struct edc_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.kind = EDC_EVENT_TOOL_STARTED;
+    ev.request_id = msg->request_id;
+    ev.as.call_id = (const char *)msg->data;
+    edc_executor_advance(&sched->executor, task, &ev);
 }
 
 /* toolbox 请求把工具结果回显到终端 (TOOL 消息)。与 thought/RESP 一致，
  * 只在调度线程上检查 session->active_task：后台任务的工具输出一律静默。 */
 static void sched_handle_tool_emit(struct edc_scheduler *sched, struct edc_actor_msg *msg)
 {
-    struct edc_toolbox_emit_msg *emit = msg->data;
-    if (!emit || !emit->content)
+    struct edc_tool_emit_view v;
+    if (!edc_executor_view_tool_emit(msg->data, &v) || !v.content)
         return;
 
     struct edc_task *task = edc_scheduler_find_task(sched, msg->request_id);
@@ -1036,13 +957,13 @@ static void sched_handle_tool_emit(struct edc_scheduler *sched, struct edc_actor
         return;
 
     if (sched->send_tool_message)
-        sched->send_tool_message(sched, task, emit->header, emit->content, emit->render_pref, msg->request_id);
+        sched->send_tool_message(sched, task, v.header, v.content, v.render_pref, msg->request_id);
 
     /* todowrite 每次成功更新 (含清空) 都会回显一条 TOOL 消息; 该消息只
      * 携带文本, todo 本身已挂到 task->todos。多轮工具链内 task 状态不再
      * 变化 (TOOL_CALLING 期间), 不会触发状态通知快照 —— 这里主动补推一次,
      * 让 TUI 的 TodoWidget 立即按新清单刷新 (规则3)。 */
-    if (emit->header && strcmp(emit->header, "todowrite") == 0)
+    if (v.header && strcmp(v.header, "todowrite") == 0)
         sched_handle_task_snapshot(sched);
 }
 
