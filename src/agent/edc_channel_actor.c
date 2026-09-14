@@ -4,8 +4,6 @@
 #include "edc_config.h"
 #include "edc_scheduler.h"
 #include "sds.h"
-#include "uthash.h"
-#include "utlist_fix.h"
 #include <stdlib.h>
 
 /* ── 边界翻译: channel 消息 → core 的入站输入 ─────────────────
@@ -41,51 +39,32 @@ void edc_channel_input_free(struct edc_sched_input *input)
         edc_channel_message_free(msg);
 }
 
+/* 只有一个通道 (adapter): 出站消息 (CHANNEL_SEND) 直接交给那个回调。
+ * 以前这里按 `msg->sub_type` (= channel 类型) 在 handlers 哈希里找实现 ——
+ * 那是多通道的机制, 随通道实现一起删了。 */
 static void edc_channel_actor_handle(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
     edc_channel_actor_state_t *state = actor->state;
 
-    if (msg->type == BC_ACTOR_MSG_START)
-    {
-        struct edc_handler_entry *e, *tmp;
-        HASH_ITER(hh, state->handlers, e, tmp)
-        {
-            e->handler(actor, msg);
-        }
-    }
-    else
-    {
-        struct edc_handler_entry *e;
-        HASH_FIND_INT(state->handlers, &msg->sub_type, e);
-        if (e)
-            e->handler(actor, msg);
-    }
+    if (msg->type == BC_ACTOR_MSG_CHANNEL_SEND && state->adapter.on_actor_message_send_fn)
+        state->adapter.on_actor_message_send_fn(state->adapter.instance, msg->data);
 
     edc_actor_msg_free(msg);
-    return;
 }
 
-cJSON *edc_channel_type_to_json(edc_channel_type type)
+cJSON *edc_channel_to_json(void)
 {
     cJSON *data = cJSON_CreateObject();
-    const char *name = "adapter"; /* 唯一通道实现 */
-    (void)type;
-    cJSON_AddStringToObject(data, "type", name);
+    cJSON_AddStringToObject(data, "type", "adapter");
     return data;
 }
 
-edc_channel_type edc_channel_type_from_json(cJSON *data)
+void edc_channel_adapter_init(edc_actor_t *channel_actor, void *instance,
+                              void (*on_actor_message_send_fn)(void *, struct edc_channel_message *))
 {
-    (void)data;
-    return edc_channel_adapter;
-}
-
-void edc_channel_free(struct edc_channel *channel)
-{
-    if (!channel)
-        return;
-
-    free(channel);
+    edc_channel_actor_state_t *state = channel_actor->state;
+    state->adapter.instance = instance;
+    state->adapter.on_actor_message_send_fn = on_actor_message_send_fn;
 }
 
 struct edc_channel_message *edc_channel_message_new(edc_channel_type type, edc_channel_message_type message_type,
@@ -112,10 +91,9 @@ void edc_channel_message_free(struct edc_channel_message *msg)
     free(msg);
 }
 
-edc_actor_t *edc_channel_actor_new(struct channel_conf *config, const char *workspace)
+edc_actor_t *edc_channel_actor_new(void)
 {
     edc_channel_actor_state_t *state = calloc(1, sizeof(edc_channel_actor_state_t));
-    state->config = *config;
 
     state->observer = NULL;
 
@@ -130,14 +108,6 @@ edc_actor_t *edc_channel_actor_new(struct channel_conf *config, const char *work
 void edc_channel_actor_free(edc_actor_t *actor)
 {
     edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
-    {
-        struct edc_handler_entry *e, *tmp;
-        HASH_ITER(hh, state->handlers, e, tmp)
-        {
-            HASH_DEL(state->handlers, e);
-            free(e);
-        }
-    }
 
     free(state);
     edc_actor_free(actor);
@@ -147,13 +117,4 @@ void edc_channel_actor_set_observer(edc_actor_t *actor, edc_actor_t *observer)
 {
     edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
     state->observer = observer;
-}
-
-void edc_channel_actor_add(edc_actor_t *actor, edc_channel_type type, edc_actor_handler_t handler)
-{
-    edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
-    struct edc_handler_entry *e = g_new0(struct edc_handler_entry, 1);
-    e->type = (int)type;
-    e->handler = handler;
-    HASH_ADD_INT(state->handlers, type, e);
 }

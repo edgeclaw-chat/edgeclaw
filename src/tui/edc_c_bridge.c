@@ -36,6 +36,14 @@ struct edc_actor *edc_c_agent_channel_actor(struct edc_agent *agent)
     return agent ? agent->channel_actor : NULL;
 }
 
+void edc_c_agent_channel_adapter_init(struct edc_agent *agent, void *instance,
+                                      void (*on_send)(void *, struct edc_channel_message *))
+{
+    if (!agent || !agent->channel_actor)
+        return;
+    edc_channel_adapter_init(agent->channel_actor, instance, on_send);
+}
+
 const char *edc_c_channel_message_content(struct edc_channel_message *channel_message)
 {
     return channel_message ? channel_message->content : NULL;

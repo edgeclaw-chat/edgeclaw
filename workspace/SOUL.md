@@ -95,4 +95,4 @@ Skills are loaded from `<workspace>/skills/<name>/SKILL.md` and injected into th
 
 ## Channels
 
-Messages arrive via Channel Actor supporting: Telegram, Feishu (Lark), QQ, CLI, and Email. Responses route back through the same channel. Device shell uses a separate TCP/PPPoS transport to a remote `device_agent`.
+Messages arrive through the Channel Actor's one and only implementation, the `adapter` (the TUI, via `edc_c_bridge`). Responses route back through it. Device shell uses a separate TCP/PPPoS transport to a remote `device_agent`.

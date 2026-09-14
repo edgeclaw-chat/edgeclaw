@@ -19,7 +19,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <edc_channel_adapter.h>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -439,7 +438,7 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
     if (!agent)
         return;
 
-    edc_channel_adapter_init(edc_c_agent_channel_actor(agent), this, on_channel_adapter_send);
+    edc_c_agent_channel_adapter_init(agent, this, on_channel_adapter_send);
     EnableBracketedPaste();
     bracketed_paste_on_ = true;
 

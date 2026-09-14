@@ -24,7 +24,12 @@ struct llm_api_conf
 
 typedef enum
 {
-    edc_channel_adapter, /* 唯一通道实现: TUI/adapter 消息回调 */
+    edc_channel_adapter, /* 唯一的通道实现: TUI/adapter 消息回调。
+                          * 多通道 (telegram/feishu/qq/cli/email) 的实现与注册表已全部删除,
+                          * 但这个枚举**刻意保留** —— 它就是"消息从哪来"的标识, 将来要接新通道
+                          * (用户 2026-09-15 裁决: 后续可能会拓展其他的 channel) 时在这里加一个值,
+                          * 并给 channel actor 装一个对应的 adapter 即可。
+                          * 它也仍然写进磁盘 (task/crontab 的 "channel" 键)。 */
 } edc_channel_type;
 
 /* The kind of content a channel message carries. Defined here (rather than in
@@ -51,11 +56,6 @@ typedef enum
     EDC_RENDER_MARKDOWN,
 } edc_render_pref_t;
 
-struct channel_conf
-{
-    edc_channel_type type;
-};
-
 /* Which sandbox path list a /sandbox add-* / rm-* command targets. */
 typedef enum
 {
@@ -69,7 +69,6 @@ struct edc_config
     sds edc_home;
 
     struct llm_api_conf llm_api_conf;
-    struct channel_conf channel;
 
     sds workspace;
     bool enable_sandbox;

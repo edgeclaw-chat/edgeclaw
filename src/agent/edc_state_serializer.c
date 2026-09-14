@@ -111,9 +111,7 @@ static cJSON *task_to_json(struct edc_task *task)
         cJSON_AddStringToObject(tj, "prompt", task->prompt);
 
     /* ── channel ── */
-    cJSON *ch = edc_channel_type_to_json(task->channel_type);
-    if (ch)
-        cJSON_AddItemToObject(tj, "channel", ch);
+    cJSON_AddItemToObject(tj, "channel", edc_channel_to_json());
 
     /* ── fork chain ── */
     if (task->forked_from)
@@ -637,13 +635,13 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
         if (!task_id)
             continue;
 
-        cJSON *ch_json = cJSON_GetObjectItem(tj, "channel");
-        edc_channel_type ch_type = ch_json ? edc_channel_type_from_json(ch_json) : edc_channel_adapter;
+        /* 磁盘上的 "channel" 键是兼容物 (唯一的通道 = adapter): 读端忽略它的值。 */
 
         struct edc_task *task =
             edc_task_new(task_id, cJSON_GetStringValue(cJSON_GetObjectItem(tj, "session_id")) ?: "",
                          cJSON_GetStringValue(cJSON_GetObjectItem(tj, "group_id")) ?: "",
-                         cJSON_GetStringValue(cJSON_GetObjectItem(tj, "description")) ?: "", ch_type);
+                         cJSON_GetStringValue(cJSON_GetObjectItem(tj, "description")) ?: "",
+                         edc_channel_adapter);
         if (!task)
             continue;
 

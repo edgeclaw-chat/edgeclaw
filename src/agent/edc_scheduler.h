@@ -26,7 +26,7 @@ struct edc_sched_input
 {
     const char *session_id; /* 属主标签; NULL/空 = 交给 store 读口给默认 (活跃 session) */
     const char *content;
-    edc_channel_type type; /* 渠道类别 (CLI / Telegram …) —— task 从这条输入继承它 */
+    edc_channel_type type; /* 渠道类别 —— 今天只有 adapter (TUI); task 从这条输入继承它 */
     void *origin;          /* 原始 channel 消息: **只透传**给命令处理器 (用户态解释),
                             * scheduler 自己不碰 */
 };

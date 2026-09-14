@@ -4,14 +4,18 @@
 #include "cJSON.h"
 #include "edc_actor.h"
 #include "edc_config.h"
-#include "edc_containers.h"
-#include "edc_terminal.h"
-#include "uthash.h"
-#include <uv.h>
-struct edc_channel
-{
-    edc_channel_type type;
-};
+#include "sds.h"
+
+/* ── 唯一的通道实现: adapter ──────────────────────────────────
+ *
+ * 多通道时代 (telegram / feishu / qq / cli / email) 的实现、注册表、以及
+ * "按 channel 类型找 handler"那套机制**都已删除**: 今天只有一个 adapter,
+ * 也就是 TUI 经 `edc_c_bridge` 的那条通路 (`edc_channel_adapter_init`)。
+ * 于是 actor 不再持有 handlers 哈希, 只留一个发送回调。
+ *
+ * `edc_channel_type` 仍然只剩 `edc_channel_adapter` 这一个取值, 它继续挂在
+ * task / message 上并且**写进磁盘** —— 那部分是格式兼容 (见 edc_channel_to_json),
+ * 不是"还有别的通道"。 */
 
 struct edc_channel_message
 {
@@ -35,19 +39,10 @@ struct edc_channel_message
                                     * (P3 ③ 把这条规则从 core 移到了前端)。 */
 };
 
-struct edc_handler_entry
-{
-    int type;
-    edc_actor_handler_t handler;
-    UT_hash_handle hh;
-};
-
 typedef struct
 {
     edc_actor_t *actor;
-    struct channel_conf config;
     edc_actor_t *observer;
-    struct edc_handler_entry *handlers;
     struct
     {
         void *instance;
@@ -55,14 +50,19 @@ typedef struct
     } adapter;
 } edc_channel_actor_state_t;
 
-extern edc_actor_t *edc_channel_actor_new(struct channel_conf *config, const char *workspace);
+extern edc_actor_t *edc_channel_actor_new(void);
 extern void edc_channel_actor_free(edc_actor_t *actor);
 extern void edc_channel_actor_set_observer(edc_actor_t *actor, edc_actor_t *observer);
-extern void edc_channel_actor_add(edc_actor_t *actor, edc_channel_type type, edc_actor_handler_t handler);
 
-extern cJSON *edc_channel_type_to_json(edc_channel_type type);
-extern edc_channel_type edc_channel_type_from_json(cJSON *channel);
-extern void edc_channel_free(struct edc_channel *channel);
+/* ── adapter: 唯一通道的插口 ──────────────────────────────────
+ * TUI 用它接收 `BC_ACTOR_MSG_CHANNEL_SEND` (要上屏的消息列表)。 */
+extern void edc_channel_adapter_init(struct edc_actor *channel_actor, void *instance,
+                                     void (*on_actor_message_send_fn)(void *, struct edc_channel_message *));
+
+/* ── 磁盘格式兼容物: task / crontab job 的 `"channel"` 键 ─────
+ * 老文件里有这个键, 新文件**照写不误** (去掉等于改 schema); 它的取值只可能是
+ * adapter (唯一的通道), 所以读端直接忽略内容。 */
+extern cJSON *edc_channel_to_json(void);
 
 extern void edc_channel_message_free(struct edc_channel_message *msg);
 extern struct edc_channel_message *edc_channel_message_new(edc_channel_type type, edc_channel_message_type message_type,

@@ -82,7 +82,7 @@ static void env_open(struct env *e, const char *ws)
     memset(&e->agent, 0, sizeof(e->agent));
     e->agent.config = e->cfg;
     e->agent.session_manager = e->sm;
-    e->agent.channel_actor = edc_channel_actor_new(&e->cfg->channel, e->cfg->workspace);
+    e->agent.channel_actor = edc_channel_actor_new();
     e->agent.scheduler = edc_scheduler_new(e->cfg);
 }
 
@@ -125,7 +125,7 @@ static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, 
     struct edc_agent agent = {0};
     agent.config = cfg;
     agent.session_manager = sm;
-    agent.channel_actor = edc_channel_actor_new(&cfg->channel, cfg->workspace);
+    agent.channel_actor = edc_channel_actor_new();
     agent.scheduler = edc_scheduler_new(cfg);
 
     /* A task in B, unfinished. */
@@ -245,7 +245,7 @@ static void scenario_multihop(const char *ws)
     struct edc_agent agent = {0};
     agent.config = cfg;
     agent.session_manager = sm;
-    agent.channel_actor = edc_channel_actor_new(&cfg->channel, cfg->workspace);
+    agent.channel_actor = edc_channel_actor_new();
     agent.scheduler = edc_scheduler_new(cfg);
 
     struct edc_task *ct = edc_scheduler_create_task(agent.scheduler, sc, "c", edc_channel_adapter);

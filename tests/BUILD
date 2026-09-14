@@ -32,15 +32,6 @@ cc_test(
 )
 
 cc_test(
-    name = "test_channel_actor",
-    srcs = ["test_channel_actor.c"],
-    deps = [
-        "//src:agent",
-    ],
-    linkopts = LINK_OPTS,
-)
-
-cc_test(
     name = "test_llm_actor",
     srcs = ["test_llm_actor.c"],
     deps = [

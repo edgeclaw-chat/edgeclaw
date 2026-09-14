@@ -413,7 +413,6 @@ static void edc_tool_crontab_schedule(const char *workspace, edc_actor_t *schedu
 
     cJSON *job0 = cJSON_GetArrayItem(jobs, 0);
     cJSON *schedule = cJSON_GetObjectItem(job0, "schedule");
-    cJSON *channel = cJSON_GetObjectItem(job0, "channel");
 
     bool once = cJSON_IsTrue(cJSON_GetObjectItem(schedule, "once"));
     int64_t next_time = (int64_t)cJSON_GetObjectItem(schedule, "next_run_at_unix_ts")->valuedouble;
@@ -428,7 +427,6 @@ static void edc_tool_crontab_schedule(const char *workspace, edc_actor_t *schedu
         int64_t next_time_i = (int64_t)(cJSON_GetObjectItem(schedule_i, "next_run_at_unix_ts")->valuedouble);
         bool once_i = cJSON_IsTrue(cJSON_GetObjectItem(schedule, "once"));
         char *job_name_i = cJSON_GetStringValue(cJSON_GetObjectItem(job_i, "name"));
-        cJSON *channel_i = cJSON_GetObjectItem(job_i, "channel");
 
         if (next_time_i < next_time)
         {
@@ -437,14 +435,13 @@ static void edc_tool_crontab_schedule(const char *workspace, edc_actor_t *schedu
             job_message = cJSON_GetStringValue(cJSON_GetObjectItem(job_i, "message"));
             next_time = next_time_i;
             once = once_i;
-            channel = channel_i;
         }
     }
 
     struct edc_tool_crontab_state *state = tool->priv;
     if (!state || (next_time < state->timeout_at && !strcmp(job_id, state->job_id) == 0))
     {
-        edc_tool_crontab_update_task(workspace, edc_channel_type_from_json(channel), scheduler, tool, job_id, job_name,
+        edc_tool_crontab_update_task(workspace, edc_channel_adapter, scheduler, tool, job_id, job_name,
                                      job_message, next_time, once);
     }
 }
@@ -522,7 +519,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
     cJSON_AddStringToObject(job, "job_id", job_id);
     free(job_id);
 
-    cJSON_AddItemToObject(job, "channel", edc_channel_type_to_json(ctx->call_from_type));
+    cJSON_AddItemToObject(job, "channel", edc_channel_to_json());
 
     cJSON *schedule = cJSON_AddObjectToObject(job, "schedule");
     cJSON_AddStringToObject(schedule, "tz", tz_name ? tz_name : "");

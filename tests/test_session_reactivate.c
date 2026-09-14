@@ -200,7 +200,7 @@ int main(void)
     struct edc_agent agent = {0};
     agent.config = cfg;
     agent.session_manager = sm;
-    agent.channel_actor = edc_channel_actor_new(&cfg->channel, cfg->workspace);
+    agent.channel_actor = edc_channel_actor_new();
     agent.scheduler = edc_scheduler_new(cfg);
 
     /* Task in A (committed turn: group history references A->messages). */

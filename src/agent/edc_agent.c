@@ -860,7 +860,7 @@ struct edc_agent *edc_agent_new(bool setup, int sandbox_override)
         edc_sandbox_init(agent->config);
     }
 
-    agent->channel_actor = edc_channel_actor_new(&agent->config->channel, agent->config->workspace);
+    agent->channel_actor = edc_channel_actor_new();
     agent->llm_actor = edc_llm_actor_new(agent->config);
     agent->session_manager = edc_session_manager_new(agent->config);
     if (!agent->session_manager)

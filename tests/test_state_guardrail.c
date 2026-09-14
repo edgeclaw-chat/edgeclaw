@@ -112,7 +112,6 @@ int main(void)
 
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew(ws);
-    cfg->channel.type = edc_channel_adapter;
 
     const char *sid = "s-guard";
     char dir[256];

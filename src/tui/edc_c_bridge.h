@@ -109,9 +109,16 @@ void edc_c_agent_free(struct edc_agent *agent);
 void edc_c_agent_set_command_handler(void);
 
 /* The agent's channel actor, so the TUI can register itself as an adapter
- * channel (see edc_channel_adapter_init). Opaque pointer -- the TUI only
- * passes it back into C functions that take struct edc_actor*. */
+ * channel. Opaque pointer -- the TUI only passes it back into C functions that
+ * take struct edc_actor*. */
 struct edc_actor *edc_c_agent_channel_actor(struct edc_agent *agent);
+
+/* Register the TUI as the one channel implementation (adapter): every
+ * BC_ACTOR_MSG_CHANNEL_SEND that needs to reach the screen arrives at
+ * |on_send|. C++ callers use this instead of edc_channel_actor.h, which pulls
+ * in sds.h. */
+void edc_c_agent_channel_adapter_init(struct edc_agent *agent, void *instance,
+                                      void (*on_send)(void *, struct edc_channel_message *));
 const char *edc_c_channel_message_content(struct edc_channel_message *);
 /* Optional short description carried by a message (e.g. the executed command
  * for tool messages). May return NULL when the sender provided no header. */

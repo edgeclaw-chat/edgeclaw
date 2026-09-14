@@ -244,39 +244,36 @@ struct edc_config *edc_config_load(const char *edc_home)
     if (device_transport && cJSON_IsString(device_transport) && strlen(device_transport->valuestring) > 0)
         config->device_transport = sdsnew(device_transport->valuestring);
 
+    /* channel: 唯一的通道实现是 adapter (TUI)。老配置里的 cli/telegram/... 一律
+     * 拒绝。配置里已经没有需要**存下来**的通道字段了 —— 这里只做校验
+     * (告警/报错文案与多通道时代一致, 那是既有行为)。 */
     cJSON *channel = cJSON_GetObjectItem(conf, "channel");
     if (!channel || !cJSON_IsObject(channel))
     {
         log_warn("channel config missing, defaulting to 'adapter'");
-        config->channel.type = edc_channel_adapter;
-        goto after_channel;
-    }
-
-    cJSON *channel_type = cJSON_GetObjectItem(channel, "type");
-    if (!channel_type || !cJSON_IsString(channel_type))
-    {
-        log_warn("channel.type missing, defaulting to 'adapter'");
-        config->channel.type = edc_channel_adapter;
-        goto after_channel;
-    }
-
-    const char *type = cJSON_GetStringValue(channel_type);
-    if (strcmp(type, "adapter") == 0)
-    {
-        config->channel.type = edc_channel_adapter;
-    }
-    else if (strcmp(type, "cli") == 0)
-    {
-        log_error("channel type 'cli' is no longer supported, set channel.type to \"adapter\"");
-        goto exit_free_config;
     }
     else
     {
-        log_error("unknown channel type: %s, only 'adapter' is supported", type);
-        goto exit_free_config;
+        cJSON *channel_type = cJSON_GetObjectItem(channel, "type");
+        if (!channel_type || !cJSON_IsString(channel_type))
+        {
+            log_warn("channel.type missing, defaulting to 'adapter'");
+        }
+        else
+        {
+            const char *type = cJSON_GetStringValue(channel_type);
+            if (strcmp(type, "cli") == 0)
+            {
+                log_error("channel type 'cli' is no longer supported, set channel.type to \"adapter\"");
+                goto exit_free_config;
+            }
+            else if (strcmp(type, "adapter") != 0)
+            {
+                log_error("unknown channel type: %s, only 'adapter' is supported", type);
+                goto exit_free_config;
+            }
+        }
     }
-
-after_channel:
 
     config->workspace = edc_path_join(edc_home, "workspace", NULL);
 
