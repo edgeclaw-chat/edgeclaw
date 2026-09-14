@@ -856,13 +856,10 @@ void TUIWindow::TickAnimations()
         CopySelectionToClipboard();
     }
 
-    // Periodic sidebar refresh: background tasks change state without any
-    // channel message (they are not the active task), so poll at a low rate.
-    {
-        const auto now = std::chrono::steady_clock::now();
-        if (now - last_snapshot_request_ > std::chrono::milliseconds(500))
-            RequestTaskSnapshot();
-    }
+    // 这里以前有个 500ms 的轮询: 后台任务不是 active task, 状态变化没有任何
+    // 消息, 只能靠它兜底。现在调度器对**任何** task 的状态变化都推 (合并到每条
+    // actor 消息一次), 所以删掉了 —— 而且它本来也不可靠: 它写在 Render() 里,
+    // ftxui 只在有帧请求时才调 Render, 空闲时没有帧就是没有轮询。
 
     auto base = split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
     if (!connect_open_)

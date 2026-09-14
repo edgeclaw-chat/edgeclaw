@@ -104,6 +104,9 @@ struct edc_scheduler
     edc_scheduler_memory_fn trigger_memory;
     edc_scheduler_save_fn save_session;
     edc_scheduler_snapshot_fn snapshot_ready;
+    /* 快照待下发 (C3 合并推送): 状态变化只置脏, 由 actor handler 在每条消息
+     * 处理完之后最多下发一次 —— 突发天然合并。 */
+    bool snapshot_pending;
 
     int64_t next_task_id;
 

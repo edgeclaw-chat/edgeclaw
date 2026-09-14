@@ -31,7 +31,6 @@ static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg
 /* 任务树快照: 只服务侧边栏 (任务树 + todo + 计数)。对话内容不再随快照下发
  * —— 聊天区由 TUI 自己持久化/回放显示流 (见 edc_tui_window.cpp)。 */
 static void sched_handle_task_snapshot(struct edc_scheduler *sched, const char *reason);
-static void sched_notify_foreground_state(struct edc_scheduler *sched, struct edc_task *task);
 static void sched_set_task_state(struct edc_scheduler *sched, struct edc_task *task, edc_task_state state);
 /* executor 的出站 ops 表（定义在文件后半；这里前向声明，供 new 里 init 用）。 */
 static const struct edc_executor_ops sched_executor_ops;
@@ -599,23 +598,18 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
  * 内部切换等), 而 TUI 的 "处理中" 动画与侧边栏完全由快照驱动; 若不主动
  * 推送, 空闲状态的 TUI 没有任何帧在跑轮询, 只能等下一条消息/按键才碰巧
  * 发现状态变了。快照在 scheduler 线程同步生成, 与 TUI 拉取共用同一路径。 */
-static void sched_notify_foreground_state(struct edc_scheduler *sched, struct edc_task *task)
-{
-    if (!sched || !task || !sched->session)
-        return;
-    if (edc_session_get_active_task(sched->session) != task)
-        return;
-    if (task->group != sched->session->foreground_group)
-        return;
-    sched_handle_task_snapshot(sched, "state");
-}
-
-/* 统一的状态迁移入口: 设置状态后, 若被改变的是前台 active task, 主动推送
- * 快照, 使 TUI 的底部动画跟上真实进程状态, 而不是等轮询或消息到达。 */
+/* 统一的状态迁移入口。设置状态后**只置脏** —— 真正下发由 actor handler 在
+ * 处理完本条消息之后合并做一次 (见 edc_scheduler_actor_handler)。
+ *
+ * 以前这里直接推, 但闸门只放行**前台 active task**: 后台任务的状态变化没有任何
+ * 推送, 侧栏只能靠 TUI 那个 500ms 轮询兜底 —— 而那个轮询写在 Render() 里, ftxui
+ * 只在有帧请求时才调 Render, 于是它靠工作条动画续命, 全部空闲时根本不跑。
+ * 现在任何 task 的变化都置脏: 后台行的更新不再依赖屏幕上有没有动画。 */
 static void sched_set_task_state(struct edc_scheduler *sched, struct edc_task *task, edc_task_state state)
 {
     edc_task_set_state(task, state);
-    sched_notify_foreground_state(sched, task);
+    if (sched)
+        sched->snapshot_pending = true;
 }
 
 /* ── 内部：消息路由 ────────────────────────────────────────── */
@@ -876,9 +870,15 @@ static void ex_save_session(void *ctx, struct edc_session *s)
         sched->save_session(sched, s);
 }
 
+/* executor 侧的接口名保留 (改它要动 ops 表), 但 C3 之后语义是"有状态变化, 该下发
+ * 了" —— 具体是哪个 task 不重要: **任何** task 的变化都要让侧栏知道, 这正是删掉
+ * 那个 500ms 轮询的前提。 */
 static void ex_notify_foreground_state(void *ctx, struct edc_task *task)
 {
-    sched_notify_foreground_state((struct edc_scheduler *)ctx, task);
+    (void)task;
+    struct edc_scheduler *sched = ctx;
+    if (sched)
+        sched->snapshot_pending = true;
 }
 
 static const struct edc_executor_ops sched_executor_ops = {
@@ -1132,6 +1132,14 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
         break;
     default:
         break;
+    }
+
+    /* 本消息引起的状态变化合并成**一次**下发 (最多一次/消息)。放在释放 msg 之前:
+     * 快照要读整棵 task 树, 而 handler 放掉 msg 后有些路径会连带释放负载。 */
+    if (sched->snapshot_pending)
+    {
+        sched->snapshot_pending = false;
+        sched_handle_task_snapshot(sched, "state");
     }
 
     edc_actor_msg_free(msg);
