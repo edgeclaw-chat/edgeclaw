@@ -372,7 +372,8 @@ void edc_scheduler_add_group(struct edc_scheduler *sched, struct edc_session *se
  * 老 `Group system` 是一个**空容器**: 没活干、会落盘、只能靠 `is_system` 特判
  * 隐藏 (5 处 skip, 漏一处就冒出来)。这里造出来的相反 —— 每个 system task 都带着
  * 真活干 (一次折叠 LLM 调用), 不落盘 (TRANSIENT), 且**不隐藏** (照常出现在快照与
- * `/task list` 里, 只是侧栏画在另一块)。三个属性各有唯一读者, 见 edc_task.h。
+ * `/task list` 里, 只是侧栏画在另一块)。三个属性各自"**一条规则 + 一个谓词**", 读者是必然的推论而非"唯一一处",
+ * 判据见 runtime-model.md §5 规则 7 与 edc_task.h。
  *
  * 组是复用还是新建: 有系统组就加进去, 没有就以它当 leader 建一个 (group_id 就是
  * 它的 task_id —— 与用户组同一套规则, 没有魔法 id)。 */
@@ -1355,7 +1356,7 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
     {
         cJSON *gj = cJSON_CreateObject();
         cJSON_AddStringToObject(gj, "id", g->group_id ? g->group_id : "");
-        /* group 的类别 —— **纯投影, 不做任何判断**。它是 `kind` 的唯一读者
+        /* group 的类别 —— **纯投影, 不做任何判断**。它是 `kind` 的读者之一
          * (展示层), 而这里只是把它写进给 TUI 的快照; scheduler 自己不看它,
          * 更不据它隐藏/过滤任何东西 (system task 与用户任务一样出现在这份
          * 快照里, 区别只在于 TUI 把它画到另一个块)。 */

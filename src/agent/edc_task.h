@@ -68,14 +68,20 @@ extern edc_task_life edc_task_classify_life(const char *name);
  * fold 是一个"把产出写进 group 记忆、活不过重启"的任务, 以前这个角色由一条
  * 专用协议 (`BC_ACTOR_MSG_GROUP_FOLD` / `_DONE`) 加一个专用 actor 扮演。 */
 
-/* 产出去向。**唯一读者: executor** (决定结果送到哪)。 */
+/* 产出去向。读者: executor (决定结果送到哪 / 占不占完成序号) 与**镜像装配**
+ * ("这次调用带不带工具定义" —— 那是镜像装配自己的问题, 也是规则 6 指定它唯一
+ * 能认识工具的地方)。**不是"唯一读者", 而是"同一条规则的必然推论"** ——
+ * 判据见 runtime-model.md §5 规则 7: 拥有权与依赖方向, 不是读者数。 */
 typedef enum
 {
     EDC_SINK_CHANNEL,      /* 产出回给用户 —— 用户任务的默认 */
     EDC_SINK_GROUP_MEMORY, /* 产出交给所属 group 的记忆 —— fold 用 */
 } edc_sink;
 
-/* 是否需要活过重启。**唯一读者: 持久化层** (edc_state_serializer.c)。 */
+/* 是否需要活过重启。当前 4 处读者都是同一条规则的推论 (见 runtime-model.md §5
+ * 规则 7): ①落盘 (edc_state_serializer.c) ②完成即回收 (scheduler 的回收队列 ——
+ * 生命周期策略的家就在这里) ③不进折叠账 (edc_task_is_foldable) ④不顶折叠阈值
+ * (edc_task_group.c)。**core 不得据此隐藏/跳过任何任务**。 */
 typedef enum
 {
     EDC_LIFETIME_PERSISTENT, /* 落盘, 重启后还在 —— 用户任务的默认 */

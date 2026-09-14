@@ -153,8 +153,9 @@ static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task
         if (ops->start_queued_dependents)
             ops->start_queued_dependents(ex->ctx, task);
 
-        /* 产出送到哪: 由 sink 决定 (runtime-model.md §1.4 —— sink 的唯一读者就是
-         * 这里)。CHANNEL = 回给用户 (send_reply 内部还会查 active_task 闸门);
+        /* 产出送到哪: 由 sink 决定 (runtime-model.md §1.4 / §5 规则 7 —— 分流这一处
+         * 在 executor, 但"镜像装配读 sink"另有一处且合法)。CHANNEL = 回给用户
+         * (send_reply 内部还会查 active_task 闸门);
          * GROUP_MEMORY = 交给上层写进目标组的记忆 (fold), 不产生任何回话。 */
         if (task->sink == EDC_SINK_GROUP_MEMORY)
         {

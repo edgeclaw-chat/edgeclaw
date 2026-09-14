@@ -25,7 +25,9 @@ typedef enum
 
 extern const char *edc_task_group_kind_name(edc_group_kind kind);
 extern edc_group_kind edc_task_group_classify_kind(const char *name);
-/** 是否是系统分组。展示层/测试用 —— core 不得据此隐藏任何东西。 */
+/** 是否是系统分组。读者: 展示层 (画在哪一块) + **容器自己** (session 用它回答
+ *  "我的孩子里哪个是系统组" —— 结构性问题, 属内聚不属耦合)。core 不得据此
+ * 隐藏/跳过任何东西 (真越界只有一种形态: 非容器模块拿它改行为)。 */
 extern bool edc_task_group_is_system(const struct edc_task_group *group);
 
 /* ── Task Group (Process Group, PGID) ──────────────────────────── */

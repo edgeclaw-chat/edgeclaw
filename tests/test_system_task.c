@@ -4,7 +4,7 @@
  *  runtime-model.md §4.6 的四条规则, 这里逐个钉住:
  *   ① 必须有活干 (不能是空容器)        → 这里不测行为, 测"它是个普通任务"
  *   ② TRANSIENT 不落盘、完成即回收      → test_transient_not_persisted / _reaped
- *   ③ 三个属性各有唯一读者             → 落盘 (lifetime) / 快照 kind (展示层)
+ *   ③ 一个属性 = 一条规则 + 一个谓词   → 落盘 (lifetime) / 快照 kind (展示层)
  *   ④ 不进入被折叠 group 的 completion_seq → P0b 的折叠测试
  *
  *  最要紧的是那两条**反面**断言 (老 `Group system` 的两种死法):
