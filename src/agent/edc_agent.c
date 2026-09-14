@@ -224,7 +224,8 @@ static sds edc_agent_var_resolver(const char *name, void *user_data)
         struct edc_task *last = NULL;
         uint32_t highest_seq = 0;
         struct edc_task_group *g;
-        DL_FOREACH(agent->scheduler->session->groups, g)
+        struct edc_session *active = edc_session_manager_get_active(agent->session_manager);
+        DL_FOREACH(active ? active->groups : NULL, g)
         {
             struct edc_task *t;
             LL_FOREACH2(g->members, t, group_next)
@@ -286,8 +287,8 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
 
     sds pristine = NULL;
     /* 属主 session 的 workdir: 后台 session 里的任务续跑时系统提示里的
-     * {{cwd}} 必须是它自己的目录, 不是当前显示 session 的。 */
-    struct edc_session *own = (task->group && task->group->session) ? task->group->session : sched->session;
+     * {{cwd}} 必须是它自己的目录 (P3 ③: 没有属主就没有目录, 不猜"当前的")。 */
+    struct edc_session *own = (task->group && task->group->session) ? task->group->session : NULL;
     const char *workdir = own ? edc_session_get_workdir(own) : NULL;
     edc_context_append_system_part(msgs, agent->config, task->group, workdir, &pristine);
 
@@ -445,14 +446,16 @@ static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task
     if (!agent || !task || !content)
         return;
 
-    /* 属主 session: 当前显示的 session 只放行 active task 的输出 (保持原样);
-     * 被切到后台的 session 照发, 由前端按 session_id 静默写进它自己的显示流
-     * (静默 = 不在当前 tab 冒泡)。 */
-    struct edc_session *own = (task->group && task->group->session) ? task->group->session : sched->session;
+    /* 属主 session: 被切到后台的 session 的产出照发, 由前端按 session_id 静默写进
+     * 它自己的显示流。P3 ③: **"显示中的 session 只显示 active task"这条展示规则
+     * 移到了前端** —— core 只把事实声明出去 (from_active_task), 不再问"谁在看"
+     * (它已经不知道了: 那份"当前 session"的副本已删)。 */
+    struct edc_session *own = (task->group && task->group->session) ? task->group->session : NULL;
     if (!own)
+    {
+        log_warn("dropping %s from task %s: no owning session", "reply", task->task_id ? task->task_id : "?");
         return;
-    if (own == sched->session && edc_session_get_active_task(own) != task)
-        return;
+    }
 
     struct edc_channel_message *reply = edc_channel_message_new(task->channel_type, message_type, sdsnew(content));
     /* Tag the message with its producing task so the frontend can show which
@@ -462,6 +465,8 @@ static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task
     /* And with its owning session, so a background session's output lands in
      * that session's transcript rather than the one on screen. */
     reply->session_id = sdsnew(own->session_id);
+    /* 事实声明: 这是它 session 的 active task 吗 (前端据此做展示闸门)。 */
+    reply->from_active_task = edc_session_get_active_task(own) == task;
     /* 发送方显式声明渲染偏好，渲染端(CLI/TUI)不再猜测：
      * 只有 LLM 回复 (RESP) 声明按 Markdown 渲染；思考/系统等内部文本保持
      * 默认 PLAIN（零值），原样显示。 */
@@ -474,8 +479,8 @@ static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task
 }
 
 /* ── 回调: 发送 Tool 消息 ───────────────────────────────────── */
-/* scheduler 已确认 task == session->active_task 后才走到这里，直接构造带
- * header 的 TOOL 消息发给 channel_actor。 */
+/* 构造带 header 的 TOOL 消息发给 channel_actor。展示闸门 (只显示显示中的 session
+ * 的 active task) 在前端 —— 这里只声明事实 (from_active_task)。 */
 
 static void edc_agent_cb_send_tool_message(struct edc_scheduler *sched, struct edc_task *task, const char *header,
                                            const char *content, edc_render_pref_t render_pref, void *request_id)
@@ -492,9 +497,10 @@ static void edc_agent_cb_send_tool_message(struct edc_scheduler *sched, struct e
     /* Owning session (see edc_agent_cb_send_reply): routes a background
      * session's tool output into its own transcript. */
     {
-        struct edc_session *own = (task->group && task->group->session) ? task->group->session : sched->session;
+        struct edc_session *own = (task->group && task->group->session) ? task->group->session : NULL;
         if (own && own->session_id)
             reply->session_id = sdsnew(own->session_id);
+        reply->from_active_task = own && edc_session_get_active_task(own) == task;
     }
     if (header && *header)
         reply->header = sdsnew(header);
@@ -612,6 +618,29 @@ static bool edc_agent_cb_handle_command(struct edc_scheduler *sched, struct edc_
     return g_command_handler ? g_command_handler(agent, actor, msg) : false;
 }
 
+/* ── session 标签 → session 对象 (store 读口, P3) ─────────────
+ *
+ * 规则 3: "哪个是当前的"只有一份权威 = session_manager.active_index; scheduler
+ * 不知道它。入站消息带的是一个 **session 标签** (不透明作用域), scheduler 需要
+ * 对象时经这个口解析 —— 于是 scheduler 不再持有那份副本。
+ *
+ * 标签为空 = "调用方没指定" (crontab 定时任务、老渠道) → 给活跃 session, 行为与
+ * 老实现一致; 标签给定但找不到 → NULL, 调用方拒绝这条输入 (不猜、不落到别的
+ * session: 老实现里"切错台"的家族事故就是这么来的)。 */
+struct edc_session *edc_agent_resolve_session(struct edc_agent *agent, const char *session_id)
+{
+    if (!agent || !agent->session_manager)
+        return NULL;
+    if (session_id && *session_id)
+        return edc_session_manager_find(agent->session_manager, session_id);
+    return edc_session_manager_get_active(agent->session_manager);
+}
+
+static struct edc_session *edc_agent_cb_resolve_session(void *ctx, const char *session_id)
+{
+    return edc_agent_resolve_session((struct edc_agent *)ctx, session_id);
+}
+
 /* ── 回调: Memory Compress ──────────────────────────────────── */
 
 static void edc_agent_cb_trigger_memory(struct edc_scheduler *sched)
@@ -683,47 +712,97 @@ static void edc_agent_cb_save_session(struct edc_scheduler *sched, struct edc_se
         edc_session_save_state(target, sched);
 }
 
-/* ── 回调: task 树快照回传 ─────────────────────────────────── */
+/* ── 回调: task 树快照 (①b: 事件 vs 应答) ─────────────────────
+ *
+ * 两条线分得很清:
+ *   - `snapshot_reply`   = 前端**点名要**的那棵树 (拉取的应答);
+ *   - `snapshot_changed` = "某个 session 的树变了" 的**事件** (很小, 不带树)。
+ * 走同一条通道 (channel adapter → TUI 回调), 靠 message_type 区分。 */
 
-static void edc_agent_cb_snapshot_ready(struct edc_scheduler *sched, sds serialized)
+/* 通过 channel adapter 发一条消息: 子类型 edc_channel_adapter 会让 channel
+ * actor 把它路由到 TUI 注册的 on_actor_message_send_fn。 */
+static void edc_agent_publish(struct edc_agent *agent, struct edc_actor *from, edc_channel_message_type type,
+                              const char *session_id, sds content)
 {
-    struct edc_agent *agent = edc_scheduler_agent(sched);
-    if (!agent || !serialized || !agent->channel_actor)
+    if (!agent || !agent->channel_actor)
     {
-        if (serialized)
-            sdsfree(serialized);
+        if (content)
+            sdsfree(content);
         return;
     }
-
-    /* 通过 channel adapter 回传: 子类型 edc_channel_adapter 会让 channel
-     * actor 把消息路由到 TUI 注册的 on_actor_message_send_fn。 */
-    struct edc_channel_message *msg =
-        edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE, serialized);
+    struct edc_channel_message *msg = edc_channel_message_new(edc_channel_adapter, type, content);
+    if (session_id && *session_id)
+        msg->session_id = sdsnew(session_id);
 
     edc_actor_send(agent->channel_actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, edc_channel_adapter,
-                                                                    edc_scheduler_get_actor(sched), NULL, msg,
+                                                                    from, NULL, msg,
                                                                     (edc_actor_data_free_fn)edc_channel_message_free));
+}
+
+static void edc_agent_cb_snapshot_reply(struct edc_scheduler *sched, sds serialized)
+{
+    struct edc_agent *agent = edc_scheduler_agent(sched);
+    if (!serialized)
+        return;
+    edc_agent_publish(agent, edc_scheduler_get_actor(sched), EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE, NULL, serialized);
+}
+
+/* "session X 的树变了" —— 事件, 不带树。前端收到后**只**在自己正显示 X 时去拉。 */
+static void edc_agent_cb_snapshot_changed(struct edc_scheduler *sched, const char *session_id, const char *reason)
+{
+    struct edc_agent *agent = edc_scheduler_agent(sched);
+    edc_agent_publish(agent, edc_scheduler_get_actor(sched), EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE, session_id,
+                      sdsnew(reason ? reason : ""));
+}
+
+/* 活跃 session 变了 (用户 `/session switch|new`): 告诉前端换显示那棵树。
+ *
+ * 这是**事实**的通报 —— "active_index 现在是 X" (规则 3 的唯一权威在 session_manager),
+ * 由 userland (命令层) 在切成功之后发出。不是"内核决定谁看什么": 前端仍然自己
+ * 决定要不要跟 (它只是被叫去显示用户刚点的那个 tab), 快照也仍然要它自己拉。 */
+/* 与 scheduler 的 EDGECLAW_SNAPSHOT_TRACE 同一份 trace (同一条通路的另一半: 切台
+ * 事件不走 scheduler 的脏表, 而是由这里直发) —— 证据工具要能看到它, 否则"前端怎么
+ * 知道换台了"在 trace 里是断的。 */
+static void edc_agent_trace_active_session(const char *session_id)
+{
+    const char *path = getenv("EDGECLAW_SNAPSHOT_TRACE");
+    if (!path || !*path)
+        return;
+    FILE *f = fopen(path, "a");
+    if (!f)
+        return;
+    fprintf(f, "notify reason=active session=%s\n", session_id ? session_id : "?");
+    fclose(f);
+}
+
+void edc_agent_notify_active_session(struct edc_agent *agent, const char *session_id)
+{
+    edc_agent_trace_active_session(session_id);
+    edc_agent_publish(agent, agent ? agent->channel_actor : NULL, EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE,
+                      session_id, sdsnew("active"));
 }
 
 void edc_agent_remove_all_turns(struct edc_agent *agent)
 {
     if (!agent || !agent->scheduler)
         return;
-    edc_scheduler_send_signal_to_all(agent->scheduler, TASK_SIGTERM);
+    edc_scheduler_send_signal_to_all(agent->scheduler, edc_session_manager_get_active(agent->session_manager),
+                                     TASK_SIGTERM);
 }
 
 /* 用户 /stop (/session stop): 取消当前 session 全部非终结 turns 后立即保存状态,
  * 使 CANCELLED 跨重启保留。
  * 注: 目标不是当前 active session 时 (如 /session stop <other>), 走
- * edc_scheduler_send_signal_to_session(sched, target, sig, true), 因为此时
- * sched->session 不是目标。 */
+ * edc_scheduler_send_signal_to_session(sched, target, sig, true) —— 目标由调用方
+ * 显式给 (P3 ③: scheduler 已经没有"当前 session"这个东西了)。 */
 void edc_agent_stop_all_turns(struct edc_agent *agent)
 {
     if (!agent || !agent->scheduler)
         return;
-    edc_scheduler_send_signal_to_all(agent->scheduler, TASK_SIGTERM);
+    struct edc_session *active = edc_session_manager_get_active(agent->session_manager);
+    edc_scheduler_send_signal_to_all(agent->scheduler, active, TASK_SIGTERM);
     if (agent->scheduler->save_session)
-        agent->scheduler->save_session(agent->scheduler, agent->scheduler->session);
+        agent->scheduler->save_session(agent->scheduler, active);
 }
 
 /* ── 生命周期 ──────────────────────────────────────────────── */
@@ -789,10 +868,9 @@ struct edc_agent *edc_agent_new(bool setup, int sandbox_override)
         return NULL;
     }
 
-    struct edc_session *session = edc_session_manager_get_active(agent->session_manager);
-
-    /* 创建 scheduler */
-    agent->scheduler = edc_scheduler_new(session, agent->config);
+    /* 创建 scheduler —— 不再把 active session 递给它 (P3 ③: scheduler 不持有
+     * "当前 session"; 每个入口显式带 session, 或经 resolve_session 读口解析)。 */
+    agent->scheduler = edc_scheduler_new(agent->config);
     agent->scheduler->ctx = agent;
 
     /* 注入回调 */
@@ -804,7 +882,9 @@ struct edc_agent *edc_agent_new(bool setup, int sandbox_override)
     agent->scheduler->handle_command = edc_agent_cb_handle_command;
     agent->scheduler->trigger_memory = edc_agent_cb_trigger_memory;
     agent->scheduler->save_session = edc_agent_cb_save_session;
-    agent->scheduler->snapshot_ready = edc_agent_cb_snapshot_ready;
+    agent->scheduler->snapshot_reply = edc_agent_cb_snapshot_reply;
+    agent->scheduler->snapshot_changed = edc_agent_cb_snapshot_changed;
+    agent->scheduler->resolve_session = edc_agent_cb_resolve_session;
 
     /* Phase 4: restore saved task/group state for active session */
     {

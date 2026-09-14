@@ -15,6 +15,25 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/stat.h>
+/* ── P3 ③ 测试读口 ──────────────────────────────────────────────
+ * scheduler 不再持有"当前 session", 所以单测要给它装一个 store 读口: 把请求里
+ * 的 session 标签解析成 session 对象 (入站路由 / 快照拉取都走它)。这一层测试
+ * 没有 agent, ctx 就留给它 (agent 那层用它自己的读口)。 */
+static struct edc_session *test_resolve_session(void *ctx, const char *session_id)
+{
+    struct edc_session *sess = ctx;
+    if (!sess)
+        return NULL;
+    if (!session_id || !*session_id)
+        return sess;
+    return (sess->session_id && strcmp(session_id, sess->session_id) == 0) ? sess : NULL;
+}
+
+static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
+{
+    sched->ctx = sess;
+    sched->resolve_session = test_resolve_session;
+}
 
 /* Stub */
 volatile sig_atomic_t _run_loop = 1;
@@ -134,7 +153,8 @@ static void test_single_mode_roundtrip(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-cpt2", "Compact2");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     struct edc_task *task = edc_task_new("task-1", "sess-cpt2", "task-1", "single", edc_channel_adapter);
     task->is_group_leader = 1;
@@ -165,7 +185,8 @@ static void test_single_mode_roundtrip(void)
     CHECK(cJSON_GetObjectItem(turn_j, "message_count") == NULL, "no message_count");
 
     struct edc_session *session2 = edc_session_new(cfg, "sess-cpt2", "Compact2");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
 
     bool ok = edc_state_deserialize(json, session2, sched2);
     CHECK(ok, "deserialize succeeds");
@@ -201,7 +222,8 @@ static void test_multi_turns(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-mt", "MultiTurn");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     struct edc_task *task = edc_task_new("task-mt", "sess-mt", "task-mt", "multi turn", edc_channel_adapter);
     task->is_group_leader = 1;
@@ -278,7 +300,8 @@ static void test_empty_turn(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-etf", "EmptyFlush");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     struct edc_task *task = edc_task_new("task-etf", "sess-etf", "task-etf", "e", edc_channel_adapter);
     task->is_group_leader = 1;
@@ -319,7 +342,8 @@ static void test_state_file_roundtrip(void)
     struct edc_config *cfg = make_config();
 
     struct edc_session *s1 = edc_session_new(cfg, "sess-full", "Full");
-    struct edc_scheduler *sc1 = edc_scheduler_new(s1, cfg);
+    struct edc_scheduler *sc1 = edc_scheduler_new(cfg);
+    install_resolver(sc1, s1);
 
     struct edc_task *task = edc_task_new("task-ft", "sess-full", "task-ft", "full test", edc_channel_adapter);
     task->is_group_leader = 1;
@@ -337,7 +361,7 @@ static void test_state_file_roundtrip(void)
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(s1, group);
     s1->active_task = task;
-    edc_scheduler_set_foreground(sc1, group);
+    edc_scheduler_set_foreground(s1, group);
 
     CHECK(edc_session_save_state(s1, sc1), "save_state succeeds");
 
@@ -349,7 +373,8 @@ static void test_state_file_roundtrip(void)
     edc_scheduler_free(sc1);
 
     struct edc_session *s2 = edc_session_new(cfg, "sess-full", "Full");
-    struct edc_scheduler *sc2 = edc_scheduler_new(s2, cfg);
+    struct edc_scheduler *sc2 = edc_scheduler_new(cfg);
+    install_resolver(sc2, s2);
 
     CHECK(edc_session_load_state(s2, sc2), "load_state succeeds");
 

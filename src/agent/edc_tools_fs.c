@@ -114,7 +114,7 @@ static void edc_fs_kick_path_tool(struct edc_toolbox_call_ctx *ctx, cJSON *args,
 {
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
     EdcError *error = NULL;
-    sds safe = edc_sandbox_verify_path_at(ctx->tb->conf, edc_scheduler_task_workdir(ctx->tb->scheduler, ctx->task),
+    sds safe = edc_sandbox_verify_path_at(ctx->tb->conf, edc_scheduler_task_workdir(ctx->task),
                                           path, write, &error);
     if (!safe)
     {
@@ -212,7 +212,7 @@ static void edc_tool_exec_write_file_async(struct edc_toolbox_call_ctx *ctx, str
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
     const char *content = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "content"));
     EdcError *error = NULL;
-    sds safe = edc_sandbox_verify_path_at(ctx->tb->conf, edc_scheduler_task_workdir(ctx->tb->scheduler, ctx->task),
+    sds safe = edc_sandbox_verify_path_at(ctx->tb->conf, edc_scheduler_task_workdir(ctx->task),
                                           path, true, &error);
     if (!safe)
     {
@@ -628,7 +628,7 @@ static void edc_tool_exec_edit_file_async(struct edc_toolbox_call_ctx *ctx, stru
         return;
     }
 
-    sds safe = edc_sandbox_verify_path_at(ctx->tb->conf, edc_scheduler_task_workdir(ctx->tb->scheduler, ctx->task),
+    sds safe = edc_sandbox_verify_path_at(ctx->tb->conf, edc_scheduler_task_workdir(ctx->task),
                                           path, true, &error);
     if (!safe)
     {

@@ -38,6 +38,25 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+/* ── P3 ③ 测试读口 ──────────────────────────────────────────────
+ * scheduler 不再持有"当前 session", 所以单测要给它装一个 store 读口: 把请求里
+ * 的 session 标签解析成 session 对象 (入站路由 / 快照拉取都走它)。这一层测试
+ * 没有 agent, ctx 就留给它 (agent 那层用它自己的读口)。 */
+static struct edc_session *test_resolve_session(void *ctx, const char *session_id)
+{
+    struct edc_session *sess = ctx;
+    if (!sess)
+        return NULL;
+    if (!session_id || !*session_id)
+        return sess;
+    return (sess->session_id && strcmp(session_id, sess->session_id) == 0) ? sess : NULL;
+}
+
+static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
+{
+    sched->ctx = sess;
+    sched->resolve_session = test_resolve_session;
+}
 
 volatile sig_atomic_t _run_loop = 1;
 
@@ -109,7 +128,8 @@ int main(void)
     TEST("v4 state round-trips and produces no legacy backup");
     {
         struct edc_session *s = edc_session_new(cfg, sid, "Guard");
-        struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+        struct edc_scheduler *sched = edc_scheduler_new(cfg);
+        install_resolver(sched, s);
 
         struct edc_task *t = edc_task_new("g-task", sid, "g-task", "guard me", edc_channel_adapter);
         t->is_group_leader = 1;
@@ -144,7 +164,8 @@ int main(void)
     }
     {
         struct edc_session *s = edc_session_new(cfg, sid, "Guard");
-        struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+        struct edc_scheduler *sched = edc_scheduler_new(cfg);
+        install_resolver(sched, s);
         CHECK(edc_session_load_state(s, sched), "v3 file loads");
         struct edc_task *t = edc_session_find_task(s, "g-task");
         CHECK(t != NULL, "task restored");
@@ -174,7 +195,8 @@ int main(void)
         }
 
         struct edc_session *s = edc_session_new(cfg, sid, "Guard");
-        struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+        struct edc_scheduler *sched = edc_scheduler_new(cfg);
+        install_resolver(sched, s);
         CHECK(!edc_session_load_state(s, sched), "load_state fails for version 3");
         CHECK(file_exists(broken_path), "v3 file renamed to .broken");
         CHECK(!file_exists(json_path), "no session.json left behind");
@@ -187,7 +209,8 @@ int main(void)
     write_str(json_path, "{ this is not valid json");
     {
         struct edc_session *s = edc_session_new(cfg, sid, "Guard");
-        struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+        struct edc_scheduler *sched = edc_scheduler_new(cfg);
+        install_resolver(sched, s);
         CHECK(!edc_session_load_state(s, sched), "load_state fails on corrupt JSON");
         CHECK(file_exists(broken_path), "corrupt file renamed to .broken");
         CHECK(!file_exists(json_path), "no session.json left behind");
@@ -241,7 +264,8 @@ int main(void)
 
         /* B's file must still describe the real session. */
         struct edc_session *b2 = edc_session_new(cfg, b->session_id, "B");
-        struct edc_scheduler *sc = edc_scheduler_new(b2, cfg);
+        struct edc_scheduler *sc = edc_scheduler_new(cfg);
+        install_resolver(sc, b2);
         CHECK(edc_session_load_state(b2, sc), "B's file still loads");
         const char *wd = edc_session_get_workdir(b2);
         CHECK(wd != NULL && strcmp(wd, breal) == 0, "B's bound workdir survived the exit save");

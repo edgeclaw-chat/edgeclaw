@@ -141,13 +141,10 @@ static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task
             ops->set_task_state(ex->ctx, task, EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED);
 
         /* session 消息数刚因 turn 提交而增长。被更新输入顶替、或在后台/
-         * 依赖链中完成的任务其 turn 是"静默"的, 需要主动补推一次快照,
+         * 依赖链中完成的任务其 turn 是"静默"的, 需要主动通知一次,
          * 否则侧边栏的 session 统计会停在旧值。 */
-        if (ops->should_snapshot_on_complete && ops->should_snapshot_on_complete(ex->ctx, task))
-        {
-            if (ops->task_snapshot)
-                ops->task_snapshot(ex->ctx);
-        }
+        if (ops->task_snapshot)
+            ops->task_snapshot(ex->ctx, task);
 
         if (ops->notify_dependents)
             ops->notify_dependents(ex->ctx, task);

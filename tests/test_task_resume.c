@@ -31,6 +31,25 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+/* ── P3 ③ 测试读口 ──────────────────────────────────────────────
+ * scheduler 不再持有"当前 session", 所以单测要给它装一个 store 读口: 把请求里
+ * 的 session 标签解析成 session 对象 (入站路由 / 快照拉取都走它)。这一层测试
+ * 没有 agent, ctx 就留给它 (agent 那层用它自己的读口)。 */
+static struct edc_session *test_resolve_session(void *ctx, const char *session_id)
+{
+    struct edc_session *sess = ctx;
+    if (!sess)
+        return NULL;
+    if (!session_id || !*session_id)
+        return sess;
+    return (sess->session_id && strcmp(session_id, sess->session_id) == 0) ? sess : NULL;
+}
+
+static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
+{
+    sched->ctx = sess;
+    sched->resolve_session = test_resolve_session;
+}
 
 /* Stub for _run_loop pulled in by edc_commands (transitively linked). */
 volatile sig_atomic_t _run_loop = 1;
@@ -201,7 +220,8 @@ static void test_ledger_serialize(void)
     TEST("ledger persists (status+args); TOOL_CALLING -> SUSPENDED on load");
     struct edc_config *cfg = make_config();
     struct edc_session *s = edc_session_new(cfg, "sess-l", "L");
-    struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, s);
 
     struct edc_task *t = edc_task_new("lt", "sess-l", "lt", "task", edc_channel_adapter);
     edc_task_await_exec(t);
@@ -221,7 +241,8 @@ static void test_ledger_serialize(void)
     CHECK(json != NULL, "serialize ok");
 
     struct edc_session *s2 = edc_session_new(cfg, "sess-l", "L");
-    struct edc_scheduler *sched2 = edc_scheduler_new(s2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, s2);
     CHECK(edc_state_deserialize(json, s2, sched2), "deserialize ok");
 
     struct edc_task *rt = find_task(s2, "lt");
@@ -260,7 +281,8 @@ static void test_resume_waiting_input(void)
     TEST("resume: no deps/tools/turn -> WAITING_INPUT");
     struct edc_config *cfg = make_config();
     struct edc_session *s = edc_session_new(cfg, "sess-r1", "R1");
-    struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, s);
 
     struct edc_task *t = edc_task_new("r1", "sess-r1", "r1", "task", edc_channel_adapter);
     force_suspended(t);
@@ -288,7 +310,8 @@ static void test_resume_waiting_deps(void)
     TEST("resume: unsatisfied dep -> WAITING_DEPS");
     struct edc_config *cfg = make_config();
     struct edc_session *s = edc_session_new(cfg, "sess-r2", "R2");
-    struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, s);
 
     struct edc_task *t = edc_task_new("r2", "sess-r2", "r2", "dependent", edc_channel_adapter);
     struct edc_task *src = edc_task_new("r2src", "sess-r2", "r2", "source", edc_channel_adapter);
@@ -318,7 +341,8 @@ static void test_resume_executing_synthesizes(void)
     TEST("resume: EXECUTING tool -> synthesized interrupted response + resume LLM");
     struct edc_config *cfg = make_config();
     struct edc_session *s = edc_session_new(cfg, "sess-r3", "R3");
-    struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, s);
     sched->send_llm = stub_send_llm;
 
     struct edc_task *t = edc_task_new("r3", "sess-r3", "r3", "task", edc_channel_adapter);
@@ -357,7 +381,8 @@ static void test_resume_pending_redispatches(void)
     TEST("resume: PENDING tool -> TOOL_CALLING + redispatch");
     struct edc_config *cfg = make_config();
     struct edc_session *s = edc_session_new(cfg, "sess-r4", "R4");
-    struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, s);
     sched->redispatch_tools = stub_redispatch;
 
     struct edc_task *t = edc_task_new("r4", "sess-r4", "r4", "task", edc_channel_adapter);
@@ -403,7 +428,8 @@ static void test_resume_migrated_task_with_pending_tool(void)
     TEST("resume: migrated task (step=READY) with a PENDING tool still redispatches");
     struct edc_config *cfg = make_config();
     struct edc_session *s = edc_session_new(cfg, "sess-m1", "M1");
-    struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, s);
     sched->redispatch_tools = stub_redispatch;
 
     struct edc_task *t = edc_task_new("m1", "sess-m1", "m1", "task", edc_channel_adapter);
@@ -437,7 +463,8 @@ static void test_resume_migrated_task_with_turn(void)
     TEST("resume: migrated task (step=READY) with an open turn still resumes the LLM");
     struct edc_config *cfg = make_config();
     struct edc_session *s = edc_session_new(cfg, "sess-m2", "M2");
-    struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, s);
     sched->send_llm = stub_send_llm;
 
     struct edc_task *t = edc_task_new("m2", "sess-m2", "m2", "task", edc_channel_adapter);
@@ -475,7 +502,8 @@ static void test_resume_nothing_left_is_ready(void)
     TEST("resume: nothing to continue -> READY (there is no 'waiting for input' phase)");
     struct edc_config *cfg = make_config();
     struct edc_session *s = edc_session_new(cfg, "sess-n1", "N1");
-    struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, s);
 
     struct edc_task *t = edc_task_new("n1", "sess-n1", "n1", "task", edc_channel_adapter);
     edc_task_await_exec(t);
@@ -505,7 +533,8 @@ static void test_resume_error_continues_turn(void)
     TEST("resume ERROR: continues the failed turn (reuses active_turn)");
     struct edc_config *cfg = make_config();
     struct edc_session *s = edc_session_new(cfg, "sess-r5", "R5");
-    struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, s);
     sched->send_llm = stub_send_llm;
 
     struct edc_task *t = edc_task_new("r5", "sess-r5", "r5", "task", edc_channel_adapter);
@@ -545,7 +574,8 @@ static void test_resume_error_pending_tool_redispatches(void)
     TEST("resume ERROR: pending tool -> TOOL_CALLING + redispatch");
     struct edc_config *cfg = make_config();
     struct edc_session *s = edc_session_new(cfg, "sess-r6", "R6");
-    struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, s);
     sched->redispatch_tools = stub_redispatch;
 
     struct edc_task *t = edc_task_new("r6", "sess-r6", "r6", "task", edc_channel_adapter);

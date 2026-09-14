@@ -24,6 +24,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* ── P3 ③ 测试读口 ──────────────────────────────────────────────
+ * scheduler 不再持有"当前 session", 所以单测要给它装一个 store 读口: 把请求里
+ * 的 session 标签解析成 session 对象 (入站路由 / 快照拉取都走它)。这一层测试
+ * 没有 agent, ctx 就留给它 (agent 那层用它自己的读口)。 */
+static struct edc_session *test_resolve_session(void *ctx, const char *session_id)
+{
+    struct edc_session *sess = ctx;
+    if (!sess)
+        return NULL;
+    if (!session_id || !*session_id)
+        return sess;
+    return (sess->session_id && strcmp(session_id, sess->session_id) == 0) ? sess : NULL;
+}
+
+static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
+{
+    sched->ctx = sess;
+    sched->resolve_session = test_resolve_session;
+}
 
 static int passed = 0, failed = 0;
 #define TEST(n)                                                                                                        \
@@ -98,7 +117,8 @@ int main(void)
     if (!sess)
         return 1;
 
-    struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
     sched->send_llm = mock_send_llm;
 
     struct edc_agent *agent = calloc(1, sizeof(*agent));

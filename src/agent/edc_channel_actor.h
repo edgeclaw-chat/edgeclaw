@@ -28,6 +28,11 @@ struct edc_channel_message
     edc_channel_type type;
     edc_channel_message_type message_type;
     edc_render_pref_t render_pref; /* 发送方声明的渲染偏好；零值 PLAIN，未声明即纯文本 */
+    bool from_active_task;         /* 发送方声明的事实: 这条产出**是不是它自己 session 的
+                                    * active task 产生的**。纯声明 —— 内核不据此丢弃任何
+                                    * 东西 (它不知道谁在看); 前端用它做展示闸门: 显示中的
+                                    * session 只显示 active task 的产出, 其余静默
+                                    * (P3 ③ 把这条规则从 core 移到了前端)。 */
 };
 
 struct edc_handler_entry

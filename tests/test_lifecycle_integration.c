@@ -15,6 +15,25 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+/* ── P3 ③ 测试读口 ──────────────────────────────────────────────
+ * scheduler 不再持有"当前 session", 所以单测要给它装一个 store 读口: 把请求里
+ * 的 session 标签解析成 session 对象 (入站路由 / 快照拉取都走它)。这一层测试
+ * 没有 agent, ctx 就留给它 (agent 那层用它自己的读口)。 */
+static struct edc_session *test_resolve_session(void *ctx, const char *session_id)
+{
+    struct edc_session *sess = ctx;
+    if (!sess)
+        return NULL;
+    if (!session_id || !*session_id)
+        return sess;
+    return (sess->session_id && strcmp(session_id, sess->session_id) == 0) ? sess : NULL;
+}
+
+static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
+{
+    sched->ctx = sess;
+    sched->resolve_session = test_resolve_session;
+}
 
 volatile sig_atomic_t _run_loop = 1;
 
@@ -80,7 +99,8 @@ static void test_exit_save(void)
 
     /* Simulate a session with tasks and turns */
     struct edc_session *session = edc_session_new(cfg, "sess-exit", "ExitTest");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     struct edc_task *t1 = edc_task_new("task-exit1", "sess-exit", "task-exit1",
                                         "exit task 1", edc_channel_adapter);
@@ -109,7 +129,7 @@ static void test_exit_save(void)
     struct edc_task_group *g1 = edc_task_group_new(t1);
     edc_session_add_group(session, g1);
     session->active_task = t1;
-    edc_scheduler_set_foreground(sched, g1);
+    edc_scheduler_set_foreground(session, g1);
 
     /* Simulate exit: save_state */
 
@@ -140,7 +160,8 @@ static void test_startup_load(void)
     /* Step 1: Create and save state */
     {
         struct edc_session *s1 = edc_session_new(cfg, "sess-start", "StartTest");
-        struct edc_scheduler *sc1 = edc_scheduler_new(s1, cfg);
+        struct edc_scheduler *sc1 = edc_scheduler_new(cfg);
+        install_resolver(sc1, s1);
 
         struct edc_task *t1 = edc_task_new("task-start1", "sess-start", "task-start1",
                                             "startup task", edc_channel_adapter);
@@ -163,7 +184,7 @@ static void test_startup_load(void)
         edc_session_add_group(s1, g1);
         s1->active_task = t1;
         s1->next_completion_seq = 100;
-        edc_scheduler_set_foreground(sc1, g1);
+        edc_scheduler_set_foreground(s1, g1);
 
         edc_session_save_state(s1, sc1);
 
@@ -174,7 +195,8 @@ static void test_startup_load(void)
     /* Step 2: Simulate restart — create new session and load */
     {
         struct edc_session *s2 = edc_session_new(cfg, "sess-start", "StartTest");
-        struct edc_scheduler *sc2 = edc_scheduler_new(s2, cfg);
+        struct edc_scheduler *sc2 = edc_scheduler_new(cfg);
+        install_resolver(sc2, s2);
 
         /* Load state (simulating what edc_agent_new does) */
         bool loaded = edc_session_load_state(s2, sc2);
@@ -189,7 +211,7 @@ static void test_startup_load(void)
         CHECK(rt->completion_seq == 99, "completion_seq restored");
         CHECK(s2->next_completion_seq == 100, "next_completion_seq restored");
         CHECK(s2->active_task == rt, "active_task restored");
-        CHECK(edc_scheduler_get_foreground(sc2) != NULL, "foreground_group restored");
+        CHECK(edc_scheduler_get_foreground(s2) != NULL, "foreground_group restored");
 
         /* Verify turn messages restored from session.json */
         CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
@@ -220,7 +242,8 @@ static void test_switch_save(void)
 
     /* Create session A with state */
     struct edc_session *sA = edc_session_new(cfg, "sess-A", "SessionA");
-    struct edc_scheduler *scA = edc_scheduler_new(sA, cfg);
+    struct edc_scheduler *scA = edc_scheduler_new(cfg);
+    install_resolver(scA, sA);
 
     struct edc_task *tA = edc_task_new("task-A", "sess-A", "task-A",
                                         "task in A", edc_channel_adapter);
@@ -233,14 +256,15 @@ static void test_switch_save(void)
     struct edc_task_group *gA = edc_task_group_new(tA);
     edc_session_add_group(sA, gA);
     sA->active_task = tA;
-    edc_scheduler_set_foreground(scA, gA);
+    edc_scheduler_set_foreground(sA, gA);
 
     /* Save session A's state */
     edc_session_save_state(sA, scA);
 
     /* Create session B (simulating switch) */
     struct edc_session *sB = edc_session_new(cfg, "sess-B", "SessionB");
-    struct edc_scheduler *scB = edc_scheduler_new(sB, cfg);
+    struct edc_scheduler *scB = edc_scheduler_new(cfg);
+    install_resolver(scB, sB);
 
     struct edc_task *tB = edc_task_new("task-B", "sess-B", "task-B",
                                         "task in B", edc_channel_adapter);
@@ -257,7 +281,8 @@ static void test_switch_save(void)
 
     /* Verify session A's file still has correct data */
     struct edc_session *sA2 = edc_session_new(cfg, "sess-A", "SessionA");
-    struct edc_scheduler *scA2 = edc_scheduler_new(sA2, cfg);
+    struct edc_scheduler *scA2 = edc_scheduler_new(cfg);
+    install_resolver(scA2, sA2);
     CHECK(edc_session_load_state(sA2, scA2), "session A state loads correctly");
     struct edc_task *rtA = find_task(sA2, "task-A");
     CHECK(rtA != NULL, "task-A still in session A");
@@ -268,11 +293,11 @@ static void test_switch_save(void)
      * of spawning its own group (the old bug dropped foreground_group_id when
      * the outgoing session was saved without a scheduler, so create_task fell
      * back to gid == tid, i.e. a brand-new group). */
-    CHECK(edc_scheduler_get_foreground(scA2) != NULL, "foreground group restored after switch-back");
-    CHECK(edc_scheduler_get_foreground(scA2) != NULL &&
-              strcmp(edc_scheduler_get_foreground(scA2)->group_id, "task-A") == 0,
+    CHECK(edc_scheduler_get_foreground(sA2) != NULL, "foreground group restored after switch-back");
+    CHECK(edc_scheduler_get_foreground(sA2) != NULL &&
+              strcmp(edc_scheduler_get_foreground(sA2)->group_id, "task-A") == 0,
           "restored foreground group has the original group id");
-    struct edc_task *fresh = edc_scheduler_create_task(scA2, "next task", edc_channel_adapter);
+    struct edc_task *fresh = edc_scheduler_create_task(scA2, sA2, "next task", edc_channel_adapter);
     CHECK(fresh != NULL, "new task created after switch-back");
     CHECK(fresh != NULL && strcmp(fresh->group_id, "task-A") == 0, "new task joins the restored foreground group");
     CHECK(fresh != NULL && strcmp(fresh->group_id, fresh->task_id) != 0, "new task does not spawn its own group");
@@ -281,7 +306,8 @@ static void test_switch_save(void)
 
     /* Verify session B's file has correct data */
     struct edc_session *sB2 = edc_session_new(cfg, "sess-B", "SessionB");
-    struct edc_scheduler *scB2 = edc_scheduler_new(sB2, cfg);
+    struct edc_scheduler *scB2 = edc_scheduler_new(cfg);
+    install_resolver(scB2, sB2);
     CHECK(edc_session_load_state(sB2, scB2), "session B state loads correctly");
     struct edc_task *rtB = find_task(sB2, "task-B");
     CHECK(rtB != NULL, "task-B in session B");
@@ -312,27 +338,25 @@ static void test_switch_keeps_background_running(void)
 
     /* Session A with a running task + a foreground group. */
     struct edc_session *sA = edc_session_new(cfg, "sess-A", "SessionA");
-    struct edc_scheduler *sc = edc_scheduler_new(sA, cfg);
+    struct edc_scheduler *sc = edc_scheduler_new(cfg);
+    install_resolver(sc, sA);
     struct edc_task *tA = edc_task_new("task-A", "sess-A", "task-A", "task in A", edc_channel_adapter);
     edc_task_await_exec(tA);
-    struct edc_task_group *gA = edc_scheduler_create_group(sc, tA);
-    edc_scheduler_set_foreground(sc, gA);
+    struct edc_task_group *gA = edc_scheduler_create_group(sc, sA, tA);
+    edc_scheduler_set_foreground(sA, gA);
     edc_session_set_active_task(sA, tA);
 
     CHECK(gA->session == sA, "group records its owning session");
     CHECK(sA->foreground_group == gA, "set_foreground stores on the owning session");
 
-    /* "Switch" to an empty session B (what /session switch does with the
-     * scheduler), then switch back. */
     struct edc_session *sB = edc_session_new(cfg, "sess-B", "SessionB");
-    edc_scheduler_set_session(sc, sB);
+    /* P3 ③: 前台组是 **session 的属性** —— 这里直接问各自的 session, 不再经过
+     * "scheduler 当前绑定谁" (那份副本已经不存在了)。 */
     CHECK(edc_task_awaits_exec(tA), "outgoing session's running task is NOT cancelled");
-    CHECK(edc_scheduler_get_foreground(sc) == NULL, "a fresh session starts with no foreground group");
+    CHECK(edc_scheduler_get_foreground(sB) == NULL, "a fresh session starts with no foreground group");
+    CHECK(edc_scheduler_get_foreground(sA) == gA, "A keeps its own foreground group (nothing was reset)");
 
-    edc_scheduler_set_session(sc, sA);
-    CHECK(edc_scheduler_get_foreground(sc) == gA, "foreground group restored on switch-back");
-
-    struct edc_task *fresh = edc_scheduler_create_task(sc, "next task", edc_channel_adapter);
+    struct edc_task *fresh = edc_scheduler_create_task(sc, sA, "next task", edc_channel_adapter);
     CHECK(fresh != NULL && strcmp(fresh->group_id, "task-A") == 0,
           "new task joins the restored foreground group, not its own");
     if (fresh)
@@ -359,7 +383,8 @@ static void test_repeated_cycle(void)
     for (int cycle = 0; cycle < 3; cycle++) {
         /* Create session, add state, save, free */
         struct edc_session *s = edc_session_new(cfg, "sess-cycle", "Cycle");
-        struct edc_scheduler *sc = edc_scheduler_new(s, cfg);
+        struct edc_scheduler *sc = edc_scheduler_new(cfg);
+        install_resolver(sc, s);
 
         /* Load previous state if exists */
         edc_session_load_state(s, sc);
@@ -403,7 +428,8 @@ static void test_repeated_cycle(void)
 
     /* Final load: should have 3 tasks */
     struct edc_session *sf = edc_session_new(cfg, "sess-cycle", "Cycle");
-    struct edc_scheduler *scf = edc_scheduler_new(sf, cfg);
+    struct edc_scheduler *scf = edc_scheduler_new(cfg);
+    install_resolver(scf, sf);
     CHECK(edc_session_load_state(sf, scf), "final load succeeds");
     CHECK(count_tasks(sf) == 3, "3 tasks after 3 cycles");
 
@@ -429,14 +455,16 @@ static void test_save_empty(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-empty2", "Empty2");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* Save with no tasks/groups */
     CHECK(edc_session_save_state(session, sched), "save_state on empty session succeeds");
 
     /* Load back */
     struct edc_session *s2 = edc_session_new(cfg, "sess-empty2", "Empty2");
-    struct edc_scheduler *sc2 = edc_scheduler_new(s2, cfg);
+    struct edc_scheduler *sc2 = edc_scheduler_new(cfg);
+    install_resolver(sc2, s2);
     CHECK(edc_session_load_state(s2, sc2), "load_state on empty session succeeds");
     CHECK(count_tasks(s2) == 0, "0 tasks");
 

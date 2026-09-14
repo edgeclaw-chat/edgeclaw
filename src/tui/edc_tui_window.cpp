@@ -502,7 +502,7 @@ void TUIWindow::Submit()
     input_->AddHistory(message);
     SaveInputHistory();
 
-    edc_c_agent_send_user_message(agent, message.c_str());
+    edc_c_agent_send_user_message(agent, current_session_id_.c_str(), message.c_str());
     chat_widget_->ScrollToBottom();
 
     // A new message may spawn/attach a task, so refresh the sidebar tree. The
@@ -581,7 +581,8 @@ void TUIWindow::SaveInputHistory()
 void TUIWindow::RequestTaskSnapshot()
 {
     last_snapshot_request_ = std::chrono::steady_clock::now();
-    edc_c_agent_request_task_snapshot(agent);
+    // 点名叫自己**正在显示**的那棵树 (P3 ①b) —— 别人的树不上路。
+    edc_c_agent_request_task_snapshot(agent, current_session_id_.c_str());
 }
 
 // Build one chat bubble. Shared by the live channel path and the restart replay
@@ -614,6 +615,33 @@ static std::shared_ptr<Message> MakeChatWidget(const std::string &kind, const st
 
     // "reply" | "sys"
     return std::make_shared<Message>(content, ts, task_id);
+}
+
+bool SnapshotIsForSession(const ::edc_c_task_snapshot *snap, const std::string &displayed_session)
+{
+    if (!snap || !snap->session_id || !*snap->session_id)
+        return false;
+    return displayed_session == snap->session_id;
+}
+
+bool TreeChangedEventWantsPull(const std::string &event_session, const std::string &reason,
+                               const std::string &displayed_session)
+{
+    if (event_session.empty())
+        return false;
+    if (reason == "active")
+        return true;
+    return event_session == displayed_session;
+}
+
+LiveOutputRoute RouteLiveOutput(const std::string &session_id, bool from_active_task,
+                                const std::string &displayed_session)
+{
+    if (session_id.empty())
+        return LiveOutputRoute::kShown; // 不是某个 task 的产出 (命令回复等)
+    if (session_id != displayed_session)
+        return LiveOutputRoute::kOtherSession;
+    return from_active_task ? LiveOutputRoute::kShown : LiveOutputRoute::kSilent;
 }
 
 void TUIWindow::LoadChatTranscript(const char *session_id)
@@ -679,14 +707,6 @@ void TUIWindow::AppendChatTranscriptTo(const std::string &path, const std::strin
     // workspace, so refuse to follow a planted symlink (see
     // edc_file_fopen_safe / edc_c_agent_write_file).
     edc_c_agent_write_file(agent, path.c_str(), line.data(), line.size(), /*append=*/true, /*under_workspace=*/true);
-}
-
-void TUIWindow::SyncChatSession(const char *session_id)
-{
-    const std::string sid = session_id ? session_id : "";
-    if (sid == current_session_id_)
-        return;
-    LoadChatTranscript(sid.c_str());
 }
 
 void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
@@ -1040,6 +1060,34 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     if (!content)
         return;
 
+    // A tree-changed event (P3 ①b) is a control message: "session X's tree
+    // changed", no tree attached. The frontend decides what to do:
+    //   - reason "active"  → the user switched tabs: adopt X as displayed (its
+    //     transcript), then pull X's tree;
+    //   - anything else    → pull **only** if X is the tree on screen. A
+    //     background session's churn is not our business: it never touches the
+    //     view here (that is the whole point of separating the event from the
+    //     payload — before, every change pushed the bound session's whole tree
+    //     and that push decided what the user was looking at).
+    if (edc_c_channel_message_is_task_tree_changed(message))
+    {
+        const char *sid_c = edc_c_channel_message_session_id(message);
+        const std::string sid = sid_c ? sid_c : "";
+        const std::string reason = content;
+        auto on_change = [tui, sid, reason]() {
+            if (!TreeChangedEventWantsPull(sid, reason, tui->current_session_id_))
+                return;
+            if (reason == "active" && sid != tui->current_session_id_)
+                tui->LoadChatTranscript(sid.c_str());
+            tui->RequestTaskSnapshot();
+        };
+        if (tui->screen_)
+            tui->screen_->Post(on_change);
+        else
+            on_change();
+        return;
+    }
+
     // A task-tree snapshot is a control message for the sidebar, not chat
     // text. Parse the JSON (via the bridge) and refresh the widget on the UI
     // thread, then stop.
@@ -1048,13 +1096,19 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
         const std::string snapshot = content;
         auto update = [tui, snapshot]() {
             ::edc_c_task_snapshot *snap = edc_c_task_snapshot_parse(snapshot.c_str());
+            // A late reply must claim its own request: if the session changed
+            // while it was in flight (the user switched tabs), this tree is
+            // yesterday's news — drop it. The displayed session is the TUI's
+            // own state (current_session_id_); the kernel never tells it what
+            // to display, and a snapshot certainly doesn't.
+            if (!SnapshotIsForSession(snap, tui->current_session_id_))
+            {
+                edc_c_task_snapshot_free(snap);
+                snap = nullptr;
+            }
             if (snap)
             {
                 tui->task_widget_->SetSnapshot(snap);
-                // The snapshot identifies the active session; when it changes
-                // (first snapshot, /session switch/new) swap the chat log over
-                // to that session's own persisted transcript.
-                tui->SyncChatSession(snap->session_id);
                 // The snapshot is the single source of truth for the status
                 // animation: re-derive it whenever the process tree refreshes.
                 tui->SyncWorkingFromSnapshot(snap);
@@ -1126,9 +1180,19 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     // Sender-declared render preference (PLAIN/MARKDOWN). Read here while
     // the message is still alive; the closure below only needs the int.
     const int render_pref = edc_c_channel_message_render_pref(message);
+    // 发送方声明的事实: 这条产出是不是它自己 session 的 active task 产生的。
+    const bool from_active_task = edc_c_channel_message_from_active_task(message) != 0;
     const time_t ts = ::time(nullptr);
 
-    auto add_message = [tui, kind, text, header, task_id, session_id, render_pref, ts]() {
+    auto add_message = [tui, kind, text, header, task_id, session_id, render_pref, ts, from_active_task]() {
+        // 展示闸门 (P3 ③: 从 core 移到前端): 显示中的 session 只显示它 **active
+        // task** 的产出 —— 同 session 里非 active task 的输出静默。以前这条判断在
+        // scheduler/agent 里做 (靠"当前绑定的 session"这份副本); 现在 core 不知道
+        // 谁在看, 只声明事实 (from_active_task), 由这里决定 (见 RouteLiveOutput)。
+        if (RouteLiveOutput(session_id, from_active_task, tui->current_session_id_) ==
+            LiveOutputRoute::kSilent)
+            return;
+
         // todowrite 的 TOOL 消息不进对话区：TODO 状态已由右侧 TodoWidget 展示，
         // 数据源是任务快照里 active task 的 todo（工具每次回显都会补推快照）。
         // 文本仍随消息传递，供无侧栏的渲染端（CLI）与 tool result（LLM）使用。

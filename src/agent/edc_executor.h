@@ -148,10 +148,13 @@ struct edc_executor_ops
     void (*unregister_task)(void *ctx, void *request_id);
     void (*notify_dependents)(void *ctx, struct edc_task *task);
     void (*flush_redirects)(void *ctx, struct edc_task *task);
-    void (*task_snapshot)(void *ctx);
+    /* 完成的任务其 session 的树可能变了 (turn 提交进 session, 侧栏计数变了)。
+     * ①b 起这里是**事件**: 只通知属主 session "变了", 树要等前端点名才序列化 ——
+     * 所以不再需要"是不是前台 active task"的闸门 (that gate compared against the
+     * *bound* session)。 */
+    void (*task_snapshot)(void *ctx, struct edc_task *task);
     /* 完成时补推快照的条件 —— "这个 task 此刻在被显示吗" = **展示逻辑**
      *（规则 8：active-task 闸门属于展示层，不属于 task 之内的推进）。 */
-    bool (*should_snapshot_on_complete)(void *ctx, struct edc_task *task);
     /* task 完成后的依赖链再启动（task 之间的事，归 scheduler）。 */
     void (*start_queued_dependents)(void *ctx, struct edc_task *task);
 

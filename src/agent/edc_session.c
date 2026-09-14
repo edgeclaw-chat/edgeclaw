@@ -220,8 +220,9 @@ void edc_session_add_group(struct edc_session *session, struct edc_task_group *g
 {
     if (!session || !group)
         return;
-    /* 属主反向指针: 任务在后台 session 里跑完时, 调度器靠它把 turn/快照/落盘
-     * 写回正确的 session, 而不是当前绑定的 sched->session。 */
+    /* 属主反向指针: 任务在后台 session 里跑完时, 调度器靠它把 turn/通知/落盘
+     * 写回**它自己**。P3 ③ 起 core 里没有"当前 session"这份副本可回退了 ——
+     * 这个指针是唯一的归属来源。 */
     group->session = session;
     DL_APPEND(session->groups, group);
 }

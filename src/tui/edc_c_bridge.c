@@ -92,13 +92,25 @@ int edc_c_channel_message_is_task_snapshot(struct edc_channel_message *channel_m
     return channel_message ? channel_message->message_type == EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE : 0;
 }
 
+int edc_c_channel_message_is_task_tree_changed(struct edc_channel_message *channel_message)
+{
+    return channel_message ? channel_message->message_type == EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE : 0;
+}
+
+int edc_c_channel_message_from_active_task(struct edc_channel_message *channel_message)
+{
+    /* 发送方声明的事实: 这条产出是不是它自己 session 的 active task 产生的。
+     * P3 ③ 起展示闸门在前端 —— 前端按"我正在显示哪个 session"决定显不显示。 */
+    return (channel_message && channel_message->from_active_task) ? 1 : 0;
+}
+
 int edc_c_channel_message_render_pref(struct edc_channel_message *channel_message)
 {
     /* 返回 EDC_C_RENDER_PLAIN/MARKDOWN；发送方未声明时为 PLAIN（零值默认） */
     return channel_message ? (int)channel_message->render_pref : EDC_C_RENDER_PLAIN;
 }
 
-void edc_c_agent_request_task_snapshot(struct edc_agent *agent)
+void edc_c_agent_request_task_snapshot(struct edc_agent *agent, const char *session_id)
 {
     if (!agent || !agent->channel_actor)
         return;
@@ -107,8 +119,12 @@ void edc_c_agent_request_task_snapshot(struct edc_agent *agent)
     if (!state || !state->observer)
         return;
 
-    /* observer = scheduler actor; the snapshot is built on its thread. */
-    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TASK_SNAPSHOT, agent->channel_actor, NULL, NULL, NULL);
+    /* observer = scheduler actor; the snapshot is built on its thread.
+     * 请求**点名**要哪棵树 (P3 ①b): data = session_id。没有"顺带把树推给你"
+     * 的路径了 —— 前端只拉自己正在显示的那一棵。 */
+    sds tag = sdsnew(session_id ? session_id : "");
+    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TASK_SNAPSHOT, agent->channel_actor, NULL, tag,
+                                             (edc_actor_data_free_fn)sdsfree);
     edc_actor_send(state->observer, msg);
 }
 
@@ -490,13 +506,17 @@ bool edc_c_agent_write_file(struct edc_agent *agent, const char *path, const cha
     return ok;
 }
 
-void edc_c_agent_send_user_message(struct edc_agent *agent, const char *content)
+void edc_c_agent_send_user_message(struct edc_agent *agent, const char *session_id, const char *content)
 {
     if (!agent)
         return;
 
     struct edc_channel_message *message =
         edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsnew(content));
+    /* 这条输入属于哪个 session —— 前端**显式**说 (P3 ①a)。scheduler 不再读自己
+     * 身上那份"当前绑定"的副本, 也不再猜。 */
+    if (session_id && *session_id)
+        message->session_id = sdsnew(session_id);
 
     edc_channel_actor_state_t *state = agent->channel_actor->state;
     edc_actor_msg_t *actor_msg = edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, agent->channel_actor, NULL, message,

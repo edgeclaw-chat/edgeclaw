@@ -54,7 +54,7 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
     if (strcmp(content, "/whoami") == 0)
     {
         struct edc_session *sess = edc_session_manager_get_active(agent->session_manager);
-        struct edc_task_group *fg = edc_scheduler_get_foreground(agent->scheduler);
+        struct edc_task_group *fg = edc_scheduler_get_foreground(sess);
         struct edc_task *active = sess ? sess->active_task : NULL;
         sds out = sdscatprintf(sdsempty(),
                                "## Whoami\n\n"
@@ -191,7 +191,8 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
 }
 
 struct edc_task *edc_shell_spawn_task(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type,
-                                      struct edc_cmd_task_opts *opts, struct edc_task *prev_task,
+                                      struct edc_session *session, struct edc_cmd_task_opts *opts,
+                                      struct edc_task *prev_task,
                                       struct edc_task_group *target_group, const char *reply_prefix,
                                       struct edc_task_group **out_group, sds redirect_stdout, bool redirect_append,
                                       sds redirect_stderr, edc_task_dep_type prev_dep_type)
@@ -234,7 +235,9 @@ struct edc_task *edc_shell_spawn_task(struct edc_agent *agent, struct edc_actor 
     }
 
     struct edc_task *task = edc_scheduler_create_task(
-        agent->scheduler, (opts->desc && sdslen(opts->desc) > 0) ? opts->desc : "New task", channel_type);
+        agent->scheduler, session, (opts->desc && sdslen(opts->desc) > 0) ? opts->desc : "New task", channel_type);
+    if (!task)
+        return NULL;
     if (opts->prompt_name)
         edc_task_set_prompt(task, opts->prompt_name, NULL);
 
@@ -254,12 +257,12 @@ struct edc_task *edc_shell_spawn_task(struct edc_agent *agent, struct edc_actor 
     }
     else
     {
-        group = edc_scheduler_create_group(agent->scheduler, task);
+        group = edc_scheduler_create_group(agent->scheduler, session, task);
     }
 
     if (!opts->bg)
     {
-        edc_scheduler_set_foreground(agent->scheduler, group);
+        edc_scheduler_set_foreground(session, group);
         edc_session_set_active_task(edc_session_manager_get_active(agent->session_manager), task);
     }
 
@@ -592,7 +595,7 @@ bool edc_shell_execute(struct edc_agent *agent, struct edc_actor *actor, struct 
     sdsfree(hist_expanded);
 
     ast_node_t *root = ast_parse(tokens, tok_count, is_at);
-    ast_execute(agent, actor, message->type, root);
+    ast_execute(agent, actor, message->type, root, edc_agent_resolve_session(agent, message->session_id));
     ast_free(root);
 
     for (int i = 0; i < tok_count; i++)

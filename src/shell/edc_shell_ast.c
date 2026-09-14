@@ -47,6 +47,7 @@ void ast_free(ast_node_t *node)
 typedef struct
 {
     struct edc_task_group *target_group;
+    struct edc_session *session; /* 这条输入所属的 session (命令建的任务/组落在它上面) */
     bool bg;
     edc_task_dep_type dep_type;
 } exec_ctx_t;
@@ -196,8 +197,8 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
 
         struct edc_task_group *out_group = NULL;
         struct edc_task *task =
-            edc_shell_spawn_task(agent, actor, channel_type, &opts, prev_task, group, node->at_group ? "@" : "task",
-                                 &out_group, NULL, false, NULL, ctx->dep_type);
+            edc_shell_spawn_task(agent, actor, channel_type, ctx->session, &opts, prev_task, group,
+                                 node->at_group ? "@" : "task", &out_group, NULL, false, NULL, ctx->dep_type);
 
         if (task && node->has_deferred_vars)
             task->has_deferred_vars = 1;
@@ -209,10 +210,13 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
 
         if (node->at_group && task && out_group)
         {
-            struct edc_task_group *fg = edc_scheduler_get_foreground(agent->scheduler);
+            /* 前台组是 session 的属性: 问/写都用这条输入归属的 session
+             * (P3 ③: scheduler 不再持有"当前 session")。 */
+            struct edc_session *sess = ctx->session;
+            struct edc_task_group *fg = edc_scheduler_get_foreground(sess);
             if (!fg)
             {
-                edc_scheduler_set_foreground(agent->scheduler, out_group);
+                edc_scheduler_set_foreground(sess, out_group);
                 edc_session_set_active_task(edc_session_manager_get_active(agent->session_manager), task);
             }
         }
@@ -336,13 +340,17 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
     return prev_task;
 }
 
-void ast_execute(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type, ast_node_t *root)
+void ast_execute(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type, ast_node_t *root,
+                 struct edc_session *session)
 {
     if (!root)
         return;
     exec_ctx_t ctx = {0};
     ctx.dep_type = TASK_DEP_SEQUENCE;
-    ctx.target_group = edc_scheduler_get_foreground(agent->scheduler);
+    ctx.session = session;
+    /* 前台组是 session 的属性 —— 直接读传进来的那个 session (不再问 scheduler
+     * "当前绑定的"那份副本)。 */
+    ctx.target_group = session ? session->foreground_group : NULL;
     if (!ctx.target_group || ctx.target_group->is_orphaned || ctx.target_group->member_count == 0)
         ctx.target_group = NULL;
     exec_node(agent, actor, channel_type, root, NULL, &ctx);

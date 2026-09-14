@@ -37,7 +37,9 @@ typedef enum
     EDC_CHANNEL_MESSAGE_THOUGHT_TYPE,
     EDC_CHANNEL_MESSAGE_RESP_TYPE,
     EDC_CHANNEL_MESSAGE_SYS_TYPE,
-    EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE, /* serialized task-tree snapshot for the TUI */
+    EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE,      /* 拉取的**应答**: TUI 点名要的那棵 task 树 */
+    EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE,  /* **事件**: "某个 session 的树变了" (只带 id + 原因,
+                                                  * 不带树) —— TUI 据此决定要不要去拉 (P3 ①b) */
 } edc_channel_message_type;
 
 /* 消息内容的渲染偏好：由发送方(tool/agent)显式声明，渲染端(CLI/TUI)

@@ -135,6 +135,19 @@ int edc_c_channel_message_is_sys(struct edc_channel_message *channel_message);
  * task sidebar. */
 int edc_c_channel_message_is_task_snapshot(struct edc_channel_message *channel_message);
 
+/* True when the sender declares this output comes from **its own session's active
+ * task**. The display gate lives in the frontend (P3 ③): the displayed session
+ * shows only its active task's output; a non-active task's output of that same
+ * session is silent (it is neither shown nor written to the transcript). Output
+ * of another session is unaffected (it goes into that session's transcript). */
+int edc_c_channel_message_from_active_task(struct edc_channel_message *channel_message);
+
+/* True when a message is a **tree-changed event** (P3 ①b): "session X's tree
+ * changed" — it carries the session id and a reason in the content, but NOT the
+ * tree. The frontend pulls the tree it is displaying when this arrives (see
+ * edc_c_agent_request_task_snapshot). Such messages must not be rendered. */
+int edc_c_channel_message_is_task_tree_changed(struct edc_channel_message *channel_message);
+
 /* Renderer preference declared by the sender (EDC_C_RENDER_PLAIN/MARKDOWN).
  * PLAIN is the default (zero value): an undeclared message renders as plain
  * text; only explicitly declared MARKDOWN content is run through markdown. */
@@ -145,10 +158,21 @@ int edc_c_channel_message_render_pref(struct edc_channel_message *channel_messag
  * EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE message. The snapshot carries only
  * sidebar data (task tree + todos + counts) — never chat text, which the TUI
  * records itself (see edc_chat_transcript.hpp). */
-void edc_c_agent_request_task_snapshot(struct edc_agent *agent);
+/* |session_id| names the tree to build. The reply (TASK_SNAPSHOT) carries the
+ * same session id inside its JSON, so a late reply can be claimed/dropped by
+ * comparing it with the session currently displayed.
+ * @param agent       the agent
+ * @param session_id  the session whose tree is wanted (NULL/"" = the store's
+ *                    default, i.e. the active session) */
+void edc_c_agent_request_task_snapshot(struct edc_agent *agent, const char *session_id);
 
 void edc_c_file_utils_init(struct uv_loop_s *loop);
-void edc_c_agent_send_user_message(struct edc_agent *agent, const char *content);
+/* Send one user message into the agent. |session_id| is the session this input
+ * belongs to (P3 ①a: the TUI always names the session it is displaying) — the
+ * task it spawns lands there, and nowhere else. NULL/"" means "unspecified",
+ * which resolves to the active session (used by callers with no session notion,
+ * e.g. crontab reminders). */
+void edc_c_agent_send_user_message(struct edc_agent *agent, const char *session_id, const char *content);
 
 /* Copy the configured LLM model name (config->llm_api_conf.model) into |buf|
  * (NUL-terminated, at most |cap| bytes). Returns true when a model is

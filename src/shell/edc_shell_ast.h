@@ -6,6 +6,8 @@
 #include "sds.h"
 #include <stdbool.h>
 
+struct edc_session;
+
 struct edc_agent;
 struct edc_actor;
 
@@ -53,6 +55,10 @@ void ast_free(ast_node_t *node);
 ast_node_t *ast_parse(edc_shell_token_t *tokens, int count, bool is_at);
 
 /* Walk the AST and execute via agent. */
-void ast_execute(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type, ast_node_t *root);
+/* |session| = 这条输入所属的 session (调用方由消息的 session 标签解析, 见
+ * edc_agent_resolve_session)。命令建出来的任务/组都落在它上面 —— P3 之后
+ * scheduler 不再有"当前 session", 所以必须显式传。 */
+void ast_execute(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type, ast_node_t *root,
+                 struct edc_session *session);
 
 #endif

@@ -99,10 +99,10 @@ static void commit_turn_into_group(struct edc_session *sess, struct edc_task *ta
  * foreground, and commit one turn. Returns the group. */
 static struct edc_task_group *run_task(struct edc_scheduler *sched, struct edc_session *sess, const char *desc)
 {
-    struct edc_task *t = edc_scheduler_create_task(sched, desc, edc_channel_adapter);
+    struct edc_task *t = edc_scheduler_create_task(sched, sess, desc, edc_channel_adapter);
     edc_task_await_exec(t);
-    struct edc_task_group *g = edc_scheduler_create_group(sched, t);
-    edc_scheduler_set_foreground(sched, g);
+    struct edc_task_group *g = edc_scheduler_create_group(sched, sess, t);
+    edc_scheduler_set_foreground(sess, g);
     edc_session_set_active_task(sess, t);
     commit_turn_into_group(sess, t, desc, "done");
     edc_task_mark_completed(t);
@@ -201,7 +201,7 @@ int main(void)
     agent.config = cfg;
     agent.session_manager = sm;
     agent.channel_actor = edc_channel_actor_new(&cfg->channel, cfg->workspace);
-    agent.scheduler = edc_scheduler_new(sa, cfg);
+    agent.scheduler = edc_scheduler_new(cfg);
 
     /* Task in A (committed turn: group history references A->messages). */
     struct edc_task_group *ga = run_task(agent.scheduler, sa, "task-a-1");
@@ -210,12 +210,12 @@ int main(void)
 
     /* Switch A -> B, run a task, then switch back B -> A. */
     switch_to(&agent, sb->session_id);
-    CHECK(agent.scheduler->session == sb, "scheduler bound to B after switch");
+    CHECK(edc_session_manager_get_active(agent.session_manager) == sb, "B is the active session after switch");
     struct edc_task_group *gb = run_task(agent.scheduler, sb, "task-b-1");
     CHECK(touch_group_history(gb) == 2, "B's group history readable");
 
     switch_to(&agent, sa->session_id);
-    CHECK(agent.scheduler->session == sa, "scheduler bound back to A");
+    CHECK(edc_session_manager_get_active(agent.session_manager) == sa, "A is the active session again");
     CHECK(sa->state_loaded, "A still flagged loaded (in-memory authoritative)");
     CHECK(count_messages_containing(sa, "task-a-1") == 1, "A->messages survived re-activation");
 

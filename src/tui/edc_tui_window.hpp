@@ -20,6 +20,40 @@ class TodoWidget;
 // Declared here so tests can render it without a live agent.
 ::ftxui::Element WorkingIndicatorElement(long long elapsed_ms);
 
+// ── P3 ①b: 快照的**认领规则** ────────────────────────────────
+//
+// 快照现在是**拉取**的 (内核不再主动把树推给前端), 所以前端有两个纯判断:
+// 收到一棵树时它是不是我要的, 收到"某棵树变了"时我要不要拉。两条规则都提成
+// 纯函数, 单测直接钉它们 —— 这是"别人的树不许上屏"这条性质的前端那一半。
+
+// A reply belongs to the frontend only when it is the tree it is currently
+// displaying. A late reply (the user switched sessions while it was in flight)
+// is yesterday's news: drop it. A reply that names no session is nobody's.
+bool SnapshotIsForSession(const ::edc_c_task_snapshot *snap, const std::string &displayed_session);
+
+// "session |event_session| changed for |reason|" → should the frontend pull?
+//  - reason "active": the user switched tabs — the caller already adopted that
+//    session as displayed, so yes, pull it;
+//  - anything else: only if it is the tree on screen (a background session's
+//    churn is not the displayed tab's business).
+bool TreeChangedEventWantsPull(const std::string &event_session, const std::string &reason,
+                               const std::string &displayed_session);
+
+// 展示闸门 (P3 ③: 从 core 移到前端) —— 一条**实时**产出该去哪儿?
+//   - kShown:        进当前视图 + 当前转录 (显示中的 session 的 active task 的产出);
+//   - kSilent:       什么都不做 (同 session 里 **非** active task 的输出静默 ——
+//                    以前这条判断在 core 里做, 靠"当前绑定的 session"那份副本);
+//   - kOtherSession: 写进**它自己** session 的转录 (切回去能看到, 但不在当前 tab 冒泡)。
+// 没有 session 标签的产出 (命令回复等, 发送方不是 task) 一律 kShown。
+enum class LiveOutputRoute
+{
+    kShown,
+    kSilent,
+    kOtherSession,
+};
+LiveOutputRoute RouteLiveOutput(const std::string &session_id, bool from_active_task,
+                                const std::string &displayed_session);
+
 class TUIWindow : public ::ftxui::ComponentBase
 {
   public:
@@ -86,8 +120,6 @@ class TUIWindow : public ::ftxui::ComponentBase
     void SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap);
     // Switch the log to |session_id|: when the id changes the log is cleared and
     // that session's messages re-derived, so the log always belongs to the
-    // active session. See SyncWorkingFromSnapshot for the snapshot source.
-    void SyncChatSession(const char *session_id);
     // The left pane: chat log + input + footer/spinner.
     ::ftxui::Element RenderMain();
     // The working directory on the left; the model, sandbox state and "/help"

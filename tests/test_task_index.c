@@ -102,11 +102,10 @@ int main(void)
     agent.config = cfg;
     agent.session_manager = sm;
     agent.channel_actor = edc_channel_actor_new(&cfg->channel, cfg->workspace);
-    agent.scheduler = edc_scheduler_new(sa, cfg);
+    agent.scheduler = edc_scheduler_new(cfg);
 
-    edc_scheduler_set_session(agent.scheduler, sb);
-    struct edc_task *bt = edc_scheduler_create_task(agent.scheduler, "b-task", edc_channel_adapter);
-    edc_scheduler_create_group(agent.scheduler, bt);
+    struct edc_task *bt = edc_scheduler_create_task(agent.scheduler, sb, "b-task", edc_channel_adapter);
+    edc_scheduler_create_group(agent.scheduler, sb, bt);
     /* 新模型: task 创建时就带着它的 input —— 没装 turn 的任务落盘时会被丢掉
      * (docs/retire-waiting-input.md §4)。装上 input 再停到 SUSPENDED
      * (= "建了、有输入、先不跑"), 它才会出现在 session.json 里; 本用例要验的正是

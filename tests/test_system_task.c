@@ -27,6 +27,25 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+/* ── P3 ③ 测试读口 ──────────────────────────────────────────────
+ * scheduler 不再持有"当前 session", 所以单测要给它装一个 store 读口: 把请求里
+ * 的 session 标签解析成 session 对象 (入站路由 / 快照拉取都走它)。这一层测试
+ * 没有 agent, ctx 就留给它 (agent 那层用它自己的读口)。 */
+static struct edc_session *test_resolve_session(void *ctx, const char *session_id)
+{
+    struct edc_session *sess = ctx;
+    if (!sess)
+        return NULL;
+    if (!session_id || !*session_id)
+        return sess;
+    return (sess->session_id && strcmp(session_id, sess->session_id) == 0) ? sess : NULL;
+}
+
+static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
+{
+    sched->ctx = sess;
+    sched->resolve_session = test_resolve_session;
+}
 
 /* Stub: _run_loop is referenced by edc_commands (pulled in transitively). */
 volatile sig_atomic_t _run_loop = 1;
@@ -140,6 +159,16 @@ static void pump_scheduler(struct edc_scheduler *sched, edc_actor_msg_type_t typ
     sched->self->handler(sched->self, msg);
 }
 
+
+/* P3 ①b: 快照是**拉取**的 (请求带 session 标签)。 */
+static void pull_snapshot(struct edc_scheduler *sched, struct edc_session *session)
+{
+    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TASK_SNAPSHOT, NULL, NULL,
+                                             sdsnew(session ? session->session_id : ""),
+                                             (edc_actor_data_free_fn)sdsfree);
+    sched->self->handler(sched->self, msg);
+}
+
 static sds g_snapshot = NULL;
 
 static void capture_snapshot(struct edc_scheduler *sched, sds json)
@@ -204,7 +233,8 @@ static void test_spawn_system_task(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-spawn", "Spawn");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     CHECK(edc_session_find_system_group(session) == NULL, "还没有系统组");
 
@@ -243,7 +273,8 @@ static void test_transient_not_persisted(void)
 
     /* A = 对照组: 只有一个用户组 + 一个已完成的任务。 */
     struct edc_session *sa = edc_session_new(cfg, "sess-p", "P");
-    struct edc_scheduler *scha = edc_scheduler_new(sa, cfg);
+    struct edc_scheduler *scha = edc_scheduler_new(cfg);
+    install_resolver(scha, sa);
     struct edc_task *ua = edc_task_new("10", "sess-p", "10", "user work", edc_channel_adapter);
     struct edc_task_group *ga = edc_task_group_new(ua);
     edc_session_add_group(sa, ga);
@@ -254,7 +285,8 @@ static void test_transient_not_persisted(void)
     /* B = 同一份用户侧内容 + 一个系统组 (其任务是 COMPLETED, 已带 input ——
      * 也就是说: 只有 lifetime 这一关能拦住它)。 */
     struct edc_session *sb = edc_session_new(cfg, "sess-p", "P");
-    struct edc_scheduler *schb = edc_scheduler_new(sb, cfg);
+    struct edc_scheduler *schb = edc_scheduler_new(cfg);
+    install_resolver(schb, sb);
     struct edc_task *ub = edc_task_new("10", "sess-p", "10", "user work", edc_channel_adapter);
     struct edc_task_group *gb = edc_task_group_new(ub);
     edc_session_add_group(sb, gb);
@@ -285,7 +317,8 @@ static void test_transient_not_persisted(void)
 
     /* 读回来: 系统组不会复活 (它从来没进过文件)。 */
     struct edc_session *s2 = edc_session_new(cfg, "sess-p", "P");
-    struct edc_scheduler *sc2 = edc_scheduler_new(s2, cfg);
+    struct edc_scheduler *sc2 = edc_scheduler_new(cfg);
+    install_resolver(sc2, s2);
     CHECK(edc_state_deserialize(jb, s2, sc2), "反序列化成功");
     CHECK(count_groups(s2) == 1, "读回 1 个组");
     CHECK(count_tasks(s2) == 1, "读回 1 个任务");
@@ -312,8 +345,9 @@ static void test_transient_reaped(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-reap", "Reap");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
-    sched->snapshot_ready = capture_snapshot;
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->snapshot_reply = capture_snapshot;
 
     /* 两个共用系统组的 system task。 */
     struct edc_task *a = edc_scheduler_spawn_system_task(sched, session, "fold A");
@@ -328,7 +362,7 @@ static void test_transient_reaped(void)
 
     /* (1) 完成 A —— 经 executor 的 set_task_state 端口入队, 消息末尾结算。 */
     complete_via_executor(sched, a);
-    pump_scheduler(sched, BC_ACTOR_MSG_TASK_SNAPSHOT);
+    pull_snapshot(sched, session);
     CHECK(count_tasks(session) == 1, "A 被回收了");
     CHECK(count_groups(session) == 1, "组里还有 B, 所以组还在");
     CHECK(edc_session_find_system_group(session) == sg, "同一个组对象");
@@ -337,7 +371,7 @@ static void test_transient_reaped(void)
      * 回收同样要覆盖它;此时组空了, 连组一起删。 */
     edc_scheduler_send_signal_to_task_ptr(sched, b, TASK_SIGTERM);
     CHECK(edc_task_is_cancelled(b), "B 被取消了");
-    pump_scheduler(sched, BC_ACTOR_MSG_TASK_SNAPSHOT);
+    pull_snapshot(sched, session);
     CHECK(count_tasks(session) == 0, "B 也被回收了");
     CHECK(count_groups(session) == 0, "组空了就被删掉 (系统组不是容器)");
     CHECK(edc_session_find_system_group(session) == NULL, "会话里不再有系统组");
@@ -360,7 +394,7 @@ static void test_transient_reaped(void)
     CHECK(count_groups(session) == 1, "仍然只有一个系统组");
     give_input(c, "fold c");
     edc_scheduler_send_signal_to_task_ptr(sched, c, TASK_SIGTERM);
-    pump_scheduler(sched, BC_ACTOR_MSG_TASK_SNAPSHOT);
+    pull_snapshot(sched, session);
     CHECK(count_tasks(session) == 0 && count_groups(session) == 0, "重建的那个也被回收");
 
     sdsfree(id_a);
@@ -385,7 +419,8 @@ static void test_persistent_not_reaped(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-keep", "Keep");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     struct edc_task *user = edc_task_new("1", "sess-keep", "1", "user work", edc_channel_adapter);
     struct edc_task_group *ug = edc_task_group_new(user);
@@ -394,7 +429,7 @@ static void test_persistent_not_reaped(void)
 
     /* 信号路径 → terminal → 入回收队列; 结算点照样跑一遍。 */
     edc_scheduler_send_signal_to_task_ptr(sched, user, TASK_SIGTERM);
-    pump_scheduler(sched, BC_ACTOR_MSG_TASK_SNAPSHOT);
+    pull_snapshot(sched, session);
 
     CHECK(edc_task_is_cancelled(user), "用户任务确实被取消了");
     CHECK(edc_task_state_str(user) != NULL, "它还在 (没被 free: 读字段不崩)");
@@ -417,8 +452,9 @@ static void test_system_task_is_visible(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-vis", "Vis");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
-    sched->snapshot_ready = capture_snapshot;
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->snapshot_reply = capture_snapshot;
 
     struct edc_task *user = edc_task_new("1", "sess-vis", "1", "user work", edc_channel_adapter);
     struct edc_task_group *ug = edc_task_group_new(user);
@@ -430,7 +466,7 @@ static void test_system_task_is_visible(void)
     /* 别让它被回收 —— 本测的是"画得出来", 不是生命周期。 */
     sds sys_id = sdsnew(sys->task_id);
 
-    pump_scheduler(sched, BC_ACTOR_MSG_TASK_SNAPSHOT);
+    pull_snapshot(sched, session);
     CHECK(g_snapshot != NULL, "拿到快照");
     if (g_snapshot)
     {

@@ -71,6 +71,18 @@ extern bool edc_agent_load_session(struct edc_agent *agent, struct edc_session *
 extern void edc_agent_reconcile_pending_deps(struct edc_agent *agent);
 
 extern char *edc_agent_run_turn(struct edc_agent *agent, const char *input);
+
+/** session 标签 → session 对象 (P3 的 store 读口; 也是 shell/命令层解析"这条输入
+ *  属于哪个 session"的入口)。
+ *
+ *  - 标签非空: 按 id/name 在 session_manager 里找, **找不到返回 NULL** (调用方拒绝
+ *    这条输入, 不许回退到活跃 session —— 那正是老实现"切错台"的来源);
+ *  - 标签为空/NULL: 返回活跃 session (没有 session 概念的入站, 如 crontab)。 */
+extern struct edc_session *edc_agent_resolve_session(struct edc_agent *agent, const char *session_id);
+
+/** 通知前端"活跃 session 变成 X 了" (P3 ①b): 用户 `/session switch|new` 成功后由
+ *  命令层调用。前端据此换显示的那棵树并去拉它 —— 快照本身仍然由前端点名拉取。 */
+extern void edc_agent_notify_active_session(struct edc_agent *agent, const char *session_id);
 /* |sandbox_override|: -1 = keep the persisted config.json value (the default
  * at startup), 0 = force off, 1 = force on. The override is per-run and is NOT
  * persisted; only the in-TUI /sandbox command writes config.json. */

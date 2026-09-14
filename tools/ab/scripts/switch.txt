@@ -1,0 +1,29 @@
+# 切台 —— ①b 换掉的正是这条机制：切 session 不再靠"内核把新 session 的整棵树推
+# 过来，前端跟着换显示"，而是内核对"活跃 session 变了"发一条事件，前端换显示后
+# **自己**去拉那棵树。本夹具钉住用户可见结果不变：
+#   - 新旧 session 各自的转录/状态各自成套（session.json、chat.jsonl）；
+#   - 那条 "**Switched**" 回复仍然落在**旧** session 的转录里（顺序：先回复、
+#     后换台事件）—— 这是逐字对齐的一部分，改错了会在这里露出来；
+#   - 切走后仍在后台的任务继续跑，切回来时前台组还在。
+
+wait 1500
+
+# 在冻结的 session 里起一个任务（完成后落盘）
+send /task new """switch probe"""\n
+wait 6000
+
+# 新开一个 session（会切过去）+ 在里面说话
+send /session new ""switch-tab""\n
+wait 2000
+send hello from the new tab\n
+wait 5000
+
+# 列一下（回复落在当前这台）
+send /session list\n
+wait 1500
+
+# 切回原来那台（名字取自冻结工作区里的 session；找不到也照样是对照的一部分）
+send /session switch opencode\n
+wait 2000
+send back on the old tab\n
+wait 5000

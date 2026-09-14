@@ -83,7 +83,7 @@ static void env_open(struct env *e, const char *ws)
     e->agent.config = e->cfg;
     e->agent.session_manager = e->sm;
     e->agent.channel_actor = edc_channel_actor_new(&e->cfg->channel, e->cfg->workspace);
-    e->agent.scheduler = edc_scheduler_new(sa, e->cfg);
+    e->agent.scheduler = edc_scheduler_new(e->cfg);
 }
 
 static void env_close(struct env *e)
@@ -126,12 +126,11 @@ static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, 
     agent.config = cfg;
     agent.session_manager = sm;
     agent.channel_actor = edc_channel_actor_new(&cfg->channel, cfg->workspace);
-    agent.scheduler = edc_scheduler_new(sa, cfg);
+    agent.scheduler = edc_scheduler_new(cfg);
 
     /* A task in B, unfinished. */
-    edc_scheduler_set_session(agent.scheduler, sb);
-    struct edc_task *bt = edc_scheduler_create_task(agent.scheduler, "b-task", edc_channel_adapter);
-    edc_scheduler_create_group(agent.scheduler, bt);
+    struct edc_task *bt = edc_scheduler_create_task(agent.scheduler, sb, "b-task", edc_channel_adapter);
+    edc_scheduler_create_group(agent.scheduler, sb, bt);
     /* 新模型: task 创建时就带着它的 input (没装 turn 的任务落盘时会被丢弃):
      * docs/retire-waiting-input.md §4)。装上 input 停到 SUSPENDED —— 本用例要验的
      * 是跨会话依赖的恢复, 所以 B 这条任务必须真的出现在它自己的 session.json 里。 */
@@ -141,9 +140,8 @@ static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, 
     *out_bt_id = sdsnew(bt->task_id);
 
     /* A task in A that depends on B's task (cross-session edge). */
-    edc_scheduler_set_session(agent.scheduler, sa);
-    struct edc_task *at = edc_scheduler_create_task(agent.scheduler, "a-task", edc_channel_adapter);
-    edc_scheduler_create_group(agent.scheduler, at);
+    struct edc_task *at = edc_scheduler_create_task(agent.scheduler, sa, "a-task", edc_channel_adapter);
+    edc_scheduler_create_group(agent.scheduler, sa, at);
     edc_task_add_dependency(at, bt, TASK_DEP_SEQUENCE);
     edc_session_save_state(sa, agent.scheduler);
     *out_at_id = sdsnew(at->task_id);
@@ -248,24 +246,21 @@ static void scenario_multihop(const char *ws)
     agent.config = cfg;
     agent.session_manager = sm;
     agent.channel_actor = edc_channel_actor_new(&cfg->channel, cfg->workspace);
-    agent.scheduler = edc_scheduler_new(sa, cfg);
+    agent.scheduler = edc_scheduler_new(cfg);
 
-    edc_scheduler_set_session(agent.scheduler, sc);
-    struct edc_task *ct = edc_scheduler_create_task(agent.scheduler, "c", edc_channel_adapter);
-    edc_scheduler_create_group(agent.scheduler, ct);
+    struct edc_task *ct = edc_scheduler_create_task(agent.scheduler, sc, "c", edc_channel_adapter);
+    edc_scheduler_create_group(agent.scheduler, sc, ct);
     give_input(ct);
     edc_session_save_state(sc, agent.scheduler);
 
-    edc_scheduler_set_session(agent.scheduler, sb);
-    struct edc_task *bt = edc_scheduler_create_task(agent.scheduler, "b", edc_channel_adapter);
-    edc_scheduler_create_group(agent.scheduler, bt);
+    struct edc_task *bt = edc_scheduler_create_task(agent.scheduler, sb, "b", edc_channel_adapter);
+    edc_scheduler_create_group(agent.scheduler, sb, bt);
     give_input(bt);
     edc_task_add_dependency(bt, ct, TASK_DEP_SEQUENCE);
     edc_session_save_state(sb, agent.scheduler);
 
-    edc_scheduler_set_session(agent.scheduler, sa);
-    struct edc_task *at = edc_scheduler_create_task(agent.scheduler, "a", edc_channel_adapter);
-    edc_scheduler_create_group(agent.scheduler, at);
+    struct edc_task *at = edc_scheduler_create_task(agent.scheduler, sa, "a", edc_channel_adapter);
+    edc_scheduler_create_group(agent.scheduler, sa, at);
     give_input(at);
     edc_task_add_dependency(at, bt, TASK_DEP_SEQUENCE);
     edc_session_save_state(sa, agent.scheduler);

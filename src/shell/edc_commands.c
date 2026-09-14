@@ -195,6 +195,23 @@ static void edc_commands_split_name_dir(const char *rest, sds *out_name, sds *ou
         *out_dir = sdsnewlen(dir_start, (size_t)(dir_end - dir_start));
 }
 
+/* 切活跃 session 的公共尾巴 (P3 ①b): 告诉前端"现在显示哪个 session"。
+ *
+ *  ①b 之后快照是**拉取**的 —— 前端不再从推送里得知自己该看哪棵树, 所以这件事
+ *  得显式说一声 (这是"active_index 变了"这个事实的通报, 权威仍在 session_manager)。
+ *  两道讲究:
+ *    - **只在真的换了时才发**: 没换就什么都不做, 免得前端白拉一棵没变的树;
+ *    - **位置在 reply 之后**: 今天那条 "**Switched**" / "**Session created**" 文本
+ *      落在**旧** session 的转录里 (前端先收到回复、再被推送切台) —— 顺序反过来
+ *      会把它写进新 session 的转录, 那是用户可见的差异。 */
+static void cmd_notify_if_active_session_changed(struct edc_agent *agent, struct edc_session *before)
+{
+    struct edc_session *now = edc_session_manager_get_active(agent->session_manager);
+    if (now == before)
+        return;
+    edc_agent_notify_active_session(agent, now ? now->session_id : NULL);
+}
+
 static bool edc_commands_handle_session_new(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
                                             sds arg)
 {
@@ -243,14 +260,12 @@ static bool edc_commands_handle_session_new(struct edc_agent *agent, edc_actor_t
     const char *bound = edc_session_get_workdir(sess);
     sdsfree(dir);
     /* 切到新 session: 旧 session **继续在后台执行**, 不取消任何任务 (session
-     * 像终端 tab —— 切走不停进程)。但要在 set_session 之前把旧 session 落盘,
-     * 因为此后 sched->session 已指向新 session; 用显式 save_state(old, sched) ——
-     * 不能用 save_session 回调, 它保存的是已经被 create 切过去的 "当前" session。 */
-    if (old && old != sess)
-    {
-        edc_session_save_state(old, agent->scheduler);
-    }
-    edc_scheduler_set_session(agent->scheduler, sess);
+     * 像终端 tab —— 切走不停进程)。
+     * P3 ③: 这里不再有"把 binding 换成新 session"这一步 —— 切 session 只是
+     * `active_index` 变了 (session_manager 的唯一权威), scheduler 里根本没有
+     * 那份副本了。落盘也不再依赖"切之前先存": 任务完成时按属主存、退出时存
+     * 所有已加载的 (save_loaded_states)。 */
+    (void)old;
     /* 全新 session: 内存状态即权威, 标记已加载, 避免日后切回时被（此时可能
      * 已存在的）session.json 反序列化覆盖。 */
     sess->state_loaded = true;
@@ -259,6 +274,7 @@ static bool edc_commands_handle_session_new(struct edc_agent *agent, edc_actor_t
                              edc_session_get_name(sess), bound ? bound : "default");
     edc_commands_reply(agent, actor, channel_type, reply);
     sdsfree(reply);
+    cmd_notify_if_active_session_changed(agent, old);
     return true;
 }
 
@@ -303,7 +319,8 @@ static bool edc_commands_handle_session_switch(struct edc_agent *agent, edc_acto
         sdsfree(reply);
         return true;
     }
-    edc_scheduler_set_session(agent->scheduler, new_sess);
+    /* P3 ③: active_index 已经由 edc_session_manager_switch 改好, 没有别的状态
+     * 要改 —— 切 session 只是 UI 换视图 (前端收 reason=active 事件后自己换)。 */
     /* 只在本 run 首次激活该 session 时反序列化磁盘状态; 已加载过的 session
      * (可能正在后台执行) 直接沿用内存对象, 避免被磁盘副本覆盖 —— 不再 reload
      * (重建会释放 group->history 引用的对象)。 */
@@ -313,6 +330,7 @@ static bool edc_commands_handle_session_switch(struct edc_agent *agent, edc_acto
         sdscatprintf(sdsempty(), "**Switched** — `[%s]` %s", new_sess->session_id, edc_session_get_name(new_sess));
     edc_commands_reply(agent, actor, channel_type, reply);
     sdsfree(reply);
+    cmd_notify_if_active_session_changed(agent, old);
     return true;
 }
 
@@ -348,6 +366,9 @@ static bool edc_commands_handle_session_remove(struct edc_agent *agent, edc_acto
         return true;
     }
 
+    /* remove 也会调整 active_index (删掉的是当前之前的那个时会顺移), 所以先把
+     * "移除前显示的是谁"记下来, 末尾按事实决定要不要通知前端换台。 */
+    struct edc_session *active_before = edc_session_manager_get_active(agent->session_manager);
     sds stopped_id = sdsnew(target->session_id);
     sds stopped_name = sdsnew(edc_session_get_name(target));
 
@@ -365,12 +386,12 @@ static bool edc_commands_handle_session_remove(struct edc_agent *agent, edc_acto
         return true;
     }
     struct edc_session *new_active = edc_session_manager_get_active(agent->session_manager);
-    edc_scheduler_set_session(agent->scheduler, new_active);
     if (new_active && !new_active->state_loaded)
         edc_agent_load_session(agent, new_active);
     sds reply = sdscatprintf(sdsempty(), "**Session removed** — `[%s]` %s", stopped_id, stopped_name);
     edc_commands_reply(agent, actor, channel_type, reply);
     sdsfree(reply);
+    cmd_notify_if_active_session_changed(agent, active_before);
     sdsfree(stopped_id);
     sdsfree(stopped_name);
     return true;
@@ -457,9 +478,7 @@ static bool edc_commands_handle_session_status(struct edc_agent *agent, edc_acto
     }
     else
     {
-        sess = edc_scheduler_get_session(agent->scheduler);
-        if (!sess)
-            sess = edc_session_manager_get_active(agent->session_manager);
+        sess = edc_session_manager_get_active(agent->session_manager);
         if (!sess)
         {
             edc_commands_reply(agent, actor, channel_type, "**Session** — no current session.");
@@ -467,8 +486,9 @@ static bool edc_commands_handle_session_status(struct edc_agent *agent, edc_acto
         }
     }
 
-    bool is_current = (sess == edc_scheduler_get_session(agent->scheduler));
-    struct edc_task_group *fg = is_current ? edc_scheduler_get_foreground(agent->scheduler) : NULL;
+    /* "是不是当前这台" = 是不是 active session (P3 ③: 唯一权威在 session_manager)。 */
+    bool is_current = (sess == edc_session_manager_get_active(agent->session_manager));
+    struct edc_task_group *fg = is_current ? edc_scheduler_get_foreground(sess) : NULL;
 
     sds out = edc_session_status_text(sess, is_current, fg ? fg->group_id : NULL);
     edc_commands_reply(agent, actor, channel_type, out);
@@ -552,9 +572,22 @@ static bool edc_commands_handle_session(struct edc_agent *agent, edc_actor_t *ac
  * (注: edc_shell.c 的 AST 派发点另有自己的计数器, 尚未合并 —— 既有偏离, 不在本批。) */
 static int64_t g_cmd_req_seq = 0;
 
-static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
-                                         sds arg)
+/* ── 这条输入属于哪个 session (P3) ──────────────────────────
+ *
+ * 命令建出来的任务/组必须落在**输入自己声明**的 session 上, 而不是"当前绑定"
+ * 的那份副本 (scheduler 里那份正在被拆掉)。标签为空 = 调用方没指定 (crontab,
+ * 老渠道) → agent 给活跃 session, 与老实现一致; 标签指向不存在的 session 时
+ * 返回 NULL, 调用方**拒绝**这条命令 (不猜)。 */
+static struct edc_session *cmd_input_session(struct edc_agent *agent, struct edc_channel_message *msg)
 {
+    return edc_agent_resolve_session(agent, msg ? msg->session_id : NULL);
+}
+
+static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
+                                         struct edc_session *session, sds arg)
+{
+    if (!session)
+        return;
     struct edc_cmd_task_opts opts;
     edc_cmd_parse_task_opts(arg, &opts);
 
@@ -581,7 +614,9 @@ static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *a
     }
 
     struct edc_task *task = edc_scheduler_create_task(
-        agent->scheduler, (opts.desc && sdslen(opts.desc) > 0) ? opts.desc : "New task", channel_type);
+        agent->scheduler, session, (opts.desc && sdslen(opts.desc) > 0) ? opts.desc : "New task", channel_type);
+    if (!task)
+        return;
     if (opts.prompt_name)
         edc_task_set_prompt(task, opts.prompt_name, NULL);
 
@@ -594,14 +629,13 @@ static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *a
 
     if (opts.group_id)
     {
-        struct edc_task_group *group =
-            edc_session_find_group(edc_session_manager_get_active(agent->session_manager), opts.group_id);
+        struct edc_task_group *group = edc_session_find_group(session, opts.group_id);
         if (!group)
         {
             sds reply = sdscatprintf(sdsempty(), "Group `%s` not found — creating a new group.", opts.group_id);
             edc_commands_reply(agent, actor, channel_type, reply);
             sdsfree(reply);
-            group = edc_scheduler_create_group(agent->scheduler, task);
+            group = edc_scheduler_create_group(agent->scheduler, session, task);
         }
         else
         {
@@ -614,7 +648,7 @@ static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *a
     }
     else
     {
-        struct edc_task_group *group = edc_scheduler_create_group(agent->scheduler, task);
+        struct edc_task_group *group = edc_scheduler_create_group(agent->scheduler, session, task);
 
         /* 挂起的任务不算 active task, 也不抢前台 —— 与 --bg 同样只建组。 */
         if (opts.bg || opts.suspended)
@@ -627,8 +661,8 @@ static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *a
         }
         else
         {
-            edc_scheduler_set_foreground(agent->scheduler, group);
-            edc_session_set_active_task(edc_session_manager_get_active(agent->session_manager), task);
+            edc_scheduler_set_foreground(session, group);
+            edc_session_set_active_task(session, task);
             // sds reply = sdscatprintf(sdsempty(), "[task] created %s (group %s)", task->task_id, group->group_id);
             // edc_commands_reply(agent, actor, channel_type, reply);
             // sdsfree(reply);
@@ -688,12 +722,13 @@ done:
 static void edc_commands_handle_task_list(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type)
 {
     sds out = sdsnew("## Tasks\n\n");
+    struct edc_session *sess = edc_session_manager_get_active(agent->session_manager);
     struct edc_task_group *g;
     bool any = false;
-    DL_FOREACH(edc_scheduler_get_session(agent->scheduler)->groups, g)
+    DL_FOREACH(sess ? sess->groups : NULL, g)
     {
         any = true;
-        bool fg = edc_scheduler_get_foreground(agent->scheduler) == g;
+        bool fg = edc_scheduler_get_foreground(sess) == g;
         out =
             sdscatprintf(out, "- `%s` · %d task%s%s%s\n", g->group_id, g->member_count, g->member_count == 1 ? "" : "s",
                          fg ? " · **foreground**" : "", g->is_orphaned ? " · _orphaned_" : "");
@@ -729,7 +764,7 @@ static void edc_commands_handle_task_stop(struct edc_agent *agent, edc_actor_t *
         /* 不带 id: 默认停当前前台进程组里的 active 任务 (组内"正在说话"的那个)。
          * active 概念上应属于前台组, 但代码并不强制 —— 这里显式校验成员关系,
          * 免得 session 切换残留的 active 指到别的组去。 */
-        struct edc_task_group *fg = edc_scheduler_get_foreground(agent->scheduler);
+        struct edc_task_group *fg = edc_scheduler_get_foreground(sess);
         struct edc_task *active = sess ? sess->active_task : NULL;
         if (active && (!fg || active->group == fg))
             t = active;
@@ -776,7 +811,7 @@ static void edc_commands_handle_task_resume(struct edc_agent *agent, edc_actor_t
 
     if (!arg || sdslen(arg) == 0)
     {
-        struct edc_task_group *fg = edc_scheduler_get_foreground(agent->scheduler);
+        struct edc_task_group *fg = edc_scheduler_get_foreground(sess);
         struct edc_task *active = sess ? sess->active_task : NULL;
         if (active && (!fg || active->group == fg))
             t = active;
@@ -880,7 +915,7 @@ static void edc_commands_handle_task_fg(struct edc_agent *agent, edc_actor_t *ac
         edc_commands_reply(agent, actor, channel_type, "Group not found.");
         return;
     }
-    edc_scheduler_set_foreground(agent->scheduler, g);
+    edc_scheduler_set_foreground(edc_session_manager_get_active(agent->session_manager), g);
     edc_session_set_active_task(edc_session_manager_get_active(agent->session_manager), t);
     sds reply = sdscatprintf(sdsempty(), "**Foreground** — group `%s` · active task `%s`.", g->group_id, t->task_id);
     edc_commands_reply(agent, actor, channel_type, reply);
@@ -907,9 +942,9 @@ static void edc_commands_handle_task_bg(struct edc_agent *agent, edc_actor_t *ac
             edc_commands_reply(agent, actor, channel_type, "Group not found.");
             return;
         }
-        if (edc_scheduler_get_foreground(agent->scheduler) == g)
+        if (edc_scheduler_get_foreground(edc_session_manager_get_active(agent->session_manager)) == g)
         {
-            edc_scheduler_set_foreground(agent->scheduler, NULL);
+            edc_scheduler_set_foreground(edc_session_manager_get_active(agent->session_manager), NULL);
             edc_session_set_active_task(edc_session_manager_get_active(agent->session_manager), NULL);
             sds reply = sdscatprintf(sdsempty(), "**Background** — group `%s`.", g->group_id);
             edc_commands_reply(agent, actor, channel_type, reply);
@@ -924,15 +959,17 @@ static void edc_commands_handle_task_bg(struct edc_agent *agent, edc_actor_t *ac
     }
     else
     {
-        edc_scheduler_set_foreground(agent->scheduler, NULL);
+        edc_scheduler_set_foreground(edc_session_manager_get_active(agent->session_manager), NULL);
         edc_session_set_active_task(edc_session_manager_get_active(agent->session_manager), NULL);
         edc_commands_reply(agent, actor, channel_type, "No foreground group.");
     }
 }
 
 static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
-                                          sds arg)
+                                          struct edc_session *session, sds arg)
 {
+    if (!session)
+        return;
     /* /task fork <parent_id> <desc> [--prompt <name>] [--suspended] */
     if (!arg)
     {
@@ -951,7 +988,8 @@ static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *
         return;
     }
 
-    struct edc_session *session = edc_session_manager_get_active(agent->session_manager);
+    /* `session` 是形参: **这条输入所属的** session (P3 起由消息的标签解析, 不再是
+     * "问活跃 session 再假设它就是这个输入的家")。 */
     struct edc_task *parent = edc_session_manager_find_task_any(agent->session_manager, tokens[0], NULL);
     if (!parent)
     {
@@ -1012,7 +1050,7 @@ static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *
     /* 新语义: 子任务另起独立 group (成为 leader), 继承父 group 的前文快照,
      * 而非塞进父 group。快照作为子任务的一条合成初始 turn 存在,
      * 随子任务一起持久化/折叠, 父 group 不受影响。 */
-    struct edc_task_group *child_group = edc_scheduler_create_group(agent->scheduler, child);
+    struct edc_task_group *child_group = edc_scheduler_create_group(agent->scheduler, session, child);
 
     if (parent->group)
     {
@@ -1066,8 +1104,8 @@ static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *
     }
 
     /* 前台切到新 group, 并把子任务设为 active task。 */
-    edc_scheduler_set_foreground(agent->scheduler, child_group);
-    edc_session_set_active_task(edc_session_manager_get_active(agent->session_manager), child);
+    edc_scheduler_set_foreground(session, child_group);
+    edc_session_set_active_task(session, child);
 
     /* desc 就是 input —— 与 /task new 同一条规则: 任务创建时就带着它的 turn。
      *
@@ -1118,10 +1156,11 @@ static void edc_commands_handle_task_groups(struct edc_agent *agent, edc_actor_t
 {
     sds out = sdsnew("## Groups\n\n");
     struct edc_task_group *g;
-    DL_FOREACH(edc_scheduler_get_session(agent->scheduler)->groups, g)
+    struct edc_session *sess = edc_session_manager_get_active(agent->session_manager);
+    DL_FOREACH(sess ? sess->groups : NULL, g)
     {
         out = sdscatprintf(out, "- %s%s  **%s**  %d members  _%s_\n",
-                           edc_scheduler_get_foreground(agent->scheduler) == g ? "`[fg]` " : "",
+                           edc_scheduler_get_foreground(sess) == g ? "`[fg]` " : "",
                            g->is_orphaned ? "`[orphan]` " : "", g->group_id, g->member_count,
                            edc_task_group_status_label(g));
     }
@@ -1386,12 +1425,12 @@ static bool edc_commands_handle_task(struct edc_agent *agent, edc_actor_t *actor
     if (strncmp(content_trim, "/task new ", 10) == 0)
     {
         arg = sdsnew(content_trim + 10);
-        edc_commands_handle_task_new(agent, actor, message->type, arg);
+        edc_commands_handle_task_new(agent, actor, message->type, cmd_input_session(agent, message), arg);
     }
     else if (strncmp(content_trim, "/task fork ", 11) == 0)
     {
         arg = sdsnew(content_trim + 11);
-        edc_commands_handle_task_fork(agent, actor, message->type, arg);
+        edc_commands_handle_task_fork(agent, actor, message->type, cmd_input_session(agent, message), arg);
     }
     else if (strcmp(content_trim, "/task list") == 0)
     {

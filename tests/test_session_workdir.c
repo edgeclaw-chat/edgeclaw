@@ -16,6 +16,25 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+/* ── P3 ③ 测试读口 ──────────────────────────────────────────────
+ * scheduler 不再持有"当前 session", 所以单测要给它装一个 store 读口: 把请求里
+ * 的 session 标签解析成 session 对象 (入站路由 / 快照拉取都走它)。这一层测试
+ * 没有 agent, ctx 就留给它 (agent 那层用它自己的读口)。 */
+static struct edc_session *test_resolve_session(void *ctx, const char *session_id)
+{
+    struct edc_session *sess = ctx;
+    if (!sess)
+        return NULL;
+    if (!session_id || !*session_id)
+        return sess;
+    return (sess->session_id && strcmp(session_id, sess->session_id) == 0) ? sess : NULL;
+}
+
+static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
+{
+    sched->ctx = sess;
+    sched->resolve_session = test_resolve_session;
+}
 
 /* Stub: referenced transitively by the shell/command layer. */
 volatile sig_atomic_t _run_loop = 1;
@@ -238,10 +257,10 @@ static void test_verify_path_at(void)
     rmdir(dir);
 }
 
-/* ── 6. System prompt reports the bound directory as {{cwd}} ── */
+/* ── 6. System prompt reports the session's directory as {{cwd}} ── */
 static void test_system_prompt_cwd(void)
 {
-    TEST("system prompt uses bound workdir as current dir");
+    TEST("system prompt uses the session workdir as current dir");
     char dir[256];
     make_tmpdir(dir, sizeof(dir));
     char real[PATH_MAX];
@@ -271,19 +290,26 @@ static void test_task_workdir_owner(void)
     struct edc_session *A = edc_session_new_with_workdir(cfg, "sess-A", "A", dirA);
     struct edc_session *B = edc_session_new_with_workdir(cfg, "sess-B", "B", dirB);
 
-    /* Scheduler displays A, but the task belongs to B (its group is bound to B).
-     * A tool call from that task must resolve against B's directory, not A's. */
-    struct edc_scheduler *sched = edc_scheduler_new(A, cfg);
-    edc_actor_t *actor = edc_scheduler_get_actor(sched);
+    /* The task belongs to B (its group is bound to B): a tool call from that task
+     * must resolve against B's directory. P3 ③: 目录**只看属主** —— core 里已经没有
+     * "当前 session"(A) 可以回退, 所以"谁在看"这件事根本进不来。 */
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, A);
 
     struct edc_task *tB = edc_task_new("tB", "sess-B", "tB", "desc", edc_channel_adapter);
     struct edc_task_group *gB = edc_task_group_new(tB);
     edc_session_add_group(B, gB);
 
-    CHECK(strcmp(edc_scheduler_session_workdir(actor), realA) == 0, "active session dir = A");
-    CHECK(strcmp(edc_scheduler_task_workdir(actor, tB), realB) == 0, "task owner dir = B");
-    CHECK(strcmp(edc_scheduler_task_workdir(actor, NULL), realA) == 0, "non-task caller falls back to active (A)");
+    CHECK(strcmp(edc_session_get_workdir(A), realA) == 0, "session A's own dir");
+    CHECK(strcmp(edc_scheduler_task_workdir(tB), realB) == 0, "task owner dir = B (not the displayed A)");
+    /* 没有属主就没有目录: 不再是"回退到当前 session"(那份副本已删)。工具层拿到
+     * NULL 时落到沙箱根 (见 edc_tools_shell / edc_tools_fs)。 */
+    struct edc_task *ownerless = edc_task_new("tX", "sess-X", "tX", "desc", edc_channel_adapter);
+    CHECK(edc_scheduler_task_workdir(ownerless) == NULL, "ownerless task → NULL (core 不猜)");
+    CHECK(edc_scheduler_task_workdir(NULL) == NULL, "no task → NULL");
 
+    if (ownerless)
+        edc_task_free(ownerless);
     edc_scheduler_free(sched);
     edc_session_free(A);
     edc_session_free(B);

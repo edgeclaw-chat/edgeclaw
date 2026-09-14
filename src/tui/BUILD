@@ -57,6 +57,20 @@ cc_library(
 )
 
 cc_test(
+    name = "test_snapshot_claim",
+    srcs = ["test_snapshot_claim.cpp"],
+    deps = [
+        ":tui",
+    ],
+    linkstatic = True,
+    linkopts = LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+
+cc_test(
     name = "test_theme",
     srcs = ["test_theme.cpp"],
     deps = [

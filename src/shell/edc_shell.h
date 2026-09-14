@@ -7,6 +7,8 @@
 #include "sds.h"
 #include <stdbool.h>
 
+struct edc_session;
+
 struct edc_agent;
 struct edc_actor;
 struct edc_channel_message;
@@ -24,7 +26,8 @@ bool edc_shell_handle_builtin(struct edc_agent *agent, struct edc_actor *actor, 
 
 /* 通用 task 创建 + group 管理 + deps + turn + LLM 发送 */
 struct edc_task *edc_shell_spawn_task(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type,
-                                      struct edc_cmd_task_opts *opts, struct edc_task *prev_task,
+                                      struct edc_session *session, struct edc_cmd_task_opts *opts,
+                                      struct edc_task *prev_task,
                                       struct edc_task_group *target_group, const char *reply_prefix,
                                       struct edc_task_group **out_group, sds redirect_stdout, bool redirect_append,
                                       sds redirect_stderr, edc_task_dep_type prev_dep_type);

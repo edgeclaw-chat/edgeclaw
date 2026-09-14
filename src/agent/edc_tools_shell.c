@@ -376,7 +376,7 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
     sds allocated_cwd = NULL;
     /* Default cwd: the session's bound working directory, falling back to the
      * launch directory (sandbox root) when the session is unbound. */
-    const char *cwd = edc_scheduler_task_workdir(tb_ctx->tb->scheduler, tb_ctx->task);
+    const char *cwd = edc_scheduler_task_workdir(tb_ctx->task);
     if (!cwd)
         cwd = edc_sandbox_get_root(conf);
     if (working_dir)

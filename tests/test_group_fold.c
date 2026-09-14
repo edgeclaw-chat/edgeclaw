@@ -33,6 +33,24 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+/* ── P3 ③ 测试读口 ──────────────────────────────────────────────
+ * 这一层测试跑真 agent (ctx = agent), 所以会话由 session_manager 解析 ——
+ * scheduler 自己不再持有"当前 session"。 */
+static struct edc_session *test_resolve_session(void *ctx, const char *session_id)
+{
+    struct edc_agent *agent = ctx;
+    if (!agent || !agent->session_manager)
+        return NULL;
+    if (!session_id || !*session_id)
+        return edc_session_manager_get_active(agent->session_manager);
+    return edc_session_manager_find(agent->session_manager, session_id);
+}
+
+static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
+{
+    (void)sess; /* ctx 留给 agent */
+    sched->resolve_session = test_resolve_session;
+}
 
 volatile sig_atomic_t _run_loop = 1;
 
@@ -216,7 +234,8 @@ static void test_fold_runs_as_a_system_task(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-fold", "Fold");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
     struct edc_agent *agent = make_agent(sched);
     sched->send_llm = stub_send_llm;
     g_send_llm_calls = 0;
@@ -341,7 +360,8 @@ static void test_fold_failure_keeps_memory(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-fail", "Fail");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
     struct edc_agent *agent = make_agent(sched);
     sched->send_llm = stub_send_llm;
     g_send_llm_calls = 0;
@@ -396,7 +416,8 @@ static void test_fold_task_is_not_persisted(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-disk", "Disk");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
     struct edc_agent *agent = make_agent(sched);
     sched->send_llm = stub_send_llm;
     g_send_llm_calls = 0;
@@ -417,7 +438,8 @@ static void test_fold_task_is_not_persisted(void)
 
     /* 对照组: 没有折叠时的产物 */
     struct edc_session *ctrl = edc_session_new(cfg, "sess-disk", "Disk");
-    struct edc_scheduler *ctrl_sched = edc_scheduler_new(ctrl, cfg);
+    struct edc_scheduler *ctrl_sched = edc_scheduler_new(cfg);
+    install_resolver(ctrl_sched, ctrl);
     ctrl_sched->send_llm = stub_send_llm;
     struct edc_task *cleader = edc_task_new("1", "sess-disk", "1", "leader", edc_channel_adapter);
     struct edc_task_group *cgroup = edc_task_group_new(cleader);

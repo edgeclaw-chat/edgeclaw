@@ -15,6 +15,25 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/stat.h>
+/* ── P3 ③ 测试读口 ──────────────────────────────────────────────
+ * scheduler 不再持有"当前 session", 所以单测要给它装一个 store 读口: 把请求里
+ * 的 session 标签解析成 session 对象 (入站路由 / 快照拉取都走它)。这一层测试
+ * 没有 agent, ctx 就留给它 (agent 那层用它自己的读口)。 */
+static struct edc_session *test_resolve_session(void *ctx, const char *session_id)
+{
+    struct edc_session *sess = ctx;
+    if (!sess)
+        return NULL;
+    if (!session_id || !*session_id)
+        return sess;
+    return (sess->session_id && strcmp(session_id, sess->session_id) == 0) ? sess : NULL;
+}
+
+static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
+{
+    sched->ctx = sess;
+    sched->resolve_session = test_resolve_session;
+}
 
 /* Stub for _run_loop pulled in by edc_commands */
 volatile sig_atomic_t _run_loop = 1;
@@ -106,7 +125,8 @@ static void test_no_file(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-new", "New");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* load_state should return false for a fresh session */
     bool ok = edc_session_load_state(session, sched);
@@ -130,7 +150,8 @@ static void test_write_read(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-wr", "WriteRead");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* Build some state */
     struct edc_task *task = edc_task_new("task-1", "sess-wr", "task-1",
@@ -153,7 +174,7 @@ static void test_write_read(void)
     edc_session_add_group(session, group);
     session->active_task = task;
     session->next_completion_seq = 8;
-    edc_scheduler_set_foreground(sched, group);
+    edc_scheduler_set_foreground(session, group);
 
     /* Save */
     bool saved = edc_session_save_state(session, sched);
@@ -170,7 +191,8 @@ static void test_write_read(void)
 
     /* Load into a fresh session */
     struct edc_session *session2 = edc_session_new(cfg, "sess-wr", "WriteRead");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
 
     bool loaded = edc_session_load_state(session2, sched2);
     CHECK(loaded, "load_state succeeds");
@@ -184,7 +206,7 @@ static void test_write_read(void)
     CHECK(rt->completion_seq == 7, "completion_seq restored");
     CHECK(session2->next_completion_seq == 8, "next_completion_seq restored");
     CHECK(session2->active_task == rt, "active_task restored");
-    CHECK(edc_scheduler_get_foreground(sched2) != NULL, "foreground_group restored");
+    CHECK(edc_scheduler_get_foreground(session2) != NULL, "foreground_group restored");
 
     /* Verify turn messages */
     CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
@@ -209,7 +231,8 @@ static void test_overwrite(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-ow", "Overwrite");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* First save: 1 task */
     struct edc_task *t1 = edc_task_new("task-A", "sess-ow", "task-A",
@@ -240,7 +263,8 @@ static void test_overwrite(void)
 
     /* Load and verify 2 tasks */
     struct edc_session *session2 = edc_session_new(cfg, "sess-ow", "Overwrite");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
     CHECK(edc_session_load_state(session2, sched2), "load succeeds");
     CHECK(count_tasks(session2) == 2, "2 tasks after second save");
 
@@ -263,7 +287,8 @@ static void test_corrupt_file(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-corr", "Corrupt");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* Manually write invalid JSON */
     sds dir = edc_path_join(TEST_WS, "sess-corr", NULL);
@@ -299,7 +324,8 @@ static void test_atomic_write(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-atom", "Atomic");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     struct edc_task *t1 = edc_task_new("task-A", "sess-atom", "task-A",
                                         "task A", edc_channel_adapter);
@@ -352,7 +378,8 @@ static void test_version_mismatch(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-ver", "Version");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* Manually write a session.json with wrong version */
     sds dir = edc_path_join(TEST_WS, "sess-ver", NULL);
@@ -389,7 +416,8 @@ static void test_load_onto_nonempty(void)
 
     /* First, create and save a session */
     struct edc_session *s1 = edc_session_new(cfg, "sess-ne", "NonEmpty");
-    struct edc_scheduler *sc1 = edc_scheduler_new(s1, cfg);
+    struct edc_scheduler *sc1 = edc_scheduler_new(cfg);
+    install_resolver(sc1, s1);
 
     struct edc_task *t1 = edc_task_new("task-A", "sess-ne", "task-A",
                                         "first", edc_channel_adapter);
@@ -407,7 +435,8 @@ static void test_load_onto_nonempty(void)
 
     /* Now create a new session that already has some groups */
     struct edc_session *s2 = edc_session_new(cfg, "sess-ne", "NonEmpty");
-    struct edc_scheduler *sc2 = edc_scheduler_new(s2, cfg);
+    struct edc_scheduler *sc2 = edc_scheduler_new(cfg);
+    install_resolver(sc2, s2);
 
     /* Pre-populate with a task */
     struct edc_task *pre = edc_task_new("pre-existing", "sess-ne", "pre-existing",
@@ -453,7 +482,8 @@ static void test_permission_errors(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-perm", "Perm");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* Create the directory and a session.json that is a directory (cannot be read as file) */
     sds dir = edc_path_join(TEST_WS, "sess-perm", NULL);

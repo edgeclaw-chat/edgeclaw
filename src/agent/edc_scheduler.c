@@ -30,7 +30,10 @@ struct edc_sched_task_entry
 static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg);
 /* 任务树快照: 只服务侧边栏 (任务树 + todo + 计数)。对话内容不再随快照下发
  * —— 聊天区由 TUI 自己持久化/回放显示流 (见 edc_tui_window.cpp)。 */
-static void sched_handle_task_snapshot(struct edc_scheduler *sched, const char *reason);
+/* 显式拉取: 前端点名要 `session_id` 那棵树 (BC_ACTOR_MSG_TASK_SNAPSHOT 的 data)。 */
+static void sched_handle_pull_snapshot(struct edc_scheduler *sched, const char *session_id);
+static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_session *session, const char *reason);
+static void sched_trace_notify(const char *reason, const char *session_id);
 /* TRANSIENT 任务的回收: 状态迁移/信号改变相位时入队, 消息末尾统一结算
  * (见下方 "TRANSIENT 任务的回收" 一节)。信号路径在文件前部, 故这里前向声明。 */
 static void sched_queue_reap(struct edc_scheduler *sched, struct edc_task *task);
@@ -42,14 +45,73 @@ static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *
 /* executor 的出站 ops 表（定义在文件后半；这里前向声明，供 new 里 init 用）。 */
 static const struct edc_executor_ops sched_executor_ops;
 
-/* 任务的属主 session: 被切到后台的 session 里的任务完成/取消时, turn、快照与
- * 落盘都要写回**它自己**, 而不是当前绑定的 sched->session (否则串台)。group
- * 没有属主时 (极端/测试) 回退到当前 session。 */
-static struct edc_session *sched_task_session(struct edc_scheduler *sched, struct edc_task *task)
+/* 任务的属主 session —— 被切到后台的 session 里的任务完成/取消时, turn、通知与
+ * 落盘都要写回**它自己** (否则串台)。P3 ③: 没有属主就**没有** session (不再回退
+ * 到"当前绑定" —— 那份副本已经不存在了); 调用方按"没有属主"处理。 */
+static struct edc_session *sched_task_session(struct edc_task *task)
 {
-    if (task && task->group && task->group->session)
-        return task->group->session;
-    return sched ? sched->session : NULL;
+    return (task && task->group) ? task->group->session : NULL;
+}
+
+/* 前台组是 session 的属性 (terminal tab); scheduler 不持有副本。 */
+static struct edc_task_group *sched_foreground(struct edc_session *session)
+{
+    return session ? session->foreground_group : NULL;
+}
+
+/* 入站消息的 session 标签 → session 对象: 走 store 读口 (规则 8: 向外是调用)。
+ * 没有读口 (单测没装) 或标签解析不出来 → NULL: 调用方**拒绝**这条输入, 不猜。 */
+static struct edc_session *sched_resolve_session(struct edc_scheduler *sched, const char *session_id)
+{
+    if (!sched || !sched->resolve_session)
+        return NULL;
+    return sched->resolve_session(sched->ctx, session_id);
+}
+
+/* ── "某棵树的某处变了" (事件, 不带树; 见 edc_scheduler_snapshot_changed_fn) ──
+ *
+ * 只记录**哪个 session** 变了 (按指针去重), 由 actor handler 在本条消息末尾
+ * 一次性通知出去。前端收到通知后自己决定要不要拉 —— 于是没人在看的那棵树
+ * 一次都不会被序列化。 */
+static void sched_mark_dirty(struct edc_scheduler *sched, struct edc_session *session, const char *reason)
+{
+    if (!sched || !session)
+        return;
+    for (size_t i = 0; i < sched->dirty_count; i++)
+    {
+        if (sched->dirty[i].session == session)
+            return; /* 本条消息里已经标过它了 */
+    }
+    if (sched->dirty_count == sched->dirty_cap)
+    {
+        size_t cap = sched->dirty_cap ? sched->dirty_cap * 2 : 4;
+        struct edc_sched_dirty *grown = realloc(sched->dirty, cap * sizeof(*grown));
+        if (!grown)
+            return;
+        sched->dirty = grown;
+        sched->dirty_cap = cap;
+    }
+    sched->dirty[sched->dirty_count].session = session;
+    sched->dirty[sched->dirty_count].reason = reason;
+    sched->dirty_count++;
+}
+
+/* 本条消息引起的后果结算: 把脏 session 通知出去。一个一个发 (每个 session 一条
+ * 小消息), 发完清空 —— 下一次变化重新开始攒。 */
+static void sched_drain_dirty(struct edc_scheduler *sched)
+{
+    if (!sched || sched->dirty_count == 0)
+        return;
+    for (size_t i = 0; i < sched->dirty_count; i++)
+    {
+        struct edc_session *session = sched->dirty[i].session;
+        const char *reason = sched->dirty[i].reason;
+        const char *sid = (session && session->session_id) ? session->session_id : NULL;
+        sched_trace_notify(reason, sid);
+        if (sched->snapshot_changed && sid)
+            sched->snapshot_changed(sched, sid, reason);
+    }
+    sched->dirty_count = 0;
 }
 
 /* ── Task 序号持久化 ─────────────────────────────────────────
@@ -139,10 +201,9 @@ void edc_scheduler_observe_task_id(struct edc_scheduler *sched, const char *task
 
 /* ── 生命周期 ──────────────────────────────────────────────── */
 
-struct edc_scheduler *edc_scheduler_new(struct edc_session *session, struct edc_config *config)
+struct edc_scheduler *edc_scheduler_new(struct edc_config *config)
 {
     struct edc_scheduler *sched = g_new0(struct edc_scheduler, 1);
-    sched->session = session;
     sched->config = config;
     sched->task_hash = NULL;
     sched->next_task_id = 1;
@@ -187,6 +248,12 @@ void edc_scheduler_free(struct edc_scheduler *sched)
     free(sched->reap_pending);
     sched->reap_pending = NULL;
     sched->reap_count = 0;
+
+    /* 脏表只持有 session 指针 —— session 归 session_manager 所有, 这里只丢数组。 */
+    free(sched->dirty);
+    sched->dirty = NULL;
+    sched->dirty_count = 0;
+    sched->dirty_cap = 0;
     sched->reap_cap = 0;
 
     if (sched->self)
@@ -260,16 +327,17 @@ char *edc_scheduler_gen_task_id(struct edc_scheduler *sched)
     return strdup(buf);
 }
 
-struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const char *desc, edc_channel_type channel_type)
+struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, struct edc_session *session, const char *desc,
+                                           edc_channel_type channel_type)
 {
-    if (!sched)
+    if (!sched || !session)
         return NULL;
 
     char *tid = edc_scheduler_gen_task_id(sched);
-    /* 任务归属调度器当前绑定的 session (经 edc_scheduler_set_session 切换),
-     * 不再硬编码 "sess-1"。无 session 时 (测试/极端情况) 才回退占位 id。 */
-    const char *sid = (sched->session && sched->session->session_id) ? sched->session->session_id : "sess-1";
-    struct edc_task_group *fg = edc_scheduler_get_foreground(sched);
+    /* 任务归属**显式传进来的** session (P3: 不再读"当前绑定"的那份副本)。
+     * 无 session 直接拒绝 —— 猜一个 session 出来正是这份副本存在时的老毛病。 */
+    const char *sid = session->session_id ? session->session_id : "sess-1";
+    struct edc_task_group *fg = sched_foreground(session);
     const char *gid = fg ? fg->group_id : tid;
 
     struct edc_task *task = edc_task_new(tid, sid, gid, desc, channel_type);
@@ -282,21 +350,21 @@ struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const ch
     return task;
 }
 
-struct edc_task_group *edc_scheduler_create_group(struct edc_scheduler *sched, struct edc_task *leader)
+struct edc_task_group *edc_scheduler_create_group(struct edc_scheduler *sched, struct edc_session *session,
+                                                  struct edc_task *leader)
 {
-    if (!sched || !leader)
+    if (!sched || !session || !leader)
         return NULL;
     struct edc_task_group *group = edc_task_group_new(leader);
-    edc_scheduler_add_group(sched, group);
+    edc_scheduler_add_group(sched, session, group);
     return group;
 }
 
-void edc_scheduler_add_group(struct edc_scheduler *sched, struct edc_task_group *group)
+void edc_scheduler_add_group(struct edc_scheduler *sched, struct edc_session *session, struct edc_task_group *group)
 {
-    if (!sched || !group)
+    if (!sched || !group || !session)
         return;
-    if (sched->session)
-        edc_session_add_group(sched->session, group);
+    edc_session_add_group(session, group);
 }
 
 /* ── system task: 有活干 + TRANSIENT + 可见 ──────────────────
@@ -342,7 +410,7 @@ struct edc_task *edc_scheduler_spawn_system_task(struct edc_scheduler *sched, st
     }
 
     /* 侧栏立刻能看到它 (它可能就是当前唯一在跑的东西)。 */
-    sched->snapshot_pending = true;
+    sched_mark_dirty(sched, session, "system-task");
     return task;
 }
 
@@ -410,12 +478,13 @@ struct edc_task *edc_scheduler_find_task(struct edc_scheduler *sched, void *requ
     return entry ? entry->task : NULL;
 }
 
-struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sched, const char *task_id)
+struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sched, struct edc_session *session,
+                                               const char *task_id)
 {
-    if (!sched || !task_id || !sched->session)
+    if (!sched || !task_id || !session)
         return NULL;
     struct edc_task_group *group;
-    DL_FOREACH(sched->session->groups, group)
+    DL_FOREACH(session->groups, group)
     {
         struct edc_task *task = edc_task_group_find_task(group, task_id);
         if (task)
@@ -426,65 +495,35 @@ struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sched, cons
 
 /* ── 前台/后台 ──────────────────────────────────────────────── */
 
-void edc_scheduler_set_foreground(struct edc_scheduler *sched, struct edc_task_group *group)
+void edc_scheduler_set_foreground(struct edc_session *session, struct edc_task_group *group)
 {
-    if (!sched)
-        return;
-    /* 前台组是 session 的属性 (terminal tab), scheduler 不再持有副本。这里只
-     * 写属主 session: group 为 NULL (如 /task bg) 时清掉当前 session 的前台组。 */
-    struct edc_session *owner = group ? group->session : sched->session;
+    /* 前台组是 session 的属性 (terminal tab)。group 非 NULL 时属主由它自己推出;
+     * NULL (/task bg) 时用调用方给的 session。 */
+    struct edc_session *owner = group ? group->session : session;
     if (owner)
         owner->foreground_group = group;
 }
 
-struct edc_task_group *edc_scheduler_get_foreground(struct edc_scheduler *sched)
+struct edc_task_group *edc_scheduler_get_foreground(struct edc_session *session)
 {
-    if (!sched || !sched->session)
-        return NULL;
-    return sched->session->foreground_group;
+    return sched_foreground(session);
 }
 
-/* ── 当前 session ──────────────────────────────────────────── */
-
-struct edc_session *edc_scheduler_get_session(struct edc_scheduler *sched)
+const char *edc_scheduler_task_workdir(struct edc_task *task)
 {
-    return sched ? sched->session : NULL;
-}
-
-void edc_scheduler_set_session(struct edc_scheduler *sched, struct edc_session *session)
-{
-    if (!sched)
-        return;
-    /* 前台组是目标 session 自己的属性, 绑定 session 即恢复其前台组 ——
-     * 无需再拷贝到 scheduler (新建 session 为 NULL, 首个任务会自建)。 */
-    sched->session = session;
-}
-
-/* 从 scheduler actor 取当前 session 绑定的工作目录 (未绑定返回 NULL)。
- * 工具层拿到的只有 actor 指针 (tb->scheduler), actor->state 即 scheduler 结构
- * (见 edc_scheduler_new)。 */
-const char *edc_scheduler_session_workdir(edc_actor_t *scheduler_actor)
-{
-    struct edc_scheduler *sched = scheduler_actor ? (struct edc_scheduler *)scheduler_actor->state : NULL;
-    return (sched && sched->session) ? edc_session_get_workdir(sched->session) : NULL;
-}
-
-const char *edc_scheduler_task_workdir(edc_actor_t *scheduler_actor, struct edc_task *task)
-{
-    /* 属主 session 优先: 后台 session 的任务在"切走"后仍应按自己的绑定目录
-     * 执行, 而不是当前正在显示的 session 的目录。 */
+    /* 属主 session: 后台 session 的任务在"切走"后仍按自己的绑定目录执行,
+     * 而不是"当前正在显示"的那个 session 的目录 (P3 ③ 起后者已不存在于 core)。
+     * 没有属主就返回 NULL —— 由调用方兜底, core 不猜。 */
     struct edc_session *own = (task && task->group) ? task->group->session : NULL;
-    if (own)
-        return edc_session_get_workdir(own);
-    return edc_scheduler_session_workdir(scheduler_actor);
+    return own ? edc_session_get_workdir(own) : NULL;
 }
 
-bool edc_scheduler_has_active_tasks(struct edc_scheduler *sched)
+bool edc_scheduler_has_active_tasks(struct edc_scheduler *sched, struct edc_session *session)
 {
-    if (!sched || !sched->session)
+    if (!sched || !session)
         return false;
     struct edc_task_group *g;
-    DL_FOREACH(sched->session->groups, g)
+    DL_FOREACH(session->groups, g)
     {
         struct edc_task *t;
         LL_FOREACH2(g->members, t, group_next)
@@ -540,9 +579,10 @@ void edc_scheduler_send_signal_to_task_ptr(struct edc_scheduler *sched, struct e
     sched_queue_reap(sched, task);
 }
 
-void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *task_id, edc_task_signal sig)
+void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, struct edc_session *session, const char *task_id,
+                                       edc_task_signal sig)
 {
-    struct edc_task *task = edc_scheduler_find_task_by_id(sched, task_id);
+    struct edc_task *task = edc_scheduler_find_task_by_id(sched, session, task_id);
     if (!task)
         return;
     edc_scheduler_send_signal_to_task_ptr(sched, task, sig);
@@ -578,12 +618,13 @@ static void sched_signal_group_members(struct edc_scheduler *sched, struct edc_t
     sched_queue_reap(sched, task);
 }
 
-void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, const char *group_id, edc_task_signal sig)
+void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, struct edc_session *session, const char *group_id,
+                                        edc_task_signal sig)
 {
-    if (!sched || !sched->session)
+    if (!sched || !session)
         return;
     struct edc_task_group *group = NULL;
-    DL_FOREACH(sched->session->groups, group)
+    DL_FOREACH(session->groups, group)
     {
         if (strcmp(group->group_id, group_id) == 0)
             break;
@@ -603,9 +644,9 @@ void edc_scheduler_send_signal_to_session(struct edc_scheduler *sched, struct ed
     }
 }
 
-void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, edc_task_signal sig)
+void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, struct edc_session *session, edc_task_signal sig)
 {
-    edc_scheduler_send_signal_to_session(sched, sched ? sched->session : NULL, sig, false);
+    edc_scheduler_send_signal_to_session(sched, session, sig, false);
 }
 
 /* ── resume ────────────────────────────────────────────────── */
@@ -805,8 +846,8 @@ void edc_scheduler_drain_reap_pending(struct edc_scheduler *sched)
     {
         struct edc_task *task = sched->reap_pending[--sched->reap_count];
         sched_reap_one(sched, task);
-        /* 树上少了一行 (可能整组没了) —— 置脏, 由本消息末尾的合并推送下发。 */
-        sched->snapshot_pending = true;
+        /* 树上少了一行 (可能整组没了) —— 置脏, 由本消息末尾统一通知属主 session。 */
+        sched_mark_dirty(sched, sched_task_session(task), "reap");
     }
 }
 
@@ -833,7 +874,7 @@ static void sched_move_task(struct edc_scheduler *sched, struct edc_task *task, 
     if (edc_task_move(task, step, life))
         sched_queue_reap(sched, task);
     if (sched)
-        sched->snapshot_pending = true;
+        sched_mark_dirty(sched, sched_task_session(task), "state");
 }
 
 /* 强制置相位 (不查转移表) —— 给**兜底出口**用。
@@ -850,7 +891,7 @@ static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *
     /* force 也可能把 TRANSIENT 任务直接送到终态 (兜底/取消) —— 同一条回收规则。 */
     sched_queue_reap(sched, task);
     if (sched)
-        sched->snapshot_pending = true;
+        sched_mark_dirty(sched, sched_task_session(task), "state");
 }
 
 /* ── 内部：消息路由 ────────────────────────────────────────── */
@@ -861,7 +902,18 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     if (!input)
         return;
 
-    struct edc_task_group *fg = edc_scheduler_get_foreground(sched);
+    /* 这条输入属于哪个 session: 由**消息自己**说 (P3: 不再读 scheduler 身上那份
+     * "当前绑定"的副本)。标签为空时由 store 读口给默认值 (agent 给活跃 session),
+     * 于是 crontab 这类没有 session 概念的入站行为不变; 而 TUI/CLI 永远显式带 id。
+     * 解析不出来就**拒绝** —— 猜一个 session 出来正是老实现"切错台"的来源。 */
+    struct edc_session *session = sched_resolve_session(sched, input->session_id);
+    if (!session)
+    {
+        log_warn("input dropped: no session for tag '%s'", input->session_id ? input->session_id : "(none)");
+        return;
+    }
+
+    struct edc_task_group *fg = sched_foreground(session);
     struct edc_task *task = NULL;
 
     /* 斜杠命令 / @组寻址 交给命令处理器 (shell); 普通输入**一律新建 task**。
@@ -880,13 +932,15 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
         return;
 
     /* 无命令处理器 (或未处理) → 兜底新建 task (本条输入就是它的 turn)。 */
-    task = edc_scheduler_create_task(sched, input->content, input->type);
-    edc_session_set_active_task(sched->session, task);
+    task = edc_scheduler_create_task(sched, session, input->content, input->type);
+    if (!task)
+        return;
+    edc_session_set_active_task(session, task);
 
     if (!fg || fg->is_orphaned || fg->member_count == 0)
     {
-        fg = edc_scheduler_create_group(sched, task);
-        edc_scheduler_set_foreground(sched, fg);
+        fg = edc_scheduler_create_group(sched, session, task);
+        edc_scheduler_set_foreground(session, fg);
     }
     else
     {
@@ -1049,19 +1103,13 @@ static void ex_flush_redirects(void *ctx, struct edc_task *task)
     sched_flush_redirects(task);
 }
 
-static void ex_task_snapshot(void *ctx)
+static void ex_task_snapshot(void *ctx, struct edc_task *task)
 {
-    sched_handle_task_snapshot((struct edc_scheduler *)ctx, "tool");
+    struct edc_scheduler *sched = ctx;
+    sched_mark_dirty(sched, sched_task_session(task), "complete");
 }
 
 /* 展示逻辑: 这个 task 此刻在被显示吗 (规则 8 的 active-task 闸门)。 */
-static bool ex_should_snapshot_on_complete(void *ctx, struct edc_task *task)
-{
-    struct edc_scheduler *sched = ctx;
-    return !sched->session || edc_session_get_active_task(sched->session) != task ||
-           task->group != sched->session->foreground_group;
-}
-
 /* task 之间的事: 依赖链上排队的输入自动启动。 */
 static void ex_start_queued_dependents(void *ctx, struct edc_task *task)
 {
@@ -1085,7 +1133,8 @@ static void ex_start_queued_dependents(void *ctx, struct edc_task *task)
 
 static struct edc_session *ex_task_session(void *ctx, struct edc_task *task)
 {
-    return sched_task_session((struct edc_scheduler *)ctx, task);
+    (void)ctx;
+    return sched_task_session(task);
 }
 
 /* 表达式原样搬自 sched_handle_llm_resp 的 `no_key`（含 config 为 NULL 时判 false）。 */
@@ -1121,10 +1170,9 @@ static void ex_save_session(void *ctx, struct edc_session *s)
  * 那个 500ms 轮询的前提。 */
 static void ex_notify_foreground_state(void *ctx, struct edc_task *task)
 {
-    (void)task;
     struct edc_scheduler *sched = ctx;
-    if (sched)
-        sched->snapshot_pending = true;
+    /* 事件属主 = 这个任务的 session (前台组是它的属性)。 */
+    sched_mark_dirty(sched, sched_task_session(task), "foreground");
 }
 
 static const struct edc_executor_ops sched_executor_ops = {
@@ -1138,7 +1186,6 @@ static const struct edc_executor_ops sched_executor_ops = {
     .notify_dependents = ex_notify_dependents,
     .flush_redirects = ex_flush_redirects,
     .task_snapshot = ex_task_snapshot,
-    .should_snapshot_on_complete = ex_should_snapshot_on_complete,
     .start_queued_dependents = ex_start_queued_dependents,
     .task_session = ex_task_session,
     .no_api_key = ex_no_api_key,
@@ -1194,13 +1241,13 @@ static void sched_handle_tool_emit(struct edc_scheduler *sched, struct edc_actor
     if (!task || task->cancelled_request)
         return;
 
-    /* 当前显示的 session 只放行 active task; 后台 session 的工具输出照发,
-     * 由前端按其 session_id 静默写进它自己的流。 */
-    struct edc_session *own = sched_task_session(sched, task);
+    /* 没有属主就没有可投递的地方 (P3 ③: 不再回退到"当前绑定")。 */
+    struct edc_session *own = sched_task_session(task);
     if (!own)
         return;
-    if (own == sched->session && edc_session_get_active_task(own) != task)
-        return;
+    /* 展示闸门已移到前端 (P3 ③): core 不再问"谁在看" (它已经没有"当前 session"
+     * 这份副本了)。它只把**事实**随消息声明出去 —— "这条输出来自它 session 的
+     * active task 吗" —— 由前端按"我正在显示哪棵树"决定显不显示。 */
 
     if (sched->send_tool_message)
         sched->send_tool_message(sched, task, v.header, v.content, v.render_pref, msg->request_id);
@@ -1210,7 +1257,7 @@ static void sched_handle_tool_emit(struct edc_scheduler *sched, struct edc_actor
      * 变化 (TOOL_CALLING 期间), 不会触发状态通知快照 —— 这里主动补推一次,
      * 让 TUI 的 TodoWidget 立即按新清单刷新 (规则3)。 */
     if (v.header && strcmp(v.header, "todowrite") == 0)
-        sched_handle_task_snapshot(sched, "todo");
+        sched_mark_dirty(sched, own, "todo");
 }
 
 /* ── Actor 入口 ────────────────────────────────────────────── */
@@ -1234,18 +1281,49 @@ static void sched_trace_snapshot(const char *reason, sds json)
     FILE *f = fopen(path, "a");
     if (!f)
         return;
-    fprintf(f, "push reason=%s %s\n", reason ? reason : "?", json ? json : "");
+    fprintf(f, "pull reason=%s %s\n", reason ? reason : "?", json ? json : "");
+    fclose(f);
+}
+
+/* 同一份 trace 的"事件"那一半: 通知不带树, 只记 谁 + 为什么。
+ * 两条线合起来能回答"某个变化是怎么到达前端的" —— 事件 → 拉取 → 树。 */
+static void sched_trace_notify(const char *reason, const char *session_id)
+{
+    const char *path = getenv("EDGECLAW_SNAPSHOT_TRACE");
+    if (!path || !*path)
+        return;
+    FILE *f = fopen(path, "a");
+    if (!f)
+        return;
+    fprintf(f, "notify reason=%s session=%s\n", reason ? reason : "?", session_id ? session_id : "?");
     fclose(f);
 }
 
 
-static void sched_handle_task_snapshot(struct edc_scheduler *sched, const char *reason)
+/* 前端点名要一棵树。解析不出来就不给 (前端拿到的是"没人应答", 不是别人的树)。 */
+static void sched_handle_pull_snapshot(struct edc_scheduler *sched, const char *session_id)
 {
-    if (!sched || !sched->session)
+    /* 一次**读**：先把已经入队的后果结算掉 (TRANSIENT 回收), 再建树 —— 否则应答里
+     * 会带着一个不该再出现的任务, 而前端只在收到通知时才重拉 (它没有第二次机会
+     * 去纠正这一帧)。生产上上一条消息早就结算完了, 这里多半是空操作。 */
+    edc_scheduler_drain_reap_pending(sched);
+
+    struct edc_session *session = sched_resolve_session(sched, session_id);
+    if (!session)
+    {
+        log_warn("snapshot request dropped: no session for tag '%s'", session_id ? session_id : "(none)");
+        return;
+    }
+    sched_handle_task_snapshot(sched, session, "pull");
+}
+
+static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_session *session, const char *reason)
+{
+    if (!sched || !session)
         return;
 
     cJSON *root = cJSON_CreateObject();
-    struct edc_session *sess = sched->session;
+    struct edc_session *sess = session;
     cJSON_AddStringToObject(root, "session_id", sess->session_id ? sess->session_id : "");
     cJSON_AddStringToObject(root, "session_name", edc_session_get_name(sess));
     /* 统计口径 = 已提交 session 消息 + session 内所有 task 在途 turn 的消息数。
@@ -1273,7 +1351,7 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, const char *
 
     cJSON *groups = cJSON_AddArrayToObject(root, "groups");
     struct edc_task_group *g;
-    DL_FOREACH(sched->session->groups, g)
+    DL_FOREACH(session->groups, g)
     {
         cJSON *gj = cJSON_CreateObject();
         cJSON_AddStringToObject(gj, "id", g->group_id ? g->group_id : "");
@@ -1284,7 +1362,7 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, const char *
         cJSON_AddStringToObject(gj, "kind", edc_task_group_kind_name(g->kind));
         cJSON_AddNumberToObject(gj, "member_count", g->member_count);
         cJSON_AddBoolToObject(gj, "orphaned", g->is_orphaned);
-        cJSON_AddBoolToObject(gj, "fg", edc_scheduler_get_foreground(sched) == g);
+        cJSON_AddBoolToObject(gj, "fg", sched_foreground(session) == g);
         /* 组消息数: group history 已提交消息 (不含 history[0] 的组 system
          * prompt) + 组内各 task 在途 turn 的消息。history 在 task turn STOP
          * 提交前同步引用 (提交后 active_turn 清空), 因此不重复计数; 侧边栏
@@ -1343,8 +1421,9 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, const char *
 
     sched_trace_snapshot(reason, out);
 
-    if (sched->snapshot_ready)
-        sched->snapshot_ready(sched, out);
+    /* 应答只发给**点名要它**的前端 (拉取路径), 不再有主动推送。 */
+    if (sched->snapshot_reply)
+        sched->snapshot_reply(sched, out);
     else
         sdsfree(out);
 }
@@ -1373,7 +1452,9 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
         sched_handle_tool_emit(sched, msg);
         break;
     case BC_ACTOR_MSG_TASK_SNAPSHOT:
-        sched_handle_task_snapshot(sched, "poll");
+        /* 拉取: 前端**点名**要哪棵树 (data = session_id)。不点名就没有树 ——
+         * ①b 之后没有任何"顺带把树推给你"的路径。 */
+        sched_handle_pull_snapshot(sched, (const char *)msg->data);
         break;
     default:
         break;
@@ -1385,11 +1466,7 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
      * 这一帧还会画出那个刚被回收的任务。 */
     edc_scheduler_drain_reap_pending(sched);
 
-    if (sched->snapshot_pending)
-    {
-        sched->snapshot_pending = false;
-        sched_handle_task_snapshot(sched, "state");
-    }
+    sched_drain_dirty(sched);
 
     edc_actor_msg_free(msg);
 }

@@ -233,6 +233,33 @@ cc_test(
 )
 
 cc_test(
+    name = "test_session_snapshot",
+    srcs = ["test_session_snapshot.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_session_routing",
+    srcs = ["test_session_routing.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_snapshot_addressing",
+    srcs = ["test_snapshot_addressing.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_session_state_file",
     srcs = ["test_session_state_file.c"],
     deps = [
