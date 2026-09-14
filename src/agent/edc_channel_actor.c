@@ -165,6 +165,8 @@ static void edc_channel_trace_active_session(const char *session_id)
 void edc_channel_notify_active_session(struct edc_actor *channel_actor, const char *session_id)
 {
     edc_channel_trace_active_session(session_id);
-    struct edc_reply_to to = {channel_actor, channel_actor, EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE};
+    /* 切台通报: 由通道以**自己的**名义发出 (没有入站发送者)。*/
+    struct edc_reply_to to = {.channel_actor = channel_actor, .actor = channel_actor,
+                              .type = EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE};
     edc_channel_publish(to, session_id, sdsnew("active"));
 }

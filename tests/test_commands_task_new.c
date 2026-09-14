@@ -83,7 +83,7 @@ static void drive_command(struct edc_config *cfg, struct edc_session_manager *sm
     struct edc_channel_message *cm =
         edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsnew(content));
     /* 这个用例没有通道 actor (收不到回话, 也不关心) —— 回话地址只给类型。 */
-    edc_commands_handler(cfg, sm, sched, (struct edc_reply_to){NULL, NULL, cm->type}, cm);
+    edc_commands_handler(cfg, sm, sched, (struct edc_reply_to){.type = cm->type}, cm);
 }
 
 /* 挂起的任务不会进 send_llm, 所以只能自己去 session 的组里找。 */

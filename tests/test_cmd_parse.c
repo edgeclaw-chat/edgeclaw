@@ -1,4 +1,6 @@
 #include "edc_cmd_parse.h"
+#include "edc_shell_vars.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -102,6 +104,43 @@ static void test_flags_after_quotes(void)
     edc_cmd_task_opts_free(&o);
 }
 
+/* ── $VAR 展开的出参契约 ──────────────────────────────────────
+ * `edc_shell_expand_vars` 是"出参一定写定"的: **成功**也要把 *out_error 置 NULL,
+ * 这样调用方可以传一个未初始化的 `sds err;` 而不必自己先清零 (同 `edc_shell_spawn_task`)。
+ * 用毒值 (绝不解引用的 0x1) 验"是函数在写它", 而不是调用方自己清的。 */
+static sds stub_resolver(const char *name, void *user_data)
+{
+    (void)user_data;
+    if (strcmp(name, "GOOD") == 0)
+        return sdsnew("value");
+    return NULL; /* 其余一律"查不到" */
+}
+
+static void test_expand_vars_out_error(void)
+{
+    sds err = (sds)(uintptr_t)1;
+    sds out = edc_shell_expand_vars("plain text", stub_resolver, NULL, &err);
+    T_STREQ(out, "plain text", "expand: 无变量 → 原样返回");
+    T_CHECK(err == NULL, "expand: **成功**也要把 *out_error 置 NULL");
+    sdsfree(out);
+
+    err = (sds)(uintptr_t)1;
+    out = edc_shell_expand_vars("$MISSING", stub_resolver, NULL, &err);
+    T_CHECK(out == NULL, "expand: 查不到变量 → 返回 NULL");
+    T_CHECK(err != NULL, "expand: 失败时 *out_error 带文案");
+    sdsfree(err);
+
+    err = (sds)(uintptr_t)1;
+    out = edc_shell_expand_vars("$GOOD", stub_resolver, NULL, &err);
+    T_STREQ(out, "value", "expand: 查得到 → 展开");
+    T_CHECK(err == NULL, "expand: 成功路径 *out_error 仍被置 NULL");
+    sdsfree(out);
+
+    out = edc_shell_expand_vars("x", stub_resolver, NULL, NULL);
+    T_STREQ(out, "x", "expand: out_error 传 NULL 也安全");
+    sdsfree(out);
+}
+
 int main(void)
 {
     test_triple_single_raw();
@@ -111,6 +150,7 @@ int main(void)
     test_triple_multiline_bg();
     test_plain_unquoted();
     test_flags_after_quotes();
+    test_expand_vars_out_error();
 
     printf("test_cmd_parse: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

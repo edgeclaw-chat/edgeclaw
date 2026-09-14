@@ -41,6 +41,14 @@ typedef bool (*edc_runtime_command_fn)(struct edc_config *cfg, struct edc_sessio
  * at startup), 0 = force off, 1 = force on. The override is per-run and is NOT
  * persisted; only the in-TUI /sandbox command writes config.json. */
 extern struct edc_runtime *edc_runtime_new(bool setup, int sandbox_override);
+
+/* 关进程 (幂等, 可重复调用): 停 actor/runner → 把所有 session **原样落盘** → 清掉在途 turn。
+ * 它**会写盘** —— 名字里不带 "free" 就是为了这个: 销毁一个 runtime 不只是 free()。
+ * 单独暴露它是为了让"先落地、后释放"成为两件可分的事 (TUI 退出路径仍只调 free)。 */
+extern void edc_runtime_shutdown(struct edc_runtime *rt);
+
+/* 释放内存。会先补齐 `edc_runtime_shutdown()` 那一步 (保持"销毁即落盘"的老行为),
+ * 然后依次 free scheduler / session_manager / config / toolbox。 */
 extern void edc_runtime_free(struct edc_runtime *rt);
 
 /* ── 边界访问器 (只服务上面那一个读者: TUI 的 C bridge) ──────── */

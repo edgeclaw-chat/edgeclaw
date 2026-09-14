@@ -10,6 +10,10 @@
 
 sds edc_shell_expand_vars(const char *input, edc_shell_var_resolver_fn resolver, void *user_data, sds *out_error)
 {
+    /* 出参契约: 返回前**一定**写定 —— 成功置 NULL、失败置文案。调用方可以传一个未初始化
+     * 的 `sds err;` 而不必自己先清零 (`edc_shell_spawn_task` 用同一份契约)。 */
+    if (out_error)
+        *out_error = NULL;
     sds result = sdsempty();
     bool in_dq = false, in_sq = false;
     const char *p = input;

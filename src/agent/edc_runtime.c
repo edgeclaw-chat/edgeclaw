@@ -47,6 +47,10 @@ struct edc_runtime
     edc_actor_t *toolbox_actor;
 
     edc_actor_runner_t *runner;
+
+    /* shutdown() 幂等闸门 (见 edc_runtime_shutdown): "落盘"只能做一次 ——
+     * 重复跑一遍等于把刚恢复的状态又写一次。 */
+    bool shutdown_done;
 };
 
 typedef bool (*edc_runtime_command_fn)(struct edc_config *cfg, struct edc_session_manager *sm,
@@ -482,7 +486,7 @@ static bool edc_runtime_cb_handle_command(struct edc_scheduler *sched, struct ed
     struct edc_channel_message *msg = input ? input->origin : NULL;
     if (!agent || !msg)
         return false;
-    struct edc_reply_to to = {agent->channel_actor, actor, msg->type};
+    struct edc_reply_to to = {.channel_actor = agent->channel_actor, .actor = actor, .type = msg->type};
     return g_command_handler ? g_command_handler(agent->config, agent->session_manager, agent->scheduler, to, msg) : false;
 }
 
@@ -592,8 +596,9 @@ static void edc_runtime_cb_snapshot_reply(struct edc_scheduler *sched, sds seria
     struct edc_runtime *agent = edc_runtime_from_sched(sched);
     if (!serialized)
         return;
-    struct edc_reply_to to = {agent ? agent->channel_actor : NULL, edc_scheduler_get_actor(sched),
-                              EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE};
+    struct edc_reply_to to = {.channel_actor = agent ? agent->channel_actor : NULL,
+                              .actor = edc_scheduler_get_actor(sched),
+                              .type = EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE};
     edc_channel_publish(to, NULL, serialized);
 }
 
@@ -601,8 +606,9 @@ static void edc_runtime_cb_snapshot_reply(struct edc_scheduler *sched, sds seria
 static void edc_runtime_cb_snapshot_changed(struct edc_scheduler *sched, const char *session_id, const char *reason)
 {
     struct edc_runtime *agent = edc_runtime_from_sched(sched);
-    struct edc_reply_to to = {agent ? agent->channel_actor : NULL, edc_scheduler_get_actor(sched),
-                              EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE};
+    struct edc_reply_to to = {.channel_actor = agent ? agent->channel_actor : NULL,
+                              .actor = edc_scheduler_get_actor(sched),
+                              .type = EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE};
     edc_channel_publish(to, session_id, sdsnew(reason ? reason : ""));
 }
 
@@ -776,35 +782,66 @@ bool edc_runtime_set_llm_config(struct edc_runtime *agent, const char *api_url, 
 
 /* sandbox 配置的写口 (只碰 config) → edc_config.{c,h}
  * —— 它们与 config 的读写是同一个概念, 不该挂在 runtime 上。 */
-void edc_runtime_free(struct edc_runtime *agent)
+void edc_runtime_shutdown(struct edc_runtime *rt)
 {
-    if (!agent)
+    if (!rt || rt->shutdown_done)
         return;
 
-    edc_actor_runner_free(agent->runner);
-    edc_channel_actor_free(agent->channel_actor);
-    edc_toolbox_actor_free(agent->toolbox_actor);
-    edc_llm_actor_free(agent->llm_actor);
+    /* 1. 先停 actor (含 runner) —— 落盘必须在之后, 否则会与 actor 线程并发写。 */
+    edc_actor_runner_free(rt->runner);
+    rt->runner = NULL;
 
-    /* 退出 = 关闭进程, 不是用户要 remove session: 尽量保留原状态。把所有
+    /* 这三个 free **不接受 NULL** (会解引用 `actor->state`), 所以逐个判空:
+     * `edc_runtime_new` 的失败路径上 toolbox_actor 还没建出来, 以前会在这里空指针崩。*/
+    if (rt->channel_actor)
+    {
+        edc_channel_actor_free(rt->channel_actor);
+        rt->channel_actor = NULL;
+    }
+    if (rt->toolbox_actor)
+    {
+        edc_toolbox_actor_free(rt->toolbox_actor);
+        rt->toolbox_actor = NULL;
+    }
+    if (rt->llm_actor)
+    {
+        edc_llm_actor_free(rt->llm_actor);
+        rt->llm_actor = NULL;
+    }
+
+    /* 2. 退出 = 关闭进程, 不是用户要 remove session: 尽量保留原状态。把所有
      * session 完整落盘 (history + state + task/group), 让中断任务以
      * LLM_PROCESSING/TOOL_CALLING + 工具账本**原样**保存, 加载时统一收敛为
      * SUSPENDED, 用户可选择是否 resume —— 因此不写 CANCELLED, 也不在取消后
-     * 再落盘。放在 actor runner 停掉之后调用, 避免与 actor 线程并发写。 */
-    if (agent->scheduler)
-        edc_session_store_save_all_sessions_state(agent->session_manager, agent->scheduler);
+     * 再落盘。 */
+    if (rt->scheduler)
+        edc_session_store_save_all_sessions_state(rt->session_manager, rt->scheduler);
 
-    edc_session_store_remove_all_turns(agent->session_manager, agent->scheduler);
+    /* 3. 在途 turn 不再属于任何活着的 turn: 清掉 (sched 为空时这两个函数自己返回)。 */
+    edc_session_store_remove_all_turns(rt->session_manager, rt->scheduler);
 
-    edc_scheduler_free(agent->scheduler);
+    rt->shutdown_done = true; /* 幂等: 上面的落盘只能做一次 */
+}
 
-    if (agent->session_manager)
-        edc_session_manager_free(agent->session_manager);
-    if (agent->config)
-        edc_config_free(agent->config);
-    if (agent->toolbox)
-        edc_toolbox_free(agent->toolbox);
+void edc_runtime_free(struct edc_runtime *rt)
+{
+    if (!rt)
+        return;
+
+    /* 先补齐"关进程"该做的 (停 actor + 落盘 + 清在途 turn) —— 保持老的
+     * "销毁即落盘"行为; 想分两步走的调用方显式先 `edc_runtime_shutdown()`。
+     * 位置在**释放零件之前**: 落盘要用到 scheduler / session_manager。 */
+    edc_runtime_shutdown(rt);
+
+    edc_scheduler_free(rt->scheduler);
+
+    if (rt->session_manager)
+        edc_session_manager_free(rt->session_manager);
+    if (rt->config)
+        edc_config_free(rt->config);
+    if (rt->toolbox)
+        edc_toolbox_free(rt->toolbox);
 
     edc_secret_cleanup();
-    free(agent);
+    free(rt);
 }

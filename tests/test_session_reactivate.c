@@ -133,7 +133,7 @@ static void switch_to(struct edc_config *cfg, struct edc_session_manager *sm, st
     sds cmd = sdscatprintf(sdsempty(), "/session switch %s", target);
     struct edc_channel_message *msg =
         edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsdup(cmd));
-    edc_commands_handler(cfg, sm, sched, (struct edc_reply_to){channel_actor, NULL, msg->type}, msg);
+    edc_commands_handler(cfg, sm, sched, (struct edc_reply_to){.channel_actor = channel_actor, .type = msg->type}, msg);
     edc_channel_message_free(msg);
     sdsfree(cmd);
 }
