@@ -8,59 +8,11 @@
 #include <string.h>
 #include <strings.h>
 
-/* ── 状态名映射 ────────────────────────────────────────────── */
-
-const char *edc_task_state_name(edc_task_state state)
-{
-    switch (state)
-    {
-    case TASK_IDLE:
-        return "IDLE";
-    case TASK_WAITING_DEPS:
-        return "WAITING_DEPS";
-    case TASK_WAITING_INPUT:
-        return "WAITING_INPUT";
-    case TASK_LLM_PROCESSING:
-        return "LLM_PROCESSING";
-    case TASK_TOOL_CALLING:
-        return "TOOL_CALLING";
-    case TASK_SUSPENDED:
-        return "SUSPENDED";
-    case TASK_COMPLETED:
-        return "COMPLETED";
-    case TASK_CANCELLED:
-        return "CANCELLED";
-    case TASK_ERROR:
-        return "ERROR";
-    default:
-        return "UNKNOWN";
-    }
-}
-
-edc_task_state edc_task_classify_state(const char *name)
-{
-    if (!name)
-        return TASK_IDLE;
-    if (strcasecmp(name, "idle") == 0)
-        return TASK_IDLE;
-    if (strcasecmp(name, "waiting_deps") == 0)
-        return TASK_WAITING_DEPS;
-    if (strcasecmp(name, "waiting_input") == 0)
-        return TASK_WAITING_INPUT;
-    if (strcasecmp(name, "llm_processing") == 0)
-        return TASK_LLM_PROCESSING;
-    if (strcasecmp(name, "tool_calling") == 0)
-        return TASK_TOOL_CALLING;
-    if (strcasecmp(name, "suspended") == 0)
-        return TASK_SUSPENDED;
-    if (strcasecmp(name, "completed") == 0)
-        return TASK_COMPLETED;
-    if (strcasecmp(name, "cancelled") == 0)
-        return TASK_CANCELLED;
-    if (strcasecmp(name, "error") == 0)
-        return TASK_ERROR;
-    return TASK_IDLE;
-}
+/* ── 状态名映射: 已退休 (R3b) ──────────────────────────────
+ *
+ * 旧的 `edc_task_state_name(enum)` / `edc_task_classify_state(str)` 随旧枚举一起删掉了。
+ * 显示名现在只有一处来源: `edc_task_state_str` —— 由 (step, life) 直接出。
+ * 反向 (串 → 状态) 从来没有 src 调用方: 落盘的 step/life 走 classify_step/life。 */
 
 /* ── 状态转换校验 ──────────────────────────────────────────── */
 
@@ -74,8 +26,6 @@ const char *edc_task_step_name(edc_task_step step)
         return "READY";
     case EDC_TASKSTEP_AWAIT_DEPS:
         return "AWAIT_DEPS";
-    case EDC_TASKSTEP_AWAIT_INPUT:
-        return "AWAIT_INPUT";
     case EDC_TASKSTEP_AWAIT_EXEC:
         return "AWAIT_EXEC";
     case EDC_TASKSTEP_AWAIT_TOOLS:
@@ -112,8 +62,12 @@ edc_task_step edc_task_classify_step(const char *name)
         return EDC_TASKSTEP_READY;
     if (strcmp(name, "AWAIT_DEPS") == 0)
         return EDC_TASKSTEP_AWAIT_DEPS;
+    /* "AWAIT_INPUT" 是**旧名**, 从来就等同于 READY (task 创建时就带着 input, 没有
+     * "等用户输入"这个相位)。必须收这一条: 前一个二进制写出的 v5 文件、以及
+     * tools/migrate_session_v4_to_v5.py 早先的产物里, 停着的任务 step 都是它 ——
+     * 不折成 READY 就会载入成不可 attach 的僵尸 (读侧已改按 READY/IDLE 判定)。 */
     if (strcmp(name, "AWAIT_INPUT") == 0)
-        return EDC_TASKSTEP_AWAIT_INPUT;
+        return EDC_TASKSTEP_READY;
     if (strcmp(name, "AWAIT_EXEC") == 0)
         return EDC_TASKSTEP_AWAIT_EXEC;
     if (strcmp(name, "AWAIT_TOOLS") == 0)
@@ -140,151 +94,200 @@ edc_task_life edc_task_classify_life(const char *name)
     return EDC_LIFE_ALIVE;
 }
 
-/* 旧常量 -> (step, life)。SUSPENDED **只动 life, 不动 step** —— 那正是这次改动要
- * 保住的东西: 挂起/重启改变"活着吗", 不改变"在哪一步"。 */
-static void legacy_to_step_life(edc_task_state s, edc_task_step *step, edc_task_life *life)
-{
-    switch (s)
-    {
-    case TASK_IDLE:
-        *step = EDC_TASKSTEP_READY;
-        *life = EDC_LIFE_ALIVE;
-        break;
-    case TASK_WAITING_DEPS:
-        *step = EDC_TASKSTEP_AWAIT_DEPS;
-        *life = EDC_LIFE_ALIVE;
-        break;
-    case TASK_WAITING_INPUT:
-        *step = EDC_TASKSTEP_AWAIT_INPUT;
-        *life = EDC_LIFE_ALIVE;
-        break;
-    case TASK_LLM_PROCESSING:
-        *step = EDC_TASKSTEP_AWAIT_EXEC;
-        *life = EDC_LIFE_ALIVE;
-        break;
-    case TASK_TOOL_CALLING:
-        *step = EDC_TASKSTEP_AWAIT_TOOLS;
-        *life = EDC_LIFE_ALIVE;
-        break;
-    case TASK_SUSPENDED:
-        *life = EDC_LIFE_SUSPENDED; /* step 保持不动 */
-        break;
-    case TASK_COMPLETED:
-        *step = EDC_TASKSTEP_DONE;
-        *life = EDC_LIFE_COMPLETED;
-        break;
-    case TASK_CANCELLED:
-        *step = EDC_TASKSTEP_DONE;
-        *life = EDC_LIFE_CANCELLED;
-        break;
-    case TASK_ERROR:
-        *step = EDC_TASKSTEP_DONE;
-        *life = EDC_LIFE_ERROR;
-        break;
-    }
-}
-
-edc_task_state edc_task_state_of(const struct edc_task *task)
+/* 派生的显示名 (快照 / 日志 / `/task status|list|join` 文案)。见 edc_task.h: 词表冻结。
+ *
+ * 旧有的两级 (state_of → state_name) 随旧枚举一起退休 (R3b): 现在 (step, life) **直接**
+ * 出词, 顺序与原实现逐字一致 —— **life 先说话** (挂起/终态掩掉 step), 然后才轮到 step。
+ * 两个"畸形但必须不崩"的组合沿用旧的兜底口径: (DONE, ALIVE) → IDLE,
+ * (AWAIT_RESOURCE, ALIVE) → WAITING_DEPS (旧枚举里没有对应的词)。
+ * `WAITING_INPUT` 这个串**再也不会被返回** —— 那个相位退休了 (旧名 = READY)。 */
+const char *edc_task_state_str(const struct edc_task *task)
 {
     if (!task)
-        return TASK_IDLE;
+        return "IDLE";
     switch (task->life)
     {
     case EDC_LIFE_SUSPENDED:
-        return TASK_SUSPENDED;
+        return "SUSPENDED";
     case EDC_LIFE_COMPLETED:
-        return TASK_COMPLETED;
+        return "COMPLETED";
     case EDC_LIFE_CANCELLED:
-        return TASK_CANCELLED;
+        return "CANCELLED";
     case EDC_LIFE_ERROR:
-        return TASK_ERROR;
+        return "ERROR";
     case EDC_LIFE_ALIVE:
         break;
     }
     switch (task->step)
     {
     case EDC_TASKSTEP_READY:
-        return TASK_IDLE;
+        return "IDLE";
     case EDC_TASKSTEP_AWAIT_DEPS:
-        return TASK_WAITING_DEPS;
-    case EDC_TASKSTEP_AWAIT_INPUT:
-        return TASK_WAITING_INPUT;
+        return "WAITING_DEPS";
     case EDC_TASKSTEP_AWAIT_EXEC:
-        return TASK_LLM_PROCESSING;
+        return "LLM_PROCESSING";
     case EDC_TASKSTEP_AWAIT_TOOLS:
-        return TASK_TOOL_CALLING;
+        return "TOOL_CALLING";
     case EDC_TASKSTEP_AWAIT_RESOURCE:
-        return TASK_WAITING_DEPS; /* 旧枚举没有对应值 */
+        return "WAITING_DEPS"; /* 旧枚举没有对应值 */
     case EDC_TASKSTEP_DONE:
         break;
     }
-    return TASK_WAITING_INPUT;
+    /* 兜底: DONE 但仍 ALIVE 的畸形组合。没有任何路径产出它。 */
+    return "IDLE";
 }
 
-/* 唯一的写入点: 置 (step, life) 并据此刷新镜像。
- *
- * force 的语义 = **不做合法性检查**。需要绕过状态机的路径有三条: 新建 (IDLE)、
- * fork 出来的子任务 (WAITING_INPUT)、resume 的兜底 —— 它们本来就直写 state, 现在
- * 统一走这里, 免得三个字段各写各的、日后漂移。edc_task_set_state 校验之后也走它。 */
-void edc_task_force_state(struct edc_task *task, edc_task_state s)
+static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life from_life, edc_task_step to_step,
+                                         edc_task_life to_life);
+
+/* 目标态: 一次转移同时说清"到哪一步"和"还活着吗"。这两件事过去挤在 `edc_task_state`
+ * **一个** enum 里 —— 于是"挂起"既表示"跑到一半停住"又表示"重启后什么都没在跑",
+ * 相位只能靠粗化保存。拆开 step/life 的意义在这里落地: **状态机自己也不再丢掉相位**
+ * (校验用 (step, life), 不再用把 step 塌掉的旧词)。 */
+/* ── 低层原语: 直接说目标态 ─────────────────────────────────
+ * 一般调用方用上面的意图函数; 说目标态的两处是 scheduler 的统一入口与 executor 的
+ * port —— 它们**先说话再置脏**, 不自己拼意图 (见 edc_scheduler.c / edc_executor.h)。 */
+bool edc_task_move(struct edc_task *task, edc_task_step step, edc_task_life life)
+{
+    if (!task)
+        return false;
+    if (!edc_task_is_valid_transition(task->step, task->life, step, life))
+        return false;
+    task->step = step;
+    task->life = life;
+    return true;
+}
+
+/* ── 意图命名的写入口: 调用方说"我要干什么", 不拼目标态 ──────
+ * 取代 `edc_task_set_state(task, TASK_X)`: 旧写法把"到哪一步"和"活着吗"藏在一个
+ * enum 值里, 挂起更是**说不出**目标 step (TASK_SUSPENDED 只动 life)。返回 false =
+ * 该转移不合法 (被状态机拒绝), 与旧 set_state 的返回值语义一致。 */
+bool edc_task_await_exec(struct edc_task *task)
+{
+    return edc_task_move(task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
+}
+
+bool edc_task_await_tools(struct edc_task *task)
+{
+    return edc_task_move(task, EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
+}
+
+bool edc_task_mark_ready(struct edc_task *task)
+{
+    return edc_task_move(task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
+}
+
+bool edc_task_mark_waiting_deps(struct edc_task *task)
+{
+    return edc_task_move(task, EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE);
+}
+
+bool edc_task_mark_completed(struct edc_task *task)
+{
+    return edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED);
+}
+
+bool edc_task_mark_failed(struct edc_task *task)
+{
+    return edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR);
+}
+
+bool edc_task_mark_cancelled(struct edc_task *task)
+{
+    return edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED);
+}
+
+/* 挂起**只说 life**: 停在哪一步就停在哪一步 —— 这正是 step/life 拆分要保住的东西
+ * (旧词 TASK_SUSPENDED 也是这个语义, 只是说不出口)。 */
+bool edc_task_mark_suspended(struct edc_task *task)
+{
+    return task && edc_task_move(task, task->step, EDC_LIFE_SUSPENDED);
+}
+
+/* ── 转移表 (键 = (step, life)) ─────────────────────────────
+ * 与旧表逐条对照。旧表以**折叠过的旧词**为键, 所以新表只能与它在实际可达的转移上
+ * 等价 —— 唯一等价不了的那一格写在下面 (READY → READY)。 */
+static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life from_life, edc_task_step to_step,
+                                         edc_task_life to_life)
+{
+    /* 同一个 (step, life) 之间没有"转移"可言。
+     *
+     * ⚠️ 与旧表的一处**不可能等价**: 旧代码判
+     *     IDLE          → WAITING_INPUT   合法   (两个旧名, 同一个落点)
+     *     WAITING_INPUT → WAITING_INPUT   非法
+     * —— 同一个源、同一个目标却一真一假, 因为旧表的键是**名字**而不是状态。新表的键
+     * 是 (step, life), 这种"同名不同行"无法表示, 两条统一按自转移处理。实际路径不受
+     * 影响: 所有"回 READY"的调用点都先判 `edc_task_awaits_deps()` (源必为 AWAIT_DEPS),
+     * 没有一条会从 READY 发起。这条残渣随 WAITING_INPUT 一起退休
+     * (见 docs/retire-waiting-input.md §4 第 3 行)。 */
+    if (from_step == to_step && from_life == to_life)
+        return false;
+
+    switch (from_life)
+    {
+    case EDC_LIFE_COMPLETED:
+        return false; /* terminal */
+    case EDC_LIFE_CANCELLED:
+        return to_step == EDC_TASKSTEP_READY && to_life == EDC_LIFE_ALIVE; /* resume */
+    case EDC_LIFE_SUSPENDED:
+        /* resume 重新判定: 回依赖等待 / 就绪 / 重新请求 LLM / 继续工具链, 或取消 */
+    case EDC_LIFE_ERROR:
+        /* 失败的那一轮续跑 (与 SUSPENDED 同一组目标), 或取消。 */
+        return (to_life == EDC_LIFE_ALIVE &&
+                (to_step == EDC_TASKSTEP_READY || to_step == EDC_TASKSTEP_AWAIT_DEPS ||
+                 to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_TOOLS)) ||
+               (to_step == EDC_TASKSTEP_DONE && to_life == EDC_LIFE_CANCELLED);
+    case EDC_LIFE_ALIVE:
+        break;
+    }
+
+    switch (from_step)
+    {
+    /* READY = "带着 input 停着, 等着被派发": 派发 / 撞上依赖 / 取消 / 挂起。 */
+    case EDC_TASKSTEP_READY:
+        /* 挂起那一格来自 "以挂起状态创建" (2026-09-14): 还没开始跑、但输入已装好的
+         * 任务需要一条进入挂起的入口 —— 在此之前 SUSPENDED 只能从 AWAIT_TOOLS 到达,
+         * 那是"跑到一半挂起"。往返是对称的 (SUSPENDED 行允许 resume 回
+         * READY / AWAIT_DEPS / AWAIT_EXEC / AWAIT_TOOLS)。 */
+        return (to_life == EDC_LIFE_ALIVE &&
+                (to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_DEPS)) ||
+               (to_step == EDC_TASKSTEP_DONE && to_life == EDC_LIFE_CANCELLED) ||
+               (to_step == EDC_TASKSTEP_READY && to_life == EDC_LIFE_SUSPENDED);
+    case EDC_TASKSTEP_AWAIT_DEPS:
+    case EDC_TASKSTEP_AWAIT_RESOURCE: /* 旧词表里没有这一步 (镜像折成 WAITING_DEPS): 沿用同一行 */
+        /* 依赖齐了 → 回就绪; 或取消 / 失败 */
+        return (to_step == EDC_TASKSTEP_READY && to_life == EDC_LIFE_ALIVE) ||
+               (to_step == EDC_TASKSTEP_DONE && (to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR));
+    case EDC_TASKSTEP_AWAIT_EXEC:
+        return (to_life == EDC_LIFE_ALIVE && to_step == EDC_TASKSTEP_AWAIT_TOOLS) ||
+               (to_step == EDC_TASKSTEP_DONE &&
+                (to_life == EDC_LIFE_COMPLETED || to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR));
+    case EDC_TASKSTEP_AWAIT_TOOLS:
+        return (to_life == EDC_LIFE_ALIVE && to_step == EDC_TASKSTEP_AWAIT_EXEC) ||
+               (to_step == EDC_TASKSTEP_DONE &&
+                (to_life == EDC_LIFE_COMPLETED || to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR)) ||
+               (to_step == EDC_TASKSTEP_AWAIT_TOOLS && to_life == EDC_LIFE_SUSPENDED); /* 跑到一半挂起 */
+    case EDC_TASKSTEP_DONE:
+        /* 畸形组合: DONE 却还 ALIVE (显示名折成 IDLE, 见 edc_task_state_str 的兜底)。
+         * 没有任何路径产出它; 沿用 READY 一行, 免得落到 default 之外的行为。 */
+        return (to_life == EDC_LIFE_ALIVE &&
+                (to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_DEPS)) ||
+               (to_step == EDC_TASKSTEP_DONE && to_life == EDC_LIFE_CANCELLED) ||
+               (to_step == EDC_TASKSTEP_DONE && to_life == EDC_LIFE_SUSPENDED);
+    }
+    return false;
+}
+
+/* ── 绕过状态机的写入口 (装配初始态 / 摆场景 / 构造"不可能状态") ──
+ * 不校验, 直接落到 (step, life)。src 里只被 edc_task_new / edc_task_fork 用 (它们要
+ * 装配一个初始态)。旧词的过渡桥 (`edc_task_set_state` / `edc_task_force_state`) 已随
+ * 旧枚举一起退休 (R3b) —— 说目标态就是直接说 (step, life), 中间不再经一层词表。 */
+void edc_task_force_move(struct edc_task *task, edc_task_step step, edc_task_life life)
 {
     if (!task)
         return;
-    legacy_to_step_life(s, &task->step, &task->life);
-    task->state = edc_task_state_of(task); /* 镜像 */
-}
-
-static bool edc_task_is_valid_transition(edc_task_state from, edc_task_state to)
-{
-    /* 同一个状态之间没有"转移"可言。这条规则在 IDLE 与 WAITING_INPUT 两行合一之后
-     * 成了必需: 它们现在是同一行, 于是
-     *   IDLE → WAITING_INPUT        (不同的枚举值, 同一个落点) 应当**成功**
-     *   WAITING_INPUT → WAITING_INPUT                         应当**失败**
-     * 两个既有契约就是这样区分的。 */
-    if (from == to)
-        return false;
-
-    switch (from)
-    {
-    /* IDLE 与 WAITING_INPUT 是**同一件事**: "空闲/就绪, 可被驱动"。
-     *
-     * 两行本来不一样: IDLE 不能派发 (→ LLM_PROCESSING) 也不能挂起。而"新建任务被强制
-     * 置成 WAITING_INPUT"那行代码, 存在的意义**正是绕开 IDLE 这一行**。当落点改成
-     * READY (镜像折成 IDLE) 之后, 新建任务就落在 IDLE 行上了 —— 两行若不合一, 它连
-     * 派发和挂起都过不了校验。这是"退休 WAITING_INPUT"必须先做的一小步。
-     * 见 docs/retire-waiting-input.md §4 第 3 行。 */
-    case TASK_IDLE:
-    case TASK_WAITING_INPUT:
-        /* TASK_SUSPENDED 也在内: "以挂起状态创建" (2026-09-14)。一个还没开始跑、
-         * 但输入已经装好的任务需要一条进入挂起的入口 —— 在此之前 SUSPENDED 只能
-         * 从 TOOL_CALLING 到达, 那是"跑到一半挂起"。SUSPENDED 那一行本来就允许
-         * resume 回 WAITING_INPUT / WAITING_DEPS / LLM_PROCESSING, 所以这个往返
-         * 是对称的: 挂起 -> resume -> 重新判定 (有依赖就等依赖)。 */
-        return to == TASK_LLM_PROCESSING || to == TASK_CANCELLED || to == TASK_WAITING_DEPS ||
-               to == TASK_SUSPENDED || to == TASK_WAITING_INPUT;
-    case TASK_WAITING_DEPS:
-        return to == TASK_WAITING_INPUT || to == TASK_CANCELLED || to == TASK_ERROR;
-    case TASK_LLM_PROCESSING:
-        return to == TASK_TOOL_CALLING || to == TASK_COMPLETED || to == TASK_CANCELLED || to == TASK_ERROR;
-    case TASK_TOOL_CALLING:
-        return to == TASK_LLM_PROCESSING || to == TASK_COMPLETED || to == TASK_CANCELLED || to == TASK_ERROR ||
-               to == TASK_SUSPENDED;
-    case TASK_SUSPENDED:
-        /* resume 重新判定: 回依赖等待 / 等待输入 / 重新处理 / 继续工具链, 或取消 */
-        return to == TASK_WAITING_DEPS || to == TASK_WAITING_INPUT || to == TASK_LLM_PROCESSING ||
-               to == TASK_TOOL_CALLING || to == TASK_CANCELLED;
-    case TASK_COMPLETED:
-        return false; /* terminal */
-    case TASK_CANCELLED:
-        return to == TASK_WAITING_INPUT; /* resume */
-    case TASK_ERROR:
-        /* resume 续跑失败的那一轮: 重新判定后可能回依赖等待 / 等输入 / 重新
-         * 请求 LLM / 继续工具链 (与 SUSPENDED 同一组目标); 或取消。 */
-        return to == TASK_WAITING_DEPS || to == TASK_WAITING_INPUT || to == TASK_LLM_PROCESSING ||
-               to == TASK_TOOL_CALLING || to == TASK_CANCELLED;
-    default:
-        return false;
-    }
+    task->step = step;
+    task->life = life;
 }
 
 /* ── 生命周期 ──────────────────────────────────────────────── */
@@ -297,7 +300,9 @@ struct edc_task *edc_task_new(const char *task_id, const char *session_id, const
     task->session_id = strdup(session_id);
     task->group_id = strdup(group_id);
     task->description = strdup(desc ? desc : "");
-    edc_task_force_state(task, TASK_IDLE);
+    /* 新任务: "带着 input 停着, 等着被派发" —— 没有"等用户输入"这个相位,
+     * 所以直接置 (READY, ALIVE) (旧词写作 TASK_IDLE/TASK_WAITING_INPUT 两行)。 */
+    edc_task_force_move(task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
     task->is_group_leader = 0;
     task->channel_type = channel_type;
 
@@ -323,7 +328,7 @@ struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, con
     struct edc_task *child = edc_task_new(task_id, parent->session_id, parent->group_id, desc, channel_type);
     child->forked_from = parent;
     child->fork_point_completion_seq = fork_point_completion_seq;
-    edc_task_force_state(child, TASK_WAITING_INPUT);
+    /* 子任务与 edc_task_new 一样落在 READY (= IDLE 镜像); 不再强制 WAITING_INPUT。 */
     return child;
 }
 
@@ -447,22 +452,6 @@ void edc_task_free(struct edc_task *task)
         cJSON_Delete(task->todos);
 
     free(task);
-}
-
-/* ── 状态机 ────────────────────────────────────────────────── */
-
-bool edc_task_set_state(struct edc_task *task, edc_task_state new_state)
-{
-    if (!task)
-        return false;
-
-    if (!edc_task_is_valid_transition(task->state, new_state))
-    {
-        return false;
-    }
-
-    edc_task_force_state(task, new_state);
-    return true;
 }
 
 /* ── Turn ──────────────────────────────────────────────────── */
@@ -646,14 +635,15 @@ bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, e
     target->deps_total++;
 
     /* 若 source 已完成，立即标记 dep 为 completed */
-    if (source->state == TASK_COMPLETED)
+    if (edc_task_is_completed(source))
     {
         edc_task_on_dep_completed(target, source);
     }
-    /* 若 target 刚获得依赖，进入 WAITING_DEPS */
-    else if (target->state == TASK_IDLE || target->state == TASK_WAITING_INPUT)
+    /* 若 target 刚获得依赖，进入 WAITING_DEPS。
+     * READY 的镜像就是 IDLE; 退休 WAITING_INPUT 后两者同落点, 不再并列。 */
+    else if (edc_task_is_ready(target))
     {
-        edc_task_set_state(target, TASK_WAITING_DEPS);
+        edc_task_mark_waiting_deps(target);
     }
 
     return true;
@@ -686,9 +676,9 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
         }
     }
 
-    if (target->deps_completed >= target->deps_total && target->state == TASK_WAITING_DEPS)
+    if (target->deps_completed >= target->deps_total && edc_task_awaits_deps(target))
     {
-        edc_task_set_state(target, TASK_WAITING_INPUT);
+        edc_task_mark_ready(target);
     }
 }
 
@@ -742,9 +732,9 @@ void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source)
     }
     target->deps_total = active_deps;
 
-    if (target->deps_total == 0 && target->state == TASK_WAITING_DEPS)
+    if (target->deps_total == 0 && edc_task_awaits_deps(target))
     {
-        edc_task_set_state(target, TASK_WAITING_INPUT);
+        edc_task_mark_ready(target);
     }
 }
 
@@ -768,9 +758,10 @@ void edc_task_notify_dependents(struct edc_task *task)
 
 bool edc_task_is_running(const struct edc_task *task)
 {
-    if (!task)
-        return false;
-    return task->state == TASK_LLM_PROCESSING || task->state == TASK_TOOL_CALLING;
+    /* 正跑着 = ALIVE 且在等 executor/工具的答复。挂起在等工具的任务是
+     * step=AWAIT_TOOLS && life=SUSPENDED —— 不算 running (旧词汇里它只显示成
+     * SUSPENDED, 这里必须一致)。 */
+    return edc_task_awaits_exec(task) || edc_task_awaits_tools(task);
 }
 
 void edc_task_send_signal(struct edc_task *task, edc_task_signal sig)
@@ -832,7 +823,7 @@ void edc_task_send_signal(struct edc_task *task, edc_task_signal sig)
 
     /* 任务被取消: 在途工具追账已无意义, 丢弃账本 */
     edc_task_tool_calls_clear(task);
-    edc_task_set_state(task, TASK_CANCELLED);
+    edc_task_mark_cancelled(task);
 }
 
 /* ── 未完成工具调用表 (resume 账本) ────────────────────────── */
@@ -942,7 +933,7 @@ sds edc_task_get_output(struct edc_task *task)
 
 bool edc_task_is_foldable(struct edc_task *task)
 {
-    return task && task->state == TASK_COMPLETED && !task->turns_folded;
+    return edc_task_is_completed(task) && !task->turns_folded;
 }
 
 size_t edc_task_turn_msg_count(struct edc_task *task)

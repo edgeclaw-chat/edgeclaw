@@ -13,22 +13,12 @@
 struct edc_session;
 struct edc_config;
 
-/* ── Task 状态 ─────────────────────────────────────────────── */
-
-typedef enum
-{
-    TASK_IDLE,           /* 刚创建，未开始 */
-    TASK_WAITING_DEPS,   /* 等待依赖 task 完成 */
-    TASK_WAITING_INPUT,  /* 等待用户输入 */
-    TASK_LLM_PROCESSING, /* LLM 生成中 */
-    TASK_TOOL_CALLING,   /* 执行工具调用链 */
-    TASK_SUSPENDED,      /* 已暂停 (Ctrl+Z) */
-    TASK_COMPLETED,      /* 任务完成 */
-    TASK_CANCELLED,      /* 被取消 */
-    TASK_ERROR,          /* 出错 */
-} edc_task_state;
-
-extern const char *edc_task_state_name(edc_task_state state);
+/* ── Task 状态 ───────────────────────────────────────────────
+ *
+ * 旧枚举 `edc_task_state` (TASK_IDLE / TASK_WAITING_INPUT / TASK_SUSPENDED / …)
+ * 已随过渡桥一起退休 (R3b)。现在: **"在哪一步"是 step, "活着吗"是 life**,
+ * 判断走下面那组谓词, 文案走 `edc_task_state_str` (它仍返回旧名字 —— 词表冻结,
+ * 但那只是**字符串**, 不再是类型)。见 docs/retire-waiting-input.md §10.5。 */
 
 /* ── step / life: 把"在哪一步"和"活着吗"拆开 ──────────────────
  *
@@ -43,9 +33,8 @@ extern const char *edc_task_state_name(edc_task_state state);
  * 两者正交: (step=DONE, life=COMPLETED) 与 (step=AWAIT_EXEC, life=SUSPENDED) 都合法。 */
 typedef enum
 {
-    EDC_TASKSTEP_READY,          /* 就绪, 可以开始 */
+    EDC_TASKSTEP_READY,          /* 就绪, 可以开始 (旧名 AWAIT_INPUT 也归到这里) */
     EDC_TASKSTEP_AWAIT_DEPS,     /* 在等依赖 */
-    EDC_TASKSTEP_AWAIT_INPUT,    /* 在等用户输入 */
     EDC_TASKSTEP_AWAIT_EXEC,     /* 在等 LLM (executor) 回话 */
     EDC_TASKSTEP_AWAIT_TOOLS,    /* 在等工具结果 */
     EDC_TASKSTEP_AWAIT_RESOURCE, /* 在等资源锁 (P1 起预留) */
@@ -120,13 +109,15 @@ struct edc_task
     char *session_id; /* SID — 所属 session */
 
     char *description;    /* 用户可见描述 */
-    /* 在哪一步 / 活着吗 —— 拆开之后相位才能如实保存, 且落盘时不再被粗化。 */
+    /* 在哪一步 / 活着吗 —— 拆开之后相位才能如实保存, 且落盘时不再被粗化。
+     *
+     * **这里是"任务在哪一步"的唯一来源** (runtime-model.md §8 判据 4)。过渡期那层
+     * `edc_task_state state` 镜像已在 R3a 删掉: 它曾经只是"让 60 多处旧读法一行不用改"
+     * 的脚手架, 而读侧与转移表都已改以 (step, life) 为键 (见 docs/retire-waiting-input.md
+     * §10)。旧词表仍在, 但只作**显示名** (`edc_task_state_str`) 与过渡桥的输入,
+     * 由 (step, life) 派生 —— 不再有第二份副本可以漂移。 */
     edc_task_step step;
     edc_task_life life;
-    /* ⚠️ **过渡期镜像**: 由 (step, life) 导出, 唯一写入口是 edc_task_force_state
-     * (edc_task_set_state 走它)。**不要直接写它** —— 读侧逐文件迁完之后就删。
-     * 保留它只是为了让 60 多处旧读法一行不用改、并让迁移的每一步都能编译。 */
-    edc_task_state state;
 
     int is_group_leader; /* 是否是 group leader */
     int auto_reap;       /* 完成后自动回收 (前台输入任务) */
@@ -220,23 +211,103 @@ extern void edc_task_free(struct edc_task *task);
 extern struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, struct edc_session *session,
                                                 const char *snapshot_task_id);
 
-/* ── 状态机 ────────────────────────────────────────────────── */
-
-extern bool edc_task_set_state(struct edc_task *task, edc_task_state new_state);
-
-/* 旧常量 -> (step, life) 的**唯一**写入点。**不做合法性检查** (需要绕过状态机的
- * 三条路径: 新建 / fork 子任务 / resume 兜底, 它们本来就直写 state); 校验过的
- * 路径请走 edc_task_set_state。
+/* ── 状态机: 意图命名的写入口 ────────────────────────────────
  *
- * 注意这两个声明必须在 struct edc_task 的**定义之后**: 出现在函数原型里的
- * `struct edc_task` 其 tag 是"函数原型作用域", 与文件作用域的那个**不是同一个
- * 类型** —— 放在前面会得到一个很难懂的 conflicting types。 */
-extern void edc_task_force_state(struct edc_task *task, edc_task_state s);
+ * 一次转移同时说清"到哪一步"和"还活着吗"; 调用方说**意图**, 不拼目标态, 状态机以
+ * (step, life) 为键校验。返回 false = 该转移不合法 (被状态机拒绝)。
+ *
+ * 它们取代了 `edc_task_set_state(task, TASK_X)`: 旧写法把两个维度藏在一个 enum
+ * 值里, 挂起更是**说不出**目标 step (TASK_SUSPENDED 只动 life)。 */
+extern bool edc_task_await_exec(struct edc_task *task);        /* 已发出 LLM 请求 */
+extern bool edc_task_await_tools(struct edc_task *task);       /* 已发出工具调用 */
+extern bool edc_task_mark_ready(struct edc_task *task);        /* 回就绪 (依赖齐了 / resume) */
+extern bool edc_task_mark_waiting_deps(struct edc_task *task); /* 被依赖挡住, 不派发 */
+extern bool edc_task_mark_completed(struct edc_task *task);
+extern bool edc_task_mark_failed(struct edc_task *task);
+extern bool edc_task_mark_cancelled(struct edc_task *task);
+extern bool edc_task_mark_suspended(struct edc_task *task); /* 只动 life: 停在哪一步就停在哪一步 */
 
-/* (step, life) -> 旧常量。life 不是 ALIVE 时**看不出**原来的 step —— 有损, 只服务于
- * 尚未迁移到 step/life 的旧读法。它是过渡脚手架, 读侧迁完即删。 */
-extern edc_task_state edc_task_state_of(const struct edc_task *task);
-extern edc_task_state edc_task_classify_state(const char *name);
+/* 低层原语: 直接说目标态 (校验 / 不校验)。一般调用方用上面的意图函数;
+ * 说目标态的是 scheduler 的统一入口与 executor 的 port。
+ * `force` 版本**不查转移表** —— 兜底出口要能把任务从死胡同里拽出来。 */
+extern bool edc_task_move(struct edc_task *task, edc_task_step step, edc_task_life life);
+extern void edc_task_force_move(struct edc_task *task, edc_task_step step, edc_task_life life);
+
+/* ── 过渡桥: 已退休 (R3b) ────────────────────────────────────
+ *
+ * `edc_task_set_state(task, TASK_X)` / `edc_task_force_state(task, TASK_X)` 与
+ * `edc_task_state_of` / `edc_task_classify_state` 都删了 —— 说目标态就是直接说
+ * (step, life), 中间不再经一层把两个维度折叠起来的词表。 */
+
+/* ── 读侧判定: 直接问 (step, life) ──────────────────────────
+ *
+ * 旧读法 `t->state == TASK_X` 的每一处, 问的都是下面这些问题之一 —— 换成谓词
+ * 之后, 删除过渡镜像时这些调用点**一行都不用再改** (镜像一删, 它们照旧工作)。
+ * 这就是"读侧迁移"这件事本身。
+ *
+ * 每条都带 life 条件, 因为 SUSPENDED **不动 step** (那正是 P2 要保住的东西):
+ * 一个"挂起在等工具"的任务是 step=AWAIT_TOOLS && life=SUSPENDED —— 它**不是**
+ * running、也不是 awaits_tools。旧词汇里没有"在哪一步"这个维度, 它只显示成
+ * SUSPENDED; 谓词必须复现这一条, 否则挂起的任务会被误当成在跑。 */
+static inline bool edc_task_is_alive(const struct edc_task *task) /* 还可能跑: 既没完成/取消/出错, 也没被挂起 */
+{
+    return task && task->life == EDC_LIFE_ALIVE;
+}
+static inline bool edc_task_is_ready(const struct edc_task *task) /* 带着 input 停着, 等着被派发 */
+{
+    return task && task->life == EDC_LIFE_ALIVE && task->step == EDC_TASKSTEP_READY;
+}
+static inline bool edc_task_awaits_deps(const struct edc_task *task) /* 被依赖挡住, 不派发 */
+{
+    return task && task->life == EDC_LIFE_ALIVE && task->step == EDC_TASKSTEP_AWAIT_DEPS;
+}
+static inline bool edc_task_is_completed(const struct edc_task *task)
+{
+    return task && task->life == EDC_LIFE_COMPLETED;
+}
+static inline bool edc_task_is_cancelled(const struct edc_task *task)
+{
+    return task && task->life == EDC_LIFE_CANCELLED;
+}
+static inline bool edc_task_has_failed(const struct edc_task *task)
+{
+    return task && task->life == EDC_LIFE_ERROR;
+}
+static inline bool edc_task_is_suspended(const struct edc_task *task)
+{
+    return task && task->life == EDC_LIFE_SUSPENDED;
+}
+/* 两个"在等对方回话"的相位: 等 LLM (executor) / 等工具结果。挂起在等工具的任务
+ * 不算 —— 见 edc_task_is_running。 */
+static inline bool edc_task_awaits_exec(const struct edc_task *task)
+{
+    return task && task->life == EDC_LIFE_ALIVE && task->step == EDC_TASKSTEP_AWAIT_EXEC;
+}
+static inline bool edc_task_awaits_tools(const struct edc_task *task)
+{
+    return task && task->life == EDC_LIFE_ALIVE && task->step == EDC_TASKSTEP_AWAIT_TOOLS;
+}
+/* "停着等驱动": 就绪或等依赖 —— 输入/输出都已装好, 只差一个事件。能接收
+ * `/task join` 注入的就是这一类 (见 edc_commands.c)。 */
+static inline bool edc_task_is_parked(const struct edc_task *task)
+{
+    return edc_task_is_ready(task) || edc_task_awaits_deps(task);
+}
+/* `/task resume` **命令门**只认这两种: 用户 Ctrl+Z / 退出挂起, 或者跑失败的那
+ * 一轮。注意这与转移表不同 —— 转移表还允许 CANCELLED 回 READY, 但那不是用户
+ * 能走的路; 谓词复现的是命令门 (edc_commands.c)。 */
+static inline bool edc_task_is_resumable(const struct edc_task *task)
+{
+    return task && (task->life == EDC_LIFE_SUSPENDED || task->life == EDC_LIFE_ERROR);
+}
+
+/* 对外词汇 —— 快照的 "state" 字段 / 日志 / 命令文案都用它。
+ *
+ * **词表冻结**: 返回的仍是旧名字 ("IDLE" / "WAITING_DEPS" / "LLM_PROCESSING" ...),
+ * 因为它们是 TUI 颜色表、`/task status` 文本与日志的既有输入 (§6 硬规则: 外部行为
+ * 一致)。它由 (step, life) **直接派生** (life 先说话), 不再是某个字段的转发;
+ * `WAITING_INPUT` 这个词已经不会再出现 (那个相位退休了)。 */
+extern const char *edc_task_state_str(const struct edc_task *task);
 
 /* ── Todo 同步节流 ──────────────────────────────────────────
  * todo reminder 不再每轮请求都塞 (用户 2026-09-09 要求降频): 只有"隔了

@@ -180,7 +180,7 @@ static void group_send_signal_impl(struct edc_task_group *group, edc_task_signal
         edc_task_send_signal(task, sig);
     }
 
-    if (group->leader && group->leader->state == TASK_CANCELLED && group->member_count > 0)
+    if (edc_task_is_cancelled(group->leader) && group->member_count > 0)
     {
         edc_task_group_mark_orphaned(group);
     }

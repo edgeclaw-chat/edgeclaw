@@ -136,7 +136,7 @@ struct edc_executor_ops
 
     /* ── task 之间的事：executor 只**请求**，由 scheduler 执行 ── */
 
-    void (*set_task_state)(void *ctx, struct edc_task *task, edc_task_state state);
+    void (*set_task_state)(void *ctx, struct edc_task *task, edc_task_step step, edc_task_life life);
     void (*unregister_task)(void *ctx, void *request_id);
     void (*notify_dependents)(void *ctx, struct edc_task *task);
     void (*flush_redirects)(void *ctx, struct edc_task *task);

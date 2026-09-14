@@ -134,9 +134,9 @@ static void test_auto_reap(void)
     /* Simulate src completing */
     sds out = sdsnew("result from src");
     edc_task_set_output(src, out);
-    edc_task_set_state(src, TASK_WAITING_INPUT);
-    edc_task_set_state(src, TASK_LLM_PROCESSING);
-    edc_task_set_state(src, TASK_COMPLETED);
+    edc_task_mark_ready(src);
+    edc_task_await_exec(src);
+    edc_task_mark_completed(src);
 
     /* Notify (scheduler does: notify + auto-reap if has dependents) */
     edc_task_notify_dependents(src);
@@ -168,13 +168,13 @@ static void test_no_dep_stays(void)
 
     sds out = sdsnew("standalone result");
     edc_task_set_output(t, out);
-    edc_task_set_state(t, TASK_WAITING_INPUT);
-    edc_task_set_state(t, TASK_LLM_PROCESSING);
-    edc_task_set_state(t, TASK_COMPLETED);
+    edc_task_mark_ready(t);
+    edc_task_await_exec(t);
+    edc_task_mark_completed(t);
 
     /* No dependents → should NOT be reaped */
     C(t->dependents == NULL, "no dependents");
-    C(t->state == TASK_COMPLETED, "state is COMPLETED");
+    C(edc_task_is_completed(t), "state is COMPLETED");
     C(g->member_count == 1, "still in group");
 
     edc_task_group_free(g);

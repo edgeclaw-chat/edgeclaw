@@ -192,7 +192,7 @@ static void edc_memory_finish_group_fold(edc_actor_t *actor, edc_actor_msg_t *ms
         struct edc_task *t;
         LL_FOREACH2(group->members, t, group_next)
         {
-            if (t->state == TASK_COMPLETED && !t->turns_folded && t->completion_seq <= state->fold_max_seq)
+            if (edc_task_is_completed(t) && !t->turns_folded && t->completion_seq <= state->fold_max_seq)
             {
                 t->turns_folded = true;
                 folded_tasks++;

@@ -138,9 +138,9 @@ static void test_single_mode_roundtrip(void)
 
     struct edc_task *task = edc_task_new("task-1", "sess-cpt2", "task-1", "single", edc_channel_adapter);
     task->is_group_leader = 1;
-    edc_task_set_state(task, TASK_WAITING_INPUT);
-    edc_task_set_state(task, TASK_LLM_PROCESSING);
-    edc_task_set_state(task, TASK_COMPLETED);
+    edc_task_mark_ready(task);
+    edc_task_await_exec(task);
+    edc_task_mark_completed(task);
 
     struct edc_turn *turn = edc_turn_new();
     turn->task_id = strdup("task-1");
@@ -205,9 +205,9 @@ static void test_multi_turns(void)
 
     struct edc_task *task = edc_task_new("task-mt", "sess-mt", "task-mt", "multi turn", edc_channel_adapter);
     task->is_group_leader = 1;
-    edc_task_set_state(task, TASK_WAITING_INPUT);
-    edc_task_set_state(task, TASK_LLM_PROCESSING);
-    edc_task_set_state(task, TASK_COMPLETED);
+    edc_task_mark_ready(task);
+    edc_task_await_exec(task);
+    edc_task_mark_completed(task);
 
     struct edc_turn *t0 = edc_turn_new();
     t0->task_id = strdup("task-mt");
@@ -323,9 +323,9 @@ static void test_state_file_roundtrip(void)
 
     struct edc_task *task = edc_task_new("task-ft", "sess-full", "task-ft", "full test", edc_channel_adapter);
     task->is_group_leader = 1;
-    edc_task_set_state(task, TASK_WAITING_INPUT);
-    edc_task_set_state(task, TASK_LLM_PROCESSING);
-    edc_task_set_state(task, TASK_COMPLETED);
+    edc_task_mark_ready(task);
+    edc_task_await_exec(task);
+    edc_task_mark_completed(task);
     task->output = sdsnew("final output");
 
     struct edc_turn *turn = edc_turn_new();
@@ -355,7 +355,7 @@ static void test_state_file_roundtrip(void)
 
     struct edc_task *rt = find_task(s2, "task-ft");
     CHECK(rt != NULL, "task restored");
-    CHECK(rt->state == TASK_COMPLETED, "state COMPLETED");
+    CHECK(edc_task_is_completed(rt), "state COMPLETED");
     CHECK_STREQ(rt->output, "final output", "output restored");
 
     CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");

@@ -113,7 +113,7 @@ static bool edc_commands_handle_help(struct edc_agent *agent, edc_actor_t *actor
                        "- /session remove <name>  ·  /session rename <old> <new>\n"
                        "\n"
                        "- /task new <desc>   [--bg] [--suspended]\n"
-                       "- /task fork <parent> <desc>\n"
+                       "- /task fork <parent> <desc> [--suspended]\n"
                        "- /task list  ·  /task status [id]  ·  /task output <id>\n"
                        "- /task groups  ·  /task fg <id>  ·  /task bg [id]\n"
                        "- /task stop [id]  ·  /task resume [id]   (default: active task of the foreground group)\n"
@@ -547,6 +547,12 @@ static bool edc_commands_handle_session(struct edc_agent *agent, edc_actor_t *ac
 
 /* ── /task commands ─────────────────────────────────────────― */
 
+/* 命令层派发任务时用的 request id。**这一文件里所有派发点共用同一个计数器** ——
+ * 各自 `static int64_t counter = 0` 的话都从 1 开始, 两个命令会发出**相同**的 id,
+ * 而 scheduler 的 task_hash 正是以 request id 为键。
+ * (注: edc_shell.c 的 AST 派发点另有自己的计数器, 尚未合并 —— 既有偏离, 不在本批。) */
+static int64_t g_cmd_req_seq = 0;
+
 static void edc_commands_handle_task_new(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
                                          sds arg)
 {
@@ -652,11 +658,11 @@ done:
             /* --suspended: 到此为止。不注册请求、不进 LLM_PROCESSING —— 停在
              * SUSPENDED, 等 /task resume。有依赖的照样等依赖 (resume 之后走的
              * 就是普通路径)。 */
-            bool ok = edc_task_set_state(task, TASK_SUSPENDED);
+            bool ok = edc_task_mark_suspended(task);
             log_info("/task new: task=%s created SUSPENDED -> %s (awaiting /task resume)", task->task_id,
                      ok ? "ok" : "FAILED");
         }
-        else if (task->state == TASK_WAITING_DEPS)
+        else if (edc_task_awaits_deps(task))
         {
             log_info("/task new spawn: task %s blocked in WAITING_DEPS, turn queued", task->task_id);
             edc_cmd_task_opts_free(&opts);
@@ -664,12 +670,11 @@ done:
         }
         else
         {
-        static int64_t counter = 0;
-        void *req_id = (void *)(intptr_t)(++counter);
+        void *req_id = (void *)(intptr_t)(++g_cmd_req_seq);
         edc_scheduler_register_task(agent->scheduler, task, req_id);
         task->current_request_id = req_id;
 
-        bool ok = edc_task_set_state(task, TASK_LLM_PROCESSING);
+        bool ok = edc_task_await_exec(task);
         log_info("/task new spawn: task=%s set_state LLM_PROCESSING -> %s, send_llm=%s", task->task_id,
                  ok ? "ok" : "FAILED",
                  (agent->scheduler && agent->scheduler->send_llm) ? "ready" : "NULL");
@@ -700,7 +705,7 @@ static void edc_commands_handle_task_list(struct edc_agent *agent, edc_actor_t *
             bool is_active = edc_session_manager_get_active(agent->session_manager) &&
                              edc_session_manager_get_active(agent->session_manager)->active_task == t;
             out = sdscatprintf(out, "  - %s `%s` **%s**", t == g->leader ? "`[L]`" : "`[M]`", t->task_id,
-                               edc_task_state_name(t->state));
+                               edc_task_state_str(t));
             if (t->description && *t->description)
                 out = sdscatprintf(out, " — %s", t->description);
             if (is_active)
@@ -799,10 +804,10 @@ static void edc_commands_handle_task_resume(struct edc_agent *agent, edc_actor_t
     /* SUSPENDED = 重启后被停住的任务 (resume 重新判定并驱动);
      * ERROR = 执行中失败的任务 (resume 续跑失败的那一轮, 复用残留的
      * active_turn / 工具账本)。其余状态都不可 resume。 */
-    if (t->state != TASK_SUSPENDED && t->state != TASK_ERROR)
+    if (!edc_task_is_resumable(t))
     {
         sds reply =
-            sdscatprintf(sdsempty(), "**Task `%s`** — %s, not resumable.", t->task_id, edc_task_state_name(t->state));
+            sdscatprintf(sdsempty(), "**Task `%s`** — %s, not resumable.", t->task_id, edc_task_state_str(t));
         edc_commands_reply(agent, actor, channel_type, reply);
         sdsfree(reply);
         return;
@@ -826,7 +831,7 @@ static void edc_commands_handle_task_resume(struct edc_agent *agent, edc_actor_t
 
     edc_scheduler_resume_task(agent->scheduler, t);
     sds reply =
-        sdscatprintf(sdsempty(), "**Task `%s`** — resume signal sent (%s).", t->task_id, edc_task_state_name(t->state));
+        sdscatprintf(sdsempty(), "**Task `%s`** — resume signal sent (%s).", t->task_id, edc_task_state_str(t));
     if (t->group && t->group->session && t->group->session != sess)
         reply = sdscatprintf(reply, " (session `[%s]`)", t->group->session->session_id);
     edc_commands_reply(agent, actor, channel_type, reply);
@@ -929,10 +934,11 @@ static void edc_commands_handle_task_bg(struct edc_agent *agent, edc_actor_t *ac
 static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *actor, edc_channel_type channel_type,
                                           sds arg)
 {
-    /* /task fork <parent_id> <desc> [--prompt <name>] */
+    /* /task fork <parent_id> <desc> [--prompt <name>] [--suspended] */
     if (!arg)
     {
-        edc_commands_reply(agent, actor, channel_type, "Usage: `/task fork <parent_id> <desc> [--prompt <name>]`");
+        edc_commands_reply(agent, actor, channel_type,
+                           "Usage: `/task fork <parent_id> <desc> [--prompt <name>] [--suspended]`");
         return;
     }
 
@@ -940,7 +946,8 @@ static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *
     sds *tokens = sdssplitlen(arg, sdslen(arg), " ", 1, &count);
     if (count < 2)
     {
-        edc_commands_reply(agent, actor, channel_type, "Usage: `/task fork <parent_id> <desc> [--prompt <name>]`");
+        edc_commands_reply(agent, actor, channel_type,
+                           "Usage: `/task fork <parent_id> <desc> [--prompt <name>] [--suspended]`");
         sdsfreesplitres(tokens, count);
         return;
     }
@@ -961,8 +968,9 @@ static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *
         return;
     }
 
-    /* find --prompt in remaining args */
+    /* find --prompt / --suspended in remaining args; the rest is the input */
     sds prompt_name = NULL;
+    bool suspended = false;
     sds desc = sdsempty();
     for (int i = 1; i < count; i++)
     {
@@ -970,6 +978,10 @@ static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *
         {
             prompt_name = sdsnew(tokens[i + 1]);
             i++; /* skip prompt value */
+        }
+        else if (strcmp(tokens[i], "--suspended") == 0)
+        {
+            suspended = true;
         }
         else
         {
@@ -1054,15 +1066,48 @@ static void edc_commands_handle_task_fork(struct edc_agent *agent, edc_actor_t *
         }
     }
 
-    /* 前台切到新 group, 并立即把子任务设为 active task。这样后续普通输入
-     * 会被路由 attach 到这个 WAITING_INPUT 的 leader, 而不是再新建一个 task。 */
+    /* 前台切到新 group, 并把子任务设为 active task。 */
     edc_scheduler_set_foreground(agent->scheduler, child_group);
     edc_session_set_active_task(edc_session_manager_get_active(agent->session_manager), child);
+
+    /* desc 就是 input —— 与 /task new 同一条规则: 任务创建时就带着它的 turn。
+     *
+     * 旧实现把子任务停在 WAITING_INPUT, 等用户下一条普通输入被 attach 进来; 那是
+     * "任务是个长期会话、停在原地等输入" 的旧模型, 已随 attach 路径一起退休。
+     * 要"先建好、稍后再跑"就用 --suspended: turn 照样挂上, 但不派发, 由
+     * /task resume 驱动 —— 那才是新模型里休眠态的表达方式。
+     * 见 docs/retire-waiting-input.md §4 第 6 行。 */
+    {
+        struct edc_turn *turn = edc_turn_new();
+        turn->task_id = strdup(child->task_id);
+        edc_turn_add_user_message(turn, desc);
+        child->active_turn = turn;
+    }
+
+    if (suspended)
+    {
+        bool ok = edc_task_mark_suspended(child);
+        log_info("/task fork: task=%s created SUSPENDED -> %s (awaiting /task resume)", child->task_id,
+                 ok ? "ok" : "FAILED");
+    }
+    else
+    {
+        void *req_id = (void *)(intptr_t)(++g_cmd_req_seq);
+        edc_scheduler_register_task(agent->scheduler, child, req_id);
+        child->current_request_id = req_id;
+        bool ok = edc_task_await_exec(child);
+        log_info("/task fork spawn: task=%s set_state LLM_PROCESSING -> %s, send_llm=%s", child->task_id,
+                 ok ? "ok" : "FAILED", (agent->scheduler && agent->scheduler->send_llm) ? "ready" : "NULL");
+        if (ok && agent->scheduler && agent->scheduler->send_llm)
+            agent->scheduler->send_llm(agent->scheduler, child, req_id);
+    }
 
     sds reply = sdscatprintf(sdsempty(), "**Fork created** — `%s` from `%s` · group `%s` · fork point %zu",
                              child->task_id, parent->task_id, child->group_id, fork_point);
     if (prompt_name)
         reply = sdscatprintf(reply, " · prompt `%s`", prompt_name);
+    if (suspended)
+        reply = sdscatprintf(reply, " · parked (send `/task resume %s` to run)", child->task_id);
     edc_commands_reply(agent, actor, channel_type, reply);
     sdsfree(reply);
     sdsfree(desc);
@@ -1116,7 +1161,7 @@ static void edc_commands_handle_task_status(struct edc_agent *agent, edc_actor_t
                            "- **state**: %s\n"
                            "- **group**: %s\n"
                            "- **desc**: %s\n",
-                           t->task_id, edc_task_state_name(t->state), t->group_id, t->description);
+                           t->task_id, edc_task_state_str(t), t->group_id, t->description);
 
     /* 非当前 session 的任务额外标出属主 session, 否则用户看不出这条从哪来。 */
     {
@@ -1217,27 +1262,29 @@ static void edc_commands_handle_task_join(struct edc_agent *agent, edc_actor_t *
         edc_commands_reply(agent, actor, channel_type, "Task not found.");
         return;
     }
-    if (t->state == TASK_COMPLETED)
+    if (edc_task_is_completed(t))
     {
-        /* find or create a target task to inject output into */
-        struct edc_task *active = edc_session_get_active_task(edc_session_manager_get_active(agent->session_manager));
-        if (!active || (active->state != TASK_WAITING_INPUT && active->state != TASK_WAITING_DEPS))
+        /* join = "把这条已完成任务的输出注入到一个**已有的、可接收的任务**里"。
+         *
+         * 以前没有可用的 active task 时, 这里会新建一个没有 turn 的 "Joined task"
+         * 停在 READY, 等用户下一条普通输入被 attach 进来, 把 output 一起带进 LLM。
+         * 那是旧模型 (任务停在原地等输入) 的残余, attach 路径已退休, 而新模型里
+         * 任务创建时就带着它的 input —— 不存在"先建一个没有 input 的空任务"。
+         * 所以这里**拒绝**: 让用户先起一个任务 (/task new) 或先 /task resume 一个,
+         * 再 join。源任务原样不动, 命令可以原样重试。
+         * 见 docs/retire-waiting-input.md §4 第 10 行。 */
+        struct edc_session *active_session = edc_session_manager_get_active(agent->session_manager);
+        struct edc_task *active = active_session ? edc_session_get_active_task(active_session) : NULL;
+        /* "停着" = READY (IDLE 镜像) 或等依赖 —— 两者都能接收注入的输出 */
+        if (!active || !edc_task_is_parked(active))
         {
-            /* no usable active task — create one in foreground group */
-            struct edc_task_group *fg = edc_scheduler_get_foreground(agent->scheduler);
-            if (fg && fg->members)
-                channel_type = fg->members->channel_type;
-            active = edc_scheduler_create_task(agent->scheduler, "Joined task", channel_type);
-            if (fg)
-            {
-                edc_task_group_add_task(fg, active);
-                edc_session_set_active_task(edc_session_manager_get_active(agent->session_manager), active);
-            }
-            else
-            {
-                struct edc_task_group *g = edc_scheduler_create_group(agent->scheduler, active);
-                edc_scheduler_set_foreground(agent->scheduler, g);
-            }
+            sds reply = sdscatprintf(sdsempty(),
+                                     "No task to join into — start one first (`/task new <desc>`), then "
+                                     "`/task join %s` again.",
+                                     t->task_id);
+            edc_commands_reply(agent, actor, channel_type, reply);
+            sdsfree(reply);
+            return;
         }
 
         /* auto-chain: inject output into active task */
@@ -1255,9 +1302,9 @@ static void edc_commands_handle_task_join(struct edc_agent *agent, edc_actor_t *
         return;
     }
 
-    if (t->state == TASK_CANCELLED || t->state == TASK_ERROR)
+    if (edc_task_is_cancelled(t) || edc_task_has_failed(t))
     {
-        sds reply = sdscatprintf(sdsempty(), "Task `%s` is %s — reaped.", t->task_id, edc_task_state_name(t->state));
+        sds reply = sdscatprintf(sdsempty(), "Task `%s` is %s — reaped.", t->task_id, edc_task_state_str(t));
         edc_commands_reply(agent, actor, channel_type, reply);
         sdsfree(reply);
         if (t->group)
@@ -1270,7 +1317,7 @@ static void edc_commands_handle_task_join(struct edc_agent *agent, edc_actor_t *
                              "Task `%s` is currently **%s**.\n\n"
                              "- `/task chain %s <current>` — a current task waits for it\n"
                              "- `/task join %s` — check back later, once it is COMPLETED",
-                             t->task_id, edc_task_state_name(t->state), t->task_id, t->task_id);
+                             t->task_id, edc_task_state_str(t), t->task_id, t->task_id);
     edc_commands_reply(agent, actor, channel_type, reply);
     sdsfree(reply);
 }

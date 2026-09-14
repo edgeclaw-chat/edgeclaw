@@ -103,7 +103,7 @@ static void test_scheduler_task_mgmt(void)
     CHECK(t1->task_id != NULL, "task 1 id non-NULL");
     CHECK(t2->task_id != NULL, "task 2 id non-NULL");
     CHECK(strcmp(t1->task_id, t2->task_id) != 0, "task IDs are unique");
-    CHECK(t1->state == TASK_WAITING_INPUT, "task starts WAITING_INPUT");
+    CHECK(edc_task_is_ready(t1), "task starts READY");
 
     TEST("find_task_by_id cross-group");
     struct edc_task_group *g1 = edc_scheduler_create_group(sched, t1);
@@ -198,10 +198,10 @@ static void test_scheduler_signals(void)
     struct edc_task *t = edc_scheduler_create_task(sched, "signal target", edc_channel_adapter);
     struct edc_task_group *g = edc_scheduler_create_group(sched, t);
 
-    CHECK(t->state == TASK_WAITING_INPUT, "task at WAITING_INPUT");
+    CHECK(edc_task_is_ready(t), "task at READY");
 
     edc_scheduler_send_signal_to_task(sched, t->task_id, TASK_SIGTERM);
-    CHECK(t->state == TASK_CANCELLED, "task cancelled by SIGTERM");
+    CHECK(edc_task_is_cancelled(t), "task cancelled by SIGTERM");
 
     TEST("send_signal_to_task nonexistent");
     edc_scheduler_send_signal_to_task(sched, "nonexistent", TASK_SIGTERM);
@@ -215,16 +215,16 @@ static void test_scheduler_signals(void)
     struct edc_task *t2 = edc_scheduler_create_task(sched, "signal target 2", edc_channel_adapter);
     edc_task_group_add_task(g, t2);
     edc_scheduler_send_signal_to_task(sched, t2->task_id, TASK_SIGTERM);
-    CHECK(t2->state == TASK_CANCELLED, "t2 cancelled");
+    CHECK(edc_task_is_cancelled(t2), "t2 cancelled");
     CHECK(g_save_calls == 1, "save_session called once after explicit cancel");
 
     /* COMPLETED task is terminal: cancel is a no-op → no save */
     struct edc_task *t3 = edc_scheduler_create_task(sched, "done task", edc_channel_adapter);
     edc_task_group_add_task(g, t3);
-    edc_task_set_state(t3, TASK_LLM_PROCESSING);
-    edc_task_set_state(t3, TASK_COMPLETED);
+    edc_task_await_exec(t3);
+    edc_task_mark_completed(t3);
     edc_scheduler_send_signal_to_task(sched, t3->task_id, TASK_SIGTERM);
-    CHECK(t3->state == TASK_COMPLETED, "completed task stays COMPLETED");
+    CHECK(edc_task_is_completed(t3), "completed task stays COMPLETED");
     CHECK(g_save_calls == 1, "no extra save for no-op cancel on completed task");
 
     /* nonexistent task → no save */
@@ -251,9 +251,9 @@ static void test_scheduler_group_signals(void)
     edc_task_group_add_task(g, m2);
 
     edc_scheduler_send_signal_to_group(sched, g->group_id, TASK_SIGTERM);
-    CHECK(l->state == TASK_CANCELLED, "leader cancelled");
-    CHECK(m1->state == TASK_CANCELLED, "member 1 cancelled");
-    CHECK(m2->state == TASK_CANCELLED, "member 2 cancelled");
+    CHECK(edc_task_is_cancelled(l), "leader cancelled");
+    CHECK(edc_task_is_cancelled(m1), "member 1 cancelled");
+    CHECK(edc_task_is_cancelled(m2), "member 2 cancelled");
 
     TEST("send_signal_to_group nonexistent");
     edc_scheduler_send_signal_to_group(sched, "nonexistent-gid", TASK_SIGTERM);
@@ -282,15 +282,15 @@ static void test_scheduler_signal_all(void)
     CHECK(g2->member_count == 1, "group 2 has 1 member");
 
     edc_scheduler_send_signal_to_all(sched, TASK_SIGTERM);
-    CHECK(l1->state == TASK_CANCELLED, "G1 leader cancelled");
-    CHECK(l2->state == TASK_CANCELLED, "G2 leader cancelled");
+    CHECK(edc_task_is_cancelled(l1), "G1 leader cancelled");
+    CHECK(edc_task_is_cancelled(l2), "G2 leader cancelled");
 
     edc_scheduler_free(sched);
     free(sess);
     free_config(cfg);
 }
 
-/* ── 6. 输入路由: 普通输入 attach 到 WAITING_INPUT 的 leader ── */
+/* ── 6. 输入路由: 普通输入一律新建 task (attach 已退休) ── */
 
 static int g_cmd_calls = 0;
 static int g_llm_calls = 0;
@@ -325,19 +325,20 @@ static void drive_input(struct edc_scheduler *sched, const char *content, long r
     sched_actor->handler(sched_actor, msg); /* dispatches + frees msg */
 }
 
-static void test_input_routes_to_waiting_leader(void)
+static void test_input_routing(void)
 {
-    TEST("plain input attaches to WAITING_INPUT leader (fork)");
+    TEST("a parked task no longer captures plain input (attach is retired)");
     struct edc_config *cfg = make_config();
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(sess, cfg);
 
-    /* fork 语义: leader 在自己的(前台) group 中处于 WAITING_INPUT */
-    struct edc_task *leader = edc_scheduler_create_task(sched, "fork leader", edc_channel_adapter);
-    struct edc_task_group *g = edc_scheduler_create_group(sched, leader);
+    /* 旧模型里, 一个停在前台 group 的 active task 会把普通输入"吃"进去 (attach);
+     * 新模型下它没有任何特殊地位 —— 输入交给命令处理器 (shell), 由它建一条新任务。 */
+    struct edc_task *parked = edc_scheduler_create_task(sched, "parked", edc_channel_adapter);
+    struct edc_task_group *g = edc_scheduler_create_group(sched, parked);
     edc_scheduler_set_foreground(sched, g);
-    edc_session_set_active_task(sess, leader);
-    CHECK(leader->state == TASK_WAITING_INPUT, "leader starts WAITING_INPUT");
+    edc_session_set_active_task(sess, parked);
+    CHECK(edc_task_is_ready(parked), "parked task starts READY");
 
     g_cmd_calls = 0;
     g_llm_calls = 0;
@@ -347,28 +348,27 @@ static void test_input_routes_to_waiting_leader(void)
 
     drive_input(sched, "hello", 1);
 
-    CHECK(g_llm_calls == 1, "send_llm called once (attached, not spawned)");
-    CHECK(g_llm_task == leader, "input attached to leader task");
-    CHECK(g_cmd_calls == 0, "shell not invoked (no new task)");
-    CHECK(leader->state == TASK_LLM_PROCESSING, "leader advanced to LLM_PROCESSING");
-    CHECK(leader->active_turn != NULL, "leader has active turn");
+    CHECK(g_cmd_calls == 1, "plain input reached the shell (it builds the task)");
+    CHECK(g_llm_calls == 0, "nothing was attached to the parked task");
+    CHECK(edc_task_is_ready(parked), "parked task untouched");
+    CHECK(parked->active_turn == NULL, "parked task got no turn");
 
     edc_scheduler_free(sched);
     free(sess);
     free_config(cfg);
 
-    TEST("plain input spawns via shell when no WAITING_INPUT task");
+    TEST("plain input spawns via shell when no parked task");
     cfg = make_config();
     sess = make_session(cfg);
     sched = edc_scheduler_new(sess, cfg);
 
-    /* 已完成(非等待)的前台 task → 不再 attach, 走 shell 新建 task */
+    /* 已完成的前台 task → 本来就是新建 task, 现在不再有"停着就吃掉输入"那条路 */
     struct edc_task *done = edc_scheduler_create_task(sched, "done", edc_channel_adapter);
     struct edc_task_group *g2 = edc_scheduler_create_group(sched, done);
     edc_scheduler_set_foreground(sched, g2);
     edc_session_set_active_task(sess, done);
-    edc_task_set_state(done, TASK_LLM_PROCESSING);
-    edc_task_set_state(done, TASK_COMPLETED);
+    edc_task_await_exec(done);
+    edc_task_mark_completed(done);
 
     g_cmd_calls = 0;
     g_llm_calls = 0;
@@ -385,7 +385,7 @@ static void test_input_routes_to_waiting_leader(void)
     free(sess);
     free_config(cfg);
 
-    TEST("slash command bypasses attach and reaches shell");
+    TEST("slash command reaches the shell");
     cfg = make_config();
     sess = make_session(cfg);
     sched = edc_scheduler_new(sess, cfg);
@@ -393,7 +393,7 @@ static void test_input_routes_to_waiting_leader(void)
     struct edc_task *leader2 = edc_scheduler_create_task(sched, "waiting", edc_channel_adapter);
     struct edc_task_group *g3 = edc_scheduler_create_group(sched, leader2);
     edc_scheduler_set_foreground(sched, g3);
-    edc_session_set_active_task(sess, leader2); /* WAITING_INPUT */
+    edc_session_set_active_task(sess, leader2);
 
     g_cmd_calls = 0;
     g_llm_calls = 0;
@@ -404,7 +404,7 @@ static void test_input_routes_to_waiting_leader(void)
     drive_input(sched, "/task list", 3);
 
     CHECK(g_cmd_calls == 1, "slash command reached shell");
-    CHECK(g_llm_calls == 0, "slash command did NOT attach to waiting leader");
+    CHECK(g_llm_calls == 0, "slash command did not attach/dispatch anything");
 
     edc_scheduler_free(sched);
     free(sess);
@@ -500,19 +500,22 @@ static void test_scheduler_max_iter_cap(void)
     sched->send_reply = mock_send_reply;
 
     drive_input(sched, "hello", 101);
-    CHECK(leader->llm_rounds == 1, "first llm request consumes one round");
+    /* 新模型: 普通输入经命令处理器建一条**新**任务并对它派发, 不再是 attach 到那个
+     * 停着的 leader。后面断言的对象换成真正拿到输入的任务 (mock_send_llm 记下了它)。 */
+    leader = g_llm_task;
+    CHECK(leader != NULL && leader->llm_rounds == 1, "first llm request consumes one round");
     CHECK(g_llm_calls == 1, "first llm request sent");
 
     run_one_tool_round(sched, 101); /* 第1轮: 链尾 rounds=1 < 2 → 续发 */
     CHECK(leader->llm_rounds == 2, "chain-end resend consumes round 2");
     CHECK(g_dispatch_calls == 1, "tools dispatched in round 1");
-    CHECK(leader->state == TASK_LLM_PROCESSING, "round 1 continues to llm");
+    CHECK(edc_task_awaits_exec(leader), "round 1 continues to llm");
     CHECK(g_llm_calls == 2, "round 1 chain end re-sends llm");
 
     run_one_tool_round(sched, 101); /* rounds=2 >= 2 → 截断 */
     CHECK(leader->llm_rounds == 2, "rounds consumed up to the cap");
     CHECK(g_llm_calls == 2, "no third llm request after budget exhausted");
-    CHECK(leader->state == TASK_COMPLETED, "task completed at cap");
+    CHECK(edc_task_is_completed(leader), "task completed at cap");
     CHECK(leader->active_turn == NULL, "active turn committed");
     CHECK(leader->output && strstr(leader->output, "max_iter=2") != NULL, "output carries cap notice");
     CHECK(g_reply_calls == 1, "cap notice replied once");
@@ -540,9 +543,10 @@ static void test_scheduler_max_iter_cap(void)
     sched->send_reply = mock_send_reply;
 
     drive_input(sched, "hello", 102);
+    leader = g_llm_task; /* 输入建的新任务 (见上) */
     run_one_tool_round(sched, 102);
     CHECK(g_llm_calls == 1, "only the initial llm request");
-    CHECK(leader->state == TASK_COMPLETED, "capped right after first chain");
+    CHECK(edc_task_is_completed(leader), "capped right after first chain");
     CHECK(g_reply_calls == 1, "cap notice replied");
 
     edc_scheduler_free(sched);
@@ -565,6 +569,7 @@ static void test_scheduler_max_iter_cap(void)
     sched->send_reply = mock_send_reply;
 
     drive_input(sched, "hello", 103);
+    leader = g_llm_task; /* 输入建的新任务 (见上) */
     run_one_tool_round(sched, 103);
     run_one_tool_round(sched, 103);
     run_one_tool_round(sched, 103);
@@ -593,6 +598,7 @@ static void test_scheduler_max_iter_cap(void)
     sched->send_reply = mock_send_reply;
 
     drive_input(sched, "hello", 104);
+    leader = g_llm_task; /* 输入建的新任务 (见上) */
     run_one_tool_round(sched, 104);
     run_one_tool_round(sched, 104);
     CHECK(leader->llm_rounds == 3, "rounds counted while unlimited (-1)");
@@ -777,7 +783,7 @@ int main(void)
     test_scheduler_signals();
     test_scheduler_group_signals();
     test_scheduler_signal_all();
-    test_input_routes_to_waiting_leader();
+    test_input_routing();
     test_scheduler_max_iter_cap();
     test_snapshot_carries_no_chat_messages();
     test_task_id_survives_restart();

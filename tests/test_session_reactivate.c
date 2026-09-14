@@ -100,12 +100,12 @@ static void commit_turn_into_group(struct edc_session *sess, struct edc_task *ta
 static struct edc_task_group *run_task(struct edc_scheduler *sched, struct edc_session *sess, const char *desc)
 {
     struct edc_task *t = edc_scheduler_create_task(sched, desc, edc_channel_adapter);
-    edc_task_set_state(t, TASK_LLM_PROCESSING);
+    edc_task_await_exec(t);
     struct edc_task_group *g = edc_scheduler_create_group(sched, t);
     edc_scheduler_set_foreground(sched, g);
     edc_session_set_active_task(sess, t);
     commit_turn_into_group(sess, t, desc, "done");
-    edc_task_set_state(t, TASK_COMPLETED);
+    edc_task_mark_completed(t);
     return g;
 }
 

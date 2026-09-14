@@ -16,7 +16,7 @@
 
     IDLE           -> step READY        life ALIVE
     WAITING_DEPS   -> step AWAIT_DEPS   life ALIVE
-    WAITING_INPUT  -> step AWAIT_INPUT  life ALIVE
+    WAITING_INPUT  -> step READY        life ALIVE   (旧名 = 就绪; 没有"等输入"相位)
     LLM_PROCESSING -> step AWAIT_EXEC   life ALIVE
     TOOL_CALLING   -> step AWAIT_TOOLS  life ALIVE
     SUSPENDED      -> step READY        life SUSPENDED   (step 未知, 取中性值)
@@ -41,7 +41,7 @@ from pathlib import Path
 STEP_OF = {
     "IDLE": ("READY", "ALIVE"),
     "WAITING_DEPS": ("AWAIT_DEPS", "ALIVE"),
-    "WAITING_INPUT": ("AWAIT_INPUT", "ALIVE"),
+    "WAITING_INPUT": ("READY", "ALIVE"),
     "LLM_PROCESSING": ("AWAIT_EXEC", "ALIVE"),
     "TOOL_CALLING": ("AWAIT_TOOLS", "ALIVE"),
     "SUSPENDED": ("READY", "SUSPENDED"),

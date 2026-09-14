@@ -116,7 +116,7 @@ int main(void)
     CHECK(g_llm_task != NULL, "a task was handed to send_llm");
     if (g_llm_task)
     {
-        CHECK(g_llm_task->state == TASK_LLM_PROCESSING, "state advanced to LLM_PROCESSING");
+        CHECK(edc_task_awaits_exec(g_llm_task), "state advanced to LLM_PROCESSING");
         CHECK(g_llm_task->active_turn != NULL, "has an active turn (not a dead end)");
         CHECK(g_llm_task->current_request_id != NULL, "request registered (late events can be dropped)");
         CHECK(g_llm_task->description && strcmp(g_llm_task->description, "probe") == 0,
@@ -137,7 +137,7 @@ int main(void)
     CHECK(susp != NULL, "the task exists");
     if (susp)
     {
-        CHECK(susp->state == TASK_SUSPENDED, "state is SUSPENDED");
+        CHECK(edc_task_is_suspended(susp), "state is SUSPENDED");
         /* 初始相位与普通新建任务相同 —— 输入已经装上了, 只是没跑。 */
         CHECK(susp->active_turn != NULL, "input is attached (same initial phase as a normal task)");
         CHECK(susp->current_request_id == NULL, "no request registered (nothing is in flight)");
@@ -154,7 +154,7 @@ int main(void)
         g_llm_task = NULL;
         edc_scheduler_resume_task(sched, susp);
         CHECK(g_llm_calls == 1, "send_llm called once (it runs now)");
-        CHECK(susp->state == TASK_LLM_PROCESSING, "resume advances to LLM_PROCESSING");
+        CHECK(edc_task_awaits_exec(susp), "resume advances to LLM_PROCESSING");
     }
 
     printf("\n  %d passed, %d failed\n", passed, failed);

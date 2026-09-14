@@ -25,6 +25,7 @@
 #include "edc_session_manager.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
+#include "edc_turn.h"
 #include "log.h"
 #include "utlist_fix.h"
 #include <cJSON.h>
@@ -143,7 +144,7 @@ int main(void)
     CHECK(count_tasks(sa) == before + 1, "exactly one task added to A");
     CHECK(at->deps_total == 1, "A's task has one dependency");
     CHECK(at->deps && at->deps->source == bt, "dependency points at B's task");
-    CHECK(at->state == TASK_WAITING_DEPS, "dependent waits for its cross-session dep");
+    CHECK(edc_task_awaits_deps(at), "dependent waits for its cross-session dep");
 
     /* ── S1a/D5: unknown id fails the command ───────────────── */
     TEST("unknown -d id fails the command (no task created)");
@@ -154,9 +155,9 @@ int main(void)
 
     /* ── runtime: completion wakes the dependent ────────────── */
     TEST("completing the source wakes the cross-session dependent");
-    edc_task_set_state(bt, TASK_COMPLETED);
+    edc_task_mark_completed(bt);
     edc_task_notify_dependents(bt);
-    CHECK(at->state == TASK_WAITING_INPUT, "dependent became runnable after source completed");
+    CHECK(edc_task_is_ready(at), "dependent became runnable after source completed");
 
     /* ── S1b: fg refuses a task in another session ──────────── */
     TEST("/task fg refuses a task in another session");
@@ -185,6 +186,16 @@ int main(void)
     struct edc_task *bt2 = edc_scheduler_create_task(agent.scheduler, "b2-task", edc_channel_adapter);
     edc_scheduler_create_group(agent.scheduler, bt2);
     edc_session_set_active_task(sb, bt2);
+    /* 新模型: task 创建时就带着它的 input —— 没装 turn 的任务落盘时会被丢掉
+     * (docs/retire-waiting-input.md §4)。装上 input 停到 SUSPENDED, 它才会出现在
+     * B 的 session.json 里; 本用例要验的是"属主 session 未激活时靠磁盘反解 task id"。 */
+    {
+        struct edc_turn *turn = edc_turn_new();
+        turn->task_id = strdup(bt2->task_id);
+        edc_turn_add_user_message(turn, "b2-task input");
+        bt2->active_turn = turn;
+        edc_task_mark_suspended(bt2);
+    }
     sds bt2_id = sdsnew(bt2->task_id);
     CHECK(edc_session_save_state(sb, agent.scheduler), "B state saved to disk");
     switch_to(&agent, sa->session_id);

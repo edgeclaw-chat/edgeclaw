@@ -286,11 +286,32 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
             struct edc_task *t;
             LL_FOREACH2(g->members, t, group_next)
             {
-                /* filter transient states: 刚创建未开始的 IDLE 任务不落盘。
-                 * CANCELLED 也必须持久化 —— 用户显式 stop 的任务要跨重启保留,
-                 * 否则重启后会按旧状态恢复, 让取消看起来"没生效"。 */
-                if (t->state == TASK_IDLE)
+                /* 落盘判据 (retire-waiting-input.md §4 第 4 行):
+                 *   丢 "READY 且身上什么都没有" 的任务, 不丢真任务。
+                 *
+                 * 为什么是这三个条件的合取:
+                 *  - step==READY && life==ALIVE (== 旧 `state == TASK_IDLE`) 给出
+                 *    "停着"的候选;
+                 *  - 但 "停在 READY" 有两种截然不同的来源, 而 task 上没有字段能区分:
+                 *    ① 旧模型残渣 —— 创建后不带 input 就停在那儿 (fork leader、
+                 *       /task join 的 Joined task、@task 无正文), 它不该存在;
+                 *    ② 被兜底/迁移强行放回 READY 的**真任务** (resume 的三条死胡同
+                 *       从 TOOL_CALLING/LLM_PROCESSING 强制回 READY), 它这时
+                 *       `active_turn` 和工具账本都还在, 丢掉就是数据丢失。
+                 *    两个内容条件正是把 ② 择出去。
+                 *
+                 * 新模型下 ① 不该再被生产出来 (创建任务必然带着它的 input; 休眠态
+                 * 走 SUSPENDED + /task resume) —— 如果真的落进这里, 说明还有调用方
+                 * 在造 turn-less 任务, 于是告警而不是静默吞掉。
+                 * task 该不该落盘, 目标态由 lifetime 回答 (P0a 的 TRANSIENT/PERSISTENT)。 */
+                if (t->step == EDC_TASKSTEP_READY && t->life == EDC_LIFE_ALIVE && !t->active_turn &&
+                    !t->tool_calls)
+                {
+                    log_warn("serialize: dropping a task with no input: task=%s group=%s "
+                             "(created without a turn — the retired 'waiting for input' shape)",
+                             t->task_id ? t->task_id : "(null)", t->group_id ? t->group_id : "(null)");
                     continue;
+                }
                 cJSON_AddItemToArray(tasks_json, task_to_json(t));
             }
         }
@@ -593,7 +614,6 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
         task->life = edc_task_classify_life(cJSON_GetStringValue(cJSON_GetObjectItem(tj, "life")));
         if (task->life == EDC_LIFE_ALIVE)
             task->life = EDC_LIFE_SUSPENDED;
-        task->state = edc_task_state_of(task); /* 过渡期镜像 */
 
         cJSON *v;
         if ((v = cJSON_GetObjectItem(tj, "is_group_leader")))
@@ -839,8 +859,8 @@ static void deser_reconcile_deps(struct task_map_entry **id_map)
                 }
                 task->deps_total = total;
                 task->deps_completed = completed;
-                if (task->state == TASK_WAITING_DEPS && completed >= total)
-                    edc_task_set_state(task, TASK_WAITING_INPUT);
+                if (edc_task_awaits_deps(task) && completed >= total)
+                    edc_task_mark_ready(task);
             }
             e = e->next;
         }

@@ -113,9 +113,9 @@ int main(void)
 
         struct edc_task *t = edc_task_new("g-task", sid, "g-task", "guard me", edc_channel_adapter);
         t->is_group_leader = 1;
-        edc_task_set_state(t, TASK_WAITING_INPUT);
-        edc_task_set_state(t, TASK_LLM_PROCESSING);
-        edc_task_set_state(t, TASK_COMPLETED);
+        edc_task_mark_ready(t);
+        edc_task_await_exec(t);
+        edc_task_mark_completed(t);
         edc_session_add_group(s, edc_task_group_new(t));
 
         struct edc_turn *turn = edc_turn_new();
@@ -224,9 +224,9 @@ int main(void)
         struct edc_task *bt =
             edc_task_new("b-task", b->session_id, "b-task", "real work", edc_channel_adapter);
         bt->is_group_leader = 1;
-        edc_task_set_state(bt, TASK_WAITING_INPUT);
-        edc_task_set_state(bt, TASK_LLM_PROCESSING);
-        edc_task_set_state(bt, TASK_COMPLETED);
+        edc_task_mark_ready(bt);
+        edc_task_await_exec(bt);
+        edc_task_mark_completed(bt);
         edc_session_add_group(b_real, edc_task_group_new(bt));
         CHECK(edc_session_save_state(b_real, NULL), "B's real state written to disk");
         edc_session_free(b_real);

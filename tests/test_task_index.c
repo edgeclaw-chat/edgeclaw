@@ -21,6 +21,7 @@
 #include "edc_session_manager.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
+#include "edc_turn.h"
 #include "log.h"
 #include "sds.h"
 #include "utlist_fix.h"
@@ -106,6 +107,17 @@ int main(void)
     edc_scheduler_set_session(agent.scheduler, sb);
     struct edc_task *bt = edc_scheduler_create_task(agent.scheduler, "b-task", edc_channel_adapter);
     edc_scheduler_create_group(agent.scheduler, bt);
+    /* 新模型: task 创建时就带着它的 input —— 没装 turn 的任务落盘时会被丢掉
+     * (docs/retire-waiting-input.md §4)。装上 input 再停到 SUSPENDED
+     * (= "建了、有输入、先不跑"), 它才会出现在 session.json 里; 本用例要验的正是
+     * "从磁盘上的 session.json 反解出 task 的属主"。 */
+    {
+        struct edc_turn *turn = edc_turn_new();
+        turn->task_id = strdup(bt->task_id);
+        edc_turn_add_user_message(turn, "b-task input");
+        bt->active_turn = turn;
+        edc_task_mark_suspended(bt);
+    }
     CHECK(edc_session_save_state(sb, agent.scheduler), "B state saved");
 
     sds bt_id = sdsnew(bt->task_id);

@@ -198,6 +198,19 @@ struct edc_task *edc_shell_spawn_task(struct edc_agent *agent, struct edc_actor 
 {
     (void)actor; /* task creation no longer echoes back to the actor */
 
+    /* 任务必须带着它的 input —— 与 /task new (desc 就是 input) 同一条规则。
+     *
+     * 一个只有 flag、没有正文的命令 (如 `-d 5`) 会走到这里而没有内容可跑。旧模型
+     * 下这种任务会停在 WAITING_INPUT, 等下一条普通输入被 attach 进来; 那条路已退休,
+     * 所以这里直接拒绝, 不再建一个没有 input 的空任务。
+     * 见 docs/retire-waiting-input.md §4。 */
+    if (!opts->input || sdslen(opts->input) == 0)
+    {
+        edc_commands_reply(agent, actor, channel_type,
+                           "A task needs an input — write `@<desc>` or `<desc>` (flags alone do not create a task).");
+        return NULL;
+    }
+
     /* Resolve `-d` dependencies up front. Task ids are globally unique (see
      * edc_session_manager_find_task_any), so a dependency may live in another
      * session. An id that cannot be resolved fails the whole command — it is
@@ -278,11 +291,11 @@ struct edc_task *edc_shell_spawn_task(struct edc_agent *agent, struct edc_actor 
         task->current_request_id = req_id;
 
         log_info("%s spawn: task=%s state=%s deps_total=%zu input='%s'", reply_prefix, task->task_id,
-                 edc_task_state_name(task->state), task->deps_total, opts->input);
+                 edc_task_state_str(task), task->deps_total, opts->input);
 
-        if (task->state != TASK_WAITING_DEPS)
+        if (!edc_task_awaits_deps(task))
         {
-            bool ok = edc_task_set_state(task, TASK_LLM_PROCESSING);
+            bool ok = edc_task_await_exec(task);
             log_info("%s spawn: set_state LLM_PROCESSING -> %s, send_llm=%s", reply_prefix, ok ? "ok" : "FAILED",
                      (agent->scheduler && agent->scheduler->send_llm) ? "ready" : "NULL");
             if (ok && agent->scheduler && agent->scheduler->send_llm)

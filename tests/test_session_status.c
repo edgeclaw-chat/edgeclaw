@@ -50,16 +50,19 @@ static void test_current_session_status(void)
     /* group 1: leader COMPLETED + a member LLM_PROCESSING */
     struct edc_task *l1 = edc_task_new("1", "sess-c", "1", "leader one", edc_channel_adapter);
     struct edc_task_group *g1 = edc_task_group_new(l1);
-    l1->state = TASK_COMPLETED;
+    /* 这几个任务**没有 turn**, 所以走不了合法的状态机路径 (READY 不能直接 COMPLETED) ——
+     * 它们只是给 `/task status` 的直方图摆场景。装配时 (step, life) 一起给定, 不留
+     * 任何"step 与状态互相矛盾"的组合: 读侧只看 (step, life)。 */
+    edc_task_force_move(l1, EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED);
     struct edc_task *m1 = edc_task_new("2", "sess-c", "1", "member", edc_channel_adapter);
-    m1->state = TASK_LLM_PROCESSING;
+    edc_task_force_move(m1, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
     edc_task_group_add_task(g1, m1);
     edc_session_add_group(s, g1);
 
     /* group 2: orphaned, leader ERROR */
     struct edc_task *l2 = edc_task_new("3", "sess-c", "3", "leader two", edc_channel_adapter);
     struct edc_task_group *g2 = edc_task_group_new(l2);
-    l2->state = TASK_ERROR;
+    edc_task_force_move(l2, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR);
     edc_task_group_mark_orphaned(g2);
     edc_session_add_group(s, g2);
 

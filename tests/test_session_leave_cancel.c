@@ -32,6 +32,7 @@
 #include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
+#include "edc_turn.h"
 #include "utlist_fix.h"
 #include "log.h"
 #include <signal.h>
@@ -98,24 +99,40 @@ static struct edc_task *find_task(struct edc_session *session, const char *task_
     return NULL;
 }
 
-/* Build a task in `target` state through a legal transition chain
- * (IDLE -> WAITING_INPUT -> ... -> target). */
-static struct edc_task *make_task(const char *id, const char *sid, const char *desc, edc_task_state target)
+/* fixture 要摆出的相位。以前这里传旧状态枚举 —— 但"在哪一步"和"活着吗"已经是两件事,
+ * 而且场景只能通过**合法路径**摆出来 (旧词里那种"直接 set 成 COMPLETED"已经不存在)。 */
+typedef enum
+{
+    SCENE_READY,     /* 带着 input 就绪 (新建即此态) */
+    SCENE_RUNNING,   /* 已发出 LLM 请求, 在等回话 */
+    SCENE_COMPLETED,
+    SCENE_CANCELLED,
+} scene;
+
+/* Build a task in `scene` through a legal transition chain (READY -> ... -> target). */
+static struct edc_task *make_task(const char *id, const char *sid, const char *desc, scene target)
 {
     struct edc_task *t = edc_task_new(id, sid, id, desc, edc_channel_adapter);
-    edc_task_set_state(t, TASK_WAITING_INPUT);
-    if (target == TASK_LLM_PROCESSING)
+    /* 新模型: task 创建时就带着它的 input。fixture 必须装上一个 turn, 否则它就是
+     * 一条 turn-less 残渣 —— 落盘时会被判据丢弃。 */
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup(id);
+    edc_turn_add_user_message(turn, desc);
+    t->active_turn = turn;
+    switch (target)
     {
-        edc_task_set_state(t, TASK_LLM_PROCESSING);
-    }
-    else if (target == TASK_COMPLETED)
-    {
-        edc_task_set_state(t, TASK_LLM_PROCESSING);
-        edc_task_set_state(t, TASK_COMPLETED);
-    }
-    else if (target == TASK_CANCELLED)
-    {
+    case SCENE_READY:
+        break;
+    case SCENE_RUNNING:
+        edc_task_await_exec(t);
+        break;
+    case SCENE_COMPLETED:
+        edc_task_await_exec(t);
+        edc_task_mark_completed(t);
+        break;
+    case SCENE_CANCELLED:
         edc_task_send_signal(t, TASK_SIGTERM);
+        break;
     }
     return t;
 }
@@ -134,20 +151,20 @@ static void test_signal_scoped_to_session(void)
     /* Session A (bound to the scheduler) */
     struct edc_session *sa = edc_session_new(cfg, "sess-a", "A");
     struct edc_scheduler *sched_a = edc_scheduler_new(sa, cfg);
-    struct edc_task *a_run = make_task("a-run", "sess-a", "running", TASK_LLM_PROCESSING);
+    struct edc_task *a_run = make_task("a-run", "sess-a", "running", SCENE_RUNNING);
     struct edc_task_group *ga = edc_task_group_new(a_run);
     edc_session_add_group(sa, ga);
-    struct edc_task *a_done = make_task("a-done", "sess-a", "done", TASK_COMPLETED);
+    struct edc_task *a_done = make_task("a-done", "sess-a", "done", SCENE_COMPLETED);
     edc_task_group_add_task(ga, a_done);
     /* 非运行态: 离开时必须原样保留, 不能被"离开即取消"误伤 */
-    struct edc_task *a_wait = make_task("a-wait", "sess-a", "waiting input", TASK_WAITING_INPUT);
+    struct edc_task *a_wait = make_task("a-wait", "sess-a", "waiting input", SCENE_READY);
     edc_task_group_add_task(ga, a_wait);
 
     /* Session B, NOT bound to the scheduler */
     struct edc_session *sb = edc_session_new(cfg, "sess-b", "B");
     struct edc_scheduler *sched_b = edc_scheduler_new(sb, cfg);
-    struct edc_task *b_run = make_task("b-run", "sess-b", "other", TASK_LLM_PROCESSING);
-    struct edc_task *b_wait = make_task("b-wait", "sess-b", "other wait", TASK_WAITING_INPUT);
+    struct edc_task *b_run = make_task("b-run", "sess-b", "other", SCENE_RUNNING);
+    struct edc_task *b_wait = make_task("b-wait", "sess-b", "other wait", SCENE_READY);
     struct edc_task_group *gb = edc_task_group_new(b_run);
     edc_task_group_add_task(gb, b_wait);
     edc_session_add_group(sb, gb);
@@ -155,16 +172,16 @@ static void test_signal_scoped_to_session(void)
     /* Leaving session A (running_only=true): only A's running task goes. */
     edc_scheduler_send_signal_to_session(sched_a, sa, TASK_SIGTERM, true);
 
-    CHECK(a_run->state == TASK_CANCELLED, "target session running task -> CANCELLED");
-    CHECK(a_wait->state == TASK_WAITING_INPUT, "WAITING_INPUT task preserved on leave");
-    CHECK(a_done->state == TASK_COMPLETED, "terminal COMPLETED task untouched");
-    CHECK(b_run->state == TASK_LLM_PROCESSING, "other session's running task untouched");
-    CHECK(b_wait->state == TASK_WAITING_INPUT, "other session's waiting task untouched");
+    CHECK(edc_task_is_cancelled(a_run), "target session running task -> CANCELLED");
+    CHECK(edc_task_is_ready(a_wait), "READY task preserved on leave");
+    CHECK(edc_task_is_completed(a_done), "terminal COMPLETED task untouched");
+    CHECK(edc_task_awaits_exec(b_run), "other session's running task untouched");
+    CHECK(edc_task_is_ready(b_wait), "other session's waiting task untouched");
 
     /* Contrast: cancel-all (running_only=false, used by /stop and teardown)
      * still wipes every non-terminal task, WAITING_INPUT included. */
     edc_scheduler_send_signal_to_session(sched_a, sa, TASK_SIGTERM, false);
-    CHECK(a_wait->state == TASK_CANCELLED, "cancel-all still cancels WAITING_INPUT");
+    CHECK(edc_task_is_cancelled(a_wait), "cancel-all still cancels WAITING_INPUT");
 
     edc_scheduler_free(sched_a);
     edc_scheduler_free(sched_b);
@@ -187,17 +204,17 @@ static void test_leave_persists_cancelled(void)
 
     struct edc_session *sa = edc_session_new(cfg, "sess-lv", "Leave");
     struct edc_scheduler *sched_a = edc_scheduler_new(sa, cfg);
-    struct edc_task *a_run = make_task("t1", "sess-lv", "running", TASK_LLM_PROCESSING);
+    struct edc_task *a_run = make_task("t1", "sess-lv", "running", SCENE_RUNNING);
     struct edc_task_group *ga = edc_task_group_new(a_run);
     edc_session_add_group(sa, ga);
-    struct edc_task *a_wait = make_task("t2", "sess-lv", "waiting", TASK_WAITING_INPUT);
+    struct edc_task *a_wait = make_task("t2", "sess-lv", "waiting", SCENE_READY);
     edc_task_group_add_task(ga, a_wait);
     edc_scheduler_set_foreground(sched_a, ga);
 
     /* "Leave" = cancel running + persist before switching away. */
     edc_scheduler_send_signal_to_session(sched_a, sa, TASK_SIGTERM, true);
-    CHECK(a_run->state == TASK_CANCELLED, "running task cancelled in memory");
-    CHECK(a_wait->state == TASK_WAITING_INPUT, "WAITING_INPUT left alone in memory");
+    CHECK(edc_task_is_cancelled(a_run), "running task cancelled in memory");
+    CHECK(edc_task_is_ready(a_wait), "READY left alone in memory");
     CHECK(edc_session_save_state(sa, sched_a), "save_state succeeds");
 
     /* Reload into a fresh session (simulates switch-back / restart). */
@@ -207,9 +224,9 @@ static void test_leave_persists_cancelled(void)
 
     struct edc_task *rt = find_task(sa2, "t1");
     CHECK(rt != NULL, "cancelled task restored");
-    CHECK(rt != NULL && rt->state == TASK_CANCELLED, "terminal CANCELLED passes through unchanged");
+    CHECK(rt != NULL && edc_task_is_cancelled(rt), "terminal CANCELLED passes through unchanged");
     struct edc_task *rt2 = find_task(sa2, "t2");
-    CHECK(rt2 != NULL && rt2->state == TASK_SUSPENDED, "WAITING_INPUT -> SUSPENDED on load");
+    CHECK(rt2 != NULL && edc_task_is_suspended(rt2), "WAITING_INPUT -> SUSPENDED on load");
 
     edc_scheduler_free(sched_a);
     edc_scheduler_free(sched_a2);
@@ -233,12 +250,12 @@ static void test_interrupted_restores_cancelled(void)
 
     struct edc_session *sa = edc_session_new(cfg, "sess-dg", "Degrade");
     struct edc_scheduler *sched_a = edc_scheduler_new(sa, cfg);
-    struct edc_task *a_run = make_task("t1", "sess-dg", "running", TASK_LLM_PROCESSING);
+    struct edc_task *a_run = make_task("t1", "sess-dg", "running", SCENE_RUNNING);
     struct edc_task_group *ga = edc_task_group_new(a_run);
     edc_session_add_group(sa, ga);
 
     /* No explicit cancel — simulate a hard kill that never got to persist. */
-    CHECK(a_run->state == TASK_LLM_PROCESSING, "in-flight before save");
+    CHECK(edc_task_awaits_exec(a_run), "in-flight before save");
     CHECK(edc_session_save_state(sa, sched_a), "save_state succeeds");
 
     struct edc_session *sa2 = edc_session_new(cfg, "sess-dg", "Degrade");
@@ -246,7 +263,7 @@ static void test_interrupted_restores_cancelled(void)
     CHECK(edc_session_load_state(sa2, sched_a2), "load_state succeeds");
 
     struct edc_task *rt = find_task(sa2, "t1");
-    CHECK(rt != NULL && rt->state == TASK_SUSPENDED, "restored as SUSPENDED");
+    CHECK(rt != NULL && edc_task_is_suspended(rt), "restored as SUSPENDED");
 
     edc_scheduler_free(sched_a);
     edc_scheduler_free(sched_a2);

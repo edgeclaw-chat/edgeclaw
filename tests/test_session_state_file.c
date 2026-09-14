@@ -136,9 +136,9 @@ static void test_write_read(void)
     struct edc_task *task = edc_task_new("task-1", "sess-wr", "task-1",
                                           "hello world", edc_channel_adapter);
     task->is_group_leader = 1;
-    edc_task_set_state(task, TASK_WAITING_INPUT);
-    edc_task_set_state(task, TASK_LLM_PROCESSING);
-    edc_task_set_state(task, TASK_COMPLETED);
+    edc_task_mark_ready(task);
+    edc_task_await_exec(task);
+    edc_task_mark_completed(task);
     task->output = sdsnew("result text");
     task->completion_seq = 7;
 
@@ -179,7 +179,7 @@ static void test_write_read(void)
     CHECK(count_tasks(session2) == 1, "1 task restored");
     struct edc_task *rt = find_task(session2, "task-1");
     CHECK(rt != NULL, "task-1 found");
-    CHECK(rt->state == TASK_COMPLETED, "state COMPLETED");
+    CHECK(edc_task_is_completed(rt), "state COMPLETED");
     CHECK_STREQ(rt->output, "result text", "output restored");
     CHECK(rt->completion_seq == 7, "completion_seq restored");
     CHECK(session2->next_completion_seq == 8, "next_completion_seq restored");
@@ -215,18 +215,24 @@ static void test_overwrite(void)
     struct edc_task *t1 = edc_task_new("task-A", "sess-ow", "task-A",
                                         "first task", edc_channel_adapter);
     t1->is_group_leader = 1;
-    edc_task_set_state(t1, TASK_WAITING_INPUT);
-    edc_task_set_state(t1, TASK_LLM_PROCESSING);
-    edc_task_set_state(t1, TASK_COMPLETED);
+    edc_task_mark_ready(t1);
+    edc_task_await_exec(t1);
+    edc_task_mark_completed(t1);
 
     struct edc_task_group *g1 = edc_task_group_new(t1);
     edc_session_add_group(session, g1);
     CHECK(edc_session_save_state(session, sched), "first save succeeds");
 
-    /* Add second task */
+    /* Add second task —— 新模型: 任务创建时就带着它的 input (turn-less 的 READY
+     * 任务会在落盘时被丢掉, 见 docs/retire-waiting-input.md §4)。 */
     struct edc_task *t2 = edc_task_new("task-B", "sess-ow", "task-A",
                                         "second task", edc_channel_adapter);
-    edc_task_set_state(t2, TASK_WAITING_INPUT);
+    {
+        struct edc_turn *turn = edc_turn_new();
+        turn->task_id = strdup(t2->task_id);
+        edc_turn_add_user_message(turn, "second input");
+        t2->active_turn = turn;
+    }
     edc_task_group_add_task(g1, t2);
 
     /* Second save */
@@ -298,9 +304,9 @@ static void test_atomic_write(void)
     struct edc_task *t1 = edc_task_new("task-A", "sess-atom", "task-A",
                                         "task A", edc_channel_adapter);
     t1->is_group_leader = 1;
-    edc_task_set_state(t1, TASK_WAITING_INPUT);
-    edc_task_set_state(t1, TASK_LLM_PROCESSING);
-    edc_task_set_state(t1, TASK_COMPLETED);
+    edc_task_mark_ready(t1);
+    edc_task_await_exec(t1);
+    edc_task_mark_completed(t1);
 
     struct edc_task_group *g1 = edc_task_group_new(t1);
     edc_session_add_group(session, g1);
@@ -388,9 +394,9 @@ static void test_load_onto_nonempty(void)
     struct edc_task *t1 = edc_task_new("task-A", "sess-ne", "task-A",
                                         "first", edc_channel_adapter);
     t1->is_group_leader = 1;
-    edc_task_set_state(t1, TASK_WAITING_INPUT);
-    edc_task_set_state(t1, TASK_LLM_PROCESSING);
-    edc_task_set_state(t1, TASK_COMPLETED);
+    edc_task_mark_ready(t1);
+    edc_task_await_exec(t1);
+    edc_task_mark_completed(t1);
 
     struct edc_task_group *g1 = edc_task_group_new(t1);
     edc_session_add_group(s1, g1);
@@ -407,7 +413,13 @@ static void test_load_onto_nonempty(void)
     struct edc_task *pre = edc_task_new("pre-existing", "sess-ne", "pre-existing",
                                          "pre", edc_channel_adapter);
     pre->is_group_leader = 1;
-    edc_task_set_state(pre, TASK_WAITING_INPUT);
+    /* 新模型: 任务创建时就带着它的 input。 */
+    {
+        struct edc_turn *turn = edc_turn_new();
+        turn->task_id = strdup(pre->task_id);
+        edc_turn_add_user_message(turn, "pre input");
+        pre->active_turn = turn;
+    }
     struct edc_task_group *pre_g = edc_task_group_new(pre);
     edc_session_add_group(s2, pre_g);
     CHECK(count_tasks(s2) == 1, "1 pre-existing task");

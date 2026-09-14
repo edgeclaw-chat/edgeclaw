@@ -282,7 +282,18 @@ sds edc_session_status_text(struct edc_session *session, bool is_current, const 
 
     /* Tally groups and per-state tasks. */
     int group_count = 0, orphan_count = 0, task_count = 0;
-    int state_counts[TASK_ERROR + 1] = {0};
+    /* 直方图按**显示名**分桶: `/task status` 的文案是既有外部行为, 词表冻在这张表里
+     * (顺序 = 旧枚举顺序, 输出逐字不变)。串是闭的 (`edc_task_state_str` 只可能返回
+     * 表里的词), 找不到只可能是漏改了状态机的行 —— 那时报警, 不要静默丢。
+     * `WAITING_INPUT` 已退休 (旧名 = READY), 永远是 0; 留着只为顺序稳定。 */
+    static const char *const k_state_order[] = {"IDLE",        "WAITING_DEPS", "WAITING_INPUT", "LLM_PROCESSING",
+                                                "TOOL_CALLING", "SUSPENDED",    "COMPLETED",     "CANCELLED",
+                                                "ERROR"};
+    enum
+    {
+        k_state_order_n = sizeof(k_state_order) / sizeof(k_state_order[0])
+    };
+    int state_counts[k_state_order_n] = {0};
     struct edc_task_group *g;
     DL_FOREACH(session->groups, g)
     {
@@ -293,8 +304,22 @@ sds edc_session_status_text(struct edc_session *session, bool is_current, const 
         LL_FOREACH2(g->members, t, group_next)
         {
             task_count++;
-            if (t->state >= TASK_IDLE && t->state <= TASK_ERROR)
-                state_counts[t->state]++;
+            const char *state = edc_task_state_str(t);
+            size_t bucket = k_state_order_n;
+            for (size_t s = 0; s < k_state_order_n; s++)
+            {
+                if (strcmp(state, k_state_order[s]) == 0)
+                {
+                    bucket = s;
+                    break;
+                }
+            }
+            if (bucket == k_state_order_n)
+            {
+                log_warn("status: task %s reports an unknown state '%s'", t->task_id, state);
+                continue;
+            }
+            state_counts[bucket]++;
         }
     }
 
@@ -309,14 +334,13 @@ sds edc_session_status_text(struct edc_session *session, bool is_current, const 
     out = sdscat(out, "\n");
     out = sdscatprintf(out, "- **Tasks**: %d", task_count);
 
-    /* Per-state breakdown, in enum order, only for non-zero buckets. */
+    /* Per-state breakdown, in the frozen word-list order, only for non-zero buckets. */
     bool first_state = true;
-    for (int s = TASK_IDLE; s <= TASK_ERROR; s++)
+    for (size_t s = 0; s < k_state_order_n; s++)
     {
         if (state_counts[s] == 0)
             continue;
-        out = sdscatprintf(out, "%s %s %d", first_state ? " —" : " ·", edc_task_state_name((edc_task_state)s),
-                           state_counts[s]);
+        out = sdscatprintf(out, "%s %s %d", first_state ? " —" : " ·", k_state_order[s], state_counts[s]);
         first_state = false;
     }
     out = sdscat(out, "\n");

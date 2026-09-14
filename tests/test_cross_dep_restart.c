@@ -25,6 +25,7 @@
 #include "edc_session_manager.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
+#include "edc_turn.h"
 #include "log.h"
 #include "utlist_fix.h"
 #include <cJSON.h>
@@ -93,6 +94,16 @@ static void env_close(struct env *e)
     edc_config_free(e->cfg);
 }
 
+/* 新模型: task 创建时就带着它的 input —— 没有 turn-less 的任务, 落盘判据会丢掉
+ * 那种残渣。fixture 用它给任务装上 input。 */
+static void give_input(struct edc_task *t)
+{
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup(t->task_id);
+    edc_turn_add_user_message(turn, "input");
+    t->active_turn = turn;
+}
+
 /* Build A (depends on B's task) + B on disk, then tear everything down so the
  * next open is a cold start. |delete_b_state| removes B's session.json to make
  * the dependency unrestorable. */
@@ -121,6 +132,11 @@ static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, 
     edc_scheduler_set_session(agent.scheduler, sb);
     struct edc_task *bt = edc_scheduler_create_task(agent.scheduler, "b-task", edc_channel_adapter);
     edc_scheduler_create_group(agent.scheduler, bt);
+    /* 新模型: task 创建时就带着它的 input (没装 turn 的任务落盘时会被丢弃):
+     * docs/retire-waiting-input.md §4)。装上 input 停到 SUSPENDED —— 本用例要验的
+     * 是跨会话依赖的恢复, 所以 B 这条任务必须真的出现在它自己的 session.json 里。 */
+    give_input(bt);
+    edc_task_mark_suspended(bt);
     edc_session_save_state(sb, agent.scheduler);
     *out_bt_id = sdsnew(bt->task_id);
 
@@ -161,17 +177,17 @@ static void scenario_restore(const char *ws)
     CHECK(bt != NULL, "B's task loaded on demand");
     CHECK(at && at->deps_total == 1, "cross-session edge restored");
     CHECK(at && at->deps && at->deps->source == bt, "edge points at B's task");
-    CHECK(at && at->state == TASK_SUSPENDED, "A's task held (SUSPENDED), not run");
+    CHECK(at && edc_task_is_suspended(at), "A's task held (SUSPENDED), not run");
     CHECK(!edc_scheduler_task_has_unresolved_deps(e.agent.scheduler, at), "gate open once the edge is restored");
 
     sds resume_cmd = sdscatprintf(sdsempty(), "/task resume %s", at_id);
     send_cmd(&e.agent, resume_cmd);
     sdsfree(resume_cmd);
-    CHECK(at->state == TASK_WAITING_DEPS, "resume legitimately waits for the unfinished dep");
+    CHECK(edc_task_awaits_deps(at), "resume legitimately waits for the unfinished dep");
 
-    edc_task_set_state(bt, TASK_COMPLETED);
+    edc_task_mark_completed(bt);
     edc_task_notify_dependents(bt);
-    CHECK(at->state == TASK_WAITING_INPUT, "A wakes when B completes");
+    CHECK(edc_task_is_ready(at), "A wakes when B completes");
     env_close(&e);
 
     sdsfree(at_id);
@@ -198,7 +214,7 @@ static void scenario_unresolvable(const char *ws)
     sds resume_cmd = sdscatprintf(sdsempty(), "/task resume %s", at_id);
     send_cmd(&e.agent, resume_cmd);
     sdsfree(resume_cmd);
-    CHECK(at->state == TASK_SUSPENDED, "resume refused; task stays held");
+    CHECK(edc_task_is_suspended(at), "resume refused; task stays held");
 
     /* Removing the session that owns the missing source must not dangle: the
      * pending entry is stored by id, so the task simply stays held. */
@@ -237,17 +253,20 @@ static void scenario_multihop(const char *ws)
     edc_scheduler_set_session(agent.scheduler, sc);
     struct edc_task *ct = edc_scheduler_create_task(agent.scheduler, "c", edc_channel_adapter);
     edc_scheduler_create_group(agent.scheduler, ct);
+    give_input(ct);
     edc_session_save_state(sc, agent.scheduler);
 
     edc_scheduler_set_session(agent.scheduler, sb);
     struct edc_task *bt = edc_scheduler_create_task(agent.scheduler, "b", edc_channel_adapter);
     edc_scheduler_create_group(agent.scheduler, bt);
+    give_input(bt);
     edc_task_add_dependency(bt, ct, TASK_DEP_SEQUENCE);
     edc_session_save_state(sb, agent.scheduler);
 
     edc_scheduler_set_session(agent.scheduler, sa);
     struct edc_task *at = edc_scheduler_create_task(agent.scheduler, "a", edc_channel_adapter);
     edc_scheduler_create_group(agent.scheduler, at);
+    give_input(at);
     edc_task_add_dependency(at, bt, TASK_DEP_SEQUENCE);
     edc_session_save_state(sa, agent.scheduler);
 

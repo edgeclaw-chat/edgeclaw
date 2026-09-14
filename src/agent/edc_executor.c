@@ -42,7 +42,7 @@ static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task
             ops->unregister_task(ex->ctx, req_id);
         task->current_request_id = NULL;
         if (ops->set_task_state)
-            ops->set_task_state(ex->ctx, task, TASK_ERROR);
+            ops->set_task_state(ex->ctx, task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR);
         if (e->content)
             edc_task_set_output(task, sdsnew(e->content));
         if (ops->flush_redirects)
@@ -72,7 +72,7 @@ static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task
     if (e->reason == EDC_REASON_TOOL_CALL)
     {
         if (ops->set_task_state)
-            ops->set_task_state(ex->ctx, task, TASK_TOOL_CALLING);
+            ops->set_task_state(ex->ctx, task, EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
         if (task->active_turn)
         {
             /* 所有权转入 turn；被接手才消掉源指针（与今天逐字一致）。 */
@@ -125,7 +125,7 @@ static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task
             ops->flush_redirects(ex->ctx, task);
         task->completion_seq = own ? own->next_completion_seq++ : 0;
         if (ops->set_task_state)
-            ops->set_task_state(ex->ctx, task, TASK_COMPLETED);
+            ops->set_task_state(ex->ctx, task, EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED);
 
         /* session 消息数刚因 turn 提交而增长。被更新输入顶替、或在后台/
          * 依赖链中完成的任务其 turn 是"静默"的, 需要主动补推一次快照,
@@ -163,7 +163,7 @@ static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task
         ops->unregister_task(ex->ctx, req_id);
     task->current_request_id = NULL;
     if (ops->set_task_state)
-        ops->set_task_state(ex->ctx, task, TASK_ERROR);
+        ops->set_task_state(ex->ctx, task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR);
     if (ops->send_reply)
         ops->send_reply(ex->ctx, task, "Internal error: unknown finish reason", EDC_CHANNEL_MESSAGE_SYS_TYPE, req_id);
     return EDC_STEP_ERROR;
@@ -228,7 +228,7 @@ static edc_step_outcome tool_done(struct edc_executor *ex, struct edc_task *task
         }
 
         if (ops->set_task_state)
-            ops->set_task_state(ex->ctx, task, TASK_LLM_PROCESSING);
+            ops->set_task_state(ex->ctx, task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
         if (ops->send_llm)
         {
             task->llm_rounds++; /* 工具链结束后续发 → 再消耗一轮预算 */
@@ -267,7 +267,7 @@ static edc_step_outcome exec_signal(struct edc_executor *ex, struct edc_task *ta
 
     /* 3. 显式取消必须立即持久化 + 推送快照: CANCELLED 只在内存里, 若不保存,
      *    重启后任务会按 session.json 里的旧状态恢复, 取消看起来像没生效。 */
-    if (ev->as.signal.persist && task->state == TASK_CANCELLED)
+    if (ev->as.signal.persist && edc_task_is_cancelled(task))
     {
         if (ops->notify_foreground_state)
             ops->notify_foreground_state(ex->ctx, task);
@@ -275,7 +275,7 @@ static edc_step_outcome exec_signal(struct edc_executor *ex, struct edc_task *ta
             ops->save_session(ex->ctx, ops->task_session ? ops->task_session(ex->ctx, task) : NULL);
     }
 
-    return task->state == TASK_CANCELLED ? EDC_STEP_DONE : EDC_STEP_BLOCKED;
+    return edc_task_is_cancelled(task) ? EDC_STEP_DONE : EDC_STEP_BLOCKED;
 }
 
 /* ── 步进 ──────────────────────────────────────────────────── */

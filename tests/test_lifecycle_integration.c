@@ -85,9 +85,9 @@ static void test_exit_save(void)
     struct edc_task *t1 = edc_task_new("task-exit1", "sess-exit", "task-exit1",
                                         "exit task 1", edc_channel_adapter);
     t1->is_group_leader = 1;
-    edc_task_set_state(t1, TASK_WAITING_INPUT);
-    edc_task_set_state(t1, TASK_LLM_PROCESSING);
-    edc_task_set_state(t1, TASK_COMPLETED);
+    edc_task_mark_ready(t1);
+    edc_task_await_exec(t1);
+    edc_task_mark_completed(t1);
     t1->output = sdsnew("exit output");
 
     struct edc_turn *turn = edc_turn_new();
@@ -145,9 +145,9 @@ static void test_startup_load(void)
         struct edc_task *t1 = edc_task_new("task-start1", "sess-start", "task-start1",
                                             "startup task", edc_channel_adapter);
         t1->is_group_leader = 1;
-        edc_task_set_state(t1, TASK_WAITING_INPUT);
-        edc_task_set_state(t1, TASK_LLM_PROCESSING);
-        edc_task_set_state(t1, TASK_COMPLETED);
+        edc_task_mark_ready(t1);
+        edc_task_await_exec(t1);
+        edc_task_mark_completed(t1);
         t1->output = sdsnew("startup output");
         t1->completion_seq = 99;
 
@@ -184,7 +184,7 @@ static void test_startup_load(void)
         CHECK(count_tasks(s2) == 1, "1 task restored on startup");
         struct edc_task *rt = find_task(s2, "task-start1");
         CHECK(rt != NULL, "task found after startup load");
-        CHECK(rt->state == TASK_COMPLETED, "state COMPLETED");
+        CHECK(edc_task_is_completed(rt), "state COMPLETED");
         CHECK_STREQ(rt->output, "startup output", "output restored");
         CHECK(rt->completion_seq == 99, "completion_seq restored");
         CHECK(s2->next_completion_seq == 100, "next_completion_seq restored");
@@ -225,9 +225,9 @@ static void test_switch_save(void)
     struct edc_task *tA = edc_task_new("task-A", "sess-A", "task-A",
                                         "task in A", edc_channel_adapter);
     tA->is_group_leader = 1;
-    edc_task_set_state(tA, TASK_WAITING_INPUT);
-    edc_task_set_state(tA, TASK_LLM_PROCESSING);
-    edc_task_set_state(tA, TASK_COMPLETED);
+    edc_task_mark_ready(tA);
+    edc_task_await_exec(tA);
+    edc_task_mark_completed(tA);
     tA->output = sdsnew("output from A");
 
     struct edc_task_group *gA = edc_task_group_new(tA);
@@ -245,9 +245,9 @@ static void test_switch_save(void)
     struct edc_task *tB = edc_task_new("task-B", "sess-B", "task-B",
                                         "task in B", edc_channel_adapter);
     tB->is_group_leader = 1;
-    edc_task_set_state(tB, TASK_WAITING_INPUT);
-    edc_task_set_state(tB, TASK_LLM_PROCESSING);
-    edc_task_set_state(tB, TASK_COMPLETED);
+    edc_task_mark_ready(tB);
+    edc_task_await_exec(tB);
+    edc_task_mark_completed(tB);
     tB->output = sdsnew("output from B");
 
     struct edc_task_group *gB = edc_task_group_new(tB);
@@ -314,8 +314,7 @@ static void test_switch_keeps_background_running(void)
     struct edc_session *sA = edc_session_new(cfg, "sess-A", "SessionA");
     struct edc_scheduler *sc = edc_scheduler_new(sA, cfg);
     struct edc_task *tA = edc_task_new("task-A", "sess-A", "task-A", "task in A", edc_channel_adapter);
-    edc_task_set_state(tA, TASK_WAITING_INPUT);
-    edc_task_set_state(tA, TASK_LLM_PROCESSING);
+    edc_task_await_exec(tA);
     struct edc_task_group *gA = edc_scheduler_create_group(sc, tA);
     edc_scheduler_set_foreground(sc, gA);
     edc_session_set_active_task(sA, tA);
@@ -327,7 +326,7 @@ static void test_switch_keeps_background_running(void)
      * scheduler), then switch back. */
     struct edc_session *sB = edc_session_new(cfg, "sess-B", "SessionB");
     edc_scheduler_set_session(sc, sB);
-    CHECK(tA->state == TASK_LLM_PROCESSING, "outgoing session's running task is NOT cancelled");
+    CHECK(edc_task_awaits_exec(tA), "outgoing session's running task is NOT cancelled");
     CHECK(edc_scheduler_get_foreground(sc) == NULL, "a fresh session starts with no foreground group");
 
     edc_scheduler_set_session(sc, sA);
@@ -376,9 +375,9 @@ static void test_repeated_cycle(void)
                                            cycle == 0 ? tid : "task-cycle0",
                                            tdesc, edc_channel_adapter);
         if (cycle == 0) t->is_group_leader = 1;
-        edc_task_set_state(t, TASK_WAITING_INPUT);
-        edc_task_set_state(t, TASK_LLM_PROCESSING);
-        edc_task_set_state(t, TASK_COMPLETED);
+        edc_task_mark_ready(t);
+        edc_task_await_exec(t);
+        edc_task_mark_completed(t);
 
         /* On first cycle, create group */
         if (cycle == 0) {

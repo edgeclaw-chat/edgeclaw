@@ -113,42 +113,38 @@ static void test_group_signals(void)
 {
     TEST("group SIGTERM sends signal to all members");
     struct edc_task *leader = edc_task_new("task-GL", "sess-4", "task-GL", "grp leader", edc_channel_adapter);
-    edc_task_set_state(leader, TASK_WAITING_INPUT);
     struct edc_task_group *g = edc_task_group_new(leader);
 
     struct edc_task *m1 = edc_task_new("task-GM1", "sess-4", "task-GL", "grp member 1", edc_channel_adapter);
-    edc_task_set_state(m1, TASK_LLM_PROCESSING);
+    edc_task_await_exec(m1);
     /* need WAITING_INPUT→LLM_PROCESSING transition first */
-    edc_task_set_state(m1, TASK_WAITING_INPUT);
-    edc_task_set_state(m1, TASK_LLM_PROCESSING);
+    edc_task_mark_ready(m1);
+    edc_task_await_exec(m1);
     edc_task_group_add_task(g, m1);
 
     struct edc_task *m2 = edc_task_new("task-GM2", "sess-4", "task-GL", "grp member 2", edc_channel_adapter);
-    edc_task_set_state(m2, TASK_WAITING_INPUT);
-    edc_task_set_state(m2, TASK_LLM_PROCESSING);
+    edc_task_await_exec(m2);
     edc_task_group_add_task(g, m2);
 
     edc_task_group_send_signal(g, TASK_SIGTERM);
 
-    CHECK(leader->state == TASK_CANCELLED, "leader cancelled");
-    CHECK(m1->state == TASK_CANCELLED, "member 1 cancelled");
-    CHECK(m2->state == TASK_CANCELLED, "member 2 cancelled");
+    CHECK(edc_task_is_cancelled(leader), "leader cancelled");
+    CHECK(edc_task_is_cancelled(m1), "member 1 cancelled");
+    CHECK(edc_task_is_cancelled(m2), "member 2 cancelled");
     CHECK(g->is_orphaned == true, "group orphaned after leader cancelled");
 
     TEST("group SIGKILL also signals all members");
     struct edc_task *l2 = edc_task_new("task-GL2", "sess-5", "task-GL2", "grp leader 2", edc_channel_adapter);
-    edc_task_set_state(l2, TASK_WAITING_INPUT);
     struct edc_task_group *g2 = edc_task_group_new(l2);
 
     struct edc_task *m = edc_task_new("task-GM3", "sess-5", "task-GL2", "grp member 3", edc_channel_adapter);
-    edc_task_set_state(m, TASK_WAITING_INPUT);
-    edc_task_set_state(m, TASK_LLM_PROCESSING);
+    edc_task_await_exec(m);
     edc_task_group_add_task(g2, m);
 
     edc_task_group_send_signal(g2, TASK_SIGKILL);
 
-    CHECK(l2->state == TASK_CANCELLED, "leader cancelled (SIGKILL)");
-    CHECK(m->state == TASK_CANCELLED, "member cancelled (SIGKILL)");
+    CHECK(edc_task_is_cancelled(l2), "leader cancelled (SIGKILL)");
+    CHECK(edc_task_is_cancelled(m), "member cancelled (SIGKILL)");
 
     edc_task_group_free(g);
     edc_task_group_free(g2);

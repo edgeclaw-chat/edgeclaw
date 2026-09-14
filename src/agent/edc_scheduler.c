@@ -31,7 +31,9 @@ static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg
 /* 任务树快照: 只服务侧边栏 (任务树 + todo + 计数)。对话内容不再随快照下发
  * —— 聊天区由 TUI 自己持久化/回放显示流 (见 edc_tui_window.cpp)。 */
 static void sched_handle_task_snapshot(struct edc_scheduler *sched, const char *reason);
-static void sched_set_task_state(struct edc_scheduler *sched, struct edc_task *task, edc_task_state state);
+static void sched_move_task(struct edc_scheduler *sched, struct edc_task *task, edc_task_step step, edc_task_life life);
+static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *task, edc_task_step step,
+                                  edc_task_life life);
 /* executor 的出站 ops 表（定义在文件后半；这里前向声明，供 new 里 init 用）。 */
 static const struct edc_executor_ops sched_executor_ops;
 
@@ -259,7 +261,10 @@ struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const ch
     const char *gid = fg ? fg->group_id : tid;
 
     struct edc_task *task = edc_task_new(tid, sid, gid, desc, channel_type);
-    edc_task_force_state(task, TASK_WAITING_INPUT);
+    /* 不再强制置成 WAITING_INPUT: 那是旧模型"任务是个长期会话、停在原地等输入"的
+     * 残留。edc_task_new 已经把它置成 READY (= IDLE 镜像) —— "空闲/就绪, 可被驱动"。
+     * 旧的那一行存在的意义只是**绕开 IDLE 那行转移校验**; 两行合一之后不需要了。
+     * 见 docs/retire-waiting-input.md §4 第 5 行。 */
     free(tid);
 
     return task;
@@ -372,8 +377,9 @@ bool edc_scheduler_has_active_tasks(struct edc_scheduler *sched)
         struct edc_task *t;
         LL_FOREACH2(g->members, t, group_next)
         {
-            if (t->state != TASK_COMPLETED && t->state != TASK_CANCELLED && t->state != TASK_ERROR &&
-                t->state != TASK_SUSPENDED)
+            /* "还有任务没跑完" = 还活着 (life==ALIVE)。旧写法把四个终态/挂起态
+             * 一个个列出来, 问的正是这一个问题。 */
+            if (edc_task_is_alive(t))
                 return true;
         }
     }
@@ -521,7 +527,7 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
         task->deps_completed = completed;
         if (completed < total)
         {
-            sched_set_task_state(sched, task, TASK_WAITING_DEPS);
+            sched_move_task(sched, task, EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE);
             return;
         }
     }
@@ -549,17 +555,17 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
         if (edc_task_has_pending_tool_calls(task))
         {
             void *req_id = sched_gen_resume_request_id();
-            sched_set_task_state(sched, task, TASK_TOOL_CALLING);
+            sched_move_task(sched, task, EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
             edc_scheduler_register_task(sched, task, req_id);
             task->current_request_id = req_id;
             /* 重发成功即等 toolbox 回来; 各工具的 EXECUTING 由 toolbox 的
              * TOOL_STARTED 上报后按 call_id 置位 —— 不再按链序预标。 */
             if (!sched->redispatch_tools || sched->redispatch_tools(sched, task, req_id) <= 0)
             {
-                /* 无重发通道 / 无可派发 → 退回等待输入, 避免卡死 */
+                /* 无重发通道 / 无可派发 → 退回就绪, 避免卡死 */
                 edc_scheduler_unregister_task(sched, req_id);
                 task->current_request_id = NULL;
-                sched_set_task_state(sched, task, TASK_WAITING_INPUT);
+                sched_force_move_task(sched, task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
             }
             return;
         }
@@ -570,7 +576,7 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
     if (task->active_turn)
     {
         void *req_id = sched_gen_resume_request_id();
-        sched_set_task_state(sched, task, TASK_LLM_PROCESSING);
+        sched_move_task(sched, task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
         edc_scheduler_register_task(sched, task, req_id);
         task->current_request_id = req_id;
         if (sched->send_llm)
@@ -582,13 +588,13 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
         {
             edc_scheduler_unregister_task(sched, req_id);
             task->current_request_id = NULL;
-            sched_set_task_state(sched, task, TASK_WAITING_INPUT);
+            sched_force_move_task(sched, task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
         }
         return;
     }
 
-    /* 4. 无待跑内容 → WAITING_INPUT */
-    sched_set_task_state(sched, task, TASK_WAITING_INPUT);
+    /* 4. 无待跑内容 → 就绪 (READY) */
+    sched_force_move_task(sched, task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
 }
 
 /* ── 前台任务状态通知 ─────────────────────────────────────── */
@@ -604,10 +610,28 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
  * 以前这里直接推, 但闸门只放行**前台 active task**: 后台任务的状态变化没有任何
  * 推送, 侧栏只能靠 TUI 那个 500ms 轮询兜底 —— 而那个轮询写在 Render() 里, ftxui
  * 只在有帧请求时才调 Render, 于是它靠工作条动画续命, 全部空闲时根本不跑。
- * 现在任何 task 的变化都置脏: 后台行的更新不再依赖屏幕上有没有动画。 */
-static void sched_set_task_state(struct edc_scheduler *sched, struct edc_task *task, edc_task_state state)
+ * 现在任何 task 的变化都置脏: 后台行的更新不再依赖屏幕上有没有动画。
+ *
+ * 说的是**目标态** (step, life) 而不是旧词 —— 这个入口同时也是 executor 的
+ * port (见 ex_set_task_state), 而 executor 只知道"任务该到哪一步了"。 */
+static void sched_move_task(struct edc_scheduler *sched, struct edc_task *task, edc_task_step step, edc_task_life life)
 {
-    edc_task_set_state(task, state);
+    edc_task_move(task, step, life);
+    if (sched)
+        sched->snapshot_pending = true;
+}
+
+/* 强制置相位 (不查转移表) —— 给**兜底出口**用。
+ *
+ * 派不出去时不能让任务卡在 AWAIT_EXEC / AWAIT_TOOLS: 那是死胡同, resume 会永远
+ * 重入。旧代码这里写的是 set_state(WAITING_INPUT), 但 TOOL_CALLING / LLM_PROCESSING
+ * → WAITING_INPUT **本来就不在转移表里**, set_state 静默失败 —— 兜底其实没生效,
+ * 任务就卡在那里。落点是 READY (退休 WAITING_INPUT 之后与 IDLE 同义)。
+ * 见 docs/retire-waiting-input.md §4 第 8 行。 */
+static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *task, edc_task_step step,
+                                  edc_task_life life)
+{
+    edc_task_force_move(task, step, life);
     if (sched)
         sched->snapshot_pending = true;
 }
@@ -622,69 +646,38 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
 
     struct edc_task_group *fg = edc_scheduler_get_foreground(sched);
     struct edc_task *task = NULL;
-    bool task_is_waiting_deps = false;
 
-    /* 斜杠命令 / @组寻址 交给命令处理器 (shell); 普通输入先尝试 attach 到
-     * 前台 group 中等待输入的任务 (fork leader、/task new 无输入等)。 */
+    /* 斜杠命令 / @组寻址 交给命令处理器 (shell); 普通输入**一律新建 task**。
+     *
+     * 这里以前有两条 "attach 到前台 group 中停着的任务" 的路 (先看 active task 是否
+     * 停着, 再扫第一个 IDLE 成员)。那是旧模型的产物 —— 任务是一个长期会话, 停着等
+     * 下一条消息喂进来。新模型里 task 创建时就带着它的 input, 休眠态走
+     * SUSPENDED + /task resume, 于是**没有任何任务需要被 attach**: 那些"停着的任务"
+     * (fork leader、/task join 的 Joined task、@task 无正文) 都是 turn-less 残渣,
+     * 已在各自的创建点改成拒绝或带上 input, 落盘判据也不再收它们。
+     * 见 docs/retire-waiting-input.md §4 第 10 行。 */
     const bool is_plain = input->content && input->content[0] != '/' && input->content[0] != '@';
 
-    /* 优先：active_task 在前台 group 且为 WAITING_INPUT/WAITING_DEPS */
-    if (is_plain && sched->session && fg)
+    /* 命令处理器 (shell): /… 与 @… 由它处理, 普通输入也由它建 task。 */
+    if (sched->handle_command && sched->handle_command(sched, msg->from, input))
+        return;
+
+    /* 无命令处理器 (或未处理) → 兜底新建 task (本条输入就是它的 turn)。 */
+    task = edc_scheduler_create_task(sched, input->content, input->type);
+    edc_session_set_active_task(sched->session, task);
+
+    if (!fg || fg->is_orphaned || fg->member_count == 0)
     {
-        struct edc_task *at = edc_session_get_active_task(sched->session);
-        if (at && (at->state == TASK_WAITING_INPUT || at->state == TASK_WAITING_DEPS))
-        {
-            struct edc_task *m;
-            LL_FOREACH2(fg->members, m, group_next)
-            {
-                if (m == at)
-                {
-                    task = at;
-                    task_is_waiting_deps = (at->state == TASK_WAITING_DEPS);
-                    break;
-                }
-            }
-        }
+        fg = edc_scheduler_create_group(sched, task);
+        edc_scheduler_set_foreground(sched, fg);
     }
-
-    /* 其次：扫描前台 group 中第一个 WAITING_INPUT (不含 WAITING_DEPS) */
-    if (is_plain && !task && fg && !fg->is_orphaned && fg->member_count > 0)
+    else
     {
-        struct edc_task *m;
-        LL_FOREACH2(fg->members, m, group_next)
-        {
-            if (m->state == TASK_WAITING_INPUT)
-            {
-                task = m;
-                edc_session_set_active_task(sched->session, task);
-                break;
-            }
-        }
-    }
-
-    /* 斜杠/@ 或没有可 attach 的等待任务 → 命令处理器 (shell 会新建 task) */
-    if (!task)
-    {
-        if (sched->handle_command && sched->handle_command(sched, msg->from, input))
-            return;
-
-        /* 无命令处理器 (或未处理) → 兜底新建 task */
-        task = edc_scheduler_create_task(sched, input->content, input->type);
-        edc_session_set_active_task(sched->session, task);
-
-        if (!fg || fg->is_orphaned || fg->member_count == 0)
-        {
-            fg = edc_scheduler_create_group(sched, task);
-            edc_scheduler_set_foreground(sched, fg);
-        }
-        else
-        {
-            edc_task_group_add_task(fg, task);
-        }
+        edc_task_group_add_task(fg, task);
     }
 
     /* 普通输入也遵循 python-like 引号解析："""…""" / '''…''' / '…' / "…" 的
-     * 引号在 attach 到等待任务时也要剥掉，与 @ 新建 task 的 shell 路径一致。
+     * 引号在建 task 时也要剥掉，与 @ 新建 task 的 shell 路径一致。
      * (/ 与 @ 输入不走到这里，已在上方交给命令处理器。) */
     sds effective_input = NULL;
     if (is_plain)
@@ -706,21 +699,11 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     task->current_request_id = msg->request_id;
     edc_scheduler_register_task(sched, task, msg->request_id);
 
-    if (task_is_waiting_deps)
+    sched_move_task(sched, task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
+    if (sched->send_llm)
     {
-        /* 排队等待: turn 已创建, deps 完成后自动触发 */
-        if (sched->send_reply)
-            sched->send_reply(sched, task, "input queued — waiting for dependencies to complete...",
-                              EDC_CHANNEL_MESSAGE_SYS_TYPE, msg->request_id);
-    }
-    else
-    {
-        sched_set_task_state(sched, task, TASK_LLM_PROCESSING);
-        if (sched->send_llm)
-        {
-            task->llm_rounds++; /* 发出一条 LLM 请求 → 消耗一轮迭代预算 */
-            sched->send_llm(sched, task, msg->request_id);
-        }
+        task->llm_rounds++; /* 发出一条 LLM 请求 → 消耗一轮迭代预算 */
+        sched->send_llm(sched, task, msg->request_id);
     }
 }
 
@@ -782,9 +765,9 @@ static void ex_dispatch_tools(void *ctx, struct edc_task *task, void *llm_resp, 
         sched->dispatch_tools(sched, task, llm_resp, request_id);
 }
 
-static void ex_set_task_state(void *ctx, struct edc_task *task, edc_task_state state)
+static void ex_set_task_state(void *ctx, struct edc_task *task, edc_task_step step, edc_task_life life)
 {
-    sched_set_task_state((struct edc_scheduler *)ctx, task, state);
+    sched_move_task((struct edc_scheduler *)ctx, task, step, life);
 }
 
 static void ex_unregister_task(void *ctx, void *request_id)
@@ -825,9 +808,10 @@ static void ex_start_queued_dependents(void *ctx, struct edc_task *task)
     LL_FOREACH(task->dependents, dep)
     {
         struct edc_task *dt = dep->target;
-        if (dt->active_turn && dt->state == TASK_WAITING_INPUT)
+        /* 依赖链上排队的输入: 目标**带着 turn 停着** (READY = IDLE) 就自动启动。 */
+        if (dt->active_turn && edc_task_is_ready(dt))
         {
-            sched_set_task_state(sched, dt, TASK_LLM_PROCESSING);
+            sched_move_task(sched, dt, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
             if (sched->send_llm)
             {
                 dt->llm_rounds++; /* 排队的依赖输入开始消耗预算 */
@@ -1059,7 +1043,7 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, const char *
         {
             cJSON *tj = cJSON_CreateObject();
             cJSON_AddStringToObject(tj, "id", t->task_id ? t->task_id : "");
-            cJSON_AddStringToObject(tj, "state", edc_task_state_name(t->state));
+            cJSON_AddStringToObject(tj, "state", edc_task_state_str(t));
             cJSON_AddBoolToObject(tj, "leader", t->is_group_leader);
             cJSON_AddBoolToObject(tj, "active", sess->active_task == t);
             cJSON_AddStringToObject(tj, "desc", t->description ? t->description : "");

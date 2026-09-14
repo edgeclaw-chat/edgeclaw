@@ -229,7 +229,7 @@ static sds edc_agent_var_resolver(const char *name, void *user_data)
             struct edc_task *t;
             LL_FOREACH2(g->members, t, group_next)
             {
-                if (t->state == TASK_COMPLETED && t->completion_seq > highest_seq)
+                if (edc_task_is_completed(t) && t->completion_seq > highest_seq)
                 {
                     highest_seq = t->completion_seq;
                     last = t;
