@@ -1,5 +1,7 @@
 #include "edc_c_bridge.h"
-#include "edc_agent.h"
+#include "edc_runtime.h"
+#include "edc_session.h"
+#include "edc_session_manager.h"
 #include "edc_channel_actor.h"
 #include "edc_commands.h"
 #include "uv.h"
@@ -12,36 +14,37 @@
 
 /*
  * Bridge implementation. Compiled as C (this is a .c file), so it can include
- * edc_agent.h and the sds/cJSON headers it pulls in. The TUI (C++) only sees
+ * edc_runtime.h and the sds/cJSON headers it pulls in. The TUI (C++) only sees
  * edc_c_bridge.h, which uses plain C types.
  */
 
-struct edc_agent *edc_c_agent_new(bool setup, int sandbox_override)
+struct edc_runtime *edc_c_agent_new(bool setup, int sandbox_override)
 {
-    return edc_agent_new(setup, sandbox_override);
+    return edc_runtime_new(setup, sandbox_override);
 }
 
 void edc_c_agent_set_command_handler(void)
 {
-    edc_agent_set_command_handler(edc_commands_handler);
+    edc_runtime_set_command_handler(edc_commands_handler);
 }
 
-void edc_c_agent_free(struct edc_agent *agent)
+void edc_c_agent_free(struct edc_runtime *agent)
 {
-    edc_agent_free(agent);
+    edc_runtime_free(agent);
 }
 
-struct edc_actor *edc_c_agent_channel_actor(struct edc_agent *agent)
+struct edc_actor *edc_c_agent_channel_actor(struct edc_runtime *agent)
 {
-    return agent ? agent->channel_actor : NULL;
+    return edc_runtime_channel_actor(agent);
 }
 
-void edc_c_agent_channel_adapter_init(struct edc_agent *agent, void *instance,
+void edc_c_agent_channel_adapter_init(struct edc_runtime *agent, void *instance,
                                       void (*on_send)(void *, struct edc_channel_message *))
 {
-    if (!agent || !agent->channel_actor)
+    edc_actor_t *channel = edc_runtime_channel_actor(agent);
+    if (!channel)
         return;
-    edc_channel_adapter_init(agent->channel_actor, instance, on_send);
+    edc_channel_adapter_init(channel, instance, on_send);
 }
 
 const char *edc_c_channel_message_content(struct edc_channel_message *channel_message)
@@ -118,12 +121,13 @@ int edc_c_channel_message_render_pref(struct edc_channel_message *channel_messag
     return channel_message ? (int)channel_message->render_pref : EDC_C_RENDER_PLAIN;
 }
 
-void edc_c_agent_request_task_snapshot(struct edc_agent *agent, const char *session_id)
+void edc_c_agent_request_task_snapshot(struct edc_runtime *agent, const char *session_id)
 {
-    if (!agent || !agent->channel_actor)
+    edc_actor_t *channel = edc_runtime_channel_actor(agent);
+    if (!channel)
         return;
 
-    edc_channel_actor_state_t *state = agent->channel_actor->state;
+    edc_channel_actor_state_t *state = channel->state;
     if (!state || !state->observer)
         return;
 
@@ -131,7 +135,7 @@ void edc_c_agent_request_task_snapshot(struct edc_agent *agent, const char *sess
      * 请求**点名**要哪棵树 (P3 ①b): data = session_id。没有"顺带把树推给你"
      * 的路径了 —— 前端只拉自己正在显示的那一棵。 */
     sds tag = sdsnew(session_id ? session_id : "");
-    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TASK_SNAPSHOT, agent->channel_actor, NULL, tag,
+    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TASK_SNAPSHOT, channel, NULL, tag,
                                              (edc_actor_data_free_fn)sdsfree);
     edc_actor_send(state->observer, msg);
 }
@@ -318,15 +322,16 @@ void edc_c_file_utils_init(struct uv_loop_s *loop)
     edc_file_utils_init(loop);
 }
 
-bool edc_c_agent_model(struct edc_agent *agent, char *buf, size_t cap)
+bool edc_c_agent_model(struct edc_runtime *agent, char *buf, size_t cap)
 {
     if (!buf || cap == 0)
         return false;
     buf[0] = '\0';
-    if (!agent || !agent->config)
+    struct edc_config *cfg = edc_runtime_config(agent);
+    if (!cfg)
         return false;
 
-    const sds model = agent->config->llm_api_conf.model;
+    const sds model = cfg->llm_api_conf.model;
     if (!model)
         return false;
 
@@ -349,36 +354,39 @@ static bool edc_c_copy_sds(const sds value, char *buf, size_t cap)
     return ok;
 }
 
-bool edc_c_agent_sandbox_enabled(struct edc_agent *agent)
+bool edc_c_agent_sandbox_enabled(struct edc_runtime *agent)
 {
-    return agent && agent->config && agent->config->enable_sandbox;
+    struct edc_config *cfg = edc_runtime_config(agent);
+    return cfg && cfg->enable_sandbox;
 }
 
-bool edc_c_agent_api_url(struct edc_agent *agent, char *buf, size_t cap)
+bool edc_c_agent_api_url(struct edc_runtime *agent, char *buf, size_t cap)
 {
-    if (!agent || !agent->config)
+    struct edc_config *cfg = edc_runtime_config(agent);
+    if (!cfg)
     {
         if (buf && cap)
             buf[0] = '\0';
         return false;
     }
-    return edc_c_copy_sds(agent->config->llm_api_conf.api_url, buf, cap);
+    return edc_c_copy_sds(cfg->llm_api_conf.api_url, buf, cap);
 }
 
-bool edc_c_agent_api_key(struct edc_agent *agent, char *buf, size_t cap)
+bool edc_c_agent_api_key(struct edc_runtime *agent, char *buf, size_t cap)
 {
-    if (!agent || !agent->config)
+    struct edc_config *cfg = edc_runtime_config(agent);
+    if (!cfg)
     {
         if (buf && cap)
             buf[0] = '\0';
         return false;
     }
-    return edc_c_copy_sds(agent->config->llm_api_conf.api_key, buf, cap);
+    return edc_c_copy_sds(cfg->llm_api_conf.api_key, buf, cap);
 }
 
-bool edc_c_agent_connect(struct edc_agent *agent, const char *api_url, const char *model, const char *api_key)
+bool edc_c_agent_connect(struct edc_runtime *agent, const char *api_url, const char *model, const char *api_key)
 {
-    return edc_agent_set_llm_config(agent, api_url, model, api_key);
+    return edc_runtime_set_llm_config(agent, api_url, model, api_key);
 }
 
 bool edc_c_history_path(char *buf, size_t cap)
@@ -402,15 +410,16 @@ bool edc_c_history_path(char *buf, size_t cap)
     return ok;
 }
 
-bool edc_c_agent_session_id(struct edc_agent *agent, char *buf, size_t cap)
+bool edc_c_agent_session_id(struct edc_runtime *agent, char *buf, size_t cap)
 {
     if (!buf || cap == 0)
         return false;
     buf[0] = '\0';
 
-    if (!agent || !agent->session_manager)
+    struct edc_session_manager *sm = edc_runtime_sessions(agent);
+    if (!sm)
         return false;
-    struct edc_session *session = edc_session_manager_get_active(agent->session_manager);
+    struct edc_session *session = edc_session_manager_get_active(sm);
     if (!session || !session->session_id)
         return false;
 
@@ -421,15 +430,16 @@ bool edc_c_agent_session_id(struct edc_agent *agent, char *buf, size_t cap)
     return true;
 }
 
-bool edc_c_session_workdir(struct edc_agent *agent, char *buf, size_t cap)
+bool edc_c_session_workdir(struct edc_runtime *agent, char *buf, size_t cap)
 {
     if (!buf || cap == 0)
         return false;
     buf[0] = '\0';
 
-    if (!agent || !agent->session_manager)
+    struct edc_session_manager *sm = edc_runtime_sessions(agent);
+    if (!sm)
         return false;
-    struct edc_session *session = edc_session_manager_get_active(agent->session_manager);
+    struct edc_session *session = edc_session_manager_get_active(sm);
     const char *workdir = session ? edc_session_get_workdir(session) : NULL;
     if (!workdir || !workdir[0])
         return false;
@@ -446,14 +456,15 @@ bool edc_c_session_workdir(struct edc_agent *agent, char *buf, size_t cap)
  * what it showed (see edc_chat_transcript.hpp). The bridge only resolves where
  * that file lives — the codec, the appending and the replay are the TUI's. */
 
-bool edc_c_session_chat_log_path_for(struct edc_agent *agent, const char *session_id, char *buf, size_t cap)
+bool edc_c_session_chat_log_path_for(struct edc_runtime *agent, const char *session_id, char *buf, size_t cap)
 {
     if (buf && cap > 0)
         buf[0] = '\0';
-    if (!agent || !agent->session_manager || !session_id || !buf || cap == 0)
+    struct edc_session_manager *sm = edc_runtime_sessions(agent);
+    if (!sm || !session_id || !buf || cap == 0)
         return false;
 
-    struct edc_session *session = edc_session_manager_find(agent->session_manager, session_id);
+    struct edc_session *session = edc_session_manager_find(sm, session_id);
     if (!session || !session->history_dir)
         return false;
 
@@ -466,7 +477,7 @@ bool edc_c_session_chat_log_path_for(struct edc_agent *agent, const char *sessio
     return ok;
 }
 
-bool edc_c_agent_ensure_parent_dir(struct edc_agent *agent, const char *path)
+bool edc_c_agent_ensure_parent_dir(struct edc_runtime *agent, const char *path)
 {
     if (!path)
         return false;
@@ -480,7 +491,8 @@ bool edc_c_agent_ensure_parent_dir(struct edc_agent *agent, const char *path)
     }
 
     /* Only inside the workspace: everything this bridge writes lives under it. */
-    const char *root = (agent && agent->config) ? agent->config->workspace : NULL;
+    const struct edc_config *cfg = edc_runtime_config(agent);
+    const char *root = cfg ? cfg->workspace : NULL;
     bool ok = root && root[0] && strncmp(parent, root, strlen(root)) == 0;
     if (ok)
     {
@@ -496,13 +508,14 @@ bool edc_c_agent_ensure_parent_dir(struct edc_agent *agent, const char *path)
     return ok;
 }
 
-bool edc_c_agent_write_file(struct edc_agent *agent, const char *path, const char *data, size_t len, bool append,
+bool edc_c_agent_write_file(struct edc_runtime *agent, const char *path, const char *data, size_t len, bool append,
                             bool under_workspace)
 {
     if (!path || (!data && len > 0))
         return false;
 
-    const char *root = (under_workspace && agent && agent->config) ? agent->config->workspace : NULL;
+    const struct edc_config *cfg = edc_runtime_config(agent);
+    const char *root = (under_workspace && cfg) ? cfg->workspace : NULL;
     FILE *f = edc_file_fopen_safe(path, append ? "a" : "w", root);
     if (!f)
     {
@@ -514,9 +527,10 @@ bool edc_c_agent_write_file(struct edc_agent *agent, const char *path, const cha
     return ok;
 }
 
-void edc_c_agent_send_user_message(struct edc_agent *agent, const char *session_id, const char *content)
+void edc_c_agent_send_user_message(struct edc_runtime *agent, const char *session_id, const char *content)
 {
-    if (!agent)
+    edc_actor_t *channel = edc_runtime_channel_actor(agent);
+    if (!channel)
         return;
 
     struct edc_channel_message *message =
@@ -526,10 +540,10 @@ void edc_c_agent_send_user_message(struct edc_agent *agent, const char *session_
     if (session_id && *session_id)
         message->session_id = sdsnew(session_id);
 
-    edc_channel_actor_state_t *state = agent->channel_actor->state;
+    edc_channel_actor_state_t *state = channel->state;
     /* 边界翻译: core 不认识 channel 消息 —— 翻译好再投 (edc_channel_actor.h)。 */
     edc_actor_msg_t *actor_msg =
-        edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, agent->channel_actor, NULL, edc_channel_input_new(message),
+        edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, channel, NULL, edc_channel_input_new(message),
                           (edc_actor_data_free_fn)edc_channel_input_free);
     edc_actor_send(state->observer, actor_msg);
 }

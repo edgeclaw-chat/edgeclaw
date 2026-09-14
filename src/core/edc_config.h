@@ -116,4 +116,10 @@ extern bool edc_config_update_sandbox_enabled(const char *edc_home, bool enable)
  * and the matching rm-* commands. */
 extern bool edc_config_update_sandbox_path(const char *edc_home, const char *path, edc_sandbox_path_kind kind,
                                            bool add);
+/* sandbox 配置的写口: 先落盘 (config.json), 成功后才改内存 —— 失败时内存与磁盘
+ * 保持一致 (见实现)。它们只碰 config, 所以是 config 模块的 API (形状 C)。 */
+extern bool edc_config_set_sandbox_enabled(struct edc_config *cfg, bool enable);
+extern bool edc_config_set_sandbox_path(struct edc_config *cfg, const char *path, edc_sandbox_path_kind kind, bool add,
+                                        sds *msg);
+
 #endif

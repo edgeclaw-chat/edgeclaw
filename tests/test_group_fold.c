@@ -16,7 +16,6 @@
  *    ③ 它不污染被折叠的组 (消息不进那个组的 history / 不占它的 completion_seq)。
  * ══════════════════════════════════════════════════════════════ */
 
-#include "edc_agent.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_executor.h"
@@ -34,21 +33,19 @@
 #include <stdio.h>
 #include <string.h>
 /* ── P3 ③ 测试读口 ──────────────────────────────────────────────
- * 这一层测试跑真 agent (ctx = agent), 所以会话由 session_manager 解析 ——
- * scheduler 自己不再持有"当前 session"。 */
+ * 这一层测的是**折叠本体**: 它不需要 session store —— 会话是测试直接建的
+ * (edc_session_new), 没有 session_manager。所以这个口恒返回 NULL, 与改动前
+ * 行为一致 (那时那个手工造的 minimal agent 也没有 session_manager)。 */
 static struct edc_session *test_resolve_session(void *ctx, const char *session_id)
 {
-    struct edc_agent *agent = ctx;
-    if (!agent || !agent->session_manager)
-        return NULL;
-    if (!session_id || !*session_id)
-        return edc_session_manager_get_active(agent->session_manager);
-    return edc_session_manager_find(agent->session_manager, session_id);
+    (void)ctx;
+    (void)session_id;
+    return NULL;
 }
 
 static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
 {
-    (void)sess; /* ctx 留给 agent */
+    (void)sess;
     sched->resolve_session = test_resolve_session;
 }
 
@@ -91,17 +88,9 @@ static struct edc_config *make_config(void)
     return cfg;
 }
 
-/* 最小 agent: edc_group_fold_start 只用到 agent->scheduler (触发方还会用
+/* 折叠本体收的就是 scheduler (触发方还会用
  * session_manager/config, 但那条路是 shell/agent 侧的, 这里测的是折叠本体)。
  * 用真结构体而不是 mock —— 它就是个普通结构, 没有构造函数。 */
-static struct edc_agent *make_agent(struct edc_scheduler *sched)
-{
-    struct edc_agent *agent = g_new0(struct edc_agent, 1);
-    agent->scheduler = sched;
-    sched->ctx = agent;
-    return agent;
-}
-
 /* 建一组"已完成、带 turn"的任务 (可折叠), 每个 turn 装 `msgs_per_task` 条消息。 */
 static void add_foldable_task(struct edc_session *session, struct edc_task_group *group, const char *id,
                               uint32_t completion_seq, int msgs_per_task, const char *text)
@@ -236,7 +225,6 @@ static void test_fold_runs_as_a_system_task(void)
     struct edc_session *session = edc_session_new(cfg, "sess-fold", "Fold");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
-    struct edc_agent *agent = make_agent(sched);
     sched->send_llm = stub_send_llm;
     g_send_llm_calls = 0;
 
@@ -263,7 +251,7 @@ static void test_fold_runs_as_a_system_task(void)
     size_t group_msgs_before = edc_task_group_unfolded_msg_count(group);
     uint32_t seq_before = group->folded_through_completion_seq;
 
-    CHECK(edc_group_fold_start(agent, session, group) != NULL, "折叠任务起来了");
+    CHECK(edc_group_fold_start(sched, session, group) != NULL, "折叠任务起来了");
     CHECK(g_send_llm_calls == 1, "折叠 prompt 作为一次普通 LLM 请求发出去了");
 
     /* ① 它是一条**普通任务**, 只是三个属性不同。 */
@@ -290,7 +278,7 @@ static void test_fold_runs_as_a_system_task(void)
 
     /* 该 session 已有折叠在飞: 不再起第二次 (免得两次折叠看见半成品记忆)。 */
     CHECK(edc_scheduler_has_pending_system_task(session), "有折叠在飞");
-    CHECK(edc_group_fold_start(agent, session, group) == NULL, "有折叠在飞时不起第二次");
+    CHECK(edc_group_fold_start(sched, session, group) == NULL, "有折叠在飞时不起第二次");
 
 
     /* ② 跑完它: LLM 返回摘要 → exec_done → sink 分流 → 落地。 */
@@ -346,7 +334,6 @@ static void test_fold_runs_as_a_system_task(void)
     sdsfree(resp.content);
     edc_session_free(session);
     edc_scheduler_free(sched);
-    free(agent);
     edc_config_free(cfg);
 }
 
@@ -362,7 +349,6 @@ static void test_fold_failure_keeps_memory(void)
     struct edc_session *session = edc_session_new(cfg, "sess-fail", "Fail");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
-    struct edc_agent *agent = make_agent(sched);
     sched->send_llm = stub_send_llm;
     g_send_llm_calls = 0;
 
@@ -381,7 +367,7 @@ static void test_fold_failure_keeps_memory(void)
     add_foldable_task(session, group, "2", 2, 6, "work");
     group->memory = sdsnew("# memory before");
 
-    CHECK(edc_group_fold_start(agent, session, group) != NULL, "起了一次折叠");
+    CHECK(edc_group_fold_start(sched, session, group) != NULL, "起了一次折叠");
     struct edc_task *fold = edc_session_find_system_group(session)->members;
 
     /* 空的 LLM 回复 (旧实现里这也算失败) */
@@ -402,7 +388,6 @@ static void test_fold_failure_keeps_memory(void)
 
     edc_session_free(session);
     edc_scheduler_free(sched);
-    free(agent);
     edc_config_free(cfg);
 }
 
@@ -418,7 +403,6 @@ static void test_fold_task_is_not_persisted(void)
     struct edc_session *session = edc_session_new(cfg, "sess-disk", "Disk");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
-    struct edc_agent *agent = make_agent(sched);
     sched->send_llm = stub_send_llm;
     g_send_llm_calls = 0;
 
@@ -455,7 +439,7 @@ static void test_fold_task_is_not_persisted(void)
     edc_task_add_turn(cleader, cturn);
     add_foldable_task(ctrl, cgroup, "2", 2, 6, "work");
 
-    CHECK(edc_group_fold_start(agent, session, group) != NULL, "折叠在飞");
+    CHECK(edc_group_fold_start(sched, session, group) != NULL, "折叠在飞");
 
     cJSON *j_with = edc_state_serialize(session, sched);
     cJSON *j_ctrl = edc_state_serialize(ctrl, ctrl_sched);
@@ -473,7 +457,6 @@ static void test_fold_task_is_not_persisted(void)
     edc_scheduler_free(sched);
     edc_session_free(ctrl);
     edc_scheduler_free(ctrl_sched);
-    free(agent);
     edc_config_free(cfg);
 }
 

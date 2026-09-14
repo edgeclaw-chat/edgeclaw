@@ -163,7 +163,7 @@ class TUIWindow : public ::ftxui::ComponentBase
     // resolved with the log. Empty when the session is unknown.
     std::string chat_log_path_;
 
-    struct edc_agent *agent = NULL;
+    struct edc_runtime *agent = NULL;
     // True once bracketed paste was actually enabled, so the destructor only
     // emits the "disable" sequence when the matching "enable" ran.
     bool bracketed_paste_on_ = false;

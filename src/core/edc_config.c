@@ -279,7 +279,7 @@ struct edc_config *edc_config_load(const char *edc_home)
 
     /* Sandbox master switch, persisted under "sandbox.enable". It defaults to
      * on when the key is absent (first run / older config files). The CLI flag
-     * overrides this for the current run only (see edc_agent_new), whereas the
+     * overrides this for the current run only (see edc_runtime_new), whereas the
      * in-TUI /sandbox command persists it back to config.json. */
     config->enable_sandbox = true;
 
@@ -831,4 +831,131 @@ bool edc_config_update_sandbox_path(const char *edc_home, const char *path, edc_
     cJSON_free(out);
     sdsfree(conf_path);
     return ok;
+}
+
+bool edc_config_set_sandbox_enabled(struct edc_config *cfg, bool enable)
+{
+    if (!cfg)
+        return false;
+
+    /* Persist first (mirrors edc_runtime_set_llm_config): if config.json cannot
+     * be written, leave the running agent untouched so memory and disk agree. */
+    if (!edc_config_update_sandbox_enabled(cfg->edc_home, enable))
+        return false;
+
+    cfg->enable_sandbox = enable;
+    return true;
+}
+
+/* ── sandbox 配置的写口 ──────────────────────────────────────
+ * 先落盘 (config.json), 成功后才改内存 —— 失败时内存与磁盘保持一致。
+ * 它们只碰 config, 所以归 config 模块 (形状 C: 一个概念一个 owner)。 */
+
+static bool sds_path_list_contains(sds *arr, const char *p)
+{
+    if (!arr)
+        return false;
+    for (int i = 0; arr[i]; i++)
+        if (strcmp(arr[i], p) == 0)
+            return true;
+    return false;
+}
+
+static void sds_path_list_add(sds **arrp, const char *p)
+{
+    if (sds_path_list_contains(*arrp, p))
+        return;
+    int n = 0;
+    if (*arrp)
+        while ((*arrp)[n])
+            n++;
+    *arrp = realloc(*arrp, (size_t)(n + 2) * sizeof(sds));
+    (*arrp)[n] = sdsnew(p);
+    (*arrp)[n + 1] = NULL;
+}
+
+static void sds_path_list_remove(sds **arrp, const char *p)
+{
+    if (!arrp || !*arrp)
+        return;
+    int n = 0;
+    for (int i = 0; (*arrp)[i]; i++)
+    {
+        if (strcmp((*arrp)[i], p) == 0)
+        {
+            sdsfree((*arrp)[i]);
+            continue;
+        }
+        (*arrp)[n++] = (*arrp)[i];
+    }
+    (*arrp)[n] = NULL;
+}
+
+bool edc_config_set_sandbox_path(struct edc_config *cfg, const char *path, edc_sandbox_path_kind kind, bool add,
+                                 sds *msg)
+{
+    if (msg)
+        *msg = NULL;
+    if (!cfg)
+    {
+        if (msg)
+            *msg = sdsnew("config not ready");
+        return false;
+    }
+    if (!path || path[0] != '/')
+    {
+        if (msg)
+            *msg = sdsnew("path must be absolute");
+        return false;
+    }
+
+    char *resolved = realpath(path, NULL);
+    if (!resolved)
+    {
+        if (msg)
+            *msg = sdscatprintf(sdsempty(), "no such directory: %s", path);
+        return false;
+    }
+    struct stat st;
+    if (stat(resolved, &st) != 0 || !S_ISDIR(st.st_mode))
+    {
+        if (msg)
+            *msg = sdscatprintf(sdsempty(), "not a directory: %s", resolved);
+        free(resolved);
+        return false;
+    }
+
+    /* Persist first (mirrors edc_runtime_set_sandbox_enabled): on failure leave
+     * the running config untouched so memory and disk agree. */
+    if (!edc_config_update_sandbox_path(cfg->edc_home, resolved, kind, add))
+    {
+        if (msg)
+            *msg = sdsnew("failed to write config.json");
+        free(resolved);
+        return false;
+    }
+
+    /* A path lives in exactly one list; mirror the persist step in memory. */
+    sds **ro = &cfg->sandbox_ro_paths;
+    sds **rw = &cfg->sandbox_rw_paths;
+    sds **dn = &cfg->sandbox_deny_paths;
+    sds **target = (kind == EDC_SANDBOX_PATH_RW) ? rw : (kind == EDC_SANDBOX_PATH_DENY) ? dn : ro;
+
+    if (add)
+    {
+        sds_path_list_add(target, resolved);
+        if (target != ro)
+            sds_path_list_remove(ro, resolved);
+        if (target != rw)
+            sds_path_list_remove(rw, resolved);
+        if (target != dn)
+            sds_path_list_remove(dn, resolved);
+    }
+    else
+    {
+        sds_path_list_remove(target, resolved);
+    }
+
+    free(resolved);
+    return true;
 }

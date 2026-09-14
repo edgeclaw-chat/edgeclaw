@@ -147,13 +147,19 @@ struct edc_scheduler
     struct edc_sched_task_entry *task_hash; /* uthash: request_id → edc_task */
 
     /* 未解析的跨 session 依赖边 (重启后对账用); owned by the scheduler.
-     * Drained by edc_agent_reconcile_pending_deps(); entries that cannot be
-     * resolved hold their target task (see the resume gate). */
+     * Drained by edc_session_store_reconcile_pending_deps(); entries that cannot
+     * be resolved hold their target task (see the resume gate).
+     *
+     * |reconciling| guards that drain against re-entry: resolving an entry may
+     * lazy-load another session, and load_session reconciles by contract — the
+     * inner call must let the outer fixpoint loop finish the table instead of
+     * recursing. State **of this table's drain**, so it lives here, next to it. */
     struct edc_pending_dep *pending_deps;
+    bool reconciling;
 
     edc_actor_t *self;
 
-    /* 回调 (Phase 5 由 edc_agent 注入) */
+    /* 回调 (由 edc_runtime 的装配注入; 见 edc_runtime.c) */
     edc_scheduler_send_llm_fn send_llm;
     edc_scheduler_send_reply_fn send_reply;
     edc_scheduler_send_tool_fn send_tool_message;
@@ -187,7 +193,7 @@ struct edc_scheduler
 
     int64_t next_task_id;
 
-    void *ctx; /* 回调上下文 (edc_agent*) */
+    void *ctx; /* 回调上下文 (edc_runtime*) */
 };
 
 /* ── API ───────────────────────────────────────────────────── */
@@ -272,7 +278,7 @@ extern void edc_scheduler_add_group(struct edc_scheduler *sched, struct edc_sess
 
 extern struct edc_task *edc_scheduler_find_task(struct edc_scheduler *sched, void *request_id);
 /** 在**指定** session 的组里按 id 找任务 (P3 ③: session 显式给 —— 以前是"在绑定
- *  的那个 session 里找")。跨 session 的查找走 agent 的 `edc_agent_resolve_task`
+ *  的那个 session 里找")。跨 session 的查找走 store 的 `edc_session_store_resolve_task`
  *  (它用 session_manager 的全局 task-id 索引 + 惰性加载)。 */
 extern struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sched, struct edc_session *session,
                                                       const char *task_id);

@@ -64,6 +64,24 @@ extern void edc_channel_adapter_init(struct edc_actor *channel_actor, void *inst
  * adapter (唯一的通道), 所以读端直接忽略内容。 */
 extern cJSON *edc_channel_to_json(void);
 
+/* ── 一条消息的去向: "投到哪条通道、以谁的名义、按哪种类型" ──────
+ *
+ * 这三件永远一起走 (出站投递要它们, userland 回话也要它们), 所以给它们一个
+ * 名字 —— 而不是在几十个签名里各占一个位、还可能把顺序写反。 */
+struct edc_reply_to
+{
+    struct edc_actor *channel_actor; /* 投给谁 (通道 actor) */
+    struct edc_actor *actor;         /* 以谁的名义 (入站消息的发送者; 任务产出=scheduler actor) */
+    edc_channel_message_type type;   /* 消息类型 (路由键) */
+};
+
+/* ── 出站: 投一条消息到通道 (前端) ───────────────────────────
+ * |content| 的所有权归这条消息 (成功与失败都由这里接手)。 */
+extern void edc_channel_publish(struct edc_reply_to to, const char *session_id, sds content);
+
+/* "活跃 session 变成 X 了" (P3 ①b): 由命令层在 `/session switch|new` 成功后发出。 */
+extern void edc_channel_notify_active_session(struct edc_actor *channel_actor, const char *session_id);
+
 extern void edc_channel_message_free(struct edc_channel_message *msg);
 extern struct edc_channel_message *edc_channel_message_new(edc_channel_type type, edc_channel_message_type message_type,
                                                            sds content);

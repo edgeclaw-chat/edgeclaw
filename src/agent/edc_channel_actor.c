@@ -4,6 +4,7 @@
 #include "edc_config.h"
 #include "edc_scheduler.h"
 #include "sds.h"
+#include <stdio.h>
 #include <stdlib.h>
 
 /* ── 边界翻译: channel 消息 → core 的入站输入 ─────────────────
@@ -117,4 +118,53 @@ void edc_channel_actor_set_observer(edc_actor_t *actor, edc_actor_t *observer)
 {
     edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
     state->observer = observer;
+}
+
+/* ── 出站: 投一条消息到通道 (前端) ─────────────────────────────
+ *
+ * 建一条 channel 消息、发 `BC_ACTOR_MSG_CHANNEL_SEND` 给本 actor —— 这是**通道
+ * 自己的**词汇 (消息形状 + 发送路径都归这里)。以前它住在 edc_agent.c, 只因为
+ * 那里恰好握有 channel_actor; 现在任何持有通道句柄的模块都能投递。 */
+void edc_channel_publish(struct edc_reply_to to, const char *session_id, sds content)
+{
+    if (!to.channel_actor)
+    {
+        if (content)
+            sdsfree(content);
+        return;
+    }
+    struct edc_channel_message *msg = edc_channel_message_new(edc_channel_adapter, to.type, content);
+    if (session_id && *session_id)
+        msg->session_id = sdsnew(session_id);
+
+    edc_actor_send(to.channel_actor,
+                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, edc_channel_adapter, to.actor, NULL, msg,
+                                              (edc_actor_data_free_fn)edc_channel_message_free));
+}
+
+/* 与 scheduler 的 EDGECLAW_SNAPSHOT_TRACE 同一份 trace (同一条通路的另一半: 切台
+ * 事件不走 scheduler 的脏表, 而是由这里直发) —— 证据工具要能看到它, 否则"前端怎么
+ * 知道换台了"在 trace 里是断的。 */
+static void edc_channel_trace_active_session(const char *session_id)
+{
+    const char *path = getenv("EDGECLAW_SNAPSHOT_TRACE");
+    if (!path || !*path)
+        return;
+    FILE *f = fopen(path, "a");
+    if (!f)
+        return;
+    fprintf(f, "notify reason=active session=%s\n", session_id ? session_id : "?");
+    fclose(f);
+}
+
+/* 活跃 session 变了 (用户 `/session switch|new`): 告诉前端换显示那棵树。
+ *
+ * 这是**事实**的通报 —— "active_index 现在是 X" (规则 3 的唯一权威在 session_manager),
+ * 由 userland (命令层) 在切成功之后发出。不是"内核决定谁看什么": 前端仍然自己
+ * 决定要不要跟 (它只是被叫去显示用户刚点的那个 tab), 快照也仍然要它自己拉。 */
+void edc_channel_notify_active_session(struct edc_actor *channel_actor, const char *session_id)
+{
+    edc_channel_trace_active_session(session_id);
+    struct edc_reply_to to = {channel_actor, channel_actor, EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE};
+    edc_channel_publish(to, session_id, sdsnew("active"));
 }

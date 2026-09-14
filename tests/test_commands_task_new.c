@@ -11,7 +11,6 @@
  * 缺口 (如实记录): 这里断言的是"任务有了 active_turn 并且被派发", **没有**
  * 断言那个 turn 里装的就是 desc 的正文 —— 那需要 turn 的消息读取 API, 超出
  * 这条测试想守的范围 (description 已经钉住了"用的是 desc"这一半)。 */
-#include "edc_agent.h"
 #include "edc_channel_actor.h"
 #include "edc_commands.h"
 #include "edc_config.h"
@@ -78,11 +77,13 @@ static void mock_send_llm(struct edc_scheduler *sched, struct edc_task *task, vo
 
 /* 走公开命令入口。注意 handler 可能接管/释放 message, 所以这里不 free —— 测试
  * 里宁可漏一点也不要 double free。 */
-static void drive_command(struct edc_agent *agent, const char *content)
+static void drive_command(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
+                          const char *content)
 {
     struct edc_channel_message *cm =
         edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsnew(content));
-    edc_commands_handler(agent, NULL, cm);
+    /* 这个用例没有通道 actor (收不到回话, 也不关心) —— 回话地址只给类型。 */
+    edc_commands_handler(cfg, sm, sched, (struct edc_reply_to){NULL, NULL, cm->type}, cm);
 }
 
 /* 挂起的任务不会进 send_llm, 所以只能自己去 session 的组里找。 */
@@ -121,16 +122,12 @@ int main(void)
     install_resolver(sched, sess);
     sched->send_llm = mock_send_llm;
 
-    struct edc_agent *agent = calloc(1, sizeof(*agent));
-    agent->scheduler = sched;
-    agent->session_manager = sm;
-
     /* ── /task new <desc> 必须创建**并且**派发 ──────────────────── */
 
     TEST("/task new <desc> creates and dispatches in one go");
     g_llm_calls = 0;
     g_llm_task = NULL;
-    drive_command(agent, "/task new probe");
+    drive_command(cfg, sm, sched, "/task new probe");
 
     CHECK(g_llm_calls == 1, "send_llm called once (created AND dispatched)");
     CHECK(g_llm_task != NULL, "a task was handed to send_llm");
@@ -150,7 +147,7 @@ int main(void)
     g_llm_task = NULL;
     /* 注意 /task new 的 flag **只有在引号输入之后才被解析** —— 不加引号时整个
      * 剩余文本都成为 desc, flag 被忽略 (这个陷阱会让人以为新 flag 没生效)。 */
-    drive_command(agent, "/task new \"\"\"shelved\"\"\" --suspended");
+    drive_command(cfg, sm, sched, "/task new \"\"\"shelved\"\"\" --suspended");
 
     struct edc_task *susp = find_task_by_desc(sess, "shelved");
     CHECK(g_llm_calls == 0, "send_llm NOT called (nothing executed)");

@@ -93,7 +93,7 @@ int main(int argc, char **argv)
 
         if (!window->Ready())
         {
-            // 配置损坏 / 主密钥不对 / 无终端输入口令等, edc_agent_new() 已写日志。
+            // 配置损坏 / 主密钥不对 / 无终端输入口令等, edc_runtime_new() 已写日志。
             // 没有 agent 就什么都做不了, 直接非零退出, 不进 TUI 循环。
             fprintf(stderr, "edgeclaw: failed to start, see the log for details\n");
             exit_code = 1;

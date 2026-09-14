@@ -11,7 +11,6 @@
  *      there is no sidecar to fall back on any more.
  */
 
-#include "edc_agent.h"
 #include "edc_channel_actor.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -98,14 +97,11 @@ int main(void)
     struct edc_session *sb = edc_session_manager_create_ex(sm, "B", NULL);
     sm->active_index = edc_session_manager_index_of(sm, sa->session_id);
 
-    struct edc_agent agent = {0};
-    agent.config = cfg;
-    agent.session_manager = sm;
-    agent.channel_actor = edc_channel_actor_new();
-    agent.scheduler = edc_scheduler_new(cfg);
+    edc_actor_t *channel_actor = edc_channel_actor_new();
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
 
-    struct edc_task *bt = edc_scheduler_create_task(agent.scheduler, sb, "b-task", edc_channel_adapter);
-    edc_scheduler_create_group(agent.scheduler, sb, bt);
+    struct edc_task *bt = edc_scheduler_create_task(sched, sb, "b-task", edc_channel_adapter);
+    edc_scheduler_create_group(sched, sb, bt);
     /* 新模型: task 创建时就带着它的 input —— 没装 turn 的任务落盘时会被丢掉
      * (docs/retire-waiting-input.md §4)。装上 input 再停到 SUSPENDED
      * (= "建了、有输入、先不跑"), 它才会出现在 session.json 里; 本用例要验的正是
@@ -117,7 +113,7 @@ int main(void)
         bt->active_turn = turn;
         edc_task_mark_suspended(bt);
     }
-    CHECK(edc_session_save_state(sb, agent.scheduler), "B state saved");
+    CHECK(edc_session_save_state(sb, sched), "B state saved");
 
     sds bt_id = sdsnew(bt->task_id);
     sds b_dir = sdsnew(sb->history_dir);
@@ -128,8 +124,8 @@ int main(void)
     CHECK(file_exists(json_path), "session.json exists");
     CHECK(!file_exists(idx_path), "tasks.idx is NOT written any more");
 
-    edc_scheduler_free(agent.scheduler);
-    edc_channel_actor_free(agent.channel_actor);
+    edc_scheduler_free(sched);
+    edc_channel_actor_free(channel_actor);
     edc_session_manager_save_all(sm); /* persist sessions.json so a fresh manager sees B */
     edc_session_manager_free(sm);
     edc_config_free(cfg);

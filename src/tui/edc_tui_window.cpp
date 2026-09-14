@@ -431,7 +431,7 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
 
     agent = edc_c_agent_new(false, sandbox_override);
 
-    // edc_agent_new() returns NULL (after logging the reason) when it cannot
+    // edc_runtime_new() returns NULL (after logging the reason) when it cannot
     // start: unreadable config, undecryptable API key, no terminal for the
     // passphrase, env init failure. Every call below dereferences the agent, so
     // stop here. main() sees Ready() == false and exits cleanly.

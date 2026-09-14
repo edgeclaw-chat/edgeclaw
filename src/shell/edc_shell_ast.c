@@ -1,5 +1,5 @@
 #include "edc_shell_ast.h"
-#include "edc_agent.h"
+#include "edc_session_store.h"
 #include "edc_cmd_parse.h"
 #include "edc_commands.h"
 #include "edc_scheduler.h"
@@ -44,31 +44,37 @@ void ast_free(ast_node_t *node)
 
 /* ── AST executor ──────────────────────────────────────────── */
 
+/* 一次 shell 执行的上下文: 遍历 AST 时**手里那几个句柄** (store 的读口 + 派发)
+ * 与遍历中的可变状态。由 ast_execute 从它收到的参数装出来 —— 不是装配根:
+ * 这里没有 config / channel 生命周期 / llm / toolbox, 只有这次执行要用的那几件。 */
 typedef struct
 {
+    struct edc_session_manager *sm;
+    struct edc_scheduler *sched;
+    struct edc_reply_to to; /* 回话地址 (投给谁 / 以谁的名义 / 什么类型) */
     struct edc_task_group *target_group;
     struct edc_session *session; /* 这条输入所属的 session (命令建的任务/组落在它上面) */
     bool bg;
     edc_task_dep_type dep_type;
 } exec_ctx_t;
 
-static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type,
+static struct edc_task *exec_node(
                                   ast_node_t *node, struct edc_task *prev_task, exec_ctx_t *ctx);
 
-static struct edc_task *exec_chain(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type,
+static struct edc_task *exec_chain(
                                    ast_node_t *first, exec_ctx_t *ctx)
 {
     struct edc_task *prev = NULL;
     ast_node_t *cur = first;
     while (cur)
     {
-        prev = exec_node(agent, actor, channel_type, cur, prev, ctx);
+        prev = exec_node(cur, prev, ctx);
         cur = cur->next;
     }
     return prev;
 }
 
-static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type,
+static struct edc_task *exec_node(
                                   ast_node_t *node, struct edc_task *prev_task, exec_ctx_t *ctx)
 {
     if (!node)
@@ -78,26 +84,26 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
     {
     case AST_ROOT:
         if (node->child)
-            return exec_node(agent, actor, channel_type, node->child, prev_task, ctx);
+            return exec_node(node->child, prev_task, ctx);
         return prev_task;
 
     case AST_SEQ:
         ctx->dep_type = TASK_DEP_SEQUENCE;
-        return exec_chain(agent, actor, channel_type, node->child, ctx);
+        return exec_chain(node->child, ctx);
 
     case AST_PIPE:
         ctx->dep_type = TASK_DEP_JOIN;
-        return exec_chain(agent, actor, channel_type, node->child, ctx);
+        return exec_chain(node->child, ctx);
 
     case AST_BG:
         ctx->bg = true;
-        return exec_node(agent, actor, channel_type, node->child, prev_task, ctx);
+        return exec_node(node->child, prev_task, ctx);
 
     case AST_REDIR_OUT:
     case AST_REDIR_APPEND:
     case AST_REDIR_ERR:
     case AST_REDIR_IN: {
-        struct edc_task *task = exec_node(agent, actor, channel_type, node->child, prev_task, ctx);
+        struct edc_task *task = exec_node(node->child, prev_task, ctx);
         if (!task)
             return prev_task;
         if (node->filename)
@@ -149,7 +155,7 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
                 }
                 else if (err)
                 {
-                    edc_commands_reply(agent, actor, channel_type, err);
+                    edc_commands_reply(ctx->to, err);
                     sdsfree(err);
                 }
                 break;
@@ -184,11 +190,11 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
         struct edc_task_group *group = NULL;
         if (!node->at_group && opts.group_id)
         {
-            group = edc_session_find_group(edc_session_manager_get_active(agent->session_manager), opts.group_id);
+            group = edc_session_find_group(edc_session_manager_get_active(ctx->sm), opts.group_id);
             if (!group)
             {
                 sds reply = sdscatprintf(sdsempty(), "group %s not found", opts.group_id);
-                edc_commands_reply(agent, actor, channel_type, reply);
+                edc_commands_reply(ctx->to, reply);
                 sdsfree(reply);
             }
         }
@@ -196,9 +202,16 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
             group = ctx->target_group;
 
         struct edc_task_group *out_group = NULL;
+        sds spawn_err = NULL;
         struct edc_task *task =
-            edc_shell_spawn_task(agent, actor, channel_type, ctx->session, &opts, prev_task, group,
-                                 node->at_group ? "@" : "task", &out_group, NULL, false, NULL, ctx->dep_type);
+            edc_shell_spawn_task(ctx->sm, ctx->sched, ctx->to.type, ctx->session, &opts, prev_task, group,
+                                 node->at_group ? "@" : "task", &out_group, NULL, false, NULL, ctx->dep_type,
+                                 &spawn_err);
+        if (spawn_err)
+        {
+            edc_commands_reply(ctx->to, spawn_err);
+            sdsfree(spawn_err);
+        }
 
         if (task && node->has_deferred_vars)
             task->has_deferred_vars = 1;
@@ -217,7 +230,7 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
             if (!fg)
             {
                 edc_scheduler_set_foreground(sess, out_group);
-                edc_session_set_active_task(edc_session_manager_get_active(agent->session_manager), task);
+                edc_session_set_active_task(edc_session_manager_get_active(ctx->sm), task);
             }
         }
 
@@ -230,13 +243,13 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
          * (task ids are globally unique). An unknown id fails the command. */
         if (prev_task && node->dep_count > 0 && node->dep_ids[0])
         {
-            struct edc_task *dt = edc_agent_resolve_task(agent, node->dep_ids[0], NULL);
+            struct edc_task *dt = edc_session_store_resolve_task(ctx->sm, ctx->sched, node->dep_ids[0], NULL);
             if (dt)
                 edc_task_add_dependency(prev_task, dt, TASK_DEP_JOIN);
             else
             {
                 sds reply = sdscatprintf(sdsempty(), "Task not found: `%s`", node->dep_ids[0]);
-                edc_commands_reply(agent, actor, channel_type, reply);
+                edc_commands_reply(ctx->to, reply);
                 sdsfree(reply);
             }
         }
@@ -256,10 +269,11 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
 
         if (node->text && sdslen(node->text) > 0 && strchr(node->text, '$'))
         {
-            processed_text = edc_shell_collect_var_refs(agent, node->text, &var_deps, &var_dep_count, &var_err);
+            processed_text =
+            edc_shell_collect_var_refs(ctx->sm, ctx->sched, node->text, &var_deps, &var_dep_count, &var_err);
             if (!processed_text)
             {
-                edc_commands_reply(agent, actor, channel_type, var_err);
+                edc_commands_reply(ctx->to, var_err);
                 sdsfree(var_err);
                 return prev_task;
             }
@@ -317,9 +331,9 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
         }
 
         /* execute the child CMD (now with injected text + deps) */
-        struct edc_task *task = exec_node(agent, actor, channel_type, node->child, prev_task, ctx);
+        struct edc_task *task = exec_node(node->child, prev_task, ctx);
 
-        /* mark for deferred expansion in edc_agent_cb_send_llm */
+        /* mark for deferred expansion in edc_runtime_cb_send_llm */
         if (task && var_dep_count >= 0)
         {
             /* check if any $VAR references exist (even $LAST which has no deps) */
@@ -340,12 +354,15 @@ static struct edc_task *exec_node(struct edc_agent *agent, struct edc_actor *act
     return prev_task;
 }
 
-void ast_execute(struct edc_agent *agent, struct edc_actor *actor, edc_channel_type channel_type, ast_node_t *root,
+void ast_execute(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to, ast_node_t *root,
                  struct edc_session *session)
 {
     if (!root)
         return;
     exec_ctx_t ctx = {0};
+    ctx.sm = sm;
+    ctx.sched = sched;
+    ctx.to = to;
     ctx.dep_type = TASK_DEP_SEQUENCE;
     ctx.session = session;
     /* 前台组是 session 的属性 —— 直接读传进来的那个 session (不再问 scheduler
@@ -353,5 +370,5 @@ void ast_execute(struct edc_agent *agent, struct edc_actor *actor, edc_channel_t
     ctx.target_group = session ? session->foreground_group : NULL;
     if (!ctx.target_group || ctx.target_group->is_orphaned || ctx.target_group->member_count == 0)
         ctx.target_group = NULL;
-    exec_node(agent, actor, channel_type, root, NULL, &ctx);
+    exec_node(root, NULL, &ctx);
 }

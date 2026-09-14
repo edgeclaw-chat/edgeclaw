@@ -15,7 +15,6 @@
  *   - `/task fg <id>` refuses a task that lives in another session.
  */
 
-#include "edc_agent.h"
 #include "edc_channel_actor.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
@@ -60,18 +59,20 @@ static int test_passed = 0;
 
 #define TEST_WS "/tmp/test_cross_dep_ws"
 
-static void send_cmd(struct edc_agent *agent, const char *content)
+static void send_cmd(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
+                     edc_actor_t *channel_actor, const char *content)
 {
     struct edc_channel_message *msg =
         edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsnew(content));
-    edc_commands_handler(agent, NULL, msg);
+    edc_commands_handler(cfg, sm, sched, (struct edc_reply_to){channel_actor, NULL, msg->type}, msg);
     edc_channel_message_free(msg);
 }
 
-static void switch_to(struct edc_agent *agent, const char *target)
+static void switch_to(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
+                      edc_actor_t *channel_actor, const char *target)
 {
     sds scmd = sdscatprintf(sdsempty(), "/session switch %s", target);
-    send_cmd(agent, scmd);
+    send_cmd(cfg, sm, sched, channel_actor, scmd);
     sdsfree(scmd);
 }
 
@@ -109,19 +110,16 @@ int main(void)
     CHECK(sb != NULL, "second session B created");
     sm->active_index = edc_session_manager_index_of(sm, sa->session_id);
 
-    struct edc_agent agent = {0};
-    agent.config = cfg;
-    agent.session_manager = sm;
-    agent.channel_actor = edc_channel_actor_new();
-    agent.scheduler = edc_scheduler_new(cfg);
+    edc_actor_t *channel_actor = edc_channel_actor_new();
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
 
     /* ── Create a task in session B ─────────────────────────── */
-    switch_to(&agent, sb->session_id);
-    struct edc_task *bt = edc_scheduler_create_task(agent.scheduler, sb, "b-task", edc_channel_adapter);
-    edc_scheduler_create_group(agent.scheduler, sb, bt);
+    switch_to(cfg, sm, sched, channel_actor, sb->session_id);
+    struct edc_task *bt = edc_scheduler_create_task(sched, sb, "b-task", edc_channel_adapter);
+    edc_scheduler_create_group(sched, sb, bt);
     edc_session_set_active_task(sb, bt);
-    switch_to(&agent, sa->session_id);
-    CHECK(edc_session_manager_get_active(agent.session_manager) == sa, "A is the active session again");
+    switch_to(cfg, sm, sched, channel_actor, sa->session_id);
+    CHECK(edc_session_manager_get_active(sm) == sa, "A is the active session again");
 
     /* ── S0: global lookup ──────────────────────────────────── */
     TEST("find_task_any locates tasks across sessions");
@@ -136,7 +134,7 @@ int main(void)
     TEST("create a task with a cross-session -d dependency");
     int before = count_tasks(sa);
     sds scmd = sdscatprintf(sdsempty(), "/task new \"\"\"crossdep\"\"\" -d %s", bt->task_id);
-    send_cmd(&agent, scmd);
+    send_cmd(cfg, sm, sched, channel_actor, scmd);
     sdsfree(scmd);
 
     struct edc_task *at = edc_session_get_active_task(sa);
@@ -149,7 +147,7 @@ int main(void)
     /* ── S1a/D5: unknown id fails the command ───────────────── */
     TEST("unknown -d id fails the command (no task created)");
     before = count_tasks(sa);
-    send_cmd(&agent, "/task new \"\"\"shouldfail\"\"\" -d no-such-task");
+    send_cmd(cfg, sm, sched, channel_actor, "/task new \"\"\"shouldfail\"\"\" -d no-such-task");
     CHECK(count_tasks(sa) == before, "no task created when dep is unknown");
     CHECK(edc_session_get_active_task(sa) == at, "active task unchanged after failure");
 
@@ -162,20 +160,20 @@ int main(void)
     /* ── S1b: fg refuses a task in another session ──────────── */
     TEST("/task fg refuses a task in another session");
     struct edc_task_group *fg_before =
-        edc_scheduler_get_foreground(edc_session_manager_get_active(agent.session_manager));
+        edc_scheduler_get_foreground(edc_session_manager_get_active(sm));
     sds fg_cmd = sdscatprintf(sdsempty(), "/task fg %s", bt->task_id);
-    send_cmd(&agent, fg_cmd);
+    send_cmd(cfg, sm, sched, channel_actor, fg_cmd);
     sdsfree(fg_cmd);
-    CHECK(edc_scheduler_get_foreground(edc_session_manager_get_active(agent.session_manager)) == fg_before,
+    CHECK(edc_scheduler_get_foreground(edc_session_manager_get_active(sm)) == fg_before,
           "foreground group unchanged");
 
     /* ── S1a: /task chain is cross-session ──────────────────── */
     TEST("/task chain links tasks across sessions");
-    struct edc_task *at2 = edc_scheduler_create_task(agent.scheduler, sa, "chain-target", edc_channel_adapter);
-    edc_scheduler_create_group(agent.scheduler, sa, at2);
+    struct edc_task *at2 = edc_scheduler_create_task(sched, sa, "chain-target", edc_channel_adapter);
+    edc_scheduler_create_group(sched, sa, at2);
     size_t deps_before = at2->deps_total;
     sds chain_cmd = sdscatprintf(sdsempty(), "/task chain %s %s", bt->task_id, at2->task_id);
-    send_cmd(&agent, chain_cmd);
+    send_cmd(cfg, sm, sched, channel_actor, chain_cmd);
     sdsfree(chain_cmd);
     CHECK(at2->deps_total == deps_before + 1, "chain added a cross-session dependency");
 
@@ -184,9 +182,9 @@ int main(void)
      * run": save B's state, then drop B's live groups. The resolver must find
      * the id by probing B's session.json and load B on demand. */
     TEST("dependency onto a task in an unloaded session activates it on demand");
-    switch_to(&agent, sb->session_id);
-    struct edc_task *bt2 = edc_scheduler_create_task(agent.scheduler, sb, "b2-task", edc_channel_adapter);
-    edc_scheduler_create_group(agent.scheduler, sb, bt2);
+    switch_to(cfg, sm, sched, channel_actor, sb->session_id);
+    struct edc_task *bt2 = edc_scheduler_create_task(sched, sb, "b2-task", edc_channel_adapter);
+    edc_scheduler_create_group(sched, sb, bt2);
     edc_session_set_active_task(sb, bt2);
     /* 新模型: task 创建时就带着它的 input —— 没装 turn 的任务落盘时会被丢掉
      * (docs/retire-waiting-input.md §4)。装上 input 停到 SUSPENDED, 它才会出现在
@@ -199,8 +197,8 @@ int main(void)
         edc_task_mark_suspended(bt2);
     }
     sds bt2_id = sdsnew(bt2->task_id);
-    CHECK(edc_session_save_state(sb, agent.scheduler), "B state saved to disk");
-    switch_to(&agent, sa->session_id);
+    CHECK(edc_session_save_state(sb, sched), "B state saved to disk");
+    switch_to(cfg, sm, sched, channel_actor, sa->session_id);
 
     /* Drop B's in-memory groups (freeing bt/bt2 also detaches their reverse
      * edges, so nothing dangles) and mark it unloaded. */
@@ -221,7 +219,7 @@ int main(void)
 
     int before2 = count_tasks(sa);
     sds load_cmd = sdscatprintf(sdsempty(), "/task new \"\"\"needs-b2\"\"\" -d %s", bt2_id);
-    send_cmd(&agent, load_cmd);
+    send_cmd(cfg, sm, sched, channel_actor, load_cmd);
     sdsfree(load_cmd);
 
     struct edc_task *at3 = edc_session_get_active_task(sa);
@@ -230,13 +228,13 @@ int main(void)
               strcmp(at3->deps->source->task_id, bt2_id) == 0,
           "dependency resolved against B, loaded on demand");
     CHECK(sb->state_loaded, "B was activated on demand");
-    CHECK(edc_session_manager_get_active(agent.session_manager) == sa, "active session unchanged by the on-demand load");
-    CHECK(edc_scheduler_get_foreground(edc_session_manager_get_active(agent.session_manager)) == at3->group,
+    CHECK(edc_session_manager_get_active(sm) == sa, "active session unchanged by the on-demand load");
+    CHECK(edc_scheduler_get_foreground(edc_session_manager_get_active(sm)) == at3->group,
           "active session's foreground group is A's, not hijacked by the load");
     sdsfree(bt2_id);
 
-    edc_scheduler_free(agent.scheduler);
-    edc_channel_actor_free(agent.channel_actor);
+    edc_scheduler_free(sched);
+    edc_channel_actor_free(channel_actor);
     edc_session_manager_free(sm);
     edc_config_free(cfg);
     snprintf(cmd, sizeof(cmd), "rm -rf %s", TEST_WS);

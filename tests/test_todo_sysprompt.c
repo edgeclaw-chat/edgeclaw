@@ -17,7 +17,7 @@
  *      包裹, 不再是独立的 "# TODO" checklist markdown)。
  *   3. edc_task_llm_request_poke 的节流状态机 (每次 send_llm 前调用): 计
  *      数累加, 达阈值返回 true 并清零 —— 直测。
- *   4. edc_agent_cb_send_llm 仅在 poke 返回 true 时调用
+ *   4. edc_runtime_cb_send_llm 仅在 poke 返回 true 时调用
  *      edc_context_make_todo_reminder (edc_context.c, 实现于生产代码, 在此
  *      直测): 有清单 → role=system 的 reminder 消息, content 与工具 result
  *      逐字节一致 (单一渲染源 edc_tools_todo_render_reminder), 不带 base,

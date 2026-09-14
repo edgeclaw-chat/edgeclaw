@@ -1,4 +1,4 @@
-﻿#include "edc_agent.h"
+﻿#include "edc_runtime.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
 #include "edc_compat.h"
@@ -12,6 +12,7 @@
 #include "edc_secret.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
+#include "edc_session_store.h"
 #include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -30,184 +31,48 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define CLI_HISTORY_MAX 1000
-
 /* ── 命令处理钩子 (由外部注册，避免 agent → shell 依赖) ───── */
 
-typedef bool (*edc_agent_command_fn)(struct edc_agent *, struct edc_actor *, struct edc_channel_message *);
-static edc_agent_command_fn g_command_handler = NULL;
+/* ── 装配根: 定义**只**在这里 (不透明) ──────────────────────
+ * 外部读法: 边界经访问器, userland 收自己那几件 (见 edc_runtime.h)。 */
+struct edc_runtime
+{
+    struct edc_config *config;
+    struct edc_session_manager *session_manager;
+    struct edc_toolbox *toolbox;
+    struct edc_scheduler *scheduler;
 
-void edc_agent_set_command_handler(edc_agent_command_fn fn)
+    edc_actor_t *channel_actor;
+    edc_actor_t *llm_actor;
+    edc_actor_t *toolbox_actor;
+
+    edc_actor_runner_t *runner;
+};
+
+typedef bool (*edc_runtime_command_fn)(struct edc_config *cfg, struct edc_session_manager *sm,
+                                      struct edc_scheduler *sched, struct edc_reply_to to,
+                                      struct edc_channel_message *message);
+static edc_runtime_command_fn g_command_handler = NULL;
+
+void edc_runtime_set_command_handler(edc_runtime_command_fn fn)
 {
     g_command_handler = fn;
 }
 
 /* ── 辅助: 获取 agent ──────────────────────────────────────── */
 
-static struct edc_agent *edc_scheduler_agent(struct edc_scheduler *sched)
+static struct edc_runtime *edc_runtime_from_sched(struct edc_scheduler *sched)
 {
     return sched ? sched->ctx : NULL;
 }
 
-/* ── 跨 session task 解析 (S2) ───────────────────────────────
- * task id 全局唯一 (见 edc_session_manager_find_task_any), 所以命中唯一。
- * 内存查找只覆盖"本 run 已激活"的 session; 若任务属于一个只在磁盘上、尚未
- * 激活的 session, 就用 session_manager 的索引 (task_id → session_id, 由各
- * 未加载 session.json 解析一次而来) 定位属主, 再按需加载。 */
-
-struct edc_task *edc_agent_resolve_task(struct edc_agent *agent, const char *task_id, struct edc_session **owner_out)
-{
-    if (owner_out)
-        *owner_out = NULL;
-    if (!agent || !task_id || !agent->session_manager)
-        return NULL;
-
-    /* 1. 内存优先: 本 run 已激活的 session 里直接找。 */
-    struct edc_session *owner = NULL;
-    struct edc_task *t = edc_session_manager_find_task_any(agent->session_manager, task_id, &owner);
-    if (t)
-    {
-        if (owner_out)
-            *owner_out = owner;
-        return t;
-    }
-
-    /* 2. 未命中: 用 session_manager 的索引定位属主 session (解析各未加载
-     *    session.json 一次), 命中则按需加载。 */
-    struct edc_session *s = edc_session_manager_session_for_task(agent->session_manager, task_id);
-    if (!s)
-        return NULL;
-    if (!s->state_loaded)
-    {
-        /* Activate the owner session (also reconciles any cross-session deps it
-         * reveals). Loading is side-effect-free for the active session. */
-        edc_agent_load_session(agent, s);
-    }
-
-    t = edc_session_manager_find_task_any(agent->session_manager, task_id, &owner);
-    if (owner_out)
-        *owner_out = owner;
-    return t;
-}
-
-/* ── 未解析依赖对账 (S3) ───────────────────────────────────── */
-
-/* Re-apply a persisted dep edge's flags once the edge is wired late. Mirrors the
- * logic in deser_deps for the local path. */
-static void edc_agent_apply_dep_flags(struct edc_task *target, struct edc_task *source, bool completed,
-                                      bool cancelled, bool injected)
-{
-    if (completed)
-        edc_task_on_dep_completed(target, source);
-    if (cancelled)
-        edc_task_on_dep_cancelled(target, source);
-    if (injected)
-    {
-        struct edc_task_dep *dep;
-        LL_FOREACH(target->deps, dep)
-        {
-            if (dep->source == source)
-            {
-                dep->injected = true;
-                break;
-            }
-        }
-    }
-}
-
-static void edc_agent_free_pending_dep(struct edc_pending_dep *pd)
-{
-    sdsfree(pd->target_task_id);
-    sdsfree(pd->source_task_id);
-    free(pd);
-}
-
-bool edc_agent_load_session(struct edc_agent *agent, struct edc_session *session)
-{
-    if (!agent || !session)
-        return false;
-    bool ok = edc_session_load_state(session, agent->scheduler);
-    /* 内存即权威: 即使没有存档 (全新 session) 也标记为已加载, 之后不再重载。 */
-    session->state_loaded = true;
-    if (!agent->reconciling)
-        edc_agent_reconcile_pending_deps(agent);
-    return ok;
-}
-
-void edc_agent_reconcile_pending_deps(struct edc_agent *agent)
-{
-    if (!agent || !agent->scheduler || !agent->session_manager)
-        return;
-    if (agent->reconciling)
-        return; /* re-entrant call from resolve_task: let the outer loop drain */
-    agent->reconciling = true;
-
-    struct edc_scheduler *sched = agent->scheduler;
-
-    /* Each pass resolves what it can; loading an owner session may reveal more
-     * pending edges, so loop until a pass makes no progress. */
-    bool progress = true;
-    while (progress)
-    {
-        progress = false;
-        struct edc_pending_dep **link = &sched->pending_deps;
-        while (*link)
-        {
-            struct edc_pending_dep *pd = *link;
-
-            struct edc_task *target =
-                edc_session_manager_find_task_any(agent->session_manager, pd->target_task_id, NULL);
-            if (!target)
-            {
-                /* Dependent task is gone (e.g. its session was removed). */
-                *link = pd->next;
-                edc_agent_free_pending_dep(pd);
-                progress = true;
-                continue;
-            }
-
-            struct edc_task *source = edc_agent_resolve_task(agent, pd->source_task_id, NULL);
-            if (source)
-            {
-                /* add_dependency returns false for an already-wired edge or a
-                 * cycle; either way there is nothing more to do for this entry. */
-                if (edc_task_add_dependency(target, source, pd->type))
-                    edc_agent_apply_dep_flags(target, source, pd->completed, pd->cancelled, pd->injected);
-                *link = pd->next;
-                edc_agent_free_pending_dep(pd);
-                progress = true;
-                continue;
-            }
-
-            /* Unresolved. A completed/cancelled edge was already satisfied when
-             * saved, so dropping it cannot cause a premature run. Anything else
-             * must HOLD the target (resume gate) — never run with a missing dep. */
-            if (pd->completed || pd->cancelled)
-            {
-                *link = pd->next;
-                edc_agent_free_pending_dep(pd);
-                progress = true;
-                continue;
-            }
-
-            link = &pd->next;
-        }
-    }
-
-    /* Whatever is left is genuinely unresolvable: surface it, and rely on the
-     * resume gate to keep the target from running. */
-    for (struct edc_pending_dep *pd = sched->pending_deps; pd; pd = pd->next)
-        log_warn("cross-session dep unresolved: task `%s` waits on `%s` (owner session not found)", pd->target_task_id,
-                 pd->source_task_id);
-
-    agent->reconciling = false;
-}
-
+/* 跨 session task 解析 / 依赖对账 / session 加载 → edc_session_store.{c,h}
+ * (store 自己的读口与生命周期, 显式收 (session_manager, scheduler))。 */
 /* ── Shell 变量解析回调 ──────────────────────────────────── */
 
-static sds edc_agent_var_resolver(const char *name, void *user_data)
+static sds edc_runtime_var_resolver(const char *name, void *user_data)
 {
-    struct edc_agent *agent = user_data;
+    struct edc_runtime *agent = user_data;
     if (!agent)
         return NULL;
 
@@ -241,7 +106,7 @@ static sds edc_agent_var_resolver(const char *name, void *user_data)
     }
 
     /* $NUMBER 或 $NAME → 按 task ID / job number 查找 (全局; 必要时按需激活属主 session) */
-    struct edc_task *t = edc_agent_resolve_task(agent, name, NULL);
+    struct edc_task *t = edc_session_store_resolve_task(agent->session_manager, agent->scheduler, name, NULL);
     return (t && t->output) ? sdsdup(t->output) : NULL;
 }
 
@@ -252,7 +117,7 @@ static sds edc_agent_var_resolver(const char *name, void *user_data)
  * 若窗口起点正好切在 assistant(tool_calls)+tool 序列中间，会导致 tool 消息孤儿化，
  * 从而报 "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"。
  * 这里把起点向前回退到第一个非 tool 消息（即其 assistant），保证序列完整。 */
-static size_t edc_agent_history_safe_start(cJSON *history, size_t start, size_t lower_bound)
+static size_t edc_runtime_history_safe_start(cJSON *history, size_t start, size_t lower_bound)
 {
     while (start > lower_bound)
     {
@@ -270,9 +135,9 @@ static size_t edc_agent_history_safe_start(cJSON *history, size_t start, size_t 
     return start;
 }
 
-static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
+static void edc_runtime_cb_send_llm(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
 {
-    struct edc_agent *agent = edc_scheduler_agent(sched);
+    struct edc_runtime *agent = edc_runtime_from_sched(sched);
     if (!agent || !task)
         return;
 
@@ -318,7 +183,7 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
         if (hist_begin > end)
             hist_begin = end;
         /* 水位边界也可能切在 tool 消息上, 回退到安全边界 */
-        hist_begin = edc_agent_history_safe_start(task->group->history, hist_begin, 1);
+        hist_begin = edc_runtime_history_safe_start(task->group->history, hist_begin, 1);
 
         /* 注入全部未折叠历史 [hist_begin, end): fold 采用"半量"策略 (见
          * edc_group_fold 的 L1 fold), 触发时只压最老的一半, 剩下的未折叠
@@ -397,7 +262,7 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
                 cJSON *content = cJSON_GetObjectItem(msg, "content");
                 if (content && cJSON_IsString(content))
                 {
-                    sds expanded = edc_shell_expand_vars(content->valuestring, edc_agent_var_resolver, agent, NULL);
+                    sds expanded = edc_shell_expand_vars(content->valuestring, edc_runtime_var_resolver, agent, NULL);
                     if (expanded)
                     {
                         cJSON_ReplaceItemInObject(msg, "content", cJSON_CreateString(expanded));
@@ -439,10 +304,10 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
 
 /* ── 回调: 发送 Channel 回复 ────────────────────────────────── */
 
-static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task *task, const char *content,
+static void edc_runtime_cb_send_reply(struct edc_scheduler *sched, struct edc_task *task, const char *content,
                                     edc_channel_message_type message_type, void *request_id)
 {
-    struct edc_agent *agent = edc_scheduler_agent(sched);
+    struct edc_runtime *agent = edc_runtime_from_sched(sched);
     if (!agent || !task || !content)
         return;
 
@@ -482,10 +347,10 @@ static void edc_agent_cb_send_reply(struct edc_scheduler *sched, struct edc_task
 /* 构造带 header 的 TOOL 消息发给 channel_actor。展示闸门 (只显示显示中的 session
  * 的 active task) 在前端 —— 这里只声明事实 (from_active_task)。 */
 
-static void edc_agent_cb_send_tool_message(struct edc_scheduler *sched, struct edc_task *task, const char *header,
+static void edc_runtime_cb_send_tool_message(struct edc_scheduler *sched, struct edc_task *task, const char *header,
                                            const char *content, edc_render_pref_t render_pref, void *request_id)
 {
-    struct edc_agent *agent = edc_scheduler_agent(sched);
+    struct edc_runtime *agent = edc_runtime_from_sched(sched);
     if (!agent || !task || !content)
         return;
 
@@ -494,7 +359,7 @@ static void edc_agent_cb_send_tool_message(struct edc_scheduler *sched, struct e
     reply->render_pref = render_pref;
     if (task->task_id)
         reply->task_id = sdsnew(task->task_id);
-    /* Owning session (see edc_agent_cb_send_reply): routes a background
+    /* Owning session (see edc_runtime_cb_send_reply): routes a background
      * session's tool output into its own transcript. */
     {
         struct edc_session *own = (task->group && task->group->session) ? task->group->session : NULL;
@@ -512,13 +377,13 @@ static void edc_agent_cb_send_tool_message(struct edc_scheduler *sched, struct e
 
 /* ── 回调: 分发 Tool Calls ────────────────────────────────── */
 
-static void edc_agent_handle_tool_calls(struct edc_agent *agent, struct edc_task *task, edc_channel_type call_from_type,
+static void edc_runtime_handle_tool_calls(struct edc_runtime *agent, struct edc_task *task, edc_channel_type call_from_type,
                                         struct edc_llm_actor_resp *resp, void *request_id, edc_actor_t *from_actor);
 
-static void edc_agent_cb_dispatch_tools(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
+static void edc_runtime_cb_dispatch_tools(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
                                         void *request_id)
 {
-    struct edc_agent *agent = edc_scheduler_agent(sched);
+    struct edc_runtime *agent = edc_runtime_from_sched(sched);
     if (!agent || !task || !llm_resp)
         return;
 
@@ -530,16 +395,16 @@ static void edc_agent_cb_dispatch_tools(struct edc_scheduler *sched, struct edc_
     {
         sds content = (resp->content && sdslen(resp->content) > 0) ? resp->content : resp->reasoning_content;
         sds text = sdscatprintf(sdsempty(), "%s", content);
-        edc_agent_cb_send_reply(sched, task, text, EDC_CHANNEL_MESSAGE_THOUGHT_TYPE, request_id);
+        edc_runtime_cb_send_reply(sched, task, text, EDC_CHANNEL_MESSAGE_THOUGHT_TYPE, request_id);
         sdsfree(text);
     }
 
-    edc_agent_handle_tool_calls(agent, task, task->channel_type, resp, request_id, edc_scheduler_get_actor(sched));
+    edc_runtime_handle_tool_calls(agent, task, task->channel_type, resp, request_id, edc_scheduler_get_actor(sched));
 }
 
 /* ── 工具分发逻辑 ──────────────────────────────────────────── */
 
-static void edc_agent_handle_tool_calls(struct edc_agent *agent, struct edc_task *task, edc_channel_type call_from_type,
+static void edc_runtime_handle_tool_calls(struct edc_runtime *agent, struct edc_task *task, edc_channel_type call_from_type,
                                         struct edc_llm_actor_resp *resp, void *request_id, edc_actor_t *from_actor)
 {
     struct edc_toolbox_actor_req *req = edc_toolbox_actor_req_new(NULL, NULL, NULL, call_from_type, task);
@@ -573,9 +438,9 @@ static void edc_agent_handle_tool_calls(struct edc_agent *agent, struct edc_task
 /* resume: 把 task 工具账本里仍为 PENDING (尚未执行) 的记录重建 toolbox 请求链
  * 并投递。EXECUTING 的记录由 scheduler 在 resume 时补中断响应, 不在此列。
  * 返回投递的条数。 */
-static int edc_agent_cb_redispatch_tools(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
+static int edc_runtime_cb_redispatch_tools(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
 {
-    struct edc_agent *agent = edc_scheduler_agent(sched);
+    struct edc_runtime *agent = edc_runtime_from_sched(sched);
     if (!agent || !task || !agent->toolbox_actor)
         return 0;
 
@@ -609,15 +474,16 @@ static int edc_agent_cb_redispatch_tools(struct edc_scheduler *sched, struct edc
 
 /* ── 回调: 命令处理 ────────────────────────────────────────── */
 
-static bool edc_agent_cb_handle_command(struct edc_scheduler *sched, struct edc_actor *actor,
+static bool edc_runtime_cb_handle_command(struct edc_scheduler *sched, struct edc_actor *actor,
                                         const struct edc_sched_input *input)
 {
-    struct edc_agent *agent = edc_scheduler_agent(sched);
+    struct edc_runtime *agent = edc_runtime_from_sched(sched);
     /* 命令层 (shell) 说的是 channel 消息: 原始消息由 core 不透明透传到这里。 */
     struct edc_channel_message *msg = input ? input->origin : NULL;
     if (!agent || !msg)
         return false;
-    return g_command_handler ? g_command_handler(agent, actor, msg) : false;
+    struct edc_reply_to to = {agent->channel_actor, actor, msg->type};
+    return g_command_handler ? g_command_handler(agent->config, agent->session_manager, agent->scheduler, to, msg) : false;
 }
 
 /* ── session 标签 → session 对象 (store 读口, P3) ─────────────
@@ -629,25 +495,16 @@ static bool edc_agent_cb_handle_command(struct edc_scheduler *sched, struct edc_
  * 标签为空 = "调用方没指定" (crontab 定时任务、老渠道) → 给活跃 session, 行为与
  * 老实现一致; 标签给定但找不到 → NULL, 调用方拒绝这条输入 (不猜、不落到别的
  * session: 老实现里"切错台"的家族事故就是这么来的)。 */
-struct edc_session *edc_agent_resolve_session(struct edc_agent *agent, const char *session_id)
+static struct edc_session *edc_runtime_cb_resolve_session(void *ctx, const char *session_id)
 {
-    if (!agent || !agent->session_manager)
-        return NULL;
-    if (session_id && *session_id)
-        return edc_session_manager_find(agent->session_manager, session_id);
-    return edc_session_manager_get_active(agent->session_manager);
-}
-
-static struct edc_session *edc_agent_cb_resolve_session(void *ctx, const char *session_id)
-{
-    return edc_agent_resolve_session((struct edc_agent *)ctx, session_id);
+    return edc_session_store_resolve_session(((struct edc_runtime *)ctx)->session_manager, session_id);
 }
 
 /* ── 回调: Memory Compress ──────────────────────────────────── */
 
-static void edc_agent_cb_trigger_memory(struct edc_scheduler *sched)
+static void edc_runtime_cb_trigger_memory(struct edc_scheduler *sched)
 {
-    struct edc_agent *agent = edc_scheduler_agent(sched);
+    struct edc_runtime *agent = edc_runtime_from_sched(sched);
     if (!agent || !agent->session_manager)
         return;
 
@@ -684,7 +541,7 @@ static void edc_agent_cb_trigger_memory(struct edc_scheduler *sched)
             {
                 log_info("L1 fold trigger: group %s foldable=%zu unfolded=%zu (msg_thr=%d)", g->group_id, foldable,
                          unfolded, msg_threshold);
-                edc_group_fold_start(agent, sess, g);
+                edc_group_fold_start(sched, sess, g);
                 return; /* 一次只折叠一个 group */
             }
             if (foldable > 0 || unfolded > 0)
@@ -697,9 +554,9 @@ static void edc_agent_cb_trigger_memory(struct edc_scheduler *sched)
 
 /* ── 回调: 保存 Session ────────────────────────────────────── */
 
-static void edc_agent_cb_save_session(struct edc_scheduler *sched, struct edc_session *session)
+static void edc_runtime_cb_save_session(struct edc_scheduler *sched, struct edc_session *session)
 {
-    struct edc_agent *agent = edc_scheduler_agent(sched);
+    struct edc_runtime *agent = edc_runtime_from_sched(sched);
     if (!agent || !agent->session_manager)
         return;
 
@@ -721,95 +578,71 @@ static void edc_agent_cb_save_session(struct edc_scheduler *sched, struct edc_se
  *   - `snapshot_changed` = "某个 session 的树变了" 的**事件** (很小, 不带树)。
  * 走同一条通道 (channel adapter → TUI 回调), 靠 message_type 区分。 */
 
-/* 通过 channel adapter 发一条消息: 子类型 edc_channel_adapter 会让 channel
- * actor 把它路由到 TUI 注册的 on_actor_message_send_fn。 */
-static void edc_agent_publish(struct edc_agent *agent, struct edc_actor *from, edc_channel_message_type type,
-                              const char *session_id, sds content)
-{
-    if (!agent || !agent->channel_actor)
-    {
-        if (content)
-            sdsfree(content);
-        return;
-    }
-    struct edc_channel_message *msg = edc_channel_message_new(edc_channel_adapter, type, content);
-    if (session_id && *session_id)
-        msg->session_id = sdsnew(session_id);
+/* 出站投递 (publish / 活跃 session 通报) → edc_channel_actor.{c,h}
+ * —— 建消息 + 发 BC_ACTOR_MSG_CHANNEL_SEND 是**通道自己的**词汇。 */
 
-    edc_actor_send(agent->channel_actor, edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, edc_channel_adapter,
-                                                                    from, NULL, msg,
-                                                                    (edc_actor_data_free_fn)edc_channel_message_free));
-}
-
-static void edc_agent_cb_snapshot_reply(struct edc_scheduler *sched, sds serialized)
+/* ── 回调: task 树快照 (①b: 事件 vs 应答) ─────────────────────
+ *
+ * 两条线分得很清:
+ *   - `snapshot_reply`   = 前端**点名要**的那棵树 (拉取的应答);
+ *   - `snapshot_changed` = "某个 session 的树变了" 的**事件** (很小, 不带树)。
+ * 走同一条通道 (channel adapter → TUI 回调), 靠 message_type 区分。 */
+static void edc_runtime_cb_snapshot_reply(struct edc_scheduler *sched, sds serialized)
 {
-    struct edc_agent *agent = edc_scheduler_agent(sched);
+    struct edc_runtime *agent = edc_runtime_from_sched(sched);
     if (!serialized)
         return;
-    edc_agent_publish(agent, edc_scheduler_get_actor(sched), EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE, NULL, serialized);
+    struct edc_reply_to to = {agent ? agent->channel_actor : NULL, edc_scheduler_get_actor(sched),
+                              EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE};
+    edc_channel_publish(to, NULL, serialized);
 }
 
 /* "session X 的树变了" —— 事件, 不带树。前端收到后**只**在自己正显示 X 时去拉。 */
-static void edc_agent_cb_snapshot_changed(struct edc_scheduler *sched, const char *session_id, const char *reason)
+static void edc_runtime_cb_snapshot_changed(struct edc_scheduler *sched, const char *session_id, const char *reason)
 {
-    struct edc_agent *agent = edc_scheduler_agent(sched);
-    edc_agent_publish(agent, edc_scheduler_get_actor(sched), EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE, session_id,
-                      sdsnew(reason ? reason : ""));
+    struct edc_runtime *agent = edc_runtime_from_sched(sched);
+    struct edc_reply_to to = {agent ? agent->channel_actor : NULL, edc_scheduler_get_actor(sched),
+                              EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE};
+    edc_channel_publish(to, session_id, sdsnew(reason ? reason : ""));
 }
 
-/* 活跃 session 变了 (用户 `/session switch|new`): 告诉前端换显示那棵树。
- *
- * 这是**事实**的通报 —— "active_index 现在是 X" (规则 3 的唯一权威在 session_manager),
- * 由 userland (命令层) 在切成功之后发出。不是"内核决定谁看什么": 前端仍然自己
- * 决定要不要跟 (它只是被叫去显示用户刚点的那个 tab), 快照也仍然要它自己拉。 */
-/* 与 scheduler 的 EDGECLAW_SNAPSHOT_TRACE 同一份 trace (同一条通路的另一半: 切台
- * 事件不走 scheduler 的脏表, 而是由这里直发) —— 证据工具要能看到它, 否则"前端怎么
- * 知道换台了"在 trace 里是断的。 */
-static void edc_agent_trace_active_session(const char *session_id)
+
+/* 会话信号与落盘 (stop_all_turns / remove_all_turns) → edc_session_store.{c,h} */
+/* ── 测试/嵌入式装配缝 ──────────────────────────────────────── */
+
+struct edc_runtime *edc_runtime_attach(struct edc_config *cfg, struct edc_session_manager *sm,
+                                       struct edc_scheduler *sched, edc_actor_t *channel_actor)
 {
-    const char *path = getenv("EDGECLAW_SNAPSHOT_TRACE");
-    if (!path || !*path)
-        return;
-    FILE *f = fopen(path, "a");
-    if (!f)
-        return;
-    fprintf(f, "notify reason=active session=%s\n", session_id ? session_id : "?");
-    fclose(f);
+    struct edc_runtime *rt = g_new0(struct edc_runtime, 1);
+    rt->config = cfg;
+    rt->session_manager = sm;
+    rt->scheduler = sched;
+    rt->channel_actor = channel_actor;
+    if (sched)
+        sched->ctx = rt; /* 回调上下文指回装配根 (scheduler 只透传, 不认识它) */
+    return rt;
 }
 
-void edc_agent_notify_active_session(struct edc_agent *agent, const char *session_id)
+/* ── 边界访问器 ────────────────────────────────────────────── */
+
+struct edc_config *edc_runtime_config(const struct edc_runtime *rt)
 {
-    edc_agent_trace_active_session(session_id);
-    edc_agent_publish(agent, agent ? agent->channel_actor : NULL, EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE,
-                      session_id, sdsnew("active"));
+    return rt ? rt->config : NULL;
 }
 
-void edc_agent_remove_all_turns(struct edc_agent *agent)
+struct edc_session_manager *edc_runtime_sessions(const struct edc_runtime *rt)
 {
-    if (!agent || !agent->scheduler)
-        return;
-    edc_scheduler_send_signal_to_all(agent->scheduler, edc_session_manager_get_active(agent->session_manager),
-                                     TASK_SIGTERM);
+    return rt ? rt->session_manager : NULL;
 }
 
-/* 用户 /stop (/session stop): 取消当前 session 全部非终结 turns 后立即保存状态,
- * 使 CANCELLED 跨重启保留。
- * 注: 目标不是当前 active session 时 (如 /session stop <other>), 走
- * edc_scheduler_send_signal_to_session(sched, target, sig, true) —— 目标由调用方
- * 显式给 (P3 ③: scheduler 已经没有"当前 session"这个东西了)。 */
-void edc_agent_stop_all_turns(struct edc_agent *agent)
+edc_actor_t *edc_runtime_channel_actor(const struct edc_runtime *rt)
 {
-    if (!agent || !agent->scheduler)
-        return;
-    struct edc_session *active = edc_session_manager_get_active(agent->session_manager);
-    edc_scheduler_send_signal_to_all(agent->scheduler, active, TASK_SIGTERM);
-    if (agent->scheduler->save_session)
-        agent->scheduler->save_session(agent->scheduler, active);
+    return rt ? rt->channel_actor : NULL;
 }
 
 /* ── 生命周期 ──────────────────────────────────────────────── */
 
-struct edc_agent *edc_agent_new(bool setup, int sandbox_override)
+struct edc_runtime *edc_runtime_new(bool setup, int sandbox_override)
 {
     sds edc_home = edc_config_resolve_bc_home();
 
@@ -827,9 +660,7 @@ struct edc_agent *edc_agent_new(bool setup, int sandbox_override)
         return NULL;
     }
 
-    struct edc_agent *agent = g_new0(struct edc_agent, 1);
-    agent->history_capacity = 8;
-    agent->history = malloc((size_t)agent->history_capacity * sizeof(sds));
+    struct edc_runtime *agent = g_new0(struct edc_runtime, 1);
     agent->config = edc_config_load(edc_home);
 
     /* edc_config_load() returns NULL on a missing/corrupt config.json or when
@@ -839,7 +670,6 @@ struct edc_agent *edc_agent_new(bool setup, int sandbox_override)
     if (!agent->config)
     {
         log_error("Failed to load configuration (%s); aborting startup", edc_home);
-        free(agent->history);
         free(agent);
         sdsfree(edc_home);
         return NULL;
@@ -866,7 +696,7 @@ struct edc_agent *edc_agent_new(bool setup, int sandbox_override)
     if (!agent->session_manager)
     {
         log_error("failed to create session manager");
-        edc_agent_free(agent);
+        edc_runtime_free(agent);
         return NULL;
     }
 
@@ -876,23 +706,23 @@ struct edc_agent *edc_agent_new(bool setup, int sandbox_override)
     agent->scheduler->ctx = agent;
 
     /* 注入回调 */
-    agent->scheduler->send_llm = edc_agent_cb_send_llm;
-    agent->scheduler->send_reply = edc_agent_cb_send_reply;
-    agent->scheduler->send_tool_message = edc_agent_cb_send_tool_message;
-    agent->scheduler->dispatch_tools = edc_agent_cb_dispatch_tools;
-    agent->scheduler->redispatch_tools = edc_agent_cb_redispatch_tools;
-    agent->scheduler->handle_command = edc_agent_cb_handle_command;
-    agent->scheduler->trigger_memory = edc_agent_cb_trigger_memory;
-    agent->scheduler->save_session = edc_agent_cb_save_session;
-    agent->scheduler->snapshot_reply = edc_agent_cb_snapshot_reply;
-    agent->scheduler->snapshot_changed = edc_agent_cb_snapshot_changed;
-    agent->scheduler->resolve_session = edc_agent_cb_resolve_session;
+    agent->scheduler->send_llm = edc_runtime_cb_send_llm;
+    agent->scheduler->send_reply = edc_runtime_cb_send_reply;
+    agent->scheduler->send_tool_message = edc_runtime_cb_send_tool_message;
+    agent->scheduler->dispatch_tools = edc_runtime_cb_dispatch_tools;
+    agent->scheduler->redispatch_tools = edc_runtime_cb_redispatch_tools;
+    agent->scheduler->handle_command = edc_runtime_cb_handle_command;
+    agent->scheduler->trigger_memory = edc_runtime_cb_trigger_memory;
+    agent->scheduler->save_session = edc_runtime_cb_save_session;
+    agent->scheduler->snapshot_reply = edc_runtime_cb_snapshot_reply;
+    agent->scheduler->snapshot_changed = edc_runtime_cb_snapshot_changed;
+    agent->scheduler->resolve_session = edc_runtime_cb_resolve_session;
 
     /* Phase 4: restore saved task/group state for active session */
     {
         struct edc_session *active = edc_session_manager_get_active(agent->session_manager);
         if (active)
-            edc_agent_load_session(agent, active); /* also reconciles cross-session deps */
+            edc_session_store_load_session(agent->session_manager, agent->scheduler, active);
     }
 
     edc_channel_actor_set_observer(agent->channel_actor, edc_scheduler_get_actor(agent->scheduler));
@@ -913,22 +743,9 @@ struct edc_agent *edc_agent_new(bool setup, int sandbox_override)
     return agent;
 }
 
-void edc_agent_add_history(struct edc_agent *agent, const char *line)
-{
-    if (!agent || !line || !*line)
-        return;
-    if (agent->history_count > 0 && strcmp(agent->history[agent->history_count - 1], line) == 0)
-        return;
-
-    if (agent->history_count >= agent->history_capacity)
-    {
-        agent->history_capacity *= 2;
-        agent->history = realloc(agent->history, (size_t)agent->history_capacity * sizeof(sds));
-    }
-    agent->history[agent->history_count++] = sdsnew(line);
-}
-
-bool edc_agent_set_llm_config(struct edc_agent *agent, const char *api_url, const char *model, const char *api_key)
+/* CLI 的 !n / !! 历史 → edc_cli_history.{c,h}
+ * (前端状态: 进程一份, 不是运行时装配; 见那里的头文件说明) */
+bool edc_runtime_set_llm_config(struct edc_runtime *agent, const char *api_url, const char *model, const char *api_key)
 {
     if (!agent || !agent->config)
         return false;
@@ -968,145 +785,12 @@ bool edc_agent_set_llm_config(struct edc_agent *agent, const char *api_url, cons
     return true;
 }
 
-bool edc_agent_set_sandbox_enabled(struct edc_agent *agent, bool enable)
-{
-    if (!agent || !agent->config)
-        return false;
-
-    /* Persist first (mirrors edc_agent_set_llm_config): if config.json cannot
-     * be written, leave the running agent untouched so memory and disk agree. */
-    if (!edc_config_update_sandbox_enabled(agent->config->edc_home, enable))
-        return false;
-
-    agent->config->enable_sandbox = enable;
-    return true;
-}
 
 /* ── sandbox path whitelist (ro/rw) management ─────────────────────────── */
 
-static bool sds_path_list_contains(sds *arr, const char *p)
-{
-    if (!arr)
-        return false;
-    for (int i = 0; arr[i]; i++)
-        if (strcmp(arr[i], p) == 0)
-            return true;
-    return false;
-}
-
-static void sds_path_list_add(sds **arrp, const char *p)
-{
-    if (sds_path_list_contains(*arrp, p))
-        return;
-    int n = 0;
-    if (*arrp)
-        while ((*arrp)[n])
-            n++;
-    *arrp = realloc(*arrp, (size_t)(n + 2) * sizeof(sds));
-    (*arrp)[n] = sdsnew(p);
-    (*arrp)[n + 1] = NULL;
-}
-
-static void sds_path_list_remove(sds **arrp, const char *p)
-{
-    if (!arrp || !*arrp)
-        return;
-    int n = 0;
-    for (int i = 0; (*arrp)[i]; i++)
-    {
-        if (strcmp((*arrp)[i], p) == 0)
-        {
-            sdsfree((*arrp)[i]);
-            continue;
-        }
-        (*arrp)[n++] = (*arrp)[i];
-    }
-    (*arrp)[n] = NULL;
-}
-
-bool edc_agent_set_sandbox_path(struct edc_agent *agent, const char *path, edc_sandbox_path_kind kind, bool add,
-                                sds *msg)
-{
-    if (msg)
-        *msg = NULL;
-    if (!agent || !agent->config)
-    {
-        if (msg)
-            *msg = sdsnew("agent not ready");
-        return false;
-    }
-    if (!path || path[0] != '/')
-    {
-        if (msg)
-            *msg = sdsnew("path must be absolute");
-        return false;
-    }
-
-    char *resolved = realpath(path, NULL);
-    if (!resolved)
-    {
-        if (msg)
-            *msg = sdscatprintf(sdsempty(), "no such directory: %s", path);
-        return false;
-    }
-    struct stat st;
-    if (stat(resolved, &st) != 0 || !S_ISDIR(st.st_mode))
-    {
-        if (msg)
-            *msg = sdscatprintf(sdsempty(), "not a directory: %s", resolved);
-        free(resolved);
-        return false;
-    }
-
-    /* Persist first (mirrors edc_agent_set_sandbox_enabled): on failure leave
-     * the running config untouched so memory and disk agree. */
-    if (!edc_config_update_sandbox_path(agent->config->edc_home, resolved, kind, add))
-    {
-        if (msg)
-            *msg = sdsnew("failed to write config.json");
-        free(resolved);
-        return false;
-    }
-
-    /* A path lives in exactly one list; mirror the persist step in memory. */
-    sds **ro = &agent->config->sandbox_ro_paths;
-    sds **rw = &agent->config->sandbox_rw_paths;
-    sds **dn = &agent->config->sandbox_deny_paths;
-    sds **target = (kind == EDC_SANDBOX_PATH_RW) ? rw : (kind == EDC_SANDBOX_PATH_DENY) ? dn : ro;
-
-    if (add)
-    {
-        sds_path_list_add(target, resolved);
-        if (target != ro)
-            sds_path_list_remove(ro, resolved);
-        if (target != rw)
-            sds_path_list_remove(rw, resolved);
-        if (target != dn)
-            sds_path_list_remove(dn, resolved);
-    }
-    else
-    {
-        sds_path_list_remove(target, resolved);
-    }
-
-    free(resolved);
-    return true;
-}
-
-/* 退出落盘辅助: 全量 history + **每个已加载** session 的 state (含后台 session)。
- * 前台组已随 session 保存 (session->foreground_group), 逐 session save_state
- * 不会互相污染。本 run 从未激活过的 session 会被跳过 —— 它们的内存对象只是
- * 由 sessions.json 拼出的 id/name 空壳, 写盘会覆盖磁盘上更新的状态 (含绑定
- * 的工作目录), 见 edc_session_manager_save_loaded_states。 */
-static void edc_agent_save_all_sessions_state(struct edc_agent *agent)
-{
-    if (!agent || !agent->session_manager || !agent->scheduler)
-        return;
-    edc_session_manager_save_all(agent->session_manager);
-    edc_session_manager_save_loaded_states(agent->session_manager, agent->scheduler);
-}
-
-void edc_agent_free(struct edc_agent *agent)
+/* sandbox 配置的写口 (只碰 config) → edc_config.{c,h}
+ * —— 它们与 config 的读写是同一个概念, 不该挂在 runtime 上。 */
+void edc_runtime_free(struct edc_runtime *agent)
 {
     if (!agent)
         return;
@@ -1122,9 +806,9 @@ void edc_agent_free(struct edc_agent *agent)
      * SUSPENDED, 用户可选择是否 resume —— 因此不写 CANCELLED, 也不在取消后
      * 再落盘。放在 actor runner 停掉之后调用, 避免与 actor 线程并发写。 */
     if (agent->scheduler)
-        edc_agent_save_all_sessions_state(agent);
+        edc_session_store_save_all_sessions_state(agent->session_manager, agent->scheduler);
 
-    edc_agent_remove_all_turns(agent);
+    edc_session_store_remove_all_turns(agent->session_manager, agent->scheduler);
 
     edc_scheduler_free(agent->scheduler);
 
@@ -1134,10 +818,6 @@ void edc_agent_free(struct edc_agent *agent)
         edc_config_free(agent->config);
     if (agent->toolbox)
         edc_toolbox_free(agent->toolbox);
-
-    for (int i = 0; i < agent->history_count; i++)
-        sdsfree(agent->history[i]);
-    free(agent->history);
 
     edc_secret_cleanup();
     free(agent);

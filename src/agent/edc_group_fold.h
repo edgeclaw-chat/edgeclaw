@@ -4,7 +4,7 @@
 #include "sds.h"
 #include <stdbool.h>
 
-struct edc_agent;
+struct edc_scheduler;
 struct edc_session;
 struct edc_task;
 struct edc_task_group;
@@ -34,7 +34,7 @@ extern sds edc_group_fold_build_prompt(struct edc_task_group *group, uint32_t *o
 /** 发起一次折叠: 建一个 system task (挂上目标组与水位)、把 prompt 装成它的
  *  input、派发它。返回该任务; 该 session 已有折叠在飞 / 没有可折叠内容 /
  *  派发失败时返回 NULL。 */
-extern struct edc_task *edc_group_fold_start(struct edc_agent *agent, struct edc_session *session,
+extern struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_session *session,
                                              struct edc_task_group *group);
 
 #endif

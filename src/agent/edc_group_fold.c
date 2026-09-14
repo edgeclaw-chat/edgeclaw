@@ -1,6 +1,6 @@
 #include "edc_group_fold.h"
 #include "cJSON.h"
-#include "edc_agent.h"
+#include "edc_runtime.h"
 #include "edc_compat.h"
 #include "edc_scheduler.h"
 #include "edc_task.h"
@@ -13,7 +13,7 @@
 
 /* ══════════════════════════════════════════════════════════════
  * L1 折叠: task turns → group memory
- * 触发 (edc_agent_cb_trigger_memory) 只看未折叠消息数 ≥ 阈值 (默认 200);
+ * 触发 (edc_runtime_cb_trigger_memory) 只看未折叠消息数 ≥ 阈值 (默认 200);
  * 真正折叠时按半量策略: 只把最老的一半未折叠消息 (≈ 阈值/2, 即 ~100 条)
  * 交给 LLM 做摘要, 新的一半保持未折叠细节 —— 每次总是一半记忆被压缩、
  * 一半记忆留细节, 上下文里仍有明细消息可读, 不会整批全被摘要化。
@@ -144,10 +144,10 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, uint32_t *out_max_
     return prompt;
 }
 
-struct edc_task *edc_group_fold_start(struct edc_agent *agent, struct edc_session *session,
+struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_session *session,
                                       struct edc_task_group *group)
 {
-    if (!agent || !agent->scheduler || !session || !group)
+    if (!sched || !session || !group)
         return NULL;
 
     /* 一个 session 同时只折一个组: 两次折叠并行的话, 后一次的 prompt 会读到
@@ -160,7 +160,7 @@ struct edc_task *edc_group_fold_start(struct edc_agent *agent, struct edc_sessio
     if (!prompt)
         return NULL;
 
-    struct edc_task *task = edc_scheduler_spawn_system_task(agent->scheduler, session, "fold group memory");
+    struct edc_task *task = edc_scheduler_spawn_system_task(sched, session, "fold group memory");
     if (!task)
     {
         sdsfree(prompt);
@@ -181,12 +181,12 @@ struct edc_task *edc_group_fold_start(struct edc_agent *agent, struct edc_sessio
     log_info("L1 fold start: group %s task=%s prompt=%zu bytes, max_seq=%u", group->group_id, task->task_id,
              sdslen(prompt), max_seq);
 
-    if (!edc_scheduler_dispatch_task(agent->scheduler, task, prompt))
+    if (!edc_scheduler_dispatch_task(sched, task, prompt))
     {
         log_error("L1 fold: could not dispatch the fold task for group %s — no fold this round", group->group_id);
         /* 派不出去就别留着它: 置 ERROR 让 lifetime 规则把它回收 (不留半成品)。 */
         edc_task_force_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR);
-        edc_scheduler_drain_reap_pending(agent->scheduler);
+        edc_scheduler_drain_reap_pending(sched);
         sdsfree(prompt);
         return NULL;
     }

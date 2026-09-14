@@ -15,7 +15,7 @@
  *      and /task resume is refused.
  */
 
-#include "edc_agent.h"
+#include "edc_session_store.h"
 #include "edc_channel_actor.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
@@ -58,20 +58,24 @@ static int test_passed = 0;
         }                                                                                                              \
     } while (0)
 
-static void send_cmd(struct edc_agent *agent, const char *content)
-{
-    struct edc_channel_message *msg =
-        edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsnew(content));
-    edc_commands_handler(agent, NULL, msg);
-    edc_channel_message_free(msg);
-}
 
+/* 测试环境 = 真零件本身 (没有伞对象可造)。 */
 struct env
 {
     struct edc_config *cfg;
     struct edc_session_manager *sm;
-    struct edc_agent agent;
+    edc_actor_t *channel_actor;
+    struct edc_scheduler *sched;
 };
+
+static void send_cmd(struct env *e, const char *content)
+{
+    struct edc_channel_message *msg =
+        edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsnew(content));
+    edc_commands_handler(e->cfg, e->sm, e->sched, (struct edc_reply_to){e->channel_actor, NULL, msg->type}, msg);
+    edc_channel_message_free(msg);
+}
+
 
 static void env_open(struct env *e, const char *ws)
 {
@@ -79,17 +83,14 @@ static void env_open(struct env *e, const char *ws)
     e->cfg->workspace = sdsnew(ws);
     e->sm = edc_session_manager_new(e->cfg);
     struct edc_session *sa = edc_session_manager_get_active(e->sm);
-    memset(&e->agent, 0, sizeof(e->agent));
-    e->agent.config = e->cfg;
-    e->agent.session_manager = e->sm;
-    e->agent.channel_actor = edc_channel_actor_new();
-    e->agent.scheduler = edc_scheduler_new(e->cfg);
+    e->channel_actor = edc_channel_actor_new();
+    e->sched = edc_scheduler_new(e->cfg);
 }
 
 static void env_close(struct env *e)
 {
-    edc_scheduler_free(e->agent.scheduler);
-    edc_channel_actor_free(e->agent.channel_actor);
+    edc_scheduler_free(e->sched);
+    edc_channel_actor_free(e->channel_actor);
     edc_session_manager_free(e->sm);
     edc_config_free(e->cfg);
 }
@@ -122,32 +123,29 @@ static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, 
     sm->active_index = edc_session_manager_index_of(sm, sa->session_id);
     sds b_sid = sdsnew(sb->session_id);
 
-    struct edc_agent agent = {0};
-    agent.config = cfg;
-    agent.session_manager = sm;
-    agent.channel_actor = edc_channel_actor_new();
-    agent.scheduler = edc_scheduler_new(cfg);
+    edc_actor_t *channel_actor = edc_channel_actor_new();
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
 
     /* A task in B, unfinished. */
-    struct edc_task *bt = edc_scheduler_create_task(agent.scheduler, sb, "b-task", edc_channel_adapter);
-    edc_scheduler_create_group(agent.scheduler, sb, bt);
+    struct edc_task *bt = edc_scheduler_create_task(sched, sb, "b-task", edc_channel_adapter);
+    edc_scheduler_create_group(sched, sb, bt);
     /* 新模型: task 创建时就带着它的 input (没装 turn 的任务落盘时会被丢弃):
      * docs/retire-waiting-input.md §4)。装上 input 停到 SUSPENDED —— 本用例要验的
      * 是跨会话依赖的恢复, 所以 B 这条任务必须真的出现在它自己的 session.json 里。 */
     give_input(bt);
     edc_task_mark_suspended(bt);
-    edc_session_save_state(sb, agent.scheduler);
+    edc_session_save_state(sb, sched);
     *out_bt_id = sdsnew(bt->task_id);
 
     /* A task in A that depends on B's task (cross-session edge). */
-    struct edc_task *at = edc_scheduler_create_task(agent.scheduler, sa, "a-task", edc_channel_adapter);
-    edc_scheduler_create_group(agent.scheduler, sa, at);
+    struct edc_task *at = edc_scheduler_create_task(sched, sa, "a-task", edc_channel_adapter);
+    edc_scheduler_create_group(sched, sa, at);
     edc_task_add_dependency(at, bt, TASK_DEP_SEQUENCE);
-    edc_session_save_state(sa, agent.scheduler);
+    edc_session_save_state(sa, sched);
     *out_at_id = sdsnew(at->task_id);
 
-    edc_scheduler_free(agent.scheduler);
-    edc_channel_actor_free(agent.channel_actor);
+    edc_scheduler_free(sched);
+    edc_channel_actor_free(channel_actor);
     edc_session_manager_free(sm);
     edc_config_free(cfg);
 
@@ -167,7 +165,7 @@ static void scenario_restore(const char *ws)
     TEST("restart restores a cross-session dep by lazy-loading the owner");
     struct env e;
     env_open(&e, ws);
-    edc_agent_load_session(&e.agent, edc_session_manager_get_active(e.sm));
+    edc_session_store_load_session(e.sm, e.sched, edc_session_manager_get_active(e.sm));
 
     struct edc_task *at = edc_session_manager_find_task_any(e.sm, at_id, NULL);
     struct edc_task *bt = edc_session_manager_find_task_any(e.sm, bt_id, NULL);
@@ -176,10 +174,10 @@ static void scenario_restore(const char *ws)
     CHECK(at && at->deps_total == 1, "cross-session edge restored");
     CHECK(at && at->deps && at->deps->source == bt, "edge points at B's task");
     CHECK(at && edc_task_is_suspended(at), "A's task held (SUSPENDED), not run");
-    CHECK(!edc_scheduler_task_has_unresolved_deps(e.agent.scheduler, at), "gate open once the edge is restored");
+    CHECK(!edc_scheduler_task_has_unresolved_deps(e.sched, at), "gate open once the edge is restored");
 
     sds resume_cmd = sdscatprintf(sdsempty(), "/task resume %s", at_id);
-    send_cmd(&e.agent, resume_cmd);
+    send_cmd(&e, resume_cmd);
     sdsfree(resume_cmd);
     CHECK(edc_task_awaits_deps(at), "resume legitimately waits for the unfinished dep");
 
@@ -200,25 +198,25 @@ static void scenario_unresolvable(const char *ws)
     TEST("an unrestorable dep holds the task (resume gate)");
     struct env e;
     env_open(&e, ws);
-    edc_agent_load_session(&e.agent, edc_session_manager_get_active(e.sm));
+    edc_session_store_load_session(e.sm, e.sched, edc_session_manager_get_active(e.sm));
 
     struct edc_task *at = edc_session_manager_find_task_any(e.sm, at_id, NULL);
     CHECK(at != NULL, "A's task restored");
     CHECK(edc_session_manager_find_task_any(e.sm, bt_id, NULL) == NULL, "B's task unavailable");
-    CHECK(at && edc_scheduler_task_has_unresolved_deps(e.agent.scheduler, at), "task held by an unresolved dep");
-    const char *missing = at ? edc_scheduler_first_unresolved_dep(e.agent.scheduler, at) : NULL;
+    CHECK(at && edc_scheduler_task_has_unresolved_deps(e.sched, at), "task held by an unresolved dep");
+    const char *missing = at ? edc_scheduler_first_unresolved_dep(e.sched, at) : NULL;
     CHECK(missing && bt_id && strcmp(missing, bt_id) == 0, "held on the missing source id");
 
     sds resume_cmd = sdscatprintf(sdsempty(), "/task resume %s", at_id);
-    send_cmd(&e.agent, resume_cmd);
+    send_cmd(&e, resume_cmd);
     sdsfree(resume_cmd);
     CHECK(edc_task_is_suspended(at), "resume refused; task stays held");
 
     /* Removing the session that owns the missing source must not dangle: the
      * pending entry is stored by id, so the task simply stays held. */
-    send_cmd(&e.agent, "/session remove B");
+    send_cmd(&e, "/session remove B");
     CHECK(at != NULL, "held task survives removing the source session");
-    CHECK(at && edc_scheduler_task_has_unresolved_deps(e.agent.scheduler, at), "still held after the source session is gone");
+    CHECK(at && edc_scheduler_task_has_unresolved_deps(e.sched, at), "still held after the source session is gone");
     env_close(&e);
 
     sdsfree(at_id);
@@ -242,48 +240,45 @@ static void scenario_multihop(const char *ws)
     struct edc_session *sc = edc_session_manager_create_ex(sm, "C", NULL);
     sm->active_index = edc_session_manager_index_of(sm, sa->session_id);
 
-    struct edc_agent agent = {0};
-    agent.config = cfg;
-    agent.session_manager = sm;
-    agent.channel_actor = edc_channel_actor_new();
-    agent.scheduler = edc_scheduler_new(cfg);
+    edc_actor_t *channel_actor = edc_channel_actor_new();
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
 
-    struct edc_task *ct = edc_scheduler_create_task(agent.scheduler, sc, "c", edc_channel_adapter);
-    edc_scheduler_create_group(agent.scheduler, sc, ct);
+    struct edc_task *ct = edc_scheduler_create_task(sched, sc, "c", edc_channel_adapter);
+    edc_scheduler_create_group(sched, sc, ct);
     give_input(ct);
-    edc_session_save_state(sc, agent.scheduler);
+    edc_session_save_state(sc, sched);
 
-    struct edc_task *bt = edc_scheduler_create_task(agent.scheduler, sb, "b", edc_channel_adapter);
-    edc_scheduler_create_group(agent.scheduler, sb, bt);
+    struct edc_task *bt = edc_scheduler_create_task(sched, sb, "b", edc_channel_adapter);
+    edc_scheduler_create_group(sched, sb, bt);
     give_input(bt);
     edc_task_add_dependency(bt, ct, TASK_DEP_SEQUENCE);
-    edc_session_save_state(sb, agent.scheduler);
+    edc_session_save_state(sb, sched);
 
-    struct edc_task *at = edc_scheduler_create_task(agent.scheduler, sa, "a", edc_channel_adapter);
-    edc_scheduler_create_group(agent.scheduler, sa, at);
+    struct edc_task *at = edc_scheduler_create_task(sched, sa, "a", edc_channel_adapter);
+    edc_scheduler_create_group(sched, sa, at);
     give_input(at);
     edc_task_add_dependency(at, bt, TASK_DEP_SEQUENCE);
-    edc_session_save_state(sa, agent.scheduler);
+    edc_session_save_state(sa, sched);
 
     sds at_id = sdsnew(at->task_id), bt_id = sdsnew(bt->task_id), ct_id = sdsnew(ct->task_id);
 
-    edc_scheduler_free(agent.scheduler);
-    edc_channel_actor_free(agent.channel_actor);
+    edc_scheduler_free(sched);
+    edc_channel_actor_free(channel_actor);
     edc_session_manager_free(sm);
     edc_config_free(cfg);
 
     TEST("restart restores a multi-hop chain across three sessions");
     struct env e;
     env_open(&e, ws);
-    edc_agent_load_session(&e.agent, edc_session_manager_get_active(e.sm));
+    edc_session_store_load_session(e.sm, e.sched, edc_session_manager_get_active(e.sm));
     struct edc_task *a2 = edc_session_manager_find_task_any(e.sm, at_id, NULL);
     struct edc_task *b2 = edc_session_manager_find_task_any(e.sm, bt_id, NULL);
     struct edc_task *c2 = edc_session_manager_find_task_any(e.sm, ct_id, NULL);
     CHECK(a2 && b2 && c2, "all three tasks loaded on demand");
     CHECK(a2 && a2->deps && a2->deps->source == b2, "A→B restored");
     CHECK(b2 && b2->deps && b2->deps->source == c2, "B→C restored");
-    CHECK(a2 && !edc_scheduler_task_has_unresolved_deps(e.agent.scheduler, a2), "A's gate open");
-    CHECK(b2 && !edc_scheduler_task_has_unresolved_deps(e.agent.scheduler, b2), "B's gate open");
+    CHECK(a2 && !edc_scheduler_task_has_unresolved_deps(e.sched, a2), "A's gate open");
+    CHECK(b2 && !edc_scheduler_task_has_unresolved_deps(e.sched, b2), "B's gate open");
     env_close(&e);
 
     sdsfree(at_id);

@@ -1,5 +1,6 @@
 #include "edc_shell.h"
-#include "edc_agent.h"
+#include "edc_runtime.h"
+#include "edc_cli_history.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -21,84 +22,63 @@ static int test_passed = 0;
 static void test_history_expand_double_bang(void)
 {
     TEST("history !! expansion");
-    struct edc_agent *agent = calloc(1, sizeof(struct edc_agent));
-    agent->history_capacity = 4;
-    agent->history = malloc(4 * sizeof(sds));
-    edc_agent_add_history(agent, "first cmd");
-    edc_agent_add_history(agent, "second cmd");
+    edc_cli_history_clear();
+    edc_cli_history_add("first cmd");
+    edc_cli_history_add("second cmd");
 
-    sds result = edc_shell_expand_history(agent, "!! after");
+    sds result = edc_shell_expand_history("!! after");
     CHECK(strcmp(result, "second cmd after") == 0, "!! expands to last command");
     sdsfree(result);
 
-    for (int i = 0; i < agent->history_count; i++) sdsfree(agent->history[i]);
-    free(agent->history);
-    free(agent);
 }
 
 static void test_history_expand_nth(void)
 {
     TEST("history !n expansion");
-    struct edc_agent *agent = calloc(1, sizeof(struct edc_agent));
-    agent->history_capacity = 4;
-    agent->history = malloc(4 * sizeof(sds));
-    edc_agent_add_history(agent, "cmd one");
-    edc_agent_add_history(agent, "cmd two");
-    edc_agent_add_history(agent, "cmd three");
+    edc_cli_history_clear();
+    edc_cli_history_add("cmd one");
+    edc_cli_history_add("cmd two");
+    edc_cli_history_add("cmd three");
 
-    sds result = edc_shell_expand_history(agent, "!2 !3 !1");
+    sds result = edc_shell_expand_history("!2 !3 !1");
     CHECK(strcmp(result, "cmd two cmd three cmd one") == 0, "!n positional expansion");
     sdsfree(result);
 
-    for (int i = 0; i < agent->history_count; i++) sdsfree(agent->history[i]);
-    free(agent->history);
-    free(agent);
 }
 
 static void test_history_no_expand(void)
 {
     TEST("no history expansion when none");
-    struct edc_agent *agent = calloc(1, sizeof(struct edc_agent));
+    edc_cli_history_clear();
 
-    sds result = edc_shell_expand_history(agent, "no history here");
+    sds result = edc_shell_expand_history("no history here");
     CHECK(strcmp(result, "no history here") == 0, "unchanged without history");
     sdsfree(result);
 
-    free(agent);
 }
 
 static void test_history_quoted_bang(void)
 {
     TEST("quoted ! is not expanded");
-    struct edc_agent *agent = calloc(1, sizeof(struct edc_agent));
-    agent->history_capacity = 4;
-    agent->history = malloc(4 * sizeof(sds));
-    edc_agent_add_history(agent, "should not appear");
+    edc_cli_history_clear();
+    edc_cli_history_add("should not appear");
 
-    sds result = edc_shell_expand_history(agent, "\"!1\" or '!1'");
+    sds result = edc_shell_expand_history("\"!1\" or '!1'");
     CHECK(strcmp(result, "\"!1\" or '!1'") == 0, "quoted ! preserved");
     sdsfree(result);
 
-    for (int i = 0; i < agent->history_count; i++) sdsfree(agent->history[i]);
-    free(agent->history);
-    free(agent);
 }
 
 static void test_history_out_of_range(void)
 {
     TEST("history !n out of range");
-    struct edc_agent *agent = calloc(1, sizeof(struct edc_agent));
-    agent->history_capacity = 4;
-    agent->history = malloc(4 * sizeof(sds));
-    edc_agent_add_history(agent, "only one");
+    edc_cli_history_clear();
+    edc_cli_history_add("only one");
 
-    sds result = edc_shell_expand_history(agent, "!5 not found");
+    sds result = edc_shell_expand_history("!5 not found");
     CHECK(strcmp(result, " not found") == 0, "!5 silently removed");
     sdsfree(result);
 
-    for (int i = 0; i < agent->history_count; i++) sdsfree(agent->history[i]);
-    free(agent->history);
-    free(agent);
 }
 
 int main(void)

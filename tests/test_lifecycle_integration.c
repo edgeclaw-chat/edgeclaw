@@ -198,7 +198,7 @@ static void test_startup_load(void)
         struct edc_scheduler *sc2 = edc_scheduler_new(cfg);
         install_resolver(sc2, s2);
 
-        /* Load state (simulating what edc_agent_new does) */
+        /* Load state (simulating what edc_runtime_new does) */
         bool loaded = edc_session_load_state(s2, sc2);
         CHECK(loaded, "load_state succeeds on startup");
 

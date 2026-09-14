@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-struct edc_agent;
+struct edc_runtime;
 struct edc_actor;
 struct edc_channel_message;
 /* render_pref 取值（与 C 侧 edc_render_pref_t 对应；此处内联以免 C++ 侧
@@ -97,11 +97,11 @@ struct edc_c_task_snapshot *edc_c_task_snapshot_parse(const char *json);
 void edc_c_task_snapshot_free(struct edc_c_task_snapshot *snap);
 
 /* Create / destroy an agent. The returned pointer is opaque to the TUI; it is
- * only passed back into other bridge functions. Mirrors edc_agent_new/free.
+ * only passed back into other bridge functions. Mirrors edc_runtime_new/free.
  * |sandbox_override|: -1 = keep the persisted config.json value, 0 = force off,
  * 1 = force on (per-run only; not persisted). */
-struct edc_agent *edc_c_agent_new(bool setup, int sandbox_override);
-void edc_c_agent_free(struct edc_agent *agent);
+struct edc_runtime *edc_c_agent_new(bool setup, int sandbox_override);
+void edc_c_agent_free(struct edc_runtime *agent);
 
 /* Register the shell command handler (edc_commands_handler) with the agent so
  * slash commands (e.g. /task, /session) typed into the TUI are handled like in
@@ -111,13 +111,13 @@ void edc_c_agent_set_command_handler(void);
 /* The agent's channel actor, so the TUI can register itself as an adapter
  * channel. Opaque pointer -- the TUI only passes it back into C functions that
  * take struct edc_actor*. */
-struct edc_actor *edc_c_agent_channel_actor(struct edc_agent *agent);
+struct edc_actor *edc_c_agent_channel_actor(struct edc_runtime *agent);
 
 /* Register the TUI as the one channel implementation (adapter): every
  * BC_ACTOR_MSG_CHANNEL_SEND that needs to reach the screen arrives at
  * |on_send|. C++ callers use this instead of edc_channel_actor.h, which pulls
  * in sds.h. */
-void edc_c_agent_channel_adapter_init(struct edc_agent *agent, void *instance,
+void edc_c_agent_channel_adapter_init(struct edc_runtime *agent, void *instance,
                                       void (*on_send)(void *, struct edc_channel_message *));
 const char *edc_c_channel_message_content(struct edc_channel_message *);
 /* Optional short description carried by a message (e.g. the executed command
@@ -171,7 +171,7 @@ int edc_c_channel_message_render_pref(struct edc_channel_message *channel_messag
  * @param agent       the agent
  * @param session_id  the session whose tree is wanted (NULL/"" = the store's
  *                    default, i.e. the active session) */
-void edc_c_agent_request_task_snapshot(struct edc_agent *agent, const char *session_id);
+void edc_c_agent_request_task_snapshot(struct edc_runtime *agent, const char *session_id);
 
 void edc_c_file_utils_init(struct uv_loop_s *loop);
 /* Send one user message into the agent. |session_id| is the session this input
@@ -179,27 +179,27 @@ void edc_c_file_utils_init(struct uv_loop_s *loop);
  * task it spawns lands there, and nowhere else. NULL/"" means "unspecified",
  * which resolves to the active session (used by callers with no session notion,
  * e.g. crontab reminders). */
-void edc_c_agent_send_user_message(struct edc_agent *agent, const char *session_id, const char *content);
+void edc_c_agent_send_user_message(struct edc_runtime *agent, const char *session_id, const char *content);
 
 /* Copy the configured LLM model name (config->llm_api_conf.model) into |buf|
  * (NUL-terminated, at most |cap| bytes). Returns true when a model is
  * configured and fit the buffer; false leaves |buf| empty. Lets the TUI show
  * the active model without pulling in the sds-based config header. */
-bool edc_c_agent_model(struct edc_agent *agent, char *buf, size_t cap);
+bool edc_c_agent_model(struct edc_runtime *agent, char *buf, size_t cap);
 
 /* Same contract as edc_c_agent_model, for the configured API URL / API key.
  * Used to prefill the /connect dialog with the current values. */
-bool edc_c_agent_api_url(struct edc_agent *agent, char *buf, size_t cap);
-bool edc_c_agent_api_key(struct edc_agent *agent, char *buf, size_t cap);
+bool edc_c_agent_api_url(struct edc_runtime *agent, char *buf, size_t cap);
+bool edc_c_agent_api_key(struct edc_runtime *agent, char *buf, size_t cap);
 
 /* True when the filesystem sandbox is currently enabled (toggled at runtime
  * with /sandbox). Lets the TUI show the sandbox state in the footer. */
-bool edc_c_agent_sandbox_enabled(struct edc_agent *agent);
+bool edc_c_agent_sandbox_enabled(struct edc_runtime *agent);
 
 /* Apply new LLM provider settings at runtime: persist them to config.json and
  * hot-update the running agent (config + llm_actor). Any argument may be NULL
  * or empty to leave that field unchanged. Returns true on success. */
-bool edc_c_agent_connect(struct edc_agent *agent, const char *api_url, const char *model, const char *api_key);
+bool edc_c_agent_connect(struct edc_runtime *agent, const char *api_url, const char *model, const char *api_key);
 
 /* Copy the path of the TUI input-history file ($EDC_HOME/.tui_history) into
  * |buf| (NUL-terminated, at most |cap| bytes). Returns true when the path fit;
@@ -214,12 +214,12 @@ bool edc_c_history_path(char *buf, size_t cap);
  * into |buf|. The TUI owns that file: it appends one line per bubble it shows and
  * replays the file on the next start (see edc_chat_transcript.hpp). Returns false
  * when the session is unknown or |buf| is too small. */
-bool edc_c_session_chat_log_path_for(struct edc_agent *agent, const char *session_id, char *buf, size_t cap);
+bool edc_c_session_chat_log_path_for(struct edc_runtime *agent, const char *session_id, char *buf, size_t cap);
 
 /* Create the parent directory of |path| (a file under the workspace) when it does
  * not exist yet. A session's directory only appears once the session is saved,
  * so the transcript of a session that has not been saved still needs one. */
-bool edc_c_agent_ensure_parent_dir(struct edc_agent *agent, const char *path);
+bool edc_c_agent_ensure_parent_dir(struct edc_runtime *agent, const char *path);
 
 /* Write |data| to |path| with symlink safety: the final component must not be a
  * symlink (opened with O_NOFOLLOW), and when |under_workspace| is true the
@@ -227,21 +227,21 @@ bool edc_c_agent_ensure_parent_dir(struct edc_agent *agent, const char *path);
  * selects append vs truncate. Returns true on success. Used by the TUI for the
  * chat transcript and the input history, whose paths can sit next to
  * model-writable files. */
-bool edc_c_agent_write_file(struct edc_agent *agent, const char *path, const char *data, size_t len, bool append,
+bool edc_c_agent_write_file(struct edc_runtime *agent, const char *path, const char *data, size_t len, bool append,
                             bool under_workspace);
 
 /* Copy the active session's id into |buf| (NUL-terminated, at most |cap|
  * bytes). Returns true when it fit; false leaves |buf| empty. Used to key the
  * chat transcript to the session that is active at startup, before the first
  * task snapshot arrives. */
-bool edc_c_agent_session_id(struct edc_agent *agent, char *buf, size_t cap);
+bool edc_c_agent_session_id(struct edc_runtime *agent, char *buf, size_t cap);
 
 /* Copy the active session's bound working directory into |buf| (NUL-terminated,
  * at most |cap| bytes). Returns true when the session is bound to a directory
  * and it fit; false (buf left empty) for an unbound session or on failure — the
  * caller then falls back to the process working directory. Mirrors the {{cwd}}
  * the model is told about, so the footer reflects the session actually shown. */
-bool edc_c_session_workdir(struct edc_agent *agent, char *buf, size_t cap);
+bool edc_c_session_workdir(struct edc_runtime *agent, char *buf, size_t cap);
 
 #ifdef __cplusplus
 }

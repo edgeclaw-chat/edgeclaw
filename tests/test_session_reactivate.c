@@ -19,11 +19,10 @@
  *
  * This test drives the real /session switch command handler between two
  * sessions that both have committed task history, then dereferences the group
- * history the same way edc_agent_cb_send_llm does (a use-after-free would abort
+ * history the same way edc_runtime_cb_send_llm does (a use-after-free would abort
  * under ASan).
  */
 
-#include "edc_agent.h"
 #include "edc_channel_actor.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
@@ -109,7 +108,7 @@ static struct edc_task_group *run_task(struct edc_scheduler *sched, struct edc_s
     return g;
 }
 
-/* Walk a group's history exactly like edc_agent_cb_send_llm, dereferencing every
+/* Walk a group's history exactly like edc_runtime_cb_send_llm, dereferencing every
  * message. Returns how many entries were readable; on a dangling entry this is
  * a use-after-free. */
 static int touch_group_history(struct edc_task_group *g)
@@ -128,12 +127,13 @@ static int touch_group_history(struct edc_task_group *g)
 }
 
 /* Drive the real "/session switch <target>" command handler. */
-static void switch_to(struct edc_agent *agent, const char *target)
+static void switch_to(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
+                      edc_actor_t *channel_actor, const char *target)
 {
     sds cmd = sdscatprintf(sdsempty(), "/session switch %s", target);
     struct edc_channel_message *msg =
         edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsdup(cmd));
-    edc_commands_handler(agent, NULL, msg);
+    edc_commands_handler(cfg, sm, sched, (struct edc_reply_to){channel_actor, NULL, msg->type}, msg);
     edc_channel_message_free(msg);
     sdsfree(cmd);
 }
@@ -197,35 +197,32 @@ int main(void)
     CHECK(sb != NULL, "second session created");
     sm->active_index = edc_session_manager_index_of(sm, sa->session_id);
 
-    struct edc_agent agent = {0};
-    agent.config = cfg;
-    agent.session_manager = sm;
-    agent.channel_actor = edc_channel_actor_new();
-    agent.scheduler = edc_scheduler_new(cfg);
+    edc_actor_t *channel_actor = edc_channel_actor_new();
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
 
     /* Task in A (committed turn: group history references A->messages). */
-    struct edc_task_group *ga = run_task(agent.scheduler, sa, "task-a-1");
+    struct edc_task_group *ga = run_task(sched, sa, "task-a-1");
     CHECK(count_messages_containing(sa, "task-a-1") == 1, "A's committed turn is in A->messages");
     CHECK(touch_group_history(ga) == 2, "A's group history readable before switching");
 
     /* Switch A -> B, run a task, then switch back B -> A. */
-    switch_to(&agent, sb->session_id);
-    CHECK(edc_session_manager_get_active(agent.session_manager) == sb, "B is the active session after switch");
-    struct edc_task_group *gb = run_task(agent.scheduler, sb, "task-b-1");
+    switch_to(cfg, sm, sched, channel_actor, sb->session_id);
+    CHECK(edc_session_manager_get_active(sm) == sb, "B is the active session after switch");
+    struct edc_task_group *gb = run_task(sched, sb, "task-b-1");
     CHECK(touch_group_history(gb) == 2, "B's group history readable");
 
-    switch_to(&agent, sa->session_id);
-    CHECK(edc_session_manager_get_active(agent.session_manager) == sa, "A is the active session again");
+    switch_to(cfg, sm, sched, channel_actor, sa->session_id);
+    CHECK(edc_session_manager_get_active(sm) == sa, "A is the active session again");
     CHECK(sa->state_loaded, "A still flagged loaded (in-memory authoritative)");
     CHECK(count_messages_containing(sa, "task-a-1") == 1, "A->messages survived re-activation");
 
     /* Running a task in A builds its LLM request from ga->history. */
-    struct edc_task_group *ga2 = run_task(agent.scheduler, sa, "task-a-2");
+    struct edc_task_group *ga2 = run_task(sched, sa, "task-a-2");
     CHECK(touch_group_history(ga) == 2, "A's original group history still valid after re-activation");
     CHECK(touch_group_history(ga2) == 2, "A's new group history valid");
 
-    edc_scheduler_free(agent.scheduler);
-    edc_channel_actor_free(agent.channel_actor);
+    edc_scheduler_free(sched);
+    edc_channel_actor_free(channel_actor);
     edc_session_manager_free(sm);
     edc_config_free(cfg);
     snprintf(cmd, sizeof(cmd), "rm -rf %s", TEST_WS);
