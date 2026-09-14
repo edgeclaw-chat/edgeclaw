@@ -1,0 +1,21 @@
+# 尖刀: read_file 去读一个**无写端的 FIFO**。
+#
+# 今天(改动前): 这个 open 在 runner 线程上阻塞 -> 整个 TUI 冻住, 所有 actor 停摆。
+# 改动后:      它只堵住 libuv 线程池的一条线程; runner 照常。
+#
+# 判据 = 下面那条 /whoami: 如果 runner 还活着, 它会被处理并落进转录。
+#        改动前它永远不会出现。
+
+wait 1500
+
+# 触发: 假 LLM 发 read_file -> FIFO -> 阻塞
+send read the fifo\n
+
+# 留足时间让它真的堵上
+wait 3000
+
+# ★ 判据: 此刻 fs 操作正堵着。这条能不能被答复 = runner 有没有被冻住。
+send /whoami\n
+
+wait 2000
+wait 1000

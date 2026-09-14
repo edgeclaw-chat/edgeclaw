@@ -14,60 +14,120 @@ static UT_icd ut_size_t_icd = {sizeof(size_t), NULL, NULL, NULL};
 static UT_icd ut_int64_icd = {sizeof(int64_t), NULL, NULL, NULL};
 static UT_icd ut_uint_icd = {sizeof(unsigned int), NULL, NULL, NULL};
 
-static sds edc_tool_exec_read_file(struct edc_config *conf, const char *base, cJSON *args, EdcError **error)
+/* ── fs I/O 的异步外壳 ────────────────────────────────────────
+ *
+ * 为什么需要: 文件 I/O 是阻塞的, 而工具是在 **runner 线程**上被执行的 —— 一次慢
+ * I/O (大文件 / 冷缓存 / NFS) 会冻住**所有** actor, 不只是发起它的那个 task。
+ * 这违反 runtime-model.md §2.9 的架构禁令「runner 线程绝不阻塞」。
+ *
+ * 拆法 (见 docs/fs-io-off-runner.md):
+ *   runner:  沙箱判定 (读 conf 的 ro/rw/deny 三张表) -> 已校验的绝对路径
+ *   池线程:  纯文件 I/O  (uv_fs_*(..., NULL) 的同步路径**不使用线程池**, 它就在
+ *            调用者线程上做系统调用 —— 于是池线程上调用, I/O 就发生在池线程)
+ *   runner:  after_cb -> 发工具消息 + 调 callback
+ *
+ * 沙箱判定**必须留在 runner**: /sandbox add-* 也在 runner 线程上改那三张表, 把
+ * "校验 + I/O"整段丢进池线程会新生一条数据竞争 (今天没有的)。
+ *
+ * 两条生命周期规矩:
+ *   1. **args 不能进池**。exec 返回后工具箱就释放了 req (连同 args), 而异步工具的
+ *      exec 是立刻返回的 —— 池线程读 args 就是 use-after-free。凡入池要用的都在
+ *      runner 上抄进 job (§4.4)。
+ *   2. **ctx 反而安全**。call_ctx 由工具箱的 inflight 登记表管, 它正是在 callback
+ *      里才被 free —— 跨这一跳持有它是架构本来就支持的 (edc_toolbox_actor.c 末尾
+ *      那句 `// TODO: async exec` 就是给这个留的位置, shell 已经在这么用)。
+ *
+ * 顺带 (不改行为): 池默认 4 条。4 个 fs 操作同时卡住会让后续 fs 操作排队, 但 runner
+ * 活着 —— 那正是本改动的目标。不给 fs 加 deadline: 池线程无法被中断。 */
+struct fs_job
 {
-    const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
+    uv_work_t req;
+    struct edc_toolbox_call_ctx *ctx;
+    void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *);
+    sds (*io)(struct fs_job *, EdcError **); /* 池线程上执行 */
+    sds safe_path;                           /* runner 上算好; 池线程只读 */
+    sds arg_path;                            /* 原始 path, 只用于回包文案 */
+    sds header;                              /* 非 NULL 才发工具消息 (edit_file 不发, 保持原样) */
+    sds content;                             /* write_file 的正文 */
+    sds old_text;                            /* edit_file */
+    sds new_text;
+    bool replace_all;
+    int64_t occurrence;
+    int64_t line_hint;
+    int64_t expected_replacements;
+    sds result; /* 池线程填 */
+    EdcError *error;
+};
 
-    sds safe_path = edc_sandbox_verify_path_at(conf, base, path, false, error);
-    if (!safe_path)
-    {
-        return NULL;
-    }
-
-    EdcError *gerror = NULL;
-    sds content = edc_file_read(safe_path, &gerror);
-    sdsfree(safe_path);
-    if (!content)
-    {
-        edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
-        edc_error_free(gerror);
-        return NULL;
-    }
-
-    return content;
+static void edc_fs_work_cb(uv_work_t *req)
+{
+    struct fs_job *job = (struct fs_job *)req->data;
+    job->result = job->io(job, &job->error);
 }
 
-static sds edc_tool_exec_write_file(struct edc_config *conf, const char *base, cJSON *args, EdcError **error)
+static void edc_fs_after_cb(uv_work_t *req, int status)
+{
+    (void)status;
+    struct fs_job *job = (struct fs_job *)req->data;
+
+    if (job->result && job->header)
+        edc_toolbox_emit_tool_message_plain(job->ctx, job->header, job->result);
+    job->callback(job->ctx, job->result, job->error);
+
+    if (job->safe_path)
+        sdsfree(job->safe_path);
+    if (job->arg_path)
+        sdsfree(job->arg_path);
+    if (job->header)
+        sdsfree(job->header);
+    if (job->content)
+        sdsfree(job->content);
+    if (job->old_text)
+        sdsfree(job->old_text);
+    if (job->new_text)
+        sdsfree(job->new_text);
+    free(job);
+}
+
+/* runner 半段: 组装 job。tool_name 为 NULL -> 不发工具消息 (edit_file 本来就不发)。 */
+static struct fs_job *edc_fs_job_new(struct edc_toolbox_call_ctx *ctx,
+                                     void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *),
+                                     sds (*io)(struct fs_job *, EdcError **), const char *tool_name,
+                                     const char *arg_path, sds safe_path)
+{
+    struct fs_job *job = calloc(1, sizeof(*job));
+    job->req.data = job;
+    job->ctx = ctx;
+    job->callback = callback;
+    job->io = io;
+    job->safe_path = safe_path;
+    job->arg_path = sdsnew(arg_path ? arg_path : "");
+    if (tool_name)
+        job->header = sdscatprintf(sdsempty(), "%s %s", tool_name, arg_path ? arg_path : "");
+    return job;
+}
+
+/* runner 半段: 沙箱判定 -> 入池。失败则直接在 runner 上回错 (与原来同步失败同路)。 */
+static void edc_fs_kick_path_tool(struct edc_toolbox_call_ctx *ctx, cJSON *args, const char *tool_name, bool write,
+                                  void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *),
+                                  sds (*io)(struct fs_job *, EdcError **))
 {
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
-    const char *content = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "content"));
-
-    sds safe_path = edc_sandbox_verify_path_at(conf, base, path, true, error);
-    if (!safe_path)
+    EdcError *error = NULL;
+    sds safe = edc_sandbox_verify_path_at(ctx->tb->conf, edc_scheduler_task_workdir(ctx->tb->scheduler, ctx->task),
+                                          path, write, &error);
+    if (!safe)
     {
-        return NULL;
+        callback(ctx, NULL, error);
+        return;
     }
-
-    sds parent = edc_path_dirname(safe_path);
-    if (!edc_dir_create_with_parents(parent, 0755, error))
-    {
-        sdsfree(parent);
-        sdsfree(safe_path);
-        return NULL;
-    }
-    sdsfree(parent);
-
-    if (!edc_file_write(safe_path, content, -1, error))
-    {
-        sdsfree(safe_path);
-        return NULL;
-    }
-
-    sdsfree(safe_path);
-    sds result = sdsnew("");
-    result = sdscatprintf(result, "Successfully wrote to file %s", path);
-    return result;
+    uv_queue_work(ctx->tb->scheduler->loop, &edc_fs_job_new(ctx, callback, io, tool_name, path, safe)->req,
+                  edc_fs_work_cb, edc_fs_after_cb);
 }
+
+/*
+ * ↓↓ 以下是四个工具的 I/O 半段: 只吃 job, **不碰 conf、不碰 args**。
+ */
 
 struct edc_list_dir_ctx
 {
@@ -81,20 +141,42 @@ static void edc_tool_list_dir_cb(const char *name, int type, void *userdata)
     lctx->result = sdscatprintf(lctx->result, "%s%s\n", prefix, name);
 }
 
-static sds edc_tool_exec_list_dir(struct edc_config *conf, const char *base, cJSON *args, EdcError **error)
+static sds edc_tool_read_file_io(struct fs_job *job, EdcError **error)
 {
-    const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
-
-    sds safe_path = edc_sandbox_verify_path_at(conf, base, path, false, error);
-    if (!safe_path)
+    EdcError *gerror = NULL;
+    sds content = edc_file_read(job->safe_path, &gerror);
+    if (!content)
     {
+        edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
+        edc_error_free(gerror);
         return NULL;
     }
+    return content;
+}
 
+static sds edc_tool_write_file_io(struct fs_job *job, EdcError **error)
+{
+    sds parent = edc_path_dirname(job->safe_path);
+    if (!edc_dir_create_with_parents(parent, 0755, error))
+    {
+        sdsfree(parent);
+        return NULL;
+    }
+    sdsfree(parent);
+
+    if (!edc_file_write(job->safe_path, job->content, -1, error))
+        return NULL;
+
+    sds result = sdsnew("");
+    result = sdscatprintf(result, "Successfully wrote to file %s", job->arg_path);
+    return result;
+}
+
+static sds edc_tool_list_dir_io(struct fs_job *job, EdcError **error)
+{
     EdcError *gerror = NULL;
     struct edc_list_dir_ctx lctx = {.result = sdsnew("")};
-    bool ok = edc_dir_foreach(safe_path, edc_tool_list_dir_cb, &lctx, &gerror);
-    sdsfree(safe_path);
+    bool ok = edc_dir_foreach(job->safe_path, edc_tool_list_dir_cb, &lctx, &gerror);
     if (!ok)
     {
         sdsfree(lctx.result);
@@ -102,25 +184,15 @@ static sds edc_tool_exec_list_dir(struct edc_config *conf, const char *base, cJS
         edc_error_free(gerror);
         return NULL;
     }
-
     return lctx.result;
 }
+
 
 static void edc_tool_exec_read_file_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
                                           void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     (void)tool;
-    EdcError *error = NULL;
-    sds result =
-        edc_tool_exec_read_file(ctx->tb->conf, edc_scheduler_task_workdir(ctx->tb->scheduler, ctx->task), args, &error);
-    if (result)
-    {
-        const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
-        sds header = sdscatprintf(sdsempty(), "read_file %s", path ? path : "");
-        edc_toolbox_emit_tool_message_plain(ctx, header, result);
-        sdsfree(header);
-    }
-    callback(ctx, result, error);
+    edc_fs_kick_path_tool(ctx, args, "read_file", false, callback, edc_tool_read_file_io);
 }
 
 static void edc_tool_create_read_file(struct edc_toolbox *tb)
@@ -136,17 +208,20 @@ static void edc_tool_exec_write_file_async(struct edc_toolbox_call_ctx *ctx, str
                                            void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     (void)tool;
+    /* content 必须在 runner 上抄一份: exec 返回后 args 就被释放 (§4.4)。 */
+    const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
+    const char *content = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "content"));
     EdcError *error = NULL;
-    sds result =
-        edc_tool_exec_write_file(ctx->tb->conf, edc_scheduler_task_workdir(ctx->tb->scheduler, ctx->task), args, &error);
-    if (result)
+    sds safe = edc_sandbox_verify_path_at(ctx->tb->conf, edc_scheduler_task_workdir(ctx->tb->scheduler, ctx->task),
+                                          path, true, &error);
+    if (!safe)
     {
-        const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
-        sds header = sdscatprintf(sdsempty(), "write_file %s", path ? path : "");
-        edc_toolbox_emit_tool_message_plain(ctx, header, result);
-        sdsfree(header);
+        callback(ctx, NULL, error);
+        return;
     }
-    callback(ctx, result, error);
+    struct fs_job *job = edc_fs_job_new(ctx, callback, edc_tool_write_file_io, "write_file", path, safe);
+    job->content = content ? sdsnew(content) : NULL;
+    uv_queue_work(ctx->tb->scheduler->loop, &job->req, edc_fs_work_cb, edc_fs_after_cb);
 }
 
 static void edc_tool_create_write_file(struct edc_toolbox *tb)
@@ -165,16 +240,7 @@ static void edc_tool_exec_list_dir_async(struct edc_toolbox_call_ctx *ctx, struc
                                          void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     (void)tool;
-    EdcError *error = NULL;
-    sds result = edc_tool_exec_list_dir(ctx->tb->conf, edc_scheduler_task_workdir(ctx->tb->scheduler, ctx->task), args, &error);
-    if (result)
-    {
-        const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
-        sds header = sdscatprintf(sdsempty(), "list_dir %s", path ? path : "");
-        edc_toolbox_emit_tool_message_plain(ctx, header, result);
-        sdsfree(header);
-    }
-    callback(ctx, result, error);
+    edc_fs_kick_path_tool(ctx, args, "list_dir", false, callback, edc_tool_list_dir_io);
 }
 
 static void edc_tool_create_list_dir(struct edc_toolbox *tb)
@@ -436,46 +502,18 @@ static void edc_edit_file_apply_replacements(const char *content, size_t content
     *out_content = sdscatlen(*out_content, content + prev_end, (ssize_t)(content_len - prev_end));
 }
 
-static sds edc_tool_exec_edit_file(struct edc_config *conf, const char *base, cJSON *args, EdcError **error)
+/* edit_file 的 I/O 半段。7 个参数已在 runner 上抄进 job —— 池线程不许读 args (§4.4)。 */
+static sds edc_tool_edit_file_io(struct fs_job *job, EdcError **error)
 {
-    const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
-    const char *old_text = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "old_text"));
-    const char *new_text = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "new_text"));
-
-    if (!path || !old_text || !new_text)
-    {
-        edc_error_set(error, EDC_ERR_EXEC, "Error: missing required parameter 'path', 'old_text', or 'new_text'.");
-        return NULL;
-    }
-
-    bool replace_all = cJSON_IsTrue(cJSON_GetObjectItem(args, "replace_all"));
-
-    cJSON *j;
-    int64_t occurrence = 0;
-    j = cJSON_GetObjectItem(args, "occurrence");
-    if (j && cJSON_IsNumber(j))
-        occurrence = (int64_t)j->valuedouble;
-
-    int64_t line_hint = 0;
-    j = cJSON_GetObjectItem(args, "line_hint");
-    if (j && cJSON_IsNumber(j))
-        line_hint = (int64_t)j->valuedouble;
-
-    int64_t expected_replacements = 0;
-    j = cJSON_GetObjectItem(args, "expected_replacements");
-    if (j && cJSON_IsNumber(j))
-        expected_replacements = (int64_t)j->valuedouble;
-
-    if (occurrence < 0 || line_hint < 0 || expected_replacements < 0)
-    {
-        edc_error_set(error, EDC_ERR_EXEC,
-                      "Error: occurrence, line_hint, and expected_replacements must be non-negative.");
-        return NULL;
-    }
-
-    sds safe_path = edc_sandbox_verify_path_at(conf, base, path, true, error);
-    if (!safe_path)
-        return NULL;
+    /* 局部名与原实现保持一致, 于是下面那整段本体一字未改。 */
+    const char *path = job->arg_path;
+    sds safe_path = job->safe_path;
+    const char *old_text = job->old_text;
+    const char *new_text = job->new_text;
+    bool replace_all = job->replace_all;
+    int64_t occurrence = job->occurrence;
+    int64_t line_hint = job->line_hint;
+    int64_t expected_replacements = job->expected_replacements;
 
     sds created = edc_edit_file_try_create(path, safe_path, old_text, new_text, error);
     if (created || *error)
@@ -538,7 +576,7 @@ static sds edc_tool_exec_edit_file(struct edc_config *conf, const char *base, cJ
 cleanup:
     if (content)
         sdsfree(content);
-    sdsfree(safe_path);
+    /* safe_path 归 job 所有, 由 after_cb 释放 —— 这里不能 free。 */
     if (positions)
         utarray_free(positions);
     if (line_nums)
@@ -551,10 +589,62 @@ cleanup:
 static void edc_tool_exec_edit_file_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
                                           void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
+    /* 7 个参数全部在 runner 上抄进 job —— 池线程不许读 args (§4.4)。
+     * 校验顺序与原实现一致 (缺参 -> 负值 -> 沙箱)。 */
+    const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
+    const char *old_text = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "old_text"));
+    const char *new_text = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "new_text"));
     EdcError *error = NULL;
-    sds result =
-        edc_tool_exec_edit_file(ctx->tb->conf, edc_scheduler_task_workdir(ctx->tb->scheduler, ctx->task), args, &error);
-    callback(ctx, result, error);
+    if (!path || !old_text || !new_text)
+    {
+        edc_error_set(&error, EDC_ERR_EXEC, "Error: missing required parameter 'path', 'old_text', or 'new_text'.");
+        callback(ctx, NULL, error);
+        return;
+    }
+
+    bool replace_all = cJSON_IsTrue(cJSON_GetObjectItem(args, "replace_all"));
+
+    cJSON *j;
+    int64_t occurrence = 0;
+    j = cJSON_GetObjectItem(args, "occurrence");
+    if (j && cJSON_IsNumber(j))
+        occurrence = (int64_t)j->valuedouble;
+
+    int64_t line_hint = 0;
+    j = cJSON_GetObjectItem(args, "line_hint");
+    if (j && cJSON_IsNumber(j))
+        line_hint = (int64_t)j->valuedouble;
+
+    int64_t expected_replacements = 0;
+    j = cJSON_GetObjectItem(args, "expected_replacements");
+    if (j && cJSON_IsNumber(j))
+        expected_replacements = (int64_t)j->valuedouble;
+
+    if (occurrence < 0 || line_hint < 0 || expected_replacements < 0)
+    {
+        edc_error_set(&error, EDC_ERR_EXEC,
+                      "Error: occurrence, line_hint, and expected_replacements must be non-negative.");
+        callback(ctx, NULL, error);
+        return;
+    }
+
+    sds safe = edc_sandbox_verify_path_at(ctx->tb->conf, edc_scheduler_task_workdir(ctx->tb->scheduler, ctx->task),
+                                          path, true, &error);
+    if (!safe)
+    {
+        callback(ctx, NULL, error);
+        return;
+    }
+
+    /* tool_name = NULL: edit_file 本来就不发工具消息, 保持原样。 */
+    struct fs_job *job = edc_fs_job_new(ctx, callback, edc_tool_edit_file_io, NULL, path, safe);
+    job->old_text = sdsnew(old_text);
+    job->new_text = sdsnew(new_text);
+    job->replace_all = replace_all;
+    job->occurrence = occurrence;
+    job->line_hint = line_hint;
+    job->expected_replacements = expected_replacements;
+    uv_queue_work(ctx->tb->scheduler->loop, &job->req, edc_fs_work_cb, edc_fs_after_cb);
 }
 
 static void edc_tool_create_edit_file(struct edc_toolbox *tb)

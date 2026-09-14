@@ -1,0 +1,33 @@
+[
+  {
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_fifo_1",
+              "type": "function",
+              "function": {
+                "name": "read_file",
+                "arguments": "{\"path\": \"/tmp/ab/run/fifo/home/.edgeclaw/workspace/fifo_probe\"}"
+              }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ]
+  },
+  {
+    "choices": [
+      {
+        "index": 0,
+        "message": { "role": "assistant", "content": "read done" },
+        "finish_reason": "stop"
+      }
+    ]
+  }
+]

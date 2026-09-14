@@ -342,6 +342,15 @@ def cmd_run(args):
         shutil.rmtree(home)
     shutil.copytree(pristine, home, symlinks=True)
 
+    # 启动应用**之前**的布置（在 home 里跑）。用途: 造那些 copytree 带不进来的
+    # 东西 —— 比如一个 FIFO（就地重建的夹具里放不住）。
+    if args.pre:
+        import subprocess
+        r = subprocess.run(args.pre, shell=True, cwd=home, capture_output=True, text=True)
+        if r.returncode != 0:
+            sys.stderr.write("--pre 失败(%s): %s\n" % (r.returncode, r.stderr))
+            return 1
+
     rc = run_binary(Path(args.bin), home, HERE / "scripts" / (args.fixture + ".txt"),
                     out, home, HERE / "responses" / (args.fixture + ".json"),
                     extra_env=dict(kv.split("=", 1) for kv in (args.env or [])))
@@ -377,6 +386,8 @@ def main():
                        help="额外传一传环境变量给**被测二进制**（可重复）")
 
     p = sub.add_parser("run"); common(p)
+    p.add_argument("--pre", default=None,
+                   help="启动应用之前在 home 里跑的 shell（布置夹具带不进来的东西，如 FIFO）")
     p.add_argument("--label", required=True)
     p.add_argument("--out", default=None)
     p.set_defaults(func=cmd_run)
