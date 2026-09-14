@@ -1152,11 +1152,11 @@ static int ex_max_iter(void *ctx)
     return (sched->config && sched->config->max_iter > 0) ? sched->config->max_iter : 0;
 }
 
-static void ex_trigger_memory(void *ctx)
+static void ex_on_task_settled(void *ctx)
 {
     struct edc_scheduler *sched = ctx;
-    if (sched->trigger_memory)
-        sched->trigger_memory(sched);
+    if (sched->on_task_settled)
+        sched->on_task_settled(sched);
 }
 
 static void ex_save_session(void *ctx, struct edc_session *s)
@@ -1191,7 +1191,7 @@ static const struct edc_executor_ops sched_executor_ops = {
     .task_session = ex_task_session,
     .no_api_key = ex_no_api_key,
     .max_iter = ex_max_iter,
-    .trigger_memory = ex_trigger_memory,
+    .on_task_settled = ex_on_task_settled,
     .save_session = ex_save_session,
     .notify_foreground_state = ex_notify_foreground_state,
 };

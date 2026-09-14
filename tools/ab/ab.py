@@ -388,10 +388,12 @@ def main():
                        help="重建冻结夹具（默认复用第一次冻结的结果）")
         p.add_argument("--env", action="append", metavar="K=V",
                        help="额外传一传环境变量给**被测二进制**（可重复）")
+        # --pre 属于**每一次运行**（cmd_run 无条件读它），所以注册在 common() 里：
+        # 只挂在 run 子命令上会让 selftest 复用 cmd_run 时 AttributeError。
+        p.add_argument("--pre", default=None,
+                       help="启动应用之前在 home 里跑的 shell（布置夹具带不进来的东西，如 FIFO）")
 
     p = sub.add_parser("run"); common(p)
-    p.add_argument("--pre", default=None,
-                   help="启动应用之前在 home 里跑的 shell（布置夹具带不进来的东西，如 FIFO）")
     p.add_argument("--label", required=True)
     p.add_argument("--out", default=None)
     p.set_defaults(func=cmd_run)

@@ -169,9 +169,9 @@ static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task
 
         /* auto-reap disabled: tasks stay COMPLETED for cross-group join */
 
-        /* 触发 L1 折叠检查 (task 完成后可能达到 group fold 阈值) */
-        if (ops->trigger_memory)
-            ops->trigger_memory(ex->ctx);
+        /* task 收尾: 交给用户态做自己的簿记 (今天 = 检查 L1 折叠阈值)。 */
+        if (ops->on_task_settled)
+            ops->on_task_settled(ex->ctx);
 
         if (ops->save_session)
             ops->save_session(ex->ctx, own);

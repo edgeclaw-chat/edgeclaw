@@ -500,9 +500,9 @@ static struct edc_session *edc_runtime_cb_resolve_session(void *ctx, const char 
     return edc_session_store_resolve_session(((struct edc_runtime *)ctx)->session_manager, session_id);
 }
 
-/* ── 回调: Memory Compress ──────────────────────────────────── */
+/* ── 回调: task 收尾 → try_fold (userland 侧) ───────────────── */
 
-static void edc_runtime_cb_trigger_memory(struct edc_scheduler *sched)
+static void edc_runtime_cb_try_fold(struct edc_scheduler *sched)
 {
     struct edc_runtime *agent = edc_runtime_from_sched(sched);
     if (!agent || !agent->session_manager)
@@ -712,7 +712,7 @@ struct edc_runtime *edc_runtime_new(bool setup, int sandbox_override)
     agent->scheduler->dispatch_tools = edc_runtime_cb_dispatch_tools;
     agent->scheduler->redispatch_tools = edc_runtime_cb_redispatch_tools;
     agent->scheduler->handle_command = edc_runtime_cb_handle_command;
-    agent->scheduler->trigger_memory = edc_runtime_cb_trigger_memory;
+    agent->scheduler->on_task_settled = edc_runtime_cb_try_fold;
     agent->scheduler->save_session = edc_runtime_cb_save_session;
     agent->scheduler->snapshot_reply = edc_runtime_cb_snapshot_reply;
     agent->scheduler->snapshot_changed = edc_runtime_cb_snapshot_changed;

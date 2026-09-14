@@ -66,8 +66,10 @@ typedef int (*edc_scheduler_redispatch_tools_fn)(struct edc_scheduler *sched, st
 typedef bool (*edc_scheduler_command_fn)(struct edc_scheduler *sched, struct edc_actor *actor,
                                          const struct edc_sched_input *input);
 
-/** 触发 memory compress */
-typedef void (*edc_scheduler_memory_fn)(struct edc_scheduler *sched);
+/** task 收尾 (结果已交付、副作用已做完): 交给用户态做自己的簿记。
+ *  名字是**结构词** —— core 不解释它; 今天唯一的订阅者去检查该不该折叠记忆
+ *  (§8 验收判据 5: 内容词只出现在订阅者那一侧)。 */
+typedef void (*edc_scheduler_settled_fn)(struct edc_scheduler *sched);
 
 /** 保存 session 状态 (实现里 history 全量落盘)。|session| 是**显式参数**:
  *  每个调用点自己知道要存谁 (任务完成时存属主, 退出时存所有已加载的) ——
@@ -166,7 +168,7 @@ struct edc_scheduler
     edc_scheduler_dispatch_tools_fn dispatch_tools;
     edc_scheduler_redispatch_tools_fn redispatch_tools;
     edc_scheduler_command_fn handle_command;
-    edc_scheduler_memory_fn trigger_memory;
+    edc_scheduler_settled_fn on_task_settled;
     edc_scheduler_save_fn save_session;
     edc_scheduler_snapshot_fn snapshot_reply;           /* 拉取的应答: 那棵树 */
     edc_scheduler_snapshot_changed_fn snapshot_changed; /* "某个 session 的树变了" (不带树) */

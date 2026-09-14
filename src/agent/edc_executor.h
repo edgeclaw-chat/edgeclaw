@@ -169,7 +169,7 @@ struct edc_executor_ops
     int (*max_iter)(void *ctx); /* <= 0 = 不限制 */
 
     /* ── 其它出站 ── */
-    void (*trigger_memory)(void *ctx);
+    void (*on_task_settled)(void *ctx);
     void (*save_session)(void *ctx, struct edc_session *s);
 };
 
