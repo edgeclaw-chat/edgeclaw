@@ -219,8 +219,9 @@ static void test_event_names_the_owner_and_carries_no_tree(void)
         struct edc_channel_message *cm =
             edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsnew("hello in B"));
         cm->session_id = sdsnew("sess-b");
-        edc_actor_msg_t *im = edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, NULL, cm,
-                                                (edc_actor_data_free_fn)edc_channel_message_free);
+        edc_actor_msg_t *im =
+            edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, NULL, edc_channel_input_new(cm),
+                              (edc_actor_data_free_fn)edc_channel_input_free);
         actor->handler(actor, im);
     }
 

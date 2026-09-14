@@ -610,9 +610,11 @@ static int edc_agent_cb_redispatch_tools(struct edc_scheduler *sched, struct edc
 /* ── 回调: 命令处理 ────────────────────────────────────────── */
 
 static bool edc_agent_cb_handle_command(struct edc_scheduler *sched, struct edc_actor *actor,
-                                        struct edc_channel_message *msg)
+                                        const struct edc_sched_input *input)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
+    /* 命令层 (shell) 说的是 channel 消息: 原始消息由 core 不透明透传到这里。 */
+    struct edc_channel_message *msg = input ? input->origin : NULL;
     if (!agent || !msg)
         return false;
     return g_command_handler ? g_command_handler(agent, actor, msg) : false;

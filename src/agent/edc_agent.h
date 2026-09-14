@@ -15,6 +15,9 @@ extern "C" {
 #include <stdbool.h>
 
 struct edc_task;
+/* 命令处理器的签名说的是 **channel 消息** (userland 的词汇)。core (scheduler) 已经
+ * 不认识这个类型了 —— 它只透传一个不透明指针 (input->origin), 由这里解释。 */
+struct edc_channel_message;
 
 struct edc_agent
 {

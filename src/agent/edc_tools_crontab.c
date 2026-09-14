@@ -338,8 +338,9 @@ static void edc_tool_crontab_on_timeout(uv_timer_t *timer)
         edc_channel_message_new(state->channel_type, EDC_CHANNEL_MESSAGE_USER_TYPE, state->message);
     state->message = NULL;
 
-    edc_actor_send(state->scheduler, edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, NULL, message,
-                                                       (edc_actor_data_free_fn)edc_channel_message_free));
+    edc_actor_send(state->scheduler,
+                   edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, NULL, edc_channel_input_new(message),
+                                     (edc_actor_data_free_fn)edc_channel_input_free));
     EdcError *error = NULL;
     cJSON *db = edc_tool_crontab_load_jobs_db(state->workspace, &error);
     if (error)

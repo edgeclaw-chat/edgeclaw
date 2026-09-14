@@ -147,8 +147,9 @@ static void deliver_input(struct edc_scheduler *sched, const char *tag, const ch
         edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsnew(content));
     if (tag)
         cm->session_id = sdsnew(tag);
-    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, (void *)(intptr_t)req_id, cm,
-                                             (edc_actor_data_free_fn)edc_channel_message_free);
+    edc_actor_msg_t *msg =
+        edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, (void *)(intptr_t)req_id, edc_channel_input_new(cm),
+                          (edc_actor_data_free_fn)edc_channel_input_free);
     actor->handler(actor, msg); /* dispatches + frees msg */
 }
 

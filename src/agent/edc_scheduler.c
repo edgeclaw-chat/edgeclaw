@@ -1,5 +1,4 @@
 #include "edc_scheduler.h"
-#include "edc_channel_actor.h"
 #include "edc_cmd_parse.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -899,7 +898,7 @@ static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *
 
 static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg *msg)
 {
-    struct edc_channel_message *input = msg->data;
+    const struct edc_sched_input *input = msg->data;
     if (!input)
         return;
 
@@ -928,7 +927,8 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
      * 见 docs/retire-waiting-input.md §4 第 10 行。 */
     const bool is_plain = input->content && input->content[0] != '/' && input->content[0] != '@';
 
-    /* 命令处理器 (shell): /… 与 @… 由它处理, 普通输入也由它建 task。 */
+    /* 命令处理器 (shell): /… 与 @… 由它处理, 普通输入也由它建 task。
+     * 参数是 core 的入站输入 —— 处理器要原始消息时从 `input->origin` 取。 */
     if (sched->handle_command && sched->handle_command(sched, msg->from, input))
         return;
 

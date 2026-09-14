@@ -11,7 +11,25 @@
 
 struct edc_session;
 struct edc_config;
-struct edc_channel_message;
+
+/* ── 入站输入: core 自己的词表 ────────────────────────────────
+ *
+ * 规则 8 说"向内是**事件**" —— 事件的**词表也归 core**: 投递方 (channel 边界 / 工具)
+ * 把 channel 消息翻译成下面这个结构之后才投 `BC_ACTOR_MSG_CHANNEL_RECV`, 于是
+ * scheduler **不认识 `struct edc_channel_message`**, 也不 include
+ * `edc_channel_actor.h` —— core 对外部世界的形状一无所知。
+ *
+ * 翻译点就在边界上 (`edc_channel_input_new()` / `edc_channel_input_free()`,
+ * 见 edc_channel_actor.h): 那里既认识 channel 消息、也认识这个结构,
+ * 依赖方向是"适配层 → core", 不是反过来。 */
+struct edc_sched_input
+{
+    const char *session_id; /* 属主标签; NULL/空 = 交给 store 读口给默认 (活跃 session) */
+    const char *content;
+    edc_channel_type type; /* 渠道类别 (CLI / Telegram …) —— task 从这条输入继承它 */
+    void *origin;          /* 原始 channel 消息: **只透传**给命令处理器 (用户态解释),
+                            * scheduler 自己不碰 */
+};
 
 struct edc_sched_task_entry;
 /* edc_sched_task_entry is an internal hash entry used by uthash.
@@ -42,9 +60,11 @@ typedef void (*edc_scheduler_dispatch_tools_fn)(struct edc_scheduler *sched, str
  *  返回投递的条数 (0 = 无)。 */
 typedef int (*edc_scheduler_redispatch_tools_fn)(struct edc_scheduler *sched, struct edc_task *task, void *request_id);
 
-/** 检查/处理命令 (返回 true=已处理) */
+/** 检查/处理命令 (返回 true=已处理)。
+ *  参数是 **core 的入站输入** (上面的 `struct edc_sched_input`); 命令处理器在用户态,
+ *  需要原始 channel 消息时自己从 `input->origin` 取回 (不透明透传)。 */
 typedef bool (*edc_scheduler_command_fn)(struct edc_scheduler *sched, struct edc_actor *actor,
-                                         struct edc_channel_message *msg);
+                                         const struct edc_sched_input *input);
 
 /** 触发 memory compress */
 typedef void (*edc_scheduler_memory_fn)(struct edc_scheduler *sched);

@@ -68,4 +68,17 @@ extern void edc_channel_message_free(struct edc_channel_message *msg);
 extern struct edc_channel_message *edc_channel_message_new(edc_channel_type type, edc_channel_message_type message_type,
                                                            sds content);
 
+/* ── 边界翻译: channel 消息 → core 的入站输入 ─────────────────
+ *
+ * 这里是"两个词表都认识"的地方 (channel 消息 + `struct edc_sched_input`),
+ * 所以翻译归它 —— 依赖方向是"适配层 → core"。投递方 (frontend / 工具) 用它建负载,
+ * 投 `BC_ACTOR_MSG_CHANNEL_RECV` 给 scheduler; scheduler 侧只认识后者。
+ *
+ * `edc_channel_input_new` **接管 `msg` 的所有权** (内容之外还负责在释放时
+ * `edc_channel_message_free` 它), 所以它可以直接当 actor msg 的 data_free_fn 用:
+ * `edc_actor_msg_new(..., edc_channel_input_new(msg), (edc_actor_data_free_fn)edc_channel_input_free)`。 */
+struct edc_sched_input;
+extern struct edc_sched_input *edc_channel_input_new(struct edc_channel_message *msg);
+extern void edc_channel_input_free(struct edc_sched_input *input);
+
 #endif

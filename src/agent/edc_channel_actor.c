@@ -2,10 +2,44 @@
 #include "edc_actor.h"
 #include "edc_compat.h"
 #include "edc_config.h"
+#include "edc_scheduler.h"
 #include "sds.h"
 #include "uthash.h"
 #include "utlist_fix.h"
 #include <stdlib.h>
+
+/* ── 边界翻译: channel 消息 → core 的入站输入 ─────────────────
+ *
+ * `struct edc_sched_input` 是 core 的词表 (edc_scheduler.h); 本文件是"两个词表都
+ * 认识"的地方 —— 于是 core 不必知道 channel 消息的形状, 也不用 include 本头文件。
+ * 输入**接管消息所有权**: 释放输入时顺带释放消息 (`origin` 只是透传, 但它的
+ * 生命周期由这里管 —— 否则要么泄漏, 要么调度器得认识它的类型)。 */
+struct edc_sched_input *edc_channel_input_new(struct edc_channel_message *msg)
+{
+    if (!msg)
+        return NULL;
+    struct edc_sched_input *input = calloc(1, sizeof(*input));
+    if (!input)
+    { /* OOM: 这条输入丢弃 (scheduler 对 NULL 负载直接返回), 不泄漏消息 */
+        edc_channel_message_free(msg);
+        return NULL;
+    }
+    input->session_id = msg->session_id;
+    input->content = msg->content;
+    input->type = msg->type;
+    input->origin = msg;
+    return input;
+}
+
+void edc_channel_input_free(struct edc_sched_input *input)
+{
+    if (!input)
+        return;
+    struct edc_channel_message *msg = input->origin;
+    free(input);
+    if (msg)
+        edc_channel_message_free(msg);
+}
 
 static void edc_channel_actor_handle(edc_actor_t *actor, edc_actor_msg_t *msg)
 {

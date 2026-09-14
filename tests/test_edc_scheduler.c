@@ -327,11 +327,11 @@ static int g_llm_calls = 0;
 static struct edc_task *g_llm_task = NULL;
 
 static bool mock_handle_command(struct edc_scheduler *sched, struct edc_actor *actor,
-                                struct edc_channel_message *message)
+                                const struct edc_sched_input *input)
 {
     (void)sched;
     (void)actor;
-    (void)message;
+    (void)input;
     g_cmd_calls++;
     return true;
 }
@@ -360,8 +360,9 @@ static void drive_input(struct edc_scheduler *sched, const char *content, long r
     struct edc_session *owner = sched->ctx;
     if (owner && owner->session_id)
         cm->session_id = sdsnew(owner->session_id);
-    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, (void *)(intptr_t)req_id, cm,
-                                             (edc_actor_data_free_fn)edc_channel_message_free);
+    edc_actor_msg_t *msg =
+        edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, (void *)(intptr_t)req_id, edc_channel_input_new(cm),
+                          (edc_actor_data_free_fn)edc_channel_input_free);
     sched_actor->handler(sched_actor, msg); /* dispatches + frees msg */
 }
 

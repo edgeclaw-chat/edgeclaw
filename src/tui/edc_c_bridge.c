@@ -519,7 +519,9 @@ void edc_c_agent_send_user_message(struct edc_agent *agent, const char *session_
         message->session_id = sdsnew(session_id);
 
     edc_channel_actor_state_t *state = agent->channel_actor->state;
-    edc_actor_msg_t *actor_msg = edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, agent->channel_actor, NULL, message,
-                                                   (edc_actor_data_free_fn)edc_channel_message_free);
+    /* 边界翻译: core 不认识 channel 消息 —— 翻译好再投 (edc_channel_actor.h)。 */
+    edc_actor_msg_t *actor_msg =
+        edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, agent->channel_actor, NULL, edc_channel_input_new(message),
+                          (edc_actor_data_free_fn)edc_channel_input_free);
     edc_actor_send(state->observer, actor_msg);
 }
