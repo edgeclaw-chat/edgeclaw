@@ -93,7 +93,7 @@ resize 100x40         # 改终端尺寸
 | `workspace/.task_seq` / `.session_seq` | **逐字节**（数字，无时钟） |
 | `llm_requests.jsonl` | 掩 clock 后一致 —— raw 差 system prompt 里的 `## Current Time` 与请求 `ts` |
 | `log/*.log` | 去掉时间戳后逐行 |
-| `session.json.broken` | **不应存在**（出现即失败） |
+| `session.json.broken` | **不应存在** —— `run` 与 `compare` 都有**闸门**：产物里出现 `*.broken`、或日志里出现 `quarantin*` → **直接失败**（退出码 **4**），不进入比对（两边可能同样残缺，那样 compare 会说"一致"） |
 | **终端帧** | **不比** —— 见下 |
 
 ### 归一化（非确定性的来源）
@@ -153,3 +153,15 @@ python3 tools/ab/ab.py selftest --bin /tmp/ab/bin/a --fixture smoke
 
 产物在 `/tmp/ab/out/<label>/`：`artifacts/`（工作区 + 日志）、`llm_requests.jsonl`、
 `screen.bin`（仅留证，**不参与比较**）。
+
+### 退出码（脚本/CI 要看的）
+
+| 命令 | 码 | 含义 |
+|---|---|---|
+| `run` | 0 | 这次运行干净 |
+| | 3 | 一个 LLM 请求都没发生 → 回路没被覆盖，结论无效 |
+| | 4 | 产物里有**隔离痕迹**（`*.broken` / 日志 `quarantined`）→ 不干净 |
+| | 其它 | 被测二进制自己的退出码（透传） |
+| `compare` | 0 / 1 | 一致 / 有差异 |
+| | 4 | 任何一侧产物不干净 → **不比对** |
+| `selftest` | 同 `run` | 某一次自证运行不干净时立即失败（不再假装"一致"） |

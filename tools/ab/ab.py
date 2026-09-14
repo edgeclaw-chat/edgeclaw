@@ -240,7 +240,12 @@ def run_binary(binary: Path, home: Path, script: Path, out: Path, fake: Path,
 
     collect(home, out)
 
-    # 防"空转通过"：夹具备了响应却一个 LLM 请求都没发生 → 回路没被覆盖，
+    # 闸门一：产物里有没有"隔离"的痕迹（见上）。比"没有 LLM 请求"更靠前 ——
+    # 状态都没加载上时，问"LLM 回路跑过吗"是没有意义的。
+    if not gate(out, "本次运行 %s" % out):
+        return 4
+
+    # 闸门二，防"空转通过"：夹具备了响应却一个 LLM 请求都没发生 → 回路没被覆盖，
     # 此时 compare 一致是没有意义的。
     req_log = out / "llm_requests.jsonl"
     nreq = sum(1 for _ in open(req_log)) if req_log.exists() else 0
@@ -269,6 +274,53 @@ def collect(home: Path, out: Path):
     logdir = home / ".edgeclaw" / "log"
     if logdir.is_dir():
         shutil.copytree(logdir, art / "_log", dirs_exist_ok=True)
+
+
+# --------------------------------------------------------------- 闸门
+
+
+# 脏物有两个落点，都来自同一条路径"加载失败 → 把文件改名隔离"
+# （`edc_session.c` 的 `session_quarantine_state()`：`session.json` →
+# `session.json.broken`，同时打一行 `load_state: quarantined <旧> -> <新> (<why>)`）：
+#   ① 产物里出现 `*.broken`；② 日志里出现 `quarantined`。
+# 为什么必须拦：这不是"某个字段不一样"，而是**这次运行从残缺状态开始**了。它甚至
+# 不会表现为产物差异 —— 两个二进制可能同样地丢掉了加载不上的东西，于是 compare
+# 高高兴兴说"一致"。v4→v5 夹具当时就是这样（每次生成一个 `s8/session.json.broken`）。
+BREAK_SUFFIX = ".broken"
+QUARANTINE_RE = re.compile(r"quarantin", re.I)
+
+
+def breakage(out: Path):
+    """这次运行的脏物清单（空 = 干净）。"""
+    hits = []
+    art = out / "artifacts"
+    if not art.is_dir():
+        return hits
+    for p in sorted(art.rglob("*" + BREAK_SUFFIX)):
+        hits.append("隔离文件: %s" % p.relative_to(out))
+    for p in sorted(art.rglob("*.log")):
+        try:
+            text = p.read_text(errors="replace")
+        except OSError:
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
+            if QUARANTINE_RE.search(line):
+                hits.append("日志里的隔离记录: %s:%d: %s"
+                            % (p.relative_to(out), i, line.strip()[:120]))
+    return hits
+
+
+def gate(out: Path, label: str) -> bool:
+    """脏物 → 直接失败（退出码 4），不进入比对。返回 True = 可以继续。"""
+    hits = breakage(out)
+    if not hits:
+        return True
+    sys.stderr.write("ab.py: 错误 —— %s 的产物不干净，A/B 结论无效:\n" % label)
+    for h in hits:
+        sys.stderr.write("    %s\n" % h)
+    sys.stderr.write("    （`*.broken` / `quarantined` = 加载失败被隔离；两边可能"
+                     "同样残缺，那样 compare 会说\"一致\"）\n")
+    return False
 
 
 # ------------------------------------------------------------- compare
@@ -302,6 +354,11 @@ def _mask_obj(o):
 
 
 def compare(a: Path, b: Path) -> int:
+    # 脏物闸门先过：残缺的产物集不值得比（见 gate 的说明）。
+    if not (gate(a, "A(%s)" % a) and gate(b, "B(%s)" % b)):
+        print("compare: 未比对（产物不干净）")
+        return 4
+
     # 帧不比：TUI 有动画，且 ftxui 只重绘 diff（README §为什么第一版不比终端帧）
     ignore = {"screen.bin"}
 
@@ -359,7 +416,10 @@ def cmd_run(args):
                     out, home, HERE / "responses" / (args.fixture + ".json"),
                     extra_env=dict(kv.split("=", 1) for kv in (args.env or [])))
     print("run %s: 退出码 %s，产物在 %s" % (args.label, rc, out))
-    return 0
+    # 透传退出码。这里以前是 `return 0`，于是"退出码 3"（没有 LLM 请求）与闸门的 4
+    # 只印在屏幕上、CLI 却报成功 —— 脚本/CI 看不见（2026-09-15 修；历史运行都是 0，
+    # 所以透传只会在真出问题时改变行为）。
+    return rc
 
 
 def cmd_compare(args):
@@ -367,10 +427,12 @@ def cmd_compare(args):
 
 
 def cmd_selftest(args):
-    args.sessions = args.sessions
     for lbl in ("self1", "self2"):
         args.label, args.out = lbl, str(OUT_BASE / lbl)
-        cmd_run(args)
+        rc = cmd_run(args)
+        if rc != 0:
+            sys.stderr.write("selftest: %s 不干净（退出码 %s）→ 确定性自证无效\n" % (lbl, rc))
+            return rc
     print("selftest: 同一二进制两次运行的对照")
     return compare(OUT_BASE / "self1", OUT_BASE / "self2")
 
