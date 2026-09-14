@@ -26,7 +26,7 @@ cc_test(
     name = "test_containers",
     srcs = ["test_containers.c"],
     deps = [
-        "//src:agent",
+        "//src/core:core",
     ],
     linkopts = LINK_OPTS,
 )
@@ -35,7 +35,7 @@ cc_test(
     name = "test_llm_actor",
     srcs = ["test_llm_actor.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -46,7 +46,7 @@ cc_test(
     deps = [
         "@lwip//:lwip",
         "//thirdparty/lwip:sys_arch",
-        "//src:agent",
+        "//src/device:device",
     ],
     linkopts = LINK_OPTS,
 )
@@ -77,7 +77,7 @@ cc_test(
     deps = [
         "@lwip//:lwip",
         "//thirdparty/lwip:sys_arch",
-        "//src:agent",
+        "//src/device:device",
     ],
     linkopts = LINUX_LINK_OPTS + ["-lutil"],
 )
@@ -89,7 +89,8 @@ cc_test(
         "@cjson//:cjson",
         "@lwip//:lwip",
         "//thirdparty/lwip:sys_arch",
-        "//src:agent",
+        "//src/core:core",
+        "//src/device:device",
     ],
     linkopts = LINUX_LINK_OPTS + ["-lutil"],
 )
@@ -101,7 +102,7 @@ cc_binary(
         "@lwip//:lwip",
         "//thirdparty/lwip:sys_arch",
         "@cjson//:cjson",
-        "//src:agent",
+        "//src/device:device",
     ],
     linkopts = LINUX_LINK_OPTS,
 )
@@ -119,7 +120,7 @@ cc_test(
     name = "test_https_client_get",
     srcs = ["test_https_client_get.c"],
     deps = [
-        "//src:agent",
+        "//src/core:core",
     ],
     linkopts = LINK_OPTS,
 )
@@ -128,7 +129,7 @@ cc_test(
     name = "test_edc_task",
     srcs = ["test_edc_task.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -137,7 +138,7 @@ cc_test(
     name = "test_edc_task_group",
     srcs = ["test_edc_task_group.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -146,7 +147,7 @@ cc_test(
     name = "test_edc_task_stress",
     srcs = ["test_edc_task_stress.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -155,7 +156,7 @@ cc_test(
     name = "test_edc_scheduler",
     srcs = ["test_edc_scheduler.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -164,7 +165,7 @@ cc_test(
     name = "test_edc_session_stress",
     srcs = ["test_edc_session_stress.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -173,7 +174,7 @@ cc_test(
     name = "test_group_level",
     srcs = ["test_group_level.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -182,7 +183,7 @@ cc_test(
     name = "test_edc_shell",
     srcs = ["test_edc_shell.c"],
     deps = [
-        "//src:agent",
+        "//src/shell:shell",
     ],
     linkopts = LINK_OPTS,
 )
@@ -191,7 +192,7 @@ cc_test(
     name = "test_commands_task_new",
     srcs = ["test_commands_task_new.c"],
     deps = [
-        "//src:agent",
+        "//src/shell:shell",
     ],
     linkopts = LINK_OPTS,
 )
@@ -200,7 +201,7 @@ cc_test(
     name = "test_state_serializer",
     srcs = ["test_state_serializer.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -209,7 +210,7 @@ cc_test(
     name = "test_system_task",
     srcs = ["test_system_task.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -218,7 +219,7 @@ cc_test(
     name = "test_group_fold",
     srcs = ["test_group_fold.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -227,7 +228,7 @@ cc_test(
     name = "test_session_snapshot",
     srcs = ["test_session_snapshot.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -236,7 +237,7 @@ cc_test(
     name = "test_session_routing",
     srcs = ["test_session_routing.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -245,7 +246,7 @@ cc_test(
     name = "test_snapshot_addressing",
     srcs = ["test_snapshot_addressing.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -254,7 +255,7 @@ cc_test(
     name = "test_session_state_file",
     srcs = ["test_session_state_file.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -263,7 +264,7 @@ cc_test(
     name = "test_session_workdir",
     srcs = ["test_session_workdir.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -272,7 +273,7 @@ cc_test(
     name = "test_session_status",
     srcs = ["test_session_status.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -281,7 +282,7 @@ cc_test(
     name = "test_turn_history_integration",
     srcs = ["test_turn_history_integration.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -290,7 +291,7 @@ cc_test(
     name = "test_lifecycle_integration",
     srcs = ["test_lifecycle_integration.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -299,7 +300,7 @@ cc_test(
     name = "test_todo_sysprompt",
     srcs = ["test_todo_sysprompt.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -317,7 +318,7 @@ cc_test(
     name = "test_session_leave_cancel",
     srcs = ["test_session_leave_cancel.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -326,7 +327,7 @@ cc_test(
     name = "test_session_reactivate",
     srcs = ["test_session_reactivate.c"],
     deps = [
-        "//src:agent",
+        "//src/shell:shell",
     ],
     linkopts = LINK_OPTS,
 )
@@ -335,7 +336,7 @@ cc_test(
     name = "test_session_cross_dep",
     srcs = ["test_session_cross_dep.c"],
     deps = [
-        "//src:agent",
+        "//src/shell:shell",
     ],
     linkopts = LINK_OPTS,
 )
@@ -344,7 +345,7 @@ cc_test(
     name = "test_cross_dep_restart",
     srcs = ["test_cross_dep_restart.c"],
     deps = [
-        "//src:agent",
+        "//src/shell:shell",
     ],
     linkopts = LINK_OPTS,
 )
@@ -353,7 +354,7 @@ cc_test(
     name = "test_task_index",
     srcs = ["test_task_index.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -361,7 +362,7 @@ cc_test(
 cc_test(
     name = "test_state_guardrail",
     srcs = ["test_state_guardrail.c"],    deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -370,7 +371,7 @@ cc_test(
     name = "test_session_id",
     srcs = ["test_session_id.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -379,7 +380,7 @@ cc_test(
     name = "test_task_resume",
     srcs = ["test_task_resume.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -397,8 +398,8 @@ cc_test(
     name = "test_sandbox_helper",
     srcs = ["test_sandbox_helper.c"],
     deps = [
-        "//src:agent",
         "@libuv",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -407,7 +408,7 @@ cc_test(
     name = "test_shell_env",
     srcs = ["test_shell_env.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )
@@ -426,7 +427,7 @@ cc_test(
     name = "test_llm_actor_config",
     srcs = ["test_llm_actor_config.c"],
     deps = [
-        "//src:agent",
+        "//src/agent:agent",
     ],
     linkopts = LINK_OPTS,
 )

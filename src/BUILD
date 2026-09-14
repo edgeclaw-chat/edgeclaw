@@ -9,20 +9,9 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
-# ── Backward-compatibility aggregate targets ──────────────────────────────
-
-# Full agent library (agent + shell + core + device) for tests compatibility
-cc_library(
-    name = "agent",
-    deps = [
-        "//src/agent:agent",
-        "//src/core:core",
-        "//src/device:device",
-        "//src/shell:shell",
-    ],
-    linkstatic = True,
-    visibility = ["//visibility:public"],
-)
+# ── Backward-compatibility aliases ────────────────────────────────────────
+# 注: 聚合伞 `//src:agent`（agent + shell + core + device）已于 2026-09-15 删除 ——
+# 它让测试可以静默越界; 现在每个测试只依赖自己真正用到的模块, 越界即编译失败。
 
 alias(
     name = "edc_string_utils",

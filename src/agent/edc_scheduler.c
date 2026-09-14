@@ -2,7 +2,6 @@
 #include "edc_cmd_parse.h"
 #include "edc_compat.h"
 #include "edc_config.h"
-#include "edc_context.h"
 #include "edc_file_utils.h"
 #include "edc_session.h"
 #include "edc_turn.h"
