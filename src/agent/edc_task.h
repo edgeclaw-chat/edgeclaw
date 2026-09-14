@@ -12,6 +12,7 @@
 
 struct edc_session;
 struct edc_config;
+struct edc_task;
 
 /* ── Task 状态 ───────────────────────────────────────────────
  *
@@ -54,6 +55,40 @@ extern const char *edc_task_step_name(edc_task_step step);
 extern const char *edc_task_life_name(edc_task_life life);
 extern edc_task_step edc_task_classify_step(const char *name);
 extern edc_task_life edc_task_classify_life(const char *name);
+
+/* ── sink / lifetime: 与 step、life 正交的两件事 ──────────────
+ *
+ * runtime-model.md §1.4 把这件事说得很直白: `step` / `life` / `sink` / `lifetime`
+ * / `kind` 是**五个正交互质的**, 回答五个不同问题 —— 在哪 / 活着吗 / 结果给谁 /
+ * 要不要活过重启 / 属于哪一类(展示)。它们各有**唯一**的读者, 所以谁都不许拿别人
+ * 的字段做分支 (core 尤其不许; 那是老 `is_system` 的死因)。
+ *
+ * 这五个名字过去被**挤进 `edc_task_state` 一个 enum**。step/life 已经拆出来了
+ * (P2/R3b); sink/lifetime 在这里补上 —— 它们是为 **system task** 准备的:
+ * fold 是一个"把产出写进 group 记忆、活不过重启"的任务, 以前这个角色由一条
+ * 专用协议 (`BC_ACTOR_MSG_GROUP_FOLD` / `_DONE`) 加一个专用 actor 扮演。 */
+
+/* 产出去向。**唯一读者: executor** (决定结果送到哪)。 */
+typedef enum
+{
+    EDC_SINK_CHANNEL,      /* 产出回给用户 —— 用户任务的默认 */
+    EDC_SINK_GROUP_MEMORY, /* 产出交给所属 group 的记忆 —— fold 用 */
+} edc_sink;
+
+/* 是否需要活过重启。**唯一读者: 持久化层** (edc_state_serializer.c)。 */
+typedef enum
+{
+    EDC_LIFETIME_PERSISTENT, /* 落盘, 重启后还在 —— 用户任务的默认 */
+    EDC_LIFETIME_TRANSIENT,  /* 不落盘、完成即回收 —— system task */
+} edc_lifetime;
+
+extern const char *edc_task_sink_name(edc_sink sink);
+extern edc_sink edc_task_classify_sink(const char *name);
+extern const char *edc_task_lifetime_name(edc_lifetime lifetime);
+extern edc_lifetime edc_task_classify_lifetime(const char *name);
+
+/** 是否是"不落盘、完成即回收"的 system task (只看 lifetime)。 */
+extern bool edc_task_is_transient(const struct edc_task *task);
 
 
 /* ── 信号 ──────────────────────────────────────────────────── */
@@ -118,6 +153,13 @@ struct edc_task
      * 由 (step, life) 派生 —— 不再有第二份副本可以漂移。 */
     edc_task_step step;
     edc_task_life life;
+
+    /* 与上面两个同理, 但回答的是另外两个问题 (见本文档顶部那两个 enum):
+     * 产出给谁 (sink) / 要不要活过重启 (lifetime)。默认 (CHANNEL, PERSISTENT)
+     * 就是用户任务; 只有 system task 会把它们改成 (GROUP_MEMORY, TRANSIENT),
+     * 而那个组合的全部意义是: **fold 不需要专用协议, 也不需要隐藏**。 */
+    edc_sink sink;
+    edc_lifetime lifetime;
 
     int is_group_leader; /* 是否是 group leader */
     int auto_reap;       /* 完成后自动回收 (前台输入任务) */
@@ -188,6 +230,15 @@ struct edc_task
     sds redirect_stdout;  /* > / >> file */
     sds redirect_stderr;  /* 2> file */
     bool redirect_append; /* true = >>, false = > */
+
+    /* ── 产出目标 (sink = GROUP_MEMORY 的 system task 用) ──
+     * fold 任务的产出不是一条回话, 而是**某个组的记忆**: 写进哪个组、本轮折到
+     * 哪个水位 (completion_seq 上限, 与折叠 prompt 里选中的那批任务一致)。
+     * 两者都由触发折叠的一侧填好 (见 edc_group_fold.c); 任务自己不解释它们,
+     * executor 只转交 (ops->deliver_group_memory), 落地在 scheduler。
+     * TRANSIENT 任务不落盘, 所以这两个字段按 id 存没有必要 —— 是纯内存的。 */
+    struct edc_task_group *sink_group;
+    uint32_t fold_max_seq;
 
     /* ── 链表 ── */
     struct edc_task *group_next;  /* group 内下一成员 */

@@ -31,6 +31,11 @@ static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg
 /* 任务树快照: 只服务侧边栏 (任务树 + todo + 计数)。对话内容不再随快照下发
  * —— 聊天区由 TUI 自己持久化/回放显示流 (见 edc_tui_window.cpp)。 */
 static void sched_handle_task_snapshot(struct edc_scheduler *sched, const char *reason);
+/* TRANSIENT 任务的回收: 状态迁移/信号改变相位时入队, 消息末尾统一结算
+ * (见下方 "TRANSIENT 任务的回收" 一节)。信号路径在文件前部, 故这里前向声明。 */
+static void sched_queue_reap(struct edc_scheduler *sched, struct edc_task *task);
+/** 终结态 (COMPLETED / CANCELLED / ERROR) —— 定义在下面的回收一节。 */
+static bool sched_task_finished(struct edc_task *task);
 static void sched_move_task(struct edc_scheduler *sched, struct edc_task *task, edc_task_step step, edc_task_life life);
 static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *task, edc_task_step step,
                                   edc_task_life life);
@@ -177,6 +182,13 @@ void edc_scheduler_free(struct edc_scheduler *sched)
         free(pd);
     }
 
+    /* 回收队列只持有指针 —— 任务归 session 所有, 这里只丢数组 (session 关闭时
+     * 才真正 free 它们)。 */
+    free(sched->reap_pending);
+    sched->reap_pending = NULL;
+    sched->reap_count = 0;
+    sched->reap_cap = 0;
+
     if (sched->self)
         edc_actor_free(sched->self);
     free(sched);
@@ -285,6 +297,106 @@ void edc_scheduler_add_group(struct edc_scheduler *sched, struct edc_task_group 
         return;
     if (sched->session)
         edc_session_add_group(sched->session, group);
+}
+
+/* ── system task: 有活干 + TRANSIENT + 可见 ──────────────────
+ *
+ * 老 `Group system` 是一个**空容器**: 没活干、会落盘、只能靠 `is_system` 特判
+ * 隐藏 (5 处 skip, 漏一处就冒出来)。这里造出来的相反 —— 每个 system task 都带着
+ * 真活干 (一次折叠 LLM 调用), 不落盘 (TRANSIENT), 且**不隐藏** (照常出现在快照与
+ * `/task list` 里, 只是侧栏画在另一块)。三个属性各有唯一读者, 见 edc_task.h。
+ *
+ * 组是复用还是新建: 有系统组就加进去, 没有就以它当 leader 建一个 (group_id 就是
+ * 它的 task_id —— 与用户组同一套规则, 没有魔法 id)。 */
+struct edc_task *edc_scheduler_spawn_system_task(struct edc_scheduler *sched, struct edc_session *session,
+                                                 const char *desc)
+{
+    if (!sched || !session)
+        return NULL;
+
+    struct edc_task_group *group = edc_session_find_system_group(session);
+
+    char *tid = edc_scheduler_gen_task_id(sched);
+    const char *gid = group ? group->group_id : tid;
+    struct edc_task *task = edc_task_new(tid, session->session_id, gid, desc, edc_channel_adapter);
+    free(tid);
+
+    /* 三个属性: 不落盘、完成即回收; 产出交给 group 记忆; 容器是系统组。 */
+    task->lifetime = EDC_LIFETIME_TRANSIENT;
+    task->sink = EDC_SINK_GROUP_MEMORY;
+
+    if (group)
+    {
+        edc_task_group_add_task(group, task);
+    }
+    else
+    {
+        group = edc_task_group_new(task);
+        if (!group)
+        {
+            edc_task_free(task);
+            return NULL;
+        }
+        group->kind = EDC_GROUP_KIND_SYSTEM;
+        edc_session_add_group(session, group);
+    }
+
+    /* 侧栏立刻能看到它 (它可能就是当前唯一在跑的东西)。 */
+    sched->snapshot_pending = true;
+    return task;
+}
+
+bool edc_scheduler_has_pending_system_task(struct edc_session *session)
+{
+    struct edc_task_group *group = edc_session_find_system_group(session);
+    if (!group)
+        return false;
+    struct edc_task *t;
+    LL_FOREACH2(group->members, t, group_next)
+    {
+        if (!sched_task_finished(t))
+            return true;
+    }
+    return false;
+}
+
+/* system task 的 request_id: 高位段起步, 见 edc_scheduler.h 的说明。 */
+static int64_t g_system_req_seq = (int64_t)1 << 41;
+
+void *edc_scheduler_gen_system_request_id(void)
+{
+    return (void *)(intptr_t)(++g_system_req_seq);
+}
+
+bool edc_scheduler_dispatch_task(struct edc_scheduler *sched, struct edc_task *task, const char *input)
+{
+    if (!sched || !task || !input)
+        return false;
+
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup(task->task_id);
+    /* input 装成**裸的** user 消息 (只有 role/content): 派发出去的是"任务的输入",
+     * 不是一条聊天气泡 —— render/ts 那层装饰属于展示路径 (shell 的输入回显会加)。
+     * 折叠 prompt 因此与旧实现发给 LLM 的请求逐字相同 (也才可比)。 */
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "role", "user");
+    cJSON_AddStringToObject(msg, "content", input);
+    edc_queue_push(&turn->messages, msg);
+    task->active_turn = turn;
+
+    void *req_id = edc_scheduler_gen_system_request_id();
+    edc_scheduler_register_task(sched, task, req_id);
+    task->current_request_id = req_id;
+
+    if (edc_task_awaits_deps(task))
+        return false; /* 有依赖就排队, 等依赖完成时自动派发 */
+
+    if (!edc_task_await_exec(task))
+        return false;
+    if (!sched->send_llm)
+        return false;
+    sched->send_llm(sched, task, req_id);
+    return true;
 }
 
 /* ── 查找 ──────────────────────────────────────────────────── */
@@ -423,6 +535,9 @@ void edc_scheduler_send_signal_to_task_ptr(struct edc_scheduler *sched, struct e
     ev.as.signal.sig = sig;
     ev.as.signal.persist = true;
     edc_executor_advance(&sched->executor, task, &ev);
+    /* executor 的信号路径**直接**改 task 状态 (不经 sched_move_task) —— 取消可能让
+     * 一个 TRANSIENT 任务直接进终态, 这里补上回收队列。 */
+    sched_queue_reap(sched, task);
 }
 
 void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *task_id, edc_task_signal sig)
@@ -456,6 +571,11 @@ static void sched_signal_group_members(struct edc_scheduler *sched, struct edc_t
         edc_task_group_send_signal_running(group, sig);
     else
         edc_task_group_send_signal(group, sig);
+
+    /* 组级信号同样绕开了 sched_move_task (它直接落到 task 层) —— 逐个补上回收
+     * 队列; sched_queue_reap 自己只挑 TRANSIENT + 终态的, 其余一概不动。 */
+    LL_FOREACH2(group->members, task, group_next)
+    sched_queue_reap(sched, task);
 }
 
 void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, const char *group_id, edc_task_signal sig)
@@ -597,6 +717,99 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
     sched_force_move_task(sched, task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
 }
 
+/* ── TRANSIENT 任务的回收 (完成即回收) ───────────────────────
+ *
+ * `lifetime` 的语义是"这个任务不留下来", 它有两个后果、同一个来源谓词
+ * (edc_task_is_transient): 不写盘 (持久化层, edc_state_serializer.c) + 完成即回收
+ * (这里)。两处问的是同一个问题 —— "它要不要活过自己这摊活" —— 而不是"按 kind
+ * 把它藏起来": 系统任务跑完就没了, 于是盘上不会有僵尸, 也不需要任何地方跳过它。
+ *
+ * 回收分两步, 都在本条消息末尾结算 (sched_drain_reap_pending):
+ *   1. 入队 —— 状态迁移那一刻只排队, 绝不 free (那条路径上还有人拿着指针);
+ *   2. 结算 —— 摘链、清 active_task、free; 组空了就删组。 */
+
+static bool sched_task_finished(struct edc_task *task)
+{
+    /* 终态 = 不再推进。SUSPENDED 不算 (它还会被 resume)。 */
+    return edc_task_is_completed(task) || edc_task_is_cancelled(task) || edc_task_has_failed(task);
+}
+
+static void sched_queue_reap(struct edc_scheduler *sched, struct edc_task *task)
+{
+    if (!sched || !task || !edc_task_is_transient(task) || !sched_task_finished(task))
+        return;
+    /* 同一任务只入队一次 (兜底路径可能再迁一次)。 */
+    for (size_t i = 0; i < sched->reap_count; i++)
+        if (sched->reap_pending[i] == task)
+            return;
+    if (sched->reap_count == sched->reap_cap)
+    {
+        size_t cap = sched->reap_cap ? sched->reap_cap * 2 : 4;
+        struct edc_task **grown = realloc(sched->reap_pending, cap * sizeof(*grown));
+        if (!grown)
+            return;
+        sched->reap_pending = grown;
+        sched->reap_cap = cap;
+    }
+    sched->reap_pending[sched->reap_count++] = task;
+}
+
+static void sched_reap_one(struct edc_scheduler *sched, struct edc_task *task)
+{
+    struct edc_task_group *group = task->group;
+    struct edc_session *owner = group ? group->session : NULL;
+
+    /* 完成的请求不该还挂在表上; 万一挂着自己摘掉, 免得 hash 里留野指针。 */
+    if (task->current_request_id)
+    {
+        edc_scheduler_unregister_task(sched, task->current_request_id);
+        task->current_request_id = NULL;
+    }
+    /* 它不该被当成前台 active task, 但真被当成过就摘掉 —— 否则 session 上留
+     * 一个悬垂指针。 */
+    if (owner && owner->active_task == task)
+        edc_session_set_active_task(owner, NULL);
+
+    if (!group)
+    {
+        edc_task_free(task);
+        return;
+    }
+
+    edc_task_group_remove_task(group, task);
+    edc_task_free(task);
+    /* 空了就删 (runtime-model.md §4.6): 系统组不是容器, 没有活干就不该存在。
+     * 这一步是**结构性**的 (空组没有可承载的东西), 与 kind 无关。 */
+    if (group->member_count == 0)
+    {
+        if (owner)
+        {
+            /* 系统组不该是前台组, 但万一被 `/task fg` 指过 —— 摘掉, 免得 session
+             * 上留一个已释放的指针。 */
+            if (owner->foreground_group == group)
+                owner->foreground_group = NULL;
+            edc_session_remove_group(owner, group);
+        }
+        edc_task_group_free(group);
+    }
+}
+
+/* 结算点: 把待回收的 TRANSIENT 任务真正摘掉 (见 edc_scheduler.h 的声明)。
+ * actor handler 在每条消息末尾调用; 任何在消息之外推进过任务状态的调用方
+ * (测试、脚本路径) 也应调用它, 否则队列里的任务会留到下一轮。 */
+void edc_scheduler_drain_reap_pending(struct edc_scheduler *sched)
+{
+    if (!sched || sched->reap_count == 0)
+        return;
+    while (sched->reap_count > 0)
+    {
+        struct edc_task *task = sched->reap_pending[--sched->reap_count];
+        sched_reap_one(sched, task);
+        /* 树上少了一行 (可能整组没了) —— 置脏, 由本消息末尾的合并推送下发。 */
+        sched->snapshot_pending = true;
+    }
+}
+
 /* ── 前台任务状态通知 ─────────────────────────────────────── */
 
 /* 前台 group 的 active task 状态变化后立即推送一次 task 树快照。很多这类
@@ -616,7 +829,9 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
  * port (见 ex_set_task_state), 而 executor 只知道"任务该到哪一步了"。 */
 static void sched_move_task(struct edc_scheduler *sched, struct edc_task *task, edc_task_step step, edc_task_life life)
 {
-    edc_task_move(task, step, life);
+    /* 迁移被拒 (不在转移表里) 时相位没变 —— 也就没有"完成"可言, 不入回收队列。 */
+    if (edc_task_move(task, step, life))
+        sched_queue_reap(sched, task);
     if (sched)
         sched->snapshot_pending = true;
 }
@@ -632,6 +847,8 @@ static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *
                                   edc_task_life life)
 {
     edc_task_force_move(task, step, life);
+    /* force 也可能把 TRANSIENT 任务直接送到终态 (兜底/取消) —— 同一条回收规则。 */
+    sched_queue_reap(sched, task);
     if (sched)
         sched->snapshot_pending = true;
 }
@@ -748,6 +965,51 @@ static void ex_send_reply(void *ctx, struct edc_task *task, const char *content,
     struct edc_scheduler *sched = ctx;
     if (sched->send_reply)
         sched->send_reply(sched, task, content, type, request_id);
+}
+
+/* ── sink = GROUP_MEMORY 的落地 (fold 的产出) ─────────────────
+ *
+ * executor 只转交 (它不知道"记忆"是什么); 落地在这里: 写进目标组的 memory、
+ * 把本轮选中的那批已终结任务标成已折叠、推进折叠水位。这套动作原来住在
+ * memory_actor 的 finish 里, 现在它就是"一次普通任务的完成" —— 专用协议
+ * (GROUP_FOLD_DONE) 随之退休 (runtime-model.md §4.6)。
+ *
+ * 失败 (content 空 / 没目标组) 时**什么都不改**: 折叠没成功就还是老记忆 +
+ * 老水位, 下一轮再折 (与旧实现一致)。任务本身照常按 lifetime 回收。 */
+static void sched_deliver_group_memory(struct edc_scheduler *sched, struct edc_task *task, const char *content)
+{
+    (void)sched;
+    struct edc_task_group *group = task ? task->sink_group : NULL;
+    if (!group || !content || !*content)
+    {
+        log_error("L1 fold: task %s produced no memory (target=%s, content=%s) — group memory unchanged",
+                  (task && task->task_id) ? task->task_id : "(null)", group ? "yes" : "none",
+                  (content && *content) ? "non-empty" : "empty");
+        return;
+    }
+
+    if (group->memory)
+        sdsfree(group->memory);
+    group->memory = sdsnew(content);
+
+    size_t folded_tasks = 0, folded_msgs = 0;
+    struct edc_task *t;
+    LL_FOREACH2(group->members, t, group_next)
+    {
+        if (edc_task_is_completed(t) && !t->turns_folded && t->completion_seq <= task->fold_max_seq)
+        {
+            t->turns_folded = true;
+            folded_tasks++;
+            folded_msgs += edc_task_turn_msg_count(t);
+        }
+    }
+    group->folded_through_completion_seq = task->fold_max_seq;
+    log_info("L1 fold done: group %s folded %zu tasks (%zu msgs)", group->group_id, folded_tasks, folded_msgs);
+}
+
+static void ex_deliver_group_memory(void *ctx, struct edc_task *task, const char *content)
+{
+    sched_deliver_group_memory((struct edc_scheduler *)ctx, task, content);
 }
 
 static void ex_send_tool_message(void *ctx, struct edc_task *task, const char *header, const char *content,
@@ -868,6 +1130,7 @@ static void ex_notify_foreground_state(void *ctx, struct edc_task *task)
 static const struct edc_executor_ops sched_executor_ops = {
     .send_llm = ex_send_llm,
     .send_reply = ex_send_reply,
+    .deliver_group_memory = ex_deliver_group_memory,
     .send_tool_message = ex_send_tool_message,
     .dispatch_tools = ex_dispatch_tools,
     .set_task_state = ex_set_task_state,
@@ -1014,6 +1277,11 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, const char *
     {
         cJSON *gj = cJSON_CreateObject();
         cJSON_AddStringToObject(gj, "id", g->group_id ? g->group_id : "");
+        /* group 的类别 —— **纯投影, 不做任何判断**。它是 `kind` 的唯一读者
+         * (展示层), 而这里只是把它写进给 TUI 的快照; scheduler 自己不看它,
+         * 更不据它隐藏/过滤任何东西 (system task 与用户任务一样出现在这份
+         * 快照里, 区别只在于 TUI 把它画到另一个块)。 */
+        cJSON_AddStringToObject(gj, "kind", edc_task_group_kind_name(g->kind));
         cJSON_AddNumberToObject(gj, "member_count", g->member_count);
         cJSON_AddBoolToObject(gj, "orphaned", g->is_orphaned);
         cJSON_AddBoolToObject(gj, "fg", edc_scheduler_get_foreground(sched) == g);
@@ -1104,13 +1372,6 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
     case BC_ACTOR_MSG_TOOL_EMIT:
         sched_handle_tool_emit(sched, msg);
         break;
-    case BC_ACTOR_MSG_GROUP_FOLD_DONE:
-        /* L1 折叠完成, 持久化 state (turns_folded/memory/折叠水位)。
-         * 折叠消息不带 group, 无法定位属主 session, 退化为保存当前 session;
-         * 后台 session 的折叠结果会在它下次被保存时落盘。 */
-        if (sched->save_session)
-            sched->save_session(sched, sched->session);
-        break;
     case BC_ACTOR_MSG_TASK_SNAPSHOT:
         sched_handle_task_snapshot(sched, "poll");
         break;
@@ -1120,6 +1381,10 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 
     /* 本消息引起的状态变化合并成**一次**下发 (最多一次/消息)。放在释放 msg 之前:
      * 快照要读整棵 task 树, 而 handler 放掉 msg 后有些路径会连带释放负载。 */
+    /* 先结算回收 (TRANSIENT 任务跑完就没了), 再下发快照 —— 顺序反过来的话,
+     * 这一帧还会画出那个刚被回收的任务。 */
+    edc_scheduler_drain_reap_pending(sched);
+
     if (sched->snapshot_pending)
     {
         sched->snapshot_pending = false;

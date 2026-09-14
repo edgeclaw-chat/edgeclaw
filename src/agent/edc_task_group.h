@@ -7,6 +7,27 @@
 
 struct edc_session;
 
+/* ── group 的类别 (runtime-model.md §1.4 / §4.6) ───────────────
+ *
+ * USER = 用户任务的分组 (默认); SYSTEM = 系统任务的分组 (fold 等) —— 侧栏
+ * **单独一块**渲染, 好让用户看见有哪些系统任务在跑。
+ *
+ * **只有展示层可读** —— 这就是防复发的那道闸。老实现用一个 `is_system` 布尔
+ * 在 5 处做 skip (`/task list`、侧栏、`is_foldable`、序列化过滤器…), 漏一处就
+ * 冒出 `Group system` (既有事故见 MEMORY: 加载期收敛成非瞬时态后过滤器不再丢它)。
+ * 新做法相反: system task **照常出现在 `/task list` 与快照里**(可见), 唯一的
+ * 区别是展示层把它画到另一块 —— 没有"漏一处"这回事, 因为**没有地方在隐藏它**。 */
+typedef enum
+{
+    EDC_GROUP_KIND_USER,   /* 用户任务的分组 (默认) */
+    EDC_GROUP_KIND_SYSTEM, /* 系统任务的分组 */
+} edc_group_kind;
+
+extern const char *edc_task_group_kind_name(edc_group_kind kind);
+extern edc_group_kind edc_task_group_classify_kind(const char *name);
+/** 是否是系统分组。展示层/测试用 —— core 不得据此隐藏任何东西。 */
+extern bool edc_task_group_is_system(const struct edc_task_group *group);
+
 /* ── Task Group (Process Group, PGID) ──────────────────────────── */
 
 struct edc_task_group
@@ -16,6 +37,8 @@ struct edc_task_group
     struct edc_task *members; /* 链表头: group 内所有 task (含 leader) */
     int member_count;
     struct edc_session *session; /* 属主 session (由 edc_session_add_group 绑定) */
+
+    edc_group_kind kind; /* USER (默认) / SYSTEM —— 只有展示层可读, 见上面的 enum */
 
     bool is_orphaned; /* leader 退出后置 true */
 

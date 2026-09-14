@@ -76,7 +76,11 @@ def gen_config(ecl: Path, extra_rw=()):
     cfg = {
         "max_iter": -1,
         "memory_compress_threshold": 200,
-        "group_fold_msg_threshold": 200,
+        # 折叠阈值: 默认 200 (smoke/bg/cancel 都够不到, 所以那些夹具不折)。
+        # fold 夹具在冻结时用 AB_FOLD_MSG_THRESHOLD 调低, 好在几轮对话内就
+        # 触发一次真正的折叠 —— 折叠的**产物** (memory / turns_folded / 水位)
+        # 必须逐字节可比。
+        "group_fold_msg_threshold": int(os.environ.get("AB_FOLD_MSG_THRESHOLD", "200")),
         "tool_max_output_size": 10000,
         "sandbox": {
             "rw_paths": [str(ws) + "/", "/tmp", "/dev"] + list(extra_rw),

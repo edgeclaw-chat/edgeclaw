@@ -70,6 +70,8 @@ class TaskWidget : public ::ftxui::ComponentBase
     struct GroupInfo
     {
         std::string group_id;
+        /* EDC_C_GROUP_KIND_*: 展示层唯一的依据 —— 系统分组画到侧栏单独一块。 */
+        int kind = EDC_C_GROUP_KIND_USER;
         int msg_count = 0; /* live group messages (committed + in-flight) */
         bool orphaned = false;
         bool fg = false;

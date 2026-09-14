@@ -111,11 +111,17 @@ static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task
             edc_turn_add_assistant_message(task->active_turn, e->msg);
             e->msg = NULL;
 
-            /* sync turn messages to group history (context sharing) */
-            for (size_t qi = task->active_turn->messages.head; qi < task->active_turn->messages.tail; qi++)
+            /* sync turn messages to group history (context sharing)。
+             * sink=GROUP_MEMORY (system task) 除外: 它的 turn 是折叠 prompt 与
+             * 摘要, 不属于任何"对话历史" —— 混进去的话, 同一个系统组里**下一次**
+             * 折叠就会看到上一次的 prompt 与答案。 */
+            if (task->sink != EDC_SINK_GROUP_MEMORY)
             {
-                cJSON *item = task->active_turn->messages.data[qi];
-                edc_task_group_history_add_ref(task->group, item);
+                for (size_t qi = task->active_turn->messages.head; qi < task->active_turn->messages.tail; qi++)
+                {
+                    cJSON *item = task->active_turn->messages.data[qi];
+                    edc_task_group_history_add_ref(task->group, item);
+                }
             }
         }
         edc_task_commit_active_turn(task);
@@ -123,7 +129,14 @@ static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task
             edc_task_set_output(task, sdsnew(e->content));
         if (ops->flush_redirects)
             ops->flush_redirects(ex->ctx, task);
-        task->completion_seq = own ? own->next_completion_seq++ : 0;
+        /* completion_seq = session 的**完成顺序** (折叠水位、$N 输出引用都读它)。
+         * sink=GROUP_MEMORY 的 system task 不进这个序列: 它不是用户的完成次序里
+         * 的一环 (规则 ④ "不进入被折叠 group 的 completion_seq" 的落地 —— 连它所在
+         * session 的计数器也不动, 于是折叠不改变任何用户可见的序号)。 */
+        if (own && task->sink != EDC_SINK_GROUP_MEMORY)
+            task->completion_seq = own->next_completion_seq++;
+        else
+            task->completion_seq = 0;
         if (ops->set_task_state)
             ops->set_task_state(ex->ctx, task, EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED);
 
@@ -143,9 +156,18 @@ static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task
         if (ops->start_queued_dependents)
             ops->start_queued_dependents(ex->ctx, task);
 
-        /* send_reply internally checks active_task */
-        if (ops->send_reply)
+        /* 产出送到哪: 由 sink 决定 (runtime-model.md §1.4 —— sink 的唯一读者就是
+         * 这里)。CHANNEL = 回给用户 (send_reply 内部还会查 active_task 闸门);
+         * GROUP_MEMORY = 交给上层写进目标组的记忆 (fold), 不产生任何回话。 */
+        if (task->sink == EDC_SINK_GROUP_MEMORY)
+        {
+            if (ops->deliver_group_memory)
+                ops->deliver_group_memory(ex->ctx, task, e->content);
+        }
+        else if (ops->send_reply)
+        {
             ops->send_reply(ex->ctx, task, e->content, EDC_CHANNEL_MESSAGE_RESP_TYPE, req_id);
+        }
 
         /* auto-reap disabled: tasks stay COMPLETED for cross-group join */
 

@@ -112,6 +112,18 @@ extern size_t edc_session_get_message_count(struct edc_session *session);
 extern void edc_session_add_group(struct edc_session *session, struct edc_task_group *group);
 extern void edc_session_remove_group(struct edc_session *session, struct edc_task_group *group);
 extern struct edc_task_group *edc_session_find_group(struct edc_session *session, const char *group_id);
+
+/** session 的**系统组** (kind == SYSTEM), 没有时返回 NULL。
+ *
+ *  系统任务 (fold 等) 的容器: 首次需要时由 edc_scheduler_spawn_system_task 建,
+ *  最后一个系统任务被回收时由回收路径删掉 (runtime-model.md §4.6)。所以它可能
+ *  在任何时刻不存在, 调用方必须处理 NULL。
+ *
+ *  这是 `kind` 在核心侧**唯一**的读取点, 而且是**结构性**的 ("这些任务归哪个
+ *  容器"), 不隐藏、不跳过、不改变任何行为 —— 老 `is_system` 那种"用它当 skip
+ *  的门"在这里没有对应物。另一个读者是展示层 (侧栏把这块画在单独一块)。 */
+extern struct edc_task_group *edc_session_find_system_group(struct edc_session *session);
+
 extern struct edc_task *edc_session_find_task(struct edc_session *session, const char *task_id);
 
 extern void edc_session_set_active_task(struct edc_session *session, struct edc_task *task);

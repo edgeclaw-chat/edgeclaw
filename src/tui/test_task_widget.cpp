@@ -142,6 +142,15 @@ std::vector<std::pair<int, int>> MarkerCells(const ::ftxui::Screen &screen)
     return cells;
 }
 
+// The first row (top to bottom) whose text contains `needle`, or -1.
+int RowWith(const ::ftxui::Screen &screen, const std::string &needle)
+{
+    for (int y = 0; y < kH; y++)
+        if (RowText(screen, y).find(needle) != std::string::npos)
+            return y;
+    return -1;
+}
+
 // Render `widget` at a given breath phase and return the color of its first
 // marker.
 ::ftxui::Color FirstMarkerColor(edc::TaskWidget &widget, long long breath_ms)
@@ -184,6 +193,90 @@ void TestMarkerPerStateInItsColor(void)
         const auto &cell = screen.CellAt(markers[i].first, markers[i].second);
         Check(cell.foreground_color == expected[i], std::string("marker for ") + specs[i].state + " wears its state color");
     }
+}
+
+void TestSystemGroupGetsItsOwnBlock(void)
+{
+    std::cout << "system groups draw in their own block (and are never hidden)\n";
+
+    // Two groups, snapshot order = user first (the usual case: the user's group
+    // is older). The widget must reorder them: system block on top, user tree
+    // under it (the tree is bottom-anchored, so the squeeze hits the system
+    // block first and the user's active row keeps its place).
+    edc_c_task_info user_tasks[1] = {};
+    user_tasks[0].task_id = "11";
+    user_tasks[0].state = "IDLE";
+    user_tasks[0].description = "user work";
+    user_tasks[0].is_active = 1;
+    user_tasks[0].is_leader = 1;
+    edc_c_task_group g_user = edc_c_task_group{};
+    g_user.group_id = "1";
+    g_user.kind = EDC_C_GROUP_KIND_USER;
+    g_user.member_count = 1;
+    g_user.task_count = 1;
+    g_user.tasks = user_tasks;
+
+    edc_c_task_info sys_tasks[1] = {};
+    sys_tasks[0].task_id = "777";
+    sys_tasks[0].state = "LLM_PROCESSING";
+    sys_tasks[0].description = "fold group 1";
+    sys_tasks[0].is_leader = 1;
+    edc_c_task_group g_sys = edc_c_task_group{};
+    g_sys.group_id = "9";
+    g_sys.kind = EDC_C_GROUP_KIND_SYSTEM;
+    g_sys.member_count = 1;
+    g_sys.task_count = 1;
+    g_sys.tasks = sys_tasks;
+
+    edc_c_task_group groups[2] = {g_user, g_sys};
+    edc_c_task_snapshot snap = edc_c_task_snapshot{};
+    snap.session_id = "s";
+    snap.session_name = "session";
+    snap.group_count = 2;
+    snap.groups = groups;
+
+    auto widget = std::make_shared<edc::TaskWidget>();
+    widget->SetSnapshot(&snap);
+    const auto screen = Render(*widget);
+
+    const int heading = RowWith(screen, " System");
+    const int sys_row = RowWith(screen, "Group 9");
+    const int user_row = RowWith(screen, "Group 1");
+    const std::string frame = FrameText(screen);
+
+    Check(heading >= 0, "the System heading is drawn");
+    Check(sys_row > heading, "the system group sits under its heading");
+    Check(user_row > sys_row, "the user tree stays below the system block");
+    Check(RowWith(screen, "777") >= 0 && RowWith(screen, "fold group 1") >= 0, "its task row is drawn (nothing is hidden)");
+    Check(RowWith(screen, "fold group 1") > 0, "the system task's description is visible");
+    Check(frame.find("2 groups") != std::string::npos, "the header counts the system group too");
+
+    // Control 1: the same two groups, both USER -> no System heading and the
+    // snapshot's own order (user "1" above "9"). Mutate the array the snapshot
+    // points at (the snapshot holds copies of the two structs).
+    groups[1].kind = EDC_C_GROUP_KIND_USER;
+    auto plain = std::make_shared<edc::TaskWidget>();
+    plain->SetSnapshot(&snap);
+    const auto plain_screen = Render(*plain);
+    Check(RowWith(plain_screen, " System") < 0, "no System heading when no group is a system group");
+    Check(RowWith(plain_screen, "Group 1") < RowWith(plain_screen, "Group 9"), "user groups keep snapshot order");
+
+    // Control 2: a snapshot with no `kind` (zero) renders exactly like an
+    // explicit USER one -- old snapshots are unaffected.
+    edc_c_task_group one[1] = {g_user};
+    edc_c_task_snapshot snap_one = snap;
+    snap_one.group_count = 1;
+    snap_one.groups = one;
+    edc_c_task_group one_nokind = g_user;
+    one_nokind.kind = 0;
+    edc_c_task_snapshot snap_nokind = snap_one;
+    snap_nokind.groups = &one_nokind;
+
+    auto a = std::make_shared<edc::TaskWidget>();
+    a->SetSnapshot(&snap_one);
+    auto b = std::make_shared<edc::TaskWidget>();
+    b->SetSnapshot(&snap_nokind);
+    Check(FrameText(Render(*a)) == FrameText(Render(*b)), "an absent kind renders like USER (old snapshots unchanged)");
 }
 
 void TestActiveTaskWearsTheBlock(void)
@@ -364,6 +457,7 @@ int main()
     TestHasProcessingTask();
     TestMarkersSitLeftOfTheId();
     TestStateNameIsGone();
+    TestSystemGroupGetsItsOwnBlock();
 
     if (g_failures == 0)
     {

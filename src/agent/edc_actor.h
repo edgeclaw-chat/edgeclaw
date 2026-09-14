@@ -24,8 +24,6 @@ typedef enum
     BC_ACTOR_MSG_CHANNEL_RECV,
     BC_ACTOR_MSG_TASK_SNAPSHOT,   /* TUI 请求当前 session 的 task 树快照 */
     BC_ACTOR_MSG_TOOL_EMIT,       /* toolbox → scheduler: 工具结果需经 active-task 闸门后转发 */
-    BC_ACTOR_MSG_GROUP_FOLD,      /* scheduler → memory_actor: 折叠 group 内已终结 task 的 turns */
-    BC_ACTOR_MSG_GROUP_FOLD_DONE, /* memory_actor → scheduler: 折叠完成, 请求持久化 */
     BC_ACTOR_MSG_TOOL_STARTED,    /* toolbox → scheduler: 某个工具**真正开始执行**
                                    * (data = strdup(call_id)); 供 resume 账本精确
                                    * 区分"未执行"(PENDING) 与"执行中"(EXECUTING) */

@@ -108,6 +108,16 @@ struct edc_scheduler
      * 处理完之后最多下发一次 —— 突发天然合并。 */
     bool snapshot_pending;
 
+    /* ── 待回收的 TRANSIENT 任务 (完成即回收) ──
+     * 不在状态迁移的那一刻直接 free: 那条路径上还有调用方拿着 task 指针
+     * (executor 的 exec_done 返回后, 调用它的响应处理还要接着用它)。所以只入队,
+     * 由 actor handler 在**本条消息处理完之后**统一结算 —— 与 snapshot_pending
+     * 同一个位置、同一个理由 ("本条消息引起的后果, 在消息末尾一次性落地")。
+     * 数组按需增长; 队列在调度器销毁时只丢指针 (任务归 session 所有)。 */
+    struct edc_task **reap_pending;
+    size_t reap_count;
+    size_t reap_cap;
+
     int64_t next_task_id;
 
     void *ctx; /* 回调上下文 (edc_agent*) */
@@ -142,6 +152,46 @@ extern char *edc_scheduler_gen_task_id(struct edc_scheduler *sched);
 extern void edc_scheduler_observe_task_id(struct edc_scheduler *sched, const char *task_id);
 extern struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, const char *desc,
                                                   edc_channel_type channel_type);
+
+/** 创建一个 **system task** 并放进 `session` 的系统组 (没有就建一个)。
+ *
+ *  三个属性一次给全 (runtime-model.md §4.6 的四条规则):
+ *    - `lifetime = TRANSIENT`  —— 不落盘、完成即回收 (回收后组空了会连组一起删);
+ *    - `sink = GROUP_MEMORY`   —— 产出交给 group 记忆, 不发给用户;
+ *    - 组 `kind = SYSTEM`      —— 只有展示层读它 (侧栏单独一块)。
+ *
+ *  `session` 是**属主**(也是系统组的家): 折叠一个后台 session 的组时, 任务与产出
+ *  都落在那个 session 上 —— 这正是老实现做不到的 (它退回"保存当前 session")。
+ *
+ *  返回时任务停在 (READY, ALIVE): **它还没有 input** —— 调用方装上 turn (折叠
+ *  prompt 等) 再派发 (见 edc_scheduler_dispatch_task)。任务归 session 所有,
+ *  不要自己 free。没有 session 时返回 NULL。 */
+extern struct edc_task *edc_scheduler_spawn_system_task(struct edc_scheduler *sched, struct edc_session *session,
+                                                        const char *desc);
+
+/** 该 session 的系统组里是否还有没跑完的 system task (即已有一次折叠在飞)。
+ *  折叠触发用它做闸门: 一个 session 同时只折一个组, 免得两次折叠互相看见对方
+ *  的半成品记忆。 */
+extern bool edc_scheduler_has_pending_system_task(struct edc_session *session);
+
+/** 给任务装上 input 并派发它: 建 turn → 注册 request_id → AWAIT_EXEC → send_llm。
+ *  与 shell 的创建路径同一套步骤; system task (fold) 的触发方用它。 */
+extern bool edc_scheduler_dispatch_task(struct edc_scheduler *sched, struct edc_task *task, const char *input);
+
+/** system task 的 request_id 来源。
+ *
+ *  与 resume 同一套做法: 用一个**高位段**起步的计数器, 避免与 shell 输入路径的
+ *  小整数 counter 撞 (task_hash 以指针为键, 撞了会把响应路由到别的任务)。
+ *  段位: shell 输入 = 小整数, resume = 1<<40, system task = 1<<41。 */
+extern void *edc_scheduler_gen_system_request_id(void);
+
+/** 结算待回收的 TRANSIENT 任务 (完成即回收)。
+ *
+ *  actor handler 在**每条消息末尾**调用它 (先结算、再下发快照, 否则这一帧还会
+ *  画出刚被回收的任务)。消息之外推进过任务状态的调用方 (单测、脚本路径) 也要
+ *  自己调一次, 否则队列里的任务会留到下一轮。
+ *  ⚠️ 它会 free 任务、必要时连空组一起删 —— 调用方此后不得再持有那些指针。 */
+extern void edc_scheduler_drain_reap_pending(struct edc_scheduler *sched);
 extern struct edc_task_group *edc_scheduler_create_group(struct edc_scheduler *sched, struct edc_task *leader);
 extern void edc_scheduler_add_group(struct edc_scheduler *sched, struct edc_task_group *group);
 

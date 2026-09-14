@@ -128,6 +128,14 @@ struct edc_executor_ops
     void (*send_reply)(void *ctx, struct edc_task *task, const char *content, edc_channel_message_type msg_type,
                        void *request_id);
 
+    /* ── sink = GROUP_MEMORY 的产出落地 ──
+     * 产出送到哪由 `task->sink` 决定 (runtime-model.md §1.4: sink 的唯一读者是
+     * executor), 但"记忆"是什么、怎么合并、水位怎么推, 是 scheduler 的事 ——
+     * 这里只把结果转交。实现见 sched_deliver_group_memory。
+     * (fold 原来是 memory_actor 的专用协议 GROUP_FOLD_DONE; 现在它就是一次
+     *  普通任务的完成, 产出按 sink 分流。) */
+    void (*deliver_group_memory)(void *ctx, struct edc_task *task, const char *content);
+
     /* 把工具结果回显成一条 TOOL 消息（仅 active task 会触发）。 */
     void (*send_tool_message)(void *ctx, struct edc_task *task, const char *header, const char *content,
                               edc_render_pref_t render_pref, void *request_id);

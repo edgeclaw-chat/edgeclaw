@@ -4,7 +4,6 @@
 #include "edc_channel_actor.h"
 #include "edc_cmd_parse.h"
 #include "edc_compat.h"
-#include "edc_memory_actor.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"

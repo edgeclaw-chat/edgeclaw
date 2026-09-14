@@ -122,6 +122,7 @@ void TaskWidget::SetSnapshot(const ::edc_c_task_snapshot *snap)
 
         GroupInfo group;
         group.group_id = g->group_id ? g->group_id : "";
+        group.kind = g->kind;
         group.msg_count = g->msg_count;
         group.orphaned = g->orphaned != 0;
         group.fg = g->fg != 0;
@@ -150,12 +151,18 @@ void TaskWidget::SetSnapshot(const ::edc_c_task_snapshot *snap)
     }
 
     // Refresh collapse state: keep user toggles for groups that still exist;
-    // a newly-seen group is expanded only when it holds the active task.
+    // a newly-seen group is expanded when it holds the active task -- and also
+    // when it is a *system* group: the whole point of that block is showing what
+    // is running, and a system task lives for seconds, so folding it away by
+    // default would hide it for its entire life. (A user can still fold it; the
+    // toggle is remembered like any other.)
     std::map<std::string, bool> next;
     for (const auto &g : groups_)
     {
         const auto it = group_expanded_.find(g.group_id);
-        next[g.group_id] = (it != group_expanded_.end()) ? it->second : (g.group_id == active_group_id);
+        next[g.group_id] = (it != group_expanded_.end())
+                               ? it->second
+                               : (g.group_id == active_group_id || g.kind == EDC_C_GROUP_KIND_SYSTEM);
     }
     group_expanded_ = std::move(next);
 }
@@ -333,8 +340,37 @@ int TaskWidget::RowWidth() const
 
         group_header_boxes_.resize(groups_.size());
 
-        for (size_t i = 0; i < groups_.size(); i++)
+        /* 画两块: **系统分组单独一块** (只有存在时才画), 用户分组照旧。
+         *
+         * 为什么系统块在前: 侧栏的树是锚底的 (edc_sidebar 用 follow_tail), 视口不
+         * 够时该被挤出去的正是系统块 —— "最后一行永远是用户正在跑的那个 task"
+         * 优先于"看见系统任务"。system task 本来就是短命的 (TRANSIENT, 完成即回收),
+         * 它出现/消失都不该动用户那棵树的锚点。
+         *
+         * 这里读 `kind` 是它**唯一的读者** (展示层)。没有任何东西被隐藏: 系统
+         * 任务与用户任务一样是快照里的普通成员, 只是画在另一块 —— 换句话说,
+         * "漏一处就冒出 Group system"那类事故在这个形状下不可能发生。 */
         {
+            std::vector<size_t> order;
+            for (size_t i = 0; i < groups_.size(); i++)
+                if (groups_[i].kind == ::EDC_C_GROUP_KIND_SYSTEM)
+                    order.push_back(i);
+            if (!order.empty())
+            {
+                lines.push_back(text(" System") | bold | color(pal.text_dim));
+                for (size_t i = 0; i < groups_.size(); i++)
+                    if (groups_[i].kind != ::EDC_C_GROUP_KIND_SYSTEM)
+                        order.push_back(i);
+            }
+            else
+            {
+                for (size_t i = 0; i < groups_.size(); i++)
+                    order.push_back(i);
+            }
+
+        for (size_t k = 0; k < order.size(); k++)
+        {
+            const size_t i = order[k];
             const auto &g = groups_[i];
             const bool expanded = group_expanded_[g.group_id];
 
@@ -400,6 +436,7 @@ int TaskWidget::RowWidth() const
                                     text(std::string(kRightPad, ' ')),
                                 }));
             }
+        }
         }
     }
 

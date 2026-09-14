@@ -172,6 +172,13 @@ struct edc_c_task_snapshot *edc_c_task_snapshot_parse(const char *json)
             cJSON *mc = cJSON_GetObjectItemCaseSensitive(gj, "member_count");
             cJSON *gmc = cJSON_GetObjectItemCaseSensitive(gj, "msg_count");
             g->group_id = snap_dup(snap_str(cJSON_GetObjectItemCaseSensitive(gj, "id")));
+            /* 类别: 只认 "system", 其余 (含缺键 = 旧快照) 一律 USER —— 展示层
+             * 对未知取值退化为"照旧显示", 不隐藏任何东西。 */
+            {
+                cJSON *knd = cJSON_GetObjectItemCaseSensitive(gj, "kind");
+                g->kind = (knd && strcmp(snap_str(knd), "system") == 0) ? EDC_C_GROUP_KIND_SYSTEM
+                                                                        : EDC_C_GROUP_KIND_USER;
+            }
             g->member_count = cJSON_IsNumber(mc) ? mc->valueint : 0;
             g->msg_count = cJSON_IsNumber(gmc) ? gmc->valueint : 0;
             g->orphaned = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(gj, "orphaned")) ? 1 : 0;

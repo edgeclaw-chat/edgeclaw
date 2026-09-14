@@ -18,6 +18,9 @@ struct edc_task_group *edc_task_group_new(struct edc_task *leader)
     leader->group_next = NULL;
     group->member_count = 1;
     group->is_orphaned = false;
+    /* 用户分组是默认: 系统分组只会由 system task 的创建者显式点名 (见 task_group.h
+     * 的 edc_group_kind)。 */
+    group->kind = EDC_GROUP_KIND_USER;
     group->history = cJSON_CreateArray();
     group->memory = NULL;
     group->folded_through_completion_seq = 0;
@@ -48,6 +51,34 @@ void edc_task_group_free(struct edc_task_group *group)
     if (group->memory)
         sdsfree(group->memory);
     free(group);
+}
+
+/* ── 类别 ─────────────────────────────────────────────────── */
+
+const char *edc_task_group_kind_name(edc_group_kind kind)
+{
+    switch (kind)
+    {
+    case EDC_GROUP_KIND_USER:
+        return "user";
+    case EDC_GROUP_KIND_SYSTEM:
+        return "system";
+    }
+    return "user";
+}
+
+edc_group_kind edc_task_group_classify_kind(const char *name)
+{
+    if (!name)
+        return EDC_GROUP_KIND_USER;
+    if (strcmp(name, "system") == 0)
+        return EDC_GROUP_KIND_SYSTEM;
+    return EDC_GROUP_KIND_USER;
+}
+
+bool edc_task_group_is_system(const struct edc_task_group *group)
+{
+    return group && group->kind == EDC_GROUP_KIND_SYSTEM;
 }
 
 /* ── 组历史 ───────────────────────────────────────────────── */
@@ -254,10 +285,17 @@ size_t edc_task_group_unfolded_msg_count(struct edc_task_group *group)
     if (!group)
         return 0;
 
+    /* 只数**要留下来的**任务的消息 (见 edc_task_is_foldable): TRANSIENT 的任务
+     * 不参与折叠, 也不该把折叠阈值顶起来 —— 否则系统组 (全 TRANSIENT) 会自己
+     * 触发一次没有意义的折叠。 */
     size_t total = 0;
     struct edc_task *t;
     LL_FOREACH2(group->members, t, group_next)
+    {
+        if (edc_task_is_transient(t))
+            continue;
         total += edc_task_turn_msg_count(t);
+    }
 
     size_t folded = edc_task_group_folded_msg_count(group);
     return total > folded ? total - folded : 0;

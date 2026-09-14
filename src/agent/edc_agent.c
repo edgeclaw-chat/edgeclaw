@@ -7,7 +7,7 @@
 #include "edc_file_utils.h"
 #include "edc_init_env.h"
 #include "edc_llm_actor.h"
-#include "edc_memory_actor.h"
+#include "edc_group_fold.h"
 #include "edc_sandbox.h"
 #include "edc_secret.h"
 #include "edc_session.h"
@@ -320,7 +320,7 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
         hist_begin = edc_agent_history_safe_start(task->group->history, hist_begin, 1);
 
         /* 注入全部未折叠历史 [hist_begin, end): fold 采用"半量"策略 (见
-         * edc_memory_actor 的 L1 fold), 触发时只压最老的一半, 剩下的未折叠
+         * edc_group_fold 的 L1 fold), 触发时只压最老的一半, 剩下的未折叠
          * 消息正是模型该看到的近期细节, 因此整段注入、不再截断。请求体量的
          * 上界由 group_fold_msg_threshold 决定 (fold 触发即把它压回去)。 */
         for (size_t i = hist_begin; i < end; i++)
@@ -408,7 +408,14 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
         task->has_deferred_vars = 0;
     }
 
-    struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, agent->toolbox ? agent->toolbox->schemas : NULL,
+    /* sink = GROUP_MEMORY 的 system task (fold) 要的是**一次干净的摘要调用**:
+     * 它的"镜像"就是 系统组头部 (折叠说明) + 它自己的 turn (折叠 prompt)。
+     * 所以不给它工具定义 —— 摘要器没有工具可用, 也不该被工具循环带走 (旧实现
+     * 发给 LLM 的请求里 tools 字段是空的, 这条差别的唯一理由就是保持那份请求
+     * 逐字节可比)。 */
+    const bool is_memory_sink = (task->sink == EDC_SINK_GROUP_MEMORY);
+    cJSON *tools = (!is_memory_sink && agent->toolbox) ? agent->toolbox->schemas : NULL;
+    struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, tools,
                                                           task->active_turn ? &task->active_turn->messages : NULL);
     req->history_owned = true;
     /* 绝对队尾: todo reminder —— 不再每轮请求都塞 (避免唠叨), 只在
@@ -419,7 +426,9 @@ static void edc_agent_cb_send_llm(struct edc_scheduler *sched, struct edc_task *
      * 单→"尚无清单"+建计划引导。llm actor 在 history + turn 之后追加, 每
      * 轮请求都是最新状态。req 持有并随请求释放 (副本, 不改 task/group)。 */
     req->tail_system = NULL;
-    if (edc_task_llm_request_poke(task))
+    /* 待办提醒是给"正在干活的用户任务"的节拍; 摘要调用不该被它插尾
+     * (同样是为了让折叠请求与旧实现逐字节一致)。 */
+    if (!is_memory_sink && edc_task_llm_request_poke(task))
         req->tail_system = edc_context_make_todo_reminder(task);
 
     edc_actor_send(agent->llm_actor,
@@ -608,7 +617,7 @@ static bool edc_agent_cb_handle_command(struct edc_scheduler *sched, struct edc_
 static void edc_agent_cb_trigger_memory(struct edc_scheduler *sched)
 {
     struct edc_agent *agent = edc_scheduler_agent(sched);
-    if (!agent || !agent->memory_actor || !sched->session)
+    if (!agent || !agent->session_manager)
         return;
 
     int msg_threshold =
@@ -619,29 +628,35 @@ static void edc_agent_cb_trigger_memory(struct edc_scheduler *sched)
     /* L1 折叠触发: 组内存在可折叠 task 且未折叠消息条数 ≥ 阈值。
      * 触发时机只由对话条数驱动 —— 不再看可折叠 task 个数。
      * 扫描**所有** session: 后台 session 里的任务完成后也要能触发折叠, 否则
-     * 只有切回来才折叠。一次只折叠一个 group。 */
+     * 只有切回来才折叠。一次只折叠一个组。
+     *
+     * 折叠本身是一次 system task (见 edc_group_fold.c): 这里只决定"该折了",
+     * 任务由 edc_group_fold_start 建、派发, 它的产出经 sink=GROUP_MEMORY 落到
+     * 目标组的记忆里, 跑完按 lifetime=TRANSIENT 被回收。 */
     struct edc_session_manager *sm = agent->session_manager;
     for (int si = 0; si < sm->session_count; si++)
     {
         struct edc_session *sess = sm->sessions[si];
         if (!sess)
             continue;
+        /* 这个 session 已经有折叠在飞: 跳过 (别让两次折叠互相看见半成品记忆)。 */
+        if (edc_scheduler_has_pending_system_task(sess))
+            continue;
+
         struct edc_task_group *g;
         DL_FOREACH(sess->groups, g)
         {
             size_t foldable = edc_task_group_count_foldable(g);
             size_t unfolded = edc_task_group_unfolded_msg_count(g);
-            bool should_fold = foldable > 0 && unfolded >= (size_t)msg_threshold;
 
-            if (should_fold)
+            if (edc_group_fold_due(g, msg_threshold))
             {
                 log_info("L1 fold trigger: group %s foldable=%zu unfolded=%zu (msg_thr=%d)", g->group_id, foldable,
                          unfolded, msg_threshold);
-                edc_actor_send(agent->memory_actor, edc_actor_msg_new(BC_ACTOR_MSG_GROUP_FOLD,
-                                                                      edc_scheduler_get_actor(sched), NULL, g, NULL));
+                edc_group_fold_start(agent, sess, g);
                 return; /* 一次只折叠一个 group */
             }
-            else if (foldable > 0 || unfolded > 0)
+            if (foldable > 0 || unfolded > 0)
             {
                 log_debug("L1 fold check: group %s foldable=%zu unfolded=%zu", g->group_id, foldable, unfolded);
             }
@@ -766,7 +781,6 @@ struct edc_agent *edc_agent_new(bool setup, int sandbox_override)
 
     agent->channel_actor = edc_channel_actor_new(&agent->config->channel, agent->config->workspace);
     agent->llm_actor = edc_llm_actor_new(agent->config);
-    agent->memory_actor = edc_memory_actor_new(agent->config->workspace, agent->llm_actor);
     agent->session_manager = edc_session_manager_new(agent->config);
     if (!agent->session_manager)
     {
@@ -806,7 +820,6 @@ struct edc_agent *edc_agent_new(bool setup, int sandbox_override)
     edc_actor_runner_add(agent->runner, edc_scheduler_get_actor(agent->scheduler));
     edc_actor_runner_add(agent->runner, agent->channel_actor);
     edc_actor_runner_add(agent->runner, agent->llm_actor);
-    edc_actor_runner_add(agent->runner, agent->memory_actor);
 
     agent->toolbox = edc_toolbox_new(agent->config, edc_scheduler_get_actor(agent->scheduler), agent->channel_actor);
     agent->toolbox_actor = edc_toolbox_actor_new(agent->toolbox);
@@ -1020,7 +1033,6 @@ void edc_agent_free(struct edc_agent *agent)
     edc_channel_actor_free(agent->channel_actor);
     edc_toolbox_actor_free(agent->toolbox_actor);
     edc_llm_actor_free(agent->llm_actor);
-    edc_memory_actor_free(agent->memory_actor);
 
     /* 退出 = 关闭进程, 不是用户要 remove session: 尽量保留原状态。把所有
      * session 完整落盘 (history + state + task/group), 让中断任务以

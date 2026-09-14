@@ -247,6 +247,20 @@ struct edc_task_group *edc_session_find_group(struct edc_session *session, const
     return NULL;
 }
 
+/* 系统任务的容器, 见 edc_session.h 的声明 (kind 在核心侧唯一的读取点)。 */
+struct edc_task_group *edc_session_find_system_group(struct edc_session *session)
+{
+    if (!session)
+        return NULL;
+    struct edc_task_group *group;
+    DL_FOREACH(session->groups, group)
+    {
+        if (edc_task_group_is_system(group))
+            return group;
+    }
+    return NULL;
+}
+
 struct edc_task *edc_session_find_task(struct edc_session *session, const char *task_id)
 {
     if (!session || !task_id)

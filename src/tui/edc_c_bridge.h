@@ -40,6 +40,14 @@ struct edc_c_todo_item
     const char *priority; /* high | medium | low ("" when unset) */
 };
 
+/* Group kinds (mirrors the project's edc_group_kind; inlined so the C++ side
+ * never includes the project's headers). Only the sidebar reads them. */
+enum
+{
+    EDC_C_GROUP_KIND_USER = 0,
+    EDC_C_GROUP_KIND_SYSTEM = 1,
+};
+
 struct edc_c_task_info
 {
     const char *task_id;
@@ -59,6 +67,10 @@ struct edc_c_task_info
 struct edc_c_task_group
 {
     const char *group_id;
+    /* 组类别（project 侧 edc_group_kind）: EDC_C_GROUP_KIND_*。它是展示层
+     * 唯一的依据 —— 系统分组画到侧栏单独一块，用户分组照旧。core 不据此隐藏
+     * 任何东西（系统任务同样出现在快照里）。 */
+    int kind;
     int member_count;
     int msg_count; /* messages in this group: committed (no system prompt) +
                       in-flight turns of its tasks */

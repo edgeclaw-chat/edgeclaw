@@ -25,7 +25,6 @@ struct edc_agent
 
     edc_actor_t *channel_actor;
     edc_actor_t *llm_actor;
-    edc_actor_t *memory_actor;
     edc_actor_t *toolbox_actor;
 
     edc_actor_runner_t *runner;

@@ -206,14 +206,42 @@ static cJSON *task_to_json(struct edc_task *task)
  *  Serialize a single group
  *  ══════════════════════════════════════════════════════════════ */
 
+/* ── 落盘判据: 谁上盘 ────────────────────────────────────────
+ * `lifetime` 的**唯一读者**是持久化层 (runtime-model.md §5 规则 7) —— 就是这个文件。
+ * TRANSIENT (system task) 不落盘, 于是重启后**僵尸不可能存在**; 它照常出现在快照与
+ * `/task list` 里 (可见), 所以也**没有可漏的 skip** —— 老 `is_system` 的两种死法
+ * (会落盘的僵尸 + 五处特判漏一处就冒 `Group system`) 都不成立。
+ *
+ * group 的落盘同理**只由成员的 lifetime 派生**, 不看 `kind`: 一个组里没有任何
+ * PERSISTENT 成员时它自然空掉, 不写盘 —— 这就是 system 组不进文件的原因, 而
+ * 持久化层连"系统组"这个概念都不需要知道。 */
+static bool task_is_persisted(const struct edc_task *task)
+{
+    return !edc_task_is_transient(task);
+}
+
+static size_t group_persisted_member_count(struct edc_task_group *group)
+{
+    size_t n = 0;
+    struct edc_task *t;
+    LL_FOREACH2(group->members, t, group_next)
+    {
+        if (task_is_persisted(t))
+            n++;
+    }
+    return n;
+}
+
 static cJSON *group_to_json(struct edc_task_group *group)
 {
     cJSON *gj = cJSON_CreateObject();
 
     cJSON_AddStringToObject(gj, "group_id", group->group_id ? group->group_id : "");
     /* leader_task_id: for normal groups use leader->task_id;
-     * for orphaned groups fall back to group_id (original leader's id) */
-    if (group->leader)
+     * for orphaned groups fall back to group_id (original leader's id).
+     * leader 不落盘时 (TRANSIENT) 也走同一条退路 —— 否则读回时会去找一个
+     * task 块里根本不存在的 leader。 */
+    if (group->leader && task_is_persisted(group->leader))
         cJSON_AddStringToObject(gj, "leader_task_id", group->leader->task_id);
     else if (group->group_id)
         cJSON_AddStringToObject(gj, "leader_task_id", group->group_id);
@@ -222,11 +250,13 @@ static cJSON *group_to_json(struct edc_task_group *group)
         cJSON_AddStringToObject(gj, "memory", group->memory);
     cJSON_AddNumberToObject(gj, "folded_through_completion_seq", (int)group->folded_through_completion_seq);
 
-    /* member task ids */
+    /* member task ids (与 tasks 块同一把尺子: 只列真正上盘的那些) */
     cJSON *members = cJSON_CreateArray();
     struct edc_task *m;
     LL_FOREACH2(group->members, m, group_next)
     {
+        if (!task_is_persisted(m))
+            continue;
         cJSON_AddItemToArray(members, cJSON_CreateString(m->task_id ? m->task_id : ""));
     }
     cJSON_AddItemToObject(gj, "member_task_ids", members);
@@ -270,7 +300,10 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
         struct edc_task_group *g;
         DL_FOREACH(session->groups, g)
         {
-            if (g->member_count == 0)
+            /* "空组" 按**上盘的成员**数算: 一个全是 TRANSIENT 成员的组 (system
+             * 组) 不会写盘 —— 这不是特判 kind, 而是同一把尺子的自然结果 (见
+             * group_to_json 上方的落盘判据)。 */
+            if (group_persisted_member_count(g) == 0)
                 continue; /* skip empty */
             cJSON_AddItemToArray(groups_json, group_to_json(g));
         }
@@ -286,7 +319,13 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
             struct edc_task *t;
             LL_FOREACH2(g->members, t, group_next)
             {
-                /* 落盘判据 (retire-waiting-input.md §4 第 4 行):
+                /* 落盘判据第一关: lifetime。TRANSIENT (system task) 不落盘 ——
+                 * 它完成即回收, 重启后没有任何东西该"恢复"它, 所以文件里也没有它。
+                 * 这一关由**属性**回答, 不看它此刻在哪一步 (见本文档上方 task_is_persisted)。 */
+                if (!task_is_persisted(t))
+                    continue;
+
+                /* 落盘判据第二关 (retire-waiting-input.md §4 第 4 行):
                  *   丢 "READY 且身上什么都没有" 的任务, 不丢真任务。
                  *
                  * 为什么是这三个条件的合取:
@@ -303,7 +342,8 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
                  * 新模型下 ① 不该再被生产出来 (创建任务必然带着它的 input; 休眠态
                  * 走 SUSPENDED + /task resume) —— 如果真的落进这里, 说明还有调用方
                  * 在造 turn-less 任务, 于是告警而不是静默吞掉。
-                 * task 该不该落盘, 目标态由 lifetime 回答 (P0a 的 TRANSIENT/PERSISTENT)。 */
+                 * ("该不该落盘"这件事本身由上一关的 lifetime 回答; 这一关只管
+                 *  "PERSISTENT 的任务里, 哪些是空壳"。) */
                 if (t->step == EDC_TASKSTEP_READY && t->life == EDC_LIFE_ALIVE && !t->active_turn &&
                     !t->tool_calls)
                 {

@@ -46,6 +46,25 @@ send /task list\n     # 发送（支持 \n \r \t \xNN）
 resize 100x40         # 改终端尺寸
 ```
 
+### 夹具清单
+
+| 夹具 | 覆盖 |
+|---|---|
+| `smoke` | 命令路径 + 完整 LLM 回路（含一次真工具执行） |
+| `bg` | 后台任务 + 快照推送 |
+| `cancel` | 在途取消（`/task stop` + `__delay` 制造在途窗口） |
+| `fsok` / `fifo` / `timeout` / `smoke5` | 文件工具/超时等零散场景 |
+| **`fold`** | **L1 折叠**：`AB_FOLD_MSG_THRESHOLD=2` 冻结（见下），一个任务跑完就触发一次真折叠 |
+
+`fold` 夹具要证的：折叠从 `memory_actor` 的专用协议搬成 system task 之后，
+`session.json`（memory 文本 / `turns_folded` / 折叠水位）、`chat.jsonl`、
+`llm_requests.jsonl` 归一化后不变（raw 只差 system prompt 里的 clock）。唯一**固有**的差异是 `.task_seq` +1 ——
+折叠现在真的是一个任务，它要一个 id（id 不能复用，重启后必须越过它）。
+
+**冻结门槛**：`group_fold_msg_threshold` 由 `AB_FOLD_MSG_THRESHOLD` 环境变量决定
+（默认 200，只有 `fold` 夹具会调低）。它写在 **pristine 的 config.json** 里，
+所以**只在冻结那一次生效** —— 要重冻：`rm -rf /tmp/ab/run/fold`。
+
 ## 假 LLM 响应序列（`responses/*.json`）
 
 按**请求顺序**消费；用完后重复最后一个（保证确定性）：
@@ -67,18 +86,27 @@ resize 100x40         # 改终端尺寸
 
 | 产物 | 比法 |
 |---|---|
-| `workspace/<sid>/session.json` | **归一化**后逐字节（见下） |
-| `workspace/<sid>/chat.jsonl` | 逐字节 |
-| `workspace/sessions.json` | 归一化后逐字节 |
-| `workspace/.task_seq` / `.session_seq` | 逐字节 |
+| `workspace/<sid>/session.json` | 归一化后一致（见下）—— raw 差 clock（`last_active` / 消息 `ts`） |
+| `workspace/<sid>/chat.jsonl` | 掩 clock 后一致；实测 raw 也相同（转录不带时刻） |
+| `workspace/sessions.json` | 归一化后一致 |
+| `workspace/.task_seq` / `.session_seq` | **逐字节**（数字，无时钟） |
+| `llm_requests.jsonl` | 掩 clock 后一致 —— raw 差 system prompt 里的 `## Current Time` 与请求 `ts` |
 | `log/*.log` | 去掉时间戳后逐行 |
 | `session.json.broken` | **不应存在**（出现即失败） |
 | **终端帧** | **不比** —— 见下 |
 
 ### 归一化（非确定性的来源）
 
-`session.json` / `sessions.json` 里有**写入时刻**（`created_at` / `last_active` 等），
-两次运行必然不同。归一化 = 解析 JSON → 把这些字段换成固定占位 → **确定性重序列化**。
+归一化 = `canon()` 对**每个**产物做的三件事：
+
+1. **掩时钟**（`TS_RE`，`YYYY-MM-DD HH:MM:SS`）：`session.json` / `sessions.json` 里的
+   `created_at` / `last_active`、消息的 `ts`、system prompt 里的 `## Current Time` —— 两次运行必然不同；
+2. **掩行号**（`LINE_RE`，`file.c:NNN`）：往任何会打日志的文件里加一行，日志里的行号就位移，
+   那是编辑的副作用、不是行为（实测：`edc_https_client.c` 加 55 行 → `724` 变 `779`）；
+3. **`.json` 再规范化**：解析 → 掩掉 1 里的字符串 → 按键序重序列化。
+
+所以文档里说的"一致"= **归一化后一致**；`chat.jsonl` / `.task_seq` 是少数 raw 也相同的产物。
+**唯一抹不掉的产物差异**是 `.task_seq`（id 高水位，见 `fold` 夹具）。
 
 ### 为什么第一版不比终端帧
 

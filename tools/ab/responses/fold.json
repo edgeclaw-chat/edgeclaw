@@ -1,0 +1,26 @@
+[
+  {
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "alpha done"
+        },
+        "finish_reason": "stop"
+      }
+    ]
+  },
+  {
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "# Group Memory\n- alpha was done"
+        },
+        "finish_reason": "stop"
+      }
+    ]
+  }
+]

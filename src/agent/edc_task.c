@@ -94,6 +94,59 @@ edc_task_life edc_task_classify_life(const char *name)
     return EDC_LIFE_ALIVE;
 }
 
+/* ── sink / lifetime: 名称、解析 (与 step/life 同一套做法) ──
+ *
+ * 这两个属性今天**不落盘** (TRANSIENT 任务根本不进 session.json; PERSISTENT 任务的
+ * 取值恒为默认), 所以 `_name` 只服务日志/调试, `_classify` 暂无落盘调用方 —— 与
+ * step/life 成套留着: 它们是同一族 (五个正交属性), 落盘一旦需要就有一致的入口。 */
+
+const char *edc_task_sink_name(edc_sink sink)
+{
+    switch (sink)
+    {
+    case EDC_SINK_CHANNEL:
+        return "CHANNEL";
+    case EDC_SINK_GROUP_MEMORY:
+        return "GROUP_MEMORY";
+    }
+    return "CHANNEL";
+}
+
+edc_sink edc_task_classify_sink(const char *name)
+{
+    if (!name)
+        return EDC_SINK_CHANNEL;
+    if (strcmp(name, "GROUP_MEMORY") == 0)
+        return EDC_SINK_GROUP_MEMORY;
+    return EDC_SINK_CHANNEL;
+}
+
+const char *edc_task_lifetime_name(edc_lifetime lifetime)
+{
+    switch (lifetime)
+    {
+    case EDC_LIFETIME_PERSISTENT:
+        return "PERSISTENT";
+    case EDC_LIFETIME_TRANSIENT:
+        return "TRANSIENT";
+    }
+    return "PERSISTENT";
+}
+
+edc_lifetime edc_task_classify_lifetime(const char *name)
+{
+    if (!name)
+        return EDC_LIFETIME_PERSISTENT;
+    if (strcmp(name, "TRANSIENT") == 0)
+        return EDC_LIFETIME_TRANSIENT;
+    return EDC_LIFETIME_PERSISTENT;
+}
+
+bool edc_task_is_transient(const struct edc_task *task)
+{
+    return task && task->lifetime == EDC_LIFETIME_TRANSIENT;
+}
+
 /* 派生的显示名 (快照 / 日志 / `/task status|list|join` 文案)。见 edc_task.h: 词表冻结。
  *
  * 旧有的两级 (state_of → state_name) 随旧枚举一起退休 (R3b): 现在 (step, life) **直接**
@@ -303,6 +356,11 @@ struct edc_task *edc_task_new(const char *task_id, const char *session_id, const
     /* 新任务: "带着 input 停着, 等着被派发" —— 没有"等用户输入"这个相位,
      * 所以直接置 (READY, ALIVE) (旧词写作 TASK_IDLE/TASK_WAITING_INPUT 两行)。 */
     edc_task_force_move(task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
+    /* 另外两个属性 (sink / lifetime): 默认就是用户任务 —— 产出回给用户、落盘。
+     * g_new0 已经把两个 0 值 (CHANNEL / PERSISTENT) 置好, 这里**显式**写一遍:
+     * 它们由 enum 顺序保证, 而 enum 顺序不该是这里正确性的依赖。 */
+    task->sink = EDC_SINK_CHANNEL;
+    task->lifetime = EDC_LIFETIME_PERSISTENT;
     task->is_group_leader = 0;
     task->channel_type = channel_type;
 
@@ -931,9 +989,20 @@ sds edc_task_get_output(struct edc_task *task)
 
 /* ── 折叠 ────────────────────────────────────────────────── */
 
+/* 可折叠 = 已终结、且还没折过、且**这个任务是要留下来的** (PERSISTENT)。
+ *
+ * 第三条来自 lifetime, 是 P0b 把一个真 bug 逼出来的: 折叠任务自己也是一个
+ * "COMPLETED && !turns_folded" 的任务, 它一完成就会触发下一轮触发检查 ——
+ * 于是系统组 (成员全是 TRANSIENT) 也会被当成可折叠对象, 折出自己的 prompt
+ * 和摘要 (实测夹具里立刻多出一次 LLM 请求)。
+ *
+ * 规则本身很直白: **折叠是为"活过重启"的那部分历史做压缩** (它决定重启后还剩
+ * 多少细节), 所以一个"不落盘、完成即回收"的任务根本不该进这个账 —— 它没有
+ * 需要被压缩的未来。于是 lifetime 在这里再读一次: 不是特判隐藏, 而是同一条
+ * "它不留下来"的规则在折叠口径上的必然结论。 */
 bool edc_task_is_foldable(struct edc_task *task)
 {
-    return edc_task_is_completed(task) && !task->turns_folded;
+    return !edc_task_is_transient(task) && edc_task_is_completed(task) && !task->turns_folded;
 }
 
 size_t edc_task_turn_msg_count(struct edc_task *task)

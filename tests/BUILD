@@ -215,6 +215,24 @@ cc_test(
 )
 
 cc_test(
+    name = "test_system_task",
+    srcs = ["test_system_task.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_group_fold",
+    srcs = ["test_group_fold.c"],
+    deps = [
+        "//src:agent",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_session_state_file",
     srcs = ["test_session_state_file.c"],
     deps = [

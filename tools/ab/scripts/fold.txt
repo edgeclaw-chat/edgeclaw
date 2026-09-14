@@ -1,0 +1,19 @@
+# fold：把 group_fold_msg_threshold 调到 2 (见 ab.py 的 AB_FOLD_MSG_THRESHOLD)，
+# 一个任务跑完就攒到 2 条未折叠消息 → 触发一次**真正的折叠**。
+# 只发一个任务：`/task new` 每次建自己的组，两个任务就是两个组，谁都到不了阈值。
+#
+# 这一步要证的：折叠从 memory_actor 的专用协议搬到 system task 之后，
+#   产物 (group memory 文本 / turns_folded 标记 / folded_through_completion_seq)
+#   逐字节不变，且盘上不会多出系统组或折叠任务。
+
+# 启动与首帧
+wait 1500
+
+send /task new """alpha work"""\n
+wait 3500
+
+# 完成后：2 条未折叠消息 ≥ 阈值 → 折叠任务起来 (假 LLM 的第 2 个响应)
+wait 4000
+
+# settle（之后 ab.py 会发 SIGINT，走 main.cpp 的优雅退出 → 落盘）
+wait 2000
