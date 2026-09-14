@@ -30,6 +30,7 @@ typedef enum
     EDC_EVENT_EXEC_DONE,    /* LLM 响应到达（含 error / tool_calls / stop） */
     EDC_EVENT_TOOL_STARTED, /* 某个工具真正开始执行 */
     EDC_EVENT_TOOL_DONE,    /* 某个工具完成 */
+    EDC_EVENT_SIGNAL,       /* 取消/中断信号 */
 } edc_event_kind;
 
 /* LLM 响应的 **归一化** 形态。`reason` 用 executor 自己的枚举，
@@ -81,6 +82,16 @@ struct edc_event_tool_done
     bool has_next; /* tool chain 里还有下一个 → 不续发 LLM */
 };
 
+/* 信号也是事件（docs/runtime-model.md §2.8）：迟到完成事件必须无害、
+ * 信号直接改 task 状态、参数里的持久化只属于显式取消那条路。 */
+struct edc_event_signal
+{
+    edc_task_signal sig;
+    /* persist = 显式取消（用户 /task stop 那条路）要立即落盘 + 推快照。
+     * group/session 的**扇出**今天就不落盘 —— 这个不对称原样保留（台账）。 */
+    bool persist;
+};
+
 struct edc_event
 {
     edc_event_kind kind;
@@ -90,6 +101,7 @@ struct edc_event
         struct edc_event_exec exec; /* EXEC_DONE */
         const char *call_id;        /* TOOL_STARTED */
         struct edc_event_tool_done tool_done;
+        struct edc_event_signal signal;
     } as;
 };
 
@@ -134,6 +146,9 @@ struct edc_executor_ops
     bool (*should_snapshot_on_complete)(void *ctx, struct edc_task *task);
     /* task 完成后的依赖链再启动（task 之间的事，归 scheduler）。 */
     void (*start_queued_dependents)(void *ctx, struct edc_task *task);
+
+    /* 前台状态变了 → 推一次通知（展示逻辑）。 */
+    void (*notify_foreground_state)(void *ctx, struct edc_task *task);
 
     /* ── 环境查询 ── */
     struct edc_session *(*task_session)(void *ctx, struct edc_task *task); /* task 的属主 session */

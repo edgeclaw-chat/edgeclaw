@@ -408,23 +408,16 @@ void edc_scheduler_send_signal_to_task_ptr(struct edc_scheduler *sched, struct e
 {
     if (!sched || !task)
         return;
-    if (task->current_request_id)
-    {
-        edc_scheduler_unregister_task(sched, task->current_request_id);
-    }
-    edc_task_send_signal(task, sig);
 
-    if (task->state == TASK_CANCELLED)
-    {
-        /* 显式取消必须立即持久化 + 推送快照: CANCELLED 目前只在内存里, 若不
-         * 保存, 重启后任务会按 session.json 里的旧状态恢复 (运行中任务会被
-         * 降级成 WAITING_INPUT), 取消看起来像没生效。此函数只被用户命令
-         * (/task stop) 调用, 不涉及 teardown 的 remove_all_turns。
-         * 落盘走任务的属主 session —— 跨 session 取消时同样写回源 session。 */
-        sched_notify_foreground_state(sched, task);
-        if (sched->save_session)
-            sched->save_session(sched, sched_task_session(sched, task));
-    }
+    /* 信号是一次**事件**（§2.8）：反注册 in-flight 请求、改 task 状态、
+     * 显式取消立即落盘这三步都搬进了 executor，这里只构造事件。
+     * persist=true —— 这条路径只被用户命令 (/task stop) 调用。 */
+    struct edc_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.kind = EDC_EVENT_SIGNAL;
+    ev.as.signal.sig = sig;
+    ev.as.signal.persist = true;
+    edc_executor_advance(&sched->executor, task, &ev);
 }
 
 void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, const char *task_id, edc_task_signal sig)
@@ -883,6 +876,11 @@ static void ex_save_session(void *ctx, struct edc_session *s)
         sched->save_session(sched, s);
 }
 
+static void ex_notify_foreground_state(void *ctx, struct edc_task *task)
+{
+    sched_notify_foreground_state((struct edc_scheduler *)ctx, task);
+}
+
 static const struct edc_executor_ops sched_executor_ops = {
     .send_llm = ex_send_llm,
     .send_reply = ex_send_reply,
@@ -900,6 +898,7 @@ static const struct edc_executor_ops sched_executor_ops = {
     .max_iter = ex_max_iter,
     .trigger_memory = ex_trigger_memory,
     .save_session = ex_save_session,
+    .notify_foreground_state = ex_notify_foreground_state,
 };
 
 /* ── actor 事件 → 归一化 → executor ──────────────────────────

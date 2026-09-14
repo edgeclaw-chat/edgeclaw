@@ -249,6 +249,35 @@ static edc_step_outcome tool_started(struct edc_executor *ex, struct edc_task *t
     return EDC_STEP_BLOCKED;
 }
 
+/* ── SIGNAL：取消/中断信号 ───────────────────────────────────
+ * 今天这三步都在 edc_scheduler_send_signal_to_task_ptr 里，逐字搬过来：
+ * 先反注册（让迟到的 LLM/工具响应找不到 task，从而无害），再交给 task 层
+ * 改状态，最后按需要落盘。 */
+static edc_step_outcome exec_signal(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
+{
+    const struct edc_executor_ops *ops = ex->ops;
+    edc_task_signal sig = ev->as.signal.sig;
+
+    /* 1. 反注册 in-flight 请求 —— 迟到的响应必须无害（规则 2）。 */
+    if (task->current_request_id && ops->unregister_task)
+        ops->unregister_task(ex->ctx, task->current_request_id);
+
+    /* 2. 信号**直接**改 task 状态，不依赖任何设备回执（规则 1）。 */
+    edc_task_send_signal(task, sig);
+
+    /* 3. 显式取消必须立即持久化 + 推送快照: CANCELLED 只在内存里, 若不保存,
+     *    重启后任务会按 session.json 里的旧状态恢复, 取消看起来像没生效。 */
+    if (ev->as.signal.persist && task->state == TASK_CANCELLED)
+    {
+        if (ops->notify_foreground_state)
+            ops->notify_foreground_state(ex->ctx, task);
+        if (ops->save_session)
+            ops->save_session(ex->ctx, ops->task_session ? ops->task_session(ex->ctx, task) : NULL);
+    }
+
+    return task->state == TASK_CANCELLED ? EDC_STEP_DONE : EDC_STEP_BLOCKED;
+}
+
 /* ── 步进 ──────────────────────────────────────────────────── */
 
 edc_step_outcome edc_executor_advance(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
@@ -264,6 +293,8 @@ edc_step_outcome edc_executor_advance(struct edc_executor *ex, struct edc_task *
         return tool_done(ex, task, ev);
     case EDC_EVENT_TOOL_STARTED:
         return tool_started(ex, task, ev);
+    case EDC_EVENT_SIGNAL:
+        return exec_signal(ex, task, ev);
     }
     return EDC_STEP_BLOCKED;
 }
