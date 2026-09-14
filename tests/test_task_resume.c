@@ -391,6 +391,119 @@ static void test_resume_pending_redispatches(void)
     edc_config_free(cfg);
 }
 
+/* ── 迁移过来的任务: 相位丢了 (step=READY), 残留状态才是线索 ──────────
+ *
+ * v4 的 SUSPENDED 任务, 磁盘上**根本没写**它当时在哪一步 —— 迁移只能给中性值
+ * READY (见 tools/migrate_session_v4_to_v5.py)。如果 resume **只**看 step, 这类
+ * 任务就会走进 READY 分支、把工具账本和 active_turn 全忽略掉: 排队的工具永远不
+ * 重发, 任务静默卡死。
+ *
+ * 所以规矩定成: step 权威, 但 **READY 退回旧探测** —— v5 里真正 READY 的任务没有
+ * 任何残留状态, 探测落到 WAITING_INPUT, 与今天一致。
+ *
+ * 这两条在批 3 之前就该绿 (今天 resume 压根不看 step), 批 3 之后必须**仍然**绿。
+ * 它们是"迁移数据不被新逻辑改变行为"的守卫 —— 那一批唯一的风险就在这儿。 */
+static void test_resume_migrated_task_with_pending_tool(void)
+{
+    TEST("resume: migrated task (step=READY) with a PENDING tool still redispatches");
+    struct edc_config *cfg = make_config();
+    struct edc_session *s = edc_session_new(cfg, "sess-m1", "M1");
+    struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+    sched->redispatch_tools = stub_redispatch;
+
+    struct edc_task *t = edc_task_new("m1", "sess-m1", "m1", "task", edc_channel_adapter);
+    edc_task_set_state(t, TASK_WAITING_INPUT);
+    edc_task_set_state(t, TASK_LLM_PROCESSING);
+    edc_task_set_state(t, TASK_TOOL_CALLING);
+    seed_tool_turn(t, "c1", "shell");
+    edc_task_tool_call_add(t, "c1", "shell", NULL); /* stays PENDING */
+    force_suspended(t);
+    /* 迁移的产物: 相位丢了, 只有中性值 */
+    t->step = EDC_TASKSTEP_READY;
+    t->life = EDC_LIFE_SUSPENDED;
+
+    struct edc_task_group *g = edc_task_group_new(t);
+    edc_session_add_group(s, g);
+
+    g_send_llm_calls = 0;
+    g_redispatch_calls = 0;
+    edc_scheduler_resume_task(sched, t);
+
+    CHECK(t->state == TASK_TOOL_CALLING, "still rediscovers the tool via the ledger");
+    CHECK(g_redispatch_calls == 1, "redispatch callback invoked once");
+    CHECK(g_send_llm_calls == 0, "no LLM yet (waiting for tool result)");
+
+    edc_session_free(s);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+static void test_resume_migrated_task_with_turn(void)
+{
+    TEST("resume: migrated task (step=READY) with an open turn still resumes the LLM");
+    struct edc_config *cfg = make_config();
+    struct edc_session *s = edc_session_new(cfg, "sess-m2", "M2");
+    struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+    sched->send_llm = stub_send_llm;
+
+    struct edc_task *t = edc_task_new("m2", "sess-m2", "m2", "task", edc_channel_adapter);
+    edc_task_set_state(t, TASK_WAITING_INPUT);
+    edc_task_set_state(t, TASK_LLM_PROCESSING);
+    seed_tool_turn(t, "c9", "shell"); /* 有 turn, 但账本里没有待办 */
+    force_suspended(t);
+    t->step = EDC_TASKSTEP_READY; /* 迁移的产物 */
+    t->life = EDC_LIFE_SUSPENDED;
+
+    struct edc_task_group *g = edc_task_group_new(t);
+    edc_session_add_group(s, g);
+
+    g_send_llm_calls = 0;
+    g_redispatch_calls = 0;
+    edc_scheduler_resume_task(sched, t);
+
+    CHECK(t->state == TASK_LLM_PROCESSING, "the open turn is continued");
+    CHECK(g_send_llm_calls == 1, "LLM resent exactly once");
+
+    edc_session_free(s);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* ── 没有"等输入"这种相位 ────────────────────────────────────────────
+ *
+ * task **创建时就带着它的 input** (/task new <desc> 的 desc 就是 input; --suspended
+ * 也是"把 turn 装上、只是先不跑")。所以一个 resume 时没有依赖、没有账本、也没有
+ * turn 的任务, 不是"在等用户输入" —— 没有这种相位, 它只是**空闲** (READY)。
+ *
+ * 今天它落到 WAITING_INPUT: 那个值来自旧模型 (任务是个长期会话, 会坐在那儿等下一
+ * 条消息), 后来只被三个"派不出去, 避免卡死"的死胡同当作兜底用。 */
+static void test_resume_nothing_left_is_ready(void)
+{
+    TEST("resume: nothing to continue -> READY (there is no 'waiting for input' phase)");
+    struct edc_config *cfg = make_config();
+    struct edc_session *s = edc_session_new(cfg, "sess-n1", "N1");
+    struct edc_scheduler *sched = edc_scheduler_new(s, cfg);
+
+    struct edc_task *t = edc_task_new("n1", "sess-n1", "n1", "task", edc_channel_adapter);
+    edc_task_set_state(t, TASK_WAITING_INPUT);
+    edc_task_set_state(t, TASK_LLM_PROCESSING);
+    force_suspended(t);
+    /* 没有依赖、没有工具账本、没有 active_turn —— 没有任何东西可以续 */
+
+    struct edc_task_group *g = edc_task_group_new(t);
+    edc_session_add_group(s, g);
+
+    edc_scheduler_resume_task(sched, t);
+
+    CHECK(t->step == EDC_TASKSTEP_READY, "lands on READY");
+    CHECK(t->life == EDC_LIFE_ALIVE, "and it is alive");
+    CHECK(t->state == TASK_IDLE, "the mirror reads IDLE, not WAITING_INPUT");
+
+    edc_session_free(s);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 /* ══════════════════════════════════════════════════════════════
  *  Test 7: resume an ERROR task -> continue the failed turn
  *  ══════════════════════════════════════════════════════════════ */
@@ -481,6 +594,9 @@ int main(void)
     test_resume_waiting_deps();
     test_resume_executing_synthesizes();
     test_resume_pending_redispatches();
+    test_resume_migrated_task_with_pending_tool();
+    test_resume_migrated_task_with_turn();
+    test_resume_nothing_left_is_ready();
     test_resume_error_continues_turn();
     test_resume_error_pending_tool_redispatches();
 

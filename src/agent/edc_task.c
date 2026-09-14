@@ -236,12 +236,24 @@ void edc_task_force_state(struct edc_task *task, edc_task_state s)
 
 static bool edc_task_is_valid_transition(edc_task_state from, edc_task_state to)
 {
+    /* 同一个状态之间没有"转移"可言。这条规则在 IDLE 与 WAITING_INPUT 两行合一之后
+     * 成了必需: 它们现在是同一行, 于是
+     *   IDLE → WAITING_INPUT        (不同的枚举值, 同一个落点) 应当**成功**
+     *   WAITING_INPUT → WAITING_INPUT                         应当**失败**
+     * 两个既有契约就是这样区分的。 */
+    if (from == to)
+        return false;
+
     switch (from)
     {
+    /* IDLE 与 WAITING_INPUT 是**同一件事**: "空闲/就绪, 可被驱动"。
+     *
+     * 两行本来不一样: IDLE 不能派发 (→ LLM_PROCESSING) 也不能挂起。而"新建任务被强制
+     * 置成 WAITING_INPUT"那行代码, 存在的意义**正是绕开 IDLE 这一行**。当落点改成
+     * READY (镜像折成 IDLE) 之后, 新建任务就落在 IDLE 行上了 —— 两行若不合一, 它连
+     * 派发和挂起都过不了校验。这是"退休 WAITING_INPUT"必须先做的一小步。
+     * 见 docs/retire-waiting-input.md §4 第 3 行。 */
     case TASK_IDLE:
-        return to == TASK_WAITING_DEPS || to == TASK_WAITING_INPUT || to == TASK_CANCELLED;
-    case TASK_WAITING_DEPS:
-        return to == TASK_WAITING_INPUT || to == TASK_CANCELLED || to == TASK_ERROR;
     case TASK_WAITING_INPUT:
         /* TASK_SUSPENDED 也在内: "以挂起状态创建" (2026-09-14)。一个还没开始跑、
          * 但输入已经装好的任务需要一条进入挂起的入口 —— 在此之前 SUSPENDED 只能
@@ -249,7 +261,9 @@ static bool edc_task_is_valid_transition(edc_task_state from, edc_task_state to)
          * resume 回 WAITING_INPUT / WAITING_DEPS / LLM_PROCESSING, 所以这个往返
          * 是对称的: 挂起 -> resume -> 重新判定 (有依赖就等依赖)。 */
         return to == TASK_LLM_PROCESSING || to == TASK_CANCELLED || to == TASK_WAITING_DEPS ||
-               to == TASK_SUSPENDED;
+               to == TASK_SUSPENDED || to == TASK_WAITING_INPUT;
+    case TASK_WAITING_DEPS:
+        return to == TASK_WAITING_INPUT || to == TASK_CANCELLED || to == TASK_ERROR;
     case TASK_LLM_PROCESSING:
         return to == TASK_TOOL_CALLING || to == TASK_COMPLETED || to == TASK_CANCELLED || to == TASK_ERROR;
     case TASK_TOOL_CALLING:

@@ -94,11 +94,23 @@ static void test_state_machine(void)
     CHECK(edc_task_set_state(t, TASK_CANCELLED), "IDLE → CANCELLED");
     edc_task_free(t);
 
-    TEST("invalid transitions from IDLE");
+    /* 新契约 (2026-09-14): **IDLE 能派发**。
+     *
+     * IDLE 正是"新建了、带着 input、还没跑"那个状态 —— 它必须能进 LLM_PROCESSING。
+     * 旧契约钉的是"IDLE 不能派发", 而旧代码靠"新建时强制置成 WAITING_INPUT"绕开它;
+     * 那一绕就是 WAITING_INPUT 这个假相位的来源之一。见 docs/retire-waiting-input.md
+     * §4 第 3 行 / 「干净全量复核」。 */
+    TEST("a fresh (IDLE) task can be dispatched");
     t = edc_task_new("task-sm4", "sess-1", "task-sm4", "sm test", edc_channel_adapter);
+    CHECK(edc_task_set_state(t, TASK_LLM_PROCESSING), "IDLE → LLM_PROCESSING allowed (dispatch)");
+    CHECK(t->state == TASK_LLM_PROCESSING, "and it took effect");
+    CHECK(edc_task_set_state(t, TASK_TOOL_CALLING), "LLM_PROCESSING → TOOL_CALLING allowed");
+    edc_task_free(t);
+
+    TEST("invalid transitions from IDLE");
+    t = edc_task_new("task-sm4b", "sess-1", "task-sm4b", "sm test", edc_channel_adapter);
     CHECK(!edc_task_set_state(t, TASK_COMPLETED), "IDLE → COMPLETED rejected");
     CHECK(!edc_task_set_state(t, TASK_ERROR), "IDLE → ERROR rejected");
-    CHECK(!edc_task_set_state(t, TASK_LLM_PROCESSING), "IDLE → LLM_PROCESSING rejected");
     CHECK(!edc_task_set_state(t, TASK_TOOL_CALLING), "IDLE → TOOL_CALLING rejected");
     CHECK(t->state == TASK_IDLE, "state unchanged after invalid transition");
     edc_task_free(t);
