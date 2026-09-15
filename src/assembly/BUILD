@@ -12,6 +12,7 @@ cc_library(
     deps = [
             "//src/actor:actor",
             "//src/actor:actors",
+            "//src/actor:llm_request",
             "//src/common:common",
             "//src/common:utlist_fix",
             "//src/kernel:kernel",

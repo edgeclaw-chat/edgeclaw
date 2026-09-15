@@ -3,7 +3,9 @@
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
+#include "edc_group_fold.h"
 #include "edc_session.h"
+#include "edc_session_store.h"
 #include "edc_turn.h"
 #include "log.h"
 #include "uthash.h"
@@ -57,13 +59,13 @@ static struct edc_task_group *sched_foreground(struct edc_session *session)
     return session ? session->foreground_group : NULL;
 }
 
-/* 入站消息的 session 标签 → session 对象: 走 store 读口 (规则 8: 向外是调用)。
- * 没有读口 (单测没装) 或标签解析不出来 → NULL: 调用方**拒绝**这条输入, 不猜。 */
+/* 入站消息的 session 标签 → session 对象: 同包直调 store 的读口。
+ * 没有 store (单测没装) 或标签解析不出来 → NULL: 调用方**拒绝**这条输入, 不猜。 */
 static struct edc_session *sched_resolve_session(struct edc_scheduler *sched, const char *session_id)
 {
-    if (!sched || !sched->resolve_session)
+    if (!sched || !sched->sessions)
         return NULL;
-    return sched->resolve_session(sched->ctx, session_id);
+    return edc_session_store_resolve_session(sched->sessions, session_id);
 }
 
 /* ── "某棵树的某处变了" (事件, 不带树; 见 edc_scheduler_snapshot_changed_fn) ──
@@ -970,7 +972,7 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
         return;
 
     /* 这条输入属于哪个 session: 由**消息自己**说 (P3: 不再读 scheduler 身上那份
-     * "当前绑定"的副本)。标签为空时由 store 读口给默认值 (agent 给活跃 session),
+     * "当前绑定"的副本)。标签为空时由 store 给默认值 (活跃 session),
      * 于是 crontab 这类没有 session 概念的入站行为不变; 而 TUI/CLI 永远显式带 id。
      * 解析不出来就**拒绝** —— 猜一个 session 出来正是老实现"切错台"的来源。 */
     struct edc_session *session = sched_resolve_session(sched, input->session_id);
@@ -1222,15 +1224,19 @@ static int ex_max_iter(void *ctx)
 static void ex_on_task_settled(void *ctx)
 {
     struct edc_scheduler *sched = ctx;
-    if (sched->on_task_settled)
-        sched->on_task_settled(sched);
+    /* 结构事件 → 内容轴的订阅者: 折不该折由 group_fold 自己决定 (core 不解释这个词)。
+     * 这里只把本模块拿不到的两样递过去: session 仓库与 config (阈值)。 */
+    if (sched && sched->sessions)
+        edc_group_fold_try(sched, sched->sessions, sched->config);
 }
 
 static void ex_save_session(void *ctx, struct edc_session *s)
 {
     struct edc_scheduler *sched = ctx;
-    if (sched->save_session)
-        sched->save_session(sched, s);
+    if (!sched || !sched->sessions)
+        return;
+    /* 同包直调 store: 落盘是 store 的事, 这里只把"要存谁"递过去 (NULL = 活跃的)。 */
+    edc_session_store_save_session_state(sched->sessions, sched, s);
 }
 
 /* executor 侧的接口名保留 (改它要动 ops 表), 但 C3 之后语义是"有状态变化, 该下发

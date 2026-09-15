@@ -169,6 +169,9 @@ struct edc_executor_ops
     int (*max_iter)(void *ctx); /* <= 0 = 不限制 */
 
     /* ── 其它出站 ── */
+    /* task 收尾 (结果已交付、副作用已做完): 名字是**结构词** —— core 不解释它,
+     * 唯一的订阅者在内容轴 (group_fold 检查该不该折叠记忆; §8 验收判据 5: 内容词
+     * 只出现在订阅者那一侧)。 */
     void (*on_task_settled)(void *ctx);
     void (*save_session)(void *ctx, struct edc_session *s);
 };

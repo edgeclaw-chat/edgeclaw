@@ -23,6 +23,7 @@
 #include "edc_llm_actor.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_session_manager.h"
 #include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -32,23 +33,14 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
-/* ── P3 ③ 测试读口 ──────────────────────────────────────────────
- * 这一层测的是**折叠本体**: 它不需要 session store —— 会话是测试直接建的
- * (edc_session_new), 没有 session_manager。所以这个口恒返回 NULL, 与改动前
- * 行为一致 (那时那个手工造的 minimal agent 也没有 session_manager)。 */
-static struct edc_session *test_resolve_session(void *ctx, const char *session_id)
-{
-    (void)ctx;
-    (void)session_id;
-    return NULL;
-}
-
+/* ── 这一层没有 session 仓库 ────────────────────────────────────
+ * 折叠本体不需要 store: 会话是测试直接建的 (edc_session_new), 没有 manager。
+ * 句柄留空 → 标签一律解析不出来 (与改动前"恒 NULL 的假读口"行为一致)。 */
 static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
 {
     (void)sess;
-    sched->resolve_session = test_resolve_session;
+    sched->sessions = NULL;
 }
-
 volatile sig_atomic_t _run_loop = 1;
 
 /* ══════════════════════════════════════════════════════════════
@@ -280,7 +272,6 @@ static void test_fold_runs_as_a_system_task(void)
     CHECK(edc_scheduler_has_pending_system_task(session), "有折叠在飞");
     CHECK(edc_group_fold_start(sched, session, group) == NULL, "有折叠在飞时不起第二次");
 
-
     /* ② 跑完它: LLM 返回摘要 → exec_done → sink 分流 → 落地。 */
     struct edc_llm_actor_resp resp;
     memset(&resp, 0, sizeof(resp));
@@ -460,6 +451,78 @@ static void test_fold_task_is_not_persisted(void)
     edc_config_free(cfg);
 }
 
+/* ══════════════════════════════════════════════════════════════
+ *  Test 5: 触发扫描 (edc_group_fold_try)
+ *
+ *  它是 scheduler 唯一调的入口 (以前住装配根, 经 `on_task_settled` 端口被调)。
+ *  钉三件事:
+ *    ① 扫**所有** session —— 可折叠的内容在第二个 session 里也要折;
+ *    ② 一次只起一个折叠 —— 已有折叠在飞的 session 跳过;
+ *    ③ 阈值来自 config (不给 conf 时用 edc_init_env.h 的默认值)。
+ * ══════════════════════════════════════════════════════════════ */
+
+static void test_try_scans_all_sessions(void)
+{
+    TEST("触发扫描: 扫所有 session / 一次一个 / 阈值来自 config");
+
+    struct edc_config *cfg = make_config();
+    cfg->group_fold_msg_threshold = 2; /* 低阈值: 一个 4 条消息的可折叠 task 就够 */
+
+    /* 第一个 session: 没有可折叠内容 (扫到它 → 不折) */
+    struct edc_session *idle = edc_session_new(cfg, "sess-try-idle", "TryIdle");
+    struct edc_task *ileader = edc_task_new("11", "sess-try-idle", "11", "idle leader", edc_channel_adapter);
+    struct edc_task_group *igroup = edc_task_group_new(ileader);
+    edc_session_add_group(idle, igroup);
+    edc_task_await_exec(ileader);
+    edc_task_mark_completed(ileader);
+
+    /* 第二个 session: 可折叠的内容只在这里 —— 只有"扫全部"才会命中 */
+    struct edc_session *busy = edc_session_new(cfg, "sess-try-busy", "TryBusy");
+    struct edc_task *bleader = edc_task_new("21", "sess-try-busy", "21", "busy leader", edc_channel_adapter);
+    struct edc_task_group *bgroup = edc_task_group_new(bleader);
+    edc_session_add_group(busy, bgroup);
+    edc_task_await_exec(bleader);
+    edc_task_mark_completed(bleader);
+    bleader->completion_seq = 1;
+    add_foldable_task(busy, bgroup, "22", 2, 4, "foldable in the second session");
+
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, idle);
+    sched->send_llm = stub_send_llm;
+
+    /* 仓库只被读两个字段 (session_count / sessions[]) → 栈上搭一个, 不碰磁盘 */
+    struct edc_session *arr[2] = {idle, busy};
+    struct edc_session_manager sm = {0};
+    sm.sessions = arr;
+    sm.session_count = 2;
+    sm.active_index = 0;
+    sm.config = cfg;
+
+    CHECK(!edc_group_fold_try(NULL, &sm, cfg), "NULL scheduler 不折");
+    CHECK(!edc_group_fold_try(sched, NULL, cfg), "NULL 仓库不折");
+
+    /* ③ 阈值: conf=NULL → 默认 (500) → 这个规模的组折不动 (此时无折叠在飞) */
+    g_send_llm_calls = 0;
+    CHECK(!edc_group_fold_try(sched, &sm, NULL), "conf=NULL 用默认阈值 → 不折");
+    CHECK(g_send_llm_calls == 0, "默认阈值下没有 LLM 请求");
+
+    /* ① 扫所有 session: 第二个 session 里的组被折 */
+    g_send_llm_calls = 0;
+    CHECK(edc_group_fold_try(sched, &sm, cfg), "第二个 session 里的组被折了 (扫全部)");
+    CHECK(g_send_llm_calls == 1, "折叠 prompt 真发出去了一次 LLM 请求");
+    CHECK(edc_scheduler_has_pending_system_task(busy), "busy 里已有折叠在飞");
+
+    /* ② 一次一个: 在飞的那个 session 跳过, 不再起第二次 */
+    g_send_llm_calls = 0;
+    CHECK(!edc_group_fold_try(sched, &sm, cfg), "有折叠在飞 → 不再起第二次");
+    CHECK(g_send_llm_calls == 0, "第二次没有 LLM 请求");
+
+    edc_session_free(idle);
+    edc_session_free(busy);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 /* ══════════════════════════════════════════════════════════════ */
 
 int main(void)
@@ -468,6 +531,7 @@ int main(void)
     test_fold_runs_as_a_system_task();
     test_fold_failure_keeps_memory();
     test_fold_task_is_not_persisted();
+    test_try_scans_all_sessions();
 
     log_info("=== %d passed, %d failed ===", test_passed, test_failed);
     printf("%d passed, %d failed\n", test_passed, test_failed);

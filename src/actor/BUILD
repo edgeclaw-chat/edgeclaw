@@ -44,3 +44,29 @@ cc_library(
     linkstatic = True,
     visibility = ["//visibility:public"],
 )
+
+# LLM 请求装配器：与 llm_actor 同概念的另一半（谁定请求体 / 谁发请求）。
+# 不含 toolbox —— 工具定义由装配根当参数传入（见 edc_llm_request.h）。
+cc_library(
+    name = "llm_request",
+    srcs = [
+            "edc_llm_request.c",
+        ],
+    hdrs = [
+            "edc_llm_request.h",
+        ],
+    includes = ["."],
+    deps = [
+            ":actor",
+            ":actors",
+            "//src/common:common",
+            "//src/common:utlist_fix",
+            "//src/kernel:kernel",
+            "//src/shell:shell_parse",
+            "@cjson//:cjson",
+            "@log.c//:log.c",
+            "@sds//:sds",
+        ],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)

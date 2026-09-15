@@ -1,7 +1,11 @@
 #include "edc_group_fold.h"
 #include "cJSON.h"
 #include "edc_compat.h"
+#include "edc_config.h"
+#include "edc_init_env.h"
 #include "edc_scheduler.h"
+#include "edc_session.h"
+#include "edc_session_manager.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -12,7 +16,7 @@
 
 /* ══════════════════════════════════════════════════════════════
  * L1 折叠: task turns → group memory
- * 触发 (edc_runtime_cb_try_fold) 只看未折叠消息数 ≥ 阈值 (默认 200);
+ * 触发 (edc_group_fold_try) 只看未折叠消息数 ≥ 阈值 (默认 200);
  * 真正折叠时按半量策略: 只把最老的一半未折叠消息 (≈ 阈值/2, 即 ~100 条)
  * 交给 LLM 做摘要, 新的一半保持未折叠细节 —— 每次总是一半记忆被压缩、
  * 一半记忆留细节, 上下文里仍有明细消息可读, 不会整批全被摘要化。
@@ -37,6 +41,55 @@ bool edc_group_fold_due(struct edc_task_group *group, int msg_threshold)
     size_t foldable = edc_task_group_count_foldable(group);
     size_t unfolded = edc_task_group_unfolded_msg_count(group);
     return foldable > 0 && unfolded >= (size_t)msg_threshold;
+}
+
+bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_manager *sessions, struct edc_config *conf)
+{
+    if (!sched || !sessions)
+        return false;
+
+    int msg_threshold = conf ? conf->group_fold_msg_threshold : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
+    if (msg_threshold <= 0)
+        msg_threshold = EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
+
+    /* L1 折叠触发: 组内存在可折叠 task 且未折叠消息条数 ≥ 阈值。
+     * 触发时机只由对话条数驱动 —— 不再看可折叠 task 个数。
+     * 扫描**所有** session: 后台 session 里的任务完成后也要能触发折叠, 否则
+     * 只有切回来才折叠。一次只折叠一个组。
+     *
+     * 折叠本身是一次 system task: 下面只决定"该折了", 任务由 edc_group_fold_start
+     * 建、派发, 它的产出经 sink=GROUP_MEMORY 落到目标组的记忆里, 跑完按
+     * lifetime=TRANSIENT 被回收。 */
+    struct edc_session_manager *sm = sessions;
+    for (int si = 0; si < sm->session_count; si++)
+    {
+        struct edc_session *sess = sm->sessions[si];
+        if (!sess)
+            continue;
+        /* 这个 session 已经有折叠在飞: 跳过 (别让两次折叠互相看见半成品记忆)。 */
+        if (edc_scheduler_has_pending_system_task(sess))
+            continue;
+
+        struct edc_task_group *g;
+        DL_FOREACH(sess->groups, g)
+        {
+            size_t foldable = edc_task_group_count_foldable(g);
+            size_t unfolded = edc_task_group_unfolded_msg_count(g);
+
+            if (edc_group_fold_due(g, msg_threshold))
+            {
+                log_info("L1 fold trigger: group %s foldable=%zu unfolded=%zu (msg_thr=%d)", g->group_id, foldable,
+                         unfolded, msg_threshold);
+                edc_group_fold_start(sched, sess, g);
+                return true; /* 一次只折叠一个 group */
+            }
+            if (foldable > 0 || unfolded > 0)
+            {
+                log_debug("L1 fold check: group %s foldable=%zu unfolded=%zu", g->group_id, foldable, unfolded);
+            }
+        }
+    }
+    return false;
 }
 
 sds edc_group_fold_build_prompt(struct edc_task_group *group, uint32_t *out_max_seq)

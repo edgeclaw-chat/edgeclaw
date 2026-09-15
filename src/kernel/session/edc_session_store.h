@@ -58,6 +58,19 @@ extern struct edc_session *edc_session_store_resolve_session(struct edc_session_
  *  本 run 从未激活过的 session 会被跳过 (空壳写盘会覆盖磁盘上更新的状态)。 */
 extern void edc_session_store_save_all_sessions_state(struct edc_session_manager *sm, struct edc_scheduler *sched);
 
+/** 单个 session 的落盘请求 (NULL = 活跃的那个): 先写 sessions 索引 (全量 history),
+ *  再重写目标 session 的 state。
+ *
+ *  |session| 是**显式参数**: 每个调用点自己知道要存谁 (任务收尾时存属主 —— 后台
+ *  session 的任务完成也要落盘, 哪怕前台显示的是别人; 显式取消时存被取消的那个) ——
+ *  P3 ③ 起没有任何"当前 session"可以默认, NULL 只是"调用点确实没指定"时才用。
+ *
+ *  调用点都在 kernel 内 (scheduler 任务收尾 / 本文件的取消路径) —— 它原来是装配根
+ *  注入的 `save_session` 端口, store 搬进 kernel 后端口成了同包中转, 于 2026-09-16
+ *  退休 (见 runtime-model.md §11)。 */
+extern void edc_session_store_save_session_state(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                                struct edc_session *session);
+
 /** 取消该 session (NULL = 活跃) 的全部非终结 turns 并立即落盘, 使 CANCELLED
  *  跨重启保留 (`/session stop`)。 */
 extern void edc_session_store_stop_all_turns(struct edc_session_manager *sm, struct edc_scheduler *sched);

@@ -21,6 +21,7 @@
 #include "edc_config.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_session_manager.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "log.h"
@@ -28,26 +29,23 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
-/* ── P3 ③ 测试读口 ──────────────────────────────────────────────
- * scheduler 不再持有"当前 session", 所以单测要给它装一个 store 读口: 把请求里
- * 的 session 标签解析成 session 对象 (入站路由 / 快照拉取都走它)。这一层测试
- * 没有 agent, ctx 就留给它 (agent 那层用它自己的读口)。 */
-static struct edc_session *test_resolve_session(void *ctx, const char *session_id)
+/* ── 单测的 session 仓库 (两个) ────────────────────────────────
+ * 同 install_resolver, 只是装两个: 标签为空 = 活跃的那个 (第一个), 标签给定则按
+ * id/name 找, 找不到返回 NULL (调用方拒绝这条输入)。NULL 的槽位不放进数组 ——
+ * 真 store 的 find 会解引用每个槽。 */
+static void install_store(struct edc_scheduler *sched, struct edc_session *first, struct edc_session *second)
 {
-    struct edc_session *sess = ctx;
-    if (!sess)
-        return NULL;
-    if (!session_id || !*session_id)
-        return sess;
-    return (sess->session_id && strcmp(session_id, sess->session_id) == 0) ? sess : NULL;
+    struct edc_session_manager *sm = g_new0(struct edc_session_manager, 1);
+    sm->sessions = g_new0(struct edc_session *, 2);
+    int n = 0;
+    if (first)
+        sm->sessions[n++] = first;
+    if (second)
+        sm->sessions[n++] = second;
+    sm->session_count = n;
+    sm->active_index = first ? 0 : -1; /* 第一个没给 → 空标签也解析不出来 */
+    sched->sessions = sm;              /* 测试进程内不释放 */
 }
-
-static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
-{
-    sched->ctx = sess;
-    sched->resolve_session = test_resolve_session;
-}
-
 /* Stub: _run_loop is referenced by edc_commands (pulled in transitively). */
 volatile sig_atomic_t _run_loop = 1;
 
@@ -127,18 +125,6 @@ static char *first_task_id(struct edc_session *session)
 static struct edc_session *g_sess_a = NULL;
 static struct edc_session *g_sess_b = NULL;
 
-static struct edc_session *stub_resolve_session(void *ctx, const char *session_id)
-{
-    (void)ctx;
-    if (!session_id || !*session_id)
-        return g_sess_a; /* "调用方没指定" → 默认给 A (对应生产里的活跃 session) */
-    if (g_sess_a && g_sess_a->session_id && strcmp(session_id, g_sess_a->session_id) == 0)
-        return g_sess_a;
-    if (g_sess_b && g_sess_b->session_id && strcmp(session_id, g_sess_b->session_id) == 0)
-        return g_sess_b;
-    return NULL; /* 未知标签 → 调用方必须拒绝 */
-}
-
 /* 投递一条入站消息 (模拟前端): |tag| 就是消息上的 session 标签。 */
 static void deliver_input(struct edc_scheduler *sched, const char *tag, const char *content, long req_id)
 {
@@ -165,8 +151,7 @@ static void test_input_lands_in_the_tagged_session(void)
     g_sess_a = edc_session_new(cfg, "sess-a", "A");
     g_sess_b = edc_session_new(cfg, "sess-b", "B");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
-    install_resolver(sched, g_sess_a);
-    sched->resolve_session = stub_resolve_session;
+    install_store(sched, g_sess_a, g_sess_b);
     /* 没有 handle_command → 走 scheduler 自己的兜底建任务路径 (这正是要测的那条)。 */
 
     deliver_input(sched, "sess-b", "hello from B", 1);
@@ -210,8 +195,7 @@ static void test_unknown_tag_is_rejected(void)
     g_sess_a = edc_session_new(cfg, "sess-a", "A");
     g_sess_b = edc_session_new(cfg, "sess-b", "B");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
-    install_resolver(sched, g_sess_a);
-    sched->resolve_session = stub_resolve_session;
+    install_store(sched, g_sess_a, g_sess_b);
 
     deliver_input(sched, "sess-does-not-exist", "who am I", 2);
 
@@ -239,8 +223,7 @@ static void test_tagless_input_uses_the_default(void)
     g_sess_a = edc_session_new(cfg, "sess-a", "A");
     g_sess_b = edc_session_new(cfg, "sess-b", "B");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
-    install_resolver(sched, g_sess_a);
-    sched->resolve_session = stub_resolve_session;
+    install_store(sched, g_sess_a, g_sess_b);
 
     deliver_input(sched, NULL, "reminder: drink water", 3);
 

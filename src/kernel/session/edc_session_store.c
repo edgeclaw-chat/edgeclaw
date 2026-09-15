@@ -186,6 +186,20 @@ void edc_session_store_save_all_sessions_state(struct edc_session_manager *sm, s
     edc_session_manager_save_loaded_states(sm, sched);
 }
 
+void edc_session_store_save_session_state(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                          struct edc_session *session)
+{
+    if (!sm || !sched)
+        return;
+
+    /* 索引/历史先落 (全量), 再重写目标 session 的 state。 */
+    edc_session_manager_save_all(sm);
+
+    struct edc_session *target = session ? session : edc_session_manager_get_active(sm);
+    if (target)
+        edc_session_save_state(target, sched);
+}
+
 /* 用户 /stop (/session stop): 取消当前 session 全部非终结 turns 后立即保存状态,
  * 使 CANCELLED 跨重启保留。
  * 注: 目标不是当前 active session 时 (如 /session stop <other>), 走
@@ -197,8 +211,7 @@ void edc_session_store_stop_all_turns(struct edc_session_manager *sm, struct edc
         return;
     struct edc_session *active = edc_session_manager_get_active(sm);
     edc_scheduler_send_signal_to_all(sched, active, TASK_SIGTERM);
-    if (sched->save_session)
-        sched->save_session(sched, active);
+    edc_session_store_save_session_state(sm, sched, active);
 }
 
 void edc_session_store_remove_all_turns(struct edc_session_manager *sm, struct edc_scheduler *sched)

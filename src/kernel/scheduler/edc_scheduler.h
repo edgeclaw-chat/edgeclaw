@@ -10,6 +10,7 @@
 #include <stdbool.h>
 
 struct edc_session;
+struct edc_session_manager;
 struct edc_config;
 
 /* ── 入站输入: core 自己的词表 ────────────────────────────────
@@ -65,27 +66,6 @@ typedef int (*edc_scheduler_redispatch_tools_fn)(struct edc_scheduler *sched, st
  *  需要原始 channel 消息时自己从 `input->origin` 取回 (不透明透传)。 */
 typedef bool (*edc_scheduler_command_fn)(struct edc_scheduler *sched, struct edc_actor *actor,
                                          const struct edc_sched_input *input);
-
-/** task 收尾 (结果已交付、副作用已做完): 交给用户态做自己的簿记。
- *  名字是**结构词** —— core 不解释它; 今天唯一的订阅者去检查该不该折叠记忆
- *  (§8 验收判据 5: 内容词只出现在订阅者那一侧)。 */
-typedef void (*edc_scheduler_settled_fn)(struct edc_scheduler *sched);
-
-/** 保存 session 状态 (实现里 history 全量落盘)。|session| 是**显式参数**:
- *  每个调用点自己知道要存谁 (任务完成时存属主, 退出时存所有已加载的) ——
- *  P3 ③ 起没有任何"当前 session"可以默认。 */
-typedef void (*edc_scheduler_save_fn)(struct edc_scheduler *sched, struct edc_session *session);
-
-/** session store 的读口: 把 `session_id` 解析成 session (出站调用 —— 规则 8 允许的
- *  store 读口)。
- *
- *  规则 3: scheduler **不知道"哪个是当前的"** (那是 session_manager.active_index 的
- *  事) —— 它只把 `session_id` 当**不透明作用域标签**, 需要对象时经这个口解析。
- *  `NULL`/空标签 = "调用方没指定", 由实现决定默认值 (agent 给活跃 session), 于是
- *  没有 session 概念的入站 (crontab 定时任务) 行为不变, 而 TUI 永远显式带 id。
- *  解析不出来 (标签指向不存在的 session) 返回 NULL —— 调用方**不许猜**、不许回退
- *  到"当前" (那正是 P3 要拆掉的那份副本)。 */
-typedef struct edc_session *(*edc_scheduler_resolve_session_fn)(void *ctx, const char *session_id);
 
 /** 前端**点名要的那棵树**（拉取的应答；①b 之后没有"主动把树推给你"的路径）。
  *
@@ -161,6 +141,18 @@ struct edc_scheduler
 
     edc_actor_t *self;
 
+    /* session 仓库 (store 句柄): store 与 scheduler 同包 (kernel/session ↔
+     * kernel/scheduler), 由装配注入一次, 同包直调 —— 与 `config` 同形。
+     *
+     * P3 ①a 时它是**注入的读口** (函数指针 `resolve_session`), 因为那时 store 住在
+     * 装配根; 目录重组把 store 搬进 kernel 后跨包理由消失, 端口成了同包中转, 于是
+     * 读口 + 落盘口一起退休, 只留这个数据句柄 (2026-09-16, 见 runtime-model.md §11)。
+     *
+     * **不变量 (规则 3)**: scheduler 只知道"把标签交给 store 解析", 不读
+     * `active_index` —— "哪个是当前的" 只在 store 里回答 (唯一谓词 =
+     * edc_session_store_resolve_session); 调度器更不持有任何 session 副本。 */
+    struct edc_session_manager *sessions;
+
     /* 回调 (由 edc_runtime 的装配注入; 见 edc_runtime.c) */
     edc_scheduler_send_llm_fn send_llm;
     edc_scheduler_send_reply_fn send_reply;
@@ -168,11 +160,8 @@ struct edc_scheduler
     edc_scheduler_dispatch_tools_fn dispatch_tools;
     edc_scheduler_redispatch_tools_fn redispatch_tools;
     edc_scheduler_command_fn handle_command;
-    edc_scheduler_settled_fn on_task_settled;
-    edc_scheduler_save_fn save_session;
     edc_scheduler_snapshot_fn snapshot_reply;           /* 拉取的应答: 那棵树 */
     edc_scheduler_snapshot_changed_fn snapshot_changed; /* "某个 session 的树变了" (不带树) */
-    edc_scheduler_resolve_session_fn resolve_session;   /* session_id → session (store 读口) */
 
     /* ── 哪些 session 的树变了 (待通知前端) ──
      * 一条消息里可能同时动了多个 session (跨 session 依赖唤醒目标), 也可能同一个
@@ -216,7 +205,7 @@ extern const char *edc_scheduler_first_unresolved_dep(struct edc_scheduler *sche
 
 /* P3 ③: 构造不再收 session —— scheduler **不持有**"当前 session"这份副本
  * (唯一权威是 session_manager.active_index)。每个入口显式带 session, 或经
- * store 读口 (resolve_session) 把标签解析成 session。 */
+ * store (edc_session_store_resolve_session) 把标签解析成 session。 */
 extern struct edc_scheduler *edc_scheduler_new(struct edc_config *config);
 extern void edc_scheduler_free(struct edc_scheduler *sched);
 

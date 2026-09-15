@@ -179,6 +179,11 @@ static cJSON *edc_sm_build_index(struct edc_session_manager *sm)
 
 static void edc_sm_save_index(struct edc_session_manager *sm)
 {
+    /* 没有索引路径 = 这个仓库没有落盘目的地 (测试里手工拼的纯内存仓库), 跳过而不是
+     * 崩: 与 edc_session_save_state 对 history_dir 的处理同一条规矩。 */
+    if (!sm->index_path)
+        return;
+
     cJSON *root = edc_sm_build_index(sm);
     char *json_str = cJSON_Print(root);
     EdcError *err = NULL;

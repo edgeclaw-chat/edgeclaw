@@ -1,4 +1,5 @@
 #include "edc_session.h"
+#include "edc_session_manager.h"
 #include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -15,26 +16,22 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/stat.h>
-/* ── P3 ③ 测试读口 ──────────────────────────────────────────────
- * scheduler 不再持有"当前 session", 所以单测要给它装一个 store 读口: 把请求里
- * 的 session 标签解析成 session 对象 (入站路由 / 快照拉取都走它)。这一层测试
- * 没有 agent, ctx 就留给它 (agent 那层用它自己的读口)。 */
-static struct edc_session *test_resolve_session(void *ctx, const char *session_id)
-{
-    struct edc_session *sess = ctx;
-    if (!sess)
-        return NULL;
-    if (!session_id || !*session_id)
-        return sess;
-    return (sess->session_id && strcmp(session_id, sess->session_id) == 0) ? sess : NULL;
-}
-
+/* ── 单测的 session 仓库 ─────────────────────────────────────────
+ * scheduler 现在**同包直调 store** (P3 的 `resolve_session` 端口已退休),
+ * 所以测试给它的不是"解析函数"而是**仓库**: 一个只装着
+ * 这些 session 的内存 manager (普通结构体, 没有构造函数 —— 与 poke 别的结构体同法)。
+ * 标签为空 = 用活跃的那个 (active_index 指向第一个), 与真 store 的策略一致。
+ * `ctx` 仍留给测试自己用 (它不再是读口的入参)。 */
 static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
 {
     sched->ctx = sess;
-    sched->resolve_session = test_resolve_session;
+    struct edc_session_manager *sm = g_new0(struct edc_session_manager, 1);
+    sm->sessions = g_new0(struct edc_session *, 1);
+    sm->sessions[0] = sess;
+    sm->session_count = sess ? 1 : 0;
+    sm->active_index = 0;
+    sched->sessions = sm; /* 测试进程内不释放: 与测试同生共死 */
 }
-
 /* Stub for _run_loop pulled in by edc_commands */
 volatile sig_atomic_t _run_loop = 1;
 

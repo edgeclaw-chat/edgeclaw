@@ -7,7 +7,7 @@
 #include "edc_file_utils.h"
 #include "edc_init_env.h"
 #include "edc_llm_actor.h"
-#include "edc_group_fold.h"
+#include "edc_llm_request.h"
 #include "edc_sandbox.h"
 #include "edc_secret.h"
 #include "edc_session.h"
@@ -23,7 +23,6 @@
 #include "uthash.h"
 #include "utlist_fix.h"
 #include <dirent.h>
-#include <edc_shell_vars.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,238 +71,14 @@ static struct edc_runtime *edc_runtime_from_sched(struct edc_scheduler *sched)
 
 /* 跨 session task 解析 / 依赖对账 / session 加载 → edc_session_store.{c,h}
  * (store 自己的读口与生命周期, 显式收 (session_manager, scheduler))。 */
-/* ── Shell 变量解析回调 ──────────────────────────────────── */
-
-static sds edc_runtime_var_resolver(const char *name, void *user_data)
-{
-    struct edc_runtime *agent = user_data;
-    if (!agent)
-        return NULL;
-
-    /* $$ → 当前活跃 task ID */
-    if (strcmp(name, "$") == 0)
-    {
-        struct edc_task *active = edc_session_get_active_task(edc_session_manager_get_active(agent->session_manager));
-        return active ? sdsnew(active->task_id) : NULL;
-    }
-
-    /* $LAST → 最后一个完成 task 的 output */
-    if (strcmp(name, "LAST") == 0)
-    {
-        struct edc_task *last = NULL;
-        uint32_t highest_seq = 0;
-        struct edc_task_group *g;
-        struct edc_session *active = edc_session_manager_get_active(agent->session_manager);
-        DL_FOREACH(active ? active->groups : NULL, g)
-        {
-            struct edc_task *t;
-            LL_FOREACH2(g->members, t, group_next)
-            {
-                if (edc_task_is_completed(t) && t->completion_seq > highest_seq)
-                {
-                    highest_seq = t->completion_seq;
-                    last = t;
-                }
-            }
-        }
-        return (last && last->output) ? sdsdup(last->output) : NULL;
-    }
-
-    /* $NUMBER 或 $NAME → 按 task ID / job number 查找 (全局; 必要时按需激活属主 session) */
-    struct edc_task *t = edc_session_store_resolve_task(agent->session_manager, agent->scheduler, name, NULL);
-    return (t && t->output) ? sdsdup(t->output) : NULL;
-}
-
-/* ── 回调: 发送 LLM 请求 ──────────────────────────────────── */
-
-/* 确保 group history 切片起点不落在 tool 消息上。
- * OpenAI 要求每个 role=tool 消息前面必须有对应的 assistant(tool_calls) 消息；
- * 若窗口起点正好切在 assistant(tool_calls)+tool 序列中间，会导致 tool 消息孤儿化，
- * 从而报 "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"。
- * 这里把起点向前回退到第一个非 tool 消息（即其 assistant），保证序列完整。 */
-static size_t edc_runtime_history_safe_start(cJSON *history, size_t start, size_t lower_bound)
-{
-    while (start > lower_bound)
-    {
-        cJSON *m = cJSON_GetArrayItem(history, start);
-        cJSON *role = cJSON_GetObjectItem(m, "role");
-        if (role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0)
-        {
-            start--;
-        }
-        else
-        {
-            break;
-        }
-    }
-    return start;
-}
-
+/* ── 回调: 发送 LLM 请求 (实现见 //src/actor:llm_request) ─────────
+ * 装配根只交两样 kernel 拿不到的值: 工具定义 (所有权归 toolbox) 与 LLM 端点
+ * 邮箱; 其余 (config / session 仓库 / group 状态) 都在 sched 或 task 上。 */
 static void edc_runtime_cb_send_llm(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
 {
-    struct edc_runtime *agent = edc_runtime_from_sched(sched);
-    if (!agent || !task)
-        return;
-
-    /* Group 级上下文: system 部分 (group memory + system prompt, 纯净、不含
-     * todo) 由 edc_context_append_system_part 统一组装; 余下为全部未折叠历史
-     * + task 专属 (dep outputs / $VAR 展开)。todo 状态提醒不放在
-     * 头部——也不每轮请求都塞: 由 edc_task_llm_request_poke 节流, 只有"隔了
-     * EDC_TODO_SYNC_REMIND_GAP 条对话 (LLM 请求) 都没调用过 todowrite"
-     * 时, 才经 edc_context_make_todo_reminder 重新计算并追加到消息列表绝对
-     * 队尾 (req->tail_system, llm actor 在 history + 当前 turn 之后发出)。 */
-    cJSON *msgs = cJSON_CreateArray();
-
-    sds pristine = NULL;
-    /* 属主 session 的 workdir: 后台 session 里的任务续跑时系统提示里的
-     * {{cwd}} 必须是它自己的目录 (P3 ③: 没有属主就没有目录, 不猜"当前的")。 */
-    struct edc_session *own = (task->group && task->group->session) ? task->group->session : NULL;
-    const char *workdir = own ? edc_session_get_workdir(own) : NULL;
-    edc_context_append_system_part(msgs, agent->config, task->group, workdir, &pristine);
-
-    /* group 无历史时 context 现拼的纯净 prompt: 写回 group history[0] (组内
-     * 所有 task 共享、保持纯净) */
-    if (pristine)
-    {
-        if (task->group)
-        {
-            cJSON *sys_hist = cJSON_CreateObject();
-            cJSON_AddStringToObject(sys_hist, "role", "system");
-            cJSON_AddStringToObject(sys_hist, "content", pristine);
-            /* 组 system prompt 不属于任何 task */
-            edc_task_group_history_add_owned(task->group, sys_hist);
-        }
-        sdsfree(pristine);
-    }
-
-    if (task->group && cJSON_GetArraySize(task->group->history) > 0)
-    {
-        size_t total = cJSON_GetArraySize(task->group->history);
-        size_t end = total;
-
-        /* 未折叠历史起点: 跳过 system prompt (history[0]) + 已折叠消息。
-         * 已折叠消息数 = 折叠水位 (completion_seq) 之前的 task 的消息总数。 */
-        size_t hist_begin = 1 + edc_task_group_folded_msg_count(task->group);
-        if (hist_begin > end)
-            hist_begin = end;
-        /* 水位边界也可能切在 tool 消息上, 回退到安全边界 */
-        hist_begin = edc_runtime_history_safe_start(task->group->history, hist_begin, 1);
-
-        /* 注入全部未折叠历史 [hist_begin, end): fold 采用"半量"策略 (见
-         * edc_group_fold 的 L1 fold), 触发时只压最老的一半, 剩下的未折叠
-         * 消息正是模型该看到的近期细节, 因此整段注入、不再截断。请求体量的
-         * 上界由 group_fold_msg_threshold 决定 (fold 触发即把它压回去)。 */
-        for (size_t i = hist_begin; i < end; i++)
-        {
-            cJSON_AddItemReferenceToArray(msgs, cJSON_GetArrayItem(task->group->history, i));
-        }
-    }
-
-    /* 注入已完成依赖 task 的输出 (user inputs + final output) */
-    struct edc_task_dep *dep;
-    LL_FOREACH(task->deps, dep)
-    {
-        log_info("send_llm task=%s dep src=%s completed=%d output=%s", task->task_id,
-                 dep->source ? dep->source->task_id : "(null)", dep->completed,
-                 (dep->source && dep->source->output) ? "yes" : "none");
-        if (dep->completed && dep->source && !dep->injected && dep->type == TASK_DEP_JOIN)
-        {
-            dep->injected = true;
-
-            /* inject source task's final output only (mainstream subagent pattern) */
-            if (dep->source->output)
-            {
-                /* find the last user message from source to form a Q&A pair */
-                sds last_user = NULL;
-                for (size_t qi = dep->source->turns.head; qi < dep->source->turns.tail; qi++)
-                {
-                    struct edc_turn *turn = dep->source->turns.data[qi];
-                    for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
-                    {
-                        cJSON *msg = turn->messages.data[mj];
-                        cJSON *role = cJSON_GetObjectItem(msg, "role");
-                        if (role && cJSON_IsString(role) && strcmp(role->valuestring, "user") == 0)
-                        {
-                            cJSON *content = cJSON_GetObjectItem(msg, "content");
-                            if (content && cJSON_IsString(content))
-                            {
-                                if (last_user)
-                                    sdsfree(last_user);
-                                last_user = sdsnew(content->valuestring);
-                            }
-                        }
-                    }
-                }
-
-                if (last_user)
-                {
-                    cJSON *usr = cJSON_CreateObject();
-                    cJSON_AddStringToObject(usr, "role", "user");
-                    cJSON_AddStringToObject(usr, "content", last_user);
-                    cJSON_AddItemToArray(msgs, usr);
-                    sdsfree(last_user);
-                }
-
-                cJSON *asst = cJSON_CreateObject();
-                cJSON_AddStringToObject(asst, "role", "assistant");
-                cJSON_AddStringToObject(asst, "content", dep->source->output);
-                cJSON_AddItemToArray(msgs, asst);
-            }
-
-            log_info("  -> injected final output from task %s", dep->source->task_id);
-        }
-    }
-
-    /* expand deferred $VAR references in the current turn's user messages */
-    if (task->has_deferred_vars && task->active_turn)
-    {
-        for (size_t mj = task->active_turn->messages.head; mj < task->active_turn->messages.tail; mj++)
-        {
-            cJSON *msg = task->active_turn->messages.data[mj];
-            cJSON *role = cJSON_GetObjectItem(msg, "role");
-            if (role && cJSON_IsString(role) && strcmp(role->valuestring, "user") == 0)
-            {
-                cJSON *content = cJSON_GetObjectItem(msg, "content");
-                if (content && cJSON_IsString(content))
-                {
-                    sds expanded = edc_shell_expand_vars(content->valuestring, edc_runtime_var_resolver, agent, NULL);
-                    if (expanded)
-                    {
-                        cJSON_ReplaceItemInObject(msg, "content", cJSON_CreateString(expanded));
-                        sdsfree(expanded);
-                    }
-                }
-            }
-        }
-        task->has_deferred_vars = 0;
-    }
-
-    /* sink = GROUP_MEMORY 的 system task (fold) 要的是**一次干净的摘要调用**:
-     * 它的"镜像"就是 系统组头部 (折叠说明) + 它自己的 turn (折叠 prompt)。
-     * 所以不给它工具定义 —— 摘要器没有工具可用, 也不该被工具循环带走 (旧实现
-     * 发给 LLM 的请求里 tools 字段是空的, 这条差别的唯一理由就是保持那份请求
-     * 逐字节可比)。 */
-    const bool is_memory_sink = (task->sink == EDC_SINK_GROUP_MEMORY);
-    cJSON *tools = (!is_memory_sink && agent->toolbox) ? agent->toolbox->schemas : NULL;
-    struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, tools,
-                                                          task->active_turn ? &task->active_turn->messages : NULL);
-    req->history_owned = true;
-    /* 绝对队尾: todo reminder —— 不再每轮请求都塞 (避免唠叨), 只在
-     * "隔了 EDC_TODO_SYNC_REMIND_GAP 条对话 (LLM 请求) 都没调用过
-     * todowrite" 时生成 (edc_task_llm_request_poke 达阈值返回 true,
-     * 内部已清零重计)。两段式: CURRENT TASK SYSTEM STATE 状态段 +
-     * INSTRUCTIONS FOR THIS TURN 指令段; 有清单→清单行+逐轮同步节拍, 无清
-     * 单→"尚无清单"+建计划引导。llm actor 在 history + turn 之后追加, 每
-     * 轮请求都是最新状态。req 持有并随请求释放 (副本, 不改 task/group)。 */
-    req->tail_system = NULL;
-    /* 待办提醒是给"正在干活的用户任务"的节拍; 摘要调用不该被它插尾
-     * (同样是为了让折叠请求与旧实现逐字节一致)。 */
-    if (!is_memory_sink && edc_task_llm_request_poke(task))
-        req->tail_system = edc_context_make_todo_reminder(task);
-
-    edc_actor_send(agent->llm_actor,
-                   edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST, edc_scheduler_get_actor(sched), request_id, req,
-                                     (edc_actor_data_free_fn)edc_llm_actor_req_free));
+    struct edc_runtime *rt = edc_runtime_from_sched(sched);
+    edc_llm_request_send(sched, task, (rt && rt->toolbox) ? rt->toolbox->schemas : NULL,
+                         rt ? rt->llm_actor : NULL, request_id);
 }
 
 /* ── 回调: 发送 Channel 回复 ────────────────────────────────── */
@@ -490,91 +265,6 @@ static bool edc_runtime_cb_handle_command(struct edc_scheduler *sched, struct ed
     return g_command_handler ? g_command_handler(agent->config, agent->session_manager, agent->scheduler, to, msg) : false;
 }
 
-/* ── session 标签 → session 对象 (store 读口, P3) ─────────────
- *
- * 规则 3: "哪个是当前的"只有一份权威 = session_manager.active_index; scheduler
- * 不知道它。入站消息带的是一个 **session 标签** (不透明作用域), scheduler 需要
- * 对象时经这个口解析 —— 于是 scheduler 不再持有那份副本。
- *
- * 标签为空 = "调用方没指定" (crontab 定时任务、老渠道) → 给活跃 session, 行为与
- * 老实现一致; 标签给定但找不到 → NULL, 调用方拒绝这条输入 (不猜、不落到别的
- * session: 老实现里"切错台"的家族事故就是这么来的)。 */
-static struct edc_session *edc_runtime_cb_resolve_session(void *ctx, const char *session_id)
-{
-    return edc_session_store_resolve_session(((struct edc_runtime *)ctx)->session_manager, session_id);
-}
-
-/* ── 回调: task 收尾 → try_fold (userland 侧) ───────────────── */
-
-static void edc_runtime_cb_try_fold(struct edc_scheduler *sched)
-{
-    struct edc_runtime *agent = edc_runtime_from_sched(sched);
-    if (!agent || !agent->session_manager)
-        return;
-
-    int msg_threshold =
-        agent->config ? agent->config->group_fold_msg_threshold : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
-    if (msg_threshold <= 0)
-        msg_threshold = EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
-
-    /* L1 折叠触发: 组内存在可折叠 task 且未折叠消息条数 ≥ 阈值。
-     * 触发时机只由对话条数驱动 —— 不再看可折叠 task 个数。
-     * 扫描**所有** session: 后台 session 里的任务完成后也要能触发折叠, 否则
-     * 只有切回来才折叠。一次只折叠一个组。
-     *
-     * 折叠本身是一次 system task (见 edc_group_fold.c): 这里只决定"该折了",
-     * 任务由 edc_group_fold_start 建、派发, 它的产出经 sink=GROUP_MEMORY 落到
-     * 目标组的记忆里, 跑完按 lifetime=TRANSIENT 被回收。 */
-    struct edc_session_manager *sm = agent->session_manager;
-    for (int si = 0; si < sm->session_count; si++)
-    {
-        struct edc_session *sess = sm->sessions[si];
-        if (!sess)
-            continue;
-        /* 这个 session 已经有折叠在飞: 跳过 (别让两次折叠互相看见半成品记忆)。 */
-        if (edc_scheduler_has_pending_system_task(sess))
-            continue;
-
-        struct edc_task_group *g;
-        DL_FOREACH(sess->groups, g)
-        {
-            size_t foldable = edc_task_group_count_foldable(g);
-            size_t unfolded = edc_task_group_unfolded_msg_count(g);
-
-            if (edc_group_fold_due(g, msg_threshold))
-            {
-                log_info("L1 fold trigger: group %s foldable=%zu unfolded=%zu (msg_thr=%d)", g->group_id, foldable,
-                         unfolded, msg_threshold);
-                edc_group_fold_start(sched, sess, g);
-                return; /* 一次只折叠一个 group */
-            }
-            if (foldable > 0 || unfolded > 0)
-            {
-                log_debug("L1 fold check: group %s foldable=%zu unfolded=%zu", g->group_id, foldable, unfolded);
-            }
-        }
-    }
-}
-
-/* ── 回调: 保存 Session ────────────────────────────────────── */
-
-static void edc_runtime_cb_save_session(struct edc_scheduler *sched, struct edc_session *session)
-{
-    struct edc_runtime *agent = edc_runtime_from_sched(sched);
-    if (!agent || !agent->session_manager)
-        return;
-
-    /* Save history for all sessions */
-    edc_session_manager_save_all(agent->session_manager);
-
-    /* Save state for the requested session (NULL = the active one). Background
-     * task completions pass the owning session so their progress is persisted
-     * even while a different session is displayed. */
-    struct edc_session *target = session ? session : edc_session_manager_get_active(agent->session_manager);
-    if (target)
-        edc_session_save_state(target, sched);
-}
-
 /* ── 回调: task 树快照 (①b: 事件 vs 应答) ─────────────────────
  *
  * 两条线分得很清:
@@ -693,9 +383,11 @@ struct edc_runtime *edc_runtime_new(bool setup, int sandbox_override)
     }
 
     /* 创建 scheduler —— 不再把 active session 递给它 (P3 ③: scheduler 不持有
-     * "当前 session"; 每个入口显式带 session, 或经 resolve_session 读口解析)。 */
+     * "当前 session"; 每个入口显式带 session, 标签解析交由 store 的同包读口)。 */
     agent->scheduler = edc_scheduler_new(agent->config);
     agent->scheduler->ctx = agent;
+    /* session 仓库句柄: 标签解析、落盘、折叠扫描都同包直调 store (与 config 同形) */
+    agent->scheduler->sessions = agent->session_manager;
 
     /* 注入回调 */
     agent->scheduler->send_llm = edc_runtime_cb_send_llm;
@@ -704,11 +396,8 @@ struct edc_runtime *edc_runtime_new(bool setup, int sandbox_override)
     agent->scheduler->dispatch_tools = edc_runtime_cb_dispatch_tools;
     agent->scheduler->redispatch_tools = edc_runtime_cb_redispatch_tools;
     agent->scheduler->handle_command = edc_runtime_cb_handle_command;
-    agent->scheduler->on_task_settled = edc_runtime_cb_try_fold;
-    agent->scheduler->save_session = edc_runtime_cb_save_session;
     agent->scheduler->snapshot_reply = edc_runtime_cb_snapshot_reply;
     agent->scheduler->snapshot_changed = edc_runtime_cb_snapshot_changed;
-    agent->scheduler->resolve_session = edc_runtime_cb_resolve_session;
 
     /* Phase 4: restore saved task/group state for active session */
     {

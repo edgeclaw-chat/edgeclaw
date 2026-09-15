@@ -1,5 +1,7 @@
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_session_manager.h"
+#include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_channel_actor.h"
 #include "edc_llm_actor.h"
@@ -12,26 +14,22 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <sys/stat.h>
-/* ── P3 ③ 测试读口 ──────────────────────────────────────────────
- * scheduler 不再持有"当前 session", 所以单测要给它装一个 store 读口: 把请求里
- * 的 session 标签解析成 session 对象 (入站路由 / 快照拉取都走它)。这一层测试
- * 没有 agent, ctx 就留给它 (agent 那层用它自己的读口)。 */
-static struct edc_session *test_resolve_session(void *ctx, const char *session_id)
-{
-    struct edc_session *sess = ctx;
-    if (!sess)
-        return NULL;
-    if (!session_id || !*session_id)
-        return sess;
-    return (sess->session_id && strcmp(session_id, sess->session_id) == 0) ? sess : NULL;
-}
-
+/* ── 单测的 session 仓库 ─────────────────────────────────────────
+ * scheduler 现在**同包直调 store** (P3 的 `resolve_session` 端口已退休),
+ * 所以测试给它的不是"解析函数"而是**仓库**: 一个只装着
+ * 这些 session 的内存 manager (普通结构体, 没有构造函数 —— 与 poke 别的结构体同法)。
+ * 标签为空 = 用活跃的那个 (active_index 指向第一个), 与真 store 的策略一致。
+ * `ctx` 仍留给测试自己用 (它不再是读口的入参)。 */
 static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
 {
     sched->ctx = sess;
-    sched->resolve_session = test_resolve_session;
+    struct edc_session_manager *sm = g_new0(struct edc_session_manager, 1);
+    sm->sessions = g_new0(struct edc_session *, 1);
+    sm->sessions[0] = sess;
+    sm->session_count = sess ? 1 : 0;
+    sm->active_index = 0;
+    sched->sessions = sm; /* 测试进程内不释放: 与测试同生共死 */
 }
-
 volatile sig_atomic_t _run_loop;
 
 static int test_failed = 0;
@@ -208,13 +206,10 @@ static void test_scheduler_fg_bg(void)
 
 /* ── 5. 信号发送 ──────────────────────────────────────────── */
 
-static int g_save_calls = 0;
-static void fake_save_session(struct edc_scheduler *sched, struct edc_session *session)
-{
-    (void)sched;
-    (void)session;
-    g_save_calls++;
-}
+/* 落盘不再是可注入的端口 (scheduler 同包直调 store, 见 runtime-model.md §11), 所以
+ * "取消 → 立刻落盘"**不再用调用计数探针** —— 那断言的是一个已被删掉的机制。真行为
+ * (取消后 CANCELLED 跨重启保留) 由 tests/test_session_leave_cancel.c 的盘上
+ * round-trip 钉住 (它的会话有真 history_dir, 这里是裸结构体, 落盘会静默失败)。 */
 
 static void test_scheduler_signals(void)
 {
@@ -236,29 +231,25 @@ static void test_scheduler_signals(void)
     edc_scheduler_send_signal_to_task(sched, sess, "nonexistent", TASK_SIGTERM);
     CHECK(1, "signal to nonexistent task survived");
 
-    TEST("send_signal_to_task triggers save_session on cancel");
-    g_save_calls = 0;
-    sched->save_session = fake_save_session;
+    TEST("send_signal_to_task triggers persist on cancel");
 
     /* WAITING_INPUT task: cancel → must persist */
     struct edc_task *t2 = edc_scheduler_create_task(sched, sess, "signal target 2", edc_channel_adapter);
     edc_task_group_add_task(g, t2);
     edc_scheduler_send_signal_to_task(sched, sess, t2->task_id, TASK_SIGTERM);
     CHECK(edc_task_is_cancelled(t2), "t2 cancelled");
-    CHECK(g_save_calls == 1, "save_session called once after explicit cancel");
 
-    /* COMPLETED task is terminal: cancel is a no-op → no save */
+    /* COMPLETED task is terminal: cancel is a no-op */
     struct edc_task *t3 = edc_scheduler_create_task(sched, sess, "done task", edc_channel_adapter);
     edc_task_group_add_task(g, t3);
     edc_task_await_exec(t3);
     edc_task_mark_completed(t3);
     edc_scheduler_send_signal_to_task(sched, sess, t3->task_id, TASK_SIGTERM);
     CHECK(edc_task_is_completed(t3), "completed task stays COMPLETED");
-    CHECK(g_save_calls == 1, "no extra save for no-op cancel on completed task");
 
-    /* nonexistent task → no save */
+    /* nonexistent task → survived */
     edc_scheduler_send_signal_to_task(sched, sess, "nonexistent", TASK_SIGTERM);
-    CHECK(g_save_calls == 1, "no save for nonexistent task");
+    CHECK(1, "signal to a nonexistent task survived");
 
     edc_scheduler_free(sched);
     free(sess);

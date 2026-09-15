@@ -6,6 +6,8 @@
 
 struct edc_scheduler;
 struct edc_session;
+struct edc_session_manager;
+struct edc_config;
 struct edc_task;
 struct edc_task_group;
 
@@ -25,6 +27,15 @@ struct edc_task_group;
 
 /** 触发闸门: 这个组该折了吗 —— 有可折叠任务, 且未折叠消息数达到阈值。 */
 extern bool edc_group_fold_due(struct edc_task_group *group, int msg_threshold);
+
+/** 触发扫描: 现在该折哪个组 —— 扫**所有** session (后台 session 里的任务完成后
+ *  也要能触发, 否则只有切回来才折), 一次只折一个组。返回是否发起了折叠。
+ *
+ *  这是它唯一的入口。它原来住装配根、经 scheduler 的 `on_task_settled` 端口被调:
+ *  端口那层只递进来两样本模块拿不到的东西 —— session 仓库与 config (阈值), 别的
+ *  全是本模块自己做的事, 所以端口去掉、逻辑归位到这里 (见 runtime-model.md §11)。 */
+extern bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_manager *sessions,
+                               struct edc_config *conf);
 
 /** 构造折叠 prompt (半量策略: 现有 memory + 最老的一半可折叠任务的 turns 与
  *  output; `*out_max_seq` 回传选中批次的 completion_seq 上限)。

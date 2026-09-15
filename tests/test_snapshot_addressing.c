@@ -25,6 +25,7 @@
 #include "edc_config.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_session_manager.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "log.h"
@@ -35,28 +36,24 @@
 /* ── P3 ③ 测试读口 (两个 session) ────────────────────────────────
  * scheduler 不再持有"当前 session": 拉取/入站请求带 session 标签, 由读口解析。
  * 本文件每条用例都有自己的两棵树, 所以槽位**每次覆盖** (不留上一轮的指针)。 */
-static struct edc_session *g_store[2];
 
-static struct edc_session *test_resolve_session(void *ctx, const char *session_id)
-{
-    (void)ctx;
-    if (!session_id || !*session_id)
-        return g_store[0] ? g_store[0] : NULL;
-    for (int i = 0; i < 2; i++)
-    {
-        if (g_store[i] && g_store[i]->session_id && strcmp(g_store[i]->session_id, session_id) == 0)
-            return g_store[i];
-    }
-    return NULL;
-}
-
+/* ── 单测的 session 仓库 (两个) ────────────────────────────────
+ * 同 install_resolver, 只是装两个: 标签为空 = 活跃的那个 (第一个), 标签给定则按
+ * id/name 找, 找不到返回 NULL (调用方拒绝这条输入)。NULL 的槽位不放进数组 ——
+ * 真 store 的 find 会解引用每个槽。 */
 static void install_store(struct edc_scheduler *sched, struct edc_session *first, struct edc_session *second)
 {
-    g_store[0] = first;
-    g_store[1] = second;
-    sched->resolve_session = test_resolve_session;
+    struct edc_session_manager *sm = g_new0(struct edc_session_manager, 1);
+    sm->sessions = g_new0(struct edc_session *, 2);
+    int n = 0;
+    if (first)
+        sm->sessions[n++] = first;
+    if (second)
+        sm->sessions[n++] = second;
+    sm->session_count = n;
+    sm->active_index = first ? 0 : -1; /* 第一个没给 → 空标签也解析不出来 */
+    sched->sessions = sm;              /* 测试进程内不释放 */
 }
-
 /* Stub: _run_loop is referenced by edc_commands (pulled in transitively). */
 volatile sig_atomic_t _run_loop = 1;
 
@@ -135,7 +132,6 @@ static void reset_capture(void)
 
 static struct edc_session *g_sess_a = NULL;
 static struct edc_session *g_sess_b = NULL;
-
 
 /* 处理一条无害消息: 让 handler 尾巴上的"结算"跑起来 (脏表 → 事件)。
  * CHANNEL_RECV 且 data=NULL 时 sched_handle_input 立刻返回, 零副作用。 */
