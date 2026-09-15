@@ -2,6 +2,8 @@
 #include "edc_actor.h"
 #include "edc_compat.h"
 #include "edc_error.h"
+#include "edc_scheduler.h"
+#include "edc_task.h"
 #include "edc_toolbox.h"
 #include "log.h"
 #include "sds.h"
@@ -253,4 +255,97 @@ edc_actor_t *edc_toolbox_actor_new(struct edc_toolbox *toolbox)
     state->toolbox = toolbox;
 
     return edc_actor_new("edc_toolbox_actor", edc_toolbox_actor_handler, state);
+}
+
+/* ── 请求侧: 投一条请求链给 toolbox actor ─────────────────────
+ * 唯一的投递出口: dispatch 与 redispatch 都从这里出去, 所以
+ * `BC_ACTOR_MSG_TOOL_REQUEST` 全文件只出现两次 (这里 + actor 自己的 handler)。 */
+static void edc_toolbox_actor_send_chain(edc_actor_t *actor, struct edc_scheduler *sched, void *request_id,
+                                         struct edc_toolbox_actor_req *chain)
+{
+    edc_actor_send(actor, edc_actor_msg_new(BC_ACTOR_MSG_TOOL_REQUEST, edc_scheduler_get_actor(sched), request_id,
+                                            chain, (edc_actor_data_free_fn)edc_toolbox_actor_req_free));
+}
+
+/* 把 LLM 响应里的 tool_calls 拼成一条请求链并投递 (链首是 dummy head, 空链不投)。
+ * 只处理 FUNCTION 类型的 call; name/args/id 的所有权转移给 req (响应侧不再引用)。 */
+void edc_toolbox_actor_dispatch(edc_actor_t *actor, struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
+                                void *request_id)
+{
+    if (!actor || !task || !llm_resp)
+        return;
+
+    struct edc_llm_actor_resp *resp = llm_resp;
+
+    /* 思维内容回显: 内容上屏是**通道**的活, 所以仍走 scheduler 的 send_reply
+     * 端口 —— 本模块不认识通道句柄 (规则: 能拿到的才拿)。 */
+    if ((resp->reasoning_content && sdslen(resp->reasoning_content) > 0) ||
+        (resp->content && sdslen(resp->content) > 0))
+    {
+        sds content = (resp->content && sdslen(resp->content) > 0) ? resp->content : resp->reasoning_content;
+        sds text = sdscatprintf(sdsempty(), "%s", content);
+        if (sched && sched->send_reply)
+            sched->send_reply(sched, task, text, EDC_CHANNEL_MESSAGE_THOUGHT_TYPE, request_id);
+        sdsfree(text);
+    }
+
+    if (!resp->tool_calls)
+        return;
+
+    struct edc_toolbox_actor_req *head = edc_toolbox_actor_req_new(NULL, NULL, NULL, task->channel_type, task);
+    struct edc_toolbox_actor_req *req = head;
+
+    for (unsigned i = 0; i < utarray_len(resp->tool_calls); i++)
+    {
+        struct edc_llm_chat_tool_call *tool_call = (struct edc_llm_chat_tool_call *)utarray_eltptr(resp->tool_calls, i);
+        if (tool_call->type == BC_LLM_TOOL_CALL_TYPE_FUNCTION)
+        {
+            req->next = edc_toolbox_actor_req_new(tool_call->function.name, tool_call->function.arguments,
+                                                  tool_call->id, task->channel_type, task);
+            req = req->next;
+            tool_call->function.arguments = NULL;
+            tool_call->function.name = NULL;
+            tool_call->id = NULL;
+        }
+    }
+
+    req = head->next;
+    edc_toolbox_actor_req_free(head);
+    if (req)
+        edc_toolbox_actor_send_chain(actor, sched, request_id, req);
+}
+
+/* resume: 把 task 工具账本里仍为 PENDING (尚未执行) 的记录重建 toolbox 请求链
+ * 并投递。EXECUTING 的记录由 scheduler 在 resume 时补中断响应, 不在此列。
+ * 返回投递的条数。 */
+int edc_toolbox_actor_redispatch(edc_actor_t *actor, struct edc_scheduler *sched, struct edc_task *task,
+                                 void *request_id)
+{
+    if (!actor || !task)
+        return 0;
+
+    /* dummy head, 与原 dispatch 路径一致 (空 req 不入链) */
+    struct edc_toolbox_actor_req *head = edc_toolbox_actor_req_new(NULL, NULL, NULL, task->channel_type, task);
+    struct edc_toolbox_actor_req *tail = head;
+    int count = 0;
+
+    struct edc_tool_call_record *rec;
+    for (rec = task->tool_calls; rec; rec = rec->next)
+    {
+        if (rec->status != TOOL_CALL_PENDING)
+            continue;
+        tail->next = edc_toolbox_actor_req_new(rec->name ? sdsdup(rec->name) : sdsempty(),
+                                               rec->args ? cJSON_Duplicate(rec->args, 1) : NULL,
+                                               rec->call_id ? sdsdup(rec->call_id) : NULL, task->channel_type, task);
+        tail = tail->next;
+        count++;
+    }
+
+    struct edc_toolbox_actor_req *chain = head->next;
+    edc_toolbox_actor_req_free(head);
+    if (!chain)
+        return 0;
+
+    edc_toolbox_actor_send_chain(actor, sched, request_id, chain);
+    return count;
 }

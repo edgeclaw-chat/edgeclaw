@@ -14,7 +14,6 @@ cc_library(
             "//src/actor:actors",
             "//src/actor:llm_request",
             "//src/common:common",
-            "//src/common:utlist_fix",
             "//src/kernel:kernel",
             "//src/sandbox:sandbox",
         "//src/shell:shell",

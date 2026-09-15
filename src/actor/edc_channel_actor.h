@@ -1,4 +1,4 @@
-﻿#ifndef __BC_CHANNEL_ACTOR_H__
+#ifndef __BC_CHANNEL_ACTOR_H__
 #define __BC_CHANNEL_ACTOR_H__
 
 #include "cJSON.h"
@@ -82,6 +82,24 @@ extern void edc_channel_publish(struct edc_reply_to to, const char *session_id, 
 
 /* "活跃 session 变成 X 了" (P3 ①b): 由命令层在 `/session switch|new` 成功后发出。 */
 extern void edc_channel_notify_active_session(struct edc_actor *channel_actor, const char *session_id);
+
+/* ── 出站: 一条**任务产出** → 通道消息 ────────────────────────
+ *
+ * 与 `edc_channel_publish` 是同一族 (消息形状 + 发送路径都归通道), 区别只在
+ * "这条消息描述什么":
+ *   publish          = 一段现成内容 (快照 / 事件通报 / 命令层回话);
+ *   send_task_reply  = 某条 task 的一轮产出 (LLM 回复 / 思考 / 系统提示);
+ *   send_task_tool_* = 某条 task 的工具输出 (带 header)。
+ * 后两者要往消息上填 `task_id` / `session_id` / `from_active_task` /
+ * `render_pref` —— 那是**通道消息的形状**, 所以由通道自己填, 不由调用方拼。
+ *
+ * 调用方 (scheduler / executor / toolbox) 只声明"该回一条了"。
+ * `to.type` = 这条消息的类型 (路由键); |content| 所有权归消息, 失败路径这里接手。 */
+struct edc_task; /* fwd: 只以指针出现 */
+extern void edc_channel_send_task_reply(struct edc_reply_to to, struct edc_task *task, const char *content,
+                                        void *request_id);
+extern void edc_channel_send_task_tool_message(struct edc_reply_to to, struct edc_task *task, const char *header,
+                                               const char *content, edc_render_pref_t render_pref, void *request_id);
 
 extern void edc_channel_message_free(struct edc_channel_message *msg);
 extern struct edc_channel_message *edc_channel_message_new(edc_channel_type type, edc_channel_message_type message_type,

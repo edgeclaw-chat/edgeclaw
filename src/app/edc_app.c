@@ -22,7 +22,6 @@
 #include "log.h"
 #include "sds.h"
 #include "uthash.h"
-#include "utlist_fix.h"
 #include <dirent.h>
 #include <limits.h>
 #include <stdio.h>
@@ -77,178 +76,57 @@ static void edc_app_cb_send_llm(struct edc_scheduler *sched, struct edc_task *ta
                          rt ? rt->llm_actor : NULL, request_id);
 }
 
-/* ── 回调: 发送 Channel 回复 ────────────────────────────────── */
+/* ── 回调 (装配根只做两件事) ───────────────────────────────────
+ *
+ * 1) **交句柄**: 下面这些 thunk 的全部内容 —— 把提供方的句柄接给调用方;
+ * 2) **只有装配根同时握着两端的事**: LLM 请求装配 (send_llm) 与命令分发
+ *    (handle_command)。
+ *
+ * 其余"怎么做"都在提供方: 通道消息的形状 → src/actor/edc_channel_actor.c;
+ * 工具协议 (req 链 / dispatch / redispatch / 按账本重建) → src/toolbox/edc_toolbox_actor.c;
+ * LLM 请求体 → //src/actor:llm_request。
+ * **端口签名 (edc_scheduler.h) 一字未动** —— scheduler / executor 的调用点不受影响。 */
+
+static struct edc_reply_to edc_app_reply_to(const struct edc_app *rt, struct edc_scheduler *sched,
+                                            edc_channel_message_type type)
+{
+    struct edc_reply_to to = {.channel_actor = rt ? rt->channel_actor : NULL,
+                              .actor = edc_scheduler_get_actor(sched),
+                              .type = type};
+    return to;
+}
 
 static void edc_app_cb_send_reply(struct edc_scheduler *sched, struct edc_task *task, const char *content,
-                                    edc_channel_message_type message_type, void *request_id)
+                                  edc_channel_message_type message_type, void *request_id)
 {
-    struct edc_app *agent = edc_app_from_sched(sched);
-    if (!agent || !task || !content)
-        return;
-
-    /* 属主 session: 被切到后台的 session 的产出照发, 由前端按 session_id 静默写进
-     * 它自己的显示流。P3 ③: **"显示中的 session 只显示 active task"这条展示规则
-     * 移到了前端** —— core 只把事实声明出去 (from_active_task), 不再问"谁在看"
-     * (它已经不知道了: 那份"当前 session"的副本已删)。 */
-    struct edc_session *own = (task->group && task->group->session) ? task->group->session : NULL;
-    if (!own)
-    {
-        log_warn("dropping %s from task %s: no owning session", "reply", task->task_id ? task->task_id : "?");
-        return;
-    }
-
-    struct edc_channel_message *reply = edc_channel_message_new(task->channel_type, message_type, sdsnew(content));
-    /* Tag the message with its producing task so the frontend can show which
-     * task a chat message belongs to (interleaved tasks in one session). */
-    if (task->task_id)
-        reply->task_id = sdsnew(task->task_id);
-    /* And with its owning session, so a background session's output lands in
-     * that session's transcript rather than the one on screen. */
-    reply->session_id = sdsnew(own->session_id);
-    /* 事实声明: 这是它 session 的 active task 吗 (前端据此做展示闸门)。 */
-    reply->from_active_task = edc_session_get_active_task(own) == task;
-    /* 发送方显式声明渲染偏好，渲染端(CLI/TUI)不再猜测：
-     * 只有 LLM 回复 (RESP) 声明按 Markdown 渲染；思考/系统等内部文本保持
-     * 默认 PLAIN（零值），原样显示。 */
-    if (message_type == EDC_CHANNEL_MESSAGE_RESP_TYPE)
-        reply->render_pref = EDC_RENDER_MARKDOWN;
-
-    edc_actor_send(agent->channel_actor,
-                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type, edc_scheduler_get_actor(sched),
-                                              request_id, reply, (edc_actor_data_free_fn)edc_channel_message_free));
+    edc_channel_send_task_reply(edc_app_reply_to(edc_app_from_sched(sched), sched, message_type), task, content,
+                                request_id);
 }
-
-/* ── 回调: 发送 Tool 消息 ───────────────────────────────────── */
-/* 构造带 header 的 TOOL 消息发给 channel_actor。展示闸门 (只显示显示中的 session
- * 的 active task) 在前端 —— 这里只声明事实 (from_active_task)。 */
 
 static void edc_app_cb_send_tool_message(struct edc_scheduler *sched, struct edc_task *task, const char *header,
-                                           const char *content, edc_render_pref_t render_pref, void *request_id)
+                                         const char *content, edc_render_pref_t render_pref, void *request_id)
 {
-    struct edc_app *agent = edc_app_from_sched(sched);
-    if (!agent || !task || !content)
-        return;
-
-    struct edc_channel_message *reply =
-        edc_channel_message_new(task->channel_type, EDC_CHANNEL_MESSAGE_TOOL_TYPE, sdsnew(content));
-    reply->render_pref = render_pref;
-    if (task->task_id)
-        reply->task_id = sdsnew(task->task_id);
-    /* Owning session (see edc_app_cb_send_reply): routes a background
-     * session's tool output into its own transcript. */
-    {
-        struct edc_session *own = (task->group && task->group->session) ? task->group->session : NULL;
-        if (own && own->session_id)
-            reply->session_id = sdsnew(own->session_id);
-        reply->from_active_task = own && edc_session_get_active_task(own) == task;
-    }
-    if (header && *header)
-        reply->header = sdsnew(header);
-
-    edc_actor_send(agent->channel_actor,
-                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type, edc_scheduler_get_actor(sched),
-                                              request_id, reply, (edc_actor_data_free_fn)edc_channel_message_free));
+    edc_channel_send_task_tool_message(edc_app_reply_to(edc_app_from_sched(sched), sched, EDC_CHANNEL_MESSAGE_TOOL_TYPE),
+                                       task, header, content, render_pref, request_id);
 }
 
-/* ── 回调: 分发 Tool Calls ────────────────────────────────── */
-
-static void edc_app_handle_tool_calls(struct edc_app *agent, struct edc_task *task, edc_channel_type call_from_type,
-                                        struct edc_llm_actor_resp *resp, void *request_id, edc_actor_t *from_actor);
-
+/* 工具协议 (req 链 / dispatch / redispatch) 全在 //src/toolbox: 这里只交 toolbox actor。 */
 static void edc_app_cb_dispatch_tools(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
-                                        void *request_id)
+                                      void *request_id)
 {
-    struct edc_app *agent = edc_app_from_sched(sched);
-    if (!agent || !task || !llm_resp)
-        return;
-
-    struct edc_llm_actor_resp *resp = llm_resp;
-
-    /* 思维内容回显 */
-    if ((resp->reasoning_content && sdslen(resp->reasoning_content) > 0) ||
-        (resp->content && sdslen(resp->content) > 0))
-    {
-        sds content = (resp->content && sdslen(resp->content) > 0) ? resp->content : resp->reasoning_content;
-        sds text = sdscatprintf(sdsempty(), "%s", content);
-        edc_app_cb_send_reply(sched, task, text, EDC_CHANNEL_MESSAGE_THOUGHT_TYPE, request_id);
-        sdsfree(text);
-    }
-
-    edc_app_handle_tool_calls(agent, task, task->channel_type, resp, request_id, edc_scheduler_get_actor(sched));
+    struct edc_app *rt = edc_app_from_sched(sched);
+    edc_toolbox_actor_dispatch(rt ? rt->toolbox_actor : NULL, sched, task, llm_resp, request_id);
 }
 
-/* ── 工具分发逻辑 ──────────────────────────────────────────── */
-
-static void edc_app_handle_tool_calls(struct edc_app *agent, struct edc_task *task, edc_channel_type call_from_type,
-                                        struct edc_llm_actor_resp *resp, void *request_id, edc_actor_t *from_actor)
-{
-    struct edc_toolbox_actor_req *req = edc_toolbox_actor_req_new(NULL, NULL, NULL, call_from_type, task);
-    struct edc_toolbox_actor_req *head = req;
-
-    if (!resp->tool_calls)
-        return;
-    for (unsigned i = 0; i < utarray_len(resp->tool_calls); i++)
-    {
-        struct edc_llm_chat_tool_call *tool_call = (struct edc_llm_chat_tool_call *)utarray_eltptr(resp->tool_calls, i);
-        if (tool_call->type == BC_LLM_TOOL_CALL_TYPE_FUNCTION)
-        {
-            req->next = edc_toolbox_actor_req_new(tool_call->function.name, tool_call->function.arguments,
-                                                  tool_call->id, call_from_type, task);
-            req = req->next;
-            tool_call->function.arguments = NULL;
-            tool_call->function.name = NULL;
-            tool_call->id = NULL;
-        }
-    }
-
-    req = head->next;
-    edc_toolbox_actor_req_free(head);
-    if (req)
-    {
-        edc_actor_send(agent->toolbox_actor, edc_actor_msg_new(BC_ACTOR_MSG_TOOL_REQUEST, from_actor, request_id, req,
-                                                               (edc_actor_data_free_fn)edc_toolbox_actor_req_free));
-    }
-}
-
-/* resume: 把 task 工具账本里仍为 PENDING (尚未执行) 的记录重建 toolbox 请求链
- * 并投递。EXECUTING 的记录由 scheduler 在 resume 时补中断响应, 不在此列。
- * 返回投递的条数。 */
 static int edc_app_cb_redispatch_tools(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
 {
-    struct edc_app *agent = edc_app_from_sched(sched);
-    if (!agent || !task || !agent->toolbox_actor)
-        return 0;
-
-    /* dummy head, 与原 dispatch 路径一致 (空 req 不入链) */
-    struct edc_toolbox_actor_req *head = edc_toolbox_actor_req_new(NULL, NULL, NULL, task->channel_type, task);
-    struct edc_toolbox_actor_req *tail = head;
-    int count = 0;
-
-    struct edc_tool_call_record *rec;
-    for (rec = task->tool_calls; rec; rec = rec->next)
-    {
-        if (rec->status != TOOL_CALL_PENDING)
-            continue;
-        tail->next = edc_toolbox_actor_req_new(rec->name ? sdsdup(rec->name) : sdsempty(),
-                                               rec->args ? cJSON_Duplicate(rec->args, 1) : NULL,
-                                               rec->call_id ? sdsdup(rec->call_id) : NULL, task->channel_type, task);
-        tail = tail->next;
-        count++;
-    }
-
-    struct edc_toolbox_actor_req *chain = head->next;
-    edc_toolbox_actor_req_free(head);
-    if (!chain)
-        return 0;
-
-    edc_actor_send(agent->toolbox_actor,
-                   edc_actor_msg_new(BC_ACTOR_MSG_TOOL_REQUEST, edc_scheduler_get_actor(sched), request_id, chain,
-                                     (edc_actor_data_free_fn)edc_toolbox_actor_req_free));
-    return count;
+    struct edc_app *rt = edc_app_from_sched(sched);
+    return edc_toolbox_actor_redispatch(rt ? rt->toolbox_actor : NULL, sched, task, request_id);
 }
 
-/* ── 回调: 命令处理 ────────────────────────────────────────── */
-
+/* ── 回调: 命令处理 (装配根的本职) ───────────────────────────
+ * 命令层 (shell) 说的是 channel 消息, 而它要的三样 (config / session 仓库 /
+ * scheduler) 只有装配根有 —— 这个接缝搬不走。 */
 static bool edc_app_cb_handle_command(struct edc_scheduler *sched, struct edc_actor *actor,
                                         const struct edc_sched_input *input)
 {
@@ -266,36 +144,21 @@ static bool edc_app_cb_handle_command(struct edc_scheduler *sched, struct edc_ac
  * 两条线分得很清:
  *   - `snapshot_reply`   = 前端**点名要**的那棵树 (拉取的应答);
  *   - `snapshot_changed` = "某个 session 的树变了" 的**事件** (很小, 不带树)。
- * 走同一条通道 (channel adapter → TUI 回调), 靠 message_type 区分。 */
-
-/* 出站投递 (publish / 活跃 session 通报) → edc_channel_actor.{c,h}
- * —— 建消息 + 发 BC_ACTOR_MSG_CHANNEL_SEND 是**通道自己的**词汇。 */
-
-/* ── 回调: task 树快照 (①b: 事件 vs 应答) ─────────────────────
- *
- * 两条线分得很清:
- *   - `snapshot_reply`   = 前端**点名要**的那棵树 (拉取的应答);
- *   - `snapshot_changed` = "某个 session 的树变了" 的**事件** (很小, 不带树)。
- * 走同一条通道 (channel adapter → TUI 回调), 靠 message_type 区分。 */
+ * 走同一条通道 (channel adapter → TUI 回调), 靠 message_type 区分。
+ * 投递本身 (`edc_channel_publish`) 是通道的词汇 —— 装配根只交句柄 + 声明类型。 */
 static void edc_app_cb_snapshot_reply(struct edc_scheduler *sched, sds serialized)
 {
-    struct edc_app *agent = edc_app_from_sched(sched);
     if (!serialized)
         return;
-    struct edc_reply_to to = {.channel_actor = agent ? agent->channel_actor : NULL,
-                              .actor = edc_scheduler_get_actor(sched),
-                              .type = EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE};
-    edc_channel_publish(to, NULL, serialized);
+    edc_channel_publish(edc_app_reply_to(edc_app_from_sched(sched), sched, EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE), NULL,
+                        serialized);
 }
 
 /* "session X 的树变了" —— 事件, 不带树。前端收到后**只**在自己正显示 X 时去拉。 */
 static void edc_app_cb_snapshot_changed(struct edc_scheduler *sched, const char *session_id, const char *reason)
 {
-    struct edc_app *agent = edc_app_from_sched(sched);
-    struct edc_reply_to to = {.channel_actor = agent ? agent->channel_actor : NULL,
-                              .actor = edc_scheduler_get_actor(sched),
-                              .type = EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE};
-    edc_channel_publish(to, session_id, sdsnew(reason ? reason : ""));
+    edc_channel_publish(edc_app_reply_to(edc_app_from_sched(sched), sched, EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE),
+                        session_id, sdsnew(reason ? reason : ""));
 }
 
 
