@@ -32,7 +32,7 @@ cc_library(
     includes = ["."],
     deps = [
         "//src/actor:actor",
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",

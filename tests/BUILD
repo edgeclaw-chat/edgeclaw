@@ -40,7 +40,7 @@ cc_test(
     srcs = ["test_llm_actor.c"],
     deps = [
         "//src/actor:actor",
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
     ],
     linkopts = LINK_OPTS,
@@ -166,7 +166,7 @@ cc_test(
     name = "test_edc_scheduler",
     srcs = ["test_edc_scheduler.c"],
     deps = [
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
         "//src/kernel:kernel",
         "//src/toolbox:toolbox",
@@ -218,7 +218,7 @@ cc_test(
     name = "test_state_serializer",
     srcs = ["test_state_serializer.c"],
     deps = [
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
@@ -244,7 +244,7 @@ cc_test(
     name = "test_group_fold",
     srcs = ["test_group_fold.c"],
     deps = [
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
@@ -271,7 +271,7 @@ cc_test(
     srcs = ["test_session_routing.c"],
     deps = [
         "//src/actor:actor",
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
@@ -285,7 +285,7 @@ cc_test(
     srcs = ["test_snapshot_addressing.c"],
     deps = [
         "//src/actor:actor",
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
@@ -298,7 +298,7 @@ cc_test(
     name = "test_session_state_file",
     srcs = ["test_session_state_file.c"],
     deps = [
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
@@ -311,7 +311,7 @@ cc_test(
     name = "test_session_workdir",
     srcs = ["test_session_workdir.c"],
     deps = [
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
         "//src/kernel:kernel",
         "//src/sandbox:sandbox",
@@ -335,7 +335,7 @@ cc_test(
     name = "test_turn_history_integration",
     srcs = ["test_turn_history_integration.c"],
     deps = [
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
@@ -348,7 +348,7 @@ cc_test(
     name = "test_lifecycle_integration",
     srcs = ["test_lifecycle_integration.c"],
     deps = [
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
@@ -361,7 +361,7 @@ cc_test(
     name = "test_todo_sysprompt",
     srcs = ["test_todo_sysprompt.c"],
     deps = [
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
         "//src/kernel:kernel",
         "//src/toolbox:toolbox",
@@ -383,7 +383,7 @@ cc_test(
     name = "test_session_leave_cancel",
     srcs = ["test_session_leave_cancel.c"],
     deps = [
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
@@ -423,7 +423,7 @@ cc_test(
     name = "test_task_index",
     srcs = ["test_task_index.c"],
     deps = [
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
@@ -436,7 +436,7 @@ cc_test(
 cc_test(
     name = "test_state_guardrail",
     srcs = ["test_state_guardrail.c"],    deps = [
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
@@ -462,7 +462,7 @@ cc_test(
     name = "test_task_resume",
     srcs = ["test_task_resume.c"],
     deps = [
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
@@ -516,7 +516,7 @@ cc_test(
     srcs = ["test_llm_actor_config.c"],
     deps = [
         "//src/actor:actor",
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/common:common",
         "@sds//:sds",
     ],

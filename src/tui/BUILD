@@ -48,7 +48,7 @@ cc_library(
     ],
     includes = ["."],
     deps = [
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/assembly:assembly",
         "//src/common:common",
         "//src/kernel:kernel",
@@ -89,7 +89,7 @@ cc_binary(
         "main.cpp",
     ],
     deps = [
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/assembly:assembly",
         "//src/common:common",
         "//src/common:utlist_fix",

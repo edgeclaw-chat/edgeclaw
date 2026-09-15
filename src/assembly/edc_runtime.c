@@ -735,8 +735,8 @@ struct edc_runtime *edc_runtime_new(bool setup, int sandbox_override)
     return agent;
 }
 
-/* CLI 的 !n / !! 历史 → edc_cli_history.{c,h}
- * (前端状态: 进程一份, 不是运行时装配; 见那里的头文件说明) */
+/* CLI 的 !n / !! 历史 → src/shell/edc_cli_history.{c,h}
+ * (shell 自己的命令历史, 进程一份, 不是运行时装配; 见那里的头文件说明) */
 bool edc_runtime_set_llm_config(struct edc_runtime *agent, const char *api_url, const char *model, const char *api_key)
 {
     if (!agent || !agent->config)

@@ -45,6 +45,7 @@ cc_library(
 cc_library(
     name = "shell",
     srcs = [
+        "edc_cli_history.c",
         "edc_commands.c",
         "edc_shell.c",
         "edc_shell_ast.c",
@@ -52,6 +53,7 @@ cc_library(
         "edc_shell_token.c",
     ],
     hdrs = [
+        "edc_cli_history.h",
         "edc_commands.h",
         "edc_completion.h",
         "edc_shell.h",
@@ -63,7 +65,7 @@ cc_library(
     ],
     deps = [
         "//src/actor:actor",
-        "//src/actors:actors",
+        "//src/actor:actors",
         "//src/assembly:assembly",
         "//src/common:common",
         "//src/common:utlist_fix",

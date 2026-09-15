@@ -3,17 +3,15 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 cc_library(
     name = "assembly",
     srcs = [
-            "edc_cli_history.c",
             "edc_runtime.c",
         ],
     hdrs = [
-            "edc_cli_history.h",
             "edc_runtime.h",
         ],
     includes = ["."],
     deps = [
             "//src/actor:actor",
-            "//src/actors:actors",
+            "//src/actor:actors",
             "//src/common:common",
             "//src/common:utlist_fix",
             "//src/kernel:kernel",
