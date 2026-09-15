@@ -350,12 +350,16 @@ static inline bool edc_task_is_parked(const struct edc_task *task)
 {
     return edc_task_is_ready(task) || edc_task_awaits_deps(task);
 }
-/* `/task resume` **命令门**只认这两种: 用户 Ctrl+Z / 退出挂起, 或者跑失败的那
- * 一轮。注意这与转移表不同 —— 转移表还允许 CANCELLED 回 READY, 但那不是用户
- * 能走的路; 谓词复现的是命令门 (edc_commands.c)。 */
+/* `/task resume` **命令门**: 挂起 (Ctrl+Z / 退出挂起) / 跑失败 / **被取消**。
+ *
+ * 取消算可续 —— 取消只表示"停下", 不表示"这活没了": 续跑时按消息与账本重新判定该
+ * 回到哪一步 (取消那一步已经把 step 压成 DONE, 所以必须重判, 见
+ * edc_scheduler_resume_task)。谓词与转移表 (edc_task.c 的 CANCELLED 行) 一致,
+ * 命令层不再额外否决。 */
 static inline bool edc_task_is_resumable(const struct edc_task *task)
 {
-    return task && (task->life == EDC_LIFE_SUSPENDED || task->life == EDC_LIFE_ERROR);
+    return task && (task->life == EDC_LIFE_SUSPENDED || task->life == EDC_LIFE_ERROR ||
+                    task->life == EDC_LIFE_CANCELLED);
 }
 
 /* 对外词汇 —— 快照的 "state" 字段 / 日志 / 命令文案都用它。

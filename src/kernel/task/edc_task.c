@@ -281,7 +281,13 @@ static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life 
     case EDC_LIFE_COMPLETED:
         return false; /* terminal */
     case EDC_LIFE_CANCELLED:
-        return to_step == EDC_TASKSTEP_READY && to_life == EDC_LIFE_ALIVE; /* resume */
+        /* resume: 取消只是"停下", 不是"这活没了" —— 与 SUSPENDED / ERROR 同一组目标。
+         * 取消时 step 已被压成 DONE, 所以续跑必须按消息 / 账本重判该回哪一步
+         * (edc_scheduler_resume_task)。 */
+        return (to_life == EDC_LIFE_ALIVE &&
+                (to_step == EDC_TASKSTEP_READY || to_step == EDC_TASKSTEP_AWAIT_DEPS ||
+                 to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_TOOLS)) ||
+               (to_step == EDC_TASKSTEP_DONE && to_life == EDC_LIFE_CANCELLED);
     case EDC_LIFE_SUSPENDED:
         /* resume 重新判定: 回依赖等待 / 就绪 / 重新请求 LLM / 继续工具链, 或取消 */
     case EDC_LIFE_ERROR:

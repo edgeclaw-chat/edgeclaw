@@ -212,9 +212,18 @@ static void test_state_machine(void)
     CHECK(!edc_task_mark_suspended(t), "ERROR → suspended rejected");
     edc_task_free(t);
 
-    TEST("CANCELLED can be resumed to READY (by the state machine)");
+    TEST("CANCELLED can be resumed (by the state machine, same targets as SUSPENDED/ERROR)");
     t = park_at("sm28", EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED);
     CHECK(edc_task_mark_ready(t), "CANCELLED → READY");
+    edc_task_free(t);
+    t = park_at("sm28b", EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED);
+    CHECK(edc_task_mark_waiting_deps(t), "CANCELLED → AWAIT_DEPS");
+    edc_task_free(t);
+    t = park_at("sm28c", EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED);
+    CHECK(edc_task_await_exec(t), "CANCELLED → AWAIT_EXEC (continue the turn)");
+    edc_task_free(t);
+    t = park_at("sm28d", EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED);
+    CHECK(edc_task_await_tools(t), "CANCELLED → AWAIT_TOOLS (re-dispatch the tools)");
     edc_task_free(t);
     t = park_at("sm29", EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED);
     CHECK(!edc_task_mark_cancelled(t), "CANCELLED → CANCELLED rejected (self)");
@@ -312,8 +321,8 @@ static void test_display_names(void)
  * "挂起在等工具"是 (AWAIT_TOOLS, SUSPENDED), 它既不是 running 也不是 awaits_tools
  * (旧词汇里它只显示成 SUSPENDED; 谓词必须复现这一条, 否则挂起的任务会被误当成在跑)。
  *
- * CANCELLED 不可 resume: 转移表允许它回 READY, 但 `/task resume` 那道**命令门**只认
- * 挂起与失败 —— 谓词复现的是命令门, 不是转移表。 */
+ * CANCELLED **可 resume** (2026-09-15): 取消只表示"停下", 不表示"这活没了" ——
+ * 命令门与转移表在这件事上口径一致 (挂起 / 失败 / 取消三类都可续)。 */
 
 struct read_side_row
 {
@@ -334,7 +343,7 @@ static void test_step_life_read_side(void)
         {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_SUSPENDED, false, false, false, false, false, false, true, false, false},
         {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED, false, false, false, false, false, false, true, false, false},
         {EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED, false, false, false, true, false, false, false, false, false},
-        {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED, false, false, false, false, true, false, false, false, false},
+        {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED, false, false, false, false, true, false, true, false, false},
         {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR, false, false, false, false, false, true, true, false, false},
     };
 
@@ -385,7 +394,7 @@ static void test_step_life_read_side(void)
  * 规格里不写自转移 (源 = 目标): 实现由前置判空拒绝它, 而逐源列表本就不含自己。
  * 边数也钉住, 免得规格被悄悄删空。 */
 
-#define EDC_TABLE_EDGES 89
+#define EDC_TABLE_EDGES 112
 
 struct table_target
 {
@@ -419,7 +428,12 @@ static const struct table_row g_table[] = {
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
     {EDC_TASKSTEP_READY, EDC_LIFE_COMPLETED, 0, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
     /* READY + CANCELLED */
-    {EDC_TASKSTEP_READY, EDC_LIFE_CANCELLED, 1, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
+    {EDC_TASKSTEP_READY, EDC_LIFE_CANCELLED, 5,
+     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* READY + ERROR */
     {EDC_TASKSTEP_READY, EDC_LIFE_ERROR, 5,
      {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
@@ -443,7 +457,12 @@ static const struct table_row g_table[] = {
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
     {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_COMPLETED, 0, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
     /* AWAIT_DEPS + CANCELLED */
-    {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_CANCELLED, 1, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
+    {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_CANCELLED, 5,
+     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* AWAIT_DEPS + ERROR */
     {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ERROR, 5,
      {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
@@ -468,7 +487,12 @@ static const struct table_row g_table[] = {
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
     {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_COMPLETED, 0, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
     /* AWAIT_EXEC + CANCELLED */
-    {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_CANCELLED, 1, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
+    {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_CANCELLED, 5,
+     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* AWAIT_EXEC + ERROR */
     {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ERROR, 5,
      {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
@@ -494,7 +518,12 @@ static const struct table_row g_table[] = {
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
     {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_COMPLETED, 0, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
     /* AWAIT_TOOLS + CANCELLED */
-    {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_CANCELLED, 1, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
+    {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_CANCELLED, 5,
+     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* AWAIT_TOOLS + ERROR */
     {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ERROR, 5,
      {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
@@ -518,7 +547,12 @@ static const struct table_row g_table[] = {
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
     {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_COMPLETED, 0, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
     /* AWAIT_RESOURCE + CANCELLED */
-    {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_CANCELLED, 1, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
+    {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_CANCELLED, 5,
+     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* AWAIT_RESOURCE + ERROR */
     {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_ERROR, 5,
      {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
@@ -543,7 +577,11 @@ static const struct table_row g_table[] = {
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
     {EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED, 0, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
     /* DONE + CANCELLED */
-    {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED, 1, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
+    {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED, 4,
+     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE}}},
     /* DONE + ERROR */
     {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR, 5,
      {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},

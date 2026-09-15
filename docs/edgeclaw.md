@@ -115,17 +115,27 @@ return to:
 - an unfinished tool call → `TOOL_CALLING` (not-yet-started tools are re-run; a
   tool that was interrupted mid-flight gets a synthesized "interrupted" result)
 - a pending turn (input not yet answered) → `LLM_PROCESSING`
-- otherwise → `WAITING_INPUT`
+- otherwise → `IDLE` (ready; there is no separate "waiting for input" phase)
 
 **Failed tasks**: a task that failed mid-run is `ERROR` but keeps its half-finished
 turn (and any interrupted tool ledger). `/task resume [tid]` continues that turn
 instead of starting over — it re-derives the same way (deps / tool chain / turn)
 and re-drives it.
 
+**Cancelled tasks**: a task stopped with `/task stop` is `CANCELLED`, but it is not
+destroyed — its turn, messages and the work done so far are all kept (the tool
+ledger is dropped, since a cancelled tool no longer has a result to wait for).
+`/task resume [tid]` revives it: the cancel flattened the step to `DONE`, so resume
+re-derives the position. A tool call that was in flight when the task was stopped
+gets a synthesized "interrupted" result first (the assistant message is the only
+record left of it), so the next LLM request stays well-formed. Only `COMPLETED`
+cannot be resumed.
+
 - **COMPLETED**: persists until reclaimed with `/task join`.
 - **WAITING_DEPS**: accepts input and queues it until dependencies resolve.
 - **SUSPENDED**: parked (e.g. after a restart); `/task resume` revives it.
 - **ERROR**: a failed task; `/task resume` continues its unfinished turn.
+- **CANCELLED**: stopped with `/task stop`; `/task resume` continues it too.
 
 ### Dependency System
 
@@ -213,7 +223,7 @@ The child inherits a slice of the parent's conversation context. Use
 | Command | Description |
 |---------|-------------|
 | `/task stop [tid]` | Cancel a task (SIGTERM — notifies dependents). Without an id, stops the active task of the foreground group; errors if the id is not found |
-| `/task resume [tid]` | Resume a SUSPENDED or ERROR task: re-derives state (deps / tool chain / turn) and drives it; an ERROR task continues its failed turn. Without an id, resumes the active task of the foreground group |
+| `/task resume [tid]` | Resume a SUSPENDED, ERROR or CANCELLED task: re-derives state (deps / tool chain / turn) and drives it; an ERROR or CANCELLED task continues its unfinished turn. Without an id, resumes the active task of the foreground group |
 | `/task join <tid>` | Show output, auto-inject into active task (or create one), then reclaim |
 
 ### Pipelines

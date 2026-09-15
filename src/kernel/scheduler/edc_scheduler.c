@@ -660,6 +660,78 @@ static void *sched_gen_resume_request_id(void)
     return (void *)(intptr_t)(++g_resume_req_seq);
 }
 
+/* ── 悬空 tool_call 的修补 (resume 前置) ─────────────────────
+ *
+ * 症状: assistant 消息带 `tool_calls`, 但缺对应的 tool 响应 → 下一次请求被 API 拒绝
+ * ("An assistant message with 'tool_calls' must be followed by tool messages")。
+ *
+ * **为什么按消息而不是按账本**: 取消路径会清空账本 (`edc_task_send_signal` 里的
+ * `edc_task_tool_calls_clear`) —— 取消后才 resume 的任务, 账本里查不到那条
+ * "派发过、没结果"的调用, 而 assistant 消息是已经落盘的既成事实。消息是权威。
+ *
+ * 账本仍在读, 但只用来回答一个问题: **这条调用是不是 PENDING** (还没派发出去,
+ * 该由 §2b 重派发而不是补一条"被中断"的假响应)。
+ *
+ * 幂等: 已有 tool 响应的 call_id 跳过 (重复 resume 不会补第二条)。 */
+static const char *const kInterruptedToolNote =
+    "[interrupted: this tool was still running when the process restarted; it did not produce a result]";
+
+static bool sched_turn_has_tool_response(struct edc_turn *turn, size_t upto, const char *call_id)
+{
+    for (size_t i = 0; i < upto; i++)
+    {
+        cJSON *m = turn->messages.data[i];
+        cJSON *role = cJSON_GetObjectItem(m, "role");
+        cJSON *tcid = cJSON_GetObjectItem(m, "tool_call_id");
+        if (role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0 && tcid && cJSON_IsString(tcid) &&
+            strcmp(tcid->valuestring, call_id) == 0)
+            return true;
+    }
+    return false;
+}
+
+static void sched_repair_dangling_tool_calls(struct edc_task *task)
+{
+    struct edc_turn *turn = (task && task->active_turn) ? task->active_turn : NULL;
+    if (!turn)
+        return;
+
+    /* 只扫**修补之前**的既有消息: 补进去的 tool 消息不参与遍历。队列会因追加而
+     * realloc, 所以 base 指针每轮重取 (不能缓存数组首地址)。 */
+    size_t n = turn->messages.tail;
+    for (size_t i = 0; i < n; i++)
+    {
+        cJSON *m = turn->messages.data[i];
+        cJSON *role = cJSON_GetObjectItem(m, "role");
+        cJSON *tcs = cJSON_GetObjectItem(m, "tool_calls");
+        if (!role || !cJSON_IsString(role) || strcmp(role->valuestring, "assistant") != 0 || !tcs ||
+            !cJSON_IsArray(tcs))
+            continue;
+
+        cJSON *tc = NULL;
+        cJSON_ArrayForEach(tc, tcs)
+        {
+            cJSON *id = cJSON_GetObjectItem(tc, "id");
+            if (!id || !cJSON_IsString(id) || !id->valuestring || !*id->valuestring)
+                continue;
+
+            const struct edc_tool_call_record *rec = edc_task_tool_call_find(task, id->valuestring);
+            if (rec && rec->status != TOOL_CALL_EXECUTING)
+                continue; /* PENDING: 交给 §2b 真派发, 不要造假响应 */
+            if (sched_turn_has_tool_response(turn, n, id->valuestring))
+                continue; /* 已经有结果了 (幂等) */
+
+            cJSON *fn = cJSON_GetObjectItem(tc, "function");
+            cJSON *nm = fn ? cJSON_GetObjectItem(fn, "name") : NULL;
+            edc_turn_add_tool_message(turn, id->valuestring, (nm && cJSON_IsString(nm)) ? nm->valuestring : "",
+                                      kInterruptedToolNote);
+            /* 账本里若还留着这条 (SUSPENDED / ERROR 路径: EXECUTING 已派发、结果未回),
+             * 一并删掉 —— 它已经有响应了, 不该再被当成未完成。 */
+            edc_task_tool_call_remove(task, id->valuestring);
+        }
+    }
+}
+
 void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *task)
 {
     if (!sched || !task)
@@ -692,45 +764,29 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
         }
     }
 
-    /* 2. 账本里还有未完成的工具调用 */
+    /* 2. 未完成的工具调用: 先按**消息**补齐悬空响应 (取消路径账本已被清空, 只有
+     *    消息还记着那条调用), 再看账本要不要重派发。 */
+    sched_repair_dangling_tool_calls(task);
+
+    /* 2b. 仍未执行 (PENDING) 的: 重新派发 */
     if (edc_task_has_pending_tool_calls(task))
     {
-        /* 2a. EXECUTING (已派发、结果未回, 即中断时正在执行的): 人工补一条
-         *     "执行到一半被中断"的 tool 响应, 并从账本删除。 */
-        struct edc_tool_call_record *rec, *tmp;
-        LL_FOREACH_SAFE(task->tool_calls, rec, tmp)
+        void *req_id = sched_gen_resume_request_id();
+        sched_move_task(sched, task, EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
+        edc_scheduler_register_task(sched, task, req_id);
+        task->current_request_id = req_id;
+        /* 重发成功即等 toolbox 回来; 各工具的 EXECUTING 由 toolbox 的
+         * TOOL_STARTED 上报后按 call_id 置位 —— 不再按链序预标。 */
+        if (!sched->redispatch_tools || sched->redispatch_tools(sched, task, req_id) <= 0)
         {
-            if (rec->status != TOOL_CALL_EXECUTING)
-                continue;
-            if (task->active_turn && rec->call_id)
-            {
-                const char *note = "[interrupted: this tool was still running when the process restarted; "
-                                   "it did not produce a result]";
-                edc_turn_add_tool_message(task->active_turn, rec->call_id, rec->name ? rec->name : "", note);
-            }
-            edc_task_tool_call_remove(task, rec->call_id);
+            /* 无重发通道 / 无可派发 → 退回就绪, 避免卡死 */
+            edc_scheduler_unregister_task(sched, req_id);
+            task->current_request_id = NULL;
+            sched_force_move_task(sched, task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
         }
-
-        /* 2b. 仍未执行 (PENDING) 的: 重新派发 */
-        if (edc_task_has_pending_tool_calls(task))
-        {
-            void *req_id = sched_gen_resume_request_id();
-            sched_move_task(sched, task, EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
-            edc_scheduler_register_task(sched, task, req_id);
-            task->current_request_id = req_id;
-            /* 重发成功即等 toolbox 回来; 各工具的 EXECUTING 由 toolbox 的
-             * TOOL_STARTED 上报后按 call_id 置位 —— 不再按链序预标。 */
-            if (!sched->redispatch_tools || sched->redispatch_tools(sched, task, req_id) <= 0)
-            {
-                /* 无重发通道 / 无可派发 → 退回就绪, 避免卡死 */
-                edc_scheduler_unregister_task(sched, req_id);
-                task->current_request_id = NULL;
-                sched_force_move_task(sched, task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
-            }
-            return;
-        }
-        /* 2c. 只有 EXECUTING 且已补完响应 → 所有工具都有结果, 落到下面续 LLM */
+        return;
     }
+    /* 2c. 只有 EXECUTING 且已补完响应 → 所有工具都有结果, 落到下面续 LLM */
 
     /* 3. 有待跑的 turn → LLM_PROCESSING, 重发 LLM */
     if (task->active_turn)

@@ -603,6 +603,95 @@ static void test_resume_error_pending_tool_redispatches(void)
     edc_config_free(cfg);
 }
 
+/* ══════════════════════════════════════════════════════════════
+ *  Test 12: resume a CANCELLED task whose tool call was in flight
+ *           (取消会清空账本 —— 悬空响应只能按**消息**补出来)
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_resume_cancelled_dangling_tool(void)
+{
+    TEST("resume CANCELLED: dangling tool_call (ledger cleared by cancel) -> note + resume LLM");
+    struct edc_config *cfg = make_config();
+    struct edc_session *s = edc_session_new(cfg, "sess-r7", "R7");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, s);
+    sched->send_llm = stub_send_llm;
+
+    struct edc_task *t = edc_task_new("r7", "sess-r7", "r7", "task", edc_channel_adapter);
+    edc_task_await_exec(t);
+    edc_task_await_tools(t);
+    seed_tool_turn(t, "c1", "shell");
+    edc_task_tool_call_add(t, "c1", "shell", NULL);
+    edc_task_tool_call_mark_executing(t, "c1");
+    edc_task_send_signal(t, TASK_SIGTERM); /* 真取消 (与 /task stop 同一条路径) */
+
+    CHECK(edc_task_is_cancelled(t), "task is CANCELLED");
+    CHECK(t->step == EDC_TASKSTEP_DONE, "cancel压平了 step (所以续跑必须重判)");
+    CHECK(edc_task_tool_call_find(t, "c1") == NULL, "cancel cleared the ledger (消息是唯一线索)");
+    CHECK(!turn_has_tool_msg(t->active_turn, "c1"), "no tool response yet");
+    CHECK(edc_task_is_resumable(t), "CANCELLED is resumable (命令门)");
+
+    struct edc_task_group *g = edc_task_group_new(t);
+    edc_session_add_group(s, g);
+
+    g_send_llm_calls = 0;
+    g_redispatch_calls = 0;
+    edc_scheduler_resume_task(sched, t);
+
+    CHECK(edc_task_awaits_exec(t), "resumed CANCELLED -> LLM_PROCESSING");
+    CHECK(g_send_llm_calls == 1, "LLM re-dispatched once");
+    CHECK(g_redispatch_calls == 0, "the interrupted tool is not re-run");
+    CHECK(turn_has_tool_msg(t->active_turn, "c1"), "interrupted tool response synthesized from the message");
+
+    /* 幂等: 再 resume 一次不会补第二条 */
+    edc_scheduler_resume_task(sched, t);
+    size_t tool_msgs = 0;
+    for (size_t i = 0; i < t->active_turn->messages.tail; i++)
+    {
+        cJSON *m = t->active_turn->messages.data[i];
+        cJSON *role = cJSON_GetObjectItem(m, "role");
+        if (role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0)
+            tool_msgs++;
+    }
+    CHECK(tool_msgs == 1, "second resume adds no duplicate tool response");
+
+    edc_session_free(s);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Test 13: resume a CANCELLED task with nothing to continue
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_resume_cancelled_nothing_left(void)
+{
+    TEST("resume CANCELLED: no turn/tools -> READY + ALIVE, no LLM");
+    struct edc_config *cfg = make_config();
+    struct edc_session *s = edc_session_new(cfg, "sess-r8", "R8");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, s);
+    sched->send_llm = stub_send_llm;
+
+    struct edc_task *t = edc_task_new("r8", "sess-r8", "r8", "task", edc_channel_adapter);
+    edc_task_send_signal(t, TASK_SIGTERM);
+    CHECK(edc_task_is_cancelled(t), "task is CANCELLED");
+
+    struct edc_task_group *g = edc_task_group_new(t);
+    edc_session_add_group(s, g);
+
+    g_send_llm_calls = 0;
+    edc_scheduler_resume_task(sched, t);
+
+    CHECK(t->step == EDC_TASKSTEP_READY, "lands on READY");
+    CHECK(t->life == EDC_LIFE_ALIVE, "and it is alive");
+    CHECK(g_send_llm_calls == 0, "nothing to continue -> no LLM request");
+
+    edc_session_free(s);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     log_info("=== task resume / tool ledger tests ===");
@@ -619,6 +708,8 @@ int main(void)
     test_resume_nothing_left_is_ready();
     test_resume_error_continues_turn();
     test_resume_error_pending_tool_redispatches();
+    test_resume_cancelled_dangling_tool();
+    test_resume_cancelled_nothing_left();
 
     log_info("");
     log_info("=== Results: %d passed, %d failed ===", test_passed, test_failed);

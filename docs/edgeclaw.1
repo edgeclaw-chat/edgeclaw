@@ -244,11 +244,11 @@ COMMAND REFERENCE
                               Without an id, stops the active task of the
                               foreground group; errors if the id is not
                               found.
-     /task resume [tid]       Resume a SUSPENDED or ERROR task: re-derives
-                              state (deps / tool chain / turn) and drives it;
-                              an ERROR task continues its failed turn.
-                              Without an id, resumes the active task of the
-                              foreground group.
+     /task resume [tid]       Resume a SUSPENDED, ERROR or CANCELLED task:
+                              re-derives state (deps / tool chain / turn) and
+                              drives it; an ERROR or CANCELLED task continues
+                              its unfinished turn. Without an id, resumes the
+                              active task of the foreground group.
      /task join <tid>         Show output, auto-inject into active task
                                (or create one), then reclaim.
 

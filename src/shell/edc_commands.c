@@ -799,10 +799,13 @@ static void edc_commands_handle_task_stop( struct edc_session_manager *sm, struc
     sdsfree(reply);
 }
 
-/* /task resume [id]: 对可恢复任务重新判定并驱动 (依赖/工具/turn)。接受两类:
+/* /task resume [id]: 对可恢复任务重新判定并驱动 (依赖/工具/turn)。接受三类:
  *   - SUSPENDED: 重启后被停住的任务, 按持久化状态重新判定该回到哪一步;
  *   - ERROR:    执行中失败的任务, 续跑失败的那一轮 (复用残留 active_turn /
- *               工具账本, 不整轮重来)。
+ *               工具账本, 不整轮重来);
+ *   - CANCELLED: 被 /task stop 停下的任务 —— 取消只是"停下", 不是"这活没了"。
+ *               取消时 step 已被压成 DONE, 所以续跑完全靠重判 (悬空的 tool_call
+ *               由 resume 按消息补齐, 见 edc_scheduler_resume_task)。
  * 不带 id 时默认当前前台组的 active 任务, 与 /task stop 一致。 */
 static void edc_commands_handle_task_resume( struct edc_session_manager *sm, struct edc_scheduler *sched,
                                             struct edc_reply_to to, sds arg)
@@ -838,7 +841,9 @@ static void edc_commands_handle_task_resume( struct edc_session_manager *sm, str
 
     /* SUSPENDED = 重启后被停住的任务 (resume 重新判定并驱动);
      * ERROR = 执行中失败的任务 (resume 续跑失败的那一轮, 复用残留的
-     * active_turn / 工具账本)。其余状态都不可 resume。 */
+     * active_turn / 工具账本); CANCELLED = 被 /task stop 停下的任务 (取消不销毁
+     * 工作痕迹: turn / 消息都还在, 续跑时按消息补齐悬空工具调用)。
+     * 只有 COMPLETED 与 ALIVE 不可 resume。 */
     if (!edc_task_is_resumable(t))
     {
         sds reply =
