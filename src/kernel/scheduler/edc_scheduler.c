@@ -540,6 +540,18 @@ bool edc_scheduler_has_active_tasks(struct edc_scheduler *sched, struct edc_sess
 
 void edc_scheduler_register_task(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
 {
+    /* 登记一个新请求 = 这个任务**又有在途请求了**。
+     *
+     * `cancelled_request` 是"当前那条请求已作废"的标记 (取消/挂起时置位, 应答处理器
+     * 见到它就丢弃迟到应答), 它的生命周期 **到下一次发出请求为止** —— 所以在这里清。
+     * 不清的后果 (2026-09-15 真机 511): 取消过的任务 resume 后显示"执行中", 但那条
+     * 新请求的应答被同一个标记丢掉, 于是永远没有回音 (账本/消息都对, 只是没人接)。
+     *
+     * 这里清是安全的: 旧请求的迟到应答靠 **request_id 注销** 丢弃 (取消时已反注册,
+     * 查表查不到), 与这个标记无关; 而新请求的 id 是刚注册的, 只有它可能命中。 */
+    if (task)
+        task->cancelled_request = 0;
+
     struct edc_sched_task_entry *e = g_new0(struct edc_sched_task_entry, 1);
     e->request_id = request_id;
     e->task = task;

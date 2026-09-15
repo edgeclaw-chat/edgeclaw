@@ -5,6 +5,7 @@
 #include "edc_llm_actor.h"
 #include "edc_toolbox_actor.h"
 #include "edc_task_group.h"
+#include "edc_turn.h"
 #include "log.h"
 #include <stdio.h>
 #include <string.h>
@@ -826,6 +827,59 @@ static void test_observe_task_id_raises_high_water(void)
     free_config(cfg);
 }
 
+/* ── 8. 取消过的任务: resume 之后必须能收到应答 ────────────────
+ *
+ * 真机现象 (2026-09-15, task 511): `/task stop` 之后 `/task resume`, 侧栏显示
+ * "LLM_PROCESSING" 但**永远没有回音**。
+ *
+ * 根因: `cancelled_request` 是"当前请求已作废"的标记 —— 取消时置位, 应答处理器
+ * 见到它就丢弃迟到应答 (规则 2); 但它**全仓没有清零的地方**, 于是 resume 重新发出的
+ * 那条请求也被同一个标记丢掉。修法: 新请求登记时清零 (edc_scheduler_register_task)。
+ *
+ * 这条测试盯的是**行为**而不是标志本身: 真投一条应答进去, 看它有没有被接受。 */
+static void test_cancelled_task_resume_accepts_reply(void)
+{
+    TEST("a cancelled task accepts the reply of the request resume issued");
+    struct edc_config *cfg = make_config();
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+    sched->send_llm = mock_send_llm;
+    sched->dispatch_tools = mock_dispatch_tools;
+
+    struct edc_task *t = edc_scheduler_create_task(sched, sess, "run something", edc_channel_adapter);
+    struct edc_task_group *g = edc_scheduler_create_group(sched, sess, t);
+    edc_scheduler_set_foreground(sess, g);
+    edc_session_set_active_task(sess, t);
+
+    /* 停在一轮进行中的 turn 上 (除取消外, 与"跑到一半"没有区别)。 */
+    t->active_turn = edc_turn_new();
+    edc_turn_add_user_message(t->active_turn, "run something");
+    edc_task_await_exec(t);
+    edc_task_await_tools(t);
+
+    edc_task_send_signal(t, TASK_SIGTERM); /* = /task stop */
+    CHECK(edc_task_is_cancelled(t), "task is CANCELLED");
+    CHECK(t->cancelled_request == 1, "cancel marked the in-flight request dead");
+
+    g_llm_calls = 0;
+    g_dispatch_calls = 0;
+    edc_scheduler_resume_task(sched, t);
+    CHECK(edc_task_awaits_exec(t), "resume re-issued the LLM request");
+    CHECK(g_llm_calls == 1, "exactly one LLM request went out");
+    CHECK(t->cancelled_request == 0, "the marker was cleared for the new request");
+
+    /* 关键断言: 那条新请求的应答被**接受**。若被丢弃, 任务会永远停在 AWAIT_EXEC
+     * (界面就显示成"执行中"而再无消息 —— 正是真机看到的那个样子)。 */
+    deliver_llm_tool_call(sched, (long)(intptr_t)t->current_request_id);
+    CHECK(g_dispatch_calls == 1, "the reply was accepted -> tools dispatched");
+    CHECK(edc_task_awaits_tools(t), "task advanced to AWAIT_TOOLS");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
 int main(void)
 {
     log_info("=== Phase 3: edc_scheduler 模块测试 ===");
@@ -843,6 +897,7 @@ int main(void)
     test_snapshot_carries_no_chat_messages();
     test_task_id_survives_restart();
     test_observe_task_id_raises_high_water();
+    test_cancelled_task_resume_accepts_reply();
 
     log_info("");
     log_info("=== 测试结果: %d passed, %d failed ===", test_passed, test_failed);
