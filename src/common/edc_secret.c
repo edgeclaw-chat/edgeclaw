@@ -2,7 +2,6 @@
 #include "edc_compat.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
-#include "edc_terminal.h"
 #include "log.h"
 #include "sds.h"
 #include <errno.h>
@@ -16,6 +15,7 @@
 #include <string.h>
 #ifndef _WIN32
 #include <sys/mman.h>
+#include <termios.h>
 #endif
 #include <unistd.h>
 
@@ -50,20 +50,86 @@ static bool derive_key(const char *passphrase, size_t len)
     return true;
 }
 
+/* 关回显读密码。这段原先是独立的 edc_terminal.{c,h}，但那里 7 个函数只有这 2 个有
+ * 调用者（save / restore / raw_mode / raw_restore / vt_enable 都是零读者），而唯一的
+ * 使用者就是下面的 read_passphrase_tty —— 于是并进来，让那个模块消失。
+ * 逻辑是从原实现逐字搬过来的（POSIX 与 Windows 两分支都保持原样）。 */
+struct secret_tty_state
+{
+#ifdef _WIN32
+    DWORD original_mode;
+#else
+    struct termios original;
+#endif
+    bool valid;
+};
+
+static int secret_tty_echo_off(int fd, struct secret_tty_state *saved)
+{
+#ifdef _WIN32
+    HANDLE h;
+    if (fd == STDIN_FILENO)
+        h = GetStdHandle(STD_INPUT_HANDLE);
+    else
+        return -1;
+
+    if (!GetConsoleMode(h, &saved->original_mode))
+        return -1;
+    saved->valid = true;
+
+    DWORD mode = saved->original_mode & ~ENABLE_ECHO_INPUT;
+    if (!SetConsoleMode(h, mode))
+    {
+        saved->valid = false;
+        return -1;
+    }
+    return 0;
+#else
+    if (!isatty(fd))
+        return -1;
+    if (tcgetattr(fd, &saved->original) != 0)
+        return -1;
+    saved->valid = true;
+    struct termios t = saved->original;
+    t.c_lflag &= ~(ECHO | ECHONL);
+    if (tcsetattr(fd, TCSANOW, &t) != 0)
+    {
+        saved->valid = false;
+        return -1;
+    }
+    return 0;
+#endif
+}
+
+static void secret_tty_echo_restore(int fd, struct secret_tty_state *saved)
+{
+    if (!saved || !saved->valid)
+        return;
+#ifdef _WIN32
+    HANDLE h = (fd == STDIN_FILENO) ? GetStdHandle(STD_INPUT_HANDLE) : NULL;
+    if (!h)
+        return;
+    SetConsoleMode(h, saved->original_mode);
+#else
+    tcsetattr(fd, TCSANOW, &saved->original);
+#endif
+    saved->valid = false;
+}
+
 static bool read_passphrase_tty(const char *prompt, char *buf, size_t buf_size)
 {
     fprintf(stdout, "%s", prompt);
     fflush(stdout);
 
-    struct edc_terminal_state saved = {{0}};
-    if (edc_terminal_echo_off(STDIN_FILENO, &saved) != 0)
+    struct secret_tty_state saved = {{0}};
+    if (secret_tty_echo_off(STDIN_FILENO, &saved) != 0)
     {
-        log_error("edc_terminal_echo_off failed");
+        log_error("secret_tty_echo_off failed");
         return false;
     }
 
     char *result = fgets(buf, (int)buf_size, stdin);
-    edc_terminal_echo_restore(STDIN_FILENO, &saved);
+    secret_tty_echo_restore(STDIN_FILENO, &saved);
     fprintf(stdout, "\n");
     fflush(stdout);
 

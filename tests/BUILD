@@ -22,11 +22,15 @@ LINK_OPTS = select({
     "//conditions:default": [], 
 })
 
+# C++ 测试（TUI 那 11 个）：这些 target 由 gcc 驱动链接，不会自动带上 C++ 运行库（原
+# 在 src/tui/BUILD 里靠它自己的 LINK_OPTS 补 -lstdc++；搬过来后按同一手法补）。
+TUI_TEST_LINK_OPTS = LINK_OPTS + ["-lstdc++"]
+
 cc_test(
     name = "test_containers",
     srcs = ["test_containers.c"],
     deps = [
-        "//src/core:core",
+        "//src/common:common",
     ],
     linkopts = LINK_OPTS,
 )
@@ -35,7 +39,9 @@ cc_test(
     name = "test_llm_actor",
     srcs = ["test_llm_actor.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actor:actor",
+        "//src/actors:actors",
+        "//src/common:common",
     ],
     linkopts = LINK_OPTS,
 )
@@ -44,9 +50,9 @@ cc_test(
     name = "test_lwip_http",
     srcs = ["test_lwip_http.c"],
     deps = [
-        "@lwip//:lwip",
-        "//thirdparty/lwip:sys_arch",
         "//src/device:device",
+        "//thirdparty/lwip:sys_arch",
+        "@lwip//:lwip",
     ],
     linkopts = LINK_OPTS,
 )
@@ -55,8 +61,8 @@ cc_test(
     name = "test_pppos_http",
     srcs = ["test_pppos_http.c"],
     deps = [
-        "@lwip//:lwip",
         "//thirdparty/lwip:sys_arch",
+        "@lwip//:lwip",
     ],
     linkopts = LINUX_LINK_OPTS + ["-lutil"],
 )
@@ -65,8 +71,8 @@ cc_test(
     name = "test_pppos_stress",
     srcs = ["test_pppos_stress.c"],
     deps = [
-        "@lwip//:lwip",
         "//thirdparty/lwip:sys_arch",
+        "@lwip//:lwip",
     ],
     linkopts = LINUX_LINK_OPTS + ["-lutil"],
 )
@@ -75,9 +81,9 @@ cc_test(
     name = "test_pppos_agent",
     srcs = ["test_pppos_agent.c"],
     deps = [
-        "@lwip//:lwip",
-        "//thirdparty/lwip:sys_arch",
         "//src/device:device",
+        "//thirdparty/lwip:sys_arch",
+        "@lwip//:lwip",
     ],
     linkopts = LINUX_LINK_OPTS + ["-lutil"],
 )
@@ -86,11 +92,11 @@ cc_test(
     name = "test_pppos_agent_stress",
     srcs = ["test_pppos_agent_stress.c"],
     deps = [
+        "//src/common:common",
+        "//src/device:device",
+        "//thirdparty/lwip:sys_arch",
         "@cjson//:cjson",
         "@lwip//:lwip",
-        "//thirdparty/lwip:sys_arch",
-        "//src/core:core",
-        "//src/device:device",
     ],
     linkopts = LINUX_LINK_OPTS + ["-lutil"],
 )
@@ -99,10 +105,10 @@ cc_binary(
     name = "pppos_cli",
     srcs = ["pppos_cli.c"],
     deps = [
-        "@lwip//:lwip",
+        "//src/device:device",
         "//thirdparty/lwip:sys_arch",
         "@cjson//:cjson",
-        "//src/device:device",
+        "@lwip//:lwip",
     ],
     linkopts = LINUX_LINK_OPTS,
 )
@@ -120,7 +126,7 @@ cc_test(
     name = "test_https_client_get",
     srcs = ["test_https_client_get.c"],
     deps = [
-        "//src/core:core",
+        "//src/common:common",
     ],
     linkopts = LINK_OPTS,
 )
@@ -129,7 +135,9 @@ cc_test(
     name = "test_edc_task",
     srcs = ["test_edc_task.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -138,7 +146,8 @@ cc_test(
     name = "test_edc_task_group",
     srcs = ["test_edc_task_group.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -147,7 +156,8 @@ cc_test(
     name = "test_edc_task_stress",
     srcs = ["test_edc_task_stress.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -156,7 +166,11 @@ cc_test(
     name = "test_edc_scheduler",
     srcs = ["test_edc_scheduler.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actors:actors",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "//src/toolbox:toolbox",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -165,7 +179,9 @@ cc_test(
     name = "test_edc_session_stress",
     srcs = ["test_edc_session_stress.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -174,7 +190,8 @@ cc_test(
     name = "test_group_level",
     srcs = ["test_group_level.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -201,7 +218,11 @@ cc_test(
     name = "test_state_serializer",
     srcs = ["test_state_serializer.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actors:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -210,7 +231,11 @@ cc_test(
     name = "test_system_task",
     srcs = ["test_system_task.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actor:actor",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -219,7 +244,11 @@ cc_test(
     name = "test_group_fold",
     srcs = ["test_group_fold.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actors:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -228,7 +257,11 @@ cc_test(
     name = "test_session_snapshot",
     srcs = ["test_session_snapshot.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actor:actor",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -237,7 +270,12 @@ cc_test(
     name = "test_session_routing",
     srcs = ["test_session_routing.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actor:actor",
+        "//src/actors:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -246,7 +284,12 @@ cc_test(
     name = "test_snapshot_addressing",
     srcs = ["test_snapshot_addressing.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actor:actor",
+        "//src/actors:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -255,7 +298,11 @@ cc_test(
     name = "test_session_state_file",
     srcs = ["test_session_state_file.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actors:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -264,7 +311,11 @@ cc_test(
     name = "test_session_workdir",
     srcs = ["test_session_workdir.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actors:actors",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "//src/sandbox:sandbox",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -273,7 +324,9 @@ cc_test(
     name = "test_session_status",
     srcs = ["test_session_status.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -282,7 +335,11 @@ cc_test(
     name = "test_turn_history_integration",
     srcs = ["test_turn_history_integration.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actors:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -291,7 +348,11 @@ cc_test(
     name = "test_lifecycle_integration",
     srcs = ["test_lifecycle_integration.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actors:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -300,7 +361,11 @@ cc_test(
     name = "test_todo_sysprompt",
     srcs = ["test_todo_sysprompt.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actors:actors",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "//src/toolbox:toolbox",
+        "@sds//:sds",
     ],
     linkopts = LINK_OPTS,
 )
@@ -318,7 +383,11 @@ cc_test(
     name = "test_session_leave_cancel",
     srcs = ["test_session_leave_cancel.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actors:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -354,7 +423,12 @@ cc_test(
     name = "test_task_index",
     srcs = ["test_task_index.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actors:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+        "@sds//:sds",
     ],
     linkopts = LINK_OPTS,
 )
@@ -362,7 +436,12 @@ cc_test(
 cc_test(
     name = "test_state_guardrail",
     srcs = ["test_state_guardrail.c"],    deps = [
-        "//src/agent:agent",
+        "//src/actors:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+        "@sds//:sds",
     ],
     linkopts = LINK_OPTS,
 )
@@ -371,7 +450,10 @@ cc_test(
     name = "test_session_id",
     srcs = ["test_session_id.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+        "@sds//:sds",
     ],
     linkopts = LINK_OPTS,
 )
@@ -380,7 +462,11 @@ cc_test(
     name = "test_task_resume",
     srcs = ["test_task_resume.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actors:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )
@@ -389,7 +475,7 @@ cc_test(
     name = "test_bundled_workspace",
     srcs = ["test_bundled_workspace.c"],
     deps = [
-        "//src/core:core",
+        "//src/common:common",
     ],
     linkopts = LINK_OPTS,
 )
@@ -398,8 +484,10 @@ cc_test(
     name = "test_sandbox_helper",
     srcs = ["test_sandbox_helper.c"],
     deps = [
+        "//src/common:common",
+        "//src/sandbox:sandbox",
         "@libuv",
-        "//src/agent:agent",
+        "@sds//:sds",
     ],
     linkopts = LINK_OPTS,
 )
@@ -408,7 +496,7 @@ cc_test(
     name = "test_shell_env",
     srcs = ["test_shell_env.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/sandbox:sandbox",
     ],
     linkopts = LINK_OPTS,
 )
@@ -417,7 +505,7 @@ cc_test(
     name = "test_connect",
     srcs = ["test_connect.c"],
     deps = [
-        "//src/core:core",
+        "//src/common:common",
         "@libuv",
     ],
     linkopts = LINK_OPTS,
@@ -427,7 +515,170 @@ cc_test(
     name = "test_llm_actor_config",
     srcs = ["test_llm_actor_config.c"],
     deps = [
-        "//src/agent:agent",
+        "//src/actor:actor",
+        "//src/actors:actors",
+        "//src/common:common",
+        "@sds//:sds",
     ],
     linkopts = LINK_OPTS,
+)
+
+# ── TUI 测试（原 src/tui/test_*.cpp，2026-09-15 归拢到 tests/）──────────
+
+cc_test(
+    name = "test_snapshot_claim",
+    srcs = ["test_snapshot_claim.cpp"],
+    deps = [
+        "//src/tui:tui",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
+    name = "test_theme",
+    srcs = ["test_theme.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
+    name = "test_scroll_regression",
+    srcs = ["test_scroll_regression.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:component",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
+    name = "test_text_wrap",
+    srcs = ["test_text_wrap.cpp"],
+    deps = [
+        "//src/tui:tui",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
+    name = "test_edc_input",
+    srcs = ["test_edc_input.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:component",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
+    name = "test_working_status",
+    srcs = ["test_working_status.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
+    name = "test_chat_transcript",
+    srcs = ["test_chat_transcript.cpp"],
+    deps = [
+        "//src/tui:tui",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+cc_test(
+    name = "test_clipboard",
+    srcs = ["test_clipboard.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
+    name = "test_todo_widget",
+    srcs = ["test_todo_widget.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
+    name = "test_task_widget",
+    srcs = ["test_task_widget.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
+    name = "test_message_list",
+    srcs = ["test_message_list.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:component",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
 )

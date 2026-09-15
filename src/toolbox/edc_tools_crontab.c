@@ -1,6 +1,7 @@
 ﻿#ifndef _WIN32
 #define _GNU_SOURCE
 #endif
+#include "edc_config.h"
 #include "edc_tools_crontab.h"
 #include "ccronexpr.h"
 #include "edc_actor.h"

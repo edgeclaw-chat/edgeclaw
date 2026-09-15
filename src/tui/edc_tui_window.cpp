@@ -23,7 +23,7 @@
 #include <memory>
 #include <string>
 #include <sys/ioctl.h>
-#include <tui/edc_c_bridge.h>
+#include "edc_c_bridge.h"
 #include <unistd.h>
 #include <vector>
 

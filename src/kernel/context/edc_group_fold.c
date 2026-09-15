@@ -1,6 +1,5 @@
 #include "edc_group_fold.h"
 #include "cJSON.h"
-#include "edc_runtime.h"
 #include "edc_compat.h"
 #include "edc_scheduler.h"
 #include "edc_task.h"

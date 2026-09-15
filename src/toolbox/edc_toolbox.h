@@ -4,6 +4,7 @@
 
 #include "edc_actor.h"
 #include "edc_config.h"
+#include "edc_exec_io.h"
 #include "edc_error.h"
 #include <cJSON.h>
 #include <stdbool.h>
@@ -31,14 +32,7 @@ struct edc_toolbox_call_ctx
 
 };
 
-/* 工具结果先发给 scheduler actor，由 scheduler 在自身线程上做 active-task 闸门判定，
- * 通过后才由 agent 转发为 TOOL 类型 channel 消息。该结构是 toolbox → scheduler 的载荷。 */
-struct edc_toolbox_emit_msg
-{
-    sds header;
-    sds content;
-    edc_render_pref_t render_pref; /* 发送方声明的渲染偏好 (默认/PLAIN = 纯文本) */
-};
+/* struct edc_toolbox_emit_msg 已移至 edc_exec_io.h (executor 的 I/O 词表)。 */
 
 extern struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, edc_channel_type channel_type,
                                                              void *request_id, struct edc_task *task, void *priv);

@@ -6,11 +6,9 @@
  */
 #include "edc_executor.h"
 #include "edc_config.h"
-#include "edc_llm_actor.h"
+#include "edc_exec_io.h"
 #include "edc_session.h"
 #include "edc_task_group.h"
-#include "edc_toolbox.h"
-#include "edc_toolbox_actor.h"
 #include "edc_turn.h"
 #include "sds.h"
 #include "utlist_fix.h"

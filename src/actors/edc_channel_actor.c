@@ -53,13 +53,6 @@ static void edc_channel_actor_handle(edc_actor_t *actor, edc_actor_msg_t *msg)
     edc_actor_msg_free(msg);
 }
 
-cJSON *edc_channel_to_json(void)
-{
-    cJSON *data = cJSON_CreateObject();
-    cJSON_AddStringToObject(data, "type", "adapter");
-    return data;
-}
-
 void edc_channel_adapter_init(edc_actor_t *channel_actor, void *instance,
                               void (*on_actor_message_send_fn)(void *, struct edc_channel_message *))
 {

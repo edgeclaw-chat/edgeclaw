@@ -12,7 +12,7 @@
  *   1. todowrite 工具 (edc_tools_todo.c) 经真实 toolbox 执行后把校验
  *      通过的 items 挂到 ctx->task->todos (整体替换), 并重置 todo 同步
  *      节流计数 (task->todo_sync_gap = 0) —— 本测试执行真实工具。
- *   2. 工具返回的 result == task->todos 经 edc_tools_todo_render_reminder
+ *   2. 工具返回的 result == task->todos 经 edc_context_render_todo_reminder
  *      生成的 todo reminder 文本 (同一渲染函数, 两段式骨架 + <system-reminder>
  *      包裹, 不再是独立的 "# TODO" checklist markdown)。
  *   3. edc_task_llm_request_poke 的节流状态机 (每次 send_llm 前调用): 计
@@ -20,7 +20,7 @@
  *   4. edc_runtime_cb_send_llm 仅在 poke 返回 true 时调用
  *      edc_context_make_todo_reminder (edc_context.c, 实现于生产代码, 在此
  *      直测): 有清单 → role=system 的 reminder 消息, content 与工具 result
- *      逐字节一致 (单一渲染源 edc_tools_todo_render_reminder), 不带 base,
+ *      逐字节一致 (单一渲染源 edc_context_render_todo_reminder), 不带 base,
  *      独立成消息; 无清单且 task 非空 → 短规划引导; task 为 NULL → NULL。
  *      副本语义: 不改共享 history[0] / task。
  *   5. 头部 edc_context_append_system_part 恢复纯净: 只挂 group memory +
@@ -159,9 +159,9 @@ static void test_attach_and_reminder(void)
              "in_progress") == 0,
       "item 2 kept in_progress status");
 
-    /* 工具 result == task->todos 经 edc_tools_todo_render_reminder 的完整
+    /* 工具 result == task->todos 经 edc_context_render_todo_reminder 的完整
      * todo reminder 文本 (不再是独立的 "# TODO" checklist markdown) */
-    sds rem = edc_tools_todo_render_reminder(task->todos);
+    sds rem = edc_context_render_todo_reminder(task->todos);
     C(rem != NULL, "render_reminder returns reminder text for attached list");
     C(strcmp(rem, g_result) == 0, "tool result == todo reminder text (same renderer)");
     C(strstr(rem, "- [ ] step one [low]") != NULL, "pending item rendered with priority tag");
@@ -212,7 +212,7 @@ static void test_attach_and_reminder(void)
 
     /* (c) 单一渲染源: 工具 result 与队尾 reminder 逐字节一致 —— todowrite
      *     返回的正是这条 todo reminder 本身 (edc_context_make_todo_reminder 只
-     *     包 role=system, 文本来自 edc_tools_todo_render_reminder) */
+     *     包 role=system, 文本来自 edc_context_render_todo_reminder) */
     C(strcmp(content, g_result) == 0, "tail reminder content == tool result (byte-identical)");
     C(strcmp(content, rem) == 0, "tail reminder content == render_reminder(todos) (same renderer)");
 
@@ -336,18 +336,18 @@ static void test_validation_gate(void)
 static void test_render_boundaries(void)
 {
     T("render_reminder(NULL / empty array) falls into the no-list planning branch");
-    sds rem = edc_tools_todo_render_reminder(NULL);
+    sds rem = edc_context_render_todo_reminder(NULL);
     C(rem != NULL && is_planning_reminder(rem), "NULL items -> planning reminder (no-list branch)");
     sdsfree(rem);
     cJSON *arr = cJSON_CreateArray();
-    rem = edc_tools_todo_render_reminder(arr);
+    rem = edc_context_render_todo_reminder(arr);
     C(rem != NULL && is_planning_reminder(rem), "empty array -> planning reminder (no-list branch)");
     sdsfree(rem);
     cJSON_Delete(arr);
 
     T("render_body(NULL) returns empty sds, count 0");
     int completed = -1;
-    sds body = edc_tools_todo_render_body(NULL, &completed);
+    sds body = edc_context_render_todo_body(NULL, &completed);
     C(body != NULL && sdslen(body) == 0, "NULL items -> empty body");
     C(completed == 0, "count is 0 for empty body");
     sdsfree(body);

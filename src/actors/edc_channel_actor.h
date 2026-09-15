@@ -62,7 +62,8 @@ extern void edc_channel_adapter_init(struct edc_actor *channel_actor, void *inst
 /* ── 磁盘格式兼容物: task / crontab job 的 `"channel"` 键 ─────
  * 老文件里有这个键, 新文件**照写不误** (去掉等于改 schema); 它的取值只可能是
  * adapter (唯一的通道), 所以读端直接忽略内容。 */
-extern cJSON *edc_channel_to_json(void);
+/* edc_channel_to_json() 已迁到 core/edc_config.h（落在 edc_channel_type 旁边）：
+ * 落盘格式是底层关注, kernel 的 state_serializer 也要用它, 不该引边界模块的头。 */
 
 /* ── 一条消息的去向: "投到哪条通道、以谁的名义、按哪种类型" ──────
  *

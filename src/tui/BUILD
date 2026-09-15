@@ -46,151 +46,42 @@ cc_library(
         "edc_todo_widget.hpp",
         "markdown.hpp",
     ],
+    includes = ["."],
     deps = [
-        "//src/agent:agent",
+        "//src/actors:actors",
+        "//src/assembly:assembly",
+        "//src/common:common",
+        "//src/kernel:kernel",
         "//src/shell:shell",
-        "@md4c//:md4c",
-        "@ftxui//:ftxui",
         "@cjson//:cjson",
+        "@ftxui//:dom",
+        "@ftxui//:ftxui",
+        "@libuv",
+        "@log.c//:log.c",
+        "@md4c//:md4c",
     ],
-    visibility = ["//visibility:private"],
+    visibility = ["//tests:__pkg__"],
 )
 
-cc_test(
-    name = "test_snapshot_claim",
-    srcs = ["test_snapshot_claim.cpp"],
-    deps = [
-        ":tui",
-    ],
-    linkstatic = True,
-    linkopts = LINK_OPTS,
-    local_defines = select({
-        "//:debug": ["EDGECLAW_DEBUG"],
-        "//conditions:default": [],
-    }),
-)
 
-cc_test(
-    name = "test_theme",
-    srcs = ["test_theme.cpp"],
-    deps = [
-        ":tui",
-    ],
-    linkstatic = True,
-    linkopts = LINK_OPTS,
-    local_defines = select({
-        "//:debug": ["EDGECLAW_DEBUG"],
-        "//conditions:default": [],
-    }),
-)
 
-cc_test(
-    name = "test_scroll_regression",
-    srcs = ["test_scroll_regression.cpp"],
-    deps = [
-        ":tui",
-    ],
-    linkstatic = True,
-    linkopts = LINK_OPTS,
-    local_defines = select({
-        "//:debug": ["EDGECLAW_DEBUG"],
-        "//conditions:default": [],
-    }),
-)
 
-cc_test(
-    name = "test_text_wrap",
-    srcs = ["test_text_wrap.cpp"],
-    deps = [
-        ":tui",
-    ],
-    linkstatic = True,
-    linkopts = LINK_OPTS,
-    local_defines = select({
-        "//:debug": ["EDGECLAW_DEBUG"],
-        "//conditions:default": [],
-    }),
-)
 
-cc_test(
-    name = "test_edc_input",
-    srcs = ["test_edc_input.cpp"],
-    deps = [
-        ":tui",
-    ],
-    linkstatic = True,
-    linkopts = LINK_OPTS,
-    local_defines = select({
-        "//:debug": ["EDGECLAW_DEBUG"],
-        "//conditions:default": [],
-    }),
-)
 
-cc_test(
-    name = "test_working_status",
-    srcs = ["test_working_status.cpp"],
-    deps = [
-        ":tui",
-    ],
-    linkstatic = True,
-    linkopts = LINK_OPTS,
-    local_defines = select({
-        "//:debug": ["EDGECLAW_DEBUG"],
-        "//conditions:default": [],
-    }),
-)
 
-cc_test(
-    name = "test_chat_transcript",
-    srcs = ["test_chat_transcript.cpp"],
-    deps = [
-        ":tui",
-    ],
-    linkstatic = True,
-    linkopts = LINK_OPTS,
-)
 
-cc_test(
-    name = "test_clipboard",
-    srcs = ["test_clipboard.cpp"],
-    deps = [
-        ":tui",
-    ],
-    linkstatic = True,
-    linkopts = LINK_OPTS,
-    local_defines = select({
-        "//:debug": ["EDGECLAW_DEBUG"],
-        "//conditions:default": [],
-    }),
-)
 
-cc_test(
-    name = "test_todo_widget",
-    srcs = ["test_todo_widget.cpp"],
-    deps = [
-        ":tui",
-    ],
-    linkstatic = True,
-    linkopts = LINK_OPTS,
-    local_defines = select({
-        "//:debug": ["EDGECLAW_DEBUG"],
-        "//conditions:default": [],
-    }),
-)
 
-cc_test(
-    name = "test_task_widget",
-    srcs = ["test_task_widget.cpp"],
-    deps = [
-        ":tui",
-    ],
-    linkstatic = True,
-    linkopts = LINK_OPTS,
-    local_defines = select({
-        "//:debug": ["EDGECLAW_DEBUG"],
-        "//conditions:default": [],
-    }),
-)
+
+
+
+
+
+
+
+
+
+
 
 cc_binary(
     name = "edgeclaw_tui",
@@ -198,11 +89,16 @@ cc_binary(
         "main.cpp",
     ],
     deps = [
-        "//src/agent:agent",
-        "//src/core:core",
+        "//src/actors:actors",
+        "//src/assembly:assembly",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
         "//src/shell:shell",
-        "//src:utlist_fix",
-        ":tui",
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@libuv",
+        "@log.c//:log.c",
     ] + select({
         "//:windows": [],
         "//conditions:default": ["//src/device:device"],
@@ -214,18 +110,4 @@ cc_binary(
         "//conditions:default": [],
     }),
     visibility = ["//visibility:public"],
-)
-
-cc_test(
-    name = "test_message_list",
-    srcs = ["test_message_list.cpp"],
-    deps = [
-        ":tui",
-    ],
-    linkstatic = True,
-    linkopts = LINK_OPTS,
-    local_defines = select({
-        "//:debug": ["EDGECLAW_DEBUG"],
-        "//conditions:default": [],
-    }),
 )

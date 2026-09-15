@@ -1,5 +1,5 @@
 #include "edc_state_serializer.h"
-#include "edc_channel_actor.h"
+#include "edc_config.h"
 #include "edc_compat.h"
 #include "edc_containers.h"
 #include "edc_context.h"

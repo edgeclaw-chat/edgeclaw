@@ -20,7 +20,7 @@ extern sds edc_context_build_system_prompt(struct edc_config *conf, const char *
  * 调用 (edc_task_llm_request_poke 达阈值), 并把返回的消息塞到该请求消息列表
  * 的【最末尾】(新的队尾, 见 edc_llm_actor_req.tail_system), 避免头部注入的
  * todo 状态在长上下文里被模型遗忘。content 即两段式骨架文本
- * (含 <system-reminder> 包裹, 由 edc_tools_todo_render_reminder 统一生成,
+ * (含 <system-reminder> 包裹, 由 edc_context_render_todo_reminder 统一生成,
  * 与 todowrite 工具返回的 result 逐字节一致——同一渲染源):
  *   ① ## 🚨 CURRENT TASK SYSTEM STATE: 状态段——当前清单全貌 (清单行);
  *   ② ## 🛠️ INSTRUCTIONS FOR THIS TURN: 指令段——逐轮强约束的同步节拍
@@ -49,5 +49,12 @@ extern cJSON *edc_context_make_todo_reminder(struct edc_task *task);
  * 引用/副本/写回语义与迁移前的 edc_runtime_cb_send_llm 完全一致。 */
 extern int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct edc_task_group *group,
                                           const char *workdir, sds *out_pristine);
+
+/* todo reminder 的单一渲染源（原先在 edc_tools_todo.c/h）: 渲染 task->todos。
+ * - render_body: 纯 "- [ ]/- [x]" 清单行（无包裹、无引导段），*out_completed 可 NULL；
+ * - render_reminder: 完整 reminder 文本（含 <system-reminder> 包裹, 两段式骨架）。
+ * 工具侧 (todowrite) 与请求队尾的 reminder 共用它 → 输出逐字节一致。返回 sds，调用方 sdsfree。 */
+extern sds edc_context_render_todo_body(cJSON *items, int *out_completed);
+extern sds edc_context_render_todo_reminder(cJSON *items);
 
 #endif

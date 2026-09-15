@@ -2,6 +2,7 @@
 #define __BC_CONFIG_H__
 #include "sds.h"
 #include <stdbool.h>
+#include <cJSON.h>
 #include <stdint.h>
 
 /* Canonical read-only sandbox whitelist: only these system directories are
@@ -121,5 +122,11 @@ extern bool edc_config_update_sandbox_path(const char *edc_home, const char *pat
 extern bool edc_config_set_sandbox_enabled(struct edc_config *cfg, bool enable);
 extern bool edc_config_set_sandbox_path(struct edc_config *cfg, const char *path, edc_sandbox_path_kind kind, bool add,
                                         sds *msg);
+
+/* 通道序列化 (唯一通道 = adapter): 写进 task/message 的 "channel" 字段, 属于落盘
+ * 格式兼容。以前住 edc_channel_actor.{c,h} —— 但那是边界模块, kernel 的
+ * state_serializer 也要用它, 会把"底层 → 边界"引成一条反向边; 挪到
+ * edc_channel_type 的定义处 (本文件) 后方向就正了。 */
+extern cJSON *edc_channel_to_json(void);
 
 #endif

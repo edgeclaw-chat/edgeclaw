@@ -1,5 +1,13 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
+# Top-level utility: utlist 的兼容修正（原 //src:utlist_fix，随 core 一起下沉）
+cc_library(
+    name = "utlist_fix",
+    hdrs = ["utlist_fix.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+
 # ── Individual utility libraries (externally visible) ──────────────────────
 
 # Header-only platform/GLib compatibility shim. Exposed on its own so very
@@ -17,16 +25,9 @@ cc_library(
     srcs = ["edc_error.c"],
     hdrs = ["edc_error.h"],
     includes = ["."],
-    deps = ["@sds//:sds"],
-    linkstatic = True,
-    visibility = ["//visibility:public"],
-)
-
-cc_library(
-    name = "edc_terminal",
-    srcs = ["edc_terminal.c"],
-    hdrs = ["edc_terminal.h"],
-    includes = ["."],
+    deps = [
+        "@sds//:sds",
+    ],
     linkstatic = True,
     visibility = ["//visibility:public"],
 )
@@ -37,8 +38,8 @@ cc_library(
     hdrs = ["edc_file_utils.h"],
     includes = ["."],
     deps = [
+        "//src/common:edc_error",
         "@libuv",
-        ":edc_error",
         "@sds//:sds",
     ],
     linkstatic = True,
@@ -51,10 +52,10 @@ cc_library(
     hdrs = ["edc_string_utils.h"],
     includes = ["."],
     deps = [
-        "@sds//:sds",
-        ":mbedtls_config",
-        "@mbedtls//:mbedtls",
+        "//src/common:mbedtls_config",
         "//thirdparty/utf8proc",
+        "@mbedtls//:mbedtls",
+        "@sds//:sds",
     ],
     linkstatic = True,
     visibility = ["//visibility:public"],
@@ -65,7 +66,9 @@ cc_library(
     srcs = ["edc_datetime_utils.c"],
     hdrs = ["edc_datetime_utils.h"],
     includes = ["."],
-    deps = ["@sds//:sds"],
+    deps = [
+        "@sds//:sds",
+    ],
     linkstatic = True,
     visibility = ["//visibility:public"],
 )
@@ -87,13 +90,12 @@ cc_library(
     ],
     includes = ["."],
     deps = [
-        ":edc_error",
-        ":edc_file_utils",
-        ":edc_terminal",
-        "@sds//:sds",
+        "//src/common:edc_error",
+        "//src/common:edc_file_utils",
+        "//src/common:mbedtls_config",
         "@log.c//:log.c",
-        ":mbedtls_config",
         "@mbedtls//:mbedtls",
+        "@sds//:sds",
     ],
     linkstatic = True,
     visibility = ["//visibility:public"],
@@ -116,7 +118,7 @@ genrule(
 # ── Combined core library (remaining utility modules) ─────────────────────
 
 cc_library(
-    name = "core",
+    name = "common",
     srcs = [
         ":workspace_embedded.c",
         "edc_config.c",
@@ -124,7 +126,6 @@ cc_library(
         "edc_https_client.c",
         "edc_init_env.c",
         "edc_log.c",
-        "edc_param_types.c",
     ],
     hdrs = [
         "edc_bundled_workspace.h",
@@ -134,19 +135,17 @@ cc_library(
         "edc_https_client.h",
         "edc_init_env.h",
         "edc_log.h",
-        "edc_param_types.h",
         "edc_string.h",
-        "edc_task_types.h",
     ],
     includes = ["."],
     deps = [
-        ":edc_datetime_utils",
-        ":edc_error",
-        ":edc_file_utils",
-        ":edc_secret_lib",
-        ":edc_string_utils",
-        ":edc_terminal",
-        ":mbedtls_config",
+        "//src/common:edc_datetime_utils",
+        "//src/common:edc_error",
+        "//src/common:edc_file_utils",
+        "//src/common:edc_secret_lib",
+        "//src/common:edc_string_utils",
+        "//src/common:mbedtls_config",
+        "//thirdparty/utf8proc",
         "@cjson//:cjson",
         "@libuv",
         "@libyuarel//:libyuarel",
@@ -155,7 +154,6 @@ cc_library(
         "@mbedtls//:mbedtls",
         "@sds//:sds",
         "@uthash//:uthash",
-        "//thirdparty/utf8proc",
     ],
     # Debug builds keep trace/debug logging; normal builds clamp to INFO
     # (see edc_log_init). Same signal as the rest of the tree.

@@ -10,6 +10,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* 通道序列化 (唯一通道 = adapter)：写进 task/message 的 "channel" 字段, 属于落盘格式
+ * 兼容。原先住 edc_channel_actor.c —— 那是边界模块, 而 kernel 的 state_serializer 也
+ * 要用它, 会引成一条"底层 → 边界"的反向边; 挪到 edc_channel_type 的定义处后方向就正了。 */
+cJSON *edc_channel_to_json(void)
+{
+    cJSON *data = cJSON_CreateObject();
+    cJSON_AddStringToObject(data, "type", "adapter");
+    return data;
+}
+
 /* Build a NULL-terminated sds array from a comma-separated path list. */
 static sds *edc_config_split_paths(const char *csv)
 {

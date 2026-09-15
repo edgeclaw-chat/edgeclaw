@@ -4,7 +4,6 @@
 #include "edc_skills.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
-#include "edc_tools_todo.h"
 #include "log.h"
 #include "sds.h"
 
@@ -239,7 +238,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
  * 按 edc_task_llm_request_poke 节流 —— 隔了 EDC_TODO_SYNC_REMIND_GAP 条对话
  * (LLM 请求) 都没调用过 todowrite 才生成一次 (达阈值清零重计)。
  * 两段式骨架文本 (含 <system-reminder> 包裹、状态段内容选择、逐轮同步节拍/
- * 建计划引导两个分支) 由 edc_tools_todo_render_reminder 统一生成 —— 与
+ * 建计划引导两个分支) 由 edc_context_render_todo_reminder 统一生成 —— 与
  * todowrite 工具每次成功返回的 result 逐字节一致 (同一渲染源, 不再有
  * 独立的 "# TODO" checklist md 形态)。本函数只负责把这份文本包成一条
  * role=system 消息。
@@ -255,12 +254,136 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
  *    (建计划引导);
  *  - task 为 NULL → NULL。
  * 副本语义: 返回未挂到任何数组的新消息对象, 随请求释放; 不改 task/group。 */
+/* 纯渲染"- [ ]/- [x]" 清单行 (无 "<system-reminder>" 包裹、无引导段) ——
+ * 与 render_reminder 共用同一行格式源: 它是 todo reminder 状态段的正文, 供
+ * 需要把清单行单独嵌入的调用方使用。items 已在工具入口校验过 (status 合法、
+ * 至多一个 in_progress)。对缺失字段做保守兜底 (缺省视为 pending / 空文本)，
+ * 避免 agent 侧读取历史数据时因脏数据崩溃。
+ * *out_completed (可为 NULL) 返回已完成条数。返回 sds，调用方负责 sdsfree。 */
+sds edc_context_render_todo_body(cJSON *items, int *out_completed)
+{
+    int total = items ? cJSON_GetArraySize(items) : 0;
+    sds lines = sdsempty();
+    int completed = 0;
+    for (int i = 0; i < total; ++i)
+    {
+        cJSON *item = cJSON_GetArrayItem(items, i);
+        char *status = cJSON_GetStringValue(cJSON_GetObjectItem(item, "status"));
+        char *content = cJSON_GetStringValue(cJSON_GetObjectItem(item, "content"));
+        char *priority = cJSON_GetStringValue(cJSON_GetObjectItem(item, "priority"));
+        const char *st = status ? status : "pending";
+        const char *ct = content ? content : "";
+        const char *pri = priority ? priority : "";
+
+        const char *marker;
+        if (strcmp(st, "completed") == 0)
+        {
+            marker = "- [x]";
+            completed += 1;
+        }
+        else if (strcmp(st, "cancelled") == 0)
+        {
+            marker = "- [-]";
+        }
+        else if (strcmp(st, "in_progress") == 0)
+        {
+            marker = "- [•]";
+        }
+        else
+        {
+            marker = "- [ ]";
+        }
+
+        if (pri && *pri)
+            lines = sdscatprintf(lines, "%s %s [%s]\n", marker, ct, pri);
+        else
+            lines = sdscatprintf(lines, "%s %s\n", marker, ct);
+    }
+    if (out_completed)
+        *out_completed = completed;
+    return lines;
+}
+
+/* ── todo reminder 两段式骨架 (单一渲染源) ──────────────────────
+ * 提醒 = "系统状态 + 本轮指令" (2026-09-09, 参照用户模板重构):
+ *   ① ## 🚨 CURRENT TASK SYSTEM STATE —— 当前 todo 清单全貌 (与工具回显
+ *      同格式的清单行), 让模型看到整个计划与执行到哪一步;
+ *   ② ## 🛠️ INSTRUCTIONS FOR THIS TURN —— 每轮必须遵守的节拍: 检查上一个
+ *     工具的执行结果; 当前条目干完后的【下一个动作必须是调用 todowrite】
+ *     同步状态; 当前条目未标 [x] 不得跳到下一项。逐轮强约束, 解决"执行完
+ *     好几步才想起来更新一次清单"的滞后问题。
+ * 本文件 (edc_context.c) 是这套文本的唯一生成地 —— 原先它在 edc_tools_todo.c
+ * 里, 但渲染的是 **task 的 todos**（上下文材料），生产读取方是本文件的
+ * edc_context_make_todo_reminder; 留在工具箱侧会让 kernel 反过来引 tool 模块。
+ * 搬到这里后, "工具回显与 reminder 逐字节一致"由结构保证（同一个实现）:
+ *  todowrite 工具每次
+ * 成功返回的 result/回显 就是这条 todo reminder 本身, LLM 请求队尾的 reminder
+ * (edc_context_make_todo_reminder 的 content) 也由同一函数生成 —— 不再存在
+ * 独立的 "# TODO" checklist markdown 形态, 模型在任何位置看到的清单格式
+ * 逐字节一致。 */
+
+/* 状态段标题 / 指令段标题 / 无清单状态行 (两分支共用) */
+static const char *kTodoStateHeader = "## 🚨 CURRENT TASK SYSTEM STATE\n";
+static const char *kTodoTurnHeader = "## 🛠️ INSTRUCTIONS FOR THIS TURN\n";
+static const char *kTodoNoListState = "No todo list exists for this task yet.\n";
+
+/* 逐轮同步节拍 (清单非空时注入)。核心诉求: 不许干完好几步才更新一次 todo——
+ * 当前条目一完成, 下一步就强制 todowrite 同步。 */
+static const char *kTodoTurnGuide =
+    "- Check the execution result of the last tool call.\n"
+    "- If the item you are working on is fully finished, your NEXT SINGLE ACTION must be calling "
+    "todowrite to update the state (mark it \"completed\", promote the next pending item to "
+    "\"in_progress\", send the FULL updated list).\n"
+    "- Do NOT jump to the next item until the current one is marked as [x].\n"
+    "- When the whole list is done, keep the completed list — do not clear it or invent items.\n";
+
+/* 建清单引导 (尚无清单时注入)。多步任务先把计划落到 todowrite, 之后每轮
+ * 自然切换到 kTodoTurnGuide 的逐轮同步节拍。 */
+static const char *kTodoPlanningGuide =
+    "- If the request is multi-step — several distinct steps or multiple tool calls (research, coding, "
+    "debugging, batch edits, ...) — your FIRST action must be calling todowrite to create a "
+    "step-by-step plan, then execute it.\n"
+    "- Simple single-step requests or direct conversation do NOT need a todo list — just answer "
+    "without creating one.\n";
+
+/* 完整 todo reminder 文本 (含 <system-reminder> 包裹), 与 LLM 请求队尾的
+ * reminder (edc_context_make_todo_reminder 的 content) 逐字节一致 ——
+ * todowrite 工具 result/回显与上下文提醒共用此单一渲染源。两分支互斥:
+ *  - items 非空 → 状态段 = 清单行 (render_body), 指令段 = 逐轮同步节拍;
+ *  - items 为 NULL/空 → 状态段 = "尚无清单", 指令段 = 建计划引导。
+ * 返回 sds, 调用方负责 sdsfree。 */
+sds edc_context_render_todo_reminder(cJSON *items)
+{
+    int has_list = items && cJSON_GetArraySize(items) > 0;
+    sds content = sdsnew("<system-reminder>\n");
+    content = sdscat(content, kTodoStateHeader);
+
+    if (has_list)
+    {
+        sds body = edc_context_render_todo_body(items, NULL);
+        content = sdscat(content, body); /* 清单行, 每行以 \n 结尾 */
+        sdsfree(body);
+    }
+    else
+    {
+        content = sdscat(content, kTodoNoListState);
+    }
+
+    content = sdscat(content, "\n"); /* 状态段与指令段之间留空行 */
+    content = sdscat(content, kTodoTurnHeader);
+
+    content = sdscat(content, has_list ? kTodoTurnGuide : kTodoPlanningGuide);
+
+    content = sdscat(content, "\n</system-reminder>");
+    return content;
+}
+
 cJSON *edc_context_make_todo_reminder(struct edc_task *task)
 {
     if (!task)
         return NULL;
 
-    sds content = edc_tools_todo_render_reminder(task->todos);
+    sds content = edc_context_render_todo_reminder(task->todos);
 
     cJSON *sys = cJSON_CreateObject();
     cJSON_AddStringToObject(sys, "role", "system");
