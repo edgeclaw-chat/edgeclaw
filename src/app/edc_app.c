@@ -30,8 +30,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* ── 命令处理钩子 (由外部注册，避免 agent → shell 依赖) ───── */
-
 /* ── 装配根: 定义**只**在这里 (不透明) ──────────────────────
  * 外部读法: 边界经访问器, userland 收自己那几件 (见 edc_app.h)。 */
 struct edc_app
@@ -52,115 +50,8 @@ struct edc_app
     bool shutdown_done;
 };
 
-typedef bool (*edc_app_command_fn)(struct edc_config *cfg, struct edc_session_manager *sm,
-                                      struct edc_scheduler *sched, struct edc_reply_to to,
-                                      struct edc_channel_message *message);
-static edc_app_command_fn g_command_handler = NULL;
-
-/* ── 辅助: 获取 agent ──────────────────────────────────────── */
-
-static struct edc_app *edc_app_from_sched(struct edc_scheduler *sched)
-{
-    return sched ? sched->ctx : NULL;
-}
-
 /* 跨 session task 解析 / 依赖对账 / session 加载 → edc_session_store.{c,h}
  * (store 自己的读口与生命周期, 显式收 (session_manager, scheduler))。 */
-/* ── 回调: 发送 LLM 请求 (实现见 //src/actor:llm_request) ─────────
- * 装配根只交两样 kernel 拿不到的值: 工具定义 (所有权归 toolbox) 与 LLM 端点
- * 邮箱; 其余 (config / session 仓库 / group 状态) 都在 sched 或 task 上。 */
-static void edc_app_cb_send_llm(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
-{
-    struct edc_app *rt = edc_app_from_sched(sched);
-    edc_llm_request_send(sched, task, (rt && rt->toolbox) ? rt->toolbox->schemas : NULL,
-                         rt ? rt->llm_actor : NULL, request_id);
-}
-
-/* ── 回调 (装配根只做两件事) ───────────────────────────────────
- *
- * 1) **交句柄**: 下面这些 thunk 的全部内容 —— 把提供方的句柄接给调用方;
- * 2) **只有装配根同时握着两端的事**: LLM 请求装配 (send_llm) 与命令分发
- *    (handle_command)。
- *
- * 其余"怎么做"都在提供方: 通道消息的形状 → src/actor/edc_channel_actor.c;
- * 工具协议 (req 链 / dispatch / redispatch / 按账本重建) → src/toolbox/edc_toolbox_actor.c;
- * LLM 请求体 → //src/actor:llm_request。
- * **端口签名 (edc_scheduler.h) 一字未动** —— scheduler / executor 的调用点不受影响。 */
-
-static struct edc_reply_to edc_app_reply_to(const struct edc_app *rt, struct edc_scheduler *sched,
-                                            edc_channel_message_type type)
-{
-    struct edc_reply_to to = {.channel_actor = rt ? rt->channel_actor : NULL,
-                              .actor = edc_scheduler_get_actor(sched),
-                              .type = type};
-    return to;
-}
-
-static void edc_app_cb_send_reply(struct edc_scheduler *sched, struct edc_task *task, const char *content,
-                                  edc_channel_message_type message_type, void *request_id)
-{
-    edc_channel_send_task_reply(edc_app_reply_to(edc_app_from_sched(sched), sched, message_type), task, content,
-                                request_id);
-}
-
-static void edc_app_cb_send_tool_message(struct edc_scheduler *sched, struct edc_task *task, const char *header,
-                                         const char *content, edc_render_pref_t render_pref, void *request_id)
-{
-    edc_channel_send_task_tool_message(edc_app_reply_to(edc_app_from_sched(sched), sched, EDC_CHANNEL_MESSAGE_TOOL_TYPE),
-                                       task, header, content, render_pref, request_id);
-}
-
-/* 工具协议 (req 链 / dispatch / redispatch) 全在 //src/toolbox: 这里只交 toolbox actor。 */
-static void edc_app_cb_dispatch_tools(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
-                                      void *request_id)
-{
-    struct edc_app *rt = edc_app_from_sched(sched);
-    edc_toolbox_actor_dispatch(rt ? rt->toolbox_actor : NULL, sched, task, llm_resp, request_id);
-}
-
-static int edc_app_cb_redispatch_tools(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
-{
-    struct edc_app *rt = edc_app_from_sched(sched);
-    return edc_toolbox_actor_redispatch(rt ? rt->toolbox_actor : NULL, sched, task, request_id);
-}
-
-/* ── 回调: 命令处理 (装配根的本职) ───────────────────────────
- * 命令层 (shell) 说的是 channel 消息, 而它要的三样 (config / session 仓库 /
- * scheduler) 只有装配根有 —— 这个接缝搬不走。 */
-static bool edc_app_cb_handle_command(struct edc_scheduler *sched, struct edc_actor *actor,
-                                        const struct edc_sched_input *input)
-{
-    struct edc_app *agent = edc_app_from_sched(sched);
-    /* 命令层 (shell) 说的是 channel 消息: 原始消息由 core 不透明透传到这里。 */
-    struct edc_channel_message *msg = input ? input->origin : NULL;
-    if (!agent || !msg)
-        return false;
-    struct edc_reply_to to = {.channel_actor = agent->channel_actor, .actor = actor, .type = msg->type};
-    return g_command_handler ? g_command_handler(agent->config, agent->session_manager, agent->scheduler, to, msg) : false;
-}
-
-/* ── 回调: task 树快照 (①b: 事件 vs 应答) ─────────────────────
- *
- * 两条线分得很清:
- *   - `snapshot_reply`   = 前端**点名要**的那棵树 (拉取的应答);
- *   - `snapshot_changed` = "某个 session 的树变了" 的**事件** (很小, 不带树)。
- * 走同一条通道 (channel adapter → TUI 回调), 靠 message_type 区分。
- * 投递本身 (`edc_channel_publish`) 是通道的词汇 —— 装配根只交句柄 + 声明类型。 */
-static void edc_app_cb_snapshot_reply(struct edc_scheduler *sched, sds serialized)
-{
-    if (!serialized)
-        return;
-    edc_channel_publish(edc_app_reply_to(edc_app_from_sched(sched), sched, EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE), NULL,
-                        serialized);
-}
-
-/* "session X 的树变了" —— 事件, 不带树。前端收到后**只**在自己正显示 X 时去拉。 */
-static void edc_app_cb_snapshot_changed(struct edc_scheduler *sched, const char *session_id, const char *reason)
-{
-    edc_channel_publish(edc_app_reply_to(edc_app_from_sched(sched), sched, EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE),
-                        session_id, sdsnew(reason ? reason : ""));
-}
-
 
 /* 会话信号与落盘 (stop_all_turns / remove_all_turns) → edc_session_store.{c,h} */
 
@@ -185,10 +76,6 @@ edc_actor_t *edc_app_channel_actor(const struct edc_app *rt)
 
 struct edc_app *edc_app_new(bool setup, int sandbox_override)
 {
-    /* 命令处理器 (userland 入口) 由装配根自己装好 —— 装配是装配根的活,
-     * 前端不必知道 shell 的符号名 (那正是从前 C bridge 存在的理由之一)。 */
-    g_command_handler = edc_commands_handler;
-
     sds edc_home = edc_config_resolve_bc_home();
 
     if (!edc_init_env(edc_home, setup))
@@ -248,19 +135,16 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
     /* 创建 scheduler —— 不再把 active session 递给它 (P3 ③: scheduler 不持有
      * "当前 session"; 每个入口显式带 session, 标签解析交由 store 的同包读口)。 */
     agent->scheduler = edc_scheduler_new(agent->config);
-    agent->scheduler->ctx = agent;
     /* session 仓库句柄: 标签解析、落盘、折叠扫描都同包直调 store (与 config 同形) */
     agent->scheduler->sessions = agent->session_manager;
 
-    /* 注入回调 */
-    agent->scheduler->send_llm = edc_app_cb_send_llm;
-    agent->scheduler->send_reply = edc_app_cb_send_reply;
-    agent->scheduler->send_tool_message = edc_app_cb_send_tool_message;
-    agent->scheduler->dispatch_tools = edc_app_cb_dispatch_tools;
-    agent->scheduler->redispatch_tools = edc_app_cb_redispatch_tools;
-    agent->scheduler->handle_command = edc_app_cb_handle_command;
-    agent->scheduler->snapshot_reply = edc_app_cb_snapshot_reply;
-    agent->scheduler->snapshot_changed = edc_app_cb_snapshot_changed;
+    /* 接线: 每个提供方把**自己的**端口装到 scheduler 上 —— 装配根只做"建对象 +
+     * 叫它接线", 运行期不再出现在任何一条路径上 (见 docs/runtime-model.md §5 规则 8)。
+     * 四条出站端口归通道 (消息形状是它的知识), 命令入口归命令层 (它要的 config /
+     * session 仓库都在 scheduler 上)。端口签名 (edc_scheduler.h) 未动 ⇒ kernel 的
+     * 调用点与测试里的假端口都不受影响。 */
+    edc_channel_actor_bind_scheduler(agent->channel_actor, agent->scheduler);
+    edc_commands_bind_scheduler(agent->scheduler);
 
     /* Phase 4: restore saved task/group state for active session */
     {
@@ -280,6 +164,10 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
     agent->toolbox = edc_toolbox_new(agent->config, edc_scheduler_get_actor(agent->scheduler), agent->channel_actor);
     agent->toolbox_actor = edc_toolbox_actor_new(agent->toolbox);
     edc_actor_runner_add(agent->runner, agent->toolbox_actor);
+
+    /* 这两条端口的实现要用到工具箱 (工具定义 / 请求链), 所以接线排在工具箱之后。 */
+    edc_toolbox_actor_bind_scheduler(agent->toolbox_actor, agent->scheduler);
+    edc_llm_request_bind_scheduler(agent->scheduler, agent->llm_actor, agent->toolbox ? agent->toolbox->schemas : NULL);
 
     edc_actor_runner_start(agent->runner);
 

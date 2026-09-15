@@ -1,4 +1,4 @@
-#ifndef __EDC_LLM_REQUEST_H__
+﻿#ifndef __EDC_LLM_REQUEST_H__
 #define __EDC_LLM_REQUEST_H__
 
 #include "edc_actor.h" /* edc_actor_t */
@@ -21,5 +21,16 @@ struct edc_task;
  * 数据源 = sched->sessions (store 句柄) —— 见 docs/runtime-model.md §11。 */
 extern void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJSON *tool_schemas,
                                  edc_actor_t *llm_actor, void *request_id);
+
+/* ── 端口: 请求装配器是 `send_llm` 的提供方 ──────────────────
+ *
+ * 请求体怎么装、投给谁, 都是本文件的知识, 所以"把端口装到 scheduler 上"也归
+ * 这里。装配期交一次上面那两样值; 此后每次请求都从这里出去 —— 装配根不再出现
+ * 在运行期路径上。端口签名 (`edc_scheduler.h`) 一个字没动。
+ *
+ * |tool_schemas| 只读, 所有权仍归 toolbox; 两个值的生命周期 = 进程。 */
+struct edc_scheduler; /* fwd */
+extern void edc_llm_request_bind_scheduler(struct edc_scheduler *sched, edc_actor_t *llm_actor,
+                                           cJSON *tool_schemas);
 
 #endif

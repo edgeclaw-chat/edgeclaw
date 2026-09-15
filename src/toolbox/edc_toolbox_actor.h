@@ -40,4 +40,12 @@ extern void edc_toolbox_actor_dispatch(edc_actor_t *actor, struct edc_scheduler 
                                        void *llm_resp, void *request_id);
 extern int edc_toolbox_actor_redispatch(edc_actor_t *actor, struct edc_scheduler *sched, struct edc_task *task,
                                         void *request_id);
+
+/* ── 端口: toolbox 是两条工具端口的提供方 ────────────────────
+ *
+ * 工具协议 (req 链 / dispatch / 按账本重建) 全住本文件, 所以"把端口装到
+ * scheduler 上"也归这里 —— **谁提供谁接线**。装配根只在装配期叫这一次,
+ * 运行期不再出现在路径上 (`dispatch_tools` / `redispatch_tools`)。
+ * 端口签名一个字没动: kernel 的调用点与测试里的假端口都不受影响。 */
+extern void edc_toolbox_actor_bind_scheduler(edc_actor_t *actor, struct edc_scheduler *sched);
 #endif

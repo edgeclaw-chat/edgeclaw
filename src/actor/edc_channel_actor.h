@@ -101,6 +101,17 @@ extern void edc_channel_send_task_reply(struct edc_reply_to to, struct edc_task 
 extern void edc_channel_send_task_tool_message(struct edc_reply_to to, struct edc_task *task, const char *header,
                                                const char *content, edc_render_pref_t render_pref, void *request_id);
 
+/* ── 端口: 通道是四条出站端口的提供方 ────────────────────────
+ *
+ * 通道的消息形状与投递路径都住本文件, 所以"把端口装到 scheduler 上"的活也归
+ * 这里 —— **谁提供谁接线**。装配根只在装配期叫这一次, 运行期不再出现在路径上
+ * (`send_reply` / `send_tool_message` / `snapshot_reply` / `snapshot_changed`)。
+ *
+ * 端口签名 (`edc_scheduler.h`) 一个字都没动: kernel 的调用点与测试里的假端口
+ * 都不受影响。 */
+struct edc_scheduler; /* fwd */
+extern void edc_channel_actor_bind_scheduler(edc_actor_t *actor, struct edc_scheduler *sched);
+
 extern void edc_channel_message_free(struct edc_channel_message *msg);
 extern struct edc_channel_message *edc_channel_message_new(edc_channel_type type, edc_channel_message_type message_type,
                                                            sds content);

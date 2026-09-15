@@ -1,4 +1,4 @@
-#ifndef __BC_COMMANDS_H__
+﻿#ifndef __BC_COMMANDS_H__
 #define __BC_COMMANDS_H__
 
 #include "edc_channel_actor.h"
@@ -16,5 +16,13 @@ struct edc_session_manager;
 extern bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
                                  struct edc_reply_to to, struct edc_channel_message *);
 extern void edc_commands_reply(struct edc_reply_to to, const char *text);
+
+/* ── 端口: 命令层是 `handle_command` 的提供方 ────────────────
+ *
+ * "谁提供服务谁装端口": 处理器住这里, 它要的 config / session 仓库都在
+ * scheduler 上 (`sched->config` / `sched->sessions`), 回话地址由 scheduler 调用时
+ * 递进来的发送者给出 —— 装配根不再中转 (也不必持一个函数指针)。 */
+struct edc_scheduler; /* fwd */
+extern void edc_commands_bind_scheduler(struct edc_scheduler *sched);
 
 #endif

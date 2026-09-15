@@ -11,6 +11,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/* 唯一的通道 actor: `edc_channel_actor_bind_scheduler` 登记 (见文件末"端口"一节)。
+ * 放在这里是因为 `edc_channel_actor_free` 要清它 —— 免得释放后还留着一个野指针。 */
+static edc_actor_t *g_channel = NULL;
+
 /* ── 边界翻译: channel 消息 → core 的入站输入 ─────────────────
  *
  * `struct edc_sched_input` 是 core 的词表 (edc_scheduler.h); 本文件是"两个词表都
@@ -107,6 +111,8 @@ void edc_channel_actor_free(edc_actor_t *actor)
 {
     edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
 
+    if (g_channel == actor) /* 端口实现者的登记位: 别留野指针 */
+        g_channel = NULL;
     free(state);
     edc_actor_free(actor);
 }
@@ -238,4 +244,59 @@ void edc_channel_notify_active_session(struct edc_actor *channel_actor, const ch
     struct edc_reply_to to = {.channel_actor = channel_actor, .actor = channel_actor,
                               .type = EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE};
     edc_channel_publish(to, session_id, sdsnew("active"));
+}
+
+/* ── 端口: 通道是四条出站端口的提供方 ────────────────────────
+ *
+ * 消息形状与投递路径已经归本文件 (见上), 于是"把端口装到 scheduler 上"也归
+ * 这里: 装配根只在装配期叫一次 `edc_channel_actor_bind_scheduler`, 运行期不再
+ * 出现在这条路径上。端口签名一个字没动, kernel 的调用点与测试里的假端口都不
+ * 受影响。
+ *
+ * 通道 actor 是**进程里唯一的一个** (1072c70 之后没有多通道了), 所以实现者
+ * 在 bind 时登记自己即可 —— 不必往 kernel 的 scheduler 上挂一个"通道句柄"
+ * (那会让 core 重新认识边界上的东西)。`.actor` 仍是 scheduler actor: 任务产出
+ * 以调度器名义发出, 与从前装配根的 thunk 逐字一致。 */
+static struct edc_reply_to edc_channel_to(struct edc_scheduler *sched, edc_channel_message_type type)
+{
+    struct edc_reply_to to = {.channel_actor = g_channel, .actor = edc_scheduler_get_actor(sched), .type = type};
+    return to;
+}
+
+static void edc_channel_cb_send_reply(struct edc_scheduler *sched, struct edc_task *task, const char *content,
+                                      edc_channel_message_type message_type, void *request_id)
+{
+    edc_channel_send_task_reply(edc_channel_to(sched, message_type), task, content, request_id);
+}
+
+static void edc_channel_cb_send_tool_message(struct edc_scheduler *sched, struct edc_task *task, const char *header,
+                                             const char *content, edc_render_pref_t render_pref, void *request_id)
+{
+    edc_channel_send_task_tool_message(edc_channel_to(sched, EDC_CHANNEL_MESSAGE_TOOL_TYPE), task, header, content,
+                                       render_pref, request_id);
+}
+
+static void edc_channel_cb_snapshot_reply(struct edc_scheduler *sched, sds serialized)
+{
+    if (!serialized)
+        return;
+    edc_channel_publish(edc_channel_to(sched, EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE), NULL, serialized);
+}
+
+static void edc_channel_cb_snapshot_changed(struct edc_scheduler *sched, const char *session_id, const char *reason)
+{
+    edc_channel_publish(edc_channel_to(sched, EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE), session_id,
+                        sdsnew(reason ? reason : ""));
+}
+
+void edc_channel_actor_bind_scheduler(edc_actor_t *actor, struct edc_scheduler *sched)
+{
+    if (!actor || !sched)
+        return;
+
+    g_channel = actor;
+    sched->send_reply = edc_channel_cb_send_reply;
+    sched->send_tool_message = edc_channel_cb_send_tool_message;
+    sched->snapshot_reply = edc_channel_cb_snapshot_reply;
+    sched->snapshot_changed = edc_channel_cb_snapshot_changed;
 }

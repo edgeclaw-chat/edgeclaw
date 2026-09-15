@@ -153,7 +153,10 @@ struct edc_scheduler
      * edc_session_store_resolve_session); 调度器更不持有任何 session 副本。 */
     struct edc_session_manager *sessions;
 
-    /* 回调 (由 edc_app 的装配注入; 见 edc_app.c) */
+    /* 回调 (端口): **由提供方自己装** —— 通道装四条出站 (消息形状是它的知识),
+     * 命令层装入站命令入口, 工具箱装两条工具端口, LLM 请求装配器装 send_llm
+     * (2026-09-16 起; 从前是装配根逐个注入 thunk, 见 runtime-model.md §5 规则 8)。
+     * 于是本结构只声明"有哪些端口", 不再暗示"谁实现它们"。 */
     edc_scheduler_send_llm_fn send_llm;
     edc_scheduler_send_reply_fn send_reply;
     edc_scheduler_send_tool_fn send_tool_message;
@@ -184,7 +187,10 @@ struct edc_scheduler
 
     int64_t next_task_id;
 
-    void *ctx; /* 回调上下文 (edc_app*) */
+    /* 一个不透明口袋: 装配期可交一个句柄进来。端口归提供方自己装之后 (2026-09-16),
+     * 生产路径上已经没有读者 —— 留着是因为测试拿它挂夹具 session (它们要一个
+     * "这个 scheduler 在替谁干活"的槽位)。 */
+    void *ctx;
 };
 
 /* ── API ───────────────────────────────────────────────────── */

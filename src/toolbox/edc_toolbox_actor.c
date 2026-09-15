@@ -1,4 +1,4 @@
-#include "edc_toolbox_actor.h"
+﻿#include "edc_toolbox_actor.h"
 #include "edc_actor.h"
 #include "edc_compat.h"
 #include "edc_error.h"
@@ -9,6 +9,8 @@
 #include "sds.h"
 #include <stdlib.h>
 #include <string.h>
+
+static edc_actor_t *g_toolbox_actor = NULL; /* 端口实现者的登记位 (见文件末"端口"一节) */
 
 /* 向请求方 (scheduler) 上报"某个工具开始执行": data = strdup(call_id), 由 free
  * 释放。scheduler 收到后把该 call_id 的账本记录标为 EXECUTING —— 这样 resume
@@ -202,6 +204,8 @@ static void edc_toolbox_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 void edc_toolbox_actor_free(edc_actor_t *actor)
 {
     edc_toolbox_actor_state_t *state = (edc_toolbox_actor_state_t *)actor->state;
+    if (g_toolbox_actor == actor) /* 端口实现者的登记位: 别留野指针 */
+        g_toolbox_actor = NULL;
     /* runner 已 stop, 在途工具回调不会再触发 —— 主动回收, 否则随进程退出泄漏 */
     for (size_t i = 0; i < state->inflight_count; i++)
         edc_toolbox_actor_inflight_free(state->inflight[i]);
@@ -348,4 +352,34 @@ int edc_toolbox_actor_redispatch(edc_actor_t *actor, struct edc_scheduler *sched
 
     edc_toolbox_actor_send_chain(actor, sched, request_id, chain);
     return count;
+}
+
+/* ── 端口: toolbox 是两条工具端口的提供方 ────────────────────
+ *
+ * 工具协议 (req 链 / dispatch / 按账本重建) 都住本文件, 所以"把端口装到
+ * scheduler 上"也归这里 —— 装配根只在装配期叫一次, 运行期不再出现在路径上。
+ * 端口签名一个字没动, kernel 的调用点与测试里的假端口都不受影响。
+ *
+ * toolbox actor 是**进程里唯一的一个**, 所以实现者在 bind 时登记自己即可
+ * (与通道同一个理由: 不往 kernel 的 scheduler 上挂边界句柄); 登记位在文件开头。 */
+
+static void edc_toolbox_cb_dispatch(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
+                                    void *request_id)
+{
+    edc_toolbox_actor_dispatch(g_toolbox_actor, sched, task, llm_resp, request_id);
+}
+
+static int edc_toolbox_cb_redispatch(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
+{
+    return edc_toolbox_actor_redispatch(g_toolbox_actor, sched, task, request_id);
+}
+
+void edc_toolbox_actor_bind_scheduler(edc_actor_t *actor, struct edc_scheduler *sched)
+{
+    if (!actor || !sched)
+        return;
+
+    g_toolbox_actor = actor;
+    sched->dispatch_tools = edc_toolbox_cb_dispatch;
+    sched->redispatch_tools = edc_toolbox_cb_redispatch;
 }

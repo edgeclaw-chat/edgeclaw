@@ -1554,3 +1554,33 @@ bool edc_commands_handler( struct edc_config *cfg, struct edc_session_manager *s
     /* non-/ input: delegate to shell module */
     return edc_shell_execute(sm, sched, to, message);
 }
+
+/* ── 端口: 命令层是 `handle_command` 的提供方 ────────────────
+ *
+ * 命令处理器本来就住 userland (这里), 它要的 config / session 仓库是 scheduler
+ * 上的**数据句柄** (`sched->config` / `sched->sessions`), 回话地址就是本条入站
+ * 消息的发送者 —— scheduler 调用时已经把发送者递进来了
+ * (`edc_scheduler.c`: `sched->handle_command(sched, msg->from, input)`)。
+ * 于是这个接缝不再需要装配根中转: 谁提供服务谁装端口。
+ *
+ * `input->origin` 仍是 core 不透明透传过来的原始 channel 消息 —— 形状与从前的
+ * thunk 逐字一致 (那里也是在这里取回它)。端口签名一个字没动。 */
+static bool edc_commands_cb_handle_command(struct edc_scheduler *sched, struct edc_actor *actor,
+                                           const struct edc_sched_input *input)
+{
+    struct edc_channel_message *msg = input ? input->origin : NULL;
+    if (!msg)
+        return false;
+
+    /* 入站消息的发送者就是通道 actor —— 回话就回到它那里。 */
+    struct edc_reply_to to = {.channel_actor = actor, .actor = actor, .type = msg->type};
+    return edc_commands_handler(sched->config, sched->sessions, sched, to, msg);
+}
+
+void edc_commands_bind_scheduler(struct edc_scheduler *sched)
+{
+    if (!sched)
+        return;
+
+    sched->handle_command = edc_commands_cb_handle_command;
+}

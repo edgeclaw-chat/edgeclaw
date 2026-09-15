@@ -259,3 +259,29 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
                    edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST, edc_scheduler_get_actor(sched), request_id, req,
                                      (edc_actor_data_free_fn)edc_llm_actor_req_free));
 }
+
+/* ── 端口: 请求装配器是 `send_llm` 的提供方 ──────────────────
+ *
+ * 请求体怎么装、投给谁, 都是本文件的知识 (见 edc_llm_request.h), 所以"把端口
+ * 装到 scheduler 上"也归这里 —— **谁提供谁接线**。装配期交一次两样 kernel 拿
+ * 不到的值 (工具定义 + LLM 端点邮箱), 此后每次请求都从这里出去, 装配根不再出现
+ * 在运行期路径上。端口签名一个字没动。
+ *
+ * 两个值的生命周期 = 进程 (装配根创建、装配根释放, 且只在运行时被读)。 */
+static edc_actor_t *g_llm_actor = NULL;
+static cJSON *g_tool_schemas = NULL;
+
+static void edc_llm_request_cb_send_llm(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
+{
+    edc_llm_request_send(sched, task, g_tool_schemas, g_llm_actor, request_id);
+}
+
+void edc_llm_request_bind_scheduler(struct edc_scheduler *sched, edc_actor_t *llm_actor, cJSON *tool_schemas)
+{
+    if (!sched)
+        return;
+
+    g_llm_actor = llm_actor;
+    g_tool_schemas = tool_schemas;
+    sched->send_llm = edc_llm_request_cb_send_llm;
+}
