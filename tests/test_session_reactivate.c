@@ -19,7 +19,7 @@
  *
  * This test drives the real /session switch command handler between two
  * sessions that both have committed task history, then dereferences the group
- * history the same way edc_runtime_cb_send_llm does (a use-after-free would abort
+ * history the same way edc_app_cb_send_llm does (a use-after-free would abort
  * under ASan).
  */
 
@@ -108,7 +108,7 @@ static struct edc_task_group *run_task(struct edc_scheduler *sched, struct edc_s
     return g;
 }
 
-/* Walk a group's history exactly like edc_runtime_cb_send_llm, dereferencing every
+/* Walk a group's history exactly like edc_app_cb_send_llm, dereferencing every
  * message. Returns how many entries were readable; on a dangling entry this is
  * a use-after-free. */
 static int touch_group_history(struct edc_task_group *g)

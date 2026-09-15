@@ -289,7 +289,7 @@ struct edc_config *edc_config_load(const char *edc_home)
 
     /* Sandbox master switch, persisted under "sandbox.enable". It defaults to
      * on when the key is absent (first run / older config files). The CLI flag
-     * overrides this for the current run only (see edc_runtime_new), whereas the
+     * overrides this for the current run only (see edc_app_new), whereas the
      * in-TUI /sandbox command persists it back to config.json. */
     config->enable_sandbox = true;
 
@@ -848,7 +848,7 @@ bool edc_config_set_sandbox_enabled(struct edc_config *cfg, bool enable)
     if (!cfg)
         return false;
 
-    /* Persist first (mirrors edc_runtime_set_llm_config): if config.json cannot
+    /* Persist first (mirrors edc_app_set_llm_config): if config.json cannot
      * be written, leave the running agent untouched so memory and disk agree. */
     if (!edc_config_update_sandbox_enabled(cfg->edc_home, enable))
         return false;
@@ -935,7 +935,7 @@ bool edc_config_set_sandbox_path(struct edc_config *cfg, const char *path, edc_s
         return false;
     }
 
-    /* Persist first (mirrors edc_runtime_set_sandbox_enabled): on failure leave
+    /* Persist first (mirrors edc_app_set_sandbox_enabled): on failure leave
      * the running config untouched so memory and disk agree. */
     if (!edc_config_update_sandbox_path(cfg->edc_home, resolved, kind, add))
     {

@@ -31,9 +31,9 @@ void Check(bool ok, const std::string &what)
     g_failures++;
 }
 
-::edc_c_task_snapshot MakeSnap(const char *session_id)
+edc::TaskSnapshot MakeSnap(const char *session_id)
 {
-    ::edc_c_task_snapshot snap{};
+    edc::TaskSnapshot snap;
     snap.session_id = session_id;
     return snap;
 }
@@ -42,9 +42,9 @@ void TestSnapshotClaim()
 {
     std::cout << "SnapshotIsForSession\n";
 
-    const ::edc_c_task_snapshot mine = MakeSnap("sess-a");
-    const ::edc_c_task_snapshot theirs = MakeSnap("sess-b");
-    const ::edc_c_task_snapshot unlabelled = MakeSnap("");
+    const edc::TaskSnapshot mine = MakeSnap("sess-a");
+    const edc::TaskSnapshot theirs = MakeSnap("sess-b");
+    const edc::TaskSnapshot unlabelled = MakeSnap("");
 
     Check(::edc::SnapshotIsForSession(&mine, "sess-a"), "我要的那棵 → 收下");
     Check(!::edc::SnapshotIsForSession(&theirs, "sess-a"), "别人的那棵 → 丢弃");

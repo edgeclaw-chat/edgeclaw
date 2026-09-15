@@ -153,7 +153,7 @@ struct edc_scheduler
      * edc_session_store_resolve_session); 调度器更不持有任何 session 副本。 */
     struct edc_session_manager *sessions;
 
-    /* 回调 (由 edc_runtime 的装配注入; 见 edc_runtime.c) */
+    /* 回调 (由 edc_app 的装配注入; 见 edc_app.c) */
     edc_scheduler_send_llm_fn send_llm;
     edc_scheduler_send_reply_fn send_reply;
     edc_scheduler_send_tool_fn send_tool_message;
@@ -184,7 +184,7 @@ struct edc_scheduler
 
     int64_t next_task_id;
 
-    void *ctx; /* 回调上下文 (edc_runtime*) */
+    void *ctx; /* 回调上下文 (edc_app*) */
 };
 
 /* ── API ───────────────────────────────────────────────────── */
@@ -290,7 +290,7 @@ extern struct edc_task_group *edc_scheduler_get_foreground(struct edc_session *s
  *  目录里执行。任务没有属主 (无 group/session) 时返回 NULL, 由调用方决定兜底
  *  (工具层落到沙箱根): **scheduler 不再猜一个"当前 session"出来**。
  *  会话级 (无 task) 的调用方要目录请直接问 session_manager (TUI footer 走
- *  `edc_c_session_workdir`)。 */
+ *  `edc_app_active_session_workdir`)。 */
 extern const char *edc_scheduler_task_workdir(struct edc_task *task);
 
 /** **指定** session 中是否存在未终结 (非 COMPLETED/CANCELLED/ERROR/SUSPENDED)

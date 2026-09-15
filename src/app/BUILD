@@ -1,12 +1,12 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
 cc_library(
-    name = "assembly",
+    name = "app",
     srcs = [
-            "edc_runtime.c",
+            "edc_app.c",
         ],
     hdrs = [
-            "edc_runtime.h",
+            "edc_app.h",
         ],
     includes = ["."],
     deps = [
@@ -17,6 +17,7 @@ cc_library(
             "//src/common:utlist_fix",
             "//src/kernel:kernel",
             "//src/sandbox:sandbox",
+        "//src/shell:shell",
             "//src/toolbox:toolbox",
             "@log.c//:log.c",
             "@sds//:sds",

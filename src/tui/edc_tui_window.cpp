@@ -23,7 +23,7 @@
 #include <memory>
 #include <string>
 #include <sys/ioctl.h>
-#include "edc_c_bridge.h"
+#include "edc_app.h"
 #include <unistd.h>
 #include <vector>
 
@@ -53,22 +53,20 @@ constexpr char kTodoToolHeader[] = "todowrite";
 // process, so it must not light the spinner up or repaint the todo list, which
 // belongs to this one task. Both ForegroundProcessBusy below and the todo widget
 // read this, so they cannot disagree about which task owns the list.
-const char *ForegroundActiveTaskState(const ::edc_c_task_snapshot *snap)
+const char *ForegroundActiveTaskState(const TaskSnapshot *snap)
 {
     if (!snap)
         return "";
 
-    for (int gi = 0; gi < snap->group_count; gi++)
+    for (const TaskGroup &g : snap->groups)
     {
-        const ::edc_c_task_group *g = &snap->groups[gi];
-        if (!g->fg)
+        if (!g.fg)
             continue;
-        for (int ti = 0; ti < g->task_count; ti++)
+        for (const TaskInfo &t : g.tasks)
         {
-            const ::edc_c_task_info *t = &g->tasks[ti];
-            if (!t->is_active)
+            if (!t.is_active)
                 continue;
-            return t->state ? t->state : "";
+            return t.state.c_str();
         }
         return ""; // foreground group exists but has no active task marked
     }
@@ -79,7 +77,7 @@ const char *ForegroundActiveTaskState(const ::edc_c_task_snapshot *snap)
 // stream: it spins exactly while the foreground group's active task runs (LLM
 // generating or a tool chain in flight). Other members of the group, background
 // groups, completed tasks and tasks waiting for input/deps never count as busy.
-bool ForegroundProcessBusy(const ::edc_c_task_snapshot *snap)
+bool ForegroundProcessBusy(const TaskSnapshot *snap)
 {
     return style::TaskStateProcessing(ForegroundActiveTaskState(snap));
 }
@@ -192,32 +190,30 @@ struct ActiveTaskTodos
     std::vector<TodoWidget::Item> items;
 };
 
-ActiveTaskTodos ActiveTaskTodosOf(const ::edc_c_task_snapshot *snap)
+ActiveTaskTodos ActiveTaskTodosOf(const TaskSnapshot *snap)
 {
     ActiveTaskTodos todos;
     if (!snap)
         return todos;
 
-    for (int gi = 0; gi < snap->group_count; gi++)
+    for (const TaskGroup &g : snap->groups)
     {
-        const ::edc_c_task_group *g = &snap->groups[gi];
-        if (!g->fg)
+        if (!g.fg)
             continue;
-        for (int ti = 0; ti < g->task_count; ti++)
+        for (const TaskInfo &t : g.tasks)
         {
-            const ::edc_c_task_info *t = &g->tasks[ti];
-            if (!t->is_active)
+            if (!t.is_active)
                 continue;
             // The id honesty: this is the task the section follows. Whether it is
             // worth showing is the widget's call -- an empty list shows none.
-            todos.task_id = t->task_id ? t->task_id : "";
-            todos.items.reserve(static_cast<size_t>(t->todo_count));
-            for (int i = 0; i < t->todo_count; i++)
+            todos.task_id = t.task_id;
+            todos.items.reserve(t.todos.size());
+            for (const TodoItem &todo : t.todos)
             {
                 TodoWidget::Item item;
-                item.content = t->todo_items[i].content ? t->todo_items[i].content : "";
-                item.status = t->todo_items[i].status ? t->todo_items[i].status : "";
-                item.priority = t->todo_items[i].priority ? t->todo_items[i].priority : "";
+                item.content = todo.content;
+                item.status = todo.status;
+                item.priority = todo.priority;
                 todos.items.push_back(std::move(item));
             }
             return todos;
@@ -429,16 +425,16 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
         {connect_url_input_, connect_model_input_, connect_key_input_, connect_buttons_}, &connect_focus_);
     connect_modal_ = ::ftxui::Renderer(connect_fields, [this] { return RenderConnectModal(); });
 
-    agent = edc_c_agent_new(false, sandbox_override);
+    agent = edc_app_new(false, sandbox_override);
 
-    // edc_runtime_new() returns NULL (after logging the reason) when it cannot
+    // edc_app_new() returns NULL (after logging the reason) when it cannot
     // start: unreadable config, undecryptable API key, no terminal for the
     // passphrase, env init failure. Every call below dereferences the agent, so
     // stop here. main() sees Ready() == false and exits cleanly.
     if (!agent)
         return;
 
-    edc_c_agent_channel_adapter_init(agent, this, on_channel_adapter_send);
+    edc_app_channel_adapter_init(agent, this, on_channel_adapter_send);
     EnableBracketedPaste();
     bracketed_paste_on_ = true;
 
@@ -446,7 +442,7 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
     // config); the footer itself is built per frame so it can fit the pane.
     {
         char model[256];
-        if (edc_c_agent_model(agent, model, sizeof(model)))
+        if (edc_app_config_model(agent, model, sizeof(model)))
             model_ = model;
     }
 
@@ -457,7 +453,7 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
     // snapshots only reload when /session switch/new changes the session.
     {
         char sid[256];
-        if (edc_c_agent_session_id(agent, sid, sizeof(sid)))
+        if (edc_app_active_session_id(agent, sid, sizeof(sid)))
             LoadChatTranscript(sid);
     }
 
@@ -493,7 +489,7 @@ void TUIWindow::Submit()
     // The submitted text is part of what is on screen (a slash command included),
     // so it goes into the transcript too — replaying the file after a restart
     // shows the same log, typed input and all.
-    AppendChatTranscript("user", "", message, "", EDC_C_RENDER_PLAIN);
+    AppendChatTranscript("user", "", message, "", EDC_APP_RENDER_PLAIN);
     input_text_.clear();
     input_->Reset(); // caret/scroll back to the start after the external clear
     // Record the submitted text for ArrowUp recall and persist it so history
@@ -501,7 +497,7 @@ void TUIWindow::Submit()
     input_->AddHistory(message);
     SaveInputHistory();
 
-    edc_c_agent_send_user_message(agent, current_session_id_.c_str(), message.c_str());
+    edc_app_send_user_message(agent, current_session_id_.c_str(), message.c_str());
     chat_widget_->ScrollToBottom();
 
     // A new message may spawn/attach a task, so refresh the sidebar tree. The
@@ -519,9 +515,9 @@ void TUIWindow::Submit()
 void TUIWindow::OpenConnect()
 {
     char buf[4096];
-    connect_url_ = edc_c_agent_api_url(agent, buf, sizeof(buf)) ? buf : "";
-    connect_model_ = edc_c_agent_model(agent, buf, sizeof(buf)) ? buf : "";
-    connect_key_ = edc_c_agent_api_key(agent, buf, sizeof(buf)) ? buf : "";
+    connect_url_ = edc_app_config_api_url(agent, buf, sizeof(buf)) ? buf : "";
+    connect_model_ = edc_app_config_model(agent, buf, sizeof(buf)) ? buf : "";
+    connect_key_ = edc_app_config_api_key(agent, buf, sizeof(buf)) ? buf : "";
     connect_open_ = true;
     connect_focus_ = 0;
     connect_button_focus_ = 0;
@@ -533,7 +529,7 @@ bool TUIWindow::SubmitConnect()
 {
     if (connect_url_.empty() || connect_model_.empty() || connect_key_.empty())
         return false;
-    if (!edc_c_agent_connect(agent, connect_url_.c_str(), connect_model_.c_str(), connect_key_.c_str()))
+    if (!edc_app_set_llm_config(agent, connect_url_.c_str(), connect_model_.c_str(), connect_key_.c_str()))
         return false;
     model_ = connect_model_; // refresh the footer's model label
     connect_open_ = false;
@@ -545,7 +541,7 @@ bool TUIWindow::SubmitConnect()
 void TUIWindow::LoadInputHistory()
 {
     char path[4096];
-    if (!edc_c_history_path(path, sizeof(path)))
+    if (!edc_app_history_path(path, sizeof(path)))
         return;
 
     std::ifstream file(path, std::ios::binary);
@@ -567,21 +563,21 @@ void TUIWindow::LoadInputHistory()
 void TUIWindow::SaveInputHistory()
 {
     char path[4096];
-    if (!edc_c_history_path(path, sizeof(path)))
+    if (!edc_app_history_path(path, sizeof(path)))
         return;
 
     std::string out;
     for (const std::string &entry : input_->History())
         out += EscapeHistoryEntry(entry) + "\n";
     // Symlink-safe (the file sits in $EDC_HOME; still never follow a link).
-    edc_c_agent_write_file(agent, path, out.data(), out.size(), /*append=*/false, /*under_workspace=*/false);
+    edc_app_write_file(agent, path, out.data(), out.size(), /*append=*/false, /*under_workspace=*/false);
 }
 
 void TUIWindow::RequestTaskSnapshot()
 {
     last_snapshot_request_ = std::chrono::steady_clock::now();
     // 点名叫自己**正在显示**的那棵树 (P3 ①b) —— 别人的树不上路。
-    edc_c_agent_request_task_snapshot(agent, current_session_id_.c_str());
+    edc_app_request_task_snapshot(agent, current_session_id_.c_str());
 }
 
 // Build one chat bubble. Shared by the live channel path and the restart replay
@@ -600,7 +596,7 @@ static std::shared_ptr<Message> MakeChatWidget(const std::string &kind, const st
         //  - MARKDOWN: 内容按 Markdown 渲染；有 header 时保留 ToolMessage 的
         //    折叠 chrome，无 header 直接进 md 消息样式
         //  - 默认/PLAIN（未声明即纯文本）: 一律纯文本 ToolMessage
-        if (render_pref == EDC_C_RENDER_MARKDOWN)
+        if (render_pref == EDC_APP_RENDER_MARKDOWN)
         {
             if (!header.empty())
                 return std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/true, task_id);
@@ -616,9 +612,9 @@ static std::shared_ptr<Message> MakeChatWidget(const std::string &kind, const st
     return std::make_shared<Message>(content, ts, task_id);
 }
 
-bool SnapshotIsForSession(const ::edc_c_task_snapshot *snap, const std::string &displayed_session)
+bool SnapshotIsForSession(const TaskSnapshot *snap, const std::string &displayed_session)
 {
-    if (!snap || !snap->session_id || !*snap->session_id)
+    if (!snap || snap->session_id.empty())
         return false;
     return displayed_session == snap->session_id;
 }
@@ -653,7 +649,7 @@ void TUIWindow::LoadChatTranscript(const char *session_id)
     // frontend displayed for that session, so it survives switches and restarts.
     char path[4096];
     if (!current_session_id_.empty() &&
-        edc_c_session_chat_log_path_for(agent, current_session_id_.c_str(), path, sizeof(path)))
+        edc_app_chat_log_path_for(agent, current_session_id_.c_str(), path, sizeof(path)))
         chat_log_path_ = path;
 
     LoadChatTranscriptFile(chat_log_path_);
@@ -693,7 +689,7 @@ void TUIWindow::AppendChatTranscriptTo(const std::string &path, const std::strin
     // A session's directory only exists once the session has been saved, and a
     // command-only session (e.g. /help) may never be saved before its first line
     // is displayed — make sure the parent is there before appending.
-    edc_c_agent_ensure_parent_dir(agent, path.c_str());
+    edc_app_ensure_parent_dir(agent, path.c_str());
 
     // A previous process may have died mid-append, leaving a fragment without
     // its newline. Re-terminate it first: otherwise this line lands on top of it
@@ -704,11 +700,11 @@ void TUIWindow::AppendChatTranscriptTo(const std::string &path, const std::strin
 
     // Symlink-safe append: the transcript lives under the model-writable
     // workspace, so refuse to follow a planted symlink (see
-    // edc_file_fopen_safe / edc_c_agent_write_file).
-    edc_c_agent_write_file(agent, path.c_str(), line.data(), line.size(), /*append=*/true, /*under_workspace=*/true);
+    // edc_file_fopen_safe / edc_app_write_file).
+    edc_app_write_file(agent, path.c_str(), line.data(), line.size(), /*append=*/true, /*under_workspace=*/true);
 }
 
-void TUIWindow::SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap)
+void TUIWindow::SyncWorkingFromSnapshot(const TaskSnapshot *snap)
 {
     const bool busy = ForegroundProcessBusy(snap);
     if (busy == working_)
@@ -821,7 +817,7 @@ void TUIWindow::TickAnimations()
     /* Prefer the active session's bound working directory (what the model is
      * told via {{cwd}} and where tools run); fall back to the process launch
      * directory for an unbound session. */
-    const char *dir_src = edc_c_session_workdir(agent, wd_buf, sizeof(wd_buf))
+    const char *dir_src = edc_app_active_session_workdir(agent, wd_buf, sizeof(wd_buf))
                               ? wd_buf
                               : (::getcwd(cwd_buf, sizeof(cwd_buf)) ? cwd_buf : nullptr);
     const std::string dir = dir_src ? ShortenHome(dir_src) : std::string();
@@ -843,7 +839,7 @@ void TUIWindow::TickAnimations()
     // the filler; when the pane is narrow drop fields from the middle outward:
     // first the model, then the sandbox state, leaving "/help" alone.
     const int budget = pane_w - ::ftxui::string_width(left) - 1;
-    const std::string sandbox = std::string("sandbox:") + (edc_c_agent_sandbox_enabled(agent) ? "on" : "off");
+    const std::string sandbox = std::string("sandbox:") + (edc_app_sandbox_enabled(agent) ? "on" : "off");
 
     std::string right = kFooterHelp;
     const std::string sandbox_help = sandbox + " · " + kFooterHelp;
@@ -1023,7 +1019,7 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
 
 TUIWindow::~TUIWindow()
 {
-    edc_c_agent_free(agent);
+    edc_app_free(agent);
     if (bracketed_paste_on_)
         DisableBracketedPaste();
 }
@@ -1055,7 +1051,7 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
         return;
 
     auto *tui = static_cast<TUIWindow *>(instance);
-    const auto *content = edc_c_channel_message_content(message);
+    const auto *content = edc_app_message_content(message);
     if (!content)
         return;
 
@@ -1068,9 +1064,9 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     //     view here (that is the whole point of separating the event from the
     //     payload — before, every change pushed the bound session's whole tree
     //     and that push decided what the user was looking at).
-    if (edc_c_channel_message_is_task_tree_changed(message))
+    if (edc_app_message_is_task_tree_changed(message))
     {
-        const char *sid_c = edc_c_channel_message_session_id(message);
+        const char *sid_c = edc_app_message_session_id(message);
         const std::string sid = sid_c ? sid_c : "";
         const std::string reason = content;
         auto on_change = [tui, sid, reason]() {
@@ -1090,27 +1086,23 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     // A task-tree snapshot is a control message for the sidebar, not chat
     // text. Parse the JSON (via the bridge) and refresh the widget on the UI
     // thread, then stop.
-    if (edc_c_channel_message_is_task_snapshot(message))
+    if (edc_app_message_is_task_snapshot(message))
     {
         const std::string snapshot = content;
         auto update = [tui, snapshot]() {
-            ::edc_c_task_snapshot *snap = edc_c_task_snapshot_parse(snapshot.c_str());
+            TaskSnapshot snap;
             // A late reply must claim its own request: if the session changed
             // while it was in flight (the user switched tabs), this tree is
             // yesterday's news — drop it. The displayed session is the TUI's
             // own state (current_session_id_); the kernel never tells it what
             // to display, and a snapshot certainly doesn't.
-            if (!SnapshotIsForSession(snap, tui->current_session_id_))
+            if (!ParseTaskSnapshot(snapshot, &snap) || !SnapshotIsForSession(&snap, tui->current_session_id_))
+                return;
             {
-                edc_c_task_snapshot_free(snap);
-                snap = nullptr;
-            }
-            if (snap)
-            {
-                tui->task_widget_->SetSnapshot(snap);
+                tui->task_widget_->SetSnapshot(&snap);
                 // The snapshot is the single source of truth for the status
                 // animation: re-derive it whenever the process tree refreshes.
-                tui->SyncWorkingFromSnapshot(snap);
+                tui->SyncWorkingFromSnapshot(&snap);
                 // And for the todo section: the list shows the foreground group's
                 // active task's own todos (part of the task state), so it
                 // refreshes on every snapshot — not via a side channel on the
@@ -1119,10 +1111,9 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
                 // current step wears the failure colour if the task failed (read
                 // from the very same snapshot, so items and state cannot
                 // disagree).
-                const ActiveTaskTodos todos = ActiveTaskTodosOf(snap);
+                const ActiveTaskTodos todos = ActiveTaskTodosOf(&snap);
                 tui->todo_widget_->SetItems(todos.items, todos.task_id);
-                tui->todo_widget_->SetOwnerState(ForegroundActiveTaskState(snap));
-                edc_c_task_snapshot_free(snap);
+                tui->todo_widget_->SetOwnerState(ForegroundActiveTaskState(&snap));
             }
             // FTXUI only repaints when the frame was invalidated. Closures
             // posted via screen_->Post() do NOT invalidate it, so while the
@@ -1153,34 +1144,34 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
         Sys,
     };
     Kind kind = Kind::None;
-    if (edc_c_channel_message_is_user(message))
+    if (edc_app_message_is_user(message))
         kind = Kind::User;
-    else if (edc_c_channel_message_is_tool(message))
+    else if (edc_app_message_is_tool(message))
         kind = Kind::Tool;
-    else if (edc_c_channel_message_is_thought(message))
+    else if (edc_app_message_is_thought(message))
         kind = Kind::Thought;
-    else if (edc_c_channel_message_is_resp(message))
+    else if (edc_app_message_is_resp(message))
         kind = Kind::Reply;
-    else if (edc_c_channel_message_is_sys(message))
+    else if (edc_app_message_is_sys(message))
         kind = Kind::Sys;
 
     const std::string text = content;
-    const char *header_c = edc_c_channel_message_header(message);
+    const char *header_c = edc_app_message_header(message);
     const std::string header = header_c ? header_c : "";
     // Task that produced this message (NULL for user input / snapshots). Kept
     // for callers; the chat widgets no longer render a "task N" tag.
-    const char *task_id_c = edc_c_channel_message_task_id(message);
+    const char *task_id_c = edc_app_message_task_id(message);
     const std::string task_id = task_id_c ? task_id_c : "";
     // Session that owns the producing task (NULL for user input / snapshots).
     // Lets output of a background session be kept out of the visible tab (the
     // agent already persisted it into that session's own messages).
-    const char *session_id_c = edc_c_channel_message_session_id(message);
+    const char *session_id_c = edc_app_message_session_id(message);
     const std::string session_id = session_id_c ? session_id_c : "";
     // Sender-declared render preference (PLAIN/MARKDOWN). Read here while
     // the message is still alive; the closure below only needs the int.
-    const int render_pref = edc_c_channel_message_render_pref(message);
+    const int render_pref = edc_app_message_render_pref(message);
     // 发送方声明的事实: 这条产出是不是它自己 session 的 active task 产生的。
-    const bool from_active_task = edc_c_channel_message_from_active_task(message) != 0;
+    const bool from_active_task = edc_app_message_from_active_task(message) != 0;
     const time_t ts = ::time(nullptr);
 
     auto add_message = [tui, kind, text, header, task_id, session_id, render_pref, ts, from_active_task]() {
@@ -1233,7 +1224,7 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
         if (!session_id.empty() && session_id != tui->current_session_id_)
         {
             char path[4096];
-            if (edc_c_session_chat_log_path_for(tui->agent, session_id.c_str(), path, sizeof(path)))
+            if (edc_app_chat_log_path_for(tui->agent, session_id.c_str(), path, sizeof(path)))
                 tui->AppendChatTranscriptTo(path, kind_str, header, text, task_id, render_pref);
             return;
         }

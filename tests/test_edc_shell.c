@@ -1,5 +1,4 @@
 #include "edc_shell.h"
-#include "edc_runtime.h"
 #include "edc_cli_history.h"
 #include <stdio.h>
 #include <string.h>

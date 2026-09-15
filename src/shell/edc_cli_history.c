@@ -4,7 +4,7 @@
 #include <string.h>
 
 /* 进程一份 (见头文件: 前端状态, 不是运行时装配)。初始容量与老实现一致 (8),
- * 增长策略也一致 (翻倍) —— 只把存储从 `struct edc_runtime` 里挪出来。 */
+ * 增长策略也一致 (翻倍) —— 只把存储从 `struct edc_app` 里挪出来。 */
 static sds *g_history = NULL;
 static int g_history_count = 0;
 static int g_history_capacity = 0;

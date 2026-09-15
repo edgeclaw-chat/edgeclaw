@@ -43,7 +43,7 @@ int ParseSandboxFlag(int argc, char **argv)
 // the loop quits normally, and ~Loop re-raises it after restoring the previous
 // disposition. With the default disposition that raise() kills the process from inside
 // screen.Loop(), so Loop() never returns and ~TUIWindow() -- the one place calling
-// edc_c_agent_free() -- is skipped, leaking every agent resource. Installing a benign
+// edc_app_free() -- is skipped, leaking every agent resource. Installing a benign
 // handler *before* Loop() makes ftxui record it as "previous", so the re-raise lands here
 // and control falls through to a normal return from main().
 void HandleTerminationSignal(int)
@@ -52,7 +52,7 @@ void HandleTerminationSignal(int)
 
 // 关闭 uv_default_loop: 把 loop 上残留的句柄全部 uv_close, 跑完关闭回调后
 // uv_loop_close, 释放 libuv 内部 (epoll / eventfd / io_uring) 的句柄与堆内存。
-// 必须在 TUIWindow 析构 (edc_c_agent_free) 之后调用。
+// 必须在 TUIWindow 析构 (edc_app_free) 之后调用。
 void CloseDefaultLoop(uv_loop_t *loop)
 {
     uv_walk(
@@ -81,26 +81,26 @@ int main(int argc, char **argv)
     edc::theme::Init();
 
     uv_loop_t *default_loop = uv_default_loop();
-    edc_c_file_utils_init(default_loop);
+    /* 文件工具的 loop 由 edc_app_new() 用 runner 的 loop 装上（文件 I/O 都发生在
+     * 那里）；这里从前那次"先用 default loop 预初始化"反正会被它覆盖，删掉。 */
 
     int exit_code = 0;
     {
         // TUI 对象放在显式作用域里: 作用域退出时 screen/window 的 shared_ptr
-        // 一同释放 (~TUIWindow -> edc_c_agent_free, 停 actor 线程 + 关句柄),
+        // 一同释放 (~TUIWindow -> edc_app_free, 停 actor 线程 + 关句柄),
         // 之后才能安全地关日志与 default loop。
         auto screen = ScreenInteractive::Fullscreen();
         auto window = std::make_shared<edc::TUIWindow>(sandbox_override);
 
         if (!window->Ready())
         {
-            // 配置损坏 / 主密钥不对 / 无终端输入口令等, edc_runtime_new() 已写日志。
+            // 配置损坏 / 主密钥不对 / 无终端输入口令等, edc_app_new() 已写日志。
             // 没有 agent 就什么都做不了, 直接非零退出, 不进 TUI 循环。
             fprintf(stderr, "edgeclaw: failed to start, see the log for details\n");
             exit_code = 1;
         }
         else
         {
-            edc_c_agent_set_command_handler();
             window->SetScreen(&screen);
             // ftxui's Loop::Run() sleeps ~16.6ms after every iteration, even the
             // ones that just handled input (~59 batches/s). Counting events lets
@@ -120,7 +120,7 @@ int main(int argc, char **argv)
             });
 
             // See HandleTerminationSignal(): swallow ftxui's post-loop re-raise so
-            // Ctrl-C (and `kill`) exit through ~TUIWindow() -> edc_c_agent_free()
+            // Ctrl-C (and `kill`) exit through ~TUIWindow() -> edc_app_free()
             // instead of terminating the process before teardown can run. Installed
             // here, before Loop() calls PreMain()/Install() and takes over SIGINT.
             ::signal(SIGINT, HandleTerminationSignal);
@@ -142,7 +142,7 @@ int main(int argc, char **argv)
     }
 
     // Normal loop exit only (Esc / Ctrl-C / Ctrl-D): the TUI objects above are destroyed
-    // here, running edc_c_agent_free() before the process returns. Hand the signals back
+    // here, running edc_app_free() before the process returns. Hand the signals back
     // to their default disposition so a second Ctrl-C during a slow teardown still works.
     ::signal(SIGINT, SIG_DFL);
     ::signal(SIGTERM, SIG_DFL);

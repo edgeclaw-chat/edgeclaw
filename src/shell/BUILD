@@ -66,7 +66,6 @@ cc_library(
     deps = [
         "//src/actor:actor",
         "//src/actor:actors",
-        "//src/assembly:assembly",
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",

@@ -98,7 +98,7 @@ TaskWidget::TaskWidget()
 {
 }
 
-void TaskWidget::SetSnapshot(const ::edc_c_task_snapshot *snap)
+void TaskWidget::SetSnapshot(const TaskSnapshot *snap)
 {
     session_id_.clear();
     session_name_.clear();
@@ -111,37 +111,33 @@ void TaskWidget::SetSnapshot(const ::edc_c_task_snapshot *snap)
         return;
     }
 
-    session_id_ = snap->session_id ? snap->session_id : "";
-    session_name_ = snap->session_name ? snap->session_name : "";
-    created_at_ = snap->created_at ? snap->created_at : "";
+    session_id_ = snap->session_id;
+    session_name_ = snap->session_name;
+    created_at_ = snap->created_at;
 
     std::string active_group_id;
-    for (int gi = 0; gi < snap->group_count; gi++)
+    for (const edc::TaskGroup &g : snap->groups)
     {
-        const ::edc_c_task_group *g = &snap->groups[gi];
-
         GroupInfo group;
-        group.group_id = g->group_id ? g->group_id : "";
-        group.kind = g->kind;
-        group.msg_count = g->msg_count;
-        group.orphaned = g->orphaned != 0;
-        group.fg = g->fg != 0;
-        group.tokens_total = g->tokens_total;
+        group.group_id = g.group_id;
+        group.kind = g.kind;
+        group.msg_count = g.msg_count;
+        group.orphaned = g.orphaned;
+        group.fg = g.fg;
+        group.tokens_total = g.tokens_total;
 
-        for (int ti = 0; ti < g->task_count; ti++)
+        for (const edc::TaskInfo &t : g.tasks)
         {
-            const ::edc_c_task_info *t = &g->tasks[ti];
-
             TaskInfo task;
-            task.task_id = t->task_id ? t->task_id : "";
-            task.state = t->state ? t->state : "";
-            task.is_leader = t->is_leader != 0;
-            task.is_active = t->is_active != 0;
-            task.description = TruncateUtf8(t->description ? t->description : "", kMaxDescCodepoints);
-            task.tokens_prompt = t->tokens_prompt;
-            task.tokens_completion = t->tokens_completion;
-            task.tokens_total = t->tokens_total;
-            task.tokens_cached = t->tokens_cached;
+            task.task_id = t.task_id;
+            task.state = t.state;
+            task.is_leader = t.is_leader;
+            task.is_active = t.is_active;
+            task.description = TruncateUtf8(t.description, kMaxDescCodepoints);
+            task.tokens_prompt = t.tokens_prompt;
+            task.tokens_completion = t.tokens_completion;
+            task.tokens_total = t.tokens_total;
+            task.tokens_cached = t.tokens_cached;
             if (task.is_active)
                 active_group_id = group.group_id;
             group.tasks.push_back(std::move(task));
@@ -162,7 +158,7 @@ void TaskWidget::SetSnapshot(const ::edc_c_task_snapshot *snap)
         const auto it = group_expanded_.find(g.group_id);
         next[g.group_id] = (it != group_expanded_.end())
                                ? it->second
-                               : (g.group_id == active_group_id || g.kind == EDC_C_GROUP_KIND_SYSTEM);
+                               : (g.group_id == active_group_id || g.kind == GroupKind::System);
     }
     group_expanded_ = std::move(next);
 }
@@ -353,13 +349,13 @@ int TaskWidget::RowWidth() const
         {
             std::vector<size_t> order;
             for (size_t i = 0; i < groups_.size(); i++)
-                if (groups_[i].kind == ::EDC_C_GROUP_KIND_SYSTEM)
+                if (groups_[i].kind == GroupKind::System)
                     order.push_back(i);
             if (!order.empty())
             {
                 lines.push_back(text(" System") | bold | color(pal.text_dim));
                 for (size_t i = 0; i < groups_.size(); i++)
-                    if (groups_[i].kind != ::EDC_C_GROUP_KIND_SYSTEM)
+                    if (groups_[i].kind != GroupKind::System)
                         order.push_back(i);
             }
             else

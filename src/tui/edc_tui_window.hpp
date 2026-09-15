@@ -1,4 +1,5 @@
-#include "edc_c_bridge.h"
+#include "edc_app.h"
+#include "edc_task_snapshot.hpp"
 #include "edc_clipboard.hpp"
 #include <chrono>
 #include <ftxui/component/component.hpp>
@@ -29,7 +30,7 @@ class TodoWidget;
 // A reply belongs to the frontend only when it is the tree it is currently
 // displaying. A late reply (the user switched sessions while it was in flight)
 // is yesterday's news: drop it. A reply that names no session is nobody's.
-bool SnapshotIsForSession(const ::edc_c_task_snapshot *snap, const std::string &displayed_session);
+bool SnapshotIsForSession(const TaskSnapshot *snap, const std::string &displayed_session);
 
 // "session |event_session| changed for |reason|" → should the frontend pull?
 //  - reason "active": the user switched tabs — the caller already adopted that
@@ -117,7 +118,7 @@ class TUIWindow : public ::ftxui::ComponentBase
     void AppendChatTranscriptTo(const std::string &path, const std::string &kind, const std::string &header,
                                 const std::string &content, const std::string &task_id, int render_pref);
     // Show "processing" exactly while the foreground group's active task runs.
-    void SyncWorkingFromSnapshot(const ::edc_c_task_snapshot *snap);
+    void SyncWorkingFromSnapshot(const TaskSnapshot *snap);
     // Switch the log to |session_id|: when the id changes the log is cleared and
     // that session's messages re-derived, so the log always belongs to the
     // The left pane: chat log + input + footer/spinner.
@@ -163,7 +164,7 @@ class TUIWindow : public ::ftxui::ComponentBase
     // resolved with the log. Empty when the session is unknown.
     std::string chat_log_path_;
 
-    struct edc_runtime *agent = NULL;
+    struct edc_app *agent = NULL;
     // True once bracketed paste was actually enabled, so the destructor only
     // emits the "disable" sequence when the matching "enable" ran.
     bool bracketed_paste_on_ = false;

@@ -333,7 +333,7 @@ static struct edc_task *exec_node(
         /* execute the child CMD (now with injected text + deps) */
         struct edc_task *task = exec_node(node->child, prev_task, ctx);
 
-        /* mark for deferred expansion in edc_runtime_cb_send_llm */
+        /* mark for deferred expansion in edc_app_cb_send_llm */
         if (task && var_dep_count >= 0)
         {
             /* check if any $VAR references exist (even $LAST which has no deps) */

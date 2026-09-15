@@ -12,7 +12,6 @@ LINK_OPTS = select({
 cc_library(
     name = "tui",
     srcs = [
-        "edc_c_bridge.c",
         "edc_chat_transcript.cpp",
         "edc_chat_widget.cpp",
         "edc_clipboard.cpp",
@@ -23,13 +22,13 @@ cc_library(
         "edc_tui_window.cpp",
         "edc_scroll_view.cpp",
         "edc_sidebar.cpp",
+        "edc_task_snapshot.cpp",
         "edc_task_widget.cpp",
         "edc_todo_widget.cpp",
         "markdown.cpp",
     ],
 
     hdrs = [
-        "edc_c_bridge.h",
         "edc_chat_transcript.hpp",
         "edc_chat_widget.hpp",
         "edc_clipboard.hpp",
@@ -41,6 +40,7 @@ cc_library(
         "edc_scroll_view.hpp",
         "edc_sidebar.hpp",
         "edc_style.hpp",
+        "edc_task_snapshot.hpp",
         "edc_task_widget.hpp",
         "edc_text_util.hpp",
         "edc_todo_widget.hpp",
@@ -48,11 +48,8 @@ cc_library(
     ],
     includes = ["."],
     deps = [
-        "//src/actor:actors",
-        "//src/assembly:assembly",
+        "//src/app:app",
         "//src/common:common",
-        "//src/kernel:kernel",
-        "//src/shell:shell",
         "@cjson//:cjson",
         "@ftxui//:dom",
         "@ftxui//:ftxui",
@@ -90,7 +87,7 @@ cc_binary(
     ],
     deps = [
         "//src/actor:actors",
-        "//src/assembly:assembly",
+        "//src/app:app",
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",

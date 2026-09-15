@@ -58,30 +58,26 @@ struct TaskSpec
 // label used to be.
 std::shared_ptr<edc::TaskWidget> MakeWidget(const std::vector<TaskSpec> &specs, size_t active = 0)
 {
-    std::vector<edc_c_task_info> infos(specs.size());
-    for (size_t i = 0; i < specs.size(); i++)
-    {
-        infos[i] = edc_c_task_info{};
-        infos[i].task_id = specs[i].id;
-        infos[i].state = specs[i].state;
-        infos[i].description = specs[i].desc;
-    }
-    // A group only starts expanded when it holds the active task, so there is
-    // always one: the test cares about the task rows, not about folding.
-    if (active < infos.size())
-        infos[active].is_active = 1;
-    edc_c_task_group group = edc_c_task_group{};
+    edc::TaskGroup group;
     group.group_id = "1";
     group.member_count = static_cast<int>(specs.size());
     group.msg_count = 1;
-    group.task_count = static_cast<int>(specs.size());
-    group.tasks = infos.data();
+    for (size_t i = 0; i < specs.size(); i++)
+    {
+        edc::TaskInfo task;
+        task.task_id = specs[i].id;
+        task.state = specs[i].state;
+        task.description = specs[i].desc;
+        // A group only starts expanded when it holds the active task, so there is
+        // always one: the test cares about the task rows, not about folding.
+        task.is_active = (i == active);
+        group.tasks.push_back(std::move(task));
+    }
 
-    edc_c_task_snapshot snap = edc_c_task_snapshot{};
+    edc::TaskSnapshot snap;
     snap.session_id = "s";
     snap.session_name = "session";
-    snap.group_count = 1;
-    snap.groups = &group;
+    snap.groups.push_back(std::move(group));
 
     auto widget = std::make_shared<edc::TaskWidget>();
     widget->SetSnapshot(&snap);
@@ -203,37 +199,37 @@ void TestSystemGroupGetsItsOwnBlock(void)
     // is older). The widget must reorder them: system block on top, user tree
     // under it (the tree is bottom-anchored, so the squeeze hits the system
     // block first and the user's active row keeps its place).
-    edc_c_task_info user_tasks[1] = {};
-    user_tasks[0].task_id = "11";
-    user_tasks[0].state = "IDLE";
-    user_tasks[0].description = "user work";
-    user_tasks[0].is_active = 1;
-    user_tasks[0].is_leader = 1;
-    edc_c_task_group g_user = edc_c_task_group{};
+    edc::TaskGroup g_user;
     g_user.group_id = "1";
-    g_user.kind = EDC_C_GROUP_KIND_USER;
+    g_user.kind = edc::GroupKind::User;
     g_user.member_count = 1;
-    g_user.task_count = 1;
-    g_user.tasks = user_tasks;
+    {
+        edc::TaskInfo task;
+        task.task_id = "11";
+        task.state = "IDLE";
+        task.description = "user work";
+        task.is_active = true;
+        task.is_leader = true;
+        g_user.tasks.push_back(std::move(task));
+    }
 
-    edc_c_task_info sys_tasks[1] = {};
-    sys_tasks[0].task_id = "777";
-    sys_tasks[0].state = "LLM_PROCESSING";
-    sys_tasks[0].description = "fold group 1";
-    sys_tasks[0].is_leader = 1;
-    edc_c_task_group g_sys = edc_c_task_group{};
+    edc::TaskGroup g_sys;
     g_sys.group_id = "9";
-    g_sys.kind = EDC_C_GROUP_KIND_SYSTEM;
+    g_sys.kind = edc::GroupKind::System;
     g_sys.member_count = 1;
-    g_sys.task_count = 1;
-    g_sys.tasks = sys_tasks;
+    {
+        edc::TaskInfo task;
+        task.task_id = "777";
+        task.state = "LLM_PROCESSING";
+        task.description = "fold group 1";
+        task.is_leader = true;
+        g_sys.tasks.push_back(std::move(task));
+    }
 
-    edc_c_task_group groups[2] = {g_user, g_sys};
-    edc_c_task_snapshot snap = edc_c_task_snapshot{};
+    edc::TaskSnapshot snap;
     snap.session_id = "s";
     snap.session_name = "session";
-    snap.group_count = 2;
-    snap.groups = groups;
+    snap.groups = {g_user, g_sys};
 
     auto widget = std::make_shared<edc::TaskWidget>();
     widget->SetSnapshot(&snap);
@@ -252,9 +248,8 @@ void TestSystemGroupGetsItsOwnBlock(void)
     Check(frame.find("2 groups") != std::string::npos, "the header counts the system group too");
 
     // Control 1: the same two groups, both USER -> no System heading and the
-    // snapshot's own order (user "1" above "9"). Mutate the array the snapshot
-    // points at (the snapshot holds copies of the two structs).
-    groups[1].kind = EDC_C_GROUP_KIND_USER;
+    // snapshot's own order (user "1" above "9").
+    snap.groups[1].kind = edc::GroupKind::User;
     auto plain = std::make_shared<edc::TaskWidget>();
     plain->SetSnapshot(&snap);
     const auto plain_screen = Render(*plain);
@@ -263,14 +258,11 @@ void TestSystemGroupGetsItsOwnBlock(void)
 
     // Control 2: a snapshot with no `kind` (zero) renders exactly like an
     // explicit USER one -- old snapshots are unaffected.
-    edc_c_task_group one[1] = {g_user};
-    edc_c_task_snapshot snap_one = snap;
-    snap_one.group_count = 1;
-    snap_one.groups = one;
-    edc_c_task_group one_nokind = g_user;
-    one_nokind.kind = 0;
-    edc_c_task_snapshot snap_nokind = snap_one;
-    snap_nokind.groups = &one_nokind;
+    edc::TaskSnapshot snap_one;
+    snap_one.session_id = "s";
+    snap_one.session_name = "session";
+    snap_one.groups.push_back(g_user);
+    edc::TaskSnapshot snap_nokind = snap_one; /* kind 缺省 = User（老快照没有这个键） */
 
     auto a = std::make_shared<edc::TaskWidget>();
     a->SetSnapshot(&snap_one);
@@ -325,25 +317,25 @@ void TestLeaderMarkerIsGone(void)
 
     // A group's id *is* its leader's task id, so the group header above the tree
     // already names the leader: the bullet was a second, redundant marker.
-    std::vector<edc_c_task_info> infos(2);
-    infos[0] = edc_c_task_info{};
-    infos[0].task_id = "7";
-    infos[0].state = "IDLE";
-    infos[0].is_leader = 1;
-    infos[0].is_active = 1;
-    infos[1] = edc_c_task_info{};
-    infos[1].task_id = "8";
-    infos[1].state = "IDLE";
-
-    edc_c_task_group group = edc_c_task_group{};
+    edc::TaskGroup group;
     group.group_id = "7";
     group.member_count = 2;
-    group.task_count = 2;
-    group.tasks = infos.data();
-    edc_c_task_snapshot snap = edc_c_task_snapshot{};
+    {
+        edc::TaskInfo leader;
+        leader.task_id = "7";
+        leader.state = "IDLE";
+        leader.is_leader = true;
+        leader.is_active = true;
+        group.tasks.push_back(std::move(leader));
+
+        edc::TaskInfo member;
+        member.task_id = "8";
+        member.state = "IDLE";
+        group.tasks.push_back(std::move(member));
+    }
+    edc::TaskSnapshot snap;
     snap.session_id = "s";
-    snap.group_count = 1;
-    snap.groups = &group;
+    snap.groups.push_back(std::move(group));
 
     edc::TaskWidget widget;
     widget.SetSnapshot(&snap);

@@ -2,7 +2,6 @@
 #include "edc_cli_history.h"
 #include "edc_session_store.h"
 #include "edc_actor.h"
-#include "edc_runtime.h"
 #include "edc_channel_actor.h"
 #include "edc_cmd_parse.h"
 #include "edc_commands.h"

@@ -234,7 +234,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
 /* ── task todo list → 运行时 reminder (请求队尾) ────────────────
  * (2026-09-09: 从"头部 system prompt 尾部注入"改为"请求消息列表最末尾追加
  * 绝对新鲜的 system reminder"——头部注入在长上下文里易被模型遗忘; 队尾紧贴
- * 模型开始生成的位置。同年同日再改: 不每轮请求都发, 由 edc_runtime_cb_send_llm
+ * 模型开始生成的位置。同年同日再改: 不每轮请求都发, 由 edc_app_cb_send_llm
  * 按 edc_task_llm_request_poke 节流 —— 隔了 EDC_TODO_SYNC_REMIND_GAP 条对话
  * (LLM 请求) 都没调用过 todowrite 才生成一次 (达阈值清零重计)。
  * 两段式骨架文本 (含 <system-reminder> 包裹、状态段内容选择、逐轮同步节拍/
@@ -245,7 +245,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
  * 副本语义: 生成新 system 消息, 绝不改动组内共享的 history[0] / task。 */
 
 /* 运行时 todo reminder (role=system 的新消息, 每次生成都绝对新鲜)。由
- * edc_runtime_cb_send_llm 在节流判定通过后调用, 塞到本次 LLM 请求消息列表的
+ * edc_app_cb_send_llm 在节流判定通过后调用, 塞到本次 LLM 请求消息列表的
  * 最末尾 (req->tail_system, 真正队尾: llm actor 在 history + 当前 turn 之后
  * 追加)。返回三种形态:
  *  - task 持有非空 todo 清单 → <system-reminder> 内: 状态段 (清单行) + 指令段
@@ -395,7 +395,7 @@ cJSON *edc_context_make_todo_reminder(struct edc_task *task)
 /* 本次 LLM 请求 "system 部分" (头部) 的唯一组装入口: group memory + system
  * prompt。不含任何 todo 内容——todo 引导一律由 edc_context_make_todo_reminder
  * 生成并塞到请求最末尾。引用/副本/现拼语义见 edc_context.h 注释——与迁移前
- * edc_runtime_cb_send_llm 的行为字节级一致。 */
+ * edc_app_cb_send_llm 的行为字节级一致。 */
 int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct edc_task_group *group,
                                    const char *workdir, sds *out_pristine)
 {

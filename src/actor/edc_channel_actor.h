@@ -1,4 +1,4 @@
-#ifndef __BC_CHANNEL_ACTOR_H__
+﻿#ifndef __BC_CHANNEL_ACTOR_H__
 #define __BC_CHANNEL_ACTOR_H__
 
 #include "cJSON.h"
@@ -10,7 +10,7 @@
  *
  * 多通道时代 (telegram / feishu / qq / cli / email) 的实现、注册表、以及
  * "按 channel 类型找 handler"那套机制**都已删除**: 今天只有一个 adapter,
- * 也就是 TUI 经 `edc_c_bridge` 的那条通路 (`edc_channel_adapter_init`)。
+ * 也就是 TUI 经 `edc_app` 的那条通路 (`edc_app_channel_adapter_init`)。
  * 于是 actor 不再持有 handlers 哈希, 只留一个发送回调。
  *
  * `edc_channel_type` 仍然只剩 `edc_channel_adapter` 这一个取值, 它继续挂在

@@ -300,26 +300,21 @@ std::shared_ptr<edc::TaskWidget> MakeTallTaskWidget()
         group_ids.push_back("g" + std::to_string(i));
         task_ids.push_back("t" + std::to_string(i));
     }
-    std::vector<edc_c_task_info> infos(24);
-    std::vector<edc_c_task_group> groups(24);
-    for (int i = 0; i < 24; i++)
-    {
-        infos[i] = edc_c_task_info{};
-        infos[i].task_id = task_ids[i].c_str();
-        infos[i].state = "COMPLETED";
-        infos[i].description = "";
-        groups[i] = edc_c_task_group{};
-        groups[i].group_id = group_ids[i].c_str();
-        groups[i].member_count = 1;
-        groups[i].msg_count = 1;
-        groups[i].task_count = 1;
-        groups[i].tasks = &infos[i];
-    }
-    edc_c_task_snapshot snap{};
+    edc::TaskSnapshot snap;
     snap.session_id = "s";
     snap.session_name = "session";
-    snap.group_count = 24;
-    snap.groups = groups.data();
+    for (int i = 0; i < 24; i++)
+    {
+        edc::TaskGroup group;
+        group.group_id = group_ids[i];
+        group.member_count = 1;
+        group.msg_count = 1;
+        edc::TaskInfo task;
+        task.task_id = task_ids[i];
+        task.state = "COMPLETED";
+        group.tasks.push_back(std::move(task));
+        snap.groups.push_back(std::move(group));
+    }
 
     auto task = std::make_shared<edc::TaskWidget>();
     task->SetSnapshot(&snap);
@@ -340,27 +335,22 @@ std::shared_ptr<edc::TaskWidget> MakeDeepActiveTaskWidget()
         group_ids.push_back("g" + std::to_string(i));
         task_ids.push_back("t" + std::to_string(i));
     }
-    std::vector<edc_c_task_info> infos(kGroups);
-    std::vector<edc_c_task_group> groups(kGroups);
-    for (int i = 0; i < kGroups; i++)
-    {
-        infos[i] = edc_c_task_info{};
-        infos[i].task_id = task_ids[i].c_str();
-        infos[i].state = "COMPLETED";
-        infos[i].description = "";
-        infos[i].is_active = (i == kGroups - 1); // the newest task is the one running
-        groups[i] = edc_c_task_group{};
-        groups[i].group_id = group_ids[i].c_str();
-        groups[i].member_count = 1;
-        groups[i].msg_count = 1;
-        groups[i].task_count = 1;
-        groups[i].tasks = &infos[i];
-    }
-    edc_c_task_snapshot snap{};
+    edc::TaskSnapshot snap;
     snap.session_id = "s";
     snap.session_name = "session";
-    snap.group_count = kGroups;
-    snap.groups = groups.data();
+    for (int i = 0; i < kGroups; i++)
+    {
+        edc::TaskGroup group;
+        group.group_id = group_ids[i];
+        group.member_count = 1;
+        group.msg_count = 1;
+        edc::TaskInfo task;
+        task.task_id = task_ids[i];
+        task.state = "COMPLETED";
+        task.is_active = (i == kGroups - 1); // the newest task is the one running
+        group.tasks.push_back(std::move(task));
+        snap.groups.push_back(std::move(group));
+    }
 
     auto task = std::make_shared<edc::TaskWidget>();
     task->SetSnapshot(&snap);

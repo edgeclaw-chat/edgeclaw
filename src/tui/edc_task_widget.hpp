@@ -1,6 +1,6 @@
 #pragma once
 
-#include "edc_c_bridge.h"
+#include "edc_task_snapshot.hpp"
 #include "ftxui/component/component_base.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/screen/box.hpp"
@@ -22,7 +22,7 @@ class TaskWidget : public ::ftxui::ComponentBase
 
     // Copy the parsed snapshot into display state. The snapshot stays owned by
     // the caller and is freed after this call.
-    void SetSnapshot(const ::edc_c_task_snapshot *snap);
+    void SetSnapshot(const TaskSnapshot *snap);
 
     // Phase the breathing dot of a task in a processing state. |elapsed_ms| is
     // the window's animation clock (see TUIWindow::TickAnimations), so the dot
@@ -70,8 +70,8 @@ class TaskWidget : public ::ftxui::ComponentBase
     struct GroupInfo
     {
         std::string group_id;
-        /* EDC_C_GROUP_KIND_*: 展示层唯一的依据 —— 系统分组画到侧栏单独一块。 */
-        int kind = EDC_C_GROUP_KIND_USER;
+        /* GroupKind: 展示层唯一的依据 —— 系统分组画到侧栏单独一块。 */
+        GroupKind kind = GroupKind::User;
         int msg_count = 0; /* live group messages (committed + in-flight) */
         bool orphaned = false;
         bool fg = false;

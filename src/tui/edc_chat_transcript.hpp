@@ -24,7 +24,7 @@ namespace edc
 struct ChatTranscriptEntry
 {
     std::string kind;    /* user | tool | thought | reply | sys */
-    int render_pref = 0; /* EDC_C_RENDER_PLAIN / _MARKDOWN (see edc_c_bridge.h) */
+    int render_pref = 0; /* EDC_APP_RENDER_PLAIN / _MARKDOWN (see edc_app.h) */
     std::string task_id;
     std::string header;
     std::string content;

@@ -14,7 +14,7 @@
  *   · `edc_completion.c` 的 `g_history` —— 补全候选的排序来源 (2000 条, 带评分);
  *   · 本文件 —— `!n` / `!!` 展开用的命令历史。
  *
- * 沿革: 曾经挂在 `struct edc_runtime` 上 (于是 shell 的 `!` 展开要收一把伞、测试
+ * 沿革: 曾经挂在 `struct edc_app` 上 (于是 shell 的 `!` 展开要收一把伞、测试
  * 要为它造一个 agent), P4 卸到 `assembly/`, 2026-09-16 判定它归 shell 自己 →
  * 搬进 `src/shell/`。**方向性理由**: 将来真去**写**它的必然是 TUI (谁读到用户敲的
  * 行谁记录), 而 `tui → shell` 这条边**本来就存在**; 反过来把它放 tui, shell 就得

@@ -2,7 +2,7 @@
  *
  * edc_llm_actor_new() used to shallow-copy config->llm_api_conf, so the actor
  * shared sds pointers with the global config. When the agent updated the config
- * (freeing/replacing those strings via edc_runtime_set_llm_config) and then
+ * (freeing/replacing those strings via edc_app_set_llm_config) and then
  * notified the actor, the actor's BC_ACTOR_MSG_LLM_SET_CONFIG handler called
  * sdsfree() on the already-freed pointer -> double free -> abort() in
  * malloc_printerr().
@@ -52,7 +52,7 @@ int main(void)
     edc_actor_runner_start(runner);
     usleep(100 * 1000);
 
-    /* Simulate edc_runtime_set_llm_config(): the agent frees/replaces the config
+    /* Simulate edc_app_set_llm_config(): the agent frees/replaces the config
      * strings first, then hands the new values to the actor through its mailbox.
      * With the shared-pointer bug, freeing the config string here leaves the
      * actor's api_conf dangling; the handler below then double-frees it. */

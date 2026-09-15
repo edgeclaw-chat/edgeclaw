@@ -15,7 +15,7 @@ struct edc_task_group;
 extern sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir);
 
 /* 运行时 todo reminder (role=system 的新消息, 绝对新鲜)。调用方
- * (edc_runtime_cb_send_llm) 按节流规则决定是否调用本函数: 只在"隔了
+ * (edc_app_cb_send_llm) 按节流规则决定是否调用本函数: 只在"隔了
  * EDC_TODO_SYNC_REMIND_GAP 条对话 (LLM 请求) 都没调用过 todowrite"时
  * 调用 (edc_task_llm_request_poke 达阈值), 并把返回的消息塞到该请求消息列表
  * 的【最末尾】(新的队尾, 见 edc_llm_actor_req.tail_system), 避免头部注入的
@@ -46,7 +46,7 @@ extern cJSON *edc_context_make_todo_reminder(struct edc_task *task);
  *         edc_context_build_system_prompt 现拼; 纯净文本同时经 *out_pristine
  *         (可 NULL) 带回, 由调用方决定是否写回 group->history (保持组内共享
  *         prompt 纯净; 调用方写回后后续请求即走引用分支)
- * 引用/副本/写回语义与迁移前的 edc_runtime_cb_send_llm 完全一致。 */
+ * 引用/副本/写回语义与迁移前的 edc_app_cb_send_llm 完全一致。 */
 extern int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct edc_task_group *group,
                                           const char *workdir, sds *out_pristine);
 

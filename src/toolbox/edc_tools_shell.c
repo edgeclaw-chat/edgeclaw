@@ -415,7 +415,7 @@ void edc_tool_shell_abort_all(void)
         uv_timer_stop(&ctx->timeout_timer);
 
         /* Only close handles that are still open. Teardown order in
-         * edc_runtime_free() runs edc_actor_runner_free() (which stops the actor
+         * edc_app_free() runs edc_actor_runner_free() (which stops the actor
          * loop and uv_walk()s every handle on it shut with a NULL callback)
          * *before* edc_toolbox_free() lands here, so by now these handles are
          * usually already closed. Calling uv_close() on a closing/closed handle

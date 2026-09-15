@@ -7,7 +7,7 @@
 struct edc_scheduler;
 struct edc_task;
 
-/* 装配一次 LLM 请求并投给 llm_actor 邮箱（原 src/assembly/edc_runtime.c 的搬家）。
+/* 装配一次 LLM 请求并投给 llm_actor 邮箱（原 src/app/edc_app.c 的搬家）。
  *
  * kernel 自己的东西（group 历史 / 折叠水位 / deps / active_turn / todo 节流 /
  * config / session 仓库）全部经 sched 与 task 取得；另有两样 kernel 拿不到的
