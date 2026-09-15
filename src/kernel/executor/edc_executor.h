@@ -1,4 +1,4 @@
-/* edc_executor.h —— task 之内的推进器（无状态步进函数）。
+﻿/* edc_executor.h —— task 之内的推进器（无状态步进函数）。
  *
  * 见 docs/runtime-model.md §2。分工：
  *   - **scheduler** 只管 **task 之间**：就绪集、依赖 DAG、并发槽、资源仲裁。
@@ -135,10 +135,6 @@ struct edc_executor_ops
      * (fold 原来是 memory_actor 的专用协议 GROUP_FOLD_DONE; 现在它就是一次
      *  普通任务的完成, 产出按 sink 分流。) */
     void (*deliver_group_memory)(void *ctx, struct edc_task *task, const char *content);
-
-    /* 把工具结果回显成一条 TOOL 消息（仅 active task 会触发）。 */
-    void (*send_tool_message)(void *ctx, struct edc_task *task, const char *header, const char *content,
-                              edc_render_pref_t render_pref, void *request_id);
 
     void (*dispatch_tools)(void *ctx, struct edc_task *task, void *tool_calls, void *request_id);
 

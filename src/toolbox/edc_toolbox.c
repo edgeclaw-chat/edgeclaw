@@ -24,8 +24,10 @@ static void edc_toolbox_emit_tool_message_internal(struct edc_toolbox_call_ctx *
     if (!tb->scheduler)
         return;
 
-    /* 不再直发 channel_actor：把工具结果交给 scheduler 做 active-task 闸门判定
-     * (scheduler 线程上检查 session->active_task)，避免后台任务的工具输出上屏。 */
+    /* 交 scheduler 中转, 不是因为"上屏要它批准" (展示闸门早在前端), 而是因为
+     * **只有它知道这条请求还在不在**: 异步工具回调可能迟到到任务已被回收, 而调用方
+     * 手里的是 task 指针 —— 直发通道等于拿一个可能失效的指针。它按 request_id 查一次,
+     * 顺手做属主判定与 todowrite 的脏表补推; 显示与消息形状仍归通道。 */
     struct edc_toolbox_emit_msg *emit = g_new0(struct edc_toolbox_emit_msg, 1);
     emit->header = (header && *header) ? sdsnew(header) : NULL;
     emit->content = sdsnew(content);

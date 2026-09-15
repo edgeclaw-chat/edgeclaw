@@ -1,4 +1,4 @@
-#include "edc_scheduler.h"
+﻿#include "edc_scheduler.h"
 #include "edc_cmd_parse.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -1136,14 +1136,6 @@ static void ex_deliver_group_memory(void *ctx, struct edc_task *task, const char
     sched_deliver_group_memory((struct edc_scheduler *)ctx, task, content);
 }
 
-static void ex_send_tool_message(void *ctx, struct edc_task *task, const char *header, const char *content,
-                                 edc_render_pref_t render_pref, void *request_id)
-{
-    struct edc_scheduler *sched = ctx;
-    if (sched->send_tool_message)
-        sched->send_tool_message(sched, task, header, content, render_pref, request_id);
-}
-
 static void ex_dispatch_tools(void *ctx, struct edc_task *task, void *llm_resp, void *request_id)
 {
     struct edc_scheduler *sched = ctx;
@@ -1253,7 +1245,6 @@ static const struct edc_executor_ops sched_executor_ops = {
     .send_llm = ex_send_llm,
     .send_reply = ex_send_reply,
     .deliver_group_memory = ex_deliver_group_memory,
-    .send_tool_message = ex_send_tool_message,
     .dispatch_tools = ex_dispatch_tools,
     .set_task_state = ex_set_task_state,
     .unregister_task = ex_unregister_task,
@@ -1303,8 +1294,14 @@ static void sched_handle_tool_started(struct edc_scheduler *sched, struct edc_ac
     edc_executor_advance(&sched->executor, task, &ev);
 }
 
-/* toolbox 请求把工具结果回显到终端 (TOOL 消息)。与 thought/RESP 一致，
- * 只在调度线程上检查 session->active_task：后台任务的工具输出一律静默。 */
+/* toolbox 把工具结果回显到终端 (TOOL 消息)。这一跳只出**内核独有的权威**,
+ * 不是"替通道转发":
+ *   1. **请求还活着吗** —— 按 request_id 在 task 哈希里查 (异步工具回调可能迟到,
+ *      迟到时调用方手里那个 task 指针已经不可信); 查不到 / 已取消 → 丢弃;
+ *   2. **属主是谁** —— 没有属主 session 就没有可投递的地方 (P3 ③: 不回落"当前绑定");
+ *   3. **todowrite 的脏表** —— 见函数末尾那次补推。
+ * 显示本身 (消息形状 + 投递) 归通道, 工具域决定"产出什么"; 展示闸门 (只显示显示中
+ * session 的 active task) 在**前端** —— 这里只声明事实 `from_active_task`。 */
 static void sched_handle_tool_emit(struct edc_scheduler *sched, struct edc_actor_msg *msg)
 {
     struct edc_tool_emit_view v;
