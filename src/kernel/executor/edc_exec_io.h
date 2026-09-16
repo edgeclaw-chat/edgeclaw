@@ -4,7 +4,7 @@
  * executor 解释"LLM 回了什么 / 工具回了什么 / 工具要发什么"所需的全部类型。原先
  * 它们散在 llm_actor.h / toolbox.h / toolbox_actor.h 里 —— 那三个头属于上层
  * （actors / toolbox），而 executor 是最底下的解释者，于是 executor → 上层 成了
- * 一条反向边：单包构建时看不出来（整个 src/agent 是一个 cc_library），一旦按概念
+ * 一条反向边：单包构建时看不出来（整个 src/app 是一个 cc_library），一旦按概念
  * 分包就成环。
  *
  * 把定义搬到这里、上层头反过来引它，环就消掉。**纯定义搬迁，零行为变化。**
@@ -99,13 +99,13 @@ struct edc_toolbox_actor_req
     cJSON *args;
     sds call_id;
     edc_channel_type call_from_type;
-    struct edc_task *task; /* 发起本次工具调用的 task (agent 注入；NULL = 非 task 路径) */
+    struct edc_task *task; /* 发起本次工具调用的 task (app 注入；NULL = 非 task 路径) */
     sds result;
     struct edc_toolbox_actor_req *next;
 };
 
 /* 工具结果先发给 scheduler actor，由 scheduler 在自身线程上做 active-task 闸门判定，
- * 通过后才由 agent 转发为 TOOL 类型 channel 消息。该结构是 toolbox → scheduler 的载荷。 */
+ * 通过后才由 app 转发为 TOOL 类型 channel 消息。该结构是 toolbox → scheduler 的载荷。 */
 struct edc_toolbox_emit_msg
 {
     sds header;

@@ -15,7 +15,7 @@
 // 两个测试接缝（都在 edc_tui_window.{hpp,cpp} 里，各一行）：
 //   1. `on_channel_adapter_send` 是 public 的（生产路径注册的就是同一个函数）；
 //   2. `EDGECLAW_TUI_NO_PULL=1` 让 `RequestTaskSnapshot()` 变 no-op —— 否则构造期
-//      （:464）与回调里（:1077）的拉取会经 agent **异步**回包，而没 SetScreen() 时
+//      （:464）与回调里（:1077）的拉取会经 app **异步**回包，而没 SetScreen() 时
 //      那回包内联在 runner 线程上，会和本测试自己的断言抢同一个 widget。
 
 #include "edc_tui_window.hpp"
@@ -56,7 +56,7 @@ constexpr const char *kShown = "harness-shown";
 // 另一个 session：它的树/产出都不该出现在屏上。
 constexpr const char *kOther = "harness-other";
 
-// ── 临时 HOME + 最小 config：TUIWindow 的构造会真起一个 agent ──────────────
+// ── 临时 HOME + 最小 config：TUIWindow 的构造会真起一个 app ──────────────
 bool SetupHome(std::string *out_home)
 {
     const char *tmp = getenv("TEST_TMPDIR");
@@ -247,7 +247,7 @@ int main()
     edc::TUIWindow win(/*sandbox_override=*/0);
     if (!win.Ready())
     {
-        std::cout << "  FAIL 窗口没起来（agent 起不来 —— 临时 HOME 里的 config.json 检查一下）\n";
+        std::cout << "  FAIL 窗口没起来（app 起不来 —— 临时 HOME 里的 config.json 检查一下）\n";
         return 1;
     }
     Check(true, "窗口起来了（临时 HOME + 最小 config）");

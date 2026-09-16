@@ -56,7 +56,7 @@ typedef void (*edc_scheduler_send_tool_fn)(struct edc_scheduler *sched, struct e
 typedef void (*edc_scheduler_dispatch_tools_fn)(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
                                                 void *request_id);
 
-/** resume 时重发未完成的 tool 调用 (由 agent 注入): 把 task 账本里 PENDING 的记录
+/** resume 时重发未完成的 tool 调用 (由 app 注入): 把 task 账本里 PENDING 的记录
  *  重建 toolbox 请求链并投递 (首条 PENDING 由调用方提升 EXECUTING)。
  *  返回投递的条数 (0 = 无)。 */
 typedef int (*edc_scheduler_redispatch_tools_fn)(struct edc_scheduler *sched, struct edc_task *task, void *request_id);
@@ -196,7 +196,7 @@ struct edc_scheduler
 /* ── API ───────────────────────────────────────────────────── */
 
 /* Record an unresolved cross-session dependency edge (its source was absent from
- * the loaded session's id_map). Copied by id. Drained by the agent reconcile. */
+ * the loaded session's id_map). Copied by id. Drained by the app reconcile. */
 extern void edc_scheduler_add_pending_dep(struct edc_scheduler *sched, const char *target_task_id,
                                           const char *source_task_id, edc_task_dep_type type, bool completed,
                                           bool cancelled, bool injected);

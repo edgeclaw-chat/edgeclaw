@@ -4,12 +4,12 @@
 #include "sds.h"
 #include <stdbool.h>
 
-/* ── $VAR 展开原语（leaf: 只依赖 core，不认识 agent）─────────
+/* ── $VAR 展开原语（leaf: 只依赖 common，不认识 app）─────────
  *
  * 这一层刻意与 shell 执行器（edc_shell.c / edc_commands.c，它们依赖
- * //src/agent:agent）分开：agent 侧（edc_scheduler 的 /task 解析、
+ * //src/app:app）分开：app 侧（edc_scheduler 的 /task 解析、
  * edc_app 的变量展开）需要这两个入口，但绝不能反向依赖 shell 执行器，
- * 否则形成 agent ↔ shell 的循环。见 //src/shell:shell_parse。 */
+ * 否则形成 app ↔ shell 的循环。见 //src/shell:shell_parse。 */
 
 /* 展开 $VAR 时用此回调向调用方查询变量值。
  * name: 变量名（如 "LAST", "$"）

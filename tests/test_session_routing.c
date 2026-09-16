@@ -121,7 +121,7 @@ static char *first_task_id(struct edc_session *session)
 }
 
 /* ── 测试用的 session store: 两张表 + 一个读口 ──────────────
- * 与生产里 agent 注入的那个同形 (标签空 = 默认/活跃, 未知标签 = NULL)。 */
+ * 与生产里 app 注入的那个同形 (标签空 = 默认/活跃, 未知标签 = NULL)。 */
 static struct edc_session *g_sess_a = NULL;
 static struct edc_session *g_sess_b = NULL;
 

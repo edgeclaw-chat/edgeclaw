@@ -11,8 +11,8 @@ cc_library(
 # ── Individual utility libraries (externally visible) ──────────────────────
 
 # Header-only platform/GLib compatibility shim. Exposed on its own so very
-# small binaries (e.g. //src/agent:sandbox_helper) can use it without pulling
-# the whole //src/core:core library.
+# small binaries (e.g. //src/sandbox:sandbox_helper) can use it without pulling
+# the whole //src/common:common library.
 cc_library(
     name = "edc_compat",
     hdrs = ["edc_compat.h"],

@@ -19,7 +19,7 @@ class TodoWidget;
 // process runs: a bar of blocks that sweeps back and forth, brightness flowing
 // along the lit run. |elapsed_ms| drives position and phase. Fixed cell count
 // and one line tall, so swapping it for the footer never moves the layout.
-// Declared here so tests can render it without a live agent.
+// Declared here so tests can render it without a live app.
 ::ftxui::Element WorkingIndicatorElement(long long elapsed_ms);
 
 // ── P3 ①b: 快照的**认领规则** ────────────────────────────────
@@ -71,17 +71,17 @@ class TUIWindow : public ::ftxui::ComponentBase
     bool OnEvent(ftxui::Event) override;
     ::ftxui::Element OnRender() override;
 
-    // The agent actor runs on its own thread; adapter callbacks are marshalled
+    // The app's actors run on their own threads; adapter callbacks are marshalled
     // through this screen's task queue, so the tree is only touched by the
     // render thread.
     void SetScreen(::ftxui::ScreenInteractive *screen);
 
-    // False when the agent failed to start (bad/missing config, bad master key,
+    // False when the app failed to start (bad/missing config, bad master key,
     // no terminal for the passphrase). main() checks this and exits instead of
-    // dereferencing a NULL agent.
+    // dereferencing a NULL app.
     bool Ready() const
     {
-        return agent != nullptr;
+        return app != nullptr;
     }
 
     // Pace the window's own animations (the working spinner and the sidebar's
@@ -107,7 +107,7 @@ class TUIWindow : public ::ftxui::ComponentBase
     // Seed the input history from $EDC_HOME/.tui_history (a missing file is fine).
     void LoadInputHistory();
     void SaveInputHistory();
-    // Ask the agent (on its scheduler thread) for a fresh task-tree snapshot.
+    // Ask the app (on its scheduler thread) for a fresh task-tree snapshot.
     void RequestTaskSnapshot();
     // Show |session_id|'s chat log: the TUI's own transcript
     // (<session>/chat.jsonl, one line per bubble it showed) is replayed into the
@@ -145,7 +145,7 @@ class TUIWindow : public ::ftxui::ComponentBase
     std::shared_ptr<edc::EdcInput> input_;
     ::ftxui::Element prompt_;
     std::string input_text_;
-    // Read once from the agent's config; shown at the right end of the footer
+    // Read once from the app's config; shown at the right end of the footer
     // (dropped only when the pane is too narrow).
     std::string model_;
 
@@ -171,7 +171,7 @@ class TUIWindow : public ::ftxui::ComponentBase
     // resolved with the log. Empty when the session is unknown.
     std::string chat_log_path_;
 
-    struct edc_app *agent = NULL;
+    struct edc_app *app = NULL;
     // True once bracketed paste was actually enabled, so the destructor only
     // emits the "disable" sequence when the matching "enable" ran.
     bool bracketed_paste_on_ = false;

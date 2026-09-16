@@ -7,7 +7,7 @@
 struct edc_config;
 
 /*
- * The sandbox helper (see src/agent/sandbox_helper.c) is a tiny executable,
+ * The sandbox helper (see src/sandbox/sandbox_helper.c) is a tiny executable,
  * embedded in the binary as edc_sandbox_helper_blob (see
  * edc_sandbox_helper_blob.h), that applies the kernel sandbox and then execs
  * /bin/sh. These functions materialize it on disk and build its argv.

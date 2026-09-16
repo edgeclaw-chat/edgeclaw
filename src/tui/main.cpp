@@ -43,7 +43,7 @@ int ParseSandboxFlag(int argc, char **argv)
 // the loop quits normally, and ~Loop re-raises it after restoring the previous
 // disposition. With the default disposition that raise() kills the process from inside
 // screen.Loop(), so Loop() never returns and ~TUIWindow() -- the one place calling
-// edc_app_free() -- is skipped, leaking every agent resource. Installing a benign
+// edc_app_free() -- is skipped, leaking every app resource. Installing a benign
 // handler *before* Loop() makes ftxui record it as "previous", so the re-raise lands here
 // and control falls through to a normal return from main().
 void HandleTerminationSignal(int)
@@ -95,7 +95,7 @@ int main(int argc, char **argv)
         if (!window->Ready())
         {
             // 配置损坏 / 主密钥不对 / 无终端输入口令等, edc_app_new() 已写日志。
-            // 没有 agent 就什么都做不了, 直接非零退出, 不进 TUI 循环。
+            // 没有 app 就什么都做不了, 直接非零退出, 不进 TUI 循环。
             fprintf(stderr, "edgeclaw: failed to start, see the log for details\n");
             exit_code = 1;
         }

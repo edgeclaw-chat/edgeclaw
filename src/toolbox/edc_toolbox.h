@@ -27,7 +27,7 @@ struct edc_toolbox_call_ctx
     edc_channel_type call_from_type;
     void *request_id; /* 发起该次工具调用的 task 的 request_id (由 toolbox actor 注入) */
     struct edc_task
-        *task; /* 发起该次工具调用的 task (与 request_id 同源；agent 构建请求链时注入，非 task 路径为 NULL) */
+        *task; /* 发起该次工具调用的 task (与 request_id 同源；app 构建请求链时注入，非 task 路径为 NULL) */
     void *priv;
 
 };

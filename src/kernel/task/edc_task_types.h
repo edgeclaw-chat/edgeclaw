@@ -2,7 +2,7 @@
 #define __EDC_TASK_TYPES_H__
 
 /* ── Task 间依赖类型 ──────────────────────────────────────────
- * 从 edc_task.h 提取，放 core/ 以避免 shell ↔ agent 循环依赖 */
+ * 从 edc_task.h 提取，放 common/ 以避免 shell ↔ app 循环依赖 */
 
 typedef enum
 {

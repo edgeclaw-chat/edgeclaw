@@ -34,7 +34,7 @@ Safety
 ------
 A file that would change is first copied to `session.json.v3.bak` (refusing to
 overwrite an existing backup), then rewritten via a temp file + rename.  The
-rewrite keeps the on-disk format the agent itself writes: compact JSON, UTF-8
+rewrite keeps the on-disk format the app itself writes: compact JSON, UTF-8
 (no \\uXXXX escapes), no trailing newline.  After writing, the file is re-read
 and verified (version == 4, no `system` ids left, no display keys left); on
 mismatch the backup is restored.  Idempotent: a v4 file is skipped untouched.

@@ -21,7 +21,7 @@
  *   - kernel 侧输入 (group 历史 / 折叠水位 / deps / active_turn / todo 节流 /
  *     config / session 仓库) 全部经 sched 与 task 取得;
  *   - kernel 之外只有两样, 由装配根当参数交进来 (见 edc_llm_request.h)。
- * 三条不变量: 不认识 struct edc_app / 不认识 toolbox / 不反向依赖 assembly。
+ * 三条不变量: 不认识 struct edc_app / 不认识 toolbox / 不反向依赖 app。
  *
  * $VAR 的"值语义" ($$ / $LAST / $N / $NAME) 是本文件私有的 static resolver:
  * 数据源 = sched->sessions (store 句柄)。shell 侧只做两件事 —— 语法识别与

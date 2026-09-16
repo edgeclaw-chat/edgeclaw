@@ -87,7 +87,7 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
 
     /* 把这份 todo 清单挂到调用它的 task 上 (整体替换)。todo list 是 task
      * 状态的一部分: task->todos 已被 state_serializer 持久化；之后为该
-     * task 组装 LLM 请求时 (见 agent send_llm), agent 按节流规则 (隔了
+     * task 组装 LLM 请求时 (见 app send_llm), app 按节流规则 (隔了
      * EDC_TODO_SYNC_REMIND_GAP 条对话都没再调用 todowrite) 把当前
      * 清单重新计算成队尾 todo reminder (edc_context_make_todo_reminder)
      * 注入请求 —— 与本次工具返回的文本同源 (edc_context_render_todo_reminder),

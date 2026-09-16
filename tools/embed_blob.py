@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Embed a single file as a C byte array.
 
-Build-time helper (see the genrule //src/agent:sandbox_helper_embedded_c): it
+Build-time helper (see the genrule //src/sandbox:sandbox_helper_embedded_c): it
 turns the sandbox helper executable into a byte array so it can be linked into
 the main binary and the release stays a single self-contained file.
 """

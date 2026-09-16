@@ -61,7 +61,7 @@ static sds *edc_config_default_ro_paths(void)
     return edc_config_split_paths(EDC_SANDBOX_DEFAULT_RO_PATHS);
 }
 
-/* Fresh copy of the default writable set: the agent workspace, /tmp, /dev and
+/* Fresh copy of the default writable set: the app workspace, /tmp, /dev and
  * the user's cache directory (~/.cache). The cache is writable so the tools a
  * shell command may run keep working under the sandbox -- package managers and
  * build systems (bazel, pip, cargo, ...) write their caches there. Follows the
@@ -342,7 +342,7 @@ struct edc_config *edc_config_load(const char *edc_home)
         config->sandbox_ro_paths = edc_config_default_ro_paths();
     }
 
-    /* The agent's own workspace must be writable: the model edits files there
+    /* The app's own workspace must be writable: the model edits files there
      * (AGENTS.md, skills/, ...). Make sure it is in rw_paths -- which grants
      * read too -- rather than relying on config.json, and skip it when it is
      * already present (the default list includes it). rw_paths[0] stays the
@@ -849,7 +849,7 @@ bool edc_config_set_sandbox_enabled(struct edc_config *cfg, bool enable)
         return false;
 
     /* Persist first (mirrors edc_app_set_llm_config): if config.json cannot
-     * be written, leave the running agent untouched so memory and disk agree. */
+     * be written, leave the running app untouched so memory and disk agree. */
     if (!edc_config_update_sandbox_enabled(cfg->edc_home, enable))
         return false;
 

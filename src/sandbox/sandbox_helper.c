@@ -4,10 +4,10 @@
  *
  * Why a separate program (see docs / MEMORY): Landlock and seccomp can only be
  * applied in the process that will be confined (they are irreversible and
- * inherited). Doing it inside the agent would sandbox the agent itself, and
- * doing it between fork() and exec() inside the multithreaded agent is unsafe
+ * inherited). Doing it inside the app would sandbox the app itself, and
+ * doing it between fork() and exec() inside the multithreaded app is unsafe
  * (only async-signal-safe calls are allowed there). This helper is exec'd by
- * the agent, so it applies the sandbox in its own fresh, single-threaded
+ * the app, so it applies the sandbox in its own fresh, single-threaded
  * process -- where ordinary libc calls are perfectly safe -- and then execs
  * /bin/sh. Because exec keeps the pid, the parent's process-group kill and
  * exit handling are unchanged.

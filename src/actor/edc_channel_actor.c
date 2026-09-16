@@ -126,7 +126,7 @@ void edc_channel_actor_set_observer(edc_actor_t *actor, edc_actor_t *observer)
 /* ── 出站: 消息 → 通道 (前端) ─────────────────────────────────
  *
  * 建一条 channel 消息、发 `BC_ACTOR_MSG_CHANNEL_SEND` 给本 actor —— 这是**通道
- * 自己的**词汇 (消息形状 + 发送路径都归这里)。以前它住在 edc_agent.c, 只因为
+ * 自己的**词汇 (消息形状 + 发送路径都归这里)。以前它住在 edc_app.c, 只因为
  * 那里恰好握有 channel_actor; 现在任何持有通道句柄的模块都能投递。 */
 
 /* 唯一的发送出口: publish 与两个 send_task_* 都从这里出去, 所以

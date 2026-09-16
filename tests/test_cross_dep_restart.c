@@ -2,7 +2,7 @@
  *
  * On save, each session.json only holds its own tasks, and a dep edge records
  * just the source task id. On load, the source of a cross-session edge is not in
- * the loaded session, so deser records it as a pending edge and the agent
+ * the loaded session, so deser records it as a pending edge and the app
  * reconciles it afterwards (lazy-loading the owner session). An edge that cannot
  * be restored must HOLD its target task — never let it run with an incomplete
  * dependency view (the resume gate).

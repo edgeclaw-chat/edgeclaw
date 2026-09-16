@@ -26,7 +26,7 @@
  *   5. 头部 edc_context_append_system_part 恢复纯净: 只挂 group memory +
  *      system prompt (引用/现拼), 不含任何 todo 内容。
  *
- * 本测试不依赖 secret/网络/真实 home: 不构造 agent, 直接驱动 toolbox 与 task。
+ * 本测试不依赖 secret/网络/真实 home: 不构造 app, 直接驱动 toolbox 与 task。
  */
 #include "edc_channel_actor.h"
 #include "edc_compat.h"
@@ -528,7 +528,7 @@ static void test_append_system_part(void)
       "history[0] survives msgs delete (reference did not transfer/copy)");
 
     /* todo 引导独立于头部: no-list task 的 reminder = 规划引导 (owned), 模拟
-     * agent 把它作为队尾消息塞进请求数组 → 落在 base 引用之后 */
+     * app 把它作为队尾消息塞进请求数组 → 落在 base 引用之后 */
     cJSON *tail = edc_context_make_todo_reminder(t1);
     C(tail != NULL && !(tail->type & cJSON_IsReference), "planning-guide reminder is an owned msg");
     C(is_planning_reminder(cJSON_GetStringValue(cJSON_GetObjectItem(tail, "content"))),
@@ -578,7 +578,7 @@ static void test_append_system_part(void)
     C(strstr(rc, "NEXT SINGLE ACTION must be calling todowrite") != NULL,
       "per-turn sync instruction present in the list branch");
 
-    /* 模拟 agent: reminder 经 req->tail_system 成为请求数组队尾 */
+    /* 模拟 app: reminder 经 req->tail_system 成为请求数组队尾 */
     cJSON_AddItemToArray(msgs, r2);
     C(cJSON_GetArraySize(msgs) == 3 && cJSON_GetArrayItem(msgs, 2) == r2,
       "todo reminder appended as LAST message, after memory + base ref");

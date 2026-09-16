@@ -48,7 +48,7 @@ typedef enum
                                                   * 不带树) —— TUI 据此决定要不要去拉 (P3 ①b) */
 } edc_channel_message_type;
 
-/* 消息内容的渲染偏好：由发送方(tool/agent)显式声明，渲染端(CLI/TUI)
+/* 消息内容的渲染偏好：由发送方(tool/app)显式声明，渲染端(CLI/TUI)
  * 不再按消息类型/header 有无去猜测。零值 PLAIN 即默认——发送方未声明时
  * 消息一律按纯文本显示，想按 Markdown 渲染必须显式声明 EDC_RENDER_MARKDOWN。 */
 typedef enum
@@ -100,7 +100,7 @@ extern bool edc_config_add_sandbox_rw(struct edc_config *conf, const char *path)
 
 /* Rewrite api_url / model / api_key in <edc_home>/config.json. The key is
  * encrypted before writing. A NULL argument leaves that field unchanged.
- * Returns true on success. Used by the runtime /connect command. */
+ * Returns true on success. Used by the app's /connect command. */
 extern bool edc_config_update_llm(const char *edc_home, const char *api_url, const char *model, const char *api_key);
 
 /* Persist the sandbox master switch ("sandbox.enable") in config.json,

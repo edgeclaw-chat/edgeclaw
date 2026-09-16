@@ -4,7 +4,7 @@
 #include <stddef.h>
 
 /*
- * The sandbox helper executable (see //src/agent:sandbox_helper), embedded
+ * The sandbox helper executable (see //src/sandbox:sandbox_helper), embedded
  * into the binary at build time so the release stays a single self-contained
  * file. edc_sandbox_helper_path() extracts it to disk on first use.
  */

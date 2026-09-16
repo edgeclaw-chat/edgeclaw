@@ -258,7 +258,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
  * 与 render_reminder 共用同一行格式源: 它是 todo reminder 状态段的正文, 供
  * 需要把清单行单独嵌入的调用方使用。items 已在工具入口校验过 (status 合法、
  * 至多一个 in_progress)。对缺失字段做保守兜底 (缺省视为 pending / 空文本)，
- * 避免 agent 侧读取历史数据时因脏数据崩溃。
+ * 避免 app 侧读取历史数据时因脏数据崩溃。
  * *out_completed (可为 NULL) 返回已完成条数。返回 sds，调用方负责 sdsfree。 */
 sds edc_context_render_todo_body(cJSON *items, int *out_completed)
 {

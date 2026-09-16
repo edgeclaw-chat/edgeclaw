@@ -9,7 +9,7 @@
  *
  * 唯一入参是 `struct edc_app *` (不透明): 本文件**不碰它的字段**, 只经
  * `edc_app_config()` / `edc_app_sessions()` / `edc_app_channel_actor()` 三个句柄访问器
- * 拿东西 (实测 `rt->` = 0 次) ⇒ 装配根不为它开任何"内部头", `struct edc_app` 仍然
+ * 拿东西 (实测 `app->` = 0 次) ⇒ 装配根不为它开任何"内部头", `struct edc_app` 仍然
  * 只在 `edc_app.c` 里定义 (docs/runtime-model.md §8 判据 1 不退步)。
  *
  * 对 C++ 安全 (`edc_api.h` 与 `edc_app.h` 同规矩: 不 include 拉 sds 的头)。 */
@@ -138,51 +138,51 @@ static bool copy_str_into(const char *value, char *buf, size_t cap)
     return true;
 }
 
-bool edc_app_config_model(const struct edc_app *rt, char *buf, size_t cap)
+bool edc_app_config_model(const struct edc_app *app, char *buf, size_t cap)
 {
-    struct edc_config *cfg = edc_app_config(rt);
+    struct edc_config *cfg = edc_app_config(app);
     return cfg ? copy_sds_into(cfg->llm_api_conf.model, buf, cap) : copy_sds_into(NULL, buf, cap);
 }
 
-bool edc_app_config_api_url(const struct edc_app *rt, char *buf, size_t cap)
+bool edc_app_config_api_url(const struct edc_app *app, char *buf, size_t cap)
 {
-    struct edc_config *cfg = edc_app_config(rt);
+    struct edc_config *cfg = edc_app_config(app);
     return cfg ? copy_sds_into(cfg->llm_api_conf.api_url, buf, cap) : copy_sds_into(NULL, buf, cap);
 }
 
-bool edc_app_config_api_key(const struct edc_app *rt, char *buf, size_t cap)
+bool edc_app_config_api_key(const struct edc_app *app, char *buf, size_t cap)
 {
-    struct edc_config *cfg = edc_app_config(rt);
+    struct edc_config *cfg = edc_app_config(app);
     return cfg ? copy_sds_into(cfg->llm_api_conf.api_key, buf, cap) : copy_sds_into(NULL, buf, cap);
 }
 
-bool edc_app_sandbox_enabled(const struct edc_app *rt)
+bool edc_app_sandbox_enabled(const struct edc_app *app)
 {
-    struct edc_config *cfg = edc_app_config(rt);
+    struct edc_config *cfg = edc_app_config(app);
     return cfg && cfg->enable_sandbox;
 }
 
-bool edc_app_active_session_id(const struct edc_app *rt, char *buf, size_t cap)
+bool edc_app_active_session_id(const struct edc_app *app, char *buf, size_t cap)
 {
-    struct edc_session_manager *sm = edc_app_sessions(rt);
+    struct edc_session_manager *sm = edc_app_sessions(app);
     struct edc_session *session = sm ? edc_session_manager_get_active(sm) : NULL;
     return copy_str_into(session ? session->session_id : NULL, buf, cap);
 }
 
-bool edc_app_active_session_workdir(const struct edc_app *rt, char *buf, size_t cap)
+bool edc_app_active_session_workdir(const struct edc_app *app, char *buf, size_t cap)
 {
-    struct edc_session_manager *sm = edc_app_sessions(rt);
+    struct edc_session_manager *sm = edc_app_sessions(app);
     struct edc_session *session = sm ? edc_session_manager_get_active(sm) : NULL;
     return copy_str_into(session ? edc_session_get_workdir(session) : NULL, buf, cap);
 }
 
 /* 转录文件在哪 —— 只解路径: 编解码、追加、回放都是前端自己的事 (见
  * edc_chat_transcript.hpp)。 */
-bool edc_app_chat_log_path_for(const struct edc_app *rt, const char *session_id, char *buf, size_t cap)
+bool edc_app_chat_log_path_for(const struct edc_app *app, const char *session_id, char *buf, size_t cap)
 {
     if (buf && cap > 0)
         buf[0] = '\0';
-    struct edc_session_manager *sm = edc_app_sessions(rt);
+    struct edc_session_manager *sm = edc_app_sessions(app);
     if (!sm || !session_id || !buf || cap == 0)
         return false;
 
@@ -224,10 +224,10 @@ bool edc_app_history_path(char *buf, size_t cap)
 /* ── 前端要做的几件事 ───────────────────────────────────────── */
 
 /* 把前端注册成**唯一**通道实现的 adapter: 每一条要上屏的消息都到 |on_send|。 */
-void edc_app_channel_adapter_init(struct edc_app *rt, void *instance,
+void edc_app_channel_adapter_init(struct edc_app *app, void *instance,
                                   void (*on_send)(void *, struct edc_channel_message *))
 {
-    edc_actor_t *channel = edc_app_channel_actor(rt);
+    edc_actor_t *channel = edc_app_channel_actor(app);
     if (!channel)
         return;
     edc_channel_adapter_init(channel, instance, on_send);
@@ -235,9 +235,9 @@ void edc_app_channel_adapter_init(struct edc_app *rt, void *instance,
 
 /* 投一条用户输入。|session_id| 点名这条输入属于哪个 session (P3 ①a):
  * 它派出的 task 落在那儿, 不会去别处。NULL/"" = 未指定, 由 store 取默认。 */
-void edc_app_send_user_message(struct edc_app *rt, const char *session_id, const char *content)
+void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content)
 {
-    edc_actor_t *channel = edc_app_channel_actor(rt);
+    edc_actor_t *channel = edc_app_channel_actor(app);
     if (!channel)
         return;
 
@@ -256,9 +256,9 @@ void edc_app_send_user_message(struct edc_app *rt, const char *session_id, const
 
 /* 要一棵 task 树 (P3 ①b: 前端只拉自己正在显示的那一棵); 树在 scheduler 线程上建,
  * 经通道 adapter 以 TASK_SNAPSHOT 应答回来。 */
-void edc_app_request_task_snapshot(struct edc_app *rt, const char *session_id)
+void edc_app_request_task_snapshot(struct edc_app *app, const char *session_id)
 {
-    edc_actor_t *channel = edc_app_channel_actor(rt);
+    edc_actor_t *channel = edc_app_channel_actor(app);
     if (!channel)
         return;
 
@@ -272,7 +272,7 @@ void edc_app_request_task_snapshot(struct edc_app *rt, const char *session_id)
     edc_actor_send(state->observer, msg);
 }
 
-bool edc_app_ensure_parent_dir(struct edc_app *rt, const char *path)
+bool edc_app_ensure_parent_dir(struct edc_app *app, const char *path)
 {
     if (!path)
         return false;
@@ -286,7 +286,7 @@ bool edc_app_ensure_parent_dir(struct edc_app *rt, const char *path)
     }
 
     /* 只允许在 workspace 里面: 前端经这里写的都是它自己的文件。 */
-    const struct edc_config *cfg = edc_app_config(rt);
+    const struct edc_config *cfg = edc_app_config(app);
     const char *root = cfg ? cfg->workspace : NULL;
     bool ok = root && root[0] && strncmp(parent, root, strlen(root)) == 0;
     if (ok)
@@ -303,13 +303,13 @@ bool edc_app_ensure_parent_dir(struct edc_app *rt, const char *path)
     return ok;
 }
 
-bool edc_app_write_file(struct edc_app *rt, const char *path, const char *data, size_t len, bool append,
+bool edc_app_write_file(struct edc_app *app, const char *path, const char *data, size_t len, bool append,
                         bool under_workspace)
 {
     if (!path || (!data && len > 0))
         return false;
 
-    const struct edc_config *cfg = edc_app_config(rt);
+    const struct edc_config *cfg = edc_app_config(app);
     const char *root = (under_workspace && cfg) ? cfg->workspace : NULL;
     FILE *f = edc_file_fopen_safe(path, append ? "a" : "w", root);
     if (!f)

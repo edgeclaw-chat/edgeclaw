@@ -241,7 +241,7 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
      * dup2()s it onto fd 0 (src/unix/process.c, "Redirect stdin, stdout and
      * stderr to /dev/null even if UV_IGNORE is set"), so anything that reads
      * stdin gets an immediate EOF. Do NOT switch this to UV_INHERIT_STDIO:
-     * the agent has no way to type into the child, so sharing our stdin would
+     * the app has no way to type into the child, so sharing our stdin would
      * only let the command steal TUI keystrokes.
      */
     uv_stdio_container_t stdio[3];
@@ -283,7 +283,7 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
     /* When the filesystem sandbox is enabled, run the command through the
      * embedded sandbox helper: it applies the kernel sandbox (Landlock/seccomp)
      * in its own fresh process and then execs /bin/sh. We cannot apply it here
-     * (it would sandbox the agent) nor between fork/exec (not async-signal-safe
+     * (it would sandbox the app) nor between fork/exec (not async-signal-safe
      * in this multithreaded process). exec keeps the pid, so the timeout kill
      * and exit handling below are unaffected. Falls back to /bin/sh when the
      * helper cannot be materialized. */
@@ -304,7 +304,7 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
 #endif
     options.file = spawn_file;
     options.args = spawn_args;
-    /* Minimal whitelist, never NULL: NULL makes uv_spawn inherit the agent's
+    /* Minimal whitelist, never NULL: NULL makes uv_spawn inherit the app's
      * entire environment (see edc_shell_env.h for why that leaked secrets). */
     spawn_env = edc_shell_env_build();
     options.env = spawn_env;

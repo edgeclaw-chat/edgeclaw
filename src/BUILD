@@ -3,7 +3,7 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 # ── Top-level utilities ───────────────────────────────────────────────────
 
 # ── Backward-compatibility aliases ────────────────────────────────────────
-# 注: 聚合伞 `//src:agent`（agent + shell + core + device）已于 2026-09-15 删除 ——
+# 注: 聚合伞 `//src:agent`（当时是 agent + shell + core + device；今 `//src/app` / `//src/common`）已于 2026-09-15 删除 ——
 # 它让测试可以静默越界; 现在每个测试只依赖自己真正用到的模块, 越界即编译失败。
 
 alias(

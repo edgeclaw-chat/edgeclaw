@@ -51,24 +51,24 @@ extern struct edc_app *edc_app_new(bool setup, int sandbox_override);
 /* 关进程 (幂等, 可重复调用): 停 actor/runner → 把所有 session **原样落盘** → 清掉在途 turn。
  * 它**会写盘** —— 名字里不带 "free" 就是为了这个: 销毁一个 app 不只是 free()。
  * 单独暴露它是为了让"先落地、后释放"成为两件可分的事 (TUI 退出路径仍只调 free)。 */
-extern void edc_app_shutdown(struct edc_app *rt);
+extern void edc_app_shutdown(struct edc_app *app);
 
 /* 释放内存。会先补齐 `edc_app_shutdown()` 那一步 (保持"销毁即落盘"的老行为),
  * 然后依次 free scheduler / session_manager / config / toolbox。 */
-extern void edc_app_free(struct edc_app *rt);
+extern void edc_app_free(struct edc_app *app);
 
 /* ── 句柄访问器 = 装配根与 `//src/app:api` 的合同 ─────────────
  * app 是 opaque 的, 所以外面只能拿这几件"零件"; 前端面的那批投影函数就是
- * 全部经这里取数 (实测 `edc_api.c` 里 `rt->` 为 0 次)。 */
-extern struct edc_config *edc_app_config(const struct edc_app *rt);
-extern struct edc_session_manager *edc_app_sessions(const struct edc_app *rt);
-extern struct edc_actor *edc_app_channel_actor(const struct edc_app *rt);
+ * 全部经这里取数 (实测 `edc_api.c` 里 `app->` 为 0 次)。 */
+extern struct edc_config *edc_app_config(const struct edc_app *app);
+extern struct edc_session_manager *edc_app_sessions(const struct edc_app *app);
+extern struct edc_actor *edc_app_channel_actor(const struct edc_app *app);
 
 /* Update the LLM provider settings at runtime (from the TUI /connect menu):
  * persist api_url/model/api_key to config.json, update the in-memory config,
  * and refresh the llm_actor's copy. A NULL/empty argument leaves that field
  * unchanged. Returns true when the config was persisted. */
-extern bool edc_app_set_llm_config(struct edc_app *rt, const char *api_url, const char *model,
+extern bool edc_app_set_llm_config(struct edc_app *app, const char *api_url, const char *model,
                                    const char *api_key);
 
 #ifdef __cplusplus

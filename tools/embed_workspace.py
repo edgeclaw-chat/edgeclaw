@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Embed the workspace/ tree into a C translation unit.
 
-Invoked by the genrule //src/core:workspace_embedded_c. Every file under
+Invoked by the genrule //src/common:workspace_embedded_c. Every file under
 workspace/ becomes an entry in the `edc_bundled_workspace_entries` table
-declared by src/core/edc_bundled_workspace.h, so the binary no longer needs
+declared by src/common/edc_bundled_workspace.h, so the binary no longer needs
 the source tree on disk at runtime.
 """
 

@@ -24,7 +24,7 @@ extern "C" {
  *
  * 三个句柄访问器 (`edc_app_config` / `edc_app_sessions` /
  * `edc_app_channel_actor`, 都在 `edc_app.h` 里) 就是本模块与装配根的**全部**合同:
- * 实现里 `rt->` 出现 **0 次**, `struct edc_app` 仍然是只在 `edc_app.c` 里定义的
+ * 实现里 `app->` 出现 **0 次**, `struct edc_app` 仍然是只在 `edc_app.c` 里定义的
  * 不透明类型 (docs/runtime-model.md §8 判据 1)。 */
 struct edc_app;
 struct edc_channel_message;
@@ -58,31 +58,31 @@ enum
 /* ── 配置 / 会话的字符串读取 (sds → 调用方缓冲区) ──────────────
  * 契约: 成功才写 |buf| 并返回 true; 失败一律把 |buf| 置空、返回 false。
  * |cap| = 缓冲区总字节数, 含结尾 NUL (装不下就不写)。 */
-extern bool edc_app_config_model(const struct edc_app *rt, char *buf, size_t cap);
-extern bool edc_app_config_api_url(const struct edc_app *rt, char *buf, size_t cap);
-extern bool edc_app_config_api_key(const struct edc_app *rt, char *buf, size_t cap);
-extern bool edc_app_sandbox_enabled(const struct edc_app *rt);
-extern bool edc_app_active_session_id(const struct edc_app *rt, char *buf, size_t cap);
-extern bool edc_app_active_session_workdir(const struct edc_app *rt, char *buf, size_t cap);
+extern bool edc_app_config_model(const struct edc_app *app, char *buf, size_t cap);
+extern bool edc_app_config_api_url(const struct edc_app *app, char *buf, size_t cap);
+extern bool edc_app_config_api_key(const struct edc_app *app, char *buf, size_t cap);
+extern bool edc_app_sandbox_enabled(const struct edc_app *app);
+extern bool edc_app_active_session_id(const struct edc_app *app, char *buf, size_t cap);
+extern bool edc_app_active_session_workdir(const struct edc_app *app, char *buf, size_t cap);
 /* 指定 session 的转录文件路径 (`<session>/chat.jsonl`)。 */
-extern bool edc_app_chat_log_path_for(const struct edc_app *rt, const char *session_id, char *buf, size_t cap);
+extern bool edc_app_chat_log_path_for(const struct edc_app *app, const char *session_id, char *buf, size_t cap);
 /* 前端的命令历史文件 (`<bc_home>/.tui_history`)。 */
 extern bool edc_app_history_path(char *buf, size_t cap);
 
 /* ── 前端要做的几件事 ───────────────────────────────────────── */
 /* 把前端注册成唯一通道实现的 adapter: 每一条要上屏的消息都到 |on_send|。 */
-extern void edc_app_channel_adapter_init(struct edc_app *rt, void *instance,
+extern void edc_app_channel_adapter_init(struct edc_app *app, void *instance,
                                          void (*on_send)(void *, struct edc_channel_message *));
 /* 投一条用户输入; |session_id| 点名它属于哪个 session (NULL/"" = 默认活跃 session)。 */
-extern void edc_app_send_user_message(struct edc_app *rt, const char *session_id, const char *content);
+extern void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content);
 /* 要一棵 task 树 (P3 ①b): 树在 scheduler 线程上建, 以 TASK_SNAPSHOT 消息应答回来。 */
-extern void edc_app_request_task_snapshot(struct edc_app *rt, const char *session_id);
+extern void edc_app_request_task_snapshot(struct edc_app *app, const char *session_id);
 /* 写一个**属于前端**的文件 (转录 / 命令历史): under_workspace 时路径必须落在
  * config.workspace 下, 且拒绝符号链接目标 (见 edc_file_fopen_safe)。 */
-extern bool edc_app_write_file(struct edc_app *rt, const char *path, const char *data, size_t len,
+extern bool edc_app_write_file(struct edc_app *app, const char *path, const char *data, size_t len,
                                bool append, bool under_workspace);
 /* 建父目录; 路径必须落在 workspace 下 (与 edc_app_write_file 同一条规矩)。 */
-extern bool edc_app_ensure_parent_dir(struct edc_app *rt, const char *path);
+extern bool edc_app_ensure_parent_dir(struct edc_app *app, const char *path);
 
 #ifdef __cplusplus
 }

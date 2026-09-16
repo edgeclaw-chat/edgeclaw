@@ -837,7 +837,7 @@ static void deser_deps(cJSON *json, struct task_map_entry **id_map, struct edc_s
             if (!source)
             {
                 /* Source not in this session → a cross-session edge (or a stale
-                 * one). Record it for the agent-level reconcile instead of
+                 * one). Record it for the app-level reconcile instead of
                  * silently dropping it: without the edge the target's
                  * deps_total would omit the dependency and it could be resumed
                  * before the source completes. */

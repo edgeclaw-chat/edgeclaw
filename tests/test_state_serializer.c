@@ -1907,7 +1907,7 @@ static void test_schema_version_is_current(void)
 
 static void test_message_unknown_keys_round_trip(void)
 {
-    TEST("message unknown keys round-trip verbatim (the runtime no longer strips them)");
+    TEST("message unknown keys round-trip verbatim (the app no longer strips them)");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-disp", "Disp");
@@ -1950,7 +1950,7 @@ static void test_message_unknown_keys_round_trip(void)
     cJSON *msgs2 = cJSON_GetObjectItem(cJSON_GetObjectItem(t0, "active_turn"), "messages");
     cJSON *msg2 = cJSON_GetArrayItem(msgs2, 0);
     CHECK(msg2 != NULL, "message written back");
-    /* Raw JSON round-trip: keys the runtime does not know are preserved.  Removing
+    /* Raw JSON round-trip: keys the app does not know are preserved.  Removing
      * pre-transcript leftovers is the one-shot migration's job, not save's. */
     CHECK(msg2 && cJSON_GetObjectItem(msg2, "displayed") != NULL, "displayed round-trips");
     CHECK(msg2 && cJSON_GetObjectItem(msg2, "header") != NULL, "header round-trips");

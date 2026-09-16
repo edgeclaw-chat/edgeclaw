@@ -81,7 +81,7 @@ static struct edc_config *make_config(void)
 }
 
 /* 折叠本体收的就是 scheduler (触发方还会用
- * session_manager/config, 但那条路是 shell/agent 侧的, 这里测的是折叠本体)。
+ * session_manager/config, 但那条路是 shell/app 侧的, 这里测的是折叠本体)。
  * 用真结构体而不是 mock —— 它就是个普通结构, 没有构造函数。 */
 /* 建一组"已完成、带 turn"的任务 (可折叠), 每个 turn 装 `msgs_per_task` 条消息。 */
 static void add_foldable_task(struct edc_session *session, struct edc_task_group *group, const char *id,

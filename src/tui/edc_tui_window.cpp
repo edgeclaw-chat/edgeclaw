@@ -313,7 +313,7 @@ std::string ShortenHome(const char *path)
 
 // The animated "working" row: the sweeping bar on its own, no text. Defined here
 // (declared in the header) so tests can render it for a given elapsed time without
-// a live agent. Fixed cell count and one line tall, so it never changes the layout.
+// a live app. Fixed cell count and one line tall, so it never changes the layout.
 ::ftxui::Element WorkingIndicatorElement(long long elapsed_ms)
 {
     const auto &pal = style::palette();
@@ -426,39 +426,39 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
         {connect_url_input_, connect_model_input_, connect_key_input_, connect_buttons_}, &connect_focus_);
     connect_modal_ = ::ftxui::Renderer(connect_fields, [this] { return RenderConnectModal(); });
 
-    agent = edc_app_new(false, sandbox_override);
+    app = edc_app_new(false, sandbox_override);
 
     // edc_app_new() returns NULL (after logging the reason) when it cannot
     // start: unreadable config, undecryptable API key, no terminal for the
-    // passphrase, env init failure. Every call below dereferences the agent, so
+    // passphrase, env init failure. Every call below dereferences the app, so
     // stop here. main() sees Ready() == false and exits cleanly.
-    if (!agent)
+    if (!app)
         return;
 
-    edc_app_channel_adapter_init(agent, this, on_channel_adapter_send);
+    edc_app_channel_adapter_init(app, this, on_channel_adapter_send);
     EnableBracketedPaste();
     bracketed_paste_on_ = true;
 
-    // Read the model once for the footer (the agent has just loaded its
+    // Read the model once for the footer (the app has just loaded its
     // config); the footer itself is built per frame so it can fit the pane.
     {
         char model[256];
-        if (edc_app_config_model(agent, model, sizeof(model)))
+        if (edc_app_config_model(app, model, sizeof(model)))
             model_ = model;
     }
 
-    // The agent has already restored its active session, so resolve the chat
+    // The app has already restored its active session, so resolve the chat
     // transcript now — before any input can arrive — and replay it. This keys
     // the transcript to the active session without waiting for the first task
     // snapshot, so even the very first typed message is persisted. Later
     // snapshots only reload when /session switch/new changes the session.
     {
         char sid[256];
-        if (edc_app_active_session_id(agent, sid, sizeof(sid)))
+        if (edc_app_active_session_id(app, sid, sizeof(sid)))
             LoadChatTranscript(sid);
     }
 
-    // Populate the sidebar once the agent is running (its response is routed
+    // Populate the sidebar once the app is running (its response is routed
     // through the adapter and handled by on_channel_adapter_send below). The
     // chat log comes from the session's own transcript file, which the live path
     // below appends to (see LoadChatTranscript for the one-time bootstrap).
@@ -477,7 +477,7 @@ void TUIWindow::Submit()
     std::string message = input_text_.substr(first, last - first + 1);
 
     // "/connect" is handled locally: open the provider dialog and do not send
-    // anything to the agent or record it as a chat message.
+    // anything to the app or record it as a chat message.
     if (message == "/connect")
     {
         input_text_.clear();
@@ -498,7 +498,7 @@ void TUIWindow::Submit()
     input_->AddHistory(message);
     SaveInputHistory();
 
-    edc_app_send_user_message(agent, current_session_id_.c_str(), message.c_str());
+    edc_app_send_user_message(app, current_session_id_.c_str(), message.c_str());
     chat_widget_->ScrollToBottom();
 
     // A new message may spawn/attach a task, so refresh the sidebar tree. The
@@ -516,9 +516,9 @@ void TUIWindow::Submit()
 void TUIWindow::OpenConnect()
 {
     char buf[4096];
-    connect_url_ = edc_app_config_api_url(agent, buf, sizeof(buf)) ? buf : "";
-    connect_model_ = edc_app_config_model(agent, buf, sizeof(buf)) ? buf : "";
-    connect_key_ = edc_app_config_api_key(agent, buf, sizeof(buf)) ? buf : "";
+    connect_url_ = edc_app_config_api_url(app, buf, sizeof(buf)) ? buf : "";
+    connect_model_ = edc_app_config_model(app, buf, sizeof(buf)) ? buf : "";
+    connect_key_ = edc_app_config_api_key(app, buf, sizeof(buf)) ? buf : "";
     connect_open_ = true;
     connect_focus_ = 0;
     connect_button_focus_ = 0;
@@ -530,7 +530,7 @@ bool TUIWindow::SubmitConnect()
 {
     if (connect_url_.empty() || connect_model_.empty() || connect_key_.empty())
         return false;
-    if (!edc_app_set_llm_config(agent, connect_url_.c_str(), connect_model_.c_str(), connect_key_.c_str()))
+    if (!edc_app_set_llm_config(app, connect_url_.c_str(), connect_model_.c_str(), connect_key_.c_str()))
         return false;
     model_ = connect_model_; // refresh the footer's model label
     connect_open_ = false;
@@ -571,12 +571,12 @@ void TUIWindow::SaveInputHistory()
     for (const std::string &entry : input_->History())
         out += EscapeHistoryEntry(entry) + "\n";
     // Symlink-safe (the file sits in $EDC_HOME; still never follow a link).
-    edc_app_write_file(agent, path, out.data(), out.size(), /*append=*/false, /*under_workspace=*/false);
+    edc_app_write_file(app, path, out.data(), out.size(), /*append=*/false, /*under_workspace=*/false);
 }
 
 void TUIWindow::RequestTaskSnapshot()
 {
-    /* 测试模式: 不向 agent 要树。理由 —— 构造期 (:464) 与回调里 (:1077) 的拉取
+    /* 测试模式: 不向 app 要树。理由 —— 构造期 (:464) 与回调里 (:1077) 的拉取
      * 都会走一个**异步**回包, 而没 SetScreen() 时那回包是内联在 runner 线程上
      * 跑进本函数的调用方 (on_channel_adapter_send 的 else 分支), 会和测试自己的
      * 断言抢同一个 widget。设了它就完全没有这条路 (tests/test_tui_dispatch.cpp)。
@@ -585,7 +585,7 @@ void TUIWindow::RequestTaskSnapshot()
         return;
     last_snapshot_request_ = std::chrono::steady_clock::now();
     // 点名叫自己**正在显示**的那棵树 (P3 ①b) —— 别人的树不上路。
-    edc_app_request_task_snapshot(agent, current_session_id_.c_str());
+    edc_app_request_task_snapshot(app, current_session_id_.c_str());
 }
 
 // Build one chat bubble. Shared by the live channel path and the restart replay
@@ -657,7 +657,7 @@ void TUIWindow::LoadChatTranscript(const char *session_id)
     // frontend displayed for that session, so it survives switches and restarts.
     char path[4096];
     if (!current_session_id_.empty() &&
-        edc_app_chat_log_path_for(agent, current_session_id_.c_str(), path, sizeof(path)))
+        edc_app_chat_log_path_for(app, current_session_id_.c_str(), path, sizeof(path)))
         chat_log_path_ = path;
 
     LoadChatTranscriptFile(chat_log_path_);
@@ -697,7 +697,7 @@ void TUIWindow::AppendChatTranscriptTo(const std::string &path, const std::strin
     // A session's directory only exists once the session has been saved, and a
     // command-only session (e.g. /help) may never be saved before its first line
     // is displayed — make sure the parent is there before appending.
-    edc_app_ensure_parent_dir(agent, path.c_str());
+    edc_app_ensure_parent_dir(app, path.c_str());
 
     // A previous process may have died mid-append, leaving a fragment without
     // its newline. Re-terminate it first: otherwise this line lands on top of it
@@ -709,7 +709,7 @@ void TUIWindow::AppendChatTranscriptTo(const std::string &path, const std::strin
     // Symlink-safe append: the transcript lives under the model-writable
     // workspace, so refuse to follow a planted symlink (see
     // edc_file_fopen_safe / edc_app_write_file).
-    edc_app_write_file(agent, path.c_str(), line.data(), line.size(), /*append=*/true, /*under_workspace=*/true);
+    edc_app_write_file(app, path.c_str(), line.data(), line.size(), /*append=*/true, /*under_workspace=*/true);
 }
 
 void TUIWindow::SyncWorkingFromSnapshot(const TaskSnapshot *snap)
@@ -825,7 +825,7 @@ void TUIWindow::TickAnimations()
     /* Prefer the active session's bound working directory (what the model is
      * told via {{cwd}} and where tools run); fall back to the process launch
      * directory for an unbound session. */
-    const char *dir_src = edc_app_active_session_workdir(agent, wd_buf, sizeof(wd_buf))
+    const char *dir_src = edc_app_active_session_workdir(app, wd_buf, sizeof(wd_buf))
                               ? wd_buf
                               : (::getcwd(cwd_buf, sizeof(cwd_buf)) ? cwd_buf : nullptr);
     const std::string dir = dir_src ? ShortenHome(dir_src) : std::string();
@@ -847,7 +847,7 @@ void TUIWindow::TickAnimations()
     // the filler; when the pane is narrow drop fields from the middle outward:
     // first the model, then the sandbox state, leaving "/help" alone.
     const int budget = pane_w - ::ftxui::string_width(left) - 1;
-    const std::string sandbox = std::string("sandbox:") + (edc_app_sandbox_enabled(agent) ? "on" : "off");
+    const std::string sandbox = std::string("sandbox:") + (edc_app_sandbox_enabled(app) ? "on" : "off");
 
     std::string right = kFooterHelp;
     const std::string sandbox_help = sandbox + " · " + kFooterHelp;
@@ -1027,7 +1027,7 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
 
 TUIWindow::~TUIWindow()
 {
-    edc_app_free(agent);
+    edc_app_free(app);
     if (bracketed_paste_on_)
         DisableBracketedPaste();
 }
@@ -1172,7 +1172,7 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     const std::string task_id = task_id_c ? task_id_c : "";
     // Session that owns the producing task (NULL for user input / snapshots).
     // Lets output of a background session be kept out of the visible tab (the
-    // agent already persisted it into that session's own messages).
+    // app already persisted it into that session's own messages).
     const char *session_id_c = edc_app_message_session_id(message);
     const std::string session_id = session_id_c ? session_id_c : "";
     // Sender-declared render preference (PLAIN/MARKDOWN). Read here while
@@ -1185,7 +1185,7 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     auto add_message = [tui, kind, text, header, task_id, session_id, render_pref, ts, from_active_task]() {
         // 展示闸门 (P3 ③: 从 core 移到前端): 显示中的 session 只显示它 **active
         // task** 的产出 —— 同 session 里非 active task 的输出静默。以前这条判断在
-        // scheduler/agent 里做 (靠"当前绑定的 session"这份副本); 现在 core 不知道
+        // scheduler/app 里做 (靠"当前绑定的 session"这份副本); 现在 core 不知道
         // 谁在看, 只声明事实 (from_active_task), 由这里决定 (见 RouteLiveOutput)。
         if (RouteLiveOutput(session_id, from_active_task, tui->current_session_id_) ==
             LiveOutputRoute::kSilent)
@@ -1232,7 +1232,7 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
         if (!session_id.empty() && session_id != tui->current_session_id_)
         {
             char path[4096];
-            if (edc_app_chat_log_path_for(tui->agent, session_id.c_str(), path, sizeof(path)))
+            if (edc_app_chat_log_path_for(tui->app, session_id.c_str(), path, sizeof(path)))
                 tui->AppendChatTranscriptTo(path, kind_str, header, text, task_id, render_pref);
             return;
         }
@@ -1260,7 +1260,7 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     };
 
     // Before Loop() starts there is no render thread, so mutating the tree
-    // directly is safe (the agent cannot have produced channel traffic yet).
+    // directly is safe (the app cannot have produced channel traffic yet).
     if (tui->screen_)
         tui->screen_->Post(std::move(add_message));
     else

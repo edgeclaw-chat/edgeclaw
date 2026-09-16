@@ -25,9 +25,9 @@ bool edc_sandbox_init(struct edc_config *conf)
     if (conf->enable_sandbox)
     {
         /* Kernel isolation is applied per-command inside the embedded sandbox
-         * helper (see src/agent/sandbox_helper.c), NOT in the agent process:
+         * helper (see src/sandbox/sandbox_helper.c), NOT in the app process:
          * the layers are irreversible and inherited, so applying them here
-         * would sandbox the agent itself. In-process enforcement is the
+         * would sandbox the app itself. In-process enforcement is the
          * tool-layer path verification in edc_sandbox_verify_path(). */
         log_info("edc_sandbox: kernel isolation runs in the per-command helper; "
                  "path validation is the in-process enforcement");
@@ -76,7 +76,7 @@ static bool path_allowed(struct edc_config *conf, const char *resolved_path, boo
         return true;
 
     /* Deny wins over every allow entry, for reads and writes alike. This covers
-     * the file tools (which run in the agent process and have no kernel
+     * the file tools (which run in the app process and have no kernel
      * sandbox); exec_shell is additionally masked at the mount level. */
     if (path_prefix_match_len(resolved_path, conf->sandbox_deny_paths) >= 0)
         return false;

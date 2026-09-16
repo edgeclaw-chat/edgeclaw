@@ -583,7 +583,7 @@ edc_actor_t *edc_llm_actor_new(struct edc_config *config)
     edc_llm_actor_state_t *state = g_new0(edc_llm_actor_state_t, 1);
     /* Deep copy: the actor owns its own provider settings. A shallow struct
      * copy would share the sds pointers with config->llm_api_conf, so when the
-     * agent frees/replaces the config strings (runtime /connect) the actor's
+     * app frees/replaces the config strings (runtime /connect) the actor's
      * copy dangles and the next sdsfree() double-frees -> abort(). */
     state->api_conf.model = config->llm_api_conf.model ? sdsdup(config->llm_api_conf.model) : NULL;
     state->api_conf.api_key = config->llm_api_conf.api_key ? sdsdup(config->llm_api_conf.api_key) : NULL;

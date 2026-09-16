@@ -568,7 +568,7 @@ cc_test(
     ],
     linkstatic = True,
     linkopts = TUI_TEST_LINK_OPTS,
-    # 这个 harness 会真起一个 agent（临时 HOME + 最小 config），比纯渲染测试慢。
+    # 这个 harness 会真起一个 app（临时 HOME + 最小 config），比纯渲染测试慢。
     timeout = "moderate",
     local_defines = select({
         "//:debug": ["EDGECLAW_DEBUG"],
