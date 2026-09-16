@@ -48,6 +48,7 @@ cc_library(
     ],
     includes = ["."],
     deps = [
+        "//src/app:api",
         "//src/app:app",
         "//src/common:common",
         "@cjson//:cjson",
@@ -87,6 +88,7 @@ cc_binary(
     ],
     deps = [
         "//src/actor:actors",
+        "//src/app:api",
         "//src/app:app",
         "//src/common:common",
         "//src/common:utlist_fix",

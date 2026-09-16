@@ -554,6 +554,28 @@ cc_test(
     }),
 )
 cc_test(
+    name = "test_tui_dispatch",
+    srcs = [
+        "test_tui_dispatch.cpp",
+        "tui_dispatch_msgs.c",
+        "tui_dispatch_msgs.h",
+    ],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+        "@sds//:sds",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    # 这个 harness 会真起一个 agent（临时 HOME + 最小 config），比纯渲染测试慢。
+    timeout = "moderate",
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
     name = "test_theme",
     srcs = ["test_theme.cpp"],
     deps = [

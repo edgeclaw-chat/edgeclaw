@@ -23,6 +23,7 @@
 #include <memory>
 #include <string>
 #include <sys/ioctl.h>
+#include "edc_api.h"
 #include "edc_app.h"
 #include <unistd.h>
 #include <vector>
@@ -575,6 +576,13 @@ void TUIWindow::SaveInputHistory()
 
 void TUIWindow::RequestTaskSnapshot()
 {
+    /* 测试模式: 不向 agent 要树。理由 —— 构造期 (:464) 与回调里 (:1077) 的拉取
+     * 都会走一个**异步**回包, 而没 SetScreen() 时那回包是内联在 runner 线程上
+     * 跑进本函数的调用方 (on_channel_adapter_send 的 else 分支), 会和测试自己的
+     * 断言抢同一个 widget。设了它就完全没有这条路 (tests/test_tui_dispatch.cpp)。
+     * 本仓既有先例: EDGECLAW_SNAPSHOT_TRACE 也是 env 开关。 */
+    if (getenv("EDGECLAW_TUI_NO_PULL"))
+        return;
     last_snapshot_request_ = std::chrono::steady_clock::now();
     // 点名叫自己**正在显示**的那棵树 (P3 ①b) —— 别人的树不上路。
     edc_app_request_task_snapshot(agent, current_session_id_.c_str());

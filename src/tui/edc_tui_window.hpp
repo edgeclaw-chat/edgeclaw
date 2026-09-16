@@ -1,4 +1,5 @@
-#include "edc_app.h"
+#include "edc_api.h" /* 前端面 (投影): 消息窗口 + 读口 + 前端动作 */
+#include "edc_app.h" /* 装配根: edc_app_new / free */
 #include "edc_task_snapshot.hpp"
 #include "edc_clipboard.hpp"
 #include <chrono>
@@ -87,6 +88,12 @@ class TUIWindow : public ::ftxui::ComponentBase
     // breathing: processing dots + the in_progress todo row) from the main-loop
     // iteration; see TickAnimations().
     void TickAnimations();
+
+    // 通道消息进本窗口的**唯一**入口 (生产路径由 `edc_app_channel_adapter_init`
+    // 注册的就是它)。公开是给测试用的: 可以直接喂一条 `struct edc_channel_message`
+    // 进来 —— 没调 `SetScreen()` 时回调**同步**执行, 所以不必起 ftxui 事件循环,
+    // 喂完就能渲染断言 (见 tests/test_tui_dispatch.cpp)。
+    static void on_channel_adapter_send(void *instance, struct edc_channel_message *message);
 
   private:
     // Append the current input as a user message and clear the box. A bare
@@ -210,7 +217,5 @@ class TUIWindow : public ::ftxui::ComponentBase
     // Throttles the periodic snapshot refresh, which is what catches
     // background-task state changes (they send no channel message).
     std::chrono::steady_clock::time_point last_snapshot_request_;
-
-    static void on_channel_adapter_send(void *instance, struct edc_channel_message *message);
 };
 } // namespace edc
