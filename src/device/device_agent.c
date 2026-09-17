@@ -10,8 +10,11 @@
 #include <termios.h>
 #include <unistd.h>
 
-/* Bionic on ARM64 requires TLS segment p_align >= 64.
-   Force the required alignment via an assembly .tdata entry. */
+/* Bionic on ARM64 requires TLS segment p_align >= 64, which the compiler does
+ * not guarantee on its own. Force it via an assembly .tdata entry. Guarded: the
+ * ELF-only .section syntax (and the requirement itself) is meaningless
+ * elsewhere -- Mach-O and COFF reject this directive outright. */
+#if defined(__BIONIC__) && defined(__aarch64__)
 __asm__(
     ".section .tdata,\"awT\",@progbits\n"
     ".p2align 6\n"
@@ -19,6 +22,7 @@ __asm__(
     ".zero 64\n"
     ".text\n"
 );
+#endif
 
 static speed_t int_to_baud(int baud)
 {
