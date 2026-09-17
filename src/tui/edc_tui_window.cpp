@@ -780,12 +780,7 @@ void TUIWindow::TickAnimations()
 
 ::ftxui::Element TUIWindow::RenderMain()
 {
-    // 只看模式: 整个左侧面板是"读 history"的视图 —— 输入框消失, 那一行换成返回提示
-    // (输入这时也不接受: 见 OnEvent 的闸门)。Esc 是唯一的出口。
-    auto input_row = history_view_
-                         ? ::ftxui::hbox({::ftxui::text(" history view · Esc 返回 ") |
-                                          ::ftxui::color(style::palette().accent)})
-                         : ::ftxui::hbox({prompt_, input_->Render() | ::ftxui::flex});
+    auto input_row = ::ftxui::hbox({prompt_, input_->Render() | ::ftxui::flex});
 
     // The status row shares this pane's width (the input's), so the right-aligned
     // model + "/help" stop at the input's right edge and never spill into the
@@ -801,7 +796,26 @@ void TUIWindow::TickAnimations()
             screen_->RequestAnimationFrame();
     }
 
-    ::ftxui::Elements children = {chat | ::ftxui::flex, ::ftxui::separator(), input_row, ::ftxui::separator()};
+    // 只看模式: 输入组件**整块不渲染** (连它那两行分隔线一起) —— 面板只剩历史 + 状态行。
+    // 不拿一行文字去顶输入框的位置: 那样看着像"输入框还在, 只是被禁用", 比禁用它更怪。
+    // 返回提示做成历史面板右上角的一枚徽标 (与 "Copied" 芯片同一个 dbox 手法)。
+
+    ::ftxui::Elements children = {chat | ::ftxui::flex, ::ftxui::separator()};
+    if (!history_view_)
+    {
+        children.push_back(input_row);
+        children.push_back(::ftxui::separator());
+    }
+
+    // 只看模式: 输入组件整块不在屏上, 返回提示就放底部这一行 (与状态行同一个位置)。
+    // 输入框原来的位置上**什么都不摆** —— 摆一行字反而像"输入框被禁用了"。
+    if (history_view_)
+    {
+        children.push_back(::ftxui::hbox({::ftxui::text(" 历史 · Esc 返回 ") |
+                                          ::ftxui::color(style::palette().accent)}));
+        children.push_back(::ftxui::text(""));
+        return ::ftxui::vbox(std::move(children));
+    }
 
     if (working_)
     {
