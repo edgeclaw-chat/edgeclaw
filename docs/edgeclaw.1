@@ -4,35 +4,25 @@ NAME
      edgeclaw — AI-powered personal assistant agent with shell-like syntax
 
 SYNOPSIS
-     edgeclaw [--setup] [--sandbox] [-c CMD] [--help] [--version] [SCRIPT]
+     edgeclaw
 
 DESCRIPTION
-     EdgeClaw is a command-line AI assistant offering bash-inspired task man-
-     agement.  It supports multi-turn conversations, tool calling, pipeline
-     chaining, I/O redirection, variable expansion, and Unix-style job con-
-     trol for orchestrating multiple parallel agent tasks.
+     EdgeClaw is an interactive terminal AI assistant offering bash-inspired
+     task management.  It supports multi-turn conversations, tool calling,
+     pipeline chaining, I/O redirection, variable expansion, and Unix-style
+     job control for orchestrating multiple parallel agent tasks.
 
 OPTIONS
-     -s, --setup        Run initial setup wizard and exit.
-     -S, --sandbox      Enable filesystem sandbox for tool execution.
-     -c, --command CMD  Execute a single command and exit (non-interactive).
-     -h, --help         Display help and exit.
-     -V, --version      Output version information and exit.
-
-     If a file path is given as the final argument and it is not an option,
-     edgeclaw executes each non-empty, non-comment line as a command
-     (shell script mode), then exits.
+     The interactive TUI takes no command-line arguments.  On first run,
+     when config.json does not exist, it is created with defaults.
 
 GETTING STARTED
            $ edgeclaw
-           EdgeClaw CLI ready.  Type /help for commands.
-           > explain this code
-           [task] created 1 (group 1)
-           ...
+           EdgeClaw TUI ready.
 
-     Type and press Enter.  All non-/ input creates a task in the current
-     foreground group and sends it to the LLM.  Conversations are saved per
-     session under workspace/<session_id>/.
+     Type a message in the input box and press Enter.  All non-/ input
+     creates a task in the current foreground group and sends it to the LLM.
+     Conversations are saved per session under workspace/<session_id>/.
 
      Tab completion is available for commands (type / then Tab) and will
      cycle through matching completions on subsequent Tab presses.
@@ -93,7 +83,7 @@ SHELL SYNTAX
            > !!
            > !3
        !!  — repeat the last command.
-       !n  — repeat the nth command from history (see /history).
+       !n  — repeat the nth command from history.
 
      Options on any shell command
            > "input text" --bg -d task1 --group dev --prompt reviewer
@@ -141,9 +131,13 @@ SHELL ARCHITECTURE
        cycle detection runs on every new dependency to prevent deadlocks.
 
        Dependency types:
-         JOIN      (|)       Source output injected into destination's LLM context.
-         SEQUENCE  (;)       Destination waits, no output injection.
-         PIPE      (reserved) Streaming mode — not yet implemented.
+         JOIN      (|)       Source output injected into destination's LLM
+                             context.  If the source is CANCELLED the
+                             dependency can never be satisfied, so the
+                             destination is CANCELLED too (cascades).
+         SEQUENCE  (;)       Destination waits, no output injection.  If the
+                             source is CANCELLED only this edge is dropped;
+                             the destination stays runnable.
 
 TASK MODEL
      Three-layer Unix-like process model:
@@ -170,9 +164,24 @@ TASK STATES
      Tasks reach COMPLETED on final LLM response; CANCELLED when stopped;
      ERROR on failure.
 
+     Restart behavior: unfinished tasks are persisted as-is on exit; on load
+     every unfinished task is parked as SUSPENDED.  /task resume [tid]
+     re-derives the state to return to:
+       - unsatisfied deps            -> WAITING_DEPS
+       - unfinished tool call        -> TOOL_CALLING (re-run not-yet-started
+                                        tools; a mid-flight tool gets a
+                                        synthesized "interrupted" result)
+       - pending turn (no LLM reply) -> LLM_PROCESSING
+       - otherwise                   -> WAITING_INPUT
+
+     Failed tasks: a task that failed mid-run is ERROR but keeps its
+     half-finished turn (and any interrupted tool ledger).  /task resume
+     [tid] continues that turn instead of starting over.
+
      - COMPLETED tasks persist until reclaimed with /task join.
      - WAITING_DEPS tasks accept input and queue it until deps resolve.
-     - SUSPENDED tasks can be resumed.
+     - SUSPENDED tasks are parked (e.g. after a restart); /task resume revives.
+     - ERROR tasks failed mid-run; /task resume continues their unfinished turn.
 
 SHELL-LIKE JOB CONTROL
      Shell            EdgeClaw
@@ -184,31 +193,31 @@ SHELL-LIKE JOB CONTROL
      cmd >> file      task >> log    (append output)
      cmd 2> file      task 2> err    (stderr redirect)
      cmd < file       task < in.txt  (input from file)
-     jobs             /jobs  (current group only)
-     fg %n            /fg <id>
-     bg %n            /bg [id]
-     kill %n          /cancel <id>
-     Ctrl+Z           /task suspend <id>
-     fg / bg (resume) /task resume <id>
+     jobs             /task list
+     fg %n            /task fg <id>
+     bg %n            /task bg [id]
+     kill %n          /task stop <id>
      !!   !n          !!  !3  (history expansion)
      $LAST  $1  $$    variable expansion
 
 COMMAND REFERENCE
      Session
-     /new          Start a new session.
-     /stop         Cancel all active tasks in foreground group.
-     /help         Show help message.
-     /exit         Exit edgeclaw.
-     /whoami       Show current session, model, and group info.
-     /model [name] Show or set the current LLM model name.
-     /history      Show the last 20 CLI history entries.
-
-     Job control
-     /jobs         List tasks in the current foreground group with IDs.
-     /tasks        List all tasks in all groups (alias: /task list).
-     /cancel <id>  Cancel a task by id.
-     /fg <id>      Bring a task to the foreground.
-     /bg [id]      Move a task to the background (no arg: current fg).
+     /session new [name]           Start a new session (optionally named).
+     /session switch <name_or_id>  Switch to another session.
+     /session list                 List all sessions.
+     /session info                 Show current session details.
+     /session save                 Persist the current session's history
+                                   and state.
+     /session stop                 Cancel all active tasks in the current
+                                   session.
+     /session remove <name_or_id>  Remove a session (the last one cannot
+                                   be removed).
+     /session rename <old> <new>   Rename a session.
+     /help                         Show help message.
+     /whoami                       Show current session, model, and group info.
+     /model [name]                 Show or set the current LLM model name.
+     /connect                      Configure the LLM provider (API URL, model,
+                                   API key) in the TUI.
 
      Task creation
      /task new <desc>                  Create new group + task (foreground).
@@ -229,19 +238,19 @@ COMMAND REFERENCE
      Foreground / active
      /task fg <tid>           Foreground + set as active task.
      /task bg                 Move current foreground to background.
-     /task switch <tid>       Set active task within foreground group.
-                               Only the active task outputs to terminal.
 
      Task control
-     /task stop <tid>         Cancel (SIGTERM — notifies deps).
-     /task stop --force <id>  Force-kill (SIGKILL — no dep notification).
-     /task stop --group <id>  Cancel all tasks in a process group.
-     /task suspend <tid>      Pause a task (Ctrl+Z).
-     /task resume <tid>       Resume a suspended task.
+     /task stop [tid]         Cancel a task (SIGTERM — notifies deps).
+                              Without an id, stops the active task of the
+                              foreground group; errors if the id is not
+                              found.
+     /task resume [tid]       Resume a SUSPENDED, ERROR or CANCELLED task:
+                              re-derives state (deps / tool chain / turn) and
+                              drives it; an ERROR or CANCELLED task continues
+                              its unfinished turn. Without an id, resumes the
+                              active task of the foreground group.
      /task join <tid>         Show output, auto-inject into active task
                                (or create one), then reclaim.
-     /task prompt <tid> <name>
-                               Set subagent prompt.
 
      Pipelines
      /task chain <src> <dst>  dst waits for src.  When src completes,
@@ -251,8 +260,8 @@ COMMAND REFERENCE
 
 OUTPUT
      Only the session's active task outputs to the terminal.  Other tasks
-     complete silently; use /task join to retrieve output.  /task fg and
-     /task switch change the active task.
+     complete silently; use /task join to retrieve output.  /task fg
+     changes the active task.
 
 CONTEXT SHARING
      Within a group: all tasks share the full conversation history.
@@ -291,9 +300,10 @@ WORKFLOW EXAMPLES
      Background + pipeline
            > analyze the error logs &
            > audit API endpoints &
-           > /jobs
-             [1] running  1  "analyze the error logs"   [bg]
-             [2] running  2  "audit API endpoints"      [bg]
+           > /task list
+             - [fg] 1 (2)
+                 - [L]* 1   LLM_PROCESSING  analyze the error logs
+                 - [M]  2   LLM_PROCESSING  audit API endpoints
            > merge both results -d 1 -d 2 > merged.md
 
      Variable expansion (two-phase)
@@ -310,16 +320,9 @@ WORKFLOW EXAMPLES
      Fork with subagent
            > /task fork task-0 "audit the database schema" --prompt dba
 
-     Single command (non-interactive)
-           $ edgeclaw -c "check src/main.c for bugs"
-
-     Script file
-           $ edgeclaw review.ecs
-
 FILES
      ~/.edgeclaw/                        EdgeClaw home directory.
      ~/.edgeclaw/config.json             Configuration (API key, model).
-     ~/.edgeclaw/.cli_history            CLI command history.
      ~/.edgeclaw/workspace/              Workspace root.
      ~/.edgeclaw/workspace/<sid>/        Per-session directory.
      ~/.edgeclaw/workspace/<sid>/history.jsonl  Session history.

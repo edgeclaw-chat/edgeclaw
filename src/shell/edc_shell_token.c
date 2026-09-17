@@ -151,95 +151,12 @@ edc_shell_token_t *edc_shell_tokenize(const char *input, int *count)
     }
 
     EMIT_TEXT();
+    /* EMIT_TEXT() always leaves `cur` pointing at a fresh sds (emitted above,
+     * or a new empty one); this final one is never handed to a token, so
+     * release it here. */
+    sdsfree(cur);
     memset(&tokens[n], 0, sizeof(edc_shell_token_t));
     *count = n;
     return tokens;
 }
 
-sds edc_shell_tokens_join(edc_shell_token_t *tokens, int start, int end)
-{
-    sds result = sdsempty();
-    for (int i = start; i < end; i++)
-    {
-        if (tokens[i].type == TOK_TEXT && tokens[i].value)
-        {
-            if (sdslen(result) > 0)
-                result = sdscat(result, " ");
-            result = sdscatsds(result, tokens[i].value);
-        }
-        else if (tokens[i].type == TOK_BG)
-        {
-            result = sdscat(result, " &");
-        }
-    }
-    sdstrim(result, " \t");
-    return result;
-}
-
-int *edc_shell_tokens_split_pipe(edc_shell_token_t *tokens, int count, int *n)
-{
-    int cap = 4;
-    *n = 0;
-    int *ranges = malloc((size_t)cap * 2 * sizeof(int));
-    int seg_start = 0;
-
-    for (int i = 0; i < count; i++)
-    {
-        if (tokens[i].type == TOK_PIPE)
-        {
-            if (*n * 2 >= cap)
-            {
-                cap *= 2;
-                ranges = realloc(ranges, (size_t)cap * 2 * sizeof(int));
-            }
-            ranges[*n * 2] = seg_start;
-            ranges[*n * 2 + 1] = i;
-            (*n)++;
-            seg_start = i + 1;
-        }
-    }
-    if (*n * 2 >= cap)
-    {
-        cap *= 2;
-        ranges = realloc(ranges, (size_t)cap * 2 * sizeof(int));
-    }
-    ranges[*n * 2] = seg_start;
-    ranges[*n * 2 + 1] = count;
-    (*n)++;
-
-    return ranges;
-}
-
-int *edc_shell_tokens_split_seq(edc_shell_token_t *tokens, int count, int *n)
-{
-    int cap = 4;
-    *n = 0;
-    int *ranges = malloc((size_t)cap * 2 * sizeof(int));
-    int seg_start = 0;
-
-    for (int i = 0; i < count; i++)
-    {
-        if (tokens[i].type == TOK_SEQ)
-        {
-            if (*n * 2 >= cap)
-            {
-                cap *= 2;
-                ranges = realloc(ranges, (size_t)cap * 2 * sizeof(int));
-            }
-            ranges[*n * 2] = seg_start;
-            ranges[*n * 2 + 1] = i;
-            (*n)++;
-            seg_start = i + 1;
-        }
-    }
-    if (*n * 2 >= cap)
-    {
-        cap *= 2;
-        ranges = realloc(ranges, (size_t)cap * 2 * sizeof(int));
-    }
-    ranges[*n * 2] = seg_start;
-    ranges[*n * 2 + 1] = count;
-    (*n)++;
-
-    return ranges;
-}

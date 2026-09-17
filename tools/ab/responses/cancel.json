@@ -1,0 +1,15 @@
+[
+  {
+    "__delay": 8,
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "LATE-REPLY-MUST-NOT-APPEAR"
+        },
+        "finish_reason": "stop"
+      }
+    ]
+  }
+]

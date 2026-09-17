@@ -4,13 +4,18 @@
 #include "sds.h"
 #include <stdbool.h>
 
+/* task 描述 (desc) 的最大 UTF-8 字符数，超出截断并追加 "..." */
+#define EDC_TASK_DESC_MAX 30
+
 /* ── /task 命令解析结果 ────────────────────────────────────── */
 
 struct edc_cmd_task_opts
 {
     sds desc;     /* 任务描述 (剩余文本) */
-    sds input;    /* "引号内输入" — @ 语法专用 */
-    bool bg;      /* --bg 后台 */
+    sds input;    /* 引号内输入 — @ 语法专用 */
+    bool bg;        /* --bg 后台 */
+    bool suspended; /* --suspended: 创建即挂起, 不立即执行, 等 /task resume */
+    bool literal; /* input 来自 '''/''' 块或单引号：不解析 $ 变量 */
     sds *dep_ids; /* -d <id> 依赖列表 */
     int dep_count;
     sds group_id;    /* --group <id> / -g <id> */

@@ -1,0 +1,15 @@
+# 后台任务的状态变化 —— 这条通路今天**只**由 500ms 轮询承担。
+# 删掉轮询之后必须改由 reason=state 承担，本场景就是那条断言的载体。
+#
+# 断言：后台任务最终 COMPLETED 这件事，必须以 reason=state 送达侧栏。
+#   C3 之前：后台任务不是 fg active task → 推送闸门挡住 → 只会以 reason=poll 出现 → 红。
+#   C3 之后：任何 task 的状态变化都推（合并到每条消息一次）→ reason=state 出现 → 绿。
+
+wait 1500
+
+# --bg: 创建**后台**任务。注意 /task new 的 flag 只有在引号输入之后才被解析。
+send /task new """bg probe""" --bg\n
+
+# 等它被调度、进 LLM、完成（后台状态变化）
+wait 6000
+wait 1500

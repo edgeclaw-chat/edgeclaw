@@ -52,7 +52,13 @@ int main(const int argc, const char *argv[])
 
     uv_sem_init(&done_sem, 0);
     struct edc_https_client *client = edc_https_client_new(NULL);
-    edc_https_client_connect(client, argv[1], edc_https_client_fn, NULL);
+    if (edc_https_client_connect(client, argv[1], edc_https_client_fn, NULL) < 0)
+    {
+        fprintf(stderr, "invalid url: %s\n", argv[1]);
+        edc_https_client_free(client);
+        uv_sem_destroy(&done_sem);
+        return -1;
+    }
 
     uv_sem_wait(&done_sem);
     edc_https_client_free(client);

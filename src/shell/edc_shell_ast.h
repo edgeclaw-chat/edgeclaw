@@ -1,14 +1,17 @@
 #ifndef __EDC_SHELL_AST_H__
 #define __EDC_SHELL_AST_H__
 
+#include "edc_channel_actor.h"
 #include "edc_shell_token.h"
 #include "edc_task.h"
 #include "sds.h"
 #include <stdbool.h>
 
-struct edc_agent;
+struct edc_session;
+
+struct edc_scheduler;
+struct edc_session_manager;
 struct edc_actor;
-struct edc_channel;
 
 typedef enum
 {
@@ -53,7 +56,11 @@ void ast_free(ast_node_t *node);
 /* Parse tokens into AST. is_at: @ prefix on the input. */
 ast_node_t *ast_parse(edc_shell_token_t *tokens, int count, bool is_at);
 
-/* Walk the AST and execute via agent. */
-void ast_execute(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel *channel, ast_node_t *root);
+/* Walk the AST and execute via the app. */
+/* |session| = 这条输入所属的 session (调用方由消息的 session 标签解析, 见
+ * edc_session_store_resolve_session)。命令建出来的任务/组都落在它上面 —— P3 之后
+ * scheduler 不再有"当前 session", 所以必须显式传。 */
+void ast_execute(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to, ast_node_t *root,
+                 struct edc_session *session);
 
 #endif

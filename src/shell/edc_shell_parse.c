@@ -1,6 +1,6 @@
+#include "edc_cmd_parse.h"
 #include "edc_shell_ast.h"
 #include "edc_shell_token.h"
-#include "edc_cmd_parse.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -12,6 +12,7 @@ static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos)
 {
     ast_node_t *cmd = ast_new(AST_CMD);
     sds text = sdsempty();
+    bool literal = false;
 
     /* Collect all TOK_TEXT into one string. The tokenizer doesn't split on
      * whitespace, so flags like -d / -g / --bg / --prompt end up embedded
@@ -49,12 +50,16 @@ static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos)
 
         cmd->bg = t_opts.bg;
 
+        /* Literal input (''' / ' blocks) keeps $VAR text verbatim: no
+         * deferred variable expansion is registered for it. */
+        literal = t_opts.literal;
+
         /* Merge dependencies from -d flags */
         if (t_opts.dep_count > 0)
         {
             cmd->dep_ids = t_opts.dep_ids;
             cmd->dep_count = t_opts.dep_count;
-            t_opts.dep_ids = NULL;  /* transfer ownership */
+            t_opts.dep_ids = NULL; /* transfer ownership */
             t_opts.dep_count = 0;
         }
 
@@ -77,8 +82,9 @@ static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos)
 
     cmd->text = text;
 
-    /* detect $VAR references: mark for AST_VAR_ASSIGN wrapping */
-    if (text && strchr(text, '$'))
+    /* detect $VAR references: mark for AST_VAR_ASSIGN wrapping.
+     * Literal inputs ('''/'-quoted) never expand, so they skip this. */
+    if (text && strchr(text, '$') && !literal)
         cmd->has_deferred_vars = true;
 
     return cmd;

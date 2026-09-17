@@ -1,4 +1,6 @@
 #include "markdown.hpp"
+#include "edc_style.hpp"
+#include "edc_text_util.hpp"
 
 #include <ftxui/dom/table.hpp>
 #include <md4c.h>
@@ -71,32 +73,54 @@ struct HeadingB : ParaB
     int level = 1;
     Element Finish() override
     {
+        // Heading colors come from the central Monokai palette
+        // (edc_style.hpp): every ATX level keeps its markdown prefix
+        // ("## ", "### ", ...) and h1 is a reversed banner whose
+        // background only hugs the text, walking the Monokai token
+        // ladder pink -> yellow -> green -> cyan.
+        const auto &pal = style::palette();
         Color c;
         switch (level)
         {
         case 1:
-            c = Color::Yellow;
+            c = pal.md_h1;
             break;
         case 2:
-            c = Color::Cyan;
+            c = pal.md_h2;
             break;
         case 3:
-            c = Color::Green;
+            c = pal.md_h3;
             break;
         default:
-            c = Color::GrayLight;
+            c = pal.md_h4;
             break;
         }
-        Element head = ParaB::Finish() | bold | color(c);
-        if (level <= 2)
-            return vbox({head, separator()});
-        return head;
+        Elements els;
+        if (level == 1)
+        {
+            // Band padding: words were given the banner background while the
+            // inline text was built (State::h1); pad the two ends here.
+            els.push_back(text(" ") | bgcolor(pal.md_h1_bg));
+            for (auto &w : words)
+                els.push_back(std::move(w));
+            els.push_back(text(" ") | bgcolor(pal.md_h1_bg));
+        }
+        else
+        {
+            els.push_back(text(std::string(level, '#') + " "));
+            for (auto &w : words)
+                els.push_back(std::move(w));
+        }
+        words.clear();
+        Element head = hflow(std::move(els)) | bold | color(c);
+        // Blank line above and below, so the banner breathes in the flow.
+        return vbox({text(""), std::move(head), text("")});
     }
 };
 
 struct CodeB : Builder
 {
-    std::string lang, buf;
+    std::string buf;
     void AddText(std::string_view s)
     {
         buf.append(s);
@@ -109,14 +133,16 @@ struct CodeB : Builder
         {
             if (i == buf.size() || buf[i] == '\n')
             {
-                lines.push_back(text(buf.substr(start, i - start)));
+                // Fenced code is an indented, borderless, unlabeled block
+                // in the Monokai foreground color, not a framed window.
+                lines.push_back(text("  " + buf.substr(start, i - start)));
                 start = i + 1;
             }
         }
-        Element body = vbox(std::move(lines)) | color(Color::Cyan);
-        if (lang.empty())
-            return window(text("code"), body);
-        return window(text(lang), body);
+        const auto &pal = style::palette();
+        Element body = vbox(std::move(lines)) | color(pal.md_code);
+        // Blank lines above and below keep the borderless block readable.
+        return vbox({text(""), std::move(body), text("")});
     }
 };
 
@@ -129,8 +155,9 @@ struct QuoteB : Builder
     }
     Element Finish() override
     {
+        const auto &pal = style::palette();
         return hbox({
-            text("│ ") | color(Color::GrayDark),
+            text("│ ") | color(pal.md_quote),
             vbox(std::move(children)) | flex,
         });
     }
@@ -180,8 +207,9 @@ struct ListB : Builder
     void AddBlock(Element e) override
     {
         std::string bullet = ordered ? (std::to_string(index++) + ". ") : "• ";
+        const auto &pal = style::palette();
         items.push_back(hbox({
-            text(bullet) | color(Color::Blue),
+            text(bullet) | color(pal.md_list),
             std::move(e) | flex,
         }));
     }
@@ -193,6 +221,14 @@ struct ListB : Builder
     }
 };
 
+// Pad a table cell with one space on each side so adjacent columns don't run
+// into each other.
+Element PadTableCell(Element cell)
+{
+    auto gap_x = emptyElement() | size(WIDTH, EQUAL, 1);
+    return hbox({gap_x, std::move(cell), gap_x});
+}
+
 struct TableB : Builder
 {
     std::vector<std::vector<Element>> rows;
@@ -203,12 +239,14 @@ struct TableB : Builder
     {
         if (rows.empty())
             return text("");
+        const auto &pal = style::palette();
         Table t(std::move(rows));
-        t.SelectAll().Border(LIGHT);
+        t.SelectAll().Border(LIGHT, color(pal.md_rule));
+        t.SelectAll().DecorateCells(PadTableCell);
         if (head_end > 0)
         {
             t.SelectRow(0).Decorate(bold);
-            t.SelectRow(0).SeparatorHorizontal(LIGHT);
+            t.SelectRow(0).SeparatorHorizontal(LIGHT, color(pal.md_rule));
         }
         return t.Render();
     }
@@ -222,16 +260,32 @@ struct State
 {
     std::vector<std::unique_ptr<Builder>> stack;
     Style style;
+    bool h1 = false; // currently inside an ATX level-1 heading (banner).
+    // Width the element tree will be laid out at, or 0 when unknown. See
+    // RenderMarkdown() and AddWord().
+    int wrap_cols = 0;
     Builder &top()
     {
         return *stack.back();
     }
 
+    // Inter-word space: uncolored normally, but inside an h1 banner the
+    // space cell must keep the banner background so the band is continuous.
+    Element GapSpace()
+    {
+        if (h1)
+            return text(" ") | bgcolor(style::palette().md_h1_bg);
+        return text(" ");
+    }
+
     Element StyledWord(std::string s)
     {
+        const auto &pal = style::palette();
         Element e = text(std::move(s));
-        if (style.code)
-            e = e | bgcolor(Color::GrayDark);
+        if (h1)
+            e = e | bgcolor(pal.md_h1_bg);
+        else if (style.code)
+            e = e | color(pal.md_code_inline) | bgcolor(pal.md_code_bg);
         if (style.bold)
             e = e | bold;
         if (style.italic)
@@ -239,8 +293,30 @@ struct State
         if (style.strike)
             e = e | strikethrough;
         if (!style.href.empty())
-            e = e | color(Color::Blue) | underlined | hyperlink(style.href);
+            e = e | color(pal.md_link) | underlined | hyperlink(style.href);
         return e;
+    }
+
+    // Hand one word to the current block, normally as a single flow item. A word that cannot
+    // fit on a line of its own -- an unbroken CJK run, a long URL or path -- is instead broken
+    // between code points, one item each, so the flow can wrap there: a flow only breaks
+    // *between* its children, so otherwise the word overflows the box and is clipped.
+    void AddWord(const std::string &word)
+    {
+        if (wrap_cols > 0 && StringWidth(word) > wrap_cols)
+        {
+            size_t i = 0;
+            while (i < word.size())
+            {
+                size_t len = Utf8SeqLen(static_cast<unsigned char>(word[i]));
+                if (i + len > word.size())
+                    len = word.size() - i;
+                top().AddInline(StyledWord(word.substr(i, len)));
+                i += len;
+            }
+            return;
+        }
+        top().AddInline(StyledWord(word));
     }
 };
 
@@ -252,6 +328,7 @@ int on_enter_block(MD_BLOCKTYPE type, void *det, void *ud)
     case MD_BLOCK_H: {
         auto h = std::make_unique<HeadingB>();
         h->level = static_cast<MD_BLOCK_H_DETAIL *>(det)->level;
+        s->h1 = (h->level == 1);
         s->stack.push_back(std::move(h));
         break;
     }
@@ -259,11 +336,7 @@ int on_enter_block(MD_BLOCKTYPE type, void *det, void *ud)
         s->stack.push_back(std::make_unique<ParaB>());
         break;
     case MD_BLOCK_CODE: {
-        auto c = std::make_unique<CodeB>();
-        auto *d = static_cast<MD_BLOCK_CODE_DETAIL *>(det);
-        if (d->lang.text && d->lang.size > 0)
-            c->lang.assign(d->lang.text, d->lang.size);
-        s->stack.push_back(std::move(c));
+        s->stack.push_back(std::make_unique<CodeB>());
         break;
     }
     case MD_BLOCK_QUOTE:
@@ -311,8 +384,11 @@ int on_leave_block(MD_BLOCKTYPE type, void * /*det*/, void *ud)
     auto *s = static_cast<State *>(ud);
     switch (type)
     {
+    case MD_BLOCK_H:
+        s->h1 = false;
+        break;
     case MD_BLOCK_HR:
-        s->top().AddBlock(separator());
+        s->top().AddBlock(separator() | color(style::palette().md_rule));
         return 0;
     case MD_BLOCK_TR: {
         auto *t = dynamic_cast<TableB *>(&s->top());
@@ -418,9 +494,20 @@ int on_text(MD_TEXTTYPE type, const MD_CHAR *txt, MD_SIZE sz, void *ud)
         return 0;
     }
 
+    // Inline code: keep the whole span in ONE text element so multi-word
+    // code (e.g. `bazel build`) renders as a single continuous Monokai chip
+    // instead of one highlight block per word. (An over-wide span is still
+    // broken up by AddWord, but the pieces stay adjacent so the chip reads as
+    // one block.)
+    if (s->style.code)
+    {
+        s->AddWord(std::string(sv));
+        return 0;
+    }
+
     if (type == MD_TEXT_SOFTBR || type == MD_TEXT_BR)
     {
-        s->top().AddInline(text(" "));
+        s->top().AddInline(s->GapSpace());
         return 0;
     }
 
@@ -430,9 +517,9 @@ int on_text(MD_TEXTTYPE type, const MD_CHAR *txt, MD_SIZE sz, void *ud)
         if (i == sv.size() || sv[i] == ' ')
         {
             if (i > start)
-                s->top().AddInline(s->StyledWord(std::string(sv.substr(start, i - start))));
+                s->AddWord(std::string(sv.substr(start, i - start)));
             if (i < sv.size())
-                s->top().AddInline(text(" "));
+                s->top().AddInline(s->GapSpace());
             start = i + 1;
         }
     }
@@ -441,9 +528,10 @@ int on_text(MD_TEXTTYPE type, const MD_CHAR *txt, MD_SIZE sz, void *ud)
 
 } // namespace
 
-Element RenderMarkdown(std::string_view md)
+Element RenderMarkdown(std::string_view md, int wrap_cols)
 {
     State st;
+    st.wrap_cols = wrap_cols;
     st.stack.push_back(std::make_unique<RootB>());
 
     MD_PARSER parser{};

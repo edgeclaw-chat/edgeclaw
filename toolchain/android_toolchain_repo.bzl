@@ -1,5 +1,10 @@
 load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
+load(
+    ":compilation_mode_features.bzl",
+    "COMPILATION_MODE_ACTIONS",
+    "COMPILATION_MODE_FEATURES",
+)
 
 def _normalize_path(path):
     parts = path.split("/")
@@ -52,11 +57,13 @@ def _generate_android_config_bzl(tool_paths, include_dirs, arch_config):
         include_entries.append('            "{}",'.format(d))
     include_dirs_str = "\n".join(include_entries)
 
-    features_str = ""
-    cc_toolchain_config_imports = 'load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "action_config", "tool")'
+    # Always include the compilation-mode feature set (see
+    # :compilation_mode_features.bzl) so --compilation_mode actually maps to
+    # -O flags; arch_config may add its own features on top.
+    features_str = COMPILATION_MODE_FEATURES
     if arch_config.get("features"):
-        features_str = arch_config["features"]
-        cc_toolchain_config_imports = 'load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "action_config", "tool", "feature", "flag_set", "flag_group")'
+        features_str = COMPILATION_MODE_FEATURES + arch_config["features"]
+    cc_toolchain_config_imports = 'load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "action_config", "tool", "feature", "flag_set", "flag_group", "with_feature_set")'
 
     return """{cc_toolchain_config_imports}
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
@@ -87,6 +94,7 @@ def _impl(ctx):
         ),
     ]
 
+{all_compile_actions}
     features = [
 {features}
     ]
@@ -118,6 +126,7 @@ android_toolchain_config = rule(
         tool_paths = tool_paths_str,
         include_dirs = include_dirs_str,
         features = features_str,
+        all_compile_actions = COMPILATION_MODE_ACTIONS,
         toolchain_identifier = arch_config["toolchain_identifier"],
         target_system_name = arch_config["target_system_name"],
         target_cpu = arch_config["target_cpu"],

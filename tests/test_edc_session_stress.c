@@ -48,11 +48,9 @@ static void test_lifecycle(void)
     C(s->groups == NULL, "groups starts NULL");
     C(s->active_task == NULL, "active_task starts NULL");
     C(s->config == cfg, "config set");
-    C(s->messages != NULL, "messages array exists");
-    C(s->timestamps == NULL, "timestamps starts NULL");
 
     T("edc_session_free cleans groups and active_task");
-    struct edc_task *t = edc_task_new("t1", s->session_id, "t1", "test", NULL);
+    struct edc_task *t = edc_task_new("t1", s->session_id, "t1", "test", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
     edc_session_add_group(s, g);
     edc_session_set_active_task(s, t);
@@ -78,12 +76,12 @@ static void test_group_mgmt(void)
     struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
     T("add_group / remove_group basic");
-    struct edc_task *l1 = edc_task_new("t-a1", s->session_id, "t-a1", "G1L", NULL);
+    struct edc_task *l1 = edc_task_new("t-a1", s->session_id, "t-a1", "G1L", edc_channel_adapter);
     struct edc_task_group *g1 = edc_task_group_new(l1);
     edc_session_add_group(s, g1);
     C(s->groups == g1, "first group at head");
 
-    struct edc_task *l2 = edc_task_new("t-a2", s->session_id, "t-a2", "G2L", NULL);
+    struct edc_task *l2 = edc_task_new("t-a2", s->session_id, "t-a2", "G2L", edc_channel_adapter);
     struct edc_task_group *g2 = edc_task_group_new(l2);
     edc_session_add_group(s, g2);
     C(s->groups == g1, "g1 still head");
@@ -120,7 +118,7 @@ static void test_find(void)
     struct edc_task_group *groups[10];
     for (int i = 0; i < 10; i++) {
         char id[32]; snprintf(id, sizeof(id), "task-%d", i);
-        struct edc_task *l = edc_task_new(id, s->session_id, id, "leader", NULL);
+        struct edc_task *l = edc_task_new(id, s->session_id, id, "leader", edc_channel_adapter);
         groups[i] = edc_task_group_new(l);
         edc_session_add_group(s, groups[i]);
     }
@@ -130,7 +128,7 @@ static void test_find(void)
     C(edc_session_find_group(s, "nonexistent") == NULL, "find nonexistent group");
 
     T("find_task cross-group");
-    struct edc_task *m2 = edc_task_new("member-2", s->session_id, "task-2", "member", NULL);
+    struct edc_task *m2 = edc_task_new("member-2", s->session_id, "task-2", "member", edc_channel_adapter);
     edc_task_group_add_task(groups[2], m2);
     C(edc_session_find_task(s, "member-2") == m2, "find member in group 2");
     C(edc_session_find_task(s, "task-7") == groups[7]->leader, "find leader in group 7");
@@ -157,11 +155,11 @@ static void test_active_task(void)
     T("set/get active_task");
     C(edc_session_get_active_task(s) == NULL, "initially NULL");
 
-    struct edc_task *t = edc_task_new("at1", s->session_id, "at1", "active", NULL);
+    struct edc_task *t = edc_task_new("at1", s->session_id, "at1", "active", edc_channel_adapter);
     edc_session_set_active_task(s, t);
     C(edc_session_get_active_task(s) == t, "get returns set value");
 
-    struct edc_task *t2 = edc_task_new("at2", s->session_id, "at2", "active 2", NULL);
+    struct edc_task *t2 = edc_task_new("at2", s->session_id, "at2", "active 2", edc_channel_adapter);
     edc_session_set_active_task(s, t2);
     C(edc_session_get_active_task(s) == t2, "overwrite works");
 
@@ -173,116 +171,6 @@ static void test_active_task(void)
 
     edc_task_free(t);
     edc_task_free(t2);
-    edc_session_free(s);
-    free_cfg(cfg);
-}
-
-/* ══════════════════════════════════════════════════════════════
-   5. get_messages_slice
-   ══════════════════════════════════════════════════════════════ */
-
-static void test_messages_slice(void)
-{
-    struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
-
-    T("slice from new session (has system prompt)");
-    cJSON *ms = edc_session_get_messages_slice(s, 0, 10);
-    size_t t = edc_session_get_message_count(s);
-    /* new session has system prompt + optionally history → at least 1 msg */
-    C(cJSON_GetArraySize(ms) == t, "slice(0,10) returns all msgs for small session");
-    cJSON_Delete(ms);
-
-    T("slice out of range → empty");
-    ms = edc_session_get_messages_slice(s, 999, 10);
-    C(cJSON_GetArraySize(ms) == 0, "from > total → empty");
-    cJSON_Delete(ms);
-
-    T("slice first N items");
-    /* session has system prompt + potential history — at least 1 message */
-    size_t total = edc_session_get_message_count(s);
-    C(total > 0, "session has messages");
-    ms = edc_session_get_messages_slice(s, 0, 1);
-    C(cJSON_GetArraySize(ms) == 1, "slice 1 item");
-    cJSON_Delete(ms);
-
-    T("slice count=0 → all");
-    ms = edc_session_get_messages_slice(s, 0, 0);
-    C(cJSON_GetArraySize(ms) == total, "count=0 gives all items");
-    cJSON_Delete(ms);
-
-    T("slice NULL session");
-    ms = edc_session_get_messages_slice(NULL, 0, 10);
-    C(ms != NULL, "NULL session → non-NULL empty array");
-    C(cJSON_GetArraySize(ms) == 0, "empty");
-    cJSON_Delete(ms);
-
-    T("slice with partial range");
-    if (total >= 2) {
-        ms = edc_session_get_messages_slice(s, 1, 1);
-        C(cJSON_GetArraySize(ms) == 1, "exact 1 from index 1");
-        cJSON_Delete(ms);
-    }
-
-    T("slice returns valid messages");
-    ms = edc_session_get_messages_slice(s, 0, 1);
-    if (cJSON_GetArraySize(ms) > 0) {
-        cJSON *item = cJSON_GetArrayItem(ms, 0);
-        cJSON *role = cJSON_GetObjectItem(item, "role");
-        C(role != NULL && cJSON_IsString(role), "sliced item has role field");
-    }
-    cJSON_Delete(ms);
-
-    edc_session_free(s);
-    free_cfg(cfg);
-}
-
-/* ══════════════════════════════════════════════════════════════
-   6. save_tasks / reload_tasks
-   ══════════════════════════════════════════════════════════════ */
-
-static void test_persistence(void)
-{
-    struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
-
-    T("save_tasks tags messages with task_id/group_id");
-    /* Add some messages directly */
-    cJSON *u1 = cJSON_CreateObject();
-    cJSON_AddStringToObject(u1, "role", "user");
-    cJSON_AddStringToObject(u1, "content", "hello");
-    cJSON_AddItemToArray(s->messages, u1);
-
-    cJSON *u2 = cJSON_CreateObject();
-    cJSON_AddStringToObject(u2, "role", "assistant");
-    cJSON_AddStringToObject(u2, "content", "hi there");
-    cJSON_AddItemToArray(s->messages, u2);
-
-    edc_session_save_tasks(s);
-
-    /* Check that user and assistant messages have task_id */
-    cJSON *r1 = cJSON_GetObjectItem(u1, "task_id");
-    cJSON *r2 = cJSON_GetObjectItem(u2, "task_id");
-    C(r1 != NULL && cJSON_IsString(r1), "user msg tagged task_id");
-    C(r2 != NULL && cJSON_IsString(r2), "assistant msg tagged task_id");
-    C(strcmp(cJSON_GetStringValue(r1), "legacy") == 0, "task_id = legacy");
-
-    T("save_tasks skips system/tool messages");
-    /* system msg was added by edc_session_new — check it's untagged */
-    cJSON *sys_msg = cJSON_GetArrayItem(s->messages, 0);
-    cJSON *sr = cJSON_GetObjectItem(sys_msg, "role");
-    if (sr && strcmp(cJSON_GetStringValue(sr), "system") == 0) {
-        C(!cJSON_HasObjectItem(sys_msg, "task_id"), "system msg untagged");
-    }
-
-    T("save_tasks NULL session");
-    C(!edc_session_save_tasks(NULL), "NULL session → false");
-
-    T("reload_tasks NULL safety");
-    edc_session_reload_tasks(NULL);
-    edc_session_reload_tasks(s);  /* stub, no crash */
-    C(1, "reload_tasks survived");
-
     edc_session_free(s);
     free_cfg(cfg);
 }
@@ -305,14 +193,14 @@ static void test_mixed_scenario(void)
 
     for (int i = 0; i < 3; i++) {
         char id[32]; snprintf(id, sizeof(id), "sc-%d-leader", i);
-        struct edc_task *l = edc_task_new(id, s->session_id, id, "leader", NULL);
+        struct edc_task *l = edc_task_new(id, s->session_id, id, "leader", edc_channel_adapter);
         g[i] = edc_task_group_new(l);
         edc_session_add_group(s, g[i]);
         tasks[t_idx++] = l;
 
         for (int j = 0; j < 2; j++) {
             snprintf(id, sizeof(id), "sc-%d-m%d", i, j);
-            struct edc_task *m = edc_task_new(id, s->session_id, g[i]->group_id, "member", NULL);
+            struct edc_task *m = edc_task_new(id, s->session_id, g[i]->group_id, "member", edc_channel_adapter);
             edc_task_group_add_task(g[i], m);
             tasks[t_idx++] = m;
         }
@@ -353,14 +241,14 @@ static void test_stress(void)
     struct edc_task_group *first = NULL;
     for (int i = 0; i < 100; i++) {
         char id[32]; snprintf(id, sizeof(id), "s-%d", i);
-        struct edc_task *l = edc_task_new(id, s->session_id, id, "leader", NULL);
+        struct edc_task *l = edc_task_new(id, s->session_id, id, "leader", edc_channel_adapter);
         struct edc_task_group *g = edc_task_group_new(l);
         edc_session_add_group(s, g);
         if (i == 0) first = g;
 
         for (int j = 0; j < 4; j++) {
             snprintf(id, sizeof(id), "s-%d-m%d", i, j);
-            struct edc_task *m = edc_task_new(id, s->session_id, g->group_id, "m", NULL);
+            struct edc_task *m = edc_task_new(id, s->session_id, g->group_id, "m", edc_channel_adapter);
             edc_task_group_add_task(g, m);
         }
     }
@@ -372,9 +260,6 @@ static void test_stress(void)
 
     /* Find random task */
     C(edc_session_find_task(s, "s-33-m2") != NULL, "find nested task");
-
-    /* Verify message system still works */
-    C(cJSON_GetArraySize(s->messages) >= 1, "messages intact");
 
     edc_session_free(s);
     free_cfg(cfg);
@@ -390,29 +275,14 @@ static void test_backward_compat(void)
     struct edc_config *cfg = make_cfg();
     struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
-    T("old API: get_messages returns cJSON*");
-    cJSON *msgs = edc_session_get_messages(s);
-    C(msgs != NULL, "get_messages returns non-NULL");
-    C(msgs == s->messages, "returns same pointer");
+    T("get_message_count is turn-derived (0 with no tasks)");
+    C(edc_session_get_message_count(s) == 0, "count 0 for session without tasks");
 
-    T("old API: get_message_count");
-    size_t cnt = edc_session_get_message_count(s);
-    C(cnt == (size_t)cJSON_GetArraySize(s->messages), "count matches array size");
-
-    T("old API: add_turn");
+    T("standalone turn does not count (messages belong to a task)");
     struct edc_turn *turn = edc_turn_new();
     edc_turn_add_user_message(turn, "msg from turn");
-    edc_session_add_turn(s, turn);
-    C(cJSON_GetArraySize(s->messages) > cnt, "messages grew after add_turn");
-
-    T("old API: save_history (no crash)");
-    /* May fail on missing filesystem — just check no crash */
-    edc_session_save_history(s);
-    C(1, "save_history survived");
-
-    T("old API: reload (no crash)");
-    edc_session_reload(s, false);
-    C(1, "reload survived");
+    C(edc_session_get_message_count(s) == 0, "count unchanged (turn not in any task)");
+    edc_turn_free(turn);
 
     edc_session_free(s);
     free_cfg(cfg);
@@ -428,7 +298,7 @@ static void test_active_task_lifetime(void)
     struct edc_config *cfg = make_cfg();
     struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
-    struct edc_task *t = edc_task_new("at-life", s->session_id, "at-life", "test", NULL);
+    struct edc_task *t = edc_task_new("at-life", s->session_id, "at-life", "test", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
     edc_session_add_group(s, g);
     edc_session_set_active_task(s, t);
@@ -450,9 +320,9 @@ static void test_orphan_cleanup(void)
     struct edc_config *cfg = make_cfg();
     struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
 
-    struct edc_task *l = edc_task_new("orph-l", s->session_id, "orph-l", "L", NULL);
+    struct edc_task *l = edc_task_new("orph-l", s->session_id, "orph-l", "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
-    struct edc_task *m = edc_task_new("orph-m", s->session_id, "orph-l", "M", NULL);
+    struct edc_task *m = edc_task_new("orph-m", s->session_id, "orph-l", "M", edc_channel_adapter);
     edc_task_group_add_task(g, m);
     edc_session_add_group(s, g);
 
@@ -478,8 +348,6 @@ int main(void)
     test_group_mgmt();
     test_find();
     test_active_task();
-    test_messages_slice();
-    test_persistence();
     test_mixed_scenario();
     test_stress();
     test_backward_compat();

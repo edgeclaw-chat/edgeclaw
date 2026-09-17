@@ -48,7 +48,7 @@ int main(void)
     sdsfree(root);
     sdsfree(home_dir);
 
-    edc_actor_t *llm_actor = edc_llm_actor_new(&conf->llm_api_conf);
+    edc_actor_t *llm_actor = edc_llm_actor_new(conf);
     edc_actor_t *observe_actor = edc_actor_new("edc_observer", edc_observe_llm_handler, NULL);
 
     edc_actor_runner_t *runner = edc_actor_runner_new();

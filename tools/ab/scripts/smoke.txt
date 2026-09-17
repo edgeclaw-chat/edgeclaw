@@ -1,0 +1,16 @@
+# smoke：覆盖"命令路径 + 完整 LLM 回路 + 落盘"
+
+# 启动与首帧
+wait 1500
+
+# 纯命令路径：不经过 LLM
+send /task list\n
+wait 800
+
+# 完整 LLM 回路：
+#   输入 → 假 LLM #1 (tool_calls: shell) → 真 shell 执行 → 假 LLM #2 (收尾)
+send hello there\n
+wait 3500
+
+# settle（之后 ab.py 会发 SIGINT，走 main.cpp 的优雅退出 → 落盘）
+wait 1500

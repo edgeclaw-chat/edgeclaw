@@ -120,7 +120,7 @@ static int run_one(ip_addr_t *addr, test_case_t *tc)
     if (!c) { printf("  FAIL [%s]: connect timeout\n", tc->desc); total_fail++; return 0; }
 
     int exit_code, ok = 1;
-    sds out, *err;
+    sds out, err;
 
     if (do_request(c, tc->cmd, &exit_code, &out, &err) != 0) {
         printf("  FAIL [%s]: request failed\n", tc->desc);
@@ -230,7 +230,7 @@ int main(void)
     /* ---- rapid-fire: 50 iterations ---- */
     printf("\n  [rapid-fire: 50 iterations]\n");
     {
-        sds o = NULL, *e = NULL; int ec; int rok = 0, rfail = 0;
+        sds o = NULL, e = NULL; int ec; int rok = 0, rfail = 0;
         for (int i = 0; i < 50; i++) {
             char rcmd[64];
             snprintf(rcmd, sizeof(rcmd), "echo iter-%d", i);
@@ -251,7 +251,7 @@ int main(void)
     /* ---- large payload ---- */
     printf("\n  [large payload: 64KB response]\n");
     {
-        sds o = NULL, *e = NULL; int ec;
+        sds o = NULL, e = NULL; int ec;
         struct netconn *lc = new_conn_timeout(&addr, 5000);
         if (lc && do_request(lc, "dd if=/dev/urandom bs=1024 count=64 2>/dev/null | wc -c",
                              &ec, &o, &e) == 0 && ec == 0 && strstr(o, "65536")) {

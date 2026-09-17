@@ -14,7 +14,9 @@ cc_library(
     srcs = ["edc_device_agent.c"],
     hdrs = ["edc_device_agent.h"],
     includes = ["."],
-    deps = ["@sds//:sds"],
+    deps = [
+        "@sds//:sds",
+    ],
     linkstatic = True,
 )
 
@@ -27,10 +29,10 @@ cc_library(
     ],
     includes = ["."],
     deps = [
-        ":device_agent_lib",
-        "@lwip//:lwip",
+        "//src/device:device_agent_lib",
         "//thirdparty/lwip:sys_arch",
         "@cjson//:cjson",
+        "@lwip//:lwip",
         "@sds//:sds",
     ],
     linkstatic = True,
@@ -42,8 +44,8 @@ cc_library(
     hdrs = ["edc_pppos_agent.h"],
     includes = ["."],
     deps = [
-        ":device_agent_lib",
-        ":transport_pppos_lib",
+        "//src/device:device_agent_lib",
+        "//src/device:transport_pppos_lib",
     ],
     linkstatic = True,
 )
@@ -57,7 +59,7 @@ cc_library(
     ],
     includes = ["."],
     deps = [
-        ":device_agent_lib",
+        "//src/device:device_agent_lib",
         "@cjson//:cjson",
     ],
     linkstatic = True,
@@ -69,8 +71,8 @@ cc_library(
     hdrs = ["edc_socket_agent.h"],
     includes = ["."],
     deps = [
-        ":device_agent_lib",
-        ":transport_socket_lib",
+        "//src/device:device_agent_lib",
+        "//src/device:transport_socket_lib",
     ],
     linkstatic = True,
 )
@@ -81,15 +83,15 @@ cc_library(
     hdrs = ["edc_lwip.h"],
     includes = ["."],
     deps = [
-        ":device_agent_lib",
-        ":pppos_agent_lib",
-        ":socket_agent_lib",
-        ":transport_pppos_lib",
-        ":transport_socket_lib",
-        "//src/core:core",
-        "@lwip//:lwip",
+        "//src/common:common",
+        "//src/device:device_agent_lib",
+        "//src/device:pppos_agent_lib",
+        "//src/device:socket_agent_lib",
+        "//src/device:transport_pppos_lib",
+        "//src/device:transport_socket_lib",
         "//thirdparty/lwip:sys_arch",
         "@cjson//:cjson",
+        "@lwip//:lwip",
         "@sds//:sds",
     ],
     linkstatic = True,
@@ -102,9 +104,9 @@ cc_binary(
     name = "device_agent",
     srcs = ["device_agent.c"],
     deps = [
-        ":device_agent_lib",
-        ":transport_pppos_lib",
-        ":transport_socket_lib",
+        "//src/device:device_agent_lib",
+        "//src/device:transport_pppos_lib",
+        "//src/device:transport_socket_lib",
     ],
     linkstatic = True,
     linkopts = LINK_OPTS,

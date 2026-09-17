@@ -1,0 +1,36 @@
+[
+  {
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_ab_1",
+              "type": "function",
+              "function": {
+                "name": "exec_shell",
+                "arguments": "{\"command\": \"echo ab-smoke\"}"
+              }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ]
+  },
+  {
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "smoke ok"
+        },
+        "finish_reason": "stop"
+      }
+    ]
+  }
+]

@@ -1,5 +1,10 @@
 load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
+load(
+    ":compilation_mode_features.bzl",
+    "COMPILATION_MODE_ACTIONS",
+    "COMPILATION_MODE_FEATURES",
+)
 
 def _normalize_path(path):
     parts = path.split("/")
@@ -59,7 +64,7 @@ def _generate_config_bzl(prefix, include_dirs, target_cpu, target_system_name, t
         include_entries.append('            "{}",'.format(d))
     include_dirs_str = "\n".join(include_entries)
 
-    return """load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "feature", "flag_set", "flag_group", "action_config", "tool")
+    return """load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "feature", "flag_set", "flag_group", "with_feature_set", "action_config", "tool")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 
 def _impl(ctx):
@@ -90,7 +95,9 @@ def _impl(ctx):
         ),
     ]
 
+{all_compile_actions}
     features = [
+{compilation_mode_features}
         feature(
             name = "armv7_arch_flags",
             enabled = True,
@@ -134,7 +141,7 @@ arm_toolchain_config = rule(
     implementation = _impl,
     attrs = {{}},
 )
-""".format(prefix = prefix, tool_paths = tool_paths_str, include_dirs = include_dirs_str, target_cpu = target_cpu, target_system_name = target_system_name, toolchain_identifier = toolchain_identifier)
+""".format(prefix = prefix, tool_paths = tool_paths_str, include_dirs = include_dirs_str, target_cpu = target_cpu, target_system_name = target_system_name, toolchain_identifier = toolchain_identifier, all_compile_actions = COMPILATION_MODE_ACTIONS, compilation_mode_features = COMPILATION_MODE_FEATURES)
 
 def _arm_toolchain_repo_impl(rctx):
     prefix = rctx.os.environ.get("CROSS_COMPILE", "")

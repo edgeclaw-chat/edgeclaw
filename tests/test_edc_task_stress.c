@@ -23,59 +23,20 @@ static int test_passed = 0;
    Phase 1: edc_task 压力 / 边界 / 异常测试
    ══════════════════════════════════════════════════════════════ */
 
-/* ── 1. 全部状态转换穷举 ──────────────────────────────────── */
-
-static void test_full_transition_matrix(void)
-{
-    TEST("full 9×9 transition matrix");
-    edc_task_state all[] = {
-        TASK_IDLE, TASK_WAITING_DEPS, TASK_WAITING_INPUT,
-        TASK_LLM_PROCESSING, TASK_TOOL_CALLING, TASK_SUSPENDED,
-        TASK_COMPLETED, TASK_CANCELLED, TASK_ERROR
-    };
-    const char *names[] = {"IDLE","WAITING_DEPS","WAITING_INPUT",
-        "LLM_PROCESSING","TOOL_CALLING","SUSPENDED","COMPLETED","CANCELLED","ERROR"};
-
-    for (int from = 0; from < 9; from++)
-    {
-        struct edc_task *t = edc_task_new("mtx", "s", "g", "matrix test", NULL);
-        edc_task_set_state(t, all[from]);
-        if (t->state != all[from])
-        {
-            /* Skip states that can't be reached directly from IDLE */
-            edc_task_free(t);
-            continue;
-        }
-
-        for (int to = 0; to < 9; to++)
-        {
-            /* Verify same-state transition returns false */
-            if (from == to)
-            {
-                bool r = edc_task_set_state(t, all[to]);
-                if (r)
-                {
-                    log_error("    matrix: %s → %s should return false (same state)",
-                              names[from], names[to]);
-                    test_failed++;
-                }
-                else
-                {
-                    test_passed++;
-                }
-            }
-        }
-
-        edc_task_free(t);
-    }
-}
+/* ── 1. 状态转换穷举 ────────────────────────────────────────
+ * 已搬去 tests/test_edc_task.c 的 `test_transition_table_spec`: 那里把新转移表
+ * 按 (step, life) 逐源写成规格, 穷举 30×30 = 900 格 (旧版本这里是 9×9 的旧词
+ * 矩阵, 随旧枚举一起退休)。 */
 
 /* ── 2. NULL 安全全面测试 ──────────────────────────────────── */
 
 static void test_null_safety_task(void)
 {
     TEST("NULL safety: all edc_task APIs with NULL task");
-    edc_task_set_state(NULL, TASK_IDLE);
+    edc_task_await_exec(NULL);       /* 意图写入口也走一遍空指针 */
+    edc_task_mark_ready(NULL);
+    edc_task_mark_completed(NULL);
+    edc_task_force_move(NULL, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
     edc_task_add_turn(NULL, NULL);
     edc_task_commit_active_turn(NULL);
     edc_task_add_dependency(NULL, NULL, TASK_DEP_JOIN);
@@ -87,13 +48,13 @@ static void test_null_safety_task(void)
     edc_task_set_prompt(NULL, NULL, NULL);
     edc_task_get_context_messages(NULL, NULL);
     CHECK(edc_task_get_output(NULL) == NULL, "get_output(NULL) → NULL");
-    CHECK(edc_task_state_name(999) != NULL, "state_name(999) → not NULL");
+    CHECK(edc_task_state_str(NULL) != NULL, "state_str(NULL) → not NULL");
     edc_task_free(NULL);
     /* no crash = pass */
     CHECK(1, "all NULL API calls survived");
 
     TEST("NULL safety: NULL source/target in dep functions");
-    struct edc_task *t = edc_task_new("null-s", "s", "g", "null", NULL);
+    struct edc_task *t = edc_task_new("null-s", "s", "g", "null", edc_channel_adapter);
     CHECK(!edc_task_add_dependency(t, NULL, TASK_DEP_JOIN), "add_dep(NULL source) → false");
     CHECK(!edc_task_add_dependency(NULL, t, TASK_DEP_JOIN), "add_dep(NULL target) → false");
     edc_task_on_dep_completed(t, NULL);
@@ -109,27 +70,27 @@ static void test_null_safety_task(void)
 static void test_idempotent_operations(void)
 {
     TEST("double complete is idempotent");
-    struct edc_task *target = edc_task_new("idep-1", "s", "g", "target", NULL);
-    struct edc_task *source = edc_task_new("idep-2", "s", "g", "source", NULL);
+    struct edc_task *target = edc_task_new("idep-1", "s", "g", "target", edc_channel_adapter);
+    struct edc_task *source = edc_task_new("idep-2", "s", "g", "source", edc_channel_adapter);
     edc_task_add_dependency(target, source, TASK_DEP_JOIN);
     CHECK(target->deps_total == 1, "deps_total=1");
 
     edc_task_on_dep_completed(target, source);
     CHECK(target->deps_completed == 1, "deps_completed=1 after first");
-    CHECK(target->state == TASK_WAITING_INPUT, "advanced");
+    CHECK(edc_task_is_ready(target), "advanced");
 
     /* Second completion of same dep should do nothing */
     edc_task_on_dep_completed(target, source);
     CHECK(target->deps_completed == 1, "deps_completed still 1 (idempotent)");
-    CHECK(target->state == TASK_WAITING_INPUT, "state unchanged");
+    CHECK(edc_task_is_ready(target), "state unchanged");
 
     edc_task_free(target);
     edc_task_free(source);
 
     TEST("double cancel is idempotent");
-    target = edc_task_new("idc-1", "s", "g", "target", NULL);
-    source = edc_task_new("idc-2", "s", "g", "source", NULL);
-    edc_task_add_dependency(target, source, TASK_DEP_JOIN);
+    target = edc_task_new("idc-1", "s", "g", "target", edc_channel_adapter);
+    source = edc_task_new("idc-2", "s", "g", "source", edc_channel_adapter);
+    edc_task_add_dependency(target, source, TASK_DEP_SEQUENCE);
     CHECK(target->deps_total == 1, "deps_total=1");
 
     edc_task_on_dep_cancelled(target, source);
@@ -142,17 +103,16 @@ static void test_idempotent_operations(void)
     edc_task_free(source);
 
     TEST("signal on already CANCELLED task");
-    struct edc_task *t = edc_task_new("idc-3", "s", "g", "cancelled", NULL);
-    edc_task_set_state(t, TASK_WAITING_INPUT);
-    edc_task_set_state(t, TASK_CANCELLED);
-    CHECK(t->state == TASK_CANCELLED, "state is CANCELLED");
+    struct edc_task *t = edc_task_new("idc-3", "s", "g", "cancelled", edc_channel_adapter);
+    edc_task_mark_cancelled(t);
+    CHECK(edc_task_is_cancelled(t), "state is CANCELLED");
 
     edc_task_send_signal(t, TASK_SIGTERM);
-    CHECK(t->state == TASK_CANCELLED, "still CANCELLED after SIGTERM");
+    CHECK(edc_task_is_cancelled(t), "still CANCELLED after SIGTERM");
     CHECK(t->cancelled_request == 1, "cancelled_request still set");
 
     edc_task_send_signal(t, TASK_SIGKILL);
-    CHECK(t->state == TASK_CANCELLED, "still CANCELLED after SIGKILL");
+    CHECK(edc_task_is_cancelled(t), "still CANCELLED after SIGKILL");
 
     edc_task_free(t);
 }
@@ -162,13 +122,13 @@ static void test_idempotent_operations(void)
 static void test_many_dependencies(void)
 {
     TEST("10 dependencies, complete all");
-    struct edc_task *target = edc_task_new("many-t", "s", "g", "aggregator", NULL);
+    struct edc_task *target = edc_task_new("many-t", "s", "g", "aggregator", edc_channel_adapter);
     struct edc_task *sources[10];
     for (int i = 0; i < 10; i++)
     {
         char id[32];
         snprintf(id, sizeof(id), "many-s%d", i);
-        sources[i] = edc_task_new(id, "s", "g", "worker", NULL);
+        sources[i] = edc_task_new(id, "s", "g", "worker", edc_channel_adapter);
         edc_task_add_dependency(target, sources[i], TASK_DEP_JOIN);
     }
     CHECK(target->deps_total == 10, "deps_total=10");
@@ -179,7 +139,7 @@ static void test_many_dependencies(void)
         edc_task_notify_dependents(sources[i]);
     }
     CHECK(target->deps_completed == 10, "deps_completed=10");
-    CHECK(target->state == TASK_WAITING_INPUT, "advanced after all done");
+    CHECK(edc_task_is_ready(target), "advanced after all done");
 
     /* Context should have 10 dep output messages */
     for (int i = 0; i < 10; i++)
@@ -207,13 +167,13 @@ static void test_many_dependencies(void)
     edc_task_free(target);
 
     TEST("10 dependencies, cancel 5, complete 5");
-    target = edc_task_new("mix-t", "s", "g", "mix aggregator", NULL);
+    target = edc_task_new("mix-t", "s", "g", "mix aggregator", edc_channel_adapter);
     for (int i = 0; i < 10; i++)
     {
         char id[32];
         snprintf(id, sizeof(id), "mix-s%d", i);
-        sources[i] = edc_task_new(id, "s", "g", "worker", NULL);
-        edc_task_add_dependency(target, sources[i], TASK_DEP_JOIN);
+        sources[i] = edc_task_new(id, "s", "g", "worker", edc_channel_adapter);
+        edc_task_add_dependency(target, sources[i], TASK_DEP_SEQUENCE);
     }
 
     /* Cancel odd-indexed ones */
@@ -229,7 +189,7 @@ static void test_many_dependencies(void)
         edc_task_notify_dependents(sources[i]);
     }
     CHECK(target->deps_completed == 5, "deps_completed=5");
-    CHECK(target->state == TASK_WAITING_INPUT, "advanced after mixed");
+    CHECK(edc_task_is_ready(target), "advanced after mixed");
 
     for (int i = 0; i < 10; i++) edc_task_free(sources[i]);
     edc_task_free(target);
@@ -240,29 +200,29 @@ static void test_many_dependencies(void)
 static void test_dependency_chain(void)
 {
     TEST("dependency chain: A → B → C");
-    struct edc_task *a = edc_task_new("chain-a", "s", "g", "A", NULL);
-    struct edc_task *b = edc_task_new("chain-b", "s", "g", "B", NULL);
-    struct edc_task *c = edc_task_new("chain-c", "s", "g", "C", NULL);
+    struct edc_task *a = edc_task_new("chain-a", "s", "g", "A", edc_channel_adapter);
+    struct edc_task *b = edc_task_new("chain-b", "s", "g", "B", edc_channel_adapter);
+    struct edc_task *c = edc_task_new("chain-c", "s", "g", "C", edc_channel_adapter);
 
     /* A depends on B depends on C */
     edc_task_add_dependency(a, b, TASK_DEP_JOIN);
     edc_task_add_dependency(b, c, TASK_DEP_JOIN);
 
-    CHECK(a->state == TASK_WAITING_DEPS, "A waits for B");
-    CHECK(b->state == TASK_WAITING_DEPS, "B waits for C");
+    CHECK(edc_task_awaits_deps(a), "A waits for B");
+    CHECK(edc_task_awaits_deps(b), "B waits for C");
 
     /* Complete C → B advances */
     edc_task_set_output(c, sdsnew("C done"));
     edc_task_notify_dependents(c);
     CHECK(b->deps_completed == 1, "B deps_completed=1");
-    CHECK(b->state == TASK_WAITING_INPUT, "B advanced to WAITING_INPUT");
-    CHECK(a->state == TASK_WAITING_DEPS, "A still waits (B not done yet)");
+    CHECK(edc_task_is_ready(b), "B advanced to READY");
+    CHECK(edc_task_awaits_deps(a), "A still waits (B not done yet)");
 
     /* Complete B → A advances */
     edc_task_set_output(b, sdsnew("B done"));
     edc_task_notify_dependents(b);
     CHECK(a->deps_completed == 1, "A deps_completed=1");
-    CHECK(a->state == TASK_WAITING_INPUT, "A advanced");
+    CHECK(edc_task_is_ready(a), "A advanced");
 
     /* A should see B's output in context */
     cJSON *msgs = edc_task_get_context_messages(a, NULL);
@@ -281,9 +241,9 @@ static void test_dependency_chain(void)
     edc_task_free(c);
 
     TEST("chain break: SIGTERM middle node");
-    a = edc_task_new("chain-a2", "s", "g", "A2", NULL);
-    b = edc_task_new("chain-b2", "s", "g", "B2", NULL);
-    c = edc_task_new("chain-c2", "s", "g", "C2", NULL);
+    a = edc_task_new("chain-a2", "s", "g", "A2", edc_channel_adapter);
+    b = edc_task_new("chain-b2", "s", "g", "B2", edc_channel_adapter);
+    c = edc_task_new("chain-c2", "s", "g", "C2", edc_channel_adapter);
 
     edc_task_add_dependency(a, b, TASK_DEP_JOIN);
     edc_task_add_dependency(b, c, TASK_DEP_JOIN);
@@ -291,20 +251,13 @@ static void test_dependency_chain(void)
     CHECK(a->deps_total == 1, "A has 1 dep");
     CHECK(b->deps_total == 1, "B has 1 dep");
 
-    /* SIGTERM B → A should be notified (B cancelled → A deps_total=0) */
+    /* SIGTERM B → A 是 JOIN 依赖者 → 级联取消 (A→B 是 JOIN) */
     edc_task_send_signal(b, TASK_SIGTERM);
-    CHECK(b->state == TASK_CANCELLED, "B cancelled");
-    CHECK(a->deps_total == 0, "A deps_total=0 after B SIGTERM");
-    CHECK(a->state == TASK_WAITING_INPUT, "A advanced (no more deps)");
+    CHECK(edc_task_is_cancelled(b), "B cancelled");
+    CHECK(edc_task_is_cancelled(a), "A cascaded to CANCELLED (JOIN dependent)");
+    CHECK(a->deps_total == 0, "A deps cleared by cascade");
 
-    /* C's dep on B is also cancelled? Actually no - B is the SOURCE of C's dep.
-       C depends on B, not the other way. B cancelled → on_dep_cancelled
-       is called on B's dependents. We need to check what B's dependents are.
-       B's dependents = A (because A depends on B).
-       B's deps = C (because B depends on C).
-       When B gets SIGTERM, it notifies only dependents (A), not deps (C).
-       C's deps list still has B as a source, but B's state is CANCELLED.
-       C's deps_total should still be 1. Let me check: */
+    /* C 是 B 的依赖源 (B→C), 不是 B 的依赖者 → 取消 B 不触碰 C。 */
     CHECK(c->deps_total == 0, "C has no deps (B depends on C, not the other way)");
 
     /* B was C's dependent (b depends on c). B was cancelled.
@@ -320,21 +273,21 @@ static void test_dependency_chain(void)
 static void test_concurrent_signals(void)
 {
     TEST("SIGTERM then notify_dependents (should be safe)");
-    struct edc_task *target = edc_task_new("conc-t", "s", "g", "target", NULL);
-    struct edc_task *source = edc_task_new("conc-s", "s", "g", "source", NULL);
+    struct edc_task *target = edc_task_new("conc-t", "s", "g", "target", edc_channel_adapter);
+    struct edc_task *source = edc_task_new("conc-s", "s", "g", "source", edc_channel_adapter);
     edc_task_add_dependency(target, source, TASK_DEP_JOIN);
 
     /* Source completes normally */
     edc_task_set_output(source, sdsnew("done"));
     edc_task_notify_dependents(source);
-    CHECK(target->state == TASK_WAITING_INPUT, "target advanced after completion");
+    CHECK(edc_task_is_ready(target), "target advanced after completion");
     CHECK(source->dependents->completed, "source dependent marked completed");
 
     /* Then SIGTERM source (idempotent) */
     edc_task_send_signal(source, TASK_SIGTERM);
-    CHECK(source->state == TASK_CANCELLED, "source cancelled after SIGTERM");
+    CHECK(edc_task_is_cancelled(source), "source cancelled after SIGTERM");
     /* Target should be unaffected */
-    CHECK(target->state == TASK_WAITING_INPUT, "target still WAITING_INPUT");
+    CHECK(edc_task_is_ready(target), "target still READY");
 
     edc_task_free(target);
     edc_task_free(source);
@@ -345,7 +298,7 @@ static void test_concurrent_signals(void)
 static void test_turn_stress(void)
 {
     TEST("100 turns add/commit in task");
-    struct edc_task *t = edc_task_new("turn-stress", "s", "g", "turn stress", NULL);
+    struct edc_task *t = edc_task_new("turn-stress", "s", "g", "turn stress", edc_channel_adapter);
     for (int i = 0; i < 100; i++)
     {
         struct edc_turn *turn = edc_turn_new();
@@ -369,16 +322,16 @@ static void test_turn_stress(void)
 static void test_free_with_resources(void)
 {
     TEST("task_free with active_turn set");
-    struct edc_task *t = edc_task_new("free-1", "s", "g", "free test", NULL);
+    struct edc_task *t = edc_task_new("free-1", "s", "g", "free test", edc_channel_adapter);
     t->active_turn = edc_turn_new();
     edc_turn_add_user_message(t->active_turn, "msg");
     edc_task_free(t);
     CHECK(1, "free with active_turn survived");
 
     TEST("task_free with non-empty deps");
-    struct edc_task *a = edc_task_new("free-a", "s", "g", "A", NULL);
-    struct edc_task *b = edc_task_new("free-b", "s", "g", "B", NULL);
-    struct edc_task *c = edc_task_new("free-c", "s", "g", "C", NULL);
+    struct edc_task *a = edc_task_new("free-a", "s", "g", "A", edc_channel_adapter);
+    struct edc_task *b = edc_task_new("free-b", "s", "g", "B", edc_channel_adapter);
+    struct edc_task *c = edc_task_new("free-c", "s", "g", "C", edc_channel_adapter);
     edc_task_add_dependency(a, b, TASK_DEP_JOIN);
     edc_task_add_dependency(a, c, TASK_DEP_JOIN);
 
@@ -396,8 +349,8 @@ static void test_free_with_resources(void)
 static void test_circular_dependency(void)
 {
     TEST("circular dependency attempt");
-    struct edc_task *a = edc_task_new("circ-a", "s", "g", "A", NULL);
-    struct edc_task *b = edc_task_new("circ-b", "s", "g", "B", NULL);
+    struct edc_task *a = edc_task_new("circ-a", "s", "g", "A", edc_channel_adapter);
+    struct edc_task *b = edc_task_new("circ-b", "s", "g", "B", edc_channel_adapter);
 
     edc_task_add_dependency(a, b, TASK_DEP_JOIN);
     /* Try to add reverse dependency - must be rejected to prevent deadlock */
@@ -413,7 +366,7 @@ static void test_circular_dependency(void)
 static void test_deep_fork(void)
 {
     TEST("deep fork chain (5 levels)");
-    struct edc_task *root = edc_task_new("fork-0", "s", "g", "root", NULL);
+    struct edc_task *root = edc_task_new("fork-0", "s", "g", "root", edc_channel_adapter);
     struct edc_task *cur = root;
     struct edc_task *children[5];
     children[0] = root;
@@ -422,11 +375,11 @@ static void test_deep_fork(void)
     {
         char id[32];
         snprintf(id, sizeof(id), "fork-%d", i);
-        cur = edc_task_fork(cur, id, "child", 10 + i * 10, NULL);
+        cur = edc_task_fork(cur, id, "child", 10 + i * 10, edc_channel_adapter);
         children[i] = cur;
         CHECK(cur->forked_from == children[i-1], "fork chain link %d correct", i);
     }
-    CHECK(children[4]->fork_point_msg_count == 50, "leaf fork_point_msg_count = 50");
+    CHECK(children[4]->fork_point_completion_seq == 50, "leaf fork_point_completion_seq = 50");
 
     /* Free root (should free all via ownership? No - each is independent) */
     for (int i = 0; i < 5; i++) edc_task_free(children[i]);
@@ -456,7 +409,7 @@ static void test_group_null_safety(void)
     CHECK(1, "all group NULL APIs survived");
 
     TEST("group APIs with valid group but NULL args");
-    struct edc_task *l = edc_task_new("gnul-l", "s", "g", "L", NULL);
+    struct edc_task *l = edc_task_new("gnul-l", "s", "g", "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
     edc_task_group_add_task(g, NULL);
     CHECK(g->member_count == 1, "add_task(NULL) does nothing");
@@ -473,9 +426,9 @@ static void test_group_null_safety(void)
 static void test_group_leader_edge(void)
 {
     TEST("set_leader to non-member");
-    struct edc_task *l = edc_task_new("gnm-l", "s", "g", "L", NULL);
+    struct edc_task *l = edc_task_new("gnm-l", "s", "g", "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
-    struct edc_task *outsider = edc_task_new("gnm-o", "s", "other", "outsider", NULL);
+    struct edc_task *outsider = edc_task_new("gnm-o", "s", "other", "outsider", edc_channel_adapter);
 
     /* Can still set outsider as leader (API doesn't enforce membership) */
     edc_task_group_set_leader(g, outsider);
@@ -488,9 +441,9 @@ static void test_group_leader_edge(void)
     edc_task_group_free(g);
 
     TEST("set_leader on orphaned group");
-    l = edc_task_new("gor-l", "s", "g", "L", NULL);
+    l = edc_task_new("gor-l", "s", "g", "L", edc_channel_adapter);
     g = edc_task_group_new(l);
-    struct edc_task *m = edc_task_new("gor-m", "s", "g", "M", NULL);
+    struct edc_task *m = edc_task_new("gor-m", "s", "g", "M", edc_channel_adapter);
     edc_task_group_add_task(g, m);
     edc_task_group_remove_task(g, l);
     CHECK(g->is_orphaned, "group is orphaned");
@@ -510,7 +463,7 @@ static void test_group_leader_edge(void)
 static void test_group_many_members(void)
 {
     TEST("group with 50 members, find each, signal all");
-    struct edc_task *l = edc_task_new("gbig-l", "s", "g", "big L", NULL);
+    struct edc_task *l = edc_task_new("gbig-l", "s", "g", "big L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
     struct edc_task *members[50];
     members[0] = l;
@@ -519,8 +472,8 @@ static void test_group_many_members(void)
     {
         char id[32];
         snprintf(id, sizeof(id), "gbig-%d", i);
-        members[i] = edc_task_new(id, "s", "g", "big member", NULL);
-        edc_task_set_state(members[i], TASK_WAITING_INPUT);
+        members[i] = edc_task_new(id, "s", "g", "big member", edc_channel_adapter);
+        edc_task_mark_ready(members[i]);
         edc_task_group_add_task(g, members[i]);
     }
     CHECK(g->member_count == 50, "50 members");
@@ -558,12 +511,12 @@ static void test_group_many_members(void)
 static void test_group_orphan_cycle(void)
 {
     TEST("orphan / set_leader cycle 3 times");
-    struct edc_task *l = edc_task_new("gocyc-l", "s", "g", "L", NULL);
+    struct edc_task *l = edc_task_new("gocyc-l", "s", "g", "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
 
     for (int cycle = 0; cycle < 3; cycle++)
     {
-        struct edc_task *m = edc_task_new("gocyc-m", "s", "g", "M", NULL);
+        struct edc_task *m = edc_task_new("gocyc-m", "s", "g", "M", edc_channel_adapter);
         edc_task_group_add_task(g, m);
 
         /* Remove leader → orphan */
@@ -586,15 +539,9 @@ static void test_group_orphan_cycle(void)
 static void test_group_signal_edge(void)
 {
     TEST("signal to orphaned group");
-    struct edc_task *l = edc_task_new("gsig-l", "s", "g", "L", NULL);
+    struct edc_task *l = edc_task_new("gsig-l", "s", "g", "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
-    struct edc_task *m = edc_task_new("gsig-m", "s", "g", "M", NULL);
-    edc_task_set_state(m, TASK_WAITING_INPUT);
-    edc_task_set_state(m, TASK_LLM_PROCESSING); /* Need WAITING_INPUT first */
-
-    /* Reset: just use WAITING_INPUT */
-    m->state = TASK_IDLE;
-    edc_task_set_state(m, TASK_WAITING_INPUT);
+    struct edc_task *m = edc_task_new("gsig-m", "s", "g", "M", edc_channel_adapter);
     edc_task_group_add_task(g, m);
 
     edc_task_group_remove_task(g, l);
@@ -603,7 +550,7 @@ static void test_group_signal_edge(void)
 
     /* SIGTERM to orphaned group */
     edc_task_group_send_signal(g, TASK_SIGTERM);
-    CHECK(m->state == TASK_CANCELLED, "orphaned member cancelled");
+    CHECK(edc_task_is_cancelled(m), "orphaned member cancelled");
 
     edc_task_group_free(g);
 }
@@ -613,7 +560,7 @@ static void test_group_signal_edge(void)
 static void test_group_double_free(void)
 {
     TEST("group_free on already-cleaned group");
-    struct edc_task *l = edc_task_new("gdf-l", "s", "g", "L", NULL);
+    struct edc_task *l = edc_task_new("gdf-l", "s", "g", "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
     edc_task_group_free(g);
     /* g is now dangling - but we can't test double-free safely */
@@ -628,7 +575,6 @@ int main(void)
     log_info("");
 
     log_info("── Phase 1: edc_task ──");
-    test_full_transition_matrix();
     test_null_safety_task();
     test_idempotent_operations();
     test_many_dependencies();

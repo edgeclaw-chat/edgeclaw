@@ -2,19 +2,22 @@
 
 ## Overview
 
-EdgeClaw is a command-line AI assistant offering shell-like task management.
+EdgeClaw is an interactive terminal AI assistant offering shell-like task management.
 It supports multi-turn conversations, tool calling, and Unix-inspired process
 control for orchestrating multiple parallel agent tasks.
 
 ## Quick Start
 
 ```bash
-$ edgeclaw              # start interactive CLI
-$ edgeclaw --setup       # first-time setup wizard
-$ edgeclaw --sandbox     # enable filesystem sandbox
+$ edgeclaw              # start the interactive TUI
 ```
 
-Type and press Enter. Conversations are saved per session under `workspace/<session_id>/`.
+On first run EdgeClaw creates `config.json` with defaults and does not prompt;
+every setting uses its default. Configure the provider with `/connect`, which
+opens a dialog (prefilled with the current values) for the API URL, model and key
+and applies them immediately.
+
+Type a message in the input box and press Enter. Conversations are saved per session under `workspace/<session_id>/`.
 
 ---
 
@@ -65,7 +68,7 @@ The AST executor (`exec_ctx_t`) walks the tree recursively, carrying context:
 
 Before tokenization, `!n` and `!!` patterns are expanded:
 - `!!` — repeat the last command
-- `!n` — repeat the nth command from history (see `/history`)
+- `!n` — repeat the nth command from history
 
 ---
 
@@ -103,9 +106,36 @@ The LLM_PROCESSING and TOOL_CALLING states alternate as the LLM invokes tools
 and receives results. Tasks reach COMPLETED when the LLM produces a final
 response; CANCELLED when stopped; ERROR on failure.
 
+**Restart behavior**: on exit, every unfinished task is persisted *as-is*
+(including LLM_PROCESSING / TOOL_CALLING). On load, every unfinished task is
+parked as **SUSPENDED**; `/task resume [tid]` re-derives the state it should
+return to:
+
+- unsatisfied dependencies → `WAITING_DEPS`
+- an unfinished tool call → `TOOL_CALLING` (not-yet-started tools are re-run; a
+  tool that was interrupted mid-flight gets a synthesized "interrupted" result)
+- a pending turn (input not yet answered) → `LLM_PROCESSING`
+- otherwise → `IDLE` (ready; there is no separate "waiting for input" phase)
+
+**Failed tasks**: a task that failed mid-run is `ERROR` but keeps its half-finished
+turn (and any interrupted tool ledger). `/task resume [tid]` continues that turn
+instead of starting over — it re-derives the same way (deps / tool chain / turn)
+and re-drives it.
+
+**Cancelled tasks**: a task stopped with `/task stop` is `CANCELLED`, but it is not
+destroyed — its turn, messages and the work done so far are all kept (the tool
+ledger is dropped, since a cancelled tool no longer has a result to wait for).
+`/task resume [tid]` revives it: the cancel flattened the step to `DONE`, so resume
+re-derives the position. A tool call that was in flight when the task was stopped
+gets a synthesized "interrupted" result first (the assistant message is the only
+record left of it), so the next LLM request stays well-formed. Only `COMPLETED`
+cannot be resumed.
+
 - **COMPLETED**: persists until reclaimed with `/task join`.
 - **WAITING_DEPS**: accepts input and queues it until dependencies resolve.
-- **SUSPENDED**: can be resumed.
+- **SUSPENDED**: parked (e.g. after a restart); `/task resume` revives it.
+- **ERROR**: a failed task; `/task resume` continues its unfinished turn.
+- **CANCELLED**: stopped with `/task stop`; `/task resume` continues it too.
 
 ### Dependency System
 
@@ -114,13 +144,12 @@ maintains two linked lists: `deps` (tasks it waits for) and `dependents`
 (tasks waiting for it). **DFS cycle detection** runs on every new dependency
 to prevent deadlocks.
 
-Three dependency types:
+Two dependency types:
 
-| Type | Syntax | Behavior |
-|------|--------|----------|
-| **JOIN** | `\|` (pipe) | Source output is injected into destination's LLM context |
-| **SEQUENCE** | `;` | Destination waits for source, but no output injection |
-| **PIPE** | (reserved) | Streaming mode — not yet implemented |
+| Type | Syntax | Behavior | On source CANCELLED |
+|------|--------|----------|---------------------|
+| **JOIN** | `\|` (pipe) | Source output is injected into destination's LLM context | Destination is CANCELLED too — the dependency can never be satisfied |
+| **SEQUENCE** | `;` | Destination waits for source, but no output injection | Only this dependency edge is dropped; destination stays runnable |
 
 ### Fork
 
@@ -139,8 +168,6 @@ The child inherits a slice of the parent's conversation context. Use
 | `fg %1`           | `/task fg <task_id>`          |
 | `bg %1`           | `/task bg`                    |
 | `kill %1`         | `/task stop <task_id>`        |
-| `Ctrl+Z`          | `/task suspend <task_id>`     |
-| `fg / bg (resume)`| `/task resume <task_id>`      |
 | `cmd1 \| cmd2`    | `/task chain <src> <dst>`     |
 | `pthread_join()`  | `/task join <task_id>`        |
 | `fork()`          | `/task fork <parent> <desc>`  |
@@ -153,10 +180,16 @@ The child inherits a slice of the parent's conversation context. Use
 
 | Command | Description |
 |---------|-------------|
-| `/new`  | Start a new session |
-| `/stop` | Cancel all active tasks in foreground group |
+| `/session new [name]` | Start a new session (optionally named) |
+| `/session switch <name_or_id>` | Switch to another session |
+| `/session list` | List all sessions |
+| `/session info` | Show current session details |
+| `/session save` | Persist the current session's history and state |
+| `/session stop` | Cancel all active tasks in the current session |
+| `/session remove <name_or_id>` | Remove a session (the last one cannot be removed) |
+| `/session rename <old> <new>` | Rename a session |
 | `/help` | Show help message |
-| `/exit` | Exit edgeclaw |
+| `/connect` | Configure the LLM provider (API URL, model, key) — opens a dialog |
 
 ### Task Creation
 
@@ -184,19 +217,14 @@ The child inherits a slice of the parent's conversation context. Use
 |---------|-------------|
 | `/task fg <tid>` | Foreground + set as active. **Only the active task outputs to terminal.** |
 | `/task bg` | Move current foreground group to background |
-| `/task switch <tid>` | Set active task within foreground group |
 
 ### Task Control
 
 | Command | Description |
 |---------|-------------|
-| `/task stop <tid>` | Cancel a task (SIGTERM — notifies dependents) |
-| `/task stop --force <id>` | Force-kill (SIGKILL — no dep notification) |
-| `/task stop --group <id>` | Cancel all tasks in a process group |
-| `/task suspend <tid>` | Pause a task (like Ctrl+Z) |
-| `/task resume <tid>` | Resume a suspended task |
+| `/task stop [tid]` | Cancel a task (SIGTERM — notifies dependents). Without an id, stops the active task of the foreground group; errors if the id is not found |
+| `/task resume [tid]` | Resume a SUSPENDED, ERROR or CANCELLED task: re-derives state (deps / tool chain / turn) and drives it; an ERROR or CANCELLED task continues its unfinished turn. Without an id, resumes the active task of the foreground group |
 | `/task join <tid>` | Show output, auto-inject into active task (or create one), then reclaim |
-| `/task prompt <tid> <name>` | Set a subagent prompt for the task |
 
 ### Pipelines
 
@@ -208,8 +236,8 @@ The child inherits a slice of the parent's conversation context. Use
 
 ## Output
 
-Only the session's **active task** outputs to the terminal. `/task fg` and
-`/task switch` change the active task. Other tasks complete silently; use
+Only the session's **active task** outputs to the terminal. `/task fg` changes
+the active task. Other tasks complete silently; use
 `/task join` to retrieve their output.
 
 ---
@@ -337,7 +365,7 @@ text before `<`, they are joined with a newline.
 
 ... task-1, task-2 complete ...
 
-> /task switch task-3
+> /task fg task-3
 > please summarize both reports
 → LLM sees task-1 and task-2 Q&A injected as context
 ```
@@ -347,13 +375,6 @@ text before `<`, they are joined with a newline.
 ```
 > /task join task-1
 [task-1 output]: ... → injected into active task → task-1 reaped
-```
-
-### Suspend and Resume
-
-```
-> /task suspend task-3
-> /task resume task-3
 ```
 
 ### Fork with Subagent

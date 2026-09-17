@@ -1,5 +1,6 @@
 #include "edc_state_serializer.h"
 #include "edc_session.h"
+#include "edc_session_manager.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -15,7 +16,22 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/stat.h>
-
+/* ── 单测的 session 仓库 ─────────────────────────────────────────
+ * scheduler 现在**同包直调 store** (P3 的 `resolve_session` 端口已退休),
+ * 所以测试给它的不是"解析函数"而是**仓库**: 一个只装着
+ * 这些 session 的内存 manager (普通结构体, 没有构造函数 —— 与 poke 别的结构体同法)。
+ * 标签为空 = 用活跃的那个 (active_index 指向第一个), 与真 store 的策略一致。
+ * `ctx` 仍留给测试自己用 (它不再是读口的入参)。 */
+static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
+{
+    sched->ctx = sess;
+    struct edc_session_manager *sm = g_new0(struct edc_session_manager, 1);
+    sm->sessions = g_new0(struct edc_session *, 1);
+    sm->sessions[0] = sess;
+    sm->session_count = sess ? 1 : 0;
+    sm->active_index = 0;
+    sched->sessions = sm; /* 测试进程内不释放: 与测试同生共死 */
+}
 /* Stub */
 volatile sig_atomic_t _run_loop = 1;
 
@@ -66,17 +82,6 @@ static void turn_add_assistant(struct edc_turn *turn, const char *content)
     edc_turn_add_assistant_message(turn, msg);
 }
 
-static int count_tasks(struct edc_session *session)
-{
-    int n = 0;
-    struct edc_task_group *g;
-    DL_FOREACH(session->groups, g) {
-        struct edc_task *t;
-        LL_FOREACH2(g->members, t, group_next) { n++; }
-    }
-    return n;
-}
-
 static struct edc_task *find_task(struct edc_session *session, const char *task_id)
 {
     struct edc_task_group *g;
@@ -90,134 +95,95 @@ static struct edc_task *find_task(struct edc_session *session, const char *task_
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Test 1: edc_session_add_turn records correct range
+ *  Test 1: turn 运行时持有消息 (不再搬进 session->messages)
  *  ══════════════════════════════════════════════════════════════ */
 
-static void test_add_turn_records_range(void)
+static void test_turn_owns_messages(void)
 {
-    TEST("edc_session_add_turn records message range on turn");
+    TEST("turn retains its messages (ownership stays on turn)");
     clean_workspace();
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-rng", "Range");
 
-    /* Initial message count (system prompt) */
-    size_t initial = edc_session_get_message_count(session);
-    CHECK(initial >= 1, "session has at least system prompt");
+    struct edc_task *task = edc_task_new("task-1", "sess-rng", "task-1", "t", edc_channel_adapter);
+    task->is_group_leader = 1;
+    struct edc_task_group *group = edc_task_group_new(task);
+    edc_session_add_group(session, group);
 
-    /* Create a turn with messages */
+    /* Fresh session (无 task) 计数为 0 */
+    CHECK(edc_session_get_message_count(session) == 0, "empty session count is 0");
+
     struct edc_turn *turn = edc_turn_new();
     turn->task_id = strdup("task-1");
     turn_add_user(turn, "user msg 1");
     turn_add_assistant(turn, "assistant msg 1");
-    size_t msg_count = edc_queue_length(&turn->messages);
-    CHECK(msg_count == 2, "turn has 2 messages before flush");
+    CHECK(edc_queue_length(&turn->messages) == 2, "turn has 2 messages");
 
-    /* range not valid yet */
-    CHECK(!turn->range_valid, "range_valid is false before flush");
+    /* commit 到 task: 消息仍留在 turn (P4: 不再 move 到 session) */
+    edc_task_add_turn(task, turn);
 
-    /* Flush — this moves messages to session->messages */
-    edc_session_add_turn(session, turn);
+    CHECK(edc_queue_length(&turn->messages) == 2, "turn retains messages after commit");
 
-    /* After flush, turn queue should be empty */
-    CHECK(edc_queue_length(&turn->messages) == 0, "turn queue empty after flush");
+    /* 计数由 turn 派生 */
+    CHECK(edc_session_get_message_count(session) == 2, "session count derived from turn messages");
 
-    /* Range should be recorded */
-    CHECK(turn->range_valid, "range_valid is true after flush");
-    CHECK(turn->msg_range_start == initial, "msg_range_start == initial message count");
-    CHECK(turn->msg_range_count == 2, "msg_range_count == 2");
+    cJSON *m0 = (cJSON *)turn->messages.data[turn->messages.head];
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "role")), "user", "msg0 role user");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "user msg 1", "msg0 content");
+    cJSON *m1 = (cJSON *)turn->messages.data[turn->messages.head + 1];
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m1, "role")), "assistant", "msg1 role assistant");
 
-    /* Session should have 2 more messages */
-    CHECK(edc_session_get_message_count(session) == initial + 2,
-          "session message count increased by 2");
-
-    /* Verify the messages at the recorded range */
-    cJSON *m0 = cJSON_GetArrayItem(session->messages, (int)turn->msg_range_start);
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "role")), "user",
-                "msg at range_start is user");
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "user msg 1",
-                "msg content correct");
-
-    cJSON *m1 = cJSON_GetArrayItem(session->messages, (int)(turn->msg_range_start + 1));
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m1, "role")), "assistant",
-                "msg at range_start+1 is assistant");
-
-    edc_turn_free(turn);
     edc_session_free(session);
     edc_config_free(cfg);
     clean_workspace();
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Test 2: Flushed turn uses compact range in serializer
+ *  Test 2: 序列化一律内联, 反序列化恢复到 turn
  *  ══════════════════════════════════════════════════════════════ */
 
-static void test_flushed_turn_compact_serialize(void)
+static void test_single_mode_roundtrip(void)
 {
-    TEST("flushed turn serializes via stored range (compact path)");
+    TEST("single mode: turn embeds messages; roundtrip restores them");
     clean_workspace();
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-cpt2", "Compact2");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
-    /* Create task */
-    struct edc_task *task = edc_task_new("task-1", "sess-cpt2", "task-1",
-                                          "compact via flush", edc_channel_cli_new());
+    struct edc_task *task = edc_task_new("task-1", "sess-cpt2", "task-1", "single", edc_channel_adapter);
     task->is_group_leader = 1;
-    edc_task_set_state(task, TASK_WAITING_INPUT);
-    edc_task_set_state(task, TASK_LLM_PROCESSING);
-    edc_task_set_state(task, TASK_COMPLETED);
+    edc_task_mark_ready(task);
+    edc_task_await_exec(task);
+    edc_task_mark_completed(task);
 
-    /* Create turn, add messages, flush to session */
     struct edc_turn *turn = edc_turn_new();
     turn->task_id = strdup("task-1");
     turn_add_user(turn, "flush query");
     turn_add_assistant(turn, "flush answer");
-    edc_session_add_turn(session, turn);   /* flush — moves to session->messages */
-    edc_task_add_turn(task, turn);          /* commit to task's turns queue */
+    edc_task_add_turn(task, turn);
 
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(session, group);
 
-    /* Serialize */
     cJSON *json = edc_state_serialize(session, sched);
     CHECK(json != NULL, "serialize succeeds");
 
-    /* Verify compact mode was used (via stored range, not embedded messages) */
     cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
     cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
     cJSON *turns_j = cJSON_GetObjectItem(t0, "turns");
     cJSON *turn_j = cJSON_GetArrayItem(turns_j, 0);
 
-    /* Should have message_start/count (compact), NOT embedded messages */
-    cJSON *embedded  = cJSON_GetObjectItem(turn_j, "messages");
-    cJSON *msg_start = cJSON_GetObjectItem(turn_j, "message_start");
-    cJSON *msg_count = cJSON_GetObjectItem(turn_j, "message_count");
+    CHECK(cJSON_GetObjectItem(turn_j, "messages") != NULL, "turn embeds messages");
+    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(turn_j, "messages")) == 2, "embedded 2 messages");
+    CHECK(cJSON_GetObjectItem(turn_j, "message_start") == NULL, "no message_start");
+    CHECK(cJSON_GetObjectItem(turn_j, "message_count") == NULL, "no message_count");
 
-    CHECK(embedded == NULL, "no embedded messages (compact path via stored range)");
-    CHECK(msg_start != NULL, "has message_start");
-    CHECK(msg_count != NULL, "has message_count");
-    CHECK((int)cJSON_GetNumberValue(msg_count) == 2, "message_count = 2");
-
-    /* message_start should be >= 1 (after system prompt) */
-    int start = (int)cJSON_GetNumberValue(msg_start);
-    CHECK(start >= 1, "message_start >= 1");
-
-    /* Deserialize into fresh session — must have messages at same positions */
     struct edc_session *session2 = edc_session_new(cfg, "sess-cpt2", "Compact2");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
-
-    /* Replicate the same messages at the same positions */
-    cJSON *copy1 = cJSON_CreateObject();
-    cJSON_AddStringToObject(copy1, "role", "user");
-    cJSON_AddStringToObject(copy1, "content", "flush query");
-    cJSON_AddItemToArray(session2->messages, copy1);
-
-    cJSON *copy2 = cJSON_CreateObject();
-    cJSON_AddStringToObject(copy2, "role", "assistant");
-    cJSON_AddStringToObject(copy2, "content", "flush answer");
-    cJSON_AddItemToArray(session2->messages, copy2);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
 
     bool ok = edc_state_deserialize(json, session2, sched2);
     CHECK(ok, "deserialize succeeds");
@@ -227,11 +193,11 @@ static void test_flushed_turn_compact_serialize(void)
     CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
 
     struct edc_turn *rturn = (struct edc_turn *)rt->turns.data[rt->turns.head];
-    CHECK(edc_queue_length(&rturn->messages) == 2, "2 messages from compact range");
+    CHECK(edc_queue_length(&rturn->messages) == 2, "2 messages restored in turn");
 
     cJSON *rm0 = (cJSON *)rturn->messages.data[rturn->messages.head];
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(rm0, "content")),
-                "flush query", "msg0 content correct via compact range");
+                "flush query", "msg0 content correct");
 
     cJSON_Delete(json);
     edc_session_free(session);
@@ -243,72 +209,53 @@ static void test_flushed_turn_compact_serialize(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Test 3: Multi-turn contiguous ranges
+ *  Test 3: 多 turn, 每个 turn 独立持有消息
  *  ══════════════════════════════════════════════════════════════ */
 
-static void test_multi_turn_ranges(void)
+static void test_multi_turns(void)
 {
-    TEST("multi-turn contiguous ranges");
+    TEST("multi-turn: each turn owns its messages");
     clean_workspace();
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-mt", "MultiTurn");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
-    struct edc_task *task = edc_task_new("task-mt", "sess-mt", "task-mt",
-                                          "multi turn", edc_channel_cli_new());
+    struct edc_task *task = edc_task_new("task-mt", "sess-mt", "task-mt", "multi turn", edc_channel_adapter);
     task->is_group_leader = 1;
-    edc_task_set_state(task, TASK_WAITING_INPUT);
-    edc_task_set_state(task, TASK_LLM_PROCESSING);
-    edc_task_set_state(task, TASK_COMPLETED);
+    edc_task_mark_ready(task);
+    edc_task_await_exec(task);
+    edc_task_mark_completed(task);
 
-    size_t base = edc_session_get_message_count(session);
-
-    /* Turn 0: 3 messages */
     struct edc_turn *t0 = edc_turn_new();
     t0->task_id = strdup("task-mt");
     turn_add_user(t0, "turn0-user");
     turn_add_assistant(t0, "turn0-asst1");
     turn_add_assistant(t0, "turn0-asst2");
-    edc_session_add_turn(session, t0);
     edc_task_add_turn(task, t0);
 
-    CHECK(t0->range_valid, "turn0 range recorded");
-    CHECK(t0->msg_range_start == base, "turn0 starts at base");
-    CHECK(t0->msg_range_count == 3, "turn0 has 3 msgs");
-
-    /* Turn 1: 2 messages — should start right after turn0 */
     struct edc_turn *t1 = edc_turn_new();
     t1->task_id = strdup("task-mt");
     turn_add_user(t1, "turn1-user");
     turn_add_assistant(t1, "turn1-asst");
-    edc_session_add_turn(session, t1);
     edc_task_add_turn(task, t1);
 
-    CHECK(t1->range_valid, "turn1 range recorded");
-    CHECK(t1->msg_range_start == base + 3, "turn1 starts at base+3");
-    CHECK(t1->msg_range_count == 2, "turn1 has 2 msgs");
-
-    /* Turn 2: 2 messages */
     struct edc_turn *t2 = edc_turn_new();
     t2->task_id = strdup("task-mt");
     turn_add_user(t2, "turn2-user");
     turn_add_assistant(t2, "turn2-asst");
-    edc_session_add_turn(session, t2);
     edc_task_add_turn(task, t2);
 
-    CHECK(t2->range_valid, "turn2 range recorded");
-    CHECK(t2->msg_range_start == base + 5, "turn2 starts at base+5");
-    CHECK(t2->msg_range_count == 2, "turn2 has 2 msgs");
-
-    /* Total messages: base + 7 */
-    CHECK(edc_session_get_message_count(session) == base + 7,
-          "session has base+7 messages");
+    CHECK(edc_queue_length(&t0->messages) == 3, "turn0 has 3 msgs");
+    CHECK(edc_queue_length(&t1->messages) == 2, "turn1 has 2 msgs");
+    CHECK(edc_queue_length(&t2->messages) == 2, "turn2 has 2 msgs");
 
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(session, group);
 
-    /* Serialize and verify ranges in JSON */
+    CHECK(edc_session_get_message_count(session) == 7, "session count = 7 (sum of turns)");
+
     cJSON *json = edc_state_serialize(session, sched);
     CHECK(json != NULL, "serialize succeeds");
 
@@ -317,30 +264,20 @@ static void test_multi_turn_ranges(void)
     cJSON *turns_j = cJSON_GetObjectItem(t0j, "turns");
     CHECK(cJSON_GetArraySize(turns_j) == 3, "3 turns in JSON");
 
-    /* Verify each turn has compact format */
     for (int i = 0; i < 3; i++) {
         cJSON *tj = cJSON_GetArrayItem(turns_j, i);
-        CHECK(cJSON_GetObjectItem(tj, "messages") == NULL,
-              "no embedded messages in turn");
-        CHECK(cJSON_GetObjectItem(tj, "message_start") != NULL,
-              "has message_start");
-        CHECK(cJSON_GetObjectItem(tj, "message_count") != NULL,
-              "has message_count");
+        CHECK(cJSON_GetObjectItem(tj, "messages") != NULL, "turn embeds messages");
+        CHECK(cJSON_GetObjectItem(tj, "message_start") == NULL, "no message_start");
+        CHECK(cJSON_GetObjectItem(tj, "message_count") == NULL, "no message_count");
     }
 
-    /* Verify the content at each range */
-    cJSON *msgs = session->messages;
-    /* Turn 0 messages */
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
-        cJSON_GetArrayItem(msgs, (int)base), "content")), "turn0-user", "turn0 msg0 content");
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
-        cJSON_GetArrayItem(msgs, (int)base + 2), "content")), "turn0-asst2", "turn0 msg2 content");
-    /* Turn 1 messages */
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
-        cJSON_GetArrayItem(msgs, (int)base + 3), "content")), "turn1-user", "turn1 msg0 content");
-    /* Turn 2 messages */
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
-        cJSON_GetArrayItem(msgs, (int)base + 5), "content")), "turn2-user", "turn2 msg0 content");
+    /* 内容直接从 turn 队列读 */
+    cJSON *m = (cJSON *)t0->messages.data[t0->messages.head];
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m, "content")), "turn0-user", "turn0 msg0");
+    m = (cJSON *)t1->messages.data[t1->messages.head];
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m, "content")), "turn1-user", "turn1 msg0");
+    m = (cJSON *)t2->messages.data[t2->messages.head];
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m, "content")), "turn2-user", "turn2 msg0");
 
     cJSON_Delete(json);
     edc_session_free(session);
@@ -350,117 +287,110 @@ static void test_multi_turn_ranges(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Test 4: Empty turn flush (0 messages) — range not recorded
+ *  Test 4: 空 turn
  *  ══════════════════════════════════════════════════════════════ */
 
-static void test_empty_turn_flush(void)
+static void test_empty_turn(void)
 {
-    TEST("empty turn flush: range not recorded for 0 messages");
+    TEST("empty turn: no messages, count 0");
     clean_workspace();
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-etf", "EmptyFlush");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    struct edc_task *task = edc_task_new("task-etf", "sess-etf", "task-etf", "e", edc_channel_adapter);
+    task->is_group_leader = 1;
+    struct edc_task_group *group = edc_task_group_new(task);
+    edc_session_add_group(session, group);
 
     struct edc_turn *turn = edc_turn_new();
     turn->task_id = strdup("task-etf");
+    edc_task_add_turn(task, turn);
 
-    /* Don't add any messages — flush empty turn */
-    edc_session_add_turn(session, turn);
+    CHECK(edc_queue_length(&turn->messages) == 0, "empty turn has 0 messages");
+    CHECK(edc_session_get_message_count(session) == 0, "session count 0");
 
-    /* Range should NOT be recorded for empty turn */
-    CHECK(!turn->range_valid, "range_valid stays false for empty turn");
-    CHECK(turn->msg_range_count == 0, "msg_range_count is 0");
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize succeeds");
+    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
+    cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
+    cJSON *turns_j = cJSON_GetObjectItem(t0, "turns");
+    cJSON *turn_j = cJSON_GetArrayItem(turns_j, 0);
+    CHECK(cJSON_GetObjectItem(turn_j, "messages") == NULL, "empty turn has no messages array");
+    cJSON_Delete(json);
 
-    edc_turn_free(turn);
     edc_session_free(session);
+    edc_scheduler_free(sched);
     edc_config_free(cfg);
     clean_workspace();
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Test 5: Full roundtrip via file (save_history + save_state → load)
+ *  Test 5: save_state → load_state (session.json 自包含)
  *  ══════════════════════════════════════════════════════════════ */
 
-static void test_full_file_roundtrip(void)
+static void test_state_file_roundtrip(void)
 {
-    TEST("full roundtrip: save_history + save_state → load_state");
+    TEST("save_state -> load_state: turns self-contained (no history.jsonl)");
     clean_workspace();
 
     struct edc_config *cfg = make_config();
 
-    /* Build session with flushed turns */
     struct edc_session *s1 = edc_session_new(cfg, "sess-full", "Full");
-    struct edc_scheduler *sc1 = edc_scheduler_new(s1, cfg);
+    struct edc_scheduler *sc1 = edc_scheduler_new(cfg);
+    install_resolver(sc1, s1);
 
-    struct edc_task *task = edc_task_new("task-ft", "sess-full", "task-ft",
-                                          "full test", edc_channel_cli_new());
+    struct edc_task *task = edc_task_new("task-ft", "sess-full", "task-ft", "full test", edc_channel_adapter);
     task->is_group_leader = 1;
-    edc_task_set_state(task, TASK_WAITING_INPUT);
-    edc_task_set_state(task, TASK_LLM_PROCESSING);
-    edc_task_set_state(task, TASK_COMPLETED);
+    edc_task_mark_ready(task);
+    edc_task_await_exec(task);
+    edc_task_mark_completed(task);
     task->output = sdsnew("final output");
 
-    /* Turn: flush to session */
     struct edc_turn *turn = edc_turn_new();
     turn->task_id = strdup("task-ft");
     turn_add_user(turn, "hello");
     turn_add_assistant(turn, "world");
-    edc_session_add_turn(s1, turn);
     edc_task_add_turn(task, turn);
 
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(s1, group);
     s1->active_task = task;
-    sc1->foreground_group = group;
+    edc_scheduler_set_foreground(s1, group);
 
-    /* Save history first, then state */
-    CHECK(edc_session_save_history(s1), "save_history succeeds");
     CHECK(edc_session_save_state(s1, sc1), "save_state succeeds");
 
-    /* Verify files exist */
-    sds hist_path = edc_path_join(TEST_WS, "sess-full", "history.jsonl", NULL);
     sds state_path = edc_path_join(TEST_WS, "sess-full", "session.json", NULL);
-    CHECK(edc_file_exists(hist_path), "history.jsonl exists");
     CHECK(edc_file_exists(state_path), "session.json exists");
+    sdsfree(state_path);
 
-    /* Clean up first session */
-    cJSON_Delete(s1->messages);
-    s1->messages = NULL;
     edc_session_free(s1);
     edc_scheduler_free(sc1);
 
-    /* Now reload from files */
     struct edc_session *s2 = edc_session_new(cfg, "sess-full", "Full");
-    struct edc_scheduler *sc2 = edc_scheduler_new(s2, cfg);
+    struct edc_scheduler *sc2 = edc_scheduler_new(cfg);
+    install_resolver(sc2, s2);
 
     CHECK(edc_session_load_state(s2, sc2), "load_state succeeds");
 
-    /* Verify restored task */
     struct edc_task *rt = find_task(s2, "task-ft");
     CHECK(rt != NULL, "task restored");
-    CHECK(rt->state == TASK_COMPLETED, "state COMPLETED");
+    CHECK(edc_task_is_completed(rt), "state COMPLETED");
     CHECK_STREQ(rt->output, "final output", "output restored");
 
-    /* Verify turn messages */
     CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
     struct edc_turn *rturn = (struct edc_turn *)rt->turns.data[rt->turns.head];
-    CHECK(edc_queue_length(&rturn->messages) == 2, "2 messages in restored turn");
+    CHECK(edc_queue_length(&rturn->messages) == 2, "2 messages restored in turn");
 
-    /* Verify message content — messages come from history.jsonl via compact range */
     cJSON *rm0 = (cJSON *)rturn->messages.data[rturn->messages.head];
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(rm0, "content")),
-                "hello", "msg0: hello");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(rm0, "content")), "hello", "msg0: hello");
     cJSON *rm1 = (cJSON *)rturn->messages.data[rturn->messages.head + 1];
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(rm1, "content")),
-                "world", "msg1: world");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(rm1, "content")), "world", "msg1: world");
 
-    /* Verify session metadata */
     CHECK(s2->active_task == rt, "active_task restored");
 
-    sdsfree(hist_path);
-    sdsfree(state_path);
-    cJSON_Delete(s2->messages);
-    s2->messages = NULL;
     edc_session_free(s2);
     edc_scheduler_free(sc2);
     edc_config_free(cfg);
@@ -473,14 +403,14 @@ static void test_full_file_roundtrip(void)
 
 int main(void)
 {
-    log_info("=== Phase 3: Turn-History linkage tests ===");
+    log_info("=== Turn ownership tests (P4) ===");
     log_info("");
 
-    test_add_turn_records_range();
-    test_flushed_turn_compact_serialize();
-    test_multi_turn_ranges();
-    test_empty_turn_flush();
-    test_full_file_roundtrip();
+    test_turn_owns_messages();
+    test_single_mode_roundtrip();
+    test_multi_turns();
+    test_empty_turn();
+    test_state_file_roundtrip();
 
     log_info("");
     log_info("=== Results: %d passed, %d failed ===", test_passed, test_failed);

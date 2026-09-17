@@ -1,5 +1,6 @@
 #include "edc_state_serializer.h"
 #include "edc_session.h"
+#include "edc_session_manager.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -12,7 +13,22 @@
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
-
+/* ── 单测的 session 仓库 ─────────────────────────────────────────
+ * scheduler 现在**同包直调 store** (P3 的 `resolve_session` 端口已退休),
+ * 所以测试给它的不是"解析函数"而是**仓库**: 一个只装着
+ * 这些 session 的内存 manager (普通结构体, 没有构造函数 —— 与 poke 别的结构体同法)。
+ * 标签为空 = 用活跃的那个 (active_index 指向第一个), 与真 store 的策略一致。
+ * `ctx` 仍留给测试自己用 (它不再是读口的入参)。 */
+static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
+{
+    sched->ctx = sess;
+    struct edc_session_manager *sm = g_new0(struct edc_session_manager, 1);
+    sm->sessions = g_new0(struct edc_session *, 1);
+    sm->sessions[0] = sess;
+    sm->session_count = sess ? 1 : 0;
+    sm->active_index = 0;
+    sched->sessions = sm; /* 测试进程内不释放: 与测试同生共死 */
+}
 /* Stub: _run_loop is referenced by edc_commands (which gets pulled in
  * transitively).  Provide a dummy definition for test builds. */
 volatile sig_atomic_t _run_loop = 1;
@@ -53,8 +69,6 @@ static void turn_add_msg(struct edc_turn *turn, const char *role, const char *co
     cJSON_AddStringToObject(msg, "role", role);
     cJSON_AddStringToObject(msg, "content", content);
     edc_queue_push(&turn->messages, msg);
-    /* add a dummy timestamp too */
-    edc_queue_push(&turn->timestamps, sdsnew("2026-01-01T00:00:00"));
 }
 
 /* ── Helper: count tasks in a session (across all groups) ── */
@@ -115,7 +129,8 @@ static void test_empty_session(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-empty", "Empty");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* Verify initial state */
     CHECK(count_groups(session) == 0, "no groups initially");
@@ -133,7 +148,8 @@ static void test_empty_session(void)
 
     /* Deserialize into a fresh session */
     struct edc_session *session2 = edc_session_new(cfg, "sess-empty", "Empty");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
     bool ok = edc_state_deserialize(json, session2, sched2);
     CHECK(ok, "deserialize succeeds");
 
@@ -159,17 +175,18 @@ static void test_single_task(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-st", "SingleTask");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* Build a task with one completed turn */
-    struct edc_channel *ch = edc_channel_cli_new();
-    struct edc_task *task = edc_task_new("task-1", "sess-st", "task-1", "do something", ch);
-    edc_task_set_state(task, TASK_WAITING_INPUT);
-    edc_task_set_state(task, TASK_LLM_PROCESSING);
-    edc_task_set_state(task, TASK_COMPLETED);
+    struct edc_task *task = edc_task_new("task-1", "sess-st", "task-1", "do something", edc_channel_adapter);
+    edc_task_await_exec(task);
+    edc_task_mark_completed(task);
     task->is_group_leader = 1;
     task->output = sdsnew("task output result");
     task->completion_seq = 42;
+    /* 用户原文 (由哪条输入建成): 可选键, 但要能原样来回。 */
+    task->raw_input = sdsnew("do something");
 
     /* Add a turn with messages */
     struct edc_turn *turn = edc_turn_new();
@@ -194,15 +211,18 @@ static void test_single_task(void)
 
     cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "task_id")), "task-1", "task_id preserved");
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "state")), "COMPLETED", "state COMPLETED");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "life")), "COMPLETED", "life COMPLETED");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "step")), "DONE", "step DONE");
     CHECK(cJSON_IsTrue(cJSON_GetObjectItem(t0, "is_group_leader")), "is_group_leader");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "raw_input")), "do something", "raw_input persisted");
 
     cJSON *turns_j = cJSON_GetObjectItem(t0, "turns");
     CHECK(cJSON_GetArraySize(turns_j) == 1, "1 turn serialized");
 
     /* Deserialize */
     struct edc_session *session2 = edc_session_new(cfg, "sess-st", "SingleTask");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
     bool ok = edc_state_deserialize(json, session2, sched2);
     CHECK(ok, "deserialize succeeds");
 
@@ -211,10 +231,11 @@ static void test_single_task(void)
 
     struct edc_task *rtask = find_task(session2, "task-1");
     CHECK(rtask != NULL, "task-1 found after deserialize");
-    CHECK(rtask->state == TASK_COMPLETED, "state remains COMPLETED");
+    CHECK(edc_task_is_completed(rtask), "state remains COMPLETED");
     CHECK(rtask->is_group_leader == 1, "is_group_leader preserved");
     CHECK(rtask->completion_seq == 42, "completion_seq preserved");
     CHECK_STREQ(rtask->output, "task output result", "output preserved");
+    CHECK_STREQ(rtask->raw_input, "do something", "raw_input restored");
 
     /* Check turn messages */
     CHECK(edc_queue_length(&rtask->turns) == 1, "1 turn in turns queue");
@@ -247,31 +268,51 @@ static void test_single_task(void)
  *  Test 3: Fork chain
  *  ══════════════════════════════════════════════════════════════ */
 
+/* 新模型: task 创建时就带着它的 input —— 落盘判据会丢掉 "READY 但身上什么都没有"
+ * 的 turn-less 残渣 (docs/retire-waiting-input.md §4), 所以 fixture 给成员装上 input。 */
+static void give_input(struct edc_task *t, const char *text)
+{
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup(t->task_id);
+    edc_turn_add_user_message(turn, text);
+    t->active_turn = turn;
+}
+
 static void test_fork_chain(void)
 {
     TEST("fork chain roundtrip");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-fork", "Fork");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* Create parent task */
-    struct edc_channel *ch = edc_channel_cli_new();
     struct edc_task *parent = edc_task_new("task-parent", "sess-fork", "task-parent",
-                                            "parent task", ch);
+                                            "parent task", edc_channel_adapter);
     parent->is_group_leader = 1;
-    edc_task_set_state(parent, TASK_WAITING_INPUT);
-    edc_task_set_state(parent, TASK_LLM_PROCESSING);
-    edc_task_set_state(parent, TASK_COMPLETED);
+    edc_task_mark_ready(parent);
+    edc_task_await_exec(parent);
+    edc_task_mark_completed(parent);
 
     /* Create fork children */
-    struct edc_task *child1 = edc_task_fork(parent, "task-child1", "child 1", 10, NULL);
-    edc_task_set_state(child1, TASK_WAITING_INPUT);
-    edc_task_set_state(child1, TASK_LLM_PROCESSING);
-    edc_task_set_state(child1, TASK_COMPLETED);
+    struct edc_task *child1 = edc_task_fork(parent, "task-child1", "child 1", 10, edc_channel_adapter);
+    edc_task_mark_ready(child1);
+    edc_task_await_exec(child1);
+    edc_task_mark_completed(child1);
 
-    struct edc_task *child2 = edc_task_fork(parent, "task-child2", "child 2", 10, NULL);
-    edc_task_set_state(child2, TASK_WAITING_INPUT);
+    struct edc_task *child2 = edc_task_fork(parent, "task-child2", "child 2", 10, edc_channel_adapter);
+    /* 新模型: fork 子任务创建时就带着它的 input —— /task fork 现在把 desc 当 input
+     * 装上并派发 (或 --suspended 停住)。旧 fixture 让子任务停在 WAITING_INPUT 等
+     * attach 喂输入, 那种 turn-less 任务现在落盘时会被丢掉
+     * (docs/retire-waiting-input.md §4)。 */
+    {
+        struct edc_turn *turn = edc_turn_new();
+        turn->task_id = strdup(child2->task_id);
+        edc_turn_add_user_message(turn, "child 2 input");
+        child2->active_turn = turn;
+        edc_task_mark_suspended(child2);
+    }
 
     /* Create group, add all tasks */
     struct edc_task_group *group = edc_task_group_new(parent);
@@ -288,7 +329,8 @@ static void test_fork_chain(void)
 
     /* Deserialize */
     struct edc_session *session2 = edc_session_new(cfg, "sess-fork", "Fork");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
     bool ok = edc_state_deserialize(json, session2, sched2);
     CHECK(ok, "deserialize succeeds");
 
@@ -306,12 +348,12 @@ static void test_fork_chain(void)
     CHECK(rc1->forked_from == rp, "child1->forked_from == parent");
     CHECK(rc2->forked_from == rp, "child2->forked_from == parent");
     CHECK(rp->forked_from == NULL, "parent has no forked_from");
-    CHECK(rc1->fork_point_msg_count == 10, "fork_point_msg_count preserved");
+    CHECK(rc1->fork_point_completion_seq == 10, "fork_point_completion_seq preserved");
 
     /* Verify states */
-    CHECK(rp->state == TASK_COMPLETED, "parent COMPLETED");
-    CHECK(rc1->state == TASK_COMPLETED, "child1 COMPLETED");
-    CHECK(rc2->state == TASK_WAITING_INPUT, "child2 WAITING_INPUT");
+    CHECK(edc_task_is_completed(rp), "parent COMPLETED");
+    CHECK(edc_task_is_completed(rc1), "child1 COMPLETED");
+    CHECK(edc_task_is_suspended(rc2), "child2 non-terminal -> SUSPENDED");
 
     cJSON_Delete(json);
     edc_session_free(session);
@@ -331,22 +373,31 @@ static void test_dependency_graph(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-dep", "Dep");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* Create tasks: A → (JOIN) → B → (JOIN) → C */
-    struct edc_channel *ch = edc_channel_cli_new();
-    struct edc_task *ta = edc_task_new("task-A", "sess-dep", "task-A", "source A", ch);
+    struct edc_task *ta = edc_task_new("task-A", "sess-dep", "task-A", "source A", edc_channel_adapter);
     ta->is_group_leader = 1;
-    edc_task_set_state(ta, TASK_WAITING_INPUT);
-    edc_task_set_state(ta, TASK_LLM_PROCESSING);
-    edc_task_set_state(ta, TASK_COMPLETED);
+    edc_task_mark_ready(ta);
+    edc_task_await_exec(ta);
+    edc_task_mark_completed(ta);
     ta->output = sdsnew("output from A");
 
-    struct edc_task *tb = edc_task_new("task-B", "sess-dep", "task-A", "middle B", NULL);
-    edc_task_set_state(tb, TASK_WAITING_DEPS); /* must be set before adding deps */
+    struct edc_task *tb = edc_task_new("task-B", "sess-dep", "task-A", "middle B", edc_channel_adapter);
+    edc_task_mark_waiting_deps(tb); /* must be set before adding deps */
+    /* 新模型: 任务创建时就带着它的 input。B 也是"带着输入"建出来的, 只是依赖先完成,
+     * 于是它回到 READY (有 turn, 待驱动); 没有 turn 的 READY 任务会被落盘判据丢掉
+     * (docs/retire-waiting-input.md §4)。 */
+    {
+        struct edc_turn *turn = edc_turn_new();
+        turn->task_id = strdup(tb->task_id);
+        edc_turn_add_user_message(turn, "middle B input");
+        tb->active_turn = turn;
+    }
 
-    struct edc_task *tc = edc_task_new("task-C", "sess-dep", "task-A", "sink C", NULL);
-    edc_task_set_state(tc, TASK_WAITING_DEPS);
+    struct edc_task *tc = edc_task_new("task-C", "sess-dep", "task-A", "sink C", edc_channel_adapter);
+    edc_task_mark_waiting_deps(tc);
 
     /* Add dependencies: B depends on A, C depends on B */
     edc_task_add_dependency(tb, ta, TASK_DEP_JOIN);
@@ -363,7 +414,7 @@ static void test_dependency_graph(void)
     /* Verify deps setup before serialization */
     CHECK(tb->deps_total == 1, "B has 1 dep");
     CHECK(tb->deps_completed == 1, "B deps completed (A already done)");
-    CHECK(tb->state == TASK_WAITING_INPUT, "B transitioned to WAITING_INPUT");
+    CHECK(edc_task_is_ready(tb), "B transitioned to READY");
 
     /* Serialize */
     cJSON *json = edc_state_serialize(session, sched);
@@ -371,7 +422,8 @@ static void test_dependency_graph(void)
 
     /* Deserialize */
     struct edc_session *session2 = edc_session_new(cfg, "sess-dep", "Dep");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
     bool ok = edc_state_deserialize(json, session2, sched2);
     CHECK(ok, "deserialize succeeds");
 
@@ -388,7 +440,7 @@ static void test_dependency_graph(void)
     /* Verify dependencies */
     CHECK(rb->deps_total == 1, "B deps_total = 1");
     CHECK(rb->deps_completed == 1, "B deps_completed = 1");
-    CHECK(rb->state == TASK_WAITING_INPUT, "B in WAITING_INPUT");
+    CHECK(edc_task_is_suspended(rb), "B non-terminal -> SUSPENDED on load");
 
     CHECK(rc->deps_total == 1, "C deps_total = 1");
     CHECK(rc->deps_completed == 0, "C deps_completed = 0 (B not done)");
@@ -426,24 +478,25 @@ static void test_complex_topology(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-cplx", "Complex");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* Group 1: 3 tasks */
     struct edc_task *g1_leader = edc_task_new("g1-L", "sess-cplx", "g1-L",
-                                               "group1 leader", edc_channel_cli_new());
+                                               "group1 leader", edc_channel_adapter);
     g1_leader->is_group_leader = 1;
-    edc_task_set_state(g1_leader, TASK_WAITING_INPUT);
-    edc_task_set_state(g1_leader, TASK_LLM_PROCESSING);
-    edc_task_set_state(g1_leader, TASK_COMPLETED);
+    edc_task_mark_ready(g1_leader);
+    edc_task_await_exec(g1_leader);
+    edc_task_mark_completed(g1_leader);
     g1_leader->output = sdsnew("g1 leader done");
 
     struct edc_task *g1_m1 = edc_task_new("g1-M1", "sess-cplx", "g1-L",
-                                           "group1 member1", NULL);
-    edc_task_set_state(g1_m1, TASK_WAITING_INPUT);
+                                           "group1 member1", edc_channel_adapter);
+    give_input(g1_m1, "g1 member1 input");
 
     struct edc_task *g1_m2 = edc_task_new("g1-M2", "sess-cplx", "g1-L",
-                                           "group1 member2", NULL);
-    edc_task_set_state(g1_m2, TASK_IDLE); /* will be filtered out! */
+                                           "group1 member2", edc_channel_adapter);
+    give_input(g1_m2, "g1 member2 input");
 
     struct edc_task_group *group1 = edc_task_group_new(g1_leader);
     edc_task_group_add_task(group1, g1_m1);
@@ -452,15 +505,15 @@ static void test_complex_topology(void)
 
     /* Group 2: 2 tasks, normal group */
     struct edc_task *g2_leader = edc_task_new("g2-L", "sess-cplx", "g2-L",
-                                               "group2 leader", edc_channel_cli_new());
+                                               "group2 leader", edc_channel_adapter);
     g2_leader->is_group_leader = 1;
-    edc_task_set_state(g2_leader, TASK_WAITING_INPUT);
-    edc_task_set_state(g2_leader, TASK_LLM_PROCESSING);
-    edc_task_set_state(g2_leader, TASK_COMPLETED);
+    edc_task_mark_ready(g2_leader);
+    edc_task_await_exec(g2_leader);
+    edc_task_mark_completed(g2_leader);
 
     struct edc_task *g2_m1 = edc_task_new("g2-M1", "sess-cplx", "g2-L",
-                                           "group2 member1", NULL);
-    edc_task_set_state(g2_m1, TASK_WAITING_INPUT);
+                                           "group2 member1", edc_channel_adapter);
+    give_input(g2_m1, "g2 member1 input");
 
     struct edc_task_group *group2 = edc_task_group_new(g2_leader);
     edc_task_group_add_task(group2, g2_m1);
@@ -480,10 +533,11 @@ static void test_complex_topology(void)
     cJSON *json = edc_state_serialize(session, sched);
     CHECK(json != NULL, "serialize returns non-NULL");
 
-    /* Verify filtering: g1-M2 (IDLE) should NOT be in output */
+    /* READY 但**带着 input** 的任务照样落盘; 只有 "READY 但身上什么都没有" 的
+     * turn-less 残渣会被丢掉 (见 edc_state_serializer.c 里的落盘判据)。 */
     cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
     int tcount = cJSON_GetArraySize(tasks_j);
-    CHECK(tcount == 4, "4 tasks serialized (g1-L, g1-M1, g2-L, g2-M1; g1-M2 IDLE filtered)");
+    CHECK(tcount == 5, "5 tasks serialized (READY with an input is persisted too)");
 
     /* Verify groups: 2 groups */
     cJSON *groups_j = cJSON_GetObjectItem(json, "groups");
@@ -491,12 +545,13 @@ static void test_complex_topology(void)
 
     /* Deserialize */
     struct edc_session *session2 = edc_session_new(cfg, "sess-cplx", "Complex");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
     bool ok = edc_state_deserialize(json, session2, sched2);
     CHECK(ok, "deserialize succeeds");
 
     CHECK(count_groups(session2) == 2, "2 groups restored");
-    CHECK(count_tasks(session2) == 4, "4 tasks restored (IDLE filtered)");
+    CHECK(count_tasks(session2) == 5, "5 tasks restored (READY with an input persisted too)");
 
     struct edc_task *rg1L  = find_task(session2, "g1-L");
     struct edc_task *rg1M1 = find_task(session2, "g1-M1");
@@ -508,7 +563,7 @@ static void test_complex_topology(void)
     CHECK(rg1M1 != NULL, "g1-M1 restored");
     CHECK(rg2L != NULL, "g2-L restored");
     CHECK(rg2M1 != NULL, "g2-M1 restored");
-    CHECK(rg1M2 == NULL, "g1-M2 correctly filtered (IDLE)");
+    CHECK(rg1M2 != NULL, "g1-M2 restored (READY with an input is persisted)");
 
     /* Verify cross-group dep */
     CHECK(rg1M1->deps_total == 1, "g1-M1 has 1 dep");
@@ -526,29 +581,84 @@ static void test_complex_topology(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Test 6: State degradation
+ *  Test 5b: 落盘判据 —— "READY 且没有 input" 的残渣不落盘
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_turnless_shell_is_dropped(void)
+{
+    TEST("a READY task with no input is not persisted (no turn-less shells)");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-shell", "Shell");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    /* 旧模型的残渣形状: 创建后不带 input 就停在 READY (fork leader / /task join 的
+     * Joined task / @task 无正文)。新模型里任务创建时就带着它的 input, 所以这条形状
+     * 不该存在 —— 落盘判据丢掉它并告警
+     * (见 edc_state_serializer.c / docs/retire-waiting-input.md §4)。 */
+    struct edc_task *shell = edc_task_new("t-shell", "sess-shell", "t-shell",
+                                          "no input", edc_channel_adapter);
+    shell->is_group_leader = 1;
+    struct edc_task_group *group = edc_task_group_new(shell);
+    edc_session_add_group(session, group);
+    CHECK(edc_task_is_ready(shell), "shell starts READY");
+
+    /* 对照组: 同样停在 READY, 但它带着 input → 必须落盘。
+     * 放进它自己的 group 当 leader —— 被丢的 t-shell 是它那个 group 的 leader,
+     * leader 消失后整个 group 也重建不出来, 会把同组的对照组一起带没。 */
+    struct edc_task *real = edc_task_new("t-real", "sess-shell", "t-real",
+                                         "has input", edc_channel_adapter);
+    real->is_group_leader = 1;
+    give_input(real, "real input");
+    edc_session_add_group(session, edc_task_group_new(real));
+    CHECK(edc_task_is_ready(real), "control task also sits at READY");
+
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize returns non-NULL");
+    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
+    CHECK(cJSON_GetArraySize(tasks_j) == 1, "only the task carrying an input is persisted");
+
+    struct edc_session *session2 = edc_session_new(cfg, "sess-shell", "Shell");
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
+    CHECK(edc_state_deserialize(json, session2, sched2), "deserialize succeeds");
+    CHECK(find_task(session2, "t-shell") == NULL, "the turn-less shell did not come back");
+    CHECK(find_task(session2, "t-real") != NULL, "the task with an input came back");
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(session2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Test 6: Interrupted-state normalization
  *  ══════════════════════════════════════════════════════════════ */
 
 static void test_state_degradation(void)
 {
-    TEST("state degradation (LLM_PROCESSING/TOOL_CALLING → WAITING_INPUT)");
+    TEST("interrupted STEPS are preserved; only life collapses to SUSPENDED");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-deg", "Degrade");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     struct edc_task *t1 = edc_task_new("t-llm", "sess-deg", "t-llm",
-                                        "llm processing", edc_channel_cli_new());
+                                        "llm processing", edc_channel_adapter);
     t1->is_group_leader = 1;
-    edc_task_set_state(t1, TASK_WAITING_INPUT);
-    edc_task_set_state(t1, TASK_LLM_PROCESSING);
+    edc_task_mark_ready(t1);
+    edc_task_await_exec(t1);
     /* stays in LLM_PROCESSING */
 
     struct edc_task *t2 = edc_task_new("t-tool", "sess-deg", "t-llm",
-                                        "tool calling", NULL);
-    edc_task_set_state(t2, TASK_WAITING_INPUT);
-    edc_task_set_state(t2, TASK_LLM_PROCESSING);
-    edc_task_set_state(t2, TASK_TOOL_CALLING);
+                                        "tool calling", edc_channel_adapter);
+    edc_task_mark_ready(t2);
+    edc_task_await_exec(t2);
+    edc_task_await_tools(t2);
     /* stays in TOOL_CALLING */
 
     struct edc_task_group *group = edc_task_group_new(t1);
@@ -563,22 +673,29 @@ static void test_state_degradation(void)
     cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
     cJSON *j1 = cJSON_GetArrayItem(tasks_j, 0);
     cJSON *j2 = cJSON_GetArrayItem(tasks_j, 1);
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(j1, "state")),
-                "LLM_PROCESSING", "JSON keeps LLM_PROCESSING");
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(j2, "state")),
-                "TOOL_CALLING", "JSON keeps TOOL_CALLING");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(j1, "step")),
+                "AWAIT_EXEC", "JSON keeps step AWAIT_EXEC");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(j2, "step")),
+                "AWAIT_TOOLS", "JSON keeps step AWAIT_TOOLS");
 
     /* Deserialize */
     struct edc_session *session2 = edc_session_new(cfg, "sess-deg", "Degrade");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
     bool ok = edc_state_deserialize(json, session2, sched2);
     CHECK(ok, "deserialize succeeds");
 
     struct edc_task *rt1 = find_task(session2, "t-llm");
     struct edc_task *rt2 = find_task(session2, "t-tool");
 
-    CHECK(rt1->state == TASK_WAITING_INPUT, "LLM_PROCESSING degraded to WAITING_INPUT");
-    CHECK(rt2->state == TASK_WAITING_INPUT, "TOOL_CALLING degraded to WAITING_INPUT");
+    /* P2 之前这里断言的是"相位被丢掉": 两个 task 都变成 SUSPENDED, 分不出谁在哪一步。
+     * 现在 life 仍然收敛 (重启后没有东西在跑), 但 **step 原样保留** —— 这正是能够让
+     * resume 不再靠残留物猜的那份信息。 */
+    CHECK(rt1->step == EDC_TASKSTEP_AWAIT_EXEC, "step AWAIT_EXEC preserved");
+    CHECK(rt2->step == EDC_TASKSTEP_AWAIT_TOOLS, "step AWAIT_TOOLS preserved");
+    CHECK(rt1->life == EDC_LIFE_SUSPENDED && rt2->life == EDC_LIFE_SUSPENDED,
+          "life collapses to SUSPENDED for both");
+    CHECK(rt1->step != rt2->step, "the two are still distinguishable");
 
     cJSON_Delete(json);
     edc_session_free(session);
@@ -594,27 +711,28 @@ static void test_state_degradation(void)
 
 static void test_filter_transient_states(void)
 {
-    TEST("IDLE and CANCELLED tasks are filtered out");
+    TEST("READY (carrying an input) is persisted too; CANCELLED is persisted");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-filt", "Filter");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     struct edc_task *leader = edc_task_new("t-ok", "sess-filt", "t-ok",
-                                            "good task", edc_channel_cli_new());
+                                            "good task", edc_channel_adapter);
     leader->is_group_leader = 1;
-    edc_task_set_state(leader, TASK_WAITING_INPUT);
-    edc_task_set_state(leader, TASK_LLM_PROCESSING);
-    edc_task_set_state(leader, TASK_COMPLETED);
+    edc_task_mark_ready(leader);
+    edc_task_await_exec(leader);
+    edc_task_mark_completed(leader);
 
     struct edc_task *idle_t = edc_task_new("t-idle", "sess-filt", "t-ok",
-                                            "idle task", NULL);
-    /* stays IDLE */
+                                            "idle task", edc_channel_adapter);
+    give_input(idle_t, "idle input"); /* 停在 READY, 但带着 input */
 
     struct edc_task *canc_t = edc_task_new("t-canc", "sess-filt", "t-ok",
-                                            "cancelled task", NULL);
-    edc_task_set_state(canc_t, TASK_WAITING_INPUT);
-    edc_task_set_state(canc_t, TASK_CANCELLED);
+                                            "cancelled task", edc_channel_adapter);
+    edc_task_mark_ready(canc_t);
+    edc_task_mark_cancelled(canc_t);
 
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_task_group_add_task(group, idle_t);
@@ -628,18 +746,207 @@ static void test_filter_transient_states(void)
     CHECK(json != NULL, "serialize returns non-NULL");
 
     cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
-    CHECK(cJSON_GetArraySize(tasks_j) == 1, "only 1 task serialized (t-ok)");
-
-    cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "task_id")),
-                "t-ok", "the one task is t-ok");
+    CHECK(cJSON_GetArraySize(tasks_j) == 3, "3 tasks serialized (t-ok + t-idle + t-canc; READY with input too)");
 
     /* Deserialize */
     struct edc_session *session2 = edc_session_new(cfg, "sess-filt", "Filter");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
     bool ok = edc_state_deserialize(json, session2, sched2);
     CHECK(ok, "deserialize succeeds");
-    CHECK(count_tasks(session2) == 1, "1 task restored");
+    CHECK(count_tasks(session2) == 3, "3 tasks restored");
+
+    struct edc_task *rcanc = find_task(session2, "t-canc");
+    CHECK(rcanc != NULL, "cancelled task restored");
+    CHECK(edc_task_is_cancelled(rcanc), "cancelled state survives restart");
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(session2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Test 7b: CANCELLED mid-flight task roundtrip
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_cancelled_midflight_roundtrip(void)
+{
+    TEST("CANCELLED mid-flight task (active_turn) roundtrip");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-cmid", "CancelledMid");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    /* Task was running (LLM_PROCESSING) with a partial active turn, then got
+     * a stop signal → CANCELLED.  Simulates /task stop during a run. */
+    struct edc_task *task = edc_task_new("c-mid", "sess-cmid", "c-mid",
+                                         "running then stopped", edc_channel_adapter);
+    task->is_group_leader = 1;
+    edc_task_mark_ready(task);
+    edc_task_await_exec(task);
+
+    struct edc_turn *at = edc_turn_new();
+    at->task_id = strdup("c-mid");
+    turn_add_msg(at, "user", "please do the long task");
+    task->active_turn = at;
+
+    edc_task_send_signal(task, TASK_SIGTERM);
+    CHECK(edc_task_is_cancelled(task), "signal puts task into CANCELLED");
+
+    struct edc_task_group *group = edc_task_group_new(task);
+    edc_session_add_group(session, group);
+    session->active_task = task;
+
+    /* Serialize: CANCELLED task must be present */
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize returns non-NULL");
+    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
+    CHECK(cJSON_GetArraySize(tasks_j) == 1, "CANCELLED task is serialized");
+    cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "life")),
+                "CANCELLED", "JSON keeps life CANCELLED");
+    CHECK(cJSON_GetObjectItem(t0, "active_turn") != NULL, "active_turn serialized");
+
+    /* Deserialize */
+    struct edc_session *session2 = edc_session_new(cfg, "sess-cmid", "CancelledMid");
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
+    bool ok = edc_state_deserialize(json, session2, sched2);
+    CHECK(ok, "deserialize succeeds");
+
+    struct edc_task *rt = find_task(session2, "c-mid");
+    CHECK(rt != NULL, "cancelled task restored");
+    CHECK(edc_task_is_cancelled(rt), "state stays CANCELLED after restart (no WAITING_INPUT degrade)");
+    CHECK(rt->active_turn != NULL, "active_turn restored");
+    struct edc_turn *rturn = rt->active_turn;
+    CHECK(edc_queue_length(&rturn->messages) == 1, "active turn has 1 message");
+    cJSON *m0 = (cJSON *)rturn->messages.data[rturn->messages.head];
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "role")), "user", "active turn msg role=user");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "please do the long task",
+                "active turn msg content");
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(session2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Test 7c: cancelled dependency edges survive roundtrip
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_cancelled_dep_roundtrip(void)
+{
+    TEST("dependency edge of a cancelled source survives roundtrip");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-cdep", "CancelledDep");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    /* src: group leader, runs and then gets cancelled.
+     * tgt: SEQUENCE-depends on src; when src is cancelled only this dependency
+     *      edge is dropped and tgt returns to WAITING_INPUT. */
+    struct edc_task *src = edc_task_new("src", "sess-cdep", "src", "source task", edc_channel_adapter);
+    src->is_group_leader = 1;
+    edc_task_mark_ready(src);
+    edc_task_await_exec(src);
+
+    struct edc_task *tgt = edc_task_new("tgt", "sess-cdep", "src", "dependent task", edc_channel_adapter);
+    /* 新模型: 任务创建时就带着它的 input —— tgt 被释放回 READY 时仍带着 turn,
+     * 否则它会被落盘判据当成 turn-less 残渣丢掉 (docs/retire-waiting-input.md §4)。 */
+    give_input(tgt, "dependent input");
+
+    struct edc_task_group *group = edc_task_group_new(src);
+    edc_task_group_add_task(group, tgt);
+    edc_session_add_group(session, group);
+
+    /* wire dep, then cancel the source (runtime order) */
+    bool ok_add = edc_task_add_dependency(tgt, src, TASK_DEP_SEQUENCE);
+    CHECK(ok_add, "add dependency succeeds");
+    CHECK(edc_task_awaits_deps(tgt), "tgt waits on deps");
+    edc_task_send_signal(src, TASK_SIGTERM);
+    CHECK(edc_task_is_cancelled(src), "src cancelled");
+    CHECK(edc_task_is_ready(tgt), "tgt released back to READY");
+
+    /* Serialize: both tasks must be present */
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize returns non-NULL");
+    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
+    CHECK(cJSON_GetArraySize(tasks_j) == 2, "both src(CANCELLED) and tgt serialized");
+
+    /* Deserialize */
+    struct edc_session *session2 = edc_session_new(cfg, "sess-cdep", "CancelledDep");
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
+    bool ok = edc_state_deserialize(json, session2, sched2);
+    CHECK(ok, "deserialize succeeds");
+
+    struct edc_task *rsrc = find_task(session2, "src");
+    struct edc_task *rtgt = find_task(session2, "tgt");
+    CHECK(rsrc != NULL && edc_task_is_cancelled(rsrc), "cancelled source restored as CANCELLED");
+    CHECK(rtgt != NULL, "dependent restored");
+    CHECK(edc_task_is_suspended(rtgt), "dependent returns SUSPENDED (not stuck in WAITING_DEPS)");
+    CHECK(rtgt->deps_total == 0, "deps_total reconciled to 0");
+    CHECK(rtgt->deps_completed == 0, "deps_completed reconciled to 0");
+    CHECK(rtgt->deps != NULL, "cancelled dep edge preserved");
+    if (rtgt->deps)
+    {
+        CHECK(rtgt->deps->cancelled, "dep edge marked cancelled");
+        CHECK(rtgt->deps->source == rsrc, "dep edge points at restored source");
+    }
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(session2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Test 7d: JOIN cascade — cancelling a source cancels dependents
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_join_cascade_roundtrip(void)
+{
+    TEST("JOIN cancel cascades the dependent to CANCELLED across roundtrip");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-jcas", "JoinCascade");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    struct edc_task *src = edc_task_new("jsrc", "sess-jcas", "jsrc", "source", edc_channel_adapter);
+    src->is_group_leader = 1;
+    edc_task_mark_ready(src);
+    struct edc_task *tgt = edc_task_new("jtgt", "sess-jcas", "jsrc", "dependent", edc_channel_adapter);
+
+    struct edc_task_group *group = edc_task_group_new(src);
+    edc_task_group_add_task(group, tgt);
+    edc_session_add_group(session, group);
+
+    CHECK(edc_task_add_dependency(tgt, src, TASK_DEP_JOIN), "tgt -JOIN-> src");
+    edc_task_send_signal(src, TASK_SIGTERM);
+    CHECK(edc_task_is_cancelled(src), "src cancelled");
+    CHECK(edc_task_is_cancelled(tgt), "JOIN dependent cascaded to CANCELLED");
+
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize returns non-NULL");
+
+    struct edc_session *session2 = edc_session_new(cfg, "sess-jcas", "JoinCascade");
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
+    bool ok = edc_state_deserialize(json, session2, sched2);
+    CHECK(ok, "deserialize succeeds");
+    struct edc_task *rtgt = find_task(session2, "jtgt");
+    CHECK(rtgt != NULL && edc_task_is_cancelled(rtgt), "dependent restored as CANCELLED");
 
     cJSON_Delete(json);
     edc_session_free(session);
@@ -659,13 +966,14 @@ static void test_active_turn(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-at", "ActiveTurn");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     struct edc_task *task = edc_task_new("t-at", "sess-at", "t-at",
-                                          "has active turn", edc_channel_cli_new());
+                                          "has active turn", edc_channel_adapter);
     task->is_group_leader = 1;
-    edc_task_set_state(task, TASK_WAITING_INPUT);
-    edc_task_set_state(task, TASK_LLM_PROCESSING);
+    edc_task_mark_ready(task);
+    edc_task_await_exec(task);
 
     /* Add a committed turn */
     struct edc_turn *turn1 = edc_turn_new();
@@ -698,7 +1006,8 @@ static void test_active_turn(void)
 
     /* Deserialize */
     struct edc_session *session2 = edc_session_new(cfg, "sess-at", "ActiveTurn");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
     bool ok = edc_state_deserialize(json, session2, sched2);
     CHECK(ok, "deserialize succeeds");
 
@@ -726,23 +1035,24 @@ static void test_active_turn(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Test 9: todolist, prompt, redirect fields
+ *  Test 9: todos, prompt, redirect fields
  *  ══════════════════════════════════════════════════════════════ */
 
 static void test_extra_fields(void)
 {
-    TEST("todolist, prompt, redirect roundtrip");
+    TEST("todos, prompt, redirect roundtrip");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-extra", "Extra");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     struct edc_task *task = edc_task_new("t-extra", "sess-extra", "t-extra",
-                                          "extra fields", edc_channel_cli_new());
+                                          "extra fields", edc_channel_adapter);
     task->is_group_leader = 1;
-    edc_task_set_state(task, TASK_WAITING_INPUT);
-    edc_task_set_state(task, TASK_LLM_PROCESSING);
-    edc_task_set_state(task, TASK_COMPLETED);
+    edc_task_mark_ready(task);
+    edc_task_await_exec(task);
+    edc_task_mark_completed(task);
 
     /* Set prompt */
     task->prompt_name = sdsnew("code-reviewer");
@@ -753,18 +1063,21 @@ static void test_extra_fields(void)
     task->redirect_stderr = sdsnew("/tmp/err.log");
     task->redirect_append = true;
 
-    /* Set todolist */
-    task->todolist = cJSON_CreateArray();
+    /* Set todos */
+    task->todos = cJSON_CreateArray();
     cJSON *item1 = cJSON_CreateObject();
     cJSON_AddStringToObject(item1, "content", "review code");
     cJSON_AddStringToObject(item1, "status", "completed");
-    cJSON_AddStringToObject(item1, "activeForm", "");
-    cJSON_AddItemToArray(task->todolist, item1);
+    cJSON_AddStringToObject(item1, "priority", "low");
+    cJSON_AddItemToArray(task->todos, item1);
     cJSON *item2 = cJSON_CreateObject();
     cJSON_AddStringToObject(item2, "content", "write tests");
     cJSON_AddStringToObject(item2, "status", "in_progress");
-    cJSON_AddStringToObject(item2, "activeForm", "writing...");
-    cJSON_AddItemToArray(task->todolist, item2);
+    cJSON_AddStringToObject(item2, "priority", "high");
+    cJSON_AddItemToArray(task->todos, item2);
+
+    /* Set todo sync throttle gap (距上次 todowrite 的 LLM 请求数) */
+    task->todo_sync_gap = 7;
 
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(session, group);
@@ -775,7 +1088,8 @@ static void test_extra_fields(void)
 
     /* Deserialize */
     struct edc_session *session2 = edc_session_new(cfg, "sess-extra", "Extra");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
     bool ok = edc_state_deserialize(json, session2, sched2);
     CHECK(ok, "deserialize succeeds");
 
@@ -791,14 +1105,17 @@ static void test_extra_fields(void)
     CHECK_STREQ(rt->redirect_stderr, "/tmp/err.log", "redirect_stderr preserved");
     CHECK(rt->redirect_append == true, "redirect_append preserved");
 
-    /* Verify todolist */
-    CHECK(rt->todolist != NULL, "todolist restored");
-    CHECK(cJSON_GetArraySize(rt->todolist) == 2, "todolist has 2 items");
-    cJSON *ri1 = cJSON_GetArrayItem(rt->todolist, 0);
+    /* Verify todos */
+    CHECK(rt->todos != NULL, "todos restored");
+    CHECK(cJSON_GetArraySize(rt->todos) == 2, "todos has 2 items");
+    cJSON *ri1 = cJSON_GetArrayItem(rt->todos, 0);
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(ri1, "content")),
-                "review code", "todolist item1 content");
+                "review code", "todos item1 content");
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(ri1, "status")),
-                "completed", "todolist item1 status");
+                "completed", "todos item1 status");
+
+    /* Verify todo sync throttle gap */
+    CHECK(rt->todo_sync_gap == 7, "todo_sync_gap preserved");
 
     cJSON_Delete(json);
     edc_session_free(session);
@@ -818,25 +1135,24 @@ static void test_null_inputs(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-null", "Null");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* serialize with NULL session */
     cJSON *j1 = edc_state_serialize(NULL, NULL);
     CHECK(j1 == NULL, "serialize(NULL, NULL) returns NULL");
 
-    /* serialize with NULL messages */
-    cJSON *saved = session->messages;
-    session->messages = NULL;
+    /* serialize no longer depends on session->messages */
     cJSON *j2 = edc_state_serialize(session, NULL);
-    CHECK(j2 == NULL, "serialize with NULL messages returns NULL");
-    session->messages = saved;
+    CHECK(j2 != NULL, "serialize does not require session->messages");
+    cJSON_Delete(j2);
 
     /* deserialize with NULL json */
     bool ok1 = edc_state_deserialize(NULL, session, NULL);
     CHECK(!ok1, "deserialize(NULL json) returns false");
 
     /* deserialize with NULL session */
-    cJSON *valid = cJSON_Parse("{\"version\":1,\"session\":{},\"groups\":[],\"tasks\":[]}");
+    cJSON *valid = cJSON_Parse("{\"version\":5,\"session\":{},\"groups\":[],\"tasks\":[]}");
     bool ok2 = edc_state_deserialize(valid, NULL, NULL);
     CHECK(!ok2, "deserialize(NULL session) returns false");
     cJSON_Delete(valid);
@@ -848,19 +1164,19 @@ static void test_null_inputs(void)
     cJSON_Delete(no_ver);
 
     /* deserialize with missing tasks array */
-    cJSON *no_tasks = cJSON_Parse("{\"version\":1,\"session\":{},\"groups\":[]}");
+    cJSON *no_tasks = cJSON_Parse("{\"version\":5,\"session\":{},\"groups\":[]}");
     bool ok4 = edc_state_deserialize(no_tasks, session, sched);
     CHECK(ok4, "deserialize without tasks array succeeds (treated as empty)");
     cJSON_Delete(no_tasks);
 
     /* deserialize with tasks not an array */
-    cJSON *bad_tasks = cJSON_Parse("{\"version\":1,\"session\":{},\"groups\":[],\"tasks\":\"not_array\"}");
+    cJSON *bad_tasks = cJSON_Parse("{\"version\":5,\"session\":{},\"groups\":[],\"tasks\":\"not_array\"}");
     bool ok5 = edc_state_deserialize(bad_tasks, session, sched);
     CHECK(ok5, "deserialize with non-array tasks succeeds (ignored)");
     cJSON_Delete(bad_tasks);
 
     /* deserialize with groups not an array */
-    cJSON *bad_groups = cJSON_Parse("{\"version\":1,\"session\":{},\"groups\":123,\"tasks\":[]}");
+    cJSON *bad_groups = cJSON_Parse("{\"version\":5,\"session\":{},\"groups\":123,\"tasks\":[]}");
     bool ok6 = edc_state_deserialize(bad_groups, session, sched);
     CHECK(ok6, "deserialize with non-array groups succeeds (ignored)");
     cJSON_Delete(bad_groups);
@@ -880,12 +1196,13 @@ static void test_malformed_inputs(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-mal", "Malformed");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* dep referencing nonexistent task */
     const char *bad_dep_json =
         "{"
-        "  \"version\":1,"
+        "  \"version\":5,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -895,7 +1212,7 @@ static void test_malformed_inputs(void)
         "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
         "     \"description\":\"task 1\",\"state\":\"COMPLETED\","
         "     \"is_group_leader\":true,\"auto_reap\":false,"
-        "     \"fork_point_msg_count\":0,\"completion_seq\":0,"
+        "     \"fork_point_completion_seq\":0,\"completion_seq\":0,"
         "     \"redirect_append\":false,"
         "     \"deps\":[{\"source_task_id\":\"NOBODY\",\"type\":\"JOIN\","
         "                \"completed\":false,\"cancelled\":false,\"injected\":false}],"
@@ -910,7 +1227,7 @@ static void test_malformed_inputs(void)
     /* group member referencing nonexistent task */
     const char *bad_member_json =
         "{"
-        "  \"version\":1,"
+        "  \"version\":5,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -920,7 +1237,7 @@ static void test_malformed_inputs(void)
         "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
         "     \"description\":\"task 1\",\"state\":\"COMPLETED\","
         "     \"is_group_leader\":true,\"auto_reap\":false,"
-        "     \"fork_point_msg_count\":0,\"completion_seq\":0,"
+        "     \"fork_point_completion_seq\":0,\"completion_seq\":0,"
         "     \"redirect_append\":false,"
         "     \"deps\":[],\"turns\":[]}"
         "  ]"
@@ -930,10 +1247,10 @@ static void test_malformed_inputs(void)
     CHECK(ok2, "deserialize with bad member reference succeeds (skipped)");
     cJSON_Delete(j2);
 
-    /* turn message_start out of range */
+    /* turn with no embedded messages (unknown/legacy keys are ignored) */
     const char *bad_range_json =
         "{"
-        "  \"version\":1,"
+        "  \"version\":5,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -943,7 +1260,7 @@ static void test_malformed_inputs(void)
         "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
         "     \"description\":\"task 1\",\"state\":\"COMPLETED\","
         "     \"is_group_leader\":true,\"auto_reap\":false,"
-        "     \"fork_point_msg_count\":0,\"completion_seq\":0,"
+        "     \"fork_point_completion_seq\":0,\"completion_seq\":0,"
         "     \"redirect_append\":false,"
         "     \"deps\":[],"
         "     \"turns\":[{\"turn_index\":0,\"message_start\":999,\"message_count\":5}]}"
@@ -951,20 +1268,20 @@ static void test_malformed_inputs(void)
         "}";
     cJSON *j3 = cJSON_Parse(bad_range_json);
     bool ok3 = edc_state_deserialize(j3, session, sched);
-    CHECK(ok3, "deserialize with out-of-range message_start succeeds (turn empty)");
+    CHECK(ok3, "deserialize tolerates a turn with unknown keys (empty turn)");
     cJSON_Delete(j3);
 
     /* task with empty task_id */
     const char *empty_id_json =
         "{"
-        "  \"version\":1,"
+        "  \"version\":5,"
         "  \"session\":{},"
         "  \"groups\":[],"
         "  \"tasks\":["
         "    {\"task_id\":\"\",\"group_id\":\"g1\",\"session_id\":\"s\","
         "     \"description\":\"\",\"state\":\"COMPLETED\","
         "     \"is_group_leader\":false,\"auto_reap\":false,"
-        "     \"fork_point_msg_count\":0,\"completion_seq\":0,"
+        "     \"fork_point_completion_seq\":0,\"completion_seq\":0,"
         "     \"redirect_append\":false,\"deps\":[],\"turns\":[]}"
         "  ]"
         "}";
@@ -984,115 +1301,61 @@ static void test_malformed_inputs(void)
 
 static void test_compact_messages(void)
 {
-    TEST("compact message reference (messages in session->messages)");
+    TEST("single inline mode: turn embeds its messages");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-cpt", "Compact");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
-    /* Build turn messages that also exist in session->messages.
-     * We add messages to session->messages first, then add the SAME
-     * pointers to a turn via cJSON_AddItemReferenceToArray
-     * (which doesn't take ownership).  This simulates what happens
-     * when edc_session_add_turn moves messages from turn to session. */
-
-    struct edc_task *task = edc_task_new("t-cpt", "sess-cpt", "t-cpt",
-                                          "compact test", edc_channel_cli_new());
+    struct edc_task *task = edc_task_new("t-cpt", "sess-cpt", "t-cpt", "inline test", edc_channel_adapter);
     task->is_group_leader = 1;
-    edc_task_set_state(task, TASK_WAITING_INPUT);
-    edc_task_set_state(task, TASK_LLM_PROCESSING);
-    edc_task_set_state(task, TASK_COMPLETED);
+    edc_task_mark_ready(task);
+    edc_task_await_exec(task);
+    edc_task_mark_completed(task);
 
-    /* Create messages and add to session->messages */
-    cJSON *msg1 = cJSON_CreateObject();
-    cJSON_AddStringToObject(msg1, "role", "user");
-    cJSON_AddStringToObject(msg1, "content", "compact query");
-    cJSON_AddItemToArray(session->messages, msg1);
-
-    cJSON *msg2 = cJSON_CreateObject();
-    cJSON_AddStringToObject(msg2, "role", "assistant");
-    cJSON_AddStringToObject(msg2, "content", "compact answer");
-    cJSON_AddItemToArray(session->messages, msg2);
-
-    /* Build turn with references to the same objects */
+    /* The turn owns its messages (single inline mode). */
     struct edc_turn *turn = edc_turn_new();
     turn->task_id = strdup("t-cpt");
-    /* Push references (not owned by turn) */
-    edc_queue_push(&turn->messages, msg1);
-    edc_queue_push(&turn->messages, msg2);
-    edc_queue_push(&turn->timestamps, sdsnew("2026-01-01T00:00:00"));
-    edc_queue_push(&turn->timestamps, sdsnew("2026-01-01T00:00:01"));
+    edc_turn_add_user_message(turn, "compact query");
+    cJSON *am = cJSON_CreateObject();
+    cJSON_AddStringToObject(am, "role", "assistant");
+    cJSON_AddStringToObject(am, "content", "compact answer");
+    edc_turn_add_assistant_message(turn, am);
     edc_task_add_turn(task, turn);
 
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(session, group);
 
-    /* SERIALIZE — should take compact path (pointer match) */
     cJSON *json = edc_state_serialize(session, sched);
-    CHECK(json != NULL, "serialize succeeds with compact path");
+    CHECK(json != NULL, "serialize succeeds");
 
-    /* Verify compact mode was used */
-    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
-    cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
-    cJSON *turns_j = cJSON_GetObjectItem(t0, "turns");
-    cJSON *turn_j = cJSON_GetArrayItem(turns_j, 0);
+    cJSON *t0 = cJSON_GetArrayItem(cJSON_GetObjectItem(json, "tasks"), 0);
+    cJSON *turn_j = cJSON_GetArrayItem(cJSON_GetObjectItem(t0, "turns"), 0);
+    cJSON *embedded = cJSON_GetObjectItem(turn_j, "messages");
 
-    cJSON *embedded  = cJSON_GetObjectItem(turn_j, "messages");
-    cJSON *msg_start = cJSON_GetObjectItem(turn_j, "message_start");
-    cJSON *msg_count = cJSON_GetObjectItem(turn_j, "message_count");
+    /* v2 单一模式: 一律内联 messages, 不再有 start/count */
+    CHECK(embedded != NULL, "single mode: embedded messages array");
+    CHECK(cJSON_GetArraySize(embedded) == 2, "embedded 2 messages");
+    CHECK(cJSON_GetObjectItem(turn_j, "message_start") == NULL, "single mode: no message_start");
+    CHECK(cJSON_GetObjectItem(turn_j, "message_count") == NULL, "single mode: no message_count");
 
-    CHECK(embedded == NULL, "compact mode: no embedded messages array");
-    CHECK(msg_start != NULL, "compact mode: has message_start");
-    CHECK(msg_count != NULL, "compact mode: has message_count");
-    CHECK((int)cJSON_GetNumberValue(msg_count) == 2, "message_count = 2");
-
-    /* Verify the start index (should be after system prompt, so >= 1) */
-    int start = (int)cJSON_GetNumberValue(msg_start);
-    CHECK(start >= 1, "message_start >= 1 (after system prompt)");
-
-    /* DESERIALIZE — need matching messages in target session */
     struct edc_session *session2 = edc_session_new(cfg, "sess-cpt", "Compact");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
-
-    /* Put identical-content messages at the same positions in session2 */
-    cJSON *msg1b = cJSON_CreateObject();
-    cJSON_AddStringToObject(msg1b, "role", "user");
-    cJSON_AddStringToObject(msg1b, "content", "compact query");
-    cJSON_AddItemToArray(session2->messages, msg1b);
-
-    cJSON *msg2b = cJSON_CreateObject();
-    cJSON_AddStringToObject(msg2b, "role", "assistant");
-    cJSON_AddStringToObject(msg2b, "content", "compact answer");
-    cJSON_AddItemToArray(session2->messages, msg2b);
-
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
     bool ok = edc_state_deserialize(json, session2, sched2);
-    CHECK(ok, "deserialize succeeds from compact mode");
+    CHECK(ok, "deserialize succeeds");
 
     struct edc_task *rt = find_task(session2, "t-cpt");
-    CHECK(rt != NULL, "task restored from compact mode");
-    CHECK(edc_queue_length(&rt->turns) == 1, "1 turn from compact mode");
+    CHECK(rt != NULL, "task restored");
+    CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
 
     struct edc_turn *rturn = (struct edc_turn *)rt->turns.data[rt->turns.head];
-    CHECK(edc_queue_length(&rturn->messages) == 2, "2 messages from compact range");
+    CHECK(edc_queue_length(&rturn->messages) == 2, "2 messages restored");
 
     cJSON *m0 = (cJSON *)rturn->messages.data[rturn->messages.head];
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")),
-                "compact query", "msg0 content correct in compact roundtrip");
-
-    /* Cleanup: clear turn queues manually to avoid double-free
-     * (msg1/msg2 are owned by session->messages, not by turn) */
-    while (edc_queue_length(&turn->messages) > 0)
-        edc_queue_pop(&turn->messages);
-    while (edc_queue_length(&turn->timestamps) > 0)
-        sdsfree((sds)edc_queue_pop(&turn->timestamps));
-    /* Also clear task->turns to prevent edc_task_free from freeing the turn */
-    while (edc_queue_length(&task->turns) > 0) {
-        struct edc_turn *t = edc_queue_pop(&task->turns);
-        while (edc_queue_length(&t->messages) > 0) edc_queue_pop(&t->messages);
-        while (edc_queue_length(&t->timestamps) > 0) sdsfree(edc_queue_pop(&t->timestamps));
-        free(t->task_id);
-        free(t);
-    }
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "compact query",
+                "msg0 content correct");
 
     cJSON_Delete(json);
     edc_session_free(session);
@@ -1112,14 +1375,15 @@ static void test_empty_turn(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-et", "EmptyTurn");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     struct edc_task *task = edc_task_new("t-et", "sess-et", "t-et",
-                                          "empty turn task", edc_channel_cli_new());
+                                          "empty turn task", edc_channel_adapter);
     task->is_group_leader = 1;
-    edc_task_set_state(task, TASK_WAITING_INPUT);
-    edc_task_set_state(task, TASK_LLM_PROCESSING);
-    edc_task_set_state(task, TASK_COMPLETED);
+    edc_task_mark_ready(task);
+    edc_task_await_exec(task);
+    edc_task_mark_completed(task);
 
     /* Add a turn with 0 messages */
     struct edc_turn *empty_turn = edc_turn_new();
@@ -1138,11 +1402,12 @@ static void test_empty_turn(void)
     cJSON *turns_j = cJSON_GetObjectItem(t0, "turns");
     cJSON *turn_j = cJSON_GetArrayItem(turns_j, 0);
     CHECK(turn_j != NULL, "empty turn present in JSON");
-    CHECK(cJSON_GetNumberValue(cJSON_GetObjectItem(turn_j, "message_count")) == 0,
-          "message_count = 0");
+    CHECK(cJSON_GetObjectItem(turn_j, "messages") == NULL,
+          "empty turn has no messages array");
 
     struct edc_session *session2 = edc_session_new(cfg, "sess-et", "EmptyTurn");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
     bool ok = edc_state_deserialize(json, session2, sched2);
     CHECK(ok, "deserialize succeeds");
 
@@ -1170,23 +1435,24 @@ static void test_orphaned_group(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-orph", "Orphan");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* Create group with leader + 2 members */
     struct edc_task *leader = edc_task_new("t-leader", "sess-orph", "t-leader",
-                                            "group leader", edc_channel_cli_new());
+                                            "group leader", edc_channel_adapter);
     leader->is_group_leader = 1;
-    edc_task_set_state(leader, TASK_WAITING_INPUT);
-    edc_task_set_state(leader, TASK_LLM_PROCESSING);
-    edc_task_set_state(leader, TASK_COMPLETED);
+    edc_task_mark_ready(leader);
+    edc_task_await_exec(leader);
+    edc_task_mark_completed(leader);
 
     struct edc_task *m1 = edc_task_new("t-m1", "sess-orph", "t-leader",
-                                        "member 1", NULL);
-    edc_task_set_state(m1, TASK_WAITING_INPUT);
+                                        "member 1", edc_channel_adapter);
+    give_input(m1, "member 1 input");
 
     struct edc_task *m2 = edc_task_new("t-m2", "sess-orph", "t-leader",
-                                        "member 2", NULL);
-    edc_task_set_state(m2, TASK_WAITING_INPUT);
+                                        "member 2", edc_channel_adapter);
+    give_input(m2, "member 2 input");
 
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_task_group_add_task(group, m1);
@@ -1222,7 +1488,8 @@ static void test_orphaned_group(void)
 
     /* Deserialize */
     struct edc_session *session2 = edc_session_new(cfg, "sess-orph", "Orphan");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
     bool ok = edc_state_deserialize(json, session2, sched2);
     CHECK(ok, "deserialize succeeds");
 
@@ -1255,6 +1522,535 @@ static void test_orphaned_group(void)
  *  main
  *  ══════════════════════════════════════════════════════════════ */
 
+/* ══════════════════════════════════════════════════════════════
+ *  Test: fork → child gets independent group + snapshot turn
+ *  (mirrors the /task fork command logic)
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_fork_new_group_snapshot(void)
+{
+    TEST("fork: child gets independent group with snapshot turn");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-forkgrp", "ForkGrp");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    /* parent group with history: [system, user1, assistant1] */
+    struct edc_task *parent = edc_task_new("task-parent", "sess-forkgrp", "task-parent",
+                                            "parent task", edc_channel_adapter);
+    edc_task_mark_ready(parent);
+    edc_task_await_exec(parent);
+    edc_task_mark_completed(parent);
+    struct edc_task_group *pg = edc_scheduler_create_group(sched, session, parent);
+
+    cJSON *sys = cJSON_CreateObject();
+    cJSON_AddStringToObject(sys, "role", "system");
+    cJSON_AddStringToObject(sys, "content", "You are EdgeClaw.");
+    cJSON_AddItemToArray(pg->history, sys);
+
+    struct edc_turn *pt = edc_turn_new();
+    pt->task_id = strdup("task-parent");
+    turn_add_msg(pt, "user", "hello");
+    turn_add_msg(pt, "assistant", "hi there");
+    edc_task_add_turn(parent, pt);
+    for (size_t m = 0; m < edc_queue_length(&pt->messages); m++)
+        cJSON_AddItemReferenceToArray(pg->history, pt->messages.data[m]); /* STOP sync */
+
+    /* ── fork (mirror edc_commands_handle_task_fork) ── */
+    size_t fork_point = (size_t)cJSON_GetArraySize(pg->history);
+    struct edc_task *child = edc_task_fork(parent, "task-child", "child", fork_point, edc_channel_adapter);
+    struct edc_task_group *cg = edc_scheduler_create_group(sched, session, child);
+
+    if (pg->memory)
+        cg->memory = sdsdup(pg->memory);
+    cJSON *psys = cJSON_GetArrayItem(pg->history, 0);
+    if (psys)
+        cJSON_AddItemToArray(cg->history, cJSON_Duplicate(psys, 1));
+
+    size_t snap_begin = 1 + edc_task_group_folded_msg_count(pg);
+    struct edc_turn *snap = edc_turn_new();
+    snap->task_id = strdup(child->task_id);
+    for (size_t i = snap_begin; i < fork_point; i++)
+    {
+        cJSON *src = cJSON_GetArrayItem(pg->history, i);
+        if (!src)
+            break;
+        cJSON *msg = cJSON_Duplicate(src, 1);
+        edc_queue_push(&snap->messages, msg);
+        cJSON_AddItemReferenceToArray(cg->history, msg);
+    }
+    if (edc_queue_length(&snap->messages) > 0)
+        edc_task_add_turn(child, snap);
+    else
+        edc_turn_free(snap);
+
+    /* 新模型: /task fork 同时把 desc 当 input 装到子任务上 (子任务创建时就带着它的
+     * input); 这里照做, 否则这条只有历史、没有待跑 turn 的子任务会在落盘时被丢掉。 */
+    {
+        struct edc_turn *cturn = edc_turn_new();
+        cturn->task_id = strdup(child->task_id);
+        edc_turn_add_user_message(cturn, "child input");
+        child->active_turn = cturn;
+        edc_task_mark_suspended(child);
+    }
+
+    /* ── runtime invariants ── */
+    CHECK(child->group == cg, "child in own group");
+    CHECK(child->group != pg, "child not in parent group");
+    CHECK(child->is_group_leader == 1, "child is group leader");
+    CHECK_STREQ(child->group_id, "task-child", "child group_id is its own id");
+    CHECK(cJSON_GetArraySize(cg->history) == 3, "child group history = system + 2 snapshot msgs");
+    CHECK(cJSON_GetArraySize(pg->history) == 3, "parent group history unchanged");
+    cJSON *csys = cJSON_GetArrayItem(cg->history, 0);
+    CHECK(csys && cJSON_GetObjectItem(csys, "role") &&
+              strcmp(cJSON_GetObjectItem(csys, "role")->valuestring, "system") == 0,
+          "child history[0] is system");
+    CHECK(edc_queue_length(&child->turns) == 1, "child has 1 synthetic turn");
+    struct edc_turn *c0 = child->turns.data[child->turns.head];
+    CHECK(edc_queue_length(&c0->messages) == 2, "snapshot turn has 2 messages");
+
+    /* ── serialize + deserialize ── */
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize ok");
+    struct edc_session *session2 = edc_session_new(cfg, "sess-forkgrp", "ForkGrp");
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
+    CHECK(edc_state_deserialize(json, session2, sched2), "deserialize ok");
+
+    CHECK(count_groups(session2) == 2, "2 groups after roundtrip");
+    struct edc_task *rp = find_task(session2, "task-parent");
+    struct edc_task *rc = find_task(session2, "task-child");
+    CHECK(rp != NULL && rc != NULL, "parent and child restored");
+    if (rp && rc)
+    {
+        CHECK(rc->group != NULL && rp->group != NULL, "both have groups");
+        CHECK(rc->group != rp->group, "child group distinct from parent group");
+        CHECK_STREQ(rc->group->group_id, "task-child", "child restored in own group");
+        CHECK(rc->forked_from == rp, "forked_from preserved");
+        CHECK(rc->group->history != NULL, "child group history rebuilt");
+        CHECK(cJSON_GetArraySize(rc->group->history) == 3, "child group history rebuilt to 3 msgs");
+    }
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(session2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Test: fork snapshot retrieves folded parent turns (rule 2)
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_fork_snapshot_turns_flushed(void)
+{
+    TEST("edc_task_snapshot_turns retrieves committed turns (rule 2)");
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-snapfl", "SnapFlush");
+
+    /* 建 task + turn (P4: 消息留在 turn, 不再 move 到 session) */
+    struct edc_task *task = edc_task_new("task-parent", "sess-snapfl", "task-parent",
+                                          "parent", edc_channel_adapter);
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup("task-parent");
+    turn_add_msg(turn, "user", "folded query");
+    turn_add_msg(turn, "assistant", "folded answer");
+    edc_task_add_turn(task, turn); /* commit 到 task->turns */
+
+    CHECK(edc_queue_length(&turn->messages) == 2, "turn retains messages");
+
+    /* 模拟 L1 折叠 */
+    task->turns_folded = true;
+
+    /* 规则 2 捞回 */
+    struct edc_turn *snap = edc_task_snapshot_turns(task, session, "task-child");
+    CHECK(snap != NULL, "snapshot non-null");
+    if (snap)
+    {
+        CHECK(edc_queue_length(&snap->messages) == 2, "snapshot has 2 msgs");
+        CHECK_STREQ(snap->task_id, "task-child", "snapshot task_id is child");
+        cJSON *m0 = (cJSON *)snap->messages.data[snap->messages.head];
+        cJSON *m1 = (cJSON *)snap->messages.data[snap->messages.head + 1];
+        CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "role")), "user", "msg0 role user");
+        CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m1, "content")), "folded answer", "msg1 content");
+        edc_turn_free(snap);
+    }
+
+    edc_turn_free(turn);
+    edc_session_free(session);
+    edc_config_free(cfg);
+}
+
+static void test_fork_snapshot_turns_unflushed(void)
+{
+    TEST("edc_task_snapshot_turns copies unflushed turns");
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-snapun", "SnapUnfl");
+
+    struct edc_task *task = edc_task_new("task-parent", "sess-snapun", "task-parent",
+                                          "parent", edc_channel_adapter);
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup("task-parent");
+    turn_add_msg(turn, "user", "unflushed q");
+    turn_add_msg(turn, "assistant", "unflushed a");
+    edc_task_add_turn(task, turn); /* 未 flush */
+
+    struct edc_turn *snap = edc_task_snapshot_turns(task, session, "task-child");
+    CHECK(snap != NULL, "snapshot non-null");
+    if (snap)
+    {
+        CHECK(edc_queue_length(&snap->messages) == 2, "snapshot has 2 msgs");
+        cJSON *m1 = (cJSON *)snap->messages.data[snap->messages.head + 1];
+        CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m1, "content")), "unflushed a", "msg1 content");
+        edc_turn_free(snap);
+    }
+
+    edc_turn_free(turn);
+    edc_session_free(session);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  v3: message provenance (ts + render) persists across a roundtrip
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_message_provenance(void)
+{
+    TEST("message ts/render persist across roundtrip");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-prov", "Prov");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    struct edc_task *task = edc_task_new("tp", "sess-prov", "tp", "d", edc_channel_adapter);
+    /* 落在 READY 的 task 必须带着 input 才落盘 (turn-less 的 READY 是残渣)。 */
+    give_input(task, "tp active input");
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup("tp");
+    /* Real creation path: edc_turn_add_user_message stamps ts + render. */
+    edc_turn_add_user_message(turn, "hi");
+    edc_task_add_turn(task, turn);
+    struct edc_task_group *group = edc_task_group_new(task);
+    edc_session_add_group(session, group);
+
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize");
+
+    cJSON *t0 = cJSON_GetArrayItem(cJSON_GetObjectItem(json, "tasks"), 0);
+    CHECK(t0 != NULL, "task serialized");
+    cJSON *turn0 = t0 ? cJSON_GetArrayItem(cJSON_GetObjectItem(t0, "turns"), 0) : NULL;
+    cJSON *m0 = turn0 ? cJSON_GetArrayItem(cJSON_GetObjectItem(turn0, "messages"), 0) : NULL;
+    CHECK(m0 != NULL, "message serialized");
+    CHECK(m0 && cJSON_GetObjectItem(m0, "ts") != NULL, "ts serialized");
+    CHECK(m0 && cJSON_IsString(cJSON_GetObjectItem(m0, "ts")), "ts is a string");
+    CHECK_STREQ(m0 ? cJSON_GetStringValue(cJSON_GetObjectItem(m0, "render")) : NULL, "plain",
+                "render serialized (default plain)");
+
+    struct edc_session *s2 = edc_session_new(cfg, "sess-prov", "Prov");
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, s2);
+    CHECK(edc_state_deserialize(json, s2, sched2), "deserialize");
+
+    struct edc_task *rt = find_task(s2, "tp");
+    CHECK(rt != NULL, "task restored");
+    struct edc_turn *rturn = rt ? (struct edc_turn *)rt->turns.data[rt->turns.head] : NULL;
+    cJSON *rm = rturn ? (cJSON *)rturn->messages.data[rturn->messages.head] : NULL;
+    CHECK(rm && cJSON_GetObjectItem(rm, "ts") != NULL, "ts roundtrips");
+    CHECK_STREQ(rm ? cJSON_GetStringValue(cJSON_GetObjectItem(rm, "render")) : NULL, "plain", "render roundtrips");
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(s2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  v3: fold watermark (completion_seq) — serialize + v2 derivation
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_fold_watermark(void)
+{
+    TEST("fold watermark (completion_seq) roundtrip + v2 derivation");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-fold", "Fold");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    /* t1 (completion_seq=1) folded; t2 (completion_seq=2) not folded. */
+    struct edc_task *t1 = edc_task_new("t1", "sess-fold", "t1", "one", edc_channel_adapter);
+    edc_task_await_exec(t1);
+    edc_task_mark_completed(t1);
+    t1->completion_seq = 1;
+    t1->turns_folded = true;
+    struct edc_turn *turn1 = edc_turn_new();
+    turn1->task_id = strdup("t1");
+    turn_add_msg(turn1, "user", "a");
+    turn_add_msg(turn1, "assistant", "b");
+    edc_task_add_turn(t1, turn1);
+
+    struct edc_task_group *group = edc_task_group_new(t1);
+    edc_session_add_group(session, group);
+
+    struct edc_task *t2 = edc_task_new("t2", "sess-fold", "t1", "two", edc_channel_adapter);
+    edc_task_await_exec(t2);
+    edc_task_mark_completed(t2);
+    t2->completion_seq = 2;
+    struct edc_turn *turn2 = edc_turn_new();
+    turn2->task_id = strdup("t2");
+    turn_add_msg(turn2, "user", "c");
+    edc_task_add_turn(t2, turn2);
+    edc_task_group_add_task(group, t2);
+
+    group->folded_through_completion_seq = 1;
+    session->next_completion_seq = 3;
+
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize");
+    cJSON *gj = cJSON_GetArrayItem(cJSON_GetObjectItem(json, "groups"), 0);
+    CHECK(gj != NULL, "group serialized");
+    cJSON *fw = gj ? cJSON_GetObjectItem(gj, "folded_through_completion_seq") : NULL;
+    CHECK(fw && cJSON_GetNumberValue(fw) == 1, "watermark serialized = 1");
+
+    /* (a) v3 file: watermark read back verbatim. */
+    struct edc_session *s2 = edc_session_new(cfg, "sess-fold", "Fold");
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, s2);
+    CHECK(edc_state_deserialize(json, s2, sched2), "deserialize v3");
+    struct edc_task_group *g2 = find_group(s2, "t1");
+    CHECK(g2 != NULL, "group restored");
+    if (g2)
+    {
+        CHECK(g2->folded_through_completion_seq == 1, "watermark preserved");
+        CHECK(edc_task_group_folded_msg_count(g2) == 2, "folded prefix = 2 msgs");
+        CHECK(edc_task_group_unfolded_msg_count(g2) == 1, "unfolded = 1 msg");
+    }
+
+    /* (b) missing watermark key: v3 keeps it at 0 — no derivation from
+     * per-task turns_folded any more (v2 compat was dropped). */
+    cJSON_DeleteItemFromObject(gj, "folded_through_completion_seq");
+    struct edc_session *s3 = edc_session_new(cfg, "sess-fold", "Fold");
+    struct edc_scheduler *sched3 = edc_scheduler_new(cfg);
+    install_resolver(sched3, s3);
+    CHECK(edc_state_deserialize(json, s3, sched3), "deserialize without a watermark key");
+    struct edc_task_group *g3 = find_group(s3, "t1");
+    CHECK(g3 != NULL, "group restored (no watermark key)");
+    if (g3)
+    {
+        CHECK(g3->folded_through_completion_seq == 0, "missing watermark stays 0 (no v2 derivation)");
+        CHECK(edc_task_group_folded_msg_count(g3) == 0, "nothing folded");
+        CHECK(edc_task_group_unfolded_msg_count(g3) == 3, "all 3 msgs unfolded");
+    }
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(s2);
+    edc_scheduler_free(sched2);
+    edc_session_free(s3);
+    edc_scheduler_free(sched3);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  schema version: only the current one is accepted
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_schema_version_is_current(void)
+{
+    TEST("serialize writes version 5; older versions fail loudly instead of being patched up");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-ver", "Ver");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    struct edc_task *task = edc_task_new("1", "sess-ver", "1", "task", edc_channel_adapter);
+    task->is_group_leader = 1;
+    edc_task_mark_ready(task);
+    edc_task_mark_suspended(task);
+    edc_session_add_group(session, edc_task_group_new(task));
+
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize returns non-NULL");
+    CHECK(edc_state_json_version(json) == 5, "on-disk version is 4");
+
+    struct edc_session *s2 = edc_session_new(cfg, "sess-ver", "Ver");
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, s2);
+    CHECK(edc_state_deserialize(json, s2, sched2), "the current schema round-trips");
+    CHECK(edc_session_find_task(s2, "1") != NULL, "task restored");
+    edc_session_free(s2);
+    edc_scheduler_free(sched2);
+
+    /* A pre-migration file must be rejected: the load path no longer carries the
+     * v3 compatibility branches (system-container drop, displayed/header strip)
+     * -- those moved into tools/migrate_session_v3_to_v4.py. */
+    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(3));
+    struct edc_session *s3 = edc_session_new(cfg, "sess-ver", "Ver");
+    struct edc_scheduler *sched3 = edc_scheduler_new(cfg);
+    install_resolver(sched3, s3);
+    CHECK(!edc_state_deserialize(json, s3, sched3), "a v3 tree is rejected");
+    edc_session_free(s3);
+    edc_scheduler_free(sched3);
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  message unknown keys round-trip verbatim
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_message_unknown_keys_round_trip(void)
+{
+    TEST("message unknown keys round-trip verbatim (the app no longer strips them)");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-disp", "Disp");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    struct edc_task *task = edc_task_new("1", "sess-disp", "1", "task", edc_channel_adapter);
+    task->is_group_leader = 1;
+    edc_task_mark_ready(task);
+    edc_task_mark_suspended(task);
+    struct edc_task_group *group = edc_task_group_new(task);
+    edc_session_add_group(session, group);
+
+    struct edc_turn *turn = edc_turn_new();
+    edc_turn_add_user_message(turn, "hi");
+    task->active_turn = turn;
+
+    cJSON *json = edc_state_serialize(session, sched);
+
+    /* Splice the 5c keys into the stored message, the way an old file has them. */
+    cJSON *json_task = cJSON_GetArrayItem(cJSON_GetObjectItem(json, "tasks"), 0);
+    cJSON *json_msgs = cJSON_GetObjectItem(cJSON_GetObjectItem(json_task, "active_turn"), "messages");
+    cJSON *json_msg = cJSON_GetArrayItem(json_msgs, 0);
+    CHECK(json_msg != NULL, "message found in the serialized turn");
+    cJSON_AddBoolToObject(json_msg, "displayed", true);
+    cJSON_AddStringToObject(json_msg, "header", "exec_shell");
+
+    struct edc_session *s2 = edc_session_new(cfg, "sess-disp", "Disp");
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, s2);
+    CHECK(edc_state_deserialize(json, s2, sched2), "deserialize");
+
+    struct edc_task *t2 = edc_session_find_task(s2, "1");
+    CHECK(t2 && t2->active_turn, "turn restored");
+    CHECK(t2 && t2->active_turn && cJSON_GetObjectItem((cJSON *)t2->active_turn->messages.data[0], "displayed") != NULL,
+          "messages keep unknown keys in memory (raw JSON, not rebuilt field by field)");
+
+    cJSON *json2 = edc_state_serialize(s2, sched2);
+    cJSON *t0 = cJSON_GetArrayItem(cJSON_GetObjectItem(json2, "tasks"), 0);
+    cJSON *msgs2 = cJSON_GetObjectItem(cJSON_GetObjectItem(t0, "active_turn"), "messages");
+    cJSON *msg2 = cJSON_GetArrayItem(msgs2, 0);
+    CHECK(msg2 != NULL, "message written back");
+    /* Raw JSON round-trip: keys the app does not know are preserved.  Removing
+     * pre-transcript leftovers is the one-shot migration's job, not save's. */
+    CHECK(msg2 && cJSON_GetObjectItem(msg2, "displayed") != NULL, "displayed round-trips");
+    CHECK(msg2 && cJSON_GetObjectItem(msg2, "header") != NULL, "header round-trips");
+    CHECK(msg2 && cJSON_GetObjectItem(msg2, "role") != NULL, "role kept");
+    CHECK(msg2 && cJSON_GetObjectItem(msg2, "ts") != NULL, "ts kept");
+
+    cJSON_Delete(json2);
+    cJSON_Delete(json);
+    edc_session_free(s2);
+    edc_scheduler_free(sched2);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  continuation: 相位必须在往返中**幸存**
+ *  ══════════════════════════════════════════════════════════════ */
+
+/* 这条是 P2 的第一块砖, 而且它**今天就是红的** —— 那正是它存在的意义。
+ *
+ * 现状 (runtime-model.md §1.4, 台账第 4 条): 相位**存得下来** —— 上面
+ * test_state_degradation 自己就断言了 JSON 里写着 "LLM_PROCESSING"/"TOOL_CALLING"
+ * —— 但**读不回**: normalize_interrupted_state 把五个相位一起塌成 SUSPENDED,
+ * resume 再靠顺序探测 (deps -> 工具账本 -> active_turn) 把相位猜回来。
+ *
+ * 丢的不只是"叫什么名字": 一个正在等工具结果的 task, 和一个刚建好还没跑的
+ * task, 落盘后变成同一个状态。resume 只能靠残留物反推; 推不出来就退化到
+ * WAITING_INPUT —— "任务到哪了"散在多处、且会丢, 就是这么来的。
+ *
+ * P2 之后: 相位原样回来, 下面的断言全绿; 而 test_state_degradation 要改成
+ * 表达新契约 (它现在钉的是旧行为, 这正是"行为变更先补测试"要面对的东西)。
+ *
+ * 变异测试: 把 step 再粗化回 SUSPENDED, 这条必须**红**。 */
+static void test_continuation_preserved(void)
+{
+    TEST("interrupted phases survive the round trip");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-cont", "Continuation");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    struct edc_task *t_llm = edc_task_new("t-llm", "sess-cont", "t-llm", "llm processing", edc_channel_adapter);
+    t_llm->is_group_leader = 1;
+    edc_task_mark_ready(t_llm);
+    edc_task_await_exec(t_llm);
+
+    struct edc_task *t_tool = edc_task_new("t-tool", "sess-cont", "t-llm", "tool calling", edc_channel_adapter);
+    edc_task_await_exec(t_tool);
+    edc_task_await_tools(t_tool);
+
+    struct edc_task *t_input = edc_task_new("t-input", "sess-cont", "t-llm", "waiting input", edc_channel_adapter);
+    /* READY 的 task 也必须带着 input 才落盘, 否则它和 "刚建好还没跑" 无处区分;
+     * 没有 turn 的 READY 任务会被落盘判据丢掉 (docs/retire-waiting-input.md §4)。 */
+    give_input(t_input, "input for t-input");
+
+    struct edc_task_group *group = edc_task_group_new(t_llm);
+    edc_task_group_add_task(group, t_tool);
+    edc_task_group_add_task(group, t_input);
+    edc_session_add_group(session, group);
+
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize returns non-NULL");
+
+    struct edc_session *session2 = edc_session_new(cfg, "sess-cont", "Continuation");
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
+    bool ok = edc_state_deserialize(json, session2, sched2);
+    CHECK(ok, "deserialize succeeds");
+
+    struct edc_task *r_llm = find_task(session2, "t-llm");
+    struct edc_task *r_tool = find_task(session2, "t-tool");
+    struct edc_task *r_input = find_task(session2, "t-input");
+
+    CHECK(r_llm && r_llm->step == EDC_TASKSTEP_AWAIT_EXEC, "step AWAIT_EXEC survives");
+    CHECK(r_tool && r_tool->step == EDC_TASKSTEP_AWAIT_TOOLS, "step AWAIT_TOOLS survives");
+    /* t-input 停在 READY: 旧名 AWAIT_INPUT 已经退休 —— "等用户输入"不是相位,
+     * task 创建时就带着它的 input。载入时旧文件里的 "AWAIT_INPUT" 也折成 READY。 */
+    CHECK(r_input && r_input->step == EDC_TASKSTEP_READY, "step READY survives");
+
+    /* 活着吗统一收敛 (重启后没有任何东西在跑) —— 但那是**另一件事**, 不该把 step 带走。 */
+    CHECK(r_llm && r_llm->life == EDC_LIFE_SUSPENDED, "life collapses to SUSPENDED");
+
+    /* 而且三个必须**互不相同** —— 否则"存下来"没有意义。 */
+    CHECK(r_llm && r_tool && r_input && r_llm->step != r_tool->step && r_tool->step != r_input->step,
+          "the three steps are still distinct");
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(session2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     log_info("=== Phase 1: edc_state_serializer module tests ===");
@@ -1263,10 +2059,20 @@ int main(void)
     test_empty_session();
     test_single_task();
     test_fork_chain();
+    test_fork_new_group_snapshot();
+    test_fork_snapshot_turns_flushed();
+    test_fork_snapshot_turns_unflushed();
     test_dependency_graph();
     test_complex_topology();
+    test_turnless_shell_is_dropped();
     test_state_degradation();
+    test_continuation_preserved();
+    test_schema_version_is_current();
+    test_message_unknown_keys_round_trip();
     test_filter_transient_states();
+    test_cancelled_midflight_roundtrip();
+    test_cancelled_dep_roundtrip();
+    test_join_cascade_roundtrip();
     test_active_turn();
     test_extra_fields();
     test_null_inputs();
@@ -1274,6 +2080,8 @@ int main(void)
     test_compact_messages();
     test_empty_turn();
     test_orphaned_group();
+    test_message_provenance();
+    test_fold_watermark();
 
     log_info("");
     log_info("=== Results: %d passed, %d failed ===", test_passed, test_failed);

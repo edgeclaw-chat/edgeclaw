@@ -1,13 +1,33 @@
-#ifndef __BC_COMMANDS_H__
+﻿#ifndef __BC_COMMANDS_H__
 #define __BC_COMMANDS_H__
 
+#include "edc_channel_actor.h"
+#include "edc_config.h"
 #include <stdbool.h>
 struct edc_actor;
-struct edc_agent;
-struct edc_channel;
 struct edc_channel_message;
-extern bool edc_commands_handler(struct edc_agent *, struct edc_actor *actor, struct edc_channel_message *);
-extern void edc_commands_reply(struct edc_agent *agent, struct edc_actor *actor, struct edc_channel *channel,
-                               const char *text);
+struct edc_config;
+struct edc_scheduler;
+struct edc_session_manager;
+
+/* 命令处理器 (userland 入口)。收的是**它下游真正需要的**那几件 (形状 C:
+ * 签名即读者名册) —— 不借任何伞对象: cfg 给 /model 这类显示、sm/sched 是
+ * task 图与 store、channel_actor+actor+channel_type 是"回话地址"。 */
+extern bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                 struct edc_reply_to to, struct edc_channel_message *);
+extern void edc_commands_reply(struct edc_reply_to to, const char *text);
+
+/** 命令的**结构化**回话: 与 edc_commands_reply 同一条出口 (同一个 to.channel_actor),
+ *  只换消息类型 (TASK_HISTORY) —— 前端据此按"消息历史"渲染, 而不是当一段文本。
+ *  |payload| 是 edc_scheduler_task_history_json 那份 JSON。 */
+extern void edc_commands_send_history(struct edc_reply_to to, const char *payload);
+
+/* ── 端口: 命令层是 `handle_command` 的提供方 ────────────────
+ *
+ * "谁提供服务谁装端口": 处理器住这里, 它要的 config / session 仓库都在
+ * scheduler 上 (`sched->config` / `sched->sessions`), 回话地址由 scheduler 调用时
+ * 递进来的发送者给出 —— 装配根不再中转 (也不必持一个函数指针)。 */
+struct edc_scheduler; /* fwd */
+extern void edc_commands_bind_scheduler(struct edc_scheduler *sched);
 
 #endif

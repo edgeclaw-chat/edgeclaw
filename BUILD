@@ -49,6 +49,14 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
+# Build with `--define=valgrind=1` to drop `-static` and produce a dynamically
+# linked binary, so valgrind can intercept malloc/free and track the heap.
+config_setting(
+    name = "valgrind",
+    define_values = {"valgrind": "1"},
+    visibility = ["//visibility:public"],
+)
+
 platform(
     name = "arm_linux",
     constraint_values = [
@@ -169,26 +177,32 @@ DAGENT_FILE_NAME = select({
 
 pkg_files(
     name = "edgeclaw_binary",
-    srcs = ["//src:edgeclaw.exe"],
-    attributes = pkg_attributes(mode = "0755"), 
+    srcs = ["//src/tui:edgeclaw_tui"],
+    attributes = pkg_attributes(mode = "0755"),
+    renames = select({
+        ":windows": {"//src/tui:edgeclaw_tui": "edgeclaw.exe"},
+        "//conditions:default": {"//src/tui:edgeclaw_tui": "edgeclaw"},
+    }),
 )
 
 
 WORKSPACE_FILES = glob(["workspace/**"])
 
-pkg_files(
-    name = "edgeclaw_workspace",
+# Default workspace tree, embedded into the binary at build time (see
+# //src/core:workspace_embedded_c).
+filegroup(
+    name = "workspace_files",
     srcs = WORKSPACE_FILES,
-    attributes = pkg_attributes(mode = "0644"),
-    strip_prefix = "workspace",
-    prefix = "workspace",
+    visibility = ["//visibility:public"],
 )
 
+# Release archive: a single self-contained binary. The default workspace is
+# embedded in the binary and released to ~/.edgeclaw/ on first run, so no
+# workspace/ copy ships alongside it.
 pkg_tar(
     name = "edgeclaw",
     srcs = [
         ":edgeclaw_binary",
-        ":edgeclaw_workspace",
     ],
     extension = "tar.gz",
     package_dir = FILE_NAME,

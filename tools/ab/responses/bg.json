@@ -1,0 +1,11 @@
+[
+  {
+    "choices": [
+      {
+        "index": 0,
+        "message": { "role": "assistant", "content": "bg done" },
+        "finish_reason": "stop"
+      }
+    ]
+  }
+]

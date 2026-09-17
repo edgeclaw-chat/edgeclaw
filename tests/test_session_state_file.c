@@ -1,4 +1,5 @@
 #include "edc_session.h"
+#include "edc_session_manager.h"
 #include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -15,7 +16,22 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/stat.h>
-
+/* ── 单测的 session 仓库 ─────────────────────────────────────────
+ * scheduler 现在**同包直调 store** (P3 的 `resolve_session` 端口已退休),
+ * 所以测试给它的不是"解析函数"而是**仓库**: 一个只装着
+ * 这些 session 的内存 manager (普通结构体, 没有构造函数 —— 与 poke 别的结构体同法)。
+ * 标签为空 = 用活跃的那个 (active_index 指向第一个), 与真 store 的策略一致。
+ * `ctx` 仍留给测试自己用 (它不再是读口的入参)。 */
+static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
+{
+    sched->ctx = sess;
+    struct edc_session_manager *sm = g_new0(struct edc_session_manager, 1);
+    sm->sessions = g_new0(struct edc_session *, 1);
+    sm->sessions[0] = sess;
+    sm->session_count = sess ? 1 : 0;
+    sm->active_index = 0;
+    sched->sessions = sm; /* 测试进程内不释放: 与测试同生共死 */
+}
 /* Stub for _run_loop pulled in by edc_commands */
 volatile sig_atomic_t _run_loop = 1;
 
@@ -66,7 +82,6 @@ static void turn_add_msg(struct edc_turn *turn, const char *role, const char *co
     cJSON_AddStringToObject(msg, "role", role);
     cJSON_AddStringToObject(msg, "content", content);
     edc_queue_push(&turn->messages, msg);
-    edc_queue_push(&turn->timestamps, sdsnew("2026-01-01T00:00:00"));
 }
 
 /* ── Helper: count tasks ── */
@@ -107,7 +122,8 @@ static void test_no_file(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-new", "New");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* load_state should return false for a fresh session */
     bool ok = edc_session_load_state(session, sched);
@@ -131,16 +147,16 @@ static void test_write_read(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-wr", "WriteRead");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* Build some state */
-    struct edc_channel *ch = edc_channel_cli_new();
     struct edc_task *task = edc_task_new("task-1", "sess-wr", "task-1",
-                                          "hello world", ch);
+                                          "hello world", edc_channel_adapter);
     task->is_group_leader = 1;
-    edc_task_set_state(task, TASK_WAITING_INPUT);
-    edc_task_set_state(task, TASK_LLM_PROCESSING);
-    edc_task_set_state(task, TASK_COMPLETED);
+    edc_task_mark_ready(task);
+    edc_task_await_exec(task);
+    edc_task_mark_completed(task);
     task->output = sdsnew("result text");
     task->completion_seq = 7;
 
@@ -155,7 +171,7 @@ static void test_write_read(void)
     edc_session_add_group(session, group);
     session->active_task = task;
     session->next_completion_seq = 8;
-    sched->foreground_group = group;
+    edc_scheduler_set_foreground(session, group);
 
     /* Save */
     bool saved = edc_session_save_state(session, sched);
@@ -172,7 +188,8 @@ static void test_write_read(void)
 
     /* Load into a fresh session */
     struct edc_session *session2 = edc_session_new(cfg, "sess-wr", "WriteRead");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
 
     bool loaded = edc_session_load_state(session2, sched2);
     CHECK(loaded, "load_state succeeds");
@@ -181,19 +198,17 @@ static void test_write_read(void)
     CHECK(count_tasks(session2) == 1, "1 task restored");
     struct edc_task *rt = find_task(session2, "task-1");
     CHECK(rt != NULL, "task-1 found");
-    CHECK(rt->state == TASK_COMPLETED, "state COMPLETED");
+    CHECK(edc_task_is_completed(rt), "state COMPLETED");
     CHECK_STREQ(rt->output, "result text", "output restored");
     CHECK(rt->completion_seq == 7, "completion_seq restored");
     CHECK(session2->next_completion_seq == 8, "next_completion_seq restored");
     CHECK(session2->active_task == rt, "active_task restored");
-    CHECK(sched2->foreground_group != NULL, "foreground_group restored");
+    CHECK(edc_scheduler_get_foreground(session2) != NULL, "foreground_group restored");
 
     /* Verify turn messages */
     CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
 
     sdsfree(state_path);
-    cJSON_Delete(session->messages);
-    session->messages = NULL; /* prevent double-free since session2 loaded it */
     edc_session_free(session);
     edc_scheduler_free(sched);
     edc_session_free(session2);
@@ -213,24 +228,31 @@ static void test_overwrite(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-ow", "Overwrite");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* First save: 1 task */
     struct edc_task *t1 = edc_task_new("task-A", "sess-ow", "task-A",
-                                        "first task", edc_channel_cli_new());
+                                        "first task", edc_channel_adapter);
     t1->is_group_leader = 1;
-    edc_task_set_state(t1, TASK_WAITING_INPUT);
-    edc_task_set_state(t1, TASK_LLM_PROCESSING);
-    edc_task_set_state(t1, TASK_COMPLETED);
+    edc_task_mark_ready(t1);
+    edc_task_await_exec(t1);
+    edc_task_mark_completed(t1);
 
     struct edc_task_group *g1 = edc_task_group_new(t1);
     edc_session_add_group(session, g1);
     CHECK(edc_session_save_state(session, sched), "first save succeeds");
 
-    /* Add second task */
+    /* Add second task —— 新模型: 任务创建时就带着它的 input (turn-less 的 READY
+     * 任务会在落盘时被丢掉, 见 docs/retire-waiting-input.md §4)。 */
     struct edc_task *t2 = edc_task_new("task-B", "sess-ow", "task-A",
-                                        "second task", NULL);
-    edc_task_set_state(t2, TASK_WAITING_INPUT);
+                                        "second task", edc_channel_adapter);
+    {
+        struct edc_turn *turn = edc_turn_new();
+        turn->task_id = strdup(t2->task_id);
+        edc_turn_add_user_message(turn, "second input");
+        t2->active_turn = turn;
+    }
     edc_task_group_add_task(g1, t2);
 
     /* Second save */
@@ -238,12 +260,11 @@ static void test_overwrite(void)
 
     /* Load and verify 2 tasks */
     struct edc_session *session2 = edc_session_new(cfg, "sess-ow", "Overwrite");
-    struct edc_scheduler *sched2 = edc_scheduler_new(session2, cfg);
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
     CHECK(edc_session_load_state(session2, sched2), "load succeeds");
     CHECK(count_tasks(session2) == 2, "2 tasks after second save");
 
-    cJSON_Delete(session->messages);
-    session->messages = NULL;
     edc_session_free(session);
     edc_scheduler_free(sched);
     edc_session_free(session2);
@@ -263,7 +284,8 @@ static void test_corrupt_file(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-corr", "Corrupt");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* Manually write invalid JSON */
     sds dir = edc_path_join(TEST_WS, "sess-corr", NULL);
@@ -280,7 +302,6 @@ static void test_corrupt_file(void)
     CHECK(!ok, "load_state returns false for corrupt JSON");
     CHECK(count_tasks(session) == 0, "no tasks loaded from corrupt file");
     /* session should still be usable */
-    CHECK(session->messages != NULL, "session still has messages array");
 
     sdsfree(path);
     edc_session_free(session);
@@ -300,14 +321,15 @@ static void test_atomic_write(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-atom", "Atomic");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     struct edc_task *t1 = edc_task_new("task-A", "sess-atom", "task-A",
-                                        "task A", edc_channel_cli_new());
+                                        "task A", edc_channel_adapter);
     t1->is_group_leader = 1;
-    edc_task_set_state(t1, TASK_WAITING_INPUT);
-    edc_task_set_state(t1, TASK_LLM_PROCESSING);
-    edc_task_set_state(t1, TASK_COMPLETED);
+    edc_task_mark_ready(t1);
+    edc_task_await_exec(t1);
+    edc_task_mark_completed(t1);
 
     struct edc_task_group *g1 = edc_task_group_new(t1);
     edc_session_add_group(session, g1);
@@ -353,7 +375,8 @@ static void test_version_mismatch(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-ver", "Version");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* Manually write a session.json with wrong version */
     sds dir = edc_path_join(TEST_WS, "sess-ver", NULL);
@@ -390,33 +413,39 @@ static void test_load_onto_nonempty(void)
 
     /* First, create and save a session */
     struct edc_session *s1 = edc_session_new(cfg, "sess-ne", "NonEmpty");
-    struct edc_scheduler *sc1 = edc_scheduler_new(s1, cfg);
+    struct edc_scheduler *sc1 = edc_scheduler_new(cfg);
+    install_resolver(sc1, s1);
 
     struct edc_task *t1 = edc_task_new("task-A", "sess-ne", "task-A",
-                                        "first", edc_channel_cli_new());
+                                        "first", edc_channel_adapter);
     t1->is_group_leader = 1;
-    edc_task_set_state(t1, TASK_WAITING_INPUT);
-    edc_task_set_state(t1, TASK_LLM_PROCESSING);
-    edc_task_set_state(t1, TASK_COMPLETED);
+    edc_task_mark_ready(t1);
+    edc_task_await_exec(t1);
+    edc_task_mark_completed(t1);
 
     struct edc_task_group *g1 = edc_task_group_new(t1);
     edc_session_add_group(s1, g1);
     CHECK(edc_session_save_state(s1, sc1), "save succeeds");
 
-    cJSON_Delete(s1->messages);
-    s1->messages = NULL;
     edc_session_free(s1);
     edc_scheduler_free(sc1);
 
     /* Now create a new session that already has some groups */
     struct edc_session *s2 = edc_session_new(cfg, "sess-ne", "NonEmpty");
-    struct edc_scheduler *sc2 = edc_scheduler_new(s2, cfg);
+    struct edc_scheduler *sc2 = edc_scheduler_new(cfg);
+    install_resolver(sc2, s2);
 
     /* Pre-populate with a task */
     struct edc_task *pre = edc_task_new("pre-existing", "sess-ne", "pre-existing",
-                                         "pre", edc_channel_cli_new());
+                                         "pre", edc_channel_adapter);
     pre->is_group_leader = 1;
-    edc_task_set_state(pre, TASK_WAITING_INPUT);
+    /* 新模型: 任务创建时就带着它的 input。 */
+    {
+        struct edc_turn *turn = edc_turn_new();
+        turn->task_id = strdup(pre->task_id);
+        edc_turn_add_user_message(turn, "pre input");
+        pre->active_turn = turn;
+    }
     struct edc_task_group *pre_g = edc_task_group_new(pre);
     edc_session_add_group(s2, pre_g);
     CHECK(count_tasks(s2) == 1, "1 pre-existing task");
@@ -433,8 +462,6 @@ static void test_load_onto_nonempty(void)
     struct edc_task *rpre = find_task(s2, "pre-existing");
     CHECK(rpre != NULL, "pre-existing task still present");
 
-    cJSON_Delete(s2->messages);
-    s2->messages = NULL;
     edc_session_free(s2);
     edc_scheduler_free(sc2);
     edc_config_free(cfg);
@@ -452,7 +479,8 @@ static void test_permission_errors(void)
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-perm", "Perm");
-    struct edc_scheduler *sched = edc_scheduler_new(session, cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
 
     /* Create the directory and a session.json that is a directory (cannot be read as file) */
     sds dir = edc_path_join(TEST_WS, "sess-perm", NULL);

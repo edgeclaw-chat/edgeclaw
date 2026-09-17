@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define DESC_MAX 30
+#define DESC_MAX EDC_TASK_DESC_MAX
 
 void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
 {
@@ -23,58 +23,62 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
         sdstrim(remaining, " \t");
     }
 
-    /* extract "input": quoted string, or text before first flag */
-    char *q_start = strchr(remaining, '"');
-    if (q_start)
+    /*
+     * Input extraction follows a Python-style quote grammar:
+     *   - argument starts with """ or ''': that whole block, which may span
+     *     multiple lines, is taken verbatim as the input (up to the closing
+     *     triple quote); anything after it is parsed for flags.
+     *   - argument starts with a single '"' or '\'': that quoted chunk is the
+     *     input, and everything after its closing quote is parsed for flags.
+     *   - otherwise the entire remainder is the input verbatim, so pasted
+     *     text that merely contains quotes (e.g. JSON) is never truncated;
+     *     flags are not scanned in this mode.
+     */
+    char *s = remaining;
+    while (*s == ' ' || *s == '\t')
+        s++;
+
+    bool input_consumed = false;
+
+    if (strncmp(s, "\"\"\"", 3) == 0 || strncmp(s, "'''", 3) == 0)
     {
-        char *q_end = strchr(q_start + 1, '"');
+        const char *delim = (*s == '"') ? "\"\"\"" : "'''";
+        /* Python semantics: ''' is raw — no $variable expansion inside.
+         * Capture BEFORE sdsrange() below rewrites the buffer s points into
+         * (it null-terminates at the new end, clobbering the opening quote). */
+        opts->literal = (*s == '\'');
+        char *q_end = strstr(s + 3, delim);
         if (q_end)
         {
-            opts->input = sdsnewlen(q_start + 1, q_end - q_start - 1);
-            sds before = sdsnewlen(remaining, q_start - remaining);
-            sdsrange(remaining, (int)(q_end - remaining + 1), -1);
+            opts->input = sdsnewlen(s + 3, (size_t)(q_end - (s + 3)));
+            sdsrange(remaining, (int)(q_end + 3 - remaining), -1);
             sdstrim(remaining, " \t");
-            sdsfree(before);
+            input_consumed = true;
         }
     }
 
-    if (!opts->input && sdslen(remaining) > 0)
+    if (!input_consumed && (*s == '"' || *s == '\''))
     {
-        /* no quotes: split at first '-' flag token;
-         * left part is input, right part is parsed for flags */
-        char *flag_start = NULL;
-        char *p = remaining;
-        while (*p)
+        char quote = *s;
+        /* single-quoted input is raw too (no $ expansion). Same as above:
+         * capture before sdsrange() clobbers the buffer s points into. */
+        opts->literal = (quote == '\'');
+        char *q_end = strchr(s + 1, quote);
+        if (q_end)
         {
-            while (*p == ' ')
-                p++;
-            if (*p == '\0')
-                break;
-            if (*p == '-')
-            {
-                flag_start = p;
-                break;
-            }
-            while (*p && *p != ' ')
-                p++;
-        }
-
-        if (!flag_start)
-        {
-            /* no flags at all — everything is input */
-            opts->input = sdsdup(remaining);
-            sdsfree(remaining);
-            remaining = NULL;
-        }
-        else if (flag_start > remaining)
-        {
-            /* text before first flag is input */
-            opts->input = sdsnewlen(remaining, flag_start - remaining);
-            sdstrim(opts->input, " \t");
-            sdsrange(remaining, (int)(flag_start - remaining), -1);
+            opts->input = sdsnewlen(s + 1, (size_t)(q_end - s - 1));
+            sdsrange(remaining, (int)(q_end - remaining + 1), -1);
             sdstrim(remaining, " \t");
+            input_consumed = true;
         }
-        /* else: flag at position 0 — no input text, remaining stays for flag parsing */
+    }
+
+    if (!input_consumed)
+    {
+        /* unbalanced quotes / no leading quote: the whole text is the input */
+        opts->input = sdsdup(remaining);
+        sdsfree(remaining);
+        remaining = NULL;
     }
 
     /* build desc: first DESC_MAX UTF-8 chars of input, truncated with "..." */
@@ -83,8 +87,12 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
         opts->desc = edc_str_utf8_truncate(opts->input, DESC_MAX, true);
     }
 
-    /* parse flags from remaining */
-    if (remaining && sdslen(remaining) > 0)
+    /* Parse flags from remaining. The block runs even when `remaining` is an
+     * empty sds (which happens once a quoted input has consumed the whole
+     * argument); the token loop is a no-op then, but `remaining` still has to
+     * be released — the old `sdslen(...) > 0` guard skipped the free and leaked
+     * one sds per such parse. */
+    if (remaining)
     {
         sds work = sdsdup(remaining);
         char *p = work;
@@ -99,6 +107,13 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
             {
                 opts->bg = true;
                 p += 4;
+                continue;
+            }
+            /* --suspended: 建任务但**不立即执行**。放 --bg 之后, 两者互不前缀。 */
+            if (strncmp(p, "--suspended", 11) == 0 && (p[11] == ' ' || p[11] == '\0'))
+            {
+                opts->suspended = true;
+                p += 11;
                 continue;
             }
             if (strncmp(p, "-d ", 3) == 0)
@@ -163,6 +178,7 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
         }
         sdsfree(work);
         sdsfree(remaining);
+        remaining = NULL;
     }
 }
 

@@ -1,0 +1,23 @@
+# cancel：任务在 LLM **在途**时被取消
+#
+# 覆盖三条今天只靠单测保的东西：
+#   1. 显式取消要立即落盘（CANCELLED 写进 session.json）+ 推快照；
+#   2. in-flight 请求要反注册 —— 迟到的应答必须无害；
+#   3. 迟到应答落地时不该多出一条 assistant 消息。
+#
+# 假 LLM 的第一个应答**延迟 8s** —— 那 8 秒就是可取消的窗口。没有这个延迟
+# 就没有"在途"，也就没有可取消的东西（这是之前 A/B 覆盖不到取消的原因）。
+
+wait 1500
+
+# 触发 LLM 请求：任务进入 LLM_PROCESSING，应答还在路上
+send hello there\n
+wait 1500
+
+# 在途取消。**不带 id** = 前台组的 active task（/help 里写明 id 可选）——
+# 脚本无法引用运行期才分配的 id，正是靠这个默认值绕开的。
+send /task stop\n
+
+# 等那个迟到的应答回来（8s）+ settle
+wait 9000
+wait 1500

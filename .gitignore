@@ -278,4 +278,11 @@ _deps
 
 *.jsonl
 *json
+# A/B harness fixtures are configuration, not build output
+!tools/ab/responses/*.json
+!tools/ab/responses/*.jsonl
 MODULE.bazel.lock
+
+# Terminal emulator stray files (accidental empty files in repo root)
+ghostty
+iTerm2

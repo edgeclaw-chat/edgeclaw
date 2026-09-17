@@ -1,0 +1,484 @@
+﻿#include "edc_compat.h"
+#include "edc_error.h"
+#include "edc_sandbox.h"
+#include "edc_sandbox_helper.h"
+#include "edc_scheduler.h"
+#include "edc_shell_env.h"
+#include "edc_toolbox.h"
+#include "edc_tools.h"
+#include "log.h"
+#include "sds.h"
+#include <edc_param_types.h>
+#include <errno.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <uv.h>
+
+#define BC_MASTER_KEY_ENV "EDGECLAW_MASTER_KEY"
+#define CMD_TIMEOUT_SEC 30
+
+struct edc_tool_shell_ctx
+{
+    struct edc_tool *tool;
+    sds command;
+    sds stderr_buf;
+    sds stdout_buf;
+    bool stderr_complete;
+    bool stdout_complete;
+    bool child_exited;
+    bool completed;
+    int exit_status;
+    uv_process_t process;
+    uv_pipe_t stdout_pipe;
+    uv_pipe_t stderr_pipe;
+    uv_timer_t timeout_timer;
+    int pending_handles;
+    struct edc_toolbox_call_ctx *tb_ctx;
+    void (*callback)(struct edc_toolbox_call_ctx *, sds result, EdcError *error);
+    struct edc_tool_shell_ctx *next;
+};
+
+static struct edc_tool_shell_ctx *active_contexts = NULL;
+static uv_mutex_t active_mutex;
+static uv_once_t active_mutex_once = UV_ONCE_INIT;
+
+static void active_mutex_init(void)
+{
+    uv_mutex_init(&active_mutex);
+}
+
+static void shell_ctx_try_complete(struct edc_tool_shell_ctx *ctx);
+
+static void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf)
+{
+    (void)handle;
+    buf->base = malloc(suggested_size);
+    buf->len = suggested_size;
+}
+
+static void shell_ctx_destroy(struct edc_tool_shell_ctx *ctx)
+{
+    if (ctx->stderr_buf)
+        sdsfree(ctx->stderr_buf);
+    if (ctx->stdout_buf)
+        sdsfree(ctx->stdout_buf);
+    if (ctx->command)
+        sdsfree(ctx->command);
+    free(ctx);
+}
+
+static void shell_ctx_close_handles(struct edc_tool_shell_ctx *ctx)
+{
+    if (--ctx->pending_handles == 0)
+        shell_ctx_destroy(ctx);
+}
+
+static void on_stdout_close(uv_handle_t *handle)
+{
+    struct edc_tool_shell_ctx *ctx = handle->data;
+    shell_ctx_close_handles(ctx);
+}
+
+static void on_stderr_close(uv_handle_t *handle)
+{
+    struct edc_tool_shell_ctx *ctx = handle->data;
+    shell_ctx_close_handles(ctx);
+}
+
+static void on_timer_close(uv_handle_t *handle)
+{
+    struct edc_tool_shell_ctx *ctx = handle->data;
+    shell_ctx_close_handles(ctx);
+}
+
+static void on_process_close(uv_handle_t *handle)
+{
+    struct edc_tool_shell_ctx *ctx = handle->data;
+    shell_ctx_close_handles(ctx);
+}
+
+static void on_stdout_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
+{
+    struct edc_tool_shell_ctx *ctx = stream->data;
+    if (nread > 0)
+        ctx->stdout_buf = sdscatlen(ctx->stdout_buf, buf->base, (size_t)nread);
+    if (nread != UV_EOF && nread < 0)
+        log_error("edc_tools_shell: stdout read error: %s", uv_strerror((int)nread));
+    free(buf->base);
+    if (nread == UV_EOF || nread < 0)
+    {
+        ctx->stdout_complete = true;
+        uv_read_stop(stream);
+        shell_ctx_try_complete(ctx);
+    }
+}
+
+static void on_stderr_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
+{
+    struct edc_tool_shell_ctx *ctx = stream->data;
+    if (nread > 0)
+        ctx->stderr_buf = sdscatlen(ctx->stderr_buf, buf->base, (size_t)nread);
+    if (nread != UV_EOF && nread < 0)
+        log_error("edc_tools_shell: stderr read error: %s", uv_strerror((int)nread));
+    free(buf->base);
+    if (nread == UV_EOF || nread < 0)
+    {
+        ctx->stderr_complete = true;
+        uv_read_stop(stream);
+        shell_ctx_try_complete(ctx);
+    }
+}
+
+static void on_shell_exit(uv_process_t *process, int64_t exit_status, int term_signal)
+{
+    struct edc_tool_shell_ctx *ctx = process->data;
+    ctx->child_exited = true;
+    ctx->exit_status = term_signal ? -term_signal : (int)exit_status;
+    shell_ctx_try_complete(ctx);
+}
+
+static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
+{
+    if (ctx->completed)
+        return;
+    ctx->completed = true;
+
+    uv_timer_stop(&ctx->timeout_timer);
+
+    if (ctx->stdout_buf)
+        sdstrim(ctx->stdout_buf, " \t\r\n");
+    if (ctx->stderr_buf)
+        sdstrim(ctx->stderr_buf, " \t\r\n");
+
+    sds result = sdsempty();
+    if (ctx->stdout_buf && sdslen(ctx->stdout_buf) > 0)
+        result = sdscatprintf(result, "%s\n", ctx->stdout_buf);
+    if (ctx->stderr_buf && sdslen(ctx->stderr_buf) > 0)
+        result = sdscatprintf(result, "stderr:\n%s\n", ctx->stderr_buf);
+
+    edc_toolbox_emit_tool_message_plain(ctx->tb_ctx, ctx->command, result);
+
+    ctx->callback(ctx->tb_ctx, result, NULL);
+
+    uv_once(&active_mutex_once, active_mutex_init);
+    uv_mutex_lock(&active_mutex);
+    LL_DELETE(active_contexts, ctx);
+    uv_mutex_unlock(&active_mutex);
+
+    ctx->pending_handles = 4;
+    uv_close((uv_handle_t *)&ctx->stdout_pipe, on_stdout_close);
+    uv_close((uv_handle_t *)&ctx->stderr_pipe, on_stderr_close);
+    uv_close((uv_handle_t *)&ctx->timeout_timer, on_timer_close);
+    uv_close((uv_handle_t *)&ctx->process, on_process_close);
+}
+
+static void shell_ctx_try_complete(struct edc_tool_shell_ctx *ctx)
+{
+    if (!ctx->stderr_complete || !ctx->stdout_complete || !ctx->child_exited)
+        return;
+    shell_ctx_complete(ctx);
+}
+
+static void on_timeout(uv_timer_t *timer)
+{
+    struct edc_tool_shell_ctx *ctx = timer->data;
+    if (!ctx->child_exited)
+    {
+#ifdef _WIN32
+        uv_process_kill(&ctx->process, SIGTERM);
+#else
+        /*
+         * The child was spawned with UV_PROCESS_DETACHED, so setsid() made it
+         * the leader of its own process group (pgid == pid). Signal the whole
+         * group, not just the direct child: for `sh -c 'a && sudo b'` killing
+         * only `/bin/sh` would leave the grandchild running and holding the
+         * stdout/stderr pipes open. uv_process_kill() is kept as a fallback in
+         * case the group signal did not land (e.g. the group is already gone).
+         */
+        if (ctx->process.pid > 0)
+            kill(-ctx->process.pid, SIGKILL);
+        uv_process_kill(&ctx->process, SIGKILL);
+#endif
+        ctx->child_exited = true;
+        ctx->exit_status = -1;
+        ctx->stderr_buf = sdscat(ctx->stderr_buf, "\n[command timed out]");
+    }
+    ctx->stdout_complete = true;
+    ctx->stderr_complete = true;
+    shell_ctx_try_complete(ctx);
+}
+
+static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, const char *cmd_s,
+                            const char *cwd, unsigned int timeout_sec,
+                            void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
+{
+    uv_loop_t *loop = tb_ctx->tb->scheduler->loop;
+
+    struct edc_tool_shell_ctx *ctx = calloc(1, sizeof(*ctx));
+    ctx->tb_ctx = tb_ctx;
+    ctx->stderr_buf = sdsempty();
+    ctx->stdout_buf = sdsempty();
+    ctx->command = sdsnew(cmd_s);
+    ctx->callback = callback;
+    ctx->tool = tool;
+
+    uv_pipe_init(loop, &ctx->stdout_pipe, 0);
+    uv_pipe_init(loop, &ctx->stderr_pipe, 0);
+    uv_timer_init(loop, &ctx->timeout_timer);
+    ctx->timeout_timer.data = ctx;
+
+    /*
+     * NOTE: uv__process_open_stream() in this libuv version has inverted
+     * flag semantics for UV_READABLE_PIPE / UV_WRITABLE_PIPE:
+     *   UV_READABLE_PIPE → UV_HANDLE_WRITABLE  (parent can write = stdin)
+     *   UV_WRITABLE_PIPE → UV_HANDLE_READABLE  (parent can read  = stdout/stderr)
+     * Therefore stdout/stderr use UV_WRITABLE_PIPE so that uv_read_start
+     * sees UV_HANDLE_READABLE and starts polling POLLIN.
+     *
+     * stdin is deliberately left at UV_IGNORE: libuv then opens /dev/null and
+     * dup2()s it onto fd 0 (src/unix/process.c, "Redirect stdin, stdout and
+     * stderr to /dev/null even if UV_IGNORE is set"), so anything that reads
+     * stdin gets an immediate EOF. Do NOT switch this to UV_INHERIT_STDIO:
+     * the app has no way to type into the child, so sharing our stdin would
+     * only let the command steal TUI keystrokes.
+     */
+    uv_stdio_container_t stdio[3];
+    stdio[0].flags = UV_IGNORE;
+    stdio[1].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
+    stdio[1].data.stream = (uv_stream_t *)&ctx->stdout_pipe;
+    stdio[2].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
+    stdio[2].data.stream = (uv_stream_t *)&ctx->stderr_pipe;
+
+    uv_process_options_t options = {0};
+    options.exit_cb = on_shell_exit;
+    /*
+     * Run the child in its own session (setsid, via libuv UV_PROCESS_DETACHED)
+     * so that it has NO controlling terminal. stdin is already /dev/null, but
+     * interactive tools ignore stdin and prompt on /dev/tty instead (sudo,
+     * ssh, git without GIT_TERMINAL_PROMPT=0, apt, ...). While the child
+     * inherited our terminal those prompts were written straight over the TUI
+     * and then blocked on a read nobody could answer, so the tool call hung
+     * until its timeout and the screen was left garbled. Detached,
+     * open("/dev/tty") fails and the command aborts immediately with a message
+     * ("sudo: no tty present and no askpass program specified") that reaches
+     * the model on stderr, which can then retry without an interactive step.
+     */
+    options.flags |= UV_PROCESS_DETACHED;
+
+    const char *spawn_file = NULL;
+    char **spawn_args = NULL;
+    char *plain_args[4] = {0};
+    sds sandbox_helper_file = NULL;
+    char **sandbox_helper_args = NULL;
+    char **spawn_env = NULL;
+#ifdef _WIN32
+    plain_args[0] = (char *)"cmd.exe";
+    plain_args[1] = (char *)"/c";
+    plain_args[2] = (char *)cmd_s;
+    spawn_file = "cmd.exe";
+    spawn_args = plain_args;
+#else
+    /* When the filesystem sandbox is enabled, run the command through the
+     * embedded sandbox helper: it applies the kernel sandbox (Landlock/seccomp)
+     * in its own fresh process and then execs /bin/sh. We cannot apply it here
+     * (it would sandbox the app) nor between fork/exec (not async-signal-safe
+     * in this multithreaded process). exec keeps the pid, so the timeout kill
+     * and exit handling below are unaffected. Falls back to /bin/sh when the
+     * helper cannot be materialized. */
+    if (tb_ctx->tb->conf && tb_ctx->tb->conf->enable_sandbox &&
+        edc_sandbox_helper_prepare(tb_ctx->tb->conf, cmd_s, &sandbox_helper_file, &sandbox_helper_args))
+    {
+        spawn_file = sandbox_helper_file;
+        spawn_args = sandbox_helper_args;
+    }
+    else
+    {
+        plain_args[0] = (char *)"sh";
+        plain_args[1] = (char *)"-c";
+        plain_args[2] = (char *)cmd_s;
+        spawn_file = "/bin/sh";
+        spawn_args = plain_args;
+    }
+#endif
+    options.file = spawn_file;
+    options.args = spawn_args;
+    /* Minimal whitelist, never NULL: NULL makes uv_spawn inherit the app's
+     * entire environment (see edc_shell_env.h for why that leaked secrets). */
+    spawn_env = edc_shell_env_build();
+    options.env = spawn_env;
+    options.cwd = cwd;
+    options.stdio = stdio;
+    options.stdio_count = 3;
+
+    ctx->process.data = ctx;
+    int r = uv_spawn(loop, &ctx->process, &options);
+
+    /* libuv has consumed argv/envp by now. */
+    if (sandbox_helper_file)
+        sdsfree(sandbox_helper_file);
+    free(sandbox_helper_args);
+    edc_shell_env_free(spawn_env);
+
+    if (r != 0)
+    {
+        EdcError *error = edc_error_new(EDC_ERR_EXEC, "uv_spawn failed: %s", uv_strerror(r));
+        ctx->stdout_pipe.data = ctx;
+        ctx->stderr_pipe.data = ctx;
+        ctx->pending_handles = 3;
+        uv_close((uv_handle_t *)&ctx->stdout_pipe, on_stdout_close);
+        uv_close((uv_handle_t *)&ctx->stderr_pipe, on_stderr_close);
+        uv_close((uv_handle_t *)&ctx->timeout_timer, on_timer_close);
+        callback(tb_ctx, NULL, error);
+        return;
+    }
+
+    ctx->stdout_pipe.data = ctx;
+    ctx->stderr_pipe.data = ctx;
+    uv_read_start((uv_stream_t *)&ctx->stdout_pipe, alloc_buffer, on_stdout_read);
+    uv_read_start((uv_stream_t *)&ctx->stderr_pipe, alloc_buffer, on_stderr_read);
+
+    uv_timer_start(&ctx->timeout_timer, on_timeout, (uint64_t)timeout_sec * 1000, 0);
+
+    uv_once(&active_mutex_once, active_mutex_init);
+    uv_mutex_lock(&active_mutex);
+    LL_PREPEND(active_contexts, ctx);
+    uv_mutex_unlock(&active_mutex);
+}
+
+static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, cJSON *args,
+                                      void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
+{
+    EdcError *error = NULL;
+    cJSON *cmd = cJSON_GetObjectItemCaseSensitive(args, "command");
+    if (!cmd || !cJSON_IsString(cmd))
+    {
+        char *msg = cJSON_PrintUnformatted(args);
+        error = edc_error_new(EDC_ERR_INVAL, "ERROR: edc_tools_shell exec command failed: %s", msg);
+        cJSON_free(msg);
+        callback(tb_ctx, NULL, error);
+        return;
+    }
+
+    const char *cmd_s = cJSON_GetStringValue(cmd);
+    unsigned int timeout_sec = CMD_TIMEOUT_SEC;
+    cJSON *timeout_json = cJSON_GetObjectItemCaseSensitive(args, "timeout");
+    if (timeout_json && cJSON_IsNumber(timeout_json) && timeout_json->valueint > 0)
+        timeout_sec = (unsigned int)timeout_json->valueint;
+
+    const char *working_dir = NULL;
+    cJSON *wd = cJSON_GetObjectItemCaseSensitive(args, "working_dir");
+    if (wd && cJSON_IsString(wd))
+        working_dir = cJSON_GetStringValue(wd);
+
+    struct edc_config *conf = tb_ctx->tb->conf;
+    sds allocated_cwd = NULL;
+    /* Default cwd: the session's bound working directory, falling back to the
+     * launch directory (sandbox root) when the session is unbound. */
+    const char *cwd = edc_scheduler_task_workdir(tb_ctx->task);
+    if (!cwd)
+        cwd = edc_sandbox_get_root(conf);
+    if (working_dir)
+    {
+        allocated_cwd = edc_sandbox_verify_path_at(conf, cwd, working_dir, false, &error);
+        if (!allocated_cwd)
+        {
+            callback(tb_ctx, NULL, error);
+            return;
+        }
+        cwd = allocated_cwd;
+    }
+
+    edc_shell_spawn(tb_ctx, tool, cmd_s, cwd, timeout_sec, callback);
+    sdsfree(allocated_cwd);
+}
+
+void edc_tool_shell_abort_all(void)
+{
+    uv_once(&active_mutex_once, active_mutex_init);
+    uv_mutex_lock(&active_mutex);
+    struct edc_tool_shell_ctx *ctx, *tmp;
+    LL_FOREACH_SAFE(active_contexts, ctx, tmp)
+    {
+        LL_DELETE(active_contexts, ctx);
+        if (!ctx->child_exited)
+        {
+            uv_process_kill(&ctx->process,
+#ifdef _WIN32
+                            SIGTERM
+#else
+                            SIGKILL
+#endif
+            );
+        }
+        uv_timer_stop(&ctx->timeout_timer);
+
+        /* Only close handles that are still open. Teardown order in
+         * edc_app_free() runs edc_actor_runner_free() (which stops the actor
+         * loop and uv_walk()s every handle on it shut with a NULL callback)
+         * *before* edc_toolbox_free() lands here, so by now these handles are
+         * usually already closed. Calling uv_close() on a closing/closed handle
+         * trips libuv's assert(!uv__is_closing(handle)) and aborts the whole
+         * process (SIGABRT during teardown).
+         *
+         * count only the handles we close here: those are the only ones whose
+         * close callback will decrement ctx->pending_handles, so the context is
+         * released exactly when the last of *our* callbacks fires. */
+        int to_close = 0;
+        if (!uv_is_closing((uv_handle_t *)&ctx->stdout_pipe))
+        {
+            uv_close((uv_handle_t *)&ctx->stdout_pipe, on_stdout_close);
+            to_close++;
+        }
+        if (!uv_is_closing((uv_handle_t *)&ctx->stderr_pipe))
+        {
+            uv_close((uv_handle_t *)&ctx->stderr_pipe, on_stderr_close);
+            to_close++;
+        }
+        if (!uv_is_closing((uv_handle_t *)&ctx->timeout_timer))
+        {
+            uv_close((uv_handle_t *)&ctx->timeout_timer, on_timer_close);
+            to_close++;
+        }
+        if (!uv_is_closing((uv_handle_t *)&ctx->process))
+        {
+            uv_close((uv_handle_t *)&ctx->process, on_process_close);
+            to_close++;
+        }
+
+        if (to_close == 0)
+        {
+            /* Every handle was already closed elsewhere (the runner walk closed
+             * them with a NULL callback), so no callback will run to release the
+             * context: do it here. */
+            shell_ctx_destroy(ctx);
+        }
+        else
+        {
+            ctx->pending_handles = to_close;
+        }
+    }
+    uv_mutex_unlock(&active_mutex);
+}
+
+struct edc_tool *edc_tool_create_exec_shell(struct edc_toolbox *tb)
+{
+    const char *name = "exec_shell";
+    const char *desc = "Execute shell command and return output";
+    struct edc_tool_param *params = NULL;
+    LL_APPEND(params, edc_tool_param_new("command", edc_param_str_type("The shell command to execute", NULL), true));
+    LL_APPEND(params,
+              edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), false));
+    LL_APPEND(params,
+              edc_tool_param_new("working_dir",
+                                 edc_param_str_type("Working directory (relative to sandbox root)", NULL), false));
+    struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_shell_async);
+    edc_toolbox_register(tb, tool);
+    return tool;
+}
+
+void edc_tools_shell_register(struct edc_toolbox *tb)
+{
+    edc_tool_create_exec_shell(tb);
+}

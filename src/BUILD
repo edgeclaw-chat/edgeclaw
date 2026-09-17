@@ -1,68 +1,20 @@
-load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
-
-LINK_OPTS = select({
-    "//:macos_debug": ["-lresolv"],
-    "//:macos": ["-lresolv"],
-    "//:windows": ["-lws2_32", "-lbcrypt", "-luserenv"],
-    "//conditions:default": ["-static", "-Wl,--no-gc-sections"],
-})
+load("@rules_cc//cc:defs.bzl", "cc_library")
 
 # ── Top-level utilities ───────────────────────────────────────────────────
 
-cc_library(
-    name = "utlist_fix",
-    hdrs = ["utlist_fix.h"],
-    includes = ["."],
-    visibility = ["//visibility:public"],
-)
-
-# ── Main binary ───────────────────────────────────────────────────────────
-
-cc_binary(
-    name = "edgeclaw.exe",
-    srcs = ["main.c"],
-    deps = [
-        "//src/agent:agent",
-        "//src/core:core",
-        "//src/shell:shell",
-        ":utlist_fix",
-    ] + select({
-        "//:windows": [],
-        "//conditions:default": ["//src/device:device"],
-    }),
-    linkstatic = True,
-    linkopts = LINK_OPTS,
-    local_defines = select({
-        "//:debug": ["EDGECLAW_DEBUG"],
-        "//conditions:default": [],
-    }),
-    visibility = ["//visibility:public"],
-)
-
-# ── Backward-compatibility aggregate targets ──────────────────────────────
-
-# Full agent library (agent + shell + core + device) for tests compatibility
-cc_library(
-    name = "agent",
-    deps = [
-        "//src/agent:agent",
-        "//src/core:core",
-        "//src/device:device",
-        "//src/shell:shell",
-    ],
-    linkstatic = True,
-    visibility = ["//visibility:public"],
-)
+# ── Backward-compatibility aliases ────────────────────────────────────────
+# 注: 聚合伞 `//src:agent`（当时是 agent + shell + core + device；今 `//src/app` / `//src/common`）已于 2026-09-15 删除 ——
+# 它让测试可以静默越界; 现在每个测试只依赖自己真正用到的模块, 越界即编译失败。
 
 alias(
     name = "edc_string_utils",
-    actual = "//src/core:edc_string_utils",
+    actual = "//src/common:edc_string_utils",
     visibility = ["//visibility:public"],
 )
 
 alias(
     name = "mbedtls_config",
-    actual = "//src/core:mbedtls_config",
+    actual = "//src/common:mbedtls_config",
     visibility = ["//visibility:public"],
 )
 
