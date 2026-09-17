@@ -110,8 +110,11 @@ int main(int argc, char **argv)
             component |= CatchEvent([&](Event e) -> bool {
                 events_seen++;
                 // No 'q' here: the window now has a text input, so a bare letter must
-                // reach the box instead of quitting.
-                if (e == Event::Escape || e == Event::CtrlC)
+                // reach the box instead of quitting. And no Escape either: it belongs
+                // to the innermost component -- it closes the /connect dialog and it
+                // leaves the history view -- so a global quit on the same key would
+                // fight with them. Ctrl-C (and the signals below) is the way out.
+                if (e == Event::CtrlC)
                 {
                     screen.Exit();
                     return true;
