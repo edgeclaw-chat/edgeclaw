@@ -139,6 +139,41 @@ static inline char *win32_realpath(const char *path, char *resolved)
 /* ---- environment ---- */
 #define unsetenv(name) SetEnvironmentVariable(name, NULL)
 
+/* ---- binary mode flag (Windows text-mode open() breaks binary I/O) ---- */
+#ifndef O_BINARY
+#ifdef _WIN32
+#define O_BINARY _O_BINARY
+#else
+#define O_BINARY 0
+#endif
+#endif
+
+/* ---- UTF-8 path support ---- */
+/* The Windows ANSI CRT APIs (stat/open/fopen) interpret paths using the
+ * local code page, which mangles non-ASCII (e.g. Chinese) file names.
+ * Convert UTF-8 paths to UTF-16 so wide-char APIs (_wstat64/_wopen) can
+ * handle them correctly. Caller must free() the returned buffer. */
+#ifdef _WIN32
+#include <wchar.h>
+static inline wchar_t *edc_utf8_to_wide(const char *utf8)
+{
+    if (!utf8)
+        return NULL;
+    int len = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, NULL, 0);
+    if (len <= 0)
+        return NULL;
+    wchar_t *wide = (wchar_t *)malloc((size_t)len * sizeof(wchar_t));
+    if (!wide)
+        return NULL;
+    if (MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wide, len) <= 0)
+    {
+        free(wide);
+        return NULL;
+    }
+    return wide;
+}
+#endif /* _WIN32 */
+
 /* ---- file mode macros (Windows _S_IF*) ---- */
 #ifndef S_ISDIR
 #define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)

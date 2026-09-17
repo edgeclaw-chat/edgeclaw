@@ -10,6 +10,16 @@
 #include <termios.h>
 #include <unistd.h>
 
+/* Bionic on ARM64 requires TLS segment p_align >= 64.
+   Force the required alignment via an assembly .tdata entry. */
+__asm__(
+    ".section .tdata,\"awT\",@progbits\n"
+    ".p2align 6\n"
+    "__tls_align_pad:\n"
+    ".zero 64\n"
+    ".text\n"
+);
+
 static speed_t int_to_baud(int baud)
 {
     switch (baud)
