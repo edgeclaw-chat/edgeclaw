@@ -780,7 +780,12 @@ void TUIWindow::TickAnimations()
 
 ::ftxui::Element TUIWindow::RenderMain()
 {
-    auto input_row = ::ftxui::hbox({prompt_, input_->Render() | ::ftxui::flex});
+    // 只看模式: 整个左侧面板是"读 history"的视图 —— 输入框消失, 那一行换成返回提示
+    // (输入这时也不接受: 见 OnEvent 的闸门)。Esc 是唯一的出口。
+    auto input_row = history_view_
+                         ? ::ftxui::hbox({::ftxui::text(" history view · Esc 返回 ") |
+                                          ::ftxui::color(style::palette().accent)})
+                         : ::ftxui::hbox({prompt_, input_->Render() | ::ftxui::flex});
 
     // The status row shares this pane's width (the input's), so the right-aligned
     // model + "/help" stop at the input's right edge and never spill into the
@@ -1008,12 +1013,19 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
         return input_->OnEvent(event);
     }
 
-    // 只看模式下的 Esc: 回实时流 (重放转录)。放在 /connect 弹窗之后: 弹窗开着时
-    // Esc 归它 (先关弹窗), 这也是"最内层先拿事件"的老规矩。
-    if (history_view_ && event == ::ftxui::Event::Escape)
+    // 只看模式: 整块左侧是"读 history"的视图。它**不接受输入** —— 输入框已经不在屏上,
+    // 字符与回车一律吞掉 (鼠标与滚动照旧放行, 历史要能滚)。唯一能做的事是 Esc: 回实时流
+    // (重放转录)。这一块放在 /connect 弹窗之后: 弹窗开着时 Esc 归它 (先关弹窗),
+    // 这也是"最内层先拿事件"的老规矩。
+    if (history_view_)
     {
-        ExitHistoryView();
-        return true;
+        if (event == ::ftxui::Event::Escape)
+        {
+            ExitHistoryView();
+            return true;
+        }
+        if (event.is_character() || event == ::ftxui::Event::Return)
+            return true;
     }
 
     // Alt+Enter arrives as ESC-prefixed Return: the terminal (raw mode, ICRNL
