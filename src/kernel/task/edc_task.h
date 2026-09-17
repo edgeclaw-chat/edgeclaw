@@ -150,6 +150,15 @@ struct edc_task
     char *session_id; /* SID — 所属 session */
 
     char *description;    /* 用户可见描述 */
+    /* ── 用户输入 (这个 task 是怎么来的) ──────────────────────
+     * `raw_input` = 用户**敲的原文** (前端发过来的那条, shell parser 之前);
+     * parser 之后的输入是 turn 的第一条 user 消息 (`"""x"""` → `x` 才进 turn)。
+     * 两份都留在 task 上: 原文是"这条回显属于谁"的凭据 —— 任务**建成的那一刻**
+     * kernel 带着它发"任务已创建"事件, 前端据此把用户敲的那条绑定到本任务, 于是
+     * 归属的权威在 kernel, 而不是前端按日志顺序去猜。
+     * NULL = 这个 task 不是由某条用户输入建的 (fold 的 system task、fork 的孩子、
+     * 单测直接建的)。纯内存: 转录已经记着那条回显, 重启不需要它。 */
+    sds raw_input;
     /* 在哪一步 / 活着吗 —— 拆开之后相位才能如实保存, 且落盘时不再被粗化。
      *
      * **这里是"任务在哪一步"的唯一来源** (runtime-model.md §8 判据 4)。过渡期那层

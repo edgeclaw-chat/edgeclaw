@@ -63,7 +63,8 @@ const char *kFull = R"json({
       "tasks": [
         {
           "id": "11", "state": "IDLE", "leader": true, "active": true,
-          "desc": "user work", "tokens_prompt": 1, "tokens_completion": 2,
+          "desc": "user work", "input": "please fix it",
+          "tokens_prompt": 1, "tokens_completion": 2,
           "tokens_total": 3, "tokens_cached": 4,
           "todos": [
             {"content": "one", "status": "pending", "priority": "high"},
@@ -107,6 +108,7 @@ void TestParseFullSnapshot()
     Check(active.task_id == "11" && active.state == "IDLE", "task id + state");
     Check(active.is_leader && active.is_active, "leader / active flags");
     Check(active.description == "user work", "description");
+    Check(active.input == "please fix it", "the input the task was created from");
     Check(active.tokens_prompt == 1 && active.tokens_completion == 2 && active.tokens_total == 3 &&
               active.tokens_cached == 4,
           "token counters");

@@ -98,6 +98,12 @@ struct edc_https_request
     bool header_in_field;
 
     void *priv;
+
+    /* 这个请求还欠 libuv 几笔 close 回调 (socket + timer 各一笔, 建时置 2)。两个
+     * 句柄都嵌在本结构里, 而 libuv 直到 close 回调跑完 (uv__finish_close 最后那句
+     * uv__queue_remove(&handle->handle_queue)) 都还会读写这块内存 —— 所以 free()
+     * 只能等两笔都到齐, 见 edc_https_request_release。 */
+    int pending_closes;
 };
 
 static int edc_https_on_header_field(llhttp_t *http, const char *at, size_t len)
@@ -229,6 +235,11 @@ static struct edc_https_request *edc_https_request_new(struct edc_https_client *
         return NULL;
     }
 
+    /* ssl 上下文在这里就初始化, 与收尾时的 mbedtls_ssl_free 对称: 失败在握手之前
+     * 的请求 (连接失败、超时、退出时被关) 走的是同一条 free 路径, 一样要能安全释放
+     * 它 —— 以前 init 只在握手路径上做, 那条路径到不了就 free 了未初始化的上下文。 */
+    mbedtls_ssl_init(&req->ssl);
+
     uv_tcp_init(&client->loop, &req->socket);
 
     /* 一创建就起表：连不上、握不上手、发出去了没人回 —— 三种挂起都由它兜底。
@@ -237,17 +248,24 @@ static struct edc_https_request *edc_https_request_new(struct edc_https_client *
     uv_timer_init(&client->loop, &req->timer);
     req->timer.data = req;
     uv_timer_start(&req->timer, edc_https_on_timeout, edc_https_timeout_ms(), 0);
+
+    /* socket + timer 两笔 close 回调的账 (见 struct 里的说明)。 */
+    req->pending_closes = 2;
     return req;
 }
 
-static void edc_https_request_free(struct edc_https_request *req)
-{
-    /* 正常收尾时把期限撤掉 —— 否则它会在 req 被 free 之后开火（use-after-free）。
-     * 到期路径已经 close 过它，uv_is_closing 挡住二次 close。 */
-    uv_timer_stop(&req->timer);
-    if (!uv_is_closing((uv_handle_t *)&req->timer))
-        uv_close((uv_handle_t *)&req->timer, NULL);
+/* ── 请求的收尾: socket 与 timer 各欠一笔 close 回调 ────────────
+ * 两个句柄都嵌在 struct edc_https_request 里, 而 libuv 直到 close 回调跑完
+ * (uv__finish_close 最后那句 uv__queue_remove(&handle->handle_queue)) 都还会读写
+ * 这块内存。所以 free(req) 必须等**两笔都到齐** —— 谁先 close 完都无所谓。
+ *
+ * 提前 free 的后果 (2026-09-17 真机实测): libuv 拿回收后的内存当句柄摘链, 把垃圾
+ * 节点拼进 loop->handle_queue; 运行期看不出来 (uv_run 不遍历那条链), 但退出时
+ * edc_https_client_free() 的 uv_walk() 再也走不完 —— TUI 表现为 Ctrl+C 退出卡死、
+ * 单核 100% 用户态空转、SIGINT/SIGTERM 被 main.cpp 的空处理器吞掉。 */
 
+static void edc_https_request_dispose(struct edc_https_request *req)
+{
     struct edc_https_buf_list *node = req->mbedtls_recv_bufs;
     while (node)
     {
@@ -271,6 +289,28 @@ static void edc_https_request_free(struct edc_https_request *req)
     sdsfree(req->current_header_field);
     sdsfree(req->current_header_value);
     free(req);
+}
+
+/* 一笔 close 到账。谁最后到, 谁负责真正释放。 */
+static void edc_https_request_release(struct edc_https_request *req)
+{
+    if (--req->pending_closes > 0)
+        return;
+    edc_https_request_dispose(req);
+}
+
+static void edc_https_on_timer_close(uv_handle_t *handle)
+{
+    edc_https_request_release(EDC_CONTAINER_OF(handle, struct edc_https_request, timer));
+}
+
+/* 撤掉期限: 停表 + close (回调归 edc_https_on_timer_close)。到期路径已经 close
+ * 过它, uv_is_closing 挡住二次 close —— 那一笔账算在那次 close 上。 */
+static void edc_https_request_close_timer(struct edc_https_request *req)
+{
+    uv_timer_stop(&req->timer);
+    if (!uv_is_closing((uv_handle_t *)&req->timer))
+        uv_close((uv_handle_t *)&req->timer, edc_https_on_timer_close);
 }
 
 int edc_https_client_connect(struct edc_https_client *client, const char *url, edc_https_event_fn fn, void *priv)
@@ -367,7 +407,9 @@ static void edc_https_on_tcp_close(uv_handle_t *handle)
 {
     struct edc_https_request *req = (struct edc_https_request *)handle;
     req->fn(req, EDC_HTTPS_EVENT_CLOSE, NULL);
-    edc_https_request_free((struct edc_https_request *)handle);
+    /* socket 这侧到账了; 期限那侧的 close 回调随后到 —— 两笔齐了才 free。 */
+    edc_https_request_close_timer(req);
+    edc_https_request_release(req);
 }
 
 /* 期限到了。**故意复用失败那条路**（ERROR 然后 CLOSE），于是上层不需要为超时
@@ -383,7 +425,7 @@ static void edc_https_on_timeout(uv_timer_t *timer)
     sdsfree(message);
 
     uv_timer_stop(timer);
-    uv_close((uv_handle_t *)timer, NULL);
+    uv_close((uv_handle_t *)timer, edc_https_on_timer_close);
     uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
 }
 
@@ -634,7 +676,8 @@ static void edc_https_client_on_tcp_connect(uv_connect_t *conn, int status)
 
     struct edc_https_client *client = req->client;
 
-    mbedtls_ssl_init(&req->ssl);
+    /* ssl 上下文已在 edc_https_request_new 初始化 (与收尾的 mbedtls_ssl_free 对称),
+     * 这里只 setup —— 握手前就失败的请求也必须有可安全释放的上下文。 */
     if (mbedtls_ssl_setup(&req->ssl, &client->ssl_conf) != 0)
     {
         sds err_message = sdscatprintf(sdsnew(NULL), "mbedtls ssl_setup failed");
@@ -798,14 +841,22 @@ struct edc_https_client *edc_https_client_new(const char *cacert_path)
 
 static void edc_https_request_cleanup_close(uv_handle_t *handle)
 {
-    edc_https_request_free((struct edc_https_request *)handle);
+    /* 退出时的兜底关法 (不发 CLOSE 事件): 同样走"两笔 close 账"。 */
+    struct edc_https_request *req = (struct edc_https_request *)handle;
+    edc_https_request_close_timer(req);
+    edc_https_request_release(req);
 }
 
 static void edc_https_client_close_walk(uv_handle_t *handle, void *arg)
 {
     (void)arg;
+    /* 请求的两个句柄都由请求自己的账本收尾 (它们的 close 回调要等另一笔到齐才
+     * free, 见 edc_https_request_release)。退出时正有请求在途也会走到这里 ——
+     * 所以 timer 那支必须带回调, 不能给 NULL。 */
     if (handle->type == UV_TCP)
         uv_close(handle, edc_https_request_cleanup_close);
+    else if (handle->type == UV_TIMER)
+        uv_close(handle, edc_https_on_timer_close);
     else
         uv_close(handle, NULL);
 }

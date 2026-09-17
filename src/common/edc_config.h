@@ -46,6 +46,9 @@ typedef enum
     EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE,      /* 拉取的**应答**: TUI 点名要的那棵 task 树 */
     EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE,  /* **事件**: "某个 session 的树变了" (只带 id + 原因,
                                                   * 不带树) —— TUI 据此决定要不要去拉 (P3 ①b) */
+    EDC_CHANNEL_MESSAGE_TASK_HISTORY_TYPE,       /* `/task history <id>` / `/group history <id>` 的
+                                                  * **应答载荷**: 那个 task/组的消息历史 (JSON)。命令
+                                                  * 的答案随命令的回复回来, 前端只负责把它拆成气泡。 */
 } edc_channel_message_type;
 
 /* 消息内容的渲染偏好：由发送方(tool/app)显式声明，渲染端(CLI/TUI)

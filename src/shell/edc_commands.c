@@ -1,4 +1,5 @@
-﻿#include "edc_commands.h"
+﻿#include <cJSON.h>
+#include "edc_commands.h"
 #include "edc_actor.h"
 #include "edc_session_store.h"
 #include "edc_channel_actor.h"
@@ -83,6 +84,15 @@ void edc_commands_reply(struct edc_reply_to to, const char *text)
                                               (edc_actor_data_free_fn)edc_channel_message_free));
 }
 
+void edc_commands_send_history(struct edc_reply_to to, const char *payload)
+{
+    struct edc_channel_message *reply =
+        edc_channel_message_new(to.type, EDC_CHANNEL_MESSAGE_TASK_HISTORY_TYPE, sdsnew(payload));
+    edc_actor_send(to.channel_actor,
+                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type, to.actor, NULL, reply,
+                                              (edc_actor_data_free_fn)edc_channel_message_free));
+}
+
 /* ── /session stop ─────────────────────────────────────────── */
 
 /* 取消当前 session 的全部非终结 turns 并立即落盘。原顶层 /stop 命令, 现收归
@@ -114,6 +124,8 @@ static bool edc_commands_handle_help(struct edc_reply_to to)
                        "- /task new <desc>   [--bg] [--suspended]\n"
                        "- /task fork <parent> <desc> [--suspended]\n"
                        "- /task list  ·  /task status [id]  ·  /task output <id>\n"
+                       "- /task history <id>   (its messages; `--json` = raw payload)\n"
+                       "- /group history <id>  (the whole group; one block per member)\n"
                        "- /task groups  ·  /task fg <id>  ·  /task bg [id]\n"
                        "- /task stop [id]  ·  /task resume [id]   (default: active task of the foreground group)\n"
                        "- /task chain <src> <dst>  ·  /task join <id>\n"
@@ -1287,6 +1299,113 @@ static void edc_commands_handle_task_output( struct edc_session_manager *sm, str
     edc_commands_reply(to, t->output);
 }
 
+/* /task history <id>: 这个 task 的消息历史 —— 它建自哪条输入, 以及它每个 turn 的消息。
+ * 数据源是 kernel 自己那份 (`task->turns`, 就是喂给 LLM 的对话), 经
+ * edc_scheduler_task_history_json 出来; 跨 session 的 task 也能查 (id 全局唯一,
+ * 解析走 store 的懒加载)。`--json` 打原始载荷 (给前端接线/排查用)。
+ * 这也是那条拉取通路的第一个消费者。 */
+static void edc_commands_handle_history( struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                       struct edc_reply_to to, sds arg, bool group)
+{
+    if (!arg)
+    {
+        edc_commands_reply(to, group ? "Usage: `/group history <id>`" : "Usage: `/task history <id>`  (append `--json` for the raw payload)");
+        return;
+    }
+
+    const bool want_json = strncmp(arg, "--json ", 7) == 0;
+    const char *task_id = want_json ? arg + 7 : arg;
+
+    /* 归属 session 由解析器一并给出: task id 全局唯一, 所以这条命令能查别的 session 的任务。 */
+    struct edc_session *owner = NULL;
+    struct edc_task *t = edc_session_store_resolve_task(sm, sched, task_id, &owner);
+    if (!t || !owner)
+    {
+        edc_commands_reply(to, "Task not found.");
+        return;
+    }
+
+    /* 组的 id 就是它 leader 的 task id (edc_task_group_new), 所以同一个解析器也认得组;
+     * 组那份载荷按成员分块 (每块是该成员自己的消息)。 */
+    const char *target_id = group ? (want_json ? arg + 7 : arg) : t->task_id;
+    char *payload = edc_scheduler_task_history_json(sched, owner, group ? target_id : NULL, group ? NULL : target_id);
+    if (!payload)
+    {
+        edc_commands_reply(to, "_No history._");
+        return;
+    }
+    /* 结构化回话: 前端把它拆成一条条气泡。`--json` 时改回文本 (排查/测试用),
+     * 也顺便给出了"同一份载荷的两种渲染"的对照。 */
+    if (!want_json)
+    {
+        edc_commands_send_history(to, payload);
+        free(payload);
+        return;
+    }
+    edc_commands_reply(to, payload);
+    free(payload);
+    return;
+
+    cJSON *root = cJSON_Parse(payload);
+    free(payload);
+    if (!root)
+    {
+        edc_commands_reply(to, "Failed to read the history.");
+        return;
+    }
+
+    const cJSON *messages = cJSON_GetObjectItem(root, "messages");
+    const int count = cJSON_GetArraySize(messages);
+    const char *input = cJSON_GetStringValue(cJSON_GetObjectItem(root, "input"));
+
+    sds out = sdscatprintf(sdsempty(), "**task %s** · %d message%s\n", t->task_id, count, count == 1 ? "" : "s");
+    if (input && *input)
+        out = sdscatprintf(out, "_input:_ %s\n", input);
+
+    int i = 0;
+    const cJSON *m = NULL;
+    cJSON_ArrayForEach(m, messages)
+    {
+        i++;
+        const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(m, "role"));
+        const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(m, "name"));
+        const char *body = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+        sds who = sdsnew(role ? role : "?");
+        if (name && *name)
+            who = sdscatprintf(who, "(%s)", name);
+
+        const int full = body ? (int)strlen(body) : 0;
+        const int cap = full > 400 ? 400 : full;
+        out = sdscatprintf(out, "%d. **%s**: %.*s%s\n", i, who, cap, body ? body : "", full > cap ? " …" : "");
+        sdsfree(who);
+    }
+    cJSON_Delete(root);
+    edc_commands_reply(to, out);
+    sdsfree(out);
+}
+
+/* `/group history <id>`: 一个组的消息历史 —— 每个成员一块 (块首是它那条输入, 块内是它
+ * 自己的消息, 不跨 task 交错)。组的 id 就是组头的那个 id。 */
+static bool edc_commands_handle_group( struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                      struct edc_reply_to to, struct edc_channel_message *message)
+{
+    sds arg = NULL;
+    if (edc_commands_arg(message->content, "/group history", &arg))
+    {
+        edc_commands_handle_history(sm, sched, to, arg, true);
+        sdsfree(arg);
+        return true;
+    }
+    if (edc_commands_is_command(message->content, "/group") ||
+        edc_commands_is_command(message->content, "/group history"))
+    {
+        edc_commands_reply(to, "Usage: `/group history <id>`   (the id is the group header's)");
+        return true;
+    }
+    edc_commands_reply(to, "**Unknown subcommand** — `/group` knows only `history <id>`.");
+    return true;
+}
+
 static void edc_commands_handle_task_join( struct edc_session_manager *sm, struct edc_scheduler *sched,
                                           struct edc_reply_to to, sds arg)
 {
@@ -1473,6 +1592,15 @@ static bool edc_commands_handle_task( struct edc_session_manager *sm, struct edc
         arg = sdsnew(content_trim + 13);
         edc_commands_handle_task_output(sm, sched, to, arg);
     }
+    else if (strcmp(content_trim, "/task history") == 0)
+    {
+        edc_commands_handle_history(sm, sched, to, NULL, false);
+    }
+    else if (strncmp(content_trim, "/task history ", 14) == 0)
+    {
+        arg = sdsnew(content_trim + 14);
+        edc_commands_handle_history(sm, sched, to, arg, false);
+    }
     else if (strncmp(content_trim, "/task fg ", 9) == 0)
     {
         arg = sdsnew(content_trim + 9);
@@ -1537,6 +1665,9 @@ bool edc_commands_handler( struct edc_config *cfg, struct edc_session_manager *s
 
         if (edc_commands_is_command(message->content, "/task"))
             return edc_commands_handle_task(sm, sched, to, message);
+
+        if (edc_commands_is_command(message->content, "/group"))
+            return edc_commands_handle_group(sm, sched, to, message);
 
         if (edc_commands_is_command(message->content, "/session"))
             return edc_commands_handle_session(sm, sched, to, message);

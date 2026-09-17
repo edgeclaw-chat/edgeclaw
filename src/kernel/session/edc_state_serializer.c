@@ -97,6 +97,12 @@ static cJSON *task_to_json(struct edc_task *task)
 
     /* ── description & state ── */
     cJSON_AddStringToObject(tj, "description", task->description ? task->description : "");
+    /* 用户原文 (这个 task 是由哪条输入建成的)。**可选键**: 只有"由某条输入建成"
+     * 的任务才有它 (fold 的 system task、fork 的孩子、单测直接建的都没有)。
+     * 老文件没有这个键 → 读回 NULL, 所以不需要 schema 版本变更 (任务本来就是
+     * 逐字段重建的, 未知键一律忽略)。 */
+    if (task->raw_input)
+        cJSON_AddStringToObject(tj, "raw_input", task->raw_input);
     /* v5: 存**两件正交的事**, 而不是把五个相位塌成一个常量。
      * step = 在哪一步 (原样存, 读回也原样), life = 活着吗。 */
     cJSON_AddStringToObject(tj, "step", edc_task_step_name(task->step));
@@ -644,6 +650,13 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
                          edc_channel_adapter);
         if (!task)
             continue;
+
+        /* 用户原文 (可选键: 老文件没有它 → NULL, 与 fork/system task 一样)。 */
+        {
+            const char *raw_input = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "raw_input"));
+            if (raw_input && *raw_input)
+                task->raw_input = sdsnew(raw_input);
+        }
 
         /* v5: step 与 life 分别读回 —— 相位**不再被粗化**。
          *

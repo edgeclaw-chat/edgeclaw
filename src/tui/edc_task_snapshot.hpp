@@ -39,6 +39,9 @@ struct TaskInfo
     bool is_leader = false;
     bool is_active = false;
     std::string description;
+    /* 用户输入原文: 这条 task 是由哪条输入建成的 ("" = 不是由输入建的)。选中该
+     * task/组时, 它被渲染成该 task 的第一条 user message (见 ChatWidget::ApplyFilter)。 */
+    std::string input;
     std::vector<TodoItem> todos; /* the todo list this task holds (the todowrite items) */
     /* Accumulated LLM token usage for this task (0 when none reported yet). */
     long long tokens_prompt = 0;

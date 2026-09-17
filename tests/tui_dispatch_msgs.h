@@ -20,6 +20,7 @@ enum
     HARNESS_MSG_SYS = 4,
     HARNESS_MSG_TASK_SNAPSHOT = 5,
     HARNESS_MSG_TASK_TREE_CHANGED = 6,
+    HARNESS_MSG_TASK_HISTORY = 7,
     /* 认不出来的类型: 前端必须什么都不做 (兜底分支)。 */
     HARNESS_MSG_GARBAGE = 99
 };

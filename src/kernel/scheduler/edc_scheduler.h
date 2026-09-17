@@ -91,6 +91,7 @@ typedef void (*edc_scheduler_snapshot_fn)(struct edc_scheduler *sched, sds seria
 typedef void (*edc_scheduler_snapshot_changed_fn)(struct edc_scheduler *sched, const char *session_id,
                                                   const char *reason);
 
+
 /* ── 待解析的跨 session 依赖 + 待通知的脏 session ─────────── */
 
 /** 一张"树变了"的表项: 哪个 session 变了 + 谁弄脏的 (只进 trace, 不上协议)。
@@ -166,6 +167,12 @@ struct edc_scheduler
     edc_scheduler_snapshot_fn snapshot_reply;           /* 拉取的应答: 那棵树 */
     edc_scheduler_snapshot_changed_fn snapshot_changed; /* "某个 session 的树变了" (不带树) */
 
+    /* 正在被处理的那条入站输入的**原文** (非拥有; 处理期间有效, 消息末尾清掉)。
+     * 它是"任务由哪条输入建成"的凭据: `edc_scheduler_create_task` 见它非空, 就把原文
+     * 挂到新任务上 (`task->raw_input`) —— 于是不必把原文一路穿过 `edc_shell_spawn_task`
+     * 那一长串参数。谁都不该读它, 除了 create_task。 */
+    const char *input_raw;
+
     /* ── 哪些 session 的树变了 (待通知前端) ──
      * 一条消息里可能同时动了多个 session (跨 session 依赖唤醒目标), 也可能同一个
      * session 被标多次 —— 所以是一张**按 session 指针去重**的表, 而不是一个 bool。
@@ -220,6 +227,19 @@ extern edc_actor_t *edc_scheduler_get_actor(struct edc_scheduler *sched);
 /* ── Task 管理 ─────────────────────────────────────────────── */
 
 extern char *edc_scheduler_gen_task_id(struct edc_scheduler *sched);
+
+/** 一个 task 或一个组的**消息历史**, 序列化成 JSON 字符串。
+ *
+ *  **当前没有调用方**: 这条通路先留着, 前端接线待定 (谁拉、什么时候拉由前端定)。
+ *
+ *  数据源是 `task->turns` —— 喂给 LLM 的那份对话, 消息原样带上 (每条都带 ts/render)。
+ *  `task_id` 非空 = 只要那一个 task (返回 {"kind":"task","id","input","messages"});
+ *  `group_id` 非空 = 该组的每个成员一块 (返回 {"kind":"group","id","tasks":[块...]},
+ *  块 = {"id","input","messages"}, 按成员顺序, 不跨 task 交错)。
+ *  `input` = 建这条 task 的那条用户输入原文 (见 task->raw_input), 渲染端拿它当该 task
+ *  的第一条 user message。返回 malloc 的字符串 (调用方 free); 找不到返回 NULL。 */
+extern char *edc_scheduler_task_history_json(struct edc_scheduler *sched, struct edc_session *session,
+                                             const char *group_id, const char *task_id);
 /** 把已存在的 task_id (十进制) 纳入发号器高水位并落盘: 反序列化存活任务时
  *  调用, 保证重启后新编号越过旧存档里的最大编号。非纯十进制 id 忽略。 */
 extern void edc_scheduler_observe_task_id(struct edc_scheduler *sched, const char *task_id);

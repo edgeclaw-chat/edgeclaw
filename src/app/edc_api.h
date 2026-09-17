@@ -41,6 +41,7 @@ extern int edc_app_message_is_tool(const struct edc_channel_message *message);
 extern int edc_app_message_is_thought(const struct edc_channel_message *message);
 extern int edc_app_message_is_resp(const struct edc_channel_message *message);
 extern int edc_app_message_is_sys(const struct edc_channel_message *message);
+extern int edc_app_message_is_task_history(const struct edc_channel_message *message);
 extern int edc_app_message_is_task_snapshot(const struct edc_channel_message *message);
 extern int edc_app_message_is_task_tree_changed(const struct edc_channel_message *message);
 extern int edc_app_message_from_active_task(const struct edc_channel_message *message);

@@ -146,6 +146,102 @@ static void test_scheduler_task_mgmt(void)
     free_config(cfg);
 }
 
+/* ── 2b. "任务建成" 事件 (2026-09-17) ────────────────────────
+ *
+ * 发射点是 `edc_scheduler_create_task` —— 任务**真正建成功**的那一刻, 于是普通
+ * 输入 / `@task` / `/task new` / 兜底建任务全都在内。用户原文取自
+ * `sched->input_raw` (正在被处理的那条入站输入), 免得把原文一路穿过命令层与
+ * 外壳那一长串参数。
+ *
+ * 这里是 **kernel 那一半**的判据 (建任务 → 事件带 task_id + 原文; 没有输入在飞
+ * 就不发)。前端那一半 —— 事件到达后把用户敲的那条绑到该 task —— 见
+ * tests/test_tui_dispatch.cpp。 */
+
+static void test_task_history_pull(void)
+{
+    struct edc_config *cfg = make_config();
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+
+    sched->input_raw = "please fix the parser";
+    struct edc_task *t1 = edc_scheduler_create_task(sched, sess, "fix", edc_channel_adapter);
+    sched->input_raw = NULL;
+    struct edc_turn *turn = edc_turn_new();
+    edc_turn_add_user_message(turn, "please fix the parser");
+    edc_turn_add_assistant_message(turn, cJSON_Parse("{\"role\":\"assistant\",\"content\":\"on it\"}"));
+    edc_task_add_turn(t1, turn);
+    edc_scheduler_register_task(sched, t1, NULL); /* 生产路径总会登记: 组内成员 + task_hash */
+    struct edc_task_group *g1 = edc_scheduler_create_group(sched, sess, t1); /* 让它成为 session 的成员组 */
+    edc_task_group_add_task(g1, t1);
+
+    TEST("a task's history comes back by id, with the input that created it");
+    char *json = edc_scheduler_task_history_json(sched, sess, NULL, t1->task_id);
+    CHECK(json != NULL, "got a payload");
+    cJSON *root = cJSON_Parse(json);
+    CHECK(root != NULL, "and it parses");
+    if (root)
+    {
+        CHECK(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(root, "kind")), "task") == 0, "kind=task");
+        CHECK(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(root, "input")), "please fix the parser") == 0,
+              "the input rides along (the frontend draws it as the first user line)");
+        cJSON *msgs = cJSON_GetObjectItem(root, "messages");
+        CHECK(cJSON_GetArraySize(msgs) == 2, "both of the turn's messages are there");
+        CHECK(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(msgs, 1), "content")), "on it") == 0,
+              "in order, unmodified");
+        cJSON_Delete(root);
+    }
+    free(json);
+
+    TEST("a group's history is its members, one block each");
+    char *gjson = edc_scheduler_task_history_json(sched, sess, g1->group_id, NULL);
+    CHECK(gjson != NULL, "got a payload");
+    root = cJSON_Parse(gjson);
+    CHECK(root != NULL, "and it parses");
+    if (root)
+    {
+        CHECK(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(root, "kind")), "group") == 0, "kind=group");
+        cJSON *blocks = cJSON_GetObjectItem(root, "tasks");
+        CHECK(blocks && cJSON_GetArraySize(blocks) == 1, "one block per member");
+        CHECK(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(blocks, 0), "id")), t1->task_id) == 0,
+              "the block names the member");
+        cJSON_Delete(root);
+    }
+    free(gjson);
+
+    TEST("an id that is not there yields nothing (frontend shows nothing, not a wrong task)");
+    CHECK(edc_scheduler_task_history_json(sched, sess, NULL, "999999") == NULL, "no such task");
+    CHECK(edc_scheduler_task_history_json(sched, sess, "999999", NULL) == NULL, "no such group");
+    CHECK(edc_scheduler_task_history_json(sched, sess, NULL, NULL) == NULL, "no id at all");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
+static void test_task_raw_input(void)
+{
+    struct edc_config *cfg = make_config();
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+
+    TEST("no raw input when no input is being handled (fork / system task / direct)");
+    struct edc_task *t0 = edc_scheduler_create_task(sched, sess, "no input", edc_channel_adapter);
+    CHECK(t0->raw_input == NULL, "and attached no raw input");
+
+    TEST("create_task keeps the input being handled as the task's raw input");
+    sched->input_raw = "hello \"\"\"world\"\"\"";
+    struct edc_task *t1 = edc_scheduler_create_task(sched, sess, "hi", edc_channel_adapter);
+    CHECK(t1->raw_input && strcmp(t1->raw_input, "hello \"\"\"world\"\"\"") == 0,
+          "the task keeps the user's own (unparsed) text");
+    sched->input_raw = NULL;
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
 /* ── 3. Group 管理 ────────────────────────────────────────── */
 
 static void test_scheduler_group_mgmt(void)
@@ -878,6 +974,8 @@ int main(void)
 
     test_scheduler_lifecycle();
     test_scheduler_task_mgmt();
+    test_task_raw_input();
+    test_task_history_pull();
     test_scheduler_group_mgmt();
     test_scheduler_fg_bg();
     test_scheduler_signals();

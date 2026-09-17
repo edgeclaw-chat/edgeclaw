@@ -185,6 +185,8 @@ static void test_single_task(void)
     task->is_group_leader = 1;
     task->output = sdsnew("task output result");
     task->completion_seq = 42;
+    /* 用户原文 (由哪条输入建成): 可选键, 但要能原样来回。 */
+    task->raw_input = sdsnew("do something");
 
     /* Add a turn with messages */
     struct edc_turn *turn = edc_turn_new();
@@ -212,6 +214,7 @@ static void test_single_task(void)
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "life")), "COMPLETED", "life COMPLETED");
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "step")), "DONE", "step DONE");
     CHECK(cJSON_IsTrue(cJSON_GetObjectItem(t0, "is_group_leader")), "is_group_leader");
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "raw_input")), "do something", "raw_input persisted");
 
     cJSON *turns_j = cJSON_GetObjectItem(t0, "turns");
     CHECK(cJSON_GetArraySize(turns_j) == 1, "1 turn serialized");
@@ -232,6 +235,7 @@ static void test_single_task(void)
     CHECK(rtask->is_group_leader == 1, "is_group_leader preserved");
     CHECK(rtask->completion_seq == 42, "completion_seq preserved");
     CHECK_STREQ(rtask->output, "task output result", "output preserved");
+    CHECK_STREQ(rtask->raw_input, "do something", "raw_input restored");
 
     /* Check turn messages */
     CHECK(edc_queue_length(&rtask->turns) == 1, "1 turn in turns queue");

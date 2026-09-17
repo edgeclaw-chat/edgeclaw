@@ -1,3 +1,4 @@
+#include <cJSON.h>
 #include "edc_tui_window.hpp"
 #include "edc_sidebar.hpp"
 #include "edc_chat_transcript.hpp"
@@ -21,6 +22,7 @@
 #include <ctime>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <string>
 #include <sys/ioctl.h>
 #include "edc_api.h"
@@ -486,10 +488,12 @@ void TUIWindow::Submit()
         return;
     }
 
+    // The bubble is immediate and names no task: the input predates its task and
+    // nothing here guesses which task it will become. While no selection is
+    // active that is all the log needs; under a selection the input is drawn from
+    // the task's own raw_input, as the first user message of its history
+    // (ChatWidget::SetTaskInputs), so it is hidden here and shown there.
     chat_widget_->AddMessage(std::make_shared<UserMessage>(message, ::time(nullptr)));
-    // The submitted text is part of what is on screen (a slash command included),
-    // so it goes into the transcript too — replaying the file after a restart
-    // shows the same log, typed input and all.
     AppendChatTranscript("user", "", message, "", EDC_APP_RENDER_PLAIN);
     input_text_.clear();
     input_->Reset(); // caret/scroll back to the start after the external clear
@@ -588,6 +592,9 @@ void TUIWindow::RequestTaskSnapshot()
     edc_app_request_task_snapshot(app, current_session_id_.c_str());
 }
 
+// The sidebar's selection (one group or one task) becomes a filter over the chat
+// log: only the bubbles belonging to the selected group's / task's ids are drawn.
+// No selection = the whole session log, exactly as before. The task ids come from
 // Build one chat bubble. Shared by the live channel path and the restart replay
 // so a message looks the same whether it just arrived or was re-derived from
 // session.json. |kind| is the bridge's tag: user | tool | thought | reply | sys.
@@ -1001,6 +1008,14 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
         return input_->OnEvent(event);
     }
 
+    // 只看模式下的 Esc: 回实时流 (重放转录)。放在 /connect 弹窗之后: 弹窗开着时
+    // Esc 归它 (先关弹窗), 这也是"最内层先拿事件"的老规矩。
+    if (history_view_ && event == ::ftxui::Event::Escape)
+    {
+        ExitHistoryView();
+        return true;
+    }
+
     // Alt+Enter arrives as ESC-prefixed Return: the terminal (raw mode, ICRNL
     // off) sends CR for Enter, and Alt adds the ESC prefix, so the parser emits
     // a single Special({27, 13}). ESC+LF is accepted too for terminals that
@@ -1053,6 +1068,123 @@ void TUIWindow::CopySelectionToClipboard()
     screen_->RequestAnimationFrame();
 }
 
+/* 历史载荷里的一条消息 → 一个气泡。kind/header 的映射与实时流一致 (user | tool |
+ * reply | sys), render 字段决定 Markdown 与否 (与 edc_turn_add_message 写下的偏好同一个)。 */
+static void AppendHistoryBubbles(const cJSON *messages, const std::string &task_id,
+                                 std::vector<std::shared_ptr<Message>> *out)
+{
+    const cJSON *m = NULL;
+    cJSON_ArrayForEach(m, messages)
+    {
+        const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(m, "role"));
+        const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(m, "name"));
+        const char *body = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+        const char *render = cJSON_GetStringValue(cJSON_GetObjectItem(m, "render"));
+        const int render_pref = (render && strcmp(render, "markdown") == 0) ? EDC_APP_RENDER_MARKDOWN : EDC_APP_RENDER_PLAIN;
+        const cJSON *ts_json = cJSON_GetObjectItem(m, "ts");
+        const time_t ts = (ts_json && cJSON_IsNumber(ts_json)) ? (time_t)ts_json->valuedouble : 0;
+
+        std::string kind = "sys";
+        std::string header;
+        if (role && strcmp(role, "user") == 0)
+        {
+            kind = "user";
+        }
+        else if (role && strcmp(role, "assistant") == 0)
+        {
+            kind = "reply";
+        }
+        else if (role && strcmp(role, "tool") == 0)
+        {
+            kind = "tool";
+            header = name ? name : "";
+        }
+        else if (role)
+        {
+            header = role; // reasoning/其它: 当 sys 行, 报出它是什么
+        }
+
+        std::string text = body ? body : "";
+        const cJSON *calls = cJSON_GetObjectItem(m, "tool_calls");
+        if (text.empty() && calls && cJSON_GetArraySize(calls) > 0)
+        {
+            /* 空的 assistant 消息 (只有发起工具调用): 画一行"调用了什么", 倒参数没有意义。 */
+            kind = "sys";
+            header.clear();
+            text = "→ ";
+            const cJSON *call = NULL;
+            cJSON_ArrayForEach(call, calls)
+            {
+                const cJSON *fn = cJSON_GetObjectItem(call, "function");
+                const char *fn_name = fn ? cJSON_GetStringValue(cJSON_GetObjectItem(fn, "name")) : NULL;
+                text += (fn_name ? fn_name : "tool");
+                text += " ";
+            }
+        }
+        out->push_back(MakeChatWidget(kind, header, text, task_id, render_pref, ts));
+    }
+}
+
+void TUIWindow::ExitHistoryView()
+{
+    if (!history_view_)
+        return;
+    history_view_ = false;
+    chat_widget_->Clear();
+    LoadChatTranscript(current_session_id_.empty() ? nullptr : current_session_id_.c_str());
+    if (screen_)
+        screen_->RequestAnimationFrame();
+}
+
+void TUIWindow::RenderTaskHistory(const std::string &payload)
+{
+    cJSON *root = cJSON_Parse(payload.c_str());
+    if (!root)
+        return;
+
+    std::vector<std::shared_ptr<Message>> bubbles;
+    const char *kind = cJSON_GetStringValue(cJSON_GetObjectItem(root, "kind"));
+    const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(root, "id"));
+    const std::string sid = id ? id : "?";
+    const bool group = kind && strcmp(kind, "group") == 0;
+
+    if (group)
+    {
+        const cJSON *block = NULL;
+        cJSON_ArrayForEach(block, cJSON_GetObjectItem(root, "tasks"))
+        {
+            const char *block_id = cJSON_GetStringValue(cJSON_GetObjectItem(block, "id"));
+            const cJSON *msgs = cJSON_GetObjectItem(block, "messages");
+            const char *input = cJSON_GetStringValue(cJSON_GetObjectItem(block, "input"));
+            std::string head = "— task " + std::string(block_id ? block_id : "?") + " · " +
+                               std::to_string(cJSON_GetArraySize(msgs)) + " messages";
+            if (input && *input)
+                head += " · input: " + std::string(input);
+            head += " —";
+            bubbles.push_back(MakeChatWidget("sys", "", head, "", EDC_APP_RENDER_PLAIN, 0));
+            AppendHistoryBubbles(msgs, block_id ? block_id : "", &bubbles);
+        }
+    }
+    else
+    {
+        const cJSON *msgs = cJSON_GetObjectItem(root, "messages");
+        const char *input = cJSON_GetStringValue(cJSON_GetObjectItem(root, "input"));
+        std::string head = "history of task " + sid + " · " + std::to_string(cJSON_GetArraySize(msgs)) + " messages";
+        if (input && *input)
+            head += " · input: " + std::string(input);
+        bubbles.push_back(MakeChatWidget("sys", "", head, "", EDC_APP_RENDER_PLAIN, 0));
+        AppendHistoryBubbles(msgs, sid, &bubbles);
+    }
+    cJSON_Delete(root);
+
+    /* 只看模式: 这份历史**替换**对话区 (不是追加), 之后实时产出不再上屏, 直到 Esc。 */
+    chat_widget_->Clear();
+    for (const auto &bubble : bubbles)
+        chat_widget_->AddMessage(bubble);
+    history_view_ = true;
+    screen_ ? screen_->RequestAnimationFrame() : void();
+}
+
 void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_message *message)
 {
     if (!instance || !message)
@@ -1060,6 +1192,17 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
 
     auto *tui = static_cast<TUIWindow *>(instance);
     const auto *content = edc_app_message_content(message);
+    // `/task history <id>` / `/group history <id>` 的应答: 结构化载荷, 拆成一条条气泡。
+    // 与别的消息走同一条 UI 线程规则 (有屏幕就 Post, 无屏幕的 harness 里内联)。
+    if (edc_app_message_is_task_history(message))
+    {
+        const std::string payload = content ? content : "";
+        if (tui->screen_)
+            tui->screen_->Post([tui, payload]() { tui->RenderTaskHistory(payload); });
+        else
+            tui->RenderTaskHistory(payload);
+        return;
+    }
     if (!content)
         return;
 
@@ -1107,6 +1250,18 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             if (!ParseTaskSnapshot(snapshot, &snap) || !SnapshotIsForSession(&snap, tui->current_session_id_))
                 return;
             {
+                // Give the chat log what each task was created from: while a
+                // selection is active, that input is drawn as the first user
+                // message of the task's history (the input's own bubble belongs
+                // to no task, so the filter hides it). Straight from the task by
+                // id -- no matching of any kind, and it works the same on replay
+                // after a restart.
+                auto inputs = std::make_shared<std::map<std::string, std::string>>();
+                for (const TaskGroup &g : snap.groups)
+                    for (const TaskInfo &t : g.tasks)
+                        if (!t.input.empty())
+                            (*inputs)[t.task_id] = t.input;
+                tui->chat_widget_->SetTaskInputs(inputs);
                 tui->task_widget_->SetSnapshot(&snap);
                 // The snapshot is the single source of truth for the status
                 // animation: re-derive it whenever the process tree refreshes.
@@ -1183,6 +1338,11 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
     const time_t ts = ::time(nullptr);
 
     auto add_message = [tui, kind, text, header, task_id, session_id, render_pref, ts, from_active_task]() {
+        // 只看模式: 实时产出不上屏、也不写转录 (写点在展示之后 —— 与从前的过滤同口径)。
+        // 命令回复 (SYS) 例外: 在只看模式里敲命令也要有反馈, 不然静默得像卡死了。
+        if (tui->history_view_ && kind != Kind::Sys)
+            return;
+
         // 展示闸门 (P3 ③: 从 core 移到前端): 显示中的 session 只显示它 **active
         // task** 的产出 —— 同 session 里非 active task 的输出静默。以前这条判断在
         // scheduler/app 里做 (靠"当前绑定的 session"这份副本); 现在 core 不知道

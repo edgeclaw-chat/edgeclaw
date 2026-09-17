@@ -57,6 +57,7 @@ TaskInfo ParseTask(const cJSON *item)
     task.is_leader = JsonBool(Field(item, "leader"));
     task.is_active = JsonBool(Field(item, "active"));
     task.description = JsonStr(Field(item, "desc"));
+    task.input = JsonStr(Field(item, "input"));
     task.tokens_prompt = JsonInt64(Field(item, "tokens_prompt"));
     task.tokens_completion = JsonInt64(Field(item, "tokens_completion"));
     task.tokens_total = JsonInt64(Field(item, "tokens_total"));

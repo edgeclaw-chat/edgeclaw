@@ -84,6 +84,12 @@ int edc_app_message_is_sys(const struct edc_channel_message *message)
     return message ? message->message_type == EDC_CHANNEL_MESSAGE_SYS_TYPE : 0;
 }
 
+/* `/task history` 的应答载荷 (结构化, 不是 SYS 文本): 前端认出它就按消息历史渲染。 */
+int edc_app_message_is_task_history(const struct edc_channel_message *message)
+{
+    return message ? message->message_type == EDC_CHANNEL_MESSAGE_TASK_HISTORY_TYPE : 0;
+}
+
 /* 一条拉取的**应答**: 内容是要解析的 task 树快照 JSON, 不许当聊天文本渲染。 */
 int edc_app_message_is_task_snapshot(const struct edc_channel_message *message)
 {

@@ -13,10 +13,18 @@ class Message : public ::ftxui::ComponentBase
 {
   public:
     // |task_id| is the task that produced the message ("1", "2", ...), or empty
-    // when the sender is not a task (e.g. user input). Messages no longer render
-    // a "task N" tag.
+    // when the sender is not a task (a user input echoed before its task exists,
+    // a command reply, an error). Messages no longer render a "task N" tag.
     Message(const std::string_view content, time_t ts, const std::string_view task_id = "");
     virtual ~Message() = default;
+
+    // The task this bubble belongs to -- the key the chat filter matches on.
+    // Empty means "no task": the filter hides such bubbles (command replies,
+    // errors, and the user's own echo, which is drawn per-task from raw_input).
+    const std::string &TaskId() const
+    {
+        return task_id_;
+    }
 
     // The list knows the width before rendering (layout hands it the box) and
     // reports it here, because some content cannot be laid out without it:
@@ -42,6 +50,9 @@ class Message : public ::ftxui::ComponentBase
   protected:
     const std::string content_;
     time_t ts_;
+    // Task this bubble belongs to; empty = not a task's message. A user input's
+    // bubble is empty here: the input predates its task, and the filter draws it
+    // from the task's own raw_input instead (see ChatWidget::SetTaskInputs).
     const std::string task_id_;
     int render_width_ = 0; // columns the item's box will have; 0 = unknown
 
@@ -84,6 +95,7 @@ class UserMessage : public Message
 {
   public:
     UserMessage(const std::string_view content, time_t ts, const std::string_view task_id = "");
+
     bool OnEvent(ftxui::Event) override;
     ftxui::Element OnRender() override;
 };

@@ -704,6 +704,22 @@ cc_test(
     }),
 )
 cc_test(
+    name = "test_chat_filter",
+    srcs = ["test_chat_filter.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:component",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
     name = "test_message_list",
     srcs = ["test_message_list.cpp"],
     deps = [

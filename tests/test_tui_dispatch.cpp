@@ -20,6 +20,7 @@
 
 #include "edc_tui_window.hpp"
 #include "tui_dispatch_msgs.h"
+#include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/screen.hpp"
 #include "ftxui/screen/terminal.hpp"
@@ -29,8 +30,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <sys/stat.h>
+#include <utility>
 
 namespace
 {
@@ -230,6 +233,110 @@ void TestUnknownMessageIgnored(edc::TUIWindow &win)
     Check(!Has(after, "HARNESS_UNKNOWN_LINE"), "内容没上屏");
 }
 
+// ── "任务建成" 事件：用户输入由 kernel 画上屏 ────────────────────────────────
+// 用户敲的那条在 Submit 时立刻回显（前端自己画 —— 不建 task 的输入没有事件，
+// 否则它什么都显示不出来）；它属于哪个 task 则由 kernel 说的算：任务建成那一刻
+// 发"任务建成"事件，带 task_id + 用户原文，前端拿原文认出屏幕上那条气泡、把
+// task_id 打上去。前端从前按转录顺序推断归属，那既依赖展示闸门、又会被"前端写
+// 输入 / scheduler 收尾上一个任务"的跨线程顺序骗到。
+//
+// 这一条把整条链走通：侧栏选中一个 task（过滤生效）→ 敲一条输入（回显但没有归属，
+// 回显立刻上屏；归属来自快照（task 自己的 raw_input，见 test_chat_filter），不经过
+// 任何事件。会话用 harness 自己造的那个：scheduler 解析不到它，于是**不会有真的
+// 任务被建**，测试是确定性的（不跟 app 的线程赛跑）。
+
+// 用键盘事件把 |text| 敲进输入框并回车（Submit 走的是生产路径上的同一入口）。
+void TypeAndSubmit(edc::TUIWindow &win, const std::string &text)
+{
+    for (char c : text)
+        win.OnEvent(::ftxui::Event::Character(std::string(1, c)));
+    win.OnEvent(::ftxui::Event::Return);
+}
+
+// 帧里包含 |needle| 的那一行，以及该行上 |glyph| 所在的列（找不到返回 {-1,-1}）。
+std::pair<int, int> FindCell(const std::string &frame, const std::string &needle, const std::string &glyph)
+{
+    int row = 0;
+    size_t pos = 0;
+    while (pos <= frame.size())
+    {
+        const size_t end = frame.find('\n', pos);
+        const std::string line = end == std::string::npos ? frame.substr(pos) : frame.substr(pos, end - pos);
+        if (line.find(needle) != std::string::npos)
+        {
+            const size_t col = line.find(glyph);
+            if (col != std::string::npos)
+                return {static_cast<int>(col), row};
+        }
+        if (end == std::string::npos)
+            break;
+        row++;
+        pos = end + 1;
+    }
+    return {-1, -1};
+}
+
+void TestUserInputIsEchoedImmediately(edc::TUIWindow &win)
+{
+    std::cout << "用户输入立刻回显（归属不由前端管）\n";
+
+    TypeAndSubmit(win, "HARNESS_ECHO_LINE");
+    Check(Has(FrameOf(win), "HARNESS_ECHO_LINE"), "敲下就上屏");
+
+    // 归属不发往任何一个 task: 输入那条气泡不带 task id。
+    const std::string frame = FrameOf(win);
+    Check(Has(frame, "4242"), "侧栏里 task 行照旧");
+}
+
+// ── `/task history` / `/group history` 的载荷 → 气泡 ──────────────────────
+// 载荷是 kernel 给的 (scheduler 的 task->turns), 前端只做"拆成气泡 + 用 render 字段
+// 决定渲染方式"。这里喂真载荷, 断言那几条消息真的落到了对话区。
+void TestTaskHistoryPayloadBecomesBubbles(edc::TUIWindow &win)
+{
+    const char *task_payload =
+        "{\"kind\":\"task\",\"id\":\"77\",\"input\":\"HIST_INPUT_MARKER\",\"messages\":["
+        "{\"role\":\"user\",\"content\":\"HIST_INPUT_MARKER\",\"render\":\"plain\"},"
+        "{\"role\":\"assistant\",\"content\":\"HIST_REPLY_MARKER\",\"render\":\"plain\"},"
+        "{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"function\":{\"name\":\"read_file\"}}]},"
+        "{\"role\":\"tool\",\"name\":\"HIST_TOOL_MARKER\",\"content\":\"int main(){}\",\"render\":\"plain\"}]}";
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_HISTORY, task_payload, "", ""));
+    std::string frame = FrameOf(win);
+    Check(Has(frame, "HIST_INPUT_MARKER"), "task 载荷: 第一条 user 消息上屏");
+    Check(Has(frame, "HIST_REPLY_MARKER"), "task 载荷: assistant 消息上屏");
+    Check(Has(frame, "read_file"), "task 载荷: 只有 tool_calls 的消息画成一行调用");
+    Check(Has(frame, "HIST_TOOL_MARKER"), "task 载荷: tool 消息的工具名上屏");
+
+    /* 组载荷: 每个成员一块, 块首是它那条输入。 */
+    const char *group_payload =
+        "{\"kind\":\"group\",\"id\":\"1\",\"tasks\":["
+        "{\"id\":\"5\",\"input\":\"GRP_A_INPUT\",\"messages\":[{\"role\":\"user\",\"content\":\"GRP_A_MSG\"}]},"
+        "{\"id\":\"6\",\"input\":\"GRP_B_INPUT\",\"messages\":[{\"role\":\"user\",\"content\":\"GRP_B_MSG\"}]}]}";
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_HISTORY, group_payload, "", ""));
+    frame = FrameOf(win);
+    Check(Has(frame, "GRP_A_INPUT") && Has(frame, "GRP_A_MSG"), "组载荷: 第一个成员一块");
+    Check(Has(frame, "GRP_B_INPUT") && Has(frame, "GRP_B_MSG"), "组载荷: 第二个成员一块");
+
+    /* 坏载荷 (不是 JSON) 不能把前端打崩, 也不能画出半个人。 */
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_HISTORY, "not json at all", "", ""));
+    frame = FrameOf(win);
+    Check(!Has(frame, "not json at all"), "坏载荷: 什么都不画");
+
+    /* 只看模式: 历史替换对话区, 实时产出不再上屏, Esc 回到实时流 (重放转录)。 */
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_HISTORY, task_payload, "", ""));
+    frame = FrameOf(win);
+    Check(Has(frame, "HIST_REPLY_MARKER"), "只看模式: 历史替换了对话区");
+    Feed(win, MakeMsg(HARNESS_MSG_RESP, "LIVE_WHILE_HISTORY_MARKER", "", ""));
+    frame = FrameOf(win);
+    Check(!Has(frame, "LIVE_WHILE_HISTORY_MARKER"), "只看模式: 实时产出不上屏");
+    Check(win.OnEvent(::ftxui::Event::Escape), "Esc 被吃掉");
+    frame = FrameOf(win);
+    Check(!Has(frame, "HIST_REPLY_MARKER"), "Esc 之后历史内容消失");
+    /* "回到实时流"的可观测判据 = 实时产出又能上屏 (转录重放发生在 harness 里看不到文件那一侧)。 */
+    Feed(win, MakeMsg(HARNESS_MSG_RESP, "LIVE_AFTER_ESC_MARKER", "", ""));
+    frame = FrameOf(win);
+    Check(Has(frame, "LIVE_AFTER_ESC_MARKER"), "Esc 之后实时产出又上屏");
+}
+
 } // namespace
 
 int main()
@@ -259,6 +366,8 @@ int main()
     TestLiveOutputRouting(win);
     TestKindRouting(win);
     TestUnknownMessageIgnored(win);
+    TestUserInputIsEchoedImmediately(win);
+    TestTaskHistoryPayloadBecomesBubbles(win);
 
     if (g_failures)
     {

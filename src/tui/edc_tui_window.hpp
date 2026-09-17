@@ -93,9 +93,20 @@ class TUIWindow : public ::ftxui::ComponentBase
     // 注册的就是它)。公开是给测试用的: 可以直接喂一条 `struct edc_channel_message`
     // 进来 —— 没调 `SetScreen()` 时回调**同步**执行, 所以不必起 ftxui 事件循环,
     // 喂完就能渲染断言 (见 tests/test_tui_dispatch.cpp)。
+    /* `/task history <id>` / `/group history <id>` 的应答载荷: 把它拆成一条条气泡追加到
+     * 对话区 (数据来自 scheduler 的 task->turns, 消息自带 render/ts, 渲染端零猜测)。
+     * 公开是为了让 dispatch 测试能直接喂一份载荷 —— 生产路径由 on_channel_adapter_send 调。 */
+    void RenderTaskHistory(const std::string &payload);
+    /* 退出"只看历史"模式, 回到实时流 (重放本次对话转录)。纯视图动作: kernel 不知道
+     * 谁在看什么, 也不留任何状态。Esc 调它。 */
+    void ExitHistoryView();
     static void on_channel_adapter_send(void *instance, struct edc_channel_message *message);
 
   private:
+    /* 只看模式: 对话区正在显示一份拉回来的历史 (RenderTaskHistory 建的视图), 此时实时
+     * 产出不上屏也不写转录 —— 写点在展示之后 (与从前的过滤同一个口径)。 */
+    bool history_view_ = false;
+
     // Append the current input as a user message and clear the box. A bare
     // "/connect" opens the provider dialog instead of sending anything.
     void Submit();

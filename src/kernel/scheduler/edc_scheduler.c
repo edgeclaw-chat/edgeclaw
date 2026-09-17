@@ -347,6 +347,13 @@ struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, struct e
      * 见 docs/retire-waiting-input.md §4 第 5 行。 */
     free(tid);
 
+    /* 正在处理的那条输入就是这条任务的原文: 挂到任务上 (落盘 + 随快照下发, 前端在
+     * 选中该 task/组时把它渲染成该 task 的第一条 user message)。普通输入 / `@task` /
+     * `/task new` / 兜底建任务全经过本函数; fork 与 system task 不经过 (它们不是由
+     * 某条输入建的, 原文为 NULL)。 */
+    if (sched->input_raw)
+        task->raw_input = sdsnew(sched->input_raw);
+
     return task;
 }
 
@@ -985,6 +992,12 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     struct edc_task_group *fg = sched_foreground(session);
     struct edc_task *task = NULL;
 
+    /* 记下**正在处理的这条输入的原文** (见 edc_scheduler.h 的 `input_raw`):
+     * `edc_scheduler_create_task` 见它非空, 就把原文挂到新任务上并发出"任务已创建"
+     * 事件 —— 那是前端唯一的归属依据。处理期间有效, 所以本函数**每个出口都要清掉**
+     * (下面两处; 新增出口时别忘)。 */
+    sched->input_raw = input->content;
+
     /* 斜杠命令 / @组寻址 交给命令处理器 (shell); 普通输入**一律新建 task**。
      *
      * 这里以前有两条 "attach 到前台 group 中停着的任务" 的路 (先看 active task 是否
@@ -999,7 +1012,10 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     /* 命令处理器 (shell): /… 与 @… 由它处理, 普通输入也由它建 task。
      * 参数是 core 的入站输入 —— 处理器要原始消息时从 `input->origin` 取。 */
     if (sched->handle_command && sched->handle_command(sched, msg->from, input))
+    {
+        sched->input_raw = NULL;
         return;
+    }
 
     /* 无命令处理器 (或未处理) → 兜底新建 task (本条输入就是它的 turn)。 */
     task = edc_scheduler_create_task(sched, session, input->content, input->type);
@@ -1046,6 +1062,8 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
         task->llm_rounds++; /* 发出一条 LLM 请求 → 消耗一轮迭代预算 */
         sched->send_llm(sched, task, msg->request_id);
     }
+
+    sched->input_raw = NULL; /* 这条输入处理完了 */
 }
 
 static void sched_flush_redirects(struct edc_task *task)
@@ -1464,6 +1482,12 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
             cJSON_AddBoolToObject(tj, "leader", t->is_group_leader);
             cJSON_AddBoolToObject(tj, "active", sess->active_task == t);
             cJSON_AddStringToObject(tj, "desc", t->description ? t->description : "");
+            /* 这条 task 是由哪条用户输入建成的 (原文, 即 task->raw_input)。
+             * 随快照下发, 因为前端要在**选中该 task/组时**把它渲染成该 task 的
+             * 第一条 user message —— 直接按 id 取, 不做任何"哪条输入对应哪个
+             * task"的推断 (输入回显本身不带 task id)。"" = 不是由输入建的
+             * (fork 的孩子 / system task)。 */
+            cJSON_AddStringToObject(tj, "input", t->raw_input ? t->raw_input : "");
             /* token 消耗随快照下发, 供侧边栏按 task 展示. 数值用 double 承载
              * (cJSON 无 64 位整型), 计数远小于 2^53, 无精度损失. */
             cJSON_AddNumberToObject(tj, "tokens_prompt", (double)t->tokens_prompt);
@@ -1540,4 +1564,74 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
     sched_drain_dirty(sched);
 
     edc_actor_msg_free(msg);
+}
+
+/* ── 按 id 拉取消息历史 (前端选中的 task / 组) ──────────────────────────
+ * 前端选中一个 task 或一个组时经通道发请求过来, 这里给出它的消息历史。数据源是
+ * `task->turns` —— 就是喂给 LLM 的那份对话; 消息**原样**带上 (每条都带 ts/render,
+ * 见 edc_turn_add_message), 所以渲染端不需要猜渲染偏好, 也不必从屏幕上的先后顺序
+ * 推断任何东西。组: 按成员顺序分块, 不跨 task 交错。
+ * 返回 malloc 的 JSON 字符串 (调用方 free); 没有这个 task/组返回 NULL。 */
+
+static void history_append_messages(const struct edc_task *task, cJSON *messages)
+{
+    for (size_t i = task->turns.head; i < task->turns.tail; i++)
+    {
+        const struct edc_turn *turn = (const struct edc_turn *)task->turns.data[i];
+        for (size_t j = turn->messages.head; j < turn->messages.tail; j++)
+            cJSON_AddItemToArray(messages, cJSON_Duplicate((cJSON *)turn->messages.data[j], 1));
+    }
+}
+
+/* 组里一个成员那一块: {"id", "input", "messages"}。 */
+static cJSON *history_task_block(const struct edc_task *task)
+{
+    cJSON *block = cJSON_CreateObject();
+    cJSON_AddStringToObject(block, "id", task->task_id ? task->task_id : "");
+    /* 这条 task 是由哪条输入建成的 (原文)。前端拿它当该 task 的第一条 user 消息 ——
+     * turn 里的那条是 parser 之后的, 用户敲的原样是这份。 */
+    cJSON_AddStringToObject(block, "input", task->raw_input ? task->raw_input : "");
+    history_append_messages(task, cJSON_AddArrayToObject(block, "messages"));
+    return block;
+}
+
+char *edc_scheduler_task_history_json(struct edc_scheduler *sched, struct edc_session *session,
+                                      const char *group_id, const char *task_id)
+{
+    if (!sched || !session || (!group_id && !task_id))
+        return NULL;
+
+    struct edc_task_group *g = NULL;
+    if (group_id && *group_id)
+    {
+        DL_FOREACH(session->groups, g)
+        {
+            if (!g->group_id || strcmp(g->group_id, group_id) != 0)
+                continue;
+            cJSON *root = cJSON_CreateObject();
+            cJSON_AddStringToObject(root, "kind", "group");
+            cJSON_AddStringToObject(root, "id", group_id);
+            cJSON *blocks = cJSON_AddArrayToObject(root, "tasks");
+            struct edc_task *t = NULL;
+            LL_FOREACH2(g->members, t, group_next)
+                cJSON_AddItemToArray(blocks, history_task_block(t));
+            char *out = cJSON_PrintUnformatted(root);
+            cJSON_Delete(root);
+            return out;
+        }
+        return NULL;
+    }
+
+    /* 单个 task: 用既有的权威查找 (它认识组内成员, 也认识跨 session 的懒加载)。 */
+    struct edc_task *t = edc_scheduler_find_task_by_id(sched, session, task_id);
+    if (!t)
+        return NULL;
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "kind", "task");
+    cJSON_AddStringToObject(root, "id", t->task_id ? t->task_id : "");
+    cJSON_AddStringToObject(root, "input", t->raw_input ? t->raw_input : "");
+    history_append_messages(t, cJSON_AddArrayToObject(root, "messages"));
+    char *out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return out;
 }

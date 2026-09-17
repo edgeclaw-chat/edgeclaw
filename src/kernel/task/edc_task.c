@@ -500,6 +500,9 @@ void edc_task_free(struct edc_task *task)
     free(task->session_id);
     free(task->description);
 
+    if (task->raw_input)
+        sdsfree(task->raw_input);
+
     if (task->prompt)
         sdsfree(task->prompt);
     if (task->prompt_name)

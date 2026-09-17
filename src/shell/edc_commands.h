@@ -17,6 +17,11 @@ extern bool edc_commands_handler(struct edc_config *cfg, struct edc_session_mana
                                  struct edc_reply_to to, struct edc_channel_message *);
 extern void edc_commands_reply(struct edc_reply_to to, const char *text);
 
+/** 命令的**结构化**回话: 与 edc_commands_reply 同一条出口 (同一个 to.channel_actor),
+ *  只换消息类型 (TASK_HISTORY) —— 前端据此按"消息历史"渲染, 而不是当一段文本。
+ *  |payload| 是 edc_scheduler_task_history_json 那份 JSON。 */
+extern void edc_commands_send_history(struct edc_reply_to to, const char *payload);
+
 /* ── 端口: 命令层是 `handle_command` 的提供方 ────────────────
  *
  * "谁提供服务谁装端口": 处理器住这里, 它要的 config / session 仓库都在
