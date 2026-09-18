@@ -277,7 +277,10 @@ static void test_fold_runs_as_a_system_task(void)
     memset(&resp, 0, sizeof(resp));
     resp.reason = BC_LLM_FINISH_REASON_STOP;
     resp.content = sdsnew("# Merged memory\n- folded");
-    edc_executor_advance_llm_resp(&sched->executor, fold, fold->current_request_id, &resp);
+    void *fold_req = fold->current_request_id;
+    struct edc_advance_result fold_res = edc_executor_advance_llm_resp(&sched->executor, fold, fold_req, &resp);
+    /* executor 只报事实; 告诉谁 在策略点 (契约见 edc_scheduler.h)。 */
+    edc_scheduler_apply_advance(sched, fold, fold_req, &fold_res);
 
     /* 折叠任务**自己**不是可折叠对象 (回归: 夹具实测过一次"折叠任务完成 → 触发
      * 折叠系统组 → 又起一个折叠任务"的连锁)。折叠账只为留下来的任务做 (见
@@ -366,7 +369,10 @@ static void test_fold_failure_keeps_memory(void)
     memset(&resp, 0, sizeof(resp));
     resp.reason = BC_LLM_FINISH_REASON_STOP;
     resp.content = NULL;
-    edc_executor_advance_llm_resp(&sched->executor, fold, fold->current_request_id, &resp);
+    void *fold_req = fold->current_request_id;
+    struct edc_advance_result fold_res = edc_executor_advance_llm_resp(&sched->executor, fold, fold_req, &resp);
+    /* executor 只报事实; 告诉谁 在策略点 (契约见 edc_scheduler.h)。 */
+    edc_scheduler_apply_advance(sched, fold, fold_req, &fold_res);
 
     CHECK(strcmp(group->memory, "# memory before") == 0, "记忆没被改");
     CHECK(count_folded(group) == 0, "没有任何任务被标已折叠");

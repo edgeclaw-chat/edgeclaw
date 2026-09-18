@@ -246,3 +246,41 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
     sdsfree(prompt);
     return task;
 }
+
+/* ── 折叠产出的落地 (接收半边) ─────────────────────────────────
+ *
+ * 原来住 scheduler (sched_deliver_group_memory), 由 executor 的
+ * `deliver_group_memory` 端口转交 —— 但它只碰 group 自己的字段, 不需要宿主,
+ * 所以归 fold 模块: executor 现在按 task->sink 直接调它。
+ *
+ * 失败 (content 空 / 没目标组) 时**什么都不改**: 折叠没成功就还是老记忆 +
+ * 老水位, 下一轮再折 (与旧实现一致)。任务本身照常按 lifetime 回收。 */
+void edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
+{
+    struct edc_task_group *group = task ? task->sink_group : NULL;
+    if (!group || !content || !*content)
+    {
+        log_error("L1 fold: task %s produced no memory (target=%s, content=%s) — group memory unchanged",
+                  (task && task->task_id) ? task->task_id : "(null)", group ? "yes" : "none",
+                  (content && *content) ? "non-empty" : "empty");
+        return;
+    }
+
+    if (group->memory)
+        sdsfree(group->memory);
+    group->memory = sdsnew(content);
+
+    size_t folded_tasks = 0, folded_msgs = 0;
+    struct edc_task *t;
+    LL_FOREACH2(group->members, t, group_next)
+    {
+        if (edc_task_is_completed(t) && !t->turns_folded && t->completion_seq <= task->fold_max_seq)
+        {
+            t->turns_folded = true;
+            folded_tasks++;
+            folded_msgs += edc_task_turn_msg_count(t);
+        }
+    }
+    group->folded_through_completion_seq = task->fold_max_seq;
+    log_info("L1 fold done: group %s folded %zu tasks (%zu msgs)", group->group_id, folded_tasks, folded_msgs);
+}

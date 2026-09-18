@@ -126,8 +126,8 @@ static void give_input(struct edc_task *task, const char *text)
     edc_task_await_exec(task);
 }
 
-/* 让任务跑到 COMPLETED —— **走 scheduler 的写入口** (executor 的 set_task_state
- * 端口 → sched_move_task), 因为回收队列正是在那里入队的。 */
+/* 让任务跑到 COMPLETED —— 走**真路径** (executor 推进 → scheduler 的策略点),
+ * 因为回收队列正是在策略点的簿记里入队的。 */
 static void complete_via_executor(struct edc_scheduler *sched, struct edc_task *task)
 {
     struct edc_event ev;
@@ -135,7 +135,9 @@ static void complete_via_executor(struct edc_scheduler *sched, struct edc_task *
     ev.kind = EDC_EVENT_EXEC_DONE;
     ev.as.exec.reason = EDC_REASON_STOP;
     ev.as.exec.content = "done";
-    edc_executor_advance(&sched->executor, task, &ev);
+    void *t_req = task->current_request_id;
+    struct edc_advance_result t_res = edc_executor_advance(&sched->executor, task, &ev);
+    edc_scheduler_apply_advance(sched, task, t_req, &t_res);
 }
 
 /* 给任务装 input 并直接置成 COMPLETED (task 层)。

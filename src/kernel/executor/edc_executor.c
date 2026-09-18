@@ -7,7 +7,6 @@
 #include "edc_executor.h"
 #include "edc_config.h"
 #include "edc_exec_io.h"
-#include "edc_session.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
 #include "sds.h"
@@ -15,15 +14,29 @@
 #include <stdlib.h>
 #include <string.h>
 
-void edc_executor_init(struct edc_executor *ex, const struct edc_executor_ops *ops, void *ctx)
+void edc_executor_init(struct edc_executor *ex, const struct edc_executor_ops *ops, void *ctx,
+                       const struct edc_config *config)
 {
     ex->ops = ops;
     ex->ctx = ctx;
+    ex->config = config;
 }
+
+/* ── 只读环境事实 (直读 config, 不走端口) ─────────────────────
+ * 只剩 `max_iter` —— 它是**运行预算**（决定要不要继续续发下一轮）, 是"推进"的
+ * 一部分。`no_api_key` 已移出: 它只被用来组装错误文案（展示），归宿主。 */
+static int exec_max_iter(const struct edc_executor *ex)
+{
+    return (ex->config && ex->config->max_iter > 0) ? ex->config->max_iter : 0;
+}
+
+/* ── 依赖链上排队的输入自动启动 ───────────────────────────────
+ * 走 `task->dependents` = task **之间**的边 (§4.3 / §2.2) —— 所以它是出站 op,
+ * 不在本文件里做 (当年那个 `(void)ctx` 的薄 thunk 不改变归属)。 */
 
 /* ── EXEC_DONE：LLM 响应到达 ───────────────────────────────── */
 
-static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
+static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
 {
     const struct edc_executor_ops *ops = ex->ops;
     struct edc_event_exec *e = &ev->as.exec;
@@ -36,41 +49,21 @@ static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task
 
     if (e->failed)
     {
-        if (ops->unregister_task)
-            ops->unregister_task(ex->ctx, req_id);
         task->current_request_id = NULL;
-        if (ops->set_task_state)
-            ops->set_task_state(ex->ctx, task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR);
+        edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR);
         if (e->content)
             edc_task_set_output(task, sdsnew(e->content));
-        if (ops->flush_redirects)
-            ops->flush_redirects(ex->ctx, task);
-        if (ops->send_reply)
-        {
-            const char *err = e->error_message ? e->error_message : "LLM request failed";
-            bool no_key = ops->no_api_key && ops->no_api_key(ex->ctx);
-            if (no_key)
-            {
-                /* First run: with no API key the request can only fail, so
-                 * point the user at the /connect dialog instead of just
-                 * reporting the error. */
-                sds combined = sdscatprintf(
-                    sdsempty(), "%s\n\nNo API key configured — run /connect to set the API URL, model and key.", err);
-                ops->send_reply(ex->ctx, task, combined, EDC_CHANNEL_MESSAGE_SYS_TYPE, req_id);
-                sdsfree(combined);
-            }
-            else
-            {
-                ops->send_reply(ex->ctx, task, err, EDC_CHANNEL_MESSAGE_SYS_TYPE, req_id);
-            }
-        }
-        return EDC_STEP_ERROR;
+        edc_task_flush_redirects(task);
+        /* 交付交给宿主 —— 错误文案（含没配 API key 时的 /connect 指引）是**展示**,
+         * 不是推进。notice 借用事件里的串, 调用期间必然有效。 */
+        return (struct edc_advance_result){.outcome = EDC_STEP_ERROR,
+                                           .settled = true,
+                                           .notice = e->error_message ? e->error_message : "LLM request failed"};
     }
 
     if (e->reason == EDC_REASON_TOOL_CALL)
     {
-        if (ops->set_task_state)
-            ops->set_task_state(ex->ctx, task, EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
+        edc_task_move(task, EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
         if (task->active_turn)
         {
             /* 所有权转入 turn；被接手才消掉源指针（与今天逐字一致）。 */
@@ -88,18 +81,13 @@ static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task
         /* keep task registered — tool responses use same request_id */
         if (ops->dispatch_tools)
             ops->dispatch_tools(ex->ctx, task, e->tool_calls_raw, req_id);
-        return EDC_STEP_BLOCKED;
+        return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
     }
 
     if (e->reason == EDC_REASON_STOP)
     {
-        if (ops->unregister_task)
-            ops->unregister_task(ex->ctx, req_id);
         task->current_request_id = NULL;
 
-        /* 属主 session: 后台 session 里的任务完成时, turn 与 completion_seq 必须
-         * 落回它自己, 不能用当前绑定的 session。 */
-        struct edc_session *own = ops->task_session ? ops->task_session(ex->ctx, task) : NULL;
         if (task->active_turn)
         {
             /* 最终回复就是渲染端按 Markdown 显示的那条 (send_reply 走 RESP) ——
@@ -125,76 +113,36 @@ static edc_step_outcome exec_done(struct edc_executor *ex, struct edc_task *task
         edc_task_commit_active_turn(task);
         if (e->content)
             edc_task_set_output(task, sdsnew(e->content));
-        if (ops->flush_redirects)
-            ops->flush_redirects(ex->ctx, task);
-        /* completion_seq = session 的**完成顺序** (折叠水位、$N 输出引用都读它)。
-         * sink=GROUP_MEMORY 的 system task 不进这个序列: 它不是用户的完成次序里
-         * 的一环 (规则 ④ "不进入被折叠 group 的 completion_seq" 的落地 —— 连它所在
-         * session 的计数器也不动, 于是折叠不改变任何用户可见的序号)。 */
-        if (own && task->sink != EDC_SINK_GROUP_MEMORY)
-            task->completion_seq = own->next_completion_seq++;
-        else
-            task->completion_seq = 0;
-        if (ops->set_task_state)
-            ops->set_task_state(ex->ctx, task, EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED);
+        edc_task_flush_redirects(task);
+        edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED);
 
-        /* session 消息数刚因 turn 提交而增长。被更新输入顶替、或在后台/
-         * 依赖链中完成的任务其 turn 是"静默"的, 需要主动通知一次,
-         * 否则侧边栏的 session 统计会停在旧值。 */
-        if (ops->task_snapshot)
-            ops->task_snapshot(ex->ctx, task);
-
-        if (ops->notify_dependents)
-            ops->notify_dependents(ex->ctx, task);
-
-        /* auto-trigger dependents with queued input */
-        if (ops->start_queued_dependents)
-            ops->start_queued_dependents(ex->ctx, task);
-
-        /* 产出送到哪: 由 sink 决定 (runtime-model.md §1.4 / §5 规则 7 —— 分流这一处
-         * 在 executor, 但"镜像装配读 sink"另有一处且合法)。CHANNEL = 回给用户
-         * (send_reply 内部还会查 active_task 闸门);
-         * GROUP_MEMORY = 交给上层写进目标组的记忆 (fold), 不产生任何回话。 */
-        if (task->sink == EDC_SINK_GROUP_MEMORY)
-        {
-            if (ops->deliver_group_memory)
-                ops->deliver_group_memory(ex->ctx, task, e->content);
-        }
-        else if (ops->send_reply)
-        {
-            ops->send_reply(ex->ctx, task, e->content, EDC_CHANNEL_MESSAGE_RESP_TYPE, req_id);
-        }
-
-        /* auto-reap disabled: tasks stay COMPLETED for cross-group join */
-
-        /* task 收尾: 交给用户态做自己的簿记 (今天 = 检查 L1 折叠阈值)。 */
-        if (ops->on_task_settled)
-            ops->on_task_settled(ex->ctx);
-
-        if (ops->save_session)
-            ops->save_session(ex->ctx, own);
-        return EDC_STEP_DONE;
+        /* 到此**推进结束**。剩下的全是"告诉外界" —— 完成序号（容器内的完成次序）、
+         * 置脏（推 TUI）、通知依赖者、启动排队依赖、产出交付（按 sink 选路）、
+         * 折叠、落盘 —— 一律由宿主在 `sched_apply_advance` 里做。
+         *
+         * notice 借用 `e->content`（事件的属主是调用方, 本次调用期间有效）。
+         * 注意 e->content 可能是 NULL —— 宿主按"有没有文本"处理, 与今天
+         * send_reply(..., e->content, ...) 的行为一致。 */
+        return (struct edc_advance_result){.outcome = EDC_STEP_DONE, .settled = true, .notice = e->content};
     }
 
-    /* 未知 finish reason：与今天一致 —— ERROR + 系统消息。 */
-    if (ops->unregister_task)
-        ops->unregister_task(ex->ctx, req_id);
+    /* 未知 finish reason：与今天一致 —— ERROR + 系统消息（消息由宿主发）。 */
     task->current_request_id = NULL;
-    if (ops->set_task_state)
-        ops->set_task_state(ex->ctx, task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR);
-    if (ops->send_reply)
-        ops->send_reply(ex->ctx, task, "Internal error: unknown finish reason", EDC_CHANNEL_MESSAGE_SYS_TYPE, req_id);
-    return EDC_STEP_ERROR;
+    edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR);
+    return (struct edc_advance_result){.outcome = EDC_STEP_ERROR,
+                                       .settled = true,
+                                       .notice = "Internal error: unknown finish reason"};
 }
 
 /* ── 到达 max_iter 上限 ──────────────────────────────────────
  * 构造一条 STOP 语义的事件 (内容为收尾说明), 复用 exec_done 的完整终结
- * 路径 —— turn 整体入库、任务置 COMPLETED、通知依赖者、触发 L1 折叠与
- * save_session, 保证被打断的上下文仍是连贯的。
+ * 路径 —— turn 整体入库、任务置 COMPLETED、通知依赖者、触发收尾 (内容轴折叠
+ * 与落盘), 保证被打断的上下文仍是连贯的。
  * （今天这步是伪造一个 edc_llm_actor_resp；归一化之后它就是一个事件。） */
-static void stop_at_iteration_cap(struct edc_executor *ex, struct edc_task *task, const char *request_id)
+static struct edc_advance_result stop_at_iteration_cap(struct edc_executor *ex, struct edc_task *task,
+                                                       const char *request_id)
 {
-    int max_iter = ex->ops->max_iter ? ex->ops->max_iter(ex->ctx) : 0;
+    int max_iter = exec_max_iter(ex);
 
     sds notice = sdscatprintf(
         sdsempty(),
@@ -214,14 +162,19 @@ static void stop_at_iteration_cap(struct edc_executor *ex, struct edc_task *task
     ev.as.exec.content = notice;  /* STOP 分支用 sdsnew 拷贝, 不持有 */
     ev.as.exec.msg = assistant;   /* 所有权转入 active_turn (与真实响应一致) */
 
-    (void)edc_executor_advance(ex, task, &ev);
+    struct edc_advance_result r = edc_executor_advance(ex, task, &ev);
 
+    /* 嵌套的 STOP 已经把通知 `sdsnew` 进 `task->output` —— 它活得比本函数长,
+     * 所以 notice 指向它（本地这份可以安全释放）。这正是 §3.2 的三条来源之一。 */
+    r.outcome = EDC_STEP_ERROR; /* 与今天一致：预算耗尽按 ERROR 返回 */
+    r.notice = task->output;
     sdsfree(notice);
+    return r;
 }
 
 /* ── TOOL_DONE：某个工具完成 ───────────────────────────────── */
 
-static edc_step_outcome tool_done(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
+static struct edc_advance_result tool_done(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
 {
     const struct edc_executor_ops *ops = ex->ops;
     const struct edc_event_tool_done *t = &ev->as.tool_done;
@@ -238,95 +191,94 @@ static edc_step_outcome tool_done(struct edc_executor *ex, struct edc_task *task
     {
         /* max_iter 治理: 工具链结束后若已耗尽本轮 LLM 迭代预算, 不再续发
          * LLM。max_iter <= 0 表示不限制。 */
-        int max_iter = ops->max_iter ? ops->max_iter(ex->ctx) : 0;
+        int max_iter = exec_max_iter(ex);
         if (max_iter > 0 && task->llm_rounds >= max_iter)
         {
-            stop_at_iteration_cap(ex, task, ev->request_id);
-            return EDC_STEP_ERROR; /* 已转入终结路径 */
+            return stop_at_iteration_cap(ex, task, ev->request_id); /* 已转入终结路径 */
         }
 
-        if (ops->set_task_state)
-            ops->set_task_state(ex->ctx, task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
+        edc_task_move(task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
         if (ops->send_llm)
         {
             task->llm_rounds++; /* 工具链结束后续发 → 再消耗一轮预算 */
             ops->send_llm(ex->ctx, task, (void *)ev->request_id);
         }
-        return EDC_STEP_BLOCKED;
+        return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
     }
-    return EDC_STEP_BLOCKED;
+    return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
 }
 
 /* ── TOOL_STARTED：某个工具真正开始执行 ────────────────────── */
 
-static edc_step_outcome tool_started(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
+static struct edc_advance_result tool_started(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
 {
     const char *call_id = ev->as.call_id;
     if (call_id)
         edc_task_tool_call_mark_executing(task, call_id);
-    return EDC_STEP_BLOCKED;
+    return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
 }
 
 /* ── SIGNAL：取消/中断信号 ───────────────────────────────────
- * 今天这三步都在 edc_scheduler_send_signal_to_task_ptr 里，逐字搬过来：
- * 先反注册（让迟到的 LLM/工具响应找不到 task，从而无害），再交给 task 层
- * 改状态，最后按需要落盘。 */
-static edc_step_outcome exec_signal(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
+ * executor 只管**事件本身**：交给 task 层改状态（规则 1：不等任何回执）。
+ * 反注册在途请求、要不要立刻落盘并推快照 —— 都是宿主的事，见
+ * `edc_scheduler_send_signal_to_task_ptr`。 */
+static struct edc_advance_result exec_signal(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
 {
-    const struct edc_executor_ops *ops = ex->ops;
-    edc_task_signal sig = ev->as.signal.sig;
+    (void)ex;
+    edc_task_send_signal(task, ev->as.signal.sig);
 
-    /* 1. 反注册 in-flight 请求 —— 迟到的响应必须无害（规则 2）。 */
-    if (task->current_request_id && ops->unregister_task)
-        ops->unregister_task(ex->ctx, task->current_request_id);
-
-    /* 2. 信号**直接**改 task 状态，不依赖任何设备回执（规则 1）。 */
-    edc_task_send_signal(task, sig);
-
-    /* 3. 显式取消必须立即持久化 + 推送快照: CANCELLED 只在内存里, 若不保存,
-     *    重启后任务会按 session.json 里的旧状态恢复, 取消看起来像没生效。 */
-    if (ev->as.signal.persist && edc_task_is_cancelled(task))
-    {
-        if (ops->notify_foreground_state)
-            ops->notify_foreground_state(ex->ctx, task);
-        if (ops->save_session)
-            ops->save_session(ex->ctx, ops->task_session ? ops->task_session(ex->ctx, task) : NULL);
-    }
-
-    return edc_task_is_cancelled(task) ? EDC_STEP_DONE : EDC_STEP_BLOCKED;
+    bool cancelled = edc_task_is_cancelled(task);
+    return (struct edc_advance_result){.outcome = cancelled ? EDC_STEP_DONE : EDC_STEP_BLOCKED,
+                                       .settled = cancelled};
 }
 
 /* ── 步进 ──────────────────────────────────────────────────── */
 
-edc_step_outcome edc_executor_advance(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
+struct edc_advance_result edc_executor_advance(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
 {
     if (!ex || !task || !ev)
-        return EDC_STEP_BLOCKED;
+        return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
 
+    /* 相位快照：`changed` 由「入口 vs 出口」比较得出 —— 这样它自然覆盖**所有**
+     * 内部路径，包括不经 `edc_task_move` 的信号路径（信号直接落到 task 层）。
+     * 代价是两个枚举的比较；换来的是不必在六个出口手工记账（漏一处就是静默 bug）。 */
+    edc_task_step step_before = task->step;
+    edc_task_life life_before = task->life;
+
+    struct edc_advance_result r;
     switch (ev->kind)
     {
     case EDC_EVENT_EXEC_DONE:
-        return exec_done(ex, task, ev);
+        r = exec_done(ex, task, ev);
+        break;
     case EDC_EVENT_TOOL_DONE:
-        return tool_done(ex, task, ev);
+        r = tool_done(ex, task, ev);
+        break;
     case EDC_EVENT_TOOL_STARTED:
-        return tool_started(ex, task, ev);
+        r = tool_started(ex, task, ev);
+        break;
     case EDC_EVENT_SIGNAL:
-        return exec_signal(ex, task, ev);
+        r = exec_signal(ex, task, ev);
+        break;
+    default:
+        r = (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
+        break;
     }
-    return EDC_STEP_BLOCKED;
+
+    r.changed = (task->step != step_before) || (task->life != life_before);
+    return r;
 }
 
 /* ── 边界适配（本文件里唯一认识 actor 负载的地方）────────────
  * 负载以 void* 传入 —— 适配是**类型无关的调用约定**，scheduler 侧连结构体
  * 名字都不必出现（§8 验收判据 3）。 */
 
-edc_step_outcome edc_executor_advance_llm_resp(struct edc_executor *ex, struct edc_task *task, void *request_id,
-                                               void *resp)
+struct edc_advance_result edc_executor_advance_llm_resp(struct edc_executor *ex, struct edc_task *task, void *request_id,
+                                                        void *resp)
 {
     struct edc_llm_actor_resp *r = resp;
     if (!r)
-        return EDC_STEP_BLOCKED;
+        return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
 
     struct edc_event ev;
     memset(&ev, 0, sizeof(ev));
@@ -368,7 +320,7 @@ edc_step_outcome edc_executor_advance_llm_resp(struct edc_executor *ex, struct e
         ev.as.exec.n_calls = m;
     }
 
-    edc_step_outcome out = edc_executor_advance(ex, task, &ev);
+    struct edc_advance_result out = edc_executor_advance(ex, task, &ev);
 
     /* 被接手则回写 NULL（"消掉即置 NULL" 的约定）；未被接手就保持原样，
      * 让 resp 自己释放 —— 与今天逐字一致。
@@ -378,12 +330,12 @@ edc_step_outcome edc_executor_advance_llm_resp(struct edc_executor *ex, struct e
     return out;
 }
 
-edc_step_outcome edc_executor_advance_tool_resp(struct edc_executor *ex, struct edc_task *task, void *request_id,
+struct edc_advance_result edc_executor_advance_tool_resp(struct edc_executor *ex, struct edc_task *task, void *request_id,
                                                 void *req)
 {
     struct edc_toolbox_actor_req *tr = req;
     if (!tr)
-        return EDC_STEP_BLOCKED;
+        return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
 
     struct edc_event ev;
     memset(&ev, 0, sizeof(ev));

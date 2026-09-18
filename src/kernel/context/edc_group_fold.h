@@ -48,4 +48,13 @@ extern sds edc_group_fold_build_prompt(struct edc_task_group *group, uint32_t *o
 extern struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_session *session,
                                              struct edc_task_group *group);
 
+/** 折叠产出的**落地**(接收半边): 把 |content| 写进 task->sink_group 的记忆、
+ *  把本轮选中 (completion_seq <= task->fold_max_seq) 的已终结成员标成已折叠、
+ *  推进折叠水位。失败 (无目标组 / 空内容) 时**什么都不改**, 下一轮再折。
+ *
+ *  它只碰 group 自己的字段 (memory / folded_through_completion_seq / 成员的
+ *  turns_folded), 不需要任何宿主 —— 所以归 fold 模块, 不再是 executor 的 ops
+ *  端口 (原来叫 sched_deliver_group_memory, 住在 scheduler)。 */
+extern void edc_group_fold_deliver_memory(struct edc_task *task, const char *content);
+
 #endif

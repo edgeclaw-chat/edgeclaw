@@ -45,13 +45,8 @@ static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *
 /* executor 的出站 ops 表（定义在文件后半；这里前向声明，供 new 里 init 用）。 */
 static const struct edc_executor_ops sched_executor_ops;
 
-/* 任务的属主 session —— 被切到后台的 session 里的任务完成/取消时, turn、通知与
- * 落盘都要写回**它自己** (否则串台)。P3 ③: 没有属主就**没有** session (不再回退
- * 到"当前绑定" —— 那份副本已经不存在了); 调用方按"没有属主"处理。 */
-static struct edc_session *sched_task_session(struct edc_task *task)
-{
-    return (task && task->group) ? task->group->session : NULL;
-}
+/* 任务的属主 session —— 已归位 edc_task.c 的 edc_task_session() (它只是
+ * task->group->session, 是 task 自己的关系, 不该由 scheduler 代言)。 */
 
 /* 前台组是 session 的属性 (terminal tab); scheduler 不持有副本。 */
 static struct edc_task_group *sched_foreground(struct edc_session *session)
@@ -211,7 +206,7 @@ struct edc_scheduler *edc_scheduler_new(struct edc_config *config)
     /* 恢复上次运行的发号高水位, 保证重启后 task_id 不倒退、不重复。 */
     sched_load_task_seq(sched);
 
-    edc_executor_init(&sched->executor, &sched_executor_ops, sched);
+    edc_executor_init(&sched->executor, &sched_executor_ops, sched, config);
 
     sched->self = edc_actor_new("edc_scheduler", edc_scheduler_actor_handler, sched);
 
@@ -469,6 +464,8 @@ bool edc_scheduler_dispatch_task(struct edc_scheduler *sched, struct edc_task *t
 
     if (!edc_task_await_exec(task))
         return false;
+    /* 状态变了 —— 补上簿记（回收队列 + 置脏并推 TUI），再续发请求。 */
+    edc_scheduler_task_moved(sched, task);
     if (!sched->send_llm)
         return false;
     sched->send_llm(sched, task, req_id);
@@ -585,18 +582,16 @@ void edc_scheduler_send_signal_to_task_ptr(struct edc_scheduler *sched, struct e
     if (!sched || !task)
         return;
 
-    /* 信号是一次**事件**（§2.8）：反注册 in-flight 请求、改 task 状态、
-     * 显式取消立即落盘这三步都搬进了 executor，这里只构造事件。
-     * persist=true —— 这条路径只被用户命令 (/task stop) 调用。 */
+    /* 信号是一次**事件**（§2.8）：反注册 in-flight 请求、改 task 状态两步在
+     * executor；这里只构造事件。 */
     struct edc_event ev;
     memset(&ev, 0, sizeof(ev));
     ev.kind = EDC_EVENT_SIGNAL;
     ev.as.signal.sig = sig;
-    ev.as.signal.persist = true;
-    edc_executor_advance(&sched->executor, task, &ev);
-    /* executor 的信号路径**直接**改 task 状态 (不经 sched_move_task) —— 取消可能让
-     * 一个 TRANSIENT 任务直接进终态, 这里补上回收队列。 */
-    sched_queue_reap(sched, task);
+    /* 信号路径不携带 request_id —— 要反注册的是 task 自己记着的那个
+     * （exec_signal 不再碰它: 反注册是宿主的索引）。 */
+    struct edc_advance_result res = edc_executor_advance(&sched->executor, task, &ev);
+    edc_scheduler_apply_advance(sched, task, task->current_request_id, &res);
 }
 
 void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, struct edc_session *session, const char *task_id,
@@ -923,7 +918,7 @@ void edc_scheduler_drain_reap_pending(struct edc_scheduler *sched)
         struct edc_task *task = sched->reap_pending[--sched->reap_count];
         sched_reap_one(sched, task);
         /* 树上少了一行 (可能整组没了) —— 置脏, 由本消息末尾统一通知属主 session。 */
-        sched_mark_dirty(sched, sched_task_session(task), "reap");
+        sched_mark_dirty(sched, edc_task_session(task), "reap");
     }
 }
 
@@ -950,7 +945,7 @@ static void sched_move_task(struct edc_scheduler *sched, struct edc_task *task, 
     if (edc_task_move(task, step, life))
         sched_queue_reap(sched, task);
     if (sched)
-        sched_mark_dirty(sched, sched_task_session(task), "state");
+        sched_mark_dirty(sched, edc_task_session(task), "state");
 }
 
 /* 强制置相位 (不查转移表) —— 给**兜底出口**用。
@@ -967,7 +962,7 @@ static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *
     /* force 也可能把 TRANSIENT 任务直接送到终态 (兜底/取消) —— 同一条回收规则。 */
     sched_queue_reap(sched, task);
     if (sched)
-        sched_mark_dirty(sched, sched_task_session(task), "state");
+        sched_mark_dirty(sched, edc_task_session(task), "state");
 }
 
 /* ── 内部：消息路由 ────────────────────────────────────────── */
@@ -1066,32 +1061,12 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     sched->input_raw = NULL; /* 这条输入处理完了 */
 }
 
-static void sched_flush_redirects(struct edc_task *task)
-{
-    if (task->redirect_stdout)
-    {
-        FILE *f = fopen(task->redirect_stdout, task->redirect_append ? "a" : "w");
-        if (f)
-        {
-            if (task->output)
-                fputs(task->output, f);
-            fclose(f);
-        }
-    }
-    if (task->redirect_stderr)
-    {
-        FILE *f = fopen(task->redirect_stderr, "w");
-        if (f)
-        {
-            if (task->output)
-                fputs(task->output, f);
-            fclose(f);
-        }
-    }
-}
+/* 输出重定向落盘 —— 已归位 edc_task.c 的 edc_task_flush_redirects()。 */
 
-/* ── executor 的出站 ops ─────────────────────────────────────
- * 每条都对应今天在 sched_handle_* 里的那个调用点，逐条搬过来。
+/* ── executor 的出站 ops（只剩"发起下一步 I/O"的两条）─────────
+ * 准入判据与完整的迁移表见 edc_executor.h 与
+ * docs/executor-outbound-boundary.md §2。其余 9 项已从接口里消失 —— 它们变成
+ * `struct edc_advance_result`（事实）+ 下面的 edc_scheduler_apply_advance（策略）。
  * 一律先查回调是否注入（与今天 `if (sched->send_llm)` 的形状一致）。 */
 
 static void ex_send_llm(void *ctx, struct edc_task *task, void *request_id)
@@ -1101,59 +1076,6 @@ static void ex_send_llm(void *ctx, struct edc_task *task, void *request_id)
         sched->send_llm(sched, task, request_id);
 }
 
-static void ex_send_reply(void *ctx, struct edc_task *task, const char *content, edc_channel_message_type type,
-                          void *request_id)
-{
-    struct edc_scheduler *sched = ctx;
-    if (sched->send_reply)
-        sched->send_reply(sched, task, content, type, request_id);
-}
-
-/* ── sink = GROUP_MEMORY 的落地 (fold 的产出) ─────────────────
- *
- * executor 只转交 (它不知道"记忆"是什么); 落地在这里: 写进目标组的 memory、
- * 把本轮选中的那批已终结任务标成已折叠、推进折叠水位。这套动作原来住在
- * memory_actor 的 finish 里, 现在它就是"一次普通任务的完成" —— 专用协议
- * (GROUP_FOLD_DONE) 随之退休 (runtime-model.md §4.6)。
- *
- * 失败 (content 空 / 没目标组) 时**什么都不改**: 折叠没成功就还是老记忆 +
- * 老水位, 下一轮再折 (与旧实现一致)。任务本身照常按 lifetime 回收。 */
-static void sched_deliver_group_memory(struct edc_scheduler *sched, struct edc_task *task, const char *content)
-{
-    (void)sched;
-    struct edc_task_group *group = task ? task->sink_group : NULL;
-    if (!group || !content || !*content)
-    {
-        log_error("L1 fold: task %s produced no memory (target=%s, content=%s) — group memory unchanged",
-                  (task && task->task_id) ? task->task_id : "(null)", group ? "yes" : "none",
-                  (content && *content) ? "non-empty" : "empty");
-        return;
-    }
-
-    if (group->memory)
-        sdsfree(group->memory);
-    group->memory = sdsnew(content);
-
-    size_t folded_tasks = 0, folded_msgs = 0;
-    struct edc_task *t;
-    LL_FOREACH2(group->members, t, group_next)
-    {
-        if (edc_task_is_completed(t) && !t->turns_folded && t->completion_seq <= task->fold_max_seq)
-        {
-            t->turns_folded = true;
-            folded_tasks++;
-            folded_msgs += edc_task_turn_msg_count(t);
-        }
-    }
-    group->folded_through_completion_seq = task->fold_max_seq;
-    log_info("L1 fold done: group %s folded %zu tasks (%zu msgs)", group->group_id, folded_tasks, folded_msgs);
-}
-
-static void ex_deliver_group_memory(void *ctx, struct edc_task *task, const char *content)
-{
-    sched_deliver_group_memory((struct edc_scheduler *)ctx, task, content);
-}
-
 static void ex_dispatch_tools(void *ctx, struct edc_task *task, void *llm_resp, void *request_id)
 {
     struct edc_scheduler *sched = ctx;
@@ -1161,39 +1083,17 @@ static void ex_dispatch_tools(void *ctx, struct edc_task *task, void *llm_resp, 
         sched->dispatch_tools(sched, task, llm_resp, request_id);
 }
 
-static void ex_set_task_state(void *ctx, struct edc_task *task, edc_task_step step, edc_task_life life)
-{
-    sched_move_task((struct edc_scheduler *)ctx, task, step, life);
-}
+static const struct edc_executor_ops sched_executor_ops = {
+    .send_llm = ex_send_llm,
+    .dispatch_tools = ex_dispatch_tools,
+};
 
-static void ex_unregister_task(void *ctx, void *request_id)
-{
-    edc_scheduler_unregister_task((struct edc_scheduler *)ctx, request_id);
-}
+/* ── task 之间的边（依赖 DAG）──────────────────────────────── */
 
-static void ex_notify_dependents(void *ctx, struct edc_task *task)
+/* 依赖链上"带着 turn 排队"的目标: 自动启动 —— 改状态 + 续发 LLM。
+ * 走的是 `task->dependents`, 是 task **之间**的边, 所以归这里。 */
+static void sched_start_queued_dependents(struct edc_scheduler *sched, struct edc_task *task)
 {
-    (void)ctx;
-    edc_task_notify_dependents(task);
-}
-
-static void ex_flush_redirects(void *ctx, struct edc_task *task)
-{
-    (void)ctx;
-    sched_flush_redirects(task);
-}
-
-static void ex_task_snapshot(void *ctx, struct edc_task *task)
-{
-    struct edc_scheduler *sched = ctx;
-    sched_mark_dirty(sched, sched_task_session(task), "complete");
-}
-
-/* 展示逻辑: 这个 task 此刻在被显示吗 (规则 8 的 active-task 闸门)。 */
-/* task 之间的事: 依赖链上排队的输入自动启动。 */
-static void ex_start_queued_dependents(void *ctx, struct edc_task *task)
-{
-    struct edc_scheduler *sched = ctx;
     struct edc_task_dep *dep;
     LL_FOREACH(task->dependents, dep)
     {
@@ -1211,72 +1111,127 @@ static void ex_start_queued_dependents(void *ctx, struct edc_task *task)
     }
 }
 
-static struct edc_session *ex_task_session(void *ctx, struct edc_task *task)
-{
-    (void)ctx;
-    return sched_task_session(task);
-}
+/* ── 跨容器的收尾 ──────────────────────────────────────────── */
 
-/* 表达式原样搬自 sched_handle_llm_resp 的 `no_key`（含 config 为 NULL 时判 false）。 */
-static bool ex_no_api_key(void *ctx)
+/* 同包直调 store: 落盘是 store 的事, 这里只把"要存谁"递过去 (NULL = 活跃的)。 */
+static void sched_save_session(struct edc_scheduler *sched, struct edc_session *s)
 {
-    struct edc_scheduler *sched = ctx;
-    return sched->config &&
-           (!sched->config->llm_api_conf.api_key || sdslen(sched->config->llm_api_conf.api_key) == 0);
-}
-
-static int ex_max_iter(void *ctx)
-{
-    struct edc_scheduler *sched = ctx;
-    return (sched->config && sched->config->max_iter > 0) ? sched->config->max_iter : 0;
-}
-
-static void ex_on_task_settled(void *ctx)
-{
-    struct edc_scheduler *sched = ctx;
-    /* 结构事件 → 内容轴的订阅者: 折不该折由 group_fold 自己决定 (core 不解释这个词)。
-     * 这里只把本模块拿不到的两样递过去: session 仓库与 config (阈值)。 */
-    if (sched && sched->sessions)
-        edc_group_fold_try(sched, sched->sessions, sched->config);
-}
-
-static void ex_save_session(void *ctx, struct edc_session *s)
-{
-    struct edc_scheduler *sched = ctx;
     if (!sched || !sched->sessions)
         return;
-    /* 同包直调 store: 落盘是 store 的事, 这里只把"要存谁"递过去 (NULL = 活跃的)。 */
     edc_session_store_save_session_state(sched->sessions, sched, s);
 }
 
-/* executor 侧的接口名保留 (改它要动 ops 表), 但 C3 之后语义是"有状态变化, 该下发
- * 了" —— 具体是哪个 task 不重要: **任何** task 的变化都要让侧栏知道, 这正是删掉
- * 那个 500ms 轮询的前提。 */
-static void ex_notify_foreground_state(void *ctx, struct edc_task *task)
+/* 没配 API key 时的错误文案 —— 提示用户去 /connect。
+ * 这段原来在 executor 里（它当时直读 config 的 api_key）, 但"怎么跟用户说"
+ * 是**展示**, 不是推进。 */
+static sds sched_error_copy(struct edc_scheduler *sched, const char *notice)
 {
-    struct edc_scheduler *sched = ctx;
-    /* 事件属主 = 这个任务的 session (前台组是它的属性)。 */
-    sched_mark_dirty(sched, sched_task_session(task), "foreground");
+    const char *err = notice ? notice : "LLM request failed";
+    const sds key = (sched && sched->config) ? sched->config->llm_api_conf.api_key : NULL;
+    if (!key || sdslen(key) == 0)
+    {
+        /* First run: with no API key the request can only fail, so point the
+         * user at the /connect dialog instead of just reporting the error. */
+        return sdscatprintf(sdsempty(),
+                            "%s\n\nNo API key configured — run /connect to set the API URL, model and key.", err);
+    }
+    return sdsnew(err);
 }
 
-static const struct edc_executor_ops sched_executor_ops = {
-    .send_llm = ex_send_llm,
-    .send_reply = ex_send_reply,
-    .deliver_group_memory = ex_deliver_group_memory,
-    .dispatch_tools = ex_dispatch_tools,
-    .set_task_state = ex_set_task_state,
-    .unregister_task = ex_unregister_task,
-    .notify_dependents = ex_notify_dependents,
-    .flush_redirects = ex_flush_redirects,
-    .task_snapshot = ex_task_snapshot,
-    .start_queued_dependents = ex_start_queued_dependents,
-    .task_session = ex_task_session,
-    .no_api_key = ex_no_api_key,
-    .max_iter = ex_max_iter,
-    .on_task_settled = ex_on_task_settled,
-    .save_session = ex_save_session,
-    .notify_foreground_state = ex_notify_foreground_state,
-};
+/* ══ edc_scheduler_apply_advance —— 一次推进之后**唯一**的策略点 ═══════
+ *
+ * executor 只报事实（`struct edc_advance_result`）; 这里把"发生了什么"翻译成
+ * "该告诉谁": 索引 / 回收队列 / 脏表 / 依赖者 / 产出交付 / 折叠 / 落盘。
+ *
+ * **这不是"重放 executor 的分支"** —— 它读的是**结果**（任务进终态了吗）, 不是
+ * **过程**（走的哪个 case）。判据见 docs/executor-outbound-boundary.md §2。
+ *
+ * 四个事件调用点（LLM 响应 / 工具响应 / 工具开始 / 信号）都走它; 宿主自己发起
+ * 的转移（派发、命令层）走 edc_scheduler_task_moved —— **一个入口 = 不可能漏推**。 */
+void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *task, void *req_id,
+                                const struct edc_advance_result *res)
+{
+    if (!sched || !task || !res)
+        return;
+    struct edc_session *own = edc_task_session(task);
+
+    /* ① 索引: 进终态 = 不再欠任何请求 —— task_hash 里那一格该收了。 */
+    if (res->settled && req_id)
+        edc_scheduler_unregister_task(sched, req_id);
+
+    /* ② 簿记: 相位变了 → TRANSIENT 回收队列（守卫在 sched_queue_reap 里, 不是
+     *    终态的它一概不动） + 置脏。 */
+    if (res->changed)
+    {
+        sched_queue_reap(sched, task);
+        sched_mark_dirty(sched, own, "state");
+    }
+
+    if (!res->settled)
+        return;
+
+    /* ③ 结算: 进终态 → 六件"告诉外界"的事。**顺序与搬迁前逐字相同**。 */
+    if (edc_task_is_completed(task))
+    {
+        /* 完成序号 = 属主容器内的完成次序（折叠水位、$N 输出引用都读它）。
+         * `sink=GROUP_MEMORY` 的 system task 不进这个序列: 它不是用户完成次序里
+         * 的一环 —— 连它所在容器的计数器也不动, 于是折叠不改变任何用户可见的序号。 */
+        if (task->sink != EDC_SINK_GROUP_MEMORY && own)
+            edc_task_set_completion_seq(task, own->next_completion_seq++);
+        else
+            edc_task_set_completion_seq(task, 0);
+
+        /* 容器消息数刚因 turn 提交而增长。被更新输入顶替、或在后台/依赖链中完成
+         * 的任务其 turn 是"静默"的, 需要主动通知一次, 否则侧边栏统计会停在旧值。 */
+        sched_mark_dirty(sched, own, "complete");
+
+        /* task 之间的边: 通知依赖者 + 启动排队者。 */
+        edc_task_notify_dependents(task);
+        sched_start_queued_dependents(sched, task);
+
+        /* 产出交付: 按 sink 选路（**分流在这里**, 不在 executor）。
+         * CHANNEL = 回给用户 (send_reply 内部还会查 active_task 闸门);
+         * GROUP_MEMORY = 写进目标组的记忆 (fold), 不产生任何回话。 */
+        if (task->sink == EDC_SINK_GROUP_MEMORY)
+            edc_group_fold_deliver_memory(task, res->notice);
+        else if (sched->send_reply)
+            sched->send_reply(sched, task, res->notice, EDC_CHANNEL_MESSAGE_RESP_TYPE, req_id);
+
+        /* 收尾结构事件的两个订阅者: 内容轴折叠（折不该折由 group_fold 自己决定）
+         * + 持久化（落盘是容器的语义: "盘上的状态变了"没有别的结构信号）。 */
+        if (sched->sessions)
+            edc_group_fold_try(sched, sched->sessions, sched->config);
+        sched_save_session(sched, own);
+    }
+    else if (edc_task_is_cancelled(task))
+    {
+        /* 显式取消要立刻落盘 + 推快照: CANCELLED 只在内存里, 不保存的话重启后会
+         * 按 session.json 里的旧状态恢复, 取消看起来像没生效。 */
+        sched_mark_dirty(sched, own, "foreground");
+        sched_save_session(sched, own);
+    }
+    else /* ERROR */
+    {
+        sched_mark_dirty(sched, own, "state");
+        if (sched->send_reply)
+        {
+            sds copy = sched_error_copy(sched, res->notice);
+            sched->send_reply(sched, task, copy, EDC_CHANNEL_MESSAGE_SYS_TYPE, req_id);
+            sdsfree(copy);
+        }
+    }
+}
+
+/* 宿主自己发起的转移（派发 / 命令层 `/task new`、`/task resume`）也要过**同一套
+ * 簿记** —— 否则改了状态却不推 TUI（2026-09-18 实测的三条旁路）。 */
+void edc_scheduler_task_moved(struct edc_scheduler *sched, struct edc_task *task)
+{
+    struct edc_advance_result res;
+    memset(&res, 0, sizeof(res));
+    res.outcome = EDC_STEP_BLOCKED;
+    res.changed = true;
+    edc_scheduler_apply_advance(sched, task, NULL, &res);
+}
 
 /* ── actor 事件 → 归一化 → executor ──────────────────────────
  * scheduler 只负责"按 request_id 找 task"与"丢弃已取消的迟到事件" ——
@@ -1287,7 +1242,8 @@ static void sched_handle_llm_resp(struct edc_scheduler *sched, struct edc_actor_
     struct edc_task *task = edc_scheduler_find_task(sched, msg->request_id);
     if (!task || task->cancelled_request)
         return;
-    edc_executor_advance_llm_resp(&sched->executor, task, msg->request_id, msg->data);
+    struct edc_advance_result res = edc_executor_advance_llm_resp(&sched->executor, task, msg->request_id, msg->data);
+    edc_scheduler_apply_advance(sched, task, msg->request_id, &res);
 }
 
 static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor_msg *msg)
@@ -1295,7 +1251,8 @@ static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor
     struct edc_task *task = edc_scheduler_find_task(sched, msg->request_id);
     if (!task || task->cancelled_request)
         return;
-    edc_executor_advance_tool_resp(&sched->executor, task, msg->request_id, msg->data);
+    struct edc_advance_result res = edc_executor_advance_tool_resp(&sched->executor, task, msg->request_id, msg->data);
+    edc_scheduler_apply_advance(sched, task, msg->request_id, &res);
 }
 
 static void sched_handle_tool_started(struct edc_scheduler *sched, struct edc_actor_msg *msg)
@@ -1309,7 +1266,8 @@ static void sched_handle_tool_started(struct edc_scheduler *sched, struct edc_ac
     ev.kind = EDC_EVENT_TOOL_STARTED;
     ev.request_id = msg->request_id;
     ev.as.call_id = (const char *)msg->data;
-    edc_executor_advance(&sched->executor, task, &ev);
+    struct edc_advance_result res = edc_executor_advance(&sched->executor, task, &ev);
+    edc_scheduler_apply_advance(sched, task, msg->request_id, &res);
 }
 
 /* toolbox 把工具结果回显到终端 (TOOL 消息)。这一跳只出**内核独有的权威**,
@@ -1331,7 +1289,7 @@ static void sched_handle_tool_emit(struct edc_scheduler *sched, struct edc_actor
         return;
 
     /* 没有属主就没有可投递的地方 (P3 ③: 不再回退到"当前绑定")。 */
-    struct edc_session *own = sched_task_session(task);
+    struct edc_session *own = edc_task_session(task);
     if (!own)
         return;
     /* 展示闸门已移到前端 (P3 ③): core 不再问"谁在看" (它已经没有"当前 session"

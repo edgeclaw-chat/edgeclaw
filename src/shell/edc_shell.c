@@ -305,6 +305,8 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
             bool ok = edc_task_await_exec(task);
             log_info("%s spawn: set_state LLM_PROCESSING -> %s, send_llm=%s", reply_prefix, ok ? "ok" : "FAILED",
                      (sched && sched->send_llm) ? "ready" : "NULL");
+            if (ok)
+                edc_scheduler_task_moved(sched, task);
             if (ok && sched && sched->send_llm)
                 sched->send_llm(sched, task, req_id);
         }

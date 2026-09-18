@@ -2,6 +2,7 @@
 #include "edc_compat.h"
 #include "edc_context.h"
 #include "edc_session.h"
+#include "edc_task_group.h"
 #include "utlist_fix.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -996,6 +997,13 @@ sds edc_task_get_output(struct edc_task *task)
     return task->output;
 }
 
+void edc_task_set_completion_seq(struct edc_task *task, uint32_t seq)
+{
+    if (!task)
+        return;
+    task->completion_seq = seq;
+}
+
 /* ── 折叠 ────────────────────────────────────────────────── */
 
 /* 可折叠 = 已终结、且还没折过、且**这个任务是要留下来的** (PERSISTENT)。
@@ -1106,4 +1114,40 @@ cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *c
     }
 
     return messages;
+}
+
+/* ── 关系 / 出站 (见 edc_task.h) ───────────────────────────── */
+
+struct edc_session *edc_task_session(const struct edc_task *task)
+{
+    if (!task || !task->group)
+        return NULL;
+    return task->group->session;
+}
+
+void edc_task_flush_redirects(struct edc_task *task)
+{
+    if (!task)
+        return;
+
+    if (task->redirect_stdout)
+    {
+        FILE *f = fopen(task->redirect_stdout, task->redirect_append ? "a" : "w");
+        if (f)
+        {
+            if (task->output)
+                fputs(task->output, f);
+            fclose(f);
+        }
+    }
+    if (task->redirect_stderr)
+    {
+        FILE *f = fopen(task->redirect_stderr, "w");
+        if (f)
+        {
+            if (task->output)
+                fputs(task->output, f);
+            fclose(f);
+        }
+    }
 }

@@ -468,6 +468,26 @@ extern bool edc_task_has_pending_tool_calls(const struct edc_task *task);
 extern void edc_task_set_output(struct edc_task *task, sds output);
 extern sds edc_task_get_output(struct edc_task *task);
 
+/* ── 完成序号 ──────────────────────────────────────────────────
+ * 序号按**属主容器内的完成次序**分配 —— 那是 task 之间的排序, 所以**发号权在
+ * 宿主**（scheduler）; task 模块只负责落笔。0 = 未完成/不参与序列
+ * （`sink=GROUP_MEMORY` 的 system task 不取号）。 */
+extern void edc_task_set_completion_seq(struct edc_task *task, uint32_t seq);
+
+/* ── 关系 / 出站 ────────────────────────────────────────────
+ *
+ * 两件以前挂在 executor 的 ops 端口上的事, 其实只需要 task 自己:
+ *   - `task_session`: task 的属主关系 (task->group->session) —— 以前 scheduler
+ *     与 executor 各写一份同样的三元表达式;
+ *   - `flush_redirects`: 只读 task 的 redirect_* / output 字段 + 写文件。
+ * 两者都不需要宿主, 所以从 ops 退休、归 task 模块 (唯一权威)。 */
+
+/** task 的属主 session (= task->group->session); 没有 group 时为 NULL。 */
+extern struct edc_session *edc_task_session(const struct edc_task *task);
+
+/** 把 task 的输出按重定向 (> / >> / 2>) 落盘。纯 task 字段 + stdio。 */
+extern void edc_task_flush_redirects(struct edc_task *task);
+
 /* ── 折叠 ────────────────────────────────────────────────── */
 
 /** task 是否可折叠: 已完成且 turns 尚未折叠进 group memory */

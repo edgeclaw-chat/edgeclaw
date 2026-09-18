@@ -18,6 +18,7 @@
 #include "sds.h"
 #include "cJSON.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 /* 前置声明：下面多处只用到指针。缺了它，原型里出现的 `struct edc_executor *`
  * 会在参数表作用域里自成一个类型，与后面的真正定义冲突（C 的经典坑）。 */
@@ -82,14 +83,15 @@ struct edc_event_tool_done
     bool has_next; /* tool chain 里还有下一个 → 不续发 LLM */
 };
 
-/* 信号也是事件（docs/runtime-model.md §2.8）：迟到完成事件必须无害、
- * 信号直接改 task 状态、参数里的持久化只属于显式取消那条路。 */
+/* 信号也是事件（docs/runtime-model.md §2.8）：迟到完成事件必须无害、信号直接改
+ * task 状态。
+ *
+ * 以前这里还有个 `persist`（"显式取消要立即落盘"）—— 现在它是**宿主的局部事实**:
+ * 发信号的那条路径只有 `/task stop`, 落盘由宿主在事件返回之后自己做（§2.2:
+ * 持久化是容器的语义, 不属于 task 之内的推进）。executor 不再读它。 */
 struct edc_event_signal
 {
     edc_task_signal sig;
-    /* persist = 显式取消（用户 /task stop 那条路）要立即落盘 + 推快照。
-     * group/session 的**扇出**今天就不落盘 —— 这个不对称原样保留（台账）。 */
-    bool persist;
 };
 
 struct edc_event
@@ -114,62 +116,84 @@ typedef enum
     EDC_STEP_ERROR,   /* 失败（task 已 ERROR） */
 } edc_step_outcome;
 
+/* ── 一次推进的**事实** ──────────────────────────────────────
+ * 这不是「效果清单」—— 里面没有命令、没有「请帮我做 X」。全是**已经在 task 上
+ * 发生的事**的摘要, 由调用方（scheduler）自己决定据此告诉谁。
+ *
+ * 判据（docs/executor-outbound-boundary.md §2）:
+ *   「发起下一步 I/O」是 executor 的事 —— 否则它没有推进;
+ *   「把结果告诉外界」是 scheduler 的事 —— 否则它在管业务。 */
+struct edc_advance_result
+{
+    edc_step_outcome outcome; /* DONE / BLOCKED / ERROR（语义不变） */
+
+    /* 这次推进改了 step 或 life。executor 在入口处快照、出口处比较得出来 ——
+     * 所以它覆盖了所有内部路径, 包括不经 edc_task_move 的信号路径。 */
+    bool changed;
+
+    /* 这次推进**决定**让任务终结（COMPLETED / ERROR / CANCELLED）。
+     * 由分支**显式**给出, 不由 `changed` 推出来: 转移可能被状态机拒绝, 而
+     * "已经决定终结"这件事仍然成立（消息照样要发出去）—— 与今天一致。 */
+    bool settled;
+
+    /* 要交付给外界的文本。**借用指针**, 有效期 = 「本函数返回后, 调用方处理完
+     * 这个结果为止」（投递就发生在那一瞬间, 所以不需要所有权转移协议）。
+     * 无产出则 NULL。executor 保证它活得住的办法见 .c 里的三条来源注释。 */
+    const char *notice;
+};
+
 /* ── 出站 ops（kernel → 世界）──────────────────────────────── */
 
 /* `ctx` 一律是 scheduler（executor 不持有它，只透传）。
- * 这些调用今天全部已在 sched_handle_* 里出现 —— 本接口只是把它们显式化，
- * **不新增任何行为**。 */
+ *
+ * **准入判据 = "发起下一步 I/O"**（docs/executor-outbound-boundary.md §2）:
+ *
+ *   > 发起下一步 I/O 是 executor 的事 —— 否则它没有推进;
+ *   > 把结果告诉外界是 scheduler 的事 —— 否则它在管业务。
+ *   > 状态机是 task 模块的事。
+ *
+ * 这是**职责**判据, 不是位置判据。前两版判据都不够用, 记在这里避免第三次返工:
+ *   - "需不需要宿主私有状态" → 把 task 之间的依赖边与内容轴误删 (薄 thunk ≠ 之内);
+ *   - "是不是 task 之内"     → 漏掉 `send_reply` (它既非之内也非之间, 是"出 kernel",
+ *                              被包依赖环这个理由掩盖过去了)。
+ * `send_llm` 与 `send_reply` 住在**同一个包依赖环**里, 位置判据分不开它们;
+ * 职责判据一句话分开: **`send_reply` 不发起, 任务照样推进完了。**
+ *
+ * 所以这张表**只剩 2 项**, 而且它们也正好是那个环的两条边 —— 两个独立理由
+ * 指向同一结果:
+ *
+ *   - `send_llm`        —— 推理, 推进的下一步;
+ *   - `dispatch_tools`  —— 工具 I/O, 推进的下一步。
+ *
+ * **其余 9 项不是"换个地方调用", 而是从接口里消失** —— 它们变成
+ * `struct edc_advance_result`（事实）+ scheduler 的 `sched_apply_advance`（策略）:
+ *
+ *   | 消失的 op | 现在归谁 |
+ *   |---|---|
+ *   | set_task_state / unregister_task | executor 直调 `edc_task_move`; 簿记在 scheduler |
+ *   | mark_dirty | scheduler（推 TUI 是展示逻辑） |
+ *   | notify_dependents / start_queued_dependents | scheduler（依赖 DAG = task 之间） |
+ *   | deliver_group_memory / send_reply | scheduler（产出**给谁** = 业务/装配） |
+ *   | next_completion_seq | scheduler（容器内的完成次序 = task 之间） |
+ *   | on_task_settled | scheduler（收尾的两个订阅者：折叠 + 落盘） |
+ *
+ * **仍然不在这张表里的**（task 之内, 或只需读 config）:
+ *   - task 模块调用（`edc_task_*` / `edc_turn_*`，含 `edc_task_flush_redirects`）；
+ *   - `edc_task_move`（状态机；非法转移由它拒绝）；
+ *   - `max_iter` → 直读 `config`（它是**运行预算**：决定要不要续发）。
+ *
+ * **可机械跑的判据**（runtime-model.md §8；口径同判据 5 = **剥掉注释后数标识符**）:
+ *   ① 本头文件剥注释后，session / channel / fold / 脏表 四类符号计数全为 **0**;
+ *   ② `edc_executor.c` 里 `ops->` 只剩 4 处（send_llm×2 + dispatch_tools×2 ——
+ *      每个「×2」是一次空判 + 一次调用）。
+ *   两条的完整命令记在 runtime-model.md §8。 */
 struct edc_executor_ops
 {
     /* 派发一轮 LLM 请求。调用方负责已自增 llm_rounds（与今天一致）。 */
     void (*send_llm)(void *ctx, struct edc_task *task, void *request_id);
 
-    /* 向 channel 发一条消息。 */
-    void (*send_reply)(void *ctx, struct edc_task *task, const char *content, edc_channel_message_type msg_type,
-                       void *request_id);
-
-    /* ── sink = GROUP_MEMORY 的产出落地 ──
-     * 产出送到哪由 `task->sink` 决定 (runtime-model.md §1.4 / §5 规则 7: 分流这一处
-     * 在 executor, 镜像装配那处读点另算), 但"记忆"是什么、怎么合并、水位怎么推,
-     * 是 scheduler 的事 —— 这里只把结果转交。实现见 sched_deliver_group_memory。
-     * (fold 原来是 memory_actor 的专用协议 GROUP_FOLD_DONE; 现在它就是一次
-     *  普通任务的完成, 产出按 sink 分流。) */
-    void (*deliver_group_memory)(void *ctx, struct edc_task *task, const char *content);
-
+    /* 派发本轮工具调用链。 */
     void (*dispatch_tools)(void *ctx, struct edc_task *task, void *tool_calls, void *request_id);
-
-    /* ── task 之间的事：executor 只**请求**，由 scheduler 执行 ── */
-
-    void (*set_task_state)(void *ctx, struct edc_task *task, edc_task_step step, edc_task_life life);
-    void (*unregister_task)(void *ctx, void *request_id);
-    void (*notify_dependents)(void *ctx, struct edc_task *task);
-    void (*flush_redirects)(void *ctx, struct edc_task *task);
-    /* 完成的任务其 session 的树可能变了 (turn 提交进 session, 侧栏计数变了)。
-     * ①b 起这里是**事件**: 只通知属主 session "变了", 树要等前端点名才序列化 ——
-     * 所以不再需要"是不是前台 active task"的闸门 (that gate compared against the
-     * *bound* session)。 */
-    void (*task_snapshot)(void *ctx, struct edc_task *task);
-    /* 完成时补推快照的条件 —— "这个 task 此刻在被显示吗" = **展示逻辑**
-     *（规则 8：active-task 闸门属于展示层，不属于 task 之内的推进）。 */
-    /* task 完成后的依赖链再启动（task 之间的事，归 scheduler）。 */
-    void (*start_queued_dependents)(void *ctx, struct edc_task *task);
-
-    /* 前台状态变了 → 推一次通知（展示逻辑）。 */
-    void (*notify_foreground_state)(void *ctx, struct edc_task *task);
-
-    /* ── 环境查询 ── */
-    struct edc_session *(*task_session)(void *ctx, struct edc_task *task); /* task 的属主 session */
-    /* 今天 sched_handle_llm_resp 里的 `no_key` 表达式原样搬来（含 config 为
-     * NULL 时判 false 的语义）—— 命名成 no_api_key 就是为了不含糊。 */
-    bool (*no_api_key)(void *ctx);
-    int (*max_iter)(void *ctx); /* <= 0 = 不限制 */
-
-    /* ── 其它出站 ── */
-    /* task 收尾 (结果已交付、副作用已做完): 名字是**结构词** —— core 不解释它,
-     * 唯一的订阅者在内容轴 (group_fold 检查该不该折叠记忆; §8 验收判据 5: 内容词
-     * 只出现在订阅者那一侧)。 */
-    void (*on_task_settled)(void *ctx);
-    void (*save_session)(void *ctx, struct edc_session *s);
 };
 
 /* ── 边界适配 ────────────────────────────────────────────────
@@ -181,12 +205,12 @@ struct edc_executor_ops
  *（scheduler 的分发器）连结构体名字都不必写。 */
 
 /* BC_ACTOR_MSG_LLM_RESPONSE */
-edc_step_outcome edc_executor_advance_llm_resp(struct edc_executor *ex, struct edc_task *task, void *request_id,
-                                               void *resp);
+struct edc_advance_result edc_executor_advance_llm_resp(struct edc_executor *ex, struct edc_task *task,
+                                                       void *request_id, void *resp);
 
 /* BC_ACTOR_MSG_TOOL_RESPONSE */
-edc_step_outcome edc_executor_advance_tool_resp(struct edc_executor *ex, struct edc_task *task, void *request_id,
-                                                void *req);
+struct edc_advance_result edc_executor_advance_tool_resp(struct edc_executor *ex, struct edc_task *task,
+                                                         void *request_id, void *req);
 
 /* TOOL_EMIT 的展示字段。emit 的负载被当成不透明指针，字段在这里取出 ——
  * 于是"该不该显示"的判断可以留在 scheduler（它是展示逻辑），
@@ -205,9 +229,14 @@ struct edc_executor
 {
     const struct edc_executor_ops *ops;
     void *ctx; /* 透传给 ops（= scheduler） */
+    /* 进程级配置 (只读)。executor 需要的**环境事实**（api_key 有无 / max_iter）
+     * 直接从这里读 —— 它们是配置只读, 不是宿主私有状态, 没必要走端口。
+     * 只有指针, 所有权仍在 app；scheduler 构造时把 config 递进来。 */
+    const struct edc_config *config;
 };
 
-void edc_executor_init(struct edc_executor *ex, const struct edc_executor_ops *ops, void *ctx);
+void edc_executor_init(struct edc_executor *ex, const struct edc_executor_ops *ops, void *ctx,
+                       const struct edc_config *config);
 
 /* 拿到一个事件，决定下一步并触发副作用。
  * 调用前提：task 已由 scheduler 按 request_id 找到，且未被取消
@@ -215,7 +244,9 @@ void edc_executor_init(struct edc_executor *ex, const struct edc_executor_ops *o
  * 取消状态，不是 task 之内的推进）。
  * **ev 非 const**：其中 `msg` / `tool_calls_raw` 的所有权会按需**转移**，
  * 被接手后 advance 把它们置 NULL —— 与今天 sched_handle_llm_resp 的
- * "消掉即置 NULL" 约定逐字一致（适配器据此回写源结构，避免双重释放）。 */
-edc_step_outcome edc_executor_advance(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev);
+ * "消掉即置 NULL" 约定逐字一致（适配器据此回写源结构，避免双重释放）。
+ * 返回值见 `struct edc_advance_result`；调用方**必须**把它交给策略点
+ * （scheduler 的 sched_apply_advance），否则簿记/交付会丢。 */
+struct edc_advance_result edc_executor_advance(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev);
 
 #endif /* EDC_EXECUTOR_H */

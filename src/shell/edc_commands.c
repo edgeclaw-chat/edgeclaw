@@ -723,6 +723,8 @@ done:
         log_info("/task new spawn: task=%s set_state LLM_PROCESSING -> %s, send_llm=%s", task->task_id,
                  ok ? "ok" : "FAILED",
                  (sched && sched->send_llm) ? "ready" : "NULL");
+        if (ok)
+            edc_scheduler_task_moved(sched, task);
         if (ok && sched && sched->send_llm)
             sched->send_llm(sched, task, req_id);
         }
@@ -1150,6 +1152,8 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
         bool ok = edc_task_await_exec(child);
         log_info("/task fork spawn: task=%s set_state LLM_PROCESSING -> %s, send_llm=%s", child->task_id,
                  ok ? "ok" : "FAILED", (sched && sched->send_llm) ? "ready" : "NULL");
+        if (ok)
+            edc_scheduler_task_moved(sched, child);
         if (ok && sched && sched->send_llm)
             sched->send_llm(sched, child, req_id);
     }

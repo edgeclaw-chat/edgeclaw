@@ -329,6 +329,25 @@ extern bool edc_scheduler_has_active_tasks(struct edc_scheduler *sched, struct e
 extern void edc_scheduler_register_task(struct edc_scheduler *sched, struct edc_task *task, void *request_id);
 extern void edc_scheduler_unregister_task(struct edc_scheduler *sched, void *request_id);
 
+/** 宿主自己改过 task 状态之后，补上簿记（回收队列 + 置脏）。
+ *
+ *  派发路径与命令层（`/task new`、`/task fork`、`/task resume`）直接调
+ *  `edc_task_await_exec()` 改状态，**绕过了 executor 的推进** —— 那就绕过了
+ *  `sched_apply_advance` 的簿记。调用这个函数把状态变化补上，否则改了状态却不推
+ *  TUI（2026-09-18 实测缺口）。
+ *  安全的空操作：`sched_queue_reap` 自己只挑 TRANSIENT + 终态的成员。 */
+extern void edc_scheduler_task_moved(struct edc_scheduler *sched, struct edc_task *task);
+
+/** 一次推进之后**唯一**的策略点：把 `struct edc_advance_result`（事实）翻译成
+ *  "该告诉谁" —— 索引 / 回收队列 / 脏表 / 依赖者 / 产出交付 / 折叠 / 落盘。
+ *
+ *  **契约**：凡是驱动 executor 的地方，拿到返回值后**必须**调它，否则簿记与交付
+ *  会丢。4 个事件调用点（LLM 响应 / 工具响应 / 工具开始 / 信号）走它; 测试直接
+ *  驱动 executor 时也要走它（见 tests/test_system_task.c、tests/test_group_fold.c）。
+ *  宿主自己发起的转移用 `edc_scheduler_task_moved`。 */
+extern void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *task, void *req_id,
+                                       const struct edc_advance_result *res);
+
 /* ── 信号 ──────────────────────────────────────────────────── */
 
 extern void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, struct edc_session *session,
