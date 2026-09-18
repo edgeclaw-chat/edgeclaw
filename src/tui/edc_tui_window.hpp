@@ -100,6 +100,8 @@ class TUIWindow : public ::ftxui::ComponentBase
     /* 退出"只看历史"模式, 回到实时流 (重放本次对话转录)。纯视图动作: kernel 不知道
      * 谁在看什么, 也不留任何状态。Esc 调它。 */
     void ExitHistoryView();
+    /* 现在是不是在"只看历史"的视图里 (只读谓词: 给测试一个不靠帧的判据)。 */
+    bool InHistoryView() const { return history_view_; }
     static void on_channel_adapter_send(void *instance, struct edc_channel_message *message);
 
   private:

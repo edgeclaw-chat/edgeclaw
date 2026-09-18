@@ -325,6 +325,10 @@ void TestTaskHistoryPayloadBecomesBubbles(edc::TUIWindow &win)
     Feed(win, MakeMsg(HARNESS_MSG_TASK_HISTORY, task_payload, "", ""));
     frame = FrameOf(win);
     Check(Has(frame, "HIST_REPLY_MARKER"), "只看模式: 历史替换了对话区");
+    Check(win.InHistoryView(), "只看模式: 视图状态位立起来了");
+    Check(!Has(frame, "输入消息"), "只看模式: 输入框消失");
+    Check(win.OnEvent(::ftxui::Event::Character("x")) && win.OnEvent(::ftxui::Event::Return),
+          "只看模式: 字符与回车都被吞掉 (不可输入)");
     Feed(win, MakeMsg(HARNESS_MSG_RESP, "LIVE_WHILE_HISTORY_MARKER", "", ""));
     frame = FrameOf(win);
     Check(!Has(frame, "LIVE_WHILE_HISTORY_MARKER"), "只看模式: 实时产出不上屏");
@@ -334,6 +338,7 @@ void TestTaskHistoryPayloadBecomesBubbles(edc::TUIWindow &win)
     /* "回到实时流"的可观测判据 = 实时产出又能上屏 (转录重放发生在 harness 里看不到文件那一侧)。 */
     Feed(win, MakeMsg(HARNESS_MSG_RESP, "LIVE_AFTER_ESC_MARKER", "", ""));
     frame = FrameOf(win);
+    Check(!win.InHistoryView(), "Esc 之后视图状态位落下");
     Check(Has(frame, "LIVE_AFTER_ESC_MARKER"), "Esc 之后实时产出又上屏");
 }
 

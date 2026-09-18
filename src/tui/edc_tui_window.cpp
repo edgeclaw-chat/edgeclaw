@@ -796,7 +796,26 @@ void TUIWindow::TickAnimations()
             screen_->RequestAnimationFrame();
     }
 
-    ::ftxui::Elements children = {chat | ::ftxui::flex, ::ftxui::separator(), input_row, ::ftxui::separator()};
+    // 只看模式: 输入组件**整块不渲染** (连它那两行分隔线一起) —— 面板只剩历史 + 状态行。
+    // 不拿一行文字去顶输入框的位置: 那样看着像"输入框还在, 只是被禁用", 比禁用它更怪。
+    // 返回提示做成历史面板右上角的一枚徽标 (与 "Copied" 芯片同一个 dbox 手法)。
+
+    ::ftxui::Elements children = {chat | ::ftxui::flex, ::ftxui::separator()};
+    if (!history_view_)
+    {
+        children.push_back(input_row);
+        children.push_back(::ftxui::separator());
+    }
+
+    // 只看模式: 输入组件整块不在屏上, 返回提示就放底部这一行 (与状态行同一个位置)。
+    // 输入框原来的位置上**什么都不摆** —— 摆一行字反而像"输入框被禁用了"。
+    if (history_view_)
+    {
+        children.push_back(::ftxui::hbox({::ftxui::text(" 历史 · Esc 返回 ") |
+                                          ::ftxui::color(style::palette().accent)}));
+        children.push_back(::ftxui::text(""));
+        return ::ftxui::vbox(std::move(children));
+    }
 
     if (working_)
     {
@@ -1008,12 +1027,19 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
         return input_->OnEvent(event);
     }
 
-    // 只看模式下的 Esc: 回实时流 (重放转录)。放在 /connect 弹窗之后: 弹窗开着时
-    // Esc 归它 (先关弹窗), 这也是"最内层先拿事件"的老规矩。
-    if (history_view_ && event == ::ftxui::Event::Escape)
+    // 只看模式: 整块左侧是"读 history"的视图。它**不接受输入** —— 输入框已经不在屏上,
+    // 字符与回车一律吞掉 (鼠标与滚动照旧放行, 历史要能滚)。唯一能做的事是 Esc: 回实时流
+    // (重放转录)。这一块放在 /connect 弹窗之后: 弹窗开着时 Esc 归它 (先关弹窗),
+    // 这也是"最内层先拿事件"的老规矩。
+    if (history_view_)
     {
-        ExitHistoryView();
-        return true;
+        if (event == ::ftxui::Event::Escape)
+        {
+            ExitHistoryView();
+            return true;
+        }
+        if (event.is_character() || event == ::ftxui::Event::Return)
+            return true;
     }
 
     // Alt+Enter arrives as ESC-prefixed Return: the terminal (raw mode, ICRNL
