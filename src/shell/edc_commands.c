@@ -578,12 +578,6 @@ static bool edc_commands_handle_session( struct edc_session_manager *sm, struct 
 
 /* ── /task commands ─────────────────────────────────────────― */
 
-/* 命令层派发任务时用的 request id。**这一文件里所有派发点共用同一个计数器** ——
- * 各自 `static int64_t counter = 0` 的话都从 1 开始, 两个命令会发出**相同**的 id,
- * 而 scheduler 的 task_hash 正是以 request id 为键。
- * (注: edc_shell.c 的 AST 派发点另有自己的计数器, 尚未合并 —— 既有偏离, 不在本批。) */
-static int64_t g_cmd_req_seq = 0;
-
 /* ── 这条输入属于哪个 session (P3) ──────────────────────────
  *
  * 命令建出来的任务/组必须落在**输入自己声明**的 session 上, 而不是"当前绑定"
@@ -684,15 +678,16 @@ static void edc_commands_handle_task_new( struct edc_session_manager *sm, struct
 done:
     /* desc 就是 input, 任务**创建即运行** (2026-09-14 决定)。此前这里只建不派发,
      * 任务停在 WAITING_INPUT 且**永远等不到输入** —— 没有任何代码会给它,
-     * 那是个死胡同。派发与 shell 的创建路径 (edc_shell.c) 走同一条:
-     * 建 turn -> 注册 -> 置 LLM_PROCESSING -> send_llm。
+     * 那是个死胡同。**跑起来**这件事现在由消息末尾的调度负责 (唯一驱动入口,
+     * 见 edc_scheduler_schedule): 这里只把 turn 装上, 谁都可以建任务 ——
+     * 建完就被扫描按状态认出来, 不再需要每个创建点自己记得派发。
      *
      * 放在 `done:` **之后**: 指定已存在 group 的那条路是 `goto done` 过来的,
      * 放前面会被跳过, 于是 `--group` 创建的任务又不跑了。 */
     if (task && opts.desc && sdslen(opts.desc) > 0)
     {
-        /* desc 就是 input: 先把 turn 装上 —— 普通任务与 --suspended 任务在**这一点
-         * 上完全一样** (初始相位相同), 区别只在下面那一步"立即执行"。 */
+        /* desc 就是 input: 把 turn 装上 —— 普通任务与 --suspended 任务在**这一点
+         * 上完全一样** (初始相位相同), 区别只在 life (挂起的不在扫描的谓词里)。 */
         struct edc_turn *turn = edc_turn_new();
         turn->task_id = strdup(task->task_id);
         edc_turn_add_user_message(turn, opts.desc);
@@ -700,33 +695,14 @@ done:
 
         if (opts.suspended)
         {
-            /* --suspended: 到此为止。不注册请求、不进 LLM_PROCESSING —— 停在
-             * SUSPENDED, 等 /task resume。有依赖的照样等依赖 (resume 之后走的
-             * 就是普通路径)。 */
+            /* --suspended: turn 装好, life 置挂起 —— 扫描不认它, 等 /task resume。 */
             bool ok = edc_task_mark_suspended(task);
             log_info("/task new: task=%s created SUSPENDED -> %s (awaiting /task resume)", task->task_id,
                      ok ? "ok" : "FAILED");
         }
         else if (edc_task_awaits_deps(task))
         {
-            log_info("/task new spawn: task %s blocked in WAITING_DEPS, turn queued", task->task_id);
-            edc_cmd_task_opts_free(&opts);
-            return;
-        }
-        else
-        {
-        void *req_id = (void *)(intptr_t)(++g_cmd_req_seq);
-        edc_scheduler_register_task(sched, task, req_id);
-        task->current_request_id = req_id;
-
-        bool ok = edc_task_await_exec(task);
-        log_info("/task new spawn: task=%s set_state LLM_PROCESSING -> %s, send_llm=%s", task->task_id,
-                 ok ? "ok" : "FAILED",
-                 (sched && sched->send_llm) ? "ready" : "NULL");
-        if (ok)
-            edc_scheduler_task_moved(sched, task);
-        if (ok && sched && sched->send_llm)
-            sched->send_llm(sched, task, req_id);
+            log_info("/task new: task %s waits for its dependencies, turn queued", task->task_id);
         }
     }
 
@@ -1146,16 +1122,8 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
     }
     else
     {
-        void *req_id = (void *)(intptr_t)(++g_cmd_req_seq);
-        edc_scheduler_register_task(sched, child, req_id);
-        child->current_request_id = req_id;
-        bool ok = edc_task_await_exec(child);
-        log_info("/task fork spawn: task=%s set_state LLM_PROCESSING -> %s, send_llm=%s", child->task_id,
-                 ok ? "ok" : "FAILED", (sched && sched->send_llm) ? "ready" : "NULL");
-        if (ok)
-            edc_scheduler_task_moved(sched, child);
-        if (ok && sched && sched->send_llm)
-            sched->send_llm(sched, child, req_id);
+        /* 跑起来由消息末尾的调度负责 (唯一驱动入口) —— 这里只把 turn 装上。 */
+        log_info("/task fork: task=%s turn attached (deps_total=%zu)", child->task_id, child->deps_total);
     }
 
     sds reply = sdscatprintf(sdsempty(), "**Fork created** — `%s` from `%s` · group `%s` · fork point %zu",

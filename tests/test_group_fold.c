@@ -33,13 +33,18 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
-/* ── 这一层没有 session 仓库 ────────────────────────────────────
- * 折叠本体不需要 store: 会话是测试直接建的 (edc_session_new), 没有 manager。
- * 句柄留空 → 标签一律解析不出来 (与改动前"恒 NULL 的假读口"行为一致)。 */
+/* ── 这一层的 session 仓库 ──────────────────────────────────────
+ * 折叠本体不需要 store (会话是测试直接建的), 但**调度需要** —— 消息末尾的扫描从
+ * 仓库枚举任务 (仓库为 NULL 就没人可扫, "跑"这一步会静默不发生)。所以这里给一个
+ * 只装着这个 session 的内存 manager: 与别的测试同一套做法, 不碰磁盘。 */
 static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
 {
-    (void)sess;
-    sched->sessions = NULL;
+    struct edc_session_manager *sm = g_new0(struct edc_session_manager, 1);
+    sm->sessions = g_new0(struct edc_session *, 1);
+    sm->sessions[0] = sess;
+    sm->session_count = sess ? 1 : 0;
+    sm->active_index = 0;
+    sched->sessions = sm; /* 测试进程内不释放: 与测试同生共死 */
 }
 volatile sig_atomic_t _run_loop = 1;
 
@@ -115,6 +120,14 @@ static void stub_send_llm(struct edc_scheduler *sched, struct edc_task *task, vo
     (void)task;
     (void)request_id;
     g_send_llm_calls++;
+}
+
+/* 折叠任务也是**普通任务**: 起折叠只把 prompt 装上, "跑"发生在消息末尾的调度
+ * (actor handler 每条消息末尾调 `edc_scheduler_schedule`)。测试里直接调那个入口,
+ * 等价于"这条消息处理完了"。 */
+static void pump_schedule(struct edc_scheduler *sched)
+{
+    edc_scheduler_schedule(sched);
 }
 
 static int count_folded(struct edc_task_group *group)
@@ -244,6 +257,7 @@ static void test_fold_runs_as_a_system_task(void)
     uint32_t seq_before = group->folded_through_completion_seq;
 
     CHECK(edc_group_fold_start(sched, session, group) != NULL, "折叠任务起来了");
+    pump_schedule(sched);
     CHECK(g_send_llm_calls == 1, "折叠 prompt 作为一次普通 LLM 请求发出去了");
 
     /* ① 它是一条**普通任务**, 只是三个属性不同。 */
@@ -362,6 +376,7 @@ static void test_fold_failure_keeps_memory(void)
     group->memory = sdsnew("# memory before");
 
     CHECK(edc_group_fold_start(sched, session, group) != NULL, "起了一次折叠");
+    pump_schedule(sched);
     struct edc_task *fold = edc_session_find_system_group(session)->members;
 
     /* 空的 LLM 回复 (旧实现里这也算失败) */
@@ -437,6 +452,7 @@ static void test_fold_task_is_not_persisted(void)
     add_foldable_task(ctrl, cgroup, "2", 2, 6, "work");
 
     CHECK(edc_group_fold_start(sched, session, group) != NULL, "折叠在飞");
+    pump_schedule(sched);
 
     cJSON *j_with = edc_state_serialize(session, sched);
     cJSON *j_ctrl = edc_state_serialize(ctrl, ctrl_sched);
@@ -504,6 +520,10 @@ static void test_try_scans_all_sessions(void)
     sm.active_index = 0;
     sm.config = cfg;
 
+    /* 调度器看到的仓库 = 同一个 (它按这个枚举任务: 折叠任务落在 busy, 不在 idle)。
+     * 这两行从前靠 "fold 直接 send_llm" 掩盖 —— 现在"跑"要经调度, 仓库必须是真那份。 */
+    sched->sessions = &sm;
+
     CHECK(!edc_group_fold_try(NULL, &sm, cfg), "NULL scheduler 不折");
     CHECK(!edc_group_fold_try(sched, NULL, cfg), "NULL 仓库不折");
 
@@ -515,6 +535,7 @@ static void test_try_scans_all_sessions(void)
     /* ① 扫所有 session: 第二个 session 里的组被折 */
     g_send_llm_calls = 0;
     CHECK(edc_group_fold_try(sched, &sm, cfg), "第二个 session 里的组被折了 (扫全部)");
+    pump_schedule(sched);
     CHECK(g_send_llm_calls == 1, "折叠 prompt 真发出去了一次 LLM 请求");
     CHECK(edc_scheduler_has_pending_system_task(busy), "busy 里已有折叠在飞");
 

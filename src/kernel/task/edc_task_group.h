@@ -71,9 +71,9 @@ extern void edc_task_group_history_add_ref(struct edc_task_group *group, cJSON *
 extern void edc_task_group_set_leader(struct edc_task_group *group, struct edc_task *new_leader);
 extern void edc_task_group_mark_orphaned(struct edc_task_group *group);
 
-extern void edc_task_group_send_signal(struct edc_task_group *group, edc_task_signal sig);
-/** 只对"正在执行"的成员发信号 (edc_task_is_running), 其余成员原样保留。 */
-extern void edc_task_group_send_signal_running(struct edc_task_group *group, edc_task_signal sig);
+/* 逐成员发信号在 scheduler (它要顺带给每个成员做宿主簿记); 组里只留自己那部分
+ * 收尾 —— leader 被取消则组标记孤儿。 */
+extern void edc_task_group_finish_signal(struct edc_task_group *group);
 
 extern bool edc_task_group_is_foreground_capable(struct edc_task_group *group);
 extern const char *edc_task_group_status_label(struct edc_task_group *group);

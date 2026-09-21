@@ -64,6 +64,16 @@ extern int edc_session_manager_index_of(struct edc_session_manager *sm, const ch
 extern struct edc_task *edc_session_manager_find_task_any(struct edc_session_manager *sm, const char *task_id,
                                                           struct edc_session **owner_out);
 
+/** 把**内存里**的每个 task 依次交给 |cb| (session 链序 × 组链序 × 成员链序)。
+ *
+ *  "内存里" = 已加载的 session 的组与成员; 未加载的 session 还没有树, 自然不在
+ *  枚举里。这是"全表扫描"那类需求 (调度器每条消息末尾的调度) 的唯一枚举口 ——
+ *  顺序固定, 调用方可以依赖它得到确定性的行为。
+ *
+ *  回调期间**不要**增删任务/组 (本轮调用只读 task 的字段)。 */
+typedef void (*edc_session_task_visit_fn)(void *ctx, struct edc_task *task);
+extern void edc_session_manager_foreach_task(struct edc_session_manager *sm, edc_session_task_visit_fn cb, void *ctx);
+
 /** Owning session of |task_id| when it is not loaded in memory yet, resolved via
  *  a lazily-built in-memory index (task_id → session_id), populated by parsing
  *  each unloaded session's session.json once. Returns NULL if no unloaded

@@ -5,6 +5,7 @@
 #include "edc_file_utils.h"
 #include "edc_group_fold.h"
 #include "edc_session.h"
+#include "edc_session_manager.h"
 #include "edc_session_store.h"
 #include "edc_turn.h"
 #include "log.h"
@@ -39,7 +40,6 @@ static void sched_trace_notify(const char *reason, const char *session_id);
 static void sched_queue_reap(struct edc_scheduler *sched, struct edc_task *task);
 /** 终结态 (COMPLETED / CANCELLED / ERROR) —— 定义在下面的回收一节。 */
 static bool sched_task_finished(struct edc_task *task);
-static void sched_move_task(struct edc_scheduler *sched, struct edc_task *task, edc_task_step step, edc_task_life life);
 static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *task, edc_task_step step,
                                   edc_task_life life);
 /* executor 的出站 ops 表（定义在文件后半；这里前向声明，供 new 里 init 用）。 */
@@ -349,6 +349,11 @@ struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, struct e
     if (sched->input_raw)
         task->raw_input = sdsnew(sched->input_raw);
 
+    /* 树上多了一个任务 = 这棵树变了 → 置脏 (本条消息末尾推一次快照)。
+     * 从前这口脏是"派发"那一步顺手置的 (sched_move_task); 派发统一归调度之后,
+     * 它必须由**创建**自己说 —— 否则 --suspended / 等依赖的任务不会出现在侧栏。 */
+    sched_mark_dirty(sched, session, "task");
+
     return task;
 }
 
@@ -431,17 +436,10 @@ bool edc_scheduler_has_pending_system_task(struct edc_session *session)
     return false;
 }
 
-/* system task 的 request_id: 高位段起步, 见 edc_scheduler.h 的说明。 */
-static int64_t g_system_req_seq = (int64_t)1 << 41;
-
-void *edc_scheduler_gen_system_request_id(void)
+bool edc_scheduler_attach_input(struct edc_scheduler *sched, struct edc_task *task, const char *input)
 {
-    return (void *)(intptr_t)(++g_system_req_seq);
-}
-
-bool edc_scheduler_dispatch_task(struct edc_scheduler *sched, struct edc_task *task, const char *input)
-{
-    if (!sched || !task || !input)
+    (void)sched;
+    if (!task || !input)
         return false;
 
     struct edc_turn *turn = edc_turn_new();
@@ -454,22 +452,113 @@ bool edc_scheduler_dispatch_task(struct edc_scheduler *sched, struct edc_task *t
     cJSON_AddStringToObject(msg, "content", input);
     edc_queue_push(&turn->messages, msg);
     task->active_turn = turn;
+    return true;
+}
 
-    void *req_id = edc_scheduler_gen_system_request_id();
+/* ── 驱动 + 调度（唯一入口）──────────────────────────────────
+ *
+ * **驱动** = 把一个"可跑"的任务交给 executor 的 START 事件, 并把结果过策略点。
+ * request_id 是 task 之间的索引 (task_hash 以它为键), executor 不认识它 —— 所以
+ * **发号与登记归这里**, 而"下一步发什么 I/O"归 executor。
+ *
+ * 从前这件事被抄了 6 份 (shell spawn / /task new / /task fork / dispatch_task /
+ * 排队的依赖 / resume), 而且顺序各不相同: shell 先登记再判依赖, /task new 反过来
+ * —— 于是"排队等依赖"的任务在两条路上一个带 request_id、一个是 NULL, 回包路由
+ * 结果完全不同 (实测: NULL 那条的响应永远找不到任务)。现在只有这一个出口。 */
+static void *sched_gen_request_id(void)
+{
+    /* 高位段起步: 进程内唯一, 不会与测试/调用方自造的小整数字面量撞 (task_hash
+     * 以指针为键, 撞了会把响应路由到别的任务)。 */
+    static int64_t seq = (int64_t)1 << 42;
+    return (void *)(intptr_t)(++seq);
+}
+
+/* 可跑 = 有活干、且此刻没人推它。依赖齐不齐**不问边**, 直接读 step —— 状态机
+ * 就是那个问题的权威 (只有"依赖齐了"与"依赖作废"两条路能把任务放进 READY)。 */
+static bool sched_task_runnable(struct edc_scheduler *sched, struct edc_task *task)
+{
+    return task && edc_task_is_ready(task) && task->active_turn &&
+           !edc_scheduler_task_has_unresolved_deps(sched, task);
+}
+
+static void sched_drive_task(struct edc_scheduler *sched, struct edc_task *task);
+
+/* 扫描的回调: 每个任务问一次"可跑吗"; 驱动成功 = 这一轮有进展。 */
+struct sched_sweep_ctx
+{
+    struct edc_scheduler *sched;
+    size_t driven;
+};
+
+static void sched_schedule_visit(void *ctx, struct edc_task *task)
+{
+    struct sched_sweep_ctx *sweep = ctx;
+    if (!sched_task_runnable(sweep->sched, task))
+        return;
+    sched_drive_task(sweep->sched, task);
+    sweep->driven++;
+}
+
+/* ── 调度：本条消息末尾的全表扫 ─────────────────────────────
+ *
+ * **表 = 内存里的全部任务** (session 链序 × 组链序 × 成员链序, 顺序固定)。枚举走
+ * store 的只读口 `edc_session_manager_foreach_task` —— 未加载的 session 还没有树,
+ * 所以"全表"天然等于"本进程已知的任务": 没有别的任务集合可扫, 也不需要额外过滤。
+ *
+ * **时机 = 每条入站消息的末尾** (actor handler 里, 回收之后、推快照之前)。没有
+ * tick, 所以消息边界就是 tick: 所有能改 task 相位的事都从 handler 进来, 在这里
+ * 扫一次就"不可能漏"。**不能放在单次推进之后** —— 一条消息里会有多次推进 (/session
+ * stop 逐个取消成员、失败级联传播), 那样会在取消进行到一半时把下游启动; 放在消息
+ * 末尾, 看到的是整条消息的最终状态, 因此"取消整组"之后一个请求都不会多发。
+ *
+ * **判据在状态上, 不在因果上**: 谁把任务弄成 READY 的 (完成 / 取消 / 失败 / 建边 /
+ * resume 兜底) 无关紧要 —— 这就是"转 READY 就顺手发出去"的完整实现, 它不需要任何
+ * 簿记 (没有就绪队列, 没有待驱动集, 扫描只读 task 的字段)。
+ *
+ * **扫到不动点**: 一次驱动**成功**时不产生新的可跑者, 但驱动**失败**会级联 ——
+ * 失败要广播, 它的 SEQUENCE 依赖者会被放行成 READY, 而那个任务可能排在扫描顺序的
+ * 更前面 (已经被看过一遍了)。所以扫完一轮还有进展就再扫一轮。
+ *
+ * **终止性**: 每个被驱动的任务这一轮必然离开 READY —— 要么进在途相位
+ * (`AWAIT_EXEC` / `AWAIT_TOOLS`), 要么进终态 (`ERROR`, 失败出口**不会**把任务留在
+ * 原地: 推不动就是失败)。所以可跑者数量每一轮严格减少, 轮数上界 = 可跑任务数 + 1。 */
+void edc_scheduler_schedule(struct edc_scheduler *sched)
+{
+    if (!sched || !sched->sessions)
+        return;
+    size_t driven;
+    do
+    {
+        struct sched_sweep_ctx sweep = {.sched = sched, .driven = 0};
+        edc_session_manager_foreach_task(sched->sessions, sched_schedule_visit, &sweep);
+        driven = sweep.driven;
+    } while (driven > 0);
+}
+
+/* 交给 executor 的 START, 再把事实过统一策略点。
+ *
+ * `!settled && !running` = 这次驱动什么都没发起 (就绪兜底 / 状态机拒绝): 刚发的
+ * request_id 白发了, 当场收回 —— 否则 task_hash 会留下一格没人认领的索引, 而扫描
+ * 下一条消息还会再驱动它一次。 */
+static void sched_drive_task(struct edc_scheduler *sched, struct edc_task *task)
+{
+    void *req_id = sched_gen_request_id();
     edc_scheduler_register_task(sched, task, req_id);
     task->current_request_id = req_id;
 
-    if (edc_task_awaits_deps(task))
-        return false; /* 有依赖就排队, 等依赖完成时自动派发 */
+    struct edc_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.kind = EDC_EVENT_START;
+    ev.request_id = (const char *)req_id;
 
-    if (!edc_task_await_exec(task))
-        return false;
-    /* 状态变了 —— 补上簿记（回收队列 + 置脏并推 TUI），再续发请求。 */
-    edc_scheduler_task_moved(sched, task);
-    if (!sched->send_llm)
-        return false;
-    sched->send_llm(sched, task, req_id);
-    return true;
+    struct edc_advance_result res = edc_executor_advance(&sched->executor, task, &ev);
+
+    if (!res.settled && !edc_task_is_running(task))
+    {
+        edc_scheduler_unregister_task(sched, req_id);
+        task->current_request_id = NULL;
+    }
+    edc_scheduler_apply_advance(sched, task, req_id, &res);
 }
 
 /* ── 查找 ──────────────────────────────────────────────────── */
@@ -603,34 +692,55 @@ void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, struct edc_s
     edc_scheduler_send_signal_to_task_ptr(sched, task, sig);
 }
 
-/* 对单个 group 发信号: 先反注册要取消的 in-flight 请求 (否则已作废的 LLM/
- * 工具响应回来时仍能命中 task_hash), 再交给 task 层逐成员发送。
+/* 对一个 task 发信号 = task 层改相位 + 宿主的统一入口收尾 (索引 / 回收队列 / 置脏 /
+ * 结算), 两步挨着, 中间没有别的东西可以插进来。
+ *
+ * 单任务路径 (`send_signal_to_task_ptr`) 经 executor 事件走同一条入口; 这个函数给
+ * **宿主自己发起的扇出**用 (组级/会话级取消)。两条路落到同一个入口, 所以不会再出现
+ * "一条路记得做簿记、另一条忘了"。 */
+static void sched_signal_one(struct edc_scheduler *sched, struct edc_task *task, edc_task_signal sig)
+{
+    edc_task_step step_before = task->step;
+    edc_task_life life_before = task->life;
+
+    edc_task_send_signal(task, sig);
+
+    /* 相位没动 = 这次信号什么也没决定 (重复取消是幂等的) —— 那就没有"终止"可结算,
+     * 更不能拿 settled 去撞结算里那条 completed 分支 (那会再发一次回话)。 */
+    if (task->step == step_before && task->life == life_before)
+        return;
+
+    /* 取消 = 明确终止: 反注册 (不再欠任何请求) + 回收队列 + 置脏 + 结算 (推快照 +
+     * 落盘) 由统一入口一次做完。 */
+    struct edc_advance_result res;
+    memset(&res, 0, sizeof(res));
+    res.outcome = EDC_STEP_DONE;
+    res.changed = true;
+    res.settled = true;
+    edc_scheduler_apply_advance(sched, task, task->current_request_id, &res);
+}
+
+/* 对单个 group 发信号: **逐个成员走上面那条单任务路径**。
  * running_only=true 时只处理 edc_task_is_running() 的成员 (离开 session 的
- * "只取消正在跑的"), 其余成员的状态与注册都原样保留。 */
+ * "只取消正在跑的"), 其余成员的相位与注册都原样保留。
+ *
+ * 从前这里是三段手工循环 (先反注册 / 交给组模块逐成员发 / 末了补回收队列), 因为它
+ * 绕开了统一入口 —— 而手工补丁注定漏: 漏了置脏、漏了落盘, 靠调用方各自记得 save
+ * 兜着。现在一个循环、一条路径, 补丁没有存在的理由。 */
 static void sched_signal_group_members(struct edc_scheduler *sched, struct edc_task_group *group, edc_task_signal sig,
                                        bool running_only)
 {
     if (!sched || !group)
         return;
-    struct edc_task *task;
-    LL_FOREACH2(group->members, task, group_next)
+    struct edc_task *task, *next;
+    LL_FOREACH_SAFE2(group->members, task, next, group_next)
     {
         if (running_only && !edc_task_is_running(task))
             continue;
-        if (task->current_request_id)
-        {
-            edc_scheduler_unregister_task(sched, task->current_request_id);
-        }
+        sched_signal_one(sched, task, sig);
     }
-    if (running_only)
-        edc_task_group_send_signal_running(group, sig);
-    else
-        edc_task_group_send_signal(group, sig);
-
-    /* 组级信号同样绕开了 sched_move_task (它直接落到 task 层) —— 逐个补上回收
-     * 队列; sched_queue_reap 自己只挑 TRANSIENT + 终态的, 其余一概不动。 */
-    LL_FOREACH2(group->members, task, group_next)
-    sched_queue_reap(sched, task);
+    /* 组自己的收尾 (leader 被取消 → 组标记孤儿) 归组模块。 */
+    edc_task_group_finish_signal(group);
 }
 
 void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, struct edc_session *session, const char *group_id,
@@ -666,100 +776,19 @@ void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, struct edc_se
 
 /* ── resume ────────────────────────────────────────────────── */
 
-/* resume 是低频且不与输入路径并发触发 (统一在 scheduler actor 线程上跑), 用一个
- * 高位起步的进程内计数器生成 request_id, 避免与 shell 输入路径的小整数 counter
- * 发生指针碰撞。 */
-static int64_t g_resume_req_seq = (int64_t)1 << 40;
-
-static void *sched_gen_resume_request_id(void)
-{
-    return (void *)(intptr_t)(++g_resume_req_seq);
-}
-
-/* ── 悬空 tool_call 的修补 (resume 前置) ─────────────────────
- *
- * 症状: assistant 消息带 `tool_calls`, 但缺对应的 tool 响应 → 下一次请求被 API 拒绝
- * ("An assistant message with 'tool_calls' must be followed by tool messages")。
- *
- * **为什么按消息而不是按账本**: 取消路径会清空账本 (`edc_task_send_signal` 里的
- * `edc_task_tool_calls_clear`) —— 取消后才 resume 的任务, 账本里查不到那条
- * "派发过、没结果"的调用, 而 assistant 消息是已经落盘的既成事实。消息是权威。
- *
- * 账本仍在读, 但只用来回答一个问题: **这条调用是不是 PENDING** (还没派发出去,
- * 该由 §2b 重派发而不是补一条"被中断"的假响应)。
- *
- * 幂等: 已有 tool 响应的 call_id 跳过 (重复 resume 不会补第二条)。 */
-static const char *const kInterruptedToolNote =
-    "[interrupted: this tool was still running when the process restarted; it did not produce a result]";
-
-static bool sched_turn_has_tool_response(struct edc_turn *turn, size_t upto, const char *call_id)
-{
-    for (size_t i = 0; i < upto; i++)
-    {
-        cJSON *m = turn->messages.data[i];
-        cJSON *role = cJSON_GetObjectItem(m, "role");
-        cJSON *tcid = cJSON_GetObjectItem(m, "tool_call_id");
-        if (role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0 && tcid && cJSON_IsString(tcid) &&
-            strcmp(tcid->valuestring, call_id) == 0)
-            return true;
-    }
-    return false;
-}
-
-static void sched_repair_dangling_tool_calls(struct edc_task *task)
-{
-    struct edc_turn *turn = (task && task->active_turn) ? task->active_turn : NULL;
-    if (!turn)
-        return;
-
-    /* 只扫**修补之前**的既有消息: 补进去的 tool 消息不参与遍历。队列会因追加而
-     * realloc, 所以 base 指针每轮重取 (不能缓存数组首地址)。 */
-    size_t n = turn->messages.tail;
-    for (size_t i = 0; i < n; i++)
-    {
-        cJSON *m = turn->messages.data[i];
-        cJSON *role = cJSON_GetObjectItem(m, "role");
-        cJSON *tcs = cJSON_GetObjectItem(m, "tool_calls");
-        if (!role || !cJSON_IsString(role) || strcmp(role->valuestring, "assistant") != 0 || !tcs ||
-            !cJSON_IsArray(tcs))
-            continue;
-
-        cJSON *tc = NULL;
-        cJSON_ArrayForEach(tc, tcs)
-        {
-            cJSON *id = cJSON_GetObjectItem(tc, "id");
-            if (!id || !cJSON_IsString(id) || !id->valuestring || !*id->valuestring)
-                continue;
-
-            const struct edc_tool_call_record *rec = edc_task_tool_call_find(task, id->valuestring);
-            if (rec && rec->status != TOOL_CALL_EXECUTING)
-                continue; /* PENDING: 交给 §2b 真派发, 不要造假响应 */
-            if (sched_turn_has_tool_response(turn, n, id->valuestring))
-                continue; /* 已经有结果了 (幂等) */
-
-            cJSON *fn = cJSON_GetObjectItem(tc, "function");
-            cJSON *nm = fn ? cJSON_GetObjectItem(fn, "name") : NULL;
-            edc_turn_add_tool_message(turn, id->valuestring, (nm && cJSON_IsString(nm)) ? nm->valuestring : "",
-                                      kInterruptedToolNote);
-            /* 账本里若还留着这条 (SUSPENDED / ERROR 路径: EXECUTING 已派发、结果未回),
-             * 一并删掉 —— 它已经有响应了, 不该再被当成未完成。 */
-            edc_task_tool_call_remove(task, id->valuestring);
-        }
-    }
-}
-
 void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *task)
 {
     if (!sched || !task)
         return;
 
-    /* Resume gate: an unresolved cross-session dependency (source not restorable)
-     * must hold the task. Resuming here would recompute deps_total without that
-     * edge and run the task before its dependency. */
+    /* ── 闸门: 只有 task **之间**的判定留在这里 ──────────────────
+     *
+     * 1. 无主的跨 session 依赖 (源恢复不出来) → 扣住不续: 在这里续跑会按"少一条边"
+     *    重算 deps_total, 于是任务抢在依赖前面跑。
+     * 2. 依赖未满足 → 挂回等待 (重数边是必要的: 边可能在这一轮里被作废/摘掉)。 */
     if (edc_scheduler_task_has_unresolved_deps(sched, task))
         return;
 
-    /* 1. 依赖未满足 (排除已取消的边) → 回 WAITING_DEPS */
     {
         size_t total = 0, completed = 0;
         struct edc_task_dep *dep;
@@ -775,58 +804,21 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
         task->deps_completed = completed;
         if (completed < total)
         {
-            sched_move_task(sched, task, EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE);
+            /* 宿主自己发起的转移: 走**统一入口**的簿记 (回收队列 + 置脏), 不自己拼 ——
+             * 这就是 edc_scheduler_task_moved 存在的意思。 */
+            edc_task_mark_waiting_deps(task);
+            edc_scheduler_task_moved(sched, task);
             return;
         }
     }
 
-    /* 2. 未完成的工具调用: 先按**消息**补齐悬空响应 (取消路径账本已被清空, 只有
-     *    消息还记着那条调用), 再看账本要不要重派发。 */
-    sched_repair_dangling_tool_calls(task);
-
-    /* 2b. 仍未执行 (PENDING) 的: 重新派发 */
-    if (edc_task_has_pending_tool_calls(task))
-    {
-        void *req_id = sched_gen_resume_request_id();
-        sched_move_task(sched, task, EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
-        edc_scheduler_register_task(sched, task, req_id);
-        task->current_request_id = req_id;
-        /* 重发成功即等 toolbox 回来; 各工具的 EXECUTING 由 toolbox 的
-         * TOOL_STARTED 上报后按 call_id 置位 —— 不再按链序预标。 */
-        if (!sched->redispatch_tools || sched->redispatch_tools(sched, task, req_id) <= 0)
-        {
-            /* 无重发通道 / 无可派发 → 退回就绪, 避免卡死 */
-            edc_scheduler_unregister_task(sched, req_id);
-            task->current_request_id = NULL;
-            sched_force_move_task(sched, task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
-        }
-        return;
-    }
-    /* 2c. 只有 EXECUTING 且已补完响应 → 所有工具都有结果, 落到下面续 LLM */
-
-    /* 3. 有待跑的 turn → LLM_PROCESSING, 重发 LLM */
-    if (task->active_turn)
-    {
-        void *req_id = sched_gen_resume_request_id();
-        sched_move_task(sched, task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
-        edc_scheduler_register_task(sched, task, req_id);
-        task->current_request_id = req_id;
-        if (sched->send_llm)
-        {
-            task->llm_rounds++;
-            sched->send_llm(sched, task, req_id);
-        }
-        else
-        {
-            edc_scheduler_unregister_task(sched, req_id);
-            task->current_request_id = NULL;
-            sched_force_move_task(sched, task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
-        }
-        return;
-    }
-
-    /* 4. 无待跑内容 → 就绪 (READY) */
-    sched_force_move_task(sched, task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
+    /* ── 驱动: task **之内**的重判归 executor 的 START ────────────
+     *
+     * 从前这里是四段 (补悬空响应 / 重派账本 / 续发 LLM / 兜底回就绪), 与另外 5 个
+     * "派发"入口各抄一份。现在它们合成 `EDC_EVENT_START` 一处实现 —— resume 与
+     * "任务转 READY 之后由扫描驱动"走的是**同一条路**, 所以不可能再出现"两条路
+     * 只有一条接上了"这类偏差。 */
+    sched_drive_task(sched, task);
 }
 
 /* ── TRANSIENT 任务的回收 (完成即回收) ───────────────────────
@@ -924,29 +916,18 @@ void edc_scheduler_drain_reap_pending(struct edc_scheduler *sched)
 
 /* ── 前台任务状态通知 ─────────────────────────────────────── */
 
-/* 前台 group 的 active task 状态变化后立即推送一次 task 树快照。很多这类
- * 迁移不产生任何 channel 消息(依赖完成后自动触发、取消信号、LLM/工具链
- * 内部切换等), 而 TUI 的 "处理中" 动画与侧边栏完全由快照驱动; 若不主动
- * 推送, 空闲状态的 TUI 没有任何帧在跑轮询, 只能等下一条消息/按键才碰巧
- * 发现状态变了。快照在 scheduler 线程同步生成, 与 TUI 拉取共用同一路径。 */
-/* 统一的状态迁移入口。设置状态后**只置脏** —— 真正下发由 actor handler 在
- * 处理完本条消息之后合并做一次 (见 edc_scheduler_actor_handler)。
+/* 状态迁移**只置脏** —— 真正下发由 actor handler 在处理完本条消息之后合并做一次
+ * (见 edc_scheduler_actor_handler)。
  *
- * 以前这里直接推, 但闸门只放行**前台 active task**: 后台任务的状态变化没有任何
- * 推送, 侧栏只能靠 TUI 那个 500ms 轮询兜底 —— 而那个轮询写在 Render() 里, ftxui
- * 只在有帧请求时才调 Render, 于是它靠工作条动画续命, 全部空闲时根本不跑。
- * 现在任何 task 的变化都置脏: 后台行的更新不再依赖屏幕上有没有动画。
+ * 为什么要置脏而不是直接推: 依赖完成 / 取消信号 / LLM 与工具链的内部切换这类迁移
+ * 不产生任何 channel 消息, 而 TUI 的"处理中"动画与侧边栏完全由快照驱动 —— 不置脏
+ * 就只能等下一条消息或按键才碰巧发现状态变了 (从前更糟: 闸门只放行前台 active
+ * task, 后台任务的变化靠 TUI 的 500ms 轮询兜底, 而那个轮询写在 Render() 里,
+ * ftxui 只在有帧请求时才调它)。
  *
- * 说的是**目标态** (step, life) 而不是旧词 —— 这个入口同时也是 executor 的
- * port (见 ex_set_task_state), 而 executor 只知道"任务该到哪一步了"。 */
-static void sched_move_task(struct edc_scheduler *sched, struct edc_task *task, edc_task_step step, edc_task_life life)
-{
-    /* 迁移被拒 (不在转移表里) 时相位没变 —— 也就没有"完成"可言, 不入回收队列。 */
-    if (edc_task_move(task, step, life))
-        sched_queue_reap(sched, task);
-    if (sched)
-        sched_mark_dirty(sched, edc_task_session(task), "state");
-}
+ * 落笔一律说**目标态** (step, life); 宿主自己发起的转移统一走
+ * `edc_scheduler_task_moved` (同一个策略点) —— 调度把"派发"也收进那条路径之后,
+ * 这里不再有第二个拼状态机调用的地方。 */
 
 /* 强制置相位 (不查转移表) —— 给**兜底出口**用。
  *
@@ -1047,16 +1028,9 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     if (effective_input)
         sdsfree(effective_input);
     task->active_turn = turn;
-    task->llm_rounds = 0; /* 新一轮输入: 重置 max_iter 迭代预算 */
-    task->current_request_id = msg->request_id;
-    edc_scheduler_register_task(sched, task, msg->request_id);
-
-    sched_move_task(sched, task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
-    if (sched->send_llm)
-    {
-        task->llm_rounds++; /* 发出一条 LLM 请求 → 消耗一轮迭代预算 */
-        sched->send_llm(sched, task, msg->request_id);
-    }
+    /* 到此为止: **装输入**是这里的事, "把它跑起来"是消息末尾扫描的事 (唯一驱动
+     * 入口)。从前这里还自己登记 request_id + AWAIT_EXEC + send_llm —— 那是 6 份
+     * 拷贝里的一份, 而它的 id 甚至来自入站消息 (与 task_hash 的键语义不同)。 */
 
     sched->input_raw = NULL; /* 这条输入处理完了 */
 }
@@ -1069,11 +1043,15 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
  * `struct edc_advance_result`（事实）+ 下面的 edc_scheduler_apply_advance（策略）。
  * 一律先查回调是否注入（与今天 `if (sched->send_llm)` 的形状一致）。 */
 
-static void ex_send_llm(void *ctx, struct edc_task *task, void *request_id)
+static bool ex_send_llm(void *ctx, struct edc_task *task, void *request_id)
 {
     struct edc_scheduler *sched = ctx;
-    if (sched->send_llm)
-        sched->send_llm(sched, task, request_id);
+    /* 没装端口就是"推不动"这个事实本身 (见 edc_executor.h 的 ops 说明) —— 不能
+     * 静默吞掉: 那正是"任务看着在跑、其实没人接"的来源。 */
+    if (!sched->send_llm)
+        return false;
+    sched->send_llm(sched, task, request_id);
+    return true;
 }
 
 static void ex_dispatch_tools(void *ctx, struct edc_task *task, void *llm_resp, void *request_id)
@@ -1083,33 +1061,26 @@ static void ex_dispatch_tools(void *ctx, struct edc_task *task, void *llm_resp, 
         sched->dispatch_tools(sched, task, llm_resp, request_id);
 }
 
+static int ex_redispatch_tools(void *ctx, struct edc_task *task, void *request_id)
+{
+    struct edc_scheduler *sched = ctx;
+    if (sched->redispatch_tools)
+        return sched->redispatch_tools(sched, task, request_id);
+    return 0;
+}
+
 static const struct edc_executor_ops sched_executor_ops = {
     .send_llm = ex_send_llm,
     .dispatch_tools = ex_dispatch_tools,
+    .redispatch_tools = ex_redispatch_tools,
 };
 
 /* ── task 之间的边（依赖 DAG）──────────────────────────────── */
 
-/* 依赖链上"带着 turn 排队"的目标: 自动启动 —— 改状态 + 续发 LLM。
- * 走的是 `task->dependents`, 是 task **之间**的边, 所以归这里。 */
-static void sched_start_queued_dependents(struct edc_scheduler *sched, struct edc_task *task)
-{
-    struct edc_task_dep *dep;
-    LL_FOREACH(task->dependents, dep)
-    {
-        struct edc_task *dt = dep->target;
-        /* 依赖链上排队的输入: 目标**带着 turn 停着** (READY = IDLE) 就自动启动。 */
-        if (dt->active_turn && edc_task_is_ready(dt))
-        {
-            sched_move_task(sched, dt, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
-            if (sched->send_llm)
-            {
-                dt->llm_rounds++; /* 排队的依赖输入开始消耗预算 */
-                sched->send_llm(sched, dt, dt->current_request_id);
-            }
-        }
-    }
-}
+/* 依赖链上"带着 turn 排队"的目标由**消息末尾的扫描**启动 (判据是状态, 不是
+ * "谁的 dependents") —— 所以这里不再有 sched_start_queued_dependents。
+ * 那条路是"完成"这一种终结方式的特例: 取消/失败把下游转成 READY 时它不在场,
+ * 于是两种终结方式对下游的处置不同 (一个启动、一个永久干等)。 */
 
 /* ── 跨容器的收尾 ──────────────────────────────────────────── */
 
@@ -1138,18 +1109,33 @@ static sds sched_error_copy(struct edc_scheduler *sched, const char *notice)
     return sdsnew(err);
 }
 
-/* ══ edc_scheduler_apply_advance —— 一次推进之后**唯一**的策略点 ═══════
+/* 清账时的回调: **被连带动过**的 task (JOIN 级联取消 / SEQUENCE 依赖失效后转 READY)
+ * 也走同一套簿记 + 结算。它们没有"调用者"能声明发生了什么, 所以事实由 task 现在的
+ * 样子回答: 已经进终态 = 这次连带把它送进了终态, 该结算; 否则只是相位动了。
  *
- * executor 只报事实（`struct edc_advance_result`）; 这里把"发生了什么"翻译成
- * "该告诉谁": 索引 / 回收队列 / 脏表 / 依赖者 / 产出交付 / 折叠 / 落盘。
- *
- * **这不是"重放 executor 的分支"** —— 它读的是**结果**（任务进终态了吗）, 不是
- * **过程**（走的哪个 case）。判据见 docs/executor-outbound-boundary.md §2。
- *
- * 四个事件调用点（LLM 响应 / 工具响应 / 工具开始 / 信号）都走它; 宿主自己发起
- * 的转移（派发、命令层）走 edc_scheduler_task_moved —— **一个入口 = 不可能漏推**。 */
-void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *task, void *req_id,
-                                const struct edc_advance_result *res)
+ * 递归是**故意**的: 清账本身还会连带改动别的 task (A 取消 → B 级联取消 → C), 而债
+ * 记在各自的发起者头上, 所以每清一个就顺带清它欠的那些。 */
+static void sched_settle_cascaded(void *ctx, struct edc_task *task)
+{
+    struct edc_scheduler *sched = ctx;
+    bool finished = sched_task_finished(task);
+
+    struct edc_advance_result res;
+    memset(&res, 0, sizeof(res));
+    res.outcome = finished ? EDC_STEP_DONE : EDC_STEP_BLOCKED;
+    res.changed = true;
+    res.settled = finished;
+    /* 连带进终态的 task 自带原因 (失败传播会写"它的依赖 xxx 失败了"), 用它当通知文案:
+     * notice 留 NULL 时宿主会退回一句通用的 "LLM request failed" —— 对一个**从没发出过
+     * LLM 请求**的依赖者是假话。取消态的连带受害者走另一条分支 (不发通知), 取不到也不影响。 */
+    res.notice = task->output;
+    edc_scheduler_apply_advance(sched, task, task->current_request_id, &res);
+}
+
+/* 一个 task 的簿记 + 结算 (① 索引 ② 簿记 ③ 结算)。
+ * 对外的入口在下面 —— 它再加第 ④ 步 (清这次操作欠下的债)。 */
+static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task *task, void *req_id,
+                                    const struct edc_advance_result *res)
 {
     if (!sched || !task || !res)
         return;
@@ -1185,9 +1171,9 @@ void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *t
          * 的任务其 turn 是"静默"的, 需要主动通知一次, 否则侧边栏统计会停在旧值。 */
         sched_mark_dirty(sched, own, "complete");
 
-        /* task 之间的边: 通知依赖者 + 启动排队者。 */
+        /* task 之间的边: 通知依赖者 (取消/失败的传播也走这条); **启动**排队者不在这里
+         * —— 那是消息末尾扫描的事 (判据是状态)。 */
         edc_task_notify_dependents(task);
-        sched_start_queued_dependents(sched, task);
 
         /* 产出交付: 按 sink 选路（**分流在这里**, 不在 executor）。
          * CHANNEL = 回给用户 (send_reply 内部还会查 active_task 闸门);
@@ -1222,8 +1208,35 @@ void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *t
     }
 }
 
-/* 宿主自己发起的转移（派发 / 命令层 `/task new`、`/task resume`）也要过**同一套
- * 簿记** —— 否则改了状态却不推 TUI（2026-09-18 实测的三条旁路）。 */
+/* ══ edc_scheduler_apply_advance —— 一次推进之后**唯一**的策略点 ═══════
+ *
+ * executor 只报事实（`struct edc_advance_result`）; 这里把"发生了什么"翻译成
+ * "该告诉谁": 索引 / 回收队列 / 脏表 / 依赖者 / 产出交付 / 折叠 / 落盘。
+ *
+ * **这不是"重放 executor 的分支"** —— 它读的是**结果**（任务进终态了吗）, 不是
+ * **过程**（走的哪个 case）。判据见 docs/executor-outbound-boundary.md §2。
+ *
+ * 四个事件调用点（LLM 响应 / 工具响应 / 工具开始 / 信号）都走它; 宿主自己发起
+ * 的转移（派发、命令层）走 edc_scheduler_task_moved —— **一个入口 = 不可能漏推**。
+ *
+ * ④ 清账: 一次操作还会**连带**改动别的 task (JOIN 级联取消、依赖失效后转 READY),
+ * 那些 task 不在调用者的名单里, 却欠同一份簿记。债记在 task 层 (它认识依赖图),
+ * 在这里还 —— 于是"宿主忘了给某个 task 做簿记"这种漏法在结构上不存在。 */
+void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *task, void *req_id,
+                                 const struct edc_advance_result *res)
+{
+    if (!sched || !task || !res)
+        return;
+
+    sched_apply_advance_one(sched, task, req_id, res);
+
+    /* ④ 清账: 递归 —— 清账本身还会连带改动别的 task。 */
+    edc_task_drain_moves(task, sched_settle_cascaded, sched);
+}
+
+/* 宿主自己发起的转移也要过**同一套簿记** —— 否则改了状态却不推 TUI（2026-09-18
+ * 实测的三条旁路）。调度把"派发"整个收进 `sched_drive_task` 之后，这条路的调用者
+ * 只剩 `resume` 的闸门（"依赖未满足 → 挂回等待"那一格）。 */
 void edc_scheduler_task_moved(struct edc_scheduler *sched, struct edc_task *task)
 {
     struct edc_advance_result res;
@@ -1515,9 +1528,15 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 
     /* 本消息引起的状态变化合并成**一次**下发 (最多一次/消息)。放在释放 msg 之前:
      * 快照要读整棵 task 树, 而 handler 放掉 msg 后有些路径会连带释放负载。 */
-    /* 先结算回收 (TRANSIENT 任务跑完就没了), 再下发快照 —— 顺序反过来的话,
-     * 这一帧还会画出那个刚被回收的任务。 */
+    /* 先结算回收 (TRANSIENT 任务跑完就没了), 再调度 (本条消息把谁变成了"可跑"),
+     * 最后下发快照 —— 顺序反过来的话, 这一帧还会画出那个刚被回收的任务 / 画不出
+     * 刚被驱动起来的任务。 */
     edc_scheduler_drain_reap_pending(sched);
+
+    /* 调度: 本条消息的全部效果都已落地, 现在按**状态**认人 (唯一的驱动入口在
+     * edc_scheduler_schedule 的注释里)。纯读消息 (拉快照) 也走到这里 —— 扫描只认状态,
+     * 不认消息类型; 那正是"没有 tick, 消息边界就是 tick"的直接推论。 */
+    edc_scheduler_schedule(sched);
 
     sched_drain_dirty(sched);
 

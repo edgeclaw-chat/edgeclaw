@@ -1,0 +1,27 @@
+[
+  {
+    "__delay": 60000,
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "LATE-AFTER-TIMEOUT"
+        },
+        "finish_reason": "stop"
+      }
+    ]
+  },
+  {
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "SECOND-RAN"
+        },
+        "finish_reason": "stop"
+      }
+    ]
+  }
+]

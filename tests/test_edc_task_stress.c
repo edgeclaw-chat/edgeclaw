@@ -403,7 +403,7 @@ static void test_group_null_safety(void)
     CHECK(edc_task_group_find_task(NULL, "x") == NULL, "find_task(NULL,'x') → NULL");
     edc_task_group_set_leader(NULL, NULL);
     edc_task_group_mark_orphaned(NULL);
-    edc_task_group_send_signal(NULL, TASK_SIGTERM);
+    edc_task_group_finish_signal(NULL);
     CHECK(!edc_task_group_is_foreground_capable(NULL), "is_fg_capable(NULL) → false");
     CHECK(strcmp(edc_task_group_status_label(NULL), "") == 0, "status_label(NULL) → ''");
     CHECK(1, "all group NULL APIs survived");
@@ -494,13 +494,14 @@ static void test_group_many_members(void)
     CHECK(edc_task_group_find_task(g, "gbig-49") == members[49], "find member 49");
     CHECK(edc_task_group_find_task(g, "nonexistent") == NULL, "find nonexistent");
 
-    /* Signal all */
-    edc_task_group_send_signal(g, TASK_SIGTERM);
+    /* Signal all —— 宿主侧的扇出是"逐成员发信号 + 组自己收尾", 这里照它做。 */
     for (int i = 0; i < 50; i++)
     {
+        edc_task_send_signal(members[i], TASK_SIGTERM);
         /* skip COMPLETED check - let's just verify they're in terminal state */
         CHECK(members[i]->cancelled_request == 1, "member %d cancelled_request set", i);
     }
+    edc_task_group_finish_signal(g);
     CHECK(g->is_orphaned, "group orphaned after mass SIGTERM");
 
     edc_task_group_free(g);
@@ -548,9 +549,10 @@ static void test_group_signal_edge(void)
     CHECK(g->is_orphaned, "orphaned");
     edc_task_free(l);
 
-    /* SIGTERM to orphaned group */
-    edc_task_group_send_signal(g, TASK_SIGTERM);
+    /* SIGTERM to orphaned group —— 留在组里的成员照样要发到 (宿主侧的循环)。 */
+    edc_task_send_signal(m, TASK_SIGTERM);
     CHECK(edc_task_is_cancelled(m), "orphaned member cancelled");
+    edc_task_group_finish_signal(g);
 
     edc_task_group_free(g);
 }

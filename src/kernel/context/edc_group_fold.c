@@ -233,15 +233,19 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
     log_info("L1 fold start: group %s task=%s prompt=%zu bytes, max_seq=%u", group->group_id, task->task_id,
              sdslen(prompt), max_seq);
 
-    if (!edc_scheduler_dispatch_task(sched, task, prompt))
+    if (!edc_scheduler_attach_input(sched, task, prompt))
     {
-        log_error("L1 fold: could not dispatch the fold task for group %s — no fold this round", group->group_id);
-        /* 派不出去就别留着它: 置 ERROR 让 lifetime 规则把它回收 (不留半成品)。 */
+        log_error("L1 fold: could not attach the fold prompt for group %s — no fold this round", group->group_id);
+        /* 装不上就别留着它: 置 ERROR 让 lifetime 规则把它回收 (不留半成品)。 */
         edc_task_force_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR);
         edc_scheduler_drain_reap_pending(sched);
         sdsfree(prompt);
         return NULL;
     }
+
+    /* 折叠 prompt 交给调度 (消息末尾的扫描) 去跑 —— 与其它任务同一条路。 */
+    log_info("L1 fold: prompt attached to system task %s (it will be dispatched by the scheduler)",
+             task->task_id);
 
     sdsfree(prompt);
     return task;

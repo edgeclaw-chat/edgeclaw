@@ -198,33 +198,20 @@ void edc_task_group_mark_orphaned(struct edc_task_group *group)
 
 /* ── 信号 ──────────────────────────────────────────────────── */
 
-static void group_send_signal_impl(struct edc_task_group *group, edc_task_signal sig, bool running_only)
+/* 逐成员发信号**不在这里**: 发信号要顺带给每个成员做宿主那份簿记 (索引 / 回收队列 /
+ * 置脏 / 结算), 而组不认识宿主 —— 那个循环在 scheduler (`sched_signal_group_members`)。
+ * 组模块只剩自己那部分收尾, 免得"宿主忘了给成员做簿记"这种漏法有第二条路可走。 */
+
+/** 组级信号发完之后, 组**自己**要收的尾: leader 被取消 → 组标记孤儿。
+ *  (这是成员名单**之外**的事, 只有组模块知道。) */
+void edc_task_group_finish_signal(struct edc_task_group *group)
 {
     if (!group)
         return;
-
-    struct edc_task *task, *tmp;
-    LL_FOREACH_SAFE2(group->members, task, tmp, group_next)
-    {
-        if (running_only && !edc_task_is_running(task))
-            continue;
-        edc_task_send_signal(task, sig);
-    }
-
     if (edc_task_is_cancelled(group->leader) && group->member_count > 0)
     {
         edc_task_group_mark_orphaned(group);
     }
-}
-
-void edc_task_group_send_signal(struct edc_task_group *group, edc_task_signal sig)
-{
-    group_send_signal_impl(group, sig, false);
-}
-
-void edc_task_group_send_signal_running(struct edc_task_group *group, edc_task_signal sig)
-{
-    group_send_signal_impl(group, sig, true);
 }
 
 /* ── 状态查询 ──────────────────────────────────────────────── */

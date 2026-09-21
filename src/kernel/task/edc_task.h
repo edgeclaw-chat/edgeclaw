@@ -13,6 +13,7 @@
 struct edc_session;
 struct edc_config;
 struct edc_task;
+struct edc_task_move_report;
 
 /* ── Task 状态 ───────────────────────────────────────────────
  *
@@ -255,6 +256,13 @@ struct edc_task
     struct edc_task_group *sink_group;
     uint32_t fold_max_seq;
 
+    /* ── 连带改动的回报 (宿主簿记用, 见 edc_task_drain_moves) ──
+     * 一次取消/依赖失效会**连带**改动别的 task: JOIN 依赖被级联取消、SEQUENCE 依赖
+     * 失效后本 task 转 READY。那些 task 不在调用者的名单里, 而宿主对**每个动了相位的
+     * task**都欠同一份簿记 (索引/回收队列/置脏/结算) —— 但 task 层不认识宿主。
+     * 所以在这里记账, 宿主过统一入口时清账。纯内存, 不落盘。 */
+    struct edc_task_move_report *moved_report;
+
     /* ── 链表 ── */
     struct edc_task *group_next;  /* group 内下一成员 */
     struct edc_task *prev, *next; /* session 全局链表 */
@@ -289,6 +297,9 @@ extern bool edc_task_await_tools(struct edc_task *task);       /* 已发出工�
 extern bool edc_task_mark_ready(struct edc_task *task);        /* 回就绪 (依赖齐了 / resume) */
 extern bool edc_task_mark_waiting_deps(struct edc_task *task); /* 被依赖挡住, 不派发 */
 extern bool edc_task_mark_completed(struct edc_task *task);
+/** 失败 = 置 `DONE/ERROR` **并广播给依赖者** (JOIN 级联失败 / SEQUENCE 抹边放行) ——
+ *  与 `edc_task_send_signal` 的"置取消 + 广播"同构。放在这里, 是为了让"任务进 ERROR"
+ *  无论谁发起都传播: 调用方不必记得做这件事。自转移被拒时返回 false 且不广播。 */
 extern bool edc_task_mark_failed(struct edc_task *task);
 extern bool edc_task_mark_cancelled(struct edc_task *task);
 extern bool edc_task_mark_suspended(struct edc_task *task); /* 只动 life: 停在哪一步就停在哪一步 */
@@ -426,6 +437,10 @@ extern sds edc_task_user_input(const struct edc_task *task, const cJSON *session
 extern bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, edc_task_dep_type type);
 extern void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source);
 extern void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source);
+/** 源**失败** (ERROR) 时对依赖者的处置 —— 与取消同构 (源都不会再产出了), 只是终态不同:
+ *  JOIN 边 → 依赖者也级联失败 (ERROR 可 resume, 用户仍有出路), 那条边随即被摘掉;
+ *  SEQUENCE 边 → 抹边放行 (顺序约束已走完, 它本来就不要源的产出)。 */
+extern void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source);
 extern void edc_task_notify_dependents(struct edc_task *task);
 
 /* ── 信号 ──────────────────────────────────────────────────── */
@@ -437,6 +452,28 @@ extern void edc_task_notify_dependents(struct edc_task *task);
 extern bool edc_task_is_running(const struct edc_task *task);
 
 extern void edc_task_send_signal(struct edc_task *task, edc_task_signal sig);
+
+/* ── 连带改动的回报 (宿主簿记) ─────────────────────────────
+ *
+ * 取消**或失败**一个 task 都会传播: JOIN 依赖者的输入永远不会来了 → 它也跟着进终态
+ * (取消→CANCELLED / 失败→ERROR); SEQUENCE 依赖失效 → 它转 READY。这些 task 都不在
+ * 调用者的名单里 (调用者只点了源 task 的名), 但宿主对每个动了相位的 task 都欠同一份
+ * 簿记 —— 索引 (还欠不欠请求)、回收队列、置脏、结算。task 层不认识宿主, 所以把"动了谁"
+ * 记下来, 宿主过统一入口时清账。
+ *
+ * 与回收队列 (`sched_queue_reap`) 同一形状: **只记账**, 不替宿主做决定, 也不释放任何
+ * task。名单只增不减直到宿主取走 —— 载体是**发起这次操作的那个 task** (债记在谁头上,
+ * 谁就负责还)。 */
+struct edc_task_move_report
+{
+    struct edc_task *task; /* 被连带动过的 task (非拥有) */
+    struct edc_task_move_report *next;
+};
+
+/** 取走并逐个回调 |task| 操作里连带动过的 task, 然后清空名单。
+ *  回调期间名单可能**又被填进来** (级联是递归的: 清账本身还会连带改动别的 task),
+ *  所以实现取到空为止 —— 回调方可以直接在回调里递归调用本函数。 */
+extern void edc_task_drain_moves(struct edc_task *task, void (*cb)(void *ctx, struct edc_task *moved), void *ctx);
 
 /* ── 未完成工具调用表 (resume 账本) ─────────────────────────
  * 生命周期: LLM 返回 tool_calls 时逐条 add (PENDING); toolbox 真正开始执行
@@ -462,6 +499,23 @@ extern void edc_task_tool_calls_clear(struct edc_task *task);
 
 /** 表中是否还有记录 (PENDING 或 EXECUTING)。 */
 extern bool edc_task_has_pending_tool_calls(const struct edc_task *task);
+
+/** 补上悬空的 tool 响应 (驱动一个任务之前的前置; 幂等)。
+ *
+ *  症状: assistant 消息带 `tool_calls`, 但缺对应的 tool 响应 → 下一次请求被 API
+ *  拒绝 ("An assistant message with 'tool_calls' must be followed by tool
+ *  messages")。
+ *
+ *  **为什么按消息而不是按账本**: 取消路径会清空账本 (`edc_task_send_signal` 里的
+ *  `edc_task_tool_calls_clear`) —— 取消后才续跑的任务, 账本里查不到那条"派发过、
+ *  没结果"的调用, 而 assistant 消息是已经落盘的既成事实。消息是权威。
+ *
+ *  账本仍在读, 但只用来回答一个问题: **这条调用是不是 PENDING** (还没派发出去,
+ *  该由驱动段重派发, 而不是补一条"被中断"的假响应)。
+ *
+ *  这是 task **之内**的事 (turn 的消息 + 工具账本都是 task 的字段), 所以住在 task
+ *  模块: 谁驱动一个任务 (executor 的 START 段) 就调它, 与"谁取消的/谁重启的"无关。 */
+extern void edc_task_repair_dangling_tool_calls(struct edc_task *task);
 
 /* ── 输出 ──────────────────────────────────────────────────── */
 

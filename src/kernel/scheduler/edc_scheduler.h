@@ -257,7 +257,7 @@ extern struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, s
  *  都落在那个 session 上 —— 这正是老实现做不到的 (它退回"保存当前 session")。
  *
  *  返回时任务停在 (READY, ALIVE): **它还没有 input** —— 调用方装上 turn (折叠
- *  prompt 等) 再派发 (见 edc_scheduler_dispatch_task)。任务归 session 所有,
+ *  prompt 等) 再交给调度 (见 edc_scheduler_attach_input)。任务归 session 所有,
  *  不要自己 free。没有 session 时返回 NULL。 */
 extern struct edc_task *edc_scheduler_spawn_system_task(struct edc_scheduler *sched, struct edc_session *session,
                                                         const char *desc);
@@ -267,16 +267,12 @@ extern struct edc_task *edc_scheduler_spawn_system_task(struct edc_scheduler *sc
  *  的半成品记忆。 */
 extern bool edc_scheduler_has_pending_system_task(struct edc_session *session);
 
-/** 给任务装上 input 并派发它: 建 turn → 注册 request_id → AWAIT_EXEC → send_llm。
- *  与 shell 的创建路径同一套步骤; system task (fold) 的触发方用它。 */
-extern bool edc_scheduler_dispatch_task(struct edc_scheduler *sched, struct edc_task *task, const char *input);
-
-/** system task 的 request_id 来源。
+/** 给任务装上 input (**装输入**, 不派发): 建 turn 挂到 task 上。
  *
- *  与 resume 同一套做法: 用一个**高位段**起步的计数器, 避免与 shell 输入路径的
- *  小整数 counter 撞 (task_hash 以指针为键, 撞了会把响应路由到别的任务)。
- *  段位: shell 输入 = 小整数, resume = 1<<40, system task = 1<<41。 */
-extern void *edc_scheduler_gen_system_request_id(void);
+ *  与 shell 的创建路径同一件事; system task (fold) 的触发方用它。**跑不跑由调度
+ *  决定** —— 见下面 `edc_scheduler_*` 的驱动入口: 消息末尾的扫描按状态认人, 所以
+ *  这里只负责"输入挂上去", 不负责"发请求"。 */
+extern bool edc_scheduler_attach_input(struct edc_scheduler *sched, struct edc_task *task, const char *input);
 
 /** 结算待回收的 TRANSIENT 任务 (完成即回收)。
  *
@@ -342,8 +338,8 @@ extern void edc_scheduler_task_moved(struct edc_scheduler *sched, struct edc_tas
  *  "该告诉谁" —— 索引 / 回收队列 / 脏表 / 依赖者 / 产出交付 / 折叠 / 落盘。
  *
  *  **契约**：凡是驱动 executor 的地方，拿到返回值后**必须**调它，否则簿记与交付
- *  会丢。4 个事件调用点（LLM 响应 / 工具响应 / 工具开始 / 信号）走它; 测试直接
- *  驱动 executor 时也要走它（见 tests/test_system_task.c、tests/test_group_fold.c）。
+ *  会丢。5 个事件调用点（START / LLM 响应 / 工具响应 / 工具开始 / 信号）走它;
+ *  测试直接驱动 executor 时也要走它（见 tests/test_system_task.c、tests/test_group_fold.c）。
  *  宿主自己发起的转移用 `edc_scheduler_task_moved`。 */
 extern void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *task, void *req_id,
                                        const struct edc_advance_result *res);
@@ -375,12 +371,24 @@ extern void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, struct
 
 /* ── resume ────────────────────────────────────────────────── */
 
-/** 用户 resume 一个 SUSPENDED 任务: 按账本重新判定并驱动 ——
- *    1. 依赖未满足 → WAITING_DEPS;
- *    2. 账本有未完成工具 → EXECUTING 补一条"中断"响应 / PENDING 重新派发;
- *    3. 有待跑的 active_turn → LLM_PROCESSING 重发 LLM;
- *    4. 否则 → WAITING_INPUT。
- *  调用方需保证 task 属于本 sched 且当前状态为 SUSPENDED。 */
+/** 用户 resume 一个已挂起/失败/取消的任务: **闸门 + 驱动**。
+ *
+ *    闸门 (task **之间**, 留在这里): 无主的跨 session 依赖 → 扣住; 依赖未满足 → 挂回等待;
+ *    驱动 (task **之内**, 归 executor 的 START): 补悬空 tool 响应 / 重派 PENDING 账本 /
+ *    续发 LLM / 否则落回就绪。
+ *
+ *  第 2 步与"任务转 READY 之后由扫描驱动"是**同一份实现** (`sched_drive_task`) —— resume
+ *  不再自己拼一套重判, 所以两条路不可能再各自漂移。 */
 extern void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *task);
+
+/** 调度: 把内存里所有"可跑"(READY/ALIVE + 有 turn + 依赖齐) 的任务驱动起来。
+ *
+ *  actor handler 在**每条消息末尾**调用它 (回收之后、推快照之前) —— 没有 tick, 消息
+ *  边界就是 tick。驱动本身走 executor 的 `EDC_EVENT_START` (唯一入口), 发号/登记
+ *  request_id 与结算都在这条路径上。消息之外推进过任务状态的调用方 (单测、脚本路径)
+ *  也要自己调一次, 否则可跑的任务要等到下一条消息才跑。
+ *
+ *  扫到不动点 (失败广播会在扫描途中放出新的可跑者); 终止性见 .c 里的注释。 */
+extern void edc_scheduler_schedule(struct edc_scheduler *sched);
 
 #endif

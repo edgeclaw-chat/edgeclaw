@@ -30,9 +30,72 @@ static int exec_max_iter(const struct edc_executor *ex)
     return (ex->config && ex->config->max_iter > 0) ? ex->config->max_iter : 0;
 }
 
-/* ── 依赖链上排队的输入自动启动 ───────────────────────────────
- * 走 `task->dependents` = task **之间**的边 (§4.3 / §2.2) —— 所以它是出站 op,
- * 不在本文件里做 (当年那个 `(void)ctx` 的薄 thunk 不改变归属)。 */
+/* ── START：驱动一个任务 (唯一入口) ──────────────────────────
+ *
+ * "让任务开始跑"这件事只有这一份实现。调用方**不告诉它**该发推理还是该重派工具
+ * —— 下一步由任务自己的样子回答, 顺序与从前 resume 的四段重判逐字一致:
+ *
+ *   1. 补齐悬空的 tool 响应 (取消/挂起打断在途工具留下的坑; 幂等);
+ *   2. 账本里还有 PENDING 工具 → 重派它们, 等结果;
+ *   3. 有待跑的 turn → 发起推理;
+ *   4. 都没有 → 落回就绪。
+ *
+ * **task 之间**的那一段 (依赖未满足 → 挂回 AWAIT_DEPS) 不在这一格里: 依赖边是
+ * scheduler 的地盘, 它在驱动之前当闸门判完 (见 edc_scheduler_drive_task)。
+ *
+ * 两个失败出口都**说原因**并让任务进 ERROR (而不是静默停住): 一个装不上端口的
+ * 宿主不该留下一堆"看起来在跑"的僵尸, 而 ERROR 在 `/task resume` 接受的三类里,
+ * 端口补上后一条 resume 就能续。 */
+static struct edc_advance_result exec_io_failed(struct edc_task *task, const char *reason)
+{
+    edc_task_set_output(task, sdsnew(reason));
+    edc_task_mark_failed(task);
+    /* 进终态 = 不再欠任何请求 (与 exec_done 的两个终态出口同一条规矩): 留着那个
+     * id 只会让"这条任务还在等谁"看起来成立。 */
+    task->current_request_id = NULL;
+    return (struct edc_advance_result){.outcome = EDC_STEP_ERROR, .settled = true, .notice = task->output};
+}
+
+static struct edc_advance_result exec_start(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
+{
+    const struct edc_executor_ops *ops = ex->ops;
+    void *req_id = (void *)ev->request_id;
+
+    /* 1. 悬空响应先补齐: assistant 消息带 tool_calls 而缺 tool 响应时, 下一次请求
+     *    会被 API 拒绝。账本被取消清空过也算数 —— 消息才是权威。 */
+    edc_task_repair_dangling_tool_calls(task);
+
+    /* 2. 账本里还没执行的工具: 重派 (与当轮载荷那条 dispatch_tools 同一件事, 只是
+     *    输入是账本)。 */
+    if (edc_task_has_pending_tool_calls(task))
+    {
+        if (edc_task_move(task, EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE) && ops->redispatch_tools &&
+            ops->redispatch_tools(ex->ctx, task, req_id) > 0)
+            return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
+
+        /* 派不出去 = 这摊活跑不成 (没装工具箱端口 / 相位不允许这一步)。两条都进
+         * ERROR 而不是"留在原地等下一次扫描": 一个推不动的任务不能继续当"可跑者"
+         * —— 否则每轮扫描都会重试它 (而扫描是扫到不动点的)。 */
+        return exec_io_failed(task, "[failed: the tool chain could not be re-dispatched (no toolbox port)]");
+    }
+
+    /* 3. 有待跑的 turn: 发起推理。 */
+    if (task->active_turn)
+    {
+        /* 状态机拒绝 = 它此刻不在"能发起推理"的相位上。那句话说不出口就不发请求,
+         * 免得留下一个没人认领的 request_id。 */
+        if (!edc_task_move(task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE))
+            return exec_io_failed(task, "[failed: this task cannot be moved to AWAIT_EXEC (state machine)]");
+        if (!ops->send_llm(ex->ctx, task, req_id))
+            return exec_io_failed(task, "[failed: no LLM port is installed, so this task cannot be started]");
+        task->llm_rounds++; /* 这一轮推理开始消耗预算 */
+        return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
+    }
+
+    /* 4. 没有待跑内容 (resume 一个空任务): 落回就绪。 */
+    edc_task_move(task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
+    return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
+}
 
 /* ── EXEC_DONE：LLM 响应到达 ───────────────────────────────── */
 
@@ -50,7 +113,8 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
     if (e->failed)
     {
         task->current_request_id = NULL;
-        edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR);
+        /* 失败要广播给依赖者 (级联失败 / 抹边放行) —— 走 task 层的唯一入口, 不在这里直写。 */
+        edc_task_mark_failed(task);
         if (e->content)
             edc_task_set_output(task, sdsnew(e->content));
         edc_task_flush_redirects(task);
@@ -128,7 +192,8 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
 
     /* 未知 finish reason：与今天一致 —— ERROR + 系统消息（消息由宿主发）。 */
     task->current_request_id = NULL;
-    edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR);
+    /* 同上: 失败一律走 edc_task_mark_failed, 广播在它里面。 */
+    edc_task_mark_failed(task);
     return (struct edc_advance_result){.outcome = EDC_STEP_ERROR,
                                        .settled = true,
                                        .notice = "Internal error: unknown finish reason"};
@@ -198,11 +263,9 @@ static struct edc_advance_result tool_done(struct edc_executor *ex, struct edc_t
         }
 
         edc_task_move(task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
-        if (ops->send_llm)
-        {
-            task->llm_rounds++; /* 工具链结束后续发 → 再消耗一轮预算 */
-            ops->send_llm(ex->ctx, task, (void *)ev->request_id);
-        }
+        if (!ops->send_llm(ex->ctx, task, (void *)ev->request_id))
+            return exec_io_failed(task, "[failed: no LLM port is installed, so the tool chain cannot continue]");
+        task->llm_rounds++; /* 工具链结束后续发 → 再消耗一轮预算 */
         return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
     }
     return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
@@ -248,6 +311,9 @@ struct edc_advance_result edc_executor_advance(struct edc_executor *ex, struct e
     struct edc_advance_result r;
     switch (ev->kind)
     {
+    case EDC_EVENT_START:
+        r = exec_start(ex, task, ev);
+        break;
     case EDC_EVENT_EXEC_DONE:
         r = exec_done(ex, task, ev);
         break;

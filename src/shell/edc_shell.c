@@ -287,33 +287,16 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
 
     if (opts->input)
     {
+        /* **装输入**到此为止: 跑不跑由消息末尾的调度按状态决定 (唯一驱动入口)。
+         * 从前这里还自己 register → AWAIT_EXEC → task_moved → send_llm, 是那份被抄
+         * 了 6 遍的实现之一; 排队等依赖的分支还因此与 /task new 顺序不同。 */
         struct edc_turn *turn = edc_turn_new();
         turn->task_id = strdup(task->task_id);
         edc_turn_add_user_message(turn, opts->input);
         task->active_turn = turn;
 
-        static int64_t counter = 0;
-        void *req_id = (void *)(intptr_t)(++counter);
-        edc_scheduler_register_task(sched, task, req_id);
-        task->current_request_id = req_id;
-
         log_info("%s spawn: task=%s state=%s deps_total=%zu input='%s'", reply_prefix, task->task_id,
                  edc_task_state_str(task), task->deps_total, opts->input);
-
-        if (!edc_task_awaits_deps(task))
-        {
-            bool ok = edc_task_await_exec(task);
-            log_info("%s spawn: set_state LLM_PROCESSING -> %s, send_llm=%s", reply_prefix, ok ? "ok" : "FAILED",
-                     (sched && sched->send_llm) ? "ready" : "NULL");
-            if (ok)
-                edc_scheduler_task_moved(sched, task);
-            if (ok && sched && sched->send_llm)
-                sched->send_llm(sched, task, req_id);
-        }
-        else
-        {
-            log_info("%s spawn: task %s blocked in WAITING_DEPS, turn queued", reply_prefix, task->task_id);
-        }
     }
 
     if (out_group)

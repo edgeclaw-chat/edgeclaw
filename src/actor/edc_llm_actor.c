@@ -35,6 +35,7 @@ struct edc_llm_actor_http_req
     struct llm_api_conf *api_conf;
     edc_actor_t *from;
     sds response;
+    sds error; /* first cause reported by the https client; surfaced on CLOSE */
     void *request_id;
 };
 
@@ -48,6 +49,7 @@ static struct edc_llm_actor_http_req *edc_llm_actor_http_req_new(edc_actor_t *ac
     req->api_conf = api_conf;
     req->from = from;
     req->response = NULL;
+    req->error = NULL;
     req->request_id = request_id;
     return req;
 }
@@ -58,6 +60,10 @@ static void edc_llm_actor_http_req_free(struct edc_llm_actor_http_req *req)
     if (req->response)
     {
         sdsfree(req->response);
+    }
+    if (req->error)
+    {
+        sdsfree(req->error);
     }
     free(req);
 }
@@ -111,8 +117,13 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
         {
             if (httpreq->from)
             {
+                /* The https client reports the cause (DNS failure, timeout, ...) via
+                 * ERROR and then closes without a response. Surface that cause instead
+                 * of the generic message below -- otherwise the two look identical. */
                 struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
-                resp->error = edc_error_new(EDC_ERR_FAILED, "LLM API connection closed unexpectedly");
+                resp->error = edc_error_new(EDC_ERR_FAILED, "%s",
+                                            httpreq->error ? httpreq->error
+                                                           : "LLM API connection closed unexpectedly");
                 edc_actor_send(httpreq->from, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, httpreq->request_id,
                                                                 resp, (edc_actor_data_free_fn)edc_llm_actor_resp_free));
             }
@@ -122,6 +133,13 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
     else if (ev == EDC_HTTPS_EVENT_ERROR)
     {
         log_error("llm actor https error: %s", (const char *)data);
+        /* Remember only the first cause: one failing request reports several (a
+         * timeout is followed by "operation canceled" when the socket is closed),
+         * and the later ones are the least informative. */
+        if (!httpreq->error && data)
+        {
+            httpreq->error = sdsnew((const char *)data);
+        }
     }
 }
 

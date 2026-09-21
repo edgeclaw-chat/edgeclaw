@@ -241,9 +241,25 @@ bool edc_task_mark_completed(struct edc_task *task)
     return edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED);
 }
 
+/* 失败要**广播**给依赖者 (定义在依赖那一段里, 见下方)。 */
+static void task_notify_dependents_failed(struct edc_task *task);
+
+/* 失败 = 置 ERROR **并且告诉自己所有的依赖者**。广播放在这里而不是调用方, 是为了让
+ * "任务进 ERROR"这件事**无论谁发起**都传播: executor 的两个出口 (LLM 报错 / 未知
+ * finish reason) 都不用记得做这件事, 将来新的失败点也不会漏。
+ *
+ * 与取消的分工同构: `edc_task_send_signal` = 置取消 + 广播, `edc_task_mark_failed`
+ * = 置失败 + 广播 —— 两者都不做宿主簿记 (那是 `edc_scheduler_apply_advance` 的事),
+ * 只把"连带动了谁的相位"记在发起者账上 (`task_record_move`)。 */
 bool edc_task_mark_failed(struct edc_task *task)
 {
-    return edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR);
+    if (!task)
+        return false;
+    /* 自转移失败 = 它本来就没失败 (终态/非法相位), 那就什么都不该广播 —— 幂等。 */
+    if (!edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR))
+        return false;
+    task_notify_dependents_failed(task);
+    return true;
 }
 
 bool edc_task_mark_cancelled(struct edc_task *task)
@@ -303,15 +319,20 @@ static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life 
 
     switch (from_step)
     {
-    /* READY = "带着 input 停着, 等着被派发": 派发 / 撞上依赖 / 取消 / 挂起。 */
+    /* READY = "带着 input 停着, 等着被派发": 派发 / 撞上依赖 / 取消 / 挂起 / **失败**。
+     *
+     * 失败那一格是后加的 (2026-09-18, 驱动统一进 executor 的 START): 驱动一个就绪任务
+     * 时也可能**发起不了任何 I/O** —— 宿主没装 LLM / 工具箱端口、工具链重派不出去、
+     * 相位不允许这一步。那时它是"这摊活跑不成", 而不是"停着等派发"; 不许它失败,
+     * 它就只能永远留在 READY 被反复扫描 (而调度是扫到不动点的)。
+     * 挂起那一格来自 "以挂起状态创建" (2026-09-14): 还没开始跑、但输入已装好的
+     * 任务需要一条进入挂起的入口 —— 在此之前 SUSPENDED 只能从 AWAIT_TOOLS 到达,
+     * 那是"跑到一半挂起"。往返是对称的 (SUSPENDED 行允许 resume 回
+     * READY / AWAIT_DEPS / AWAIT_EXEC / AWAIT_TOOLS)。 */
     case EDC_TASKSTEP_READY:
-        /* 挂起那一格来自 "以挂起状态创建" (2026-09-14): 还没开始跑、但输入已装好的
-         * 任务需要一条进入挂起的入口 —— 在此之前 SUSPENDED 只能从 AWAIT_TOOLS 到达,
-         * 那是"跑到一半挂起"。往返是对称的 (SUSPENDED 行允许 resume 回
-         * READY / AWAIT_DEPS / AWAIT_EXEC / AWAIT_TOOLS)。 */
         return (to_life == EDC_LIFE_ALIVE &&
                 (to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_DEPS)) ||
-               (to_step == EDC_TASKSTEP_DONE && to_life == EDC_LIFE_CANCELLED) ||
+               (to_step == EDC_TASKSTEP_DONE && (to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR)) ||
                (to_step == EDC_TASKSTEP_READY && to_life == EDC_LIFE_SUSPENDED);
     case EDC_TASKSTEP_AWAIT_DEPS:
     case EDC_TASKSTEP_AWAIT_RESOURCE: /* 旧词表里没有这一步 (镜像折成 WAITING_DEPS): 沿用同一行 */
@@ -495,6 +516,9 @@ void edc_task_free(struct edc_task *task)
     edc_task_free_turns(task);
     edc_task_free_deps(task);
     edc_task_tool_calls_clear(task);
+    /* 没被宿主取走的连带改动名单 (纯内存): cb = NULL 只清空。任务都要释放了,
+     * 名单也就没有意义 —— 记的债本来只对"还活着的宿主"有意义。 */
+    edc_task_drain_moves(task, NULL, NULL);
 
     free(task->task_id);
     free(task->group_id);
@@ -717,6 +741,9 @@ bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, e
     return true;
 }
 
+/* 台账: 连带改动的记账函数 (定义在依赖那一段里, 见下方)。 */
+static void task_record_move(struct edc_task *source, struct edc_task *moved);
+
 void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
 {
     if (!target || !source)
@@ -746,37 +773,84 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
 
     if (target->deps_completed >= target->deps_total && edc_task_awaits_deps(target))
     {
+        /* 完成 → 依赖者转 READY, 也是**相位改动**: 宿主对每个动了相位的 task 都欠
+         * 同一份簿记 (置脏), 而它不在调用者的名单里 (调用者只点了源的名)。与取消 /
+         * 失败两条路同构地记一笔债 (重复是幂等的: 相位没真动就不记)。
+         *
+         * 为什么从前没记: 那时"启动排队的依赖者"走 sched_start_queued_dependents,
+         * 顺手用 sched_move_task 置了脏 —— 一处特例替三条路兜着。现在驱动统一归
+         * 消息末尾的全表扫描 (它按状态认人, 不认谁把它弄成这样的), 特例没了,
+         * 簿记就得由这条不变量自己提供。 */
+        edc_task_step step_before = target->step;
+        edc_task_life life_before = target->life;
         edc_task_mark_ready(target);
+        if (target->step != step_before || target->life != life_before)
+            task_record_move(source, target);
     }
 }
 
-void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source)
+/* ── 连带改动的回报 (见 edc_task.h) ─────────────────────────
+ *
+ * 取消/依赖失效会**连带**改动别的 task, 那些 task 不在调用者的名单里, 宿主却对每个
+ * 动了相位的 task 都欠同一份簿记。这里记账, 宿主过统一入口时清账 (`edc_task_drain_moves`)。 */
+
+/* 记一笔债务: |moved| 的相位被 |source| 发起的这次操作连带动过了。
+ * 债记在**发起者**头上 —— 宿主正要结算的就是它, 清账时顺手带走。 */
+static void task_record_move(struct edc_task *source, struct edc_task *moved)
+{
+    if (!source || !moved)
+        return;
+    struct edc_task_move_report *r = malloc(sizeof(*r));
+    if (!r)
+        return; /* 记账失败只丢一次通知, 不改变任何相位 */
+    r->task = moved;
+    r->next = source->moved_report;
+    source->moved_report = r;
+}
+
+/* 摘掉 target 对 source 的那条依赖边 (两侧链表都要摘)。用在"JOIN 的源已经失败"上:
+ * 这条依赖**永远满足不了**, 留着它, resume 重判依赖时会把 target 又搬回 AWAIT_DEPS
+ * —— 那就是永久卡死。target 与**别的**源的边一概不动 (那些源还活着, 产出仍要注入)。
+ *
+ * 注意这里选择**摘掉**而不是像取消那样把边标成 cancelled: 落盘时 cancelled 标记会被
+ * 读回来重放 (`edc_state_serializer.c` 的 `on_dep_cancelled` 那条), 而 JOIN 边的重放
+ * 语义是"连带走取消" —— 一个失败(可 resume 的 ERROR)的 task 重启后会变成被取消,
+ * 状态在盘上来回变形。边不留痕就不存在这个歧义。 */
+static void task_unlink_dep(struct edc_task *target, struct edc_task *source)
 {
     if (!target || !source)
         return;
 
-    /* 找到这条尚在等待的依赖，按类型决定语义 (完成/已取消/不存在 → 无事可做) */
-    struct edc_task_dep *dep = NULL;
-    LL_FOREACH(target->deps, dep)
+    struct edc_task_dep *dep, *tmp;
+    LL_FOREACH_SAFE(target->deps, dep, tmp)
     {
-        if (dep->source == source && !dep->completed && !dep->cancelled)
+        if (dep->source == source)
+        {
+            LL_DELETE(target->deps, dep);
+            free(dep);
+            if (target->deps_total > 0)
+                target->deps_total--;
             break;
+        }
     }
-    if (!dep)
-        return;
 
-    if (dep->type == TASK_DEP_JOIN)
+    struct edc_task_dep *sd, *sd_tmp;
+    LL_FOREACH_SAFE(source->dependents, sd, sd_tmp)
     {
-        /* JOIN: 源的 output 永远不会来了 —— 这条依赖无法满足，本 task 也就
-         * 无法作为完整输入运行，于是级联取消。edc_task_send_signal 会递归
-         * 取消本 task 自己的依赖者，并清空它的 deps；因此 dep 随后即失效，
-         * 必须立即 return，不能再解引用。 */
-        edc_task_send_signal(target, TASK_SIGTERM);
-        return;
+        if (sd->target == target)
+        {
+            LL_DELETE(source->dependents, sd);
+            free(sd);
+            break;
+        }
     }
+}
 
-    /* SEQUENCE(`;`): 只是顺序约束，不需要源 output —— 抹去这条依赖即可，
-     * 本 task 仍可运行。 */
+/* 源**终结了、再也不会产出**时, 把 target 对它的那条 SEQUENCE 依赖作废: SEQUENCE 本来
+ * 就不要源的产出 (只是"跑在它后面"), 顺序已经走完 —— 抹掉这条边, target 仍可运行。
+ * 取消与失败在这一条上语义完全相同 (源是死了还是没产出, 对 SEQUENCE 没区别), 共用这份实现。 */
+static void task_void_sequence_dep(struct edc_task_dep *dep, struct edc_task *target, struct edc_task *source)
+{
     dep->cancelled = true;
 
     /* 同时标记 source->dependents 中的对应节点 */
@@ -802,8 +876,145 @@ void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source)
 
     if (target->deps_total == 0 && edc_task_awaits_deps(target))
     {
+        /* 抹掉最后一条失效依赖 → 这个 task 从 AWAIT_DEPS 转 READY, 同样是相位改动
+         * (侧栏的依赖等待就解除了), 同样记债。 */
+        edc_task_step step_before = target->step;
+        edc_task_life life_before = target->life;
         edc_task_mark_ready(target);
+        if (target->step != step_before || target->life != life_before)
+            task_record_move(source, target);
     }
+}
+
+void edc_task_drain_moves(struct edc_task *task, void (*cb)(void *ctx, struct edc_task *moved), void *ctx)
+{
+    if (!task)
+        return;
+    /* 取到空为止: 回调里可能**又填进来** (清账本身还会连带改动别的 task)。
+     * cb = NULL 时只清空名单 (释放 task 时用)。 */
+    while (task->moved_report)
+    {
+        struct edc_task_move_report *r = task->moved_report;
+        task->moved_report = r->next;
+        if (cb)
+            cb(ctx, r->task);
+        free(r);
+    }
+}
+
+void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source)
+{
+    if (!target || !source)
+        return;
+
+    /* 找到这条尚在等待的依赖，按类型决定语义 (完成/已取消/不存在 → 无事可做) */
+    struct edc_task_dep *dep = NULL;
+    LL_FOREACH(target->deps, dep)
+    {
+        if (dep->source == source && !dep->completed && !dep->cancelled)
+            break;
+    }
+    if (!dep)
+        return;
+
+    if (dep->type == TASK_DEP_JOIN)
+    {
+        /* JOIN: 源的 output 永远不会来了 —— 这条依赖无法满足，本 task 也就
+         * 无法作为完整输入运行，于是级联取消。edc_task_send_signal 会递归
+         * 取消本 task 自己的依赖者，并清空它的 deps；因此 dep 随后即失效，
+         * 必须立即 return，不能再解引用。 */
+        edc_task_step step_before = target->step;
+        edc_task_life life_before = target->life;
+        edc_task_send_signal(target, TASK_SIGTERM);
+        /* 级联取消也是**相位改动** —— 这个 task 从此进终态, 宿主却只点了源 task 的
+         * 名。记一笔债 (重复取消是幂等的: 相位没真动就不记)。 */
+        if (target->step != step_before || target->life != life_before)
+            task_record_move(source, target);
+        return;
+    }
+
+    /* SEQUENCE(`;`): 只是顺序约束，不需要源 output —— 抹去这条依赖即可，
+     * 本 task 仍可运行。 */
+    task_void_sequence_dep(dep, target, source);
+}
+
+/* 源**失败**时对依赖者的处置 —— 与取消同构 (源都不会再产出了), 只是终态不同:
+ * 取消是"人让它停", 失败是"它跑不成"; 而 ERROR 与 CANCELLED 都在 `/task resume`
+ * 接受的三类里, 所以两种终态都给了用户出路。 */
+void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
+{
+    if (!target || !source)
+        return;
+
+    /* 找到这条尚在等待的依赖，按类型决定语义 (完成/已作废/不存在 → 无事可做) */
+    struct edc_task_dep *dep = NULL;
+    LL_FOREACH(target->deps, dep)
+    {
+        if (dep->source == source && !dep->completed && !dep->cancelled)
+            break;
+    }
+    if (!dep)
+        return;
+
+    if (dep->type == TASK_DEP_JOIN)
+    {
+        /* JOIN: 源的 output 永远不会来了 —— 这条依赖无法满足, 本 task 也就无法作为
+         * 完整输入运行, 于是级联失败。edc_task_mark_failed 会递归广播给 target 自己的
+         * 依赖者; 摘边必须**先**做 (见 task_unlink_dep 的注释: 不摘就 resume 不回来)。 */
+        edc_task_step step_before = target->step;
+        edc_task_life life_before = target->life;
+
+        /* 失败的原因要说得出来。executor 那条路上带来的是 LLM 的错误文案, 这条路上
+         * 什么都没有 —— 把"谁的产出再也来不了"写进 output (失败任务的 output 就是它的
+         * 失败原因, 与 executor 那条路一致), 宿主结算时把它当通知发给用户。留 NULL 会
+         * 让宿主退回一句通用的 "LLM request failed" —— 对一个**从没发出过请求**的
+         * 依赖者是假话。 */
+        if (source->task_id)
+            edc_task_set_output(target, sdscatprintf(sdsempty(), "[failed: its dependency %s failed, so the output "
+                                                                 "it was waiting for will never arrive]",
+                                                     source->task_id));
+        else
+            edc_task_set_output(target, sdsnew("[failed: a dependency failed, so the output it was waiting for will "
+                                               "never arrive]"));
+
+        task_unlink_dep(target, source);
+        edc_task_mark_failed(target);
+        /* 级联失败也是**相位改动** —— 这个 task 从此进终态, 宿主却只点了源 task 的
+         * 名。记一笔债 (重复失败是幂等的: 相位没真动就不记)。 */
+        if (target->step != step_before || target->life != life_before)
+            task_record_move(source, target);
+        return;
+    }
+
+    /* SEQUENCE(`;`): 与取消那条路逐字同构 —— 源死在前头, 顺序已走完, 抹边放行。 */
+    task_void_sequence_dep(dep, target, source);
+}
+
+/* 失败广播: 与 edc_task_send_signal 里取消的广播同一手法 —— 先把依赖者快照成数组
+ * 再逐个处理, 因为 JOIN 的级联失败会在回调里递归摘掉 `dependents` 上的节点 (更深一层
+ * 的 `task_unlink_dep` 会改这条链表, LL_FOREACH_SAFE 也救不了)。级联不释放 task 本身
+ * (只释放 dep 节点), 所以暂存裸指针是安全的。 */
+static void task_notify_dependents_failed(struct edc_task *task)
+{
+    if (!task)
+        return;
+
+    size_t n = 0;
+    struct edc_task_dep *dep;
+    LL_FOREACH(task->dependents, dep)
+    n++;
+    if (n == 0)
+        return;
+
+    struct edc_task **targets = malloc(n * sizeof(*targets));
+    if (!targets)
+        return; /* 快照失败只丢一次广播, 不改变任何相位 */
+    size_t i = 0;
+    LL_FOREACH(task->dependents, dep)
+    targets[i++] = dep->target;
+    for (size_t k = 0; k < i; k++)
+        edc_task_on_dep_failed(targets[k], task);
+    free(targets);
 }
 
 void edc_task_notify_dependents(struct edc_task *task)
@@ -977,6 +1188,70 @@ void edc_task_tool_calls_clear(struct edc_task *task)
 bool edc_task_has_pending_tool_calls(const struct edc_task *task)
 {
     return task && task->tool_calls != NULL;
+}
+
+/* ── 悬空 tool_call 的修补 (驱动前置) ────────────────────────
+ *
+ * 见 edc_task.h 的声明处: 为什么按消息而不是按账本、为什么归 task 模块。
+ * 幂等: 已有 tool 响应的 call_id 跳过 (重复驱动不会补第二条)。 */
+
+static const char *const kInterruptedToolNote =
+    "[interrupted: this tool was still running when the process restarted; it did not produce a result]";
+
+static bool task_turn_has_tool_response(struct edc_turn *turn, size_t upto, const char *call_id)
+{
+    for (size_t i = 0; i < upto; i++)
+    {
+        cJSON *m = turn->messages.data[i];
+        cJSON *role = cJSON_GetObjectItem(m, "role");
+        cJSON *tcid = cJSON_GetObjectItem(m, "tool_call_id");
+        if (role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0 && tcid && cJSON_IsString(tcid) &&
+            strcmp(tcid->valuestring, call_id) == 0)
+            return true;
+    }
+    return false;
+}
+
+void edc_task_repair_dangling_tool_calls(struct edc_task *task)
+{
+    struct edc_turn *turn = (task && task->active_turn) ? task->active_turn : NULL;
+    if (!turn)
+        return;
+
+    /* 只扫**修补之前**的既有消息: 补进去的 tool 消息不参与遍历。队列会因追加而
+     * realloc, 所以 base 指针每轮重取 (不能缓存数组首地址)。 */
+    size_t n = turn->messages.tail;
+    for (size_t i = 0; i < n; i++)
+    {
+        cJSON *m = turn->messages.data[i];
+        cJSON *role = cJSON_GetObjectItem(m, "role");
+        cJSON *tcs = cJSON_GetObjectItem(m, "tool_calls");
+        if (!role || !cJSON_IsString(role) || strcmp(role->valuestring, "assistant") != 0 || !tcs ||
+            !cJSON_IsArray(tcs))
+            continue;
+
+        cJSON *tc = NULL;
+        cJSON_ArrayForEach(tc, tcs)
+        {
+            cJSON *id = cJSON_GetObjectItem(tc, "id");
+            if (!id || !cJSON_IsString(id) || !id->valuestring || !*id->valuestring)
+                continue;
+
+            const struct edc_tool_call_record *rec = edc_task_tool_call_find(task, id->valuestring);
+            if (rec && rec->status != TOOL_CALL_EXECUTING)
+                continue; /* PENDING: 交给驱动段真派发, 不要造假响应 */
+            if (task_turn_has_tool_response(turn, n, id->valuestring))
+                continue; /* 已经有结果了 (幂等) */
+
+            cJSON *fn = cJSON_GetObjectItem(tc, "function");
+            cJSON *nm = fn ? cJSON_GetObjectItem(fn, "name") : NULL;
+            edc_turn_add_tool_message(turn, id->valuestring, (nm && cJSON_IsString(nm)) ? nm->valuestring : "",
+                                      kInterruptedToolNote);
+            /* 账本里若还留着这条 (SUSPENDED / ERROR 路径: EXECUTING 已派发、结果未回),
+             * 一并删掉 —— 它已经有响应了, 不该再被当成未完成。 */
+            edc_task_tool_call_remove(task, id->valuestring);
+        }
+    }
 }
 
 /* ── 输出 ──────────────────────────────────────────────────── */

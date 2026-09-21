@@ -117,11 +117,16 @@ static void test_state_machine(void)
     CHECK(t->step == EDC_TASKSTEP_READY && t->life == EDC_LIFE_SUSPENDED, "… keeps the step it was on");
     edc_task_free(t);
 
+    t = park_at("sm3b", EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
+    CHECK(edc_task_mark_failed(t), "READY → ERROR (驱动时就绪任务发起不了 I/O: 没端口/相位不允许)");
+    CHECK(edc_task_has_failed(t), "… lands on ERROR");
+    edc_task_free(t);
+
     TEST("invalid transitions from READY");
     t = park_at("sm4", EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
-    CHECK(!edc_task_mark_completed(t), "READY → COMPLETED rejected");
-    CHECK(!edc_task_mark_failed(t), "READY → ERROR rejected");
+    CHECK(!edc_task_mark_completed(t), "READY → COMPLETED rejected (没跑过不可能完成)");
     CHECK(!edc_task_await_tools(t), "READY → AWAIT_TOOLS rejected (must go via AWAIT_EXEC)");
+    CHECK(!edc_task_move(t, EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_ALIVE), "READY → AWAIT_RESOURCE rejected");
     CHECK(!edc_task_mark_ready(t), "READY → READY rejected (self)");
     CHECK(t->step == EDC_TASKSTEP_READY && t->life == EDC_LIFE_ALIVE, "nothing moved after a refused transition");
     edc_task_free(t);
@@ -394,7 +399,7 @@ static void test_step_life_read_side(void)
  * 规格里不写自转移 (源 = 目标): 实现由前置判空拒绝它, 而逐源列表本就不含自己。
  * 边数也钉住, 免得规格被悄悄删空。 */
 
-#define EDC_TABLE_EDGES 112
+#define EDC_TABLE_EDGES 113
 
 struct table_target
 {
@@ -412,10 +417,11 @@ struct table_row
 
 static const struct table_row g_table[] = {
     /* READY + ALIVE */
-    {EDC_TASKSTEP_READY, EDC_LIFE_ALIVE, 4,
+    {EDC_TASKSTEP_READY, EDC_LIFE_ALIVE, 5,
      {{EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED},
+      {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR},
       {EDC_TASKSTEP_READY, EDC_LIFE_SUSPENDED}}},
     /* READY + SUSPENDED */
     {EDC_TASKSTEP_READY, EDC_LIFE_SUSPENDED, 5,
@@ -1167,6 +1173,85 @@ static void test_scenario_multi_deps(void)
     edc_task_free(c);
 }
 
+/* 失败也**传播**。上游一失败, 它的产出就永远不会来了 —— 这正是取消那条路走的判断,
+ * 从前只是"失败"没接进这条路: 依赖者永远停在 AWAIT_DEPS, `/task resume` 也救不回来
+ * (那条边永远满足不了)。终态与取消不同: 级联的是 ERROR (与 CANCELLED 一样可 resume)。
+ * 变异自检: 去掉 edc_task_mark_failed 里的 task_notify_dependents_failed → 必红。 */
+static void count_move(void *ctx, struct edc_task *moved)
+{
+    (void)moved;
+    (*(int *)ctx)++;
+}
+
+static void test_dep_failure_propagates(void)
+{
+    TEST("scenario: 上游失败 → JOIN 依赖者级联失败 (递归), 边被摘掉");
+
+    struct edc_task *a = edc_task_new("f-a", "sess-fail", "f-a", "A", edc_channel_adapter);
+    struct edc_task *b = edc_task_new("f-b", "sess-fail", "f-b", "B waits for A", edc_channel_adapter);
+    struct edc_task *c = edc_task_new("f-c", "sess-fail", "f-c", "C waits for B", edc_channel_adapter);
+    edc_task_add_dependency(b, a, TASK_DEP_JOIN);
+    edc_task_add_dependency(c, b, TASK_DEP_JOIN);
+    CHECK(edc_task_awaits_deps(b) && edc_task_awaits_deps(c), "b/c 都在等");
+
+    edc_task_await_exec(a);
+    edc_task_mark_completed(a);
+    CHECK(!edc_task_mark_failed(a), "已完成的任务不会失败 (终态 → 拒绝)");
+    CHECK(edc_task_awaits_deps(b) && edc_task_awaits_deps(c), "没真失败 → 一点都不广播");
+    edc_task_force_move(a, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE); /* 夹具: 摆回在途 */
+
+    edc_task_await_exec(a);
+    CHECK(edc_task_mark_failed(a), "A 失败 (executor 的出口)");
+    CHECK(edc_task_has_failed(a), "A 进 ERROR");
+    CHECK(edc_task_has_failed(b), "B 级联失败 (JOIN: 拿不到 A 的产出了)");
+    CHECK(edc_task_has_failed(c), "C 跟着 B 一起失败 (递归)");
+    CHECK(b->deps_total == 0, "B 对 A 的边被摘掉 (留着 resume 会被搬回 AWAIT_DEPS)");
+    CHECK(a->dependents == NULL, "A 的依赖者链表也摘干净");
+    CHECK(c->deps_total == 0, "C 对 B 的边同样摘掉");
+    CHECK(b->output != NULL && strstr(b->output, "f-a") != NULL, "B 的失败原因点到是哪个依赖 (f-a)");
+
+    int moved = 0;
+    edc_task_drain_moves(a, count_move, &moved);
+    CHECK(moved == 1, "A 的账上是 B —— 债**按跳**记, 每跳记在直接发起者头上");
+    moved = 0;
+    edc_task_drain_moves(b, count_move, &moved);
+    CHECK(moved == 1, "B 的账上是 C —— 所以清账必须递归下去才收得干净");
+
+    CHECK(!edc_task_mark_failed(a), "再失败一次被拒 (终态) —— 幂等, 不重复广播");
+    edc_task_free(a);
+    edc_task_free(b);
+    edc_task_free(c);
+
+    TEST("scenario: 上游失败 → SEQUENCE 边作废放行 (只要顺序, 不要产出)");
+    struct edc_task *s = edc_task_new("f-s", "sess-seq", "f-s", "S", edc_channel_adapter);
+    struct edc_task *d = edc_task_new("f-d", "sess-seq", "f-d", "D runs after S", edc_channel_adapter);
+    edc_task_add_dependency(d, s, TASK_DEP_SEQUENCE);
+    CHECK(edc_task_awaits_deps(d), "D 等在顺序上");
+    edc_task_await_exec(s);
+    CHECK(edc_task_mark_failed(s), "S 失败");
+    CHECK(edc_task_is_ready(d), "D 转 READY (与取消那条路逐字同构)");
+    CHECK(d->deps_total == 0, "那条 SEQUENCE 边已作废");
+    edc_task_free(s);
+    edc_task_free(d);
+
+    TEST("scenario: 失败只摘自己那条边, 依赖者对**别的活源**的边不动");
+    struct edc_task *x = edc_task_new("f-x", "sess-mix", "f-x", "X fails", edc_channel_adapter);
+    struct edc_task *y = edc_task_new("f-y", "sess-mix", "f-y", "Y is alive", edc_channel_adapter);
+    struct edc_task *z = edc_task_new("f-z", "sess-mix", "f-z", "Z waits for both", edc_channel_adapter);
+    edc_task_add_dependency(z, x, TASK_DEP_JOIN);
+    edc_task_add_dependency(z, y, TASK_DEP_SEQUENCE);
+    CHECK(z->deps_total == 2, "Z 有两条依赖");
+    edc_task_await_exec(x);
+    CHECK(edc_task_mark_failed(x), "X 失败");
+    CHECK(edc_task_has_failed(z), "Z 级联失败 (那条 JOIN 满足不了了)");
+    CHECK(z->deps_total == 1, "Z 对 Y 的那条边还在");
+    CHECK(z->deps && z->deps->source == y, "剩下的是 Y 那条");
+    CHECK(y->dependents && y->dependents->target == z, "Y 那一侧也还挂着");
+    edc_task_free(x);
+    edc_task_free(y);
+    edc_task_free(z);
+}
+
 /* ── main ──────────────────────────────────────────────────── */
 
 int main(void)
@@ -1191,6 +1276,7 @@ int main(void)
     test_context_messages();
     test_scenario_fork_join();
     test_scenario_multi_deps();
+    test_dep_failure_propagates();
 
     log_info("");
     log_info("=== 测试结果: %d passed, %d failed ===", test_passed, test_failed);

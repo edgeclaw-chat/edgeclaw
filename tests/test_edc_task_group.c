@@ -107,47 +107,43 @@ static void test_leader_management(void)
     edc_task_group_free(g);
 }
 
-/* ── 4. 信号 ───────────────────────────────────────────────── */
+/* ── 4. 信号 ─────────────────────────────────────────────────
+ *
+ * 逐成员发信号**不归组模块**: 宿主 scheduler 要顺带给每个成员做它那份簿记 (索引 /
+ * 回收队列 / 置脏 / 结算), 而组不认识宿主 —— 所以那个循环在
+ * `sched_signal_group_members`, 这里只测组**自己**的收尾。 */
 
 static void test_group_signals(void)
 {
-    TEST("group SIGTERM sends signal to all members");
+    TEST("finish_signal orphans the group only when the leader was cancelled");
     struct edc_task *leader = edc_task_new("task-GL", "sess-4", "task-GL", "grp leader", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(leader);
 
     struct edc_task *m1 = edc_task_new("task-GM1", "sess-4", "task-GL", "grp member 1", edc_channel_adapter);
     edc_task_await_exec(m1);
-    /* need WAITING_INPUT→LLM_PROCESSING transition first */
-    edc_task_mark_ready(m1);
-    edc_task_await_exec(m1);
     edc_task_group_add_task(g, m1);
 
-    struct edc_task *m2 = edc_task_new("task-GM2", "sess-4", "task-GL", "grp member 2", edc_channel_adapter);
-    edc_task_await_exec(m2);
-    edc_task_group_add_task(g, m2);
+    /* 宿主还没发信号: 收尾什么都不做 */
+    edc_task_group_finish_signal(g);
+    CHECK(!g->is_orphaned, "group intact while the leader is alive");
+    CHECK(edc_task_group_find_task(g, "task-GL") == leader, "leader still in the group");
 
-    edc_task_group_send_signal(g, TASK_SIGTERM);
-
+    /* 宿主侧的扇出 = 逐成员发信号 (sched_signal_group_members 的循环)。 */
+    edc_task_send_signal(leader, TASK_SIGTERM);
+    edc_task_send_signal(m1, TASK_SIGTERM);
     CHECK(edc_task_is_cancelled(leader), "leader cancelled");
-    CHECK(edc_task_is_cancelled(m1), "member 1 cancelled");
-    CHECK(edc_task_is_cancelled(m2), "member 2 cancelled");
+    CHECK(edc_task_is_cancelled(m1), "member cancelled");
+
+    edc_task_group_finish_signal(g);
     CHECK(g->is_orphaned == true, "group orphaned after leader cancelled");
 
-    TEST("group SIGKILL also signals all members");
-    struct edc_task *l2 = edc_task_new("task-GL2", "sess-5", "task-GL2", "grp leader 2", edc_channel_adapter);
-    struct edc_task_group *g2 = edc_task_group_new(l2);
-
-    struct edc_task *m = edc_task_new("task-GM3", "sess-5", "task-GL2", "grp member 3", edc_channel_adapter);
-    edc_task_await_exec(m);
-    edc_task_group_add_task(g2, m);
-
-    edc_task_group_send_signal(g2, TASK_SIGKILL);
-
-    CHECK(edc_task_is_cancelled(l2), "leader cancelled (SIGKILL)");
-    CHECK(edc_task_is_cancelled(m), "member cancelled (SIGKILL)");
+    TEST("finish_signal is safe on NULL and on an already orphaned group");
+    edc_task_group_finish_signal(NULL);
+    edc_task_group_finish_signal(g); /* leader 已经是 NULL 了 */
+    CHECK(g->is_orphaned, "stays orphaned");
+    CHECK(1, "NULL / repeated finish_signal survived");
 
     edc_task_group_free(g);
-    edc_task_group_free(g2);
 }
 
 /* ── 5. 状态查询 ───────────────────────────────────────────── */

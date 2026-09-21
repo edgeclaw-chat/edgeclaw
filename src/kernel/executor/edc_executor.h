@@ -28,11 +28,20 @@ struct edc_executor;
 
 typedef enum
 {
+    EDC_EVENT_START,        /* 驱动一个任务: 从它**当前的样子**决定下一步 (唯一入口) */
     EDC_EVENT_EXEC_DONE,    /* LLM 响应到达（含 error / tool_calls / stop） */
     EDC_EVENT_TOOL_STARTED, /* 某个工具真正开始执行 */
     EDC_EVENT_TOOL_DONE,    /* 某个工具完成 */
     EDC_EVENT_SIGNAL,       /* 取消/中断信号 */
 } edc_event_kind;
+
+/* START 不带负载: 下一步是什么由任务自己的样子回答 (悬空 tool 响应 / PENDING 账本 /
+ * active_turn), 不由调用方告诉它。**task 之间**的判定 (依赖未满足) 不在这一格里 ——
+ * 那是 scheduler 的闸门, 它判过才驱动 (见 edc_scheduler_drive_task)。
+ *
+ * 这是"让任务开始跑"的**唯一**实现: 从前 6 个调用点各自抄一份"register → AWAIT_EXEC
+ * → send_llm", 顺序还各不相同 (cancel/suspend 打断的、排队等依赖的、工具重派的
+ * 各有一套), 于是同一件事有 6 份会各自漂移的实现。 */
 
 /* LLM 响应的 **归一化** 形态。`reason` 用 executor 自己的枚举，
  * 不带 edc_llm_actor_finish_reason_t。
@@ -159,11 +168,13 @@ struct edc_advance_result
  * `send_llm` 与 `send_reply` 住在**同一个包依赖环**里, 位置判据分不开它们;
  * 职责判据一句话分开: **`send_reply` 不发起, 任务照样推进完了。**
  *
- * 所以这张表**只剩 2 项**, 而且它们也正好是那个环的两条边 —— 两个独立理由
- * 指向同一结果:
+ * 所以这张表**只剩 3 项**, 而且它们也正好是那个环的边 —— 独立理由指向同一结果:
  *
- *   - `send_llm`        —— 推理, 推进的下一步;
- *   - `dispatch_tools`  —— 工具 I/O, 推进的下一步。
+ *   - `send_llm`         —— 推理, 推进的下一步;
+ *   - `dispatch_tools`   —— 工具 I/O, 推进的下一步 (当轮的 tool_calls 载荷);
+ *   - `redispatch_tools` —— 同一件事的另一种输入: **账本**里还没执行 (PENDING) 的
+ *     工具链 (取消/挂起打断之后的续跑)。`START` 需要它, 因为"该不该重派"只有
+ *     任务之内的账本能回答 —— 工具账本是 task 的字段。
  *
  * **其余 9 项不是"换个地方调用", 而是从接口里消失** —— 它们变成
  * `struct edc_advance_result`（事实）+ scheduler 的 `sched_apply_advance`（策略）:
@@ -178,22 +189,28 @@ struct edc_advance_result
  *   | on_task_settled | scheduler（收尾的两个订阅者：折叠 + 落盘） |
  *
  * **仍然不在这张表里的**（task 之内, 或只需读 config）:
- *   - task 模块调用（`edc_task_*` / `edc_turn_*`，含 `edc_task_flush_redirects`）；
+ *   - task 模块调用（`edc_task_*` / `edc_turn_*`，含 `edc_task_flush_redirects`、
+ *     `edc_task_repair_dangling_tool_calls`）；
  *   - `edc_task_move`（状态机；非法转移由它拒绝）；
  *   - `max_iter` → 直读 `config`（它是**运行预算**：决定要不要续发）。
  *
  * **可机械跑的判据**（runtime-model.md §8；口径同判据 5 = **剥掉注释后数标识符**）:
  *   ① 本头文件剥注释后，session / channel / fold / 脏表 四类符号计数全为 **0**;
- *   ② `edc_executor.c` 里 `ops->` 只剩 4 处（send_llm×2 + dispatch_tools×2 ——
- *      每个「×2」是一次空判 + 一次调用）。
+ *   ② `edc_executor.c` 里 `ops->` 只剩 6 处（三项 op，每项一次空判 + 一次调用）。
  *   两条的完整命令记在 runtime-model.md §8。 */
 struct edc_executor_ops
 {
-    /* 派发一轮 LLM 请求。调用方负责已自增 llm_rounds（与今天一致）。 */
-    void (*send_llm)(void *ctx, struct edc_task *task, void *request_id);
+    /* 派发一轮 LLM 请求。返回**请求是否真的发出去了** —— 宿主没装 LLM 端口时返回
+     * false, 于是"推不动"是一个能被察觉的事实 (executor 据此让任务失败并说出原因,
+     * 而不是留下一个看起来在跑、其实没人接的僵尸)。调用方负责已自增 llm_rounds。 */
+    bool (*send_llm)(void *ctx, struct edc_task *task, void *request_id);
 
     /* 派发本轮工具调用链。 */
     void (*dispatch_tools)(void *ctx, struct edc_task *task, void *tool_calls, void *request_id);
+
+    /* 重派账本里还没执行 (PENDING) 的工具链 (START 的续跑分支用)。
+     * 返回**派发出去的条数**; <= 0 = 没派出去 (没装端口 / 无可派发) → 该分支作失败。 */
+    int (*redispatch_tools)(void *ctx, struct edc_task *task, void *request_id);
 };
 
 /* ── 边界适配 ────────────────────────────────────────────────
@@ -241,7 +258,8 @@ void edc_executor_init(struct edc_executor *ex, const struct edc_executor_ops *o
 /* 拿到一个事件，决定下一步并触发副作用。
  * 调用前提：task 已由 scheduler 按 request_id 找到，且未被取消
  *（`task->cancelled_request` 的丢弃逻辑留在 scheduler —— 它是 task 之间的
- * 取消状态，不是 task 之内的推进）。
+ * 取消状态，不是 task 之内的推进）。`EDC_EVENT_START` 是例外: 它还多一个前提 ——
+ * scheduler 已经判过**task 之间**的闸门 (依赖齐了), 因为依赖边不是 executor 的地盘。
  * **ev 非 const**：其中 `msg` / `tool_calls_raw` 的所有权会按需**转移**，
  * 被接手后 advance 把它们置 NULL —— 与今天 sched_handle_llm_resp 的
  * "消掉即置 NULL" 约定逐字一致（适配器据此回写源结构，避免双重释放）。

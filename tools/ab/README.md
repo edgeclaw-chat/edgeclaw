@@ -56,6 +56,7 @@ resize 100x40         # 改终端尺寸
 | `fsok` / `fifo` / `timeout` / `smoke5` | 文件工具/超时等零散场景 |
 | **`fold`** | **L1 折叠**：`AB_FOLD_MSG_THRESHOLD=2` 冻结（见下），一个任务跑完就触发一次真折叠 |
 | **`switch`** | **切台**（P3 ①b）：`/session new` → 在新台说话 → `/session switch` 切回。钉住"切 session 的用户可见结果不变"：两个 session 各自成套（`session.json` / `chat.jsonl`），那条 "**Switched**" 回复仍落在**旧** session 的转录里（顺序 = 先回复、后换台事件），后台任务继续跑 |
+| **`seqfail`** | **`;` 链上"上游非完成地终结"**：`first ; second` + 首个应答压后 60s + `--env EDGECLAW_HTTPS_TIMEOUT_MS=1500` → 上游超时进 ERROR → **下游必须被驱动**（2026-09-18 "就绪后启动"那条路；五条老夹具都不含 `;`，打不到它）。跑法要带 env：`run --fixture seqfail --env EDGECLAW_HTTPS_TIMEOUT_MS=1500` |
 
 `fold` 夹具要证的：折叠从 `memory_actor` 的专用协议搬成 system task 之后，
 `session.json`（memory 文本 / `turns_folded` / 折叠水位）、`chat.jsonl`、

@@ -81,6 +81,10 @@ static void drive_command(struct edc_config *cfg, struct edc_session_manager *sm
         edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsnew(content));
     /* 这个用例没有通道 actor (收不到回话, 也不关心) —— 回话地址只给类型。 */
     edc_commands_handler(cfg, sm, sched, (struct edc_reply_to){.type = cm->type}, cm);
+    /* 命令层只**装输入**; "把它跑起来"发生在消息末尾的调度 (`edc_scheduler_schedule`
+     * —— actor handler 在每条消息末尾调它, 见 edc_scheduler.h)。这里直接调那个入口,
+     * 等价于"这条消息处理完了"。 */
+    edc_scheduler_schedule(sched);
 }
 
 /* 挂起的任务不会进 send_llm, 所以只能自己去 session 的组里找。 */
@@ -126,7 +130,7 @@ int main(void)
     g_llm_task = NULL;
     drive_command(cfg, sm, sched, "/task new probe");
 
-    CHECK(g_llm_calls == 1, "send_llm called once (created AND dispatched)");
+    CHECK(g_llm_calls == 1, "send_llm called once (created, then dispatched at the message end)");
     CHECK(g_llm_task != NULL, "a task was handed to send_llm");
     if (g_llm_task)
     {
