@@ -31,6 +31,11 @@ class TodoWidget;
 // A reply belongs to the frontend only when it is the tree it is currently
 // displaying. A late reply (the user switched sessions while it was in flight)
 // is yesterday's news: drop it. A reply that names no session is nobody's.
+//
+// |displayed_session| empty = nothing adopted yet: the snapshot claims the slot
+// (the caller adopts its session_id). Safe because snapshots are **pulled**,
+// never pushed -- the only reply that can arrive before the first adoption is
+// the answer to the bootstrap pull, which names the active session.
 bool SnapshotIsForSession(const TaskSnapshot *snap, const std::string &displayed_session);
 
 // "session |event_session| changed for |reason|" → should the frontend pull?
@@ -177,9 +182,13 @@ class TUIWindow : public ::ftxui::ComponentBase
     // inserted as a newline instead of submitting.
     bool in_paste_ = false;
 
-    // The active session's id, used to detect /session switches. Starts at a
-    // sentinel so the first snapshot triggers a rebuild.
-    std::string current_session_id_ = "\x01";
+    // The session currently displayed. Unknown ("") until the first snapshot
+    // arrives, and that one is **adopted**: the frontend learns which session it
+    // is showing from the snapshot itself, so nothing reads the store
+    // synchronously at bootstrap (the store belongs to the actor thread).
+    // Afterwards only a /session switch moves it, and a reply naming another
+    // session is dropped as stale.
+    std::string current_session_id_;
     // That session's chat-transcript path (<workspace>/<session_id>/chat.jsonl),
     // resolved with the log. Empty when the session is unknown.
     std::string chat_log_path_;

@@ -150,11 +150,6 @@ extern void edc_scheduler_free(struct edc_scheduler *sched);
  *  `sched->sessions` -- `sessions_owned` stays false and free leaves it alone. */
 extern bool edc_scheduler_open(struct edc_scheduler *sched);
 
-/** The active session's id, or NULL when the store is not open or holds no
- *  session. Borrowed: valid until the next switch. The app answers the frontend's
- *  bootstrap query with this instead of holding the manager itself. */
-extern const char *edc_scheduler_active_session_id(struct edc_scheduler *sched);
-
 /** Shut the process down: persist every session as-is, then drop the in-flight
  *  turns. Does NOT free anything -- that is edc_scheduler_free's job.
  *

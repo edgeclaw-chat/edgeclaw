@@ -77,16 +77,18 @@ static void test_new_is_in_memory_open_is_not(void)
 
     CHECK(sched->sessions == NULL, "new() does not build a store");
     CHECK(sched->sessions_owned == false, "new() owns nothing");
-    CHECK(edc_scheduler_active_session_id(sched) == NULL, "no active session before open()");
 
     CHECK(edc_scheduler_open(sched), "open() succeeds on a fresh workspace");
     CHECK(sched->sessions != NULL, "open() built the store");
     CHECK(sched->sessions_owned == true, "open() marks it owned");
 
     /* A workspace with no sessions.json gets a usable active session (the store
-     * creates a default one), so the frontend's bootstrap query is answerable. */
-    const char *sid = edc_scheduler_active_session_id(sched);
-    CHECK(sid != NULL && *sid, "an active session is resolved after open()");
+     * creates a default one), so the first snapshot has something to describe.
+     * Read through the manager here (same package): the scheduler no longer
+     * exposes an active-session accessor for the frontend to borrow. */
+    struct edc_session *active = edc_session_manager_get_active(sched->sessions);
+    CHECK(active != NULL && active->session_id && *active->session_id,
+          "an active session is resolved after open()");
 
     edc_scheduler_free(sched);
     free_config(cfg);
@@ -105,7 +107,8 @@ static void test_close_persists_then_is_idempotent(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     CHECK(edc_scheduler_open(sched), "open()");
 
-    const char *sid = edc_scheduler_active_session_id(sched);
+    struct edc_session *active = edc_session_manager_get_active(sched->sessions);
+    const char *sid = active ? active->session_id : NULL;
     CHECK(sid != NULL && *sid, "active session id");
 
     char path[512];
@@ -170,7 +173,8 @@ static void test_borrowed_store_is_left_alone(void)
 
     sched->sessions = sm; /* a fixture: sessions_owned stays false */
     CHECK(sched->sessions_owned == false, "an installed store is borrowed, not owned");
-    CHECK(edc_scheduler_active_session_id(sched) == NULL || true, "querying through it must not crash");
+    CHECK(edc_session_manager_get_active(sched->sessions) == fixture,
+          "the borrowed store is the one installed, and readable");
 
     edc_scheduler_free(sched);
 

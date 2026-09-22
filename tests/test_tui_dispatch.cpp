@@ -58,6 +58,8 @@ constexpr int kH = 40;
 constexpr const char *kShown = "harness-shown";
 // 另一个 session：它的树/产出都不该出现在屏上。
 constexpr const char *kOther = "harness-other";
+// 首帧采纳那条用例用的 session：窗口启动时还没身份，由第一帧快照占位。
+constexpr const char *kFirst = "harness-first";
 
 // ── 临时 HOME + 最小 config：TUIWindow 的构造会真起一个 app ──────────────
 bool SetupHome(std::string *out_home)
@@ -155,6 +157,25 @@ void AdoptDisplayedSession(edc::TUIWindow &win, const char *session_id)
 }
 
 // ── 各条断言 ──────────────────────────────────────────────────────────────
+
+// 首帧采纳：窗口还没采纳任何 session（current_session_id_ 为空）时，第一帧快照
+// 自证身份并占位 —— 这条盖住 TUIWindow 里那段采纳接缝，是"不再同步读 session 仓库"
+// 的判据。**必须先于 AdoptDisplayedSession() 跑**（那时才真的没身份）。
+//
+// 第二条断言是这条测试的要害：采纳一旦没发生（身份一直空着），下面的 kOther 也会被
+// 当成"第一帧"收下，于是它上屏 —— 所以"别人的树没出现"正是"身份真的立住了"的证据。
+void TestFirstSnapshotIsAdopted(edc::TUIWindow &win)
+{
+    std::cout << "首帧采纳（未采纳时第一帧自证身份）\n";
+
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJson(kFirst, "HARNESS_FIRST_TASK").c_str(), kFirst));
+    Check(Has(FrameOf(win), "HARNESS_FIRST_TASK"), "未采纳时第一帧 → 采纳并上屏");
+
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJson(kOther, "HARNESS_XTRA_TASK").c_str(), kOther));
+    const std::string frame = FrameOf(win);
+    Check(!Has(frame, "HARNESS_XTRA_TASK"), "采纳之后别人的树 → 丢弃（身份立住了）");
+    Check(Has(frame, "HARNESS_FIRST_TASK"), "第一帧的树还在");
+}
 
 // 快照 → 侧栏。**这条是 task 558 那个 M1 缺口的判据**：分类器坏掉时它必须红。
 void TestSnapshotReachesSidebar(edc::TUIWindow &win)
@@ -364,6 +385,10 @@ int main()
     }
     Check(true, "窗口起来了（临时 HOME + 最小 config）");
 
+    // 先跑首帧采纳（此刻窗口还没采纳任何 session），它顺带把身份立成 kFirst；
+    // 再切到 kShown 供其余用例使用 —— 这条切换同时压住"TreeChanged(active) ⇒
+    // LoadChatTranscript"那条生产路径。
+    TestFirstSnapshotIsAdopted(win);
     AdoptDisplayedSession(win, kShown);
 
     TestSnapshotReachesSidebar(win);

@@ -220,14 +220,6 @@ bool edc_scheduler_open(struct edc_scheduler *sched)
     return true;
 }
 
-const char *edc_scheduler_active_session_id(struct edc_scheduler *sched)
-{
-    if (!sched || !sched->sessions)
-        return NULL;
-    struct edc_session *active = edc_session_manager_get_active(sched->sessions);
-    return active ? active->session_id : NULL;
-}
-
 bool edc_scheduler_close(struct edc_scheduler *sched)
 {
     if (!sched || !sched->sessions || sched->sessions_closed)

@@ -449,21 +449,12 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
             model_ = model;
     }
 
-    // The app has already restored its active session, so resolve the chat
-    // transcript now — before any input can arrive — and replay it. This keys
-    // the transcript to the active session without waiting for the first task
-    // snapshot, so even the very first typed message is persisted. Later
-    // snapshots only reload when /session switch/new changes the session.
-    {
-        char sid[256];
-        if (edc_app_active_session_id(app, sid, sizeof(sid)))
-            LoadChatTranscript(sid);
-    }
-
     // Populate the sidebar once the app is running (its response is routed
-    // through the adapter and handled by on_channel_adapter_send below). The
-    // chat log comes from the session's own transcript file, which the live path
-    // below appends to (see LoadChatTranscript for the one-time bootstrap).
+    // through the adapter and handled by on_channel_adapter_send below), and
+    // learn from that first snapshot which session we are showing. Its reply
+    // carries the session's own transcript path, which the live path below
+    // appends to -- so nothing here reads the session store: it belongs to the
+    // actor thread, and the snapshot already names what we need.
     RequestTaskSnapshot();
 }
 
@@ -631,6 +622,12 @@ bool SnapshotIsForSession(const TaskSnapshot *snap, const std::string &displayed
 {
     if (!snap || snap->session_id.empty())
         return false;
+    /* Nothing adopted yet: let the first reply claim the slot (the caller adopts
+     * its session_id). Snapshots are only ever replies to a pull, so the one
+     * that can arrive here is the answer to the bootstrap pull -- it names the
+     * active session, not someone else's. */
+    if (displayed_session.empty())
+        return true;
     return displayed_session == snap->session_id;
 }
 
@@ -1280,6 +1277,12 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             // to display, and a snapshot certainly doesn't.
             if (!ParseTaskSnapshot(snapshot, &snap) || !SnapshotIsForSession(&snap, tui->current_session_id_))
                 return;
+            /* First reply after startup: adopt the session it names (and that
+             * session's transcript) as the one we are showing. This is how the
+             * frontend learns which session it displays -- no synchronous read of
+             * the store at bootstrap. */
+            if (tui->current_session_id_.empty())
+                tui->LoadChatTranscript(snap.session_id.c_str());
             /* The footer's working directory comes from here, so it never reaches
              * into the store (which the actor thread mutates). */
             tui->session_workdir_ = snap.workdir;

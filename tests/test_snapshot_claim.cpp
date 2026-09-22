@@ -6,10 +6,11 @@
 //   - 内核只发"session X 的树变了"的**事件**(极小, 不带树);
 //   - 树只在前端点名要的时候才序列化回来, 前端**只拉自己正在显示的那一棵**。
 //
-// 于是"别人的树根本不序列化、不上路、不到达"。这里钉住前端剩余的两个判断:
+// 于是"别人的树根本不序列化、不上路、不到达"。这里钉住前端剩余的三个判断:
 //   1. 收到的树是不是我要的(迟到的应答丢弃);
-//   2. 收到事件要不要拉(别人的 session 的变化不关我的事)。
-// 两条都是纯函数, 所以可以直接断言 —— 不需要起一个真 TUI。
+//   2. 收到事件要不要拉(别人的 session 的变化不关我的事);
+//   3. 还没采纳任何 session 时, 第一帧快照自证身份(取代了从前那次同步读)。
+// 三条都是纯函数, 所以可以直接断言 —— 不需要起一个真 TUI。
 
 #include "edc_tui_window.hpp"
 #include <iostream>
@@ -54,6 +55,15 @@ void TestSnapshotClaim()
     // 换台后才到的应答: 显示的是 B 了, A 的树在途 ⇒ 丢弃 (不把用户拉回 A)。
     Check(!::edc::SnapshotIsForSession(&mine, "sess-b"), "迟到的 A 的应答 (现在显示 B) → 丢弃");
     Check(::edc::SnapshotIsForSession(&theirs, "sess-b"), "紧接着 B 的应答 → 收下");
+
+    // 启动引导: 还没采纳任何 session ("") 时, 第一帧自证身份并占位。
+    // 这条取代了从前那次**同步读**(「活跃会话是谁」经 app → scheduler 问一次):
+    // 快照只可能是拉取的应答, 所以这里到达的必然是引导那次拉的树, 它标的就是活跃
+    // 的那个 —— 前端因此不必在引导期碰 session 仓库(它归 actor 线程改)。
+    Check(::edc::SnapshotIsForSession(&mine, ""), "尚未采纳时第一帧 → 收下 (自证身份)");
+    Check(::edc::SnapshotIsForSession(&theirs, ""), "尚未采纳时哪棵都收 (谁先到谁占位)");
+    Check(!::edc::SnapshotIsForSession(&unlabelled, ""), "没标 session 的树 → 连空位也占不了");
+    Check(!::edc::SnapshotIsForSession(nullptr, ""), "空快照 → 丢弃");
 }
 
 void TestTreeChangedEvent()

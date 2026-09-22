@@ -20,7 +20,6 @@
 #include "sds.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 
 /* ── 装配根: 定义**只**在这里 (不透明) ──────────────────────
@@ -28,8 +27,8 @@
 struct edc_app
 {
     struct edc_config *config;
-    /* 会话仓库不是本对象的字段: 它由 edc_scheduler_open 建立、归 scheduler 所有,
-     * 装配根只**问**不持有 (回答前端的问题走 edc_scheduler_active_session_id)。 */
+    /* 会话仓库不是本对象的字段: 它由 edc_scheduler_open 建立、归 scheduler 所有。
+     * 装配根既不持有、也不代问 —— 前端要的 session_id / workdir 都在快照里。 */
     struct edc_toolbox *toolbox;
     struct edc_scheduler *scheduler;
 
@@ -44,31 +43,15 @@ struct edc_app
     bool shutdown_done;
 };
 
-/* 会话仓库 / 跨 session 解析 / 落盘 → edc_scheduler_open/close + edc_scheduler.h
- * 的命名查询: 仓库是 scheduler 的私产, 装配根只建对象、只问答案, 不持有句柄。 */
+/* 会话仓库 / 跨 session 解析 / 落盘 → edc_scheduler_open/close: 仓库是 scheduler
+ * 的私产, 装配根只建对象、叫它开、叫它关 —— 既不持有也不代问 (前端从快照里拿
+ * session_id / workdir)。 */
 
 /* ── 边界访问器 ────────────────────────────────────────────── */
 
 struct edc_config *edc_app_config(const struct edc_app *app)
 {
     return app ? app->config : NULL;
-}
-
-bool edc_app_active_session_id(const struct edc_app *app, char *buf, size_t cap)
-{
-    /* Answers a question instead of handing out the store: the session manager is
-     * the scheduler's own, built by edc_scheduler_open. Read once, at bootstrap,
-     * before any switch can be in flight. */
-    if (buf && cap > 0)
-        buf[0] = '\0';
-    if (!app || !app->scheduler || !buf || cap == 0)
-        return false;
-
-    const char *sid = edc_scheduler_active_session_id(app->scheduler);
-    if (!sid || strlen(sid) >= cap)
-        return false;
-    memcpy(buf, sid, strlen(sid) + 1);
-    return true;
 }
 
 edc_actor_t *edc_app_channel_actor(const struct edc_app *app)

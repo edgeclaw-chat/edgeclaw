@@ -8,8 +8,8 @@
  * 成 `//src/app:api` —— 判据就一条: **这里一条业务逻辑都不含, 只是投影**。
  *
  * 唯一入参是 `struct edc_app *` (不透明): 本文件**不碰它的字段**, 只经
- * `edc_app_config()` / `edc_app_channel_actor()` 两个句柄访问器 + `edc_app.h` 里的命名查询
- * 拿东西 (实测 `app->` = 0 次) ⇒ 装配根不为它开任何"内部头", `struct edc_app` 仍然
+ * `edc_app_config()` / `edc_app_channel_actor()` 两个句柄访问器拿东西
+ * (实测 `app->` = 0 次) ⇒ 装配根不为它开任何"内部头", `struct edc_app` 仍然
  * 只在 `edc_app.c` 里定义 (docs/runtime-model.md §8 判据 1 不退步)。
  *
  * 对 C++ 安全 (`edc_api.h` 与 `edc_app.h` 同规矩: 不 include 拉 sds 的头)。 */
