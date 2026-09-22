@@ -84,9 +84,13 @@ struct edc_scheduler
 
     edc_actor_t *self;
 
-    /* Session store, injected at assembly; the scheduler resolves labels through
-     * it and holds no session copy. */
+    /* Session store. Owned by this object only when edc_scheduler_open() created
+     * it (`sessions_owned`); otherwise it is borrowed -- tests hang their own
+     * fixture manager here and free it themselves, so free must not touch it.
+     * Either way the scheduler holds no session copy. */
     struct edc_session_manager *sessions;
+    bool sessions_owned;
+    bool sessions_closed; /* edc_scheduler_close() already ran (idempotence) */
 
     /* Ports, installed by their providers. */
     edc_scheduler_send_llm_fn send_llm;
@@ -134,6 +138,33 @@ extern const char *edc_scheduler_first_unresolved_dep(struct edc_scheduler *sche
 
 extern struct edc_scheduler *edc_scheduler_new(struct edc_config *config);
 extern void edc_scheduler_free(struct edc_scheduler *sched);
+
+/** Create the session store and load the active session. Called once, at assembly
+ *  time: the config is ready and the runner has not started yet. Returns false
+ *  when the store cannot be created or its index cannot be read (the caller
+ *  aborts startup), or when this scheduler already holds a store.
+ *
+ *  This is the only entry that may create a session manager; `edc_scheduler_new`
+ *  stays infallible and in-memory on purpose, because the store touch is disk I/O
+ *  that can fail. Tests that want a store keep installing their own fixture on
+ *  `sched->sessions` -- `sessions_owned` stays false and free leaves it alone. */
+extern bool edc_scheduler_open(struct edc_scheduler *sched);
+
+/** The active session's id, or NULL when the store is not open or holds no
+ *  session. Borrowed: valid until the next switch. The app answers the frontend's
+ *  bootstrap query with this instead of holding the manager itself. */
+extern const char *edc_scheduler_active_session_id(struct edc_scheduler *sched);
+
+/** Shut the process down: persist every session as-is, then drop the in-flight
+ *  turns. Does NOT free anything -- that is edc_scheduler_free's job.
+ *
+ *  Ordering contract: the caller MUST have stopped its writers first (for the app,
+ *  that means after edc_actor_runner_free) or the save races the actor thread.
+ *  Idempotent; false when there is no store open.
+ *
+ *  The app remains the one who decides *when* this happens: "the runner stopped"
+ *  is process-lifecycle knowledge the scheduler does not have. */
+extern bool edc_scheduler_close(struct edc_scheduler *sched);
 
 extern edc_actor_t *edc_scheduler_get_actor(struct edc_scheduler *sched);
 

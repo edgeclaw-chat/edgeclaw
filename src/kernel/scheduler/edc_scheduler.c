@@ -196,6 +196,57 @@ struct edc_scheduler *edc_scheduler_new(struct edc_config *config)
     return sched;
 }
 
+bool edc_scheduler_open(struct edc_scheduler *sched)
+{
+    if (!sched || sched->sessions)
+        return false;
+
+    struct edc_session_manager *sm = edc_session_manager_new(sched->config);
+    if (!sm)
+    {
+        log_error("scheduler open: failed to create the session manager");
+        return false;
+    }
+    sched->sessions = sm;
+    sched->sessions_owned = true;
+    sched->sessions_closed = false;
+
+    /* Restore the saved task/group state of the active session. Safe here:
+     * `sched` is fully constructed, and the load callbacks it triggers
+     * (observe_task_id / add_pending_dep) target this same object. */
+    struct edc_session *active = edc_session_manager_get_active(sm);
+    if (active)
+        edc_session_store_load_session(sm, sched, active);
+    return true;
+}
+
+const char *edc_scheduler_active_session_id(struct edc_scheduler *sched)
+{
+    if (!sched || !sched->sessions)
+        return NULL;
+    struct edc_session *active = edc_session_manager_get_active(sched->sessions);
+    return active ? active->session_id : NULL;
+}
+
+bool edc_scheduler_close(struct edc_scheduler *sched)
+{
+    if (!sched || !sched->sessions || sched->sessions_closed)
+        return false;
+
+    /* Exit = closing the process, not a user-driven /session remove: persist
+     * everything as-is. An interrupted task is saved as LLM_PROCESSING /
+     * TOOL_CALLING with its tool ledger intact and converges to SUSPENDED on
+     * load, so the user can decide whether to resume -- hence no CANCELLED and no
+     * second save after cancelling. */
+    edc_session_store_save_all_sessions_state(sched->sessions, sched);
+
+    /* In-flight turns belong to no live turn any more: drop them. */
+    edc_session_store_remove_all_turns(sched->sessions, sched);
+
+    sched->sessions_closed = true;
+    return true;
+}
+
 void edc_scheduler_free(struct edc_scheduler *sched)
 {
     if (!sched)
@@ -230,6 +281,14 @@ void edc_scheduler_free(struct edc_scheduler *sched)
     sched->dirty_count = 0;
     sched->dirty_cap = 0;
     sched->reap_cap = 0;
+
+    /* The store is ours only when open() created it; a borrowed one (a test
+     * fixture) belongs to its installer. Released last, after our own arrays are
+     * gone, so no session pointer this object held outlives the sessions. */
+    if (sched->sessions_owned && sched->sessions)
+        edc_session_manager_free(sched->sessions);
+    sched->sessions = NULL;
+    sched->sessions_owned = false;
 
     if (sched->self)
         edc_actor_free(sched->self);
@@ -1188,6 +1247,10 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
     }
     cJSON_AddNumberToObject(root, "message_count", (double)msg_count);
     cJSON_AddStringToObject(root, "created_at", sess->created_at ? sess->created_at : "");
+    /* The session's bound working directory ("" when unbound). The frontend shows
+     * it in the footer and must not reach into the store for it. */
+    const char *sess_wd = edc_session_get_workdir(sess);
+    cJSON_AddStringToObject(root, "workdir", sess_wd ? sess_wd : "");
 
     cJSON *groups = cJSON_AddArrayToObject(root, "groups");
     struct edc_task_group *g;

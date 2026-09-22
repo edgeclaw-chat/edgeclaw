@@ -317,6 +317,17 @@ cc_test(
 )
 
 cc_test(
+    name = "test_scheduler_open_close",
+    srcs = ["test_scheduler_open_close.c"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_session_workdir",
     srcs = ["test_session_workdir.c"],
     deps = [

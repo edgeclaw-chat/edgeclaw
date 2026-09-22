@@ -183,6 +183,10 @@ class TUIWindow : public ::ftxui::ComponentBase
     // That session's chat-transcript path (<workspace>/<session_id>/chat.jsonl),
     // resolved with the log. Empty when the session is unknown.
     std::string chat_log_path_;
+    // That session's bound working directory, from the last applied snapshot
+    // ("" = unbound). Cached rather than queried per frame: the footer renders
+    // every frame, and the store is mutated on the actor thread.
+    std::string session_workdir_;
 
     struct edc_app *app = NULL;
     // True once bracketed paste was actually enabled, so the destructor only

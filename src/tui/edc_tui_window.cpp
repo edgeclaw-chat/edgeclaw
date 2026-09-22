@@ -658,6 +658,11 @@ void TUIWindow::LoadChatTranscript(const char *session_id)
 {
     chat_widget_->Clear();
     chat_log_path_.clear();
+    /* The cached workdir belongs to the session being replaced: drop it rather
+     * than show a value we already know is wrong. The next snapshot (pulled right
+     * after every switch) refills it; until then the footer falls back to the
+     * launch directory. */
+    session_workdir_.clear();
     current_session_id_ = session_id ? session_id : "";
 
     // The transcript belongs to the session, not to the tab: it records what this
@@ -847,12 +852,12 @@ void TUIWindow::TickAnimations()
     const auto &pal = style::palette();
 
     char cwd_buf[4096];
-    char wd_buf[4096];
-    /* Prefer the active session's bound working directory (what the model is
-     * told via {{cwd}} and where tools run); fall back to the process launch
-     * directory for an unbound session. */
-    const char *dir_src = edc_app_active_session_workdir(app, wd_buf, sizeof(wd_buf))
-                              ? wd_buf
+    /* The active session's bound working directory (what the model is told via
+     * {{cwd}} and where tools run), cached from the last applied snapshot so the
+     * footer never reads the store; fall back to the process launch directory
+     * when the session is unbound, or before the first snapshot lands. */
+    const char *dir_src = !session_workdir_.empty()
+                              ? session_workdir_.c_str()
                               : (::getcwd(cwd_buf, sizeof(cwd_buf)) ? cwd_buf : nullptr);
     const std::string dir = dir_src ? ShortenHome(dir_src) : std::string();
     const std::string left = " " + dir;
@@ -1275,6 +1280,9 @@ void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_messa
             // to display, and a snapshot certainly doesn't.
             if (!ParseTaskSnapshot(snapshot, &snap) || !SnapshotIsForSession(&snap, tui->current_session_id_))
                 return;
+            /* The footer's working directory comes from here, so it never reaches
+             * into the store (which the actor thread mutates). */
+            tui->session_workdir_ = snap.workdir;
             {
                 // Give the chat log what each task was created from: while a
                 // selection is active, that input is drawn as the first user

@@ -66,6 +66,7 @@ struct TaskSnapshot
 {
     std::string session_id;
     std::string session_name;
+    std::string workdir;    /* the session's bound working dir ("" = unbound) */
     int message_count = 0;  /* messages in the session history */
     std::string created_at; /* "YYYY-MM-DD HH:MM:SS" or "" */
     std::vector<TaskGroup> groups;

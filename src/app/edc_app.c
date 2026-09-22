@@ -11,9 +11,6 @@
 #include "edc_llm_request.h"
 #include "edc_sandbox.h"
 #include "edc_secret.h"
-#include "edc_session.h"
-#include "edc_session_manager.h"
-#include "edc_session_store.h"
 #include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -31,7 +28,8 @@
 struct edc_app
 {
     struct edc_config *config;
-    struct edc_session_manager *session_manager;
+    /* 会话仓库不是本对象的字段: 它由 edc_scheduler_open 建立、归 scheduler 所有,
+     * 装配根只**问**不持有 (回答前端的问题走 edc_scheduler_active_session_id)。 */
     struct edc_toolbox *toolbox;
     struct edc_scheduler *scheduler;
 
@@ -46,10 +44,8 @@ struct edc_app
     bool shutdown_done;
 };
 
-/* 跨 session task 解析 / 依赖对账 / session 加载 → edc_session_store.{c,h}
- * (store 自己的读口与生命周期, 显式收 (session_manager, scheduler))。 */
-
-/* 会话信号与落盘 (stop_all_turns / remove_all_turns) → edc_session_store.{c,h} */
+/* 会话仓库 / 跨 session 解析 / 落盘 → edc_scheduler_open/close + edc_scheduler.h
+ * 的命名查询: 仓库是 scheduler 的私产, 装配根只建对象、只问答案, 不持有句柄。 */
 
 /* ── 边界访问器 ────────────────────────────────────────────── */
 
@@ -58,9 +54,21 @@ struct edc_config *edc_app_config(const struct edc_app *app)
     return app ? app->config : NULL;
 }
 
-struct edc_session_manager *edc_app_sessions(const struct edc_app *app)
+bool edc_app_active_session_id(const struct edc_app *app, char *buf, size_t cap)
 {
-    return app ? app->session_manager : NULL;
+    /* Answers a question instead of handing out the store: the session manager is
+     * the scheduler's own, built by edc_scheduler_open. Read once, at bootstrap,
+     * before any switch can be in flight. */
+    if (buf && cap > 0)
+        buf[0] = '\0';
+    if (!app || !app->scheduler || !buf || cap == 0)
+        return false;
+
+    const char *sid = edc_scheduler_active_session_id(app->scheduler);
+    if (!sid || strlen(sid) >= cap)
+        return false;
+    memcpy(buf, sid, strlen(sid) + 1);
+    return true;
 }
 
 edc_actor_t *edc_app_channel_actor(const struct edc_app *app)
@@ -120,19 +128,19 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
 
     app->channel_actor = edc_channel_actor_new();
     app->llm_actor = edc_llm_actor_new(app->config);
-    app->session_manager = edc_session_manager_new(app->config);
-    if (!app->session_manager)
-    {
-        log_error("failed to create session manager");
-        edc_app_free(app);
-        return NULL;
-    }
 
     /* 创建 scheduler —— 不再把 active session 递给它 (P3 ③: scheduler 不持有
      * "当前 session"; 每个入口显式带 session, 标签解析交由 store 的同包读口)。 */
     app->scheduler = edc_scheduler_new(app->config);
-    /* session 仓库句柄: 标签解析、落盘、折叠扫描都同包直调 store (与 config 同形) */
-    app->scheduler->sessions = app->session_manager;
+
+    /* 建 session 仓库并恢复活跃 session 的已存状态: 仓库是 scheduler 的私产,
+     * 由它自己的入口建立 (本文件不再持有那个句柄)。 */
+    if (!edc_scheduler_open(app->scheduler))
+    {
+        log_error("failed to open the scheduler session store");
+        edc_app_free(app);
+        return NULL;
+    }
 
     /* 接线: 每个提供方把**自己的**端口装到 scheduler 上 —— 装配根只做"建对象 +
      * 叫它接线", 运行期不再出现在任何一条路径上 (见 docs/runtime-model.md §5 规则 8)。
@@ -141,13 +149,6 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
      * 调用点与测试里的假端口都不受影响。 */
     edc_channel_actor_bind_scheduler(app->channel_actor, app->scheduler);
     edc_commands_bind_scheduler(app->scheduler);
-
-    /* Phase 4: restore saved task/group state for active session */
-    {
-        struct edc_session *active = edc_session_manager_get_active(app->session_manager);
-        if (active)
-            edc_session_store_load_session(app->session_manager, app->scheduler, active);
-    }
 
     edc_channel_actor_set_observer(app->channel_actor, edc_scheduler_get_actor(app->scheduler));
 
@@ -245,16 +246,11 @@ void edc_app_shutdown(struct edc_app *app)
         app->llm_actor = NULL;
     }
 
-    /* 2. 退出 = 关闭进程, 不是用户要 remove session: 尽量保留原状态。把所有
-     * session 完整落盘 (history + state + task/group), 让中断任务以
-     * LLM_PROCESSING/TOOL_CALLING + 工具账本**原样**保存, 加载时统一收敛为
-     * SUSPENDED, 用户可选择是否 resume —— 因此不写 CANCELLED, 也不在取消后
-     * 再落盘。 */
+    /* 2. 关进程: 把每个 session 原样落盘 + 清在途 turn —— 全在 scheduler 的那一个
+     * 入口里 (它按同一份顺序做完, 这里不再各自列一遍)。契约: 必须在 ① 之后,
+     * 否则会与 actor 线程并发写。 */
     if (app->scheduler)
-        edc_session_store_save_all_sessions_state(app->session_manager, app->scheduler);
-
-    /* 3. 在途 turn 不再属于任何活着的 turn: 清掉 (sched 为空时这两个函数自己返回)。 */
-    edc_session_store_remove_all_turns(app->session_manager, app->scheduler);
+        edc_scheduler_close(app->scheduler);
 
     app->shutdown_done = true; /* 幂等: 上面的落盘只能做一次 */
 }
@@ -266,13 +262,12 @@ void edc_app_free(struct edc_app *app)
 
     /* 先补齐"关进程"该做的 (停 actor + 落盘 + 清在途 turn) —— 保持老的
      * "销毁即落盘"行为; 想分两步走的调用方显式先 `edc_app_shutdown()`。
-     * 位置在**释放零件之前**: 落盘要用到 scheduler / session_manager。 */
+     * 位置在**释放零件之前**: 落盘要用到 scheduler。 */
     edc_app_shutdown(app);
 
+    /* scheduler 释放时一并释放它自己建的 session 仓库 (sessions_owned)。 */
     edc_scheduler_free(app->scheduler);
 
-    if (app->session_manager)
-        edc_session_manager_free(app->session_manager);
     if (app->config)
         edc_config_free(app->config);
     if (app->toolbox)
