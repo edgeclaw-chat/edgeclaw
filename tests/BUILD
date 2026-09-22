@@ -378,6 +378,21 @@ cc_test(
 )
 
 cc_test(
+    name = "test_toolbox_request",
+    srcs = ["test_toolbox_request.c"],
+    deps = [
+        "//src/actor:actor",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "//src/toolbox:toolbox",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_todo_sysprompt",
     srcs = ["test_todo_sysprompt.c"],
     deps = [
