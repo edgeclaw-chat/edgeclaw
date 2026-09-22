@@ -14,12 +14,8 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <sys/stat.h>
-/* ── 单测的 session 仓库 ─────────────────────────────────────────
- * scheduler 现在**同包直调 store** (P3 的 `resolve_session` 端口已退休),
- * 所以测试给它的不是"解析函数"而是**仓库**: 一个只装着
- * 这些 session 的内存 manager (普通结构体, 没有构造函数 —— 与 poke 别的结构体同法)。
- * 标签为空 = 用活跃的那个 (active_index 指向第一个), 与真 store 的策略一致。
- * `ctx` 仍留给测试自己用 (它不再是读口的入参)。 */
+/* The in-memory session store handed to the scheduler; an empty label means the
+ * active session (active_index points at the first). */
 static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
 {
     sched->ctx = sess;
@@ -146,16 +142,9 @@ static void test_scheduler_task_mgmt(void)
     free_config(cfg);
 }
 
-/* ── 2b. "任务建成" 事件 (2026-09-17) ────────────────────────
- *
- * 发射点是 `edc_scheduler_create_task` —— 任务**真正建成功**的那一刻, 于是普通
- * 输入 / `@task` / `/task new` / 兜底建任务全都在内。用户原文取自
- * `sched->input_raw` (正在被处理的那条入站输入), 免得把原文一路穿过命令层与
- * 外壳那一长串参数。
- *
- * 这里是 **kernel 那一半**的判据 (建任务 → 事件带 task_id + 原文; 没有输入在飞
- * 就不发)。前端那一半 —— 事件到达后把用户敲的那条绑到该 task —— 见
- * tests/test_tui_dispatch.cpp。 */
+/* 2b. The "task created" event, emitted by edc_scheduler_create_task, carrying the
+ * task id and the raw input (sched->input_raw). The frontend half is in
+ * tests/test_tui_dispatch.cpp. */
 
 static void test_task_history_pull(void)
 {
@@ -302,10 +291,8 @@ static void test_scheduler_fg_bg(void)
 
 /* ── 5. 信号发送 ──────────────────────────────────────────── */
 
-/* 落盘不再是可注入的端口 (scheduler 同包直调 store, 见 runtime-model.md §11), 所以
- * "取消 → 立刻落盘"**不再用调用计数探针** —— 那断言的是一个已被删掉的机制。真行为
- * (取消后 CANCELLED 跨重启保留) 由 tests/test_session_leave_cancel.c 的盘上
- * round-trip 钉住 (它的会话有真 history_dir, 这里是裸结构体, 落盘会静默失败)。 */
+/* Persistence is no longer an injectable port, so "cancel persists immediately" is
+ * covered by the on-disk round trip in test_session_leave_cancel.c. */
 
 static void test_scheduler_signals(void)
 {
@@ -390,12 +377,9 @@ static void test_scheduler_group_signals(void)
     free_config(cfg);
 }
 
-/* 取消会**传播**: JOIN 依赖者拿不到源的产出了, 于是它也被取消。那些 task 不在调用者
- * 的名单里 (调用者只点了源 task 的名), 但宿主对每个动了相位的 task 都欠同一份簿记。
- *
- * 判据 = **级联取消的依赖者也不再欠请求** (task_hash 里那一格收了)。从前它留在表里:
- * 既没有结算、也没有反注册 —— 一条已经被取消的请求永远挂在索引上。
- * 变异自检: 去掉 edc_task_on_dep_cancelled 里的 task_record_move → 这条必红。 */
+/* Cancel propagates: a JOIN dependent is cancelled too, and its bookkeeping runs
+ * through the same entry (the hash entry is gone).
+ * Mutation: dropping task_record_move in edc_task_on_dep_cancelled must fail this. */
 static void test_signal_cascade_settles_dependents(void)
 {
     TEST("JOIN 级联取消: 被带动的依赖者也过统一入口");
@@ -488,13 +472,9 @@ static long req_id_of(struct edc_task *t)
     return t ? (long)(intptr_t)t->current_request_id : 0;
 }
 
-/* 失败也**传播**, 而且过同一条统一入口: 上游进 ERROR → JOIN 依赖者也进 ERROR。那些 task
- * 不在调用者名单里 (调用者只点了源 task 的名), 宿主对它们欠同一份簿记。
- *
- * 从前失败一个字都不广播: 依赖者永远停在 AWAIT_DEPS —— 而且 `/task resume` 也搬不动它
- * (resume 重判依赖时那条边永远满足不了, 又把它搬回去), 是永久卡死。
- * 变异自检 (三条各自必红): ① 去掉 edc_task_mark_failed 里的广播 ② 去掉 on_dep_failed
- * JOIN 分支的 task_record_move ③ 加回 task_unlink_dep 的摘边。 */
+/* Failure propagates the same way: an ERROR source cascades to its JOIN dependents.
+ * Mutation checks: remove the broadcast, remove the JOIN task_record_move, or
+ * restore the edge unlink -- each must fail this. */
 static void test_failure_cascade_settles_dependents(void)
 {
     TEST("上游失败: 连带失败者也过统一入口, 摘边后 resume 能真推起来");
@@ -577,13 +557,8 @@ static void drive_input(struct edc_scheduler *sched, const char *content, long r
     sched_actor->handler(sched_actor, msg); /* dispatches + frees msg */
 }
 
-/* ══════════════════════════════════════════════════════════════
- *  调度: 每条消息末尾的全表扫 (唯一驱动入口)
- *
- *  "转 READY 就顺手发出去"是**扫描**的直接结果, 不是某条路径的特例:
- *    - 谁把任务弄成 READY 的 (完成 / 取消 / 失败 / 建边) 无关紧要;
- *    - 它不需要簿记 (没有就绪队列), 判据全在 task 的字段上。
- * ══════════════════════════════════════════════════════════════ */
+/* Scheduling: the message-end full-table scan. "Turned READY" is a direct result of
+ * the scan, not a special case of any path. */
 
 /* 投递一条**只读**消息 (拉快照), 让 actor handler 走到"消息末尾的调度"那一步 ——
  * 生产里每条消息都走到那里; 测试用它证明**接线** (而不只是那个函数本身)。 */
@@ -613,10 +588,8 @@ static struct edc_task *add_ready_task_with_turn(struct edc_scheduler *sched, st
     return t;
 }
 
-/* ① `;` 下游: 源被取消 → 目标脱依赖转 READY, 消息末尾的扫描把它跑起来。
- * 从前 sched_start_queued_dependents 只挂在**完成**分支上, 取消/失败释放出来的
- * 目标没人驱动 (探针实测 send_llm=0, 任务永久停在黄色 IDLE)。
- * 变异自检: 去掉 actor handler 里的 edc_scheduler_schedule 调用 → 这条必红。 */
+/* (1) A `;` dependent: cancelling the source releases it to READY and the scan runs
+ * it. Mutation: removing the schedule call from the actor handler must fail this. */
 static void test_schedule_drives_released_sequence_dep(void)
 {
     TEST("调度: ; 下游被取消释放 → 消息末尾的扫描启动它 (id 可路由)");
@@ -655,10 +628,8 @@ static void test_schedule_drives_released_sequence_dep(void)
     free_config(cfg);
 }
 
-/* ② 取消整组之后, 扫描**一个请求都不发**。
- * 这是"扫描放在消息末尾"的正面判据: 判的是**状态**不是因果 —— /session stop 把
- * 整个 session 都取消了, 那一刻 dst 已经不是 READY/ALIVE, 谓词为假。
- * (若把扫描挪回 apply_advance 里逐次执行, 就会在取消到一半时替 dst 发请求。) */
+/* (2) Cancelling a whole group sends no request: the scan judges state, not cause.
+ * Moving it back into apply_advance would send one halfway through the cancel. */
 static void test_schedule_after_session_stop_sends_nothing(void)
 {
     TEST("调度: /session stop 之后一个请求都不发 (判据在状态上)");
@@ -724,11 +695,9 @@ static void test_schedule_drives_dep_released_by_failure(void)
     free_config(cfg);
 }
 
-/* ④ 排队等依赖、**从未登记过 request_id** 的目标 (生产: /task new """x""" -d <id>)。
- * 从前 sched_start_queued_dependents 复用它 `current_request_id` —— 那条路上这个
- * 字段从没被赋过值, 于是 send_llm 拿 NULL 去发, 回包 find_task(NULL) 永远找不到,
- * 任务停在 LLM_PROCESSING (探针实测)。现在 request_id 只由驱动入口发号。
- * 变异自检: 恢复"复用 task->current_request_id" → 这条必红。 */
+/* (4) A dependent that was never registered (production: /task new """x""" -d <id>).
+ * Reusing current_request_id would send NULL and the response could never route
+ * back. Mutation: restoring that reuse must fail this. */
 static void test_schedule_drives_queued_dep_without_registered_id(void)
 {
     TEST("调度: 排队依赖被驱动时用的是**自己发号**的可路由 id");
@@ -860,10 +829,9 @@ static void test_schedule_order_is_deterministic(void)
     free_config(cfg);
 }
 
-/* ⑧ 扫到不动点: 驱动**失败**会广播 → 释放它的 SEQUENCE 依赖者, 而那个依赖者可能
- * 排在扫描顺序的**前面** (已经看过一遍)。单轮扫描会漏掉它 (要等下一条消息才跑),
- * 所以扫描要扫到没有进展为止。
- * 变异自检: 把 edc_scheduler_schedule 改回单轮 → 这条必红。 */
+/* (8) Scan to a fixed point: a failed drive broadcasts, releasing a SEQUENCE
+ * dependent possibly earlier in the scan order. Mutation: a single-round scan must
+ * fail this. */
 static void test_schedule_to_fixpoint_covers_failure_cascade(void)
 {
     TEST("调度: 扫描途中被失败释放的下游 (排在前面) 同一轮也被驱动");
@@ -1357,16 +1325,10 @@ static void test_observe_task_id_raises_high_water(void)
     free_config(cfg);
 }
 
-/* ── 8. 取消过的任务: resume 之后必须能收到应答 ────────────────
- *
- * 真机现象 (2026-09-15, task 511): `/task stop` 之后 `/task resume`, 侧栏显示
- * "LLM_PROCESSING" 但**永远没有回音**。
- *
- * 根因: `cancelled_request` 是"当前请求已作废"的标记 —— 取消时置位, 应答处理器
- * 见到它就丢弃迟到应答 (规则 2); 但它**全仓没有清零的地方**, 于是 resume 重新发出的
- * 那条请求也被同一个标记丢掉。修法: 新请求登记时清零 (edc_scheduler_register_task)。
- *
- * 这条测试盯的是**行为**而不是标志本身: 真投一条应答进去, 看它有没有被接受。 */
+/* 8. A cancelled task must receive a response after resume.
+ * `cancelled_request` is set on cancel and cleared when a new request is registered
+ * (edc_scheduler_register_task); without the clear, resume's own response is
+ * dropped. This asserts the behaviour, not the flag. */
 static void test_cancelled_task_resume_accepts_reply(void)
 {
     TEST("a cancelled task accepts the reply of the request resume issued");

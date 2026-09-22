@@ -1,20 +1,8 @@
-/* ══════════════════════════════════════════════════════════════
- *  P0b: fold 迁移为 system task
- *
- *  旧实现: scheduler 回调 → memory_actor (专用 actor) → 自己发 LLM 请求 →
- *  BC_ACTOR_MSG_GROUP_FOLD_DONE → scheduler 落盘。专用协议 + 专用 actor。
- *
- *  新实现: 触发方建一个 **system task**
- *    { sink = GROUP_MEMORY, lifetime = TRANSIENT }   —— 放进 session 的 system group
- *  它的 input 就是折叠 prompt; 产出经 executor 按 sink 分流到
- *  ops->deliver_group_memory, 落地在 scheduler: 写 memory、标已折叠、推水位。
- *  跑完按 lifetime 被回收, 组空了连组一起删。
- *
- *  本文件钉住三件事:
- *    ① 折叠行为本身**没有变** (prompt 构造逐字来自旧 memory_actor);
- *    ② 它确实是一条普通任务 (属性、调度、回收、可见);
- *    ③ 它不污染被折叠的组 (消息不进那个组的 history / 不占它的 completion_seq)。
- * ══════════════════════════════════════════════════════════════ */
+/* P0b: the fold migrated to a system task { sink = GROUP_MEMORY, lifetime =
+ * TRANSIENT } in the session's system group. Its input is the fold prompt; the
+ * output lands in the group's memory and the task is reclaimed on completion.
+ * This file pins: the fold behaviour is unchanged, it is an ordinary task, and it
+ * does not pollute the folded group. */
 
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -33,10 +21,8 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
-/* ── 这一层的 session 仓库 ──────────────────────────────────────
- * 折叠本体不需要 store (会话是测试直接建的), 但**调度需要** —— 消息末尾的扫描从
- * 仓库枚举任务 (仓库为 NULL 就没人可扫, "跑"这一步会静默不发生)。所以这里给一个
- * 只装着这个 session 的内存 manager: 与别的测试同一套做法, 不碰磁盘。 */
+/* The session store: folding itself needs none, but scheduling does, since the
+ * message-end scan enumerates tasks through it. A simple in-memory manager. */
 static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
 {
     struct edc_session_manager *sm = g_new0(struct edc_session_manager, 1);
@@ -85,10 +71,8 @@ static struct edc_config *make_config(void)
     return cfg;
 }
 
-/* 折叠本体收的就是 scheduler (触发方还会用
- * session_manager/config, 但那条路是 shell/app 侧的, 这里测的是折叠本体)。
- * 用真结构体而不是 mock —— 它就是个普通结构, 没有构造函数。 */
-/* 建一组"已完成、带 turn"的任务 (可折叠), 每个 turn 装 `msgs_per_task` 条消息。 */
+/* Folding takes a real scheduler (a plain struct, no constructor).
+ * Build a group of finished, turn-bearing (foldable) tasks. */
 static void add_foldable_task(struct edc_session *session, struct edc_task_group *group, const char *id,
                               uint32_t completion_seq, int msgs_per_task, const char *text)
 {
@@ -296,13 +280,9 @@ static void test_fold_runs_as_a_system_task(void)
     /* executor 只报事实; 告诉谁 在策略点 (契约见 edc_scheduler.h)。 */
     edc_scheduler_apply_advance(sched, fold, fold_req, &fold_res);
 
-    /* 折叠任务**自己**不是可折叠对象 (回归: 夹具实测过一次"折叠任务完成 → 触发
-     * 折叠系统组 → 又起一个折叠任务"的连锁)。折叠账只为留下来的任务做 (见
-     * edc_task_is_foldable), 所以系统组永远不够触发。
-     *
-     * 断言必须放在**它完成之后**: 那一刻它已经是 COMPLETED、turn 也已提交, 正是
-     * 夹具里出事的状态 —— 只有 lifetime 这一条挡得住 (它还没被回收, 因为回收要等
-     * 本条消息末尾)。 */
+    /* The fold task is not itself foldable (a regression fixture once chained
+     * "fold completed -> system group triggers -> another fold"). Asserted after it
+     * completes, the exact state the fixture hit; only lifetime holds it out. */
     CHECK(!edc_task_is_foldable(fold), "折叠任务本身不可折叠 (TRANSIENT 不进折叠账)");
     CHECK(edc_task_group_count_foldable(sg) == 0, "系统组里没有可折叠任务");
     CHECK(edc_task_group_unfolded_msg_count(sg) == 0, "系统组的消息也不算进折叠阈值");
@@ -473,15 +453,9 @@ static void test_fold_task_is_not_persisted(void)
     edc_config_free(cfg);
 }
 
-/* ══════════════════════════════════════════════════════════════
- *  Test 5: 触发扫描 (edc_group_fold_try)
- *
- *  它是 scheduler 唯一调的入口 (以前住装配根, 经 `on_task_settled` 端口被调)。
- *  钉三件事:
- *    ① 扫**所有** session —— 可折叠的内容在第二个 session 里也要折;
- *    ② 一次只起一个折叠 —— 已有折叠在飞的 session 跳过;
- *    ③ 阈值来自 config (不给 conf 时用 edc_init_env.h 的默认值)。
- * ══════════════════════════════════════════════════════════════ */
+/* Test 5: the trigger scan (edc_group_fold_try), the only entry the scheduler calls.
+ * Pins: it scans all sessions, starts one fold at a time, and takes the threshold
+ * from config (default otherwise). */
 
 static void test_try_scans_all_sessions(void)
 {

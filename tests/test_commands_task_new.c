@@ -1,16 +1,7 @@
-/* /task new: `desc` 就是 input, 任务**创建即运行** (2026-09-14 决定)。
+/* /task new: `desc` is the input, so the task runs on creation.
  *
- * 为什么需要这条测试: 此前 /task new 只建不派发 —— 任务停在 WAITING_INPUT 且
- * **永远等不到输入** (没有任何代码会给它), 是个死胡同。补上派发之后必须有东西
- * 钉住它, 否则很容易再退回去。而且它没有别的见证: 现有测试**本来就不覆盖命令
- * 层**, 全量测试在改动前后都是 43/5。
- *
- * handle_task_new 是 static, 所以走公开入口 edc_commands_handler, 用一个 spy
- * send_llm 观察"到底跑没跑"。
- *
- * 缺口 (如实记录): 这里断言的是"任务有了 active_turn 并且被派发", **没有**
- * 断言那个 turn 里装的就是 desc 的正文 —— 那需要 turn 的消息读取 API, 超出
- * 这条测试想守的范围 (description 已经钉住了"用的是 desc"这一半)。 */
+ * handle_task_new is static, so this drives the public edc_commands_handler entry
+ * with a spy send_llm to observe whether it actually ran. */
 #include "edc_channel_actor.h"
 #include "edc_commands.h"
 #include "edc_config.h"
@@ -24,12 +15,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-/* ── 单测的 session 仓库 ─────────────────────────────────────────
- * scheduler 现在**同包直调 store** (P3 的 `resolve_session` 端口已退休),
- * 所以测试给它的不是"解析函数"而是**仓库**: 一个只装着
- * 这些 session 的内存 manager (普通结构体, 没有构造函数 —— 与 poke 别的结构体同法)。
- * 标签为空 = 用活跃的那个 (active_index 指向第一个), 与真 store 的策略一致。
- * `ctx` 仍留给测试自己用 (它不再是读口的入参)。 */
+/* The in-memory session store handed to the scheduler; an empty label means the
+ * active session (active_index points at the first). */
 static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
 {
     sched->ctx = sess;

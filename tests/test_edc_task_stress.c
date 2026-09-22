@@ -23,10 +23,8 @@ static int test_passed = 0;
    Phase 1: edc_task 压力 / 边界 / 异常测试
    ══════════════════════════════════════════════════════════════ */
 
-/* ── 1. 状态转换穷举 ────────────────────────────────────────
- * 已搬去 tests/test_edc_task.c 的 `test_transition_table_spec`: 那里把新转移表
- * 按 (step, life) 逐源写成规格, 穷举 30×30 = 900 格 (旧版本这里是 9×9 的旧词
- * 矩阵, 随旧枚举一起退休)。 */
+/* 1. Transition-table exhaustion moved to tests/test_edc_task.c
+ * (test_transition_table_spec), which pins the new table per (step, life). */
 
 /* ── 2. NULL 安全全面测试 ──────────────────────────────────── */
 

@@ -107,11 +107,9 @@ static void test_leader_management(void)
     edc_task_group_free(g);
 }
 
-/* ── 4. 信号 ─────────────────────────────────────────────────
- *
- * 逐成员发信号**不归组模块**: 宿主 scheduler 要顺带给每个成员做它那份簿记 (索引 /
- * 回收队列 / 置脏 / 结算), 而组不认识宿主 —— 所以那个循环在
- * `sched_signal_group_members`, 这里只测组**自己**的收尾。 */
+/* 4. Signals: per-member signalling lives in the scheduler (it owes each member its
+ * bookkeeping, and the group does not know the host), so this only tests the group's
+ * own teardown. */
 
 static void test_group_signals(void)
 {

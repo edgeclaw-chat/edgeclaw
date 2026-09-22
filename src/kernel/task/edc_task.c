@@ -9,11 +9,8 @@
 #include <string.h>
 #include <strings.h>
 
-/* ── 状态名映射: 已退休 (R3b) ──────────────────────────────
- *
- * 旧的 `edc_task_state_name(enum)` / `edc_task_classify_state(str)` 随旧枚举一起删掉了。
- * 显示名现在只有一处来源: `edc_task_state_str` —— 由 (step, life) 直接出。
- * 反向 (串 → 状态) 从来没有 src 调用方: 落盘的 step/life 走 classify_step/life。 */
+/* The old state-name mapping is retired (R3b): the display name has one source,
+ * edc_task_state_str, derived from (step, life). */
 
 /* ── 状态转换校验 ──────────────────────────────────────────── */
 
@@ -63,10 +60,8 @@ edc_task_step edc_task_classify_step(const char *name)
         return EDC_TASKSTEP_READY;
     if (strcmp(name, "AWAIT_DEPS") == 0)
         return EDC_TASKSTEP_AWAIT_DEPS;
-    /* "AWAIT_INPUT" 是**旧名**, 从来就等同于 READY (task 创建时就带着 input, 没有
-     * "等用户输入"这个相位)。必须收这一条: 前一个二进制写出的 v5 文件、以及
-     * tools/migrate_session_v4_to_v5.py 早先的产物里, 停着的任务 step 都是它 ——
-     * 不折成 READY 就会载入成不可 attach 的僵尸 (读侧已改按 READY/IDLE 判定)。 */
+    /* Accept the legacy "AWAIT_INPUT": older v5 files and the v4->v5 migration
+     * wrote it for a parked task, and it means READY. */
     if (strcmp(name, "AWAIT_INPUT") == 0)
         return EDC_TASKSTEP_READY;
     if (strcmp(name, "AWAIT_EXEC") == 0)
@@ -95,11 +90,8 @@ edc_task_life edc_task_classify_life(const char *name)
     return EDC_LIFE_ALIVE;
 }
 
-/* ── sink / lifetime: 名称、解析 (与 step/life 同一套做法) ──
- *
- * 这两个属性今天**不落盘** (TRANSIENT 任务根本不进 session.json; PERSISTENT 任务的
- * 取值恒为默认), 所以 `_name` 只服务日志/调试, `_classify` 暂无落盘调用方 —— 与
- * step/life 成套留着: 它们是同一族 (五个正交属性), 落盘一旦需要就有一致的入口。 */
+/* sink / lifetime name + classify, matching step/life. Not persisted today, so
+ * _name serves logs and _classify has no caller yet; kept as one family. */
 
 const char *edc_task_sink_name(edc_sink sink)
 {
@@ -148,13 +140,9 @@ bool edc_task_is_transient(const struct edc_task *task)
     return task && task->lifetime == EDC_LIFETIME_TRANSIENT;
 }
 
-/* 派生的显示名 (快照 / 日志 / `/task status|list|join` 文案)。见 edc_task.h: 词表冻结。
- *
- * 旧有的两级 (state_of → state_name) 随旧枚举一起退休 (R3b): 现在 (step, life) **直接**
- * 出词, 顺序与原实现逐字一致 —— **life 先说话** (挂起/终态掩掉 step), 然后才轮到 step。
- * 两个"畸形但必须不崩"的组合沿用旧的兜底口径: (DONE, ALIVE) → IDLE,
- * (AWAIT_RESOURCE, ALIVE) → WAITING_DEPS (旧枚举里没有对应的词)。
- * `WAITING_INPUT` 这个串**再也不会被返回** —— 那个相位退休了 (旧名 = READY)。 */
+/* The display name (snapshot / logs / command text), derived straight from
+ * (step, life) with life speaking first, matching the old order. WAITING_INPUT is
+ * never returned. */
 const char *edc_task_state_str(const struct edc_task *task)
 {
     if (!task)
@@ -194,13 +182,10 @@ const char *edc_task_state_str(const struct edc_task *task)
 static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life from_life, edc_task_step to_step,
                                          edc_task_life to_life);
 
-/* 目标态: 一次转移同时说清"到哪一步"和"还活着吗"。这两件事过去挤在 `edc_task_state`
- * **一个** enum 里 —— 于是"挂起"既表示"跑到一半停住"又表示"重启后什么都没在跑",
- * 相位只能靠粗化保存。拆开 step/life 的意义在这里落地: **状态机自己也不再丢掉相位**
- * (校验用 (step, life), 不再用把 step 塌掉的旧词)。 */
-/* ── 低层原语: 直接说目标态 ─────────────────────────────────
- * 一般调用方用上面的意图函数; 说目标态的两处是 scheduler 的统一入口与 executor 的
- * port —— 它们**先说话再置脏**, 不自己拼意图 (见 edc_scheduler.c / edc_executor.h)。 */
+/* A transition states both "which step" and "alive?" at once; the state machine
+ * validates (step, life), so it never loses the phase. */
+/* Low-level primitives: state the target directly. Used by the scheduler's
+ * unified entry and the executor's port. */
 bool edc_task_move(struct edc_task *task, edc_task_step step, edc_task_life life)
 {
     if (!task)
@@ -212,10 +197,8 @@ bool edc_task_move(struct edc_task *task, edc_task_step step, edc_task_life life
     return true;
 }
 
-/* ── 意图命名的写入口: 调用方说"我要干什么", 不拼目标态 ──────
- * 取代 `edc_task_set_state(task, TASK_X)`: 旧写法把"到哪一步"和"活着吗"藏在一个
- * enum 值里, 挂起更是**说不出**目标 step (TASK_SUSPENDED 只动 life)。返回 false =
- * 该转移不合法 (被状态机拒绝), 与旧 set_state 的返回值语义一致。 */
+/* Intent-named write points: the caller says what it wants rather than assembling
+ * a target state. Returns false when the transition is rejected. */
 bool edc_task_await_exec(struct edc_task *task)
 {
     return edc_task_move(task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
@@ -244,13 +227,9 @@ bool edc_task_mark_completed(struct edc_task *task)
 /* 失败要**广播**给依赖者 (定义在依赖那一段里, 见下方)。 */
 static void task_notify_dependents_failed(struct edc_task *task);
 
-/* 失败 = 置 ERROR **并且告诉自己所有的依赖者**。广播放在这里而不是调用方, 是为了让
- * "任务进 ERROR"这件事**无论谁发起**都传播: executor 的两个出口 (LLM 报错 / 未知
- * finish reason) 都不用记得做这件事, 将来新的失败点也不会漏。
- *
- * 与取消的分工同构: `edc_task_send_signal` = 置取消 + 广播, `edc_task_mark_failed`
- * = 置失败 + 广播 —— 两者都不做宿主簿记 (那是 `edc_scheduler_apply_advance` 的事),
- * 只把"连带动了谁的相位"记在发起者账上 (`task_record_move`)。 */
+/* Failure = set ERROR and broadcast to every dependent, so "a task failed"
+ * propagates no matter who initiated it. Symmetric with send_signal: neither does
+ * host bookkeeping, they only record the moved tasks. */
 bool edc_task_mark_failed(struct edc_task *task)
 {
     if (!task)
@@ -274,22 +253,11 @@ bool edc_task_mark_suspended(struct edc_task *task)
     return task && edc_task_move(task, task->step, EDC_LIFE_SUSPENDED);
 }
 
-/* ── 转移表 (键 = (step, life)) ─────────────────────────────
- * 与旧表逐条对照。旧表以**折叠过的旧词**为键, 所以新表只能与它在实际可达的转移上
- * 等价 —— 唯一等价不了的那一格写在下面 (READY → READY)。 */
+/* Transition table, keyed by (step, life). */
 static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life from_life, edc_task_step to_step,
                                          edc_task_life to_life)
 {
-    /* 同一个 (step, life) 之间没有"转移"可言。
-     *
-     * ⚠️ 与旧表的一处**不可能等价**: 旧代码判
-     *     IDLE          → WAITING_INPUT   合法   (两个旧名, 同一个落点)
-     *     WAITING_INPUT → WAITING_INPUT   非法
-     * —— 同一个源、同一个目标却一真一假, 因为旧表的键是**名字**而不是状态。新表的键
-     * 是 (step, life), 这种"同名不同行"无法表示, 两条统一按自转移处理。实际路径不受
-     * 影响: 所有"回 READY"的调用点都先判 `edc_task_awaits_deps()` (源必为 AWAIT_DEPS),
-     * 没有一条会从 READY 发起。这条残渣随 WAITING_INPUT 一起退休
-     * (见 docs/retire-waiting-input.md §4 第 3 行)。 */
+    /* No transition within the same (step, life). */
     if (from_step == to_step && from_life == to_life)
         return false;
 
@@ -298,9 +266,8 @@ static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life 
     case EDC_LIFE_COMPLETED:
         return false; /* terminal */
     case EDC_LIFE_CANCELLED:
-        /* resume: 取消只是"停下", 不是"这活没了" —— 与 SUSPENDED / ERROR 同一组目标。
-         * 取消时 step 已被压成 DONE, 所以续跑必须按消息 / 账本重判该回哪一步
-         * (edc_scheduler_resume_task)。 */
+        /* Resume: cancel only stops the task, so CANCELLED shares the target group
+         * with SUSPENDED / ERROR. */
         return (to_life == EDC_LIFE_ALIVE &&
                 (to_step == EDC_TASKSTEP_READY || to_step == EDC_TASKSTEP_AWAIT_DEPS ||
                  to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_TOOLS)) ||
@@ -319,16 +286,9 @@ static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life 
 
     switch (from_step)
     {
-    /* READY = "带着 input 停着, 等着被派发": 派发 / 撞上依赖 / 取消 / 挂起 / **失败**。
-     *
-     * 失败那一格是后加的 (2026-09-18, 驱动统一进 executor 的 START): 驱动一个就绪任务
-     * 时也可能**发起不了任何 I/O** —— 宿主没装 LLM / 工具箱端口、工具链重派不出去、
-     * 相位不允许这一步。那时它是"这摊活跑不成", 而不是"停着等派发"; 不许它失败,
-     * 它就只能永远留在 READY 被反复扫描 (而调度是扫到不动点的)。
-     * 挂起那一格来自 "以挂起状态创建" (2026-09-14): 还没开始跑、但输入已装好的
-     * 任务需要一条进入挂起的入口 —— 在此之前 SUSPENDED 只能从 AWAIT_TOOLS 到达,
-     * 那是"跑到一半挂起"。往返是对称的 (SUSPENDED 行允许 resume 回
-     * READY / AWAIT_DEPS / AWAIT_EXEC / AWAIT_TOOLS)。 */
+    /* READY = parked with input, waiting to be dispatched: dispatch / hit a
+     * dependency / cancel / suspend / failure. Failure is allowed so a drive that
+     * cannot start any I/O fails instead of being rescanned forever. */
     case EDC_TASKSTEP_READY:
         return (to_life == EDC_LIFE_ALIVE &&
                 (to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_DEPS)) ||
@@ -359,10 +319,8 @@ static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life 
     return false;
 }
 
-/* ── 绕过状态机的写入口 (装配初始态 / 摆场景 / 构造"不可能状态") ──
- * 不校验, 直接落到 (step, life)。src 里只被 edc_task_new / edc_task_fork 用 (它们要
- * 装配一个初始态)。旧词的过渡桥 (`edc_task_set_state` / `edc_task_force_state`) 已随
- * 旧枚举一起退休 (R3b) —— 说目标态就是直接说 (step, life), 中间不再经一层词表。 */
+/* Write entries that bypass the state machine (initial state, fixtures): no
+ * validation, straight to (step, life). */
 void edc_task_force_move(struct edc_task *task, edc_task_step step, edc_task_life life)
 {
     if (!task)
@@ -384,9 +342,8 @@ struct edc_task *edc_task_new(const char *task_id, const char *session_id, const
     /* 新任务: "带着 input 停着, 等着被派发" —— 没有"等用户输入"这个相位,
      * 所以直接置 (READY, ALIVE) (旧词写作 TASK_IDLE/TASK_WAITING_INPUT 两行)。 */
     edc_task_force_move(task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
-    /* 另外两个属性 (sink / lifetime): 默认就是用户任务 —— 产出回给用户、落盘。
-     * g_new0 已经把两个 0 值 (CHANNEL / PERSISTENT) 置好, 这里**显式**写一遍:
-     * 它们由 enum 顺序保证, 而 enum 顺序不该是这里正确性的依赖。 */
+    /* The other two axes default to a user task (output to the user, persisted);
+     * written explicitly so correctness does not depend on enum order. */
     task->sink = EDC_SINK_CHANNEL;
     task->lifetime = EDC_LIFETIME_PERSISTENT;
     task->is_group_leader = 0;
@@ -670,11 +627,8 @@ void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long lon
 
 /* ── 依赖 (IPC) ────────────────────────────────────────────── */
 
-/*
- * DFS cycle detection: check if 'source' can reach 'target' by following
- * existing dependency edges. If yes, adding target→source would create a
- * cycle, causing permanent deadlock.
- */
+/* DFS cycle detection: if 'source' can reach 'target', adding target->source
+ * would create a deadlock. */
 #define EDC_TASK_MAX_DEPTH 64
 
 static bool edc_task_can_reach(struct edc_task *from, struct edc_task *to, int depth)
@@ -773,14 +727,8 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
 
     if (target->deps_completed >= target->deps_total && edc_task_awaits_deps(target))
     {
-        /* 完成 → 依赖者转 READY, 也是**相位改动**: 宿主对每个动了相位的 task 都欠
-         * 同一份簿记 (置脏), 而它不在调用者的名单里 (调用者只点了源的名)。与取消 /
-         * 失败两条路同构地记一笔债 (重复是幂等的: 相位没真动就不记)。
-         *
-         * 为什么从前没记: 那时"启动排队的依赖者"走 sched_start_queued_dependents,
-         * 顺手用 sched_move_task 置了脏 —— 一处特例替三条路兜着。现在驱动统一归
-         * 消息末尾的全表扫描 (它按状态认人, 不认谁把它弄成这样的), 特例没了,
-         * 簿记就得由这条不变量自己提供。 */
+        /* Completion also moves the dependent's phase, so it owes the same
+         * bookkeeping and is recorded here (idempotent when nothing moved). */
         edc_task_step step_before = target->step;
         edc_task_life life_before = target->life;
         edc_task_mark_ready(target);
@@ -789,10 +737,7 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
     }
 }
 
-/* ── 连带改动的回报 (见 edc_task.h) ─────────────────────────
- *
- * 取消/依赖失效会**连带**改动别的 task, 那些 task 不在调用者的名单里, 宿主却对每个
- * 动了相位的 task 都欠同一份簿记。这里记账, 宿主过统一入口时清账 (`edc_task_drain_moves`)。 */
+/* Side-effect move report (see edc_task.h). */
 
 /* 记一笔债务: |moved| 的相位被 |source| 发起的这次操作连带动过了。
  * 债记在**发起者**头上 —— 宿主正要结算的就是它, 清账时顺手带走。 */
@@ -808,14 +753,10 @@ static void task_record_move(struct edc_task *source, struct edc_task *moved)
     source->moved_report = r;
 }
 
-/* 摘掉 target 对 source 的那条依赖边 (两侧链表都要摘)。用在"JOIN 的源已经失败"上:
- * 这条依赖**永远满足不了**, 留着它, resume 重判依赖时会把 target 又搬回 AWAIT_DEPS
- * —— 那就是永久卡死。target 与**别的**源的边一概不动 (那些源还活着, 产出仍要注入)。
- *
- * 注意这里选择**摘掉**而不是像取消那样把边标成 cancelled: 落盘时 cancelled 标记会被
- * 读回来重放 (`edc_state_serializer.c` 的 `on_dep_cancelled` 那条), 而 JOIN 边的重放
- * 语义是"连带走取消" —— 一个失败(可 resume 的 ERROR)的 task 重启后会变成被取消,
- * 状态在盘上来回变形。边不留痕就不存在这个歧义。 */
+/* Unlink target's edge to source on both lists. Used when a JOIN source failed:
+ * the edge can never be satisfied, and keeping it would send target back to
+ * AWAIT_DEPS on resume. Chosen over marking it cancelled because a cancelled flag
+ * is replayed on load and would turn a resumable ERROR into CANCELLED. */
 static void task_unlink_dep(struct edc_task *target, struct edc_task *source)
 {
     if (!target || !source)
@@ -846,9 +787,9 @@ static void task_unlink_dep(struct edc_task *target, struct edc_task *source)
     }
 }
 
-/* 源**终结了、再也不会产出**时, 把 target 对它的那条 SEQUENCE 依赖作废: SEQUENCE 本来
- * 就不要源的产出 (只是"跑在它后面"), 顺序已经走完 —— 抹掉这条边, target 仍可运行。
- * 取消与失败在这一条上语义完全相同 (源是死了还是没产出, 对 SEQUENCE 没区别), 共用这份实现。 */
+/* Void target's SEQUENCE edge to a source that has terminated and will never
+ * produce: order is done, so drop the edge and let target run. Shared by cancel
+ * and failure. */
 static void task_void_sequence_dep(struct edc_task_dep *dep, struct edc_task *target, struct edc_task *source)
 {
     dep->cancelled = true;
@@ -919,10 +860,9 @@ void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source)
 
     if (dep->type == TASK_DEP_JOIN)
     {
-        /* JOIN: 源的 output 永远不会来了 —— 这条依赖无法满足，本 task 也就
-         * 无法作为完整输入运行，于是级联取消。edc_task_send_signal 会递归
-         * 取消本 task 自己的依赖者，并清空它的 deps；因此 dep 随后即失效，
-         * 必须立即 return，不能再解引用。 */
+        /* JOIN: the source's output never arrives, so this task cannot run with a
+         * complete input and is cascaded into cancellation. Return immediately: the
+         * recursive cancel has already cleared deps. */
         edc_task_step step_before = target->step;
         edc_task_life life_before = target->life;
         edc_task_send_signal(target, TASK_SIGTERM);
@@ -938,9 +878,8 @@ void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source)
     task_void_sequence_dep(dep, target, source);
 }
 
-/* 源**失败**时对依赖者的处置 —— 与取消同构 (源都不会再产出了), 只是终态不同:
- * 取消是"人让它停", 失败是"它跑不成"; 而 ERROR 与 CANCELLED 都在 `/task resume`
- * 接受的三类里, 所以两种终态都给了用户出路。 */
+/* Handle a failed source, symmetric with cancellation (neither will produce
+ * again), only the terminal state differs. Both ERROR and CANCELLED are resumable. */
 void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
 {
     if (!target || !source)
@@ -958,17 +897,13 @@ void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
 
     if (dep->type == TASK_DEP_JOIN)
     {
-        /* JOIN: 源的 output 永远不会来了 —— 这条依赖无法满足, 本 task 也就无法作为
-         * 完整输入运行, 于是级联失败。edc_task_mark_failed 会递归广播给 target 自己的
-         * 依赖者; 摘边必须**先**做 (见 task_unlink_dep 的注释: 不摘就 resume 不回来)。 */
+        /* JOIN: cascade the failure; unlink the edge first or resume cannot
+         * recover. */
         edc_task_step step_before = target->step;
         edc_task_life life_before = target->life;
 
-        /* 失败的原因要说得出来。executor 那条路上带来的是 LLM 的错误文案, 这条路上
-         * 什么都没有 —— 把"谁的产出再也来不了"写进 output (失败任务的 output 就是它的
-         * 失败原因, 与 executor 那条路一致), 宿主结算时把它当通知发给用户。留 NULL 会
-         * 让宿主退回一句通用的 "LLM request failed" —— 对一个**从没发出过请求**的
-         * 依赖者是假话。 */
+        /* Write the reason into output ("whose output will never arrive"), so the
+         * host has a notice instead of a false generic "LLM request failed". */
         if (source->task_id)
             edc_task_set_output(target, sdscatprintf(sdsempty(), "[failed: its dependency %s failed, so the output "
                                                                  "it was waiting for will never arrive]",
@@ -990,10 +925,9 @@ void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
     task_void_sequence_dep(dep, target, source);
 }
 
-/* 失败广播: 与 edc_task_send_signal 里取消的广播同一手法 —— 先把依赖者快照成数组
- * 再逐个处理, 因为 JOIN 的级联失败会在回调里递归摘掉 `dependents` 上的节点 (更深一层
- * 的 `task_unlink_dep` 会改这条链表, LL_FOREACH_SAFE 也救不了)。级联不释放 task 本身
- * (只释放 dep 节点), 所以暂存裸指针是安全的。 */
+/* Failure broadcast: snapshot the dependents before processing, since a JOIN
+ * cascade recursively unlinks nodes from that list. The cascade never frees the
+ * tasks themselves, so raw pointers are safe. */
 static void task_notify_dependents_failed(struct edc_task *task)
 {
     if (!task)
@@ -1037,9 +971,8 @@ void edc_task_notify_dependents(struct edc_task *task)
 
 bool edc_task_is_running(const struct edc_task *task)
 {
-    /* 正跑着 = ALIVE 且在等 executor/工具的答复。挂起在等工具的任务是
-     * step=AWAIT_TOOLS && life=SUSPENDED —— 不算 running (旧词汇里它只显示成
-     * SUSPENDED, 这里必须一致)。 */
+    /* Running = ALIVE and awaiting the executor/tool reply; suspended-while-awaiting
+     * tools does not count. */
     return edc_task_awaits_exec(task) || edc_task_awaits_tools(task);
 }
 
@@ -1052,11 +985,8 @@ void edc_task_send_signal(struct edc_task *task, edc_task_signal sig)
 
     if (sig == TASK_SIGTERM)
     {
-        /* 先把依赖者快照成数组再逐个处理: JOIN 的级联取消会在回调里递归清理
-         * 各 task 的 deps, 因而把节点从 task->dependents 上摘掉 —— 边遍历边
-         * 改这条链表, LL_FOREACH_SAFE 也救不了 (它只缓存当前节点的 next,
-         * 而 next 本身可能被更深的递归 freeing)。取消过程不会释放 task 本身
-         * (只释放 dep 节点), 所以暂存裸指针是安全的。 */
+        /* Snapshot the dependents first: a JOIN cascade recursively unlinks nodes
+         * from task->dependents, which LL_FOREACH_SAFE cannot survive. */
         size_t n = 0;
         struct edc_task_dep *dep;
         LL_FOREACH(task->dependents, dep)
@@ -1190,10 +1120,7 @@ bool edc_task_has_pending_tool_calls(const struct edc_task *task)
     return task && task->tool_calls != NULL;
 }
 
-/* ── 悬空 tool_call 的修补 (驱动前置) ────────────────────────
- *
- * 见 edc_task.h 的声明处: 为什么按消息而不是按账本、为什么归 task 模块。
- * 幂等: 已有 tool 响应的 call_id 跳过 (重复驱动不会补第二条)。 */
+/* Repair dangling tool_calls (pre-drive; see edc_task.h). Idempotent. */
 
 static const char *const kInterruptedToolNote =
     "[interrupted: this tool was still running when the process restarted; it did not produce a result]";
@@ -1281,17 +1208,9 @@ void edc_task_set_completion_seq(struct edc_task *task, uint32_t seq)
 
 /* ── 折叠 ────────────────────────────────────────────────── */
 
-/* 可折叠 = 已终结、且还没折过、且**这个任务是要留下来的** (PERSISTENT)。
- *
- * 第三条来自 lifetime, 是 P0b 把一个真 bug 逼出来的: 折叠任务自己也是一个
- * "COMPLETED && !turns_folded" 的任务, 它一完成就会触发下一轮触发检查 ——
- * 于是系统组 (成员全是 TRANSIENT) 也会被当成可折叠对象, 折出自己的 prompt
- * 和摘要 (实测夹具里立刻多出一次 LLM 请求)。
- *
- * 规则本身很直白: **折叠是为"活过重启"的那部分历史做压缩** (它决定重启后还剩
- * 多少细节), 所以一个"不落盘、完成即回收"的任务根本不该进这个账 —— 它没有
- * 需要被压缩的未来。于是 lifetime 在这里再读一次: 不是特判隐藏, 而是同一条
- * "它不留下来"的规则在折叠口径上的必然结论。 */
+/* Foldable = finished, not yet folded, and PERSISTENT. The lifetime condition keeps
+ * the fold task itself (and the whole system group) out of the fold account: a task
+ * that is not persisted has no history to compress. */
 bool edc_task_is_foldable(struct edc_task *task)
 {
     return !edc_task_is_transient(task) && edc_task_is_completed(task) && !task->turns_folded;

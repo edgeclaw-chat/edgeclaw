@@ -117,9 +117,8 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
         {
             if (httpreq->from)
             {
-                /* The https client reports the cause (DNS failure, timeout, ...) via
-                 * ERROR and then closes without a response. Surface that cause instead
-                 * of the generic message below -- otherwise the two look identical. */
+                /* The client reports the cause (DNS, timeout, ...) via ERROR and then
+                 * closes without a response; surface it instead of the generic text. */
                 struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
                 resp->error = edc_error_new(EDC_ERR_FAILED, "%s",
                                             httpreq->error ? httpreq->error
@@ -133,9 +132,8 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
     else if (ev == EDC_HTTPS_EVENT_ERROR)
     {
         log_error("llm actor https error: %s", (const char *)data);
-        /* Remember only the first cause: one failing request reports several (a
-         * timeout is followed by "operation canceled" when the socket is closed),
-         * and the later ones are the least informative. */
+        /* Keep only the first cause: a failing request reports several, and the
+         * later ones (e.g. "operation canceled") are the least informative. */
         if (!httpreq->error && data)
         {
             httpreq->error = sdsnew((const char *)data);
