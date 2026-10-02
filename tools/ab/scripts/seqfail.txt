@@ -1,0 +1,23 @@
+# seqfail（**临时夹具**，用完删）：`a ; b` 链上, 上游**非完成**地终结 → 下游应被
+# 消息末尾的调度启动。
+#
+# 为什么要临时造: 五条常备夹具里没有 `;` 链, 打不到"转 READY 之后谁来驱动"这条路。
+# 联动: responses/seqfail.json 的第一个应答压后 60s, 配合
+# `--env EDGECLAW_HTTPS_TIMEOUT_MS=1500` → 上游任务以 ERROR 收场 (走真实失败路径)。
+#
+# 期望:
+#   改动前: `second` 停在 READY/ALIVE (界面 IDLE, 黄色) —— 永久没人驱动 (探针实测
+#           send_llm=0), 只有重启 + /task resume 能人工救回;
+#   改动后: `second` 被扫描启动 → 跑完 → COMPLETED。
+
+wait 1500
+
+# `;` = SEQUENCE 边 (只约束顺序, 不要上游产出): 两个任务, 第二个依赖第一个
+send first ; second\n
+
+# 等上游超时 (1.5s) + 下游跑完 + settle
+wait 6000
+
+# 把两个任务的相态写进转录 (两侧对比用)
+send /task list\n
+wait 1500

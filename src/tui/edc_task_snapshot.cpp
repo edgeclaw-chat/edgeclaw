@@ -113,6 +113,7 @@ bool ParseTaskSnapshot(const std::string &json, TaskSnapshot *out)
 
     out->session_id = JsonStr(Field(root, "session_id"));
     out->session_name = JsonStr(Field(root, "session_name"));
+    out->workdir = JsonStr(Field(root, "workdir"));
     out->message_count = JsonInt(Field(root, "message_count"));
     out->created_at = JsonStr(Field(root, "created_at"));
 

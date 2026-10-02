@@ -14,23 +14,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ══════════════════════════════════════════════════════════════
- * L1 折叠: task turns → group memory
- * 触发 (edc_group_fold_try) 只看未折叠消息数 ≥ 阈值 (默认 200);
- * 真正折叠时按半量策略: 只把最老的一半未折叠消息 (≈ 阈值/2, 即 ~100 条)
- * 交给 LLM 做摘要, 新的一半保持未折叠细节 —— 每次总是一半记忆被压缩、
- * 一半记忆留细节, 上下文里仍有明细消息可读, 不会整批全被摘要化。
- * 完成后置 turns_folded 并推进折叠水位; max_seq 只覆盖被选中的最老
- * task, 未选中的 task 保持 turns_folded=false, 下一轮再压。
- * 注意: 折叠只处理 turns, 绝不触碰 task->output (JOIN 仍可消费)。
+/* L1 fold: finished tasks' turns -> group memory.
  *
- * 下面的 prompt 构造与阈值判据**逐字来自旧的 memory_actor** —— 折叠行为本身
- * 不该因为"它现在是个普通任务"而变。
- * ══════════════════════════════════════════════════════════════ */
+ * Triggered when unfolded messages reach the threshold (default 200); the fold
+ * itself summarizes only the oldest half, so half the memory stays detailed.
+ * Only turns are folded, never task->output. The prompt building and threshold
+ * logic are unchanged from the old memory_actor. */
 
-/* 折叠任务的 system prompt。旧实现是在发请求时现拼一条 system 消息, 一字不差地
- * 搬到这里, 只是改成**系统组的 history[0]** —— 那是组的共用头部, 组内每个
- * system task (每次折叠) 都用它, 与旧实现每次现拼的结果相同。 */
+/* Fold task system prompt: the system group's shared history[0]. */
 static const char *kFoldSystemPrompt =
     "You are a memory summarizer. Merge new task history into a concise Group Memory markdown.";
 
@@ -52,21 +43,14 @@ bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_manager 
     if (msg_threshold <= 0)
         msg_threshold = EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
 
-    /* L1 折叠触发: 组内存在可折叠 task 且未折叠消息条数 ≥ 阈值。
-     * 触发时机只由对话条数驱动 —— 不再看可折叠 task 个数。
-     * 扫描**所有** session: 后台 session 里的任务完成后也要能触发折叠, 否则
-     * 只有切回来才折叠。一次只折叠一个组。
-     *
-     * 折叠本身是一次 system task: 下面只决定"该折了", 任务由 edc_group_fold_start
-     * 建、派发, 它的产出经 sink=GROUP_MEMORY 落到目标组的记忆里, 跑完按
-     * lifetime=TRANSIENT 被回收。 */
+    /* Scan every session (a background session folds too) and fold at most one
+     * group at a time. */
     struct edc_session_manager *sm = sessions;
     for (int si = 0; si < sm->session_count; si++)
     {
         struct edc_session *sess = sm->sessions[si];
         if (!sess)
             continue;
-        /* 这个 session 已经有折叠在飞: 跳过 (别让两次折叠互相看见半成品记忆)。 */
         if (edc_scheduler_has_pending_system_task(sess))
             continue;
 
@@ -119,7 +103,7 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, uint32_t *out_max_
         return NULL;
     }
 
-    /* 按 completion_seq 升序 (插入排序, task 数通常很小) */
+    /* Sort by completion_seq (insertion sort; few tasks). */
     for (size_t i = 1; i < n; i++)
     {
         struct edc_task *key = tasks[i];
@@ -132,11 +116,8 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, uint32_t *out_max_
         tasks[j] = key;
     }
 
-    /* 半量策略: 触发后不是把攒满的未折叠消息整批全压, 而是只压最老的
-     * 一半 (≈ unfolded/2; 攒满 200 即压 ~100), 剩下一半保持未折叠细节。
-     * 折叠粒度为 task (整段 turns 一起摘要), 故按 completion_seq 升序取
-     * "最老、且累计消息数不超过预算"的 task 前缀; max_seq 取边界 task,
-     * finish 阶段只会折叠 seq ≤ max_seq 的 task, 新的一半自然留下。 */
+    /* Half strategy: fold the oldest prefix of tasks (by completion_seq) whose
+     * messages fit in half of the unfolded budget; max_seq is the boundary. */
     size_t budget = edc_task_group_unfolded_msg_count(group) / 2;
     size_t sel = 0, folded_msgs = 0, total_msgs = 0;
     for (size_t i = 0; i < n; i++)
@@ -151,7 +132,7 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, uint32_t *out_max_
     }
     if (sel == 0 && n > 0)
     {
-        /* 兜底: 最老单个 task 就超预算 (正常触发时 unfolded ≥ 200, 不会走到) */
+        /* Fallback: the oldest task alone exceeds the budget. */
         folded_msgs = edc_task_turn_msg_count(tasks[0]);
         sel = 1;
     }
@@ -202,8 +183,7 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
     if (!sched || !session || !group)
         return NULL;
 
-    /* 一个 session 同时只折一个组: 两次折叠并行的话, 后一次的 prompt 会读到
-     * 前一次还没写完的记忆与水位。 */
+    /* One fold per session at a time, or the second prompt reads unwritten state. */
     if (edc_scheduler_has_pending_system_task(session))
         return NULL;
 
@@ -221,7 +201,7 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
     task->sink_group = group;   /* 产出写进这个组的记忆 (sink = GROUP_MEMORY) */
     task->fold_max_seq = max_seq;
 
-    /* 系统组的共用头部 (只写一次): 折叠说明。 */
+    /* The system group's shared header, written once. */
     if (task->group && cJSON_GetArraySize(task->group->history) == 0)
     {
         cJSON *msg = cJSON_CreateObject();
@@ -233,16 +213,53 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
     log_info("L1 fold start: group %s task=%s prompt=%zu bytes, max_seq=%u", group->group_id, task->task_id,
              sdslen(prompt), max_seq);
 
-    if (!edc_scheduler_dispatch_task(sched, task, prompt))
+    if (!edc_scheduler_attach_input(sched, task, prompt))
     {
-        log_error("L1 fold: could not dispatch the fold task for group %s — no fold this round", group->group_id);
-        /* 派不出去就别留着它: 置 ERROR 让 lifetime 规则把它回收 (不留半成品)。 */
+        log_error("L1 fold: could not attach the fold prompt for group %s — no fold this round", group->group_id);
+        /* Do not leave a half-built task: ERROR lets the lifetime rule reclaim it. */
         edc_task_force_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR);
         edc_scheduler_drain_reap_pending(sched);
         sdsfree(prompt);
         return NULL;
     }
 
+    /* The prompt is dispatched by the message-end scan, like any task. */
+    log_info("L1 fold: prompt attached to system task %s (it will be dispatched by the scheduler)",
+             task->task_id);
+
     sdsfree(prompt);
     return task;
+}
+
+/* Landing half of the fold: write the memory into task->sink_group, mark the
+ * selected members folded, advance the watermark. On failure nothing changes and
+ * the next round retries. */
+void edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
+{
+    struct edc_task_group *group = task ? task->sink_group : NULL;
+    if (!group || !content || !*content)
+    {
+        log_error("L1 fold: task %s produced no memory (target=%s, content=%s) — group memory unchanged",
+                  (task && task->task_id) ? task->task_id : "(null)", group ? "yes" : "none",
+                  (content && *content) ? "non-empty" : "empty");
+        return;
+    }
+
+    if (group->memory)
+        sdsfree(group->memory);
+    group->memory = sdsnew(content);
+
+    size_t folded_tasks = 0, folded_msgs = 0;
+    struct edc_task *t;
+    LL_FOREACH2(group->members, t, group_next)
+    {
+        if (edc_task_is_completed(t) && !t->turns_folded && t->completion_seq <= task->fold_max_seq)
+        {
+            t->turns_folded = true;
+            folded_tasks++;
+            folded_msgs += edc_task_turn_msg_count(t);
+        }
+    }
+    group->folded_through_completion_seq = task->fold_max_seq;
+    log_info("L1 fold done: group %s folded %zu tasks (%zu msgs)", group->group_id, folded_tasks, folded_msgs);
 }

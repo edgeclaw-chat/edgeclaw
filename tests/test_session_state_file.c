@@ -450,17 +450,20 @@ static void test_load_onto_nonempty(void)
     edc_session_add_group(s2, pre_g);
     CHECK(count_tasks(s2) == 1, "1 pre-existing task");
 
-    /* Load state on top */
+    /* Load state on top。
+     * 加载是**替换**不是合并: edc_state_deserialize() 先把 session->groups /
+     * active_task 清空, 再照盘上的快照重建。生产上这个场景造不出来 (store 只对
+     * 全新 session 加载, 且 state_loaded 拦住重载), 所以这里钉的就是"替换"。 */
     bool loaded = edc_session_load_state(s2, sc2);
     CHECK(loaded, "load_state succeeds on non-empty session");
 
-    /* Both the pre-existing task AND the loaded tasks should exist */
-    CHECK(count_tasks(s2) >= 2, "at least 2 tasks (pre-existing + loaded)");
+    /* 加载后内存里只剩盘上那座快照 */
+    CHECK(count_tasks(s2) == 1, "loaded snapshot replaces previous groups (1 task)");
 
     struct edc_task *rt = find_task(s2, "task-A");
     CHECK(rt != NULL, "loaded task-A found");
     struct edc_task *rpre = find_task(s2, "pre-existing");
-    CHECK(rpre != NULL, "pre-existing task still present");
+    CHECK(rpre == NULL, "in-memory pre-existing task dropped (replace, not merge)");
 
     edc_session_free(s2);
     edc_scheduler_free(sc2);

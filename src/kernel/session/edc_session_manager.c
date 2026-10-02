@@ -8,6 +8,7 @@
 #include "log.h"
 #include "sds.h"
 #include "uthash.h"
+#include "utlist_fix.h"
 #include <dirent.h>
 #include <errno.h>
 #include <string.h>
@@ -453,6 +454,28 @@ struct edc_task *edc_session_manager_find_task_any(struct edc_session_manager *s
         }
     }
     return NULL;
+}
+
+void edc_session_manager_foreach_task(struct edc_session_manager *sm, edc_session_task_visit_fn cb, void *ctx)
+{
+    if (!sm || !cb)
+        return;
+
+    /* 顺序固定 (session 链序 × 组链序 × 成员链序): 调用方 (调度) 依赖它做确定性 ——
+     * 同一批可跑任务, 每轮驱动的次序都一样。未加载的 session 没有组, 自然跳过。 */
+    for (int i = 0; i < sm->session_count; i++)
+    {
+        struct edc_session *s = sm->sessions[i];
+        if (!s)
+            continue;
+        struct edc_task_group *group;
+        DL_FOREACH(s->groups, group)
+        {
+            struct edc_task *t;
+            LL_FOREACH2(group->members, t, group_next)
+            cb(ctx, t);
+        }
+    }
 }
 
 /* ── task id 索引 (未加载 session) ───────────────────────────

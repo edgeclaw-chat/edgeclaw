@@ -1,20 +1,8 @@
-/* ══════════════════════════════════════════════════════════════
- *  P0b: fold 迁移为 system task
- *
- *  旧实现: scheduler 回调 → memory_actor (专用 actor) → 自己发 LLM 请求 →
- *  BC_ACTOR_MSG_GROUP_FOLD_DONE → scheduler 落盘。专用协议 + 专用 actor。
- *
- *  新实现: 触发方建一个 **system task**
- *    { sink = GROUP_MEMORY, lifetime = TRANSIENT }   —— 放进 session 的 system group
- *  它的 input 就是折叠 prompt; 产出经 executor 按 sink 分流到
- *  ops->deliver_group_memory, 落地在 scheduler: 写 memory、标已折叠、推水位。
- *  跑完按 lifetime 被回收, 组空了连组一起删。
- *
- *  本文件钉住三件事:
- *    ① 折叠行为本身**没有变** (prompt 构造逐字来自旧 memory_actor);
- *    ② 它确实是一条普通任务 (属性、调度、回收、可见);
- *    ③ 它不污染被折叠的组 (消息不进那个组的 history / 不占它的 completion_seq)。
- * ══════════════════════════════════════════════════════════════ */
+/* P0b: the fold migrated to a system task { sink = GROUP_MEMORY, lifetime =
+ * TRANSIENT } in the session's system group. Its input is the fold prompt; the
+ * output lands in the group's memory and the task is reclaimed on completion.
+ * This file pins: the fold behaviour is unchanged, it is an ordinary task, and it
+ * does not pollute the folded group. */
 
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -33,13 +21,16 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
-/* ── 这一层没有 session 仓库 ────────────────────────────────────
- * 折叠本体不需要 store: 会话是测试直接建的 (edc_session_new), 没有 manager。
- * 句柄留空 → 标签一律解析不出来 (与改动前"恒 NULL 的假读口"行为一致)。 */
+/* The session store: folding itself needs none, but scheduling does, since the
+ * message-end scan enumerates tasks through it. A simple in-memory manager. */
 static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
 {
-    (void)sess;
-    sched->sessions = NULL;
+    struct edc_session_manager *sm = g_new0(struct edc_session_manager, 1);
+    sm->sessions = g_new0(struct edc_session *, 1);
+    sm->sessions[0] = sess;
+    sm->session_count = sess ? 1 : 0;
+    sm->active_index = 0;
+    sched->sessions = sm; /* 测试进程内不释放: 与测试同生共死 */
 }
 volatile sig_atomic_t _run_loop = 1;
 
@@ -80,10 +71,8 @@ static struct edc_config *make_config(void)
     return cfg;
 }
 
-/* 折叠本体收的就是 scheduler (触发方还会用
- * session_manager/config, 但那条路是 shell/app 侧的, 这里测的是折叠本体)。
- * 用真结构体而不是 mock —— 它就是个普通结构, 没有构造函数。 */
-/* 建一组"已完成、带 turn"的任务 (可折叠), 每个 turn 装 `msgs_per_task` 条消息。 */
+/* Folding takes a real scheduler (a plain struct, no constructor).
+ * Build a group of finished, turn-bearing (foldable) tasks. */
 static void add_foldable_task(struct edc_session *session, struct edc_task_group *group, const char *id,
                               uint32_t completion_seq, int msgs_per_task, const char *text)
 {
@@ -115,6 +104,14 @@ static void stub_send_llm(struct edc_scheduler *sched, struct edc_task *task, vo
     (void)task;
     (void)request_id;
     g_send_llm_calls++;
+}
+
+/* 折叠任务也是**普通任务**: 起折叠只把 prompt 装上, "跑"发生在消息末尾的调度
+ * (actor handler 每条消息末尾调 `edc_scheduler_schedule`)。测试里直接调那个入口,
+ * 等价于"这条消息处理完了"。 */
+static void pump_schedule(struct edc_scheduler *sched)
+{
+    edc_scheduler_schedule(sched);
 }
 
 static int count_folded(struct edc_task_group *group)
@@ -244,6 +241,7 @@ static void test_fold_runs_as_a_system_task(void)
     uint32_t seq_before = group->folded_through_completion_seq;
 
     CHECK(edc_group_fold_start(sched, session, group) != NULL, "折叠任务起来了");
+    pump_schedule(sched);
     CHECK(g_send_llm_calls == 1, "折叠 prompt 作为一次普通 LLM 请求发出去了");
 
     /* ① 它是一条**普通任务**, 只是三个属性不同。 */
@@ -277,15 +275,14 @@ static void test_fold_runs_as_a_system_task(void)
     memset(&resp, 0, sizeof(resp));
     resp.reason = BC_LLM_FINISH_REASON_STOP;
     resp.content = sdsnew("# Merged memory\n- folded");
-    edc_executor_advance_llm_resp(&sched->executor, fold, fold->current_request_id, &resp);
+    void *fold_req = fold->current_request_id;
+    struct edc_advance_result fold_res = edc_executor_advance_llm_resp(&sched->executor, fold, fold_req, &resp);
+    /* executor 只报事实; 告诉谁 在策略点 (契约见 edc_scheduler.h)。 */
+    edc_scheduler_apply_advance(sched, fold, fold_req, &fold_res);
 
-    /* 折叠任务**自己**不是可折叠对象 (回归: 夹具实测过一次"折叠任务完成 → 触发
-     * 折叠系统组 → 又起一个折叠任务"的连锁)。折叠账只为留下来的任务做 (见
-     * edc_task_is_foldable), 所以系统组永远不够触发。
-     *
-     * 断言必须放在**它完成之后**: 那一刻它已经是 COMPLETED、turn 也已提交, 正是
-     * 夹具里出事的状态 —— 只有 lifetime 这一条挡得住 (它还没被回收, 因为回收要等
-     * 本条消息末尾)。 */
+    /* The fold task is not itself foldable (a regression fixture once chained
+     * "fold completed -> system group triggers -> another fold"). Asserted after it
+     * completes, the exact state the fixture hit; only lifetime holds it out. */
     CHECK(!edc_task_is_foldable(fold), "折叠任务本身不可折叠 (TRANSIENT 不进折叠账)");
     CHECK(edc_task_group_count_foldable(sg) == 0, "系统组里没有可折叠任务");
     CHECK(edc_task_group_unfolded_msg_count(sg) == 0, "系统组的消息也不算进折叠阈值");
@@ -359,6 +356,7 @@ static void test_fold_failure_keeps_memory(void)
     group->memory = sdsnew("# memory before");
 
     CHECK(edc_group_fold_start(sched, session, group) != NULL, "起了一次折叠");
+    pump_schedule(sched);
     struct edc_task *fold = edc_session_find_system_group(session)->members;
 
     /* 空的 LLM 回复 (旧实现里这也算失败) */
@@ -366,7 +364,10 @@ static void test_fold_failure_keeps_memory(void)
     memset(&resp, 0, sizeof(resp));
     resp.reason = BC_LLM_FINISH_REASON_STOP;
     resp.content = NULL;
-    edc_executor_advance_llm_resp(&sched->executor, fold, fold->current_request_id, &resp);
+    void *fold_req = fold->current_request_id;
+    struct edc_advance_result fold_res = edc_executor_advance_llm_resp(&sched->executor, fold, fold_req, &resp);
+    /* executor 只报事实; 告诉谁 在策略点 (契约见 edc_scheduler.h)。 */
+    edc_scheduler_apply_advance(sched, fold, fold_req, &fold_res);
 
     CHECK(strcmp(group->memory, "# memory before") == 0, "记忆没被改");
     CHECK(count_folded(group) == 0, "没有任何任务被标已折叠");
@@ -431,6 +432,7 @@ static void test_fold_task_is_not_persisted(void)
     add_foldable_task(ctrl, cgroup, "2", 2, 6, "work");
 
     CHECK(edc_group_fold_start(sched, session, group) != NULL, "折叠在飞");
+    pump_schedule(sched);
 
     cJSON *j_with = edc_state_serialize(session, sched);
     cJSON *j_ctrl = edc_state_serialize(ctrl, ctrl_sched);
@@ -451,15 +453,9 @@ static void test_fold_task_is_not_persisted(void)
     edc_config_free(cfg);
 }
 
-/* ══════════════════════════════════════════════════════════════
- *  Test 5: 触发扫描 (edc_group_fold_try)
- *
- *  它是 scheduler 唯一调的入口 (以前住装配根, 经 `on_task_settled` 端口被调)。
- *  钉三件事:
- *    ① 扫**所有** session —— 可折叠的内容在第二个 session 里也要折;
- *    ② 一次只起一个折叠 —— 已有折叠在飞的 session 跳过;
- *    ③ 阈值来自 config (不给 conf 时用 edc_init_env.h 的默认值)。
- * ══════════════════════════════════════════════════════════════ */
+/* Test 5: the trigger scan (edc_group_fold_try), the only entry the scheduler calls.
+ * Pins: it scans all sessions, starts one fold at a time, and takes the threshold
+ * from config (default otherwise). */
 
 static void test_try_scans_all_sessions(void)
 {
@@ -498,6 +494,10 @@ static void test_try_scans_all_sessions(void)
     sm.active_index = 0;
     sm.config = cfg;
 
+    /* 调度器看到的仓库 = 同一个 (它按这个枚举任务: 折叠任务落在 busy, 不在 idle)。
+     * 这两行从前靠 "fold 直接 send_llm" 掩盖 —— 现在"跑"要经调度, 仓库必须是真那份。 */
+    sched->sessions = &sm;
+
     CHECK(!edc_group_fold_try(NULL, &sm, cfg), "NULL scheduler 不折");
     CHECK(!edc_group_fold_try(sched, NULL, cfg), "NULL 仓库不折");
 
@@ -509,6 +509,7 @@ static void test_try_scans_all_sessions(void)
     /* ① 扫所有 session: 第二个 session 里的组被折 */
     g_send_llm_calls = 0;
     CHECK(edc_group_fold_try(sched, &sm, cfg), "第二个 session 里的组被折了 (扫全部)");
+    pump_schedule(sched);
     CHECK(g_send_llm_calls == 1, "折叠 prompt 真发出去了一次 LLM 请求");
     CHECK(edc_scheduler_has_pending_system_task(busy), "busy 里已有折叠在飞");
 

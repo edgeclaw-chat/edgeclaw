@@ -1,17 +1,6 @@
-/* ══════════════════════════════════════════════════════════════
- *  P0a: system task 机制 (sink / lifetime / kind + 侧栏)
- *
- *  runtime-model.md §4.6 的四条规则, 这里逐个钉住:
- *   ① 必须有活干 (不能是空容器)        → 这里不测行为, 测"它是个普通任务"
- *   ② TRANSIENT 不落盘、完成即回收      → test_transient_not_persisted / _reaped
- *   ③ 一个属性 = 一条规则 + 一个谓词   → 落盘 (lifetime) / 快照 kind (展示层)
- *   ④ 不进入被折叠 group 的 completion_seq → P0b 的折叠测试
- *
- *  最要紧的是那两条**反面**断言 (老 `Group system` 的两种死法):
- *    - 不落盘 ⇒ 盘上不可能有僵尸 (重启无残留);
- *    - **不隐藏** ⇒ 快照 / `/task status` 里都能看见它, 于是没有"漏一处特判"
- *      这回事 (老实现靠 is_system 在 5 处 skip, 漏一处就冒出来)。
- * ══════════════════════════════════════════════════════════════ */
+/* P0a: the system task mechanism (sink / lifetime / kind + sidebar). One rule, one
+ * predicate each: it must have real work, TRANSIENT is not persisted and is
+ * reclaimed, and it is not hidden (snapshot / /task status show it). */
 
 #include "edc_actor.h"
 #include "edc_compat.h"
@@ -28,12 +17,8 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
-/* ── 单测的 session 仓库 ─────────────────────────────────────────
- * scheduler 现在**同包直调 store** (P3 的 `resolve_session` 端口已退休),
- * 所以测试给它的不是"解析函数"而是**仓库**: 一个只装着
- * 这些 session 的内存 manager (普通结构体, 没有构造函数 —— 与 poke 别的结构体同法)。
- * 标签为空 = 用活跃的那个 (active_index 指向第一个), 与真 store 的策略一致。
- * `ctx` 仍留给测试自己用 (它不再是读口的入参)。 */
+/* The in-memory session store handed to the scheduler; an empty label means the
+ * active session (active_index points at the first). */
 static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
 {
     sched->ctx = sess;
@@ -126,8 +111,8 @@ static void give_input(struct edc_task *task, const char *text)
     edc_task_await_exec(task);
 }
 
-/* 让任务跑到 COMPLETED —— **走 scheduler 的写入口** (executor 的 set_task_state
- * 端口 → sched_move_task), 因为回收队列正是在那里入队的。 */
+/* 让任务跑到 COMPLETED —— 走**真路径** (executor 推进 → scheduler 的策略点),
+ * 因为回收队列正是在策略点的簿记里入队的。 */
 static void complete_via_executor(struct edc_scheduler *sched, struct edc_task *task)
 {
     struct edc_event ev;
@@ -135,13 +120,14 @@ static void complete_via_executor(struct edc_scheduler *sched, struct edc_task *
     ev.kind = EDC_EVENT_EXEC_DONE;
     ev.as.exec.reason = EDC_REASON_STOP;
     ev.as.exec.content = "done";
-    edc_executor_advance(&sched->executor, task, &ev);
+    void *t_req = task->current_request_id;
+    struct edc_advance_result t_res = edc_executor_advance(&sched->executor, task, &ev);
+    edc_scheduler_apply_advance(sched, task, t_req, &t_res);
 }
 
-/* 给任务装 input 并直接置成 COMPLETED (task 层)。
- * 只给"测落盘判据"用 —— 那条路径不经过 scheduler, 所以不会入回收队列, 任务会
- * 留在内存里等着被序列化 (真实系统里这一瞬间也存在: 折叠任务在跑的时候正好赶上
- * 一次落盘)。 */
+/* Attach input and set COMPLETED directly (task layer), for the persistence
+ * predicate only: this path bypasses the scheduler, so the task stays in memory to
+ * be serialized. */
 static void give_input_and_complete(struct edc_task *task, const char *text)
 {
     give_input(task, text);
@@ -437,10 +423,8 @@ static void test_persistent_not_reaped(void)
     edc_config_free(cfg);
 }
 
-/* ══════════════════════════════════════════════════════════════
- *  Test 6: **不隐藏** —— 快照与 /task status 都看得见系统任务
- *  (老实现靠 is_system 到处 skip;这里断言反面)
- *  ══════════════════════════════════════════════════════════════ */
+/* Test 6: the system task is not hidden -- both the snapshot and /task status show
+ * it (the old implementation skipped on is_system everywhere). */
 
 static void test_system_task_is_visible(void)
 {

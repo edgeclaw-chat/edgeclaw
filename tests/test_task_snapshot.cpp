@@ -6,9 +6,9 @@
 // function in the TUI, so it is unit-testable for the first time.
 //
 // The JSON below is shaped exactly like the producer's output
-// (edc_scheduler.c): session_id / session_name / message_count / created_at /
-// groups -> id / kind / member_count / msg_count / orphaned / fg / tokens_total
-// / tasks -> id / state / leader / active / desc / tokens_* / todos.
+// (edc_scheduler.c): session_id / session_name / workdir / message_count /
+// created_at / groups -> id / kind / member_count / msg_count / orphaned / fg /
+// tokens_total / tasks -> id / state / leader / active / desc / tokens_* / todos.
 #include "edc_task_snapshot.hpp"
 #include "edc_task_widget.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -43,6 +43,7 @@ template <typename T> const T &At(const std::vector<T> &v, size_t i)
 const char *kFull = R"json({
   "session_id": "s7",
   "session_name": "work",
+  "workdir": "/home/u/proj",
   "message_count": 42,
   "created_at": "2026-09-16 05:00:00",
   "groups": [
@@ -89,6 +90,7 @@ void TestParseFullSnapshot()
     Check(edc::ParseTaskSnapshot(kFull, &snap), "parses");
     Check(snap.session_id == "s7", "session_id");
     Check(snap.session_name == "work", "session_name");
+    Check(snap.workdir == "/home/u/proj", "workdir");
     Check(snap.message_count == 42, "message_count");
     Check(snap.created_at == "2026-09-16 05:00:00", "created_at");
     Check(snap.groups.size() == 2, "two groups, in snapshot order");
@@ -131,7 +133,8 @@ void TestMissingFieldsDegrade()
     // the id: the display layer must still draw the tree.
     const char *minimal = R"json({"groups":[{"id":"1"},{"id":"2","kind":"weird"}]})json";
     Check(edc::ParseTaskSnapshot(minimal, &snap), "parses a minimal snapshot");
-    Check(snap.session_id.empty() && snap.session_name.empty(), "absent root strings -> empty");
+    Check(snap.session_id.empty() && snap.session_name.empty() && snap.workdir.empty(),
+          "absent root strings -> empty");
     Check(snap.message_count == 0, "absent message_count -> 0");
     Check(snap.groups.size() == 2, "groups still there");
     Check(At(snap.groups, 0).group_id == "1" && At(snap.groups, 0).kind == edc::GroupKind::User,

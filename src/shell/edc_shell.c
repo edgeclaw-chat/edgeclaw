@@ -203,12 +203,9 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
     if (out_error)
         *out_error = NULL;
 
-    /* 任务必须带着它的 input —— 与 /task new (desc 就是 input) 同一条规则。
-     *
-     * 一个只有 flag、没有正文的命令 (如 `-d 5`) 会走到这里而没有内容可跑。旧模型
-     * 下这种任务会停在 WAITING_INPUT, 等下一条普通输入被 attach 进来; 那条路已退休,
-     * 所以这里直接拒绝, 不再建一个没有 input 的空任务。
-     * 见 docs/retire-waiting-input.md §4。 */
+    /* A task must carry its input (same rule as /task new: desc is the input).
+     * A flags-only command has nothing to run, so it is rejected rather than
+     * creating an empty task. */
     if (!opts->input || sdslen(opts->input) == 0)
     {
         if (out_error)
@@ -217,10 +214,8 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
         return NULL;
     }
 
-    /* Resolve `-d` dependencies up front. Task ids are globally unique (see
-     * edc_session_manager_find_task_any), so a dependency may live in another
-     * session. An id that cannot be resolved fails the whole command — it is
-     * never silently dropped. */
+    /* Resolve -d dependencies up front (ids are globally unique, so a dep may live
+     * in another session); an unresolvable id fails the whole command. */
     struct edc_task **deps = NULL;
     if (opts->dep_count > 0)
     {
@@ -277,9 +272,8 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
     if (prev_task)
         edc_task_add_dependency(task, prev_task, prev_dep_type);
 
-    /* task creation is intentionally silent: no "[task] created" echo back
-     * to the channel. State transitions are still observable via
-     * /task list, /task status, /whoami and the TUI task snapshot. */
+    /* Task creation is silent: state transitions are observable via /task list,
+     * /task status, /whoami and the TUI snapshot. */
     log_info("%s created task=%s group=%s%s%s%s%s", reply_prefix, task->task_id, group->group_id,
              opts->bg ? " [bg]" : "", opts->dep_count > 0 ? " [chained]" : "",
              prev_task ? (prev_dep_type == TASK_DEP_SEQUENCE ? " [seq]" : " [pipe]") : "",
@@ -287,31 +281,15 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
 
     if (opts->input)
     {
+        /* Attaching the input is the end of it; running it is the message-end
+         * scan's job. */
         struct edc_turn *turn = edc_turn_new();
         turn->task_id = strdup(task->task_id);
         edc_turn_add_user_message(turn, opts->input);
         task->active_turn = turn;
 
-        static int64_t counter = 0;
-        void *req_id = (void *)(intptr_t)(++counter);
-        edc_scheduler_register_task(sched, task, req_id);
-        task->current_request_id = req_id;
-
         log_info("%s spawn: task=%s state=%s deps_total=%zu input='%s'", reply_prefix, task->task_id,
                  edc_task_state_str(task), task->deps_total, opts->input);
-
-        if (!edc_task_awaits_deps(task))
-        {
-            bool ok = edc_task_await_exec(task);
-            log_info("%s spawn: set_state LLM_PROCESSING -> %s, send_llm=%s", reply_prefix, ok ? "ok" : "FAILED",
-                     (sched && sched->send_llm) ? "ready" : "NULL");
-            if (ok && sched && sched->send_llm)
-                sched->send_llm(sched, task, req_id);
-        }
-        else
-        {
-            log_info("%s spawn: task %s blocked in WAITING_DEPS, turn queued", reply_prefix, task->task_id);
-        }
     }
 
     if (out_group)

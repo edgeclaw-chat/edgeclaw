@@ -42,19 +42,19 @@ static void edc_https_client_fn(struct edc_https_request *req, int ev, void *dat
     }
 }
 
+/* 不给参数时用它 —— 否则测试在 bazel 下只会打 usage 就退出。 */
+#define DEFAULT_URL "https://example.com/"
+
 int main(const int argc, const char *argv[])
 {
-    if (argc != 2)
-    {
-        fprintf(stderr, "usage %s <url>\n", argv[0]);
-        return -1;
-    }
+    const char *url = (argc >= 2) ? argv[1] : DEFAULT_URL;
+    log_info("test_https_client_get: url=%s", url);
 
     uv_sem_init(&done_sem, 0);
     struct edc_https_client *client = edc_https_client_new(NULL);
-    if (edc_https_client_connect(client, argv[1], edc_https_client_fn, NULL) < 0)
+    if (edc_https_client_connect(client, url, edc_https_client_fn, NULL) < 0)
     {
-        fprintf(stderr, "invalid url: %s\n", argv[1]);
+        fprintf(stderr, "invalid url: %s\n", url);
         edc_https_client_free(client);
         uv_sem_destroy(&done_sem);
         return -1;

@@ -315,6 +315,34 @@ static void test_task_workdir_owner(void)
     rmdir(dirB);
 }
 
+/* ── 10. 会话目录的约定 ─────────────────────────────────────
+ * `edc_app_chat_log_path_for` (src/app/edc_api.c) 现在**按约定直接拼**路径
+ * `<workspace>/<session_id>/chat.jsonl`, 不再问 session 仓库 (仓库由 actor 线程改)。
+ * 那条推导的根据就是这里钉住的约定 —— 它一旦变了, 前端会静默写到另一个地方,
+ * 所以两边都得看得见这条断言。 */
+static void test_history_dir_convention(void)
+{
+    TEST("session dir is <workspace>/<session_id> (frontend derives chat.jsonl from it)");
+    struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
+    struct edc_session *s = edc_session_new(cfg, "sess-dir", "D");
+
+    sds expected = edc_path_join(cfg->workspace, "sess-dir", NULL);
+    CHECK(s->history_dir != NULL, "history_dir is set");
+    CHECK(s->history_dir && strcmp(s->history_dir, expected) == 0, "history_dir == <workspace>/<session_id>");
+    sdsfree(expected);
+    edc_session_free(s);
+
+    /* Binding a workdir must not move the state directory: cwd and storage are
+     * two different things, and the frontend only knows the second one. */
+    struct edc_session *b = edc_session_new_with_workdir(cfg, "sess-dir2", "B", "/tmp");
+    sds expected2 = edc_path_join(cfg->workspace, "sess-dir2", NULL);
+    CHECK(b->history_dir && strcmp(b->history_dir, expected2) == 0, "bound workdir does not change history_dir");
+    sdsfree(expected2);
+    edc_session_free(b);
+
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     log_info("== test_session_workdir ==");
@@ -328,6 +356,7 @@ int main(void)
     test_verify_path_at();
     test_system_prompt_cwd();
     test_task_workdir_owner();
+    test_history_dir_convention();
 
     log_info("passed=%d failed=%d", test_passed, test_failed);
     return test_failed == 0 ? 0 : 1;
