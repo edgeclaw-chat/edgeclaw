@@ -1,6 +1,7 @@
-/* P0a: the system task mechanism (sink / lifetime / kind + sidebar). One rule, one
- * predicate each: it must have real work, TRANSIENT is not persisted and is
- * reclaimed, and it is not hidden (snapshot / /task status show it). */
+/* P0a: the system task mechanism (sink / kind + sidebar). A system task is an
+ * ordinary persisted task in the session system group: it must have real work, it
+ * survives a restart (an interrupted fold resumes), and it is not hidden
+ * (snapshot / /task status show it). */
 
 #include "edc_actor.h"
 #include "edc_compat.h"
@@ -112,7 +113,7 @@ static void give_input(struct edc_task *task, const char *text)
 }
 
 /* 让任务跑到 COMPLETED —— 走**真路径** (executor 推进 → scheduler 的策略点),
- * 因为回收队列正是在策略点的簿记里入队的。 */
+ * 因为策略点的簿记正挂在真推进路径上。 */
 static void complete_via_executor(struct edc_scheduler *sched, struct edc_task *task)
 {
     struct edc_event ev;
@@ -135,7 +136,7 @@ static void give_input_and_complete(struct edc_task *task, const char *text)
 }
 
 /* 驱动 scheduler 的 actor: 单测里没有跑 loop (edc_actor_send 需要 actor->loop),
- * 但 handler 本身就是要测的那条路径 —— 快照下发与回收结算都挂在它的尾巴上。 */
+ * 但 handler 本身就是要测的那条路径 —— 快照下发挂在它的尾巴上。 */
 static void pump_scheduler(struct edc_scheduler *sched, edc_actor_msg_type_t type)
 {
     edc_actor_msg_t *msg = edc_actor_msg_new(type, NULL, NULL, NULL, NULL);
@@ -167,37 +168,31 @@ static void capture_snapshot(struct edc_scheduler *sched, sds json)
 
 static void test_attributes_default(void)
 {
-    TEST("sink/lifetime/kind: 默认值 + 谓词 + 名字往返");
+    TEST("sink/kind: 默认值 + 谓词 + 名字往返");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-default", "Default");
 
-    /* 普通用户任务: (CHANNEL, PERSISTENT);它的组: USER。 */
+    /* 普通用户任务: sink=CHANNEL;它的组: USER。 */
     struct edc_task *task = edc_task_new("t-1", "sess-default", "t-1", "user task", edc_channel_adapter);
     CHECK(task->sink == EDC_SINK_CHANNEL, "新任务默认 sink=CHANNEL");
-    CHECK(task->lifetime == EDC_LIFETIME_PERSISTENT, "新任务默认 lifetime=PERSISTENT");
-    CHECK(!edc_task_is_transient(task), "普通任务不是 transient");
 
     struct edc_task_group *group = edc_task_group_new(task);
     CHECK(group->kind == EDC_GROUP_KIND_USER, "新组默认 kind=USER");
     CHECK(!edc_task_group_is_system(group), "普通组不是 system");
 
-    /* 名字往返 (日志/调试用; 落盘由 lifetime 的谓词回答)。 */
+    /* 名字往返 (日志/调试用)。 */
     CHECK(strcmp(edc_task_sink_name(EDC_SINK_GROUP_MEMORY), "GROUP_MEMORY") == 0, "sink 名");
     CHECK(edc_task_classify_sink("GROUP_MEMORY") == EDC_SINK_GROUP_MEMORY, "sink 解析");
     CHECK(edc_task_classify_sink("garbage") == EDC_SINK_CHANNEL, "sink 未知值退化为 CHANNEL");
     CHECK(edc_task_classify_sink(NULL) == EDC_SINK_CHANNEL, "sink NULL 退化为 CHANNEL");
 
-    CHECK(strcmp(edc_task_lifetime_name(EDC_LIFETIME_TRANSIENT), "TRANSIENT") == 0, "lifetime 名");
-    CHECK(edc_task_classify_lifetime("TRANSIENT") == EDC_LIFETIME_TRANSIENT, "lifetime 解析");
-    CHECK(edc_task_classify_lifetime("garbage") == EDC_LIFETIME_PERSISTENT, "lifetime 未知值退化为 PERSISTENT");
 
     CHECK(strcmp(edc_task_group_kind_name(EDC_GROUP_KIND_SYSTEM), "system") == 0, "kind 名");
     CHECK(edc_task_group_classify_kind("system") == EDC_GROUP_KIND_SYSTEM, "kind 解析");
     CHECK(edc_task_group_classify_kind(NULL) == EDC_GROUP_KIND_USER, "kind NULL 退化为 USER");
 
-    /* 谓词的 NULL 容错 (回收路径会拿 NULL 探针)。 */
-    CHECK(!edc_task_is_transient(NULL), "is_transient(NULL) = false");
+    /* 谓词的 NULL 容错。 */
     CHECK(!edc_task_group_is_system(NULL), "is_system(NULL) = false");
 
     edc_task_group_free(group);
@@ -222,7 +217,6 @@ static void test_spawn_system_task(void)
 
     struct edc_task *a = edc_scheduler_spawn_system_task(sched, session, "fold group 1");
     CHECK(a != NULL, "spawn 返回任务");
-    CHECK(a->lifetime == EDC_LIFETIME_TRANSIENT, "system task 是 TRANSIENT");
     CHECK(a->sink == EDC_SINK_GROUP_MEMORY, "system task 的 sink 是 GROUP_MEMORY");
     CHECK(edc_task_is_ready(a) && edc_task_is_alive(a), "spawn 后停在 (READY, ALIVE): 还没有 input");
 
@@ -243,87 +237,71 @@ static void test_spawn_system_task(void)
     edc_config_free(cfg);
 }
 
-/* ══════════════════════════════════════════════════════════════
- *  Test 3: TRANSIENT 不落盘 (盘上不可能有僵尸)
- *  ══════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════
+ *  Test 3: 折叠任务**落盘** (好让被重启打断的那一轮能续跑)
+ *  ══════════════════════════════════════════════════════════════════ */
 
-static void test_transient_not_persisted(void)
+static void test_system_task_persisted(void)
 {
-    TEST("落盘: TRANSIENT 任务与它的组都不进 session.json");
+    TEST("落盘: 系统组 + 折叠任务进 session.json; 读回带 sink/sink_group/fold_max_seq 且置回就绪");
 
     struct edc_config *cfg = make_config();
+    struct edc_session *s = edc_session_new(cfg, "sess-p", "P");
+    struct edc_scheduler *sch = edc_scheduler_new(cfg);
+    install_resolver(sch, s);
 
-    /* A = 对照组: 只有一个用户组 + 一个已完成的任务。 */
-    struct edc_session *sa = edc_session_new(cfg, "sess-p", "P");
-    struct edc_scheduler *scha = edc_scheduler_new(cfg);
-    install_resolver(scha, sa);
-    struct edc_task *ua = edc_task_new("10", "sess-p", "10", "user work", edc_channel_adapter);
-    struct edc_task_group *ga = edc_task_group_new(ua);
-    edc_session_add_group(sa, ga);
-    give_input_and_complete(ua, "hello");
-    cJSON *ja = edc_state_serialize(sa, scha);
-    CHECK(ja != NULL, "对照组可序列化");
+    struct edc_task *user = edc_task_new("10", "sess-p", "10", "user work", edc_channel_adapter);
+    struct edc_task_group *ug = edc_task_group_new(user);
+    edc_session_add_group(s, ug);
+    give_input_and_complete(user, "hello");
 
-    /* B = 同一份用户侧内容 + 一个系统组 (其任务是 COMPLETED, 已带 input ——
-     * 也就是说: 只有 lifetime 这一关能拦住它)。 */
-    struct edc_session *sb = edc_session_new(cfg, "sess-p", "P");
-    struct edc_scheduler *schb = edc_scheduler_new(cfg);
-    install_resolver(schb, sb);
-    struct edc_task *ub = edc_task_new("10", "sess-p", "10", "user work", edc_channel_adapter);
-    struct edc_task_group *gb = edc_task_group_new(ub);
-    edc_session_add_group(sb, gb);
-    give_input_and_complete(ub, "hello");
+    /* 一个"在飞"的折叠任务: 有 input (active_turn), 未完成, 指向用户组。 */
+    struct edc_task *fold = edc_scheduler_spawn_system_task(sch, s, "fold it");
+    edc_scheduler_attach_input(sch, fold, "summarize the group");
+    edc_task_await_exec(fold);
+    fold->sink_group = ug;
+    fold->fold_max_seq = 42;
 
-    struct edc_task *sysb = edc_scheduler_spawn_system_task(schb, sb, "fold it");
-    give_input_and_complete(sysb, "summarize the group");
-    sysb->completion_seq = 7;
-    cJSON *jb = edc_state_serialize(sb, schb);
-    CHECK(jb != NULL, "含系统组的会话可序列化");
+    cJSON *j = edc_state_serialize(s, sch);
+    CHECK(j != NULL, "可序列化");
+    cJSON *tasks = cJSON_GetObjectItem(j, "tasks");
+    CHECK(cJSON_GetArraySize(tasks) == 2, "tasks 块含用户任务 + 折叠任务");
+    cJSON *groups = cJSON_GetObjectItem(j, "groups");
+    CHECK(cJSON_GetArraySize(groups) == 2, "groups 块含用户组 + 系统组");
 
-    /* 任务块里没有它, 组块里也没有它的组。 */
-    cJSON *tasks = cJSON_GetObjectItem(jb, "tasks");
-    CHECK(cJSON_GetArraySize(tasks) == 1, "tasks 块只有用户任务");
-    CHECK(cJSON_GetArrayItem(tasks, 0) != NULL, "第一个就是用户任务");
-    cJSON *groups = cJSON_GetObjectItem(jb, "groups");
-    CHECK(cJSON_GetArraySize(groups) == 1, "groups 块只有用户组");
-
-    /* 最硬的一条: 与对照组的产物**逐字节相同** —— 系统组在盘上像没存在过。
-     * (变异: 拿掉落盘判据里的 lifetime 那一关 → 这里立刻不同。) */
-    char *ta = cJSON_PrintUnformatted(ja);
-    char *tb = cJSON_PrintUnformatted(jb);
-    CHECK(ta && tb && strcmp(ta, tb) == 0, "含系统组的产物与不含的逐字节相同");
-    if (ta)
-        cJSON_free(ta);
-    if (tb)
-        cJSON_free(tb);
-
-    /* 读回来: 系统组不会复活 (它从来没进过文件)。 */
     struct edc_session *s2 = edc_session_new(cfg, "sess-p", "P");
-    struct edc_scheduler *sc2 = edc_scheduler_new(cfg);
-    install_resolver(sc2, s2);
-    CHECK(edc_state_deserialize(jb, s2, sc2), "反序列化成功");
-    CHECK(count_groups(s2) == 1, "读回 1 个组");
-    CHECK(count_tasks(s2) == 1, "读回 1 个任务");
-    CHECK(edc_session_find_system_group(s2) == NULL, "读回没有系统组 (重启无残留)");
+    struct edc_scheduler *sch2 = edc_scheduler_new(cfg);
+    install_resolver(sch2, s2);
+    CHECK(edc_state_deserialize(j, s2, sch2), "反序列化成功");
+    struct edc_task_group *sg2 = edc_session_find_system_group(s2);
+    CHECK(sg2 != NULL && edc_task_group_is_system(sg2), "系统组读回来 (kind 由 leader 的 sink 派生)");
+    struct edc_task *fold2 = sg2 ? sg2->members : NULL;
+    CHECK(fold2 != NULL, "折叠任务读回来了");
+    if (fold2)
+    {
+        CHECK(fold2->sink == EDC_SINK_GROUP_MEMORY, "sink 读回");
+        CHECK(fold2->fold_max_seq == 42, "fold_max_seq 读回");
+        CHECK(fold2->sink_group != NULL && strcmp(fold2->sink_group->group_id, ug->group_id) == 0,
+              "sink_group 解析回用户组");
+        CHECK(edc_task_is_ready(fold2) && edc_task_is_alive(fold2),
+              "在飞的折叠任务读回是 READY/ALIVE (重启由扫描重新派发), 不是 SUSPENDED");
+        CHECK(fold2->active_turn != NULL, "折叠 prompt 的 active_turn 也读回来了");
+    }
 
-    cJSON_Delete(ja);
-    cJSON_Delete(jb);
-    edc_session_free(sa);
-    edc_scheduler_free(scha);
-    edc_session_free(sb);
-    edc_scheduler_free(schb);
+    cJSON_Delete(j);
+    edc_session_free(s);
+    edc_scheduler_free(sch);
     edc_session_free(s2);
-    edc_scheduler_free(sc2);
+    edc_scheduler_free(sch2);
     edc_config_free(cfg);
 }
+/* ══════════════════════════════════════════════════════════════════
+ *  Test 4: 折叠任务不回收 (跟普通任务一样留在系统组)
+ *  ══════════════════════════════════════════════════════════════════ */
 
-/* ══════════════════════════════════════════════════════════════
- *  Test 4: 完成即回收;组空了就删
- *  ══════════════════════════════════════════════════════════════ */
-
-static void test_transient_reaped(void)
+static void test_system_task_not_reaped(void)
 {
-    TEST("回收: 完成的 system task 消失;组空了连组一起删");
+    TEST("不回收: 完成/取消的 system task 留在系统组 (与普通任务同等)");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-reap", "Reap");
@@ -331,56 +309,28 @@ static void test_transient_reaped(void)
     install_resolver(sched, session);
     sched->snapshot_reply = capture_snapshot;
 
-    /* 两个共用系统组的 system task。 */
     struct edc_task *a = edc_scheduler_spawn_system_task(sched, session, "fold A");
     struct edc_task *b = edc_scheduler_spawn_system_task(sched, session, "fold B");
     struct edc_task_group *sg = edc_session_find_system_group(session);
     CHECK(sg != NULL && sg->member_count == 2, "系统组里有两个任务");
-    give_input(a, "fold a");
-    give_input(b, "fold b");
-    sds id_a = sdsdup(a->task_id);
-    sds id_b = sdsdup(b->task_id);
+    edc_scheduler_attach_input(sched, a, "fold a");
+    edc_task_await_exec(a);
+    edc_scheduler_attach_input(sched, b, "fold b");
+    edc_task_await_exec(b);
     CHECK(count_tasks(session) == 2, "两个都在跑");
 
-    /* (1) 完成 A —— 经 executor 的 set_task_state 端口入队, 消息末尾结算。 */
     complete_via_executor(sched, a);
     pull_snapshot(sched, session);
-    CHECK(count_tasks(session) == 1, "A 被回收了");
-    CHECK(count_groups(session) == 1, "组里还有 B, 所以组还在");
-    CHECK(edc_session_find_system_group(session) == sg, "同一个组对象");
+    CHECK(edc_task_is_completed(a), "A 完成了");
+    CHECK(count_tasks(session) == 2, "A 完成后仍在 (不回收)");
+    CHECK(edc_session_find_system_group(session) == sg, "系统组还在");
 
-    /* (2) 取消 B —— 信号路径**绕开** sched_move_task (executor 直接改 task 状态),
-     * 回收同样要覆盖它;此时组空了, 连组一起删。 */
     edc_scheduler_send_signal_to_task_ptr(sched, b, TASK_SIGTERM);
+    pull_snapshot(sched, session);
     CHECK(edc_task_is_cancelled(b), "B 被取消了");
-    pull_snapshot(sched, session);
-    CHECK(count_tasks(session) == 0, "B 也被回收了");
-    CHECK(count_groups(session) == 0, "组空了就被删掉 (系统组不是容器)");
-    CHECK(edc_session_find_system_group(session) == NULL, "会话里不再有系统组");
-    CHECK(g_snapshot != NULL, "快照下发过一次");
-    if (g_snapshot)
-    {
-        /* 快照里已经没有它们了 —— 回收发生在下发之前 (顺序反了的话这里会红)。
-         * 匹配带引号的 id: 裸数字会在时间戳/计数里碰巧命中。 */
-        sds pa = sdscatprintf(sdsempty(), "\"id\":\"%s\"", id_a);
-        sds pb = sdscatprintf(sdsempty(), "\"id\":\"%s\"", id_b);
-        CHECK(strstr(g_snapshot, pa) == NULL, "快照里不会出现已回收的 A");
-        CHECK(strstr(g_snapshot, pb) == NULL, "快照里不会出现已回收的 B");
-        sdsfree(pa);
-        sdsfree(pb);
-    }
+    CHECK(count_tasks(session) == 2, "B 取消后也还在 (不回收)");
+    CHECK(edc_session_find_system_group(session) != NULL, "系统组还在 (不是'空了就删'的容器)");
 
-    /* 再 spawn 一个: 没有系统组时重新建一个 (空了就删, 需要时再建)。 */
-    struct edc_task *c = edc_scheduler_spawn_system_task(sched, session, "fold C");
-    CHECK(c != NULL && edc_session_find_system_group(session) != NULL, "按需重建系统组");
-    CHECK(count_groups(session) == 1, "仍然只有一个系统组");
-    give_input(c, "fold c");
-    edc_scheduler_send_signal_to_task_ptr(sched, c, TASK_SIGTERM);
-    pull_snapshot(sched, session);
-    CHECK(count_tasks(session) == 0 && count_groups(session) == 0, "重建的那个也被回收");
-
-    sdsfree(id_a);
-    sdsfree(id_b);
     if (g_snapshot)
     {
         sdsfree(g_snapshot);
@@ -390,14 +340,13 @@ static void test_transient_reaped(void)
     edc_scheduler_free(sched);
     edc_config_free(cfg);
 }
-
 /* ══════════════════════════════════════════════════════════════
- *  Test 5: 只有 TRANSIENT 会被回收 (反面控制)
+ *  Test 5: 取消的任务留在树里 (没有回收路径)
  *  ══════════════════════════════════════════════════════════════ */
 
 static void test_persistent_not_reaped(void)
 {
-    TEST("回收只管 TRANSIENT: 用户任务取消后仍在树里");
+    TEST("取消的用户任务留在树里 (没有回收)");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-keep", "Keep");
@@ -409,13 +358,13 @@ static void test_persistent_not_reaped(void)
     edc_session_add_group(session, ug);
     give_input(user, "hi"); /* 停在 (AWAIT_EXEC, ALIVE): 真的可以取消 */
 
-    /* 信号路径 → terminal → 入回收队列; 结算点照样跑一遍。 */
+    /* 信号路径 → terminal; 拉一次快照照样能跑。 */
     edc_scheduler_send_signal_to_task_ptr(sched, user, TASK_SIGTERM);
     pull_snapshot(sched, session);
 
     CHECK(edc_task_is_cancelled(user), "用户任务确实被取消了");
     CHECK(edc_task_state_str(user) != NULL, "它还在 (没被 free: 读字段不崩)");
-    CHECK(count_tasks(session) == 1, "PERSISTENT 任务不被回收");
+    CHECK(count_tasks(session) == 1, "任务留在树里");
     CHECK(count_groups(session) == 1, "组也还在");
 
     edc_session_free(session);
@@ -487,8 +436,8 @@ int main(void)
 {
     test_attributes_default();
     test_spawn_system_task();
-    test_transient_not_persisted();
-    test_transient_reaped();
+    test_system_task_persisted();
+    test_system_task_not_reaped();
     test_persistent_not_reaped();
     test_system_task_is_visible();
 

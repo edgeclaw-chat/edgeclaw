@@ -222,6 +222,16 @@ static struct edc_advance_result tool_done(struct edc_executor *ex, struct edc_t
             return stop_at_iteration_cap(ex, task, ev->request_id); /* 已转入终结路径 */
         }
 
+        /* A dependency is still outstanding (the fold barrier held this task): the
+         * tools already ran and their results are recorded, so only the next LLM
+         * request is held. Park at AWAIT_DEPS -- the scan re-drives it when the dep
+         * completes. Not an I/O failure. */
+        if (edc_task_has_unresolved_deps(task))
+        {
+            edc_task_move(task, EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE);
+            return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED, .changed = true};
+        }
+
         edc_task_move(task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
         if (!ops->send_llm(ex->ctx, task, (void *)ev->request_id))
             return exec_io_failed(task, "[failed: no LLM port is installed, so the tool chain cannot continue]");

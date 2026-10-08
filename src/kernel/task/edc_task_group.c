@@ -272,14 +272,14 @@ size_t edc_task_group_unfolded_msg_count(struct edc_task_group *group)
     if (!group)
         return 0;
 
-    /* 只数**要留下来的**任务的消息 (见 edc_task_is_foldable): TRANSIENT 的任务
-     * 不参与折叠, 也不该把折叠阈值顶起来 —— 否则系统组 (全 TRANSIENT) 会自己
-     * 触发一次没有意义的折叠。 */
+    /* 只数**会话任务**的消息 (见 edc_task_is_foldable): sink=GROUP_MEMORY 的任务
+     * (折叠任务本身) 不参与折叠, 也不该把折叠阈值顶起来 —— 否则系统组会自己触发
+     * 一次没有意义的折叠。 */
     size_t total = 0;
     struct edc_task *t;
     LL_FOREACH2(group->members, t, group_next)
     {
-        if (edc_task_is_transient(t))
+        if (t->sink == EDC_SINK_GROUP_MEMORY)
             continue;
         total += edc_task_turn_msg_count(t);
     }

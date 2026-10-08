@@ -111,12 +111,6 @@ struct edc_scheduler
     size_t dirty_count;
     size_t dirty_cap;
 
-    /* TRANSIENT tasks ready to be reclaimed; queued because callers still hold
-     * the pointer while the message runs, settled at message end. */
-    struct edc_task **reap_pending;
-    size_t reap_count;
-    size_t reap_cap;
-
     int64_t next_task_id;
 
     /* Opaque handle so tests can hang a fixture session on this scheduler. */
@@ -177,7 +171,7 @@ extern struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, s
                                                   const char *desc, edc_channel_type channel_type);
 
 /** Create a system task in the session's system group (creating it if needed):
- *  lifetime TRANSIENT, sink GROUP_MEMORY, group kind SYSTEM. Returns at
+ *  sink GROUP_MEMORY, group kind SYSTEM. Returns at
  *  (READY, ALIVE) with no input; the caller attaches a turn and the scheduler
  *  decides when it runs. NULL when there is no session. */
 extern struct edc_task *edc_scheduler_spawn_system_task(struct edc_scheduler *sched, struct edc_session *session,
@@ -191,10 +185,6 @@ extern bool edc_scheduler_has_pending_system_task(struct edc_session *session);
  *  scheduler's decision (see edc_scheduler_schedule). */
 extern bool edc_scheduler_attach_input(struct edc_scheduler *sched, struct edc_task *task, const char *input);
 
-/** Settle TRANSIENT tasks queued for reclaim; called at message end (callers
- *  that advance tasks outside a message must call it themselves). Frees the
- *  tasks and any emptied group. */
-extern void edc_scheduler_drain_reap_pending(struct edc_scheduler *sched);
 extern struct edc_task_group *edc_scheduler_create_group(struct edc_scheduler *sched, struct edc_session *session,
                                                          struct edc_task *leader);
 /** Attach `group` to `session`. Both are needed because a group is owned by its
@@ -222,12 +212,12 @@ extern bool edc_scheduler_has_active_tasks(struct edc_scheduler *sched, struct e
 extern void edc_scheduler_register_task(struct edc_scheduler *sched, struct edc_task *task, void *request_id);
 extern void edc_scheduler_unregister_task(struct edc_scheduler *sched, void *request_id);
 
-/** Bookkeeping after the host changed a task's state itself (reap queue + dirty
+/** Bookkeeping after the host changed a task's state itself (index + dirty
  *  table), for paths that bypass the executor's advance. */
 extern void edc_scheduler_task_moved(struct edc_scheduler *sched, struct edc_task *task);
 
 /** The one policy point after an advance: turns the facts in
- *  `struct edc_advance_result` into indexes / reap / dirty / dependents /
+ *  `struct edc_advance_result` into indexes / dirty / dependents /
  *  delivery / fold / persistence. Every executor drive must call it with the
  *  result, or that bookkeeping is lost. */
 extern void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *task, void *req_id,

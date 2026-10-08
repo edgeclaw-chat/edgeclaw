@@ -25,6 +25,44 @@
 static const char *kFoldSystemPrompt =
     "You are a memory summarizer. Merge new task history into a concise Group Memory markdown.";
 
+/* ── 折叠是一次屏障 (barrier) ────────────────────────────────
+ *
+ * 折叠读整组的 turns 写 group->memory。若此时组内的任务还在往前跑 (提交 turn、
+ * 追加组历史), 折叠看到的就不是一个稳定快照 —— 而且下一个请求的上下文会顶破窗口。
+ * 所以折叠**不让路**: 起折时把组内每个非终态成员挂到折叠任务上 (SEQUENCE),
+ * 它们停在 AWAIT_DEPS, 折叠落地才被释放:
+ *   - READY / AWAIT_DEPS 成员: `edc_task_add_dependency` 直接挂边 (READY 的自动进
+ *     AWAIT_DEPS);
+ *   - 已经在飞的成员 (AWAIT_EXEC / AWAIT_TOOLS): **不打断** (这一轮已发出/工具已跑)。
+ *     依赖边照挂, 到它的下一个请求边界才生效 —— `tool_done` 里 executor 见
+ *     `edc_task_has_unresolved_deps` 为真就不发下一个 LLM 请求、park 到 AWAIT_DEPS
+ *     (B1: 工具结果照收, 只拦下一次请求)。折叠落地后它带着压缩过的上下文重新派发。
+ * 折叠在飞期间新来的输入 / 被释放回来的任务, 由 `edc_group_fold_holds_group` 闸门
+ * 兜住 (它们是 READY, 不在 dep 里)。
+ *
+ * 折叠任务现在是一个**普通落盘任务** (sink = GROUP_MEMORY, lifetime = PERSISTENT),
+ * 所以指向它的 dep 边会随成员一起落盘、重启后读得回来; 被重启打断的折叠任务会在加载
+ * 时置回就绪、由扫描重新派发 (见 edc_state_serializer.c)。 */
+
+bool edc_group_fold_holds_group(struct edc_task_group *group)
+{
+    if (!group || !group->session)
+        return false;
+    struct edc_task_group *sys = edc_session_find_system_group(group->session);
+    if (!sys)
+        return false;
+
+    struct edc_task *t;
+    LL_FOREACH2(sys->members, t, group_next)
+    {
+        /* A fold in flight = a non-terminal SYSTEM_MEMORY task writing this group. */
+        if (t->sink == EDC_SINK_GROUP_MEMORY && t->sink_group == group && !edc_task_is_completed(t) &&
+            !edc_task_is_cancelled(t) && !edc_task_has_failed(t))
+            return true;
+    }
+    return false;
+}
+
 bool edc_group_fold_due(struct edc_task_group *group, int msg_threshold)
 {
     if (!group || msg_threshold <= 0)
@@ -64,8 +102,10 @@ bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_manager 
             {
                 log_info("L1 fold trigger: group %s foldable=%zu unfolded=%zu (msg_thr=%d)", g->group_id, foldable,
                          unfolded, msg_threshold);
-                edc_group_fold_start(sched, sess, g);
-                return true; /* 一次只折叠一个 group */
+                /* Not startable right now (a member is still running) → keep looking
+                 * at this session's other groups instead of declaring one started. */
+                if (edc_group_fold_start(sched, sess, g))
+                    return true; /* 一次只折叠一个 group */
             }
             if (foldable > 0 || unfolded > 0)
             {
@@ -216,11 +256,25 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
     if (!edc_scheduler_attach_input(sched, task, prompt))
     {
         log_error("L1 fold: could not attach the fold prompt for group %s — no fold this round", group->group_id);
-        /* Do not leave a half-built task: ERROR lets the lifetime rule reclaim it. */
-        edc_task_force_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR);
-        edc_scheduler_drain_reap_pending(sched);
+        /* Do not leave a half-built task; marking it failed also releases any
+         * dependents (SEQUENCE). */
+        edc_task_mark_failed(task);
         sdsfree(prompt);
         return NULL;
+    }
+
+    /* Barrier: every non-terminal member now waits for this fold (see the note at
+     * the top of the file). A READY member takes the SEQUENCE edge and lands in
+     * AWAIT_DEPS at once; a member already in flight keeps running, and the
+     * executor parks it at its next request boundary (tool_done refuses the next
+     * LLM send while a dep is outstanding). Either way the release is the same:
+     * the fold completing notifies its dependents. */
+    struct edc_task *m;
+    LL_FOREACH2(group->members, m, group_next)
+    {
+        if (edc_task_is_completed(m) || edc_task_is_cancelled(m) || edc_task_has_failed(m))
+            continue;
+        edc_task_add_dependency(m, task, TASK_DEP_SEQUENCE);
     }
 
     /* The prompt is dispatched by the message-end scan, like any task. */

@@ -90,8 +90,8 @@ edc_task_life edc_task_classify_life(const char *name)
     return EDC_LIFE_ALIVE;
 }
 
-/* sink / lifetime name + classify, matching step/life. Not persisted today, so
- * _name serves logs and _classify has no caller yet; kept as one family. */
+/* sink name + classify, matching step/life. Not persisted today, so _name serves
+ * logs and _classify has no caller yet; kept as one family. */
 
 const char *edc_task_sink_name(edc_sink sink)
 {
@@ -112,32 +112,6 @@ edc_sink edc_task_classify_sink(const char *name)
     if (strcmp(name, "GROUP_MEMORY") == 0)
         return EDC_SINK_GROUP_MEMORY;
     return EDC_SINK_CHANNEL;
-}
-
-const char *edc_task_lifetime_name(edc_lifetime lifetime)
-{
-    switch (lifetime)
-    {
-    case EDC_LIFETIME_PERSISTENT:
-        return "PERSISTENT";
-    case EDC_LIFETIME_TRANSIENT:
-        return "TRANSIENT";
-    }
-    return "PERSISTENT";
-}
-
-edc_lifetime edc_task_classify_lifetime(const char *name)
-{
-    if (!name)
-        return EDC_LIFETIME_PERSISTENT;
-    if (strcmp(name, "TRANSIENT") == 0)
-        return EDC_LIFETIME_TRANSIENT;
-    return EDC_LIFETIME_PERSISTENT;
-}
-
-bool edc_task_is_transient(const struct edc_task *task)
-{
-    return task && task->lifetime == EDC_LIFETIME_TRANSIENT;
 }
 
 /* The display name (snapshot / logs / command text), derived straight from
@@ -300,11 +274,15 @@ static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life 
         return (to_step == EDC_TASKSTEP_READY && to_life == EDC_LIFE_ALIVE) ||
                (to_step == EDC_TASKSTEP_DONE && (to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR));
     case EDC_TASKSTEP_AWAIT_EXEC:
-        return (to_life == EDC_LIFE_ALIVE && to_step == EDC_TASKSTEP_AWAIT_TOOLS) ||
+        /* AWAIT_DEPS: a fold in flight holds the group; the executor parks a task
+         * that still owes a dependency instead of sending the next request. */
+        return (to_life == EDC_LIFE_ALIVE &&
+                (to_step == EDC_TASKSTEP_AWAIT_TOOLS || to_step == EDC_TASKSTEP_AWAIT_DEPS)) ||
                (to_step == EDC_TASKSTEP_DONE &&
                 (to_life == EDC_LIFE_COMPLETED || to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR));
     case EDC_TASKSTEP_AWAIT_TOOLS:
-        return (to_life == EDC_LIFE_ALIVE && to_step == EDC_TASKSTEP_AWAIT_EXEC) ||
+        return (to_life == EDC_LIFE_ALIVE &&
+                (to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_DEPS)) ||
                (to_step == EDC_TASKSTEP_DONE &&
                 (to_life == EDC_LIFE_COMPLETED || to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR)) ||
                (to_step == EDC_TASKSTEP_AWAIT_TOOLS && to_life == EDC_LIFE_SUSPENDED); /* 跑到一半挂起 */
@@ -342,10 +320,9 @@ struct edc_task *edc_task_new(const char *task_id, const char *session_id, const
     /* 新任务: "带着 input 停着, 等着被派发" —— 没有"等用户输入"这个相位,
      * 所以直接置 (READY, ALIVE) (旧词写作 TASK_IDLE/TASK_WAITING_INPUT 两行)。 */
     edc_task_force_move(task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
-    /* The other two axes default to a user task (output to the user, persisted);
-     * written explicitly so correctness does not depend on enum order. */
+    /* The output axis defaults to a user task (output goes to the user); written
+     * explicitly so correctness does not depend on enum order. */
     task->sink = EDC_SINK_CHANNEL;
-    task->lifetime = EDC_LIFETIME_PERSISTENT;
     task->is_group_leader = 0;
     task->channel_type = channel_type;
 
@@ -693,6 +670,19 @@ bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, e
     }
 
     return true;
+}
+
+bool edc_task_has_unresolved_deps(const struct edc_task *task)
+{
+    if (!task)
+        return false;
+    struct edc_task_dep *dep;
+    LL_FOREACH(task->deps, dep)
+    {
+        if (!dep->completed && !dep->cancelled)
+            return true;
+    }
+    return false;
 }
 
 /* 台账: 连带改动的记账函数 (定义在依赖那一段里, 见下方)。 */
@@ -1208,12 +1198,15 @@ void edc_task_set_completion_seq(struct edc_task *task, uint32_t seq)
 
 /* ── 折叠 ────────────────────────────────────────────────── */
 
-/* Foldable = finished, not yet folded, and PERSISTENT. The lifetime condition keeps
- * the fold task itself (and the whole system group) out of the fold account: a task
- * that is not persisted has no history to compress. */
+/* Foldable = finished, not yet folded, and not itself a fold (sink != GROUP_MEMORY).
+ * The `sink` condition keeps the fold task (and the whole system group) out of the
+ * fold account: a task whose output is group memory is not conversation to compress.
+ * (It used to be a `lifetime` condition; the fold task is now an ordinary persisted
+ * task, so the exclusion rides `sink`, which is what actually says "my output is
+ * memory".) */
 bool edc_task_is_foldable(struct edc_task *task)
 {
-    return !edc_task_is_transient(task) && edc_task_is_completed(task) && !task->turns_folded;
+    return task && task->sink != EDC_SINK_GROUP_MEMORY && edc_task_is_completed(task) && !task->turns_folded;
 }
 
 size_t edc_task_turn_msg_count(struct edc_task *task)

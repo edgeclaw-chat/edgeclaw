@@ -53,19 +53,8 @@ typedef enum
     EDC_SINK_GROUP_MEMORY, /* output becomes the group's memory (fold) */
 } edc_sink;
 
-typedef enum
-{
-    EDC_LIFETIME_PERSISTENT, /* persisted, survives a restart */
-    EDC_LIFETIME_TRANSIENT,  /* not persisted, reclaimed on completion */
-} edc_lifetime;
-
 extern const char *edc_task_sink_name(edc_sink sink);
 extern edc_sink edc_task_classify_sink(const char *name);
-extern const char *edc_task_lifetime_name(edc_lifetime lifetime);
-extern edc_lifetime edc_task_classify_lifetime(const char *name);
-
-/** True for a "not persisted, reclaimed on completion" system task (lifetime only). */
-extern bool edc_task_is_transient(const struct edc_task *task);
 
 
 typedef enum
@@ -122,10 +111,8 @@ struct edc_task
     edc_task_life life;
 
     edc_sink sink;
-    edc_lifetime lifetime;
 
     int is_group_leader;
-    int auto_reap; /* reclaim on completion (foreground input tasks) */
 
     struct edc_task_group *group;
 
@@ -179,8 +166,7 @@ struct edc_task
 
     /* Output target for a sink=GROUP_MEMORY task: which group's memory to write
      * and up to which completion_seq this fold covers. Filled by the folding side;
-     * the task itself does not interpret them. Memory-only (TRANSIENT tasks are
-     * not persisted). */
+     * the task itself does not interpret them. Memory-only. */
     struct edc_task_group *sink_group;
     uint32_t fold_max_seq;
 
@@ -314,6 +300,10 @@ extern sds edc_task_user_input(const struct edc_task *task, const cJSON *session
 
 extern bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, edc_task_dep_type type);
 extern void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source);
+/* True while any dependency edge is still outstanding (not completed, not
+ * cancelled). Used by the executor at a request boundary: a task that owes someone
+ * parks instead of sending the next LLM request (the fold barrier). */
+extern bool edc_task_has_unresolved_deps(const struct edc_task *task);
 extern void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source);
 /** Handle a source that failed, symmetric with cancellation (the source will not
  *  produce anything either way): a JOIN edge cascades the failure to the dependent

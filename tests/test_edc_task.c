@@ -377,7 +377,7 @@ static void test_step_life_read_side(void)
  * (6x5 sources x 6x5 targets = 900). Self-transitions are omitted; the edge count is
  * pinned so the spec cannot be silently emptied. */
 
-#define EDC_TABLE_EDGES 113
+#define EDC_TABLE_EDGES 115
 
 struct table_target
 {
@@ -455,8 +455,9 @@ static const struct table_row g_table[] = {
       {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* AWAIT_EXEC + ALIVE */
-    {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE, 4,
+    {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE, 5,
      {{EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED},
       {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR}}},
@@ -485,8 +486,9 @@ static const struct table_row g_table[] = {
       {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* AWAIT_TOOLS + ALIVE */
-    {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE, 5,
+    {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE, 6,
      {{EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
+      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED},
       {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR},

@@ -114,11 +114,11 @@ static void test_task_group_pointer(void)
     edc_task_group_free(g);
 }
 
-/* ── 5. auto-reap 场景 ─────────────────────────────────────── */
+/* ── 5. JOIN 源完成 → 通知依赖者（回收是调用方的事）──────────── */
 
-static void test_auto_reap(void)
+static void test_join_source_notify(void)
 {
-    T("JOIN source is reaped after notify_dependents");
+    T("JOIN source notifies its dependents");
     struct edc_task *src = edc_task_new("ar-src", "s-5", "ar-src", "source", edc_channel_adapter);
     struct edc_task *dst = edc_task_new("ar-dst", "s-5", "ar-dst", "dest", edc_channel_adapter);
 
@@ -138,20 +138,16 @@ static void test_auto_reap(void)
     edc_task_await_exec(src);
     edc_task_mark_completed(src);
 
-    /* Notify (scheduler does: notify + auto-reap if has dependents) */
+    /* 通知依赖者 (JOIN 源完成时 scheduler 的收尾路径)。 */
     edc_task_notify_dependents(src);
     C(dst->deps_completed == 1, "dst notified");
 
-    /* Auto-reap: if src has dependents, remove from group and free */
-    if (src->dependents)
-    {
-        edc_task_group_remove_task(g_src, src);
-        edc_task_free(src);
-        src = NULL;
-    }
+    /* 移除 + 释放是调用方的事 (运行时没有 auto-reap)。 */
+    edc_task_group_remove_task(g_src, src);
+    edc_task_free(src);
+    src = NULL;
 
-    /* g_src now has 0 members → dead */
-    C(g_src->member_count == 0, "auto-reaped source group empty");
+    C(g_src->member_count == 0, "移除唯一成员后组空掉");
 
     /* Cleanup */
     edc_task_group_free(g_src);  /* empty group */
@@ -172,7 +168,7 @@ static void test_no_dep_stays(void)
     edc_task_await_exec(t);
     edc_task_mark_completed(t);
 
-    /* No dependents → should NOT be reaped */
+    /* 没有依赖者 → 没有要通知的; 任务留在树里 (供 /task join)。 */
     C(t->dependents == NULL, "no dependents");
     C(edc_task_is_completed(t), "state is COMPLETED");
     C(g->member_count == 1, "still in group");
@@ -257,7 +253,7 @@ int main(void)
     test_group_history_accumulation();
     test_group_isolation();
     test_task_group_pointer();
-    test_auto_reap();
+    test_join_source_notify();
     test_no_dep_stays();
     test_context_messages_iteration();
     test_large_group_history();

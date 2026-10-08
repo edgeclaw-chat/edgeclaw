@@ -1,8 +1,8 @@
-/* P0b: the fold migrated to a system task { sink = GROUP_MEMORY, lifetime =
- * TRANSIENT } in the session's system group. Its input is the fold prompt; the
- * output lands in the group's memory and the task is reclaimed on completion.
- * This file pins: the fold behaviour is unchanged, it is an ordinary task, and it
- * does not pollute the folded group. */
+/* The fold runs as a system task { sink = GROUP_MEMORY } in the session's system
+ * group -- an ordinary persisted task, not a hidden/transient one. Its input is the
+ * fold prompt; the output lands in the group's memory.
+ * This file pins: the fold behaviour, the barrier (group tasks held by a real dep
+ * until the fold lands), and that it does not pollute the folded group. */
 
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -98,12 +98,15 @@ static void add_foldable_task(struct edc_session *session, struct edc_task_group
  * LLM 请求发出去了"; 响应由测试用 edc_executor_advance_llm_resp 灌回来 —— 与真实
  * 路径 (llm actor → scheduler → executor) 的差别只在传输。 */
 static int g_send_llm_calls = 0;
+static sds g_last_llm_task_id = NULL; /* 最近一次 send_llm 的任务 id (闸门断言用) */
 static void stub_send_llm(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
 {
     (void)sched;
-    (void)task;
     (void)request_id;
     g_send_llm_calls++;
+    if (g_last_llm_task_id)
+        sdsfree(g_last_llm_task_id);
+    g_last_llm_task_id = task ? sdsnew(task->task_id) : NULL;
 }
 
 /* 折叠任务也是**普通任务**: 起折叠只把 prompt 装上, "跑"发生在消息末尾的调度
@@ -244,13 +247,13 @@ static void test_fold_runs_as_a_system_task(void)
     pump_schedule(sched);
     CHECK(g_send_llm_calls == 1, "折叠 prompt 作为一次普通 LLM 请求发出去了");
 
-    /* ① 它是一条**普通任务**, 只是三个属性不同。 */
+    /* ① 它是一条**普通任务**, 只是属性不同。 */
     struct edc_task_group *sg = edc_session_find_system_group(session);
     CHECK(sg != NULL, "出现了系统组");
     CHECK(edc_task_group_is_system(sg), "它就是系统组");
     CHECK(sg->member_count == 1, "里面正好一个任务");
     struct edc_task *fold = sg->members;
-    CHECK(fold != NULL && edc_task_is_transient(fold), "折叠任务是 TRANSIENT (不落盘)");
+    CHECK(fold != NULL, "折叠任务出现了");
     CHECK(fold->sink == EDC_SINK_GROUP_MEMORY, "sink = GROUP_MEMORY (产出写记忆, 不回话)");
     CHECK(fold->sink_group == group, "知道产出该写进哪个组");
     CHECK(fold->fold_max_seq == 2, "知道本轮折到哪个水位");
@@ -282,8 +285,8 @@ static void test_fold_runs_as_a_system_task(void)
 
     /* The fold task is not itself foldable (a regression fixture once chained
      * "fold completed -> system group triggers -> another fold"). Asserted after it
-     * completes, the exact state the fixture hit; only lifetime holds it out. */
-    CHECK(!edc_task_is_foldable(fold), "折叠任务本身不可折叠 (TRANSIENT 不进折叠账)");
+     * completes, the exact state the fixture hit; only sink holds it out. */
+    CHECK(!edc_task_is_foldable(fold), "折叠任务本身不可折叠 (sink=GROUP_MEMORY 不进折叠账)");
     CHECK(edc_task_group_count_foldable(sg) == 0, "系统组里没有可折叠任务");
     CHECK(edc_task_group_unfolded_msg_count(sg) == 0, "系统组的消息也不算进折叠阈值");
     CHECK(!edc_group_fold_due(sg, 2), "系统组永远不会触发折叠");
@@ -303,10 +306,9 @@ static void test_fold_runs_as_a_system_task(void)
     CHECK(fold->completion_seq == 0, "折叠任务不占 session 的完成序号 (不是用户的完成次序里的一环)");
     CHECK(group->folded_through_completion_seq == 2, "水位照旧只由被折的任务决定");
 
-    /* ④ 完成即回收: 结算点之后它没了, 系统组也空了。 */
-    edc_scheduler_drain_reap_pending(sched);
-    CHECK(count_tasks_in(session) == 4, "只剩被折叠组的 4 个任务 (折叠任务已回收)");
-    CHECK(edc_session_find_system_group(session) == NULL, "系统组空了就被删掉");
+    /* ④ 不回收: 折叠任务是普通任务, 完成后留在系统组。 */
+    CHECK(count_tasks_in(session) == 5, "折叠任务完成后仍在 (不回收)");
+    CHECK(edc_session_find_system_group(session) != NULL, "系统组还在");
 
     /* ⑤ 再折一次: 可折叠的还剩 3 个 → 还能起。 */
     CHECK(edc_group_fold_due(group, 4), "还有可折叠的 (seq 3/4)");
@@ -374,9 +376,8 @@ static void test_fold_failure_keeps_memory(void)
     CHECK(group->folded_through_completion_seq == 0, "水位没动");
     CHECK(edc_group_fold_due(group, 4), "下一轮还会再折 (可折叠的还在)");
 
-    edc_scheduler_drain_reap_pending(sched);
-    CHECK(count_tasks_in(session) == 2, "失败的折叠任务照样被回收 (不留下半成品)");
-    CHECK(edc_session_find_system_group(session) == NULL, "系统组也没了");
+    CHECK(count_tasks_in(session) == 3, "失败的折叠任务仍在 (普通任务, 不回收)");
+    CHECK(edc_session_find_system_group(session) != NULL, "系统组还在");
 
     edc_session_free(session);
     edc_scheduler_free(sched);
@@ -384,12 +385,12 @@ static void test_fold_failure_keeps_memory(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  Test 4: 折叠不落盘 (重启无残留)
+ *  Test 4: 折叠任务**落盘** (重启可续跑)
  *  ══════════════════════════════════════════════════════════════ */
 
-static void test_fold_task_is_not_persisted(void)
+static void test_fold_task_is_persisted(void)
 {
-    TEST("折叠任务在跑的时候落盘: 盘上没有它, 也没有系统组");
+    TEST("折叠任务在跑的时候落盘: 盘上有它、有系统组; 读回后置回就绪");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-disk", "Disk");
@@ -412,44 +413,33 @@ static void test_fold_task_is_not_persisted(void)
     edc_task_add_turn(leader, lturn);
     add_foldable_task(session, group, "2", 2, 6, "work");
 
-    /* 对照组: 没有折叠时的产物 */
-    struct edc_session *ctrl = edc_session_new(cfg, "sess-disk", "Disk");
-    struct edc_scheduler *ctrl_sched = edc_scheduler_new(cfg);
-    install_resolver(ctrl_sched, ctrl);
-    ctrl_sched->send_llm = stub_send_llm;
-    struct edc_task *cleader = edc_task_new("1", "sess-disk", "1", "leader", edc_channel_adapter);
-    struct edc_task_group *cgroup = edc_task_group_new(cleader);
-    edc_session_add_group(ctrl, cgroup);
-    edc_task_await_exec(cleader);
-    edc_task_mark_completed(cleader);
-    cleader->completion_seq = 1;
-    struct edc_turn *cturn = edc_turn_new();
-    cJSON *cm = cJSON_CreateObject();
-    cJSON_AddStringToObject(cm, "role", "user");
-    cJSON_AddStringToObject(cm, "content", "leader work");
-    edc_queue_push(&cturn->messages, cm);
-    edc_task_add_turn(cleader, cturn);
-    add_foldable_task(ctrl, cgroup, "2", 2, 6, "work");
-
-    CHECK(edc_group_fold_start(sched, session, group) != NULL, "折叠在飞");
+    struct edc_task *fold = edc_group_fold_start(sched, session, group);
+    CHECK(fold != NULL, "折叠在飞");
     pump_schedule(sched);
 
-    cJSON *j_with = edc_state_serialize(session, sched);
-    cJSON *j_ctrl = edc_state_serialize(ctrl, ctrl_sched);
-    char *tw = cJSON_PrintUnformatted(j_with);
-    char *tc = cJSON_PrintUnformatted(j_ctrl);
-    CHECK(tw && tc && strcmp(tw, tc) == 0, "产物与没有折叠时逐字节相同 (系统组/折叠任务都不落盘)");
-    if (tw)
-        cJSON_free(tw);
-    if (tc)
-        cJSON_free(tc);
-    cJSON_Delete(j_with);
-    cJSON_Delete(j_ctrl);
+    cJSON *j = edc_state_serialize(session, sched);
+    CHECK(j != NULL, "可序列化");
+    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(j, "tasks")) == 3, "tasks 块含折叠任务 (落盘)");
+    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(j, "groups")) == 2, "groups 块含系统组 (落盘)");
 
+    struct edc_session *s2 = edc_session_new(cfg, "sess-disk", "Disk");
+    struct edc_scheduler *s2s = edc_scheduler_new(cfg);
+    install_resolver(s2s, s2);
+    CHECK(edc_state_deserialize(j, s2, s2s), "读回成功");
+    struct edc_task_group *sg2 = edc_session_find_system_group(s2);
+    CHECK(sg2 != NULL && edc_task_group_is_system(sg2), "系统组读回来");
+    struct edc_task *fold2 = sg2 ? sg2->members : NULL;
+    CHECK(fold2 != NULL, "折叠任务读回来");
+    CHECK(fold2 && edc_task_is_ready(fold2) && edc_task_is_alive(fold2),
+          "未完成的折叠任务读回后置回就绪 (重启续跑), 不是 SUSPENDED");
+    CHECK(fold2 && fold2->sink_group && strcmp(fold2->sink_group->group_id, group->group_id) == 0,
+          "sink_group 解析回目标组");
+
+    cJSON_Delete(j);
     edc_session_free(session);
     edc_scheduler_free(sched);
-    edc_session_free(ctrl);
-    edc_scheduler_free(ctrl_sched);
+    edc_session_free(s2);
+    edc_scheduler_free(s2s);
     edc_config_free(cfg);
 }
 
@@ -524,6 +514,235 @@ static void test_try_scans_all_sessions(void)
     edc_config_free(cfg);
 }
 
+/* ═══════════════════════════════════════════════════════
+ *  Test 6: 折叠是一次屏障 (barrier) —— 折叠不让路, 组内成员挂在它上面等
+ *  ═══════════════════════════════════════════════════════ */
+
+/* 建一个"该折"的组骨架: leader (seq1, 一条 user 消息)。 */
+static struct edc_task_group *make_foldable_group(struct edc_session *session, const char *sid, const char *leader_text)
+{
+    struct edc_task *leader = edc_task_new("1", sid, "1", leader_text, edc_channel_adapter);
+    struct edc_task_group *group = edc_task_group_new(leader);
+    edc_session_add_group(session, group);
+    edc_task_await_exec(leader);
+    edc_task_mark_completed(leader);
+    leader->completion_seq = 1;
+    struct edc_turn *lturn = edc_turn_new();
+    cJSON *lm = cJSON_CreateObject();
+    cJSON_AddStringToObject(lm, "role", "user");
+    cJSON_AddStringToObject(lm, "content", leader_text);
+    edc_queue_push(&lturn->messages, lm);
+    edc_task_add_turn(leader, lturn);
+    return group;
+}
+
+static void test_fold_preempts_running_member(void)
+{
+    TEST("折叠前置: 在飞的成员不被 stop; dep 挂上, 到它的下一个请求边界才生效");
+
+    struct edc_config *cfg = make_config();
+    cfg->group_fold_msg_threshold = 1000;
+    struct edc_session *session = edc_session_new(cfg, "sess-preempt", "Preempt");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+    g_send_llm_calls = 0;
+
+    struct edc_task_group *group = make_foldable_group(session, "sess-preempt", "leader work");
+
+    /* 一个在飞的成员: LLM 已发, 正在等回包 (AWAIT_EXEC)。 */
+    struct edc_task *run = edc_task_new("9", "sess-preempt", group->group_id, "running", edc_channel_adapter);
+    edc_task_group_add_task(group, run);
+    edc_scheduler_attach_input(sched, run, "in flight");
+    edc_task_await_exec(run);
+    CHECK(edc_task_is_running(run), "成员在跑");
+
+    struct edc_task *fold = edc_group_fold_start(sched, session, group);
+    CHECK(fold != NULL, "有成员在跑也起折叠 (不再推迟)");
+    CHECK(edc_task_is_running(run), "在飞的成员**不被 stop** (这一轮已发出去, 拦不住)");
+    CHECK(!edc_task_awaits_deps(run), "它也没被立刻 park");
+    bool has_dep = false;
+    struct edc_task_dep *d;
+    LL_FOREACH(run->deps, d)
+    if (d->source == fold)
+        has_dep = true;
+    CHECK(has_dep, "但 dep 边已经挂上 (到它的下一个请求边界生效)");
+
+    pump_schedule(sched);
+    CHECK(g_send_llm_calls == 1, "只发出折叠的请求");
+    CHECK(g_last_llm_task_id && strcmp(g_last_llm_task_id, fold->task_id) == 0, "发的是折叠");
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+static void test_fold_holds_next_llm_send(void)
+{
+    TEST("B1: 工具跑完后, 有未决 dep 的成员拒绝发下一个 LLM 请求, park 成 AWAIT_DEPS");
+
+    struct edc_config *cfg = make_config();
+    cfg->group_fold_msg_threshold = 1000;
+    struct edc_session *session = edc_session_new(cfg, "sess-sendhold", "SendHold");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+    g_send_llm_calls = 0;
+
+    struct edc_task_group *group = make_foldable_group(session, "sess-sendhold", "leader work");
+
+    /* 一个成员: 工具链正在跑 (AWAIT_TOOLS + 账本一条)。 */
+    struct edc_task *m = edc_task_new("8", "sess-sendhold", group->group_id, "worker", edc_channel_adapter);
+    edc_task_group_add_task(group, m);
+    edc_scheduler_attach_input(sched, m, "do work");
+    edc_task_await_exec(m);
+    edc_task_await_tools(m);
+    edc_task_tool_call_add(m, "c1", "echo", NULL);
+    void *rid = (void *)0x1234;
+    m->current_request_id = rid;
+    CHECK(edc_task_is_running(m), "成员的工具链在跑");
+
+    struct edc_task *fold = edc_group_fold_start(sched, session, group);
+    CHECK(fold != NULL, "折叠起来了");
+    CHECK(edc_task_awaits_tools(m), "成员仍在 AWAIT_TOOLS (工具已跑, 不打断)");
+
+    /* 最后一个工具回包: executor 本该发下一个 LLM; 但 dep 未决 → park。 */
+    struct edc_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.kind = EDC_EVENT_TOOL_DONE;
+    ev.request_id = (const char *)rid;
+    ev.as.tool_done.call_id = "c1";
+    ev.as.tool_done.name = "echo";
+    ev.as.tool_done.result = sdsnew("out");
+    ev.as.tool_done.has_next = false;
+    struct edc_advance_result res = edc_executor_advance(&sched->executor, m, &ev);
+    edc_scheduler_apply_advance(sched, m, rid, &res);
+
+    CHECK(g_send_llm_calls == 0, "没有发出 LLM 请求 (被 dep 拦下)");
+    CHECK(edc_task_awaits_deps(m), "被 park 到 AWAIT_DEPS");
+
+    /* 表里没动, 扫描先驱动折叠 (m 在 AWAIT_DEPS, 不会被驱动)。 */
+    pump_schedule(sched);
+    CHECK(g_send_llm_calls == 1, "被挂住的成员没有被驱动");
+    CHECK(g_last_llm_task_id && strcmp(g_last_llm_task_id, fold->task_id) == 0, "只驱动了折叠");
+
+    /* 折叠落地 → 释放成员 → 扫描驱动它发请求。 */
+    struct edc_llm_actor_resp resp;
+    memset(&resp, 0, sizeof(resp));
+    resp.reason = BC_LLM_FINISH_REASON_STOP;
+    resp.content = sdsnew("# merged");
+    void *fold_req = fold->current_request_id;
+    struct edc_advance_result fr = edc_executor_advance_llm_resp(&sched->executor, fold, fold_req, &resp);
+    edc_scheduler_apply_advance(sched, fold, fold_req, &fr);
+    CHECK(edc_task_is_ready(m), "折叠落地后成员被释放 (READY)");
+
+    pump_schedule(sched);
+    CHECK(g_send_llm_calls == 2, "现在为成员发出请求");
+    CHECK(g_last_llm_task_id && strcmp(g_last_llm_task_id, m->task_id) == 0, "发的是那个成员");
+
+    sdsfree(resp.content);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+static void test_group_held_until_fold_lands(void)
+{
+    TEST("屏障: 折叠在飞时组内成员停在 AWAIT_DEPS, 折叠结算后被释放并驱动");
+
+    struct edc_config *cfg = make_config();
+    cfg->group_fold_msg_threshold = 1000;
+    struct edc_session *session = edc_session_new(cfg, "sess-hold", "Hold");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+    g_send_llm_calls = 0;
+
+    struct edc_task_group *group = make_foldable_group(session, "sess-hold", "leader work");
+
+    struct edc_task *held = edc_task_new("7", "sess-hold", group->group_id, "held", edc_channel_adapter);
+    edc_task_group_add_task(group, held);
+    edc_scheduler_attach_input(sched, held, "queued work");
+    CHECK(edc_task_is_ready(held), "held 就绪、有 turn");
+
+    struct edc_task *fold = edc_group_fold_start(sched, session, group);
+    CHECK(fold != NULL, "折叠起来了");
+    CHECK(edc_task_awaits_deps(held), "成员被挂成 AWAIT_DEPS (wait dep)");
+
+    pump_schedule(sched);
+    CHECK(g_send_llm_calls == 1, "只发出折叠自己的请求");
+    CHECK(edc_task_awaits_deps(held), "成员仍等依赖 (没被驱动)");
+
+    struct edc_llm_actor_resp resp;
+    memset(&resp, 0, sizeof(resp));
+    resp.reason = BC_LLM_FINISH_REASON_STOP;
+    resp.content = sdsnew("# merged");
+    void *fold_req = fold->current_request_id;
+    struct edc_advance_result fr = edc_executor_advance_llm_resp(&sched->executor, fold, fold_req, &resp);
+    edc_scheduler_apply_advance(sched, fold, fold_req, &fr);
+    CHECK(group->memory && strstr(group->memory, "# merged") != NULL, "记忆已写入");
+    CHECK(edc_task_is_ready(held), "成员被释放 (deps 完成 → READY)");
+
+    pump_schedule(sched);
+    CHECK(g_send_llm_calls == 2, "折叠落地后成员被驱动");
+    CHECK(g_last_llm_task_id && strcmp(g_last_llm_task_id, held->task_id) == 0, "驱动的是被挂住的成员");
+    CHECK(edc_task_awaits_exec(held), "成员现在在跑");
+
+    sdsfree(resp.content);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+static void test_resume_held_while_fold_in_flight(void)
+{
+    TEST("屏障: 折叠在飞时 resume 一个不在 dep 里的成员, 被闸门扣在 READY");
+
+    struct edc_config *cfg = make_config();
+    cfg->group_fold_msg_threshold = 1000;
+    struct edc_session *session = edc_session_new(cfg, "sess-resume", "Resume");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+    g_send_llm_calls = 0;
+
+    struct edc_task_group *group = make_foldable_group(session, "sess-resume", "leader work");
+
+    /* 起折时它是终态 (CANCELLED), 所以没被挂 dep; 之后 resume。 */
+    struct edc_task *t = edc_task_new("7", "sess-resume", group->group_id, "resume me", edc_channel_adapter);
+    edc_task_group_add_task(group, t);
+    edc_scheduler_attach_input(sched, t, "resume me");
+    edc_task_mark_cancelled(t);
+    CHECK(edc_task_is_cancelled(t), "t 是 CANCELLED");
+
+    struct edc_task *fold = edc_group_fold_start(sched, session, group);
+    CHECK(fold != NULL, "折叠起来了");
+    pump_schedule(sched);
+    CHECK(g_send_llm_calls == 1, "只发了折叠");
+
+    edc_scheduler_resume_task(sched, t);
+    CHECK(edc_task_is_ready(t), "resume 被闸门扣在 READY (没被驱动)");
+    CHECK(g_send_llm_calls == 1, "没有为 t 发请求");
+
+    struct edc_llm_actor_resp resp;
+    memset(&resp, 0, sizeof(resp));
+    resp.reason = BC_LLM_FINISH_REASON_STOP;
+    resp.content = sdsnew("# merged");
+    void *fold_req = fold->current_request_id;
+    struct edc_advance_result fr = edc_executor_advance_llm_resp(&sched->executor, fold, fold_req, &resp);
+    edc_scheduler_apply_advance(sched, fold, fold_req, &fr);
+
+    pump_schedule(sched);
+    CHECK(edc_task_awaits_exec(t), "折叠落地后 resume 生效 (t 在跑)");
+    CHECK(g_send_llm_calls == 2, "为 t 发出了请求");
+
+    sdsfree(resp.content);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+
 /* ══════════════════════════════════════════════════════════════ */
 
 int main(void)
@@ -531,8 +750,12 @@ int main(void)
     test_prompt_and_due();
     test_fold_runs_as_a_system_task();
     test_fold_failure_keeps_memory();
-    test_fold_task_is_not_persisted();
+    test_fold_task_is_persisted();
     test_try_scans_all_sessions();
+    test_fold_preempts_running_member();
+    test_fold_holds_next_llm_send();
+    test_group_held_until_fold_lands();
+    test_resume_held_while_fold_in_flight();
 
     log_info("=== %d passed, %d failed ===", test_passed, test_failed);
     printf("%d passed, %d failed\n", test_passed, test_failed);
