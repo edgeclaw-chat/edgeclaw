@@ -437,6 +437,97 @@ void TestStateNameIsGone(void)
     Check(frame.find("busy task") != std::string::npos, "descriptions still render");
 }
 
+void TestGroupUsageLine(void)
+{
+    std::cout << "the group's footer carries its usage: input / output / hit rate / context\n";
+
+    // 8192 / 1024 / 6144 / 65536 are chosen so every FormatTokens rendering is
+    // exact (no rounding tie) and the hit rate is a round 75%.
+    edc::TaskGroup group;
+    group.group_id = "5";
+    group.member_count = 1;
+    group.tokens_total = 9216;
+    group.tokens_prompt = 8192;
+    group.tokens_completion = 1024;
+    group.tokens_cached = 6144;
+    group.ctx_tokens = 65536;
+    {
+        edc::TaskInfo task;
+        task.task_id = "5";
+        task.state = "IDLE";
+        task.description = "work";
+        task.is_leader = true;
+        task.is_active = true; // active -> the group starts expanded
+        group.tasks.push_back(std::move(task));
+    }
+
+    edc::TaskSnapshot snap;
+    snap.session_id = "s";
+    snap.groups.push_back(group);
+
+    edc::TaskWidget widget;
+    widget.SetSnapshot(&snap);
+    const auto screen = Render(widget);
+
+    const int header = RowWith(screen, "Group 5");
+    const int task_row = RowWith(screen, "work");
+    const int usage = RowWith(screen, "↑8.2k ↓1k · 75.0% · ctx 65.5k");
+    Check(header >= 0, "the group header is drawn");
+    Check(task_row > header, "the member row sits under the header");
+    Check(usage == task_row + 1, "the usage line closes the group's block (a footer under its members)");
+    Check(RowText(screen, header).find("tok") == std::string::npos,
+          "an expanded group does not repeat the total in its header (the footer's arrows add up to it)");
+
+    // Folded: the members go, and so does the footer. Only the header's total
+    // stays -- "how much has this cost", not how it broke down.
+    snap.groups[0].tasks[0].is_active = false;
+    edc::TaskWidget folded;
+    folded.SetSnapshot(&snap);
+    const std::string folded_frame = FrameText(Render(folded));
+    Check(folded_frame.find("work") == std::string::npos, "a folded group draws no member rows");
+    Check(folded_frame.find("↑8.2k") == std::string::npos, "and no usage footer");
+    Check(folded_frame.find("9.2k tok") != std::string::npos, "while the folded header still carries the total");
+
+    // A provider that never reports cached tokens must not read as a flat 0%:
+    // the hit rate is dropped, the rest of the footer stays.
+    snap.groups[0].tasks[0].is_active = true;
+    snap.groups[0].tokens_cached = 0;
+    edc::TaskWidget uncached;
+    uncached.SetSnapshot(&snap);
+    const std::string uncached_frame = FrameText(Render(uncached));
+    Check(uncached_frame.find("%") == std::string::npos, "no hit rate when nothing is known to be cached");
+    Check(uncached_frame.find("↑8.2k") != std::string::npos, "the input total is still shown");
+
+    // …and the rate keeps one decimal: 1000 / 8192 is 12.2%, not 12%.
+    snap.groups[0].tokens_cached = 1000;
+    edc::TaskWidget decimal;
+    decimal.SetSnapshot(&snap);
+    const std::string decimal_frame = FrameText(Render(decimal));
+    Check(decimal_frame.find("12.2%") != std::string::npos, "the hit rate keeps one decimal");
+
+    // A group that has spent nothing draws no footer at all (and no "0 tok" in
+    // its place). The group is expanded on purpose: the missing line has to be
+    // "nothing to say", not "folded away".
+    edc::TaskSnapshot fresh;
+    fresh.session_id = "s";
+    edc::TaskGroup empty;
+    empty.group_id = "6";
+    empty.member_count = 1;
+    {
+        edc::TaskInfo task;
+        task.task_id = "6";
+        task.state = "IDLE";
+        task.is_active = true;
+        empty.tasks.push_back(std::move(task));
+    }
+    fresh.groups.push_back(std::move(empty));
+    edc::TaskWidget w2;
+    w2.SetSnapshot(&fresh);
+    const std::string fresh_frame = FrameText(Render(w2));
+    Check(fresh_frame.find("↑") == std::string::npos && fresh_frame.find("ctx ") == std::string::npos,
+          "a group that has not spent anything draws no footer");
+}
+
 } // namespace
 
 int main()
@@ -450,6 +541,7 @@ int main()
     TestMarkersSitLeftOfTheId();
     TestStateNameIsGone();
     TestSystemGroupGetsItsOwnBlock();
+    TestGroupUsageLine();
 
     if (g_failures == 0)
     {

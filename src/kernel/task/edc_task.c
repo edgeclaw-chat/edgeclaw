@@ -600,6 +600,13 @@ void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long lon
     task->tokens_completion += completion_tokens;
     task->tokens_total += total_tokens;
     task->tokens_cached += cached_tokens;
+
+    /* How big the conversation is *now*, remembered rather than summed: what this
+     * round sent plus what it got back -- where the next request starts from, so
+     * it is the group's context width in the sidebar. The all-zero guard above
+     * keeps a provider that reports no usage from erasing it. */
+    if (total_tokens > 0)
+        task->last_total_tokens = total_tokens;
 }
 
 /* ── 依赖 (IPC) ────────────────────────────────────────────── */

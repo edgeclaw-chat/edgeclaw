@@ -134,6 +134,18 @@ struct edc_task
     long long tokens_total;
     long long tokens_cached;
 
+    /* How big the conversation had grown after the most recent reply: that
+     * response's usage.total_tokens (its prompt *and* its completion) -- what was
+     * sent plus what came back. Deliberately NOT accumulated: it answers "how big
+     * is this conversation now", while the counters above answer "what has it
+     * cost so far". 0 = no response with usage has come back yet.
+     *
+     * It is the provider's count for that round trip, not a measurement of a
+     * request: it is a sum of two counts, so a provider that folds reasoning
+     * content into completion_tokens (which need not be sent back) makes it a
+     * slight over-estimate of what the next request will carry. */
+    long long last_total_tokens;
+
     edc_channel_type channel_type;
 
     cJSON *todos; /* JSON Array */

@@ -86,6 +86,10 @@ TaskGroup ParseGroup(const cJSON *item)
     group.orphaned = JsonBool(Field(item, "orphaned"));
     group.fg = JsonBool(Field(item, "fg"));
     group.tokens_total = JsonInt64(Field(item, "tokens_total"));
+    group.tokens_prompt = JsonInt64(Field(item, "tokens_prompt"));
+    group.tokens_completion = JsonInt64(Field(item, "tokens_completion"));
+    group.tokens_cached = JsonInt64(Field(item, "tokens_cached"));
+    group.ctx_tokens = JsonInt64(Field(item, "ctx_tokens"));
 
     if (const cJSON *tasks = Field(item, "tasks"); cJSON_IsArray(tasks))
     {

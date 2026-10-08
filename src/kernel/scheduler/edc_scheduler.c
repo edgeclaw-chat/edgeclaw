@@ -1193,6 +1193,10 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
         if (g_msg_count > 0)
             g_msg_count -= 1;
         long long g_tokens_total = 0;
+        long long g_tokens_prompt = 0;
+        long long g_tokens_completion = 0;
+        long long g_tokens_cached = 0;
+        long long g_ctx_tokens = 0;
         {
             struct edc_task *mt;
             LL_FOREACH2(g->members, mt, group_next)
@@ -1200,10 +1204,22 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
                 if (mt->active_turn)
                     g_msg_count += edc_queue_length(&mt->active_turn->messages);
                 g_tokens_total += mt->tokens_total;
+                g_tokens_prompt += mt->tokens_prompt;
+                g_tokens_completion += mt->tokens_completion;
+                g_tokens_cached += mt->tokens_cached;
+                /* The group's *current* context: a group's context only grows along
+                 * its chain (every member inherits the committed history), so the
+                 * biggest member conversation is also the latest one. */
+                if (mt->last_total_tokens > g_ctx_tokens)
+                    g_ctx_tokens = mt->last_total_tokens;
             }
         }
         cJSON_AddNumberToObject(gj, "msg_count", (double)g_msg_count);
         cJSON_AddNumberToObject(gj, "tokens_total", (double)g_tokens_total);
+        cJSON_AddNumberToObject(gj, "tokens_prompt", (double)g_tokens_prompt);
+        cJSON_AddNumberToObject(gj, "tokens_completion", (double)g_tokens_completion);
+        cJSON_AddNumberToObject(gj, "tokens_cached", (double)g_tokens_cached);
+        cJSON_AddNumberToObject(gj, "ctx_tokens", (double)g_ctx_tokens);
 
         cJSON *tasks = cJSON_AddArrayToObject(gj, "tasks");
         struct edc_task *t;

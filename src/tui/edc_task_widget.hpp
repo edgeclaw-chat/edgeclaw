@@ -75,7 +75,13 @@ class TaskWidget : public ::ftxui::ComponentBase
         int msg_count = 0; /* live group messages (committed + in-flight) */
         bool orphaned = false;
         bool fg = false;
-        long long tokens_total = 0; /* sum of member tasks' total tokens */
+        /* Usage rolled up from the members (the sidebar shows the group's, and
+         * only the group's, cost). */
+        long long tokens_total = 0;      /* sum of member tasks' total tokens */
+        long long tokens_prompt = 0;     /* sum of member tasks' prompt tokens */
+        long long tokens_completion = 0; /* sum of member tasks' completion tokens */
+        long long tokens_cached = 0;     /* sum of member tasks' cached prompt tokens */
+        long long ctx_tokens = 0;        /* current context (biggest member conversation) */
         std::vector<TaskInfo> tasks;
     };
 

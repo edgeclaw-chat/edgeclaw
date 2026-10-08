@@ -993,6 +993,57 @@ static void test_output(void)
     edc_task_free(t);
 }
 
+/* ── 8b. LLM 用量累积 ──────────────────────────────────────── */
+
+static void test_usage(void)
+{
+    TEST("usage accumulates; the conversation size is remembered, not summed");
+    struct edc_task *t = edc_task_new("task-usage", "sess-1", "task-usage", "usage test", edc_channel_adapter);
+
+    CHECK(t->tokens_prompt == 0 && t->tokens_completion == 0 && t->tokens_total == 0 &&
+              t->tokens_cached == 0 && t->last_total_tokens == 0,
+          "a fresh task has spent nothing");
+
+    edc_task_add_usage(t, 100, 20, 120, 40);
+    CHECK(t->tokens_prompt == 100 && t->tokens_completion == 20 && t->tokens_total == 120 &&
+              t->tokens_cached == 40,
+          "the first response is counted");
+    CHECK(t->last_total_tokens == 120,
+          "the conversation is that round's input + output (usage.total_tokens)");
+
+    /* A tool round re-sends the grown context: the counters add up, the
+     * conversation size is replaced. */
+    edc_task_add_usage(t, 300, 50, 350, 200);
+    CHECK(t->tokens_prompt == 400 && t->tokens_completion == 70 && t->tokens_total == 470 &&
+              t->tokens_cached == 240,
+          "the counters accumulate across rounds");
+    CHECK(t->last_total_tokens == 350, "the conversation size is the *latest* round, not the running total");
+
+    /* A provider that omits total_tokens: reconstruct it so the group's total
+     * stays the sum of its members. */
+    edc_task_add_usage(t, 10, 5, 0, 0);
+    CHECK(t->tokens_total == 485 && t->last_total_tokens == 15, "a missing total is prompt + completion");
+
+    /* A response that carries no usage at all must not erase the last known
+     * size (the group would otherwise show an empty context after a hiccup). */
+    const long long prompt_before = t->tokens_prompt;
+    const long long ctx_before = t->last_total_tokens;
+    edc_task_add_usage(t, 0, 0, 0, 0);
+    CHECK(t->tokens_prompt == prompt_before && t->last_total_tokens == ctx_before,
+          "a response with no usage changes nothing");
+
+    /* A broken provider sending negative counts: clamp to 0, never subtract. */
+    edc_task_add_usage(t, 10, -5, 0, -1);
+    CHECK(t->tokens_prompt == 420 && t->tokens_completion == 75 && t->tokens_total == 495 &&
+              t->tokens_cached == 240,
+          "negative counts clamp to 0 instead of subtracting");
+    CHECK(t->last_total_tokens == 10, "and the size follows the reconstructed total");
+
+    edc_task_add_usage(NULL, 1, 1, 2, 0); /* must not crash */
+
+    edc_task_free(t);
+}
+
 /* ── 9. Prompt 绑定 ────────────────────────────────────────── */
 
 static void test_prompt(void)
@@ -1252,6 +1303,7 @@ int main(void)
     test_signals();
     test_output();
     test_prompt();
+    test_usage();
     test_context_messages();
     test_scenario_fork_join();
     test_scenario_multi_deps();

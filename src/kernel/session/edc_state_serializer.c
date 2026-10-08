@@ -160,6 +160,7 @@ static cJSON *task_to_json(struct edc_task *task)
     cJSON_AddNumberToObject(tj, "tokens_completion", (double)task->tokens_completion);
     cJSON_AddNumberToObject(tj, "tokens_total", (double)task->tokens_total);
     cJSON_AddNumberToObject(tj, "tokens_cached", (double)task->tokens_cached);
+    cJSON_AddNumberToObject(tj, "last_total_tokens", (double)task->last_total_tokens);
 
     /* ── redirect ── */
     if (task->redirect_stdout)
@@ -675,6 +676,8 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->tokens_total = (long long)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "tokens_cached")) && cJSON_IsNumber(v))
             task->tokens_cached = (long long)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "last_total_tokens")) && cJSON_IsNumber(v))
+            task->last_total_tokens = (long long)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "redirect_stdout")) && cJSON_IsString(v))
             task->redirect_stdout = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "redirect_stderr")) && cJSON_IsString(v))
