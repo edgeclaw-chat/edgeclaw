@@ -8,6 +8,10 @@ struct edc_turn
 {
     char *task_id; /* 序列化时标记归属 */
     EdcQueue messages;
+    /* How many leading messages of this turn the group memory already covers (L1
+     * fold). Request assembly and the group history both start after them; set at
+     * fold landing, persisted with the turn. 0 = nothing folded. */
+    int folded_prefix;
 };
 
 extern struct edc_turn *edc_turn_new();

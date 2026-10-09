@@ -52,6 +52,7 @@ const char *kFull = R"json({
       "id": "9", "kind": "system", "member_count": 1, "msg_count": 2,
       "orphaned": false, "fg": false, "tokens_total": 30,
       "tokens_prompt": 10, "tokens_completion": 20, "tokens_cached": 5, "ctx_tokens": 2048,
+      "ctx_estimated": true,
       "tasks": [
         {
           "id": "777", "state": "LLM_PROCESSING", "leader": true, "active": false,
@@ -64,6 +65,7 @@ const char *kFull = R"json({
       "id": "1", "kind": "user", "member_count": 2, "msg_count": 7,
       "orphaned": true, "fg": true, "tokens_total": 100,
       "tokens_prompt": 70, "tokens_completion": 30, "tokens_cached": 21, "ctx_tokens": 4096,
+      "ctx_estimated": false,
       "tasks": [
         {
           "id": "11", "state": "IDLE", "leader": true, "active": true,
@@ -103,6 +105,7 @@ void TestParseFullSnapshot()
     Check(sys.msg_count == 2 && sys.member_count == 1 && sys.tokens_total == 30, "group counters");
     Check(sys.tokens_prompt == 10 && sys.tokens_completion == 20 && sys.tokens_cached == 5 && sys.ctx_tokens == 2048,
           "the group's usage roll-up (input / output / cached / current context)");
+    Check(sys.ctx_estimated, "a context that contains an estimate is flagged as such");
     Check(!sys.fg && !sys.orphaned, "group flags");
     Check(sys.tasks.size() == 1 && At(sys.tasks, 0).todos.empty(), "a task with no todo list");
 
@@ -111,6 +114,7 @@ void TestParseFullSnapshot()
     Check(user.fg && user.orphaned, "fg / orphaned flags");
     Check(user.tokens_prompt == 70 && user.tokens_completion == 30 && user.tokens_cached == 21 && user.ctx_tokens == 4096,
           "the user group's usage roll-up");
+    Check(!user.ctx_estimated, "an anchored context is not flagged");
     Check(user.tasks.size() == 2, "both member tasks");
 
     const edc::TaskInfo &active = At(user.tasks, 0);
@@ -226,7 +230,8 @@ void TestParsedSnapshotRenders()
     Check(frame.find("↑70 ↓30") != std::string::npos,
           "the group's usage line reaches the frame (input / output)");
     Check(frame.find("30.0%") != std::string::npos, "and the hit rate derived from cached / input");
-    Check(frame.find("ctx 4.1k") != std::string::npos, "and the current context width");
+    Check(frame.find("ctx 4.1k") != std::string::npos, "and the current context width (anchored: no mark)");
+    Check(frame.find("ctx ~2k") != std::string::npos, "an estimated context carries the ~ mark");
 }
 
 } // namespace

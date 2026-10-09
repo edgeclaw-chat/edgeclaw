@@ -90,6 +90,9 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
     result->group_fold_msg_threshold =
         (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
 
+    item = cJSON_GetObjectItem(json, "context_window");
+    result->context_window = (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_CONTEXT_WINDOW;
+
     item = cJSON_GetObjectItem(json, "tool_max_output_size");
     result->tool_max_output_size =
         (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_TOOL_MAX_OUTPUT_SIZE;
@@ -189,6 +192,10 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
     result->group_fold_msg_threshold = (defaults && defaults->group_fold_msg_threshold > 0)
                                            ? defaults->group_fold_msg_threshold
                                            : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
+    /* 0 is a legal value here (it means "unknown"), so an existing config is
+     * carried over as-is; a negative one normalizes to the default. */
+    result->context_window =
+        (defaults && defaults->context_window >= 0) ? defaults->context_window : EDC_CONFIG_DEFAULT_CONTEXT_WINDOW;
     result->tool_max_output_size = (defaults && defaults->tool_max_output_size > 0)
                                        ? defaults->tool_max_output_size
                                        : EDC_CONFIG_DEFAULT_TOOL_MAX_OUTPUT_SIZE;
@@ -540,6 +547,7 @@ static void edc_init_env_conf_topup(const char *conf_file, const char *edc_home)
     ensure_str_key(conf, "model", EDC_CONFIG_DEFAULT_MODEL, &changed);
     ensure_int_key(conf, "max_iter", EDC_CONFIG_DEFAULT_MAX_ITER, &changed);
     ensure_int_key(conf, "group_fold_msg_threshold", EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD, &changed);
+    ensure_int_key(conf, "context_window", EDC_CONFIG_DEFAULT_CONTEXT_WINDOW, &changed);
     ensure_int_key(conf, "tool_max_output_size", EDC_CONFIG_DEFAULT_TOOL_MAX_OUTPUT_SIZE, &changed);
 
     ensure_sandbox(conf, edc_home, &changed);
@@ -647,6 +655,7 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     cJSON_AddStringToObject(config, "api_url", env_result.api_url);
     cJSON_AddNumberToObject(config, "max_iter", env_result.max_iter);
     cJSON_AddNumberToObject(config, "group_fold_msg_threshold", env_result.group_fold_msg_threshold);
+    cJSON_AddNumberToObject(config, "context_window", env_result.context_window);
     cJSON_AddNumberToObject(config, "tool_max_output_size", env_result.tool_max_output_size);
 
     cJSON *sandbox = cJSON_CreateObject();

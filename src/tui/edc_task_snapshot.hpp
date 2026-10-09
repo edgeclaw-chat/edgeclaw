@@ -69,6 +69,9 @@ struct TaskGroup
      * along its chain). The hit rate is derived from the two above (cached /
      * prompt) -- it is not a field of its own. */
     long long ctx_tokens = 0;
+    /* ctx_tokens 里含估算成分 (锚之后有追加, 或退回从零估)。前端据此加 `~`:
+     * 估算不得冒充 provider 的测量。 */
+    bool ctx_estimated = false;
     std::vector<TaskInfo> tasks;
 };
 

@@ -135,9 +135,10 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         size_t total = cJSON_GetArraySize(task->group->history);
         size_t end = total;
 
-        /* 未折叠历史起点: 跳过 system prompt (history[0]) + 已折叠消息。
-         * 已折叠消息数 = 折叠水位 (completion_seq) 之前的 task 的消息总数。 */
-        size_t hist_begin = 1 + edc_task_group_folded_msg_count(task->group);
+        /* 未折叠历史起点: 跳过 system prompt (history[0])。已折叠消息不在
+         * history 里 —— 折叠落地时就被剪掉了 (见 edc_task_group_rebuild_history),
+         * 所以这里不再需要任何水位算术。 */
+        size_t hist_begin = 1;
         if (hist_begin > end)
             hist_begin = end;
         /* 水位边界也可能切在 tool 消息上, 回退到安全边界 */
@@ -241,6 +242,9 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
     cJSON *tools = (!is_memory_sink) ? tool_schemas : NULL;
     struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, tools,
                                                           task->active_turn ? &task->active_turn->messages : NULL);
+    /* 本 turn 的前缀若已进记忆 (折叠切在 turn 内部), 从这里之后开始发。 */
+    if (task->active_turn && task->active_turn->folded_prefix > 0)
+        req->turn_begin = (size_t)task->active_turn->folded_prefix;
     req->history_owned = true;
     /* 绝对队尾: todo reminder —— 不再每轮请求都塞 (避免唠叨), 只在
      * "隔了 EDC_TODO_SYNC_REMIND_GAP 条对话 (LLM 请求) 都没调用过

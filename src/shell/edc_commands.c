@@ -989,11 +989,12 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
         if (sys)
             cJSON_AddItemToArray(child_group->history, cJSON_Duplicate(sys, 1));
 
-        /* 合成 turn: 深拷贝父 group 未折叠消息 [1+已折叠数 .. fork_point) */
-        size_t snap_begin = 1 + edc_task_group_folded_msg_count(parent->group);
+        /* 合成 turn: 深拷贝父 group 未折叠消息 [1 .. fork_point) —— 已折叠消息
+         * 不在 history 里 (折叠落地即剪枝)。 */
+        size_t snap_begin = 1;
         struct edc_turn *snap = NULL;
 
-        if (parent->turns_folded)
+        if (edc_task_has_folded_turns(parent))
         {
             /* 规则 2: parent 的 turns 已被 L1 折叠, 捞回 parent 自己的 turns 全文,
              * 保证 fork 点本身的上下文完整。其余已折叠前文仍只靠 memory 摘要。 */

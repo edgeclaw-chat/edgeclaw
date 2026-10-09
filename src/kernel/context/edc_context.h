@@ -57,4 +57,14 @@ extern int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, 
 extern sds edc_context_render_todo_body(cJSON *items, int *out_completed);
 extern sds edc_context_render_todo_reminder(cJSON *items);
 
+/* 组**当前**上下文规模: pi 的 "anchor + 尾部估算" (compaction.ts:217)。
+ *   1) 有可用锚的成员 (最近一次应答的 provider 真值, 且晚于该组最近一次折叠、
+ *      带位置信息) → max(锚 + 锚之后追加的估算);
+ *   2) 没有可用锚 (刚折过 / 组里还没有应答) → 从零估一遍"该组下次请求会带
+ *      什么" (memory + system + 未折叠历史 + 最宽的那个在跑的 turn)。
+ * *out_estimated (可 NULL) 说**这个返回值里有没有估算成分**: 纯粹来自锚 + 尾部
+ * 为 0 时是 false (即 provider 真值)。调用方据此决定要不要显示估算标记 ——
+ * 估算不得冒充 provider 的测量。 */
+extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool *out_estimated);
+
 #endif

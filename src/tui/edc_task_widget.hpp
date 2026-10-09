@@ -82,6 +82,7 @@ class TaskWidget : public ::ftxui::ComponentBase
         long long tokens_completion = 0; /* sum of member tasks' completion tokens */
         long long tokens_cached = 0;     /* sum of member tasks' cached prompt tokens */
         long long ctx_tokens = 0;        /* current context (biggest member conversation) */
+        bool ctx_estimated = false;      /* ... and whether it carries an estimate */
         std::vector<TaskInfo> tasks;
     };
 

@@ -146,6 +146,19 @@ struct edc_task
      * slight over-estimate of what the next request will carry. */
     long long last_total_tokens;
 
+    /* Where that reply sat in the group's context, so the tail appended after it
+     * can be estimated instead of guessed: the group history length and the
+     * active turn's message count when the reply came back, and the group's fold
+     * epoch then.
+     *
+     * Two ways an anchor is unusable, both falling back to estimating the whole
+     * context: its epoch is behind the group's (a fold landed after it, so it
+     * counted a prefix that no longer gets sent), or hist_len == 0 (no position
+     * recorded: an older file read back, or no reply yet). */
+    uint32_t last_fold_epoch;
+    int last_hist_len;
+    int last_turn_len;
+
     edc_channel_type channel_type;
 
     cJSON *todos; /* JSON Array */
@@ -168,7 +181,6 @@ struct edc_task
 
     uint32_t completion_seq; /* completion order (0 = not finished) */
     int has_deferred_vars;   /* $VAR references to expand */
-    bool turns_folded;       /* turns folded into the group memory */
 
     struct edc_tool_call_record *tool_calls;
 
@@ -176,11 +188,17 @@ struct edc_task
     sds redirect_stderr;
     bool redirect_append; /* true = >>, false = > */
 
-    /* Output target for a sink=GROUP_MEMORY task: which group's memory to write
-     * and up to which completion_seq this fold covers. Filled by the folding side;
-     * the task itself does not interpret them. Memory-only. */
+    /* Output target for a sink=GROUP_MEMORY task: which group's memory to write,
+     * and where this round's cut went (P2a-4). The cut is one point in the group's
+     * content order: the member it falls in, its turn, and how many leading messages
+     * of that turn the memory covers. Everything before it is folded whole, nothing
+     * after it is touched. A NULL task id means "no cut" (a fold task written by an
+     * older binary): the landing then has nothing to apply and reports it.
+     * Filled by the folding side; the task itself does not interpret them. */
     struct edc_task_group *sink_group;
-    uint32_t fold_max_seq;
+    char *fold_cut_task_id;
+    uint32_t fold_cut_turn;
+    uint32_t fold_cut_prefix;
 
     /* Tasks a cancel or a dependency change moved as a side effect (cascaded JOIN,
      * released SEQUENCE). The task layer does not know the host, so it records them
@@ -378,10 +396,17 @@ extern struct edc_session *edc_task_session(const struct edc_task *task);
 /** Write the task's output to disk per its redirections (> / >> / 2>). */
 extern void edc_task_flush_redirects(struct edc_task *task);
 
-/** True when the task is completed and its turns are not yet folded. */
+/** True when the task is completed and still has messages the memory does not
+ *  cover (i.e. something left to fold). */
 extern bool edc_task_is_foldable(struct edc_task *task);
 /** Committed turn message count, used to advance the fold watermark. */
 extern size_t edc_task_turn_msg_count(struct edc_task *task);
+/** Committed turn messages not yet covered by the group memory (turn message
+ *  count minus each turn's folded_prefix). */
+extern size_t edc_task_unfolded_msg_count(struct edc_task *task);
+/** True when any committed turn of this task has a folded prefix (its own
+ *  conversation is therefore only partly in the group history). */
+extern bool edc_task_has_folded_turns(struct edc_task *task);
 
 extern void edc_task_set_prompt(struct edc_task *task, const char *prompt_name, const char *prompt_text);
 

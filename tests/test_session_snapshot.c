@@ -268,6 +268,25 @@ static long long group_number(cJSON *root, const char *group_id, const char *key
     return -1;
 }
 
+/* 读某个组的某个布尔字段 (缺失 -> -1)。 */
+static int group_flag(cJSON *root, const char *group_id, const char *key)
+{
+    cJSON *groups = root ? cJSON_GetObjectItem(root, "groups") : NULL;
+    if (!cJSON_IsArray(groups))
+        return -1;
+    cJSON *g;
+    cJSON_ArrayForEach(g, groups)
+    {
+        cJSON *id = cJSON_GetObjectItem(g, "id");
+        if (cJSON_IsString(id) && strcmp(cJSON_GetStringValue(id), group_id) == 0)
+        {
+            cJSON *v = cJSON_GetObjectItem(g, key);
+            return cJSON_IsBool(v) ? (cJSON_IsTrue(v) ? 1 : 0) : -1;
+        }
+    }
+    return -1;
+}
+
 static void test_group_usage_rollup(void)
 {
     TEST("快照: 组的用量 = 成员相加; ctx = 规模最大的那个成员的对话 (不是相加)");
@@ -284,6 +303,16 @@ static void test_group_usage_rollup(void)
     struct edc_task *t2 = edc_task_new("4101", s->session_id, "4100", "member", edc_channel_adapter);
     edc_task_group_add_task(group, t2);
 
+    /* 真实顺序: 组里已经有 system prompt (history[0]) 才发得出请求 —— 锚的位置
+     * 信息 (last_hist_len) 就是在那一刻记下的。没有它锚不可用, 组 ctx 会退回
+     * 从零估一遍 (那是另一条路径, 由 test_group_ctx 覆盖)。 */
+    {
+        cJSON *sys = cJSON_CreateObject();
+        cJSON_AddStringToObject(sys, "role", "system");
+        cJSON_AddStringToObject(sys, "content", "sys");
+        edc_task_group_history_add_owned(group, sys);
+    }
+
     /* leader 跑两轮 (工具循环): 计数器相加, 对话规模是**最近一轮**的 total。 */
     edc_task_add_usage(t1, 1000, 200, 1200, 750);
     edc_task_add_usage(t1, 3000, 100, 3100, 2000);
@@ -298,7 +327,26 @@ static void test_group_usage_rollup(void)
     CHECK(group_number(root, "4100", "tokens_total") == 4850, "总数 = 两个成员相加");
     CHECK(group_number(root, "4100", "tokens_cached") == 2750, "缓存命中的那部分 = 两个成员相加");
     CHECK(group_number(root, "4100", "ctx_tokens") == 3100, "当前上下文 = 规模最大的成员 (最近一轮的输入+输出)");
+    CHECK(group_flag(root, "4100", "ctx_estimated") == 0, "锚之后没追加东西 => 是 provider 真值, 不打估算标记");
     cJSON_Delete(root);
+
+    /* 锚之后又追加了一条消息 (别的成员提交的): 估算只落在这一小段上, 且整行转为
+     * "含估算" —— 估算不得冒充 provider 的测量。 */
+    {
+        cJSON *m = cJSON_CreateObject();
+        char body[41];
+        memset(body, 'a', 40);
+        body[40] = '\0';
+        cJSON_AddStringToObject(m, "role", "user");
+        cJSON_AddStringToObject(m, "content", body);
+        edc_task_group_history_add_owned(group, m);
+    }
+    request_snapshot(sched, s);
+    cJSON *root2 = parse_snapshot();
+    CHECK(root2 != NULL, "追加之后的快照可解析");
+    CHECK(group_number(root2, "4100", "ctx_tokens") == 3100 + 19, "只把锚之后的增量按估算加上去");
+    CHECK(group_flag(root2, "4100", "ctx_estimated") == 1, "含估算 => 打标记");
+    cJSON_Delete(root2);
 
     edc_session_free(s);
     edc_scheduler_free(sched);

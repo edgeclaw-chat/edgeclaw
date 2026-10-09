@@ -159,7 +159,7 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
 
     if (req->turn)
     {
-        for (size_t qi = req->turn->head; qi < req->turn->tail; qi++)
+        for (size_t qi = req->turn->head + req->turn_begin; qi < req->turn->tail; qi++)
         {
             cJSON *item = req->turn->data[qi];
             cJSON_AddItemReferenceToArray(messages, item);

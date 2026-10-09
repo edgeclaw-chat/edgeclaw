@@ -18,6 +18,9 @@ typedef struct
 struct edc_llm_actor_req
 {
     EdcQueue *turn;
+    /* 本 turn 的发送起点 (0 = 整条): 折叠若切在 turn 内部, 其前缀已在组记忆里,
+     * 不能再发一遍。生产者 (edc_llm_request) 按 active_turn->folded_prefix 置位。 */
+    size_t turn_begin;
     cJSON *history;
     cJSON *tools;
     bool history_owned; /* Phase 5: true = history needs cJSON_Delete */

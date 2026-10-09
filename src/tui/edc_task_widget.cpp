@@ -93,12 +93,17 @@ std::string FormatTokens(long long n)
 // nothing to say is dropped, so a group that has not spent anything yet draws no
 // line at all.
 //
+// The context is marked with `~` when it carries an estimate: the anchor is the
+// provider's own count, but the tail appended after it is ours, and an estimate
+// must never pass for a measurement.
+//
 // The hit rate is derived here (cached / prompt) instead of travelling as a
 // field: it is a view of the two counters, not a datum of its own. It is shown
 // only when something *was* cached -- a provider that never reports cached
 // tokens would otherwise read as a flat 0%, which claims more than we know --
 // and it keeps one decimal, because "12.2%" and "12%" are not the same claim.
-std::string FormatGroupUsage(long long prompt, long long completion, long long cached, long long ctx)
+std::string FormatGroupUsage(long long prompt, long long completion, long long cached, long long ctx,
+                             bool ctx_estimated)
 {
     std::string s;
     // Appends |part| (separated by |sep|) unless there is nothing to say.
@@ -121,7 +126,7 @@ std::string FormatGroupUsage(long long prompt, long long completion, long long c
         add(" · ", rate);
     }
     if (ctx > 0)
-        add(" · ", std::string("ctx ") + FormatTokens(ctx));
+        add(" · ", std::string("ctx ") + (ctx_estimated ? "~" : "") + FormatTokens(ctx));
     return s;
 }
 
@@ -167,6 +172,7 @@ void TaskWidget::SetSnapshot(const TaskSnapshot *snap)
         group.tokens_completion = g.tokens_completion;
         group.tokens_cached = g.tokens_cached;
         group.ctx_tokens = g.ctx_tokens;
+        group.ctx_estimated = g.ctx_estimated;
 
         for (const edc::TaskInfo &t : g.tasks)
         {
@@ -485,7 +491,8 @@ int TaskWidget::RowWidth() const
             // worth the row ("how much has this cost"), and the breakdown is
             // what the fold is hiding.
             if (const std::string usage =
-                    FormatGroupUsage(g.tokens_prompt, g.tokens_completion, g.tokens_cached, g.ctx_tokens);
+                    FormatGroupUsage(g.tokens_prompt, g.tokens_completion, g.tokens_cached, g.ctx_tokens,
+                                     g.ctx_estimated);
                 !usage.empty())
                 lines.push_back(text(TruncateToWidth("  " + usage, row_width - kRightPad)) | dim |
                                 color(pal.text_dim));

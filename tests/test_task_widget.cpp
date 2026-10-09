@@ -505,6 +505,21 @@ void TestGroupUsageLine(void)
     const std::string decimal_frame = FrameText(Render(decimal));
     Check(decimal_frame.find("12.2%") != std::string::npos, "the hit rate keeps one decimal");
 
+    // The context is marked when it carries an estimate: a number with an
+    // estimate inside must not pass for the provider's own count. An anchored
+    // one (nothing appended since the reply) is exact and stays unmarked.
+    snap.groups[0].tokens_cached = 6144;
+    snap.groups[0].ctx_estimated = true;
+    edc::TaskWidget estimated;
+    estimated.SetSnapshot(&snap);
+    Check(FrameText(Render(estimated)).find("ctx ~65.5k") != std::string::npos,
+          "an estimated context is drawn with ~");
+    snap.groups[0].ctx_estimated = false;
+    edc::TaskWidget anchored;
+    anchored.SetSnapshot(&snap);
+    Check(FrameText(Render(anchored)).find("ctx 65.5k") != std::string::npos,
+          "an anchored context is drawn plain");
+
     // A group that has spent nothing draws no footer at all (and no "0 tok" in
     // its place). The group is expanded on purpose: the missing line has to be
     // "nothing to say", not "folded away".

@@ -224,6 +224,13 @@ struct edc_config *edc_config_load(const char *edc_home)
         config->group_fold_msg_threshold = group_fold_msg_threshold->valueint;
     }
 
+    /* 0 is meaningful here (not configured / unknown), so only a missing or
+     * non-numeric key falls back to the default. */
+    cJSON *context_window = cJSON_GetObjectItem(conf, "context_window");
+    config->context_window = (context_window && cJSON_IsNumber(context_window))
+                                 ? context_window->valueint
+                                 : EDC_CONFIG_DEFAULT_CONTEXT_WINDOW;
+
     cJSON *tool_max_output_size = cJSON_GetObjectItem(conf, "tool_max_output_size");
     if (!tool_max_output_size || !cJSON_IsNumber(tool_max_output_size))
     {

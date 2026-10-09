@@ -17,7 +17,7 @@
  * the shape changes, or a legacy shape is finally retired, bump it and ship a
  * one-shot migration under tools/ (e.g. migrate_session_v3_to_v4.py) instead of
  * teaching the load path to patch old data up on every load. */
-#define EDC_STATE_SCHEMA_VERSION 5
+#define EDC_STATE_SCHEMA_VERSION 6
 
 /* ══════════════════════════════════════════════════════════════
  *  Internal helpers — dep type ↔ string
@@ -79,6 +79,9 @@ static cJSON *turn_to_json(struct edc_turn *turn)
     else
         cJSON_Delete(embedded);
 
+    /* 已进组记忆的消息条数 (L1 折叠切点): 请求与 history 都从这里之后开始。 */
+    cJSON_AddNumberToObject(tj, "folded_prefix", turn->folded_prefix);
+
     return tj;
 }
 
@@ -111,12 +114,17 @@ static cJSON *task_to_json(struct edc_task *task)
 
     /* ── sink / fold target ──
      * A fold task (sink = GROUP_MEMORY) is now an ordinary persisted task, so its
-     * output target and watermark must round-trip; otherwise the resumed fold
-     * would not know which group to write. */
+     * output target and cut must round-trip; otherwise the resumed fold would not
+     * know which group to write, nor where this round's cut was (P2a-4). */
     cJSON_AddStringToObject(tj, "sink", edc_task_sink_name(task->sink));
     if (task->sink_group && task->sink_group->group_id)
         cJSON_AddStringToObject(tj, "sink_group_id", task->sink_group->group_id);
-    cJSON_AddNumberToObject(tj, "fold_max_seq", (int)task->fold_max_seq);
+    if (task->fold_cut_task_id)
+    {
+        cJSON_AddStringToObject(tj, "fold_cut_task", task->fold_cut_task_id);
+        cJSON_AddNumberToObject(tj, "fold_cut_turn", (int)task->fold_cut_turn);
+        cJSON_AddNumberToObject(tj, "fold_cut_prefix", (int)task->fold_cut_prefix);
+    }
 
     /* ── prompt ── */
     if (task->prompt_name)
@@ -151,7 +159,6 @@ static cJSON *task_to_json(struct edc_task *task)
     if (task->output)
         cJSON_AddStringToObject(tj, "output", task->output);
     cJSON_AddNumberToObject(tj, "completion_seq", task->completion_seq);
-    cJSON_AddBoolToObject(tj, "turns_folded", task->turns_folded);
 
     /* ── token 统计 ──
      * 跨会话/进程中断保持: resume 后侧边栏的 per-task token 计数不归零。
@@ -161,6 +168,9 @@ static cJSON *task_to_json(struct edc_task *task)
     cJSON_AddNumberToObject(tj, "tokens_total", (double)task->tokens_total);
     cJSON_AddNumberToObject(tj, "tokens_cached", (double)task->tokens_cached);
     cJSON_AddNumberToObject(tj, "last_total_tokens", (double)task->last_total_tokens);
+    cJSON_AddNumberToObject(tj, "last_fold_epoch", (double)task->last_fold_epoch);
+    cJSON_AddNumberToObject(tj, "last_hist_len", (double)task->last_hist_len);
+    cJSON_AddNumberToObject(tj, "last_turn_len", (double)task->last_turn_len);
 
     /* ── redirect ── */
     if (task->redirect_stdout)
@@ -237,7 +247,7 @@ static cJSON *group_to_json(struct edc_task_group *group)
     cJSON_AddBoolToObject(gj, "is_orphaned", group->is_orphaned);
     if (group->memory)
         cJSON_AddStringToObject(gj, "memory", group->memory);
-    cJSON_AddNumberToObject(gj, "folded_through_completion_seq", (int)group->folded_through_completion_seq);
+    cJSON_AddNumberToObject(gj, "fold_epoch", (int)group->fold_epoch);
 
     /* member task ids */
     cJSON *members = cJSON_CreateArray();
@@ -357,6 +367,10 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
 static struct edc_turn *turn_from_json(cJSON *tj)
 {
     struct edc_turn *turn = edc_turn_new();
+
+    cJSON *folded = cJSON_GetObjectItem(tj, "folded_prefix");
+    if (folded && cJSON_IsNumber(folded))
+        turn->folded_prefix = (int)cJSON_GetNumberValue(folded);
 
     cJSON *embedded = cJSON_GetObjectItem(tj, "messages");
     if (embedded && cJSON_IsArray(embedded))
@@ -489,59 +503,13 @@ static void group_map_free(struct group_map_entry **map)
 
 static void deser_rebuild_group_history(struct edc_session *session, struct edc_scheduler *sched)
 {
+    /* One canonical rebuild (edc_task_group_rebuild_history): system prompt +
+     * every member's committed turns in completion_seq order, minus each turn's
+     * folded_prefix. The fold landing calls the same function, so a reloaded
+     * history is byte-for-byte what the running process had. */
     struct edc_task_group *g;
     DL_FOREACH(session->groups, g)
-    {
-        if (session->config)
-        {
-            sds prompt = edc_context_build_system_prompt(session->config, session->workdir);
-            cJSON *sys = cJSON_CreateObject();
-            cJSON_AddStringToObject(sys, "role", "system");
-            cJSON_AddStringToObject(sys, "content", prompt);
-            edc_task_group_history_add_owned(g, sys);
-            sdsfree(prompt);
-        }
-
-        /* 按 completion_seq 升序重建 history，与运行时 (STOP/完成顺序) 保持一致。
-         * 成员链表是创建顺序，若任务完成顺序与创建顺序不同，直接遍历会让
-         * 折叠水位与切片错位，进而切断 assistant(tool_calls)+tool 序列。 */
-        size_t n = 0, cap = 0;
-        struct edc_task **arr = NULL;
-        struct edc_task *t;
-        LL_FOREACH2(g->members, t, group_next)
-        {
-            if (n == cap)
-            {
-                cap = cap ? cap * 2 : 8;
-                arr = realloc(arr, cap * sizeof(*arr));
-            }
-            arr[n++] = t;
-        }
-
-        for (size_t i = 1; i < n; i++)
-        {
-            struct edc_task *key = arr[i];
-            size_t j = i;
-            while (j > 0 && arr[j - 1]->completion_seq > key->completion_seq)
-            {
-                arr[j] = arr[j - 1];
-                j--;
-            }
-            arr[j] = key;
-        }
-
-        for (size_t i = 0; i < n; i++)
-        {
-            struct edc_task *task = arr[i];
-            for (size_t qi = task->turns.head; qi < task->turns.tail; qi++)
-            {
-                struct edc_turn *turn = task->turns.data[qi];
-                for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
-                    edc_task_group_history_add_ref(g, turn->messages.data[mj]);
-            }
-        }
-        free(arr);
-    }
+        edc_task_group_rebuild_history(g);
 
     if (sched)
     {
@@ -635,7 +603,7 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
          *
          * 例外: 折叠任务 (sink = GROUP_MEMORY)。它现在也落盘, 好让被重启打断的
          * 那一轮能续跑 —— 在途请求没了, 所以置回 READY, 由消息末尾的扫描重新派发
-         * (它保留 active_turn / sink_group / fold_max_seq)。 */
+         * (它保留 active_turn / sink_group / 切点三元组)。 */
         task->step = edc_task_classify_step(cJSON_GetStringValue(cJSON_GetObjectItem(tj, "step")));
         task->life = edc_task_classify_life(cJSON_GetStringValue(cJSON_GetObjectItem(tj, "life")));
         {
@@ -664,10 +632,12 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->output = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "completion_seq")) && cJSON_IsNumber(v))
             task->completion_seq = (uint32_t)cJSON_GetNumberValue(v);
-        if ((v = cJSON_GetObjectItem(tj, "fold_max_seq")) && cJSON_IsNumber(v))
-            task->fold_max_seq = (uint32_t)cJSON_GetNumberValue(v);
-        if ((v = cJSON_GetObjectItem(tj, "turns_folded")))
-            task->turns_folded = cJSON_IsTrue(v);
+        if ((v = cJSON_GetObjectItem(tj, "fold_cut_task")) && cJSON_IsString(v))
+            task->fold_cut_task_id = strdup(cJSON_GetStringValue(v));
+        if ((v = cJSON_GetObjectItem(tj, "fold_cut_turn")) && cJSON_IsNumber(v))
+            task->fold_cut_turn = (uint32_t)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "fold_cut_prefix")) && cJSON_IsNumber(v))
+            task->fold_cut_prefix = (uint32_t)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "tokens_prompt")) && cJSON_IsNumber(v))
             task->tokens_prompt = (long long)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "tokens_completion")) && cJSON_IsNumber(v))
@@ -678,6 +648,12 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->tokens_cached = (long long)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "last_total_tokens")) && cJSON_IsNumber(v))
             task->last_total_tokens = (long long)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "last_fold_epoch")) && cJSON_IsNumber(v))
+            task->last_fold_epoch = (uint32_t)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "last_hist_len")) && cJSON_IsNumber(v))
+            task->last_hist_len = (int)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "last_turn_len")) && cJSON_IsNumber(v))
+            task->last_turn_len = (int)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "redirect_stdout")) && cJSON_IsString(v))
             task->redirect_stdout = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "redirect_stderr")) && cJSON_IsString(v))
@@ -785,9 +761,11 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
         {
             /* v3: 折叠水位 (completion_seq)。旧存档只有 fold_cursor(下标),
              * 由 deser_rebuild_group_history 依 turns_folded 推导, 这里不读。 */
-            cJSON *fw = cJSON_GetObjectItem(gj, "folded_through_completion_seq");
-            if (fw && cJSON_IsNumber(fw))
-                group->folded_through_completion_seq = (uint32_t)cJSON_GetNumberValue(fw);
+            /* 缺键 (老文件) => 0: 与该组所有 task 读回来的 last_fold_epoch 一致,
+             * 而缺位置信息 (last_hist_len==0) 会让锚失效 —— 都不会误信旧锚。 */
+            cJSON *fe = cJSON_GetObjectItem(gj, "fold_epoch");
+            if (fe && cJSON_IsNumber(fe))
+                group->fold_epoch = (uint32_t)cJSON_GetNumberValue(fe);
         }
 
         cJSON *members = cJSON_GetObjectItem(gj, "member_task_ids");
@@ -993,6 +971,11 @@ static void deser_global_ptrs(cJSON *sj, struct edc_session *session,
     const char *fg_id = cJSON_GetStringValue(cJSON_GetObjectItem(sj, "foreground_group_id"));
     if (fg_id)
         session->foreground_group = group_map_get(group_map, fg_id);
+}
+
+int edc_state_schema_version(void)
+{
+    return EDC_STATE_SCHEMA_VERSION;
 }
 
 int edc_state_json_version(cJSON *json)

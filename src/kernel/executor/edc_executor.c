@@ -139,13 +139,7 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
              * task: its turn is a fold prompt, and mixing it in would feed the
              * next fold the previous prompt and answer. */
             if (task->sink != EDC_SINK_GROUP_MEMORY)
-            {
-                for (size_t qi = task->active_turn->messages.head; qi < task->active_turn->messages.tail; qi++)
-                {
-                    cJSON *item = task->active_turn->messages.data[qi];
-                    edc_task_group_history_add_ref(task->group, item);
-                }
-            }
+                edc_task_group_history_add_turn(task->group, task->active_turn);
         }
         edc_task_commit_active_turn(task);
         if (e->content)

@@ -141,6 +141,28 @@ cc_test(
 )
 
 cc_test(
+    name = "test_group_ctx",
+    srcs = ["test_group_ctx.c"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_context_estimate",
+    srcs = ["test_context_estimate.c"],
+    deps = [
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_edc_task",
     srcs = ["test_edc_task.c"],
     deps = [
@@ -393,6 +415,22 @@ cc_test(
 )
 
 cc_test(
+    name = "test_llm_request",
+    srcs = ["test_llm_request.c"],
+    deps = [
+        "//src/actor:actor",
+        "//src/actor:actors",
+        "//src/actor:llm_request",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_toolbox_request",
     srcs = ["test_toolbox_request.c"],
     deps = [
@@ -526,6 +564,19 @@ cc_test(
     srcs = ["test_bundled_workspace.c"],
     deps = [
         "//src/common:common",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+# context_window 的配置面（默认 0 = 未配置/未知）：三个生产者都跑真的
+# —— edc_init_env 建/补 config.json + edc_config_load 读回。
+cc_test(
+    name = "test_config_window",
+    srcs = ["test_config_window.c"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
     ],
     linkopts = LINK_OPTS,
 )

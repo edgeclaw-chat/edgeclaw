@@ -4,8 +4,10 @@
 #include "edc_skills.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
+#include "edc_token_estimate.h"
 #include "log.h"
 #include "sds.h"
+#include "utlist_fix.h"
 
 const char *BOOTSTRAP_FILES[] = {"AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"};
 
@@ -441,4 +443,110 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
     }
 
     return appended;
+}
+
+/* ── 组上下文规模: pi 的 "anchor + 尾部估算" ──────────────────
+ *
+ * 为什么要锚: 预估器是启发式, 用它估整段上下文会累积误差 (中文尤甚)。provider
+ * 对某一次请求报的 usage 是真值, 而"锚之后追加的东西"才是未知量 —— 把估算的
+ * 误差钉在那一小段上。
+ *
+ * 锚什么时候不可信 (两条都退回"从零估一遍"):
+ *   1. 它早于该组最近一次折叠: 折叠把前缀换成了摘要, 锚记的是换之前那个大前缀;
+ *   2. 它没有位置信息 (last_hist_len == 0): 老存档读回来的锚, 或还没有过应答。
+ *
+ * 已知保守处 (都是"少算", 不虚报): 略去 dep 注入与队尾 todo reminder 这类常量级
+ * 追加; 在跑的成员只算它自己 turn 的增量。 */
+
+/* 一个 turn 从 from 起的估算 (from <= head 时从头算)。 */
+static long long est_turn_from(struct edc_turn *turn, int from)
+{
+    if (!turn)
+        return 0;
+    size_t begin = (from > 0) ? (size_t)from : turn->messages.head;
+    if (begin < turn->messages.head)
+        begin = turn->messages.head;
+    long long total = 0;
+    for (size_t i = begin; i < turn->messages.tail; i++)
+        total += edc_token_estimate_msg(turn->messages.data[i]);
+    return total;
+}
+
+extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool *out_estimated)
+{
+    if (out_estimated)
+        *out_estimated = false;
+    if (!group)
+        return 0;
+
+    long long best = 0;
+    bool best_estimated = false;
+
+    struct edc_task *t;
+    /* 1) 锚 + 尾部 */
+    LL_FOREACH2(group->members, t, group_next)
+    {
+        if (t->sink == EDC_SINK_GROUP_MEMORY)
+            continue; /* 折叠任务不是会话内容 (与折叠账同一口径) */
+        if (t->last_total_tokens <= 0 || t->last_hist_len <= 0)
+            continue; /* 没有锚, 或没有位置 */
+        if (t->last_fold_epoch != group->fold_epoch)
+            continue; /* 锚记的是折叠前那个前缀 */
+
+        long long tail = 0;
+        if (group->history)
+        {
+            size_t n = (size_t)cJSON_GetArraySize(group->history);
+            size_t from = (size_t)t->last_hist_len;
+            if (from < n)
+                tail += edc_token_estimate_msgs(group->history, from, n);
+        }
+        tail += est_turn_from(t->active_turn, t->last_turn_len);
+
+        long long candidate = t->last_total_tokens + tail;
+        if (candidate > best)
+        {
+            best = candidate;
+            best_estimated = (tail > 0);
+        }
+    }
+    if (best > 0)
+    {
+        if (out_estimated)
+            *out_estimated = best_estimated;
+        return best;
+    }
+
+    /* 2) 没有可用锚: 估一遍该组下次请求会带的东西 */
+    long long est = 0;
+    if (group->memory)
+        est += edc_token_estimate_text(group->memory);
+    if (group->history)
+    {
+        size_t n = (size_t)cJSON_GetArraySize(group->history);
+        if (n > 0)
+            est += edc_token_estimate_msg(cJSON_GetArrayItem(group->history, 0)); /* system prompt */
+        /* The history only holds what is still sent (folded messages are pruned
+         * at landing), so the tail starts right after the system prompt. */
+        size_t from = 1;
+        if (from < n)
+            est += edc_token_estimate_msgs(group->history, from, n);
+    }
+    /* 在跑的成员带着自己的 turn; 新起一个任务则不带 —— 取最宽的那个, 与
+     * "组 = 该组最宽的那个对话" 的口径一致。 */
+    long long widest_turn = 0;
+    LL_FOREACH2(group->members, t, group_next)
+    {
+        if (t->sink == EDC_SINK_GROUP_MEMORY)
+            continue;
+        int turn_from = (t->active_turn && t->active_turn->folded_prefix > 0) ? t->active_turn->folded_prefix : 0;
+        long long turn_est = est_turn_from(t->active_turn, turn_from);
+        if (turn_est > widest_turn)
+            widest_turn = turn_est;
+    }
+    est += widest_turn;
+
+    if (out_estimated && est > 0)
+        *out_estimated = true;
+    return est;
 }

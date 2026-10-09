@@ -468,6 +468,7 @@ void edc_task_free(struct edc_task *task)
         sdsfree(task->prompt_name);
     if (task->output)
         sdsfree(task->output);
+    free(task->fold_cut_task_id);
 
     if (task->redirect_stdout)
         sdsfree(task->redirect_stdout);
@@ -606,7 +607,16 @@ void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long lon
      * it is the group's context width in the sidebar. The all-zero guard above
      * keeps a provider that reports no usage from erasing it. */
     if (total_tokens > 0)
+    {
         task->last_total_tokens = total_tokens;
+        /* The anchor's position, recorded before the response is folded into the
+         * turn (exec_done appends the assistant message after this call), so it
+         * describes the request as it was sent. */
+        task->last_fold_epoch = task->group ? task->group->fold_epoch : 0;
+        task->last_hist_len =
+            (task->group && task->group->history) ? cJSON_GetArraySize(task->group->history) : 0;
+        task->last_turn_len = task->active_turn ? (int)task->active_turn->messages.tail : 0;
+    }
 }
 
 /* ── 依赖 (IPC) ────────────────────────────────────────────── */
@@ -1213,7 +1223,8 @@ void edc_task_set_completion_seq(struct edc_task *task, uint32_t seq)
  * memory".) */
 bool edc_task_is_foldable(struct edc_task *task)
 {
-    return task && task->sink != EDC_SINK_GROUP_MEMORY && edc_task_is_completed(task) && !task->turns_folded;
+    return task && task->sink != EDC_SINK_GROUP_MEMORY && edc_task_is_completed(task) &&
+           edc_task_unfolded_msg_count(task) > 0;
 }
 
 size_t edc_task_turn_msg_count(struct edc_task *task)
@@ -1228,6 +1239,38 @@ size_t edc_task_turn_msg_count(struct edc_task *task)
         n += edc_queue_length(&turn->messages);
     }
     return n;
+}
+
+size_t edc_task_unfolded_msg_count(struct edc_task *task)
+{
+    if (!task)
+        return 0;
+
+    size_t n = 0;
+    for (size_t qi = task->turns.head; qi < task->turns.tail; qi++)
+    {
+        struct edc_turn *turn = task->turns.data[qi];
+        size_t len = edc_queue_length(&turn->messages);
+        size_t folded = (turn->folded_prefix > 0) ? (size_t)turn->folded_prefix : 0;
+        if (folded > len)
+            folded = len;
+        n += len - folded;
+    }
+    return n;
+}
+
+bool edc_task_has_folded_turns(struct edc_task *task)
+{
+    if (!task)
+        return false;
+
+    for (size_t qi = task->turns.head; qi < task->turns.tail; qi++)
+    {
+        struct edc_turn *turn = task->turns.data[qi];
+        if (turn->folded_prefix > 0)
+            return true;
+    }
+    return false;
 }
 
 /* ── Prompt ────────────────────────────────────────────────── */

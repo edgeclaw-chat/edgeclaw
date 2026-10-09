@@ -243,7 +243,7 @@ static void test_spawn_system_task(void)
 
 static void test_system_task_persisted(void)
 {
-    TEST("落盘: 系统组 + 折叠任务进 session.json; 读回带 sink/sink_group/fold_max_seq 且置回就绪");
+    TEST("落盘: 系统组 + 折叠任务进 session.json; 读回带 sink/sink_group/切点 且置回就绪");
 
     struct edc_config *cfg = make_config();
     struct edc_session *s = edc_session_new(cfg, "sess-p", "P");
@@ -260,7 +260,9 @@ static void test_system_task_persisted(void)
     edc_scheduler_attach_input(sch, fold, "summarize the group");
     edc_task_await_exec(fold);
     fold->sink_group = ug;
-    fold->fold_max_seq = 42;
+    fold->fold_cut_task_id = strdup("cut-target");
+    fold->fold_cut_turn = 3;
+    fold->fold_cut_prefix = 42;
 
     cJSON *j = edc_state_serialize(s, sch);
     CHECK(j != NULL, "可序列化");
@@ -280,7 +282,9 @@ static void test_system_task_persisted(void)
     if (fold2)
     {
         CHECK(fold2->sink == EDC_SINK_GROUP_MEMORY, "sink 读回");
-        CHECK(fold2->fold_max_seq == 42, "fold_max_seq 读回");
+        CHECK(fold2->fold_cut_task_id && strcmp(fold2->fold_cut_task_id, "cut-target") == 0 &&
+              fold2->fold_cut_turn == 3 && fold2->fold_cut_prefix == 42,
+          "切点三元组读回 (成员/第几个 turn/折到第几条)");
         CHECK(fold2->sink_group != NULL && strcmp(fold2->sink_group->group_id, ug->group_id) == 0,
               "sink_group 解析回用户组");
         CHECK(edc_task_is_ready(fold2) && edc_task_is_alive(fold2),

@@ -2,6 +2,7 @@
 #include "edc_cmd_parse.h"
 #include "edc_compat.h"
 #include "edc_config.h"
+#include "edc_context.h"
 #include "edc_file_utils.h"
 #include "edc_group_fold.h"
 #include "edc_session.h"
@@ -477,6 +478,29 @@ static bool sched_task_runnable(struct edc_scheduler *sched, struct edc_task *ta
 }
 
 static void sched_drive_task(struct edc_scheduler *sched, struct edc_task *task);
+static void sched_save_session(struct edc_scheduler *sched, struct edc_session *s);
+
+/* 折叠触发的挂载点 (b): 一个任务**即将发请求**之前问一次"它所在的组该折了吗", 该折
+ * 就先起折 —— `edc_group_fold_start` 给组内每个非终态成员挂一条 SEQUENCE dep (包括
+ * 这个任务自己), 于是下面的谓词立刻把它停在 AWAIT_DEPS。屏障本身没有新机制 (B1):
+ * 在飞的成员由 `tool_done` 在下一个请求边界 park, 折叠任务照旧由消息边界扫描派发。
+ * 挂载点 (a) 在 `edc_scheduler_apply_advance` 尾部 (每次推进之后都查)。 */
+static void sched_fold_before_request(struct edc_scheduler *sched, struct edc_task *task)
+{
+    if (!sched || !sched->sessions || !task || !task->group || !task->active_turn)
+        return;
+    /* 只有"即将发请求"的任务触发 (sink=GROUP_MEMORY 的折叠任务自己不折)。 */
+    if (!edc_task_is_ready(task) || task->sink == EDC_SINK_GROUP_MEMORY)
+        return;
+
+    struct edc_session *session = task->group->session;
+    if (!session || edc_scheduler_has_pending_system_task(session) || edc_group_fold_holds_group(task->group))
+        return;
+    if (!edc_group_fold_due(task->group, sched->config))
+        return;
+    if (edc_group_fold_start(sched, session, task->group))
+        sched_save_session(sched, session); /* 折叠任务与它的 dep 边必须立刻可持久 */
+}
 
 /* 扫描的回调: 每个任务问一次"可跑吗"; 驱动成功 = 这一轮有进展。 */
 struct sched_sweep_ctx
@@ -488,6 +512,8 @@ struct sched_sweep_ctx
 static void sched_schedule_visit(void *ctx, struct edc_task *task)
 {
     struct sched_sweep_ctx *sweep = ctx;
+    /* 请求前先看折叠: 起折会让下面这个谓词为假 (新挂的 dep), 任务停在 AWAIT_DEPS。 */
+    sched_fold_before_request(sweep->sched, task);
     if (!sched_task_runnable(sweep->sched, task))
         return;
     sched_drive_task(sweep->sched, task);
@@ -758,6 +784,10 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
         }
     }
 
+    /* 请求前先看折叠 (挂载点 (b)): 起折给本任务挂上 dep, 它停在 AWAIT_DEPS,
+     * 折叠落地后由扫描重新驱动 —— 那次请求就会带上压过的上下文。 */
+    sched_fold_before_request(sched, task);
+
     /* A fold in flight for this group parks the task instead of driving it: leave
      * it READY/ALIVE and let the message-end scan start it once the fold lands. */
     if (edc_group_fold_holds_group(task->group))
@@ -984,9 +1014,8 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
         else if (sched->send_reply)
             sched->send_reply(sched, task, res->notice, EDC_CHANNEL_MESSAGE_RESP_TYPE, req_id);
 
-        /* The settlement subscribers: content-axis fold + persistence. */
-        if (sched->sessions)
-            edc_group_fold_try(sched, sched->sessions, sched->config);
+        /* The settlement subscribers: persistence. The fold check itself lives at the
+         * tail of edc_scheduler_apply_advance, so every advance asks once (see (a)). */
         sched_save_session(sched, own);
     }
     else if (edc_task_is_cancelled(task))
@@ -1022,6 +1051,17 @@ void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *t
 
     /* ④ 清账: 递归 —— 清账本身还会连带改动别的 task。 */
     edc_task_drain_moves(task, sched_settle_cascaded, sched);
+
+    /* ⑤ 折叠检查 (挂载点 (a)): 每次推进之后都问一次, 不只在"任务完成"那一支 ——
+     * 一次工具应答推进也能把组的上下文顶过窗口, 而那时任务还没完成。起折给组内每个
+     * 非终态成员挂 SEQUENCE dep, 在飞的成员到下一个请求边界 park (B1, 零新机制)。
+     * 起折的 session 可能不是本任务那个 (后台会话也折), 所以用 try 回传的那个。 */
+    if (sched->sessions)
+    {
+        struct edc_session *folded = NULL;
+        if (edc_group_fold_try(sched, sched->sessions, sched->config, &folded) && folded)
+            sched_save_session(sched, folded);
+    }
 }
 
 /* Host-initiated transitions go through the same bookkeeping. */
@@ -1196,7 +1236,6 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
         long long g_tokens_prompt = 0;
         long long g_tokens_completion = 0;
         long long g_tokens_cached = 0;
-        long long g_ctx_tokens = 0;
         {
             struct edc_task *mt;
             LL_FOREACH2(g->members, mt, group_next)
@@ -1207,19 +1246,22 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
                 g_tokens_prompt += mt->tokens_prompt;
                 g_tokens_completion += mt->tokens_completion;
                 g_tokens_cached += mt->tokens_cached;
-                /* The group's *current* context: a group's context only grows along
-                 * its chain (every member inherits the committed history), so the
-                 * biggest member conversation is also the latest one. */
-                if (mt->last_total_tokens > g_ctx_tokens)
-                    g_ctx_tokens = mt->last_total_tokens;
             }
         }
+        /* The group's *current* context: the widest member conversation, as the
+         * last reply's real usage plus an estimate of what was appended after it
+         * (or a from-scratch estimate while no reply is trustworthy). Estimated
+         * travels with the number -- the sidebar marks it, it never passes for a
+         * provider measurement. */
+        bool g_ctx_estimated = false;
+        long long g_ctx_tokens = edc_context_group_ctx_tokens(g, &g_ctx_estimated);
         cJSON_AddNumberToObject(gj, "msg_count", (double)g_msg_count);
         cJSON_AddNumberToObject(gj, "tokens_total", (double)g_tokens_total);
         cJSON_AddNumberToObject(gj, "tokens_prompt", (double)g_tokens_prompt);
         cJSON_AddNumberToObject(gj, "tokens_completion", (double)g_tokens_completion);
         cJSON_AddNumberToObject(gj, "tokens_cached", (double)g_tokens_cached);
         cJSON_AddNumberToObject(gj, "ctx_tokens", (double)g_ctx_tokens);
+        cJSON_AddBoolToObject(gj, "ctx_estimated", g_ctx_estimated);
 
         cJSON *tasks = cJSON_AddArrayToObject(gj, "tasks");
         struct edc_task *t;
