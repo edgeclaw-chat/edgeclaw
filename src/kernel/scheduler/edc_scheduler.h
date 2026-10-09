@@ -181,6 +181,13 @@ extern struct edc_task *edc_scheduler_spawn_system_task(struct edc_scheduler *sc
  *  is already in flight. */
 extern bool edc_scheduler_has_pending_system_task(struct edc_session *session);
 
+/** 手动折叠 (决定 8): `/group fold [id] [focus]` 走这里 —— **跳过 due 判据**
+ *  (手动就是要立刻折), 但屏障一条不松 (在飞的不打断、一次一个 session)。
+ *  起折后立刻落盘, 与自动路径同一条"折叠任务与 dep 边必须马上可持久"的规矩。
+ *  返回起好的折叠任务; NULL = 没起来 (没有可折的东西 / 已有折叠在飞)。 */
+extern struct edc_task *edc_scheduler_fold_group_now(struct edc_scheduler *sched, struct edc_session *session,
+                                                     struct edc_task_group *group, const char *focus);
+
 /** Attach input (a turn) to a task. Does not dispatch -- whether it runs is the
  *  scheduler's decision (see edc_scheduler_schedule). */
 extern bool edc_scheduler_attach_input(struct edc_scheduler *sched, struct edc_task *task, const char *input);

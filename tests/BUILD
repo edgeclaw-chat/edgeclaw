@@ -246,6 +246,15 @@ cc_test(
 )
 
 cc_test(
+    name = "test_commands_group_fold",
+    srcs = ["test_commands_group_fold.c"],
+    deps = [
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_state_serializer",
     srcs = ["test_state_serializer.c"],
     deps = [

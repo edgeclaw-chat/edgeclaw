@@ -498,8 +498,17 @@ static void sched_fold_before_request(struct edc_scheduler *sched, struct edc_ta
         return;
     if (!edc_group_fold_due(task->group, sched->config))
         return;
-    if (edc_group_fold_start(sched, session, task->group))
+    if (edc_group_fold_start(sched, session, task->group, NULL))
         sched_save_session(sched, session); /* 折叠任务与它的 dep 边必须立刻可持久 */
+}
+
+struct edc_task *edc_scheduler_fold_group_now(struct edc_scheduler *sched, struct edc_session *session,
+                                              struct edc_task_group *group, const char *focus)
+{
+    struct edc_task *fold = edc_group_fold_start(sched, session, group, focus);
+    if (fold)
+        sched_save_session(sched, session); /* 与自动路径同一条: 立刻可持久 */
+    return fold;
 }
 
 /* 扫描的回调: 每个任务问一次"可跑吗"; 驱动成功 = 这一轮有进展。 */

@@ -150,6 +150,11 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
 
     cJSON_AddStringToObject(body, "model", state->api_conf.model);
 
+    /* Only a fold's one-shot summary asks for a cap (it has to fit in the fold's
+     * reserve); a normal reply is never capped. */
+    if (req->max_tokens > 0)
+        cJSON_AddNumberToObject(body, "max_tokens", req->max_tokens);
+
     cJSON *messages = cJSON_AddArrayToObject(body, "messages");
     for (int i = 0; i < cJSON_GetArraySize(req->history); ++i)
     {

@@ -27,6 +27,9 @@ struct edc_llm_actor_req
     cJSON *tail_system; /* owned by req: role=system 消息, send_req 时追加为
                            messages 绝对队尾 (在 turn 之后); 用于运行时重新
                            计算的最新 todo reminder 等。NULL = 不追加 */
+    int max_tokens;     /* > 0 = 请求体带 "max_tokens" (只有折叠的摘要调用用得上:
+                           摘要必须能在 reserve 里装下, 见 EDC_FOLD_SUMMARY_MAX_TOKENS)。
+                           普通对话回复不设上限。0 = 不发这个字段 */
 };
 
 

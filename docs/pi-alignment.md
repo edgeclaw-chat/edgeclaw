@@ -206,7 +206,9 @@ pi 的结构天然没有这个问题：**触发发生在接近窗口时，所以
 | 期 | 内容 | 规模（估） | 触点 |
 |---|---|---|---|
 | **P1** | ✅ **已完成（2026-10-09，未提交）** 估算器（CJK 感知）+ anchor 失效（`fold_epoch`）+ 组口径三选一 + 快照 `ctx_tokens`/`ctx_estimated` + footer `~` | 中（context/ + scheduler + serializer + tui 注释 + 测试） | `edc_context.*`、`edc_task.*`、`edc_scheduler.c`、`edc_state_serializer.c` |
-| **P2** | token 触发（+ 窗口配置）、尾部预算切点、结构化迭代摘要、摘要卫生、折叠请求 `max_tokens`、手动触发（可选） | 中大 | `edc_group_fold.*`、`edc_config.*`、`edc_llm_actor.*`（可选字段）、`edc_llm_request.c` |
+| **P2a** | ✅ **已完成（2026-10-09，commit `d83f4ba`）** 窗口配置 + 水位重构（消息级 `folded_prefix`，schema v6 + 迁移脚本）+ 触发（写法乙，两个挂载点）+ 切点（尾部 token 预算 / 在飞 turn 进语料 / 切点合法性） | 中大 | `edc_group_fold.*`、`edc_config.*`、`edc_state_serializer.c`、`edc_context.*` |
+| **P2b** | ✅ **已完成（2026-10-09，未 push）** 摘要 prompt 结构化（6 段 + `<previous-summary>` 迭代 + focus）、折叠请求 `max_tokens` 且截断不当 checkpoint、手动 `/group fold [id] [focus]`、split-turn 段 | 中 | `edc_group_fold.*`、`edc_llm_actor.*`、`edc_llm_request.c`、`edc_executor.*`、`edc_scheduler.*`、`edc_commands.c` |
+| **P2b 卫生** | ⬜ 记忆本身无上限（记忆单独超 `window - reserve` 会"每条新消息折一次"）；pi 的"响应含 toolCall ⇒ 摘要失败"未做 | 小 | `edc_group_fold.c`、`edc_executor.c` |
 | **P3** | 溢出分类 + 自动加紧折叠 + 重试一次 | 中 | 执行器的错误路径、`edc_group_fold.*`、配置 |
 
 **流程**（按仓里规矩）：一期一 commit；每期先给判据再动代码；`bazel clean` 后 `bazel build //...` + 全量 `bazel test //src/tui:all //tests:all --nocache_test_results`；变异自检**必须打到生产者**（`test_session_snapshot` 那种真生产者用例，不能只喂手写 JSON）；A/B 五夹具（`smoke`/`switch`/`bg`/`cancel`/`fold`）比对，其中 **`fold` 夹具是这套改动的主战场**。
@@ -430,6 +432,24 @@ v5 的 `group.folded_through_completion_seq` + `task.turns_folded` → 每个 tu
 
 - **P2a = 骨架**：配置键 + 水位表示（`folded_prefix` / 剪枝 / 提交交接 / v6 迁移）+ 触发（两挂载点、OR）+ 切点（尾部预算）。
 - **P2b = 摘要**：6 段 + 迭代 + 卫生 + `max_tokens` + `/group fold`。
+  - **已落地**：`kFoldSystemPrompt`（pi 口径：context summarization assistant + 禁止续写/答问/工具）、
+    首次 `kInitialSummaryInstruction`（pi §8 六段 + "保留路径/函数名/错误原文"）与迭代
+    `kUpdateSummaryInstruction`（增量合并、In Progress→Done、"输出完整摘要不是 diff"）；
+    拼法 `<group-transcript>` + `[<previous-summary>]` + 指令 + `[Additional focus: …]`；
+    落地仍是**替换** ⇒ 迭代语义天然成立。
+  - `req.max_tokens`（0 = 不发）**只给 `sink == GROUP_MEMORY` 装**（`EDC_FOLD_SUMMARY_MAX_TOKENS`
+    = min(0.8 x reserve, …) = 13107）⇒ 全仓唯一发 `max_tokens` 的请求；响应侧新增
+    `EDC_REASON_LENGTH`，折叠任务的截断提示直说"discarded, the group memory is unchanged"。
+  - 手动 `/group fold [id] [focus]`（`edc_scheduler_fold_group_now`）**越过 due 判据、屏障不松**；
+    无参 = 前台组，首个 token = 组 id（跨 session），其余 = focus。
+  - split-turn 段（pi §5）：`---` + `**Turn Context (split turn):**` + Original Request / Early
+    Progress / Context for Suffix；判定 = 切点落在 turn 内部**或**语料尾部是还在飞的 turn。
+    **与 pi 的差别**：pi 为 turn 前缀发第二次调用（专用 prompt、0.5 x reserve），我们单次调用共用
+    0.8 x reserve 上限。
+  - **验证**：`bazel clean` → 全量 **62/62**；12 条变异全红（迭代/六段/focus/previous-summary/
+    装上限/写字段/length 映射/忽略 id/手动也判 due/丢 focus/split 段两个方向）；A/B `smoke`/`cancel`
+    `compare: 一致`，`fold` 的差异**逐条取证**（请求体只多 `body.max_tokens=13107` + 两条消息文本；
+    `session.json` 5 处时钟 + 1 处折叠 prompt 变长；日志新增一条 `split turn at the cut`）。
 
 ## 7.9 待点头（4 条）
 

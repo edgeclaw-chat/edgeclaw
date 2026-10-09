@@ -45,7 +45,8 @@ typedef enum
 {
     EDC_REASON_STOP = 0,   /* finished normally */
     EDC_REASON_TOOL_CALL,  /* wants to call tools */
-    EDC_REASON_OTHER,      /* length / sensitive / unknown */
+    EDC_REASON_OTHER,      /* sensitive / network / context_exceeded / unknown */
+    EDC_REASON_LENGTH,     /* the provider cut the answer at max_tokens */
 } edc_reason;
 
 /* Normalized tool call for ledger registration. All fields are borrowed and

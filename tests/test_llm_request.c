@@ -14,6 +14,7 @@
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_llm_actor.h"
+#include "edc_group_fold.h"
 #include "edc_llm_request.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
@@ -255,12 +256,57 @@ static void test_turn_begin_zero_without_prefix(void)
     harness_down(&h);
 }
 
+/* ══════════════════════════════════════════════════════════════
+ *  Case 3: 摘要调用的 max_tokens (P2b-2)
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_summary_request_is_capped(void)
+{
+    TEST("max_tokens: 折叠的摘要请求带上限, 普通回复一个字段都不多发");
+
+    struct harness h;
+    harness_up(&h);
+    struct edc_task *leader = NULL;
+    struct edc_task_group *g = make_group(&h, &leader, "sess-req");
+    (void)g;
+
+    /* 普通任务: 不带 max_tokens (回复从不封顶)。 */
+    attach_turn(&h, leader, "current input");
+    edc_llm_request_send(h.sched, leader, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 1 && g_req != NULL, "普通请求发出去了");
+    if (g_req)
+        CHECK(g_req->max_tokens == 0, "普通任务: max_tokens = 0 (请求体里没有这个字段)");
+    if (g_req)
+    {
+        edc_llm_actor_req_free(g_req);
+        g_req = NULL;
+    }
+
+    /* 折叠任务 (sink = GROUP_MEMORY): 摘要必须装得进 reserve。 */
+    struct edc_task *fold = edc_scheduler_spawn_system_task(h.sched, h.sess, "fold group memory");
+    CHECK(fold != NULL && fold->sink == EDC_SINK_GROUP_MEMORY, "拿到一个折叠任务");
+    edc_scheduler_attach_input(h.sched, fold, "summarize this");
+    edc_llm_request_send(h.sched, fold, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 2 && g_req != NULL, "摘要请求发出去了");
+    if (g_req)
+    {
+        CHECK(g_req->max_tokens == EDC_FOLD_SUMMARY_MAX_TOKENS, "摘要请求带 max_tokens = 0.8 x reserve");
+        CHECK(g_req->max_tokens == 13107, "而且就是 13107 (跟 pi: min(0.8 x reserve, 模型上限))");
+        CHECK(g_req->tools == NULL, "摘要调用依旧不带工具定义 (对照, 不许退步)");
+    }
+
+    harness_down(&h);
+}
+
 /* ══════════════════════════════════════════════════════════════ */
 
 int main(void)
 {
     test_turn_begin_honours_folded_prefix();
     test_turn_begin_zero_without_prefix();
+    test_summary_request_is_capped();
 
     printf("\n  %d passed, %d failed\n\n", test_passed, test_failed);
     return test_failed ? 1 : 0;

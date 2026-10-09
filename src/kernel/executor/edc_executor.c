@@ -153,12 +153,16 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
         return (struct edc_advance_result){.outcome = EDC_STEP_DONE, .settled = true, .notice = e->content};
     }
 
-    /* Unknown finish reason: ERROR, with the message sent by the host. */
+    /* Anything else is ERROR. A truncated summary is the one case worth naming:
+     * pi §3 refuses a checkpoint written by a `length` response, because half a
+     * summary would silently replace a whole one. The task fails here, so the
+     * fold never reaches deliver_memory and the old memory survives. */
     task->current_request_id = NULL;
     edc_task_mark_failed(task);
-    return (struct edc_advance_result){.outcome = EDC_STEP_ERROR,
-                                       .settled = true,
-                                       .notice = "Internal error: unknown finish reason"};
+    const char *notice = "Internal error: unknown finish reason";
+    if (e->reason == EDC_REASON_LENGTH && task->sink == EDC_SINK_GROUP_MEMORY)
+        notice = "Summary was truncated (max_tokens) — discarded, the group memory is unchanged";
+    return (struct edc_advance_result){.outcome = EDC_STEP_ERROR, .settled = true, .notice = notice};
 }
 
 /* Budget exhausted: synthesize a STOP event so the full completion path (turn
@@ -310,6 +314,7 @@ struct edc_advance_result edc_executor_advance_llm_resp(struct edc_executor *ex,
     ev.as.exec.error_message = r->error ? r->error->message : NULL;
     ev.as.exec.reason = (r->reason == BC_LLM_FINISH_REASON_STOP)        ? EDC_REASON_STOP
                         : (r->reason == BC_LLM_FINISH_REASON_TOOL_CALL) ? EDC_REASON_TOOL_CALL
+                        : (r->reason == BC_LLM_FINISH_REASON_LENGTH)    ? EDC_REASON_LENGTH
                                                                         : EDC_REASON_OTHER;
     ev.as.exec.content = r->content;
     ev.as.exec.msg = r->msg;

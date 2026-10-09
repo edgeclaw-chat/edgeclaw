@@ -23,9 +23,79 @@
  * Only turns are folded, never task->output. The prompt building and threshold
  * logic are unchanged from the old memory_actor. */
 
-/* Fold task system prompt: the system group's shared history[0]. */
+/* Fold task system prompt: the system group's shared history[0]. pi §3: the
+ * summary is a **separate one-shot call**, not a continuation of the conversation,
+ * so the prompt has to forbid continuing or answering it. */
 static const char *kFoldSystemPrompt =
-    "You are a memory summarizer. Merge new task history into a concise Group Memory markdown.";
+    "You are a context summarization assistant. Read the transcript and produce (or update) a structured "
+    "summary of it. Do NOT continue the conversation, do NOT answer anything in it, and do NOT call tools. "
+    "Output ONLY the summary.";
+
+/* ── 摘要 prompt (P2b, pi §3/§8) ────────────────────────────────────────
+ * 一次独立请求, 两段式拼法:
+ *   <group-transcript> 语料 </group-transcript>
+ *   [<previous-summary> 旧记忆 </previous-summary>]     ← 有旧记忆 = 迭代更新
+ *   {首次 / 迭代} 指令
+ *   [Additional focus: <focus>]                        ← 手动 /group fold 的聚焦词
+ * 首次用完整六段格式; 迭代要求"保留仍成立的信息 + 增量合并 + 重排 Next Steps",
+ * 输出**完整**的新摘要 —— 落地是替换 (`group->memory = 输出`), 不是拼接。 */
+static const char *kInitialSummaryInstruction =
+    "Summarize the transcript above as markdown with exactly these sections:\n"
+    "\n"
+    "## Goal\n"
+    "[what the user wants to achieve; multiple items allowed]\n"
+    "\n"
+    "## Constraints & Preferences\n"
+    "- [constraints / preferences / requirements the user stated]\n"
+    "- [(none) if none]\n"
+    "\n"
+    "## Progress\n"
+    "### Done\n"
+    "- [x] [completed work]\n"
+    "\n"
+    "### In Progress\n"
+    "- [ ] [current work]\n"
+    "\n"
+    "### Blocked\n"
+    "- [what blocks progress, if anything]\n"
+    "\n"
+    "## Key Decisions\n"
+    "- **[decision]**: [brief reason]\n"
+    "\n"
+    "## Next Steps\n"
+    "1. [ordered next steps]\n"
+    "\n"
+    "## Critical Context\n"
+    "- [data / examples / references needed to continue]\n"
+    "- [(none) if none]\n"
+    "\n"
+    "Keep every section concise. Preserve exact file paths, function names and error messages.";
+
+/* pi §5 的 split turn: 语料以"没写完的 turn"结尾时, 记忆里要额外带上"那个 turn 走到
+ * 哪了", 否则续跑的那半边只看到一份对话级摘要, 不知道自己接手的是什么。
+ *
+ * 我们与 pi 的差别 (写明): pi 为 turn 前缀单独发**第二次**调用 (专用 prompt, 预算
+ * 0.5 x reserve), 我们只有一次调用 —— 摘要与 turn 上下文共用同一个 max_tokens
+ * (EDC_FOLD_SUMMARY_MAX_TOKENS = 0.8 x reserve)。合并格式照抄 pi:
+ *   {history summary}
+ *   ---
+ *   **Turn Context (split turn):**
+ *   {turn prefix}
+ */
+static const char *kSplitTurnInstruction =
+    "\n\nThe transcript also ends in the middle of a turn that continues afterwards (a split turn). "
+    "After the sections above, add a `---` separator and then:\n"
+    "\n"
+    "**Turn Context (split turn):**\n"
+    "- Original Request: [what that turn was asked to do]\n"
+    "- Early Progress: [what it did before the summary cut in]\n"
+    "- Context for Suffix: [what the continuation needs to know]";
+
+static const char *kUpdateSummaryInstruction =
+    "Update the previous summary with the transcript above. Keep every piece of information that is still "
+    "true, merge in what is new, move finished items from \"In Progress\" to \"Done\", refresh \"Next Steps\" "
+    "and \"Critical Context\", and keep the same sections. Preserve exact file paths, function names and error "
+    "messages. Output the complete updated summary, not a diff.";
 
 /* ── 折叠是一次屏障 (barrier) ────────────────────────────────
  *
@@ -117,7 +187,7 @@ bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_manager 
                          conf ? conf->group_fold_msg_threshold : 0);
                 /* Not startable right now (a member is still running) → keep looking
                  * at this session's other groups instead of declaring one started. */
-                if (edc_group_fold_start(sched, sess, g))
+                if (edc_group_fold_start(sched, sess, g, NULL))
                 {
                     if (out_session)
                         *out_session = sess;
@@ -207,7 +277,7 @@ static size_t collect_pieces(struct edc_task *const *members, size_t n, struct f
     return cnt;
 }
 
-sds edc_group_fold_build_prompt(struct edc_task_group *group, struct edc_fold_cut *out_cut)
+sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus, struct edc_fold_cut *out_cut)
 {
     if (out_cut)
     {
@@ -288,10 +358,9 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, struct edc_fold_cu
              group->group_id, cut_at, cnt, total, EDC_FOLD_KEEP_RECENT_TOKENS, cut_piece->task->task_id,
              cut_piece->turn_index, cut_prefix);
 
+    bool has_memory = (group->memory && sdslen(group->memory) > 0);
     sds prompt = sdsempty();
-    prompt = sdscat(prompt, "## Existing Group Memory\n");
-    prompt = sdscat(prompt, (group->memory && sdslen(group->memory) > 0) ? group->memory : "(empty)");
-    prompt = sdscat(prompt, "\n\n## New Completed Tasks\n");
+    prompt = sdscat(prompt, "<group-transcript>\n");
 
     struct edc_task *cur = NULL;
     for (size_t i = 0; i < cut_at; i++)
@@ -323,9 +392,32 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, struct edc_fold_cu
             prompt = sdscatprintf(prompt, "output: %s\n", tk->output);
     }
 
-    prompt =
-        sdscat(prompt, "\nMerge the tasks above into the Group Memory. Output ONLY the merged Group Memory as concise "
-                       "markdown.");
+    prompt = sdscat(prompt, "</group-transcript>\n\n");
+    if (has_memory)
+    {
+        prompt = sdscat(prompt, "<previous-summary>\n");
+        prompt = sdscat(prompt, group->memory);
+        prompt = sdscat(prompt, "\n</previous-summary>\n\n");
+    }
+    /* 语料以"没写完的 turn"结尾 (pi §5): 切点落在 turn 内部 (它后面的消息留着当细节),
+     * 或者语料最后那段本来就是还在跑的 active turn (内容还没生成完)。 */
+    bool split_turn = false;
+    if (cut_at < cnt && cut_prefix > 0)
+        split_turn = true; /* 切在 turn 中间 */
+    if (cut_at > 0 && ps[cut_at - 1].turn_index == EDC_FOLD_CUT_ACTIVE_TURN)
+        split_turn = true; /* 语料尾部是一个还在飞的 turn */
+    if (split_turn)
+        log_info("L1 fold: group %s split turn at the cut (pi §5 turn context section)", group->group_id);
+
+    prompt = sdscat(prompt, has_memory ? kUpdateSummaryInstruction : kInitialSummaryInstruction);
+    if (split_turn)
+        prompt = sdscat(prompt, kSplitTurnInstruction);
+    if (focus && *focus)
+    {
+        prompt = sdscat(prompt, "\n\nAdditional focus: ");
+        prompt = sdscat(prompt, focus);
+    }
+    prompt = sdscat(prompt, "\n");
 
     free(members);
     free(ps);
@@ -333,7 +425,7 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, struct edc_fold_cu
 }
 
 struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_session *session,
-                                      struct edc_task_group *group)
+                                      struct edc_task_group *group, const char *focus)
 {
     if (!sched || !session || !group)
         return NULL;
@@ -344,7 +436,7 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
 
     struct edc_fold_cut cut;
     memset(&cut, 0, sizeof(cut));
-    sds prompt = edc_group_fold_build_prompt(group, &cut);
+    sds prompt = edc_group_fold_build_prompt(group, focus, &cut);
     if (!prompt)
         return NULL;
 

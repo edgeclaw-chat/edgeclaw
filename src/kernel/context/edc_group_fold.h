@@ -65,14 +65,17 @@ struct edc_fold_cut
  *  everything older is the corpus. The cut lands on a message boundary. When the whole
  *  group is under that budget -- only reachable when no window is configured -- fold
  *  the oldest half instead, or a small group could never fold. */
-extern sds edc_group_fold_build_prompt(struct edc_task_group *group, struct edc_fold_cut *out_cut);
+/** |focus| (optional, NULL ok) lands verbatim in the prompt as "Additional focus:" --
+ *  it is how the manual `/group fold [id] [focus]` (decision 8) steers a fold. */
+extern sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus, struct edc_fold_cut *out_cut);
 
 /** Start a fold: create a system task carrying the target group and watermark,
  *  attach the prompt, dispatch it. NULL when one is already in flight, when the
  *  group is not quiescent (a member is still running), when there is nothing to
- *  fold, or when dispatch failed. */
+ *  fold, or when dispatch failed. The prompt follows pi's two-part layout (see
+ *  kInitialSummaryInstruction): a plain fold passes NULL focus. */
 extern struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_session *session,
-                                             struct edc_task_group *group);
+                                             struct edc_task_group *group, const char *focus);
 
 /** Barrier read by the scheduler: true while a fold targeting |group| is in
  *  flight. The scheduler then refuses to drive any task of that group (the fold
