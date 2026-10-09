@@ -15,10 +15,10 @@
 | **折到哪里** | 从尾部往前累加到 `keepRecentTokens`(20k) 的**合法切点** | **折最老的一半**（按 task / 消息数） | **P2** 改尾部 token 预算 |
 | **切点安全** | 永不切在 `toolResult` 上 | `edc_llm_history_safe_start` 把起点回退到非 tool 消息 | ✅ 已具备 |
 | **摘要怎么生成** | 结构化 6 段 + 文件追踪 + **迭代更新**指令 + `maxTokens` 上限 + 失败判定 | "concise markdown" 一句，只有 `## Existing Group Memory` 前缀 | **P2** 采纳格式与迭代规则 + 卫生检查 |
-| **窗口爆了怎么办** | 三类溢出识别 → 压缩 → **重试一次** | 无：LLM 报错 → task ERROR → 等你 resume | **P3** |
+| **窗口爆了怎么办** | 三类溢出识别 → 压缩 → **重试一次** | 三类溢出识别 → **一条带数字的提示**（不自动恢复，裁决 #10） | **P3 ✅** |
 | **摘要调用的成本** | 计入会话 usage | 折叠任务在**系统组**，用量记在系统组 | 已知，不改 |
 
-一句话：**P1 让 ctx 从"上一条应答的规模"变成"下一次请求的规模"；P2 让折叠从"条数减半"变成"向窗口要空间"；P3 让超窗不再把任务卡死。** 三期的估算是**同一个函数**（同一个 `estimate`，三个消费者：footer / 触发 / 溢出恢复）。
+一句话：**P1 让 ctx 从"上一条应答的规模"变成"下一次请求的规模"；P2 让折叠从"条数减半"变成"向窗口要空间"；P3 让超窗**有人告诉你该怎么办**（不自动恢复：裁决 #10）。** 三期的估算是**同一个函数**（同一个 `estimate`，三个消费者：footer / 触发 / 溢出恢复）。
 
 ---
 
@@ -187,40 +187,64 @@ pi 的结构天然没有这个问题：**触发发生在接近窗口时，所以
 （同一条路照常 `AWAIT_TOOLS` + 派发），变异 M19（去守卫）/ M20（生效范围过宽）红；变异 M21（预算→0）/
 M22（丢掉尾部预算）红在既有切点用例 + 新用例的"最新那条留在细节里"。
 
-## 2.5 溢出检测 + 提示（P3，可单独上）
+## 2.5 溢出检测 + 提示（P3 —— **已落地 2026-10-09**，分支 `memory`）
 
-> **裁决（2026-10-09）：不自动恢复。** 命中溢出只给一条明确的系统提示，任务该失败还是失败
-> （静默溢出时任务本来就成功，提示附着在结果上）。理由：自动收紧折叠 + 自动 resume 会引入
+> **裁决（2026-10-09）：不自动恢复。** 命中溢出只给一条明确的提示，任务该失败还是失败
+> （静默溢出时任务本来就成功，提示就附在结果旁边）。理由：自动收紧折叠 + 自动 resume 会引入
 > "收紧多少 / 只试一次 / 递归（折叠请求自己超窗）/ 换模型豁免 / attempted 位要不要落盘"一整串
 > 状态，收益却不比一句"该怎么办"的提示大。**没有自动动作 ⇒ 那些豁免规则全部不需要。**（保持这条
 > 可逆：检测这一层是恢复的前置，将来想要恢复，加动作即可。）
 
-- **状态码透传（已落地 2026-10-09，commit `c33b65c`）**：`edc_https_client` 在 `on_headers_complete` 里存下
-  llhttp 的 `status_code`（新增 `edc_https_request_get_status()`），actor 在 CLOSE 时收进 `resp->http_status`；
-  同时把"没有 choices"这条错误路径从"整坨 JSON dump"改成 **`LLM API error (HTTP <code>): <provider 的 message>`**。
-  这两件合起来才让"400 与 429 分得开"有意义。测试：`test_https_client_get`（live，断言 200 与非 200 两条；
-  变异"不存状态码"→ 2 红）+ 新 `test_llm_actor_http_status`（**manual**，无效 key 打真 provider 拿 401，
-  不花 token；断言 `resp->http_status == 401` 与错误文本以 `LLM API error (HTTP 401): Authentication` 开头
-  —— 变异"不读 provider 的 message"→ 红）。
-- **检测（三层，逐层可降级）**：
-  1. **显式溢出**：provider 报错。**前置已就绪**（状态码 + provider message 都到 `resp` 了，见上）。
-     剩下要做的只是分类器：一个纯函数 `classify(status, code, type, message)`
-     → `{CONTEXT_OVERFLOW, RATE_LIMIT, AUTH, TRANSPORT, OTHER}`（`code` 不可靠，判定以 message 为主键，见 2.5.1）。
-     另有 `finish_reason == "context_length_exceeded"` 今天被映射成 `EDC_REASON_OTHER` ⇒ 提示 "unknown finish reason"，
-     也是白丢的信号。
-  2. **静默溢出**：请求成功（`stop`）但 `usage.prompt_tokens > context_window`（z.ai 型）。只在 `context_window > 0` 可判，
-     否则跳过。**注意不要加 cached**：pi 的 `input + cacheRead` 对应我们这里的单个 `prompt_tokens`（cached 是它的子集，加了就双计）。
-  3. **截断溢出**：`length` 且 `completion_tokens == 0` 且 `prompt ≥ 99%×window`（小米 MiMo 型）。普通 `length`
-     （`completion > 0`，真被截断）**不算**。
-- **限流显式排除**：`429` / `rate limit` / `too many requests` 不算溢出（pi 的 `overflow.ts` 里这条是显式反例）。
-- **提示形态**：复用 executor 的 `notice`（今天 `e->error_message` 就走这条路显示），文案要**带数字 + 带下一步**，
-  例如"上下文超出模型窗口（约 253k / 窗口 128k）——用 `/group fold` 收紧后重试，或换更大窗口的模型"。
-  静默溢出时任务不失败 ⇒ 提示附着在结果之后。
-- **折叠任务自己超窗**：照旧失败（`deliver_memory` 到不了），提示沿用折叠那套话术。**一律不递归**。
+**① 分类器（纯函数，新文件）** `src/kernel/executor/edc_llm_error_kind.{c,h}`：
 
-**判据（P3）**：三类溢出各自的分类单测（纯函数，喂 `(status, code, type, message)` 字符串）；**限流反例必须不判成溢出**；
-窗口未知时静默溢出分支不触发；提示文本含实际数字；变异：限流判成溢出 → 红；`length` 无 `completion==0` 也判溢出 → 红；
-状态码透传丢掉 → 红（至少一条断言要读到它）。
+```c
+edc_llm_error_kind edc_llm_error_classify(int http_status, const char *message);
+/* -> CONTEXT_OVERFLOW / RATE_LIMIT / AUTH / TRANSPORT / OTHER */
+```
+
+判定顺序（**顺序即语义**）：`http_status == 0` ⇒ TRANSPORT（连状态行都没有）；`429` 或 message 含
+`rate limit` / `too many requests` ⇒ RATE_LIMIT（**先排除** —— pi 的显式反例）；message 含
+`maximum context length` / `reduce the length of the messages` / `context_length_exceeded` / `prompt is too long`
+⇒ CONTEXT_OVERFLOW；`401`/`403` 或 `Authentication` / `invalid api key` ⇒ AUTH；其余 OTHER。
+**以 message 为主键**：实测那条 400 的 `type`/`code` 都是泛化的 `invalid_request_error`（见 2.5.1），
+状态码只用来分 400 与 429、以及认"根本没有响应"。
+
+**② 三个检测点**（都在 `edc_executor.c` 的 `exec_done` 里，挂在已有分支上，不新增层）：
+
+| # | 落点 | 条件 | 结果 |
+|---|---|---|---|
+| ① | 失败路径（`e->failed`） | classify ⇒ CONTEXT_OVERFLOW | 任务照旧 ERROR；notice = **provider 原话（自带真数字）+ 一句带数字的下一步** |
+| ② | `EDC_REASON_STOP` 分支 | `context_window > 0 && prompt_tokens > window` | 任务**照常 COMPLETED**；提示走 `result.warning`（**不叫停、不改回复**） |
+| ③ | ERROR 分支 | `length && completion_tokens == 0 && prompt >= 99% x window` | 认成溢出（普通 `length` 仍是通用文案） |
+
+- **状态码随事件走**：`edc_event_exec` 新增 `int http_status`（`advance_llm_resp` 从 `resp` 搬）。
+  丢掉它，①就退化成 TRANSPORT（这条有测试钉住）。
+- **找回一个一直白丢的信号**：`finish_reason == "context_length_exceeded"` **早就解析了**
+  （`edc_llm_actor.c` ⇒ `BC_LLM_FINISH_REASON_CONTEXT_EXCEEDED`），但 executor 的词表只认
+  STOP/TOOL_CALL/LENGTH ⇒ 被压成 `EDC_REASON_OTHER` → "unknown finish reason"。现在有
+  `EDC_REASON_CONTEXT_EXCEEDED` 这一格，也有穿过适配器的测试。
+- **静默类需要第二个出口**：`struct edc_advance_result` 新增 `char warning[256]`（**值不是指针** ——
+  它在 executor 的栈帧里生成，数组让生命周期零问题；空串 = 没话说）。scheduler 在 COMPLETED 分支里
+  把回复发完之后，把它当 **SYS 消息**再发一条（不走 `sched_error_copy`：它是建议，不是错误）。
+
+**③ 提示文案**（复用现有 notice 管道 ⇒ **零 UI 改动**；带数字 + 带下一步）：
+
+```
+context overflow (the provider refused the request): this request held about 2.0M tokens and the model
+window is 1.0M — run /group fold to tighten the context, then retry (or switch to a model with a larger window)
+```
+
+- 数字来源：`prompt_tokens`（真 usage；0 → 显示 unknown）+ `config->context_window`（0 → unknown）；
+  ① 还把 provider 原话整段保留在前面（它自带"请求了多大 / 窗口多大"）。
+- **窗口未知（默认 0）时 ②③ 不触发** —— 没有比较对象就不下结论。
+- **折叠任务自己超窗**：照旧失败、沿用折叠话术（"discarded, the group memory is unchanged"），
+  **不给"去 `/group fold`"的建议**（它*就是*折叠），**一律不递归**。
+
+**判据（P3，已达成）**：新测 `tests/test_llm_error_kind.c`（**23 断言**：三类溢出的各家说法 + 限流反例 +
+传输/鉴权/其余 + 大小写不敏感 + NULL）与 `tests/test_executor_overflow.c`（**53 断言**：三个落点各走真
+executor + 限流反例 + 窗口未知不触发 + 投递顺序 + 折叠护栏 + **穿过 `advance_llm_resp` 的 reason 映射与
+状态码**）。**九条变异全红**：限流→溢出 14 / `length` 不看 `completion==0` 2 / 去 99% 门槛 2 / 丢状态码 4 /
+窗口未知也判 2 / 映射丢回 OTHER 4 / 折叠任务也给建议 2 / ①去 sink 护栏 2 / 不投递 warning 2。
 
 ### 2.5.1 实测（2026-10-09，真打 provider）
 
@@ -289,7 +313,8 @@ M22（丢掉尾部预算）红在既有切点用例 + 新用例的"最新那条�
 | **P2a** | ✅ **已完成（2026-10-09，commit `d83f4ba`）** 窗口配置 + 水位重构（消息级 `folded_prefix`，schema v6 + 迁移脚本）+ 触发（写法乙，两个挂载点）+ 切点（尾部 token 预算 / 在飞 turn 进语料 / 切点合法性） | 中大 | `edc_group_fold.*`、`edc_config.*`、`edc_state_serializer.c`、`edc_context.*` |
 | **P2b** | ✅ **已完成（2026-10-09，commit `3b9baf6`）** 摘要 prompt 结构化（6 段 + `<previous-summary>` 迭代 + focus）、折叠请求 `max_tokens` 且截断不当 checkpoint、手动 `/group fold [id] [focus]`、split-turn 段 | 中 | `edc_group_fold.*`、`edc_llm_actor.*`、`edc_llm_request.c`、`edc_executor.*`、`edc_scheduler.*`、`edc_commands.c` |
 | **P2b 卫生** | ✅ **已完成（2026-10-09，commit `824ebc8`）** 四条落地前检查齐（非空 / 正常结束 / 非截断 / **无工具调用**）；"折叠请求装得下"钉成用例 | 小 | `edc_executor.c`、`tests/test_system_task.c`、`tests/test_group_fold.c` |
-| **P3** | 🚧 **待做**：溢出检测 + 明确的系统提示（不自动恢复；用户 2026-10-09 裁决）。前置（状态码 + provider 原话）`c33b65c` 已就绪 | | 小 | 执行器的错误路径、`edc_llm_actor.*` / https（状态码 + 结构化错误体）、提示文案 |
+| **P3** | ✅ **已完成（2026-10-09，分支 `memory`）** 分类器 + 三个检测点 + 一条带数字的提示（**不自动恢复**，裁决 #10）；顺带找回 `context_length_exceeded` 这个一直白丢的信号 | 小 | `executor/edc_llm_error_kind.{c,h}`、`edc_executor.{c,h}`、`edc_scheduler.c`、两个新测试 |
+| **P4（可选）** | ⏸ 文件操作累积追踪（pi 的 `<read-files>`/`<modified-files>`）—— 用户 2026-10-09 裁决**先不做** | 小 | `edc_executor.c`、`edc_llm_request.c` |
 
 **流程**（按仓里规矩）：一期一 commit；每期先给判据再动代码；`bazel clean` 后 `bazel build //...` + 全量 `bazel test //src/tui:all //tests:all --nocache_test_results`；变异自检**必须打到生产者**（`test_session_snapshot` 那种真生产者用例，不能只喂手写 JSON）；A/B 五夹具（`smoke`/`switch`/`bg`/`cancel`/`fold`）比对，其中 **`fold` 夹具是这套改动的主战场**。
 

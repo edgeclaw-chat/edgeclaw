@@ -43,10 +43,11 @@ typedef enum
  * by advance (set to NULL on hand-off). */
 typedef enum
 {
-    EDC_REASON_STOP = 0,   /* finished normally */
-    EDC_REASON_TOOL_CALL,  /* wants to call tools */
-    EDC_REASON_OTHER,      /* sensitive / network / context_exceeded / unknown */
-    EDC_REASON_LENGTH,     /* the provider cut the answer at max_tokens */
+    EDC_REASON_STOP = 0,          /* finished normally */
+    EDC_REASON_TOOL_CALL,         /* wants to call tools */
+    EDC_REASON_OTHER,             /* sensitive / network / unknown */
+    EDC_REASON_LENGTH,            /* the provider cut the answer at max_tokens */
+    EDC_REASON_CONTEXT_EXCEEDED,  /* the provider names the window as the reason */
 } edc_reason;
 
 /* Normalized tool call for ledger registration. All fields are borrowed and
@@ -62,6 +63,8 @@ struct edc_event_exec
 {
     bool failed;              /* network/protocol error */
     const char *error_message;/* non-NULL when failed */
+    int http_status;          /* status of the response, 0 when there was none --
+                                 the classifier needs it to keep 429 apart from 400 */
     edc_reason reason;
     sds content;              /* final text, may be NULL */
     cJSON *msg;               /* assistant message; ownership moves into the turn */
@@ -133,6 +136,14 @@ struct edc_advance_result
     /* Text to deliver, borrowed for as long as it takes the caller to handle this
      * result (delivery happens right then); NULL when there is nothing. */
     const char *notice;
+
+    /* A second thing to say about an advance that ended *well*: a system-level
+     * warning about what just happened (today: the provider accepted a request that
+     * was already over the model's window). It has to travel as a value, not a
+     * pointer, because it is built in the executor's frame -- an array keeps the
+     * lifetime trivial (empty string = nothing to say, `memset`-safe, copyable).
+     * The host decides how to show it; today it goes out as a system message. */
+    char warning[256];
 };
 
 /* Outbound ops (kernel -> world). `ctx` is always the scheduler, passed through.

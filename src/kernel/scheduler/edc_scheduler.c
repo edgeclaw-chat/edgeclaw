@@ -1033,6 +1033,16 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
         else if (sched->send_reply)
             sched->send_reply(sched, task, res->notice, EDC_CHANNEL_MESSAGE_RESP_TYPE, req_id);
 
+        /* A task can end well and still have something to say about what just
+         * happened (see `warning` in edc_advance_result): that goes out as a system
+         * message, after the reply, and never edits the reply itself. */
+        if (res->warning[0] && sched->send_reply)
+        {
+            sds copy = sdsnew(res->warning);
+            sched->send_reply(sched, task, copy, EDC_CHANNEL_MESSAGE_SYS_TYPE, req_id);
+            sdsfree(copy);
+        }
+
         /* The settlement subscribers: persistence. The fold check itself lives at the
          * tail of edc_scheduler_apply_advance, so every advance asks once (see (a)). */
         sched_save_session(sched, own);

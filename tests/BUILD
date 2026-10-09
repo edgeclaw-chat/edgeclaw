@@ -858,3 +858,26 @@ cc_test(
         "//conditions:default": [],
     }),
 )
+
+cc_test(
+    name = "test_llm_error_kind",
+    srcs = ["test_llm_error_kind.c"],
+    deps = [
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_executor_overflow",
+    srcs = ["test_executor_overflow.c"],
+    deps = [
+        "//src/actor:actor",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
