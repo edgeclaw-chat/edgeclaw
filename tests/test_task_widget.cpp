@@ -476,17 +476,20 @@ void TestGroupUsageLine(void)
     Check(task_row > header, "the member row sits under the header");
     Check(usage == task_row + 1, "the usage line closes the group's block (a footer under its members)");
     Check(RowText(screen, header).find("tok") == std::string::npos,
-          "an expanded group does not repeat the total in its header (the footer's arrows add up to it)");
+          "the header carries no total (the footer under the members is where the cost lives)");
 
-    // Folded: the members go, and so does the footer. Only the header's total
-    // stays -- "how much has this cost", not how it broke down.
+    // Folded: the members go and the footer goes with them. The header used to
+    // keep the total as "how much has this cost"; it says nothing now -- a
+    // number with no breakdown is not worth the column (see the header's
+    // comment in edc_task_widget.cpp).
     snap.groups[0].tasks[0].is_active = false;
     edc::TaskWidget folded;
     folded.SetSnapshot(&snap);
     const std::string folded_frame = FrameText(Render(folded));
     Check(folded_frame.find("work") == std::string::npos, "a folded group draws no member rows");
     Check(folded_frame.find("↑8.2k") == std::string::npos, "and no usage footer");
-    Check(folded_frame.find("9.2k tok") != std::string::npos, "while the folded header still carries the total");
+    Check(folded_frame.find("tok") == std::string::npos, "a folded group shows no total either");
+    Check(folded_frame.find("Group 5") != std::string::npos, "the header itself survives (it is the handle that unfolds it)");
 
     // A provider that never reports cached tokens must not read as a flat 0%:
     // the hit rate is dropped, the rest of the footer stays.

@@ -195,7 +195,7 @@ M22（丢掉尾部预算）红在既有切点用例 + 新用例的"最新那条�
 > 状态，收益却不比一句"该怎么办"的提示大。**没有自动动作 ⇒ 那些豁免规则全部不需要。**（保持这条
 > 可逆：检测这一层是恢复的前置，将来想要恢复，加动作即可。）
 
-- **状态码透传（已落地 2026-10-09，未提交）**：`edc_https_client` 在 `on_headers_complete` 里存下
+- **状态码透传（已落地 2026-10-09，commit `c33b65c`）**：`edc_https_client` 在 `on_headers_complete` 里存下
   llhttp 的 `status_code`（新增 `edc_https_request_get_status()`），actor 在 CLOSE 时收进 `resp->http_status`；
   同时把"没有 choices"这条错误路径从"整坨 JSON dump"改成 **`LLM API error (HTTP <code>): <provider 的 message>`**。
   这两件合起来才让"400 与 429 分得开"有意义。测试：`test_https_client_get`（live，断言 200 与非 200 两条；
@@ -250,9 +250,10 @@ M22（丢掉尾部预算）红在既有切点用例 + 新用例的"最新那条�
 
 | 项 | 处置 | 理由 |
 |---|---|---|
-| **单 task 巨型 turn 的 split** | 不做（记录） | 需要把水位从 `completion_seq` 改成**消息级索引**，动面大；先靠 P3 的溢出恢复兜住 |
-| **正在跑的长任务不被压** | 记录 | 今天只折**已完成** task；这是"记忆汇总"语义，不是纯窗口管理。要改成"运行中也能压"= 语义变更，需单独拍板 |
-| **文件操作累积追踪** | 待拍板（P4 候选） | 我们是 coding-capable agent，可能有价值；但要抽 tool call 参数 + 跨轮累积 + 落盘，独立一摊 |
+| **单 task 巨型 turn 的 split** | ✅ **已落地**（P2a/P2b） | 水位已从 `completion_seq` 改成**消息级** `struct edc_turn.folded_prefix`（P2a-2），P2b-4 又补了 split-turn 指令段 —— 这条原记录已作废 |
+| **正在跑的长任务不被压** | ✅ **已落地**（裁决 7a） | 起折时给组内每个非终态成员挂 `SEQUENCE` dep，成员到自己的**请求边界**才 park（工具结果照收）—— 不再是"只折已完成" |
+| **文件操作累积追踪** | **不做**（用户 2026-10-09 裁决，P4 候选保留） | 我们是 coding-capable agent，可能有价值；但要抽 tool call 参数 + 跨轮累积 + 落盘，独立一摊 |
+| **记忆本身无下限保护** | **接受现状**（用户 2026-10-09 裁决） | 窗口 < ~1.8 × reserve 时触发会偏密（只是吵/贵，不报错）；P2b-2 的 `max_tokens` 封顶已让记忆单体装得进 reserve，pi 同样没有下限保护 |
 | **扩展钩子 / 分支摘要** | 不做 | 无对应体系 |
 | **缓存断点 / 缓存统计** | 不做（可记录） | 我们已有命中率；只需在文档里写明"**折叠 = 一次缓存重置**"，免得命中率突然掉被当 bug |
 | **`memory_compress_threshold`** | ✅ 已清（2026-10-09） | 已核实**全仓无读者**（`src/` 零引用），本次删掉 `tools/ab/ab.py` 夹具里那条；`config.json` 是用户侧文件，键留着也无害（`edc_init_env` 只补缺不删键，不会自动消失） |
@@ -284,11 +285,11 @@ M22（丢掉尾部预算）红在既有切点用例 + 新用例的"最新那条�
 
 | 期 | 内容 | 规模（估） | 触点 |
 |---|---|---|---|
-| **P1** | ✅ **已完成（2026-10-09，未提交）** 估算器（CJK 感知）+ anchor 失效（`fold_epoch`）+ 组口径三选一 + 快照 `ctx_tokens`/`ctx_estimated` + footer `~` | 中（context/ + scheduler + serializer + tui 注释 + 测试） | `edc_context.*`、`edc_task.*`、`edc_scheduler.c`、`edc_state_serializer.c` |
+| **P1** | ✅ **已完成（2026-10-09，commit `d83f4ba`）** 估算器（CJK 感知）+ anchor 失效（`fold_epoch`）+ 组口径三选一 + 快照 `ctx_tokens`/`ctx_estimated` + footer `~` | 中（context/ + scheduler + serializer + tui 注释 + 测试） | `edc_context.*`、`edc_task.*`、`edc_scheduler.c`、`edc_state_serializer.c` |
 | **P2a** | ✅ **已完成（2026-10-09，commit `d83f4ba`）** 窗口配置 + 水位重构（消息级 `folded_prefix`，schema v6 + 迁移脚本）+ 触发（写法乙，两个挂载点）+ 切点（尾部 token 预算 / 在飞 turn 进语料 / 切点合法性） | 中大 | `edc_group_fold.*`、`edc_config.*`、`edc_state_serializer.c`、`edc_context.*` |
-| **P2b** | ✅ **已完成（2026-10-09，未 push）** 摘要 prompt 结构化（6 段 + `<previous-summary>` 迭代 + focus）、折叠请求 `max_tokens` 且截断不当 checkpoint、手动 `/group fold [id] [focus]`、split-turn 段 | 中 | `edc_group_fold.*`、`edc_llm_actor.*`、`edc_llm_request.c`、`edc_executor.*`、`edc_scheduler.*`、`edc_commands.c` |
-| **P2b 卫生** | ✅ **已完成（2026-10-09，未 push）** 四条落地前检查齐（非空 / 正常结束 / 非截断 / **无工具调用**）；"折叠请求装得下"钉成用例 | 小 | `edc_executor.c`、`tests/test_system_task.c`、`tests/test_group_fold.c` |
-| **P3** | **溢出检测 + 明确的系统提示（不自动恢复）**（用户 2026-10-09 裁决） | 小 | 执行器的错误路径、`edc_llm_actor.*` / https（状态码 + 结构化错误体）、提示文案 |
+| **P2b** | ✅ **已完成（2026-10-09，commit `3b9baf6`）** 摘要 prompt 结构化（6 段 + `<previous-summary>` 迭代 + focus）、折叠请求 `max_tokens` 且截断不当 checkpoint、手动 `/group fold [id] [focus]`、split-turn 段 | 中 | `edc_group_fold.*`、`edc_llm_actor.*`、`edc_llm_request.c`、`edc_executor.*`、`edc_scheduler.*`、`edc_commands.c` |
+| **P2b 卫生** | ✅ **已完成（2026-10-09，commit `824ebc8`）** 四条落地前检查齐（非空 / 正常结束 / 非截断 / **无工具调用**）；"折叠请求装得下"钉成用例 | 小 | `edc_executor.c`、`tests/test_system_task.c`、`tests/test_group_fold.c` |
+| **P3** | 🚧 **待做**：溢出检测 + 明确的系统提示（不自动恢复；用户 2026-10-09 裁决）。前置（状态码 + provider 原话）`c33b65c` 已就绪 | | 小 | 执行器的错误路径、`edc_llm_actor.*` / https（状态码 + 结构化错误体）、提示文案 |
 
 **流程**（按仓里规矩）：一期一 commit；每期先给判据再动代码；`bazel clean` 后 `bazel build //...` + 全量 `bazel test //src/tui:all //tests:all --nocache_test_results`；变异自检**必须打到生产者**（`test_session_snapshot` 那种真生产者用例，不能只喂手写 JSON）；A/B 五夹具（`smoke`/`switch`/`bg`/`cancel`/`fold`）比对，其中 **`fold` 夹具是这套改动的主战场**。
 
@@ -343,7 +344,7 @@ M22（丢掉尾部预算）红在既有切点用例 + 新用例的"最新那条�
 
 **11. 死键 `memory_compress_threshold`** —— ✅ **已定 A（清掉）并落地（2026-10-09）**：删 `tools/ab/ab.py` 夹具里那条；`src/` 本来就没读者。你 `config.json` 里那条我改不到（在可写路径外），留着无害 —— 想清就 `python3 -c "import json,pathlib;p=pathlib.Path.home()/'.edgeclaw/config.json';d=json.loads(p.read_text());d.pop('memory_compress_threshold',None);p.write_text(json.dumps(d,indent='\t',ensure_ascii=False))"`。
 
-**12. 文件操作追踪**（pi 的 `<read-files>` / `<modified-files>`，跨多次压缩累积）：A 先不做（推荐）/ B 做（独立一摊，P4 候选）。
+**12. 文件操作追踪**（pi 的 `<read-files>` / `<modified-files>`，跨多次压缩累积）：**用户 2026-10-09 裁决 A —— 先不做**（P4 候选保留）。
 
 ---
 

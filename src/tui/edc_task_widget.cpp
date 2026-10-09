@@ -419,27 +419,22 @@ int TaskWidget::RowWidth() const
             const bool expanded = group_expanded_[g.group_id];
 
             // Collapsible group header: the arrow plus "Group <id>" ("~" when
-            // orphaned) on the left, the folded group's token cost flushed right.
-            // The right block is never truncated; the left ellipsizes into
-            // whatever width it leaves.
+            // orphaned). The left part ellipsizes into whatever width is left.
+            // Cost lives in the footer, under the members it is made of, and
+            // nowhere else: the header used to repeat the group's total while the
+            // group was folded, which read as "this group costs 9.2k" without
+            // saying of what. A folded group now shows no number at all -- the
+            // row is still the handle that unfolds it.
             std::string core = g.group_id.empty() ? "(group)" : "Group " + g.group_id;
             if (g.orphaned)
                 core += " ~";
 
             const std::string arrow = expanded ? "▾ " : "▸ ";
-            // The total only earns the header's right column while the footer is
-            // not there to break it down: expanded, the footer's `↑` and `↓` add
-            // up to exactly this number one line below, and printing it twice is
-            // not "the cost at a glance", it is the same datum rendered twice.
-            // Folded, the footer is gone -- then this is the whole story.
-            const std::string right = (!expanded && g.tokens_total > 0) ? FormatTokens(g.tokens_total) + " tok" : "";
-
-            const int core_budget = row_width - kRightPad - StringWidth(arrow) - StringWidth(right) - 1;
+            const int core_budget = row_width - kRightPad - StringWidth(arrow) - 1;
             const std::string visible_core = core_budget > 0 ? TruncateToWidth(core, core_budget) : "";
 
             lines.push_back(hbox({
                                 text(arrow + visible_core) | flex | bold | color(g.fg ? pal.warn : pal.text_dim),
-                                text(right) | dim | color(pal.text_dim),
                                 text(std::string(kRightPad, ' ')),
                             }) |
                             reflect(group_header_boxes_[i]));
