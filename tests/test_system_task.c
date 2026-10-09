@@ -434,6 +434,112 @@ static void test_system_task_is_visible(void)
     edc_config_free(cfg);
 }
 
+
+/* ══════════════════════════════════════════════════════════════════
+ *  Test 7 (P2b 卫生): 摘要响应带 tool_calls = 失败, 不是一次工具往返
+ *  折叠请求根本不带工具定义 (edc_llm_request.c), 所以这个响应只可能是
+ *  provider 行为异常。pi §3 判失败 ("Summarization attempted to call a tool"):
+ *  不派发工具、不写记忆、任务落 ERROR。普通任务走同一条路**照常**派发。
+ * ══════════════════════════════════════════════════════════════════ */
+
+static int g_dispatch_calls = 0;
+
+static void spy_dispatch_tools(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp, void *request_id)
+{
+    (void)sched;
+    (void)task;
+    (void)llm_resp;
+    (void)request_id;
+    g_dispatch_calls++;
+}
+
+/* 投一个"想调工具"的应答 (一条归一化 tool call), 走真 executor 推进。 */
+static struct edc_advance_result drive_tool_call(struct edc_scheduler *sched, struct edc_task *task)
+{
+    struct edc_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.kind = EDC_EVENT_EXEC_DONE;
+    ev.as.exec.reason = EDC_REASON_TOOL_CALL;
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "role", "assistant");
+    cJSON_AddStringToObject(msg, "content", "");
+    ev.as.exec.msg = msg;
+    cJSON *args = cJSON_CreateObject();
+    struct edc_tool_call tc = {.id = "call_1", .name = "exec_shell", .args = args};
+    ev.as.exec.calls = &tc;
+    ev.as.exec.n_calls = 1;
+    ev.as.exec.tool_calls_raw = NULL;
+    /* 用量: 公共段在分支之前累加 ⇒ 失败的那次摘要调用照样记账。 */
+    ev.as.exec.prompt_tokens = 7;
+    ev.as.exec.completion_tokens = 3;
+    ev.as.exec.total_tokens = 10;
+
+    struct edc_advance_result res = edc_executor_advance(&sched->executor, task, &ev);
+
+    /* 守卫路径不接手 msg (工具路径把它移进 turn, 那会把它置 NULL)。 */
+    if (ev.as.exec.msg)
+        cJSON_Delete(ev.as.exec.msg);
+    cJSON_Delete(args);
+    return res;
+}
+
+static void test_fold_tool_call_is_failure(void)
+{
+    TEST("P2b 卫生: 摘要响应带 tool_calls ⇒ ERROR + 不派发 + 记忆不动 (普通任务不受影响)");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-hygiene", "Hygiene");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->dispatch_tools = spy_dispatch_tools;
+
+    /* 被折的组 (成员 = 普通用户任务) + 一条已有的记忆。 */
+    struct edc_task *user = edc_task_new("u-1", "sess-hygiene", "u-1", "user task", edc_channel_adapter);
+    struct edc_task_group *group = edc_task_group_new(user);
+    edc_task_group_add_task(group, user);
+    group->memory = sdsnew("old memory: keep me");
+
+    /* 折叠任务: sink=GROUP_MEMORY + 自己的 input (停在 AWAIT_EXEC)。 */
+    struct edc_task *fold = edc_scheduler_spawn_system_task(sched, session, "fold group memory");
+    CHECK(fold != NULL && fold->sink == EDC_SINK_GROUP_MEMORY, "折叠任务就位");
+    if (!fold)
+    {
+        edc_session_free(session);
+        edc_scheduler_free(sched);
+        edc_config_free(cfg);
+        return;
+    }
+    fold->sink_group = group;
+    give_input(fold, "summarize the group");
+    g_dispatch_calls = 0;
+
+    struct edc_advance_result res = drive_tool_call(sched, fold);
+    CHECK(res.outcome == EDC_STEP_ERROR, "落 ERROR (不是 AWAIT_TOOLS)");
+    CHECK(edc_task_has_failed(fold) && !edc_task_is_alive(fold), "任务 life=ERROR");
+    CHECK(fold->step != EDC_TASKSTEP_AWAIT_TOOLS, "没有被当成一次工具往返");
+    CHECK(fold->tool_calls == NULL, "工具调用没进账本");
+    CHECK(g_dispatch_calls == 0, "一次工具都没派发");
+    CHECK(group->memory && strcmp(group->memory, "old memory: keep me") == 0, "组记忆一字不动");
+    CHECK(res.notice && strstr(res.notice, "tool") != NULL, "提示语点名 tool");
+    CHECK(fold->tokens_prompt == 7 && fold->tokens_completion == 3,
+          "废掉的那次摘要调用照样记用量 (公共段在分支之前)");
+
+    /* 对照: 同一条路, 普通任务照常进 AWAIT_TOOLS 并派发 (守卫只该管摘要调用)。 */
+    give_input(user, "hi");
+    g_dispatch_calls = 0;
+    struct edc_advance_result ures = drive_tool_call(sched, user);
+    CHECK(ures.outcome == EDC_STEP_BLOCKED, "普通任务: BLOCKED (等工具回话)");
+    CHECK(edc_task_awaits_tools(user), "普通任务进 AWAIT_TOOLS");
+    CHECK(g_dispatch_calls == 1, "普通任务照常派发");
+    CHECK(user->tool_calls != NULL && strcmp(user->tool_calls->name, "exec_shell") == 0, "账本记了 PENDING");
+
+    sdsfree(group->memory);
+    group->memory = NULL;
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 /* ══════════════════════════════════════════════════════════════ */
 
 int main(void)
@@ -444,6 +550,7 @@ int main(void)
     test_system_task_not_reaped();
     test_persistent_not_reaped();
     test_system_task_is_visible();
+    test_fold_tool_call_is_failure();
 
     log_info("=== %d passed, %d failed ===", test_passed, test_failed);
     printf("%d passed, %d failed\n", test_passed, test_failed);

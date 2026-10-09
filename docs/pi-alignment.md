@@ -161,9 +161,15 @@ pi 的结构天然没有这个问题：**触发发生在接近窗口时，所以
 - system 用 pi 的强约束："Do NOT continue the conversation. ONLY output the summary."
 - 序列化沿用今天的 `role: content`（等价于 pi 的 `serializeConversation`），但把工具调用也带上：今天的实现只在 `role` 与 `content` **都是字符串**时才输出一行（`edc_group_fold.c:203`），所以**带 `tool_calls` 的 assistant 消息整条被跳过** —— 摘要器看得到工具**结果**，看不到"调用了什么"（见 2.6）。
 
-**④ 摘要卫生（便宜且值）**
+**④ 摘要卫生（便宜且值）** —— ✅ 已落地（2026-10-09）
 
-落地前检查（`edc_group_fold_deliver_memory` 之前）：非空；`stop` 正常结束；**没有**疑似工具调用；没有被 `length` 截断。任一不满足 → **不写记忆、不推水位**，记日志，等下次触发重试。（今天的实现只要非空就写。）
+落地前检查（`edc_group_fold_deliver_memory` 之前）：非空；`stop` 正常结束；**没有**疑似工具调用；没有被 `length` 截断。任一不满足 → **不写记忆、不推水位**。
+
+四条各有归属：**非空** = `deliver_memory` 开头的判空；**正常结束 / 非截断** = executor 只对 `EDC_REASON_STOP`
+走完成路径，`LENGTH` 单独映射成 ERROR（P2b-2），折叠任务的提示直说 "discarded"；**无工具调用** = 新增
+守卫（`exec_done` 的 `EDC_REASON_TOOL_CALL` 分支：`sink == GROUP_MEMORY` 直接 `mark_failed`，**不派发、
+不入账本、不写记忆** —— pi §3 "Summarization attempted to call a tool"）。用量仍在公共段累加，废掉那次
+调用照样记账。
 
 **⑤ 给折叠请求加 `max_tokens`**
 
@@ -174,6 +180,12 @@ pi 的结构天然没有这个问题：**触发发生在接近窗口时，所以
 **⑦ 不做**：扩展钩子（我们无插件体系）、分支摘要（`/tree` 我们也没有）。
 
 **判据（P2）**：触发（token 到/没到、窗口=0 时退回条数）；切点（尾部预算的边界用例：预算落在最后一个 task 内 / 只有一个巨大 task / 全都很小）；摘要卫生（截断/空/工具调用三类各一例，必须"记忆与水位都不动"）；**"折叠请求装得下"**用一条断言把它钉住（estimate(被折部分) < window − reserve）；变异：切点忽略预算 → 红；卫生检查去掉 → 红；触发忽略窗口 0 → 红。
+
+**落地情况（2026-10-09）**：以上判据全部为真。`test_fold_request_fits_the_window` 在**触发线最坏位置**
+（`window − reserve = ctx − 1`）断言 `estimate(prompt) < window − reserve` 且最新那条仍在细节里；
+`test_fold_tool_call_is_failure`（`tests/test_system_task.c`）钉工具调用守卫，并用一个普通任务作对照
+（同一条路照常 `AWAIT_TOOLS` + 派发），变异 M19（去守卫）/ M20（生效范围过宽）红；变异 M21（预算→0）/
+M22（丢掉尾部预算）红在既有切点用例 + 新用例的"最新那条留在细节里"。
 
 ## 2.5 溢出恢复（P3，可单独上）
 
@@ -208,7 +220,7 @@ pi 的结构天然没有这个问题：**触发发生在接近窗口时，所以
 | **P1** | ✅ **已完成（2026-10-09，未提交）** 估算器（CJK 感知）+ anchor 失效（`fold_epoch`）+ 组口径三选一 + 快照 `ctx_tokens`/`ctx_estimated` + footer `~` | 中（context/ + scheduler + serializer + tui 注释 + 测试） | `edc_context.*`、`edc_task.*`、`edc_scheduler.c`、`edc_state_serializer.c` |
 | **P2a** | ✅ **已完成（2026-10-09，commit `d83f4ba`）** 窗口配置 + 水位重构（消息级 `folded_prefix`，schema v6 + 迁移脚本）+ 触发（写法乙，两个挂载点）+ 切点（尾部 token 预算 / 在飞 turn 进语料 / 切点合法性） | 中大 | `edc_group_fold.*`、`edc_config.*`、`edc_state_serializer.c`、`edc_context.*` |
 | **P2b** | ✅ **已完成（2026-10-09，未 push）** 摘要 prompt 结构化（6 段 + `<previous-summary>` 迭代 + focus）、折叠请求 `max_tokens` 且截断不当 checkpoint、手动 `/group fold [id] [focus]`、split-turn 段 | 中 | `edc_group_fold.*`、`edc_llm_actor.*`、`edc_llm_request.c`、`edc_executor.*`、`edc_scheduler.*`、`edc_commands.c` |
-| **P2b 卫生** | ⬜ 记忆本身无上限（记忆单独超 `window - reserve` 会"每条新消息折一次"）；pi 的"响应含 toolCall ⇒ 摘要失败"未做 | 小 | `edc_group_fold.c`、`edc_executor.c` |
+| **P2b 卫生** | ✅ **已完成（2026-10-09，未 push）** 四条落地前检查齐（非空 / 正常结束 / 非截断 / **无工具调用**）；"折叠请求装得下"钉成用例 | 小 | `edc_executor.c`、`tests/test_system_task.c`、`tests/test_group_fold.c` |
 | **P3** | 溢出分类 + 自动加紧折叠 + 重试一次 | 中 | 执行器的错误路径、`edc_group_fold.*`、配置 |
 
 **流程**（按仓里规矩）：一期一 commit；每期先给判据再动代码；`bazel clean` 后 `bazel build //...` + 全量 `bazel test //src/tui:all //tests:all --nocache_test_results`；变异自检**必须打到生产者**（`test_session_snapshot` 那种真生产者用例，不能只喂手写 JSON）；A/B 五夹具（`smoke`/`switch`/`bg`/`cancel`/`fold`）比对，其中 **`fold` 夹具是这套改动的主战场**。

@@ -16,6 +16,7 @@
 #include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
+#include "edc_token_estimate.h"
 #include "edc_turn.h"
 #include "log.h"
 #include "utlist_fix.h"
@@ -1378,6 +1379,69 @@ static void test_no_split_turn_at_boundary(void)
     edc_config_free(cfg);
 }
 
+/* P2 判据 (docs/pi-alignment.md §2.4): "折叠请求装得下" —— 在触发线上起折时,
+ * 交给摘要器的语料必须小于 window - reserve, 否则**折叠请求自己**就超窗
+ * (那正是 P2 从"按条数"改成"向窗口要空间"要消掉的隐患)。 */
+static void add_big_member(struct edc_session *session, struct edc_task_group *group, const char *id,
+                           uint32_t seq, const char *tag)
+{
+    struct edc_task *t = edc_task_new(id, session->session_id, group->group_id, tag, edc_channel_adapter);
+    edc_task_group_add_task(group, t);
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup(t->task_id);
+    push_big_msg(turn, 100000, tag); /* ascii/4 ≈ 25k token */
+    edc_task_add_turn(t, turn);
+    edc_task_await_exec(t);
+    edc_task_mark_completed(t);
+    t->completion_seq = seq;
+    t->output = sdsnew(tag);
+}
+
+static void test_fold_request_fits_the_window(void)
+{
+    TEST("P2 判据: 触发线上起折 ⇒ 折叠 prompt 装在 window - reserve 里");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-fit", "Fit");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    struct edc_task_group *group = make_foldable_group(session, "sess-fit", "leader work");
+    add_big_member(session, group, "2", 2, "two");
+    add_big_member(session, group, "3", 3, "three");
+    add_big_member(session, group, "4", 4, "four");
+
+    /* 真路径在成员完成时把它的 turn 并进组历史 (合成夹具这里补上这一步)。 */
+    edc_task_group_rebuild_history(group);
+
+    long long ctx = edc_context_group_ctx_tokens(group, NULL);
+    CHECK(ctx > EDC_FOLD_KEEP_RECENT_TOKENS, "夹具够大 (走尾部 token 预算, 不是压最老一半)");
+
+    /* 窗口取"刚刚过线": window - reserve = ctx - 1 ⇒ 这是触发的最坏位置 (ctx 最小)。 */
+    cfg->context_window = (int)(ctx + EDC_FOLD_RESERVE_TOKENS - 1);
+    long long budget = (long long)cfg->context_window - EDC_FOLD_RESERVE_TOKENS;
+    CHECK(edc_group_fold_due(group, cfg), "刚好过线 ⇒ due");
+
+    struct edc_fold_cut cut;
+    memset(&cut, 0, sizeof(cut));
+    sds prompt = edc_group_fold_build_prompt(group, NULL, &cut);
+    CHECK(prompt != NULL, "拿到 prompt");
+    if (prompt)
+    {
+        long long pt = edc_token_estimate_text(prompt);
+        log_info("  fit: ctx=%lld budget=%lld prompt=%lld cut=%s/%u/%u", ctx, budget, pt,
+                 cut.task_id ? cut.task_id : "(null)", cut.turn, cut.prefix);
+        CHECK(pt < budget, "prompt < window - reserve (否则折叠请求自己超窗)");
+        CHECK(strstr(prompt, "TAGtwo:") != NULL, "老成员进语料");
+        CHECK(strstr(prompt, "TAGfour:") == NULL, "最新那条留在细节里 (尾部预算生效)");
+        sdsfree(prompt);
+    }
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 static void test_unresolvable_cut_folds_nothing(void)
 {
     TEST("切点解析不出来 ⇒ fail-closed: 只写记忆, 什么都不折 (绝不折进记忆没覆盖的消息)");
@@ -1458,6 +1522,7 @@ int main(void)
     test_cut_never_orphans_tool_results();
     test_prompt_initial_variant_names_the_sections();
     test_truncated_summary_discards_fold();
+    test_fold_request_fits_the_window();
     test_no_split_turn_at_boundary();
     test_unresolvable_cut_folds_nothing();
     test_cut_active_turn_committed_before_landing();
