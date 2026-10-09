@@ -178,7 +178,11 @@ void edc_task_group_rebuild_history(struct edc_task_group *group)
     {
         cJSON_AddItemToArray(group->history, sys0);
     }
-    else if (group->session && group->session->config)
+    /* 系统组不装主提示词: 它只装一次性的折叠调用, 而那些请求自带折叠说明
+     * (edc_llm_request), 组历史没有读者。加载期在这里现拼主提示词只会白花钱,
+     * 还留下一个误导的槽位 —— 上一版正是因为"折叠说明住在这个槽位"而在重启后
+     * 让摘要调用背上了主提示词。 */
+    else if (group->session && group->session->config && group->kind != EDC_GROUP_KIND_SYSTEM)
     {
         sds prompt = edc_context_build_system_prompt(group->session->config, group->session->workdir);
         cJSON *sys = cJSON_CreateObject();

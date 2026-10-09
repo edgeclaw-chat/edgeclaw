@@ -77,6 +77,14 @@ extern sds edc_group_fold_build_prompt(struct edc_task_group *group, const char 
 extern struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_session *session,
                                              struct edc_task_group *group, const char *focus);
 
+/** The system message every fold call carries (pi §3: the summary is a separate
+ *  one-shot call, so it must forbid continuing or answering the transcript).
+ *  The fold request is **self-contained**: this message + the fold prompt, and
+ *  nothing else. It deliberately does not live in a group's history[0]: that slot
+ *  is not persisted, and after a restart the loader refilled it with the agent's
+ *  own system prompt — which then rode along in every fold call. */
+extern const char *edc_group_fold_system_prompt(void);
+
 /** Barrier read by the scheduler: true while a fold targeting |group| is in
  *  flight. The scheduler then refuses to drive any task of that group (the fold
  *  task itself lives in the session's system group, so it is not held by its own

@@ -37,5 +37,12 @@ extern int edc_https_client_connect(struct edc_https_client *client, const char 
 extern const char *edc_https_request_get_host(struct edc_https_request *req);
 extern const char *edc_https_request_get_path(struct edc_https_request *req);
 extern void *edc_https_request_get_priv(struct edc_https_request *req);
+
+/**
+ * HTTP status code of the response, or 0 when no status line was parsed (the
+ * request never got a response). Read it in the CLOSE handler: it is filled in
+ * as soon as the status line arrives.
+ */
+extern int edc_https_request_get_status(struct edc_https_request *req);
 extern int edc_https_request_write(struct edc_https_request *req, const unsigned char *buf, size_t len);
 #endif

@@ -187,14 +187,64 @@ pi 的结构天然没有这个问题：**触发发生在接近窗口时，所以
 （同一条路照常 `AWAIT_TOOLS` + 派发），变异 M19（去守卫）/ M20（生效范围过宽）红；变异 M21（预算→0）/
 M22（丢掉尾部预算）红在既有切点用例 + 新用例的"最新那条留在细节里"。
 
-## 2.5 溢出恢复（P3，可单独上）
+## 2.5 溢出检测 + 提示（P3，可单独上）
 
-- 在 LLM 错误路径上分类：**溢出类**（错误文本命中厂商正则：`prompt is too long` / `exceeds the context window` / `maximum context length` …）/ **静默溢出**（stop 但 estimate > window）/ **截断**（`length` + output=0 + input ≈ 99%窗口）；限流类（rate limit / too many requests）**不算**。
-- 命中 → 把该组标"要折"，**收紧** `keep_recent`（例如减半）折一次 → **自动 resume 该 task 一次**（`overflow_recovery_attempted` 标志，失败就报错，不再循环）。
-- 豁免：换模型（消息来自别的模型）、stale usage（早于上次折叠）、`cancelled_request`（已有）。
-- 价值：**窗口爆了不再把任务卡成 ERROR 等人工 resume**——这是这套机制里对体验影响最大的一条。
+> **裁决（2026-10-09）：不自动恢复。** 命中溢出只给一条明确的系统提示，任务该失败还是失败
+> （静默溢出时任务本来就成功，提示附着在结果上）。理由：自动收紧折叠 + 自动 resume 会引入
+> "收紧多少 / 只试一次 / 递归（折叠请求自己超窗）/ 换模型豁免 / attempted 位要不要落盘"一整串
+> 状态，收益却不比一句"该怎么办"的提示大。**没有自动动作 ⇒ 那些豁免规则全部不需要。**（保持这条
+> 可逆：检测这一层是恢复的前置，将来想要恢复，加动作即可。）
 
-**判据（P3）**：三类溢出各自的分类单测（含"限流不算溢出"的反例）；只重试一次；resume 后上下文确实变小（用估算器断言）；变异：限流误判成溢出 → 红；重试无上限 → 红。
+- **状态码透传（已落地 2026-10-09，未提交）**：`edc_https_client` 在 `on_headers_complete` 里存下
+  llhttp 的 `status_code`（新增 `edc_https_request_get_status()`），actor 在 CLOSE 时收进 `resp->http_status`；
+  同时把"没有 choices"这条错误路径从"整坨 JSON dump"改成 **`LLM API error (HTTP <code>): <provider 的 message>`**。
+  这两件合起来才让"400 与 429 分得开"有意义。测试：`test_https_client_get`（live，断言 200 与非 200 两条；
+  变异"不存状态码"→ 2 红）+ 新 `test_llm_actor_http_status`（**manual**，无效 key 打真 provider 拿 401，
+  不花 token；断言 `resp->http_status == 401` 与错误文本以 `LLM API error (HTTP 401): Authentication` 开头
+  —— 变异"不读 provider 的 message"→ 红）。
+- **检测（三层，逐层可降级）**：
+  1. **显式溢出**：provider 报错。**前置已就绪**（状态码 + provider message 都到 `resp` 了，见上）。
+     剩下要做的只是分类器：一个纯函数 `classify(status, code, type, message)`
+     → `{CONTEXT_OVERFLOW, RATE_LIMIT, AUTH, TRANSPORT, OTHER}`（`code` 不可靠，判定以 message 为主键，见 2.5.1）。
+     另有 `finish_reason == "context_length_exceeded"` 今天被映射成 `EDC_REASON_OTHER` ⇒ 提示 "unknown finish reason"，
+     也是白丢的信号。
+  2. **静默溢出**：请求成功（`stop`）但 `usage.prompt_tokens > context_window`（z.ai 型）。只在 `context_window > 0` 可判，
+     否则跳过。**注意不要加 cached**：pi 的 `input + cacheRead` 对应我们这里的单个 `prompt_tokens`（cached 是它的子集，加了就双计）。
+  3. **截断溢出**：`length` 且 `completion_tokens == 0` 且 `prompt ≥ 99%×window`（小米 MiMo 型）。普通 `length`
+     （`completion > 0`，真被截断）**不算**。
+- **限流显式排除**：`429` / `rate limit` / `too many requests` 不算溢出（pi 的 `overflow.ts` 里这条是显式反例）。
+- **提示形态**：复用 executor 的 `notice`（今天 `e->error_message` 就走这条路显示），文案要**带数字 + 带下一步**，
+  例如"上下文超出模型窗口（约 253k / 窗口 128k）——用 `/group fold` 收紧后重试，或换更大窗口的模型"。
+  静默溢出时任务不失败 ⇒ 提示附着在结果之后。
+- **折叠任务自己超窗**：照旧失败（`deliver_memory` 到不了），提示沿用折叠那套话术。**一律不递归**。
+
+**判据（P3）**：三类溢出各自的分类单测（纯函数，喂 `(status, code, type, message)` 字符串）；**限流反例必须不判成溢出**；
+窗口未知时静默溢出分支不触发；提示文本含实际数字；变异：限流判成溢出 → 红；`length` 无 `completion==0` 也判溢出 → 红；
+状态码透传丢掉 → 红（至少一条断言要读到它）。
+
+### 2.5.1 实测（2026-10-09，真打 provider）
+
+探针：先校准 tokenizer 比例（`deepseek-v4-flash` 实测 **4.11 字符/token**），再按目标 token 数投纯文本、`max_tokens=1`。
+
+| 目标 | 结果 |
+|---|---|
+| 250k | HTTP 200，`prompt_tokens=251330`（**未截断**） |
+| 500k | HTTP 200，`prompt_tokens=502620`（未截断） |
+| 1M | HTTP 200，`prompt_tokens=1005501`（未截断） |
+| **2M** | **HTTP 400**：`This model's maximum context length is 1048576 tokens. However, you requested 2011367 tokens (2011366 in the messages, 1 in the completion). Please reduce the length of the messages or completion.` |
+
+**结论（三条，都改变了设计）**：
+
+1. **窗口真值 = 1,048,576**（1 MiB）—— `GET /models` 直接给了元数据：
+   `{"id":"deepseek-flash","name":"DeepSeek-V4.1-Flash","context_window":1048576,"max_output_tokens":393216,...}`。
+   ⇒ 用户这份 config 的 `context_window = 0`（未知）可以改成 1048576 或刻意更小的值；**注意**：填 1M 时触发线在
+   1,032,192（1M − reserve），而实测会话最大 ~253k ⇒ **token 轴实际上永不触发**（= pi 意义上的"显式选择不按 token 折"）。
+2. **≤ 窗口以内不会静默截断**（1M 那发报的 `prompt_tokens` 与实投一致）⇒ 这个 provider 的**静默溢出类不存在**，
+   别为它写复杂逻辑；保留判定即可（其它 provider 仍然可能）。
+3. **判别靠 message 文本，不靠 `code`**：溢出的 `type`/`code` 都是泛化的 `invalid_request_error`，只有 message 里的
+   `maximum context length is <N>` / `Please reduce the length` 是判别特征。⇒ 正则表必须以 message 为主键，
+   并且**顺带能从中抽到"请求了多大 / 窗口多大"**（提示里可以直接写真实数字）。
+   **限流**（`rate limit` / `too many requests`）在 message 上显著不同 ⇒ 反例可测。
 
 ## 2.6 不采纳 / 已知限制（写下来免得以后当 bug 报）
 
@@ -205,11 +255,28 @@ M22（丢掉尾部预算）红在既有切点用例 + 新用例的"最新那条�
 | **文件操作累积追踪** | 待拍板（P4 候选） | 我们是 coding-capable agent，可能有价值；但要抽 tool call 参数 + 跨轮累积 + 落盘，独立一摊 |
 | **扩展钩子 / 分支摘要** | 不做 | 无对应体系 |
 | **缓存断点 / 缓存统计** | 不做（可记录） | 我们已有命中率；只需在文档里写明"**折叠 = 一次缓存重置**"，免得命中率突然掉被当 bug |
-| **`memory_compress_threshold`** | 清理候选 | 已核实：**全仓无读者**（只在 `tools/ab/ab.py` 夹具里），你 `config.json` 里那条是死键 |
+| **`memory_compress_threshold`** | ✅ 已清（2026-10-09） | 已核实**全仓无读者**（`src/` 零引用），本次删掉 `tools/ab/ab.py` 夹具里那条；`config.json` 是用户侧文件，键留着也无害（`edc_init_env` 只补缺不删键，不会自动消失） |
 
 ## 2.7 折叠任务的成本口径（已知，不改）
 
 摘要调用是**系统组**里的一个 task，它的 usage 记在**系统组**的计数器上，不记进被折的组。⇒ 侧栏里"被折组"的 `↑↓` 不含这次摘要；系统组的用量会涨。pi 是把摘要 usage 计进会话成本的（`CompactionEntry.usage`）。**只是口径差异，不是 bug**；要不要改（例如把摘要用量记回被折组）需拍板。
+
+## 2.8 折叠请求的形状：自足（2026-10-09 订正）
+
+折叠任务住在 **system group** 里。要担心的两件事都**不成立**，第三件成立且已修：
+
+| 问题 | 结论 | 依据（护栏） |
+|---|---|---|
+| 折叠任务会不会共享目标组的 `group->memory`？ | **不会** | 请求装配只认 `task->group`（= 系统组），不认 `task->sink_group`（= 目标组）。目标组的记忆**只**以折叠 prompt 里 `[<previous-summary>]` 的形式进来（pi 的迭代语义，故意的） |
+| 会不会累积上一轮折叠的 prompt / 摘要？ | **不会** | 三条同向护栏：① 落盘侧 `edc_executor.c` 只有 `sink != GROUP_MEMORY` 才把 turn 并进组历史；② 组内容序 `edc_task_group_content_order` 跳过 `sink == GROUP_MEMORY` 成员；③ `rebuild_history` 同口径 |
+| 重启后呢？ | **曾会** ✗→✅ | `group->history` **不落盘** ⇒ 加载期 `rebuild_history` 给空 history 现拼**主提示词**；而折叠说明当时住 `history[0]`、且"只在空时写"的守卫不会纠正 ⇒ **每条折叠请求都背着主提示词**。同一路径也让 **resume 的折叠**（不起折、只重发请求）拿到主提示词 |
+
+**修法（2026-10-09）**：折叠请求**自足** —— `edc_llm_request.c` 对 `sink == GROUP_MEMORY` 直接
+`[edc_group_fold_system_prompt()]` + 它自己的 turn，**完全不走组上下文**（不调
+`edc_context_append_system_part`、不注入组历史）；系统组不再有共享头部；加载期也不再给系统组
+现拼主提示词。判据：`tests/test_llm_request.c` 的 **"折叠请求是自足的"**（夹具显式把主提示词摆进
+系统组 `history[0]`，断言请求第一条消息**逐字节**等于折叠说明且不含 `# EdgeClaw`；变异：改回走组
+上下文 → 2 红，既自足又走一遍组上下文 → 1 红）。
 
 ---
 
@@ -221,7 +288,7 @@ M22（丢掉尾部预算）红在既有切点用例 + 新用例的"最新那条�
 | **P2a** | ✅ **已完成（2026-10-09，commit `d83f4ba`）** 窗口配置 + 水位重构（消息级 `folded_prefix`，schema v6 + 迁移脚本）+ 触发（写法乙，两个挂载点）+ 切点（尾部 token 预算 / 在飞 turn 进语料 / 切点合法性） | 中大 | `edc_group_fold.*`、`edc_config.*`、`edc_state_serializer.c`、`edc_context.*` |
 | **P2b** | ✅ **已完成（2026-10-09，未 push）** 摘要 prompt 结构化（6 段 + `<previous-summary>` 迭代 + focus）、折叠请求 `max_tokens` 且截断不当 checkpoint、手动 `/group fold [id] [focus]`、split-turn 段 | 中 | `edc_group_fold.*`、`edc_llm_actor.*`、`edc_llm_request.c`、`edc_executor.*`、`edc_scheduler.*`、`edc_commands.c` |
 | **P2b 卫生** | ✅ **已完成（2026-10-09，未 push）** 四条落地前检查齐（非空 / 正常结束 / 非截断 / **无工具调用**）；"折叠请求装得下"钉成用例 | 小 | `edc_executor.c`、`tests/test_system_task.c`、`tests/test_group_fold.c` |
-| **P3** | 溢出分类 + 自动加紧折叠 + 重试一次 | 中 | 执行器的错误路径、`edc_group_fold.*`、配置 |
+| **P3** | **溢出检测 + 明确的系统提示（不自动恢复）**（用户 2026-10-09 裁决） | 小 | 执行器的错误路径、`edc_llm_actor.*` / https（状态码 + 结构化错误体）、提示文案 |
 
 **流程**（按仓里规矩）：一期一 commit；每期先给判据再动代码；`bazel clean` 后 `bazel build //...` + 全量 `bazel test //src/tui:all //tests:all --nocache_test_results`；变异自检**必须打到生产者**（`test_session_snapshot` 那种真生产者用例，不能只喂手写 JSON）；A/B 五夹具（`smoke`/`switch`/`bg`/`cancel`/`fold`）比对，其中 **`fold` 夹具是这套改动的主战场**。
 
@@ -269,11 +336,12 @@ M22（丢掉尾部预算）红在既有切点用例 + 新用例的"最新那条�
 
 > 只剩这三条，且都不挡 P2。回复点号即可（"10A 11A 12A"）。
 
-**10.（P3 动工前必须定）⚠️ 窗口爆了要不要自动恢复？** LLM 报 `prompt too long` 类错误 → 自动加紧折叠 → **自动 resume 一次**。
-- A 要（推荐：体验收益最大的一条，窗口爆了不再卡成 ERROR 等人肉 resume）
-- B 不要（保持"错误就是错误"）
+**10.（P3 动工前必须定）⚠️ 窗口爆了要不要自动恢复？** —— ✅ **已定 B（2026-10-09，用户裁决）**：
+**不自动恢复，但给一条明确的系统提示**。scope 因此从"分类 + 收紧折叠 + 重试一次"缩到"**分类 + 提示**"，
+连带这些设计点全部作废：`overflow_recovery_attempted` 存哪、收紧力度、换模型豁免、递归上界。
+见 §2.5。
 
-**11. 死键 `memory_compress_threshold`**（已核实全仓无读者，只活在 `tools/ab/ab.py` 夹具里，你的 config.json 里也有）：A 清掉（推荐）/ B 留着。
+**11. 死键 `memory_compress_threshold`** —— ✅ **已定 A（清掉）并落地（2026-10-09）**：删 `tools/ab/ab.py` 夹具里那条；`src/` 本来就没读者。你 `config.json` 里那条我改不到（在可写路径外），留着无害 —— 想清就 `python3 -c "import json,pathlib;p=pathlib.Path.home()/'.edgeclaw/config.json';d=json.loads(p.read_text());d.pop('memory_compress_threshold',None);p.write_text(json.dumps(d,indent='\t',ensure_ascii=False))"`。
 
 **12. 文件操作追踪**（pi 的 `<read-files>` / `<modified-files>`，跨多次压缩累积）：A 先不做（推荐）/ B 做（独立一摊，P4 候选）。
 

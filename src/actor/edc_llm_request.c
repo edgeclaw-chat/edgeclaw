@@ -109,12 +109,29 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
      * 队尾 (req->tail_system, llm actor 在 history + 当前 turn 之后发出)。 */
     cJSON *msgs = cJSON_CreateArray();
 
+    /* sink = GROUP_MEMORY 的折叠任务要的是**一次自足的摘要调用**: 折叠说明 (system)
+     * + 它自己的 turn (折叠 prompt), 不含别的东西。所以它不走组上下文 —— 尤其不能
+     * 走组 history[0]: 那个槽位不落盘, 重启后加载期会把它填成主提示词
+     * (edc_task_group_rebuild_history), 摘要器于是背上 EdgeClaw 的人设 / MEMORY.md /
+     * 工具指令, 而它根本没有工具。折叠 prompt 自带全部语料, 不需要任何组历史。 */
+    const bool is_memory_sink = (task->sink == EDC_SINK_GROUP_MEMORY);
+
     sds pristine = NULL;
     /* 属主 session 的 workdir: 后台 session 里的任务续跑时系统提示里的
      * {{cwd}} 必须是它自己的目录 (P3 ③: 没有属主就没有目录, 不猜"当前的")。 */
     struct edc_session *own = (task->group && task->group->session) ? task->group->session : NULL;
     const char *workdir = own ? edc_session_get_workdir(own) : NULL;
-    edc_context_append_system_part(msgs, sched->config, task->group, workdir, &pristine);
+    if (is_memory_sink)
+    {
+        cJSON *sys = cJSON_CreateObject();
+        cJSON_AddStringToObject(sys, "role", "system");
+        cJSON_AddStringToObject(sys, "content", edc_group_fold_system_prompt());
+        cJSON_AddItemToArray(msgs, sys);
+    }
+    else
+    {
+        edc_context_append_system_part(msgs, sched->config, task->group, workdir, &pristine);
+    }
 
     /* group 无历史时 context 现拼的纯净 prompt: 写回 group history[0] (组内
      * 所有 task 共享、保持纯净) */
@@ -131,7 +148,7 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         sdsfree(pristine);
     }
 
-    if (task->group && cJSON_GetArraySize(task->group->history) > 0)
+    if (!is_memory_sink && task->group && cJSON_GetArraySize(task->group->history) > 0)
     {
         size_t total = cJSON_GetArraySize(task->group->history);
         size_t end = total;
@@ -239,7 +256,6 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
      * 所以不给它工具定义 —— 摘要器没有工具可用, 也不该被工具循环带走 (旧实现
      * 发给 LLM 的请求里 tools 字段是空的, 这条差别的唯一理由就是保持那份请求
      * 逐字节可比)。 */
-    const bool is_memory_sink = (task->sink == EDC_SINK_GROUP_MEMORY);
     cJSON *tools = (!is_memory_sink) ? tool_schemas : NULL;
     struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, tools,
                                                           task->active_turn ? &task->active_turn->messages : NULL);

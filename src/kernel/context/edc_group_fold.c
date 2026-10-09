@@ -23,13 +23,19 @@
  * Only turns are folded, never task->output. The prompt building and threshold
  * logic are unchanged from the old memory_actor. */
 
-/* Fold task system prompt: the system group's shared history[0]. pi §3: the
- * summary is a **separate one-shot call**, not a continuation of the conversation,
- * so the prompt has to forbid continuing or answering it. */
+/* Fold task system prompt (pi §3): the summary is a **separate one-shot call**,
+ * not a continuation of the conversation, so the prompt has to forbid continuing
+ * or answering it. The request builder puts it in front of the fold prompt
+ * (edc_llm_request); the fold task shares no group context. */
 static const char *kFoldSystemPrompt =
     "You are a context summarization assistant. Read the transcript and produce (or update) a structured "
     "summary of it. Do NOT continue the conversation, do NOT answer anything in it, and do NOT call tools. "
     "Output ONLY the summary.";
+
+const char *edc_group_fold_system_prompt(void)
+{
+    return kFoldSystemPrompt;
+}
 
 /* ── 摘要 prompt (P2b, pi §3/§8) ────────────────────────────────────────
  * 一次独立请求, 两段式拼法:
@@ -452,14 +458,12 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
     task->fold_cut_turn = cut.turn;
     task->fold_cut_prefix = cut.prefix;
 
-    /* The system group's shared header, written once. */
-    if (task->group && cJSON_GetArraySize(task->group->history) == 0)
-    {
-        cJSON *msg = cJSON_CreateObject();
-        cJSON_AddStringToObject(msg, "role", "system");
-        cJSON_AddStringToObject(msg, "content", kFoldSystemPrompt);
-        edc_task_group_history_add_owned(task->group, msg);
-    }
+    /* No shared header any more: the fold request carries the instruction itself
+     * (see edc_group_fold_system_prompt). The old version wrote it into the system
+     * group's history[0] — which is not persisted, so after a restart the loader
+     * refilled that slot with the agent's main system prompt and the "written once"
+     * guard never corrected it: every fold call then ran with EdgeClaw's persona
+     * and MEMORY.md in front of the transcript. */
 
     log_info("L1 fold start: group %s task=%s prompt=%zu bytes, cut=task %s turn %u msg %u", group->group_id,
              task->task_id, sdslen(prompt), task->fold_cut_task_id ? task->fold_cut_task_id : "(none)",

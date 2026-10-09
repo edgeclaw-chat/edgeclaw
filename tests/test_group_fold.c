@@ -310,18 +310,11 @@ static void test_fold_runs_as_a_system_task(void)
     CHECK(fold->fold_cut_turn == 0 && fold->fold_cut_prefix == 2, "以及切在它的第 0 个 turn 的第 2 条");
     CHECK(edc_task_awaits_exec(fold), "已派发 (在等 LLM 回话)");
     CHECK(fold->active_turn != NULL, "带着它的 input (折叠 prompt)");
-    /* 系统组的共用头部 = 折叠说明 (等价于旧实现现拼的那条 system 消息)。 */
-    CHECK(cJSON_GetArraySize(sg->history) == 1, "系统组头部只有一条 system prompt");
-    if (cJSON_GetArraySize(sg->history) == 1)
-    {
-        cJSON *sys = cJSON_GetArrayItem(sg->history, 0);
-        cJSON *content = cJSON_GetObjectItem(sys, "content");
-        CHECK(content && cJSON_IsString(content) && strstr(content->valuestring, "context summarization assistant") != NULL,
-              "它就是折叠说明");
-        CHECK(content && cJSON_IsString(content) &&
-                  strstr(content->valuestring, "Do NOT continue the conversation") != NULL,
-              "并禁止模型把对话续写下去 (pi §3)");
-    }
+    /* 系统组**不带**共享头部: 折叠说明随请求走 (edc_llm_request 用
+     * edc_group_fold_system_prompt() 现拼, 见 tests/test_llm_request.c 的
+     * "折叠请求是自足的")。从前它住这个组的 history[0], 而那个槽位不落盘 ——
+     * 重启后加载期会把它填成主提示词, 摘要调用就背上了 EdgeClaw 的人设。 */
+    CHECK(cJSON_GetArraySize(sg->history) == 0, "系统组没有共享 header (折叠说明随请求走)");
 
     /* 该 session 已有折叠在飞: 不再起第二次 (免得两次折叠看见半成品记忆)。 */
     CHECK(edc_scheduler_has_pending_system_task(session), "有折叠在飞");

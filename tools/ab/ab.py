@@ -75,7 +75,6 @@ def gen_config(ecl: Path, extra_rw=()):
     ws = ecl / "workspace"
     cfg = {
         "max_iter": -1,
-        "memory_compress_threshold": 200,
         # 折叠阈值: 默认 200 (smoke/bg/cancel 都够不到, 所以那些夹具不折)。
         # fold 夹具在冻结时用 AB_FOLD_MSG_THRESHOLD 调低, 好在几轮对话内就
         # 触发一次真正的折叠 —— 折叠的**产物** (memory / turns_folded / 水位)

@@ -35,7 +35,8 @@ struct edc_llm_actor_http_req
     struct llm_api_conf *api_conf;
     edc_actor_t *from;
     sds response;
-    sds error; /* first cause reported by the https client; surfaced on CLOSE */
+    sds error;    /* first cause reported by the https client; surfaced on CLOSE */
+    int status;   /* HTTP status of the response (0 = no response: transport failure) */
     void *request_id;
 };
 
@@ -50,6 +51,7 @@ static struct edc_llm_actor_http_req *edc_llm_actor_http_req_new(edc_actor_t *ac
     req->from = from;
     req->response = NULL;
     req->error = NULL;
+    req->status = 0;
     req->request_id = request_id;
     return req;
 }
@@ -107,6 +109,8 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
     }
     else if (ev == EDC_HTTPS_EVENT_CLOSE)
     {
+        /* The status line is parsed before any body, so by CLOSE it is final. */
+        httpreq->status = edc_https_request_get_status(req);
         if (httpreq->response)
         {
             edc_actor_send(httpreq->actor,
@@ -277,17 +281,35 @@ static void edc_llm_actor_parse_usage(cJSON *response, struct edc_llm_actor_resp
         resp->usage.total_tokens = resp->usage.prompt_tokens + resp->usage.completion_tokens;
 }
 
-static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp *resp)
+static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp *resp, int http_status)
 {
     resp->error = NULL;
+    resp->http_status = http_status;
     edc_llm_actor_parse_usage(response, resp);
     cJSON *choices = cJSON_GetObjectItem(response, "choices");
     if (!choices || !cJSON_IsArray(choices) || cJSON_GetArraySize(choices) == 0)
     {
-        char *err_msg = cJSON_Print(response);
-        log_error("resp format error choice 0 is not exist: %s", err_msg);
-        resp->error = edc_error_new(EDC_ERR_INVAL, "resp format choice 0 is not exist: %s", err_msg);
-        cJSON_free(err_msg);
+        /* No choices = the provider refused the request. It says why in
+         * `error.message` ("This model's maximum context length is 1048576
+         * tokens. However, you requested ..."), and the status says who refused
+         * (400 = bad request / overflow, 429 = rate limit, 401 = auth). Surface
+         * both: the raw-JSON dump that used to go out here hid the two fields
+         * that the error classifier reads, and read terribly. */
+        cJSON *err = cJSON_GetObjectItem(response, "error");
+        cJSON *emsg = (err && cJSON_IsObject(err)) ? cJSON_GetObjectItem(err, "message") : NULL;
+        if (emsg && cJSON_IsString(emsg) && emsg->valuestring)
+        {
+            log_error("llm api error (HTTP %d): %s", http_status, emsg->valuestring);
+            resp->error = edc_error_new(EDC_ERR_FAILED, "LLM API error (HTTP %d): %s", http_status, emsg->valuestring);
+        }
+        else
+        {
+            char *err_msg = cJSON_Print(response);
+            log_error("resp format error choice 0 is not exist (HTTP %d): %s", http_status, err_msg);
+            resp->error = edc_error_new(EDC_ERR_INVAL, "resp format choice 0 is not exist (HTTP %d): %s", http_status,
+                                        err_msg);
+            cJSON_free(err_msg);
+        }
         return false;
     }
 
@@ -460,7 +482,7 @@ static void edc_llm_actor_handle_respone(edc_actor_t *actor, edc_actor_msg_t *ms
         goto exit;
     }
 
-    bool ok = edc_llm_actor_parse_resp(body, resp);
+    bool ok = edc_llm_actor_parse_resp(body, resp, req->status);
     if (!ok)
     {
         log_error("parse resp error: %s", resp->error->message);

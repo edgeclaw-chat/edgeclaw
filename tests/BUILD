@@ -622,6 +622,19 @@ cc_test(
 )
 
 cc_test(
+    name = "test_llm_actor_http_status",
+    srcs = ["test_llm_actor_http_status.c"],
+    tags = ["manual"],  # 网络 + 真 provider（故意用无效 key 拿 401），同 test_llm_actor
+    deps = [
+        "//src/actor:actor",
+        "//src/actor:actors",
+        "//src/common:common",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_llm_actor_config",
     srcs = ["test_llm_actor_config.c"],
     deps = [

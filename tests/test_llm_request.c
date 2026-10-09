@@ -13,6 +13,7 @@
 #include "edc_actor.h"
 #include "edc_compat.h"
 #include "edc_config.h"
+#include "edc_context.h"
 #include "edc_llm_actor.h"
 #include "edc_group_fold.h"
 #include "edc_llm_request.h"
@@ -300,6 +301,73 @@ static void test_summary_request_is_capped(void)
     harness_down(&h);
 }
 
+/* ══════════════════════════════════════════════════════════════
+ *  Case 4: 折叠请求是**自足**的 (折叠说明 + 折叠 prompt, 别无他物)
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_fold_request_is_self_contained(void)
+{
+    TEST("折叠请求: 只有折叠说明 + 折叠 prompt; 重启后也不许混进主提示词");
+
+    struct harness h;
+    harness_up(&h);
+    struct edc_task *leader = NULL;
+    struct edc_task_group *g = make_group(&h, &leader, "sess-fold-req");
+    (void)g;
+
+    struct edc_task *fold = edc_scheduler_spawn_system_task(h.sched, h.sess, "fold group memory");
+    CHECK(fold != NULL, "起一个折叠任务");
+    struct edc_task_group *sys = edc_session_find_system_group(h.sess);
+    CHECK(sys != NULL, "它进了系统组");
+
+    /* 模拟重启: 组的 history **不落盘** ⇒ 加载器读回的是空 history, 并对每个组跑一次
+     * rebuild (deser_rebuild_group_history) —— 这一跑就是本用例的病根: 系统组会因此
+     * 拿到一条主提示词。 */
+    if (sys)
+    {
+        cJSON_Delete(sys->history);
+        sys->history = cJSON_CreateArray();
+        edc_task_group_rebuild_history(sys);
+        /* 显式摆出**修复前重启后**的真形状: 那个槽位里躺着主提示词 (当时的加载期
+         * 就是这么填的, 实测确认过)。修复后折叠请求不读这个槽位, 所以下面那几条
+         * 断言与它无关; 一旦有人把折叠请求改回走组上下文, 这个夹具立刻变红。 */
+        if (cJSON_GetArraySize(sys->history) == 0)
+        {
+            sds mainp = edc_context_build_system_prompt(h.cfg, NULL);
+            cJSON *m = cJSON_CreateObject();
+            cJSON_AddStringToObject(m, "role", "system");
+            cJSON_AddStringToObject(m, "content", mainp);
+            edc_task_group_history_add_owned(sys, m);
+            sdsfree(mainp);
+        }
+        cJSON *h0 = cJSON_GetArrayItem(sys->history, 0);
+        const char *c0 = h0 ? cJSON_GetStringValue(cJSON_GetObjectItem(h0, "content")) : NULL;
+        log_info("  (前置: 系统组 history[0] 里躺着 = %.24s)", c0 ? c0 : "(空)");
+    }
+
+    edc_scheduler_attach_input(h.sched, fold, "SUMMARIZE-BODY");
+    g_req_msgs = 0;
+    edc_llm_request_send(h.sched, fold, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 1 && g_req != NULL, "折叠请求发出去了");
+    if (g_req)
+    {
+        CHECK(cJSON_GetArraySize(g_req->history) == 1, "请求前缀只有一条消息");
+        cJSON *sys0 = cJSON_GetArrayItem(g_req->history, 0);
+        const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(sys0, "role"));
+        const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(sys0, "content"));
+        CHECK(role && strcmp(role, "system") == 0, "它是 role=system");
+        CHECK(content && strcmp(content, edc_group_fold_system_prompt()) == 0,
+              "内容逐字节 = 折叠说明 (不是主提示词)");
+        CHECK(content && strstr(content, "# EdgeClaw") == NULL, "没有主提示词 (重启那条污染路径)");
+        CHECK(g_req->turn == &fold->active_turn->messages, "turn 就是折叠任务的 turn (折叠 prompt)");
+        CHECK(g_req->tail_system == NULL, "队尾不追加 todo 提醒 (摘要不该被插尾)");
+        edc_llm_actor_req_free(g_req);
+        g_req = NULL;
+    }
+    harness_down(&h);
+}
+
 /* ══════════════════════════════════════════════════════════════ */
 
 int main(void)
@@ -307,6 +375,7 @@ int main(void)
     test_turn_begin_honours_folded_prefix();
     test_turn_begin_zero_without_prefix();
     test_summary_request_is_capped();
+    test_fold_request_is_self_contained();
 
     printf("\n  %d passed, %d failed\n\n", test_passed, test_failed);
     return test_failed ? 1 : 0;
