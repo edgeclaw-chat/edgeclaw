@@ -174,10 +174,13 @@ int main(void)
     T_CHECK(cfg && cfg->context_window == 0, "explicit 0 stays 0");
     edc_config_free(cfg);
 
-    /* (7) fold policy constants (decisions 13). */
+    /* (7) fold policy constants (decisions 13; a/b/c 见 edc_group_fold.h). */
     T_CHECK(EDC_FOLD_RESERVE_TOKENS == 16384, "reserve = 16k");
     T_CHECK(EDC_FOLD_KEEP_RECENT_TOKENS == 20000, "keep_recent = 20k");
-    T_CHECK(EDC_FOLD_SUMMARY_MAX_TOKENS == (EDC_FOLD_RESERVE_TOKENS * 8) / 10, "summary cap = 0.8 x reserve");
+    T_CHECK(EDC_FOLD_SUMMARY_MAX_TOKENS == 32768, "摘要预算 = 32768 (不再由 reserve 推: 0.8 x reserve 太小)");
+    T_CHECK(EDC_FOLD_MAX_CORPUS_TOKENS == EDC_FOLD_SUMMARY_MAX_TOKENS * 4, "语料上限 = 4 x 摘要预算 (压缩比可达成)");
+    T_CHECK(EDC_FOLD_MAX_CORPUS_TOKENS == 131072, "就是 131072");
+    T_CHECK(EDC_FOLD_MAX_FAILURES == 3, "连续失败上限 = 3");
 
     printf("test_config_window: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

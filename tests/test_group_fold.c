@@ -1333,6 +1333,7 @@ static void test_truncated_summary_discards_fold(void)
           "记忆原样 (半截摘要没有顶掉它)");
     CHECK(count_folded(group) == 0, "一条也没折 (切点没动)");
     CHECK(res.notice && strstr(res.notice, "truncated") != NULL, "提示直说被截断 (可诊断, 不是 ‘unknown finish reason’)");
+    CHECK(group->fold_failures == 1, "(c) 真实的 ERROR 路径也记一次失败 (调度器那条钩子)");
 
     edc_session_free(session);
     edc_scheduler_free(sched);
@@ -1486,9 +1487,138 @@ static void test_cut_active_turn_committed_before_landing(void)
     edc_task_commit_active_turn(running);
     CHECK(running->active_turn == NULL && running->turns.tail - running->turns.head == 1, "turn 已提交, 队列里就它一个");
 
+    /* 落地成功必须把失败账清零 (与"起折不清零"配对): 先人为记两笔。 */
+    group->fold_failures = 2;
     edc_group_fold_deliver_memory(fold, "# Merged\n- folded");
     CHECK(active->folded_prefix == 3, "前缀打在**同一个 turn 对象**上 (提交后它在队列末尾)");
     CHECK(running->turns.data[running->turns.tail - 1] == active, "队列末尾就是它");
+    CHECK(group->fold_failures == 0, "(c) 落地成功清零失败账 (起折不清零, 落地才清)");
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* ═══════════════════════════════════════════════════════════
+ *  Test 20 (b): 语料上限 —— 单次折叠不许把不可达成的压缩比压给摘要器
+ * ═══════════════════════════════════════════════════════════ */
+
+/* 一条 chars 个 'a' 的大消息 (估算 ≈ chars/4 token)。**显式写 NUL** —— 别赌 malloc
+ * 给的是清零页 (老助手就少了这一句, 只是恰好一直没事)。 */
+static void push_big_msg_n(struct edc_turn *turn, size_t chars, const char *tag)
+{
+    char *buf = malloc(chars + 64);
+    int w = snprintf(buf, chars + 64, "TAG%s:", tag);
+    memset(buf + w, 'a', chars);
+    buf[w + (int)chars] = '\0';
+    cJSON *m = cJSON_CreateObject();
+    cJSON_AddStringToObject(m, "role", "user");
+    cJSON_AddStringToObject(m, "content", buf);
+    free(buf);
+    edc_turn_add_message(turn, m);
+}
+
+static void test_corpus_is_capped(void)
+{
+    TEST("(b) 语料超上限 ⇒ 切点往回收: 宁可多留细节, 也不发一发超压缩比的请求");
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-corpus-cap", "CorpusCap");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    /* 8 条各 ~25k token 的完成成员。尾部预算 (keep_recent) 单独作用只会留最新那一条
+     * ⇒ 语料 ~175k, 是上限 131072 的 1.3 倍 —— 那正是"要求模型 13:1 压缩"的现场。 */
+    struct edc_task_group *group = make_foldable_group(session, "sess-corpus-cap", "tiny leader");
+    for (uint32_t seq = 2; seq <= 9; seq++)
+    {
+        char id[8];
+        snprintf(id, sizeof(id), "%u", seq);
+        struct edc_task *t = edc_task_new(id, "sess-corpus-cap", group->group_id, id, edc_channel_adapter);
+        edc_task_group_add_task(group, t);
+        struct edc_turn *turn = edc_turn_new();
+        turn->task_id = strdup(t->task_id);
+        push_big_msg_n(turn, 100000, id);
+        edc_task_add_turn(t, turn);
+        edc_task_await_exec(t);
+        edc_task_mark_completed(t);
+        t->completion_seq = seq;
+        t->output = sdsnew(id);
+    }
+
+    struct edc_fold_cut cut;
+    memset(&cut, 0, sizeof(cut));
+    sds prompt = edc_group_fold_build_prompt(group, NULL, &cut);
+    CHECK(prompt != NULL, "拿到 prompt");
+    /* 上限把切点从 "9" (尾部预算的结果) 收到 "7": 语料 = leader + 2..6
+     * = 11 + 5 x 25010 = 125061 <= 131072; 再加一条 (150071) 就超。 */
+    CHECK(cut.task_id && strcmp(cut.task_id, "7") == 0,
+          "切点被上限收到 task 7 (尾部预算单独作用会切在最新的 9)");
+    if (prompt)
+    {
+        CHECK(strstr(prompt, "TAG2:") != NULL && strstr(prompt, "TAG6:") != NULL, "上限内的都进语料");
+        CHECK(strstr(prompt, "TAG7:") == NULL && strstr(prompt, "TAG8:") == NULL && strstr(prompt, "TAG9:") == NULL,
+              "超出上限的三条整条留作细节 (一条都没被切一半)");
+        sdsfree(prompt);
+    }
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* ═══════════════════════════════════════════════════════════
+ *  Test 21 (c): 连续失败上限 —— 失败不许变成"每 ~40s 原样重试"的永动机
+ * ═══════════════════════════════════════════════════════════ */
+
+static void test_fold_failure_cap(void)
+{
+    TEST("(c) 连续失败到上限 ⇒ 自动折叠停手; 手动折叠是唯一的重启开关");
+    struct edc_config *cfg = make_config();
+    cfg_thr(cfg, 2); /* 窗口轴不参与: 用条数轴, 组一定"该折" */
+    struct edc_session *session = edc_session_new(cfg, "sess-failcap", "FailCap");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+
+    struct edc_task_group *group = make_foldable_group(session, "sess-failcap", "old leader");
+    add_foldable_task(session, group, "2", 2, 4, "task two");
+
+    CHECK(edc_group_fold_due(group, cfg), "基线: 该折");
+    edc_group_fold_note_failure(group);
+    CHECK(group->fold_failures == 1 && edc_group_fold_due(group, cfg), "1 次失败: 还该折 (一次失败就放弃太脆)");
+    edc_group_fold_note_failure(group);
+    CHECK(edc_group_fold_due(group, cfg), "2 次失败: 还没到顶");
+    edc_group_fold_note_failure(group);
+    CHECK(group->fold_failures == EDC_FOLD_MAX_FAILURES, "到上限");
+    CHECK(!edc_group_fold_due(group, cfg), "到上限后自动路径不再该折 (永动机熄火)");
+
+    /* 起折本身**不**复位 —— 否则"起折 → 失败 → 起折"永远到不了上限, 正是永动机的形状。
+     * start 也不受限 (只有 due 那道门管自动路径, 手动/直接起折照走)。 */
+    struct edc_task *direct = edc_group_fold_start(sched, session, group, NULL);
+    CHECK(direct != NULL, "start 不受失败上限限制 (被限制的是 due 这道门)");
+    CHECK(group->fold_failures == EDC_FOLD_MAX_FAILURES, "起折**不清零** (清零的是落地/手动/新内容)");
+    if (direct)
+        edc_task_mark_cancelled(direct); /* 收尾: 会话里别有在飞的系统任务, 免得下面的手动折叠被挡 */
+
+    /* 手动折叠既不受上限限制, 也是复位开关 (自动路径熄火后唯一的重启方式)。 */
+    struct edc_task *manual = edc_scheduler_fold_group_now(sched, session, group, NULL);
+    CHECK(manual != NULL, "手动 /group fold 照起");
+    CHECK(group->fold_failures == 0, "手动折叠清掉失败账");
+    CHECK(edc_group_fold_due(group, cfg), "复位后自动路径又该折了");
+
+    /* 组里又有了**已提交内容**也清零 (调度器那条钩子: 成员完成 = 新情况, 值得再试)。 */
+    group->fold_failures = EDC_FOLD_MAX_FAILURES;
+    struct edc_task *member = edc_task_new("99", "sess-failcap", group->group_id, "later work", edc_channel_adapter);
+    edc_task_group_add_task(group, member);
+    edc_task_await_exec(member);
+    edc_task_mark_completed(member);
+    struct edc_advance_result r;
+    memset(&r, 0, sizeof(r));
+    r.outcome = EDC_STEP_DONE;
+    r.settled = true;
+    r.changed = true;
+    edc_scheduler_apply_advance(sched, member, NULL, &r);
+    CHECK(group->fold_failures == 0, "成员完成 (新内容) ⇒ 失败账清零");
 
     edc_session_free(session);
     edc_scheduler_free(sched);
@@ -1519,6 +1649,8 @@ int main(void)
     test_no_split_turn_at_boundary();
     test_unresolvable_cut_folds_nothing();
     test_cut_active_turn_committed_before_landing();
+    test_corpus_is_capped();
+    test_fold_failure_cap();
 
     log_info("=== %d passed, %d failed ===", test_passed, test_failed);
     printf("%d passed, %d failed\n", test_passed, test_failed);

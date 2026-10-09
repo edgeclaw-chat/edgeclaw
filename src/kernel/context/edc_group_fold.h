@@ -14,11 +14,35 @@ struct edc_task_group;
 /* Fold policy (pi alignment, decisions 13/14). A group folds when its estimated
  * context exceeds `context_window - EDC_FOLD_RESERVE_TOKENS`; the fold keeps the
  * newest EDC_FOLD_KEEP_RECENT_TOKENS of detail and everything older becomes the
- * summarization corpus. The reserve is what has to cover the summary request's
- * own overhead *and* its answer, hence the cap below. */
+ * summarization corpus. */
 #define EDC_FOLD_RESERVE_TOKENS 16384
 #define EDC_FOLD_KEEP_RECENT_TOKENS 20000
-#define EDC_FOLD_SUMMARY_MAX_TOKENS ((EDC_FOLD_RESERVE_TOKENS * 8) / 10)
+
+/* (a) 摘要的**输出**预算.
+ *
+ * 旧值 = 0.8 x reserve = 13107 —— 那是"窗口里留白"的量 (触发线的余量), 不是"摘要
+ * 该有多大"的量。语料可以是 keep_recent 之外的**整段历史**: 2026-10-09 实测 178 条
+ * 消息 / ~137k token, 要模型把 137k 压进 13k, 结果每发都撞 finish_reason=length;
+ * 而截断按 P2b-2 被丢弃 ⇒ 折叠永远不落地 ⇒ 组一直"该折", 每 ~40s 原样重试一发
+ * (每发都是一次 ~67k prompt 的真调用), 组里的成员被反复 park。
+ *
+ * 现在预算与语料配套 (见 EDC_FOLD_MAX_CORPUS_TOKENS), 取一个够宽敞的常数。 */
+#define EDC_FOLD_SUMMARY_MAX_TOKENS 32768
+
+/* (b) 单次折叠送进摘要器的**语料上限** (我们的估算口径)。
+ *
+ * 保证语料与输出预算之间的压缩比可达成 (≤ 4:1), 而不是把 10:1 甚至更高的压缩比
+ * 压给摘要器。超上限时把切点往回收 —— 多留细节、少折一点, 下一轮再折剩下的; 切点
+ * 永远还是消息边界 (与 keep_recent 同一条规则)。 */
+#define EDC_FOLD_MAX_CORPUS_TOKENS (EDC_FOLD_SUMMARY_MAX_TOKENS * 4)
+
+/* (c) 连续失败的次数上限。
+ *
+ * 到顶就**停自动折叠** (手动 `/group fold` 不受此限), 免得"失败 → 组仍然该折 →
+ * 原样重试"变成永动机。计数在**落地成功 / 手动折叠 / 组里又有了已提交内容**时清零
+ * (后两者才是"新情况"; 起折本身不清零, 否则永远到不了上限)。只在内存, 不落盘 ——
+ * 重启视为新情况。 */
+#define EDC_FOLD_MAX_FAILURES 3
 
 /* L1 fold: turns of finished tasks in a group -> group->memory, run as a system
  * task { sink = GROUP_MEMORY } in the session's system group. This module decides
@@ -64,7 +88,9 @@ struct edc_fold_cut
  *  from the newest backwards, keep the newest EDC_FOLD_KEEP_RECENT_TOKENS as detail,
  *  everything older is the corpus. The cut lands on a message boundary. When the whole
  *  group is under that budget -- only reachable when no window is configured -- fold
- *  the oldest half instead, or a small group could never fold. */
+ *  the oldest half instead, or a small group could never fold. The corpus is then
+ *  capped at EDC_FOLD_MAX_CORPUS_TOKENS (b): the cut moves back until what is sent can
+ *  actually be compressed into EDC_FOLD_SUMMARY_MAX_TOKENS in one call. */
 /** |focus| (optional, NULL ok) lands verbatim in the prompt as "Additional focus:" --
  *  it is how the manual `/group fold [id] [focus]` (decision 8) steers a fold. */
 extern sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus, struct edc_fold_cut *out_cut);
@@ -97,5 +123,14 @@ extern bool edc_group_fold_holds_group(struct edc_task_group *group);
  *  fold_cut_prefix), rebuild the group history, bump fold_epoch. On failure nothing
  *  changes and the next round retries. */
 extern void edc_group_fold_deliver_memory(struct edc_task *task, const char *content);
+
+/** (c) 记一次折叠失败 (任务进 ERROR / 摘要为空 / 切点解析不了)。计数到
+ *  EDC_FOLD_MAX_FAILURES 后 `edc_group_fold_due` 对**自动**路径返回 false; 手动
+ *  `/group fold` 不受影响。 */
+extern void edc_group_fold_note_failure(struct edc_task_group *group);
+
+/** (c) 清零连续失败计数。三个调用点: 折叠落地成功、手动折叠、组里又有了已提交内容
+ *  (新的 turn = 新情况, 值得再试)。**起折不清零** —— 否则永远到不了上限。 */
+extern void edc_group_fold_note_progress(struct edc_task_group *group);
 
 #endif

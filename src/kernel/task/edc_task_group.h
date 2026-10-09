@@ -49,6 +49,11 @@ struct edc_task_group
      * so it is ignored until the member replies again. */
     uint32_t fold_epoch;
 
+    /* (c) 连续失败计数: 到 EDC_FOLD_MAX_FAILURES 就停自动折叠, 免得"失败 → 组仍该折
+     * → 原样重试"变成永动机。落地成功 / 手动折叠 / 组里又有了已提交内容时清零。
+     * 只在内存, 不落盘 (重启视为新情况)。 */
+    int fold_failures;
+
     struct edc_task_group *prev, *next; /* session's group list */
 };
 

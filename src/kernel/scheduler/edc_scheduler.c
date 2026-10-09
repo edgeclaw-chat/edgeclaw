@@ -507,7 +507,12 @@ struct edc_task *edc_scheduler_fold_group_now(struct edc_scheduler *sched, struc
 {
     struct edc_task *fold = edc_group_fold_start(sched, session, group, focus);
     if (fold)
+    {
+        /* (c) 手动折叠 = 用户点名"再试一次": 清掉连续失败账 (自动路径到上限后，
+         * 这是唯一的重启开关)。 */
+        edc_group_fold_note_progress(group);
         sched_save_session(sched, session); /* 与自动路径同一条: 立刻可持久 */
+    }
     return fold;
 }
 
@@ -1007,7 +1012,12 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
     {
         /* Completion seq within the owning container; a GROUP_MEMORY task takes none. */
         if (task->sink != EDC_SINK_GROUP_MEMORY && own)
+        {
             edc_task_set_completion_seq(task, own->next_completion_seq++);
+            /* (c) 组里有了**新的已提交内容** ⇒ 折叠的连续失败账清零: 这是新情况,
+             * 值得再试一次 (与"同一份内容反复失败"区分开)。 */
+            edc_group_fold_note_progress(task->group);
+        }
         else
             edc_task_set_completion_seq(task, 0);
 
@@ -1036,6 +1046,10 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
     else /* ERROR */
     {
         sched_mark_dirty(sched, own, "state");
+        /* (c) 折叠任务进 ERROR ⇒ 记一次失败; 到上限 `edc_group_fold_due` 会停自动
+         * 折叠 (手动 /group fold 不受限)。取消不算失败 —— 那是人叫停的。 */
+        if (task->sink == EDC_SINK_GROUP_MEMORY)
+            edc_group_fold_note_failure(task->sink_group);
         if (sched->send_reply)
         {
             sds copy = sched_error_copy(sched, res->notice);

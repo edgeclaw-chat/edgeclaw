@@ -259,8 +259,8 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
     cJSON *tools = (!is_memory_sink) ? tool_schemas : NULL;
     struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, tools,
                                                           task->active_turn ? &task->active_turn->messages : NULL);
-    /* 摘要必须能在 fold 的 reserve 里装下 (pi §3: maxTokens = min(0.8 x reserve,
-     * 模型上限)) —— 因此"请求从不发 max_tokens"只有这一处例外。 */
+    /* 摘要的输出预算 (a): 语料上限 EDC_FOLD_MAX_CORPUS_TOKENS 与它配套, 保证单次
+     * 折叠的压缩比可达成 (≤ 4:1)。"请求从不发 max_tokens" 只有这一处例外。 */
     if (is_memory_sink)
         req->max_tokens = EDC_FOLD_SUMMARY_MAX_TOKENS;
     /* 本 turn 的前缀若已进记忆 (折叠切在 turn 内部), 从这里之后开始发。 */

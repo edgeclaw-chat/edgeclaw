@@ -141,9 +141,37 @@ bool edc_group_fold_holds_group(struct edc_task_group *group)
     return false;
 }
 
+void edc_group_fold_note_failure(struct edc_task_group *group)
+{
+    if (!group)
+        return;
+    group->fold_failures++;
+    if (group->fold_failures >= EDC_FOLD_MAX_FAILURES)
+        log_error("L1 fold: group %s failed %d times in a row — automatic folding is paused for this group "
+                  "(do new work in it, or run /group fold %s, to try again)",
+                  group->group_id, group->fold_failures, group->group_id);
+    else
+        log_info("L1 fold: group %s fold failure %d/%d", group->group_id, group->fold_failures,
+                 EDC_FOLD_MAX_FAILURES);
+}
+
+void edc_group_fold_note_progress(struct edc_task_group *group)
+{
+    if (!group || group->fold_failures == 0)
+        return;
+    log_info("L1 fold: group %s failure streak cleared (was %d)", group->group_id, group->fold_failures);
+    group->fold_failures = 0;
+}
+
 bool edc_group_fold_due(struct edc_task_group *group, const struct edc_config *conf)
 {
     if (!group || edc_task_group_count_foldable(group) == 0)
+        return false;
+
+    /* (c) 连续失败到上限 ⇒ 自动折叠停手 (手动 /group fold 走 start, 不过这道门)。
+     * 没有这道闸, "失败 → 组仍然该折 → 原样重试"就是永动机: 2026-10-09 实测每 ~40s
+     * 一发真调用, 组里的成员被反复 park。 */
+    if (group->fold_failures >= EDC_FOLD_MAX_FAILURES)
         return false;
 
     int window = conf ? conf->context_window : 0;
@@ -335,6 +363,21 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus,
     }
     size_t cut_at = cnt - keep; /* 语料 = ps[0, cut_at) */
 
+    /* (b) 语料上限: keep_recent 只说"留多少细节", 不说"这一发要压多大"。尾部预算
+     * 只保证留下 20k, 剩下的可以是一整段历史 —— 那就把 >10:1 的压缩比压给摘要器,
+     * 必然截断 (而截断被丢弃 ⇒ 折叠不落地 ⇒ 原样重试, 2026-10-09 现场见头文件)。
+     * 这里把切点往回收, 直到语料装进 EDC_FOLD_MAX_CORPUS_TOKENS; 收不动 (第一条
+     * 消息自己就超上限) 时留一条, 让上面的失败上限兜底 —— 绝不把切点收到 0, 那是
+     * "该折却折不出东西"的空转。 */
+    long long corpus = 0;
+    for (size_t i = 0; i < cut_at; i++)
+        corpus += ps[i].tokens;
+    while (cut_at > 1 && corpus > EDC_FOLD_MAX_CORPUS_TOKENS)
+    {
+        cut_at--;
+        corpus -= ps[cut_at].tokens;
+    }
+
     /* 切点合法性 (pi §4): 第一条留下的消息不能是工具结果 —— 它的 assistant(tool_calls)
      * 已经被折进记忆, 留下孤立的 tool 消息会让整个请求失败。往回退到那条 assistant
      * (它的工具结果自然跟随保留), 也就是"宁可少折一条"。 */
@@ -360,9 +403,10 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus,
         out_cut->turn = (uint32_t)cut_piece->turn_index;
         out_cut->prefix = cut_prefix;
     }
-    log_info("L1 fold: group %s fold %zu/%zu msgs (%lld tokens, keep ~%d), cut at task %s turn %zu msg %u",
-             group->group_id, cut_at, cnt, total, EDC_FOLD_KEEP_RECENT_TOKENS, cut_piece->task->task_id,
-             cut_piece->turn_index, cut_prefix);
+    log_info("L1 fold: group %s fold %zu/%zu msgs (%lld corpus tokens, cap %d; keep_recent ~%d), "
+             "cut at task %s turn %zu msg %u",
+             group->group_id, cut_at, cnt, corpus, EDC_FOLD_MAX_CORPUS_TOKENS, EDC_FOLD_KEEP_RECENT_TOKENS,
+             cut_piece->task->task_id, cut_piece->turn_index, cut_prefix);
 
     bool has_memory = (group->memory && sdslen(group->memory) > 0);
     sds prompt = sdsempty();
@@ -535,6 +579,8 @@ void edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
         log_error("L1 fold: task %s produced no memory (target=%s, content=%s) — group memory unchanged",
                   (task && task->task_id) ? task->task_id : "(null)", group ? "yes" : "none",
                   (content && *content) ? "non-empty" : "empty");
+        /* (c) 没写出记忆 = 没落地, 一样算一次失败。 */
+        edc_group_fold_note_failure(group);
         return;
     }
 
@@ -552,6 +598,7 @@ void edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
                   task->task_id, group->group_id);
         edc_task_group_rebuild_history(group);
         group->fold_epoch++;
+        edc_group_fold_note_failure(group); /* (c) 前缀没打上 = 没真正折掉东西 */
         return;
     }
 
@@ -586,6 +633,7 @@ void edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
         free(members);
         edc_task_group_rebuild_history(group);
         group->fold_epoch++;
+        edc_group_fold_note_failure(group); /* (c) 白折一轮: 没折掉任何东西 */
         return;
     }
 
@@ -626,6 +674,8 @@ void edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
     /* The prefix these members' requests counted is gone: every anchor older than
      * this is stale from here on (see the fold_epoch field). */
     group->fold_epoch++;
+    /* (c) 落地成功 ⇒ 连续失败账清零。 */
+    edc_group_fold_note_progress(group);
     log_info("L1 fold done: group %s folded %zu turns (%zu msgs), cut at task %s turn %u msg %u", group->group_id,
              folded_turns, folded_msgs, task->fold_cut_task_id, task->fold_cut_turn, task->fold_cut_prefix);
 }

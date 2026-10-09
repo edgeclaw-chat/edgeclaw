@@ -293,8 +293,9 @@ static void test_summary_request_is_capped(void)
     CHECK(g_req_msgs == 2 && g_req != NULL, "摘要请求发出去了");
     if (g_req)
     {
-        CHECK(g_req->max_tokens == EDC_FOLD_SUMMARY_MAX_TOKENS, "摘要请求带 max_tokens = 0.8 x reserve");
-        CHECK(g_req->max_tokens == 13107, "而且就是 13107 (跟 pi: min(0.8 x reserve, 模型上限))");
+        CHECK(g_req->max_tokens == EDC_FOLD_SUMMARY_MAX_TOKENS, "摘要请求带 max_tokens = 摘要预算");
+        CHECK(g_req->max_tokens == 32768,
+              "就是 32768 (旧值 0.8 x reserve = 13107 会让长语料必然截断 —— 见 edc_group_fold.h 的 a)");
         CHECK(g_req->tools == NULL, "摘要调用依旧不带工具定义 (对照, 不许退步)");
     }
 
