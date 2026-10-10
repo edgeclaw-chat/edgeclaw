@@ -87,6 +87,49 @@ std::string FormatTokens(long long n)
     return s;
 }
 
+// The group's usage line, drawn dim as the group's footer -- under the members
+// it sums up: ↑ input, ↓ output, the share of that input the provider served
+// from its prompt cache, and the size of the current context. Every field with
+// nothing to say is dropped, so a group that has not spent anything yet draws no
+// line at all.
+//
+// The context is marked with `~` when it carries an estimate: the anchor is the
+// provider's own count, but the tail appended after it is ours, and an estimate
+// must never pass for a measurement.
+//
+// The hit rate is derived here (cached / prompt) instead of travelling as a
+// field: it is a view of the two counters, not a datum of its own. It is shown
+// only when something *was* cached -- a provider that never reports cached
+// tokens would otherwise read as a flat 0%, which claims more than we know --
+// and it keeps one decimal, because "12.2%" and "12%" are not the same claim.
+std::string FormatGroupUsage(long long prompt, long long completion, long long cached, long long ctx,
+                             bool ctx_estimated)
+{
+    std::string s;
+    // Appends |part| (separated by |sep|) unless there is nothing to say.
+    auto add = [&s](const char *sep, const std::string &part) {
+        if (part.empty())
+            return;
+        if (!s.empty())
+            s += sep;
+        s += part;
+    };
+    if (prompt > 0)
+        add("", std::string("↑") + FormatTokens(prompt));
+    if (completion > 0)
+        add(" ", std::string("↓") + FormatTokens(completion));
+    if (prompt > 0 && cached > 0)
+    {
+        char rate[32];
+        std::snprintf(rate, sizeof(rate), "%.1f%%",
+                      100.0 * static_cast<double>(cached) / static_cast<double>(prompt));
+        add(" · ", rate);
+    }
+    if (ctx > 0)
+        add(" · ", std::string("ctx ") + (ctx_estimated ? "~" : "") + FormatTokens(ctx));
+    return s;
+}
+
 // Upper bound (in code points) kept per task when importing a snapshot. The
 // exact per-row fit is decided at render time by TruncateToWidth(); this cap
 // only stops a pathological description from being copied/stored in full.
@@ -125,6 +168,11 @@ void TaskWidget::SetSnapshot(const TaskSnapshot *snap)
         group.orphaned = g.orphaned;
         group.fg = g.fg;
         group.tokens_total = g.tokens_total;
+        group.tokens_prompt = g.tokens_prompt;
+        group.tokens_completion = g.tokens_completion;
+        group.tokens_cached = g.tokens_cached;
+        group.ctx_tokens = g.ctx_tokens;
+        group.ctx_estimated = g.ctx_estimated;
 
         for (const edc::TaskInfo &t : g.tasks)
         {
@@ -340,8 +388,8 @@ int TaskWidget::RowWidth() const
          *
          * 为什么系统块在前: 侧栏的树是锚底的 (edc_sidebar 用 follow_tail), 视口不
          * 够时该被挤出去的正是系统块 —— "最后一行永远是用户正在跑的那个 task"
-         * 优先于"看见系统任务"。system task 本来就是短命的 (TRANSIENT, 完成即回收),
-         * 它出现/消失都不该动用户那棵树的锚点。
+         * 优先于"看见系统任务"。系统块只装折叠任务 (少而独立), 它出现/消失都不该
+         * 动用户那棵树的锚点。
          *
          * 这里读 `kind` 是它**唯一的读者** (展示层)。没有任何东西被隐藏: 系统
          * 任务与用户任务一样是快照里的普通成员, 只是画在另一块 —— 换句话说,
@@ -370,24 +418,23 @@ int TaskWidget::RowWidth() const
             const auto &g = groups_[i];
             const bool expanded = group_expanded_[g.group_id];
 
-            // Collapsible group header: the arrow plus "Group <id>" ("~" when orphaned)
-            // on the left, the group's token cost flushed right. The right block is
-            // never truncated; the left ellipsizes into whatever width it leaves.
+            // Collapsible group header: the arrow plus "Group <id>" ("~" when
+            // orphaned). The left part ellipsizes into whatever width is left.
+            // Cost lives in the footer, under the members it is made of, and
+            // nowhere else: the header used to repeat the group's total while the
+            // group was folded, which read as "this group costs 9.2k" without
+            // saying of what. A folded group now shows no number at all -- the
+            // row is still the handle that unfolds it.
             std::string core = g.group_id.empty() ? "(group)" : "Group " + g.group_id;
             if (g.orphaned)
                 core += " ~";
 
             const std::string arrow = expanded ? "▾ " : "▸ ";
-            // Only the token total is shown now; a group that has not spent
-            // anything yet keeps an empty right column (no "0 tok" padding).
-            const std::string right = g.tokens_total > 0 ? FormatTokens(g.tokens_total) + " tok" : "";
-
-            const int core_budget = row_width - kRightPad - StringWidth(arrow) - StringWidth(right) - 1;
+            const int core_budget = row_width - kRightPad - StringWidth(arrow) - 1;
             const std::string visible_core = core_budget > 0 ? TruncateToWidth(core, core_budget) : "";
 
             lines.push_back(hbox({
                                 text(arrow + visible_core) | flex | bold | color(g.fg ? pal.warn : pal.text_dim),
-                                text(right) | dim | color(pal.text_dim),
                                 text(std::string(kRightPad, ' ')),
                             }) |
                             reflect(group_header_boxes_[i]));
@@ -411,8 +458,8 @@ int TaskWidget::RowWidth() const
                 {
                     // Two cells separate the id from the description; kRightPad
                     // keeps the row off the pane's right edge. Per-task tokens are
-                    // intentionally not shown: the group header carries the whole
-                    // group's cost.
+                    // intentionally not shown: the group's footer carries the
+                    // whole group's cost.
                     const int budget =
                         row_width - (2 + kMarkerCells) - StringWidth(head) - 2 - kRightPad;
                     if (budget > 0)
@@ -432,6 +479,18 @@ int TaskWidget::RowWidth() const
                                     text(std::string(kRightPad, ' ')),
                                 }));
             }
+
+            // The group's footer: what it has spent and how wide its context is
+            // *now*. It closes the group's block, which is why a folded group
+            // draws none -- there the header's right column is the only number
+            // worth the row ("how much has this cost"), and the breakdown is
+            // what the fold is hiding.
+            if (const std::string usage =
+                    FormatGroupUsage(g.tokens_prompt, g.tokens_completion, g.tokens_cached, g.ctx_tokens,
+                                     g.ctx_estimated);
+                !usage.empty())
+                lines.push_back(text(TruncateToWidth("  " + usage, row_width - kRightPad)) | dim |
+                                color(pal.text_dim));
         }
         }
     }

@@ -82,6 +82,9 @@ struct edc_config
     sds *sandbox_deny_paths;
     int max_iter; /* LLM/tool 迭代预算: -1 = 无限, N > 0 = 上限, <= 0 (含 0) = 不限制 */
     int group_fold_msg_threshold;
+    /* Declared model context window in tokens; 0 = not configured / unknown, in
+     * which case the fold falls back to the message-count axis. */
+    int context_window;
     int tool_max_output_size;
 
     sds device_pty;

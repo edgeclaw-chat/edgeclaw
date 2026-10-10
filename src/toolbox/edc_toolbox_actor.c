@@ -264,6 +264,10 @@ edc_actor_t *edc_toolbox_actor_new(struct edc_toolbox *toolbox)
 /* ── 请求侧: 投一条请求链给 toolbox actor ─────────────────────
  * 唯一的投递出口: dispatch 与 redispatch 都从这里出去, 所以
  * `BC_ACTOR_MSG_TOOL_REQUEST` 全文件只出现两次 (这里 + actor 自己的 handler)。 */
+/* 一条请求链一次投递。注意 data_free_fn 是**每节点**的释放器: 正常流程每个节点被各自的
+ * 应答消息带走, 但这条链若在信箱里被丢弃 (teardown 排空信箱), 就只有链首被释放 ⇒ 尾部
+ * 泄漏。2026-10-09 裁决**不修** (只发生在进程收尾的排空路径上, 且进程随即退出), 记在这里
+ * 免得下次被当成新 bug 报。真要修: 加一个顺 ->next 的 req_chain_free 并在这里用它。 */
 static void edc_toolbox_actor_send_chain(edc_actor_t *actor, struct edc_scheduler *sched, void *request_id,
                                          struct edc_toolbox_actor_req *chain)
 {

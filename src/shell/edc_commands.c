@@ -122,6 +122,7 @@ static bool edc_commands_handle_help(struct edc_reply_to to)
                        "- /task list  ·  /task status [id]  ·  /task output <id>\n"
                        "- /task history <id>   (its messages; `--json` = raw payload)\n"
                        "- /group history <id>  (the whole group; one block per member)\n"
+                       "- /group fold [id] [focus]  (fold now, ignoring the trigger)\n"
                        "- /task groups  ·  /task fg <id>  ·  /task bg [id]\n"
                        "- /task stop [id]  ·  /task resume [id]   (default: active task of the foreground group)\n"
                        "- /task chain <src> <dst>  ·  /task join <id>\n"
@@ -989,11 +990,12 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
         if (sys)
             cJSON_AddItemToArray(child_group->history, cJSON_Duplicate(sys, 1));
 
-        /* 合成 turn: 深拷贝父 group 未折叠消息 [1+已折叠数 .. fork_point) */
-        size_t snap_begin = 1 + edc_task_group_folded_msg_count(parent->group);
+        /* 合成 turn: 深拷贝父 group 未折叠消息 [1 .. fork_point) —— 已折叠消息
+         * 不在 history 里 (折叠落地即剪枝)。 */
+        size_t snap_begin = 1;
         struct edc_turn *snap = NULL;
 
-        if (parent->turns_folded)
+        if (edc_task_has_folded_turns(parent))
         {
             /* 规则 2: parent 的 turns 已被 L1 折叠, 捞回 parent 自己的 turns 全文,
              * 保证 fork 点本身的上下文完整。其余已折叠前文仍只靠 memory 摘要。 */
@@ -1279,6 +1281,75 @@ static void edc_commands_handle_history( struct edc_session_manager *sm, struct 
     sdsfree(out);
 }
 
+/* `/group fold [id] [focus]` (决定 8): 立刻折一次 —— **越过**触发判据 (窗口/条数),
+ * 但屏障照旧 (在飞成员不打断、一次一个 session)。id 省略 = 当前前台组; 给了 id 就按
+ * 它解析 (组 id = 组头那条 task id, 可跨 session)。剩下的部分原文作为 focus 进摘要
+ * prompt 的 "Additional focus:"。 */
+static void edc_commands_handle_group_fold( struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                           struct edc_reply_to to, sds arg)
+{
+    struct edc_session *session = NULL;
+    struct edc_task_group *group = NULL;
+    const char *focus = NULL;
+
+    if (arg && *arg)
+    {
+        /* 第一个 token = 组 id; 其余 = focus (含空格, 原文不动)。 */
+        const char *sp = strchr(arg, ' ');
+        size_t id_len = sp ? (size_t)(sp - arg) : sdslen(arg);
+        sds id = sdsnewlen(arg, id_len);
+        struct edc_session *owner = NULL;
+        struct edc_task *t = edc_session_store_resolve_task(sm, sched, id, &owner);
+        if (!t || !owner || !(group = edc_session_find_group(owner, t->group_id)))
+        {
+            sds reply = sdscatprintf(sdsempty(),
+                                     "Group `%s` not found — `/group fold [id] [focus]` (no id = the foreground group).",
+                                     id);
+            edc_commands_reply(to, reply);
+            sdsfree(reply);
+            sdsfree(id);
+            return;
+        }
+        session = owner;
+        sdsfree(id);
+        if (sp)
+        {
+            focus = sp + 1;
+            while (*focus == ' ')
+                focus++;
+            if (!*focus)
+                focus = NULL;
+        }
+    }
+    else
+    {
+        session = edc_session_manager_get_active(sm);
+        group = session ? edc_scheduler_get_foreground(session) : NULL;
+        if (!group)
+        {
+            edc_commands_reply(to, "No foreground group to fold — pass a group id: `/group fold <id>`.");
+            return;
+        }
+    }
+
+    struct edc_task *fold = edc_scheduler_fold_group_now(sched, session, group, focus);
+    if (!fold)
+    {
+        sds reply = sdscatprintf(sdsempty(),
+                                 "Nothing to fold in group `%s` — it has no unfolded messages, or a fold is "
+                                 "already in flight for that session.",
+                                 group->group_id);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        return;
+    }
+
+    sds reply = sdscatprintf(sdsempty(), "Folding group `%s` into its Group Memory%s%s.", group->group_id,
+                             focus ? " with focus: " : "", focus ? focus : "");
+    edc_commands_reply(to, reply);
+    sdsfree(reply);
+}
+
 /* `/group history <id>`: 一个组的消息历史 —— 每个成员一块 (块首是它那条输入, 块内是它
  * 自己的消息, 不跨 task 交错)。组的 id 就是组头的那个 id。 */
 static bool edc_commands_handle_group( struct edc_session_manager *sm, struct edc_scheduler *sched,
@@ -1291,13 +1362,29 @@ static bool edc_commands_handle_group( struct edc_session_manager *sm, struct ed
         sdsfree(arg);
         return true;
     }
+    sds fold_arg = NULL;
+    if (edc_commands_arg(message->content, "/group fold", &fold_arg))
+    {
+        edc_commands_handle_group_fold(sm, sched, to, fold_arg);
+        sdsfree(fold_arg);
+        return true;
+    }
+    /* 裸 `/group fold` (没有 id 也没有 focus) —— edc_commands_arg 只在有参数时为真,
+     * 所以这一支单独接: 折当前前台组。 */
+    if (edc_commands_is_command(message->content, "/group fold"))
+    {
+        edc_commands_handle_group_fold(sm, sched, to, NULL);
+        return true;
+    }
     if (edc_commands_is_command(message->content, "/group") ||
         edc_commands_is_command(message->content, "/group history"))
     {
-        edc_commands_reply(to, "Usage: `/group history <id>`   (the id is the group header's)");
+        edc_commands_reply(to, "Usage: `/group history <id>`   (the id is the group header's)\n\n"
+                               "Usage: `/group fold [id] [focus]`   (fold now, ignoring the trigger; "
+                               "no id = the foreground group)");
         return true;
     }
-    edc_commands_reply(to, "**Unknown subcommand** — `/group` knows only `history <id>`.");
+    edc_commands_reply(to, "**Unknown subcommand** — `/group` knows `history <id>` and `fold [id] [focus]`.");
     return true;
 }
 

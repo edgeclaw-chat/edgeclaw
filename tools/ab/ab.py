@@ -75,7 +75,6 @@ def gen_config(ecl: Path, extra_rw=()):
     ws = ecl / "workspace"
     cfg = {
         "max_iter": -1,
-        "memory_compress_threshold": 200,
         # 折叠阈值: 默认 200 (smoke/bg/cancel 都够不到, 所以那些夹具不折)。
         # fold 夹具在冻结时用 AB_FOLD_MSG_THRESHOLD 调低, 好在几轮对话内就
         # 触发一次真正的折叠 —— 折叠的**产物** (memory / turns_folded / 水位)
@@ -205,20 +204,28 @@ def run_binary(binary: Path, home: Path, script: Path, out: Path, fake: Path,
          "--responses", str(responses),
          "--request-log", str(out / "llm_requests.jsonl")],
         stderr=subprocess.PIPE)
-    time.sleep(1.2)  # 等握手
-    if llm.poll() is not None:
-        sys.exit("ab.py: fake_llm 起不来\n" + llm.stderr.read().decode())
 
-    master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
-    p = subprocess.Popen([str(binary)], stdin=slave, stdout=slave,
-                         stderr=slave, env=env, cwd=str(home),
-                         preexec_fn=_preexec, close_fds=True)
-    os.close(slave)
-    PID[0] = p.pid
-    screen = Screen(master, out / "screen.bin")
-    screen.start()
+    # Everything from here on is inside the try: the fake LLM is already
+    # listening on PORT, so a failure between the two Popen calls (a missing
+    # binary, an unopenable pty) used to leave it running as an orphan that
+    # holds the port for every later run.
+    master = None
+    screen = None
+    p = None
     try:
+        time.sleep(1.2)  # 等握手
+        if llm.poll() is not None:
+            sys.exit("ab.py: fake_llm 起不来\n" + llm.stderr.read().decode())
+
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+        p = subprocess.Popen([str(binary)], stdin=slave, stdout=slave,
+                             stderr=slave, env=env, cwd=str(home),
+                             preexec_fn=_preexec, close_fds=True)
+        os.close(slave)
+        PID[0] = p.pid
+        screen = Screen(master, out / "screen.bin")
+        screen.start()
         run_script(master, script)
         time.sleep(1.5)  # settle
         os.killpg(os.getpgid(p.pid), signal.SIGINT)  # 优雅退出（会落盘）
@@ -230,13 +237,22 @@ def run_binary(binary: Path, home: Path, script: Path, out: Path, fake: Path,
             sys.stderr.write("ab.py: 警告 —— 进程未在 20s 内优雅退出，已强杀\n")
     finally:
         time.sleep(0.3)
-        screen.done = True
+        if screen is not None:
+            screen.done = True
+        if master is not None:
+            try:
+                os.close(master)
+            except OSError:
+                pass
+        # The fake LLM is ours to reap whatever happened (and on a slow box
+        # terminate() alone can be ignored). Never let this mask the original
+        # exception: wait() with a timeout is the last thing that may raise.
         try:
-            os.close(master)
-        except OSError:
-            pass
-        llm.terminate()
-        llm.wait(timeout=5)
+            llm.terminate()
+            llm.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            llm.kill()
+            llm.wait(timeout=5)
 
     collect(home, out)
 

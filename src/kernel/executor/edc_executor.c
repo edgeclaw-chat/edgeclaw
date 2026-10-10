@@ -2,10 +2,12 @@
 #include "edc_executor.h"
 #include "edc_config.h"
 #include "edc_exec_io.h"
+#include "edc_llm_error_kind.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
 #include "sds.h"
 #include "utlist_fix.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -22,6 +24,41 @@ void edc_executor_init(struct edc_executor *ex, const struct edc_executor_ops *o
 static int exec_max_iter(const struct edc_executor *ex)
 {
     return (ex->config && ex->config->max_iter > 0) ? ex->config->max_iter : 0;
+}
+
+/* Compact token count for a one-line notice: 980 / 65.5k / 1.0M. */
+static void fmt_tokens(long long n, char *buf, size_t cap)
+{
+    if (n >= 1000000)
+        snprintf(buf, cap, "%.1fM", (double)n / 1000000.0);
+    else if (n >= 1000)
+        snprintf(buf, cap, "%.1fk", (double)n / 1000.0);
+    else
+        snprintf(buf, cap, "%lld", n);
+}
+
+/* The only thing a user can act on once the context no longer fits: the numbers and
+ * the next step. `prompt` is what the provider counted (0 = it reported none),
+ * `window` comes from the config (0 = unknown), `what` says which of the three
+ * overflows this is. Caller owns the returned sds. */
+static sds exec_overflow_notice(const struct edc_executor *ex, long long prompt_tokens, const char *what)
+{
+    char num[32];
+    char win[32];
+    int window = (ex->config) ? ex->config->context_window : 0;
+    if (prompt_tokens > 0)
+        fmt_tokens(prompt_tokens, num, sizeof(num));
+    else
+        snprintf(num, sizeof(num), "unknown");
+    if (window > 0)
+        fmt_tokens(window, win, sizeof(win));
+    else
+        snprintf(win, sizeof(win), "unknown");
+    return sdscatprintf(sdsempty(),
+                        "context overflow (%s): this request held about %s tokens and the model window is %s — "
+                        "run /group fold to tighten the context, then retry (or switch to a model with a larger "
+                        "window)",
+                        what, num, win);
 }
 
 /* START: drive a task. The caller does not say whether to send a request or to
@@ -96,13 +133,40 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
             edc_task_set_output(task, sdsnew(e->content));
         edc_task_flush_redirects(task);
         /* Delivery is the host's job: the error text is presentation, not advance. */
-        return (struct edc_advance_result){.outcome = EDC_STEP_ERROR,
-                                           .settled = true,
-                                           .notice = e->error_message ? e->error_message : "LLM request failed"};
+        const char *notice = e->error_message ? e->error_message : "LLM request failed";
+        /* (1) the explicit overflow: the provider refused the request because it did
+         * not fit. Keep its own words -- they carry the real numbers -- and add the
+         * next step. Throttling is classified out in front of this, since "rate
+         * limit + fold your context" would be wrong advice. A fold task gets no
+         * advice at all: it *is* the fold, and nothing here recurses. */
+        if (task->sink != EDC_SINK_GROUP_MEMORY &&
+            edc_llm_error_classify(e->http_status, notice) == EDC_LLM_ERR_CONTEXT_OVERFLOW)
+        {
+            sds advice = exec_overflow_notice(ex, e->prompt_tokens, "the provider refused the request");
+            edc_task_set_output(task, sdscatprintf(sdsempty(), "%s\n\n%s", notice, advice));
+            sdsfree(advice);
+            return (struct edc_advance_result){.outcome = EDC_STEP_ERROR, .settled = true, .notice = task->output};
+        }
+        return (struct edc_advance_result){.outcome = EDC_STEP_ERROR, .settled = true, .notice = notice};
     }
 
     if (e->reason == EDC_REASON_TOOL_CALL)
     {
+        /* The summarizer has no tools (the fold request carries no definitions, see
+         * edc_llm_request.c), so a tool call in that response means the provider
+         * misbehaved. pi §3 treats it as a failure ("Summarization attempted to
+         * call a tool") rather than a tool round: refuse the summary, keep the
+         * group memory, and let the next trigger try again. Usage above still
+         * counts: the wasted call really was paid for. */
+        if (task->sink == EDC_SINK_GROUP_MEMORY)
+        {
+            task->current_request_id = NULL;
+            edc_task_mark_failed(task);
+            return (struct edc_advance_result){
+                .outcome = EDC_STEP_ERROR,
+                .settled = true,
+                .notice = "Summarization attempted to call a tool — discarded, the group memory is unchanged"};
+        }
         edc_task_move(task, EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
         if (task->active_turn)
         {
@@ -139,13 +203,7 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
              * task: its turn is a fold prompt, and mixing it in would feed the
              * next fold the previous prompt and answer. */
             if (task->sink != EDC_SINK_GROUP_MEMORY)
-            {
-                for (size_t qi = task->active_turn->messages.head; qi < task->active_turn->messages.tail; qi++)
-                {
-                    cJSON *item = task->active_turn->messages.data[qi];
-                    edc_task_group_history_add_ref(task->group, item);
-                }
-            }
+                edc_task_group_history_add_turn(task->group, task->active_turn);
         }
         edc_task_commit_active_turn(task);
         if (e->content)
@@ -156,15 +214,59 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
         /* The advance ends here; completion seq, dirty, dependents, delivery,
          * fold and persistence are the host's, in sched_apply_advance. notice
          * borrows e->content and may be NULL. */
-        return (struct edc_advance_result){.outcome = EDC_STEP_DONE, .settled = true, .notice = e->content};
+        struct edc_advance_result r = {.outcome = EDC_STEP_DONE, .settled = true, .notice = e->content};
+
+        /* (2) the silent overflow: the provider took a request that was already past
+         * the window. The task is fine and must complete -- but the next turn will
+         * not fit, so the host is told on the side instead of the reply being edited
+         * or the task being failed. Only judgeable with a configured window (`0` means
+         * unknown, and then there is no claim to make); `prompt_tokens` is compared
+         * against it directly, never plus `cached_tokens`, which is a subset of it. */
+        int window = (ex->config) ? ex->config->context_window : 0;
+        if (window > 0 && e->prompt_tokens > window)
+        {
+            sds advice = exec_overflow_notice(ex, e->prompt_tokens, "the provider accepted it anyway");
+            snprintf(r.warning, sizeof(r.warning), "%s", advice);
+            sdsfree(advice);
+        }
+        return r;
     }
 
-    /* Unknown finish reason: ERROR, with the message sent by the host. */
+    /* Anything else is ERROR. A truncated summary is the one case worth naming:
+     * pi §3 refuses a checkpoint written by a `length` response, because half a
+     * summary would silently replace a whole one. The task fails here, so the
+     * fold never reaches deliver_memory and the old memory survives. */
     task->current_request_id = NULL;
     edc_task_mark_failed(task);
-    return (struct edc_advance_result){.outcome = EDC_STEP_ERROR,
-                                       .settled = true,
-                                       .notice = "Internal error: unknown finish reason"};
+    const char *notice = "Internal error: unknown finish reason";
+    int window = (ex->config) ? ex->config->context_window : 0;
+
+    if (task->sink == EDC_SINK_GROUP_MEMORY)
+    {
+        /* A summary that could not be finished keeps the old memory and says so. */
+        if (e->reason == EDC_REASON_LENGTH)
+            notice = "Summary was truncated (max_tokens) — discarded, the group memory is unchanged";
+        else if (e->reason == EDC_REASON_CONTEXT_EXCEEDED)
+            notice = "Summarization overflowed the model window — discarded, the group memory is unchanged";
+    }
+    /* (3) the truncated overflow: `length` with an empty completion is what a full
+     * window looks like on providers that do not say the word. A plain `length`
+     * (completion > 0) is a real truncation and keeps the generic line. */
+    else if (e->reason == EDC_REASON_LENGTH && e->completion_tokens == 0 && window > 0 &&
+             (long long)e->prompt_tokens * 100 >= (long long)window * 99)
+    {
+        sds advice = exec_overflow_notice(ex, e->prompt_tokens, "the answer was cut at max_tokens");
+        edc_task_set_output(task, advice);
+        notice = task->output;
+    }
+    /* The provider named the window itself (mapped from `context_length_exceeded`):
+     * a signal we used to throw away as "unknown finish reason". */
+    else if (e->reason == EDC_REASON_CONTEXT_EXCEEDED)
+    {
+        edc_task_set_output(task, exec_overflow_notice(ex, e->prompt_tokens, "the provider named the window"));
+        notice = task->output;
+    }
+    return (struct edc_advance_result){.outcome = EDC_STEP_ERROR, .settled = true, .notice = notice};
 }
 
 /* Budget exhausted: synthesize a STOP event so the full completion path (turn
@@ -220,6 +322,16 @@ static struct edc_advance_result tool_done(struct edc_executor *ex, struct edc_t
         if (max_iter > 0 && task->llm_rounds >= max_iter)
         {
             return stop_at_iteration_cap(ex, task, ev->request_id); /* 已转入终结路径 */
+        }
+
+        /* A dependency is still outstanding (the fold barrier held this task): the
+         * tools already ran and their results are recorded, so only the next LLM
+         * request is held. Park at AWAIT_DEPS -- the scan re-drives it when the dep
+         * completes. Not an I/O failure. */
+        if (edc_task_has_unresolved_deps(task))
+        {
+            edc_task_move(task, EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE);
+            return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED, .changed = true};
         }
 
         edc_task_move(task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
@@ -304,9 +416,14 @@ struct edc_advance_result edc_executor_advance_llm_resp(struct edc_executor *ex,
     ev.request_id = request_id;
     ev.as.exec.failed = (r->error != NULL);
     ev.as.exec.error_message = r->error ? r->error->message : NULL;
-    ev.as.exec.reason = (r->reason == BC_LLM_FINISH_REASON_STOP)        ? EDC_REASON_STOP
-                        : (r->reason == BC_LLM_FINISH_REASON_TOOL_CALL) ? EDC_REASON_TOOL_CALL
-                                                                        : EDC_REASON_OTHER;
+    /* The status travels with the event: the classifier tells a 400 (overflow) from a
+     * 429 (throttling) by it, and the error text alone cannot always do that. */
+    ev.as.exec.http_status = r->http_status;
+    ev.as.exec.reason = (r->reason == BC_LLM_FINISH_REASON_STOP)                ? EDC_REASON_STOP
+                        : (r->reason == BC_LLM_FINISH_REASON_TOOL_CALL)         ? EDC_REASON_TOOL_CALL
+                        : (r->reason == BC_LLM_FINISH_REASON_LENGTH)            ? EDC_REASON_LENGTH
+                        : (r->reason == BC_LLM_FINISH_REASON_CONTEXT_EXCEEDED)  ? EDC_REASON_CONTEXT_EXCEEDED
+                                                                               : EDC_REASON_OTHER;
     ev.as.exec.content = r->content;
     ev.as.exec.msg = r->msg;
     ev.as.exec.tool_calls_raw = r; /* opaque: dispatch_tools receives resp itself */

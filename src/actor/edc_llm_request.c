@@ -1,6 +1,7 @@
 #include "edc_llm_request.h"
 #include "edc_actor.h"
 #include "edc_context.h"
+#include "edc_group_fold.h"
 #include "edc_llm_actor.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
@@ -108,12 +109,29 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
      * 队尾 (req->tail_system, llm actor 在 history + 当前 turn 之后发出)。 */
     cJSON *msgs = cJSON_CreateArray();
 
+    /* sink = GROUP_MEMORY 的折叠任务要的是**一次自足的摘要调用**: 折叠说明 (system)
+     * + 它自己的 turn (折叠 prompt), 不含别的东西。所以它不走组上下文 —— 尤其不能
+     * 走组 history[0]: 那个槽位不落盘, 重启后加载期会把它填成主提示词
+     * (edc_task_group_rebuild_history), 摘要器于是背上 EdgeClaw 的人设 / MEMORY.md /
+     * 工具指令, 而它根本没有工具。折叠 prompt 自带全部语料, 不需要任何组历史。 */
+    const bool is_memory_sink = (task->sink == EDC_SINK_GROUP_MEMORY);
+
     sds pristine = NULL;
     /* 属主 session 的 workdir: 后台 session 里的任务续跑时系统提示里的
      * {{cwd}} 必须是它自己的目录 (P3 ③: 没有属主就没有目录, 不猜"当前的")。 */
     struct edc_session *own = (task->group && task->group->session) ? task->group->session : NULL;
     const char *workdir = own ? edc_session_get_workdir(own) : NULL;
-    edc_context_append_system_part(msgs, sched->config, task->group, workdir, &pristine);
+    if (is_memory_sink)
+    {
+        cJSON *sys = cJSON_CreateObject();
+        cJSON_AddStringToObject(sys, "role", "system");
+        cJSON_AddStringToObject(sys, "content", edc_group_fold_system_prompt());
+        cJSON_AddItemToArray(msgs, sys);
+    }
+    else
+    {
+        edc_context_append_system_part(msgs, sched->config, task->group, workdir, &pristine);
+    }
 
     /* group 无历史时 context 现拼的纯净 prompt: 写回 group history[0] (组内
      * 所有 task 共享、保持纯净) */
@@ -130,14 +148,15 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         sdsfree(pristine);
     }
 
-    if (task->group && cJSON_GetArraySize(task->group->history) > 0)
+    if (!is_memory_sink && task->group && cJSON_GetArraySize(task->group->history) > 0)
     {
         size_t total = cJSON_GetArraySize(task->group->history);
         size_t end = total;
 
-        /* 未折叠历史起点: 跳过 system prompt (history[0]) + 已折叠消息。
-         * 已折叠消息数 = 折叠水位 (completion_seq) 之前的 task 的消息总数。 */
-        size_t hist_begin = 1 + edc_task_group_folded_msg_count(task->group);
+        /* 未折叠历史起点: 跳过 system prompt (history[0])。已折叠消息不在
+         * history 里 —— 折叠落地时就被剪掉了 (见 edc_task_group_rebuild_history),
+         * 所以这里不再需要任何水位算术。 */
+        size_t hist_begin = 1;
         if (hist_begin > end)
             hist_begin = end;
         /* 水位边界也可能切在 tool 消息上, 回退到安全边界 */
@@ -237,10 +256,16 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
      * 所以不给它工具定义 —— 摘要器没有工具可用, 也不该被工具循环带走 (旧实现
      * 发给 LLM 的请求里 tools 字段是空的, 这条差别的唯一理由就是保持那份请求
      * 逐字节可比)。 */
-    const bool is_memory_sink = (task->sink == EDC_SINK_GROUP_MEMORY);
     cJSON *tools = (!is_memory_sink) ? tool_schemas : NULL;
     struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, tools,
                                                           task->active_turn ? &task->active_turn->messages : NULL);
+    /* 摘要的输出预算 (a): 语料上限 EDC_FOLD_MAX_CORPUS_TOKENS 与它配套, 保证单次
+     * 折叠的压缩比可达成 (≤ 4:1)。"请求从不发 max_tokens" 只有这一处例外。 */
+    if (is_memory_sink)
+        req->max_tokens = EDC_FOLD_SUMMARY_MAX_TOKENS;
+    /* 本 turn 的前缀若已进记忆 (折叠切在 turn 内部), 从这里之后开始发。 */
+    if (task->active_turn && task->active_turn->folded_prefix > 0)
+        req->turn_begin = (size_t)task->active_turn->folded_prefix;
     req->history_owned = true;
     /* 绝对队尾: todo reminder —— 不再每轮请求都塞 (避免唠叨), 只在
      * "隔了 EDC_TODO_SYNC_REMIND_GAP 条对话 (LLM 请求) 都没调用过

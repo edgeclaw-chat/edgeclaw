@@ -1152,7 +1152,7 @@ static void test_null_inputs(void)
     CHECK(!ok1, "deserialize(NULL json) returns false");
 
     /* deserialize with NULL session */
-    cJSON *valid = cJSON_Parse("{\"version\":5,\"session\":{},\"groups\":[],\"tasks\":[]}");
+    cJSON *valid = cJSON_Parse("{\"version\":6,\"session\":{},\"groups\":[],\"tasks\":[]}");
     bool ok2 = edc_state_deserialize(valid, NULL, NULL);
     CHECK(!ok2, "deserialize(NULL session) returns false");
     cJSON_Delete(valid);
@@ -1164,19 +1164,19 @@ static void test_null_inputs(void)
     cJSON_Delete(no_ver);
 
     /* deserialize with missing tasks array */
-    cJSON *no_tasks = cJSON_Parse("{\"version\":5,\"session\":{},\"groups\":[]}");
+    cJSON *no_tasks = cJSON_Parse("{\"version\":6,\"session\":{},\"groups\":[]}");
     bool ok4 = edc_state_deserialize(no_tasks, session, sched);
     CHECK(ok4, "deserialize without tasks array succeeds (treated as empty)");
     cJSON_Delete(no_tasks);
 
     /* deserialize with tasks not an array */
-    cJSON *bad_tasks = cJSON_Parse("{\"version\":5,\"session\":{},\"groups\":[],\"tasks\":\"not_array\"}");
+    cJSON *bad_tasks = cJSON_Parse("{\"version\":6,\"session\":{},\"groups\":[],\"tasks\":\"not_array\"}");
     bool ok5 = edc_state_deserialize(bad_tasks, session, sched);
     CHECK(ok5, "deserialize with non-array tasks succeeds (ignored)");
     cJSON_Delete(bad_tasks);
 
     /* deserialize with groups not an array */
-    cJSON *bad_groups = cJSON_Parse("{\"version\":5,\"session\":{},\"groups\":123,\"tasks\":[]}");
+    cJSON *bad_groups = cJSON_Parse("{\"version\":6,\"session\":{},\"groups\":123,\"tasks\":[]}");
     bool ok6 = edc_state_deserialize(bad_groups, session, sched);
     CHECK(ok6, "deserialize with non-array groups succeeds (ignored)");
     cJSON_Delete(bad_groups);
@@ -1202,7 +1202,7 @@ static void test_malformed_inputs(void)
     /* dep referencing nonexistent task */
     const char *bad_dep_json =
         "{"
-        "  \"version\":5,"
+        "  \"version\":6,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1211,7 +1211,7 @@ static void test_malformed_inputs(void)
         "  \"tasks\":["
         "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
         "     \"description\":\"task 1\",\"state\":\"COMPLETED\","
-        "     \"is_group_leader\":true,\"auto_reap\":false,"
+        "     \"is_group_leader\":true,"
         "     \"fork_point_completion_seq\":0,\"completion_seq\":0,"
         "     \"redirect_append\":false,"
         "     \"deps\":[{\"source_task_id\":\"NOBODY\",\"type\":\"JOIN\","
@@ -1227,7 +1227,7 @@ static void test_malformed_inputs(void)
     /* group member referencing nonexistent task */
     const char *bad_member_json =
         "{"
-        "  \"version\":5,"
+        "  \"version\":6,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1236,7 +1236,7 @@ static void test_malformed_inputs(void)
         "  \"tasks\":["
         "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
         "     \"description\":\"task 1\",\"state\":\"COMPLETED\","
-        "     \"is_group_leader\":true,\"auto_reap\":false,"
+        "     \"is_group_leader\":true,"
         "     \"fork_point_completion_seq\":0,\"completion_seq\":0,"
         "     \"redirect_append\":false,"
         "     \"deps\":[],\"turns\":[]}"
@@ -1250,7 +1250,7 @@ static void test_malformed_inputs(void)
     /* turn with no embedded messages (unknown/legacy keys are ignored) */
     const char *bad_range_json =
         "{"
-        "  \"version\":5,"
+        "  \"version\":6,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1259,7 +1259,7 @@ static void test_malformed_inputs(void)
         "  \"tasks\":["
         "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
         "     \"description\":\"task 1\",\"state\":\"COMPLETED\","
-        "     \"is_group_leader\":true,\"auto_reap\":false,"
+        "     \"is_group_leader\":true,"
         "     \"fork_point_completion_seq\":0,\"completion_seq\":0,"
         "     \"redirect_append\":false,"
         "     \"deps\":[],"
@@ -1274,13 +1274,13 @@ static void test_malformed_inputs(void)
     /* task with empty task_id */
     const char *empty_id_json =
         "{"
-        "  \"version\":5,"
+        "  \"version\":6,"
         "  \"session\":{},"
         "  \"groups\":[],"
         "  \"tasks\":["
         "    {\"task_id\":\"\",\"group_id\":\"g1\",\"session_id\":\"s\","
         "     \"description\":\"\",\"state\":\"COMPLETED\","
-        "     \"is_group_leader\":false,\"auto_reap\":false,"
+        "     \"is_group_leader\":false,"
         "     \"fork_point_completion_seq\":0,\"completion_seq\":0,"
         "     \"redirect_append\":false,\"deps\":[],\"turns\":[]}"
         "  ]"
@@ -1568,7 +1568,7 @@ static void test_fork_new_group_snapshot(void)
     if (psys)
         cJSON_AddItemToArray(cg->history, cJSON_Duplicate(psys, 1));
 
-    size_t snap_begin = 1 + edc_task_group_folded_msg_count(pg);
+    size_t snap_begin = 1; /* 已折消息不在 history 里 (折叠落地即剪枝) */
     struct edc_turn *snap = edc_turn_new();
     snap->task_id = strdup(child->task_id);
     for (size_t i = snap_begin; i < fork_point; i++)
@@ -1662,7 +1662,7 @@ static void test_fork_snapshot_turns_flushed(void)
     CHECK(edc_queue_length(&turn->messages) == 2, "turn retains messages");
 
     /* 模拟 L1 折叠 */
-    task->turns_folded = true;
+    turn->folded_prefix = (int)edc_queue_length(&turn->messages); /* 模拟 L1 折叠 */
 
     /* 规则 2 捞回 */
     struct edc_turn *snap = edc_task_snapshot_turns(task, session, "task-child");
@@ -1787,12 +1787,12 @@ static void test_fold_watermark(void)
     edc_task_await_exec(t1);
     edc_task_mark_completed(t1);
     t1->completion_seq = 1;
-    t1->turns_folded = true;
     struct edc_turn *turn1 = edc_turn_new();
     turn1->task_id = strdup("t1");
     turn_add_msg(turn1, "user", "a");
     turn_add_msg(turn1, "assistant", "b");
     edc_task_add_turn(t1, turn1);
+    turn1->folded_prefix = 2; /* 模拟 L1 折叠: 整条进了记忆 */
 
     struct edc_task_group *group = edc_task_group_new(t1);
     edc_session_add_group(session, group);
@@ -1807,15 +1807,31 @@ static void test_fold_watermark(void)
     edc_task_add_turn(t2, turn2);
     edc_task_group_add_task(group, t2);
 
-    group->folded_through_completion_seq = 1;
     session->next_completion_seq = 3;
+    /* 折叠 epoch 与锚的位置信息一起来回: 组 ctx 的可用性判断全依赖它们。 */
+    group->fold_epoch = 7;
+    t1->last_total_tokens = 1200;
+    t1->last_fold_epoch = 7;
+    t1->last_hist_len = 2;
+    t1->last_turn_len = 1;
 
     cJSON *json = edc_state_serialize(session, sched);
     CHECK(json != NULL, "serialize");
     cJSON *gj = cJSON_GetArrayItem(cJSON_GetObjectItem(json, "groups"), 0);
     CHECK(gj != NULL, "group serialized");
-    cJSON *fw = gj ? cJSON_GetObjectItem(gj, "folded_through_completion_seq") : NULL;
-    CHECK(fw && cJSON_GetNumberValue(fw) == 1, "watermark serialized = 1");
+    cJSON *fe = gj ? cJSON_GetObjectItem(gj, "fold_epoch") : NULL;
+    CHECK(fe && cJSON_GetNumberValue(fe) == 7, "fold epoch serialized");
+    {
+        cJSON *tj = cJSON_GetArrayItem(cJSON_GetObjectItem(json, "tasks"), 0);
+        cJSON *lt = tj ? cJSON_GetObjectItem(tj, "last_total_tokens") : NULL;
+        cJSON *lh = tj ? cJSON_GetObjectItem(tj, "last_hist_len") : NULL;
+        cJSON *ltu = tj ? cJSON_GetObjectItem(tj, "last_turn_len") : NULL;
+        cJSON *le = tj ? cJSON_GetObjectItem(tj, "last_fold_epoch") : NULL;
+        CHECK(lt && cJSON_GetNumberValue(lt) == 1200, "anchor size serialized");
+        CHECK(lh && cJSON_GetNumberValue(lh) == 2, "anchor history position serialized");
+        CHECK(ltu && cJSON_GetNumberValue(ltu) == 1, "anchor turn position serialized");
+        CHECK(le && cJSON_GetNumberValue(le) == 7, "anchor fold epoch serialized");
+    }
 
     /* (a) v3 file: watermark read back verbatim. */
     struct edc_session *s2 = edc_session_new(cfg, "sess-fold", "Fold");
@@ -1826,14 +1842,39 @@ static void test_fold_watermark(void)
     CHECK(g2 != NULL, "group restored");
     if (g2)
     {
-        CHECK(g2->folded_through_completion_seq == 1, "watermark preserved");
-        CHECK(edc_task_group_folded_msg_count(g2) == 2, "folded prefix = 2 msgs");
+        {
+            struct edc_task *rt = find_task(s2, "t1");
+            struct edc_turn *rturn = (rt && rt->turns.head < rt->turns.tail)
+                                         ? (struct edc_turn *)rt->turns.data[rt->turns.head]
+                                         : NULL;
+            CHECK(rturn && rturn->folded_prefix == 2, "the turn's folded prefix survives the round trip");
+        }
+        CHECK(g2->fold_epoch == 7, "fold epoch preserved");
+        {
+            struct edc_task *rt = find_task(s2, "t1");
+            CHECK(rt && rt->last_total_tokens == 1200 && rt->last_hist_len == 2 && rt->last_turn_len == 1 &&
+                      rt->last_fold_epoch == 7,
+                  "the context anchor (size + position + epoch) survives the round trip");
+        }
+        CHECK(cJSON_GetArraySize(g2->history) == 2, "已折的 2 条不在 history 里 (sys + 剩 1 条)");
         CHECK(edc_task_group_unfolded_msg_count(g2) == 1, "unfolded = 1 msg");
     }
 
-    /* (b) missing watermark key: v3 keeps it at 0 — no derivation from
-     * per-task turns_folded any more (v2 compat was dropped). */
-    cJSON_DeleteItemFromObject(gj, "folded_through_completion_seq");
+    /* (b) a turn that predates the folded_prefix key: it reads as 0 — nothing
+     * folded, nothing guessed. Filling it in is the v5->v6 migration's job; the
+     * loader never derives folded-ness from anywhere else. */
+    cJSON *tasks_arr = cJSON_GetObjectItem(json, "tasks");
+    for (size_t i = 0; tasks_arr && i < (size_t)cJSON_GetArraySize(tasks_arr); i++)
+    {
+        cJSON *tjx = cJSON_GetArrayItem(tasks_arr, i);
+        cJSON *turns = tjx ? cJSON_GetObjectItem(tjx, "turns") : NULL;
+        for (size_t k = 0; turns && k < (size_t)cJSON_GetArraySize(turns); k++)
+        {
+            cJSON *turnx = cJSON_GetArrayItem(turns, k);
+            if (turnx)
+                cJSON_DeleteItemFromObject(turnx, "folded_prefix");
+        }
+    }
     struct edc_session *s3 = edc_session_new(cfg, "sess-fold", "Fold");
     struct edc_scheduler *sched3 = edc_scheduler_new(cfg);
     install_resolver(sched3, s3);
@@ -1842,9 +1883,8 @@ static void test_fold_watermark(void)
     CHECK(g3 != NULL, "group restored (no watermark key)");
     if (g3)
     {
-        CHECK(g3->folded_through_completion_seq == 0, "missing watermark stays 0 (no v2 derivation)");
-        CHECK(edc_task_group_folded_msg_count(g3) == 0, "nothing folded");
-        CHECK(edc_task_group_unfolded_msg_count(g3) == 3, "all 3 msgs unfolded");
+        CHECK(edc_task_group_unfolded_msg_count(g3) == 3, "no key -> nothing folded, all 3 msgs unfolded");
+        CHECK(cJSON_GetArraySize(g3->history) == 4, "…and the history still carries them (sys + 3)");
     }
 
     cJSON_Delete(json);
@@ -1863,7 +1903,7 @@ static void test_fold_watermark(void)
 
 static void test_schema_version_is_current(void)
 {
-    TEST("serialize writes version 5; older versions fail loudly instead of being patched up");
+    TEST("serialize writes version 6; older versions fail loudly instead of being patched up");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-ver", "Ver");
@@ -1878,7 +1918,10 @@ static void test_schema_version_is_current(void)
 
     cJSON *json = edc_state_serialize(session, sched);
     CHECK(json != NULL, "serialize returns non-NULL");
-    CHECK(edc_state_json_version(json) == 5, "on-disk version is 4");
+    /* 本文件构造 JSON 时用的版本号是手写镜像 (见各 cJSON_Parse 字面量): 一律等于
+     * 当前 schema, 升级时这里会先红。 */
+    CHECK(edc_state_schema_version() == 6, "schema version bumped -> update this file's literals");
+    CHECK(edc_state_json_version(json) == edc_state_schema_version(), "on-disk version is the current schema");
 
     struct edc_session *s2 = edc_session_new(cfg, "sess-ver", "Ver");
     struct edc_scheduler *sched2 = edc_scheduler_new(cfg);

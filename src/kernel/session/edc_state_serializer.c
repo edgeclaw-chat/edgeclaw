@@ -17,7 +17,7 @@
  * the shape changes, or a legacy shape is finally retired, bump it and ship a
  * one-shot migration under tools/ (e.g. migrate_session_v3_to_v4.py) instead of
  * teaching the load path to patch old data up on every load. */
-#define EDC_STATE_SCHEMA_VERSION 5
+#define EDC_STATE_SCHEMA_VERSION 6
 
 /* ══════════════════════════════════════════════════════════════
  *  Internal helpers — dep type ↔ string
@@ -79,6 +79,9 @@ static cJSON *turn_to_json(struct edc_turn *turn)
     else
         cJSON_Delete(embedded);
 
+    /* 已进组记忆的消息条数 (L1 折叠切点): 请求与 history 都从这里之后开始。 */
+    cJSON_AddNumberToObject(tj, "folded_prefix", turn->folded_prefix);
+
     return tj;
 }
 
@@ -108,7 +111,20 @@ static cJSON *task_to_json(struct edc_task *task)
     cJSON_AddStringToObject(tj, "step", edc_task_step_name(task->step));
     cJSON_AddStringToObject(tj, "life", edc_task_life_name(task->life));
     cJSON_AddBoolToObject(tj, "is_group_leader", task->is_group_leader);
-    cJSON_AddBoolToObject(tj, "auto_reap", task->auto_reap);
+
+    /* ── sink / fold target ──
+     * A fold task (sink = GROUP_MEMORY) is now an ordinary persisted task, so its
+     * output target and cut must round-trip; otherwise the resumed fold would not
+     * know which group to write, nor where this round's cut was (P2a-4). */
+    cJSON_AddStringToObject(tj, "sink", edc_task_sink_name(task->sink));
+    if (task->sink_group && task->sink_group->group_id)
+        cJSON_AddStringToObject(tj, "sink_group_id", task->sink_group->group_id);
+    if (task->fold_cut_task_id)
+    {
+        cJSON_AddStringToObject(tj, "fold_cut_task", task->fold_cut_task_id);
+        cJSON_AddNumberToObject(tj, "fold_cut_turn", (int)task->fold_cut_turn);
+        cJSON_AddNumberToObject(tj, "fold_cut_prefix", (int)task->fold_cut_prefix);
+    }
 
     /* ── prompt ── */
     if (task->prompt_name)
@@ -143,7 +159,6 @@ static cJSON *task_to_json(struct edc_task *task)
     if (task->output)
         cJSON_AddStringToObject(tj, "output", task->output);
     cJSON_AddNumberToObject(tj, "completion_seq", task->completion_seq);
-    cJSON_AddBoolToObject(tj, "turns_folded", task->turns_folded);
 
     /* ── token 统计 ──
      * 跨会话/进程中断保持: resume 后侧边栏的 per-task token 计数不归零。
@@ -152,6 +167,10 @@ static cJSON *task_to_json(struct edc_task *task)
     cJSON_AddNumberToObject(tj, "tokens_completion", (double)task->tokens_completion);
     cJSON_AddNumberToObject(tj, "tokens_total", (double)task->tokens_total);
     cJSON_AddNumberToObject(tj, "tokens_cached", (double)task->tokens_cached);
+    cJSON_AddNumberToObject(tj, "last_total_tokens", (double)task->last_total_tokens);
+    cJSON_AddNumberToObject(tj, "last_fold_epoch", (double)task->last_fold_epoch);
+    cJSON_AddNumberToObject(tj, "last_hist_len", (double)task->last_hist_len);
+    cJSON_AddNumberToObject(tj, "last_turn_len", (double)task->last_turn_len);
 
     /* ── redirect ── */
     if (task->redirect_stdout)
@@ -211,33 +230,8 @@ static cJSON *task_to_json(struct edc_task *task)
  *  ══════════════════════════════════════════════════════════════ */
 
 /* ── 落盘判据: 谁上盘 ────────────────────────────────────────
- * `lifetime` 在这里的读法是**同一条规则的必然推论** (runtime-model.md §5 规则 7) ——
- * 规则是"这个任务不留下来", 本文件回答其中"要不要活过重启"那一面。它是消费者的
- * 身份, 不靠"唯一读者"这个词: 另外三处 (回收队列 / 折叠账 / 折叠阈值) 是同一句话
- * 的其它面, 生命周期策略的家在 scheduler, 不在这里。
- * TRANSIENT (system task) 不落盘, 于是重启后**僵尸不可能存在**; 它照常出现在快照与
- * `/task list` 里 (可见), 所以也**没有可漏的 skip** —— 老 `is_system` 的两种死法
- * (会落盘的僵尸 + 五处特判漏一处就冒 `Group system`) 都不成立。
- *
- * group 的落盘同理**只由成员的 lifetime 派生**, 不看 `kind`: 一个组里没有任何
- * PERSISTENT 成员时它自然空掉, 不写盘 —— 这就是 system 组不进文件的原因, 而
- * 持久化层连"系统组"这个概念都不需要知道。 */
-static bool task_is_persisted(const struct edc_task *task)
-{
-    return !edc_task_is_transient(task);
-}
-
-static size_t group_persisted_member_count(struct edc_task_group *group)
-{
-    size_t n = 0;
-    struct edc_task *t;
-    LL_FOREACH2(group->members, t, group_next)
-    {
-        if (task_is_persisted(t))
-            n++;
-    }
-    return n;
-}
+ * lifetime 轴已退休: 每个任务都上盘, 不再有"不活过重启"的任务。于是这里只剩两条 ——
+ * 一个组没有成员就不写盘 (不特判 kind), 以及下面 tasks 块里"空壳任务"那一关。 */
 
 static cJSON *group_to_json(struct edc_task_group *group)
 {
@@ -245,27 +239,21 @@ static cJSON *group_to_json(struct edc_task_group *group)
 
     cJSON_AddStringToObject(gj, "group_id", group->group_id ? group->group_id : "");
     /* leader_task_id: for normal groups use leader->task_id;
-     * for orphaned groups fall back to group_id (original leader's id).
-     * leader 不落盘时 (TRANSIENT) 也走同一条退路 —— 否则读回时会去找一个
-     * task 块里根本不存在的 leader。 */
-    if (group->leader && task_is_persisted(group->leader))
+     * for orphaned groups fall back to group_id (original leader's id). */
+    if (group->leader)
         cJSON_AddStringToObject(gj, "leader_task_id", group->leader->task_id);
     else if (group->group_id)
         cJSON_AddStringToObject(gj, "leader_task_id", group->group_id);
     cJSON_AddBoolToObject(gj, "is_orphaned", group->is_orphaned);
     if (group->memory)
         cJSON_AddStringToObject(gj, "memory", group->memory);
-    cJSON_AddNumberToObject(gj, "folded_through_completion_seq", (int)group->folded_through_completion_seq);
+    cJSON_AddNumberToObject(gj, "fold_epoch", (int)group->fold_epoch);
 
-    /* member task ids (与 tasks 块同一把尺子: 只列真正上盘的那些) */
+    /* member task ids */
     cJSON *members = cJSON_CreateArray();
     struct edc_task *m;
     LL_FOREACH2(group->members, m, group_next)
-    {
-        if (!task_is_persisted(m))
-            continue;
         cJSON_AddItemToArray(members, cJSON_CreateString(m->task_id ? m->task_id : ""));
-    }
     cJSON_AddItemToObject(gj, "member_task_ids", members);
 
     return gj;
@@ -307,10 +295,8 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
         struct edc_task_group *g;
         DL_FOREACH(session->groups, g)
         {
-            /* "空组" 按**上盘的成员**数算: 一个全是 TRANSIENT 成员的组 (system
-             * 组) 不会写盘 —— 这不是特判 kind, 而是同一把尺子的自然结果 (见
-             * group_to_json 上方的落盘判据)。 */
-            if (group_persisted_member_count(g) == 0)
+            /* 空组不写盘 (不特判 kind)。 */
+            if (g->member_count == 0)
                 continue; /* skip empty */
             cJSON_AddItemToArray(groups_json, group_to_json(g));
         }
@@ -326,13 +312,7 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
             struct edc_task *t;
             LL_FOREACH2(g->members, t, group_next)
             {
-                /* 落盘判据第一关: lifetime。TRANSIENT (system task) 不落盘 ——
-                 * 它完成即回收, 重启后没有任何东西该"恢复"它, 所以文件里也没有它。
-                 * 这一关由**属性**回答, 不看它此刻在哪一步 (见本文档上方 task_is_persisted)。 */
-                if (!task_is_persisted(t))
-                    continue;
-
-                /* 落盘判据第二关 (retire-waiting-input.md §4 第 4 行):
+                /* 落盘判据 (retire-waiting-input.md §4 第 4 行):
                  *   丢 "READY 且身上什么都没有" 的任务, 不丢真任务。
                  *
                  * 为什么是这三个条件的合取:
@@ -348,9 +328,7 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
                  *
                  * 新模型下 ① 不该再被生产出来 (创建任务必然带着它的 input; 休眠态
                  * 走 SUSPENDED + /task resume) —— 如果真的落进这里, 说明还有调用方
-                 * 在造 turn-less 任务, 于是告警而不是静默吞掉。
-                 * ("该不该落盘"这件事本身由上一关的 lifetime 回答; 这一关只管
-                 *  "PERSISTENT 的任务里, 哪些是空壳"。) */
+                 * 在造 turn-less 任务, 于是告警而不是静默吞掉。 */
                 if (t->step == EDC_TASKSTEP_READY && t->life == EDC_LIFE_ALIVE && !t->active_turn &&
                     !t->tool_calls)
                 {
@@ -389,6 +367,10 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
 static struct edc_turn *turn_from_json(cJSON *tj)
 {
     struct edc_turn *turn = edc_turn_new();
+
+    cJSON *folded = cJSON_GetObjectItem(tj, "folded_prefix");
+    if (folded && cJSON_IsNumber(folded))
+        turn->folded_prefix = (int)cJSON_GetNumberValue(folded);
 
     cJSON *embedded = cJSON_GetObjectItem(tj, "messages");
     if (embedded && cJSON_IsArray(embedded))
@@ -521,59 +503,13 @@ static void group_map_free(struct group_map_entry **map)
 
 static void deser_rebuild_group_history(struct edc_session *session, struct edc_scheduler *sched)
 {
+    /* One canonical rebuild (edc_task_group_rebuild_history): system prompt +
+     * every member's committed turns in completion_seq order, minus each turn's
+     * folded_prefix. The fold landing calls the same function, so a reloaded
+     * history is byte-for-byte what the running process had. */
     struct edc_task_group *g;
     DL_FOREACH(session->groups, g)
-    {
-        if (session->config)
-        {
-            sds prompt = edc_context_build_system_prompt(session->config, session->workdir);
-            cJSON *sys = cJSON_CreateObject();
-            cJSON_AddStringToObject(sys, "role", "system");
-            cJSON_AddStringToObject(sys, "content", prompt);
-            edc_task_group_history_add_owned(g, sys);
-            sdsfree(prompt);
-        }
-
-        /* 按 completion_seq 升序重建 history，与运行时 (STOP/完成顺序) 保持一致。
-         * 成员链表是创建顺序，若任务完成顺序与创建顺序不同，直接遍历会让
-         * 折叠水位与切片错位，进而切断 assistant(tool_calls)+tool 序列。 */
-        size_t n = 0, cap = 0;
-        struct edc_task **arr = NULL;
-        struct edc_task *t;
-        LL_FOREACH2(g->members, t, group_next)
-        {
-            if (n == cap)
-            {
-                cap = cap ? cap * 2 : 8;
-                arr = realloc(arr, cap * sizeof(*arr));
-            }
-            arr[n++] = t;
-        }
-
-        for (size_t i = 1; i < n; i++)
-        {
-            struct edc_task *key = arr[i];
-            size_t j = i;
-            while (j > 0 && arr[j - 1]->completion_seq > key->completion_seq)
-            {
-                arr[j] = arr[j - 1];
-                j--;
-            }
-            arr[j] = key;
-        }
-
-        for (size_t i = 0; i < n; i++)
-        {
-            struct edc_task *task = arr[i];
-            for (size_t qi = task->turns.head; qi < task->turns.tail; qi++)
-            {
-                struct edc_turn *turn = task->turns.data[qi];
-                for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
-                    edc_task_group_history_add_ref(g, turn->messages.data[mj]);
-            }
-        }
-        free(arr);
-    }
+        edc_task_group_rebuild_history(g);
 
     if (sched)
     {
@@ -663,17 +599,29 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
          * 唯一收敛的是 life: 重启之后没有任何东西在跑, 所以 ALIVE 落地成
          * SUSPENDED。但 **step 原样保留** —— 这正是这次改动要保住的东西: 以前
          * normalize_interrupted_state 把五个相位一起塌成 SUSPENDED, "任务到哪了"
-         * 就此丢失, resume 只能靠工具账本 / active_turn 顺序探测把它猜回来。 */
+         * 就此丢失, resume 只能靠工具账本 / active_turn 顺序探测把它猜回来。
+         *
+         * 例外: 折叠任务 (sink = GROUP_MEMORY)。它现在也落盘, 好让被重启打断的
+         * 那一轮能续跑 —— 在途请求没了, 所以置回 READY, 由消息末尾的扫描重新派发
+         * (它保留 active_turn / sink_group / 切点三元组)。 */
         task->step = edc_task_classify_step(cJSON_GetStringValue(cJSON_GetObjectItem(tj, "step")));
         task->life = edc_task_classify_life(cJSON_GetStringValue(cJSON_GetObjectItem(tj, "life")));
+        {
+            cJSON *sv = cJSON_GetObjectItem(tj, "sink");
+            if (sv && cJSON_IsString(sv))
+                task->sink = edc_task_classify_sink(cJSON_GetStringValue(sv));
+        }
         if (task->life == EDC_LIFE_ALIVE)
-            task->life = EDC_LIFE_SUSPENDED;
+        {
+            if (task->sink == EDC_SINK_GROUP_MEMORY)
+                task->step = EDC_TASKSTEP_READY;
+            else
+                task->life = EDC_LIFE_SUSPENDED;
+        }
 
         cJSON *v;
         if ((v = cJSON_GetObjectItem(tj, "is_group_leader")))
             task->is_group_leader = cJSON_IsTrue(v);
-        if ((v = cJSON_GetObjectItem(tj, "auto_reap")))
-            task->auto_reap = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "prompt_name")) && cJSON_IsString(v))
             task->prompt_name = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "prompt")) && cJSON_IsString(v))
@@ -684,8 +632,12 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->output = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "completion_seq")) && cJSON_IsNumber(v))
             task->completion_seq = (uint32_t)cJSON_GetNumberValue(v);
-        if ((v = cJSON_GetObjectItem(tj, "turns_folded")))
-            task->turns_folded = cJSON_IsTrue(v);
+        if ((v = cJSON_GetObjectItem(tj, "fold_cut_task")) && cJSON_IsString(v))
+            task->fold_cut_task_id = strdup(cJSON_GetStringValue(v));
+        if ((v = cJSON_GetObjectItem(tj, "fold_cut_turn")) && cJSON_IsNumber(v))
+            task->fold_cut_turn = (uint32_t)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "fold_cut_prefix")) && cJSON_IsNumber(v))
+            task->fold_cut_prefix = (uint32_t)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "tokens_prompt")) && cJSON_IsNumber(v))
             task->tokens_prompt = (long long)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "tokens_completion")) && cJSON_IsNumber(v))
@@ -694,6 +646,14 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->tokens_total = (long long)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "tokens_cached")) && cJSON_IsNumber(v))
             task->tokens_cached = (long long)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "last_total_tokens")) && cJSON_IsNumber(v))
+            task->last_total_tokens = (long long)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "last_fold_epoch")) && cJSON_IsNumber(v))
+            task->last_fold_epoch = (uint32_t)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "last_hist_len")) && cJSON_IsNumber(v))
+            task->last_hist_len = (int)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "last_turn_len")) && cJSON_IsNumber(v))
+            task->last_turn_len = (int)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "redirect_stdout")) && cJSON_IsString(v))
             task->redirect_stdout = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "redirect_stderr")) && cJSON_IsString(v))
@@ -786,6 +746,12 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
             continue;
         if (is_orph)
             group->is_orphaned = true;
+        /* The system group is the one led by a fold task (sink = GROUP_MEMORY).
+         * `kind` is derived from the leader's sink, not stored: the persistence
+         * layer still knows nothing of "system group" as a concept, only of task
+         * properties. */
+        if (leader->sink == EDC_SINK_GROUP_MEMORY)
+            group->kind = EDC_GROUP_KIND_SYSTEM;
 
         {
             cJSON *mem = cJSON_GetObjectItem(gj, "memory");
@@ -795,9 +761,11 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
         {
             /* v3: 折叠水位 (completion_seq)。旧存档只有 fold_cursor(下标),
              * 由 deser_rebuild_group_history 依 turns_folded 推导, 这里不读。 */
-            cJSON *fw = cJSON_GetObjectItem(gj, "folded_through_completion_seq");
-            if (fw && cJSON_IsNumber(fw))
-                group->folded_through_completion_seq = (uint32_t)cJSON_GetNumberValue(fw);
+            /* 缺键 (老文件) => 0: 与该组所有 task 读回来的 last_fold_epoch 一致,
+             * 而缺位置信息 (last_hist_len==0) 会让锚失效 —— 都不会误信旧锚。 */
+            cJSON *fe = cJSON_GetObjectItem(gj, "fold_epoch");
+            if (fe && cJSON_IsNumber(fe))
+                group->fold_epoch = (uint32_t)cJSON_GetNumberValue(fe);
         }
 
         cJSON *members = cJSON_GetObjectItem(gj, "member_task_ids");
@@ -818,6 +786,31 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
         edc_session_add_group(session, group);
         if (group_id)
             group_map_put(group_map, group_id, group);
+    }
+}
+
+/* A fold task's sink_group is a live group pointer; the file stores its id. Resolve
+ * it once the groups exist (same shape as deser_deps). */
+static void deser_sink_groups(cJSON *json, struct task_map_entry **id_map, struct group_map_entry **group_map)
+{
+    cJSON *tasks_json = cJSON_GetObjectItem(json, "tasks");
+    if (!tasks_json || !cJSON_IsArray(tasks_json))
+        return;
+
+    size_t tcount = cJSON_GetArraySize(tasks_json);
+    for (size_t i = 0; i < tcount; i++)
+    {
+        cJSON *tj = cJSON_GetArrayItem(tasks_json, i);
+        if (!tj)
+            continue;
+        const char *task_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "task_id"));
+        const char *sg_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "sink_group_id"));
+        if (!task_id || !sg_id || !*sg_id)
+            continue;
+        struct edc_task *task = task_map_get(id_map, task_id);
+        if (!task)
+            continue;
+        task->sink_group = group_map_get(group_map, sg_id);
     }
 }
 
@@ -980,6 +973,11 @@ static void deser_global_ptrs(cJSON *sj, struct edc_session *session,
         session->foreground_group = group_map_get(group_map, fg_id);
 }
 
+int edc_state_schema_version(void)
+{
+    return EDC_STATE_SCHEMA_VERSION;
+}
+
 int edc_state_json_version(cJSON *json)
 {
     if (!json)
@@ -1023,6 +1021,7 @@ bool edc_state_deserialize(cJSON *json, struct edc_session *session, struct edc_
 
     struct group_map_entry *group_map[GROUP_MAP_BUCKETS] = {0};
     deser_create_groups(json, session, id_map, group_map);
+    deser_sink_groups(json, id_map, group_map);
     deser_deps(json, id_map, sched);
     deser_reconcile_deps(id_map);
     deser_turns(json, id_map);

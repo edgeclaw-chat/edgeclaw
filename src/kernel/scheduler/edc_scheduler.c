@@ -2,6 +2,7 @@
 #include "edc_cmd_parse.h"
 #include "edc_compat.h"
 #include "edc_config.h"
+#include "edc_context.h"
 #include "edc_file_utils.h"
 #include "edc_group_fold.h"
 #include "edc_session.h"
@@ -33,8 +34,6 @@ static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg
 static void sched_handle_pull_snapshot(struct edc_scheduler *sched, const char *session_id);
 static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_session *session, const char *reason);
 static void sched_trace_notify(const char *reason, const char *session_id);
-/* TRANSIENT reclaim: queued on a phase change, settled at message end. */
-static void sched_queue_reap(struct edc_scheduler *sched, struct edc_task *task);
 /** 终结态 (COMPLETED / CANCELLED / ERROR) —— 定义在下面的回收一节。 */
 static bool sched_task_finished(struct edc_task *task);
 static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *task, edc_task_step step,
@@ -262,17 +261,11 @@ void edc_scheduler_free(struct edc_scheduler *sched)
         free(pd);
     }
 
-    /* The reap queue holds pointers only; tasks belong to sessions. */
-    free(sched->reap_pending);
-    sched->reap_pending = NULL;
-    sched->reap_count = 0;
-
     /* 脏表只持有 session 指针 —— session 归 session_manager 所有, 这里只丢数组。 */
     free(sched->dirty);
     sched->dirty = NULL;
     sched->dirty_count = 0;
     sched->dirty_cap = 0;
-    sched->reap_cap = 0;
 
     /* The store is ours only when open() created it; a borrowed one (a test
      * fixture) belongs to its installer. Released last, after our own arrays are
@@ -392,9 +385,9 @@ void edc_scheduler_add_group(struct edc_scheduler *sched, struct edc_session *se
     edc_session_add_group(session, group);
 }
 
-/* system task: real work (one fold LLM call), TRANSIENT, and visible (rendered in
- * its own sidebar block). The group is created with this task as leader when none
- * exists. */
+/* system task: real work (one fold LLM call), an ordinary persisted task, and
+ * visible (rendered in its own sidebar block). The group is created with this task
+ * as leader when none exists. */
 struct edc_task *edc_scheduler_spawn_system_task(struct edc_scheduler *sched, struct edc_session *session,
                                                  const char *desc)
 {
@@ -408,8 +401,8 @@ struct edc_task *edc_scheduler_spawn_system_task(struct edc_scheduler *sched, st
     struct edc_task *task = edc_task_new(tid, session->session_id, gid, desc, edc_channel_adapter);
     free(tid);
 
-    /* 三个属性: 不落盘、完成即回收; 产出交给 group 记忆; 容器是系统组。 */
-    task->lifetime = EDC_LIFETIME_TRANSIENT;
+    /* 两个属性: 产出交给 group 记忆; 容器是系统组。lifetime 走默认 (PERSISTENT) ——
+     * 折叠任务必须活过重启, 好让没跑完的那一轮能被 resume (见 §4.6)。 */
     task->sink = EDC_SINK_GROUP_MEMORY;
 
     if (group)
@@ -474,14 +467,54 @@ static void *sched_gen_request_id(void)
     return (void *)(intptr_t)(++seq);
 }
 
-/* Runnable = has work and nobody is driving it; deps are read off step, not the edges. */
+/* Runnable = has work and nobody is driving it; deps are read off step, not the edges.
+ * A fold in flight for the task's group is a barrier: the group's work is held
+ * until the fold lands (see edc_group_fold_holds_group). The fold task itself is
+ * in the session's system group, so it is not held by its own fold. */
 static bool sched_task_runnable(struct edc_scheduler *sched, struct edc_task *task)
 {
     return task && edc_task_is_ready(task) && task->active_turn &&
-           !edc_scheduler_task_has_unresolved_deps(sched, task);
+           !edc_scheduler_task_has_unresolved_deps(sched, task) && !edc_group_fold_holds_group(task->group);
 }
 
 static void sched_drive_task(struct edc_scheduler *sched, struct edc_task *task);
+static void sched_save_session(struct edc_scheduler *sched, struct edc_session *s);
+
+/* 折叠触发的挂载点 (b): 一个任务**即将发请求**之前问一次"它所在的组该折了吗", 该折
+ * 就先起折 —— `edc_group_fold_start` 给组内每个非终态成员挂一条 SEQUENCE dep (包括
+ * 这个任务自己), 于是下面的谓词立刻把它停在 AWAIT_DEPS。屏障本身没有新机制 (B1):
+ * 在飞的成员由 `tool_done` 在下一个请求边界 park, 折叠任务照旧由消息边界扫描派发。
+ * 挂载点 (a) 在 `edc_scheduler_apply_advance` 尾部 (每次推进之后都查)。 */
+static void sched_fold_before_request(struct edc_scheduler *sched, struct edc_task *task)
+{
+    if (!sched || !sched->sessions || !task || !task->group || !task->active_turn)
+        return;
+    /* 只有"即将发请求"的任务触发 (sink=GROUP_MEMORY 的折叠任务自己不折)。 */
+    if (!edc_task_is_ready(task) || task->sink == EDC_SINK_GROUP_MEMORY)
+        return;
+
+    struct edc_session *session = task->group->session;
+    if (!session || edc_scheduler_has_pending_system_task(session) || edc_group_fold_holds_group(task->group))
+        return;
+    if (!edc_group_fold_due(task->group, sched->config))
+        return;
+    if (edc_group_fold_start(sched, session, task->group, NULL))
+        sched_save_session(sched, session); /* 折叠任务与它的 dep 边必须立刻可持久 */
+}
+
+struct edc_task *edc_scheduler_fold_group_now(struct edc_scheduler *sched, struct edc_session *session,
+                                              struct edc_task_group *group, const char *focus)
+{
+    struct edc_task *fold = edc_group_fold_start(sched, session, group, focus);
+    if (fold)
+    {
+        /* (c) 手动折叠 = 用户点名"再试一次": 清掉连续失败账 (自动路径到上限后，
+         * 这是唯一的重启开关)。 */
+        edc_group_fold_note_progress(group);
+        sched_save_session(sched, session); /* 与自动路径同一条: 立刻可持久 */
+    }
+    return fold;
+}
 
 /* 扫描的回调: 每个任务问一次"可跑吗"; 驱动成功 = 这一轮有进展。 */
 struct sched_sweep_ctx
@@ -493,6 +526,8 @@ struct sched_sweep_ctx
 static void sched_schedule_visit(void *ctx, struct edc_task *task)
 {
     struct sched_sweep_ctx *sweep = ctx;
+    /* 请求前先看折叠: 起折会让下面这个谓词为假 (新挂的 dep), 任务停在 AWAIT_DEPS。 */
+    sched_fold_before_request(sweep->sched, task);
     if (!sched_task_runnable(sweep->sched, task))
         return;
     sched_drive_task(sweep->sched, task);
@@ -763,88 +798,27 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
         }
     }
 
+    /* 请求前先看折叠 (挂载点 (b)): 起折给本任务挂上 dep, 它停在 AWAIT_DEPS,
+     * 折叠落地后由扫描重新驱动 —— 那次请求就会带上压过的上下文。 */
+    sched_fold_before_request(sched, task);
+
+    /* A fold in flight for this group parks the task instead of driving it: leave
+     * it READY/ALIVE and let the message-end scan start it once the fold lands. */
+    if (edc_group_fold_holds_group(task->group))
+    {
+        edc_task_mark_ready(task);
+        edc_scheduler_task_moved(sched, task);
+        return;
+    }
+
     /* Drive: the within-task re-decision is the executor's START. */
     sched_drive_task(sched, task);
 }
-
-/* TRANSIENT task reclaim: `lifetime` also means "not persisted". Queue on the phase
- * change (callers still hold the pointer), settle at message end. */
 
 static bool sched_task_finished(struct edc_task *task)
 {
     /* 终态 = 不再推进。SUSPENDED 不算 (它还会被 resume)。 */
     return edc_task_is_completed(task) || edc_task_is_cancelled(task) || edc_task_has_failed(task);
-}
-
-static void sched_queue_reap(struct edc_scheduler *sched, struct edc_task *task)
-{
-    if (!sched || !task || !edc_task_is_transient(task) || !sched_task_finished(task))
-        return;
-    /* 同一任务只入队一次 (兜底路径可能再迁一次)。 */
-    for (size_t i = 0; i < sched->reap_count; i++)
-        if (sched->reap_pending[i] == task)
-            return;
-    if (sched->reap_count == sched->reap_cap)
-    {
-        size_t cap = sched->reap_cap ? sched->reap_cap * 2 : 4;
-        struct edc_task **grown = realloc(sched->reap_pending, cap * sizeof(*grown));
-        if (!grown)
-            return;
-        sched->reap_pending = grown;
-        sched->reap_cap = cap;
-    }
-    sched->reap_pending[sched->reap_count++] = task;
-}
-
-static void sched_reap_one(struct edc_scheduler *sched, struct edc_task *task)
-{
-    struct edc_task_group *group = task->group;
-    struct edc_session *owner = group ? group->session : NULL;
-
-    /* 完成的请求不该还挂在表上; 万一挂着自己摘掉, 免得 hash 里留野指针。 */
-    if (task->current_request_id)
-    {
-        edc_scheduler_unregister_task(sched, task->current_request_id);
-        task->current_request_id = NULL;
-    }
-    /* Should not be the foreground active task; unlink it if it is. */
-    if (owner && owner->active_task == task)
-        edc_session_set_active_task(owner, NULL);
-
-    if (!group)
-    {
-        edc_task_free(task);
-        return;
-    }
-
-    edc_task_group_remove_task(group, task);
-    edc_task_free(task);
-    /* An empty system group is deleted: nothing left to hold. */
-    if (group->member_count == 0)
-    {
-        if (owner)
-        {
-            /* Unlink it from the session's foreground if it was set. */
-            if (owner->foreground_group == group)
-                owner->foreground_group = NULL;
-            edc_session_remove_group(owner, group);
-        }
-        edc_task_group_free(group);
-    }
-}
-
-/* Settle the queued TRANSIENT tasks (at message end, or by outside callers). */
-void edc_scheduler_drain_reap_pending(struct edc_scheduler *sched)
-{
-    if (!sched || sched->reap_count == 0)
-        return;
-    while (sched->reap_count > 0)
-    {
-        struct edc_task *task = sched->reap_pending[--sched->reap_count];
-        sched_reap_one(sched, task);
-        /* 树上少了一行 (可能整组没了) —— 置脏, 由本消息末尾统一通知属主 session。 */
-        sched_mark_dirty(sched, edc_task_session(task), "reap");
-    }
 }
 
 /* ── 前台任务状态通知 ─────────────────────────────────────── */
@@ -858,8 +832,6 @@ static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *
                                   edc_task_life life)
 {
     edc_task_force_move(task, step, life);
-    /* force 也可能把 TRANSIENT 任务直接送到终态 (兜底/取消) —— 同一条回收规则。 */
-    sched_queue_reap(sched, task);
     if (sched)
         sched_mark_dirty(sched, edc_task_session(task), "state");
 }
@@ -1026,10 +998,9 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
     if (res->settled && req_id)
         edc_scheduler_unregister_task(sched, req_id);
 
-    /* (2) Phase changed: queue for reclaim (TRANSIENT + terminal only) and mark dirty. */
+    /* (2) Phase changed: mark the tree dirty. */
     if (res->changed)
     {
-        sched_queue_reap(sched, task);
         sched_mark_dirty(sched, own, "state");
     }
 
@@ -1041,7 +1012,12 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
     {
         /* Completion seq within the owning container; a GROUP_MEMORY task takes none. */
         if (task->sink != EDC_SINK_GROUP_MEMORY && own)
+        {
             edc_task_set_completion_seq(task, own->next_completion_seq++);
+            /* (c) 组里有了**新的已提交内容** ⇒ 折叠的连续失败账清零: 这是新情况,
+             * 值得再试一次 (与"同一份内容反复失败"区分开)。 */
+            edc_group_fold_note_progress(task->group);
+        }
         else
             edc_task_set_completion_seq(task, 0);
 
@@ -1057,9 +1033,18 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
         else if (sched->send_reply)
             sched->send_reply(sched, task, res->notice, EDC_CHANNEL_MESSAGE_RESP_TYPE, req_id);
 
-        /* The settlement subscribers: content-axis fold + persistence. */
-        if (sched->sessions)
-            edc_group_fold_try(sched, sched->sessions, sched->config);
+        /* A task can end well and still have something to say about what just
+         * happened (see `warning` in edc_advance_result): that goes out as a system
+         * message, after the reply, and never edits the reply itself. */
+        if (res->warning[0] && sched->send_reply)
+        {
+            sds copy = sdsnew(res->warning);
+            sched->send_reply(sched, task, copy, EDC_CHANNEL_MESSAGE_SYS_TYPE, req_id);
+            sdsfree(copy);
+        }
+
+        /* The settlement subscribers: persistence. The fold check itself lives at the
+         * tail of edc_scheduler_apply_advance, so every advance asks once (see (a)). */
         sched_save_session(sched, own);
     }
     else if (edc_task_is_cancelled(task))
@@ -1071,6 +1056,10 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
     else /* ERROR */
     {
         sched_mark_dirty(sched, own, "state");
+        /* (c) 折叠任务进 ERROR ⇒ 记一次失败; 到上限 `edc_group_fold_due` 会停自动
+         * 折叠 (手动 /group fold 不受限)。取消不算失败 —— 那是人叫停的。 */
+        if (task->sink == EDC_SINK_GROUP_MEMORY)
+            edc_group_fold_note_failure(task->sink_group);
         if (sched->send_reply)
         {
             sds copy = sched_error_copy(sched, res->notice);
@@ -1095,6 +1084,17 @@ void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *t
 
     /* ④ 清账: 递归 —— 清账本身还会连带改动别的 task。 */
     edc_task_drain_moves(task, sched_settle_cascaded, sched);
+
+    /* ⑤ 折叠检查 (挂载点 (a)): 每次推进之后都问一次, 不只在"任务完成"那一支 ——
+     * 一次工具应答推进也能把组的上下文顶过窗口, 而那时任务还没完成。起折给组内每个
+     * 非终态成员挂 SEQUENCE dep, 在飞的成员到下一个请求边界 park (B1, 零新机制)。
+     * 起折的 session 可能不是本任务那个 (后台会话也折), 所以用 try 回传的那个。 */
+    if (sched->sessions)
+    {
+        struct edc_session *folded = NULL;
+        if (edc_group_fold_try(sched, sched->sessions, sched->config, &folded) && folded)
+            sched_save_session(sched, folded);
+    }
 }
 
 /* Host-initiated transitions go through the same bookkeeping. */
@@ -1125,6 +1125,15 @@ static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor
         return;
     struct edc_advance_result res = edc_executor_advance_tool_resp(&sched->executor, task, msg->request_id, msg->data);
     edc_scheduler_apply_advance(sched, task, msg->request_id, &res);
+
+    /* A held send (a dep is outstanding) parked the task at AWAIT_DEPS without
+     * sending: its request is over, so drop the mapping. It is re-driven with a
+     * fresh id when the dep completes. */
+    if (!res.settled && !edc_task_is_running(task) && task->current_request_id == msg->request_id)
+    {
+        edc_scheduler_unregister_task(sched, msg->request_id);
+        task->current_request_id = NULL;
+    }
 }
 
 static void sched_handle_tool_started(struct edc_scheduler *sched, struct edc_actor_msg *msg)
@@ -1202,9 +1211,6 @@ static void sched_trace_notify(const char *reason, const char *session_id)
 /* 前端点名要一棵树。解析不出来就不给 (前端拿到的是"没人应答", 不是别人的树)。 */
 static void sched_handle_pull_snapshot(struct edc_scheduler *sched, const char *session_id)
 {
-    /* Settle queued reclaim before building the tree, or the frame shows a dead task. */
-    edc_scheduler_drain_reap_pending(sched);
-
     struct edc_session *session = sched_resolve_session(sched, session_id);
     if (!session)
     {
@@ -1260,6 +1266,9 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
         if (g_msg_count > 0)
             g_msg_count -= 1;
         long long g_tokens_total = 0;
+        long long g_tokens_prompt = 0;
+        long long g_tokens_completion = 0;
+        long long g_tokens_cached = 0;
         {
             struct edc_task *mt;
             LL_FOREACH2(g->members, mt, group_next)
@@ -1267,10 +1276,25 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
                 if (mt->active_turn)
                     g_msg_count += edc_queue_length(&mt->active_turn->messages);
                 g_tokens_total += mt->tokens_total;
+                g_tokens_prompt += mt->tokens_prompt;
+                g_tokens_completion += mt->tokens_completion;
+                g_tokens_cached += mt->tokens_cached;
             }
         }
+        /* The group's *current* context: the widest member conversation, as the
+         * last reply's real usage plus an estimate of what was appended after it
+         * (or a from-scratch estimate while no reply is trustworthy). Estimated
+         * travels with the number -- the sidebar marks it, it never passes for a
+         * provider measurement. */
+        bool g_ctx_estimated = false;
+        long long g_ctx_tokens = edc_context_group_ctx_tokens(g, &g_ctx_estimated);
         cJSON_AddNumberToObject(gj, "msg_count", (double)g_msg_count);
         cJSON_AddNumberToObject(gj, "tokens_total", (double)g_tokens_total);
+        cJSON_AddNumberToObject(gj, "tokens_prompt", (double)g_tokens_prompt);
+        cJSON_AddNumberToObject(gj, "tokens_completion", (double)g_tokens_completion);
+        cJSON_AddNumberToObject(gj, "tokens_cached", (double)g_tokens_cached);
+        cJSON_AddNumberToObject(gj, "ctx_tokens", (double)g_ctx_tokens);
+        cJSON_AddBoolToObject(gj, "ctx_estimated", g_ctx_estimated);
 
         cJSON *tasks = cJSON_AddArrayToObject(gj, "tasks");
         struct edc_task *t;
@@ -1346,10 +1370,7 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
         break;
     }
 
-    /* One push per message at most, before msg is freed: settle reclaim, schedule,
-     * then push, so the frame shows the just-driven task and not the reclaimed one. */
-    edc_scheduler_drain_reap_pending(sched);
-
+    /* One push per message at most, before msg is freed. */
     /* Every effect has landed; drive by state (a pure pull reaches here too). */
     edc_scheduler_schedule(sched);
 
