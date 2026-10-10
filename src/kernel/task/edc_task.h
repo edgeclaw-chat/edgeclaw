@@ -49,12 +49,19 @@ extern edc_task_life edc_task_classify_life(const char *name);
  * neither a private protocol nor a hidden flag. */
 typedef enum
 {
-    EDC_SINK_CHANNEL,      /* output goes back to the user */
-    EDC_SINK_GROUP_MEMORY, /* output becomes the group's memory (fold) */
+    EDC_SINK_CHANNEL,        /* output goes back to the user */
+    EDC_SINK_GROUP_MEMORY,   /* output becomes the group's memory (L1 fold) */
+    EDC_SINK_SESSION_MEMORY, /* output becomes session memory entries (L2 curation) */
 } edc_sink;
 
 extern const char *edc_task_sink_name(edc_sink sink);
+extern void edc_task_memo_commit(struct edc_task *task);
 extern edc_sink edc_task_classify_sink(const char *name);
+
+/* 产出不是给用户看的, 而是写进某种记忆 (折叠 / 策展)。这类 task 的共同形状:
+ * 请求自足 (只带自己的说明 + 自己的 turn)、不占完成序 (`completion_seq = 0`)、
+ * 不算对话内容 (不进组历史 / 不进折叠语料 / 不进 ctx 宽度)。 */
+extern bool edc_task_is_memory_sink(const struct edc_task *task);
 
 
 typedef enum
@@ -158,6 +165,26 @@ struct edc_task
     uint32_t last_fold_epoch;
     int last_hist_len;
     int last_turn_len;
+
+    /* ── L2 (session 记忆): 水位 ─────────────────────────────────────
+     * `memo_seen_seq` = 这个 task 已经"看过"到 session 记忆事件表的哪个 seq。
+     * 装配时取 `seq > memo_seen_seq` 的差集当补丁 (见 docs/l2-session-memory.md
+     * §3); 请求发出后的簿记里推进 (取消/失败**不**推进 ⇒ 下次重发同一补丁)。
+     *
+     * 出生点由 session 采纳: `memo_seen_seq = session->memo->next_seq` —— 新 task
+     * 第一轮就拿到全量索引, 所以"补丁"对它没有信息量。老存档 (迁移) 读回 0,
+     * 而迁移后的表也是空的 (next_seq = 0), 两者一致。
+     *
+     * `last_prefix_tokens` = 锚定时 session 记忆块 + 补丁的估算 token (P4b 起启用):
+     * ctx 估算要补 `max(0, prefix_now - last_prefix_tokens)`, 否则常驻块长大后会
+     * 系统性晚折。P4a 只落盘这个字段, 还没有读者。 */
+    uint64_t memo_seen_seq;
+    uint64_t last_prefix_tokens;
+
+    /* 上一次请求**装进去**的最大事件 seq (只在内存, 不落盘)。响应真的回来后
+     * (`edc_task_memo_commit`) 才把它提升成 `memo_seen_seq` —— 取消/失败的请求
+     * 丢了通知, 水位不动, 下一次请求会重发同一条 (见 edc_task_memo_commit)。 */
+    uint64_t memo_notice_seq;
 
     edc_channel_type channel_type;
 

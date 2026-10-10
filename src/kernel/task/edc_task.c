@@ -101,6 +101,8 @@ const char *edc_task_sink_name(edc_sink sink)
         return "CHANNEL";
     case EDC_SINK_GROUP_MEMORY:
         return "GROUP_MEMORY";
+    case EDC_SINK_SESSION_MEMORY:
+        return "SESSION_MEMORY";
     }
     return "CHANNEL";
 }
@@ -111,6 +113,8 @@ edc_sink edc_task_classify_sink(const char *name)
         return EDC_SINK_CHANNEL;
     if (strcmp(name, "GROUP_MEMORY") == 0)
         return EDC_SINK_GROUP_MEMORY;
+    if (strcmp(name, "SESSION_MEMORY") == 0)
+        return EDC_SINK_SESSION_MEMORY;
     return EDC_SINK_CHANNEL;
 }
 
@@ -617,6 +621,18 @@ void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long lon
             (task->group && task->group->history) ? cJSON_GetArraySize(task->group->history) : 0;
         task->last_turn_len = task->active_turn ? (int)task->active_turn->messages.tail : 0;
     }
+}
+
+/* ── L2 session 记忆: 通知投递 ─────────────────────────────── */
+
+void edc_task_memo_commit(struct edc_task *task)
+{
+    if (!task)
+        return;
+    /* 只在"这次请求真的回来了"之后调用 (见 executor 的响应入口): 模型读到了那条
+     * 通知, 水位才推进。取消/失败不调用 ⇒ 下次请求重发同一条, 幂等无害。 */
+    if (task->memo_notice_seq > task->memo_seen_seq)
+        task->memo_seen_seq = task->memo_notice_seq;
 }
 
 /* ── 依赖 (IPC) ────────────────────────────────────────────── */
@@ -1221,9 +1237,14 @@ void edc_task_set_completion_seq(struct edc_task *task, uint32_t seq)
  * (It used to be a `lifetime` condition; the fold task is now an ordinary persisted
  * task, so the exclusion rides `sink`, which is what actually says "my output is
  * memory".) */
+bool edc_task_is_memory_sink(const struct edc_task *task)
+{
+    return task && (task->sink == EDC_SINK_GROUP_MEMORY || task->sink == EDC_SINK_SESSION_MEMORY);
+}
+
 bool edc_task_is_foldable(struct edc_task *task)
 {
-    return task && task->sink != EDC_SINK_GROUP_MEMORY && edc_task_is_completed(task) &&
+    return task && !edc_task_is_memory_sink(task) && edc_task_is_completed(task) &&
            edc_task_unfolded_msg_count(task) > 0;
 }
 

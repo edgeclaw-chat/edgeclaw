@@ -12,6 +12,7 @@
 #include "edc_llm_actor.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_session_memory.h"
 #include "edc_session_manager.h"
 #include "edc_state_serializer.h"
 #include "edc_task.h"
@@ -380,7 +381,7 @@ static void test_fold_runs_as_a_system_task(void)
     }
 
     /* ④ 不回收: 折叠任务是普通任务, 完成后留在系统组。 */
-    CHECK(count_tasks_in(session) == 5, "折叠任务完成后仍在 (不回收)");
+    CHECK(count_tasks_in(session) == 6, "折叠任务 + 链上的策展任务都仍在 (不回收)");
     CHECK(edc_session_find_system_group(session) != NULL, "系统组还在");
 
     /* ⑤ 再折一次: 可折叠的还剩 3 个 → 还能起。 */
@@ -712,10 +713,36 @@ static void test_fold_holds_next_llm_send(void)
     void *fold_req = fold->current_request_id;
     struct edc_advance_result fr = edc_executor_advance_llm_resp(&sched->executor, fold, fold_req, &resp);
     edc_scheduler_apply_advance(sched, fold, fold_req, &fr);
-    CHECK(edc_task_is_ready(m), "折叠落地后成员被释放 (READY)");
+    /* P4d: 折叠落地会链出一个 L2 策展任务, 成员现在等的是它 (链: 成员 → L2 → L1) ——
+     * "策展之后成员才恢复" 正是单一策略要的顺序。 */
+    struct edc_task_group *sys = edc_session_find_system_group(session);
+    struct edc_task *l2 = NULL;
+    struct edc_task *it = NULL;
+    LL_FOREACH2(sys->members, it, group_next)
+    {
+        if (it->sink == EDC_SINK_SESSION_MEMORY)
+            l2 = it;
+    }
+    CHECK(l2 != NULL, "折叠落地后起了 L2");
+    CHECK(edc_task_awaits_deps(m) && edc_task_has_unresolved_deps(m), "成员改为等 L2 (不是立刻 READY)");
 
     pump_schedule(sched);
-    CHECK(g_send_llm_calls == 2, "现在为成员发出请求");
+    CHECK(g_send_llm_calls == 2, "扫描驱动的是 L2");
+    CHECK(g_last_llm_task_id && l2 && strcmp(g_last_llm_task_id, l2->task_id) == 0, "发的是策展任务");
+
+    /* 结算 L2 ⇒ 成员才被释放并驱动 */
+    struct edc_llm_actor_resp l2resp;
+    memset(&l2resp, 0, sizeof(l2resp));
+    l2resp.reason = BC_LLM_FINISH_REASON_STOP;
+    l2resp.content = sdsnew("{\"ops\":[]}");
+    void *l2req = l2->current_request_id;
+    struct edc_advance_result l2r = edc_executor_advance_llm_resp(&sched->executor, l2, l2req, &l2resp);
+    edc_scheduler_apply_advance(sched, l2, l2req, &l2r);
+    sdsfree(l2resp.content);
+    CHECK(edc_task_is_ready(m), "L2 落地后成员被释放 (READY)");
+
+    pump_schedule(sched);
+    CHECK(g_send_llm_calls == 3, "现在为成员发出请求");
     CHECK(g_last_llm_task_id && strcmp(g_last_llm_task_id, m->task_id) == 0, "发的是那个成员");
 
     sdsfree(resp.content);
@@ -759,10 +786,33 @@ static void test_group_held_until_fold_lands(void)
     struct edc_advance_result fr = edc_executor_advance_llm_resp(&sched->executor, fold, fold_req, &resp);
     edc_scheduler_apply_advance(sched, fold, fold_req, &fr);
     CHECK(group->memory && strstr(group->memory, "# merged") != NULL, "记忆已写入");
-    CHECK(edc_task_is_ready(held), "成员被释放 (deps 完成 → READY)");
+    /* P4d: 落地后成员等的是链上的 L2, 要等策展结算才恢复 */
+    struct edc_task_group *sys = edc_session_find_system_group(session);
+    struct edc_task *l2 = NULL;
+    struct edc_task *it = NULL;
+    LL_FOREACH2(sys->members, it, group_next)
+    {
+        if (it->sink == EDC_SINK_SESSION_MEMORY)
+            l2 = it;
+    }
+    CHECK(l2 != NULL, "折叠落地后起了 L2");
+    CHECK(edc_task_awaits_deps(held), "成员改为等 L2");
 
     pump_schedule(sched);
-    CHECK(g_send_llm_calls == 2, "折叠落地后成员被驱动");
+    CHECK(g_send_llm_calls == 2, "扫描驱动的是 L2");
+
+    struct edc_llm_actor_resp l2resp;
+    memset(&l2resp, 0, sizeof(l2resp));
+    l2resp.reason = BC_LLM_FINISH_REASON_STOP;
+    l2resp.content = sdsnew("{\"ops\":[]}");
+    void *l2req = l2->current_request_id;
+    struct edc_advance_result l2r = edc_executor_advance_llm_resp(&sched->executor, l2, l2req, &l2resp);
+    edc_scheduler_apply_advance(sched, l2, l2req, &l2r);
+    sdsfree(l2resp.content);
+    CHECK(edc_task_is_ready(held), "L2 落地 ⇒ 成员被释放 (READY)");
+
+    pump_schedule(sched);
+    CHECK(g_send_llm_calls == 3, "策展之后成员被驱动");
     CHECK(g_last_llm_task_id && strcmp(g_last_llm_task_id, held->task_id) == 0, "驱动的是被挂住的成员");
     CHECK(edc_task_awaits_exec(held), "成员现在在跑");
 
@@ -770,6 +820,35 @@ static void test_group_held_until_fold_lands(void)
     edc_session_free(session);
     edc_scheduler_free(sched);
     edc_config_free(cfg);
+}
+
+/* P4d: 折叠落地会链出一个 L2 策展任务; 被折组的成员现在等的是它。
+ * 这个 helper 把 L2 驱动起来并结算 (空 ops) —— 成员这时才恢复。
+ * 返回被结算的 L2 (没有则 NULL)。 */
+static struct edc_task *settle_l2(struct edc_scheduler *sched, struct edc_session *session)
+{
+    struct edc_task_group *sys = edc_session_find_system_group(session);
+    if (!sys)
+        return NULL;
+    struct edc_task *l2 = NULL;
+    struct edc_task *it = NULL;
+    LL_FOREACH2(sys->members, it, group_next)
+    {
+        if (it->sink == EDC_SINK_SESSION_MEMORY && !edc_task_is_completed(it) && !edc_task_has_failed(it))
+            l2 = it;
+    }
+    if (!l2)
+        return NULL;
+    pump_schedule(sched); /* 先派发 (它需要 request_id) */
+    void *rid = l2->current_request_id;
+    struct edc_llm_actor_resp resp;
+    memset(&resp, 0, sizeof(resp));
+    resp.reason = BC_LLM_FINISH_REASON_STOP;
+    resp.content = sdsnew("{\"ops\":[]}");
+    struct edc_advance_result r = edc_executor_advance_llm_resp(&sched->executor, l2, rid, &resp);
+    edc_scheduler_apply_advance(sched, l2, rid, &r);
+    sdsfree(resp.content);
+    return l2;
 }
 
 static void test_resume_held_while_fold_in_flight(void)
@@ -809,10 +888,12 @@ static void test_resume_held_while_fold_in_flight(void)
     void *fold_req = fold->current_request_id;
     struct edc_advance_result fr = edc_executor_advance_llm_resp(&sched->executor, fold, fold_req, &resp);
     edc_scheduler_apply_advance(sched, fold, fold_req, &fr);
+    CHECK(edc_task_awaits_deps(t), "折叠落地后 t 还在等链上的 L2 (单一策略的顺序)");
+    CHECK(settle_l2(sched, session) != NULL, "链上有 L2 可结算");
 
     pump_schedule(sched);
-    CHECK(edc_task_awaits_exec(t), "折叠落地后 resume 生效 (t 在跑)");
-    CHECK(g_send_llm_calls == 2, "为 t 发出了请求");
+    CHECK(edc_task_awaits_exec(t), "L2 落地后 resume 生效 (t 在跑)");
+    CHECK(g_send_llm_calls == 3, "为 t 发出了请求 (折叠 + L2 + t)");
 
     sdsfree(resp.content);
     edc_session_free(session);
@@ -880,10 +961,12 @@ static void test_fold_before_request(void)
     void *fold_req = fold->current_request_id;
     struct edc_advance_result fr = edc_executor_advance_llm_resp(&sched->executor, fold, fold_req, &resp);
     edc_scheduler_apply_advance(sched, fold, fold_req, &fr);
-    CHECK(edc_task_is_ready(ready), "折叠落地 → 成员被释放");
+    CHECK(edc_task_awaits_deps(ready), "折叠落地后它改为等 L2");
+    CHECK(settle_l2(sched, session) != NULL, "链上有 L2 可结算");
+    CHECK(edc_task_is_ready(ready), "L2 落地 → 成员被释放");
 
     pump_schedule(sched);
-    CHECK(g_send_llm_calls == 2, "释放后它自己的请求才出去");
+    CHECK(g_send_llm_calls == 3, "释放后它自己的请求才出去 (折叠 + L2 + 它)");
     CHECK(g_last_llm_task_id && strcmp(g_last_llm_task_id, ready->task_id) == 0, "驱动的是被 park 的那个");
 
     sdsfree(resp.content);

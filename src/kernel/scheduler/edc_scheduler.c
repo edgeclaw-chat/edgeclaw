@@ -6,6 +6,7 @@
 #include "edc_file_utils.h"
 #include "edc_group_fold.h"
 #include "edc_session.h"
+#include "edc_session_memory.h"
 #include "edc_session_manager.h"
 #include "edc_session_store.h"
 #include "edc_turn.h"
@@ -357,6 +358,11 @@ struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, struct e
     struct edc_task *task = edc_task_new(tid, sid, gid, desc, channel_type);
     /* edc_task_new already leaves it READY; no forced WAITING_INPUT. */
     free(tid);
+    if (!task)
+        return NULL;
+
+    /* L2: 新 task 的"看过"水位 = 当前表头 (它第一轮就拿到全量索引)。 */
+    edc_session_memory_adopt_task(session, task);
 
     /* Attach the raw input being handled (fork and system tasks do not). */
     if (sched->input_raw)
@@ -375,6 +381,9 @@ struct edc_task_group *edc_scheduler_create_group(struct edc_scheduler *sched, s
         return NULL;
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_scheduler_add_group(sched, session, group);
+    /* L2: 走这条路的 leader 可能是 create_task 建的 (重复采纳无副作用), 也可能是
+     * fork 直接建的 (edc_task_fork 不经 create_task) —— 两条都要采纳。 */
+    edc_session_memory_adopt_task(session, leader);
     return group;
 }
 
@@ -391,6 +400,13 @@ void edc_scheduler_add_group(struct edc_scheduler *sched, struct edc_session *se
 struct edc_task *edc_scheduler_spawn_system_task(struct edc_scheduler *sched, struct edc_session *session,
                                                  const char *desc)
 {
+    /* 默认 = L1 折叠任务 (产出写 group 记忆)。L2 策展任务走下面这个带 sink 的版本。 */
+    return edc_scheduler_spawn_system_task_as(sched, session, desc, EDC_SINK_GROUP_MEMORY);
+}
+
+struct edc_task *edc_scheduler_spawn_system_task_as(struct edc_scheduler *sched, struct edc_session *session,
+                                                    const char *desc, edc_sink sink)
+{
     if (!sched || !session)
         return NULL;
 
@@ -400,10 +416,13 @@ struct edc_task *edc_scheduler_spawn_system_task(struct edc_scheduler *sched, st
     const char *gid = group ? group->group_id : tid;
     struct edc_task *task = edc_task_new(tid, session->session_id, gid, desc, edc_channel_adapter);
     free(tid);
+    if (!task)
+        return NULL;
+    edc_session_memory_adopt_task(session, task);
 
-    /* 两个属性: 产出交给 group 记忆; 容器是系统组。lifetime 走默认 (PERSISTENT) ——
-     * 折叠任务必须活过重启, 好让没跑完的那一轮能被 resume (见 §4.6)。 */
-    task->sink = EDC_SINK_GROUP_MEMORY;
+    /* 两个属性: 产出交给某种记忆 (折叠 = group, 策展 = session); 容器是系统组。
+     * lifetime 走默认 (PERSISTENT) —— 这类任务必须活过重启, 好让没跑完的那一轮续跑。 */
+    task->sink = sink;
 
     if (group)
     {
@@ -490,7 +509,7 @@ static void sched_fold_before_request(struct edc_scheduler *sched, struct edc_ta
     if (!sched || !sched->sessions || !task || !task->group || !task->active_turn)
         return;
     /* 只有"即将发请求"的任务触发 (sink=GROUP_MEMORY 的折叠任务自己不折)。 */
-    if (!edc_task_is_ready(task) || task->sink == EDC_SINK_GROUP_MEMORY)
+    if (!edc_task_is_ready(task) || edc_task_is_memory_sink(task))
         return;
 
     struct edc_session *session = task->group->session;
@@ -1011,7 +1030,7 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
     if (edc_task_is_completed(task))
     {
         /* Completion seq within the owning container; a GROUP_MEMORY task takes none. */
-        if (task->sink != EDC_SINK_GROUP_MEMORY && own)
+        if (task->sink == EDC_SINK_CHANNEL && own)
         {
             edc_task_set_completion_seq(task, own->next_completion_seq++);
             /* (c) 组里有了**新的已提交内容** ⇒ 折叠的连续失败账清零: 这是新情况,
@@ -1027,9 +1046,22 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
         /* Notify dependents; starting the queued is the scan's job. */
         edc_task_notify_dependents(task);
 
-        /* Delivery by sink: CHANNEL replies, GROUP_MEMORY writes to the group. */
+        /* Delivery by sink: CHANNEL replies, GROUP_MEMORY writes the group's memory,
+         * SESSION_MEMORY writes session entries (ops contract, fail-closed). */
         if (task->sink == EDC_SINK_GROUP_MEMORY)
-            edc_group_fold_deliver_memory(task, res->notice);
+        {
+            bool landed = edc_group_fold_deliver_memory(task, res->notice);
+            /* L2 (单一策略): 折叠**真的落地**了 ⇒ 补一个策展任务, 把链挂成
+             *   被折组成员 ──► L2 ──► L1(刚完成, 声明式)
+             * 于是成员在策展之后才恢复, 而 L2 读得到刚落地的记忆。加边在同一个消息
+             * 处理里 (扫描还没跑), 被释放的成员会立刻重新 park。 */
+            if (landed && own && task->sink_group)
+                edc_session_memory_start(sched, own, task->sink_group, task);
+        }
+        else if (task->sink == EDC_SINK_SESSION_MEMORY)
+        {
+            edc_session_memory_deliver(task, res->notice);
+        }
         else if (sched->send_reply)
             sched->send_reply(sched, task, res->notice, EDC_CHANNEL_MESSAGE_RESP_TYPE, req_id);
 

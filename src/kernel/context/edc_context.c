@@ -197,6 +197,21 @@ static sds edc_context_build_permissions(struct edc_config *conf)
     return out;
 }
 
+/* session 记忆的**唯一**提示：常量文本，零可变内容（没有条数、没有内容、没有 id）。
+ * 放在 system prompt 的**最后** —— 它是模型要看那段长提示（MEMORY.md 可能有几万 token）
+ * 时最后读到的东西，recency 最好；而"条数/内容"由请求期队尾通知带（见 docs/l2-session-memory.md
+ * §1.2.1）。放在这里而不是每次现拼一个块：常量 ⇒ 不碰 prompt cache 前缀。 */
+static const char kSessionMemoryHint[] =
+    "\n## Session Memory\n"
+    "This session keeps a shared memory of durable knowledge (decisions, constraints, gotchas, external facts),\n"
+    "visible to every task in it. Consult it when you need context from earlier work; record what will matter to\n"
+    "other tasks later. Uses:\n"
+    "- `memory_search <keyword>` — find entries (returns one line per hit)\n"
+    "- `memory_list [offset] [n]` — enumerate entries\n"
+    "- `memory_get <id>` — read one entry's full detail\n"
+    "- `memory_write <title> [summary] [detail]` — record durable knowledge\n"
+    "New or updated entries are announced at the end of the conversation. Keep progress logs and todos out of it.\n";
+
 sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir)
 {
     const char *workspace = conf->workspace;
@@ -218,6 +233,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
         system_prompt = sdscat(system_prompt, memory);
     }
     system_prompt = sdscat(system_prompt, skills);
+    system_prompt = sdscat(system_prompt, kSessionMemoryHint);
 
     sdsfree(os_name);
 
@@ -486,7 +502,7 @@ extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool
     /* 1) 锚 + 尾部 */
     LL_FOREACH2(group->members, t, group_next)
     {
-        if (t->sink == EDC_SINK_GROUP_MEMORY)
+        if (edc_task_is_memory_sink(t))
             continue; /* 折叠任务不是会话内容 (与折叠账同一口径) */
         if (t->last_total_tokens <= 0 || t->last_hist_len <= 0)
             continue; /* 没有锚, 或没有位置 */
@@ -537,7 +553,7 @@ extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool
     long long widest_turn = 0;
     LL_FOREACH2(group->members, t, group_next)
     {
-        if (t->sink == EDC_SINK_GROUP_MEMORY)
+        if (edc_task_is_memory_sink(t))
             continue;
         int turn_from = (t->active_turn && t->active_turn->folded_prefix > 0) ? t->active_turn->folded_prefix : 0;
         long long turn_est = est_turn_from(t->active_turn, turn_from);

@@ -174,6 +174,10 @@ extern struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, s
  *  sink GROUP_MEMORY, group kind SYSTEM. Returns at
  *  (READY, ALIVE) with no input; the caller attaches a turn and the scheduler
  *  decides when it runs. NULL when there is no session. */
+/* 按 sink 建系统任务 (L1 折叠 = GROUP_MEMORY, L2 策展 = SESSION_MEMORY);
+ * `edc_scheduler_spawn_system_task` 是 sink = GROUP_MEMORY 的老入口。 */
+extern struct edc_task *edc_scheduler_spawn_system_task_as(struct edc_scheduler *sched, struct edc_session *session,
+                                                           const char *desc, edc_sink sink);
 extern struct edc_task *edc_scheduler_spawn_system_task(struct edc_scheduler *sched, struct edc_session *session,
                                                         const char *desc);
 

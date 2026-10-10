@@ -5,6 +5,8 @@
 #include "edc_llm_actor.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_session_memory.h"
+#include <stdbool.h>
 #include "edc_session_manager.h"
 #include "edc_session_store.h"
 #include "edc_task.h"
@@ -114,7 +116,7 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
      * 走组 history[0]: 那个槽位不落盘, 重启后加载期会把它填成主提示词
      * (edc_task_group_rebuild_history), 摘要器于是背上 EdgeClaw 的人设 / MEMORY.md /
      * 工具指令, 而它根本没有工具。折叠 prompt 自带全部语料, 不需要任何组历史。 */
-    const bool is_memory_sink = (task->sink == EDC_SINK_GROUP_MEMORY);
+    const bool is_memory_sink = edc_task_is_memory_sink(task);
 
     sds pristine = NULL;
     /* 属主 session 的 workdir: 后台 session 里的任务续跑时系统提示里的
@@ -125,7 +127,9 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
     {
         cJSON *sys = cJSON_CreateObject();
         cJSON_AddStringToObject(sys, "role", "system");
-        cJSON_AddStringToObject(sys, "content", edc_group_fold_system_prompt());
+        cJSON_AddStringToObject(sys, "content", task->sink == EDC_SINK_SESSION_MEMORY
+                                                    ? edc_session_memory_system_prompt()
+                                                    : edc_group_fold_system_prompt());
         cJSON_AddItemToArray(msgs, sys);
     }
     else
@@ -263,7 +267,8 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
     /* 摘要的输出预算 (a): 语料上限 EDC_FOLD_MAX_CORPUS_TOKENS 与它配套, 保证单次
      * 折叠的压缩比可达成 (≤ 4:1)。"请求从不发 max_tokens" 只有这一处例外。 */
     if (is_memory_sink)
-        req->max_tokens = EDC_FOLD_SUMMARY_MAX_TOKENS;
+        req->max_tokens = (task->sink == EDC_SINK_SESSION_MEMORY) ? EDC_SESSION_MEMORY_MAX_TOKENS
+                                                                  : EDC_FOLD_SUMMARY_MAX_TOKENS;
     /* 本 turn 的前缀若已进记忆 (折叠切在 turn 内部), 从这里之后开始发。 */
     if (task->active_turn && task->active_turn->folded_prefix > 0)
         req->turn_begin = (size_t)task->active_turn->folded_prefix;
@@ -275,11 +280,43 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
      * INSTRUCTIONS FOR THIS TURN 指令段; 有清单→清单行+逐轮同步节拍, 无清
      * 单→"尚无清单"+建计划引导。llm actor 在 history + turn 之后追加, 每
      * 轮请求都是最新状态。req 持有并随请求释放 (副本, 不改 task/group)。 */
-    req->tail_system = NULL;
-    /* 待办提醒是给"正在干活的用户任务"的节拍; 摘要调用不该被它插尾
-     * (同样是为了让折叠请求与旧实现逐字节一致)。 */
-    if (!is_memory_sink && edc_task_llm_request_poke(task))
-        req->tail_system = edc_context_make_todo_reminder(task);
+    req->tail_parts = NULL;
+    if (!is_memory_sink)
+    {
+        /* [0] L2 session 记忆通知: 自这个 task 上次"真的读到"以来新建/更新的条目,
+         * 一行一条 (cap 10)。**请求期现算的临时物** —— 不写进任何消息数组、不落盘;
+         * 水位在响应回来后由 `edc_task_memo_commit` 推进 (取消/失败不推进 ⇒ 重发)。
+         * 常驻里没有 memory 内容 (系统提示只留一行常量提示, 见 edc_context.c)。 */
+        struct edc_session *own = (task->group && task->group->session) ? task->group->session : NULL;
+        if (own && own->memo)
+        {
+            uint64_t max_injected = 0;
+            sds notice = edc_session_memory_notice(own->memo, task->memo_seen_seq, 10, &max_injected);
+            if (notice)
+            {
+                cJSON *sys = cJSON_CreateObject();
+                cJSON_AddStringToObject(sys, "role", "system");
+                cJSON_AddStringToObject(sys, "content", notice);
+                if (!req->tail_parts)
+                    req->tail_parts = cJSON_CreateArray();
+                cJSON_AddItemToArray(req->tail_parts, sys);
+                task->memo_notice_seq = max_injected; /* 响应回来才提升成 memo_seen_seq */
+                sdsfree(notice);
+            }
+        }
+        /* [1] todo 提醒 (节流): 给"正在干活的用户任务"的节拍。摘要调用不该被它插尾
+         * (同样是为了让折叠请求与旧实现逐字节一致)。 */
+        if (edc_task_llm_request_poke(task))
+        {
+            cJSON *todo = edc_context_make_todo_reminder(task);
+            if (todo)
+            {
+                if (!req->tail_parts)
+                    req->tail_parts = cJSON_CreateArray();
+                cJSON_AddItemToArray(req->tail_parts, todo);
+            }
+        }
+    }
 
     edc_actor_send(llm_actor,
                    edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST, edc_scheduler_get_actor(sched), request_id, req,

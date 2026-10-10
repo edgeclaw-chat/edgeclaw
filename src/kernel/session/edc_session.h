@@ -7,6 +7,7 @@
 #include <stdbool.h>
 
 struct edc_config;
+struct edc_session_memory;
 struct edc_turn;
 
 struct edc_timestamp_node
@@ -52,6 +53,11 @@ struct edc_session
     bool state_quarantined;
 
     struct edc_config *config;
+
+    /* L2: session 级记忆 (事件表 + 条目表 + 消化水位)。永远非 NULL (构造即建),
+     * 落盘在 session.json 的顶层 `session_memory` 键 (schema v7)。
+     * 设计见 docs/l2-session-memory.md。 */
+    struct edc_session_memory *memo;
 
     sds history_dir; /* workspace/<session_id> — 按 session 存历史 */
 

@@ -121,6 +121,29 @@ static void finish_fold(struct edc_scheduler *sched, struct edc_task *fold)
     struct edc_advance_result res = edc_executor_advance_llm_resp(&sched->executor, fold, rid, &resp);
     edc_scheduler_apply_advance(sched, fold, rid, &res);
     sdsfree(resp.content);
+
+    /* L2 (P4d): 折叠落地会链出一个策展任务, 而被折组的成员现在等的是它。
+     * 这个 harness 关心的是命令层, 所以这里把它也结算掉 —— 否则下个用例捕获到的
+     * "最后一个 LLM 请求"会是 L2 的 (它的 sink_group 是上一个组, prompt 也不同)。 */
+    struct edc_session *sess = (fold->group && fold->group->session) ? fold->group->session : NULL;
+    struct edc_task_group *sys = sess ? edc_session_find_system_group(sess) : NULL;
+    if (!sys)
+        return;
+    edc_scheduler_schedule(sched); /* 先让扫描把 L2 派发出去 (它才有 request_id 可结算) */
+    struct edc_task *t = NULL;
+    LL_FOREACH2(sys->members, t, group_next)
+    {
+        if (t->sink != EDC_SINK_SESSION_MEMORY || edc_task_is_completed(t) || edc_task_has_failed(t))
+            continue;
+        void *l2rid = t->current_request_id;
+        struct edc_llm_actor_resp l2resp;
+        memset(&l2resp, 0, sizeof(l2resp));
+        l2resp.reason = BC_LLM_FINISH_REASON_STOP;
+        l2resp.content = sdsnew("{\"ops\":[]}");
+        struct edc_advance_result l2res = edc_executor_advance_llm_resp(&sched->executor, t, l2rid, &l2resp);
+        edc_scheduler_apply_advance(sched, t, l2rid, &l2res);
+        sdsfree(l2resp.content);
+    }
 }
 
 /* 折叠任务 turn 里第一条消息的内容 (折叠 prompt)。 */

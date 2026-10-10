@@ -126,7 +126,10 @@ extern bool edc_group_fold_holds_group(struct edc_task_group *group);
  *  fold task carries (every member before it folded whole, its own turn up to
  *  fold_cut_prefix), rebuild the group history, bump fold_epoch. On failure nothing
  *  changes and the next round retries. */
-extern void edc_group_fold_deliver_memory(struct edc_task *task, const char *content);
+/* 折叠落地: 写 group 记忆 (并尽量打上前缀/推进 fold_epoch)。
+ * 返回 true = 记忆真的写了 (L2 的"有新料"判据就是这个返回值); false = 内容为空,
+ * 什么都没动 (下一次触发重试)。 */
+extern bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content);
 
 /** (c) 记一次折叠失败 (任务进 ERROR / 摘要为空 / 切点解析不了)。计数到
  *  EDC_FOLD_MAX_FAILURES 后 `edc_group_fold_due` 对**自动**路径返回 false; 手动

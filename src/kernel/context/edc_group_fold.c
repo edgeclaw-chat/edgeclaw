@@ -566,7 +566,7 @@ static void fold_turn_prefix(struct edc_turn *turn, uint32_t prefix, size_t *tur
     turn->folded_prefix = (int)prefix;
 }
 
-void edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
+bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
 {
     struct edc_task_group *group = task ? task->sink_group : NULL;
     if (!group || !content || !*content)
@@ -576,7 +576,7 @@ void edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
                   (content && *content) ? "non-empty" : "empty");
         /* (c) 没写出记忆 = 没落地, 一样算一次失败。 */
         edc_group_fold_note_failure(group);
-        return;
+        return false;
     }
 
     if (group->memory)
@@ -594,7 +594,7 @@ void edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
         edc_task_group_rebuild_history(group);
         group->fold_epoch++;
         edc_group_fold_note_failure(group); /* (c) 前缀没打上 = 没真正折掉东西 */
-        return;
+        return true; /* 记忆写了 —— 对 L2 来说这就是新料 */
     }
 
     /* 先把切点**精确**解析出来 (成员 + 那个 turn), 解析不出来就只写记忆、什么都不折。
@@ -629,7 +629,7 @@ void edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
         edc_task_group_rebuild_history(group);
         group->fold_epoch++;
         edc_group_fold_note_failure(group); /* (c) 白折一轮: 没折掉任何东西 */
-        return;
+        return true; /* 记忆写了 —— L2 仍该消化它 (否则这段新料永远进不了 session) */
     }
 
     /* 应用切点: 切点**之前**的内容整折 —— 已提交的 turn 一律安全 (提交后不再变),
@@ -673,4 +673,5 @@ void edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
     edc_group_fold_note_progress(group);
     log_info("L1 fold done: group %s folded %zu turns (%zu msgs), cut at task %s turn %u msg %u", group->group_id,
              folded_turns, folded_msgs, task->fold_cut_task_id, task->fold_cut_turn, task->fold_cut_prefix);
+    return true;
 }

@@ -8,6 +8,7 @@
 #include "edc_config.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_session_memory.h"
 #include "edc_session_manager.h"
 #include "edc_state_serializer.h"
 #include "edc_task.h"
@@ -114,16 +115,21 @@ static void give_input(struct edc_task *task, const char *text)
 
 /* 让任务跑到 COMPLETED —— 走**真路径** (executor 推进 → scheduler 的策略点),
  * 因为策略点的簿记正挂在真推进路径上。 */
-static void complete_via_executor(struct edc_scheduler *sched, struct edc_task *task)
+static void complete_with(struct edc_scheduler *sched, struct edc_task *task, const char *content)
 {
     struct edc_event ev;
     memset(&ev, 0, sizeof(ev));
     ev.kind = EDC_EVENT_EXEC_DONE;
     ev.as.exec.reason = EDC_REASON_STOP;
-    ev.as.exec.content = "done";
+    ev.as.exec.content = content;
     void *t_req = task->current_request_id;
     struct edc_advance_result t_res = edc_executor_advance(&sched->executor, task, &ev);
     edc_scheduler_apply_advance(sched, task, t_req, &t_res);
+}
+
+static void complete_via_executor(struct edc_scheduler *sched, struct edc_task *task)
+{
+    complete_with(sched, task, "done");
 }
 
 /* Attach input and set COMPLETED directly (task layer), for the persistence
@@ -542,10 +548,127 @@ static void test_fold_tool_call_is_failure(void)
 
 /* ══════════════════════════════════════════════════════════════ */
 
+/* ── L2 策展任务 (P4d): 链 + ops 落地 + 失败释放 ────────────── */
+
+/* 会话系统组里找 sink = SESSION_MEMORY 的任务。 */
+static struct edc_task *find_l2(struct edc_session *session)
+{
+    struct edc_task_group *sys = edc_session_find_system_group(session);
+    if (!sys)
+        return NULL;
+    struct edc_task *t;
+    LL_FOREACH2(sys->members, t, group_next)
+    {
+        if (t->sink == EDC_SINK_SESSION_MEMORY)
+            return t;
+    }
+    return NULL;
+}
+
+static void test_session_memory_chain_and_landing(void)
+{
+    TEST("L2: 折叠落地 ⇒ 起策展任务, 链在成员之后; 策展落地写条目 (completion_seq = 0)");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-l2", "L2");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    /* 被折的组 + 一个非终态成员 + 一条旧记忆 */
+    struct edc_task *user = edc_task_new("u-1", "sess-l2", "u-1", "user task", edc_channel_adapter);
+    struct edc_task_group *group = edc_task_group_new(user);
+    edc_task_group_add_task(group, user);
+    edc_session_add_group(session, group);
+    group->memory = sdsnew("old memory");
+
+    /* 折叠任务: sink=GROUP_MEMORY + sink_group + 自己的 input; 没有切点 ⇒
+     * deliver 只写记忆 (并返回 true ⇒ 该起 L2) */
+    struct edc_task *fold = edc_scheduler_spawn_system_task(sched, session, "fold group memory");
+    fold->sink_group = group;
+    give_input(fold, "summarize the group");
+    complete_with(sched, fold, "## Group memory\n- 构建入口是 bazelisk");
+
+    struct edc_task *l2 = find_l2(session);
+    CHECK(l2 != NULL, "折叠落地后起了一个 L2 策展任务");
+    CHECK(l2 && l2->sink == EDC_SINK_SESSION_MEMORY, "它的 sink = SESSION_MEMORY");
+    CHECK(l2 && l2->sink_group == group, "它记住来源组 (sources 用)");
+    CHECK(l2 && l2->deps_total >= 1, "它声明式地依赖折叠任务");
+    CHECK(edc_task_is_memory_sink(l2), "它算'记忆型'任务 (自足请求 / 不占完成序)");
+
+    /* 链的效力: 成员现在等的是 L2 (不是折叠任务 —— 那条边已 completed) */
+    CHECK(edc_task_awaits_deps(user) && edc_task_has_unresolved_deps(user), "成员被 park 在 AWAIT_DEPS 上等 L2");
+
+    /* L2 完成 + ops 落地 */
+    give_input(l2, "material");
+    uint32_t seq_before = session->next_completion_seq;
+    complete_with(sched, l2,
+                  "{\"ops\":[{\"op\":\"create\",\"title\":\"构建入口\",\"summary\":\"唯一入口是 bazelisk\"}]}");
+    CHECK(session->memo->entry_count == 1, "策展落地: 条目 +1");
+    CHECK(session->memo->event_count == 1 && session->memo->events[0].kind == EDC_MEMO_CREATED, "一条 CREATED 事件");
+    const struct edc_memo_entry *e = edc_session_memory_entry(session->memo, "m1");
+    CHECK(e && e->sources && strcmp(e->sources, "u-1") == 0, "sources = 来源组 id");
+    CHECK(e && e->created_seq == 1 && e->updated_seq == 1, "条目的 seq 记上了");
+    CHECK(l2->completion_seq == 0, "L2 不占完成序");
+    CHECK(session->next_completion_seq == seq_before, "完成序计数器没动");
+    CHECK(!edc_task_has_unresolved_deps(user), "L2 完成 ⇒ 成员被释放");
+
+    /* 非法 ops: 整批不落 (老条目与事件表一动不动) */
+    struct edc_task *l2b = edc_scheduler_spawn_system_task_as(sched, session, "curate again", EDC_SINK_SESSION_MEMORY);
+    give_input(l2b, "more material");
+    complete_with(sched, l2b, "{\"ops\":[{\"op\":\"update\",\"id\":\"m99\",\"title\":\"x\"}]}");
+    CHECK(session->memo->entry_count == 1 && session->memo->event_count == 1,
+          "引用不存在的 id ⇒ 整批拒绝 (一条都没落)");
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+static void test_session_memory_failure_releases_members(void)
+{
+    TEST("L2: 策展失败 / 被取消 ⇒ 等它的成员照常恢复 (不挂死)");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-l2b", "L2b");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    struct edc_task *user = edc_task_new("u-9", "sess-l2b", "u-9", "user task", edc_channel_adapter);
+    struct edc_task_group *group = edc_task_group_new(user);
+    edc_task_group_add_task(group, user);
+    edc_session_add_group(session, group);
+
+    /* 链: 成员 → L2 (与 start() 里那条边同形) */
+    struct edc_task *l2 = edc_scheduler_spawn_system_task_as(sched, session, "curate", EDC_SINK_SESSION_MEMORY);
+    struct edc_task *member = edc_task_new("u-10", "sess-l2b", "u-10", "member", edc_channel_adapter);
+    edc_task_group_add_task(group, member);
+    CHECK(edc_task_add_dependency(member, l2, TASK_DEP_SEQUENCE), "挂上 成员 → L2");
+    CHECK(edc_task_awaits_deps(member), "成员等 L2");
+
+    edc_task_mark_failed(l2);
+    CHECK(!edc_task_has_unresolved_deps(member), "L2 失败 ⇒ SEQUENCE 边被抹掉, 成员可跑");
+    CHECK(!edc_task_awaits_deps(member), "相位不再停在 AWAIT_DEPS");
+
+    /* 取消 (SIGTERM) 同样放行 */
+    struct edc_task *l2b = edc_scheduler_spawn_system_task_as(sched, session, "curate 2", EDC_SINK_SESSION_MEMORY);
+    struct edc_task *m2 = edc_task_new("u-11", "sess-l2b", "u-11", "member 2", edc_channel_adapter);
+    edc_task_group_add_task(group, m2);
+    CHECK(edc_task_add_dependency(m2, l2b, TASK_DEP_SEQUENCE), "挂上 成员2 → L2b");
+    CHECK(edc_task_awaits_deps(m2), "成员等 L2b");
+    edc_task_send_signal(l2b, TASK_SIGTERM);
+    CHECK(!edc_task_has_unresolved_deps(m2), "L2 被取消 ⇒ 成员照常放行");
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     test_attributes_default();
     test_spawn_system_task();
+    test_session_memory_chain_and_landing();
+    test_session_memory_failure_releases_members();
     test_system_task_persisted();
     test_system_task_not_reaped();
     test_persistent_not_reaped();

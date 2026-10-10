@@ -1152,7 +1152,7 @@ static void test_null_inputs(void)
     CHECK(!ok1, "deserialize(NULL json) returns false");
 
     /* deserialize with NULL session */
-    cJSON *valid = cJSON_Parse("{\"version\":6,\"session\":{},\"groups\":[],\"tasks\":[]}");
+    cJSON *valid = cJSON_Parse("{\"version\":7,\"session\":{},\"groups\":[],\"tasks\":[]}");
     bool ok2 = edc_state_deserialize(valid, NULL, NULL);
     CHECK(!ok2, "deserialize(NULL session) returns false");
     cJSON_Delete(valid);
@@ -1164,19 +1164,19 @@ static void test_null_inputs(void)
     cJSON_Delete(no_ver);
 
     /* deserialize with missing tasks array */
-    cJSON *no_tasks = cJSON_Parse("{\"version\":6,\"session\":{},\"groups\":[]}");
+    cJSON *no_tasks = cJSON_Parse("{\"version\":7,\"session\":{},\"groups\":[]}");
     bool ok4 = edc_state_deserialize(no_tasks, session, sched);
     CHECK(ok4, "deserialize without tasks array succeeds (treated as empty)");
     cJSON_Delete(no_tasks);
 
     /* deserialize with tasks not an array */
-    cJSON *bad_tasks = cJSON_Parse("{\"version\":6,\"session\":{},\"groups\":[],\"tasks\":\"not_array\"}");
+    cJSON *bad_tasks = cJSON_Parse("{\"version\":7,\"session\":{},\"groups\":[],\"tasks\":\"not_array\"}");
     bool ok5 = edc_state_deserialize(bad_tasks, session, sched);
     CHECK(ok5, "deserialize with non-array tasks succeeds (ignored)");
     cJSON_Delete(bad_tasks);
 
     /* deserialize with groups not an array */
-    cJSON *bad_groups = cJSON_Parse("{\"version\":6,\"session\":{},\"groups\":123,\"tasks\":[]}");
+    cJSON *bad_groups = cJSON_Parse("{\"version\":7,\"session\":{},\"groups\":123,\"tasks\":[]}");
     bool ok6 = edc_state_deserialize(bad_groups, session, sched);
     CHECK(ok6, "deserialize with non-array groups succeeds (ignored)");
     cJSON_Delete(bad_groups);
@@ -1202,7 +1202,7 @@ static void test_malformed_inputs(void)
     /* dep referencing nonexistent task */
     const char *bad_dep_json =
         "{"
-        "  \"version\":6,"
+        "  \"version\":7,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1227,7 +1227,7 @@ static void test_malformed_inputs(void)
     /* group member referencing nonexistent task */
     const char *bad_member_json =
         "{"
-        "  \"version\":6,"
+        "  \"version\":7,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1250,7 +1250,7 @@ static void test_malformed_inputs(void)
     /* turn with no embedded messages (unknown/legacy keys are ignored) */
     const char *bad_range_json =
         "{"
-        "  \"version\":6,"
+        "  \"version\":7,"
         "  \"session\":{},"
         "  \"groups\":["
         "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
@@ -1274,7 +1274,7 @@ static void test_malformed_inputs(void)
     /* task with empty task_id */
     const char *empty_id_json =
         "{"
-        "  \"version\":6,"
+        "  \"version\":7,"
         "  \"session\":{},"
         "  \"groups\":[],"
         "  \"tasks\":["
@@ -1903,7 +1903,7 @@ static void test_fold_watermark(void)
 
 static void test_schema_version_is_current(void)
 {
-    TEST("serialize writes version 6; older versions fail loudly instead of being patched up");
+    TEST("serialize writes version 7; older versions fail loudly instead of being patched up");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-ver", "Ver");
@@ -1920,7 +1920,7 @@ static void test_schema_version_is_current(void)
     CHECK(json != NULL, "serialize returns non-NULL");
     /* 本文件构造 JSON 时用的版本号是手写镜像 (见各 cJSON_Parse 字面量): 一律等于
      * 当前 schema, 升级时这里会先红。 */
-    CHECK(edc_state_schema_version() == 6, "schema version bumped -> update this file's literals");
+    CHECK(edc_state_schema_version() == 7, "schema version bumped -> update this file's literals");
     CHECK(edc_state_json_version(json) == edc_state_schema_version(), "on-disk version is the current schema");
 
     struct edc_session *s2 = edc_session_new(cfg, "sess-ver", "Ver");
