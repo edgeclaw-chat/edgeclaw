@@ -32,7 +32,7 @@
  * 见 docs/runtime-model.md §11)。 */
 
 _Static_assert(EDC_RENDER_MARKDOWN == EDC_APP_RENDER_MARKDOWN,
-               "edc_api.h 的 EDC_APP_RENDER_* 镜像必须与 edc_render_pref_t 一致");
+               "the EDC_APP_RENDER_* mirror in edc_api.h must match edc_render_pref_t");
 
 const char *edc_app_message_content(const struct edc_channel_message *message)
 {

@@ -154,7 +154,7 @@ static void test_many_dependencies(void)
         if (role && strcmp(role->valuestring, "system") == 0)
         {
             cJSON *content = cJSON_GetObjectItem(item, "content");
-            if (content && strstr(content->valuestring, "子任务") != NULL)
+            if (content && strstr(content->valuestring, "[subtask ") != NULL)
                 dep_count++;
         }
     }

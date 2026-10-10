@@ -136,6 +136,22 @@ bool Has(const std::string &frame, const std::string &needle)
     return frame.find(needle) != std::string::npos;
 }
 
+/* 界面 chrome 不许夹中文。只查 CJK 区间 (CJK 统一表意 / 全角标点 / 中日韩符号),
+ * 箱子与箭头 (● ▸ ▾ … ❯ ·) 不在其中, 所以这个谓词能直接用在整帧上。 */
+bool HasCJK(const std::string &frame)
+{
+    for (size_t i = 0; i + 2 < frame.size(); i++)
+    {
+        const unsigned char *p = reinterpret_cast<const unsigned char *>(frame.data()) + i;
+        if (p[0] < 0xE0)
+            continue;
+        const unsigned cp = ((p[0] & 0x0Fu) << 12) | ((p[1] & 0x3Fu) << 6) | (p[2] & 0x3Fu);
+        if ((cp >= 0x3000 && cp <= 0x303F) || (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0xFF00 && cp <= 0xFFEF))
+            return true;
+    }
+    return false;
+}
+
 std::string SnapJson(const char *session_id, const char *task_desc)
 {
     std::string json = R"({"session_id":")";
@@ -307,6 +323,12 @@ void TestUserInputIsEchoedImmediately(edc::TUIWindow &win)
     // 归属不发往任何一个 task: 输入那条气泡不带 task id。
     const std::string frame = FrameOf(win);
     Check(Has(frame, "4242"), "侧栏里 task 行照旧");
+
+    // 界面的固定文案是英文的 (与仓库注释的语言无关): 输入框占位符、footer 的
+    // `/help` 提示符。footer 在窄帧里会被裁掉, 所以除了点名那两句, 再加一条整帧
+    // 无 CJK 的守卫 —— 它同时钉住"以后新加的 chrome 也不许夹中文"。
+    Check(Has(frame, "Type a message"), "输入框占位符是英文的");
+    Check(!HasCJK(frame), "整帧无中文 (chrome 全英文)");
 }
 
 // ── `/task history` / `/group history` 的载荷 → 气泡 ──────────────────────
@@ -347,7 +369,9 @@ void TestTaskHistoryPayloadBecomesBubbles(edc::TUIWindow &win)
     frame = FrameOf(win);
     Check(Has(frame, "HIST_REPLY_MARKER"), "只看模式: 历史替换了对话区");
     Check(win.InHistoryView(), "只看模式: 视图状态位立起来了");
-    Check(!Has(frame, "输入消息"), "只看模式: 输入框消失");
+    Check(!Has(frame, "Type a message"), "只看模式: 输入框消失");
+    Check(Has(frame, "History · Esc to go back"), "只看模式: 历史面板徽标是英文的");
+    Check(!HasCJK(frame), "只看模式: 整帧无中文");
     Check(win.OnEvent(::ftxui::Event::Character("x")) && win.OnEvent(::ftxui::Event::Return),
           "只看模式: 字符与回车都被吞掉 (不可输入)");
     Feed(win, MakeMsg(HARNESS_MSG_RESP, "LIVE_WHILE_HISTORY_MARKER", "", ""));

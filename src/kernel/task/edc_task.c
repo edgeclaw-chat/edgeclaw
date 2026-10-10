@@ -1341,7 +1341,7 @@ cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *c
     {
         if (dep->completed && dep->source->output)
         {
-            sds note = sdscatprintf(sdsempty(), "[子任务 %s 结果]:\n%s", dep->source->description, dep->source->output);
+            sds note = sdscatprintf(sdsempty(), "[subtask %s result]:\n%s", dep->source->description, dep->source->output);
             cJSON *sys = cJSON_CreateObject();
             cJSON_AddStringToObject(sys, "role", "system");
             cJSON_AddStringToObject(sys, "content", note);
