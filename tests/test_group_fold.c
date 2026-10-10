@@ -73,20 +73,27 @@ static struct edc_config *make_config(void)
     return cfg;
 }
 
-/* `edc_group_fold_due` 吃整份配置: 写法乙 = 窗口轴**独占**。这两个助手让用例只说
- * 自己关心的那条轴, 另一条显式清零 —— 免得某个默认值把兜底分支悄悄变成死的。 */
-static struct edc_config *cfg_thr(struct edc_config *cfg, int thr)
-{
-    cfg->group_fold_msg_threshold = thr;
-    cfg->context_window = 0;
-    return cfg;
-}
-
+/* `edc_group_fold_due` 只有一条轴 (token, 2026-10-10 起: 消息条数轴整条退休):
+ * 组的上下文 vs 窗口 - reserve。这三个助手让用例只说"过线 / 没过线", 不手算窗口;
+ * cfg_win 供"特别宽 / 不是正数"这类边界用例直接用。 */
 static struct edc_config *cfg_win(struct edc_config *cfg, int window)
 {
     cfg->context_window = window;
-    cfg->group_fold_msg_threshold = 0; /* 不参与 */
     return cfg;
+}
+
+/* 窗口刚好让这个组"该折" (ctx > window - reserve 严格成立)。 */
+static struct edc_config *cfg_due(struct edc_config *cfg, struct edc_task_group *group)
+{
+    long long ctx = edc_context_group_ctx_tokens(group, NULL);
+    return cfg_win(cfg, (int)(ctx + EDC_FOLD_RESERVE_TOKENS - 1));
+}
+
+/* 窗口刚好让它"不该折" (ctx == window - reserve, 不严格大于)。 */
+static struct edc_config *cfg_not_due(struct edc_config *cfg, struct edc_task_group *group)
+{
+    long long ctx = edc_context_group_ctx_tokens(group, NULL);
+    return cfg_win(cfg, (int)(ctx + EDC_FOLD_RESERVE_TOKENS));
 }
 
 /* Folding takes a real scheduler (a plain struct, no constructor).
@@ -184,29 +191,25 @@ static void test_prompt_and_due(void)
     edc_queue_push(&lturn->messages, lm);
     edc_task_add_turn(leader, lturn);
 
-    /* 还没到阈值: 4 条未折叠消息 < 10 */
-    CHECK(!edc_group_fold_due(group, cfg_thr(cfg, 10)), "未达阈值不折");
-    CHECK(!edc_group_fold_due(group, cfg_thr(cfg, 2)), "未折叠消息数 (leader 的 1 条) 仍低于阈值");
-    CHECK(!edc_group_fold_due(NULL, cfg_thr(cfg, 2)), "NULL 组不折");
-    /* 阈值 <= 0 = "没配" → 用默认 (500), 不是"永不折" */
-    CHECK(!edc_group_fold_due(group, cfg_thr(cfg, 0)), "阈值 <= 0 落到默认阈值 → 不折");
-    /* 写法乙: 配了窗口就只看 token, 条数阈值不再参与 (改回 OR 的变异在这里红) */
+    /* 先给这个组一份旧记忆: 它同时是 (a) token 估算的一个来源 —— 让 ctx 有非零值,
+     * 好把"窗口 vs reserve"那个不等式两侧各钉一次, 和 (b) 后面迭代 prompt 的输入。 */
+    group->memory = sdsnew("# Old memory\n- something remembered");
+
+    /* 判据只有 token 轴。窗口宽 → 不折 (哪怕组里消息再多: 见本函数末尾的 500 条用例)。 */
+    CHECK(!edc_group_fold_due(group, cfg_win(cfg, 1000000)), "窗口 1M: 这段小组远没到线 → 不折");
+    CHECK(!edc_group_fold_due(NULL, cfg_win(cfg, 1000000)), "NULL 组不折");
+    /* 窗口读不到 (脏 config / 有人手改) → 不自动折; "不知道窗口"不是"随便折"的理由。
+     * 手动 /group fold 不过这道门。 */
+    CHECK(!edc_group_fold_due(group, cfg_win(cfg, 0)), "窗口 0 → 不自动折");
+    CHECK(!edc_group_fold_due(group, cfg_win(cfg, -1)), "负窗口 → 不自动折");
+    /* 判据就是那一个不等式, 两侧各钉一次 (off-by-one 会在这里红)。 */
     {
         long long ctx = edc_context_group_ctx_tokens(group, NULL);
-        CHECK(edc_group_fold_due(group, cfg_thr(cfg, 1)), "条数轴: 1 条也过线 (对照)");
-        CHECK(!edc_group_fold_due(group, cfg_win(cfg, (int)ctx + EDC_FOLD_RESERVE_TOKENS + 1)),
-              "窗口轴: ctx 没到 window - reserve → 不折");
+        CHECK(ctx > 0, "组上下文有估算值 (前置)");
+        CHECK(!edc_group_fold_due(group, cfg_win(cfg, (int)ctx + EDC_FOLD_RESERVE_TOKENS)),
+              "ctx == window - reserve → 还没过线");
         CHECK(edc_group_fold_due(group, cfg_win(cfg, (int)ctx + EDC_FOLD_RESERVE_TOKENS - 1)),
-              "窗口轴: ctx 过 window - reserve → 折");
-        CHECK(!edc_group_fold_due(group, cfg_win(cfg, 1000000)),
-              "窗口 1M: 条数再超也不折 (窗口轴独占 —— 默认值不能杀死条数兜底)");
-        /* 甲(OR) 与 乙 在这里分道扬镳: 窗口巨大**且**条数过阈值 —— 乙 说不折, 甲 会说折。
-         * 这是"把乙误写成 OR"的唯一正交判别点。 */
-        struct edc_config *both = make_config();
-        both->context_window = 1000000;
-        both->group_fold_msg_threshold = 1;
-        CHECK(!edc_group_fold_due(group, both), "两个轴都配了: 窗口轴独占 (OR 写法在这里红)");
-        edc_config_free(both);
+              "ctx 超过 window - reserve → 折");
     }
 
     group->memory = sdsnew("# Old memory\n- something remembered");
@@ -250,6 +253,12 @@ static void test_prompt_and_due(void)
         CHECK(strstr(prompt, "## Goal") == NULL, "迭代变体不复述六段格式 (只要求保持同样的段)");
         sdsfree(prompt);
     }
+
+    /* 消息条数彻底没有发言权: 500 条未折叠消息 + 宽窗口 ⇒ 仍然不折。
+     * (把任何"按条数触发"改回来都会在这里红 —— 阈值 <= 500 都拦得住。) */
+    add_foldable_task(session, group, "9", 9, 500, "a very chatty task");
+    CHECK(edc_task_group_unfolded_msg_count(group) >= 500, "前置: 未折叠消息 500 条");
+    CHECK(!edc_group_fold_due(group, cfg_win(cfg, 1000000)), "500 条未折叠消息也压不动 1M 窗口");
 
     edc_session_free(session);
     edc_config_free(cfg);
@@ -336,8 +345,8 @@ static void test_fold_runs_as_a_system_task(void)
     CHECK(!edc_task_is_foldable(fold), "折叠任务本身不可折叠 (sink=GROUP_MEMORY 不进折叠账)");
     CHECK(edc_task_group_count_foldable(sg) == 0, "系统组里没有可折叠任务");
     CHECK(edc_task_group_unfolded_msg_count(sg) == 0, "系统组的消息也不算进折叠阈值");
-    CHECK(!edc_group_fold_due(sg, cfg_thr(cfg, 2)), "系统组永远不会触发折叠");
-    CHECK(!edc_group_fold_due(sg, cfg_thr(cfg, 1)), "阈值再低也不折系统组");
+    CHECK(!edc_group_fold_due(sg, cfg_win(cfg, 1000000)), "系统组永远不会触发折叠");
+    CHECK(!edc_group_fold_due(sg, cfg_win(cfg, 1)), "窗口紧到 ctx 必然过线, 系统组仍不折 (排除靠 sink)");
 
     CHECK(group->memory != NULL && strstr(group->memory, "# Merged memory") != NULL, "记忆被写进目标组");
     CHECK(count_folded(group) == 3, "leader + task 2 整折, task 3 半折 (三个都带折叠前缀)");
@@ -375,7 +384,7 @@ static void test_fold_runs_as_a_system_task(void)
     CHECK(edc_session_find_system_group(session) != NULL, "系统组还在");
 
     /* ⑤ 再折一次: 可折叠的还剩 3 个 → 还能起。 */
-    CHECK(edc_group_fold_due(group, cfg_thr(cfg, 4)), "还有可折叠的 (seq 3/4)");
+    CHECK(edc_group_fold_due(group, cfg_due(cfg, group)), "还有可折叠的 (seq 3/4)");
     struct edc_fold_cut cut2;
     memset(&cut2, 0, sizeof(cut2));
     sds prompt2 = edc_group_fold_build_prompt(group, NULL, &cut2);
@@ -441,7 +450,7 @@ static void test_fold_failure_keeps_memory(void)
     CHECK(strcmp(group->memory, "# memory before") == 0, "记忆没被改");
     CHECK(count_folded(group) == 0, "没有任何任务被标已折叠");
     CHECK(group->fold_epoch == epoch_before, "折叠没落地: fold_epoch 没动");
-    CHECK(edc_group_fold_due(group, cfg_thr(cfg, 4)), "下一轮还会再折 (可折叠的还在)");
+    CHECK(edc_group_fold_due(group, cfg_due(cfg, group)), "下一轮还会再折 (可折叠的还在)");
 
     CHECK(count_tasks_in(session) == 3, "失败的折叠任务仍在 (普通任务, 不回收)");
     CHECK(edc_session_find_system_group(session) != NULL, "系统组还在");
@@ -511,15 +520,14 @@ static void test_fold_task_is_persisted(void)
 }
 
 /* Test 5: the trigger scan (edc_group_fold_try), the only entry the scheduler calls.
- * Pins: it scans all sessions, starts one fold at a time, and takes the threshold
- * from config (default otherwise). */
+ * Pins: it scans all sessions, starts one fold at a time, and takes the window from
+ * config (with none, it does not fold at all). */
 
 static void test_try_scans_all_sessions(void)
 {
-    TEST("触发扫描: 扫所有 session / 一次一个 / 阈值来自 config");
+    TEST("触发扫描: 扫所有 session / 一次一个 / 窗口来自 config");
 
     struct edc_config *cfg = make_config();
-    cfg->group_fold_msg_threshold = 2; /* 低阈值: 一个 4 条消息的可折叠 task 就够 */
 
     /* 第一个 session: 没有可折叠内容 (扫到它 → 不折) */
     struct edc_session *idle = edc_session_new(cfg, "sess-try-idle", "TryIdle");
@@ -538,6 +546,7 @@ static void test_try_scans_all_sessions(void)
     edc_task_mark_completed(bleader);
     bleader->completion_seq = 1;
     add_foldable_task(busy, bgroup, "22", 2, 4, "foldable in the second session");
+    cfg_due(cfg, bgroup); /* 这个组"该折" —— 只有它该折 */
 
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, idle);
@@ -558,10 +567,10 @@ static void test_try_scans_all_sessions(void)
     CHECK(!edc_group_fold_try(NULL, &sm, cfg, NULL), "NULL scheduler 不折");
     CHECK(!edc_group_fold_try(sched, NULL, cfg, NULL), "NULL 仓库不折");
 
-    /* ③ 阈值: conf=NULL → 默认 (500) → 这个规模的组折不动 (此时无折叠在飞) */
+    /* ③ conf=NULL → 读不到窗口 → 不折 (不拿"不知道"当"随便折"; 此时无折叠在飞) */
     g_send_llm_calls = 0;
-    CHECK(!edc_group_fold_try(sched, &sm, NULL, NULL), "conf=NULL 用默认阈值 → 不折");
-    CHECK(g_send_llm_calls == 0, "默认阈值下没有 LLM 请求");
+    CHECK(!edc_group_fold_try(sched, &sm, NULL, NULL), "conf=NULL (窗口未知) → 不折");
+    CHECK(g_send_llm_calls == 0, "窗口未知时没有 LLM 请求");
 
     /* ① 扫所有 session: 第二个 session 里的组被折 */
     g_send_llm_calls = 0;
@@ -610,7 +619,7 @@ static void test_fold_preempts_running_member(void)
     TEST("折叠前置: 在飞的成员不被 stop; dep 挂上, 到它的下一个请求边界才生效");
 
     struct edc_config *cfg = make_config();
-    cfg->group_fold_msg_threshold = 1000;
+    cfg_win(cfg, 1000000); /* 宽窗口 ⇒ 自动路径不动, 本用例只走显式起折 */
     struct edc_session *session = edc_session_new(cfg, "sess-preempt", "Preempt");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
@@ -651,7 +660,7 @@ static void test_fold_holds_next_llm_send(void)
     TEST("B1: 工具跑完后, 有未决 dep 的成员拒绝发下一个 LLM 请求, park 成 AWAIT_DEPS");
 
     struct edc_config *cfg = make_config();
-    cfg->group_fold_msg_threshold = 1000;
+    cfg_win(cfg, 1000000); /* 宽窗口 ⇒ 自动路径不动, 本用例只走显式起折 */
     struct edc_session *session = edc_session_new(cfg, "sess-sendhold", "SendHold");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
@@ -720,7 +729,7 @@ static void test_group_held_until_fold_lands(void)
     TEST("屏障: 折叠在飞时组内成员停在 AWAIT_DEPS, 折叠结算后被释放并驱动");
 
     struct edc_config *cfg = make_config();
-    cfg->group_fold_msg_threshold = 1000;
+    cfg_win(cfg, 1000000); /* 宽窗口 ⇒ 自动路径不动, 本用例只走显式起折 */
     struct edc_session *session = edc_session_new(cfg, "sess-hold", "Hold");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
@@ -768,7 +777,7 @@ static void test_resume_held_while_fold_in_flight(void)
     TEST("屏障: 折叠在飞时 resume 一个不在 dep 里的成员, 被闸门扣在 READY");
 
     struct edc_config *cfg = make_config();
-    cfg->group_fold_msg_threshold = 1000;
+    cfg_win(cfg, 1000000); /* 宽窗口 ⇒ 自动路径不动, 本用例只走显式起折 */
     struct edc_session *session = edc_session_new(cfg, "sess-resume", "Resume");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
@@ -823,7 +832,6 @@ static void test_fold_before_request(void)
     TEST("请求前触发: 组该折时, 待发成员先停在 AWAIT_DEPS, 出去的是折叠的请求");
 
     struct edc_config *cfg = make_config();
-    cfg_thr(cfg, 2); /* 低阈值: 两条未折叠消息就够 */
     struct edc_session *session = edc_session_new(cfg, "sess-pre-drive", "PreDrive");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
@@ -840,7 +848,9 @@ static void test_fold_before_request(void)
     sched->sessions = &sm;
 
     struct edc_task_group *group = make_foldable_group(session, "sess-pre-drive", "leader work");
-    add_foldable_task(session, group, "2", 2, 1, "second work"); /* 未折叠 2 条 = 到阈值 */
+    /* 语料只有 leader 那一条: 这一折会把它整条吃掉, 落地后组里没有可折叠的 =
+     * 不会再有第二次 (用例后面要数请求数, 不能有第二折)。 */
+    cfg_due(cfg, group);
 
     /* 一个"即将发请求"的成员: READY + active_turn。 */
     /* id 不用数字: 折叠任务由生成器给号, 数字会撞上 (上一版就撞了 "9")。 */
@@ -889,7 +899,6 @@ static void test_fold_on_non_settling_advance(void)
     TEST("触发时机 (a): 一次不结算的推进 (工具应答那种) 也会带起折叠");
 
     struct edc_config *cfg = make_config();
-    cfg_thr(cfg, 2);
     struct edc_session *session = edc_session_new(cfg, "sess-advance", "Advance");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
@@ -906,6 +915,7 @@ static void test_fold_on_non_settling_advance(void)
 
     struct edc_task_group *group = make_foldable_group(session, "sess-advance", "leader work");
     add_foldable_task(session, group, "2", 2, 1, "second work");
+    cfg_due(cfg, group);
 
     /* 一个在飞的成员: 不在 READY, 所以挂载点 (b) 不会看它 (只有"即将发请求"才触发)。 */
     struct edc_task *flying = edc_task_new("adv-1", "sess-advance", group->group_id, "flying", edc_channel_adapter);
@@ -1574,7 +1584,6 @@ static void test_fold_failure_cap(void)
 {
     TEST("(c) 连续失败到上限 ⇒ 自动折叠停手; 手动折叠是唯一的重启开关");
     struct edc_config *cfg = make_config();
-    cfg_thr(cfg, 2); /* 窗口轴不参与: 用条数轴, 组一定"该折" */
     struct edc_session *session = edc_session_new(cfg, "sess-failcap", "FailCap");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
@@ -1582,6 +1591,7 @@ static void test_fold_failure_cap(void)
 
     struct edc_task_group *group = make_foldable_group(session, "sess-failcap", "old leader");
     add_foldable_task(session, group, "2", 2, 4, "task two");
+    cfg_due(cfg, group); /* 这个组一定"该折" */
 
     CHECK(edc_group_fold_due(group, cfg), "基线: 该折");
     edc_group_fold_note_failure(group);

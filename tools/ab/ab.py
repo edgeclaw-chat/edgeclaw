@@ -75,11 +75,12 @@ def gen_config(ecl: Path, extra_rw=()):
     ws = ecl / "workspace"
     cfg = {
         "max_iter": -1,
-        # 折叠阈值: 默认 200 (smoke/bg/cancel 都够不到, 所以那些夹具不折)。
-        # fold 夹具在冻结时用 AB_FOLD_MSG_THRESHOLD 调低, 好在几轮对话内就
-        # 触发一次真正的折叠 —— 折叠的**产物** (memory / turns_folded / 水位)
-        # 必须逐字节可比。
-        "group_fold_msg_threshold": int(os.environ.get("AB_FOLD_MSG_THRESHOLD", "200")),
+        # 折叠触发线 = context_window - reserve（默认窗口 1M）。夹具的语料只有几十
+        # 个 token，所以**不会**自己触发折叠 —— fold 夹具改用 `/group fold`（见
+        # scripts/fold.txt）。要造一个"按窗口自动折"的夹具，就在冻结时把
+        # AB_CONTEXT_WINDOW 调小（< 组上下文 + 16384 才会过线；注意留白太小的窗口
+        # 会让组每一轮都该折）。
+        "context_window": int(os.environ.get("AB_CONTEXT_WINDOW", str(1024 * 1024))),
         "tool_max_output_size": 10000,
         "sandbox": {
             "rw_paths": [str(ws) + "/", "/tmp", "/dev"] + list(extra_rw),

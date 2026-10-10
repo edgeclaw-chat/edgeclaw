@@ -1,13 +1,14 @@
-/* context_window: the config key that arms the token axis of the fold trigger.
+/* context_window: the config key that drives the fold trigger.
  *
  * The three producers are exercised for real (no hand-fed expectations):
  *   - edc_init_env(home, true)  creates config.json and materializes every key
  *   - edc_init_env(home, false) tops up an existing file without clobbering it
  *   - edc_config_load(home)     reads the file the way startup does
  *
- * 0 is a *meaningful* value ("not configured / unknown" -> the message-count
- * axis decides), so it must survive both the file and the reader; only a key
- * that is missing altogether falls back to the default. */
+ * The window is the **only** trigger for folding and it has no "unconfigured"
+ * state, so <= 0 is not a value: the default (1M) applies whenever the key is
+ * missing, non-numeric, or not positive, and the top-up writes that back. The
+ * retired `group_fold_msg_threshold` is dropped from the file. */
 
 #include "cJSON.h"
 #include "edc_config.h"
@@ -82,7 +83,9 @@ static bool write_all(const char *path, const char *s)
 }
 
 /* Read-modify-write config.json through cJSON, so the test never depends on the
- * writer's spacing. */
+ * writer's spacing. `replace` adds the key when it is absent — cJSON's
+ * ReplaceItemInObject is a *no-op* on a missing key, which made an earlier version
+ * of this test assert against a file that never changed. */
 static bool edit_config(const char *home, const char *key, int value, bool remove)
 {
     char *text = read_all(conf_path(home));
@@ -93,10 +96,9 @@ static bool edit_config(const char *home, const char *key, int value, bool remov
     if (!conf)
         return false;
 
-    if (remove)
-        cJSON_DeleteItemFromObject(conf, key);
-    else
-        cJSON_ReplaceItemInObject(conf, key, cJSON_CreateNumber(value));
+    cJSON_DeleteItemFromObject(conf, key);
+    if (!remove)
+        cJSON_AddItemToObject(conf, key, cJSON_CreateNumber(value));
 
     char *out = cJSON_Print(conf);
     cJSON_Delete(conf);
@@ -115,6 +117,23 @@ static bool file_has_key(const char *home, const char *key)
     bool found = strstr(text, key) != NULL;
     free(text);
     return found;
+}
+
+/* The value as it sits in the file (0 when absent or non-numeric), so a repaired
+ * value can be asserted on disk and not only through the reader. */
+static int file_int_value(const char *home, const char *key)
+{
+    char *text = read_all(conf_path(home));
+    if (!text)
+        return -1;
+    cJSON *conf = cJSON_Parse(text);
+    free(text);
+    if (!conf)
+        return -1;
+    cJSON *item = cJSON_GetObjectItem(conf, key);
+    int value = (item && cJSON_IsNumber(item)) ? item->valueint : 0;
+    cJSON_Delete(conf);
+    return value;
 }
 
 int main(void)
@@ -138,7 +157,7 @@ int main(void)
     struct edc_config *cfg = edc_config_load(home);
     T_CHECK(cfg != NULL, "config.json loads");
     T_CHECK(cfg && cfg->context_window == EDC_CONFIG_DEFAULT_CONTEXT_WINDOW, "fresh config: default window");
-    T_CHECK(EDC_CONFIG_DEFAULT_CONTEXT_WINDOW == 0, "the default is 0 (= unconfigured/unknown)");
+    T_CHECK(EDC_CONFIG_DEFAULT_CONTEXT_WINDOW == 1024 * 1024, "the default is 1M (deepseek-v4-flash's real window)");
     edc_config_free(cfg);
 
     /* (2) a declared window is read verbatim. */
@@ -159,20 +178,36 @@ int main(void)
     T_CHECK(edc_init_env(home, false), "top-up a config that is missing the key");
     T_CHECK(file_has_key(home, "context_window"), "top-up materialized the key");
     cfg = edc_config_load(home);
-    T_CHECK(cfg && cfg->context_window == EDC_CONFIG_DEFAULT_CONTEXT_WINDOW, "re-materialized key reads 0");
+    T_CHECK(cfg && cfg->context_window == EDC_CONFIG_DEFAULT_CONTEXT_WINDOW, "re-materialized key reads the default");
     edc_config_free(cfg);
 
     /* (5) with the key gone and no top-up, the reader itself falls back. */
     T_CHECK(edit_config(home, "context_window", 0, true), "remove the key again");
     cfg = edc_config_load(home);
-    T_CHECK(cfg && cfg->context_window == EDC_CONFIG_DEFAULT_CONTEXT_WINDOW, "missing key falls back to 0");
+    T_CHECK(cfg && cfg->context_window == EDC_CONFIG_DEFAULT_CONTEXT_WINDOW, "missing key falls back to the default");
     edc_config_free(cfg);
 
-    /* (6) an explicit 0 is a value, not an absence. */
-    T_CHECK(edit_config(home, "context_window", 0, false), "set context_window=0");
+    /* (6) an explicit 0 (or a negative) is *repaired*, not honoured: the fold has
+     * no branch for an unknown window, so a stale config.json must not be able to
+     * switch folding off. The file is rewritten, so it shows the truth. */
+    T_CHECK(edit_config(home, "context_window", 0, false), "set context_window=0 by hand");
+    T_CHECK(file_int_value(home, "context_window") == 0, "前置: 文件里真的写着 0 (没这一步断言会空转)");
     cfg = edc_config_load(home);
-    T_CHECK(cfg && cfg->context_window == 0, "explicit 0 stays 0");
+    T_CHECK(cfg && cfg->context_window == EDC_CONFIG_DEFAULT_CONTEXT_WINDOW, "the reader repairs an explicit 0");
     edc_config_free(cfg);
+    T_CHECK(edc_init_env(home, false), "top-up a config holding 0");
+    T_CHECK(file_int_value(home, "context_window") == EDC_CONFIG_DEFAULT_CONTEXT_WINDOW,
+            "the file itself was rewritten to the default (not left lying)");
+
+    T_CHECK(edit_config(home, "context_window", -5, false), "set context_window=-5 by hand");
+    T_CHECK(edc_init_env(home, false), "top-up a config holding a negative window");
+    T_CHECK(file_int_value(home, "context_window") == EDC_CONFIG_DEFAULT_CONTEXT_WINDOW, "a negative is repaired too");
+
+    /* (6b) the retired message-count knob is dropped from the file. */
+    T_CHECK(edit_config(home, "group_fold_msg_threshold", 200, false), "put the retired key back by hand");
+    T_CHECK(file_has_key(home, "group_fold_msg_threshold"), "前置: 文件里真的有那个键");
+    T_CHECK(edc_init_env(home, false), "top-up drops it");
+    T_CHECK(!file_has_key(home, "group_fold_msg_threshold"), "group_fold_msg_threshold is gone from config.json");
 
     /* (7) fold policy constants (decisions 13; a/b/c 见 edc_group_fold.h). */
     T_CHECK(EDC_FOLD_RESERVE_TOKENS == 16384, "reserve = 16k");

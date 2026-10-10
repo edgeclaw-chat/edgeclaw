@@ -165,7 +165,8 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         /* 注入全部未折叠历史 [hist_begin, end): fold 采用"半量"策略 (见
          * edc_group_fold 的 L1 fold), 触发时只压最老的一半, 剩下的未折叠
          * 消息正是模型该看到的近期细节, 因此整段注入、不再截断。请求体量的
-         * 上界由 group_fold_msg_threshold 决定 (fold 触发即把它压回去)。 */
+         * 上界由 config 的 context_window 决定 (fold 触发线 = 窗口 - reserve,
+         * 触发即把它压回去)。 */
         for (size_t i = hist_begin; i < end; i++)
         {
             cJSON_AddItemReferenceToArray(msgs, cJSON_GetArrayItem(task->group->history, i));

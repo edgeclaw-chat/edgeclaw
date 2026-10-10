@@ -86,12 +86,10 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
     item = cJSON_GetObjectItem(json, "max_iter");
     result->max_iter = (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_MAX_ITER;
 
-    item = cJSON_GetObjectItem(json, "group_fold_msg_threshold");
-    result->group_fold_msg_threshold =
-        (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
-
     item = cJSON_GetObjectItem(json, "context_window");
-    result->context_window = (item && cJSON_IsNumber(item)) ? item->valueint : EDC_CONFIG_DEFAULT_CONTEXT_WINDOW;
+    /* <= 0 means "unknown" and is repaired to the default (see .h) -- never used. */
+    result->context_window =
+        (item && cJSON_IsNumber(item) && item->valueint > 0) ? item->valueint : EDC_CONFIG_DEFAULT_CONTEXT_WINDOW;
 
     item = cJSON_GetObjectItem(json, "tool_max_output_size");
     result->tool_max_output_size =
@@ -189,13 +187,8 @@ static int edc_init_env_get_configure(struct edc_init_env_result *result, const 
 
     result->api_key = (defaults && sdslen(defaults->api_key) > 0) ? sdsnew(defaults->api_key) : NULL;
     result->max_iter = (defaults && defaults->max_iter > 0) ? defaults->max_iter : EDC_CONFIG_DEFAULT_MAX_ITER;
-    result->group_fold_msg_threshold = (defaults && defaults->group_fold_msg_threshold > 0)
-                                           ? defaults->group_fold_msg_threshold
-                                           : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
-    /* 0 is a legal value here (it means "unknown"), so an existing config is
-     * carried over as-is; a negative one normalizes to the default. */
-    result->context_window =
-        (defaults && defaults->context_window >= 0) ? defaults->context_window : EDC_CONFIG_DEFAULT_CONTEXT_WINDOW;
+    result->context_window = (defaults && defaults->context_window > 0) ? defaults->context_window
+                                                                       : EDC_CONFIG_DEFAULT_CONTEXT_WINDOW;
     result->tool_max_output_size = (defaults && defaults->tool_max_output_size > 0)
                                        ? defaults->tool_max_output_size
                                        : EDC_CONFIG_DEFAULT_TOOL_MAX_OUTPUT_SIZE;
@@ -344,7 +337,7 @@ void edc_init_env_result_free(struct edc_init_env_result *result)
  *
  * config.json files written by older versions are missing keys that used to be
  * supplied by implicit "if absent, use default" fallbacks scattered around
- * edc_config.c (group_fold_msg_threshold, device_baud, device_pty, ...). Those
+ * edc_config.c (max_iter, device_baud, device_pty, ...). Those
  * keys were therefore invisible and could not be edited.
  *
  * On startup we fill in every missing key with its canonical default so the
@@ -365,6 +358,29 @@ static void ensure_int_key(cJSON *obj, const char *key, int def, bool *changed)
     *changed = true;
 }
 
+/* Same, but also repairs a present-but-invalid value. Only for keys where "0" is
+ * not a legal setting at all: today `context_window`, which has no "unconfigured"
+ * state because the fold always needs a real window to compare against. A config
+ * written by an older version (or by hand) holding 0 would otherwise silently
+ * disable folding. */
+static void ensure_positive_int_key(cJSON *obj, const char *key, int def, bool *changed)
+{
+    cJSON *item = cJSON_GetObjectItem(obj, key);
+    if (!item)
+    {
+        cJSON_AddNumberToObject(obj, key, def);
+        *changed = true;
+        return;
+    }
+    if (cJSON_IsNumber(item) && item->valueint > 0)
+        return;
+    log_info("config.json: '%s' = %d is not a usable value, resetting to %d", key,
+             cJSON_IsNumber(item) ? item->valueint : 0, def);
+    cJSON_DeleteItemFromObject(obj, key);
+    cJSON_AddNumberToObject(obj, key, def);
+    *changed = true;
+}
+
 static void ensure_str_key(cJSON *obj, const char *key, const char *def, bool *changed)
 {
     if (cJSON_GetObjectItem(obj, key))
@@ -378,7 +394,8 @@ static void ensure_str_key(cJSON *obj, const char *key, const char *def, bool *c
  * knobs (dead keys invite pointless edits). */
 static void drop_obsolete_keys(cJSON *conf, bool *changed)
 {
-    static const char *const obsolete[] = {"load_n_histories", NULL};
+    static const char *const obsolete[] = {"load_n_histories", "memory_compress_threshold",
+                                           "group_fold_msg_threshold", NULL};
 
     for (int i = 0; obsolete[i]; i++)
     {
@@ -546,8 +563,7 @@ static void edc_init_env_conf_topup(const char *conf_file, const char *edc_home)
     ensure_str_key(conf, "api_url", EDC_CONFIG_DEFAULT_API_URL, &changed);
     ensure_str_key(conf, "model", EDC_CONFIG_DEFAULT_MODEL, &changed);
     ensure_int_key(conf, "max_iter", EDC_CONFIG_DEFAULT_MAX_ITER, &changed);
-    ensure_int_key(conf, "group_fold_msg_threshold", EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD, &changed);
-    ensure_int_key(conf, "context_window", EDC_CONFIG_DEFAULT_CONTEXT_WINDOW, &changed);
+    ensure_positive_int_key(conf, "context_window", EDC_CONFIG_DEFAULT_CONTEXT_WINDOW, &changed);
     ensure_int_key(conf, "tool_max_output_size", EDC_CONFIG_DEFAULT_TOOL_MAX_OUTPUT_SIZE, &changed);
 
     ensure_sandbox(conf, edc_home, &changed);
@@ -654,7 +670,6 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     cJSON_AddStringToObject(config, "model", env_result.model);
     cJSON_AddStringToObject(config, "api_url", env_result.api_url);
     cJSON_AddNumberToObject(config, "max_iter", env_result.max_iter);
-    cJSON_AddNumberToObject(config, "group_fold_msg_threshold", env_result.group_fold_msg_threshold);
     cJSON_AddNumberToObject(config, "context_window", env_result.context_window);
     cJSON_AddNumberToObject(config, "tool_max_output_size", env_result.tool_max_output_size);
 

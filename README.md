@@ -464,7 +464,7 @@ Create `~/.edgeclaw/config.json`:
   "api_url": "https://api.openai.com/v1/chat/completions",
   "model": "gpt-4o",
   "max_iter": -1,
-  "group_fold_msg_threshold": 500,
+  "context_window": 1048576,
   "tool_max_output_size": 10000,
   "sandbox": {
     "enable": true,

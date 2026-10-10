@@ -137,8 +137,8 @@ int main(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew("/tmp/test_commands_group_fold_ws");
-    cfg->group_fold_msg_threshold = 100000; /* 远没到 ⇒ 只有"手动"能折 */
-    cfg->context_window = 0;
+    /* 窗口宽到不可能自动折: 这个文件只验手动路径 (due 那条判据由 test_group_fold 覆盖)。 */
+    cfg->context_window = 1024 * 1024;
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     struct edc_session *sess = edc_session_new(cfg, "sess-foldcmd", "FoldCmd");
     install_resolver(sched, sess);
@@ -147,7 +147,7 @@ int main(void)
     struct edc_task_group *g1 = make_group(sess, "11");
     edc_scheduler_set_foreground(sess, g1);
 
-    TEST("判据没到 (对照): 阈值远、窗口 0 ⇒ 自动触发不会折");
+    TEST("判据没到 (对照): 窗口宽 ⇒ 自动触发不会折");
     CHECK(!edc_group_fold_due(g1, cfg), "due = false");
     CHECK(!edc_scheduler_has_pending_system_task(sess), "还没有折叠任务");
 

@@ -11,7 +11,7 @@
 | | pi | 我们现在 | 结论 |
 |---|---|---|---|
 | **上下文规模怎么算** | 最后一条**有效** assistant 的 `usage.totalTokens` + 其后消息按 `chars/4` 估算；无有效 usage → 全量估算 | 最近一次应答的 `usage.total_tokens`（`task->last_total_tokens`），组取成员**最大**；**尾部不计、折叠后不失效** | **P1** 补估算器 + anchor 失效规则 |
-| **什么时候折** | `tokens > contextWindow − reserveTokens`（默认 16k） | **消息条数**（`group_fold_msg_threshold`，你配的 200） | **P2** 改 token 触发，消息数降级为兜底 |
+| **什么时候折** | `tokens > contextWindow − reserveTokens`（默认 16k） | **只剩 token 轴**：`ctx > 窗口 − reserve`；窗口默认 **1M**，`<= 0` 在启动时被修成默认值（2026-10-10，见 §2.9） | **P2 ✅**（消息条数轴已整条退休） |
 | **折到哪里** | 从尾部往前累加到 `keepRecentTokens`(20k) 的**合法切点** | **折最老的一半**（按 task / 消息数） | **P2** 改尾部 token 预算 |
 | **切点安全** | 永不切在 `toolResult` 上 | `edc_llm_history_safe_start` 把起点回退到非 tool 消息 | ✅ 已具备 |
 | **摘要怎么生成** | 结构化 6 段 + 文件追踪 + **迭代更新**指令 + `maxTokens` 上限 + 失败判定 | "concise markdown" 一句，只有 `## Existing Group Memory` 前缀 | **P2** 采纳格式与迭代规则 + 卫生检查 |
@@ -303,6 +303,42 @@ executor + 限流反例 + 窗口未知不触发 + 投递顺序 + 折叠护栏 + 
 系统组 `history[0]`，断言请求第一条消息**逐字节**等于折叠说明且不含 `# EdgeClaw`；变异：改回走组
 上下文 → 2 红，既自足又走一遍组上下文 → 1 红）。
 
+## 2.9 窗口是唯一判据：默认 1M，条数轴退休（2026-10-10）
+
+**决定（用户）**：删掉"靠消息条数判断要不要折"的逻辑；`context_window` 不会为 0，因为有默认值 1M。
+
+**为什么**：条数轴本来只是"窗口未知"时的兜底（写法乙的分支）。一旦窗口有了默认值，那条分支
+就**必然不可达** —— 留着是一条死路，而"兜底只在键缺席时可达"正是本仓库吃过亏的写法
+（§7.2 的那句警告就是这么来的）。窗口是这台机器上唯一能回答"下一次请求装得下吗"的量。
+
+**落地**：
+
+| 面 | 改动 |
+|---|---|
+| 默认值 | `EDC_CONFIG_DEFAULT_CONTEXT_WINDOW = 1024 * 1024`（= 默认模型 `deepseek-v4-flash` 的实测窗口，§2.5.1） |
+| 修复 | `edc_init_env` 的 top-up 新增 `ensure_positive_int_key`：`context_window` **缺失 / 非数字 / `<= 0`** 一律写成默认值（并重写文件，所以盘上不会留一个撒谎的 0）；读侧 `edc_config.c` 同样只接受正数 —— 双保险，因为启动顺序里 top-up 先跑 |
+| 退休 | `group_fold_msg_threshold`：字段、默认值、ensure、读侧全删；键进 `drop_obsolete_keys`（老 config.json 里的那条会在下次启动被清掉） |
+| 判据 | `edc_group_fold_due` = `foldable > 0 && failures < 3 && ctx > 窗口 - reserve`。窗口仍读不到（脏 config）时**返回 false**：不知道窗口不是"随便折"的理由；手动 `/group fold` 不受影响 |
+| 夹具 | A/B 的 `fold` 改成手动 `/group fold` 触发（`AB_CONTEXT_WINDOW` 可让将来的夹具按窗口触发）：夹具语料只有几十 token，1M 窗口下自动路径永远不会过线 |
+
+**代价（已知，写下来）**：窗口必须**跟真实模型一致**。填太大 ⇒ 折叠来晚了（provider 先报溢出，
+P3 会给一条带数字的提示）；填太小（比如小于"系统提示 + 记忆"这个基线）⇒ 组每轮都"该折"，
+变成一直在折。所以这个值不是"随便填一个数"，它现在是一等配置。
+
+**验证**：`bazel clean` → build **903 actions**、全量 **64/64**；**6 条变异全红**（窗口 <= 0 也照折 /
+条数轴复活为 OR / 默认值退回 0 / top-up 不修 <= 0 / 退役键不删 / 读侧不修 0），逐字节还原。
+A/B 三夹具对**同 HEAD 基线二进制**：`session.json` / `chat.jsonl` / `llm_requests.jsonl` /
+`.task_seq` 全部逐字节相同；日志剥时钟 + 抹行号后唯一差异是旧二进制多一条"config 重写"日志
+（它在给已退休的键补默认值）。`fold` 夹具的折叠产物（切点 `task 826 turn 0 msg 1`、prompt
+1092 字节、折叠任务 827、落地 "folded 1 turns"）**新旧完全一致** —— 手动入口与自动入口共用同一条
+start → 屏障 → prompt → 落地路径。
+
+**变异电池的收获**：M5/M6 第一版**没红** —— `cJSON_ReplaceItemInObject` 对缺席的键是 no-op，
+测试里"手工写回一个 0 / 写回那条退役键"其实**什么都没写**，断言空转。改成 delete+add 并补
+"前置：文件里真的写着 0"之后两条都红。**（老教训的新案例：先证明夹具真的摆好了，再断言结果。）**
+
+---
+
 ---
 
 # 第三部分：分期
@@ -327,12 +363,12 @@ executor + 限流反例 + 窗口未知不触发 + 投递顺序 + 折叠护栏 + 
 
 | # | 裁决 | 落地 |
 |---|---|---|
-| 1 | **A** 显式配置 `context_window`。**2026-10-09 二次澄清（覆盖原"默认 1M"）**：默认 **0 = 未配置/未知** ⇒ 走条数轴；**只有显式填了窗口值才启用 token 轴**（否则"缺失"不可观测，条数轴永远不可达，见 §7.2） | P2 |
+| 1 | ~~**A** 显式配置 `context_window`；默认 0 = 未配置/未知 ⇒ 走条数轴~~ **2026-10-10 取代**：窗口有**默认值 1M**，缺失/`<= 0` 一律被修成它；窗口是**唯一**判据（见 §2.9） | P2 → 已改 |
 | 2 | **B** footer 区分精确 / 估算：锚定真值 `ctx 65.5k`、含估算 `ctx ~72k` | ✅ P1 |
 | 3 | **A** 估算器 CJK 感知（`ascii/4 + non_ascii×1`） | ✅ P1 |
 | 4 | **A** 顺序 P1 → P2 → P3，一期一 commit | — |
 | 5 | **B** 触发时机：task 完成时 **+ 每次 LLM 请求前** | P2 |
-| 6 | **A** `group_fold_msg_threshold` 是**次选**：`context_window > 0` 时按窗口触发（token 轴独占）；**窗口缺失/为 0 时**才用消息条数（**写法乙**，2026-10-09 澄清） | P2 |
+| 6 | ~~**A** 条数是**次选**（写法乙：窗口缺失/为 0 时才用条数）~~ **2026-10-10 取代**：条数轴删掉，`group_fold_msg_threshold` 从 config 退休（见 §2.9） | P2 → 已改 |
 | 7a | **B** 范围：**运行中的 task 也能被折**（折叠任务已是每个在飞成员的 dep ⇒ 到请求边界 park、结果照收，等折叠落地） | P2（最大改动面，见 §6） |
 | 7b | **B** 粒度：**消息级水位**（不再是 `completion_seq` 标量；支持切在 turn 内部 = pi 的 split turn） | P2 |
 | 8 | **要** 手动 `/group fold [id] [focus]`（focus 进摘要 prompt） | P2 |
@@ -436,11 +472,14 @@ struct edc_turn  +=  int folded_prefix;   /* 本 turn 前 N 条消息已进记�
 
 ## 7.2 触发（裁决 5B / 6A / 14）
 
+> **2026-10-10 更新（见 §2.9）**：下面的**条数兜底已删除**，窗口是唯一判据；`context_window`
+> 也不再可能 <= 0（启动期修成默认 1M）。本节保留为当期的决策记录。
+
 **判据（单一来源 = P1 的组 ctx）**：
 
 ```
 该折 ⟺  (context_window > 0 && edc_context_group_ctx_tokens(g) > context_window - reserve)
-      ||  (unfolded_msgs(g) >= group_fold_msg_threshold)
+      ||  (unfolded_msgs(g) >= group_fold_msg_threshold)     ← 2026-10-10 已删
 ```
 
 **已定案（2026-10-09 二次澄清）= 写法乙**：`context_window > 0` 时按窗口触发（token 轴独占）；

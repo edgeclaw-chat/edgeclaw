@@ -174,19 +174,15 @@ bool edc_group_fold_due(struct edc_task_group *group, const struct edc_config *c
     if (group->fold_failures >= EDC_FOLD_MAX_FAILURES)
         return false;
 
+    /* 唯一的判据 = token 轴 (2026-10-10: 消息条数轴整条退休)。config 的默认窗口是
+     * 1M 且 "<= 0" 在 init 期就被修成默认值 ⇒ 条数分支必然不可达, 留着只是死路。
+     * 窗口仍然读不到 (有人手改脏了 config) 时**不折**: 不知道窗口不是"随便折"的理由,
+     * 而手动 /group fold 永远能用。 */
     int window = conf ? conf->context_window : 0;
-    if (window > 0)
-    {
-        /* Window axis owns the decision (写法乙): the message threshold is not
-         * consulted at all. The estimate comes from the P1 group ctx (member anchor
-         * + tail), so "window" and the footer read the same number. */
-        long long ctx = edc_context_group_ctx_tokens(group, NULL);
-        return ctx > (long long)window - EDC_FOLD_RESERVE_TOKENS;
-    }
-
-    int msg_threshold = (conf && conf->group_fold_msg_threshold > 0) ? conf->group_fold_msg_threshold
-                                                                    : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
-    return edc_task_group_unfolded_msg_count(group) >= (size_t)msg_threshold;
+    if (window <= 0)
+        return false;
+    long long ctx = edc_context_group_ctx_tokens(group, NULL);
+    return ctx > (long long)window - EDC_FOLD_RESERVE_TOKENS;
 }
 
 bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_manager *sessions, struct edc_config *conf,
@@ -216,9 +212,8 @@ bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_manager 
 
             if (edc_group_fold_due(g, conf))
             {
-                log_info("L1 fold trigger: group %s foldable=%zu unfolded=%zu (window=%d msg_thr=%d)", g->group_id,
-                         foldable, unfolded, conf ? conf->context_window : 0,
-                         conf ? conf->group_fold_msg_threshold : 0);
+                log_info("L1 fold trigger: group %s foldable=%zu unfolded=%zu (window=%d)", g->group_id,
+                         foldable, unfolded, conf ? conf->context_window : 0);
                 /* Not startable right now (a member is still running) → keep looking
                  * at this session's other groups instead of declaring one started. */
                 if (edc_group_fold_start(sched, sess, g, NULL))
@@ -339,8 +334,8 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus,
         total += ps[i].tokens;
 
     /* 保留多少条作细节。pi: keep_recent = 20k token 的尾部。整组还不够这个预算时
-     * (只在"没配窗口"的条数轴上可达) 没有"窗口"可比 —— 压最老一半 (老策略),
-     * 否则小组永远折不动。 */
+     * (小结组 —— 语料比它的摘要还小, 或手动 /group fold 点了个小小组) 没有"窗口"可比
+     * —— 压最老一半 (老策略), 否则小组永远折不动。 */
     size_t keep = 0;
     if (total <= EDC_FOLD_KEEP_RECENT_TOKENS)
     {
