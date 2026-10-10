@@ -727,6 +727,39 @@ static void deser_fork_chains(cJSON *json, struct task_map_entry **id_map)
     }
 }
 
+/* 一个 task 只能属于一个组: 从 session 的**所有**组里把它摘出来 (只可能挂在某个组的成员
+ * 表上)。盘上出现"同一个 task 被两个组 claim"(手改过的档 / 旧档 / id 撞车)时, 靠这一手保证
+ * 不会出现双重成员关系 —— 那会让同一个对象挂两个链表, 释放时 double free (ASAN 抓到过)。
+ * 看列表而不是看 `task->group`: 成员路径上那个字段不一定是权威。
+ * `only_group` 非 NULL = 只摘这一个组 (把成员挂到它自己名下时用)。 */
+static void deser_detach_from_groups(struct edc_session *session, struct edc_task *task, const char *task_id,
+                                     struct edc_task_group *only_group)
+{
+    if (!session || !task)
+        return;
+    struct edc_task_group *g;
+    DL_FOREACH(session->groups, g)
+    {
+        if (only_group && g != only_group)
+            continue;
+        /* 注意用 LL_FOREACH2(…, group_next): 成员链走的是 task 的 group_next 字段,
+         * 默认的 `next` 是**另一条链**, 用它扫等于什么都没扫 (踩过)。找到就摘 + break,
+         * 循环中唯一一次改动发生在 break 之前, 所以不需要 safe 变体。 */
+        struct edc_task *t;
+        LL_FOREACH2(g->members, t, group_next)
+        {
+            if (t != task)
+                continue;
+            LL_DELETE2(g->members, t, group_next); /* 成员链的字段是 group_next, 不是 next */
+            if (g->member_count > 0)
+                g->member_count--;
+            log_warn("deserialize: task %s detached from group %s (a task belongs to one group only)",
+                     task_id ?: "(null)", g->group_id ?: "(null)");
+            break;
+        }
+    }
+}
+
 static void deser_create_groups(cJSON *json, struct edc_session *session, struct task_map_entry **id_map,
                                 struct group_map_entry **group_map)
 {
@@ -744,6 +777,10 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
         bool is_orph = orph && cJSON_IsTrue(orph);
 
         struct edc_task *leader = task_map_get(id_map, leader_id);
+        /* 一个 task 只能属于一个组 (成员链表用**单个** group_next 字段串起来)。盘上若它
+         * 已经挂在别的组的成员表里 (手改过的档 / 旧档 / id 撞车), 先摘掉 —— 否则同一个对象
+         * 会同时挂在两个链表上, 释放时 double free (ASAN 抓到过)。 */
+        deser_detach_from_groups(session, leader, leader_id, NULL);
         if (!leader && is_orph)
         {
             cJSON *members = cJSON_GetObjectItem(gj, "member_task_ids");
@@ -793,8 +830,11 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
                 if (!mid || strcmp(mid, leader->task_id) == 0)
                     continue;
                 struct edc_task *mt = task_map_get(id_map, mid);
-                if (mt)
-                    edc_task_group_add_task(group, mt);
+                if (!mt)
+                    continue;
+                /* 同上: 只能属于一个组 —— 已在别处的先摘掉再挂过来。 */
+                deser_detach_from_groups(session, mt, mid, group);
+                edc_task_group_add_task(group, mt);
             }
         }
 

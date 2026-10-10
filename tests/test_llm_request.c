@@ -369,6 +369,91 @@ static void test_session_memory_notice_reaches_the_tail(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
+ *  Case 2d: JOIN 注入的形状 (P4d) —— 记忆型源只注入 output
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_join_injection_shape(void)
+{
+    TEST("JOIN 注入: 普通源 = (它的 user 消息 + output); 记忆型源 = 只有 output");
+
+    struct harness h;
+    harness_up(&h);
+    struct edc_task *leader = NULL;
+    struct edc_task_group *g = make_group(&h, &leader, "sess-inj");
+    (void)g;
+
+    /* 源一: 普通任务 (有 input + output); 源二: 记忆型 (折叠任务) */
+    /* 源一: 普通任务 —— 一条**已提交的 turn**(含 user 消息; 注入扫的是 turns, 不是 active_turn)
+     * + output。 */
+    struct edc_task *src = edc_task_new("src-1", "sess-inj", "src-1", "src work", edc_channel_adapter);
+    {
+        struct edc_turn *t = edc_turn_new();
+        t->task_id = strdup("src-1");
+        cJSON *um = cJSON_CreateObject();
+        cJSON_AddStringToObject(um, "role", "user");
+        cJSON_AddStringToObject(um, "content", "SOURCE-USER-TEXT");
+        edc_queue_push(&t->messages, um);
+        edc_task_add_turn(src, t);
+    }
+    src->output = sdsnew("SOURCE-OUTPUT-TEXT");
+    edc_task_await_exec(src);
+    edc_task_mark_completed(src);
+
+    /* 源二: 记忆型 (折叠任务) —— 同样的形状, 但它的 prompt 不该被注入 */
+    struct edc_task *fold_src = edc_scheduler_spawn_system_task(h.sched, h.sess, "fold group memory");
+    {
+        struct edc_turn *t = edc_turn_new();
+        t->task_id = strdup(fold_src->task_id);
+        cJSON *um = cJSON_CreateObject();
+        cJSON_AddStringToObject(um, "role", "user");
+        cJSON_AddStringToObject(um, "content", "FOLD-PROMPT-TEXT");
+        edc_queue_push(&t->messages, um);
+        edc_task_add_turn(fold_src, t);
+    }
+    fold_src->output = sdsnew("FOLD-OUTPUT-MEMORY");
+    edc_task_await_exec(fold_src);
+    edc_task_mark_completed(fold_src);
+
+    /* 目标: 一个普通任务, 同时 JOIN 两个源 */
+    struct edc_task *dst = edc_task_new("dst-1", "sess-inj", "dst-1", "dst work", edc_channel_adapter);
+    edc_task_add_dependency(dst, src, TASK_DEP_JOIN);
+    edc_task_add_dependency(dst, fold_src, TASK_DEP_JOIN);
+    attach_turn(&h, dst, "DEST-OWN-TURN"); /* 给它自己的 active_turn */
+
+    g_req_msgs = 0;
+    edc_llm_request_send(h.sched, dst, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 1, "请求发出去了");
+
+    if (g_req && g_req->history)
+    {
+        bool saw_src_user = false, saw_src_out = false, saw_fold_prompt = false, saw_fold_out = false;
+        int n = cJSON_GetArraySize(g_req->history);
+        for (int i = 0; i < n; i++)
+        {
+            cJSON *mm = cJSON_GetArrayItem(g_req->history, i);
+            const char *c = cJSON_GetStringValue(cJSON_GetObjectItem(mm, "content"));
+            if (!c)
+                continue;
+            if (strstr(c, "SOURCE-USER-TEXT"))
+                saw_src_user = true;
+            if (strstr(c, "SOURCE-OUTPUT-TEXT"))
+                saw_src_out = true;
+            if (strstr(c, "FOLD-PROMPT-TEXT"))
+                saw_fold_prompt = true;
+            if (strstr(c, "FOLD-OUTPUT-MEMORY"))
+                saw_fold_out = true;
+        }
+        CHECK(saw_src_user && saw_src_out, "普通源: 它的 user 消息与 output 都注入");
+        CHECK(saw_fold_out, "记忆型源: output 注入 (那就是它的材料)");
+        CHECK(!saw_fold_prompt, "记忆型源: 它的 user 消息 (折叠 prompt, 可能几百 KB) **不**注入");
+    }
+    edc_llm_actor_req_free(g_req);
+    g_req = NULL;
+    harness_down(&h);
+}
+
+/* ══════════════════════════════════════════════════════════════
  *  Case 2c: L2 策展请求也是自足的 (P4d)
  *  ══════════════════════════════════════════════════════════════ */
 
@@ -531,6 +616,7 @@ int main(void)
     test_turn_begin_honours_folded_prefix();
     test_turn_begin_zero_without_prefix();
     test_session_memory_notice_reaches_the_tail();
+    test_join_injection_shape();
     test_curate_request_is_self_contained();
     test_summary_request_is_capped();
     test_fold_request_is_self_contained();

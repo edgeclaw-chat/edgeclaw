@@ -6,6 +6,7 @@
 #include "edc_init_env.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_session_memory.h"
 #include "edc_session_manager.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -133,8 +134,11 @@ bool edc_group_fold_holds_group(struct edc_task_group *group)
     struct edc_task *t;
     LL_FOREACH2(sys->members, t, group_next)
     {
-        /* A fold in flight = a non-terminal SYSTEM_MEMORY task writing this group. */
-        if (t->sink == EDC_SINK_GROUP_MEMORY && t->sink_group == group && !edc_task_is_completed(t) &&
+        /* 这个组在折 (GROUP_MEMORY) 或**在策展** (SESSION_MEMORY) = 非终态的记忆型任务正
+         * 对着这个组干活 ⇒ 组里的活一律先停。统一成一条 (2026-10-10): L2 与折叠同时建,
+         * 于是"成员在策展之后才恢复"对**所有**成员成立 (含中途加入组的那些 —— 它们没有
+         * 显式的 dep 边, 靠这条谓词扣住)。 */
+        if (edc_task_is_memory_sink(t) && t->sink_group == group && !edc_task_is_completed(t) &&
             !edc_task_is_cancelled(t) && !edc_task_has_failed(t))
             return true;
     }
@@ -531,6 +535,12 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
             continue;
         edc_task_add_dependency(m, task, TASK_DEP_SEQUENCE);
     }
+
+    /* L2 与折叠**同时**建 (用户裁决 2026-10-10): 一整条链当场可见
+     *     成员 ──SEQUENCE──► L2 ──JOIN──► L1
+     * L1 先跑; 它落地后 L2 才被驱动 (JOIN 边 + 注入它的 output 当材料); 成员等两者。
+     * L1 失败/取消 ⇒ L2 自动失败/取消 (JOIN 级联) ⇒ 成员被释放 —— 不需要任何额外逻辑。 */
+    edc_session_memory_start(sched, session, group, task);
 
     /* The prompt is dispatched by the message-end scan, like any task. */
     log_info("L1 fold: prompt attached to system task %s (it will be dispatched by the scheduler)",

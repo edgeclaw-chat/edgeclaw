@@ -909,7 +909,8 @@ static void test_dep_cancel_cascade(void)
     CHECK(edc_task_is_cancelled(c), "c cancelled");
     CHECK(edc_task_is_cancelled(b), "b cascaded to CANCELLED (JOIN)");
     CHECK(edc_task_is_ready(a), "a released to READY (SEQ drop), not cancelled");
-    CHECK(a->deps_total == 0, "a's dropped dep no longer counted");
+    CHECK(a->deps_total == 0, "a's dropped dep no longer counted (SEQUENCE 仍作废)");
+    CHECK(b->deps_total == 1 && b->deps && b->deps->source == c, "b 对 c 的 JOIN 边留着");
 
     edc_task_free(a);
     edc_task_free(b);
@@ -933,7 +934,8 @@ static void test_signals(void)
     CHECK(edc_task_is_cancelled(source), "source is CANCELLED");
     /* JOIN 依赖不可满足 → 依赖者也随之取消 */
     CHECK(edc_task_is_cancelled(target), "JOIN dependent cascaded to CANCELLED");
-    CHECK(target->deps_total == 0, "dependent deps cleared by cascade");
+    CHECK(target->deps_total == 1 && target->deps && target->deps->source == source,
+          "dependent 的边留着 (取消不摘边; resume 它会回到等依赖)");
 
     edc_task_free(target);
     edc_task_free(source);
@@ -1215,7 +1217,7 @@ static void count_move(void *ctx, struct edc_task *moved)
 
 static void test_dep_failure_propagates(void)
 {
-    TEST("scenario: 上游失败 → JOIN 依赖者级联失败 (递归), 边被摘掉");
+    TEST("scenario: 上游失败 → JOIN 依赖者级联失败 (递归), **边留着**");
 
     struct edc_task *a = edc_task_new("f-a", "sess-fail", "f-a", "A", edc_channel_adapter);
     struct edc_task *b = edc_task_new("f-b", "sess-fail", "f-b", "B waits for A", edc_channel_adapter);
@@ -1235,9 +1237,12 @@ static void test_dep_failure_propagates(void)
     CHECK(edc_task_has_failed(a), "A 进 ERROR");
     CHECK(edc_task_has_failed(b), "B 级联失败 (JOIN: 拿不到 A 的产出了)");
     CHECK(edc_task_has_failed(c), "C 跟着 B 一起失败 (递归)");
-    CHECK(b->deps_total == 0, "B 对 A 的边被摘掉 (留着 resume 会被搬回 AWAIT_DEPS)");
-    CHECK(a->dependents == NULL, "A 的依赖者链表也摘干净");
-    CHECK(c->deps_total == 0, "C 对 B 的边同样摘掉");
+    /* 边**留着** (2026-10-10 裁决): 源是 ERROR/CANCELLED 都能 resume ⇒ 这条边只是暂时
+     * 满足不了, 不是永远满足不了。摘了它, resume 依赖者就会"当作从来没依赖过"地跑下去,
+     * 静默丢掉它本该等到的输入。 */
+    CHECK(b->deps_total == 1 && b->deps && b->deps->source == a, "B 对 A 的边留着");
+    CHECK(a->dependents != NULL && a->dependents->target == b, "A 那一侧也还挂着");
+    CHECK(c->deps_total == 1 && c->deps && c->deps->source == b, "C 对 B 的边同样留着");
     CHECK(b->output != NULL && strstr(b->output, "f-a") != NULL, "B 的失败原因点到是哪个依赖 (f-a)");
 
     int moved = 0;
@@ -1264,7 +1269,7 @@ static void test_dep_failure_propagates(void)
     edc_task_free(s);
     edc_task_free(d);
 
-    TEST("scenario: 失败只摘自己那条边, 依赖者对**别的活源**的边不动");
+    TEST("scenario: 失败不动任何边 (JOIN 与 SEQUENCE 都还在)");
     struct edc_task *x = edc_task_new("f-x", "sess-mix", "f-x", "X fails", edc_channel_adapter);
     struct edc_task *y = edc_task_new("f-y", "sess-mix", "f-y", "Y is alive", edc_channel_adapter);
     struct edc_task *z = edc_task_new("f-z", "sess-mix", "f-z", "Z waits for both", edc_channel_adapter);
@@ -1274,12 +1279,61 @@ static void test_dep_failure_propagates(void)
     edc_task_await_exec(x);
     CHECK(edc_task_mark_failed(x), "X 失败");
     CHECK(edc_task_has_failed(z), "Z 级联失败 (那条 JOIN 满足不了了)");
-    CHECK(z->deps_total == 1, "Z 对 Y 的那条边还在");
-    CHECK(z->deps && z->deps->source == y, "剩下的是 Y 那条");
+    CHECK(z->deps_total == 2, "两条边都还在 (JOIN 不摘、SEQUENCE 也没动)");
+    {
+        bool saw_x = false, saw_y = false;
+        for (struct edc_task_dep *d = z->deps; d; d = d->next)
+        {
+            if (d->source == x)
+                saw_x = true;
+            if (d->source == y)
+                saw_y = true;
+        }
+        CHECK(saw_x && saw_y, "边连着 X 与 Y 两个源");
+    }
     CHECK(y->dependents && y->dependents->target == z, "Y 那一侧也还挂着");
     edc_task_free(x);
     edc_task_free(y);
     edc_task_free(z);
+}
+
+/* 新语义的"出路": 依赖者被放回"等依赖"之后, 源一旦真的产出, 那条边完成, 依赖者被**自动
+ * 放行**(AWAIT_DEPS → READY, 之后由扫描驱动), 不需要人工再点一次。 */
+static void test_dep_completion_releases(void)
+{
+    TEST("scenario: 源产出 (完成通知) ⇒ 那条边完成 ⇒ 等依赖者自动转 READY");
+
+    struct edc_task *src = edc_task_new("rel-src", "sess-rel", "rel-src", "source", edc_channel_adapter);
+    struct edc_task *dst = edc_task_new("rel-dst", "sess-rel", "rel-dst", "waits for src", edc_channel_adapter);
+    edc_task_add_dependency(dst, src, TASK_DEP_JOIN);
+    CHECK(edc_task_awaits_deps(dst), "dst 在等");
+    CHECK(!edc_task_is_ready(dst), "还在等 ⇒ 不是 READY");
+
+    edc_task_await_exec(src);
+    edc_task_mark_completed(src);
+    edc_task_notify_dependents(src); /* 宿主的完成路径做的正是这件事 */
+
+    CHECK(!edc_task_has_unresolved_deps(dst), "边完成了");
+    CHECK(edc_task_is_ready(dst), "dst 被自动放行 (AWAIT_DEPS → READY)");
+
+    /* 反向: 源先取消 (边留着) ⇒ dst 取消; 之后源再完成, dst 的边同样满足 ⇒ 它也能被放行。 */
+    struct edc_task *s2 = edc_task_new("rel-src2", "sess-rel", "rel-src2", "source 2", edc_channel_adapter);
+    struct edc_task *d2 = edc_task_new("rel-dst2", "sess-rel", "rel-dst2", "waits for src2", edc_channel_adapter);
+    edc_task_add_dependency(d2, s2, TASK_DEP_JOIN);
+    edc_task_send_signal(s2, TASK_SIGTERM);
+    CHECK(edc_task_is_cancelled(d2), "d2 级联取消");
+    CHECK(d2->deps_total == 1, "边留着");
+    edc_task_force_move(s2, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
+    edc_task_await_exec(s2);
+    edc_task_mark_completed(s2);
+    edc_task_notify_dependents(s2);
+    CHECK(!edc_task_has_unresolved_deps(d2), "源后来产出 ⇒ d2 的边也满足");
+    CHECK(edc_task_is_ready(d2) || edc_task_is_cancelled(d2), "(相位随实现; 关键是边不再是未决)");
+
+    edc_task_free(src);
+    edc_task_free(dst);
+    edc_task_free(s2);
+    edc_task_free(d2);
 }
 
 /* ── main ──────────────────────────────────────────────────── */
@@ -1308,6 +1362,7 @@ int main(void)
     test_scenario_fork_join();
     test_scenario_multi_deps();
     test_dep_failure_propagates();
+    test_dep_completion_releases();
 
     log_info("");
     log_info("=== 测试结果: %d passed, %d failed ===", test_passed, test_failed);

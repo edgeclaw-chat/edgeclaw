@@ -5,6 +5,7 @@
 #include "edc_llm_error_kind.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
+#include "log.h"
 #include "sds.h"
 #include "utlist_fix.h"
 #include <stdio.h>
@@ -165,10 +166,13 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
         {
             task->current_request_id = NULL;
             edc_task_mark_failed(task);
+            const bool curate = (task->sink == EDC_SINK_SESSION_MEMORY);
+            log_error("%s: task %s asked for a tool call — discarded, nothing landed",
+                      curate ? "L2 memo" : "L1 fold", task->task_id ? task->task_id : "(null)");
             return (struct edc_advance_result){
                 .outcome = EDC_STEP_ERROR,
                 .settled = true,
-                .notice = (task->sink == EDC_SINK_SESSION_MEMORY)
+                .notice = curate
                               ? "Curation attempted to call a tool — discarded, the session memory is unchanged"
                               : "Summarization attempted to call a tool — discarded, the group memory is unchanged"};
         }
@@ -250,6 +254,8 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
     {
         /* A summary/curation that could not be finished keeps the old memory and says so. */
         const bool curate = (task->sink == EDC_SINK_SESSION_MEMORY);
+        log_error("%s: task %s did not finish cleanly (reason=%d) — discarded, nothing landed",
+                  curate ? "L2 memo" : "L1 fold", task->task_id ? task->task_id : "(null)", (int)e->reason);
         if (e->reason == EDC_REASON_LENGTH)
             notice = curate ? "Curation was truncated (max_tokens) — discarded, the session memory is unchanged"
                             : "Summary was truncated (max_tokens) — discarded, the group memory is unchanged";

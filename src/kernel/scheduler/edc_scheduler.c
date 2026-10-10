@@ -1051,12 +1051,13 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
         if (task->sink == EDC_SINK_GROUP_MEMORY)
         {
             bool landed = edc_group_fold_deliver_memory(task, res->notice);
-            /* L2 (单一策略): 折叠**真的落地**了 ⇒ 补一个策展任务, 把链挂成
-             *   被折组成员 ──► L2 ──► L1(刚完成, 声明式)
-             * 于是成员在策展之后才恢复, 而 L2 读得到刚落地的记忆。加边在同一个消息
-             * 处理里 (扫描还没跑), 被释放的成员会立刻重新 park。 */
-            if (landed && own && task->sink_group)
-                edc_session_memory_start(sched, own, task->sink_group, task);
+            /* L2 是在**起折时**就建好的 (与折叠同时, 链: 成员 → L2 →(JOIN)→ L1)。
+             * 这里只需要说明一种边角: 折叠完成了但没写出记忆 ⇒ 记忆没变, 而 L2 仍然会
+             * 跑 (它的 JOIN 边已完成) —— 拿旧记忆重策展一遍, 条目会被策展人合并,
+             * 不会错, 只是白花一次调用。 */
+            if (!landed)
+                log_warn("L1 fold: group %s landed nothing — the chained curation will see the previous memory",
+                         task->sink_group ? task->sink_group->group_id : "?");
         }
         else if (task->sink == EDC_SINK_SESSION_MEMORY)
         {

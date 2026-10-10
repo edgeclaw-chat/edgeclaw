@@ -866,6 +866,35 @@ static void edc_commands_handle_task_resume( struct edc_session_manager *sm, str
     }
 
     edc_scheduler_resume_task(sched, t);
+
+    /* 还在等依赖? (边的另一端没产出: 源被取消/失败过, 或者还没跑完。) 说清楚在等谁 —— 取消
+     * 不再摘边之后这是**正常**状态, 不能让它看起来"点了没反应"。
+     * 出口: resume 那个源 (它产出后这条边自动满足, 本任务会被放行), 或者删掉那个源。 */
+    if (edc_task_awaits_deps(t))
+    {
+        sds waiting = sdsempty();
+        struct edc_task_dep *dep;
+        LL_FOREACH(t->deps, dep)
+        {
+            if (dep->completed || dep->cancelled || !dep->source)
+                continue;
+            if (sdslen(waiting))
+                waiting = sdscat(waiting, ", ");
+            waiting = sdscatprintf(waiting, "`%s` (%s)", dep->source->task_id,
+                                   edc_task_state_str(dep->source));
+        }
+        sds reply = sdscatprintf(sdsempty(),
+                                 "**Task `%s` is waiting** — it still depends on %s. Resume that one (this task "
+                                 "runs once its output arrives), or remove it.",
+                                 t->task_id, sdslen(waiting) ? waiting : "an unfinished dependency");
+        if (t->group && t->group->session && t->group->session != sess)
+            reply = sdscatprintf(reply, " (session `[%s]`)", t->group->session->session_id);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        sdsfree(waiting);
+        return;
+    }
+
     sds reply =
         sdscatprintf(sdsempty(), "**Task `%s`** — resume signal sent (%s).", t->task_id, edc_task_state_str(t));
     if (t->group && t->group->session && t->group->session != sess)

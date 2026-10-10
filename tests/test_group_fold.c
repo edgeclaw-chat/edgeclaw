@@ -311,7 +311,7 @@ static void test_fold_runs_as_a_system_task(void)
     struct edc_task_group *sg = edc_session_find_system_group(session);
     CHECK(sg != NULL, "出现了系统组");
     CHECK(edc_task_group_is_system(sg), "它就是系统组");
-    CHECK(sg->member_count == 1, "里面正好一个任务");
+    CHECK(sg->member_count == 2, "里面两个任务: 折叠 + 链上的策展 (同时建)");
     struct edc_task *fold = sg->members;
     CHECK(fold != NULL, "折叠任务出现了");
     CHECK(fold->sink == EDC_SINK_GROUP_MEMORY, "sink = GROUP_MEMORY (产出写记忆, 不回话)");
@@ -453,7 +453,7 @@ static void test_fold_failure_keeps_memory(void)
     CHECK(group->fold_epoch == epoch_before, "折叠没落地: fold_epoch 没动");
     CHECK(edc_group_fold_due(group, cfg_due(cfg, group)), "下一轮还会再折 (可折叠的还在)");
 
-    CHECK(count_tasks_in(session) == 3, "失败的折叠任务仍在 (普通任务, 不回收)");
+    CHECK(count_tasks_in(session) == 4, "失败的折叠任务 + 被 JOIN 级联失败的策展任务仍在 (普通任务, 不回收)");
     CHECK(edc_session_find_system_group(session) != NULL, "系统组还在");
 
     edc_session_free(session);
@@ -496,7 +496,7 @@ static void test_fold_task_is_persisted(void)
 
     cJSON *j = edc_state_serialize(session, sched);
     CHECK(j != NULL, "可序列化");
-    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(j, "tasks")) == 3, "tasks 块含折叠任务 (落盘)");
+    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(j, "tasks")) == 4, "tasks 块含折叠任务与策展任务 (落盘)");
     CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(j, "groups")) == 2, "groups 块含系统组 (落盘)");
 
     struct edc_session *s2 = edc_session_new(cfg, "sess-disk", "Disk");
@@ -888,7 +888,14 @@ static void test_resume_held_while_fold_in_flight(void)
     void *fold_req = fold->current_request_id;
     struct edc_advance_result fr = edc_executor_advance_llm_resp(&sched->executor, fold, fold_req, &resp);
     edc_scheduler_apply_advance(sched, fold, fold_req, &fr);
-    CHECK(edc_task_awaits_deps(t), "折叠落地后 t 还在等链上的 L2 (单一策略的顺序)");
+    /* t 是折叠开始后才加入组的 ⇒ 它没有显式的 dep 边, 但 holds_group 这只手仍然扣着它
+     * (晚加入的成员也等策展)。它不是 AWAIT_DEPS, 是 READY-但-不被驱动。 */
+    /* 扫一次: 该被驱动的是链上的 L2, **不是** t (t 没有显式 dep 边, 靠
+     * edc_group_fold_holds_group 这只手扣着 —— 这条断言就是奔着那个谓词去的)。 */
+    pump_schedule(sched);
+    CHECK(g_send_llm_calls == 2, "折叠落地后只驱动了 L2");
+    CHECK(g_last_llm_task_id && strcmp(g_last_llm_task_id, t->task_id) != 0, "没有为 t 发请求 (它仍被扣着)");
+    CHECK(!edc_task_is_running(t), "t 没在跑");
     CHECK(settle_l2(sched, session) != NULL, "链上有 L2 可结算");
 
     pump_schedule(sched);
@@ -1048,6 +1055,7 @@ static void add_big_task(struct edc_session *session, struct edc_task_group *gro
     char *buf = malloc(chars + 32);
     int n = snprintf(buf, chars + 32, "TAG%s:", tag);
     memset(buf + n, 'a', chars);
+    buf[n + chars] = '\0'; /* 显式收尾: 后面是 malloc 的垃圾字节, strlen 会越界读 (ASAN 抓到过) */
     cJSON *m = cJSON_CreateObject();
     cJSON_AddStringToObject(m, "role", "user");
     cJSON_AddStringToObject(m, "content", buf);
@@ -1143,6 +1151,7 @@ static void push_big_msg(struct edc_turn *turn, size_t chars, const char *tag)
     char *buf = malloc(chars + 32);
     int n = snprintf(buf, chars + 32, "TAG%s:", tag);
     memset(buf + n, 'a', chars);
+    buf[n + chars] = '\0'; /* 显式收尾: 后面是 malloc 的垃圾字节, strlen 会越界读 (ASAN 抓到过) */
     cJSON *m = cJSON_CreateObject();
     cJSON_AddStringToObject(m, "role", "user");
     cJSON_AddStringToObject(m, "content", buf);
@@ -1261,6 +1270,7 @@ static void push_msg(struct edc_turn *turn, const char *role, const char *tag, s
     char *buf = malloc(chars + 64);
     int n = snprintf(buf, chars + 64, "%s:", tag);
     memset(buf + n, 'a', chars);
+    buf[n + chars] = '\0'; /* 显式收尾: 后面是 malloc 的垃圾字节, strlen 会越界读 (ASAN 抓到过) */
     cJSON *m = cJSON_CreateObject();
     cJSON_AddStringToObject(m, "role", role);
     cJSON_AddStringToObject(m, "content", buf);
@@ -1691,7 +1701,10 @@ static void test_fold_failure_cap(void)
     CHECK(direct != NULL, "start 不受失败上限限制 (被限制的是 due 这道门)");
     CHECK(group->fold_failures == EDC_FOLD_MAX_FAILURES, "起折**不清零** (清零的是落地/手动/新内容)");
     if (direct)
-        edc_task_mark_cancelled(direct); /* 收尾: 会话里别有在飞的系统任务, 免得下面的手动折叠被挡 */
+        /* 收尾: 会话里别有在飞的系统任务, 免得下面的手动折叠被挡。用**生产路径**的
+         * SIGTERM (会通知依赖者 ⇒ 链上的 L2 被级联取消); `edc_task_mark_cancelled`
+         * 不通知, 会把 L2 留在"等一个死掉的源"上 (已有的小 wart, 不是本次引入)。 */
+        edc_task_send_signal(direct, TASK_SIGTERM);
 
     /* 手动折叠既不受上限限制, 也是复位开关 (自动路径熄火后唯一的重启方式)。 */
     struct edc_task *manual = edc_scheduler_fold_group_now(sched, session, group, NULL);

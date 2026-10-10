@@ -74,9 +74,10 @@ struct edc_session_memory
 extern const char *edc_memo_event_kind_name(enum edc_memo_event_kind kind);
 extern enum edc_memo_event_kind edc_memo_event_classify_kind(const char *name);
 
-/* 策展调用的输出上限 (ops JSON 很小; 这只是不封顶的保险) 与条目总数上限
- * (超上限的批次整批拒绝 —— 宁可不记, 也不让索引失控)。 */
-#define EDC_SESSION_MEMORY_MAX_TOKENS 8192
+/* 策展调用的输出上限与条目总数上限 (超上限的批次整批拒绝 —— 宁可不记, 也不让索引失控)。
+ * 上限与折叠的摘要上限同量级: ops 里带 detail, 而语料可能是一份很大的 group memory ——
+ * 8192 实测太紧 (输出被 length 截断 ⇒ 整批丢弃, 且现场什么也看不出来)。 */
+#define EDC_SESSION_MEMORY_MAX_TOKENS 32768
 #define EDC_SESSION_MEMORY_MAX_ENTRIES 200
 
 extern struct edc_session_memory *edc_session_memory_new(void);

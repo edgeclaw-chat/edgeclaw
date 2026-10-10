@@ -477,7 +477,7 @@ static long req_id_of(struct edc_task *t)
  * restore the edge unlink -- each must fail this. */
 static void test_failure_cascade_settles_dependents(void)
 {
-    TEST("上游失败: 连带失败者也过统一入口, 摘边后 resume 能真推起来");
+    TEST("上游失败: 连带失败者也过统一入口; 边留着 ⇒ resume 它回到等依赖");
     struct edc_config *cfg = make_config();
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
@@ -523,12 +523,16 @@ static void test_failure_cascade_settles_dependents(void)
     CHECK(edc_scheduler_find_task(sched, src_rid) == NULL, "src 的请求不再欠着");
     CHECK(edc_scheduler_find_task(sched, dst_rid) == NULL, "连带失败者也不再欠着请求");
     CHECK(sched->dirty_count > 0, "连带失败也置脏 (推 TUI)");
-    CHECK(dst->deps == NULL && dst->deps_total == 0, "那条永远满足不了的边已经摘掉");
+    CHECK(dst->deps != NULL && dst->deps_total == 1, "那条边**留着** (源还能 resume, 边只是暂时满足不了)");
 
-    /* 出路: ERROR 本来就在 resume 接受的三类里, 摘了边它才真能续上 */
+    /* resume 依赖者: 它被放回"等依赖" —— 而不是当作没依赖直接跑。 */
+    int calls_before = g_llm_calls;
     edc_scheduler_resume_task(sched, dst);
-    CHECK(edc_task_awaits_exec(dst), "resume 把它推到 AWAIT_EXEC (不再被搬回等依赖)");
-    CHECK(g_llm_calls == 1 && g_llm_task == dst, "并且真的重发了 LLM 请求");
+    CHECK(edc_task_awaits_deps(dst), "resume 把它放回等依赖");
+    CHECK(g_llm_calls == calls_before, "没有为它发请求 (它得先等到源的产出)");
+
+    /* 出路 = 让源真的产出 (源产出后那条边完成, 依赖者会被自动放行 —— 那条性质在
+     * tests/test_edc_task.c 的 "dep_completion_releases" 里单测; 这里只看闸门行为)。 */
 
     edc_scheduler_free(sched);
     free(sess);

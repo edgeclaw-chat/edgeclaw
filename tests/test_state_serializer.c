@@ -1271,6 +1271,53 @@ static void test_malformed_inputs(void)
     CHECK(ok3, "deserialize tolerates a turn with unknown keys (empty turn)");
     cJSON_Delete(j3);
 
+    /* 同一个 task id 被**两个组** claim (手改过的档 / id 撞车的档): 只认第一个。
+     * 成员链表用单个 group_next 字段串起来, 一个对象进两个组 = 释放时 double free。 */
+    const char *double_claim_json =
+        "{"
+        "  \"version\":7,"
+        "  \"session\":{},"
+        "  \"groups\":["
+        "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\",\"member_task_ids\":[\"t1\",\"t2\"],"
+        "     \"is_orphaned\":false},"
+        "    {\"group_id\":\"g2\",\"leader_task_id\":\"t2\",\"member_task_ids\":[\"t2\"],"
+        "     \"is_orphaned\":false}"
+        "  ],"
+        "  \"tasks\":["
+        "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
+        "     \"description\":\"task 1\",\"state\":\"COMPLETED\",\"is_group_leader\":true,"
+        "     \"fork_point_completion_seq\":0,\"completion_seq\":0,\"redirect_append\":false,"
+        "     \"deps\":[],\"turns\":[]},"
+        "    {\"task_id\":\"t2\",\"group_id\":\"g2\",\"session_id\":\"sess-mal\","
+        "     \"description\":\"task 2\",\"state\":\"COMPLETED\",\"is_group_leader\":true,"
+        "     \"fork_point_completion_seq\":0,\"completion_seq\":0,\"redirect_append\":false,"
+        "     \"deps\":[],\"turns\":[]}"
+        "  ]"
+        "}";
+    cJSON *jd = cJSON_Parse(double_claim_json);
+    bool okd = edc_state_deserialize(jd, session, sched);
+    CHECK(okd, "同一个 task 被两个组 claim: 读回成功 (不崩)");
+    {
+        /* 数"有几个组的成员表里含 t2" —— 组的运行时 id 来自领队的 task id (不是 JSON 里
+         * 那个 group_id 字段), 所以只按成员关系数。 */
+        int holders = 0;
+        struct edc_task_group *g;
+        DL_FOREACH(session->groups, g)
+        {
+            struct edc_task *t;
+            LL_FOREACH2(g->members, t, group_next)
+            {
+                if (t->task_id && strcmp(t->task_id, "t2") == 0)
+                {
+                    holders++;
+                    break;
+                }
+            }
+        }
+        CHECK(holders == 1, "t2 只在一个组里 (不会同时挂在两个组的成员表上)");
+    }
+    cJSON_Delete(jd);
+
     /* task with empty task_id */
     const char *empty_id_json =
         "{"

@@ -181,16 +181,29 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
     struct edc_task_dep *dep;
     LL_FOREACH(task->deps, dep)
     {
-        log_info("send_llm task=%s dep src=%s completed=%d output=%s", task->task_id,
-                 dep->source ? dep->source->task_id : "(null)", dep->completed,
+        /* 打出 completed **与** cancelled: 被作废 (源已终态) 的边两个字段一假一真,
+         * 只看 completed 会把它误读成"还在等"。 */
+        log_info("send_llm task=%s dep src=%s completed=%d cancelled=%d output=%s", task->task_id,
+                 dep->source ? dep->source->task_id : "(null)", dep->completed, dep->cancelled,
                  (dep->source && dep->source->output) ? "yes" : "none");
         if (dep->completed && dep->source && !dep->injected && dep->type == TASK_DEP_JOIN)
         {
             dep->injected = true;
 
+            /* 记忆型源 (折叠 / 策展) 的"输入"是它的整段语料 (折叠 prompt 可能几百 KB),
+             * 而且与它的 output 讲的是同一件事 ⇒ 只注入 output, 不注入那条 user 消息。
+             * 对 L2 策展来说, 这一条 assistant 消息**就是**它的材料 (刚落地的 group memory)。 */
+            const bool source_is_memory = edc_task_is_memory_sink(dep->source);
+            if (source_is_memory)
+                log_info("  -> injecting only the output of memory-sink task %s", dep->source->task_id);
+
             /* inject source task's final output only (mainstream subagent pattern) */
             if (dep->source->output)
             {
+                /* 普通源: 连它最后一条 user 消息一起注入, 拼成一对 Q&A。
+                 * 记忆型源跳过这半 (它的"输入"是整段语料, 且与 output 讲同一件事)。 */
+                if (!source_is_memory)
+                {
                 /* find the last user message from source to form a Q&A pair */
                 sds last_user = NULL;
                 for (size_t qi = dep->source->turns.head; qi < dep->source->turns.tail; qi++)
@@ -221,6 +234,7 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
                     cJSON_AddItemToArray(msgs, usr);
                     sdsfree(last_user);
                 }
+                } /* !source_is_memory */
 
                 cJSON *asst = cJSON_CreateObject();
                 cJSON_AddStringToObject(asst, "role", "assistant");

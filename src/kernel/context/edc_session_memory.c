@@ -363,22 +363,17 @@ const char *edc_session_memory_system_prompt(void)
     return kCurateSystemPrompt;
 }
 
-/* 材料 (L2 的 user 消息): 组记忆 + 现有条目索引 (+ 手动/自动的 focus)。
- * `group == NULL` = 手动策展: 收**所有**有记忆的组。 */
-static sds build_curate_prompt(struct edc_session *session, struct edc_task_group *group, const char *focus)
+/* L2 的 user 消息: 现有条目索引 + focus。
+ *
+ * **组记忆不在里面** —— 自动路径的 L2 与折叠用一条 JOIN 边相连, 折叠的 output (就是
+ * 刚落地的 group memory) 由请求装配器**自动注入**成上一条 assistant 消息 (见
+ * edc_llm_request.c 的依赖注入)。这样材料天然是"折叠真的写下去的那份"。
+ * `all_groups = true` 是手动策展 (`/session memo compact`): 它没有那条边, 所以自己把
+ * **所有**有记忆的组的 memory 收进 prompt。 */
+static sds build_curate_prompt(struct edc_session *session, bool all_groups, const char *focus)
 {
     sds out = sdsempty();
-    if (!group)
-        out = sdscat(out, "## Group memories (all groups of this session)\n");
-    else
-        out = sdscatprintf(out, "## Group memory (group %s, just folded)\n",
-                           group->group_id ? group->group_id : "?");
-
-    if (group)
-    {
-        out = sdscat(out, (group->memory && sdslen(group->memory) > 0) ? group->memory : "(empty)");
-    }
-    else
+    if (all_groups)
     {
         bool any = false;
         struct edc_task_group *g = NULL;
@@ -394,6 +389,12 @@ static sds build_curate_prompt(struct edc_session *session, struct edc_task_grou
         }
         if (!any)
             out = sdscat(out, "(no group has memory yet)");
+    }
+    else
+    {
+        out = sdscat(out, "## Group memory to curate\n"
+                          "It is the **previous assistant message** in this conversation (the fold task's\n"
+                          "output). Read it, then apply the operations below to this session's memory.\n");
     }
 
     if (focus && *focus)
@@ -420,7 +421,7 @@ struct edc_task *edc_session_memory_start(struct edc_scheduler *sched, struct ed
     if (!sched || !session || !session->memo)
         return NULL;
 
-    sds prompt = build_curate_prompt(session, folded_group, NULL);
+    sds prompt = build_curate_prompt(session, /*all_groups=*/false, NULL);
     struct edc_task *task =
         edc_scheduler_spawn_system_task_as(sched, session, "curate session memory", EDC_SINK_SESSION_MEMORY);
     if (!task)
@@ -440,10 +441,14 @@ struct edc_task *edc_session_memory_start(struct edc_scheduler *sched, struct ed
     }
     sdsfree(prompt);
 
-    /* 链: L2 → L1 (声明式: L1 已完成, 这条边一建就是 completed), 成员 → L2 (真正让它们等)。
-     * 加边发生在同一个消息处理里, 扫描还没跑 ⇒ 被释放的成员会立刻重新 park 到 AWAIT_DEPS。 */
+    /* 链: L2 →(JOIN) L1 —— **JOIN 而不是 SEQUENCE**, 两个理由:
+     *   ① 失败/取消自动级联: L1 进 ERROR ⇒ L2 自动 ERROR; L1 被取消 ⇒ L2 自动取消
+     *      (SEQUENCE 只会"抹边放行", 那样 L2 会拿没变过的旧记忆白跑一次);
+     *   ② 材料自带: JOIN 的注入会把 L1 的 **output**(= 刚落地的 group memory) 作为上一条
+     *      assistant 消息放进 L2 的请求 ⇒ 不必在起折时就把记忆抄进 prompt。
+     * 成员另挂 L2 一条 SEQUENCE (见下): 它们既等折叠、也等策展。 */
     if (fold_task)
-        edc_task_add_dependency(task, fold_task, TASK_DEP_SEQUENCE);
+        edc_task_add_dependency(task, fold_task, TASK_DEP_JOIN);
     if (folded_group)
     {
         struct edc_task *m;
@@ -473,7 +478,7 @@ struct edc_task *edc_session_memory_start_manual(struct edc_scheduler *sched, st
         return NULL;
     }
 
-    sds prompt = build_curate_prompt(session, NULL, focus);
+    sds prompt = build_curate_prompt(session, /*all_groups=*/true, focus);
     struct edc_task *task =
         edc_scheduler_spawn_system_task_as(sched, session, "curate session memory", EDC_SINK_SESSION_MEMORY);
     if (!task)
@@ -695,10 +700,18 @@ bool edc_session_memory_deliver(struct edc_task *task, const char *content)
         log_error("L2 memo: task %s returned nothing — nothing landed", task->task_id ? task->task_id : "(null)");
         return false;
     }
-    return edc_session_memory_apply_ops(session->memo, content,
-                                        (task->sink_group && task->sink_group->group_id)
-                                            ? task->sink_group->group_id
-                                            : NULL);
+    size_t entries_before = session->memo->entry_count, events_before = session->memo->event_count;
+    bool ok = edc_session_memory_apply_ops(session->memo, content,
+                                           (task->sink_group && task->sink_group->group_id)
+                                               ? task->sink_group->group_id
+                                               : NULL);
+    if (ok)
+        log_info("L2 memo landed: task=%s entries %zu->%zu, events %zu->%zu", task->task_id ? task->task_id : "(null)",
+                 entries_before, session->memo->entry_count, events_before, session->memo->event_count);
+    else
+        log_error("L2 memo: task %s produced %zu bytes that did not parse as ops — nothing landed",
+                  task->task_id ? task->task_id : "(null)", strlen(content));
+    return ok;
 }
 
 /* ── 队尾通知 ─────────────────────────────────────────────── */
