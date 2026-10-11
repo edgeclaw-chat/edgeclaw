@@ -93,6 +93,12 @@ struct edc_https_request
 
     struct edc_https_header header;
 
+    /* HTTP status of the response (0 until the status line is parsed, and 0 on a
+     * transport failure — no response at all). llhttp gives it in
+     * on_headers_complete; without this the status was simply dropped, so a 400
+     * (bad request / context overflow) and a 429 (rate limit) looked identical. */
+    int status_code;
+
     sds current_header_field;
     sds current_header_value;
     bool header_in_field;
@@ -138,6 +144,8 @@ static int edc_https_on_header_value(llhttp_t *http, const char *at, size_t len)
 static int edc_https_on_headers_complete(llhttp_t *http)
 {
     struct edc_https_request *req = EDC_CONTAINER_OF(http, struct edc_https_request, parser);
+
+    req->status_code = http->status_code;
 
     if (req->current_header_value)
     {
@@ -210,6 +218,7 @@ static struct edc_https_request *edc_https_request_new(struct edc_https_client *
     req->header.value = NULL;
     req->header.next = NULL;
 
+    req->status_code = 0;
     req->current_header_field = NULL;
     req->current_header_value = NULL;
     req->header_in_field = true;
@@ -380,6 +389,11 @@ const char *edc_https_request_get_path(struct edc_https_request *req)
 void *edc_https_request_get_priv(struct edc_https_request *req)
 {
     return req->priv;
+}
+
+int edc_https_request_get_status(struct edc_https_request *req)
+{
+    return req->status_code;
 }
 
 int edc_https_request_write(struct edc_https_request *req, const unsigned char *buf, size_t len)

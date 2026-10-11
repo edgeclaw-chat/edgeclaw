@@ -23,10 +23,8 @@ static int test_passed = 0;
    Phase 1: edc_task 压力 / 边界 / 异常测试
    ══════════════════════════════════════════════════════════════ */
 
-/* ── 1. 状态转换穷举 ────────────────────────────────────────
- * 已搬去 tests/test_edc_task.c 的 `test_transition_table_spec`: 那里把新转移表
- * 按 (step, life) 逐源写成规格, 穷举 30×30 = 900 格 (旧版本这里是 9×9 的旧词
- * 矩阵, 随旧枚举一起退休)。 */
+/* 1. Transition-table exhaustion moved to tests/test_edc_task.c
+ * (test_transition_table_spec), which pins the new table per (step, life). */
 
 /* ── 2. NULL 安全全面测试 ──────────────────────────────────── */
 
@@ -156,7 +154,7 @@ static void test_many_dependencies(void)
         if (role && strcmp(role->valuestring, "system") == 0)
         {
             cJSON *content = cJSON_GetObjectItem(item, "content");
-            if (content && strstr(content->valuestring, "子任务") != NULL)
+            if (content && strstr(content->valuestring, "[subtask ") != NULL)
                 dep_count++;
         }
     }
@@ -255,7 +253,7 @@ static void test_dependency_chain(void)
     edc_task_send_signal(b, TASK_SIGTERM);
     CHECK(edc_task_is_cancelled(b), "B cancelled");
     CHECK(edc_task_is_cancelled(a), "A cascaded to CANCELLED (JOIN dependent)");
-    CHECK(a->deps_total == 0, "A deps cleared by cascade");
+    CHECK(a->deps_total == 1, "A 的边留着 (取消不摘边)");
 
     /* C 是 B 的依赖源 (B→C), 不是 B 的依赖者 → 取消 B 不触碰 C。 */
     CHECK(c->deps_total == 0, "C has no deps (B depends on C, not the other way)");
@@ -403,7 +401,7 @@ static void test_group_null_safety(void)
     CHECK(edc_task_group_find_task(NULL, "x") == NULL, "find_task(NULL,'x') → NULL");
     edc_task_group_set_leader(NULL, NULL);
     edc_task_group_mark_orphaned(NULL);
-    edc_task_group_send_signal(NULL, TASK_SIGTERM);
+    edc_task_group_finish_signal(NULL);
     CHECK(!edc_task_group_is_foreground_capable(NULL), "is_fg_capable(NULL) → false");
     CHECK(strcmp(edc_task_group_status_label(NULL), "") == 0, "status_label(NULL) → ''");
     CHECK(1, "all group NULL APIs survived");
@@ -494,13 +492,14 @@ static void test_group_many_members(void)
     CHECK(edc_task_group_find_task(g, "gbig-49") == members[49], "find member 49");
     CHECK(edc_task_group_find_task(g, "nonexistent") == NULL, "find nonexistent");
 
-    /* Signal all */
-    edc_task_group_send_signal(g, TASK_SIGTERM);
+    /* Signal all —— 宿主侧的扇出是"逐成员发信号 + 组自己收尾", 这里照它做。 */
     for (int i = 0; i < 50; i++)
     {
+        edc_task_send_signal(members[i], TASK_SIGTERM);
         /* skip COMPLETED check - let's just verify they're in terminal state */
         CHECK(members[i]->cancelled_request == 1, "member %d cancelled_request set", i);
     }
+    edc_task_group_finish_signal(g);
     CHECK(g->is_orphaned, "group orphaned after mass SIGTERM");
 
     edc_task_group_free(g);
@@ -548,9 +547,10 @@ static void test_group_signal_edge(void)
     CHECK(g->is_orphaned, "orphaned");
     edc_task_free(l);
 
-    /* SIGTERM to orphaned group */
-    edc_task_group_send_signal(g, TASK_SIGTERM);
+    /* SIGTERM to orphaned group —— 留在组里的成员照样要发到 (宿主侧的循环)。 */
+    edc_task_send_signal(m, TASK_SIGTERM);
     CHECK(edc_task_is_cancelled(m), "orphaned member cancelled");
+    edc_task_group_finish_signal(g);
 
     edc_task_group_free(g);
 }

@@ -21,9 +21,14 @@ extern "C" {
  *
  * ── 本头只装装配根本职 ───────────────────────────────────────
  * 建 / 关 / 释放, 加 `set_llm_config` (它**是**业务: 写 config.json + 通知
- * llm_actor), 再加三个句柄访问器 —— 前端面 (投输入 / 要树 / 注册 adapter /
- * 读配置字符串 / 消息只读窗口) **不在这里**, 在 `edc_api.h` (`//src/app:api`):
- * 那批函数只是"C++ ↔ C 边界"上的投影, 不是装配根的一部分 (2026-09-16 拆出)。
+ * llm_actor), 再加**两个**句柄访问器 (config / channel_actor)。
+ * 前端面 (投输入 / 要树 / 注册 adapter / 读配置字符串 / 消息只读窗口) **不在这里**,
+ * 在 `edc_api.h` (`//src/app:api`): 那批函数只是"C++ ↔ C 边界"上的投影,
+ * 不是装配根的一部分 (2026-09-16 拆出)。
+ * 会碰 session 仓库的问题, 前端**不问任何人**: 快照 (它带着 session_id / workdir)
+ * 就是答案 —— 仓库归 scheduler 所有、由 `edc_scheduler_open()` 建立; 从前那批
+ * 命名查询 (`edc_app_sessions` / `..._active_session_id` / `..._workdir`) 已全部
+ * 删除 (2026-09-22)。
  *
  * ── 这个头对 C++ 安全 (2026-09-16) ───────────────────────────
  * 前端的 C++ 可以直接 include 它、直接调这里的函数。硬约束只有一条:
@@ -41,7 +46,6 @@ struct edc_app;
  * "conflicting types" (类型打印出来还一模一样 —— 极难查)。 */
 struct edc_actor;
 struct edc_config;
-struct edc_session_manager;
 
 /* |sandbox_override|: -1 = keep the persisted config.json value (the default
  * at startup), 0 = force off, 1 = force on. The override is per-run and is NOT
@@ -61,7 +65,6 @@ extern void edc_app_free(struct edc_app *app);
  * app 是 opaque 的, 所以外面只能拿这几件"零件"; 前端面的那批投影函数就是
  * 全部经这里取数 (实测 `edc_api.c` 里 `app->` 为 0 次)。 */
 extern struct edc_config *edc_app_config(const struct edc_app *app);
-extern struct edc_session_manager *edc_app_sessions(const struct edc_app *app);
 extern struct edc_actor *edc_app_channel_actor(const struct edc_app *app);
 
 /* Update the LLM provider settings at runtime (from the TUI /connect menu):

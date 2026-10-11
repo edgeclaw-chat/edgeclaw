@@ -14,12 +14,8 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <sys/stat.h>
-/* ── 单测的 session 仓库 ─────────────────────────────────────────
- * scheduler 现在**同包直调 store** (P3 的 `resolve_session` 端口已退休),
- * 所以测试给它的不是"解析函数"而是**仓库**: 一个只装着
- * 这些 session 的内存 manager (普通结构体, 没有构造函数 —— 与 poke 别的结构体同法)。
- * 标签为空 = 用活跃的那个 (active_index 指向第一个), 与真 store 的策略一致。
- * `ctx` 仍留给测试自己用 (它不再是读口的入参)。 */
+/* The in-memory session store handed to the scheduler; an empty label means the
+ * active session (active_index points at the first). */
 static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
 {
     sched->ctx = sess;
@@ -146,16 +142,9 @@ static void test_scheduler_task_mgmt(void)
     free_config(cfg);
 }
 
-/* ── 2b. "任务建成" 事件 (2026-09-17) ────────────────────────
- *
- * 发射点是 `edc_scheduler_create_task` —— 任务**真正建成功**的那一刻, 于是普通
- * 输入 / `@task` / `/task new` / 兜底建任务全都在内。用户原文取自
- * `sched->input_raw` (正在被处理的那条入站输入), 免得把原文一路穿过命令层与
- * 外壳那一长串参数。
- *
- * 这里是 **kernel 那一半**的判据 (建任务 → 事件带 task_id + 原文; 没有输入在飞
- * 就不发)。前端那一半 —— 事件到达后把用户敲的那条绑到该 task —— 见
- * tests/test_tui_dispatch.cpp。 */
+/* 2b. The "task created" event, emitted by edc_scheduler_create_task, carrying the
+ * task id and the raw input (sched->input_raw). The frontend half is in
+ * tests/test_tui_dispatch.cpp. */
 
 static void test_task_history_pull(void)
 {
@@ -302,10 +291,8 @@ static void test_scheduler_fg_bg(void)
 
 /* ── 5. 信号发送 ──────────────────────────────────────────── */
 
-/* 落盘不再是可注入的端口 (scheduler 同包直调 store, 见 runtime-model.md §11), 所以
- * "取消 → 立刻落盘"**不再用调用计数探针** —— 那断言的是一个已被删掉的机制。真行为
- * (取消后 CANCELLED 跨重启保留) 由 tests/test_session_leave_cancel.c 的盘上
- * round-trip 钉住 (它的会话有真 history_dir, 这里是裸结构体, 落盘会静默失败)。 */
+/* Persistence is no longer an injectable port, so "cancel persists immediately" is
+ * covered by the on-disk round trip in test_session_leave_cancel.c. */
 
 static void test_scheduler_signals(void)
 {
@@ -367,14 +354,57 @@ static void test_scheduler_group_signals(void)
     edc_task_group_add_task(g, m1);
     edc_task_group_add_task(g, m2);
 
+    /* 清零脏表: 下面的判据是"组级取消**自己**把 session 标脏了", 不算前面建任务
+     * 留下的。测试独占这个 scheduler, 直接清。 */
+    sched->dirty_count = 0;
+
     edc_scheduler_send_signal_to_group(sched, sess, g->group_id, TASK_SIGTERM);
     CHECK(edc_task_is_cancelled(l), "leader cancelled");
     CHECK(edc_task_is_cancelled(m1), "member 1 cancelled");
     CHECK(edc_task_is_cancelled(m2), "member 2 cancelled");
+    /* 判据: 每个成员都走过了统一入口的簿记 (② 置脏)。这条路径从前是**手工补丁**,
+     * 它不置脏 → 侧栏不推快照、也不落盘 (靠调用方各自记得 save 兜着)。
+     * 变异自检: 去掉 sched_signal_one 里的 apply_advance 调用 → 这条必红。 */
+    CHECK(sched->dirty_count > 0, "group cancel marks the session dirty (unified entry)");
+    CHECK(sched->dirty_count > 0 && sched->dirty[0].session == sess, "dirty entry is the owning session");
 
     TEST("send_signal_to_group nonexistent");
     edc_scheduler_send_signal_to_group(sched, sess, "nonexistent-gid", TASK_SIGTERM);
     CHECK(1, "signal to nonexistent group survived");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
+/* Cancel propagates: a JOIN dependent is cancelled too, and its bookkeeping runs
+ * through the same entry (the hash entry is gone).
+ * Mutation: dropping task_record_move in edc_task_on_dep_cancelled must fail this. */
+static void test_signal_cascade_settles_dependents(void)
+{
+    TEST("JOIN 级联取消: 被带动的依赖者也过统一入口");
+    struct edc_config *cfg = make_config();
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+
+    struct edc_task *src = edc_scheduler_create_task(sched, sess, "src", edc_channel_adapter);
+    struct edc_task *dst = edc_scheduler_create_task(sched, sess, "dst", edc_channel_adapter);
+    edc_task_add_dependency(dst, src, TASK_DEP_JOIN);
+    CHECK(edc_task_awaits_deps(dst), "dst waits for src");
+
+    void *src_rid = (void *)(intptr_t)0xC001;
+    void *dst_rid = (void *)(intptr_t)0xC002;
+    edc_scheduler_register_task(sched, src, src_rid);
+    edc_scheduler_register_task(sched, dst, dst_rid);
+    src->current_request_id = src_rid;
+    dst->current_request_id = dst_rid;
+
+    edc_scheduler_send_signal_to_task_ptr(sched, src, TASK_SIGTERM);
+    CHECK(edc_task_is_cancelled(src), "src cancelled");
+    CHECK(edc_task_is_cancelled(dst), "dst cancelled by cascade");
+    CHECK(edc_scheduler_find_task(sched, src_rid) == NULL, "src 的请求不再欠着");
+    CHECK(edc_scheduler_find_task(sched, dst_rid) == NULL, "级联取消的依赖者也不再欠着");
 
     edc_scheduler_free(sched);
     free(sess);
@@ -432,6 +462,83 @@ static void mock_send_llm(struct edc_scheduler *sched, struct edc_task *task, vo
     g_llm_task = task;
 }
 
+/* 发起请求的那个 request_id 现在由**调度**发号 (唯一驱动入口), 测试不能再自己写死
+ * 一个数字: 后续投递的响应必须带**登记过的那个** id, 否则 task_hash 路由不到任务。
+ * 任务自己记着它 (current_request_id) —— 这也是那条不变量的可读证据。 */
+static long req_id_of(struct edc_task *t)
+{
+    /* NULL 安全: 断言失败时 (没有任务被派发) 后续投递要变成一个良性的"找不到任务"，
+     * 而不是解引用 NULL。 */
+    return t ? (long)(intptr_t)t->current_request_id : 0;
+}
+
+/* Failure propagates the same way: an ERROR source cascades to its JOIN dependents.
+ * Mutation checks: remove the broadcast, remove the JOIN task_record_move, or
+ * restore the edge unlink -- each must fail this. */
+static void test_failure_cascade_settles_dependents(void)
+{
+    TEST("上游失败: 连带失败者也过统一入口; 边留着 ⇒ resume 它回到等依赖");
+    struct edc_config *cfg = make_config();
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    sched->send_llm = mock_send_llm;
+
+    struct edc_task *src = edc_scheduler_create_task(sched, sess, "src", edc_channel_adapter);
+    /* 脏表按 **session** 去重, 而 task 认 session 要经它所属的 group —— 测试里得真绑上,
+     * 否则 `edc_task_session()` 是 NULL, 置脏整条路径静默不动作。 */
+    struct edc_task_group *group = edc_scheduler_create_group(sched, sess, src);
+    struct edc_task *dst = edc_scheduler_create_task(sched, sess, "dst", edc_channel_adapter);
+    edc_task_group_add_task(group, dst);
+    edc_task_add_dependency(dst, src, TASK_DEP_JOIN);
+    /* 依赖者**带着 input 停在依赖上** (生产: `/task new """x""" -d <id>` 就是这样) */
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup(dst->task_id);
+    edc_turn_add_user_message(turn, "queued input");
+    dst->active_turn = turn;
+
+    void *src_rid = (void *)(intptr_t)0xF001;
+    void *dst_rid = (void *)(intptr_t)0xF002;
+    edc_scheduler_register_task(sched, src, src_rid);
+    edc_scheduler_register_task(sched, dst, dst_rid);
+    src->current_request_id = src_rid;
+    dst->current_request_id = dst_rid;
+
+    /* 上游失败 —— 走 executor 的那个出口 (mark_failed) 加宿主的结算 */
+    CHECK(edc_task_await_exec(src), "src 在跑");
+    CHECK(edc_task_mark_failed(src), "src 失败");
+    struct edc_advance_result res;
+    memset(&res, 0, sizeof(res));
+    res.outcome = EDC_STEP_ERROR;
+    res.changed = true;
+    res.settled = true;
+    res.notice = "LLM request failed";
+    sched->dirty_count = 0;
+    edc_scheduler_apply_advance(sched, src, src_rid, &res);
+
+    CHECK(edc_task_has_failed(src), "src 进 ERROR");
+    CHECK(edc_task_has_failed(dst), "dst 连带失败 (否则它永远停在等依赖)");
+    CHECK(edc_scheduler_find_task(sched, src_rid) == NULL, "src 的请求不再欠着");
+    CHECK(edc_scheduler_find_task(sched, dst_rid) == NULL, "连带失败者也不再欠着请求");
+    CHECK(sched->dirty_count > 0, "连带失败也置脏 (推 TUI)");
+    CHECK(dst->deps != NULL && dst->deps_total == 1, "那条边**留着** (源还能 resume, 边只是暂时满足不了)");
+
+    /* resume 依赖者: 它被放回"等依赖" —— 而不是当作没依赖直接跑。 */
+    int calls_before = g_llm_calls;
+    edc_scheduler_resume_task(sched, dst);
+    CHECK(edc_task_awaits_deps(dst), "resume 把它放回等依赖");
+    CHECK(g_llm_calls == calls_before, "没有为它发请求 (它得先等到源的产出)");
+
+    /* 出路 = 让源真的产出 (源产出后那条边完成, 依赖者会被自动放行 —— 那条性质在
+     * tests/test_edc_task.c 的 "dep_completion_releases" 里单测; 这里只看闸门行为)。 */
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
 /* P3: 入站消息带一个 **session 标签**, scheduler 经 store 读口把它解析成 session
  * (它不再持有"当前 session"的副本)。单测里只有一个 session: 标签为空或与它一致
  * 就给它; 标签明确指向别人 → NULL = 调用方拒绝这条输入 (不猜)。 */
@@ -452,6 +559,314 @@ static void drive_input(struct edc_scheduler *sched, const char *content, long r
         edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, (void *)(intptr_t)req_id, edc_channel_input_new(cm),
                           (edc_actor_data_free_fn)edc_channel_input_free);
     sched_actor->handler(sched_actor, msg); /* dispatches + frees msg */
+}
+
+/* Scheduling: the message-end full-table scan. "Turned READY" is a direct result of
+ * the scan, not a special case of any path. */
+
+/* 投递一条**只读**消息 (拉快照), 让 actor handler 走到"消息末尾的调度"那一步 ——
+ * 生产里每条消息都走到那里; 测试用它证明**接线** (而不只是那个函数本身)。 */
+static void pump_message(struct edc_scheduler *sched)
+{
+    edc_actor_t *actor = edc_scheduler_get_actor(sched);
+    struct edc_session *owner = sched->ctx;
+    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TASK_SNAPSHOT, NULL, NULL,
+                                             owner && owner->session_id ? sdsnew(owner->session_id) : NULL,
+                                             (edc_actor_data_free_fn)sdsfree);
+    actor->handler(actor, msg);
+}
+
+/* 一个带着 input 停着 (READY/ALIVE) 的任务 —— 扫描谓词的原料。 */
+static struct edc_task *add_ready_task_with_turn(struct edc_scheduler *sched, struct edc_session *sess,
+                                                 struct edc_task_group *group, const char *desc)
+{
+    struct edc_task *t = edc_scheduler_create_task(sched, sess, desc, edc_channel_adapter);
+    if (group)
+        edc_task_group_add_task(group, t);
+    else
+        edc_scheduler_create_group(sched, sess, t);
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup(t->task_id);
+    edc_turn_add_user_message(turn, desc);
+    t->active_turn = turn;
+    return t;
+}
+
+/* (1) A `;` dependent: cancelling the source releases it to READY and the scan runs
+ * it. Mutation: removing the schedule call from the actor handler must fail this. */
+static void test_schedule_drives_released_sequence_dep(void)
+{
+    TEST("调度: ; 下游被取消释放 → 消息末尾的扫描启动它 (id 可路由)");
+    struct edc_config *cfg = make_config();
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    sched->send_llm = mock_send_llm;
+
+    struct edc_task *src = edc_scheduler_create_task(sched, sess, "src", edc_channel_adapter);
+    struct edc_task_group *group = edc_scheduler_create_group(sched, sess, src);
+    struct edc_task *dst = add_ready_task_with_turn(sched, sess, group, "released by cancel");
+    edc_task_add_dependency(dst, src, TASK_DEP_SEQUENCE);
+    CHECK(edc_task_awaits_deps(dst), "dst 先被依赖挡住");
+    void *src_rid = (void *)(intptr_t)0xE001;
+    edc_scheduler_register_task(sched, src, src_rid);
+    src->current_request_id = src_rid;
+
+    edc_scheduler_send_signal_to_task_ptr(sched, src, TASK_SIGTERM);
+    CHECK(edc_task_is_cancelled(src), "src 取消");
+    CHECK(edc_task_is_ready(dst), "dst 脱依赖转 READY/ALIVE (那条 ; 边已作废)");
+    CHECK(dst->deps_total == 0, "边作废, 不是「还差一个」");
+    CHECK(g_llm_calls == 0, "信号路径只改状态 —— 驱动不在这里 (这就是从前的缺口)");
+
+    pump_message(sched); /* ← 消息末尾 */
+    CHECK(g_llm_calls == 1 && g_llm_task == dst, "扫描把 dst 交给 executor 的 START");
+    CHECK(edc_task_awaits_exec(dst), "相位推到 AWAIT_EXEC");
+    CHECK(dst->llm_rounds == 1, "预算记在驱动的这一轮上");
+    CHECK(edc_scheduler_find_task(sched, (void *)(intptr_t)req_id_of(dst)) == dst,
+          "发出去的 request_id 登记得回来 (回包路由得到它)");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
+/* (2) Cancelling a whole group sends no request: the scan judges state, not cause.
+ * Moving it back into apply_advance would send one halfway through the cancel. */
+static void test_schedule_after_session_stop_sends_nothing(void)
+{
+    TEST("调度: /session stop 之后一个请求都不发 (判据在状态上)");
+    struct edc_config *cfg = make_config();
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    sched->send_llm = mock_send_llm;
+
+    struct edc_task *src = edc_scheduler_create_task(sched, sess, "src", edc_channel_adapter);
+    struct edc_task_group *group = edc_scheduler_create_group(sched, sess, src);
+    struct edc_task *dst = add_ready_task_with_turn(sched, sess, group, "queued after src");
+    edc_task_add_dependency(dst, src, TASK_DEP_SEQUENCE);
+
+    edc_scheduler_send_signal_to_all(sched, sess, TASK_SIGTERM); /* 会话级扇出 */
+    CHECK(edc_task_is_cancelled(src) && edc_task_is_cancelled(dst), "两个都取消了");
+    CHECK(!edc_task_is_ready(dst), "dst 不再是「可跑」状态");
+
+    pump_message(sched);
+    CHECK(g_llm_calls == 0, "扫描没替被取消的下游发请求");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
+/* ③ 失败释放的 `;` 下游同样被扫描启动 (三条终结路收敛到同一个驱动点)。 */
+static void test_schedule_drives_dep_released_by_failure(void)
+{
+    TEST("调度: 上游失败 → ; 下游被扫描启动");
+    struct edc_config *cfg = make_config();
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    sched->send_llm = mock_send_llm;
+
+    struct edc_task *src = edc_scheduler_create_task(sched, sess, "src", edc_channel_adapter);
+    struct edc_task_group *group = edc_scheduler_create_group(sched, sess, src);
+    struct edc_task *dst = add_ready_task_with_turn(sched, sess, group, "released by failure");
+    edc_task_add_dependency(dst, src, TASK_DEP_SEQUENCE);
+
+    CHECK(edc_task_await_exec(src), "src 在跑");
+    CHECK(edc_task_mark_failed(src), "src 失败");
+    struct edc_advance_result res;
+    memset(&res, 0, sizeof(res));
+    res.outcome = EDC_STEP_ERROR;
+    res.changed = true;
+    res.settled = true;
+    res.notice = "boom";
+    edc_scheduler_apply_advance(sched, src, NULL, &res);
+    CHECK(edc_task_is_ready(dst), "dst 被放行");
+
+    edc_scheduler_schedule(sched);
+    CHECK(g_llm_calls == 1 && g_llm_task == dst, "扫描启动它");
+    CHECK(edc_task_awaits_exec(dst), "相位 AWAIT_EXEC");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
+/* (4) A dependent that was never registered (production: /task new """x""" -d <id>).
+ * Reusing current_request_id would send NULL and the response could never route
+ * back. Mutation: restoring that reuse must fail this. */
+static void test_schedule_drives_queued_dep_without_registered_id(void)
+{
+    TEST("调度: 排队依赖被驱动时用的是**自己发号**的可路由 id");
+    struct edc_config *cfg = make_config();
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    sched->send_llm = mock_send_llm;
+
+    struct edc_task *src = edc_scheduler_create_task(sched, sess, "src", edc_channel_adapter);
+    struct edc_task_group *group = edc_scheduler_create_group(sched, sess, src);
+    struct edc_task *dst = add_ready_task_with_turn(sched, sess, group, "queued dependent");
+    edc_task_add_dependency(dst, src, TASK_DEP_JOIN);
+    CHECK(dst->current_request_id == NULL, "**没有**登记过任何请求 (与 /task new -d 同形)");
+
+    CHECK(edc_task_await_exec(src), "src 在跑");
+    CHECK(edc_task_mark_completed(src), "src 完成");
+    struct edc_advance_result res;
+    memset(&res, 0, sizeof(res));
+    res.outcome = EDC_STEP_DONE;
+    res.changed = true;
+    res.settled = true;
+    edc_scheduler_apply_advance(sched, src, NULL, &res);
+    CHECK(edc_task_is_ready(dst), "依赖齐了 → READY");
+
+    edc_scheduler_schedule(sched);
+    CHECK(g_llm_calls == 1 && g_llm_task == dst, "扫描启动它");
+    void *rid = (void *)(intptr_t)req_id_of(dst);
+    CHECK(rid != NULL, "驱动时给它发了号");
+    CHECK(edc_scheduler_find_task(sched, rid) == dst, "而且登记得回来 —— 回包不会再找不到任务");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
+/* ⑤ 幂等: 同一个任务再扫一次不会再发一份请求 (驱动把它推出了 READY)。 */
+static void test_schedule_is_idempotent(void)
+{
+    TEST("调度: 重复扫同一个任务只发一次请求");
+    struct edc_config *cfg = make_config();
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    sched->send_llm = mock_send_llm;
+
+    struct edc_task *t = add_ready_task_with_turn(sched, sess, NULL, "run me once");
+    edc_scheduler_schedule(sched);
+    edc_scheduler_schedule(sched);
+    pump_message(sched);
+    CHECK(g_llm_calls == 1, "只有一次 (第二次扫描时它已在 AWAIT_EXEC)");
+    CHECK(edc_task_awaits_exec(t), "相位没被重复推进");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
+/* ⑥ 推不动 (宿主没装 LLM 端口) = 失败 + 说得出的原因, 不是静默停在 READY。
+ * ERROR 在 /task resume 接受的三类里 —— 端口补上后一条 resume 就能续。 */
+static void test_schedule_without_llm_port_fails_loudly(void)
+{
+    TEST("调度: 没装 LLM 端口 → 任务进 ERROR 且原因写进 output");
+    struct edc_config *cfg = make_config();
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+    /* 故意**不装** send_llm */
+    struct edc_task *t = add_ready_task_with_turn(sched, sess, NULL, "cannot run here");
+
+    edc_scheduler_schedule(sched);
+    CHECK(edc_task_has_failed(t), "推不动就是失败 (不是「看起来在跑」的僵尸)");
+    CHECK(t->output && strstr(t->output, "no LLM port") != NULL, "原因写进 output (结算拿它当通知文案)");
+    CHECK(t->current_request_id == NULL, "没留下没人认领的 request_id");
+
+    /* 出路: 装上端口后 resume 能续。 */
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    sched->send_llm = mock_send_llm;
+    edc_scheduler_resume_task(sched, t);
+    CHECK(edc_task_awaits_exec(t), "resume 把它推起来了");
+    CHECK(g_llm_calls == 1, "并且真发了请求");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
+/* ⑦ 确定性: 同一批可跑任务按"session 链序 × 组链序 × 成员链序"依次驱动。 */
+static struct edc_task *g_order[4];
+static int g_order_n;
+static void order_send_llm(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
+{
+    (void)sched;
+    (void)request_id;
+    if (g_order_n < 4)
+        g_order[g_order_n++] = task;
+}
+
+static void test_schedule_order_is_deterministic(void)
+{
+    TEST("调度: 多个可跑任务按成员顺序依次驱动");
+    struct edc_config *cfg = make_config();
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+    g_order_n = 0;
+    memset(g_order, 0, sizeof(g_order));
+    sched->send_llm = order_send_llm;
+
+    struct edc_task *a = add_ready_task_with_turn(sched, sess, NULL, "first");
+    struct edc_task *b = edc_scheduler_create_task(sched, sess, "second", edc_channel_adapter);
+    edc_task_group_add_task(a->group, b);
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup(b->task_id);
+    edc_turn_add_user_message(turn, "second");
+    b->active_turn = turn;
+
+    edc_scheduler_schedule(sched);
+    CHECK(g_order_n == 2, "两个都驱动了 (今天没有并发上限)");
+    CHECK(g_order_n == 2 && g_order[0] == a && g_order[1] == b, "顺序 = 成员链序 (确定性)");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
+/* (8) Scan to a fixed point: a failed drive broadcasts, releasing a SEQUENCE
+ * dependent possibly earlier in the scan order. Mutation: a single-round scan must
+ * fail this. */
+static void test_schedule_to_fixpoint_covers_failure_cascade(void)
+{
+    TEST("调度: 扫描途中被失败释放的下游 (排在前面) 同一轮也被驱动");
+    struct edc_config *cfg = make_config();
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    sched->send_llm = mock_send_llm; /* 但**不装** redispatch_tools */
+
+    /* 成员顺序: dst 在前, src 在后 —— 这样扫描到 src (它失败、释放 dst) 时,
+     * dst **已经**被看过一遍了。 */
+    struct edc_task *dst = add_ready_task_with_turn(sched, sess, NULL, "released mid-sweep");
+    struct edc_task_group *group = dst->group;
+    struct edc_task *src = add_ready_task_with_turn(sched, sess, group, "fails at START");
+    edc_task_add_dependency(dst, src, TASK_DEP_SEQUENCE);
+    /* src 的账本里有一条没派出去的工具 + 宿主没装工具箱端口 → START 在它身上失败 */
+    edc_task_tool_call_add(src, "call_z", "shell", NULL);
+    CHECK(group->members == dst && dst->group_next == src, "顺序钉住: dst 先被扫描, src 后");
+
+    edc_scheduler_schedule(sched);
+
+    CHECK(edc_task_has_failed(src), "src 在 START 上失败 (推不动的工具链)");
+    CHECK(edc_task_is_ready(dst) == false, "dst 没有留在 READY 等下一条消息");
+    CHECK(g_llm_calls == 1 && g_llm_task == dst, "同一轮里 dst 也被驱动了 (扫到不动点)");
+    CHECK(edc_task_awaits_exec(dst), "dst 相位 AWAIT_EXEC");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
 }
 
 static void test_input_routing(void)
@@ -639,13 +1054,13 @@ static void test_scheduler_max_iter_cap(void)
     CHECK(leader != NULL && leader->llm_rounds == 1, "first llm request consumes one round");
     CHECK(g_llm_calls == 1, "first llm request sent");
 
-    run_one_tool_round(sched, 101); /* 第1轮: 链尾 rounds=1 < 2 → 续发 */
+    run_one_tool_round(sched, req_id_of(leader)); /* 第1轮: 链尾 rounds=1 < 2 → 续发 */
     CHECK(leader->llm_rounds == 2, "chain-end resend consumes round 2");
     CHECK(g_dispatch_calls == 1, "tools dispatched in round 1");
     CHECK(edc_task_awaits_exec(leader), "round 1 continues to llm");
     CHECK(g_llm_calls == 2, "round 1 chain end re-sends llm");
 
-    run_one_tool_round(sched, 101); /* rounds=2 >= 2 → 截断 */
+    run_one_tool_round(sched, req_id_of(leader)); /* rounds=2 >= 2 → 截断 */
     CHECK(leader->llm_rounds == 2, "rounds consumed up to the cap");
     CHECK(g_llm_calls == 2, "no third llm request after budget exhausted");
     CHECK(edc_task_is_completed(leader), "task completed at cap");
@@ -678,7 +1093,7 @@ static void test_scheduler_max_iter_cap(void)
 
     drive_input(sched, "hello", 102);
     leader = g_llm_task; /* 输入建的新任务 (见上) */
-    run_one_tool_round(sched, 102);
+    run_one_tool_round(sched, req_id_of(leader));
     CHECK(g_llm_calls == 1, "only the initial llm request");
     CHECK(edc_task_is_completed(leader), "capped right after first chain");
     CHECK(g_reply_calls == 1, "cap notice replied");
@@ -705,9 +1120,9 @@ static void test_scheduler_max_iter_cap(void)
 
     drive_input(sched, "hello", 103);
     leader = g_llm_task; /* 输入建的新任务 (见上) */
-    run_one_tool_round(sched, 103);
-    run_one_tool_round(sched, 103);
-    run_one_tool_round(sched, 103);
+    run_one_tool_round(sched, req_id_of(leader));
+    run_one_tool_round(sched, req_id_of(leader));
+    run_one_tool_round(sched, req_id_of(leader));
     CHECK(leader->llm_rounds == 4, "rounds counted while unlimited");
     CHECK(g_llm_calls == 4, "llm keeps being re-sent (no cap)");
     CHECK(leader->active_turn != NULL, "turn stays open while looping");
@@ -735,8 +1150,8 @@ static void test_scheduler_max_iter_cap(void)
 
     drive_input(sched, "hello", 104);
     leader = g_llm_task; /* 输入建的新任务 (见上) */
-    run_one_tool_round(sched, 104);
-    run_one_tool_round(sched, 104);
+    run_one_tool_round(sched, req_id_of(leader));
+    run_one_tool_round(sched, req_id_of(leader));
     CHECK(leader->llm_rounds == 3, "rounds counted while unlimited (-1)");
     CHECK(g_llm_calls == 3, "llm keeps being re-sent with -1 (no cap)");
     CHECK(leader->active_turn != NULL, "turn stays open while looping (-1)");
@@ -914,16 +1329,10 @@ static void test_observe_task_id_raises_high_water(void)
     free_config(cfg);
 }
 
-/* ── 8. 取消过的任务: resume 之后必须能收到应答 ────────────────
- *
- * 真机现象 (2026-09-15, task 511): `/task stop` 之后 `/task resume`, 侧栏显示
- * "LLM_PROCESSING" 但**永远没有回音**。
- *
- * 根因: `cancelled_request` 是"当前请求已作废"的标记 —— 取消时置位, 应答处理器
- * 见到它就丢弃迟到应答 (规则 2); 但它**全仓没有清零的地方**, 于是 resume 重新发出的
- * 那条请求也被同一个标记丢掉。修法: 新请求登记时清零 (edc_scheduler_register_task)。
- *
- * 这条测试盯的是**行为**而不是标志本身: 真投一条应答进去, 看它有没有被接受。 */
+/* 8. A cancelled task must receive a response after resume.
+ * `cancelled_request` is set on cancel and cleared when a new request is registered
+ * (edc_scheduler_register_task); without the clear, resume's own response is
+ * dropped. This asserts the behaviour, not the flag. */
 static void test_cancelled_task_resume_accepts_reply(void)
 {
     TEST("a cancelled task accepts the reply of the request resume issued");
@@ -980,6 +1389,16 @@ int main(void)
     test_scheduler_fg_bg();
     test_scheduler_signals();
     test_scheduler_group_signals();
+    test_signal_cascade_settles_dependents();
+    test_failure_cascade_settles_dependents();
+    test_schedule_drives_released_sequence_dep();
+    test_schedule_after_session_stop_sends_nothing();
+    test_schedule_drives_dep_released_by_failure();
+    test_schedule_drives_queued_dep_without_registered_id();
+    test_schedule_is_idempotent();
+    test_schedule_without_llm_port_fails_loudly();
+    test_schedule_order_is_deterministic();
+    test_schedule_to_fixpoint_covers_failure_cascade();
     test_scheduler_signal_all();
     test_input_routing();
     test_scheduler_max_iter_cap();

@@ -16,6 +16,7 @@
 #include "edc_string_utils.h"
 #include "sds.h"
 #include <cJSON.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -24,6 +25,52 @@
 #include <uv.h>
 
 #define DEVICE_FILE_CHUNK_SIZE (256u * 1024u)
+
+/* Windows ANSI CRT APIs (stat/open) interpret paths using the local code page,
+ * which mangles non-ASCII (e.g. Chinese) local file names. Use wide-char
+ * equivalents via edc_utf8_to_wide() from edc_compat.h. On POSIX these
+ * resolve directly to stat()/open(). */
+#ifdef _WIN32
+static int edc_win_stat_utf8(const char *path, struct stat *st)
+{
+    wchar_t *wpath = edc_utf8_to_wide(path);
+    if (!wpath)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    struct _stat64 s64;
+    int ret = _wstat64(wpath, &s64);
+    free(wpath);
+    if (ret == 0 && st)
+    {
+        memset(st, 0, sizeof(*st));
+        st->st_size = (off_t)s64.st_size;
+        st->st_mode = (mode_t)s64.st_mode;
+        st->st_mtime = (time_t)s64.st_mtime;
+    }
+    return ret;
+}
+
+static int edc_win_open_utf8(const char *path, int flags, int mode)
+{
+    wchar_t *wpath = edc_utf8_to_wide(path);
+    if (!wpath)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    int fd = _wopen(wpath, flags, mode);
+    free(wpath);
+    return fd;
+}
+#else
+#define edc_win_stat_utf8 stat
+#define edc_win_open_utf8 open
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
+#endif
 
 struct device_file_ctx
 {
@@ -556,13 +603,13 @@ static bool do_device_upload(struct device_file_ctx *ctx,
                              int (*do_chunk)(struct device_file_ctx *, const char *, size_t, size_t))
 {
     struct stat st;
-    if (stat(ctx->local_path, &st) != 0 || !S_ISREG(st.st_mode))
+    if (edc_win_stat_utf8(ctx->local_path, &st) != 0 || !S_ISREG(st.st_mode))
     {
         device_file_send_error(ctx, "device_upload: cannot stat local file '%s'", ctx->local_path);
         return false;
     }
 
-    int fd = open(ctx->local_path, O_RDONLY);
+    int fd = edc_win_open_utf8(ctx->local_path, O_RDONLY | O_BINARY, 0);
     if (fd < 0)
     {
         device_file_send_error(ctx, "device_upload: cannot open local file '%s': %s", ctx->local_path, strerror(errno));
@@ -843,7 +890,7 @@ static int do_download_chunk_lwip(struct device_file_ctx *ctx, size_t offset, si
 static bool do_device_download(struct device_file_ctx *ctx,
                                int (*do_chunk)(struct device_file_ctx *, size_t, size_t *, size_t *, int))
 {
-    int fd = open(ctx->local_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = edc_win_open_utf8(ctx->local_path, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644);
     if (fd < 0)
     {
         device_file_send_error(ctx, "device_download: cannot open local file '%s': %s", ctx->local_path,

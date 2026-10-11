@@ -71,7 +71,7 @@ ownership callback.
 | **Channel Actor** | `edc_channel_actor.c`, `edc_channel_adapter.c` | Routes outbound `CHANNEL_SEND` messages to the connected frontend via a registered adapter callback; delivers inbound input to the scheduler |
 | **LLM Actor** | `edc_llm_actor.c` | Sends chat-completions requests through the async HTTPS client; reports finish reasons and tool calls |
 | **Toolbox Actor** | `edc_toolbox_actor.c` | Executes tool-call chains one by one (`edc_toolbox_actor_req` linked list), echoing each result back as `TOOL_RESPONSE` |
-| **Memory Actor** | `edc_memory_actor.c` | Two compression paths: global memory compress (`/session new`, writes MEMORY.md/HISTORY.md) and per-group L1 fold (summarizes completed task turns into `group->memory`) |
+| **Memory Actor** | `edc_memory_actor.c` | Two compression paths: global memory compress (retired — the file-based `MEMORY.md` / `HISTORY.md` mechanism was removed 2026-10-10; durability now lives in the session memory entries) and per-group L1 fold (summarizes completed task turns into `group->memory`) |
 
 ### Message Types
 
@@ -273,8 +273,7 @@ Different sessions therefore operate in different directories, giving the
 session abstraction a concrete meaning.
 
 Writes the agent itself performs into model-writable directories (chat
-transcript, input history, `history.json`, crontab `jobs.json`, `MEMORY.md` /
-`HISTORY.md`) go through symlink-safe helpers (`edc_file_fopen_safe()` /
+transcript, input history, `history.json`, crontab `jobs.json`) go through symlink-safe helpers (`edc_file_fopen_safe()` /
 `edc_file_write_safe()`: `O_NOFOLLOW`, confined to the workspace) so a planted
 symlink cannot redirect them into a protected path. Commands spawned by the
 shell tool receive a **minimal environment whitelist** (`edc_shell_env.c`:
@@ -294,7 +293,7 @@ subsequently spawned commands):
 
 ### Additional Features
 
-- **Context compression**: automatic history summarization (global MEMORY.md +
+- **Context compression**: automatic history summarization (per-group folds +
   per-group L1 fold) to stay within LLM context limits
 - **Encrypted secrets**: AES-256-GCM for config secrets via mbedtls
 - **Skills system**: markdown skill definitions with YAML frontmatter augment
@@ -388,7 +387,7 @@ edgeclaw/
 ├── toolchain/                        # 交叉编译工具链
 ├── docs/                             # 用户手册 (edgeclaw.md) + man page + TUI 设计文档
 ├── workspace/                        # 默认工作区 (编译期打包进二进制, 首次运行释放到 ~/.edgeclaw/)
-│   ├── AGENTS.md  SOUL.md  USER.md  TOOLS.md  HEARTBEAT.md
+│   ├── AGENTS.md  TOOLS.md
 │   ├── memory/   skills/   ssl/
 ├── MODULE.bazel                      # Bazel 模块 (bzlmod)
 └── BUILD                             # 顶层构建与打包
@@ -464,7 +463,7 @@ Create `~/.edgeclaw/config.json`:
   "api_url": "https://api.openai.com/v1/chat/completions",
   "model": "gpt-4o",
   "max_iter": -1,
-  "group_fold_msg_threshold": 500,
+  "context_window": 1048576,
   "tool_max_output_size": 10000,
   "sandbox": {
     "enable": true,
@@ -594,19 +593,6 @@ All scheduled jobs persist in `~/.edgeclaw/workspace/jobs.json` and survive rest
 - **`every_seconds`**: Fixed interval in seconds
 - **`tz`**: IANA timezone (e.g. `Asia/Shanghai`)
 
-### Heartbeat Tasks
-
-Defined in `~/.edgeclaw/workspace/HEARTBEAT.md`, these are checked every 30 minutes. The LLM reads and acts on tasks in a to-do format:
-
-```
-- [ ] Check calendar and remind of upcoming events
-- [ ] Scan inbox for urgent emails
-```
-
-The agent processes each task and marks completed items. Keep the file small to minimize token usage.
-
-Use heartbeat tasks for recurring maintenance — no cron expression needed; the agent just runs them periodically.
-
 ### Environment Variables
 
 | Variable | Description |
@@ -620,10 +606,7 @@ The `~/.edgeclaw/` workspace directory contains:
 | File | Purpose |
 |------|---------|
 | `AGENTS.md` | Agent behavior instructions and tool usage guidelines |
-| `SOUL.md` | Personality definition and values |
-| `USER.md` | User profile and preferences |
 | `TOOLS.md` | Tool usage documentation |
-| `HEARTBEAT.md` | Periodic tasks (checked every 30 minutes) |
 | `memory/` | Long-term memory storage |
 | `skills/` | Custom skill definitions (markdown + YAML frontmatter) |
 | `ssl/cacert.pem` | TLS CA certificate bundle for HTTPS connections |

@@ -193,12 +193,12 @@ void TestMarkerPerStateInItsColor(void)
 
 void TestSystemGroupGetsItsOwnBlock(void)
 {
-    std::cout << "system groups draw in their own block (and are never hidden)\n";
+    std::cout << "a system group draws first and is named \"System\"\n";
 
     // Two groups, snapshot order = user first (the usual case: the user's group
-    // is older). The widget must reorder them: system block on top, user tree
+    // is older). The widget must reorder them: system group on top, user tree
     // under it (the tree is bottom-anchored, so the squeeze hits the system
-    // block first and the user's active row keeps its place).
+    // group first and the user's active row keeps its place).
     edc::TaskGroup g_user;
     g_user.group_id = "1";
     g_user.kind = edc::GroupKind::User;
@@ -235,25 +235,23 @@ void TestSystemGroupGetsItsOwnBlock(void)
     widget->SetSnapshot(&snap);
     const auto screen = Render(*widget);
 
-    const int heading = RowWith(screen, " System");
-    const int sys_row = RowWith(screen, "Group 9");
+    const int sys_row = RowWith(screen, "System");
     const int user_row = RowWith(screen, "Group 1");
     const std::string frame = FrameText(screen);
 
-    Check(heading >= 0, "the System heading is drawn");
-    Check(sys_row > heading, "the system group sits under its heading");
-    Check(user_row > sys_row, "the user tree stays below the system block");
-    Check(RowWith(screen, "777") >= 0 && RowWith(screen, "fold group 1") >= 0, "its task row is drawn (nothing is hidden)");
-    Check(RowWith(screen, "fold group 1") > 0, "the system task's description is visible");
+    Check(sys_row >= 0, "the system group's row says \"System\"");
+    Check(RowWith(screen, "Group 9") < 0, "it no longer reads like an ordinary group");
+    Check(user_row > sys_row, "the system group sits above the user tree");
+    Check(RowWith(screen, "777") < 0, "a system group starts folded (dozens of fold tasks must not squeeze the tree)");
     Check(frame.find("2 groups") != std::string::npos, "the header counts the system group too");
 
-    // Control 1: the same two groups, both USER -> no System heading and the
-    // snapshot's own order (user "1" above "9").
+    // Control 1: the same two groups, both USER -> the system label is gone and
+    // the snapshot's own order stands (user "1" above "9").
     snap.groups[1].kind = edc::GroupKind::User;
     auto plain = std::make_shared<edc::TaskWidget>();
     plain->SetSnapshot(&snap);
     const auto plain_screen = Render(*plain);
-    Check(RowWith(plain_screen, " System") < 0, "no System heading when no group is a system group");
+    Check(RowWith(plain_screen, "System") < 0, "no \"System\" row when no group is a system group");
     Check(RowWith(plain_screen, "Group 1") < RowWith(plain_screen, "Group 9"), "user groups keep snapshot order");
 
     // Control 2: a snapshot with no `kind` (zero) renders exactly like an
@@ -269,6 +267,22 @@ void TestSystemGroupGetsItsOwnBlock(void)
     auto b = std::make_shared<edc::TaskWidget>();
     b->SetSnapshot(&snap_nokind);
     Check(FrameText(Render(*a)) == FrameText(Render(*b)), "an absent kind renders like USER (old snapshots unchanged)");
+
+    // Control 3: "nothing is hidden" still holds -- a system group holding the
+    // *active* task starts expanded, so its members are one snapshot away. The
+    // label stays "System" in that state too.
+    edc::TaskSnapshot snap_open;
+    snap_open.session_id = "s";
+    snap_open.session_name = "session";
+    snap_open.groups = {g_sys, g_user};
+    snap_open.groups[0].tasks[0].is_active = true;
+    snap_open.groups[1].tasks[0].is_active = false; /* exactly one active task */
+    auto opened = std::make_shared<edc::TaskWidget>();
+    opened->SetSnapshot(&snap_open);
+    const auto open_screen = Render(*opened);
+    Check(RowWith(open_screen, "System") >= 0, "still named \"System\" when expanded");
+    Check(RowWith(open_screen, "777") >= 0 && RowWith(open_screen, "fold group 1") >= 0,
+          "its task row is drawn when it holds the active task (nothing is hidden)");
 }
 
 void TestActiveTaskWearsTheBlock(void)
@@ -437,6 +451,115 @@ void TestStateNameIsGone(void)
     Check(frame.find("busy task") != std::string::npos, "descriptions still render");
 }
 
+void TestGroupUsageLine(void)
+{
+    std::cout << "the group's footer carries its usage: input / output / hit rate / context\n";
+
+    // 8192 / 1024 / 6144 / 65536 are chosen so every FormatTokens rendering is
+    // exact (no rounding tie) and the hit rate is a round 75%.
+    edc::TaskGroup group;
+    group.group_id = "5";
+    group.member_count = 1;
+    group.tokens_total = 9216;
+    group.tokens_prompt = 8192;
+    group.tokens_completion = 1024;
+    group.tokens_cached = 6144;
+    group.ctx_tokens = 65536;
+    {
+        edc::TaskInfo task;
+        task.task_id = "5";
+        task.state = "IDLE";
+        task.description = "work";
+        task.is_leader = true;
+        task.is_active = true; // active -> the group starts expanded
+        group.tasks.push_back(std::move(task));
+    }
+
+    edc::TaskSnapshot snap;
+    snap.session_id = "s";
+    snap.groups.push_back(group);
+
+    edc::TaskWidget widget;
+    widget.SetSnapshot(&snap);
+    const auto screen = Render(widget);
+
+    const int header = RowWith(screen, "Group 5");
+    const int task_row = RowWith(screen, "work");
+    const int usage = RowWith(screen, "↑8.2k ↓1k · 75.0% · ctx 65.5k");
+    Check(header >= 0, "the group header is drawn");
+    Check(task_row > header, "the member row sits under the header");
+    Check(usage == task_row + 1, "the usage line closes the group's block (a footer under its members)");
+    Check(RowText(screen, header).find("tok") == std::string::npos,
+          "the header carries no total (the footer under the members is where the cost lives)");
+
+    // Folded: the members go and the footer goes with them. The header used to
+    // keep the total as "how much has this cost"; it says nothing now -- a
+    // number with no breakdown is not worth the column (see the header's
+    // comment in edc_task_widget.cpp).
+    snap.groups[0].tasks[0].is_active = false;
+    edc::TaskWidget folded;
+    folded.SetSnapshot(&snap);
+    const std::string folded_frame = FrameText(Render(folded));
+    Check(folded_frame.find("work") == std::string::npos, "a folded group draws no member rows");
+    Check(folded_frame.find("↑8.2k") == std::string::npos, "and no usage footer");
+    Check(folded_frame.find("tok") == std::string::npos, "a folded group shows no total either");
+    Check(folded_frame.find("Group 5") != std::string::npos, "the header itself survives (it is the handle that unfolds it)");
+
+    // A provider that never reports cached tokens must not read as a flat 0%:
+    // the hit rate is dropped, the rest of the footer stays.
+    snap.groups[0].tasks[0].is_active = true;
+    snap.groups[0].tokens_cached = 0;
+    edc::TaskWidget uncached;
+    uncached.SetSnapshot(&snap);
+    const std::string uncached_frame = FrameText(Render(uncached));
+    Check(uncached_frame.find("%") == std::string::npos, "no hit rate when nothing is known to be cached");
+    Check(uncached_frame.find("↑8.2k") != std::string::npos, "the input total is still shown");
+
+    // …and the rate keeps one decimal: 1000 / 8192 is 12.2%, not 12%.
+    snap.groups[0].tokens_cached = 1000;
+    edc::TaskWidget decimal;
+    decimal.SetSnapshot(&snap);
+    const std::string decimal_frame = FrameText(Render(decimal));
+    Check(decimal_frame.find("12.2%") != std::string::npos, "the hit rate keeps one decimal");
+
+    // The context is marked when it carries an estimate: a number with an
+    // estimate inside must not pass for the provider's own count. An anchored
+    // one (nothing appended since the reply) is exact and stays unmarked.
+    snap.groups[0].tokens_cached = 6144;
+    snap.groups[0].ctx_estimated = true;
+    edc::TaskWidget estimated;
+    estimated.SetSnapshot(&snap);
+    Check(FrameText(Render(estimated)).find("ctx ~65.5k") != std::string::npos,
+          "an estimated context is drawn with ~");
+    snap.groups[0].ctx_estimated = false;
+    edc::TaskWidget anchored;
+    anchored.SetSnapshot(&snap);
+    Check(FrameText(Render(anchored)).find("ctx 65.5k") != std::string::npos,
+          "an anchored context is drawn plain");
+
+    // A group that has spent nothing draws no footer at all (and no "0 tok" in
+    // its place). The group is expanded on purpose: the missing line has to be
+    // "nothing to say", not "folded away".
+    edc::TaskSnapshot fresh;
+    fresh.session_id = "s";
+    edc::TaskGroup empty;
+    empty.group_id = "6";
+    empty.member_count = 1;
+    {
+        edc::TaskInfo task;
+        task.task_id = "6";
+        task.state = "IDLE";
+        task.is_active = true;
+        empty.tasks.push_back(std::move(task));
+    }
+    fresh.groups.push_back(std::move(empty));
+    edc::TaskWidget w2;
+    w2.SetSnapshot(&fresh);
+    const std::string fresh_frame = FrameText(Render(w2));
+    Check(fresh_frame.find("↑") == std::string::npos && fresh_frame.find("ctx ") == std::string::npos,
+          "a group that has not spent anything draws no footer");
+}
+
 } // namespace
 
 int main()
@@ -450,6 +573,7 @@ int main()
     TestMarkersSitLeftOfTheId();
     TestStateNameIsGone();
     TestSystemGroupGetsItsOwnBlock();
+    TestGroupUsageLine();
 
     if (g_failures == 0)
     {

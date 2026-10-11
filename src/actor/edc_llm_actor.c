@@ -23,8 +23,8 @@ void edc_llm_actor_req_free(struct edc_llm_actor_req *req)
         return;
     if (req->history_owned && req->history)
         cJSON_Delete(req->history);
-    if (req->tail_system)
-        cJSON_Delete(req->tail_system);
+    if (req->tail_parts)
+        cJSON_Delete(req->tail_parts);
     free(req);
 }
 
@@ -35,6 +35,8 @@ struct edc_llm_actor_http_req
     struct llm_api_conf *api_conf;
     edc_actor_t *from;
     sds response;
+    sds error;    /* first cause reported by the https client; surfaced on CLOSE */
+    int status;   /* HTTP status of the response (0 = no response: transport failure) */
     void *request_id;
 };
 
@@ -48,6 +50,8 @@ static struct edc_llm_actor_http_req *edc_llm_actor_http_req_new(edc_actor_t *ac
     req->api_conf = api_conf;
     req->from = from;
     req->response = NULL;
+    req->error = NULL;
+    req->status = 0;
     req->request_id = request_id;
     return req;
 }
@@ -58,6 +62,10 @@ static void edc_llm_actor_http_req_free(struct edc_llm_actor_http_req *req)
     if (req->response)
     {
         sdsfree(req->response);
+    }
+    if (req->error)
+    {
+        sdsfree(req->error);
     }
     free(req);
 }
@@ -101,6 +109,8 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
     }
     else if (ev == EDC_HTTPS_EVENT_CLOSE)
     {
+        /* The status line is parsed before any body, so by CLOSE it is final. */
+        httpreq->status = edc_https_request_get_status(req);
         if (httpreq->response)
         {
             edc_actor_send(httpreq->actor,
@@ -111,8 +121,12 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
         {
             if (httpreq->from)
             {
+                /* The client reports the cause (DNS, timeout, ...) via ERROR and then
+                 * closes without a response; surface it instead of the generic text. */
                 struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
-                resp->error = edc_error_new(EDC_ERR_FAILED, "LLM API connection closed unexpectedly");
+                resp->error = edc_error_new(EDC_ERR_FAILED, "%s",
+                                            httpreq->error ? httpreq->error
+                                                           : "LLM API connection closed unexpectedly");
                 edc_actor_send(httpreq->from, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, httpreq->request_id,
                                                                 resp, (edc_actor_data_free_fn)edc_llm_actor_resp_free));
             }
@@ -122,6 +136,12 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
     else if (ev == EDC_HTTPS_EVENT_ERROR)
     {
         log_error("llm actor https error: %s", (const char *)data);
+        /* Keep only the first cause: a failing request reports several, and the
+         * later ones (e.g. "operation canceled") are the least informative. */
+        if (!httpreq->error && data)
+        {
+            httpreq->error = sdsnew((const char *)data);
+        }
     }
 }
 
@@ -134,6 +154,11 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
 
     cJSON_AddStringToObject(body, "model", state->api_conf.model);
 
+    /* Only a fold's one-shot summary asks for a cap (it has to fit in the fold's
+     * reserve); a normal reply is never capped. */
+    if (req->max_tokens > 0)
+        cJSON_AddNumberToObject(body, "max_tokens", req->max_tokens);
+
     cJSON *messages = cJSON_AddArrayToObject(body, "messages");
     for (int i = 0; i < cJSON_GetArraySize(req->history); ++i)
     {
@@ -143,7 +168,7 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
 
     if (req->turn)
     {
-        for (size_t qi = req->turn->head; qi < req->turn->tail; qi++)
+        for (size_t qi = req->turn->head + req->turn_begin; qi < req->turn->tail; qi++)
         {
             cJSON *item = req->turn->data[qi];
             cJSON_AddItemReferenceToArray(messages, item);
@@ -152,9 +177,11 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
 
     /* 绝对队尾: 运行时追加的 system 提醒 (如最新 todo reminder) —— 在已提交
      * 历史窗口与当前 turn 之后, 紧贴模型开始生成的位置, 每轮请求重新计算 */
-    if (req->tail_system)
+    if (req->tail_parts)
     {
-        cJSON_AddItemReferenceToArray(messages, req->tail_system);
+        cJSON *part = NULL;
+        cJSON_ArrayForEach(part, req->tail_parts)
+        cJSON_AddItemReferenceToArray(messages, part);
     }
 
     if (req->tools)
@@ -256,17 +283,35 @@ static void edc_llm_actor_parse_usage(cJSON *response, struct edc_llm_actor_resp
         resp->usage.total_tokens = resp->usage.prompt_tokens + resp->usage.completion_tokens;
 }
 
-static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp *resp)
+static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp *resp, int http_status)
 {
     resp->error = NULL;
+    resp->http_status = http_status;
     edc_llm_actor_parse_usage(response, resp);
     cJSON *choices = cJSON_GetObjectItem(response, "choices");
     if (!choices || !cJSON_IsArray(choices) || cJSON_GetArraySize(choices) == 0)
     {
-        char *err_msg = cJSON_Print(response);
-        log_error("resp format error choice 0 is not exist: %s", err_msg);
-        resp->error = edc_error_new(EDC_ERR_INVAL, "resp format choice 0 is not exist: %s", err_msg);
-        cJSON_free(err_msg);
+        /* No choices = the provider refused the request. It says why in
+         * `error.message` ("This model's maximum context length is 1048576
+         * tokens. However, you requested ..."), and the status says who refused
+         * (400 = bad request / overflow, 429 = rate limit, 401 = auth). Surface
+         * both: the raw-JSON dump that used to go out here hid the two fields
+         * that the error classifier reads, and read terribly. */
+        cJSON *err = cJSON_GetObjectItem(response, "error");
+        cJSON *emsg = (err && cJSON_IsObject(err)) ? cJSON_GetObjectItem(err, "message") : NULL;
+        if (emsg && cJSON_IsString(emsg) && emsg->valuestring)
+        {
+            log_error("llm api error (HTTP %d): %s", http_status, emsg->valuestring);
+            resp->error = edc_error_new(EDC_ERR_FAILED, "LLM API error (HTTP %d): %s", http_status, emsg->valuestring);
+        }
+        else
+        {
+            char *err_msg = cJSON_Print(response);
+            log_error("resp format error choice 0 is not exist (HTTP %d): %s", http_status, err_msg);
+            resp->error = edc_error_new(EDC_ERR_INVAL, "resp format choice 0 is not exist (HTTP %d): %s", http_status,
+                                        err_msg);
+            cJSON_free(err_msg);
+        }
         return false;
     }
 
@@ -439,7 +484,7 @@ static void edc_llm_actor_handle_respone(edc_actor_t *actor, edc_actor_msg_t *ms
         goto exit;
     }
 
-    bool ok = edc_llm_actor_parse_resp(body, resp);
+    bool ok = edc_llm_actor_parse_resp(body, resp, req->status);
     if (!ok)
     {
         log_error("parse resp error: %s", resp->error->message);

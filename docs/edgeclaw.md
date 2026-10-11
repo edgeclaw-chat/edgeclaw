@@ -397,7 +397,8 @@ inheriting the parent's conversation context.
 | `~/.edgeclaw/workspace/` | Workspace root |
 | `~/.edgeclaw/workspace/<sid>/` | Per-session directory |
 | `~/.edgeclaw/workspace/<sid>/history.jsonl` | Session history |
-| `~/.edgeclaw/workspace/memory/MEMORY.md` | Agent memory |
+| `~/.edgeclaw/workspace/AGENTS.md` | Agent behavior instructions (the agent's contract) |
+| `~/.edgeclaw/workspace/TOOLS.md` | Tool quick reference |
 | `~/.edgeclaw/workspace/skills/` | Custom skill SKILL.md files |
 
 ## See Also

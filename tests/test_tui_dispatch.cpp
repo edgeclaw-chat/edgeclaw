@@ -58,6 +58,8 @@ constexpr int kH = 40;
 constexpr const char *kShown = "harness-shown";
 // 另一个 session：它的树/产出都不该出现在屏上。
 constexpr const char *kOther = "harness-other";
+// 首帧采纳那条用例用的 session：窗口启动时还没身份，由第一帧快照占位。
+constexpr const char *kFirst = "harness-first";
 
 // ── 临时 HOME + 最小 config：TUIWindow 的构造会真起一个 app ──────────────
 bool SetupHome(std::string *out_home)
@@ -134,6 +136,22 @@ bool Has(const std::string &frame, const std::string &needle)
     return frame.find(needle) != std::string::npos;
 }
 
+/* 界面 chrome 不许夹中文。只查 CJK 区间 (CJK 统一表意 / 全角标点 / 中日韩符号),
+ * 箱子与箭头 (● ▸ ▾ … ❯ ·) 不在其中, 所以这个谓词能直接用在整帧上。 */
+bool HasCJK(const std::string &frame)
+{
+    for (size_t i = 0; i + 2 < frame.size(); i++)
+    {
+        const unsigned char *p = reinterpret_cast<const unsigned char *>(frame.data()) + i;
+        if (p[0] < 0xE0)
+            continue;
+        const unsigned cp = ((p[0] & 0x0Fu) << 12) | ((p[1] & 0x3Fu) << 6) | (p[2] & 0x3Fu);
+        if ((cp >= 0x3000 && cp <= 0x303F) || (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0xFF00 && cp <= 0xFFEF))
+            return true;
+    }
+    return false;
+}
+
 std::string SnapJson(const char *session_id, const char *task_desc)
 {
     std::string json = R"({"session_id":")";
@@ -155,6 +173,25 @@ void AdoptDisplayedSession(edc::TUIWindow &win, const char *session_id)
 }
 
 // ── 各条断言 ──────────────────────────────────────────────────────────────
+
+// 首帧采纳：窗口还没采纳任何 session（current_session_id_ 为空）时，第一帧快照
+// 自证身份并占位 —— 这条盖住 TUIWindow 里那段采纳接缝，是"不再同步读 session 仓库"
+// 的判据。**必须先于 AdoptDisplayedSession() 跑**（那时才真的没身份）。
+//
+// 第二条断言是这条测试的要害：采纳一旦没发生（身份一直空着），下面的 kOther 也会被
+// 当成"第一帧"收下，于是它上屏 —— 所以"别人的树没出现"正是"身份真的立住了"的证据。
+void TestFirstSnapshotIsAdopted(edc::TUIWindow &win)
+{
+    std::cout << "首帧采纳（未采纳时第一帧自证身份）\n";
+
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJson(kFirst, "HARNESS_FIRST_TASK").c_str(), kFirst));
+    Check(Has(FrameOf(win), "HARNESS_FIRST_TASK"), "未采纳时第一帧 → 采纳并上屏");
+
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJson(kOther, "HARNESS_XTRA_TASK").c_str(), kOther));
+    const std::string frame = FrameOf(win);
+    Check(!Has(frame, "HARNESS_XTRA_TASK"), "采纳之后别人的树 → 丢弃（身份立住了）");
+    Check(Has(frame, "HARNESS_FIRST_TASK"), "第一帧的树还在");
+}
 
 // 快照 → 侧栏。**这条是 task 558 那个 M1 缺口的判据**：分类器坏掉时它必须红。
 void TestSnapshotReachesSidebar(edc::TUIWindow &win)
@@ -286,6 +323,12 @@ void TestUserInputIsEchoedImmediately(edc::TUIWindow &win)
     // 归属不发往任何一个 task: 输入那条气泡不带 task id。
     const std::string frame = FrameOf(win);
     Check(Has(frame, "4242"), "侧栏里 task 行照旧");
+
+    // 界面的固定文案是英文的 (与仓库注释的语言无关): 输入框占位符、footer 的
+    // `/help` 提示符。footer 在窄帧里会被裁掉, 所以除了点名那两句, 再加一条整帧
+    // 无 CJK 的守卫 —— 它同时钉住"以后新加的 chrome 也不许夹中文"。
+    Check(Has(frame, "Type a message"), "输入框占位符是英文的");
+    Check(!HasCJK(frame), "整帧无中文 (chrome 全英文)");
 }
 
 // ── `/task history` / `/group history` 的载荷 → 气泡 ──────────────────────
@@ -326,7 +369,9 @@ void TestTaskHistoryPayloadBecomesBubbles(edc::TUIWindow &win)
     frame = FrameOf(win);
     Check(Has(frame, "HIST_REPLY_MARKER"), "只看模式: 历史替换了对话区");
     Check(win.InHistoryView(), "只看模式: 视图状态位立起来了");
-    Check(!Has(frame, "输入消息"), "只看模式: 输入框消失");
+    Check(!Has(frame, "Type a message"), "只看模式: 输入框消失");
+    Check(Has(frame, "History · Esc to go back"), "只看模式: 历史面板徽标是英文的");
+    Check(!HasCJK(frame), "只看模式: 整帧无中文");
     Check(win.OnEvent(::ftxui::Event::Character("x")) && win.OnEvent(::ftxui::Event::Return),
           "只看模式: 字符与回车都被吞掉 (不可输入)");
     Feed(win, MakeMsg(HARNESS_MSG_RESP, "LIVE_WHILE_HISTORY_MARKER", "", ""));
@@ -364,6 +409,10 @@ int main()
     }
     Check(true, "窗口起来了（临时 HOME + 最小 config）");
 
+    // 先跑首帧采纳（此刻窗口还没采纳任何 session），它顺带把身份立成 kFirst；
+    // 再切到 kShown 供其余用例使用 —— 这条切换同时压住"TreeChanged(active) ⇒
+    // LoadChatTranscript"那条生产路径。
+    TestFirstSnapshotIsAdopted(win);
     AdoptDisplayedSession(win, kShown);
 
     TestSnapshotReachesSidebar(win);

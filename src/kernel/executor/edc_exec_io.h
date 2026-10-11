@@ -88,6 +88,11 @@ struct edc_llm_actor_resp
     cJSON *msg;
     EdcError *error;
 
+    /* HTTP status of the response (0 = none: transport failure / no status line).
+     * A provider-side error arrives here as HTTP 400 with the reason in the body,
+     * a rate limit as 429 — the error text alone cannot always tell them apart. */
+    int http_status;
+
     struct edc_llm_usage usage; /* zeroed when the provider omits `usage` */
 };
 

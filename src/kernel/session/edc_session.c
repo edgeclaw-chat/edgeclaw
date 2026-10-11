@@ -1,4 +1,5 @@
 ﻿#include "edc_session.h"
+#include "edc_session_memory.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_context.h"
@@ -142,6 +143,7 @@ struct edc_session *edc_session_new_with_workdir(struct edc_config *config, cons
     session->config = config;
     session->history_dir = edc_path_join(config->workspace, session->session_id, NULL);
     session->next_completion_seq = 1;
+    session->memo = edc_session_memory_new();
 
     if (workdir && workdir[0])
     {
@@ -178,6 +180,7 @@ void edc_session_free(struct edc_session *session)
     }
     session->groups = NULL;
 
+    edc_session_memory_free(session->memo);
     free(session->session_id);
     sdsfree(session->name);
     sdsfree(session->created_at);

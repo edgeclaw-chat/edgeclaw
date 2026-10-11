@@ -86,6 +86,11 @@ TaskGroup ParseGroup(const cJSON *item)
     group.orphaned = JsonBool(Field(item, "orphaned"));
     group.fg = JsonBool(Field(item, "fg"));
     group.tokens_total = JsonInt64(Field(item, "tokens_total"));
+    group.tokens_prompt = JsonInt64(Field(item, "tokens_prompt"));
+    group.tokens_completion = JsonInt64(Field(item, "tokens_completion"));
+    group.tokens_cached = JsonInt64(Field(item, "tokens_cached"));
+    group.ctx_tokens = JsonInt64(Field(item, "ctx_tokens"));
+    group.ctx_estimated = JsonBool(Field(item, "ctx_estimated"));
 
     if (const cJSON *tasks = Field(item, "tasks"); cJSON_IsArray(tasks))
     {
@@ -113,6 +118,7 @@ bool ParseTaskSnapshot(const std::string &json, TaskSnapshot *out)
 
     out->session_id = JsonStr(Field(root, "session_id"));
     out->session_name = JsonStr(Field(root, "session_name"));
+    out->workdir = JsonStr(Field(root, "workdir"));
     out->message_count = JsonInt(Field(root, "message_count"));
     out->created_at = JsonStr(Field(root, "created_at"));
 

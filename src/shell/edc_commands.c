@@ -7,6 +7,7 @@
 #include "edc_compat.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_session_memory.h"
 #include "edc_session_manager.h"
 #include "edc_shell.h"
 #include "edc_state_serializer.h"
@@ -36,9 +37,8 @@ static bool edc_commands_is_prefix(const char *content, const char *prefix)
     return is;
 }
 
-/* 严格命令前缀: content 去空白后等于 prefix, 或以 prefix + 空格 开头。
- * 专用于命令路由 —— 宽松前缀会把 "/tasks", "/sessions" 之类误吞成
- * "/task"/"/session" 的子命令, 报出误导性的 "Unknown subcommand"。 */
+/* Strict command prefix: content equals the prefix, or starts with prefix + space.
+ * A loose prefix would swallow "/tasks" into "/task". */
 static bool edc_commands_is_command(const char *content, const char *prefix)
 {
     sds cmd = sdstrim(sdsnew(content), " \t\r\n");
@@ -95,11 +95,8 @@ void edc_commands_send_history(struct edc_reply_to to, const char *payload)
 
 /* ── /session stop ─────────────────────────────────────────── */
 
-/* 取消当前 session 的全部非终结 turns 并立即落盘。原顶层 /stop 命令, 现收归
- * /session 命名空间 (无参数)。移除某个 session 请用 /session remove <name>。
- * 不再 reload session: LLM 上下文来自 group->history, session->messages 只是
- * 持久化用的 legacy 副本, stop 不需要重建它 (重建反而会释放 group history
- * 引用的对象)。edc_session_store_stop_all_turns 内部会落盘。 */
+/* Cancel every non-terminal turn in the current session and persist. Was the
+ * top-level /stop; now /session with no arguments. */
 static bool edc_commands_handle_session_stop( struct edc_session_manager *sm, struct edc_scheduler *sched,
                                              struct edc_reply_to to)
 {
@@ -119,6 +116,7 @@ static bool edc_commands_handle_help(struct edc_reply_to to)
                        "- /session new [name] [dir]  ·  /session switch <name>\n"
                        "- /session list  ·  /session info  ·  /session status [id]\n"
                        "- /session save  ·  /session stop\n"
+                       "- /session memo [show [id] | search <q> | compact [focus]]\n"
                        "- /session remove <name>  ·  /session rename <old> <new>\n"
                        "\n"
                        "- /task new <desc>   [--bg] [--suspended]\n"
@@ -126,6 +124,7 @@ static bool edc_commands_handle_help(struct edc_reply_to to)
                        "- /task list  ·  /task status [id]  ·  /task output <id>\n"
                        "- /task history <id>   (its messages; `--json` = raw payload)\n"
                        "- /group history <id>  (the whole group; one block per member)\n"
+                       "- /group fold [id] [focus]  (fold now, ignoring the trigger)\n"
                        "- /task groups  ·  /task fg <id>  ·  /task bg [id]\n"
                        "- /task stop [id]  ·  /task resume [id]   (default: active task of the foreground group)\n"
                        "- /task chain <src> <dst>  ·  /task join <id>\n"
@@ -171,12 +170,71 @@ static bool edc_commands_handle_session_save( struct edc_session_manager *sm, st
     return true;
 }
 
+/* ── /session memo ─────────────────────────────────────────── */
+
+/* L2 session 记忆的查看与手动策展。作用域 = **活跃 session** (命令层总是对着当前
+ * 会话说话; 内核那侧的工具才是"按任务属主")。 */
+static bool edc_commands_handle_session_memo(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                             struct edc_reply_to to, const char *args)
+{
+    struct edc_session *active = edc_session_manager_get_active(sm);
+    if (!active || !active->memo)
+    {
+        edc_commands_reply(to, "**Session memory** — no active session.");
+        return true;
+    }
+
+    sds rest = args ? sdsnew(args) : sdsnew("");
+    sdstrim(rest, " ");
+    /* 子命令 = 头一个 token; 其余原文 (focus / 关键词可以带空格) */
+    char *sp = strchr(rest, ' ');
+    sds sub = sp ? sdsnewlen(rest, (size_t)(sp - rest)) : sdsdup(rest);
+    const char *tail = sp ? sp + 1 : "";
+    while (*tail == ' ')
+        tail++;
+
+    if (sdslen(sub) == 0 || strcmp(sub, "show") == 0)
+    {
+        sds text = edc_session_memory_show_text(active->memo, tail);
+        edc_commands_reply(to, text);
+        sdsfree(text);
+    }
+    else if (strcmp(sub, "search") == 0)
+    {
+        sds text = edc_session_memory_search_text(active->memo, tail);
+        edc_commands_reply(to, text);
+        sdsfree(text);
+    }
+    else if (strcmp(sub, "compact") == 0)
+    {
+        struct edc_task *t = edc_session_memory_start_manual(sched, active, (*tail ? tail : NULL));
+        if (t)
+            edc_commands_reply(to, "**Session memory** — curation started (it will land as entry ops). "
+                                   "`/session memo show` when it is done.");
+        else if (edc_scheduler_has_pending_system_task(active))
+            edc_commands_reply(to, "**Session memory** — a system task is already running in this session; "
+                                   "wait for it to finish.");
+        else
+            edc_commands_reply(to, "**Session memory** — could not start curation.");
+    }
+    else
+    {
+        edc_commands_reply(to,
+                           "Usage: `/session memo [show [id] | search <keyword> | compact [focus]]`\n"
+                           "`show` lists the entries, `show <id>` prints one entry, `search` matches title/"
+                           "summary/detail, `compact` curates now (else it only runs when a group is folded).");
+    }
+
+    sdsfree(sub);
+    sdsfree(rest);
+    return true;
+}
+
 /* ── /session commands ─────────────────────────────────────── */
 
-/* Split "/session new" arguments into an optional name and an optional working
- * directory: "<name> [dir]". Leading/trailing whitespace is trimmed; the
- * directory may itself contain spaces (everything after the first token).
- * Either output may be NULL. Callers sdsfree both. */
+/* Split "/session new" args into an optional name and an optional working
+ * directory ("<name> [dir]"); the directory may contain spaces. Either may be
+ * NULL; callers free both. */
 static void edc_commands_split_name_dir(const char *rest, sds *out_name, sds *out_dir)
 {
     *out_name = NULL;
@@ -208,15 +266,10 @@ static void edc_commands_split_name_dir(const char *rest, sds *out_name, sds *ou
         *out_dir = sdsnewlen(dir_start, (size_t)(dir_end - dir_start));
 }
 
-/* 切活跃 session 的公共尾巴 (P3 ①b): 告诉前端"现在显示哪个 session"。
- *
- *  ①b 之后快照是**拉取**的 —— 前端不再从推送里得知自己该看哪棵树, 所以这件事
- *  得显式说一声 (这是"active_index 变了"这个事实的通报, 权威仍在 session_manager)。
- *  两道讲究:
- *    - **只在真的换了时才发**: 没换就什么都不做, 免得前端白拉一棵没变的树;
- *    - **位置在 reply 之后**: 今天那条 "**Switched**" / "**Session created**" 文本
- *      落在**旧** session 的转录里 (前端先收到回复、再被推送切台) —— 顺序反过来
- *      会把它写进新 session 的转录, 那是用户可见的差异。 */
+/* The shared tail of switching the active session: tell the frontend which
+ * session is now displayed. Since ①b snapshots are pulled, this must be said
+ * explicitly. Only sent when the session really changed, after the reply, so the
+ * "Switched" text lands in the old session's transcript. */
 static void cmd_notify_if_active_session_changed( struct edc_session_manager *sm, struct edc_actor *channel_actor,
                                                  struct edc_session *before)
 {
@@ -228,18 +281,13 @@ static void cmd_notify_if_active_session_changed( struct edc_session_manager *sm
 
 static bool edc_commands_handle_session_new(struct edc_session_manager *sm, struct edc_reply_to to, sds arg)
 {
-    /* edc_session_manager_create 会把 active 直接切到新 session, 所以 "旧
-     * session" 必须在 create 之前取到, 否则拿到的是它自己。 */
+    /* create() switches active to the new session, so take the old one first. */
     struct edc_session *old = edc_session_manager_get_active(sm);
     sds name = NULL, dir = NULL;
     edc_commands_split_name_dir(arg, &name, &dir);
 
-    /* A given working directory is resolved up front and must name an existing
-     * directory. Relative paths are anchored at the process launch directory
-     * (the process cwd), not at the active session's workdir, so the anchor is
-     * stable regardless of which session is current. If it does not resolve,
-     * fail the whole command: never silently create the session bound to the
-     * default directory instead. */
+    /* A given working directory is resolved up front against the process cwd and
+     * must exist; otherwise the whole command fails. */
     if (dir && sdslen(dir) > 0)
     {
         EdcError *werr = NULL;
@@ -272,15 +320,11 @@ static bool edc_commands_handle_session_new(struct edc_session_manager *sm, stru
     }
     const char *bound = edc_session_get_workdir(sess);
     sdsfree(dir);
-    /* 切到新 session: 旧 session **继续在后台执行**, 不取消任何任务 (session
-     * 像终端 tab —— 切走不停进程)。
-     * P3 ③: 这里不再有"把 binding 换成新 session"这一步 —— 切 session 只是
-     * `active_index` 变了 (session_manager 的唯一权威), scheduler 里根本没有
-     * 那份副本了。落盘也不再依赖"切之前先存": 任务完成时按属主存、退出时存
-     * 所有已加载的 (save_loaded_states)。 */
+    /* The old session keeps running in the background (a session is like a
+     * terminal tab). Switching only changes active_index; persistence happens per
+     * task and at exit. */
     (void)old;
-    /* 全新 session: 内存状态即权威, 标记已加载, 避免日后切回时被（此时可能
-     * 已存在的）session.json 反序列化覆盖。 */
+    /* A fresh session: memory is authoritative, marked loaded so a later switch cannot overwrite it from disk. */
     sess->state_loaded = true;
 
     sds reply = sdscatprintf(sdsempty(), "**Session created** — `[%s]` %s  ·  workdir: `%s`", sess->session_id,
@@ -316,10 +360,8 @@ static bool edc_commands_handle_session_switch( struct edc_session_manager *sm, 
         sdsfree(reply);
         return true;
     }
-    /* 切走时旧 session **继续在后台执行** (session 像终端 tab, 切走切 tab 不停
-     * 进程), 因此不取消任何任务 —— 前台组随 session 保留 (session->foreground_group),
-     * 切回来时 set_session 会恢复。这里显式落一次盘: 旧 session 之后在后台继续
-     * 推进, 先保证已产生的内容持久 (前台组已随 session 落盘, 不再丢失)。 */
+    /* The old session keeps running in the background, so no task is cancelled;
+     * persist once now, since it will keep progressing. */
     if (old)
     {
         edc_session_save_state(old, sched);
@@ -332,11 +374,9 @@ static bool edc_commands_handle_session_switch( struct edc_session_manager *sm, 
         sdsfree(reply);
         return true;
     }
-    /* P3 ③: active_index 已经由 edc_session_manager_switch 改好, 没有别的状态
-     * 要改 —— 切 session 只是 UI 换视图 (前端收 reason=active 事件后自己换)。 */
-    /* 只在本 run 首次激活该 session 时反序列化磁盘状态; 已加载过的 session
-     * (可能正在后台执行) 直接沿用内存对象, 避免被磁盘副本覆盖 —— 不再 reload
-     * (重建会释放 group->history 引用的对象)。 */
+    /* P3 ③: active_index is already updated by the switch; nothing else to change. */
+    /* Deserialize disk state only on first activation this run; an already-loaded
+     * session keeps its in-memory object. */
     if (!new_sess->state_loaded)
         edc_session_store_load_session(sm, sched, new_sess);
     sds reply =
@@ -371,24 +411,20 @@ static bool edc_commands_handle_session_remove( struct edc_session_manager *sm, 
         sdsfree(reply);
         return true;
     }
-    /* 最后一个 session 不能 remove。先于取消任务拦住, 否则一次失败的 remove 会把
-     * 当前 session 的任务白白打成 CANCELLED。 */
+    /* The last session cannot be removed: check before cancelling, or a failed remove strands CANCELLED tasks. */
     if (sm->session_count <= 1)
     {
         edc_commands_reply(to, "**Session** — cannot remove the last session.");
         return true;
     }
 
-    /* remove 也会调整 active_index (删掉的是当前之前的那个时会顺移), 所以先把
-     * "移除前显示的是谁"记下来, 末尾按事实决定要不要通知前端换台。 */
+    /* remove() may adjust active_index; note who was displayed first, then notify the frontend if it changed. */
     struct edc_session *active_before = edc_session_manager_get_active(sm);
     sds stopped_id = sdsnew(target->session_id);
     sds stopped_name = sdsnew(edc_session_get_name(target));
 
-    /* /session remove = 用户明确表达移除意愿 (相当于关掉这个 tab): 全取消该
-     * session 的所有非终态任务 (含 WAITING_INPUT), 而非只掐在途执行。随后
-     * edc_session_manager_stop 内部的 save 会把内存里的 CANCELLED 落盘。目标
-     * 可能不是当前 active session, 故用 session 版信号显式指定目标。 */
+    /* /session remove = the user wants this tab gone: cancel every non-terminal
+     * task in it (targeted explicitly, since it may not be the active session). */
     edc_scheduler_send_signal_to_session(sched, target, TASK_SIGTERM, false);
 
     if (!edc_session_manager_stop(sm, arg))
@@ -468,11 +504,9 @@ static bool edc_commands_handle_session_info(struct edc_session_manager *sm, str
     return true;
 }
 
-/* /session status [name_or_id]: live runtime status of a session — group/task
- * counts, the per-state task breakdown, and (for the current session) the
- * foreground group and active task. Without an argument it reports the current
- * session. Static metadata (id/name/created/…) stays in /session info; the
- * per-task detail stays in /task list. */
+/* /session status [name_or_id]: live runtime status (group/task counts, per-state
+ * breakdown, foreground/active for the current session). Static metadata is in
+ * /session info; per-task detail in /task list. */
 static bool edc_commands_handle_session_status(struct edc_session_manager *sm, struct edc_reply_to to, sds arg)
 {
     struct edc_session *sess = NULL;
@@ -511,9 +545,7 @@ static bool edc_commands_handle_session( struct edc_session_manager *sm, struct 
                                         struct edc_reply_to to, struct edc_channel_message *msg)
 {
     sds rest = NULL;
-    /* /session new 的 name 可选 —— 无参也要能建匿名 session。edc_commands_arg
-     * 在无参时返回 false, 所以必须先做一次精确匹配, 否则裸 /session new 会掉到
-     * 末尾的 unknown subcommand。 */
+    /* The name is optional: match exactly first, or a bare "/session new" falls through to unknown subcommand. */
     if (edc_commands_is_target(msg->content, "/session new"))
         return edc_commands_handle_session_new(sm, to, NULL);
     if (edc_commands_arg(msg->content, "/session new", &rest))
@@ -542,6 +574,14 @@ static bool edc_commands_handle_session( struct edc_session_manager *sm, struct 
     }
     if (edc_commands_is_target(msg->content, "/session save"))
         return edc_commands_handle_session_save(sm, sched, to);
+    if (edc_commands_is_target(msg->content, "/session memo"))
+        return edc_commands_handle_session_memo(sm, sched, to, NULL);
+    if (edc_commands_arg(msg->content, "/session memo", &rest))
+    {
+        bool ret = edc_commands_handle_session_memo(sm, sched, to, rest);
+        sdsfree(rest);
+        return ret;
+    }
     if (edc_commands_is_target(msg->content, "/session stop"))
         return edc_commands_handle_session_stop(sm, sched, to);
     if (edc_commands_arg(msg->content, "/session remove", &rest))
@@ -578,18 +618,8 @@ static bool edc_commands_handle_session( struct edc_session_manager *sm, struct 
 
 /* ── /task commands ─────────────────────────────────────────― */
 
-/* 命令层派发任务时用的 request id。**这一文件里所有派发点共用同一个计数器** ——
- * 各自 `static int64_t counter = 0` 的话都从 1 开始, 两个命令会发出**相同**的 id,
- * 而 scheduler 的 task_hash 正是以 request id 为键。
- * (注: edc_shell.c 的 AST 派发点另有自己的计数器, 尚未合并 —— 既有偏离, 不在本批。) */
-static int64_t g_cmd_req_seq = 0;
-
-/* ── 这条输入属于哪个 session (P3) ──────────────────────────
- *
- * 命令建出来的任务/组必须落在**输入自己声明**的 session 上, 而不是"当前绑定"
- * 的那份副本 (scheduler 里那份正在被拆掉)。标签为空 = 调用方没指定 (crontab,
- * 老渠道) → 给活跃 session, 与老实现一致; 标签指向不存在的 session 时
- * 返回 NULL, 调用方**拒绝**这条命令 (不猜)。 */
+/* The session this input belongs to, as declared by the input itself; an empty
+ * label means the active session, an unknown one rejects the command. */
 static struct edc_session *cmd_input_session(struct edc_session_manager *sm, struct edc_channel_message *msg)
 {
     return edc_session_store_resolve_session(sm, msg ? msg->session_id : NULL);
@@ -603,9 +633,8 @@ static void edc_commands_handle_task_new( struct edc_session_manager *sm, struct
     struct edc_cmd_task_opts opts;
     edc_cmd_parse_task_opts(arg, &opts);
 
-    /* Resolve `-d` dependencies up front. Task ids are globally unique, so a
-     * dependency may live in another session. An unknown id fails the command
-     * (nothing is created) rather than being silently dropped. */
+    /* Resolve -d dependencies up front (ids are globally unique, so a dep may live
+     * in another session); an unknown id fails the command. */
     struct edc_task **deps = NULL;
     if (opts.dep_count > 0)
     {
@@ -632,8 +661,7 @@ static void edc_commands_handle_task_new( struct edc_session_manager *sm, struct
     if (opts.prompt_name)
         edc_task_set_prompt(task, opts.prompt_name, NULL);
 
-    /* Wire the (already resolved) dependencies onto the new task. Done before
-     * the group branching below so it is not skipped by the `goto done` path. */
+    /* Wire the resolved dependencies before the group branching, so the goto path is covered. */
     for (int i = 0; i < opts.dep_count; i++)
         edc_task_add_dependency(task, deps[i], TASK_DEP_JOIN);
     free(deps);
@@ -652,9 +680,6 @@ static void edc_commands_handle_task_new( struct edc_session_manager *sm, struct
         else
         {
             edc_task_group_add_task(group, task);
-            // sds reply = sdscatprintf(sdsempty(), "[task] created %s in group %s", task->task_id, group->group_id);
-            // edc_commands_reply(to, reply);
-            // sdsfree(reply);
             goto done;
         }
     }
@@ -665,34 +690,21 @@ static void edc_commands_handle_task_new( struct edc_session_manager *sm, struct
         /* 挂起的任务不算 active task, 也不抢前台 —— 与 --bg 同样只建组。 */
         if (opts.bg || opts.suspended)
         {
-            // sds reply =
-            //     sdscatprintf(sdsempty(), "[task] created %s (group %s) in background", task->task_id,
-            //     group->group_id);
-            // edc_commands_reply(to, reply);
-            // sdsfree(reply);
         }
         else
         {
             edc_scheduler_set_foreground(session, group);
             edc_session_set_active_task(session, task);
-            // sds reply = sdscatprintf(sdsempty(), "[task] created %s (group %s)", task->task_id, group->group_id);
-            // edc_commands_reply(to, reply);
-            // sdsfree(reply);
         }
     }
 
 done:
-    /* desc 就是 input, 任务**创建即运行** (2026-09-14 决定)。此前这里只建不派发,
-     * 任务停在 WAITING_INPUT 且**永远等不到输入** —— 没有任何代码会给它,
-     * 那是个死胡同。派发与 shell 的创建路径 (edc_shell.c) 走同一条:
-     * 建 turn -> 注册 -> 置 LLM_PROCESSING -> send_llm。
-     *
-     * 放在 `done:` **之后**: 指定已存在 group 的那条路是 `goto done` 过来的,
-     * 放前面会被跳过, 于是 `--group` 创建的任务又不跑了。 */
+    /* desc is the input: attaching the turn is all that happens here. Running it is
+     * the message-end scan's job. Kept after `done:` so the `--group` goto path
+     * still attaches. */
     if (task && opts.desc && sdslen(opts.desc) > 0)
     {
-        /* desc 就是 input: 先把 turn 装上 —— 普通任务与 --suspended 任务在**这一点
-         * 上完全一样** (初始相位相同), 区别只在下面那一步"立即执行"。 */
+        /* desc is the input: attach the turn (same for --suspended; only life differs). */
         struct edc_turn *turn = edc_turn_new();
         turn->task_id = strdup(task->task_id);
         edc_turn_add_user_message(turn, opts.desc);
@@ -700,31 +712,14 @@ done:
 
         if (opts.suspended)
         {
-            /* --suspended: 到此为止。不注册请求、不进 LLM_PROCESSING —— 停在
-             * SUSPENDED, 等 /task resume。有依赖的照样等依赖 (resume 之后走的
-             * 就是普通路径)。 */
+            /* --suspended: turn 装好, life 置挂起 —— 扫描不认它, 等 /task resume。 */
             bool ok = edc_task_mark_suspended(task);
             log_info("/task new: task=%s created SUSPENDED -> %s (awaiting /task resume)", task->task_id,
                      ok ? "ok" : "FAILED");
         }
         else if (edc_task_awaits_deps(task))
         {
-            log_info("/task new spawn: task %s blocked in WAITING_DEPS, turn queued", task->task_id);
-            edc_cmd_task_opts_free(&opts);
-            return;
-        }
-        else
-        {
-        void *req_id = (void *)(intptr_t)(++g_cmd_req_seq);
-        edc_scheduler_register_task(sched, task, req_id);
-        task->current_request_id = req_id;
-
-        bool ok = edc_task_await_exec(task);
-        log_info("/task new spawn: task=%s set_state LLM_PROCESSING -> %s, send_llm=%s", task->task_id,
-                 ok ? "ok" : "FAILED",
-                 (sched && sched->send_llm) ? "ready" : "NULL");
-        if (ok && sched && sched->send_llm)
-            sched->send_llm(sched, task, req_id);
+            log_info("/task new: task %s waits for its dependencies, turn queued", task->task_id);
         }
     }
 
@@ -773,9 +768,8 @@ static void edc_commands_handle_task_stop( struct edc_session_manager *sm, struc
 
     if (!arg || sdslen(arg) == 0)
     {
-        /* 不带 id: 默认停当前前台进程组里的 active 任务 (组内"正在说话"的那个)。
-         * active 概念上应属于前台组, 但代码并不强制 —— 这里显式校验成员关系,
-         * 免得 session 切换残留的 active 指到别的组去。 */
+        /* No id: stop the active task of the current foreground group, after
+         * checking membership so a stale active from a session switch cannot leak. */
         struct edc_task_group *fg = edc_scheduler_get_foreground(sess);
         struct edc_task *active = sess ? sess->active_task : NULL;
         if (active && (!fg || active->group == fg))
@@ -790,9 +784,8 @@ static void edc_commands_handle_task_stop( struct edc_session_manager *sm, struc
     }
     else
     {
-        /* 先校验任务存在再发信号: 盲发时对不存在的 id 也会回 "stop signal sent",
-         * 与实际效果不符。查找范围 = 所有已加载 session (task id 全局唯一) ——
-         * 允许停掉别的 session 里的任务。 */
+        /* Check the task exists first: otherwise a blind signal reports success for
+         * an unknown id. Search spans all loaded sessions. */
         t = edc_session_store_resolve_task(sm, sched, arg, NULL);
         if (!t)
         {
@@ -810,14 +803,10 @@ static void edc_commands_handle_task_stop( struct edc_session_manager *sm, struc
     sdsfree(reply);
 }
 
-/* /task resume [id]: 对可恢复任务重新判定并驱动 (依赖/工具/turn)。接受三类:
- *   - SUSPENDED: 重启后被停住的任务, 按持久化状态重新判定该回到哪一步;
- *   - ERROR:    执行中失败的任务, 续跑失败的那一轮 (复用残留 active_turn /
- *               工具账本, 不整轮重来);
- *   - CANCELLED: 被 /task stop 停下的任务 —— 取消只是"停下", 不是"这活没了"。
- *               取消时 step 已被压成 DONE, 所以续跑完全靠重判 (悬空的 tool_call
- *               由 resume 按消息补齐, 见 edc_scheduler_resume_task)。
- * 不带 id 时默认当前前台组的 active 任务, 与 /task stop 一致。 */
+/* /task resume [id]: re-decide and drive a resumable task. Accepts SUSPENDED,
+ * ERROR (continue the failed round, reusing the active turn and tool ledger), and
+ * CANCELLED (cancel only stopped it; the step is re-derived from the messages).
+ * Without an id it uses the foreground group's active task. */
 static void edc_commands_handle_task_resume( struct edc_session_manager *sm, struct edc_scheduler *sched,
                                             struct edc_reply_to to, sds arg)
 {
@@ -850,11 +839,8 @@ static void edc_commands_handle_task_resume( struct edc_session_manager *sm, str
         }
     }
 
-    /* SUSPENDED = 重启后被停住的任务 (resume 重新判定并驱动);
-     * ERROR = 执行中失败的任务 (resume 续跑失败的那一轮, 复用残留的
-     * active_turn / 工具账本); CANCELLED = 被 /task stop 停下的任务 (取消不销毁
-     * 工作痕迹: turn / 消息都还在, 续跑时按消息补齐悬空工具调用)。
-     * 只有 COMPLETED 与 ALIVE 不可 resume。 */
+    /* The three resumable kinds: SUSPENDED, ERROR, CANCELLED (only COMPLETED and
+     * ALIVE are not). */
     if (!edc_task_is_resumable(t))
     {
         sds reply =
@@ -864,9 +850,8 @@ static void edc_commands_handle_task_resume( struct edc_session_manager *sm, str
         return;
     }
 
-    /* Resume gate: try to restore any cross-session dependency right now (this
-     * may lazy-load its owner session). If it still cannot be resolved, hold the
-     * task — resuming would run it with an incomplete dependency view. */
+    /* Resume gate: try to restore any cross-session dependency now (may lazy-load
+     * its owner); if it cannot be resolved, hold the task. */
     edc_session_store_reconcile_pending_deps(sm, sched);
     const char *missing = edc_scheduler_first_unresolved_dep(sched, t);
     if (missing)
@@ -881,6 +866,35 @@ static void edc_commands_handle_task_resume( struct edc_session_manager *sm, str
     }
 
     edc_scheduler_resume_task(sched, t);
+
+    /* 还在等依赖? (边的另一端没产出: 源被取消/失败过, 或者还没跑完。) 说清楚在等谁 —— 取消
+     * 不再摘边之后这是**正常**状态, 不能让它看起来"点了没反应"。
+     * 出口: resume 那个源 (它产出后这条边自动满足, 本任务会被放行), 或者删掉那个源。 */
+    if (edc_task_awaits_deps(t))
+    {
+        sds waiting = sdsempty();
+        struct edc_task_dep *dep;
+        LL_FOREACH(t->deps, dep)
+        {
+            if (dep->completed || dep->cancelled || !dep->source)
+                continue;
+            if (sdslen(waiting))
+                waiting = sdscat(waiting, ", ");
+            waiting = sdscatprintf(waiting, "`%s` (%s)", dep->source->task_id,
+                                   edc_task_state_str(dep->source));
+        }
+        sds reply = sdscatprintf(sdsempty(),
+                                 "**Task `%s` is waiting** — it still depends on %s. Resume that one (this task "
+                                 "runs once its output arrives), or remove it.",
+                                 t->task_id, sdslen(waiting) ? waiting : "an unfinished dependency");
+        if (t->group && t->group->session && t->group->session != sess)
+            reply = sdscatprintf(reply, " (session `[%s]`)", t->group->session->session_id);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        sdsfree(waiting);
+        return;
+    }
+
     sds reply =
         sdscatprintf(sdsempty(), "**Task `%s`** — resume signal sent (%s).", t->task_id, edc_task_state_str(t));
     if (t->group && t->group->session && t->group->session != sess)
@@ -889,11 +903,9 @@ static void edc_commands_handle_task_resume( struct edc_session_manager *sm, str
     sdsfree(reply);
 }
 
-/* A task in a non-active session can be *referenced* globally (dependency,
- * status, output, stop/resume), but commands that change the current session's
- * foreground view (fg/bg/fork) must not silently operate on it. Returns true
- * when |t| belongs to the active session; otherwise replies with an error and
- * returns false. */
+/* A task in a non-active session can be referenced globally (dependency, status,
+ * stop/resume), but fg/bg/fork must not silently touch it. Returns true when |t|
+ * is in the active session, otherwise replies with an error. */
 static bool edc_commands_task_in_active_session( struct edc_session_manager *sm, struct edc_reply_to to,
                                                 struct edc_task *t)
 {
@@ -1062,9 +1074,8 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
     if (prompt_name)
         edc_task_set_prompt(child, prompt_name, NULL);
 
-    /* 新语义: 子任务另起独立 group (成为 leader), 继承父 group 的前文快照,
-     * 而非塞进父 group。快照作为子任务的一条合成初始 turn 存在,
-     * 随子任务一起持久化/折叠, 父 group 不受影响。 */
+    /* The child starts its own group (as leader), inheriting the parent's transcript
+     * snapshot as a synthetic initial turn. */
     struct edc_task_group *child_group = edc_scheduler_create_group(sched, session, child);
 
     if (parent->group)
@@ -1078,11 +1089,12 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
         if (sys)
             cJSON_AddItemToArray(child_group->history, cJSON_Duplicate(sys, 1));
 
-        /* 合成 turn: 深拷贝父 group 未折叠消息 [1+已折叠数 .. fork_point) */
-        size_t snap_begin = 1 + edc_task_group_folded_msg_count(parent->group);
+        /* 合成 turn: 深拷贝父 group 未折叠消息 [1 .. fork_point) —— 已折叠消息
+         * 不在 history 里 (折叠落地即剪枝)。 */
+        size_t snap_begin = 1;
         struct edc_turn *snap = NULL;
 
-        if (parent->turns_folded)
+        if (edc_task_has_folded_turns(parent))
         {
             /* 规则 2: parent 的 turns 已被 L1 折叠, 捞回 parent 自己的 turns 全文,
              * 保证 fork 点本身的上下文完整。其余已折叠前文仍只靠 memory 摘要。 */
@@ -1122,13 +1134,8 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
     edc_scheduler_set_foreground(session, child_group);
     edc_session_set_active_task(session, child);
 
-    /* desc 就是 input —— 与 /task new 同一条规则: 任务创建时就带着它的 turn。
-     *
-     * 旧实现把子任务停在 WAITING_INPUT, 等用户下一条普通输入被 attach 进来; 那是
-     * "任务是个长期会话、停在原地等输入" 的旧模型, 已随 attach 路径一起退休。
-     * 要"先建好、稍后再跑"就用 --suspended: turn 照样挂上, 但不派发, 由
-     * /task resume 驱动 —— 那才是新模型里休眠态的表达方式。
-     * 见 docs/retire-waiting-input.md §4 第 6 行。 */
+    /* desc is the input, as in /task new: the task carries its turn from creation.
+     * To build now and run later, use --suspended. */
     {
         struct edc_turn *turn = edc_turn_new();
         turn->task_id = strdup(child->task_id);
@@ -1144,14 +1151,8 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
     }
     else
     {
-        void *req_id = (void *)(intptr_t)(++g_cmd_req_seq);
-        edc_scheduler_register_task(sched, child, req_id);
-        child->current_request_id = req_id;
-        bool ok = edc_task_await_exec(child);
-        log_info("/task fork spawn: task=%s set_state LLM_PROCESSING -> %s, send_llm=%s", child->task_id,
-                 ok ? "ok" : "FAILED", (sched && sched->send_llm) ? "ready" : "NULL");
-        if (ok && sched && sched->send_llm)
-            sched->send_llm(sched, child, req_id);
+        /* 跑起来由消息末尾的调度负责 (唯一驱动入口) —— 这里只把 turn 装上。 */
+        log_info("/task fork: task=%s turn attached (deps_total=%zu)", child->task_id, child->deps_total);
     }
 
     sds reply = sdscatprintf(sdsempty(), "**Fork created** — `%s` from `%s` · group `%s` · fork point %zu",
@@ -1230,9 +1231,8 @@ static void edc_commands_handle_task_status( struct edc_session_manager *sm, str
             out = sdscatprintf(out, "- **held**: waiting on `%s` (unresolved cross-session dependency)\n", missing);
     }
 
-    /* 展示 task 实际收到的用户输入（而不只是 description）。多行输入把换行
-     * 后的内容缩进两格，作为 markdown 列表项的续行，避免撑破列表。
-     * P4: 消息归属 turn, user 输入直接从 turn 队列取 (不再需要 session 消息数组)。 */
+    /* The user input the task actually received (not just the description); the
+     * messages belong to the turn. */
     sds user_input = edc_task_user_input(t, NULL);
     if (user_input)
     {
@@ -1253,9 +1253,7 @@ static void edc_commands_handle_task_status( struct edc_session_manager *sm, str
                        "- **deps**: %zu/%zu completed\n"
                        "- **messages**: %zu\n",
                        t->deps_completed, t->deps_total, edc_task_message_count(t));
-    /* token 消耗: 该 task 生命周期内所有 LLM 响应 usage 的累计值。为 0
-     * (尚未发生任何 LLM 调用, 或 provider 未返回 usage) 时不打印, 免得
-     * 给刚创建、还在 WAITING_DEPS 的 task 挂一行 "0 total" 的噪音。 */
+    /* Token usage over the task's lifetime; omitted while zero. */
     if (t->tokens_total > 0)
     {
         out = sdscatprintf(out, "- **tokens**: %lld total (%lld prompt · %lld completion · %lld cached)\n",
@@ -1299,11 +1297,9 @@ static void edc_commands_handle_task_output( struct edc_session_manager *sm, str
     edc_commands_reply(to, t->output);
 }
 
-/* /task history <id>: 这个 task 的消息历史 —— 它建自哪条输入, 以及它每个 turn 的消息。
- * 数据源是 kernel 自己那份 (`task->turns`, 就是喂给 LLM 的对话), 经
- * edc_scheduler_task_history_json 出来; 跨 session 的 task 也能查 (id 全局唯一,
- * 解析走 store 的懒加载)。`--json` 打原始载荷 (给前端接线/排查用)。
- * 这也是那条拉取通路的第一个消费者。 */
+/* /task history <id>: the task's message history (its construction input and each
+ * turn's messages), from task->turns. Works across sessions. --json prints the raw
+ * payload. */
 static void edc_commands_handle_history( struct edc_session_manager *sm, struct edc_scheduler *sched,
                                        struct edc_reply_to to, sds arg, bool group)
 {
@@ -1384,6 +1380,75 @@ static void edc_commands_handle_history( struct edc_session_manager *sm, struct 
     sdsfree(out);
 }
 
+/* `/group fold [id] [focus]` (决定 8): 立刻折一次 —— **越过**触发判据 (窗口/条数),
+ * 但屏障照旧 (在飞成员不打断、一次一个 session)。id 省略 = 当前前台组; 给了 id 就按
+ * 它解析 (组 id = 组头那条 task id, 可跨 session)。剩下的部分原文作为 focus 进摘要
+ * prompt 的 "Additional focus:"。 */
+static void edc_commands_handle_group_fold( struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                           struct edc_reply_to to, sds arg)
+{
+    struct edc_session *session = NULL;
+    struct edc_task_group *group = NULL;
+    const char *focus = NULL;
+
+    if (arg && *arg)
+    {
+        /* 第一个 token = 组 id; 其余 = focus (含空格, 原文不动)。 */
+        const char *sp = strchr(arg, ' ');
+        size_t id_len = sp ? (size_t)(sp - arg) : sdslen(arg);
+        sds id = sdsnewlen(arg, id_len);
+        struct edc_session *owner = NULL;
+        struct edc_task *t = edc_session_store_resolve_task(sm, sched, id, &owner);
+        if (!t || !owner || !(group = edc_session_find_group(owner, t->group_id)))
+        {
+            sds reply = sdscatprintf(sdsempty(),
+                                     "Group `%s` not found — `/group fold [id] [focus]` (no id = the foreground group).",
+                                     id);
+            edc_commands_reply(to, reply);
+            sdsfree(reply);
+            sdsfree(id);
+            return;
+        }
+        session = owner;
+        sdsfree(id);
+        if (sp)
+        {
+            focus = sp + 1;
+            while (*focus == ' ')
+                focus++;
+            if (!*focus)
+                focus = NULL;
+        }
+    }
+    else
+    {
+        session = edc_session_manager_get_active(sm);
+        group = session ? edc_scheduler_get_foreground(session) : NULL;
+        if (!group)
+        {
+            edc_commands_reply(to, "No foreground group to fold — pass a group id: `/group fold <id>`.");
+            return;
+        }
+    }
+
+    struct edc_task *fold = edc_scheduler_fold_group_now(sched, session, group, focus);
+    if (!fold)
+    {
+        sds reply = sdscatprintf(sdsempty(),
+                                 "Nothing to fold in group `%s` — it has no unfolded messages, or a fold is "
+                                 "already in flight for that session.",
+                                 group->group_id);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        return;
+    }
+
+    sds reply = sdscatprintf(sdsempty(), "Folding group `%s` into its Group Memory%s%s.", group->group_id,
+                             focus ? " with focus: " : "", focus ? focus : "");
+    edc_commands_reply(to, reply);
+    sdsfree(reply);
+}
+
 /* `/group history <id>`: 一个组的消息历史 —— 每个成员一块 (块首是它那条输入, 块内是它
  * 自己的消息, 不跨 task 交错)。组的 id 就是组头的那个 id。 */
 static bool edc_commands_handle_group( struct edc_session_manager *sm, struct edc_scheduler *sched,
@@ -1396,13 +1461,29 @@ static bool edc_commands_handle_group( struct edc_session_manager *sm, struct ed
         sdsfree(arg);
         return true;
     }
+    sds fold_arg = NULL;
+    if (edc_commands_arg(message->content, "/group fold", &fold_arg))
+    {
+        edc_commands_handle_group_fold(sm, sched, to, fold_arg);
+        sdsfree(fold_arg);
+        return true;
+    }
+    /* 裸 `/group fold` (没有 id 也没有 focus) —— edc_commands_arg 只在有参数时为真,
+     * 所以这一支单独接: 折当前前台组。 */
+    if (edc_commands_is_command(message->content, "/group fold"))
+    {
+        edc_commands_handle_group_fold(sm, sched, to, NULL);
+        return true;
+    }
     if (edc_commands_is_command(message->content, "/group") ||
         edc_commands_is_command(message->content, "/group history"))
     {
-        edc_commands_reply(to, "Usage: `/group history <id>`   (the id is the group header's)");
+        edc_commands_reply(to, "Usage: `/group history <id>`   (the id is the group header's)\n\n"
+                               "Usage: `/group fold [id] [focus]`   (fold now, ignoring the trigger; "
+                               "no id = the foreground group)");
         return true;
     }
-    edc_commands_reply(to, "**Unknown subcommand** — `/group` knows only `history <id>`.");
+    edc_commands_reply(to, "**Unknown subcommand** — `/group` knows `history <id>` and `fold [id] [focus]`.");
     return true;
 }
 
@@ -1424,15 +1505,9 @@ static void edc_commands_handle_task_join( struct edc_session_manager *sm, struc
     }
     if (edc_task_is_completed(t))
     {
-        /* join = "把这条已完成任务的输出注入到一个**已有的、可接收的任务**里"。
-         *
-         * 以前没有可用的 active task 时, 这里会新建一个没有 turn 的 "Joined task"
-         * 停在 READY, 等用户下一条普通输入被 attach 进来, 把 output 一起带进 LLM。
-         * 那是旧模型 (任务停在原地等输入) 的残余, attach 路径已退休, 而新模型里
-         * 任务创建时就带着它的 input —— 不存在"先建一个没有 input 的空任务"。
-         * 所以这里**拒绝**: 让用户先起一个任务 (/task new) 或先 /task resume 一个,
-         * 再 join。源任务原样不动, 命令可以原样重试。
-         * 见 docs/retire-waiting-input.md §4 第 10 行。 */
+        /* join = inject a completed task's output into an existing receiving task.
+         * There is no "create an empty task to attach into later", so with no
+         * candidate the command is rejected and can be retried. */
         struct edc_session *active_session = edc_session_manager_get_active(sm);
         struct edc_task *active = active_session ? edc_session_get_active_task(active_session) : NULL;
         /* "停着" = READY (IDLE 镜像) 或等依赖 —— 两者都能接收注入的输出 */
@@ -1686,16 +1761,9 @@ bool edc_commands_handler( struct edc_config *cfg, struct edc_session_manager *s
     return edc_shell_execute(sm, sched, to, message);
 }
 
-/* ── 端口: 命令层是 `handle_command` 的提供方 ────────────────
- *
- * 命令处理器本来就住 userland (这里), 它要的 config / session 仓库是 scheduler
- * 上的**数据句柄** (`sched->config` / `sched->sessions`), 回话地址就是本条入站
- * 消息的发送者 —— scheduler 调用时已经把发送者递进来了
- * (`edc_scheduler.c`: `sched->handle_command(sched, msg->from, input)`)。
- * 于是这个接缝不再需要装配根中转: 谁提供服务谁装端口。
- *
- * `input->origin` 仍是 core 不透明透传过来的原始 channel 消息 —— 形状与从前的
- * thunk 逐字一致 (那里也是在这里取回它)。端口签名一个字没动。 */
+/* Port: the command layer provides handle_command. It reads config and the session
+ * store straight off the scheduler, and replies to the sender of the inbound
+ * message. `input->origin` is the opaque original channel message. */
 static bool edc_commands_cb_handle_command(struct edc_scheduler *sched, struct edc_actor *actor,
                                            const struct edc_sched_input *input)
 {

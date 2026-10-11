@@ -9,110 +9,87 @@ struct edc_session;
 struct edc_config;
 struct edc_task;
 struct edc_scheduler;
-struct edc_task_index_entry; /* uthash entry: task_id → session_id */
-
-/* ── Session Manager ───────────────────────────────────────── */
+struct edc_task_index_entry; /* uthash entry: task_id -> session_id */
 
 struct edc_session_manager
 {
     struct edc_session **sessions; /* dynamic array of session pointers */
-    int session_count;             /* number of active sessions */
-    int active_index;              /* index into sessions[] */
+    int session_count;
+    int active_index; /* index into sessions[] */
 
-    /* Monotonic high-water for session ids, persisted in <workspace>/.session_seq
-     * and advanced by every creation, so an id is NEVER reused — not after
-     * /session remove, not across restarts. Reuse would make a new session land
-     * on a removed one's directory, inheriting its session.json, chat.jsonl and
-     * tasks.idx (stale transcript replay, wrong cross-session task owner). */
+    /* Monotonic high-water for session ids, advanced by every creation and
+     * persisted in <workspace>/.session_seq, so an id is NEVER reused -- reuse
+     * would make a new session inherit a removed one's directory and its
+     * session.json / chat.jsonl / tasks.idx. */
     long long next_session_id;
-    sds sessions_dir;              /* workspace/ — session dirs live here */
-    sds index_path;                /* workspace/sessions.json */
+    sds sessions_dir; /* workspace/ -- session dirs live here */
+    sds index_path;   /* workspace/sessions.json */
     struct edc_config *config;
 
-    /* task_id → session_id for sessions NOT loaded this run, built lazily by
-     * parsing each unloaded session's session.json once. Only ever describes the
-     * frozen on-disk state of unloaded sessions (a session cannot be modified
-     * without being loaded), so loaded sessions always win via the in-memory
-     * lookup and this needs no write-side synchronisation. */
+    /* task_id -> session_id for sessions NOT loaded this run, built lazily by
+     * parsing each unloaded session.json once. It only ever describes the frozen
+     * on-disk state of unloaded sessions, so loaded sessions win via the
+     * in-memory lookup and no write-side sync is needed. */
     struct edc_task_index_entry *task_index;
     bool task_index_built;
 };
 
-/* ── Lifecycle ─────────────────────────────────────────────── */
-
 extern struct edc_session_manager *edc_session_manager_new(struct edc_config *config);
 extern void edc_session_manager_free(struct edc_session_manager *sm);
-
-/* ── Access ────────────────────────────────────────────────── */
 
 extern struct edc_session *edc_session_manager_get_active(struct edc_session_manager *sm);
 extern struct edc_session *edc_session_manager_find(struct edc_session_manager *sm, const char *name_or_id);
 extern int edc_session_manager_index_of(struct edc_session_manager *sm, const char *name_or_id);
 
-/** Find a task by id across **all** sessions.
- *
- *  Task ids are issued by a process-wide monotonic counter persisted in
- *  <workspace>/.task_seq (see edc_scheduler_gen_task_id), so a task id is
- *  globally unique — across sessions and across restarts. A hit is therefore
- *  unambiguous. Only sessions already loaded into memory are searched
- *  (session->groups is populated lazily on first activation).
- *
- *  On success, when |owner_out| is non-NULL it receives the owning session
- *  (so callers can tell whether the hit is in the active session, route a
- *  signal/save to the right session, etc.). On failure |owner_out| is set to
- *  NULL and NULL is returned. */
+/** Find a task by id across all loaded sessions. Task ids come from a process-wide
+ *  monotonic counter persisted in <workspace>/.task_seq, so a hit is unambiguous.
+ *  When |owner_out| is non-NULL it receives the owning session on success, or NULL
+ *  on failure. */
 extern struct edc_task *edc_session_manager_find_task_any(struct edc_session_manager *sm, const char *task_id,
                                                           struct edc_session **owner_out);
 
-/** Owning session of |task_id| when it is not loaded in memory yet, resolved via
- *  a lazily-built in-memory index (task_id → session_id), populated by parsing
- *  each unloaded session's session.json once. Returns NULL if no unloaded
- *  session provides the id. Loaded sessions are intentionally NOT indexed here;
- *  callers search memory first. */
+/** Hand every task in memory to |cb| (session list x group list x member list).
+ *  The only enumeration entry for full-table scans; the order is fixed. Do not add
+ *  or remove tasks/groups from the callback, which is read-only. */
+typedef void (*edc_session_task_visit_fn)(void *ctx, struct edc_task *task);
+extern void edc_session_manager_foreach_task(struct edc_session_manager *sm, edc_session_task_visit_fn cb, void *ctx);
+
+/** Owning session of |task_id| when it is not loaded yet, via the lazily-built
+ *  index. Loaded sessions are not indexed here; callers search memory first. */
 extern struct edc_session *edc_session_manager_session_for_task(struct edc_session_manager *sm, const char *task_id);
 
-/** Drop the cached task-id index; it is rebuilt on the next lookup. Only needed
- *  when persisted session state changed behind the manager's back (tests /
- *  external tooling) — normal flows never invalidate it. */
+/** Drop the cached task-id index (rebuilt on next lookup). Only needed when
+ *  persisted state changed behind the manager's back (tests / external tooling). */
 extern void edc_session_manager_reset_task_index(struct edc_session_manager *sm);
 
-/* ── Operations ────────────────────────────────────────────── */
-
-/** Create a new session (auto-named if name is NULL/empty).
- *  The new session becomes active. Returns the created session. */
+/** Create a session (auto-named when name is NULL/empty) and make it active. */
 extern struct edc_session *edc_session_manager_create(struct edc_session_manager *sm, const char *name);
 
-/** Like edc_session_manager_create, but binds the session to |workdir| (an
- *  existing directory; NULL/empty keeps the default launch directory). A
- *  given-but-unusable directory makes creation fail (returns NULL). */
+/** Like edc_session_manager_create, but binds |workdir| (an existing directory).
+ *  A given-but-unusable directory fails creation. */
 extern struct edc_session *edc_session_manager_create_ex(struct edc_session_manager *sm, const char *name,
                                                          const char *workdir);
 
-/** Switch to a session by name or id. Saves the outgoing session's history;
- *  its state (which needs the scheduler for the foreground group) must be
- *  persisted by the caller before switching. */
+/** Switch to a session by name or id, saving the outgoing session's history. Its
+ *  state must be persisted by the caller first (the foreground group needs the
+ *  scheduler). */
 extern bool edc_session_manager_switch(struct edc_session_manager *sm, const char *name_or_id);
 
-/** Stop (close) a session: save history, remove from active list.
- *  Refuses to stop the last remaining session. */
+/** Close a session: save history, remove from the active list. Refuses to close
+ *  the last remaining session. */
 extern bool edc_session_manager_stop(struct edc_session_manager *sm, const char *name_or_id);
 
-/** Rename a session. */
 extern bool edc_session_manager_rename(struct edc_session_manager *sm, const char *name_or_id, const char *new_name);
 
-/** List all sessions as a formatted string. */
 extern sds edc_session_manager_list(struct edc_session_manager *sm);
 
-/* ── Persistence ───────────────────────────────────────────── */
-
-/** Save the index (sessions.json) and call save on active session. */
+/** Save the index (sessions.json) and then the active session. */
 extern void edc_session_manager_save_all(struct edc_session_manager *sm);
 
-/** Persist the state of every session that was LOADED in this run (exit path).
- *  Sessions created from the index but never activated are skipped on purpose:
- *  their in-memory object is an id/name-only shell, so writing it would clobber
- *  the newer on-disk state — including the session's bound working directory
- *  and all of its groups/tasks. |sched| may be NULL. */
+/** Persist the state of every session LOADED in this run (exit path). Sessions
+ *  taken from the index but never activated are skipped: their in-memory object is
+ *  an id/name-only shell, so writing it would clobber newer on-disk state.
+ *  |sched| may be NULL. */
 extern void edc_session_manager_save_loaded_states(struct edc_session_manager *sm, struct edc_scheduler *sched);
 
 /** Load sessions from sessions.json; creates a `default` session on first run. */

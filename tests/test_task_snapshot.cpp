@@ -6,9 +6,10 @@
 // function in the TUI, so it is unit-testable for the first time.
 //
 // The JSON below is shaped exactly like the producer's output
-// (edc_scheduler.c): session_id / session_name / message_count / created_at /
-// groups -> id / kind / member_count / msg_count / orphaned / fg / tokens_total
-// / tasks -> id / state / leader / active / desc / tokens_* / todos.
+// (edc_scheduler.c): session_id / session_name / workdir / message_count /
+// created_at / groups -> id / kind / member_count / msg_count / orphaned / fg /
+// tokens_total / tokens_prompt / tokens_completion / tokens_cached / ctx_tokens /
+// tasks -> id / state / leader / active / desc / tokens_* / todos.
 #include "edc_task_snapshot.hpp"
 #include "edc_task_widget.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -43,12 +44,15 @@ template <typename T> const T &At(const std::vector<T> &v, size_t i)
 const char *kFull = R"json({
   "session_id": "s7",
   "session_name": "work",
+  "workdir": "/home/u/proj",
   "message_count": 42,
   "created_at": "2026-09-16 05:00:00",
   "groups": [
     {
       "id": "9", "kind": "system", "member_count": 1, "msg_count": 2,
       "orphaned": false, "fg": false, "tokens_total": 30,
+      "tokens_prompt": 10, "tokens_completion": 20, "tokens_cached": 5, "ctx_tokens": 2048,
+      "ctx_estimated": true,
       "tasks": [
         {
           "id": "777", "state": "LLM_PROCESSING", "leader": true, "active": false,
@@ -60,6 +64,8 @@ const char *kFull = R"json({
     {
       "id": "1", "kind": "user", "member_count": 2, "msg_count": 7,
       "orphaned": true, "fg": true, "tokens_total": 100,
+      "tokens_prompt": 70, "tokens_completion": 30, "tokens_cached": 21, "ctx_tokens": 4096,
+      "ctx_estimated": false,
       "tasks": [
         {
           "id": "11", "state": "IDLE", "leader": true, "active": true,
@@ -89,6 +95,7 @@ void TestParseFullSnapshot()
     Check(edc::ParseTaskSnapshot(kFull, &snap), "parses");
     Check(snap.session_id == "s7", "session_id");
     Check(snap.session_name == "work", "session_name");
+    Check(snap.workdir == "/home/u/proj", "workdir");
     Check(snap.message_count == 42, "message_count");
     Check(snap.created_at == "2026-09-16 05:00:00", "created_at");
     Check(snap.groups.size() == 2, "two groups, in snapshot order");
@@ -96,12 +103,18 @@ void TestParseFullSnapshot()
     const edc::TaskGroup &sys = At(snap.groups, 0);
     Check(sys.kind == edc::GroupKind::System, "the system group is marked as such");
     Check(sys.msg_count == 2 && sys.member_count == 1 && sys.tokens_total == 30, "group counters");
+    Check(sys.tokens_prompt == 10 && sys.tokens_completion == 20 && sys.tokens_cached == 5 && sys.ctx_tokens == 2048,
+          "the group's usage roll-up (input / output / cached / current context)");
+    Check(sys.ctx_estimated, "a context that contains an estimate is flagged as such");
     Check(!sys.fg && !sys.orphaned, "group flags");
     Check(sys.tasks.size() == 1 && At(sys.tasks, 0).todos.empty(), "a task with no todo list");
 
     const edc::TaskGroup &user = At(snap.groups, 1);
     Check(user.kind == edc::GroupKind::User, "user group kind");
     Check(user.fg && user.orphaned, "fg / orphaned flags");
+    Check(user.tokens_prompt == 70 && user.tokens_completion == 30 && user.tokens_cached == 21 && user.ctx_tokens == 4096,
+          "the user group's usage roll-up");
+    Check(!user.ctx_estimated, "an anchored context is not flagged");
     Check(user.tasks.size() == 2, "both member tasks");
 
     const edc::TaskInfo &active = At(user.tasks, 0);
@@ -131,7 +144,8 @@ void TestMissingFieldsDegrade()
     // the id: the display layer must still draw the tree.
     const char *minimal = R"json({"groups":[{"id":"1"},{"id":"2","kind":"weird"}]})json";
     Check(edc::ParseTaskSnapshot(minimal, &snap), "parses a minimal snapshot");
-    Check(snap.session_id.empty() && snap.session_name.empty(), "absent root strings -> empty");
+    Check(snap.session_id.empty() && snap.session_name.empty() && snap.workdir.empty(),
+          "absent root strings -> empty");
     Check(snap.message_count == 0, "absent message_count -> 0");
     Check(snap.groups.size() == 2, "groups still there");
     Check(At(snap.groups, 0).group_id == "1" && At(snap.groups, 0).kind == edc::GroupKind::User,
@@ -139,6 +153,9 @@ void TestMissingFieldsDegrade()
     Check(At(snap.groups, 1).kind == edc::GroupKind::User, "unknown kind -> User");
     Check(At(snap.groups, 0).tasks.empty() && At(snap.groups, 0).msg_count == 0, "absent arrays/counters -> empty/0");
     Check(!At(snap.groups, 0).fg && !At(snap.groups, 0).orphaned, "absent flags -> false");
+    Check(At(snap.groups, 0).tokens_prompt == 0 && At(snap.groups, 0).tokens_completion == 0 &&
+              At(snap.groups, 0).tokens_cached == 0 && At(snap.groups, 0).ctx_tokens == 0,
+          "absent group usage -> 0 (an older producer draws no usage line)");
 
     // Right-shaped but ill-typed values (a string where a number belongs) must
     // not poison the rest of the parse.
@@ -205,11 +222,19 @@ void TestParsedSnapshotRenders()
     }
 
     Check(frame.find("Group 1") != std::string::npos, "the user group's header is drawn");
-    Check(frame.find("Group 9") != std::string::npos, "the system group's header is drawn");
+    Check(frame.find("System") != std::string::npos, "the system group's header reads \"System\"");
+    Check(frame.find("Group 9") == std::string::npos, "it does not read as an ordinary group");
     Check(frame.find("11") != std::string::npos, "task 11's row is drawn");
-    Check(frame.find("777") != std::string::npos, "the system task's row is drawn");
+    Check(frame.find("777") == std::string::npos,
+          "the system group starts folded (its fold tasks are one click away, not in the tree)");
     Check(frame.find("2 groups") != std::string::npos && frame.find("3 tasks") != std::string::npos,
           "the header counts both groups and all three tasks");
+    Check(frame.find("↑70 ↓30") != std::string::npos,
+          "the group's usage line reaches the frame (input / output)");
+    Check(frame.find("30.0%") != std::string::npos, "and the hit rate derived from cached / input");
+    Check(frame.find("ctx 4.1k") != std::string::npos, "and the current context width (anchored: no mark)");
+    /* The estimated mark (`ctx ~…`) is covered by test_task_widget's footer case:
+     * a folded group draws no footer, and the system group is folded here. */
 }
 
 } // namespace

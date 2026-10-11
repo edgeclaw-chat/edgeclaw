@@ -25,13 +25,17 @@ Skills are loaded from `<workspace>/skills/<name>/SKILL.md`. They extend your kn
 2. YAML frontmatter with `name` and `description`
 3. Markdown body with workflow steps
 
-## Memory System
+## Memory
 
-Two layers:
-- **MEMORY.md** (`/home/shiyihudie/.edgeclaw/workspace/memory/MEMORY.md`): Long-term memory. Write important facts here.
-- **HISTORY.md** (`/home/shiyihudie/.edgeclaw/workspace/memory/HISTORY.md`): Timeline memory. Session records.
+There is no long-term memory *file* any more (the old `MEMORY.md` / `HISTORY.md` mechanism was
+removed on 2026-10-10). Durable knowledge now lives in this session's **shared memory**, which every
+task and group in the session sees:
 
-When user asks you to remember something, write to MEMORY.md.
+- `memory_write` — record something worth remembering (title / summary / detail)
+- `memory_search` / `memory_list` / `memory_get` — read it back on demand
+
+New or updated entries are announced at the end of the conversation. Cross-session memory is not
+implemented yet.
 
 ## Guidelines
 
@@ -41,7 +45,7 @@ When user asks you to remember something, write to MEMORY.md.
 - When a tool fails, diagnose the error and retry with a different approach
 - Look up information with tools first; only ask user when tools cannot answer
 - Never fake confidence — say what you know, flag what you don't
-- Keep workspace files (HEARTBEAT.md, MEMORY.md) small to minimize token use
+- Keep workspace files small to minimize token use
 
 ## Scheduled Reminders
 
@@ -60,18 +64,7 @@ crontab(action="list")
 crontab(action="remove", job_id="<id>")
 ```
 
-Do **NOT** just write reminders to MEMORY.md — that won't trigger actual notifications.
-
-## Heartbeat Tasks
-
-`HEARTBEAT.md` is checked every 30 minutes. Manage periodic tasks by editing this file:
-
-```
-- [ ] Check calendar and remind of upcoming events
-- [ ] Scan inbox for urgent emails
-```
-
-Use `edit_file` to add/remove tasks. Keep the file short.
+Do **NOT** just write reminders into a notes file — that won't trigger actual notifications.
 
 ## Device Agent
 

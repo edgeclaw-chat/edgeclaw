@@ -1,13 +1,141 @@
 #include "edc_context.h"
-#include "edc_datetime_utils.h"
 #include "edc_file_utils.h"
 #include "edc_skills.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
+#include "edc_token_estimate.h"
 #include "log.h"
 #include "sds.h"
+#include "utlist_fix.h"
 
-const char *BOOTSTRAP_FILES[] = {"AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"};
+/* 只有"契约性、且不与人设重复"的文件留在提示词里 (2026-10-10 精简):
+ *   - AGENTS.md  —— 行为契约 (工具/技能/记忆/事件约定)
+ *   - TOOLS.md   —— 工具速查
+ *   - IDENTITY.md—— 可选的身份覆盖 (缺省不存在)
+ * SOUL.md / USER.md 已从提示词与种子工作区里去掉: 前者的原则/执行细则与 AGENTS.md、各工具
+ * 描述、以及 dtbo-debug 这类技能重复; 后者是一份**全空的模板** (没有任何真实字段), 纯噪声。
+ * pi 里也没有这两个东西 (它的身份是代码里的 preamble, 用户画像靠 AGENTS.md/追加文本)。 */
+const char *BOOTSTRAP_FILES[] = {"AGENTS.md", "TOOLS.md", "IDENTITY.md"};
+
+/* pi 的"上下文文件"候选 (docs/pi-system-prompt-guide.md §3.6): **同一目录里只取优先级最高的
+ * 那一个**; override 只压制同目录, 不压制别的目录。 */
+static const char *CONTEXT_FILE_CANDIDATES[] = {"AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md",
+                                                "CLAUDE.MD"};
+
+/* 读一个上下文文件; 读不到返回 NULL (不报错 —— "没有"是正常情况, pi 那边整段都不出现)。 */
+static sds read_context_file(const char *path)
+{
+    EdcError *err = NULL;
+    sds content = edc_file_read(path, &err);
+    if (!content)
+    {
+        if (err)
+            edc_error_free(err);
+        return NULL;
+    }
+    return content;
+}
+
+/* 追加一个文件 (带 pi 的 <project_instructions path="…"> 包裹); 空内容/重复路径都跳过。
+ * `seen` 是我们已经收过的路径表 (去重: 工作目录就是 workspace 时别把 AGENTS.md 收两遍)。 */
+static void append_context_file(sds *out, sds *seen, size_t *seen_n, const char *path)
+{
+    for (size_t i = 0; i < *seen_n; i++)
+    {
+        if (seen[i] && strcmp(seen[i], path) == 0)
+            return;
+    }
+    sds content = read_context_file(path);
+    if (!content || sdslen(content) == 0)
+    {
+        if (content)
+            sdsfree(content);
+        return;
+    }
+    *out = sdscatprintf(*out, "<project_instructions path=\"%s\">\n%s\n</project_instructions>\n\n", path, content);
+    sdsfree(content);
+    if (*seen_n < 64)
+        seen[(*seen_n)++] = sdsnew(path);
+}
+
+/* "Project Context" 段: 用户全局一份 + 从 session 的工作目录向上遍历到根 (先广后专)。
+ * 一个都没命中 ⇒ 返回空串 (段就不出现, 与 pi 一致)。`skip` = 配置里关掉。 */
+static sds load_project_context(const char *workspace, const char *workdir, bool skip)
+{
+    if (skip)
+        return sdsempty();
+
+    sds seen[64];
+    size_t seen_n = 0;
+    /* workspace 里的 bootstrap 文件已经在别处收过了 —— 记下来免得重复。 */
+    for (size_t i = 0; i < sizeof(BOOTSTRAP_FILES) / sizeof(BOOTSTRAP_FILES[0]) && seen_n < 64; i++)
+        seen[seen_n++] = edc_path_join(workspace, BOOTSTRAP_FILES[i], NULL);
+
+    sds body = sdsempty();
+
+    /* ① 用户全局 (pi: ~/.pi/agent/AGENTS.md; 我们: ~/.edgeclaw/AGENTS.md) */
+    sds bc_home = edc_config_resolve_bc_home();
+    sds global = edc_path_join(bc_home, "AGENTS.md", NULL);
+    append_context_file(&body, seen, &seen_n, global);
+    sdsfree(global);
+    sdsfree(bc_home);
+
+    /* ② 从 workdir 向上遍历 (收进数组, 再按 根 → workdir 的顺序输出) */
+    if (workdir && workdir[0])
+    {
+        sds dirs[64];
+        size_t n = 0;
+        sds cur = sdsnew(workdir);
+        while (n < 64)
+        {
+            dirs[n++] = sdsdup(cur);
+            sds parent = edc_path_dirname(cur);
+            /* 到根了 (dirname 不再变) 或 dirname 失败 ⇒ 停 */
+            if (!parent || strcmp(parent, cur) == 0)
+            {
+                sdsfree(parent);
+                break;
+            }
+            sdsfree(cur);
+            cur = parent;
+        }
+        sdsfree(cur); /* 退出时 cur 还没被释放 (break 那条路) —— 见上面每步先 free 旧的 */
+
+        for (size_t i = n; i-- > 0;)
+        {
+            for (size_t c = 0; c < sizeof(CONTEXT_FILE_CANDIDATES) / sizeof(CONTEXT_FILE_CANDIDATES[0]); c++)
+            {
+                sds path = edc_path_join(dirs[i], CONTEXT_FILE_CANDIDATES[c], NULL);
+                sds content = read_context_file(path);
+                if (content && sdslen(content) > 0)
+                {
+                    sdsfree(content);
+                    append_context_file(&body, seen, &seen_n, path);
+                    sdsfree(path);
+                    break; /* 同一目录只取优先级最高的那一个 */
+                }
+                if (content)
+                    sdsfree(content);
+                sdsfree(path);
+            }
+        }
+        for (size_t i = 0; i < n; i++)
+            sdsfree(dirs[i]);
+    }
+
+    for (size_t i = 0; i < seen_n; i++)
+        sdsfree(seen[i]);
+
+    if (sdslen(body) == 0)
+    {
+        sdsfree(body);
+        return sdsempty();
+    }
+    sds section = sdsnew("## Project Context\n\nProject-specific instructions and guidelines:\n\n");
+    section = sdscatsds(section, body);
+    sdsfree(body);
+    return section;
+}
 
 static void sds_replace_all(sds *s, const char *find, const char *replacement)
 {
@@ -26,7 +154,7 @@ static void sds_replace_all(sds *s, const char *find, const char *replacement)
     *s = result;
 }
 
-static sds edc_context_get_identity(const char *os_name, const char *time, const char *workspace, const char *workdir)
+static sds edc_context_get_identity(const char *os_name, const char *workspace, const char *workdir)
 {
     const char *identity_fmt = "# EdgeClaw\n"
                                "You are EdgeClaw, a helpful AI assistant. You have access to tools "
@@ -37,8 +165,6 @@ static sds edc_context_get_identity(const char *os_name, const char *time, const
                                "- Send messages to users on chat channels\n"
                                "\n- Spawn subagents for complex background tasks\n"
                                "\n"
-                               "## Current Time\n"
-                               "{{time}}\n"
                                "## OS Name\n"
                                "{{os_name}}"
                                "\n"
@@ -46,8 +172,6 @@ static sds edc_context_get_identity(const char *os_name, const char *time, const
                                "{{cwd}}\n"
                                "## Workspace\n"
                                "Your workspace is at: {{workspace}}\n"
-                               "- Memory files: {{workspace}}/memory/MEMORY.md\n"
-                               "- Timeline memory: {{workspace}}/memory/HISTORY.md\n"
                                "- Custom skills: {{workspace}}/skills/{{skill-name}}/SKILL.md\n"
                                "\n"
                                "IMPORTANT: When responding to direct questions or conversations, "
@@ -59,8 +183,9 @@ static sds edc_context_get_identity(const char *os_name, const char *time, const
                                "\n"
                                "Always be helpful, accurate, and concise. When using tools, explain "
                                "what you're doing.\n"
-                               "When remembering something, write to "
-                               "{{workspace}}/memory/MEMORY.md\n\n";
+                               "\n"
+                               "This prompt carries no clock: when you need the current date or time, run "
+                               "`date` (or check the OS).\n\n";
 
     /* The session's bound working directory is the "current directory" the
      * model is told about; unbound sessions fall back to the process cwd. */
@@ -68,7 +193,6 @@ static sds edc_context_get_identity(const char *os_name, const char *time, const
     sds identity = sdsnew(identity_fmt);
     sds_replace_all(&identity, "{{os_name}}", os_name);
     sds_replace_all(&identity, "{{cwd}}", cwd);
-    sds_replace_all(&identity, "{{time}}", time);
     sds_replace_all(&identity, "{{workspace}}", workspace);
     sdsfree(cwd);
 
@@ -149,29 +273,6 @@ static sds edc_context_load_skills(const char *workspace)
     return result;
 }
 
-static sds edc_context_load_memory(const char *workspace)
-{
-    sds memory_file = edc_path_join(workspace, "memory", "MEMORY.md", NULL);
-    EdcError *error = NULL;
-    sds content = edc_file_read(memory_file, &error);
-
-    if (!content)
-    {
-        log_error("load memory failed: %s", error->message);
-        edc_error_free(error);
-        sdsfree(memory_file);
-        return NULL;
-    }
-
-    sds buf = sdsnew("## Memory\n\n### Long-Term Memory\n\n");
-    buf = sdscat(buf, content);
-    buf = sdscat(buf, "\n\n");
-
-    sdsfree(memory_file);
-    sdsfree(content);
-
-    return buf;
-}
 
 /* Compact description of the sandbox's writable / read-only path sets, so the
  * model knows up front which directories it can write and does not waste tool
@@ -195,38 +296,48 @@ static sds edc_context_build_permissions(struct edc_config *conf)
     return out;
 }
 
+/* session 记忆的**唯一**提示：常量文本，零可变内容（没有条数、没有内容、没有 id）。
+ * 放在 system prompt 的**最后** —— 它是模型要看那段长提示（bootstrap/技能可能有几万 token）
+ * 时最后读到的东西，recency 最好；而"条数/内容"由请求期队尾通知带（见 docs/l2-session-memory.md
+ * §1.2.1）。放在这里而不是每次现拼一个块：常量 ⇒ 不碰 prompt cache 前缀。 */
+static const char kSessionMemoryHint[] =
+    "\n## Session Memory\n"
+    "This session keeps a shared memory of durable knowledge (decisions, constraints, gotchas, external facts),\n"
+    "visible to every task in it. Consult it when you need context from earlier work; record what will matter to\n"
+    "other tasks later. Uses:\n"
+    "- `memory_search <keyword>` — find entries (returns one line per hit)\n"
+    "- `memory_list [offset] [n]` — enumerate entries\n"
+    "- `memory_get <id>` — read one entry's full detail\n"
+    "- `memory_write <title> [summary] [detail]` — record durable knowledge\n"
+    "New or updated entries are announced at the end of the conversation. Keep progress logs and todos out of it.\n";
+
 sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir)
 {
     const char *workspace = conf->workspace;
     sds os_name = edc_os_name();
 
-    sds time = edc_datetime_timestamp();
-    sds identity = edc_context_get_identity(os_name, time, workspace, workdir);
+    sds identity = edc_context_get_identity(os_name, workspace, workdir);
     sds permissions = edc_context_build_permissions(conf);
     sds bootstrap = edc_context_load_bootstrap_files(workspace);
-    sds memory = edc_context_load_memory(workspace);
+    /* 上下文文件 (pi §3.6): 用户全局 + 从**这个 session 的工作目录**向上遍历 —— 于是绑定到某个
+     * 项目目录的会话, 会真的吃到那个项目的 AGENTS.md。 */
+    sds project_context = load_project_context(workspace, workdir, conf->skip_context_files);
     sds skills = edc_context_load_skills(workspace);
 
     sds system_prompt = sdsempty();
     system_prompt = sdscat(system_prompt, identity);
     system_prompt = sdscat(system_prompt, permissions);
     system_prompt = sdscat(system_prompt, bootstrap);
-    if (memory)
-    {
-        system_prompt = sdscat(system_prompt, memory);
-    }
+    system_prompt = sdscatsds(system_prompt, project_context);
     system_prompt = sdscat(system_prompt, skills);
+    system_prompt = sdscat(system_prompt, kSessionMemoryHint);
 
     sdsfree(os_name);
 
-    sdsfree(time);
     sdsfree(identity);
     sdsfree(permissions);
     sdsfree(bootstrap);
-    if (memory)
-    {
-        sdsfree(memory);
-    }
+    sdsfree(project_context);
     sdsfree(skills);
 
     return system_prompt;
@@ -392,10 +503,14 @@ cJSON *edc_context_make_todo_reminder(struct edc_task *task)
     return sys;
 }
 
-/* 本次 LLM 请求 "system 部分" (头部) 的唯一组装入口: group memory + system
- * prompt。不含任何 todo 内容——todo 引导一律由 edc_context_make_todo_reminder
- * 生成并塞到请求最末尾。引用/副本/现拼语义见 edc_context.h 注释——与迁移前
- * edc_app_cb_send_llm 的行为字节级一致。 */
+/* 本次 LLM 请求 "system 部分" (头部) 的唯一组装入口: system prompt + group memory。
+ * 不含任何 todo 内容——todo 引导一律由 edc_context_make_todo_reminder 生成并塞到请求
+ * 最末尾。引用/副本/现拼语义见 edc_context.h 注释。
+ *
+ * **顺序 = cache 友好** (2026-10-10 裁决, docs/l2-session-memory.md §3.1): **常量在前,
+ * 易变的在后**。系统提示词在会话内是不动的对象 (rebuild 也是复用同一个 history[0])，而
+ * `## Group Memory` 每次折叠落地都会被重写 —— 它若排在前面, 一变就把后面那份常量一起
+ * 打掉 (整段前缀 miss)。换过来之后, 折叠只作废 "group memory + 未折叠历史" 那一段。 */
 int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct edc_task_group *group,
                                    const char *workdir, sds *out_pristine)
 {
@@ -405,19 +520,7 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
     if (out_pristine)
         *out_pristine = NULL;
 
-    /* 1. GROUP 记忆摘要 (已折叠 turns 的浓缩), 注入所有新 task */
-    if (group && group->memory && sdslen(group->memory) > 0)
-    {
-        cJSON *mem = cJSON_CreateObject();
-        cJSON_AddStringToObject(mem, "role", "system");
-        sds mc = sdscatprintf(sdsempty(), "## Group Memory\n%s", group->memory);
-        cJSON_AddStringToObject(mem, "content", mc);
-        cJSON_AddItemToArray(msgs, mem);
-        sdsfree(mc);
-        appended++;
-    }
-
-    /* 2. system prompt (纯净, 无 todo 注入)
+    /* 1. system prompt (纯净, 无 todo 注入)
      * - group 有历史: 以引用挂 history[0] (不复制)
      * - group 无历史 / group 为空: 现拼纯净 prompt, 经 out_pristine 交还调用
      *   方 (由其决定写回 group history; 写回后后续请求即走引用分支) */
@@ -440,5 +543,123 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
         sdsfree(prompt);
     }
 
+    /* 2. GROUP 记忆摘要 (已折叠 turns 的浓缩)—— 易变的那块放最后 (见函数头注释) */
+    if (group && group->memory && sdslen(group->memory) > 0)
+    {
+        cJSON *mem = cJSON_CreateObject();
+        cJSON_AddStringToObject(mem, "role", "system");
+        sds mc = sdscatprintf(sdsempty(), "## Group Memory\n%s", group->memory);
+        cJSON_AddStringToObject(mem, "content", mc);
+        cJSON_AddItemToArray(msgs, mem);
+        sdsfree(mc);
+        appended++;
+    }
+
     return appended;
+}
+
+/* ── 组上下文规模: pi 的 "anchor + 尾部估算" ──────────────────
+ *
+ * 为什么要锚: 预估器是启发式, 用它估整段上下文会累积误差 (中文尤甚)。provider
+ * 对某一次请求报的 usage 是真值, 而"锚之后追加的东西"才是未知量 —— 把估算的
+ * 误差钉在那一小段上。
+ *
+ * 锚什么时候不可信 (两条都退回"从零估一遍"):
+ *   1. 它早于该组最近一次折叠: 折叠把前缀换成了摘要, 锚记的是换之前那个大前缀;
+ *   2. 它没有位置信息 (last_hist_len == 0): 老存档读回来的锚, 或还没有过应答。
+ *
+ * 已知保守处 (都是"少算", 不虚报): 略去 dep 注入与队尾 todo reminder 这类常量级
+ * 追加; 在跑的成员只算它自己 turn 的增量。 */
+
+/* 一个 turn 从 from 起的估算 (from <= head 时从头算)。 */
+static long long est_turn_from(struct edc_turn *turn, int from)
+{
+    if (!turn)
+        return 0;
+    size_t begin = (from > 0) ? (size_t)from : turn->messages.head;
+    if (begin < turn->messages.head)
+        begin = turn->messages.head;
+    long long total = 0;
+    for (size_t i = begin; i < turn->messages.tail; i++)
+        total += edc_token_estimate_msg(turn->messages.data[i]);
+    return total;
+}
+
+extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool *out_estimated)
+{
+    if (out_estimated)
+        *out_estimated = false;
+    if (!group)
+        return 0;
+
+    long long best = 0;
+    bool best_estimated = false;
+
+    struct edc_task *t;
+    /* 1) 锚 + 尾部 */
+    LL_FOREACH2(group->members, t, group_next)
+    {
+        if (edc_task_is_memory_sink(t))
+            continue; /* 折叠任务不是会话内容 (与折叠账同一口径) */
+        if (t->last_total_tokens <= 0 || t->last_hist_len <= 0)
+            continue; /* 没有锚, 或没有位置 */
+        if (t->last_fold_epoch != group->fold_epoch)
+            continue; /* 锚记的是折叠前那个前缀 */
+
+        long long tail = 0;
+        if (group->history)
+        {
+            size_t n = (size_t)cJSON_GetArraySize(group->history);
+            size_t from = (size_t)t->last_hist_len;
+            if (from < n)
+                tail += edc_token_estimate_msgs(group->history, from, n);
+        }
+        tail += est_turn_from(t->active_turn, t->last_turn_len);
+
+        long long candidate = t->last_total_tokens + tail;
+        if (candidate > best)
+        {
+            best = candidate;
+            best_estimated = (tail > 0);
+        }
+    }
+    if (best > 0)
+    {
+        if (out_estimated)
+            *out_estimated = best_estimated;
+        return best;
+    }
+
+    /* 2) 没有可用锚: 估一遍该组下次请求会带的东西 */
+    long long est = 0;
+    if (group->memory)
+        est += edc_token_estimate_text(group->memory);
+    if (group->history)
+    {
+        size_t n = (size_t)cJSON_GetArraySize(group->history);
+        if (n > 0)
+            est += edc_token_estimate_msg(cJSON_GetArrayItem(group->history, 0)); /* system prompt */
+        /* The history only holds what is still sent (folded messages are pruned
+         * at landing), so the tail starts right after the system prompt. */
+        size_t from = 1;
+        if (from < n)
+            est += edc_token_estimate_msgs(group->history, from, n);
+    }
+    /* 在跑的成员带着自己的 turn; 新起一个任务则不带 —— 取最宽的那个, 与
+     * "组 = 该组最宽的那个对话" 的口径一致。 */
+    long long widest_turn = 0;
+    LL_FOREACH2(group->members, t, group_next)
+    {
+        if (edc_task_is_memory_sink(t))
+            continue;
+        int turn_from = (t->active_turn && t->active_turn->folded_prefix > 0) ? t->active_turn->folded_prefix : 0;
+        long long turn_est = est_turn_from(t->active_turn, turn_from);
+        if (turn_est > widest_turn)
+            widest_turn = turn_est;
+    }
+    est += widest_turn;
+
+    if (out_estimated && est > 0)
+        *out_estimated = true;
+    return est;
 }

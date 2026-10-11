@@ -13,39 +13,26 @@
 struct edc_session;
 struct edc_config;
 struct edc_task;
+struct edc_task_move_report;
 
-/* ── Task 状态 ───────────────────────────────────────────────
- *
- * 旧枚举 `edc_task_state` (TASK_IDLE / TASK_WAITING_INPUT / TASK_SUSPENDED / …)
- * 已随过渡桥一起退休 (R3b)。现在: **"在哪一步"是 step, "活着吗"是 life**,
- * 判断走下面那组谓词, 文案走 `edc_task_state_str` (它仍返回旧名字 —— 词表冻结,
- * 但那只是**字符串**, 不再是类型)。见 docs/retire-waiting-input.md §10.5。 */
-
-/* ── step / life: 把"在哪一步"和"活着吗"拆开 ──────────────────
- *
- * runtime-model.md §1.4: 这两件事今天挤在 edc_task_state **一个** enum 里, 于是
- * 落盘时只能靠**粗化**保存 —— 一个正在等工具结果的 task 和一个刚建好还没跑的
- * task, 存下来变成同一个 SUSPENDED, 相位就丢了。resume 只能靠残留物 (工具账本 /
- * active_turn) 顺序探测把相位猜回来。
- *
- * 拆开之后: step 如实落盘、如实读回; life 回答"还活着吗" —— 重启后没有任何东西
- * 在跑, 于是 life 统一成 SUSPENDED, 但**不再动 step**。这是这次改动的全部要点。
- *
- * 两者正交: (step=DONE, life=COMPLETED) 与 (step=AWAIT_EXEC, life=SUSPENDED) 都合法。 */
+/* "Where is it" (step) and "is it alive" (life) are two axes kept apart, so a
+ * phase survives being persisted instead of being coarse-grained into one value.
+ * A suspended task keeps its step: (AWAIT_TOOLS, SUSPENDED) is not running and is
+ * not awaiting tools. The two are orthogonal. */
 typedef enum
 {
-    EDC_TASKSTEP_READY,          /* 就绪, 可以开始 (旧名 AWAIT_INPUT 也归到这里) */
-    EDC_TASKSTEP_AWAIT_DEPS,     /* 在等依赖 */
-    EDC_TASKSTEP_AWAIT_EXEC,     /* 在等 LLM (executor) 回话 */
-    EDC_TASKSTEP_AWAIT_TOOLS,    /* 在等工具结果 */
-    EDC_TASKSTEP_AWAIT_RESOURCE, /* 在等资源锁 (P1 起预留) */
-    EDC_TASKSTEP_DONE,           /* 这一步走完了 */
+    EDC_TASKSTEP_READY,          /* ready to run */
+    EDC_TASKSTEP_AWAIT_DEPS,     /* waiting on dependencies */
+    EDC_TASKSTEP_AWAIT_EXEC,     /* waiting on the executor's LLM reply */
+    EDC_TASKSTEP_AWAIT_TOOLS,    /* waiting on tool results */
+    EDC_TASKSTEP_AWAIT_RESOURCE, /* waiting on a resource slot (reserved) */
+    EDC_TASKSTEP_DONE,           /* this step is over */
 } edc_task_step;
 
 typedef enum
 {
-    EDC_LIFE_ALIVE,     /* 活着 */
-    EDC_LIFE_SUSPENDED, /* 挂起: 用户 Ctrl+Z, 或重启后没有东西在跑 */
+    EDC_LIFE_ALIVE,
+    EDC_LIFE_SUSPENDED, /* Ctrl+Z, or nothing is running after a restart */
     EDC_LIFE_COMPLETED,
     EDC_LIFE_CANCELLED,
     EDC_LIFE_ERROR,
@@ -56,211 +43,198 @@ extern const char *edc_task_life_name(edc_task_life life);
 extern edc_task_step edc_task_classify_step(const char *name);
 extern edc_task_life edc_task_classify_life(const char *name);
 
-/* ── sink / lifetime: 与 step、life 正交的两件事 ──────────────
- *
- * runtime-model.md §1.4 把这件事说得很直白: `step` / `life` / `sink` / `lifetime`
- * / `kind` 是**五个正交互质的**, 回答五个不同问题 —— 在哪 / 活着吗 / 结果给谁 /
- * 要不要活过重启 / 属于哪一类(展示)。它们各有**唯一**的读者, 所以谁都不许拿别人
- * 的字段做分支 (core 尤其不许; 那是老 `is_system` 的死因)。
- *
- * 这五个名字过去被**挤进 `edc_task_state` 一个 enum**。step/life 已经拆出来了
- * (P2/R3b); sink/lifetime 在这里补上 —— 它们是为 **system task** 准备的:
- * fold 是一个"把产出写进 group 记忆、活不过重启"的任务, 以前这个角色由一条
- * 专用协议 (`BC_ACTOR_MSG_GROUP_FOLD` / `_DONE`) 加一个专用 actor 扮演。 */
-
-/* 产出去向。读者: executor (决定结果送到哪 / 占不占完成序号) 与**镜像装配**
- * ("这次调用带不带工具定义" —— 那是镜像装配自己的问题, 也是规则 6 指定它唯一
- * 能认识工具的地方)。**不是"唯一读者", 而是"同一条规则的必然推论"** ——
- * 判据见 runtime-model.md §5 规则 7: 拥有权与依赖方向, 不是读者数。 */
+/* Two more orthogonal axes: where the output goes, and whether the task must
+ * survive a restart. Defaults (CHANNEL, PERSISTENT) describe a user task; only a
+ * system task flips them, and that combination is the whole reason a fold needs
+ * neither a private protocol nor a hidden flag. */
 typedef enum
 {
-    EDC_SINK_CHANNEL,      /* 产出回给用户 —— 用户任务的默认 */
-    EDC_SINK_GROUP_MEMORY, /* 产出交给所属 group 的记忆 —— fold 用 */
+    EDC_SINK_CHANNEL,        /* output goes back to the user */
+    EDC_SINK_GROUP_MEMORY,   /* output becomes the group's memory (L1 fold) */
+    EDC_SINK_SESSION_MEMORY, /* output becomes session memory entries (L2 curation) */
 } edc_sink;
 
-/* 是否需要活过重启。当前 4 处读者都是同一条规则的推论 (见 runtime-model.md §5
- * 规则 7): ①落盘 (edc_state_serializer.c) ②完成即回收 (scheduler 的回收队列 ——
- * 生命周期策略的家就在这里) ③不进折叠账 (edc_task_is_foldable) ④不顶折叠阈值
- * (edc_task_group.c)。**core 不得据此隐藏/跳过任何任务**。 */
-typedef enum
-{
-    EDC_LIFETIME_PERSISTENT, /* 落盘, 重启后还在 —— 用户任务的默认 */
-    EDC_LIFETIME_TRANSIENT,  /* 不落盘、完成即回收 —— system task */
-} edc_lifetime;
-
 extern const char *edc_task_sink_name(edc_sink sink);
+extern void edc_task_memo_commit(struct edc_task *task);
 extern edc_sink edc_task_classify_sink(const char *name);
-extern const char *edc_task_lifetime_name(edc_lifetime lifetime);
-extern edc_lifetime edc_task_classify_lifetime(const char *name);
 
-/** 是否是"不落盘、完成即回收"的 system task (只看 lifetime)。 */
-extern bool edc_task_is_transient(const struct edc_task *task);
+/* 产出不是给用户看的, 而是写进某种记忆 (折叠 / 策展)。这类 task 的共同形状:
+ * 请求自足 (只带自己的说明 + 自己的 turn)、不占完成序 (`completion_seq = 0`)、
+ * 不算对话内容 (不进组历史 / 不进折叠语料 / 不进 ctx 宽度)。 */
+extern bool edc_task_is_memory_sink(const struct edc_task *task);
 
-
-/* ── 信号 ──────────────────────────────────────────────────── */
 
 typedef enum
 {
-    TASK_SIGTERM, /* 优雅取消：取消 in-flight 请求，通知依赖者 */
-    TASK_SIGKILL, /* 强制取消：不通知依赖者，deps_total 不减 */
+    TASK_SIGTERM, /* graceful cancel: cancel in-flight requests, notify dependents */
+    TASK_SIGKILL, /* force cancel: no notification, deps_total untouched */
 } edc_task_signal;
 
-/* ── Task 间依赖 ─────────────────────────────────────────────
- * edc_task_dep_type 定义在 core/edc_task_types.h 中 */
+/* edc_task_dep_type is defined in edc_task_types.h */
 
 struct edc_task_dep
 {
-    struct edc_task *source; /* 依赖的源 task */
-    struct edc_task *target; /* 被依赖的目标 task (this) */
+    struct edc_task *source;
+    struct edc_task *target; /* the dependent task (this) */
     edc_task_dep_type type;
-    bool completed;            /* 已完成 */
-    bool cancelled;            /* 已取消 */
-    bool injected;             /* 已注入到 LLM 上下文 */
-    struct edc_task_dep *next; /* 单链表 (在 target 的 deps 链上) */
+    bool completed;
+    bool cancelled;
+    bool injected;
+    struct edc_task_dep *next;
 };
 
-/* ── Tool 调用跟踪 (resume 账本) ─────────────────────────────
- * 只记录"尚未执行完"的工具调用, 供进程中断后 resume 判定:
- *   - PENDING   : 尚未派发给工具箱 → 重新执行;
- *   - EXECUTING : 已派发、结果未回 → 补一条"中途被中断"的响应。
- * 工具一旦返回结果即从表中删除 —— 表只跟踪未完成的工具。
- * 链序即执行序 (toolbox 顺序执行), 故任一时刻至多一条头部为 EXECUTING。 */
-
+/* Resume ledger of tool calls that have not finished. List order is execution
+ * order, so at most the head can be EXECUTING; a record is removed as soon as its
+ * result arrives. */
 typedef enum
 {
-    TOOL_CALL_PENDING = 0,   /* 未派发 */
-    TOOL_CALL_EXECUTING = 1, /* 已派发, 结果未回 */
+    TOOL_CALL_PENDING = 0,   /* not dispatched */
+    TOOL_CALL_EXECUTING = 1, /* dispatched, no result yet */
 } edc_tool_call_status;
 
 struct edc_tool_call_record
 {
-    sds call_id; /* LLM 侧 tool_call_id, 用于响应回填/查表 */
-    sds name;    /* 工具名 */
-    cJSON *args; /* 调用参数 (重新执行时重建 req 用, 可为 NULL) */
+    sds call_id; /* LLM-side tool_call_id, for matching the response */
+    sds name;
+    cJSON *args; /* kept to rebuild the request on resume; may be NULL */
     edc_tool_call_status status;
-    struct edc_tool_call_record *next; /* 单链表, 顺序即派发顺序 */
+    struct edc_tool_call_record *next;
 };
-
-/* ── Task ──────────────────────────────────────────────────── */
 
 struct edc_task
 {
-    char *task_id;    /* PID — 唯一标识 */
-    char *group_id;   /* PGID — 所属 group (leader 的 task_id) */
-    char *session_id; /* SID — 所属 session */
+    char *task_id;    /* PID */
+    char *group_id;   /* PGID -- the leader's task_id */
+    char *session_id; /* SID */
 
-    char *description;    /* 用户可见描述 */
-    /* ── 用户输入 (这个 task 是怎么来的) ──────────────────────
-     * `raw_input` = 用户**敲的原文** (前端发过来的那条, shell parser 之前);
-     * parser 之后的输入是 turn 的第一条 user 消息 (`"""x"""` → `x` 才进 turn)。
-     * 两份都留在 task 上: 原文是"这条回显属于谁"的凭据 —— 任务**建成的那一刻**
-     * kernel 带着它发"任务已创建"事件, 前端据此把用户敲的那条绑定到本任务, 于是
-     * 归属的权威在 kernel, 而不是前端按日志顺序去猜。
-     * NULL = 这个 task 不是由某条用户输入建的 (fold 的 system task、fork 的孩子、
-     * 单测直接建的)。纯内存: 转录已经记着那条回显, 重启不需要它。 */
+    char *description; /* user-visible */
+    /* The raw text the user typed, before the shell parser (the parsed form is
+     * the turn's first user message). Kept so the kernel can bind a task-created
+     * event to that echo; memory-only. NULL when the task was not created from a
+     * user input (fold's system task, a fork child, a test fixture). */
     sds raw_input;
-    /* 在哪一步 / 活着吗 —— 拆开之后相位才能如实保存, 且落盘时不再被粗化。
-     *
-     * **这里是"任务在哪一步"的唯一来源** (runtime-model.md §8 判据 4)。过渡期那层
-     * `edc_task_state state` 镜像已在 R3a 删掉: 它曾经只是"让 60 多处旧读法一行不用改"
-     * 的脚手架, 而读侧与转移表都已改以 (step, life) 为键 (见 docs/retire-waiting-input.md
-     * §10)。旧词表仍在, 但只作**显示名** (`edc_task_state_str`) 与过渡桥的输入,
-     * 由 (step, life) 派生 —— 不再有第二份副本可以漂移。 */
+    /* The single source of truth for "where is this task". */
     edc_task_step step;
     edc_task_life life;
 
-    /* 与上面两个同理, 但回答的是另外两个问题 (见本文档顶部那两个 enum):
-     * 产出给谁 (sink) / 要不要活过重启 (lifetime)。默认 (CHANNEL, PERSISTENT)
-     * 就是用户任务; 只有 system task 会把它们改成 (GROUP_MEMORY, TRANSIENT),
-     * 而那个组合的全部意义是: **fold 不需要专用协议, 也不需要隐藏**。 */
     edc_sink sink;
-    edc_lifetime lifetime;
 
-    int is_group_leader; /* 是否是 group leader */
-    int auto_reap;       /* 完成后自动回收 (前台输入任务) */
+    int is_group_leader;
 
-    struct edc_task_group *group; /* 所属 group */
+    struct edc_task_group *group;
 
     EdcQueue turns;               /* FIFO: struct edc_turn* */
-    struct edc_turn *active_turn; /* 当前活跃 turn */
+    struct edc_turn *active_turn; /* the turn in progress */
 
-    void *current_request_id; /* 发往 actor 的 request_id */
-    int cancelled_request;    /* 标记请求已取消 */
+    void *current_request_id; /* request_id sent to an actor */
+    int cancelled_request;    /* request marked cancelled */
 
-    /* ── max_iter 迭代预算 ──
-     * llm_rounds: 当前 turn (一次用户输入) 已发出的 LLM 请求数 —— 调度器
-     * 每次调用 send_llm 时加一 (入口输入、依赖排队的自动触发、工具链续发)。
-     * 工具链结束后若达到 config->max_iter 上限 (max_iter > 0), 调度器不再
-     * 续发 LLM, 以收尾消息终结本轮, 防止模型在工具循环里空转烧预算。
-     * max_iter <= 0 (含 -1 = 无限, 默认) 表示不限制。新一轮输入开始时
-     * 清零 (scheduler)。 */
+    /* LLM requests issued for the current turn, incremented by the scheduler on
+     * every send_llm. At max_iter the chain is no longer continued. Reset to 0
+     * when a new input starts. max_iter <= 0 means unlimited. */
     int llm_rounds;
 
-    /* ── Token 消耗统计 ──
-     * 该 task 生命周期内所有 LLM 响应的 usage 累加值。一次用户输入可能触发
-     * 多轮请求 (工具链续发、依赖触发), 同 turn 内每次 API 调用的 usage 都
-     * 计入本 task; 跨 turn 持续累加, 直到 task 被回收。纯本地统计, 用于
-     * 侧边栏按 task 展示 token 消耗, 不参与调度决策。 */
-    long long tokens_prompt;     /* 累计 prompt tokens */
-    long long tokens_completion; /* 累计 completion tokens */
-    long long tokens_total;      /* 累计 total tokens */
-    long long tokens_cached;     /* 累计命中 provider 缓存的 prompt tokens */
+    /* Usage accumulated over the task's whole lifetime, for the sidebar; not used
+     * for scheduling. */
+    long long tokens_prompt;
+    long long tokens_completion;
+    long long tokens_total;
+    long long tokens_cached;
+
+    /* How big the conversation had grown after the most recent reply: that
+     * response's usage.total_tokens (its prompt *and* its completion) -- what was
+     * sent plus what came back. Deliberately NOT accumulated: it answers "how big
+     * is this conversation now", while the counters above answer "what has it
+     * cost so far". 0 = no response with usage has come back yet.
+     *
+     * It is the provider's count for that round trip, not a measurement of a
+     * request: it is a sum of two counts, so a provider that folds reasoning
+     * content into completion_tokens (which need not be sent back) makes it a
+     * slight over-estimate of what the next request will carry. */
+    long long last_total_tokens;
+
+    /* Where that reply sat in the group's context, so the tail appended after it
+     * can be estimated instead of guessed: the group history length and the
+     * active turn's message count when the reply came back, and the group's fold
+     * epoch then.
+     *
+     * Two ways an anchor is unusable, both falling back to estimating the whole
+     * context: its epoch is behind the group's (a fold landed after it, so it
+     * counted a prefix that no longer gets sent), or hist_len == 0 (no position
+     * recorded: an older file read back, or no reply yet). */
+    uint32_t last_fold_epoch;
+    int last_hist_len;
+    int last_turn_len;
+
+    /* ── L2 (session 记忆): 水位 ─────────────────────────────────────
+     * `memo_seen_seq` = 这个 task 已经"看过"到 session 记忆事件表的哪个 seq。
+     * 装配时取 `seq > memo_seen_seq` 的差集当补丁 (见 docs/l2-session-memory.md
+     * §3); 请求发出后的簿记里推进 (取消/失败**不**推进 ⇒ 下次重发同一补丁)。
+     *
+     * 出生点由 session 采纳: `memo_seen_seq = session->memo->next_seq` —— 新 task
+     * 第一轮就拿到全量索引, 所以"补丁"对它没有信息量。老存档 (迁移) 读回 0,
+     * 而迁移后的表也是空的 (next_seq = 0), 两者一致。
+     *
+     * `last_prefix_tokens` = 锚定时 session 记忆块 + 补丁的估算 token (P4b 起启用):
+     * ctx 估算要补 `max(0, prefix_now - last_prefix_tokens)`, 否则常驻块长大后会
+     * 系统性晚折。P4a 只落盘这个字段, 还没有读者。 */
+    uint64_t memo_seen_seq;
+    uint64_t last_prefix_tokens;
+
+    /* 上一次请求**装进去**的最大事件 seq (只在内存, 不落盘)。响应真的回来后
+     * (`edc_task_memo_commit`) 才把它提升成 `memo_seen_seq` —— 取消/失败的请求
+     * 丢了通知, 水位不动, 下一次请求会重发同一条 (见 edc_task_memo_commit)。 */
+    uint64_t memo_notice_seq;
 
     edc_channel_type channel_type;
 
     cJSON *todos; /* JSON Array */
 
-    /* ── Todo 同步节流 ──
-     * todo_sync_gap: 距上次 todowrite 成功调用以来的 LLM 请求数
-     * (每次为该 task 组装一次 LLM 请求即 +1, 见 edc_task_llm_request_poke)。
-     * 达 EDC_TODO_SYNC_REMIND_GAP 仍未同步 → 该次请求队尾 append 一条
-     * system reminder 提醒调用 todowrite, 并清零重新计数 —— 避免
-     * 每轮请求都带 reminder 的唠叨, 也保证模型长时间闷头干活不更新清单时
-     * 能被周期性唤醒。 */
-    int todo_sync_gap; /* >= EDC_TODO_SYNC_REMIND_GAP 时触发提醒 (达阈值自动清零) */
+    /* LLM requests since the last successful todowrite; at the threshold a single
+     * system reminder is appended to the request and the counter resets. */
+    int todo_sync_gap;
 
-    /* ── Fork 上下文继承 ── */
-    struct edc_task *forked_from; /* 父 task (NULL = 非 fork) */
-    uint32_t fork_point_completion_seq; /* fork 点: 父组的提交序水位 (仅元数据, 上下文切片由合成 turn 快照负责) */
+    struct edc_task *forked_from;       /* parent (NULL = not a fork) */
+    uint32_t fork_point_completion_seq; /* parent's completion watermark at the fork point */
 
-    /* ── Subagent / Prompt 绑定 ── */
-    sds prompt;      /* 自定义 system prompt (NULL = 用默认) */
-    sds prompt_name; /* prompt 名称 (如 "code-reviewer") */
+    sds prompt;      /* custom system prompt (NULL = default) */
+    sds prompt_name; /* e.g. "code-reviewer" */
 
-    /* ── Task IPC ── */
-    struct edc_task_dep *deps;       /* 我依赖谁 */
-    struct edc_task_dep *dependents; /* 谁依赖我 */
-    size_t deps_total;               /* 总依赖数 */
-    size_t deps_completed;           /* 已完成依赖数 */
-    sds output;                      /* 本 task 最终输出 (供 JOIN 注入) */
+    struct edc_task_dep *deps;       /* whom I depend on */
+    struct edc_task_dep *dependents; /* who depends on me */
+    size_t deps_total;
+    size_t deps_completed;
+    sds output; /* final output, injected into a JOIN dependent */
 
-    uint32_t completion_seq; /* 完成顺序 (0=未完成) */
-    int has_deferred_vars;   /* $VAR 引用待展开 */
-    bool turns_folded;       /* turns 已折叠进 group memory (摘要) */
+    uint32_t completion_seq; /* completion order (0 = not finished) */
+    int has_deferred_vars;   /* $VAR references to expand */
 
-    /* ── 未完成工具调用 (resume 账本) ── */
     struct edc_tool_call_record *tool_calls;
 
-    /* ── 输出重定向 ── */
-    sds redirect_stdout;  /* > / >> file */
-    sds redirect_stderr;  /* 2> file */
+    sds redirect_stdout;
+    sds redirect_stderr;
     bool redirect_append; /* true = >>, false = > */
 
-    /* ── 产出目标 (sink = GROUP_MEMORY 的 system task 用) ──
-     * fold 任务的产出不是一条回话, 而是**某个组的记忆**: 写进哪个组、本轮折到
-     * 哪个水位 (completion_seq 上限, 与折叠 prompt 里选中的那批任务一致)。
-     * 两者都由触发折叠的一侧填好 (见 edc_group_fold.c); 任务自己不解释它们,
-     * executor 只转交 (ops->deliver_group_memory), 落地在 scheduler。
-     * TRANSIENT 任务不落盘, 所以这两个字段按 id 存没有必要 —— 是纯内存的。 */
+    /* Output target for a sink=GROUP_MEMORY task: which group's memory to write,
+     * and where this round's cut went (P2a-4). The cut is one point in the group's
+     * content order: the member it falls in, its turn, and how many leading messages
+     * of that turn the memory covers. Everything before it is folded whole, nothing
+     * after it is touched. A NULL task id means "no cut" (a fold task written by an
+     * older binary): the landing then has nothing to apply and reports it.
+     * Filled by the folding side; the task itself does not interpret them. */
     struct edc_task_group *sink_group;
-    uint32_t fold_max_seq;
+    char *fold_cut_task_id;
+    uint32_t fold_cut_turn;
+    uint32_t fold_cut_prefix;
 
-    /* ── 链表 ── */
-    struct edc_task *group_next;  /* group 内下一成员 */
-    struct edc_task *prev, *next; /* session 全局链表 */
+    /* Tasks a cancel or a dependency change moved as a side effect (cascaded JOIN,
+     * released SEQUENCE). The task layer does not know the host, so it records them
+     * here for the host to settle through its unified entry. Memory-only. */
+    struct edc_task_move_report *moved_report;
+
+    struct edc_task *group_next;  /* next member within the group */
+    struct edc_task *prev, *next; /* session-wide list */
 };
-
-/* ── 生命周期 ──────────────────────────────────────────────── */
 
 extern struct edc_task *edc_task_new(const char *task_id, const char *session_id, const char *group_id,
                                      const char *desc, edc_channel_type channel_type);
@@ -268,62 +242,46 @@ extern struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_
                                       uint32_t fork_point_completion_seq, edc_channel_type channel_type);
 extern void edc_task_free(struct edc_task *task);
 
-/* ── fork 快照 ────────────────────────────────────────────── */
-
-/** 深拷贝 task 的全部 turn 消息到一个合成快照 turn。
- *  兼容两种态: 未 flush (消息在 turn->messages) 与已 flush (消息在 session->messages,
- *  用 recorded msg_range 定位)。返回 NULL 表示 task 无消息; 调用方负责 edc_turn_free。
- *  用于 fork 规则 2: 当 parent 的 turns 已被 L1 折叠时, 捞回 parent 自己的 turns 全文。 */
+/** Deep-copy all of the task's turn messages into one synthetic snapshot turn.
+ *  Handles both flushed and unflushed messages. NULL when the task has none; the
+ *  caller frees the turn. Used by fork rule 2 to recover a parent's own turns
+ *  after L1 folding. */
 extern struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, struct edc_session *session,
                                                 const char *snapshot_task_id);
 
-/* ── 状态机: 意图命名的写入口 ────────────────────────────────
- *
- * 一次转移同时说清"到哪一步"和"还活着吗"; 调用方说**意图**, 不拼目标态, 状态机以
- * (step, life) 为键校验。返回 false = 该转移不合法 (被状态机拒绝)。
- *
- * 它们取代了 `edc_task_set_state(task, TASK_X)`: 旧写法把两个维度藏在一个 enum
- * 值里, 挂起更是**说不出**目标 step (TASK_SUSPENDED 只动 life)。 */
-extern bool edc_task_await_exec(struct edc_task *task);        /* 已发出 LLM 请求 */
-extern bool edc_task_await_tools(struct edc_task *task);       /* 已发出工具调用 */
-extern bool edc_task_mark_ready(struct edc_task *task);        /* 回就绪 (依赖齐了 / resume) */
-extern bool edc_task_mark_waiting_deps(struct edc_task *task); /* 被依赖挡住, 不派发 */
+/* State machine write points, named by intent: the caller says what it wants, and
+ * (step, life) is validated. Returns false when the transition is rejected. */
+extern bool edc_task_await_exec(struct edc_task *task);        /* LLM request sent */
+extern bool edc_task_await_tools(struct edc_task *task);       /* tool calls sent */
+extern bool edc_task_mark_ready(struct edc_task *task);        /* back to ready */
+extern bool edc_task_mark_waiting_deps(struct edc_task *task); /* blocked by a dependency */
 extern bool edc_task_mark_completed(struct edc_task *task);
+/** Set DONE/ERROR *and* broadcast to dependents (cascade JOIN failures, release
+ *  SEQUENCE), symmetric with edc_task_send_signal. Any caller putting a task into
+ *  ERROR gets the propagation for free. Returns false and does not broadcast when
+ *  the self-transition is rejected. */
 extern bool edc_task_mark_failed(struct edc_task *task);
 extern bool edc_task_mark_cancelled(struct edc_task *task);
-extern bool edc_task_mark_suspended(struct edc_task *task); /* 只动 life: 停在哪一步就停在哪一步 */
+extern bool edc_task_mark_suspended(struct edc_task *task); /* moves life only */
 
-/* 低层原语: 直接说目标态 (校验 / 不校验)。一般调用方用上面的意图函数;
- * 说目标态的是 scheduler 的统一入口与 executor 的 port。
- * `force` 版本**不查转移表** —— 兜底出口要能把任务从死胡同里拽出来。 */
+/* Low-level primitives stating the target state directly. Most callers use the
+ * intent functions above; only the scheduler's unified entry and the executor's
+ * ports state the target. The `force` variant skips the transition table. */
 extern bool edc_task_move(struct edc_task *task, edc_task_step step, edc_task_life life);
 extern void edc_task_force_move(struct edc_task *task, edc_task_step step, edc_task_life life);
 
-/* ── 过渡桥: 已退休 (R3b) ────────────────────────────────────
- *
- * `edc_task_set_state(task, TASK_X)` / `edc_task_force_state(task, TASK_X)` 与
- * `edc_task_state_of` / `edc_task_classify_state` 都删了 —— 说目标态就是直接说
- * (step, life), 中间不再经一层把两个维度折叠起来的词表。 */
-
-/* ── 读侧判定: 直接问 (step, life) ──────────────────────────
- *
- * 旧读法 `t->state == TASK_X` 的每一处, 问的都是下面这些问题之一 —— 换成谓词
- * 之后, 删除过渡镜像时这些调用点**一行都不用再改** (镜像一删, 它们照旧工作)。
- * 这就是"读侧迁移"这件事本身。
- *
- * 每条都带 life 条件, 因为 SUSPENDED **不动 step** (那正是 P2 要保住的东西):
- * 一个"挂起在等工具"的任务是 step=AWAIT_TOOLS && life=SUSPENDED —— 它**不是**
- * running、也不是 awaits_tools。旧词汇里没有"在哪一步"这个维度, 它只显示成
- * SUSPENDED; 谓词必须复现这一条, 否则挂起的任务会被误当成在跑。 */
-static inline bool edc_task_is_alive(const struct edc_task *task) /* 还可能跑: 既没完成/取消/出错, 也没被挂起 */
+/* Read-side predicates. Each carries a life condition because SUSPENDED does not
+ * move step: a task suspended while awaiting tools is (AWAIT_TOOLS, SUSPENDED) and
+ * must not be mistaken for running or awaiting tools. */
+static inline bool edc_task_is_alive(const struct edc_task *task)
 {
     return task && task->life == EDC_LIFE_ALIVE;
 }
-static inline bool edc_task_is_ready(const struct edc_task *task) /* 带着 input 停着, 等着被派发 */
+static inline bool edc_task_is_ready(const struct edc_task *task)
 {
     return task && task->life == EDC_LIFE_ALIVE && task->step == EDC_TASKSTEP_READY;
 }
-static inline bool edc_task_awaits_deps(const struct edc_task *task) /* 被依赖挡住, 不派发 */
+static inline bool edc_task_awaits_deps(const struct edc_task *task)
 {
     return task && task->life == EDC_LIFE_ALIVE && task->step == EDC_TASKSTEP_AWAIT_DEPS;
 }
@@ -343,8 +301,6 @@ static inline bool edc_task_is_suspended(const struct edc_task *task)
 {
     return task && task->life == EDC_LIFE_SUSPENDED;
 }
-/* 两个"在等对方回话"的相位: 等 LLM (executor) / 等工具结果。挂起在等工具的任务
- * 不算 —— 见 edc_task_is_running。 */
 static inline bool edc_task_awaits_exec(const struct edc_task *task)
 {
     return task && task->life == EDC_LIFE_ALIVE && task->step == EDC_TASKSTEP_AWAIT_EXEC;
@@ -353,133 +309,133 @@ static inline bool edc_task_awaits_tools(const struct edc_task *task)
 {
     return task && task->life == EDC_LIFE_ALIVE && task->step == EDC_TASKSTEP_AWAIT_TOOLS;
 }
-/* "停着等驱动": 就绪或等依赖 —— 输入/输出都已装好, 只差一个事件。能接收
- * `/task join` 注入的就是这一类 (见 edc_commands.c)。 */
+/* Parked = ready or waiting on deps: input and output are in place, only an event
+ * is missing. These are the tasks `/task join` can inject into. */
 static inline bool edc_task_is_parked(const struct edc_task *task)
 {
     return edc_task_is_ready(task) || edc_task_awaits_deps(task);
 }
-/* `/task resume` **命令门**: 挂起 (Ctrl+Z / 退出挂起) / 跑失败 / **被取消**。
- *
- * 取消算可续 —— 取消只表示"停下", 不表示"这活没了": 续跑时按消息与账本重新判定该
- * 回到哪一步 (取消那一步已经把 step 压成 DONE, 所以必须重判, 见
- * edc_scheduler_resume_task)。谓词与转移表 (edc_task.c 的 CANCELLED 行) 一致,
- * 命令层不再额外否决。 */
+/* `/task resume` gate: suspended, failed, or cancelled. A cancelled task is
+ * resumable because cancelling only stops it; the resume re-derives the step from
+ * the messages and ledger. */
 static inline bool edc_task_is_resumable(const struct edc_task *task)
 {
     return task && (task->life == EDC_LIFE_SUSPENDED || task->life == EDC_LIFE_ERROR ||
                     task->life == EDC_LIFE_CANCELLED);
 }
 
-/* 对外词汇 —— 快照的 "state" 字段 / 日志 / 命令文案都用它。
- *
- * **词表冻结**: 返回的仍是旧名字 ("IDLE" / "WAITING_DEPS" / "LLM_PROCESSING" ...),
- * 因为它们是 TUI 颜色表、`/task status` 文本与日志的既有输入 (§6 硬规则: 外部行为
- * 一致)。它由 (step, life) **直接派生** (life 先说话), 不再是某个字段的转发;
- * `WAITING_INPUT` 这个词已经不会再出现 (那个相位退休了)。 */
+/* Outward vocabulary for the snapshot's "state" field, logs and command text.
+ * The words are frozen (a TUI colour table, `/task status` and logs read them) and
+ * are derived from (step, life); life speaks first. */
 extern const char *edc_task_state_str(const struct edc_task *task);
 
-/* ── Todo 同步节流 ──────────────────────────────────────────
- * todo reminder 不再每轮请求都塞 (用户 2026-09-09 要求降频): 只有"隔了
- * EDC_TODO_SYNC_REMIND_GAP 条对话 (LLM 请求) 都没调用过 todowrite"
- * 时, 才在该次请求的消息列表末尾 append 一条 system reminder 提醒同步。 */
-
-/* 阈值: 距上次 todowrite 调用 (或上次提醒) 满 EDC_TODO_SYNC_REMIND_GAP
- * 次 LLM 请求仍未同步, 则提醒一次。 */
+/* Distance since the last todowrite, in LLM requests: at the threshold one system
+ * reminder is appended to the request and the counter resets. */
 #define EDC_TODO_SYNC_REMIND_GAP 10
 
-/** todowrite 工具成功调用后调用: 清零节流计数 (重新从 0 计"隔了
- *  多少条对话")。 */
+/** Reset the throttle after a successful todowrite. */
 extern void edc_task_note_todo_sync(struct edc_task *task);
 
-/** 每次为该 task 组装 LLM 请求 (send_llm) 前调用: 计数 +1; 返回 true 表示
- *  已达阈值、本次请求应 append todo reminder (内部已清零, 提醒一次后重新
- *  计数, 直到模型再次调用 todowrite 或再次超距)。 */
+/** Count one more request; true when the threshold was reached and this request
+ *  should carry a todo reminder (the counter is reset here). */
 extern bool edc_task_llm_request_poke(struct edc_task *task);
 
-/* ── Token 统计 ──
- * 累加一次 LLM 响应的 usage 到 task 的 token 账。四元组任一为正即累加;
- * 全 0 (provider 未返回 usage, 或错误响应) 时无操作。total <= 0 时用
- * prompt + completion 兜底 (与解析端一致)。线程/actor 语义: 只由调度器在
- * 处理该 task 的 LLM 响应时调用, 与 task 状态同线程。 */
+/** Add one LLM response's usage to the task's token account. All-zero usage is a
+ *  no-op; total <= 0 falls back to prompt + completion. */
 extern void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long long completion_tokens,
                                long long total_tokens, long long cached_tokens);
-
-/* ── Turn ──────────────────────────────────────────────────── */
 
 extern void edc_task_add_turn(struct edc_task *task, struct edc_turn *turn);
 extern void edc_task_commit_active_turn(struct edc_task *task);
 
-/** 该 task 目前持有的 message 总数: 所有已提交 turn 的 messages 之和, 加上
- *  在途 active_turn 的 messages (若有)。一个 turn 可含多条 message (user +
- *  多轮 assistant/tool 往返), 因此这个数才是"消息数"; 与之相对,
- *  edc_queue_length(&task->turns) 只是已提交的轮数 (当前状态机下恒为 0/1)。 */
+/** Total messages the task holds: committed turns plus the in-flight active turn. */
 extern size_t edc_task_message_count(const struct edc_task *task);
 
-/** 该 task 收到的所有用户输入 (各 turn 里 role=="user" 的消息 content, 以 '\n'
- *  连接)。返回新分配的 sds, 无输入返回 NULL, 调用方负责 sdsfree。用于
- *  /task status 展示 task 实际收到的输入, 而不只是 description。 */
+/** Every user input the task received, joined by '\n'; a fresh sds the caller
+ *  frees, or NULL. */
 extern sds edc_task_user_input(const struct edc_task *task, const cJSON *session_messages);
-
-/* ── 依赖 (IPC) ────────────────────────────────────────────── */
 
 extern bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, edc_task_dep_type type);
 extern void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source);
+/* True while any dependency edge is still outstanding (not completed, not
+ * cancelled). Used by the executor at a request boundary: a task that owes someone
+ * parks instead of sending the next LLM request (the fold barrier). */
+extern bool edc_task_has_unresolved_deps(const struct edc_task *task);
 extern void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source);
+/** Handle a source that failed, symmetric with cancellation (the source will not
+ *  produce anything either way): a JOIN edge cascades the failure to the dependent
+ *  and is dropped; a SEQUENCE edge is dropped to release it. */
+extern void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source);
 extern void edc_task_notify_dependents(struct edc_task *task);
 
-/* ── 信号 ──────────────────────────────────────────────────── */
-
-/** 任务是否"正在执行": 只有当进程正跑这个 turn 时才会出现的状态
- *  (LLM_PROCESSING / TOOL_CALLING)。与 edc_state_serializer 的中断归一化
- *  (normalize_interrupted_state) 用同一集合 —— 离开 session 时只取消这类任务,
- *  WAITING_INPUT / WAITING_DEPS / SUSPENDED 等原样保留。 */
+/** True only while the process is running this turn (LLM_PROCESSING /
+ *  TOOL_CALLING). */
 extern bool edc_task_is_running(const struct edc_task *task);
 
 extern void edc_task_send_signal(struct edc_task *task, edc_task_signal sig);
 
-/* ── 未完成工具调用表 (resume 账本) ─────────────────────────
- * 生命周期: LLM 返回 tool_calls 时逐条 add (PENDING); toolbox 真正开始执行
- * 某个工具时经 BC_ACTOR_MSG_TOOL_STARTED 上报 → mark_executing(call_id) 置
- * EXECUTING; 工具返回结果时 remove (删记录); turn 提交/取消时 clear。
- * EXECUTING 由 toolbox 真实上报, 不再按链序推断。 */
+/* Record of tasks moved as a side effect of cancelling or failing one task. The
+ * host owes each of them the same bookkeeping (index, reap queue, dirty, settle),
+ * but the task layer does not know the host, so it only records them; they are
+ * cleared through the host's unified entry. The list is carried by the task that
+ * initiated the operation. */
+struct edc_task_move_report
+{
+    struct edc_task *task; /* a task moved as a side effect (not owned) */
+    struct edc_task_move_report *next;
+};
 
-/** 链尾追加一条 PENDING 记录。call_id/name 复制 (可为 NULL); args 深拷贝 (可为 NULL)。 */
+/** Take and hand each side-effect-moved task to |cb|, then clear the list. The
+ *  callback may recurse (clearing can move more tasks), so the list is drained
+ *  until empty. */
+extern void edc_task_drain_moves(struct edc_task *task, void (*cb)(void *ctx, struct edc_task *moved), void *ctx);
+
+/* Resume ledger of unfinished tool calls. Lifecycle: add (PENDING) when the LLM
+ * returns tool_calls; mark_executing when the toolbox reports start; remove when
+ * the result arrives; clear when the turn is committed or cancelled. */
 extern struct edc_tool_call_record *edc_task_tool_call_add(struct edc_task *task, const char *call_id, const char *name,
                                                            cJSON *args);
-
-/** 按 call_id 查找记录 (NULL = 无)。 */
 extern struct edc_tool_call_record *edc_task_tool_call_find(struct edc_task *task, const char *call_id);
-
-/** toolbox 上报"开始执行": 按 call_id 把记录置为 EXECUTING。返回该记录 (无则 NULL)。 */
 extern struct edc_tool_call_record *edc_task_tool_call_mark_executing(struct edc_task *task, const char *call_id);
-
-/** 删除记录 (工具返回结果 / resume 补中断响应)。返回是否删掉了一条。 */
 extern bool edc_task_tool_call_remove(struct edc_task *task, const char *call_id);
-
-/** 清空整张表。 */
 extern void edc_task_tool_calls_clear(struct edc_task *task);
-
-/** 表中是否还有记录 (PENDING 或 EXECUTING)。 */
 extern bool edc_task_has_pending_tool_calls(const struct edc_task *task);
 
-/* ── 输出 ──────────────────────────────────────────────────── */
+/** Fill in dangling tool responses before driving a task (idempotent).
+ *
+ *  An assistant message with `tool_calls` but no matching tool response is
+ *  rejected by the API. The ledger cannot answer this because cancelling clears
+ *  it, while the assistant message is already on disk: the messages are
+ *  authoritative. The ledger is still read, but only to tell whether a call is
+ *  still PENDING (to be re-dispatched) rather than interrupted. */
+extern void edc_task_repair_dangling_tool_calls(struct edc_task *task);
 
 extern void edc_task_set_output(struct edc_task *task, sds output);
 extern sds edc_task_get_output(struct edc_task *task);
 
-/* ── 折叠 ────────────────────────────────────────────────── */
+/* Sequence number by completion order within the owning container; the host issues
+ * it, the task module only records it. 0 = not finished / not ordered. */
+extern void edc_task_set_completion_seq(struct edc_task *task, uint32_t seq);
 
-/** task 是否可折叠: 已完成且 turns 尚未折叠进 group memory */
+/** Owner session (= task->group->session), or NULL when there is no group. */
+extern struct edc_session *edc_task_session(const struct edc_task *task);
+
+/** Write the task's output to disk per its redirections (> / >> / 2>). */
+extern void edc_task_flush_redirects(struct edc_task *task);
+
+/** True when the task is completed and still has messages the memory does not
+ *  cover (i.e. something left to fold). */
 extern bool edc_task_is_foldable(struct edc_task *task);
-/** task 的已提交 turn 消息总数 (用于折叠水位推进) */
+/** Committed turn message count, used to advance the fold watermark. */
 extern size_t edc_task_turn_msg_count(struct edc_task *task);
-
-/* ── Prompt ────────────────────────────────────────────────── */
+/** Committed turn messages not yet covered by the group memory (turn message
+ *  count minus each turn's folded_prefix). */
+extern size_t edc_task_unfolded_msg_count(struct edc_task *task);
+/** True when any committed turn of this task has a folded prefix (its own
+ *  conversation is therefore only partly in the group history). */
+extern bool edc_task_has_folded_turns(struct edc_task *task);
 
 extern void edc_task_set_prompt(struct edc_task *task, const char *prompt_name, const char *prompt_text);
-
-/* ── 上下文构建 ────────────────────────────────────────────── */
 
 extern cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *config);
 

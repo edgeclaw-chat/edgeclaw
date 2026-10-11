@@ -54,17 +54,20 @@ resize 100x40         # 改终端尺寸
 | `bg` | 后台任务 + 快照推送 |
 | `cancel` | 在途取消（`/task stop` + `__delay` 制造在途窗口） |
 | `fsok` / `fifo` / `timeout` / `smoke5` | 文件工具/超时等零散场景 |
-| **`fold`** | **L1 折叠**：`AB_FOLD_MSG_THRESHOLD=2` 冻结（见下），一个任务跑完就触发一次真折叠 |
+| **`fold`** | **L1 折叠**：跑一个任务后手动 `/group fold`（见下），折一次真的折叠 |
 | **`switch`** | **切台**（P3 ①b）：`/session new` → 在新台说话 → `/session switch` 切回。钉住"切 session 的用户可见结果不变"：两个 session 各自成套（`session.json` / `chat.jsonl`），那条 "**Switched**" 回复仍落在**旧** session 的转录里（顺序 = 先回复、后换台事件），后台任务继续跑 |
+| **`seqfail`** | **`;` 链上"上游非完成地终结"**：`first ; second` + 首个应答压后 60s + `--env EDGECLAW_HTTPS_TIMEOUT_MS=1500` → 上游超时进 ERROR → **下游必须被驱动**（2026-09-18 "就绪后启动"那条路；五条老夹具都不含 `;`，打不到它）。跑法要带 env：`run --fixture seqfail --env EDGECLAW_HTTPS_TIMEOUT_MS=1500` |
 
 `fold` 夹具要证的：折叠从 `memory_actor` 的专用协议搬成 system task 之后，
 `session.json`（memory 文本 / `turns_folded` / 折叠水位）、`chat.jsonl`、
 `llm_requests.jsonl` 归一化后不变（raw 只差 system prompt 里的 clock）。唯一**固有**的差异是 `.task_seq` +1 ——
 折叠现在真的是一个任务，它要一个 id（id 不能复用，重启后必须越过它）。
 
-**冻结门槛**：`group_fold_msg_threshold` 由 `AB_FOLD_MSG_THRESHOLD` 环境变量决定
-（默认 200，只有 `fold` 夹具会调低）。它写在 **pristine 的 config.json** 里，
-所以**只在冻结那一次生效** —— 要重冻：`rm -rf /tmp/ab/run/fold`。
+**冻结门槛**：折叠的触发线是 `context_window - 16384`（默认窗口 1M），由
+`AB_CONTEXT_WINDOW` 环境变量决定（默认 1048576），写在 **pristine 的 config.json** 里，
+所以**只在冻结那一次生效** —— 要重冻：`rm -rf /tmp/ab/run/fold`。夹具的语料太小，
+在 1M 窗口下自动路径不会过线，所以 `fold` 夹具用手动 `/group fold` 触发；自动触发由
+`tests/test_group_fold.c` 的挂载点用例覆盖（见 `scripts/fold.txt` 的说明）。
 
 ## 假 LLM 响应序列（`responses/*.json`）
 

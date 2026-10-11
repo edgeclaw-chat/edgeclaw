@@ -269,15 +269,16 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
 
     const char *spawn_file = NULL;
     char **spawn_args = NULL;
-    char *plain_args[4] = {0};
+    char *plain_args[5] = {0};
     sds sandbox_helper_file = NULL;
     char **sandbox_helper_args = NULL;
     char **spawn_env = NULL;
 #ifdef _WIN32
-    plain_args[0] = (char *)"cmd.exe";
-    plain_args[1] = (char *)"/c";
-    plain_args[2] = (char *)cmd_s;
-    spawn_file = "cmd.exe";
+    plain_args[0] = (char *)"powershell.exe";
+    plain_args[1] = (char *)"-NonInteractive";
+    plain_args[2] = (char *)"-Command";
+    plain_args[3] = (char *)cmd_s;
+    spawn_file = "powershell.exe";
     spawn_args = plain_args;
 #else
     /* When the filesystem sandbox is enabled, run the command through the

@@ -1,4 +1,5 @@
 #include "edc_session.h"
+#include "edc_session_memory.h"
 #include "edc_session_manager.h"
 #include "edc_state_serializer.h"
 #include "edc_task.h"
@@ -159,6 +160,12 @@ static void test_write_read(void)
     edc_task_mark_completed(task);
     task->output = sdsnew("result text");
     task->completion_seq = 7;
+    /* L2 (v7): task 级水位 + session 记忆块都要能往返 */
+    task->memo_seen_seq = 7;
+    task->last_prefix_tokens = 123;
+    edc_session_memory_add_event(session->memo, "m1", EDC_MEMO_CREATED, "标题", "摘要");
+    edc_session_memory_upsert_entry(session->memo, "m1", "标题", "摘要", "明细", "group task-1");
+    edc_session_memory_note_proposer(edc_session_memory_entry(session->memo, "m1"), "task-1");
 
     /* Add a turn */
     struct edc_turn *turn = edc_turn_new();
@@ -207,6 +214,19 @@ static void test_write_read(void)
 
     /* Verify turn messages */
     CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
+
+    /* L2 (v7): 两个水位键随 task 往返 */
+    CHECK(rt->memo_seen_seq == 7, "memo_seen_seq restored");
+    CHECK(rt->last_prefix_tokens == 123, "last_prefix_tokens restored");
+
+    /* L2 (v7): session 记忆块随 session 往返 (新加的 session 在加载时被替换) */
+    CHECK(session2->memo != NULL, "session memory block exists after load");
+    CHECK(session2->memo->next_seq == 1, "session memory: event seq restored");
+    CHECK(session2->memo->event_count == 1, "session memory: 1 event restored");
+    const struct edc_memo_entry *me = edc_session_memory_entry(session2->memo, "m1");
+    CHECK(me != NULL, "session memory: entry restored");
+    CHECK(me && me->detail && strcmp(me->detail, "明细") == 0, "session memory: detail restored");
+    CHECK(me && me->proposed_by && strcmp(me->proposed_by, "task-1") == 0, "session memory: proposed_by restored");
 
     sdsfree(state_path);
     edc_session_free(session);
@@ -450,17 +470,20 @@ static void test_load_onto_nonempty(void)
     edc_session_add_group(s2, pre_g);
     CHECK(count_tasks(s2) == 1, "1 pre-existing task");
 
-    /* Load state on top */
+    /* Load state on top。
+     * 加载是**替换**不是合并: edc_state_deserialize() 先把 session->groups /
+     * active_task 清空, 再照盘上的快照重建。生产上这个场景造不出来 (store 只对
+     * 全新 session 加载, 且 state_loaded 拦住重载), 所以这里钉的就是"替换"。 */
     bool loaded = edc_session_load_state(s2, sc2);
     CHECK(loaded, "load_state succeeds on non-empty session");
 
-    /* Both the pre-existing task AND the loaded tasks should exist */
-    CHECK(count_tasks(s2) >= 2, "at least 2 tasks (pre-existing + loaded)");
+    /* 加载后内存里只剩盘上那座快照 */
+    CHECK(count_tasks(s2) == 1, "loaded snapshot replaces previous groups (1 task)");
 
     struct edc_task *rt = find_task(s2, "task-A");
     CHECK(rt != NULL, "loaded task-A found");
     struct edc_task *rpre = find_task(s2, "pre-existing");
-    CHECK(rpre != NULL, "pre-existing task still present");
+    CHECK(rpre == NULL, "in-memory pre-existing task dropped (replace, not merge)");
 
     edc_session_free(s2);
     edc_scheduler_free(sc2);

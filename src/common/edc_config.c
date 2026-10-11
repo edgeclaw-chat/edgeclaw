@@ -214,15 +214,13 @@ struct edc_config *edc_config_load(const char *edc_home)
      * edc_init_env() (EDC_CONFIG_DEFAULT_* in edc_init_env.h is the single
      * source of truth). The fallbacks here only cover a key that was removed
      * from the file by hand. */
-    cJSON *group_fold_msg_threshold = cJSON_GetObjectItem(conf, "group_fold_msg_threshold");
-    if (!group_fold_msg_threshold || !cJSON_IsNumber(group_fold_msg_threshold))
-    {
-        config->group_fold_msg_threshold = EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
-    }
-    else
-    {
-        config->group_fold_msg_threshold = group_fold_msg_threshold->valueint;
-    }
+    /* Always positive: a key that is missing, non-numeric or <= 0 (which is what
+     * an older config.json may hold) falls back to the default window. The fold
+     * has no "unconfigured window" state to fall back to. */
+    cJSON *context_window = cJSON_GetObjectItem(conf, "context_window");
+    config->context_window = (context_window && cJSON_IsNumber(context_window) && context_window->valueint > 0)
+                                 ? context_window->valueint
+                                 : EDC_CONFIG_DEFAULT_CONTEXT_WINDOW;
 
     cJSON *tool_max_output_size = cJSON_GetObjectItem(conf, "tool_max_output_size");
     if (!tool_max_output_size || !cJSON_IsNumber(tool_max_output_size))
@@ -291,6 +289,11 @@ struct edc_config *edc_config_load(const char *edc_home)
      * on when the key is absent (first run / older config files). The CLI flag
      * overrides this for the current run only (see edc_app_new), whereas the
      * in-TUI /sandbox command persists it back to config.json. */
+    config->skip_context_files = false;
+    cJSON *skip_ctx = cJSON_GetObjectItem(conf, "skip_context_files");
+    if (skip_ctx && cJSON_IsBool(skip_ctx))
+        config->skip_context_files = cJSON_IsTrue(skip_ctx);
+
     config->enable_sandbox = true;
 
     cJSON *sandbox = cJSON_GetObjectItem(conf, "sandbox");

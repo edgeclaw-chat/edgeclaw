@@ -37,7 +37,7 @@ MASTER_KEY = "ab-fixture-master-key"
 # 非确定性来源：写入时刻。会话状态、system prompt 里的 time 都是这个形状。
 TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}")
 
-BOOTSTRAP = ["AGENTS.md", "SOUL.md", "TOOLS.md", "USER.md", "HEARTBEAT.md"]
+BOOTSTRAP = ["AGENTS.md", "TOOLS.md"]  # 2026-10-10: SOUL/USER/HEARTBEAT 已从种子工作区去掉
 
 
 # 行号：往"会打日志的文件"里加一行，日志里的 `file.c:NNN` 就会位移 —— 那是
@@ -75,12 +75,12 @@ def gen_config(ecl: Path, extra_rw=()):
     ws = ecl / "workspace"
     cfg = {
         "max_iter": -1,
-        "memory_compress_threshold": 200,
-        # 折叠阈值: 默认 200 (smoke/bg/cancel 都够不到, 所以那些夹具不折)。
-        # fold 夹具在冻结时用 AB_FOLD_MSG_THRESHOLD 调低, 好在几轮对话内就
-        # 触发一次真正的折叠 —— 折叠的**产物** (memory / turns_folded / 水位)
-        # 必须逐字节可比。
-        "group_fold_msg_threshold": int(os.environ.get("AB_FOLD_MSG_THRESHOLD", "200")),
+        # 折叠触发线 = context_window - reserve（默认窗口 1M）。夹具的语料只有几十
+        # 个 token，所以**不会**自己触发折叠 —— fold 夹具改用 `/group fold`（见
+        # scripts/fold.txt）。要造一个"按窗口自动折"的夹具，就在冻结时把
+        # AB_CONTEXT_WINDOW 调小（< 组上下文 + 16384 才会过线；注意留白太小的窗口
+        # 会让组每一轮都该折）。
+        "context_window": int(os.environ.get("AB_CONTEXT_WINDOW", str(1024 * 1024))),
         "tool_max_output_size": 10000,
         "sandbox": {
             "rw_paths": [str(ws) + "/", "/tmp", "/dev"] + list(extra_rw),
@@ -205,20 +205,28 @@ def run_binary(binary: Path, home: Path, script: Path, out: Path, fake: Path,
          "--responses", str(responses),
          "--request-log", str(out / "llm_requests.jsonl")],
         stderr=subprocess.PIPE)
-    time.sleep(1.2)  # 等握手
-    if llm.poll() is not None:
-        sys.exit("ab.py: fake_llm 起不来\n" + llm.stderr.read().decode())
 
-    master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
-    p = subprocess.Popen([str(binary)], stdin=slave, stdout=slave,
-                         stderr=slave, env=env, cwd=str(home),
-                         preexec_fn=_preexec, close_fds=True)
-    os.close(slave)
-    PID[0] = p.pid
-    screen = Screen(master, out / "screen.bin")
-    screen.start()
+    # Everything from here on is inside the try: the fake LLM is already
+    # listening on PORT, so a failure between the two Popen calls (a missing
+    # binary, an unopenable pty) used to leave it running as an orphan that
+    # holds the port for every later run.
+    master = None
+    screen = None
+    p = None
     try:
+        time.sleep(1.2)  # 等握手
+        if llm.poll() is not None:
+            sys.exit("ab.py: fake_llm 起不来\n" + llm.stderr.read().decode())
+
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+        p = subprocess.Popen([str(binary)], stdin=slave, stdout=slave,
+                             stderr=slave, env=env, cwd=str(home),
+                             preexec_fn=_preexec, close_fds=True)
+        os.close(slave)
+        PID[0] = p.pid
+        screen = Screen(master, out / "screen.bin")
+        screen.start()
         run_script(master, script)
         time.sleep(1.5)  # settle
         os.killpg(os.getpgid(p.pid), signal.SIGINT)  # 优雅退出（会落盘）
@@ -230,13 +238,22 @@ def run_binary(binary: Path, home: Path, script: Path, out: Path, fake: Path,
             sys.stderr.write("ab.py: 警告 —— 进程未在 20s 内优雅退出，已强杀\n")
     finally:
         time.sleep(0.3)
-        screen.done = True
+        if screen is not None:
+            screen.done = True
+        if master is not None:
+            try:
+                os.close(master)
+            except OSError:
+                pass
+        # The fake LLM is ours to reap whatever happened (and on a slow box
+        # terminate() alone can be ignored). Never let this mask the original
+        # exception: wait() with a timeout is the last thing that may raise.
         try:
-            os.close(master)
-        except OSError:
-            pass
-        llm.terminate()
-        llm.wait(timeout=5)
+            llm.terminate()
+            llm.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            llm.kill()
+            llm.wait(timeout=5)
 
     collect(home, out)
 

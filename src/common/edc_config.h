@@ -76,12 +76,19 @@ struct edc_config
 
     sds workspace;
     bool enable_sandbox;
+    /* 关掉"上下文文件"发现 (pi 里是 --no-context-files / -nc): 不读用户全局与工作目录树上的
+     * AGENTS.md / CLAUDE.md, 提示词里只剩 workspace 的 bootstrap 文件。config.json 的
+     * 顶层键 `skip_context_files` (缺省 → false)。 */
+    bool skip_context_files;
     sds sandbox_root_real;
     sds *sandbox_ro_paths;
     sds *sandbox_rw_paths;
     sds *sandbox_deny_paths;
     int max_iter; /* LLM/tool 迭代预算: -1 = 无限, N > 0 = 上限, <= 0 (含 0) = 不限制 */
-    int group_fold_msg_threshold;
+    /* Declared model context window in tokens. Always positive: edc_init_env()
+     * repairs a missing or <= 0 value to EDC_CONFIG_DEFAULT_CONTEXT_WINDOW, and
+     * the fold compares the group's context against `window - reserve`. */
+    int context_window;
     int tool_max_output_size;
 
     sds device_pty;

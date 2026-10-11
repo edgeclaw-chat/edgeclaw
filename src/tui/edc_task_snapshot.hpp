@@ -58,7 +58,20 @@ struct TaskGroup
     int msg_count = 0; /* committed messages (no system prompt) + in-flight turns */
     bool orphaned = false;
     bool fg = false; /* this is the session's foreground group */
-    long long tokens_total = 0; /* sum of member tasks' total tokens */
+    /* Usage rolled up from the members (the sidebar shows the group, never a
+     * single task). A group that has not spent anything yet is all zeroes. */
+    long long tokens_total = 0;      /* prompt + completion */
+    long long tokens_prompt = 0;     /* every request's input (context) tokens */
+    long long tokens_completion = 0; /* every response's output tokens */
+    long long tokens_cached = 0;     /* the input the provider served from cache */
+    /* Current context: the biggest conversation any member has accumulated --
+     * that member's last reply's input *and* output (a group's context only grows
+     * along its chain). The hit rate is derived from the two above (cached /
+     * prompt) -- it is not a field of its own. */
+    long long ctx_tokens = 0;
+    /* ctx_tokens 里含估算成分 (锚之后有追加, 或退回从零估)。前端据此加 `~`:
+     * 估算不得冒充 provider 的测量。 */
+    bool ctx_estimated = false;
     std::vector<TaskInfo> tasks;
 };
 
@@ -66,6 +79,7 @@ struct TaskSnapshot
 {
     std::string session_id;
     std::string session_name;
+    std::string workdir;    /* the session's bound working dir ("" = unbound) */
     int message_count = 0;  /* messages in the session history */
     std::string created_at; /* "YYYY-MM-DD HH:MM:SS" or "" */
     std::vector<TaskGroup> groups;

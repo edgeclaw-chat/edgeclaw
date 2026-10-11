@@ -2,7 +2,7 @@
  *
  * Older schemas are dropped now that every workspace is migrated, so the
  * contract is:
- *   a. a fresh save_state writes `version: 4` and round-trips (no legacy
+ *   a. a fresh save_state writes the current schema version and round-trips (no legacy
  *      backup files are produced any more);
  *   b. a well-formed but outdated `version: 3` file is REJECTED and quarantined
  *      as `session.json.broken` (no silent overwrite of unknown data); the
@@ -153,7 +153,8 @@ int main(void)
         if (txt)
         {
             cJSON *root = cJSON_Parse(txt);
-            CHECK(edc_state_json_version(root) == 5, "on-disk version is 5");
+            CHECK(edc_state_json_version(root) == edc_state_schema_version(),
+                  "on-disk version is the current schema");
             cJSON_Delete(root);
             sdsfree(txt);
         }

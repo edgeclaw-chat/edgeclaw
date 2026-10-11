@@ -8,8 +8,8 @@
  * 成 `//src/app:api` —— 判据就一条: **这里一条业务逻辑都不含, 只是投影**。
  *
  * 唯一入参是 `struct edc_app *` (不透明): 本文件**不碰它的字段**, 只经
- * `edc_app_config()` / `edc_app_sessions()` / `edc_app_channel_actor()` 三个句柄访问器
- * 拿东西 (实测 `app->` = 0 次) ⇒ 装配根不为它开任何"内部头", `struct edc_app` 仍然
+ * `edc_app_config()` / `edc_app_channel_actor()` 两个句柄访问器拿东西
+ * (实测 `app->` = 0 次) ⇒ 装配根不为它开任何"内部头", `struct edc_app` 仍然
  * 只在 `edc_app.c` 里定义 (docs/runtime-model.md §8 判据 1 不退步)。
  *
  * 对 C++ 安全 (`edc_api.h` 与 `edc_app.h` 同规矩: 不 include 拉 sds 的头)。 */
@@ -20,8 +20,6 @@
 #include "edc_channel_actor.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
-#include "edc_session.h"
-#include "edc_session_manager.h"
 #include "log.h"
 #include "sds.h"
 #include <stdio.h>
@@ -34,7 +32,7 @@
  * 见 docs/runtime-model.md §11)。 */
 
 _Static_assert(EDC_RENDER_MARKDOWN == EDC_APP_RENDER_MARKDOWN,
-               "edc_api.h 的 EDC_APP_RENDER_* 镜像必须与 edc_render_pref_t 一致");
+               "the EDC_APP_RENDER_* mirror in edc_api.h must match edc_render_pref_t");
 
 const char *edc_app_message_content(const struct edc_channel_message *message)
 {
@@ -130,20 +128,6 @@ static bool copy_sds_into(const sds value, char *buf, size_t cap)
     return ok;
 }
 
-static bool copy_str_into(const char *value, char *buf, size_t cap)
-{
-    if (!buf || cap == 0)
-        return false;
-    buf[0] = '\0';
-    if (!value || !value[0])
-        return false;
-    const size_t n = strlen(value);
-    if (n >= cap)
-        return false;
-    memcpy(buf, value, n + 1);
-    return true;
-}
-
 bool edc_app_config_model(const struct edc_app *app, char *buf, size_t cap)
 {
     struct edc_config *cfg = edc_app_config(app);
@@ -168,35 +152,24 @@ bool edc_app_sandbox_enabled(const struct edc_app *app)
     return cfg && cfg->enable_sandbox;
 }
 
-bool edc_app_active_session_id(const struct edc_app *app, char *buf, size_t cap)
-{
-    struct edc_session_manager *sm = edc_app_sessions(app);
-    struct edc_session *session = sm ? edc_session_manager_get_active(sm) : NULL;
-    return copy_str_into(session ? session->session_id : NULL, buf, cap);
-}
-
-bool edc_app_active_session_workdir(const struct edc_app *app, char *buf, size_t cap)
-{
-    struct edc_session_manager *sm = edc_app_sessions(app);
-    struct edc_session *session = sm ? edc_session_manager_get_active(sm) : NULL;
-    return copy_str_into(session ? edc_session_get_workdir(session) : NULL, buf, cap);
-}
-
 /* 转录文件在哪 —— 只解路径: 编解码、追加、回放都是前端自己的事 (见
- * edc_chat_transcript.hpp)。 */
+ * edc_chat_transcript.hpp)。
+ *
+ * 路径由**约定**拼出, 不再问仓库: 会话目录就是 `<workspace>/<session_id>`
+ * (kernel 侧 edc_session_new_with_workdir 用的同一条规则, tests/test_session_workdir.c
+ * 钉住它)。这样前端面不必碰 session 仓库 —— 它由 actor 线程改。
+ *
+ * |session_id| 必须是**会话 id**: 从前走 manager_find 时显示名也能匹配, 而两个
+ * 调用点传的都是快照/消息里的 id, 所以那条便利没有被用上。 */
 bool edc_app_chat_log_path_for(const struct edc_app *app, const char *session_id, char *buf, size_t cap)
 {
     if (buf && cap > 0)
         buf[0] = '\0';
-    struct edc_session_manager *sm = edc_app_sessions(app);
-    if (!sm || !session_id || !buf || cap == 0)
+    struct edc_config *cfg = edc_app_config(app);
+    if (!cfg || !cfg->workspace || sdslen(cfg->workspace) == 0 || !session_id || !*session_id || !buf || cap == 0)
         return false;
 
-    struct edc_session *session = edc_session_manager_find(sm, session_id);
-    if (!session || !session->history_dir)
-        return false;
-
-    sds path = edc_path_join(session->history_dir, "chat.jsonl", NULL);
+    sds path = edc_path_join(cfg->workspace, session_id, "chat.jsonl", NULL);
     const bool ok = path && strlen(path) < cap;
     if (ok)
         memcpy(buf, path, strlen(path) + 1);

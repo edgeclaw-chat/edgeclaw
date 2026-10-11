@@ -22,10 +22,11 @@ extern "C" {
  *   - sds 字段 → `...(char *buf, size_t cap)` 形态的读口 (见文件尾);
  *   - 消息字段 → 只读窗口 (`edc_app_message_*`)。
  *
- * 三个句柄访问器 (`edc_app_config` / `edc_app_sessions` /
- * `edc_app_channel_actor`, 都在 `edc_app.h` 里) 就是本模块与装配根的**全部**合同:
- * 实现里 `app->` 出现 **0 次**, `struct edc_app` 仍然是只在 `edc_app.c` 里定义的
- * 不透明类型 (docs/runtime-model.md §8 判据 1)。 */
+ * 两个句柄访问器 (`edc_app_config` / `edc_app_channel_actor`, 都在 `edc_app.h` 里)
+ * 就是本模块与装配根的**全部**合同: 实现里 `app->` 出现 **0 次**,
+ * `struct edc_app` 仍然是只在 `edc_app.c` 里定义的不透明类型
+ * (docs/runtime-model.md §8 判据 1)。会碰 session 仓库的问题这里**不问任何人** ——
+ * 快照自己带着 session_id / workdir (2026-09-22)。 */
 struct edc_app;
 struct edc_channel_message;
 
@@ -63,9 +64,8 @@ extern bool edc_app_config_model(const struct edc_app *app, char *buf, size_t ca
 extern bool edc_app_config_api_url(const struct edc_app *app, char *buf, size_t cap);
 extern bool edc_app_config_api_key(const struct edc_app *app, char *buf, size_t cap);
 extern bool edc_app_sandbox_enabled(const struct edc_app *app);
-extern bool edc_app_active_session_id(const struct edc_app *app, char *buf, size_t cap);
-extern bool edc_app_active_session_workdir(const struct edc_app *app, char *buf, size_t cap);
-/* 指定 session 的转录文件路径 (`<session>/chat.jsonl`)。 */
+/* 指定 session 的转录文件路径 (`<workspace>/<session_id>/chat.jsonl`)。按约定拼出,
+ * 不查仓库; |session_id| 必须是 id (快照/消息里带的那种), 显示名不再匹配。 */
 extern bool edc_app_chat_log_path_for(const struct edc_app *app, const char *session_id, char *buf, size_t cap);
 /* 前端的命令历史文件 (`<bc_home>/.tui_history`)。 */
 extern bool edc_app_history_path(char *buf, size_t cap);
