@@ -6,6 +6,7 @@
 #include "edc_init_env.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_session_memory.h"
 #include "edc_session_manager.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -133,8 +134,11 @@ bool edc_group_fold_holds_group(struct edc_task_group *group)
     struct edc_task *t;
     LL_FOREACH2(sys->members, t, group_next)
     {
-        /* A fold in flight = a non-terminal SYSTEM_MEMORY task writing this group. */
-        if (t->sink == EDC_SINK_GROUP_MEMORY && t->sink_group == group && !edc_task_is_completed(t) &&
+        /* 这个组在折 (GROUP_MEMORY) 或**在策展** (SESSION_MEMORY) = 非终态的记忆型任务正
+         * 对着这个组干活 ⇒ 组里的活一律先停。统一成一条 (2026-10-10): L2 与折叠同时建,
+         * 于是"成员在策展之后才恢复"对**所有**成员成立 (含中途加入组的那些 —— 它们没有
+         * 显式的 dep 边, 靠这条谓词扣住)。 */
+        if (edc_task_is_memory_sink(t) && t->sink_group == group && !edc_task_is_completed(t) &&
             !edc_task_is_cancelled(t) && !edc_task_has_failed(t))
             return true;
     }
@@ -174,19 +178,15 @@ bool edc_group_fold_due(struct edc_task_group *group, const struct edc_config *c
     if (group->fold_failures >= EDC_FOLD_MAX_FAILURES)
         return false;
 
+    /* 唯一的判据 = token 轴 (2026-10-10: 消息条数轴整条退休)。config 的默认窗口是
+     * 1M 且 "<= 0" 在 init 期就被修成默认值 ⇒ 条数分支必然不可达, 留着只是死路。
+     * 窗口仍然读不到 (有人手改脏了 config) 时**不折**: 不知道窗口不是"随便折"的理由,
+     * 而手动 /group fold 永远能用。 */
     int window = conf ? conf->context_window : 0;
-    if (window > 0)
-    {
-        /* Window axis owns the decision (写法乙): the message threshold is not
-         * consulted at all. The estimate comes from the P1 group ctx (member anchor
-         * + tail), so "window" and the footer read the same number. */
-        long long ctx = edc_context_group_ctx_tokens(group, NULL);
-        return ctx > (long long)window - EDC_FOLD_RESERVE_TOKENS;
-    }
-
-    int msg_threshold = (conf && conf->group_fold_msg_threshold > 0) ? conf->group_fold_msg_threshold
-                                                                    : EDC_CONFIG_DEFAULT_GROUP_FOLD_MSG_THRESHOLD;
-    return edc_task_group_unfolded_msg_count(group) >= (size_t)msg_threshold;
+    if (window <= 0)
+        return false;
+    long long ctx = edc_context_group_ctx_tokens(group, NULL);
+    return ctx > (long long)window - EDC_FOLD_RESERVE_TOKENS;
 }
 
 bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_manager *sessions, struct edc_config *conf,
@@ -216,9 +216,8 @@ bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_manager 
 
             if (edc_group_fold_due(g, conf))
             {
-                log_info("L1 fold trigger: group %s foldable=%zu unfolded=%zu (window=%d msg_thr=%d)", g->group_id,
-                         foldable, unfolded, conf ? conf->context_window : 0,
-                         conf ? conf->group_fold_msg_threshold : 0);
+                log_info("L1 fold trigger: group %s foldable=%zu unfolded=%zu (window=%d)", g->group_id,
+                         foldable, unfolded, conf ? conf->context_window : 0);
                 /* Not startable right now (a member is still running) → keep looking
                  * at this session's other groups instead of declaring one started. */
                 if (edc_group_fold_start(sched, sess, g, NULL))
@@ -339,8 +338,8 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus,
         total += ps[i].tokens;
 
     /* 保留多少条作细节。pi: keep_recent = 20k token 的尾部。整组还不够这个预算时
-     * (只在"没配窗口"的条数轴上可达) 没有"窗口"可比 —— 压最老一半 (老策略),
-     * 否则小组永远折不动。 */
+     * (小结组 —— 语料比它的摘要还小, 或手动 /group fold 点了个小小组) 没有"窗口"可比
+     * —— 压最老一半 (老策略), 否则小组永远折不动。 */
     size_t keep = 0;
     if (total <= EDC_FOLD_KEEP_RECENT_TOKENS)
     {
@@ -537,6 +536,12 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
         edc_task_add_dependency(m, task, TASK_DEP_SEQUENCE);
     }
 
+    /* L2 与折叠**同时**建 (用户裁决 2026-10-10): 一整条链当场可见
+     *     成员 ──SEQUENCE──► L2 ──JOIN──► L1
+     * L1 先跑; 它落地后 L2 才被驱动 (JOIN 边 + 注入它的 output 当材料); 成员等两者。
+     * L1 失败/取消 ⇒ L2 自动失败/取消 (JOIN 级联) ⇒ 成员被释放 —— 不需要任何额外逻辑。 */
+    edc_session_memory_start(sched, session, group, task);
+
     /* The prompt is dispatched by the message-end scan, like any task. */
     log_info("L1 fold: prompt attached to system task %s (it will be dispatched by the scheduler)",
              task->task_id);
@@ -571,7 +576,7 @@ static void fold_turn_prefix(struct edc_turn *turn, uint32_t prefix, size_t *tur
     turn->folded_prefix = (int)prefix;
 }
 
-void edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
+bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
 {
     struct edc_task_group *group = task ? task->sink_group : NULL;
     if (!group || !content || !*content)
@@ -581,7 +586,7 @@ void edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
                   (content && *content) ? "non-empty" : "empty");
         /* (c) 没写出记忆 = 没落地, 一样算一次失败。 */
         edc_group_fold_note_failure(group);
-        return;
+        return false;
     }
 
     if (group->memory)
@@ -599,7 +604,7 @@ void edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
         edc_task_group_rebuild_history(group);
         group->fold_epoch++;
         edc_group_fold_note_failure(group); /* (c) 前缀没打上 = 没真正折掉东西 */
-        return;
+        return true; /* 记忆写了 —— 对 L2 来说这就是新料 */
     }
 
     /* 先把切点**精确**解析出来 (成员 + 那个 turn), 解析不出来就只写记忆、什么都不折。
@@ -634,7 +639,7 @@ void edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
         edc_task_group_rebuild_history(group);
         group->fold_epoch++;
         edc_group_fold_note_failure(group); /* (c) 白折一轮: 没折掉任何东西 */
-        return;
+        return true; /* 记忆写了 —— L2 仍该消化它 (否则这段新料永远进不了 session) */
     }
 
     /* 应用切点: 切点**之前**的内容整折 —— 已提交的 turn 一律安全 (提交后不再变),
@@ -678,4 +683,5 @@ void edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
     edc_group_fold_note_progress(group);
     log_info("L1 fold done: group %s folded %zu turns (%zu msgs), cut at task %s turn %u msg %u", group->group_id,
              folded_turns, folded_msgs, task->fold_cut_task_id, task->fold_cut_turn, task->fold_cut_prefix);
+    return true;
 }

@@ -10,6 +10,7 @@
 #include "edc_session_manager.h"
 #include "edc_state_serializer.h"
 #include "log.h"
+#include <ctype.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -272,6 +273,179 @@ static void test_system_prompt_cwd(void)
     rmdir(dir);
 }
 
+/* pi 的纪律 (docs/pi-system-prompt-guide.md §7: "无任何日期/时间戳注入 … 跨天、重启、resume
+ * prompt 字节完全不变")。这里钉住它 —— 提示词里不许有时钟, 也不许留未替换的占位符。 */
+static void test_system_prompt_has_no_clock(void)
+{
+    TEST("system prompt: 无时钟 / 无未替换占位符 (pi §7 的确定性纪律)");
+
+    struct edc_config *cfg = make_config("/tmp/test_edc_noclock_ws");
+    sds a = edc_context_build_system_prompt(cfg, NULL);
+    sds b = edc_context_build_system_prompt(cfg, NULL);
+    CHECK(a && b && strcmp(a, b) == 0, "连续构造两次逐字节相同");
+    CHECK(a && strstr(a, "Current Time") == NULL, "没有 Current Time 段");
+    CHECK(a && strstr(a, "no clock") != NULL, "有常量行说明：要时间就跑 date");
+    CHECK(a && strstr(a, "{{time}}") == NULL, "没有未替换的 {{time}} 占位符");
+    /* 注意 {{skill-name}} 是**故意**留给模型看的路径模板, 不是漏替换。 */
+
+    /* 时间戳形如 2026-10-10 … —— 提示词里不该出现任何 20xx- 的日期串。 */
+    bool has_date = false;
+    if (a)
+    {
+        for (const char *q = a; (q = strstr(q, "20")) != NULL; q += 2)
+        {
+            if (isdigit((unsigned char)q[2]) && isdigit((unsigned char)q[3]) && q[4] == '-')
+                has_date = true;
+        }
+    }
+    CHECK(!has_date, "不含 20xx- 形式的日期");
+
+    sdsfree(a);
+    sdsfree(b);
+    edc_config_free(cfg);
+}
+
+/* MEMORY.md 这套"文件式长期记忆"机制**整个删掉**了 (2026-10-10 裁决): 提示词里既没有它的
+ * 正文 (那是 agent 自己会写的东西, 常驻就等于一改就把整段前缀作废), 也不再指路 —— 它已经没有
+ * 读者/写者。durable knowledge 现在只有一条路: 本 session 的共享记忆 (memory_* 四个工具)。 */
+static void test_memory_file_mechanism_is_gone(void)
+{
+    TEST("system prompt: MEMORY.md 机制已删 (既不装正文, 也不指路)");
+
+    char dir[256];
+    make_tmpdir(dir, sizeof(dir));
+    char memdir[512];
+    snprintf(memdir, sizeof(memdir), "%s/memory", dir);
+    EdcError *err = NULL;
+    CHECK(edc_dir_create_with_parents(memdir, 0755, &err), "建 memory 目录");
+    char memfile[600];
+    snprintf(memfile, sizeof(memfile), "%s/MEMORY.md", memdir);
+    const char *marker = "MEMORY-CONTENT-MARKER-9f3a\n";
+    CHECK(edc_file_write(memfile, marker, -1, &err), "写一份 MEMORY.md (旧装还会带着它)");
+
+    struct edc_config *cfg = make_config(dir);
+    sds prompt = edc_context_build_system_prompt(cfg, NULL);
+    CHECK(prompt && strstr(prompt, "MEMORY-CONTENT-MARKER-9f3a") == NULL, "正文不在提示词里");
+    CHECK(prompt && strstr(prompt, "MEMORY.md") == NULL, "提示词里**完全不提** MEMORY.md");
+    CHECK(prompt && strstr(prompt, "HISTORY.md") == NULL, "也不提 HISTORY.md");
+    CHECK(prompt && strstr(prompt, "memory_write") != NULL, "但 session 记忆的路子还在 (memory_write)");
+    sdsfree(prompt);
+    edc_config_free(cfg);
+    unlink(memfile);
+    rmdir(memdir);
+    rmdir(dir);
+}
+
+/* pi 的"上下文文件"发现 (docs/pi-system-prompt-guide.md §3.6): 用户全局一份 + 从**工作目录**
+ * 向上遍历到根, 同一目录里只取优先级最高的候选 (override > AGENTS.md > AGENTS.MD > CLAUDE.md >
+ * CLAUDE.MD), 每个文件带自己的路径。绑定到某个项目目录的 session 就是靠这个吃到项目的规矩。 */
+static void test_project_context_discovery(void)
+{
+    TEST("project context: 全局 + 向上遍历 + override 优先 + 可关掉");
+
+    char root[256];
+    make_tmpdir(root, sizeof(root));
+    char home[512], ws[512], proj[512], sub[512];
+    snprintf(home, sizeof(home), "%s/home", root);
+    snprintf(ws, sizeof(ws), "%s/ws", root);
+    snprintf(proj, sizeof(proj), "%s/proj", root);
+    snprintf(sub, sizeof(sub), "%s/proj/sub", root); /* sub 必须在 proj **里面** (向上遍历才经过 proj) */
+
+    EdcError *err = NULL;
+    CHECK(edc_dir_create_with_parents(home, 0755, &err), "建假 HOME");
+    CHECK(edc_dir_create_with_parents(ws, 0755, &err), "建 workspace");
+    CHECK(edc_dir_create_with_parents(proj, 0755, &err), "建项目目录");
+    CHECK(edc_dir_create_with_parents(sub, 0755, &err), "建子目录");
+
+    char path[768];
+    snprintf(path, sizeof(path), "%s/.edgeclaw", home);
+    edc_dir_create_with_parents(path, 0755, &err);
+    snprintf(path, sizeof(path), "%s/.edgeclaw/AGENTS.md", home);
+    edc_file_write(path, "GLOBAL-RULE\n", -1, &err);
+    snprintf(path, sizeof(path), "%s/AGENTS.md", proj);
+    edc_file_write(path, "PROJ-RULE\n", -1, &err);
+    snprintf(path, sizeof(path), "%s/AGENTS.override.md", sub);
+    edc_file_write(path, "SUB-OVERRIDE\n", -1, &err);
+    snprintf(path, sizeof(path), "%s/AGENTS.md", sub);
+    edc_file_write(path, "SUB-PLAIN\n", -1, &err); /* 被 override 压制 */
+    snprintf(path, sizeof(path), "%s/CLAUDE.md", sub);
+    edc_file_write(path, "SUB-CLAUDE\n", -1, &err); /* 优先级更低, 也不该出现 */
+    snprintf(path, sizeof(path), "%s/AGENTS.md", ws);
+    edc_file_write(path, "WS-RULE\n", -1, &err);
+
+    /* $HOME 指到临时目录 —— edc_config_resolve_bc_home() 读的就是它 */
+    const char *old_home = getenv("HOME");
+    char old_home_copy[1024];
+    snprintf(old_home_copy, sizeof(old_home_copy), "%s", old_home ? old_home : "");
+    setenv("HOME", home, 1);
+
+    struct edc_config *cfg = make_config(ws);
+    sds p = edc_context_build_system_prompt(cfg, sub);
+    CHECK(p && strstr(p, "GLOBAL-RULE") != NULL, "用户全局那份进来了");
+    CHECK(p && strstr(p, "PROJ-RULE") != NULL, "项目那一层进来了");
+    CHECK(p && strstr(p, "SUB-OVERRIDE") != NULL, "子目录的 override 进来了");
+    CHECK(p && strstr(p, "SUB-PLAIN") == NULL, "同目录被 override 压制的没收");
+    CHECK(p && strstr(p, "SUB-CLAUDE") == NULL, "同目录优先级更低的 CLAUDE.md 没收");
+    CHECK(p && strstr(p, "<project_instructions path=") != NULL, "带路径标注");
+    CHECK(p && strstr(p, "Project-specific instructions and guidelines:") != NULL, "有 pi 那句引导语");
+    if (p)
+    {
+        const char *gpos = strstr(p, "GLOBAL-RULE");
+        const char *jpos = strstr(p, "PROJ-RULE");
+        const char *spos = strstr(p, "SUB-OVERRIDE");
+        CHECK(gpos && jpos && spos && gpos < jpos && jpos < spos, "顺序: 全局 → 项目 → 子目录");
+    }
+    sdsfree(p);
+
+    /* workdir 为空 ⇒ 只剩全局 */
+    p = edc_context_build_system_prompt(cfg, NULL);
+    CHECK(p && strstr(p, "GLOBAL-RULE") != NULL && strstr(p, "PROJ-RULE") == NULL, "没有工作目录 ⇒ 只收全局");
+    sdsfree(p);
+
+    /* 工作目录 == workspace 时, AGENTS.md 不该被收两遍 */
+    p = edc_context_build_system_prompt(cfg, ws);
+    if (p)
+    {
+        int hits = 0;
+        for (const char *q = p; (q = strstr(q, "WS-RULE")) != NULL; q += 7)
+            hits++;
+        CHECK(hits == 1, "workspace 的 AGENTS.md 只出现一次 (去重)");
+    }
+    sdsfree(p);
+
+    /* 开关: 一份都不读 (bootstrap 照旧) */
+    cfg->skip_context_files = true;
+    p = edc_context_build_system_prompt(cfg, sub);
+    CHECK(p && strstr(p, "GLOBAL-RULE") == NULL && strstr(p, "PROJ-RULE") == NULL, "关掉 ⇒ 一份都不读");
+    CHECK(p && strstr(p, "Project-specific instructions and guidelines:") == NULL, "整段不出现");
+    sdsfree(p);
+    cfg->skip_context_files = false;
+    edc_config_free(cfg);
+
+    setenv("HOME", old_home_copy, 1);
+
+    /* 收尾 */
+    snprintf(path, sizeof(path), "%s/.edgeclaw/AGENTS.md", home);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/.edgeclaw", home);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/AGENTS.md", proj);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/AGENTS.override.md", sub);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/AGENTS.md", sub);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/CLAUDE.md", sub);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/AGENTS.md", ws);
+    unlink(path);
+    rmdir(sub);
+    rmdir(proj);
+    rmdir(ws);
+    rmdir(home);
+    rmdir(root);
+}
+
 /* ── 7. Tool calls use the task's OWNER session workdir ── */
 static void test_task_workdir_owner(void)
 {
@@ -355,6 +529,9 @@ int main(void)
     test_persist_roundtrip();
     test_verify_path_at();
     test_system_prompt_cwd();
+    test_system_prompt_has_no_clock();
+    test_memory_file_mechanism_is_gone();
+    test_project_context_discovery();
     test_task_workdir_owner();
     test_history_dir_convention();
 

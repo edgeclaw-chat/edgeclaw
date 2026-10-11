@@ -2,6 +2,7 @@
 #include "edc_compat.h"
 #include "edc_context.h"
 #include "edc_session.h"
+#include "edc_task.h"
 #include "edc_turn.h"
 #include "utlist_fix.h"
 #include <stdlib.h>
@@ -129,7 +130,7 @@ struct edc_task **edc_task_group_content_order(struct edc_task_group *group, siz
     struct edc_task *t;
     LL_FOREACH2(group->members, t, group_next)
     {
-        if (t->sink == EDC_SINK_GROUP_MEMORY)
+        if (edc_task_is_memory_sink(t))
             continue;
         if (cnt == cap)
         {
@@ -368,7 +369,7 @@ size_t edc_task_group_unfolded_msg_count(struct edc_task_group *group)
     struct edc_task *t;
     LL_FOREACH2(group->members, t, group_next)
     {
-        if (t->sink == EDC_SINK_GROUP_MEMORY)
+        if (edc_task_is_memory_sink(t))
             continue;
         total += edc_task_unfolded_msg_count(t);
     }

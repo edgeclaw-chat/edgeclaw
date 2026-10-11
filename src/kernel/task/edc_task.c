@@ -101,6 +101,8 @@ const char *edc_task_sink_name(edc_sink sink)
         return "CHANNEL";
     case EDC_SINK_GROUP_MEMORY:
         return "GROUP_MEMORY";
+    case EDC_SINK_SESSION_MEMORY:
+        return "SESSION_MEMORY";
     }
     return "CHANNEL";
 }
@@ -111,6 +113,8 @@ edc_sink edc_task_classify_sink(const char *name)
         return EDC_SINK_CHANNEL;
     if (strcmp(name, "GROUP_MEMORY") == 0)
         return EDC_SINK_GROUP_MEMORY;
+    if (strcmp(name, "SESSION_MEMORY") == 0)
+        return EDC_SINK_SESSION_MEMORY;
     return EDC_SINK_CHANNEL;
 }
 
@@ -619,6 +623,18 @@ void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long lon
     }
 }
 
+/* ── L2 session 记忆: 通知投递 ─────────────────────────────── */
+
+void edc_task_memo_commit(struct edc_task *task)
+{
+    if (!task)
+        return;
+    /* 只在"这次请求真的回来了"之后调用 (见 executor 的响应入口): 模型读到了那条
+     * 通知, 水位才推进。取消/失败不调用 ⇒ 下次请求重发同一条, 幂等无害。 */
+    if (task->memo_notice_seq > task->memo_seen_seq)
+        task->memo_seen_seq = task->memo_notice_seq;
+}
+
 /* ── 依赖 (IPC) ────────────────────────────────────────────── */
 
 /* DFS cycle detection: if 'source' can reach 'target', adding target->source
@@ -760,40 +776,6 @@ static void task_record_move(struct edc_task *source, struct edc_task *moved)
     source->moved_report = r;
 }
 
-/* Unlink target's edge to source on both lists. Used when a JOIN source failed:
- * the edge can never be satisfied, and keeping it would send target back to
- * AWAIT_DEPS on resume. Chosen over marking it cancelled because a cancelled flag
- * is replayed on load and would turn a resumable ERROR into CANCELLED. */
-static void task_unlink_dep(struct edc_task *target, struct edc_task *source)
-{
-    if (!target || !source)
-        return;
-
-    struct edc_task_dep *dep, *tmp;
-    LL_FOREACH_SAFE(target->deps, dep, tmp)
-    {
-        if (dep->source == source)
-        {
-            LL_DELETE(target->deps, dep);
-            free(dep);
-            if (target->deps_total > 0)
-                target->deps_total--;
-            break;
-        }
-    }
-
-    struct edc_task_dep *sd, *sd_tmp;
-    LL_FOREACH_SAFE(source->dependents, sd, sd_tmp)
-    {
-        if (sd->target == target)
-        {
-            LL_DELETE(source->dependents, sd);
-            free(sd);
-            break;
-        }
-    }
-}
-
 /* Void target's SEQUENCE edge to a source that has terminated and will never
  * produce: order is done, so drop the edge and let target run. Shared by cancel
  * and failure. */
@@ -867,9 +849,8 @@ void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source)
 
     if (dep->type == TASK_DEP_JOIN)
     {
-        /* JOIN: the source's output never arrives, so this task cannot run with a
-         * complete input and is cascaded into cancellation. Return immediately: the
-         * recursive cancel has already cleared deps. */
+        /* JOIN: 源没产出 ⇒ 这个依赖者也不该继续 ⇒ 级联取消它。**边留着** (取消不再摘边),
+         * 所以之后 resume 它, 闸门会把它放回"等依赖", 直到源真的产出。 */
         edc_task_step step_before = target->step;
         edc_task_life life_before = target->life;
         edc_task_send_signal(target, TASK_SIGTERM);
@@ -904,8 +885,10 @@ void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
 
     if (dep->type == TASK_DEP_JOIN)
     {
-        /* JOIN: cascade the failure; unlink the edge first or resume cannot
-         * recover. */
+        /* JOIN: 级联失败,**但边留着** (2026-10-10 裁决)。源的 output 现在拿不到 —— 不是
+         * 永远拿不到: 源是 ERROR/CANCELLED, 两者都可以 resume。摘掉边等于偷偷替调用方放弃
+         * 它要等的输入。留着 ⇒ resume 这个依赖者时它回到"等依赖", 等源真的产出, 那条边完成时
+         * 它会被自动放行 (edc_task_on_dep_completed → mark_ready → 扫描驱动)。 */
         edc_task_step step_before = target->step;
         edc_task_life life_before = target->life;
 
@@ -919,8 +902,7 @@ void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
             edc_task_set_output(target, sdsnew("[failed: a dependency failed, so the output it was waiting for will "
                                                "never arrive]"));
 
-        task_unlink_dep(target, source);
-        edc_task_mark_failed(target);
+        edc_task_mark_failed(target); /* 边不摘: 见上 */
         /* 级联失败也是**相位改动** —— 这个 task 从此进终态, 宿主却只点了源 task 的
          * 名。记一笔债 (重复失败是幂等的: 相位没真动就不记)。 */
         if (target->step != step_before || target->life != life_before)
@@ -992,8 +974,8 @@ void edc_task_send_signal(struct edc_task *task, edc_task_signal sig)
 
     if (sig == TASK_SIGTERM)
     {
-        /* Snapshot the dependents first: a JOIN cascade recursively unlinks nodes
-         * from task->dependents, which LL_FOREACH_SAFE cannot survive. */
+        /* 先快照依赖者列表: 级联取消会往它们身上写 (取消/作废边), 而这个列表本身
+         * 可能在递归里被改 —— 遍历前先取出来最稳。 */
         size_t n = 0;
         struct edc_task_dep *dep;
         LL_FOREACH(task->dependents, dep)
@@ -1013,29 +995,10 @@ void edc_task_send_signal(struct edc_task *task, edc_task_signal sig)
         }
     }
 
-    /* 移除自己的 deps (不再等待别人) */
-    {
-        struct edc_task_dep *dep, *tmp;
-        LL_FOREACH_SAFE(task->deps, dep, tmp)
-        {
-            if (dep->source)
-            {
-                struct edc_task_dep *sd, *sd_tmp;
-                LL_FOREACH_SAFE(dep->source->dependents, sd, sd_tmp)
-                {
-                    if (sd->target == task)
-                    {
-                        LL_DELETE(dep->source->dependents, sd);
-                        free(sd);
-                    }
-                }
-            }
-            LL_DELETE(task->deps, dep);
-            free(dep);
-        }
-        task->deps = NULL;
-        task->deps_total = 0;
-    }
+    /* **不动自己的 deps** (2026-10-10 裁决): 取消 = 停下, 不是删除/回收 —— 任务还能
+     * resume, 而它的依赖是它状态的一部分。摘掉边会让 resume "当作从来没依赖过"地跑下去,
+     * 静默丢掉它本该等到的输入。留着边 ⇒ resume 时闸门数到未满足的边, 把它放回"等依赖",
+     * 等源任务真的产出 (或被删掉) 才继续。 */
 
     /* 任务被取消: 在途工具追账已无意义, 丢弃账本 */
     edc_task_tool_calls_clear(task);
@@ -1221,9 +1184,14 @@ void edc_task_set_completion_seq(struct edc_task *task, uint32_t seq)
  * (It used to be a `lifetime` condition; the fold task is now an ordinary persisted
  * task, so the exclusion rides `sink`, which is what actually says "my output is
  * memory".) */
+bool edc_task_is_memory_sink(const struct edc_task *task)
+{
+    return task && (task->sink == EDC_SINK_GROUP_MEMORY || task->sink == EDC_SINK_SESSION_MEMORY);
+}
+
 bool edc_task_is_foldable(struct edc_task *task)
 {
-    return task && task->sink != EDC_SINK_GROUP_MEMORY && edc_task_is_completed(task) &&
+    return task && !edc_task_is_memory_sink(task) && edc_task_is_completed(task) &&
            edc_task_unfolded_msg_count(task) > 0;
 }
 
@@ -1341,7 +1309,7 @@ cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *c
     {
         if (dep->completed && dep->source->output)
         {
-            sds note = sdscatprintf(sdsempty(), "[子任务 %s 结果]:\n%s", dep->source->description, dep->source->output);
+            sds note = sdscatprintf(sdsempty(), "[subtask %s result]:\n%s", dep->source->description, dep->source->output);
             cJSON *sys = cJSON_CreateObject();
             cJSON_AddStringToObject(sys, "role", "system");
             cJSON_AddStringToObject(sys, "content", note);

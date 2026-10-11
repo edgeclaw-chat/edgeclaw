@@ -193,12 +193,12 @@ void TestMarkerPerStateInItsColor(void)
 
 void TestSystemGroupGetsItsOwnBlock(void)
 {
-    std::cout << "system groups draw in their own block (and are never hidden)\n";
+    std::cout << "a system group draws first and is named \"System\"\n";
 
     // Two groups, snapshot order = user first (the usual case: the user's group
-    // is older). The widget must reorder them: system block on top, user tree
+    // is older). The widget must reorder them: system group on top, user tree
     // under it (the tree is bottom-anchored, so the squeeze hits the system
-    // block first and the user's active row keeps its place).
+    // group first and the user's active row keeps its place).
     edc::TaskGroup g_user;
     g_user.group_id = "1";
     g_user.kind = edc::GroupKind::User;
@@ -235,25 +235,23 @@ void TestSystemGroupGetsItsOwnBlock(void)
     widget->SetSnapshot(&snap);
     const auto screen = Render(*widget);
 
-    const int heading = RowWith(screen, " System");
-    const int sys_row = RowWith(screen, "Group 9");
+    const int sys_row = RowWith(screen, "System");
     const int user_row = RowWith(screen, "Group 1");
     const std::string frame = FrameText(screen);
 
-    Check(heading >= 0, "the System heading is drawn");
-    Check(sys_row > heading, "the system group sits under its heading");
-    Check(user_row > sys_row, "the user tree stays below the system block");
-    Check(RowWith(screen, "777") >= 0 && RowWith(screen, "fold group 1") >= 0, "its task row is drawn (nothing is hidden)");
-    Check(RowWith(screen, "fold group 1") > 0, "the system task's description is visible");
+    Check(sys_row >= 0, "the system group's row says \"System\"");
+    Check(RowWith(screen, "Group 9") < 0, "it no longer reads like an ordinary group");
+    Check(user_row > sys_row, "the system group sits above the user tree");
+    Check(RowWith(screen, "777") < 0, "a system group starts folded (dozens of fold tasks must not squeeze the tree)");
     Check(frame.find("2 groups") != std::string::npos, "the header counts the system group too");
 
-    // Control 1: the same two groups, both USER -> no System heading and the
-    // snapshot's own order (user "1" above "9").
+    // Control 1: the same two groups, both USER -> the system label is gone and
+    // the snapshot's own order stands (user "1" above "9").
     snap.groups[1].kind = edc::GroupKind::User;
     auto plain = std::make_shared<edc::TaskWidget>();
     plain->SetSnapshot(&snap);
     const auto plain_screen = Render(*plain);
-    Check(RowWith(plain_screen, " System") < 0, "no System heading when no group is a system group");
+    Check(RowWith(plain_screen, "System") < 0, "no \"System\" row when no group is a system group");
     Check(RowWith(plain_screen, "Group 1") < RowWith(plain_screen, "Group 9"), "user groups keep snapshot order");
 
     // Control 2: a snapshot with no `kind` (zero) renders exactly like an
@@ -269,6 +267,22 @@ void TestSystemGroupGetsItsOwnBlock(void)
     auto b = std::make_shared<edc::TaskWidget>();
     b->SetSnapshot(&snap_nokind);
     Check(FrameText(Render(*a)) == FrameText(Render(*b)), "an absent kind renders like USER (old snapshots unchanged)");
+
+    // Control 3: "nothing is hidden" still holds -- a system group holding the
+    // *active* task starts expanded, so its members are one snapshot away. The
+    // label stays "System" in that state too.
+    edc::TaskSnapshot snap_open;
+    snap_open.session_id = "s";
+    snap_open.session_name = "session";
+    snap_open.groups = {g_sys, g_user};
+    snap_open.groups[0].tasks[0].is_active = true;
+    snap_open.groups[1].tasks[0].is_active = false; /* exactly one active task */
+    auto opened = std::make_shared<edc::TaskWidget>();
+    opened->SetSnapshot(&snap_open);
+    const auto open_screen = Render(*opened);
+    Check(RowWith(open_screen, "System") >= 0, "still named \"System\" when expanded");
+    Check(RowWith(open_screen, "777") >= 0 && RowWith(open_screen, "fold group 1") >= 0,
+          "its task row is drawn when it holds the active task (nothing is hidden)");
 }
 
 void TestActiveTaskWearsTheBlock(void)

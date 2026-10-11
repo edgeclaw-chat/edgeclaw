@@ -546,27 +546,30 @@ static void test_append_system_part(void)
       "no turn-instructions inside the head part");
     cJSON_Delete(msgs); /* 连带释放 tail reminder */
 
-    /* ── history 分支: group memory 在前 + 有 todo → 头部仍纯净, todo 只在
-     *    队尾 reminder; 共享 history[0] 不被改动 ── */
+    /* ── history 分支: **system prompt 在前、group memory 在后** (常量在前, 易变的在后
+     *    —— cache 友好, 2026-10-10) + 有 todo → 头部仍纯净, todo 只在队尾 reminder;
+     *    共享 history[0] 不被改动 ── */
     g1->memory = sdsnew("MEM-SUMMARY");
     t1->todos = cJSON_Parse("[{\"content\":\"do it\",\"status\":\"pending\",\"priority\":\"high\"}]");
     C(t1->todos != NULL && cJSON_GetArraySize(t1->todos) == 1, "attached 1 todo item");
     msgs = cJSON_CreateArray();
     pristine = NULL;
     n = edc_context_append_system_part(msgs, NULL, g1, NULL, &pristine);
-    C(n == 2, "group memory + base ref -> 2 head appends");
+    C(n == 2, "base ref + group memory -> 2 head appends");
     C(pristine == NULL, "still no pristine (history exists)");
-    cJSON *mem0 = cJSON_GetArrayItem(msgs, 0);
-    C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(mem0, "content")), "## Group Memory\nMEM-SUMMARY") == 0,
-      "group memory message comes first");
-    cJSON *m1b = cJSON_GetArrayItem(msgs, 1);
-    C(m1b != NULL && (m1b->type & cJSON_IsReference) && m1b->child == sys0->child,
-      "base attached by reference (not a todo-injected copy)");
-    const char *h1 = cJSON_GetStringValue(cJSON_GetObjectItem(m1b, "content"));
+    /* 顺序: 常量 (system prompt) 在前, 易变的 (group memory) 在后 —— 折叠落地只作废后者
+     * 之后的内容, 前缀 (系统提示词) 仍命中 cache。 */
+    cJSON *m0b = cJSON_GetArrayItem(msgs, 0);
+    C(m0b != NULL && (m0b->type & cJSON_IsReference) && m0b->child == sys0->child,
+      "base attached by reference and comes FIRST (it is the constant part)");
+    const char *h1 = cJSON_GetStringValue(cJSON_GetObjectItem(m0b, "content"));
     C(h1 && strcmp(h1, "SYS0_BASE") == 0, "head base stays PURE even when task has a todo list");
     C(strstr(h1, "CURRENT TASK SYSTEM STATE") == NULL && strstr(h1, "INSTRUCTIONS FOR THIS TURN") == NULL &&
           strstr(h1, "<system-reminder>") == NULL,
       "no reminder sections/marker anywhere in the head");
+    cJSON *mem1 = cJSON_GetArrayItem(msgs, 1);
+    C(mem1 && strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(mem1, "content")), "## Group Memory\nMEM-SUMMARY") == 0,
+      "group memory comes AFTER the system prompt (mutable part last)");
 
     cJSON *r2 = edc_context_make_todo_reminder(t1);
     C(r2 != NULL && !(r2->type & cJSON_IsReference), "todo reminder is an owned msg");

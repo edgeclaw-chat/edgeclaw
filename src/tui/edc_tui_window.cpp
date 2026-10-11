@@ -292,7 +292,7 @@ std::string UnescapeHistoryLine(const std::string &line)
 // The only hint the footer shows: instead of spelling out every key binding in
 // the status line, point users at the slash command that lists them. Placed at
 // the right end of the footer, after the model name.
-constexpr char kFooterHelp[] = "/help 帮助";
+constexpr char kFooterHelp[] = "/help";
 
 // Replace a leading $HOME with "~" so a deep directory stays readable in the
 // one-line footer. Falls back to the raw path when HOME is unset or the path
@@ -375,7 +375,7 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
     // wrap onto following rows instead of overflowing the input width;
     // Alt+Enter / pasted newlines still create real '\n' in the content. The
     // placeholder is dimmed by the widget itself (no InputOption transform).
-    input_ = std::make_shared<edc::EdcInput>(&input_text_, "输入消息，Enter 发送，Alt+Enter 换行...");
+    input_ = std::make_shared<edc::EdcInput>(&input_text_, "Type a message, Enter to send, Alt+Enter for a newline...");
 
     // Restore the recall history saved by previous runs (ArrowUp/ArrowDown in
     // the box). Missing file on first run just leaves the box with no history.
@@ -813,7 +813,7 @@ void TUIWindow::TickAnimations()
     // 输入框原来的位置上**什么都不摆** —— 摆一行字反而像"输入框被禁用了"。
     if (history_view_)
     {
-        children.push_back(::ftxui::hbox({::ftxui::text(" 历史 · Esc 返回 ") |
+        children.push_back(::ftxui::hbox({::ftxui::text(" History · Esc to go back ") |
                                           ::ftxui::color(style::palette().accent)}));
         children.push_back(::ftxui::text(""));
         return ::ftxui::vbox(std::move(children));

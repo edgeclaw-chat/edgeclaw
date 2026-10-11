@@ -153,6 +153,29 @@ cc_test(
 )
 
 cc_test(
+    name = "test_tools_memory",
+    srcs = ["test_tools_memory.c"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "//src/toolbox:toolbox",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_session_memory",
+    srcs = ["test_session_memory.c"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_context_estimate",
     srcs = ["test_context_estimate.c"],
     deps = [
@@ -241,6 +264,20 @@ cc_test(
     srcs = ["test_commands_task_new.c"],
     deps = [
         "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_commands_session_memo",
+    srcs = ["test_commands_session_memo.c"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "//src/shell:shell",
+        "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
 )

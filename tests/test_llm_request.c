@@ -19,6 +19,7 @@
 #include "edc_llm_request.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_session_memory.h"
 #include "edc_session_manager.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -258,8 +259,314 @@ static void test_turn_begin_zero_without_prefix(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
+ *  Case 2b: L2 session 记忆通知 (P4c) —— 请求期临时物, 队尾第一条
+ *  ══════════════════════════════════════════════════════════════ */
+
+/* 请求的 tail_parts 里那条通知 (没有就 NULL)。 */
+static const char *notice_part(struct edc_llm_actor_req *req, int *out_index)
+{
+    if (out_index)
+        *out_index = -1;
+    if (!req || !req->tail_parts)
+        return NULL;
+    int n = cJSON_GetArraySize(req->tail_parts);
+    for (int i = 0; i < n; i++)
+    {
+        cJSON *m = cJSON_GetArrayItem(req->tail_parts, i);
+        const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+        if (content && strncmp(content, "## Session Memory Updates", 25) == 0)
+        {
+            if (out_index)
+                *out_index = i;
+            return content;
+        }
+    }
+    return NULL;
+}
+
+static sds memo_add(struct edc_session *sess, const char *title, const char *summary, const char *detail)
+{
+    sds id = edc_session_memory_create_entry(sess->memo, title, summary, detail, NULL);
+    uint64_t seq = edc_session_memory_add_event(sess->memo, id, EDC_MEMO_CREATED, title, summary);
+    struct edc_memo_entry *e = edc_session_memory_entry(sess->memo, id);
+    if (e)
+        e->created_seq = e->updated_seq = seq;
+    return id;
+}
+
+static void test_session_memory_notice_reaches_the_tail(void)
+{
+    TEST("L2 通知: 新 task 首轮自带回填; 队尾第一条; 提交前不发第二次; 提交后为空");
+
+    struct harness h;
+    harness_up(&h);
+    struct edc_task *leader = NULL;
+    struct edc_task_group *g = make_group(&h, &leader, "sess-req");
+    (void)g;
+    attach_turn(&h, leader, "current input");
+
+    /* 两条条目 (与前台 memory_write 走同一套) + 一个还没有东西的 task */
+    sds id1 = memo_add(h.sess, "构建入口", "唯一入口是 bazelisk", "明细一");
+    sds id2 = memo_add(h.sess, "沙箱策略", "uid 1000 + sudo", NULL);
+    leader->memo_seen_seq = 0; /* 新 task: 什么都没看过 ⇒ 该回填 */
+
+    edc_llm_request_send(h.sched, leader, NULL, h.llm_actor, NULL);
+    pump(&h);
+
+    CHECK(g_req_msgs == 1, "请求发出去了");
+    int idx = -1;
+    const char *notice = notice_part(g_req, &idx);
+    CHECK(notice != NULL, "队尾有 session 记忆通知");
+    CHECK(notice && strstr(notice, "[m1] created: 构建入口 — 唯一入口是 bazelisk") != NULL, "第一条在");
+    CHECK(notice && strstr(notice, "[m2] created: 沙箱策略 — uid 1000 + sudo") != NULL, "第二条在");
+    CHECK(notice && strstr(notice, "共 2 条") != NULL, "带总条数");
+    CHECK(idx == 0, "通知在队尾**第一条** (todo 提醒在它后面)");
+    CHECK(leader->memo_seen_seq == 0, "水位没动 —— 请求还没被模型读到");
+    CHECK(leader->memo_notice_seq == 2, "记下了这次装进去的最大 seq");
+
+    /* 还没提交 (等价于请求被取消): 下一次请求**重发同一条** */
+    edc_llm_actor_req_free(g_req);
+    g_req = NULL;
+    edc_llm_request_send(h.sched, leader, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 2, "第二次请求也发出去了");
+    CHECK(notice_part(g_req, NULL) != NULL, "没提交 ⇒ 通知重发 (幂等, 不丢信息)");
+
+    /* 响应回来 ⇒ 提交 ⇒ 再请求就不带了 */
+    edc_task_memo_commit(leader);
+    CHECK(leader->memo_seen_seq == 2, "提交后水位追平");
+    edc_llm_actor_req_free(g_req);
+    g_req = NULL;
+    edc_llm_request_send(h.sched, leader, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 3, "第三次请求");
+    CHECK(notice_part(g_req, NULL) == NULL, "看过之后不再注入 (常驻里也没有 memory 内容)");
+
+    /* 新条目到来 ⇒ 只补新的那条 */
+    sds id3 = memo_add(h.sess, "第三条", "后来才有的", NULL);
+    edc_llm_actor_req_free(g_req);
+    g_req = NULL;
+    edc_llm_request_send(h.sched, leader, NULL, h.llm_actor, NULL);
+    pump(&h);
+    const char *n2 = notice_part(g_req, NULL);
+    CHECK(n2 != NULL && strstr(n2, id3) != NULL, "只带新条目");
+    CHECK(n2 && strstr(n2, "共 3 条") != NULL, "总数跟着涨");
+    edc_llm_actor_req_free(g_req);
+    g_req = NULL;
+
+    /* 折叠任务 (sink = GROUP_MEMORY): 自足请求, 队尾什么都不加 */
+    struct edc_task *fold = edc_scheduler_spawn_system_task(h.sched, h.sess, "fold group memory");
+    attach_turn(&h, fold, "fold prompt material");
+    fold->sink = EDC_SINK_GROUP_MEMORY;
+    edc_llm_request_send(h.sched, fold, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(notice_part(g_req, NULL) == NULL, "折叠任务不吃通知 (请求自足)");
+
+    sdsfree(id1);
+    sdsfree(id2);
+    sdsfree(id3);
+    harness_down(&h);
+}
+
+/* 头部两块的顺序与"同组内逐字节一致" —— cache 命中的前提：
+ * 常量 (system prompt) 在前、易变的 (group memory) 在后；同组内不同 task 的头部两块必须完全
+ * 相同, 否则它们连第一段 cache 都共享不了。 */
+static void test_head_blocks_cache_layout(void)
+{
+    TEST("请求头部: system prompt 在前 / group memory 在后; 同组两个 task 逐字节一致");
+
+    struct harness h;
+    harness_up(&h);
+    struct edc_task *leader = NULL;
+    struct edc_task_group *g = make_group(&h, &leader, "sess-head");
+    g->memory = sdsnew("MEM-SUMMARY"); /* 非空 ⇒ 两块都出现 */
+
+    struct edc_task *t2 = edc_task_new("h-2", "sess-head", g->group_id, "second task", edc_channel_adapter);
+    edc_task_group_add_task(g, t2);
+
+    attach_turn(&h, leader, "first input");
+    attach_turn(&h, t2, "second input");
+
+    edc_llm_request_send(h.sched, leader, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 1, "A 的请求发出去了");
+
+    sds a0 = NULL, a1 = NULL;
+    if (g_req && g_req->history)
+    {
+        a0 = sdsnew(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g_req->history, 0), "content")));
+        a1 = sdsnew(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g_req->history, 1), "content")));
+        CHECK(a0 && strstr(a0, "# EdgeClaw") != NULL, "第 0 块 = 系统提示词 (常量)");
+        CHECK(a1 && strncmp(a1, "## Group Memory\nMEM-SUMMARY", 27) == 0, "第 1 块 = group memory (易变的在后)");
+    }
+    edc_llm_actor_req_free(g_req);
+    g_req = NULL;
+    g_req_msgs = 0;
+
+    edc_llm_request_send(h.sched, t2, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 1, "B 的请求发出去了");
+    if (g_req && g_req->history)
+    {
+        const char *b0 = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g_req->history, 0), "content"));
+        const char *b1 = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g_req->history, 1), "content"));
+        CHECK(a0 && b0 && strcmp(b0, a0) == 0, "系统提示词那块与 A 逐字节一致");
+        CHECK(a1 && b1 && strcmp(b1, a1) == 0, "group memory 那块也与 A 逐字节一致");
+    }
+    sdsfree(a0);
+    sdsfree(a1);
+    edc_llm_actor_req_free(g_req);
+    g_req = NULL;
+    harness_down(&h);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Case 2d: JOIN 注入的形状 (P4d) —— 记忆型源只注入 output
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_join_injection_shape(void)
+{
+    TEST("JOIN (B 方案): 材料拼进目标**自己的输入**; 不往请求里插消息; 只拼一次且留存");
+
+    struct harness h;
+    harness_up(&h);
+    struct edc_task *leader = NULL;
+    struct edc_task_group *g = make_group(&h, &leader, "sess-inj");
+    (void)g;
+
+    /* 源一: 普通任务 (description + output) */
+    struct edc_task *src = edc_task_new("src-1", "sess-inj", "src-1", "src work", edc_channel_adapter);
+    {
+        struct edc_turn *t = edc_turn_new();
+        t->task_id = strdup("src-1");
+        cJSON *um = cJSON_CreateObject();
+        cJSON_AddStringToObject(um, "role", "user");
+        cJSON_AddStringToObject(um, "content", "SOURCE-USER-TEXT");
+        edc_queue_push(&t->messages, um);
+        edc_task_add_turn(src, t);
+    }
+    src->output = sdsnew("SOURCE-OUTPUT-TEXT");
+    edc_task_await_exec(src);
+    edc_task_mark_completed(src);
+
+    /* 源二: 记忆型 (折叠任务) —— 它的 prompt 不该被拼进来, 只拼 output */
+    struct edc_task *fold_src = edc_scheduler_spawn_system_task(h.sched, h.sess, "fold group memory");
+    {
+        struct edc_turn *t = edc_turn_new();
+        t->task_id = strdup(fold_src->task_id);
+        cJSON *um = cJSON_CreateObject();
+        cJSON_AddStringToObject(um, "role", "user");
+        cJSON_AddStringToObject(um, "content", "FOLD-PROMPT-TEXT");
+        edc_queue_push(&t->messages, um);
+        edc_task_add_turn(fold_src, t);
+    }
+    fold_src->output = sdsnew("FOLD-OUTPUT-MEMORY");
+    edc_task_await_exec(fold_src);
+    edc_task_mark_completed(fold_src);
+
+    /* 目标: 自己的输入 = "DEST-OWN-TURN", 同时 JOIN 两个源 */
+    struct edc_task *dst = edc_task_new("dst-1", "sess-inj", "dst-1", "dst work", edc_channel_adapter);
+    edc_task_add_dependency(dst, src, TASK_DEP_JOIN);
+    edc_task_add_dependency(dst, fold_src, TASK_DEP_JOIN);
+    attach_turn(&h, dst, "DEST-OWN-TURN");
+
+    g_req_msgs = 0;
+    edc_llm_request_send(h.sched, dst, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 1, "请求发出去了");
+
+    /* 目标自己的输入被就地改写: 原文 + 两段材料 */
+    const char *input = NULL;
+    if (dst->active_turn && edc_queue_length(&dst->active_turn->messages) > 0)
+    {
+        cJSON *m = dst->active_turn->messages.data[dst->active_turn->messages.head];
+        input = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+    }
+    CHECK(input && strstr(input, "DEST-OWN-TURN") != NULL, "原输入还在");
+    CHECK(input && strstr(input, "[subtask src work result]:") != NULL, "普通源: 带标记拼进输入");
+    CHECK(input && strstr(input, "SOURCE-OUTPUT-TEXT") != NULL, "普通源: output 在输入里");
+    CHECK(input && strstr(input, "SOURCE-USER-TEXT") == NULL, "普通源: 不再注入它那条 user 消息 (B 方案)");
+    CHECK(input && strstr(input, "FOLD-OUTPUT-MEMORY") != NULL, "记忆型源: output 也拼进输入");
+    CHECK(input && strstr(input, "FOLD-PROMPT-TEXT") == NULL, "记忆型源: 它的 prompt 一字不进");
+
+    /* 请求头部里**不该**多出注入消息 (只剩系统提示词) */
+    CHECK(g_req && g_req->history && cJSON_GetArraySize(g_req->history) == 1,
+          "请求头部没有插入额外的注入消息 (材料走输入)");
+    edc_llm_actor_req_free(g_req);
+    g_req = NULL;
+    g_req_msgs = 0;
+
+    /* 再发一次: 材料已进输入 ⇒ 不重复拼 (一次性), 且仍在那里 (留存) */
+    edc_llm_request_send(h.sched, dst, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 1, "第二次请求也出去了");
+    const char *input2 = NULL;
+    if (dst->active_turn && edc_queue_length(&dst->active_turn->messages) > 0)
+    {
+        cJSON *m = dst->active_turn->messages.data[dst->active_turn->messages.head];
+        input2 = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+    }
+    int marker_hits = 0;
+    if (input2)
+    {
+        for (const char *q = input2; (q = strstr(q, "[subtask src work result]:")) != NULL; q += 1)
+            marker_hits++;
+    }
+    CHECK(marker_hits == 1, "材料只在输入里出现一次 (不重复拼)");
+    CHECK(input2 && strstr(input2, "SOURCE-OUTPUT-TEXT") != NULL, "第二轮的输入里材料还在 (留存)");
+    CHECK(g_req && g_req->history && cJSON_GetArraySize(g_req->history) == 1, "第二轮头部依然只有系统提示词");
+    edc_llm_actor_req_free(g_req);
+    g_req = NULL;
+    harness_down(&h);
+}
+
+/* ══════════════════════════════════════════════════════════════
  *  Case 3: 摘要调用的 max_tokens (P2b-2)
  *  ══════════════════════════════════════════════════════════════ */
+
+/* ══════════════════════════════════════════════════════════════
+ *  Case 2c: L2 策展请求也是自足的 (P4d)
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_curate_request_is_self_contained(void)
+{
+    TEST("策展请求: 只有策展说明 + 它自己的 turn; 不吃通知 / 不吃 todo");
+
+    struct harness h;
+    harness_up(&h);
+    struct edc_task *leader = NULL;
+    struct edc_task_group *g = make_group(&h, &leader, "sess-curate");
+    (void)g;
+    /* 会话里放两条条目: 策展任务也不该被"通知" (它读的是自己 turn 里的材料) */
+    sds id1 = memo_add(h.sess, "构建入口", "bazelisk", NULL);
+    sds id2 = memo_add(h.sess, "沙箱", "uid 1000", NULL);
+
+    struct edc_task *l2 = edc_scheduler_spawn_system_task_as(h.sched, h.sess, "curate session memory",
+                                                             EDC_SINK_SESSION_MEMORY);
+    CHECK(l2 != NULL && l2->sink == EDC_SINK_SESSION_MEMORY, "起一个策展任务");
+    edc_scheduler_attach_input(h.sched, l2, "CURATE-MATERIAL");
+    g_req_msgs = 0;
+    edc_llm_request_send(h.sched, l2, NULL, h.llm_actor, NULL);
+    pump(&h);
+
+    CHECK(g_req_msgs == 1, "请求发出去了");
+    if (g_req)
+    {
+        CHECK(cJSON_GetArraySize(g_req->history) == 1, "前缀只有一条消息");
+        cJSON *sys0 = cJSON_GetArrayItem(g_req->history, 0);
+        const char *content = sys0 ? cJSON_GetStringValue(cJSON_GetObjectItem(sys0, "content")) : NULL;
+        CHECK(content && strcmp(content, edc_session_memory_system_prompt()) == 0, "内容 = 策展说明");
+        CHECK(content && strstr(content, "# EdgeClaw") == NULL, "没有主提示词");
+        CHECK(g_req->tail_parts == NULL, "队尾什么都不加 (通知与 todo 都不给策展调用)");
+        CHECK(g_req->max_tokens > 0, "带上 max_tokens (摘要类调用的唯一例外)");
+        edc_llm_actor_req_free(g_req);
+        g_req = NULL;
+    }
+
+    sdsfree(id1);
+    sdsfree(id2);
+    harness_down(&h);
+}
 
 static void test_summary_request_is_capped(void)
 {
@@ -362,7 +669,7 @@ static void test_fold_request_is_self_contained(void)
               "内容逐字节 = 折叠说明 (不是主提示词)");
         CHECK(content && strstr(content, "# EdgeClaw") == NULL, "没有主提示词 (重启那条污染路径)");
         CHECK(g_req->turn == &fold->active_turn->messages, "turn 就是折叠任务的 turn (折叠 prompt)");
-        CHECK(g_req->tail_system == NULL, "队尾不追加 todo 提醒 (摘要不该被插尾)");
+        CHECK(g_req->tail_parts == NULL, "队尾什么都不追加 (摘要不该被插尾)");
         edc_llm_actor_req_free(g_req);
         g_req = NULL;
     }
@@ -375,6 +682,10 @@ int main(void)
 {
     test_turn_begin_honours_folded_prefix();
     test_turn_begin_zero_without_prefix();
+    test_session_memory_notice_reaches_the_tail();
+    test_head_blocks_cache_layout();
+    test_join_injection_shape();
+    test_curate_request_is_self_contained();
     test_summary_request_is_capped();
     test_fold_request_is_self_contained();
 

@@ -7,6 +7,7 @@
 #include "edc_compat.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_session_memory.h"
 #include "edc_session_manager.h"
 #include "edc_shell.h"
 #include "edc_state_serializer.h"
@@ -115,6 +116,7 @@ static bool edc_commands_handle_help(struct edc_reply_to to)
                        "- /session new [name] [dir]  ·  /session switch <name>\n"
                        "- /session list  ·  /session info  ·  /session status [id]\n"
                        "- /session save  ·  /session stop\n"
+                       "- /session memo [show [id] | search <q> | compact [focus]]\n"
                        "- /session remove <name>  ·  /session rename <old> <new>\n"
                        "\n"
                        "- /task new <desc>   [--bg] [--suspended]\n"
@@ -165,6 +167,66 @@ static bool edc_commands_handle_session_save( struct edc_session_manager *sm, st
     edc_session_save_state(active, sched);
     edc_commands_reply(to, "**Session saved** — history and state persisted.");
     log_info("receive /session save command");
+    return true;
+}
+
+/* ── /session memo ─────────────────────────────────────────── */
+
+/* L2 session 记忆的查看与手动策展。作用域 = **活跃 session** (命令层总是对着当前
+ * 会话说话; 内核那侧的工具才是"按任务属主")。 */
+static bool edc_commands_handle_session_memo(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                             struct edc_reply_to to, const char *args)
+{
+    struct edc_session *active = edc_session_manager_get_active(sm);
+    if (!active || !active->memo)
+    {
+        edc_commands_reply(to, "**Session memory** — no active session.");
+        return true;
+    }
+
+    sds rest = args ? sdsnew(args) : sdsnew("");
+    sdstrim(rest, " ");
+    /* 子命令 = 头一个 token; 其余原文 (focus / 关键词可以带空格) */
+    char *sp = strchr(rest, ' ');
+    sds sub = sp ? sdsnewlen(rest, (size_t)(sp - rest)) : sdsdup(rest);
+    const char *tail = sp ? sp + 1 : "";
+    while (*tail == ' ')
+        tail++;
+
+    if (sdslen(sub) == 0 || strcmp(sub, "show") == 0)
+    {
+        sds text = edc_session_memory_show_text(active->memo, tail);
+        edc_commands_reply(to, text);
+        sdsfree(text);
+    }
+    else if (strcmp(sub, "search") == 0)
+    {
+        sds text = edc_session_memory_search_text(active->memo, tail);
+        edc_commands_reply(to, text);
+        sdsfree(text);
+    }
+    else if (strcmp(sub, "compact") == 0)
+    {
+        struct edc_task *t = edc_session_memory_start_manual(sched, active, (*tail ? tail : NULL));
+        if (t)
+            edc_commands_reply(to, "**Session memory** — curation started (it will land as entry ops). "
+                                   "`/session memo show` when it is done.");
+        else if (edc_scheduler_has_pending_system_task(active))
+            edc_commands_reply(to, "**Session memory** — a system task is already running in this session; "
+                                   "wait for it to finish.");
+        else
+            edc_commands_reply(to, "**Session memory** — could not start curation.");
+    }
+    else
+    {
+        edc_commands_reply(to,
+                           "Usage: `/session memo [show [id] | search <keyword> | compact [focus]]`\n"
+                           "`show` lists the entries, `show <id>` prints one entry, `search` matches title/"
+                           "summary/detail, `compact` curates now (else it only runs when a group is folded).");
+    }
+
+    sdsfree(sub);
+    sdsfree(rest);
     return true;
 }
 
@@ -512,6 +574,14 @@ static bool edc_commands_handle_session( struct edc_session_manager *sm, struct 
     }
     if (edc_commands_is_target(msg->content, "/session save"))
         return edc_commands_handle_session_save(sm, sched, to);
+    if (edc_commands_is_target(msg->content, "/session memo"))
+        return edc_commands_handle_session_memo(sm, sched, to, NULL);
+    if (edc_commands_arg(msg->content, "/session memo", &rest))
+    {
+        bool ret = edc_commands_handle_session_memo(sm, sched, to, rest);
+        sdsfree(rest);
+        return ret;
+    }
     if (edc_commands_is_target(msg->content, "/session stop"))
         return edc_commands_handle_session_stop(sm, sched, to);
     if (edc_commands_arg(msg->content, "/session remove", &rest))
@@ -796,6 +866,35 @@ static void edc_commands_handle_task_resume( struct edc_session_manager *sm, str
     }
 
     edc_scheduler_resume_task(sched, t);
+
+    /* 还在等依赖? (边的另一端没产出: 源被取消/失败过, 或者还没跑完。) 说清楚在等谁 —— 取消
+     * 不再摘边之后这是**正常**状态, 不能让它看起来"点了没反应"。
+     * 出口: resume 那个源 (它产出后这条边自动满足, 本任务会被放行), 或者删掉那个源。 */
+    if (edc_task_awaits_deps(t))
+    {
+        sds waiting = sdsempty();
+        struct edc_task_dep *dep;
+        LL_FOREACH(t->deps, dep)
+        {
+            if (dep->completed || dep->cancelled || !dep->source)
+                continue;
+            if (sdslen(waiting))
+                waiting = sdscat(waiting, ", ");
+            waiting = sdscatprintf(waiting, "`%s` (%s)", dep->source->task_id,
+                                   edc_task_state_str(dep->source));
+        }
+        sds reply = sdscatprintf(sdsempty(),
+                                 "**Task `%s` is waiting** — it still depends on %s. Resume that one (this task "
+                                 "runs once its output arrives), or remove it.",
+                                 t->task_id, sdslen(waiting) ? waiting : "an unfinished dependency");
+        if (t->group && t->group->session && t->group->session != sess)
+            reply = sdscatprintf(reply, " (session `[%s]`)", t->group->session->session_id);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        sdsfree(waiting);
+        return;
+    }
+
     sds reply =
         sdscatprintf(sdsempty(), "**Task `%s`** — resume signal sent (%s).", t->task_id, edc_task_state_str(t));
     if (t->group && t->group->session && t->group->session != sess)

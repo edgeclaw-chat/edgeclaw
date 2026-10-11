@@ -1,4 +1,5 @@
 #include "edc_state_serializer.h"
+#include "edc_session_memory.h"
 #include "edc_config.h"
 #include "edc_compat.h"
 #include "edc_containers.h"
@@ -17,7 +18,7 @@
  * the shape changes, or a legacy shape is finally retired, bump it and ship a
  * one-shot migration under tools/ (e.g. migrate_session_v3_to_v4.py) instead of
  * teaching the load path to patch old data up on every load. */
-#define EDC_STATE_SCHEMA_VERSION 6
+#define EDC_STATE_SCHEMA_VERSION 7
 
 /* ══════════════════════════════════════════════════════════════
  *  Internal helpers — dep type ↔ string
@@ -171,6 +172,11 @@ static cJSON *task_to_json(struct edc_task *task)
     cJSON_AddNumberToObject(tj, "last_fold_epoch", (double)task->last_fold_epoch);
     cJSON_AddNumberToObject(tj, "last_hist_len", (double)task->last_hist_len);
     cJSON_AddNumberToObject(tj, "last_turn_len", (double)task->last_turn_len);
+
+    /* L2 水位 (v7): session 记忆事件表的"看过"位置 + 头部块的锚定 token。
+     * 两个都随 task 走 —— 单写者 = 这个 task 自己 (见 edc_task.h)。 */
+    cJSON_AddNumberToObject(tj, "memo_seen_seq", (double)task->memo_seen_seq);
+    cJSON_AddNumberToObject(tj, "last_prefix_tokens", (double)task->last_prefix_tokens);
 
     /* ── redirect ── */
     if (task->redirect_stdout)
@@ -342,6 +348,11 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
         }
     }
     cJSON_AddItemToObject(root, "tasks", tasks_json);
+
+    /* ── L2: session 级记忆 (v7) ──
+     * 顶层键 (与 session/groups/tasks 平级): 它不是某个组的属性。空结构也写 ——
+     * 加载端因此不必处理"键不在"这一支。 */
+    cJSON_AddItemToObject(root, "session_memory", edc_session_memory_to_json(session->memo));
 
     return root;
 }
@@ -613,7 +624,7 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
         }
         if (task->life == EDC_LIFE_ALIVE)
         {
-            if (task->sink == EDC_SINK_GROUP_MEMORY)
+            if (edc_task_is_memory_sink(task))
                 task->step = EDC_TASKSTEP_READY;
             else
                 task->life = EDC_LIFE_SUSPENDED;
@@ -654,6 +665,10 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->last_hist_len = (int)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "last_turn_len")) && cJSON_IsNumber(v))
             task->last_turn_len = (int)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "memo_seen_seq")) && cJSON_IsNumber(v))
+            task->memo_seen_seq = (uint64_t)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "last_prefix_tokens")) && cJSON_IsNumber(v))
+            task->last_prefix_tokens = (uint64_t)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "redirect_stdout")) && cJSON_IsString(v))
             task->redirect_stdout = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "redirect_stderr")) && cJSON_IsString(v))
@@ -712,6 +727,39 @@ static void deser_fork_chains(cJSON *json, struct task_map_entry **id_map)
     }
 }
 
+/* 一个 task 只能属于一个组: 从 session 的**所有**组里把它摘出来 (只可能挂在某个组的成员
+ * 表上)。盘上出现"同一个 task 被两个组 claim"(手改过的档 / 旧档 / id 撞车)时, 靠这一手保证
+ * 不会出现双重成员关系 —— 那会让同一个对象挂两个链表, 释放时 double free (ASAN 抓到过)。
+ * 看列表而不是看 `task->group`: 成员路径上那个字段不一定是权威。
+ * `only_group` 非 NULL = 只摘这一个组 (把成员挂到它自己名下时用)。 */
+static void deser_detach_from_groups(struct edc_session *session, struct edc_task *task, const char *task_id,
+                                     struct edc_task_group *only_group)
+{
+    if (!session || !task)
+        return;
+    struct edc_task_group *g;
+    DL_FOREACH(session->groups, g)
+    {
+        if (only_group && g != only_group)
+            continue;
+        /* 注意用 LL_FOREACH2(…, group_next): 成员链走的是 task 的 group_next 字段,
+         * 默认的 `next` 是**另一条链**, 用它扫等于什么都没扫 (踩过)。找到就摘 + break,
+         * 循环中唯一一次改动发生在 break 之前, 所以不需要 safe 变体。 */
+        struct edc_task *t;
+        LL_FOREACH2(g->members, t, group_next)
+        {
+            if (t != task)
+                continue;
+            LL_DELETE2(g->members, t, group_next); /* 成员链的字段是 group_next, 不是 next */
+            if (g->member_count > 0)
+                g->member_count--;
+            log_warn("deserialize: task %s detached from group %s (a task belongs to one group only)",
+                     task_id ?: "(null)", g->group_id ?: "(null)");
+            break;
+        }
+    }
+}
+
 static void deser_create_groups(cJSON *json, struct edc_session *session, struct task_map_entry **id_map,
                                 struct group_map_entry **group_map)
 {
@@ -729,6 +777,10 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
         bool is_orph = orph && cJSON_IsTrue(orph);
 
         struct edc_task *leader = task_map_get(id_map, leader_id);
+        /* 一个 task 只能属于一个组 (成员链表用**单个** group_next 字段串起来)。盘上若它
+         * 已经挂在别的组的成员表里 (手改过的档 / 旧档 / id 撞车), 先摘掉 —— 否则同一个对象
+         * 会同时挂在两个链表上, 释放时 double free (ASAN 抓到过)。 */
+        deser_detach_from_groups(session, leader, leader_id, NULL);
         if (!leader && is_orph)
         {
             cJSON *members = cJSON_GetObjectItem(gj, "member_task_ids");
@@ -778,8 +830,11 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
                 if (!mid || strcmp(mid, leader->task_id) == 0)
                     continue;
                 struct edc_task *mt = task_map_get(id_map, mid);
-                if (mt)
-                    edc_task_group_add_task(group, mt);
+                if (!mt)
+                    continue;
+                /* 同上: 只能属于一个组 —— 已在别处的先摘掉再挂过来。 */
+                deser_detach_from_groups(session, mt, mid, group);
+                edc_task_group_add_task(group, mt);
             }
         }
 
@@ -1011,6 +1066,10 @@ bool edc_state_deserialize(cJSON *json, struct edc_session *session, struct edc_
 
     session->groups = NULL;
     session->active_task = NULL;
+
+    /* L2 session 记忆 (v7): 顶层键, 先读 —— 后面任何用到它的地方都在此之后。 */
+    edc_session_memory_free(session->memo);
+    session->memo = edc_session_memory_from_json(cJSON_GetObjectItem(json, "session_memory"));
 
     cJSON *sj = cJSON_GetObjectItem(json, "session");
     deser_session_meta(session, sj);

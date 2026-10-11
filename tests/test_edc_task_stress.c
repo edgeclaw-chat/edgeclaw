@@ -154,7 +154,7 @@ static void test_many_dependencies(void)
         if (role && strcmp(role->valuestring, "system") == 0)
         {
             cJSON *content = cJSON_GetObjectItem(item, "content");
-            if (content && strstr(content->valuestring, "子任务") != NULL)
+            if (content && strstr(content->valuestring, "[subtask ") != NULL)
                 dep_count++;
         }
     }
@@ -253,7 +253,7 @@ static void test_dependency_chain(void)
     edc_task_send_signal(b, TASK_SIGTERM);
     CHECK(edc_task_is_cancelled(b), "B cancelled");
     CHECK(edc_task_is_cancelled(a), "A cascaded to CANCELLED (JOIN dependent)");
-    CHECK(a->deps_total == 0, "A deps cleared by cascade");
+    CHECK(a->deps_total == 1, "A 的边留着 (取消不摘边)");
 
     /* C 是 B 的依赖源 (B→C), 不是 B 的依赖者 → 取消 B 不触碰 C。 */
     CHECK(c->deps_total == 0, "C has no deps (B depends on C, not the other way)");

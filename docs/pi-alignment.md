@@ -11,7 +11,7 @@
 | | pi | 我们现在 | 结论 |
 |---|---|---|---|
 | **上下文规模怎么算** | 最后一条**有效** assistant 的 `usage.totalTokens` + 其后消息按 `chars/4` 估算；无有效 usage → 全量估算 | 最近一次应答的 `usage.total_tokens`（`task->last_total_tokens`），组取成员**最大**；**尾部不计、折叠后不失效** | **P1** 补估算器 + anchor 失效规则 |
-| **什么时候折** | `tokens > contextWindow − reserveTokens`（默认 16k） | **消息条数**（`group_fold_msg_threshold`，你配的 200） | **P2** 改 token 触发，消息数降级为兜底 |
+| **什么时候折** | `tokens > contextWindow − reserveTokens`（默认 16k） | **只剩 token 轴**：`ctx > 窗口 − reserve`；窗口默认 **1M**，`<= 0` 在启动时被修成默认值（2026-10-10，见 §2.9） | **P2 ✅**（消息条数轴已整条退休） |
 | **折到哪里** | 从尾部往前累加到 `keepRecentTokens`(20k) 的**合法切点** | **折最老的一半**（按 task / 消息数） | **P2** 改尾部 token 预算 |
 | **切点安全** | 永不切在 `toolResult` 上 | `edc_llm_history_safe_start` 把起点回退到非 tool 消息 | ✅ 已具备 |
 | **摘要怎么生成** | 结构化 6 段 + 文件追踪 + **迭代更新**指令 + `maxTokens` 上限 + 失败判定 | "concise markdown" 一句，只有 `## Existing Group Memory` 前缀 | **P2** 采纳格式与迭代规则 + 卫生检查 |
@@ -303,6 +303,42 @@ executor + 限流反例 + 窗口未知不触发 + 投递顺序 + 折叠护栏 + 
 系统组 `history[0]`，断言请求第一条消息**逐字节**等于折叠说明且不含 `# EdgeClaw`；变异：改回走组
 上下文 → 2 红，既自足又走一遍组上下文 → 1 红）。
 
+## 2.9 窗口是唯一判据：默认 1M，条数轴退休（2026-10-10）
+
+**决定（用户）**：删掉"靠消息条数判断要不要折"的逻辑；`context_window` 不会为 0，因为有默认值 1M。
+
+**为什么**：条数轴本来只是"窗口未知"时的兜底（写法乙的分支）。一旦窗口有了默认值，那条分支
+就**必然不可达** —— 留着是一条死路，而"兜底只在键缺席时可达"正是本仓库吃过亏的写法
+（§7.2 的那句警告就是这么来的）。窗口是这台机器上唯一能回答"下一次请求装得下吗"的量。
+
+**落地**：
+
+| 面 | 改动 |
+|---|---|
+| 默认值 | `EDC_CONFIG_DEFAULT_CONTEXT_WINDOW = 1024 * 1024`（= 默认模型 `deepseek-v4-flash` 的实测窗口，§2.5.1） |
+| 修复 | `edc_init_env` 的 top-up 新增 `ensure_positive_int_key`：`context_window` **缺失 / 非数字 / `<= 0`** 一律写成默认值（并重写文件，所以盘上不会留一个撒谎的 0）；读侧 `edc_config.c` 同样只接受正数 —— 双保险，因为启动顺序里 top-up 先跑 |
+| 退休 | `group_fold_msg_threshold`：字段、默认值、ensure、读侧全删；键进 `drop_obsolete_keys`（老 config.json 里的那条会在下次启动被清掉） |
+| 判据 | `edc_group_fold_due` = `foldable > 0 && failures < 3 && ctx > 窗口 - reserve`。窗口仍读不到（脏 config）时**返回 false**：不知道窗口不是"随便折"的理由；手动 `/group fold` 不受影响 |
+| 夹具 | A/B 的 `fold` 改成手动 `/group fold` 触发（`AB_CONTEXT_WINDOW` 可让将来的夹具按窗口触发）：夹具语料只有几十 token，1M 窗口下自动路径永远不会过线 |
+
+**代价（已知，写下来）**：窗口必须**跟真实模型一致**。填太大 ⇒ 折叠来晚了（provider 先报溢出，
+P3 会给一条带数字的提示）；填太小（比如小于"系统提示 + 记忆"这个基线）⇒ 组每轮都"该折"，
+变成一直在折。所以这个值不是"随便填一个数"，它现在是一等配置。
+
+**验证**：`bazel clean` → build **903 actions**、全量 **64/64**；**6 条变异全红**（窗口 <= 0 也照折 /
+条数轴复活为 OR / 默认值退回 0 / top-up 不修 <= 0 / 退役键不删 / 读侧不修 0），逐字节还原。
+A/B 三夹具对**同 HEAD 基线二进制**：`session.json` / `chat.jsonl` / `llm_requests.jsonl` /
+`.task_seq` 全部逐字节相同；日志剥时钟 + 抹行号后唯一差异是旧二进制多一条"config 重写"日志
+（它在给已退休的键补默认值）。`fold` 夹具的折叠产物（切点 `task 826 turn 0 msg 1`、prompt
+1092 字节、折叠任务 827、落地 "folded 1 turns"）**新旧完全一致** —— 手动入口与自动入口共用同一条
+start → 屏障 → prompt → 落地路径。
+
+**变异电池的收获**：M5/M6 第一版**没红** —— `cJSON_ReplaceItemInObject` 对缺席的键是 no-op，
+测试里"手工写回一个 0 / 写回那条退役键"其实**什么都没写**，断言空转。改成 delete+add 并补
+"前置：文件里真的写着 0"之后两条都红。**（老教训的新案例：先证明夹具真的摆好了，再断言结果。）**
+
+---
+
 ---
 
 # 第三部分：分期
@@ -327,12 +363,12 @@ executor + 限流反例 + 窗口未知不触发 + 投递顺序 + 折叠护栏 + 
 
 | # | 裁决 | 落地 |
 |---|---|---|
-| 1 | **A** 显式配置 `context_window`。**2026-10-09 二次澄清（覆盖原"默认 1M"）**：默认 **0 = 未配置/未知** ⇒ 走条数轴；**只有显式填了窗口值才启用 token 轴**（否则"缺失"不可观测，条数轴永远不可达，见 §7.2） | P2 |
+| 1 | ~~**A** 显式配置 `context_window`；默认 0 = 未配置/未知 ⇒ 走条数轴~~ **2026-10-10 取代**：窗口有**默认值 1M**，缺失/`<= 0` 一律被修成它；窗口是**唯一**判据（见 §2.9） | P2 → 已改 |
 | 2 | **B** footer 区分精确 / 估算：锚定真值 `ctx 65.5k`、含估算 `ctx ~72k` | ✅ P1 |
 | 3 | **A** 估算器 CJK 感知（`ascii/4 + non_ascii×1`） | ✅ P1 |
 | 4 | **A** 顺序 P1 → P2 → P3，一期一 commit | — |
 | 5 | **B** 触发时机：task 完成时 **+ 每次 LLM 请求前** | P2 |
-| 6 | **A** `group_fold_msg_threshold` 是**次选**：`context_window > 0` 时按窗口触发（token 轴独占）；**窗口缺失/为 0 时**才用消息条数（**写法乙**，2026-10-09 澄清） | P2 |
+| 6 | ~~**A** 条数是**次选**（写法乙：窗口缺失/为 0 时才用条数）~~ **2026-10-10 取代**：条数轴删掉，`group_fold_msg_threshold` 从 config 退休（见 §2.9） | P2 → 已改 |
 | 7a | **B** 范围：**运行中的 task 也能被折**（折叠任务已是每个在飞成员的 dep ⇒ 到请求边界 park、结果照收，等折叠落地） | P2（最大改动面，见 §6） |
 | 7b | **B** 粒度：**消息级水位**（不再是 `completion_seq` 标量；支持切在 turn 内部 = pi 的 split turn） | P2 |
 | 8 | **要** 手动 `/group fold [id] [focus]`（focus 进摘要 prompt） | P2 |
@@ -436,11 +472,14 @@ struct edc_turn  +=  int folded_prefix;   /* 本 turn 前 N 条消息已进记�
 
 ## 7.2 触发（裁决 5B / 6A / 14）
 
+> **2026-10-10 更新（见 §2.9）**：下面的**条数兜底已删除**，窗口是唯一判据；`context_window`
+> 也不再可能 <= 0（启动期修成默认 1M）。本节保留为当期的决策记录。
+
 **判据（单一来源 = P1 的组 ctx）**：
 
 ```
 该折 ⟺  (context_window > 0 && edc_context_group_ctx_tokens(g) > context_window - reserve)
-      ||  (unfolded_msgs(g) >= group_fold_msg_threshold)
+      ||  (unfolded_msgs(g) >= group_fold_msg_threshold)     ← 2026-10-10 已删
 ```
 
 **已定案（2026-10-09 二次澄清）= 写法乙**：`context_window > 0` 时按窗口触发（token 轴独占）；
@@ -563,3 +602,111 @@ v5 的 `group.folded_through_completion_seq` + `task.turns_folded` → 每个 tu
 2. **水位落在 turn 上 + group history 剪枝**（7.1 的骨架）—— 这是 7a/7b 成立的前提；
 3. **三个数字走常量**（16k / 20k / `min(0.8×16k, …)`）而不是配置键；
 4. **P2 拆两步（P2a / P2b）**，各自验证；commit 按你的规矩来（合成一个也行）。
+
+## §2.10 系统提示的确定性纪律（2026-10-10）
+
+参考 `docs/pi-system-prompt-guide.md` §7 的三条"无"：**无日期/时间戳注入**（要时间自己跑 `date`）、
+**无文件监听**（`/reload` 才重读）、**无环境漂移**（版本号/遥测/网络状态）。判据是
+"跨天、重启、resume，prompt 字节完全不变"。
+
+拿它量 EdgeClaw 的 `edc_context_build_system_prompt`（六段：身份头 / 权限表 / bootstrap /
+全局记忆 / 技能 / session 记忆常量提示）：
+
+| 段落 | 判定 |
+|---|---|
+| **`## Current Time`（时间戳）** | ❌ 违反第一条 ⇒ **已删**（连 `{{time}}` 占位符与那个参数一起清掉；身份头补一句常量行："这个提示词没有时钟，要时间就跑 `date`"） |
+| `## Current Running Directory` / OS / workspace | ✅ 会话内常量（pi 自己也有 `<cwd>`） |
+| 权限表（sandbox 路径） | ✅ 会话配置；只在 config / 绑新 workdir 时变（那是会话事件，pi §7 的"结构性变化 ⇒ 新前缀"） |
+| bootstrap（`AGENTS.md` / `TOOLS.md` / 可选 `IDENTITY.md`） | ✅ 与 pi 的 `<project_context>` 同性质：会话事件时读一次。**`SOUL.md` / `USER.md` 已删**（见 §2.12） |
+| 全局记忆 `MEMORY.md` | ✅ **2026-10-10 整套删除**（见 §2.13）：正文先移出提示词，随后连机制一起退休 —— 它是 agent 自己会写、且没有渐进式披露/去重/通知的文件 |
+| 技能清单 | ✅ pi `<skills>` 同款（只放索引，正文惰性读） |
+| session 记忆常量提示 | ✅ 常量（无条数、无内容） |
+
+守卫：`tests/test_session_workdir.c::test_system_prompt_has_no_clock` —— 连续构造两次逐字节相同、
+没有 `Current Time` 段、没有未替换的 `{{time}}`、全文不含 `20xx-` 形式的日期。
+（`{{skill-name}}` 是**故意**留给模型看的路径模板，不算漏替换。）
+以及 `tests/test_session_workdir.c::test_memory_file_mechanism_is_gone` —— 造一份带标记的 MEMORY.md，
+断言提示词里**既没有正文、也不提**这两个文件名，而 `memory_write` 的路子还在。
+（**后续**：这一步之后的同一天，整个 `MEMORY.md` 机制被删除了 —— 见 §2.13。）
+
+把 MEMORY.md 移出提示词还顺带修掉一个语义毛病：原来它常驻（缓存在 `history[0]`）⇒ agent 本次会话
+写进去的记忆，**它自己反而读不到最新版**（要等重建）。
+
+## §2.11 上下文文件的发现机制（2026-10-10）
+
+**缺口**：在那之前，提示词只从 **workspace** 里读 5 个固定名字的文件（`AGENTS.md` / `SOUL.md` /
+`USER.md` / `TOOLS.md` / `IDENTITY.md`）。而 session 是可以绑定工作目录的
+（`/session new x /path/to/repo`）—— **那个 repo 自己的 `AGENTS.md` 一个字都进不来**。
+
+照 pi §3.6 补齐（`edc_context.c` 的 `load_project_context`）：
+
+| pi 的做法 | 现在 |
+|---|---|
+| 用户全局 `~/.pi/agent/AGENTS.md` | ✅ `~/.edgeclaw/AGENTS.md` |
+| 从 cwd **向上遍历到根** | ✅ 从 session 的**工作目录**向上遍历到根 |
+| 同目录候选优先级 `AGENTS.override.md` > `AGENTS.md` > `AGENTS.MD` > `CLAUDE.md` > `CLAUDE.MD`（override 只压制同目录） | ✅ 同一条优先级，同一目录只取一个 |
+| 每个文件包 `<project_instructions path="…">` | ✅ 同款包裹（外加 `## Project Context` 标题与 pi 那句引导语） |
+| 一个都没命中 ⇒ 整段不出现 | ✅ 返回空串，段不出现 |
+| `--no-context-files` / `-nc` 禁用 | ✅ config.json 顶层键 **`skip_context_files`**（缺省 false） |
+| 附着顺序：全局 → 外层 → 内层 | ✅ 先全局、再 根 → 工作目录（先广后专） |
+
+**有意保留的差别**：workspace 的那 5 个文件仍照旧躺在最前面（它们是"agent 自己的家目录规则"，
+pi 没有这一层）；工作目录就是 workspace 时那 5 个文件会被**去重**，不会收两遍。
+
+**守卫**：`tests/test_session_workdir.c::test_project_context_discovery` —— 造一棵
+`home/.edgeclaw/AGENTS.md` + `proj/AGENTS.md` + `proj/sub/{AGENTS.override.md, AGENTS.md, CLAUDE.md}`
+的树，断言：全局/项目/子目录 override 都进来、被 override 压制的与 `CLAUDE.md` 都不进来、
+顺序是 全局 → 项目 → 子目录、工作目录为空时只收全局、`skip_context_files` 一开一份都不读。
+
+## §2.12 砍掉 SOUL.md / USER.md / HEARTBEAT.md（2026-10-10）
+
+被问："pi 是不是都没有这部分内容？" —— **是，pi 一个都没有**。逐条对照后删掉：
+
+| 文件 | 原内容 | 为什么删 | pi 里对应什么 |
+|---|---|---|---|
+| `SOUL.md` | Core Principles / Execution Rules（单步多步、错误恢复、二进制调试、文件管理）/ Task Management / Tool Catalog / Channels | **绝大部分是重复**：Task Management 与 `todowrite` 的工具描述重复；Tool Catalog 与 `TOOLS.md` 重复；二进制调试与 `dtbo-debug` 技能重复；原则与 `AGENTS.md` 的 Guidelines 重复 | 无（pi 的身份是**代码里的 preamble 常量**） |
+| `USER.md` | 一份**全空模板**（`(your name)`、未勾选的复选框、空列表项） | 没有任何真实字段 ⇒ 纯噪声，占 token 还误导 | 无（要个性化就写进 AGENTS.md / `--append-system-prompt`） |
+| `HEARTBEAT.md` | 周期性任务清单 | **本仓库没有任何代码实现"每 30 分钟检查"** —— 那条声称只写在 `AGENTS.md` / `TOOLS.md` / `README.md` 里，机制不在这个仓库 | 无（pi 没有 heartbeat；要周期任务用 cron/外部调度） |
+
+**改动面**（一次做干净，不留悬空引用）：
+- `src/kernel/context/edc_context.c`：`BOOTSTRAP_FILES` = `AGENTS.md` / `TOOLS.md` / `IDENTITY.md`；
+- 种子工作区 `workspace/`：删这三个文件；`AGENTS.md` / `TOOLS.md` 里那两段 heartbeat 说明一并摘掉；
+- 引用同步：`tests/test_bundled_workspace.c` 的必需文件名单、`tools/ab/ab.py` 的 `BOOTSTRAP` 名单、`README.md`（目录树 / Heartbeat 段落 / Workspace 文件表）；
+- 已有安装的 `~/.edgeclaw/workspace/`：那两份与种子**逐字节相同** ⇒ 同样摘掉 heartbeat 段后与种子再一致（不丢用户内容）。
+
+**用户自己那份也删了**（2026-10-10 裁决）：`~/.edgeclaw/workspace/HEARTBEAT.md` 里那条"时钟哨兵"
+任务一并丢掉 —— 反正本仓库没有任何东西会去执行它（要周期任务，用真实现的 `crontab` 工具）。
+
+**仍然保留的**：`AGENTS.md`（行为契约）、`TOOLS.md`（工具速查）—— 它们与 pi 的 `<project_context>` 同类（人写、会话事件时读一次）。`TOOLS.md` 与 provider 的 tools 字段确有部分重复，但它是"给人看的清单 + 额外说明（设备、通道）"，暂留。
+
+## §2.13 删掉 MEMORY.md 机制（2026-10-10）
+
+**裁决**：文件式的长期记忆（`workspace/memory/MEMORY.md` + `HISTORY.md`）**整套删除**；跨 session 记忆
+"后面再设计一个更好的机制"（要求：像 session 条目那样有 id / 检索 / 更新纪律 / 通知）。
+
+**为什么它该走**（与 session 条目逐条对比）：
+
+| | `MEMORY.md`（旧） | session 条目（新） |
+|---|---|---|
+| 存放 | 一个平面文件（实测 840 行 / 116 KB ≈ 3 万 token） | 条目 + 事件表（id / title / summary / detail） |
+| 取用 | `read_file` **只能整读**（没有 offset/limit）⇒ 无渐进式披露 | `memory_search` / `memory_list` / `memory_get` |
+| 写入 | agent 直接改写整个文件（无合并/去重/校验） | `memory_write` + 策展 ops（整批校验、fail-closed） |
+| 通知 | 无 | 队尾通知（按水位补差集） |
+| 唯一独占能力 | **跨 session**（这一条以后要用新机制补回来） | session 内 |
+
+**改动面**：
+- `edc_context.c` 身份头：删掉 `MEMORY.md` / `HISTORY.md` 两条路径 + "长期记忆在那些文件里…写回 MEMORY.md"
+  两段常量说明（提示词里现在**完全不提**这两个文件）；
+- 种子工作区：删 `workspace/memory/MEMORY.md`；删 `workspace/skills/memory/`（那个 skill 实现的就是这套
+  文件记忆的 grep 检索流程）；
+- `workspace/AGENTS.md` 的 "## Memory System" 改成 "## Memory"（只讲 session 记忆的四个工具 + 明说
+  跨 session 还没做）；
+- 引用同步：`tests/test_bundled_workspace.c` 名单、`README.md`、`docs/edgeclaw.md`、`docs/edgeclaw.1`、
+  `docs/runtime-model.md`、`docs/l2-session-memory.md`（含台账 ⑯）。
+
+**守卫**：`tests/test_session_workdir.c::test_memory_file_mechanism_is_gone` —— 造一份带标记的
+`MEMORY.md`，断言提示词里**既没有正文、也不提 `MEMORY.md`/`HISTORY.md`**，而 `memory_write` 的路子还在。
+
+**用户数据**：已有的 `~/.edgeclaw/workspace/memory/MEMORY.md`（840 行）与 `HISTORY.md` **内容保留在盘上**
+（机制没了 = 没人再读写它，但那些是攒出来的知识，删不删由用户决定）。
+

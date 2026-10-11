@@ -222,16 +222,19 @@ void TestParsedSnapshotRenders()
     }
 
     Check(frame.find("Group 1") != std::string::npos, "the user group's header is drawn");
-    Check(frame.find("Group 9") != std::string::npos, "the system group's header is drawn");
+    Check(frame.find("System") != std::string::npos, "the system group's header reads \"System\"");
+    Check(frame.find("Group 9") == std::string::npos, "it does not read as an ordinary group");
     Check(frame.find("11") != std::string::npos, "task 11's row is drawn");
-    Check(frame.find("777") != std::string::npos, "the system task's row is drawn");
+    Check(frame.find("777") == std::string::npos,
+          "the system group starts folded (its fold tasks are one click away, not in the tree)");
     Check(frame.find("2 groups") != std::string::npos && frame.find("3 tasks") != std::string::npos,
           "the header counts both groups and all three tasks");
     Check(frame.find("↑70 ↓30") != std::string::npos,
           "the group's usage line reaches the frame (input / output)");
     Check(frame.find("30.0%") != std::string::npos, "and the hit rate derived from cached / input");
     Check(frame.find("ctx 4.1k") != std::string::npos, "and the current context width (anchored: no mark)");
-    Check(frame.find("ctx ~2k") != std::string::npos, "an estimated context carries the ~ mark");
+    /* The estimated mark (`ctx ~…`) is covered by test_task_widget's footer case:
+     * a folded group draws no footer, and the system group is folded here. */
 }
 
 } // namespace

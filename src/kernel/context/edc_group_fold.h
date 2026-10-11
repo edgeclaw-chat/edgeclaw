@@ -12,8 +12,9 @@ struct edc_task;
 struct edc_task_group;
 
 /* Fold policy (pi alignment, decisions 13/14). A group folds when its estimated
- * context exceeds `context_window - EDC_FOLD_RESERVE_TOKENS`; the fold keeps the
- * newest EDC_FOLD_KEEP_RECENT_TOKENS of detail and everything older becomes the
+ * context exceeds `context_window - EDC_FOLD_RESERVE_TOKENS` (the window is always
+ * configured, see edc_init_env.h); the fold keeps the newest
+ * EDC_FOLD_KEEP_RECENT_TOKENS of detail and everything older becomes the
  * summarization corpus. */
 #define EDC_FOLD_RESERVE_TOKENS 16384
 #define EDC_FOLD_KEEP_RECENT_TOKENS 20000
@@ -48,15 +49,17 @@ struct edc_task_group;
  * task { sink = GROUP_MEMORY } in the session's system group. This module decides
  * whether to fold, what to fold, and dispatches; the scheduler lands the output. */
 
-/** Gate (decision 6/14/15): a group is due when it has foldable tasks and
+/** Gate (decision 6): a group is due when it has foldable tasks and
  *
- *     context_window > 0  ->  ctx > context_window - EDC_FOLD_RESERVE_TOKENS
- *     context_window <= 0 ->  unfolded messages >= group_fold_msg_threshold
+ *     ctx > context_window - EDC_FOLD_RESERVE_TOKENS
  *
- *  The window axis is **exclusive**, not a disjunction: 0 means "not configured /
- *  unknown" and is the only value that reaches the count axis. Do not give
- *  `context_window` a non-zero default -- any default would make the count branch
- *  unreachable (a fallback that only fires when a key is absent dies silently). */
+ *  The token axis is the **only** axis (2026-10-10: the message-count branch was
+ *  deleted). `context_window` is always positive -- edc_init_env repairs a missing
+ *  or <= 0 value to EDC_CONFIG_DEFAULT_CONTEXT_WINDOW -- so the count branch that
+ *  used to catch "window unknown" was unreachable code, and a fallback that only
+ *  fires when a key is absent dies silently as soon as anything supplies a default.
+ *  If a bad config still yields <= 0 here we refuse to fold automatically rather
+ *  than guess; the manual `/group fold` never asks this predicate. */
 extern bool edc_group_fold_due(struct edc_task_group *group, const struct edc_config *conf);
 
 /** Scan every session (so a background session folds too, not only when switched
@@ -87,8 +90,9 @@ struct edc_fold_cut
  *  Selection (pi's keep_recent): walk the group's unfolded messages in content order
  *  from the newest backwards, keep the newest EDC_FOLD_KEEP_RECENT_TOKENS as detail,
  *  everything older is the corpus. The cut lands on a message boundary. When the whole
- *  group is under that budget -- only reachable when no window is configured -- fold
- *  the oldest half instead, or a small group could never fold. The corpus is then
+ *  group is under that budget (a group whose summary is bigger than what is left to
+ *  fold, or a manual fold of a small group) fold the oldest half instead, or a small
+ *  group could never fold. The corpus is then
  *  capped at EDC_FOLD_MAX_CORPUS_TOKENS (b): the cut moves back until what is sent can
  *  actually be compressed into EDC_FOLD_SUMMARY_MAX_TOKENS in one call. */
 /** |focus| (optional, NULL ok) lands verbatim in the prompt as "Additional focus:" --
@@ -122,7 +126,10 @@ extern bool edc_group_fold_holds_group(struct edc_task_group *group);
  *  fold task carries (every member before it folded whole, its own turn up to
  *  fold_cut_prefix), rebuild the group history, bump fold_epoch. On failure nothing
  *  changes and the next round retries. */
-extern void edc_group_fold_deliver_memory(struct edc_task *task, const char *content);
+/* 折叠落地: 写 group 记忆 (并尽量打上前缀/推进 fold_epoch)。
+ * 返回 true = 记忆真的写了 (L2 的"有新料"判据就是这个返回值); false = 内容为空,
+ * 什么都没动 (下一次触发重试)。 */
+extern bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content);
 
 /** (c) 记一次折叠失败 (任务进 ERROR / 摘要为空 / 切点解析不了)。计数到
  *  EDC_FOLD_MAX_FAILURES 后 `edc_group_fold_due` 对**自动**路径返回 false; 手动

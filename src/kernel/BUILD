@@ -16,6 +16,7 @@ cc_library(
             "context/edc_context.c",
             "context/edc_token_estimate.c",
             "context/edc_group_fold.c",
+            "context/edc_session_memory.c",
             "context/edc_skills.c",
         ],
     hdrs = [
@@ -34,6 +35,7 @@ cc_library(
             "context/edc_context.h",
             "context/edc_token_estimate.h",
             "context/edc_group_fold.h",
+            "context/edc_session_memory.h",
             "context/edc_skills.h",
         ],
     includes = [

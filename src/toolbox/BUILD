@@ -16,6 +16,7 @@ cc_library(
         "edc_tools_fs.c",
         "edc_tools_shell.c",
         "edc_tools_todo.c",
+        "edc_tools_memory.c",
     ],
     hdrs = [
         "edc_param_types.h",
@@ -28,6 +29,7 @@ cc_library(
         "edc_tools_fs.h",
         "edc_tools_shell.h",
         "edc_tools_todo.h",
+        "edc_tools_memory.h",
     ],
     includes = ["."],
     deps = [

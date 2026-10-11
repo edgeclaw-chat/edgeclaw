@@ -1,10 +1,15 @@
-# fold：把 group_fold_msg_threshold 调到 2 (见 ab.py 的 AB_FOLD_MSG_THRESHOLD)，
-# 一个任务跑完就攒到 2 条未折叠消息 → 触发一次**真正的折叠**。
-# 只发一个任务：`/task new` 每次建自己的组，两个任务就是两个组，谁都到不了阈值。
+# fold：折叠走**手动**入口 —— `send /group fold`（无 id = 前台组）。
 #
-# 这一步要证的：折叠从 memory_actor 的专用协议搬到 system task 之后，
-#   产物 (group memory 文本 / turns_folded 标记 / folded_through_completion_seq)
-#   逐字节不变，且盘上不会多出系统组或折叠任务。
+# 为什么不再靠阈值自己触发：触发判据现在只有 token 轴（组的上下文 > context_window
+# - 16384），而夹具的语料只有几十个 token；窗口是 1M（config.json 的默认值），所以
+# 自动路径**永远不会**在夹具里过线。要造"自动折"的夹具得塞进 ~1M token 的会话，不划算。
+# 自动触发（两个挂载点 / 扫描 / 失败闸门）由单测覆盖：
+#   tests/test_group_fold.c 的 test_fold_before_request / test_fold_on_non_settling_advance
+#   / test_try_scans_all_sessions / test_fold_failure_cap，判据本身还有两侧的边界断言。
+# 手动入口与自动入口共用同一条 start → 屏障 → prompt → 落地路径（tests/test_commands_group_fold.c）。
+#
+# 这一步要证的：折叠的**产物**（group memory 文本 / 折叠水位 / session.json 结构）
+# 与新 prompt 布局逐字节可比，且盘上不会多出系统组或折叠任务。
 
 # 启动与首帧
 wait 1500
@@ -12,7 +17,8 @@ wait 1500
 send /task new """alpha work"""\n
 wait 3500
 
-# 完成后：2 条未折叠消息 ≥ 阈值 → 折叠任务起来 (假 LLM 的第 2 个响应)
+# 任务跑完（假 LLM 的第 1 个响应）→ 手动折一次（假 LLM 的第 2 个响应）
+send /group fold\n
 wait 4000
 
 # settle（之后 ab.py 会发 SIGINT，走 main.cpp 的优雅退出 → 落盘）

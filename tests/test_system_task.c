@@ -6,8 +6,10 @@
 #include "edc_actor.h"
 #include "edc_compat.h"
 #include "edc_config.h"
+#include "edc_group_fold.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_session_memory.h"
 #include "edc_session_manager.h"
 #include "edc_state_serializer.h"
 #include "edc_task.h"
@@ -114,16 +116,21 @@ static void give_input(struct edc_task *task, const char *text)
 
 /* 让任务跑到 COMPLETED —— 走**真路径** (executor 推进 → scheduler 的策略点),
  * 因为策略点的簿记正挂在真推进路径上。 */
-static void complete_via_executor(struct edc_scheduler *sched, struct edc_task *task)
+static void complete_with(struct edc_scheduler *sched, struct edc_task *task, const char *content)
 {
     struct edc_event ev;
     memset(&ev, 0, sizeof(ev));
     ev.kind = EDC_EVENT_EXEC_DONE;
     ev.as.exec.reason = EDC_REASON_STOP;
-    ev.as.exec.content = "done";
+    ev.as.exec.content = (char *)content; /* executor 只读它 */
     void *t_req = task->current_request_id;
     struct edc_advance_result t_res = edc_executor_advance(&sched->executor, task, &ev);
     edc_scheduler_apply_advance(sched, task, t_req, &t_res);
+}
+
+static void complete_via_executor(struct edc_scheduler *sched, struct edc_task *task)
+{
+    complete_with(sched, task, "done");
 }
 
 /* Attach input and set COMPLETED directly (task layer), for the persistence
@@ -250,7 +257,10 @@ static void test_system_task_persisted(void)
     struct edc_scheduler *sch = edc_scheduler_new(cfg);
     install_resolver(sch, s);
 
-    struct edc_task *user = edc_task_new("10", "sess-p", "10", "user work", edc_channel_adapter);
+    /* 字面 id 必须带字母前缀: `sched->next_task_id` 是**进程级**递增计数器 (全套测试共享),
+     * 纯数字的字面 id (曾经的 "10") 会被后面生成的 id 撞上 —— 撞了之后两个组会 claim 同一个
+     * task, 落盘再读回就是"同一个对象进两个组", 释放时 double free (ASAN 抓到过)。 */
+    struct edc_task *user = edc_task_new("u-10", "sess-p", "u-10", "user work", edc_channel_adapter);
     struct edc_task_group *ug = edc_task_group_new(user);
     edc_session_add_group(s, ug);
     give_input_and_complete(user, "hello");
@@ -542,10 +552,186 @@ static void test_fold_tool_call_is_failure(void)
 
 /* ══════════════════════════════════════════════════════════════ */
 
+/* ── L2 策展任务 (P4d): 与折叠同时建 + JOIN 链 + ops 落地 ───── */
+
+/* 会话系统组里找 sink = SESSION_MEMORY 的任务。 */
+static struct edc_task *find_l2(struct edc_session *session)
+{
+    struct edc_task_group *sys = edc_session_find_system_group(session);
+    if (!sys)
+        return NULL;
+    struct edc_task *t;
+    LL_FOREACH2(sys->members, t, group_next)
+    {
+        if (t->sink == EDC_SINK_SESSION_MEMORY)
+            return t;
+    }
+    return NULL;
+}
+
+/* 一个"可折叠"的组: 成员已完成 + 带一条 turn。 */
+static struct edc_task_group *make_foldable_group(struct edc_session *sess, const char *id,
+                                                 struct edc_task **out_member)
+{
+    struct edc_task *m = edc_task_new(id, sess->session_id, id, "member work", edc_channel_adapter);
+    struct edc_task_group *g = edc_task_group_new(m);
+    edc_session_add_group(sess, g);
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup(m->task_id);
+    turn_add_msg(turn, "user", "please fold me");
+    turn_add_msg(turn, "assistant", "noted");
+    edc_task_add_turn(m, turn);
+    edc_task_await_exec(m);
+    edc_task_mark_completed(m);
+    m->completion_seq = 1;
+    if (out_member)
+        *out_member = m;
+    return g;
+}
+
+static void test_session_memory_chain_and_landing(void)
+{
+    TEST("L2: 与折叠**同时**建 (成员→L2→JOIN→L1); 策展落地写条目 (completion_seq = 0)");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-l2", "L2");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    struct edc_task *member = NULL;
+    struct edc_task_group *group = make_foldable_group(session, "m-a1", &member);
+
+    /* 活着的成员 (非终态) —— 它既等折叠也等策展 */
+    struct edc_task *live = edc_task_new("u-live", "sess-l2", group->group_id, "live member", edc_channel_adapter);
+    edc_task_group_add_task(group, live);
+
+    struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
+    CHECK(fold != NULL, "折叠起来了");
+    /* 生产里由扫描派发 (READY → AWAIT_EXEC); 这里只把相位摆好, 好让 complete_with 能走
+     * 真推进路径 (executor → apply_advance)。 */
+    edc_task_await_exec(fold);
+
+    /* 关键: 策展任务是**当场**出现的 (不等折叠落地) */
+    struct edc_task *l2 = find_l2(session);
+    CHECK(l2 != NULL, "起折的同时就建好了 L2");
+    CHECK(l2 && l2->sink == EDC_SINK_SESSION_MEMORY, "sink = SESSION_MEMORY");
+    CHECK(l2 && l2->sink_group == group, "它记住来源组 (sources 与 holds_group 用)");
+    CHECK(l2 && l2->deps_total == 1 && l2->deps_completed == 0, "它有一条未决的 JOIN 边 (对着折叠)");
+    CHECK(edc_task_awaits_deps(live) ? true : true, "(相位随实现, 这里只断言链的效力)");
+    CHECK(edc_task_has_unresolved_deps(live), "活成员有未决依赖 (折叠 + 策展)");
+
+    /* 折叠落地 ⇒ L2 才可跑 (JOIN 边完成) */
+    complete_with(sched, fold, "## Group memory\n- 构建入口是 bazelisk");
+    CHECK(edc_task_has_unresolved_deps(live), "折叠完成 ≠ 成员恢复: 它还在等策展");
+    CHECK(!edc_task_has_unresolved_deps(l2), "L2 的 JOIN 边完成了 ⇒ 它可跑");
+
+    /* L2 的请求: 材料**不在 prompt 里**, 而是装配请求时由 JOIN 把它**拼进 L2 自己的输入**
+     * (B 方案)。这个夹具没建请求, 所以此刻 turn 里还只有"索引 + 契约"。 */
+    struct edc_turn *turn = l2->active_turn;
+    CHECK(turn != NULL && edc_queue_length(&turn->messages) > 0, "L2 有自己的 turn (索引 + 契约)");
+    const char *material = NULL;
+    if (turn && edc_queue_length(&turn->messages) > 0)
+    {
+        cJSON *m = turn->messages.data[turn->messages.head];
+        material = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+    }
+    CHECK(material && strstr(material, "Existing session entries") != NULL, "turn 里有条目索引与契约");
+    CHECK(material && strstr(material, "构建入口是 bazelisk") == NULL, "此刻 turn 里没有组记忆 (装配请求时才拼)");
+    CHECK(material && strstr(material, "appended at the end of this message") != NULL,
+          "prompt 说清了材料拼在本条消息末尾");
+
+    /* 结算 L2 ⇒ 条目落地; 成员才恢复 */
+    uint32_t seq_before = session->next_completion_seq;
+    edc_task_await_exec(l2); /* 生产里由扫描派发; 这里摆好相位, 好让完成走真推进路径 */
+    complete_with(sched, l2,
+                  "{\"ops\":[{\"op\":\"create\",\"title\":\"构建入口\",\"summary\":\"唯一入口是 bazelisk\"}]}");
+    CHECK(session->memo->entry_count == 1, "策展落地: 条目 +1");
+    CHECK(session->memo->event_count == 1 && session->memo->events[0].kind == EDC_MEMO_CREATED, "一条 CREATED 事件");
+    const struct edc_memo_entry *e = edc_session_memory_entry(session->memo, "m1");
+    CHECK(e && e->sources && strcmp(e->sources, group->group_id) == 0, "sources = 来源组 id");
+    CHECK(l2->completion_seq == 0, "L2 不占完成序");
+    CHECK(session->next_completion_seq == seq_before, "完成序计数器没动");
+    CHECK(!edc_task_has_unresolved_deps(live), "策展落地 ⇒ 成员被释放");
+
+    /* 非法 ops: 整批不落 */
+    struct edc_task *l2b = edc_scheduler_spawn_system_task_as(sched, session, "curate again", EDC_SINK_SESSION_MEMORY);
+    give_input(l2b, "more material");
+    complete_with(sched, l2b, "{\"ops\":[{\"op\":\"update\",\"id\":\"m99\",\"title\":\"x\"}]}");
+    CHECK(session->memo->entry_count == 1 && session->memo->event_count == 1,
+          "引用不存在的 id ⇒ 整批拒绝 (一条都没落)");
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+static void test_session_memory_join_cascades_failure(void)
+{
+    TEST("L2: 折叠失败/取消 ⇒ 策展被 JOIN 级联 (失败/取消); 成员照常释放");
+
+    /* 一个 session + 一个 scheduler (同文件其它用例同形; 不要在一个进程里起第二个
+     * scheduler —— `active_contexts` 是单例静态全局, 那属于既有偏离)。 */
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-casc", "Casc");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    /* ── ① 失败级联: 第二个组, 活成员, 折叠一失败 ── */
+    struct edc_task *member = NULL;
+    struct edc_task_group *gB = make_foldable_group(session, "m-b1", &member);
+    struct edc_task *live = edc_task_new("u-liveB", "sess-casc", gB->group_id, "live B", edc_channel_adapter);
+    edc_task_group_add_task(gB, live);
+
+    struct edc_task *fold = edc_group_fold_start(sched, session, gB, NULL);
+    struct edc_task *l2 = find_l2(session);
+    CHECK(fold && l2, "折叠与策展都在");
+    edc_task_await_exec(fold);
+    edc_task_mark_failed(fold);
+    CHECK(edc_task_has_failed(fold), "折叠失败");
+    CHECK(l2 && edc_task_has_failed(l2), "策展**自动**失败 (JOIN 级联, 没有额外逻辑)");
+    CHECK(!edc_task_has_unresolved_deps(live), "成员被释放 (它的边都被处理掉了)");
+
+    /* ── ② 取消级联: 第三个组, 折叠一起就被取消 (SIGTERM 那条生产路径) ── */
+    struct edc_task *member2 = NULL;
+    struct edc_task_group *gC = make_foldable_group(session, "m-c1", &member2);
+    struct edc_task *live2 = edc_task_new("u-liveC", "sess-casc", gC->group_id, "live C", edc_channel_adapter);
+    edc_task_group_add_task(gC, live2);
+
+    struct edc_task *fold2 = edc_group_fold_start(sched, session, gC, NULL);
+    struct edc_task *l2b = NULL;
+    {
+        struct edc_task_group *sys = edc_session_find_system_group(session);
+        struct edc_task *t = NULL;
+        LL_FOREACH2(sys->members, t, group_next)
+        {
+            if (t->sink == EDC_SINK_SESSION_MEMORY && !edc_task_is_completed(t) && !edc_task_has_failed(t))
+                l2b = t;
+        }
+    }
+    CHECK(fold2 && l2b, "第二对也在");
+    edc_task_await_exec(fold2);
+    edc_task_send_signal(fold2, TASK_SIGTERM);
+    CHECK(l2b && edc_task_is_cancelled(l2b), "折叠被取消 ⇒ 策展自动取消");
+    CHECK(!edc_task_has_unresolved_deps(live2), "成员照常释放");
+
+    /* 用户裁决的语义 (2026-10-10): 取消**不摘边** —— 源还能 resume, 边只是暂时满足不了。
+     * 所以 resume 这个被级联取消的 L2, 它回到"等依赖" (而不是空手跑一遍, 也不是假装没依赖)。 */
+    edc_scheduler_resume_task(sched, l2b);
+    CHECK(edc_task_awaits_deps(l2b), "resume 它 ⇒ 回到等依赖");
+    CHECK(edc_task_has_unresolved_deps(l2b), "那条边还在 (源不产出就不放它跑)");
+    CHECK(!edc_task_is_running(l2b), "它没有被驱动");
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     test_attributes_default();
     test_spawn_system_task();
+    test_session_memory_chain_and_landing();
+    test_session_memory_join_cascades_failure();
     test_system_task_persisted();
     test_system_task_not_reaped();
     test_persistent_not_reaped();

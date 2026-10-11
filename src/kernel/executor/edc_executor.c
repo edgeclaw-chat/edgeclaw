@@ -5,6 +5,7 @@
 #include "edc_llm_error_kind.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
+#include "log.h"
 #include "sds.h"
 #include "utlist_fix.h"
 #include <stdio.h>
@@ -123,6 +124,9 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
 
     /* Before the branches, so every path (stop, tool_calls, error) counts. */
     edc_task_add_usage(task, e->prompt_tokens, e->completion_tokens, e->total_tokens, e->cached_tokens);
+    /* L2: 这次请求的队尾通知被模型读到了 (响应回来了) ⇒ 水位推进。取消/失败的请求
+     * 到不了这里, 所以那条通知会随下一次请求重发 (幂等)。 */
+    edc_task_memo_commit(task);
 
     if (e->failed)
     {
@@ -139,7 +143,7 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
          * next step. Throttling is classified out in front of this, since "rate
          * limit + fold your context" would be wrong advice. A fold task gets no
          * advice at all: it *is* the fold, and nothing here recurses. */
-        if (task->sink != EDC_SINK_GROUP_MEMORY &&
+        if (!edc_task_is_memory_sink(task) &&
             edc_llm_error_classify(e->http_status, notice) == EDC_LLM_ERR_CONTEXT_OVERFLOW)
         {
             sds advice = exec_overflow_notice(ex, e->prompt_tokens, "the provider refused the request");
@@ -158,14 +162,19 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
          * call a tool") rather than a tool round: refuse the summary, keep the
          * group memory, and let the next trigger try again. Usage above still
          * counts: the wasted call really was paid for. */
-        if (task->sink == EDC_SINK_GROUP_MEMORY)
+        if (edc_task_is_memory_sink(task))
         {
             task->current_request_id = NULL;
             edc_task_mark_failed(task);
+            const bool curate = (task->sink == EDC_SINK_SESSION_MEMORY);
+            log_error("%s: task %s asked for a tool call — discarded, nothing landed",
+                      curate ? "L2 memo" : "L1 fold", task->task_id ? task->task_id : "(null)");
             return (struct edc_advance_result){
                 .outcome = EDC_STEP_ERROR,
                 .settled = true,
-                .notice = "Summarization attempted to call a tool — discarded, the group memory is unchanged"};
+                .notice = curate
+                              ? "Curation attempted to call a tool — discarded, the session memory is unchanged"
+                              : "Summarization attempted to call a tool — discarded, the group memory is unchanged"};
         }
         edc_task_move(task, EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
         if (task->active_turn)
@@ -202,7 +211,7 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
             /* Share the turn into group history, except for a sink=GROUP_MEMORY
              * task: its turn is a fold prompt, and mixing it in would feed the
              * next fold the previous prompt and answer. */
-            if (task->sink != EDC_SINK_GROUP_MEMORY)
+            if (!edc_task_is_memory_sink(task))
                 edc_task_group_history_add_turn(task->group, task->active_turn);
         }
         edc_task_commit_active_turn(task);
@@ -241,13 +250,18 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
     const char *notice = "Internal error: unknown finish reason";
     int window = (ex->config) ? ex->config->context_window : 0;
 
-    if (task->sink == EDC_SINK_GROUP_MEMORY)
+    if (edc_task_is_memory_sink(task))
     {
-        /* A summary that could not be finished keeps the old memory and says so. */
+        /* A summary/curation that could not be finished keeps the old memory and says so. */
+        const bool curate = (task->sink == EDC_SINK_SESSION_MEMORY);
+        log_error("%s: task %s did not finish cleanly (reason=%d) — discarded, nothing landed",
+                  curate ? "L2 memo" : "L1 fold", task->task_id ? task->task_id : "(null)", (int)e->reason);
         if (e->reason == EDC_REASON_LENGTH)
-            notice = "Summary was truncated (max_tokens) — discarded, the group memory is unchanged";
+            notice = curate ? "Curation was truncated (max_tokens) — discarded, the session memory is unchanged"
+                            : "Summary was truncated (max_tokens) — discarded, the group memory is unchanged";
         else if (e->reason == EDC_REASON_CONTEXT_EXCEEDED)
-            notice = "Summarization overflowed the model window — discarded, the group memory is unchanged";
+            notice = curate ? "Curation overflowed the model window — discarded, the session memory is unchanged"
+                            : "Summarization overflowed the model window — discarded, the group memory is unchanged";
     }
     /* (3) the truncated overflow: `length` with an empty completion is what a full
      * window looks like on providers that do not say the word. A plain `length`

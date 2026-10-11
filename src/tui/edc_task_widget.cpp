@@ -195,18 +195,17 @@ void TaskWidget::SetSnapshot(const TaskSnapshot *snap)
     }
 
     // Refresh collapse state: keep user toggles for groups that still exist;
-    // a newly-seen group is expanded when it holds the active task -- and also
-    // when it is a *system* group: the whole point of that block is showing what
-    // is running, and a system task lives for seconds, so folding it away by
-    // default would hide it for its entire life. (A user can still fold it; the
-    // toggle is remembered like any other.)
+    // a newly-seen group is expanded when it holds the active task. A system
+    // group (folding) is *not* special-cased here: it starts folded like any
+    // other group that is not active -- it can hold dozens of finished fold
+    // tasks, and expanding all of them would squeeze the user's tree out of
+    // the bottom-anchored viewport. The row still says "System", so it is one
+    // click away and never mistaken for a user group.
     std::map<std::string, bool> next;
     for (const auto &g : groups_)
     {
         const auto it = group_expanded_.find(g.group_id);
-        next[g.group_id] = (it != group_expanded_.end())
-                               ? it->second
-                               : (g.group_id == active_group_id || g.kind == GroupKind::System);
+        next[g.group_id] = (it != group_expanded_.end()) ? it->second : (g.group_id == active_group_id);
     }
     group_expanded_ = std::move(next);
 }
@@ -384,33 +383,22 @@ int TaskWidget::RowWidth() const
 
         group_header_boxes_.resize(groups_.size());
 
-        /* 画两块: **系统分组单独一块** (只有存在时才画), 用户分组照旧。
+        /* 系统组画在最前, 用户分组照旧 (顺序固定, 不靠标题行)。
          *
-         * 为什么系统块在前: 侧栏的树是锚底的 (edc_sidebar 用 follow_tail), 视口不
-         * 够时该被挤出去的正是系统块 —— "最后一行永远是用户正在跑的那个 task"
-         * 优先于"看见系统任务"。系统块只装折叠任务 (少而独立), 它出现/消失都不该
-         * 动用户那棵树的锚点。
+         * 为什么系统组在前: 侧栏的树是锚底的 (edc_sidebar 用 follow_tail), 视口不
+         * 够时该被挤出去的正是它 —— "最后一行永远是用户正在跑的那个 task" 优先
+         * 于"看见折叠任务"。它的组头写着 "System" (见下面), 点名靠那一行本身,
+         * 所以不再单画一条 ` System` 标题。
          *
          * 这里读 `kind` 是它**唯一的读者** (展示层)。没有任何东西被隐藏: 系统
-         * 任务与用户任务一样是快照里的普通成员, 只是画在另一块 —— 换句话说,
-         * "漏一处就冒出 Group system"那类事故在这个形状下不可能发生。 */
-        {
-            std::vector<size_t> order;
-            for (size_t i = 0; i < groups_.size(); i++)
-                if (groups_[i].kind == GroupKind::System)
-                    order.push_back(i);
-            if (!order.empty())
-            {
-                lines.push_back(text(" System") | bold | color(pal.text_dim));
-                for (size_t i = 0; i < groups_.size(); i++)
-                    if (groups_[i].kind != GroupKind::System)
-                        order.push_back(i);
-            }
-            else
-            {
-                for (size_t i = 0; i < groups_.size(); i++)
-                    order.push_back(i);
-            }
+         * 任务与用户任务一样是快照里的普通成员, 展开就看得见。 */
+        std::vector<size_t> order;
+        for (size_t i = 0; i < groups_.size(); i++)
+            if (groups_[i].kind == GroupKind::System)
+                order.push_back(i);
+        for (size_t i = 0; i < groups_.size(); i++)
+            if (groups_[i].kind != GroupKind::System)
+                order.push_back(i);
 
         for (size_t k = 0; k < order.size(); k++)
         {
@@ -418,14 +406,23 @@ int TaskWidget::RowWidth() const
             const auto &g = groups_[i];
             const bool expanded = group_expanded_[g.group_id];
 
-            // Collapsible group header: the arrow plus "Group <id>" ("~" when
-            // orphaned). The left part ellipsizes into whatever width is left.
+            // Collapsible group header: the arrow plus the group's name. A user
+            // group shows "Group <id>" (its id *is* its leader's task id); a
+            // system group -- the container of the folding tasks, one per
+            // session -- shows "System": it has no user-facing id worth
+            // reading, and without this it read as one more ordinary group.
+            // "~" marks an orphaned group. The left part ellipsizes into
+            // whatever width is left.
             // Cost lives in the footer, under the members it is made of, and
             // nowhere else: the header used to repeat the group's total while the
             // group was folded, which read as "this group costs 9.2k" without
             // saying of what. A folded group now shows no number at all -- the
             // row is still the handle that unfolds it.
-            std::string core = g.group_id.empty() ? "(group)" : "Group " + g.group_id;
+            std::string core;
+            if (g.kind == GroupKind::System)
+                core = "System";
+            else
+                core = g.group_id.empty() ? "(group)" : "Group " + g.group_id;
             if (g.orphaned)
                 core += " ~";
 
@@ -491,7 +488,6 @@ int TaskWidget::RowWidth() const
                 !usage.empty())
                 lines.push_back(text(TruncateToWidth("  " + usage, row_width - kRightPad)) | dim |
                                 color(pal.text_dim));
-        }
         }
     }
 

@@ -5,6 +5,8 @@
 #include "edc_llm_actor.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_session_memory.h"
+#include <stdbool.h>
 #include "edc_session_manager.h"
 #include "edc_session_store.h"
 #include "edc_task.h"
@@ -16,6 +18,29 @@
 #include "utlist_fix.h"
 #include <cJSON.h>
 #include <string.h>
+
+/* 把依赖材料**拼进 task 自己的输入**（B 方案, 2026-10-10）: 就地改写 active turn 的
+ * 第一条 user 消息 —— 于是它跟着 turn 一起留存（不再是"只在一次请求里出现"的派生块）。
+ * 返回 false = 没有可拼的 user 消息（异常形状；调用方退回"追加一条 system 消息"，不丢材料）。 */
+static bool append_to_task_input(struct edc_task *task, const char *block)
+{
+    if (!task || !task->active_turn || !block || !*block)
+        return false;
+    struct edc_turn *turn = task->active_turn;
+    for (size_t i = turn->messages.head; i < turn->messages.tail; i++)
+    {
+        cJSON *msg = turn->messages.data[i];
+        const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "role"));
+        if (!role || strcmp(role, "user") != 0)
+            continue;
+        const char *old = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
+        sds joined = sdscatprintf(sdsempty(), "%s%s%s", old ? old : "", (old && *old) ? "\n\n" : "", block);
+        cJSON_ReplaceItemInObject(msg, "content", cJSON_CreateString(joined));
+        sdsfree(joined);
+        return true;
+    }
+    return false;
+}
 
 /* ── LLM 请求装配 (原 src/app/edc_app.c 的搬家) ──────────
  * 本模块只有一条对外入口 edc_llm_request_send(); 它不含任何装配根私有状态:
@@ -114,7 +139,7 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
      * 走组 history[0]: 那个槽位不落盘, 重启后加载期会把它填成主提示词
      * (edc_task_group_rebuild_history), 摘要器于是背上 EdgeClaw 的人设 / MEMORY.md /
      * 工具指令, 而它根本没有工具。折叠 prompt 自带全部语料, 不需要任何组历史。 */
-    const bool is_memory_sink = (task->sink == EDC_SINK_GROUP_MEMORY);
+    const bool is_memory_sink = edc_task_is_memory_sink(task);
 
     sds pristine = NULL;
     /* 属主 session 的 workdir: 后台 session 里的任务续跑时系统提示里的
@@ -125,7 +150,9 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
     {
         cJSON *sys = cJSON_CreateObject();
         cJSON_AddStringToObject(sys, "role", "system");
-        cJSON_AddStringToObject(sys, "content", edc_group_fold_system_prompt());
+        cJSON_AddStringToObject(sys, "content", task->sink == EDC_SINK_SESSION_MEMORY
+                                                    ? edc_session_memory_system_prompt()
+                                                    : edc_group_fold_system_prompt());
         cJSON_AddItemToArray(msgs, sys);
     }
     else
@@ -165,7 +192,8 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         /* 注入全部未折叠历史 [hist_begin, end): fold 采用"半量"策略 (见
          * edc_group_fold 的 L1 fold), 触发时只压最老的一半, 剩下的未折叠
          * 消息正是模型该看到的近期细节, 因此整段注入、不再截断。请求体量的
-         * 上界由 group_fold_msg_threshold 决定 (fold 触发即把它压回去)。 */
+         * 上界由 config 的 context_window 决定 (fold 触发线 = 窗口 - reserve,
+         * 触发即把它压回去)。 */
         for (size_t i = hist_begin; i < end; i++)
         {
             cJSON_AddItemReferenceToArray(msgs, cJSON_GetArrayItem(task->group->history, i));
@@ -176,54 +204,41 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
     struct edc_task_dep *dep;
     LL_FOREACH(task->deps, dep)
     {
-        log_info("send_llm task=%s dep src=%s completed=%d output=%s", task->task_id,
-                 dep->source ? dep->source->task_id : "(null)", dep->completed,
+        /* 打出 completed **与** cancelled: 被作废 (源已终态) 的边两个字段一假一真,
+         * 只看 completed 会把它误读成"还在等"。 */
+        log_info("send_llm task=%s dep src=%s completed=%d cancelled=%d output=%s", task->task_id,
+                 dep->source ? dep->source->task_id : "(null)", dep->completed, dep->cancelled,
                  (dep->source && dep->source->output) ? "yes" : "none");
         if (dep->completed && dep->source && !dep->injected && dep->type == TASK_DEP_JOIN)
         {
-            dep->injected = true;
+            dep->injected = true; /* "已经拼过了" —— 材料已进输入, 不该再拼第二遍 */
 
-            /* inject source task's final output only (mainstream subagent pattern) */
+            /* **B 方案** (2026-10-10 裁决): 材料**拼进目标自己的输入**, 不再往请求里插一对消息。
+             * 就地改写 active turn 的第一条 user 消息 ⇒ 它跟着 turn 留存, 语义也更直白:
+             * "我的输入里带着子任务的产出"。(就近原则: 只有出生时就挂的 JOIN 才走到这里 ——
+             * 边没满足时目标根本不会被驱动。)
+             * 记忆型源 (折叠 / 策展) 的"输入"是整段语料 (折叠 prompt 可能几百 KB) 且与 output
+             * 讲同一件事 ⇒ 只拼它的 output (对 L2 策展来说那就是刚落地的 group memory)。 */
             if (dep->source->output)
             {
-                /* find the last user message from source to form a Q&A pair */
-                sds last_user = NULL;
-                for (size_t qi = dep->source->turns.head; qi < dep->source->turns.tail; qi++)
+                const bool source_is_memory = edc_task_is_memory_sink(dep->source);
+                sds block = source_is_memory
+                                ? sdsnew(dep->source->output)
+                                : sdscatprintf(sdsempty(), "[subtask %s result]:\n%s",
+                                               dep->source->description ? dep->source->description : "(task)",
+                                               dep->source->output);
+                if (!append_to_task_input(task, block))
                 {
-                    struct edc_turn *turn = dep->source->turns.data[qi];
-                    for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
-                    {
-                        cJSON *msg = turn->messages.data[mj];
-                        cJSON *role = cJSON_GetObjectItem(msg, "role");
-                        if (role && cJSON_IsString(role) && strcmp(role->valuestring, "user") == 0)
-                        {
-                            cJSON *content = cJSON_GetObjectItem(msg, "content");
-                            if (content && cJSON_IsString(content))
-                            {
-                                if (last_user)
-                                    sdsfree(last_user);
-                                last_user = sdsnew(content->valuestring);
-                            }
-                        }
-                    }
+                    log_warn("  -> task %s has no input message to splice into; appending a system message instead",
+                             task->task_id ? task->task_id : "(null)");
+                    cJSON *sys = cJSON_CreateObject();
+                    cJSON_AddStringToObject(sys, "role", "system");
+                    cJSON_AddStringToObject(sys, "content", block);
+                    cJSON_AddItemToArray(msgs, sys);
                 }
-
-                if (last_user)
-                {
-                    cJSON *usr = cJSON_CreateObject();
-                    cJSON_AddStringToObject(usr, "role", "user");
-                    cJSON_AddStringToObject(usr, "content", last_user);
-                    cJSON_AddItemToArray(msgs, usr);
-                    sdsfree(last_user);
-                }
-
-                cJSON *asst = cJSON_CreateObject();
-                cJSON_AddStringToObject(asst, "role", "assistant");
-                cJSON_AddStringToObject(asst, "content", dep->source->output);
-                cJSON_AddItemToArray(msgs, asst);
+                sdsfree(block);
             }
-
-            log_info("  -> injected final output from task %s", dep->source->task_id);
+            log_info("  -> spliced the output of task %s into the task input", dep->source->task_id);
         }
     }
 
@@ -262,7 +277,8 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
     /* 摘要的输出预算 (a): 语料上限 EDC_FOLD_MAX_CORPUS_TOKENS 与它配套, 保证单次
      * 折叠的压缩比可达成 (≤ 4:1)。"请求从不发 max_tokens" 只有这一处例外。 */
     if (is_memory_sink)
-        req->max_tokens = EDC_FOLD_SUMMARY_MAX_TOKENS;
+        req->max_tokens = (task->sink == EDC_SINK_SESSION_MEMORY) ? EDC_SESSION_MEMORY_MAX_TOKENS
+                                                                  : EDC_FOLD_SUMMARY_MAX_TOKENS;
     /* 本 turn 的前缀若已进记忆 (折叠切在 turn 内部), 从这里之后开始发。 */
     if (task->active_turn && task->active_turn->folded_prefix > 0)
         req->turn_begin = (size_t)task->active_turn->folded_prefix;
@@ -274,11 +290,43 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
      * INSTRUCTIONS FOR THIS TURN 指令段; 有清单→清单行+逐轮同步节拍, 无清
      * 单→"尚无清单"+建计划引导。llm actor 在 history + turn 之后追加, 每
      * 轮请求都是最新状态。req 持有并随请求释放 (副本, 不改 task/group)。 */
-    req->tail_system = NULL;
-    /* 待办提醒是给"正在干活的用户任务"的节拍; 摘要调用不该被它插尾
-     * (同样是为了让折叠请求与旧实现逐字节一致)。 */
-    if (!is_memory_sink && edc_task_llm_request_poke(task))
-        req->tail_system = edc_context_make_todo_reminder(task);
+    req->tail_parts = NULL;
+    if (!is_memory_sink)
+    {
+        /* [0] L2 session 记忆通知: 自这个 task 上次"真的读到"以来新建/更新的条目,
+         * 一行一条 (cap 10)。**请求期现算的临时物** —— 不写进任何消息数组、不落盘;
+         * 水位在响应回来后由 `edc_task_memo_commit` 推进 (取消/失败不推进 ⇒ 重发)。
+         * 常驻里没有 memory 内容 (系统提示只留一行常量提示, 见 edc_context.c)。 */
+        struct edc_session *own = (task->group && task->group->session) ? task->group->session : NULL;
+        if (own && own->memo)
+        {
+            uint64_t max_injected = 0;
+            sds notice = edc_session_memory_notice(own->memo, task->memo_seen_seq, 10, &max_injected);
+            if (notice)
+            {
+                cJSON *sys = cJSON_CreateObject();
+                cJSON_AddStringToObject(sys, "role", "system");
+                cJSON_AddStringToObject(sys, "content", notice);
+                if (!req->tail_parts)
+                    req->tail_parts = cJSON_CreateArray();
+                cJSON_AddItemToArray(req->tail_parts, sys);
+                task->memo_notice_seq = max_injected; /* 响应回来才提升成 memo_seen_seq */
+                sdsfree(notice);
+            }
+        }
+        /* [1] todo 提醒 (节流): 给"正在干活的用户任务"的节拍。摘要调用不该被它插尾
+         * (同样是为了让折叠请求与旧实现逐字节一致)。 */
+        if (edc_task_llm_request_poke(task))
+        {
+            cJSON *todo = edc_context_make_todo_reminder(task);
+            if (todo)
+            {
+                if (!req->tail_parts)
+                    req->tail_parts = cJSON_CreateArray();
+                cJSON_AddItemToArray(req->tail_parts, todo);
+            }
+        }
+    }
 
     edc_actor_send(llm_actor,
                    edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST, edc_scheduler_get_actor(sched), request_id, req,
