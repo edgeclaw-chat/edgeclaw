@@ -61,8 +61,7 @@ int main(void)
 
     /* Known top-level entries. */
     const char *required[] = {
-        "AGENTS.md",           "SOUL.md", "TOOLS.md",      "USER.md",        "HEARTBEAT.md",
-        "memory/MEMORY.md",    "ssl/cacert.pem",
+        "AGENTS.md",           "TOOLS.md", "memory/MEMORY.md", "ssl/cacert.pem",
     };
     for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++)
     {

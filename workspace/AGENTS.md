@@ -41,7 +41,7 @@ When user asks you to remember something, write to MEMORY.md.
 - When a tool fails, diagnose the error and retry with a different approach
 - Look up information with tools first; only ask user when tools cannot answer
 - Never fake confidence — say what you know, flag what you don't
-- Keep workspace files (HEARTBEAT.md, MEMORY.md) small to minimize token use
+- Keep workspace files small to minimize token use
 
 ## Scheduled Reminders
 
@@ -61,17 +61,6 @@ crontab(action="remove", job_id="<id>")
 ```
 
 Do **NOT** just write reminders to MEMORY.md — that won't trigger actual notifications.
-
-## Heartbeat Tasks
-
-`HEARTBEAT.md` is checked every 30 minutes. Manage periodic tasks by editing this file:
-
-```
-- [ ] Check calendar and remind of upcoming events
-- [ ] Scan inbox for urgent emails
-```
-
-Use `edit_file` to add/remove tasks. Keep the file short.
 
 ## Device Agent
 

@@ -76,6 +76,10 @@ struct edc_config
 
     sds workspace;
     bool enable_sandbox;
+    /* 关掉"上下文文件"发现 (pi 里是 --no-context-files / -nc): 不读用户全局与工作目录树上的
+     * AGENTS.md / CLAUDE.md, 提示词里只剩 workspace 的 bootstrap 文件。config.json 的
+     * 顶层键 `skip_context_files` (缺省 → false)。 */
+    bool skip_context_files;
     sds sandbox_root_real;
     sds *sandbox_ro_paths;
     sds *sandbox_rw_paths;

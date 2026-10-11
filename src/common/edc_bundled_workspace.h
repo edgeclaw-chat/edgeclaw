@@ -4,7 +4,7 @@
 #include <stddef.h>
 
 /*
- * The default workspace tree (AGENTS.md, SOUL.md, skills/, ...) is embedded
+ * The default workspace tree (AGENTS.md, TOOLS.md, memory/, skills/, ...) is embedded
  * into the binary at build time by //tools:embed_workspace.py, so a fresh
  * install no longer needs a `workspace/` directory next to the executable or
  * in the current working directory. edc_init_env() releases this table into

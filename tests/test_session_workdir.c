@@ -335,6 +335,116 @@ static void test_memory_is_not_resident(void)
     rmdir(dir);
 }
 
+/* pi 的"上下文文件"发现 (docs/pi-system-prompt-guide.md §3.6): 用户全局一份 + 从**工作目录**
+ * 向上遍历到根, 同一目录里只取优先级最高的候选 (override > AGENTS.md > AGENTS.MD > CLAUDE.md >
+ * CLAUDE.MD), 每个文件带自己的路径。绑定到某个项目目录的 session 就是靠这个吃到项目的规矩。 */
+static void test_project_context_discovery(void)
+{
+    TEST("project context: 全局 + 向上遍历 + override 优先 + 可关掉");
+
+    char root[256];
+    make_tmpdir(root, sizeof(root));
+    char home[512], ws[512], proj[512], sub[512];
+    snprintf(home, sizeof(home), "%s/home", root);
+    snprintf(ws, sizeof(ws), "%s/ws", root);
+    snprintf(proj, sizeof(proj), "%s/proj", root);
+    snprintf(sub, sizeof(sub), "%s/proj/sub", root); /* sub 必须在 proj **里面** (向上遍历才经过 proj) */
+
+    EdcError *err = NULL;
+    CHECK(edc_dir_create_with_parents(home, 0755, &err), "建假 HOME");
+    CHECK(edc_dir_create_with_parents(ws, 0755, &err), "建 workspace");
+    CHECK(edc_dir_create_with_parents(proj, 0755, &err), "建项目目录");
+    CHECK(edc_dir_create_with_parents(sub, 0755, &err), "建子目录");
+
+    char path[768];
+    snprintf(path, sizeof(path), "%s/.edgeclaw", home);
+    edc_dir_create_with_parents(path, 0755, &err);
+    snprintf(path, sizeof(path), "%s/.edgeclaw/AGENTS.md", home);
+    edc_file_write(path, "GLOBAL-RULE\n", -1, &err);
+    snprintf(path, sizeof(path), "%s/AGENTS.md", proj);
+    edc_file_write(path, "PROJ-RULE\n", -1, &err);
+    snprintf(path, sizeof(path), "%s/AGENTS.override.md", sub);
+    edc_file_write(path, "SUB-OVERRIDE\n", -1, &err);
+    snprintf(path, sizeof(path), "%s/AGENTS.md", sub);
+    edc_file_write(path, "SUB-PLAIN\n", -1, &err); /* 被 override 压制 */
+    snprintf(path, sizeof(path), "%s/CLAUDE.md", sub);
+    edc_file_write(path, "SUB-CLAUDE\n", -1, &err); /* 优先级更低, 也不该出现 */
+    snprintf(path, sizeof(path), "%s/AGENTS.md", ws);
+    edc_file_write(path, "WS-RULE\n", -1, &err);
+
+    /* $HOME 指到临时目录 —— edc_config_resolve_bc_home() 读的就是它 */
+    const char *old_home = getenv("HOME");
+    char old_home_copy[1024];
+    snprintf(old_home_copy, sizeof(old_home_copy), "%s", old_home ? old_home : "");
+    setenv("HOME", home, 1);
+
+    struct edc_config *cfg = make_config(ws);
+    sds p = edc_context_build_system_prompt(cfg, sub);
+    CHECK(p && strstr(p, "GLOBAL-RULE") != NULL, "用户全局那份进来了");
+    CHECK(p && strstr(p, "PROJ-RULE") != NULL, "项目那一层进来了");
+    CHECK(p && strstr(p, "SUB-OVERRIDE") != NULL, "子目录的 override 进来了");
+    CHECK(p && strstr(p, "SUB-PLAIN") == NULL, "同目录被 override 压制的没收");
+    CHECK(p && strstr(p, "SUB-CLAUDE") == NULL, "同目录优先级更低的 CLAUDE.md 没收");
+    CHECK(p && strstr(p, "<project_instructions path=") != NULL, "带路径标注");
+    CHECK(p && strstr(p, "Project-specific instructions and guidelines:") != NULL, "有 pi 那句引导语");
+    if (p)
+    {
+        const char *gpos = strstr(p, "GLOBAL-RULE");
+        const char *jpos = strstr(p, "PROJ-RULE");
+        const char *spos = strstr(p, "SUB-OVERRIDE");
+        CHECK(gpos && jpos && spos && gpos < jpos && jpos < spos, "顺序: 全局 → 项目 → 子目录");
+    }
+    sdsfree(p);
+
+    /* workdir 为空 ⇒ 只剩全局 */
+    p = edc_context_build_system_prompt(cfg, NULL);
+    CHECK(p && strstr(p, "GLOBAL-RULE") != NULL && strstr(p, "PROJ-RULE") == NULL, "没有工作目录 ⇒ 只收全局");
+    sdsfree(p);
+
+    /* 工作目录 == workspace 时, AGENTS.md 不该被收两遍 */
+    p = edc_context_build_system_prompt(cfg, ws);
+    if (p)
+    {
+        int hits = 0;
+        for (const char *q = p; (q = strstr(q, "WS-RULE")) != NULL; q += 7)
+            hits++;
+        CHECK(hits == 1, "workspace 的 AGENTS.md 只出现一次 (去重)");
+    }
+    sdsfree(p);
+
+    /* 开关: 一份都不读 (bootstrap 照旧) */
+    cfg->skip_context_files = true;
+    p = edc_context_build_system_prompt(cfg, sub);
+    CHECK(p && strstr(p, "GLOBAL-RULE") == NULL && strstr(p, "PROJ-RULE") == NULL, "关掉 ⇒ 一份都不读");
+    CHECK(p && strstr(p, "Project-specific instructions and guidelines:") == NULL, "整段不出现");
+    sdsfree(p);
+    cfg->skip_context_files = false;
+    edc_config_free(cfg);
+
+    setenv("HOME", old_home_copy, 1);
+
+    /* 收尾 */
+    snprintf(path, sizeof(path), "%s/.edgeclaw/AGENTS.md", home);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/.edgeclaw", home);
+    rmdir(path);
+    snprintf(path, sizeof(path), "%s/AGENTS.md", proj);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/AGENTS.override.md", sub);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/AGENTS.md", sub);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/CLAUDE.md", sub);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/AGENTS.md", ws);
+    unlink(path);
+    rmdir(sub);
+    rmdir(proj);
+    rmdir(ws);
+    rmdir(home);
+    rmdir(root);
+}
+
 /* ── 7. Tool calls use the task's OWNER session workdir ── */
 static void test_task_workdir_owner(void)
 {
@@ -420,6 +530,7 @@ int main(void)
     test_system_prompt_cwd();
     test_system_prompt_has_no_clock();
     test_memory_is_not_resident();
+    test_project_context_discovery();
     test_task_workdir_owner();
     test_history_dir_convention();
 

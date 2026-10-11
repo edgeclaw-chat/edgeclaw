@@ -37,7 +37,7 @@ MASTER_KEY = "ab-fixture-master-key"
 # 非确定性来源：写入时刻。会话状态、system prompt 里的 time 都是这个形状。
 TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}")
 
-BOOTSTRAP = ["AGENTS.md", "SOUL.md", "TOOLS.md", "USER.md", "HEARTBEAT.md"]
+BOOTSTRAP = ["AGENTS.md", "TOOLS.md"]  # 2026-10-10: SOUL/USER/HEARTBEAT 已从种子工作区去掉
 
 
 # 行号：往"会打日志的文件"里加一行，日志里的 `file.c:NNN` 就会位移 —— 那是

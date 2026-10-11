@@ -289,6 +289,11 @@ struct edc_config *edc_config_load(const char *edc_home)
      * on when the key is absent (first run / older config files). The CLI flag
      * overrides this for the current run only (see edc_app_new), whereas the
      * in-TUI /sandbox command persists it back to config.json. */
+    config->skip_context_files = false;
+    cJSON *skip_ctx = cJSON_GetObjectItem(conf, "skip_context_files");
+    if (skip_ctx && cJSON_IsBool(skip_ctx))
+        config->skip_context_files = cJSON_IsTrue(skip_ctx);
+
     config->enable_sandbox = true;
 
     cJSON *sandbox = cJSON_GetObjectItem(conf, "sandbox");

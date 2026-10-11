@@ -617,7 +617,7 @@ v5 的 `group.folded_through_completion_seq` + `task.turns_folded` → 每个 tu
 | **`## Current Time`（时间戳）** | ❌ 违反第一条 ⇒ **已删**（连 `{{time}}` 占位符与那个参数一起清掉；身份头补一句常量行："这个提示词没有时钟，要时间就跑 `date`"） |
 | `## Current Running Directory` / OS / workspace | ✅ 会话内常量（pi 自己也有 `<cwd>`） |
 | 权限表（sandbox 路径） | ✅ 会话配置；只在 config / 绑新 workdir 时变（那是会话事件，pi §7 的"结构性变化 ⇒ 新前缀"） |
-| bootstrap（AGENTS.md / SOUL.md / TOOLS.md / USER.md） | ✅ 与 pi 的 `<project_context>` 同性质：会话事件时读一次 |
+| bootstrap（`AGENTS.md` / `TOOLS.md` / 可选 `IDENTITY.md`） | ✅ 与 pi 的 `<project_context>` 同性质：会话事件时读一次。**`SOUL.md` / `USER.md` 已删**（见 §2.12） |
 | 全局记忆 `MEMORY.md` | ✅ **2026-10-10 已移出提示词**（裁决 ⑥ 的收尾）：正文不再常驻，身份头只留**常量**指路（"记忆在文件里，不在这个提示词里；需要早期上下文就先读 MEMORY.md，写回也写它"）|
 | 技能清单 | ✅ pi `<skills>` 同款（只放索引，正文惰性读） |
 | session 记忆常量提示 | ✅ 常量（无条数、无内容） |
@@ -631,4 +631,51 @@ v5 的 `group.folded_through_completion_seq` + `task.turns_folded` → 每个 tu
 把 MEMORY.md 移出去还顺带修掉一个语义毛病：原来它常驻（缓存在 `history[0]`）⇒ agent 本次会话
 写进去的记忆，**它自己反而读不到最新版**（要等重建）。现在"需要就读"，pi 也是这个路子
 （提示词里没有任何"agent 自己写"的文件，要知识自己 `read`）。
+
+## §2.11 上下文文件的发现机制（2026-10-10）
+
+**缺口**：在那之前，提示词只从 **workspace** 里读 5 个固定名字的文件（`AGENTS.md` / `SOUL.md` /
+`USER.md` / `TOOLS.md` / `IDENTITY.md`）。而 session 是可以绑定工作目录的
+（`/session new x /path/to/repo`）—— **那个 repo 自己的 `AGENTS.md` 一个字都进不来**。
+
+照 pi §3.6 补齐（`edc_context.c` 的 `load_project_context`）：
+
+| pi 的做法 | 现在 |
+|---|---|
+| 用户全局 `~/.pi/agent/AGENTS.md` | ✅ `~/.edgeclaw/AGENTS.md` |
+| 从 cwd **向上遍历到根** | ✅ 从 session 的**工作目录**向上遍历到根 |
+| 同目录候选优先级 `AGENTS.override.md` > `AGENTS.md` > `AGENTS.MD` > `CLAUDE.md` > `CLAUDE.MD`（override 只压制同目录） | ✅ 同一条优先级，同一目录只取一个 |
+| 每个文件包 `<project_instructions path="…">` | ✅ 同款包裹（外加 `## Project Context` 标题与 pi 那句引导语） |
+| 一个都没命中 ⇒ 整段不出现 | ✅ 返回空串，段不出现 |
+| `--no-context-files` / `-nc` 禁用 | ✅ config.json 顶层键 **`skip_context_files`**（缺省 false） |
+| 附着顺序：全局 → 外层 → 内层 | ✅ 先全局、再 根 → 工作目录（先广后专） |
+
+**有意保留的差别**：workspace 的那 5 个文件仍照旧躺在最前面（它们是"agent 自己的家目录规则"，
+pi 没有这一层）；工作目录就是 workspace 时那 5 个文件会被**去重**，不会收两遍。
+
+**守卫**：`tests/test_session_workdir.c::test_project_context_discovery` —— 造一棵
+`home/.edgeclaw/AGENTS.md` + `proj/AGENTS.md` + `proj/sub/{AGENTS.override.md, AGENTS.md, CLAUDE.md}`
+的树，断言：全局/项目/子目录 override 都进来、被 override 压制的与 `CLAUDE.md` 都不进来、
+顺序是 全局 → 项目 → 子目录、工作目录为空时只收全局、`skip_context_files` 一开一份都不读。
+
+## §2.12 砍掉 SOUL.md / USER.md / HEARTBEAT.md（2026-10-10）
+
+被问："pi 是不是都没有这部分内容？" —— **是，pi 一个都没有**。逐条对照后删掉：
+
+| 文件 | 原内容 | 为什么删 | pi 里对应什么 |
+|---|---|---|---|
+| `SOUL.md` | Core Principles / Execution Rules（单步多步、错误恢复、二进制调试、文件管理）/ Task Management / Tool Catalog / Channels | **绝大部分是重复**：Task Management 与 `todowrite` 的工具描述重复；Tool Catalog 与 `TOOLS.md` 重复；二进制调试与 `dtbo-debug` 技能重复；原则与 `AGENTS.md` 的 Guidelines 重复 | 无（pi 的身份是**代码里的 preamble 常量**） |
+| `USER.md` | 一份**全空模板**（`(your name)`、未勾选的复选框、空列表项） | 没有任何真实字段 ⇒ 纯噪声，占 token 还误导 | 无（要个性化就写进 AGENTS.md / `--append-system-prompt`） |
+| `HEARTBEAT.md` | 周期性任务清单 | **本仓库没有任何代码实现"每 30 分钟检查"** —— 那条声称只写在 `AGENTS.md` / `TOOLS.md` / `README.md` 里，机制不在这个仓库 | 无（pi 没有 heartbeat；要周期任务用 cron/外部调度） |
+
+**改动面**（一次做干净，不留悬空引用）：
+- `src/kernel/context/edc_context.c`：`BOOTSTRAP_FILES` = `AGENTS.md` / `TOOLS.md` / `IDENTITY.md`；
+- 种子工作区 `workspace/`：删这三个文件；`AGENTS.md` / `TOOLS.md` 里那两段 heartbeat 说明一并摘掉；
+- 引用同步：`tests/test_bundled_workspace.c` 的必需文件名单、`tools/ab/ab.py` 的 `BOOTSTRAP` 名单、`README.md`（目录树 / Heartbeat 段落 / Workspace 文件表）；
+- 已有安装的 `~/.edgeclaw/workspace/`：那两份与种子**逐字节相同** ⇒ 同样摘掉 heartbeat 段后与种子再一致（不丢用户内容）。
+
+**用户自己那份也删了**（2026-10-10 裁决）：`~/.edgeclaw/workspace/HEARTBEAT.md` 里那条"时钟哨兵"
+任务一并丢掉 —— 反正本仓库没有任何东西会去执行它（要周期任务，用真实现的 `crontab` 工具）。
+
+**仍然保留的**：`AGENTS.md`（行为契约）、`TOOLS.md`（工具速查）—— 它们与 pi 的 `<project_context>` 同类（人写、会话事件时读一次）。`TOOLS.md` 与 provider 的 tools 字段确有部分重复，但它是"给人看的清单 + 额外说明（设备、通道）"，暂留。
 

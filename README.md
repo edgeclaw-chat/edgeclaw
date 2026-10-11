@@ -388,7 +388,7 @@ edgeclaw/
 ├── toolchain/                        # 交叉编译工具链
 ├── docs/                             # 用户手册 (edgeclaw.md) + man page + TUI 设计文档
 ├── workspace/                        # 默认工作区 (编译期打包进二进制, 首次运行释放到 ~/.edgeclaw/)
-│   ├── AGENTS.md  SOUL.md  USER.md  TOOLS.md  HEARTBEAT.md
+│   ├── AGENTS.md  TOOLS.md
 │   ├── memory/   skills/   ssl/
 ├── MODULE.bazel                      # Bazel 模块 (bzlmod)
 └── BUILD                             # 顶层构建与打包
@@ -594,19 +594,6 @@ All scheduled jobs persist in `~/.edgeclaw/workspace/jobs.json` and survive rest
 - **`every_seconds`**: Fixed interval in seconds
 - **`tz`**: IANA timezone (e.g. `Asia/Shanghai`)
 
-### Heartbeat Tasks
-
-Defined in `~/.edgeclaw/workspace/HEARTBEAT.md`, these are checked every 30 minutes. The LLM reads and acts on tasks in a to-do format:
-
-```
-- [ ] Check calendar and remind of upcoming events
-- [ ] Scan inbox for urgent emails
-```
-
-The agent processes each task and marks completed items. Keep the file small to minimize token usage.
-
-Use heartbeat tasks for recurring maintenance — no cron expression needed; the agent just runs them periodically.
-
 ### Environment Variables
 
 | Variable | Description |
@@ -620,10 +607,7 @@ The `~/.edgeclaw/` workspace directory contains:
 | File | Purpose |
 |------|---------|
 | `AGENTS.md` | Agent behavior instructions and tool usage guidelines |
-| `SOUL.md` | Personality definition and values |
-| `USER.md` | User profile and preferences |
 | `TOOLS.md` | Tool usage documentation |
-| `HEARTBEAT.md` | Periodic tasks (checked every 30 minutes) |
 | `memory/` | Long-term memory storage |
 | `skills/` | Custom skill definitions (markdown + YAML frontmatter) |
 | `ssl/cacert.pem` | TLS CA certificate bundle for HTTPS connections |

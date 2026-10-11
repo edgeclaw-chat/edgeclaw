@@ -152,18 +152,4 @@ Spawn a subagent to handle a task in the background.
 spawn(task: str, label: str = None) -> str
 ```
 
----
 
-## Heartbeat Tasks
-
-`HEARTBEAT.md` is checked every 30 minutes. Use `edit_file` to manage periodic tasks:
-
-```
-# Add
-edit_file(path="HEARTBEAT.md", old_text="## Active Tasks", new_text="- [ ] New task\n\n## Active Tasks")
-
-# Remove
-edit_file(path="HEARTBEAT.md", old_text="- [ ] Task to remove\n", new_text="")
-```
-
-Keep this file short.

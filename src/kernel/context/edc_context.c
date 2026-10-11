@@ -8,7 +8,134 @@
 #include "sds.h"
 #include "utlist_fix.h"
 
-const char *BOOTSTRAP_FILES[] = {"AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"};
+/* 只有"契约性、且不与人设重复"的文件留在提示词里 (2026-10-10 精简):
+ *   - AGENTS.md  —— 行为契约 (工具/技能/记忆/事件约定)
+ *   - TOOLS.md   —— 工具速查
+ *   - IDENTITY.md—— 可选的身份覆盖 (缺省不存在)
+ * SOUL.md / USER.md 已从提示词与种子工作区里去掉: 前者的原则/执行细则与 AGENTS.md、各工具
+ * 描述、以及 dtbo-debug 这类技能重复; 后者是一份**全空的模板** (没有任何真实字段), 纯噪声。
+ * pi 里也没有这两个东西 (它的身份是代码里的 preamble, 用户画像靠 AGENTS.md/追加文本)。 */
+const char *BOOTSTRAP_FILES[] = {"AGENTS.md", "TOOLS.md", "IDENTITY.md"};
+
+/* pi 的"上下文文件"候选 (docs/pi-system-prompt-guide.md §3.6): **同一目录里只取优先级最高的
+ * 那一个**; override 只压制同目录, 不压制别的目录。 */
+static const char *CONTEXT_FILE_CANDIDATES[] = {"AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md",
+                                                "CLAUDE.MD"};
+
+/* 读一个上下文文件; 读不到返回 NULL (不报错 —— "没有"是正常情况, pi 那边整段都不出现)。 */
+static sds read_context_file(const char *path)
+{
+    EdcError *err = NULL;
+    sds content = edc_file_read(path, &err);
+    if (!content)
+    {
+        if (err)
+            edc_error_free(err);
+        return NULL;
+    }
+    return content;
+}
+
+/* 追加一个文件 (带 pi 的 <project_instructions path="…"> 包裹); 空内容/重复路径都跳过。
+ * `seen` 是我们已经收过的路径表 (去重: 工作目录就是 workspace 时别把 AGENTS.md 收两遍)。 */
+static void append_context_file(sds *out, sds *seen, size_t *seen_n, const char *path)
+{
+    for (size_t i = 0; i < *seen_n; i++)
+    {
+        if (seen[i] && strcmp(seen[i], path) == 0)
+            return;
+    }
+    sds content = read_context_file(path);
+    if (!content || sdslen(content) == 0)
+    {
+        if (content)
+            sdsfree(content);
+        return;
+    }
+    *out = sdscatprintf(*out, "<project_instructions path=\"%s\">\n%s\n</project_instructions>\n\n", path, content);
+    sdsfree(content);
+    if (*seen_n < 64)
+        seen[(*seen_n)++] = sdsnew(path);
+}
+
+/* "Project Context" 段: 用户全局一份 + 从 session 的工作目录向上遍历到根 (先广后专)。
+ * 一个都没命中 ⇒ 返回空串 (段就不出现, 与 pi 一致)。`skip` = 配置里关掉。 */
+static sds load_project_context(const char *workspace, const char *workdir, bool skip)
+{
+    if (skip)
+        return sdsempty();
+
+    sds seen[64];
+    size_t seen_n = 0;
+    /* workspace 里的 bootstrap 文件已经在别处收过了 —— 记下来免得重复。 */
+    for (size_t i = 0; i < sizeof(BOOTSTRAP_FILES) / sizeof(BOOTSTRAP_FILES[0]) && seen_n < 64; i++)
+        seen[seen_n++] = edc_path_join(workspace, BOOTSTRAP_FILES[i], NULL);
+
+    sds body = sdsempty();
+
+    /* ① 用户全局 (pi: ~/.pi/agent/AGENTS.md; 我们: ~/.edgeclaw/AGENTS.md) */
+    sds bc_home = edc_config_resolve_bc_home();
+    sds global = edc_path_join(bc_home, "AGENTS.md", NULL);
+    append_context_file(&body, seen, &seen_n, global);
+    sdsfree(global);
+    sdsfree(bc_home);
+
+    /* ② 从 workdir 向上遍历 (收进数组, 再按 根 → workdir 的顺序输出) */
+    if (workdir && workdir[0])
+    {
+        sds dirs[64];
+        size_t n = 0;
+        sds cur = sdsnew(workdir);
+        while (n < 64)
+        {
+            dirs[n++] = sdsdup(cur);
+            sds parent = edc_path_dirname(cur);
+            /* 到根了 (dirname 不再变) 或 dirname 失败 ⇒ 停 */
+            if (!parent || strcmp(parent, cur) == 0)
+            {
+                sdsfree(parent);
+                break;
+            }
+            sdsfree(cur);
+            cur = parent;
+        }
+        sdsfree(cur); /* 退出时 cur 还没被释放 (break 那条路) —— 见上面每步先 free 旧的 */
+
+        for (size_t i = n; i-- > 0;)
+        {
+            for (size_t c = 0; c < sizeof(CONTEXT_FILE_CANDIDATES) / sizeof(CONTEXT_FILE_CANDIDATES[0]); c++)
+            {
+                sds path = edc_path_join(dirs[i], CONTEXT_FILE_CANDIDATES[c], NULL);
+                sds content = read_context_file(path);
+                if (content && sdslen(content) > 0)
+                {
+                    sdsfree(content);
+                    append_context_file(&body, seen, &seen_n, path);
+                    sdsfree(path);
+                    break; /* 同一目录只取优先级最高的那一个 */
+                }
+                if (content)
+                    sdsfree(content);
+                sdsfree(path);
+            }
+        }
+        for (size_t i = 0; i < n; i++)
+            sdsfree(dirs[i]);
+    }
+
+    for (size_t i = 0; i < seen_n; i++)
+        sdsfree(seen[i]);
+
+    if (sdslen(body) == 0)
+    {
+        sdsfree(body);
+        return sdsempty();
+    }
+    sds section = sdsnew("## Project Context\n\nProject-specific instructions and guidelines:\n\n");
+    section = sdscatsds(section, body);
+    sdsfree(body);
+    return section;
+}
 
 static void sds_replace_all(sds *s, const char *find, const char *replacement)
 {
@@ -201,12 +328,16 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
     sds identity = edc_context_get_identity(os_name, workspace, workdir);
     sds permissions = edc_context_build_permissions(conf);
     sds bootstrap = edc_context_load_bootstrap_files(workspace);
+    /* 上下文文件 (pi §3.6): 用户全局 + 从**这个 session 的工作目录**向上遍历 —— 于是绑定到某个
+     * 项目目录的会话, 会真的吃到那个项目的 AGENTS.md。 */
+    sds project_context = load_project_context(workspace, workdir, conf->skip_context_files);
     sds skills = edc_context_load_skills(workspace);
 
     sds system_prompt = sdsempty();
     system_prompt = sdscat(system_prompt, identity);
     system_prompt = sdscat(system_prompt, permissions);
     system_prompt = sdscat(system_prompt, bootstrap);
+    system_prompt = sdscatsds(system_prompt, project_context);
     system_prompt = sdscat(system_prompt, skills);
     system_prompt = sdscat(system_prompt, kSessionMemoryHint);
 
@@ -215,6 +346,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
     sdsfree(identity);
     sdsfree(permissions);
     sdsfree(bootstrap);
+    sdsfree(project_context);
     sdsfree(skills);
 
     return system_prompt;
