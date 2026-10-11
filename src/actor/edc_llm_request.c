@@ -19,6 +19,29 @@
 #include <cJSON.h>
 #include <string.h>
 
+/* 把依赖材料**拼进 task 自己的输入**（B 方案, 2026-10-10）: 就地改写 active turn 的
+ * 第一条 user 消息 —— 于是它跟着 turn 一起留存（不再是"只在一次请求里出现"的派生块）。
+ * 返回 false = 没有可拼的 user 消息（异常形状；调用方退回"追加一条 system 消息"，不丢材料）。 */
+static bool append_to_task_input(struct edc_task *task, const char *block)
+{
+    if (!task || !task->active_turn || !block || !*block)
+        return false;
+    struct edc_turn *turn = task->active_turn;
+    for (size_t i = turn->messages.head; i < turn->messages.tail; i++)
+    {
+        cJSON *msg = turn->messages.data[i];
+        const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "role"));
+        if (!role || strcmp(role, "user") != 0)
+            continue;
+        const char *old = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
+        sds joined = sdscatprintf(sdsempty(), "%s%s%s", old ? old : "", (old && *old) ? "\n\n" : "", block);
+        cJSON_ReplaceItemInObject(msg, "content", cJSON_CreateString(joined));
+        sdsfree(joined);
+        return true;
+    }
+    return false;
+}
+
 /* ── LLM 请求装配 (原 src/app/edc_app.c 的搬家) ──────────
  * 本模块只有一条对外入口 edc_llm_request_send(); 它不含任何装配根私有状态:
  *   - kernel 侧输入 (group 历史 / 折叠水位 / deps / active_turn / todo 节流 /
@@ -188,61 +211,34 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
                  (dep->source && dep->source->output) ? "yes" : "none");
         if (dep->completed && dep->source && !dep->injected && dep->type == TASK_DEP_JOIN)
         {
-            dep->injected = true;
+            dep->injected = true; /* "已经拼过了" —— 材料已进输入, 不该再拼第二遍 */
 
-            /* 记忆型源 (折叠 / 策展) 的"输入"是它的整段语料 (折叠 prompt 可能几百 KB),
-             * 而且与它的 output 讲的是同一件事 ⇒ 只注入 output, 不注入那条 user 消息。
-             * 对 L2 策展来说, 这一条 assistant 消息**就是**它的材料 (刚落地的 group memory)。 */
-            const bool source_is_memory = edc_task_is_memory_sink(dep->source);
-            if (source_is_memory)
-                log_info("  -> injecting only the output of memory-sink task %s", dep->source->task_id);
-
-            /* inject source task's final output only (mainstream subagent pattern) */
+            /* **B 方案** (2026-10-10 裁决): 材料**拼进目标自己的输入**, 不再往请求里插一对消息。
+             * 就地改写 active turn 的第一条 user 消息 ⇒ 它跟着 turn 留存, 语义也更直白:
+             * "我的输入里带着子任务的产出"。(就近原则: 只有出生时就挂的 JOIN 才走到这里 ——
+             * 边没满足时目标根本不会被驱动。)
+             * 记忆型源 (折叠 / 策展) 的"输入"是整段语料 (折叠 prompt 可能几百 KB) 且与 output
+             * 讲同一件事 ⇒ 只拼它的 output (对 L2 策展来说那就是刚落地的 group memory)。 */
             if (dep->source->output)
             {
-                /* 普通源: 连它最后一条 user 消息一起注入, 拼成一对 Q&A。
-                 * 记忆型源跳过这半 (它的"输入"是整段语料, 且与 output 讲同一件事)。 */
-                if (!source_is_memory)
+                const bool source_is_memory = edc_task_is_memory_sink(dep->source);
+                sds block = source_is_memory
+                                ? sdsnew(dep->source->output)
+                                : sdscatprintf(sdsempty(), "[subtask %s result]:\n%s",
+                                               dep->source->description ? dep->source->description : "(task)",
+                                               dep->source->output);
+                if (!append_to_task_input(task, block))
                 {
-                /* find the last user message from source to form a Q&A pair */
-                sds last_user = NULL;
-                for (size_t qi = dep->source->turns.head; qi < dep->source->turns.tail; qi++)
-                {
-                    struct edc_turn *turn = dep->source->turns.data[qi];
-                    for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
-                    {
-                        cJSON *msg = turn->messages.data[mj];
-                        cJSON *role = cJSON_GetObjectItem(msg, "role");
-                        if (role && cJSON_IsString(role) && strcmp(role->valuestring, "user") == 0)
-                        {
-                            cJSON *content = cJSON_GetObjectItem(msg, "content");
-                            if (content && cJSON_IsString(content))
-                            {
-                                if (last_user)
-                                    sdsfree(last_user);
-                                last_user = sdsnew(content->valuestring);
-                            }
-                        }
-                    }
+                    log_warn("  -> task %s has no input message to splice into; appending a system message instead",
+                             task->task_id ? task->task_id : "(null)");
+                    cJSON *sys = cJSON_CreateObject();
+                    cJSON_AddStringToObject(sys, "role", "system");
+                    cJSON_AddStringToObject(sys, "content", block);
+                    cJSON_AddItemToArray(msgs, sys);
                 }
-
-                if (last_user)
-                {
-                    cJSON *usr = cJSON_CreateObject();
-                    cJSON_AddStringToObject(usr, "role", "user");
-                    cJSON_AddStringToObject(usr, "content", last_user);
-                    cJSON_AddItemToArray(msgs, usr);
-                    sdsfree(last_user);
-                }
-                } /* !source_is_memory */
-
-                cJSON *asst = cJSON_CreateObject();
-                cJSON_AddStringToObject(asst, "role", "assistant");
-                cJSON_AddStringToObject(asst, "content", dep->source->output);
-                cJSON_AddItemToArray(msgs, asst);
+                sdsfree(block);
             }
-
-            log_info("  -> injected final output from task %s", dep->source->task_id);
+            log_info("  -> spliced the output of task %s into the task input", dep->source->task_id);
         }
     }
 

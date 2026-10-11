@@ -368,13 +368,65 @@ static void test_session_memory_notice_reaches_the_tail(void)
     harness_down(&h);
 }
 
+/* 头部两块的顺序与"同组内逐字节一致" —— cache 命中的前提：
+ * 常量 (system prompt) 在前、易变的 (group memory) 在后；同组内不同 task 的头部两块必须完全
+ * 相同, 否则它们连第一段 cache 都共享不了。 */
+static void test_head_blocks_cache_layout(void)
+{
+    TEST("请求头部: system prompt 在前 / group memory 在后; 同组两个 task 逐字节一致");
+
+    struct harness h;
+    harness_up(&h);
+    struct edc_task *leader = NULL;
+    struct edc_task_group *g = make_group(&h, &leader, "sess-head");
+    g->memory = sdsnew("MEM-SUMMARY"); /* 非空 ⇒ 两块都出现 */
+
+    struct edc_task *t2 = edc_task_new("h-2", "sess-head", g->group_id, "second task", edc_channel_adapter);
+    edc_task_group_add_task(g, t2);
+
+    attach_turn(&h, leader, "first input");
+    attach_turn(&h, t2, "second input");
+
+    edc_llm_request_send(h.sched, leader, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 1, "A 的请求发出去了");
+
+    sds a0 = NULL, a1 = NULL;
+    if (g_req && g_req->history)
+    {
+        a0 = sdsnew(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g_req->history, 0), "content")));
+        a1 = sdsnew(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g_req->history, 1), "content")));
+        CHECK(a0 && strstr(a0, "# EdgeClaw") != NULL, "第 0 块 = 系统提示词 (常量)");
+        CHECK(a1 && strncmp(a1, "## Group Memory\nMEM-SUMMARY", 27) == 0, "第 1 块 = group memory (易变的在后)");
+    }
+    edc_llm_actor_req_free(g_req);
+    g_req = NULL;
+    g_req_msgs = 0;
+
+    edc_llm_request_send(h.sched, t2, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 1, "B 的请求发出去了");
+    if (g_req && g_req->history)
+    {
+        const char *b0 = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g_req->history, 0), "content"));
+        const char *b1 = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g_req->history, 1), "content"));
+        CHECK(a0 && b0 && strcmp(b0, a0) == 0, "系统提示词那块与 A 逐字节一致");
+        CHECK(a1 && b1 && strcmp(b1, a1) == 0, "group memory 那块也与 A 逐字节一致");
+    }
+    sdsfree(a0);
+    sdsfree(a1);
+    edc_llm_actor_req_free(g_req);
+    g_req = NULL;
+    harness_down(&h);
+}
+
 /* ══════════════════════════════════════════════════════════════
  *  Case 2d: JOIN 注入的形状 (P4d) —— 记忆型源只注入 output
  *  ══════════════════════════════════════════════════════════════ */
 
 static void test_join_injection_shape(void)
 {
-    TEST("JOIN 注入: 普通源 = (它的 user 消息 + output); 记忆型源 = 只有 output");
+    TEST("JOIN (B 方案): 材料拼进目标**自己的输入**; 不往请求里插消息; 只拼一次且留存");
 
     struct harness h;
     harness_up(&h);
@@ -382,9 +434,7 @@ static void test_join_injection_shape(void)
     struct edc_task_group *g = make_group(&h, &leader, "sess-inj");
     (void)g;
 
-    /* 源一: 普通任务 (有 input + output); 源二: 记忆型 (折叠任务) */
-    /* 源一: 普通任务 —— 一条**已提交的 turn**(含 user 消息; 注入扫的是 turns, 不是 active_turn)
-     * + output。 */
+    /* 源一: 普通任务 (description + output) */
     struct edc_task *src = edc_task_new("src-1", "sess-inj", "src-1", "src work", edc_channel_adapter);
     {
         struct edc_turn *t = edc_turn_new();
@@ -399,7 +449,7 @@ static void test_join_injection_shape(void)
     edc_task_await_exec(src);
     edc_task_mark_completed(src);
 
-    /* 源二: 记忆型 (折叠任务) —— 同样的形状, 但它的 prompt 不该被注入 */
+    /* 源二: 记忆型 (折叠任务) —— 它的 prompt 不该被拼进来, 只拼 output */
     struct edc_task *fold_src = edc_scheduler_spawn_system_task(h.sched, h.sess, "fold group memory");
     {
         struct edc_turn *t = edc_turn_new();
@@ -414,44 +464,65 @@ static void test_join_injection_shape(void)
     edc_task_await_exec(fold_src);
     edc_task_mark_completed(fold_src);
 
-    /* 目标: 一个普通任务, 同时 JOIN 两个源 */
+    /* 目标: 自己的输入 = "DEST-OWN-TURN", 同时 JOIN 两个源 */
     struct edc_task *dst = edc_task_new("dst-1", "sess-inj", "dst-1", "dst work", edc_channel_adapter);
     edc_task_add_dependency(dst, src, TASK_DEP_JOIN);
     edc_task_add_dependency(dst, fold_src, TASK_DEP_JOIN);
-    attach_turn(&h, dst, "DEST-OWN-TURN"); /* 给它自己的 active_turn */
+    attach_turn(&h, dst, "DEST-OWN-TURN");
 
     g_req_msgs = 0;
     edc_llm_request_send(h.sched, dst, NULL, h.llm_actor, NULL);
     pump(&h);
     CHECK(g_req_msgs == 1, "请求发出去了");
 
-    if (g_req && g_req->history)
+    /* 目标自己的输入被就地改写: 原文 + 两段材料 */
+    const char *input = NULL;
+    if (dst->active_turn && edc_queue_length(&dst->active_turn->messages) > 0)
     {
-        bool saw_src_user = false, saw_src_out = false, saw_fold_prompt = false, saw_fold_out = false;
-        int n = cJSON_GetArraySize(g_req->history);
-        for (int i = 0; i < n; i++)
-        {
-            cJSON *mm = cJSON_GetArrayItem(g_req->history, i);
-            const char *c = cJSON_GetStringValue(cJSON_GetObjectItem(mm, "content"));
-            if (!c)
-                continue;
-            if (strstr(c, "SOURCE-USER-TEXT"))
-                saw_src_user = true;
-            if (strstr(c, "SOURCE-OUTPUT-TEXT"))
-                saw_src_out = true;
-            if (strstr(c, "FOLD-PROMPT-TEXT"))
-                saw_fold_prompt = true;
-            if (strstr(c, "FOLD-OUTPUT-MEMORY"))
-                saw_fold_out = true;
-        }
-        CHECK(saw_src_user && saw_src_out, "普通源: 它的 user 消息与 output 都注入");
-        CHECK(saw_fold_out, "记忆型源: output 注入 (那就是它的材料)");
-        CHECK(!saw_fold_prompt, "记忆型源: 它的 user 消息 (折叠 prompt, 可能几百 KB) **不**注入");
+        cJSON *m = dst->active_turn->messages.data[dst->active_turn->messages.head];
+        input = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
     }
+    CHECK(input && strstr(input, "DEST-OWN-TURN") != NULL, "原输入还在");
+    CHECK(input && strstr(input, "[subtask src work result]:") != NULL, "普通源: 带标记拼进输入");
+    CHECK(input && strstr(input, "SOURCE-OUTPUT-TEXT") != NULL, "普通源: output 在输入里");
+    CHECK(input && strstr(input, "SOURCE-USER-TEXT") == NULL, "普通源: 不再注入它那条 user 消息 (B 方案)");
+    CHECK(input && strstr(input, "FOLD-OUTPUT-MEMORY") != NULL, "记忆型源: output 也拼进输入");
+    CHECK(input && strstr(input, "FOLD-PROMPT-TEXT") == NULL, "记忆型源: 它的 prompt 一字不进");
+
+    /* 请求头部里**不该**多出注入消息 (只剩系统提示词) */
+    CHECK(g_req && g_req->history && cJSON_GetArraySize(g_req->history) == 1,
+          "请求头部没有插入额外的注入消息 (材料走输入)");
+    edc_llm_actor_req_free(g_req);
+    g_req = NULL;
+    g_req_msgs = 0;
+
+    /* 再发一次: 材料已进输入 ⇒ 不重复拼 (一次性), 且仍在那里 (留存) */
+    edc_llm_request_send(h.sched, dst, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 1, "第二次请求也出去了");
+    const char *input2 = NULL;
+    if (dst->active_turn && edc_queue_length(&dst->active_turn->messages) > 0)
+    {
+        cJSON *m = dst->active_turn->messages.data[dst->active_turn->messages.head];
+        input2 = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+    }
+    int marker_hits = 0;
+    if (input2)
+    {
+        for (const char *q = input2; (q = strstr(q, "[subtask src work result]:")) != NULL; q += 1)
+            marker_hits++;
+    }
+    CHECK(marker_hits == 1, "材料只在输入里出现一次 (不重复拼)");
+    CHECK(input2 && strstr(input2, "SOURCE-OUTPUT-TEXT") != NULL, "第二轮的输入里材料还在 (留存)");
+    CHECK(g_req && g_req->history && cJSON_GetArraySize(g_req->history) == 1, "第二轮头部依然只有系统提示词");
     edc_llm_actor_req_free(g_req);
     g_req = NULL;
     harness_down(&h);
 }
+
+/* ══════════════════════════════════════════════════════════════
+ *  Case 3: 摘要调用的 max_tokens (P2b-2)
+ *  ══════════════════════════════════════════════════════════════ */
 
 /* ══════════════════════════════════════════════════════════════
  *  Case 2c: L2 策展请求也是自足的 (P4d)
@@ -496,10 +567,6 @@ static void test_curate_request_is_self_contained(void)
     sdsfree(id2);
     harness_down(&h);
 }
-
-/* ══════════════════════════════════════════════════════════════
- *  Case 3: 摘要调用的 max_tokens (P2b-2)
- *  ══════════════════════════════════════════════════════════════ */
 
 static void test_summary_request_is_capped(void)
 {
@@ -616,6 +683,7 @@ int main(void)
     test_turn_begin_honours_folded_prefix();
     test_turn_begin_zero_without_prefix();
     test_session_memory_notice_reaches_the_tail();
+    test_head_blocks_cache_layout();
     test_join_injection_shape();
     test_curate_request_is_self_contained();
     test_summary_request_is_capped();

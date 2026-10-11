@@ -625,7 +625,8 @@ static void test_session_memory_chain_and_landing(void)
     CHECK(edc_task_has_unresolved_deps(live), "折叠完成 ≠ 成员恢复: 它还在等策展");
     CHECK(!edc_task_has_unresolved_deps(l2), "L2 的 JOIN 边完成了 ⇒ 它可跑");
 
-    /* L2 的请求: 材料来自 JOIN 注入 (折叠的 output), 不再是 prompt 里抄一份 */
+    /* L2 的请求: 材料**不在 prompt 里**, 而是装配请求时由 JOIN 把它**拼进 L2 自己的输入**
+     * (B 方案)。这个夹具没建请求, 所以此刻 turn 里还只有"索引 + 契约"。 */
     struct edc_turn *turn = l2->active_turn;
     CHECK(turn != NULL && edc_queue_length(&turn->messages) > 0, "L2 有自己的 turn (索引 + 契约)");
     const char *material = NULL;
@@ -635,7 +636,9 @@ static void test_session_memory_chain_and_landing(void)
         material = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
     }
     CHECK(material && strstr(material, "Existing session entries") != NULL, "turn 里有条目索引与契约");
-    CHECK(material && strstr(material, "构建入口是 bazelisk") == NULL, "turn 里**没有**组记忆 (那份走注入)");
+    CHECK(material && strstr(material, "构建入口是 bazelisk") == NULL, "此刻 turn 里没有组记忆 (装配请求时才拼)");
+    CHECK(material && strstr(material, "appended at the end of this message") != NULL,
+          "prompt 说清了材料拼在本条消息末尾");
 
     /* 结算 L2 ⇒ 条目落地; 成员才恢复 */
     uint32_t seq_before = session->next_completion_seq;

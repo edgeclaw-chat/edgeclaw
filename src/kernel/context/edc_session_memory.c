@@ -393,8 +393,8 @@ static sds build_curate_prompt(struct edc_session *session, bool all_groups, con
     else
     {
         out = sdscat(out, "## Group memory to curate\n"
-                          "It is the **previous assistant message** in this conversation (the fold task's\n"
-                          "output). Read it, then apply the operations below to this session's memory.\n");
+                          "It is **appended at the end of this message** (the fold task's output).\n"
+                          "Read it, then apply the operations below to this session's memory.\n");
     }
 
     if (focus && *focus)

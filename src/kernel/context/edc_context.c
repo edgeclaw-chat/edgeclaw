@@ -503,10 +503,14 @@ cJSON *edc_context_make_todo_reminder(struct edc_task *task)
     return sys;
 }
 
-/* 本次 LLM 请求 "system 部分" (头部) 的唯一组装入口: group memory + system
- * prompt。不含任何 todo 内容——todo 引导一律由 edc_context_make_todo_reminder
- * 生成并塞到请求最末尾。引用/副本/现拼语义见 edc_context.h 注释——与迁移前
- * edc_app_cb_send_llm 的行为字节级一致。 */
+/* 本次 LLM 请求 "system 部分" (头部) 的唯一组装入口: system prompt + group memory。
+ * 不含任何 todo 内容——todo 引导一律由 edc_context_make_todo_reminder 生成并塞到请求
+ * 最末尾。引用/副本/现拼语义见 edc_context.h 注释。
+ *
+ * **顺序 = cache 友好** (2026-10-10 裁决, docs/l2-session-memory.md §3.1): **常量在前,
+ * 易变的在后**。系统提示词在会话内是不动的对象 (rebuild 也是复用同一个 history[0])，而
+ * `## Group Memory` 每次折叠落地都会被重写 —— 它若排在前面, 一变就把后面那份常量一起
+ * 打掉 (整段前缀 miss)。换过来之后, 折叠只作废 "group memory + 未折叠历史" 那一段。 */
 int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct edc_task_group *group,
                                    const char *workdir, sds *out_pristine)
 {
@@ -516,19 +520,7 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
     if (out_pristine)
         *out_pristine = NULL;
 
-    /* 1. GROUP 记忆摘要 (已折叠 turns 的浓缩), 注入所有新 task */
-    if (group && group->memory && sdslen(group->memory) > 0)
-    {
-        cJSON *mem = cJSON_CreateObject();
-        cJSON_AddStringToObject(mem, "role", "system");
-        sds mc = sdscatprintf(sdsempty(), "## Group Memory\n%s", group->memory);
-        cJSON_AddStringToObject(mem, "content", mc);
-        cJSON_AddItemToArray(msgs, mem);
-        sdsfree(mc);
-        appended++;
-    }
-
-    /* 2. system prompt (纯净, 无 todo 注入)
+    /* 1. system prompt (纯净, 无 todo 注入)
      * - group 有历史: 以引用挂 history[0] (不复制)
      * - group 无历史 / group 为空: 现拼纯净 prompt, 经 out_pristine 交还调用
      *   方 (由其决定写回 group history; 写回后后续请求即走引用分支) */
@@ -549,6 +541,18 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
         if (out_pristine)
             *out_pristine = sdsdup(prompt);
         sdsfree(prompt);
+    }
+
+    /* 2. GROUP 记忆摘要 (已折叠 turns 的浓缩)—— 易变的那块放最后 (见函数头注释) */
+    if (group && group->memory && sdslen(group->memory) > 0)
+    {
+        cJSON *mem = cJSON_CreateObject();
+        cJSON_AddStringToObject(mem, "role", "system");
+        sds mc = sdscatprintf(sdsempty(), "## Group Memory\n%s", group->memory);
+        cJSON_AddStringToObject(mem, "content", mc);
+        cJSON_AddItemToArray(msgs, mem);
+        sdsfree(mc);
+        appended++;
     }
 
     return appended;
