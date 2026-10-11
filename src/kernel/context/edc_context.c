@@ -1,5 +1,4 @@
 #include "edc_context.h"
-#include "edc_datetime_utils.h"
 #include "edc_file_utils.h"
 #include "edc_skills.h"
 #include "edc_task.h"
@@ -28,7 +27,7 @@ static void sds_replace_all(sds *s, const char *find, const char *replacement)
     *s = result;
 }
 
-static sds edc_context_get_identity(const char *os_name, const char *time, const char *workspace, const char *workdir)
+static sds edc_context_get_identity(const char *os_name, const char *workspace, const char *workdir)
 {
     const char *identity_fmt = "# EdgeClaw\n"
                                "You are EdgeClaw, a helpful AI assistant. You have access to tools "
@@ -39,8 +38,6 @@ static sds edc_context_get_identity(const char *os_name, const char *time, const
                                "- Send messages to users on chat channels\n"
                                "\n- Spawn subagents for complex background tasks\n"
                                "\n"
-                               "## Current Time\n"
-                               "{{time}}\n"
                                "## OS Name\n"
                                "{{os_name}}"
                                "\n"
@@ -52,6 +49,11 @@ static sds edc_context_get_identity(const char *os_name, const char *time, const
                                "- Timeline memory: {{workspace}}/memory/HISTORY.md\n"
                                "- Custom skills: {{workspace}}/skills/{{skill-name}}/SKILL.md\n"
                                "\n"
+                               "Your long-term memory lives in those files, **not** in this prompt: read "
+                               "MEMORY.md (and HISTORY.md when you need the timeline) before answering "
+                               "anything that depends on earlier context, and write durable knowledge back "
+                               "into MEMORY.md.\n"
+                               "\n"
                                "IMPORTANT: When responding to direct questions or conversations, "
                                "reply directly with your text response.\n"
                                "Only use the 'message' tool when you need to send a message to a "
@@ -62,7 +64,10 @@ static sds edc_context_get_identity(const char *os_name, const char *time, const
                                "Always be helpful, accurate, and concise. When using tools, explain "
                                "what you're doing.\n"
                                "When remembering something, write to "
-                               "{{workspace}}/memory/MEMORY.md\n\n";
+                               "{{workspace}}/memory/MEMORY.md\n"
+                               "\n"
+                               "This prompt carries no clock: when you need the current date or time, run "
+                               "`date` (or check the OS).\n\n";
 
     /* The session's bound working directory is the "current directory" the
      * model is told about; unbound sessions fall back to the process cwd. */
@@ -70,7 +75,6 @@ static sds edc_context_get_identity(const char *os_name, const char *time, const
     sds identity = sdsnew(identity_fmt);
     sds_replace_all(&identity, "{{os_name}}", os_name);
     sds_replace_all(&identity, "{{cwd}}", cwd);
-    sds_replace_all(&identity, "{{time}}", time);
     sds_replace_all(&identity, "{{workspace}}", workspace);
     sdsfree(cwd);
 
@@ -151,29 +155,6 @@ static sds edc_context_load_skills(const char *workspace)
     return result;
 }
 
-static sds edc_context_load_memory(const char *workspace)
-{
-    sds memory_file = edc_path_join(workspace, "memory", "MEMORY.md", NULL);
-    EdcError *error = NULL;
-    sds content = edc_file_read(memory_file, &error);
-
-    if (!content)
-    {
-        log_error("load memory failed: %s", error->message);
-        edc_error_free(error);
-        sdsfree(memory_file);
-        return NULL;
-    }
-
-    sds buf = sdsnew("## Memory\n\n### Long-Term Memory\n\n");
-    buf = sdscat(buf, content);
-    buf = sdscat(buf, "\n\n");
-
-    sdsfree(memory_file);
-    sdsfree(content);
-
-    return buf;
-}
 
 /* Compact description of the sandbox's writable / read-only path sets, so the
  * model knows up front which directories it can write and does not waste tool
@@ -217,34 +198,23 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
     const char *workspace = conf->workspace;
     sds os_name = edc_os_name();
 
-    sds time = edc_datetime_timestamp();
-    sds identity = edc_context_get_identity(os_name, time, workspace, workdir);
+    sds identity = edc_context_get_identity(os_name, workspace, workdir);
     sds permissions = edc_context_build_permissions(conf);
     sds bootstrap = edc_context_load_bootstrap_files(workspace);
-    sds memory = edc_context_load_memory(workspace);
     sds skills = edc_context_load_skills(workspace);
 
     sds system_prompt = sdsempty();
     system_prompt = sdscat(system_prompt, identity);
     system_prompt = sdscat(system_prompt, permissions);
     system_prompt = sdscat(system_prompt, bootstrap);
-    if (memory)
-    {
-        system_prompt = sdscat(system_prompt, memory);
-    }
     system_prompt = sdscat(system_prompt, skills);
     system_prompt = sdscat(system_prompt, kSessionMemoryHint);
 
     sdsfree(os_name);
 
-    sdsfree(time);
     sdsfree(identity);
     sdsfree(permissions);
     sdsfree(bootstrap);
-    if (memory)
-    {
-        sdsfree(memory);
-    }
     sdsfree(skills);
 
     return system_prompt;

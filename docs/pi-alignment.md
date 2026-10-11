@@ -602,3 +602,33 @@ v5 的 `group.folded_through_completion_seq` + `task.turns_folded` → 每个 tu
 2. **水位落在 turn 上 + group history 剪枝**（7.1 的骨架）—— 这是 7a/7b 成立的前提；
 3. **三个数字走常量**（16k / 20k / `min(0.8×16k, …)`）而不是配置键；
 4. **P2 拆两步（P2a / P2b）**，各自验证；commit 按你的规矩来（合成一个也行）。
+
+## §2.10 系统提示的确定性纪律（2026-10-10）
+
+参考 `docs/pi-system-prompt-guide.md` §7 的三条"无"：**无日期/时间戳注入**（要时间自己跑 `date`）、
+**无文件监听**（`/reload` 才重读）、**无环境漂移**（版本号/遥测/网络状态）。判据是
+"跨天、重启、resume，prompt 字节完全不变"。
+
+拿它量 EdgeClaw 的 `edc_context_build_system_prompt`（六段：身份头 / 权限表 / bootstrap /
+全局记忆 / 技能 / session 记忆常量提示）：
+
+| 段落 | 判定 |
+|---|---|
+| **`## Current Time`（时间戳）** | ❌ 违反第一条 ⇒ **已删**（连 `{{time}}` 占位符与那个参数一起清掉；身份头补一句常量行："这个提示词没有时钟，要时间就跑 `date`"） |
+| `## Current Running Directory` / OS / workspace | ✅ 会话内常量（pi 自己也有 `<cwd>`） |
+| 权限表（sandbox 路径） | ✅ 会话配置；只在 config / 绑新 workdir 时变（那是会话事件，pi §7 的"结构性变化 ⇒ 新前缀"） |
+| bootstrap（AGENTS.md / SOUL.md / TOOLS.md / USER.md） | ✅ 与 pi 的 `<project_context>` 同性质：会话事件时读一次 |
+| 全局记忆 `MEMORY.md` | ✅ **2026-10-10 已移出提示词**（裁决 ⑥ 的收尾）：正文不再常驻，身份头只留**常量**指路（"记忆在文件里，不在这个提示词里；需要早期上下文就先读 MEMORY.md，写回也写它"）|
+| 技能清单 | ✅ pi `<skills>` 同款（只放索引，正文惰性读） |
+| session 记忆常量提示 | ✅ 常量（无条数、无内容） |
+
+守卫：`tests/test_session_workdir.c::test_system_prompt_has_no_clock` —— 连续构造两次逐字节相同、
+没有 `Current Time` 段、没有未替换的 `{{time}}`、全文不含 `20xx-` 形式的日期。
+（`{{skill-name}}` 是**故意**留给模型看的路径模板，不算漏替换。）
+以及 `tests/test_session_workdir.c::test_memory_is_not_resident` —— 造一份带标记的 MEMORY.md，
+断言**正文不在**提示词里、路径与"要自己读"的常量说明在。
+
+把 MEMORY.md 移出去还顺带修掉一个语义毛病：原来它常驻（缓存在 `history[0]`）⇒ agent 本次会话
+写进去的记忆，**它自己反而读不到最新版**（要等重建）。现在"需要就读"，pi 也是这个路子
+（提示词里没有任何"agent 自己写"的文件，要知识自己 `read`）。
+

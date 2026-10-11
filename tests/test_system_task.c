@@ -122,7 +122,7 @@ static void complete_with(struct edc_scheduler *sched, struct edc_task *task, co
     memset(&ev, 0, sizeof(ev));
     ev.kind = EDC_EVENT_EXEC_DONE;
     ev.as.exec.reason = EDC_REASON_STOP;
-    ev.as.exec.content = content;
+    ev.as.exec.content = (char *)content; /* executor 只读它 */
     void *t_req = task->current_request_id;
     struct edc_advance_result t_res = edc_executor_advance(&sched->executor, task, &ev);
     edc_scheduler_apply_advance(sched, task, t_req, &t_res);

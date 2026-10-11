@@ -10,6 +10,7 @@
 #include "edc_session_manager.h"
 #include "edc_state_serializer.h"
 #include "log.h"
+#include <ctype.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -272,6 +273,68 @@ static void test_system_prompt_cwd(void)
     rmdir(dir);
 }
 
+/* pi 的纪律 (docs/pi-system-prompt-guide.md §7: "无任何日期/时间戳注入 … 跨天、重启、resume
+ * prompt 字节完全不变")。这里钉住它 —— 提示词里不许有时钟, 也不许留未替换的占位符。 */
+static void test_system_prompt_has_no_clock(void)
+{
+    TEST("system prompt: 无时钟 / 无未替换占位符 (pi §7 的确定性纪律)");
+
+    struct edc_config *cfg = make_config("/tmp/test_edc_noclock_ws");
+    sds a = edc_context_build_system_prompt(cfg, NULL);
+    sds b = edc_context_build_system_prompt(cfg, NULL);
+    CHECK(a && b && strcmp(a, b) == 0, "连续构造两次逐字节相同");
+    CHECK(a && strstr(a, "Current Time") == NULL, "没有 Current Time 段");
+    CHECK(a && strstr(a, "no clock") != NULL, "有常量行说明：要时间就跑 date");
+    CHECK(a && strstr(a, "{{time}}") == NULL, "没有未替换的 {{time}} 占位符");
+    /* 注意 {{skill-name}} 是**故意**留给模型看的路径模板, 不是漏替换。 */
+
+    /* 时间戳形如 2026-10-10 … —— 提示词里不该出现任何 20xx- 的日期串。 */
+    bool has_date = false;
+    if (a)
+    {
+        for (const char *q = a; (q = strstr(q, "20")) != NULL; q += 2)
+        {
+            if (isdigit((unsigned char)q[2]) && isdigit((unsigned char)q[3]) && q[4] == '-')
+                has_date = true;
+        }
+    }
+    CHECK(!has_date, "不含 20xx- 形式的日期");
+
+    sdsfree(a);
+    sdsfree(b);
+    edc_config_free(cfg);
+}
+
+/* 全局记忆不再是提示词里的常驻块 (2026-10-10 裁决 ⑥ + pi §2.10 的方向): 提示词里只有
+ * 常量指路, MEMORY.md 的**正文**一个字都不许出现 —— 它是 agent 自己会写的东西, 常驻就等于
+ * 「一改就把整段前缀作废」, 而且本次会话里模型反而读不到最新版。 */
+static void test_memory_is_not_resident(void)
+{
+    TEST("system prompt: 不装 MEMORY.md 正文 (只留常量指路)");
+
+    char dir[256];
+    make_tmpdir(dir, sizeof(dir)); /* 本文件的约定: 传缓冲 + 容量 */
+    char memdir[512];
+    snprintf(memdir, sizeof(memdir), "%s/memory", dir);
+    EdcError *err = NULL;
+    CHECK(edc_dir_create_with_parents(memdir, 0755, &err), "建 memory 目录");
+    char memfile[600];
+    snprintf(memfile, sizeof(memfile), "%s/MEMORY.md", memdir);
+    const char *marker = "MEMORY-CONTENT-MARKER-9f3a\n";
+    CHECK(edc_file_write(memfile, marker, -1, &err), "写 MEMORY.md");
+
+    struct edc_config *cfg = make_config(dir);
+    sds prompt = edc_context_build_system_prompt(cfg, NULL);
+    CHECK(prompt && strstr(prompt, "MEMORY-CONTENT-MARKER-9f3a") == NULL, "正文不在提示词里");
+    CHECK(prompt && strstr(prompt, "MEMORY.md") != NULL, "但指了路 (路径还在)");
+    CHECK(prompt && strstr(prompt, "not** in this prompt") != NULL, "并说明要自己去读");
+    sdsfree(prompt);
+    edc_config_free(cfg);
+    unlink(memfile);
+    rmdir(memdir);
+    rmdir(dir);
+}
+
 /* ── 7. Tool calls use the task's OWNER session workdir ── */
 static void test_task_workdir_owner(void)
 {
@@ -355,6 +418,8 @@ int main(void)
     test_persist_roundtrip();
     test_verify_path_at();
     test_system_prompt_cwd();
+    test_system_prompt_has_no_clock();
+    test_memory_is_not_resident();
     test_task_workdir_owner();
     test_history_dir_convention();
 
