@@ -172,14 +172,7 @@ static sds edc_context_get_identity(const char *os_name, const char *workspace, 
                                "{{cwd}}\n"
                                "## Workspace\n"
                                "Your workspace is at: {{workspace}}\n"
-                               "- Memory files: {{workspace}}/memory/MEMORY.md\n"
-                               "- Timeline memory: {{workspace}}/memory/HISTORY.md\n"
                                "- Custom skills: {{workspace}}/skills/{{skill-name}}/SKILL.md\n"
-                               "\n"
-                               "Your long-term memory lives in those files, **not** in this prompt: read "
-                               "MEMORY.md (and HISTORY.md when you need the timeline) before answering "
-                               "anything that depends on earlier context, and write durable knowledge back "
-                               "into MEMORY.md.\n"
                                "\n"
                                "IMPORTANT: When responding to direct questions or conversations, "
                                "reply directly with your text response.\n"
@@ -190,8 +183,6 @@ static sds edc_context_get_identity(const char *os_name, const char *workspace, 
                                "\n"
                                "Always be helpful, accurate, and concise. When using tools, explain "
                                "what you're doing.\n"
-                               "When remembering something, write to "
-                               "{{workspace}}/memory/MEMORY.md\n"
                                "\n"
                                "This prompt carries no clock: when you need the current date or time, run "
                                "`date` (or check the OS).\n\n";
@@ -306,7 +297,7 @@ static sds edc_context_build_permissions(struct edc_config *conf)
 }
 
 /* session 记忆的**唯一**提示：常量文本，零可变内容（没有条数、没有内容、没有 id）。
- * 放在 system prompt 的**最后** —— 它是模型要看那段长提示（MEMORY.md 可能有几万 token）
+ * 放在 system prompt 的**最后** —— 它是模型要看那段长提示（bootstrap/技能可能有几万 token）
  * 时最后读到的东西，recency 最好；而"条数/内容"由请求期队尾通知带（见 docs/l2-session-memory.md
  * §1.2.1）。放在这里而不是每次现拼一个块：常量 ⇒ 不碰 prompt cache 前缀。 */
 static const char kSessionMemoryHint[] =

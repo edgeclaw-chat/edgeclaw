@@ -305,15 +305,15 @@ static void test_system_prompt_has_no_clock(void)
     edc_config_free(cfg);
 }
 
-/* 全局记忆不再是提示词里的常驻块 (2026-10-10 裁决 ⑥ + pi §2.10 的方向): 提示词里只有
- * 常量指路, MEMORY.md 的**正文**一个字都不许出现 —— 它是 agent 自己会写的东西, 常驻就等于
- * 「一改就把整段前缀作废」, 而且本次会话里模型反而读不到最新版。 */
-static void test_memory_is_not_resident(void)
+/* MEMORY.md 这套"文件式长期记忆"机制**整个删掉**了 (2026-10-10 裁决): 提示词里既没有它的
+ * 正文 (那是 agent 自己会写的东西, 常驻就等于一改就把整段前缀作废), 也不再指路 —— 它已经没有
+ * 读者/写者。durable knowledge 现在只有一条路: 本 session 的共享记忆 (memory_* 四个工具)。 */
+static void test_memory_file_mechanism_is_gone(void)
 {
-    TEST("system prompt: 不装 MEMORY.md 正文 (只留常量指路)");
+    TEST("system prompt: MEMORY.md 机制已删 (既不装正文, 也不指路)");
 
     char dir[256];
-    make_tmpdir(dir, sizeof(dir)); /* 本文件的约定: 传缓冲 + 容量 */
+    make_tmpdir(dir, sizeof(dir));
     char memdir[512];
     snprintf(memdir, sizeof(memdir), "%s/memory", dir);
     EdcError *err = NULL;
@@ -321,13 +321,14 @@ static void test_memory_is_not_resident(void)
     char memfile[600];
     snprintf(memfile, sizeof(memfile), "%s/MEMORY.md", memdir);
     const char *marker = "MEMORY-CONTENT-MARKER-9f3a\n";
-    CHECK(edc_file_write(memfile, marker, -1, &err), "写 MEMORY.md");
+    CHECK(edc_file_write(memfile, marker, -1, &err), "写一份 MEMORY.md (旧装还会带着它)");
 
     struct edc_config *cfg = make_config(dir);
     sds prompt = edc_context_build_system_prompt(cfg, NULL);
     CHECK(prompt && strstr(prompt, "MEMORY-CONTENT-MARKER-9f3a") == NULL, "正文不在提示词里");
-    CHECK(prompt && strstr(prompt, "MEMORY.md") != NULL, "但指了路 (路径还在)");
-    CHECK(prompt && strstr(prompt, "not** in this prompt") != NULL, "并说明要自己去读");
+    CHECK(prompt && strstr(prompt, "MEMORY.md") == NULL, "提示词里**完全不提** MEMORY.md");
+    CHECK(prompt && strstr(prompt, "HISTORY.md") == NULL, "也不提 HISTORY.md");
+    CHECK(prompt && strstr(prompt, "memory_write") != NULL, "但 session 记忆的路子还在 (memory_write)");
     sdsfree(prompt);
     edc_config_free(cfg);
     unlink(memfile);
@@ -529,7 +530,7 @@ int main(void)
     test_verify_path_at();
     test_system_prompt_cwd();
     test_system_prompt_has_no_clock();
-    test_memory_is_not_resident();
+    test_memory_file_mechanism_is_gone();
     test_project_context_discovery();
     test_task_workdir_owner();
     test_history_dir_convention();

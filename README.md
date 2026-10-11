@@ -71,7 +71,7 @@ ownership callback.
 | **Channel Actor** | `edc_channel_actor.c`, `edc_channel_adapter.c` | Routes outbound `CHANNEL_SEND` messages to the connected frontend via a registered adapter callback; delivers inbound input to the scheduler |
 | **LLM Actor** | `edc_llm_actor.c` | Sends chat-completions requests through the async HTTPS client; reports finish reasons and tool calls |
 | **Toolbox Actor** | `edc_toolbox_actor.c` | Executes tool-call chains one by one (`edc_toolbox_actor_req` linked list), echoing each result back as `TOOL_RESPONSE` |
-| **Memory Actor** | `edc_memory_actor.c` | Two compression paths: global memory compress (`/session new`, writes MEMORY.md/HISTORY.md) and per-group L1 fold (summarizes completed task turns into `group->memory`) |
+| **Memory Actor** | `edc_memory_actor.c` | Two compression paths: global memory compress (retired — the file-based `MEMORY.md` / `HISTORY.md` mechanism was removed 2026-10-10; durability now lives in the session memory entries) and per-group L1 fold (summarizes completed task turns into `group->memory`) |
 
 ### Message Types
 
@@ -273,8 +273,7 @@ Different sessions therefore operate in different directories, giving the
 session abstraction a concrete meaning.
 
 Writes the agent itself performs into model-writable directories (chat
-transcript, input history, `history.json`, crontab `jobs.json`, `MEMORY.md` /
-`HISTORY.md`) go through symlink-safe helpers (`edc_file_fopen_safe()` /
+transcript, input history, `history.json`, crontab `jobs.json`) go through symlink-safe helpers (`edc_file_fopen_safe()` /
 `edc_file_write_safe()`: `O_NOFOLLOW`, confined to the workspace) so a planted
 symlink cannot redirect them into a protected path. Commands spawned by the
 shell tool receive a **minimal environment whitelist** (`edc_shell_env.c`:
@@ -294,7 +293,7 @@ subsequently spawned commands):
 
 ### Additional Features
 
-- **Context compression**: automatic history summarization (global MEMORY.md +
+- **Context compression**: automatic history summarization (per-group folds +
   per-group L1 fold) to stay within LLM context limits
 - **Encrypted secrets**: AES-256-GCM for config secrets via mbedtls
 - **Skills system**: markdown skill definitions with YAML frontmatter augment

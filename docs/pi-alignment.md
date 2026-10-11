@@ -618,19 +618,19 @@ v5 的 `group.folded_through_completion_seq` + `task.turns_folded` → 每个 tu
 | `## Current Running Directory` / OS / workspace | ✅ 会话内常量（pi 自己也有 `<cwd>`） |
 | 权限表（sandbox 路径） | ✅ 会话配置；只在 config / 绑新 workdir 时变（那是会话事件，pi §7 的"结构性变化 ⇒ 新前缀"） |
 | bootstrap（`AGENTS.md` / `TOOLS.md` / 可选 `IDENTITY.md`） | ✅ 与 pi 的 `<project_context>` 同性质：会话事件时读一次。**`SOUL.md` / `USER.md` 已删**（见 §2.12） |
-| 全局记忆 `MEMORY.md` | ✅ **2026-10-10 已移出提示词**（裁决 ⑥ 的收尾）：正文不再常驻，身份头只留**常量**指路（"记忆在文件里，不在这个提示词里；需要早期上下文就先读 MEMORY.md，写回也写它"）|
+| 全局记忆 `MEMORY.md` | ✅ **2026-10-10 整套删除**（见 §2.13）：正文先移出提示词，随后连机制一起退休 —— 它是 agent 自己会写、且没有渐进式披露/去重/通知的文件 |
 | 技能清单 | ✅ pi `<skills>` 同款（只放索引，正文惰性读） |
 | session 记忆常量提示 | ✅ 常量（无条数、无内容） |
 
 守卫：`tests/test_session_workdir.c::test_system_prompt_has_no_clock` —— 连续构造两次逐字节相同、
 没有 `Current Time` 段、没有未替换的 `{{time}}`、全文不含 `20xx-` 形式的日期。
 （`{{skill-name}}` 是**故意**留给模型看的路径模板，不算漏替换。）
-以及 `tests/test_session_workdir.c::test_memory_is_not_resident` —— 造一份带标记的 MEMORY.md，
-断言**正文不在**提示词里、路径与"要自己读"的常量说明在。
+以及 `tests/test_session_workdir.c::test_memory_file_mechanism_is_gone` —— 造一份带标记的 MEMORY.md，
+断言提示词里**既没有正文、也不提**这两个文件名，而 `memory_write` 的路子还在。
+（**后续**：这一步之后的同一天，整个 `MEMORY.md` 机制被删除了 —— 见 §2.13。）
 
-把 MEMORY.md 移出去还顺带修掉一个语义毛病：原来它常驻（缓存在 `history[0]`）⇒ agent 本次会话
-写进去的记忆，**它自己反而读不到最新版**（要等重建）。现在"需要就读"，pi 也是这个路子
-（提示词里没有任何"agent 自己写"的文件，要知识自己 `read`）。
+把 MEMORY.md 移出提示词还顺带修掉一个语义毛病：原来它常驻（缓存在 `history[0]`）⇒ agent 本次会话
+写进去的记忆，**它自己反而读不到最新版**（要等重建）。
 
 ## §2.11 上下文文件的发现机制（2026-10-10）
 
@@ -678,4 +678,35 @@ pi 没有这一层）；工作目录就是 workspace 时那 5 个文件会被**�
 任务一并丢掉 —— 反正本仓库没有任何东西会去执行它（要周期任务，用真实现的 `crontab` 工具）。
 
 **仍然保留的**：`AGENTS.md`（行为契约）、`TOOLS.md`（工具速查）—— 它们与 pi 的 `<project_context>` 同类（人写、会话事件时读一次）。`TOOLS.md` 与 provider 的 tools 字段确有部分重复，但它是"给人看的清单 + 额外说明（设备、通道）"，暂留。
+
+## §2.13 删掉 MEMORY.md 机制（2026-10-10）
+
+**裁决**：文件式的长期记忆（`workspace/memory/MEMORY.md` + `HISTORY.md`）**整套删除**；跨 session 记忆
+"后面再设计一个更好的机制"（要求：像 session 条目那样有 id / 检索 / 更新纪律 / 通知）。
+
+**为什么它该走**（与 session 条目逐条对比）：
+
+| | `MEMORY.md`（旧） | session 条目（新） |
+|---|---|---|
+| 存放 | 一个平面文件（实测 840 行 / 116 KB ≈ 3 万 token） | 条目 + 事件表（id / title / summary / detail） |
+| 取用 | `read_file` **只能整读**（没有 offset/limit）⇒ 无渐进式披露 | `memory_search` / `memory_list` / `memory_get` |
+| 写入 | agent 直接改写整个文件（无合并/去重/校验） | `memory_write` + 策展 ops（整批校验、fail-closed） |
+| 通知 | 无 | 队尾通知（按水位补差集） |
+| 唯一独占能力 | **跨 session**（这一条以后要用新机制补回来） | session 内 |
+
+**改动面**：
+- `edc_context.c` 身份头：删掉 `MEMORY.md` / `HISTORY.md` 两条路径 + "长期记忆在那些文件里…写回 MEMORY.md"
+  两段常量说明（提示词里现在**完全不提**这两个文件）；
+- 种子工作区：删 `workspace/memory/MEMORY.md`；删 `workspace/skills/memory/`（那个 skill 实现的就是这套
+  文件记忆的 grep 检索流程）；
+- `workspace/AGENTS.md` 的 "## Memory System" 改成 "## Memory"（只讲 session 记忆的四个工具 + 明说
+  跨 session 还没做）；
+- 引用同步：`tests/test_bundled_workspace.c` 名单、`README.md`、`docs/edgeclaw.md`、`docs/edgeclaw.1`、
+  `docs/runtime-model.md`、`docs/l2-session-memory.md`（含台账 ⑯）。
+
+**守卫**：`tests/test_session_workdir.c::test_memory_file_mechanism_is_gone` —— 造一份带标记的
+`MEMORY.md`，断言提示词里**既没有正文、也不提 `MEMORY.md`/`HISTORY.md`**，而 `memory_write` 的路子还在。
+
+**用户数据**：已有的 `~/.edgeclaw/workspace/memory/MEMORY.md`（840 行）与 `HISTORY.md` **内容保留在盘上**
+（机制没了 = 没人再读写它，但那些是攒出来的知识，删不删由用户决定）。
 

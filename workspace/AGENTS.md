@@ -25,13 +25,17 @@ Skills are loaded from `<workspace>/skills/<name>/SKILL.md`. They extend your kn
 2. YAML frontmatter with `name` and `description`
 3. Markdown body with workflow steps
 
-## Memory System
+## Memory
 
-Two layers:
-- **MEMORY.md** (`/home/shiyihudie/.edgeclaw/workspace/memory/MEMORY.md`): Long-term memory. Write important facts here.
-- **HISTORY.md** (`/home/shiyihudie/.edgeclaw/workspace/memory/HISTORY.md`): Timeline memory. Session records.
+There is no long-term memory *file* any more (the old `MEMORY.md` / `HISTORY.md` mechanism was
+removed on 2026-10-10). Durable knowledge now lives in this session's **shared memory**, which every
+task and group in the session sees:
 
-When user asks you to remember something, write to MEMORY.md.
+- `memory_write` — record something worth remembering (title / summary / detail)
+- `memory_search` / `memory_list` / `memory_get` — read it back on demand
+
+New or updated entries are announced at the end of the conversation. Cross-session memory is not
+implemented yet.
 
 ## Guidelines
 
@@ -60,7 +64,7 @@ crontab(action="list")
 crontab(action="remove", job_id="<id>")
 ```
 
-Do **NOT** just write reminders to MEMORY.md — that won't trigger actual notifications.
+Do **NOT** just write reminders into a notes file — that won't trigger actual notifications.
 
 ## Device Agent
 
