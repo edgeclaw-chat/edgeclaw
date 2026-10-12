@@ -157,13 +157,12 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
 
     if (e->reason == EDC_REASON_TOOL_CALL)
     {
-        /* The summarizer has no tools (the fold request carries no definitions, see
-         * edc_llm_request.c), so a tool call in that response means the provider
-         * misbehaved. pi §3 treats it as a failure ("Summarization attempted to
-         * call a tool") rather than a tool round: refuse the summary, keep the
-         * group memory, and let the next trigger try again. Usage above still
-         * counts: the wasted call really was paid for. */
-        if (edc_task_is_memory_sink(task))
+        /* A FOLD task has no tools, so a tool call in its response means the provider
+         * misbehaved: refuse the summary, keep the group memory, let the next trigger
+         * retry. (pi §3.) A CURATION task (SESSION_MEMORY) is deliberately tool-driven
+         * and falls through to the normal tool loop
+         * below. */
+        if (task->sink == EDC_SINK_GROUP_MEMORY)
         {
             task->current_request_id = NULL;
             edc_task_mark_failed(task);
@@ -253,16 +252,20 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
 
     if (edc_task_is_memory_sink(task))
     {
-        /* A summary/curation that could not be finished keeps the old memory and says so. */
+        /* A summary/curation that could not be finished. A FOLD keeps the old group
+         * memory; a CURATION is tool-driven, so anything it already wrote through the
+         * memory tools stays (there is no batch to roll back).
+         * docs/session-memory-write-path.md). */
         const bool curate = (task->sink == EDC_SINK_SESSION_MEMORY);
-        log_error("%s: task %s did not finish cleanly (reason=%d) — discarded, nothing landed",
+        log_error("%s: task %s did not finish cleanly (reason=%d) — stopped early",
                   curate ? "L2 memo" : "L1 fold", task->task_id ? task->task_id : "(null)", (int)e->reason);
         if (e->reason == EDC_REASON_LENGTH)
-            notice = curate ? "Curation was truncated (max_tokens) — discarded, the session memory is unchanged"
+            notice = curate ? "Curation was truncated (max_tokens) — it stopped early; entries it already wrote remain"
                             : "Summary was truncated (max_tokens) — discarded, the group memory is unchanged";
         else if (e->reason == EDC_REASON_CONTEXT_EXCEEDED)
-            notice = curate ? "Curation overflowed the model window — discarded, the session memory is unchanged"
-                            : "Summarization overflowed the model window — discarded, the group memory is unchanged";
+            notice = curate
+                         ? "Curation overflowed the model window — it stopped early; entries it already wrote remain"
+                         : "Summarization overflowed the model window — discarded, the group memory is unchanged";
     }
     /* (3) the truncated overflow: `length` with an empty completion is what a full
      * window looks like on providers that do not say the word. A plain `length`

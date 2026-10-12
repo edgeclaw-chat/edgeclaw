@@ -17,6 +17,10 @@ struct edc_toolbox
     struct edc_tool *tools;
     struct edc_config *conf;
     cJSON *schemas;
+    /* The memory_* tools' schemas alone. The curation task (SINK_SESSION_MEMORY) gets
+     * this subset instead of the full set; folded in edc_toolbox_register by name.
+     */
+    cJSON *memory_schemas;
     edc_actor_t *scheduler;
     edc_actor_t *channel_actor;
 };

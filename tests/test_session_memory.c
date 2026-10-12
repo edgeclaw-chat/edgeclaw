@@ -206,6 +206,7 @@ static void test_notice(void)
     CHECK(strstr(n, "- [m1] created: 构建入口 — 唯一入口是 bazelisk") != NULL, "第一条一行");
     CHECK(strstr(n, "- [m2] created: 沙箱策略") != NULL, "第二条一行 (无摘要不拖尾巴)");
     CHECK(strstr(n, "memory_list") != NULL && strstr(n, "memory_get") != NULL, "带用法提示");
+    CHECK(strstr(n, "RECONCILE") != NULL && strstr(n, "expected_rev") != NULL, "带 reconcile/merge/create 纪律");
     sdsfree(n);
 
     /* 同一条目再更新: 只出最新那行 (kind = updated), 不是两行 */

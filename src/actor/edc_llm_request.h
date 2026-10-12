@@ -11,18 +11,21 @@ struct edc_task;
  * src/app/edc_app.c).
  *
  * Everything kernel-owned (group history / fold watermark / deps / active_turn / todo
- * throttle / config / session store) comes via sched and task; two values the kernel
- * cannot get are handed in BY PARAMETER at assembly time (no new core fields):
- *   tool_schemas -- the tool-definition array; owned by the toolbox (freed by
- *                   edc_toolbox_free), read-only here; non-NULL and sink != GROUP_MEMORY
- *                   puts it in the request body; NULL = this request carries no tools
- *                   (the fold summary call)
+ * throttle / config / session store) comes via sched and task; the tool-definition
+ * arrays and the LLM mailbox are handed in BY PARAMETER at assembly time (no new core
+ * fields). Which array a request carries is decided by the task's sink:
+ *   tool_schemas   -- the FULL tool-definition array; a normal task carries it;
+ *   memory_schemas -- only the memory_* tools; a SINK_SESSION_MEMORY (curation) task
+ *                     carries it (it must be able to search/read/update memory, and
+ *                     nothing else);
+ *   a SINK_GROUP_MEMORY (fold) task carries neither.
+ * Both arrays are read-only here and owned by the toolbox (freed by edc_toolbox_free).
  *   llm_actor    -- the LLM endpoint mailbox (owned by the assembly root)
  *
  * $VAR's "value semantics" ($$ / $LAST / $N / $NAME) are a static resolver private to
  * this file, its data source = sched->sessions (the store handle). */
 extern void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJSON *tool_schemas,
-                                 edc_actor_t *llm_actor, void *request_id);
+                                 cJSON *memory_schemas, edc_actor_t *llm_actor, void *request_id);
 
 /* ── Ports: the request assembler provides `send_llm` ────────
  *
@@ -31,10 +34,10 @@ extern void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *t
  * assembly time; every request then leaves from here -- the assembly root no longer
  * appears on a runtime path. Port signatures (edc_scheduler.h) are unchanged.
  *
- * |tool_schemas| is read-only, still owned by the toolbox; both values live for the
- * process. */
+ * |tool_schemas| / |memory_schemas| are read-only, still owned by the toolbox; all
+ * three values live for the process. */
 struct edc_scheduler; /* fwd */
 extern void edc_llm_request_bind_scheduler(struct edc_scheduler *sched, edc_actor_t *llm_actor,
-                                           cJSON *tool_schemas);
+                                           cJSON *tool_schemas, cJSON *memory_schemas);
 
 #endif

@@ -210,8 +210,8 @@ static bool edc_commands_handle_session_memo(struct edc_session_manager *sm, str
     {
         struct edc_task *t = edc_session_memory_start_manual(sched, active, (*tail ? tail : NULL));
         if (t)
-            edc_commands_reply(to, "**Session memory** — curation started (it will land as entry ops). "
-                                   "`/session memo show` when it is done.");
+            edc_commands_reply(to, "**Session memory** — curation started (it writes entries through its memory "
+                                   "tools). `/session memo show` when it is done.");
         else if (edc_scheduler_has_pending_system_task(active))
             edc_commands_reply(to, "**Session memory** — a system task is already running in this session; "
                                    "wait for it to finish.");

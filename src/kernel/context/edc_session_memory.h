@@ -153,10 +153,31 @@ extern const char *edc_session_memory_system_prompt(void);
 extern struct edc_task *edc_session_memory_start(struct edc_scheduler *sched, struct edc_session *session,
                                                  struct edc_task_group *folded_group, struct edc_task *fold_task);
 
-/* Parse + apply the ops contract (validate the whole batch before applying; see
- * docs/l2-session-memory.md §4.7). `sources` is recorded on new entries (usually a
- * source group id; may be NULL). */
-extern bool edc_session_memory_apply_ops(struct edc_session_memory *m, const char *text, const char *sources);
+/* Result of a guarded (optimistic-concurrency) mutation. */
+enum edc_memo_write_result
+{
+    EDC_MEMO_WRITE_OK = 0,
+    EDC_MEMO_WRITE_NOT_FOUND, /* no entry with that id */
+    EDC_MEMO_WRITE_CONFLICT,  /* expected_rev != the entry's current updated_seq */
+};
+
+/* Update an existing entry in place: given fields overwrite (NULL leaves the old
+ * value), and an UPDATED event is appended. Guards against lost updates: the caller
+ * passes the `expected_rev` it based the edit on (the entry's `updated_seq`, surfaced by
+ * memory_get and by a write's result); a mismatch is refused and nothing changes --
+ * never overwrite a newer edit with a stale snapshot. *out_rev (may be NULL) receives the
+ * entry's updated_seq (the new one on OK, the current one on CONFLICT).
+ */
+extern enum edc_memo_write_result edc_session_memory_update(struct edc_session_memory *m, const char *id,
+                                                            const char *title, const char *summary, const char *detail,
+                                                            uint64_t expected_rev, uint64_t *out_rev);
+
+/* Mark entries retired (tombstone -- content is kept, never deleted); each NEWLY-retired
+ * one gets a SUPERSEDED event. Retire is ID-BASED: it carries no version guard (it does
+ * not overwrite content). ATOMIC: if ANY id is unknown, nothing changes and false is
+ * returned; on success every id is retired (idempotent -- an already-retired id is a
+ * no-op, no duplicate event). */
+extern bool edc_session_memory_supersede(struct edc_session_memory *m, const char *const *ids, size_t n);
 
 /* Manual curation (`/session memo compact [focus]`): run once now, no waiting for
  * a fold -- material = every group's memory + the current entry index (+ focus).
@@ -173,10 +194,8 @@ extern sds edc_session_memory_show_text(const struct edc_session_memory *m, cons
 /* Text for `/session memo search <q>` (pure function): index rows of hits + count. */
 extern sds edc_session_memory_search_text(const struct edc_session_memory *m, const char *query);
 
-/* L2 landing: parse and apply the ops contract. Validate the WHOLE batch first,
- * then apply -- any invalid op lands nothing (old entries and the event table stay
- * put) and returns false. */
-extern bool edc_session_memory_deliver(struct edc_task *task, const char *content);
+/* L2 landing is retired: the curation task writes
+ * through the memory tools during its run, so there is no post-hoc ops landing. */
 
 /* Persistence (schema v7's `session_memory` block). */
 extern cJSON *edc_session_memory_to_json(const struct edc_session_memory *m);

@@ -158,6 +158,110 @@ int main(void)
     CHECK(g2.error != NULL && g2.result && strstr(g2.result, "m99") != NULL, "未知 id: 报错 + 说明");
     free_capture(&g2);
 
+    TEST("memory_update: 就地合并 (给的字段覆盖, 没给的保留) + UPDATED 事件");
+    struct capture u = run_tool(tb, task, "memory_update",
+                                "{\"id\":\"m1\",\"expected_rev\":1,\"summary\":\"唯一入口是 bazelisk (v2)\"}");
+    CHECK(u.error == NULL && u.result && strstr(u.result, "m1") != NULL, "更新成功");
+    const struct edc_memo_entry *e1u = edc_session_memory_entry(session->memo, "m1");
+    CHECK(e1u && e1u->summary && strcmp(e1u->summary, "唯一入口是 bazelisk (v2)") == 0, "摘要被覆盖");
+    CHECK(e1u && e1u->title && strcmp(e1u->title, "构建入口") == 0, "没给的 title 保留");
+    CHECK(session->memo->events[session->memo->event_count - 1].kind == EDC_MEMO_UPDATED, "最新事件是 UPDATED");
+    CHECK(e1u && e1u->updated_seq == session->memo->events[session->memo->event_count - 1].seq, "updated_seq 抬到新 seq");
+    uint64_t m1_rev = e1u->updated_seq;
+    free_capture(&u);
+
+    TEST("memory_update: expected_rev 必填");
+    struct capture no_rev = run_tool(tb, task, "memory_update", "{\"id\":\"m1\",\"summary\":\"x\"}");
+    CHECK(no_rev.error != NULL, "缺 expected_rev ⇒ 参数校验报错");
+    free_capture(&no_rev);
+
+    TEST("memory_update: rev 过期 ⇒ 拒绝 + 回当前内容, 一个字都不动 (乐观并发)");
+    size_t c_events = session->memo->event_count;
+    struct capture c = run_tool(tb, task, "memory_update",
+                                "{\"id\":\"m1\",\"expected_rev\":1,\"summary\":\"stale overwrite\"}");
+    CHECK(c.error != NULL, "被拒");
+    CHECK(c.result && strstr(c.result, "changed since you read it") != NULL, "说明冲突");
+    CHECK(c.result && strstr(c.result, "Current content") != NULL, "回当前内容");
+    const struct edc_memo_entry *e1c = edc_session_memory_entry(session->memo, "m1");
+    CHECK(e1c && e1c->updated_seq == m1_rev, "rev 没动");
+    CHECK(e1c && strcmp(e1c->summary, "唯一入口是 bazelisk (v2)") == 0, "没被旧快照覆盖");
+    CHECK(session->memo->event_count == c_events, "没发事件");
+    free_capture(&c);
+
+    TEST("memory_get: 返回 rev; 拿它做 expected_rev 就能更新成功");
+    struct capture mg = run_tool(tb, task, "memory_get", "{\"id\":\"m1\"}");
+    CHECK(mg.error == NULL && mg.result && strstr(mg.result, "rev: ") != NULL, "memory_get 带 rev");
+    char upd[256];
+    snprintf(upd, sizeof(upd), "{\"id\":\"m1\",\"expected_rev\":%llu,\"summary\":\"ok after re-read\"}",
+             (unsigned long long)m1_rev);
+    struct capture mg2 = run_tool(tb, task, "memory_update", upd);
+    CHECK(mg2.error == NULL && mg2.result && strstr(mg2.result, "Updated m1") != NULL, "带正确 rev 更新成功");
+    free_capture(&mg);
+    free_capture(&mg2);
+
+    TEST("memory_update: 未知 id / 空更新 都报错且不落地");
+    size_t u_events = session->memo->event_count;
+    struct capture ub = run_tool(tb, task, "memory_update", "{\"id\":\"m99\",\"expected_rev\":1,\"summary\":\"x\"}");
+    CHECK(ub.error != NULL, "未知 id 报错");
+    struct capture ue = run_tool(tb, task, "memory_update", "{\"id\":\"m1\",\"expected_rev\":1}");
+    CHECK(ue.error != NULL, "什么都没给报错");
+    CHECK(session->memo->event_count == u_events, "两条都没落地");
+    free_capture(&ub);
+    free_capture(&ue);
+
+    TEST("memory_supersede: 列表形式; 标 retired + SUPERSEDED 事件; 条目不删");
+    struct capture sp = run_tool(tb, task, "memory_supersede", "{\"ids\":[\"m2\"]}");
+    CHECK(sp.error == NULL && sp.result && strstr(sp.result, "m2") != NULL, "作废成功");
+    const struct edc_memo_entry *e2 = edc_session_memory_entry(session->memo, "m2");
+    CHECK(e2 && e2->superseded, "标记 retired");
+    CHECK(session->memo->entry_count == 2, "条目没被删");
+    CHECK(session->memo->events[session->memo->event_count - 1].kind == EDC_MEMO_SUPERSEDED, "最新事件 SUPERSEDED");
+    free_capture(&sp);
+
+    TEST("memory_supersede: 原子 —— 列表含未知 id ⇒ 整批不退休");
+    size_t s_events = session->memo->event_count;
+    struct capture sb = run_tool(tb, task, "memory_supersede", "{\"ids\":[\"m1\",\"m99\"]}");
+    CHECK(sb.error != NULL, "有未知 id ⇒ 报错");
+    CHECK(sb.result && strstr(sb.result, "m99") != NULL, "点名未知 id");
+    const struct edc_memo_entry *e1s = edc_session_memory_entry(session->memo, "m1");
+    CHECK(e1s && !e1s->superseded, "m1 没被退休 (原子)");
+    CHECK(session->memo->event_count == s_events, "没发事件");
+    free_capture(&sb);
+
+    TEST("memory_supersede: 空列表 / 已有条目重复退休 (幂等)");
+    struct capture se = run_tool(tb, task, "memory_supersede", "{\"ids\":[]}");
+    CHECK(se.error != NULL, "空列表报错");
+    free_capture(&se);
+    size_t idem_events = session->memo->event_count;
+    struct capture si = run_tool(tb, task, "memory_supersede", "{\"ids\":[\"m2\"]}");
+    CHECK(si.error == NULL, "重复退休不报错 (幂等)");
+    CHECK(session->memo->event_count == idem_events, "已 retired ⇒ 不再发事件");
+    free_capture(&si);
+
+    TEST("策展任务 (sink_group) 写条目: sources = 被折叠的组, 不是自己的系统组");
+    struct edc_task *curator = edc_task_new("300", "s1", "300", "curate", edc_channel_adapter);
+    struct edc_task_group *cg = edc_task_group_new(curator);
+    edc_session_add_group(session, cg); /* 挂上 group->session (属主) */
+    curator->sink = EDC_SINK_SESSION_MEMORY;
+    curator->sink_group = group; /* 被折叠的那个组 (id = "100") */
+    struct capture wc = run_tool(tb, curator, "memory_write", "{\"title\":\"策展写的\",\"summary\":\"s\"}");
+    CHECK(wc.error == NULL, "策展任务能写");
+    const struct edc_memo_entry *ec = edc_session_memory_entry(session->memo, "m3");
+    CHECK(ec && ec->sources && strcmp(ec->sources, "100") == 0, "sources = 被折叠组 id");
+    free_capture(&wc);
+    edc_session_remove_group(session, cg); /* 连带释放 task */
+    edc_task_group_free(cg);
+
+    TEST("memory_write: 新建时给出相关旧条目候选 (不拦截, 照样建)");
+    size_t n_cnt = session->memo->entry_count;
+    struct capture nudge = run_tool(tb, task, "memory_write",
+                                    "{\"title\":\"构建入口\",\"summary\":\"CI 与本地都用 bazelisk\"}");
+    CHECK(nudge.error == NULL, "照样建成功 (不拦截)");
+    CHECK(session->memo->entry_count == n_cnt + 1, "条目 +1");
+    CHECK(nudge.result && strstr(nudge.result, "look related") != NULL, "结果里带相关提示");
+    CHECK(nudge.result && strstr(nudge.result, "[m1]") != NULL, "点名了相关的 m1");
+    free_capture(&nudge);
+
     TEST("读工具是只读的: 事件表与水位纹丝不动");
     size_t events_before = session->memo->event_count;
     uint64_t seq_before = session->memo->next_seq;

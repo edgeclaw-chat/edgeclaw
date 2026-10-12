@@ -341,23 +341,36 @@ sds edc_session_memory_create_entry(struct edc_session_memory *m, const char *ti
 static const char kCurateSystemPrompt[] =
     "You are the session-memory curator for the EdgeClaw agent.\n"
     "\n"
-    "You receive (a) the memory of ONE group that was just folded, and (b) the index of the\n"
-    "session's existing memory entries. Your job: turn the material into durable entries that\n"
-    "other tasks in this session will need later, and keep the existing entries consistent.\n"
+    "You are given the memory of ONE group that was just folded (appended at the end of\n"
+    "your input) and the index of the session's existing memory entries. Your job has TWO\n"
+    "parts, and both are mandatory:\n"
+    "\n"
+    "1) RECONCILE the existing entries against the group memory. The group memory is the\n"
+    "   NEWER truth. Go through the index, find the entries whose subject the material\n"
+    "   covers, read them (memory_get), and check whether what they say still holds. If an\n"
+    "   entry's fact has changed, either UPDATE it to the correct content or, if it is\n"
+    "   simply obsolete, RETIRE it. An entry that no longer matches the material must not\n"
+    "   stay as it is.\n"
+    "2) FOLD IN the material's durable knowledge: update a related entry, or create a new\n"
+    "   one when nothing related exists.\n"
     "\n"
     "Rules:\n"
-    "- Record knowledge, not activity: decisions, constraints, gotchas, external facts, exact\n"
-    "  paths / commands / error text. Never progress logs, todos, or transient conclusions.\n"
-    "- Prefer `update` on an existing entry (by its id) over creating a near-duplicate.\n"
-    "- `supersede` an entry the material shows to be obsolete or wrong.\n"
+    "- SEARCH FIRST: use memory_search / memory_list to find related entries, and memory_get\n"
+    "  to read one in full before changing it.\n"
+    "- Prefer UPDATE over creating a near-duplicate. Before memory_update, pass the `rev` you\n"
+    "  read as `expected_rev`; if the tool says the entry changed, re-read and redo the merge.\n"
+    "- RETIRE entries the material shows to be obsolete or wrong: memory_supersede takes a\n"
+    "  list of ids and needs no rev.\n"
+    "- memory_write a new entry only when nothing related exists, or when the knowledge\n"
+    "  genuinely deserves its own entry.\n"
+    "- Record knowledge, not activity: decisions, constraints, gotchas, external facts,\n"
+    "  exact paths / commands / error text. Never progress logs, todos or transient\n"
+    "  conclusions.\n"
     "- Keep entries small: title <= 80 chars, summary <= 240 chars, detail holds the rest.\n"
-    "- Judgment, not transcribing: merge what belongs together, drop what does not matter.\n"
+    "- You have ONLY the memory tools. Do not try to read files or run commands.\n"
     "\n"
-    "Output ONLY one JSON object, no prose and no code fences:\n"
-    "{\"ops\":[{\"op\":\"create\",\"title\":\"...\",\"summary\":\"...\",\"detail\":\"...\"},\n"
-    "         {\"op\":\"update\",\"id\":\"m7\",\"title\":\"...\",\"summary\":\"...\",\"detail\":\"...\"},\n"
-    "         {\"op\":\"supersede\",\"id\":\"m9\"}]}\n"
-    "Use {\"ops\":[]} when the material holds nothing worth recording.\n";
+    "If the material changes nothing, say so and change nothing. When you are done, reply\n"
+    "with a one-line summary of what you changed.\n";
 
 const char *edc_session_memory_system_prompt(void)
 {
@@ -368,7 +381,7 @@ const char *edc_session_memory_system_prompt(void)
  *
  * Group memory is NOT in it -- the automatic path's L2 and the fold are joined by a
  * JOIN edge, so the fold's output (the just-landed group memory) is auto-injected by
- * the request assembler as the previous assistant message (see edc_llm_request.c).
+ * the request assembler into this same user message (see edc_llm_request.c).
  * That makes the material exactly "what the fold really wrote".
  * all_groups = true is manual curation (/session memo compact): it has no such edge,
  * so it gathers EVERY group's memory into the prompt itself. */
@@ -396,7 +409,8 @@ static sds build_curate_prompt(struct edc_session *session, bool all_groups, con
     {
         out = sdscat(out, "## Group memory to curate\n"
                           "It is **appended at the end of this message** (the fold task's output).\n"
-                          "Read it, then apply the operations below to this session's memory.\n");
+                          "It is the NEWER truth: reconcile the existing entries against it, then fold in\n"
+                          "what is new (use the memory tools; search first).\n");
     }
 
     if (focus && *focus)
@@ -405,15 +419,19 @@ static sds build_curate_prompt(struct edc_session *session, bool all_groups, con
 
     const struct edc_session_memory *m = session ? session->memo : NULL;
     size_t total = 0;
-    sds index = edc_session_memory_index_lines(m, 0, 50, &total);
+    /* The whole index (the entry cap bounds it), so the curator can judge relatedness
+     * rather than guess from a truncated list. */
+    sds index = edc_session_memory_index_lines(m, 0, EDC_SESSION_MEMORY_MAX_ENTRIES + 1, &total);
     if (sdslen(index))
         out = sdscatsds(out, index);
     else
         out = sdscat(out, "(none yet)");
-    if (total > 50)
-        out = sdscatprintf(out, "\n(… %zu more; this is the first 50)", total - 50);
     sdsfree(index);
-    out = sdscat(out, "\n\nNow return the ops JSON.\n");
+    out = sdscat(out, "\n\nNow use the memory tools on the material above:\n"
+                      "1) RECONCILE -- find the existing entries it covers (memory_search / memory_list),\n"
+                      "   read each (memory_get), and update or retire any whose facts it has changed;\n"
+                      "2) FOLD IN -- update a related entry, or memory_write a new one when nothing\n"
+                      "   related exists.\n");
     return out;
 }
 
@@ -447,9 +465,9 @@ struct edc_task *edc_session_memory_start(struct edc_scheduler *sched, struct ed
      *   1) failure/cancel cascade automatically: L1 ERROR => L2 ERROR; L1 cancelled
      *      => L2 cancelled (SEQUENCE would just drop the edge and let L2 run on stale
      *      memory for nothing);
-     *   2) the material comes along: JOIN's injection places L1's output (the
-     *      just-landed group memory) as the previous assistant message in L2's
-     *      request, so the memory need not be copied into the prompt when folding.
+     *   2) the material comes along: JOIN's injection splices L1's output (the
+     *      just-landed group memory) into L2's own input message, so the memory need
+     *      not be copied into the prompt when folding.
      * Members additionally hang a SEQUENCE on L2 (below): they wait for both. */
     if (fold_task)
         edc_task_add_dependency(task, fold_task, TASK_DEP_JOIN);
@@ -565,157 +583,74 @@ sds edc_session_memory_search_text(const struct edc_session_memory *m, const cha
     return out;
 }
 
-/* ── ops contract: validate the whole batch, then apply ────── */
+/* ── In-place mutation: update / supersede ──────────────────
+ * The two write primitives behind the memory_update / memory_supersede tools (and
+ * behind the curation task, which uses those tools directly):
+ * Both append an event, so other tasks see the
+ * change on their next request; nothing is ever deleted (supersede is a tombstone). */
 
-static const char *op_str(const cJSON *op, const char *key)
+enum edc_memo_write_result edc_session_memory_update(struct edc_session_memory *m, const char *id, const char *title,
+                                                     const char *summary, const char *detail, uint64_t expected_rev,
+                                                     uint64_t *out_rev)
 {
-    const cJSON *v = cJSON_GetObjectItemCaseSensitive(op, key);
-    return cJSON_IsString(v) ? v->valuestring : NULL;
+    if (out_rev)
+        *out_rev = 0;
+    struct edc_memo_entry *e = edc_session_memory_entry(m, id);
+    if (!e)
+        return EDC_MEMO_WRITE_NOT_FOUND;
+    /* Optimistic concurrency: refuse to overwrite content the caller did not read.
+     * expected_rev is required and always a real rev (>= 1), so it can never match a
+     * sentinel. Nothing changes on conflict. */
+    if (expected_rev != e->updated_seq)
+    {
+        if (out_rev)
+            *out_rev = e->updated_seq;
+        return EDC_MEMO_WRITE_CONFLICT;
+    }
+    /* Given fields overwrite; missing ones stay. */
+    if (title)
+    {
+        free(e->title);
+        e->title = strdup(title);
+    }
+    if (summary)
+    {
+        free(e->summary);
+        e->summary = strdup(summary);
+    }
+    if (detail)
+    {
+        if (e->detail)
+            sdsfree(e->detail);
+        e->detail = sdsnew(detail);
+    }
+    uint64_t seq = edc_session_memory_add_event(m, id, EDC_MEMO_UPDATED, e->title, e->summary);
+    e->updated_seq = seq;
+    if (out_rev)
+        *out_rev = seq;
+    return EDC_MEMO_WRITE_OK;
 }
 
-bool edc_session_memory_apply_ops(struct edc_session_memory *m, const char *text, const char *sources)
+bool edc_session_memory_supersede(struct edc_session_memory *m, const char *const *ids, size_t n)
 {
-    if (!m || !text || !*text)
+    if (!m || !ids || n == 0)
         return false;
-
-    cJSON *root = cJSON_Parse(text);
-    if (!root)
-        return false;
-    cJSON *ops = cJSON_GetObjectItemCaseSensitive(root, "ops");
-    bool ok = cJSON_IsArray(ops);
-    size_t creates = 0;
-
-    /* Pass 1: validate the whole batch (any invalid op => nothing lands). */
-    if (ok)
+    /* Atomic: every id must resolve before anything changes. */
+    for (size_t i = 0; i < n; i++)
     {
-        const cJSON *op = NULL;
-        cJSON_ArrayForEach(op, ops)
-        {
-            const char *kind = op_str(op, "op");
-            if (!kind)
-                ok = false;
-            else if (strcmp(kind, "create") == 0)
-            {
-                const char *title = op_str(op, "title");
-                if (!title || !*title)
-                    ok = false;
-                creates++;
-            }
-            else if (strcmp(kind, "update") == 0 || strcmp(kind, "supersede") == 0)
-            {
-                const char *id = op_str(op, "id");
-                if (!id || !*id || !edc_session_memory_entry(m, id))
-                    ok = false;
-            }
-            else
-            {
-                ok = false;
-            }
-            if (!ok)
-                break;
-        }
+        if (!ids[i] || !edc_session_memory_entry(m, ids[i]))
+            return false;
     }
-    if (ok && m->entry_count + creates > EDC_SESSION_MEMORY_MAX_ENTRIES)
+    for (size_t i = 0; i < n; i++)
     {
-        log_error("L2 memo: batch would grow past %d entries — refused", EDC_SESSION_MEMORY_MAX_ENTRIES);
-        ok = false;
+        struct edc_memo_entry *e = edc_session_memory_entry(m, ids[i]);
+        if (e->superseded)
+            continue; /* idempotent: already retired, no duplicate event */
+        e->superseded = true;
+        uint64_t seq = edc_session_memory_add_event(m, ids[i], EDC_MEMO_SUPERSEDED, e->title, e->summary);
+        e->updated_seq = seq;
     }
-    if (!ok)
-    {
-        log_error("L2 memo: invalid ops — nothing landed (entries and events untouched)");
-        cJSON_Delete(root);
-        return false;
-    }
-
-    /* Pass 2: apply. */
-    const cJSON *op = NULL;
-    cJSON_ArrayForEach(op, ops)
-    {
-        const char *kind = op_str(op, "op");
-        if (strcmp(kind, "create") == 0)
-        {
-            const char *title = op_str(op, "title");
-            const char *summary = op_str(op, "summary");
-            const char *detail = op_str(op, "detail");
-            sds id = edc_session_memory_create_entry(m, title, summary, detail, NULL);
-            if (!id)
-                continue;
-            struct edc_memo_entry *e = edc_session_memory_entry(m, id);
-            uint64_t seq = edc_session_memory_add_event(m, id, EDC_MEMO_CREATED, title, summary);
-            if (e)
-            {
-                e->created_seq = seq;
-                e->updated_seq = seq;
-                if (sources)
-                    e->sources = strdup(sources);
-            }
-            sdsfree(id);
-        }
-        else if (strcmp(kind, "update") == 0)
-        {
-            const char *id = op_str(op, "id");
-            struct edc_memo_entry *e = edc_session_memory_entry(m, id);
-            const char *title = op_str(op, "title");
-            const char *summary = op_str(op, "summary");
-            const char *detail = op_str(op, "detail");
-            /* Overwrite only the GIVEN fields (missing ones stay). */
-            if (title)
-            {
-                free(e->title);
-                e->title = strdup(title);
-            }
-            if (summary)
-            {
-                free(e->summary);
-                e->summary = strdup(summary);
-            }
-            if (detail)
-            {
-                if (e->detail)
-                    sdsfree(e->detail);
-                e->detail = sdsnew(detail);
-            }
-            uint64_t seq = edc_session_memory_add_event(m, id, EDC_MEMO_UPDATED, e->title, e->summary);
-            e->updated_seq = seq;
-        }
-        else /* supersede */
-        {
-            const char *id = op_str(op, "id");
-            struct edc_memo_entry *e = edc_session_memory_entry(m, id);
-            e->superseded = true;
-            uint64_t seq = edc_session_memory_add_event(m, id, EDC_MEMO_SUPERSEDED, e->title, e->summary);
-            e->updated_seq = seq;
-        }
-    }
-    cJSON_Delete(root);
     return true;
-}
-
-bool edc_session_memory_deliver(struct edc_task *task, const char *content)
-{
-    struct edc_session *session = (task && task->group) ? task->group->session : NULL;
-    if (!session || !session->memo)
-    {
-        log_error("L2 memo: no session memory to land into — nothing written");
-        return false;
-    }
-    if (!content || !*content)
-    {
-        log_error("L2 memo: task %s returned nothing — nothing landed", task->task_id ? task->task_id : "(null)");
-        return false;
-    }
-    size_t entries_before = session->memo->entry_count, events_before = session->memo->event_count;
-    bool ok = edc_session_memory_apply_ops(session->memo, content,
-                                           (task->sink_group && task->sink_group->group_id)
-                                               ? task->sink_group->group_id
-                                               : NULL);
-    if (ok)
-        log_info("L2 memo landed: task=%s entries %zu->%zu, events %zu->%zu", task->task_id ? task->task_id : "(null)",
-                 entries_before, session->memo->entry_count, events_before, session->memo->event_count);
-    else
-        log_error("L2 memo: task %s produced %zu bytes that did not parse as ops — nothing landed",
-                  task->task_id ? task->task_id : "(null)", strlen(content));
-    return ok;
 }
 
 /* ── Tail notice ───────────────────────────────────────────── */
@@ -801,6 +736,14 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
                            npick - shown);
     else
         out = sdscat(out, "\n（memory_list / memory_search / memory_get 可查完整内容）");
+    /* Ride the reconcile/merge/create discipline along with every notice (same rule as the
+     * static system-prompt hint) -- the notice is exactly the moment memory is in front of
+     * the model, so it must not default to appending. */
+    out = sdscat(out,
+                 "\n\nWhen you act on memory, do NOT just append: RECONCILE first (memory_search / memory_get; "
+                 "memory_update an entry that is now wrong, memory_supersede one that is obsolete), then MERGE "
+                 "into a related entry; memory_write only when nothing related exists. memory_update needs the "
+                 "entry's `rev` as expected_rev.");
 
     free(picked);
     /* The watermark advances to the HEADER: the "newest cap" window guarantees the

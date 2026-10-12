@@ -14,6 +14,7 @@
 #include "log.h"
 #include "sds.h"
 #include "uthash.h"
+#include <string.h>
 
 static void edc_toolbox_emit_tool_message_internal(struct edc_toolbox_call_ctx *ctx, const char *header,
                                                    const char *content, edc_render_pref_t render_pref)
@@ -90,6 +91,7 @@ struct edc_toolbox *edc_toolbox_new(struct edc_config *conf, edc_actor_t *schedu
     struct edc_toolbox *tb = g_new0(struct edc_toolbox, 1);
     tb->conf = conf;
     tb->schemas = cJSON_CreateArray();
+    tb->memory_schemas = cJSON_CreateArray();
     tb->scheduler = scheduler;
     tb->channel_actor = channel_actor;
 
@@ -112,6 +114,8 @@ void edc_toolbox_free(struct edc_toolbox *tb)
     }
     if (tb->schemas)
         cJSON_Delete(tb->schemas);
+    if (tb->memory_schemas)
+        cJSON_Delete(tb->memory_schemas);
     free(tb);
 }
 
@@ -159,6 +163,10 @@ void edc_toolbox_register(struct edc_toolbox *tb, struct edc_tool *tool)
 {
     HASH_ADD_STR(tb->tools, name, tool);
     cJSON_AddItemToArray(tb->schemas, edc_tool_to_schema(tool));
+    /* The memory_* tools are also collected separately: the curation task gets this
+     * subset (and only this) instead of the full set. */
+    if (tb->memory_schemas && strncmp(tool->name, "memory_", 7) == 0)
+        cJSON_AddItemToArray(tb->memory_schemas, edc_tool_to_schema(tool));
 }
 
 void edc_toolbox_register_defaults(struct edc_toolbox *tb)

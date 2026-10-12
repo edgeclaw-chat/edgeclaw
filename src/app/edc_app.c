@@ -150,7 +150,8 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
     /* These two ports' implementations need the toolbox (tool definitions / the
      * request chain), so this wiring comes after it. */
     edc_toolbox_actor_bind_scheduler(app->toolbox_actor, app->scheduler);
-    edc_llm_request_bind_scheduler(app->scheduler, app->llm_actor, app->toolbox ? app->toolbox->schemas : NULL);
+    edc_llm_request_bind_scheduler(app->scheduler, app->llm_actor, app->toolbox ? app->toolbox->schemas : NULL,
+                                   app->toolbox ? app->toolbox->memory_schemas : NULL);
 
     edc_actor_runner_start(app->runner);
 

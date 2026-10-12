@@ -1069,7 +1069,11 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
         }
         else if (task->sink == EDC_SINK_SESSION_MEMORY)
         {
-            edc_session_memory_deliver(task, res->notice);
+            /* The curator writes through the memory tools DURING its run (see
+             * docs/session-memory-write-path.md); there is no post-hoc landing step.
+             * Its final text is just a wrap-up and must not be sent to the user. */
+            log_info("L2 memo done: task=%s (writes already landed via the memory tools)",
+                     task->task_id ? task->task_id : "(null)");
         }
         else if (sched->send_reply)
             sched->send_reply(sched, task, res->notice, EDC_CHANNEL_MESSAGE_RESP_TYPE, req_id);

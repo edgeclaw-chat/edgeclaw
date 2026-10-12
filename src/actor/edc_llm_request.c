@@ -127,7 +127,7 @@ static size_t edc_llm_history_safe_start(cJSON *history, size_t start, size_t lo
 }
 
 void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJSON *tool_schemas,
-                          edc_actor_t *llm_actor, void *request_id)
+                          cJSON *memory_schemas, edc_actor_t *llm_actor, void *request_id)
 {
     if (!sched || !task || !llm_actor)
         return;
@@ -283,12 +283,16 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         task->has_deferred_vars = 0;
     }
 
-    /* A sink = GROUP_MEMORY system task (fold) wants ONE clean summary call: its
-     * "mirror" is the system group head (the fold instruction) + its own turn (the fold
-     * prompt). So it gets no tool definitions -- the summarizer has no tools and must not
-     * be dragged into a tool loop (the old implementation sent an empty tools field; the
-     * only reason for this difference is keeping that request byte-comparable). */
-    cJSON *tools = (!is_memory_sink) ? tool_schemas : NULL;
+    /* Which tool definitions this request carries:
+     *   - a normal task            -> the full set;
+     *   - SINK_GROUP_MEMORY (fold) -> none (a clean one-shot summary call);
+     *   - SINK_SESSION_MEMORY      -> only the memory tools (the curator searches /
+     *     reads / updates memory and must not be dragged into anything else). */
+    cJSON *tools = NULL;
+    if (task->sink == EDC_SINK_SESSION_MEMORY)
+        tools = memory_schemas;
+    else if (!is_memory_sink)
+        tools = tool_schemas;
     struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, tools,
                                                           task->active_turn ? &task->active_turn->messages : NULL);
     /* The summary's output budget (a): paired with the corpus cap
@@ -365,18 +369,21 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
  * runtime only). */
 static edc_actor_t *g_llm_actor = NULL;
 static cJSON *g_tool_schemas = NULL;
+static cJSON *g_memory_schemas = NULL;
 
 static void edc_llm_request_cb_send_llm(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
 {
-    edc_llm_request_send(sched, task, g_tool_schemas, g_llm_actor, request_id);
+    edc_llm_request_send(sched, task, g_tool_schemas, g_memory_schemas, g_llm_actor, request_id);
 }
 
-void edc_llm_request_bind_scheduler(struct edc_scheduler *sched, edc_actor_t *llm_actor, cJSON *tool_schemas)
+void edc_llm_request_bind_scheduler(struct edc_scheduler *sched, edc_actor_t *llm_actor, cJSON *tool_schemas,
+                                    cJSON *memory_schemas)
 {
     if (!sched)
         return;
 
     g_llm_actor = llm_actor;
     g_tool_schemas = tool_schemas;
+    g_memory_schemas = memory_schemas;
     sched->send_llm = edc_llm_request_cb_send_llm;
 }
