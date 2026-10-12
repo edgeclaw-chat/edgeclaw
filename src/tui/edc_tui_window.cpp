@@ -9,6 +9,7 @@
 #include "edc_scroll_view.hpp"
 #include "edc_style.hpp"
 #include "edc_task_widget.hpp"
+#include "edc_status_bar_view.hpp"
 #include "edc_todo_widget.hpp"
 #include "ftxui/component/component.hpp"
 #include "ftxui/component/component_options.hpp"
@@ -193,28 +194,6 @@ std::string UnescapeHistoryLine(const std::string &line)
     return out;
 }
 
-// The only hint the footer shows: instead of spelling out every key binding in
-// the status line, point users at the slash command that lists them. Placed at
-// the right end of the footer, after the model name.
-constexpr char kFooterHelp[] = "/help";
-
-// Replace a leading $HOME with "~" so a deep directory stays readable in the
-// one-line footer. Falls back to the raw path when HOME is unset or the path
-// is not under it.
-std::string ShortenHome(const char *path)
-{
-    if (!path || !*path)
-        return "";
-    const char *home = std::getenv("HOME");
-    if (home && *home)
-    {
-        const size_t n = std::strlen(home);
-        if (std::strncmp(path, home, n) == 0 && (path[n] == '/' || path[n] == '\0'))
-            return std::string("~") + (path + n);
-    }
-    return path;
-}
-
 } // namespace
 
 TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminalInfo> terminal)
@@ -228,6 +207,11 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     task_widget_ = std::make_shared<TaskWidget>();
     todo_widget_ = std::make_shared<TodoWidget>();
     working_indicator_ = std::make_shared<ui::WorkingIndicatorView>();
+    // The status row reads the session model + terminal width; the sandbox state
+    // and the sidebar width are pulled per frame (both change at runtime).
+    status_bar_ = std::make_shared<ui::StatusBarView>(session_model_, terminal_,
+                                                      [this] { return app_ && app_->SandboxEnabled(); },
+                                                      [this] { return sidebar_width_; });
 
     const auto &pal = style::palette();
     prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(pal.prompt) | ::ftxui::bold;
@@ -269,7 +253,7 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     connect_dialog_ = std::make_shared<ui::ConnectDialog>([this](const port::ConnectConfig &cfg) -> bool {
         if (!app_->SetLlmConfig(cfg))
             return false;
-        model_ = cfg.model; // refresh the footer's model label
+        status_bar_->SetModel(cfg.model); // refresh the footer's model label
         if (screen_)
             screen_->RequestAnimationFrame();
         return true;
@@ -296,9 +280,13 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     EnableBracketedPaste();
     bracketed_paste_on_ = true;
 
-    // Read the model once for the footer (the app has just loaded its
-    // config); the footer itself is built per frame so it can fit the pane.
-    app_->ConfigModel(&model_);
+    // Read the model once for the footer (the app has just loaded its config);
+    // the footer itself is rebuilt per frame so it can fit the pane.
+    {
+        std::string model;
+        if (app_->ConfigModel(&model))
+            status_bar_->SetModel(model);
+    }
 
     // The transcript store owns the chat-log file I/O (path, append, replay); it
     // needs the app port for the workspace path and the symlink-safe writes.
@@ -660,7 +648,7 @@ void TUIWindow::TickAnimations()
     }
     else
     {
-        children.push_back(RenderFooter());
+        children.push_back(status_bar_->Render());
     }
 
     // A blank line under the status row so its text does not sit flush against
@@ -670,55 +658,6 @@ void TUIWindow::TickAnimations()
     children.push_back(::ftxui::text(""));
 
     return ::ftxui::vbox(std::move(children));
-}
-
-::ftxui::Element TUIWindow::RenderFooter() const
-{
-    const auto &pal = style::palette();
-
-    char cwd_buf[4096];
-    /* The active session's bound working directory (what the model is told via
-     * {{cwd}} and where tools run), cached from the last applied snapshot so the
-     * footer never reads the store; fall back to the process launch directory
-     * when the session is unbound, or before the first snapshot lands. */
-    const char *dir_src = !session_model_->workdir().empty()
-                              ? session_model_->workdir().c_str()
-                              : (::getcwd(cwd_buf, sizeof(cwd_buf)) ? cwd_buf : nullptr);
-    const std::string dir = dir_src ? ShortenHome(dir_src) : std::string();
-    const std::string left = " " + dir;
-
-    // Columns available to the footer: the chat pane, i.e. the terminal minus
-    // the sidebar and the two-cell split separator. The footer never uses more
-    // than this, so its right-aligned model/"help" stop at the input's right
-    // edge instead of running under the sidebar. The width comes from the
-    // injected terminal port (the real tty by default, a fixed one in tests).
-    const int term_w = terminal_->width();
-    const int pane_w = term_w - sidebar_width_ - 2;
-
-    // Right end: the model in use, the sandbox state and the "/help" pointer,
-    // joined by middle dots so they read as one compact unit -- model first,
-    // then the sandbox state, then "/help". Flush to the pane's right edge with
-    // the filler; when the pane is narrow drop fields from the middle outward:
-    // first the model, then the sandbox state, leaving "/help" alone.
-    const int budget = pane_w - ::ftxui::string_width(left) - 1;
-    const std::string sandbox = std::string("sandbox:") + (app_->SandboxEnabled() ? "on" : "off");
-
-    std::string right = kFooterHelp;
-    const std::string sandbox_help = sandbox + " · " + kFooterHelp;
-    if (::ftxui::string_width(sandbox_help) <= budget)
-        right = sandbox_help;
-    if (!model_.empty())
-    {
-        const std::string full = model_ + " · " + sandbox + " · " + kFooterHelp;
-        if (::ftxui::string_width(full) <= budget)
-            right = full;
-    }
-
-    return ::ftxui::hbox({
-        ::ftxui::text(left) | ::ftxui::color(pal.text_dim),
-        ::ftxui::filler(),
-        ::ftxui::text(right + " ") | ::ftxui::color(pal.text_dim),
-    });
 }
 
 ::ftxui::Element TUIWindow::OnRender()

@@ -699,6 +699,21 @@ cc_test(
     }),
 )
 cc_test(
+    name = "test_status_bar_view",
+    srcs = ["test_status_bar_view.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
     name = "test_domain_policies",
     srcs = ["test_domain_policies.cpp"],
     deps = [

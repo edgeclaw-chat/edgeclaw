@@ -20,6 +20,7 @@ namespace edc
 namespace ui
 {
 class SidebarView;
+class StatusBarView;
 } // namespace ui
 
 class ChatWidget;
@@ -173,9 +174,6 @@ class TUIWindow : public ::ftxui::ComponentBase,
     // that session's messages re-derived, so the log always belongs to the
     // The left pane: chat log + input + footer/spinner.
     ::ftxui::Element RenderMain();
-    // The working directory on the left; the model, sandbox state and "/help"
-    // right-aligned within the chat pane's width (never into the sidebar).
-    ::ftxui::Element RenderFooter() const;
     // Put the selection on the clipboard and raise the chip. Runs on the frame
     // after the drag was released, once FTXUI's selection is complete.
     void CopySelectionToClipboard();
@@ -211,9 +209,6 @@ class TUIWindow : public ::ftxui::ComponentBase,
     std::shared_ptr<edc::EdcInput> input_;
     ::ftxui::Element prompt_;
     std::string input_text_;
-    // Read once from the app's config; shown at the right end of the footer
-    // (dropped only when the pane is too narrow).
-    std::string model_;
 
     // Routes keyboard focus between the chat log and the input (1 = input,
     // focused from the start). Declared before |container_| because the
@@ -277,6 +272,9 @@ class TUIWindow : public ::ftxui::ComponentBase,
     // owns its own clock/timing (Restart() on the busy transition); the window
     // only paces its repaints (see TickAnimations).
     std::shared_ptr<ui::WorkingIndicatorView> working_indicator_;
+    // The status row (footer): working directory on the left, model/sandbox//help
+    // on the right. A component reading the session model + terminal port.
+    std::shared_ptr<ui::StatusBarView> status_bar_;
     // When the spinner's next repaint is due (see TickAnimations).
     std::chrono::steady_clock::time_point last_spinner_frame_;
     // Whether the sidebar is currently breathing (a processing task's dot or an
