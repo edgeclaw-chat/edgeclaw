@@ -1,16 +1,14 @@
 /* ─────────────────────────────────────────────────────────────────────────
- * executor 的 I/O 词表
+ * executor's I/O vocabulary
  *
- * executor 解释"LLM 回了什么 / 工具回了什么 / 工具要发什么"所需的全部类型。原先
- * 它们散在 llm_actor.h / toolbox.h / toolbox_actor.h 里 —— 那三个头属于上层
- * （actors / toolbox），而 executor 是最底下的解释者，于是 executor → 上层 成了
- * 一条反向边：单包构建时看不出来（整个 src/app 是一个 cc_library），一旦按概念
- * 分包就成环。
+ * All the types the executor needs to interpret "what the LLM returned / what a
+ * tool returned / what a tool will send". They used to live in llm_actor.h /
+ * toolbox.h / toolbox_actor.h -- upper-layer headers (actors / toolbox) -- while
+ * the executor is the lowest interpreter, so executor -> upper layer was a reverse
+ * edge (invisible in a single-package build, a cycle once split by concept).
  *
- * 把定义搬到这里、上层头反过来引它，环就消掉。**纯定义搬迁，零行为变化。**
- * 依据：文档 §2.5「工具协议属于 core 语义」—— 判据 5 的口径本来就把工具协议
- * （`edc_tool_call` / `EDC_EVENT_TOOL_*` / `dispatch_tools` / `send_tool_message`）
- * 排除在核外词表之外。scheduler 依旧看不到 provider payload（判据 3）。
+ * Moving the definitions here and having the upper headers include this removes
+ * the cycle. Pure definition move, zero behaviour change.
  * ───────────────────────────────────────────────────────────────────────── */
 #ifndef __EDC_EXEC_IO_H__
 #define __EDC_EXEC_IO_H__
@@ -21,9 +19,9 @@
 #include "utarray.h"
 #include <cJSON.h>
 
-struct edc_task; /* fwd: 只在 edc_toolbox_actor_req 里以指针出现 */
+struct edc_task; /* fwd: appears only as a pointer in edc_toolbox_actor_req */
 
-/* ══ LLM 响应词表 ═════════════════════════════════════════════════════════ */
+/* ══ LLM response vocabulary ══════════════════════════════════════════════ */
 
 typedef enum
 {
@@ -96,7 +94,7 @@ struct edc_llm_actor_resp
     struct edc_llm_usage usage; /* zeroed when the provider omits `usage` */
 };
 
-/* ══ 工具侧词表 ═══════════════════════════════════════════════════════════ */
+/* ══ Tool-side vocabulary ═════════════════════════════════════════════════ */
 
 struct edc_toolbox_actor_req
 {
@@ -104,18 +102,19 @@ struct edc_toolbox_actor_req
     cJSON *args;
     sds call_id;
     edc_channel_type call_from_type;
-    struct edc_task *task; /* 发起本次工具调用的 task (app 注入；NULL = 非 task 路径) */
+    struct edc_task *task; /* the task that issued this tool call (injected by app; NULL = non-task path) */
     sds result;
     struct edc_toolbox_actor_req *next;
 };
 
-/* 工具结果先发给 scheduler actor，由 scheduler 在自身线程上做 active-task 闸门判定，
- * 通过后才由 app 转发为 TOOL 类型 channel 消息。该结构是 toolbox → scheduler 的载荷。 */
+/* A tool result goes to the scheduler actor first: the scheduler runs the
+ * active-task gate on its own thread, and only then does app forward it as a TOOL
+ * channel message. This struct is the toolbox -> scheduler payload. */
 struct edc_toolbox_emit_msg
 {
     sds header;
     sds content;
-    edc_render_pref_t render_pref; /* 发送方声明的渲染偏好 (默认/PLAIN = 纯文本) */
+    edc_render_pref_t render_pref; /* render preference declared by the sender (default/PLAIN = plain text) */
 };
 
 #endif /* __EDC_EXEC_IO_H__ */

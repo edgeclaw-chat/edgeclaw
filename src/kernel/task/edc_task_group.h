@@ -49,9 +49,10 @@ struct edc_task_group
      * so it is ignored until the member replies again. */
     uint32_t fold_epoch;
 
-    /* (c) 连续失败计数: 到 EDC_FOLD_MAX_FAILURES 就停自动折叠, 免得"失败 → 组仍该折
-     * → 原样重试"变成永动机。落地成功 / 手动折叠 / 组里又有了已提交内容时清零。
-     * 只在内存, 不落盘 (重启视为新情况)。 */
+    /* Consecutive failure count: at EDC_FOLD_MAX_FAILURES, automatic folding stops,
+     * so "fail -> group still due -> retry unchanged" cannot become a perpetual
+     * motion machine. Reset on successful landing / manual fold / new committed
+     * content. In-memory only, not persisted (a restart counts as new). */
     int fold_failures;
 
     struct edc_task_group *prev, *next; /* session's group list */
@@ -76,11 +77,12 @@ extern void edc_task_group_history_add_turn(struct edc_task_group *group, struct
  * the fold landing and by load, so the array can never drift from the turns. */
 extern void edc_task_group_rebuild_history(struct edc_task_group *group);
 
-/* 组内容序 —— 折叠选料与 group history 共用的**唯一**顺序 (两者必须一致, 否则"折掉的
- * 前缀"就不是"请求里读到的那段前缀")。成员里 sink=GROUP_MEMORY 的跳过; 已完成的按
- * completion_seq 升序; 没完成的排在最后 (组内插入序) —— 未完成任务的 completion_seq 是
- * 0, 直接按数值排会把它顶到最前面, 而它的内容恰恰是最新的。返回新数组 (调用方 free),
- * 条数经 *n 返回。 */
+/* Group content order -- the ONE order shared by fold selection and group history
+ * (they must agree, or "the folded prefix" is not "the prefix the request read").
+ * Members with sink=GROUP_MEMORY are skipped; completed ones by ascending
+ * completion_seq; unfinished ones last (in-group insertion order) -- an unfinished
+ * task's completion_seq is 0, so a plain numeric sort would hoist the newest
+ * content to the front. Returns a new array (caller frees); count via *n. */
 extern struct edc_task **edc_task_group_content_order(struct edc_task_group *group, size_t *n);
 
 extern void edc_task_group_set_leader(struct edc_task_group *group, struct edc_task *new_leader);

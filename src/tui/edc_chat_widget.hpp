@@ -13,17 +13,15 @@
 namespace edc
 {
 
-// The chat log **view**: renders a ChatModel's visible() sequence inside a
-// scrolling, virtualized list. It owns no message state of its own —— all of it
-// (the messages, the filter, each task's input) lives in the model, so the log
-// can be driven by anyone holding the model (the window / a dispatcher) without
-// touching rendering.
+// The chat log view: renders a ChatModel's visible() sequence inside a scrolling,
+// virtualized list. It owns no message state itself -- all of it (messages,
+// filter, each task's input) lives in the model, so the log can be driven by
+// anyone holding the model without touching rendering.
 //
-// The compat methods below (AddMessage / Clear / SetFilter / SetTaskInputs)
-// forward to the model, so existing callers and tests are unchanged. The view
-// subscribes to the model and updates incrementally: an appended bubble is
-// appended to the list (keeping the O(1) append that the virtualization relies
-// on), a filter/task-input/clear change rebuilds the list from visible().
+// The compat methods below forward to the model. The view subscribes to the model
+// and updates incrementally: an appended bubble is appended to the list (keeping
+// the O(1) append the virtualization relies on); a filter/task-input/clear change
+// rebuilds the list from visible().
 class ChatWidget : public ::ftxui::ComponentBase
 {
   public:
@@ -36,7 +34,6 @@ class ChatWidget : public ::ftxui::ComponentBase
     ChatWidget(ChatWidget const &) = delete;
     ChatWidget &operator=(ChatWidget const &) = delete;
 
-    // ── 兼容入口: 委托给模型 ──────────────────────────────────
     void AddMessage(std::shared_ptr<Message> message);
     void Clear();
     void SetFilter(std::shared_ptr<const std::set<std::string>> allowed, std::string label = "");
@@ -51,23 +48,20 @@ class ChatWidget : public ::ftxui::ComponentBase
     bool OnEvent(ftxui::Event) override;
     ftxui::Element OnRender() override;
 
-    // The chat log is deliberately NOT keyboard focusable (↑/↓ belong to the
-    // message editor); it still scrolls with the wheel. Focusable() is inherited
-    // false from the ScrollView it wraps.
-
+    // Deliberately NOT keyboard focusable (↑/↓ belong to the message editor); it
+    // still scrolls with the wheel.
     bool Scroll(int delta);
     bool ScrollToTop();
     bool ScrollToBottom();
 
   private:
-    // One model change → one list update (append or rebuild).
+    // One model change -> one list update (append or rebuild).
     void OnModelChanged(const model::ChatModel::Change &change);
 
     std::shared_ptr<model::ChatModel> model_;
     int subscription_ = -1;
 
-    // Holds the messages and draws only the ones inside the viewport; see
-    // edc_message_list.hpp for why the log is not a plain component container.
+    // Holds the messages and draws only those inside the viewport.
     std::shared_ptr<MessageList> list_;
     std::shared_ptr<ScrollView> scroll_view_;
 };

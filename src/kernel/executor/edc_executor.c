@@ -99,7 +99,7 @@ static struct edc_advance_result exec_start(struct edc_executor *ex, struct edc_
         return exec_io_failed(task, "[failed: the tool chain could not be re-dispatched (no toolbox port)]");
     }
 
-    /* 3. 有待跑的 turn: 发起推理。 */
+    /* 3. An active turn is waiting: send an inference request. */
     if (task->active_turn)
     {
         /* Rejected by the state machine: do not send a request nobody will claim. */
@@ -107,7 +107,7 @@ static struct edc_advance_result exec_start(struct edc_executor *ex, struct edc_
             return exec_io_failed(task, "[failed: this task cannot be moved to AWAIT_EXEC (state machine)]");
         if (!ops->send_llm(ex->ctx, task, req_id))
             return exec_io_failed(task, "[failed: no LLM port is installed, so this task cannot be started]");
-        task->llm_rounds++; /* 这一轮推理开始消耗预算 */
+        task->llm_rounds++; /* this round starts consuming the run budget */
         return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
     }
 
@@ -124,8 +124,9 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
 
     /* Before the branches, so every path (stop, tool_calls, error) counts. */
     edc_task_add_usage(task, e->prompt_tokens, e->completion_tokens, e->total_tokens, e->cached_tokens);
-    /* L2: 这次请求的队尾通知被模型读到了 (响应回来了) ⇒ 水位推进。取消/失败的请求
-     * 到不了这里, 所以那条通知会随下一次请求重发 (幂等)。 */
+    /* L2: this request's tail notice was read by the model (the response came
+     * back), so the watermark advances. A cancelled/failed request never reaches
+     * here, so that notice is resent with the next request (idempotent). */
     edc_task_memo_commit(task);
 
     if (e->failed)
@@ -305,14 +306,14 @@ static struct edc_advance_result stop_at_iteration_cap(struct edc_executor *ex, 
     ev.kind = EDC_EVENT_EXEC_DONE;
     ev.request_id = request_id;
     ev.as.exec.reason = EDC_REASON_STOP;
-    ev.as.exec.content = notice;  /* STOP 分支用 sdsnew 拷贝, 不持有 */
-    ev.as.exec.msg = assistant;   /* 所有权转入 active_turn (与真实响应一致) */
+    ev.as.exec.content = notice;  /* the STOP branch sdsnew-copies it; it is not held */
+    ev.as.exec.msg = assistant;   /* ownership moves to active_turn, like a real response */
 
     struct edc_advance_result r = edc_executor_advance(ex, task, &ev);
 
     /* The nested STOP copied the notice into task->output, which outlives this
      * function; point at that and free the local copy. */
-    r.outcome = EDC_STEP_ERROR; /* 与今天一致：预算耗尽按 ERROR 返回 */
+    r.outcome = EDC_STEP_ERROR; /* budget exhaustion returns ERROR */
     r.notice = task->output;
     sdsfree(notice);
     return r;
@@ -335,7 +336,7 @@ static struct edc_advance_result tool_done(struct edc_executor *ex, struct edc_t
         int max_iter = exec_max_iter(ex);
         if (max_iter > 0 && task->llm_rounds >= max_iter)
         {
-            return stop_at_iteration_cap(ex, task, ev->request_id); /* 已转入终结路径 */
+            return stop_at_iteration_cap(ex, task, ev->request_id); /* already on a terminal path */
         }
 
         /* A dependency is still outstanding (the fold barrier held this task): the
@@ -351,7 +352,7 @@ static struct edc_advance_result tool_done(struct edc_executor *ex, struct edc_t
         edc_task_move(task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
         if (!ops->send_llm(ex->ctx, task, (void *)ev->request_id))
             return exec_io_failed(task, "[failed: no LLM port is installed, so the tool chain cannot continue]");
-        task->llm_rounds++; /* 工具链结束后续发 → 再消耗一轮预算 */
+        task->llm_rounds++; /* sending again after the tool chain consumes another round */
         return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
     }
     return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};

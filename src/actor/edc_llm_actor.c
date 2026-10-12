@@ -175,8 +175,9 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
         }
     }
 
-    /* 绝对队尾: 运行时追加的 system 提醒 (如最新 todo reminder) —— 在已提交
-     * 历史窗口与当前 turn 之后, 紧贴模型开始生成的位置, 每轮请求重新计算 */
+    /* Absolute tail: runtime system reminders (e.g. the latest todo reminder) -- after
+     * the committed history window and the current turn, right where the model starts
+     * generating, recomputed every request. */
     if (req->tail_parts)
     {
         cJSON *part = NULL;

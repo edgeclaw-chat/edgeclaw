@@ -4,16 +4,18 @@
 #include <cJSON.h>
 #include <stddef.h>
 
-/* 启发式 token 估算 (见 .c 里的口径与边界)。只用于"provider 真值之后的尾部"
- * 与"没有真值时的整段估算"; 任何真值 (应答的 usage) 都优先于它。 */
+/* Heuristic token estimate (see the .c for the calibration and its limits). Used
+ * only for "the tail after a provider's real count" and "the whole span when there
+ * is no real count"; any real count (response usage) takes precedence. */
 
-/* 一段 UTF-8 文本的估算 (不含消息结构开销)。 */
+/* Estimate for a UTF-8 text span (excluding message structure overhead). */
 extern long long edc_token_estimate_text(const char *s);
 
-/* 一条消息 (cJSON 对象) 的估算: 其所有字符串值 + 每条消息的结构开销。 */
+/* Estimate for one message (cJSON object): all its string values plus the
+ * per-message structure overhead. */
 extern long long edc_token_estimate_msg(const cJSON *msg);
 
-/* JSON 消息数组的 [from, to) 切片估算 (越界自动夹紧)。 */
+/* Estimate for the [from, to) slice of a JSON message array (out-of-range clamped). */
 extern long long edc_token_estimate_msgs(const cJSON *arr, size_t from, size_t to);
 
 #endif

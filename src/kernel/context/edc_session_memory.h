@@ -12,21 +12,23 @@ struct edc_session;
 struct edc_task;
 struct edc_task_group;
 
-/* L2: session 级记忆 (设计见 docs/l2-session-memory.md)。
+/* L2: session-level memory.
 
- * 两半, 各自单写者:
- *   - **事件表** (entries 的变更日志, seq 单调): L2 任务写。
- *     它不给任何 task 的上下文里塞东西 —— 每个 task 记一个水位
- *     (`task->memo_seen_seq`), 请求装配时取差集当"补丁"注入队尾。
- *   - **条目表** (索引 + 明细): 索引每轮常驻头部, 明细按需 (P4d 的
- *     `memory_get`)。
+ * Two halves, each with a single writer:
+ *   - the EVENT TABLE (a change log of entries, monotonic seq): written by the L2
+ *     task. It injects nothing into any task's context -- each task keeps a
+ *     watermark (`task->memo_seen_seq`), and request assembly takes the difference
+ *     as a "patch" injected at the tail.
+ *   - the ENTRY TABLE (index + detail): the index is resident in the head each
+ *     round, the detail is on demand (`memory_get`).
 
- * 关键不变量 (与 L1 同族, 见 pi-alignment.md):
- *   - 事件 seq 单调递增、**永不复用**; `next_seq` = 下一个要分配的 seq
- *     (无事件时 0)。task 的"看过"水位与它比较: `seq > memo_seen_seq`。
- *   - **L2 没有自己的水位**: 触发是"折叠落地"这个事件, 输入是"刚落地的
- *     group memory"这个快照, 而 L2 与 L1 由依赖边串行 ⇒ 同一份材料不会跑两遍
- *     (见 docs/l2-session-memory.md §4.2)。 */
+ * Key invariants (same family as L1):
+ *   - event seq increases monotonically and is NEVER reused; `next_seq` = the next
+ *     seq to assign (0 when no events). A task's "seen" watermark compares against
+ *     it: `seq > memo_seen_seq`.
+ *   - L2 has no watermark of its own: the trigger is the "fold landed" event and the
+ *     input is the just-landed group memory snapshot, with L2 and L1 serialized by a
+ *     dependency edge, so the same material never runs twice. */
 
 enum edc_memo_event_kind
 {
@@ -49,9 +51,9 @@ struct edc_memo_entry
     char *id;
     char *title;
     char *summary;
-    sds detail;    /* 明细全文: 不进常驻上下文, 只由 memory_get 现取 (P4d) */
-    char *sources; /* 来源: 组 id / 覆盖的 completion_seq 区间 (审计) */
-    char *proposed_by; /* 谁提议写的 (前台 memory_write 的 task id; 策展人写的为 NULL) */
+    sds detail;        /* full detail: not resident in context, fetched by memory_get */
+    char *sources;     /* origin: group id / completion_seq range covered (audit) */
+    char *proposed_by; /* who proposed it (foreground memory_write's task id; NULL for the curator) */
     uint64_t created_seq;
     uint64_t updated_seq;
     bool superseded;
@@ -65,108 +67,118 @@ struct edc_session_memory
     struct edc_memo_entry *entries;
     size_t entry_count, entry_cap;
 
-    uint64_t next_seq;      /* 下一个要分配的 seq (0 = 还没有事件) */
-    uint64_t next_entry_id; /* 下一个要分配的条目号 (id = "m<n>", 永不复用) */
-    uint64_t pruned_before; /* 事件清理后的下界 (P4e; 现在恒 0) */
-    int fail_count;         /* 连续失败, 只在内存 */
+    uint64_t next_seq;      /* next seq to assign (0 = no events yet) */
+    uint64_t next_entry_id; /* next entry number (id = "m<n>", never reused) */
+    uint64_t pruned_before; /* lower bound after event pruning (P4e; always 0 now) */
+    int fail_count;         /* consecutive failures, in-memory only */
 };
 
 extern const char *edc_memo_event_kind_name(enum edc_memo_event_kind kind);
 extern enum edc_memo_event_kind edc_memo_event_classify_kind(const char *name);
 
-/* 策展调用的输出上限与条目总数上限 (超上限的批次整批拒绝 —— 宁可不记, 也不让索引失控)。
- * 上限与折叠的摘要上限同量级: ops 里带 detail, 而语料可能是一份很大的 group memory ——
- * 8192 实测太紧 (输出被 length 截断 ⇒ 整批丢弃, 且现场什么也看不出来)。 */
+/* Output cap for a curation call and cap on total entries (an over-cap batch is
+ * rejected whole -- better to record nothing than let the index run away). Same
+ * order as the fold summary cap: ops carry detail and the corpus can be a large
+ * group memory -- 8192 proved too tight (output truncated by length -> whole batch
+ * dropped, invisibly). */
 #define EDC_SESSION_MEMORY_MAX_TOKENS 32768
 #define EDC_SESSION_MEMORY_MAX_ENTRIES 200
 
 extern struct edc_session_memory *edc_session_memory_new(void);
 extern void edc_session_memory_free(struct edc_session_memory *m);
 
-/* 追加一个事件 (返回它拿到的 seq; 分配失败返回 0)。 */
+/* Append one event (returns its seq; 0 when allocation failed). */
 extern uint64_t edc_session_memory_add_event(struct edc_session_memory *m, const char *entry_id,
                                              enum edc_memo_event_kind kind, const char *title, const char *summary);
 
-/* 条目: 查 / 增改 (按 id, 存在则更新)。返回条目的指针 (归 m 所有)。 */
+/* Entry: lookup / upsert (by id; update when present). Returns a pointer owned by m. */
 extern struct edc_memo_entry *edc_session_memory_entry(struct edc_session_memory *m, const char *id);
 extern struct edc_memo_entry *edc_session_memory_upsert_entry(struct edc_session_memory *m, const char *id,
                                                               const char *title, const char *summary,
                                                               const char *detail, const char *sources);
 
-/* 记"谁提议写的" (前台 memory_write 用; 归 m 所有)。 */
+/* Record who proposed the entry (foreground memory_write; owned by m). */
 extern void edc_session_memory_note_proposer(struct edc_memo_entry *entry, const char *task_id);
 
-/* ── 给工具与通知用的读/写口 ───────────────────────────────── */
+/* ── Readers/writers for tools and notifications ────────────── */
 
-/* 索引行 (一行一条, 形如 "- [m12] 标题 — 摘要", 退休的加 "(retired)"), 按 id 升序
- * 保证翻页稳定。返回的 sds 归调用方; `*out_total` 给条目总数 (可为 NULL)。 */
+/* Index rows (one per line, "- [m12] title -- summary"; retired ones add
+ * "(retired)"), ascending by id for stable paging. The sds is the caller's;
+ * `*out_total` gives the entry count (may be NULL). */
 extern sds edc_session_memory_index_lines(const struct edc_session_memory *m, size_t offset, size_t n,
                                           size_t *out_total);
 
-/* 搜索: 标题/摘要/明细的子串匹配 (大小写不敏感), 返回命中条目的索引行 (上限 cap 条),
- * `*out_hits` 给命中总数 (可为 NULL)。 */
+/* Search: case-insensitive substring match on title/summary/detail; returns index
+ * rows of hits (at most cap), `*out_hits` gives the hit count (may be NULL). */
 extern sds edc_session_memory_search_lines(const struct edc_session_memory *m, const char *query, size_t cap,
                                            size_t *out_hits);
 
-/* 队尾通知 (请求期临时物, 见 docs/l2-session-memory.md §1.2.1/§3.2):
- * 自 `seen` 以来**新建/更新**的条目, 一行一条 (同一 id 只出现最新那条), 最多 cap 条,
- * 带总条数与用法提示。返回 NULL = 没有新东西 (不注入)。
- * `*out_max_injected` (可 NULL) = **实际注入**的最大事件 seq —— 请求被模型真的读到之后,
- * 水位才推进到它 (见 edc_task_memo_commit); 截断掉的老事件由水位一并标记为已看,
- * 通知里那句 "N more" 与 memory_list/memory_search 就是它们的兜底。 */
+/* Tail notice (a request-time temporary):
+ * entries CREATED/UPDATED since `seen`, one line each (an id appears once, the
+ * newest), at most cap, with the total count and a usage hint. NULL = nothing new
+ * (do not inject). `*out_max_injected` (may be NULL) = the largest event seq
+ * ACTUALLY injected -- the watermark advances to it only once the model really read
+ * the request; truncated old events are marked seen by the watermark, and the
+ * notice's "N more" plus memory_list/memory_search are their fallback. */
 extern sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen, size_t cap,
                                      uint64_t *out_max_injected);
 
-/* 某条目的明细全文 (没有明细时退化成索引行); 条目不存在返回 NULL。 */
+/* Full detail of one entry (falls back to the index row when there is none); NULL
+ * when the entry does not exist. */
 extern sds edc_session_memory_get_detail(const struct edc_session_memory *m, const char *id);
 
-/* 新建条目: 分配新 id (m<n>, 永不复用) + 写入 title/summary/detail。
- * 返回新 id (sds, 调用方 sdsfree); 失败返回 NULL。**不**写事件 —— 事件由调用方
- * (前台 memory_write 或 L2 落地) 按 ops 语义追加。 */
+/* Create an entry: allocate a new id (m<n>, never reused) and write
+ * title/summary/detail. Returns the new id (sds, caller sdsfree); NULL on failure.
+ * Does NOT write an event -- the caller (foreground memory_write or L2 landing)
+ * appends it per ops semantics. */
 extern sds edc_session_memory_create_entry(struct edc_session_memory *m, const char *title, const char *summary,
                                            const char *detail, const char *proposed_by);
 
-/* 出生点采纳: 新 task 的"看过"水位 = **0** —— 它正是"没有最新条目"的那个,
- * 于是它的第一次请求会自带一次回填通知 (最新 cap 条 + "N more")。这解决了
- * "session 内新建 group 看不到最新 session 记忆"。**只在 task 的出生点**调用
- * (用户 task = create_task, fork 的子 task / 新组的 leader = create_group,
- * 系统 task = start_system_task)。 */
+/* Birth-point adoption: a new task's "seen" watermark = 0 -- the one meaning "no
+ * latest entry", so its first request carries a backfill notice (newest cap entries
+ * + "N more"). This fixes "a newly created group in a session cannot see the latest
+ * session memory". Call ONLY at a task's birth point (user task = create_task, fork
+ * child / new group leader = create_group, system task = start_system_task). */
 extern void edc_session_memory_adopt_task(struct edc_session *session, struct edc_task *task);
 
-/* ── L2 策展任务 (见 docs/l2-session-memory.md §4) ─────────── */
+/* ── L2 curation task ──────────────────────────────────────── */
 
-/* 策展调用的 system 说明 (自足请求: 只有这一段 + 它自己的 turn)。 */
+/* The curation call's system text (a self-contained request: this plus its turn). */
 extern const char *edc_session_memory_system_prompt(void);
 
-/* 折叠落地 ⇒ 建 L2 策展任务, 并把链挂成:
- *     被折组的非终态成员 ──SEQUENCE──► L2 ──SEQUENCE──► L1(刚落地, 声明式)
- * 于是"成员的恢复"发生在策展之后, 而 L2 读得到刚落地的 group 记忆。
- * 返回建好的 L2 任务 (失败 NULL)。 */
+/* Fold landed -> build the L2 curation task and chain it:
+ *     folded group's non-terminal members --SEQUENCE--> L2 --SEQUENCE--> L1 (just landed)
+ * so member recovery happens after curation and L2 can read the just-landed group
+ * memory. Returns the built L2 task (NULL on failure). */
 extern struct edc_task *edc_session_memory_start(struct edc_scheduler *sched, struct edc_session *session,
                                                  struct edc_task_group *folded_group, struct edc_task *fold_task);
 
-/* ops 契约的解析 + 应用 (先整批校验再应用; 见 docs/l2-session-memory.md §4.7)。
- * `sources` 记到新建条目上 (通常是来源组 id; 可 NULL)。 */
+/* Parse + apply the ops contract (validate the whole batch before applying; see
+ * docs/l2-session-memory.md §4.7). `sources` is recorded on new entries (usually a
+ * source group id; may be NULL). */
 extern bool edc_session_memory_apply_ops(struct edc_session_memory *m, const char *text, const char *sources);
 
-/* 手动策展 (`/session memo compact [focus]`): 不等折叠, 现在就跑一次 ——
- * 材料 = **所有**有记忆的组的 memory + 现有条目索引 (+ focus)。已有 system task
- * 在飞时拒绝 (一次一个, 与自动路径同一条闸门)。 */
+/* Manual curation (`/session memo compact [focus]`): run once now, no waiting for
+ * a fold -- material = every group's memory + the current entry index (+ focus).
+ * Refused while a system task is in flight (one at a time, same gate as the
+ * automatic path). */
 extern struct edc_task *edc_session_memory_start_manual(struct edc_scheduler *sched, struct edc_session *session,
                                                         const char *focus);
 
-/* `/session memo show` 的文本 (纯函数, 便于断言): id 为空 = 列全部条目 + 总数;
- * 给了 id = 那一条的完整内容 (不存在则给出提示)。调用方 sdsfree。 */
+/* Text for `/session memo show` (pure function, easy to assert): empty id = list
+ * all entries + total; an id = that entry's full content (or a hint when missing).
+ * Caller sdsfree. */
 extern sds edc_session_memory_show_text(const struct edc_session_memory *m, const char *id);
 
-/* `/session memo search <q>` 的文本 (纯函数): 命中条目的索引行 + 计数。 */
+/* Text for `/session memo search <q>` (pure function): index rows of hits + count. */
 extern sds edc_session_memory_search_text(const struct edc_session_memory *m, const char *query);
 
-/* L2 落地: 解析 ops 契约并应用。**先整批校验, 再应用** —— 任一条不合法就什么都不落
- * (老条目与事件表一动不动), 返回 false。 */
+/* L2 landing: parse and apply the ops contract. Validate the WHOLE batch first,
+ * then apply -- any invalid op lands nothing (old entries and the event table stay
+ * put) and returns false. */
 extern bool edc_session_memory_deliver(struct edc_task *task, const char *content);
 
-/* 落盘 (schema v7 的 `session_memory` 块)。 */
+/* Persistence (schema v7's `session_memory` block). */
 extern cJSON *edc_session_memory_to_json(const struct edc_session_memory *m);
 extern struct edc_session_memory *edc_session_memory_from_json(const cJSON *json);
 

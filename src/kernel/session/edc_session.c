@@ -192,7 +192,7 @@ void edc_session_free(struct edc_session *session)
 
 size_t edc_session_get_message_count(struct edc_session *session)
 {
-    /* P4: 消息归属 turn, 计数按所有 turn 的消息数求和 (含在途 active_turn)。 */
+    /* Messages belong to turns: sum every turn's message count (in-flight active_turn included). */
     if (!session)
         return 0;
     size_t n = 0;
@@ -216,16 +216,17 @@ size_t edc_session_get_message_count(struct edc_session *session)
 }
 
 /* ══════════════════════════════════════════════════════════════
-   Phase 4: Task/Group 管理
+   Task/Group management
    ══════════════════════════════════════════════════════════════ */
 
 void edc_session_add_group(struct edc_session *session, struct edc_task_group *group)
 {
     if (!session || !group)
         return;
-    /* 属主反向指针: 任务在后台 session 里跑完时, 调度器靠它把 turn/通知/落盘
-     * 写回**它自己**。P3 ③ 起 core 里没有"当前 session"这份副本可回退了 ——
-     * 这个指针是唯一的归属来源。 */
+    /* Owner back-pointer: when a task finishes in a background session, the
+     * scheduler uses it to write the turn/notice/persist back to THAT session.
+     * Core has no "current session" copy to fall back on, so this pointer is the
+     * only source of ownership. */
     group->session = session;
     DL_APPEND(session->groups, group);
 }
@@ -251,7 +252,7 @@ struct edc_task_group *edc_session_find_group(struct edc_session *session, const
     return NULL;
 }
 
-/* 系统任务的容器, 见 edc_session.h 的声明 (kind 在核心侧唯一的读取点)。 */
+/* Container of system tasks; see edc_session.h (the only core-side read of kind). */
 struct edc_task_group *edc_session_find_system_group(struct edc_session *session)
 {
     if (!session)
@@ -279,7 +280,7 @@ struct edc_task *edc_session_find_task(struct edc_session *session, const char *
     return NULL;
 }
 
-/* ── system task: 承载无主/会话级消息 ──────────────────────── */
+/* ── system task: carries ownerless / session-level messages ─ */
 
 void edc_session_set_active_task(struct edc_session *session, struct edc_task *task)
 {
@@ -300,10 +301,11 @@ sds edc_session_status_text(struct edc_session *session, bool is_current, const 
 
     /* Tally groups and per-state tasks. */
     int group_count = 0, orphan_count = 0, task_count = 0;
-    /* 直方图按**显示名**分桶: `/task status` 的文案是既有外部行为, 词表冻在这张表里
-     * (顺序 = 旧枚举顺序, 输出逐字不变)。串是闭的 (`edc_task_state_str` 只可能返回
-     * 表里的词), 找不到只可能是漏改了状态机的行 —— 那时报警, 不要静默丢。
-     * `WAITING_INPUT` 已退休 (旧名 = READY), 永远是 0; 留着只为顺序稳定。 */
+    /* The histogram buckets by DISPLAY NAME: /task status's wording is existing
+     * external behaviour and this table freezes the vocabulary (order = the old enum
+     * order, output byte-identical). The set is closed, so a miss can only be a
+     * missed state-machine edit -- then warn, do not silently drop.
+     * WAITING_INPUT is retired (old name = READY), always 0, kept only for order. */
     static const char *const k_state_order[] = {"IDLE",        "WAITING_DEPS", "WAITING_INPUT", "LLM_PROCESSING",
                                                 "TOOL_CALLING", "SUSPENDED",    "COMPLETED",     "CANCELLED",
                                                 "ERROR"};
@@ -384,18 +386,17 @@ sds edc_session_status_text(struct edc_session *session, bool is_current, const 
     return out;
 }
 
-/* ── Phase 2: 完整状态持久化 ───────────────────────────────── */
+/* ── Full state persistence ────────────────────────────────── */
 
 bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *sched)
 {
     if (!session || !session->history_dir)
         return false;
 
-    /* 隔离过的 session 禁止落盘 (见 struct edc_session.state_quarantined): 内存
-     * 里的它只是加载失败后的空壳, 写出去就会占掉 session.json 这个槽, 让事后
-     * 恢复的文件在下一次退出时被覆盖。堵在这里是因为 save_state 是所有落盘路径
-     * 的公共出口 (含 edc_session_store_stop_all_turns 那条不走 state_loaded 闸门
-     * 的直调)。 */
+    /* A quarantined session must not persist (see state_quarantined): its in-memory
+     * form is just the shell after a failed load, and writing it would occupy the
+     * session.json slot, so a later restored file would be overwritten on the next
+     * exit. Blocked here because save_state is the common exit of every persist path. */
     if (session->state_quarantined)
     {
         log_warn("save_state: refusing to persist quarantined session %s (session.json.broken holds the real state)",
@@ -410,8 +411,8 @@ bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *s
         return false;
     }
 
-    /* 紧凑序列化: cJSON_Print 会生成带缩进换行的美化 JSON,体积大数倍;
-       session.json 只用于程序内部加载,无需人类可读,故用 Unformatted。 */
+    /* Compact serialization: cJSON_Print's pretty JSON is several times larger, and
+       session.json is only loaded internally, never read by humans. */
     char *json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (!json_str)
@@ -460,9 +461,10 @@ bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *s
     return true;
 }
 
-/* ── 加载护栏 (v1→v2 事故的教训) ─────────────────────────────
- * 无法解析/迁移的 session.json 先改名隔离, 免得进程随后用空 session 把它
- * 覆盖掉 —— 那次事故正是"加载失败后仍照常落盘"抹掉了 s7 的任务结构。 */
+/* ── Load guardrail (lesson from the v1->v2 incident) ─────────
+ * An unparseable/unmigratable session.json is renamed to quarantine it, so the
+ * process does not later overwrite it with an empty session -- that incident was
+ * "persist anyway after a failed load" wiping s7's task structure. */
 static void session_quarantine_state(struct edc_session *session, const char *path, const char *why)
 {
     sds broken = edc_path_join(session->history_dir, "session.json.broken", NULL);
@@ -471,8 +473,9 @@ static void session_quarantine_state(struct edc_session *session, const char *pa
     else
         log_error("load_state: cannot quarantine %s (%s): %s", path, why, strerror(errno));
     sdsfree(broken);
-    /* 无论改名成功与否, 这个 session 的槽位都不再由本进程负责: 改名失败时原
-     * 文件还在 path 上, 落盘会把它盖掉; 改名成功时落盘会写出一个空壳假状态。 */
+    /* Whether or not the rename worked, this session's slot is no longer this
+     * process's responsibility: on failure the original file is still at path and a
+     * persist would overwrite it; on success a persist would write an empty shell. */
     session->state_quarantined = true;
     log_error("load_state: %s is quarantined — this run will NOT persist it; restore %s/session.json.broken and restart",
               session->session_id ? session->session_id : "?", session->history_dir ? session->history_dir : "?");
@@ -550,7 +553,7 @@ void edc_session_reset(struct edc_session *session)
     }
     session->groups = NULL;
 
-    /* 前台组随 groups 一起没了 */
+    /* the foreground group went with groups */
     session->foreground_group = NULL;
 }
 

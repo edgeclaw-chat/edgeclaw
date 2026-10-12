@@ -8,16 +8,16 @@
 #include <sys/stat.h>
 
 /* ================================================================
- *  1. Trie — 用于命令/子命令的快速前缀匹配
+ *  1. Trie -- fast prefix matching for commands/subcommands
  * ================================================================ */
 
-#define TRIE_CHILDREN 128 /* ASCII 范围足够 */
+#define TRIE_CHILDREN 128 /* the ASCII range is enough */
 
 typedef struct trie_node
 {
     struct trie_node *children[TRIE_CHILDREN];
-    bool is_terminal; /* 是否是一个完整命令 */
-    int freq;         /* 使用频率 */
+    bool is_terminal; /* whether it is a complete command */
+    int freq;         /* usage frequency */
 } trie_node_t;
 
 static trie_node_t *g_cmd_trie = NULL;
@@ -44,7 +44,7 @@ static void trie_insert(trie_node_t *root, const char *key)
     cur->freq++;
 }
 
-/* 递归收集所有以 node 为根的完整词 */
+/* Recursively collect every complete word rooted at node */
 static void trie_collect(trie_node_t *node, sds prefix, edc_completion_result_t *result)
 {
     if (!node)
@@ -69,7 +69,7 @@ static void trie_collect(trie_node_t *node, sds prefix, edc_completion_result_t 
     }
 }
 
-/* 前缀搜索：找到 prefix 对应的节点，然后收集所有子节点 */
+/* Prefix search: find the node for prefix, then collect all child nodes */
 static void trie_prefix_search(trie_node_t *root, const char *prefix, edc_completion_result_t *result)
 {
     trie_node_t *cur = root;
@@ -79,10 +79,10 @@ static void trie_prefix_search(trie_node_t *root, const char *prefix, edc_comple
         if (idx >= TRIE_CHILDREN)
             idx = TRIE_CHILDREN - 1;
         if (!cur->children[idx])
-            return; /* 无匹配 */
+            return; /* no match */
         cur = cur->children[idx];
     }
-    /* cur 是 prefix 的节点，收集所有子节点 */
+    /* cur is the node for prefix; collect all child nodes */
     sds p = sdsnew(prefix);
     trie_collect(cur, p, result);
 }
@@ -97,7 +97,7 @@ static void trie_free_node(trie_node_t *node)
 }
 
 /* ================================================================
- *  2. 命令补全源 — 内部 Trie
+ *  2. Command completion source -- the internal Trie
  * ================================================================ */
 
 static void source_commands(const char *token, edc_completion_result_t *result, void *user_data)
@@ -105,26 +105,26 @@ static void source_commands(const char *token, edc_completion_result_t *result, 
     (void)user_data;
     if (!g_cmd_trie || !token || token[0] != '/')
         return;
-    /* token 是 "/tas" 这种形式，直接送入 trie */
+    /* token looks like "/tas"; feed it straight to the trie */
     trie_prefix_search(g_cmd_trie, token, result);
 }
 
 /* ================================================================
- *  3. 文件路径补全源
+ *  3. File-path completion source
  * ================================================================ */
 
-/* 从路径中提取目录部分和文件前缀部分 */
+/* Split a path into its directory part and file-prefix part */
 static void path_split(const char *token, sds *dir_part, sds *file_part)
 {
     const char *last_slash = strrchr(token, '/');
     if (last_slash)
     {
-        *dir_part = sdsnewlen(token, (size_t)(last_slash - token + 1)); /* 含 / */
+        *dir_part = sdsnewlen(token, (size_t)(last_slash - token + 1)); /* includes the / */
         *file_part = sdsnew(last_slash + 1);
     }
     else
     {
-        *dir_part = sdsnew("./"); /* 当前目录 */
+        *dir_part = sdsnew("./"); /* the current directory */
         *file_part = sdsnew(token);
     }
 }
@@ -151,17 +151,17 @@ static void source_files(const char *token, edc_completion_result_t *result, voi
     while ((entry = readdir(d)) != NULL && result->count < EDC_COMPLETION_MAX)
     {
         if (entry->d_name[0] == '.')
-            continue; /* 跳过隐藏文件 */
+            continue; /* skip hidden files */
 
-        /* 前缀匹配 */
+        /* prefix match */
         if (strncmp(entry->d_name, file_part, file_len) != 0)
             continue;
 
         int idx = result->count;
-        /* 构建完整路径 */
+        /* build the full path */
         sds full = sdscatprintf(sdsdup(dir_part), "%s", entry->d_name);
 
-        /* 如果是目录，加 / 后缀 */
+        /* append a / suffix when it is a directory */
         struct stat st;
         bool is_dir = false;
         sds display_path = sdsdup(full);
@@ -174,7 +174,7 @@ static void source_files(const char *token, edc_completion_result_t *result, voi
 
         result->items[idx].text = full;
         result->items[idx].display = display_path;
-        /* 目录优先级略高 */
+        /* directories rank slightly higher */
         result->items[idx].score = is_dir ? 2.0 : 1.0;
         result->items[idx].source = 1;
         result->count++;
@@ -185,7 +185,7 @@ static void source_files(const char *token, edc_completion_result_t *result, voi
 }
 
 /* ================================================================
- *  4. History 补全源 — 带 Frecency 评分
+ *  4. History completion source -- with Frecency scoring
  * ================================================================ */
 
 #define HISTORY_MAX_ENTRIES 2000
@@ -193,8 +193,8 @@ static void source_files(const char *token, edc_completion_result_t *result, voi
 typedef struct
 {
     char *line;
-    int count;        /* 使用次数 */
-    double last_used; /* 单调递增的时间戳 */
+    int count;        /* usage count */
+    double last_used; /* monotonically increasing timestamp */
 } history_entry_t;
 
 static history_entry_t *g_history = NULL;
@@ -212,13 +212,13 @@ static void source_history(const char *token, edc_completion_result_t *result, v
 
     for (int i = 0; i < g_history_count && result->count < EDC_COMPLETION_MAX; i++)
     {
-        /* 快速前缀过滤 */
+        /* fast prefix filter */
         if (strncmp(g_history[i].line, token, tlen) != 0)
             continue;
 
-        /* Frecency 评分:
+        /* Frecency score:
          *   score = log2(1 + count) * 2.0  +  recency_bonus
-         *   recency_bonus = 1.0 / (1.0 + tick_diff)  (越近越高)
+         *   recency_bonus = 1.0 / (1.0 + tick_diff)  (the more recent, the higher)
          */
         double freq_score = 2.0 * log2(1.0 + (double)g_history[i].count);
         double tick_diff = g_tick - g_history[i].last_used;
@@ -235,7 +235,7 @@ static void source_history(const char *token, edc_completion_result_t *result, v
     }
 }
 
-/* ---- 公开的 history 添加接口 ---- */
+/* ---- public history-add interface ---- */
 void edc_completion_add_history(const char *line)
 {
     if (!line || !line[0])
@@ -243,7 +243,7 @@ void edc_completion_add_history(const char *line)
 
     g_tick += 1.0;
 
-    /* 查找是否已存在 */
+    /* check whether it already exists */
     for (int i = 0; i < g_history_count; i++)
     {
         if (strcmp(g_history[i].line, line) == 0)
@@ -254,7 +254,7 @@ void edc_completion_add_history(const char *line)
         }
     }
 
-    /* 扩容 */
+    /* grow */
     if (g_history_count >= g_history_cap)
     {
         g_history_cap = g_history_cap ? g_history_cap * 2 : 64;
@@ -268,7 +268,7 @@ void edc_completion_add_history(const char *line)
 }
 
 /* ================================================================
- *  5. 模糊匹配 (Subsequence scoring, fzy-style)
+ *  5. Fuzzy matching (subsequence scoring, fzy-style)
  * ================================================================ */
 
 double edc_completion_fuzzy_score(const char *pattern, const char *target)
@@ -294,23 +294,23 @@ double edc_completion_fuzzy_score(const char *pattern, const char *target)
     {
         if (tolower((unsigned char)target[ti]) == tolower((unsigned char)pattern[pi]))
         {
-            /* 匹配点得分：
-             *   - 首字母匹配 bonus
-             *   - 连续匹配 bonus
+            /* Match-point score:
+             *   - first-letter match bonus
+             *   - consecutive-match bonus
              *   - gap penalty
              */
             double pt_score = 1.0;
 
-            /* 驼峰/大写字母 bonus (类似 fzf) */
+            /* camelCase/uppercase bonus (like fzf) */
             if (isupper((unsigned char)target[ti]))
                 pt_score += 0.5;
 
-            /* 单词边界 bonus (前一个是分隔符) */
+            /* word-boundary bonus (the previous char is a separator) */
             if (ti > 0 &&
                 (target[ti - 1] == '_' || target[ti - 1] == '-' || target[ti - 1] == '/' || target[ti - 1] == ' '))
                 pt_score += 0.5;
 
-            /* 连续匹配 bonus */
+            /* consecutive-match bonus */
             if (prev_match >= 0 && (int)ti == prev_match + 1)
                 pt_score += 0.3;
 
@@ -331,18 +331,18 @@ double edc_completion_fuzzy_score(const char *pattern, const char *target)
         }
     }
 
-    /* 未完全匹配 */
+    /* not a full match */
     if (pi < plen)
         return 0.0;
 
-    /* 归一化：除以 target 长度，加上匹配位置 bonus */
+    /* Normalize: divide by the target length, plus a match-position bonus */
     score = score / (double)tlen;
 
-    /* 匹配越靠前越好 */
+    /* the earlier the match, the better */
     if (first_match >= 0)
         score += 0.2 * (1.0 - (double)first_match / (double)tlen);
 
-    /* 前缀完全匹配 bonus */
+    /* exact-prefix-match bonus */
     if (strncasecmp(target, pattern, plen) == 0)
         score += 0.3;
 
@@ -352,7 +352,7 @@ double edc_completion_fuzzy_score(const char *pattern, const char *target)
 }
 
 /* ================================================================
- *  6. 候选排序 (按 score 降序)
+ *  6. Candidate sorting (by descending score)
  * ================================================================ */
 
 static int candidate_cmp(const void *a, const void *b)
@@ -372,7 +372,7 @@ static void result_sort(edc_completion_result_t *result)
 }
 
 /* ================================================================
- *  7. 去重
+ *  7. Dedup
  * ================================================================ */
 
 static void result_dedup(edc_completion_result_t *result)
@@ -383,10 +383,10 @@ static void result_dedup(edc_completion_result_t *result)
         {
             if (strcmp(result->items[i].text, result->items[j].text) == 0)
             {
-                /* 合并 score (取较高者) */
+                /* merge the score (take the higher) */
                 if (result->items[j].score > result->items[i].score)
                     result->items[i].score = result->items[j].score;
-                /* 移除 j */
+                /* remove j */
                 sdsfree(result->items[j].text);
                 sdsfree(result->items[j].display);
                 memmove(&result->items[j], &result->items[j + 1],
@@ -402,7 +402,7 @@ static void result_dedup(edc_completion_result_t *result)
 }
 
 /* ================================================================
- *  8. 公共前缀提取 (LCP)
+ *  8. Common-prefix extraction (LCP)
  * ================================================================ */
 
 sds edc_completion_lcp(edc_completion_result_t *result)
@@ -430,7 +430,7 @@ sds edc_completion_lcp(edc_completion_result_t *result)
 }
 
 /* ================================================================
- *  9. 多源注册机制
+ *  9. Multi-source registration
  * ================================================================ */
 
 #define MAX_SOURCES 8
@@ -453,7 +453,7 @@ void edc_completion_register_source(edc_completion_source_fn source, void *user_
 }
 
 /* ================================================================
- *  10. 核心入口：收集补全候选项
+ *  10. Core entry: collect completion candidates
  * ================================================================ */
 
 void edc_completion_collect(const char *line_buffer, int cursor_pos, edc_completion_result_t *result)
@@ -464,7 +464,7 @@ void edc_completion_collect(const char *line_buffer, int cursor_pos, edc_complet
     if (!line_buffer || cursor_pos <= 0)
         return;
 
-    /* 提取当前 token：从 cursor_pos 向左到空格/行首 */
+    /* Extract the current token: from cursor_pos left to a space / start of line */
     int start = cursor_pos;
     while (start > 0 && line_buffer[start - 1] != ' ')
         start--;
@@ -475,7 +475,7 @@ void edc_completion_collect(const char *line_buffer, int cursor_pos, edc_complet
     char *token = strndup(line_buffer + start, (size_t)token_len);
     result->token = sdsnew(token);
 
-    /* 从所有注册源收集 */
+    /* collect from every registered source */
     for (int i = 0; i < g_source_count; i++)
     {
         if (result->count >= EDC_COMPLETION_MAX)
@@ -485,15 +485,15 @@ void edc_completion_collect(const char *line_buffer, int cursor_pos, edc_complet
 
     free(token);
 
-    /* 如果没有前缀匹配结果，尝试模糊匹配 */
+    /* if there is no prefix match, try fuzzy matching */
     if (result->count == 0 && result->token && sdslen(result->token) > 0)
     {
-        /* 对 history 做模糊匹配（仅 history 源，因为命令/file 前缀已精确） */
+        /* fuzzy-match against history only (commands/files already prefix-match exactly) */
         for (int i = 0; i < g_history_count && result->count < EDC_COMPLETION_MAX; i++)
         {
             double s = edc_completion_fuzzy_score(result->token, g_history[i].line);
             if (s > 0.3)
-            { /* 阈值 */
+            { /* threshold */
                 int idx = result->count;
                 result->items[idx].text = sdsnew(g_history[i].line);
                 result->items[idx].display = sdsnew(g_history[i].line);
@@ -504,16 +504,16 @@ void edc_completion_collect(const char *line_buffer, int cursor_pos, edc_complet
         }
     }
 
-    /* 去重 + 排序 */
+    /* dedup + sort */
     result_dedup(result);
     result_sort(result);
 
-    /* 计算公共前缀 */
+    /* compute the common prefix */
     result->common_prefix = edc_completion_lcp(result);
 }
 
 /* ================================================================
- *  11. 生命周期
+ *  11. Lifetime
  * ================================================================ */
 
 void edc_completion_init(void)
@@ -521,7 +521,7 @@ void edc_completion_init(void)
     g_cmd_trie = trie_node_new();
     g_source_count = 0;
 
-    /* 默认注册三个源 */
+    /* register the three default sources */
     edc_completion_register_source(source_commands, NULL);
     edc_completion_register_source(source_files, NULL);
     edc_completion_register_source(source_history, NULL);

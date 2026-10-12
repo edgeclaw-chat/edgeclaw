@@ -8,7 +8,7 @@
 namespace edc
 {
 
-/* UTF-8 / 终端宽度工具，右侧栏各 widget（任务树、todo 列表）共用。 */
+/* UTF-8 / terminal-width helpers shared by the sidebar widgets. */
 
 // Truncate by UTF-8 code points so a multi-byte character is never cut in
 // half (which would otherwise render as a replacement/garbage glyph).
@@ -45,20 +45,16 @@ inline std::string TruncateUtf8(const std::string &s, size_t max_codepoints)
     return s.substr(0, byte_pos) + "…";
 }
 
-// Number of terminal cells |s| occupies when printed. Wide characters (CJK
-// fullwidth, emoji, …) count as two cells — this is what ftxui itself uses
-// when laying out and rendering text, so it is the right unit for deciding
-// how much of a description fits on a row.
+// Number of terminal cells |s| occupies when printed (wide chars count as two);
+// the same unit ftxui uses to lay out and render text.
 inline int StringWidth(const std::string &s)
 {
     return ::ftxui::string_width(s);
 }
 
-// Truncate |s| so it occupies at most |max_cells| terminal cells, appending
-// "…" when something had to be cut. Truncation happens on UTF-8 code-point
-// boundaries and accounts for wide characters, so the result really fits:
-// the caller no longer has to rely on flex-shrink, which would hard-clip the
-// text flush against whatever follows it.
+// Truncate |s| to at most |max_cells| terminal cells, appending "…" when cut.
+// Truncation is on UTF-8 code-point boundaries and accounts for wide chars, so
+// the result really fits (no reliance on flex-shrink hard-clipping the text).
 inline std::string TruncateToWidth(const std::string &s, int max_cells)
 {
     if (max_cells <= 0)

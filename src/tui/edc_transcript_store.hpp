@@ -1,15 +1,16 @@
 #pragma once
 
-// ── 端口: 会话转录存储 (TranscriptStore) ─────────────────────────────────────
+// Port: the session transcript store (TranscriptStore).
 //
-// 转录是 TUI 自己"上过屏的东西"的记录 (每屏一条气泡一行), 从前这段 I/O 写在
-// TUIWindow 里: 解析路径、确保父目录、修复半截行、symlink-safe 追加、重放。
-// 现在收进一个存储对象:
-//
-//   * TUIWindow (及其 replay 回调) 只管"把条目变成气泡上屏", 不再碰文件格式;
-//   * 文件格式 (EncodeTranscriptLine / LoadTranscript / TranscriptEndsMidLine)
-//     集中在这一层, 单独可测;
-//   * 路径经 IAppFacade 解析 (它知道 workspace), 存储不认识 app 的具体类型。
+// A transcript is the TUI's own record of what it put on screen (one bubble per
+// line). This I/O used to live in TUIWindow (path resolution, parent dir, fixing
+// a half-written line, symlink-safe append, replay). It is now a store object:
+//   * TUIWindow (and its replay callback) only turns entries into on-screen
+//     bubbles, it no longer knows the file format;
+//   * the file format (EncodeTranscriptLine / LoadTranscript /
+//     TranscriptEndsMidLine) is centralized here and testable alone;
+//   * paths are resolved through IAppFacade (which knows the workspace), so the
+//     store does not know the app's concrete type.
 
 #include "edc_app_facade.hpp"      /* port::IAppFacade */
 #include "edc_chat_transcript.hpp" /* edc::ChatTranscriptEntry */
@@ -25,18 +26,20 @@ class ITranscriptStore
   public:
     virtual ~ITranscriptStore() = default;
 
-    // 按会话 id 解析转录路径 (`<workspace>/<session_id>/chat.jsonl`)。
+    // Resolve the transcript path by session id (<workspace>/<session_id>/chat.jsonl).
     virtual bool PathFor(const std::string &session_id, std::string *out) const = 0;
 
-    // 只读重放: 每条可解码的行交 |emit|, 返回条数 (0 = 没有可用转录)。
+    // Read-only replay: hands every decodable line to |emit|, returns the count
+    // (0 = no usable transcript).
     virtual size_t Replay(const std::string &path,
                           const std::function<void(const ChatTranscriptEntry &)> &emit) const = 0;
 
-    // 追加一条 (先确保父目录存在、修复可能存在的半截行、symlink-safe)。
+    // Append one entry (after ensuring the parent dir, fixing a possible
+    // half-written line, symlink-safe).
     virtual void Append(const std::string &path, const ChatTranscriptEntry &entry) = 0;
 };
 
-// IAppFacade 的生产实现。
+// Production implementation backed by IAppFacade.
 class TranscriptStore : public ITranscriptStore
 {
   public:

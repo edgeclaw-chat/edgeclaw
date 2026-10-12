@@ -51,8 +51,9 @@ static edc_task_dep_type dep_type_from_name(const char *name)
 /* ══════════════════════════════════════════════════════════════
  *  Serialize a single turn
  *
- *  单一模式: 把消息体内联进 turn (消息归属 turn)。顺序由 task 的
- *  completion_seq + turn/消息内序决定 (见 deser_rebuild_group_history)。
+ *  Single mode: inline the message bodies into the turn (messages belong to turns).
+ *  Order is by the task's completion_seq + turn/message order (see
+ *  deser_rebuild_group_history).
  *  ══════════════════════════════════════════════════════════════ */
 
 static cJSON *turn_to_json(struct edc_turn *turn)
@@ -67,11 +68,12 @@ static cJSON *turn_to_json(struct edc_turn *turn)
             continue;
 
         cJSON *copy = cJSON_Duplicate(msg, 1);
-        /* 消息是**整体往返的原始 JSON** (见 turn_from_json 的 cJSON_Duplicate),
-         * 不象 task/group 那样逐字段重建 —— 未知键本来会一直跟着走。运行期
-         * 不再替旧存档摘键: pre-transcript 的残留 (displayed/header、system
-         * 容器) 由一次性 v3→v4 迁移清掉
-         * (tools/migrate_session_v3_to_v4.py), loader 只收当前 schema。 */
+        /* A message round-trips as WHOLE raw JSON (see turn_from_json's
+         * cJSON_Duplicate), not field-by-field like task/group -- unknown keys ride
+         * along. The runtime no longer strips keys for old archives: pre-transcript
+         * leftovers (displayed/header, the system container) are cleaned by the
+         * one-shot v3->v4 migration (tools/migrate_session_v3_to_v4.py); the loader
+         * only accepts the current schema. */
         cJSON_AddItemToArray(embedded, copy);
     }
 
@@ -80,7 +82,7 @@ static cJSON *turn_to_json(struct edc_turn *turn)
     else
         cJSON_Delete(embedded);
 
-    /* 已进组记忆的消息条数 (L1 折叠切点): 请求与 history 都从这里之后开始。 */
+    /* Messages already folded into group memory (the L1 fold cut): requests and history start after this. */
     cJSON_AddNumberToObject(tj, "folded_prefix", turn->folded_prefix);
 
     return tj;
@@ -101,14 +103,14 @@ static cJSON *task_to_json(struct edc_task *task)
 
     /* ── description & state ── */
     cJSON_AddStringToObject(tj, "description", task->description ? task->description : "");
-    /* 用户原文 (这个 task 是由哪条输入建成的)。**可选键**: 只有"由某条输入建成"
-     * 的任务才有它 (fold 的 system task、fork 的孩子、单测直接建的都没有)。
-     * 老文件没有这个键 → 读回 NULL, 所以不需要 schema 版本变更 (任务本来就是
-     * 逐字段重建的, 未知键一律忽略)。 */
+    /* Raw user input this task was built from. An OPTIONAL key: only tasks built
+     * from some input have it (fold system tasks, forked children and directly
+     * built test tasks do not). Old files lack it -> reads back NULL, so no schema
+     * bump is needed (tasks are rebuilt field-by-field and unknown keys are ignored). */
     if (task->raw_input)
         cJSON_AddStringToObject(tj, "raw_input", task->raw_input);
-    /* v5: 存**两件正交的事**, 而不是把五个相位塌成一个常量。
-     * step = 在哪一步 (原样存, 读回也原样), life = 活着吗。 */
+    /* v5: persist TWO orthogonal facts instead of collapsing five phases into one
+     * constant. step = where (stored and read back verbatim), life = alive or not. */
     cJSON_AddStringToObject(tj, "step", edc_task_step_name(task->step));
     cJSON_AddStringToObject(tj, "life", edc_task_life_name(task->life));
     cJSON_AddBoolToObject(tj, "is_group_leader", task->is_group_leader);
@@ -161,9 +163,9 @@ static cJSON *task_to_json(struct edc_task *task)
         cJSON_AddStringToObject(tj, "output", task->output);
     cJSON_AddNumberToObject(tj, "completion_seq", task->completion_seq);
 
-    /* ── token 统计 ──
-     * 跨会话/进程中断保持: resume 后侧边栏的 per-task token 计数不归零。
-     * cJSON 无 64 位整型, 用 double 承载 (计数远小于 2^53)。 */
+    /* ── token accounting ──
+     * Survives a session/process interruption: the sidebar's per-task token count
+     * does not reset after resume. cJSON has no 64-bit int; double carries it. */
     cJSON_AddNumberToObject(tj, "tokens_prompt", (double)task->tokens_prompt);
     cJSON_AddNumberToObject(tj, "tokens_completion", (double)task->tokens_completion);
     cJSON_AddNumberToObject(tj, "tokens_total", (double)task->tokens_total);
@@ -173,8 +175,8 @@ static cJSON *task_to_json(struct edc_task *task)
     cJSON_AddNumberToObject(tj, "last_hist_len", (double)task->last_hist_len);
     cJSON_AddNumberToObject(tj, "last_turn_len", (double)task->last_turn_len);
 
-    /* L2 水位 (v7): session 记忆事件表的"看过"位置 + 头部块的锚定 token。
-     * 两个都随 task 走 —— 单写者 = 这个 task 自己 (见 edc_task.h)。 */
+    /* L2 watermarks (v7): the session memory event table's "seen" position + the head
+     * block's anchor tokens. Both travel with the task; the single writer is the task. */
     cJSON_AddNumberToObject(tj, "memo_seen_seq", (double)task->memo_seen_seq);
     cJSON_AddNumberToObject(tj, "last_prefix_tokens", (double)task->last_prefix_tokens);
 
@@ -188,10 +190,10 @@ static cJSON *task_to_json(struct edc_task *task)
     /* ── todos ── */
     if (task->todos)
         cJSON_AddItemToObject(tj, "todos", cJSON_Duplicate(task->todos, 1));
-    /* todo 同步节流计数 (距上次 todowrite 的 LLM 请求数, 跨会话保持) */
+    /* todo sync throttle count (LLM requests since the last todowrite; survives sessions) */
     cJSON_AddNumberToObject(tj, "todo_sync_gap", task->todo_sync_gap);
 
-    /* ── 未完成工具调用 (resume 账本) ── */
+    /* ── Incomplete tool calls (resume ledger) ── */
     if (task->tool_calls)
     {
         cJSON *tc = cJSON_CreateArray();
@@ -224,7 +226,7 @@ static cJSON *task_to_json(struct edc_task *task)
     }
     cJSON_AddItemToObject(tj, "turns", turns_json);
 
-    /* ── active_turn (在途回合, 独立字段) ── */
+    /* ── active_turn (the in-flight turn, a separate field) ── */
     if (task->active_turn)
         cJSON_AddItemToObject(tj, "active_turn", turn_to_json(task->active_turn));
 
@@ -235,9 +237,10 @@ static cJSON *task_to_json(struct edc_task *task)
  *  Serialize a single group
  *  ══════════════════════════════════════════════════════════════ */
 
-/* ── 落盘判据: 谁上盘 ────────────────────────────────────────
- * lifetime 轴已退休: 每个任务都上盘, 不再有"不活过重启"的任务。于是这里只剩两条 ——
- * 一个组没有成员就不写盘 (不特判 kind), 以及下面 tasks 块里"空壳任务"那一关。 */
+/* ── Persist predicate: who goes to disk ─────────────────────
+ * The lifetime axis is retired: every task persists, and no task "does not survive a
+ * restart". Two rules remain -- a group with no members is not written (no special
+ * kind), and the "shell task" gate in the tasks block below. */
 
 static cJSON *group_to_json(struct edc_task_group *group)
 {
@@ -271,7 +274,7 @@ static cJSON *group_to_json(struct edc_task_group *group)
 
 cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sched)
 {
-    (void)sched; /* 前台组现在只存在 session 上, 序列化不再需要 scheduler */
+    (void)sched; /* the foreground group lives on the session now; serialization no longer needs the scheduler */
     if (!session)
         return NULL;
 
@@ -288,8 +291,9 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
         cJSON_AddStringToObject(sj, "workdir", session->workdir);
     if (session->active_task)
         cJSON_AddStringToObject(sj, "active_task_id", session->active_task->task_id);
-    /* 前台组是 session 自己的属性 —— 直接读它, 后台 session 落盘也带得回正确 id。
-     * (scheduler 不再持有副本, 故无需回退。) */
+    /* The foreground group is the session's own attribute -- read it directly; a
+     * background session's persist brings back the right id (the scheduler keeps no
+     * copy, so no fallback). */
     if (session->foreground_group)
         cJSON_AddStringToObject(sj, "foreground_group_id", session->foreground_group->group_id);
     cJSON_AddNumberToObject(sj, "next_completion_seq", (int)session->next_completion_seq);
@@ -301,7 +305,7 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
         struct edc_task_group *g;
         DL_FOREACH(session->groups, g)
         {
-            /* 空组不写盘 (不特判 kind)。 */
+            /* empty group: not written (no special kind) */
             if (g->member_count == 0)
                 continue; /* skip empty */
             cJSON_AddItemToArray(groups_json, group_to_json(g));
@@ -318,23 +322,24 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
             struct edc_task *t;
             LL_FOREACH2(g->members, t, group_next)
             {
-                /* 落盘判据 (retire-waiting-input.md §4 第 4 行):
-                 *   丢 "READY 且身上什么都没有" 的任务, 不丢真任务。
-                 *
-                 * 为什么是这三个条件的合取:
-                 *  - step==READY && life==ALIVE (== 旧 `state == TASK_IDLE`) 给出
-                 *    "停着"的候选;
-                 *  - 但 "停在 READY" 有两种截然不同的来源, 而 task 上没有字段能区分:
-                 *    ① 旧模型残渣 —— 创建后不带 input 就停在那儿 (fork leader、
-                 *       /task join 的 Joined task、@task 无正文), 它不该存在;
-                 *    ② 被兜底/迁移强行放回 READY 的**真任务** (resume 的三条死胡同
-                 *       从 TOOL_CALLING/LLM_PROCESSING 强制回 READY), 它这时
-                 *       `active_turn` 和工具账本都还在, 丢掉就是数据丢失。
-                 *    两个内容条件正是把 ② 择出去。
-                 *
-                 * 新模型下 ① 不该再被生产出来 (创建任务必然带着它的 input; 休眠态
-                 * 走 SUSPENDED + /task resume) —— 如果真的落进这里, 说明还有调用方
-                 * 在造 turn-less 任务, 于是告警而不是静默吞掉。 */
+                /* Persist predicate: drop a task that is "READY with nothing on it",
+                 * not a real task. The conjunction of three conditions:
+                 *  - step==READY && life==ALIVE (== the old `state == TASK_IDLE`)
+                 *    gives the "parked" candidate;
+                 *  - but "parked at READY" has two very different sources and no task
+                 *    field distinguishes them:
+                 *    1) legacy residue -- created with no input and left there (fork
+                 *       leaders, /task join's Joined task, @task with no body), which
+                 *       should not exist;
+                 *    2) a REAL task forced back to READY by fallback/migration (resume
+                 *       forces the three dead ends back from TOOL_CALLING/
+                 *       LLM_PROCESSING); its active_turn and tool ledger are still
+                 *       there, so dropping it is data loss.
+                 *    The two content conditions filter out (2).
+                 * Under the new model (1) should no longer be produced (creating a task
+                 * always carries its input; sleep uses SUSPENDED + /task resume) -- if
+                 * one still lands here, a caller is building turn-less tasks, so warn
+                 * rather than swallow it. */
                 if (t->step == EDC_TASKSTEP_READY && t->life == EDC_LIFE_ALIVE && !t->active_turn &&
                     !t->tool_calls)
                 {
@@ -349,9 +354,9 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
     }
     cJSON_AddItemToObject(root, "tasks", tasks_json);
 
-    /* ── L2: session 级记忆 (v7) ──
-     * 顶层键 (与 session/groups/tasks 平级): 它不是某个组的属性。空结构也写 ——
-     * 加载端因此不必处理"键不在"这一支。 */
+    /* ── L2: session-level memory (v7) ──
+     * A top-level key (peer of session/groups/tasks): it is not a group's attribute.
+     * Even an empty structure is written, so the loader need not handle a missing key. */
     cJSON_AddItemToObject(root, "session_memory", edc_session_memory_to_json(session->memo));
 
     return root;
@@ -364,11 +369,12 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
 /**
  * Normalize a state read back from disk.
  *
- * 进程退出时所有未完成任务都被原样落盘 (WAITING_INPUT / WAITING_DEPS /
- * LLM_PROCESSING / TOOL_CALLING)。加载时一律收敛为 SUSPENDED —— 即"重新
- * 打开后先全部停住, 由用户对单个 task 发 resume 再重新判定该回到
- * WAITING_DEPS / WAITING_INPUT / LLM_PROCESSING 还是继续工具链"。
- * 终态 (COMPLETED / CANCELLED / ERROR) 与已 SUSPENDED 的原样保留。
+ * On process exit every unfinished task is persisted as-is (WAITING_INPUT /
+ * WAITING_DEPS / LLM_PROCESSING / TOOL_CALLING). On load they all converge to
+ * SUSPENDED -- everything stops on reopen, and the user resumes a task individually to
+ * decide whether it returns to WAITING_DEPS / WAITING_INPUT / LLM_PROCESSING or
+ * continues its tool chain. Terminal states (COMPLETED / CANCELLED / ERROR) and
+ * already-SUSPENDED ones are kept as-is.
  */
 /**
  * Rebuild a turn from JSON: its embedded "messages" array.
@@ -588,7 +594,7 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
         if (!task_id)
             continue;
 
-        /* 磁盘上的 "channel" 键是兼容物 (唯一的通道 = adapter): 读端忽略它的值。 */
+        /* The on-disk "channel" key is a compatibility artifact (the only channel = adapter); the reader ignores its value. */
 
         struct edc_task *task =
             edc_task_new(task_id, cJSON_GetStringValue(cJSON_GetObjectItem(tj, "session_id")) ?: "",
@@ -598,23 +604,25 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
         if (!task)
             continue;
 
-        /* 用户原文 (可选键: 老文件没有它 → NULL, 与 fork/system task 一样)。 */
+        /* Raw user input (optional key: absent in old files -> NULL, like fork/system tasks). */
         {
             const char *raw_input = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "raw_input"));
             if (raw_input && *raw_input)
                 task->raw_input = sdsnew(raw_input);
         }
 
-        /* v5: step 与 life 分别读回 —— 相位**不再被粗化**。
+        /* v5: step and life are read back separately -- the phase is NOT coarsened.
          *
-         * 唯一收敛的是 life: 重启之后没有任何东西在跑, 所以 ALIVE 落地成
-         * SUSPENDED。但 **step 原样保留** —— 这正是这次改动要保住的东西: 以前
-         * normalize_interrupted_state 把五个相位一起塌成 SUSPENDED, "任务到哪了"
-         * 就此丢失, resume 只能靠工具账本 / active_turn 顺序探测把它猜回来。
+         * Only life converges: after a restart nothing is running, so ALIVE lands as
+         * SUSPENDED. But step is kept verbatim -- that is exactly what this change
+         * preserves: normalize_interrupted_state used to collapse five phases into
+         * SUSPENDED, losing "where the task was", and resume could only guess it back
+         * from the tool ledger / active_turn.
          *
-         * 例外: 折叠任务 (sink = GROUP_MEMORY)。它现在也落盘, 好让被重启打断的
-         * 那一轮能续跑 —— 在途请求没了, 所以置回 READY, 由消息末尾的扫描重新派发
-         * (它保留 active_turn / sink_group / 切点三元组)。 */
+         * Exception: a fold task (sink = GROUP_MEMORY). It persists too now, so a
+         * restart-interrupted round can resume -- the in-flight request is gone, so it
+         * goes back to READY for the end-of-message scan to redispatch (it keeps its
+         * active_turn / sink_group / cut triple). */
         task->step = edc_task_classify_step(cJSON_GetStringValue(cJSON_GetObjectItem(tj, "step")));
         task->life = edc_task_classify_life(cJSON_GetStringValue(cJSON_GetObjectItem(tj, "life")));
         {
@@ -680,7 +688,7 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
         if ((v = cJSON_GetObjectItem(tj, "todo_sync_gap")) && cJSON_IsNumber(v))
             task->todo_sync_gap = (int)cJSON_GetNumberValue(v);
 
-        /* ── 未完成工具调用 (resume 账本) ── */
+        /* ── Incomplete tool calls (resume ledger) ── */
         if ((v = cJSON_GetObjectItem(tj, "tool_calls")) && cJSON_IsArray(v))
         {
             size_t tcn = cJSON_GetArraySize(v);
@@ -727,11 +735,14 @@ static void deser_fork_chains(cJSON *json, struct task_map_entry **id_map)
     }
 }
 
-/* 一个 task 只能属于一个组: 从 session 的**所有**组里把它摘出来 (只可能挂在某个组的成员
- * 表上)。盘上出现"同一个 task 被两个组 claim"(手改过的档 / 旧档 / id 撞车)时, 靠这一手保证
- * 不会出现双重成员关系 —— 那会让同一个对象挂两个链表, 释放时 double free (ASAN 抓到过)。
- * 看列表而不是看 `task->group`: 成员路径上那个字段不一定是权威。
- * `only_group` 非 NULL = 只摘这一个组 (把成员挂到它自己名下时用)。 */
+/* A task belongs to one group only: detach it from ALL of the session's groups (it
+ * can only be on some group's member list). When disk shows "one task claimed by two
+ * groups" (hand-edited / old archives / id collision), this prevents a double
+ * membership, which would put the same object on two linked lists and double-free on
+ * release (ASAN caught it). Scan the lists, not `task->group`: on the member path that
+ * field is not necessarily authoritative.
+ * only_group non-NULL = detach from that one group only (used when attaching a member
+ * to its own group). */
 static void deser_detach_from_groups(struct edc_session *session, struct edc_task *task, const char *task_id,
                                      struct edc_task_group *only_group)
 {
@@ -742,15 +753,16 @@ static void deser_detach_from_groups(struct edc_session *session, struct edc_tas
     {
         if (only_group && g != only_group)
             continue;
-        /* 注意用 LL_FOREACH2(…, group_next): 成员链走的是 task 的 group_next 字段,
-         * 默认的 `next` 是**另一条链**, 用它扫等于什么都没扫 (踩过)。找到就摘 + break,
-         * 循环中唯一一次改动发生在 break 之前, 所以不需要 safe 变体。 */
+        /* Note LL_FOREACH2(..., group_next): the member chain runs on the task's
+         * group_next field; the default `next` is a DIFFERENT chain, so scanning with
+         * it does nothing (bitten before). Detach + break on match; the only mutation
+         * happens before the break, so no safe variant is needed. */
         struct edc_task *t;
         LL_FOREACH2(g->members, t, group_next)
         {
             if (t != task)
                 continue;
-            LL_DELETE2(g->members, t, group_next); /* 成员链的字段是 group_next, 不是 next */
+            LL_DELETE2(g->members, t, group_next); /* the member chain's field is group_next, not next */
             if (g->member_count > 0)
                 g->member_count--;
             log_warn("deserialize: task %s detached from group %s (a task belongs to one group only)",
@@ -777,9 +789,10 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
         bool is_orph = orph && cJSON_IsTrue(orph);
 
         struct edc_task *leader = task_map_get(id_map, leader_id);
-        /* 一个 task 只能属于一个组 (成员链表用**单个** group_next 字段串起来)。盘上若它
-         * 已经挂在别的组的成员表里 (手改过的档 / 旧档 / id 撞车), 先摘掉 —— 否则同一个对象
-         * 会同时挂在两个链表上, 释放时 double free (ASAN 抓到过)。 */
+        /* A task belongs to one group (the member list is threaded by a SINGLE
+         * group_next field). If disk shows it already on another group's member list
+         * (hand-edited / old archives / id collision), detach first -- else the same
+         * object would be on two lists and double-free on release (ASAN caught it). */
         deser_detach_from_groups(session, leader, leader_id, NULL);
         if (!leader && is_orph)
         {
@@ -811,10 +824,12 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
                 group->memory = sdsnew(cJSON_GetStringValue(mem));
         }
         {
-            /* v3: 折叠水位 (completion_seq)。旧存档只有 fold_cursor(下标),
-             * 由 deser_rebuild_group_history 依 turns_folded 推导, 这里不读。 */
-            /* 缺键 (老文件) => 0: 与该组所有 task 读回来的 last_fold_epoch 一致,
-             * 而缺位置信息 (last_hist_len==0) 会让锚失效 —— 都不会误信旧锚。 */
+            /* v3: fold watermark (completion_seq). Old archives only had fold_cursor
+             * (an index), derived by deser_rebuild_group_history from turns_folded; not
+             * read here. */
+            /* Missing (old file) => 0: consistent with every task's last_fold_epoch,
+             * and a missing position (last_hist_len==0) invalidates the anchor -- so an
+             * old anchor is never trusted. */
             cJSON *fe = cJSON_GetObjectItem(gj, "fold_epoch");
             if (fe && cJSON_IsNumber(fe))
                 group->fold_epoch = (uint32_t)cJSON_GetNumberValue(fe);
@@ -832,7 +847,7 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
                 struct edc_task *mt = task_map_get(id_map, mid);
                 if (!mt)
                     continue;
-                /* 同上: 只能属于一个组 —— 已在别处的先摘掉再挂过来。 */
+                /* Same: one group only -- detach from elsewhere before attaching. */
                 deser_detach_from_groups(session, mt, mid, group);
                 edc_task_group_add_task(group, mt);
             }
@@ -934,11 +949,12 @@ static void deser_deps(cJSON *json, struct task_map_entry **id_map, struct edc_s
     }
 }
 
-/* 依赖重建后的最终对账: 按 dep 标志 (completed/cancelled) 重算每个 task 的
- * deps_total / deps_completed, 并在所有依赖已满足时把 WAITING_DEPS 收敛到
- * WAITING_INPUT。运行时取消/完成事件按时间序触发, 恢复时 JSON 里的 deps
- * 顺序不定, 逐条 replay on_dep_cancelled/on_dep_completed 会产生与运行时
- * 不一致的中间状态, 这里一次性收敛, 保证确定性。 */
+/* Final reconciliation after dependency rebuild: recompute each task's deps_total /
+ * deps_completed from the dep flags (completed/cancelled), and converge WAITING_DEPS
+ * to WAITING_INPUT once all deps are satisfied. Runtime cancel/complete events fire in
+ * time order, but JSON deps have no fixed order on restore, so replaying
+ * on_dep_cancelled/on_dep_completed one by one would produce intermediate states
+ * inconsistent with runtime; this converges once, for determinism. */
 static void deser_reconcile_deps(struct task_map_entry **id_map)
 {
     for (int b = 0; b < TASK_MAP_BUCKETS; b++)
@@ -1021,8 +1037,9 @@ static void deser_global_ptrs(cJSON *sj, struct edc_session *session,
     const char *at_id = cJSON_GetStringValue(cJSON_GetObjectItem(sj, "active_task_id"));
     if (at_id)
         session->active_task = task_map_get(id_map, at_id);
-    /* 前台组只记到属主 session —— 它本就是 session 的属性, scheduler 不持有
-     * 副本 (装载 session 不再有副作用, 无需恢复当前视图)。 */
+    /* The foreground group is recorded only on its owning session -- it is a session
+     * attribute and the scheduler holds no copy (loading a session has no side effect;
+     * there is no current view to restore). */
     const char *fg_id = cJSON_GetStringValue(cJSON_GetObjectItem(sj, "foreground_group_id"));
     if (fg_id)
         session->foreground_group = group_map_get(group_map, fg_id);
@@ -1055,9 +1072,9 @@ bool edc_state_deserialize(cJSON *json, struct edc_session *session, struct edc_
         return false;
     }
     double ver_num = cJSON_GetNumberValue(ver);
-    /* 只接受当前 schema。老版本必须先跑一次性迁移
-     * (tools/migrate_session_v3_to_v4.py, 见 docs/session-model-v3.md §10) ——
-     * 加载路径不再替旧数据做兼容修补。 */
+    /* Only the current schema is accepted. An old version must run the one-shot
+     * migration first (tools/migrate_session_v3_to_v4.py, see
+     * docs/session-model-v3.md §10) -- the load path no longer patches old data. */
     if (ver_num != EDC_STATE_SCHEMA_VERSION)
     {
         log_error("deserialize: unsupported version %g (expected %d)", ver_num, EDC_STATE_SCHEMA_VERSION);
@@ -1067,7 +1084,7 @@ bool edc_state_deserialize(cJSON *json, struct edc_session *session, struct edc_
     session->groups = NULL;
     session->active_task = NULL;
 
-    /* L2 session 记忆 (v7): 顶层键, 先读 —— 后面任何用到它的地方都在此之后。 */
+    /* L2 session memory (v7): a top-level key, read first -- every use is after this. */
     edc_session_memory_free(session->memo);
     session->memo = edc_session_memory_from_json(cJSON_GetObjectItem(json, "session_memory"));
 

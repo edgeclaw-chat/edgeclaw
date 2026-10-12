@@ -1,16 +1,17 @@
 #pragma once
 
-// ── 模型层: 侧栏任务树 (TaskTreeModel) ──────────────────────────────────────
+// Model layer: the sidebar task tree (TaskTreeModel).
 //
-// 从前这些状态 (会话元信息 + 解析后的分组/任务 + 折叠状态) 全是 TaskWidget 的
-// 私有字段, 由它的 SetSnapshot() 就地重建。现在归到一个模型里:
+// These states (session meta + parsed groups/tasks + fold state) used to be
+// TaskWidget's private fields, rebuilt in place by SetSnapshot(). They now live
+// in a model:
+//   * TaskTreeModel holds the whole "this tree + who folded what" state and
+//     projects the snapshot (DTO) into display GroupInfo/TaskInfo (with
+//     description truncation) and fold-state continuity;
+//   * TaskWidget degrades to "draw this tree"; a fold click just changes the model.
 //
-//   * TaskTreeModel 持有"这一棵树 + 谁折叠了"的全部状态, 并负责把快照 (DTO)
-//     投影成展示用的 GroupInfo/TaskInfo (含描述截断) 与折叠状态的延续;
-//   * TaskWidget 退化成"把这棵树画出来"的视图, 折叠点击也只是改模型。
-//
-// 折叠状态属于模型而不属于视图: 它必须跨快照刷新存活 (后台更新不许把用户手动
-// 折起的组重新展开), 这正是模型该管的事。
+// Fold state belongs to the model, not the view: it must survive snapshot
+// refreshes (a background update must not re-expand a group the user folded).
 
 #include "edc_task_snapshot.hpp"
 
@@ -53,8 +54,9 @@ class TaskTreeModel
         std::vector<TaskInfo> tasks;
     };
 
-    // 用一棵快照替换当前树 (nullptr = 清空)。用户折叠的组若仍存在则保留其状态,
-    // 新出现的组在它是 active 组时展开。
+    // Replace the current tree with a snapshot (nullptr = clear). A group the user
+    // folded keeps its state if it still exists; a new group expands when it is the
+    // active group.
     void Apply(const TaskSnapshot *snap);
 
     const std::string &session_id() const
@@ -83,7 +85,8 @@ class TaskTreeModel
         section_collapsed_ = !section_collapsed_;
     }
 
-    // 未记录的组视作未展开 (与旧版 map::operator[] 的默认值一致)。
+    // A group with no record is treated as collapsed (matching the old
+    // map::operator[] default).
     bool group_expanded(const std::string &group_id) const
     {
         const auto it = group_expanded_.find(group_id);
@@ -95,7 +98,8 @@ class TaskTreeModel
         v = !v;
     }
 
-    // 树里有没有处在 processing 状态的任务 (窗口据此决定要不要继续要动画帧)。
+    // Whether any task in the tree is processing (the window uses it to decide
+    // whether to keep requesting animation frames).
     bool HasProcessingTask() const;
 
   private:

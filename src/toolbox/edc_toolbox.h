@@ -10,7 +10,7 @@
 #include <stdbool.h>
 
 struct edc_tool;
-struct edc_task; /* fwd: 发起工具调用的 task，经 ctx->task 提供给工具 */
+struct edc_task; /* fwd: the task that issued the tool call; passed to tools via ctx->task */
 
 struct edc_toolbox
 {
@@ -25,14 +25,14 @@ struct edc_toolbox_call_ctx
 {
     struct edc_toolbox *tb;
     edc_channel_type call_from_type;
-    void *request_id; /* 发起该次工具调用的 task 的 request_id (由 toolbox actor 注入) */
+    void *request_id; /* the request_id of the task that issued this tool call (injected by the toolbox actor) */
     struct edc_task
-        *task; /* 发起该次工具调用的 task (与 request_id 同源；app 构建请求链时注入，非 task 路径为 NULL) */
+        *task; /* the task that issued this tool call (same source as request_id; injected by app when building the request chain; NULL on a non-task path) */
     void *priv;
 
 };
 
-/* struct edc_toolbox_emit_msg 已移至 edc_exec_io.h (executor 的 I/O 词表)。 */
+/* struct edc_toolbox_emit_msg moved to edc_exec_io.h (the executor's I/O vocabulary). */
 
 extern struct edc_toolbox_call_ctx *edc_toolbox_call_ctx_new(struct edc_toolbox *tb, edc_channel_type channel_type,
                                                              void *request_id, struct edc_task *task, void *priv);
@@ -52,10 +52,14 @@ extern void edc_toolbox_exec(struct edc_toolbox_call_ctx *, const char *name, cJ
  * through the scheduler actor, which only forwards it when the originating
  * task is still the session's active task — so background tasks stay silent.
  *
- * render_pref 由发送方（工具）按输出内容显式声明，渲染端零猜测：
- *   - emit_tool_message_plain：纯文本输出（代码/命令输出/确认消息等），渲染端原样显示；
- *   - emit_tool_message_md：输出本身是 Markdown（如 checklist/表格），按 Markdown 渲染。
- * 消息经 scheduler 转发，仅在来源 task 仍为 active task 时显示——后台任务保持静默。 */
+ * render_pref is declared explicitly by the sender (the tool) from the output's nature;
+ * the renderer does not guess:
+ *   - emit_tool_message_plain: plain-text output (code/command output/confirmations),
+ *     shown as-is;
+ *   - emit_tool_message_md: the output itself is Markdown (a checklist/table), rendered
+ *     as Markdown.
+ * The message is forwarded through the scheduler and shown only while the source task is
+ * still the active task -- background tasks stay silent. */
 extern void edc_toolbox_emit_tool_message_plain(struct edc_toolbox_call_ctx *ctx, const char *header,
                                                 const char *content);
 extern void edc_toolbox_emit_tool_message_md(struct edc_toolbox_call_ctx *ctx, const char *header, const char *content);

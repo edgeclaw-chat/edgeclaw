@@ -10,9 +10,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* 通道序列化 (唯一通道 = adapter)：写进 task/message 的 "channel" 字段, 属于落盘格式
- * 兼容。原先住 edc_channel_actor.c —— 那是边界模块, 而 kernel 的 state_serializer 也
- * 要用它, 会引成一条"底层 → 边界"的反向边; 挪到 edc_channel_type 的定义处后方向就正了。 */
+/* Channel serialization (the only channel = adapter): writes the task/message "channel"
+ * field; an on-disk format compatibility concern. It used to live in
+ * edc_channel_actor.c -- a boundary module -- but the kernel's state_serializer needs it
+ * too, which would draw a "low-level -> boundary" reverse edge; moved next to
+ * edc_channel_type's definition, the direction is right. */
 cJSON *edc_channel_to_json(void)
 {
     cJSON *data = cJSON_CreateObject();
@@ -252,9 +254,10 @@ struct edc_config *edc_config_load(const char *edc_home)
     if (device_transport && cJSON_IsString(device_transport) && strlen(device_transport->valuestring) > 0)
         config->device_transport = sdsnew(device_transport->valuestring);
 
-    /* channel: 唯一的通道实现是 adapter (TUI)。老配置里的 cli/telegram/... 一律
-     * 拒绝。配置里已经没有需要**存下来**的通道字段了 —— 这里只做校验
-     * (告警/报错文案与多通道时代一致, 那是既有行为)。 */
+    /* channel: the only channel implementation is adapter (TUI). Old configs with
+     * cli/telegram/... are rejected outright. There is no channel field left to STORE --
+     * this only validates (the warning/error wording matches the multi-channel era,
+     * which is existing behaviour). */
     cJSON *channel = cJSON_GetObjectItem(conf, "channel");
     if (!channel || !cJSON_IsObject(channel))
     {
@@ -860,9 +863,10 @@ bool edc_config_set_sandbox_enabled(struct edc_config *cfg, bool enable)
     return true;
 }
 
-/* ── sandbox 配置的写口 ──────────────────────────────────────
- * 先落盘 (config.json), 成功后才改内存 —— 失败时内存与磁盘保持一致。
- * 它们只碰 config, 所以归 config 模块 (形状 C: 一个概念一个 owner)。 */
+/* ── Sandbox config writers ──────────────────────────────────
+ * Persist to config.json first, only then change memory -- memory and disk stay
+ * consistent on failure. They touch config only, so they belong to the config module
+ * (one concept, one owner). */
 
 static bool sds_path_list_contains(sds *arr, const char *p)
 {

@@ -1,15 +1,17 @@
 #ifndef __EDC_TASK_TYPES_H__
 #define __EDC_TASK_TYPES_H__
 
-/* ── Task 间依赖类型 ──────────────────────────────────────────
- * 从 edc_task.h 提取，放 common/ 以避免 shell ↔ app 循环依赖 */
+/* ── Task dependency types ────────────────────────────────────
+ * Extracted from edc_task.h into common/ to avoid a shell <-> app cycle. */
 
 typedef enum
 {
-    TASK_DEP_JOIN,     /* 等待源 task 完成，将源 output 注入自己上下文；
-                        * 源被取消 → 本 task 也随之取消（依赖不可满足） */
-    TASK_DEP_SEQUENCE, /* 等待源 task 完成，不注入 output（; 语义）；
-                        * 源被取消 → 仅抹去本条依赖，本 task 可继续 */
+    TASK_DEP_JOIN,     /* wait for the source task to finish, then inject its output
+                        * into this task's context; source cancelled -> this task is
+                        * cancelled too (the dependency is unsatisfiable) */
+    TASK_DEP_SEQUENCE, /* wait for the source task to finish, no output injection
+                        * (`;` semantics); source cancelled -> only this edge is
+                        * dropped, this task continues */
 } edc_task_dep_type;
 
 #endif

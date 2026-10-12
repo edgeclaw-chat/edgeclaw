@@ -8,21 +8,21 @@
 #include "sds.h"
 #include "utlist_fix.h"
 
-/* 只有"契约性、且不与人设重复"的文件留在提示词里 (2026-10-10 精简):
- *   - AGENTS.md  —— 行为契约 (工具/技能/记忆/事件约定)
- *   - TOOLS.md   —— 工具速查
- *   - IDENTITY.md—— 可选的身份覆盖 (缺省不存在)
- * SOUL.md / USER.md 已从提示词与种子工作区里去掉: 前者的原则/执行细则与 AGENTS.md、各工具
- * 描述、以及 dtbo-debug 这类技能重复; 后者是一份**全空的模板** (没有任何真实字段), 纯噪声。
- * pi 里也没有这两个东西 (它的身份是代码里的 preamble, 用户画像靠 AGENTS.md/追加文本)。 */
+/* Only files that are contractual and do not duplicate the persona stay in the prompt:
+ *   - AGENTS.md   -- behaviour contract (tools/skills/memory/event conventions)
+ *   - TOOLS.md    -- tool quick reference
+ *   - IDENTITY.md -- optional identity override (absent by default)
+ * SOUL.md / USER.md were dropped from the prompt and the seed workspace: the former's
+ * principles duplicate AGENTS.md, the tool descriptions and skills; the latter is an
+ * ALL-EMPTY template (no real fields), pure noise. pi has neither either. */
 const char *BOOTSTRAP_FILES[] = {"AGENTS.md", "TOOLS.md", "IDENTITY.md"};
 
-/* pi 的"上下文文件"候选 (docs/pi-system-prompt-guide.md §3.6): **同一目录里只取优先级最高的
- * 那一个**; override 只压制同目录, 不压制别的目录。 */
+/* pi's "context file" candidates (docs/pi-system-prompt-guide.md §3.6): IN a directory
+ * only the highest-priority one is taken; an override suppresses only its own directory. */
 static const char *CONTEXT_FILE_CANDIDATES[] = {"AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md",
                                                 "CLAUDE.MD"};
 
-/* 读一个上下文文件; 读不到返回 NULL (不报错 —— "没有"是正常情况, pi 那边整段都不出现)。 */
+/* Read a context file; NULL when unreadable (not an error -- absence is normal; on pi's side the section just does not appear). */
 static sds read_context_file(const char *path)
 {
     EdcError *err = NULL;
@@ -36,8 +36,9 @@ static sds read_context_file(const char *path)
     return content;
 }
 
-/* 追加一个文件 (带 pi 的 <project_instructions path="…"> 包裹); 空内容/重复路径都跳过。
- * `seen` 是我们已经收过的路径表 (去重: 工作目录就是 workspace 时别把 AGENTS.md 收两遍)。 */
+/* Append one file (wrapped in pi's <project_instructions path="...">); empty content /
+ * duplicate path are skipped. `seen` is the set already collected (so AGENTS.md is not
+ * collected twice when the workdir is the workspace). */
 static void append_context_file(sds *out, sds *seen, size_t *seen_n, const char *path)
 {
     for (size_t i = 0; i < *seen_n; i++)
@@ -58,8 +59,9 @@ static void append_context_file(sds *out, sds *seen, size_t *seen_n, const char 
         seen[(*seen_n)++] = sdsnew(path);
 }
 
-/* "Project Context" 段: 用户全局一份 + 从 session 的工作目录向上遍历到根 (先广后专)。
- * 一个都没命中 ⇒ 返回空串 (段就不出现, 与 pi 一致)。`skip` = 配置里关掉。 */
+/* The "Project Context" section: one user-global file + an upward walk from the
+ * session's workdir to the root (broad first, then specific). No hit => empty string
+ * (the section does not appear, matching pi). `skip` = disabled in config. */
 static sds load_project_context(const char *workspace, const char *workdir, bool skip)
 {
     if (skip)
@@ -67,20 +69,20 @@ static sds load_project_context(const char *workspace, const char *workdir, bool
 
     sds seen[64];
     size_t seen_n = 0;
-    /* workspace 里的 bootstrap 文件已经在别处收过了 —— 记下来免得重复。 */
+    /* The workspace's bootstrap files were collected elsewhere; remember them to avoid duplicates. */
     for (size_t i = 0; i < sizeof(BOOTSTRAP_FILES) / sizeof(BOOTSTRAP_FILES[0]) && seen_n < 64; i++)
         seen[seen_n++] = edc_path_join(workspace, BOOTSTRAP_FILES[i], NULL);
 
     sds body = sdsempty();
 
-    /* ① 用户全局 (pi: ~/.pi/agent/AGENTS.md; 我们: ~/.edgeclaw/AGENTS.md) */
+    /* (1) user-global (pi: ~/.pi/agent/AGENTS.md; us: ~/.edgeclaw/AGENTS.md) */
     sds bc_home = edc_config_resolve_bc_home();
     sds global = edc_path_join(bc_home, "AGENTS.md", NULL);
     append_context_file(&body, seen, &seen_n, global);
     sdsfree(global);
     sdsfree(bc_home);
 
-    /* ② 从 workdir 向上遍历 (收进数组, 再按 根 → workdir 的顺序输出) */
+    /* (2) walk up from workdir (collected into an array, output root -> workdir) */
     if (workdir && workdir[0])
     {
         sds dirs[64];
@@ -90,7 +92,7 @@ static sds load_project_context(const char *workspace, const char *workdir, bool
         {
             dirs[n++] = sdsdup(cur);
             sds parent = edc_path_dirname(cur);
-            /* 到根了 (dirname 不再变) 或 dirname 失败 ⇒ 停 */
+            /* Reached the root (dirname stops changing) or dirname failed => stop */
             if (!parent || strcmp(parent, cur) == 0)
             {
                 sdsfree(parent);
@@ -99,7 +101,7 @@ static sds load_project_context(const char *workspace, const char *workdir, bool
             sdsfree(cur);
             cur = parent;
         }
-        sdsfree(cur); /* 退出时 cur 还没被释放 (break 那条路) —— 见上面每步先 free 旧的 */
+        sdsfree(cur); /* cur is still alive on exit (the break path) -- each step above frees the old one */
 
         for (size_t i = n; i-- > 0;)
         {
@@ -112,7 +114,7 @@ static sds load_project_context(const char *workspace, const char *workdir, bool
                     sdsfree(content);
                     append_context_file(&body, seen, &seen_n, path);
                     sdsfree(path);
-                    break; /* 同一目录只取优先级最高的那一个 */
+                    break; /* only the highest-priority one per directory */
                 }
                 if (content)
                     sdsfree(content);
@@ -296,10 +298,11 @@ static sds edc_context_build_permissions(struct edc_config *conf)
     return out;
 }
 
-/* session 记忆的**唯一**提示：常量文本，零可变内容（没有条数、没有内容、没有 id）。
- * 放在 system prompt 的**最后** —— 它是模型要看那段长提示（bootstrap/技能可能有几万 token）
- * 时最后读到的东西，recency 最好；而"条数/内容"由请求期队尾通知带（见 docs/l2-session-memory.md
- * §1.2.1）。放在这里而不是每次现拼一个块：常量 ⇒ 不碰 prompt cache 前缀。 */
+/* The ONLY session-memory hint: constant text, zero variable content (no count, no
+ * content, no ids). Placed at the END of the system prompt -- the last thing the model
+ * reads before the long prompt (bootstrap/skills can be tens of thousands of tokens),
+ * giving it best recency; the count/content come from the request-time tail notice.
+ * Constant => the prompt cache prefix is untouched. */
 static const char kSessionMemoryHint[] =
     "\n## Session Memory\n"
     "This session keeps a shared memory of durable knowledge (decisions, constraints, gotchas, external facts),\n"
@@ -319,8 +322,9 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
     sds identity = edc_context_get_identity(os_name, workspace, workdir);
     sds permissions = edc_context_build_permissions(conf);
     sds bootstrap = edc_context_load_bootstrap_files(workspace);
-    /* 上下文文件 (pi §3.6): 用户全局 + 从**这个 session 的工作目录**向上遍历 —— 于是绑定到某个
-     * 项目目录的会话, 会真的吃到那个项目的 AGENTS.md。 */
+    /* Context files (pi §3.6): user-global + an upward walk from THIS session's workdir
+     * -- so a session bound to a project directory really picks up that project's
+     * AGENTS.md. */
     sds project_context = load_project_context(workspace, workdir, conf->skip_context_files);
     sds skills = edc_context_load_skills(workspace);
 
@@ -342,35 +346,37 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
 
     return system_prompt;
 }
-/* ── task todo list → 运行时 reminder (请求队尾) ────────────────
- * (2026-09-09: 从"头部 system prompt 尾部注入"改为"请求消息列表最末尾追加
- * 绝对新鲜的 system reminder"——头部注入在长上下文里易被模型遗忘; 队尾紧贴
- * 模型开始生成的位置。同年同日再改: 不每轮请求都发, 由 edc_app_cb_send_llm
- * 按 edc_task_llm_request_poke 节流 —— 隔了 EDC_TODO_SYNC_REMIND_GAP 条对话
- * (LLM 请求) 都没调用过 todowrite 才生成一次 (达阈值清零重计)。
- * 两段式骨架文本 (含 <system-reminder> 包裹、状态段内容选择、逐轮同步节拍/
- * 建计划引导两个分支) 由 edc_context_render_todo_reminder 统一生成 —— 与
- * todowrite 工具每次成功返回的 result 逐字节一致 (同一渲染源, 不再有
- * 独立的 "# TODO" checklist md 形态)。本函数只负责把这份文本包成一条
- * role=system 消息。
- * 副本语义: 生成新 system 消息, 绝不改动组内共享的 history[0] / task。 */
+/* ── task todo list -> runtime reminder (request tail) ──────────
+ * (2026-09-09: changed from "injected at the head system prompt's tail" to
+ * "appended at the very end of the request message list, absolutely fresh" -- a head
+ * injection is easily forgotten in a long context, while the tail sits right where the
+ * model starts generating. Same day: not sent every request; throttled by
+ * edc_app_cb_send_llm via edc_task_llm_request_poke -- only when
+ * EDC_TODO_SYNC_REMIND_GAP requests have passed without a todowrite call (reset at the
+ * threshold).
+ * The two-part skeleton text is generated solely by
+ * edc_context_render_todo_reminder, byte-identical to the todowrite tool's successful
+ * result (same render source, no separate "# TODO" checklist form). This function only
+ * wraps that text into one role=system message.
+ * Copy semantics: builds a new system message, never touches the shared history[0] / task. */
 
-/* 运行时 todo reminder (role=system 的新消息, 每次生成都绝对新鲜)。由
- * edc_app_cb_send_llm 在节流判定通过后调用, 塞到本次 LLM 请求消息列表的
- * 最末尾 (req->tail_system, 真正队尾: llm actor 在 history + 当前 turn 之后
- * 追加)。返回三种形态:
- *  - task 持有非空 todo 清单 → <system-reminder> 内: 状态段 (清单行) + 指令段
- *    (逐轮同步节拍)。内容不带 base, 独立成一条 system 消息;
- *  - task 非 NULL 但尚无/已清空清单 → 同骨架: 状态段 "尚无清单" + 指令段
- *    (建计划引导);
- *  - task 为 NULL → NULL。
- * 副本语义: 返回未挂到任何数组的新消息对象, 随请求释放; 不改 task/group。 */
-/* 纯渲染"- [ ]/- [x]" 清单行 (无 "<system-reminder>" 包裹、无引导段) ——
- * 与 render_reminder 共用同一行格式源: 它是 todo reminder 状态段的正文, 供
- * 需要把清单行单独嵌入的调用方使用。items 已在工具入口校验过 (status 合法、
- * 至多一个 in_progress)。对缺失字段做保守兜底 (缺省视为 pending / 空文本)，
- * 避免 app 侧读取历史数据时因脏数据崩溃。
- * *out_completed (可为 NULL) 返回已完成条数。返回 sds，调用方负责 sdsfree。 */
+/* Runtime todo reminder (a fresh role=system message every time). Called by
+ * edc_app_cb_send_llm after the throttle passes; appended at the very end of the request
+ * message list (req->tail_system; the llm actor appends after history + the current
+ * turn). Three shapes:
+ *  - task has a non-empty todo list -> <system-reminder> with a status section (the list
+ *    rows) + a turn-instruction section;
+ *  - task non-NULL but empty/cleared -> same skeleton with "no list yet" + the planning
+ *    guide;
+ *  - task NULL -> NULL.
+ * Copy semantics: returns a fresh message not attached to any array, freed with the
+ * request; no change to task/group. */
+/* Renders plain "- [ ]/- [x]" list rows only (no wrapper, no guidance) -- the same line
+ * format source as render_reminder: it is the todo reminder's status body, for callers
+ * that need the rows alone. items is already validated at the tool entry (legal status,
+ * at most one in_progress); missing fields degrade conservatively (pending / empty) so
+ * app-side reads of historical data cannot crash.
+ * *out_completed (may be NULL) returns the completed count. Returns sds, caller sdsfree. */
 sds edc_context_render_todo_body(cJSON *items, int *out_completed)
 {
     int total = items ? cJSON_GetArraySize(items) : 0;
@@ -415,31 +421,31 @@ sds edc_context_render_todo_body(cJSON *items, int *out_completed)
     return lines;
 }
 
-/* ── todo reminder 两段式骨架 (单一渲染源) ──────────────────────
- * 提醒 = "系统状态 + 本轮指令" (2026-09-09, 参照用户模板重构):
- *   ① ## 🚨 CURRENT TASK SYSTEM STATE —— 当前 todo 清单全貌 (与工具回显
- *      同格式的清单行), 让模型看到整个计划与执行到哪一步;
- *   ② ## 🛠️ INSTRUCTIONS FOR THIS TURN —— 每轮必须遵守的节拍: 检查上一个
- *     工具的执行结果; 当前条目干完后的【下一个动作必须是调用 todowrite】
- *     同步状态; 当前条目未标 [x] 不得跳到下一项。逐轮强约束, 解决"执行完
- *     好几步才想起来更新一次清单"的滞后问题。
- * 本文件 (edc_context.c) 是这套文本的唯一生成地 —— 原先它在 edc_tools_todo.c
- * 里, 但渲染的是 **task 的 todos**（上下文材料），生产读取方是本文件的
- * edc_context_make_todo_reminder; 留在工具箱侧会让 kernel 反过来引 tool 模块。
- * 搬到这里后, "工具回显与 reminder 逐字节一致"由结构保证（同一个实现）:
- *  todowrite 工具每次
- * 成功返回的 result/回显 就是这条 todo reminder 本身, LLM 请求队尾的 reminder
- * (edc_context_make_todo_reminder 的 content) 也由同一函数生成 —— 不再存在
- * 独立的 "# TODO" checklist markdown 形态, 模型在任何位置看到的清单格式
- * 逐字节一致。 */
+/* ── The two-part todo reminder skeleton (single render source) ─
+ * reminder = "system state + this turn's instructions":
+ *   1) ## CURRENT TASK SYSTEM STATE -- the whole todo list (rows in the tool's format),
+ *      so the model sees the plan and how far along it is;
+ *   2) ## INSTRUCTIONS FOR THIS TURN -- the per-turn cadence: check the last tool's
+ *      result; after finishing the current item the NEXT action must be a todowrite
+ *      to sync state; do not move on until the current item is marked [x]. A per-turn
+ *      constraint fixing the "several steps before updating the list" lag.
+ * edc_context.c is the sole generator of this text -- it used to live in
+ * edc_tools_todo.c, but it renders the task's todos (context material) and the
+ * production reader is this file's edc_context_make_todo_reminder; leaving it in the
+ * toolbox would make kernel depend on the tool module. Once here, "tool echo and
+ * reminder are byte-identical" is structural (one implementation): the todowrite
+ * tool's successful result IS this reminder, and the request-tail reminder
+ * (edc_context_make_todo_reminder's content) is generated by the same function -- there
+ * is no separate "# TODO" markdown form. */
 
-/* 状态段标题 / 指令段标题 / 无清单状态行 (两分支共用) */
+/* Status heading / instruction heading / no-list status line (shared by both branches) */
 static const char *kTodoStateHeader = "## 🚨 CURRENT TASK SYSTEM STATE\n";
 static const char *kTodoTurnHeader = "## 🛠️ INSTRUCTIONS FOR THIS TURN\n";
 static const char *kTodoNoListState = "No todo list exists for this task yet.\n";
 
-/* 逐轮同步节拍 (清单非空时注入)。核心诉求: 不许干完好几步才更新一次 todo——
- * 当前条目一完成, 下一步就强制 todowrite 同步。 */
+/* Per-turn cadence (injected when the list is non-empty): never finish several steps
+ * before updating the todo -- once the current item is done, the next action must sync
+ * via todowrite. */
 static const char *kTodoTurnGuide =
     "- Check the execution result of the last tool call.\n"
     "- If the item you are working on is fully finished, your NEXT SINGLE ACTION must be calling "
@@ -448,8 +454,9 @@ static const char *kTodoTurnGuide =
     "- Do NOT jump to the next item until the current one is marked as [x].\n"
     "- When the whole list is done, keep the completed list — do not clear it or invent items.\n";
 
-/* 建清单引导 (尚无清单时注入)。多步任务先把计划落到 todowrite, 之后每轮
- * 自然切换到 kTodoTurnGuide 的逐轮同步节拍。 */
+/* Planning guide (injected when there is no list yet): a multi-step task first writes
+ * its plan with todowrite, after which each round naturally switches to
+ * kTodoTurnGuide's cadence. */
 static const char *kTodoPlanningGuide =
     "- If the request is multi-step — several distinct steps or multiple tool calls (research, coding, "
     "debugging, batch edits, ...) — your FIRST action must be calling todowrite to create a "
@@ -457,12 +464,13 @@ static const char *kTodoPlanningGuide =
     "- Simple single-step requests or direct conversation do NOT need a todo list — just answer "
     "without creating one.\n";
 
-/* 完整 todo reminder 文本 (含 <system-reminder> 包裹), 与 LLM 请求队尾的
- * reminder (edc_context_make_todo_reminder 的 content) 逐字节一致 ——
- * todowrite 工具 result/回显与上下文提醒共用此单一渲染源。两分支互斥:
- *  - items 非空 → 状态段 = 清单行 (render_body), 指令段 = 逐轮同步节拍;
- *  - items 为 NULL/空 → 状态段 = "尚无清单", 指令段 = 建计划引导。
- * 返回 sds, 调用方负责 sdsfree。 */
+/* The full todo reminder text (with the <system-reminder> wrapper), byte-identical to
+ * the request-tail reminder (edc_context_make_todo_reminder's content) -- the todowrite
+ * tool result and the context reminder share this single render source. Two exclusive
+ * branches:
+ *  - items non-empty -> status = the rows (render_body), instructions = the cadence;
+ *  - items NULL/empty -> status = "no list yet", instructions = the planning guide.
+ * Returns sds, caller sdsfree. */
 sds edc_context_render_todo_reminder(cJSON *items)
 {
     int has_list = items && cJSON_GetArraySize(items) > 0;
@@ -472,7 +480,7 @@ sds edc_context_render_todo_reminder(cJSON *items)
     if (has_list)
     {
         sds body = edc_context_render_todo_body(items, NULL);
-        content = sdscat(content, body); /* 清单行, 每行以 \n 结尾 */
+        content = sdscat(content, body); /* list rows, each ending with \n */
         sdsfree(body);
     }
     else
@@ -480,7 +488,7 @@ sds edc_context_render_todo_reminder(cJSON *items)
         content = sdscat(content, kTodoNoListState);
     }
 
-    content = sdscat(content, "\n"); /* 状态段与指令段之间留空行 */
+    content = sdscat(content, "\n"); /* blank line between the status and instruction sections */
     content = sdscat(content, kTodoTurnHeader);
 
     content = sdscat(content, has_list ? kTodoTurnGuide : kTodoPlanningGuide);
@@ -503,14 +511,16 @@ cJSON *edc_context_make_todo_reminder(struct edc_task *task)
     return sys;
 }
 
-/* 本次 LLM 请求 "system 部分" (头部) 的唯一组装入口: system prompt + group memory。
- * 不含任何 todo 内容——todo 引导一律由 edc_context_make_todo_reminder 生成并塞到请求
- * 最末尾。引用/副本/现拼语义见 edc_context.h 注释。
+/* The single assembly entry for this request's "system part" (the head): system prompt +
+ * group memory. No todo content -- todo guidance always comes from
+ * edc_context_make_todo_reminder at the very end. Reference/copy/build semantics are in
+ * edc_context.h.
  *
- * **顺序 = cache 友好** (2026-10-10 裁决, docs/l2-session-memory.md §3.1): **常量在前,
- * 易变的在后**。系统提示词在会话内是不动的对象 (rebuild 也是复用同一个 history[0])，而
- * `## Group Memory` 每次折叠落地都会被重写 —— 它若排在前面, 一变就把后面那份常量一起
- * 打掉 (整段前缀 miss)。换过来之后, 折叠只作废 "group memory + 未折叠历史" 那一段。 */
+ * Order is CACHE-FRIENDLY: constants first, mutable last. The system prompt is fixed
+ * within a session (a rebuild reuses the same history[0]), while `## Group Memory` is
+ * rewritten on every fold landing -- if it came first, one change would invalidate the
+ * constant that follows (a whole-prefix miss). Swapped, a fold only invalidates
+ * "group memory + unfolded history". */
 int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct edc_task_group *group,
                                    const char *workdir, sds *out_pristine)
 {
@@ -520,10 +530,11 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
     if (out_pristine)
         *out_pristine = NULL;
 
-    /* 1. system prompt (纯净, 无 todo 注入)
-     * - group 有历史: 以引用挂 history[0] (不复制)
-     * - group 无历史 / group 为空: 现拼纯净 prompt, 经 out_pristine 交还调用
-     *   方 (由其决定写回 group history; 写回后后续请求即走引用分支) */
+    /* 1. system prompt (pristine, no todo injection)
+     * - group has history: attach history[0] by reference (no copy);
+     * - no history / group NULL: build a pristine prompt and return it via out_pristine
+     *   (the caller decides whether to write it back to group history; after that,
+     *   later requests take the reference branch). */
     if (group && cJSON_GetArraySize(group->history) > 0)
     {
         cJSON *sys0 = cJSON_GetArrayItem(group->history, 0);
@@ -543,7 +554,7 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
         sdsfree(prompt);
     }
 
-    /* 2. GROUP 记忆摘要 (已折叠 turns 的浓缩)—— 易变的那块放最后 (见函数头注释) */
+    /* 2. GROUP memory summary (a condensation of folded turns) -- the mutable part last (see the function head) */
     if (group && group->memory && sdslen(group->memory) > 0)
     {
         cJSON *mem = cJSON_CreateObject();
@@ -558,20 +569,24 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
     return appended;
 }
 
-/* ── 组上下文规模: pi 的 "anchor + 尾部估算" ──────────────────
+/* ── Group context size: pi's "anchor + tail estimate" ────────
  *
- * 为什么要锚: 预估器是启发式, 用它估整段上下文会累积误差 (中文尤甚)。provider
- * 对某一次请求报的 usage 是真值, 而"锚之后追加的东西"才是未知量 —— 把估算的
- * 误差钉在那一小段上。
+ * Why an anchor: the estimator is a heuristic and estimating the whole context
+ * accumulates error (worse for Chinese). The provider's usage for one request is truth,
+ * and "what was appended after the anchor" is the only unknown -- pinning the estimate's
+ * error to that small span.
  *
- * 锚什么时候不可信 (两条都退回"从零估一遍"):
- *   1. 它早于该组最近一次折叠: 折叠把前缀换成了摘要, 锚记的是换之前那个大前缀;
- *   2. 它没有位置信息 (last_hist_len == 0): 老存档读回来的锚, 或还没有过应答。
+ * When the anchor is untrustworthy (both fall back to estimating from scratch):
+ *   1. it predates the group's last fold: the fold replaced the prefix with a summary,
+ *      and the anchor recorded the larger prefix before that;
+ *   2. it has no position info (last_hist_len == 0): an anchor read from an old archive,
+ *      or no response yet.
  *
- * 已知保守处 (都是"少算", 不虚报): 略去 dep 注入与队尾 todo reminder 这类常量级
- * 追加; 在跑的成员只算它自己 turn 的增量。 */
+ * Known conservatism (all under-estimating, never over-reporting): dep injections and
+ * the tail todo reminder (constant-size additions) are omitted; a running member counts
+ * only its own turn's increment. */
 
-/* 一个 turn 从 from 起的估算 (from <= head 时从头算)。 */
+/* Estimate of a turn from `from` (from scratch when from <= head). */
 static long long est_turn_from(struct edc_turn *turn, int from)
 {
     if (!turn)
@@ -596,15 +611,15 @@ extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool
     bool best_estimated = false;
 
     struct edc_task *t;
-    /* 1) 锚 + 尾部 */
+    /* 1) anchor + tail */
     LL_FOREACH2(group->members, t, group_next)
     {
         if (edc_task_is_memory_sink(t))
-            continue; /* 折叠任务不是会话内容 (与折叠账同一口径) */
+            continue; /* a fold task is not conversation content (same rule as the fold ledger) */
         if (t->last_total_tokens <= 0 || t->last_hist_len <= 0)
-            continue; /* 没有锚, 或没有位置 */
+            continue; /* no anchor, or no position */
         if (t->last_fold_epoch != group->fold_epoch)
-            continue; /* 锚记的是折叠前那个前缀 */
+            continue; /* the anchor recorded the pre-fold prefix */
 
         long long tail = 0;
         if (group->history)
@@ -630,7 +645,7 @@ extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool
         return best;
     }
 
-    /* 2) 没有可用锚: 估一遍该组下次请求会带的东西 */
+    /* 2) no usable anchor: estimate what the group's next request would carry */
     long long est = 0;
     if (group->memory)
         est += edc_token_estimate_text(group->memory);
@@ -645,8 +660,8 @@ extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool
         if (from < n)
             est += edc_token_estimate_msgs(group->history, from, n);
     }
-    /* 在跑的成员带着自己的 turn; 新起一个任务则不带 —— 取最宽的那个, 与
-     * "组 = 该组最宽的那个对话" 的口径一致。 */
+    /* A running member carries its own turn; a fresh task does not -- take the widest,
+     * consistent with "group = its widest conversation". */
     long long widest_turn = 0;
     LL_FOREACH2(group->members, t, group_next)
     {

@@ -136,8 +136,9 @@ void AppFacade::HandleChannelMessage(struct edc_channel_message *message)
     TranslateAndDispatch(message);
 }
 
-// 逐字搬自原 TUIWindow::on_channel_adapter_send 的分类 + 取字段那一段: 读 C
-// 消息 (生命周期 = 本函数), 造强类型事件, Post 到 UI 线程。视图侧不再碰 C API。
+// Verbatim from the old TUIWindow::on_channel_adapter_send classification + field
+// copying: read the C message (lifetime = this function), build the typed event,
+// Post to the UI thread. The view side no longer touches the C API.
 void AppFacade::TranslateAndDispatch(struct edc_channel_message *message)
 {
     if (!message || !sink_ || !dispatcher_)
@@ -145,7 +146,7 @@ void AppFacade::TranslateAndDispatch(struct edc_channel_message *message)
 
     const auto *content = edc_app_message_content(message);
 
-    // `/task history <id>` / `/group history <id>` 的结构化应答。
+    // Structured reply for `/task history <id>` / `/group history <id>`.
     if (edc_app_message_is_task_history(message))
     {
         const std::string payload = content ? content : "";
@@ -156,7 +157,7 @@ void AppFacade::TranslateAndDispatch(struct edc_channel_message *message)
     if (!content)
         return;
 
-    // 树变化控制事件 (不带树): 由前端决定拉不拉。
+    // Tree-changed control event (no tree): the frontend decides whether to pull.
     if (edc_app_message_is_task_tree_changed(message))
     {
         const char *sid_c = edc_app_message_session_id(message);
@@ -167,7 +168,7 @@ void AppFacade::TranslateAndDispatch(struct edc_channel_message *message)
         return;
     }
 
-    // 任务树快照: 原始 JSON 交给前端解析 + 认领。
+    // Task-tree snapshot: raw JSON for the frontend to parse + claim.
     if (edc_app_message_is_task_snapshot(message))
     {
         const std::string snapshot = content;
@@ -176,7 +177,8 @@ void AppFacade::TranslateAndDispatch(struct edc_channel_message *message)
         return;
     }
 
-    // 聊天消息: 分类 (认不出来的一律丢弃)。分类结果用强类型枚举, 不再靠字符串。
+    // Chat message: classify (anything unrecognized is dropped); the result is a
+    // typed enum, no longer a string.
     ChatMessageEvent event;
     if (edc_app_message_is_user(message))
         event.kind = ChatKind::User;
@@ -189,7 +191,7 @@ void AppFacade::TranslateAndDispatch(struct edc_channel_message *message)
     else if (edc_app_message_is_sys(message))
         event.kind = ChatKind::System;
     else
-        return; // 认不出来的类型: 前端什么都不做 (兜底分支)
+        return; // unrecognized type: the frontend does nothing
 
     event.content = content;
     const char *header_c = edc_app_message_header(message);

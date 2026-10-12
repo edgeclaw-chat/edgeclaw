@@ -174,8 +174,9 @@ extern struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, s
  *  sink GROUP_MEMORY, group kind SYSTEM. Returns at
  *  (READY, ALIVE) with no input; the caller attaches a turn and the scheduler
  *  decides when it runs. NULL when there is no session. */
-/* 按 sink 建系统任务 (L1 折叠 = GROUP_MEMORY, L2 策展 = SESSION_MEMORY);
- * `edc_scheduler_spawn_system_task` 是 sink = GROUP_MEMORY 的老入口。 */
+/* Spawn a system task by sink (L1 fold = GROUP_MEMORY, L2 curation =
+ * SESSION_MEMORY); edc_scheduler_spawn_system_task is the sink = GROUP_MEMORY
+ * legacy entry. */
 extern struct edc_task *edc_scheduler_spawn_system_task_as(struct edc_scheduler *sched, struct edc_session *session,
                                                            const char *desc, edc_sink sink);
 extern struct edc_task *edc_scheduler_spawn_system_task(struct edc_scheduler *sched, struct edc_session *session,
@@ -185,10 +186,11 @@ extern struct edc_task *edc_scheduler_spawn_system_task(struct edc_scheduler *sc
  *  is already in flight. */
 extern bool edc_scheduler_has_pending_system_task(struct edc_session *session);
 
-/** 手动折叠 (决定 8): `/group fold [id] [focus]` 走这里 —— **跳过 due 判据**
- *  (手动就是要立刻折), 但屏障一条不松 (在飞的不打断、一次一个 session)。
- *  起折后立刻落盘, 与自动路径同一条"折叠任务与 dep 边必须马上可持久"的规矩。
- *  返回起好的折叠任务; NULL = 没起来 (没有可折的东西 / 已有折叠在飞)。 */
+/** Manual fold: `/group fold [id] [focus]` goes through here. It skips the "due"
+ *  predicate (a manual fold must happen now) but keeps every barrier (never
+ *  interrupt an in-flight fold, one per session). Persists immediately after
+ *  starting, like the automatic path. Returns the started fold task, or NULL when
+ *  none started (nothing to fold / a fold already in flight). */
 extern struct edc_task *edc_scheduler_fold_group_now(struct edc_scheduler *sched, struct edc_session *session,
                                                      struct edc_task_group *group, const char *focus);
 

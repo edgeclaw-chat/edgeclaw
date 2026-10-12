@@ -153,7 +153,7 @@ static bool edc_commands_handle_help(struct edc_reply_to to)
 
 /* ── /session save ─────────────────────────────────────────── */
 
-/* 持久化当前 session 的 history + state。原顶层 /save 命令, 现收归 /session。 */
+/* Persist the current session's history + state. Was the top-level /save; now under /session. */
 static bool edc_commands_handle_session_save( struct edc_session_manager *sm, struct edc_scheduler *sched,
                                              struct edc_reply_to to)
 {
@@ -172,8 +172,9 @@ static bool edc_commands_handle_session_save( struct edc_session_manager *sm, st
 
 /* ── /session memo ─────────────────────────────────────────── */
 
-/* L2 session 记忆的查看与手动策展。作用域 = **活跃 session** (命令层总是对着当前
- * 会话说话; 内核那侧的工具才是"按任务属主")。 */
+/* Viewing and manual curation of L2 session memory. Scope = the ACTIVE session (the
+ * command layer always speaks to the current session; the kernel-side tools are the ones
+ * scoped "by task owner"). */
 static bool edc_commands_handle_session_memo(struct edc_session_manager *sm, struct edc_scheduler *sched,
                                              struct edc_reply_to to, const char *args)
 {
@@ -186,7 +187,7 @@ static bool edc_commands_handle_session_memo(struct edc_session_manager *sm, str
 
     sds rest = args ? sdsnew(args) : sdsnew("");
     sdstrim(rest, " ");
-    /* 子命令 = 头一个 token; 其余原文 (focus / 关键词可以带空格) */
+    /* Subcommand = the first token; the rest is verbatim (focus / a query may contain spaces) */
     char *sp = strchr(rest, ' ');
     sds sub = sp ? sdsnewlen(rest, (size_t)(sp - rest)) : sdsdup(rest);
     const char *tail = sp ? sp + 1 : "";
@@ -531,7 +532,7 @@ static bool edc_commands_handle_session_status(struct edc_session_manager *sm, s
         }
     }
 
-    /* "是不是当前这台" = 是不是 active session (P3 ③: 唯一权威在 session_manager)。 */
+    /* "Is this the current one" = is it the active session (the sole authority is the session_manager). */
     bool is_current = (sess == edc_session_manager_get_active(sm));
     struct edc_task_group *fg = is_current ? edc_scheduler_get_foreground(sess) : NULL;
 
@@ -600,7 +601,7 @@ static bool edc_commands_handle_session( struct edc_session_manager *sm, struct 
     }
     if (edc_commands_is_target(msg->content, "/session rename"))
         return edc_commands_handle_session_rename(sm, to, NULL);
-    /* /session stop 不接受参数 —— 移除 session 已改用 /session remove。 */
+    /* /session stop takes no argument -- removing a session moved to /session remove. */
     if (edc_commands_is_prefix(msg->content, "/session stop"))
     {
         edc_commands_reply(
@@ -687,7 +688,7 @@ static void edc_commands_handle_task_new( struct edc_session_manager *sm, struct
     {
         struct edc_task_group *group = edc_scheduler_create_group(sched, session, task);
 
-        /* 挂起的任务不算 active task, 也不抢前台 —— 与 --bg 同样只建组。 */
+        /* A suspended task is not the active task and does not take the foreground -- like --bg it only creates the group. */
         if (opts.bg || opts.suspended)
         {
         }
@@ -712,7 +713,7 @@ done:
 
         if (opts.suspended)
         {
-            /* --suspended: turn 装好, life 置挂起 —— 扫描不认它, 等 /task resume。 */
+            /* --suspended: the turn is attached but life is suspended -- the scan ignores it until /task resume. */
             bool ok = edc_task_mark_suspended(task);
             log_info("/task new: task=%s created SUSPENDED -> %s (awaiting /task resume)", task->task_id,
                      ok ? "ok" : "FAILED");
@@ -867,9 +868,11 @@ static void edc_commands_handle_task_resume( struct edc_session_manager *sm, str
 
     edc_scheduler_resume_task(sched, t);
 
-    /* 还在等依赖? (边的另一端没产出: 源被取消/失败过, 或者还没跑完。) 说清楚在等谁 —— 取消
-     * 不再摘边之后这是**正常**状态, 不能让它看起来"点了没反应"。
-     * 出口: resume 那个源 (它产出后这条边自动满足, 本任务会被放行), 或者删掉那个源。 */
+    /* Still waiting on deps? (the other end produced nothing: the source was cancelled /
+     * failed, or has not finished.) Say whom it waits for -- after cancel stopped
+     * detaching edges this is a NORMAL state and must not look like "clicked, no
+     * response". Ways out: resume that source (once it produces, the edge auto-satisfies
+     * and this task is released), or delete that source. */
     if (edc_task_awaits_deps(t))
     {
         sds waiting = sdsempty();
@@ -1015,8 +1018,9 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
         return;
     }
 
-    /* `session` 是形参: **这条输入所属的** session (P3 起由消息的标签解析, 不再是
-     * "问活跃 session 再假设它就是这个输入的家")。 */
+    /* `session` is a parameter: the session THIS INPUT belongs to (resolved from the
+     * message's tag -- no more "ask the active session and assume it is this input's
+     * home"). */
     struct edc_task *parent = edc_session_manager_find_task_any(sm, tokens[0], NULL);
     if (!parent)
     {
@@ -1057,7 +1061,7 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
     sdsfreesplitres(tokens, count);
 
     size_t fork_point = parent->group ? (size_t)cJSON_GetArraySize(parent->group->history) : 0;
-    /* fork 点用"提交序水位"表达: 父组中已提交成员的最大 completion_seq。 */
+    /* The fork point is expressed as a commit-order watermark: the max completion_seq among the parent group's committed members. */
     uint32_t fork_point_seq = 0;
     if (parent->group)
     {
@@ -1080,29 +1084,30 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
 
     if (parent->group)
     {
-        /* 继承父 group 的 memory 摘要 */
+        /* inherit the parent group's memory summary */
         if (parent->group->memory)
             child_group->memory = sdsdup(parent->group->memory);
 
-        /* system prompt 先占 history[0], 避免快照第一条被 cb_send_llm 误当 system */
+        /* The system prompt takes history[0] first, so the snapshot's first message is not mistaken for the system prompt by cb_send_llm */
         cJSON *sys = cJSON_GetArrayItem(parent->group->history, 0);
         if (sys)
             cJSON_AddItemToArray(child_group->history, cJSON_Duplicate(sys, 1));
 
-        /* 合成 turn: 深拷贝父 group 未折叠消息 [1 .. fork_point) —— 已折叠消息
-         * 不在 history 里 (折叠落地即剪枝)。 */
+        /* Synthesize a turn: deep-copy the parent group's unfolded messages
+         * [1 .. fork_point) -- folded messages are not in history (pruned at landing). */
         size_t snap_begin = 1;
         struct edc_turn *snap = NULL;
 
         if (edc_task_has_folded_turns(parent))
         {
-            /* 规则 2: parent 的 turns 已被 L1 折叠, 捞回 parent 自己的 turns 全文,
-             * 保证 fork 点本身的上下文完整。其余已折叠前文仍只靠 memory 摘要。 */
+            /* Rule 2: the parent's turns were folded by L1, so recover the parent's own
+             * full turns to keep the context at the fork point intact. Earlier folded
+             * history still relies only on the memory summary. */
             snap = edc_task_snapshot_turns(parent, session, child->task_id);
         }
         else
         {
-            /* 规则 1: 未折叠区间 [1+已折叠数, fork_point) 作为快照 */
+            /* Rule 1: the unfolded span [1+folded_count, fork_point) is the snapshot */
             snap = edc_turn_new();
             snap->task_id = strdup(child->task_id);
             if (snap_begin > fork_point)
@@ -1113,13 +1118,13 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
                 if (!src)
                     break;
                 cJSON *msg = cJSON_Duplicate(src, 1);
-                edc_queue_push(&snap->messages, msg); /* turn 拥有它 */
+                edc_queue_push(&snap->messages, msg); /* the turn owns it */
             }
         }
 
         if (snap && edc_queue_length(&snap->messages) > 0)
         {
-            /* 快照消息引用到 child group history (不重复拥有) */
+            /* Reference the snapshot messages into the child group history (no double ownership) */
             for (size_t mj = snap->messages.head; mj < snap->messages.tail; mj++)
                 cJSON_AddItemReferenceToArray(child_group->history, snap->messages.data[mj]);
             edc_task_add_turn(child, snap);
@@ -1130,7 +1135,7 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
         }
     }
 
-    /* 前台切到新 group, 并把子任务设为 active task。 */
+    /* Switch the foreground to the new group and make the child the active task. */
     edc_scheduler_set_foreground(session, child_group);
     edc_session_set_active_task(session, child);
 
@@ -1151,7 +1156,7 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
     }
     else
     {
-        /* 跑起来由消息末尾的调度负责 (唯一驱动入口) —— 这里只把 turn 装上。 */
+        /* Running it is the message-end scheduler's job (the only drive entry) -- this only attaches the turn. */
         log_info("/task fork: task=%s turn attached (deps_total=%zu)", child->task_id, child->deps_total);
     }
 
@@ -1217,14 +1222,14 @@ static void edc_commands_handle_task_status( struct edc_session_manager *sm, str
                            "- **desc**: %s\n",
                            t->task_id, edc_task_state_str(t), t->group_id, t->description);
 
-    /* 非当前 session 的任务额外标出属主 session, 否则用户看不出这条从哪来。 */
+    /* For a task of a non-current session, also mark its owning session, or the user cannot tell where it came from. */
     {
         struct edc_session *active = edc_session_manager_get_active(sm);
         if (owner && owner != active)
             out = sdscatprintf(out, "- **session**: `[%s]`\n", owner->session_id);
     }
 
-    /* 未解析的跨 session 依赖: 任务被"卡住", resume 会被 gate 拒绝。 */
+    /* Unresolved cross-session dependency: the task is "stuck" and resume is refused by the gate. */
     {
         const char *missing = edc_scheduler_first_unresolved_dep(sched, t);
         if (missing)
@@ -1312,7 +1317,7 @@ static void edc_commands_handle_history( struct edc_session_manager *sm, struct 
     const bool want_json = strncmp(arg, "--json ", 7) == 0;
     const char *task_id = want_json ? arg + 7 : arg;
 
-    /* 归属 session 由解析器一并给出: task id 全局唯一, 所以这条命令能查别的 session 的任务。 */
+    /* The resolver also returns the owning session: a task id is globally unique, so this command can find another session's task. */
     struct edc_session *owner = NULL;
     struct edc_task *t = edc_session_store_resolve_task(sm, sched, task_id, &owner);
     if (!t || !owner)
@@ -1321,8 +1326,9 @@ static void edc_commands_handle_history( struct edc_session_manager *sm, struct 
         return;
     }
 
-    /* 组的 id 就是它 leader 的 task id (edc_task_group_new), 所以同一个解析器也认得组;
-     * 组那份载荷按成员分块 (每块是该成员自己的消息)。 */
+    /* A group's id IS its leader's task id (edc_task_group_new), so the same resolver
+     * knows groups too; the group payload is chunked by member (each block is that
+     * member's own messages). */
     const char *target_id = group ? (want_json ? arg + 7 : arg) : t->task_id;
     char *payload = edc_scheduler_task_history_json(sched, owner, group ? target_id : NULL, group ? NULL : target_id);
     if (!payload)
@@ -1330,8 +1336,8 @@ static void edc_commands_handle_history( struct edc_session_manager *sm, struct 
         edc_commands_reply(to, "_No history._");
         return;
     }
-    /* 结构化回话: 前端把它拆成一条条气泡。`--json` 时改回文本 (排查/测试用),
-     * 也顺便给出了"同一份载荷的两种渲染"的对照。 */
+    /* Structured reply: the frontend splits it into bubbles. With `--json` it reverts to
+     * text (debug/test), which also contrasts "two renderings of one payload". */
     if (!want_json)
     {
         edc_commands_send_history(to, payload);
@@ -1380,10 +1386,11 @@ static void edc_commands_handle_history( struct edc_session_manager *sm, struct 
     sdsfree(out);
 }
 
-/* `/group fold [id] [focus]` (决定 8): 立刻折一次 —— **越过**触发判据 (窗口/条数),
- * 但屏障照旧 (在飞成员不打断、一次一个 session)。id 省略 = 当前前台组; 给了 id 就按
- * 它解析 (组 id = 组头那条 task id, 可跨 session)。剩下的部分原文作为 focus 进摘要
- * prompt 的 "Additional focus:"。 */
+/* `/group fold [id] [focus]`: fold once now -- BYPASSING the trigger predicate
+ * (window/count), but the barrier is unchanged (in-flight members are not interrupted,
+ * one per session). No id = the current foreground group; an id is resolved as given
+ * (group id = the group head's task id, possibly cross-session). The remaining text goes
+ * verbatim as focus into the summary prompt's "Additional focus:". */
 static void edc_commands_handle_group_fold( struct edc_session_manager *sm, struct edc_scheduler *sched,
                                            struct edc_reply_to to, sds arg)
 {
@@ -1393,7 +1400,7 @@ static void edc_commands_handle_group_fold( struct edc_session_manager *sm, stru
 
     if (arg && *arg)
     {
-        /* 第一个 token = 组 id; 其余 = focus (含空格, 原文不动)。 */
+        /* The first token = group id; the rest = focus (may contain spaces, kept verbatim). */
         const char *sp = strchr(arg, ' ');
         size_t id_len = sp ? (size_t)(sp - arg) : sdslen(arg);
         sds id = sdsnewlen(arg, id_len);
@@ -1449,8 +1456,9 @@ static void edc_commands_handle_group_fold( struct edc_session_manager *sm, stru
     sdsfree(reply);
 }
 
-/* `/group history <id>`: 一个组的消息历史 —— 每个成员一块 (块首是它那条输入, 块内是它
- * 自己的消息, 不跨 task 交错)。组的 id 就是组头的那个 id。 */
+/* `/group history <id>`: a group's message history -- one block per member (the block
+ * starts with its input, then its own messages, never interleaved across tasks). The
+ * group id is the group head's id. */
 static bool edc_commands_handle_group( struct edc_session_manager *sm, struct edc_scheduler *sched,
                                       struct edc_reply_to to, struct edc_channel_message *message)
 {
@@ -1468,8 +1476,8 @@ static bool edc_commands_handle_group( struct edc_session_manager *sm, struct ed
         sdsfree(fold_arg);
         return true;
     }
-    /* 裸 `/group fold` (没有 id 也没有 focus) —— edc_commands_arg 只在有参数时为真,
-     * 所以这一支单独接: 折当前前台组。 */
+    /* Bare `/group fold` (no id, no focus) -- edc_commands_arg is true only with
+     * arguments, so this branch handles it separately: fold the current foreground group. */
     if (edc_commands_is_command(message->content, "/group fold"))
     {
         edc_commands_handle_group_fold(sm, sched, to, NULL);
@@ -1510,7 +1518,7 @@ static void edc_commands_handle_task_join( struct edc_session_manager *sm, struc
          * candidate the command is rejected and can be retried. */
         struct edc_session *active_session = edc_session_manager_get_active(sm);
         struct edc_task *active = active_session ? edc_session_get_active_task(active_session) : NULL;
-        /* "停着" = READY (IDLE 镜像) 或等依赖 —— 两者都能接收注入的输出 */
+        /* "parked" = READY (IDLE's mirror) or waiting on deps -- both can receive injected output */
         if (!active || !edc_task_is_parked(active))
         {
             sds reply = sdscatprintf(sdsempty(),
@@ -1525,7 +1533,7 @@ static void edc_commands_handle_task_join( struct edc_session_manager *sm, struc
         /* auto-chain: inject output into active task */
         edc_task_add_dependency(active, t, TASK_DEP_JOIN);
 
-        /* 只回显原始输出，不加 "[task xxx output]" / "injected/reaped" 等元信息噪声 */
+        /* Echo only the raw output, no "[task xxx output]" / "injected/reaped" metadata noise */
         sds reply = t->output ? sdsnew(t->output) : sdsnew("_No output._");
         edc_commands_reply(to, reply);
         sdsfree(reply);
@@ -1720,13 +1728,14 @@ static bool edc_commands_handle_task( struct edc_session_manager *sm, struct edc
     return true;
 }
 
-/* ── 入口 ──────────────────────────────────────────────────── */
+/* ── Entry ─────────────────────────────────────────────────── */
 
 bool edc_commands_handler( struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
                           struct edc_reply_to to, struct edc_channel_message *message)
 {
-    /* 有效性门只检查消息本身; 不检查 message->type —— 历史上 edc_channel_cli==0
-     * 曾让 CLI 消息被误判为"无类型"而整体丢弃 (类型是路由键, 不是有效性标志)。 */
+    /* The validity gate checks only the message itself, not message->type -- historically
+     * edc_channel_cli==0 made CLI messages look "untyped" and drop them wholesale (type
+     * is a routing key, not a validity flag). */
     if (!message || !message->content)
         return false;
 
@@ -1736,7 +1745,7 @@ bool edc_commands_handler( struct edc_config *cfg, struct edc_session_manager *s
         if (edc_shell_handle_builtin(cfg, sm, to, message))
             return true;
 
-        /* 顶层快捷别名 (/tasks, /bg, /fg) 已移除 —— 统一走 /task 子命令。 */
+        /* The top-level shortcuts (/tasks, /bg, /fg) were removed -- all go through /task subcommands. */
 
         if (edc_commands_is_command(message->content, "/task"))
             return edc_commands_handle_task(sm, sched, to, message);
@@ -1771,7 +1780,7 @@ static bool edc_commands_cb_handle_command(struct edc_scheduler *sched, struct e
     if (!msg)
         return false;
 
-    /* 入站消息的发送者就是通道 actor —— 回话就回到它那里。 */
+    /* The inbound message's sender is the channel actor -- reply straight back to it. */
     struct edc_reply_to to = {.channel_actor = actor, .actor = actor, .type = msg->type};
     return edc_commands_handler(sched->config, sched->sessions, sched, to, msg);
 }

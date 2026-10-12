@@ -22,13 +22,15 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-/* ── 装配根: 定义**只**在这里 (不透明) ──────────────────────
- * 外部读法: 边界经访问器, userland 收自己那几件 (见 edc_app.h)。 */
+/* ── Composition root: defined ONLY here (opaque) ────────────
+ * Outside reads through the accessors; userland receives its own few pieces
+ * (see edc_app.h). */
 struct edc_app
 {
     struct edc_config *config;
-    /* 会话仓库不是本对象的字段: 它由 edc_scheduler_open 建立、归 scheduler 所有。
-     * 装配根既不持有、也不代问 —— 前端要的 session_id / workdir 都在快照里。 */
+    /* The session store is not a field here: edc_scheduler_open creates it and the
+     * scheduler owns it. The root neither holds it nor asks on its behalf -- the
+     * frontend gets session_id / workdir from the snapshot. */
     struct edc_toolbox *toolbox;
     struct edc_scheduler *scheduler;
 
@@ -38,16 +40,16 @@ struct edc_app
 
     edc_actor_runner_t *runner;
 
-    /* shutdown() 幂等闸门 (见 edc_app_shutdown): "落盘"只能做一次 ——
-     * 重复跑一遍等于把刚恢复的状态又写一次。 */
+    /* shutdown() idempotence gate (see edc_app_shutdown): persisting may happen
+     * only once. */
     bool shutdown_done;
 };
 
-/* 会话仓库 / 跨 session 解析 / 落盘 → edc_scheduler_open/close: 仓库是 scheduler
- * 的私产, 装配根只建对象、叫它开、叫它关 —— 既不持有也不代问 (前端从快照里拿
- * session_id / workdir)。 */
+/* Session store / cross-session resolution / persistence -> edc_scheduler_open/close:
+ * the store is the scheduler's private property; the root only builds the object
+ * and tells it to open/close. */
 
-/* ── 边界访问器 ────────────────────────────────────────────── */
+/* ── Boundary accessors ────────────────────────────────────── */
 
 struct edc_config *edc_app_config(const struct edc_app *app)
 {
@@ -59,7 +61,7 @@ edc_actor_t *edc_app_channel_actor(const struct edc_app *app)
     return app ? app->channel_actor : NULL;
 }
 
-/* ── 生命周期 ──────────────────────────────────────────────── */
+/* ── Lifetime ──────────────────────────────────────────────── */
 
 struct edc_app *edc_app_new(bool setup, int sandbox_override)
 {
@@ -112,12 +114,12 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
     app->channel_actor = edc_channel_actor_new();
     app->llm_actor = edc_llm_actor_new(app->config);
 
-    /* 创建 scheduler —— 不再把 active session 递给它 (P3 ③: scheduler 不持有
-     * "当前 session"; 每个入口显式带 session, 标签解析交由 store 的同包读口)。 */
+    /* Create the scheduler -- no active session is handed to it (the scheduler does
+     * not hold "the current session"; each entry point carries its session). */
     app->scheduler = edc_scheduler_new(app->config);
 
-    /* 建 session 仓库并恢复活跃 session 的已存状态: 仓库是 scheduler 的私产,
-     * 由它自己的入口建立 (本文件不再持有那个句柄)。 */
+    /* Build the session store and restore the active session's saved state: the
+     * store is the scheduler's private property, built by its own entry point. */
     if (!edc_scheduler_open(app->scheduler))
     {
         log_error("failed to open the scheduler session store");
@@ -125,11 +127,11 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
         return NULL;
     }
 
-    /* 接线: 每个提供方把**自己的**端口装到 scheduler 上 —— 装配根只做"建对象 +
-     * 叫它接线", 运行期不再出现在任何一条路径上 (见 docs/runtime-model.md §5 规则 8)。
-     * 四条出站端口归通道 (消息形状是它的知识), 命令入口归命令层 (它要的 config /
-     * session 仓库都在 scheduler 上)。端口签名 (edc_scheduler.h) 未动 ⇒ kernel 的
-     * 调用点与测试里的假端口都不受影响。 */
+    /* Wiring: each provider installs its OWN ports onto the scheduler -- the root
+     * only "builds objects + tells them to wire", and never appears on a runtime
+     * path. The four outbound ports belong to the channel (message shape is its
+     * knowledge), the command entry to the command layer. Port signatures are
+     * unchanged, so kernel call sites and test fakes are unaffected. */
     edc_channel_actor_bind_scheduler(app->channel_actor, app->scheduler);
     edc_commands_bind_scheduler(app->scheduler);
 
@@ -145,7 +147,8 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
     app->toolbox_actor = edc_toolbox_actor_new(app->toolbox);
     edc_actor_runner_add(app->runner, app->toolbox_actor);
 
-    /* 这两条端口的实现要用到工具箱 (工具定义 / 请求链), 所以接线排在工具箱之后。 */
+    /* These two ports' implementations need the toolbox (tool definitions / the
+     * request chain), so this wiring comes after it. */
     edc_toolbox_actor_bind_scheduler(app->toolbox_actor, app->scheduler);
     edc_llm_request_bind_scheduler(app->scheduler, app->llm_actor, app->toolbox ? app->toolbox->schemas : NULL);
 
@@ -155,8 +158,8 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
     return app;
 }
 
-/* CLI 的 !n / !! 历史 → src/shell/edc_cli_history.{c,h}
- * (shell 自己的命令历史, 进程一份, 不是运行时装配; 见那里的头文件说明) */
+/* CLI `!n` / `!!` history lives in src/shell/edc_cli_history.{c,h} (the shell's own
+ * per-process command history, not runtime assembly). */
 bool edc_app_set_llm_config(struct edc_app *app, const char *api_url, const char *model, const char *api_key)
 {
     if (!app || !app->config)
@@ -200,19 +203,21 @@ bool edc_app_set_llm_config(struct edc_app *app, const char *api_url, const char
 
 /* ── sandbox path whitelist (ro/rw) management ─────────────────────────── */
 
-/* sandbox 配置的写口 (只碰 config) → edc_config.{c,h}
- * —— 它们与 config 的读写是同一个概念, 不该挂在 app 上。 */
+/* The sandbox config writers (config only) live in edc_config.{c,h} -- the same
+ * concept as config read/write, so they do not belong on app. */
 void edc_app_shutdown(struct edc_app *app)
 {
     if (!app || app->shutdown_done)
         return;
 
-    /* 1. 先停 actor (含 runner) —— 落盘必须在之后, 否则会与 actor 线程并发写。 */
+    /* 1. Stop the actors (and runner) first -- persistence must follow, or it would
+     * write concurrently with the actor threads. */
     edc_actor_runner_free(app->runner);
     app->runner = NULL;
 
-    /* 这三个 free **不接受 NULL** (会解引用 `actor->state`), 所以逐个判空:
-     * `edc_app_new` 的失败路径上 toolbox_actor 还没建出来, 以前会在这里空指针崩。*/
+    /* These three frees do not accept NULL (they dereference `actor->state`), so
+     * each is null-checked: on edc_app_new's failure path toolbox_actor is not
+     * built yet. */
     if (app->channel_actor)
     {
         edc_channel_actor_free(app->channel_actor);
@@ -229,13 +234,12 @@ void edc_app_shutdown(struct edc_app *app)
         app->llm_actor = NULL;
     }
 
-    /* 2. 关进程: 把每个 session 原样落盘 + 清在途 turn —— 全在 scheduler 的那一个
-     * 入口里 (它按同一份顺序做完, 这里不再各自列一遍)。契约: 必须在 ① 之后,
-     * 否则会与 actor 线程并发写。 */
+    /* 2. Shut down: persist every session as-is + drop in-flight turns, all in the
+     * scheduler's single entry point. Must run after step 1. */
     if (app->scheduler)
         edc_scheduler_close(app->scheduler);
 
-    app->shutdown_done = true; /* 幂等: 上面的落盘只能做一次 */
+    app->shutdown_done = true; /* idempotent: persistence runs only once */
 }
 
 void edc_app_free(struct edc_app *app)
@@ -243,12 +247,13 @@ void edc_app_free(struct edc_app *app)
     if (!app)
         return;
 
-    /* 先补齐"关进程"该做的 (停 actor + 落盘 + 清在途 turn) —— 保持老的
-     * "销毁即落盘"行为; 想分两步走的调用方显式先 `edc_app_shutdown()`。
-     * 位置在**释放零件之前**: 落盘要用到 scheduler。 */
+    /* Run the shutdown work first (stop actors + persist + drop turns), keeping
+     * the old "destroy = persist" behaviour; callers wanting two steps call
+     * `edc_app_shutdown()` explicitly. Before freeing parts: persisting needs the
+     * scheduler. */
     edc_app_shutdown(app);
 
-    /* scheduler 释放时一并释放它自己建的 session 仓库 (sessions_owned)。 */
+    /* Freeing the scheduler also frees the session store it created. */
     edc_scheduler_free(app->scheduler);
 
     if (app->config)

@@ -15,32 +15,34 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
     cJSON *items = cJSON_GetObjectItem(args, "items");
     int total = items ? cJSON_GetArraySize(items) : 0;
 
-    /* 无论清单是否为空都回显一条带 header 的 TOOL 消息。非空时文本 = todo
-     * reminder (与 LLM 请求队尾的 reminder 逐字节一致, 见
-     * edc_context_render_todo_reminder), 它就是工具返回的 result 本身; 空清单
-     * 时这里只发展示用的空 checklist (callback 结果仍是 "No todos")。TUI 对
-     * todowrite 消息不进对话区 —— TODO 展示完全走任务快照 (见 scheduler:
-     * 每次回显推送一次快照, active task 的 todos 渲染到右侧 TodoWidget)；
-     * content 同时作为 tool result 回给 LLM，CLI 等无侧栏渲染端也照常显示。 */
+    /* Echo one header-carrying TOOL message whether the list is empty or not. When
+     * non-empty the text IS the todo reminder (byte-identical to the request-tail
+     * reminder, see edc_context_render_todo_reminder) and is the tool's result itself;
+     * when empty this sends only a display checklist (the callback result is still "No
+     * todos"). The TUI keeps todowrite messages out of the chat -- TODO display goes
+     * entirely through task snapshots (the scheduler pushes one per echo, rendering the
+     * active task's todos into the sidebar TodoWidget); content is also returned to the
+     * LLM as the tool result, so CLI and other sidebar-less renderers show it normally. */
 
     if (!total)
     {
-        /* 空清单同样回显一次：TUI 借此推送快照把 TodoWidget 清成 0/0
-         * (active task 的 todos 已被摘除)。这里只发展示消息，callback
-         * 结果仍是 "No todos"，LLM 看到的 tool result 与原来一致。 */
+        /* An empty list is echoed too: the TUI uses it to push a snapshot clearing the
+         * TodoWidget to 0/0 (the active task's todos were removed). Only the display
+         * message is sent; the callback result is still "No todos" and the LLM sees the
+         * same tool result as before. */
         sds empty = sdsnew("# TODO\n\n0/0 completed");
         edc_toolbox_emit_tool_message_md(ctx, "todowrite", empty);
         sdsfree(empty);
 
-        /* 清单被清空 → 该 task 不再持有 todo（后续请求的队尾 reminder 自动
-         * 退回"尚无清单"的建计划引导） */
+        /* The list was cleared -> the task holds no todos (later requests' tail reminder
+         * falls back to the "no list yet" planning guide). */
         if (ctx->task && ctx->task->todos)
         {
             cJSON_Delete(ctx->task->todos);
             ctx->task->todos = NULL;
         }
-        /* 一次成功的 todowrite 调用 (含清空): 重置 todo 同步节流计数,
-         * 后续 LLM 请求重新从"隔了多少条对话"计起 */
+        /* A successful todowrite call (including a clear): reset the todo-sync throttle,
+         * so later LLM requests count the gap afresh. */
         if (ctx->task)
             edc_task_note_todo_sync(ctx->task);
         callback(ctx, sdsnew("No todos"), NULL);
@@ -54,7 +56,7 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
         return;
     }
 
-    /* 校验 (渲染函数假设输入已合法) */
+    /* Validate (the render functions assume legal input) */
     int in_progress_count = 0;
     for (int i = 0; i < total; ++i)
     {
@@ -85,21 +87,22 @@ static void edc_tools_todo_exec_async(struct edc_toolbox_call_ctx *ctx, struct e
 
     sds lines = edc_context_render_todo_reminder(items);
 
-    /* 把这份 todo 清单挂到调用它的 task 上 (整体替换)。todo list 是 task
-     * 状态的一部分: task->todos 已被 state_serializer 持久化；之后为该
-     * task 组装 LLM 请求时 (见 app send_llm), app 按节流规则 (隔了
-     * EDC_TODO_SYNC_REMIND_GAP 条对话都没再调用 todowrite) 把当前
-     * 清单重新计算成队尾 todo reminder (edc_context_make_todo_reminder)
-     * 注入请求 —— 与本次工具返回的文本同源 (edc_context_render_todo_reminder),
-     * 让多轮工具循环中的模型始终能看到与工具结果逐字节一致的当前清单, 而
-     * 不依赖窗口内残留的 todowrite tool 消息。 */
+    /* Attach this todo list to the calling task (wholesale replacement). The todo list
+     * is part of task state: task->todos is persisted by the state_serializer. When an
+     * LLM request is later assembled for this task, the app applies the throttle (only
+     * after EDC_TODO_SYNC_REMIND_GAP requests without a todowrite) and recomputes the
+     * current list into the tail reminder (edc_context_make_todo_reminder) injected into
+     * the request -- the same source as this tool's returned text
+     * (edc_context_render_todo_reminder), so the model in a multi-round tool loop always
+     * sees a current list byte-identical to the tool result, without depending on a stale
+     * todowrite tool message still in the window. */
     if (ctx->task)
     {
         if (ctx->task->todos)
             cJSON_Delete(ctx->task->todos);
         ctx->task->todos = cJSON_Duplicate(items, 1);
-        /* todowrite 成功: 重置 todo 同步节流计数 (每次工具调用本身
-         * 就是一次清单同步) */
+        /* todowrite succeeded: reset the todo-sync throttle (each tool call is itself a
+         * list sync). */
         edc_task_note_todo_sync(ctx->task);
     }
 

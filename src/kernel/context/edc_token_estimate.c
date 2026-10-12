@@ -2,17 +2,18 @@
 
 #include <string.h>
 
-/* Token estimation, pi-shaped: a provider's real usage is always the anchor,
- * this heuristic only fills in what has been appended after it. It exists
- * because "the last reply's usage" answers "how big was that request", never
- * "how big is the context now".
+/* Token estimation, pi-shaped: a provider's real usage is always the anchor; this
+ * heuristic only fills in what was appended after it, because "the last reply's
+ * usage" answers "how big was that request", never "how big is the context now".
  *
- * 口径: ASCII 按 ~4 字符/token (英文经验值), 其余字符 (CJK 为主) 按 ~1 字符/
- * token。全用 chars/4 会把中文低估 3~4 倍, 而我们的 prompt 大量是中文。
+ * Calibration: ASCII at ~4 chars/token, other characters (mostly CJK) at ~1
+ * char/token; chars/4 alone underestimates Chinese by 3-4x, and much of our prompt
+ * is Chinese.
  *
- * 它是启发式, 不是测量: 不得当成 provider 的真值展示 (调用方负责带上估算标记)。 */
+ * It is a heuristic, not a measurement: never present it as provider truth (the
+ * caller is responsible for the estimate marker). */
 
-/* 每条消息的结构开销: role / name / 分隔符 / JSON 框架 (键名不计, 由它覆盖)。 */
+/* Per-message structure overhead: role / name / separators / JSON framing. */
 #define EDC_TOKEN_MSG_OVERHEAD 8
 
 static void est_count(const char *s, long long *ascii, long long *wide)
@@ -28,7 +29,7 @@ static void est_count(const char *s, long long *ascii, long long *wide)
         }
         else
         {
-            /* 一个非 ASCII 字符 (它的所有 UTF-8 字节算一个字符)。 */
+            /* One non-ASCII character (all its UTF-8 bytes count as one). */
             (*wide)++;
             p++;
             while ((*p & 0xc0) == 0x80)
@@ -37,11 +38,11 @@ static void est_count(const char *s, long long *ascii, long long *wide)
     }
 }
 
-/* 走一棵 cJSON 子树的所有**值**, 累加字符串。两件不算:
- *   - 键名: 它们是框架, 已计入每条消息的开销;
- *   - `ts` / `render`: 我们自己挂在消息上的元数据 (edc_turn_add_message 加的),
- *     随消息落盘、也随请求原样发出去, 但 provider 的模板不认识它们, 不会算进
- *     prompt —— 数它们会让每条消息凭空多出 ~6 token。 */
+/* Walk all VALUES of a cJSON subtree, accumulating strings. Two things are not
+ * counted:
+ *   - key names: framing already covered by the per-message overhead;
+ *   - `ts` / `render`: metadata we attach (by edc_turn_add_message); the provider's
+ *     template does not know them, so counting them would add ~6 tokens per message. */
 static void est_walk_values(const cJSON *node, long long *ascii, long long *wide)
 {
     for (const cJSON *c = node; c; c = c->next)

@@ -13,7 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── 词表 ──────────────────────────────────────────────────── */
+/* ── Vocabulary ────────────────────────────────────────────── */
 
 const char *edc_memo_event_kind_name(enum edc_memo_event_kind kind)
 {
@@ -40,7 +40,7 @@ enum edc_memo_event_kind edc_memo_event_classify_kind(const char *name)
     return EDC_MEMO_CREATED;
 }
 
-/* ── 生命周期 ──────────────────────────────────────────────── */
+/* ── Lifetime ──────────────────────────────────────────────── */
 
 struct edc_session_memory *edc_session_memory_new(void)
 {
@@ -78,7 +78,7 @@ void edc_session_memory_free(struct edc_session_memory *m)
     free(m);
 }
 
-/* ── 小工具 ────────────────────────────────────────────────── */
+/* ── Helpers ───────────────────────────────────────────────── */
 
 static void *grow_array(void *data, size_t *cap, size_t elem_size, size_t need)
 {
@@ -99,9 +99,9 @@ static char *dup_or_null(const char *s)
     return s ? strdup(s) : NULL;
 }
 
-/* ── 事件表 ────────────────────────────────────────────────── */
+/* ── Event table ───────────────────────────────────────────── */
 
-/* 追加一条**已定 seq** 的事件 (装配用的内部件: 写者给 seq, 读回时用盘上的 seq)。 */
+/* Append an event with a PREDETERMINED seq (an assembly internal: the writer supplies seq, load uses the on-disk seq). */
 static struct edc_memo_event *append_event(struct edc_session_memory *m, uint64_t seq, const char *entry_id,
                                            enum edc_memo_event_kind kind, const char *title, const char *summary)
 {
@@ -135,7 +135,7 @@ uint64_t edc_session_memory_add_event(struct edc_session_memory *m, const char *
     return seq;
 }
 
-/* ── 条目表 ────────────────────────────────────────────────── */
+/* ── Entry table ───────────────────────────────────────────── */
 
 struct edc_memo_entry *edc_session_memory_entry(struct edc_session_memory *m, const char *id)
 {
@@ -181,9 +181,9 @@ struct edc_memo_entry *edc_session_memory_upsert_entry(struct edc_session_memory
     return e;
 }
 
-/* ── 给工具与通知用的读/写口 ───────────────────────────────── */
+/* ── Readers/writers for tools and notifications ───────────── */
 
-/* 条目按 id 升序 ("m12" 的数字部分) —— 保证 memory_list 翻页稳定。 */
+/* Entries in ascending id order (the numeric part of "m12") -- keeps memory_list paging stable. */
 static int entry_id_num(const char *id)
 {
     if (!id || id[0] != 'm')
@@ -207,7 +207,7 @@ sds edc_session_memory_index_lines(const struct edc_session_memory *m, size_t of
     if (!m || n == 0)
         return sdsempty();
 
-    /* 收集 + 按 id 号升序排 (条目数不大, 直接插入排序) */
+    /* Collect and sort ascending by id number (few entries; insertion sort). */
     struct edc_memo_entry **sorted = malloc(m->entry_count * sizeof(*sorted));
     if (!sorted)
         return sdsempty();
@@ -259,8 +259,8 @@ sds edc_session_memory_search_lines(const struct edc_session_memory *m, const ch
     if (!m || !query || !query[0] || cap == 0 || m->entry_count == 0)
         return sdsempty();
 
-    /* 命中下标, 按 updated_seq (退化成 created_seq) 倒序输出 —— 搜索是"看一眼",
-     * 稳定排序不作要求。 */
+    /* Hit indices, output in descending updated_seq (falling back to created_seq).
+     * Search is a glance; stable ordering is not required. */
     size_t *hits = malloc(m->entry_count * sizeof(*hits));
     if (!hits)
         return sdsempty();
@@ -329,14 +329,15 @@ sds edc_session_memory_create_entry(struct edc_session_memory *m, const char *ti
     m->next_entry_id++;
     if (proposed_by)
         edc_session_memory_note_proposer(e, proposed_by);
-    /* created_seq/updated_seq 由调用方按它追加的事件 seq 填 (见 memory_write / L2 落地)。 */
+    /* created_seq/updated_seq are filled by the caller from the event seq it appended (memory_write / L2 landing). */
     return id;
 }
 
-/* ── L2 策展任务 ───────────────────────────────────────────── */
+/* ── L2 curation task ──────────────────────────────────────── */
 
-/* 策展说明: 与折叠说明同族 —— 自足请求的 system 段, 常量文本 (不随记忆变化,
- * 所以 L2 调用的前缀是稳定的)。输出契约见 docs/l2-session-memory.md §4.7。 */
+/* Curation instruction: same family as the fold instruction -- the system section of
+ * a self-contained request, constant text (so the L2 call's prefix is stable). The
+ * output contract is the six-section summary. */
 static const char kCurateSystemPrompt[] =
     "You are the session-memory curator for the EdgeClaw agent.\n"
     "\n"
@@ -363,13 +364,14 @@ const char *edc_session_memory_system_prompt(void)
     return kCurateSystemPrompt;
 }
 
-/* L2 的 user 消息: 现有条目索引 + focus。
+/* L2's user message: the current entry index + focus.
  *
- * **组记忆不在里面** —— 自动路径的 L2 与折叠用一条 JOIN 边相连, 折叠的 output (就是
- * 刚落地的 group memory) 由请求装配器**自动注入**成上一条 assistant 消息 (见
- * edc_llm_request.c 的依赖注入)。这样材料天然是"折叠真的写下去的那份"。
- * `all_groups = true` 是手动策展 (`/session memo compact`): 它没有那条边, 所以自己把
- * **所有**有记忆的组的 memory 收进 prompt。 */
+ * Group memory is NOT in it -- the automatic path's L2 and the fold are joined by a
+ * JOIN edge, so the fold's output (the just-landed group memory) is auto-injected by
+ * the request assembler as the previous assistant message (see edc_llm_request.c).
+ * That makes the material exactly "what the fold really wrote".
+ * all_groups = true is manual curation (/session memo compact): it has no such edge,
+ * so it gathers EVERY group's memory into the prompt itself. */
 static sds build_curate_prompt(struct edc_session *session, bool all_groups, const char *focus)
 {
     sds out = sdsempty();
@@ -429,24 +431,26 @@ struct edc_task *edc_session_memory_start(struct edc_scheduler *sched, struct ed
         sdsfree(prompt);
         return NULL;
     }
-    /* 记住来源组 (sources / 日志用; 它不参与"某组在折"的判定 —— 那条只认 GROUP_MEMORY)。 */
+    /* Remember the source group (for sources/logging); it does not participate in the "group folding" test, which reads only GROUP_MEMORY. */
     task->sink_group = folded_group;
 
     if (!edc_scheduler_attach_input(sched, task, prompt))
     {
         log_error("L2 memo: could not attach the curation prompt — no curation this round");
-        edc_task_mark_failed(task); /* 失败也会释放依赖者 */
+        edc_task_mark_failed(task); /* failure also releases dependents */
         sdsfree(prompt);
         return NULL;
     }
     sdsfree(prompt);
 
-    /* 链: L2 →(JOIN) L1 —— **JOIN 而不是 SEQUENCE**, 两个理由:
-     *   ① 失败/取消自动级联: L1 进 ERROR ⇒ L2 自动 ERROR; L1 被取消 ⇒ L2 自动取消
-     *      (SEQUENCE 只会"抹边放行", 那样 L2 会拿没变过的旧记忆白跑一次);
-     *   ② 材料自带: JOIN 的注入会把 L1 的 **output**(= 刚落地的 group memory) 作为上一条
-     *      assistant 消息放进 L2 的请求 ⇒ 不必在起折时就把记忆抄进 prompt。
-     * 成员另挂 L2 一条 SEQUENCE (见下): 它们既等折叠、也等策展。 */
+    /* Chain: L2 ->(JOIN) L1 -- JOIN rather than SEQUENCE, for two reasons:
+     *   1) failure/cancel cascade automatically: L1 ERROR => L2 ERROR; L1 cancelled
+     *      => L2 cancelled (SEQUENCE would just drop the edge and let L2 run on stale
+     *      memory for nothing);
+     *   2) the material comes along: JOIN's injection places L1's output (the
+     *      just-landed group memory) as the previous assistant message in L2's
+     *      request, so the memory need not be copied into the prompt when folding.
+     * Members additionally hang a SEQUENCE on L2 (below): they wait for both. */
     if (fold_task)
         edc_task_add_dependency(task, fold_task, TASK_DEP_JOIN);
     if (folded_group)
@@ -471,7 +475,7 @@ struct edc_task *edc_session_memory_start_manual(struct edc_scheduler *sched, st
 {
     if (!sched || !session || !session->memo)
         return NULL;
-    /* 与自动路径同一条闸门: 一个 session 同时只有一个 system task。 */
+    /* Same gate as the automatic path: one system task per session at a time. */
     if (edc_scheduler_has_pending_system_task(session))
     {
         log_info("L2 memo: manual compaction refused — a system task is already in flight");
@@ -499,7 +503,7 @@ struct edc_task *edc_session_memory_start_manual(struct edc_scheduler *sched, st
     return task;
 }
 
-/* ── `/session memo` 的文本 ────────────────────────────────── */
+/* ── `/session memo` text ──────────────────────────────────── */
 
 sds edc_session_memory_show_text(const struct edc_session_memory *m, const char *id)
 {
@@ -561,7 +565,7 @@ sds edc_session_memory_search_text(const struct edc_session_memory *m, const cha
     return out;
 }
 
-/* ── ops 契约: 先整批校验, 再应用 ─────────────────────────── */
+/* ── ops contract: validate the whole batch, then apply ────── */
 
 static const char *op_str(const cJSON *op, const char *key)
 {
@@ -581,7 +585,7 @@ bool edc_session_memory_apply_ops(struct edc_session_memory *m, const char *text
     bool ok = cJSON_IsArray(ops);
     size_t creates = 0;
 
-    /* 第一遍: 整批校验 (任一条不合法 ⇒ 什么都不落) */
+    /* Pass 1: validate the whole batch (any invalid op => nothing lands). */
     if (ok)
     {
         const cJSON *op = NULL;
@@ -623,7 +627,7 @@ bool edc_session_memory_apply_ops(struct edc_session_memory *m, const char *text
         return false;
     }
 
-    /* 第二遍: 应用 */
+    /* Pass 2: apply. */
     const cJSON *op = NULL;
     cJSON_ArrayForEach(op, ops)
     {
@@ -654,7 +658,7 @@ bool edc_session_memory_apply_ops(struct edc_session_memory *m, const char *text
             const char *title = op_str(op, "title");
             const char *summary = op_str(op, "summary");
             const char *detail = op_str(op, "detail");
-            /* 只覆盖**给了的**字段 (缺的保持原样)。 */
+            /* Overwrite only the GIVEN fields (missing ones stay). */
             if (title)
             {
                 free(e->title);
@@ -714,7 +718,7 @@ bool edc_session_memory_deliver(struct edc_task *task, const char *content)
     return ok;
 }
 
-/* ── 队尾通知 ─────────────────────────────────────────────── */
+/* ── Tail notice ───────────────────────────────────────────── */
 
 sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen, size_t cap, uint64_t *out_max_injected)
 {
@@ -723,7 +727,7 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
     if (!m || m->next_seq <= seen || m->event_count == 0)
         return NULL;
 
-    /* 同一 id 只留最新那条事件 (模型要的是"现在的样子", 不是流水) */
+    /* Keep only the newest event per id (the model wants the current state, not a log). */
     const struct edc_memo_event **picked = malloc(m->event_count * sizeof(*picked));
     if (!picked)
         return NULL;
@@ -738,7 +742,7 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
         {
             if (picked[j]->entry_id && strcmp(picked[j]->entry_id, e->entry_id) == 0)
             {
-                if (e->seq > picked[j]->seq) /* 只换新, 不换旧 */
+                if (e->seq > picked[j]->seq) /* replace only if newer */
                     picked[j] = e;
                 break;
             }
@@ -752,7 +756,7 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
         return NULL;
     }
 
-    /* 先按 seq 升序 (pick 是"首次出现"序, 不保证单调), 再取**最新的** cap 条 */
+    /* Sort ascending by seq (pick is "first seen" order, not monotonic), then take the NEWEST cap. */
     for (size_t i = 1; i < npick; i++)
     {
         const struct edc_memo_event *cur = picked[i];
@@ -765,7 +769,7 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
         picked[j] = cur;
     }
 
-    /* 最新的 cap 条 (超出只报数) */
+    /* The newest cap (overflow is reported as a count). */
     size_t first = (npick > cap) ? (npick - cap) : 0;
     size_t shown = npick - first;
 
@@ -799,20 +803,21 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
         out = sdscat(out, "\n（memory_list / memory_search / memory_get 可查完整内容）");
 
     free(picked);
-    /* 水位推进到**表头**: "最新 cap 条"窗口保证最新那条一定在里面, 被 cap 截掉的
-     * 老事件由通知里那句 "N more" + memory_list/memory_search 兜 (见头文件说明)。 */
+    /* The watermark advances to the HEADER: the "newest cap" window guarantees the
+     * newest is included, and cap-truncated old events are covered by the notice's
+     * "N more" + memory_list/memory_search (see the header). */
     if (out_max_injected)
         *out_max_injected = m->next_seq;
     return out;
 }
 
-/* ── 出生点采纳 / 提议者 ────────────────────────────────────── */
+/* ── Birth-point adoption / proposer ───────────────────────── */
 
 void edc_session_memory_adopt_task(struct edc_session *session, struct edc_task *task)
 {
     if (!session || !task || !session->memo)
         return;
-    /* 0 = "什么都没看过" ⇒ 第一次请求自带一次回填通知 (最新 cap 条)。 */
+    /* 0 = "has seen nothing" => the first request carries a backfill notice (newest cap). */
     task->memo_seen_seq = 0;
 }
 
@@ -824,7 +829,7 @@ void edc_session_memory_note_proposer(struct edc_memo_entry *entry, const char *
     entry->proposed_by = dup_or_null(task_id);
 }
 
-/* ── 落盘 / 读回 ───────────────────────────────────────────── */
+/* ── Persistence / load ────────────────────────────────────── */
 
 static void json_add_str(cJSON *o, const char *key, const char *v)
 {
@@ -836,7 +841,7 @@ cJSON *edc_session_memory_to_json(const struct edc_session_memory *m)
 {
     cJSON *root = cJSON_CreateObject();
     if (!m)
-        return root; /* 空结构也写: 加载端不必处理"这个键不在" */
+        return root; /* write even an empty structure so the loader need not handle a missing key */
 
     cJSON_AddNumberToObject(root, "next_seq", (double)m->next_seq);
     cJSON_AddNumberToObject(root, "next_entry_id", (double)m->next_entry_id);
@@ -900,7 +905,7 @@ struct edc_session_memory *edc_session_memory_from_json(const cJSON *json)
     m->next_entry_id = (uint64_t)json_num(json, "next_entry_id");
     m->pruned_before = (uint64_t)json_num(json, "pruned_before");
 
-    /* 事件: 用盘上的 seq 回填 (单调由写者保证; next_seq 跟着抬到最大值)。 */
+    /* Events: backfill with the on-disk seq (the writer guarantees monotonicity; next_seq rises to the max). */
     const cJSON *ev;
     cJSON_ArrayForEach(ev, cJSON_GetObjectItemCaseSensitive(json, "events"))
     {
@@ -927,7 +932,7 @@ struct edc_session_memory *edc_session_memory_from_json(const cJSON *json)
         if (!e)
             continue;
         edc_session_memory_note_proposer(e, json_str(en, "proposed_by"));
-        /* 缺键的老档 (或手写的) 也能继续发号: 抬到"已见过的最大 id"之上 */
+        /* Old (or hand-written) archives missing the key can still allocate: raise above the largest id seen. */
         if ((uint64_t)entry_id_num(id) > m->next_entry_id)
             m->next_entry_id = (uint64_t)entry_id_num(id);
         e->created_seq = (uint64_t)json_num(en, "created_seq");

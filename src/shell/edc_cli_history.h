@@ -1,42 +1,47 @@
 #ifndef __EDC_CLI_HISTORY_H__
 #define __EDC_CLI_HISTORY_H__
 
-/* ── CLI 的 `!n` / `!!` 历史 ───────────────────────────────────
+/* ── CLI `!n` / `!!` history ─────────────────────────────────
  *
- * 这是 **shell 自己的**命令历史: 它的**语义** (`!1` / `!!`、索引与边界) 整个在
- * `edc_shell.c` 的 `edc_shell_expand_history()` 里, 而**读它的也只有 shell**。
- * 进程一份、不落盘、与 session / channel 都无关 —— 同包 `edc_completion.c` 里
- * 有一份**同类**状态 (补全源的 Frecency 历史 `g_history`)。
+ * This is the SHELL'S OWN command history: its semantics (`!1` / `!!`, indices and
+ * bounds) live entirely in edc_shell.c's edc_shell_expand_history(), and only the shell
+ * reads it. One per process, not persisted, unrelated to session/channel -- the
+ * same-package edc_completion.c has a SIMILAR piece of state (the completion source's
+ * Frecency history, g_history).
  *
- * 它**不是 TUI 的历史**, 别跟这两个搞混 (三个 datum, 各有各的读者, 不要合并):
- *   · `src/tui/edc_input.cpp` 的 `history_` —— 输入框 Up/Down 的行召回
- *     (C++ 成员, 瞬态, 上限 500; 那个才是"前端界面的历史");
- *   · `edc_completion.c` 的 `g_history` —— 补全候选的排序来源 (2000 条, 带评分);
- *   · 本文件 —— `!n` / `!!` 展开用的命令历史。
+ * It is NOT the TUI's history; do not confuse it with these two (three data, each with
+ * its own reader, never merged):
+ *   - src/tui's input history_ -- the input box's Up/Down line recall (a C++ member,
+ *     transient, capped at 500; THAT is "the frontend UI's history");
+ *   - edc_completion.c's g_history -- the ordering source for completion candidates
+ *     (2000 entries, scored);
+ *   - this file -- the command history used for `!n` / `!!` expansion.
  *
- * 沿革: 曾经挂在 `struct edc_app` 上 (于是 shell 的 `!` 展开要收一把伞、测试
- * 要为它造一个 app), P4 卸到 `assembly/`（今 `app/`）, 2026-09-16 判定它归 shell 自己 →
- * 搬进 `src/shell/`。**方向性理由**: 将来真去**写**它的必然是 TUI (谁读到用户敲的
- * 行谁记录), 而 `tui → shell` 这条边**本来就存在**; 反过来把它放 tui, shell 就得
- * 向上伸手够 tui 的包, 那样必须加一个反向叶 target —— 需要那个 hack 本身就是
- * 放错位置的信号 (试过一版, 见 docs/runtime-model.md §11)。
+ * Lineage: it used to hang on `struct edc_app` (so the shell's `!` expansion had to take
+ * an umbrella and tests had to build an app for it), moved to assembly/ (today app/) in
+ * P4, and in 2026-09-16 was judged to belong to the shell -> moved into src/shell/.
+ * DIRECTIONAL reason: the thing that will really WRITE it is the TUI (whoever reads the
+ * line the user typed records it), and the tui -> shell edge already exists; putting it
+ * in tui instead would make the shell reach up into tui's package and require a reverse
+ * leaf target -- needing that hack is itself a sign of misplacement (tried once, see
+ * docs/runtime-model.md §11).
  *
- * **既有偏离原样保留**: 生产路径里**没有任何地方写它** (唯一调用者是测试),
- * 所以真实使用中 `!n`/`!!` 永远展开不出东西。搬家不改行为 (§5.1 台账第 9 条)。
- *
- * 另一个历史上的怪处一并保留: 以前 `#define CLI_HISTORY_MAX 1000` 定义了却从
- * 来没有读者 (历史无上限) —— 那个宏随搬家删掉, 但**上限这件事仍然是"没有"**。 */
+ * EXISTING DEVIATION KEPT AS-IS: nothing in the production path writes it (the only
+ * caller is a test), so in real use `!n`/`!!` never expand to anything. The move changes
+ * no behaviour. Another historical oddity kept too: `#define CLI_HISTORY_MAX 1000` was
+ * defined but never read (the history has no cap) -- the macro was dropped with the move,
+ * but the cap is STILL "none". */
 
-/** 记录一行 (空行忽略; 与上一行相同时忽略)。 */
+/** Record a line (blank lines and a repeat of the previous line are ignored). */
 extern void edc_cli_history_add(const char *line);
 
-/** 已记录的行数。 */
+/** Number of recorded lines. */
 extern int edc_cli_history_count(void);
 
-/** 第 |index| 行 (0-based, 即 `!1` 是 at(0))。越界返回 NULL。 */
+/** Line |index| (0-based, so `!1` is at(0)). NULL when out of range. */
 extern const char *edc_cli_history_at(int index);
 
-/** 清空 (测试隔离用: 这份历史现在是进程级的)。 */
+/** Clear it (for test isolation: this history is process-level now). */
 extern void edc_cli_history_clear(void);
 
 #endif

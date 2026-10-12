@@ -15,8 +15,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* 四个工具的公共前提: 调用方 task → 属主 session 的 session 记忆。
- * 非 task 路径 (ctx->task == NULL) 或 session 没挂记忆 = 报错, 不猜。 */
+/* The four tools' shared precondition: calling task -> its owning session's session
+ * memory. A non-task path (ctx->task == NULL) or a session with no memory = error, do
+ * not guess. */
 static struct edc_session_memory *memory_of(struct edc_toolbox_call_ctx *ctx, sds *err_out)
 {
     if (!ctx || !ctx->task || !ctx->task->group || !ctx->task->group->session ||
@@ -138,7 +139,7 @@ static void memory_get_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool *t
     callback(ctx, detail, NULL);
 }
 
-/* ── memory_write (前台直写) ───────────────────────────────── */
+/* ── memory_write (foreground direct write) ────────────────── */
 
 static void memory_write_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
                               void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
@@ -184,7 +185,7 @@ static void memory_write_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool 
     callback(ctx, out, NULL);
 }
 
-/* ── 注册 ──────────────────────────────────────────────────── */
+/* ── Registration ──────────────────────────────────────────── */
 
 void edc_tools_memory_register(struct edc_toolbox *tb)
 {

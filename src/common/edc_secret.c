@@ -50,10 +50,11 @@ static bool derive_key(const char *passphrase, size_t len)
     return true;
 }
 
-/* 关回显读密码。这段原先是独立的 edc_terminal.{c,h}，但那里 7 个函数只有这 2 个有
- * 调用者（save / restore / raw_mode / raw_restore / vt_enable 都是零读者），而唯一的
- * 使用者就是下面的 read_passphrase_tty —— 于是并进来，让那个模块消失。
- * 逻辑是从原实现逐字搬过来的（POSIX 与 Windows 两分支都保持原样）。 */
+/* Read a password with echo off. This used to be a separate edc_terminal.{c,h}, but of
+ * its 7 functions only these 2 had callers (save / restore / raw_mode / raw_restore /
+ * vt_enable had zero readers) and the only user is read_passphrase_tty below -- so they
+ * were absorbed here and that module disappeared. The logic is verbatim from the old
+ * implementation (both POSIX and Windows branches). */
 struct secret_tty_state
 {
 #ifdef _WIN32

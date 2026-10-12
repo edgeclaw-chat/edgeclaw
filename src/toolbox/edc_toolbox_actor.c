@@ -10,11 +10,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-static edc_actor_t *g_toolbox_actor = NULL; /* 端口实现者的登记位 (见文件末"端口"一节) */
+static edc_actor_t *g_toolbox_actor = NULL; /* the port provider's registration slot (see the "ports" section at the end) */
 
-/* 向请求方 (scheduler) 上报"某个工具开始执行": data = strdup(call_id), 由 free
- * 释放。scheduler 收到后把该 call_id 的账本记录标为 EXECUTING —— 这样 resume
- * 时能精确区分"未执行"(PENDING) 与"执行中"(EXECUTING), 不再依赖链序推断。 */
+/* Report "a tool started executing" to the requester (scheduler): data = strdup(call_id),
+ * freed by free. On receipt the scheduler marks that call_id's ledger record EXECUTING --
+ * so resume can tell "not executed" (PENDING) from "executing" (EXECUTING) precisely,
+ * no longer inferring from chain order. */
 static void toolbox_notify_tool_started(edc_actor_t *actor, edc_actor_t *to, void *request_id,
                                         struct edc_toolbox_actor_req *req)
 {
@@ -40,10 +41,11 @@ static struct edc_toolbox_actor_exec_ctx *edc_toolbox_actor_exec_ctx_new(edc_act
     return ctx;
 }
 
-/* ── 在途工具调用登记 ─────────────────────────────────────────
- * 一次工具调用从 TOOL_REQUEST 进入到最后一个异步回调跑完为止都是"在途"。
- * actor loop 在 teardown 时被 uv_stop, 这些回调不会再触发, 所以调用上下文
- * 必须在 actor 停止后被主动释放 (见 edc_toolbox_actor_free)。 */
+/* ── In-flight tool-call registry ────────────────────────────
+ * A tool call is "in flight" from entering TOOL_REQUEST until its last async callback
+ * finishes. At teardown the actor loop is uv_stop()ped, so these callbacks never fire and
+ * the call context must be released proactively after the actor stops (see
+ * edc_toolbox_actor_free). */
 static void edc_toolbox_actor_inflight_add(edc_toolbox_actor_state_t *state, struct edc_toolbox_call_ctx *call)
 {
     if (state->inflight_count == state->inflight_cap)
@@ -51,7 +53,7 @@ static void edc_toolbox_actor_inflight_add(edc_toolbox_actor_state_t *state, str
         size_t cap = state->inflight_cap ? state->inflight_cap * 2 : 4;
         struct edc_toolbox_call_ctx **grown = realloc(state->inflight, cap * sizeof(*grown));
         if (!grown)
-            return; /* 登记失败: 回退到旧的"退出即漏"行为, 不致命 */
+            return; /* registration failed: fall back to the old "leak on exit" behaviour; not fatal */
         state->inflight = grown;
         state->inflight_cap = cap;
     }
@@ -70,11 +72,11 @@ static void edc_toolbox_actor_inflight_remove(edc_toolbox_actor_state_t *state, 
     }
 }
 
-/* 彻底释放一次在途工具调用: 未发出的 req 链 + actor msg + exec ctx + 调用 ctx。
- * 所有权说明: exec->msg->data 可能指向"尚未发出"的首个 req (与 exec->req 同一
- * 对象), 也可能指向"已转交消费者"的前一 req (链中途)。先把 msg->data 摘掉,
- * 保证 msg 不会去 double-free 已转交的 req; 本调用仍持有的 req 从 exec->req
- * 起沿 ->next 逐个释放。 */
+/* Fully release one in-flight tool call: the unsent req chain + actor msg + exec ctx +
+ * call ctx. Ownership: exec->msg->data may point at the first, not-yet-sent req (the same
+ * object as exec->req), or at a previous req already handed to the consumer (mid-chain).
+ * Detach msg->data first so msg does not double-free a handed-off req; the reqs this call
+ * still holds are released from exec->req along ->next. */
 static void edc_toolbox_actor_inflight_free(struct edc_toolbox_call_ctx *call)
 {
     if (!call)
@@ -167,8 +169,9 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
     }
     else
     {
-        /* 链尾: 当前 req 已在上面转交给消费者, 这里不能再用 inflight_free
-         * (它会去 free exec->req)。只需注销登记并释放 ctx 自身。 */
+        /* Chain tail: the current req was handed to the consumer above, so do not use
+         * inflight_free here (it would free exec->req). Just deregister and free the ctx
+         * itself. */
         msg->data = NULL;
         edc_toolbox_actor_inflight_remove(state, tb_ctx);
         edc_toolbox_call_ctx_free(tb_ctx);
@@ -204,9 +207,9 @@ static void edc_toolbox_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 void edc_toolbox_actor_free(edc_actor_t *actor)
 {
     edc_toolbox_actor_state_t *state = (edc_toolbox_actor_state_t *)actor->state;
-    if (g_toolbox_actor == actor) /* 端口实现者的登记位: 别留野指针 */
+    if (g_toolbox_actor == actor) /* the port provider's registration slot: leave no dangling pointer */
         g_toolbox_actor = NULL;
-    /* runner 已 stop, 在途工具回调不会再触发 —— 主动回收, 否则随进程退出泄漏 */
+    /* The runner has stopped; in-flight tool callbacks never fire -- reclaim proactively, or they leak on process exit */
     for (size_t i = 0; i < state->inflight_count; i++)
         edc_toolbox_actor_inflight_free(state->inflight[i]);
     free(state->inflight);
@@ -261,13 +264,16 @@ edc_actor_t *edc_toolbox_actor_new(struct edc_toolbox *toolbox)
     return edc_actor_new("edc_toolbox_actor", edc_toolbox_actor_handler, state);
 }
 
-/* ── 请求侧: 投一条请求链给 toolbox actor ─────────────────────
- * 唯一的投递出口: dispatch 与 redispatch 都从这里出去, 所以
- * `BC_ACTOR_MSG_TOOL_REQUEST` 全文件只出现两次 (这里 + actor 自己的 handler)。 */
-/* 一条请求链一次投递。注意 data_free_fn 是**每节点**的释放器: 正常流程每个节点被各自的
- * 应答消息带走, 但这条链若在信箱里被丢弃 (teardown 排空信箱), 就只有链首被释放 ⇒ 尾部
- * 泄漏。2026-10-09 裁决**不修** (只发生在进程收尾的排空路径上, 且进程随即退出), 记在这里
- * 免得下次被当成新 bug 报。真要修: 加一个顺 ->next 的 req_chain_free 并在这里用它。 */
+/* ── Request side: post a request chain to the toolbox actor ──
+ * The single posting exit: dispatch and redispatch both go through here, so
+ * BC_ACTOR_MSG_TOOL_REQUEST appears exactly twice in the file (here + the actor's own
+ * handler). */
+/* One request chain, one post. Note data_free_fn is a PER-NODE freer: normally each node
+ * is taken away by its own reply message, but if this chain is dropped in the mailbox
+ * (teardown draining it), only the chain head is freed => the tail leaks. Decided
+ * (2026-10-09) NOT to fix (it only happens on the process-teardown drain path, and the
+ * process exits right after); recorded here so it is not reported as a new bug. Real fix:
+ * add a req_chain_free walking ->next and use it here. */
 static void edc_toolbox_actor_send_chain(edc_actor_t *actor, struct edc_scheduler *sched, void *request_id,
                                          struct edc_toolbox_actor_req *chain)
 {
@@ -275,8 +281,9 @@ static void edc_toolbox_actor_send_chain(edc_actor_t *actor, struct edc_schedule
                                             chain, (edc_actor_data_free_fn)edc_toolbox_actor_req_free));
 }
 
-/* 把 LLM 响应里的 tool_calls 拼成一条请求链并投递 (链首是 dummy head, 空链不投)。
- * 只处理 FUNCTION 类型的 call; name/args/id 的所有权转移给 req (响应侧不再引用)。 */
+/* Assemble the LLM response's tool_calls into a request chain and post it (the head is a
+ * dummy; an empty chain is not posted). Only FUNCTION calls are handled; ownership of
+ * name/args/id moves to the req (the response side no longer references them). */
 void edc_toolbox_actor_dispatch(edc_actor_t *actor, struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
                                 void *request_id)
 {
@@ -285,8 +292,9 @@ void edc_toolbox_actor_dispatch(edc_actor_t *actor, struct edc_scheduler *sched,
 
     struct edc_llm_actor_resp *resp = llm_resp;
 
-    /* 思维内容回显: 内容上屏是**通道**的活, 所以仍走 scheduler 的 send_reply
-     * 端口 —— 本模块不认识通道句柄 (规则: 能拿到的才拿)。 */
+    /* Thought echo: putting content on screen is the CHANNEL's job, so it still goes
+     * through the scheduler's send_reply port -- this module does not know the channel
+     * handle (rule: take only what you can get). */
     if ((resp->reasoning_content && sdslen(resp->reasoning_content) > 0) ||
         (resp->content && sdslen(resp->content) > 0))
     {
@@ -323,16 +331,16 @@ void edc_toolbox_actor_dispatch(edc_actor_t *actor, struct edc_scheduler *sched,
         edc_toolbox_actor_send_chain(actor, sched, request_id, req);
 }
 
-/* resume: 把 task 工具账本里仍为 PENDING (尚未执行) 的记录重建 toolbox 请求链
- * 并投递。EXECUTING 的记录由 scheduler 在 resume 时补中断响应, 不在此列。
- * 返回投递的条数。 */
+/* resume: rebuild the toolbox request chain from the task's tool ledger for records still
+ * PENDING (not executed) and post it. EXECUTING records get their interrupt reply from the
+ * scheduler during resume and are not included. Returns the number posted. */
 int edc_toolbox_actor_redispatch(edc_actor_t *actor, struct edc_scheduler *sched, struct edc_task *task,
                                  void *request_id)
 {
     if (!actor || !task)
         return 0;
 
-    /* dummy head, 与原 dispatch 路径一致 (空 req 不入链) */
+    /* dummy head, matching the dispatch path (an empty req is not chained) */
     struct edc_toolbox_actor_req *head = edc_toolbox_actor_req_new(NULL, NULL, NULL, task->channel_type, task);
     struct edc_toolbox_actor_req *tail = head;
     int count = 0;
@@ -358,14 +366,16 @@ int edc_toolbox_actor_redispatch(edc_actor_t *actor, struct edc_scheduler *sched
     return count;
 }
 
-/* ── 端口: toolbox 是两条工具端口的提供方 ────────────────────
+/* ── Ports: the toolbox provides the two tool ports ─────────
  *
- * 工具协议 (req 链 / dispatch / 按账本重建) 都住本文件, 所以"把端口装到
- * scheduler 上"也归这里 —— 装配根只在装配期叫一次, 运行期不再出现在路径上。
- * 端口签名一个字没动, kernel 的调用点与测试里的假端口都不受影响。
+ * The tool protocol (req chain / dispatch / rebuild from the ledger) lives in this file,
+ * so "install the ports onto the scheduler" is here too -- the assembly root calls it
+ * once at assembly time and never appears on a runtime path again. Port signatures are
+ * unchanged; kernel call sites and test fakes are unaffected.
  *
- * toolbox actor 是**进程里唯一的一个**, 所以实现者在 bind 时登记自己即可
- * (与通道同一个理由: 不往 kernel 的 scheduler 上挂边界句柄); 登记位在文件开头。 */
+ * The toolbox actor is THE ONLY ONE in the process, so the provider just registers itself
+ * at bind (the same reason as the channel: no boundary handle hung on the kernel's
+ * scheduler); the registration slot is at the top of the file. */
 
 static void edc_toolbox_cb_dispatch(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
                                     void *request_id)

@@ -3,8 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* 进程一份 (见头文件: 前端状态, 不是运行时装配)。初始容量与老实现一致 (8),
- * 增长策略也一致 (翻倍) —— 只把存储从 `struct edc_app` 里挪出来。 */
+/* One per process (see the header: frontend state, not runtime assembly). The initial
+ * capacity matches the old implementation (8), and so does the growth policy (doubling)
+ * -- only the storage moved out of `struct edc_app`. */
 static sds *g_history = NULL;
 static int g_history_count = 0;
 static int g_history_capacity = 0;

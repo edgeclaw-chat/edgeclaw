@@ -1,22 +1,26 @@
 #pragma once
 
-// ── 端口层: 应用边界 (IAppFacade) + 通道事件的强类型出口 (IChannelSink) ──────
+// Port layer: the application boundary (IAppFacade) + the strongly-typed channel
+// event sink (IChannelSink).
 //
-// 现状: TUIWindow 直接 include edc_api.h, 在静态回调 `on_channel_adapter_send`
-// 里读 `edc_app_message_*` 分类、取字段, 再在 `screen_->Post` 的闭包里分派 ——
-// C 边界、消息类型字符串、线程 marshal 全糊在一个上帝类里。
+// Before: TUIWindow included edc_api.h directly, classified messages by reading
+// edc_app_message_* in a static callback `on_channel_adapter_send`, and then
+// dispatched inside a `screen_->Post` closure -- the C boundary, message-type
+// strings and thread marshalling all welded into one god class.
 //
-// 这里把它拆成两个角色:
-//   * IAppFacade / AppFacade —— 唯一的 C 边界。它拥有 edc_app 生命周期, 读
-//     `edc_app_message_*` 把通道消息**翻译**成下面这套强类型事件, 经 IUiDispatcher
-//     marshal 到 UI 线程, 交给 IChannelSink。视图从此不见 edc_app_*。
-//   * IChannelSink —— 强类型事件的下游 (今天由 TUIWindow 实现; 之后会收进
-//     独立的 ChannelDispatcher + 模型, 见 docs/tui-oop-redesign.zh.md P3)。
+// Now split into two roles:
+//   * IAppFacade / AppFacade -- the only C boundary. It owns the edc_app lifetime,
+//     reads edc_app_message_* and translates channel messages into the strongly
+//     typed events below, marshals them onto the UI thread through IUiDispatcher,
+//     and hands them to IChannelSink. Views never see edc_app_* again.
+//   * IChannelSink -- the downstream of strongly typed events (implemented by
+//     TUIWindow today; later by ChannelDispatcher + models, see P3).
 //
-// IUiDispatcher 是"投到 UI 线程"这一动作的端口: 生产实现走 ftxui 屏幕, 没有
-// 屏幕时内联执行 —— 后者正是测试能同步喂消息的原因。
+// IUiDispatcher is the "post to the UI thread" port: production posts to the ftxui
+// screen, with no screen it runs inline -- which is what lets tests feed messages
+// synchronously.
 
-#include "edc_api.h" /* struct edc_channel_message + message_* 只读窗口 + EDC_APP_RENDER_* */
+#include "edc_api.h" /* struct edc_channel_message + message_* read-only views + EDC_APP_RENDER_* */
 
 #include <cstddef>
 #include <ctime>
@@ -27,19 +31,19 @@
 namespace edc::port
 {
 
-// UI 线程调度端口。
+// UI-thread dispatch port.
 class IUiDispatcher
 {
   public:
     virtual ~IUiDispatcher() = default;
-    // 把 |task| 投到 UI 线程; 没有屏幕时同步执行 (测试路径)。
+    // Post |task| to the UI thread; with no screen, run synchronously (test path).
     virtual void Post(std::function<void()> task) = 0;
-    // 请求重绘一帧。
+    // Request one repaint.
     virtual void RequestFrame() = 0;
 };
 
-// 通道消息的种类 (对应原 `enum class Kind`)。None 不在此列: 认不出来的消息
-// 在适配器里直接丢弃, 不会到达 sink。
+// The kind of a channel message (the old `enum class Kind`). None is absent:
+// unrecognized messages are dropped in the adapter and never reach the sink.
 enum class ChatKind
 {
     User,
@@ -49,7 +53,8 @@ enum class ChatKind
     System,
 };
 
-// 一条聊天消息的强类型快照: 适配器在 C 消息存活期间拷出全部字段。
+// A strongly typed snapshot of one chat message: the adapter copies all fields
+// while the C message is alive.
 struct ChatMessageEvent
 {
     ChatKind kind = ChatKind::System;
@@ -62,21 +67,21 @@ struct ChatMessageEvent
     time_t ts = 0;
 };
 
-// 强类型通道出口。适配器在 UI 线程上调用这些方法。
+// Strongly typed channel sink. The adapter calls these on the UI thread.
 class IChannelSink
 {
   public:
     virtual ~IChannelSink() = default;
     virtual void OnChatMessage(const ChatMessageEvent &event) = 0;
-    // 任务树快照 (原始 JSON: 解析 + 认领属于前端自身的判断)。
+    // Task-tree snapshot (raw JSON: parsing + claiming belong to the frontend).
     virtual void OnTaskSnapshot(const std::string &json) = 0;
-    // "session X 的树变了, 原因 reason" 控制事件 (不带树)。
+    // "session X's tree changed, reason" control event (no tree).
     virtual void OnTreeChanged(const std::string &session_id, const std::string &reason) = 0;
-    // `/task history` / `/group history` 的结构化载荷。
+    // Structured payload for `/task history` / `/group history`.
     virtual void OnTaskHistory(const std::string &payload) = 0;
 };
 
-// /connect 弹窗提交的配置。
+// The config submitted by the /connect dialog.
 struct ConnectConfig
 {
     std::string api_url;
@@ -84,7 +89,8 @@ struct ConnectConfig
     std::string api_key;
 };
 
-// 前端需要的 app 操作的投影。视图/控制器依赖它, 而不是 edc_app_* C API。
+// Projection of the app operations the frontend needs. Views/controllers depend on
+// this, not on the edc_app_* C API.
 class IAppFacade
 {
   public:
@@ -93,7 +99,7 @@ class IAppFacade
     // False when the app failed to start (bad config / key / no tty).
     virtual bool Ready() const = 0;
 
-    // ── 配置读取 ────────────────────────────────────────────────
+    // ── config reads ─────────────────────────────────────────────
     virtual bool ConfigModel(std::string *out) const = 0;
     virtual bool ConfigApiUrl(std::string *out) const = 0;
     virtual bool ConfigApiKey(std::string *out) const = 0;
@@ -101,29 +107,30 @@ class IAppFacade
     // Persist + hot-apply; true when it succeeded.
     virtual bool SetLlmConfig(const ConnectConfig &config) = 0;
 
-    // ── 前端要做的几件事 ────────────────────────────────────────
+    // ── a few things the frontend does ───────────────────────────
     virtual void SendUserMessage(const std::string &session_id, const std::string &content) = 0;
     virtual void RequestTaskSnapshot(const std::string &session_id) = 0;
 
-    // ── 路径 / 文件 (前端自己拥有的文件) ────────────────────────
+    // ── paths / files the frontend owns ──────────────────────────
     virtual bool HistoryPath(std::string *out) const = 0;
     virtual bool ChatLogPathFor(const std::string &session_id, std::string *out) const = 0;
     virtual bool WriteFile(const std::string &path, const char *data, size_t len, bool append,
                            bool under_workspace) = 0;
     virtual bool EnsureParentDir(const std::string &path) = 0;
 
-    // 适配器入口: 生产路径注册的 C 回调最终进这里。公开是**给测试**用的 ——
-    // 可以直接把一条真 `struct edc_channel_message` 喂进来; 没 SetScreen() 时
-    // 事件同步执行, 喂完即可渲染断言 (见 tests/test_tui_dispatch.cpp)。
+    // Adapter entry: the C callback registered by production lands here. Public for
+    // tests -- they can feed a real `struct edc_channel_message`; with no
+    // SetScreen() the event runs synchronously, so the assertion follows at once.
     virtual void HandleChannelMessage(struct edc_channel_message *message) = 0;
 };
 
-// edc_app_* 的生产实现: 拥有 app 生命周期, 把 C 回调翻译成强类型事件并经
-// IUiDispatcher marshal 到 UI 线程。
+// Production edc_app_* implementation: owns the app lifetime and translates C
+// callbacks into strongly typed events marshalled via IUiDispatcher.
 class AppFacade : public IAppFacade
 {
   public:
-    // |dispatcher| / |sink| 都不被拥有, 须比本对象活得久 (今天都指向 TUIWindow)。
+    // |dispatcher| / |sink| are not owned and must outlive this object (both point
+    // at TUIWindow today).
     AppFacade(int sandbox_override, IUiDispatcher *dispatcher, IChannelSink *sink);
     ~AppFacade() override;
 
@@ -150,9 +157,10 @@ class AppFacade : public IAppFacade
     void HandleChannelMessage(struct edc_channel_message *message) override;
 
   private:
-    // C 回调蹦床: instance 就是本 AppFacade。
+    // C callback trampoline: instance is this AppFacade.
     static void ChannelTrampoline(void *instance, struct edc_channel_message *message);
-    // 读 C 消息 → 造强类型事件 → Post 到 UI 线程。必须在 C 消息存活期间完成取字段。
+    // Read the C message -> build the typed event -> Post to the UI thread. Fields
+    // must be read while the C message is alive.
     void TranslateAndDispatch(struct edc_channel_message *message);
 
     struct edc_app *app_ = nullptr;

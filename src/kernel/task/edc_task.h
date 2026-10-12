@@ -58,9 +58,10 @@ extern const char *edc_task_sink_name(edc_sink sink);
 extern void edc_task_memo_commit(struct edc_task *task);
 extern edc_sink edc_task_classify_sink(const char *name);
 
-/* 产出不是给用户看的, 而是写进某种记忆 (折叠 / 策展)。这类 task 的共同形状:
- * 请求自足 (只带自己的说明 + 自己的 turn)、不占完成序 (`completion_seq = 0`)、
- * 不算对话内容 (不进组历史 / 不进折叠语料 / 不进 ctx 宽度)。 */
+/* Its output is not for the user but written into some memory (fold / curation).
+ * The shared shape of these tasks: a self-contained request (its own description +
+ * its own turn), no completion order (`completion_seq = 0`), not part of the
+ * conversation (excluded from group history / fold corpus / ctx width). */
 extern bool edc_task_is_memory_sink(const struct edc_task *task);
 
 
@@ -166,24 +167,28 @@ struct edc_task
     int last_hist_len;
     int last_turn_len;
 
-    /* ── L2 (session 记忆): 水位 ─────────────────────────────────────
-     * `memo_seen_seq` = 这个 task 已经"看过"到 session 记忆事件表的哪个 seq。
-     * 装配时取 `seq > memo_seen_seq` 的差集当补丁 (见 docs/l2-session-memory.md
-     * §3); 请求发出后的簿记里推进 (取消/失败**不**推进 ⇒ 下次重发同一补丁)。
+    /* ── L2 (session memory): watermarks ─────────────────────────
+     * `memo_seen_seq` = how far this task has "seen" the session memory event
+     * table. Assembly takes the `seq > memo_seen_seq` difference as a patch:
+     * it advances in the bookkeeping after a request
+     * is sent (cancel/failure do NOT advance, so the same patch is resent).
      *
-     * 出生点由 session 采纳: `memo_seen_seq = session->memo->next_seq` —— 新 task
-     * 第一轮就拿到全量索引, 所以"补丁"对它没有信息量。老存档 (迁移) 读回 0,
-     * 而迁移后的表也是空的 (next_seq = 0), 两者一致。
+     * Birth point adopted from the session: `memo_seen_seq = session->memo->next_seq`
+     * -- a new task gets the full index on its first round, so a "patch" says
+     * nothing to it. Old archives (migration) read back 0, and the migrated table
+     * is empty too (next_seq = 0), so both agree.
      *
-     * `last_prefix_tokens` = 锚定时 session 记忆块 + 补丁的估算 token (P4b 起启用):
-     * ctx 估算要补 `max(0, prefix_now - last_prefix_tokens)`, 否则常驻块长大后会
-     * 系统性晚折。P4a 只落盘这个字段, 还没有读者。 */
+     * `last_prefix_tokens` = estimated tokens of the session memory block + patch
+     * at anchor time (P4b onward): the ctx estimate adds
+     * `max(0, prefix_now - last_prefix_tokens)`, else a growing resident block folds
+     * systematically late. P4a only persists this field, no readers yet. */
     uint64_t memo_seen_seq;
     uint64_t last_prefix_tokens;
 
-    /* 上一次请求**装进去**的最大事件 seq (只在内存, 不落盘)。响应真的回来后
-     * (`edc_task_memo_commit`) 才把它提升成 `memo_seen_seq` —— 取消/失败的请求
-     * 丢了通知, 水位不动, 下一次请求会重发同一条 (见 edc_task_memo_commit)。 */
+    /* Largest event seq the last request INCLUDED (in-memory only). It is promoted
+     * to `memo_seen_seq` only once the response really returns
+     * (`edc_task_memo_commit`) -- a cancelled/failed request loses its notification,
+     * the watermark stays, and the next request resends the same entry. */
     uint64_t memo_notice_seq;
 
     edc_channel_type channel_type;

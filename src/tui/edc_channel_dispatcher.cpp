@@ -10,12 +10,13 @@ namespace edc::control
 namespace
 {
 
-// todowrite 工具的 TOOL 消息头（与 edc_tools_todo.c 注册名一致）。它的文本回显
-// （Markdown checklist）不进对话区：TODO 状态只由右侧 TodoWidget 展示。
+// TOOL message header of the todowrite tool (matches edc_tools_todo.c). Its
+// Markdown-checklist echo stays out of the chat: TODO state is shown only by the
+// sidebar TodoWidget.
 constexpr char kTodoToolHeader[] = "todowrite";
 
-// 每个 task 由哪条输入建成 (task id -> 原文)，喂给 ChatModel: 选中该 task 时它被
-// 渲染成该 task 的第一条 user message。
+// Which input built each task (task id -> raw input), handed to ChatModel: when the
+// task is selected it renders as the task's first user message.
 std::shared_ptr<const std::map<std::string, std::string>> TaskInputsOf(const TaskSnapshot &snap)
 {
     auto inputs = std::make_shared<std::map<std::string, std::string>>();
@@ -26,7 +27,8 @@ std::shared_ptr<const std::map<std::string, std::string>> TaskInputsOf(const Tas
     return inputs;
 }
 
-// 强类型枚举 → 持久化 tag (与从前的字符串契约逐字一致: 转录文件里存的就是这些)。
+// Typed enum -> persisted tag (identical to the old string contract: these are what
+// the transcript file stores).
 const char *TagOf(port::ChatKind kind)
 {
     switch (kind)
@@ -56,7 +58,7 @@ ChannelDispatcher::ChannelDispatcher(model::ChatModel &chat, model::SessionModel
 
 void ChannelDispatcher::OnTaskHistory(const std::string &payload)
 {
-    // 结构化历史载荷: 拆成一条条气泡追加到对话区 (见 TUIWindow::RenderTaskHistory)。
+    // Structured history payload: split into bubbles appended to the chat pane.
     host_.PresentHistory(payload);
 }
 
@@ -110,25 +112,28 @@ void ChannelDispatcher::OnTaskSnapshot(const std::string &json)
 
 void ChannelDispatcher::OnChatMessage(const port::ChatMessageEvent &event)
 {
-    // 只看模式: 实时产出不上屏、也不写转录。命令回复 (System) 例外: 在只看模式里
-    // 敲命令也要有反馈, 不然静默得像卡死了。
+    // History view: live output is neither shown nor written to the transcript.
+    // Command replies (System) are the exception -- typing a command must give
+    // feedback.
     if (host_.InHistoryView() && event.kind != port::ChatKind::System)
         return;
 
-    // 展示闸门 (P3 ③: 从 core 移到前端): 显示中的 session 只显示它 **active task**
-    // 的产出 —— 同 session 里非 active task 的输出静默。
+    // Display gate (moved from core to the frontend): the displayed session shows
+    // only its active task's output -- a non-active task's output is silent.
     if (route_.Route(event.session_id, event.from_active_task, session_.displayed_id()) ==
         domain::OutputRoute::Silent)
         return;
 
-    // todowrite 的 TOOL 消息不进对话区：TODO 状态已由右侧 TodoWidget 展示。
+    // The todowrite TOOL message stays out of the chat: TODO state is shown by the
+    // sidebar TodoWidget.
     if (event.kind == port::ChatKind::Tool && event.header == kTodoToolHeader)
         return;
 
     const std::string kind_str = TagOf(event.kind);
 
-    // PresentChat 负责落盘 + 上屏; 后台上 session 的产出只落进它自己的转录,
-    // 不在当前 tab 冒泡, 也不需要拉树/重绘。
+    // PresentChat persists + shows; a background session's output is written only
+    // into its own transcript, does not bubble into the current tab, and needs no
+    // tree pull / repaint.
     if (!host_.PresentChat(event, kind_str))
         return;
 

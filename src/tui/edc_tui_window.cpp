@@ -27,7 +27,7 @@
 #include <memory>
 #include <set>
 #include <string>
-#include "edc_api.h" /* EDC_APP_RENDER_PLAIN / _MARKDOWN 常量 */
+#include "edc_api.h" /* EDC_APP_RENDER_PLAIN / _MARKDOWN */
 #include <unistd.h>
 #include <vector>
 
@@ -409,21 +409,18 @@ void TUIWindow::SaveInputHistory()
 
 void TUIWindow::RequestTaskSnapshot()
 {
-    /* 测试模式: 不向 app 要树。理由 —— 构造期与回调里的拉取都会走一个**异步**
-     * 回包, 而没 SetScreen() 时那回包是内联在 runner 线程上跑 (Post() 的 else
-     * 分支, 或 Post 之前无屏幕的构造期), 会和测试自己的断言抢同一个 widget。
-     * 设了它就完全没有这条路 (tests/test_tui_dispatch.cpp)。
-     * 本仓既有先例: EDGECLAW_SNAPSHOT_TRACE 也是 env 开关。 */
+    /* Test mode: do not pull the tree. Pulls from the constructor and from
+     * callbacks arrive as an async reply that, with no SetScreen(), runs inline on
+     * the runner thread (Post()'s else branch) and races the test's own assertions
+     * over the same widget. Setting this removes that path entirely
+     * (tests/test_tui_dispatch.cpp). */
     if (getenv("EDGECLAW_TUI_NO_PULL"))
         return;
     last_snapshot_request_ = std::chrono::steady_clock::now();
-    // 点名叫自己**正在显示**的那棵树 (P3 ①b) —— 别人的树不上路。
+    // Name the tree we are currently displaying; another session's tree is not ours.
     app_->RequestTaskSnapshot(session_model_->displayed_id());
 }
 
-// The sidebar's selection (one group or one task) becomes a filter over the chat
-// log: only the bubbles belonging to the selected group's / task's ids are drawn.
-// No selection = the whole session log, exactly as before. The task ids come from
 // Build one chat bubble. Shared by the live channel path and the restart replay
 // so a message looks the same whether it just arrived or was re-derived from
 // session.json. |kind| is the bridge's tag: user | tool | thought | reply | sys.
@@ -436,10 +433,10 @@ static std::shared_ptr<Message> MakeChatWidget(const std::string &kind, const st
 
     if (kind == "tool")
     {
-        // 工具消息的渲染完全由发送方声明的 render_pref 决定，渲染端零猜测：
-        //  - MARKDOWN: 内容按 Markdown 渲染；有 header 时保留 ToolMessage 的
-        //    折叠 chrome，无 header 直接进 md 消息样式
-        //  - 默认/PLAIN（未声明即纯文本）: 一律纯文本 ToolMessage
+        // Rendering is entirely decided by the sender's render_pref:
+        //  - MARKDOWN: render the content as Markdown; keep ToolMessage's collapse
+        //    chrome when there is a header, otherwise use the plain md style;
+        //  - default/PLAIN (undeclared = plain text): a plain-text ToolMessage.
         if (render_pref == EDC_APP_RENDER_MARKDOWN)
         {
             if (!header.empty())
@@ -460,7 +457,7 @@ bool SnapshotIsForSession(const TaskSnapshot *snap, const std::string &displayed
 {
     if (!snap)
         return false;
-    // 规则本身在 domain::SnapshotClaimPolicy 里; 这里只是保留旧入口 (薄委托)。
+    // The rule lives in domain::SnapshotClaimPolicy; this is a thin legacy entry.
     return domain::SnapshotClaimPolicy::Default().Claims(*snap, displayed_session);
 }
 
@@ -473,7 +470,7 @@ bool TreeChangedEventWantsPull(const std::string &event_session, const std::stri
 LiveOutputRoute RouteLiveOutput(const std::string &session_id, bool from_active_task,
                                 const std::string &displayed_session)
 {
-    // 旧枚举 (LiveOutputRoute) 与领域枚举 (domain::OutputRoute) 一对一, 映射即可。
+    // The legacy enum (LiveOutputRoute) maps one-to-one onto domain::OutputRoute.
     switch (domain::OutputRoutingPolicy::Default().Route(session_id, from_active_task, displayed_session))
     {
     case domain::OutputRoute::Shown:
@@ -616,9 +613,9 @@ void TUIWindow::TickAnimations()
             screen_->RequestAnimationFrame();
     }
 
-    // 只看模式: 输入组件**整块不渲染** (连它那两行分隔线一起) —— 面板只剩历史 + 状态行。
-    // 不拿一行文字去顶输入框的位置: 那样看着像"输入框还在, 只是被禁用", 比禁用它更怪。
-    // 返回提示做成历史面板右上角的一枚徽标 (与 "Copied" 芯片同一个 dbox 手法)。
+    // History view: the input is not rendered at all (nor its two separators) --
+    // the pane is just history + status row. The return hint is a badge in the
+    // history pane's top-right corner (same dbox trick as the "Copied" chip).
 
     ::ftxui::Elements children = {chat | ::ftxui::flex, ::ftxui::separator()};
     if (!history_view_)
@@ -627,8 +624,8 @@ void TUIWindow::TickAnimations()
         children.push_back(::ftxui::separator());
     }
 
-    // 只看模式: 输入组件整块不在屏上, 返回提示就放底部这一行 (与状态行同一个位置)。
-    // 输入框原来的位置上**什么都不摆** —— 摆一行字反而像"输入框被禁用了"。
+    // History view: the input is off screen, so the return hint takes the bottom
+    // row (the status row's slot); nothing is drawn where the input was.
     if (history_view_)
     {
         children.push_back(::ftxui::hbox({::ftxui::text(" History · Esc to go back ") |
@@ -672,10 +669,9 @@ void TUIWindow::TickAnimations()
         CopySelectionToClipboard();
     }
 
-    // 这里以前有个 500ms 的轮询: 后台任务不是 active task, 状态变化没有任何
-    // 消息, 只能靠它兜底。现在调度器对**任何** task 的状态变化都推 (合并到每条
-    // actor 消息一次), 所以删掉了 —— 而且它本来也不可靠: 它写在 Render() 里,
-    // ftxui 只在有帧请求时才调 Render, 空闲时没有帧就是没有轮询。
+    // The old 500ms poll (a background task emits no message, so it was the only
+    // way to catch its state changes) is gone: the scheduler now pushes every
+    // task's state change, coalesced once per actor message.
 
     auto base = split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
     if (!connect_dialog_->IsOpen())
@@ -834,8 +830,8 @@ void TUIWindow::CopySelectionToClipboard()
     screen_->RequestAnimationFrame();
 }
 
-/* 历史载荷里的一条消息 → 一个气泡。kind/header 的映射与实时流一致 (user | tool |
- * reply | sys), render 字段决定 Markdown 与否 (与 edc_turn_add_message 写下的偏好同一个)。 */
+/* One message from the history payload -> one bubble. kind/header map the same as
+ * the live stream (user | tool | reply | sys); the render field decides Markdown. */
 static void AppendHistoryBubbles(const cJSON *messages, const std::string &task_id,
                                  std::vector<std::shared_ptr<Message>> *out)
 {
@@ -867,14 +863,14 @@ static void AppendHistoryBubbles(const cJSON *messages, const std::string &task_
         }
         else if (role)
         {
-            header = role; // reasoning/其它: 当 sys 行, 报出它是什么
+            header = role; // reasoning/other: draw as a sys row, naming it
         }
 
         std::string text = body ? body : "";
         const cJSON *calls = cJSON_GetObjectItem(m, "tool_calls");
         if (text.empty() && calls && cJSON_GetArraySize(calls) > 0)
         {
-            /* 空的 assistant 消息 (只有发起工具调用): 画一行"调用了什么", 倒参数没有意义。 */
+            /* Empty assistant message (only tool calls): draw "called what". */
             kind = "sys";
             header.clear();
             text = "→ ";
@@ -944,7 +940,7 @@ void TUIWindow::RenderTaskHistory(const std::string &payload)
     }
     cJSON_Delete(root);
 
-    /* 只看模式: 这份历史**替换**对话区 (不是追加), 之后实时产出不再上屏, 直到 Esc。 */
+    /* History view: this replaces the chat pane; live output stops until Esc. */
     chat_widget_->Clear();
     for (const auto &bubble : bubbles)
         chat_widget_->AddMessage(bubble);
@@ -952,20 +948,21 @@ void TUIWindow::RenderTaskHistory(const std::string &payload)
     screen_ ? screen_->RequestAnimationFrame() : void();
 }
 
-// ── IUiDispatcher + IChannelHost 实现 ───────────────────────────────────────
+// IUiDispatcher + IChannelHost implementation.
 //
-// 事件本身由 control::ChannelDispatcher 承接 (判断 + 更新模型); 本窗口只做
-// 两件事: 把任务 marshal 到 UI 线程 (IUiDispatcher), 以及分派器回调的"模型
-// 之外的视图动作" (IChannelHost) —— 转录重放/落盘、侧栏刷新、动画、重绘、拉树。
-// 全部运行在 UI 线程: 生产由 AppFacade 经 Post() marshal, 测试无屏幕时 Post()
-// 同步执行 (正是在这个分支上, harness 的喂消息会立刻跑到分派器)。
+// Events are handled by control::ChannelDispatcher; this window only does two
+// things: marshal tasks onto the UI thread (IUiDispatcher), and perform the
+// dispatcher's out-of-model view actions (IChannelHost) -- transcript replay and
+// writes, sidebar refresh, animation, repaint, tree pull. Everything runs on the
+// UI thread: production marshals through Post(); with no screen Post() runs the
+// task synchronously.
 
 void TUIWindow::Post(std::function<void()> task)
 {
     if (screen_)
         screen_->Post(std::move(task));
     else
-        task(); // 没有屏幕 (构造期 / harness): 同步执行
+        task(); // no screen (construction / harness): run synchronously
 }
 
 void TUIWindow::RequestFrame()
@@ -976,7 +973,7 @@ void TUIWindow::RequestFrame()
 
 void TUIWindow::PresentHistory(const std::string &payload)
 {
-    // 结构化历史载荷: 拆成一条条气泡追加到对话区 (见 RenderTaskHistory)。
+    // Structured history payload: split into bubbles appended to the chat pane.
     RenderTaskHistory(payload);
 }
 

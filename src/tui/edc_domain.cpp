@@ -6,7 +6,7 @@ namespace edc::domain
 namespace
 {
 
-// 默认认领策略: 就是原来两个自由函数的语义, 逐字搬过来, 不引入新判断。
+// Default claim policy: the semantics of the old free functions, verbatim.
 class PullOnDisplayedPolicy : public SnapshotClaimPolicy
 {
   public:
@@ -27,15 +27,15 @@ class PullOnDisplayedPolicy : public SnapshotClaimPolicy
     {
         if (event_session.empty())
             return false;
-        // 切台事件: 调用方已先把显示换过去, 必须拉。
+        // Tab switch: the caller already adopted the new session, so pull.
         if (reason == "active")
             return true;
-        // 其余: 只有显示中的那棵才拉。
+        // Otherwise only the displayed tree pulls.
         return event_session == displayed_session;
     }
 };
 
-// 默认路由策略: 显示中的 session 只显示它 active task 的产出。
+// Default routing: the displayed session only shows its active task's output.
 class ForegroundOnlyRouting : public OutputRoutingPolicy
 {
   public:
@@ -43,7 +43,7 @@ class ForegroundOnlyRouting : public OutputRoutingPolicy
                       const std::string &displayed_session) const override
     {
         if (session_id.empty())
-            return OutputRoute::Shown; // 不是某个 task 的产出 (命令回复等)
+            return OutputRoute::Shown; // not a task's output (command reply)
         if (session_id != displayed_session)
             return OutputRoute::OtherSession;
         return from_active_task ? OutputRoute::Shown : OutputRoute::Silent;

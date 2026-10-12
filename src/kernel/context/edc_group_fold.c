@@ -38,14 +38,15 @@ const char *edc_group_fold_system_prompt(void)
     return kFoldSystemPrompt;
 }
 
-/* ── 摘要 prompt (P2b, pi §3/§8) ────────────────────────────────────────
- * 一次独立请求, 两段式拼法:
- *   <group-transcript> 语料 </group-transcript>
- *   [<previous-summary> 旧记忆 </previous-summary>]     ← 有旧记忆 = 迭代更新
- *   {首次 / 迭代} 指令
- *   [Additional focus: <focus>]                        ← 手动 /group fold 的聚焦词
- * 首次用完整六段格式; 迭代要求"保留仍成立的信息 + 增量合并 + 重排 Next Steps",
- * 输出**完整**的新摘要 —— 落地是替换 (`group->memory = 输出`), 不是拼接。 */
+/* ── Summary prompt (P2b, pi §3/§8) ─────────────────────────────────────
+ * One independent request, assembled in two parts:
+ *   <group-transcript> corpus </group-transcript>
+ *   [<previous-summary> old memory </previous-summary>]  <- old memory = iterative update
+ *   {first-time / iterative} instruction
+ *   [Additional focus: <focus>]                          <- /group fold's focus term
+ * The first time uses the full six-section format; iteration asks to "keep what still
+ * holds + merge incrementally + reorder Next Steps" and outputs the COMPLETE new
+ * summary -- landing replaces (`group->memory = output`), never concatenates. */
 static const char *kInitialSummaryInstruction =
     "Summarize the transcript above as markdown with exactly these sections:\n"
     "\n"
@@ -78,12 +79,14 @@ static const char *kInitialSummaryInstruction =
     "\n"
     "Keep every section concise. Preserve exact file paths, function names and error messages.";
 
-/* pi §5 的 split turn: 语料以"没写完的 turn"结尾时, 记忆里要额外带上"那个 turn 走到
- * 哪了", 否则续跑的那半边只看到一份对话级摘要, 不知道自己接手的是什么。
+/* pi §5's split turn: when the corpus ends on an UNFINISHED turn, the memory must
+ * additionally carry "where that turn got to", or the resuming half sees only a
+ * conversation-level summary and does not know what it is taking over.
  *
- * 我们与 pi 的差别 (写明): pi 为 turn 前缀单独发**第二次**调用 (专用 prompt, 预算
- * 0.5 x reserve), 我们只有一次调用 —— 摘要与 turn 上下文共用同一个 max_tokens
- * (EDC_FOLD_SUMMARY_MAX_TOKENS = 0.8 x reserve)。合并格式照抄 pi:
+ * Our difference from pi: pi sends a SECOND call for the turn prefix (a dedicated
+ * prompt, budget 0.5 x reserve); we use one call -- summary and turn context share the
+ * same max_tokens (EDC_FOLD_SUMMARY_MAX_TOKENS = 0.8 x reserve). The merge format is
+ * copied from pi:
  *   {history summary}
  *   ---
  *   **Turn Context (split turn):**
@@ -104,24 +107,28 @@ static const char *kUpdateSummaryInstruction =
     "and \"Critical Context\", and keep the same sections. Preserve exact file paths, function names and error "
     "messages. Output the complete updated summary, not a diff.";
 
-/* ── 折叠是一次屏障 (barrier) ────────────────────────────────
+/* ── Folding is a barrier ────────────────────────────────────
  *
- * 折叠读整组的 turns 写 group->memory。若此时组内的任务还在往前跑 (提交 turn、
- * 追加组历史), 折叠看到的就不是一个稳定快照 —— 而且下一个请求的上下文会顶破窗口。
- * 所以折叠**不让路**: 起折时把组内每个非终态成员挂到折叠任务上 (SEQUENCE),
- * 它们停在 AWAIT_DEPS, 折叠落地才被释放:
- *   - READY / AWAIT_DEPS 成员: `edc_task_add_dependency` 直接挂边 (READY 的自动进
- *     AWAIT_DEPS);
- *   - 已经在飞的成员 (AWAIT_EXEC / AWAIT_TOOLS): **不打断** (这一轮已发出/工具已跑)。
- *     依赖边照挂, 到它的下一个请求边界才生效 —— `tool_done` 里 executor 见
- *     `edc_task_has_unresolved_deps` 为真就不发下一个 LLM 请求、park 到 AWAIT_DEPS
- *     (B1: 工具结果照收, 只拦下一次请求)。折叠落地后它带着压缩过的上下文重新派发。
- * 折叠在飞期间新来的输入 / 被释放回来的任务, 由 `edc_group_fold_holds_group` 闸门
- * 兜住 (它们是 READY, 不在 dep 里)。
+ * A fold reads the whole group's turns and writes group->memory. If the group's tasks
+ * are still advancing (committing turns, appending group history), the fold sees no
+ * stable snapshot -- and the next request's context would burst the window. So the
+ * fold YIELDS NOTHING: at fold start every non-terminal member is hung on the fold
+ * task (SEQUENCE) and parks in AWAIT_DEPS until the fold lands:
+ *   - READY / AWAIT_DEPS members: edc_task_add_dependency attaches the edge directly
+ *     (a READY task goes to AWAIT_DEPS);
+ *   - members already in flight (AWAIT_EXEC / AWAIT_TOOLS): NOT interrupted (this round
+ *     was sent / the tool is running). The edge still attaches and takes effect at
+ *     their next request boundary -- in tool_done the executor sees
+ *     edc_task_has_unresolved_deps true, sends no next LLM request and parks in
+ *     AWAIT_DEPS (B1: tool results are still received, only the next request is
+ *     blocked). After the fold lands it is redispatched with compressed context.
+ * Inputs arriving while a fold is in flight / tasks released back, are caught by the
+ * edc_group_fold_holds_group gate (they are READY, not in a dep).
  *
- * 折叠任务现在是一个**普通落盘任务** (sink = GROUP_MEMORY, lifetime = PERSISTENT),
- * 所以指向它的 dep 边会随成员一起落盘、重启后读得回来; 被重启打断的折叠任务会在加载
- * 时置回就绪、由扫描重新派发 (见 edc_state_serializer.c)。 */
+ * The fold task is now an ORDINARY PERSISTED task (sink = GROUP_MEMORY, lifetime =
+ * PERSISTENT), so its dep edges persist with the members and read back after a restart;
+ * a restart-interrupted fold task is set back to ready at load and redispatched by the
+ * scan (see edc_state_serializer.c). */
 
 bool edc_group_fold_holds_group(struct edc_task_group *group)
 {
@@ -134,10 +141,11 @@ bool edc_group_fold_holds_group(struct edc_task_group *group)
     struct edc_task *t;
     LL_FOREACH2(sys->members, t, group_next)
     {
-        /* 这个组在折 (GROUP_MEMORY) 或**在策展** (SESSION_MEMORY) = 非终态的记忆型任务正
-         * 对着这个组干活 ⇒ 组里的活一律先停。统一成一条 (2026-10-10): L2 与折叠同时建,
-         * 于是"成员在策展之后才恢复"对**所有**成员成立 (含中途加入组的那些 —— 它们没有
-         * 显式的 dep 边, 靠这条谓词扣住)。 */
+        /* This group is folding (GROUP_MEMORY) or CURATING (SESSION_MEMORY) = a
+         * non-terminal memory task is working on it => all group work stops. Unified
+         * into one rule: L2 and the fold are built together, so "members resume only
+         * after curation" holds for ALL members (including those that joined the group
+         * mid-flight -- they have no explicit dep edge and are held by this predicate). */
         if (edc_task_is_memory_sink(t) && t->sink_group == group && !edc_task_is_completed(t) &&
             !edc_task_is_cancelled(t) && !edc_task_has_failed(t))
             return true;
@@ -172,16 +180,18 @@ bool edc_group_fold_due(struct edc_task_group *group, const struct edc_config *c
     if (!group || edc_task_group_count_foldable(group) == 0)
         return false;
 
-    /* (c) 连续失败到上限 ⇒ 自动折叠停手 (手动 /group fold 走 start, 不过这道门)。
-     * 没有这道闸, "失败 → 组仍然该折 → 原样重试"就是永动机: 2026-10-09 实测每 ~40s
-     * 一发真调用, 组里的成员被反复 park。 */
+    /* (c) Consecutive failures at the cap => automatic folding stops (manual
+     * /group fold goes through start and skips this gate). Without it, "fail -> group
+     * still due -> retry unchanged" is a perpetual motion machine: measured ~one real
+     * call every ~40s, members parked over and over. */
     if (group->fold_failures >= EDC_FOLD_MAX_FAILURES)
         return false;
 
-    /* 唯一的判据 = token 轴 (2026-10-10: 消息条数轴整条退休)。config 的默认窗口是
-     * 1M 且 "<= 0" 在 init 期就被修成默认值 ⇒ 条数分支必然不可达, 留着只是死路。
-     * 窗口仍然读不到 (有人手改脏了 config) 时**不折**: 不知道窗口不是"随便折"的理由,
-     * 而手动 /group fold 永远能用。 */
+    /* The only predicate = the token axis (the message-count axis is fully retired).
+     * config's default window is 1M and "<= 0" is repaired to the default at init, so a
+     * count branch would be unreachable dead code. When the window still cannot be read
+     * (a hand-edited config), do NOT fold: not knowing the window is no reason to fold
+     * blindly, and manual /group fold is always available. */
     int window = conf ? conf->context_window : 0;
     if (window <= 0)
         return false;
@@ -224,7 +234,7 @@ bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_manager 
                 {
                     if (out_session)
                         *out_session = sess;
-                    return true; /* 一次只折叠一个 group */
+                    return true; /* fold one group at a time */
                 }
             }
             if (foldable > 0 || unfolded > 0)
@@ -236,26 +246,30 @@ bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_manager 
     return false;
 }
 
-/* ── 选料 (P2a-4): 从队尾保留 keep_recent 的细节, 更老的进语料 ──────────────
+/* ── Selection (P2a-4): keep keep_recent of detail from the tail, older goes to the
+ * corpus ──────────────────────────────────────────────────────────────────────
  *
- * 内容序 = 已完成的成员按 completion_seq, **在飞的排在最后**(它们的内容最新), 成员内
- * 按 turn 顺序, turn 内按消息顺序, 且只算未折叠的那一段 (turn->folded_prefix 之后)。
- * 切点永远落在消息边界上: 一条消息要么整条进语料, 要么整条留作细节。
+ * Content order = completed members by completion_seq, with IN-FLIGHT ones last (their
+ * content is newest); inside a member by turn order, inside a turn by message order, and
+ * only the unfolded span (after turn->folded_prefix) counts. The cut always lands on a
+ * message boundary: a message goes wholly to the corpus or stays wholly as detail.
  *
- * P2a-4a 只折"已提交"的 turn (`task->turns`); 在飞任务的 active turn 不在里面 ——
- * 它还没提交, 请求侧自己带着它。切到它内部 (点亮 req->turn_begin) 是 P2a-4b。 */
+ * P2a-4a folds only COMMITTED turns (task->turns); an in-flight task's active turn is
+ * not among them -- it is uncommitted and the request side carries it. Cutting inside it
+ * is P2a-4b. */
 
 struct fold_piece
 {
     struct edc_task *task;
     struct edc_turn *turn;
-    size_t turn_index; /* 在该成员 turns 队列里的序号 (落地时按它找回同一个 turn) */
-    size_t msg_index;  /* 在该 turn 里的绝对序号 */
+    size_t turn_index; /* index in the member's turns queue (used to find the same turn at landing) */
+    size_t msg_index;  /* absolute index within that turn */
     long long tokens;
 };
 
-/* 把一个 turn 的**未折叠段**摊进那一列。turn_index = 该 turn 在成员 turns 队列里的
- * 序号; 在飞的 active turn 用 EDC_FOLD_CUT_ACTIVE_TURN 这个哨兵。 */
+/* Flatten a turn's UNFOLDED span into that column. turn_index = the turn's index in the
+ * member's turns queue; an in-flight active turn uses the EDC_FOLD_CUT_ACTIVE_TURN
+ * sentinel. */
 static void push_pieces(struct fold_piece **ps, size_t *cnt, size_t *cap, struct edc_task *t, struct edc_turn *turn,
                         size_t turn_index)
 {
@@ -279,8 +293,9 @@ static void push_pieces(struct fold_piece **ps, size_t *cnt, size_t *cap, struct
     }
 }
 
-/* piece 的 role 是不是 "tool" (工具结果)。pi §4: 切点永不落在工具结果上 —— 被折掉的
- * assistant(tool_calls) 会让它变成孤儿, 整个请求直接失败。 */
+/* Whether a piece's role is "tool" (a tool result). pi §4: a cut never lands on a tool
+ * result -- with its assistant(tool_calls) folded away it becomes an orphan and the
+ * whole request fails. */
 static bool piece_is_tool_result(const struct fold_piece *fp)
 {
     cJSON *m = fp->turn->messages.data[fp->turn->messages.head + fp->msg_index];
@@ -288,7 +303,7 @@ static bool piece_is_tool_result(const struct fold_piece *fp)
     return role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0;
 }
 
-/* 把成员们的未折叠消息摊平成一列 (内容序)。 */
+/* Flatten members' unfolded messages into one column (content order). */
 static size_t collect_pieces(struct edc_task *const *members, size_t n, struct fold_piece **out)
 {
     struct fold_piece *ps = NULL;
@@ -299,10 +314,11 @@ static size_t collect_pieces(struct edc_task *const *members, size_t n, struct f
         for (size_t qi = t->turns.head; qi < t->turns.tail; qi++)
             push_pieces(&ps, &cnt, &cap, t, t->turns.data[qi], qi);
 
-        /* 在飞成员 (P2a-4b): active turn 还没提交, 但它是**最新**的内容。折它的前缀
-         * 就是 pi 的 split turn —— 落地后请求从 turn->folded_prefix 之后开始发
-         * (req->turn_begin 因此点亮)。只有 ALIVE 的成员算"在飞": SUSPENDED /
-         * CANCELLED 手里那半个 turn 不属于当前对话, 等它续跑时再走常规路径。 */
+        /* In-flight member (P2a-4b): the active turn is uncommitted but is the NEWEST
+         * content. Folding its prefix is pi's split turn -- after landing the request
+         * starts after turn->folded_prefix (req->turn_begin lights up). Only ALIVE
+         * members count as in-flight: a SUSPENDED / CANCELLED half-turn is not part of
+         * the current conversation and takes the normal path when it resumes. */
         if (t->life == EDC_LIFE_ALIVE && t->active_turn)
             push_pieces(&ps, &cnt, &cap, t, t->active_turn, EDC_FOLD_CUT_ACTIVE_TURN);
     }
@@ -337,9 +353,10 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus,
     for (size_t i = 0; i < cnt; i++)
         total += ps[i].tokens;
 
-    /* 保留多少条作细节。pi: keep_recent = 20k token 的尾部。整组还不够这个预算时
-     * (小结组 —— 语料比它的摘要还小, 或手动 /group fold 点了个小小组) 没有"窗口"可比
-     * —— 压最老一半 (老策略), 否则小组永远折不动。 */
+    /* How many messages to keep as detail. pi: keep_recent = a 20k-token tail. When the
+     * whole group is under that budget (a small group whose corpus is smaller than its
+     * summary, or a manual /group fold on a tiny group) there is no "window" to compare
+     * -- compress the oldest half, or a small group would never fold. */
     size_t keep = 0;
     if (total <= EDC_FOLD_KEEP_RECENT_TOKENS)
     {
@@ -358,16 +375,18 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus,
             if (acc >= EDC_FOLD_KEEP_RECENT_TOKENS)
                 break;
         }
-        keep = (k < cnt) ? k : cnt - 1; /* 至少折一条, 否则这次折叠没有意义 */
+        keep = (k < cnt) ? k : cnt - 1; /* fold at least one, or the fold is pointless */
     }
-    size_t cut_at = cnt - keep; /* 语料 = ps[0, cut_at) */
+    size_t cut_at = cnt - keep; /* corpus = ps[0, cut_at) */
 
-    /* (b) 语料上限: keep_recent 只说"留多少细节", 不说"这一发要压多大"。尾部预算
-     * 只保证留下 20k, 剩下的可以是一整段历史 —— 那就把 >10:1 的压缩比压给摘要器,
-     * 必然截断 (而截断被丢弃 ⇒ 折叠不落地 ⇒ 原样重试, 2026-10-09 现场见头文件)。
-     * 这里把切点往回收, 直到语料装进 EDC_FOLD_MAX_CORPUS_TOKENS; 收不动 (第一条
-     * 消息自己就超上限) 时留一条, 让上面的失败上限兜底 —— 绝不把切点收到 0, 那是
-     * "该折却折不出东西"的空转。 */
+    /* (b) Corpus cap: keep_recent says "how much detail to keep", not "how much this
+     * call compresses". The tail budget only guarantees 20k kept; the rest can be a
+     * whole history -- pushing >10:1 onto the summarizer, which must truncate (and a
+     * truncated result is discarded => the fold never lands => retry unchanged; see the
+     * header). Here the cut moves back until the corpus fits
+     * EDC_FOLD_MAX_CORPUS_TOKENS; if it cannot (the first message alone exceeds the
+     * cap) keep one and let the failure cap above catch it -- never move the cut to 0,
+     * which is a "due but yields nothing" spin. */
     long long corpus = 0;
     for (size_t i = 0; i < cut_at; i++)
         corpus += ps[i].tokens;
@@ -377,9 +396,10 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus,
         corpus -= ps[cut_at].tokens;
     }
 
-    /* 切点合法性 (pi §4): 第一条留下的消息不能是工具结果 —— 它的 assistant(tool_calls)
-     * 已经被折进记忆, 留下孤立的 tool 消息会让整个请求失败。往回退到那条 assistant
-     * (它的工具结果自然跟随保留), 也就是"宁可少折一条"。 */
+    /* Cut validity (pi §4): the first kept message must not be a tool result -- its
+     * assistant(tool_calls) was folded into memory, and an orphan tool message fails the
+     * whole request. Move back to that assistant (its tool result then stays too), i.e.
+     * "rather fold one fewer". */
     while (cut_at > 0 && cut_at < cnt && piece_is_tool_result(&ps[cut_at]))
         cut_at--;
 
@@ -390,9 +410,10 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus,
         return NULL;
     }
 
-    /* 切点 = 第一条留下的消息: 它所在成员 + 它那个 turn + 它在 turn 内的序号。一条都
-     * 不留 (keep == 0, 只可能发生在整组只有一条未折叠消息时) 的切点 = 最后那条**之后**,
-     * 也就是"全折"(落地时会把最后那个 turn 的前缀推到它的长度)。 */
+    /* The cut = the first kept message: its member + its turn + its index in the turn.
+     * Keeping none (keep == 0, possible only when the whole group has one unfolded
+     * message) cuts AFTER the last one, i.e. "fold all" (landing pushes the last turn's
+     * prefix to its length). */
     const struct fold_piece *cut_piece = &ps[cut_at < cnt ? cut_at : cnt - 1];
     uint32_t cut_prefix =
         (cut_at < cnt) ? (uint32_t)cut_piece->msg_index : (uint32_t)cut_piece->msg_index + 1;
@@ -427,12 +448,12 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus,
             prompt = sdscatprintf(prompt, "%s: %s\n", role->valuestring, content->valuestring);
     }
 
-    /* 只有**整条进了语料**的成员才带 output (半折的成员, 它的尾巴还在历史里当细节)。 */
+    /* Only members ENTIRELY in the corpus carry output (a half-folded member keeps its tail as detail). */
     for (size_t i = 0; i < n; i++)
     {
         struct edc_task *tk = members[i];
         if (tk == cut_piece->task)
-            continue; /* 切点所在成员: 半折, 不带 output */
+            continue; /* the cut's member: half-folded, no output */
         bool in_corpus = false;
         for (size_t j = 0; j < cut_at && !in_corpus; j++)
             if (ps[j].task == tk)
@@ -448,13 +469,14 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus,
         prompt = sdscat(prompt, group->memory);
         prompt = sdscat(prompt, "\n</previous-summary>\n\n");
     }
-    /* 语料以"没写完的 turn"结尾 (pi §5): 切点落在 turn 内部 (它后面的消息留着当细节),
-     * 或者语料最后那段本来就是还在跑的 active turn (内容还没生成完)。 */
+    /* The corpus ends on an unfinished turn (pi §5): the cut falls inside a turn (later
+     * messages stay as detail), or the last corpus piece was already a running active
+     * turn (content not finished generating). */
     bool split_turn = false;
     if (cut_at < cnt && cut_prefix > 0)
-        split_turn = true; /* 切在 turn 中间 */
+        split_turn = true; /* cut mid-turn */
     if (cut_at > 0 && ps[cut_at - 1].turn_index == EDC_FOLD_CUT_ACTIVE_TURN)
-        split_turn = true; /* 语料尾部是一个还在飞的 turn */
+        split_turn = true; /* the corpus tail is an in-flight turn */
     if (split_turn)
         log_info("L1 fold: group %s split turn at the cut (pi §5 turn context section)", group->group_id);
 
@@ -495,8 +517,8 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
         sdsfree(prompt);
         return NULL;
     }
-    task->sink_group = group; /* 产出写进这个组的记忆 (sink = GROUP_MEMORY) */
-    /* 语料与切点是同一遍算出来的: 落地照这个切点打前缀。 */
+    task->sink_group = group; /* output goes into this group's memory (sink = GROUP_MEMORY) */
+    /* The corpus and the cut are computed in one pass, so landing applies this cut. */
     task->fold_cut_task_id = cut.task_id ? strdup(cut.task_id) : NULL;
     task->fold_cut_turn = cut.turn;
     task->fold_cut_prefix = cut.prefix;
@@ -536,10 +558,11 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
         edc_task_add_dependency(m, task, TASK_DEP_SEQUENCE);
     }
 
-    /* L2 与折叠**同时**建 (用户裁决 2026-10-10): 一整条链当场可见
-     *     成员 ──SEQUENCE──► L2 ──JOIN──► L1
-     * L1 先跑; 它落地后 L2 才被驱动 (JOIN 边 + 注入它的 output 当材料); 成员等两者。
-     * L1 失败/取消 ⇒ L2 自动失败/取消 (JOIN 级联) ⇒ 成员被释放 —— 不需要任何额外逻辑。 */
+    /* L2 and the fold are built TOGETHER: the whole chain is visible at once
+     *     members --SEQUENCE--> L2 --JOIN--> L1
+     * L1 runs first; only after it lands is L2 driven (the JOIN edge plus injecting its
+     * output as material); members wait for both. L1 failing/cancelling => L2 fails/
+     * cancels automatically (JOIN cascade) => members are released -- no extra logic. */
     edc_session_memory_start(sched, session, group, task);
 
     /* The prompt is dispatched by the message-end scan, like any task. */
@@ -564,7 +587,7 @@ static void fold_turn_whole(struct edc_turn *turn, size_t *turns, size_t *msgs)
     turn->folded_prefix = (int)len;
 }
 
-/* 只折前 |prefix| 条 (前缀只许变长, 不许回退)。 */
+/* Fold only the first |prefix| messages (the prefix only grows, never regresses). */
 static void fold_turn_prefix(struct edc_turn *turn, uint32_t prefix, size_t *turns, size_t *msgs)
 {
     size_t len = edc_queue_length(&turn->messages);
@@ -584,7 +607,7 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
         log_error("L1 fold: task %s produced no memory (target=%s, content=%s) — group memory unchanged",
                   (task && task->task_id) ? task->task_id : "(null)", group ? "yes" : "none",
                   (content && *content) ? "non-empty" : "empty");
-        /* (c) 没写出记忆 = 没落地, 一样算一次失败。 */
+        /* (c) No memory written = not landed; still counts as one failure. */
         edc_group_fold_note_failure(group);
         return false;
     }
@@ -593,23 +616,26 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
         sdsfree(group->memory);
     group->memory = sdsnew(content);
 
-    /* 应用切点: 内容序上切点**之前**的成员整折 (含整条进语料的在飞成员 —— 它的 active
-     * turn 也整折, 请求侧按前缀切片); 切点成员折到 cut_turn 的 fold_cut_prefix 条为止;
-     * 那之后一律不动。切点为空 = 老二进制写下的在飞折叠任务 (没有切点信息) —— 记忆已经
-     * 写了, 前缀没法打, 记一次错 (无回退/无重试)。 */
+    /* Apply the cut: members BEFORE it in content order fold whole (including an
+     * in-flight member entirely in the corpus -- its active turn folds whole too and the
+     * request side slices by prefix); the cut's member folds up to its
+     * fold_cut_prefix; nothing after. An empty cut = an in-flight fold task written by an
+     * older binary (no cut info) -- the memory was written but the prefix cannot be
+     * applied; count one failure (no fallback/retry). */
     if (!task->fold_cut_task_id)
     {
         log_error("L1 fold: task %s carries no cut (older format) — group %s memory updated but no prefix applied",
                   task->task_id, group->group_id);
         edc_task_group_rebuild_history(group);
         group->fold_epoch++;
-        edc_group_fold_note_failure(group); /* (c) 前缀没打上 = 没真正折掉东西 */
-        return true; /* 记忆写了 —— 对 L2 来说这就是新料 */
+        edc_group_fold_note_failure(group); /* (c) no prefix applied = nothing really folded */
+        return true; /* memory written -- new material to L2 */
     }
 
-    /* 先把切点**精确**解析出来 (成员 + 那个 turn), 解析不出来就只写记忆、什么都不折。
-     * 宁可这轮白折 (内容留在历史里, 顶多与记忆重复), 也不能折进记忆没覆盖的消息 ——
-     * 那是静默丢内容。 */
+    /* Resolve the cut EXACTLY first (member + that turn); if it cannot be resolved,
+     * write the memory and fold nothing. Rather a wasted round (content stays in history,
+     * at worst duplicating the memory) than folding messages the memory does not cover --
+     * that is silent data loss. */
     size_t n = 0;
     struct edc_task **members = edc_task_group_content_order(group, &n);
     struct edc_task *cut_member = NULL;
@@ -638,14 +664,15 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
         free(members);
         edc_task_group_rebuild_history(group);
         group->fold_epoch++;
-        edc_group_fold_note_failure(group); /* (c) 白折一轮: 没折掉任何东西 */
-        return true; /* 记忆写了 —— L2 仍该消化它 (否则这段新料永远进不了 session) */
+        edc_group_fold_note_failure(group); /* (c) wasted round: nothing folded */
+        return true; /* memory written -- L2 should still digest it (else this material never reaches the session) */
     }
 
-    /* 应用切点: 切点**之前**的内容整折 —— 已提交的 turn 一律安全 (提交后不再变),
-     * 在飞 turn 只在"它当时进了语料"的同一条件下整折 (语料只收 ALIVE 成员的 active
-     * turn, 这里必须照同一条件, 否则会把没进过摘要的内容折掉); 切点那个 turn 只折前缀;
-     * 之后一律不动。 */
+    /* Apply the cut: content BEFORE it folds whole -- committed turns are always safe
+     * (they do not change after commit); an in-flight turn folds whole only under the
+     * same condition it entered the corpus (the corpus takes only ALIVE members' active
+     * turns; the same condition here, else content never summarized would be folded);
+     * the cut's turn folds its prefix only; nothing after. */
     size_t folded_turns = 0, folded_msgs = 0;
     for (size_t i = 0; i < n; i++)
     {
@@ -666,8 +693,8 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
             fold_turn_whole(t->active_turn, &folded_turns, &folded_msgs);
         if (!stop_after && cut_turn && cut_turn == t->active_turn)
         {
-            /* 切点就在 active turn 上 (它没提交, 不在 turns 里): 上面的循环已把它之前
-             * 的 turn 整折完。 */
+            /* The cut is on the active turn (uncommitted, not in turns): the loop above
+             * already folded all turns before it. */
             fold_turn_prefix(cut_turn, task->fold_cut_prefix, &folded_turns, &folded_msgs);
         }
         if (t == cut_member)
@@ -679,7 +706,7 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
     /* The prefix these members' requests counted is gone: every anchor older than
      * this is stale from here on (see the fold_epoch field). */
     group->fold_epoch++;
-    /* (c) 落地成功 ⇒ 连续失败账清零。 */
+    /* (c) Successful landing => clear the consecutive-failure count. */
     edc_group_fold_note_progress(group);
     log_info("L1 fold done: group %s folded %zu turns (%zu msgs), cut at task %s turn %u msg %u", group->group_id,
              folded_turns, folded_msgs, task->fold_cut_task_id, task->fold_cut_turn, task->fold_cut_prefix);

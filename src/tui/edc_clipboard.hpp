@@ -10,34 +10,33 @@
 // Clipboard support for the chat: copy a selection and acknowledge it on screen.
 //
 // FTXUI cannot reach a system clipboard, so everything goes through OSC 52, which
-// the terminal in front of the user performs. It is also the only route that
-// works over SSH, and mouse reporting is on (the log scrolls on the wheel), so a
-// plain drag reaches the app instead of the terminal's own selection.
+// the terminal performs. It is also the only route that works over SSH, and mouse
+// reporting is on, so a plain drag reaches the app instead of the terminal's own
+// selection.
 namespace edc
 {
 
-// The OSC 52 sequence putting |text| on the terminal clipboard (base64 wrapped in
+// The OSC 52 sequence putting |text| on the terminal clipboard (base64 in
 // ESC ] 52 ; c ; ... BEL). Exposed so tests can pin the exact bytes.
 std::string Osc52ClipboardSequence(const std::string &text);
 
 void CopyToClipboard(const std::string &text);
 
 // Whether a left-button release ends a drag rather than a plain click. A click
-// also leaves FTXUI with a one-cell selection, which nobody meant to copy, and it
-// may have been aimed at a collapsible entry's footer.
+// also leaves FTXUI with a one-cell selection nobody meant to copy, possibly on
+// a collapsible entry's footer.
 bool IsSelectionDrag(int press_x, int press_y, int release_x, int release_y);
 
 // The transient "Copied to clipboard" chip: an overlay pinned to the top-right of
 // the pane it is drawn in, one row and column clear of the edges. |fade| runs from
-// 0 (fully painted) to 1 (gone), so it dissolves into the backdrop (FTXUI has no
-// alpha).
+// 0 (fully painted) to 1 (gone) -- FTXUI has no alpha.
 ::ftxui::Element ClipboardToastElement(float fade);
 
 // When the chip is on screen and how far gone it is.
 class ClipboardToast
 {
   public:
-    // How long the chip holds at full strength, then how long it takes to fade.
+    // How long the chip holds at full strength, then how long it fades.
     static constexpr auto kHold = std::chrono::milliseconds(1400);
     static constexpr auto kFade = std::chrono::milliseconds(600);
 
@@ -50,7 +49,7 @@ class ClipboardToast
     float Fade(std::chrono::steady_clock::time_point now) const;
 
   private:
-    // When the chip goes away; the default (epoch) reads as "never raised".
+    // When the chip goes away; the default (epoch) means "never raised".
     std::chrono::steady_clock::time_point until_;
 };
 

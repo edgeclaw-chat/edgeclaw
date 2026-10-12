@@ -9,53 +9,37 @@
 
 namespace edc
 {
-// Single source of truth for the TUI look: every widget draws its colors from
-// style::palette(), so panes that must match cannot drift apart and a retheme
-// is a one-place change.
-//
-// There are two palettes, dark and light, and palette() picks between them from
-// the terminal background edc_theme resolved at startup (OSC 11 probe, or
-// $EDGECLAW_THEME). Widgets never see this: they ask for a role and get the
-// value that suits the terminal they are running in.
+// Single source of truth for the TUI look: every widget draws from
+// style::palette(). Two palettes (dark/light); palette() picks one from the
+// terminal background edc_theme resolved at startup.
 namespace style
 {
 
-// Semantic color roles, not raw values, so widgets read intent ("the
-// in_progress accent") instead of repeating magic RGB triples.
+// Semantic colour roles, not raw values.
 struct Palette
 {
-    // ---- window chrome -------------------------------------------------
-    ::ftxui::Color window_bg; // outermost backdrop.
-    ::ftxui::Color pane_bg;   // sidebar pane + chat message surface.
-    ::ftxui::Color text_dim;  // quiet secondary text / neutral rows.
-    ::ftxui::Color text;      // body/label text. Always an explicit value, on
-                              // both palettes: every surface this palette paints
-                              // (window_bg, pane_bg, dialog_bg) is one it chose,
-                              // so the body colour must be too -- inheriting the
-                              // terminal's default foreground would pair a
-                              // light-terminal black with the dark palette's
-                              // near-black pane. Matches md_code.
-    ::ftxui::Color line_dim;  // subtle separator lines.
-    ::ftxui::Color dialog_bg; // raised surface for borderless modals.
+    ::ftxui::Color window_bg;
+    ::ftxui::Color pane_bg;
+    ::ftxui::Color text_dim;
+    // Always explicit on both palettes: inheriting the terminal's default
+    // foreground would pair a light terminal's black with the dark palette's
+    // near-black pane.
+    ::ftxui::Color text;
+    ::ftxui::Color line_dim;
+    ::ftxui::Color dialog_bg;
 
-    // ---- accents & status ----------------------------------------------
-    ::ftxui::Color accent;         // cyan: headers, in_progress, spinner.
-    ::ftxui::Color ok;             // green: success/COMPLETED, and nothing else.
-    ::ftxui::Color warn;           // yellow: foreground group, IDLE/WAITING.
-    ::ftxui::Color error;          // ERROR states.
-    ::ftxui::Color suspended;      // SUSPENDED states.
-    ::ftxui::Color thought_open;   // expanded "Thought" toggle.
-    ::ftxui::Color thought_closed; // collapsed "Thought" toggle.
+    ::ftxui::Color accent;         // cyan: headers, in_progress, spinner
+    ::ftxui::Color ok;             // green: success/COMPLETED, nothing else
+    ::ftxui::Color warn;           // yellow: foreground group, IDLE/WAITING
+    ::ftxui::Color error;          // ERROR
+    ::ftxui::Color suspended;      // SUSPENDED
+    ::ftxui::Color thought_open;   // expanded "Thought" toggle
+    ::ftxui::Color thought_closed; // collapsed "Thought" toggle
 
-    // ---- input & chat rules ---------------------------------------------
-    ::ftxui::Color prompt;    // the "❯ " input prompt glyph.
-    ::ftxui::Color user_rule; // heavy rule marking user messages.
+    ::ftxui::Color prompt;    // the "❯ " input prompt glyph
+    ::ftxui::Color user_rule; // heavy rule marking user messages
 
-    // ---- Markdown -------------------------------------------------------
-    // Monokai's syntax mapping: h1 is a banner with its text punched out in the
-    // surface colour, the heading ladder walks yellow -> orange -> cyan, and
-    // inline code is a violet chip. No role uses green -- that stays reserved
-    // for Palette::ok.
+    // Markdown syntax mapping (Monokai). No role uses green -- that is Palette::ok.
     ::ftxui::Color md_h1;
     ::ftxui::Color md_h1_bg;
     ::ftxui::Color md_h2;
@@ -73,101 +57,84 @@ struct Palette
 // Function-local statics on purpose: ftxui::Color::RGB() resolves against the
 // current terminal (Terminal::ColorSupport()), which is not ready during C++
 // static initialization -- a file-scope object would run before main() and can
-// crash. The first call happens at render time.
+// crash.
 
-// The original Monokai look, for terminals with a dark background.
+// The original Monokai, for dark terminals.
 inline const Palette &dark_palette()
 {
     static const Palette k = {
-        ::ftxui::Color::RGB(30, 31, 28),    // window_bg      #1E1F1C
-        ::ftxui::Color::RGB(39, 40, 34),    // pane_bg        #272822
-        ::ftxui::Color::RGB(117, 113, 94),  // text_dim       #75715E comment
-        ::ftxui::Color::RGB(248, 248, 242), // text           #F8F8F2 foreground
-        ::ftxui::Color::RGB(73, 72, 62),    // line_dim       #49483E selection
-        ::ftxui::Color::RGB(62, 61, 50),    // dialog_bg      #3E3D32 lite
-        ::ftxui::Color::RGB(102, 217, 239), // accent         #66D9EF cyan
-        ::ftxui::Color::RGB(166, 226, 46),  // ok             #A6E22E green
-        ::ftxui::Color::RGB(230, 219, 116), // warn           #E6DB74 yellow
-        ::ftxui::Color::RGB(249, 38, 114),  // error          #F92672 pink
-        ::ftxui::Color::RGB(174, 129, 255), // suspended      #AE81FF purple
-        ::ftxui::Color::RGB(230, 219, 116), // thought_open   #E6DB74 yellow
-        ::ftxui::Color::RGB(138, 131, 69),  // thought_closed #8A8345 dim yellow
-        ::ftxui::Color::RGB(102, 217, 239), // prompt         #66D9EF accent
-        ::ftxui::Color::RGB(102, 217, 239), // user_rule      #66D9EF accent
-        ::ftxui::Color::RGB(39, 40, 34),    // md_h1          #272822 punched out
-        ::ftxui::Color::RGB(249, 38, 114),  // md_h1_bg       #F92672 pink
-        ::ftxui::Color::RGB(230, 219, 116), // md_h2          #E6DB74 yellow
-        ::ftxui::Color::RGB(253, 151, 31),  // md_h3          #FD971F orange
-        ::ftxui::Color::RGB(102, 217, 239), // md_h4          #66D9EF cyan
-        ::ftxui::Color::RGB(248, 248, 242), // md_code        #F8F8F2 foreground
-        ::ftxui::Color::RGB(174, 129, 255), // md_code_inline #AE81FF purple
-        ::ftxui::Color::RGB(62, 61, 50),    // md_code_bg     #3E3D32 lite
-        ::ftxui::Color::RGB(73, 72, 62),    // md_rule        #49483E selection
-        ::ftxui::Color::RGB(117, 113, 94),  // md_quote       #75715E comment
-        ::ftxui::Color::RGB(249, 38, 114),  // md_list        #F92672 pink
-        ::ftxui::Color::RGB(102, 217, 239), // md_link        #66D9EF cyan
+        ::ftxui::Color::RGB(30, 31, 28),    // window_bg
+        ::ftxui::Color::RGB(39, 40, 34),    // pane_bg
+        ::ftxui::Color::RGB(117, 113, 94),  // text_dim
+        ::ftxui::Color::RGB(248, 248, 242), // text
+        ::ftxui::Color::RGB(73, 72, 62),    // line_dim
+        ::ftxui::Color::RGB(62, 61, 50),    // dialog_bg
+        ::ftxui::Color::RGB(102, 217, 239), // accent
+        ::ftxui::Color::RGB(166, 226, 46),  // ok
+        ::ftxui::Color::RGB(230, 219, 116), // warn
+        ::ftxui::Color::RGB(249, 38, 114),  // error
+        ::ftxui::Color::RGB(174, 129, 255), // suspended
+        ::ftxui::Color::RGB(230, 219, 116), // thought_open
+        ::ftxui::Color::RGB(138, 131, 69),  // thought_closed
+        ::ftxui::Color::RGB(102, 217, 239), // prompt
+        ::ftxui::Color::RGB(102, 217, 239), // user_rule
+        ::ftxui::Color::RGB(39, 40, 34),    // md_h1
+        ::ftxui::Color::RGB(249, 38, 114),  // md_h1_bg
+        ::ftxui::Color::RGB(230, 219, 116), // md_h2
+        ::ftxui::Color::RGB(253, 151, 31),  // md_h3
+        ::ftxui::Color::RGB(102, 217, 239), // md_h4
+        ::ftxui::Color::RGB(248, 248, 242), // md_code
+        ::ftxui::Color::RGB(174, 129, 255), // md_code_inline
+        ::ftxui::Color::RGB(62, 61, 50),    // md_code_bg
+        ::ftxui::Color::RGB(73, 72, 62),    // md_rule
+        ::ftxui::Color::RGB(117, 113, 94),  // md_quote
+        ::ftxui::Color::RGB(249, 38, 114),  // md_list
+        ::ftxui::Color::RGB(102, 217, 239), // md_link
     };
     return k;
 }
 
-// The light counterpart: rjfranco's Monokai Light, used verbatim.
-//   https://github.com/rjfranco/monokai-light
-// Surfaces keep the dark palette's relationship (pane_bg is the lighter one,
-// window_bg sits behind it). Every hue is taken from that theme -- pane_bg is
-// its `background`, text its `foreground`, text_dim its `comment`, line_dim its
-// `invisibles`, window_bg its `inactiveSelection`, and md_h1/md_h1_bg are
-// exactly its `invalid` pair (a pink banner with the text punched out).
-//
-// Note on contrast: Monokai Light puts its syntax colours on pure white at
-// 2.0-3.8:1, which is below WCAG AA for small text -- that is the look, not an
-// oversight, and it is in the same range the dark palette already ships for
-// `error` (3.9), `md_list` (3.9) and `text_dim` (3.0). The ratios below are
-// measured against #FFFFFF; only `text` is high-contrast (21:1).
-//
-// The Thought toggle is the one role that does not come from Monokai Light: it
-// stays yellow, as it is on the dark palette, but the dark yellow (#E6DB74) is
-// only 1.4:1 on white -- invisible -- so the hue is kept at the intensity that
-// survives a white surface.
+// Monokai Light, used verbatim: https://github.com/rjfranco/monokai-light
+// Its syntax colours sit at 2.0-3.8:1 on white (below WCAG AA) -- that is the
+// look, not an oversight. The Thought toggle keeps the dark palette's yellow
+// hue at an intensity that survives a white surface.
 inline const Palette &light_palette()
 {
     static const Palette k = {
-        ::ftxui::Color::RGB(237, 237, 237), // window_bg      #EDEDED inactiveSelection
-        ::ftxui::Color::RGB(255, 255, 255), // pane_bg        #FFFFFF background
-        ::ftxui::Color::RGB(159, 159, 143), // text_dim       #9F9F8F comment 2.7:1
-        ::ftxui::Color::RGB(0, 0, 0),       // text           #000000 foreground 21:1
-        ::ftxui::Color::RGB(224, 224, 224), // line_dim       #E0E0E0 invisibles
-        ::ftxui::Color::RGB(255, 255, 255), // dialog_bg      #FFFFFF raised off the #EDEDED backdrop
-        ::ftxui::Color::RGB(40, 198, 228),  // accent         #28C6E4 support.type 2.0:1
-        ::ftxui::Color::RGB(106, 175, 25),  // ok             #6AAF19 function/class 2.7:1
-        ::ftxui::Color::RGB(253, 151, 31),  // warn           #FD971F function argument 2.2:1
-        ::ftxui::Color::RGB(249, 38, 114),  // error          #F92672 keyword 3.8:1
-        ::ftxui::Color::RGB(174, 129, 255), // suspended      #AE81FF constant 2.8:1
-        ::ftxui::Color::RGB(138, 131, 69),  // thought_open   #8A8345 yellow 3.9:1
-        ::ftxui::Color::RGB(168, 154, 94),  // thought_closed #A89A5E quieter yellow 2.8:1
-        ::ftxui::Color::RGB(40, 198, 228),  // prompt         #28C6E4 accent
-        ::ftxui::Color::RGB(40, 198, 228),  // user_rule      #28C6E4 accent
-        ::ftxui::Color::RGB(248, 248, 240), // md_h1          #F8F8F0 invalid foreground
-        ::ftxui::Color::RGB(249, 38, 114),  // md_h1_bg       #F92672 invalid background
-        ::ftxui::Color::RGB(242, 90, 0),    // md_h2          #F25A00 string
-        ::ftxui::Color::RGB(253, 151, 31),  // md_h3          #FD971F function argument
-        ::ftxui::Color::RGB(40, 198, 228),  // md_h4          #28C6E4 support.type
-        ::ftxui::Color::RGB(0, 0, 0),       // md_code        #000000 foreground
-        ::ftxui::Color::RGB(174, 129, 255), // md_code_inline #AE81FF constant
-        ::ftxui::Color::RGB(237, 237, 237), // md_code_bg     #EDEDED chip under md_code_inline
-        ::ftxui::Color::RGB(224, 224, 224), // md_rule        #E0E0E0 invisibles
-        ::ftxui::Color::RGB(159, 159, 143), // md_quote       #9F9F8F comment
-        ::ftxui::Color::RGB(249, 38, 114),  // md_list        #F92672 keyword
-        ::ftxui::Color::RGB(40, 198, 228),  // md_link        #28C6E4 support.type
+        ::ftxui::Color::RGB(237, 237, 237), // window_bg
+        ::ftxui::Color::RGB(255, 255, 255), // pane_bg
+        ::ftxui::Color::RGB(159, 159, 143), // text_dim
+        ::ftxui::Color::RGB(0, 0, 0),       // text
+        ::ftxui::Color::RGB(224, 224, 224), // line_dim
+        ::ftxui::Color::RGB(255, 255, 255), // dialog_bg
+        ::ftxui::Color::RGB(40, 198, 228),  // accent
+        ::ftxui::Color::RGB(106, 175, 25),  // ok
+        ::ftxui::Color::RGB(253, 151, 31),  // warn
+        ::ftxui::Color::RGB(249, 38, 114),  // error
+        ::ftxui::Color::RGB(174, 129, 255), // suspended
+        ::ftxui::Color::RGB(138, 131, 69),  // thought_open
+        ::ftxui::Color::RGB(168, 154, 94),  // thought_closed
+        ::ftxui::Color::RGB(40, 198, 228),  // prompt
+        ::ftxui::Color::RGB(40, 198, 228),  // user_rule
+        ::ftxui::Color::RGB(248, 248, 240), // md_h1
+        ::ftxui::Color::RGB(249, 38, 114),  // md_h1_bg
+        ::ftxui::Color::RGB(242, 90, 0),    // md_h2
+        ::ftxui::Color::RGB(253, 151, 31),  // md_h3
+        ::ftxui::Color::RGB(40, 198, 228),  // md_h4
+        ::ftxui::Color::RGB(0, 0, 0),       // md_code
+        ::ftxui::Color::RGB(174, 129, 255), // md_code_inline
+        ::ftxui::Color::RGB(237, 237, 237), // md_code_bg
+        ::ftxui::Color::RGB(224, 224, 224), // md_rule
+        ::ftxui::Color::RGB(159, 159, 143), // md_quote
+        ::ftxui::Color::RGB(249, 38, 114),  // md_list
+        ::ftxui::Color::RGB(40, 198, 228),  // md_link
     };
     return k;
 }
 
-// The palette the widgets draw from, chosen from the terminal background
-// edc_theme resolved at startup.
-// ── 调色板端口 ──────────────────────────────────────────────────────────────
-// 渲染层通过 palette() 取色; 默认按终端主题在 dark/light 之间选, 但**可以**装一个
-// 提供者 (进程级) 来替换它 —— 这正是 IPalette 的用处: 测试以固定的假调色板渲染
-// (或以不同主题重放), 断言组件只用了调色板角色。提供者装了就优先于主题选择。
+// Palette port: the render layer takes colours from palette(). Tests install a
+// fixed provider to render (or replay) with a known palette without depending
+// on the terminal; a provider, once installed, wins over the theme.
 class IPalette
 {
   public:
@@ -175,14 +142,14 @@ class IPalette
     virtual const Palette &colors() const = 0;
 };
 
-// 当前提供者的槽位。函数内静态 + inline ⇒ 跨 TU 唯一 (与 palette() 同一个对象)。
+// Function-local static + inline: one slot per process (same object as palette()).
 inline std::shared_ptr<const IPalette> &palette_provider_slot()
 {
     static std::shared_ptr<const IPalette> provider;
     return provider;
 }
 
-// 装一个提供者; nullptr = 回到内建的主题选择 (dark/light)。
+// Install a provider; nullptr restores the built-in theme selection.
 inline void SetPaletteProvider(std::shared_ptr<const IPalette> provider)
 {
     palette_provider_slot() = std::move(provider);
@@ -195,23 +162,16 @@ inline const Palette &palette()
     return theme::IsLight() ? light_palette() : dark_palette();
 }
 
-// ---- task states ------------------------------------------------------
-// One vocabulary for the scheduler's task-state names, for every widget that has
-// to show them. Hoisted here for the same reason as the block glyph below: the
-// task tree paints its markers with this table and the todo list takes the
-// failure colour of its current step from it, so the two panes cannot drift into
-// two different reds for "the task failed".
+// One vocabulary for the scheduler's task-state names. The task tree paints its
+// markers with this table and the todo list takes the failure colour of its
+// current step from it, so the two panes cannot drift apart.
 
-// A task is "processing" (working right now) in exactly these two states: the
-// ones the sidebar's markers animate for, and the ones edc_task_is_running marks
-// in the scheduler.
+// Processing = working right now (the states edc_task_is_running marks).
 inline bool TaskStateProcessing(const std::string &state)
 {
     return state == "LLM_PROCESSING" || state == "TOOL_CALLING";
 }
 
-// A task ended in failure: the state whose rows and markers wear the failure
-// colour, and the one the todo list mirrors on the step it was on.
 inline bool TaskStateFailed(const std::string &state)
 {
     return state == "ERROR";
@@ -234,30 +194,17 @@ inline ::ftxui::Color TaskStateColor(const Palette &pal, const std::string &stat
     return pal.warn;
 }
 
-// ---- the "working" animation ------------------------------------------
-// The one glyph the working bar is built from: its lit cells and the active
-// task's marker in the sidebar are the same block, so "the task the session is
-// working on" and "the bar that says it is working" read as one signal. Shared
-// here rather than spelled out twice.
+// The working bar's lit cell and a processing task's sidebar marker are the
+// same block, so "working now" reads as one signal.
 constexpr const char *kBlockGlyph = "■";
 
-// One accent, one tempo, for everything that says "this is running right now".
-// Exactly one consumer is left: a processing task's marker in the sidebar tree.
-// The in_progress todo row used to breathe with it and no longer does (see
-// TodoWidget::SetOwnerState) -- with the task's own marker breathing a few rows
-// above on the same condition, the row's pulse told the eye nothing new and cost
-// the sidebar's most important text its contrast; it is a static highlight now.
-// Motion is evidence, not decoration.
-//
-// The period matches the working bar's full sweep in TUIWindow
-// (2 * (kRunPositions - 1) * kStepMs = 1800 ms), so the sidebar and the footer
-// animate at the same rate. The clock is the window's animation time in ms;
-// any value works, it wraps.
+// Period matches the working bar's full sweep in TUIWindow
+// (2 * (kRunPositions - 1) * kStepMs = 1800 ms) so the sidebar and footer
+// animate at the same rate. The clock is the window's animation time in ms.
 constexpr long long kBreathPeriodMs = 1800;
 
-// The breathing curve at |elapsed_ms|, in [0, 1]: 1-cos, so a run starts and
-// ends at the dim end and is brightest mid-cycle. Exposed so tests can pin the
-// shape without re-deriving it from colours.
+// Breathing curve at |elapsed_ms| in [0, 1]: 1-cos, dim at both ends, brightest
+// mid-cycle.
 inline float breath_phase(long long elapsed_ms)
 {
     long long phase = elapsed_ms % kBreathPeriodMs;
@@ -268,23 +215,9 @@ inline float breath_phase(long long elapsed_ms)
     return 0.5f * (1.0f - static_cast<float>(std::cos(radians)));
 }
 
-// The breath: the accent dimmed towards the pane surface and back, so the bright
-// end of every cycle is exactly the theme's blue -- the same colour the section
-// titles, the input prompt and the working spinner wear. It never goes brighter
-// than the accent: the accent already sits at HSV value 0.94, so any push past it
-// just trades saturation for brightness and the glyph stops reading as blue.
-//
-//   dim    the accent all but drowned in the pane surface (nearly the surface
-//          colour, so the glyph almost dies at the trough);
-//   bright exactly the theme's accent, untouched.
-//
-// The dim end keeps the accent's hue (fading to gray would read as the state
-// changing, not as work in progress). Measured WCAG contrast against the pane
-// the glyphs sit on: dark 2.2:1 -> 9.0:1, light 1.1:1 -> 2.0:1, against
-// 2.9:1 -> 9.0:1 for a static accent -- all of the added swing is the trough.
-// The fade is parameterised so the effect can be tuned in one place, and takes
-// the palette explicitly so tests can measure it per theme.
-constexpr float kBreathDimFade = 0.85f; // the accent's fade into the pane surface
+// Fraction the accent fades towards the pane surface at the trough; the bright
+// end is exactly the theme accent.
+constexpr float kBreathDimFade = 0.85f;
 
 inline ::ftxui::Color breath_dim(const Palette &pal)
 {
@@ -292,10 +225,8 @@ inline ::ftxui::Color breath_dim(const Palette &pal)
 }
 
 // The accent mid-breath: the dim end and the plain accent, nothing brighter.
-// The two extremes are returned exactly rather than interpolated into: ftxui's
-// per-channel gamma round-trip (pow(x, 2.2) then pow(., 1/2.2)) lands a unit low
-// at t = 0 and t = 1, which would leave the peak at (101,216,238) instead of the
-// accent's (102,217,239) -- invisible, but it is not "the theme's blue" either.
+// The extremes are returned exactly rather than interpolated into, because
+// ftxui's per-channel gamma round-trip lands a unit low at t = 0 and t = 1.
 inline ::ftxui::Color breath_accent(long long elapsed_ms)
 {
     const Palette &pal = palette();

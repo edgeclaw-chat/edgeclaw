@@ -14,16 +14,12 @@ namespace edc::ui
 
 // The sidebar column: the task tree above the todo list.
 //
-// Both sections are fit-content ScrollViews with their own headers pinned above
-// the viewport, so a short sidebar is *shared* instead of one section eating the
+// Both sections are fit-content ScrollViews with their headers pinned above the
+// viewport, so a short sidebar is shared instead of one section eating the
 // other's rows. The tree is anchored to its bottom (follow_tail): when it does not
 // fit, the oldest rows leave the top and the active task (the last row) stays on
-// screen. The todo list keeps its tail off (items are read from the top) and is
-// capped so it can never swallow the tree.
-//
-// A real composite component rather than a bare struct: the window (and a test)
-// holds one object and renders it; the two ScrollViews stay reachable for
-// geometry assertions and wheel events.
+// screen. The todo list keeps its tail off and is capped so it can never swallow
+// the tree.
 class SidebarView : public Widget
 {
   public:
@@ -49,7 +45,7 @@ class SidebarView : public Widget
     bool OnEvent(::ftxui::Event event) override;
 
   protected:
-    // Widget 模板方法: 只实现绘制。
+    // Widget template method: draw only.
     ::ftxui::Element Draw(const Frame &frame) override;
 
   private:

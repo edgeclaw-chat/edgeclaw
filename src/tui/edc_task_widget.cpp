@@ -13,47 +13,26 @@ namespace edc
 namespace
 {
 
-// The state predicates and the state -> colour table live in edc_style.hpp
-// (style::TaskStateProcessing / TaskStateFailed / TaskStateColor): the todo
-// list mirrors the tree's failure colour on its current step, so both read the
-// same one. The names below keep this file's call sites short.
+// The state predicates/colour table live in edc_style.hpp so this file and the
+// todo widget stay in sync.
 bool StateIsProcessing(const std::string &state)
 {
     return style::TaskStateProcessing(state);
 }
 
-// The glyphs that stand in for a task's state in the tree. One marker column
-// carries two facts at once: the shape says whether this is the *active* task
-// (the one the chat surface is talking to) -- a block for that one, a filled
-// dot for every other -- and the color says which state it is in (the shared
-// style::TaskStateColor table). The state used to be spelled out, which cost
-// each row as many cells as the longest name ("LLM_PROCESSING") and made the
-// right edge ragged; a single fixed-column glyph keeps every row's right edge
-// still and hands the freed cells to the description.
-//
-// A block rather than an arrow: it is style::kBlockGlyph, the very glyph the
-// working bar's lit cells are made of, so the row the session is working on and
-// the bar that says it is working read as one signal -- a processing active task
-// lights up as a lit block of that bar. It stays distinct from the thin fold
-// arrows the group headers wear (▾ / ▸) and from the round ● of every other row.
-// A processing task's marker breathes through its colour instead of sitting
-// static (style::breath_accent).
+// A task's marker in the tree: the shape says whether it is the active task
+// (block) or not (dot), the colour says its state. The block is
+// style::kBlockGlyph, the same glyph the working bar is made of.
 constexpr const char *kStateDot = "●";
 constexpr const char *kActiveMarker = style::kBlockGlyph;
 constexpr int kMarkerCells = 1; // either glyph is a single terminal cell
 
-// Blank cells reserved at the right edge of every full-width row. The
-// sidebar pane is the window's rightmost element: rows used to truncate /
-// right-align right up to the inner border, so long text and the state
-// labels butted against the terminal edge while the left side kept a visible
-// gutter (split separator + border inset). Keeping this much of every text
-// row free on the right restores a balanced inset.
+// Blank cells kept at the right edge of every full-width row: the sidebar is the
+// window's rightmost element, so this restores the inset the left side has.
 constexpr int kRightPad = 2;
 
-// Right-align a count into a fixed-width cell so numeric columns line up
-// across rows and live increments (9 → 10 → 21) do not reflow the layout.
-// Beyond the width the string simply grows one cell per extra digit (rare)
-// and the row's filler absorbs it instead of clipping the number.
+// Right-align a count into a fixed-width cell so numeric columns line up across
+// rows and live increments (9 -> 10 -> 21) do not reflow the layout.
 std::string PadCount(int value, int width)
 {
     std::string s = std::to_string(value);
@@ -62,10 +41,7 @@ std::string PadCount(int value, int width)
     return std::string(width - static_cast<int>(s.size()), ' ') + s;
 }
 
-// Compact token count for the sidebar: 942 -> "942", 12345 -> "12.3k",
-// 1_250_000 -> "1.2M". One decimal reads the magnitude at a glance; below
-// 100 units a whole number is used so the block does not wobble in width,
-// and a trailing ".0" is dropped so round values stay short.
+// Compact token count: 942 -> "942", 12345 -> "12.3k", 1250000 -> "1.2M".
 std::string FormatTokens(long long n)
 {
     if (n <= 0)
@@ -89,21 +65,9 @@ std::string FormatTokens(long long n)
     return s;
 }
 
-// The group's usage line, drawn dim as the group's footer -- under the members
-// it sums up: ↑ input, ↓ output, the share of that input the provider served
-// from its prompt cache, and the size of the current context. Every field with
-// nothing to say is dropped, so a group that has not spent anything yet draws no
-// line at all.
-//
-// The context is marked with `~` when it carries an estimate: the anchor is the
-// provider's own count, but the tail appended after it is ours, and an estimate
-// must never pass for a measurement.
-//
-// The hit rate is derived here (cached / prompt) instead of travelling as a
-// field: it is a view of the two counters, not a datum of its own. It is shown
-// only when something *was* cached -- a provider that never reports cached
-// tokens would otherwise read as a flat 0%, which claims more than we know --
-// and it keeps one decimal, because "12.2%" and "12%" are not the same claim.
+// The group's usage line: ↑ input, ↓ output, cache hit rate, current context.
+// Fields with nothing to say are dropped. The context is marked "~" when it
+// carries an estimate (the provider's own count is the anchor, the tail is ours).
 std::string FormatGroupUsage(long long prompt, long long completion, long long cached, long long ctx,
                              bool ctx_estimated)
 {
@@ -166,9 +130,7 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
     if (event.mouse().button != ::ftxui::Mouse::Left || event.mouse().motion != ::ftxui::Mouse::Pressed)
         return false;
 
-    // Clicking the Tasks section header folds/unfolds the whole tree. The
-    // header box is recorded by reflect() over the full-width header row, so
-    // a click anywhere on that row toggles the section.
+    // The header row is full width, so a click anywhere on it toggles the section.
     if (section_header_box_.Contain(event.mouse().x, event.mouse().y))
     {
         tree_->toggle_section();
@@ -188,34 +150,27 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
 
 int TaskWidget::RowWidth() const
 {
-    // Width available for a text row. reflect() sits on the vbox *inside* the
-    // EMPTY-style border, which still insets its child by one column per side (the
-    // outer box would overestimate by 2 and a wide description would be flex-shrunk,
-    // clipping the trailing "…"). Reads the previous frame's width; before the first
+    // reflect() sits on the vbox *inside* the EMPTY border, which still insets
+    // by one column per side. Reads the previous frame's width; before the first
     // measurement, the default sidebar width minus those columns.
     if (content_box_.x_min != 0 || content_box_.x_max != 0 || content_box_.y_min != 0 || content_box_.y_max != 0)
         return content_box_.x_max - content_box_.x_min + 1;
     return 34;
 }
 
-// The section's heading: the fold arrow, the "Tasks" label and the counts, then
-// the session meta row and the rule that closes it off. Drawn apart from the
-// group rows so the sidebar can pin all of it above the scrolling tree -- the
-// wheel has to move the tree without taking the heading with it.
+// The section heading (fold arrow, "Tasks" label, counts, session meta, rule),
+// drawn apart from the group rows so the sidebar can pin it above the scrolling
+// tree.
 ::ftxui::Element TaskWidget::RenderHeader()
 {
     using namespace ::ftxui;
 
-    // All colors come from the central style palette (edc_style.hpp); the
-    // pane background must stay identical to TodoWidget and the chat surface.
     const auto &pal = style::palette();
     const int row_width = RowWidth();
     Elements lines;
 
-    // Collapsible Tasks section header: the arrow shows the fold state, the
-    // counts on the right summarize what a collapsed section hides. The row
-    // is full width (reflect below records its box) so clicking anywhere on
-    // it toggles the whole tree (see OnEvent).
+    // Collapsible header: the row is full width (reflect records its box), so
+    // clicking anywhere on it toggles the whole tree (see OnEvent).
     {
         int group_count = static_cast<int>(tree_->groups().size());
         int task_count = 0;
@@ -230,9 +185,7 @@ int TaskWidget::RowWidth() const
         {
             const std::string gc = PadCount(group_count, 2) + (group_count == 1 ? " group" : " groups");
             const std::string tc = PadCount(task_count, 2) + (task_count == 1 ? " task" : " tasks");
-            // Truncate the summary to the room left after the fixed header
-            // label and the right pad, instead of letting it clip at the
-            // pane edge on a narrow sidebar.
+            // Truncate the summary to the room left after the label and right pad.
             const int left_cells = 2 /* arrow */ + static_cast<int>(std::string(" Tasks ").size());
             const int summary_budget = row_width - kRightPad - left_cells;
             head.push_back(text(TruncateToWidth(gc + " · " + tc, summary_budget)) | dim | color(pal.text_dim));
@@ -243,34 +196,31 @@ int TaskWidget::RowWidth() const
 
     if (tree_->section_collapsed())
     {
-        // A collapsed section is its header row alone: the session meta and
-        // the rule under it introduce the list, so they fold away with it.
+        // A collapsed section is its header row alone.
         return vbox(std::move(lines));
     }
 
     if (!tree_->session_name().empty() || !tree_->session_id().empty())
     {
-        // Session meta on one row: the name (with its id in brackets when distinct) on
-        // the left, the creation date flushed right into the same edge column as the
-        // group rows. The date is never truncated: a narrow sidebar ellipsizes the name
-        // instead, dropping the bracketed id first.
+        // Session meta on one row: the name (id bracketed when distinct) on the
+        // left, the creation date flushed right. The date is never truncated;
+        // a narrow sidebar ellipsizes the name instead.
         const std::string created = tree_->created_at().size() >= 10 ? "created " + tree_->created_at().substr(0, 10) : "";
         const std::string name = tree_->session_name().empty() ? tree_->session_id() : tree_->session_name();
-        // The id is bracketed only when a distinct session *name* exists;
-        // with no name the id stands alone and must not repeat itself.
+        // The id is bracketed only when a distinct name exists; with no name the
+        // id stands alone and must not repeat itself.
         const bool distinct = !tree_->session_name().empty() && !tree_->session_id().empty() && tree_->session_name() != tree_->session_id();
         const std::string sid = distinct ? name + " [" + tree_->session_id() + "]" : name;
 
-        // Room for the name after the leading gutter, the fixed created
-        // block, the reserved right pad and a one-cell spacer that keeps
-        // the two sides apart even when the flex label gets no leftover.
+        // Room for the name after the leading gutter, the created block, the
+        // right pad and a one-cell spacer.
         const int created_cells = created.empty() ? 0 : StringWidth(created);
         const int gap_cells = created.empty() ? 0 : 1;
         const int name_budget = row_width - 1 - kRightPad - created_cells - gap_cells;
 
         std::string left = name;
         if (name_budget > 0 && StringWidth(sid) <= name_budget)
-            left = sid; /* full name + id fits: keep the id too */
+            left = sid; /* full name + id fits */
         else if (name_budget > 0)
             left = TruncateToWidth(name, name_budget);
         else
@@ -288,9 +238,9 @@ int TaskWidget::RowWidth() const
     return vbox(std::move(lines));
 }
 
-// The group rows: everything under the heading's rule, and the half the sidebar
-// hands to a ScrollView. It carries the body's reflect(content_box_) -- the row
-// width both halves truncate against.
+// The group rows (everything under the heading's rule); the half the sidebar
+// gives to a ScrollView. Carries reflect(content_box_), the row width both
+// halves truncate against.
 ::ftxui::Element TaskWidget::RenderBody()
 {
     using namespace ::ftxui;
@@ -301,10 +251,8 @@ int TaskWidget::RowWidth() const
 
     if (tree_->section_collapsed())
     {
-        // A collapsed section keeps only its header row: the session meta and
-        // the rule that introduce the list fold away with it (they are part of
-        // RenderHeader). No group headers are drawn either, so drop their click
-        // boxes to avoid stale hit targets lingering from the expanded frame.
+        // Collapsed: no group headers are drawn, so drop their click boxes to
+        // avoid stale hit targets from the expanded frame.
         group_header_boxes_.clear();
     }
     else
@@ -316,15 +264,9 @@ int TaskWidget::RowWidth() const
 
         group_header_boxes_.resize(tree_->groups().size());
 
-        /* 系统组画在最前, 用户分组照旧 (顺序固定, 不靠标题行)。
-         *
-         * 为什么系统组在前: 侧栏的树是锚底的 (edc_sidebar 用 follow_tail), 视口不
-         * 够时该被挤出去的正是它 —— "最后一行永远是用户正在跑的那个 task" 优先
-         * 于"看见折叠任务"。它的组头写着 "System" (见下面), 点名靠那一行本身,
-         * 所以不再单画一条 ` System` 标题。
-         *
-         * 这里读 `kind` 是它**唯一的读者** (展示层)。没有任何东西被隐藏: 系统
-         * 任务与用户任务一样是快照里的普通成员, 展开就看得见。 */
+        // The system group is drawn first so it is squeezed out first when the
+        // viewport is short (the sidebar tree is anchored to the tail), keeping
+        // "the last row is the running task" ahead of "seeing folded tasks".
         std::vector<size_t> order;
         for (size_t i = 0; i < tree_->groups().size(); i++)
             if (tree_->groups()[i].kind == GroupKind::System)
@@ -339,18 +281,9 @@ int TaskWidget::RowWidth() const
             const auto &g = tree_->groups()[i];
             const bool expanded = tree_->group_expanded(g.group_id);
 
-            // Collapsible group header: the arrow plus the group's name. A user
-            // group shows "Group <id>" (its id *is* its leader's task id); a
-            // system group -- the container of the folding tasks, one per
-            // session -- shows "System": it has no user-facing id worth
-            // reading, and without this it read as one more ordinary group.
-            // "~" marks an orphaned group. The left part ellipsizes into
-            // whatever width is left.
-            // Cost lives in the footer, under the members it is made of, and
-            // nowhere else: the header used to repeat the group's total while the
-            // group was folded, which read as "this group costs 9.2k" without
-            // saying of what. A folded group now shows no number at all -- the
-            // row is still the handle that unfolds it.
+            // A user group is "Group <id>" (its id is its leader's task id); a
+            // system group shows "System". "~" marks an orphaned group. Cost is
+            // shown only in the footer, never on a folded group's header.
             std::string core;
             if (g.kind == GroupKind::System)
                 core = "System";
@@ -374,12 +307,9 @@ int TaskWidget::RowWidth() const
 
             for (const auto &t : g.tasks)
             {
-                // Left part: indent, the single marker glyph and the task id.
-                // The description is appended separately so its length can be
-                // computed against the real row width. The group used to carry a
-                // `•` on its leader's row as well, but a group's id *is* its
-                // leader's task id (edc_task_group_new), so the group header
-                // above already names it -- the cell went to the marker instead.
+                // Indent, the marker glyph and the task id; the description is
+                // appended separately so its length can be measured against the
+                // row width.
                 const char *marker = t.is_active ? kActiveMarker : kStateDot;
                 const std::string head = " " + t.task_id;
                 std::string left = head;
@@ -387,20 +317,14 @@ int TaskWidget::RowWidth() const
                 if (!t.description.empty())
                 {
                     // Two cells separate the id from the description; kRightPad
-                    // keeps the row off the pane's right edge. Per-task tokens are
-                    // intentionally not shown: the group's footer carries the
-                    // whole group's cost.
+                    // keeps the row off the pane's right edge.
                     const int budget =
                         row_width - (2 + kMarkerCells) - StringWidth(head) - 2 - kRightPad;
                     if (budget > 0)
                         left += "  " + TruncateToWidth(t.description, budget);
                 }
 
-                // A processing task breathes (its marker pulses with the working
-                // bar's tempo, peaking at the plain accent); every other state is
-                // a fixed color. Only the marker is tinted -- the id and the
-                // description stay in the terminal's default foreground, so the
-                // row does not turn into a block of state colour.
+                // Only the marker is tinted; a processing task breathes.
                 const ::ftxui::Color tint = StateIsProcessing(t.state) ? style::breath_accent(breath_ms_)
                                                                        : style::TaskStateColor(pal, t.state);
                 lines.push_back(hbox({
@@ -410,11 +334,7 @@ int TaskWidget::RowWidth() const
                                 }));
             }
 
-            // The group's footer: what it has spent and how wide its context is
-            // *now*. It closes the group's block, which is why a folded group
-            // draws none -- there the header's right column is the only number
-            // worth the row ("how much has this cost"), and the breakdown is
-            // what the fold is hiding.
+            // The group's footer: what it has spent and how wide its context is now.
             if (const std::string usage =
                     FormatGroupUsage(g.tokens_prompt, g.tokens_completion, g.tokens_cached, g.ctx_tokens,
                                      g.ctx_estimated);
@@ -424,18 +344,14 @@ int TaskWidget::RowWidth() const
         }
     }
 
-    // No flex here: the enclosing right-pane column owns the vertical space
-    // and stacks this section above the Todo section in natural order. This
-    // widget only ever occupies its own content height (plus its own EMPTY
-    // border/background), so the todo list below is never pushed to the pane
-    // bottom by a greedy task tree.
+    // No flex here: the enclosing column owns the vertical space, so this
+    // section only occupies its own content height and never pushes the todo
+    // list to the pane bottom.
     return vbox(std::move(lines)) | reflect(content_box_);
 }
 
-// The section as one block: header over body, inside the section's single EMPTY
-// border. The sidebar builds the same two halves itself -- pinning the header
-// above a ScrollView that owns the body -- so a wheel scrolls only the tree;
-// this keeps the widget whole for standalone use and for its tests.
+// The section as one block: header over body, inside the section's EMPTY border.
+// The sidebar builds the same two halves itself so a wheel scrolls only the tree.
 ::ftxui::Element TaskWidget::OnRender()
 {
     return ::ftxui::vbox({RenderHeader(), RenderBody()}) | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) |

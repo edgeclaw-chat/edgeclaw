@@ -19,9 +19,11 @@
 #include <cJSON.h>
 #include <string.h>
 
-/* 把依赖材料**拼进 task 自己的输入**（B 方案, 2026-10-10）: 就地改写 active turn 的
- * 第一条 user 消息 —— 于是它跟着 turn 一起留存（不再是"只在一次请求里出现"的派生块）。
- * 返回 false = 没有可拼的 user 消息（异常形状；调用方退回"追加一条 system 消息"，不丢材料）。 */
+/* Splice the dependency material INTO the task's own input: rewrite the active turn's
+ * first user message in place -- so it persists with the turn (no longer a derived block
+ * that appears in one request only). Returns false when there is no user message to
+ * splice into (an abnormal shape; the caller falls back to appending a system message so
+ * the material is not lost). */
 static bool append_to_task_input(struct edc_task *task, const char *block)
 {
     if (!task || !task->active_turn || !block || !*block)
@@ -42,17 +44,21 @@ static bool append_to_task_input(struct edc_task *task, const char *block)
     return false;
 }
 
-/* ── LLM 请求装配 (原 src/app/edc_app.c 的搬家) ──────────
- * 本模块只有一条对外入口 edc_llm_request_send(); 它不含任何装配根私有状态:
- *   - kernel 侧输入 (group 历史 / 折叠水位 / deps / active_turn / todo 节流 /
- *     config / session 仓库) 全部经 sched 与 task 取得;
- *   - kernel 之外只有两样, 由装配根当参数交进来 (见 edc_llm_request.h)。
- * 三条不变量: 不认识 struct edc_app / 不认识 toolbox / 不反向依赖 app。
+/* ── LLM request assembly (moved from src/app/edc_app.c) ────
+ * This module has one public entry, edc_llm_request_send(); it holds no assembly-root
+ * private state:
+ *   - kernel-side inputs (group history / fold watermark / deps / active_turn / todo
+ *     throttle / config / session store) all come via sched and task;
+ *   - outside kernel there are only two, passed in by the assembly root as parameters
+ *     (see edc_llm_request.h).
+ * Three invariants: does not know struct edc_app / does not know the toolbox / does not
+ * depend back on app.
  *
- * $VAR 的"值语义" ($$ / $LAST / $N / $NAME) 是本文件私有的 static resolver:
- * 数据源 = sched->sessions (store 句柄)。shell 侧只做两件事 —— 语法识别与
- * 打 has_deferred_vars 标记 (edc_shell_parse.c:88 / edc_shell_ast.c:216),
- * 真正的替换推迟到这里, 因为值取自别的 task 的 output。 */
+ * $VAR's "value semantics" ($$ / $LAST / $N / $NAME) are a static resolver private to
+ * this file, its data source = sched->sessions (the store handle). The shell side does
+ * only two things -- recognize the syntax and set has_deferred_vars
+ * (edc_shell_parse.c:88 / edc_shell_ast.c:216); the actual substitution is deferred to
+ * here because the values come from other tasks' output. */
 
 static sds edc_llm_var_resolver(const char *name, void *user_data)
 {
@@ -60,14 +66,14 @@ static sds edc_llm_var_resolver(const char *name, void *user_data)
     if (!sched)
         return NULL;
 
-    /* $$ → 当前活跃 task ID */
+    /* $$ -> the active task id */
     if (strcmp(name, "$") == 0)
     {
         struct edc_task *active = edc_session_get_active_task(edc_session_manager_get_active(sched->sessions));
         return active ? sdsnew(active->task_id) : NULL;
     }
 
-    /* $LAST → 最后一个完成 task 的 output */
+    /* $LAST -> the last completed task's output */
     if (strcmp(name, "LAST") == 0)
     {
         struct edc_task *last = NULL;
@@ -89,18 +95,19 @@ static sds edc_llm_var_resolver(const char *name, void *user_data)
         return (last && last->output) ? sdsdup(last->output) : NULL;
     }
 
-    /* $NUMBER 或 $NAME → 按 task ID / job number 查找 (全局; 必要时按需激活属主 session) */
+    /* $NUMBER or $NAME -> look up by task id / job number (global; lazily activates the owning session if needed) */
     struct edc_task *t = edc_session_store_resolve_task(sched->sessions, sched, name, NULL);
     return (t && t->output) ? sdsdup(t->output) : NULL;
 }
 
-/* ── 回调: 发送 LLM 请求 ──────────────────────────────────── */
+/* ── Callback: send an LLM request ─────────────────────────── */
 
-/* 确保 group history 切片起点不落在 tool 消息上。
- * OpenAI 要求每个 role=tool 消息前面必须有对应的 assistant(tool_calls) 消息；
- * 若窗口起点正好切在 assistant(tool_calls)+tool 序列中间，会导致 tool 消息孤儿化，
- * 从而报 "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"。
- * 这里把起点向前回退到第一个非 tool 消息（即其 assistant），保证序列完整。 */
+/* Ensure the group-history slice start does not land on a tool message. OpenAI requires
+ * every role=tool message to be preceded by a matching assistant(tool_calls); a window
+ * start inside an assistant(tool_calls)+tool sequence orphans the tool message and
+ * errors with "Messages with role 'tool' must be a response to a preceding message with
+ * 'tool_calls'". Move the start back to the first non-tool message (its assistant),
+ * keeping the sequence whole. */
 static size_t edc_llm_history_safe_start(cJSON *history, size_t start, size_t lower_bound)
 {
     while (start > lower_bound)
@@ -125,25 +132,29 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
     if (!sched || !task || !llm_actor)
         return;
 
-    /* Group 级上下文: system 部分 (group memory + system prompt, 纯净、不含
-     * todo) 由 edc_context_append_system_part 统一组装; 余下为全部未折叠历史
-     * + task 专属 (dep outputs / $VAR 展开)。todo 状态提醒不放在
-     * 头部——也不每轮请求都塞: 由 edc_task_llm_request_poke 节流, 只有"隔了
-     * EDC_TODO_SYNC_REMIND_GAP 条对话 (LLM 请求) 都没调用过 todowrite"
-     * 时, 才经 edc_context_make_todo_reminder 重新计算并追加到消息列表绝对
-     * 队尾 (req->tail_system, llm actor 在 history + 当前 turn 之后发出)。 */
+    /* Group-level context: the system part (group memory + system prompt, pristine, no
+     * todo) is assembled by edc_context_append_system_part; the rest is all unfolded
+     * history + task-specific material (dep outputs / $VAR expansion). The todo reminder
+     * is not in the head -- nor sent every request: it is throttled by
+     * edc_task_llm_request_poke and generated only when EDC_TODO_SYNC_REMIND_GAP requests
+     * have passed without a todowrite, recomputed via edc_context_make_todo_reminder and
+     * appended at the absolute tail (req->tail_system; the llm actor appends after
+     * history + the current turn). */
     cJSON *msgs = cJSON_CreateArray();
 
-    /* sink = GROUP_MEMORY 的折叠任务要的是**一次自足的摘要调用**: 折叠说明 (system)
-     * + 它自己的 turn (折叠 prompt), 不含别的东西。所以它不走组上下文 —— 尤其不能
-     * 走组 history[0]: 那个槽位不落盘, 重启后加载期会把它填成主提示词
-     * (edc_task_group_rebuild_history), 摘要器于是背上 EdgeClaw 的人设 / MEMORY.md /
-     * 工具指令, 而它根本没有工具。折叠 prompt 自带全部语料, 不需要任何组历史。 */
+    /* A sink = GROUP_MEMORY fold task wants ONE self-contained summary call: the fold
+     * instruction (system) + its own turn (the fold prompt), nothing else. So it does not
+     * use group context -- especially not group history[0]: that slot is not persisted
+     * and would be refilled with the main prompt at load after a restart
+     * (edc_task_group_rebuild_history), loading the summarizer with EdgeClaw's persona /
+     * MEMORY.md / tool instructions it has no tools for. The fold prompt carries all its
+     * corpus and needs no group history. */
     const bool is_memory_sink = edc_task_is_memory_sink(task);
 
     sds pristine = NULL;
-    /* 属主 session 的 workdir: 后台 session 里的任务续跑时系统提示里的
-     * {{cwd}} 必须是它自己的目录 (P3 ③: 没有属主就没有目录, 不猜"当前的")。 */
+    /* The owning session's workdir: when a background session's task resumes, {{cwd}} in
+     * the system prompt must be its own directory (no owner => no directory; do not
+     * guess "the current one"). */
     struct edc_session *own = (task->group && task->group->session) ? task->group->session : NULL;
     const char *workdir = own ? edc_session_get_workdir(own) : NULL;
     if (is_memory_sink)
@@ -160,8 +171,8 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         edc_context_append_system_part(msgs, sched->config, task->group, workdir, &pristine);
     }
 
-    /* group 无历史时 context 现拼的纯净 prompt: 写回 group history[0] (组内
-     * 所有 task 共享、保持纯净) */
+    /* The pristine prompt built on the fly when the group has no history: write it back
+     * to group history[0] (shared by all the group's tasks, kept pristine). */
     if (pristine)
     {
         if (task->group)
@@ -169,7 +180,7 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
             cJSON *sys_hist = cJSON_CreateObject();
             cJSON_AddStringToObject(sys_hist, "role", "system");
             cJSON_AddStringToObject(sys_hist, "content", pristine);
-            /* 组 system prompt 不属于任何 task */
+            /* the group system prompt belongs to no task */
             edc_task_group_history_add_owned(task->group, sys_hist);
         }
         sdsfree(pristine);
@@ -180,45 +191,51 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         size_t total = cJSON_GetArraySize(task->group->history);
         size_t end = total;
 
-        /* 未折叠历史起点: 跳过 system prompt (history[0])。已折叠消息不在
-         * history 里 —— 折叠落地时就被剪掉了 (见 edc_task_group_rebuild_history),
-         * 所以这里不再需要任何水位算术。 */
+        /* Unfolded-history start: skip the system prompt (history[0]). Folded messages
+         * are not in history -- they are pruned at fold landing (see
+         * edc_task_group_rebuild_history) -- so no watermark arithmetic is needed here. */
         size_t hist_begin = 1;
         if (hist_begin > end)
             hist_begin = end;
-        /* 水位边界也可能切在 tool 消息上, 回退到安全边界 */
+        /* A watermark boundary can also land on a tool message; move back to a safe start */
         hist_begin = edc_llm_history_safe_start(task->group->history, hist_begin, 1);
 
-        /* 注入全部未折叠历史 [hist_begin, end): fold 采用"半量"策略 (见
-         * edc_group_fold 的 L1 fold), 触发时只压最老的一半, 剩下的未折叠
-         * 消息正是模型该看到的近期细节, 因此整段注入、不再截断。请求体量的
-         * 上界由 config 的 context_window 决定 (fold 触发线 = 窗口 - reserve,
-         * 触发即把它压回去)。 */
+        /* Inject the whole unfolded history [hist_begin, end): the fold uses a
+         * "half" strategy (see edc_group_fold's L1 fold) and compresses only the oldest
+         * half when triggered, so the remaining unfolded messages are exactly the recent
+         * detail the model should see -- inject them all, no truncation. The request
+         * size ceiling comes from config's context_window (fold trigger = window -
+         * reserve; triggering compresses it back). */
         for (size_t i = hist_begin; i < end; i++)
         {
             cJSON_AddItemReferenceToArray(msgs, cJSON_GetArrayItem(task->group->history, i));
         }
     }
 
-    /* 注入已完成依赖 task 的输出 (user inputs + final output) */
+    /* Inject completed dependency tasks' output (user inputs + final output) */
     struct edc_task_dep *dep;
     LL_FOREACH(task->deps, dep)
     {
-        /* 打出 completed **与** cancelled: 被作废 (源已终态) 的边两个字段一假一真,
-         * 只看 completed 会把它误读成"还在等"。 */
+        /* Print completed AND cancelled: a voided edge (source terminal) has one field
+         * false and the other true; reading completed alone would misread it as "still
+         * waiting". */
         log_info("send_llm task=%s dep src=%s completed=%d cancelled=%d output=%s", task->task_id,
                  dep->source ? dep->source->task_id : "(null)", dep->completed, dep->cancelled,
                  (dep->source && dep->source->output) ? "yes" : "none");
         if (dep->completed && dep->source && !dep->injected && dep->type == TASK_DEP_JOIN)
         {
-            dep->injected = true; /* "已经拼过了" —— 材料已进输入, 不该再拼第二遍 */
+            dep->injected = true; /* already spliced -- the material is in the input, not spliced again */
 
-            /* **B 方案** (2026-10-10 裁决): 材料**拼进目标自己的输入**, 不再往请求里插一对消息。
-             * 就地改写 active turn 的第一条 user 消息 ⇒ 它跟着 turn 留存, 语义也更直白:
-             * "我的输入里带着子任务的产出"。(就近原则: 只有出生时就挂的 JOIN 才走到这里 ——
-             * 边没满足时目标根本不会被驱动。)
-             * 记忆型源 (折叠 / 策展) 的"输入"是整段语料 (折叠 prompt 可能几百 KB) 且与 output
-             * 讲同一件事 ⇒ 只拼它的 output (对 L2 策展来说那就是刚落地的 group memory)。 */
+            /* Splice the material INTO the target's own input rather than inserting a
+             * pair of messages into the request. Rewrite the active turn's first user
+             * message in place => it persists with the turn and reads more directly:
+             * "my input carries the subtask's output". (Locality: only a JOIN hung at
+             * birth reaches here -- the target is never driven while the edge is
+             * unsatisfied.)
+             * A memory-type source (fold / curation) has as "input" the whole corpus (a
+             * fold prompt can be hundreds of KB) that says the same thing as its output
+             * => splice only its output (for L2 curation, the just-landed group
+             * memory). */
             if (dep->source->output)
             {
                 const bool source_is_memory = edc_task_is_memory_sink(dep->source);
@@ -266,37 +283,40 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         task->has_deferred_vars = 0;
     }
 
-    /* sink = GROUP_MEMORY 的 system task (fold) 要的是**一次干净的摘要调用**:
-     * 它的"镜像"就是 系统组头部 (折叠说明) + 它自己的 turn (折叠 prompt)。
-     * 所以不给它工具定义 —— 摘要器没有工具可用, 也不该被工具循环带走 (旧实现
-     * 发给 LLM 的请求里 tools 字段是空的, 这条差别的唯一理由就是保持那份请求
-     * 逐字节可比)。 */
+    /* A sink = GROUP_MEMORY system task (fold) wants ONE clean summary call: its
+     * "mirror" is the system group head (the fold instruction) + its own turn (the fold
+     * prompt). So it gets no tool definitions -- the summarizer has no tools and must not
+     * be dragged into a tool loop (the old implementation sent an empty tools field; the
+     * only reason for this difference is keeping that request byte-comparable). */
     cJSON *tools = (!is_memory_sink) ? tool_schemas : NULL;
     struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, tools,
                                                           task->active_turn ? &task->active_turn->messages : NULL);
-    /* 摘要的输出预算 (a): 语料上限 EDC_FOLD_MAX_CORPUS_TOKENS 与它配套, 保证单次
-     * 折叠的压缩比可达成 (≤ 4:1)。"请求从不发 max_tokens" 只有这一处例外。 */
+    /* The summary's output budget (a): paired with the corpus cap
+     * EDC_FOLD_MAX_CORPUS_TOKENS, keeping a single fold's compression ratio achievable
+     * (<= 4:1). This is the only exception to "requests never send max_tokens". */
     if (is_memory_sink)
         req->max_tokens = (task->sink == EDC_SINK_SESSION_MEMORY) ? EDC_SESSION_MEMORY_MAX_TOKENS
                                                                   : EDC_FOLD_SUMMARY_MAX_TOKENS;
-    /* 本 turn 的前缀若已进记忆 (折叠切在 turn 内部), 从这里之后开始发。 */
+    /* If this turn's prefix is already in memory (a fold cut inside the turn), send from after it. */
     if (task->active_turn && task->active_turn->folded_prefix > 0)
         req->turn_begin = (size_t)task->active_turn->folded_prefix;
     req->history_owned = true;
-    /* 绝对队尾: todo reminder —— 不再每轮请求都塞 (避免唠叨), 只在
-     * "隔了 EDC_TODO_SYNC_REMIND_GAP 条对话 (LLM 请求) 都没调用过
-     * todowrite" 时生成 (edc_task_llm_request_poke 达阈值返回 true,
-     * 内部已清零重计)。两段式: CURRENT TASK SYSTEM STATE 状态段 +
-     * INSTRUCTIONS FOR THIS TURN 指令段; 有清单→清单行+逐轮同步节拍, 无清
-     * 单→"尚无清单"+建计划引导。llm actor 在 history + turn 之后追加, 每
-     * 轮请求都是最新状态。req 持有并随请求释放 (副本, 不改 task/group)。 */
+    /* Absolute tail: the todo reminder -- no longer every request (avoids nagging); only
+     * generated when EDC_TODO_SYNC_REMIND_GAP requests have passed without a todowrite
+     * (edc_task_llm_request_poke returns true at the threshold and has reset the count).
+     * Two parts: CURRENT TASK SYSTEM STATE + INSTRUCTIONS FOR THIS TURN; a list => rows +
+     * cadence, none => "no list yet" + planning guide. The llm actor appends it after
+     * history + turn, so every request carries the latest state. req owns it and frees it
+     * with the request (a copy; task/group untouched). */
     req->tail_parts = NULL;
     if (!is_memory_sink)
     {
-        /* [0] L2 session 记忆通知: 自这个 task 上次"真的读到"以来新建/更新的条目,
-         * 一行一条 (cap 10)。**请求期现算的临时物** —— 不写进任何消息数组、不落盘;
-         * 水位在响应回来后由 `edc_task_memo_commit` 推进 (取消/失败不推进 ⇒ 重发)。
-         * 常驻里没有 memory 内容 (系统提示只留一行常量提示, 见 edc_context.c)。 */
+        /* [0] L2 session-memory notice: entries created/updated since this task last
+         * REALLY read it, one per line (cap 10). A request-time temporary -- written into
+         * no message array, not persisted; the watermark advances after the response via
+         * edc_task_memo_commit (cancel/failure do not advance => resent). No memory
+         * content is resident (the system prompt keeps one constant hint line, see
+         * edc_context.c). */
         struct edc_session *own = (task->group && task->group->session) ? task->group->session : NULL;
         if (own && own->memo)
         {
@@ -310,12 +330,12 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
                 if (!req->tail_parts)
                     req->tail_parts = cJSON_CreateArray();
                 cJSON_AddItemToArray(req->tail_parts, sys);
-                task->memo_notice_seq = max_injected; /* 响应回来才提升成 memo_seen_seq */
+                task->memo_notice_seq = max_injected; /* promoted to memo_seen_seq only after the response */
                 sdsfree(notice);
             }
         }
-        /* [1] todo 提醒 (节流): 给"正在干活的用户任务"的节拍。摘要调用不该被它插尾
-         * (同样是为了让折叠请求与旧实现逐字节一致)。 */
+        /* [1] todo reminder (throttled): the cadence for "a user task at work". A summary
+         * call must not get it (again, to keep the fold request byte-comparable). */
         if (edc_task_llm_request_poke(task))
         {
             cJSON *todo = edc_context_make_todo_reminder(task);
@@ -333,14 +353,16 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
                                      (edc_actor_data_free_fn)edc_llm_actor_req_free));
 }
 
-/* ── 端口: 请求装配器是 `send_llm` 的提供方 ──────────────────
+/* ── Ports: the request assembler provides `send_llm` ────────
  *
- * 请求体怎么装、投给谁, 都是本文件的知识 (见 edc_llm_request.h), 所以"把端口
- * 装到 scheduler 上"也归这里 —— **谁提供谁接线**。装配期交一次两样 kernel 拿
- * 不到的值 (工具定义 + LLM 端点邮箱), 此后每次请求都从这里出去, 装配根不再出现
- * 在运行期路径上。端口签名一个字没动。
+ * How the body is assembled and whom it is posted to is this file's knowledge (see
+ * edc_llm_request.h), so "install the port onto the scheduler" is here too -- the
+ * provider wires it. The two values the kernel cannot get (tool definitions + the LLM
+ * endpoint mailbox) are handed in once at assembly time; every request then leaves from
+ * here and the assembly root never appears on a runtime path. Port signatures unchanged.
  *
- * 两个值的生命周期 = 进程 (装配根创建、装配根释放, 且只在运行时被读)。 */
+ * Both values live for the process (created and freed by the assembly root, read at
+ * runtime only). */
 static edc_actor_t *g_llm_actor = NULL;
 static cJSON *g_tool_schemas = NULL;
 

@@ -9,11 +9,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── 跨 session task 解析 (S2) ───────────────────────────────
- * task id 全局唯一 (见 edc_session_manager_find_task_any), 所以命中唯一。
- * 内存查找只覆盖"本 run 已激活"的 session; 若任务属于一个只在磁盘上、尚未
- * 激活的 session, 就用 session_manager 的索引 (task_id → session_id, 由各
- * 未加载 session.json 解析一次而来) 定位属主, 再按需加载。 */
+/* ── Cross-session task resolution (S2) ──────────────────────
+ * A task id is globally unique (edc_session_manager_find_task_any), so a hit is
+ * unambiguous. The in-memory lookup covers only sessions activated this run; when a
+ * task belongs to a disk-only, not-yet-activated session, the session_manager index
+ * (task_id -> session_id, parsed once from each unloaded session.json) locates the
+ * owner, which is then loaded on demand. */
 struct edc_task *edc_session_store_resolve_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
                                                 const char *task_id, struct edc_session **owner_out)
 {
@@ -22,7 +23,7 @@ struct edc_task *edc_session_store_resolve_task(struct edc_session_manager *sm, 
     if (!sm || !task_id)
         return NULL;
 
-    /* 1. 内存优先: 本 run 已激活的 session 里直接找。 */
+    /* 1. Memory first: look directly in the sessions activated this run. */
     struct edc_session *owner = NULL;
     struct edc_task *t = edc_session_manager_find_task_any(sm, task_id, &owner);
     if (t)
@@ -32,8 +33,8 @@ struct edc_task *edc_session_store_resolve_task(struct edc_session_manager *sm, 
         return t;
     }
 
-    /* 2. 未命中: 用 session_manager 的索引定位属主 session (解析各未加载
-     *    session.json 一次), 命中则按需加载。 */
+    /* 2. Miss: use the session_manager index to locate the owning session (parsing
+     *    each unloaded session.json once); on a hit, load it on demand. */
     struct edc_session *s = edc_session_manager_session_for_task(sm, task_id);
     if (!s)
         return NULL;
@@ -50,7 +51,7 @@ struct edc_task *edc_session_store_resolve_task(struct edc_session_manager *sm, 
     return t;
 }
 
-/* ── 未解析依赖对账 (S3) ───────────────────────────────────── */
+/* ── Unresolved-dependency reconciliation (S3) ────────────── */
 
 /* Re-apply a persisted dep edge's flags once the edge is wired late. Mirrors the
  * logic in deser_deps for the local path. */
@@ -88,7 +89,8 @@ bool edc_session_store_load_session(struct edc_session_manager *sm, struct edc_s
     if (!session)
         return false;
     bool ok = edc_session_load_state(session, sched);
-    /* 内存即权威: 即使没有存档 (全新 session) 也标记为已加载, 之后不再重载。 */
+    /* Memory is authoritative: even with no archive (a brand-new session) mark it
+     * loaded, so it is never reloaded. */
     session->state_loaded = true;
     if (!sched || !sched->reconciling)
         edc_session_store_reconcile_pending_deps(sm, sched);
@@ -161,7 +163,7 @@ void edc_session_store_reconcile_pending_deps(struct edc_session_manager *sm, st
     sched->reconciling = false;
 }
 
-/* ── session 标签 → session 对象 (P3 读口) ─────────────────── */
+/* ── Session label -> session object (reader) ─────────────── */
 struct edc_session *edc_session_store_resolve_session(struct edc_session_manager *sm, const char *session_id)
 {
     if (!sm)
@@ -171,13 +173,15 @@ struct edc_session *edc_session_store_resolve_session(struct edc_session_manager
     return edc_session_manager_get_active(sm);
 }
 
-/* ── 会话生命周期 (信号 + 落盘) ────────────────────────────── */
+/* ── Session lifecycle (signals + persistence) ────────────── */
 
-/* 退出落盘辅助: 全量 history + **每个已加载** session 的 state (含后台 session)。
- * 前台组已随 session 保存 (session->foreground_group), 逐 session save_state
- * 不会互相污染。本 run 从未激活过的 session 会被跳过 —— 它们的内存对象只是
- * 由 sessions.json 拼出的 id/name 空壳, 写盘会覆盖磁盘上更新的状态 (含绑定
- * 的工作目录), 见 edc_session_manager_save_loaded_states。 */
+/* Shutdown-persist helper: full history + every LOADED session's state (background
+ * sessions included). The foreground group is saved with the session
+ * (session->foreground_group), so per-session save_state does not cross-contaminate.
+ * Sessions never activated this run are skipped -- their in-memory object is only an
+ * id/name shell built from sessions.json, and writing it would overwrite newer state
+ * on disk (including the bound working directory); see
+ * edc_session_manager_save_loaded_states. */
 void edc_session_store_save_all_sessions_state(struct edc_session_manager *sm, struct edc_scheduler *sched)
 {
     if (!sm || !sched)
@@ -192,7 +196,7 @@ void edc_session_store_save_session_state(struct edc_session_manager *sm, struct
     if (!sm || !sched)
         return;
 
-    /* 索引/历史先落 (全量), 再重写目标 session 的 state。 */
+    /* Write the index/history (full) first, then rewrite the target session's state. */
     edc_session_manager_save_all(sm);
 
     struct edc_session *target = session ? session : edc_session_manager_get_active(sm);
@@ -200,11 +204,11 @@ void edc_session_store_save_session_state(struct edc_session_manager *sm, struct
         edc_session_save_state(target, sched);
 }
 
-/* 用户 /stop (/session stop): 取消当前 session 全部非终结 turns 后立即保存状态,
- * 使 CANCELLED 跨重启保留。
- * 注: 目标不是当前 active session 时 (如 /session stop <other>), 走
- * edc_scheduler_send_signal_to_session(sched, target, sig, true) —— 目标由调用方
- * 显式给 (P3 ③: scheduler 已经没有"当前 session"这个东西了)。 */
+/* User /stop (/session stop): cancel all non-terminal turns of the current session
+ * and persist at once, so CANCELLED survives a restart.
+ * Note: when the target is not the active session (e.g. /session stop <other>), it
+ * goes through edc_scheduler_send_signal_to_session(sched, target, sig, true) -- the
+ * target is given explicitly by the caller. */
 void edc_session_store_stop_all_turns(struct edc_session_manager *sm, struct edc_scheduler *sched)
 {
     if (!sched)

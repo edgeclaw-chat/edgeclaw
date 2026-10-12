@@ -10,23 +10,26 @@ struct edc_config;
 struct edc_scheduler;
 struct edc_session_manager;
 
-/* 命令处理器 (userland 入口)。收的是**它下游真正需要的**那几件 (形状 C:
- * 签名即读者名册) —— 不借任何伞对象: cfg 给 /model 这类显示、sm/sched 是
- * task 图与 store、channel_actor+actor+channel_type 是"回话地址"。 */
+/* The command handler (the userland entry). It takes exactly the few things its
+ * downstream really needs (signature = reader roster) -- borrowing no umbrella object:
+ * cfg for displays like /model, sm/sched for the task graph and store,
+ * channel_actor+actor+channel_type for the "reply address". */
 extern bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
                                  struct edc_reply_to to, struct edc_channel_message *);
 extern void edc_commands_reply(struct edc_reply_to to, const char *text);
 
-/** 命令的**结构化**回话: 与 edc_commands_reply 同一条出口 (同一个 to.channel_actor),
- *  只换消息类型 (TASK_HISTORY) —— 前端据此按"消息历史"渲染, 而不是当一段文本。
- *  |payload| 是 edc_scheduler_task_history_json 那份 JSON。 */
+/** Structured command reply: the same exit as edc_commands_reply (the same
+ *  to.channel_actor), only the message type changes (TASK_HISTORY) -- the frontend then
+ *  renders it as a message history rather than a text blob. |payload| is the JSON from
+ *  edc_scheduler_task_history_json. */
 extern void edc_commands_send_history(struct edc_reply_to to, const char *payload);
 
-/* ── 端口: 命令层是 `handle_command` 的提供方 ────────────────
+/* ── Ports: the command layer provides `handle_command` ──────
  *
- * "谁提供服务谁装端口": 处理器住这里, 它要的 config / session 仓库都在
- * scheduler 上 (`sched->config` / `sched->sessions`), 回话地址由 scheduler 调用时
- * 递进来的发送者给出 —— 装配根不再中转 (也不必持一个函数指针)。 */
+ * "The provider installs its own port": the handler lives here, the config / session
+ * store it needs are on the scheduler (sched->config / sched->sessions), and the reply
+ * address is the sender the scheduler passes in when calling -- the assembly root no
+ * longer relays it (and need not hold a function pointer). */
 struct edc_scheduler; /* fwd */
 extern void edc_commands_bind_scheduler(struct edc_scheduler *sched);
 

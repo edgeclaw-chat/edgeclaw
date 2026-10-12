@@ -11,8 +11,9 @@ void edc_turn_add_message(struct edc_turn *turn, cJSON *msg)
     sdsfree(valid_utf8);
     cJSON_ReplaceItemInObject(msg, "content", valid_content);
 
-    /* v3: 消息自带产生时间与渲染偏好, 随消息一起持久化 —— 不再用平行的
-     * timestamps 队列 (那样重启即丢, 且下标需与 messages 对齐)。 */
+    /* v3: a message carries its own timestamp and render preference, persisted with
+     * it -- no parallel timestamps queue (which was lost on restart and needed
+     * indices aligned with messages). */
     if (!cJSON_HasObjectItem(msg, "ts"))
     {
         sds ts = edc_datetime_timestamp();

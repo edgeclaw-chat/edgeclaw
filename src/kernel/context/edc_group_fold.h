@@ -19,30 +19,29 @@ struct edc_task_group;
 #define EDC_FOLD_RESERVE_TOKENS 16384
 #define EDC_FOLD_KEEP_RECENT_TOKENS 20000
 
-/* (a) 摘要的**输出**预算.
+/* (a) The summary's OUTPUT budget.
  *
- * 旧值 = 0.8 x reserve = 13107 —— 那是"窗口里留白"的量 (触发线的余量), 不是"摘要
- * 该有多大"的量。语料可以是 keep_recent 之外的**整段历史**: 2026-10-09 实测 178 条
- * 消息 / ~137k token, 要模型把 137k 压进 13k, 结果每发都撞 finish_reason=length;
- * 而截断按 P2b-2 被丢弃 ⇒ 折叠永远不落地 ⇒ 组一直"该折", 每 ~40s 原样重试一发
- * (每发都是一次 ~67k prompt 的真调用), 组里的成员被反复 park。
- *
- * 现在预算与语料配套 (见 EDC_FOLD_MAX_CORPUS_TOKENS), 取一个够宽敞的常数。 */
+ * It is tuned to the corpus (see EDC_FOLD_MAX_CORPUS_TOKENS) rather than derived
+ * from the trigger margin: the corpus can be the whole history outside
+ * keep_recent, and a budget too small for it made every call hit
+ * finish_reason=length, so the fold never landed and the group retried unchanged
+ * forever. */
 #define EDC_FOLD_SUMMARY_MAX_TOKENS 32768
 
-/* (b) 单次折叠送进摘要器的**语料上限** (我们的估算口径)。
+/* (b) Corpus cap per fold, in our estimate units.
  *
- * 保证语料与输出预算之间的压缩比可达成 (≤ 4:1), 而不是把 10:1 甚至更高的压缩比
- * 压给摘要器。超上限时把切点往回收 —— 多留细节、少折一点, 下一轮再折剩下的; 切点
- * 永远还是消息边界 (与 keep_recent 同一条规则)。 */
+ * Keeps the compression ratio achievable (<= 4:1) instead of pushing 10:1+ onto
+ * the summarizer. Over the cap the cut moves back -- keep more detail, fold less,
+ * fold the rest next round; the cut is always a message boundary. */
 #define EDC_FOLD_MAX_CORPUS_TOKENS (EDC_FOLD_SUMMARY_MAX_TOKENS * 4)
 
-/* (c) 连续失败的次数上限。
+/* (c) Consecutive-failure cap.
  *
- * 到顶就**停自动折叠** (手动 `/group fold` 不受此限), 免得"失败 → 组仍然该折 →
- * 原样重试"变成永动机。计数在**落地成功 / 手动折叠 / 组里又有了已提交内容**时清零
- * (后两者才是"新情况"; 起折本身不清零, 否则永远到不了上限)。只在内存, 不落盘 ——
- * 重启视为新情况。 */
+ * At the cap automatic folding STOPS (manual `/group fold` is exempt), so "fail ->
+ * group still due -> retry unchanged" cannot become a perpetual motion machine.
+ * The count resets on successful landing / manual fold / new committed content;
+ * starting a fold does NOT reset it. In-memory only, not persisted -- a restart
+ * counts as new. */
 #define EDC_FOLD_MAX_FAILURES 3
 
 /* L1 fold: turns of finished tasks in a group -> group->memory, run as a system
@@ -73,9 +72,10 @@ extern bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_m
  *  index, and how many leading messages of that turn the memory covers. Everything
  *  earlier in content order is folded whole; nothing later is touched. A NULL task
  *  id means no cut (a fold task written by an older binary). */
-/** 切点落在成员的**在飞 turn** 内部时的 turn 标记: 它还没有下标。落地时解析成
- *  active_turn; 若这期间它已提交 (成员跑到 turn 尾就结束了), 就退到队列末尾 —— 同一个
- *  对象, 所以用指针比较而不是序号 (提交会让序号漂移)。 */
+/** Turn marker for a cut that falls inside a member's IN-FLIGHT turn (it has no
+ *  index yet). Resolved to active_turn at landing; if the turn committed meanwhile
+ *  it falls back to the end of the queue. The same object, so it is compared by
+ *  pointer, not index (commit shifts indices). */
 #define EDC_FOLD_CUT_ACTIVE_TURN 0x7fffffffu
 
 struct edc_fold_cut
@@ -126,18 +126,20 @@ extern bool edc_group_fold_holds_group(struct edc_task_group *group);
  *  fold task carries (every member before it folded whole, its own turn up to
  *  fold_cut_prefix), rebuild the group history, bump fold_epoch. On failure nothing
  *  changes and the next round retries. */
-/* 折叠落地: 写 group 记忆 (并尽量打上前缀/推进 fold_epoch)。
- * 返回 true = 记忆真的写了 (L2 的"有新料"判据就是这个返回值); false = 内容为空,
- * 什么都没动 (下一次触发重试)。 */
+/* Fold landing: write the group memory (and advance the prefix / fold_epoch where
+ * possible). Returns true when the memory was really written (L2's "new material"
+ * predicate is this return value); false when the content was empty and nothing
+ * changed (retry on the next trigger). */
 extern bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content);
 
-/** (c) 记一次折叠失败 (任务进 ERROR / 摘要为空 / 切点解析不了)。计数到
- *  EDC_FOLD_MAX_FAILURES 后 `edc_group_fold_due` 对**自动**路径返回 false; 手动
- *  `/group fold` 不受影响。 */
+/** Record one fold failure (task ERROR / empty summary / unresolvable cut). At
+ *  EDC_FOLD_MAX_FAILURES, `edc_group_fold_due` returns false on the AUTOMATIC
+ *  path; manual `/group fold` is unaffected. */
 extern void edc_group_fold_note_failure(struct edc_task_group *group);
 
-/** (c) 清零连续失败计数。三个调用点: 折叠落地成功、手动折叠、组里又有了已提交内容
- *  (新的 turn = 新情况, 值得再试)。**起折不清零** —— 否则永远到不了上限。 */
+/** Reset the consecutive-failure count. Three call sites: successful landing,
+ *  manual fold, and new committed content in the group (a new turn = new
+ *  situation, worth retrying). Starting a fold does NOT reset it. */
 extern void edc_group_fold_note_progress(struct edc_task_group *group);
 
 #endif

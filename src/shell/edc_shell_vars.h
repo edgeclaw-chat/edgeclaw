@@ -4,22 +4,23 @@
 #include "sds.h"
 #include <stdbool.h>
 
-/* ── $VAR 展开原语（leaf: 只依赖 common，不认识 app）─────────
+/* ── $VAR expansion primitives (leaf: depends only on common, does not know app) ──
  *
- * 这一层刻意与 shell 执行器（edc_shell.c / edc_commands.c，它们依赖
- * //src/app:app）分开：app 侧（edc_scheduler 的 /task 解析、
- * edc_app 的变量展开）需要这两个入口，但绝不能反向依赖 shell 执行器，
- * 否则形成 app ↔ shell 的循环。见 //src/shell:shell_parse。 */
+ * This layer is deliberately kept apart from the shell executor (edc_shell.c /
+ * edc_commands.c, which depend on //src/app:app): the app side (edc_scheduler's /task
+ * parsing, edc_app's variable expansion) needs these two entries but must never depend
+ * back on the shell executor, or app <-> shell becomes a cycle. See
+ * //src/shell:shell_parse. */
 
-/* 展开 $VAR 时用此回调向调用方查询变量值。
- * name: 变量名（如 "LAST", "$"）
- * user_data: 调用方上下文
- * 返回: 变量值（sds），失败返回 NULL；调用方负责 sdsfree */
+/* When expanding a $VAR this callback asks the caller for the variable's value.
+ * name: the variable name (e.g. "LAST", "$")
+ * user_data: the caller's context
+ * Returns the value (sds), or NULL on failure; the caller sdsfree()s it. */
 typedef sds (*edc_shell_var_resolver_fn)(const char *name, void *user_data);
 
-/* 展开 $VAR 引用（expand 阶段，deps 已完成后调用）。
- * resolver: 解析变量值的回调
- * 成功返回 expanded string，失败返回 NULL 并设置 *out_error */
+/* Expand $VAR references (the expand phase, called once deps are done).
+ * resolver: the callback that resolves variable values
+ * Returns the expanded string, or NULL and sets *out_error on failure. */
 sds edc_shell_expand_vars(const char *input, edc_shell_var_resolver_fn resolver, void *user_data, sds *out_error);
 
 #endif
