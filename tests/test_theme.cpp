@@ -16,7 +16,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <memory>
 #include <string>
+#include <utility>
 
 #if !defined(_WIN32)
 #include <chrono>
@@ -488,6 +490,38 @@ void test_task_state_table(void)
 
 } // namespace
 
+// The palette provider seam: style::palette() is served through an IPalette, so a
+// test (or a themed renderer) can replace it wholesale. This is what IPalette is
+// for -- without a consumer it would be dead code.
+struct FakePalette : edc::style::IPalette
+{
+    edc::style::Palette pal;
+    explicit FakePalette(edc::style::Palette p) : pal(std::move(p))
+    {
+    }
+    const edc::style::Palette &colors() const override
+    {
+        return pal;
+    }
+};
+
+void test_palette_provider(void)
+{
+    TEST("IPalette provider seam");
+    const edc::style::Palette real = edc::style::palette();
+    edc::style::Palette fake = real;
+    fake.accent = ftxui::Color::RGB(1, 2, 3);
+    fake.pane_bg = ftxui::Color::RGB(4, 5, 6);
+
+    auto provider = std::make_shared<FakePalette>(fake);
+    edc::style::SetPaletteProvider(provider);
+    CHECK(edc::style::palette().accent == fake.accent, "the installed provider supplies the palette");
+    CHECK(edc::style::palette().pane_bg == fake.pane_bg, "every role comes from the provider");
+
+    edc::style::SetPaletteProvider(nullptr);
+    CHECK(edc::style::palette().accent == real.accent, "nullptr restores the built-in theme palette");
+}
+
 int main(void)
 {
     // Pin truecolor before anything builds a palette (the palette's statics take
@@ -501,6 +535,7 @@ int main(void)
     test_parse_osc11();
     test_light_background();
     test_palette_selection();
+    test_palette_provider();
     test_light_palette_contrast();
     test_breath_curve();
     test_breath_endpoints();

@@ -686,6 +686,47 @@ cc_test(
 # ── TUI 测试（原 src/tui/test_*.cpp，2026-09-15 归拢到 tests/）──────────
 
 cc_test(
+    name = "test_channel_dispatcher",
+    srcs = ["test_channel_dispatcher.cpp"],
+    deps = [
+        "//src/tui:tui",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
+    name = "test_status_bar_view",
+    srcs = ["test_status_bar_view.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
+    name = "test_domain_policies",
+    srcs = ["test_domain_policies.cpp"],
+    deps = [
+        "//src/tui:tui",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
     name = "test_snapshot_claim",
     srcs = ["test_snapshot_claim.cpp"],
     deps = [

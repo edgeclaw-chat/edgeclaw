@@ -9,7 +9,12 @@
 namespace edc
 {
 
-ChatWidget::ChatWidget()
+ChatWidget::ChatWidget() : ChatWidget(std::make_shared<model::ChatModel>())
+{
+}
+
+ChatWidget::ChatWidget(std::shared_ptr<model::ChatModel> model)
+    : model_(model ? std::move(model) : std::make_shared<model::ChatModel>())
 {
     // Mouse-wheel-only: the log stays out of the keyboard focus cycle so the
     // arrow keys always belong to the input box (caret movement / history
@@ -21,73 +26,54 @@ ChatWidget::ChatWidget()
                                                                      /*follow_tail=*/true,
                                                                      /*focusable=*/false});
     Add(scroll_view_);
+
+    subscription_ = model_->Subscribe([this](const model::ChatModel::Change &change) { OnModelChanged(change); });
+    // Initial sync: a shared model may already hold messages (e.g. a log replayed
+    // before the view was built).
+    OnModelChanged(model::ChatModel::Change{});
+}
+
+ChatWidget::~ChatWidget()
+{
+    if (subscription_ >= 0)
+        model_->Unsubscribe(subscription_);
+}
+
+void ChatWidget::OnModelChanged(const model::ChatModel::Change &change)
+{
+    // An appended bubble: one list append, exactly as before (the reader's scroll
+    // offset is untouched — if following the tail, layout pins it to the new
+    // bottom, otherwise the reader stays where they were).
+    if (change.appended)
+    {
+        list_->AddMessage(change.appended);
+        return;
+    }
+
+    // A filter / task-input / clear change: rebuild the drawn list from the model.
+    list_->Clear();
+    for (const std::shared_ptr<Message> &message : model_->visible())
+        list_->AddMessage(message);
 }
 
 void ChatWidget::AddMessage(std::shared_ptr<Message> message)
 {
-    if (!message)
-        return;
-
-    // The log keeps everything; the filter only decides what is drawn. Recording
-    // before the visibility test is what makes switching the filter back to
-    // "all" non-destructive.
-    all_.push_back(message);
-
-    if (Visible(*message))
-        list_->AddMessage(std::move(message));
-
-    // Leave the scroll offset alone: if we are following the tail, layout pins
-    // it to the new bottom, otherwise the reader stays where they were.
+    model_->AddMessage(std::move(message));
 }
 
 void ChatWidget::Clear()
 {
-    all_.clear();
-    list_->Clear();
-}
-
-void ChatWidget::SetTaskInputs(std::shared_ptr<const std::map<std::string, std::string>> inputs)
-{
-    task_inputs_ = std::move(inputs);
-    if (filter_)
-        ApplyFilter();
+    model_->Clear();
 }
 
 void ChatWidget::SetFilter(std::shared_ptr<const std::set<std::string>> allowed, std::string label)
 {
-    filter_ = std::move(allowed);
-    filter_label_ = std::move(label);
-    ApplyFilter();
+    model_->SetFilter(std::move(allowed), std::move(label));
 }
 
-bool ChatWidget::Visible(const Message &message) const
+void ChatWidget::SetTaskInputs(std::shared_ptr<const std::map<std::string, std::string>> inputs)
 {
-    if (!filter_)
-        return true;
-    return filter_->find(message.TaskId()) != filter_->end();
-}
-
-void ChatWidget::ApplyFilter()
-{
-    list_->Clear();
-    input_shown_.clear();
-    for (const std::shared_ptr<Message> &message : all_)
-    {
-        if (!Visible(*message))
-            continue;
-
-        // Under a filter, each task's history opens with the input it was created
-        // from. A message with no task (a command reply) is not a history, so it
-        // gets none.
-        const std::string &task_id = message->TaskId();
-        if (filter_ && !task_id.empty() && task_inputs_ && input_shown_.insert(task_id).second)
-        {
-            const auto it = task_inputs_->find(task_id);
-            if (it != task_inputs_->end() && !it->second.empty())
-                list_->AddMessage(std::make_shared<UserMessage>(it->second, ::time(nullptr), task_id));
-        }
-        list_->AddMessage(message);
-    }
+    model_->SetTaskInputs(std::move(inputs));
 }
 
 bool ChatWidget::Scroll(int delta)
@@ -118,8 +104,8 @@ bool ChatWidget::OnEvent(::ftxui::Event event)
     // group that simply has no recorded output would read as a broken button.
     if (list_->Empty())
     {
-        if (filter_ && !filter_label_.empty())
-            return ::ftxui::text("  no messages in " + filter_label_) | ::ftxui::dim |
+        if (model_->has_filter() && !model_->filter_label().empty())
+            return ::ftxui::text("  no messages in " + model_->filter_label()) | ::ftxui::dim |
                    ::ftxui::color(style::palette().text_dim);
         return ::ftxui::filler();
     }

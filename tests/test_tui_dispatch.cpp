@@ -1,22 +1,25 @@
 // TUIWindow 的"喂通道消息"harness。
 //
-// 为什么需要它：通道消息进 TUI 的唯一入口是
-// `TUIWindow::on_channel_adapter_send`（edc_tui_window.cpp:1048），它先**分类**
+// 为什么需要它：通道消息进 TUI 的唯一入口是 `AppFacade::HandleChannelMessage`
+// （P2 之前是 `TUIWindow::on_channel_adapter_send`）。适配器先**分类**
 // （`edc_app_message_is_task_tree_changed` / `..._is_task_snapshot` / 其余按
-// `Kind::{User,Tool,Thought,Reply,Sys}`）、再**取字段**（`edc_app_message_*`），
-// 最后才用三个谓词决定怎么做。谓词本身有 `test_snapshot_claim.cpp` 钉住，但
+// `port::ChatKind::{User,Tool,Thought,Reply,System}`）、再**取字段**
+// （`edc_app_message_*`），翻成强类型事件后交给 `IChannelSink`（TUIWindow 实现）。
+// 谓词本身有 `test_snapshot_claim.cpp` / `test_domain_policies.cpp` 钉住，但
 // **分类 + 取字段这一段谁都没测过**：把 `edc_app_message_is_task_snapshot` 改成
 // 恒 0，谓词测试不红、A/B 也不红（A/B 比的是状态机产物，不比屏幕）—— 于是
 // "某类消息根本到不了它该去的 widget"这类故障没有任何判据。
 //
-// 这个 harness 把**真的** `struct edc_channel_message` 喂进**真的** TUIWindow，
-// 然后读屏幕（`OnRender()` 的帧）。它盖住的正是 A/B 看不到的那一层。
+// 这个 harness 把**真的** `struct edc_channel_message` 喂进**真的** TUIWindow
+// （经它自己的 AppFacade），然后读屏幕（`OnRender()` 的帧）。它盖住的正是 A/B
+// 看不到的那一层。
 //
-// 两个测试接缝（都在 edc_tui_window.{hpp,cpp} 里，各一行）：
-//   1. `on_channel_adapter_send` 是 public 的（生产路径注册的就是同一个函数）；
+// 两个测试接缝：
+//   1. `IAppFacade::HandleChannelMessage` 是公开的（生产路径注册的 C 回调最终
+//      进这里），测试直接 `win.App()->HandleChannelMessage(m)` 喂一条真消息；
 //   2. `EDGECLAW_TUI_NO_PULL=1` 让 `RequestTaskSnapshot()` 变 no-op —— 否则构造期
-//      （:464）与回调里（:1077）的拉取会经 app **异步**回包，而没 SetScreen() 时
-//      那回包内联在 runner 线程上，会和本测试自己的断言抢同一个 widget。
+//      与回调里的拉取会经 app **异步**回包，而没 SetScreen() 时那回包内联在
+//      runner 线程上（Post() 的 else 分支），会和本测试自己的断言抢同一个 widget。
 
 #include "edc_tui_window.hpp"
 #include "tui_dispatch_msgs.h"
@@ -98,7 +101,10 @@ struct edc_channel_message *MakeMsg(int type, const char *content, const char *s
 
 void Feed(edc::TUIWindow &win, struct edc_channel_message *m)
 {
-    edc::TUIWindow::on_channel_adapter_send(&win, m);
+    /* P2: C 消息的分类/取字段已搬进 AppFacade, 窗口实现 IChannelSink。喂消息的
+     * 缝因此从 static on_channel_adapter_send 换成端口的适配器入口
+     * (App()->HandleChannelMessage) —— 与生产路径注册的是同一段翻译逻辑。 */
+    win.App()->HandleChannelMessage(m);
     /* 生产路径由通道在回调之后释放（edc_channel_actor_handle）；测试里消息归调用方。 */
     harness_msg_free(m);
 }

@@ -1,26 +1,32 @@
-#include "edc_api.h" /* 前端面 (投影): 消息窗口 + 读口 + 前端动作 */
-#include "edc_app.h" /* 装配根: edc_app_new / free */
+#pragma once
+
+#include "edc_working_indicator_view.hpp" /* 动画行: WorkingIndicatorView (含旧入口 WorkingIndicatorElement) */
+#include "edc_ports.hpp"                  /* 端口: IClock / ITerminalInfo */
+#include "edc_app_facade.hpp"             /* 端口: IAppFacade / IChannelSink / IUiDispatcher */
+#include "edc_channel_dispatcher.hpp"     /* 控制层: ChannelDispatcher / IChannelHost */
+#include "edc_connect_dialog.hpp"         /* 视图: /connect 弹窗 */
+#include "edc_transcript_store.hpp"       /* 端口: 转录存储 */
 #include "edc_task_snapshot.hpp"
 #include "edc_clipboard.hpp"
 #include <chrono>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
+#include <functional>
 #include <memory>
 #include <string>
 
 namespace edc
 {
+namespace ui
+{
+class SidebarView;
+class StatusBarView;
+} // namespace ui
+
 class ChatWidget;
 class EdcInput;
 class TaskWidget;
 class TodoWidget;
-
-// The animated "working" row shown in place of the footer while the foreground
-// process runs: a bar of blocks that sweeps back and forth, brightness flowing
-// along the lit run. |elapsed_ms| drives position and phase. Fixed cell count
-// and one line tall, so swapping it for the footer never moves the layout.
-// Declared here so tests can render it without a live app.
-::ftxui::Element WorkingIndicatorElement(long long elapsed_ms);
 
 // ── P3 ①b: 快照的**认领规则** ────────────────────────────────
 //
@@ -61,13 +67,18 @@ enum class LiveOutputRoute
 LiveOutputRoute RouteLiveOutput(const std::string &session_id, bool from_active_task,
                                 const std::string &displayed_session);
 
-class TUIWindow : public ::ftxui::ComponentBase
+class TUIWindow : public ::ftxui::ComponentBase,
+                  public control::IChannelHost,
+                  public port::IUiDispatcher
 {
   public:
     // |sandbox_override| mirrors --sandbox/--no-sandbox: -1 keeps the persisted
     // config.json value, 0 forces off, 1 forces on (per-run only). Runtime
-    // toggling goes through /sandbox on|off.
-    explicit TUIWindow(int sandbox_override = -1);
+    // toggling goes through /sandbox on|off. |terminal| supplies the width the
+    // footer trims its fields against (nullptr = the real terminal); a test can
+    // pass a fixed-width one.
+    explicit TUIWindow(int sandbox_override = -1,
+                       std::shared_ptr<const port::ITerminalInfo> terminal = nullptr);
     virtual ~TUIWindow();
 
     TUIWindow(const TUIWindow &) = delete;
@@ -86,7 +97,7 @@ class TUIWindow : public ::ftxui::ComponentBase
     // dereferencing a NULL app.
     bool Ready() const
     {
-        return app != nullptr;
+        return app_ && app_->Ready();
     }
 
     // Pace the window's own animations (the working spinner and the sidebar's
@@ -94,20 +105,36 @@ class TUIWindow : public ::ftxui::ComponentBase
     // iteration; see TickAnimations().
     void TickAnimations();
 
-    // 通道消息进本窗口的**唯一**入口 (生产路径由 `edc_app_channel_adapter_init`
-    // 注册的就是它)。公开是给测试用的: 可以直接喂一条 `struct edc_channel_message`
-    // 进来 —— 没调 `SetScreen()` 时回调**同步**执行, 所以不必起 ftxui 事件循环,
-    // 喂完就能渲染断言 (见 tests/test_tui_dispatch.cpp)。
-    /* `/task history <id>` / `/group history <id>` 的应答载荷: 把它拆成一条条气泡追加到
-     * 对话区 (数据来自 scheduler 的 task->turns, 消息自带 render/ts, 渲染端零猜测)。
-     * 公开是为了让 dispatch 测试能直接喂一份载荷 —— 生产路径由 on_channel_adapter_send 调。 */
-    void RenderTaskHistory(const std::string &payload);
+    // ── 控制层 hook (IChannelHost) ───────────────────────────────
+    // ChannelDispatcher 调用这些做"模型之外的视图动作"。事件本身由分派器承接
+    // (AppFacade 注册的 sink 是它, 不是本窗口); 生产与测试同一条路径:
+    // App()->HandleChannelMessage() → 分派器 → 这里的 hook。
+    bool InHistoryView() const override
+    {
+        return history_view_;
+    }
+    bool PresentChat(const port::ChatMessageEvent &event, const std::string &kind_str) override;
+    void LoadSessionTranscript(const std::string &session_id) override;
+    void SetTaskTree(const TaskSnapshot &snap) override;
+    void SyncWorking(const TaskSnapshot &snap) override;
+    void SetTodos(const TaskSnapshot &snap) override;
+    void PresentHistory(const std::string &payload) override;
+    void RequestTaskSnapshot() override;
+    void RequestFrame() override;
+
+    // IUiDispatcher: 把任务投到 UI 线程。没有屏幕时 Post() 同步执行 (正是在这个
+    // 分支上, harness 的喂消息会立刻跑到分派器)。
+    void Post(std::function<void()> task) override;
+
+    // 应用端口 (视图与测试用; 生命期与窗口一致)。
+    port::IAppFacade *App()
+    {
+        return app_.get();
+    }
+
     /* 退出"只看历史"模式, 回到实时流 (重放本次对话转录)。纯视图动作: kernel 不知道
      * 谁在看什么, 也不留任何状态。Esc 调它。 */
     void ExitHistoryView();
-    /* 现在是不是在"只看历史"的视图里 (只读谓词: 给测试一个不靠帧的判据)。 */
-    bool InHistoryView() const { return history_view_; }
-    static void on_channel_adapter_send(void *instance, struct edc_channel_message *message);
 
   private:
     /* 只看模式: 对话区正在显示一份拉回来的历史 (RenderTaskHistory 建的视图), 此时实时
@@ -117,16 +144,15 @@ class TUIWindow : public ::ftxui::ComponentBase
     // Append the current input as a user message and clear the box. A bare
     // "/connect" opens the provider dialog instead of sending anything.
     void Submit();
+    // Seed + open the /connect dialog (reads the persisted config).
     void OpenConnect();
-    // Persist + hot-apply the /connect dialog; true when it succeeded (the
-    // dialog then closes).
-    bool SubmitConnect();
-    ::ftxui::Element RenderConnectModal();
     // Seed the input history from $EDC_HOME/.tui_history (a missing file is fine).
     void LoadInputHistory();
     void SaveInputHistory();
-    // Ask the app (on its scheduler thread) for a fresh task-tree snapshot.
-    void RequestTaskSnapshot();
+    /* `/task history <id>` / `/group history <id>` 的应答载荷: 拆成一条条气泡追加到
+     * 对话区 (数据来自 scheduler 的 task->turns)。生产路径由 PresentHistory (IChannelHost)
+     * 调; 私有 —— dispatch 测试同样经通道喂载荷, 不直接调。 */
+    void RenderTaskHistory(const std::string &payload);
     // Show |session_id|'s chat log: the TUI's own transcript
     // (<session>/chat.jsonl, one line per bubble it showed) is replayed into the
     // cleared log. A session without one shows an empty log — nothing is derived
@@ -148,12 +174,32 @@ class TUIWindow : public ::ftxui::ComponentBase
     // that session's messages re-derived, so the log always belongs to the
     // The left pane: chat log + input + footer/spinner.
     ::ftxui::Element RenderMain();
-    // The working directory on the left; the model, sandbox state and "/help"
-    // right-aligned within the chat pane's width (never into the sidebar).
-    ::ftxui::Element RenderFooter() const;
     // Put the selection on the clipboard and raise the chip. Runs on the frame
     // after the drag was released, once FTXUI's selection is complete.
     void CopySelectionToClipboard();
+
+    // ── 事件模式 (P4) ────────────────────────────────────────────
+    // 从前 OnEvent 的优先级靠一串 if 的先后维持; 现在显式成一个模式: 粘贴 /
+    // 只看历史 / 正常 (弹窗单独最先判 —— 它是最内层、且拥有全部事件)。三个
+    // 处理器各自只处理本模式的事件。
+    enum class InputMode
+    {
+        Paste,
+        History,
+        Normal,
+    };
+    InputMode inputMode() const
+    {
+        if (in_paste_)
+            return InputMode::Paste;
+        if (history_view_)
+            return InputMode::History;
+        return InputMode::Normal;
+    }
+    bool HandlePasteEvent(::ftxui::Event event);
+    // 返回 true = 已消费; false = 放行给正常路径 (鼠标/滚轮/Alt+Enter)。
+    bool HandleHistoryEvent(::ftxui::Event event);
+    bool HandleNormalEvent(::ftxui::Event event);
 
     std::shared_ptr<edc::ChatWidget> chat_widget_;
     std::shared_ptr<edc::TaskWidget> task_widget_;
@@ -163,9 +209,6 @@ class TUIWindow : public ::ftxui::ComponentBase
     std::shared_ptr<edc::EdcInput> input_;
     ::ftxui::Element prompt_;
     std::string input_text_;
-    // Read once from the app's config; shown at the right end of the footer
-    // (dropped only when the pane is too narrow).
-    std::string model_;
 
     // Routes keyboard focus between the chat log and the input (1 = input,
     // focused from the start). Declared before |container_| because the
@@ -177,27 +220,30 @@ class TUIWindow : public ::ftxui::ComponentBase
     // separator.
     int sidebar_width_ = 36;
     ::ftxui::Component split_;
+    // The sidebar column (task tree over todo list); held so it outlives the split
+    // it was handed to.
+    std::shared_ptr<ui::SidebarView> sidebar_;
 
     // Set between the bracketed-paste ESC[200~ and ESC[201~, where Return is
     // inserted as a newline instead of submitting.
     bool in_paste_ = false;
 
-    // The session currently displayed. Unknown ("") until the first snapshot
-    // arrives, and that one is **adopted**: the frontend learns which session it
-    // is showing from the snapshot itself, so nothing reads the store
-    // synchronously at bootstrap (the store belongs to the actor thread).
-    // Afterwards only a /session switch moves it, and a reply naming another
-    // session is dropped as stale.
-    std::string current_session_id_;
-    // That session's chat-transcript path (<workspace>/<session_id>/chat.jsonl),
-    // resolved with the log. Empty when the session is unknown.
-    std::string chat_log_path_;
-    // That session's bound working directory, from the last applied snapshot
-    // ("" = unbound). Cached rather than queried per frame: the footer renders
-    // every frame, and the store is mutated on the actor thread.
-    std::string session_workdir_;
+    // ── 模型层 (P3) ─────────────────────────────────────────────
+    // The chat log's state (messages + filter + task inputs) and the displayed
+    // session's identity. Widgets render them; the ChannelDispatcher writes them.
+    std::shared_ptr<model::ChatModel> chat_model_;
+    std::shared_ptr<model::SessionModel> session_model_;
 
-    struct edc_app *app = NULL;
+    // App port: owns the edc_app (assembly + the only C boundary).
+    std::unique_ptr<port::AppFacade> app_;
+    // Channel dispatcher: the AppFacade sink. Turns typed events into model
+    // updates + the IChannelHost hooks below.
+    std::unique_ptr<control::ChannelDispatcher> dispatcher_;
+    // Chat-log file I/O (path, append, replay) — the transcript port (interface;
+    // the concrete TranscriptStore is built in the ctor).
+    std::unique_ptr<port::ITranscriptStore> transcript_;
+    // Terminal geometry port: the footer trims its fields against this width.
+    std::shared_ptr<const port::ITerminalInfo> terminal_;
     // True once bracketed paste was actually enabled, so the destructor only
     // emits the "disable" sequence when the matching "enable" ran.
     bool bracketed_paste_on_ = false;
@@ -214,24 +260,21 @@ class TUIWindow : public ::ftxui::ComponentBase
     // /connect dialog: three fields (API URL / Model / API key) built once in
     // the constructor. While open it owns all keyboard/mouse events and renders
     // from these strings directly.
-    bool connect_open_ = false;
-    std::string connect_url_;
-    std::string connect_model_;
-    std::string connect_key_;
-    ::ftxui::Component connect_modal_;
-    ::ftxui::Component connect_url_input_;
-    ::ftxui::Component connect_model_input_;
-    ::ftxui::Component connect_key_input_;
-    ::ftxui::Component connect_buttons_;
-    int connect_focus_ = 0;
-    int connect_button_focus_ = 0;
+    // /connect dialog: a self-contained widget (owns its three fields, its
+    // rendering and its event handling). The window only opens it and overlays
+    // it; config persistence goes through the Submit callback given at build time.
+    std::shared_ptr<ui::ConnectDialog> connect_dialog_;
 
     // True while the foreground group's active task runs. Owned exclusively by
     // SyncWorkingFromSnapshot(), never toggled by channel messages.
     bool working_ = false;
-    // When working_ last flipped to true: the animation phase, so the run starts
-    // at the first cell each time.
-    std::chrono::steady_clock::time_point working_started_;
+    // The animated "working" row, swapped in for the footer while working_. It
+    // owns its own clock/timing (Restart() on the busy transition); the window
+    // only paces its repaints (see TickAnimations).
+    std::shared_ptr<ui::WorkingIndicatorView> working_indicator_;
+    // The status row (footer): working directory on the left, model/sandbox//help
+    // on the right. A component reading the session model + terminal port.
+    std::shared_ptr<ui::StatusBarView> status_bar_;
     // When the spinner's next repaint is due (see TickAnimations).
     std::chrono::steady_clock::time_point last_spinner_frame_;
     // Whether the sidebar is currently breathing (a processing task's dot or an
