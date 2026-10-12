@@ -14,31 +14,31 @@ jobs:
           - target: edgeclaw_amd64_linux
             runner: ubuntu-latest
             platform: //:amd64_linux
-            bazel_target: //src/tui:edgeclaw_tui
+            bazel_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
           - target: edgeclaw_arm_linux
             runner: ubuntu-latest
             platform: //:arm_linux
             cross_compile: arm-linux-gnueabi
             apt_package: gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
-            bazel_target: //src/tui:edgeclaw_tui
+            bazel_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
           - target: edgeclaw_aarch64_linux
             runner: ubuntu-latest
             platform: //:aarch64_linux
             cross_compile: aarch64-linux-gnu
             apt_package: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-            bazel_target: //src/tui:edgeclaw_tui
+            bazel_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
           - target: edgeclaw_aarch64_macos
             runner: macos-14
             platform: //:aarch64_macos
-            bazel_target: //src/tui:edgeclaw_tui
+            bazel_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
           - target: edgeclaw_amd64_windows
             runner: windows-latest
             platform: //:amd64_windows
-            bazel_target: //src/tui:edgeclaw_tui
+            bazel_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
 
           - target: device_agent_amd64_linux

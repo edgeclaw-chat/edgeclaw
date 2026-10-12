@@ -177,11 +177,11 @@ DAGENT_FILE_NAME = select({
 
 pkg_files(
     name = "edgeclaw_binary",
-    srcs = ["//src/tui:edgeclaw_tui"],
+    srcs = ["//src/tui:edgeclaw"],
     attributes = pkg_attributes(mode = "0755"),
     renames = select({
-        ":windows": {"//src/tui:edgeclaw_tui": "edgeclaw.exe"},
-        "//conditions:default": {"//src/tui:edgeclaw_tui": "edgeclaw"},
+        ":windows": {"//src/tui:edgeclaw": "edgeclaw.exe"},
+        "//conditions:default": {"//src/tui:edgeclaw": "edgeclaw"},
     }),
 )
 

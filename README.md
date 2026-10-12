@@ -162,7 +162,7 @@ tab), never mirrored on the scheduler.
 
 | Interface | Binary | Description |
 |-----------|--------|-------------|
-| **TUI** | `//src/tui:edgeclaw_tui` | Interactive terminal UI (FTXUI): chat pane + task/todo sidebar, driven by scheduler task-tree snapshots. Primary daily driver — **this is the released binary** (packaged as `edgeclaw`) |
+| **TUI** | `//src/tui:edgeclaw` | Interactive terminal UI (FTXUI): chat pane + task/todo sidebar, driven by scheduler task-tree snapshots. Primary daily driver — **this is the released binary** (packaged as `edgeclaw`) |
 | **Device agent** | `//src:device_agent` | Remote shell/file execution over TCP socket or PPPoS/lwIP |
 
 There is currently **one** channel implementation (`edc_channel_adapter`); the
@@ -432,10 +432,10 @@ git clone https://github.com/edgeclaw-chat/edgeclaw.git
 cd edgeclaw
 
 # Build the interactive TUI (the released binary) for the host platform
-bazel build //src/tui:edgeclaw_tui
+bazel build //src/tui:edgeclaw
 
 # Cross-compile the TUI for aarch64 Linux
-bazel build //src/tui:edgeclaw_tui --platforms=//:aarch64_linux
+bazel build //src/tui:edgeclaw --platforms=//:aarch64_linux
 
 # Build release tarball (a single self-contained TUI binary; workspace is embedded)
 bazel build //:edgeclaw
@@ -504,7 +504,7 @@ On first run, EdgeClaw releases the default workspace (embedded in the binary at
 **Interactive TUI:**
 
 ```bash
-bazel run //src/tui:edgeclaw_tui
+bazel run //src/tui:edgeclaw
 ```
 
 **Production / release tarball (the TUI):**

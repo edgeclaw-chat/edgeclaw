@@ -84,28 +84,8 @@ cc_library(
     visibility = ["//tests:__pkg__"],
 )
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 cc_binary(
-    name = "edgeclaw_tui",
+    name = "edgeclaw",
     srcs = [
         "main.cpp",
     ],
