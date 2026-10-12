@@ -163,9 +163,9 @@ void edc_tools_todo_register(struct edc_toolbox *tb)
         "When in doubt, use it.";
 
     struct edc_param_object_property properties[] = {
-        {"content", edc_param_str_type("Task description", NULL)},
-        {"status", edc_param_str_type("Status of task.", "pending", "in_progress", "completed", "cancelled", NULL)},
-        {"priority", edc_param_str_type("Priority of task.", "high", "medium", "low", NULL)}};
+        {"content", edc_param_str_type("Task description", NULL), true},
+        {"status", edc_param_str_type("Status of task.", "pending", "in_progress", "completed", "cancelled", NULL), true},
+        {"priority", edc_param_str_type("Priority of task.", "high", "medium", "low", NULL), true}};
 
     struct edc_param_type *item_type = edc_param_object_type("Todo item", properties, G_N_ELEMENTS(properties));
     struct edc_param_type *items_type = edc_param_array_type("New todo items", item_type);

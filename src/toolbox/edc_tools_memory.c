@@ -98,27 +98,6 @@ static bool json_u64(cJSON *args, const char *key, uint64_t *out)
     return true;
 }
 
-/* Conflict reply for a guarded write: say what changed and show the CURRENT content, so
- * the model can re-read and redo the merge in one step. Caller sdsfree. */
-static sds memo_conflict_msg(struct edc_session_memory *m, const char *id, uint64_t expected_rev, uint64_t now_rev)
-{
-    sds cur = edc_session_memory_get_detail(m, id);
-    if (cur && sdslen(cur) > 1200)
-    {
-        sdsrange(cur, 0, 1199);
-        cur = sdscat(cur, "…");
-    }
-    sds out = sdscatprintf(sdsempty(),
-                           "Error: `%s` changed since you read it (rev %llu -> %llu) — refused, nothing changed.\n"
-                           "Current content:\n%s\n\nRe-read it (memory_get) and redo the merge, then pass the new "
-                           "rev (%llu).",
-                           id, (unsigned long long)expected_rev, (unsigned long long)now_rev,
-                           cur ? cur : "(empty)", (unsigned long long)now_rev);
-    if (cur)
-        sdsfree(cur);
-    return out;
-}
-
 /* ── memory_search ─────────────────────────────────────────── */
 
 static void memory_search_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
@@ -133,18 +112,31 @@ static void memory_search_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool
         return;
     }
 
-    const char *query = cJSON_GetStringValue(cJSON_GetObjectItem(args, "query"));
-    if (!query || !query[0])
+    cJSON *arr = cJSON_GetObjectItem(args, "queries");
+    int n = (arr && cJSON_IsArray(arr)) ? cJSON_GetArraySize(arr) : 0;
+    if (n <= 0)
     {
-        fail(ctx, callback, "Error: `query` is required.");
+        fail(ctx, callback, "Error: `queries` must be a non-empty array of keywords, e.g. [\"bazel\",\"sandbox\"].");
         return;
     }
 
-    size_t hits = 0;
-    sds lines = edc_session_memory_search_lines(m, query, 20, &hits);
-    sds out = sdscatprintf(sdsempty(), "__MEMORY_SEARCH__ %zu hit(s) for \"%s\"\n%s", hits, query,
+    sds out = sdsempty();
+    for (int i = 0; i < n; i++)
+    {
+        const char *query = cJSON_GetStringValue(cJSON_GetArrayItem(arr, i));
+        if (i)
+            out = sdscat(out, "\n\n");
+        if (!query || !query[0])
+        {
+            out = sdscat(out, "(empty query)");
+            continue;
+        }
+        size_t hits = 0;
+        sds lines = edc_session_memory_search_lines(m, query, 20, &hits);
+        out = sdscatprintf(out, "__MEMORY_SEARCH__ %zu hit(s) for \"%s\"\n%s", hits, query,
                            sdslen(lines) ? lines : "(no match)");
-    sdsfree(lines);
+        sdsfree(lines);
+    }
     callback(ctx, out, NULL);
 }
 
@@ -193,25 +185,37 @@ static void memory_get_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool *t
         return;
     }
 
-    const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(args, "id"));
-    if (!id || !id[0])
+    cJSON *arr = cJSON_GetObjectItem(args, "ids");
+    int n = (arr && cJSON_IsArray(arr)) ? cJSON_GetArraySize(arr) : 0;
+    if (n <= 0)
     {
-        fail(ctx, callback, "Error: `id` is required (e.g. \"m12\"; get ids from memory_list / memory_search).");
+        fail(ctx, callback, "Error: `ids` must be a non-empty array of entry ids, e.g. [\"m1\",\"m12\"].");
         return;
     }
 
-    sds detail = edc_session_memory_get_detail(m, id);
-    if (!detail)
+    sds out = sdsempty();
+    for (int i = 0; i < n; i++)
     {
-        fail(ctx, callback, "Error: no memory entry with id \"%s\" (ids are stable; list them with memory_list).", id);
-        return;
+        const char *id = cJSON_GetStringValue(cJSON_GetArrayItem(arr, i));
+        if (i)
+            out = sdscat(out, "\n\n");
+        if (!id || !id[0])
+        {
+            out = sdscat(out, "- (invalid id)");
+            continue;
+        }
+        sds detail = edc_session_memory_get_detail(m, id);
+        struct edc_memo_entry *e = edc_session_memory_entry(m, id);
+        if (!detail)
+        {
+            out = sdscatprintf(out, "- [%s] (no such entry; list ids with memory_list)", id);
+            continue;
+        }
+        /* Surface the entry's rev: memory_update needs it as expected_rev, so a write
+         * built on this read cannot clobber a newer edit. */
+        out = sdscatprintf(out, "- [%s] rev %llu\n%s", id, (unsigned long long)(e ? e->updated_seq : 0), detail);
+        sdsfree(detail);
     }
-    /* Surface the entry's rev: memory_update / memory_supersede require it as
-     * expected_rev, so a write built on this read cannot clobber a newer edit. */
-    struct edc_memo_entry *e = edc_session_memory_entry(m, id);
-    uint64_t rev = e ? e->updated_seq : 0;
-    sds out = sdscatprintf(sdsempty(), "rev: %llu\n\n%s", (unsigned long long)rev, detail);
-    sdsfree(detail);
     callback(ctx, out, NULL);
 }
 
@@ -277,6 +281,8 @@ static void memory_write_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool 
 
 /* ── memory_update (merge into an existing entry) ──────────── */
 
+/* ── memory_update (update one or more entries; atomic) ────── */
+
 static void memory_update_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
                                void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
@@ -289,53 +295,114 @@ static void memory_update_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool
         return;
     }
 
-    const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(args, "id"));
-    if (!id || !id[0])
+    cJSON *arr = cJSON_GetObjectItem(args, "entries");
+    int n = (arr && cJSON_IsArray(arr)) ? cJSON_GetArraySize(arr) : 0;
+    if (n <= 0)
     {
-        fail(ctx, callback, "Error: `id` is required (get ids from memory_search / memory_list).");
-        return;
-    }
-    /* Empty strings are "not given": only a non-empty field overwrites. */
-    const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(args, "title"));
-    const char *summary = cJSON_GetStringValue(cJSON_GetObjectItem(args, "summary"));
-    const char *detail = cJSON_GetStringValue(cJSON_GetObjectItem(args, "detail"));
-    if (title && !title[0])
-        title = NULL;
-    if (summary && !summary[0])
-        summary = NULL;
-    if (detail && !detail[0])
-        detail = NULL;
-    if (!title && !summary && !detail)
-    {
-        fail(ctx, callback, "Error: nothing to update; pass at least one of title / summary / detail.");
+        fail(ctx, callback, "Error: `entries` must be a non-empty array of update objects.");
         return;
     }
 
-    uint64_t expected_rev = 0;
-    if (!json_u64(args, "expected_rev", &expected_rev))
+    const char **ids = calloc((size_t)n, sizeof(*ids));
+    const char **titles = calloc((size_t)n, sizeof(*titles));
+    const char **summaries = calloc((size_t)n, sizeof(*summaries));
+    const char **details = calloc((size_t)n, sizeof(*details));
+    uint64_t *revs = calloc((size_t)n, sizeof(*revs));
+    if (!ids || !titles || !summaries || !details || !revs)
     {
-        fail(ctx, callback,
-             "Error: `expected_rev` is required — the entry's rev when you read it (from memory_get). It blocks "
-             "overwriting a newer edit.");
+        free(ids);
+        free(titles);
+        free(summaries);
+        free(details);
+        free(revs);
+        fail(ctx, callback, "Error: out of memory.");
         return;
     }
 
-    uint64_t now_rev = 0;
-    enum edc_memo_write_result r = edc_session_memory_update(m, id, title, summary, detail, expected_rev, &now_rev);
-    if (r == EDC_MEMO_WRITE_NOT_FOUND)
+    /* Pass 1: validate the whole batch; any bad item refuses the whole update. */
+    sds bad = sdsempty();
+    bool ok = true;
+    for (int i = 0; i < n; i++)
     {
-        fail(ctx, callback, "Error: no memory entry with id \"%s\" (ids are stable; list them with memory_list).", id);
-        return;
-    }
-    if (r == EDC_MEMO_WRITE_CONFLICT)
-    {
-        sds msg = memo_conflict_msg(m, id, expected_rev, now_rev);
-        callback(ctx, msg, edc_error_new(EDC_ERR_INVAL, "%s", msg));
-        return;
-    }
+        cJSON *it = cJSON_GetArrayItem(arr, i);
+        if (!cJSON_IsObject(it))
+        {
+            bad = sdscatprintf(bad, "%s#%d: not an object", sdslen(bad) ? "; " : "", i);
+            ok = false;
+            continue;
+        }
+        const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(it, "id"));
+        /* Empty strings are "not given": only a non-empty field overwrites. */
+        const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(it, "title"));
+        const char *summary = cJSON_GetStringValue(cJSON_GetObjectItem(it, "summary"));
+        const char *detail = cJSON_GetStringValue(cJSON_GetObjectItem(it, "detail"));
+        if (title && !title[0])
+            title = NULL;
+        if (summary && !summary[0])
+            summary = NULL;
+        if (detail && !detail[0])
+            detail = NULL;
+        uint64_t rev = 0;
+        bool has_rev = json_u64(it, "expected_rev", &rev);
 
-    sds out = sdscatprintf(sdsempty(), "Updated %s (rev %llu). Other tasks see it on their next request.", id,
-                           (unsigned long long)now_rev);
+        bool dup = false;
+        for (int j = 0; j < i; j++)
+            if (ids[j] && id && strcmp(ids[j], id) == 0)
+                dup = true;
+
+        struct edc_memo_entry *e = (id && id[0]) ? edc_session_memory_entry(m, id) : NULL;
+        const char *pfx = sdslen(bad) ? "; " : "";
+        if (!id || !id[0])
+            bad = sdscatprintf(bad, "%s#%d: missing id", pfx, i), ok = false;
+        else if (!e)
+            bad = sdscatprintf(bad, "%s%s: unknown id", pfx, id), ok = false;
+        else if (!has_rev)
+            bad = sdscatprintf(bad, "%s%s: missing expected_rev", pfx, id), ok = false;
+        else if (rev != e->updated_seq)
+            bad = sdscatprintf(bad, "%s%s: stale expected_rev (now %llu)", pfx, id, (unsigned long long)e->updated_seq),
+            ok = false;
+        else if (dup)
+            bad = sdscatprintf(bad, "%s%s: duplicate id in batch", pfx, id), ok = false;
+        else if (!title && !summary && !detail)
+            bad = sdscatprintf(bad, "%s%s: no field to update", pfx, id), ok = false;
+        else
+        {
+            ids[i] = id;
+            titles[i] = title;
+            summaries[i] = summary;
+            details[i] = detail;
+            revs[i] = rev;
+        }
+    }
+    if (!ok)
+    {
+        fail(ctx, callback, "Error: invalid update batch — nothing changed (atomic): %s.", bad);
+        sdsfree(bad);
+        free(ids);
+        free(titles);
+        free(summaries);
+        free(details);
+        free(revs);
+        return;
+    }
+    sdsfree(bad);
+
+    /* Pass 2: apply. Single-threaded, so the revs validated above still hold. */
+    sds list = sdsempty();
+    for (int i = 0; i < n; i++)
+    {
+        uint64_t now = 0;
+        edc_session_memory_update(m, ids[i], titles[i], summaries[i], details[i], revs[i], &now);
+        list = sdscatprintf(list, "%s%s", i ? ", " : "", ids[i]);
+    }
+    sds out = sdscatprintf(sdsempty(), "Updated %d entr%s: %s. Other tasks see it on their next request.", n,
+                           n == 1 ? "y" : "ies", list);
+    sdsfree(list);
+    free(ids);
+    free(titles);
+    free(summaries);
+    free(details);
+    free(revs);
     edc_toolbox_emit_tool_message_plain(ctx, "memory_update", out);
     callback(ctx, out, NULL);
 }
@@ -410,11 +477,16 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
         "decisions, constraints, gotchas, external facts — never progress logs, todos or transient conclusions.";
 
     {
-        const char *desc = "Search this session's shared memory entries by keyword (matches title, summary and "
-                           "detail). Returns one index line per hit; use memory_get for the full detail.";
-        struct edc_tool *tool = edc_tool_new("memory_search", desc,
-                                             edc_tool_param_new("query", edc_param_str_type("Keyword to look for", NULL), true),
-                                             memory_search_exec);
+        const char *desc = "Search this session's shared memory entries by one or more keywords (matches title, "
+                           "summary and detail). Returns one index line per hit, grouped per keyword; use memory_get "
+                           "for the full detail.";
+        struct edc_tool *tool = edc_tool_new(
+            "memory_search", desc,
+            edc_tool_param_new("queries",
+                               edc_param_array_type("Keywords to look for, e.g. [\"bazel\",\"sandbox\"]",
+                                                    edc_param_str_type("Keyword", NULL)),
+                               true),
+            memory_search_exec);
         edc_toolbox_register(tb, tool);
     }
     {
@@ -427,11 +499,15 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
         edc_toolbox_register(tb, tool);
     }
     {
-        const char *desc = "Fetch the full detail of one session-memory entry by id (ids come from memory_list or "
-                           "memory_search / the session memory notice).";
-        struct edc_tool *tool = edc_tool_new("memory_get", desc,
-                                             edc_tool_param_new("id", edc_param_str_type("Entry id, e.g. \"m12\"", NULL), true),
-                                             memory_get_exec);
+        const char *desc = "Fetch the full detail (and rev) of one or more session-memory entries by id. Ids come "
+                           "from memory_list / memory_search / the session memory notice.";
+        struct edc_tool *tool = edc_tool_new(
+            "memory_get", desc,
+            edc_tool_param_new("ids",
+                               edc_param_array_type("Entry ids, e.g. [\"m1\",\"m12\"]",
+                                                    edc_param_str_type("Entry id, e.g. \"m12\"", NULL)),
+                               true),
+            memory_get_exec);
         edc_toolbox_register(tb, tool);
     }
     {
@@ -448,21 +524,25 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
         edc_toolbox_register(tb, tool);
     }
     {
-        const char *desc = "Update an existing session-memory entry IN PLACE: merge new or corrected content into "
-                           "it. Pass the `id` (from memory_search / memory_list) plus any of title / summary / "
-                           "detail to overwrite; omitted fields keep their old value. `expected_rev` is the rev you "
-                           "read (from memory_get) and is required: if the entry changed since then the update is "
-                           "refused, so a stale snapshot cannot clobber a newer edit.";
-        struct edc_tool_param *params = edc_tool_param_new("id", edc_param_str_type("Entry id, e.g. \"m12\"", NULL), true);
-        params->next =
-            edc_tool_param_new("expected_rev", edc_param_int_type("The entry's rev from memory_get (required)", 1,
-                                                                  2000000000),
-                               true);
-        params->next->next = edc_tool_param_new("title", edc_param_str_type("New title (omit to keep)", NULL), false);
-        params->next->next->next = edc_tool_param_new("summary", edc_param_str_type("New summary (omit to keep)", NULL), false);
-        params->next->next->next->next =
-            edc_tool_param_new("detail", edc_param_str_type("New detail (omit to keep)", NULL), false);
-        struct edc_tool *tool = edc_tool_new("memory_update", desc, params, memory_update_exec);
+        const char *desc = "Update one or more session-memory entries IN PLACE (merge new / corrected content). Each "
+                           "entry needs its `id` and the `expected_rev` you read (from memory_get) plus any of "
+                           "title / summary / detail to overwrite; omitted fields keep their old value. ATOMIC: if "
+                           "any item is unknown or stale, none is updated.";
+        struct edc_param_object_property props[] = {
+            {"id", edc_param_str_type("Entry id, e.g. \"m12\"", NULL), true},
+            {"expected_rev", edc_param_int_type("The entry's rev from memory_get", 1, 2000000000), true},
+            {"title", edc_param_str_type("New title (omit to keep)", NULL), false},
+            {"summary", edc_param_str_type("New summary (omit to keep)", NULL), false},
+            {"detail", edc_param_str_type("New detail (omit to keep)", NULL), false},
+        };
+        struct edc_tool *tool = edc_tool_new(
+            "memory_update", desc,
+            edc_tool_param_new(
+                "entries",
+                edc_param_array_type("Updates, e.g. [{\"id\":\"m12\",\"expected_rev\":47,\"summary\":\"...\"}]",
+                                     edc_param_object_type("One entry update", props, G_N_ELEMENTS(props))),
+                true),
+            memory_update_exec);
         edc_toolbox_register(tb, tool);
     }
     {

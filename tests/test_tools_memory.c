@@ -136,31 +136,31 @@ int main(void)
     CHECK(l1.result && strstr(l1.result, "[m2]") != NULL && strstr(l1.result, "[m1]") == NULL, "翻页只给 m2");
     free_capture(&l1);
 
-    TEST("memory_search: 命中摘要 / 明细; 没命中也给计数");
-    struct capture s1 = run_tool(tb, task, "memory_search", "{\"query\":\"沙箱\"}");
-    CHECK(s1.result && strstr(s1.result, "1 hit") != NULL && strstr(s1.result, "[m2]") != NULL, "命中 1 条");
+    TEST("memory_search: 多查询; 命中摘要/明细; 没命中也给计数");
+    struct capture s1 = run_tool(tb, task, "memory_search", "{\"queries\":[\"沙箱\",\"bazelisk\",\"不存在的词\"]}");
+    CHECK(s1.error == NULL, "多查询成功");
+    CHECK(s1.result && strstr(s1.result, "1 hit(s) for \"沙箱\"") != NULL && strstr(s1.result, "[m2]") != NULL, "查询1 命中 1 条");
+    CHECK(s1.result && strstr(s1.result, "[m1]") != NULL, "查询2 命中明细里的词");
+    CHECK(s1.result && strstr(s1.result, "0 hit(s) for \"不存在的词\"") != NULL, "查询3 0 命中也是正常结果");
     free_capture(&s1);
-    struct capture s2 = run_tool(tb, task, "memory_search", "{\"query\":\"bazelisk\"}");
-    CHECK(s2.result && strstr(s2.result, "[m1]") != NULL, "命中明细里的词");
-    free_capture(&s2);
-    struct capture s3 = run_tool(tb, task, "memory_search", "{\"query\":\"不存在的词\"}");
-    CHECK(s3.error == NULL && s3.result && strstr(s3.result, "0 hit") != NULL, "0 命中也是正常结果");
-    free_capture(&s3);
     struct capture s4 = run_tool(tb, task, "memory_search", "{}");
-    CHECK(s4.error != NULL, "缺 query 报错");
+    CHECK(s4.error != NULL, "缺 queries 报错");
     free_capture(&s4);
 
-    TEST("memory_get: 明细全文 / 未知 id 报错");
-    struct capture g1 = run_tool(tb, task, "memory_get", "{\"id\":\"m1\"}");
-    CHECK(g1.error == NULL && g1.result && strstr(g1.result, "不要再用 make") != NULL, "明细回来");
+    TEST("memory_get: 批量读; 未知 id 给说明而不是整体报错");
+    struct capture g1 = run_tool(tb, task, "memory_get", "{\"ids\":[\"m1\",\"m99\"]}");
+    CHECK(g1.error == NULL, "批量读成功");
+    CHECK(g1.result && strstr(g1.result, "[m1] rev ") != NULL && strstr(g1.result, "不要再用 make") != NULL,
+          "m1 明细 + rev 回来");
+    CHECK(g1.result && strstr(g1.result, "[m99] (no such entry") != NULL, "m99 给说明");
     free_capture(&g1);
-    struct capture g2 = run_tool(tb, task, "memory_get", "{\"id\":\"m99\"}");
-    CHECK(g2.error != NULL && g2.result && strstr(g2.result, "m99") != NULL, "未知 id: 报错 + 说明");
-    free_capture(&g2);
+    struct capture g0 = run_tool(tb, task, "memory_get", "{}");
+    CHECK(g0.error != NULL, "缺 ids 报错");
+    free_capture(&g0);
 
-    TEST("memory_update: 就地合并 (给的字段覆盖, 没给的保留) + UPDATED 事件");
+    TEST("memory_update: 批量就地合并 (给的字段覆盖, 没给的保留) + UPDATED 事件");
     struct capture u = run_tool(tb, task, "memory_update",
-                                "{\"id\":\"m1\",\"expected_rev\":1,\"summary\":\"唯一入口是 bazelisk (v2)\"}");
+                                "{\"entries\":[{\"id\":\"m1\",\"expected_rev\":1,\"summary\":\"唯一入口是 bazelisk (v2)\"}]}");
     CHECK(u.error == NULL && u.result && strstr(u.result, "m1") != NULL, "更新成功");
     const struct edc_memo_entry *e1u = edc_session_memory_entry(session->memo, "m1");
     CHECK(e1u && e1u->summary && strcmp(e1u->summary, "唯一入口是 bazelisk (v2)") == 0, "摘要被覆盖");
@@ -170,40 +170,40 @@ int main(void)
     uint64_t m1_rev = e1u->updated_seq;
     free_capture(&u);
 
-    TEST("memory_update: expected_rev 必填");
-    struct capture no_rev = run_tool(tb, task, "memory_update", "{\"id\":\"m1\",\"summary\":\"x\"}");
-    CHECK(no_rev.error != NULL, "缺 expected_rev ⇒ 参数校验报错");
-    free_capture(&no_rev);
+    TEST("memory_update: 缺 expected_rev ⇒ 参数校验报错");
+    struct capture nrev = run_tool(tb, task, "memory_update", "{\"entries\":[{\"id\":\"m1\",\"summary\":\"x\"}]}");
+    CHECK(nrev.error != NULL, "缺 expected_rev 报错");
+    free_capture(&nrev);
 
-    TEST("memory_update: rev 过期 ⇒ 拒绝 + 回当前内容, 一个字都不动 (乐观并发)");
+    TEST("memory_update: 原子 —— 批里任一项 rev 过期 ⇒ 整批不落地");
     size_t c_events = session->memo->event_count;
     struct capture c = run_tool(tb, task, "memory_update",
-                                "{\"id\":\"m1\",\"expected_rev\":1,\"summary\":\"stale overwrite\"}");
+                                "{\"entries\":[{\"id\":\"m1\",\"expected_rev\":1,\"summary\":\"stale overwrite\"}]}");
     CHECK(c.error != NULL, "被拒");
-    CHECK(c.result && strstr(c.result, "changed since you read it") != NULL, "说明冲突");
-    CHECK(c.result && strstr(c.result, "Current content") != NULL, "回当前内容");
+    CHECK(c.result && strstr(c.result, "stale expected_rev") != NULL, "说明冲突");
     const struct edc_memo_entry *e1c = edc_session_memory_entry(session->memo, "m1");
     CHECK(e1c && e1c->updated_seq == m1_rev, "rev 没动");
     CHECK(e1c && strcmp(e1c->summary, "唯一入口是 bazelisk (v2)") == 0, "没被旧快照覆盖");
     CHECK(session->memo->event_count == c_events, "没发事件");
     free_capture(&c);
 
-    TEST("memory_get: 返回 rev; 拿它做 expected_rev 就能更新成功");
-    struct capture mg = run_tool(tb, task, "memory_get", "{\"id\":\"m1\"}");
-    CHECK(mg.error == NULL && mg.result && strstr(mg.result, "rev: ") != NULL, "memory_get 带 rev");
+    TEST("memory_get 的 rev 可用来批量成功更新");
+    struct capture mg = run_tool(tb, task, "memory_get", "{\"ids\":[\"m1\"]}");
+    CHECK(mg.error == NULL && mg.result && strstr(mg.result, "rev ") != NULL, "memory_get 带 rev");
     char upd[256];
-    snprintf(upd, sizeof(upd), "{\"id\":\"m1\",\"expected_rev\":%llu,\"summary\":\"ok after re-read\"}",
+    snprintf(upd, sizeof(upd), "{\"entries\":[{\"id\":\"m1\",\"expected_rev\":%llu,\"summary\":\"ok after re-read\"}]}",
              (unsigned long long)m1_rev);
     struct capture mg2 = run_tool(tb, task, "memory_update", upd);
-    CHECK(mg2.error == NULL && mg2.result && strstr(mg2.result, "Updated m1") != NULL, "带正确 rev 更新成功");
+    CHECK(mg2.error == NULL && mg2.result && strstr(mg2.result, "Updated 1 entr") != NULL, "带正确 rev 更新成功");
     free_capture(&mg);
     free_capture(&mg2);
 
-    TEST("memory_update: 未知 id / 空更新 都报错且不落地");
+    TEST("memory_update: 未知 id / 空更新 都报错且整批不落地");
     size_t u_events = session->memo->event_count;
-    struct capture ub = run_tool(tb, task, "memory_update", "{\"id\":\"m99\",\"expected_rev\":1,\"summary\":\"x\"}");
-    CHECK(ub.error != NULL, "未知 id 报错");
-    struct capture ue = run_tool(tb, task, "memory_update", "{\"id\":\"m1\",\"expected_rev\":1}");
+    struct capture ub =
+        run_tool(tb, task, "memory_update", "{\"entries\":[{\"id\":\"m99\",\"expected_rev\":1,\"summary\":\"x\"}]}");
+    CHECK(ub.error != NULL && ub.result && strstr(ub.result, "unknown id") != NULL, "未知 id 报错");
+    struct capture ue = run_tool(tb, task, "memory_update", "{\"entries\":[{\"id\":\"m1\",\"expected_rev\":1}]}");
     CHECK(ue.error != NULL, "什么都没给报错");
     CHECK(session->memo->event_count == u_events, "两条都没落地");
     free_capture(&ub);
@@ -266,7 +266,7 @@ int main(void)
     size_t events_before = session->memo->event_count;
     uint64_t seq_before = session->memo->next_seq;
     struct capture r1 = run_tool(tb, task, "memory_list", "{}");
-    struct capture r2 = run_tool(tb, task, "memory_get", "{\"id\":\"m1\"}");
+    struct capture r2 = run_tool(tb, task, "memory_get", "{\"ids\":[\"m1\"]}");
     CHECK(session->memo->event_count == events_before && session->memo->next_seq == seq_before,
           "读完之后事件表与 next_seq 没变");
     free_capture(&r1);

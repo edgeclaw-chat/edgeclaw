@@ -72,6 +72,7 @@ struct edc_param_type *edc_param_object_type(char *desc, struct edc_param_object
     {
         type->object.properties[i].name = sdsnew(properties[i].name);
         type->object.properties[i].type = properties[i].type;
+        type->object.properties[i].required = properties[i].required;
     }
     return type;
 }
@@ -160,6 +161,12 @@ bool edc_param_type_validate(cJSON *args, struct edc_param_type *type)
         for (int i = 0; i < type->object.n; i++)
         {
             cJSON *item = cJSON_GetObjectItem(args, type->object.properties[i].name);
+            if (!item || cJSON_IsNull(item))
+            {
+                if (type->object.properties[i].required)
+                    return false;
+                continue; /* optional and absent: fine */
+            }
             if (!edc_param_type_validate(item, type->object.properties[i].type))
                 return false;
         }
@@ -224,12 +231,16 @@ cJSON *edc_param_type_to_json(struct edc_param_type *type)
         if (type->desc)
             cJSON_AddStringToObject(obj, "description", type->desc);
         cJSON *props = cJSON_CreateObject();
+        cJSON *req = cJSON_CreateArray();
         for (int i = 0; i < type->object.n; i++)
         {
             cJSON_AddItemToObject(props, type->object.properties[i].name,
                                   edc_param_type_to_json(type->object.properties[i].type));
+            if (type->object.properties[i].required)
+                cJSON_AddItemToArray(req, cJSON_CreateString(type->object.properties[i].name));
         }
         cJSON_AddItemToObject(obj, "properties", props);
+        cJSON_AddItemToObject(obj, "required", req);
         return obj;
     }
     default:
