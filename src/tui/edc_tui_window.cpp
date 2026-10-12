@@ -1,5 +1,7 @@
 #include <cJSON.h>
 #include "edc_tui_window.hpp"
+#include "edc_working_indicator_view.hpp"
+#include "edc_domain.hpp"
 #include "edc_sidebar.hpp"
 #include "edc_chat_transcript.hpp"
 #include "edc_chat_widget.hpp"
@@ -25,8 +27,7 @@
 #include <set>
 #include <string>
 #include <sys/ioctl.h>
-#include "edc_api.h"
-#include "edc_app.h"
+#include "edc_api.h" /* EDC_APP_RENDER_PLAIN / _MARKDOWN 常量 */
 #include <unistd.h>
 #include <vector>
 
@@ -44,11 +45,6 @@ static void DisableBracketedPaste()
     std::fputs("\x1b[?2004l", stdout);
     std::fflush(stdout);
 }
-
-// todowrite 工具的 TOOL 消息头（与 edc_tools_todo.c 注册名一致）。它的文本回显
-// （Markdown checklist）不进对话区：TODO 状态只由右侧 TodoWidget 展示，数据源是
-// 任务快照里 active task 的 todo；文本仍随消息传递，供 CLI 与 tool result（LLM）用。
-constexpr char kTodoToolHeader[] = "todowrite";
 
 // The state of the foreground group's active task -- the task whose todo list
 // the sidebar shows -- or "" when there is none. Only the foreground group's
@@ -85,102 +81,11 @@ bool ForegroundProcessBusy(const TaskSnapshot *snap)
     return style::TaskStateProcessing(ForegroundActiveTaskState(snap));
 }
 
-// The "working" row: a bar of blocks that sweeps back and forth while the
-// brightness inside the lit run flows along it. Exactly one text line (it
-// replaces the footer, so the layout height must not change), a fixed cell count
-// (never the width), no background fill, and medium block glyphs -- not the
-// full-height █▓▒░, which tower over the surrounding text.
-constexpr int kBarCells = 10;     // cells in the bar
-constexpr int kBarLit = 5;        // lit cells: the sliding run
-constexpr long long kStepMs = 60; // per cell of travel
-// The run slides from completely past the left edge to completely past the
-// right edge before the sweep reverses, so the ends of the bar are genuine
-// turning points (a few frames of empty bar) rather than bumpers.
-constexpr int kRunFirst = -kBarLit; // run fully off the left edge
-constexpr int kRunLast = kBarCells; // run fully off the right edge
-constexpr int kRunPositions = kRunLast - kRunFirst + 1;
-// First frame: the run fully on screen at the left, so the row looks busy
-// straight away instead of opening on an empty bar.
-constexpr int kRunStart = 0;
-
-// How often the working spinner repaints. The bar moves one cell per kStepMs, so
-// a frame per loop tick redraws the whole tree for sub-cell movement nobody can
-// see; see TickAnimations() for why the pacing cannot live in the render.
+// How often the working spinner repaints: the bar (ui::WorkingIndicatorView)
+// moves one cell per its own step, so a frame per loop tick would redraw the
+// whole tree for sub-cell movement nobody can see; see TickAnimations() for why
+// the pacing cannot live in the render.
 constexpr long long kSpinnerFrameMs = 33;
-
-// Where the lit run sits at |elapsed_ms|, and which way it is travelling.
-// The position is fractional so the run can slide *between* cells instead of
-// snapping a whole cell per step; at whole-cell times it lands exactly on the
-// integer the old discrete sweep used, so the sampled frames are unchanged.
-struct BarState
-{
-    float pos;    // leftmost lit cell; may be negative or past the right edge
-    bool forward; // true while the run sweeps right
-};
-
-// The run slides out past one edge -- tail included -- then re-enters from it and
-// crosses to the other, ping-ponging, so the motion never jumps and no turning
-// point is held for an extra frame. Float, so the position can sit between two
-// cells and the edge cells can fade (see WorkingIndicatorElement).
-BarState BarAt(long long elapsed_ms)
-{
-    const float step = static_cast<float>(elapsed_ms < 0 ? 0 : elapsed_ms) / static_cast<float>(kStepMs);
-    const float cycle = static_cast<float>(2 * (kRunPositions - 1));
-    // Negative elapsed is clamped above, so the phase is never negative.
-    const float phase = std::fmod(static_cast<float>(kRunStart - kRunFirst) + step, cycle);
-    if (phase < static_cast<float>(kRunPositions))
-        return {static_cast<float>(kRunFirst) + phase, true};
-    return {static_cast<float>(kRunFirst) + (cycle - phase), false};
-}
-
-// The shade an unlit cell uses; the run's edge cells fade towards it.
-::ftxui::Color UnlitColor(const style::Palette &pal)
-{
-    return pal.text_dim;
-}
-
-// A lit block, shaded by depth: the terminal cannot fade opacity, so the ramp
-// is a handful of discrete steps from a bold accent head down to a barely
-// there gray. Same glyph at every depth: only the colour intensity changes.
-// |tier| 0 is the brightest (bold accent) and 4 the darkest lit shade.
-::ftxui::Element LitBlock(int tier, const style::Palette &pal)
-{
-    if (tier <= 2)
-    {
-        auto e = ::ftxui::text(style::kBlockGlyph) | ::ftxui::color(pal.accent);
-        if (tier == 0)
-            e = e | ::ftxui::bold;
-        else if (tier == 2)
-            e = e | ::ftxui::dim;
-        return e;
-    }
-    auto e = ::ftxui::text(style::kBlockGlyph) | ::ftxui::color(pal.text_dim);
-    if (tier >= 4)
-        e = e | ::ftxui::dim;
-    return e;
-}
-
-// A cell the run's edge is only part-way across: same lit glyph, but its shade
-// is faded towards the unlit colour by how much of the cell is covered, so the
-// head and tail of the run dissolve in and out instead of popping one whole
-// cell at a time. |cover| is in (0, 1); whole cells never take this path.
-::ftxui::Element PartialLitBlock(int tier, float cover, const style::Palette &pal)
-{
-    const ::ftxui::Color lit = (tier <= 2) ? pal.accent : pal.text_dim;
-    auto e = ::ftxui::text(style::kBlockGlyph) | ::ftxui::color(::ftxui::Color::Interpolate(cover, UnlitColor(pal), lit));
-    if (tier == 0)
-        e = e | ::ftxui::bold;
-    else if (tier == 2 || tier == 4)
-        e = e | ::ftxui::dim;
-    return e;
-}
-
-// An unlit cell: the small square that keeps the bar's full length visible, so
-// the eye can see the run move rather than a floating blob.
-::ftxui::Element OffBlock(const style::Palette &pal)
-{
-    return ::ftxui::text("⬝") | ::ftxui::color(pal.text_dim) | ::ftxui::dim;
-}
 
 // Todo sidebar content: the foreground group's active task -- its id and its own
 // todo list, which is part of the task state (todowrite attaches it to the task
@@ -313,60 +218,16 @@ std::string ShortenHome(const char *path)
 
 } // namespace
 
-// The animated "working" row: the sweeping bar on its own, no text. Defined here
-// (declared in the header) so tests can render it for a given elapsed time without
-// a live app. Fixed cell count and one line tall, so it never changes the layout.
-::ftxui::Element WorkingIndicatorElement(long long elapsed_ms)
-{
-    const auto &pal = style::palette();
-
-    // BarAt clamps a negative elapsed (a clock adjustment between the start
-    // stamp and the frame must not rewind the bar).
-    const BarState bar = BarAt(elapsed_ms);
-    const float run_begin = bar.pos;
-    const float run_end = bar.pos + static_cast<float>(kBarLit);
-
-    // The bar is the whole row: the animation alone says "working", so the
-    // row carries no label and its width is just the bar's.
-    ::ftxui::Elements row;
-    row.reserve(static_cast<size_t>(kBarCells));
-    for (int i = 0; i < kBarCells; i++)
-    {
-        // How much of cell |i| (the span [i, i+1]) the run currently covers.
-        // At a whole-cell position every cell is either fully covered or not at
-        // all, so the frame matches the old discrete sweep exactly; between
-        // positions the edge cells are partially covered.
-        const float cover = std::min(static_cast<float>(i + 1), run_end) - std::max(static_cast<float>(i), run_begin);
-        if (cover <= 0.0f)
-        {
-            row.push_back(OffBlock(pal));
-            continue;
-        }
-
-        // Depth from the leading edge: the edge the run travels towards is the
-        // brightest and the shade falls off behind it, so the gradient points
-        // the way the light moves and swaps ends when the sweep turns around.
-        const float into_run = static_cast<float>(i) - bar.pos;
-        float depth = bar.forward ? (static_cast<float>(kBarLit - 1) - into_run) : into_run;
-        depth = std::min(std::max(depth, 0.0f), static_cast<float>(kBarLit - 1));
-        const int tier = static_cast<int>(std::lround(depth));
-
-        // A whole cell draws its exact depth shade; a part-covered edge cell
-        // fades that shade towards the unlit colour by its coverage, so the run
-        // slips between cells instead of snapping one whole cell per step.
-        if (cover >= 1.0f)
-            row.push_back(LitBlock(tier, pal));
-        else
-            row.push_back(PartialLitBlock(tier, cover, pal));
-    }
-    return ::ftxui::hbox(std::move(row));
-}
-
 TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
 {
-    chat_widget_ = std::make_shared<ChatWidget>();
+    // Models first: the chat view renders them, the dispatcher writes them.
+    chat_model_ = std::make_shared<model::ChatModel>();
+    session_model_ = std::make_shared<model::SessionModel>();
+
+    chat_widget_ = std::make_shared<ChatWidget>(chat_model_);
     task_widget_ = std::make_shared<TaskWidget>();
     todo_widget_ = std::make_shared<TodoWidget>();
+    working_indicator_ = std::make_shared<ui::WorkingIndicatorView>();
 
     const auto &pal = style::palette();
     prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(pal.prompt) | ::ftxui::bold;
@@ -377,10 +238,6 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
     // placeholder is dimmed by the widget itself (no InputOption transform).
     input_ = std::make_shared<edc::EdcInput>(&input_text_, "Type a message, Enter to send, Alt+Enter for a newline...");
 
-    // Restore the recall history saved by previous runs (ArrowUp/ArrowDown in
-    // the box). Missing file on first run just leaves the box with no history.
-    LoadInputHistory();
-
     container_ = ::ftxui::Container::Vertical({chat_widget_, input_}, &focused_);
 
     // Left pane = chat + input + footer (see RenderMain); right pane = the task tree
@@ -390,12 +247,13 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
     // ResizableSplit keeps "main" on the right at a drag-adjustable width; the
     // separator is a blank column, so the sidebar stays borderless but grabbable.
     auto main_area = ::ftxui::Renderer(container_, [this] { return RenderMain(); });
-    // The sidebar column is built in edc_sidebar.cpp so a test can compose the
-    // very same layout (see MakeSidebar: both sections fit-content with their
-    // headers pinned, the tree anchored to its bottom -- that anchoring is what
-    // keeps the active task's row on screen when the todo list has a lot to say).
-    const Sidebar sidebar = MakeSidebar(task_widget_, todo_widget_);
-    auto right_pane = sidebar.pane;
+    // The sidebar column is a real component (ui::SidebarView, built in
+    // edc_sidebar.cpp) so a test can compose the very same layout: both sections
+    // fit-content with their headers pinned, the tree anchored to its bottom --
+    // that anchoring keeps the active task's row on screen when the todo list has
+    // a lot to say.
+    sidebar_ = std::make_shared<ui::SidebarView>(task_widget_, todo_widget_);
+    auto right_pane = sidebar_->pane();
     split_ = ::ftxui::ResizableSplit({
         right_pane,                         // main (right pane)
         main_area,                          // back (left pane)
@@ -405,56 +263,58 @@ TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
     });
     Add(split_);
 
-    // /connect dialog: three text fields plus Connect/Cancel. Built once; the
-    // window overlays it while open and routes all events to it.
-    connect_url_input_ = ::ftxui::Input(&connect_url_, "https://api.example.com/v1/chat/completions");
-    connect_model_input_ = ::ftxui::Input(&connect_model_, "model name");
-    connect_key_input_ = ::ftxui::Input(&connect_key_, "API key");
-    // Flat, borderless buttons. ButtonOption::Simple()/Border() draw a boxed
-    // frame around the label, which reads as heavy next to the flat dialog;
-    // focus is shown as the accent highlight instead, matching the active
-    // Tasks/Todos rows.
-    ::ftxui::ButtonOption flat_button;
-    flat_button.transform = [&pal](const ::ftxui::EntryState &s) {
-        auto label = ::ftxui::text(" " + s.label + " ");
-        if (s.focused)
-            return label | ::ftxui::bold | ::ftxui::color(pal.accent);
-        return label | ::ftxui::color(pal.text);
-    };
-    auto connect_ok = ::ftxui::Button("Connect", [this] { SubmitConnect(); }, flat_button);
-    auto connect_cancel = ::ftxui::Button("Cancel", [this] { connect_open_ = false; }, flat_button);
-    connect_buttons_ = ::ftxui::Container::Horizontal({connect_ok, connect_cancel}, &connect_button_focus_);
-    auto connect_fields = ::ftxui::Container::Vertical(
-        {connect_url_input_, connect_model_input_, connect_key_input_, connect_buttons_}, &connect_focus_);
-    connect_modal_ = ::ftxui::Renderer(connect_fields, [this] { return RenderConnectModal(); });
+    // /connect dialog: a self-contained widget (owns its fields + rendering +
+    // events). The window only opens it and overlays it; persistence + hot-apply
+    // go through this Submit callback (so the dialog itself never sees the app).
+    connect_dialog_ = std::make_shared<ui::ConnectDialog>([this](const port::ConnectConfig &cfg) -> bool {
+        if (!app_->SetLlmConfig(cfg))
+            return false;
+        model_ = cfg.model; // refresh the footer's model label
+        if (screen_)
+            screen_->RequestAnimationFrame();
+        return true;
+    });
 
-    app = edc_app_new(false, sandbox_override);
+    // The dispatcher is the AppFacade sink; it updates the models and calls back
+    // into this window (IChannelHost) for the view actions. Created before the
+    // app so the port can register it as its channel sink.
+    dispatcher_ = std::make_unique<control::ChannelDispatcher>(*chat_model_, *session_model_, *this);
 
-    // edc_app_new() returns NULL (after logging the reason) when it cannot
+    // The app port owns the edc_app: it starts the app, registers the channel
+    // adapter (translating C messages into typed events, handed to |dispatcher_|
+    // as IChannelSink and marshalled through this window as IUiDispatcher), and
+    // frees it in its destructor.
+    app_ = std::make_unique<port::AppFacade>(sandbox_override, this, dispatcher_.get());
+
+    // AppFacade is not Ready() (after logging the reason) when the app cannot
     // start: unreadable config, undecryptable API key, no terminal for the
-    // passphrase, env init failure. Every call below dereferences the app, so
-    // stop here. main() sees Ready() == false and exits cleanly.
-    if (!app)
+    // passphrase, env init failure. Every call below needs it, so stop here.
+    // main() sees Ready() == false and exits cleanly.
+    if (!app_->Ready())
         return;
 
-    edc_app_channel_adapter_init(app, this, on_channel_adapter_send);
     EnableBracketedPaste();
     bracketed_paste_on_ = true;
 
     // Read the model once for the footer (the app has just loaded its
     // config); the footer itself is built per frame so it can fit the pane.
-    {
-        char model[256];
-        if (edc_app_config_model(app, model, sizeof(model)))
-            model_ = model;
-    }
+    app_->ConfigModel(&model_);
+
+    // The transcript store owns the chat-log file I/O (path, append, replay); it
+    // needs the app port for the workspace path and the symlink-safe writes.
+    transcript_ = std::make_unique<port::TranscriptStore>(*app_);
+
+    // Restore the recall history saved by previous runs (ArrowUp/ArrowDown in the
+    // box). Missing file on first run just leaves the box with no history. Read
+    // through the app port, so this must come after it is constructed.
+    LoadInputHistory();
 
     // Populate the sidebar once the app is running (its response is routed
-    // through the adapter and handled by on_channel_adapter_send below), and
-    // learn from that first snapshot which session we are showing. Its reply
-    // carries the session's own transcript path, which the live path below
-    // appends to -- so nothing here reads the session store: it belongs to the
-    // actor thread, and the snapshot already names what we need.
+    // through the adapter into the dispatcher), and learn from that
+    // first snapshot which session we are showing. Its reply carries the
+    // session's own transcript path, which the live path below appends to -- so
+    // nothing here reads the session store: it belongs to the actor thread, and
+    // the snapshot already names what we need.
     RequestTaskSnapshot();
 }
 
@@ -493,7 +353,7 @@ void TUIWindow::Submit()
     input_->AddHistory(message);
     SaveInputHistory();
 
-    edc_app_send_user_message(app, current_session_id_.c_str(), message.c_str());
+    app_->SendUserMessage(session_model_->displayed_id(), message);
     chat_widget_->ScrollToBottom();
 
     // A new message may spawn/attach a task, so refresh the sidebar tree. The
@@ -510,34 +370,24 @@ void TUIWindow::Submit()
 
 void TUIWindow::OpenConnect()
 {
-    char buf[4096];
-    connect_url_ = edc_app_config_api_url(app, buf, sizeof(buf)) ? buf : "";
-    connect_model_ = edc_app_config_model(app, buf, sizeof(buf)) ? buf : "";
-    connect_key_ = edc_app_config_api_key(app, buf, sizeof(buf)) ? buf : "";
-    connect_open_ = true;
-    connect_focus_ = 0;
-    connect_button_focus_ = 0;
+    // Seed the dialog from the persisted config; a missing field reads empty
+    // (matching the pre-portal behaviour).
+    port::ConnectConfig initial;
+    if (!app_->ConfigApiUrl(&initial.api_url))
+        initial.api_url.clear();
+    if (!app_->ConfigModel(&initial.model))
+        initial.model.clear();
+    if (!app_->ConfigApiKey(&initial.api_key))
+        initial.api_key.clear();
+    connect_dialog_->Open(initial);
     if (screen_)
         screen_->RequestAnimationFrame();
-}
-
-bool TUIWindow::SubmitConnect()
-{
-    if (connect_url_.empty() || connect_model_.empty() || connect_key_.empty())
-        return false;
-    if (!edc_app_set_llm_config(app, connect_url_.c_str(), connect_model_.c_str(), connect_key_.c_str()))
-        return false;
-    model_ = connect_model_; // refresh the footer's model label
-    connect_open_ = false;
-    if (screen_)
-        screen_->RequestAnimationFrame();
-    return true;
 }
 
 void TUIWindow::LoadInputHistory()
 {
-    char path[4096];
-    if (!edc_app_history_path(path, sizeof(path)))
+    std::string path;
+    if (!app_->HistoryPath(&path))
         return;
 
     std::ifstream file(path, std::ios::binary);
@@ -558,29 +408,29 @@ void TUIWindow::LoadInputHistory()
 
 void TUIWindow::SaveInputHistory()
 {
-    char path[4096];
-    if (!edc_app_history_path(path, sizeof(path)))
+    std::string path;
+    if (!app_->HistoryPath(&path))
         return;
 
     std::string out;
     for (const std::string &entry : input_->History())
         out += EscapeHistoryEntry(entry) + "\n";
     // Symlink-safe (the file sits in $EDC_HOME; still never follow a link).
-    edc_app_write_file(app, path, out.data(), out.size(), /*append=*/false, /*under_workspace=*/false);
+    app_->WriteFile(path, out.data(), out.size(), /*append=*/false, /*under_workspace=*/false);
 }
 
 void TUIWindow::RequestTaskSnapshot()
 {
-    /* 测试模式: 不向 app 要树。理由 —— 构造期 (:464) 与回调里 (:1077) 的拉取
-     * 都会走一个**异步**回包, 而没 SetScreen() 时那回包是内联在 runner 线程上
-     * 跑进本函数的调用方 (on_channel_adapter_send 的 else 分支), 会和测试自己的
-     * 断言抢同一个 widget。设了它就完全没有这条路 (tests/test_tui_dispatch.cpp)。
+    /* 测试模式: 不向 app 要树。理由 —— 构造期与回调里的拉取都会走一个**异步**
+     * 回包, 而没 SetScreen() 时那回包是内联在 runner 线程上跑 (Post() 的 else
+     * 分支, 或 Post 之前无屏幕的构造期), 会和测试自己的断言抢同一个 widget。
+     * 设了它就完全没有这条路 (tests/test_tui_dispatch.cpp)。
      * 本仓既有先例: EDGECLAW_SNAPSHOT_TRACE 也是 env 开关。 */
     if (getenv("EDGECLAW_TUI_NO_PULL"))
         return;
     last_snapshot_request_ = std::chrono::steady_clock::now();
     // 点名叫自己**正在显示**的那棵树 (P3 ①b) —— 别人的树不上路。
-    edc_app_request_task_snapshot(app, current_session_id_.c_str());
+    app_->RequestTaskSnapshot(session_model_->displayed_id());
 }
 
 // The sidebar's selection (one group or one task) becomes a filter over the chat
@@ -620,61 +470,55 @@ static std::shared_ptr<Message> MakeChatWidget(const std::string &kind, const st
 
 bool SnapshotIsForSession(const TaskSnapshot *snap, const std::string &displayed_session)
 {
-    if (!snap || snap->session_id.empty())
+    if (!snap)
         return false;
-    /* Nothing adopted yet: let the first reply claim the slot (the caller adopts
-     * its session_id). Snapshots are only ever replies to a pull, so the one
-     * that can arrive here is the answer to the bootstrap pull -- it names the
-     * active session, not someone else's. */
-    if (displayed_session.empty())
-        return true;
-    return displayed_session == snap->session_id;
+    // 规则本身在 domain::SnapshotClaimPolicy 里; 这里只是保留旧入口 (薄委托)。
+    return domain::SnapshotClaimPolicy::Default().Claims(*snap, displayed_session);
 }
 
 bool TreeChangedEventWantsPull(const std::string &event_session, const std::string &reason,
                                const std::string &displayed_session)
 {
-    if (event_session.empty())
-        return false;
-    if (reason == "active")
-        return true;
-    return event_session == displayed_session;
+    return domain::SnapshotClaimPolicy::Default().WantsPull(event_session, reason, displayed_session);
 }
 
 LiveOutputRoute RouteLiveOutput(const std::string &session_id, bool from_active_task,
                                 const std::string &displayed_session)
 {
-    if (session_id.empty())
-        return LiveOutputRoute::kShown; // 不是某个 task 的产出 (命令回复等)
-    if (session_id != displayed_session)
+    // 旧枚举 (LiveOutputRoute) 与领域枚举 (domain::OutputRoute) 一对一, 映射即可。
+    switch (domain::OutputRoutingPolicy::Default().Route(session_id, from_active_task, displayed_session))
+    {
+    case domain::OutputRoute::Shown:
+        return LiveOutputRoute::kShown;
+    case domain::OutputRoute::Silent:
+        return LiveOutputRoute::kSilent;
+    case domain::OutputRoute::OtherSession:
         return LiveOutputRoute::kOtherSession;
-    return from_active_task ? LiveOutputRoute::kShown : LiveOutputRoute::kSilent;
+    }
+    return LiveOutputRoute::kShown;
 }
 
 void TUIWindow::LoadChatTranscript(const char *session_id)
 {
     chat_widget_->Clear();
-    chat_log_path_.clear();
-    /* The cached workdir belongs to the session being replaced: drop it rather
-     * than show a value we already know is wrong. The next snapshot (pulled right
-     * after every switch) refills it; until then the footer falls back to the
-     * launch directory. */
-    session_workdir_.clear();
-    current_session_id_ = session_id ? session_id : "";
-
+    /* The cached workdir belongs to the session being replaced: SessionModel::Reset
+     * drops it rather than show a value we already know is wrong. The next snapshot
+     * (pulled right after every switch) refills it; until then the footer falls
+     * back to the launch directory. */
+    const std::string id = session_id ? session_id : "";
     // The transcript belongs to the session, not to the tab: it records what this
     // frontend displayed for that session, so it survives switches and restarts.
-    char path[4096];
-    if (!current_session_id_.empty() &&
-        edc_app_chat_log_path_for(app, current_session_id_.c_str(), path, sizeof(path)))
-        chat_log_path_ = path;
+    std::string path;
+    if (!id.empty())
+        transcript_->PathFor(id, &path);
+    session_model_->Reset(id, path);
 
-    LoadChatTranscriptFile(chat_log_path_);
+    LoadChatTranscriptFile(session_model_->chat_log_path());
 }
 
 void TUIWindow::LoadChatTranscriptFile(const std::string &path)
 {
-    const size_t entries = LoadTranscript(path, [this](const ChatTranscriptEntry &entry) {
+    const size_t entries = transcript_->Replay(path, [this](const ChatTranscriptEntry &entry) {
         const std::shared_ptr<Message> widget = MakeChatWidget(entry.kind, entry.header, entry.content, entry.task_id,
                                                                entry.render_pref, ::time(nullptr));
         if (widget)
@@ -687,15 +531,12 @@ void TUIWindow::LoadChatTranscriptFile(const std::string &path)
 void TUIWindow::AppendChatTranscript(const std::string &kind, const std::string &header, const std::string &content,
                                      const std::string &task_id, int render_pref)
 {
-    AppendChatTranscriptTo(chat_log_path_, kind, header, content, task_id, render_pref);
+    AppendChatTranscriptTo(session_model_->chat_log_path(), kind, header, content, task_id, render_pref);
 }
 
 void TUIWindow::AppendChatTranscriptTo(const std::string &path, const std::string &kind, const std::string &header,
                                        const std::string &content, const std::string &task_id, int render_pref)
 {
-    if (path.empty())
-        return;
-
     ChatTranscriptEntry entry;
     entry.kind = kind;
     entry.render_pref = render_pref;
@@ -703,22 +544,9 @@ void TUIWindow::AppendChatTranscriptTo(const std::string &path, const std::strin
     entry.header = header;
     entry.content = content;
 
-    // A session's directory only exists once the session has been saved, and a
-    // command-only session (e.g. /help) may never be saved before its first line
-    // is displayed — make sure the parent is there before appending.
-    edc_app_ensure_parent_dir(app, path.c_str());
-
-    // A previous process may have died mid-append, leaving a fragment without
-    // its newline. Re-terminate it first: otherwise this line lands on top of it
-    // and the two bubbles merge into one undecodable line.
-    std::string line = EncodeTranscriptLine(entry);
-    if (TranscriptEndsMidLine(path))
-        line.insert(line.begin(), '\n');
-
-    // Symlink-safe append: the transcript lives under the model-writable
-    // workspace, so refuse to follow a planted symlink (see
-    // edc_file_fopen_safe / edc_app_write_file).
-    edc_app_write_file(app, path.c_str(), line.data(), line.size(), /*append=*/true, /*under_workspace=*/true);
+    // The store owns the file details: parent dir, the half-written-line repair,
+    // and the symlink-safe append (see TranscriptStore::Append).
+    transcript_->Append(path, entry);
 }
 
 void TUIWindow::SyncWorkingFromSnapshot(const TaskSnapshot *snap)
@@ -729,9 +557,11 @@ void TUIWindow::SyncWorkingFromSnapshot(const TaskSnapshot *snap)
     working_ = busy;
     if (busy)
     {
-        working_started_ = std::chrono::steady_clock::now();
+        // The view owns the timing: restart its clock on the busy transition
+        // (the run always starts at the first cell).
+        working_indicator_->Restart();
         // Start the spinner's cadence from the frame requested just below.
-        last_spinner_frame_ = working_started_;
+        last_spinner_frame_ = std::chrono::steady_clock::now();
     }
     // A transition here can happen while the render loop is otherwise idle
     // (e.g. the first snapshot after a submit starts the animation), so ask
@@ -824,11 +654,9 @@ void TUIWindow::TickAnimations()
         // While the foreground group's active task is running the animated bar
         // replaces the footer line (so the bottom row keeps its height); as
         // soon as a snapshot reports it is no longer busy, the footer returns.
-        const auto now = std::chrono::steady_clock::now();
-        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - working_started_).count();
-        children.push_back(WorkingIndicatorElement(elapsed_ms));
-
-        // Repaints are paced by TickAnimations(), not requested here.
+        // The view owns the timing (started on the busy transition); repaints
+        // are paced by TickAnimations(), not requested here.
+        children.push_back(working_indicator_->Render());
     }
     else
     {
@@ -853,8 +681,8 @@ void TUIWindow::TickAnimations()
      * {{cwd}} and where tools run), cached from the last applied snapshot so the
      * footer never reads the store; fall back to the process launch directory
      * when the session is unbound, or before the first snapshot lands. */
-    const char *dir_src = !session_workdir_.empty()
-                              ? session_workdir_.c_str()
+    const char *dir_src = !session_model_->workdir().empty()
+                              ? session_model_->workdir().c_str()
                               : (::getcwd(cwd_buf, sizeof(cwd_buf)) ? cwd_buf : nullptr);
     const std::string dir = dir_src ? ShortenHome(dir_src) : std::string();
     const std::string left = " " + dir;
@@ -875,7 +703,7 @@ void TUIWindow::TickAnimations()
     // the filler; when the pane is narrow drop fields from the middle outward:
     // first the model, then the sandbox state, leaving "/help" alone.
     const int budget = pane_w - ::ftxui::string_width(left) - 1;
-    const std::string sandbox = std::string("sandbox:") + (edc_app_sandbox_enabled(app) ? "on" : "off");
+    const std::string sandbox = std::string("sandbox:") + (app_->SandboxEnabled() ? "on" : "off");
 
     std::string right = kFooterHelp;
     const std::string sandbox_help = sandbox + " · " + kFooterHelp;
@@ -913,49 +741,18 @@ void TUIWindow::TickAnimations()
     // ftxui 只在有帧请求时才调 Render, 空闲时没有帧就是没有轮询。
 
     auto base = split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
-    if (!connect_open_)
+    if (!connect_dialog_->IsOpen())
         return base;
     // The dialog is borderless, so the backdrop is dimmed while it is open: the
     // raised surface then reads as the one lit panel on a muted screen.
     // clear_under is load-bearing: ftxui's `dim` is a per-cell flag the backdrop
     // stamps over its box and an overlaid element never clears it, so without it the
     // dialog renders gray whatever its text colour.
-    return ::ftxui::dbox({base | ::ftxui::dim, connect_modal_->Render() | ::ftxui::clear_under |
+    return ::ftxui::dbox({base | ::ftxui::dim, connect_dialog_->Render() | ::ftxui::clear_under |
                                                    ::ftxui::size(::ftxui::WIDTH, ::ftxui::LESS_THAN, 80) |
                                                    ::ftxui::center});
 }
 
-::ftxui::Element TUIWindow::RenderConnectModal()
-{
-    // Flat, borderless dialog borrowing the sidebar's visual language (accent
-    // heading, dim rules, flat labels) but floating on dialog_bg. Labels use the
-    // bright foreground, not text_dim, which washes out on that surface.
-    // BorderStyle::EMPTY reserves the inset without drawing box lines.
-    using namespace ::ftxui;
-    const auto &pal = style::palette();
-
-    auto field = [&](const char *label, const Component &input) {
-        return hbox({
-            text(label) | color(pal.text),
-            input->Render() | flex,
-        });
-    };
-
-    return vbox({
-               text(" Connect provider ") | bold | color(pal.accent),
-               separator() | color(pal.line_dim),
-               field("API URL  ", connect_url_input_),
-               field("Model    ", connect_model_input_),
-               field("API Key  ", connect_key_input_),
-               separator() | color(pal.line_dim),
-               hbox({
-                   text(" ") | dim | color(pal.text_dim),
-                   filler(),
-                   connect_buttons_->Render(),
-               }),
-           }) |
-           borderStyled(BorderStyle::EMPTY) | bgcolor(pal.dialog_bg);
-}
 
 bool TUIWindow::OnEvent(::ftxui::Event event)
 {
@@ -980,31 +777,17 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
         }
     }
 
-    // The /connect dialog, when open, owns every event: Esc closes it, Enter
-    // submits, everything else goes to its fields.
-    if (connect_open_)
-    {
-        if (event == ::ftxui::Event::Escape)
-        {
-            connect_open_ = false;
-            return true;
-        }
-        if (event == ::ftxui::Event::Return)
-        {
-            SubmitConnect();
-            return true;
-        }
-        return connect_modal_->OnEvent(event);
-    }
+    // The /connect dialog is a modal: while open it owns every event (Esc closes,
+    // Enter submits, the rest go to its fields). Checked first -- it is the
+    // innermost thing on screen, so it takes the event before any input mode.
+    if (connect_dialog_->IsOpen())
+        return connect_dialog_->OnEvent(event);
 
-    // Bracketed paste: the terminal wraps pasted content in ESC[200~ ...
-    // ESC[201~. FTXUI delivers each marker as a single Event::Special, so the
-    // window can track paste state here. Inside a paste, Return and '\n' are
-    // inserted as newlines instead of submitted, so a multi-line block becomes
-    // one draft rather than one message per line.
+    // Bracketed paste markers (ESC[200~ / ESC[201~) toggle the paste mode and are
+    // consumed whatever the mode was. FTXUI delivers each marker as a single
+    // Event::Special.
     static const auto kPasteStart = ::ftxui::Event::Special("\x1b[200~");
     static const auto kPasteEnd = ::ftxui::Event::Special("\x1b[201~");
-
     if (event == kPasteStart)
     {
         in_paste_ = true;
@@ -1016,39 +799,56 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
         return true;
     }
 
-    if (in_paste_)
+    // Explicit input modes replace the old implicit if-ordering (see inputMode()).
+    switch (inputMode())
     {
-        // Everything inside a paste is text. Return/newline becomes a line
-        // break; other characters flow straight through to the Input, which
-        // handles cursor movement and UTF-8. Nothing here submits.
-        if (event == ::ftxui::Event::Return)
-        {
-            input_->OnEvent(::ftxui::Event::Character("\n"));
+    case InputMode::Paste:
+        return HandlePasteEvent(event);
+    case InputMode::History:
+        // Read-only: Esc returns to the live stream; characters and Return are
+        // swallowed (the box is off screen). Mouse/wheel still fall through so the
+        // history can be scrolled.
+        if (HandleHistoryEvent(event))
             return true;
-        }
-        return input_->OnEvent(event);
+        return HandleNormalEvent(event);
+    case InputMode::Normal:
+        return HandleNormalEvent(event);
     }
+    return false;
+}
 
-    // 只看模式: 整块左侧是"读 history"的视图。它**不接受输入** —— 输入框已经不在屏上,
-    // 字符与回车一律吞掉 (鼠标与滚动照旧放行, 历史要能滚)。唯一能做的事是 Esc: 回实时流
-    // (重放转录)。这一块放在 /connect 弹窗之后: 弹窗开着时 Esc 归它 (先关弹窗),
-    // 这也是"最内层先拿事件"的老规矩。
-    if (history_view_)
+bool TUIWindow::HandlePasteEvent(::ftxui::Event event)
+{
+    // Everything inside a paste is text. Return/newline becomes a line break;
+    // other characters flow straight through to the Input (cursor movement and
+    // UTF-8). Nothing here submits.
+    if (event == ::ftxui::Event::Return)
     {
-        if (event == ::ftxui::Event::Escape)
-        {
-            ExitHistoryView();
-            return true;
-        }
-        if (event.is_character() || event == ::ftxui::Event::Return)
-            return true;
+        input_->OnEvent(::ftxui::Event::Character("\n"));
+        return true;
     }
+    return input_->OnEvent(event);
+}
 
-    // Alt+Enter arrives as ESC-prefixed Return: the terminal (raw mode, ICRNL
-    // off) sends CR for Enter, and Alt adds the ESC prefix, so the parser emits
-    // a single Special({27, 13}). ESC+LF is accepted too for terminals that
-    // send LF. Insert a newline via a synthetic character event, which reuses
-    // the Input's cursor and UTF-8 handling without firing on_enter.
+bool TUIWindow::HandleHistoryEvent(::ftxui::Event event)
+{
+    if (event == ::ftxui::Event::Escape)
+    {
+        ExitHistoryView();
+        return true;
+    }
+    if (event.is_character() || event == ::ftxui::Event::Return)
+        return true; // swallowed: the input box is off screen
+    return false;    // mouse / wheel / Alt+Enter -> normal handling
+}
+
+bool TUIWindow::HandleNormalEvent(::ftxui::Event event)
+{
+    // Alt+Enter arrives as ESC-prefixed Return: the terminal (raw mode, ICRNL off)
+    // sends CR for Enter, and Alt adds the ESC prefix, so the parser emits a single
+    // Special({27, 13}). ESC+LF is accepted too for terminals that send LF. Insert a
+    // newline via a synthetic character event, which reuses the Input's cursor and
+    // UTF-8 handling without firing on_enter.
     static const auto kAltEnterCR = ::ftxui::Event::Special(std::string({27, 13}));
     static const auto kAltEnterLF = ::ftxui::Event::Special(std::string({27, 10}));
     if (event == kAltEnterCR || event == kAltEnterLF)
@@ -1057,8 +857,8 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
         return true;
     }
 
-    // Plain Enter submits. Intercepting it here means it never reaches the
-    // Input, so multiline stays purely for Alt+Enter and typed text.
+    // Plain Enter submits. Intercepting it here means it never reaches the Input,
+    // so multiline stays purely for Alt+Enter and typed text.
     if (event == ::ftxui::Event::Return)
     {
         Submit();
@@ -1070,7 +870,8 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
 
 TUIWindow::~TUIWindow()
 {
-    edc_app_free(app);
+    // app_ (a member) frees the edc_app: "destroy = persist" lives inside
+    // AppFacade's destructor, which runs right after this body.
     if (bracketed_paste_on_)
         DisableBracketedPaste();
 }
@@ -1159,7 +960,8 @@ void TUIWindow::ExitHistoryView()
         return;
     history_view_ = false;
     chat_widget_->Clear();
-    LoadChatTranscript(current_session_id_.empty() ? nullptr : current_session_id_.c_str());
+    const std::string id = session_model_->displayed_id();
+    LoadChatTranscript(id.empty() ? nullptr : id.c_str());
     if (screen_)
         screen_->RequestAnimationFrame();
 }
@@ -1213,254 +1015,86 @@ void TUIWindow::RenderTaskHistory(const std::string &payload)
     screen_ ? screen_->RequestAnimationFrame() : void();
 }
 
-void TUIWindow::on_channel_adapter_send(void *instance, struct edc_channel_message *message)
+// ── IUiDispatcher + IChannelHost 实现 ───────────────────────────────────────
+//
+// 事件本身由 control::ChannelDispatcher 承接 (判断 + 更新模型); 本窗口只做
+// 两件事: 把任务 marshal 到 UI 线程 (IUiDispatcher), 以及分派器回调的"模型
+// 之外的视图动作" (IChannelHost) —— 转录重放/落盘、侧栏刷新、动画、重绘、拉树。
+// 全部运行在 UI 线程: 生产由 AppFacade 经 Post() marshal, 测试无屏幕时 Post()
+// 同步执行 (正是在这个分支上, harness 的喂消息会立刻跑到分派器)。
+
+void TUIWindow::Post(std::function<void()> task)
 {
-    if (!instance || !message)
-        return;
-
-    auto *tui = static_cast<TUIWindow *>(instance);
-    const auto *content = edc_app_message_content(message);
-    // `/task history <id>` / `/group history <id>` 的应答: 结构化载荷, 拆成一条条气泡。
-    // 与别的消息走同一条 UI 线程规则 (有屏幕就 Post, 无屏幕的 harness 里内联)。
-    if (edc_app_message_is_task_history(message))
-    {
-        const std::string payload = content ? content : "";
-        if (tui->screen_)
-            tui->screen_->Post([tui, payload]() { tui->RenderTaskHistory(payload); });
-        else
-            tui->RenderTaskHistory(payload);
-        return;
-    }
-    if (!content)
-        return;
-
-    // A tree-changed event (P3 ①b) is a control message: "session X's tree
-    // changed", no tree attached. The frontend decides what to do:
-    //   - reason "active"  → the user switched tabs: adopt X as displayed (its
-    //     transcript), then pull X's tree;
-    //   - anything else    → pull **only** if X is the tree on screen. A
-    //     background session's churn is not our business: it never touches the
-    //     view here (that is the whole point of separating the event from the
-    //     payload — before, every change pushed the bound session's whole tree
-    //     and that push decided what the user was looking at).
-    if (edc_app_message_is_task_tree_changed(message))
-    {
-        const char *sid_c = edc_app_message_session_id(message);
-        const std::string sid = sid_c ? sid_c : "";
-        const std::string reason = content;
-        auto on_change = [tui, sid, reason]() {
-            if (!TreeChangedEventWantsPull(sid, reason, tui->current_session_id_))
-                return;
-            if (reason == "active" && sid != tui->current_session_id_)
-                tui->LoadChatTranscript(sid.c_str());
-            tui->RequestTaskSnapshot();
-        };
-        if (tui->screen_)
-            tui->screen_->Post(on_change);
-        else
-            on_change();
-        return;
-    }
-
-    // A task-tree snapshot is a control message for the sidebar, not chat
-    // text. Parse the JSON (via the bridge) and refresh the widget on the UI
-    // thread, then stop.
-    if (edc_app_message_is_task_snapshot(message))
-    {
-        const std::string snapshot = content;
-        auto update = [tui, snapshot]() {
-            TaskSnapshot snap;
-            // A late reply must claim its own request: if the session changed
-            // while it was in flight (the user switched tabs), this tree is
-            // yesterday's news — drop it. The displayed session is the TUI's
-            // own state (current_session_id_); the kernel never tells it what
-            // to display, and a snapshot certainly doesn't.
-            if (!ParseTaskSnapshot(snapshot, &snap) || !SnapshotIsForSession(&snap, tui->current_session_id_))
-                return;
-            /* First reply after startup: adopt the session it names (and that
-             * session's transcript) as the one we are showing. This is how the
-             * frontend learns which session it displays -- no synchronous read of
-             * the store at bootstrap. */
-            if (tui->current_session_id_.empty())
-                tui->LoadChatTranscript(snap.session_id.c_str());
-            /* The footer's working directory comes from here, so it never reaches
-             * into the store (which the actor thread mutates). */
-            tui->session_workdir_ = snap.workdir;
-            {
-                // Give the chat log what each task was created from: while a
-                // selection is active, that input is drawn as the first user
-                // message of the task's history (the input's own bubble belongs
-                // to no task, so the filter hides it). Straight from the task by
-                // id -- no matching of any kind, and it works the same on replay
-                // after a restart.
-                auto inputs = std::make_shared<std::map<std::string, std::string>>();
-                for (const TaskGroup &g : snap.groups)
-                    for (const TaskInfo &t : g.tasks)
-                        if (!t.input.empty())
-                            (*inputs)[t.task_id] = t.input;
-                tui->chat_widget_->SetTaskInputs(inputs);
-                tui->task_widget_->SetSnapshot(&snap);
-                // The snapshot is the single source of truth for the status
-                // animation: re-derive it whenever the process tree refreshes.
-                tui->SyncWorkingFromSnapshot(&snap);
-                // And for the todo section: the list shows the foreground group's
-                // active task's own todos (part of the task state), so it
-                // refreshes on every snapshot — not via a side channel on the
-                // todowrite chat message. The task id is passed along so the
-                // section can name whose list it is, and the task's state so its
-                // current step wears the failure colour if the task failed (read
-                // from the very same snapshot, so items and state cannot
-                // disagree).
-                const ActiveTaskTodos todos = ActiveTaskTodosOf(&snap);
-                tui->todo_widget_->SetItems(todos.items, todos.task_id);
-                tui->todo_widget_->SetOwnerState(ForegroundActiveTaskState(&snap));
-            }
-            // FTXUI only repaints when the frame was invalidated. Closures
-            // posted via screen_->Post() do NOT invalidate it, so while the
-            // TUI is idle (no spinner requesting frames) a refreshed sidebar
-            // would stay invisible until the next keypress. Ask for exactly
-            // one frame so the change paints immediately.
-            if (tui->screen_)
-                tui->screen_->RequestAnimationFrame();
-        };
-        if (tui->screen_)
-            tui->screen_->Post(std::move(update));
-        else
-            update();
-        return;
-    }
-
-    // The channel message is owned by the actor framework and is freed as soon
-    // as this callback returns, so classify it and copy the text now. Widget
-    // construction and AddMessage() mutate ftxui state shared with the
-    // renderer, so they must run on the UI thread via the screen task queue.
-    enum class Kind
-    {
-        None,
-        User,
-        Tool,
-        Thought,
-        Reply,
-        Sys,
-    };
-    Kind kind = Kind::None;
-    if (edc_app_message_is_user(message))
-        kind = Kind::User;
-    else if (edc_app_message_is_tool(message))
-        kind = Kind::Tool;
-    else if (edc_app_message_is_thought(message))
-        kind = Kind::Thought;
-    else if (edc_app_message_is_resp(message))
-        kind = Kind::Reply;
-    else if (edc_app_message_is_sys(message))
-        kind = Kind::Sys;
-
-    const std::string text = content;
-    const char *header_c = edc_app_message_header(message);
-    const std::string header = header_c ? header_c : "";
-    // Task that produced this message (NULL for user input / snapshots). Kept
-    // for callers; the chat widgets no longer render a "task N" tag.
-    const char *task_id_c = edc_app_message_task_id(message);
-    const std::string task_id = task_id_c ? task_id_c : "";
-    // Session that owns the producing task (NULL for user input / snapshots).
-    // Lets output of a background session be kept out of the visible tab (the
-    // app already persisted it into that session's own messages).
-    const char *session_id_c = edc_app_message_session_id(message);
-    const std::string session_id = session_id_c ? session_id_c : "";
-    // Sender-declared render preference (PLAIN/MARKDOWN). Read here while
-    // the message is still alive; the closure below only needs the int.
-    const int render_pref = edc_app_message_render_pref(message);
-    // 发送方声明的事实: 这条产出是不是它自己 session 的 active task 产生的。
-    const bool from_active_task = edc_app_message_from_active_task(message) != 0;
-    const time_t ts = ::time(nullptr);
-
-    auto add_message = [tui, kind, text, header, task_id, session_id, render_pref, ts, from_active_task]() {
-        // 只看模式: 实时产出不上屏、也不写转录 (写点在展示之后 —— 与从前的过滤同口径)。
-        // 命令回复 (SYS) 例外: 在只看模式里敲命令也要有反馈, 不然静默得像卡死了。
-        if (tui->history_view_ && kind != Kind::Sys)
-            return;
-
-        // 展示闸门 (P3 ③: 从 core 移到前端): 显示中的 session 只显示它 **active
-        // task** 的产出 —— 同 session 里非 active task 的输出静默。以前这条判断在
-        // scheduler/app 里做 (靠"当前绑定的 session"这份副本); 现在 core 不知道
-        // 谁在看, 只声明事实 (from_active_task), 由这里决定 (见 RouteLiveOutput)。
-        if (RouteLiveOutput(session_id, from_active_task, tui->current_session_id_) ==
-            LiveOutputRoute::kSilent)
-            return;
-
-        // todowrite 的 TOOL 消息不进对话区：TODO 状态已由右侧 TodoWidget 展示，
-        // 数据源是任务快照里 active task 的 todo（工具每次回显都会补推快照）。
-        // 文本仍随消息传递，供无侧栏的渲染端（CLI）与 tool result（LLM）使用。
-        const char *kind_str = "sys";
-        switch (kind)
-        {
-        case Kind::User:
-            kind_str = "user";
-            break;
-        case Kind::Tool:
-            if (header == kTodoToolHeader)
-                return;
-            kind_str = "tool";
-            break;
-        case Kind::Thought:
-            kind_str = "thought";
-            break;
-        case Kind::Reply:
-            kind_str = "reply";
-            // RESP is just another chat message here: it neither starts nor
-            // stops the working animation. The animation follows the task
-            // snapshot (foreground group's active task running), which is
-            // re-requested below and refreshed by the periodic poll in
-            // OnRender().
-            break;
-        case Kind::Sys:
-            // SYS (e.g. an error or a command reply) does not touch the
-            // status row either; the next snapshot decides it.
-            break;
-        default:
-            return;
-        }
-
-        // A background session's output must not appear in the tab that is
-        // currently displayed — but it is still part of *that* session's screen
-        // history, so it goes into that session's own transcript and shows up
-        // when the user switches back. The current tab (and its sidebar) is left
-        // untouched.
-        if (!session_id.empty() && session_id != tui->current_session_id_)
-        {
-            char path[4096];
-            if (edc_app_chat_log_path_for(tui->app, session_id.c_str(), path, sizeof(path)))
-                tui->AppendChatTranscriptTo(path, kind_str, header, text, task_id, render_pref);
-            return;
-        }
-
-        // Persist exactly what is shown, so the next start replays this log.
-        tui->AppendChatTranscript(kind_str, header, text, task_id, render_pref);
-
-        if (std::shared_ptr<Message> widget = MakeChatWidget(kind_str, header, text, task_id, render_pref, ts))
-            tui->chat_widget_->AddMessage(widget);
-
-        // No explicit ScrollToBottom() here: if the reader is already at the
-        // tail the view follows it automatically; if they scrolled up to read
-        // history, arriving messages must not yank them back down.
-        // A message (or a sidebar-only todo refresh) implies task state may
-        // have changed; refresh the sidebar.
-        tui->RequestTaskSnapshot();
-
-        // The posted closure mutated the chat log but does not invalidate the
-        // FTXUI frame by itself; while the TUI is idle (working_ == false and
-        // nothing requests frames) the new message would never paint. Ask for
-        // one frame so it appears immediately (Submit() already does the same
-        // for locally typed messages).
-        if (tui->screen_)
-            tui->screen_->RequestAnimationFrame();
-    };
-
-    // Before Loop() starts there is no render thread, so mutating the tree
-    // directly is safe (the app cannot have produced channel traffic yet).
-    if (tui->screen_)
-        tui->screen_->Post(std::move(add_message));
+    if (screen_)
+        screen_->Post(std::move(task));
     else
-        add_message();
+        task(); // 没有屏幕 (构造期 / harness): 同步执行
+}
+
+void TUIWindow::RequestFrame()
+{
+    if (screen_)
+        screen_->RequestAnimationFrame();
+}
+
+void TUIWindow::PresentHistory(const std::string &payload)
+{
+    // 结构化历史载荷: 拆成一条条气泡追加到对话区 (见 RenderTaskHistory)。
+    RenderTaskHistory(payload);
+}
+
+void TUIWindow::LoadSessionTranscript(const std::string &session_id)
+{
+    LoadChatTranscript(session_id.c_str());
+}
+
+void TUIWindow::SetTaskTree(const TaskSnapshot &snap)
+{
+    task_widget_->SetSnapshot(&snap);
+}
+
+void TUIWindow::SyncWorking(const TaskSnapshot &snap)
+{
+    // The snapshot is the single source of truth for the status animation.
+    SyncWorkingFromSnapshot(&snap);
+}
+
+void TUIWindow::SetTodos(const TaskSnapshot &snap)
+{
+    // The todo section shows the foreground group's active task's own todos (part
+    // of the task state): the task id names whose list it is, and the task's state
+    // decides the failure colour — read from the very same snapshot so the two
+    // cannot disagree.
+    const ActiveTaskTodos todos = ActiveTaskTodosOf(&snap);
+    todo_widget_->SetItems(todos.items, todos.task_id);
+    todo_widget_->SetOwnerState(ForegroundActiveTaskState(&snap));
+}
+
+bool TUIWindow::PresentChat(const port::ChatMessageEvent &event, const std::string &kind_str)
+{
+    // A background session's output must not appear in the tab that is currently
+    // displayed — but it is still part of *that* session's screen history, so it
+    // goes into that session's own transcript and shows up when the user switches
+    // back. The current tab (and its sidebar) is left untouched.
+    if (!event.session_id.empty() && event.session_id != session_model_->displayed_id())
+    {
+        std::string path;
+        if (transcript_->PathFor(event.session_id, &path))
+            AppendChatTranscriptTo(path, kind_str, event.header, event.content, event.task_id, event.render_pref);
+        return false;
+    }
+
+    // Persist exactly what is shown, so the next start replays this log.
+    AppendChatTranscript(kind_str, event.header, event.content, event.task_id, event.render_pref);
+
+    if (std::shared_ptr<Message> widget =
+            MakeChatWidget(kind_str, event.header, event.content, event.task_id, event.render_pref, event.ts))
+        chat_widget_->AddMessage(widget);
+
+    // No explicit ScrollToBottom() here: if the reader is already at the tail the
+    // view follows it automatically; if they scrolled up to read history, arriving
+    // messages must not yank them back down. The caller (the dispatcher) then
+    // refreshes the sidebar and asks for a frame.
+    return true;
 }
 } // namespace edc

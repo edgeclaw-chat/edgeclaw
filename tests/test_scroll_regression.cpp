@@ -376,11 +376,11 @@ std::string Plain(const std::string &frame)
     return out;
 }
 
-// The sidebar as the application builds it: edc::MakeSidebar is the very factory
+// The sidebar as the application builds it: ui::SidebarView is the very component
 // TUIWindow uses, so these assertions pin the real layout rather than a copy of it.
 struct SidebarHarness
 {
-    edc::Sidebar sidebar;
+    std::shared_ptr<edc::ui::SidebarView> sidebar;
 
     // The ScrollViews commit their offset during the render pass, so the frame a
     // fresh harness draws is provisional (in the TUI the next frame corrects it and
@@ -391,7 +391,7 @@ struct SidebarHarness
         for (int pass = 0; pass < 3; pass++)
         {
             auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(width), ftxui::Dimension::Fixed(height));
-            ftxui::Render(screen, sidebar.pane->Render() | ftxui::flex);
+            ftxui::Render(screen, sidebar->pane()->Render() | ftxui::flex);
             frame = screen.ToString();
         }
         return frame;
@@ -473,7 +473,7 @@ void test_squeezed_sidebar_keeps_the_working_row_and_both_headings()
     }
     todo->SetItems(items, "t23");
     SidebarHarness sidebar;
-    sidebar.sidebar = edc::MakeSidebar(task, todo);
+    sidebar.sidebar = std::make_shared<edc::ui::SidebarView>(task, todo);
 
     const int width = 40;
     // Small enough that the tree cannot fit, large enough that the share it keeps
@@ -492,7 +492,7 @@ void test_squeezed_sidebar_keeps_the_working_row_and_both_headings()
     // squeezed together with the tree as it would be if both were flexible).
     // ViewportHeight() counts the rows granted to the *body* -- the pinned heading is
     // outside it -- so a list of eight one-line items shows eight.
-    ASSERT(sidebar.sidebar.todos->ViewportHeight() == 8,
+    ASSERT(sidebar.sidebar->todos()->ViewportHeight() == 8,
            "the todo list was squeezed instead of the tree yielding rows");
 
     // With a little more room both sections are readable, and the todo list's own
@@ -503,7 +503,7 @@ void test_squeezed_sidebar_keeps_the_working_row_and_both_headings()
     auto wheel_down = ftxui::Event::Mouse(
         "", ftxui::Mouse{ftxui::Mouse::WheelDown, ftxui::Mouse::Pressed, false, false, false, 5, roomier - 3});
     for (int i = 0; i < 8; i++)
-        sidebar.sidebar.todos->OnEvent(wheel_down);
+        sidebar.sidebar->todos()->OnEvent(wheel_down);
     const std::string scrolled = Plain(sidebar.Draw(width, roomier));
     ASSERT(scrolled.find("TODO-7") != std::string::npos || scrolled.find("TODO-6") != std::string::npos,
            "the todo list's hidden rows are not reachable by scrolling");
@@ -523,16 +523,16 @@ void test_squeezed_sidebar_keeps_the_working_row_and_both_headings()
     auto long_todo = std::make_shared<edc::TodoWidget>();
     long_todo->SetItems(long_items, "t23");
     SidebarHarness capped;
-    capped.sidebar = edc::MakeSidebar(task, long_todo);
+    capped.sidebar = std::make_shared<edc::ui::SidebarView>(task, long_todo);
     const int tall = 36;
     const std::string capped_frame = Plain(capped.Draw(width, tall));
     // The section's height: its empty border (2 rows) + the pinned heading and rule
     // (2) + the rows granted to the body.
     // ftxui's size(LESS_THAN) hands the child one row more than the value it was
     // given, so the rule to measure against is "two thirds, plus one".
-    const int todo_section = 4 + capped.sidebar.todos->ViewportHeight();
+    const int todo_section = 4 + capped.sidebar->todos()->ViewportHeight();
     ASSERT(todo_section <= (2 * tall) / 3 + 1, "the todo list took more than two thirds of the sidebar");
-    ASSERT(capped.sidebar.tasks->ViewportHeight() > 3,
+    ASSERT(capped.sidebar->tasks()->ViewportHeight() > 3,
            "the tree was left with almost no body rows by the todo list");
     ASSERT(capped_frame.find("■ t23") != std::string::npos, "the active row was pushed out of the capped sidebar");
 
@@ -540,9 +540,9 @@ void test_squeezed_sidebar_keeps_the_working_row_and_both_headings()
     // only its own heading.
     auto empty_todo = std::make_shared<edc::TodoWidget>();
     SidebarHarness bare;
-    bare.sidebar = edc::MakeSidebar(task, empty_todo);
+    bare.sidebar = std::make_shared<edc::ui::SidebarView>(task, empty_todo);
     bare.Draw(width, tall);
-    ASSERT(bare.sidebar.tasks->ViewportHeight() > capped.sidebar.tasks->ViewportHeight() + 10,
+    ASSERT(bare.sidebar->tasks()->ViewportHeight() > capped.sidebar->tasks()->ViewportHeight() + 10,
            "an empty todo list did not give the tree its rows back");
 
     // And the tree's own rows above stay reachable too: scrolling up releases the
@@ -550,7 +550,7 @@ void test_squeezed_sidebar_keeps_the_working_row_and_both_headings()
     auto wheel_up = ftxui::Event::Mouse(
         "", ftxui::Mouse{ftxui::Mouse::WheelUp, ftxui::Mouse::Pressed, false, false, false, 5, 4});
     for (int i = 0; i < 20; i++)
-        sidebar.sidebar.tasks->OnEvent(wheel_up);
+        sidebar.sidebar->tasks()->OnEvent(wheel_up);
     ASSERT(Plain(sidebar.Draw(width, roomier)).find("Group g0") != std::string::npos,
            "scrolling up did not release the bottom anchor");
     PASS();

@@ -4,6 +4,8 @@
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
 #include <cstdio>
+#include <memory>
+#include <utility>
 
 namespace edc
 {
@@ -130,84 +132,20 @@ std::string FormatGroupUsage(long long prompt, long long completion, long long c
     return s;
 }
 
-// Upper bound (in code points) kept per task when importing a snapshot. The
-// exact per-row fit is decided at render time by TruncateToWidth(); this cap
-// only stops a pathological description from being copied/stored in full.
-constexpr size_t kMaxDescCodepoints = 200;
-
 } // namespace
 
-TaskWidget::TaskWidget()
+TaskWidget::TaskWidget() : TaskWidget(std::make_shared<model::TaskTreeModel>())
+{
+}
+
+TaskWidget::TaskWidget(std::shared_ptr<model::TaskTreeModel> tree)
+    : tree_(tree ? std::move(tree) : std::make_shared<model::TaskTreeModel>())
 {
 }
 
 void TaskWidget::SetSnapshot(const TaskSnapshot *snap)
 {
-    session_id_.clear();
-    session_name_.clear();
-    created_at_.clear();
-    groups_.clear();
-
-    if (!snap)
-    {
-        group_expanded_.clear();
-        return;
-    }
-
-    session_id_ = snap->session_id;
-    session_name_ = snap->session_name;
-    created_at_ = snap->created_at;
-
-    std::string active_group_id;
-    for (const edc::TaskGroup &g : snap->groups)
-    {
-        GroupInfo group;
-        group.group_id = g.group_id;
-        group.kind = g.kind;
-        group.msg_count = g.msg_count;
-        group.orphaned = g.orphaned;
-        group.fg = g.fg;
-        group.tokens_total = g.tokens_total;
-        group.tokens_prompt = g.tokens_prompt;
-        group.tokens_completion = g.tokens_completion;
-        group.tokens_cached = g.tokens_cached;
-        group.ctx_tokens = g.ctx_tokens;
-        group.ctx_estimated = g.ctx_estimated;
-
-        for (const edc::TaskInfo &t : g.tasks)
-        {
-            TaskInfo task;
-            task.task_id = t.task_id;
-            task.state = t.state;
-            task.is_leader = t.is_leader;
-            task.is_active = t.is_active;
-            task.description = TruncateUtf8(t.description, kMaxDescCodepoints);
-            task.tokens_prompt = t.tokens_prompt;
-            task.tokens_completion = t.tokens_completion;
-            task.tokens_total = t.tokens_total;
-            task.tokens_cached = t.tokens_cached;
-            if (task.is_active)
-                active_group_id = group.group_id;
-            group.tasks.push_back(std::move(task));
-        }
-
-        groups_.push_back(std::move(group));
-    }
-
-    // Refresh collapse state: keep user toggles for groups that still exist;
-    // a newly-seen group is expanded when it holds the active task. A system
-    // group (folding) is *not* special-cased here: it starts folded like any
-    // other group that is not active -- it can hold dozens of finished fold
-    // tasks, and expanding all of them would squeeze the user's tree out of
-    // the bottom-anchored viewport. The row still says "System", so it is one
-    // click away and never mistaken for a user group.
-    std::map<std::string, bool> next;
-    for (const auto &g : groups_)
-    {
-        const auto it = group_expanded_.find(g.group_id);
-        next[g.group_id] = (it != group_expanded_.end()) ? it->second : (g.group_id == active_group_id);
-    }
-    group_expanded_ = std::move(next);
+    tree_->Apply(snap);
 }
 
 void TaskWidget::SetBreath(long long elapsed_ms)
@@ -217,11 +155,7 @@ void TaskWidget::SetBreath(long long elapsed_ms)
 
 bool TaskWidget::HasProcessingTask() const
 {
-    for (const auto &g : groups_)
-        for (const auto &t : g.tasks)
-            if (StateIsProcessing(t.state))
-                return true;
-    return false;
+    return tree_->HasProcessingTask();
 }
 
 bool TaskWidget::OnEvent(::ftxui::Event event)
@@ -237,16 +171,15 @@ bool TaskWidget::OnEvent(::ftxui::Event event)
     // a click anywhere on that row toggles the section.
     if (section_header_box_.Contain(event.mouse().x, event.mouse().y))
     {
-        section_collapsed_ = !section_collapsed_;
+        tree_->toggle_section();
         return true;
     }
 
-    for (size_t i = 0; i < group_header_boxes_.size() && i < groups_.size(); i++)
+    for (size_t i = 0; i < group_header_boxes_.size() && i < tree_->groups().size(); i++)
     {
         if (group_header_boxes_[i].Contain(event.mouse().x, event.mouse().y))
         {
-            const std::string &gid = groups_[i].group_id;
-            group_expanded_[gid] = !group_expanded_[gid];
+            tree_->toggle_group(tree_->groups()[i].group_id);
             return true;
         }
     }
@@ -284,13 +217,13 @@ int TaskWidget::RowWidth() const
     // is full width (reflect below records its box) so clicking anywhere on
     // it toggles the whole tree (see OnEvent).
     {
-        int group_count = static_cast<int>(groups_.size());
+        int group_count = static_cast<int>(tree_->groups().size());
         int task_count = 0;
-        for (const auto &g : groups_)
+        for (const auto &g : tree_->groups())
             task_count += static_cast<int>(g.tasks.size());
 
         Elements head = {
-            text((section_collapsed_ ? "▸ " : "▾ ") + std::string(" Tasks ")) | bold | color(pal.accent),
+            text((tree_->section_collapsed() ? "▸ " : "▾ ") + std::string(" Tasks ")) | bold | color(pal.accent),
             filler(),
         };
         if (group_count > 0)
@@ -308,25 +241,25 @@ int TaskWidget::RowWidth() const
         lines.push_back(hbox(std::move(head)) | reflect(section_header_box_));
     }
 
-    if (section_collapsed_)
+    if (tree_->section_collapsed())
     {
         // A collapsed section is its header row alone: the session meta and
         // the rule under it introduce the list, so they fold away with it.
         return vbox(std::move(lines));
     }
 
-    if (!session_name_.empty() || !session_id_.empty())
+    if (!tree_->session_name().empty() || !tree_->session_id().empty())
     {
         // Session meta on one row: the name (with its id in brackets when distinct) on
         // the left, the creation date flushed right into the same edge column as the
         // group rows. The date is never truncated: a narrow sidebar ellipsizes the name
         // instead, dropping the bracketed id first.
-        const std::string created = created_at_.size() >= 10 ? "created " + created_at_.substr(0, 10) : "";
-        const std::string name = session_name_.empty() ? session_id_ : session_name_;
+        const std::string created = tree_->created_at().size() >= 10 ? "created " + tree_->created_at().substr(0, 10) : "";
+        const std::string name = tree_->session_name().empty() ? tree_->session_id() : tree_->session_name();
         // The id is bracketed only when a distinct session *name* exists;
         // with no name the id stands alone and must not repeat itself.
-        const bool distinct = !session_name_.empty() && !session_id_.empty() && session_name_ != session_id_;
-        const std::string sid = distinct ? name + " [" + session_id_ + "]" : name;
+        const bool distinct = !tree_->session_name().empty() && !tree_->session_id().empty() && tree_->session_name() != tree_->session_id();
+        const std::string sid = distinct ? name + " [" + tree_->session_id() + "]" : name;
 
         // Room for the name after the leading gutter, the fixed created
         // block, the reserved right pad and a one-cell spacer that keeps
@@ -366,7 +299,7 @@ int TaskWidget::RowWidth() const
     const int row_width = RowWidth();
     Elements lines;
 
-    if (section_collapsed_)
+    if (tree_->section_collapsed())
     {
         // A collapsed section keeps only its header row: the session meta and
         // the rule that introduce the list fold away with it (they are part of
@@ -376,12 +309,12 @@ int TaskWidget::RowWidth() const
     }
     else
     {
-        if (groups_.empty())
+        if (tree_->groups().empty())
         {
             lines.push_back(text(" (no tasks)") | dim | color(pal.text_dim));
         }
 
-        group_header_boxes_.resize(groups_.size());
+        group_header_boxes_.resize(tree_->groups().size());
 
         /* 系统组画在最前, 用户分组照旧 (顺序固定, 不靠标题行)。
          *
@@ -393,18 +326,18 @@ int TaskWidget::RowWidth() const
          * 这里读 `kind` 是它**唯一的读者** (展示层)。没有任何东西被隐藏: 系统
          * 任务与用户任务一样是快照里的普通成员, 展开就看得见。 */
         std::vector<size_t> order;
-        for (size_t i = 0; i < groups_.size(); i++)
-            if (groups_[i].kind == GroupKind::System)
+        for (size_t i = 0; i < tree_->groups().size(); i++)
+            if (tree_->groups()[i].kind == GroupKind::System)
                 order.push_back(i);
-        for (size_t i = 0; i < groups_.size(); i++)
-            if (groups_[i].kind != GroupKind::System)
+        for (size_t i = 0; i < tree_->groups().size(); i++)
+            if (tree_->groups()[i].kind != GroupKind::System)
                 order.push_back(i);
 
         for (size_t k = 0; k < order.size(); k++)
         {
             const size_t i = order[k];
-            const auto &g = groups_[i];
-            const bool expanded = group_expanded_[g.group_id];
+            const auto &g = tree_->groups()[i];
+            const bool expanded = tree_->group_expanded(g.group_id);
 
             // Collapsible group header: the arrow plus the group's name. A user
             // group shows "Group <id>" (its id *is* its leader's task id); a
