@@ -3,6 +3,7 @@
 #include "edc_scroll_view.hpp"
 #include "edc_task_widget.hpp"
 #include "edc_todo_widget.hpp"
+#include "edc_widget.hpp" /* ui::Widget */
 
 #include "ftxui/component/component_base.hpp"
 
@@ -23,7 +24,7 @@ namespace edc::ui
 // A real composite component rather than a bare struct: the window (and a test)
 // holds one object and renders it; the two ScrollViews stay reachable for
 // geometry assertions and wheel events.
-class SidebarView : public ::ftxui::ComponentBase
+class SidebarView : public Widget
 {
   public:
     SidebarView(std::shared_ptr<TaskWidget> task, std::shared_ptr<TodoWidget> todo);
@@ -45,8 +46,11 @@ class SidebarView : public ::ftxui::ComponentBase
         return pane_;
     }
 
-    ::ftxui::Element OnRender() override;
     bool OnEvent(::ftxui::Event event) override;
+
+  protected:
+    // Widget 模板方法: 只实现绘制。
+    ::ftxui::Element Draw(const Frame &frame) override;
 
   private:
     std::shared_ptr<ScrollView> tasks_;

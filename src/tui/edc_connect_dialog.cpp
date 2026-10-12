@@ -83,12 +83,7 @@ bool ConnectDialog::OnEvent(::ftxui::Event event)
     return fields_->OnEvent(event);
 }
 
-::ftxui::Element ConnectDialog::OnRender()
-{
-    return Draw();
-}
-
-::ftxui::Element ConnectDialog::Draw()
+::ftxui::Element ConnectDialog::Draw(const Frame &)
 {
     // Flat, borderless dialog borrowing the sidebar's visual language (accent
     // heading, dim rules, flat labels) but floating on dialog_bg. Labels use the

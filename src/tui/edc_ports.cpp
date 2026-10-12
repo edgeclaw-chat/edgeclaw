@@ -26,10 +26,4 @@ std::shared_ptr<const TerminalInfo> TerminalInfo::Shared()
     return kInstance;
 }
 
-std::shared_ptr<const ThemePalette> ThemePalette::Shared()
-{
-    static const std::shared_ptr<const ThemePalette> kInstance = std::make_shared<ThemePalette>();
-    return kInstance;
-}
-
 } // namespace edc::port

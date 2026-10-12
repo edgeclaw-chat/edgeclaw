@@ -1,6 +1,7 @@
 #pragma once
 
 #include "edc_working_indicator_view.hpp" /* 动画行: WorkingIndicatorView (含旧入口 WorkingIndicatorElement) */
+#include "edc_ports.hpp"                  /* 端口: IClock / ITerminalInfo */
 #include "edc_app_facade.hpp"             /* 端口: IAppFacade / IChannelSink / IUiDispatcher */
 #include "edc_channel_dispatcher.hpp"     /* 控制层: ChannelDispatcher / IChannelHost */
 #include "edc_connect_dialog.hpp"         /* 视图: /connect 弹窗 */
@@ -72,8 +73,11 @@ class TUIWindow : public ::ftxui::ComponentBase,
   public:
     // |sandbox_override| mirrors --sandbox/--no-sandbox: -1 keeps the persisted
     // config.json value, 0 forces off, 1 forces on (per-run only). Runtime
-    // toggling goes through /sandbox on|off.
-    explicit TUIWindow(int sandbox_override = -1);
+    // toggling goes through /sandbox on|off. |terminal| supplies the width the
+    // footer trims its fields against (nullptr = the real terminal); a test can
+    // pass a fixed-width one.
+    explicit TUIWindow(int sandbox_override = -1,
+                       std::shared_ptr<const port::ITerminalInfo> terminal = nullptr);
     virtual ~TUIWindow();
 
     TUIWindow(const TUIWindow &) = delete;
@@ -240,8 +244,11 @@ class TUIWindow : public ::ftxui::ComponentBase,
     // Channel dispatcher: the AppFacade sink. Turns typed events into model
     // updates + the IChannelHost hooks below.
     std::unique_ptr<control::ChannelDispatcher> dispatcher_;
-    // Chat-log file I/O (path, append, replay) — the transcript port.
-    std::unique_ptr<port::TranscriptStore> transcript_;
+    // Chat-log file I/O (path, append, replay) — the transcript port (interface;
+    // the concrete TranscriptStore is built in the ctor).
+    std::unique_ptr<port::ITranscriptStore> transcript_;
+    // Terminal geometry port: the footer trims its fields against this width.
+    std::shared_ptr<const port::ITerminalInfo> terminal_;
     // True once bracketed paste was actually enabled, so the destructor only
     // emits the "disable" sequence when the matching "enable" ran.
     bool bracketed_paste_on_ = false;

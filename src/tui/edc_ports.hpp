@@ -1,14 +1,15 @@
 #pragma once
 
-// ── 端口层: 把"外部世界"(时间 / 终端 / 主题)挡在视图之外 ───────────────────
+// ── 端口层: 把"外部世界"(时间 / 终端)挡在视图之外 ──────────────────────────
 //
-// 现在这些依赖是从环境里各自现取的: TickAnimations 直接读 steady_clock,
-// RenderFooter 直接 ioctl(TIOCGWINSZ), 每个 widget 直接调全局 style::palette()。
-// 隐藏依赖让组件无法脱离真实终端单测。
+// 这些依赖原是从环境里各自现取的: TickAnimations 直接读 steady_clock,
+// RenderFooter 直接 ioctl(TIOCGWINSZ)。隐藏依赖让组件无法脱离真实终端单测。
 //
 // 这里把它们提成**接口**: 组件依赖接口, 生产路径注入真实现, 测试注入假实现
-// (假时钟驱动一帧不必 sleep; 固定宽度验证 footer 的裁剪阈值; 假调色板断言组件
-// 只用了调色板角色)。
+// (假时钟驱动一帧不必 sleep; 固定宽度验证 footer 的裁剪阈值)。
+//
+// 调色板端口 (style::IPalette / style::SetPaletteProvider) 随 Palette 一起定义在
+// edc_style.hpp —— 它返回的就是那个类型, 放一起才不互相包含。
 
 #include "edc_style.hpp"
 
@@ -56,26 +57,6 @@ class TerminalInfo : public ITerminalInfo
     int width() const override;
 
     static std::shared_ptr<const TerminalInfo> Shared();
-};
-
-// 调色板端口: 组件依赖它, 而不是全局 style::palette()。
-class IPalette
-{
-  public:
-    virtual ~IPalette() = default;
-    virtual const style::Palette &colors() const = 0;
-};
-
-// 生产实现: 转发到启动时解析好的全局调色板 (见 edc_style.hpp / edc_theme.hpp)。
-class ThemePalette : public IPalette
-{
-  public:
-    const style::Palette &colors() const override
-    {
-        return style::palette();
-    }
-
-    static std::shared_ptr<const ThemePalette> Shared();
 };
 
 } // namespace edc::port

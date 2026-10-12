@@ -26,7 +26,6 @@
 #include <memory>
 #include <set>
 #include <string>
-#include <sys/ioctl.h>
 #include "edc_api.h" /* EDC_APP_RENDER_PLAIN / _MARKDOWN 常量 */
 #include <unistd.h>
 #include <vector>
@@ -218,7 +217,8 @@ std::string ShortenHome(const char *path)
 
 } // namespace
 
-TUIWindow::TUIWindow(int sandbox_override) : input_text_("")
+TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminalInfo> terminal)
+    : input_text_(""), terminal_(terminal ? std::move(terminal) : port::TerminalInfo::Shared())
 {
     // Models first: the chat view renders them, the dispatcher writes them.
     chat_model_ = std::make_shared<model::ChatModel>();
@@ -690,11 +690,9 @@ void TUIWindow::TickAnimations()
     // Columns available to the footer: the chat pane, i.e. the terminal minus
     // the sidebar and the two-cell split separator. The footer never uses more
     // than this, so its right-aligned model/"help" stop at the input's right
-    // edge instead of running under the sidebar.
-    int term_w = 80;
-    struct winsize ws;
-    if (::ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
-        term_w = ws.ws_col;
+    // edge instead of running under the sidebar. The width comes from the
+    // injected terminal port (the real tty by default, a fixed one in tests).
+    const int term_w = terminal_->width();
     const int pane_w = term_w - sidebar_width_ - 2;
 
     // Right end: the model in use, the sandbox state and the "/help" pointer,

@@ -78,7 +78,7 @@ SidebarView::SidebarView(std::shared_ptr<TaskWidget> task, std::shared_ptr<TodoW
     });
 }
 
-::ftxui::Element SidebarView::OnRender()
+::ftxui::Element SidebarView::Draw(const Frame &)
 {
     return pane_->Render();
 }

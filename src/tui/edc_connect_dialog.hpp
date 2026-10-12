@@ -10,6 +10,7 @@
 // 持久化/热应用交给构造时传入的 Submit 回调 —— 弹窗因此不认识 IAppFacade。
 
 #include "edc_app_facade.hpp" /* port::ConnectConfig */
+#include "edc_widget.hpp"     /* ui::Widget (模板方法基类) */
 
 #include "ftxui/component/component_base.hpp"
 
@@ -19,7 +20,7 @@
 namespace edc::ui
 {
 
-class ConnectDialog : public ::ftxui::ComponentBase
+class ConnectDialog : public Widget
 {
   public:
     // 提交回调: 把填好的配置交给宿主 (持久化 + 热应用)。返回 true = 成功, 弹窗自关。
@@ -36,12 +37,14 @@ class ConnectDialog : public ::ftxui::ComponentBase
 
     // 只在打开时由窗口转发事件: Esc 关, Enter 提交, 其余交给字段。
     bool OnEvent(::ftxui::Event event) override;
-    ::ftxui::Element OnRender() override;
+
+  protected:
+    // Widget 模板方法: 只实现绘制 (OnRender 由基类固定为 Draw + reflect)。
+    ::ftxui::Element Draw(const Frame &frame) override;
 
   private:
     // 收集字段并调用 Submit; 成功则自关。
     bool SubmitNow();
-    ::ftxui::Element Draw();
 
     bool open_ = false;
     std::string url_;

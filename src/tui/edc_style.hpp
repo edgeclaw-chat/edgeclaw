@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <ftxui/screen/color.hpp>
+#include <memory>
 #include <string>
 
 namespace edc
@@ -163,8 +164,34 @@ inline const Palette &light_palette()
 
 // The palette the widgets draw from, chosen from the terminal background
 // edc_theme resolved at startup.
+// ── 调色板端口 ──────────────────────────────────────────────────────────────
+// 渲染层通过 palette() 取色; 默认按终端主题在 dark/light 之间选, 但**可以**装一个
+// 提供者 (进程级) 来替换它 —— 这正是 IPalette 的用处: 测试以固定的假调色板渲染
+// (或以不同主题重放), 断言组件只用了调色板角色。提供者装了就优先于主题选择。
+class IPalette
+{
+  public:
+    virtual ~IPalette() = default;
+    virtual const Palette &colors() const = 0;
+};
+
+// 当前提供者的槽位。函数内静态 + inline ⇒ 跨 TU 唯一 (与 palette() 同一个对象)。
+inline std::shared_ptr<const IPalette> &palette_provider_slot()
+{
+    static std::shared_ptr<const IPalette> provider;
+    return provider;
+}
+
+// 装一个提供者; nullptr = 回到内建的主题选择 (dark/light)。
+inline void SetPaletteProvider(std::shared_ptr<const IPalette> provider)
+{
+    palette_provider_slot() = std::move(provider);
+}
+
 inline const Palette &palette()
 {
+    if (const std::shared_ptr<const IPalette> &provider = palette_provider_slot())
+        return provider->colors();
     return theme::IsLight() ? light_palette() : dark_palette();
 }
 

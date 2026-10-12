@@ -1,5 +1,6 @@
 #pragma once
 
+#include "edc_widget.hpp" /* ui::IScrollable */
 #include "ftxui/component/component_base.hpp"
 #include "ftxui/screen/box.hpp"
 #include <algorithm>
@@ -106,7 +107,7 @@ struct ScrollOptions
 // window onto it, scrolled by the offset this view owns. Deliberately not
 // ftxui::yframe: yframe derives the offset by centring whichever element
 // reported focus, which cannot express "scrolled to line N".
-class ScrollView : public ::ftxui::ComponentBase
+class ScrollView : public ::ftxui::ComponentBase, public ui::IScrollable
 {
   public:
     // |pinned|, when given, is drawn above the viewport and never scrolls (the
@@ -124,11 +125,12 @@ class ScrollView : public ::ftxui::ComponentBase
         return options_.focusable;
     }
 
-    // Move the viewport by |delta| lines. Returns false when the view was already
-    // against that end, so an enclosing container can use the key to move focus.
-    bool Scroll(int delta);
-    bool ScrollToTop();
-    bool ScrollToBottom();
+    // ui::IScrollable: move the viewport by |delta| lines. Returns false when the
+    // view was already against that end, so an enclosing container can use the key
+    // to move focus instead.
+    bool Scroll(int delta) override;
+    bool ScrollToTop() override;
+    bool ScrollToBottom() override;
 
     // True while the viewport follows the tail, so new content reveals itself
     // instead of leaving the reader behind.
