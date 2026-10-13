@@ -129,6 +129,10 @@ struct edc_task
     edc_sink sink;
 
     int is_group_leader;
+    /* Created as a background task (`&` / `--bg`): it runs without taking the screen, and
+     * it keeps that property across a restart -- resuming it must not put it on screen
+     * either. Persisted. */
+    bool is_background;
 
     struct edc_task_group *group;
 

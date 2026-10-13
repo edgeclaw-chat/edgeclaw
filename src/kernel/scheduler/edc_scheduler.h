@@ -308,7 +308,6 @@ extern struct edc_task_group *edc_scheduler_get_foreground(struct edc_session *s
 extern const char *edc_scheduler_task_workdir(struct edc_task *task);
 
 /** True when |session| holds a task that has not finished. */
-extern bool edc_scheduler_has_active_tasks(struct edc_scheduler *sched, struct edc_session *session);
 
 extern void edc_scheduler_register_task(struct edc_scheduler *sched, struct edc_task *task, void *request_id);
 extern void edc_scheduler_unregister_task(struct edc_scheduler *sched, void *request_id);

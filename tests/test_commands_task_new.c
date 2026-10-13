@@ -223,6 +223,33 @@ int main(void)
         CHECK(sent && strcmp(sent, full) == 0, "while the prompt reaches the LLM in full");
     }
 
+    /* ── /task resume --all: 重启后一把复活 ───────────────────────── */
+
+    TEST("/task resume --all re-decides every stopped task, in dependency order");
+    /* 先造两个: A 在新组里跑, B 排在它后面(同组)。 */
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "/task new \"alpha\" --new-group");
+    struct edc_task *alpha = g_llm_task;
+    CHECK(alpha != NULL, "A 在跑");
+    struct edc_task *beta = NULL;
+    if (alpha)
+    {
+        drive_command(cfg, sm, sched, "/task new \"beta\"");
+        beta = last_member_except(alpha->group, alpha);
+        CHECK(beta && edc_task_awaits_deps(beta), "B 排在 A 后面");
+
+        /* 模拟重启后的样子: A 被中断 —— 而按依赖语义, 排队等它的 B 一起倒。 */
+        CHECK(edc_task_mark_interrupted(alpha), "A 被中断");
+        CHECK(beta && edc_task_has_failed(beta), "B 跟着级联失败 (SEQ 与 JOIN 一致)");
+
+        g_llm_calls = 0;
+        g_llm_task = NULL;
+        drive_command(cfg, sm, sched, "/task resume --all");
+        CHECK(g_llm_task == alpha, "A 被复活并驱动");
+        CHECK(beta && edc_task_awaits_deps(beta), "B 回到等依赖 (没有越过 A)");
+    }
+
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

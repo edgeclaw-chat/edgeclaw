@@ -126,7 +126,7 @@ static bool edc_commands_handle_help(struct edc_reply_to to)
                        "- /group history <id>  (the whole group; one block per member)\n"
                        "- /group fold [id] [focus]  (fold now, ignoring the trigger)\n"
                        "- /task groups  ·  /task fg <id>  ·  /task bg [id]\n"
-                       "- /task stop [id]  ·  /task resume [id]   (default: active task of the foreground group)\n"
+                       "- /task stop [id]  ·  /task resume [id|--all]   (default: active task of the foreground group)\n"
                        "- /task chain <src> <dst>  ·  /task join <id>\n"
                        "\n"
                        "- /whoami\n"
@@ -682,8 +682,9 @@ static void edc_commands_handle_task_new( struct edc_session_manager *sm, struct
     struct edc_task_spec spec;
     memset(&spec, 0, sizeof(spec));
     /* desc names the task (truncated for display); input is the whole prompt -- they are
-     * not the same string once the prompt is longer than EDC_TASK_DESC_MAX. */
-    spec.desc = (opts.desc && sdslen(opts.desc) > 0) ? opts.desc : "New task";
+     * not the same string once the prompt is longer than EDC_TASK_DESC_MAX. Non-empty:
+     * the guard above rejected an empty input. */
+    spec.desc = opts.desc;
     spec.channel_type = to.type;
     spec.input = opts.input;
     spec.deps = deps;
@@ -813,6 +814,35 @@ static void edc_commands_handle_task_resume( struct edc_session_manager *sm, str
 {
     struct edc_session *sess = edc_session_manager_get_active(sm);
     struct edc_task *t = NULL;
+
+    if (arg && strcmp(arg, "--all") == 0)
+    {
+        /* Batch revive, for after a restart (which stops every unfinished task): re-decide
+         * each stopped task of this session. The order does not matter -- a task whose
+         * dependency is stopped too parks in dep-wait and is released when that one
+         * produces, and the message-end scan drives it then. */
+        edc_session_store_reconcile_pending_deps(sm, sched);
+        int resumed = 0;
+        struct edc_task_group *g;
+        DL_FOREACH(sess ? sess->groups : NULL, g)
+        {
+            struct edc_task *m;
+            LL_FOREACH2(g->members, m, group_next)
+            {
+                if (!edc_task_is_resumable(m))
+                    continue;
+                edc_scheduler_resume_task(sched, m);
+                resumed++;
+            }
+        }
+        sds reply = sdscatprintf(sdsempty(),
+                                 "**Resumed** — %d task(s) re-decided. Ones whose dependency is still stopped "
+                                 "wait for it.",
+                                 resumed);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        return;
+    }
 
     if (!arg || sdslen(arg) == 0)
     {
@@ -945,6 +975,14 @@ static void edc_commands_handle_task_fg(struct edc_session_manager *sm, struct e
     if (!g)
     {
         edc_commands_reply(to, "Group not found.");
+        return;
+    }
+    if (edc_task_group_is_system(g))
+    {
+        /* The system group holds fold / curation work; putting it in front would let it
+         * take the screen and become what an id-less command acts on. */
+        edc_commands_reply(to, "**Foreground** — that task lives in the system group (fold / curation); "
+                               "the foreground is for user groups.");
         return;
     }
     edc_scheduler_set_foreground(edc_session_manager_get_active(sm), g);

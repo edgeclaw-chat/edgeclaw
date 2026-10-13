@@ -476,8 +476,8 @@ static struct edc_task_group *sched_settle_task(struct edc_scheduler *sched, str
     case EDC_TASK_PLACE_FOREGROUND:
     default:
         group = sched_foreground(session);
-        /* A finished or orphaned group is not a place to put new work. */
-        if (!group || group->is_orphaned || group->member_count == 0)
+        /* A finished, orphaned or system group is not a place to put new work. */
+        if (!group || group->is_orphaned || group->member_count == 0 || edc_task_group_is_system(group))
             group = edc_scheduler_create_group(sched, session, task);
         else
             edc_task_group_add_task(group, task);
@@ -506,6 +506,10 @@ bool edc_scheduler_task_adopt(struct edc_scheduler *sched, struct edc_session *s
 {
     if (!sched || !session || !task || !spec)
         return false;
+
+    /* A background task never takes the screen -- not at creation (take_foreground is
+     * false for them) and not when it is driven (see sched_drive_task). */
+    task->is_background = spec->background;
 
     /* Edges first: a dependent parks in WAITING_DEPS, and the group it joins does
      * not care which phase it was in. */
@@ -773,7 +777,7 @@ static void sched_drive_task(struct edc_scheduler *sched, struct edc_task *task)
      * is what `&` asked for), so a task that was queued behind the one in front picks
      * the active pointer up here -- when it finally runs and nothing is in front. */
     struct edc_session *own = edc_task_session(task);
-    if (own && task->group && own->foreground_group == task->group)
+    if (own && task->group && !task->is_background && own->foreground_group == task->group)
     {
         struct edc_task *cur = edc_session_get_active_task(own);
         if (cur != task && (!cur || !edc_task_is_running(cur)))
@@ -884,24 +888,6 @@ const char *edc_scheduler_task_workdir(struct edc_task *task)
     /* Runs in the task's own bound directory; NULL when it has no owner. */
     struct edc_session *own = (task && task->group) ? task->group->session : NULL;
     return own ? edc_session_get_workdir(own) : NULL;
-}
-
-bool edc_scheduler_has_active_tasks(struct edc_scheduler *sched, struct edc_session *session)
-{
-    if (!sched || !session)
-        return false;
-    struct edc_task_group *g;
-    DL_FOREACH(session->groups, g)
-    {
-        struct edc_task *t;
-        LL_FOREACH2(g->members, t, group_next)
-        {
-            /* "Any task left running" = still alive. */
-            if (edc_task_is_alive(t))
-                return true;
-        }
-    }
-    return false;
 }
 
 /* ── Register/unregister ───────────────────────────────────── */

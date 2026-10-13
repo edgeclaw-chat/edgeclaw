@@ -252,6 +252,18 @@ int main(void)
     CHECK(aside && edc_task_is_cancelled(aside), "the task in front was stopped");
     CHECK(waiting && !edc_task_is_cancelled(waiting), "the focused task was left alone");
 
+    /* ── 后台任务不上屏: 就算场上没人跑, 也不给它焦点 ─────────────── */
+
+    TEST("a driven background task does not take the front, even when nothing runs");
+    edc_task_mark_completed(waiting); /* 焦点停在一个已结束的任务上, 场上没人跑 */
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    struct edc_task *bg2 = drive_command(cfg, sm, sched, "bgwork &");
+    CHECK(bg2 != NULL, "后台任务跑起来了");
+    CHECK(bg2 && bg2->is_background, "它被记成后台任务");
+    CHECK(bg2 && bg2->group == at_fg->group, "还是进当前前台组");
+    CHECK(edc_session_get_active_task(sess) == waiting, "焦点没有跑到它身上 (后台不上屏)");
+
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

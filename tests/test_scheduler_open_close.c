@@ -147,6 +147,7 @@ static void test_close_interrupts_in_flight_and_heals_the_queue(void)
     edc_scheduler_set_foreground(sess, g);
     edc_scheduler_attach_input(sched, a, "a's input");
     CHECK(edc_task_await_exec(a), "A is in flight (LLM_PROCESSING)");
+    a->is_background = true; /* it must keep that across the restart (see below) */
 
     struct edc_task_spec spec;
     memset(&spec, 0, sizeof(spec));
@@ -173,6 +174,7 @@ static void test_close_interrupts_in_flight_and_heals_the_queue(void)
     struct edc_task *ra = edc_session_manager_find_task_any(sched2->sessions, a_id, NULL);
     struct edc_task *rb = edc_session_manager_find_task_any(sched2->sessions, b_id, NULL);
     CHECK(ra && edc_task_is_interrupted(ra), "INTERRUPTED round-trips (no inference on load)");
+    CHECK(ra && ra->is_background, "and the background flag does too (resuming it must not put it on screen)");
     CHECK(rb && edc_task_has_failed(rb), "and B's ERROR does too");
     CHECK(rb && rb->deps_total == 1 && rb->deps && rb->deps->source && a_id &&
               strcmp(rb->deps->source->task_id, a_id) == 0,
