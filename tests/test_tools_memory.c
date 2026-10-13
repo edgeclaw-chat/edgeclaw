@@ -136,15 +136,20 @@ int main(void)
     CHECK(l1.result && strstr(l1.result, "[m2]") != NULL && strstr(l1.result, "[m1]") == NULL, "翻页只给 m2");
     free_capture(&l1);
 
-    TEST("memory_search: 多查询; 命中摘要/明细; 没命中也给计数");
-    struct capture s1 = run_tool(tb, task, "memory_search", "{\"queries\":[\"沙箱\",\"bazelisk\",\"不存在的词\"]}");
-    CHECK(s1.error == NULL, "多查询成功");
-    CHECK(s1.result && strstr(s1.result, "1 hit(s) for \"沙箱\"") != NULL && strstr(s1.result, "[m2]") != NULL, "查询1 命中 1 条");
-    CHECK(s1.result && strstr(s1.result, "[m1]") != NULL, "查询2 命中明细里的词");
-    CHECK(s1.result && strstr(s1.result, "0 hit(s) for \"不存在的词\"") != NULL, "查询3 0 命中也是正常结果");
+    TEST("memory_search: 多正则分组命中; 非法正则逐项报, 不整体失败");
+    struct capture s1 = run_tool(tb, task, "memory_search", "{\"patterns\":[\"^沙箱\",\"bazel|sudo\",\"不存在的词\"]}");
+    CHECK(s1.error == NULL, "多正则搜索成功");
+    CHECK(s1.result && strstr(s1.result, "1 hit(s) for /^沙箱/") != NULL && strstr(s1.result, "[m2]") != NULL,
+          "正则1 锚定命中 1 条");
+    CHECK(s1.result && strstr(s1.result, "2 hit(s) for /bazel|sudo/") != NULL && strstr(s1.result, "[m1]") != NULL,
+          "正则2 交替命中 2 条");
+    CHECK(s1.result && strstr(s1.result, "0 hit(s) for /不存在的词/") != NULL, "正则3 0 命中也是正常结果");
     free_capture(&s1);
+    struct capture s5 = run_tool(tb, task, "memory_search", "{\"patterns\":[\"(\"]}");
+    CHECK(s5.error == NULL && s5.result && strstr(s5.result, "invalid regex") != NULL, "非法正则逐项报错");
+    free_capture(&s5);
     struct capture s4 = run_tool(tb, task, "memory_search", "{}");
-    CHECK(s4.error != NULL, "缺 queries 报错");
+    CHECK(s4.error != NULL, "缺 patterns 报错");
     free_capture(&s4);
 
     TEST("memory_get: 批量读; 未知 id 给说明而不是整体报错");

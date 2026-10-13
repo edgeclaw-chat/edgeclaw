@@ -112,31 +112,36 @@ static void memory_search_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool
         return;
     }
 
-    cJSON *arr = cJSON_GetObjectItem(args, "queries");
+    cJSON *arr = cJSON_GetObjectItem(args, "patterns");
     int n = (arr && cJSON_IsArray(arr)) ? cJSON_GetArraySize(arr) : 0;
     if (n <= 0)
     {
-        fail(ctx, callback, "Error: `queries` must be a non-empty array of keywords, e.g. [\"bazel\",\"sandbox\"].");
+        fail(ctx, callback, "Error: `patterns` must be a non-empty array of POSIX ERE (grep -E) regexes.");
         return;
     }
 
     sds out = sdsempty();
     for (int i = 0; i < n; i++)
     {
-        const char *query = cJSON_GetStringValue(cJSON_GetArrayItem(arr, i));
+        const char *pat = cJSON_GetStringValue(cJSON_GetArrayItem(arr, i));
         if (i)
             out = sdscat(out, "\n\n");
-        if (!query || !query[0])
+        if (!pat || !pat[0])
         {
-            out = sdscat(out, "(empty query)");
+            out = sdscat(out, "(empty pattern)");
             continue;
         }
         size_t hits = 0;
-        sds lines = edc_session_memory_search_lines(m, query, 20, &hits);
-        out = sdscatprintf(out, "__MEMORY_SEARCH__ %zu hit(s) for \"%s\"\n%s", hits, query,
-                           sdslen(lines) ? lines : "(no match)");
+        int bad = 0;
+        sds lines = edc_session_memory_search_regex_lines(m, pat, 20, &hits, &bad);
+        if (bad)
+            out = sdscatprintf(out, "__MEMORY_SEARCH__ invalid regex: %s", pat);
+        else
+            out = sdscatprintf(out, "__MEMORY_SEARCH__ %zu hit(s) for /%s/\n%s", hits, pat,
+                               sdslen(lines) ? lines : "(no match)");
         sdsfree(lines);
     }
+    edc_toolbox_emit_tool_message_plain(ctx, "memory_search", out);
     callback(ctx, out, NULL);
 }
 
@@ -168,6 +173,7 @@ static void memory_list_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool *
     sds out = sdscatprintf(sdsempty(), "__MEMORY_LIST__ %d..%d of %zu\n%s", offset, offset + n, total,
                            sdslen(lines) ? lines : "(nothing at this offset)");
     sdsfree(lines);
+    edc_toolbox_emit_tool_message_plain(ctx, "memory_list", out);
     callback(ctx, out, NULL);
 }
 
@@ -216,6 +222,7 @@ static void memory_get_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool *t
         out = sdscatprintf(out, "- [%s] rev %llu\n%s", id, (unsigned long long)(e ? e->updated_seq : 0), detail);
         sdsfree(detail);
     }
+    edc_toolbox_emit_tool_message_plain(ctx, "memory_get", out);
     callback(ctx, out, NULL);
 }
 
@@ -265,7 +272,7 @@ static void memory_write_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool 
             e->sources = strdup(src);
     }
 
-    sds out = sdscatprintf(sdsempty(), "Stored as %s (event #%llu). Other tasks see it on their next request.", id,
+    sds out = sdscatprintf(sdsempty(), "Stored as %s (rev %llu). Other tasks see it on their next request.", id,
                            (unsigned long long)seq);
     if (related)
         out = sdscatprintf(out,
@@ -477,14 +484,14 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
         "decisions, constraints, gotchas, external facts — never progress logs, todos or transient conclusions.";
 
     {
-        const char *desc = "Search this session's shared memory entries by one or more keywords (matches title, "
-                           "summary and detail). Returns one index line per hit, grouped per keyword; use memory_get "
-                           "for the full detail.";
+        const char *desc = "Search this session's shared memory entries with one or more POSIX ERE regexes "
+                           "(grep -E syntax), case-insensitive, matched anywhere in title / summary / detail. "
+                           "Returns one index line per hit, grouped per pattern; use memory_get for the full detail.";
         struct edc_tool *tool = edc_tool_new(
             "memory_search", desc,
-            edc_tool_param_new("queries",
-                               edc_param_array_type("Keywords to look for, e.g. [\"bazel\",\"sandbox\"]",
-                                                    edc_param_str_type("Keyword", NULL)),
+            edc_tool_param_new("patterns",
+                               edc_param_array_type("Regexes to look for, e.g. [\"bazel\",\"^m3\\\\b\"]",
+                                                    edc_param_str_type("POSIX ERE (grep -E)", NULL)),
                                true),
             memory_search_exec);
         edc_toolbox_register(tb, tool);

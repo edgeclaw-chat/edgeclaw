@@ -309,7 +309,7 @@ static const char kSessionMemoryHint[] =
     "visible to every task in it. Consult it when you need context from earlier work.\n"
     "\n"
     "When you decide to touch memory, do NOT just append -- first reconcile, then pick the right move:\n"
-    "- RECONCILE: look for existing entries about the same thing (`memory_search <keywords...>` / `memory_list`)\n"
+    "- RECONCILE: look for existing entries about the same thing (`memory_search <patterns...>` / `memory_list`)\n"
     "  and read them (`memory_get <ids...>`). If what you just learned shows an entry is now wrong, UPDATE it\n"
     "  to the correct content; if it is simply obsolete, RETIRE it (`memory_supersede <ids...>`; pass a list).\n"
     "- MERGE: if a related entry exists and the new knowledge belongs with it, UPDATE it with the merged\n"
@@ -320,13 +320,14 @@ static const char kSessionMemoryHint[] =
     "  entry changed, re-read it and redo the merge with the new rev.\n"
     "\n"
     "Tools:\n"
-    "- `memory_search <keywords...>`                   -- find entries (one line per hit)\n"
+    "- `memory_search <patterns...>`                   -- regex (grep -E, case-insensitive) over title/summary/detail\n"
     "- `memory_list [offset] [n]`                      -- enumerate entries\n"
     "- `memory_get <ids...>`                           -- read entries (each with its rev)\n"
     "- `memory_update <entries>`                       -- update entries: [{id, expected_rev, title?, summary?, detail?}] (atomic)\n"
     "- `memory_supersede <ids...>`                     -- retire entries (never deleted; atomic)\n"
     "- `memory_write <title> [summary] [detail]`       -- create a new entry\n"
-    "New or updated entries are announced at the end of the conversation. Keep progress logs and todos out of it.\n";
+    "New or updated entries are announced at the tail of your context (a \"## Session Memory Updates\" block)\n"
+    "when something changed. Keep progress logs and todos out of it.\n";
 
 sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir)
 {

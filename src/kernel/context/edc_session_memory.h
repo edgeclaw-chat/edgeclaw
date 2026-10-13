@@ -113,6 +113,13 @@ extern sds edc_session_memory_index_lines(const struct edc_session_memory *m, si
 extern sds edc_session_memory_search_lines(const struct edc_session_memory *m, const char *query, size_t cap,
                                            size_t *out_hits);
 
+/* Regex search: `pattern` is a POSIX ERE (grep -E), case-insensitive, matched anywhere
+ * in title/summary/detail. Same rows/ordering/cap semantics as the substring search.
+ * `*out_regerror` (may be NULL) = 1 when the pattern is refused (invalid or too long);
+ * the result is empty then. */
+extern sds edc_session_memory_search_regex_lines(const struct edc_session_memory *m, const char *pattern, size_t cap,
+                                                 size_t *out_hits, int *out_regerror);
+
 /* Tail notice (a request-time temporary):
  * entries CREATED/UPDATED since `seen`, one line each (an id appears once, the
  * newest), at most cap, with the total count and a usage hint. NULL = nothing new

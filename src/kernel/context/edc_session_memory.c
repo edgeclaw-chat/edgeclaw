@@ -10,6 +10,7 @@
 #include "utlist_fix.h"
 
 #include <ctype.h>
+#include <regex.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -301,6 +302,83 @@ sds edc_session_memory_search_lines(const struct edc_session_memory *m, const ch
     return out;
 }
 
+/* Regex search: POSIX ERE (grep -E), case-insensitive, matched ANYWHERE in title /
+ * summary / detail. `*out_regerror` (may be NULL) is set to 1 when the pattern is
+ * refused (failed to compile, or longer than the bound) -- the returned sds is empty
+ * then. Same ordering (newest first) and cap semantics as the substring search. */
+#define EDC_MEMO_MAX_PATTERN_LEN 512
+
+sds edc_session_memory_search_regex_lines(const struct edc_session_memory *m, const char *pattern, size_t cap,
+                                          size_t *out_hits, int *out_regerror)
+{
+    if (out_hits)
+        *out_hits = 0;
+    if (out_regerror)
+        *out_regerror = 0;
+    if (!m || !pattern || !pattern[0] || cap == 0 || m->entry_count == 0)
+        return sdsempty();
+    /* Bound the pattern: entries are few and small, but a pathological regex should
+     * not be able to run wild. */
+    if (strlen(pattern) > EDC_MEMO_MAX_PATTERN_LEN)
+    {
+        if (out_regerror)
+            *out_regerror = 1;
+        return sdsempty();
+    }
+
+    regex_t re;
+    if (regcomp(&re, pattern, REG_EXTENDED | REG_ICASE | REG_NOSUB) != 0)
+    {
+        if (out_regerror)
+            *out_regerror = 1;
+        return sdsempty();
+    }
+
+    size_t *hits = malloc(m->entry_count * sizeof(*hits));
+    if (!hits)
+    {
+        regfree(&re);
+        return sdsempty();
+    }
+    size_t nhits = 0;
+    for (size_t i = 0; i < m->entry_count; i++)
+    {
+        const struct edc_memo_entry *e = &m->entries[i];
+        bool hit = (e->title && regexec(&re, e->title, 0, NULL, 0) == 0) ||
+                   (e->summary && regexec(&re, e->summary, 0, NULL, 0) == 0) ||
+                   (e->detail && regexec(&re, e->detail, 0, NULL, 0) == 0);
+        if (!hit)
+            continue;
+        size_t j = nhits++;
+        while (j > 0)
+        {
+            const struct edc_memo_entry *prev = &m->entries[hits[j - 1]];
+            uint64_t a = prev->updated_seq ? prev->updated_seq : prev->created_seq;
+            uint64_t b = e->updated_seq ? e->updated_seq : e->created_seq;
+            if (a >= b)
+                break;
+            hits[j] = hits[j - 1];
+            j--;
+        }
+        hits[j] = i;
+    }
+    regfree(&re);
+
+    sds out = sdsempty();
+    for (size_t i = 0; i < nhits && i < cap; i++)
+    {
+        if (sdslen(out))
+            out = sdscat(out, "\n");
+        sds line = index_line_for(&m->entries[hits[i]]);
+        out = sdscatsds(out, line);
+        sdsfree(line);
+    }
+    free(hits);
+    if (out_hits)
+        *out_hits = nhits;
+    return out;
+}
+
 sds edc_session_memory_get_detail(const struct edc_session_memory *m, const char *id)
 {
     if (!m || !id)
@@ -355,8 +433,8 @@ static const char kCurateSystemPrompt[] =
     "   one when nothing related exists.\n"
     "\n"
     "Rules:\n"
-    "- SEARCH FIRST: use memory_search / memory_list to find related entries, and memory_get\n"
-    "  (a list of ids) to read them in full before changing them.\n"
+    "- SEARCH FIRST: use memory_search (POSIX ERE regexes) / memory_list to find related entries, and\n"
+    "  memory_get (a list of ids) to read them in full before changing them.\n"
     "- Prefer UPDATE over creating a near-duplicate. memory_update takes a list; for each item pass\n"
     "  the `rev` you read as `expected_rev`; if the tool says an item is stale, re-read and redo it.\n"
     "- RETIRE entries the material shows to be obsolete or wrong: memory_supersede takes a\n"
@@ -732,7 +810,7 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
 
     sds out = sdscatprintf(sdsempty(), "## Session Memory Updates  (共 %zu 条)\n%s", m->entry_count, body);
     if (npick > shown)
-        out = sdscatprintf(out, "\n… %zu more（memory_list 0 20 / memory_search <关键词> / memory_get <id>）",
+        out = sdscatprintf(out, "\n… %zu more（memory_search <patterns> / memory_list [offset] [n] / memory_get <ids>）",
                            npick - shown);
     else
         out = sdscat(out, "\n（memory_list / memory_search / memory_get 可查完整内容）");
