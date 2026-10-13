@@ -131,6 +131,23 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
 
     if (e->failed)
     {
+        const char *notice = e->error_message ? e->error_message : "LLM request failed";
+
+        /* A TRANSPORT failure (no HTTP response at all: DNS/TCP/TLS/timeout) is re-sent
+         * ONCE automatically -- a transient network blip should not kill the task. Stay
+         * in AWAIT_EXEC and re-send the SAME request (same request_id, so the reply still
+         * routes back); a second transport failure falls through and fails it. A failure
+         * that DID get an HTTP response is never retried here. */
+        if (!task->net_retried && edc_task_is_running(task) &&
+            edc_llm_error_classify(e->http_status, notice) == EDC_LLM_ERR_TRANSPORT &&
+            ops->send_llm(ex->ctx, task, req_id))
+        {
+            task->net_retried = true;
+            task->llm_rounds++; /* the retry consumes a run-budget round */
+            log_warn("task %s: LLM transport failure (%s) — re-sending once", task->task_id, notice);
+            return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
+        }
+
         task->current_request_id = NULL;
         /* Fails and broadcasts to dependents through the task layer's entry. */
         edc_task_mark_failed(task);
@@ -138,7 +155,6 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
             edc_task_set_output(task, sdsnew(e->content));
         edc_task_flush_redirects(task);
         /* Delivery is the host's job: the error text is presentation, not advance. */
-        const char *notice = e->error_message ? e->error_message : "LLM request failed";
         /* (1) the explicit overflow: the provider refused the request because it did
          * not fit. Keep its own words -- they carry the real numbers -- and add the
          * next step. Throttling is classified out in front of this, since "rate

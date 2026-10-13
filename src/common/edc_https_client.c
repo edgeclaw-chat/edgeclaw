@@ -191,10 +191,12 @@ static int edc_https_on_message_complete(llhttp_t *http)
  *
  * This is a TOTAL deadline, not an idle one: the response is non-streaming
  * (edc_llm_actor.c only finishes on the complete JSON), so no data flows during
- * generation to keep it alive. The default is therefore very loose (2 minutes) -- better
- * not to kill a live call; use EDGECLAW_HTTPS_TIMEOUT_MS to tighten it (also
- * test-friendly: a fixture can hit the deadline in seconds without waiting two minutes). */
-#define EDC_HTTPS_DEFAULT_TIMEOUT_MS 120000
+ * generation to keep it alive. The default is therefore very loose -- better not to
+ * kill a live call; use EDGECLAW_HTTPS_TIMEOUT_MS to tighten it (also test-friendly: a
+ * fixture can hit the deadline in seconds without waiting). Raised 120s -> 300s: a
+ * fold/curation input can be a few hundred KB, and a 1M-window model may need more than
+ * two minutes to finish a long summary on a non-streaming call. */
+#define EDC_HTTPS_DEFAULT_TIMEOUT_MS 300000
 
 static int edc_https_timeout_ms(void)
 {

@@ -135,6 +135,11 @@ struct edc_task
      * when a new input starts. max_iter <= 0 means unlimited. */
     int llm_rounds;
 
+    /* One automatic re-send after a TRANSPORT failure (no HTTP response at all:
+     * DNS/TCP/TLS/timeout). Set on the first retry, so a persistent outage still fails
+     * the task instead of looping. In-memory only (not persisted). */
+    bool net_retried;
+
     /* Usage accumulated over the task's whole lifetime, for the sidebar; not used
      * for scheduling. */
     long long tokens_prompt;
