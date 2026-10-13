@@ -251,6 +251,7 @@ equivalent of `cmd &`.
 | Command | Description |
 |---------|-------------|
 | `/task stop [tid]` | Cancel a task (SIGTERM — notifies dependents). Without an id, stops the active task of the foreground group; errors if the id is not found |
+| `/group info [id]` | A group's context / fold numbers (window, the fold line, how far it is, epoch, failures, fold in flight) |
 | `/task resume --all` | Re-decide every stopped task of the session (after a restart); ones whose dependency is stopped too wait for it |
 | `/task resume [tid]` | Resume an INTERRUPTED, SUSPENDED, ERROR or CANCELLED task: re-derives state (deps / tool chain / turn) and drives it; an ERROR or CANCELLED task continues its unfinished turn. Without an id, resumes the active task of the foreground group |
 | `/task join <tid>` | Show output, auto-inject into active task (or create one), then reclaim |

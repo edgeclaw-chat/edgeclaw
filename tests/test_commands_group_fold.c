@@ -231,6 +231,26 @@ int main(void)
         CHECK(edc_session_get_active_task(sess) != pending_fold, "折叠任务也没变成 active");
     }
 
+    TEST("/group info: 一个组的上下文 / 折叠数字");
+    struct edc_task_group *gi = make_group(sess, "15");
+    sds info = edc_commands_group_info_text(sess, gi, cfg);
+    CHECK(info && strstr(info, "fold line") && strstr(info, "1032192"), "带折线 (window − 16384)");
+    CHECK(info && strstr(info, "1 members"), "带成员数");
+    CHECK(info && strstr(info, "never folded"), "从没折过时说得清楚");
+    CHECK(info && strstr(info, "not due"), "内容还很少 ⇒ 不到线");
+    CHECK(info && strstr(info, "0/3"), "带连续失败计数");
+    CHECK(info && strstr(info, "1 foldable"), "带可折数");
+    sdsfree(info);
+
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sched->sessions, sched, "/group info 15");
+    CHECK(g_llm_calls == 0, "只报告, 不折任何东西");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sched->sessions, sched, "/group info");
+    CHECK(g_llm_calls == 0, "不带 id 看前台组, 也不折");
+
     edc_session_free(sess);
     edc_scheduler_free(sched);
     edc_config_free(cfg);

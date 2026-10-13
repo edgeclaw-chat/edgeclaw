@@ -3,12 +3,15 @@
 
 #include "edc_channel_actor.h"
 #include "edc_config.h"
+#include "sds.h"
 #include <stdbool.h>
 struct edc_actor;
 struct edc_channel_message;
 struct edc_config;
 struct edc_scheduler;
+struct edc_session;
 struct edc_session_manager;
+struct edc_task_group;
 
 /* The command handler (the userland entry). It takes exactly the few things its
  * downstream really needs (signature = reader roster) -- borrowing no umbrella object:
@@ -17,6 +20,12 @@ struct edc_session_manager;
 extern bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
                                  struct edc_reply_to to, struct edc_channel_message *);
 extern void edc_commands_reply(struct edc_reply_to to, const char *text);
+
+/** The `/group info` body: one group's context and fold numbers, so "why is this group
+ *  not folding yet?" is answerable without reading the snapshot trace or doing the
+ *  arithmetic by hand. `group` may be NULL (nothing to describe). Exposed for tests. */
+extern sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_group *group,
+                                        const struct edc_config *conf);
 
 /** Structured command reply: the same exit as edc_commands_reply (the same
  *  to.channel_actor), only the message type changes (TASK_HISTORY) -- the frontend then

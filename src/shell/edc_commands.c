@@ -5,6 +5,8 @@
 #include "edc_channel_actor.h"
 #include "edc_cmd_parse.h"
 #include "edc_compat.h"
+#include "edc_context.h"
+#include "edc_group_fold.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_memory.h"
@@ -124,6 +126,7 @@ static bool edc_commands_handle_help(struct edc_reply_to to)
                        "- /task list  ·  /task status [id]  ·  /task output <id>\n"
                        "- /task history <id>   (its messages; `--json` = raw payload)\n"
                        "- /group history <id>  (the whole group; one block per member)\n"
+                       "- /group info [id]  (context / fold numbers)\n"
                        "- /group fold [id] [focus]  (fold now, ignoring the trigger)\n"
                        "- /task groups  ·  /task fg <id>  ·  /task bg [id]\n"
                        "- /task stop [id]  ·  /task resume [id|--all]   (default: active task of the foreground group)\n"
@@ -1489,6 +1492,65 @@ static void edc_commands_handle_group_fold( struct edc_session_manager *sm, stru
 /* `/group history <id>`: a group's message history -- one block per member (the block
  * starts with its input, then its own messages, never interleaved across tasks). The
  * group id is the group head's id. */
+sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_group *group,
+                                 const struct edc_config *conf)
+{
+    if (!group)
+        return sdsnew("**Group** — no such group (the id is the one on its header).");
+
+    bool estimated = false;
+    long long ctx = edc_context_group_ctx_tokens(group, &estimated);
+    int window = conf ? conf->context_window : 0;
+    long long line = (long long)window - EDC_FOLD_RESERVE_TOKENS;
+
+    struct edc_task *leader = group->leader;
+    const char *place =
+        (session && edc_scheduler_get_foreground(session) == group) ? "foreground" : "background";
+
+    sds out = sdscatprintf(sdsempty(), "## Group `%s` (%s%s)\n\n", group->group_id, place,
+                           group->is_orphaned ? ", orphaned" : "");
+    out = sdscatprintf(out, "- **%d members** · **%zu foldable** · **%zu unfolded messages**\n", group->member_count,
+                       edc_task_group_count_foldable(group), edc_task_group_unfolded_msg_count(group));
+    out = sdscatprintf(out, "- **context** `%lld`%s\n", ctx,
+                       estimated ? " (the tail after the last reply is estimated)" : " (provider-reported)");
+    out = sdscatprintf(out, "- **window** `%d` · **fold line** `%lld` (= window − %d reserve)\n", window, line,
+                       EDC_FOLD_RESERVE_TOKENS);
+    if (window > 0)
+        out = sdscatprintf(out, "- **verdict**: %s, %lld tokens %s the line%s\n",
+                           edc_group_fold_due(group, conf) ? "due" : "not due",
+                           ctx > line ? ctx - line : line - ctx, ctx > line ? "above" : "below",
+                           edc_group_fold_due(group, conf) ? " — the next message folds it" : "");
+    out = sdscatprintf(out, "- **fold epoch** %u · **memory** %s · **failure streak** %d/%d\n", group->fold_epoch,
+                       (group->memory && sdslen(group->memory) > 0) ? "present" : "none (never folded)",
+                       group->fold_failures, EDC_FOLD_MAX_FAILURES);
+    out = sdscatprintf(out, "- **fold in flight** %s (one per session) · **barrier on this group** %s\n",
+                       (session && edc_scheduler_has_pending_system_task(session)) ? "yes" : "no",
+                       edc_group_fold_holds_group(group) ? "yes" : "no");
+    if (leader)
+        out = sdscatprintf(out, "- leader `%s`%s\n", leader->task_id,
+                           (leader->description && *leader->description) ? leader->description : "");
+    out = sdscatprintf(out, "\n_`/group fold` folds now, ignoring the line._\n");
+    return out;
+}
+
+static void edc_commands_handle_group_info(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                          struct edc_reply_to to, sds arg)
+{
+    struct edc_session *sess = edc_session_manager_get_active(sm);
+    bool named = (arg && sdslen(arg) > 0);
+    struct edc_task_group *g =
+        named ? (sess ? edc_session_find_group(sess, arg) : NULL) : (sess ? edc_scheduler_get_foreground(sess) : NULL);
+    if (!g)
+    {
+        edc_commands_reply(to, named ? "**Group** — not found (the id is the one on its header)."
+                                     : "**Group** — no foreground group; pass an id: `/group info <id>`.");
+        return;
+    }
+    sds out = edc_commands_group_info_text(sess, g, sched ? sched->config : NULL);
+    edc_commands_reply(to, out);
+    sdsfree(out);
+}
+
 static bool edc_commands_handle_group( struct edc_session_manager *sm, struct edc_scheduler *sched,
                                       struct edc_reply_to to, struct edc_channel_message *message)
 {
@@ -1497,6 +1559,18 @@ static bool edc_commands_handle_group( struct edc_session_manager *sm, struct ed
     {
         edc_commands_handle_history(sm, sched, to, arg, true);
         sdsfree(arg);
+        return true;
+    }
+    sds info_arg = NULL;
+    if (edc_commands_arg(message->content, "/group info", &info_arg))
+    {
+        edc_commands_handle_group_info(sm, sched, to, info_arg);
+        sdsfree(info_arg);
+        return true;
+    }
+    if (edc_commands_is_command(message->content, "/group info"))
+    {
+        edc_commands_handle_group_info(sm, sched, to, NULL);
         return true;
     }
     sds fold_arg = NULL;
@@ -1516,12 +1590,14 @@ static bool edc_commands_handle_group( struct edc_session_manager *sm, struct ed
     if (edc_commands_is_command(message->content, "/group") ||
         edc_commands_is_command(message->content, "/group history"))
     {
-        edc_commands_reply(to, "Usage: `/group history <id>`   (the id is the group header's)\n\n"
+        edc_commands_reply(to, "Usage: `/group info [id]`   (context / fold numbers; no id = the foreground group)\n\n"
+                               "Usage: `/group history <id>`   (the id is the group header's)\n\n"
                                "Usage: `/group fold [id] [focus]`   (fold now, ignoring the trigger; "
                                "no id = the foreground group)");
         return true;
     }
-    edc_commands_reply(to, "**Unknown subcommand** — `/group` knows `history <id>` and `fold [id] [focus]`.");
+    edc_commands_reply(to, "**Unknown subcommand** — `/group` knows `info [id]`, `history <id>` and "
+                           "`fold [id] [focus]`.");
     return true;
 }
 
