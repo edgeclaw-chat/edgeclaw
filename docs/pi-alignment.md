@@ -1,6 +1,6 @@
 # 向 pi 对齐：上下文 token 统计 + 记忆折叠（方案）
 
-> 依据一：`pi-compaction-guide.md`（pi 源码整理：`compaction.ts` / `agent-session.ts` / `overflow.ts`）。
+> 依据一：pi 源码（`packages/coding-agent/src/core/compaction/compaction.ts` / `agent-session.ts`、`packages/ai/src/utils/overflow.ts`）。
 > 依据二：本仓 HEAD `824dc07`（分支 `memory`）的**实际代码**，逐条核实过，未核实的不写。
 > 本文只是方案，**不改代码**。术语：本仓的 **折叠**（L1 fold，`src/kernel/context/edc_group_fold.c`）↔ pi 的 **压缩**（compaction）。
 
