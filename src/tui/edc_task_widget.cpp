@@ -20,12 +20,15 @@ bool StateIsProcessing(const std::string &state)
     return style::TaskStateProcessing(state);
 }
 
-// A task's marker in the tree: the shape says whether it is the active task
-// (block) or not (dot), the colour says its state. The block is
+// A task's marker in the tree: three shapes, one meaning each -- the block is the active
+// task, the hollow square is an INTERRUPTED one (the loop stopped underneath it), the dot
+// is everything else. The colour says the state, and INTERRUPTED wears the error colour:
+// it did not fail, but it is not going to move on its own either. The block is
 // style::kBlockGlyph, the same glyph the working bar is made of.
 constexpr const char *kStateDot = "●";
 constexpr const char *kActiveMarker = style::kBlockGlyph;
-constexpr int kMarkerCells = 1; // either glyph is a single terminal cell
+constexpr const char *kInterruptedMarker = "□";
+constexpr int kMarkerCells = 1; // any of the three is a single terminal cell
 
 // Blank cells kept at the right edge of every full-width row: the sidebar is the
 // window's rightmost element, so this restores the inset the left side has.
@@ -310,7 +313,8 @@ int TaskWidget::RowWidth() const
                 // Indent, the marker glyph and the task id; the description is
                 // appended separately so its length can be measured against the
                 // row width.
-                const char *marker = t.is_active ? kActiveMarker : kStateDot;
+                const char *marker = (t.state == "INTERRUPTED") ? kInterruptedMarker
+                                     : (t.is_active ? kActiveMarker : kStateDot);
                 const std::string head = " " + t.task_id;
                 std::string left = head;
 

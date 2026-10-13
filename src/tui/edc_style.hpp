@@ -186,7 +186,9 @@ inline ::ftxui::Color TaskStateColor(const Palette &pal, const std::string &stat
         return pal.error;
     if (TaskStateProcessing(state))
         return pal.accent;
-    if (state == "INTERRUPTED" || state == "SUSPENDED")
+    if (state == "INTERRUPTED")
+        return pal.error; // red, like ERROR: the loop stopped underneath it
+    if (state == "SUSPENDED")
         return pal.suspended;
     if (state == "CANCELLED")
         return pal.text_dim;
