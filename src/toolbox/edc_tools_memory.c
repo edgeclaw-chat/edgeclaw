@@ -98,6 +98,67 @@ static bool json_u64(cJSON *args, const char *key, uint64_t *out)
     return true;
 }
 
+/* ── echo header = the CALL, not just the tool name ──────────
+ * The TOOL echo's header is the line the user reads to know WHICH question was asked;
+ * the result alone does not say it (index rows / "Stored as m1" never name what was
+ * searched, fetched or written). Same convention as the shell tools, whose header is
+ * the command itself. Pure function over the request's args (never touches the entry
+ * table), so it is unit-testable on its own. */
+
+/* Append a bracketed list: the string items of `arr`, or the `id` of its object items
+ * (memory_update's entries). Missing/ill-typed items degrade to "?" -- the header is
+ * display-only and must never fail a call. */
+static sds memo_header_add_list(sds h, cJSON *arr, bool objects)
+{
+    h = sdscat(h, "[");
+    int n = (arr && cJSON_IsArray(arr)) ? cJSON_GetArraySize(arr) : 0;
+    for (int i = 0; i < n; i++)
+    {
+        cJSON *it = cJSON_GetArrayItem(arr, i);
+        const char *s = NULL;
+        if (objects)
+            s = cJSON_IsObject(it) ? cJSON_GetStringValue(cJSON_GetObjectItem(it, "id")) : NULL;
+        else
+            s = cJSON_IsString(it) ? it->valuestring : NULL;
+        h = sdscatprintf(h, "%s%s", i ? " " : "", (s && *s) ? s : "?");
+    }
+    return sdscat(h, "]");
+}
+
+sds edc_tools_memory_call_header(const char *name, cJSON *args)
+{
+    sds h = sdsnew(name ? name : "memory");
+    if (!args)
+        return h;
+
+    if (strcmp(h, "memory_search") == 0)
+    {
+        h = sdscat(h, " patterns=");
+        h = memo_header_add_list(h, cJSON_GetObjectItem(args, "patterns"), false);
+    }
+    else if (strcmp(h, "memory_get") == 0 || strcmp(h, "memory_supersede") == 0)
+    {
+        h = sdscat(h, " ids=");
+        h = memo_header_add_list(h, cJSON_GetObjectItem(args, "ids"), false);
+    }
+    else if (strcmp(h, "memory_list") == 0)
+    {
+        /* the requested window (the page is also in the result's first line) */
+        h = sdscatprintf(h, " offset=%d n=%d", json_int(args, "offset", 0), json_int(args, "n", 20));
+    }
+    else if (strcmp(h, "memory_write") == 0)
+    {
+        const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(args, "title"));
+        h = sdscatprintf(h, " title=%s", (title && *title) ? title : "?");
+    }
+    else if (strcmp(h, "memory_update") == 0)
+    {
+        h = sdscat(h, " ids=");
+        h = memo_header_add_list(h, cJSON_GetObjectItem(args, "entries"), true);
+    }
+    return h;
+}
+
 /* ── memory_search ─────────────────────────────────────────── */
 
 static void memory_search_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
@@ -141,7 +202,9 @@ static void memory_search_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool
                                sdslen(lines) ? lines : "(no match)");
         sdsfree(lines);
     }
-    edc_toolbox_emit_tool_message_plain(ctx, "memory_search", out);
+    sds header = edc_tools_memory_call_header("memory_search", args);
+    edc_toolbox_emit_tool_message_plain(ctx, header, out);
+    sdsfree(header);
     callback(ctx, out, NULL);
 }
 
@@ -173,7 +236,9 @@ static void memory_list_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool *
     sds out = sdscatprintf(sdsempty(), "__MEMORY_LIST__ %d..%d of %zu\n%s", offset, offset + n, total,
                            sdslen(lines) ? lines : "(nothing at this offset)");
     sdsfree(lines);
-    edc_toolbox_emit_tool_message_plain(ctx, "memory_list", out);
+    sds header = edc_tools_memory_call_header("memory_list", args);
+    edc_toolbox_emit_tool_message_plain(ctx, header, out);
+    sdsfree(header);
     callback(ctx, out, NULL);
 }
 
@@ -222,7 +287,9 @@ static void memory_get_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool *t
         out = sdscatprintf(out, "- [%s] rev %llu\n%s", id, (unsigned long long)(e ? e->updated_seq : 0), detail);
         sdsfree(detail);
     }
-    edc_toolbox_emit_tool_message_plain(ctx, "memory_get", out);
+    sds header = edc_tools_memory_call_header("memory_get", args);
+    edc_toolbox_emit_tool_message_plain(ctx, header, out);
+    sdsfree(header);
     callback(ctx, out, NULL);
 }
 
@@ -281,7 +348,9 @@ static void memory_write_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool 
                            "this new one with memory_supersede (%s).",
                            related, id);
     sdsfree(related);
-    edc_toolbox_emit_tool_message_plain(ctx, "memory_write", out);
+    sds header = edc_tools_memory_call_header("memory_write", args);
+    edc_toolbox_emit_tool_message_plain(ctx, header, out);
+    sdsfree(header);
     sdsfree(id);
     callback(ctx, out, NULL);
 }
@@ -410,7 +479,9 @@ static void memory_update_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool
     free(summaries);
     free(details);
     free(revs);
-    edc_toolbox_emit_tool_message_plain(ctx, "memory_update", out);
+    sds header = edc_tools_memory_call_header("memory_update", args);
+    edc_toolbox_emit_tool_message_plain(ctx, header, out);
+    sdsfree(header);
     callback(ctx, out, NULL);
 }
 
@@ -471,7 +542,9 @@ static void memory_supersede_exec(struct edc_toolbox_call_ctx *ctx, struct edc_t
                            n == 1 ? "y" : "ies", list);
     sdsfree(list);
     free(ids);
-    edc_toolbox_emit_tool_message_plain(ctx, "memory_supersede", out);
+    sds header = edc_tools_memory_call_header("memory_supersede", args);
+    edc_toolbox_emit_tool_message_plain(ctx, header, out);
+    sdsfree(header);
     callback(ctx, out, NULL);
 }
 

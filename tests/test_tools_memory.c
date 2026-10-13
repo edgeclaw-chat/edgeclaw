@@ -82,6 +82,16 @@ static void free_capture(struct capture *c)
     memset(c, 0, sizeof(*c));
 }
 
+/* 回显 header 的小工具: 解析一段 JSON 参数 → 取 header 文本 (调用方 sdsfree) */
+static sds hdr(const char *name, const char *args_json)
+{
+    cJSON *a = args_json ? cJSON_Parse(args_json) : NULL;
+    sds h = edc_tools_memory_call_header(name, a);
+    if (a)
+        cJSON_Delete(a);
+    return h;
+}
+
 int main(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
@@ -283,6 +293,44 @@ int main(void)
     CHECK(o.error != NULL && o.result != NULL, "拿不到 session 记忆 ⇒ error + 说明");
     free_capture(&o);
     edc_task_free(orphan);
+
+    TEST("回显 header 带输入参数: 用户能看到 search 什么 / get 什么");
+    {
+        sds h = hdr("memory_search", "{\"patterns\":[\"^沙箱\",\"bazel|sudo\"]}");
+        CHECK(h && strcmp(h, "memory_search patterns=[^沙箱 bazel|sudo]") == 0, "search: 每个正则都列出来");
+        sdsfree(h);
+
+        h = hdr("memory_get", "{\"ids\":[\"m1\",\"m99\"]}");
+        CHECK(h && strcmp(h, "memory_get ids=[m1 m99]") == 0, "get: 每个 id 都列出来");
+        sdsfree(h);
+
+        h = hdr("memory_list", "{\"offset\":1,\"n\":1}");
+        CHECK(h && strcmp(h, "memory_list offset=1 n=1") == 0, "list: 翻页窗口");
+        sdsfree(h);
+
+        h = hdr("memory_update", "{\"entries\":[{\"id\":\"m1\",\"expected_rev\":2},{\"id\":\"m3\"}]}");
+        CHECK(h && strcmp(h, "memory_update ids=[m1 m3]") == 0, "update: 批里每一项的 id");
+        sdsfree(h);
+
+        h = hdr("memory_write", "{\"title\":\"构建入口\",\"summary\":\"s\"}");
+        CHECK(h && strcmp(h, "memory_write title=构建入口") == 0, "write: 标题 (不看 summary/detail)");
+        sdsfree(h);
+
+        h = hdr("memory_supersede", "{\"ids\":[\"m9\",\"m12\"]}");
+        CHECK(h && strcmp(h, "memory_supersede ids=[m9 m12]") == 0, "supersede: 退休的 id");
+        sdsfree(h);
+
+        /* 缺字段 / 非数组都只影响这一行文字, 不会让调用失败 */
+        h = hdr("memory_list", "{}");
+        CHECK(h && strcmp(h, "memory_list offset=0 n=20") == 0, "list 缺参数 = 默认窗口");
+        sdsfree(h);
+        h = hdr("memory_get", "{}");
+        CHECK(h && strcmp(h, "memory_get ids=[]") == 0, "get 缺 ids = 空列表 (校验那步会报错)");
+        sdsfree(h);
+        h = edc_tools_memory_call_header("memory_search", NULL);
+        CHECK(h && strcmp(h, "memory_search") == 0, "args = NULL = 只有工具名");
+        sdsfree(h);
+    }
 
     edc_toolbox_free(tb);
     edc_session_free(session); /* 连带释放 group / task / memo */

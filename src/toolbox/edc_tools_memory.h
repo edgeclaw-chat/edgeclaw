@@ -1,6 +1,9 @@
 #ifndef __BC_TOOLS_MEMORY_H__
 #define __BC_TOOLS_MEMORY_H__
 
+#include <cJSON.h>
+#include "sds.h"
+
 struct edc_toolbox;
 
 /* The session-memory tools:
@@ -14,5 +17,11 @@ struct edc_toolbox;
  * create when nothing related exists. Nothing is ever deleted.
  * Scope = the calling task's OWNING session (a cross-session task reads its own table). */
 extern void edc_tools_memory_register(struct edc_toolbox *tb);
+
+/* Header of the TUI echo for one of the tools above: "<name> <params>", e.g.
+ * `memory_get ids=[m1 m99]` / `memory_search patterns=[^m3 bazel]`. The echo must say
+ * WHAT was asked (the result alone does not name the query); pure function over the
+ * request's args, never touches the entry table. Caller sdsfree. */
+extern sds edc_tools_memory_call_header(const char *name, cJSON *args);
 
 #endif
