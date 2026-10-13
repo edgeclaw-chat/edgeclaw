@@ -119,8 +119,8 @@ static bool edc_commands_handle_help(struct edc_reply_to to)
                        "- /session memo [show [id] | search <q> | compact [focus]]\n"
                        "- /session remove <name>  ·  /session rename <old> <new>\n"
                        "\n"
-                       "- /task new <desc>   [--bg] [--suspended]\n"
-                       "- /task fork <parent> <desc> [--suspended]\n"
+                       "- /task new <desc>   [--bg] [--new-group]\n"
+                       "- /task fork <parent> <desc> [--prompt <name>]\n"
                        "- /task list  ·  /task status [id]  ·  /task output <id>\n"
                        "- /task history <id>   (its messages; `--json` = raw payload)\n"
                        "- /group history <id>  (the whole group; one block per member)\n"
@@ -631,8 +631,29 @@ static void edc_commands_handle_task_new( struct edc_session_manager *sm, struct
 {
     if (!session)
         return;
+    /* Same rule as the `@` form: options are only recognised after a quoted
+     * description, so the shape that would silently swallow them into the description
+     * text is rejected rather than quietly creating a task nobody meant. */
+    if (edc_cmd_desc_needs_quotes(arg))
+    {
+        edc_commands_reply(to, "Syntax error — `/task new` with options needs its description quoted: "
+                               "write `/task new \"<description>\" --bg`, or drop the options.");
+        return;
+    }
     struct edc_cmd_task_opts opts;
     edc_cmd_parse_task_opts(arg, &opts);
+
+    /* A task needs something to run. With no text there is nothing to attach, and a READY
+     * task without a turn is never drivable: it just sits in the group forever (and would
+     * be picked as the foreground group's "current task" by /task stop, /task status and
+     * `$$`). Same rule as the shell path. */
+    if (!opts.input || sdslen(opts.input) == 0)
+    {
+        edc_commands_reply(to, "A task needs an input — write `/task new \"<desc>\"` "
+                               "(flags alone do not create a task).");
+        edc_cmd_task_opts_free(&opts);
+        return;
+    }
 
     /* Resolve -d dependencies up front (ids are globally unique, so a dep may live
      * in another session); an unknown id fails the command. */
@@ -655,74 +676,54 @@ static void edc_commands_handle_task_new( struct edc_session_manager *sm, struct
         }
     }
 
-    struct edc_task *task = edc_scheduler_create_task(
-        sched, session, (opts.desc && sdslen(opts.desc) > 0) ? opts.desc : "New task", to.type);
-    if (!task)
-        return;
-    if (opts.prompt_name)
-        edc_task_set_prompt(task, opts.prompt_name, NULL);
-
-    /* Wire the resolved dependencies before the group branching, so the goto path is covered. */
-    for (int i = 0; i < opts.dep_count; i++)
-        edc_task_add_dependency(task, deps[i], TASK_DEP_JOIN);
-    free(deps);
-    deps = NULL;
+    /* Which group, who takes the foreground, the edges and the turn: one spec, one
+     * call (edc_scheduler_task_create). This handler only turns the command's syntax
+     * into that spec -- it no longer knows how a task is placed. */
+    struct edc_task_spec spec;
+    memset(&spec, 0, sizeof(spec));
+    /* desc names the task (truncated for display); input is the whole prompt -- they are
+     * not the same string once the prompt is longer than EDC_TASK_DESC_MAX. */
+    spec.desc = (opts.desc && sdslen(opts.desc) > 0) ? opts.desc : "New task";
+    spec.channel_type = to.type;
+    spec.input = opts.input;
+    spec.deps = deps;
+    spec.dep_count = (size_t)opts.dep_count;
 
     if (opts.group_id)
     {
-        struct edc_task_group *group = edc_session_find_group(session, opts.group_id);
-        if (!group)
+        /* The name may not exist yet; the scheduler makes one led by this task. */
+        if (!edc_session_find_group(session, opts.group_id))
         {
             sds reply = sdscatprintf(sdsempty(), "Group `%s` not found — creating a new group.", opts.group_id);
             edc_commands_reply(to, reply);
             sdsfree(reply);
-            group = edc_scheduler_create_group(sched, session, task);
         }
-        else
-        {
-            edc_task_group_add_task(group, task);
-            goto done;
-        }
+        spec.place = EDC_TASK_PLACE_GROUP;
+        spec.group_id = opts.group_id;
     }
     else
     {
-        struct edc_task_group *group = edc_scheduler_create_group(sched, session, task);
-
-        /* A suspended task is not the active task and does not take the foreground -- like --bg it only creates the group. */
-        if (opts.bg || opts.suspended)
-        {
-        }
-        else
-        {
-            edc_scheduler_set_foreground(session, group);
-            edc_session_set_active_task(session, task);
-        }
+        /* No group named: join the group that is in front (creating one when the session
+         * has none). It is the same group, i.e. the same conversation and the same queue --
+         * a new group is a new conversation, so it takes an explicit --new-group. */
+        spec.place = opts.new_group ? EDC_TASK_PLACE_NEW_GROUP : EDC_TASK_PLACE_FOREGROUND;
+        spec.take_foreground = !opts.bg;
+        spec.background = opts.bg;
     }
 
-done:
-    /* desc is the input: attaching the turn is all that happens here. Running it is
-     * the message-end scan's job. Kept after `done:` so the `--group` goto path
-     * still attaches. */
-    if (task && opts.desc && sdslen(opts.desc) > 0)
+    struct edc_task *task = edc_scheduler_task_create(sched, session, &spec);
+    free(deps);
+    deps = NULL;
+    if (!task)
     {
-        /* desc is the input: attach the turn (same for --suspended; only life differs). */
-        struct edc_turn *turn = edc_turn_new();
-        turn->task_id = strdup(task->task_id);
-        edc_turn_add_user_message(turn, opts.desc);
-        task->active_turn = turn;
-
-        if (opts.suspended)
-        {
-            /* --suspended: the turn is attached but life is suspended -- the scan ignores it until /task resume. */
-            bool ok = edc_task_mark_suspended(task);
-            log_info("/task new: task=%s created SUSPENDED -> %s (awaiting /task resume)", task->task_id,
-                     ok ? "ok" : "FAILED");
-        }
-        else if (edc_task_awaits_deps(task))
-        {
-            log_info("/task new: task %s waits for its dependencies, turn queued", task->task_id);
-        }
+        edc_cmd_task_opts_free(&opts);
+        return;
     }
+    if (opts.prompt_name)
+        edc_task_set_prompt(task, opts.prompt_name, NULL);
+
+    if (opts.desc && sdslen(opts.desc) > 0 && edc_task_awaits_deps(task))
+        log_info("/task new: task %s waits for its dependencies, turn queued", task->task_id);
 
     edc_cmd_task_opts_free(&opts);
 }
@@ -769,17 +770,15 @@ static void edc_commands_handle_task_stop( struct edc_session_manager *sm, struc
 
     if (!arg || sdslen(arg) == 0)
     {
-        /* No id: stop the active task of the current foreground group, after
-         * checking membership so a stale active from a session switch cannot leak. */
-        struct edc_task_group *fg = edc_scheduler_get_foreground(sess);
-        struct edc_task *active = sess ? sess->active_task : NULL;
-        if (active && (!fg || active->group == fg))
-            t = active;
+        /* No id: the one in front. Deliberately not the active task -- that one is the
+         * screen focus and may sit on a task that already finished, on which stopping
+         * would do nothing. */
+        t = edc_scheduler_current_task(sess);
         if (!t)
         {
-            edc_commands_reply(to,
-                               fg ? "**Task** — no active task to stop in the foreground group."
-                                  : "**Task** — no foreground group.");
+            edc_commands_reply(to, edc_scheduler_get_foreground(sess)
+                                     ? "**Task** — nothing unfinished in the foreground group."
+                                     : "**Task** — no foreground group.");
             return;
         }
     }
@@ -804,7 +803,8 @@ static void edc_commands_handle_task_stop( struct edc_session_manager *sm, struc
     sdsfree(reply);
 }
 
-/* /task resume [id]: re-decide and drive a resumable task. Accepts SUSPENDED,
+/* /task resume [id]: re-decide and drive a resumable task. Accepts INTERRUPTED
+ * (the loop stopped mid-flight), SUSPENDED (the user parked it),
  * ERROR (continue the failed round, reusing the active turn and tool ledger), and
  * CANCELLED (cancel only stopped it; the step is re-derived from the messages).
  * Without an id it uses the foreground group's active task. */
@@ -816,15 +816,16 @@ static void edc_commands_handle_task_resume( struct edc_session_manager *sm, str
 
     if (!arg || sdslen(arg) == 0)
     {
-        struct edc_task_group *fg = edc_scheduler_get_foreground(sess);
-        struct edc_task *active = sess ? sess->active_task : NULL;
-        if (active && (!fg || active->group == fg))
-            t = active;
+        /* No id: the last member of the foreground group that is not COMPLETED. A
+         * stopped task (INTERRUPTED / SUSPENDED / ERROR / CANCELLED) is what one wants
+         * to revive here,
+         * so this is wider than "the one still in play" (see the header). */
+        t = edc_scheduler_resumable_task(sess);
         if (!t)
         {
-            edc_commands_reply(to,
-                               fg ? "**Task** — no active task to resume in the foreground group."
-                                  : "**Task** — no foreground group.");
+            edc_commands_reply(to, edc_scheduler_get_foreground(sess)
+                                     ? "**Task** — nothing to resume in the foreground group."
+                                     : "**Task** — no foreground group.");
             return;
         }
     }
@@ -840,8 +841,8 @@ static void edc_commands_handle_task_resume( struct edc_session_manager *sm, str
         }
     }
 
-    /* The three resumable kinds: SUSPENDED, ERROR, CANCELLED (only COMPLETED and
-     * ALIVE are not). */
+    /* The resumable kinds: INTERRUPTED, SUSPENDED, ERROR, CANCELLED (only COMPLETED
+     * and ALIVE are not). */
     if (!edc_task_is_resumable(t))
     {
         sds reply =
@@ -1000,11 +1001,11 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
 {
     if (!session)
         return;
-    /* /task fork <parent_id> <desc> [--prompt <name>] [--suspended] */
+    /* /task fork <parent_id> <desc> [--prompt <name>] */
     if (!arg)
     {
         edc_commands_reply(to,
-                           "Usage: `/task fork <parent_id> <desc> [--prompt <name>] [--suspended]`");
+                           "Usage: `/task fork <parent_id> <desc> [--prompt <name>]`");
         return;
     }
 
@@ -1013,7 +1014,7 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
     if (count < 2)
     {
         edc_commands_reply(to,
-                           "Usage: `/task fork <parent_id> <desc> [--prompt <name>] [--suspended]`");
+                           "Usage: `/task fork <parent_id> <desc> [--prompt <name>]`");
         sdsfreesplitres(tokens, count);
         return;
     }
@@ -1036,9 +1037,8 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
         return;
     }
 
-    /* find --prompt / --suspended in remaining args; the rest is the input */
+    /* find --prompt in remaining args; the rest is the input */
     sds prompt_name = NULL;
-    bool suspended = false;
     sds desc = sdsempty();
     for (int i = 1; i < count; i++)
     {
@@ -1046,10 +1046,6 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
         {
             prompt_name = sdsnew(tokens[i + 1]);
             i++; /* skip prompt value */
-        }
-        else if (strcmp(tokens[i], "--suspended") == 0)
-        {
-            suspended = true;
         }
         else
         {
@@ -1078,9 +1074,28 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
     if (prompt_name)
         edc_task_set_prompt(child, prompt_name, NULL);
 
-    /* The child starts its own group (as leader), inheriting the parent's transcript
-     * snapshot as a synthetic initial turn. */
-    struct edc_task_group *child_group = edc_scheduler_create_group(sched, session, child);
+    /* The child starts its own group (as leader) and takes the foreground; desc is the
+     * input, as in /task new. Which group and who owns the foreground is the
+     * scheduler's answer (edc_scheduler_task_adopt), not this handler's. */
+    struct edc_task_spec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.place = EDC_TASK_PLACE_NEW_GROUP;
+    spec.take_foreground = true;
+    spec.input = desc;
+    if (!child || !edc_scheduler_task_adopt(sched, session, child, &spec))
+    {
+        edc_commands_reply(to, "Fork failed — the child task could not be placed.");
+        if (child)
+            edc_task_free(child);
+        sdsfree(desc);
+        if (prompt_name)
+            sdsfree(prompt_name);
+        return;
+    }
+
+    /* The child group inherits the parent's transcript snapshot as a synthetic
+     * initial turn. */
+    struct edc_task_group *child_group = child->group;
 
     if (parent->group)
     {
@@ -1135,37 +1150,14 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
         }
     }
 
-    /* Switch the foreground to the new group and make the child the active task. */
-    edc_scheduler_set_foreground(session, child_group);
-    edc_session_set_active_task(session, child);
-
-    /* desc is the input, as in /task new: the task carries its turn from creation.
-     * To build now and run later, use --suspended. */
-    {
-        struct edc_turn *turn = edc_turn_new();
-        turn->task_id = strdup(child->task_id);
-        edc_turn_add_user_message(turn, desc);
-        child->active_turn = turn;
-    }
-
-    if (suspended)
-    {
-        bool ok = edc_task_mark_suspended(child);
-        log_info("/task fork: task=%s created SUSPENDED -> %s (awaiting /task resume)", child->task_id,
-                 ok ? "ok" : "FAILED");
-    }
-    else
-    {
-        /* Running it is the message-end scheduler's job (the only drive entry) -- this only attaches the turn. */
-        log_info("/task fork: task=%s turn attached (deps_total=%zu)", child->task_id, child->deps_total);
-    }
+    /* The foreground is already on the child and the input turn is already attached
+     * (adopt). Running it is the message-end scheduler's job (the only drive entry). */
+    log_info("/task fork: task=%s turn attached (deps_total=%zu)", child->task_id, child->deps_total);
 
     sds reply = sdscatprintf(sdsempty(), "**Fork created** — `%s` from `%s` · group `%s` · fork point %zu",
                              child->task_id, parent->task_id, child->group_id, fork_point);
     if (prompt_name)
         reply = sdscatprintf(reply, " · prompt `%s`", prompt_name);
-    if (suspended)
-        reply = sdscatprintf(reply, " · parked (send `/task resume %s` to run)", child->task_id);
     edc_commands_reply(to, reply);
     sdsfree(reply);
     sdsfree(desc);
@@ -1207,10 +1199,10 @@ static void edc_commands_handle_task_status( struct edc_session_manager *sm, str
     else
     {
         owner = edc_session_manager_get_active(sm);
-        t = owner ? edc_session_get_active_task(owner) : NULL;
+        t = owner ? edc_scheduler_current_task(owner) : NULL;
         if (!t)
         {
-            edc_commands_reply(to, "no active task");
+            edc_commands_reply(to, "No task in front — the foreground group is empty or all its tasks have finished.");
             return;
         }
     }
@@ -1517,21 +1509,21 @@ static void edc_commands_handle_task_join( struct edc_session_manager *sm, struc
          * There is no "create an empty task to attach into later", so with no
          * candidate the command is rejected and can be retried. */
         struct edc_session *active_session = edc_session_manager_get_active(sm);
-        struct edc_task *active = active_session ? edc_session_get_active_task(active_session) : NULL;
+        struct edc_task *front = active_session ? edc_scheduler_current_task(active_session) : NULL;
         /* "parked" = READY (IDLE's mirror) or waiting on deps -- both can receive injected output */
-        if (!active || !edc_task_is_parked(active))
+        if (!front || !edc_task_is_parked(front))
         {
             sds reply = sdscatprintf(sdsempty(),
-                                     "No task to join into — start one first (`/task new <desc>`), then "
-                                     "`/task join %s` again.",
+                                     "No task to join into — the foreground group has no parked task. "
+                                     "Start one (`/task new <desc>`), then `/task join %s` again.",
                                      t->task_id);
             edc_commands_reply(to, reply);
             sdsfree(reply);
             return;
         }
 
-        /* auto-chain: inject output into active task */
-        edc_task_add_dependency(active, t, TASK_DEP_JOIN);
+        /* auto-chain: inject output into the task in front */
+        edc_task_add_dependency(front, t, TASK_DEP_JOIN);
 
         /* Echo only the raw output, no "[task xxx output]" / "injected/reaped" metadata noise */
         sds reply = t->output ? sdsnew(t->output) : sdsnew("_No output._");

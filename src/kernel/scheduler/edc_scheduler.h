@@ -103,7 +103,7 @@ struct edc_scheduler
     edc_scheduler_snapshot_changed_fn snapshot_changed;
 
     /* Raw text of the input being handled (not owned, valid during the message);
-     * edc_scheduler_create_task attaches it to the new task. */
+     * edc_scheduler_task_new attaches it to the new task. */
     const char *input_raw;
 
     /* Sessions whose tree changed, deduped by pointer, flushed at message end. */
@@ -167,8 +167,82 @@ extern char *edc_scheduler_task_history_json(struct edc_scheduler *sched, struct
 /** Fold an existing decimal task id into the allocator's high-water mark and
  *  persist it, so ids issued after a restart stay above the saved maximum. */
 extern void edc_scheduler_observe_task_id(struct edc_scheduler *sched, const char *task_id);
-extern struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, struct edc_session *session,
-                                                  const char *desc, edc_channel_type channel_type);
+
+/** The bare task object: id, owner session, L2 watermark, raw input. Makes NO group
+ *  membership and attaches NO turn -- placement is edc_scheduler_task_create's job
+ *  below. Kept separate because the three constructors (new / fork / system) differ
+ *  here and only here. */
+extern struct edc_task *edc_scheduler_task_new(struct edc_scheduler *sched, struct edc_session *session,
+                                               const char *desc, edc_channel_type channel_type);
+
+/* ── Task creation with placement ───────────────────────────
+ *
+ * The one entry a front-end uses: object -> edges -> group -> turn. Splitting
+ * "where does a new task land" out of each caller is what keeps it from being
+ * answered five different ways (an earlier round had five copies: /task new, the
+ * shell spawn, fork, the system task, and the plain-input fallback). */
+
+/** Where a new task lands. */
+typedef enum
+{
+    /** The session's foreground group; one is created (this task leading it) when
+     *  the session has none, or the current one is finished / orphaned. */
+    EDC_TASK_PLACE_FOREGROUND,
+    /** The group named by spec->group_id, created (this task leading it) when the
+     *  session has no such group. */
+    EDC_TASK_PLACE_GROUP,
+    /** A fresh group led by this task. */
+    EDC_TASK_PLACE_NEW_GROUP,
+    /** The session's system group (fold / curation), created when it has none. */
+    EDC_TASK_PLACE_SYSTEM,
+} edc_task_place;
+
+struct edc_task_spec
+{
+    const char *desc;
+    edc_channel_type channel_type;
+
+    /* The turn this task runs on. NULL attaches none (system tasks, and any caller
+     * that builds its own turn); an empty string still attaches an empty turn -- which
+     * is what a `/task fork <id> --prompt p` (no desc) has always produced. */
+    const char *input;
+
+    edc_task_place place;
+    const char *group_id; /* EDC_TASK_PLACE_GROUP */
+    /* Move the session's foreground group and active pointer onto this task.
+     * Background and system tasks do not take it. */
+    bool take_foreground;
+    /* The caller said "run this alongside" (`&` / `--bg`). Such a task is not queued
+     * behind the group's current holder; everything else that lands in the group in
+     * front waits its turn. Distinct from !take_foreground: `--group <the group in
+     * front>` also leaves the front alone, but it IS part of that conversation and must
+     * queue. */
+    bool background;
+    edc_sink sink; /* EDC_TASK_PLACE_SYSTEM: where this task's output goes */
+
+    /* TASK_DEP_JOIN sources, already resolved: turning an id into a task is the
+     * front-end's job (the id may name a task of another session). */
+    struct edc_task **deps;
+    size_t dep_count;
+    /* The ';' / '|' edge source -- the previous command of the same command line.
+     * That pointer exists only inside the shell's AST walk, so only the shell can
+     * pass it (NULL for a lone command). */
+    struct edc_task *prev;
+    edc_task_dep_type prev_type;
+};
+
+/** Create a task and place it: object -> edges -> group -> foreground -> turn.
+ *  NULL when there is no session or the group cannot be made. */
+extern struct edc_task *edc_scheduler_task_create(struct edc_scheduler *sched, struct edc_session *session,
+                                                  const struct edc_task_spec *spec);
+
+/** The half of the above that runs once the object exists: edges -> group ->
+ *  foreground -> turn. `spec->desc` is not read here (it only names the object the
+ *  caller built), so a creator with a different object -- `edc_task_fork`, the
+ *  system task -- can still settle through this one and share the placement.
+ *  Returns false when the task could not be placed (nothing else is undone). */
+extern bool edc_scheduler_task_adopt(struct edc_scheduler *sched, struct edc_session *session,
+                                     struct edc_task *task, const struct edc_task_spec *spec);
 
 /** Create a system task in the session's system group (creating it if needed):
  *  sink GROUP_MEMORY, group kind SYSTEM. Returns at
@@ -211,6 +285,20 @@ extern struct edc_task *edc_scheduler_find_task(struct edc_scheduler *sched, voi
 extern struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sched, struct edc_session *session,
                                                       const char *task_id);
 
+/** The task a command with no id acts on: the foreground group's last unfinished
+ *  member, or NULL when there is no foreground group or all of its members have
+ *  finished. Deliberately NOT `session->active_task` -- that one is the screen focus
+ *  and may sit on a task that already finished, which makes it a poor default for
+ *  "/task stop", "/task status", "/task join" and `$$`. */
+extern struct edc_task *edc_scheduler_current_task(struct edc_session *session);
+
+/** Same as edc_scheduler_current_task, but the last member that is not COMPLETED --
+ *  what `/task resume` can pick up. INTERRUPTED, SUSPENDED, ERROR and CANCELLED can all
+ *  be resumed
+ *  (only COMPLETED is final), so they are candidates where the plain "in front"
+ *  derivation would skip them. */
+extern struct edc_task *edc_scheduler_resumable_task(struct edc_session *session);
+
 /** The foreground group is a property of the session, not the scheduler. */
 extern void edc_scheduler_set_foreground(struct edc_session *session, struct edc_task_group *group);
 extern struct edc_task_group *edc_scheduler_get_foreground(struct edc_session *session);
@@ -250,7 +338,8 @@ extern void edc_scheduler_send_signal_to_session(struct edc_scheduler *sched, st
 extern void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, struct edc_session *session,
                                              edc_task_signal sig);
 
-/** Resume a suspended/failed/cancelled task: dependency gate, then drive it
+/** Resume a stopped task (interrupted / suspended / failed / cancelled): dependency gate,
+ *  then drive it
  *  through the executor's START (the same path a READY task takes). */
 extern void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *task);
 

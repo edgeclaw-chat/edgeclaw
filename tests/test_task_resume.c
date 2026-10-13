@@ -244,7 +244,7 @@ static void test_ledger_serialize(void)
 
     struct edc_task *rt = find_task(s2, "lt");
     CHECK(rt != NULL, "task restored");
-    CHECK(rt != NULL && edc_task_is_suspended(rt), "TOOL_CALLING -> SUSPENDED");
+    CHECK(rt != NULL && edc_task_is_interrupted(rt), "TOOL_CALLING -> INTERRUPTED");
 
     struct edc_tool_call_record *r1 = edc_task_tool_call_find(rt, "c1");
     struct edc_tool_call_record *r2 = edc_task_tool_call_find(rt, "c2");
@@ -488,8 +488,8 @@ static void test_resume_migrated_task_with_turn(void)
 
 /* ── 没有"等输入"这种相位 ────────────────────────────────────────────
  *
- * task **创建时就带着它的 input** (/task new <desc> 的 desc 就是 input; --suspended
- * 也是"把 turn 装上、只是先不跑")。所以一个 resume 时没有依赖、没有账本、也没有
+ * task **创建时就带着它的 input** (/task new <desc> 的 desc 就是 input; /task fork 同理)。
+ * 所以一个 resume 时没有依赖、没有账本、也没有
  * turn 的任务, 不是"在等用户输入" —— 没有这种相位, 它只是**空闲** (READY)。
  *
  * 今天它落到 WAITING_INPUT: 那个值来自旧模型 (任务是个长期会话, 会坐在那儿等下一

@@ -45,6 +45,13 @@ and `'` single-quotes. Recognized token types:
 | `2>`  | TOK_REDIR_ERR | Redirect stderr to file |
 | `<`   | TOK_REDIR_IN | Read input from file |
 
+Quoting and escapes follow Python's string rules: `"..."` and `'...'` both process
+escapes (`\n`, `\t`, `\\`, `\"`, `\'`, `\xHH`; an unknown escape keeps its backslash),
+and `"""` / `'''` are the multi-line forms. The two quote kinds differ in exactly one
+thing: `$VAR` interpolation happens inside double quotes and never inside single ones
+(single quotes are the way to write a literal `$`). A quoted region must open the
+argument for anything after the closing quote to be read as options.
+
 ### Parser & AST
 
 A recursive-descent parser builds an AST (Abstract Syntax Tree). Node hierarchy:
@@ -74,14 +81,23 @@ Before tokenization, `!n` and `!!` patterns are expanded:
 
 ## Quick Task Syntax (`@`)
 
-Use `@` to create a task in a new group with one line:
+Use `@` to create a task in a **new** group with one line:
 
 ```
-@analyze "find performance bugs in src/"
-@analyze "find bugs" --bg                # background
-@summary "please merge" -d task-1        # wait for task-1 first
-@review "check code" -d t1 -d t2        # wait for multiple tasks
+@find performance bugs in src/
 ```
+
+To pass options, quote the description — an `@` command with an unquoted description
+carrying an option (`-`, `--bg`, ...) is a syntax error, not a silently-ignored flag:
+
+```
+@"find bugs" --bg                # background
+@"please merge" -d task-1        # wait for task-1 first
+@"check code" -d t1 -d t2        # wait for multiple tasks
+```
+
+The description is everything you type; `@` only says "put it in a new group" (plain
+input joins the current group). See Shell-like Job Control below.
 
 ---
 
@@ -98,18 +114,21 @@ Three-layer Unix-like process model:
 ### Task States
 
 ```
-IDLE → WAITING_DEPS → WAITING_INPUT → LLM_PROCESSING
-  ⇄ TOOL_CALLING → SUSPENDED → COMPLETED / CANCELLED / ERROR
+IDLE → WAITING_DEPS → LLM_PROCESSING ⇄ TOOL_CALLING → COMPLETED / CANCELLED / ERROR
+                          INTERRUPTED (the loop stopped mid-flight)
 ```
 
 The LLM_PROCESSING and TOOL_CALLING states alternate as the LLM invokes tools
 and receives results. Tasks reach COMPLETED when the LLM produces a final
 response; CANCELLED when stopped; ERROR on failure.
 
-**Restart behavior**: on exit, every unfinished task is persisted *as-is*
-(including LLM_PROCESSING / TOOL_CALLING). On load, every unfinished task is
-parked as **SUSPENDED**; `/task resume [tid]` re-derives the state it should
-return to:
+**Restart behavior**: on exit, every unfinished task is rewritten as **INTERRUPTED**
+(the loop stopped underneath it -- that is what happened, so that is what is recorded),
+queued ones included, and the interrupt propagates to dependents like a failure so nobody
+is left waiting for a task that will not run on its own. Load reads that back as stated:
+an INTERRUPTED task stays INTERRUPTED until `/task resume [tid]` re-derives the state to
+return to. Only fold / curation tasks resume by themselves (a half-done background round
+is re-dispatched).
 
 - unsatisfied dependencies → `WAITING_DEPS`
 - an unfinished tool call → `TOOL_CALLING` (not-yet-started tools are re-run; a
@@ -133,7 +152,10 @@ cannot be resumed.
 
 - **COMPLETED**: persists until reclaimed with `/task join`.
 - **WAITING_DEPS**: accepts input and queues it until dependencies resolve.
-- **SUSPENDED**: parked (e.g. after a restart); `/task resume` revives it.
+- **INTERRUPTED**: the process went down while it was running; `/task resume` revives it.
+  Like ERROR it propagates to its dependents (a JOIN dependent is cancelled, an order edge
+  is voided), and it never holds a group's front.
+- **SUSPENDED**: the user parked it; `/task resume` revives it. Nothing produces it today.
 - **ERROR**: a failed task; `/task resume` continues its unfinished turn.
 - **CANCELLED**: stopped with `/task stop`; `/task resume` continues it too.
 
@@ -149,7 +171,7 @@ Two dependency types:
 | Type | Syntax | Behavior | On source CANCELLED |
 |------|--------|----------|---------------------|
 | **JOIN** | `\|` (pipe) | Source output is injected into destination's LLM context | Destination is CANCELLED too — the dependency can never be satisfied |
-| **SEQUENCE** | `;` | Destination waits for source, but no output injection | Only this dependency edge is dropped; destination stays runnable |
+| **SEQUENCE** | `;` | Destination waits for source, but no output injection | Destination is cancelled too, and the edge stays: resuming it returns it to the wait |
 
 ### Fork
 
@@ -163,7 +185,7 @@ The child inherits a slice of the parent's conversation context. Use
 
 | Shell             | EdgeClaw                      |
 |-------------------|-------------------------------|
-| `cmd &`           | `@task "input" --bg`          |
+| `cmd &`           | `"input" &`                   |
 | `jobs`            | `/task list`                  |
 | `fg %1`           | `/task fg <task_id>`          |
 | `bg %1`           | `/task bg`                    |
@@ -171,6 +193,11 @@ The child inherits a slice of the parent's conversation context. Use
 | `cmd1 \| cmd2`    | `/task chain <src> <dst>`     |
 | `pthread_join()`  | `/task join <task_id>`        |
 | `fork()`          | `/task fork <parent> <desc>`  |
+
+`&` is the background modifier: the task joins the **current** group but does not take
+the foreground. `@input` is a different thing -- it puts the task in a **new** group
+(`@input &` = new group, still background). So `@task "input" --bg` is not the
+equivalent of `cmd &`.
 
 ---
 
@@ -195,9 +222,10 @@ The child inherits a slice of the parent's conversation context. Use
 
 | Command | Description |
 |---------|-------------|
-| `/task new <desc>` | Create new group + task (foreground) |
-| `/task new <desc> --bg` | Create new group + task (background) |
-| `/task new <desc> -g <gid>` | Create in existing group |
+| `/task new <desc>` | Create a task in the group in front (queues behind whatever runs there) |
+| `/task new <desc> --bg` | Same group, but background: runs alongside, takes no foreground |
+| `/task new <desc> --new-group` | Open a group of its own (a fresh conversation) and take the foreground |
+| `/task new <desc> -g <gid>` | Create in that existing group |
 | `/task new <desc> -d <tid>` | Create + wait for dependency |
 | `/task fork <pid> <desc>` | Fork child in parent's group |
 | `/task fork <pid> <desc> --prompt <name>` | Fork with subagent prompt |
@@ -223,7 +251,7 @@ The child inherits a slice of the parent's conversation context. Use
 | Command | Description |
 |---------|-------------|
 | `/task stop [tid]` | Cancel a task (SIGTERM — notifies dependents). Without an id, stops the active task of the foreground group; errors if the id is not found |
-| `/task resume [tid]` | Resume a SUSPENDED, ERROR or CANCELLED task: re-derives state (deps / tool chain / turn) and drives it; an ERROR or CANCELLED task continues its unfinished turn. Without an id, resumes the active task of the foreground group |
+| `/task resume [tid]` | Resume an INTERRUPTED, SUSPENDED, ERROR or CANCELLED task: re-derives state (deps / tool chain / turn) and drives it; an ERROR or CANCELLED task continues its unfinished turn. Without an id, resumes the active task of the foreground group |
 | `/task join <tid>` | Show output, auto-inject into active task (or create one), then reclaim |
 
 ### Pipelines
@@ -356,10 +384,13 @@ text before `<`, they are joined with a newline.
 
 ### Cross-Group Chain
 
+Three separate conversations, wired together by hand. `--new-group` is what makes them
+separate -- without it they would all land in the group in front.
+
 ```
-> /task new "security audit"
-> /task new "performance review"
-> /task new "final summary"
+> /task new "security audit" --new-group
+> /task new "performance review" --new-group
+> /task new "final summary" --new-group
 > /task chain task-1 task-3     ← task-3 waits for task-1
 > /task chain task-2 task-3     ← task-3 waits for both
 

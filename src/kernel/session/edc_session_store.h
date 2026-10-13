@@ -81,8 +81,9 @@ extern void edc_session_store_save_session_state(struct edc_session_manager *sm,
  *  once, so CANCELLED survives a restart (`/session stop`). */
 extern void edc_session_store_stop_all_turns(struct edc_session_manager *sm, struct edc_scheduler *sched);
 
-/** Stop all turns of the session without persisting (shutdown path: state is saved
- *  by the shutdown persist). */
-extern void edc_session_store_remove_all_turns(struct edc_session_manager *sm, struct edc_scheduler *sched);
+/** Forget that any request was in flight (shutdown path): the state was already saved
+ *  by edc_scheduler_close and a reply still travelling must not land. Changes no task's
+ *  state -- SIGTERM here would cancel the session and persist it. */
+extern void edc_session_store_drop_in_flight_requests(struct edc_session_manager *sm, struct edc_scheduler *sched);
 
 #endif

@@ -317,8 +317,9 @@ static size_t collect_pieces(struct edc_task *const *members, size_t n, struct f
         /* In-flight member (P2a-4b): the active turn is uncommitted but is the NEWEST
          * content. Folding its prefix is pi's split turn -- after landing the request
          * starts after turn->folded_prefix (req->turn_begin lights up). Only ALIVE
-         * members count as in-flight: a SUSPENDED / CANCELLED half-turn is not part of
-         * the current conversation and takes the normal path when it resumes. */
+         * members count as in-flight: an INTERRUPTED / SUSPENDED / CANCELLED half-turn is
+         * not part of the current conversation and takes the normal path when it
+         * resumes. */
         if (t->life == EDC_LIFE_ALIVE && t->active_turn)
             push_pieces(&ps, &cnt, &cap, t, t->active_turn, EDC_FOLD_CUT_ACTIVE_TURN);
     }
@@ -555,7 +556,7 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
     {
         if (edc_task_is_completed(m) || edc_task_is_cancelled(m) || edc_task_has_failed(m))
             continue;
-        edc_task_add_dependency(m, task, TASK_DEP_SEQUENCE);
+        edc_task_add_dependency(m, task, TASK_DEP_BARRIER);
     }
 
     /* L2 and the fold are built TOGETHER: the whole chain is visible at once

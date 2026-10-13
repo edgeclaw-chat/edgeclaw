@@ -539,13 +539,10 @@ struct edc_task *edc_session_memory_start(struct edc_scheduler *sched, struct ed
     }
     sdsfree(prompt);
 
-    /* Chain: L2 ->(JOIN) L1 -- JOIN rather than SEQUENCE, for two reasons:
-     *   1) failure/cancel cascade automatically: L1 ERROR => L2 ERROR; L1 cancelled
-     *      => L2 cancelled (SEQUENCE would just drop the edge and let L2 run on stale
-     *      memory for nothing);
-     *   2) the material comes along: JOIN's injection splices L1's output (the
-     *      just-landed group memory) into L2's own input message, so the memory need
-     *      not be copied into the prompt when folding.
+    /* Chain: L2 ->(JOIN) L1. JOIN, because the material has to come along: its injection
+     * splices L1's output (the just-landed group memory) into L2's own input message, so
+     * the memory need not be copied into the prompt when folding. (Failure/cancel cascade
+     * through JOIN and SEQUENCE alike, so that is no longer a reason to pick one.)
      * Members additionally hang a SEQUENCE on L2 (below): they wait for both. */
     if (fold_task)
         edc_task_add_dependency(task, fold_task, TASK_DEP_JOIN);
@@ -556,7 +553,7 @@ struct edc_task *edc_session_memory_start(struct edc_scheduler *sched, struct ed
         {
             if (edc_task_is_completed(m) || edc_task_is_cancelled(m) || edc_task_has_failed(m))
                 continue;
-            edc_task_add_dependency(m, task, TASK_DEP_SEQUENCE);
+            edc_task_add_dependency(m, task, TASK_DEP_BARRIER);
         }
     }
 

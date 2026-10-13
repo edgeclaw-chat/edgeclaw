@@ -92,10 +92,11 @@ static void test_idempotent_operations(void)
     CHECK(target->deps_total == 1, "deps_total=1");
 
     edc_task_on_dep_cancelled(target, source);
-    CHECK(target->deps_total == 0, "deps_total=0 after first cancel");
+    CHECK(edc_task_is_cancelled(target), "cascaded to CANCELLED");
+    CHECK(target->deps_total == 1, "deps_total stays 1 (the edge is kept)");
 
     edc_task_on_dep_cancelled(target, source);
-    CHECK(target->deps_total == 0, "deps_total=0 after second (idempotent)");
+    CHECK(target->deps_total == 1, "still 1 after the second call (idempotent)");
 
     edc_task_free(target);
     edc_task_free(source);
@@ -179,7 +180,8 @@ static void test_many_dependencies(void)
     {
         edc_task_send_signal(sources[i], TASK_SIGTERM);
     }
-    CHECK(target->deps_total == 5, "deps_total=5 after 5 cancels");
+    CHECK(target->deps_total == 10, "deps_total stays 10: cancelled edges are kept, not voided");
+    CHECK(edc_task_is_cancelled(target), "and the target cascaded with the first one");
 
     /* Complete even-indexed ones */
     for (int i = 0; i < 10; i += 2)
@@ -187,7 +189,7 @@ static void test_many_dependencies(void)
         edc_task_notify_dependents(sources[i]);
     }
     CHECK(target->deps_completed == 5, "deps_completed=5");
-    CHECK(edc_task_is_ready(target), "advanced after mixed");
+    CHECK(edc_task_is_cancelled(target), "a dead dependency keeps it stopped (no release)");
 
     for (int i = 0; i < 10; i++) edc_task_free(sources[i]);
     edc_task_free(target);

@@ -66,11 +66,12 @@ static sds edc_llm_var_resolver(const char *name, void *user_data)
     if (!sched)
         return NULL;
 
-    /* $$ -> the active task id */
+    /* $$ -> the task in front (the foreground group's last unfinished member), not the
+     * screen focus: that one may sit on a task that already finished. */
     if (strcmp(name, "$") == 0)
     {
-        struct edc_task *active = edc_session_get_active_task(edc_session_manager_get_active(sched->sessions));
-        return active ? sdsnew(active->task_id) : NULL;
+        struct edc_task *front = edc_scheduler_current_task(edc_session_manager_get_active(sched->sessions));
+        return front ? sdsnew(front->task_id) : NULL;
     }
 
     /* $LAST -> the last completed task's output */

@@ -35,12 +35,44 @@ static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg
 static void sched_handle_pull_snapshot(struct edc_scheduler *sched, const char *session_id);
 static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_session *session, const char *reason);
 static void sched_trace_notify(const char *reason, const char *session_id);
-/** Terminal states (COMPLETED / CANCELLED / ERROR); defined in the reap section below. */
-static bool sched_task_finished(struct edc_task *task);
 static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *task, edc_task_step step,
                                   edc_task_life life);
 /* The executor's outbound ops table (defined later in the file; forward-declared for init in new). */
 static const struct edc_executor_ops sched_executor_ops;
+
+/* Whether a member of a group still holds the front, i.e. whether a task that joins
+ * behind it has to wait. Only work that can actually run counts: a task with no input
+ * at all is never runnable, so it must not block the ones behind it forever. */
+static bool sched_task_holds_front(const struct edc_task *task)
+{
+    return task && !edc_task_is_finished(task) && (task->active_turn || edc_task_is_running(task));
+}
+
+/* Put |task| at the back of the queue of the group it is in, when that group is the one
+ * in front: one edge to the member that currently holds the front. Two doors lead to "a
+ * task is about to run in the foreground group" -- creation (sched_settle_task) and
+ * resume -- and both must respect the queue, or the group runs two at a time.
+ * Returns true when an edge was added (false when there is nothing to wait for). */
+static bool sched_chain_behind_front(struct edc_task *task)
+{
+    struct edc_session *own = edc_task_session(task);
+    struct edc_task *prev = NULL;
+    struct edc_task *m;
+
+    if (!own || !task->group || own->foreground_group != task->group)
+        return false;
+
+    LL_FOREACH2(task->group->members, m, group_next)
+    {
+        /* Skip this task: it has already joined the group. */
+        if (m != task && sched_task_holds_front(m))
+            prev = m;
+    }
+    if (!prev)
+        return false;
+
+    return edc_task_add_dependency(task, prev, TASK_DEP_SEQUENCE);
+}
 
 /* The task's owner session -- now edc_task_session() in edc_task.c. */
 
@@ -220,20 +252,41 @@ bool edc_scheduler_open(struct edc_scheduler *sched)
     return true;
 }
 
+/* Shutdown pass: nothing will advance any more, so every task that is not already
+ * terminal says so in its own state -- READY and waiting ones included: the queue they
+ * were sitting in is over, and each of them needs a decision now. Memory-sink tasks
+ * (fold / curation) are the exception: the scan re-dispatches a half-done fold on load,
+ * which is what a background round wants. */
+static void sched_interrupt_all(void *ctx, struct edc_task *task)
+{
+    (void)ctx;
+    if (!task || edc_task_is_finished(task) || edc_task_is_memory_sink(task))
+        return;
+
+    edc_task_mark_interrupted(task);
+    /* The broadcast moved dependents as a side effect and nobody will settle those
+     * reports now. The flags they carried are what gets persisted, so dropping the list
+     * only releases the bookkeeping (its owner is still alive at this point). */
+    edc_task_drain_moves(task, NULL, NULL);
+}
+
 bool edc_scheduler_close(struct edc_scheduler *sched)
 {
     if (!sched || !sched->sessions || sched->sessions_closed)
         return false;
 
-    /* Exit = closing the process, not a user-driven /session remove: persist
-     * everything as-is. An interrupted task is saved as LLM_PROCESSING /
-     * TOOL_CALLING with its tool ledger intact and converges to SUSPENDED on
-     * load, so the user can decide whether to resume -- hence no CANCELLED and no
-     * second save after cancelling. */
+    /* Exit = closing the process, not a user-driven /session remove: persist what
+     * happened. Nothing will advance any more, so every unfinished task is stated as
+     * INTERRUPTED first (tool ledger intact), and the user decides whether to resume one
+     * by one -- hence no CANCELLED and no second save after cancelling. The interrupt
+     * also broadcasts, so a task queued behind another one is not left waiting for a
+     * predecessor that will never run on its own. */
+    edc_session_manager_foreach_task(sched->sessions, sched_interrupt_all, NULL);
     edc_session_store_save_all_sessions_state(sched->sessions, sched);
 
-    /* In-flight turns belong to no live turn any more: drop them. */
-    edc_session_store_remove_all_turns(sched->sessions, sched);
+    /* Nothing is in flight any more: forget the pending requests (a late reply must not
+     * land) without touching the states just written. */
+    edc_session_store_drop_in_flight_requests(sched->sessions, sched);
 
     sched->sessions_closed = true;
     return true;
@@ -343,7 +396,7 @@ char *edc_scheduler_gen_task_id(struct edc_scheduler *sched)
     return strdup(buf);
 }
 
-struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, struct edc_session *session, const char *desc,
+struct edc_task *edc_scheduler_task_new(struct edc_scheduler *sched, struct edc_session *session, const char *desc,
                                            edc_channel_type channel_type)
 {
     if (!sched || !session)
@@ -370,6 +423,147 @@ struct edc_task *edc_scheduler_create_task(struct edc_scheduler *sched, struct e
 
     /* A new task changed the tree: mark dirty so it shows in the sidebar. */
     sched_mark_dirty(sched, session, "task");
+
+    return task;
+}
+
+/* ── Task creation with placement ──────────────────────────── */
+
+/* Choose the group a task lands in and join it. The single answer to "where does a
+ * new task go" -- create / fork / system all settle through here instead of each
+ * deciding for itself. */
+static struct edc_task_group *sched_settle_task(struct edc_scheduler *sched, struct edc_session *session,
+                                                struct edc_task *task, const struct edc_task_spec *spec,
+                                                bool *chained_out)
+{
+    struct edc_task_group *group = NULL;
+
+    if (chained_out)
+        *chained_out = false;
+
+    switch (spec->place)
+    {
+    case EDC_TASK_PLACE_SYSTEM:
+        task->sink = spec->sink;
+        group = edc_session_find_system_group(session);
+        if (group)
+        {
+            edc_task_group_add_task(group, task);
+        }
+        else
+        {
+            group = edc_task_group_new(task);
+            if (!group)
+                return NULL;
+            group->kind = EDC_GROUP_KIND_SYSTEM;
+            edc_session_add_group(session, group);
+        }
+        break;
+
+    case EDC_TASK_PLACE_GROUP:
+        /* The caller names the group; an unknown name makes one led by this task. */
+        group = spec->group_id ? edc_session_find_group(session, spec->group_id) : NULL;
+        if (group)
+            edc_task_group_add_task(group, task);
+        else
+            group = edc_scheduler_create_group(sched, session, task);
+        break;
+
+    case EDC_TASK_PLACE_NEW_GROUP:
+        group = edc_scheduler_create_group(sched, session, task);
+        break;
+
+    case EDC_TASK_PLACE_FOREGROUND:
+    default:
+        group = sched_foreground(session);
+        /* A finished or orphaned group is not a place to put new work. */
+        if (!group || group->is_orphaned || group->member_count == 0)
+            group = edc_scheduler_create_group(sched, session, task);
+        else
+            edc_task_group_add_task(group, task);
+        break;
+    }
+
+    /* One in front at a time: a task joining the group that is currently in front waits
+     * for whatever is still unfinished there. The edge is an order constraint (no output
+     * is injected), but its failure semantics are a dependency's: a predecessor that dies
+     * takes this task with it and keeps the edge, so resuming this one puts it back behind
+     * the predecessor instead of jumping the queue. A predecessor that finished satisfies
+     * it at once. A background task (`&` / `--bg`) is not queued -- it asked to run
+     * alongside. */
+    if (!spec->background)
+    {
+        bool chained = sched_chain_behind_front(task);
+        if (chained_out)
+            *chained_out = chained;
+    }
+
+    return group;
+}
+
+bool edc_scheduler_task_adopt(struct edc_scheduler *sched, struct edc_session *session, struct edc_task *task,
+                              const struct edc_task_spec *spec)
+{
+    if (!sched || !session || !task || !spec)
+        return false;
+
+    /* Edges first: a dependent parks in WAITING_DEPS, and the group it joins does
+     * not care which phase it was in. */
+    for (size_t i = 0; i < spec->dep_count; i++)
+        edc_task_add_dependency(task, spec->deps[i], TASK_DEP_JOIN);
+    if (spec->prev)
+        edc_task_add_dependency(task, spec->prev, spec->prev_type);
+
+    bool chained = false;
+    struct edc_task_group *group = sched_settle_task(sched, session, task, spec, &chained);
+    if (!group)
+    {
+        log_error("task %s: nowhere to land (group not creatable)", task->task_id ? task->task_id : "?");
+        return false;
+    }
+
+    if (spec->take_foreground)
+    {
+        /* The group is where the next task goes. The active pointer (what the frontend
+         * shows live) moves onto the new task -- except when it was queued behind the one
+         * in front: that one is running, and taking the pointer away would black out its
+         * output; the drive rule hands the pointer over when the queued task runs. */
+        edc_scheduler_set_foreground(session, group);
+        if (!chained)
+            edc_session_set_active_task(session, task);
+    }
+
+    /* Attaching the input is all that happens here; running it is the message-end
+     * scan's job. (Parking is not a creation option: an interrupted task lands in
+     * INTERRUPTED, and /task resume undoes it -- that is a phase change, not a flag.) */
+    if (spec->input)
+    {
+        struct edc_turn *turn = edc_turn_new();
+        turn->task_id = strdup(task->task_id);
+        edc_turn_add_user_message(turn, spec->input);
+        task->active_turn = turn;
+    }
+
+    return true;
+}
+
+struct edc_task *edc_scheduler_task_create(struct edc_scheduler *sched, struct edc_session *session,
+                                           const struct edc_task_spec *spec)
+{
+    if (!sched || !session || !spec)
+        return NULL;
+
+    struct edc_task *task =
+        edc_scheduler_task_new(sched, session, (spec->desc && *spec->desc) ? spec->desc : "New task",
+                               spec->channel_type);
+    if (!task)
+        return NULL;
+
+    if (!edc_scheduler_task_adopt(sched, session, task, spec))
+    {
+        edc_task_free(task);
+        return NULL;
+    }
 
     return task;
 }
@@ -423,23 +617,16 @@ struct edc_task *edc_scheduler_spawn_system_task_as(struct edc_scheduler *sched,
 
     /* Two attributes: the output goes to some memory (fold = group, curation =
      * session), and the container is the system group. lifetime defaults to PERSISTENT
-     * -- these tasks must survive a restart so an unfinished round resumes. */
-    task->sink = sink;
-
-    if (group)
+     * -- these tasks must survive a restart so an unfinished round resumes. No turn:
+     * the caller attaches one. */
+    struct edc_task_spec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.place = EDC_TASK_PLACE_SYSTEM;
+    spec.sink = sink;
+    if (!edc_scheduler_task_adopt(sched, session, task, &spec))
     {
-        edc_task_group_add_task(group, task);
-    }
-    else
-    {
-        group = edc_task_group_new(task);
-        if (!group)
-        {
-            edc_task_free(task);
-            return NULL;
-        }
-        group->kind = EDC_GROUP_KIND_SYSTEM;
-        edc_session_add_group(session, group);
+        edc_task_free(task);
+        return NULL;
     }
 
     /* Make it immediately visible in the sidebar (it may be the only thing running). */
@@ -455,7 +642,7 @@ bool edc_scheduler_has_pending_system_task(struct edc_session *session)
     struct edc_task *t;
     LL_FOREACH2(group->members, t, group_next)
     {
-        if (!sched_task_finished(t))
+        if (!edc_task_is_finished(t))
             return true;
     }
     return false;
@@ -581,6 +768,18 @@ void edc_scheduler_schedule(struct edc_scheduler *sched)
  * was started, take the just-issued request_id back. */
 static void sched_drive_task(struct edc_scheduler *sched, struct edc_task *task)
 {
+    /* What the frontend shows live is whoever is running in the group that is in front.
+     * A task never takes the front away from another one that is already running (that
+     * is what `&` asked for), so a task that was queued behind the one in front picks
+     * the active pointer up here -- when it finally runs and nothing is in front. */
+    struct edc_session *own = edc_task_session(task);
+    if (own && task->group && own->foreground_group == task->group)
+    {
+        struct edc_task *cur = edc_session_get_active_task(own);
+        if (cur != task && (!cur || !edc_task_is_running(cur)))
+            edc_session_set_active_task(own, task);
+    }
+
     void *req_id = sched_gen_request_id();
     edc_scheduler_register_task(sched, task, req_id);
     task->current_request_id = req_id;
@@ -639,6 +838,45 @@ void edc_scheduler_set_foreground(struct edc_session *session, struct edc_task_g
 struct edc_task_group *edc_scheduler_get_foreground(struct edc_session *session)
 {
     return sched_foreground(session);
+}
+
+/* The task an id-less command acts on: the foreground group's last unfinished member.
+ * Deliberately not `active_task` -- that one is the screen focus and may sit on a task
+ * that already finished (the final reply is delivered *after* the task reaches
+ * COMPLETED, see edc_executor.c), which makes it a poor default for /task stop, /task
+ * resume, /task join and `$$`. */
+struct edc_task *edc_scheduler_current_task(struct edc_session *session)
+{
+    struct edc_task_group *fg = sched_foreground(session);
+    struct edc_task *last = NULL;
+    struct edc_task *t;
+
+    if (!fg)
+        return NULL;
+
+    LL_FOREACH2(fg->members, t, group_next)
+    {
+        if (!edc_task_is_finished(t))
+            last = t;
+    }
+    return last;
+}
+
+struct edc_task *edc_scheduler_resumable_task(struct edc_session *session)
+{
+    struct edc_task_group *fg = sched_foreground(session);
+    struct edc_task *last = NULL;
+    struct edc_task *t;
+
+    if (!fg)
+        return NULL;
+
+    LL_FOREACH2(fg->members, t, group_next)
+    {
+        if (!edc_task_is_completed(t))
+            last = t;
+    }
+    return last;
 }
 
 const char *edc_scheduler_task_workdir(struct edc_task *task)
@@ -822,6 +1060,15 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
         }
     }
 
+    /* Resume is the other door into "this task is about to run in the foreground group":
+     * it must not jump the queue (creation goes through sched_settle_task for this). */
+    if (sched_chain_behind_front(task))
+    {
+        edc_task_mark_waiting_deps(task);
+        edc_scheduler_task_moved(sched, task);
+        return;
+    }
+
     /* Check folding before the request (mount point (b)): starting a fold hangs a dep
      * on this task, parking it in AWAIT_DEPS; after the fold lands the scan drives it
      * again, and that request then carries the compressed context. */
@@ -840,11 +1087,6 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
     sched_drive_task(sched, task);
 }
 
-static bool sched_task_finished(struct edc_task *task)
-{
-    /* Terminal = no more advancing. SUSPENDED does not count (it can be resumed). */
-    return edc_task_is_completed(task) || edc_task_is_cancelled(task) || edc_task_has_failed(task);
-}
 
 /* ── Foreground task state notification ────────────────────── */
 
@@ -877,9 +1119,6 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
         return;
     }
 
-    struct edc_task_group *fg = sched_foreground(session);
-    struct edc_task *task = NULL;
-
     /* Record the raw text being handled (cleared on every exit of this function). */
     sched->input_raw = input->content;
 
@@ -893,26 +1132,15 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
         return;
     }
 
-    /* No command handler (or unhandled) -> fall back to creating a task (this input is its turn). */
-    task = edc_scheduler_create_task(sched, session, input->content, input->type);
-    if (!task)
-        return;
-    edc_session_set_active_task(session, task);
-
-    if (!fg || fg->is_orphaned || fg->member_count == 0)
-    {
-        fg = edc_scheduler_create_group(sched, session, task);
-        edc_scheduler_set_foreground(session, fg);
-    }
-    else
-    {
-        edc_task_group_add_task(fg, task);
-    }
-
-    /* Plain input gets the same python-like quoting stripped as the shell path. */
+    /* No command handler (or unhandled) -> create a task carrying this input.
+     *
+     * Production does not reach this: edc_commands_handler claims every non-`/` input,
+     * so it is the seam the scheduler tests drive (they install a mock handler that
+     * declines). Kept, and kept on the same placement as a real plain input. */
     sds effective_input = NULL;
     if (is_plain)
     {
+        /* Plain input gets the same python-like quoting stripped as the shell path. */
         struct edc_cmd_task_opts popts;
         edc_cmd_parse_task_opts(input->content, &popts);
         if (popts.input && sdslen(popts.input) > 0)
@@ -920,13 +1148,16 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
         edc_cmd_task_opts_free(&popts);
     }
 
-    struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(task->task_id);
-    edc_turn_add_user_message(turn, effective_input ? effective_input : input->content);
+    struct edc_task_spec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.desc = input->content;
+    spec.channel_type = input->type;
+    spec.input = effective_input ? effective_input : input->content;
+    spec.place = EDC_TASK_PLACE_FOREGROUND;
+    spec.take_foreground = true;
+    edc_scheduler_task_create(sched, session, &spec);
     if (effective_input)
         sdsfree(effective_input);
-    task->active_turn = turn;
-    /* Attaching the input is all that happens here; running it is the scan's job. */
 
     sched->input_raw = NULL; /* this input is done */
 }
@@ -999,7 +1230,7 @@ static sds sched_error_copy(struct edc_scheduler *sched, const char *notice)
 static void sched_settle_cascaded(void *ctx, struct edc_task *task)
 {
     struct edc_scheduler *sched = ctx;
-    bool finished = sched_task_finished(task);
+    bool finished = edc_task_is_finished(task);
 
     struct edc_advance_result res;
     memset(&res, 0, sizeof(res));

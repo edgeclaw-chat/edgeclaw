@@ -233,13 +233,39 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
         }
     }
 
-    struct edc_task *task = edc_scheduler_create_task(
-        sched, session, (opts->desc && sdslen(opts->desc) > 0) ? opts->desc : "New task", channel_type);
+    /* The shell's syntax decides the placement: `&` is the only thing that does not
+     * take the foreground, and the AST's walk-local target group (a pipeline shares
+     * one) names the group. Everything else -- object, edges, group, turn -- is the
+     * scheduler's edc_scheduler_task_create. */
+    struct edc_task_spec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.desc = (opts->desc && sdslen(opts->desc) > 0) ? opts->desc : "New task";
+    spec.channel_type = channel_type;
+    spec.input = opts->input;
+    spec.deps = deps;
+    spec.dep_count = (size_t)opts->dep_count;
+    spec.prev = prev_task;
+    spec.prev_type = prev_dep_type;
+    spec.take_foreground = !opts->bg;
+    spec.background = opts->bg;
+    if (target_group)
+    {
+        spec.place = EDC_TASK_PLACE_GROUP;
+        spec.group_id = target_group->group_id;
+    }
+    else
+    {
+        spec.place = EDC_TASK_PLACE_NEW_GROUP;
+    }
+
+    struct edc_task *task = edc_scheduler_task_create(sched, session, &spec);
+    free(deps);
+    deps = NULL;
     if (!task)
         return NULL;
+
     if (opts->prompt_name)
         edc_task_set_prompt(task, opts->prompt_name, NULL);
-
     if (redirect_stdout)
     {
         task->redirect_stdout = redirect_stdout;
@@ -248,49 +274,19 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
     if (redirect_stderr)
         task->redirect_stderr = redirect_stderr;
 
-    struct edc_task_group *group;
-    if (target_group)
-    {
-        edc_task_group_add_task(target_group, task);
-        group = target_group;
-    }
-    else
-    {
-        group = edc_scheduler_create_group(sched, session, task);
-    }
-
-    if (!opts->bg)
-    {
-        edc_scheduler_set_foreground(session, group);
-        edc_session_set_active_task(edc_session_manager_get_active(sm), task);
-    }
-
-    for (int i = 0; i < opts->dep_count; i++)
-        edc_task_add_dependency(task, deps[i], TASK_DEP_JOIN);
-    free(deps);
-
-    if (prev_task)
-        edc_task_add_dependency(task, prev_task, prev_dep_type);
+    struct edc_task_group *group = task->group;
 
     /* Task creation is silent: state transitions are observable via /task list,
      * /task status, /whoami and the TUI snapshot. */
-    log_info("%s created task=%s group=%s%s%s%s%s", reply_prefix, task->task_id, group->group_id,
-             opts->bg ? " [bg]" : "", opts->dep_count > 0 ? " [chained]" : "",
+    log_info("%s created task=%s group=%s%s%s%s%s", reply_prefix, task->task_id,
+             group ? group->group_id : "-", opts->bg ? " [bg]" : "", opts->dep_count > 0 ? " [chained]" : "",
              prev_task ? (prev_dep_type == TASK_DEP_SEQUENCE ? " [seq]" : " [pipe]") : "",
              redirect_stdout ? (redirect_append ? " (>> redirect)" : " (> redirect)") : "");
 
-    if (opts->input)
-    {
-        /* Attaching the input is the end of it; running it is the message-end
-         * scan's job. */
-        struct edc_turn *turn = edc_turn_new();
-        turn->task_id = strdup(task->task_id);
-        edc_turn_add_user_message(turn, opts->input);
-        task->active_turn = turn;
-
-        log_info("%s spawn: task=%s state=%s deps_total=%zu input='%s'", reply_prefix, task->task_id,
-                 edc_task_state_str(task), task->deps_total, opts->input);
-    }
+    /* The turn is already attached (input is mandatory in this path); running it is
+     * the message-end scan's job. */
+    log_info("%s spawn: task=%s state=%s deps_total=%zu input='%s'", reply_prefix, task->task_id,
+             edc_task_state_str(task), task->deps_total, opts->input);
 
     if (out_group)
         *out_group = group;
@@ -484,10 +480,11 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
             if (*p == '$')
             {
                 p++;
-                struct edc_task *active =
-                    edc_session_get_active_task(edc_session_manager_get_active(sm));
-                if (active)
-                    result = sdscat(result, active->task_id);
+                /* `$$` is the task in front (not the screen focus: that one may sit on a
+                 * task that already finished). */
+                struct edc_task *front = edc_scheduler_current_task(edc_session_manager_get_active(sm));
+                if (front)
+                    result = sdscat(result, front->task_id);
             }
             else if (strncmp(p, "LAST", 4) == 0 && VAR_DELIM(p[4]))
             {
@@ -569,6 +566,16 @@ bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sch
         return true;
     }
     sdsfree(trimmed);
+
+    /* Options are only recognised after a quoted description, so an unquoted `@`
+     * command carrying one would silently swallow it into the description text.
+     * Reject it instead of creating a task nobody meant. */
+    if (is_at && edc_cmd_desc_needs_quotes(body))
+    {
+        edc_commands_reply(to, "Syntax error — an `@` command with options needs its description quoted: "
+                               "write `@\"<description>\" --bg`, or drop the options.");
+        return true;
+    }
 
     /* expand !n / !! history references */
     sds hist_expanded = edc_shell_expand_history(body);

@@ -269,6 +269,24 @@ cc_test(
 )
 
 cc_test(
+    name = "test_commands_task_fork",
+    srcs = ["test_commands_task_fork.c"],
+    deps = [
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_shell_job_control",
+    srcs = ["test_shell_job_control.c"],
+    deps = [
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_commands_session_memo",
     srcs = ["test_commands_session_memo.c"],
     deps = [

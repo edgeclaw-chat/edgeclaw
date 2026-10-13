@@ -222,18 +222,10 @@ static struct edc_task *exec_node(
         if (!ctx->target_group && out_group)
             ctx->target_group = out_group;
 
-        if (node->at_group && task && out_group)
-        {
-            /* The foreground group is a session attribute: read/write it on this input's
-             * session (the scheduler no longer holds a "current session"). */
-            struct edc_session *sess = ctx->session;
-            struct edc_task_group *fg = edc_scheduler_get_foreground(sess);
-            if (!fg)
-            {
-                edc_scheduler_set_foreground(sess, out_group);
-                edc_session_set_active_task(edc_session_manager_get_active(ctx->sm), task);
-            }
-        }
+        /* No foreground bookkeeping here: `adopt` already decided it when it placed
+         * the task (take_foreground = !bg). An explicitly background task must not
+         * touch the foreground concept at all -- not even when the session has no
+         * foreground group, which is exactly when this used to promote it. */
 
         return task;
     }

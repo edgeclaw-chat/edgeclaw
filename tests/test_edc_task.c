@@ -107,7 +107,7 @@ static void test_state_machine(void)
     edc_task_free(t);
 
     t = park_at("sm3", EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
-    CHECK(edc_task_mark_suspended(t), "READY → suspended (created parked: /task new --suspended)");
+    CHECK(edc_task_mark_suspended(t), "READY → suspended (as a task restored from disk lands)");
     CHECK(t->step == EDC_TASKSTEP_READY && t->life == EDC_LIFE_SUSPENDED, "… keeps the step it was on");
     edc_task_free(t);
 
@@ -874,8 +874,9 @@ static void test_dependencies(void)
 
 static void test_dep_cancelled(void)
 {
-    /* SEQUENCE (`;`) 语义: 源被取消只抹去这条依赖, 目标照常可运行。 */
-    TEST("SEQUENCE dep cancelled: edge dropped, target stays runnable");
+    /* SEQUENCE 与 JOIN 在失败/取消的传播上完全一致 (只差"输出是否注入"):
+     * 源取消 -> 目标被级联取消, 且**边留着** (resume 它会回到等依赖)。 */
+    TEST("SEQUENCE dep cancelled: target is cascaded, the edge is kept");
     struct edc_task *target = edc_task_new("task-tgt-c", "sess-1", "task-tgt-c", "target-c", edc_channel_adapter);
     struct edc_task *source = edc_task_new("task-src-c", "sess-1", "task-tgt-c", "source-c", edc_channel_adapter);
 
@@ -883,10 +884,10 @@ static void test_dep_cancelled(void)
     CHECK(target->deps_total == 1, "deps_total=1 before cancel");
 
     edc_task_on_dep_cancelled(target, source);
-    CHECK(target->deps_total == 0, "deps_total=0 after cancel");
-    CHECK(edc_task_is_ready(target), "advanced to READY (all deps done/cancelled)");
+    CHECK(edc_task_is_cancelled(target), "target cascaded to CANCELLED, like a JOIN dependent");
+    CHECK(target->deps_total == 1, "deps_total stays 1: the edge is not voided");
     CHECK(source->dependents != NULL, "source still has dependent record");
-    CHECK(source->dependents->cancelled, "source dependent marked cancelled");
+    CHECK(!source->dependents->cancelled, "and it is not marked voided");
 
     edc_task_free(target);
     edc_task_free(source);
@@ -895,8 +896,8 @@ static void test_dep_cancelled(void)
 static void test_dep_cancel_cascade(void)
 {
     /* chain: a --SEQ--> b --JOIN--> c  (a 依赖 b, b 依赖 c)
-     * 取消 c: b 是 JOIN 依赖者 → 级联取消; a 是 b 的 SEQ 依赖者 → 只抹边、保持可运行。 */
-    TEST("JOIN cancel cascades, SEQUENCE cancel only drops the edge");
+     * 取消 c: b 是 JOIN 依赖者 → 级联取消; a 是 b 的 SEQ 依赖者 → **同样级联取消**。 */
+    TEST("cancel cascades through both kinds, keeping the edges");
     struct edc_task *a = edc_task_new("cas-a", "sess-cas", "cas-a", "A", edc_channel_adapter);
     struct edc_task *b = edc_task_new("cas-b", "sess-cas", "cas-a", "B", edc_channel_adapter);
     struct edc_task *c = edc_task_new("cas-c", "sess-cas", "cas-a", "C", edc_channel_adapter);
@@ -908,8 +909,8 @@ static void test_dep_cancel_cascade(void)
     edc_task_send_signal(c, TASK_SIGTERM);
     CHECK(edc_task_is_cancelled(c), "c cancelled");
     CHECK(edc_task_is_cancelled(b), "b cascaded to CANCELLED (JOIN)");
-    CHECK(edc_task_is_ready(a), "a released to READY (SEQ drop), not cancelled");
-    CHECK(a->deps_total == 0, "a's dropped dep no longer counted (SEQUENCE 仍作废)");
+    CHECK(edc_task_is_cancelled(a), "a cascaded too (SEQ behaves like JOIN here)");
+    CHECK(a->deps_total == 1, "a's edge to b is kept");
     CHECK(b->deps_total == 1 && b->deps && b->deps->source == c, "b 对 c 的 JOIN 边留着");
 
     edc_task_free(a);
@@ -940,15 +941,15 @@ static void test_signals(void)
     edc_task_free(target);
     edc_task_free(source);
 
-    TEST("SIGTERM on SEQUENCE source only drops the dependency");
+    TEST("SIGTERM on a SEQUENCE source cascades, keeping the edge");
     struct edc_task *starget = edc_task_new("task-sig5", "sess-1", "task-sig5", "seq target", edc_channel_adapter);
     struct edc_task *ssource = edc_task_new("task-sig6", "sess-1", "task-sig5", "seq source", edc_channel_adapter);
 
     edc_task_add_dependency(starget, ssource, TASK_DEP_SEQUENCE);
     edc_task_send_signal(ssource, TASK_SIGTERM);
     CHECK(edc_task_is_cancelled(ssource), "seq source CANCELLED");
-    CHECK(edc_task_is_ready(starget), "SEQUENCE dependent released, not cancelled");
-    CHECK(starget->deps_total == 0, "dropped dep no longer counted");
+    CHECK(edc_task_is_cancelled(starget), "SEQUENCE dependent cascaded too, like a JOIN one");
+    CHECK(starget->deps_total == 1, "the edge is kept");
 
     edc_task_free(starget);
     edc_task_free(ssource);
@@ -1185,15 +1186,16 @@ static void test_scenario_multi_deps(void)
 
     /* C is cancelled */
     edc_task_on_dep_cancelled(target, c);
-    CHECK(target->deps_total == 2, "deps_total=2 after C cancelled");
+    CHECK(target->deps_total == 3, "deps_total=3 after C cancelled (its edge is kept)");
     CHECK(target->deps_completed == 1, "deps_completed still 1");
+    CHECK(edc_task_is_cancelled(target), "and the target was cascaded: one dead dependency stops it");
 
     /* B completes */
     sds out_b = sdsnew("result from B");
     edc_task_set_output(b, out_b);
     edc_task_notify_dependents(b);
     CHECK(target->deps_completed == 2, "deps_completed=2");
-    CHECK(edc_task_is_ready(target), "all resolved → READY");
+    CHECK(edc_task_is_cancelled(target), "still cancelled: a completion does not revive a stopped task");
 
     /* Context should include A and B outputs */
     cJSON *msgs = edc_task_get_context_messages(target, NULL);
@@ -1257,15 +1259,15 @@ static void test_dep_failure_propagates(void)
     edc_task_free(b);
     edc_task_free(c);
 
-    TEST("scenario: 上游失败 → SEQUENCE 边作废放行 (只要顺序, 不要产出)");
+    TEST("scenario: 上游失败 → SEQUENCE 下游一起失败 (边保留, resume 后回到等依赖)");
     struct edc_task *s = edc_task_new("f-s", "sess-seq", "f-s", "S", edc_channel_adapter);
     struct edc_task *d = edc_task_new("f-d", "sess-seq", "f-d", "D runs after S", edc_channel_adapter);
     edc_task_add_dependency(d, s, TASK_DEP_SEQUENCE);
     CHECK(edc_task_awaits_deps(d), "D 等在顺序上");
     edc_task_await_exec(s);
     CHECK(edc_task_mark_failed(s), "S 失败");
-    CHECK(edc_task_is_ready(d), "D 转 READY (与取消那条路逐字同构)");
-    CHECK(d->deps_total == 0, "那条 SEQUENCE 边已作废");
+    CHECK(edc_task_has_failed(d), "D 也失败 (与 JOIN 那条路逐字同构)");
+    CHECK(d->deps_total == 1, "边留着: resume D 会回到等依赖");
     edc_task_free(s);
     edc_task_free(d);
 
@@ -1338,6 +1340,37 @@ static void test_dep_completion_releases(void)
 
 /* ── main ──────────────────────────────────────────────────── */
 
+/* Interruption is "the loop stopped underneath it": unlike a user pause it may land on
+ * any step (the process can die mid-request), it keeps that step, and resume re-decides
+ * from there exactly like the other stopped states. */
+static void test_interrupted_state(void)
+{
+    TEST("INTERRUPTED is allowed from any step and keeps it");
+    struct edc_task *t = park_at("int-ready", EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
+    CHECK(edc_task_mark_interrupted(t), "READY -> INTERRUPTED");
+    CHECK(t->step == EDC_TASKSTEP_READY && edc_task_is_interrupted(t), "step kept, life stated");
+    CHECK(edc_task_is_resumable(t), "and it is resumable");
+    CHECK(!edc_task_mark_interrupted(t), "a second interrupt is rejected (self-transition)");
+    CHECK(edc_task_is_finished(t), "it does not hold a group's front");
+    edc_task_free(t);
+
+    t = park_at("int-exec", EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
+    CHECK(edc_task_mark_interrupted(t), "AWAIT_EXEC -> INTERRUPTED (a user pause is refused here)");
+    CHECK(t->step == EDC_TASKSTEP_AWAIT_EXEC, "step kept");
+    CHECK(edc_task_await_tools(t), "resume re-decides: INTERRUPTED -> AWAIT_TOOLS");
+    edc_task_free(t);
+
+    t = park_at("int-tools", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
+    CHECK(edc_task_mark_interrupted(t), "AWAIT_TOOLS -> INTERRUPTED");
+    CHECK(!edc_task_mark_suspended(t), "and it is not the user-pause row");
+    CHECK(edc_task_mark_cancelled(t), "INTERRUPTED -> CANCELLED");
+    edc_task_free(t);
+
+    t = park_at("int-done", EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED);
+    CHECK(!edc_task_mark_interrupted(t), "COMPLETED cannot be interrupted");
+    edc_task_free(t);
+}
+
 int main(void)
 {
     log_info("=== Phase 1: edc_task 模块测试 ===");
@@ -1346,6 +1379,7 @@ int main(void)
     test_lifecycle();
     test_fork();
     test_state_machine();
+    test_interrupted_state();
     test_display_names();
     test_step_life_read_side();
     test_transition_table_spec();

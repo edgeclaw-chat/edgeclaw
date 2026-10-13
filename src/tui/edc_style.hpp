@@ -32,7 +32,7 @@ struct Palette
     ::ftxui::Color ok;             // green: success/COMPLETED, nothing else
     ::ftxui::Color warn;           // yellow: foreground group, IDLE/WAITING
     ::ftxui::Color error;          // ERROR
-    ::ftxui::Color suspended;      // SUSPENDED
+    ::ftxui::Color suspended;      // INTERRUPTED / SUSPENDED (both are parked)
     ::ftxui::Color thought_open;   // expanded "Thought" toggle
     ::ftxui::Color thought_closed; // collapsed "Thought" toggle
 
@@ -186,7 +186,7 @@ inline ::ftxui::Color TaskStateColor(const Palette &pal, const std::string &stat
         return pal.error;
     if (TaskStateProcessing(state))
         return pal.accent;
-    if (state == "SUSPENDED")
+    if (state == "INTERRUPTED" || state == "SUSPENDED")
         return pal.suspended;
     if (state == "CANCELLED")
         return pal.text_dim;

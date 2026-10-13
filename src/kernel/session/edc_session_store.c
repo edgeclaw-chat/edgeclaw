@@ -218,9 +218,24 @@ void edc_session_store_stop_all_turns(struct edc_session_manager *sm, struct edc
     edc_session_store_save_session_state(sm, sched, active);
 }
 
-void edc_session_store_remove_all_turns(struct edc_session_manager *sm, struct edc_scheduler *sched)
+/* Forget that any request was in flight: the process is going down, so a reply that is
+ * still travelling must not land. That is ALL this does -- it must not touch a task's
+ * state. (It used to SIGTERM every task of the active session, which marks them CANCELLED
+ * and persists it, undoing the INTERRUPTED edc_scheduler_close had just written: a clean
+ * exit silently cancelled the whole session instead of leaving it resumable.) */
+static void drop_in_flight_request(void *ctx, struct edc_task *task)
 {
-    if (!sched)
+    (void)ctx;
+    if (!task)
         return;
-    edc_scheduler_send_signal_to_all(sched, edc_session_manager_get_active(sm), TASK_SIGTERM);
+    task->current_request_id = NULL;
+    task->cancelled_request = 1;
+}
+
+void edc_session_store_drop_in_flight_requests(struct edc_session_manager *sm, struct edc_scheduler *sched)
+{
+    (void)sched;
+    if (!sm)
+        return;
+    edc_session_manager_foreach_task(sm, drop_in_flight_request, NULL);
 }

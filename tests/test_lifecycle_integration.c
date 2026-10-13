@@ -293,7 +293,7 @@ static void test_switch_save(void)
     CHECK(edc_scheduler_get_foreground(sA2) != NULL &&
               strcmp(edc_scheduler_get_foreground(sA2)->group_id, "task-A") == 0,
           "restored foreground group has the original group id");
-    struct edc_task *fresh = edc_scheduler_create_task(scA2, sA2, "next task", edc_channel_adapter);
+    struct edc_task *fresh = edc_scheduler_task_new(scA2, sA2, "next task", edc_channel_adapter);
     CHECK(fresh != NULL, "new task created after switch-back");
     CHECK(fresh != NULL && strcmp(fresh->group_id, "task-A") == 0, "new task joins the restored foreground group");
     CHECK(fresh != NULL && strcmp(fresh->group_id, fresh->task_id) != 0, "new task does not spawn its own group");
@@ -352,7 +352,7 @@ static void test_switch_keeps_background_running(void)
     CHECK(edc_scheduler_get_foreground(sB) == NULL, "a fresh session starts with no foreground group");
     CHECK(edc_scheduler_get_foreground(sA) == gA, "A keeps its own foreground group (nothing was reset)");
 
-    struct edc_task *fresh = edc_scheduler_create_task(sc, sA, "next task", edc_channel_adapter);
+    struct edc_task *fresh = edc_scheduler_task_new(sc, sA, "next task", edc_channel_adapter);
     CHECK(fresh != NULL && strcmp(fresh->group_id, "task-A") == 0,
           "new task joins the restored foreground group, not its own");
     if (fresh)

@@ -127,6 +127,71 @@ static void test_close_persists_then_is_idempotent(void)
     rmdir(ws);
 }
 
+/* ── 2b. close() states what was in flight, and the queue heals ──────────
+ * The process going down is written into the state itself (INTERRUPTED, not inferred on
+ * the way back in) for every unfinished task -- queued ones included -- and the interrupt
+ * propagates, so nobody is left waiting for a predecessor that will not run on its own. */
+static void test_close_interrupts_in_flight_and_heals_the_queue(void)
+{
+    char ws[256];
+    make_tmpdir(ws, sizeof(ws));
+    struct edc_config *cfg = make_config(ws);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    CHECK(edc_scheduler_open(sched), "open()");
+    struct edc_session *sess = edc_session_manager_get_active(sched->sessions);
+    CHECK(sess != NULL, "active session");
+
+    /* A holds the front and is in flight; B joins the group in front, so it queues. */
+    struct edc_task *a = edc_scheduler_task_new(sched, sess, "a", edc_channel_adapter);
+    struct edc_task_group *g = edc_scheduler_create_group(sched, sess, a);
+    edc_scheduler_set_foreground(sess, g);
+    edc_scheduler_attach_input(sched, a, "a's input");
+    CHECK(edc_task_await_exec(a), "A is in flight (LLM_PROCESSING)");
+
+    struct edc_task_spec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.desc = "b";
+    spec.input = "b's input";
+    spec.place = EDC_TASK_PLACE_FOREGROUND;
+    spec.take_foreground = true;
+    struct edc_task *b = edc_scheduler_task_create(sched, sess, &spec);
+    CHECK(b && edc_task_awaits_deps(b), "B queued behind A while it runs");
+
+    CHECK(edc_scheduler_close(sched), "close() settles");
+
+    TEST("close() interrupts what was in flight, and the queue behind it goes down with it");
+    CHECK(edc_task_is_interrupted(a), "A was in flight -> INTERRUPTED");
+    CHECK(b && edc_task_has_failed(b), "B (queued behind A) cascaded to ERROR, like a JOIN dependent");
+    CHECK(b && b->deps_total == 1, "and its edge to A is kept");
+    CHECK(b && edc_task_is_resumable(b), "so B can be resumed...");
+
+    /* Reopen: the state comes back as stated -- nothing is inferred on the way in. */
+    const char *a_id = a->task_id;
+    const char *b_id = b->task_id;
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    CHECK(edc_scheduler_open(sched2), "reopen()");
+    struct edc_task *ra = edc_session_manager_find_task_any(sched2->sessions, a_id, NULL);
+    struct edc_task *rb = edc_session_manager_find_task_any(sched2->sessions, b_id, NULL);
+    CHECK(ra && edc_task_is_interrupted(ra), "INTERRUPTED round-trips (no inference on load)");
+    CHECK(rb && edc_task_has_failed(rb), "and B's ERROR does too");
+    CHECK(rb && rb->deps_total == 1 && rb->deps && rb->deps->source && a_id &&
+              strcmp(rb->deps->source->task_id, a_id) == 0,
+          "with its edge to A still there: resuming it will wait for A");
+
+    TEST("resuming B waits for A: it does not jump the queue");
+    if (rb)
+    {
+        edc_scheduler_resume_task(sched2, rb);
+        CHECK(edc_task_awaits_deps(rb), "B went back to dep-wait (its edge to A is still there)");
+        CHECK(!edc_task_is_ready(rb), "so the scan will not start it");
+    }
+
+    edc_scheduler_free(sched2);
+    edc_scheduler_free(sched);
+    free_config(cfg);
+    rmdir(ws);
+}
+
 /* ── 3. The refusals ───────────────────────────────────────────────────── */
 static void test_refusals(void)
 {
@@ -193,6 +258,7 @@ int main(void)
     log_info("== test_scheduler_open_close ==");
     test_new_is_in_memory_open_is_not();
     test_close_persists_then_is_idempotent();
+    test_close_interrupts_in_flight_and_heals_the_queue();
     test_refusals();
     test_borrowed_store_is_left_alone();
     log_info("passed=%d failed=%d", test_passed, test_failed);

@@ -32,6 +32,8 @@ static const char *dep_type_name(edc_task_dep_type t)
         return "JOIN";
     case TASK_DEP_SEQUENCE:
         return "SEQUENCE";
+    case TASK_DEP_BARRIER:
+        return "BARRIER";
     default:
         return "UNKNOWN";
     }
@@ -45,6 +47,8 @@ static edc_task_dep_type dep_type_from_name(const char *name)
         return TASK_DEP_JOIN;
     if (strcmp(name, "SEQUENCE") == 0)
         return TASK_DEP_SEQUENCE;
+    if (strcmp(name, "BARRIER") == 0)
+        return TASK_DEP_BARRIER;
     return TASK_DEP_JOIN;
 }
 
@@ -337,7 +341,7 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
                  *       there, so dropping it is data loss.
                  *    The two content conditions filter out (2).
                  * Under the new model (1) should no longer be produced (creating a task
-                 * always carries its input; sleep uses SUSPENDED + /task resume) -- if
+                 * always carries its input; a stop uses INTERRUPTED + /task resume) -- if
                  * one still lands here, a caller is building turn-less tasks, so warn
                  * rather than swallow it. */
                 if (t->step == EDC_TASKSTEP_READY && t->life == EDC_LIFE_ALIVE && !t->active_turn &&
@@ -369,12 +373,13 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
 /**
  * Normalize a state read back from disk.
  *
- * On process exit every unfinished task is persisted as-is (WAITING_INPUT /
- * WAITING_DEPS / LLM_PROCESSING / TOOL_CALLING). On load they all converge to
- * SUSPENDED -- everything stops on reopen, and the user resumes a task individually to
- * decide whether it returns to WAITING_DEPS / WAITING_INPUT / LLM_PROCESSING or
- * continues its tool chain. Terminal states (COMPLETED / CANCELLED / ERROR) and
- * already-SUSPENDED ones are kept as-is.
+ * On process exit edc_scheduler_close states the fact itself: every unfinished task is
+ * written as INTERRUPTED ("the loop stopped underneath it" -- queue, in-flight, whatever),
+ * and each one needs the user to decide. Load reads that back as stated: an INTERRUPTED
+ * task stays INTERRUPTED until /task resume. The one fallback left is for a process that
+ * died without a clean shutdown: an ALIVE task was in flight or queued when the loop
+ * stopped, which is the same situation, so it is INTERRUPTED too. Terminal states
+ * (COMPLETED / CANCELLED / ERROR) and memory-sink tasks are kept as-is.
  */
 /**
  * Rebuild a turn from JSON: its embedded "messages" array.
@@ -635,7 +640,12 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             if (edc_task_is_memory_sink(task))
                 task->step = EDC_TASKSTEP_READY;
             else
-                task->life = EDC_LIFE_SUSPENDED;
+                /* Nothing is running after a restart and nothing was decided about this
+                 * task either. A clean shutdown states that itself before it saves
+                 * (edc_scheduler_close -> edc_task_mark_interrupted); landing here means
+                 * the process died without one, and the same state is what actually
+                 * happened. No further inference: INTERRUPTED is read back as it is. */
+                task->life = EDC_LIFE_INTERRUPTED;
         }
 
         cJSON *v;
@@ -965,8 +975,31 @@ static void deser_reconcile_deps(struct task_map_entry **id_map)
             struct edc_task *task = e->task;
             if (task)
             {
-                size_t total = 0, completed = 0;
+                /* Mirror the runtime cascade first: a dependency whose source ended
+                 * without producing (ERROR / CANCELLED / INTERRUPTED) takes its dependent
+                 * with it -- JOIN and SEQUENCE alike, exactly as
+                 * edc_task_on_dep_failed/cancelled do at runtime, which the file may not
+                 * have recorded (the source's end can be newer than the last save). An
+                 * internal BARRIER is the exception: it is released instead. */
                 struct edc_task_dep *dep;
+                LL_FOREACH(task->deps, dep)
+                {
+                    if (dep->cancelled || dep->completed || !dep->source)
+                        continue;
+                    if (dep->source && edc_task_is_finished(dep->source) &&
+                        !edc_task_is_completed(dep->source))
+                    {
+                        if (edc_task_is_cancelled(dep->source))
+                            edc_task_on_dep_cancelled(task, dep->source);
+                        else
+                            /* ERROR and INTERRUPTED: the loop did not finish the source, and
+                             * an interrupt is a manufactured error -- both cascade as a
+                             * failure. */
+                            edc_task_on_dep_failed(task, dep->source);
+                    }
+                }
+
+                size_t total = 0, completed = 0;
                 LL_FOREACH(task->deps, dep)
                 {
                     if (dep->cancelled)

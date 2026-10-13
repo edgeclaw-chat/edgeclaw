@@ -115,7 +115,7 @@ int main(void)
 
     /* ── Create a task in session B ─────────────────────────── */
     switch_to(cfg, sm, sched, channel_actor, sb->session_id);
-    struct edc_task *bt = edc_scheduler_create_task(sched, sb, "b-task", edc_channel_adapter);
+    struct edc_task *bt = edc_scheduler_task_new(sched, sb, "b-task", edc_channel_adapter);
     edc_scheduler_create_group(sched, sb, bt);
     edc_session_set_active_task(sb, bt);
     switch_to(cfg, sm, sched, channel_actor, sa->session_id);
@@ -133,7 +133,9 @@ int main(void)
     /* ── S1a: cross-session -d dependency ───────────────────── */
     TEST("create a task with a cross-session -d dependency");
     int before = count_tasks(sa);
-    sds scmd = sdscatprintf(sdsempty(), "/task new \"\"\"crossdep\"\"\" -d %s", bt->task_id);
+    /* --new-group pins the placement: what this case checks is the cross-session
+     * dependency, and joining the group in front would add a queue edge on top of it. */
+    sds scmd = sdscatprintf(sdsempty(), "/task new \"\"\"crossdep\"\"\" -d %s --new-group", bt->task_id);
     send_cmd(cfg, sm, sched, channel_actor, scmd);
     sdsfree(scmd);
 
@@ -169,7 +171,7 @@ int main(void)
 
     /* ── S1a: /task chain is cross-session ──────────────────── */
     TEST("/task chain links tasks across sessions");
-    struct edc_task *at2 = edc_scheduler_create_task(sched, sa, "chain-target", edc_channel_adapter);
+    struct edc_task *at2 = edc_scheduler_task_new(sched, sa, "chain-target", edc_channel_adapter);
     edc_scheduler_create_group(sched, sa, at2);
     size_t deps_before = at2->deps_total;
     sds chain_cmd = sdscatprintf(sdsempty(), "/task chain %s %s", bt->task_id, at2->task_id);
@@ -183,7 +185,7 @@ int main(void)
      * the id by probing B's session.json and load B on demand. */
     TEST("dependency onto a task in an unloaded session activates it on demand");
     switch_to(cfg, sm, sched, channel_actor, sb->session_id);
-    struct edc_task *bt2 = edc_scheduler_create_task(sched, sb, "b2-task", edc_channel_adapter);
+    struct edc_task *bt2 = edc_scheduler_task_new(sched, sb, "b2-task", edc_channel_adapter);
     edc_scheduler_create_group(sched, sb, bt2);
     edc_session_set_active_task(sb, bt2);
     /* 新模型: task 创建时就带着它的 input —— 没装 turn 的任务落盘时会被丢掉
@@ -218,7 +220,7 @@ int main(void)
     CHECK(edc_session_manager_find_task_any(sm, bt2_id, NULL) == NULL, "bt2 absent from memory");
 
     int before2 = count_tasks(sa);
-    sds load_cmd = sdscatprintf(sdsempty(), "/task new \"\"\"needs-b2\"\"\" -d %s", bt2_id);
+    sds load_cmd = sdscatprintf(sdsempty(), "/task new \"\"\"needs-b2\"\"\" -d %s --new-group", bt2_id);
     send_cmd(cfg, sm, sched, channel_actor, load_cmd);
     sdsfree(load_cmd);
 

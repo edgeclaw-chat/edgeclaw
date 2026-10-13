@@ -66,8 +66,13 @@ edc_shell_token_t *edc_shell_tokenize(const char *input, int *count)
             }
             else if (*p == '\\' && *(p + 1))
             {
-                p++;                        /* skip backslash */
-                cur = sdscatlen(cur, p, 1); /* add escaped char */
+                /* Copy the pair verbatim: unescaping belongs to the argument parser
+                 * (the only place that knows this text is a task description). Not
+                 * flipping the quote state on the escaped char is what keeps `\"`
+                 * from ending the region. */
+                cur = sdscatlen(cur, p, 1);
+                p++;
+                cur = sdscatlen(cur, p, 1);
             }
             else
             {
@@ -80,6 +85,12 @@ edc_shell_token_t *edc_shell_tokenize(const char *input, int *count)
             {
                 cur = sdscatlen(cur, p, 1);
                 in_sq = false;
+            }
+            else if (*p == '\\' && *(p + 1))
+            {
+                cur = sdscatlen(cur, p, 1);
+                p++;
+                cur = sdscatlen(cur, p, 1);
             }
             else
             {

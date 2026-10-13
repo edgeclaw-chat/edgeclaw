@@ -30,9 +30,11 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
                               struct edc_channel_message *message);
 
 /* Generic task creation + group management + deps + turn + LLM dispatch. */
-/* Build a task + group management + deps + turn + dispatch. Does NOT reply: on error it
- * writes the reason into *out_error (caller frees; NULL when there is no error) -- task
- * creation must not write into the channel as a side effect. */
+/* Build a task from one AST command node: translate the shell's syntax into an
+ * edc_task_spec, then let the scheduler create and place it (the group/foreground/
+ * turn/edge decisions live there, not here). Does NOT reply: on error it writes the
+ * reason into *out_error (caller frees; NULL when there is no error) -- task creation
+ * must not write into the channel as a side effect. */
 struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
                                       edc_channel_type channel_type, struct edc_session *session,
                                       struct edc_cmd_task_opts *opts,
