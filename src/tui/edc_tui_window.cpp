@@ -87,6 +87,12 @@ bool ForegroundProcessBusy(const TaskSnapshot *snap)
 // the pacing cannot live in the render.
 constexpr long long kSpinnerFrameMs = 33;
 
+// Cadence of the frames that drain the chat log's post-resize re-measure (see
+// TickAnimations). The work is invisible cleanup (off-screen rows only), so it
+// runs on the spinner's tempo: a drag supplies its own frames anyway, and this
+// only has to keep them coming until the log's scroll geometry has settled.
+constexpr long long kRemeasureFrameMs = 33;
+
 // Todo sidebar content: the foreground group's active task -- its id and its own
 // todo list, which is part of the task state (todowrite attaches it to the task
 // that called it). The snapshot already says which task is active, so it is the
@@ -581,6 +587,22 @@ void TUIWindow::TickAnimations()
 
     if (task_widget_)
         task_widget_->SetBreath(breath_ms);
+
+    // The chat log is the other thing that finishes work off the render path: a
+    // sidebar drag re-measures only the rows on screen and leaves the rest as
+    // estimates (see MessageList). Keep a throttled frame coming until that
+    // drains, so the scroll geometry settles right after the drag instead of the
+    // next time the reader happens to scroll.
+    if (chat_widget_ && chat_widget_->NeedsRemeasure())
+    {
+        const auto since_remeasure =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - last_remeasure_frame_).count();
+        if (since_remeasure >= kRemeasureFrameMs)
+        {
+            last_remeasure_frame_ = now;
+            screen_->RequestAnimationFrame();
+        }
+    }
 
     // A background task can process while the foreground process is idle, so the
     // sidebar's breathing, not just the spinner, keeps requesting frames.

@@ -138,6 +138,9 @@ class ScrollView : public ::ftxui::ComponentBase, public ui::IScrollable
     ::ftxui::Component pinned_;
     ScrollOptions options_;
     std::shared_ptr<ScrollState> state_ = std::make_shared<ScrollState>();
+    // The content's scroll-anchoring hook, when it provides one (borrowed: the
+    // content outlives this view in every use).
+    ui::IScrollAnchor *anchor_ = nullptr;
     ::ftxui::Box box_;
 };
 

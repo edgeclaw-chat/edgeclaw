@@ -48,6 +48,11 @@ class ChatWidget : public ::ftxui::ComponentBase
     bool OnEvent(ftxui::Event) override;
     ftxui::Element OnRender() override;
 
+    // True while the log still owes work to finish a pane resize (heights that
+    // are still estimates, or a measurement that has not been folded back into
+    // the row map). The window keeps a throttled frame coming until this clears.
+    bool NeedsRemeasure() const;
+
     // Deliberately NOT keyboard focusable (↑/↓ belong to the message editor); it
     // still scrolls with the wheel.
     bool Scroll(int delta);

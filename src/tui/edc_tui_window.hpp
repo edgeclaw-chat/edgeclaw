@@ -238,6 +238,9 @@ class TUIWindow : public ::ftxui::ComponentBase,
     std::shared_ptr<ui::StatusBarView> status_bar_;
     // When the spinner's next repaint is due.
     std::chrono::steady_clock::time_point last_spinner_frame_;
+    // When the chat log's next post-resize re-measure frame is due (see
+    // TickAnimations).
+    std::chrono::steady_clock::time_point last_remeasure_frame_;
     // Whether the sidebar is currently breathing, and when that run started.
     bool dot_breathing_ = false;
     std::chrono::steady_clock::time_point breath_started_;

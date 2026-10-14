@@ -27,9 +27,15 @@ constexpr int kWheelStep = 3;
 class ScrollNode : public ::ftxui::Node
 {
   public:
-    ScrollNode(::ftxui::Element child, std::shared_ptr<ScrollState> state, ScrollMode mode)
-        : Node({std::move(child)}), state_(std::move(state)), mode_(mode)
+    ScrollNode(::ftxui::Element child, std::shared_ptr<ScrollState> state, ScrollMode mode,
+               ui::IScrollAnchor *anchor)
+        : Node({std::move(child)}), state_(std::move(state)), mode_(mode), anchor_(anchor)
     {
+        // This node is rebuilt every frame, so it is the only place that can tell
+        // the content a frame began (the content budgets its lazy re-measure per
+        // frame, and SetBox alone runs several times within one).
+        if (anchor_)
+            anchor_->OnFrameBegin();
     }
 
     void ComputeRequirement() override
@@ -62,6 +68,11 @@ class ScrollNode : public ::ftxui::Node
         const int viewport = box.y_max - box.y_min + 1;
         state_->viewport_height = viewport;
 
+        // Scroll anchoring: since we last positioned the content it may have
+        // re-measured rows above the viewport, which moves every row below them --
+        // including the ones on screen. Move the offset first, then position.
+        ApplyAnchor();
+
         // Layout the content at the offset we currently own. This is a
         // provisional pass: ftxui iterates the layout several times per frame
         // and the content height is only final once those iterations finish,
@@ -82,20 +93,32 @@ class ScrollNode : public ::ftxui::Node
         // transient height a mid-iteration pass reported -- wrapping text reports
         // several while its flexbox converges, and the smallest would reset the
         // offset every frame.
+        //
+        // Anchor and clamp settle together, so this is a small fixed point: moving
+        // the offset can pull new rows into the viewport, whose re-measure can ask
+        // for another move. It converges in one or two passes (and the next frame
+        // would finish it regardless).
         const int viewport = state_->viewport_height;
-        const int content = std::max(children_[0]->requirement().min_y, viewport);
-        state_->content_height = content;
-        state_->ClampForLayout();
+        int content = viewport;
+        for (int pass = 0; pass < 3; pass++)
+        {
+            content = std::max(children_[0]->requirement().min_y, viewport);
+            state_->content_height = content;
+            state_->ClampForLayout();
 
-        // The provisional SetBox passes ran against the previous frame's
-        // committed height and offset, so re-lay the content out against the
-        // committed values. This guarantees the drawing always matches the
-        // geometry the clamp decided (growing content while sticky, shrinking
-        // content, or the transient heights seen earlier in this frame).
-        ::ftxui::Box child = box_;
-        child.y_min = box_.y_min - state_->offset;
-        child.y_max = child.y_min + content - 1;
-        children_[0]->SetBox(child);
+            // The provisional SetBox passes ran against the previous frame's
+            // committed height and offset, so re-lay the content out against the
+            // committed values. This guarantees the drawing always matches the
+            // geometry the clamp decided (growing content while sticky, shrinking
+            // content, or the transient heights seen earlier in this frame).
+            ::ftxui::Box child = box_;
+            child.y_min = box_.y_min - state_->offset;
+            child.y_max = child.y_min + content - 1;
+            children_[0]->SetBox(child);
+
+            if (!ApplyAnchor())
+                break;
+        }
 
         const ::ftxui::AutoReset<::ftxui::Box> stencil(&screen.stencil,
                                                        ::ftxui::Box::Intersection(box_, screen.stencil));
@@ -103,8 +126,22 @@ class ScrollNode : public ::ftxui::Node
     }
 
   private:
+    // Ask the content for a scroll-anchoring correction and apply it. True when
+    // the offset moved, i.e. the layout has to be redone at the new offset.
+    bool ApplyAnchor()
+    {
+        if (!anchor_)
+            return false;
+        const int adjust = anchor_->TakeOffsetAdjustment();
+        if (adjust == 0)
+            return false;
+        state_->offset = std::max(0, state_->offset + adjust);
+        return true;
+    }
+
     std::shared_ptr<ScrollState> state_;
     ScrollMode mode_;
+    ui::IScrollAnchor *anchor_ = nullptr;
 };
 
 } // namespace
@@ -119,6 +156,10 @@ ScrollView::ScrollView(::ftxui::Component content, ScrollOptions options, ::ftxu
     // (the active task) and never auto-follows refreshes.
     state_->stick_to_bottom = options_.follow_tail;
     state_->follow_tail = options_.follow_tail;
+    // A content whose own geometry can change under the viewport (the chat log
+    // re-measures rows lazily) anchors the scroll position; a plain content (the
+    // sidebar's renderers) does not.
+    anchor_ = dynamic_cast<ui::IScrollAnchor *>(content_.get());
 }
 
 bool ScrollView::Scroll(int delta)
@@ -220,7 +261,7 @@ bool ScrollView::OnEvent(::ftxui::Event event)
     if (options_.show_indicator)
         content = std::move(content) | ::ftxui::vscroll_indicator;
 
-    ::ftxui::Element scrollable = std::make_shared<ScrollNode>(std::move(content), state_, options_.mode);
+    ::ftxui::Element scrollable = std::make_shared<ScrollNode>(std::move(content), state_, options_.mode, anchor_);
 
     if (!pinned_)
         return std::move(scrollable) | ::ftxui::reflect(box_);

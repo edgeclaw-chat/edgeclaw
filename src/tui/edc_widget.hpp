@@ -94,4 +94,27 @@ class IScrollable
     virtual bool ScrollToBottom() = 0;
 };
 
+// Scroll anchoring, for a content whose own geometry can change under the
+// viewport (the chat log re-measures rows lazily after a resize). Without it, a
+// row above the viewport that gets re-measured moves every row below it, so the
+// rows on screen slide while the reader is looking at them.
+//
+// The ScrollView finds this on its content and hands it to the scroll node, which
+// is rebuilt every frame: OnFrameBegin() is where per-frame state can be reset,
+// and TakeOffsetAdjustment() is asked for a correction while the layout settles.
+class IScrollAnchor
+{
+  public:
+    virtual ~IScrollAnchor() = default;
+
+    // A new frame starts. The scroll node is per frame, so this is the only hook
+    // for resetting anything that is budgeted per frame.
+    virtual void OnFrameBegin() = 0;
+
+    // Rows the scroll offset must move so the row anchored at the top of the
+    // viewport keeps the screen row it had. Consuming: the anchor counts the
+    // returned value as applied. 0 when nothing above the viewport moved.
+    virtual int TakeOffsetAdjustment() = 0;
+};
+
 } // namespace edc::ui

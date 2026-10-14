@@ -94,6 +94,40 @@ bool AnyRowContains(const std::string &frame, const char *needle)
     return Plain(frame).find(needle) != std::string::npos;
 }
 
+// The frame split into rows and reduced to its text: ANSI escapes dropped, the
+// '\r' that Screen::ToString ends its rows with dropped, the scroll indicator
+// dropped (it lives in the rightmost column and its thumb moves with the offset,
+// which would look like the text moving), and the padding spaces dropped. The
+// indicator is a non-ASCII glyph ('┃' / '╹' / '╻'), so dropping non-ASCII bytes
+// removes it -- which is why the log this test uses is ASCII.
+std::vector<std::string> Lines(const std::string &frame)
+{
+    const std::string plain = Plain(frame);
+    std::vector<std::string> out;
+    size_t pos = 0;
+    while (pos <= plain.size())
+    {
+        const size_t end = plain.find('\n', pos);
+        const std::string raw = end == std::string::npos ? plain.substr(pos) : plain.substr(pos, end - pos);
+
+        std::string text;
+        text.reserve(raw.size());
+        for (unsigned char c : raw)
+        {
+            if (c < 0x80 && c != '\r')
+                text += static_cast<char>(c);
+        }
+        while (!text.empty() && text.back() == ' ')
+            text.pop_back();
+
+        out.push_back(std::move(text));
+        if (end == std::string::npos)
+            break;
+        pos = end + 1;
+    }
+    return out;
+}
+
 // 0-based row holding |needle|, or -1. Screen rows and frame lines line up
 // because the chat widget is the only thing on the fixed-size screen, so this
 // doubles as the y coordinate to click on.
@@ -177,6 +211,21 @@ std::shared_ptr<edc::ChatWidget> MakeWrappingChat()
     for (int i = 0; i < 400; i++)
         words += "word" + std::to_string(i) + " ";
     chat->AddMessage(std::make_shared<edc::Message>(words, now));
+    return chat;
+}
+
+// A log of |count| prose messages: each wraps to a different number of rows at
+// different widths, so a height estimated at one width is wrong at another and
+// the catch-up has something real to fix.
+std::shared_ptr<edc::ChatWidget> MakeWrappingLog(int count)
+{
+    auto chat = std::make_shared<edc::ChatWidget>();
+    const auto now = ::time(nullptr);
+    std::string words;
+    for (int i = 0; i < 60; i++)
+        words += "word" + std::to_string(i) + " ";
+    for (int i = 0; i < count; i++)
+        chat->AddMessage(std::make_shared<edc::Message>(words + "tail" + std::to_string(i), now));
     return chat;
 }
 
@@ -295,6 +344,46 @@ static void test_resize_remeasures_wrapped_heights(void)
     // The wrapped height of every item changed with the width, so the cached
     // measurements must have been dropped and rebuilt.
     ASSERT(AnyRowContains(narrow, "word399"), "tail lost after re-wrapping at a narrower width");
+    PASS();
+}
+
+// A sidebar drag changes the pane's width on every frame. Re-measuring the whole
+// log each time is exactly what made the drag stutter, so a width change must
+// touch only the rows that are on screen, however long the log is.
+static void test_resize_remeasures_only_the_visible_window(void)
+{
+    TEST("a width change re-measures only the visible window");
+    int renders = 0;
+    auto chat = MakeLog(400, &renders);
+    (void)Draw(chat, kW, kH); // the first frame measures the whole log once
+    ASSERT(renders >= 400, "first frame measured %d items, expected all 400", renders);
+
+    renders = 0;
+    (void)Draw(chat, kW - 1, kH); // one drag step
+    ASSERT(renders > 0 && renders < 40, "a one-column width change re-measured %d of 400 items", renders);
+    PASS();
+}
+
+// Everything off screen keeps its old height as an estimate across a resize, so
+// the list reports the leftover work and the window keeps drawing frames until it
+// is done. Once those frames have run, the geometry must be exactly what a
+// freshly measured log produces -- not merely close.
+static void test_resize_catch_up_restores_exact_geometry(void)
+{
+    TEST("the post-resize catch-up restores exact geometry");
+    auto resized = MakeWrappingLog(60);
+    (void)Draw(resized, kW, kH);
+    for (int w = kW - 1; w >= 60; w--) // a drag: the width changes every frame
+        (void)Draw(resized, w, kH);
+    ASSERT(resized->NeedsRemeasure(), "the drag left no re-measure work to finish");
+
+    for (int i = 0; i < 500 && resized->NeedsRemeasure(); i++)
+        (void)Draw(resized, 60, kH);
+    ASSERT(!resized->NeedsRemeasure(), "the catch-up never finished");
+
+    auto fresh = MakeWrappingLog(60);
+    ASSERT(Plain(Draw(resized, 60, kH)) == Plain(Draw(fresh, 60, kH)),
+           "the settled log differs from a freshly measured one");
     PASS();
 }
 
@@ -440,6 +529,38 @@ static void test_unbroken_run_rewraps_on_resize(void)
     PASS();
 }
 
+// Scrolling up into rows that still carry an estimate from the pre-drag width
+// must never move the rows already on screen. One arrow press scrolls exactly one
+// row, so the new frame has to be the previous one shifted down by exactly that
+// row (scrolling up reveals the row above, so the content moves down). While the
+// post-resize catch-up is still running it repairs rows *above* the viewport on
+// every frame, and each of those repairs moves everything below it -- which is
+// exactly the "the log re-scrolls itself" the scroll anchor exists to prevent.
+static void test_scroll_up_during_resize_catch_up_moves_one_row_at_a_time(void)
+{
+    TEST("scrolling up while the resize catch-up runs moves exactly one row per press");
+    auto chat = MakeWrappingLog(400);
+    (void)Draw(chat, kW, kH);
+    for (int w = kW - 1; w >= 70; w--) // a drag: every frame a new width
+        (void)Draw(chat, w, kH);
+    // The catch-up must still be running, or this test proves nothing (a log small
+    // enough to finish it in one frame scrolls cleanly whatever the anchor does).
+    ASSERT(chat->NeedsRemeasure(), "the drag drained the catch-up; the test would be vacuous");
+
+    std::vector<std::string> prev = Lines(Draw(chat, 70, kH));
+    for (int step = 0; step < 6; step++)
+    {
+        chat->OnEvent(ftxui::Event::ArrowUp);
+        const std::vector<std::string> cur = Lines(Draw(chat, 70, kH));
+        ASSERT(cur.size() == prev.size(), "step %d changed the viewport height (%zu -> %zu)", step, prev.size(),
+               cur.size());
+        for (size_t i = 1; i < cur.size(); i++)
+            ASSERT(cur[i] == prev[i - 1], "step %d: the view shifted more than one row (row %zu)", step, i);
+        prev = cur;
+    }
+    PASS();
+}
+
 // FTXUI collects the selected text by walking the node tree and asking every
 // node which of its cells the selection covers. The list draws its items itself
 // instead of holding them as child components, so it must forward Select() down
@@ -541,6 +662,9 @@ int main(void)
     test_middle_of_log_renders_its_own_messages();
     test_wheel_scrolls_the_virtualized_log();
     test_resize_remeasures_wrapped_heights();
+    test_resize_remeasures_only_the_visible_window();
+    test_resize_catch_up_restores_exact_geometry();
+    test_scroll_up_during_resize_catch_up_moves_one_row_at_a_time();
     test_click_reaches_a_visible_item();
     test_click_is_ignored_outside_the_items();
     test_expand_grows_the_item();
