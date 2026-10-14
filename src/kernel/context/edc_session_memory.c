@@ -31,6 +31,8 @@ const char *edc_memo_event_kind_name(enum edc_memo_event_kind kind)
         return "updated";
     case EDC_MEMO_SUPERSEDED:
         return "superseded";
+    case EDC_MEMO_DELETED:
+        return "deleted";
     }
     return "created";
 }
@@ -43,6 +45,8 @@ enum edc_memo_event_kind edc_memo_event_classify_kind(const char *name)
         return EDC_MEMO_UPDATED;
     if (strcmp(name, "superseded") == 0)
         return EDC_MEMO_SUPERSEDED;
+    if (strcmp(name, "deleted") == 0)
+        return EDC_MEMO_DELETED;
     return EDC_MEMO_CREATED;
 }
 
@@ -104,6 +108,10 @@ static char *dup_or_null(const char *s)
 {
     return s ? strdup(s) : NULL;
 }
+
+/* Trims the event log when it has outgrown its threshold (defined below, next to the trim
+ * itself). Forward-declared because every mutator calls it. */
+static void memo_trim_if_due(struct edc_session_memory *m);
 
 /* ── Event table ───────────────────────────────────────────── */
 
@@ -210,7 +218,7 @@ sds edc_session_memory_index_lines(const struct edc_session_memory *m, size_t of
 {
     if (out_total)
         *out_total = m ? m->entry_count : 0;
-    if (!m || n == 0)
+    if (!m || n == 0 || m->entry_count == 0)
         return sdsempty();
 
     /* Collect and sort ascending by id number (few entries; insertion sort). */
@@ -413,6 +421,7 @@ sds edc_session_memory_create_entry(struct edc_session_memory *m, const char *ti
     if (proposed_by)
         edc_session_memory_note_proposer(e, proposed_by);
     /* created_seq/updated_seq are filled by the caller from the event seq it appended (memory_write / L2 landing). */
+    memo_trim_if_due(m);
     return id;
 }
 
@@ -421,6 +430,168 @@ sds edc_session_memory_create_entry(struct edc_session_memory *m, const char *ti
 /* Curation instruction: same family as the fold instruction -- the system section of
  * a self-contained request, constant text (so the L2 call's prefix is stable). The
  * output contract is the six-section summary. */
+/* ── Compaction task: an LLM round whose only job is to make the memory smaller ──
+ *
+ * Same nature as the fold task: a system task (sink SESSION_MEMORY, its own turn, tools =
+ * the memory tools) started when the entry table outgrows its cap, prompted to merge /
+ * condense / drop and rebuild the index. It has to be told apart from the CURATION task,
+ * which shares its sink and tools, so it carries its own system prompt (the request picks
+ * it by task->memo_compact, see edc_llm_request.c). */
+
+static const char kCompactSystemPrompt[] =
+    "You are compacting this session's shared memory. Nobody is waiting on a conversation: "
+    "your only job is to make the memory SMALLER while keeping what is durable.\n"
+    "\n"
+    "The whole memory is in this turn. You may:\n"
+    "- MERGE entries that belong together into one: memory_update the survivor with the union, "
+    "then memory_delete the entries it absorbed.\n"
+    "- CONDENSE a verbose entry into its decision plus the reason, dropping narration, "
+    "superseded plans and anything another entry already covers (memory_update).\n"
+    "- DROP entries that are obsolete, wrong, or no longer worth a slot (memory_delete).\n"
+    "- REBUILD the index if that serves the goal: decide which entries should exist, write "
+    "them, delete the rest. Ids are never reused, but keeping an id is not required.\n"
+    "\n"
+    "Hard rules:\n"
+    "- Never lose durable knowledge to save space. A decision, a constraint, a gotcha or an "
+    "external fact the next session would need must survive somewhere.\n"
+    "- Keep what cannot be recovered otherwise: paths, commands, error text, numbers.\n"
+    "- Nothing about this round belongs in the memory: do not write an entry saying you "
+    "compacted it.\n"
+    "- Do not invent facts. If two entries disagree and you cannot tell which is right, keep "
+    "both and say so in the summary.\n"
+    "\n"
+    "Goal: the entry count back under the cap, and the memory materially smaller.\n";
+
+const char *edc_session_memory_compact_prompt(void)
+{
+    return kCompactSystemPrompt;
+}
+
+/* The material: every entry, with the fields a rewrite needs (id, rev, title, summary,
+ * detail). The curator's prompt embeds group memories; this one embeds the memory itself,
+ * because compacting needs nothing from the outside world. */
+static sds build_compact_prompt(struct edc_session *session)
+{
+    struct edc_session_memory *m = session ? session->memo : NULL;
+    sds out = sdscatprintf(sdsempty(),
+                           "## Compact the session memory\n"
+                           "It holds %zu entries; the cap is %d. Bring it back under the cap and make it\n"
+                           "smaller. Every entry follows (id / rev / title / summary / detail); use\n"
+                           "memory_update (with the rev as expected_rev) and memory_delete.\n",
+                           m ? m->entry_count : (size_t)0, EDC_SESSION_MEMORY_COMPACT_ENTRIES);
+    if (!m || m->entry_count == 0)
+        return out;
+
+    /* Ids are handed out in ascending order and a delete keeps the array in order, so the
+     * dump reads in the same order as memory_list. */
+    for (size_t i = 0; i < m->entry_count; i++)
+    {
+        const struct edc_memo_entry *e = &m->entries[i];
+        out = sdscatprintf(out, "\n- id: %s  rev: %llu%s\n", e->id, (unsigned long long)e->updated_seq,
+                           e->superseded ? "  (retired)" : "");
+        out = sdscatprintf(out, "  title: %s\n", e->title ? e->title : "(untitled)");
+        if (e->summary && e->summary[0])
+            out = sdscatprintf(out, "  summary: %s\n", e->summary);
+        if (e->detail && sdslen(e->detail) > 0)
+            out = sdscatprintf(out, "  detail: %s\n", e->detail);
+    }
+    return out;
+}
+
+int edc_session_memory_hold_task(struct edc_task *task)
+{
+    if (!task || !task->group || !task->group->session)
+        return 0;
+    if (edc_task_is_memory_sink(task))
+        return 0; /* the round itself is never held (a finished task is NOT skipped -- see
+                   * edc_group_fold_hold_task: the resume door hands us those) */
+
+    struct edc_task_group *sys = edc_session_find_system_group(task->group->session);
+    if (!sys)
+        return 0;
+
+    int added = 0;
+    struct edc_task *t;
+    LL_FOREACH2(sys->members, t, group_next)
+    {
+        if (t == task || edc_task_is_finished(t) || !t->memo_compact)
+            continue;
+        if (edc_task_add_dependency(task, t, TASK_DEP_BARRIER))
+            added++;
+    }
+    return added;
+}
+
+bool edc_session_memory_compact_due(struct edc_session *session)
+{
+    if (!session || !session->memo)
+        return false;
+    const struct edc_session_memory *m = session->memo;
+    /* Over the cap, and it has GROWN since the last round was started: a round that could
+     * not get under the cap must not immediately start another one. */
+    if (m->entry_count <= EDC_SESSION_MEMORY_COMPACT_ENTRIES || m->entry_count <= m->compact_at_entries)
+        return false;
+    /* One system task per session at a time (the same gate the fold uses). */
+    return !edc_scheduler_has_pending_system_task(session);
+}
+
+struct edc_task *edc_session_memory_start_compact(struct edc_scheduler *sched, struct edc_session *session)
+{
+    if (!sched || !session || !session->memo)
+        return NULL;
+    if (edc_scheduler_has_pending_system_task(session))
+        return NULL; /* one at a time */
+
+    sds prompt = build_compact_prompt(session);
+    struct edc_task *task =
+        edc_scheduler_spawn_system_task_as(sched, session, "compact session memory", EDC_SINK_SESSION_MEMORY);
+    if (!task)
+    {
+        sdsfree(prompt);
+        return NULL;
+    }
+    /* Same sink as curation, different prompt: this is what tells the two apart. */
+    task->memo_compact = true;
+
+    /* Barrier over the WHOLE session: every task that is still going waits for this round, so
+     * the memory is not rewritten underneath a task that is mid-flight, and they pick up
+     * afterwards. Same shape as the fold's barrier -- and the same safety property: a
+     * TASK_DEP_BARRIER is released by its source ending EITHER way, so a compaction round that
+     * dies (or is cancelled) releases the tasks it was holding instead of taking them with it.
+     *
+     * What "waits" means concretely: a task that is between rounds (about to send its next
+     * request) parks at AWAIT_DEPS and is woken by the release; one whose LLM call is already
+     * in flight finishes that call -- the fold behaves the same way, and it is the request
+     * boundary that is the safe point, not the middle of a round. */
+    {
+        struct edc_task_group *g = NULL;
+        DL_FOREACH(session->groups, g)
+        {
+            struct edc_task *m = NULL;
+            LL_FOREACH2(g->members, m, group_next)
+            {
+                if (m == task || edc_task_is_completed(m) || edc_task_is_cancelled(m) || edc_task_has_failed(m))
+                    continue;
+                edc_task_add_dependency(m, task, TASK_DEP_BARRIER);
+            }
+        }
+    }
+    if (!edc_scheduler_attach_input(sched, task, prompt))
+    {
+        log_error("L2 memo: could not attach the compaction prompt — nothing started");
+        edc_task_mark_failed(task);
+        sdsfree(prompt);
+        return NULL;
+    }
+    sdsfree(prompt);
+    /* Remember the size we tried at, so a round that cannot shrink below the cap does not
+     * start another one until the memory grows again. */
+    session->memo->compact_at_entries = session->memo->entry_count;
+    log_info("L2 memo compact start: session=%s task=%s entries=%zu", session->session_id, task->task_id,
+             session->memo->entry_count);
+    return task;
+}
+
 static const char kCurateSystemPrompt[] =
     "You are the session-memory curator for the EdgeClaw agent.\n"
     "\n"
@@ -708,6 +879,7 @@ enum edc_memo_write_result edc_session_memory_update(struct edc_session_memory *
     e->updated_seq = seq;
     if (out_rev)
         *out_rev = seq;
+    memo_trim_if_due(m);
     return EDC_MEMO_WRITE_OK;
 }
 
@@ -730,7 +902,69 @@ bool edc_session_memory_supersede(struct edc_session_memory *m, const char *cons
         uint64_t seq = edc_session_memory_add_event(m, ids[i], EDC_MEMO_SUPERSEDED, e->title, e->summary);
         e->updated_seq = seq;
     }
+    memo_trim_if_due(m);
     return true;
+}
+
+/* ── Delete / compaction ───────────────────────────────────── */
+
+bool edc_session_memory_delete(struct edc_session_memory *m, const char *const *ids, size_t n)
+{
+    if (!m || !ids || n == 0)
+        return false;
+    /* Atomic: every id must resolve before anything is removed. */
+    for (size_t i = 0; i < n; i++)
+    {
+        if (!ids[i] || !edc_session_memory_entry(m, ids[i]))
+            return false;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        struct edc_memo_entry *e = edc_session_memory_entry(m, ids[i]);
+        /* Announce before removing: the entry is about to be gone for good, and a task that
+         * already saw it has to be told (the event carries no content). */
+        edc_session_memory_add_event(m, ids[i], EDC_MEMO_DELETED, e->title, e->summary);
+        size_t idx = (size_t)(e - m->entries);
+        memo_entry_free(&m->entries[idx]);
+        memmove(&m->entries[idx], &m->entries[idx + 1], (m->entry_count - idx - 1) * sizeof(*m->entries));
+        m->entry_count--;
+    }
+    return true;
+}
+
+/* Trim the event log to the newest EDC_SESSION_MEMORY_KEEP_EVENTS: free the oldest, advance
+ * `pruned_before` to the highest seq dropped, memmove the rest down. Returns how many events
+ * went away.
+ *
+ * Safe because the log is a change FEED, not the knowledge: the notice says "N more" and
+ * every reader can fall back to memory_list / memory_search for the current state (that is
+ * what those tools are for). */
+size_t edc_session_memory_trim_events(struct edc_session_memory *m)
+{
+    if (!m || m->event_count <= EDC_SESSION_MEMORY_KEEP_EVENTS)
+        return 0;
+
+    size_t drop = m->event_count - EDC_SESSION_MEMORY_KEEP_EVENTS;
+    for (size_t i = 0; i < drop; i++)
+    {
+        if (m->events[i].seq > m->pruned_before)
+            m->pruned_before = m->events[i].seq;
+        memo_event_free(&m->events[i]);
+    }
+    memmove(m->events, m->events + drop, (m->event_count - drop) * sizeof(*m->events));
+    m->event_count -= drop;
+    return drop;
+}
+
+/* The write path's automatic trigger: "periodic" here means a threshold at a natural
+ * boundary (every write already appends an event), not a timer -- the same choice the rest
+ * of the runtime makes. */
+static void memo_trim_if_due(struct edc_session_memory *m)
+{
+    if (!m || m->event_count <= EDC_SESSION_MEMORY_TRIM_EVENTS)
+        return;
+    size_t dropped = edc_session_memory_trim_events(m);
+    log_info("session memory: trimmed %zu old events, %zu kept", dropped, m->event_count);
 }
 
 /* ── Tail notice ───────────────────────────────────────────── */
@@ -803,6 +1037,13 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
         }
         if (sdslen(body))
             body = sdscat(body, "\n");
+        if (ev->kind == EDC_MEMO_DELETED)
+        {
+            /* A deletion is a CHANGE, not knowledge: announce it without the content
+             * (the entry has left every view). */
+            body = sdscatprintf(body, "- [%s] deleted", ev->entry_id);
+            continue;
+        }
         body = sdscatprintf(body, "- [%s] %s: %s", ev->entry_id, edc_memo_event_kind_name(ev->kind),
                             en && en->title ? en->title : (ev->title ? ev->title : "(untitled)"));
         const char *sum = (en && en->summary && en->summary[0]) ? en->summary : ev->summary;
@@ -810,7 +1051,11 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
             body = sdscatprintf(body, " — %s", sum);
     }
 
-    sds out = sdscatprintf(sdsempty(), "## Session Memory Updates  (共 %zu 条)\n%s", m->entry_count, body);
+    sds out = sdscatprintf(sdsempty(), "## Session Memory Updates  (共 %zu 条)\n", m->entry_count);
+    if (seen < m->pruned_before)
+        out = sdscatprintf(out, "[events up to seq %llu were compacted away — the index/search hold the full picture]\n",
+                           (unsigned long long)m->pruned_before);
+    out = sdscatsds(out, body);
     if (npick > shown)
         out = sdscatprintf(out, "\n… %zu more（memory_search <patterns> / memory_list [offset] [n] / memory_get <ids>）",
                            npick - shown);
@@ -949,6 +1194,16 @@ struct edc_session_memory *edc_session_memory_from_json(const cJSON *json)
         const char *id = json_str(en, "id");
         if (!id)
             continue;
+        /* Compatibility with the short-lived logical-delete marker: an archive written by a
+         * build where `deleted` meant "hidden but kept" is honoured by DROPPING the row at
+         * load. Without this, those rows would silently come back the next time the memory
+         * is read (the field is gone from the model now). */
+        if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(en, "deleted")))
+        {
+            if ((uint64_t)entry_id_num(id) > m->next_entry_id)
+                m->next_entry_id = (uint64_t)entry_id_num(id);
+            continue;
+        }
         struct edc_memo_entry *e = edc_session_memory_upsert_entry(m, id, json_str(en, "title"),
                                                                    json_str(en, "summary"), json_str(en, "detail"),
                                                                    json_str(en, "sources"));

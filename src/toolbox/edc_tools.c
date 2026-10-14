@@ -67,6 +67,12 @@ void edc_tool_set_abort(struct edc_tool *tool, edc_tool_abort_fn abort)
         tool->abort = abort;
 }
 
+void edc_tool_set_keep_full_output(struct edc_tool *tool, bool keep)
+{
+    if (tool)
+        tool->keep_full_output = keep;
+}
+
 struct edc_tool *edc_tool_new_v(const char *name, const char *desc, struct edc_tool_param **params,
                                 edc_tool_exec_async_fn exec)
 {

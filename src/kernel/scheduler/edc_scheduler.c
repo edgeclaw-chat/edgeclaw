@@ -432,6 +432,16 @@ struct edc_task *edc_scheduler_task_new(struct edc_scheduler *sched, struct edc_
 /* Choose the group a task lands in and join it. The single answer to "where does a
  * new task go" -- create / fork / system all settle through here instead of each
  * deciding for itself. */
+/* The ONE place that decides "a maintenance round holds this task": attach the barrier edges
+ * at the two doors that can make a task runnable (creation, resume). Everything else follows
+ * from the dep graph -- a task with an unresolved edge is not runnable, and a BARRIER is
+ * released by its source ending either way. There is deliberately no drive-time predicate any
+ * more: two mechanisms deciding the same thing is how they drift apart. */
+static int sched_attach_maintenance_barrier(struct edc_task *task)
+{
+    return edc_group_fold_hold_task(task) + edc_session_memory_hold_task(task);
+}
+
 static struct edc_task_group *sched_settle_task(struct edc_scheduler *sched, struct edc_session *session,
                                                 struct edc_task *task, const struct edc_task_spec *spec,
                                                 bool *chained_out)
@@ -497,6 +507,10 @@ static struct edc_task_group *sched_settle_task(struct edc_scheduler *sched, str
         if (chained_out)
             *chained_out = chained;
     }
+
+    /* Door 1 of 2: a task that joins while a maintenance round is in flight waits for it too
+     * (this is what the former drive-time predicate caught for newcomers). */
+    sched_attach_maintenance_barrier(task);
 
     return group;
 }
@@ -702,8 +716,12 @@ static void *sched_gen_request_id(void)
  * in the session's system group, so it is not held by its own fold. */
 static bool sched_task_runnable(struct edc_scheduler *sched, struct edc_task *task)
 {
+    /* "May this run" is decided by the task's OWN edges (plus the cross-session ledger). A task
+     * parked at AWAIT_DEPS is already excluded by is_ready; this term keeps the invariant true
+     * for a READY task that somehow still carries an unmet edge (the barrier is attached at
+     * creation and at resume, and every consumer must agree the edge is what holds it). */
     return task && edc_task_is_ready(task) && task->active_turn &&
-           !edc_scheduler_task_has_unresolved_deps(sched, task) && !edc_group_fold_holds_group(task->group);
+           !edc_task_has_unresolved_deps(task) && !edc_scheduler_task_has_unresolved_deps(sched, task);
 }
 
 static void sched_drive_task(struct edc_scheduler *sched, struct edc_task *task);
@@ -730,7 +748,9 @@ static void sched_fold_before_request(struct edc_scheduler *sched, struct edc_ta
         return;
 
     struct edc_session *session = task->group->session;
-    if (!session || edc_scheduler_has_pending_system_task(session) || edc_group_fold_holds_group(task->group))
+    /* `has_pending_system_task` is session-wide, so it already covers "a fold/curation for any
+     * group is in flight" -- the former per-group term here could never decide anything. */
+    if (!session || edc_scheduler_has_pending_system_task(session))
         return;
     if (!edc_group_fold_due(task->group, sched->config))
         return;
@@ -1055,6 +1075,21 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
     if (!sched || !task)
         return;
 
+    /* Door 2 of 2: a maintenance round in flight holds it. Park at READY/ALIVE -- the intent to
+     * resume is NOT dropped: the message-end scan drives it as soon as the round ends and
+     * releases the barrier (same effect as the fold's own member sweep, for the doors that sweep
+     * cannot see). */
+    if (sched_attach_maintenance_barrier(task) > 0)
+    {
+        /* AWAIT_DEPS is the ONE representation of "waiting for something": an edge added to a
+         * READY task parks it there by itself, and the release path (the edge being completed or
+         * voided) is written against that state. Parking at READY instead would leave a task that
+         * is runnable-in-shape but held, which is exactly the drift this change removes. */
+        edc_task_mark_waiting_deps(task);
+        edc_scheduler_task_moved(sched, task);
+        return;
+    }
+
     /* Gate: only between-tasks checks stay here. An unresolved cross-session dep
      * holds the task back; unsatisfied deps send it back to waiting. */
     if (edc_scheduler_task_has_unresolved_deps(sched, task))
@@ -1095,15 +1130,6 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
      * on this task, parking it in AWAIT_DEPS; after the fold lands the scan drives it
      * again, and that request then carries the compressed context. */
     sched_fold_before_request(sched, task);
-
-    /* A fold in flight for this group parks the task instead of driving it: leave
-     * it READY/ALIVE and let the message-end scan start it once the fold lands. */
-    if (edc_group_fold_holds_group(task->group))
-    {
-        edc_task_mark_ready(task);
-        edc_scheduler_task_moved(sched, task);
-        return;
-    }
 
     /* Drive: the within-task re-decision is the executor's START. */
     sched_drive_task(sched, task);
@@ -1395,6 +1421,21 @@ void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *t
         struct edc_session *folded = NULL;
         if (edc_group_fold_try(sched, sched->sessions, sched->config, &folded) && folded)
             sched_save_session(sched, folded);
+    }
+
+    /* (6) L2 hygiene, asked at the same boundary: once a session's memory outgrows its entry
+     * cap, start a compaction round. The decision is a fact about the data (entry_count vs
+     * the cap, and whether it grew since the last round), so no write path had to set a flag
+     * for it -- the same shape as the fold check above, and gated the same way (one system
+     * task per session at a time). */
+    {
+        struct edc_session *own = edc_task_session(task);
+        if (own && edc_session_memory_compact_due(own))
+        {
+            struct edc_task *compact = edc_session_memory_start_compact(sched, own);
+            if (compact)
+                sched_save_session(sched, own);
+        }
     }
 }
 

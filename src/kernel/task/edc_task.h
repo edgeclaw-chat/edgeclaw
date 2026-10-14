@@ -141,6 +141,11 @@ struct edc_task
      * (the executor reads this flag on both the resume and the tool-done path). */
     bool tool_only;
 
+    /* This system task is a MEMORY COMPACTION round (sink SESSION_MEMORY), not a curation
+     * one: they share the sink and the tools, so the request picks the system prompt by this
+     * flag (see edc_session_memory_compact_prompt). Persisted. */
+    bool memo_compact;
+
     struct edc_task_group *group;
 
     EdcQueue turns;               /* FIFO: struct edc_turn* */

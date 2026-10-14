@@ -162,8 +162,11 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
     {
         cJSON *sys = cJSON_CreateObject();
         cJSON_AddStringToObject(sys, "role", "system");
+        /* A compaction round shares the curation task's sink and tools, so it is its own
+         * prompt that tells it apart (see edc_session_memory_compact_prompt). */
         cJSON_AddStringToObject(sys, "content", task->sink == EDC_SINK_SESSION_MEMORY
-                                                    ? edc_session_memory_system_prompt()
+                                                    ? (task->memo_compact ? edc_session_memory_compact_prompt()
+                                                                          : edc_session_memory_system_prompt())
                                                     : edc_group_fold_system_prompt());
         cJSON_AddItemToArray(msgs, sys);
     }

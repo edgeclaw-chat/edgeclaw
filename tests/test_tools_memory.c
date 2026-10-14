@@ -11,7 +11,9 @@
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_toolbox.h"
+#include "edc_tools.h" /* struct edc_tool: the registration flags */
 #include "edc_tools_memory.h"
+#include <uthash.h> /* HASH_FIND_STR: the test looks tools up by name */
 #include "log.h"
 #include "sds.h"
 #include <cJSON.h>
@@ -330,6 +332,46 @@ int main(void)
         h = edc_tools_memory_call_header("memory_search", NULL);
         CHECK(h && strcmp(h, "memory_search") == 0, "args = NULL = 只有工具名");
         sdsfree(h);
+    }
+
+    size_t entries_before = session->memo->entry_count;
+
+    TEST("memory_delete: 真删（列表/搜索/按 id 都拿不到）; 事件是 DELETED");
+    struct capture de = run_tool(tb, task, "memory_delete", "{\"ids\":[\"m2\"]}");
+    CHECK(de.error == NULL && de.result && strstr(de.result, "m2") != NULL, "删除成功");
+    CHECK(session->memo->entry_count + 1 == entries_before, "条目表少了一条（不是只打标记）");
+    CHECK(edc_session_memory_entry(session->memo, "m2") == NULL, "按 id 也查不到了");
+    CHECK(session->memo->events[session->memo->event_count - 1].kind == EDC_MEMO_DELETED, "最新事件 DELETED");
+    free_capture(&de);
+
+    struct capture dl = run_tool(tb, task, "memory_list", "{}");
+    CHECK(dl.result && strstr(dl.result, "[m1]") != NULL, "m1 还在列");
+    CHECK(dl.result && strstr(dl.result, "[m2]") == NULL, "m2 不再出现在索引里");
+    free_capture(&dl);
+
+    struct capture ds = run_tool(tb, task, "memory_search", "{\"patterns\":[\"uid 1000\"]}");
+    CHECK(ds.result && strstr(ds.result, "0 hit(s)") != NULL, "搜索也搜不到");
+    free_capture(&ds);
+
+    struct capture dg = run_tool(tb, task, "memory_get", "{\"ids\":[\"m2\"]}");
+    CHECK(dg.error == NULL && dg.result && strstr(dg.result, "no such entry") != NULL, "按 id 也取不到了");
+    free_capture(&dg);
+
+    TEST("memory_delete: 原子 —— 含未知 id ⇒ 整批不删");
+    struct capture da = run_tool(tb, task, "memory_delete", "{\"ids\":[\"m1\",\"m404\"]}");
+    CHECK(da.error != NULL && da.result && strstr(da.result, "unknown") != NULL, "整批被拒");
+    CHECK(edc_session_memory_entry(session->memo, "m1") != NULL, "m1 没被牵连");
+    free_capture(&da);
+
+    TEST("工具声明: 记忆工具的输出不被 tool_max_output_size 截断 (别的工具照旧)");
+    {
+        struct edc_tool *t = NULL;
+        HASH_FIND_STR(tb->tools, "memory_get", t);
+        CHECK(t && t->keep_full_output, "memory_get 声明全文输出");
+        HASH_FIND_STR(tb->tools, "memory_delete", t);
+        CHECK(t != NULL && t->keep_full_output, "memory_delete 已注册且声明全文输出");
+        HASH_FIND_STR(tb->tools, "exec_shell", t);
+        CHECK(t == NULL || !t->keep_full_output, "对照组: shell 没有声明（它有自己的上限）");
     }
 
     edc_toolbox_free(tb);

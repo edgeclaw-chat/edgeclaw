@@ -344,6 +344,55 @@ static void test_adopt(void)
     edc_config_free(cfg);
 }
 
+/* ── 7. 逻辑删除 + 压缩 ────────────────────────────────────── */
+
+static void test_delete_and_trim(void)
+{
+    TEST("删除: 真删（表里没有、按 id 读不到、视图没有），并留一条 DELETED 事件");
+    struct edc_session_memory *m = edc_session_memory_new();
+    sds id1 = edc_session_memory_create_entry(m, "要删的", "过期了", "明细 A", NULL);
+    sds id2 = edc_session_memory_create_entry(m, "留着的", "还在用", "明细 B", NULL);
+    CHECK_STREQ(id1, "m1", "id1 = m1");
+    CHECK_STREQ(id2, "m2", "id2 = m2");
+
+    const char *one[] = {"m1"};
+    CHECK(edc_session_memory_delete(m, one, 1), "删除 m1");
+    CHECK(m->entry_count == 1, "条目表真的少了一条");
+    CHECK(edc_session_memory_entry(m, "m1") == NULL, "按 id 查不到了");
+    CHECK(edc_session_memory_get_detail(m, "m1") == NULL, "明细也读不到了");
+    CHECK(m->events[m->event_count - 1].kind == EDC_MEMO_DELETED, "留了一条 DELETED 事件（变化流要告诉别人）");
+    CHECK(!edc_session_memory_delete(m, one, 1), "再删一次 = 未知 id（不是幂等）");
+    const char *mixed[] = {"m2", "m404"};
+    CHECK(!edc_session_memory_delete(m, mixed, 2), "原子: 含未知 id 就整批拒绝");
+    CHECK(edc_session_memory_entry(m, "m2") != NULL, "m2 没被牵连");
+
+    size_t total = 0;
+    sds idx = edc_session_memory_index_lines(m, 0, 10, &total);
+    CHECK(total == 1 && strstr(idx, "要删的") == NULL, "索引只剩一条、没有它的标题");
+    sdsfree(idx);
+    size_t hits = 0;
+    sds found = edc_session_memory_search_lines(m, "过期了", 10, &hits);
+    CHECK(hits == 0, "搜索搜不到");
+    sdsfree(found);
+    sds shown = edc_session_memory_show_text(m, "m1");
+    CHECK(shown && strstr(shown, "no entry") != NULL, "show 报没有这条");
+    sdsfree(shown);
+
+    TEST("事件日志: 写路径上自动裁剪, 不会无限增长");
+    uint64_t rev = edc_session_memory_entry(m, "m2")->updated_seq;
+    for (int i = 0; i < EDC_SESSION_MEMORY_TRIM_EVENTS + 20; i++)
+    {
+        enum edc_memo_write_result r = edc_session_memory_update(m, "m2", NULL, "改了", NULL, rev, &rev);
+        if (r != EDC_MEMO_WRITE_OK)
+            break;
+    }
+    CHECK(m->event_count <= EDC_SESSION_MEMORY_TRIM_EVENTS, "日志被压在触发线以内（不再无限增长）");
+    CHECK(m->pruned_before > 0, "pruned_before 前进了");
+    CHECK(edc_session_memory_entry(m, "m2") != NULL, "裁剪不会碰活着的条目");
+
+    edc_session_memory_free(m);
+}
+
 int main(void)
 {
 
@@ -353,6 +402,7 @@ int main(void)
     test_notice();
     test_round_trip();
     test_adopt();
+    test_delete_and_trim();
     printf("\n%d passed, %d failed\n", g_passed, g_failed);
     return g_failed ? 1 : 0;
 }

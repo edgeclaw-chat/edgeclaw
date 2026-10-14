@@ -1527,7 +1527,7 @@ sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_gr
                        group->fold_failures, EDC_FOLD_MAX_FAILURES);
     out = sdscatprintf(out, "- **fold in flight** %s (one per session) · **barrier on this group** %s\n",
                        (session && edc_scheduler_has_pending_system_task(session)) ? "yes" : "no",
-                       edc_group_fold_holds_group(group) ? "yes" : "no");
+                       edc_group_fold_in_flight(group) ? "yes" : "no");
     if (leader)
         out = sdscatprintf(out, "- leader `%s`%s\n", leader->task_id,
                            (leader->description && *leader->description) ? leader->description : "");

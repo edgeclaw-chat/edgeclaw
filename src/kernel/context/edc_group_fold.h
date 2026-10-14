@@ -115,12 +115,22 @@ extern struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct
  *  own system prompt — which then rode along in every fold call. */
 extern const char *edc_group_fold_system_prompt(void);
 
-/** Barrier read by the scheduler: true while a fold targeting |group| is in
- *  flight. The scheduler then refuses to drive any task of that group (the fold
- *  task itself lives in the session's system group, so it is not held by its own
- *  fold). Together with edc_group_fold_start refusing a non-quiescent group, this
- *  serializes the group's work strictly around a fold. */
-extern bool edc_group_fold_holds_group(struct edc_task_group *group);
+/** REPORTING ONLY -- not a gate: is a fold (L1) or its chained curation (L2) in flight for
+ *  |group|? The scheduler does NOT ask this any more: whether a task may run is decided by its
+ *  own dependency edges (see edc_group_fold_hold_task), so there is exactly one answer to
+ *  "may this run" and one place that releases it. Used by `/group info`. */
+extern bool edc_group_fold_in_flight(struct edc_task_group *group);
+
+/** Attach |task| to whatever maintenance round is in flight FOR ITS GROUP: the fold task (L1)
+ *  and its chained curation (L2) if either is still going, each as a TASK_DEP_BARRIER.
+ *  Returns how many edges were added (0 = nothing in flight).
+ *
+ *  The scheduler calls this at the two doors that can make a task runnable -- creation and
+ *  resume -- which is what lets the dep graph be the only thing that decides "may this run":
+ *  a task that joins mid-round waits like everyone else, without a drive-time predicate that
+ *  could drift from the barrier's semantics. A BARRIER is released by its source ending either
+ *  way, so a round that dies releases what it was holding. */
+extern int edc_group_fold_hold_task(struct edc_task *task);
 
 /** Landing half: write |content| into task->sink_group's memory, apply the cut the
  *  fold task carries (every member before it folded whole, its own turn up to

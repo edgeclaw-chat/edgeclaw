@@ -160,6 +160,7 @@ cc_test(
         "//src/kernel:kernel",
         "//src/toolbox:toolbox",
         "@log.c//:log.c",
+        "@uthash//:uthash",
     ],
     linkopts = LINK_OPTS,
 )

@@ -123,6 +123,9 @@ static cJSON *task_to_json(struct edc_task *task)
      * false), so old files read back a normal task -- no schema bump. */
     if (task->tool_only)
         cJSON_AddBoolToObject(tj, "tool_only", true);
+    /* Same shape: optional key, absent = an ordinary (curation) memory task. */
+    if (task->memo_compact)
+        cJSON_AddBoolToObject(tj, "memo_compact", true);
 
     /* ── sink / fold target ──
      * A fold task (sink = GROUP_MEMORY) is now an ordinary persisted task, so its
@@ -660,6 +663,8 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->is_background = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "tool_only")))
             task->tool_only = cJSON_IsTrue(v);
+        if ((v = cJSON_GetObjectItem(tj, "memo_compact")))
+            task->memo_compact = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "prompt_name")) && cJSON_IsString(v))
             task->prompt_name = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "prompt")) && cJSON_IsString(v))

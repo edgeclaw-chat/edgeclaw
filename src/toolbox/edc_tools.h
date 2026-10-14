@@ -55,6 +55,11 @@ struct edc_tool
 
     edc_tool_exec_async_fn exec;
     edc_tool_abort_fn abort; /* optional: NULL = this tool has no interruptible work */
+    /* Declared by the tool: its result must NOT be cut at tool_max_output_size on the way to
+     * the model. For a tool whose output IS knowledge rather than bulk (the session memory
+     * tools), a silent cut loses facts; such a tool must be able to bound its own output
+     * (the memory tools are bounded by the entry table). */
+    bool keep_full_output;
     EdcDestroyNotify priv_free_fn;
     UT_hash_handle hh;
 };
@@ -65,6 +70,8 @@ extern void edc_tool_free(struct edc_tool *tool);
 /* Install the tool's abort hook (kept out of edc_tool_new so the 17 existing constructions
  * did not have to grow a NULL argument). */
 extern void edc_tool_set_abort(struct edc_tool *tool, edc_tool_abort_fn abort);
+/* Declare that this tool's output must reach the model whole (see keep_full_output). */
+extern void edc_tool_set_keep_full_output(struct edc_tool *tool, bool keep);
 extern struct edc_tool *edc_tool_new_v(const char *name, const char *desc, struct edc_tool_param **params,
                                        edc_tool_exec_async_fn exec);
 #endif

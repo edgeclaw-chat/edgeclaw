@@ -130,7 +130,7 @@ static const char *kUpdateSummaryInstruction =
  * a restart-interrupted fold task is set back to ready at load and redispatched by the
  * scan (see edc_state_serializer.c). */
 
-bool edc_group_fold_holds_group(struct edc_task_group *group)
+bool edc_group_fold_in_flight(struct edc_task_group *group)
 {
     if (!group || !group->session)
         return false;
@@ -151,6 +151,37 @@ bool edc_group_fold_holds_group(struct edc_task_group *group)
             return true;
     }
     return false;
+}
+
+int edc_group_fold_hold_task(struct edc_task *task)
+{
+    /* The maintenance rounds themselves are never held (their own barrier must not grab them).
+     * NOTE: a FINISHED task is deliberately NOT skipped: the resume door hands us exactly those
+     * (INTERRUPTED / ERROR / CANCELLED all count as finished), and holding them is the point --
+     * resume then parks them at READY until the round ends. */
+    if (!task || !task->group || !task->group->session)
+        return 0;
+    if (edc_task_is_memory_sink(task))
+        return 0;
+
+    struct edc_task_group *sys = edc_session_find_system_group(task->group->session);
+    if (!sys)
+        return 0;
+
+    int added = 0;
+    struct edc_task *t;
+    LL_FOREACH2(sys->members, t, group_next)
+    {
+        if (t == task || edc_task_is_finished(t))
+            continue;
+        /* L1 (the fold) and L2 (its curation) both carry sink_group == the folded group, and
+         * the members wait for BOTH: L1 produces the memory, L2 reconciles it into the index. */
+        if (!edc_task_is_memory_sink(t) || t->sink_group != task->group)
+            continue;
+        if (edc_task_add_dependency(task, t, TASK_DEP_BARRIER))
+            added++;
+    }
+    return added;
 }
 
 void edc_group_fold_note_failure(struct edc_task_group *group)

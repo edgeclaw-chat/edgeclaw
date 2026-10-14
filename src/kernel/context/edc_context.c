@@ -324,7 +324,8 @@ static const char kSessionMemoryHint[] =
     "- `memory_list [offset] [n]`                      -- enumerate entries\n"
     "- `memory_get <ids...>`                           -- read entries (each with its rev)\n"
     "- `memory_update <entries>`                       -- update entries: [{id, expected_rev, title?, summary?, detail?}] (atomic)\n"
-    "- `memory_supersede <ids...>`                     -- retire entries (never deleted; atomic)\n"
+    "- `memory_supersede <ids...>`                     -- retire entries (obsolete; kept and still visible as retired)\n"
+    "- `memory_delete <ids...>`                        -- delete entries for real (removed; cannot be read again)\n"
     "- `memory_write <title> [summary] [detail]`       -- create a new entry\n"
     "New or updated entries are announced at the tail of your context (a \"## Session Memory Updates\" block)\n"
     "when something changed. Keep progress logs and todos out of it.\n";

@@ -149,7 +149,10 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
     cJSON_free(args);
 
     req->result = result;
-    if ((sdslen(result)) > state->toolbox->conf->tool_max_output_size)
+    /* A tool may declare that its output must reach the model whole (the session memory
+     * tools: their output is knowledge, not bulk, and they bound it themselves). */
+    bool keep_full = tb_ctx->tool && tb_ctx->tool->keep_full_output;
+    if (!keep_full && (sdslen(result)) > state->toolbox->conf->tool_max_output_size)
     {
         size_t len = sdslen(result);
         size_t cap = (size_t)state->toolbox->conf->tool_max_output_size;
