@@ -126,10 +126,10 @@ pty 字节重放只能看到前几帧）→ **帧比较不可靠**。
 
 ```bash
 # 1. 两个二进制
-bazel build //src/tui:edgeclaw_tui
-cp bazel-bin/src/tui/edgeclaw_tui /tmp/ab/bin/a      # 改动前
+bazel build //src/tui:edgeclaw
+cp bazel-bin/src/tui/edgeclaw /tmp/ab/bin/a      # 改动前
 # ... 改动 ...
-cp bazel-bin/src/tui/edgeclaw_tui /tmp/ab/bin/b      # 改动后
+cp bazel-bin/src/tui/edgeclaw /tmp/ab/bin/b      # 改动后
 
 # 2. 对照（夹具运行时从真实工作区冻结；默认 source=~/.edgeclaw/workspace, sessions=s8）
 python3 tools/ab/ab.py run --bin /tmp/ab/bin/a --label a --fixture smoke

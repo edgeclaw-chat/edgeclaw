@@ -1,18 +1,21 @@
-﻿/* 前端的 C 安全面 —— 从 `edc_app.c` 拆出来 (2026-09-16)。
+﻿/* The frontend's C-safe surface -- split out of `edc_app.c` (2026-09-16).
  *
- * 这批函数**不是装配根的业务**: 它们是 "C++ ↔ C 边界" 上的投影 ——
- *   - `edc_app_message_*`: 消息字段是 sds, C++ 侧不能 include 那些头, 所以只读窗口在这里;
- *   - 字符串读口: 同一个理由 (sds → 调用方缓冲区);
- *   - 前端要做的几件事: 投输入 / 要快照 / 注册 adapter / 写它自己的文件。
- * 它们从前住在 tui 的 `edc_c_bridge` (92b2c99 搬进 app, 形状 C: 边界用伞), 现在单独
- * 成 `//src/app:api` —— 判据就一条: **这里一条业务逻辑都不含, 只是投影**。
+ * These functions are NOT the root's business: they are the projection onto the
+ * C++ <-> C boundary --
+ *   - `edc_app_message_*`: message fields are sds and C++ cannot include those
+ *     headers, so the read-only window lives here;
+ *   - string readers: same reason (sds -> caller buffer);
+ *   - a few things the frontend does: send input / request a snapshot / register
+ *     an adapter / write its own files.
+ * They used to live in tui's `edc_c_bridge` (moved into app by 92b2c99), now their
+ * own `//src/app:api` -- one rule: no business logic here, only projection.
  *
- * 唯一入参是 `struct edc_app *` (不透明): 本文件**不碰它的字段**, 只经
- * `edc_app_config()` / `edc_app_channel_actor()` 两个句柄访问器拿东西
- * (实测 `app->` = 0 次) ⇒ 装配根不为它开任何"内部头", `struct edc_app` 仍然
- * 只在 `edc_app.c` 里定义 (docs/runtime-model.md §8 判据 1 不退步)。
+ * The only parameter is an opaque `struct edc_app *`: this file does not touch its
+ * fields, reading only through the `edc_app_config()` / `edc_app_channel_actor()`
+ * accessors (`app->` appears 0 times), so `struct edc_app` stays defined only in
+ * `edc_app.c`.
  *
- * 对 C++ 安全 (`edc_api.h` 与 `edc_app.h` 同规矩: 不 include 拉 sds 的头)。 */
+ * C++-safe (`edc_api.h` and `edc_app.h` share the rule: include no sds header). */
 #include "edc_api.h"
 
 #include "edc_actor.h"
@@ -25,11 +28,9 @@
 #include <stdio.h>
 #include <string.h>
 
-/* ── 前端的只读窗口 (sds → 纯 C 类型) ─────────────────────────
- * 本文件对 C++ 安全 (不 include 任何拉 sds 的头), 所以凡是 sds 字段、
- * 或只有 C 侧才完整的内脏, 都要在这里过一道。这批函数从前住在 tui 的
- * `edc_c_bridge`; 搬家理由: **C++ ↔ C 的边界属于 app** (形状 C: 边界用伞,
- * 见 docs/runtime-model.md §11)。 */
+/* ── The frontend's read-only window (sds -> plain C types) ────
+ * This file is C++-safe (it includes no sds header), so every sds field or
+ * C-only detail is converted here. The C++ <-> C boundary belongs to app. */
 
 _Static_assert(EDC_RENDER_MARKDOWN == EDC_APP_RENDER_MARKDOWN,
                "the EDC_APP_RENDER_* mirror in edc_api.h must match edc_render_pref_t");
@@ -44,14 +45,16 @@ const char *edc_app_message_header(const struct edc_channel_message *message)
     return message ? message->header : NULL;
 }
 
-/* 产出这条消息的 task id ("1"/"2"/...)；不是 task 发的 (用户输入、快照) 时为 NULL。 */
+/* The task id that produced this message; NULL when no task did (user input, a
+ * snapshot). */
 const char *edc_app_message_task_id(const struct edc_channel_message *message)
 {
     return message ? message->task_id : NULL;
 }
 
-/* 产出这条消息的 task 属于哪个 session；不是 task 发的时为 NULL。
- * 前端据此把**别的** session 的后台产出记进那个 session 自己的转录。 */
+/* Which session the producing task belongs to; NULL when no task did. The
+ * frontend uses it to record another session's background output into that
+ * session's own transcript. */
 const char *edc_app_message_session_id(const struct edc_channel_message *message)
 {
     return message ? message->session_id : NULL;
@@ -82,26 +85,29 @@ int edc_app_message_is_sys(const struct edc_channel_message *message)
     return message ? message->message_type == EDC_CHANNEL_MESSAGE_SYS_TYPE : 0;
 }
 
-/* `/task history` 的应答载荷 (结构化, 不是 SYS 文本): 前端认出它就按消息历史渲染。 */
+/* The `/task history` reply payload (structured, not SYS text): the frontend
+ * renders it as a message history. */
 int edc_app_message_is_task_history(const struct edc_channel_message *message)
 {
     return message ? message->message_type == EDC_CHANNEL_MESSAGE_TASK_HISTORY_TYPE : 0;
 }
 
-/* 一条拉取的**应答**: 内容是要解析的 task 树快照 JSON, 不许当聊天文本渲染。 */
+/* A pull REPLY: the content is task-tree snapshot JSON to parse, never rendered as
+ * chat text. */
 int edc_app_message_is_task_snapshot(const struct edc_channel_message *message)
 {
     return message ? message->message_type == EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE : 0;
 }
 
-/* 一个**事件**: "某个 session 的树变了" (只带 id + 原因, 不带树) —— P3 ①b。 */
+/* An EVENT: "some session's tree changed" (id + reason only, no tree). */
 int edc_app_message_is_task_tree_changed(const struct edc_channel_message *message)
 {
     return message ? message->message_type == EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE : 0;
 }
 
-/* 发送方声明的事实: 这条产出是不是它自己 session 的 active task 产生的。
- * P3 ③ 起展示闸门在前端 —— 前端按"我正在显示哪个 session"决定显不显示。 */
+/* A fact the sender declares: whether this output came from its own session's
+ * active task. The display gate lives in the frontend, which decides from the
+ * session it is showing. */
 int edc_app_message_from_active_task(const struct edc_channel_message *message)
 {
     return (message && message->from_active_task) ? 1 : 0;
@@ -109,11 +115,11 @@ int edc_app_message_from_active_task(const struct edc_channel_message *message)
 
 int edc_app_message_render_pref(const struct edc_channel_message *message)
 {
-    /* 返回 EDC_APP_RENDER_PLAIN/MARKDOWN；发送方未声明时为 PLAIN（零值默认） */
+    /* Returns EDC_APP_RENDER_PLAIN/MARKDOWN; PLAIN when the sender did not declare. */
     return message ? (int)message->render_pref : EDC_APP_RENDER_PLAIN;
 }
 
-/* ── 配置 / 会话的字符串读取 (sds → 调用方缓冲区) ─────────────── */
+/* ── Config / session string readers (sds -> caller buffer) ──── */
 
 static bool copy_sds_into(const sds value, char *buf, size_t cap)
 {
@@ -152,15 +158,15 @@ bool edc_app_sandbox_enabled(const struct edc_app *app)
     return cfg && cfg->enable_sandbox;
 }
 
-/* 转录文件在哪 —— 只解路径: 编解码、追加、回放都是前端自己的事 (见
- * edc_chat_transcript.hpp)。
+/* Where a transcript lives -- path resolution only; encode/append/replay are the
+ * frontend's own concern (see edc_chat_transcript.hpp).
  *
- * 路径由**约定**拼出, 不再问仓库: 会话目录就是 `<workspace>/<session_id>`
- * (kernel 侧 edc_session_new_with_workdir 用的同一条规则, tests/test_session_workdir.c
- * 钉住它)。这样前端面不必碰 session 仓库 —— 它由 actor 线程改。
+ * The path is assembled by convention, not by querying the store: a session dir is
+ * `<workspace>/<session_id>` (the same rule edc_session_new_with_workdir uses on
+ * the kernel side; tests/test_session_workdir.c pins it), so the frontend never
+ * touches the session store (mutated by the actor thread).
  *
- * |session_id| 必须是**会话 id**: 从前走 manager_find 时显示名也能匹配, 而两个
- * 调用点传的都是快照/消息里的 id, 所以那条便利没有被用上。 */
+ * |session_id| must be a session id (as carried by snapshots/messages). */
 bool edc_app_chat_log_path_for(const struct edc_app *app, const char *session_id, char *buf, size_t cap)
 {
     if (buf && cap > 0)
@@ -178,7 +184,7 @@ bool edc_app_chat_log_path_for(const struct edc_app *app, const char *session_id
     return ok;
 }
 
-/* 前端的命令历史文件 (`<bc_home>/.tui_history`) —— 是前端自己的进程级历史。 */
+/* The frontend's command history file (`<bc_home>/.tui_history`). */
 bool edc_app_history_path(char *buf, size_t cap)
 {
     if (!buf || cap == 0)
@@ -200,9 +206,10 @@ bool edc_app_history_path(char *buf, size_t cap)
     return ok;
 }
 
-/* ── 前端要做的几件事 ───────────────────────────────────────── */
+/* ── A few things the frontend does ─────────────────────────── */
 
-/* 把前端注册成**唯一**通道实现的 adapter: 每一条要上屏的消息都到 |on_send|。 */
+/* Register the frontend as the ONLY channel adapter: every on-screen message
+ * reaches |on_send|. */
 void edc_app_channel_adapter_init(struct edc_app *app, void *instance,
                                   void (*on_send)(void *, struct edc_channel_message *))
 {
@@ -212,8 +219,8 @@ void edc_app_channel_adapter_init(struct edc_app *app, void *instance,
     edc_channel_adapter_init(channel, instance, on_send);
 }
 
-/* 投一条用户输入。|session_id| 点名这条输入属于哪个 session (P3 ①a):
- * 它派出的 task 落在那儿, 不会去别处。NULL/"" = 未指定, 由 store 取默认。 */
+/* Send a user input. |session_id| names the session it belongs to (the task it
+ * spawns lands there). NULL/"" = unspecified, the store picks the default. */
 void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content)
 {
     edc_actor_t *channel = edc_app_channel_actor(app);
@@ -226,15 +233,15 @@ void edc_app_send_user_message(struct edc_app *app, const char *session_id, cons
         message->session_id = sdsnew(session_id);
 
     edc_channel_actor_state_t *state = channel->state;
-    /* 边界翻译: core 不认识 channel 消息 —— 翻译好再投 (edc_channel_actor.h)。 */
+    /* Boundary translation: core does not know channel messages (edc_channel_actor.h). */
     edc_actor_msg_t *actor_msg =
         edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, channel, NULL, edc_channel_input_new(message),
                           (edc_actor_data_free_fn)edc_channel_input_free);
     edc_actor_send(state->observer, actor_msg);
 }
 
-/* 要一棵 task 树 (P3 ①b: 前端只拉自己正在显示的那一棵); 树在 scheduler 线程上建,
- * 经通道 adapter 以 TASK_SNAPSHOT 应答回来。 */
+/* Request a task tree (the frontend pulls only the one it displays); built on the
+ * scheduler thread and answered as TASK_SNAPSHOT through the channel adapter. */
 void edc_app_request_task_snapshot(struct edc_app *app, const char *session_id)
 {
     edc_actor_t *channel = edc_app_channel_actor(app);
@@ -264,7 +271,7 @@ bool edc_app_ensure_parent_dir(struct edc_app *app, const char *path)
         return false;
     }
 
-    /* 只允许在 workspace 里面: 前端经这里写的都是它自己的文件。 */
+    /* Must stay under the workspace: everything written here is the frontend's own. */
     const struct edc_config *cfg = edc_app_config(app);
     const char *root = cfg ? cfg->workspace : NULL;
     bool ok = root && root[0] && strncmp(parent, root, strlen(root)) == 0;

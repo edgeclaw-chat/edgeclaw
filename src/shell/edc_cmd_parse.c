@@ -5,6 +5,92 @@
 
 #define DESC_MAX EDC_TASK_DESC_MAX
 
+/* ── Quoted regions ──────────────────────────────────────────
+ *
+ * Quotes and escapes follow Python's string rules. The one EdgeClaw addition is
+ * `$VAR` interpolation, and that is the only thing the two quote kinds differ on:
+ * single-quoted text is raw (literal = 1, no interpolation), double-quoted text
+ * interpolates. Escapes are identical in both, and an unknown escape keeps its
+ * backslash -- also as in Python. Not implemented: adjacent literal concatenation
+ * (`"a" "b"`), which nothing here needs. */
+
+static int hex_digit(char c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+    return -1;
+}
+
+/* |*pp| points at a backslash; append what it names and move past the whole escape.
+ * An unknown escape emits the backslash and leaves |*pp| on the escaped character, so
+ * the caller's loop copies it next. */
+static void append_escape(sds *out, const char **pp)
+{
+    const char *q = *pp + 1; /* the escaped character */
+    switch (*q)
+    {
+    case 'n': *out = sdscatlen(*out, "\n", 1); *pp = q + 1; return;
+    case 't': *out = sdscatlen(*out, "\t", 1); *pp = q + 1; return;
+    case 'r': *out = sdscatlen(*out, "\r", 1); *pp = q + 1; return;
+    case 'v': *out = sdscatlen(*out, "\v", 1); *pp = q + 1; return;
+    case 'f': *out = sdscatlen(*out, "\f", 1); *pp = q + 1; return;
+    case 'b': *out = sdscatlen(*out, "\b", 1); *pp = q + 1; return;
+    case 'a': *out = sdscatlen(*out, "\a", 1); *pp = q + 1; return;
+    case '\\':
+    case '"':
+    case '\'': *out = sdscatlen(*out, q, 1); *pp = q + 1; return;
+    case 'x':
+    {
+        int hi = hex_digit(q[1]);
+        if (hi >= 0)
+        {
+            int lo = hex_digit(q[2]);
+            char ch = (char)((lo < 0) ? hi : hi * 16 + lo);
+            *out = sdscatlen(*out, &ch, 1);
+            *pp = q + ((lo < 0) ? 2 : 3);
+            return;
+        }
+        break;
+    }
+    default: break;
+    }
+
+    *out = sdscatlen(*out, "\\", 1); /* unknown escape: the backslash stays */
+    *pp = q;
+}
+
+/* Scan one quoted region: |q| points at the opening quote (one or three of them).
+ * Returns the unescaped body (caller frees) and stores the position just past the
+ * closing delimiter in *end_out; NULL when the region never closes. */
+static sds scan_quoted(const char *q, bool triple, char quote, const char **end_out)
+{
+    const char *p = q + (triple ? 3 : 1);
+    sds out = sdsempty();
+
+    while (*p)
+    {
+        if (triple ? (p[0] == quote && p[1] == quote && p[2] == quote) : (*p == quote))
+        {
+            *end_out = p + (triple ? 3 : 1);
+            return out;
+        }
+        if (*p == '\\' && p[1])
+        {
+            append_escape(&out, &p);
+            continue;
+        }
+        out = sdscatlen(out, p, 1);
+        p++;
+    }
+
+    sdsfree(out);
+    return NULL;
+}
+
 void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
 {
     if (!opts)
@@ -26,13 +112,15 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
     /*
      * Input extraction follows a Python-style quote grammar:
      *   - argument starts with """ or ''': that whole block, which may span
-     *     multiple lines, is taken verbatim as the input (up to the closing
-     *     triple quote); anything after it is parsed for flags.
+     *     multiple lines, is taken as the input (up to the closing triple
+     *     quote); anything after it is parsed for flags.
      *   - argument starts with a single '"' or '\'': that quoted chunk is the
      *     input, and everything after its closing quote is parsed for flags.
      *   - otherwise the entire remainder is the input verbatim, so pasted
      *     text that merely contains quotes (e.g. JSON) is never truncated;
      *     flags are not scanned in this mode.
+     * Escapes are Python's in every case (see append_escape); the two quote kinds
+     * differ only in $VAR interpolation.
      */
     char *s = remaining;
     while (*s == ' ' || *s == '\t')
@@ -40,34 +128,22 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
 
     bool input_consumed = false;
 
-    if (strncmp(s, "\"\"\"", 3) == 0 || strncmp(s, "'''", 3) == 0)
-    {
-        const char *delim = (*s == '"') ? "\"\"\"" : "'''";
-        /* Python semantics: ''' is raw — no $variable expansion inside.
-         * Capture BEFORE sdsrange() below rewrites the buffer s points into
-         * (it null-terminates at the new end, clobbering the opening quote). */
-        opts->literal = (*s == '\'');
-        char *q_end = strstr(s + 3, delim);
-        if (q_end)
-        {
-            opts->input = sdsnewlen(s + 3, (size_t)(q_end - (s + 3)));
-            sdsrange(remaining, (int)(q_end + 3 - remaining), -1);
-            sdstrim(remaining, " \t");
-            input_consumed = true;
-        }
-    }
+    size_t left = sdslen(remaining) - (size_t)(s - remaining);
+    bool triple = false;
+    if (left >= 3 && (strncmp(s, "\"\"\"", 3) == 0 || strncmp(s, "'''", 3) == 0))
+        triple = true;
 
-    if (!input_consumed && (*s == '"' || *s == '\''))
+    if (triple || *s == '"' || *s == '\'')
     {
-        char quote = *s;
-        /* single-quoted input is raw too (no $ expansion). Same as above:
-         * capture before sdsrange() clobbers the buffer s points into. */
-        opts->literal = (quote == '\'');
-        char *q_end = strchr(s + 1, quote);
-        if (q_end)
+        /* A quoted region opens the argument; everything after its closing delimiter
+         * is the option area. An unterminated region is not one -- the whole text
+         * stays the input, which is what pasted text relies on. */
+        const char *end = NULL;
+        opts->literal = (*s == '\'');
+        opts->input = scan_quoted(s, triple, *s, &end);
+        if (opts->input)
         {
-            opts->input = sdsnewlen(s + 1, (size_t)(q_end - s - 1));
-            sdsrange(remaining, (int)(q_end - remaining + 1), -1);
+            sdsrange(remaining, (int)(end - remaining), -1);
             sdstrim(remaining, " \t");
             input_consumed = true;
         }
@@ -109,10 +185,10 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
                 p += 4;
                 continue;
             }
-            /* --suspended: 建任务但**不立即执行**。放 --bg 之后, 两者互不前缀。 */
-            if (strncmp(p, "--suspended", 11) == 0 && (p[11] == ' ' || p[11] == '\0'))
+            /* --new-group: open a group of its own. Not a prefix of --bg nor --group. */
+            if (strncmp(p, "--new-group", 11) == 0 && (p[11] == ' ' || p[11] == '\0'))
             {
-                opts->suspended = true;
+                opts->new_group = true;
                 p += 11;
                 continue;
             }
@@ -180,6 +256,36 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
         sdsfree(remaining);
         remaining = NULL;
     }
+}
+
+bool edc_cmd_desc_needs_quotes(const char *arg)
+{
+    if (!arg)
+        return false;
+
+    const char *p = arg;
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    /* Quote-led: everything after the closing quote is the option area, which is the
+     * only shape where options are recognised (see edc_cmd_parse_task_opts). */
+    if (*p == '"' || *p == '\'')
+        return false;
+
+    /* Walk the tokens; a token that starts with '-' (and is not just "-") is an
+     * option the caller meant to pass, and it has nowhere to go. */
+    while (*p)
+    {
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (!*p)
+            break;
+        if (p[0] == '-' && p[1] && p[1] != ' ' && p[1] != '\t')
+            return true;
+        while (*p && *p != ' ' && *p != '\t')
+            p++;
+    }
+    return false;
 }
 
 void edc_cmd_task_opts_free(struct edc_cmd_task_opts *opts)

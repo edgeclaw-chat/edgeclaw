@@ -22,12 +22,12 @@ typedef enum
     BC_ACTOR_MSG_TOOL_RESPONSE,
     BC_ACTOR_MSG_CHANNEL_SEND,
     BC_ACTOR_MSG_CHANNEL_RECV,
-    BC_ACTOR_MSG_TASK_SNAPSHOT,   /* TUI 请求当前 session 的 task 树快照 */
-    BC_ACTOR_MSG_TOOL_EMIT,       /* toolbox → scheduler: 工具结果需经 active-task 闸门后转发 */
-    BC_ACTOR_MSG_TOOL_STARTED,    /* toolbox → scheduler: 某个工具**真正开始执行**
-                                   * (data = strdup(call_id)); 供 resume 账本精确
-                                   * 区分"未执行"(PENDING) 与"执行中"(EXECUTING) */
-    BC_ACTOR_MSG_LLM_SET_CONFIG,  /* app → llm_actor: 运行时更新 api_url/model/key
+    BC_ACTOR_MSG_TASK_SNAPSHOT,   /* TUI requests the current session's task-tree snapshot */
+    BC_ACTOR_MSG_TOOL_EMIT,       /* toolbox -> scheduler: a tool result to forward past the active-task gate */
+    BC_ACTOR_MSG_TOOL_STARTED,    /* toolbox -> scheduler: a tool REALLY started executing
+                                   * (data = strdup(call_id)); lets the resume ledger tell
+                                   * "not executed" (PENDING) from "executing" (EXECUTING) */
+    BC_ACTOR_MSG_LLM_SET_CONFIG,  /* app -> llm_actor: update api_url/model/key at runtime
                                    * (data = struct edc_llm_api_conf_update *) */
 } edc_actor_msg_type_t;
 

@@ -44,16 +44,17 @@ void ast_free(ast_node_t *node)
 
 /* ── AST executor ──────────────────────────────────────────── */
 
-/* 一次 shell 执行的上下文: 遍历 AST 时**手里那几个句柄** (store 的读口 + 派发)
- * 与遍历中的可变状态。由 ast_execute 从它收到的参数装出来 —— 不是装配根:
- * 这里没有 config / channel 生命周期 / llm / toolbox, 只有这次执行要用的那几件。 */
+/* The context of one shell execution: the few handles held while walking the AST (the
+ * store's reader + dispatch) and the mutable state of the walk. ast_execute builds it
+ * from its parameters -- it is not the assembly root: no config / channel lifetime / llm
+ * / toolbox here, only what this execution needs. */
 typedef struct
 {
     struct edc_session_manager *sm;
     struct edc_scheduler *sched;
-    struct edc_reply_to to; /* 回话地址 (投给谁 / 以谁的名义 / 什么类型) */
+    struct edc_reply_to to; /* reply address (whom to deliver to / in whose name / which type) */
     struct edc_task_group *target_group;
-    struct edc_session *session; /* 这条输入所属的 session (命令建的任务/组落在它上面) */
+    struct edc_session *session; /* the session this input belongs to (tasks/groups it creates land here) */
     bool bg;
     edc_task_dep_type dep_type;
 } exec_ctx_t;
@@ -221,18 +222,10 @@ static struct edc_task *exec_node(
         if (!ctx->target_group && out_group)
             ctx->target_group = out_group;
 
-        if (node->at_group && task && out_group)
-        {
-            /* 前台组是 session 的属性: 问/写都用这条输入归属的 session
-             * (P3 ③: scheduler 不再持有"当前 session")。 */
-            struct edc_session *sess = ctx->session;
-            struct edc_task_group *fg = edc_scheduler_get_foreground(sess);
-            if (!fg)
-            {
-                edc_scheduler_set_foreground(sess, out_group);
-                edc_session_set_active_task(edc_session_manager_get_active(ctx->sm), task);
-            }
-        }
+        /* No foreground bookkeeping here: `adopt` already decided it when it placed
+         * the task (take_foreground = !bg). An explicitly background task must not
+         * touch the foreground concept at all -- not even when the session has no
+         * foreground group, which is exactly when this used to promote it. */
 
         return task;
     }
@@ -365,8 +358,8 @@ void ast_execute(struct edc_session_manager *sm, struct edc_scheduler *sched, st
     ctx.to = to;
     ctx.dep_type = TASK_DEP_SEQUENCE;
     ctx.session = session;
-    /* 前台组是 session 的属性 —— 直接读传进来的那个 session (不再问 scheduler
-     * "当前绑定的"那份副本)。 */
+    /* The foreground group is a session attribute -- read it straight from the passed-in
+     * session (no more asking the scheduler for its "currently bound" copy). */
     ctx.target_group = session ? session->foreground_group : NULL;
     if (!ctx.target_group || ctx.target_group->is_orphaned || ctx.target_group->member_count == 0)
         ctx.target_group = NULL;

@@ -210,11 +210,46 @@ int main(void)
     g_llm_task = NULL;
     drive_command(cfg, sched->sessions, sched, "/group fold 13");
     CHECK(g_llm_calls == 1, "第一次起来了 (这个组确实有可折的内容)");
+    struct edc_task *pending_fold = g_llm_task; /* 后面 /task fg 那条用例拿它当系统组任务 */
     g_llm_calls = 0;
     g_llm_task = NULL;
     drive_command(cfg, sched->sessions, sched, "/group fold 13");
     CHECK(g_llm_calls == 0, "第二次没有请求 (一次一个 session)");
     (void)g3;
+
+    TEST("/task fg refuses a task of the system group");
+    struct edc_task_group *sys = edc_session_find_system_group(sess);
+    CHECK(pending_fold && sys && pending_fold->group == sys, "那个在飞的折叠就在系统组里");
+    if (pending_fold && sys)
+    {
+        struct edc_task_group *fg_before = edc_scheduler_get_foreground(sess);
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "/task fg %s", pending_fold->task_id);
+        drive_command(cfg, sched->sessions, sched, cmd);
+        CHECK(edc_scheduler_get_foreground(sess) == fg_before, "前台没动");
+        CHECK(edc_scheduler_get_foreground(sess) != sys, "也没有变成系统组");
+        CHECK(edc_session_get_active_task(sess) != pending_fold, "折叠任务也没变成 active");
+    }
+
+    TEST("/group info: 一个组的上下文 / 折叠数字");
+    struct edc_task_group *gi = make_group(sess, "15");
+    sds info = edc_commands_group_info_text(sess, gi, cfg);
+    CHECK(info && strstr(info, "fold line") && strstr(info, "1032192"), "带折线 (window − 16384)");
+    CHECK(info && strstr(info, "1 members"), "带成员数");
+    CHECK(info && strstr(info, "never folded"), "从没折过时说得清楚");
+    CHECK(info && strstr(info, "not due"), "内容还很少 ⇒ 不到线");
+    CHECK(info && strstr(info, "0/3"), "带连续失败计数");
+    CHECK(info && strstr(info, "1 foldable"), "带可折数");
+    sdsfree(info);
+
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sched->sessions, sched, "/group info 15");
+    CHECK(g_llm_calls == 0, "只报告, 不折任何东西");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sched->sessions, sched, "/group info");
+    CHECK(g_llm_calls == 0, "不带 id 看前台组, 也不折");
 
     edc_session_free(sess);
     edc_scheduler_free(sched);

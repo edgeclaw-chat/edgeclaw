@@ -158,6 +158,18 @@ static void test_read_write_api(void)
     CHECK(hits == 2 && sdslen(r) > 0, "两条命中但只回 1 条 (cap), hits 仍报 2");
     sdsfree(r);
 
+    /* 正则搜索: POSIX ERE + 大小写不敏感; 非法正则置 out_regerror 且不回行 */
+    int regerr = 0;
+    sds rr = edc_session_memory_search_regex_lines(m, "^沙", 5, &hits, &regerr);
+    CHECK(regerr == 0 && hits == 1 && strstr(rr, "[m2]") != NULL, "正则锚定命中标题");
+    sdsfree(rr);
+    rr = edc_session_memory_search_regex_lines(m, "uid 1000|BAZELISK", 5, &hits, &regerr);
+    CHECK(regerr == 0 && hits == 2, "交替 + 大小写不敏感命中 2 条");
+    sdsfree(rr);
+    rr = edc_session_memory_search_regex_lines(m, "(", 5, &hits, &regerr);
+    CHECK(regerr == 1 && hits == 0 && sdslen(rr) == 0, "非法正则: 置 regerror, 不回行");
+    sdsfree(rr);
+
     /* 取明细: 有条目 = 明细; 没明细 = 索引行; 不存在 = NULL */
     sds d = edc_session_memory_get_detail(m, "m2");
     CHECK(d && strcmp(d, "明细二") == 0, "明细原样回来");
@@ -206,6 +218,7 @@ static void test_notice(void)
     CHECK(strstr(n, "- [m1] created: 构建入口 — 唯一入口是 bazelisk") != NULL, "第一条一行");
     CHECK(strstr(n, "- [m2] created: 沙箱策略") != NULL, "第二条一行 (无摘要不拖尾巴)");
     CHECK(strstr(n, "memory_list") != NULL && strstr(n, "memory_get") != NULL, "带用法提示");
+    CHECK(strstr(n, "RECONCILE") != NULL && strstr(n, "expected_rev") != NULL, "带 reconcile/merge/create 纪律");
     sdsfree(n);
 
     /* 同一条目再更新: 只出最新那行 (kind = updated), 不是两行 */

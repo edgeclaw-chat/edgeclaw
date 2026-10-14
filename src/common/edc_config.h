@@ -25,12 +25,12 @@ struct llm_api_conf
 
 typedef enum
 {
-    edc_channel_adapter, /* 唯一的通道实现: TUI/adapter 消息回调。
-                          * 多通道 (telegram/feishu/qq/cli/email) 的实现与注册表已全部删除,
-                          * 但这个枚举**刻意保留** —— 它就是"消息从哪来"的标识, 将来要接新通道
-                          * (用户 2026-09-15 裁决: 后续可能会拓展其他的 channel) 时在这里加一个值,
-                          * 并给 channel actor 装一个对应的 adapter 即可。
-                          * 它也仍然写进磁盘 (task/crontab 的 "channel" 键)。 */
+    edc_channel_adapter, /* The only channel implementation: TUI/adapter message callback.
+                          * The multi-channel (telegram/feishu/qq/cli/email) implementations and
+                          * registry are gone, but this enum is KEPT ON PURPOSE -- it is the
+                          * "where a message came from" tag; to add a channel later, add a value
+                          * here and install an adapter on the channel actor.
+                          * It is still written to disk (the task/crontab "channel" key). */
 } edc_channel_type;
 
 /* The kind of content a channel message carries. Defined here (rather than in
@@ -43,17 +43,19 @@ typedef enum
     EDC_CHANNEL_MESSAGE_THOUGHT_TYPE,
     EDC_CHANNEL_MESSAGE_RESP_TYPE,
     EDC_CHANNEL_MESSAGE_SYS_TYPE,
-    EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE,      /* 拉取的**应答**: TUI 点名要的那棵 task 树 */
-    EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE,  /* **事件**: "某个 session 的树变了" (只带 id + 原因,
-                                                  * 不带树) —— TUI 据此决定要不要去拉 (P3 ①b) */
-    EDC_CHANNEL_MESSAGE_TASK_HISTORY_TYPE,       /* `/task history <id>` / `/group history <id>` 的
-                                                  * **应答载荷**: 那个 task/组的消息历史 (JSON)。命令
-                                                  * 的答案随命令的回复回来, 前端只负责把它拆成气泡。 */
+    EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TYPE,      /* A pull REPLY: the task tree the TUI named */
+    EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE,  /* An EVENT: "some session's tree changed" (id + reason
+                                                  * only, no tree) -- the TUI decides whether to pull */
+    EDC_CHANNEL_MESSAGE_TASK_HISTORY_TYPE,       /* REPLY payload for `/task history <id>` /
+                                                  * `/group history <id>`: that task's/group's message
+                                                  * history (JSON). The answer returns with the command's
+                                                  * reply; the frontend only splits it into bubbles. */
 } edc_channel_message_type;
 
-/* 消息内容的渲染偏好：由发送方(tool/app)显式声明，渲染端(CLI/TUI)
- * 不再按消息类型/header 有无去猜测。零值 PLAIN 即默认——发送方未声明时
- * 消息一律按纯文本显示，想按 Markdown 渲染必须显式声明 EDC_RENDER_MARKDOWN。 */
+/* Render preference for message content: declared explicitly by the sender (tool/app);
+ * the renderer (CLI/TUI) no longer guesses from the message type / header presence. The
+ * zero value PLAIN is the default -- an undeclared message always shows as plain text;
+ * Markdown requires an explicit EDC_RENDER_MARKDOWN. */
 typedef enum
 {
     EDC_RENDER_PLAIN = 0,
@@ -76,15 +78,16 @@ struct edc_config
 
     sds workspace;
     bool enable_sandbox;
-    /* 关掉"上下文文件"发现 (pi 里是 --no-context-files / -nc): 不读用户全局与工作目录树上的
-     * AGENTS.md / CLAUDE.md, 提示词里只剩 workspace 的 bootstrap 文件。config.json 的
-     * 顶层键 `skip_context_files` (缺省 → false)。 */
+    /* Turn off "context file" discovery (--no-context-files / -nc in pi): do not read the
+     * user-global and workdir-tree AGENTS.md / CLAUDE.md, leaving only the workspace's
+     * bootstrap files in the prompt. config.json's top-level key `skip_context_files`
+     * (default -> false). */
     bool skip_context_files;
     sds sandbox_root_real;
     sds *sandbox_ro_paths;
     sds *sandbox_rw_paths;
     sds *sandbox_deny_paths;
-    int max_iter; /* LLM/tool 迭代预算: -1 = 无限, N > 0 = 上限, <= 0 (含 0) = 不限制 */
+    int max_iter; /* LLM/tool iteration budget: -1 = unlimited, N > 0 = cap, <= 0 (incl. 0) = no limit */
     /* Declared model context window in tokens. Always positive: edc_init_env()
      * repairs a missing or <= 0 value to EDC_CONFIG_DEFAULT_CONTEXT_WINDOW, and
      * the fold compares the group's context against `window - reserve`. */
@@ -127,16 +130,18 @@ extern bool edc_config_update_sandbox_enabled(const char *edc_home, bool enable)
  * and the matching rm-* commands. */
 extern bool edc_config_update_sandbox_path(const char *edc_home, const char *path, edc_sandbox_path_kind kind,
                                            bool add);
-/* sandbox 配置的写口: 先落盘 (config.json), 成功后才改内存 —— 失败时内存与磁盘
- * 保持一致 (见实现)。它们只碰 config, 所以是 config 模块的 API (形状 C)。 */
+/* Sandbox config writers: persist to config.json first, only then change memory -- memory
+ * and disk stay consistent on failure (see the implementation). They touch config only,
+ * so they are the config module's API. */
 extern bool edc_config_set_sandbox_enabled(struct edc_config *cfg, bool enable);
 extern bool edc_config_set_sandbox_path(struct edc_config *cfg, const char *path, edc_sandbox_path_kind kind, bool add,
                                         sds *msg);
 
-/* 通道序列化 (唯一通道 = adapter): 写进 task/message 的 "channel" 字段, 属于落盘
- * 格式兼容。以前住 edc_channel_actor.{c,h} —— 但那是边界模块, kernel 的
- * state_serializer 也要用它, 会把"底层 → 边界"引成一条反向边; 挪到
- * edc_channel_type 的定义处 (本文件) 后方向就正了。 */
+/* Channel serialization (the only channel = adapter): writes the task/message "channel"
+ * field; an on-disk format compatibility concern. It used to live in
+ * edc_channel_actor.{c,h} -- a boundary module -- but the kernel's state_serializer needs
+ * it too, which would draw a "low-level -> boundary" reverse edge; moved next to
+ * edc_channel_type's definition (this file), the direction is right. */
 extern cJSON *edc_channel_to_json(void);
 
 #endif

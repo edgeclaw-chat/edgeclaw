@@ -303,7 +303,7 @@ static void test_fork_chain(void)
 
     struct edc_task *child2 = edc_task_fork(parent, "task-child2", "child 2", 10, edc_channel_adapter);
     /* 新模型: fork 子任务创建时就带着它的 input —— /task fork 现在把 desc 当 input
-     * 装上并派发 (或 --suspended 停住)。旧 fixture 让子任务停在 WAITING_INPUT 等
+     * 装上并派发 (--suspended 时停住)。旧 fixture 让子任务停在 WAITING_INPUT 等
      * attach 喂输入, 那种 turn-less 任务现在落盘时会被丢掉
      * (docs/retire-waiting-input.md §4)。 */
     {
@@ -311,7 +311,7 @@ static void test_fork_chain(void)
         turn->task_id = strdup(child2->task_id);
         edc_turn_add_user_message(turn, "child 2 input");
         child2->active_turn = turn;
-        edc_task_mark_suspended(child2);
+        edc_task_mark_interrupted(child2);
     }
 
     /* Create group, add all tasks */
@@ -353,7 +353,7 @@ static void test_fork_chain(void)
     /* Verify states */
     CHECK(edc_task_is_completed(rp), "parent COMPLETED");
     CHECK(edc_task_is_completed(rc1), "child1 COMPLETED");
-    CHECK(edc_task_is_suspended(rc2), "child2 non-terminal -> SUSPENDED");
+    CHECK(edc_task_is_interrupted(rc2), "child2 was in flight -> INTERRUPTED");
 
     cJSON_Delete(json);
     edc_session_free(session);
@@ -440,10 +440,16 @@ static void test_dependency_graph(void)
     /* Verify dependencies */
     CHECK(rb->deps_total == 1, "B deps_total = 1");
     CHECK(rb->deps_completed == 1, "B deps_completed = 1");
-    CHECK(edc_task_is_suspended(rb), "B non-terminal -> SUSPENDED on load");
+    CHECK(edc_task_is_interrupted(rb), "B (deps satisfied) comes back INTERRUPTED on load");
 
-    CHECK(rc->deps_total == 1, "C deps_total = 1");
-    CHECK(rc->deps_completed == 0, "C deps_completed = 0 (B not done)");
+    /* B came back INTERRUPTED, and an interrupt propagates like a failure -- but a task that
+     * is itself INTERRUPTED cannot be cascaded into ERROR (the state machine only lets a
+     * stopped task resume or cancel), so C stays INTERRUPTED with the edge kept: resuming C
+     * returns it to dep-wait until B is resumed and produces. */
+    CHECK(rc->deps_total == 1, "C deps_total stays 1 (the edge is kept)");
+    CHECK(rc->deps_completed == 0, "C deps_completed = 0 (B produced nothing)");
+    CHECK(edc_task_is_interrupted(rc) || edc_task_has_failed(rc),
+          "C is stopped by the unsatisfiable edge (never released by it)");
 
     /* Verify dep types */
     struct edc_task_dep *dep_b = rb->deps;
@@ -456,6 +462,7 @@ static void test_dependency_graph(void)
     CHECK(dep_c != NULL, "C has dep node");
     CHECK(dep_c->source == rb, "C dep source = B");
     CHECK(dep_c->type == TASK_DEP_SEQUENCE, "C dep type = SEQUENCE");
+    CHECK(!dep_c->cancelled, "and that node is NOT voided");
 
     /* Verify output */
     CHECK_STREQ(ra->output, "output from A", "A output preserved");
@@ -693,8 +700,8 @@ static void test_state_degradation(void)
      * resume 不再靠残留物猜的那份信息。 */
     CHECK(rt1->step == EDC_TASKSTEP_AWAIT_EXEC, "step AWAIT_EXEC preserved");
     CHECK(rt2->step == EDC_TASKSTEP_AWAIT_TOOLS, "step AWAIT_TOOLS preserved");
-    CHECK(rt1->life == EDC_LIFE_SUSPENDED && rt2->life == EDC_LIFE_SUSPENDED,
-          "life collapses to SUSPENDED for both");
+    CHECK(rt1->life == EDC_LIFE_INTERRUPTED && rt2->life == EDC_LIFE_INTERRUPTED,
+          "both were in flight -> INTERRUPTED");
     CHECK(rt1->step != rt2->step, "the two are still distinguishable");
 
     cJSON_Delete(json);
@@ -873,7 +880,7 @@ static void test_cancelled_dep_roundtrip(void)
     CHECK(edc_task_awaits_deps(tgt), "tgt waits on deps");
     edc_task_send_signal(src, TASK_SIGTERM);
     CHECK(edc_task_is_cancelled(src), "src cancelled");
-    CHECK(edc_task_is_ready(tgt), "tgt released back to READY");
+    CHECK(edc_task_is_cancelled(tgt), "tgt cascaded to CANCELLED (SEQ behaves like JOIN)");
 
     /* Serialize: both tasks must be present */
     cJSON *json = edc_state_serialize(session, sched);
@@ -892,13 +899,13 @@ static void test_cancelled_dep_roundtrip(void)
     struct edc_task *rtgt = find_task(session2, "tgt");
     CHECK(rsrc != NULL && edc_task_is_cancelled(rsrc), "cancelled source restored as CANCELLED");
     CHECK(rtgt != NULL, "dependent restored");
-    CHECK(edc_task_is_suspended(rtgt), "dependent returns SUSPENDED (not stuck in WAITING_DEPS)");
-    CHECK(rtgt->deps_total == 0, "deps_total reconciled to 0");
-    CHECK(rtgt->deps_completed == 0, "deps_completed reconciled to 0");
-    CHECK(rtgt->deps != NULL, "cancelled dep edge preserved");
+    CHECK(edc_task_is_cancelled(rtgt), "dependent comes back CANCELLED too");
+    CHECK(rtgt->deps_total == 1, "deps_total stays 1: the edge is kept");
+    CHECK(rtgt->deps_completed == 0, "deps_completed 0");
+    CHECK(rtgt->deps != NULL && !rtgt->deps->cancelled, "the dep edge is preserved, not voided");
     if (rtgt->deps)
     {
-        CHECK(rtgt->deps->cancelled, "dep edge marked cancelled");
+        CHECK(!rtgt->deps->cancelled, "dep edge NOT voided (JOIN/SEQ keep it)");
         CHECK(rtgt->deps->source == rsrc, "dep edge points at restored source");
     }
 
@@ -2127,7 +2134,7 @@ static void test_continuation_preserved(void)
     CHECK(r_input && r_input->step == EDC_TASKSTEP_READY, "step READY survives");
 
     /* 活着吗统一收敛 (重启后没有任何东西在跑) —— 但那是**另一件事**, 不该把 step 带走。 */
-    CHECK(r_llm && r_llm->life == EDC_LIFE_SUSPENDED, "life collapses to SUSPENDED");
+    CHECK(r_llm && r_llm->life == EDC_LIFE_INTERRUPTED, "the in-flight one is INTERRUPTED");
 
     /* 而且三个必须**互不相同** —— 否则"存下来"没有意义。 */
     CHECK(r_llm && r_tool && r_input && r_llm->step != r_tool->step && r_tool->step != r_input->step,

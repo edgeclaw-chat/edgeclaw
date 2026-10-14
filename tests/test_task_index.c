@@ -100,7 +100,7 @@ int main(void)
     edc_actor_t *channel_actor = edc_channel_actor_new();
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
 
-    struct edc_task *bt = edc_scheduler_create_task(sched, sb, "b-task", edc_channel_adapter);
+    struct edc_task *bt = edc_scheduler_task_new(sched, sb, "b-task", edc_channel_adapter);
     edc_scheduler_create_group(sched, sb, bt);
     /* 新模型: task 创建时就带着它的 input —— 没装 turn 的任务落盘时会被丢掉
      * (docs/retire-waiting-input.md §4)。装上 input 再停到 SUSPENDED

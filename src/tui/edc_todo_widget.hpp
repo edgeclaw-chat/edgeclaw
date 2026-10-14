@@ -8,16 +8,11 @@
 
 namespace edc
 {
-// Right-sidebar section under the task tree: the todo list of the current foreground task.
-// The list is part of the task state (todowrite attaches the items to the calling task, the
-// snapshot JSON carries them), so there is no side channel from the tool's chat message.
-//
-// Its "▾/▸ Todos" header toggles the items and always stays visible with the progress
-// summary. It starts collapsed and auto-expands on the first non-empty list. Item text is
-// word-wrapped, each item carries a priority tag, cancelled items are struck through.
-// The single highlight of the list is the in_progress row -- a static colour, never a
-// pulse -- and it takes the failure colour when the task that owns the list failed
-// (see SetOwnerState).
+// Right-sidebar section under the task tree: the current foreground task's todo
+// list (part of the task state, carried by the snapshot JSON -- no side channel).
+// Header "▾/▸ Todos" toggles the items; starts collapsed and auto-expands on the
+// first non-empty list. The in_progress row is a static highlight that takes the
+// failure colour when the owning task failed (see SetOwnerState).
 class TodoWidget : public ::ftxui::ComponentBase
 {
   public:
@@ -30,34 +25,20 @@ class TodoWidget : public ::ftxui::ComponentBase
 
     TodoWidget();
 
-    // Replace the whole displayed list. |task_id| names the task the items belong
-    // to and is shown as "#<id>" in the header while the list has items; pass ""
-    // when the list belongs to no known task. No items clears the rows and
-    // resets the summary to 0/0, but the header stays visible.
+    // Replace the whole displayed list. |task_id| names the owning task (shown
+    // as "#<id>" while the list has items); "" when unknown. No items clears the
+    // rows and resets the summary to 0/0, but the header stays visible.
     void SetItems(const std::vector<Item> &items, const std::string &task_id);
 
-    // The owning task's scheduler state ("" when unattached or unknown). The
-    // widget holds items, not task state, so the window supplies what only it
-    // knows -- from the same snapshot the items come from, so the two cannot
-    // disagree about whose list this is. It decides the in_progress row's one
-    // colour (and nothing else), read through the same task-state table the task
-    // tree paints its markers with (style::TaskState*):
-    //   ERROR -> the failure colour, exactly like the task's own marker above -- a
-    //            failed run must not leave the step it died on looking merely
-    //            "current";
-    //   anything else -> the section's plain accent.
-    // Deliberately *not* animated: no clock is taken and none is read. Motion has
-    // to be evidence the data can back (see the note in edc_style.hpp); this widget
-    // renders as a pure function of items + owner state.
+    // The owning task's scheduler state ("" when unattached or unknown). Decides
+    // the in_progress row's colour via the same task-state table the tree uses:
+    // ERROR -> the failure colour; anything else -> the section's plain accent.
+    // Deliberately not animated: render is a pure function of items + this state.
     void SetOwnerState(const std::string &task_state);
 
-    // The section in two halves, the way the task tree is split (see
-    // TUIWindow): the header row owns the title, the task it names and the
-    // progress counter, and the body owns the items. The window pins the header
-    // above a ScrollView so a short sidebar can squeeze the list without taking
-    // the section's heading (or the rule under it) away with it. Render() is the
-    // two halves stacked and inset -- what a caller that wants the whole block
-    // uses.
+    // The section in two halves, like the task tree: the header (title, task id,
+    // progress counter) and the body (items). The window pins the header above a
+    // ScrollView; Render() stacks both halves and insets them.
     ::ftxui::Element RenderHeader();
     ::ftxui::Element RenderBody();
     ::ftxui::Element OnRender() override;
@@ -68,26 +49,21 @@ class TodoWidget : public ::ftxui::ComponentBase
     }
 
   private:
-    // Width a section row may use: the content box measured on the previous frame
-    // (reflect() inside the section's own inset), or the default sidebar width
-    // before the first measurement. Shared by the two halves so their rows line
-    // up on one grid.
+    // Width a section row may use (previous frame's content box, or the default
+    // sidebar width before the first measurement). Shared by both halves.
     int RowWidth() const;
 
     std::vector<Item> items_;
     int completed_ = 0;
-    // The task whose list this is, shown as "#<id>" so the reader can tell at a
-    // glance; empty when unattached.
+    // The task whose list this is, shown as "#<id>"; empty when unattached.
     std::string task_id_;
 
-    // Collapse state, preserved across SetItems() so a manual fold survives
-    // background refreshes; SetItems() auto-expands only on empty -> non-empty.
+    // Preserved across SetItems() so a manual fold survives background refreshes;
+    // SetItems() auto-expands only on empty -> non-empty.
     bool collapsed_ = true;
 
-    // The owning task's state, as last set by the window (see SetOwnerState);
-    // only the in_progress row's colour reads it. The widget deliberately holds
-    // no clock: the row is a static highlight, so its render is a pure function of
-    // the items and this string.
+    // The owning task's state, as last set by the window; only the in_progress
+    // row's colour reads it.
     std::string owner_state_;
 
     // Click target of the section header row, populated during OnRender.
@@ -97,13 +73,11 @@ class TodoWidget : public ::ftxui::ComponentBase
     // leftovers are summarized with a "+N more" line.
     static constexpr size_t kMaxVisibleRows = 10;
 
-    // Cap the wrapped lines per item, clipped with a trailing "…" so one item
-    // cannot dominate the sidebar.
+    // Cap the wrapped lines per item, clipped with a trailing "…".
     static constexpr size_t kMaxContentLines = 4;
 
     // Content box of the inner vbox, written by reflect() during the previous
-    // render pass and read to truncate contents to the real row width. All-zero
-    // means "not measured yet".
+    // render pass; all-zero means "not measured yet".
     ::ftxui::Box content_box_;
 };
 } // namespace edc

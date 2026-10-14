@@ -57,9 +57,10 @@ void ast_free(ast_node_t *node);
 ast_node_t *ast_parse(edc_shell_token_t *tokens, int count, bool is_at);
 
 /* Walk the AST and execute via the app. */
-/* |session| = 这条输入所属的 session (调用方由消息的 session 标签解析, 见
- * edc_session_store_resolve_session)。命令建出来的任务/组都落在它上面 —— P3 之后
- * scheduler 不再有"当前 session", 所以必须显式传。 */
+/* |session| = the session this input belongs to (the caller resolves it from the
+ * message's session tag, see edc_session_store_resolve_session). Tasks/groups a command
+ * creates land on it -- after P3 the scheduler has no "current session", so it must be
+ * passed explicitly. */
 void ast_execute(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to, ast_node_t *root,
                  struct edc_session *session);
 

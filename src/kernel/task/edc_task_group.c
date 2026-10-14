@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── 生命周期 ──────────────────────────────────────────────── */
+/* ── Lifetime ──────────────────────────────────────────────── */
 
 struct edc_task_group *edc_task_group_new(struct edc_task *leader)
 {
@@ -22,8 +22,8 @@ struct edc_task_group *edc_task_group_new(struct edc_task *leader)
     leader->group_next = NULL;
     group->member_count = 1;
     group->is_orphaned = false;
-    /* 用户分组是默认: 系统分组只会由 system task 的创建者显式点名 (见 task_group.h
-     * 的 edc_group_kind)。 */
+    /* User group is the default; a system group is only named explicitly by a
+     * system task's creator (see edc_group_kind in task_group.h). */
     group->kind = EDC_GROUP_KIND_USER;
     group->history = cJSON_CreateArray();
     group->memory = NULL;
@@ -57,7 +57,7 @@ void edc_task_group_free(struct edc_task_group *group)
     free(group);
 }
 
-/* ── 类别 ─────────────────────────────────────────────────── */
+/* ── Kind ──────────────────────────────────────────────────── */
 
 const char *edc_task_group_kind_name(edc_group_kind kind)
 {
@@ -85,7 +85,7 @@ bool edc_task_group_is_system(const struct edc_task_group *group)
     return group && group->kind == EDC_GROUP_KIND_SYSTEM;
 }
 
-/* ── 组历史 ───────────────────────────────────────────────── */
+/* ── Group history ─────────────────────────────────────────── */
 
 void edc_task_group_history_add_owned(struct edc_task_group *group, cJSON *msg)
 {
@@ -139,7 +139,7 @@ struct edc_task **edc_task_group_content_order(struct edc_task_group *group, siz
         }
         arr[cnt++] = t;
     }
-    /* 未完成的排在最后 (它们的内容最新), 未完成之间保持插入序。 */
+    /* Unfinished ones go last (their content is newest), keeping insertion order. */
     for (size_t i = 1; i < cnt; i++)
     {
         struct edc_task *key = arr[i];
@@ -179,10 +179,10 @@ void edc_task_group_rebuild_history(struct edc_task_group *group)
     {
         cJSON_AddItemToArray(group->history, sys0);
     }
-    /* 系统组不装主提示词: 它只装一次性的折叠调用, 而那些请求自带折叠说明
-     * (edc_llm_request), 组历史没有读者。加载期在这里现拼主提示词只会白花钱,
-     * 还留下一个误导的槽位 —— 上一版正是因为"折叠说明住在这个槽位"而在重启后
-     * 让摘要调用背上了主提示词。 */
+    /* A system group carries no system prompt: it holds only one-shot fold calls,
+     * whose requests bring their own instruction (edc_llm_request); nothing reads
+     * the group history. Building a main prompt here at load time would waste work
+     * and leave a misleading slot. */
     else if (group->session && group->session->config && group->kind != EDC_GROUP_KIND_SYSTEM)
     {
         sds prompt = edc_context_build_system_prompt(group->session->config, group->session->workdir);
@@ -193,9 +193,10 @@ void edc_task_group_rebuild_history(struct edc_task_group *group)
         edc_task_group_history_add_owned(group, sys);
     }
 
-    /* 组内容序 (与折叠选料同一个函数 —— 两者必须一致): 已完成的按 completion_seq,
-     * 没完成的排在最后 (它还没提交进历史, 内容却是最新的)。sink=GROUP_MEMORY 的成员
-     * 跳过: 它的 turn 是折叠 prompt, 混进来会把上一轮的 prompt 喂给下一轮折叠。 */
+    /* Group content order (the same function as fold selection -- they must agree):
+     * completed by completion_seq, unfinished last (not yet committed to history but
+     * the newest content). sink=GROUP_MEMORY members are skipped: their turn is a
+     * fold prompt and would feed the previous prompt into the next fold. */
     size_t n = 0;
     struct edc_task **arr = edc_task_group_content_order(group, &n);
     for (size_t i = 0; i < n; i++)
@@ -207,7 +208,7 @@ void edc_task_group_rebuild_history(struct edc_task_group *group)
     free(arr);
 }
 
-/* ── 成员管理 ──────────────────────────────────────────────── */
+/* ── Member management ─────────────────────────────────────── */
 
 void edc_task_group_add_task(struct edc_task_group *group, struct edc_task *task)
 {
@@ -264,7 +265,7 @@ struct edc_task *edc_task_group_find_task(struct edc_task_group *group, const ch
     return NULL;
 }
 
-/* ── Leader 管理 ───────────────────────────────────────────── */
+/* ── Leader management ─────────────────────────────────────── */
 
 void edc_task_group_set_leader(struct edc_task_group *group, struct edc_task *new_leader)
 {
@@ -302,14 +303,16 @@ void edc_task_group_mark_orphaned(struct edc_task_group *group)
     }
 }
 
-/* ── 信号 ──────────────────────────────────────────────────── */
+/* ── Signals ───────────────────────────────────────────────── */
 
-/* 逐成员发信号**不在这里**: 发信号要顺带给每个成员做宿主那份簿记 (索引 / 回收队列 /
- * 置脏 / 结算), 而组不认识宿主 —— 那个循环在 scheduler (`sched_signal_group_members`)。
- * 组模块只剩自己那部分收尾, 免得"宿主忘了给成员做簿记"这种漏法有第二条路可走。 */
+/* Per-member signalling is NOT here: signalling also does the host's bookkeeping per
+ * member (index / reclaim queue / mark-dirty / settle), and the group does not know
+ * the host -- that loop lives in the scheduler (sched_signal_group_members). Only the
+ * group's own part remains here, so "host forgot a member's bookkeeping" has one
+ * code path, not two. */
 
-/** 组级信号发完之后, 组**自己**要收的尾: leader 被取消 → 组标记孤儿。
- *  (这是成员名单**之外**的事, 只有组模块知道。) */
+/** The group's OWN wrap-up after a group-level signal: leader cancelled -> mark the
+ *  group orphaned. (Outside the member roster; only the group module knows it.) */
 void edc_task_group_finish_signal(struct edc_task_group *group)
 {
     if (!group)
@@ -320,7 +323,7 @@ void edc_task_group_finish_signal(struct edc_task_group *group)
     }
 }
 
-/* ── 状态查询 ──────────────────────────────────────────────── */
+/* ── State queries ─────────────────────────────────────────── */
 
 bool edc_task_group_is_foreground_capable(struct edc_task_group *group)
 {
@@ -362,9 +365,10 @@ size_t edc_task_group_unfolded_msg_count(struct edc_task_group *group)
     if (!group)
         return 0;
 
-    /* 只数**会话任务**的消息 (见 edc_task_is_foldable): sink=GROUP_MEMORY 的任务
-     * (折叠任务本身) 不参与折叠, 也不该把折叠阈值顶起来 —— 否则系统组会自己触发
-     * 一次没有意义的折叠。 */
+    /* Count only CONVERSATION tasks' messages (see edc_task_is_foldable):
+     * sink=GROUP_MEMORY tasks (the fold task itself) do not participate in folding and
+     * must not push the threshold up, or the system group would trigger a pointless
+     * fold. */
     size_t total = 0;
     struct edc_task *t;
     LL_FOREACH2(group->members, t, group_next)

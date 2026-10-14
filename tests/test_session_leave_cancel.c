@@ -246,7 +246,7 @@ static void test_leave_persists_cancelled(void)
     CHECK(rt != NULL, "cancelled task restored");
     CHECK(rt != NULL && edc_task_is_cancelled(rt), "terminal CANCELLED passes through unchanged");
     struct edc_task *rt2 = find_task(sa2, "t2");
-    CHECK(rt2 != NULL && edc_task_is_suspended(rt2), "WAITING_INPUT -> SUSPENDED on load");
+    CHECK(rt2 != NULL && edc_task_is_interrupted(rt2), "a parked, unfinished task comes back INTERRUPTED");
 
     edc_scheduler_free(sched_a);
     edc_scheduler_free(sched_a2);
@@ -308,7 +308,7 @@ static void test_cancel_persists_without_explicit_save(void)
 
 static void test_interrupted_restores_cancelled(void)
 {
-    TEST("interrupted in-flight task reloads as SUSPENDED (resume re-derives)");
+    TEST("interrupted in-flight task reloads as INTERRUPTED (resume re-derives)");
     clean_workspace();
 
     struct edc_config *cfg = make_config();
@@ -330,7 +330,7 @@ static void test_interrupted_restores_cancelled(void)
     CHECK(edc_session_load_state(sa2, sched_a2), "load_state succeeds");
 
     struct edc_task *rt = find_task(sa2, "t1");
-    CHECK(rt != NULL && edc_task_is_suspended(rt), "restored as SUSPENDED");
+    CHECK(rt != NULL && edc_task_is_interrupted(rt), "restored as INTERRUPTED");
 
     edc_scheduler_free(sched_a);
     edc_scheduler_free(sched_a2);

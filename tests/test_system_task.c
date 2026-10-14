@@ -552,7 +552,7 @@ static void test_fold_tool_call_is_failure(void)
 
 /* ══════════════════════════════════════════════════════════════ */
 
-/* ── L2 策展任务 (P4d): 与折叠同时建 + JOIN 链 + ops 落地 ───── */
+/* ── L2 策展任务 (P4d): 与折叠同时建 + JOIN 链 + 经记忆工具写入 ───── */
 
 /* 会话系统组里找 sink = SESSION_MEMORY 的任务。 */
 static struct edc_task *find_l2(struct edc_session *session)
@@ -591,7 +591,7 @@ static struct edc_task_group *make_foldable_group(struct edc_session *sess, cons
 
 static void test_session_memory_chain_and_landing(void)
 {
-    TEST("L2: 与折叠**同时**建 (成员→L2→JOIN→L1); 策展落地写条目 (completion_seq = 0)");
+    TEST("L2: 与折叠**同时**建 (成员→L2→JOIN→L1); 策展经工具写入 (完成不落地, completion_seq = 0)");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-l2", "L2");
@@ -640,25 +640,16 @@ static void test_session_memory_chain_and_landing(void)
     CHECK(material && strstr(material, "appended at the end of this message") != NULL,
           "prompt 说清了材料拼在本条消息末尾");
 
-    /* 结算 L2 ⇒ 条目落地; 成员才恢复 */
+    /* 结算 L2 ⇒ **不落地** (写入改为运行期经记忆工具发生; 完成只是收尾);
+     * 成员才恢复。写入路径由 tests/test_tools_memory.c 覆盖。 */
     uint32_t seq_before = session->next_completion_seq;
     edc_task_await_exec(l2); /* 生产里由扫描派发; 这里摆好相位, 好让完成走真推进路径 */
-    complete_with(sched, l2,
-                  "{\"ops\":[{\"op\":\"create\",\"title\":\"构建入口\",\"summary\":\"唯一入口是 bazelisk\"}]}");
-    CHECK(session->memo->entry_count == 1, "策展落地: 条目 +1");
-    CHECK(session->memo->event_count == 1 && session->memo->events[0].kind == EDC_MEMO_CREATED, "一条 CREATED 事件");
-    const struct edc_memo_entry *e = edc_session_memory_entry(session->memo, "m1");
-    CHECK(e && e->sources && strcmp(e->sources, group->group_id) == 0, "sources = 来源组 id");
+    complete_with(sched, l2, "wrote entries via the memory tools (wrap-up)");
+    CHECK(session->memo->entry_count == 0 && session->memo->event_count == 0,
+          "策展任务完成本身不落地 (写入都在运行期经记忆工具发生)");
     CHECK(l2->completion_seq == 0, "L2 不占完成序");
     CHECK(session->next_completion_seq == seq_before, "完成序计数器没动");
-    CHECK(!edc_task_has_unresolved_deps(live), "策展落地 ⇒ 成员被释放");
-
-    /* 非法 ops: 整批不落 */
-    struct edc_task *l2b = edc_scheduler_spawn_system_task_as(sched, session, "curate again", EDC_SINK_SESSION_MEMORY);
-    give_input(l2b, "more material");
-    complete_with(sched, l2b, "{\"ops\":[{\"op\":\"update\",\"id\":\"m99\",\"title\":\"x\"}]}");
-    CHECK(session->memo->entry_count == 1 && session->memo->event_count == 1,
-          "引用不存在的 id ⇒ 整批拒绝 (一条都没落)");
+    CHECK(!edc_task_has_unresolved_deps(live), "策展完成 ⇒ 成员被释放");
 
     edc_session_free(session);
     edc_scheduler_free(sched);

@@ -162,7 +162,7 @@ static struct edc_init_env_result *load_existing_config(const char *conf_file)
         result->device_transport = sdsnew(EDC_CONFIG_DEFAULT_DEVICE_TRANSPORT);
 
     cJSON *channel = cJSON_GetObjectItem(json, "channel");
-    (void)channel; /* 通道固定为 adapter, 无需从旧配置读取 */
+    (void)channel; /* the channel is fixed to adapter; no need to read the old config */
 
     cJSON_Delete(json);
     return result;

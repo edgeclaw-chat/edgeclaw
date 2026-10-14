@@ -11,23 +11,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/* 唯一的通道 actor: `edc_channel_actor_bind_scheduler` 登记 (见文件末"端口"一节)。
- * 放在这里是因为 `edc_channel_actor_free` 要清它 —— 免得释放后还留着一个野指针。 */
+/* The only channel actor: registered by edc_channel_actor_bind_scheduler (see the
+ * "ports" section at the end of the file). Kept here because edc_channel_actor_free
+ * must clear it -- so no dangling pointer is left after release. */
 static edc_actor_t *g_channel = NULL;
 
-/* ── 边界翻译: channel 消息 → core 的入站输入 ─────────────────
+/* ── Boundary translation: channel message -> core's inbound input ──
  *
- * `struct edc_sched_input` 是 core 的词表 (edc_scheduler.h); 本文件是"两个词表都
- * 认识"的地方 —— 于是 core 不必知道 channel 消息的形状, 也不用 include 本头文件。
- * 输入**接管消息所有权**: 释放输入时顺带释放消息 (`origin` 只是透传, 但它的
- * 生命周期由这里管 —— 否则要么泄漏, 要么调度器得认识它的类型)。 */
+ * struct edc_sched_input is core's vocabulary (edc_scheduler.h); this file knows BOTH
+ * vocabularies -- so core need not know the channel message's shape nor include this
+ * header. The input TAKES OWNERSHIP of the message: releasing the input releases the
+ * message too (origin is only passed through, but its lifetime is managed here -- else
+ * it would leak, or the scheduler would have to know its type). */
 struct edc_sched_input *edc_channel_input_new(struct edc_channel_message *msg)
 {
     if (!msg)
         return NULL;
     struct edc_sched_input *input = calloc(1, sizeof(*input));
     if (!input)
-    { /* OOM: 这条输入丢弃 (scheduler 对 NULL 负载直接返回), 不泄漏消息 */
+    { /* OOM: drop this input (the scheduler returns on a NULL payload); do not leak the message */
         edc_channel_message_free(msg);
         return NULL;
     }
@@ -48,9 +50,9 @@ void edc_channel_input_free(struct edc_sched_input *input)
         edc_channel_message_free(msg);
 }
 
-/* 只有一个通道 (adapter): 出站消息 (CHANNEL_SEND) 直接交给那个回调。
- * 以前这里按 `msg->sub_type` (= channel 类型) 在 handlers 哈希里找实现 ——
- * 那是多通道的机制, 随通道实现一起删了。 */
+/* Only one channel (adapter): an outbound message (CHANNEL_SEND) goes straight to that
+ * callback. This used to look up the implementation in a handler hash by msg->sub_type
+ * (= channel type) -- the multi-channel mechanism, deleted with the extra channels. */
 static void edc_channel_actor_handle(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
     edc_channel_actor_state_t *state = actor->state;
@@ -111,7 +113,7 @@ void edc_channel_actor_free(edc_actor_t *actor)
 {
     edc_channel_actor_state_t *state = (edc_channel_actor_state_t *)actor->state;
 
-    if (g_channel == actor) /* 端口实现者的登记位: 别留野指针 */
+    if (g_channel == actor) /* the port provider's registration slot: leave no dangling pointer */
         g_channel = NULL;
     free(state);
     edc_actor_free(actor);
@@ -123,14 +125,15 @@ void edc_channel_actor_set_observer(edc_actor_t *actor, edc_actor_t *observer)
     state->observer = observer;
 }
 
-/* ── 出站: 消息 → 通道 (前端) ─────────────────────────────────
+/* ── Outbound: message -> channel (frontend) ─────────────────
  *
- * 建一条 channel 消息、发 `BC_ACTOR_MSG_CHANNEL_SEND` 给本 actor —— 这是**通道
- * 自己的**词汇 (消息形状 + 发送路径都归这里)。以前它住在 edc_app.c, 只因为
- * 那里恰好握有 channel_actor; 现在任何持有通道句柄的模块都能投递。 */
+ * Build a channel message and send BC_ACTOR_MSG_CHANNEL_SEND to this actor -- the
+ * CHANNEL's own vocabulary (message shape + send path both belong here). It used to
+ * live in edc_app.c only because that happened to hold the channel_actor; now any module
+ * holding the channel handle can deliver. */
 
-/* 唯一的发送出口: publish 与两个 send_task_* 都从这里出去, 所以
- * `BC_ACTOR_MSG_CHANNEL_SEND` 全文件只出现一次。 */
+/* The single send exit: publish and the two send_task_* all go through here, so
+ * BC_ACTOR_MSG_CHANNEL_SEND appears exactly once in the file. */
 static void edc_channel_send_msg(struct edc_reply_to to, struct edc_channel_message *msg, void *request_id)
 {
     edc_actor_send(to.channel_actor,
@@ -153,12 +156,13 @@ void edc_channel_publish(struct edc_reply_to to, const char *session_id, sds con
     edc_channel_send_msg(to, msg, NULL);
 }
 
-/* ── 一条 task 产出 → 通道消息 ───────────────────────────────
+/* ── One task output -> channel message ──────────────────────
  *
- * 属主 session: 被切到后台的 session 的产出照发, 由前端按 session_id 静默写进
- * 它自己的显示流。P3 ③: **"显示中的 session 只显示 active task" 这条展示规则
- * 移到了前端** —— core 只把事实声明出去 (from_active_task), 不再问"谁在看"
- * (它已经不知道了: 那份"当前 session"的副本已删)。 */
+ * Owning session: a backgrounded session's output is still sent; the frontend silently
+ * writes it into its own display stream by session_id. The display rule "the displayed
+ * session shows only the active task" moved TO THE FRONTEND -- core only declares the
+ * fact (from_active_task) and no longer asks "who is watching" (it no longer knows: the
+ * "current session" copy is gone). */
 void edc_channel_send_task_reply(struct edc_reply_to to, struct edc_task *task, const char *content, void *request_id)
 {
     if (!to.channel_actor || !task || !content)
@@ -179,19 +183,19 @@ void edc_channel_send_task_reply(struct edc_reply_to to, struct edc_task *task, 
     /* And with its owning session, so a background session's output lands in
      * that session's transcript rather than the one on screen. */
     reply->session_id = sdsnew(own->session_id);
-    /* 事实声明: 这是它 session 的 active task 吗 (前端据此做展示闸门)。 */
+    /* Declare the fact: is this its session's active task (the frontend's display gate)? */
     reply->from_active_task = edc_session_get_active_task(own) == task;
-    /* 发送方显式声明渲染偏好，渲染端(CLI/TUI)不再猜测：
-     * 只有 LLM 回复 (RESP) 声明按 Markdown 渲染；思考/系统等内部文本保持
-     * 默认 PLAIN（零值），原样显示。 */
+    /* The sender explicitly declares the render preference; the renderer (CLI/TUI) no
+     * longer guesses: only an LLM reply (RESP) declares Markdown; thoughts/system and
+     * other internal text keep the default PLAIN (0) and show as-is. */
     if (to.type == EDC_CHANNEL_MESSAGE_RESP_TYPE)
         reply->render_pref = EDC_RENDER_MARKDOWN;
 
     edc_channel_send_msg(to, reply, request_id);
 }
 
-/* 带 header 的 TOOL 消息。展示闸门 (只显示显示中的 session 的 active task) 在前端
- * —— 这里只声明事实 (from_active_task)。 */
+/* A TOOL message with a header. The display gate (show only the displayed session's
+ * active task) is in the frontend -- this only declares the fact (from_active_task). */
 void edc_channel_send_task_tool_message(struct edc_reply_to to, struct edc_task *task, const char *header,
                                         const char *content, edc_render_pref_t render_pref, void *request_id)
 {
@@ -217,9 +221,10 @@ void edc_channel_send_task_tool_message(struct edc_reply_to to, struct edc_task 
     edc_channel_send_msg(to, reply, request_id);
 }
 
-/* 与 scheduler 的 EDGECLAW_SNAPSHOT_TRACE 同一份 trace (同一条通路的另一半: 切台
- * 事件不走 scheduler 的脏表, 而是由这里直发) —— 证据工具要能看到它, 否则"前端怎么
- * 知道换台了"在 trace 里是断的。 */
+/* The same trace as the scheduler's EDGECLAW_SNAPSHOT_TRACE (the other half of the same
+ * path: a tab-switch event does not go through the scheduler's dirty list but is sent
+ * directly from here) -- evidence tooling must see it, or "how did the frontend learn
+ * about the switch" is broken in the trace. */
 static void edc_channel_trace_active_session(const char *session_id)
 {
     const char *path = getenv("EDGECLAW_SNAPSHOT_TRACE");
@@ -232,31 +237,35 @@ static void edc_channel_trace_active_session(const char *session_id)
     fclose(f);
 }
 
-/* 活跃 session 变了 (用户 `/session switch|new`): 告诉前端换显示那棵树。
+/* The active session changed (user /session switch|new): tell the frontend to display
+ * that tree.
  *
- * 这是**事实**的通报 —— "active_index 现在是 X" (规则 3 的唯一权威在 session_manager),
- * 由 userland (命令层) 在切成功之后发出。不是"内核决定谁看什么": 前端仍然自己
- * 决定要不要跟 (它只是被叫去显示用户刚点的那个 tab), 快照也仍然要它自己拉。 */
+ * This broadcasts a FACT -- "active_index is now X" (rule 3's sole authority is the
+ * session_manager) -- emitted by userland (the command layer) after a successful switch.
+ * It is not "the kernel deciding who sees what": the frontend still decides whether to
+ * follow (it is merely asked to display the tab the user just clicked), and it still
+ * pulls the snapshot itself. */
 void edc_channel_notify_active_session(struct edc_actor *channel_actor, const char *session_id)
 {
     edc_channel_trace_active_session(session_id);
-    /* 切台通报: 由通道以**自己的**名义发出 (没有入站发送者)。*/
+    /* Tab-switch notice: emitted by the channel in its OWN name (no inbound sender). */
     struct edc_reply_to to = {.channel_actor = channel_actor, .actor = channel_actor,
                               .type = EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE};
     edc_channel_publish(to, session_id, sdsnew("active"));
 }
 
-/* ── 端口: 通道是四条出站端口的提供方 ────────────────────────
+/* ── Ports: the channel provides the four outbound ports ─────
  *
- * 消息形状与投递路径已经归本文件 (见上), 于是"把端口装到 scheduler 上"也归
- * 这里: 装配根只在装配期叫一次 `edc_channel_actor_bind_scheduler`, 运行期不再
- * 出现在这条路径上。端口签名一个字没动, kernel 的调用点与测试里的假端口都不
- * 受影响。
+ * The message shape and delivery path are already in this file (above), so "install the
+ * ports onto the scheduler" is here too: the assembly root calls
+ * edc_channel_actor_bind_scheduler once at assembly time and never appears on this path
+ * again. Port signatures are unchanged; kernel call sites and test fakes are unaffected.
  *
- * 通道 actor 是**进程里唯一的一个** (1072c70 之后没有多通道了), 所以实现者
- * 在 bind 时登记自己即可 —— 不必往 kernel 的 scheduler 上挂一个"通道句柄"
- * (那会让 core 重新认识边界上的东西)。`.actor` 仍是 scheduler actor: 任务产出
- * 以调度器名义发出, 与从前装配根的 thunk 逐字一致。 */
+ * The channel actor is THE ONLY ONE in the process (no multi-channel since 1072c70), so
+ * a provider just registers itself at bind -- no need to hang a "channel handle" on the
+ * kernel's scheduler (which would make core know boundary things again). `.actor` is
+ * still the scheduler actor: task output is sent in the scheduler's name, verbatim as
+ * the old assembly-root thunk. */
 static struct edc_reply_to edc_channel_to(struct edc_scheduler *sched, edc_channel_message_type type)
 {
     struct edc_reply_to to = {.channel_actor = g_channel, .actor = edc_scheduler_get_actor(sched), .type = type};

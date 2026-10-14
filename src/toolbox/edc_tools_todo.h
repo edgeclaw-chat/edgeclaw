@@ -7,25 +7,25 @@
 struct edc_toolbox;
 extern void edc_tools_todo_register(struct edc_toolbox *tb);
 
-/* 渲染"- [ ]/- [x]" 清单行 (无 "<system-reminder>" 包裹与引导段)。与
- * render_reminder 共用同一行格式源——它是 todo reminder 状态段的正文。
- * *out_completed (可 NULL) 返回已完成条数。items 为 NULL/空数组 → 空 sds。
- * 调用方负责 sdsfree。 */
+/* Renders plain "- [ ]/- [x]" list rows (no <system-reminder> wrapper, no guidance). It
+ * shares the same line-format source with render_reminder -- it is the todo reminder's
+ * status body. *out_completed (may be NULL) returns the completed count. items NULL/empty
+ * -> empty sds. Caller sdsfree. */
 
-/* 完整 todo reminder 文本 (两段式骨架 + <system-reminder> 包裹)——todowrite
- * 工具 result/回显 与 LLM 请求队尾 reminder (edc_context_make_todo_reminder
- * 的 content) 的【单一渲染源】, 两者逐字节一致:
+/* The full todo reminder text (two-part skeleton + <system-reminder> wrapper) -- the
+ * SINGLE render source for the todowrite tool's result/echo and the LLM request-tail
+ * reminder (edc_context_make_todo_reminder's content), byte-identical:
  *   <system-reminder>
  *   ## 🚨 CURRENT TASK SYSTEM STATE
- *   {清单行 | No todo list exists for this task yet.}
+ *   {list rows | No todo list exists for this task yet.}
  *
  *   ## 🛠️ INSTRUCTIONS FOR THIS TURN
- *   {逐轮同步节拍 | 建计划引导}
+ *   {per-turn cadence | planning guide}
  *   </system-reminder>
- * items 非空 → 状态段 = 清单行 + 逐轮同步节拍; items 为 NULL/空数组 →
- * "尚无清单" + 建计划引导 (两分支互斥出现)。
- * 返回 sds，调用方负责 sdsfree。 */
-/* 两个渲染函数 (render_body / render_reminder) 已迁到 edc_context.h: 它们
- * 渲染的是 task 的 todos, 属于上下文材料。 */
+ * items non-empty -> status = list rows + cadence; items NULL/empty -> "no list yet" +
+ * planning guide (the two branches are exclusive).
+ * Returns sds, caller sdsfree. */
+/* The two render functions (render_body / render_reminder) moved to edc_context.h: they
+ * render the task's todos, which is context material. */
 
 #endif

@@ -470,11 +470,13 @@ void test_task_state_table(void)
 
         // The mapping the task tree draws with. COMPLETED ok, ERROR error,
         // processing accent, SUSPENDED suspended, CANCELLED neutral dim, and the
-        // three waiting/idle states share warn (a known trade-off).
+        // three waiting/idle states share warn (a known trade-off). INTERRUPTED takes
+        // the error colour too; the marker's shape is what tells it from ERROR.
         CHECK(edc::style::TaskStateColor(pal, "COMPLETED") == pal.ok, "COMPLETED -> ok");
         CHECK(edc::style::TaskStateColor(pal, "ERROR") == pal.error, "ERROR -> error");
         CHECK(edc::style::TaskStateColor(pal, "LLM_PROCESSING") == pal.accent, "processing -> accent");
         CHECK(edc::style::TaskStateColor(pal, "TOOL_CALLING") == pal.accent, "tool calls -> accent too");
+        CHECK(edc::style::TaskStateColor(pal, "INTERRUPTED") == pal.error, "INTERRUPTED -> error (red)");
         CHECK(edc::style::TaskStateColor(pal, "SUSPENDED") == pal.suspended, "SUSPENDED -> suspended");
         CHECK(edc::style::TaskStateColor(pal, "CANCELLED") == pal.text_dim, "CANCELLED -> neutral dim");
         CHECK(edc::style::TaskStateColor(pal, "IDLE") == pal.warn, "IDLE -> warn");

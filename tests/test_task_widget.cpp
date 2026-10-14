@@ -39,10 +39,11 @@ constexpr int kW = 40;
 constexpr int kH = 20;
 constexpr const char *kDot = "●";
 constexpr const char *kBlock = edc::style::kBlockGlyph; // the working bar's own block
+constexpr const char *kHollow = "□";                     // INTERRUPTED's marker
 
 bool IsMarker(const std::string &s)
 {
-    return s == kDot || s == kBlock;
+    return s == kDot || s == kBlock || s == kHollow;
 }
 
 struct TaskSpec
@@ -166,9 +167,9 @@ void TestMarkerPerStateInItsColor(void)
     // Processing states are excluded here: they breathe, so their color is not
     // a fixed value (see TestProcessingMarkerBreathes).
     const std::vector<TaskSpec> specs = {
-        {"1", "IDLE", "idle task"},        {"3", "COMPLETED", "done task"},
-        {"4", "ERROR", "failed task"},     {"5", "SUSPENDED", "paused task"},
-        {"6", "CANCELLED", "dropped task"},
+        {"1", "IDLE", "idle task"},         {"3", "COMPLETED", "done task"},
+        {"4", "ERROR", "failed task"},      {"5", "SUSPENDED", "paused task"},
+        {"6", "CANCELLED", "dropped task"}, {"7", "INTERRUPTED", "interrupted task"},
     };
     auto widget = MakeWidget(specs);
     const auto screen = Render(*widget);
@@ -179,8 +180,9 @@ void TestMarkerPerStateInItsColor(void)
         pal.warn,       // IDLE (and the active task)
         pal.ok,         // COMPLETED
         pal.error,      // ERROR
-        pal.suspended,  // SUSPENDED
-        pal.text_dim,   // CANCELLED
+        pal.suspended, // SUSPENDED
+        pal.text_dim,  // CANCELLED
+        pal.error,     // INTERRUPTED (red like ERROR; the shape tells them apart)
     };
 
     Check(markers.size() == specs.size(), "one marker per task (and nothing else draws one)");
@@ -188,6 +190,35 @@ void TestMarkerPerStateInItsColor(void)
     {
         const auto &cell = screen.CellAt(markers[i].first, markers[i].second);
         Check(cell.foreground_color == expected[i], std::string("marker for ") + specs[i].state + " wears its state color");
+    }
+}
+
+void TestInterruptedWearsTheHollowSquare(void)
+{
+    std::cout << "an INTERRUPTED task wears the hollow square, in the error colour\n";
+
+    // The interrupted row is deliberately NOT the active one: the hollow square follows
+    // the state, the block follows the flag, and the two must not be confused.
+    const std::vector<TaskSpec> specs = {
+        {"1", "IDLE", "idle"}, {"2", "INTERRUPTED", "interrupted"}, {"3", "ERROR", "failed"},
+    };
+    auto widget = MakeWidget(specs, 0);
+    const auto screen = Render(*widget);
+    const auto markers = MarkerCells(screen);
+
+    Check(markers.size() == 3, "every row still draws a marker");
+    if (markers.size() == 3)
+    {
+        Check(screen.CellAt(markers[1].first, markers[1].second).character == kHollow,
+              "INTERRUPTED wears the hollow square (not the active block, not the dot)");
+        Check(screen.CellAt(markers[2].first, markers[2].second).character == kDot,
+              "ERROR keeps the dot -- that is what tells the two apart");
+        Check(screen.CellAt(markers[1].first, markers[1].second).foreground_color ==
+                  screen.CellAt(markers[2].first, markers[2].second).foreground_color,
+              "same colour, different shape");
+        // All three glyphs must be one terminal cell wide, or the id column shifts.
+        Check(markers[0].first == markers[1].first && markers[1].first == markers[2].first,
+              "block, hollow square and dot share one column");
     }
 }
 
@@ -566,6 +597,7 @@ int main()
 {
     TestMarkerPerStateInItsColor();
     TestActiveTaskWearsTheBlock();
+    TestInterruptedWearsTheHollowSquare();
     TestLeaderMarkerIsGone();
     TestProcessingMarkerBreathes();
     TestStaticStatesIgnoreBreath();

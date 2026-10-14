@@ -30,8 +30,9 @@
  */
 int edc_state_json_version(cJSON *json);
 
-/* 当前磁盘 schema 版本（唯一真值 = EDC_STATE_SCHEMA_VERSION）：加载严格只收这一版，
- * 旧数据先跑一次性迁移。测试/工具用它，别各自硬编码。 */
+/* Current on-disk schema version (single source of truth =
+ * EDC_STATE_SCHEMA_VERSION): loading accepts only this version, older data runs a
+ * one-shot migration first. Tests/tools should use this, not hard-code it. */
 extern int edc_state_schema_version(void);
 
 /**

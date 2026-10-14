@@ -18,6 +18,7 @@ struct edc_param_object_property
 {
     sds name;
     struct edc_param_type *type;
+    bool required; /* absent + required => validation fails; absent + optional is allowed */
 };
 
 struct edc_param_type

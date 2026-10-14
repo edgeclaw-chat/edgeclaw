@@ -54,7 +54,11 @@ cc_library(
             "@log.c//:log.c",
             "@sds//:sds",
             "@uthash//:uthash",
-        ],
+        ] + select({
+            # Windows has no system <regex.h>; use PCRE2's POSIX wrapper instead.
+            "//:windows": ["@pcre2//:pcre2-posix"],
+            "//conditions:default": [],
+        }),
     linkstatic = True,
     visibility = ["//visibility:public"],
 )

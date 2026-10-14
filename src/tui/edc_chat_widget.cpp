@@ -81,6 +81,11 @@ bool ChatWidget::Scroll(int delta)
     return scroll_view_->Scroll(delta);
 }
 
+bool ChatWidget::NeedsRemeasure() const
+{
+    return list_ && list_->HasPendingWork();
+}
+
 bool ChatWidget::ScrollToTop()
 {
     return scroll_view_->ScrollToTop();

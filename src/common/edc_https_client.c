@@ -76,7 +76,7 @@ struct edc_https_request
 {
     uv_tcp_t socket;
     uv_connect_t conn;
-    uv_timer_t timer; /* 在途兜底期限：对端连上却不回时必须是它来出口 */
+    uv_timer_t timer; /* in-flight fallback deadline: the exit when the peer connects but never replies */
     mbedtls_ssl_context ssl;
     struct edc_https_buf_list *mbedtls_recv_bufs;
     struct edc_https_buf_list *mbedtls_send_bufs;
@@ -105,10 +105,11 @@ struct edc_https_request
 
     void *priv;
 
-    /* 这个请求还欠 libuv 几笔 close 回调 (socket + timer 各一笔, 建时置 2)。两个
-     * 句柄都嵌在本结构里, 而 libuv 直到 close 回调跑完 (uv__finish_close 最后那句
-     * uv__queue_remove(&handle->handle_queue)) 都还会读写这块内存 —— 所以 free()
-     * 只能等两笔都到齐, 见 edc_https_request_release。 */
+    /* This request still owes libuv some close callbacks (one for socket + one for timer,
+     * set to 2 at creation). Both handles are embedded in this struct, and libuv keeps
+     * reading/writing this memory until the close callbacks have run (uv__finish_close's
+     * final uv__queue_remove(&handle->handle_queue)) -- so free() must wait for both, see
+     * edc_https_request_release. */
     int pending_closes;
 };
 
@@ -183,15 +184,19 @@ static int edc_https_on_message_complete(llhttp_t *http)
     return 0;
 }
 
-/* 在途请求的兜底期限。见 docs/runtime-model.md §2.9: task 的每一步都必须有一个
- * 由内核保证的出口 —— 对端连上却不回，今天会**永远等下去**（HTTPS 侧此前连一
- * 个定时器都没有，是全仓库唯一没有出口的在途操作）。
+/* The in-flight request's fallback deadline. Every step
+ * of a task must have a kernel-guaranteed exit -- when the peer connects but never
+ * replies, today it would wait FOREVER (the HTTPS side had no timer at all, the only
+ * in-flight operation in the repo with no exit).
  *
- * 这是**总时限**而不是空闲时限：响应是非流式的（edc_llm_actor.c 收完整 JSON 才
- * 算完），生成期间没有数据流动可供保活。所以默认取得很松（2 分钟）—— 宁可不
- * 误杀；要更严用 `EDGECLAW_HTTPS_TIMEOUT_MS` 覆盖（也对测试友好：夹具能在几
- * 秒内跑到期限，不必真等两分钟）。 */
-#define EDC_HTTPS_DEFAULT_TIMEOUT_MS 120000
+ * This is a TOTAL deadline, not an idle one: the response is non-streaming
+ * (edc_llm_actor.c only finishes on the complete JSON), so no data flows during
+ * generation to keep it alive. The default is therefore very loose -- better not to
+ * kill a live call; use EDGECLAW_HTTPS_TIMEOUT_MS to tighten it (also test-friendly: a
+ * fixture can hit the deadline in seconds without waiting). Raised 120s -> 300s: a
+ * fold/curation input can be a few hundred KB, and a 1M-window model may need more than
+ * two minutes to finish a long summary on a non-streaming call. */
+#define EDC_HTTPS_DEFAULT_TIMEOUT_MS 300000
 
 static int edc_https_timeout_ms(void)
 {
@@ -244,34 +249,39 @@ static struct edc_https_request *edc_https_request_new(struct edc_https_client *
         return NULL;
     }
 
-    /* ssl 上下文在这里就初始化, 与收尾时的 mbedtls_ssl_free 对称: 失败在握手之前
-     * 的请求 (连接失败、超时、退出时被关) 走的是同一条 free 路径, 一样要能安全释放
-     * 它 —— 以前 init 只在握手路径上做, 那条路径到不了就 free 了未初始化的上下文。 */
+    /* The ssl context is initialized here, symmetric with mbedtls_ssl_free at teardown: a
+     * request failing before the handshake (connect failure, timeout, closed at exit)
+     * takes the same free path and must release it safely -- init used to happen only on
+     * the handshake path, so reaching teardown another way freed an uninitialized
+     * context. */
     mbedtls_ssl_init(&req->ssl);
 
     uv_tcp_init(&client->loop, &req->socket);
 
-    /* 一创建就起表：连不上、握不上手、发出去了没人回 —— 三种挂起都由它兜底。
-     * 一次性（repeat=0）：完成路径会把它关掉，到期路径自己回**和失败完全相同**
-     * 的那条路。 */
+    /* The timer starts at creation: connect failure, handshake failure, sent but no
+     * reply -- all three hangs are covered. One-shot (repeat=0): the completion path
+     * stops it, the expiry path takes the exact SAME route as a failure. */
     uv_timer_init(&client->loop, &req->timer);
     req->timer.data = req;
     uv_timer_start(&req->timer, edc_https_on_timeout, edc_https_timeout_ms(), 0);
 
-    /* socket + timer 两笔 close 回调的账 (见 struct 里的说明)。 */
+    /* The socket + timer close-callback ledger (see the struct's note). */
     req->pending_closes = 2;
     return req;
 }
 
-/* ── 请求的收尾: socket 与 timer 各欠一笔 close 回调 ────────────
- * 两个句柄都嵌在 struct edc_https_request 里, 而 libuv 直到 close 回调跑完
- * (uv__finish_close 最后那句 uv__queue_remove(&handle->handle_queue)) 都还会读写
- * 这块内存。所以 free(req) 必须等**两笔都到齐** —— 谁先 close 完都无所谓。
+/* ── Request teardown: socket and timer each owe a close callback ──
+ * Both handles are embedded in struct edc_https_request, and libuv keeps reading/writing
+ * this memory until the close callbacks have run (uv__finish_close's final
+ * uv__queue_remove(&handle->handle_queue)). So free(req) must wait for BOTH -- whichever
+ * closes last does not matter.
  *
- * 提前 free 的后果 (2026-09-17 真机实测): libuv 拿回收后的内存当句柄摘链, 把垃圾
- * 节点拼进 loop->handle_queue; 运行期看不出来 (uv_run 不遍历那条链), 但退出时
- * edc_https_client_free() 的 uv_walk() 再也走不完 —— TUI 表现为 Ctrl+C 退出卡死、
- * 单核 100% 用户态空转、SIGINT/SIGTERM 被 main.cpp 的空处理器吞掉。 */
+ * The consequence of freeing early (measured on a real device): libuv treats the
+ * reclaimed memory as a handle while unlinking and splices garbage into
+ * loop->handle_queue; invisible at runtime (uv_run does not walk that chain), but at exit
+ * edc_https_client_free()'s uv_walk() never finishes -- in the TUI that looks like
+ * Ctrl+C hanging, 100% single-core userspace spin, and SIGINT/SIGTERM swallowed by
+ * main.cpp's empty handler. */
 
 static void edc_https_request_dispose(struct edc_https_request *req)
 {
@@ -300,7 +310,7 @@ static void edc_https_request_dispose(struct edc_https_request *req)
     free(req);
 }
 
-/* 一笔 close 到账。谁最后到, 谁负责真正释放。 */
+/* One close callback arrived. Whoever is last does the actual free. */
 static void edc_https_request_release(struct edc_https_request *req)
 {
     if (--req->pending_closes > 0)
@@ -313,8 +323,9 @@ static void edc_https_on_timer_close(uv_handle_t *handle)
     edc_https_request_release(EDC_CONTAINER_OF(handle, struct edc_https_request, timer));
 }
 
-/* 撤掉期限: 停表 + close (回调归 edc_https_on_timer_close)。到期路径已经 close
- * 过它, uv_is_closing 挡住二次 close —— 那一笔账算在那次 close 上。 */
+/* Cancel the deadline: stop the timer + close (callback goes to edc_https_on_timer_close).
+ * The expiry path may already have closed it; uv_is_closing blocks a double close -- that
+ * callback counted on the earlier close. */
 static void edc_https_request_close_timer(struct edc_https_request *req)
 {
     uv_timer_stop(&req->timer);
@@ -421,13 +432,14 @@ static void edc_https_on_tcp_close(uv_handle_t *handle)
 {
     struct edc_https_request *req = (struct edc_https_request *)handle;
     req->fn(req, EDC_HTTPS_EVENT_CLOSE, NULL);
-    /* socket 这侧到账了; 期限那侧的 close 回调随后到 —— 两笔齐了才 free。 */
+    /* The socket side has arrived; the deadline side's close callback follows -- free only when both are in. */
     edc_https_request_close_timer(req);
     edc_https_request_release(req);
 }
 
-/* 期限到了。**故意复用失败那条路**（ERROR 然后 CLOSE），于是上层不需要为超时
- * 新增任何分支，收尾顺序（先 error、再 close、free 时撤期限）也与其它失败一致。 */
+/* The deadline expired. DELIBERATELY reuses the failure route (ERROR then CLOSE), so the
+ * upper layer needs no new branch for a timeout and the teardown order (error, then
+ * close, then cancel the deadline at free) matches other failures. */
 static void edc_https_on_timeout(uv_timer_t *timer)
 {
     struct edc_https_request *req = (struct edc_https_request *)timer->data;
@@ -690,8 +702,9 @@ static void edc_https_client_on_tcp_connect(uv_connect_t *conn, int status)
 
     struct edc_https_client *client = req->client;
 
-    /* ssl 上下文已在 edc_https_request_new 初始化 (与收尾的 mbedtls_ssl_free 对称),
-     * 这里只 setup —— 握手前就失败的请求也必须有可安全释放的上下文。 */
+    /* The ssl context was initialized in edc_https_request_new (symmetric with
+     * mbedtls_ssl_free at teardown); this only does setup -- a request failing before the
+     * handshake must still have a safely releasable context. */
     if (mbedtls_ssl_setup(&req->ssl, &client->ssl_conf) != 0)
     {
         sds err_message = sdscatprintf(sdsnew(NULL), "mbedtls ssl_setup failed");
@@ -855,7 +868,7 @@ struct edc_https_client *edc_https_client_new(const char *cacert_path)
 
 static void edc_https_request_cleanup_close(uv_handle_t *handle)
 {
-    /* 退出时的兜底关法 (不发 CLOSE 事件): 同样走"两笔 close 账"。 */
+    /* Shutdown fallback close (no CLOSE event): also goes through the "two close callbacks" ledger. */
     struct edc_https_request *req = (struct edc_https_request *)handle;
     edc_https_request_close_timer(req);
     edc_https_request_release(req);
@@ -864,9 +877,9 @@ static void edc_https_request_cleanup_close(uv_handle_t *handle)
 static void edc_https_client_close_walk(uv_handle_t *handle, void *arg)
 {
     (void)arg;
-    /* 请求的两个句柄都由请求自己的账本收尾 (它们的 close 回调要等另一笔到齐才
-     * free, 见 edc_https_request_release)。退出时正有请求在途也会走到这里 ——
-     * 所以 timer 那支必须带回调, 不能给 NULL。 */
+    /* Both of a request's handles are torn down by its own ledger (their close callbacks
+     * wait for the other before free, see edc_https_request_release). At exit an in-flight
+     * request also reaches here -- so the timer side must be given a callback, never NULL. */
     if (handle->type == UV_TCP)
         uv_close(handle, edc_https_request_cleanup_close);
     else if (handle->type == UV_TIMER)

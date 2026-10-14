@@ -14,6 +14,7 @@
 #include "log.h"
 #include "sds.h"
 #include "uthash.h"
+#include <string.h>
 
 static void edc_toolbox_emit_tool_message_internal(struct edc_toolbox_call_ctx *ctx, const char *header,
                                                    const char *content, edc_render_pref_t render_pref)
@@ -25,10 +26,13 @@ static void edc_toolbox_emit_tool_message_internal(struct edc_toolbox_call_ctx *
     if (!tb->scheduler)
         return;
 
-    /* 交 scheduler 中转, 不是因为"上屏要它批准" (展示闸门早在前端), 而是因为
-     * **只有它知道这条请求还在不在**: 异步工具回调可能迟到到任务已被回收, 而调用方
-     * 手里的是 task 指针 —— 直发通道等于拿一个可能失效的指针。它按 request_id 查一次,
-     * 顺手做属主判定与 todowrite 的脏表补推; 显示与消息形状仍归通道。 */
+    /* Routed through the scheduler, not because "on-screen needs its approval" (the
+     * display gate is in the frontend) but because ONLY IT knows whether this request is
+     * still alive: an async tool callback may arrive after the task was reclaimed, while
+     * the caller holds a task pointer -- sending straight to the channel would use a
+     * possibly-dangling pointer. It looks up by request_id and also does the owner check
+     * and the todowrite dirty-list push; display and message shape still belong to the
+     * channel. */
     struct edc_toolbox_emit_msg *emit = g_new0(struct edc_toolbox_emit_msg, 1);
     emit->header = (header && *header) ? sdsnew(header) : NULL;
     emit->content = sdsnew(content);
@@ -41,13 +45,13 @@ static void edc_toolbox_emit_tool_message_internal(struct edc_toolbox_call_ctx *
 
 void edc_toolbox_emit_tool_message_plain(struct edc_toolbox_call_ctx *ctx, const char *header, const char *content)
 {
-    /* 工具显式声明输出为纯文本（代码/命令输出/确认等），渲染端原样显示 */
+    /* The tool explicitly declares plain-text output (code/command output/confirmations); shown as-is */
     edc_toolbox_emit_tool_message_internal(ctx, header, content, EDC_RENDER_PLAIN);
 }
 
 void edc_toolbox_emit_tool_message_md(struct edc_toolbox_call_ctx *ctx, const char *header, const char *content)
 {
-    /* 工具显式声明输出按 Markdown 渲染 */
+    /* The tool explicitly declares Markdown-rendered output */
     edc_toolbox_emit_tool_message_internal(ctx, header, content, EDC_RENDER_MARKDOWN);
 }
 
@@ -87,6 +91,7 @@ struct edc_toolbox *edc_toolbox_new(struct edc_config *conf, edc_actor_t *schedu
     struct edc_toolbox *tb = g_new0(struct edc_toolbox, 1);
     tb->conf = conf;
     tb->schemas = cJSON_CreateArray();
+    tb->memory_schemas = cJSON_CreateArray();
     tb->scheduler = scheduler;
     tb->channel_actor = channel_actor;
 
@@ -109,6 +114,8 @@ void edc_toolbox_free(struct edc_toolbox *tb)
     }
     if (tb->schemas)
         cJSON_Delete(tb->schemas);
+    if (tb->memory_schemas)
+        cJSON_Delete(tb->memory_schemas);
     free(tb);
 }
 
@@ -156,6 +163,10 @@ void edc_toolbox_register(struct edc_toolbox *tb, struct edc_tool *tool)
 {
     HASH_ADD_STR(tb->tools, name, tool);
     cJSON_AddItemToArray(tb->schemas, edc_tool_to_schema(tool));
+    /* The memory_* tools are also collected separately: the curation task gets this
+     * subset (and only this) instead of the full set. */
+    if (tb->memory_schemas && strncmp(tool->name, "memory_", 7) == 0)
+        cJSON_AddItemToArray(tb->memory_schemas, edc_tool_to_schema(tool));
 }
 
 void edc_toolbox_register_defaults(struct edc_toolbox *tb)

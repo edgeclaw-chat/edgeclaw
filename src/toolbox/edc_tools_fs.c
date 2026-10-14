@@ -14,48 +14,53 @@ static UT_icd ut_size_t_icd = {sizeof(size_t), NULL, NULL, NULL};
 static UT_icd ut_int64_icd = {sizeof(int64_t), NULL, NULL, NULL};
 static UT_icd ut_uint_icd = {sizeof(unsigned int), NULL, NULL, NULL};
 
-/* ── fs I/O 的异步外壳 ────────────────────────────────────────
+/* ── The async shell around fs I/O ───────────────────────────
  *
- * 为什么需要: 文件 I/O 是阻塞的, 而工具是在 **runner 线程**上被执行的 —— 一次慢
- * I/O (大文件 / 冷缓存 / NFS) 会冻住**所有** actor, 不只是发起它的那个 task。
- * 这违反 runtime-model.md §2.9 的架构禁令「runner 线程绝不阻塞」。
+ * Why: file I/O blocks, and tools run ON THE RUNNER THREAD -- a slow I/O (large file /
+ * cold cache / NFS) would freeze ALL actors, not just the task that issued it, violating
+ * the rule "the runner thread never blocks".
  *
- * 拆法 (见 docs/fs-io-off-runner.md):
- *   runner:  沙箱判定 (读 conf 的 ro/rw/deny 三张表) -> 已校验的绝对路径
- *   池线程:  纯文件 I/O  (uv_fs_*(..., NULL) 的同步路径**不使用线程池**, 它就在
- *            调用者线程上做系统调用 —— 于是池线程上调用, I/O 就发生在池线程)
- *   runner:  after_cb -> 发工具消息 + 调 callback
+ * The split:
+ *   runner: sandbox check (reads conf's ro/rw/deny tables) -> a verified absolute path
+ *   pool:   pure file I/O (uv_fs_*(..., NULL)'s synchronous path does NOT use the thread
+ *           pool -- it makes the syscall on the caller thread -- so calling it on a pool
+ *           thread makes the I/O happen there)
+ *   runner: after_cb -> send the tool message + call callback
  *
- * 沙箱判定**必须留在 runner**: /sandbox add-* 也在 runner 线程上改那三张表, 把
- * "校验 + I/O"整段丢进池线程会新生一条数据竞争 (今天没有的)。
+ * The sandbox check MUST stay on the runner: /sandbox add-* also mutates those three
+ * tables on the runner thread, so moving "check + I/O" wholesale into the pool would
+ * create a new data race.
  *
- * 两条生命周期规矩:
- *   1. **args 不能进池**。exec 返回后工具箱就释放了 req (连同 args), 而异步工具的
- *      exec 是立刻返回的 —— 池线程读 args 就是 use-after-free。凡入池要用的都在
- *      runner 上抄进 job (§4.4)。
- *   2. **ctx 反而安全**。call_ctx 由工具箱的 inflight 登记表管, 它正是在 callback
- *      里才被 free —— 跨这一跳持有它是架构本来就支持的 (edc_toolbox_actor.c 末尾
- *      那句 `// TODO: async exec` 就是给这个留的位置, shell 已经在这么用)。
+ * Two lifetime rules:
+ *   1. args must NOT enter the pool. Once exec returns, the toolbox frees the req (and
+ *      args) while an async tool's exec returns immediately -- a pool thread reading args
+ *      is a use-after-free. Everything the pool needs is copied into the job on the
+ *      runner.
+ *   2. ctx is safe by contrast. call_ctx is managed by the toolbox's inflight registry
+ *      and is freed only in the callback -- holding it across this hop is architecture
+ *      the code already supports (the "TODO: async exec" note at the end of
+ *      edc_toolbox_actor.c was its placeholder; the shell already does this).
  *
- * 顺带 (不改行为): 池默认 4 条。4 个 fs 操作同时卡住会让后续 fs 操作排队, 但 runner
- * 活着 —— 那正是本改动的目标。不给 fs 加 deadline: 池线程无法被中断。 */
+ * Aside (no behaviour change): the pool defaults to 4. Four stuck fs ops make later ones
+ * queue, but the runner stays alive -- exactly the goal of this change. No deadline for
+ * fs: a pool thread cannot be interrupted. */
 struct fs_job
 {
     uv_work_t req;
     struct edc_toolbox_call_ctx *ctx;
     void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *);
-    sds (*io)(struct fs_job *, EdcError **); /* 池线程上执行 */
-    sds safe_path;                           /* runner 上算好; 池线程只读 */
-    sds arg_path;                            /* 原始 path, 只用于回包文案 */
-    sds header;                              /* 非 NULL 才发工具消息 (edit_file 不发, 保持原样) */
-    sds content;                             /* write_file 的正文 */
+    sds (*io)(struct fs_job *, EdcError **); /* runs on a pool thread */
+    sds safe_path;                           /* computed on the runner; read-only in the pool */
+    sds arg_path;                            /* the raw path, for the reply text only */
+    sds header;                              /* send a tool message only when non-NULL (edit_file does not, as before) */
+    sds content;                             /* write_file's body */
     sds old_text;                            /* edit_file */
     sds new_text;
     bool replace_all;
     int64_t occurrence;
     int64_t line_hint;
     int64_t expected_replacements;
-    sds result; /* 池线程填 */
+    sds result; /* filled by the pool thread */
     EdcError *error;
 };
 
@@ -89,7 +94,7 @@ static void edc_fs_after_cb(uv_work_t *req, int status)
     free(job);
 }
 
-/* runner 半段: 组装 job。tool_name 为 NULL -> 不发工具消息 (edit_file 本来就不发)。 */
+/* Runner half: build the job. tool_name NULL -> no tool message (edit_file never sends one). */
 static struct fs_job *edc_fs_job_new(struct edc_toolbox_call_ctx *ctx,
                                      void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *),
                                      sds (*io)(struct fs_job *, EdcError **), const char *tool_name,
@@ -107,7 +112,7 @@ static struct fs_job *edc_fs_job_new(struct edc_toolbox_call_ctx *ctx,
     return job;
 }
 
-/* runner 半段: 沙箱判定 -> 入池。失败则直接在 runner 上回错 (与原来同步失败同路)。 */
+/* Runner half: sandbox check -> enqueue. On failure reply on the runner directly (same path as the old synchronous failure). */
 static void edc_fs_kick_path_tool(struct edc_toolbox_call_ctx *ctx, cJSON *args, const char *tool_name, bool write,
                                   void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *),
                                   sds (*io)(struct fs_job *, EdcError **))
@@ -126,7 +131,8 @@ static void edc_fs_kick_path_tool(struct edc_toolbox_call_ctx *ctx, cJSON *args,
 }
 
 /*
- * ↓↓ 以下是四个工具的 I/O 半段: 只吃 job, **不碰 conf、不碰 args**。
+ * Below is the I/O half of the four tools: it only consumes the job, touching NEITHER
+ * conf NOR args.
  */
 
 struct edc_list_dir_ctx
@@ -208,7 +214,7 @@ static void edc_tool_exec_write_file_async(struct edc_toolbox_call_ctx *ctx, str
                                            void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     (void)tool;
-    /* content 必须在 runner 上抄一份: exec 返回后 args 就被释放 (§4.4)。 */
+    /* content must be copied on the runner: args is freed once exec returns (§4.4). */
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
     const char *content = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "content"));
     EdcError *error = NULL;
@@ -502,10 +508,10 @@ static void edc_edit_file_apply_replacements(const char *content, size_t content
     *out_content = sdscatlen(*out_content, content + prev_end, (ssize_t)(content_len - prev_end));
 }
 
-/* edit_file 的 I/O 半段。7 个参数已在 runner 上抄进 job —— 池线程不许读 args (§4.4)。 */
+/* edit_file's I/O half. All 7 arguments were copied into the job on the runner -- the pool thread must not read args (§4.4). */
 static sds edc_tool_edit_file_io(struct fs_job *job, EdcError **error)
 {
-    /* 局部名与原实现保持一致, 于是下面那整段本体一字未改。 */
+    /* Local names match the old implementation, so the whole body below is unchanged. */
     const char *path = job->arg_path;
     sds safe_path = job->safe_path;
     const char *old_text = job->old_text;
@@ -576,7 +582,7 @@ static sds edc_tool_edit_file_io(struct fs_job *job, EdcError **error)
 cleanup:
     if (content)
         sdsfree(content);
-    /* safe_path 归 job 所有, 由 after_cb 释放 —— 这里不能 free。 */
+    /* safe_path is owned by the job and freed by after_cb -- do not free it here. */
     if (positions)
         utarray_free(positions);
     if (line_nums)
@@ -589,8 +595,9 @@ cleanup:
 static void edc_tool_exec_edit_file_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
                                           void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
-    /* 7 个参数全部在 runner 上抄进 job —— 池线程不许读 args (§4.4)。
-     * 校验顺序与原实现一致 (缺参 -> 负值 -> 沙箱)。 */
+    /* All 7 arguments are copied into the job on the runner -- the pool thread must not
+     * read args (§4.4). Validation order matches the old implementation (missing arg ->
+     * negative value -> sandbox). */
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
     const char *old_text = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "old_text"));
     const char *new_text = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "new_text"));
@@ -636,7 +643,7 @@ static void edc_tool_exec_edit_file_async(struct edc_toolbox_call_ctx *ctx, stru
         return;
     }
 
-    /* tool_name = NULL: edit_file 本来就不发工具消息, 保持原样。 */
+    /* tool_name = NULL: edit_file never sends a tool message, unchanged. */
     struct fs_job *job = edc_fs_job_new(ctx, callback, edc_tool_edit_file_io, NULL, path, safe);
     job->old_text = sdsnew(old_text);
     job->new_text = sdsnew(new_text);

@@ -3,14 +3,15 @@
 
 #include <stdbool.h>
 
-/* ── session store 的读口与生命周期 ────────────────────────────
+/* ── session store readers and lifetime ────────────────────────
  *
- * 这些操作每一个都同时需要两样东西: **store 自己** (`session_manager`: session
- * 与 task 的家、active_index 的唯一权威) 和 **task 编排** (`scheduler`: task 图、
- * 信号、落盘请求)。所以它们显式收这两者 —— 而不是借某个伞对象捎带
- * (P4 形状 C: 签名即读者名册)。
+ * Every operation here needs two things: the STORE itself (`session_manager`: the
+ * home of sessions and tasks, the sole authority for active_index) and task
+ * ORCHESTRATION (`scheduler`: task graph, signals, persist requests). So they take
+ * both explicitly -- no umbrella object carries them (signature = reader roster).
  *
- * 这里**不放**发布/上屏 (那是 channel 的词汇), 也不放 CLI history (那是前端的)。 */
+ * Publishing/on-screen output (channel vocabulary) and CLI history (frontend) do
+ * NOT belong here. */
 
 struct edc_scheduler;
 struct edc_session;
@@ -46,36 +47,43 @@ extern bool edc_session_store_load_session(struct edc_session_manager *sm, struc
  *  Safe to call repeatedly; re-entrant calls are ignored (see sched->reconciling). */
 extern void edc_session_store_reconcile_pending_deps(struct edc_session_manager *sm, struct edc_scheduler *sched);
 
-/** session 标签 → session 对象 (P3 的 store 读口; 也是 shell/命令层解析"这条输入
- *  属于哪个 session"的入口)。
+/** Session label -> session object (the store reader; also the shell/command
+ *  layer's way to resolve which session an input belongs to).
  *
- *  - 标签非空: 按 id/name 在 session_manager 里找, **找不到返回 NULL** (调用方拒绝
- *    这条输入, 不许回退到活跃 session —— 那正是老实现"切错台"的来源);
- *  - 标签为空/NULL: 返回活跃 session (没有 session 概念的入站, 如 crontab)。 */
+ *  - non-empty label: look up by id/name; NOT FOUND returns NULL (the caller
+ *    rejects the input -- never fall back to the active session, which was the old
+ *    bug's source);
+ *  - empty/NULL label: return the active session (inputs with no session notion,
+ *    e.g. crontab). */
 extern struct edc_session *edc_session_store_resolve_session(struct edc_session_manager *sm, const char *session_id);
 
-/** 退出落盘: 全量 history + **每个已加载** session 的 state (含后台 session)。
- *  本 run 从未激活过的 session 会被跳过 (空壳写盘会覆盖磁盘上更新的状态)。 */
+/** Shutdown persist: full history + every LOADED session's state (background
+ *  sessions included). Sessions never activated this run are skipped (writing an
+ *  empty shell would overwrite newer state on disk). */
 extern void edc_session_store_save_all_sessions_state(struct edc_session_manager *sm, struct edc_scheduler *sched);
 
-/** 单个 session 的落盘请求 (NULL = 活跃的那个): 先写 sessions 索引 (全量 history),
- *  再重写目标 session 的 state。
+/** Persist one session (NULL = the active one): write the sessions index (full
+ *  history) first, then rewrite the target session's state.
  *
- *  |session| 是**显式参数**: 每个调用点自己知道要存谁 (任务收尾时存属主 —— 后台
- *  session 的任务完成也要落盘, 哪怕前台显示的是别人; 显式取消时存被取消的那个) ——
- *  P3 ③ 起没有任何"当前 session"可以默认, NULL 只是"调用点确实没指定"时才用。
+ *  |session| is an EXPLICIT parameter: each call site knows whom it is saving
+ *  (a task finishing saves its owner -- a background session's task must persist
+ *  even when another session is displayed; an explicit cancel saves the cancelled
+ *  one). There is no "current session" to default to, so NULL is only for call
+ *  sites that genuinely did not specify.
  *
- *  调用点都在 kernel 内 (scheduler 任务收尾 / 本文件的取消路径) —— 它原来是装配根
- *  注入的 `save_session` 端口, store 搬进 kernel 后端口成了同包中转, 于 2026-09-16
- *  退休 (见 runtime-model.md §11)。 */
+ *  Call sites are all inside kernel. It used to be the assembly root's injected
+ *  `save_session` port; once the store moved into kernel the port became an
+ *  intra-package hop and was retired (2026-09-16). */
 extern void edc_session_store_save_session_state(struct edc_session_manager *sm, struct edc_scheduler *sched,
                                                 struct edc_session *session);
 
-/** 取消该 session (NULL = 活跃) 的全部非终结 turns 并立即落盘, 使 CANCELLED
- *  跨重启保留 (`/session stop`)。 */
+/** Cancel all non-terminal turns of the session (NULL = active) and persist at
+ *  once, so CANCELLED survives a restart (`/session stop`). */
 extern void edc_session_store_stop_all_turns(struct edc_session_manager *sm, struct edc_scheduler *sched);
 
-/** 停止该 session 的全部 turn 但不落盘 (退出路径: 状态由退出落盘负责)。 */
-extern void edc_session_store_remove_all_turns(struct edc_session_manager *sm, struct edc_scheduler *sched);
+/** Forget that any request was in flight (shutdown path): the state was already saved
+ *  by edc_scheduler_close and a reply still travelling must not land. Changes no task's
+ *  state -- SIGTERM here would cancel the session and persist it. */
+extern void edc_session_store_drop_in_flight_requests(struct edc_session_manager *sm, struct edc_scheduler *sched);
 
 #endif

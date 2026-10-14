@@ -18,20 +18,22 @@ typedef struct
 struct edc_llm_actor_req
 {
     EdcQueue *turn;
-    /* 本 turn 的发送起点 (0 = 整条): 折叠若切在 turn 内部, 其前缀已在组记忆里,
-     * 不能再发一遍。生产者 (edc_llm_request) 按 active_turn->folded_prefix 置位。 */
+    /* This turn's send start (0 = the whole turn): if a fold cut inside the turn, its
+     * prefix is already in the group memory and must not be sent again. The producer
+     * (edc_llm_request) sets it from active_turn->folded_prefix. */
     size_t turn_begin;
     cJSON *history;
     cJSON *tools;
     bool history_owned; /* Phase 5: true = history needs cJSON_Delete */
-    cJSON *tail_parts;  /* owned by req: role=system 消息的**数组**, send_req 时按序
-                           追加为 messages 绝对队尾 (在 turn 之后)。装在里面的都是
-                           "请求期现算、只对这一次生效"的运行时提醒:
-                           [0] L2 session 记忆通知 (若有), [1] todo reminder (节流后)。
-                           NULL 或空数组 = 不追加。 */
-    int max_tokens;     /* > 0 = 请求体带 "max_tokens" (只有折叠的摘要调用用得上:
-                           摘要必须能在 reserve 里装下, 见 EDC_FOLD_SUMMARY_MAX_TOKENS)。
-                           普通对话回复不设上限。0 = 不发这个字段 */
+    cJSON *tail_parts;  /* owned by req: an ARRAY of role=system messages appended in
+                           order at the absolute tail of messages (after the turn).
+                           Everything in it is a request-time runtime reminder valid
+                           only for this call: [0] the L2 session-memory notice (if any),
+                           [1] the todo reminder (after throttling). NULL/empty = none. */
+    int max_tokens;     /* > 0 = the body carries "max_tokens" (only the fold's summary
+                           call needs it: the summary must fit in the reserve, see
+                           EDC_FOLD_SUMMARY_MAX_TOKENS). A normal reply sets no cap;
+                           0 = do not send the field */
 };
 
 

@@ -98,7 +98,7 @@ static void commit_turn_into_group(struct edc_session *sess, struct edc_task *ta
  * foreground, and commit one turn. Returns the group. */
 static struct edc_task_group *run_task(struct edc_scheduler *sched, struct edc_session *sess, const char *desc)
 {
-    struct edc_task *t = edc_scheduler_create_task(sched, sess, desc, edc_channel_adapter);
+    struct edc_task *t = edc_scheduler_task_new(sched, sess, desc, edc_channel_adapter);
     edc_task_await_exec(t);
     struct edc_task_group *g = edc_scheduler_create_group(sched, sess, t);
     edc_scheduler_set_foreground(sess, g);

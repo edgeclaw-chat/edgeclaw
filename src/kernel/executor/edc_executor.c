@@ -99,7 +99,7 @@ static struct edc_advance_result exec_start(struct edc_executor *ex, struct edc_
         return exec_io_failed(task, "[failed: the tool chain could not be re-dispatched (no toolbox port)]");
     }
 
-    /* 3. 有待跑的 turn: 发起推理。 */
+    /* 3. An active turn is waiting: send an inference request. */
     if (task->active_turn)
     {
         /* Rejected by the state machine: do not send a request nobody will claim. */
@@ -107,7 +107,7 @@ static struct edc_advance_result exec_start(struct edc_executor *ex, struct edc_
             return exec_io_failed(task, "[failed: this task cannot be moved to AWAIT_EXEC (state machine)]");
         if (!ops->send_llm(ex->ctx, task, req_id))
             return exec_io_failed(task, "[failed: no LLM port is installed, so this task cannot be started]");
-        task->llm_rounds++; /* 这一轮推理开始消耗预算 */
+        task->llm_rounds++; /* this round starts consuming the run budget */
         return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
     }
 
@@ -124,12 +124,30 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
 
     /* Before the branches, so every path (stop, tool_calls, error) counts. */
     edc_task_add_usage(task, e->prompt_tokens, e->completion_tokens, e->total_tokens, e->cached_tokens);
-    /* L2: 这次请求的队尾通知被模型读到了 (响应回来了) ⇒ 水位推进。取消/失败的请求
-     * 到不了这里, 所以那条通知会随下一次请求重发 (幂等)。 */
+    /* L2: this request's tail notice was read by the model (the response came
+     * back), so the watermark advances. A cancelled/failed request never reaches
+     * here, so that notice is resent with the next request (idempotent). */
     edc_task_memo_commit(task);
 
     if (e->failed)
     {
+        const char *notice = e->error_message ? e->error_message : "LLM request failed";
+
+        /* A TRANSPORT failure (no HTTP response at all: DNS/TCP/TLS/timeout) is re-sent
+         * ONCE automatically -- a transient network blip should not kill the task. Stay
+         * in AWAIT_EXEC and re-send the SAME request (same request_id, so the reply still
+         * routes back); a second transport failure falls through and fails it. A failure
+         * that DID get an HTTP response is never retried here. */
+        if (!task->net_retried && edc_task_is_running(task) &&
+            edc_llm_error_classify(e->http_status, notice) == EDC_LLM_ERR_TRANSPORT &&
+            ops->send_llm(ex->ctx, task, req_id))
+        {
+            task->net_retried = true;
+            task->llm_rounds++; /* the retry consumes a run-budget round */
+            log_warn("task %s: LLM transport failure (%s) — re-sending once", task->task_id, notice);
+            return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
+        }
+
         task->current_request_id = NULL;
         /* Fails and broadcasts to dependents through the task layer's entry. */
         edc_task_mark_failed(task);
@@ -137,7 +155,6 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
             edc_task_set_output(task, sdsnew(e->content));
         edc_task_flush_redirects(task);
         /* Delivery is the host's job: the error text is presentation, not advance. */
-        const char *notice = e->error_message ? e->error_message : "LLM request failed";
         /* (1) the explicit overflow: the provider refused the request because it did
          * not fit. Keep its own words -- they carry the real numbers -- and add the
          * next step. Throttling is classified out in front of this, since "rate
@@ -156,13 +173,12 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
 
     if (e->reason == EDC_REASON_TOOL_CALL)
     {
-        /* The summarizer has no tools (the fold request carries no definitions, see
-         * edc_llm_request.c), so a tool call in that response means the provider
-         * misbehaved. pi §3 treats it as a failure ("Summarization attempted to
-         * call a tool") rather than a tool round: refuse the summary, keep the
-         * group memory, and let the next trigger try again. Usage above still
-         * counts: the wasted call really was paid for. */
-        if (edc_task_is_memory_sink(task))
+        /* A FOLD task has no tools, so a tool call in its response means the provider
+         * misbehaved: refuse the summary, keep the group memory, let the next trigger
+         * retry. (pi §3.) A CURATION task (SESSION_MEMORY) is deliberately tool-driven
+         * and falls through to the normal tool loop
+         * below. */
+        if (task->sink == EDC_SINK_GROUP_MEMORY)
         {
             task->current_request_id = NULL;
             edc_task_mark_failed(task);
@@ -252,16 +268,20 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
 
     if (edc_task_is_memory_sink(task))
     {
-        /* A summary/curation that could not be finished keeps the old memory and says so. */
+        /* A summary/curation that could not be finished. A FOLD keeps the old group
+         * memory; a CURATION is tool-driven, so anything it already wrote through the
+         * memory tools stays (there is no batch to roll back).
+         * docs/session-memory-write-path.md). */
         const bool curate = (task->sink == EDC_SINK_SESSION_MEMORY);
-        log_error("%s: task %s did not finish cleanly (reason=%d) — discarded, nothing landed",
+        log_error("%s: task %s did not finish cleanly (reason=%d) — stopped early",
                   curate ? "L2 memo" : "L1 fold", task->task_id ? task->task_id : "(null)", (int)e->reason);
         if (e->reason == EDC_REASON_LENGTH)
-            notice = curate ? "Curation was truncated (max_tokens) — discarded, the session memory is unchanged"
+            notice = curate ? "Curation was truncated (max_tokens) — it stopped early; entries it already wrote remain"
                             : "Summary was truncated (max_tokens) — discarded, the group memory is unchanged";
         else if (e->reason == EDC_REASON_CONTEXT_EXCEEDED)
-            notice = curate ? "Curation overflowed the model window — discarded, the session memory is unchanged"
-                            : "Summarization overflowed the model window — discarded, the group memory is unchanged";
+            notice = curate
+                         ? "Curation overflowed the model window — it stopped early; entries it already wrote remain"
+                         : "Summarization overflowed the model window — discarded, the group memory is unchanged";
     }
     /* (3) the truncated overflow: `length` with an empty completion is what a full
      * window looks like on providers that do not say the word. A plain `length`
@@ -305,14 +325,14 @@ static struct edc_advance_result stop_at_iteration_cap(struct edc_executor *ex, 
     ev.kind = EDC_EVENT_EXEC_DONE;
     ev.request_id = request_id;
     ev.as.exec.reason = EDC_REASON_STOP;
-    ev.as.exec.content = notice;  /* STOP 分支用 sdsnew 拷贝, 不持有 */
-    ev.as.exec.msg = assistant;   /* 所有权转入 active_turn (与真实响应一致) */
+    ev.as.exec.content = notice;  /* the STOP branch sdsnew-copies it; it is not held */
+    ev.as.exec.msg = assistant;   /* ownership moves to active_turn, like a real response */
 
     struct edc_advance_result r = edc_executor_advance(ex, task, &ev);
 
     /* The nested STOP copied the notice into task->output, which outlives this
      * function; point at that and free the local copy. */
-    r.outcome = EDC_STEP_ERROR; /* 与今天一致：预算耗尽按 ERROR 返回 */
+    r.outcome = EDC_STEP_ERROR; /* budget exhaustion returns ERROR */
     r.notice = task->output;
     sdsfree(notice);
     return r;
@@ -335,7 +355,7 @@ static struct edc_advance_result tool_done(struct edc_executor *ex, struct edc_t
         int max_iter = exec_max_iter(ex);
         if (max_iter > 0 && task->llm_rounds >= max_iter)
         {
-            return stop_at_iteration_cap(ex, task, ev->request_id); /* 已转入终结路径 */
+            return stop_at_iteration_cap(ex, task, ev->request_id); /* already on a terminal path */
         }
 
         /* A dependency is still outstanding (the fold barrier held this task): the
@@ -351,7 +371,7 @@ static struct edc_advance_result tool_done(struct edc_executor *ex, struct edc_t
         edc_task_move(task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
         if (!ops->send_llm(ex->ctx, task, (void *)ev->request_id))
             return exec_io_failed(task, "[failed: no LLM port is installed, so the tool chain cannot continue]");
-        task->llm_rounds++; /* 工具链结束后续发 → 再消耗一轮预算 */
+        task->llm_rounds++; /* sending again after the tool chain consumes another round */
         return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
     }
     return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};

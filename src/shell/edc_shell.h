@@ -19,19 +19,22 @@ struct edc_cmd_task_opts;
 struct edc_task;
 struct edc_task_group;
 
-/* ── Shell 执行 / 命令处理 ─────────────────────────────────── */
+/* ── Shell execution / command handling ────────────────────── */
 
-/* 执行非 / 开头的 shell 输入（@ 和普通文本），返回 true 表示已处理 */
+/* Execute a non-/-prefixed shell input (@ and plain text); true = handled. */
 bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
                        struct edc_channel_message *message);
 
-/* 处理内置命令 (/whoami, /model)，返回 true=已处理 */
+/* Handle a built-in command (/whoami, /model); true = handled. */
 bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_reply_to to,
                               struct edc_channel_message *message);
 
-/* 通用 task 创建 + group 管理 + deps + turn + LLM 发送 */
-/* 建 task + group 管理 + deps + turn + 派发。**不回话**: 出错时把原因写进
- * *out_error (调用方 free; 没有错就置 NULL) —— 建任务的不该顺手往通道里写东西。 */
+/* Generic task creation + group management + deps + turn + LLM dispatch. */
+/* Build a task from one AST command node: translate the shell's syntax into an
+ * edc_task_spec, then let the scheduler create and place it (the group/foreground/
+ * turn/edge decisions live there, not here). Does NOT reply: on error it writes the
+ * reason into *out_error (caller frees; NULL when there is no error) -- task creation
+ * must not write into the channel as a side effect. */
 struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
                                       edc_channel_type channel_type, struct edc_session *session,
                                       struct edc_cmd_task_opts *opts,
@@ -40,14 +43,14 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
                                       sds redirect_stdout, bool redirect_append, sds redirect_stderr,
                                       edc_task_dep_type prev_dep_type, sds *out_error);
 
-/* 读取文件内容，失败时 *err_out 设错误消息 */
+/* Read file contents; on failure set an error message in *err_out. */
 sds edc_shell_read_file(const char *path, sds *err_out);
 
-/* ── 历史展开 ──────────────────────────────────────────────── */
+/* ── History expansion ─────────────────────────────────────── */
 
 sds edc_shell_expand_history(const char *input);
 
-/* ── 变量引用（$VAR）───────────────────────────────────────── */
+/* ── Variable references ($VAR) ────────────────────────────── */
 
 sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_scheduler *sched, const char *input,
                                sds **out_deps, int *out_dep_count,

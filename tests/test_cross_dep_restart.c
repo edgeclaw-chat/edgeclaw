@@ -128,7 +128,7 @@ static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, 
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
 
     /* A task in B, unfinished. */
-    struct edc_task *bt = edc_scheduler_create_task(sched, sb, "b-task", edc_channel_adapter);
+    struct edc_task *bt = edc_scheduler_task_new(sched, sb, "b-task", edc_channel_adapter);
     edc_scheduler_create_group(sched, sb, bt);
     /* 新模型: task 创建时就带着它的 input (没装 turn 的任务落盘时会被丢弃):
      * docs/retire-waiting-input.md §4)。装上 input 停到 SUSPENDED —— 本用例要验的
@@ -139,7 +139,7 @@ static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, 
     *out_bt_id = sdsnew(bt->task_id);
 
     /* A task in A that depends on B's task (cross-session edge). */
-    struct edc_task *at = edc_scheduler_create_task(sched, sa, "a-task", edc_channel_adapter);
+    struct edc_task *at = edc_scheduler_task_new(sched, sa, "a-task", edc_channel_adapter);
     edc_scheduler_create_group(sched, sa, at);
     edc_task_add_dependency(at, bt, TASK_DEP_SEQUENCE);
     edc_session_save_state(sa, sched);
@@ -174,7 +174,7 @@ static void scenario_restore(const char *ws)
     CHECK(bt != NULL, "B's task loaded on demand");
     CHECK(at && at->deps_total == 1, "cross-session edge restored");
     CHECK(at && at->deps && at->deps->source == bt, "edge points at B's task");
-    CHECK(at && edc_task_is_suspended(at), "A's task held (SUSPENDED), not run");
+    CHECK(at && edc_task_is_interrupted(at), "A's task held as INTERRUPTED, not run");
     CHECK(!edc_scheduler_task_has_unresolved_deps(e.sched, at), "gate open once the edge is restored");
 
     sds resume_cmd = sdscatprintf(sdsempty(), "/task resume %s", at_id);
@@ -211,7 +211,7 @@ static void scenario_unresolvable(const char *ws)
     sds resume_cmd = sdscatprintf(sdsempty(), "/task resume %s", at_id);
     send_cmd(&e, resume_cmd);
     sdsfree(resume_cmd);
-    CHECK(edc_task_is_suspended(at), "resume refused; task stays held");
+    CHECK(edc_task_is_interrupted(at), "resume refused; it stays INTERRUPTED behind the resume gate");
 
     /* Removing the session that owns the missing source must not dangle: the
      * pending entry is stored by id, so the task simply stays held. */
@@ -244,18 +244,18 @@ static void scenario_multihop(const char *ws)
     edc_actor_t *channel_actor = edc_channel_actor_new();
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
 
-    struct edc_task *ct = edc_scheduler_create_task(sched, sc, "c", edc_channel_adapter);
+    struct edc_task *ct = edc_scheduler_task_new(sched, sc, "c", edc_channel_adapter);
     edc_scheduler_create_group(sched, sc, ct);
     give_input(ct);
     edc_session_save_state(sc, sched);
 
-    struct edc_task *bt = edc_scheduler_create_task(sched, sb, "b", edc_channel_adapter);
+    struct edc_task *bt = edc_scheduler_task_new(sched, sb, "b", edc_channel_adapter);
     edc_scheduler_create_group(sched, sb, bt);
     give_input(bt);
     edc_task_add_dependency(bt, ct, TASK_DEP_SEQUENCE);
     edc_session_save_state(sb, sched);
 
-    struct edc_task *at = edc_scheduler_create_task(sched, sa, "a", edc_channel_adapter);
+    struct edc_task *at = edc_scheduler_task_new(sched, sa, "a", edc_channel_adapter);
     edc_scheduler_create_group(sched, sa, at);
     give_input(at);
     edc_task_add_dependency(at, bt, TASK_DEP_SEQUENCE);

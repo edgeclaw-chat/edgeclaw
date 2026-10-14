@@ -205,7 +205,7 @@ static void test_turn_begin_honours_folded_prefix(void)
 
     /* 折叠切在这个 turn 内部: 前缀 1 条进了组记忆。 */
     turn->folded_prefix = 1;
-    edc_llm_request_send(h.sched, leader, NULL, h.llm_actor, NULL);
+    edc_llm_request_send(h.sched, leader, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
 
     CHECK(g_req_msgs == 1, "请求真发出去了");
@@ -248,7 +248,7 @@ static void test_turn_begin_zero_without_prefix(void)
     struct edc_turn *turn = attach_turn(&h, leader, "current input");
     CHECK(turn->folded_prefix == 0, "新 turn 没有前缀");
 
-    edc_llm_request_send(h.sched, leader, NULL, h.llm_actor, NULL);
+    edc_llm_request_send(h.sched, leader, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
 
     CHECK(g_req_msgs == 1, "请求发出去了");
@@ -310,7 +310,7 @@ static void test_session_memory_notice_reaches_the_tail(void)
     sds id2 = memo_add(h.sess, "沙箱策略", "uid 1000 + sudo", NULL);
     leader->memo_seen_seq = 0; /* 新 task: 什么都没看过 ⇒ 该回填 */
 
-    edc_llm_request_send(h.sched, leader, NULL, h.llm_actor, NULL);
+    edc_llm_request_send(h.sched, leader, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
 
     CHECK(g_req_msgs == 1, "请求发出去了");
@@ -327,7 +327,7 @@ static void test_session_memory_notice_reaches_the_tail(void)
     /* 还没提交 (等价于请求被取消): 下一次请求**重发同一条** */
     edc_llm_actor_req_free(g_req);
     g_req = NULL;
-    edc_llm_request_send(h.sched, leader, NULL, h.llm_actor, NULL);
+    edc_llm_request_send(h.sched, leader, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
     CHECK(g_req_msgs == 2, "第二次请求也发出去了");
     CHECK(notice_part(g_req, NULL) != NULL, "没提交 ⇒ 通知重发 (幂等, 不丢信息)");
@@ -337,7 +337,7 @@ static void test_session_memory_notice_reaches_the_tail(void)
     CHECK(leader->memo_seen_seq == 2, "提交后水位追平");
     edc_llm_actor_req_free(g_req);
     g_req = NULL;
-    edc_llm_request_send(h.sched, leader, NULL, h.llm_actor, NULL);
+    edc_llm_request_send(h.sched, leader, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
     CHECK(g_req_msgs == 3, "第三次请求");
     CHECK(notice_part(g_req, NULL) == NULL, "看过之后不再注入 (常驻里也没有 memory 内容)");
@@ -346,7 +346,7 @@ static void test_session_memory_notice_reaches_the_tail(void)
     sds id3 = memo_add(h.sess, "第三条", "后来才有的", NULL);
     edc_llm_actor_req_free(g_req);
     g_req = NULL;
-    edc_llm_request_send(h.sched, leader, NULL, h.llm_actor, NULL);
+    edc_llm_request_send(h.sched, leader, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
     const char *n2 = notice_part(g_req, NULL);
     CHECK(n2 != NULL && strstr(n2, id3) != NULL, "只带新条目");
@@ -358,7 +358,7 @@ static void test_session_memory_notice_reaches_the_tail(void)
     struct edc_task *fold = edc_scheduler_spawn_system_task(h.sched, h.sess, "fold group memory");
     attach_turn(&h, fold, "fold prompt material");
     fold->sink = EDC_SINK_GROUP_MEMORY;
-    edc_llm_request_send(h.sched, fold, NULL, h.llm_actor, NULL);
+    edc_llm_request_send(h.sched, fold, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
     CHECK(notice_part(g_req, NULL) == NULL, "折叠任务不吃通知 (请求自足)");
 
@@ -387,7 +387,7 @@ static void test_head_blocks_cache_layout(void)
     attach_turn(&h, leader, "first input");
     attach_turn(&h, t2, "second input");
 
-    edc_llm_request_send(h.sched, leader, NULL, h.llm_actor, NULL);
+    edc_llm_request_send(h.sched, leader, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
     CHECK(g_req_msgs == 1, "A 的请求发出去了");
 
@@ -403,7 +403,7 @@ static void test_head_blocks_cache_layout(void)
     g_req = NULL;
     g_req_msgs = 0;
 
-    edc_llm_request_send(h.sched, t2, NULL, h.llm_actor, NULL);
+    edc_llm_request_send(h.sched, t2, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
     CHECK(g_req_msgs == 1, "B 的请求发出去了");
     if (g_req && g_req->history)
@@ -471,7 +471,7 @@ static void test_join_injection_shape(void)
     attach_turn(&h, dst, "DEST-OWN-TURN");
 
     g_req_msgs = 0;
-    edc_llm_request_send(h.sched, dst, NULL, h.llm_actor, NULL);
+    edc_llm_request_send(h.sched, dst, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
     CHECK(g_req_msgs == 1, "请求发出去了");
 
@@ -497,7 +497,7 @@ static void test_join_injection_shape(void)
     g_req_msgs = 0;
 
     /* 再发一次: 材料已进输入 ⇒ 不重复拼 (一次性), 且仍在那里 (留存) */
-    edc_llm_request_send(h.sched, dst, NULL, h.llm_actor, NULL);
+    edc_llm_request_send(h.sched, dst, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
     CHECK(g_req_msgs == 1, "第二次请求也出去了");
     const char *input2 = NULL;
@@ -545,8 +545,11 @@ static void test_curate_request_is_self_contained(void)
                                                              EDC_SINK_SESSION_MEMORY);
     CHECK(l2 != NULL && l2->sink == EDC_SINK_SESSION_MEMORY, "起一个策展任务");
     edc_scheduler_attach_input(h.sched, l2, "CURATE-MATERIAL");
+    /* 记忆工具子集: 策展任务只拿到它, 不是全量工具定义 */
+    cJSON *mem_tools = cJSON_CreateArray();
+    cJSON_AddItemToArray(mem_tools, cJSON_CreateObject());
     g_req_msgs = 0;
-    edc_llm_request_send(h.sched, l2, NULL, h.llm_actor, NULL);
+    edc_llm_request_send(h.sched, l2, NULL, mem_tools, h.llm_actor, NULL);
     pump(&h);
 
     CHECK(g_req_msgs == 1, "请求发出去了");
@@ -557,11 +560,13 @@ static void test_curate_request_is_self_contained(void)
         const char *content = sys0 ? cJSON_GetStringValue(cJSON_GetObjectItem(sys0, "content")) : NULL;
         CHECK(content && strcmp(content, edc_session_memory_system_prompt()) == 0, "内容 = 策展说明");
         CHECK(content && strstr(content, "# EdgeClaw") == NULL, "没有主提示词");
+        CHECK(g_req->tools == mem_tools, "带上了记忆工具子集 (不是全量)");
         CHECK(g_req->tail_parts == NULL, "队尾什么都不加 (通知与 todo 都不给策展调用)");
         CHECK(g_req->max_tokens > 0, "带上 max_tokens (摘要类调用的唯一例外)");
         edc_llm_actor_req_free(g_req);
         g_req = NULL;
     }
+    cJSON_Delete(mem_tools);
 
     sdsfree(id1);
     sdsfree(id2);
@@ -580,7 +585,7 @@ static void test_summary_request_is_capped(void)
 
     /* 普通任务: 不带 max_tokens (回复从不封顶)。 */
     attach_turn(&h, leader, "current input");
-    edc_llm_request_send(h.sched, leader, NULL, h.llm_actor, NULL);
+    edc_llm_request_send(h.sched, leader, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
     CHECK(g_req_msgs == 1 && g_req != NULL, "普通请求发出去了");
     if (g_req)
@@ -595,7 +600,7 @@ static void test_summary_request_is_capped(void)
     struct edc_task *fold = edc_scheduler_spawn_system_task(h.sched, h.sess, "fold group memory");
     CHECK(fold != NULL && fold->sink == EDC_SINK_GROUP_MEMORY, "拿到一个折叠任务");
     edc_scheduler_attach_input(h.sched, fold, "summarize this");
-    edc_llm_request_send(h.sched, fold, NULL, h.llm_actor, NULL);
+    edc_llm_request_send(h.sched, fold, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
     CHECK(g_req_msgs == 2 && g_req != NULL, "摘要请求发出去了");
     if (g_req)
@@ -655,7 +660,7 @@ static void test_fold_request_is_self_contained(void)
 
     edc_scheduler_attach_input(h.sched, fold, "SUMMARIZE-BODY");
     g_req_msgs = 0;
-    edc_llm_request_send(h.sched, fold, NULL, h.llm_actor, NULL);
+    edc_llm_request_send(h.sched, fold, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
     CHECK(g_req_msgs == 1 && g_req != NULL, "折叠请求发出去了");
     if (g_req)

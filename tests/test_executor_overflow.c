@@ -437,6 +437,71 @@ static void test_fold_task_keeps_the_fold_wording(void)
     fix_down(&f);
 }
 
+/* ══════════════════════════════════════════════════════════════
+ *  传输失败自动重发一次 (no HTTP response => TRANSPORT)
+ * ══════════════════════════════════════════════════════════════ */
+
+static int g_send_llm_calls = 0;
+static void stub_send_llm(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
+{
+    (void)sched;
+    (void)task;
+    (void)request_id;
+    g_send_llm_calls++;
+}
+
+static void test_transport_failure_retried_once(void)
+{
+    TEST("传输失败(无响应): 自动重发一次; 第二次才失败");
+
+    struct fix f;
+    fix_up(&f, 1048576);
+    f.sched->send_llm = stub_send_llm;
+    g_send_llm_calls = 0;
+
+    struct edc_event ev;
+    clear_event(&ev);
+    ev.as.exec.failed = true;   /* 没有 HTTP 响应 */
+    ev.as.exec.http_status = 0; /* => TRANSPORT */
+    ev.as.exec.error_message = "request timed out after 300000 ms";
+
+    struct edc_advance_result r1 = drive(&f, &ev);
+    CHECK(r1.outcome == EDC_STEP_BLOCKED, "第一次: 不失败, 重发");
+    CHECK(!edc_task_has_failed(f.task), "任务还活着");
+    CHECK(edc_task_is_running(f.task), "仍在 AWAIT_EXEC (还能接回话)");
+    CHECK(g_send_llm_calls == 1, "重发了 1 次请求");
+
+    struct edc_advance_result r2 = drive(&f, &ev);
+    CHECK(r2.outcome == EDC_STEP_ERROR, "第二次传输失败: 不再重发, 失败");
+    CHECK(edc_task_has_failed(f.task), "任务 life=ERROR");
+    CHECK(g_send_llm_calls == 1, "没有第三次请求");
+
+    fix_down(&f);
+}
+
+static void test_http_failure_is_not_retried(void)
+{
+    TEST("有 HTTP 响应的失败(401)不在此处重发");
+
+    struct fix f;
+    fix_up(&f, 1048576);
+    f.sched->send_llm = stub_send_llm;
+    g_send_llm_calls = 0;
+
+    struct edc_event ev;
+    clear_event(&ev);
+    ev.as.exec.failed = true;
+    ev.as.exec.http_status = 401;
+    ev.as.exec.error_message = "LLM API error (HTTP 401): invalid api key";
+
+    struct edc_advance_result r = drive(&f, &ev);
+    CHECK(r.outcome == EDC_STEP_ERROR, "直接失败, 不重发");
+    CHECK(edc_task_has_failed(f.task), "任务 life=ERROR");
+    CHECK(g_send_llm_calls == 0, "一次重发都没有");
+
+    fix_down(&f);
+}
+
 int main(void)
 {
     log_info("=== test_executor_overflow ===");
@@ -451,6 +516,8 @@ int main(void)
     test_context_exceeded_survives_the_boundary();
     test_status_code_survives_the_boundary();
     test_fold_task_keeps_the_fold_wording();
+    test_transport_failure_retried_once();
+    test_http_failure_is_not_retried();
 
     log_info("=== %d passed, %d failed ===", test_passed, test_failed);
     printf("%d passed, %d failed\n", test_passed, test_failed);

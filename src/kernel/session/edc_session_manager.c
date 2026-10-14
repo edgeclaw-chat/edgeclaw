@@ -15,18 +15,21 @@
 
 /* ── Helpers ───────────────────────────────────────────────── */
 
-/* ── Session 序号持久化 ──────────────────────────────────────
- * session id 必须**永不复用**。若 /session remove 之后再次 /session new 拿回
- * 同一个 id, 新 session 就落在被删 session 的目录上 —— session.json /
- * chat.jsonl / tasks.idx 全是上一个生命周期的残留: TUI 回放旧对话、跨 session
- * 的 task 索引把旧任务归到错误的属主。
+/* ── Session number persistence ──────────────────────────────
+ * A session id must NEVER be reused. If /session new after /session remove handed
+ * back the same id, the new session would land on the deleted session's directory --
+ * session.json / chat.jsonl / old sidecars left over from the previous lifecycle:
+ * the TUI replays the old chat, and the cross-session task index attributes old
+ * tasks to the wrong owner.
  *
- * id 只在"当前存活 session 的最大编号 + 1"上取号 (旧实现) 不足以防复用:
- * 被删 session 的编号一旦成为最大号, 下一次创建就会把它拿回来; 跨重启时若被
- * 删的是最大号, 同样会倒退。故把发号高水位单独落盘 workspace/.session_seq,
- * 每次取号即续写; 加载时取 "文件值 / 索引里的 id / workspace 下已存在的
- * session 目录" 三者的最大值 —— 后两者兼容升级前的旧存档与残留的孤儿目录。
- * 纯 stdio, 不依赖 uv file loop (session manager 单测不初始化 file utils)。 */
+ * Numbering at "max live session number + 1" (the old implementation) does not
+ * prevent reuse: once a deleted session's number is the max, the next create takes
+ * it back, and across a restart deleting the max number makes it regress too. So
+ * the issuing high-water mark is persisted separately in workspace/.session_seq,
+ * extended on every allocation; on load it takes the max of "file value / ids in the
+ * index / existing session dirs under workspace", the last two covering pre-upgrade
+ * archives and orphaned directories.
+ * Pure stdio, no uv file loop (session manager unit tests do not init file utils). */
 
 static sds edc_sm_session_seq_path(struct edc_session_manager *sm)
 {
@@ -45,7 +48,7 @@ static void edc_sm_persist_session_seq(struct edc_session_manager *sm)
     FILE *f = fopen(tmp, "w");
     if (!f && errno == ENOENT && sm->config && sm->config->workspace)
     {
-        /* 全新环境里 workspace 目录可能还没建立, 补建后重试一次。 */
+        /* On a fresh environment the workspace dir may not exist yet: create it and retry. */
         mkdir(sm->config->workspace, 0755);
         f = fopen(tmp, "w");
     }
@@ -74,7 +77,7 @@ static void edc_sm_load_session_seq(struct edc_session_manager *sm)
     FILE *f = fopen(path, "r");
     sdsfree(path);
     if (!f)
-        return; /* 首次运行 / 文件缺失: 保留内存初值 */
+        return; /* first run / missing file: keep the in-memory initial value */
 
     long long v = 0;
     if (fscanf(f, "%lld", &v) == 1 && v > sm->next_session_id)
@@ -82,8 +85,9 @@ static void edc_sm_load_session_seq(struct edc_session_manager *sm)
     fclose(f);
 }
 
-/* 把一个已知编号 (索引里的 id, 或磁盘上残留的 session 目录名) 计入高水位。
- * 只认 "s<N>" / "sess-<N>" 的纯十进制尾号, 与发号格式一致。 */
+/* Observe a known number (an id in the index, or a leftover session dir name on
+ * disk) into the high-water mark. Only the decimal tail of "s<N>" / "sess-<N>" is
+ * recognized, matching the issuing format. */
 static void edc_sm_observe_session_id(struct edc_session_manager *sm, const char *id)
 {
     if (!sm || !id || !*id)
@@ -109,9 +113,9 @@ static void edc_sm_observe_session_id(struct edc_session_manager *sm, const char
     }
 }
 
-/* 把 workspace 下已存在的 session 目录也计入高水位: /session remove 只把
- * session 移出索引, 目录会留下, 升级到本改动前删掉的最大号 session 就属于
- * 这种"索引里没有、目录还在"的情况。 */
+/* Also observe existing session dirs under workspace: /session remove only takes a
+ * session out of the index and leaves the directory, so a max-number session deleted
+ * before this change is "not in the index, directory still there". */
 static void edc_sm_observe_session_dirs(struct edc_session_manager *sm)
 {
     if (!sm || !sm->config || !sm->config->workspace || sdslen(sm->config->workspace) == 0)
@@ -131,8 +135,8 @@ static sds edc_sm_gen_session_id(struct edc_session_manager *sm)
 {
     long long id = sm->next_session_id > 0 ? sm->next_session_id : 1;
     sm->next_session_id = id + 1;
-    /* 取号即落盘高水位: 即便该 session 随后被 /session remove, 重启后也不会
-     * 再把同一个编号发出去。 */
+    /* Persist the high-water mark on allocation: even if the session is later
+     * /session remove'd, the same number is not issued again after a restart. */
     edc_sm_persist_session_seq(sm);
     return sdscatprintf(sdsempty(), "s%lld", id);
 }
@@ -180,8 +184,9 @@ static cJSON *edc_sm_build_index(struct edc_session_manager *sm)
 
 static void edc_sm_save_index(struct edc_session_manager *sm)
 {
-    /* 没有索引路径 = 这个仓库没有落盘目的地 (测试里手工拼的纯内存仓库), 跳过而不是
-     * 崩: 与 edc_session_save_state 对 history_dir 的处理同一条规矩。 */
+    /* No index path = this store has no disk destination (a hand-built in-memory
+     * store in tests): skip rather than crash, same rule as edc_session_save_state's
+     * handling of history_dir. */
     if (!sm->index_path)
         return;
 
@@ -314,8 +319,9 @@ bool edc_session_manager_load(struct edc_session_manager *sm)
     if (sm->active_index < 0 || sm->active_index >= sm->session_count)
         sm->active_index = 0;
 
-    /* 索引里出现过的编号一并计入发号高水位: 兼容没有 .session_seq 的旧存档
-     * (首次运行本改动时, 索引里的最大号不能被重新发出去)。 */
+    /* Numbers seen in the index also feed the high-water mark: compatible with old
+     * archives lacking .session_seq (on the first run of this change, the index's max
+     * must not be reissued). */
     for (int i = 0; i < sm->session_count; i++)
         edc_sm_observe_session_id(sm, sm->sessions[i]->session_id);
 
@@ -347,9 +353,9 @@ struct edc_session_manager *edc_session_manager_new(struct edc_config *config)
     sm->index_path = edc_path_join(config->workspace, "sessions.json", NULL);
     sm->next_session_id = 1;
 
-    /* 恢复上次运行的发号高水位, 再加载索引 (load 会把索引里的编号也计入),
-     * 最后把磁盘上残留的 session 目录一并计入 —— 顺序保证 next_session_id
-     * 在任何创建动作之前已经大于所有用过的编号。 */
+    /* Restore the previous run's high-water mark, load the index (which also feeds
+     * the numbers it lists), then observe leftover session dirs -- the order ensures
+     * next_session_id exceeds every used number before any create. */
     edc_sm_load_session_seq(sm);
     edc_sm_observe_session_dirs(sm);
 
@@ -461,8 +467,9 @@ void edc_session_manager_foreach_task(struct edc_session_manager *sm, edc_sessio
     if (!sm || !cb)
         return;
 
-    /* 顺序固定 (session 链序 × 组链序 × 成员链序): 调用方 (调度) 依赖它做确定性 ——
-     * 同一批可跑任务, 每轮驱动的次序都一样。未加载的 session 没有组, 自然跳过。 */
+    /* Fixed order (session chain x group chain x member chain): the caller (the
+     * scheduler) relies on it for determinism -- the same runnable set drives in the
+     * same order each round. Unloaded sessions have no groups and are skipped. */
     for (int i = 0; i < sm->session_count; i++)
     {
         struct edc_session *s = sm->sessions[i];
@@ -478,14 +485,16 @@ void edc_session_manager_foreach_task(struct edc_session_manager *sm, edc_sessio
     }
 }
 
-/* ── task id 索引 (未加载 session) ───────────────────────────
- * 跨 session 查找 task id 时, 若 owner 未加载, 我们只需要"它在哪个 session"。
- * v3 起不再有 tasks.idx 侧车 (单一真相源 = session.json): 首次查找时解析一次
- * 每个未加载 session 的 session.json, 收进一个 uthash, 之后 O(1) 定位。
+/* ── task id index (unloaded sessions) ───────────────────────
+ * When looking up a task id across sessions and the owner is unloaded, all we need
+ * is "which session it is in". There is no tasks.idx sidecar (single source of truth
+ * = session.json): the first lookup parses each unloaded session's session.json once
+ * into a uthash, then locates in O(1).
  *
- * 不变式: 一个未加载的 session 整个 run 都不会被修改 (要改它就得先 load), 所以
- * 这张表恒等于"未加载 session 的磁盘冻结态"; 已加载 session 一律由内存查找
- * 覆盖, 新建 task 也必然在已加载 session → 本表无需任何写侧同步。 */
+ * Invariant: an unloaded session is never modified during the whole run (changing it
+ * requires loading it first), so this table always equals "the disk-frozen state of
+ * unloaded sessions"; loaded sessions are covered by the in-memory lookup and new
+ * tasks are always in a loaded session, so no write-side sync is needed. */
 
 struct edc_task_index_entry
 {
@@ -508,7 +517,7 @@ static void sm_task_index_add(struct edc_session_manager *sm, const char *task_i
     HASH_ADD_KEYPTR(hh, sm->task_index, e->task_id, sdslen(e->task_id), e);
 }
 
-/* 解析一次 session.json 收集 task id, 供未加载 session 的 owner 定位。 */
+/* Parse session.json once to collect task ids, for locating an unloaded session's owner. */
 static void sm_task_index_ingest_session_json(struct edc_session_manager *sm, struct edc_session *s)
 {
     sds path = edc_path_join(s->history_dir, "session.json", NULL);
@@ -551,7 +560,7 @@ static void sm_task_index_build(struct edc_session_manager *sm)
     {
         struct edc_session *s = sm->sessions[i];
         if (!s || s->state_loaded)
-            continue; /* 已加载 → 内存优先, 不入表 */
+            continue; /* loaded -> memory wins, do not index */
         sm_task_index_ingest_session_json(sm, s);
     }
     sm->task_index_built = true;

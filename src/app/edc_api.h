@@ -8,31 +8,32 @@ extern "C" {
 #include <stdbool.h>
 #include <stddef.h>
 
-/* ── 前端的 C 安全面 (`//src/app:api`, 2026-09-16 从 edc_app.c 拆出) ──────────
+/* ── The frontend's C-safe surface (`//src/app:api`, split from edc_app.c on
+ * 2026-09-16) ───────────────────────────────────────────────────────────────
  *
- * 这里装的不是业务, 是**投影**: `edc_app.h` 那边只管装配与生命周期 (建 / 关 /
- * 释放 / 交出句柄), 而"把 app 的状态投影成 C++ 看得懂的样子"是另一件事 —— 后者
- * 存在的唯一理由就是 **C++ ↔ C 的边界** (从前它住在 tui 的 `edc_c_bridge`;
- * 92b2c99 搬进 app; 现在单独成这个模块)。判据一句话: 本头里的函数**一条业务
- * 逻辑都不含** —— 投一条输入 / 要一棵树 / 注册 adapter / 读一个字符串。
+ * This is not business logic, it is a projection: `edc_app.h` handles assembly
+ * and lifetime (create / shutdown / free / hand out handles), while "project the
+ * app's state into something C++ can read" is a separate concern whose only
+ * reason to exist is the C++ <-> C boundary (it used to live in tui's
+ * `edc_c_bridge`; moved into app by 92b2c99; now its own module). The rule: no
+ * function here contains any business logic -- send an input / request a tree /
+ * register an adapter / read a string.
  *
- * 与 `edc_app.h` 同一条硬约束: **对 C++ 安全** —— 只前向声明标签, 签名只用
- * bool / int / char* / 不透明指针, 不 include 任何拉 sds 的头 (`sds.h` 的
- * `SDS_HDR_VAR` 宏在 C++ 下编不过; cJSON/uthash 则没问题, 实测过)。所以:
- *   - sds 字段 → `...(char *buf, size_t cap)` 形态的读口 (见文件尾);
- *   - 消息字段 → 只读窗口 (`edc_app_message_*`)。
+ * Same hard rule as `edc_app.h`: C++-safe -- opaque pointers only, no header that
+ * pulls in sds (`sds.h`'s SDS_HDR_VAR macro does not compile as C++; cJSON/uthash
+ * are fine). So sds fields become `...(char *buf, size_t cap)` readers, and
+ * message fields become the read-only window (`edc_app_message_*`).
  *
- * 两个句柄访问器 (`edc_app_config` / `edc_app_channel_actor`, 都在 `edc_app.h` 里)
- * 就是本模块与装配根的**全部**合同: 实现里 `app->` 出现 **0 次**,
- * `struct edc_app` 仍然是只在 `edc_app.c` 里定义的不透明类型
- * (docs/runtime-model.md §8 判据 1)。会碰 session 仓库的问题这里**不问任何人** ——
- * 快照自己带着 session_id / workdir (2026-09-22)。 */
+ * The two handle accessors (`edc_app_config` / `edc_app_channel_actor`, in
+ * `edc_app.h`) are this module's entire contract with the root: in the
+ * implementation `app->` appears 0 times, and `struct edc_app` stays opaque. */
 struct edc_app;
 struct edc_channel_message;
 
-/* ── 通道消息的只读窗口 ───────────────────────────────────────
- * 消息本体的字段是 sds (或只有 C 侧才完整的类型), 所以前端只看这一组:
- * const char* 是**借用**, 生命周期 = 那条消息; 其余一律 int/bool。 */
+/* ── Read-only window onto a channel message ──────────────────
+ * The message's own fields are sds (or only complete on the C side), so the
+ * frontend only sees this group: the const char* values are BORROWED, lifetime =
+ * that message; everything else is int/bool. */
 extern const char *edc_app_message_content(const struct edc_channel_message *message);
 extern const char *edc_app_message_header(const struct edc_channel_message *message);
 extern const char *edc_app_message_task_id(const struct edc_channel_message *message);
@@ -48,41 +49,46 @@ extern int edc_app_message_is_task_tree_changed(const struct edc_channel_message
 extern int edc_app_message_from_active_task(const struct edc_channel_message *message);
 extern int edc_app_message_render_pref(const struct edc_channel_message *message);
 
-/* 渲染偏好 (与 common 的 edc_render_pref_t 对应; 内联在这里以免 C++ 侧
- * include sds 系 C 头)。零值 = PLAIN: 发送方未声明一律按纯文本显示。
- * 对应关系由 `edc_api.c` 里的 _Static_assert 钉住, 不是"两份各自维护"。 */
+/* Render preference (mirrors common's edc_render_pref_t; inlined here so C++ need
+ * not include the sds-family C header). Zero = PLAIN: an undeclared sender is
+ * plain text. The mapping is pinned by a _Static_assert in `edc_api.c`. */
 enum
 {
     EDC_APP_RENDER_PLAIN = 0,
     EDC_APP_RENDER_MARKDOWN = 1,
 };
 
-/* ── 配置 / 会话的字符串读取 (sds → 调用方缓冲区) ──────────────
- * 契约: 成功才写 |buf| 并返回 true; 失败一律把 |buf| 置空、返回 false。
- * |cap| = 缓冲区总字节数, 含结尾 NUL (装不下就不写)。 */
+/* ── Config / session string reads (sds -> caller buffer) ─────
+ * Contract: on success write |buf| and return true; on failure clear |buf| and
+ * return false. |cap| = total buffer bytes including the trailing NUL. */
 extern bool edc_app_config_model(const struct edc_app *app, char *buf, size_t cap);
 extern bool edc_app_config_api_url(const struct edc_app *app, char *buf, size_t cap);
 extern bool edc_app_config_api_key(const struct edc_app *app, char *buf, size_t cap);
 extern bool edc_app_sandbox_enabled(const struct edc_app *app);
-/* 指定 session 的转录文件路径 (`<workspace>/<session_id>/chat.jsonl`)。按约定拼出,
- * 不查仓库; |session_id| 必须是 id (快照/消息里带的那种), 显示名不再匹配。 */
+/* The transcript path for a given session (`<workspace>/<session_id>/chat.jsonl`).
+ * Built by convention, does not query the store; |session_id| must be an id (as
+ * carried by snapshots/messages), not a display name. */
 extern bool edc_app_chat_log_path_for(const struct edc_app *app, const char *session_id, char *buf, size_t cap);
-/* 前端的命令历史文件 (`<bc_home>/.tui_history`)。 */
+/* The frontend's command history file (`<bc_home>/.tui_history`). */
 extern bool edc_app_history_path(char *buf, size_t cap);
 
-/* ── 前端要做的几件事 ───────────────────────────────────────── */
-/* 把前端注册成唯一通道实现的 adapter: 每一条要上屏的消息都到 |on_send|。 */
+/* ── A few things the frontend does ─────────────────────────── */
+/* Register the frontend as the only channel adapter: every on-screen message
+ * reaches |on_send|. */
 extern void edc_app_channel_adapter_init(struct edc_app *app, void *instance,
                                          void (*on_send)(void *, struct edc_channel_message *));
-/* 投一条用户输入; |session_id| 点名它属于哪个 session (NULL/"" = 默认活跃 session)。 */
+/* Send a user input; |session_id| names its session (NULL/"" = the active one). */
 extern void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content);
-/* 要一棵 task 树 (P3 ①b): 树在 scheduler 线程上建, 以 TASK_SNAPSHOT 消息应答回来。 */
+/* Request a task tree: built on the scheduler thread, answered as a TASK_SNAPSHOT
+ * message. */
 extern void edc_app_request_task_snapshot(struct edc_app *app, const char *session_id);
-/* 写一个**属于前端**的文件 (转录 / 命令历史): under_workspace 时路径必须落在
- * config.workspace 下, 且拒绝符号链接目标 (见 edc_file_fopen_safe)。 */
+/* Write a frontend-owned file (transcript / command history): under_workspace
+ * requires the path to be under config.workspace and rejects symlink targets (see
+ * edc_file_fopen_safe). */
 extern bool edc_app_write_file(struct edc_app *app, const char *path, const char *data, size_t len,
                                bool append, bool under_workspace);
-/* 建父目录; 路径必须落在 workspace 下 (与 edc_app_write_file 同一条规矩)。 */
+/* Create the parent dir; the path must be under the workspace (same rule as
+ * edc_app_write_file). */
 extern bool edc_app_ensure_parent_dir(struct edc_app *app, const char *path);
 
 #ifdef __cplusplus

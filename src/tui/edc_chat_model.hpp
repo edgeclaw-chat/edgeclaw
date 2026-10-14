@@ -1,17 +1,19 @@
 #pragma once
 
-// ── 模型层: 聊天记录 + 过滤视图 (ChatModel) ─────────────────────────────────
+// Model layer: the chat log + filtered view (ChatModel).
 //
-// 从前这些状态和过滤逻辑全是 ChatWidget 的私有字段 (+ ApplyFilter): 视图与
-// 状态/规则糊在一个类里, 既没法脱离 ftxui 单测规则, 也没法让别的角色 (如
-// ChannelDispatcher) 只往"记录"里写而不碰渲染。
+// These states and the filter logic used to be ChatWidget's private fields (+
+// ApplyFilter): view and state/rules were welded into one class, so the rules
+// could not be unit-tested without ftxui and no other role (e.g.
+// ChannelDispatcher) could write to the log without touching rendering.
 //
-// 现在: ChatModel 持有全部消息、当前过滤 (哪些 task id 可见) 和每个 task 的
-// 原始输入, 并计算**过滤后的可见序列**; ChatWidget 退化成"把 visible() 画出来
-// 的视图", 通过订阅在变化时增量更新。
+// Now ChatModel holds all messages, the current filter (which task ids are
+// visible) and each task's raw input, and computes the filtered visible sequence;
+// ChatWidget degrades to a view that renders visible() and updates incrementally
+// via a subscription.
 //
-// 兼容: ChatWidget 仍保留 AddMessage / Clear / SetFilter / SetTaskInputs
-// (委托给模型), 既有测试不必改。
+// Compat: ChatWidget still exposes AddMessage / Clear / SetFilter / SetTaskInputs
+// (delegating to the model).
 
 #include "edc_message.hpp"
 
@@ -28,8 +30,9 @@ namespace edc::model
 class ChatModel
 {
   public:
-    // 变化通知: |appended| 非空 = 追加了一条可见消息 (视图增量追加);
-    // |appended| 为空 = 整体重建 (过滤 / 任务输入 / 清空 —— 视图从 visible() 重建)。
+    // Change notification: a non-null |appended| = one visible message appended
+    // (the view appends incrementally); a null |appended| = full rebuild (filter /
+    // task inputs / clear -- the view rebuilds from visible()).
     struct Change
     {
         std::shared_ptr<Message> appended;
@@ -46,14 +49,14 @@ class ChatModel
     // Drop every message (the log was re-pointed at another session).
     void Clear();
 
-    // Point the log at a group's / task's history: only bubbles whose TaskId()
-    // is in |allowed| are visible. nullptr = no filter. |label| names the
-    // selection for the "nothing here" hint.
+    // Point the log at a group's / task's history: only bubbles whose TaskId() is
+    // in |allowed| are visible. nullptr = no filter. |label| names the selection
+    // for the "nothing here" hint.
     void SetFilter(std::shared_ptr<const std::set<std::string>> allowed, std::string label = "");
 
-    // The user input each task was created from (task id -> raw input), as the
-    // task snapshot reports it. Under a filter, a task's input is prepended to
-    // its history (the input's own bubble belongs to no task, so the filter hides it).
+    // The user input each task was created from (task id -> raw input), as the task
+    // snapshot reports it. Under a filter, a task's input is prepended to its
+    // history (the input's own bubble belongs to no task, so the filter hides it).
     void SetTaskInputs(std::shared_ptr<const std::map<std::string, std::string>> inputs);
 
     std::shared_ptr<const std::set<std::string>> filter() const
@@ -69,8 +72,8 @@ class ChatModel
         return filter_ != nullptr;
     }
 
-    // The drawn sequence: every message passing the filter, with each task's
-    // input prepended. This is what a view renders.
+    // The drawn sequence: every message passing the filter, with each task's input
+    // prepended. This is what a view renders.
     const std::vector<std::shared_ptr<Message>> &visible() const
     {
         return visible_;

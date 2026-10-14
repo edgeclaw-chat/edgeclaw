@@ -82,6 +82,16 @@ static void free_capture(struct capture *c)
     memset(c, 0, sizeof(*c));
 }
 
+/* 回显 header 的小工具: 解析一段 JSON 参数 → 取 header 文本 (调用方 sdsfree) */
+static sds hdr(const char *name, const char *args_json)
+{
+    cJSON *a = args_json ? cJSON_Parse(args_json) : NULL;
+    sds h = edc_tools_memory_call_header(name, a);
+    if (a)
+        cJSON_Delete(a);
+    return h;
+}
+
 int main(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
@@ -136,33 +146,142 @@ int main(void)
     CHECK(l1.result && strstr(l1.result, "[m2]") != NULL && strstr(l1.result, "[m1]") == NULL, "翻页只给 m2");
     free_capture(&l1);
 
-    TEST("memory_search: 命中摘要 / 明细; 没命中也给计数");
-    struct capture s1 = run_tool(tb, task, "memory_search", "{\"query\":\"沙箱\"}");
-    CHECK(s1.result && strstr(s1.result, "1 hit") != NULL && strstr(s1.result, "[m2]") != NULL, "命中 1 条");
+    TEST("memory_search: 多正则分组命中; 非法正则逐项报, 不整体失败");
+    struct capture s1 = run_tool(tb, task, "memory_search", "{\"patterns\":[\"^沙箱\",\"bazel|sudo\",\"不存在的词\"]}");
+    CHECK(s1.error == NULL, "多正则搜索成功");
+    CHECK(s1.result && strstr(s1.result, "1 hit(s) for /^沙箱/") != NULL && strstr(s1.result, "[m2]") != NULL,
+          "正则1 锚定命中 1 条");
+    CHECK(s1.result && strstr(s1.result, "2 hit(s) for /bazel|sudo/") != NULL && strstr(s1.result, "[m1]") != NULL,
+          "正则2 交替命中 2 条");
+    CHECK(s1.result && strstr(s1.result, "0 hit(s) for /不存在的词/") != NULL, "正则3 0 命中也是正常结果");
     free_capture(&s1);
-    struct capture s2 = run_tool(tb, task, "memory_search", "{\"query\":\"bazelisk\"}");
-    CHECK(s2.result && strstr(s2.result, "[m1]") != NULL, "命中明细里的词");
-    free_capture(&s2);
-    struct capture s3 = run_tool(tb, task, "memory_search", "{\"query\":\"不存在的词\"}");
-    CHECK(s3.error == NULL && s3.result && strstr(s3.result, "0 hit") != NULL, "0 命中也是正常结果");
-    free_capture(&s3);
+    struct capture s5 = run_tool(tb, task, "memory_search", "{\"patterns\":[\"(\"]}");
+    CHECK(s5.error == NULL && s5.result && strstr(s5.result, "invalid regex") != NULL, "非法正则逐项报错");
+    free_capture(&s5);
     struct capture s4 = run_tool(tb, task, "memory_search", "{}");
-    CHECK(s4.error != NULL, "缺 query 报错");
+    CHECK(s4.error != NULL, "缺 patterns 报错");
     free_capture(&s4);
 
-    TEST("memory_get: 明细全文 / 未知 id 报错");
-    struct capture g1 = run_tool(tb, task, "memory_get", "{\"id\":\"m1\"}");
-    CHECK(g1.error == NULL && g1.result && strstr(g1.result, "不要再用 make") != NULL, "明细回来");
+    TEST("memory_get: 批量读; 未知 id 给说明而不是整体报错");
+    struct capture g1 = run_tool(tb, task, "memory_get", "{\"ids\":[\"m1\",\"m99\"]}");
+    CHECK(g1.error == NULL, "批量读成功");
+    CHECK(g1.result && strstr(g1.result, "[m1] rev ") != NULL && strstr(g1.result, "不要再用 make") != NULL,
+          "m1 明细 + rev 回来");
+    CHECK(g1.result && strstr(g1.result, "[m99] (no such entry") != NULL, "m99 给说明");
     free_capture(&g1);
-    struct capture g2 = run_tool(tb, task, "memory_get", "{\"id\":\"m99\"}");
-    CHECK(g2.error != NULL && g2.result && strstr(g2.result, "m99") != NULL, "未知 id: 报错 + 说明");
-    free_capture(&g2);
+    struct capture g0 = run_tool(tb, task, "memory_get", "{}");
+    CHECK(g0.error != NULL, "缺 ids 报错");
+    free_capture(&g0);
+
+    TEST("memory_update: 批量就地合并 (给的字段覆盖, 没给的保留) + UPDATED 事件");
+    struct capture u = run_tool(tb, task, "memory_update",
+                                "{\"entries\":[{\"id\":\"m1\",\"expected_rev\":1,\"summary\":\"唯一入口是 bazelisk (v2)\"}]}");
+    CHECK(u.error == NULL && u.result && strstr(u.result, "m1") != NULL, "更新成功");
+    const struct edc_memo_entry *e1u = edc_session_memory_entry(session->memo, "m1");
+    CHECK(e1u && e1u->summary && strcmp(e1u->summary, "唯一入口是 bazelisk (v2)") == 0, "摘要被覆盖");
+    CHECK(e1u && e1u->title && strcmp(e1u->title, "构建入口") == 0, "没给的 title 保留");
+    CHECK(session->memo->events[session->memo->event_count - 1].kind == EDC_MEMO_UPDATED, "最新事件是 UPDATED");
+    CHECK(e1u && e1u->updated_seq == session->memo->events[session->memo->event_count - 1].seq, "updated_seq 抬到新 seq");
+    uint64_t m1_rev = e1u->updated_seq;
+    free_capture(&u);
+
+    TEST("memory_update: 缺 expected_rev ⇒ 参数校验报错");
+    struct capture nrev = run_tool(tb, task, "memory_update", "{\"entries\":[{\"id\":\"m1\",\"summary\":\"x\"}]}");
+    CHECK(nrev.error != NULL, "缺 expected_rev 报错");
+    free_capture(&nrev);
+
+    TEST("memory_update: 原子 —— 批里任一项 rev 过期 ⇒ 整批不落地");
+    size_t c_events = session->memo->event_count;
+    struct capture c = run_tool(tb, task, "memory_update",
+                                "{\"entries\":[{\"id\":\"m1\",\"expected_rev\":1,\"summary\":\"stale overwrite\"}]}");
+    CHECK(c.error != NULL, "被拒");
+    CHECK(c.result && strstr(c.result, "stale expected_rev") != NULL, "说明冲突");
+    const struct edc_memo_entry *e1c = edc_session_memory_entry(session->memo, "m1");
+    CHECK(e1c && e1c->updated_seq == m1_rev, "rev 没动");
+    CHECK(e1c && strcmp(e1c->summary, "唯一入口是 bazelisk (v2)") == 0, "没被旧快照覆盖");
+    CHECK(session->memo->event_count == c_events, "没发事件");
+    free_capture(&c);
+
+    TEST("memory_get 的 rev 可用来批量成功更新");
+    struct capture mg = run_tool(tb, task, "memory_get", "{\"ids\":[\"m1\"]}");
+    CHECK(mg.error == NULL && mg.result && strstr(mg.result, "rev ") != NULL, "memory_get 带 rev");
+    char upd[256];
+    snprintf(upd, sizeof(upd), "{\"entries\":[{\"id\":\"m1\",\"expected_rev\":%llu,\"summary\":\"ok after re-read\"}]}",
+             (unsigned long long)m1_rev);
+    struct capture mg2 = run_tool(tb, task, "memory_update", upd);
+    CHECK(mg2.error == NULL && mg2.result && strstr(mg2.result, "Updated 1 entr") != NULL, "带正确 rev 更新成功");
+    free_capture(&mg);
+    free_capture(&mg2);
+
+    TEST("memory_update: 未知 id / 空更新 都报错且整批不落地");
+    size_t u_events = session->memo->event_count;
+    struct capture ub =
+        run_tool(tb, task, "memory_update", "{\"entries\":[{\"id\":\"m99\",\"expected_rev\":1,\"summary\":\"x\"}]}");
+    CHECK(ub.error != NULL && ub.result && strstr(ub.result, "unknown id") != NULL, "未知 id 报错");
+    struct capture ue = run_tool(tb, task, "memory_update", "{\"entries\":[{\"id\":\"m1\",\"expected_rev\":1}]}");
+    CHECK(ue.error != NULL, "什么都没给报错");
+    CHECK(session->memo->event_count == u_events, "两条都没落地");
+    free_capture(&ub);
+    free_capture(&ue);
+
+    TEST("memory_supersede: 列表形式; 标 retired + SUPERSEDED 事件; 条目不删");
+    struct capture sp = run_tool(tb, task, "memory_supersede", "{\"ids\":[\"m2\"]}");
+    CHECK(sp.error == NULL && sp.result && strstr(sp.result, "m2") != NULL, "作废成功");
+    const struct edc_memo_entry *e2 = edc_session_memory_entry(session->memo, "m2");
+    CHECK(e2 && e2->superseded, "标记 retired");
+    CHECK(session->memo->entry_count == 2, "条目没被删");
+    CHECK(session->memo->events[session->memo->event_count - 1].kind == EDC_MEMO_SUPERSEDED, "最新事件 SUPERSEDED");
+    free_capture(&sp);
+
+    TEST("memory_supersede: 原子 —— 列表含未知 id ⇒ 整批不退休");
+    size_t s_events = session->memo->event_count;
+    struct capture sb = run_tool(tb, task, "memory_supersede", "{\"ids\":[\"m1\",\"m99\"]}");
+    CHECK(sb.error != NULL, "有未知 id ⇒ 报错");
+    CHECK(sb.result && strstr(sb.result, "m99") != NULL, "点名未知 id");
+    const struct edc_memo_entry *e1s = edc_session_memory_entry(session->memo, "m1");
+    CHECK(e1s && !e1s->superseded, "m1 没被退休 (原子)");
+    CHECK(session->memo->event_count == s_events, "没发事件");
+    free_capture(&sb);
+
+    TEST("memory_supersede: 空列表 / 已有条目重复退休 (幂等)");
+    struct capture se = run_tool(tb, task, "memory_supersede", "{\"ids\":[]}");
+    CHECK(se.error != NULL, "空列表报错");
+    free_capture(&se);
+    size_t idem_events = session->memo->event_count;
+    struct capture si = run_tool(tb, task, "memory_supersede", "{\"ids\":[\"m2\"]}");
+    CHECK(si.error == NULL, "重复退休不报错 (幂等)");
+    CHECK(session->memo->event_count == idem_events, "已 retired ⇒ 不再发事件");
+    free_capture(&si);
+
+    TEST("策展任务 (sink_group) 写条目: sources = 被折叠的组, 不是自己的系统组");
+    struct edc_task *curator = edc_task_new("300", "s1", "300", "curate", edc_channel_adapter);
+    struct edc_task_group *cg = edc_task_group_new(curator);
+    edc_session_add_group(session, cg); /* 挂上 group->session (属主) */
+    curator->sink = EDC_SINK_SESSION_MEMORY;
+    curator->sink_group = group; /* 被折叠的那个组 (id = "100") */
+    struct capture wc = run_tool(tb, curator, "memory_write", "{\"title\":\"策展写的\",\"summary\":\"s\"}");
+    CHECK(wc.error == NULL, "策展任务能写");
+    const struct edc_memo_entry *ec = edc_session_memory_entry(session->memo, "m3");
+    CHECK(ec && ec->sources && strcmp(ec->sources, "100") == 0, "sources = 被折叠组 id");
+    free_capture(&wc);
+    edc_session_remove_group(session, cg); /* 连带释放 task */
+    edc_task_group_free(cg);
+
+    TEST("memory_write: 新建时给出相关旧条目候选 (不拦截, 照样建)");
+    size_t n_cnt = session->memo->entry_count;
+    struct capture nudge = run_tool(tb, task, "memory_write",
+                                    "{\"title\":\"构建入口\",\"summary\":\"CI 与本地都用 bazelisk\"}");
+    CHECK(nudge.error == NULL, "照样建成功 (不拦截)");
+    CHECK(session->memo->entry_count == n_cnt + 1, "条目 +1");
+    CHECK(nudge.result && strstr(nudge.result, "look related") != NULL, "结果里带相关提示");
+    CHECK(nudge.result && strstr(nudge.result, "[m1]") != NULL, "点名了相关的 m1");
+    free_capture(&nudge);
 
     TEST("读工具是只读的: 事件表与水位纹丝不动");
     size_t events_before = session->memo->event_count;
     uint64_t seq_before = session->memo->next_seq;
     struct capture r1 = run_tool(tb, task, "memory_list", "{}");
-    struct capture r2 = run_tool(tb, task, "memory_get", "{\"id\":\"m1\"}");
+    struct capture r2 = run_tool(tb, task, "memory_get", "{\"ids\":[\"m1\"]}");
     CHECK(session->memo->event_count == events_before && session->memo->next_seq == seq_before,
           "读完之后事件表与 next_seq 没变");
     free_capture(&r1);
@@ -174,6 +293,44 @@ int main(void)
     CHECK(o.error != NULL && o.result != NULL, "拿不到 session 记忆 ⇒ error + 说明");
     free_capture(&o);
     edc_task_free(orphan);
+
+    TEST("回显 header 带输入参数: 用户能看到 search 什么 / get 什么");
+    {
+        sds h = hdr("memory_search", "{\"patterns\":[\"^沙箱\",\"bazel|sudo\"]}");
+        CHECK(h && strcmp(h, "memory_search patterns=[^沙箱 bazel|sudo]") == 0, "search: 每个正则都列出来");
+        sdsfree(h);
+
+        h = hdr("memory_get", "{\"ids\":[\"m1\",\"m99\"]}");
+        CHECK(h && strcmp(h, "memory_get ids=[m1 m99]") == 0, "get: 每个 id 都列出来");
+        sdsfree(h);
+
+        h = hdr("memory_list", "{\"offset\":1,\"n\":1}");
+        CHECK(h && strcmp(h, "memory_list offset=1 n=1") == 0, "list: 翻页窗口");
+        sdsfree(h);
+
+        h = hdr("memory_update", "{\"entries\":[{\"id\":\"m1\",\"expected_rev\":2},{\"id\":\"m3\"}]}");
+        CHECK(h && strcmp(h, "memory_update ids=[m1 m3]") == 0, "update: 批里每一项的 id");
+        sdsfree(h);
+
+        h = hdr("memory_write", "{\"title\":\"构建入口\",\"summary\":\"s\"}");
+        CHECK(h && strcmp(h, "memory_write title=构建入口") == 0, "write: 标题 (不看 summary/detail)");
+        sdsfree(h);
+
+        h = hdr("memory_supersede", "{\"ids\":[\"m9\",\"m12\"]}");
+        CHECK(h && strcmp(h, "memory_supersede ids=[m9 m12]") == 0, "supersede: 退休的 id");
+        sdsfree(h);
+
+        /* 缺字段 / 非数组都只影响这一行文字, 不会让调用失败 */
+        h = hdr("memory_list", "{}");
+        CHECK(h && strcmp(h, "memory_list offset=0 n=20") == 0, "list 缺参数 = 默认窗口");
+        sdsfree(h);
+        h = hdr("memory_get", "{}");
+        CHECK(h && strcmp(h, "memory_get ids=[]") == 0, "get 缺 ids = 空列表 (校验那步会报错)");
+        sdsfree(h);
+        h = edc_tools_memory_call_header("memory_search", NULL);
+        CHECK(h && strcmp(h, "memory_search") == 0, "args = NULL = 只有工具名");
+        sdsfree(h);
+    }
 
     edc_toolbox_free(tb);
     edc_session_free(session); /* 连带释放 group / task / memo */

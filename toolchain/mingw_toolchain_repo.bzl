@@ -68,7 +68,9 @@ def _generate_config_bzl(bin_dir, tool_prefix, include_dirs, target_cpu, target_
         include_entries.append('            "{}",'.format(d))
     include_dirs_str = "\n".join(include_entries)
 
-    return """load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "action_config", "tool", "feature", "flag_set", "flag_group", "with_feature_set")
+    cxx_tool_path = bin_dir + tool_prefix + "g++"
+
+    return """load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "action_config", "tool", "feature", "flag_set", "flag_group", "with_feature_set", "artifact_name_pattern")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 
 def _impl(ctx):
@@ -80,24 +82,32 @@ def _impl(ctx):
         action_config(
             action_name = "c++-compile",
             tools = [
-                tool(path = "g++"),
+                tool(path = "{cxx_tool_path}"),
             ],
         ),
         action_config(
             action_name = "c++-header-parsing",
             tools = [
-                tool(path = "g++"),
+                tool(path = "{cxx_tool_path}"),
             ],
         ),
         action_config(
             action_name = "c++-module-compile",
             tools = [
-                tool(path = "g++"),
+                tool(path = "{cxx_tool_path}"),
             ],
         ),
     ]
 
 {all_compile_actions}
+    artifact_name_patterns = [
+        artifact_name_pattern(
+            category_name = "executable",
+            prefix = "",
+            extension = ".exe",
+        ),
+    ]
+
     features = [
 {compilation_mode_features}
     ]
@@ -114,6 +124,7 @@ def _impl(ctx):
         abi_libc_version = "unknown",
         tool_paths = tool_paths,
         action_configs = action_configs,
+        artifact_name_patterns = artifact_name_patterns,
         features = features,
         cxx_builtin_include_directories = [
 {include_dirs}
@@ -124,7 +135,7 @@ mingw_toolchain_config = rule(
     implementation = _impl,
     attrs = {{}},
 )
-""".format(tool_paths = tool_paths_str, include_dirs = include_dirs_str, target_cpu = target_cpu, target_system_name = target_system_name, toolchain_identifier = toolchain_identifier, all_compile_actions = COMPILATION_MODE_ACTIONS, compilation_mode_features = COMPILATION_MODE_FEATURES)
+""".format(tool_paths = tool_paths_str, include_dirs = include_dirs_str, target_cpu = target_cpu, target_system_name = target_system_name, toolchain_identifier = toolchain_identifier, all_compile_actions = COMPILATION_MODE_ACTIONS, compilation_mode_features = COMPILATION_MODE_FEATURES, cxx_tool_path = cxx_tool_path)
 
 def _generate_stub(rctx):
     rctx.file("mingw_compiler_config.bzl", content = """load("@rules_cc//cc/common:cc_common.bzl", "cc_common")

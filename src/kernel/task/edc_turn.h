@@ -6,7 +6,7 @@
 
 struct edc_turn
 {
-    char *task_id; /* 序列化时标记归属 */
+    char *task_id; /* marks ownership when serialized */
     EdcQueue messages;
     /* How many leading messages of this turn the group memory already covers (L1
      * fold). Request assembly and the group history both start after them; set at
@@ -17,11 +17,12 @@ struct edc_turn
 extern struct edc_turn *edc_turn_new();
 extern void edc_turn_free(struct edc_turn *turn);
 
-/* 通用: 把一条完整消息 (接管所有权) 追加进 turn; 会做 UTF-8 清洗并补 ts/render。 */
+/* Append one full message (takes ownership); cleans UTF-8 and fills ts/render. */
 extern void edc_turn_add_message(struct edc_turn *turn, cJSON *msg);
 extern void edc_turn_add_user_message(struct edc_turn *turn, const char *content);
 extern void edc_turn_add_assistant_message(struct edc_turn *turn, cJSON *msg);
-/* tool 消息 = LLM 语境里的工具结果 (tool_call_id/name/content 三者即请求所需)。 */
+/* A tool message = the tool result in the LLM's context (tool_call_id/name/content
+ * is all the request needs). */
 extern void edc_turn_add_tool_message(struct edc_turn *turn, const char *tool_call_id, const char *name,
                                       const char *content);
 #endif

@@ -7,30 +7,37 @@
 struct edc_scheduler;
 struct edc_task;
 
-/* 装配一次 LLM 请求并投给 llm_actor 邮箱（原 src/app/edc_app.c 的搬家）。
+/* Assemble one LLM request and post it to the llm_actor mailbox (moved from
+ * src/app/edc_app.c).
  *
- * kernel 自己的东西（group 历史 / 折叠水位 / deps / active_turn / todo 节流 /
- * config / session 仓库）全部经 sched 与 task 取得；另有两样 kernel 拿不到的
- * 值由装配根在装配期**当参数**交进来（不新增 core 字段）：
- *   tool_schemas —— 工具定义数组; 所有权归 toolbox (edc_toolbox_free 释放),
- *                   本函数只读不释放; 非 NULL 且 sink!=GROUP_MEMORY 时进请求体;
- *                   传 NULL = 这次请求不带工具 (折叠摘要调用)
- *   llm_actor    —— LLM 端点邮箱 (所有权归装配根)
+ * Everything kernel-owned (group history / fold watermark / deps / active_turn / todo
+ * throttle / config / session store) comes via sched and task; the tool-definition
+ * arrays and the LLM mailbox are handed in BY PARAMETER at assembly time (no new core
+ * fields). Which array a request carries is decided by the task's sink:
+ *   tool_schemas   -- the FULL tool-definition array; a normal task carries it;
+ *   memory_schemas -- only the memory_* tools; a SINK_SESSION_MEMORY (curation) task
+ *                     carries it (it must be able to search/read/update memory, and
+ *                     nothing else);
+ *   a SINK_GROUP_MEMORY (fold) task carries neither.
+ * Both arrays are read-only here and owned by the toolbox (freed by edc_toolbox_free).
+ *   llm_actor    -- the LLM endpoint mailbox (owned by the assembly root)
  *
- * $VAR 的"值语义"($$ / $LAST / $N / $NAME) 是本文件私有的 static resolver,
- * 数据源 = sched->sessions (store 句柄) —— 见 docs/runtime-model.md §11。 */
+ * $VAR's "value semantics" ($$ / $LAST / $N / $NAME) are a static resolver private to
+ * this file, its data source = sched->sessions (the store handle). */
 extern void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJSON *tool_schemas,
-                                 edc_actor_t *llm_actor, void *request_id);
+                                 cJSON *memory_schemas, edc_actor_t *llm_actor, void *request_id);
 
-/* ── 端口: 请求装配器是 `send_llm` 的提供方 ──────────────────
+/* ── Ports: the request assembler provides `send_llm` ────────
  *
- * 请求体怎么装、投给谁, 都是本文件的知识, 所以"把端口装到 scheduler 上"也归
- * 这里。装配期交一次上面那两样值; 此后每次请求都从这里出去 —— 装配根不再出现
- * 在运行期路径上。端口签名 (`edc_scheduler.h`) 一个字没动。
+ * How the body is assembled and whom it is posted to is this file's knowledge, so
+ * "install the port onto the scheduler" is here too. Two values are handed in once at
+ * assembly time; every request then leaves from here -- the assembly root no longer
+ * appears on a runtime path. Port signatures (edc_scheduler.h) are unchanged.
  *
- * |tool_schemas| 只读, 所有权仍归 toolbox; 两个值的生命周期 = 进程。 */
+ * |tool_schemas| / |memory_schemas| are read-only, still owned by the toolbox; all
+ * three values live for the process. */
 struct edc_scheduler; /* fwd */
 extern void edc_llm_request_bind_scheduler(struct edc_scheduler *sched, edc_actor_t *llm_actor,
-                                           cJSON *tool_schemas);
+                                           cJSON *tool_schemas, cJSON *memory_schemas);
 
 #endif

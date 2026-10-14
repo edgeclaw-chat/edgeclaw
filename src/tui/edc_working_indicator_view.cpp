@@ -12,24 +12,23 @@ namespace edc::ui
 namespace
 {
 
-// The bar's fixed geometry (see the header): 10 cells, a run of 5, one cell of
-// travel per kStepMs.
+// The bar's fixed geometry: 10 cells, a lit run of 5, one cell of travel per
+// kStepMs.
 constexpr int kBarCells = 10;
 constexpr int kBarLit = 5;
 constexpr long long kStepMs = 60;
 // The run slides from completely past the left edge to completely past the right
-// edge before the sweep reverses, so the ends of the bar are genuine turning
-// points (a few frames of empty bar) rather than bumpers.
+// edge before reversing, so the ends are genuine turning points (a few frames of
+// empty bar), not bumpers.
 constexpr int kRunFirst = -kBarLit;
 constexpr int kRunLast = kBarCells;
 constexpr int kRunPositions = kRunLast - kRunFirst + 1;
-// First frame: the run fully on screen at the left, so the row looks busy
-// straight away instead of opening on an empty bar.
+// First frame: the run fully on screen at the left, so the row looks busy at once.
 constexpr int kRunStart = 0;
 
-// Where the lit run sits at |elapsed_ms|, and which way it is travelling. The
-// position is fractional so the run can slide *between* cells; at whole-cell
-// times it lands exactly on the integer a discrete sweep would use.
+// Where the lit run sits at |elapsed_ms| and which way it travels. The position is
+// fractional so the run slides between cells; at whole-cell times it lands on the
+// integer a discrete sweep would use.
 struct BarState
 {
     float pos;    // leftmost lit cell; may be negative or past the right edge
@@ -47,14 +46,14 @@ BarState BarAt(long long elapsed_ms)
     return {static_cast<float>(kRunFirst) + (cycle - phase), false};
 }
 
-// The shade an unlit cell uses; the run's edge cells fade towards it.
+// Shade an unlit cell uses; the run's edge cells fade towards it.
 ::ftxui::Color UnlitColor(const style::Palette &pal)
 {
     return pal.text_dim;
 }
 
-// A lit block, shaded by depth. |tier| 0 is the brightest (bold accent) and 4
-// the darkest lit shade.
+// A lit block shaded by depth: tier 0 is the brightest (bold accent), 4 the
+// darkest lit shade.
 ::ftxui::Element LitBlock(int tier, const style::Palette &pal)
 {
     if (tier <= 2)
@@ -72,9 +71,9 @@ BarState BarAt(long long elapsed_ms)
     return e;
 }
 
-// A cell the run's edge is only part-way across: the shade is faded towards the
-// unlit colour by how much of the cell is covered, so the head and tail dissolve
-// in and out. |cover| is in (0, 1); whole cells never take this path.
+// A cell the run's edge is only part-way across: the shade fades towards the unlit
+// colour by how much of the cell is covered, so head and tail dissolve in and out.
+// |cover| is in (0, 1); whole cells never take this path.
 ::ftxui::Element PartialLitBlock(int tier, float cover, const style::Palette &pal)
 {
     const ::ftxui::Color lit = (tier <= 2) ? pal.accent : pal.text_dim;
@@ -87,8 +86,7 @@ BarState BarAt(long long elapsed_ms)
     return e;
 }
 
-// An unlit cell: the small square that keeps the bar's full length visible, so
-// the eye can see the run move rather than a floating blob.
+// An unlit cell: the small square that keeps the bar's full length visible.
 ::ftxui::Element OffBlock(const style::Palette &pal)
 {
     return ::ftxui::text("⬝") | ::ftxui::color(pal.text_dim) | ::ftxui::dim;
@@ -100,14 +98,13 @@ BarState BarAt(long long elapsed_ms)
 {
     const auto &pal = style::palette();
 
-    // BarAt clamps a negative elapsed (a clock adjustment between the start
-    // stamp and the frame must not rewind the bar).
+    // BarAt clamps a negative elapsed (a clock adjustment between the start stamp
+    // and the frame must not rewind the bar).
     const BarState bar = BarAt(elapsed_ms);
     const float run_begin = bar.pos;
     const float run_end = bar.pos + static_cast<float>(kBarLit);
 
-    // The bar is the whole row: the animation alone says "working", so the row
-    // carries no label and its width is just the bar's.
+    // The bar is the whole row: the animation alone says "working".
     ::ftxui::Elements row;
     row.reserve(static_cast<size_t>(kBarCells));
     for (int i = 0; i < kBarCells; i++)
@@ -121,14 +118,12 @@ BarState BarAt(long long elapsed_ms)
         }
 
         // Depth from the leading edge: the edge the run travels towards is the
-        // brightest and the shade falls off behind it.
+        // brightest, the shade falls off behind it.
         const float into_run = static_cast<float>(i) - bar.pos;
         float depth = bar.forward ? (static_cast<float>(kBarLit - 1) - into_run) : into_run;
         depth = std::min(std::max(depth, 0.0f), static_cast<float>(kBarLit - 1));
         const int tier = static_cast<int>(std::lround(depth));
 
-        // A whole cell draws its exact depth shade; a part-covered edge cell
-        // fades that shade towards the unlit colour by its coverage.
         if (cover >= 1.0f)
             row.push_back(LitBlock(tier, pal));
         else
@@ -170,7 +165,7 @@ long long WorkingIndicatorView::ElapsedMs() const
 
 namespace edc
 {
-// 旧入口: 薄委托, 与从前逐帧等价。
+// Old entry point: a thin delegate, frame-for-frame identical to before.
 ::ftxui::Element WorkingIndicatorElement(long long elapsed_ms)
 {
     return ui::WorkingIndicatorView::ElementAt(elapsed_ms);

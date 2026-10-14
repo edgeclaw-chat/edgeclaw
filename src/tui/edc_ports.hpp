@@ -1,15 +1,17 @@
 #pragma once
 
-// ── 端口层: 把"外部世界"(时间 / 终端)挡在视图之外 ──────────────────────────
+// Port layer: keeps the "outside world" (time / terminal) out of the views.
 //
-// 这些依赖原是从环境里各自现取的: TickAnimations 直接读 steady_clock,
-// RenderFooter 直接 ioctl(TIOCGWINSZ)。隐藏依赖让组件无法脱离真实终端单测。
+// These dependencies used to be taken from the environment in place (TickAnimations
+// read steady_clock, RenderFooter did ioctl(TIOCGWINSZ)), which made components
+// untestable outside a real terminal. Raised to interfaces: components depend on
+// the interface, production injects the real one, tests inject a fake (a fake
+// clock drives a frame without sleeping; a fixed width checks the footer's trim
+// threshold).
 //
-// 这里把它们提成**接口**: 组件依赖接口, 生产路径注入真实现, 测试注入假实现
-// (假时钟驱动一帧不必 sleep; 固定宽度验证 footer 的裁剪阈值)。
-//
-// 调色板端口 (style::IPalette / style::SetPaletteProvider) 随 Palette 一起定义在
-// edc_style.hpp —— 它返回的就是那个类型, 放一起才不互相包含。
+// The palette port (style::IPalette / style::SetPaletteProvider) lives with
+// Palette in edc_style.hpp -- it returns that type, so keeping them together
+// avoids a cycle.
 
 #include "edc_style.hpp"
 
@@ -19,7 +21,7 @@
 namespace edc::port
 {
 
-// 时间源。动画与节流读它。
+// Time source, read by animations and throttles.
 class IClock
 {
   public:
@@ -29,7 +31,7 @@ class IClock
     virtual TimePoint now() const = 0;
 };
 
-// 生产实现: 系统单调时钟。
+// Production: the system monotonic clock.
 class SystemClock : public IClock
 {
   public:
@@ -38,16 +40,16 @@ class SystemClock : public IClock
         return std::chrono::steady_clock::now();
     }
 
-    // 进程级共享实例 (无状态, 单例安全)。
+    // Process-wide shared instance (stateless, singleton-safe).
     static std::shared_ptr<const SystemClock> Shared();
 };
 
-// 终端几何。footer 按可用宽度裁剪字段。
+// Terminal geometry; the footer trims its fields against this width.
 class ITerminalInfo
 {
   public:
     virtual ~ITerminalInfo() = default;
-    // 终端列数 (无法取得时返回一个稳妥的默认 80)。
+    // Terminal columns (a safe default of 80 when unavailable).
     virtual int width() const = 0;
 };
 

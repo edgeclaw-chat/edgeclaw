@@ -12,9 +12,9 @@
 /* The old state-name mapping is retired (R3b): the display name has one source,
  * edc_task_state_str, derived from (step, life). */
 
-/* ── 状态转换校验 ──────────────────────────────────────────── */
+/* ── State-transition validation ───────────────────────────── */
 
-/* ── step / life: 名称、解析、映射 ─────────────────────────── */
+/* ── step / life: names, parsing, mapping ──────────────────── */
 
 const char *edc_task_step_name(edc_task_step step)
 {
@@ -42,6 +42,8 @@ const char *edc_task_life_name(edc_task_life life)
     {
     case EDC_LIFE_ALIVE:
         return "ALIVE";
+    case EDC_LIFE_INTERRUPTED:
+        return "INTERRUPTED";
     case EDC_LIFE_SUSPENDED:
         return "SUSPENDED";
     case EDC_LIFE_COMPLETED:
@@ -79,8 +81,13 @@ edc_task_life edc_task_classify_life(const char *name)
 {
     if (!name)
         return EDC_LIFE_ALIVE;
+    if (strcmp(name, "INTERRUPTED") == 0)
+        return EDC_LIFE_INTERRUPTED;
+    /* Legacy: only the old load-time collapse ever wrote "SUSPENDED", and what it meant
+     * was exactly what INTERRUPTED now says (the user pause had no producer even then).
+     * When a real pause lands, this mapping has to be revisited. */
     if (strcmp(name, "SUSPENDED") == 0)
-        return EDC_LIFE_SUSPENDED;
+        return EDC_LIFE_INTERRUPTED;
     if (strcmp(name, "COMPLETED") == 0)
         return EDC_LIFE_COMPLETED;
     if (strcmp(name, "CANCELLED") == 0)
@@ -127,6 +134,8 @@ const char *edc_task_state_str(const struct edc_task *task)
         return "IDLE";
     switch (task->life)
     {
+    case EDC_LIFE_INTERRUPTED:
+        return "INTERRUPTED";
     case EDC_LIFE_SUSPENDED:
         return "SUSPENDED";
     case EDC_LIFE_COMPLETED:
@@ -149,11 +158,11 @@ const char *edc_task_state_str(const struct edc_task *task)
     case EDC_TASKSTEP_AWAIT_TOOLS:
         return "TOOL_CALLING";
     case EDC_TASKSTEP_AWAIT_RESOURCE:
-        return "WAITING_DEPS"; /* 旧枚举没有对应值 */
+        return "WAITING_DEPS"; /* no counterpart in the old enum */
     case EDC_TASKSTEP_DONE:
         break;
     }
-    /* 兜底: DONE 但仍 ALIVE 的畸形组合。没有任何路径产出它。 */
+    /* Fallback: the malformed DONE-but-ALIVE combination. No path produces it. */
     return "IDLE";
 }
 
@@ -202,7 +211,7 @@ bool edc_task_mark_completed(struct edc_task *task)
     return edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED);
 }
 
-/* 失败要**广播**给依赖者 (定义在依赖那一段里, 见下方)。 */
+/* Failure is BROADCAST to dependents (defined in the dependency section below). */
 static void task_notify_dependents_failed(struct edc_task *task);
 
 /* Failure = set ERROR and broadcast to every dependent, so "a task failed"
@@ -212,7 +221,7 @@ bool edc_task_mark_failed(struct edc_task *task)
 {
     if (!task)
         return false;
-    /* 自转移失败 = 它本来就没失败 (终态/非法相位), 那就什么都不该广播 —— 幂等。 */
+    /* A failed self-transition = it was not failing (terminal/illegal phase), so nothing is broadcast -- idempotent. */
     if (!edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR))
         return false;
     task_notify_dependents_failed(task);
@@ -224,11 +233,28 @@ bool edc_task_mark_cancelled(struct edc_task *task)
     return edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED);
 }
 
-/* 挂起**只说 life**: 停在哪一步就停在哪一步 —— 这正是 step/life 拆分要保住的东西
- * (旧词 TASK_SUSPENDED 也是这个语义, 只是说不出口)。 */
+/* Stopping speaks ONLY about life: it stops at whatever step it was on -- exactly what
+ * the step/life split preserves (the old TASK_SUSPENDED meant the same, it just could not
+ * say so). */
 bool edc_task_mark_suspended(struct edc_task *task)
 {
     return task && edc_task_move(task, task->step, EDC_LIFE_SUSPENDED);
+}
+
+/* An interruption speaks about life only (keeps the step) AND is broadcast like a
+ * failure: the process is gone, so its dependents are in the same situation as if this
+ * task had errored -- a JOIN dependent is cancelled (it can come back once this one is
+ * resumed), a SEQUENCE edge is voided and lets the task behind run. */
+bool edc_task_mark_interrupted(struct edc_task *task)
+{
+    if (!task)
+        return false;
+    /* A self-transition = it was already interrupted (or the row is illegal), so
+     * nothing is broadcast -- idempotent. */
+    if (!edc_task_move(task, task->step, EDC_LIFE_INTERRUPTED))
+        return false;
+    task_notify_dependents_failed(task);
+    return true;
 }
 
 /* Transition table, keyed by (step, life). */
@@ -251,9 +277,11 @@ static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life 
                  to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_TOOLS)) ||
                (to_step == EDC_TASKSTEP_DONE && to_life == EDC_LIFE_CANCELLED);
     case EDC_LIFE_SUSPENDED:
-        /* resume 重新判定: 回依赖等待 / 就绪 / 重新请求 LLM / 继续工具链, 或取消 */
+        /* resume re-decides: back to dep-wait / ready / re-request LLM / continue the tool chain, or cancel */
+    case EDC_LIFE_INTERRUPTED:
+        /* Same as a user pause: nothing was decided, so resume re-decides. */
     case EDC_LIFE_ERROR:
-        /* 失败的那一轮续跑 (与 SUSPENDED 同一组目标), 或取消。 */
+        /* continue the failed round (same target set as SUSPENDED), or cancel. */
         return (to_life == EDC_LIFE_ALIVE &&
                 (to_step == EDC_TASKSTEP_READY || to_step == EDC_TASKSTEP_AWAIT_DEPS ||
                  to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_TOOLS)) ||
@@ -261,6 +289,11 @@ static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life 
     case EDC_LIFE_ALIVE:
         break;
     }
+
+    /* An interruption keeps the step it was on and may land on any of them: unlike a
+     * user pause (restricted to the rows below), the process went down mid-request. */
+    if (to_life == EDC_LIFE_INTERRUPTED)
+        return to_step == from_step;
 
     switch (from_step)
     {
@@ -273,8 +306,8 @@ static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life 
                (to_step == EDC_TASKSTEP_DONE && (to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR)) ||
                (to_step == EDC_TASKSTEP_READY && to_life == EDC_LIFE_SUSPENDED);
     case EDC_TASKSTEP_AWAIT_DEPS:
-    case EDC_TASKSTEP_AWAIT_RESOURCE: /* 旧词表里没有这一步 (镜像折成 WAITING_DEPS): 沿用同一行 */
-        /* 依赖齐了 → 回就绪; 或取消 / 失败 */
+    case EDC_TASKSTEP_AWAIT_RESOURCE: /* no such step in the old vocabulary (mirrors to WAITING_DEPS): same row */
+        /* deps satisfied -> back to ready; or cancel / fail */
         return (to_step == EDC_TASKSTEP_READY && to_life == EDC_LIFE_ALIVE) ||
                (to_step == EDC_TASKSTEP_DONE && (to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR));
     case EDC_TASKSTEP_AWAIT_EXEC:
@@ -289,10 +322,11 @@ static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life 
                 (to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_DEPS)) ||
                (to_step == EDC_TASKSTEP_DONE &&
                 (to_life == EDC_LIFE_COMPLETED || to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR)) ||
-               (to_step == EDC_TASKSTEP_AWAIT_TOOLS && to_life == EDC_LIFE_SUSPENDED); /* 跑到一半挂起 */
+               (to_step == EDC_TASKSTEP_AWAIT_TOOLS && to_life == EDC_LIFE_SUSPENDED); /* suspend mid-run */
     case EDC_TASKSTEP_DONE:
-        /* 畸形组合: DONE 却还 ALIVE (显示名折成 IDLE, 见 edc_task_state_str 的兜底)。
-         * 没有任何路径产出它; 沿用 READY 一行, 免得落到 default 之外的行为。 */
+        /* Malformed: DONE yet ALIVE (display name folds to IDLE, see edc_task_state_str's
+         * fallback). No path produces it; reuse the READY row to avoid behaviour
+         * outside default. */
         return (to_life == EDC_LIFE_ALIVE &&
                 (to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_DEPS)) ||
                (to_step == EDC_TASKSTEP_DONE && to_life == EDC_LIFE_CANCELLED) ||
@@ -311,7 +345,7 @@ void edc_task_force_move(struct edc_task *task, edc_task_step step, edc_task_lif
     task->life = life;
 }
 
-/* ── 生命周期 ──────────────────────────────────────────────── */
+/* ── Lifetime ──────────────────────────────────────────────── */
 
 struct edc_task *edc_task_new(const char *task_id, const char *session_id, const char *group_id, const char *desc,
                               edc_channel_type channel_type)
@@ -321,8 +355,9 @@ struct edc_task *edc_task_new(const char *task_id, const char *session_id, const
     task->session_id = strdup(session_id);
     task->group_id = strdup(group_id);
     task->description = strdup(desc ? desc : "");
-    /* 新任务: "带着 input 停着, 等着被派发" —— 没有"等用户输入"这个相位,
-     * 所以直接置 (READY, ALIVE) (旧词写作 TASK_IDLE/TASK_WAITING_INPUT 两行)。 */
+    /* A new task is "parked with input, waiting to be dispatched" -- there is no
+     * "waiting for user input" phase, so it starts at (READY, ALIVE) (the old
+     * vocabulary spelled TASK_IDLE/TASK_WAITING_INPUT on two rows). */
     edc_task_force_move(task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
     /* The output axis defaults to a user task (output goes to the user); written
      * explicitly so correctness does not depend on enum order. */
@@ -352,16 +387,16 @@ struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, con
     struct edc_task *child = edc_task_new(task_id, parent->session_id, parent->group_id, desc, channel_type);
     child->forked_from = parent;
     child->fork_point_completion_seq = fork_point_completion_seq;
-    /* 子任务与 edc_task_new 一样落在 READY (= IDLE 镜像); 不再强制 WAITING_INPUT。 */
+    /* Like edc_task_new, a child lands at READY (= IDLE's mirror); it no longer forces WAITING_INPUT. */
     return child;
 }
 
-/* ── fork 快照 ────────────────────────────────────────────── */
+/* ── fork snapshot ────────────────────────────────────────── */
 
 struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, struct edc_session *session,
                                          const char *snapshot_task_id)
 {
-    (void)session; /* turn 现在自己持有消息 */
+    (void)session; /* the turn holds its own messages now */
     if (!task)
         return NULL;
 
@@ -454,8 +489,9 @@ void edc_task_free(struct edc_task *task)
     edc_task_free_turns(task);
     edc_task_free_deps(task);
     edc_task_tool_calls_clear(task);
-    /* 没被宿主取走的连带改动名单 (纯内存): cb = NULL 只清空。任务都要释放了,
-     * 名单也就没有意义 —— 记的债本来只对"还活着的宿主"有意义。 */
+    /* The side-effect move list not taken by the host (in-memory only): cb = NULL
+     * just clears it. The task is being freed, so the list is meaningless -- the debt
+     * only mattered to a still-live host. */
     edc_task_drain_moves(task, NULL, NULL);
 
     free(task->task_id);
@@ -498,7 +534,7 @@ void edc_task_commit_active_turn(struct edc_task *task)
 {
     if (!task || !task->active_turn)
         return;
-    /* turn 提交 = 本轮所有工具都已完成 (记录已在响应时删除); 账本清空 */
+    /* Committing a turn = every tool this round is done (records removed on response); clear the ledger */
     edc_task_tool_calls_clear(task);
     edc_queue_push(&task->turns, task->active_turn);
     task->active_turn = NULL;
@@ -520,8 +556,8 @@ size_t edc_task_message_count(const struct edc_task *task)
     return n;
 }
 
-/* 把一条 role=="user" 消息的 content 追加到 *out (以 '\n' 连接; *out 为
- * NULL 时新建)。 */
+/* Append a role=="user" message's content to *out (joined with '\n'; creates *out
+ * when NULL). */
 static void append_user_msg(const cJSON *msg, sds *out)
 {
     if (!msg || !out)
@@ -535,7 +571,7 @@ static void append_user_msg(const cJSON *msg, sds *out)
     *out = *out ? sdscatprintf(*out, "\n%s", content) : sdsnew(content);
 }
 
-/* 收集一个 turn 里的 user 输入（'\n' 连接）。turn 自己持有消息。 */
+/* Collect a turn's user inputs (joined with '\n'). The turn holds its own messages. */
 static void collect_user_msgs(const struct edc_turn *turn, sds *out)
 {
     if (!turn || !out)
@@ -546,7 +582,7 @@ static void collect_user_msgs(const struct edc_turn *turn, sds *out)
 
 sds edc_task_user_input(const struct edc_task *task, const cJSON *session_messages)
 {
-    (void)session_messages; /* turn 持有消息, 不再需要 session 消息数组 */
+    (void)session_messages; /* turns hold messages now; no session message array needed */
     if (!task)
         return NULL;
     sds out = NULL;
@@ -556,7 +592,7 @@ sds edc_task_user_input(const struct edc_task *task, const cJSON *session_messag
     return out;
 }
 
-/* ── Todo 同步节流 ────────────────────────────────────────── */
+/* ── Todo sync throttle ────────────────────────────────────── */
 
 void edc_task_note_todo_sync(struct edc_task *task)
 {
@@ -572,15 +608,16 @@ bool edc_task_llm_request_poke(struct edc_task *task)
     task->todo_sync_gap++;
     if (task->todo_sync_gap >= EDC_TODO_SYNC_REMIND_GAP)
     {
-        /* 达阈值: 本次请求 append reminder 提醒一次, 清零重计 —— 避免后续
-         * 每次请求都重复提醒 (直到模型调用 todowrite 或再次超距) */
+        /* At the threshold: this request appends the reminder once, then resets the
+         * count -- avoids repeating it every request (until the model calls todowrite
+         * or the gap grows again). */
         task->todo_sync_gap = 0;
         return true;
     }
     return false;
 }
 
-/* ── Token 统计 ────────────────────────────────────────────── */
+/* ── Token accounting ──────────────────────────────────────── */
 
 void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long long completion_tokens,
                         long long total_tokens, long long cached_tokens)
@@ -588,7 +625,7 @@ void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long lon
     if (!task)
         return;
 
-    /* 全 0 = provider 没给 usage (或错误响应), 不写任何字段, 保持计数干净 */
+    /* All zero = the provider gave no usage (or an error response); write nothing, keep the counters clean */
     if (prompt_tokens <= 0 && completion_tokens <= 0 && total_tokens <= 0 && cached_tokens <= 0)
         return;
 
@@ -623,19 +660,20 @@ void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long lon
     }
 }
 
-/* ── L2 session 记忆: 通知投递 ─────────────────────────────── */
+/* ── L2 session memory: notice delivery ────────────────────── */
 
 void edc_task_memo_commit(struct edc_task *task)
 {
     if (!task)
         return;
-    /* 只在"这次请求真的回来了"之后调用 (见 executor 的响应入口): 模型读到了那条
-     * 通知, 水位才推进。取消/失败不调用 ⇒ 下次请求重发同一条, 幂等无害。 */
+    /* Called only after "this request really came back" (see the executor's response
+     * entry): the model read the notice, so the watermark advances. Cancel/failure do
+     * not call it, so the next request resends it -- idempotent and harmless. */
     if (task->memo_notice_seq > task->memo_seen_seq)
         task->memo_seen_seq = task->memo_notice_seq;
 }
 
-/* ── 依赖 (IPC) ────────────────────────────────────────────── */
+/* ── Dependencies (IPC) ────────────────────────────────────── */
 
 /* DFS cycle detection: if 'source' can reach 'target', adding target->source
  * would create a deadlock. */
@@ -662,11 +700,11 @@ bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, e
     if (!target || !source || target == source)
         return false;
 
-    /* 环检测: source 能到达 target 则拒绝 */
+    /* Cycle detection: reject when source can reach target */
     if (edc_task_can_reach(source, target, 0))
         return false;
 
-    /* 检查是否已有相同依赖 */
+    /* Check for an already-existing identical dependency */
     struct edc_task_dep *existing;
     LL_FOREACH(target->deps, existing)
     {
@@ -674,14 +712,14 @@ bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, e
             return false;
     }
 
-    /* 在 target->deps 中添加节点 */
+    /* Add a node to target->deps */
     struct edc_task_dep *dep_t = g_new0(struct edc_task_dep, 1);
     dep_t->source = source;
     dep_t->target = target;
     dep_t->type = type;
     LL_APPEND(target->deps, dep_t);
 
-    /* 在 source->dependents 中添加对应节点 */
+    /* Add the matching node to source->dependents */
     struct edc_task_dep *dep_s = g_new0(struct edc_task_dep, 1);
     dep_s->source = source;
     dep_s->target = target;
@@ -690,13 +728,13 @@ bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, e
 
     target->deps_total++;
 
-    /* 若 source 已完成，立即标记 dep 为 completed */
+    /* If source is already completed, mark the dep completed at once */
     if (edc_task_is_completed(source))
     {
         edc_task_on_dep_completed(target, source);
     }
-    /* 若 target 刚获得依赖，进入 WAITING_DEPS。
-     * READY 的镜像就是 IDLE; 退休 WAITING_INPUT 后两者同落点, 不再并列。 */
+    /* If target just gained a dependency, go to WAITING_DEPS. READY's mirror is IDLE;
+     * with WAITING_INPUT retired both share the landing spot, no longer parallel. */
     else if (edc_task_is_ready(target))
     {
         edc_task_mark_waiting_deps(target);
@@ -718,7 +756,7 @@ bool edc_task_has_unresolved_deps(const struct edc_task *task)
     return false;
 }
 
-/* 台账: 连带改动的记账函数 (定义在依赖那一段里, 见下方)。 */
+/* Ledger: the side-effect move recorder (defined in the dependency section below). */
 static void task_record_move(struct edc_task *source, struct edc_task *moved);
 
 void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
@@ -734,7 +772,7 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
             dep->completed = true;
             target->deps_completed++;
 
-            /* 同时标记 source->dependents 中的对应节点 */
+            /* Also mark the matching node in source->dependents */
             struct edc_task_dep *sd;
             LL_FOREACH(source->dependents, sd)
             {
@@ -762,28 +800,30 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
 
 /* Side-effect move report (see edc_task.h). */
 
-/* 记一笔债务: |moved| 的相位被 |source| 发起的这次操作连带动过了。
- * 债记在**发起者**头上 —— 宿主正要结算的就是它, 清账时顺手带走。 */
+/* Record a debt: |moved|'s phase was moved as a side effect of an operation
+ * |source| started. The debt is charged to the INITIATOR -- the host is about to
+ * settle it and clears the list along the way. */
 static void task_record_move(struct edc_task *source, struct edc_task *moved)
 {
     if (!source || !moved)
         return;
     struct edc_task_move_report *r = malloc(sizeof(*r));
     if (!r)
-        return; /* 记账失败只丢一次通知, 不改变任何相位 */
+        return; /* a failed record only loses one notice; no phase changes */
     r->task = moved;
     r->next = source->moved_report;
     source->moved_report = r;
 }
 
-/* Void target's SEQUENCE edge to a source that has terminated and will never
- * produce: order is done, so drop the edge and let target run. Shared by cancel
- * and failure. */
-static void task_void_sequence_dep(struct edc_task_dep *dep, struct edc_task *target, struct edc_task *source)
+/* Void target's BARRIER edge to a source that has terminated and will never produce: the
+ * order it stood for is over, so drop the edge and let target run. Reached only from the
+ * barrier kind -- a user-authored dependency (JOIN / SEQUENCE) keeps its edge and takes the
+ * target with it instead. */
+static void task_void_barrier_dep(struct edc_task_dep *dep, struct edc_task *target, struct edc_task *source)
 {
     dep->cancelled = true;
 
-    /* 同时标记 source->dependents 中的对应节点 */
+    /* Also mark the matching node in source->dependents */
     struct edc_task_dep *sd;
     LL_FOREACH(source->dependents, sd)
     {
@@ -794,7 +834,7 @@ static void task_void_sequence_dep(struct edc_task_dep *dep, struct edc_task *ta
         }
     }
 
-    /* 重算: 只计算未取消的依赖 */
+    /* Recompute: count only non-cancelled dependencies */
     size_t active_deps = 0;
     struct edc_task_dep *d;
     LL_FOREACH(target->deps, d)
@@ -806,8 +846,8 @@ static void task_void_sequence_dep(struct edc_task_dep *dep, struct edc_task *ta
 
     if (target->deps_total == 0 && edc_task_awaits_deps(target))
     {
-        /* 抹掉最后一条失效依赖 → 这个 task 从 AWAIT_DEPS 转 READY, 同样是相位改动
-         * (侧栏的依赖等待就解除了), 同样记债。 */
+        /* Voiding the last invalid dependency moves this task from AWAIT_DEPS to
+         * READY -- also a phase change (the sidebar's dep-wait clears), also recorded. */
         edc_task_step step_before = target->step;
         edc_task_life life_before = target->life;
         edc_task_mark_ready(target);
@@ -820,8 +860,8 @@ void edc_task_drain_moves(struct edc_task *task, void (*cb)(void *ctx, struct ed
 {
     if (!task)
         return;
-    /* 取到空为止: 回调里可能**又填进来** (清账本身还会连带改动别的 task)。
-     * cb = NULL 时只清空名单 (释放 task 时用)。 */
+    /* Drain to empty: the callback may FILL more (settling itself moves other tasks).
+     * cb = NULL just clears the list (used when freeing the task). */
     while (task->moved_report)
     {
         struct edc_task_move_report *r = task->moved_report;
@@ -837,7 +877,7 @@ void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source)
     if (!target || !source)
         return;
 
-    /* 找到这条尚在等待的依赖，按类型决定语义 (完成/已取消/不存在 → 无事可做) */
+    /* Find this still-waiting dependency; done/cancelled/absent -> nothing to do */
     struct edc_task_dep *dep = NULL;
     LL_FOREACH(target->deps, dep)
     {
@@ -847,23 +887,27 @@ void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source)
     if (!dep)
         return;
 
-    if (dep->type == TASK_DEP_JOIN)
+    /* A barrier is released by the source ending either way: a fold / curation round that
+     * died must not take the tasks it was holding with it. */
+    if (dep->type == TASK_DEP_BARRIER)
     {
-        /* JOIN: 源没产出 ⇒ 这个依赖者也不该继续 ⇒ 级联取消它。**边留着** (取消不再摘边),
-         * 所以之后 resume 它, 闸门会把它放回"等依赖", 直到源真的产出。 */
-        edc_task_step step_before = target->step;
-        edc_task_life life_before = target->life;
-        edc_task_send_signal(target, TASK_SIGTERM);
-        /* 级联取消也是**相位改动** —— 这个 task 从此进终态, 宿主却只点了源 task 的
-         * 名。记一笔债 (重复取消是幂等的: 相位没真动就不记)。 */
-        if (target->step != step_before || target->life != life_before)
-            task_record_move(source, target);
+        task_void_barrier_dep(dep, target, source);
         return;
     }
 
-    /* SEQUENCE(`;`): 只是顺序约束，不需要源 output —— 抹去这条依赖即可，
-     * 本 task 仍可运行。 */
-    task_void_sequence_dep(dep, target, source);
+    /* A dependency the user authored -- JOIN or SEQUENCE, which differ only in whether the
+     * source's output would have been injected: the source produced nothing, so this
+     * dependent cannot continue => cancel it in a cascade. The EDGE STAYS (cancel does not
+     * detach it), so a later resume sends it back to dep-wait until the source really
+     * produces. */
+    edc_task_step step_before = target->step;
+    edc_task_life life_before = target->life;
+    edc_task_send_signal(target, TASK_SIGTERM);
+    /* The cascade cancel is also a PHASE CHANGE -- this task now enters a terminal
+     * state while the host only named the source task. Record a debt (repeated
+     * cancels are idempotent: no real move, no record). */
+    if (target->step != step_before || target->life != life_before)
+        task_record_move(source, target);
 }
 
 /* Handle a failed source, symmetric with cancellation (neither will produce
@@ -873,7 +917,7 @@ void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
     if (!target || !source)
         return;
 
-    /* 找到这条尚在等待的依赖，按类型决定语义 (完成/已作废/不存在 → 无事可做) */
+    /* Find this still-waiting dependency; done/voided/absent -> nothing to do */
     struct edc_task_dep *dep = NULL;
     LL_FOREACH(target->deps, dep)
     {
@@ -883,35 +927,41 @@ void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
     if (!dep)
         return;
 
-    if (dep->type == TASK_DEP_JOIN)
+    /* A barrier is released by the source ending either way -- see on_dep_cancelled. */
+    if (dep->type == TASK_DEP_BARRIER)
     {
-        /* JOIN: 级联失败,**但边留着** (2026-10-10 裁决)。源的 output 现在拿不到 —— 不是
-         * 永远拿不到: 源是 ERROR/CANCELLED, 两者都可以 resume。摘掉边等于偷偷替调用方放弃
-         * 它要等的输入。留着 ⇒ resume 这个依赖者时它回到"等依赖", 等源真的产出, 那条边完成时
-         * 它会被自动放行 (edc_task_on_dep_completed → mark_ready → 扫描驱动)。 */
-        edc_task_step step_before = target->step;
-        edc_task_life life_before = target->life;
-
-        /* Write the reason into output ("whose output will never arrive"), so the
-         * host has a notice instead of a false generic "LLM request failed". */
-        if (source->task_id)
-            edc_task_set_output(target, sdscatprintf(sdsempty(), "[failed: its dependency %s failed, so the output "
-                                                                 "it was waiting for will never arrive]",
-                                                     source->task_id));
-        else
-            edc_task_set_output(target, sdsnew("[failed: a dependency failed, so the output it was waiting for will "
-                                               "never arrive]"));
-
-        edc_task_mark_failed(target); /* 边不摘: 见上 */
-        /* 级联失败也是**相位改动** —— 这个 task 从此进终态, 宿主却只点了源 task 的
-         * 名。记一笔债 (重复失败是幂等的: 相位没真动就不记)。 */
-        if (target->step != step_before || target->life != life_before)
-            task_record_move(source, target);
+        task_void_barrier_dep(dep, target, source);
         return;
     }
 
-    /* SEQUENCE(`;`): 与取消那条路逐字同构 —— 源死在前头, 顺序已走完, 抹边放行。 */
-    task_void_sequence_dep(dep, target, source);
+    /* Cascade failure, and the EDGE STAYS. The dependency is unsatisfiable *now* -- not
+     * forever: the source is ERROR / CANCELLED / INTERRUPTED and all of them are resumable.
+     * Detaching the edge would silently give up what this task is waiting for (its output
+     * for JOIN, its turn for SEQUENCE); keeping it means a later resume returns this task to
+     * dep-wait, and when the source really produces its completed edge releases this one
+     * automatically (edc_task_on_dep_completed -> mark_ready -> the scan drives it). */
+    edc_task_step step_before = target->step;
+    edc_task_life life_before = target->life;
+
+    /* Write the reason into output, so the host has a notice instead of a false generic
+     * "LLM request failed". The wording follows what actually happened to the source: an
+     * interrupted one did not fail and can still be resumed into producing. */
+    const char *what = edc_task_is_interrupted(source) ? "was interrupted" : "failed";
+    const char *why = (dep->type == TASK_DEP_JOIN)
+                          ? "so the output it was waiting for is not available -- resume that one to get it"
+                          : "so this task cannot go on -- resume that one first";
+    if (source->task_id)
+        edc_task_set_output(target, sdscatprintf(sdsempty(), "[failed: its dependency %s %s, %s]", source->task_id,
+                                                 what, why));
+    else
+        edc_task_set_output(target, sdscatprintf(sdsempty(), "[failed: a dependency %s, %s]", what, why));
+
+    edc_task_mark_failed(target); /* edge not detached: see above */
+    /* The cascade failure is also a PHASE CHANGE -- this task now enters a terminal
+     * state while the host only named the source task. Record a debt (repeated
+     * failures are idempotent: no real move, no record). */
+    if (target->step != step_before || target->life != life_before)
+        task_record_move(source, target);
 }
 
 /* Failure broadcast: snapshot the dependents before processing, since a JOIN
@@ -931,7 +981,7 @@ static void task_notify_dependents_failed(struct edc_task *task)
 
     struct edc_task **targets = malloc(n * sizeof(*targets));
     if (!targets)
-        return; /* 快照失败只丢一次广播, 不改变任何相位 */
+        return; /* a failed snapshot only loses one broadcast; no phase changes */
     size_t i = 0;
     LL_FOREACH(task->dependents, dep)
     targets[i++] = dep->target;
@@ -956,12 +1006,12 @@ void edc_task_notify_dependents(struct edc_task *task)
     }
 }
 
-/* ── 信号 ──────────────────────────────────────────────────── */
+/* ── Signals ───────────────────────────────────────────────── */
 
 bool edc_task_is_running(const struct edc_task *task)
 {
-    /* Running = ALIVE and awaiting the executor/tool reply; suspended-while-awaiting
-     * tools does not count. */
+    /* Running = ALIVE and awaiting the executor/tool reply; stopped-while-awaiting tools
+     * (INTERRUPTED / SUSPENDED) does not count. */
     return edc_task_awaits_exec(task) || edc_task_awaits_tools(task);
 }
 
@@ -974,8 +1024,9 @@ void edc_task_send_signal(struct edc_task *task, edc_task_signal sig)
 
     if (sig == TASK_SIGTERM)
     {
-        /* 先快照依赖者列表: 级联取消会往它们身上写 (取消/作废边), 而这个列表本身
-         * 可能在递归里被改 —— 遍历前先取出来最稳。 */
+        /* Snapshot the dependent list first: a cascade cancel writes to them (voided
+         * edges) and the list itself may change during recursion -- taking it out
+         * before iterating is safest. */
         size_t n = 0;
         struct edc_task_dep *dep;
         LL_FOREACH(task->dependents, dep)
@@ -995,17 +1046,18 @@ void edc_task_send_signal(struct edc_task *task, edc_task_signal sig)
         }
     }
 
-    /* **不动自己的 deps** (2026-10-10 裁决): 取消 = 停下, 不是删除/回收 —— 任务还能
-     * resume, 而它的依赖是它状态的一部分。摘掉边会让 resume "当作从来没依赖过"地跑下去,
-     * 静默丢掉它本该等到的输入。留着边 ⇒ resume 时闸门数到未满足的边, 把它放回"等依赖",
-     * 等源任务真的产出 (或被删掉) 才继续。 */
+    /* It does NOT touch its own deps: cancel = stop, not delete/reclaim -- the task can
+     * still resume and its dependencies are part of its state. Detaching the edges would
+     * let resume run "as if it never depended", silently dropping the input it was owed.
+     * Keeping them => on resume the gate counts unsatisfied edges and returns it to
+     * dep-wait until the source really produces (or is deleted). */
 
-    /* 任务被取消: 在途工具追账已无意义, 丢弃账本 */
+    /* Cancelled: chasing in-flight tool records is pointless; drop the ledger */
     edc_task_tool_calls_clear(task);
     edc_task_mark_cancelled(task);
 }
 
-/* ── 未完成工具调用表 (resume 账本) ────────────────────────── */
+/* ── Incomplete tool-call table (resume ledger) ────────────── */
 
 static void edc_task_tool_call_record_free(struct edc_tool_call_record *rec)
 {
@@ -1115,8 +1167,9 @@ void edc_task_repair_dangling_tool_calls(struct edc_task *task)
     if (!turn)
         return;
 
-    /* 只扫**修补之前**的既有消息: 补进去的 tool 消息不参与遍历。队列会因追加而
-     * realloc, 所以 base 指针每轮重取 (不能缓存数组首地址)。 */
+    /* Scan only the pre-existing messages: tool messages added here are not iterated.
+     * The queue reallocs on append, so the base pointer is re-read each round (do not
+     * cache the array's first address). */
     size_t n = turn->messages.tail;
     for (size_t i = 0; i < n; i++)
     {
@@ -1136,22 +1189,23 @@ void edc_task_repair_dangling_tool_calls(struct edc_task *task)
 
             const struct edc_tool_call_record *rec = edc_task_tool_call_find(task, id->valuestring);
             if (rec && rec->status != TOOL_CALL_EXECUTING)
-                continue; /* PENDING: 交给驱动段真派发, 不要造假响应 */
+                continue; /* PENDING: let the drive section really dispatch; do not fake a response */
             if (task_turn_has_tool_response(turn, n, id->valuestring))
-                continue; /* 已经有结果了 (幂等) */
+                continue; /* already has a result (idempotent) */
 
             cJSON *fn = cJSON_GetObjectItem(tc, "function");
             cJSON *nm = fn ? cJSON_GetObjectItem(fn, "name") : NULL;
             edc_turn_add_tool_message(turn, id->valuestring, (nm && cJSON_IsString(nm)) ? nm->valuestring : "",
                                       kInterruptedToolNote);
-            /* 账本里若还留着这条 (SUSPENDED / ERROR 路径: EXECUTING 已派发、结果未回),
-             * 一并删掉 —— 它已经有响应了, 不该再被当成未完成。 */
+            /* If the ledger still holds this one (INTERRUPTED / SUSPENDED / ERROR path: EXECUTING
+             * dispatched, result never returned), remove it too -- it now has a
+             * response and must not count as incomplete. */
             edc_task_tool_call_remove(task, id->valuestring);
         }
     }
 }
 
-/* ── 输出 ──────────────────────────────────────────────────── */
+/* ── Output ────────────────────────────────────────────────── */
 
 void edc_task_set_output(struct edc_task *task, sds output)
 {
@@ -1176,7 +1230,7 @@ void edc_task_set_completion_seq(struct edc_task *task, uint32_t seq)
     task->completion_seq = seq;
 }
 
-/* ── 折叠 ────────────────────────────────────────────────── */
+/* ── Folding ───────────────────────────────────────────────── */
 
 /* Foldable = finished, not yet folded, and not itself a fold (sink != GROUP_MEMORY).
  * The `sink` condition keeps the fold task (and the whole system group) out of the
@@ -1265,7 +1319,7 @@ void edc_task_set_prompt(struct edc_task *task, const char *prompt_name, const c
         task->prompt = sdsnew(prompt_text);
 }
 
-/* ── 上下文构建 ────────────────────────────────────────────── */
+/* ── Context building ──────────────────────────────────────── */
 
 cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *config)
 {
@@ -1292,7 +1346,7 @@ cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *c
         sdsfree(default_prompt);
     }
 
-    /* 2. 已完成的 turn 消息 */
+    /* 2. committed turn messages */
     for (size_t qi = task->turns.head; qi < task->turns.tail; qi++)
     {
         struct edc_turn *turn = task->turns.data[qi];
@@ -1303,7 +1357,7 @@ cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *c
         }
     }
 
-    /* 3. 已完成依赖 task 的 output 注入 */
+    /* 3. inject completed dependency tasks' output */
     struct edc_task_dep *dep;
     LL_FOREACH(task->deps, dep)
     {
@@ -1321,7 +1375,7 @@ cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *c
     return messages;
 }
 
-/* ── 关系 / 出站 (见 edc_task.h) ───────────────────────────── */
+/* ── Relations / outbound (see edc_task.h) ─────────────────── */
 
 struct edc_session *edc_task_session(const struct edc_task *task)
 {

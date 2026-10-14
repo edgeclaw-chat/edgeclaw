@@ -141,6 +141,44 @@ static void test_expand_vars_out_error(void)
     sdsfree(out);
 }
 
+static void test_desc_needs_quotes(void)
+{
+    /* No options -> any shape is fine. */
+    T_CHECK(edc_cmd_desc_needs_quotes(NULL) == false, "needs_quotes: NULL -> false");
+    T_CHECK(edc_cmd_desc_needs_quotes("plain description") == false, "needs_quotes: plain text -> false");
+    T_CHECK(edc_cmd_desc_needs_quotes("{\"a\": 1}") == false, "needs_quotes: json-ish text -> false");
+    T_CHECK(edc_cmd_desc_needs_quotes("a - b") == false, "needs_quotes: a lone '-' is not an option");
+
+    /* Quote-led -> the option area after it is legal. */
+    T_CHECK(edc_cmd_desc_needs_quotes("\"quoted desc\"") == false, "needs_quotes: quoted -> false");
+    T_CHECK(edc_cmd_desc_needs_quotes("'quoted desc'") == false, "needs_quotes: sq quoted -> false");
+    T_CHECK(edc_cmd_desc_needs_quotes("\"\"\"multi\"\"\" -d d1") == false, "needs_quotes: quoted + opt -> false");
+    T_CHECK(edc_cmd_desc_needs_quotes("  \"spaced\" --bg") == false, "needs_quotes: leading spaces trimmed");
+
+    /* Unquoted but carrying an option -> the description must be quoted. */
+    T_CHECK(edc_cmd_desc_needs_quotes("desc --bg") == true, "needs_quotes: unquoted --bg -> true");
+    T_CHECK(edc_cmd_desc_needs_quotes("desc -d d1") == true, "needs_quotes: unquoted -d -> true");
+    T_CHECK(edc_cmd_desc_needs_quotes("  lead --group g1") == true, "needs_quotes: leading spaces, option");
+    T_CHECK(edc_cmd_desc_needs_quotes("analyze \"find bugs\" --bg") == true,
+             "needs_quotes: option after a bare first word -> true");
+}
+
+static void test_escapes(void)
+{
+    /* Python-style escapes, the same in both quote kinds. */
+    check("\"a\\nb\"", "a\nb", 0, 0, "dq: \\n is a newline");
+    check("\"a\\tb\"", "a\tb", 0, 0, "dq: \\t is a tab");
+    check("\"a\\\\b\"", "a\\b", 0, 0, "dq: \\\\ is one backslash");
+    check("\"a\\\"b\"", "a\"b", 0, 0, "dq: \\\" is a quote, not the closing one");
+    check("\"\\x41B\"", "AB", 0, 0, "dq: \\xHH");
+    check("'a\\'b'", "a'b", 1, 0, "sq: \\' works, and sq stays raw");
+    check("'a\\nb'", "a\nb", 1, 0, "sq: escapes apply, literal still 1");
+    check("\"a\\db\"", "a\\db", 0, 0, "dq: unknown escape keeps its backslash");
+    /* An unterminated region is not one: the whole text stays the input. */
+    check("\"abc", "\"abc", 0, 0, "unterminated quote -> whole text verbatim");
+    check("\"\"\"a\\nb\"\"\"", "a\nb", 0, 0, "triple: escapes apply too");
+}
+
 int main(void)
 {
     test_triple_single_raw();
@@ -150,6 +188,8 @@ int main(void)
     test_triple_multiline_bg();
     test_plain_unquoted();
     test_flags_after_quotes();
+    test_escapes();
+    test_desc_needs_quotes();
     test_expand_vars_out_error();
 
     printf("test_cmd_parse: %d passed, %d failed\n", passed, failed);

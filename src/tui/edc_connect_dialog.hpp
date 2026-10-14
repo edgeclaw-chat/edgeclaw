@@ -1,16 +1,18 @@
 #pragma once
 
-// ── 视图: /connect 弹窗 (ConnectDialog) ─────────────────────────────────────
+// View: the /connect dialog (ConnectDialog).
 //
-// 从前这个弹窗的状态、渲染、事件、提交全糊在 TUIWindow 里 (6 个成员 + 3 个方法 +
-// OnEvent 的一段分支)。它是一个自洽的组件: 三个字段 (API URL / Model / API key)
-// 加 Connect/Cancel, 自己持有表单状态、自己渲染、自己处理事件。
+// Its state, rendering, events and submit used to be welded into TUIWindow (6
+// members + 3 methods + a branch in OnEvent). It is a self-contained component:
+// three fields (API URL / Model / API key) plus Connect/Cancel, owning its form
+// state, rendering and event handling.
 //
-// 窗口只剩两件事: 打开它 (Open 用当前配置预填) 和把它作为 overlay 画出来。配置的
-// 持久化/热应用交给构造时传入的 Submit 回调 —— 弹窗因此不认识 IAppFacade。
+// The window only opens it (Open pre-fills from the current config) and draws it
+// as an overlay. Config persistence/hot-apply goes through the Submit callback
+// given at construction, so the dialog never sees IAppFacade.
 
 #include "edc_app_facade.hpp" /* port::ConnectConfig */
-#include "edc_widget.hpp"     /* ui::Widget (模板方法基类) */
+#include "edc_widget.hpp"     /* ui::Widget (Template Method base) */
 
 #include "ftxui/component/component_base.hpp"
 
@@ -23,11 +25,12 @@ namespace edc::ui
 class ConnectDialog : public Widget
 {
   public:
-    // 提交回调: 把填好的配置交给宿主 (持久化 + 热应用)。返回 true = 成功, 弹窗自关。
+    // Submit callback: hand the filled config to the host (persist + hot-apply).
+    // true = success, the dialog closes itself.
     using Submit = std::function<bool(const port::ConnectConfig &)>;
     explicit ConnectDialog(Submit submit);
 
-    // 用 |initial| 预填三个字段并打开。
+    // Pre-fill the three fields from |initial| and open.
     void Open(const port::ConnectConfig &initial);
     void Close();
     bool IsOpen() const
@@ -35,15 +38,16 @@ class ConnectDialog : public Widget
         return open_;
     }
 
-    // 只在打开时由窗口转发事件: Esc 关, Enter 提交, 其余交给字段。
+    // Forwarded by the window only while open: Esc closes, Enter submits, the
+    // rest goes to the fields.
     bool OnEvent(::ftxui::Event event) override;
 
   protected:
-    // Widget 模板方法: 只实现绘制 (OnRender 由基类固定为 Draw + reflect)。
+    // Widget template method: draw only (OnRender is fixed to Draw + reflect).
     ::ftxui::Element Draw(const Frame &frame) override;
 
   private:
-    // 收集字段并调用 Submit; 成功则自关。
+    // Collect the fields and call Submit; close on success.
     bool SubmitNow();
 
     bool open_ = false;

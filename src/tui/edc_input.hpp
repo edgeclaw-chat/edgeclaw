@@ -9,33 +9,29 @@ namespace edc
 {
 
 // A multi-line editor that soft-wraps long logical lines to the widget's width
-// (CJK/wide-char aware) instead of clipping them, so the draft stays fully
-// visible. Editing only ever changes the real content (\n comes from Alt+Enter
-// or a paste); wrap boundaries are a display concern. Beyond ftxui::Input it
-// navigates ArrowUp/Down across *visual* rows while keeping the column, scrolls
-// internally when the draft is taller than |max_visible_rows|, keeps a
-// recallable submitted-message history, and puts the terminal caret on the
-// caret glyph of the wrapped row.
+// (CJK/wide-char aware) instead of clipping them. Editing only ever changes the
+// real content (\n comes from Alt+Enter or a paste); wrap boundaries are a
+// display concern. Navigates ArrowUp/Down across *visual* rows while keeping the
+// column, scrolls internally past |max_visible_rows|, keeps a recallable
+// submitted-message history, and puts the terminal caret on the wrapped row.
 class EdcInput : public ::ftxui::ComponentBase
 {
   public:
-    // Edits |content| in place; |placeholder| shows while empty. Longer drafts
-    // scroll internally so the caret row stays visible.
+    // Edits |content| in place; |placeholder| shows while empty.
     EdcInput(std::string *content, std::string placeholder, int max_visible_rows = 8);
 
-    // Reset caret/scroll state after the caller clears the content (e.g. a
-    // submitted message). Also leaves history mode.
+    // Reset caret/scroll state after the caller clears the content. Also leaves
+    // history mode.
     void Reset();
 
     // Append to the recall history (consecutive duplicates collapse, the list is
-    // capped). Called by the owner on submit; also leaves any in-progress recall
-    // so the next ArrowUp starts from the newest entry.
+    // capped); also leaves any in-progress recall.
     void AddHistory(const std::string &entry);
 
     // Drop every entry, so the owner can re-seed from disk idempotently.
     void ClearHistory();
 
-    // Entries oldest-first, exactly as handed to AddHistory.
+    // Entries oldest-first.
     const std::vector<std::string> &History() const
     {
         return history_;
@@ -52,14 +48,12 @@ class EdcInput : public ::ftxui::ComponentBase
         return cursor_;
     }
 
-    // Overrides of ComponentBase's public interface; kept public so callers
-    // holding this component directly can feed it events and render it.
     ::ftxui::Element OnRender() override;
     bool OnEvent(::ftxui::Event event) override;
 
   private:
-    // One visual (displayed) row: a byte range into the whole content, never
-    // splitting a UTF-8 sequence.
+    // One visual (displayed) row: a byte range into the content, never splitting
+    // a UTF-8 sequence.
     struct Row
     {
         int begin = 0;
@@ -78,8 +72,8 @@ class EdcInput : public ::ftxui::ComponentBase
     // Flattened display layout of the current content.
     struct Layout
     {
-        std::vector<Row> rows;      // visual rows, in reading order
-        std::vector<Logical> lines; // logical lines, in order
+        std::vector<Row> rows;
+        std::vector<Logical> lines;
     };
 
     bool HandleCharacter(const std::string &character);
@@ -94,8 +88,8 @@ class EdcInput : public ::ftxui::ComponentBase
     bool HandleEnd();
     bool HandleMouse(::ftxui::Event event);
 
-    // Recall the previous entry only when the caret already sits on the first
-    // visual row; otherwise move up a row. HandleDown() mirrors it.
+    // Recall the previous entry only when the caret sits on the first visual row;
+    // otherwise move up a row. HandleDown() mirrors it.
     bool HandleUp();
     bool HandleDown();
 
@@ -105,20 +99,19 @@ class EdcInput : public ::ftxui::ComponentBase
     bool HistoryPrev();
     bool HistoryNext();
     void RecallHistory(size_t index);
-    // Forget the browsing position and the stashed draft (callers that restore
-    // the draft already copied it into |content_|).
+    // Forget the browsing position and the stashed draft.
     void StopBrowsing();
 
-    // Terminal cells available for one wrapped row: one column is reserved for
-    // the caret cell appended at a row end, so rows never overflow the box.
+    // Terminal cells available for one wrapped row (one column reserved for the
+    // caret cell appended at a row end).
     int WrapColumns() const;
 
     // Display layout for |content| wrapped to |cols| cells.
     static Layout MakeLayout(const std::string &content, int cols);
 
-    // Locate |offset| in the layout: returns the visual-row index and stores the
-    // "effective" offset (a boundary byte dropped by wrapping clamps to the end
-    // of the previous row) into |*lo|.
+    // Locate |offset|: returns the visual-row index and stores the "effective"
+    // offset (a boundary byte dropped by wrapping clamps to the end of the
+    // previous row) into |*lo|.
     static int FindCaretRow(const Layout &layout, int offset, int *lo);
 
     // Terminal-cell column of |offset| inside visual |row|.
@@ -135,28 +128,26 @@ class EdcInput : public ::ftxui::ComponentBase
     std::string placeholder_;
     int max_visible_rows_ = 8;
 
-    // Byte offset of the caret into |content_|, always on a UTF-8 boundary.
+    // Byte offset of the caret, always on a UTF-8 boundary.
     int cursor_ = 0;
-    // Index into Layout::rows of the first visible row of the scroll window.
+    // Index into Layout::rows of the first visible row.
     int scroll_ = 0;
-    // Column kept while moving vertically; -1 = derive from the caret. Any
-    // horizontal edit/movement clears it.
+    // Column kept while moving vertically; -1 = derive from the caret.
     int desired_col_ = -1;
     // Insert mode (bar caret) vs. overwrite (block caret).
     bool insert_mode_ = true;
-    // Whether the mouse hovers this widget, from the last mouse event.
     bool hovered_ = false;
 
-    // Submitted-message history, oldest first. |history_pos_| is the entry being
-    // shown (== size() while editing the draft); |draft_| is the in-progress
-    // text stashed when browsing starts, so HistoryNext() can restore it.
+    // Submitted-message history, oldest first. |history_pos_| is the entry shown
+    // (== size() while editing the draft); |draft_| is the text stashed when
+    // browsing starts, so HistoryNext() can restore it.
     std::vector<std::string> history_;
     size_t history_pos_ = 0;
     std::string draft_;
     int draft_cursor_ = 0;
     bool browsing_ = false;
 
-    // Box measured during the previous frame's layout: the wrap width comes from
+    // Box measured during the previous frame's layout; the wrap width comes from
     // it, so the widget adapts to a resize one frame later.
     ::ftxui::Box box_;
 };

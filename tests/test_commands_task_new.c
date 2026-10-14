@@ -11,7 +11,9 @@
 #include "edc_compat.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
+#include "edc_turn.h"
 #include "utlist_fix.h"
+#include <cJSON.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -75,19 +77,40 @@ static void drive_command(struct edc_config *cfg, struct edc_session_manager *sm
 }
 
 /* 挂起的任务不会进 send_llm, 所以只能自己去 session 的组里找。 */
-static struct edc_task *find_task_by_desc(struct edc_session *sess, const char *desc)
+static int count_tasks(struct edc_session *sess)
 {
+    int n = 0;
     struct edc_task_group *g;
     DL_FOREACH(sess->groups, g)
     {
         struct edc_task *t;
         LL_FOREACH2(g->members, t, group_next)
-        {
-            if (t->description && strcmp(t->description, desc) == 0)
-                return t;
-        }
+        n++;
     }
-    return NULL;
+    return n;
+}
+
+/* 这条 turn 发给 LLM 的第一条用户消息。 */
+static const char *first_user_content(struct edc_turn *turn)
+{
+    if (!turn || turn->messages.tail == turn->messages.head)
+        return NULL;
+    cJSON *msg = turn->messages.data[turn->messages.head];
+    return cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
+}
+
+/* 组里除 |skip| 之外最后一个成员。 */
+static struct edc_task *last_member_except(struct edc_task_group *g, struct edc_task *skip)
+{
+    struct edc_task *last = NULL, *t;
+    if (!g)
+        return NULL;
+    LL_FOREACH2(g->members, t, group_next)
+    {
+        if (t != skip)
+            last = t;
+    }
+    return last;
 }
 
 int main(void)
@@ -128,38 +151,103 @@ int main(void)
               "description is the desc argument");
     }
 
-    /* ── /task new --suspended: 建, 但不立即执行 ─────────────────── */
+    /* `/task new --suspended` was removed (never used): a task is dispatched on
+     * creation, always. The SUSPENDED life itself stays -- an interrupted task
+     * restores as SUSPENDED -- and `/task resume` is covered by
+     * test_cross_dep_restart (it drives the real command). */
 
-    TEST("/task new <desc> --suspended creates it without running it");
-    g_llm_calls = 0;
-    g_llm_task = NULL;
-    /* 注意 /task new 的 flag **只有在引号输入之后才被解析** —— 不加引号时整个
-     * 剩余文本都成为 desc, flag 被忽略 (这个陷阱会让人以为新 flag 没生效)。 */
-    drive_command(cfg, sm, sched, "/task new \"\"\"shelved\"\"\" --suspended");
+    /* ── 默认进当前组（因此会排队）; 想另起一段得显式 --new-group ──── */
 
-    struct edc_task *susp = find_task_by_desc(sess, "shelved");
-    CHECK(g_llm_calls == 0, "send_llm NOT called (nothing executed)");
-    CHECK(susp != NULL, "the task exists");
-    if (susp)
-    {
-        CHECK(edc_task_is_suspended(susp), "state is SUSPENDED");
-        /* 初始相位与普通新建任务相同 —— 输入已经装上了, 只是没跑。 */
-        CHECK(susp->active_turn != NULL, "input is attached (same initial phase as a normal task)");
-        CHECK(susp->current_request_id == NULL, "no request registered (nothing is in flight)");
-        /* 决定 1: 挂起的任务不算 active task。 */
-        CHECK(edc_session_get_active_task(sess) != susp, "does not become the active task");
-    }
-
-    /* ── resume 之后就走普通路径 ─────────────────────────────────── */
-
-    TEST("/task resume runs a task that was created suspended");
-    if (susp)
+    TEST("/task new (no flags) joins the group in front and queues there");
+    struct edc_task *holder = g_llm_task; /* the task the case above dispatched */
+    CHECK(holder && holder->group, "a task holds the front");
+    if (holder && holder->group)
     {
         g_llm_calls = 0;
         g_llm_task = NULL;
-        edc_scheduler_resume_task(sched, susp);
-        CHECK(g_llm_calls == 1, "send_llm called once (it runs now)");
-        CHECK(edc_task_awaits_exec(susp), "resume advances to LLM_PROCESSING");
+        drive_command(cfg, sm, sched, "/task new \"queued\"");
+        CHECK(g_llm_task == NULL, "nothing was dispatched -- it waits for the one in front");
+        struct edc_task *queued = last_member_except(holder->group, holder);
+        CHECK(queued && queued->group == holder->group, "it joined the group in front (no new group)");
+        CHECK(queued && edc_task_awaits_deps(queued), "and it is waiting on a dependency");
+        CHECK(edc_session_get_active_task(sess) == holder, "the front is still on the running task");
+
+        TEST("/task new --new-group opens one, explicitly");
+        g_llm_calls = 0;
+        g_llm_task = NULL;
+        drive_command(cfg, sm, sched, "/task new \"fresh\" --new-group");
+        CHECK(g_llm_task != NULL, "it ran immediately -- there is nothing to queue behind");
+        CHECK(g_llm_task && g_llm_task->group && strcmp(g_llm_task->group->group_id, g_llm_task->task_id) == 0,
+              "in a group of its own");
+        CHECK(g_llm_task && g_llm_task->group != holder->group, "which is not the group in front");
+        CHECK(g_llm_task && edc_scheduler_get_foreground(sess) == g_llm_task->group,
+              "and it took the foreground");
+    }
+
+    /* ── 带选项但 desc 没引号: 语法错误 ──────────────────────────── */
+
+    TEST("/task new with options needs the description quoted");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "/task new probe --bg");
+    CHECK(g_llm_task == NULL, "nothing was created (no silently-swallowed option)");
+    CHECK(g_llm_calls == 0, "and nothing ran");
+
+    /* ── 没有输入: 和 shell 那条路一样, 不该建任务 ───────────────── */
+
+    TEST("/task new with an empty description creates nothing");
+    int before = count_tasks(sess);
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "/task new \"\"");
+    CHECK(count_tasks(sess) == before, "no task was created (a task needs an input)");
+    CHECK(g_llm_task == NULL, "nothing was dispatched");
+
+    /* ── desc 只用于显示名, 送给 LLM 的是完整输入 ──────────────────── */
+
+    TEST("/task new truncates the display name but sends the whole prompt");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    /* --new-group: it must run right away, and the group in front already has a runner. */
+    drive_command(cfg, sm, sched, "/task new \"a prompt clearly longer than thirty characters\" --new-group");
+    CHECK(g_llm_task != NULL, "the task ran");
+    if (g_llm_task)
+    {
+        const char *full = "a prompt clearly longer than thirty characters";
+        CHECK(g_llm_task->description && strcmp(g_llm_task->description, full) != 0 &&
+                  sdslen(g_llm_task->description) < strlen(full),
+              "the description is the truncated display name");
+        CHECK(g_llm_task->description && strstr(g_llm_task->description, "...") != NULL,
+              "and the truncation is marked");
+        const char *sent = first_user_content(g_llm_task->active_turn);
+        CHECK(sent && strcmp(sent, full) == 0, "while the prompt reaches the LLM in full");
+    }
+
+    /* ── /task resume --all: 重启后一把复活 ───────────────────────── */
+
+    TEST("/task resume --all re-decides every stopped task, in dependency order");
+    /* 先造两个: A 在新组里跑, B 排在它后面(同组)。 */
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "/task new \"alpha\" --new-group");
+    struct edc_task *alpha = g_llm_task;
+    CHECK(alpha != NULL, "A 在跑");
+    struct edc_task *beta = NULL;
+    if (alpha)
+    {
+        drive_command(cfg, sm, sched, "/task new \"beta\"");
+        beta = last_member_except(alpha->group, alpha);
+        CHECK(beta && edc_task_awaits_deps(beta), "B 排在 A 后面");
+
+        /* 模拟重启后的样子: A 被中断 —— 而按依赖语义, 排队等它的 B 一起倒。 */
+        CHECK(edc_task_mark_interrupted(alpha), "A 被中断");
+        CHECK(beta && edc_task_has_failed(beta), "B 跟着级联失败 (SEQ 与 JOIN 一致)");
+
+        g_llm_calls = 0;
+        g_llm_task = NULL;
+        drive_command(cfg, sm, sched, "/task resume --all");
+        CHECK(g_llm_task == alpha, "A 被复活并驱动");
+        CHECK(beta && edc_task_awaits_deps(beta), "B 回到等依赖 (没有越过 A)");
     }
 
     printf("\n  %d passed, %d failed\n", passed, failed);
