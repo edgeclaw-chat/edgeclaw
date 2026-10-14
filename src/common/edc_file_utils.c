@@ -242,7 +242,7 @@ bool edc_dir_create_with_parents(const char *path, int mode, EdcError **error)
         uv_fs_t req;
         int r = (int)uv_fs_mkdir(g_file_loop, &req, partial, mode, NULL);
         uv_fs_req_cleanup(&req);
-        if (r < 0 && r != -EEXIST)
+        if (r < 0 && r != UV_EEXIST) /* libuv codes are not -errno; UV_EEXIST is -4075 on Windows, not -EEXIST */
         {
             edc_error_set(error, EDC_ERR_FAILED, "mkdir '%s' failed: %s", partial, uv_strerror(r));
             sdsfree(partial);

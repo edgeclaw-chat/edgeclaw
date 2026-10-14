@@ -10,6 +10,16 @@
 #include <string>
 #include <thread>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 using namespace ftxui;
 
 namespace
@@ -70,6 +80,21 @@ void CloseDefaultLoop(uv_loop_t *loop)
 
 int main(int argc, char **argv)
 {
+
+#ifdef _WIN32
+    // FTXUI renders each frame to a UTF-8 std::string and writes it as raw
+    // bytes (App::Internal::TerminalSend does `std::cout << output_buffer`).
+    // The Windows console, however, decodes those bytes using its *output code
+    // page*, which defaults to the OEM/ANSI page (e.g. 936/GBK on a Chinese
+    // system, 437/850 elsewhere). Every non-ASCII glyph -- Chinese above all --
+    // is therefore misinterpreted and shows up as mojibake.
+    //
+    // Switch the console to UTF-8 (65001) before anything renders so the bytes
+    // on stdout are interpreted the way FTXUI produced them. Must run before
+    // theme::Init()/ScreenInteractive, both of which already write to stdout.
+    ::SetConsoleOutputCP(CP_UTF8);
+    ::SetConsoleCP(CP_UTF8); // also decode typed/pasted UTF-8 input correctly
+#endif
 
     const int sandbox_override = ParseSandboxFlag(argc, argv);
 
