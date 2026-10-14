@@ -6,8 +6,10 @@
 #include "edc_cmd_parse.h"
 #include "edc_compat.h"
 #include "edc_context.h"
+#include "edc_file_utils.h"
 #include "edc_group_fold.h"
 #include "edc_local_shell.h"
+#include "edc_prompts.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_memory.h"
@@ -136,6 +138,7 @@ static bool edc_commands_handle_help(struct edc_reply_to to)
                        "\n"
                        "- /whoami\n"
                        "- /model [name]\n"
+                       "- /prompt   (list)  ·  /prompt <name> [args…]   (run a template)\n"
                        "- /connect   (configure the LLM provider)\n"
                        "- /sandbox [on|off]   (enable/disable the filesystem sandbox)\n"
                        "- /sandbox list   ·  /sandbox add-ro|rm-ro <dir>  ·  /sandbox add-rw|rm-rw <dir>\n"
@@ -1833,6 +1836,117 @@ static bool edc_commands_handle_task( struct edc_session_manager *sm, struct edc
 
 /* ── Entry ─────────────────────────────────────────────────── */
 
+/* ── /prompt ─────────────────────────────────────────────────
+ *
+ * The whole user-extensible surface is this ONE built-in: a template is reached as its
+ * ARGUMENT, never as a name in the command namespace (docs/prompt-library.md §4,
+ * invariant 1). Two shapes:
+ *
+ *     /prompt                    list
+ *     /prompt <name> [args…]     load, substitute, then run the result as INPUT
+ *
+ * There is no reserved sub-command, so a template named `list` keeps working. */
+
+static void edc_commands_prompt_list(struct edc_config *cfg, struct edc_reply_to to)
+{
+    sds dir = edc_path_join(cfg->workspace, "prompts", NULL);
+    UT_array *prompts = edc_prompts_list(dir);
+
+    sds out;
+    if (utarray_len(prompts) == 0)
+    {
+        out = sdscatprintf(sdsempty(), "**No prompts** — put a `.md` file in `%s`.", dir);
+    }
+    else
+    {
+        out = sdsnew("## Prompts\n\n");
+        for (size_t i = 0; i < utarray_len(prompts); i++)
+        {
+            struct edc_prompt **slot = (struct edc_prompt **)utarray_eltptr(prompts, (unsigned)i);
+            struct edc_prompt *p = *slot;
+            sds hint = p->argument_hint ? sdscatprintf(sdsempty(), " %s", p->argument_hint) : sdsempty();
+            out = sdscatprintf(out, "- `/prompt %s%s`%s%s\n", p->name, hint,
+                               (p->description && sdslen(p->description)) ? " — " : "",
+                               (p->description && sdslen(p->description)) ? p->description : "");
+            sdsfree(hint);
+        }
+        out = sdscatprintf(out, "\nUsage: `/prompt <name> [args…]`\n");
+    }
+    edc_commands_reply(to, out);
+    sdsfree(out);
+
+    for (size_t i = 0; i < utarray_len(prompts); i++)
+    {
+        struct edc_prompt **slot = (struct edc_prompt **)utarray_eltptr(prompts, (unsigned)i);
+        edc_prompt_free(*slot);
+    }
+    utarray_free(prompts);
+    sdsfree(dir);
+}
+
+static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_session_manager *sm,
+                                       struct edc_scheduler *sched, struct edc_reply_to to,
+                                       struct edc_channel_message *message)
+{
+    sds arg = NULL;
+    bool has_arg = edc_commands_arg(message->content, "/prompt", &arg);
+
+    if (!has_arg || sdslen(arg) == 0)
+    {
+        if (arg)
+            sdsfree(arg);
+        edc_commands_prompt_list(cfg, to);
+        return true;
+    }
+
+    int argc = 0;
+    sds *args = edc_prompt_split_args(arg, &argc);
+    sdsfree(arg);
+    if (argc == 0)
+    {
+        edc_prompt_args_free(args, argc);
+        edc_commands_prompt_list(cfg, to);
+        return true;
+    }
+
+    sds dir = edc_path_join(cfg->workspace, "prompts", NULL);
+    struct edc_prompt *prompt = edc_prompt_load(dir, args[0]);
+    if (!prompt)
+    {
+        sds reply = sdscatprintf(sdsempty(),
+                                 "**No prompt** named `%s` (looked in `%s`).\n\nRun `/prompt` to list them.",
+                                 args[0], dir);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        sdsfree(dir);
+        edc_prompt_args_free(args, argc);
+        return true;
+    }
+
+    sds expanded = edc_prompt_expand(prompt, args + 1, argc - 1);
+    edc_prompt_free(prompt);
+    edc_prompt_args_free(args, argc);
+    sdsfree(dir);
+
+    if (sdslen(expanded) == 0)
+    {
+        edc_commands_reply(to, "**Prompt expanded to nothing** — nothing to run.");
+        sdsfree(expanded);
+        return true;
+    }
+
+    /* The result is USER INPUT, not a command: it goes to the shell path (which is what
+     * gives templates `| ; & >` and `$VAR` for free), never back through the command
+     * dispatch -- that is what makes a body containing `/prompt` harmless (invariant 2). */
+    struct edc_channel_message *expanded_msg =
+        edc_channel_message_new(message->type, message->message_type, expanded);
+    if (message->session_id)
+        expanded_msg->session_id = sdsnew(message->session_id);
+    edc_shell_execute(sm, sched, to, expanded_msg);
+    edc_channel_message_free(expanded_msg);
+    return true;
+}
+
 bool edc_commands_handler( struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
                           struct edc_reply_to to, struct edc_channel_message *message)
 {
@@ -1854,6 +1968,12 @@ bool edc_commands_handler( struct edc_config *cfg, struct edc_session_manager *s
     {
         if (edc_shell_handle_builtin(cfg, sm, to, message))
             return true;
+
+        /* One verb for the whole user-extensible surface; the template name is its
+         * argument (see the block above edc_commands_handler). Strict match, so
+         * `/promptx` is an unknown command rather than a template lookup. */
+        if (edc_commands_is_command(message->content, "/prompt"))
+            return edc_commands_handle_prompt(cfg, sm, sched, to, message);
 
         /* The top-level shortcuts (/tasks, /bg, /fg) were removed -- all go through /task subcommands. */
 

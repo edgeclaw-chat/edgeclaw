@@ -18,6 +18,7 @@ cc_library(
             "context/edc_group_fold.c",
             "context/edc_session_memory.c",
             "context/edc_skills.c",
+            "context/edc_prompts.c",
         ],
     hdrs = [
             "task/edc_task.h",
@@ -37,6 +38,7 @@ cc_library(
             "context/edc_group_fold.h",
             "context/edc_session_memory.h",
             "context/edc_skills.h",
+            "context/edc_prompts.h",
         ],
     includes = [
         "task",
