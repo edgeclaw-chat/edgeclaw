@@ -502,10 +502,6 @@ void edc_task_free(struct edc_task *task)
     if (task->raw_input)
         sdsfree(task->raw_input);
 
-    if (task->prompt)
-        sdsfree(task->prompt);
-    if (task->prompt_name)
-        sdsfree(task->prompt_name);
     if (task->output)
         sdsfree(task->output);
     free(task->fold_cut_task_id);
@@ -1302,31 +1298,12 @@ bool edc_task_has_folded_turns(struct edc_task *task)
     return false;
 }
 
-/* ── Prompt ────────────────────────────────────────────────── */
-
-void edc_task_set_prompt(struct edc_task *task, const char *prompt_name, const char *prompt_text)
-{
-    if (!task)
-        return;
-
-    if (task->prompt_name)
-    {
-        sdsfree(task->prompt_name);
-        task->prompt_name = NULL;
-    }
-    if (task->prompt)
-    {
-        sdsfree(task->prompt);
-        task->prompt = NULL;
-    }
-
-    if (prompt_name)
-        task->prompt_name = sdsnew(prompt_name);
-    if (prompt_text)
-        task->prompt = sdsnew(prompt_text);
-}
-
-/* ── Context building ──────────────────────────────────────── */
+/* ── Context building ──────────────────────────────────────── *
+ *
+ * A per-task custom system prompt used to live here (`edc_task_set_prompt` +
+ * `task->prompt` / `task->prompt_name`). It was a stub -- every caller passed a NULL
+ * body -- and has been removed: reusing a prompt is now the `/prompt` command's job
+ * (docs/prompt-library.md). */
 
 cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *config)
 {
@@ -1336,14 +1313,7 @@ cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *c
     cJSON *messages = cJSON_CreateArray();
 
     /* 1. System prompt */
-    if (task->prompt)
-    {
-        cJSON *sys_msg = cJSON_CreateObject();
-        cJSON_AddStringToObject(sys_msg, "role", "system");
-        cJSON_AddStringToObject(sys_msg, "content", task->prompt);
-        cJSON_AddItemToArray(messages, sys_msg);
-    }
-    else if (config)
+    if (config)
     {
         sds default_prompt = edc_context_build_system_prompt(config, NULL);
         cJSON *sys_msg = cJSON_CreateObject();

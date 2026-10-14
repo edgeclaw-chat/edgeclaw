@@ -231,9 +231,6 @@ struct edc_task
     struct edc_task *forked_from;       /* parent (NULL = not a fork) */
     uint32_t fork_point_completion_seq; /* parent's completion watermark at the fork point */
 
-    sds prompt;      /* custom system prompt (NULL = default) */
-    sds prompt_name; /* e.g. "code-reviewer" */
-
     struct edc_task_dep *deps;       /* whom I depend on */
     struct edc_task_dep *dependents; /* who depends on me */
     size_t deps_total;
@@ -491,8 +488,6 @@ extern size_t edc_task_unfolded_msg_count(struct edc_task *task);
 /** True when any committed turn of this task has a folded prefix (its own
  *  conversation is therefore only partly in the group history). */
 extern bool edc_task_has_folded_turns(struct edc_task *task);
-
-extern void edc_task_set_prompt(struct edc_task *task, const char *prompt_name, const char *prompt_text);
 
 extern cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *config);
 

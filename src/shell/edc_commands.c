@@ -124,7 +124,7 @@ static bool edc_commands_handle_help(struct edc_reply_to to)
                        "- /session remove <name>  ·  /session rename <old> <new>\n"
                        "\n"
                        "- /task new <desc>   [--bg] [--new-group]\n"
-                       "- /task fork <parent> <desc> [--prompt <name>]\n"
+                       "- /task fork <parent> <desc>\n"
                        "- /task list  ·  /task status [id]  ·  /task output <id>\n"
                        "- /task history <id>   (its messages; `--json` = raw payload)\n"
                        "- /group history <id>  (the whole group; one block per member)\n"
@@ -745,8 +745,6 @@ static void edc_commands_handle_task_new( struct edc_session_manager *sm, struct
         edc_cmd_task_opts_free(&opts);
         return;
     }
-    if (opts.prompt_name)
-        edc_task_set_prompt(task, opts.prompt_name, NULL);
 
     if (opts.desc && sdslen(opts.desc) > 0 && edc_task_awaits_deps(task))
         log_info("/task new: task %s waits for its dependencies, turn queued", task->task_id);
@@ -1064,11 +1062,10 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
 {
     if (!session)
         return;
-    /* /task fork <parent_id> <desc> [--prompt <name>] */
+    /* /task fork <parent_id> <desc> */
     if (!arg)
     {
-        edc_commands_reply(to,
-                           "Usage: `/task fork <parent_id> <desc> [--prompt <name>]`");
+        edc_commands_reply(to, "Usage: `/task fork <parent_id> <desc>`");
         return;
     }
 
@@ -1076,8 +1073,7 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
     sds *tokens = sdssplitlen(arg, sdslen(arg), " ", 1, &count);
     if (count < 2)
     {
-        edc_commands_reply(to,
-                           "Usage: `/task fork <parent_id> <desc> [--prompt <name>]`");
+        edc_commands_reply(to, "Usage: `/task fork <parent_id> <desc>`");
         sdsfreesplitres(tokens, count);
         return;
     }
@@ -1100,22 +1096,13 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
         return;
     }
 
-    /* find --prompt in remaining args; the rest is the input */
-    sds prompt_name = NULL;
+    /* the rest of the args are the input */
     sds desc = sdsempty();
     for (int i = 1; i < count; i++)
     {
-        if (strcmp(tokens[i], "--prompt") == 0 && i + 1 < count)
-        {
-            prompt_name = sdsnew(tokens[i + 1]);
-            i++; /* skip prompt value */
-        }
-        else
-        {
-            if (sdslen(desc) > 0)
-                desc = sdscat(desc, " ");
-            desc = sdscat(desc, tokens[i]);
-        }
+        if (sdslen(desc) > 0)
+            desc = sdscat(desc, " ");
+        desc = sdscat(desc, tokens[i]);
     }
     sdsfreesplitres(tokens, count);
 
@@ -1134,8 +1121,6 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
     char *fork_tid = edc_scheduler_gen_task_id(sched);
     struct edc_task *child = edc_task_fork(parent, fork_tid, desc, fork_point_seq, to.type);
     free(fork_tid);
-    if (prompt_name)
-        edc_task_set_prompt(child, prompt_name, NULL);
 
     /* The child starts its own group (as leader) and takes the foreground; desc is the
      * input, as in /task new. Which group and who owns the foreground is the
@@ -1151,8 +1136,6 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
         if (child)
             edc_task_free(child);
         sdsfree(desc);
-        if (prompt_name)
-            sdsfree(prompt_name);
         return;
     }
 
@@ -1219,13 +1202,9 @@ static void edc_commands_handle_task_fork( struct edc_session_manager *sm, struc
 
     sds reply = sdscatprintf(sdsempty(), "**Fork created** — `%s` from `%s` · group `%s` · fork point %zu",
                              child->task_id, parent->task_id, child->group_id, fork_point);
-    if (prompt_name)
-        reply = sdscatprintf(reply, " · prompt `%s`", prompt_name);
     edc_commands_reply(to, reply);
     sdsfree(reply);
     sdsfree(desc);
-    if (prompt_name)
-        sdsfree(prompt_name);
 }
 
 static void edc_commands_handle_task_groups(struct edc_session_manager *sm, struct edc_reply_to to)
@@ -1322,10 +1301,6 @@ static void edc_commands_handle_task_status( struct edc_session_manager *sm, str
     if (t->output)
     {
         out = sdscatprintf(out, "- **output**: %s\n", t->output);
-    }
-    if (t->prompt_name)
-    {
-        out = sdscatprintf(out, "- **prompt**: %s\n", t->prompt_name);
     }
     if (t->forked_from)
     {

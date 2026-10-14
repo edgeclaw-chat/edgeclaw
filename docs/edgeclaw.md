@@ -220,8 +220,7 @@ Two dependency types:
 ### Fork
 
 `/task fork <parent> <desc>` creates a child task in the parent's group.
-The child inherits a slice of the parent's conversation context. Use
-`--prompt <name>` to assign a subagent prompt to the forked task.
+The child inherits a slice of the parent's conversation context.
 
 ---
 
@@ -272,7 +271,6 @@ equivalent of `cmd &`.
 | `/task new <desc> -g <gid>` | Create in that existing group |
 | `/task new <desc> -d <tid>` | Create + wait for dependency |
 | `/task fork <pid> <desc>` | Fork child in parent's group |
-| `/task fork <pid> <desc> --prompt <name>` | Fork with subagent prompt |
 
 ### Task Inspection
 
@@ -456,14 +454,14 @@ separate -- without it they would all land in the group in front.
 [task-1 output]: ... → injected into active task → task-1 reaped
 ```
 
-### Fork with Subagent
+### Fork
 
 ```
-> /task fork task-0 "review the database schema" --prompt dba
+> /task fork task-0 "review the database schema"
 ```
 
-Creates a child task in task-0's group, using the "dba" subagent prompt,
-inheriting the parent's conversation context.
+Creates a child task in task-0's group, inheriting the parent's conversation
+context.
 
 ---
 

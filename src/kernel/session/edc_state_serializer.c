@@ -141,12 +141,6 @@ static cJSON *task_to_json(struct edc_task *task)
         cJSON_AddNumberToObject(tj, "fold_cut_prefix", (int)task->fold_cut_prefix);
     }
 
-    /* ── prompt ── */
-    if (task->prompt_name)
-        cJSON_AddStringToObject(tj, "prompt_name", task->prompt_name);
-    if (task->prompt)
-        cJSON_AddStringToObject(tj, "prompt", task->prompt);
-
     /* ── channel ── */
     cJSON_AddItemToObject(tj, "channel", edc_channel_to_json());
 
@@ -665,10 +659,6 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->tool_only = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "memo_compact")))
             task->memo_compact = cJSON_IsTrue(v);
-        if ((v = cJSON_GetObjectItem(tj, "prompt_name")) && cJSON_IsString(v))
-            task->prompt_name = sdsnew(cJSON_GetStringValue(v));
-        if ((v = cJSON_GetObjectItem(tj, "prompt")) && cJSON_IsString(v))
-            task->prompt = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "fork_point_completion_seq")) && cJSON_IsNumber(v))
             task->fork_point_completion_seq = (uint32_t)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "output")) && cJSON_IsString(v))

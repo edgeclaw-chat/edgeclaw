@@ -43,7 +43,6 @@ static void test_null_safety_task(void)
     edc_task_notify_dependents(NULL);
     edc_task_send_signal(NULL, TASK_SIGTERM);
     edc_task_set_output(NULL, NULL);
-    edc_task_set_prompt(NULL, NULL, NULL);
     edc_task_get_context_messages(NULL, NULL);
     CHECK(edc_task_get_output(NULL) == NULL, "get_output(NULL) → NULL");
     CHECK(edc_task_state_str(NULL) != NULL, "state_str(NULL) → not NULL");

@@ -264,8 +264,6 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
     if (!task)
         return NULL;
 
-    if (opts->prompt_name)
-        edc_task_set_prompt(task, opts->prompt_name, NULL);
     if (redirect_stdout)
     {
         task->redirect_stdout = redirect_stdout;

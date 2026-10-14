@@ -236,18 +236,6 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
                 }
                 continue;
             }
-            if (strncmp(p, "--prompt ", 9) == 0)
-            {
-                p += 9;
-                while (*p == ' ')
-                    p++;
-                char *s = p;
-                while (*p && *p != ' ')
-                    p++;
-                if (p > s)
-                    opts->prompt_name = sdsnewlen(s, p - s);
-                continue;
-            }
             /* unrecognized token — skip until space */
             while (*p && *p != ' ')
                 p++;
@@ -298,8 +286,6 @@ void edc_cmd_task_opts_free(struct edc_cmd_task_opts *opts)
         sdsfree(opts->input);
     if (opts->group_id)
         sdsfree(opts->group_id);
-    if (opts->prompt_name)
-        sdsfree(opts->prompt_name);
     for (int i = 0; i < opts->dep_count; i++)
         sdsfree(opts->dep_ids[i]);
     free(opts->dep_ids);

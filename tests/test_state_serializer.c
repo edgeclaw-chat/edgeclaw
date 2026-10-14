@@ -1068,10 +1068,6 @@ static void test_extra_fields(void)
     edc_task_await_exec(task);
     edc_task_mark_completed(task);
 
-    /* Set prompt */
-    task->prompt_name = sdsnew("code-reviewer");
-    task->prompt = sdsnew("You are a senior code reviewer.");
-
     /* Set redirect */
     task->redirect_stdout = sdsnew("/tmp/out.log");
     task->redirect_stderr = sdsnew("/tmp/err.log");
@@ -1109,10 +1105,6 @@ static void test_extra_fields(void)
 
     struct edc_task *rt = find_task(session2, "t-extra");
     CHECK(rt != NULL, "task restored");
-
-    /* Verify prompt */
-    CHECK_STREQ(rt->prompt_name, "code-reviewer", "prompt_name preserved");
-    CHECK_STREQ(rt->prompt, "You are a senior code reviewer.", "prompt preserved");
 
     /* Verify redirect */
     CHECK_STREQ(rt->redirect_stdout, "/tmp/out.log", "redirect_stdout preserved");

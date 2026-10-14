@@ -37,8 +37,6 @@ void ast_free(ast_node_t *node)
     free(node->dep_ids);
     if (node->group_id)
         sdsfree(node->group_id);
-    if (node->prompt_name)
-        sdsfree(node->prompt_name);
     free(node);
 }
 
@@ -185,8 +183,6 @@ static struct edc_task *exec_node(
         opts.dep_count = node->dep_count;
         if (node->group_id)
             opts.group_id = sdsnew(node->group_id);
-        if (node->prompt_name)
-            opts.prompt_name = sdsnew(node->prompt_name);
 
         struct edc_task_group *group = NULL;
         if (!node->at_group && opts.group_id)

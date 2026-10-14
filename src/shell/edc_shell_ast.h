@@ -43,7 +43,6 @@ typedef struct ast_node
     sds *dep_ids;
     int dep_count;
     sds group_id;
-    sds prompt_name;
     bool has_deferred_vars;
 
     /* AST_REDIR_* / AST_VAR_DEF filename (repurposed as task_id for VAR_DEF) */

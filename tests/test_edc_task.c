@@ -37,8 +37,6 @@ static void test_lifecycle(void)
     CHECK(t->deps_total == 0, "deps_total is 0");
     CHECK(t->deps_completed == 0, "deps_completed is 0");
     CHECK(t->output == NULL, "output is NULL");
-    CHECK(t->prompt == NULL, "prompt is NULL");
-    CHECK(t->prompt_name == NULL, "prompt_name is NULL");
     CHECK(t->todos == NULL, "todos is NULL");
     CHECK(t->forked_from == NULL, "forked_from is NULL");
     edc_task_free(t);
@@ -1047,57 +1045,16 @@ static void test_usage(void)
     edc_task_free(t);
 }
 
-/* ── 9. Prompt 绑定 ────────────────────────────────────────── */
-
-static void test_prompt(void)
-{
-    TEST("prompt set with name and text");
-    struct edc_task *t = edc_task_new("task-prompt", "sess-1", "task-prompt", "prompt test", edc_channel_adapter);
-
-    edc_task_set_prompt(t, "code-reviewer", "You are a code reviewer.");
-    CHECK(strcmp(t->prompt_name, "code-reviewer") == 0, "prompt_name set");
-    CHECK(strcmp(t->prompt, "You are a code reviewer.") == 0, "prompt set");
-
-    /* Overwrite */
-    edc_task_set_prompt(t, "tester", "You are a tester.");
-    CHECK(strcmp(t->prompt_name, "tester") == 0, "prompt_name overwritten");
-    CHECK(strcmp(t->prompt, "You are a tester.") == 0, "prompt overwritten");
-
-    /* Clear with NULL */
-    edc_task_set_prompt(t, NULL, NULL);
-    CHECK(t->prompt_name == NULL, "prompt_name cleared");
-    CHECK(t->prompt == NULL, "prompt cleared");
-
-    /* set_prompt NULL safety */
-    edc_task_set_prompt(NULL, "x", "y");
-    edc_task_free(t);
-}
-
-/* ── 10. 上下文构建 ────────────────────────────────────────── */
+/* ── 9. 上下文构建 ────────────────────────────────────────── */
 
 static void test_context_messages(void)
 {
-    TEST("context with custom prompt");
-    struct edc_task *t = edc_task_new("task-ctx", "sess-1", "task-ctx", "ctx test", edc_channel_adapter);
-    edc_task_set_prompt(t, "test-role", "You are a test assistant.");
-
+    TEST("no config → nothing to build");
+    struct edc_task *t = edc_task_new("task-ctx2", "sess-1", "task-ctx2", "ctx test 2", edc_channel_adapter);
+    /* A per-task custom system prompt used to override this branch; it was a stub
+     * (every caller passed a NULL body) and is gone -- see docs/prompt-library.md. */
     cJSON *msgs = edc_task_get_context_messages(t, NULL);
-    CHECK(cJSON_GetArraySize(msgs) >= 1, "at least 1 message");
-
-    cJSON *sys = cJSON_GetArrayItem(msgs, 0);
-    cJSON *role = cJSON_GetObjectItem(sys, "role");
-    cJSON *content = cJSON_GetObjectItem(sys, "content");
-    CHECK(role && strcmp(role->valuestring, "system") == 0, "first message is system");
-    CHECK(content && strcmp(content->valuestring, "You are a test assistant.") == 0, "custom prompt used");
-
-    cJSON_Delete(msgs);
-    edc_task_free(t);
-
-    TEST("context without prompt falls back to default");
-    t = edc_task_new("task-ctx2", "sess-1", "task-ctx2", "ctx test 2", edc_channel_adapter);
-    /* Pass NULL config → no default prompt either, just dep output (none) */
-    msgs = edc_task_get_context_messages(t, NULL);
-    CHECK(cJSON_GetArraySize(msgs) == 0, "no messages without prompt or config");
+    CHECK(cJSON_GetArraySize(msgs) == 0, "no messages without config");
     cJSON_Delete(msgs);
     edc_task_free(t);
 
@@ -1115,7 +1072,7 @@ static void test_context_messages(void)
     /* Should have 1 message: the child's output injected */
     CHECK(cJSON_GetArraySize(msgs) >= 1, "dep output generates message");
     cJSON *dep_msg = cJSON_GetArrayItem(msgs, 0);
-    content = cJSON_GetObjectItem(dep_msg, "content");
+    cJSON *content = cJSON_GetObjectItem(dep_msg, "content");
     CHECK(content != NULL, "dep message has content");
     CHECK(strstr(content->valuestring, "child ctx") != NULL, "dep output contains child description");
     CHECK(strstr(content->valuestring, "3 bugs") != NULL, "dep output contains child output");
@@ -1390,7 +1347,6 @@ int main(void)
     test_dep_cancel_cascade();
     test_signals();
     test_output();
-    test_prompt();
     test_usage();
     test_context_messages();
     test_scenario_fork_join();

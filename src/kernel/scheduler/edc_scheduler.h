@@ -208,8 +208,7 @@ struct edc_task_spec
     edc_channel_type channel_type;
 
     /* The turn this task runs on. NULL attaches none (system tasks, and any caller
-     * that builds its own turn); an empty string still attaches an empty turn -- which
-     * is what a `/task fork <id> --prompt p` (no desc) has always produced. */
+     * that builds its own turn); an empty string still attaches an empty turn. */
     const char *input;
 
     edc_task_place place;

@@ -182,7 +182,6 @@ static void test_context_messages_iteration(void)
 {
     T("context_messages includes turn messages via EdcQueue iteration");
     struct edc_task *t = edc_task_new("ctx-1", "s-7", "ctx-1", "ctx test", edc_channel_adapter);
-    edc_task_set_prompt(t, "test", "You are a test assistant.");
 
     /* Add completed turns to the queue */
     struct edc_turn *turn1 = edc_turn_new();
@@ -195,20 +194,20 @@ static void test_context_messages_iteration(void)
     edc_turn_add_assistant_message(turn2, cJSON_Parse("{\"role\":\"assistant\",\"content\":\"there\"}"));
     edc_task_add_turn(t, turn2);
 
-    /* Build context (no config → no default prompt) */
+    /* Build context (no config → no system message) */
     cJSON *msgs = edc_task_get_context_messages(t, NULL);
-    /* Should have: 1 system prompt + 4 turn messages = 5 */
+    /* Should have: just the 4 turn messages */
     int count = cJSON_GetArraySize(msgs);
-    C(count == 5, "5 messages: 1 system + 4 turn msgs, got %d", count);
+    C(count == 4, "4 messages: the turn messages only, got %d", count);
 
     /* Verify roles */
     cJSON *m0 = cJSON_GetArrayItem(msgs, 0);
     cJSON *r0 = cJSON_GetObjectItem(m0, "role");
-    C(r0 && strcmp(r0->valuestring, "system") == 0, "msg0 is system");
+    C(r0 && strcmp(r0->valuestring, "user") == 0, "msg0 is user");
 
     cJSON *m1 = cJSON_GetArrayItem(msgs, 1);
     cJSON *r1 = cJSON_GetObjectItem(m1, "role");
-    C(r1 && strcmp(r1->valuestring, "user") == 0, "msg1 is user");
+    C(r1 && strcmp(r1->valuestring, "assistant") == 0, "msg1 is assistant");
 
     cJSON_Delete(msgs);
     edc_task_free(t);
