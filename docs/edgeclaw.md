@@ -152,7 +152,7 @@ Three-layer Unix-like process model:
 | EdgeClaw   | Unix        | Behavior                              |
 |------------|-------------|---------------------------------------|
 | **Task**   | Thread      | Conversation sharing history with siblings. |
-| **Group**  | Process     | Isolated container. Cross-group needs pipe or `/task chain`. |
+| **Group**  | Process     | Isolated container. Cross-group needs a pipe (`\|`). |
 | **Session**| Session     | Per-session history storage, groups container. |
 
 ### Task States
@@ -194,7 +194,7 @@ gets a synthesized "interrupted" result first (the assistant message is the only
 record left of it), so the next LLM request stays well-formed. Only `COMPLETED`
 cannot be resumed.
 
-- **COMPLETED**: persists until reclaimed with `/task join`.
+- **COMPLETED**: terminal; its output stays readable with `/task output <id>`.
 - **WAITING_DEPS**: accepts input and queues it until dependencies resolve.
 - **INTERRUPTED**: the process went down while it was running; `/task resume` revives it.
   Like ERROR it propagates to its dependents (a JOIN dependent is cancelled, an order edge
@@ -233,8 +233,7 @@ The child inherits a slice of the parent's conversation context.
 | `fg %1`           | `/task fg <task_id>`          |
 | `bg %1`           | `/task bg`                    |
 | `kill %1`         | `/task stop <task_id>`        |
-| `cmd1 \| cmd2`    | `/task chain <src> <dst>`     |
-| `pthread_join()`  | `/task join <task_id>`        |
+| `cmd1 \| cmd2`    | `a \| b`                      |
 | `fork()`          | `/task fork <parent> <desc>`  |
 
 `&` is the background modifier: the task joins the **current** group but does not take
@@ -296,13 +295,6 @@ equivalent of `cmd &`.
 | `/group info [id]` | A group's context / fold numbers (window, the fold line, how far it is, epoch, failures, fold in flight) |
 | `/task resume --all` | Re-decide every stopped task of the session (after a restart); ones whose dependency is stopped too wait for it |
 | `/task resume [tid]` | Resume an INTERRUPTED, SUSPENDED, ERROR or CANCELLED task: re-derives state (deps / tool chain / turn) and drives it; an ERROR or CANCELLED task continues its unfinished turn. Without an id, resumes the active task of the foreground group |
-| `/task join <tid>` | Show output, auto-inject into active task (or create one), then reclaim |
-
-### Pipelines
-
-| Command | Description |
-|---------|-------------|
-| `/task chain <src> <dst>` | dst waits for src. When src completes, its user inputs and final output are injected into dst's LLM context as Q&A. Like `src \| dst`. |
 
 ---
 
@@ -310,7 +302,7 @@ equivalent of `cmd &`.
 
 Only the session's **active task** outputs to the terminal. `/task fg` changes
 the active task. Other tasks complete silently; use
-`/task join` to retrieve their output.
+`/task output <id>` to read their output.
 
 ---
 
@@ -349,7 +341,7 @@ or `>` in expanded output is treated as literal text.
 
 **Within a group**: all tasks share the full conversation history automatically.
 
-**Cross-group** (`/task chain` or `/task join`): the source task's user inputs
+**Cross-task** (a `-d` dependency, or a `|` pipe): the source task's user inputs
 and final output are injected into the destination's LLM context as a
 Q&A-style system message:
 
@@ -431,27 +423,18 @@ text before `<`, they are joined with a newline.
 ### Cross-Group Chain
 
 Three separate conversations, wired together by hand. `--new-group` is what makes them
-separate -- without it they would all land in the group in front.
+separate -- without it they would all land in the group in front. `-d <id>` makes a task
+wait for another, and the source's inputs + output are injected into it.
 
 ```
 > /task new "security audit" --new-group
 > /task new "performance review" --new-group
-> /task new "final summary" --new-group
-> /task chain task-1 task-3     ← task-3 waits for task-1
-> /task chain task-2 task-3     ← task-3 waits for both
+> /task new "final summary" --new-group -d task-1 -d task-2
 
-... task-1, task-2 complete ...
+... task-1, task-2 complete → task-3 runs with both reports injected ...
 
 > /task fg task-3
-> please summarize both reports
 → LLM sees task-1 and task-2 Q&A injected as context
-```
-
-### Join and Reclaim
-
-```
-> /task join task-1
-[task-1 output]: ... → injected into active task → task-1 reaped
 ```
 
 ### Fork

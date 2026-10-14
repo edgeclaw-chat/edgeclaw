@@ -1480,8 +1480,8 @@ static void test_task_id_survives_restart(void)
     struct edc_config *cfg = make_config();
     clean_task_seq(cfg);
 
-    /* 第一次运行: 连发 3 个编号, 随后把它们全部回收 (/task join 的典型路径:
-     * 编号已发出但任务对象不再存活), 再"退出"。 */
+    /* 第一次运行: 连发 3 个编号, 随后把它们全部回收 (编号已发出但任务对象不再存活),
+     * 再"退出"。 */
     {
         struct edc_session *sess = make_session(cfg);
         struct edc_scheduler *sched = edc_scheduler_new(cfg);

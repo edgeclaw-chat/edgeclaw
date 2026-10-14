@@ -600,7 +600,7 @@ static void test_turnless_shell_is_dropped(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
-    /* 旧模型的残渣形状: 创建后不带 input 就停在 READY (fork leader / /task join 的
+    /* 旧模型的残渣形状: 创建后不带 input 就停在 READY (fork leader / 历史 join 路径的
      * Joined task / @task 无正文)。新模型里任务创建时就带着它的 input, 所以这条形状
      * 不该存在 —— 落盘判据丢掉它并告警
      * (见 edc_state_serializer.c / docs/retire-waiting-input.md §4)。 */

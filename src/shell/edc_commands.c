@@ -134,7 +134,6 @@ static bool edc_commands_handle_help(struct edc_reply_to to)
                        "- /group fold [id] [focus]  (fold now, ignoring the trigger)\n"
                        "- /task groups  ·  /task fg <id>  ·  /task bg [id]\n"
                        "- /task stop [id]  ·  /task resume [id|--all]   (default: active task of the foreground group)\n"
-                       "- /task chain <src> <dst>  ·  /task join <id>\n"
                        "\n"
                        "- /whoami\n"
                        "- /model [name]\n"
@@ -1601,131 +1600,6 @@ static bool edc_commands_handle_group( struct edc_session_manager *sm, struct ed
     return true;
 }
 
-static void edc_commands_handle_task_join( struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                          struct edc_reply_to to, sds arg)
-{
-    if (!arg)
-    {
-        edc_commands_reply(to, "Usage: `/task join <id>`");
-        return;
-    }
-    /* Global lookup: the joined task may live in another session (task ids are
-     * unique). The edge is pointer-based, so the dependency works either way. */
-    struct edc_task *t = edc_session_store_resolve_task(sm, sched, arg, NULL);
-    if (!t)
-    {
-        edc_commands_reply(to, "Task not found.");
-        return;
-    }
-    if (edc_task_is_completed(t))
-    {
-        /* join = inject a completed task's output into an existing receiving task.
-         * There is no "create an empty task to attach into later", so with no
-         * candidate the command is rejected and can be retried. */
-        struct edc_session *active_session = edc_session_manager_get_active(sm);
-        struct edc_task *front = active_session ? edc_scheduler_current_task(active_session) : NULL;
-        /* "parked" = READY (IDLE's mirror) or waiting on deps -- both can receive injected output */
-        if (!front || !edc_task_is_parked(front))
-        {
-            sds reply = sdscatprintf(sdsempty(),
-                                     "No task to join into — the foreground group has no parked task. "
-                                     "Start one (`/task new <desc>`), then `/task join %s` again.",
-                                     t->task_id);
-            edc_commands_reply(to, reply);
-            sdsfree(reply);
-            return;
-        }
-
-        /* auto-chain: inject output into the task in front */
-        edc_task_add_dependency(front, t, TASK_DEP_JOIN);
-
-        /* Echo only the raw output, no "[task xxx output]" / "injected/reaped" metadata noise */
-        sds reply = t->output ? sdsnew(t->output) : sdsnew("_No output._");
-        edc_commands_reply(to, reply);
-        sdsfree(reply);
-
-        /* reap source */
-        if (t->group)
-            edc_task_group_remove_task(t->group, t);
-        edc_task_free(t);
-        return;
-    }
-
-    if (edc_task_is_cancelled(t) || edc_task_has_failed(t))
-    {
-        sds reply = sdscatprintf(sdsempty(), "Task `%s` is %s — reaped.", t->task_id, edc_task_state_str(t));
-        edc_commands_reply(to, reply);
-        sdsfree(reply);
-        if (t->group)
-            edc_task_group_remove_task(t->group, t);
-        edc_task_free(t);
-        return;
-    }
-
-    sds reply = sdscatprintf(sdsempty(),
-                             "Task `%s` is currently **%s**.\n\n"
-                             "- `/task chain %s <current>` — a current task waits for it\n"
-                             "- `/task join %s` — check back later, once it is COMPLETED",
-                             t->task_id, edc_task_state_str(t), t->task_id, t->task_id);
-    edc_commands_reply(to, reply);
-    sdsfree(reply);
-}
-
-static void edc_commands_handle_task_chain( struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                           struct edc_reply_to to, sds arg)
-{
-    /* /task chain <src> <dst> */
-    if (!arg)
-    {
-        edc_commands_reply(to, "Usage: `/task chain <src> <dst>`");
-        return;
-    }
-
-    int count = 0;
-    sds *tokens = sdssplitlen(arg, sdslen(arg), " ", 1, &count);
-    if (count < 2)
-    {
-        edc_commands_reply(to, "Usage: `/task chain <src> <dst>`");
-        sdsfreesplitres(tokens, count);
-        sdsfree(arg);
-        return;
-    }
-
-    struct edc_session *src_owner = NULL;
-    struct edc_session *dst_owner = NULL;
-    struct edc_task *src = edc_session_store_resolve_task(sm, sched, tokens[0], &src_owner);
-    struct edc_task *dst = edc_session_store_resolve_task(sm, sched, tokens[1], &dst_owner);
-    sdsfreesplitres(tokens, count);
-
-    if (!src)
-    {
-        edc_commands_reply(to, "Source task not found.");
-        return;
-    }
-    if (!dst)
-    {
-        edc_commands_reply(to, "Target task not found.");
-        return;
-    }
-
-    if (edc_task_add_dependency(dst, src, TASK_DEP_JOIN))
-    {
-        struct edc_session *active = edc_session_manager_get_active(sm);
-        sds reply = sdscatprintf(sdsempty(), "**Chained** — `%s` → `%s` · dep %zu/%zu", src->task_id, dst->task_id,
-                                 dst->deps_completed, dst->deps_total);
-        if (src_owner && src_owner != active)
-            reply = sdscatprintf(reply, " · source in `[%s]`", src_owner->session_id);
-        if (dst_owner && dst_owner != active)
-            reply = sdscatprintf(reply, " · target in `[%s]`", dst_owner->session_id);
-        edc_commands_reply(to, reply);
-        sdsfree(reply);
-    }
-    else
-    {
-        edc_commands_reply(to, "Failed to add dependency.");
-    }
-}
-
 static bool edc_commands_handle_task( struct edc_session_manager *sm, struct edc_scheduler *sched,
                                      struct edc_reply_to to, struct edc_channel_message *message)
 {
@@ -1807,16 +1681,6 @@ static bool edc_commands_handle_task( struct edc_session_manager *sm, struct edc
     else if (strcmp(content_trim, "/task groups") == 0)
     {
         edc_commands_handle_task_groups(sm, to);
-    }
-    else if (strncmp(content_trim, "/task chain ", 12) == 0)
-    {
-        arg = sdsnew(content_trim + 12);
-        edc_commands_handle_task_chain(sm, sched, to, arg);
-    }
-    else if (strncmp(content_trim, "/task join ", 11) == 0)
-    {
-        arg = sdsnew(content_trim + 11);
-        edc_commands_handle_task_join(sm, sched, to, arg);
     }
     else
     {

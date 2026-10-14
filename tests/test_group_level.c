@@ -154,11 +154,11 @@ static void test_join_source_notify(void)
     edc_task_group_free(g_dst);
 }
 
-/* ── 6. No-dependents task stays for /task join ─────────────── */
+/* ── 6. No-dependents task stays in the tree ────────────────── */
 
 static void test_no_dep_stays(void)
 {
-    T("task without dependents stays COMPLETED for join");
+    T("task without dependents stays COMPLETED in the tree");
     struct edc_task *t = edc_task_new("nd-1", "s-6", "nd-1", "standalone", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
 
@@ -168,7 +168,7 @@ static void test_no_dep_stays(void)
     edc_task_await_exec(t);
     edc_task_mark_completed(t);
 
-    /* 没有依赖者 → 没有要通知的; 任务留在树里 (供 /task join)。 */
+    /* 没有依赖者 → 没有要通知的; 任务留在树里。 */
     C(t->dependents == NULL, "no dependents");
     C(edc_task_is_completed(t), "state is COMPLETED");
     C(g->member_count == 1, "still in group");

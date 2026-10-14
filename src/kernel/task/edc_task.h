@@ -358,7 +358,7 @@ static inline bool edc_task_awaits_tools(const struct edc_task *task)
     return task && task->life == EDC_LIFE_ALIVE && task->step == EDC_TASKSTEP_AWAIT_TOOLS;
 }
 /* Parked = ready or waiting on deps: input and output are in place, only an event
- * is missing. These are the tasks `/task join` can inject into. */
+ * is missing. A JOIN dependency injects its output into a parked task. */
 static inline bool edc_task_is_parked(const struct edc_task *task)
 {
     return edc_task_is_ready(task) || edc_task_awaits_deps(task);

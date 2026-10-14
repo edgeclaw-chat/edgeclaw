@@ -167,7 +167,7 @@ TASK MODEL
                 has a unique task_id (t1, t2, ...).
 
      Group    — An isolated container.  Only the active task outputs.
-                Cross-group communication uses | pipe or /task chain.
+                Cross-group communication uses | pipe.
                 Like a Unix process.  Named by leader task's id.
 
      Session  — Per-session history storage.  Like a Unix login session.
@@ -198,7 +198,7 @@ TASK STATES
      half-finished turn (and any interrupted tool ledger).  /task resume
      [tid] continues that turn instead of starting over.
 
-     - COMPLETED tasks persist until reclaimed with /task join.
+     - COMPLETED tasks are terminal; read output with /task output <id>.
      - WAITING_DEPS tasks accept input and queue it until deps resolve.
      - SUSPENDED tasks are parked (e.g. after a restart); /task resume revives.
      - ERROR tasks failed mid-run; /task resume continues their unfinished turn.
@@ -270,24 +270,16 @@ COMMAND REFERENCE
                               drives it; an ERROR or CANCELLED task continues
                               its unfinished turn. Without an id, resumes the
                               active task of the foreground group.
-     /task join <tid>         Show output, auto-inject into active task
-                               (or create one), then reclaim.
-
-     Pipelines
-     /task chain <src> <dst>  dst waits for src.  When src completes,
-                               its user inputs and final output are
-                               injected into dst's LLM context.
-                               Shortcut: src | dst (shell syntax).
 
 OUTPUT
      Only the session's active task outputs to the terminal.  Other tasks
-     complete silently; use /task join to retrieve output.  /task fg
+     complete silently; use /task output <id> to read output.  /task fg
      changes the active task.
 
 CONTEXT SHARING
      Within a group: all tasks share the full conversation history.
 
-     Cross-group (| pipe or /task chain or /task join): source task's user
+     Cross-task (a -d dependency, or a | pipe): source task's user
      inputs and final output are injected into the destination's LLM context
      as a Q&A-style system message:
 

@@ -142,7 +142,7 @@ A task that failed mid-run is `ERROR` but keeps its half-finished turn;
 Task ids are **globally unique across sessions** (persisted high-water mark in
 `<workspace>/.task_seq`), so a dependency may point at a task living in a
 **different session**. Every dependency-creating path — `/task new -d <id>`,
-`/task chain`, `/task join`, `$N` / `$VAR`, and `|` / `&&` — resolves the id
+`$N` / `$VAR`, and `|` / `&&` — resolves the id
 globally, and so do `/task status`, `/task output`, `/task stop` and
 `/task resume` (the latter report the owning session). A referenced session that
 exists on disk but has not been loaded in this run is **activated on demand**
@@ -303,7 +303,7 @@ subsequently spawned commands):
   `/task ...`, `/connect`, `/sandbox ...`) and shell-like syntax (`|`, `;`, `&`, redirection, `$VAR`,
   `!n`/`!!`)
 - **Cross-session task dependencies**: task ids are globally unique, so
-  `-d`/`|`/`&&`/`$N` plus `/task chain` and `/task join` can reference a task in
+  `-d`/`|`/`&&`/`$N` can reference a task in
   another session; its session is activated on demand. `fg`/`bg`/`fork` remain
   scoped to the active session, while `status`/`output`/`stop`/`resume` work
   across sessions.

@@ -889,7 +889,7 @@ struct edc_task_group *edc_scheduler_get_foreground(struct edc_session *session)
  * Deliberately not `active_task` -- that one is the screen focus and may sit on a task
  * that already finished (the final reply is delivered *after* the task reaches
  * COMPLETED, see edc_executor.c), which makes it a poor default for /task stop, /task
- * resume, /task join and `$$`. */
+ * resume and `$$`. */
 struct edc_task *edc_scheduler_current_task(struct edc_session *session)
 {
     struct edc_task_group *fg = sched_foreground(session);

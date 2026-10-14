@@ -335,7 +335,7 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
                  *  - but "parked at READY" has two very different sources and no task
                  *    field distinguishes them:
                  *    1) legacy residue -- created with no input and left there (fork
-                 *       leaders, /task join's Joined task, @task with no body), which
+                 *       leaders, a legacy "Joined task", @task with no body), which
                  *       should not exist;
                  *    2) a REAL task forced back to READY by fallback/migration (resume
                  *       forces the three dead ends back from TOOL_CALLING/
