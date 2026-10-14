@@ -43,6 +43,11 @@ bazel_dep(name = "mbedtls", version = "3.6.5")
 bazel_dep(name = "rules_pkg", version = "1.2.0")
 bazel_dep(name = "ftxui", version = "7.0.0")
 
+# POSIX regex (regcomp/regexec) for Windows, where no system <regex.h> exists.
+# PCRE2 ships a POSIX-compatible wrapper (pcre2posix.h) used only on Windows;
+# other platforms keep using the system regex.
+bazel_dep(name = "pcre2", version = "10.49")
+
 bazel_dep(name = "cjson", version = "1.7.19-0.20240923110858-12c4bf1986c2.bcr.4")
 
 bazel_dep(name = "rules_python", version = "1.7.0")

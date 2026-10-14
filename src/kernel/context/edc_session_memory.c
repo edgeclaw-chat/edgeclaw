@@ -10,7 +10,12 @@
 #include "utlist_fix.h"
 
 #include <ctype.h>
+#ifdef _WIN32
+/* Windows ships no POSIX <regex.h>; PCRE2 provides a drop-in wrapper. */
+#include <pcre2posix.h>
+#else
 #include <regex.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 

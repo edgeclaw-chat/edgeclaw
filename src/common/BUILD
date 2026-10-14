@@ -38,6 +38,7 @@ cc_library(
     hdrs = ["edc_file_utils.h"],
     includes = ["."],
     deps = [
+        "//src/common:edc_compat",
         "//src/common:edc_error",
         "@libuv",
         "@sds//:sds",

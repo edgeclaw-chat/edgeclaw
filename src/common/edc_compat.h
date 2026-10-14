@@ -184,6 +184,9 @@ static inline wchar_t *edc_utf8_to_wide(const char *utf8)
 #ifndef S_ISLNK
 #define S_ISLNK(m) (0)
 #endif
+#ifndef lstat
+#define lstat(path, buf) stat(path, buf)
+#endif
 
 #ifndef F_OK
 #define F_OK 0

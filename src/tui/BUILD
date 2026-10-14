@@ -3,7 +3,7 @@ load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 LINK_OPTS = select({
     "//:macos_debug": ["-lresolv", "-lc++"],
     "//:macos": ["-lresolv", "-lc++"],
-    "//:windows": ["-lws2_32", "-lbcrypt", "-luserenv"],
+    "//:windows": ["-lstdc++", "-lws2_32", "-lbcrypt", "-luserenv"],
     # `--define=valgrind=1`: dynamic link so valgrind can intercept malloc.
     "//:valgrind": ["-lstdc++"],
     "//conditions:default": ["-static", "-Wl,--no-gc-sections", "-lstdc++"],
