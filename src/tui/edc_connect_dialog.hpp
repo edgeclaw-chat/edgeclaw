@@ -38,8 +38,9 @@ class ConnectDialog : public Widget
         return open_;
     }
 
-    // Forwarded by the window only while open: Esc closes, Enter submits, the
-    // rest goes to the fields.
+    // Forwarded by the window only while open: Esc closes, Up/Down move between
+    // rows, Enter submits (from a field) or runs the focused button, the rest
+    // goes to the fields.
     bool OnEvent(::ftxui::Event event) override;
 
   protected:
@@ -47,13 +48,26 @@ class ConnectDialog : public Widget
     ::ftxui::Element Draw(const Frame &frame) override;
 
   private:
+    // Rows the Up/Down keys walk: the three text fields plus the button row.
+    static constexpr int kRows = 4;
+
     // Collect the fields and call Submit; close on success.
     bool SubmitNow();
+
+    // Move the row focus by |dir| (-1 up / +1 down), clamped to the rows.
+    void MoveRow(int dir);
 
     bool open_ = false;
     std::string url_;
     std::string model_;
     std::string key_;
+
+    // Where the caret sits in each field. Bound into the inputs' InputOption so
+    // Open() can park it at the end of the pre-filled value (typing then appends
+    // instead of prepending).
+    int url_cursor_ = 0;
+    int model_cursor_ = 0;
+    int key_cursor_ = 0;
 
     ::ftxui::Component url_input_;
     ::ftxui::Component model_input_;
