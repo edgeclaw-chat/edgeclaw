@@ -36,6 +36,10 @@ typedef void (*edc_scheduler_dispatch_tools_fn)(struct edc_scheduler *sched, str
                                                 void *request_id);
 /** Replays the task's PENDING tool ledger; returns how many requests were posted. */
 typedef int (*edc_scheduler_redispatch_tools_fn)(struct edc_scheduler *sched, struct edc_task *task, void *request_id);
+/** Abort whatever tools are still running for |request_id| (the task was cancelled).
+ *  Provided by the toolbox, which owns the in-flight calls: a cancelled task's child
+ *  process must die with it, or a command with no timeout (`!cmd`) would run forever. */
+typedef void (*edc_scheduler_abort_tools_fn)(struct edc_scheduler *sched, void *request_id);
 /** Returns true when the command was handled. */
 typedef bool (*edc_scheduler_command_fn)(struct edc_scheduler *sched, struct edc_actor *actor,
                                          const struct edc_sched_input *input);
@@ -98,6 +102,7 @@ struct edc_scheduler
     edc_scheduler_send_tool_fn send_tool_message;
     edc_scheduler_dispatch_tools_fn dispatch_tools;
     edc_scheduler_redispatch_tools_fn redispatch_tools;
+    edc_scheduler_abort_tools_fn abort_tools;
     edc_scheduler_command_fn handle_command;
     edc_scheduler_snapshot_fn snapshot_reply;
     edc_scheduler_snapshot_changed_fn snapshot_changed;
@@ -229,6 +234,15 @@ struct edc_task_spec
      * pass it (NULL for a lone command). */
     struct edc_task *prev;
     edc_task_dep_type prev_type;
+
+    /* A seeded starting tool call: when set, the task is created `tool_only` (it never
+     * talks to the LLM) with one PENDING call already in its ledger and the matching
+     * `assistant(tool_calls)` message already in its turn. Driving it then walks the
+     * ordinary tool path -- dispatch, result into the turn, settle -- with no LLM round
+     * at all. `args` is the JSON argument object (copied; caller keeps ownership).
+     * First user: `!cmd` (a user-typed shell command as a task). */
+    const char *initial_tool_name;
+    cJSON *initial_tool_args;
 };
 
 /** Create a task and place it: object -> edges -> group -> foreground -> turn.

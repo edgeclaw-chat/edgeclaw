@@ -119,6 +119,10 @@ static cJSON *task_to_json(struct edc_task *task)
     cJSON_AddStringToObject(tj, "life", edc_task_life_name(task->life));
     cJSON_AddBoolToObject(tj, "is_group_leader", task->is_group_leader);
     cJSON_AddBoolToObject(tj, "bg", task->is_background);
+    /* `!cmd`: the task exists only to issue its seeded tool call. Optional key (absent =
+     * false), so old files read back a normal task -- no schema bump. */
+    if (task->tool_only)
+        cJSON_AddBoolToObject(tj, "tool_only", true);
 
     /* ── sink / fold target ──
      * A fold task (sink = GROUP_MEMORY) is now an ordinary persisted task, so its
@@ -654,6 +658,8 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->is_group_leader = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "bg")))
             task->is_background = cJSON_IsTrue(v);
+        if ((v = cJSON_GetObjectItem(tj, "tool_only")))
+            task->tool_only = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "prompt_name")) && cJSON_IsString(v))
             task->prompt_name = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "prompt")) && cJSON_IsString(v))

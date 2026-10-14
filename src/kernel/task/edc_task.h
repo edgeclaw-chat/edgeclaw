@@ -134,6 +134,13 @@ struct edc_task
      * either. Persisted. */
     bool is_background;
 
+    /* A "tool-only" task (`!cmd`): its whole job is to issue the one tool call it was
+     * created with. Its step producer is the tool chain, never the LLM -- when that
+     * call's result is in, the task settles instead of asking the model to continue.
+     * Persisted: after a restart the same task must not suddenly turn into an LLM round
+     * (the executor reads this flag on both the resume and the tool-done path). */
+    bool tool_only;
+
     struct edc_task_group *group;
 
     EdcQueue turns;               /* FIFO: struct edc_turn* */
@@ -440,6 +447,11 @@ extern struct edc_tool_call_record *edc_task_tool_call_mark_executing(struct edc
 extern bool edc_task_tool_call_remove(struct edc_task *task, const char *call_id);
 extern void edc_task_tool_calls_clear(struct edc_task *task);
 extern bool edc_task_has_pending_tool_calls(const struct edc_task *task);
+
+/** The text written as a tool response when a dispatched call's result was lost (see
+ *  edc_task_repair_dangling_tool_calls above). A tool-only task that resumes into that
+ *  repair has no result of its own, so this is what its output says instead. */
+extern const char *edc_task_interrupted_tool_note(void);
 
 /** Fill in dangling tool responses before driving a task (idempotent).
  *

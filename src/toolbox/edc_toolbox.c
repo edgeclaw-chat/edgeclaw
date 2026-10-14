@@ -234,6 +234,11 @@ void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON 
             return;
         }
 
+        /* Record which tool owns this call: the actor needs it to dispatch a cancellation
+         * (see edc_tool_abort_fn). Done here because this is the one place a name becomes a
+         * tool. */
+        ctx->tool = tool;
+
         tool->exec(ctx, tool, args, callback);
         return;
     }

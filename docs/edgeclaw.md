@@ -73,9 +73,16 @@ The AST executor (`exec_ctx_t`) walks the tree recursively, carrying context:
 
 ### History Expansion
 
-Before tokenization, `!n` and `!!` patterns are expanded:
+`!` at the **start of a line** is the local shell entry point, not a history reference
+(see Local Shell below) — a line-leading `!` never reaches task creation.
+
+The parser still expands `!n` / `!!` **inside a task description** before tokenization:
+
 - `!!` — repeat the last command
 - `!n` — repeat the nth command from history
+
+That history is written only from outside the TUI, so inside the TUI these expand to
+nothing and the text is taken literally.
 
 ---
 
@@ -98,6 +105,43 @@ carrying an option (`-`, `--bg`, ...) is a syntax error, not a silently-ignored 
 
 The description is everything you type; `@` only says "put it in a new group" (plain
 input joins the current group). See Shell-like Job Control below.
+
+---
+
+## Local Shell (`!`)
+
+A line starting with `!` runs a **local shell command** on this machine:
+
+```
+!git status
+```
+
+What happens is worth stating exactly, because it is also how the rest of the system
+sees it: the command becomes **a task of its own** (its own line in the sidebar, its own
+entry in the group's history) whose only job is to issue one `exec_shell` call. So
+
+- the command runs through `sh -c`, in the session's working directory, subject to the
+  sandbox setting (`/sandbox`), with the same output cap as the `exec_shell` tool the model
+  uses and **no timeout at all** — a command runs until it exits. Bound it yourself when
+  you want to: `!timeout 60 make -j8`;
+- its output is that task's result, and it is **shown on screen and stored in the group's
+  history** — the next prompt sees the command and its output;
+- **no model is called** — no LLM request is made for it, and it costs no tokens.
+
+| Input | Behavior |
+|---|---|
+| `!cmd` | run `cmd` (a task of its own) |
+| `!!` | run this session's previous `!` command again |
+| `\!cmd` | escape: send `!cmd` as ordinary input (a task description) instead |
+| `!` alone | usage |
+
+Commands that need a terminal (`sudo`, `vim`, `ssh`, an editor) fail immediately: the
+child gets no tty. A non-zero exit is not a task failure — the output (including
+stderr) is still the result.
+
+A running command is stopped from the task side: `/task stop <id>` (or `/session stop`)
+cancels the task and **kills the command's whole process group** — that is what makes
+"no timeout" safe.
 
 ---
 
@@ -376,12 +420,14 @@ text before `<`, they are joined with a newline.
 ... task 2 waits for task 1, then sees its output ...
 ```
 
-### History Expansion
+### Local Shell
 
 ```
-> review the latest PR
-> !!                    # repeats "review the latest PR"
-> !3                    # repeats command #3 from history
+> !git status          # runs on this machine, as a task of its own
+... task 2 completes with the command's output ...
+
+> !make -j8            # a command that needs a terminal fails fast (no tty)
+> !!                   # runs `make -j8` again
 ```
 
 ### Cross-Group Chain

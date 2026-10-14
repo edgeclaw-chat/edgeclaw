@@ -667,6 +667,9 @@ static void test_state_degradation(void)
     edc_task_await_exec(t2);
     edc_task_await_tools(t2);
     /* stays in TOOL_CALLING */
+    /* `!cmd`: a task that only issues its seeded tool call. Must round-trip, or a
+     * restart would resume it as an ordinary task and ask the model to continue. */
+    t2->tool_only = true;
 
     struct edc_task_group *group = edc_task_group_new(t1);
     edc_task_group_add_task(group, t2);
@@ -684,6 +687,8 @@ static void test_state_degradation(void)
                 "AWAIT_EXEC", "JSON keeps step AWAIT_EXEC");
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(j2, "step")),
                 "AWAIT_TOOLS", "JSON keeps step AWAIT_TOOLS");
+    CHECK(cJSON_IsTrue(cJSON_GetObjectItem(j2, "tool_only")), "JSON keeps tool_only");
+    CHECK(!cJSON_GetObjectItem(j1, "tool_only"), "an ordinary task writes no tool_only key");
 
     /* Deserialize */
     struct edc_session *session2 = edc_session_new(cfg, "sess-deg", "Degrade");
@@ -700,6 +705,8 @@ static void test_state_degradation(void)
      * resume 不再靠残留物猜的那份信息。 */
     CHECK(rt1->step == EDC_TASKSTEP_AWAIT_EXEC, "step AWAIT_EXEC preserved");
     CHECK(rt2->step == EDC_TASKSTEP_AWAIT_TOOLS, "step AWAIT_TOOLS preserved");
+    CHECK(rt2->tool_only, "tool_only survives the round trip");
+    CHECK(!rt1->tool_only, "an ordinary task stays ordinary");
     CHECK(rt1->life == EDC_LIFE_INTERRUPTED && rt2->life == EDC_LIFE_INTERRUPTED,
           "both were in flight -> INTERRUPTED");
     CHECK(rt1->step != rt2->step, "the two are still distinguishable");

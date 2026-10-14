@@ -65,9 +65,11 @@ static sds exec_overflow_notice(const struct edc_executor *ex, long long prompt_
 /* START: drive a task. The caller does not say whether to send a request or to
  * re-dispatch tools -- the task's own state answers, in this order:
  *   1. fill in dangling tool responses (idempotent);
- *   2. PENDING tools in the ledger -> re-dispatch them;
- *   3. an active turn -> send an LLM request;
- *   4. neither -> fall back to ready.
+ *   2. a tool-only task (`!cmd`): dispatch its seeded call, or finish if it is already
+ *      answered (it never reaches the LLM branches);
+ *   3. PENDING tools in the ledger -> re-dispatch them;
+ *   4. an active turn -> send an LLM request;
+ *   5. neither -> fall back to ready.
  * The between-tasks part (unsatisfied deps) is the scheduler's gate, checked
  * before driving. Both failure exits name a reason and fail the task, since a
  * host missing a port must not leave phantom "running" tasks. */
@@ -79,6 +81,34 @@ static struct edc_advance_result exec_io_failed(struct edc_task *task, const cha
     return (struct edc_advance_result){.outcome = EDC_STEP_ERROR, .settled = true, .notice = task->output};
 }
 
+/* The one exit a tool-only task has (`!cmd`): its seeded call has been answered (or
+ * repaired into an interrupted response), so record the result, share the turn and
+ * settle. Not a failure path -- the call ran and the result IS the output.
+ *
+ * Order matches the STOP branch of exec_done: the turn is handed to the group history
+ * BEFORE committing it (committing clears active_turn and the ledger).
+ *
+ * notice stays NULL: the tool already showed the output through its own TOOL_EMIT, and a
+ * second (RESP) copy would be rendered as Markdown -- wrong for command output. */
+static struct edc_advance_result exec_tool_only_finish(struct edc_task *task, const char *output)
+{
+    /* (DONE, COMPLETED) is only reachable from a RUNNING step (AWAIT_EXEC / AWAIT_TOOLS); from
+     * READY, or from any non-ALIVE life, the matrix allows only cancel. On the repair path the
+     * task may be in either, so step into the running one first (AWAIT_EXEC is the only door). */
+    bool running = task->life == EDC_LIFE_ALIVE &&
+                   (task->step == EDC_TASKSTEP_AWAIT_EXEC || task->step == EDC_TASKSTEP_AWAIT_TOOLS);
+    if (!running && !edc_task_move(task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE))
+        return exec_io_failed(task, "[failed: this task cannot be settled (state machine)]");
+
+    edc_task_set_output(task, sdsnew(output ? output : ""));
+    edc_task_flush_redirects(task);
+    if (task->active_turn)
+        edc_task_group_history_add_turn(task->group, task->active_turn);
+    edc_task_commit_active_turn(task);
+    edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED);
+    return (struct edc_advance_result){.outcome = EDC_STEP_DONE, .settled = true, .notice = NULL};
+}
+
 static struct edc_advance_result exec_start(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
 {
     const struct edc_executor_ops *ops = ex->ops;
@@ -87,7 +117,33 @@ static struct edc_advance_result exec_start(struct edc_executor *ex, struct edc_
     /* 1. The API rejects a request whose assistant tool_calls lack responses. */
     edc_task_repair_dangling_tool_calls(task);
 
-    /* 2. Re-dispatch the ledger's PENDING tools. */
+    /* 2. A tool-only task (`!cmd`): its whole job is the one call it was seeded with, and
+     * the LLM is never asked anything -- so this branch replaces the LLM round entirely.
+     * (Placed before the general PENDING branch because a tool-only task is never a
+     * "continue the conversation" task; the paths do not overlap, this only makes the
+     * intent explicit.) */
+    if (task->tool_only)
+    {
+        /* The ledger is empty: the call was already answered. On resume that is the
+         * repair above -- an EXECUTING record that lost its result got a synthetic tool
+         * response added to the turn. The turn is therefore complete, and the task is
+         * over; it must NOT fall through to branch 3 and ask the model. */
+        if (!edc_task_has_pending_tool_calls(task))
+            return exec_tool_only_finish(task, edc_task_interrupted_tool_note());
+
+        /* Dispatch the seeded call. The state machine routes tool dispatch through
+         * AWAIT_EXEC ("READY -> AWAIT_EXEC -> AWAIT_TOOLS, never READY -> AWAIT_TOOLS";
+         * see edc_task_is_valid_transition), which is also what this means: the task
+         * produces the call, then awaits its result. */
+        if (!edc_task_move(task, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE) ||
+            !edc_task_move(task, EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE))
+            return exec_io_failed(task, "[failed: this task cannot start its tool call (state machine)]");
+        if (!ops->redispatch_tools || ops->redispatch_tools(ex->ctx, task, req_id) <= 0)
+            return exec_io_failed(task, "[failed: the tool call could not be dispatched (no toolbox port)]");
+        return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
+    }
+
+    /* 3. Re-dispatch the ledger's PENDING tools. */
     if (edc_task_has_pending_tool_calls(task))
     {
         if (edc_task_move(task, EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE) && ops->redispatch_tools &&
@@ -99,7 +155,7 @@ static struct edc_advance_result exec_start(struct edc_executor *ex, struct edc_
         return exec_io_failed(task, "[failed: the tool chain could not be re-dispatched (no toolbox port)]");
     }
 
-    /* 3. An active turn is waiting: send an inference request. */
+    /* 4. An active turn is waiting: send an inference request. */
     if (task->active_turn)
     {
         /* Rejected by the state machine: do not send a request nobody will claim. */
@@ -111,7 +167,7 @@ static struct edc_advance_result exec_start(struct edc_executor *ex, struct edc_
         return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
     }
 
-    /* 4. Nothing to run: fall back to ready. */
+    /* 5. Nothing to run: fall back to ready. */
     edc_task_move(task, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
     return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
 }
@@ -350,6 +406,12 @@ static struct edc_advance_result tool_done(struct edc_executor *ex, struct edc_t
 
     if (!t->has_next)
     {
+        /* A tool-only task (`!cmd`) exists only to issue the one call it was seeded with,
+         * so its result settles the task: the turn is complete (assistant(tool_calls) +
+         * this tool message) and the model is never asked to continue. */
+        if (task->tool_only)
+            return exec_tool_only_finish(task, t->result);
+
         /* Do not continue the chain once the budget is spent (max_iter <= 0 means
          * unlimited). */
         int max_iter = exec_max_iter(ex);

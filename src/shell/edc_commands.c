@@ -7,6 +7,7 @@
 #include "edc_compat.h"
 #include "edc_context.h"
 #include "edc_group_fold.h"
+#include "edc_local_shell.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_memory.h"
@@ -115,6 +116,7 @@ static bool edc_commands_handle_help(struct edc_reply_to to)
     const char *text = "## EdgeClaw Commands\n"
                        "\n"
                        "- /help\n"
+                       "- !<cmd>   (run a local shell command — a task of its own; no model call)\n"
                        "- /session new [name] [dir]  ·  /session switch <name>\n"
                        "- /session list  ·  /session info  ·  /session status [id]\n"
                        "- /session save  ·  /session stop\n"
@@ -1844,6 +1846,13 @@ bool edc_commands_handler( struct edc_config *cfg, struct edc_session_manager *s
      * is a routing key, not a validity flag). */
     if (!message || !message->content)
         return false;
+
+    /* `!cmd`: a user-typed local shell command. It becomes a task of its own that issues
+     * one `exec_shell` call and settles on its result -- no model involved, and the
+     * output lands in the group's history like any other task's. The `\!` escape (and any
+     * input that is not ours) falls through to the paths below. */
+    if (message->content[0] == '!' && edc_local_shell_handle(sm, sched, to, message))
+        return true;
 
     /* / commands: shell builtins first, then shortcuts, then existing handlers */
     if (message->content[0] == '/')

@@ -210,6 +210,10 @@ static void on_timeout(uv_timer_t *timer)
     shell_ctx_try_complete(ctx);
 }
 
+/* ── Spawn ─────────────────────────────────────────────────── */
+
+/* |timeout_sec| == 0 means NO timeout: the command runs until it exits (only a
+ * cancellation can end it -- see edc_tool_shell_kill_request). */
 static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool *tool, const char *cmd_s,
                             const char *cwd, unsigned int timeout_sec,
                             void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
@@ -340,7 +344,10 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
     uv_read_start((uv_stream_t *)&ctx->stdout_pipe, alloc_buffer, on_stdout_read);
     uv_read_start((uv_stream_t *)&ctx->stderr_pipe, alloc_buffer, on_stderr_read);
 
-    uv_timer_start(&ctx->timeout_timer, on_timeout, (uint64_t)timeout_sec * 1000, 0);
+    /* 0 = no timeout at all (the timer stays unstarted; it is still closed when the
+     * context completes, which uv_close accepts for a never-started handle). */
+    if (timeout_sec > 0)
+        uv_timer_start(&ctx->timeout_timer, on_timeout, (uint64_t)timeout_sec * 1000, 0);
 
     uv_once(&active_mutex_once, active_mutex_init);
     uv_mutex_lock(&active_mutex);
@@ -368,6 +375,13 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
     if (timeout_json && cJSON_IsNumber(timeout_json) && timeout_json->valueint > 0)
         timeout_sec = (unsigned int)timeout_json->valueint;
 
+    /* A user-typed command (`!cmd`) is a TOOL-ONLY task, and it runs with NO timeout: the
+     * user owns this machine and bounds the command themselves when they want one
+     * (`!timeout 60 make -j8`). An LLM-issued call keeps the default cap -- a model that
+     * picked a hanging command must not hang the task forever. Either way a cancellation
+     * kills the child (edc_tool_shell_kill_request). */
+    const bool user_command = tb_ctx->task && tb_ctx->task->tool_only;
+
     const char *working_dir = NULL;
     cJSON *wd = cJSON_GetObjectItemCaseSensitive(args, "working_dir");
     if (wd && cJSON_IsString(wd))
@@ -391,8 +405,41 @@ static void edc_tool_exec_shell_async(struct edc_toolbox_call_ctx *tb_ctx, struc
         cwd = allocated_cwd;
     }
 
-    edc_shell_spawn(tb_ctx, tool, cmd_s, cwd, timeout_sec, callback);
+    edc_shell_spawn(tb_ctx, tool, cmd_s, cwd, user_command ? 0 : timeout_sec, callback);
     sdsfree(allocated_cwd);
+}
+
+/* The tool's `abort` hook (see edc_tool_abort_fn): kill THIS call's child.
+ *
+ * The call context the actor hands back is exactly how this module finds its own per-call
+ * state -- the previous version took a request_id and scanned the registry, which meant the
+ * port implementation had to know this module's internals. Nothing here closes handles: the
+ * child's death makes the read callbacks hit EOF, and the ordinary completion path
+ * (shell_ctx_complete) closes and frees the context. The whole process group is signalled,
+ * the same rule the timeout uses, so a `sh -c 'a && b'` grandchild cannot survive and hold
+ * the pipes open. */
+static void edc_tool_shell_abort(struct edc_toolbox_call_ctx *call)
+{
+    if (!call)
+        return;
+
+    uv_once(&active_mutex_once, active_mutex_init);
+    uv_mutex_lock(&active_mutex);
+    struct edc_tool_shell_ctx *ctx;
+    LL_FOREACH(active_contexts, ctx)
+    {
+        if (ctx->tb_ctx != call || ctx->child_exited)
+            continue;
+#ifdef _WIN32
+        /* No process groups to signal here (the same limitation as the timeout path). */
+        uv_process_kill(&ctx->process, SIGTERM);
+#else
+        if (ctx->process.pid > 0)
+            kill(-ctx->process.pid, SIGKILL);
+        uv_process_kill(&ctx->process, SIGKILL);
+#endif
+    }
+    uv_mutex_unlock(&active_mutex);
 }
 
 void edc_tool_shell_abort_all(void)
@@ -475,6 +522,9 @@ struct edc_tool *edc_tool_create_exec_shell(struct edc_toolbox *tb)
               edc_tool_param_new("working_dir",
                                  edc_param_str_type("Working directory (relative to sandbox root)", NULL), false));
     struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_shell_async);
+    /* A running command is the one thing here that must be killed when its task is
+     * cancelled -- which matters most for `!cmd`, whose commands have no timeout. */
+    edc_tool_set_abort(tool, edc_tool_shell_abort);
     edc_toolbox_register(tb, tool);
     return tool;
 }

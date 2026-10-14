@@ -230,6 +230,20 @@ cc_test(
 )
 
 cc_test(
+    name = "test_local_shell",
+    srcs = ["test_local_shell.c"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "//src/shell:shell",
+        "//src/toolbox:toolbox",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_edc_session_stress",
     srcs = ["test_edc_session_stress.c"],
     deps = [

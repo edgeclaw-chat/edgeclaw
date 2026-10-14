@@ -25,4 +25,12 @@ extern void edc_turn_add_assistant_message(struct edc_turn *turn, cJSON *msg);
  * is all the request needs). */
 extern void edc_turn_add_tool_message(struct edc_turn *turn, const char *tool_call_id, const char *name,
                                       const char *content);
+/* An assistant message asking for ONE tool call, in exactly the shape the provider
+ * returns -- so a seeded call (a `!cmd` task, see edc_task_spec.initial_tool_name) is
+ * indistinguishable from one the model asked for. Required next to every tool message:
+ * the request/fold paths rely on each `role=tool` being preceded by its
+ * `assistant(tool_calls)` (see edc_llm_request.c). |args| is the JSON argument object
+ * and is serialized into the API's `arguments` STRING field; NULL = "{}". */
+extern void edc_turn_add_assistant_tool_call(struct edc_turn *turn, const char *call_id, const char *name,
+                                             cJSON *args);
 #endif

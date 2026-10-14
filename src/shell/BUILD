@@ -47,6 +47,7 @@ cc_library(
     srcs = [
         "edc_cli_history.c",
         "edc_commands.c",
+        "edc_local_shell.c",
         "edc_shell.c",
         "edc_shell_ast.c",
         "edc_shell_parse.c",
@@ -56,6 +57,7 @@ cc_library(
         "edc_cli_history.h",
         "edc_commands.h",
         "edc_completion.h",
+        "edc_local_shell.h",
         "edc_shell.h",
         "edc_shell_ast.h",
         "edc_shell_token.h",

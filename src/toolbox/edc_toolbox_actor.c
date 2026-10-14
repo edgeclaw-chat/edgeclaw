@@ -5,6 +5,7 @@
 #include "edc_scheduler.h"
 #include "edc_task.h"
 #include "edc_toolbox.h"
+#include "edc_tools.h" /* struct edc_tool (the abort hook lives on it) */
 #include "log.h"
 #include "sds.h"
 #include <stdlib.h>
@@ -388,6 +389,37 @@ static int edc_toolbox_cb_redispatch(struct edc_scheduler *sched, struct edc_tas
     return edc_toolbox_actor_redispatch(g_toolbox_actor, sched, task, request_id);
 }
 
+/* A cancelled task's in-flight calls are offered back to the tools that own them. This is
+ * the fan-out point: the actor already keeps every in-flight call context (registered on
+ * TOOL_REQUEST, released when the last callback finishes), so "which tools are running for
+ * this request" needs no new bookkeeping -- and no tool's private registry has to be known
+ * from outside. A tool with nothing to abort simply has no hook (see edc_tool_abort_fn). */
+static void edc_toolbox_actor_abort_request(edc_actor_t *actor, void *request_id)
+{
+    if (!actor || !actor->state || !request_id)
+        return;
+    edc_toolbox_actor_state_t *state = (edc_toolbox_actor_state_t *)actor->state;
+
+    /* Backwards on purpose: a tool's abort may finish the call synchronously (invoking its
+     * callback), and inflight_remove() fills the freed slot with the LAST entry. Walking
+     * from the end means that moved entry was already visited and every index still ahead
+     * of us is untouched. */
+    for (size_t i = state->inflight_count; i > 0; i--)
+    {
+        struct edc_toolbox_call_ctx *ctx = state->inflight[i - 1];
+        if (!ctx || ctx->request_id != request_id)
+            continue;
+        if (ctx->tool && ctx->tool->abort)
+            ctx->tool->abort(ctx);
+    }
+}
+
+static void edc_toolbox_cb_abort_tools(struct edc_scheduler *sched, void *request_id)
+{
+    (void)sched;
+    edc_toolbox_actor_abort_request(g_toolbox_actor, request_id);
+}
+
 void edc_toolbox_actor_bind_scheduler(edc_actor_t *actor, struct edc_scheduler *sched)
 {
     if (!actor || !sched)
@@ -396,4 +428,5 @@ void edc_toolbox_actor_bind_scheduler(edc_actor_t *actor, struct edc_scheduler *
     g_toolbox_actor = actor;
     sched->dispatch_tools = edc_toolbox_cb_dispatch;
     sched->redispatch_tools = edc_toolbox_cb_redispatch;
+    sched->abort_tools = edc_toolbox_cb_abort_tools;
 }

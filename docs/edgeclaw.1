@@ -79,11 +79,31 @@ SHELL SYNTAX
        Expansion happens after pipe splitting and redirect stripping, so
        any | or > in the expanded output is treated as literal text.
 
-     History expansion (!)
+     Local shell (!)
+           > !git status
+       A line starting with ! runs a local shell command on THIS machine. The command
+       becomes a task of its own -- its own line in the sidebar, its own entry in the
+       group's history -- whose only job is to issue one exec_shell call. No model is
+       called, and it costs no tokens. Its output is that task's result and is stored
+       in the group's history, so the next prompt sees the command and its output.
+       The command runs through sh -c in the session's working directory, subject to
+       the sandbox setting and the same output cap as the exec_shell tool, but with NO
+       timeout: the command runs until it exits. Bound it yourself when you want to --
+       !timeout 60 make -j8. Stop it with /task stop <id> (or /session stop), which kills
+       the command's whole process group.
+       !!  — run this session's previous ! command again.
+       \!  — escape: send !cmd as ordinary input (a task description) instead.
+       !   alone — usage.
+       A command that needs a terminal (sudo, vim, ssh, an editor) fails immediately:
+       the child gets no tty. A non-zero exit is NOT a task failure -- the output
+       (including stderr) is still the result.
+     History expansion (!, inside a task description)
            > !!
            > !3
        !!  — repeat the last command.
        !n  — repeat the nth command from history.
+       That history is written only from outside the TUI, so inside the TUI these
+       expand to nothing and the text is taken literally.
 
      Options on any shell command
            > "input text" --bg -d task1 --group dev --prompt reviewer
@@ -197,7 +217,8 @@ SHELL-LIKE JOB CONTROL
      fg %n            /task fg <id>
      bg %n            /task bg [id]
      kill %n          /task stop <id>
-     !!   !n          !!  !3  (history expansion)
+     !!   !n          !!  !3  (history expansion, inside a task description)
+     !cmd             !git status  (local shell: a task of its own)
      $LAST  $1  $$    variable expansion
 
 COMMAND REFERENCE

@@ -1147,6 +1147,13 @@ bool edc_task_has_pending_tool_calls(const struct edc_task *task)
 static const char *const kInterruptedToolNote =
     "[interrupted: this tool was still running when the process restarted; it did not produce a result]";
 
+/* Same text, for the executor: a tool-only task resumed into the repair has no result
+ * of its own, and this is what its output has to say about that. */
+const char *edc_task_interrupted_tool_note(void)
+{
+    return kInterruptedToolNote;
+}
+
 static bool task_turn_has_tool_response(struct edc_turn *turn, size_t upto, const char *call_id)
 {
     for (size_t i = 0; i < upto; i++)

@@ -548,6 +548,23 @@ bool edc_scheduler_task_adopt(struct edc_scheduler *sched, struct edc_session *s
         task->active_turn = turn;
     }
 
+    /* A seeded starting tool call (`!cmd`): mark the task tool-only, put the
+     * assistant(tool_calls) message into its turn, and register the call PENDING in the
+     * ledger. Nothing is dispatched here -- the end-of-message scan drives the task and the
+     * executor's tool-only branch sends the call, exactly as it would for a call the model
+     * had asked for. From there the ordinary tool path runs it. */
+    if (spec->initial_tool_name)
+    {
+        task->tool_only = true;
+
+        sds call_id = sdscatprintf(sdsempty(), "call_local_%s", task->task_id ? task->task_id : "0");
+        if (task->active_turn)
+            edc_turn_add_assistant_tool_call(task->active_turn, call_id, spec->initial_tool_name,
+                                             spec->initial_tool_args);
+        edc_task_tool_call_add(task, call_id, spec->initial_tool_name, spec->initial_tool_args);
+        sdsfree(call_id);
+    }
+
     return true;
 }
 
@@ -706,6 +723,10 @@ static void sched_fold_before_request(struct edc_scheduler *sched, struct edc_ta
         return;
     /* Only a task about to send a request triggers (a sink=GROUP_MEMORY fold task does not fold itself). */
     if (!edc_task_is_ready(task) || edc_task_is_memory_sink(task))
+        return;
+    /* A tool-only task (`!cmd`) sends no context at all -- its round is one tool call --
+     * so folding for it would burn an LLM call on nothing. */
+    if (task->tool_only)
         return;
 
     struct edc_session *session = task->group->session;
@@ -918,6 +939,17 @@ void edc_scheduler_unregister_task(struct edc_scheduler *sched, void *request_id
 
 /* ── Signals ───────────────────────────────────────────────── */
 
+/* A task that just got cancelled takes its running tools with it: the child is a detached
+ * process, and a user-typed command has NO timeout by design, so if the toolbox is not
+ * told, a cancelled `!tail -f` would run until the app exits. The toolbox owns the
+ * in-flight calls, so it is asked by request id (never by task pointer: the tool side must
+ * not dereference a task that may already be reclaimed). */
+static void sched_abort_cancelled_tools(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
+{
+    if (sched->abort_tools && edc_task_is_cancelled(task))
+        sched->abort_tools(sched, request_id);
+}
+
 void edc_scheduler_send_signal_to_task_ptr(struct edc_scheduler *sched, struct edc_task *task, edc_task_signal sig)
 {
     if (!sched || !task)
@@ -929,8 +961,10 @@ void edc_scheduler_send_signal_to_task_ptr(struct edc_scheduler *sched, struct e
     ev.kind = EDC_EVENT_SIGNAL;
     ev.as.signal.sig = sig;
     /* A signal carries no request_id: unregister the one the task remembers. */
+    void *req_id = task->current_request_id;
     struct edc_advance_result res = edc_executor_advance(&sched->executor, task, &ev);
-    edc_scheduler_apply_advance(sched, task, task->current_request_id, &res);
+    sched_abort_cancelled_tools(sched, task, req_id);
+    edc_scheduler_apply_advance(sched, task, req_id, &res);
 }
 
 void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, struct edc_session *session, const char *task_id,
@@ -956,12 +990,14 @@ static void sched_signal_one(struct edc_scheduler *sched, struct edc_task *task,
         return;
 
     /* Cancel = explicit termination: unregister, reap, dirty, settle, all in one entry. */
+    void *req_id = task->current_request_id;
+    sched_abort_cancelled_tools(sched, task, req_id);
     struct edc_advance_result res;
     memset(&res, 0, sizeof(res));
     res.outcome = EDC_STEP_DONE;
     res.changed = true;
     res.settled = true;
-    edc_scheduler_apply_advance(sched, task, task->current_request_id, &res);
+    edc_scheduler_apply_advance(sched, task, req_id, &res);
 }
 
 /* Signal a group: walk each member through the single-task path above. */

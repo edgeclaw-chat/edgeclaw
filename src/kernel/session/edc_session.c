@@ -187,6 +187,7 @@ void edc_session_free(struct edc_session *session)
     sdsfree(session->last_active);
     sdsfree(session->history_dir);
     sdsfree(session->workdir);
+    sdsfree(session->last_local_cmd);
     free(session);
 }
 

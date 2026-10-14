@@ -62,6 +62,10 @@ struct edc_session
 
     sds history_dir; /* workspace/<session_id> -- per-session history */
 
+    /* The last `!cmd` typed in this session (`!!` runs it again). In memory only: it is
+     * a convenience at the prompt, not state the session owns across a restart. */
+    sds last_local_cmd;
+
     /* Bound working directory (absolute realpath). NULL = unset -> fall back to the
      * launch directory (config->sandbox_root_real). Tool execution (exec_shell's
      * default cwd, fs tools' relative paths) and the system prompt's {{cwd}} both

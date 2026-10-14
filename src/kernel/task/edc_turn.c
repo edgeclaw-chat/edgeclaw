@@ -49,6 +49,32 @@ void edc_turn_add_tool_message(struct edc_turn *turn, const char *tool_call_id, 
     edc_turn_add_message(turn, msg);
 }
 
+void edc_turn_add_assistant_tool_call(struct edc_turn *turn, const char *call_id, const char *name, cJSON *args)
+{
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "role", "assistant");
+
+    /* `arguments` is a STRING in the API, not an object. */
+    char *args_s = args ? cJSON_PrintUnformatted(args) : NULL;
+    cJSON *call = cJSON_CreateObject();
+    cJSON_AddStringToObject(call, "id", call_id ? call_id : "");
+    cJSON_AddStringToObject(call, "type", "function");
+    cJSON *fn = cJSON_CreateObject();
+    cJSON_AddStringToObject(fn, "name", name ? name : "");
+    cJSON_AddStringToObject(fn, "arguments", args_s ? args_s : "{}");
+    if (args_s)
+        cJSON_free(args_s);
+    cJSON_AddItemToObject(call, "function", fn);
+
+    cJSON *calls = cJSON_CreateArray();
+    cJSON_AddItemToArray(calls, call);
+    cJSON_AddItemToObject(msg, "tool_calls", calls);
+
+    /* No "content": edc_turn_add_message fills it with "" (the API accepts an empty
+     * content next to tool_calls). */
+    edc_turn_add_message(turn, msg);
+}
+
 struct edc_turn *edc_turn_new()
 {
     struct edc_turn *turn = g_new0(struct edc_turn, 1);
