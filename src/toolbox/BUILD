@@ -6,6 +6,7 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 cc_library(
     name = "toolbox",
     srcs = [
+        "edc_output_buf.c",
         "edc_param_types.c",
         "edc_toolbox.c",
         "edc_toolbox_actor.c",
@@ -14,11 +15,12 @@ cc_library(
         "edc_tools_device_file.c",
         "edc_tools_device_shell.c",
         "edc_tools_fs.c",
+        "edc_tools_memory.c",
         "edc_tools_shell.c",
         "edc_tools_todo.c",
-        "edc_tools_memory.c",
     ],
     hdrs = [
+        "edc_output_buf.h",
         "edc_param_types.h",
         "edc_toolbox.h",
         "edc_toolbox_actor.h",
@@ -27,9 +29,9 @@ cc_library(
         "edc_tools_device_file.h",
         "edc_tools_device_shell.h",
         "edc_tools_fs.h",
+        "edc_tools_memory.h",
         "edc_tools_shell.h",
         "edc_tools_todo.h",
-        "edc_tools_memory.h",
     ],
     includes = ["."],
     deps = [

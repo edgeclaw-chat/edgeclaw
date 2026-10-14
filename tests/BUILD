@@ -230,6 +230,32 @@ cc_test(
 )
 
 cc_test(
+    name = "test_output_buf",
+    srcs = ["test_output_buf.c"],
+    deps = [
+        "//src/toolbox:toolbox",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_tool_shell_loop",
+    srcs = ["test_tool_shell_loop.c"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "//src/toolbox:toolbox",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_local_shell",
     srcs = ["test_local_shell.c"],
     deps = [

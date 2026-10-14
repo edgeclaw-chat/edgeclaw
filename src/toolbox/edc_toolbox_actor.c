@@ -152,8 +152,11 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
     if ((sdslen(result)) > state->toolbox->conf->tool_max_output_size)
     {
         size_t len = sdslen(result);
-        sdsrange(result, 0, state->toolbox->conf->tool_max_output_size);
-        result = sdscatprintf(result, "\n\n[Result truncated to 10000 characters, total length: %zu]", len);
+        size_t cap = (size_t)state->toolbox->conf->tool_max_output_size;
+        sdsrange(result, 0, cap);
+        /* The number comes from the config, not from a literal: a hardcoded "10000" here
+         * used to contradict any other configured value. */
+        result = sdscatprintf(result, "\n\n[Result truncated to %zu characters, total length: %zu]", cap, len);
         req->result = result;
     }
 

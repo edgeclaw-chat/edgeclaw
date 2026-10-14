@@ -93,6 +93,13 @@ struct edc_config
      * the fold compares the group's context against `window - reserve`. */
     int context_window;
     int tool_max_output_size;
+    /* Shell output limits (see docs/tool-output-limits.zh.md). 0 = use the compile-time
+     * default (1 MiB kept per stream / 256 MiB before the command is killed). Deliberately
+     * NOT read from config.json: they exist so the policy is a value a test can pin -- a
+     * runaway test would otherwise have to emit 256 MiB to reach the kill. Promoting them
+     * to config keys later is a two-line change. */
+    int shell_capture_max;
+    int shell_output_kill_max;
 
     sds device_pty;
     sds device_ip;
