@@ -211,24 +211,44 @@ static bool edc_commands_handle_session_memo(struct edc_session_manager *sm, str
         edc_commands_reply(to, text);
         sdsfree(text);
     }
-    else if (strcmp(sub, "compact") == 0)
+    else if (strcmp(sub, "curate") == 0)
     {
+        /* CURATION pulls durable knowledge OUT of the group memories into the index. Its material
+         * is every group's memory plus the existing entries (see build_curate_prompt) -- that is
+         * the job, so group content belongs in that prompt. It is NOT a compaction. */
         struct edc_task *t = edc_session_memory_start_manual(sched, active, (*tail ? tail : NULL));
         if (t)
-            edc_commands_reply(to, "**Session memory** — curation started (it writes entries through its memory "
-                                   "tools). `/session memo show` when it is done.");
+            edc_commands_reply(to, "**Session memory** — curation started (it reads the group memories and "
+                                   "writes entries through its memory tools). `/session memo show` when it "
+                                   "is done.");
         else if (edc_scheduler_has_pending_system_task(active))
             edc_commands_reply(to, "**Session memory** — a system task is already running in this session; "
                                    "wait for it to finish.");
         else
             edc_commands_reply(to, "**Session memory** — could not start curation.");
     }
+    else if (strcmp(sub, "compact") == 0)
+    {
+        /* COMPACTION shrinks the session memory and nothing else: merge / condense / drop / rebuild
+         * the index. Its material is the entries themselves -- no group memory is involved (see
+         * build_compact_prompt). Normally started by the entry cap; this runs one now. */
+        struct edc_task *t = edc_session_memory_start_compact(sched, active);
+        if (t)
+            edc_commands_reply(to, "**Session memory** — compaction started (it only rewrites the session "
+                                   "entries: merge / condense / drop / rebuild the index).");
+        else if (edc_scheduler_has_pending_system_task(active))
+            edc_commands_reply(to, "**Session memory** — a system task is already running in this session; "
+                                   "wait for it to finish.");
+        else
+            edc_commands_reply(to, "**Session memory** — could not start compaction.");
+    }
     else
     {
         edc_commands_reply(to,
-                           "Usage: `/session memo [show [id] | search <keyword> | compact [focus]]`\n"
-                           "`show` lists the entries, `show <id>` prints one entry, `search` matches title/"
-                           "summary/detail, `compact` curates now (else it only runs when a group is folded).");
+                           "Usage: `/session memo [show [id] | search <keyword> | curate [focus] | compact]`\n"
+                           "`show` lists the entries, `show <id>` prints one entry, `search` matches title/summary/"
+                           "detail, `curate` merges the group memories INTO the entries now (else it only runs "
+                           "when a group is folded), `compact` shrinks the session entries themselves.");
     }
 
     sdsfree(sub);

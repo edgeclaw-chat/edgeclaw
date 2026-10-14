@@ -171,10 +171,10 @@ int main(void)
     CHECK(g_llm_calls == 0, "没有请求出去");
     CHECK(find_l2(sess) == NULL, "也没有 L2 被建出来");
 
-    TEST("/session memo compact: 立刻起 L2, 材料含所有组与 focus");
+    TEST("/session memo curate: 立刻起 L2, 材料含所有组与 focus（收料=它的职责）");
     g_llm_calls = 0;
     g_llm_task = NULL;
-    drive_command(cfg, sm, sched, "/session memo compact keep the build flags");
+    drive_command(cfg, sm, sched, "/session memo curate keep the build flags");
     CHECK(g_llm_calls == 1, "策展请求发出去了");
     struct edc_task *l2 = find_l2(sess);
     CHECK(l2 != NULL && g_llm_task == l2, "出去的就是这个 L2");
@@ -193,9 +193,9 @@ int main(void)
         CHECK(material && strstr(material, "[m1]") != NULL, "带上了现有条目索引");
     }
 
-    TEST("compact: 已有 system task 在飞 ⇒ 拒绝 (一次一个)");
+    TEST("curate: 已有 system task 在飞 ⇒ 拒绝 (一次一个)");
     g_llm_calls = 0;
-    drive_command(cfg, sm, sched, "/session memo compact again");
+    drive_command(cfg, sm, sched, "/session memo curate again");
     CHECK(g_llm_calls == 0, "没有再发请求");
 
     TEST("L2 压缩任务: 条目超上限 => due; start_compact 起一个同性质但有自己的提示词的任务");
@@ -275,6 +275,36 @@ int main(void)
     }
 
     CHECK(!edc_session_memory_compact_due(sess), "同尺寸不会立刻再来一轮（要再长才触发）");
+
+    TEST("/session memo compact: 只压 session memory（材料里**没有** group memory）");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "/session memo compact");
+    CHECK(g_llm_calls == 1, "压缩请求发出去了");
+    {
+        struct edc_task *ct2 = NULL;
+        struct edc_task_group *gg = NULL;
+        DL_FOREACH(sess->groups, gg)
+        {
+            struct edc_task *tt = NULL;
+            LL_FOREACH2(gg->members, tt, group_next)
+            {
+                if (tt->sink == EDC_SINK_SESSION_MEMORY && tt->memo_compact && !edc_task_is_finished(tt))
+                    ct2 = tt;
+            }
+        }
+        CHECK(ct2 != NULL, "起的是压缩任务（带 memo_compact）");
+        const char *material = NULL;
+        if (ct2 && ct2->active_turn && edc_queue_length(&ct2->active_turn->messages) > 0)
+        {
+            cJSON *m = ct2->active_turn->messages.data[ct2->active_turn->messages.head];
+            material = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+        }
+        CHECK(material && strstr(material, "## Compact the session memory") != NULL, "材料里是压缩指令");
+        CHECK(material && strstr(material, "id: m1") != NULL, "以及条目 dump（id/rev/内容）");
+        CHECK(material && strstr(material, "### group") == NULL,
+              "材料里**没有** group memory —— 压缩只动 session memory 自己");
+    }
 
     printf("\n  %d passed, %d failed\n\n", passed, failed);
     edc_scheduler_free(sched);
