@@ -172,6 +172,57 @@ static void test_close_is_safe(void)
     CHECK(true, "no crash");
 }
 
+static void test_sleep_cap(void)
+{
+    TEST("next-delay: the earliest deadline wins, capped at EDC_SERVICE_MAX_SLEEP_MS");
+    struct edc_config *cfg = make_config();
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+
+    CHECK(edc_services_next_delay_ms(sched) == UINT64_MAX, "no services => no deadline");
+    edc_service_register(sched, "near", 1000, tick_a, NULL);
+    CHECK(edc_services_next_delay_ms(sched) == 1000, "near deadline unchanged");
+    edc_service_register(sched, "far", 10 * 60 * 1000, tick_b, NULL);
+    CHECK(edc_services_next_delay_ms(sched) == 1000, "the earliest still wins");
+    edc_service_unregister(sched, "near");
+    CHECK(edc_services_next_delay_ms(sched) == EDC_SERVICE_MAX_SLEEP_MS, "a far deadline is capped at 60s");
+
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* The real thing: a loop thread running the shared uv_timer, whose PUMP message the
+ * actor's wakeup drains into the handler. */
+static volatile int g_loop_ticks = 0;
+static void tick_loop(struct edc_service *svc, void *ud)
+{
+    (void)svc;
+    (void)ud;
+    g_loop_ticks++;
+}
+
+static void test_real_loop_timer(void)
+{
+    TEST("real uv loop: the shared timer arms and fires a registered service");
+    struct edc_config *cfg = make_config();
+    cfg->services_enabled = true; /* arm the timer */
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    edc_actor_runner_t *runner = edc_actor_runner_new();
+    edc_actor_runner_add(runner, edc_scheduler_get_actor(sched));
+
+    /* Register BEFORE the loop runs: uv_timer_init must not race the loop thread. */
+    edc_service_register(sched, "loop", 10, tick_loop, NULL);
+    g_loop_ticks = 0;
+    edc_actor_runner_start(runner);
+
+    for (int i = 0; i < 400 && g_loop_ticks == 0; i++)
+        uv_sleep(5);
+    CHECK(g_loop_ticks >= 1, "fired through the real loop timer + actor pump");
+
+    edc_actor_runner_free(runner);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     test_register_and_pump();
@@ -179,6 +230,8 @@ int main(void)
     test_unregister();
     test_tick_can_reschedule_itself();
     test_close_is_safe();
+    test_sleep_cap();
+    test_real_loop_timer();
 
     log_info("  ====== %d passed, %d failed ======", test_passed, test_failed);
     return test_failed ? 1 : 0;

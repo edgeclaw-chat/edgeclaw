@@ -37,6 +37,13 @@ struct edc_service
 /* A service may not fire more often than this (guards against a busy loop). */
 #define EDC_SERVICE_MIN_INTERVAL_MS 1000
 
+/* The shared timer never sleeps longer than this, even when the next service is hours
+ * away. It is a robustness cap, not an optimization: a very long uv_timer sleep uses the
+ * monotonic clock, which does not advance while the host is suspended, so a wall-clock
+ * (crontab) deadline could otherwise fire late after a sleep/resume. The cost is at most
+ * one wakeup per minute while idle. */
+#define EDC_SERVICE_MAX_SLEEP_MS (60 * 1000)
+
 /* Register a service. Idempotent by name (an existing name is returned unchanged).
  * Returns NULL only on allocation failure. The first deadline is now + interval. */
 extern struct edc_service *edc_service_register(struct edc_scheduler *sched, const char *name, uint64_t interval_ms,
@@ -54,6 +61,11 @@ extern void edc_service_set_interval(struct edc_scheduler *sched, struct edc_ser
  * the pump body the scheduler handler calls; tests call it directly with a fake clock
  * (there is no loop in most unit tests, so this is the only way to drive services). */
 extern void edc_services_pump(struct edc_scheduler *sched, uint64_t now_ms);
+
+/* Milliseconds the shared timer should sleep for: the distance to the earliest due
+ * service, capped at EDC_SERVICE_MAX_SLEEP_MS; UINT64_MAX when there are no services.
+ * Exposed so the cap can be tested without a loop. */
+extern uint64_t edc_services_next_delay_ms(struct edc_scheduler *sched);
 
 /* Free the registry. Deliberately does NOT touch the uv timer: the actor runner closes
  * every remaining handle on shutdown (uv_walk), and by the time this runs the loop may

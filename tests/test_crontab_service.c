@@ -142,10 +142,47 @@ static void test_due_every_job_advances(void)
     edc_config_free(cfg);
 }
 
+/* A not-yet-due job must be left alone by a scan that does not fire it (regression:
+ * advancing every job on every scan would push a long-interval job forward forever). */
+static void test_future_job_not_disturbed(void)
+{
+    TEST("crontab service: an idle scan does not advance a not-yet-due job");
+    const char *dir = "/tmp/test_crontab_service_c";
+    struct edc_config *cfg = make_config(dir);
+    long long future = (long long)time(NULL) + 100000;
+    char json[512];
+    snprintf(json, sizeof(json),
+             "{\"jobs\":[{\"job_id\":\"j1\",\"name\":\"n\",\"message\":\"m\","
+             "\"schedule\":{\"kind\":\"every\",\"tz\":\"\",\"once\":false,\"every_seconds\":10,"
+             "\"next_run_at_unix_ts\":%lld}}]}",
+             future);
+    write_jobs(dir, json);
+
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    struct edc_toolbox *tb = edc_toolbox_new(cfg, edc_scheduler_get_actor(sched), NULL);
+
+    edc_services_pump(sched, 100000000); /* force the service to run its scan */
+
+    cJSON *db = read_jobs(dir);
+    cJSON *jobs = db ? cJSON_GetObjectItem(db, "jobs") : NULL;
+    cJSON *job = jobs ? cJSON_GetArrayItem(jobs, 0) : NULL;
+    cJSON *schedule = job ? cJSON_GetObjectItem(job, "schedule") : NULL;
+    cJSON *next = schedule ? cJSON_GetObjectItem(schedule, "next_run_at_unix_ts") : NULL;
+    CHECK(jobs && cJSON_GetArraySize(jobs) == 1, "the job is kept");
+    CHECK(next && cJSON_IsNumber(next) && (long long)next->valuedouble == future, "next_run is unchanged");
+    if (db)
+        cJSON_Delete(db);
+
+    edc_toolbox_free(tb);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     test_due_once_job_fires_and_is_removed();
     test_due_every_job_advances();
+    test_future_job_not_disturbed();
 
     log_info("  ====== %d passed, %d failed ======", test_passed, test_failed);
     return test_failed ? 1 : 0;

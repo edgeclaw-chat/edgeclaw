@@ -98,3 +98,31 @@ void edc_turn_free(struct edc_turn *turn)
     free(turn->task_id);
     free(turn);
 }
+
+sds edc_turn_render_message(const cJSON *msg)
+{
+    if (!msg)
+        return sdsempty();
+    const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "role"));
+    const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
+    const char *ts = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "ts"));
+    sds line = sdscatprintf(sdsempty(), "%s  %s: %s", (ts && ts[0]) ? ts : "?", role ? role : "?",
+                            content ? content : "");
+
+    /* Assistant tool calls: name + arguments are knowledge the content alone lacks (a
+     * tool-call message has empty content), so the fold corpus and the extraction
+     * material keep them. */
+    cJSON *calls = cJSON_GetObjectItem(msg, "tool_calls");
+    if (calls && cJSON_IsArray(calls))
+    {
+        cJSON *call;
+        cJSON_ArrayForEach(call, calls)
+        {
+            cJSON *fn = cJSON_GetObjectItem(call, "function");
+            const char *name = fn ? cJSON_GetStringValue(cJSON_GetObjectItem(fn, "name")) : NULL;
+            const char *args = fn ? cJSON_GetStringValue(cJSON_GetObjectItem(fn, "arguments")) : NULL;
+            line = sdscatprintf(line, "\n  -> call %s(%s)", name ? name : "?", args ? args : "{}");
+        }
+    }
+    return line;
+}

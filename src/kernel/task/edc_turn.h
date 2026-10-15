@@ -1,6 +1,7 @@
 #ifndef __BC_TURN_H__
 #define __BC_TURN_H__
 #include "edc_containers.h"
+#include "sds.h"
 #include <cJSON.h>
 #include <stdbool.h>
 
@@ -22,7 +23,11 @@ struct edc_turn
 
 extern struct edc_turn *edc_turn_new();
 extern void edc_turn_free(struct edc_turn *turn);
-
+/* Render one message as a prompt line for the fold corpus / extraction material:
+ * "<ts>  <role>: <content>", plus one "  -> call <name>(<arguments>)" line per
+ * assistant tool_call. The tool arguments are knowledge the content alone lacks, so
+ * both materials keep them. Returns a fresh sds (caller frees). */
+extern sds edc_turn_render_message(const cJSON *msg);
 /* Append one full message (takes ownership); cleans UTF-8 and fills ts/render. */
 extern void edc_turn_add_message(struct edc_turn *turn, cJSON *msg);
 extern void edc_turn_add_user_message(struct edc_turn *turn, const char *content);

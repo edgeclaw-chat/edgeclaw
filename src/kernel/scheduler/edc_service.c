@@ -40,19 +40,30 @@ static void services_rearm(struct edc_scheduler *sched)
         sched->service_timer_inited = true;
     }
 
-    uint64_t now = uv_now(sched->self->loop);
-    uint64_t best = UINT64_MAX;
-    for (struct edc_service *s = sched->services; s; s = s->next)
-        if (s->next_due_ms < best)
-            best = s->next_due_ms;
-
-    if (best == UINT64_MAX)
+    uint64_t delay = edc_services_next_delay_ms(sched);
+    if (delay == UINT64_MAX)
     {
         uv_timer_stop(&sched->service_timer);
         return;
     }
-    uint64_t delay = (best > now) ? best - now : 0;
     uv_timer_start(&sched->service_timer, on_service_pump, delay, 0); /* one-shot, re-armed each time */
+}
+
+uint64_t edc_services_next_delay_ms(struct edc_scheduler *sched)
+{
+    if (!sched)
+        return UINT64_MAX;
+    uint64_t now = service_now_ms(sched);
+    uint64_t best = UINT64_MAX;
+    for (struct edc_service *s = sched->services; s; s = s->next)
+        if (s->next_due_ms < best)
+            best = s->next_due_ms;
+    if (best == UINT64_MAX)
+        return UINT64_MAX;
+    uint64_t delay = (best > now) ? best - now : 0;
+    if (delay > EDC_SERVICE_MAX_SLEEP_MS)
+        delay = EDC_SERVICE_MAX_SLEEP_MS;
+    return delay;
 }
 
 /* The timer callback: defer into the handler. It must NOT run a service here. */

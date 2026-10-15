@@ -238,51 +238,51 @@ static sds edc_tool_crontab_build_task_message(char *job_name, char *job_message
                         job_name, job_message);
 }
 
-static void edc_tool_crontab_caculate_next_run(cJSON *jobs)
+/* Advance ONE job's next_run after it FIRED: "every" -> now + interval, "cron" -> the
+ * next occurrence, "at" -> nothing (a one-shot is removed by the caller). Only fired
+ * jobs are advanced: advancing every job on every scan would push a not-yet-due job
+ * forward each time, so a long-interval job would never come due. */
+static void edc_tool_crontab_advance_job(cJSON *job)
 {
-    for (int i = 0; i < cJSON_GetArraySize(jobs); ++i)
-    {
-        cJSON *job = cJSON_GetArrayItem(jobs, i);
-        cJSON *job_id = cJSON_GetObjectItem(job, "job_id");
-        cJSON *schedule = cJSON_GetObjectItem(job, "schedule");
-        cJSON *tz_id = cJSON_GetObjectItem(schedule, "tz");
-        cJSON *kind = cJSON_GetObjectItem(schedule, "kind");
-        const char *tz_name = cJSON_GetStringValue(tz_id);
+    cJSON *schedule = cJSON_GetObjectItem(job, "schedule");
+    cJSON *kind = schedule ? cJSON_GetObjectItem(schedule, "kind") : NULL;
+    const char *k = cJSON_GetStringValue(kind);
+    if (!k)
+        return;
 
-        if (strcmp(cJSON_GetStringValue(kind), "at") == 0)
+    if (strcmp(k, "every") == 0)
+    {
+        cJSON *interval = cJSON_GetObjectItem(schedule, "every_seconds");
+        int every_seconds = interval ? interval->valueint : 60;
+        cJSON_ReplaceItemInObject(schedule, "next_run_at_unix_ts",
+                                  cJSON_CreateNumber((int64_t)time(NULL) + every_seconds));
+    }
+    else if (strcmp(k, "cron") == 0)
+    {
+        cJSON *expr = cJSON_GetObjectItem(schedule, "cron_expr");
+        const char *error = NULL;
+        cron_expr cexpr;
+        cron_parse_expr(cJSON_GetStringValue(expr), &cexpr, &error);
+        if (error)
         {
+            log_error("crontab: parse cron expr failed: %s", error);
+            return;
         }
-        else if (strcmp(cJSON_GetStringValue(kind), "every") == 0)
+        const char *tz_name = cJSON_GetStringValue(cJSON_GetObjectItem(schedule, "tz"));
+        time_t next;
+        if (tz_name && tz_name[0])
         {
-            cJSON *interval = cJSON_GetObjectItem(schedule, "every_seconds");
-            int every_seconds = interval->valueint;
-            int64_t now = (int64_t)time(NULL);
-            cJSON_ReplaceItemInObject(schedule, "next_run_at_unix_ts", cJSON_CreateNumber(now + every_seconds));
+            time_t local_now = timezone_local_time(tz_name, time(NULL));
+            time_t local_next = cron_next(&cexpr, local_now);
+            next = timezone_gmt_time(tz_name, local_next);
+            if (next < 0)
+                next = time(NULL) + 60;
         }
-        else if (strcmp(cJSON_GetStringValue(kind), "cron") == 0)
+        else
         {
-            cJSON *expr = cJSON_GetObjectItem(schedule, "cron_expr");
-            const char *error = NULL;
-            cron_expr cexpr;
-            cron_parse_expr(cJSON_GetStringValue(expr), &cexpr, &error);
-            if (error)
-            {
-                log_error("job id: %s parse crontab expr failed: %s", cJSON_GetStringValue(job_id), error);
-            }
-            else if (tz_name && tz_name[0])
-            {
-                time_t local_now = timezone_local_time(tz_name, time(NULL));
-                time_t local_next = cron_next(&cexpr, local_now);
-                time_t utc_next = timezone_gmt_time(tz_name, local_next);
-                if (utc_next >= 0)
-                    cJSON_ReplaceItemInObject(schedule, "next_run_at_unix_ts", cJSON_CreateNumber(utc_next));
-            }
-            else
-            {
-                time_t next = cron_next(&cexpr, time(NULL));
-                cJSON_ReplaceItemInObject(schedule, "next_run_at_unix_ts", cJSON_CreateNumber(next));
-            }
+            next = cron_next(&cexpr, time(NULL));
         }
+        cJSON_ReplaceItemInObject(schedule, "next_run_at_unix_ts", cJSON_CreateNumber(next));
     }
 }
 
@@ -374,11 +374,11 @@ static void edc_tool_crontab_scan(struct edc_service *svc, void *ud)
         }
         else
         {
+            edc_tool_crontab_advance_job(job); /* only the job that fired */
             i++;
         }
     }
 
-    edc_tool_crontab_caculate_next_run(jobs);
     if (!edc_tool_crontab_save_jobs_db(state->workspace, db, &error))
     {
         log_error("crontab: failed to save jobs db: %s", error && error->message ? error->message : "?");

@@ -475,15 +475,13 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus,
             prompt = sdscatprintf(prompt, "\n### [task %s] %s\n", tk->task_id, tk->description ? tk->description : "");
         }
         cJSON *m = ps[i].turn->messages.data[ps[i].turn->messages.head + ps[i].msg_index];
-        cJSON *role = cJSON_GetObjectItem(m, "role");
-        cJSON *content = cJSON_GetObjectItem(m, "content");
-        if (role && content && cJSON_IsString(role) && cJSON_IsString(content))
+        if (cJSON_GetStringValue(cJSON_GetObjectItem(m, "role")))
         {
-            /* Carry each message's wall-clock time, so the summary the fold writes has a
-             * temporal anchor (and the curator/extractor can judge staleness later). */
-            const char *ts = cJSON_GetStringValue(cJSON_GetObjectItem(m, "ts"));
-            prompt = sdscatprintf(prompt, "%s  %s: %s\n", (ts && ts[0]) ? ts : "?", role->valuestring,
-                                  content->valuestring);
+            /* One line, with the message's wall-clock time and (for a tool call) its
+             * name + arguments -- see edc_turn_render_message. */
+            sds line = edc_turn_render_message(m);
+            prompt = sdscatprintf(prompt, "%s\n", line);
+            sdsfree(line);
         }
     }
 

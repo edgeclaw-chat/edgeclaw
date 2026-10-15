@@ -511,6 +511,51 @@ static void test_serialization_tristate_and_v7(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
+ *  Test 9: the material keeps assistant tool calls (name + arguments)
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_material_keeps_tool_calls(void)
+{
+    TEST("material: an assistant tool call renders its name + arguments");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-tc", "TC");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    struct edc_task *leader = edc_task_new("g1", session->session_id, "g1", "work", edc_channel_adapter);
+    struct edc_task_group *group = edc_task_group_new(leader);
+    edc_session_add_group(session, group);
+
+    struct edc_turn *turn = edc_turn_new();
+    turn->task_id = strdup("g1");
+    edc_turn_add_user_message(turn, "list the dir");
+    cJSON *args = cJSON_CreateObject();
+    cJSON_AddStringToObject(args, "cmd", "ls -la");
+    edc_turn_add_assistant_tool_call(turn, "call_1", "exec_shell", args);
+    cJSON_Delete(args);
+    edc_turn_add_tool_message(turn, "call_1", "exec_shell", "total 0");
+    /* edc_turn_add_* stamps ts = now; force it old so the group is "idle". */
+    for (size_t mi = turn->messages.head; mi < turn->messages.tail; mi++)
+        cJSON_ReplaceItemInObject(turn->messages.data[mi], "ts", cJSON_CreateString(OLD_TS));
+    edc_task_add_turn(leader, turn);
+    edc_task_await_exec(leader);
+    edc_task_mark_completed(leader);
+    leader->completion_seq = 1;
+
+    struct edc_session *out = NULL;
+    CHECK(edc_session_memory_extract_try(sched, sched->sessions, cfg, &out), "extraction started");
+    const char *material = task_input(find_extract_task(session));
+    CHECK(material && strstr(material, "call exec_shell({\"cmd\":\"ls -la\"})") != NULL,
+          "the tool call's name + arguments are in the material");
+    CHECK(material && strstr(material, "tool: total 0") != NULL, "the tool result is still there");
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
  *  Test 8: the extract-scan background service drives extraction
  *  ══════════════════════════════════════════════════════════════ */
 
@@ -566,6 +611,7 @@ int main(void)
     test_failure_backoff_and_bad_cut();
     test_serialization_tristate_and_v7();
     test_extract_scan_service();
+    test_material_keeps_tool_calls();
     test_prompts_have_recency_rule();
 
     log_info("  ====== %d passed, %d failed ======", test_passed, test_failed);
