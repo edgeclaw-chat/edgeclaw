@@ -44,7 +44,7 @@ ConnectDialog::ConnectDialog(Submit submit) : submit_(std::move(submit))
     // pre-filled value. Without this the caret starts at 0 and typing prepends,
     // which reads as "the caret is at the wrong end".
     field_option.cursor_position = &url_cursor_;
-    url_input_ = ::ftxui::Input(&url_, "https://api.example.com/v1/chat/completions", field_option);
+    url_input_ = ::ftxui::Input(&url_, "https://api.example.com/v1", field_option);
     field_option.cursor_position = &model_cursor_;
     model_input_ = ::ftxui::Input(&model_, "model name", field_option);
     field_option.cursor_position = &key_cursor_;

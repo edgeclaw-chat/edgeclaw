@@ -351,3 +351,22 @@ sds edc_base64_decode(const char *b64_str, size_t *out_len)
         *out_len = data_len;
     return result;
 }
+
+sds edc_url_chat_completions(const char *base_url)
+{
+    if (!base_url || !base_url[0])
+        return NULL;
+    static const char suffix[] = "/chat/completions";
+    const size_t slen = sizeof(suffix) - 1;
+
+    sds out = sdsnew(base_url);
+    /* Ignore trailing slashes so ".../v1/" and ".../v1" behave the same. */
+    while (sdslen(out) > 0 && out[sdslen(out) - 1] == '/')
+    {
+        out[sdslen(out) - 1] = '\0';
+        sdsupdatelen(out);
+    }
+    if (sdslen(out) >= slen && strcmp(out + sdslen(out) - slen, suffix) == 0)
+        return out; /* already a full endpoint */
+    return sdscat(out, suffix);
+}

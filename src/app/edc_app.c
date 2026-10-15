@@ -4,15 +4,16 @@
 #include "edc_commands.h"
 #include "edc_compat.h"
 #include "edc_config.h"
+#include "edc_context.h"
 #include "edc_endpoint_probe.h"
 #include "edc_file_utils.h"
-#include "edc_context.h"
 #include "edc_init_env.h"
 #include "edc_llm_actor.h"
 #include "edc_llm_request.h"
 #include "edc_sandbox.h"
 #include "edc_secret.h"
 #include "edc_state_serializer.h"
+#include "edc_string_utils.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_toolbox_actor.h"
@@ -201,7 +202,7 @@ bool edc_app_set_llm_config(struct edc_app *app, const char *api_url, const char
     u->model = model ? sdsnew(model) : NULL;
     u->api_key = api_key ? sdsnew(api_key) : NULL;
     edc_actor_send(app->llm_actor, edc_actor_msg_new(BC_ACTOR_MSG_LLM_SET_CONFIG, NULL, NULL, u,
-                                                       (edc_actor_data_free_fn)edc_llm_api_conf_update_free));
+                                                     (edc_actor_data_free_fn)edc_llm_api_conf_update_free));
     return true;
 }
 
@@ -238,11 +239,13 @@ bool edc_app_test_endpoint(struct edc_app *app, const char *api_url, const char 
     if (!app || !app->config)
         return false;
     sds cacert = app->config->workspace ? edc_path_join(app->config->workspace, "ssl", "cacert.pem", NULL) : NULL;
-    bool ok = edc_endpoint_probe(cacert, api_url, api_key, timeout_ms, out, cap);
+    /* The config holds a base URL; probe its /chat/completions endpoint (see the actor). */
+    sds url = edc_url_chat_completions(api_url);
+    bool ok = edc_endpoint_probe(cacert, url ? url : api_url, api_key, timeout_ms, out, cap);
+    sdsfree(url);
     sdsfree(cacert);
     return ok;
 }
-
 
 /* ── sandbox path whitelist (ro/rw) management ─────────────────────────── */
 
