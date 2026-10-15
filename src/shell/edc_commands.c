@@ -139,6 +139,7 @@ static bool edc_commands_handle_help(struct edc_reply_to to)
                        "- /model [name]\n"
                        "- /prompt   (list)  ·  /prompt <name> [args…]   (run a template)\n"
                        "- /connect   (configure the LLM provider)\n"
+                       "- /setup   (guided setup: provider → API key → model)\n"
                        "- /sandbox [on|off]   (enable/disable the filesystem sandbox)\n"
                        "- /sandbox list   ·  /sandbox add-ro|rm-ro <dir>  ·  /sandbox add-rw|rm-rw <dir>\n"
                        "- /sandbox add-deny|rm-deny <dir>   (mask a dir: wins over ro/rw; e.g. ~/.ssh)\n"

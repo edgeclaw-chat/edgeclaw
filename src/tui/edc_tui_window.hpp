@@ -128,6 +128,7 @@ class TUIWindow : public ::ftxui::ComponentBase,
     void Submit();
     // Seed + open the /connect dialog (reads the persisted config).
     void OpenConnect();
+    void OpenSetup();
     // Seed the input history from $EDC_HOME/.tui_history (a missing file is fine).
     void LoadInputHistory();
     void SaveInputHistory();

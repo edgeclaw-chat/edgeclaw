@@ -348,6 +348,16 @@ void TUIWindow::Submit()
         return;
     }
 
+    // "/setup" re-opens the first-run wizard on demand (the same page the first run
+    // shows), for changing the provider/model later; local, like /connect.
+    if (message == "/setup")
+    {
+        input_text_.clear();
+        input_->Reset();
+        OpenSetup();
+        return;
+    }
+
     // The bubble is immediate and names no task: the input predates its task and
     // nothing here guesses which task it will become. While no selection is
     // active that is all the log needs; under a selection the input is drawn from
@@ -389,6 +399,20 @@ void TUIWindow::OpenConnect()
     if (!app_->ConfigApiKey(&initial.api_key))
         initial.api_key.clear();
     connect_dialog_->Open(initial);
+    if (screen_)
+        screen_->RequestAnimationFrame();
+}
+
+void TUIWindow::OpenSetup()
+{
+    // Seed the wizard from the persisted config (the same seed the auto-open uses).
+    port::SetupConfig seed;
+    std::string s;
+    if (app_->ConfigApiUrl(&s))
+        seed.api_url = s;
+    if (app_->ConfigApiKey(&s))
+        seed.api_key = s;
+    setup_dialog_->Open(seed);
     if (screen_)
         screen_->RequestAnimationFrame();
 }
