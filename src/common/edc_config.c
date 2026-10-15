@@ -299,6 +299,12 @@ struct edc_config *edc_config_load(const char *edc_home)
 
     config->enable_sandbox = true;
 
+    /* Background services master switch, top-level "services_enabled". Defaults on. */
+    config->services_enabled = true;
+    cJSON *svc_enabled = cJSON_GetObjectItem(conf, "services_enabled");
+    if (svc_enabled && cJSON_IsBool(svc_enabled))
+        config->services_enabled = cJSON_IsTrue(svc_enabled);
+
     cJSON *sandbox = cJSON_GetObjectItem(conf, "sandbox");
     if (sandbox && cJSON_IsObject(sandbox))
     {

@@ -140,6 +140,9 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
     app->runner = edc_actor_runner_new();
     edc_file_utils_init(&app->runner->loop);
     edc_actor_runner_add(app->runner, edc_scheduler_get_actor(app->scheduler));
+    /* The scheduler actor now has a loop: register the built-in background services and
+     * arm their shared timer (before this, uv_now has no loop to read). */
+    edc_scheduler_services_start(app->scheduler);
     edc_actor_runner_add(app->runner, app->channel_actor);
     edc_actor_runner_add(app->runner, app->llm_actor);
 

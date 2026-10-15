@@ -9,6 +9,7 @@
 #include "edc_session_memory.h"
 #include "edc_session_manager.h"
 #include "edc_session_store.h"
+#include "edc_service.h"
 #include "edc_turn.h"
 #include "log.h"
 #include "uthash.h"
@@ -31,6 +32,7 @@ struct edc_sched_task_entry
 /* ── Forward declarations ──────────────────────────────────── */
 
 static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg);
+static void sched_save_session(struct edc_scheduler *sched, struct edc_session *s);
 /* Sidebar-only task-tree snapshot, pulled by explicit session_id; the chat pane is the TUI's own. */
 static void sched_handle_pull_snapshot(struct edc_scheduler *sched, const char *session_id);
 static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_session *session, const char *reason);
@@ -252,6 +254,30 @@ bool edc_scheduler_open(struct edc_scheduler *sched)
     return true;
 }
 
+/* Built-in service: look for an idle group with unfolded history and start one
+ * extraction round. It only "knocks" -- edc_session_memory_extract_try decides (idle,
+ * nothing in flight, no fold due) and is a cheap no-op when nothing is due, so a short
+ * interval costs nothing but a function call. */
+#define EDC_MEMO_EXTRACT_SCAN_MS (60 * 1000)
+
+static void sched_service_extract_scan(struct edc_service *svc, void *ud)
+{
+    (void)svc;
+    struct edc_scheduler *sched = ud;
+    if (!sched || !sched->sessions)
+        return;
+    struct edc_session *got = NULL;
+    if (edc_session_memory_extract_try(sched, sched->sessions, sched->config, &got) && got)
+        sched_save_session(sched, got);
+}
+
+void edc_scheduler_services_start(struct edc_scheduler *sched)
+{
+    if (!sched)
+        return;
+    edc_service_register(sched, "extract-scan", EDC_MEMO_EXTRACT_SCAN_MS, sched_service_extract_scan, sched);
+}
+
 /* Shutdown pass: nothing will advance any more, so every task that is not already
  * terminal says so in its own state -- READY and waiting ones included: the queue they
  * were sitting in is over, and each of them needs a decision now. Memory-sink tasks
@@ -288,6 +314,10 @@ bool edc_scheduler_close(struct edc_scheduler *sched)
      * land) without touching the states just written. */
     edc_session_store_drop_in_flight_requests(sched->sessions, sched);
 
+    /* Stop the background services' registry. Their single timer is closed by the
+     * actor runner's shutdown walk (this runs after the runner is gone). */
+    edc_services_close(sched);
+
     sched->sessions_closed = true;
     return true;
 }
@@ -303,6 +333,10 @@ void edc_scheduler_free(struct edc_scheduler *sched)
         HASH_DEL(sched->task_hash, entry);
         free(entry);
     }
+
+    /* Idempotent with edc_scheduler_close; frees the registry only (no uv: the timer is
+     * closed by the actor runner). */
+    edc_services_close(sched);
 
     /* Groups and their tasks are owned by their session (freed in edc_session_free). */
 
@@ -1735,6 +1769,11 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
         break;
     case BC_ACTOR_MSG_TOOL_EMIT:
         sched_handle_tool_emit(sched, msg);
+        break;
+    case BC_ACTOR_MSG_SERVICE_PUMP:
+        /* A service timer fired: run whichever services are due. This is the only place
+         * a service body runs, so it is still "at a message boundary". */
+        edc_services_pump(sched, sched->self && sched->self->loop ? uv_now(sched->self->loop) : 0);
         break;
     case BC_ACTOR_MSG_TASK_SNAPSHOT:
         /* A pull names which tree it wants; nothing pushes a tree unasked. */

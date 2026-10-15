@@ -9,6 +9,8 @@
 #include "edc_compat.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
+#include "edc_scheduler.h"
+#include "edc_service.h"
 #include "edc_string_utils.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
@@ -35,72 +37,28 @@ static char *edc_uuid_gen(void)
     return s;
 }
 
-struct edc_tool_crontab_state
+/* The crontab schedules are DATA (workspace/jobs.json); the ticking is a background
+ * SERVICE (edc_service.h) -- ONE shared process-wide timer, not a uv_timer per tool.
+ * This state is owned by the tool (tool->priv) and freed with it. */
+struct edc_tool_crontab_svc
 {
-    uv_timer_t timer;
-    struct edc_tool *tool;
-    uint64_t timeout_at;
-    sds job_id;
-    sds job_name;
-    sds message;
+    struct edc_scheduler *sched;  /* service registry owner */
+    edc_actor_t *scheduler_actor; /* where a fired job's message is injected */
     sds workspace;
-    bool once;
-    edc_actor_t *scheduler;
-    edc_channel_type channel_type;
+    struct edc_service *service;
 };
 
-static struct edc_tool_crontab_state *edc_tool_crontab_state_new(uint64_t timeout_at, sds job_id, sds job_name,
-                                                                 sds message, sds workspace, bool once,
-                                                                 edc_actor_t *scheduler, edc_channel_type channel_type,
-                                                                 struct edc_tool *tool)
+static void edc_tool_crontab_state_free(struct edc_tool_crontab_svc *state)
 {
-    struct edc_tool_crontab_state *state = calloc(1, sizeof(struct edc_tool_crontab_state));
-    state->tool = tool;
-    state->timeout_at = timeout_at;
-    state->job_id = job_id;
-    state->job_name = job_name;
-    state->message = message;
-    state->once = once;
-    state->scheduler = scheduler;
-    state->channel_type = channel_type;
-    state->workspace = workspace;
-    return state;
-}
-
-static void on_crontab_timer_close(uv_handle_t *handle)
-{
-    struct edc_tool_crontab_state *state = container_of(handle, struct edc_tool_crontab_state, timer);
-    if (state->job_id)
-        sdsfree(state->job_id);
-    if (state->job_name)
-        sdsfree(state->job_name);
-    if (state->message)
-        sdsfree(state->message);
+    if (!state)
+        return;
     if (state->workspace)
         sdsfree(state->workspace);
     free(state);
 }
 
-static void edc_tool_crontab_state_free(struct edc_tool_crontab_state *state)
-{
-    if (!state)
-        return;
-    if (uv_is_closing((uv_handle_t *)&state->timer))
-    {
-        if (state->job_id)
-            sdsfree(state->job_id);
-        if (state->job_name)
-            sdsfree(state->job_name);
-        if (state->message)
-            sdsfree(state->message);
-        if (state->workspace)
-            sdsfree(state->workspace);
-        free(state);
-        return;
-    }
-    uv_timer_stop(&state->timer);
-    uv_close((uv_handle_t *)&state->timer, on_crontab_timer_close);
-}
+static void edc_tool_crontab_reschedule(struct edc_tool_crontab_svc *state, cJSON *jobs);
+static void edc_tool_crontab_scan(struct edc_service *svc, void *ud);
 
 static cJSON *edc_tool_crontab_load_jobs_db(const char *workspace, EdcError **error)
 {
@@ -259,6 +217,8 @@ static void edc_tool_crontab_exec_remove_async(struct edc_toolbox_call_ctx *ctx,
     }
     else
     {
+        /* A job is gone: re-arm for whatever is next (or sleep long when empty). */
+        edc_tool_crontab_reschedule(tool->priv, jobs);
         sds result = sdsempty();
         result = sdscatprintf(result, "Remove job %s done. (exit code: 0)", cJSON_GetStringValue(job_id));
         sds header = sdscatprintf(sdsempty(), "crontab remove %s", cJSON_GetStringValue(job_id));
@@ -277,9 +237,6 @@ static sds edc_tool_crontab_build_task_message(char *job_name, char *job_message
                         "Scheduled instruction: %s",
                         job_name, job_message);
 }
-
-static void edc_tool_crontab_schedule(const char *workspace, edc_actor_t *scheduler, struct edc_tool *tool,
-                                      cJSON *jobs);
 
 static void edc_tool_crontab_caculate_next_run(cJSON *jobs)
 {
@@ -329,122 +286,107 @@ static void edc_tool_crontab_caculate_next_run(cJSON *jobs)
     }
 }
 
-static void edc_tool_crontab_on_timeout(uv_timer_t *timer)
+/* Milliseconds until the soonest next_run across all jobs (never below 1s: a 0 or
+ * negative delay would be a busy loop), or -1 when there are no jobs. */
+static int64_t edc_tool_crontab_next_delta_ms(cJSON *jobs, time_t now)
 {
-    struct edc_tool_crontab_state *state = container_of(timer, struct edc_tool_crontab_state, timer);
-    struct edc_tool *tool = state->tool;
-    tool->priv = NULL;
+    int64_t best = 0;
+    bool any = false;
+    int n = cJSON_GetArraySize(jobs);
+    for (int i = 0; i < n; ++i)
+    {
+        cJSON *schedule = cJSON_GetObjectItem(cJSON_GetArrayItem(jobs, i), "schedule");
+        cJSON *ts = schedule ? cJSON_GetObjectItem(schedule, "next_run_at_unix_ts") : NULL;
+        if (!ts || !cJSON_IsNumber(ts))
+            continue;
+        int64_t delta = (int64_t)ts->valuedouble - (int64_t)now;
+        if (!any || delta < best)
+            best = delta;
+        any = true;
+    }
+    if (!any)
+        return -1; /* no jobs: the caller sleeps long */
+    if (best < 1)
+        best = 1; /* due now or overdue: fire on the next (≥1s) tick */
+    return best;
+}
 
-    struct edc_channel_message *message =
-        edc_channel_message_new(state->channel_type, EDC_CHANNEL_MESSAGE_USER_TYPE, state->message);
-    state->message = NULL;
+/* Re-arm the shared service for the next due job (or a long sleep when idle; a later
+ * add/remove re-arms it sooner). */
+static void edc_tool_crontab_reschedule(struct edc_tool_crontab_svc *state, cJSON *jobs)
+{
+    if (!state || !state->sched || !state->service)
+        return;
+    int64_t delta_s = edc_tool_crontab_next_delta_ms(jobs, time(NULL));
+    uint64_t iv = (delta_s < 0) ? (uint64_t)3600 * 1000 : (uint64_t)delta_s * 1000;
+    edc_service_set_interval(state->sched, state->service, iv);
+}
 
-    edc_actor_send(state->scheduler,
-                   edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, NULL, edc_channel_input_new(message),
-                                     (edc_actor_data_free_fn)edc_channel_input_free));
+/* The service body: fire every due job (inject its reminder message), drop the
+ * one-shots, recompute the recurrences, persist, and re-arm for the next one. Runs in
+ * the scheduler handler (a background service never runs from the timer callback). */
+static void edc_tool_crontab_scan(struct edc_service *svc, void *ud)
+{
+    (void)svc;
+    struct edc_tool_crontab_svc *state = ud;
     EdcError *error = NULL;
     cJSON *db = edc_tool_crontab_load_jobs_db(state->workspace, &error);
-    if (error)
+    if (!db)
     {
-        log_error("failed at load jobs db: %s", error->message);
-        edc_error_free(error);
+        if (error)
+            edc_error_free(error);
+        return;
     }
-
     cJSON *jobs = cJSON_GetObjectItem(db, "jobs");
-
-    if (state->once)
+    if (!jobs)
     {
-        edc_tool_crontab_remove_job(jobs, state->job_id);
-    }
-
-    edc_tool_crontab_caculate_next_run(jobs);
-
-    if (!edc_tool_crontab_save_jobs_db(state->workspace, db, &error))
-    {
-        log_error("failed at load jobs db: %s", error->message);
-        edc_error_free(error);
-    }
-
-    edc_tool_crontab_schedule(state->workspace, state->scheduler, tool, jobs);
-    edc_tool_crontab_state_free(state);
-
-    cJSON_Delete(db);
-}
-
-static void edc_tool_crontab_update_task(const char *workspace, edc_channel_type call_from_type, edc_actor_t *scheduler,
-                                         struct edc_tool *tool, char *job_id, char *job_name, char *job_message,
-                                         int64_t run_at, bool once)
-{
-    {
-        struct edc_tool_crontab_state *old_state = tool->priv;
-        edc_tool_crontab_state_free(old_state);
-        tool->priv = NULL;
-    }
-
-    int64_t ts = time(NULL);
-    if (run_at < ts)
-    {
-        run_at = ts + 1;
-    }
-
-    int interval = run_at - ts;
-
-    struct edc_tool_crontab_state *state = edc_tool_crontab_state_new(
-        run_at, sdsnew(job_id), sdsnew(job_name), edc_tool_crontab_build_task_message(job_name, job_message),
-        sdsnew(workspace), once, scheduler, call_from_type, tool);
-
-    uv_timer_init(scheduler->loop, &state->timer);
-    uv_timer_start(&state->timer, edc_tool_crontab_on_timeout, (uint64_t)interval * 1000, 0);
-    tool->priv = state;
-
-    struct tm tm = {0};
-    localtime_r((const time_t *)&run_at, &tm);
-    char buf[64] = {0};
-    strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S%z", &tm);
-    log_info("crontabl tool schedule job name = %s, id = %s, run at %s", job_name, job_id, buf);
-}
-
-static void edc_tool_crontab_schedule(const char *workspace, edc_actor_t *scheduler, struct edc_tool *tool, cJSON *jobs)
-{
-    int n_jobs = cJSON_GetArraySize(jobs);
-    if (n_jobs == 0)
-    {
+        cJSON_Delete(db);
         return;
     }
 
-    cJSON *job0 = cJSON_GetArrayItem(jobs, 0);
-    cJSON *schedule = cJSON_GetObjectItem(job0, "schedule");
-
-    bool once = cJSON_IsTrue(cJSON_GetObjectItem(schedule, "once"));
-    int64_t next_time = (int64_t)cJSON_GetObjectItem(schedule, "next_run_at_unix_ts")->valuedouble;
-    char *job_id = cJSON_GetStringValue(cJSON_GetObjectItem(job0, "job_id"));
-    char *job_name = cJSON_GetStringValue(cJSON_GetObjectItem(job0, "name"));
-    char *job_message = cJSON_GetStringValue(cJSON_GetObjectItem(job0, "message"));
-
-    for (int i = 1; i < n_jobs; ++i)
+    time_t now = time(NULL);
+    int n = cJSON_GetArraySize(jobs);
+    for (int i = 0; i < n;)
     {
-        cJSON *job_i = cJSON_GetArrayItem(jobs, i);
-        cJSON *schedule_i = cJSON_GetObjectItem(job_i, "schedule");
-        int64_t next_time_i = (int64_t)(cJSON_GetObjectItem(schedule_i, "next_run_at_unix_ts")->valuedouble);
-        bool once_i = cJSON_IsTrue(cJSON_GetObjectItem(schedule, "once"));
-        char *job_name_i = cJSON_GetStringValue(cJSON_GetObjectItem(job_i, "name"));
-
-        if (next_time_i < next_time)
+        cJSON *job = cJSON_GetArrayItem(jobs, i);
+        cJSON *schedule = cJSON_GetObjectItem(job, "schedule");
+        cJSON *ts = schedule ? cJSON_GetObjectItem(schedule, "next_run_at_unix_ts") : NULL;
+        if (!ts || !cJSON_IsNumber(ts) || (time_t)ts->valuedouble > now)
         {
-            job_id = cJSON_GetStringValue(cJSON_GetObjectItem(job_i, "job_id"));
-            job_name = job_name_i;
-            job_message = cJSON_GetStringValue(cJSON_GetObjectItem(job_i, "message"));
-            next_time = next_time_i;
-            once = once_i;
+            i++;
+            continue;
+        }
+        const char *job_name = cJSON_GetStringValue(cJSON_GetObjectItem(job, "name"));
+        const char *job_msg = cJSON_GetStringValue(cJSON_GetObjectItem(job, "message"));
+        bool once = cJSON_IsTrue(cJSON_GetObjectItem(schedule, "once"));
+        sds text = edc_tool_crontab_build_task_message((char *)(job_name ? job_name : ""),
+                                                       (char *)(job_msg ? job_msg : ""));
+        struct edc_channel_message *message =
+            edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, text);
+        edc_actor_send(state->scheduler_actor,
+                       edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, NULL, edc_channel_input_new(message),
+                                         (edc_actor_data_free_fn)edc_channel_input_free));
+        log_info("crontab fired job '%s'", job_name ? job_name : "?");
+        if (once)
+        {
+            cJSON_DeleteItemFromArray(jobs, i);
+            n--;
+        }
+        else
+        {
+            i++;
         }
     }
 
-    struct edc_tool_crontab_state *state = tool->priv;
-    if (!state || (next_time < state->timeout_at && !strcmp(job_id, state->job_id) == 0))
+    edc_tool_crontab_caculate_next_run(jobs);
+    if (!edc_tool_crontab_save_jobs_db(state->workspace, db, &error))
     {
-        edc_tool_crontab_update_task(workspace, edc_channel_adapter, scheduler, tool, job_id, job_name,
-                                     job_message, next_time, once);
+        log_error("crontab: failed to save jobs db: %s", error && error->message ? error->message : "?");
+        if (error)
+            edc_error_free(error);
     }
+    edc_tool_crontab_reschedule(state, jobs);
+    cJSON_Delete(db);
 }
 
 static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
@@ -622,7 +564,8 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
 
     cJSON_AddStringToObject(job, "message", cJSON_GetStringValue(message));
     cJSON_AddItemToArray(jobs, job);
-    edc_tool_crontab_schedule(conf->workspace, tb->scheduler, tool, jobs);
+    /* The job is in the list now: arm the service for the soonest deadline. */
+    edc_tool_crontab_reschedule(tool->priv, jobs);
 
     if (!edc_tool_crontab_save_jobs_db(tb->conf->workspace, db, &error))
     {
@@ -691,21 +634,32 @@ static void edc_tool_create_crontab(struct edc_toolbox *tb)
         edc_tool_new("crontab", "Schedule reminders and recurring tasks. Actions: add, list, remove.", params,
                      edc_tool_crontab_exec_async);
 
-    tool->priv = NULL;
+    /* The schedule data stays in jobs.json; the ticking is one shared background
+     * service. The service's state is owned by the tool (tool->priv). */
+    struct edc_tool_crontab_svc *state = calloc(1, sizeof(*state));
+    state->sched = tb->scheduler ? tb->scheduler->state : NULL;
+    state->scheduler_actor = tb->scheduler;
+    state->workspace = sdsnew(tb->conf->workspace);
+    tool->priv = state;
     tool->priv_free_fn = (EdcDestroyNotify)edc_tool_crontab_state_free;
 
     edc_toolbox_register(tb, tool);
 
-    EdcError *error = NULL;
-    cJSON *db = edc_tool_crontab_load_jobs_db(tb->conf->workspace, &error);
-    if (!db)
+    if (state->sched)
     {
-        return;
+        state->service = edc_service_register(state->sched, "crontab", 3600 * 1000, edc_tool_crontab_scan, state);
+        EdcError *error = NULL;
+        cJSON *db = edc_tool_crontab_load_jobs_db(tb->conf->workspace, &error);
+        if (db)
+        {
+            edc_tool_crontab_reschedule(state, cJSON_GetObjectItem(db, "jobs"));
+            cJSON_Delete(db);
+        }
+        else if (error)
+        {
+            edc_error_free(error);
+        }
     }
-
-    cJSON *jobs = cJSON_GetObjectItem(db, "jobs");
-    edc_tool_crontab_schedule(tb->conf->workspace, tb->scheduler, tool, jobs);
-    cJSON_Delete(db);
 }
 
 void edc_tools_crontab_register(struct edc_toolbox *tb)

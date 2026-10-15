@@ -13,6 +13,7 @@
 #include "edc_group_fold.h"
 #include "edc_llm_actor.h"
 #include "edc_scheduler.h"
+#include "edc_service.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
 #include "edc_session_memory.h"
@@ -510,6 +511,35 @@ static void test_serialization_tristate_and_v7(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
+ *  Test 8: the extract-scan background service drives extraction
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_extract_scan_service(void)
+{
+    TEST("service: extract-scan starts an extraction for an idle group on its tick");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-scan", "Scan");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    make_finished_user_group(session, "g1", "idle work", OLD_TS, 1);
+
+    edc_scheduler_services_start(sched);
+    CHECK(edc_service_find(sched, "extract-scan") != NULL, "extract-scan is registered");
+    CHECK(find_extract_task(session) == NULL, "nothing started yet");
+
+    edc_services_pump(sched, 1000); /* before the first interval elapses */
+    CHECK(find_extract_task(session) == NULL, "not due before the interval");
+    edc_services_pump(sched, 60000); /* the service interval is 60s */
+    CHECK(find_extract_task(session) != NULL, "the scan started an extraction");
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
  *  Test 7: the recency rule is in every memory prompt
  *  ══════════════════════════════════════════════════════════════ */
 
@@ -535,6 +565,7 @@ int main(void)
     test_fold_landing_clamps_memo_prefix();
     test_failure_backoff_and_bad_cut();
     test_serialization_tristate_and_v7();
+    test_extract_scan_service();
     test_prompts_have_recency_rule();
 
     log_info("  ====== %d passed, %d failed ======", test_passed, test_failed);

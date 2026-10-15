@@ -9,6 +9,7 @@ const char *edc_actor_msg_type_s(edc_actor_msg_type_t type)
         "BC_ACTOR_MSG_LLM_RESPONSE",   "BC_ACTOR_MSG_TOOL_REQUEST",    "BC_ACTOR_MSG_TOOL_RESPONSE",
         "BC_ACTOR_MSG_CHANNEL_SEND",   "BC_ACTOR_MSG_CHANNEL_RECV",    "BC_ACTOR_MSG_TASK_SNAPSHOT",
         "BC_ACTOR_MSG_TOOL_EMIT",      "BC_ACTOR_MSG_TOOL_STARTED",    "BC_ACTOR_MSG_LLM_SET_CONFIG",
+        "BC_ACTOR_MSG_SERVICE_PUMP",
     };
 
     return __msg_type_s[type];

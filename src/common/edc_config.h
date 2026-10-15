@@ -78,6 +78,10 @@ struct edc_config
 
     sds workspace;
     bool enable_sandbox;
+    /* Background services master switch (the shared-timer "silent checks", see
+     * edc_service.h). Defaults to on; config.json's top-level key `services_enabled`
+     * may turn it off (then the timer never arms; manual pumps still work). */
+    bool services_enabled;
     /* Turn off "context file" discovery (--no-context-files / -nc in pi): do not read the
      * user-global and workdir-tree AGENTS.md / CLAUDE.md, leaving only the workspace's
      * bootstrap files in the prompt. config.json's top-level key `skip_context_files`

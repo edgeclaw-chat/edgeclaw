@@ -12,6 +12,7 @@
 struct edc_session;
 struct edc_session_manager;
 struct edc_config;
+struct edc_service;
 
 /* Core's own inbound vocabulary: the channel boundary translates a channel
  * message into this, so the scheduler never sees `struct edc_channel_message`. */
@@ -118,6 +119,13 @@ struct edc_scheduler
 
     int64_t next_task_id;
 
+    /* Background services (see edc_service.h): a list of named "silent checks" and
+     * ONE uv_timer shared by all of them, re-armed to the earliest next_due. The timer
+     * is closed by the actor runner's shutdown walk, so nothing here is heap-owned. */
+    struct edc_service *services;
+    uv_timer_t service_timer;
+    bool service_timer_inited;
+
     /* Opaque handle so tests can hang a fixture session on this scheduler. */
     void *ctx;
 };
@@ -148,6 +156,13 @@ extern void edc_scheduler_free(struct edc_scheduler *sched);
  *  that can fail. Tests that want a store keep installing their own fixture on
  *  `sched->sessions` -- `sessions_owned` stays false and free leaves it alone. */
 extern bool edc_scheduler_open(struct edc_scheduler *sched);
+
+/** Register the kernel's built-in background services (today: the idle-group
+ *  extraction scan) and arm the shared timer. Called by the assembly root once the
+ *  scheduler's actor has a loop (i.e. after edc_actor_runner_add). No-op when the
+ *  config disables services. Tests without a loop may call it and then drive
+ *  `edc_services_pump` with a fake clock. */
+extern void edc_scheduler_services_start(struct edc_scheduler *sched);
 
 /** Shut the process down: persist every session as-is, then drop the in-flight
  *  turns. Does NOT free anything -- that is edc_scheduler_free's job.

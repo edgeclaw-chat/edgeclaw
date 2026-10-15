@@ -29,6 +29,9 @@ typedef enum
                                    * "not executed" (PENDING) from "executing" (EXECUTING) */
     BC_ACTOR_MSG_LLM_SET_CONFIG,  /* app -> llm_actor: update api_url/model/key at runtime
                                    * (data = struct edc_llm_api_conf_update *) */
+    BC_ACTOR_MSG_SERVICE_PUMP,    /* host service timer -> scheduler: at least one service is
+                                   * due (data = NULL). Deferred into the scheduler handler so
+                                   * the timer callback never mutates state itself. */
 } edc_actor_msg_type_t;
 
 extern const char *edc_actor_msg_type_s(edc_actor_msg_type_t type);
