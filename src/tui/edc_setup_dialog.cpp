@@ -12,104 +12,77 @@
 namespace edc::ui
 {
 
-SetupDialog::SetupDialog(port::IAppFacade *facade) : facade_(facade)
+namespace
 {
-    // Flat, borderless buttons + fields: same look as ConnectDialog (see it for why the
-    // default Input transform hides the caret and why buttons are not boxed).
-    ::ftxui::InputOption field_option;
-    field_option.multiline = false;
-    field_option.transform = [](const ::ftxui::InputState &state) {
+/* The steps render a scrolling list; show this many rows at once. */
+constexpr int kListRows = 12;
+
+/* Field look: the palette's own foreground, placeholder dimmed (same as ConnectDialog:
+ * ftxui's default `inverted` fill hides the terminal caret). */
+::ftxui::InputOption field_option()
+{
+    ::ftxui::InputOption opt;
+    opt.multiline = false;
+    opt.transform = [](const ::ftxui::InputState &state) {
         const auto &pal = style::palette();
         ::ftxui::Element element = state.element | ::ftxui::color(pal.text);
         if (state.is_placeholder)
             element |= ::ftxui::dim;
         return element;
     };
-    url_input_ = ::ftxui::Input(&url_, "https://api.example.com/v1", field_option);
-    key_input_ = ::ftxui::Input(&key_, "API key", field_option);
+    return opt;
+}
+} // namespace
 
-    ::ftxui::InputOption filter_option = field_option;
-    filter_option.on_change = [this] { OnFilterChanged(); };
-    filter_input_ = ::ftxui::Input(&filter_, "filter models", filter_option);
+SetupDialog::SetupDialog(port::IAppFacade *facade) : facade_(facade)
+{
+    ::ftxui::InputOption pfilter = field_option();
+    pfilter.on_change = [this] { ApplyProviderFilter(); };
+    provider_filter_input_ = ::ftxui::Input(&provider_filter_, "type to filter", pfilter);
 
-    ::ftxui::MenuOption menu_option = ::ftxui::MenuOption::Vertical();
-    menu_option.entries_option.transform = [](const ::ftxui::EntryState &s) {
-        const auto &pal = style::palette();
-        auto label = ::ftxui::text(s.label);
-        if (s.focused)
-            return label | ::ftxui::bold | ::ftxui::color(pal.accent);
-        return label | ::ftxui::color(s.active ? pal.text : pal.text_dim);
-    };
-    menu_option.on_change = [this] { OnProviderPicked(); };
-    provider_menu_ = ::ftxui::Menu(&provider_labels_, &provider_sel_, menu_option);
+    url_input_ = ::ftxui::Input(&url_, "https://api.example.com/v1", field_option());
+    key_input_ = ::ftxui::Input(&key_, "API key", field_option());
 
-    ::ftxui::MenuOption model_option = ::ftxui::MenuOption::Vertical();
-    model_option.entries_option.transform = [](const ::ftxui::EntryState &s) {
-        const auto &pal = style::palette();
-        auto label = ::ftxui::text(s.label);
-        if (s.focused)
-            return label | ::ftxui::bold | ::ftxui::color(pal.accent);
-        return label | ::ftxui::color(s.active ? pal.text : pal.text_dim);
-    };
-    model_option.on_change = [this] { OnModelPicked(); };
-    model_menu_ = ::ftxui::Menu(&model_labels_, &model_sel_, model_option);
-
-    ::ftxui::ButtonOption flat_button;
-    flat_button.transform = [](const ::ftxui::EntryState &s) {
-        const auto &pal = style::palette();
-        auto label = ::ftxui::text(" " + s.label + " ");
-        if (s.focused)
-            return label | ::ftxui::bold | ::ftxui::color(pal.accent);
-        return label | ::ftxui::color(pal.text);
-    };
-    auto test = ::ftxui::Button("Test", [this] { RunTest(); }, flat_button);
-    auto finish = ::ftxui::Button("Finish", [this] { SubmitNow(); }, flat_button);
-    auto skip = ::ftxui::Button("Skip", [this] { SkipNow(); }, flat_button);
-    buttons_ = ::ftxui::Container::Horizontal({test, finish, skip}, &button_focus_);
-
-    // One vertical focus order: the menus own Up/Down for their own selection, Tab walks
-    // between them / the fields / the buttons.
-    root_ =
-        ::ftxui::Container::Vertical({provider_menu_, filter_input_, model_menu_, url_input_, key_input_, buttons_});
-    Add(root_);
+    ::ftxui::InputOption mfilter = field_option();
+    mfilter.on_change = [this] { ApplyModelFilter(); };
+    model_filter_input_ = ::ftxui::Input(&model_filter_, "type to filter", mfilter);
 }
 
 void SetupDialog::ReloadProviders()
 {
     provider_ids_.clear();
-    provider_labels_.clear();
     if (facade_)
         facade_->Providers(&provider_ids_);
-    for (const std::string &id : provider_ids_)
-    {
-        std::string name = facade_ ? facade_->ProviderName(id) : "";
-        provider_labels_.push_back(name.empty() ? id : name + "  (" + id + ")");
-    }
-    if (provider_labels_.empty())
-        provider_labels_.push_back("(no providers in the catalog)");
-    provider_sel_ = 0;
-    OnProviderPicked();
+    ApplyProviderFilter();
 }
 
-void SetupDialog::OnProviderPicked()
+void SetupDialog::ApplyProviderFilter()
 {
-    if (!facade_ || provider_sel_ < 0 || static_cast<size_t>(provider_sel_) >= provider_ids_.size())
-        return;
-    const std::string &id = provider_ids_[provider_sel_];
-    /* Prefill the base URL from the catalog (still editable). */
-    std::string api = facade_->ProviderApi(id);
-    if (!api.empty())
-        url_ = api;
-    ReloadModels();
+    provider_rows_.clear();
+    provider_view_.clear();
+    for (size_t i = 0; i < provider_ids_.size(); i++)
+    {
+        const std::string &id = provider_ids_[i];
+        std::string name = facade_ ? facade_->ProviderName(id) : "";
+        if (provider_filter_.empty() || id.find(provider_filter_) != std::string::npos ||
+            name.find(provider_filter_) != std::string::npos)
+        {
+            provider_rows_.push_back(name.empty() ? id : name + "  (" + id + ")");
+            provider_view_.push_back(i);
+        }
+    }
+    if (provider_sel_ >= static_cast<int>(provider_view_.size()))
+        provider_sel_ = provider_view_.empty() ? 0 : static_cast<int>(provider_view_.size()) - 1;
 }
 
 void SetupDialog::ReloadModels()
 {
     model_ids_.clear();
-    if (facade_ && provider_sel_ >= 0 && static_cast<size_t>(provider_sel_) < provider_ids_.size())
+    if (facade_ && provider_sel_ >= 0 && static_cast<size_t>(provider_sel_) < provider_view_.size())
     {
+        const std::string &pid = provider_ids_[provider_view_[provider_sel_]];
         std::vector<std::string> all;
-        facade_->Models(provider_ids_[provider_sel_], &all);
+        facade_->Models(pid, &all);
         for (const std::string &mid : all)
         {
             port::ModelFacts f;
@@ -117,88 +90,80 @@ void SetupDialog::ReloadModels()
                 model_ids_.push_back(mid);
         }
     }
-    OnFilterChanged();
+    model_sel_ = 0;
+    ApplyModelFilter();
 }
 
-void SetupDialog::OnFilterChanged()
+void SetupDialog::ApplyModelFilter()
 {
-    model_labels_.clear();
-    for (const std::string &mid : model_ids_)
+    model_rows_.clear();
+    model_view_.clear();
+    for (size_t i = 0; i < model_ids_.size(); i++)
     {
         port::ModelFacts f;
-        std::string name = facade_ && facade_->ModelInfo(mid, &f) ? f.name : "";
-        if (filter_.empty() || mid.find(filter_) != std::string::npos || name.find(filter_) != std::string::npos)
-            model_labels_.push_back(mid);
+        std::string name = facade_ && facade_->ModelInfo(model_ids_[i], &f) ? f.name : "";
+        if (model_filter_.empty() || model_ids_[i].find(model_filter_) != std::string::npos ||
+            name.find(model_filter_) != std::string::npos)
+        {
+            model_rows_.push_back(model_ids_[i]);
+            model_view_.push_back(i);
+        }
     }
-    if (model_labels_.empty())
-        model_labels_.push_back(model_ids_.empty() ? "(no chat models)" : "(no match)");
-    model_sel_ = 0;
-    OnModelPicked();
+    if (model_sel_ >= static_cast<int>(model_view_.size()))
+        model_sel_ = model_view_.empty() ? 0 : static_cast<int>(model_view_.size()) - 1;
 }
 
-void SetupDialog::OnModelPicked()
+void SetupDialog::CommitProvider()
 {
-    RefreshInfo();
-}
-
-void SetupDialog::RefreshInfo()
-{
-    context_window_ = 0;
-    info_.clear();
-    if (!facade_ || model_sel_ < 0 || static_cast<size_t>(model_sel_) >= model_labels_.size())
+    if (provider_view_.empty())
         return;
-    const std::string &mid = model_labels_[model_sel_];
+    const std::string &pid = provider_ids_[provider_view_[provider_sel_]];
+    std::string api = facade_ ? facade_->ProviderApi(pid) : "";
+    if (!api.empty())
+        url_ = api;
+    ReloadModels();
+    step_ = STEP_KEY;
+    key_focus_ = 0;
+}
+
+void SetupDialog::CommitKey()
+{
+    step_ = STEP_MODEL;
+}
+
+void SetupDialog::CommitModel()
+{
+    if (!facade_ || model_view_.empty())
+        return;
+    const std::string &mid = model_ids_[model_view_[model_sel_]];
     port::ModelFacts f;
-    if (!facade_->ModelInfo(mid, &f))
-        return;
-    context_window_ = f.context;
-    info_ = "context " + std::to_string(f.context) + "  ·  output " + std::to_string(f.output);
-}
-
-bool SetupDialog::SubmitNow()
-{
-    if (!facade_ || url_.empty() || key_.empty() || model_sel_ < 0 ||
-        static_cast<size_t>(model_sel_) >= model_labels_.size())
-        return false;
-    const std::string &mid = model_labels_[model_sel_];
-    if (mid.rfind("(", 0) == 0) /* the placeholder rows */
-        return false;
+    context_window_ = facade_->ModelInfo(mid, &f) ? f.context : 0;
     port::SetupConfig cfg;
     cfg.api_url = url_;
     cfg.model = mid;
     cfg.api_key = key_;
     cfg.context_window = context_window_;
-    if (!facade_->SetSetup(cfg))
-        return false;
-    Close();
-    return true;
+    if (facade_->SetSetup(cfg))
+        Close();
 }
 
-void SetupDialog::SkipNow()
+void SetupDialog::Exit()
 {
     if (facade_)
         facade_->MarkOnboarded();
     Close();
 }
 
-void SetupDialog::RunTest()
-{
-    if (!facade_)
-    {
-        status_ = "app not ready";
-        return;
-    }
-    /* BLOCKING (a few seconds): acceptable on a one-time setup page. Runs on the UI
-     * thread, so the window cannot repaint until it returns -- deliberate, to avoid a
-     * worker thread for one button. */
-    status_ = facade_->TestEndpoint(url_, key_);
-}
-
 void SetupDialog::Open(const port::SetupConfig &initial)
 {
     url_ = initial.api_url;
     key_ = initial.api_key;
-    filter_.clear();
+    provider_filter_.clear();
+    model_filter_.clear();
+    provider_sel_ = 0;
+    model_sel_ = 0;
+    key_focus_ = 0;
+    step_ = STEP_PROVIDER;
     ReloadProviders();
     open_ = true;
 }
@@ -212,13 +177,76 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
 {
     if (!open_)
         return false;
-    // Esc = Skip (accept the default config): the one-time page must never trap the user.
     if (event == ::ftxui::Event::Escape)
     {
-        SkipNow();
+        Exit();
         return true;
     }
-    return root_->OnEvent(event);
+
+    switch (step_)
+    {
+    case STEP_PROVIDER:
+        if (event == ::ftxui::Event::ArrowUp)
+            return provider_sel_ > 0 ? (provider_sel_--, true) : true;
+        if (event == ::ftxui::Event::ArrowDown)
+            return provider_sel_ + 1 < static_cast<int>(provider_view_.size()) ? (provider_sel_++, true) : true;
+        if (event == ::ftxui::Event::Return)
+        {
+            CommitProvider();
+            return true;
+        }
+        return provider_filter_input_->OnEvent(event);
+
+    case STEP_KEY:
+        if (event == ::ftxui::Event::ArrowUp || event == ::ftxui::Event::ArrowDown)
+        {
+            key_focus_ = (event == ::ftxui::Event::ArrowDown) ? 1 : 0;
+            return true;
+        }
+        if (event == ::ftxui::Event::Return)
+        {
+            CommitKey();
+            return true;
+        }
+        return (key_focus_ == 0 ? url_input_ : key_input_)->OnEvent(event);
+
+    case STEP_MODEL:
+        if (event == ::ftxui::Event::ArrowUp)
+            return model_sel_ > 0 ? (model_sel_--, true) : true;
+        if (event == ::ftxui::Event::ArrowDown)
+            return model_sel_ + 1 < static_cast<int>(model_view_.size()) ? (model_sel_++, true) : true;
+        if (event == ::ftxui::Event::Return)
+        {
+            CommitModel();
+            return true;
+        }
+        return model_filter_input_->OnEvent(event);
+    }
+    return false;
+}
+
+::ftxui::Element SetupDialog::ListElement(const std::vector<std::string> &rows, int sel, int max_rows) const
+{
+    using namespace ::ftxui;
+    const auto &pal = style::palette();
+    if (rows.empty())
+        return text("  (no match)") | color(pal.text_dim);
+
+    int n = static_cast<int>(rows.size());
+    int first = sel - max_rows / 2;
+    if (first < 0)
+        first = 0;
+    if (first > n - max_rows)
+        first = std::max(0, n - max_rows);
+
+    Elements lines;
+    for (int i = first; i < n && i < first + max_rows; i++)
+    {
+        bool cur = (i == sel);
+        auto row = text((cur ? "> " : "  ") + rows[i]);
+        lines.push_back(cur ? (row | bold | color(pal.accent)) : (row | color(pal.text)));
+    }
+    return vbox(std::move(lines));
 }
 
 ::ftxui::Element SetupDialog::Draw(const Frame &)
@@ -226,35 +254,45 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     using namespace ::ftxui;
     const auto &pal = style::palette();
 
-    auto section = [&](const char *title) { return text(title) | bold | color(pal.accent); };
+    Element body;
+    if (step_ == STEP_PROVIDER)
+    {
+        body = vbox({
+            hbox({text("Search ") | color(pal.text), provider_filter_input_->Render() | flex}),
+            separator() | color(pal.line_dim),
+            ListElement(provider_rows_, provider_sel_, kListRows),
+        });
+    }
+    else if (step_ == STEP_KEY)
+    {
+        body = vbox({
+            hbox({text((key_focus_ == 0 ? "> " : "  ") + std::string("Base URL  ")) | color(pal.text),
+                  url_input_->Render() | flex}),
+            hbox({text((key_focus_ == 1 ? "> " : "  ") + std::string("API key   ")) | color(pal.text),
+                  key_input_->Render() | flex}),
+            text(" "),
+            text("Leave the key empty for a local endpoint.") | color(pal.text_dim),
+        });
+    }
+    else
+    {
+        body = vbox({
+            hbox({text("Search ") | color(pal.text), model_filter_input_->Render() | flex}),
+            separator() | color(pal.line_dim),
+            ListElement(model_rows_, model_sel_, kListRows),
+        });
+    }
 
-    auto left = vbox({
-                    section("Provider"),
-                    provider_menu_->Render() | vscroll_indicator | frame | flex,
-                }) |
-                flex;
-    auto right = vbox({
-                     section("Model"),
-                     filter_input_->Render(),
-                     model_menu_->Render() | vscroll_indicator | frame | flex,
-                     text(info_.empty() ? " " : info_) | color(pal.text_dim),
-                 }) |
-                 flex;
-    auto form = vbox({
-        section("Base URL"),
-        url_input_->Render(),
-        section("API key"),
-        key_input_->Render(),
-        text(status_.empty() ? " " : status_) | color(pal.text_dim),
-        separator() | color(pal.line_dim),
-        hbox({filler(), buttons_->Render()}),
-    });
+    const char *title = step_ == STEP_PROVIDER ? "Choose a provider" : step_ == STEP_KEY ? "API key" : "Choose a model";
+    std::string step_no = "Step " + std::to_string(static_cast<int>(step_) + 1) + "/3";
 
     return vbox({
-               text(" Welcome to EdgeClaw — pick a provider and a model ") | bold | color(pal.accent),
-               text("Enter an API key, then Finish. Skip leaves the settings as they are.") | color(pal.text_dim),
+               hbox({text(" Setup ") | bold | color(pal.accent), filler(), text(step_no + " ") | color(pal.text_dim)}),
                separator() | color(pal.line_dim),
-               hbox({left, separator() | color(pal.line_dim), right, separator() | color(pal.line_dim), form}) | flex,
+               text(title) | bold | color(pal.accent),
+               body,
+               separator() | color(pal.line_dim),
+               text("up/down move · Enter select · Esc cancel") | color(pal.text_dim),
            }) |
            borderStyled(BorderStyle::ROUNDED) | bgcolor(pal.dialog_bg);
 }
