@@ -23,6 +23,7 @@
 #include "edc_channel_actor.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
+#include "edc_models.h"
 #include "log.h"
 #include "sds.h"
 #include <stdio.h>
@@ -156,6 +157,76 @@ bool edc_app_sandbox_enabled(const struct edc_app *app)
 {
     struct edc_config *cfg = edc_app_config(app);
     return cfg && cfg->enable_sandbox;
+}
+
+int edc_app_onboarded(const struct edc_app *app)
+{
+    struct edc_config *cfg = edc_app_config(app);
+    return cfg && cfg->onboarded;
+}
+
+int edc_app_config_context_window(const struct edc_app *app)
+{
+    struct edc_config *cfg = edc_app_config(app);
+    return cfg ? cfg->context_window : 0;
+}
+
+/* ── Model catalog: pure projection of edc_models (see edc_api.h) ── */
+
+size_t edc_app_models_providers(void)
+{
+    return edc_models_provider_count();
+}
+const char *edc_app_models_provider_id(size_t index)
+{
+    return edc_models_provider_id(index);
+}
+const char *edc_app_models_provider_name(const char *provider_id)
+{
+    return edc_models_provider_name(provider_id);
+}
+const char *edc_app_models_provider_api(const char *provider_id)
+{
+    return edc_models_provider_api(provider_id);
+}
+const char *edc_app_models_provider_env_name(const char *provider_id, size_t index)
+{
+    return edc_models_provider_env_name(provider_id, index);
+}
+size_t edc_app_models_count(const char *provider_id)
+{
+    return edc_models_model_count(provider_id);
+}
+const char *edc_app_models_model_id(const char *provider_id, size_t index)
+{
+    return edc_models_model_id_at(provider_id, index);
+}
+const char *edc_app_models_model_name(const char *model_id)
+{
+    struct edc_model_info info;
+    return edc_models_model_info(model_id, &info) ? info.name : NULL;
+}
+int edc_app_models_model_context(const char *model_id)
+{
+    struct edc_model_info info;
+    return edc_models_model_info(model_id, &info) ? (int)info.context : 0;
+}
+int edc_app_models_model_output(const char *model_id)
+{
+    struct edc_model_info info;
+    return edc_models_model_info(model_id, &info) ? (int)info.output : 0;
+}
+int edc_app_models_model_is_chat(const char *model_id)
+{
+    return edc_models_is_chat_model(model_id);
+}
+int edc_app_models_provider_matches(const char *provider_id, const char *query)
+{
+    return edc_models_provider_matches(provider_id, query);
+}
+int edc_app_models_model_matches(const char *model_id, const char *query)
+{
+    return edc_models_model_matches(model_id, query);
 }
 
 /* Where a transcript lives -- path resolution only; encode/append/replay are the

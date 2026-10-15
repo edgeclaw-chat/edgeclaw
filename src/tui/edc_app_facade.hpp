@@ -27,6 +27,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace edc::port
 {
@@ -89,6 +90,25 @@ struct ConnectConfig
     std::string api_key;
 };
 
+// The config submitted by the first-run setup page (a superset of ConnectConfig: it also
+// records the chosen model's context window).
+struct SetupConfig
+{
+    std::string api_url;
+    std::string model;
+    std::string api_key;
+    int context_window = 0; /* the catalog limit; 0 = leave the configured window alone */
+};
+
+// Facts about one catalog model (the setup page / model picker read these).
+struct ModelFacts
+{
+    std::string name;
+    int context = 0;
+    int output = 0;
+    bool chat = false;
+};
+
 // Projection of the app operations the frontend needs. Views/controllers depend on
 // this, not on the edc_app_* C API.
 class IAppFacade
@@ -106,6 +126,26 @@ class IAppFacade
     virtual bool SandboxEnabled() const = 0;
     // Persist + hot-apply; true when it succeeded.
     virtual bool SetLlmConfig(const ConnectConfig &config) = 0;
+
+    // ── first-run wizard + model catalog ─────────────────────────
+    // False until the user finished/skipped the setup page (config.json "onboarded").
+    virtual bool Onboarded() const = 0;
+    // Persist the setup (LLM settings + the chosen model's context window) and mark the
+    // wizard done. False leaves the running app untouched.
+    virtual bool SetSetup(const SetupConfig &config) = 0;
+    // "Skip": mark the wizard done without touching the LLM settings.
+    virtual bool MarkOnboarded() = 0;
+    // Test an endpoint (the setup page's Test button). BLOCKING (a few seconds); the
+    // caller should run it off the UI thread. Returns a short human message.
+    virtual std::string TestEndpoint(const std::string &api_url, const std::string &api_key) const = 0;
+    // Catalog reads (the embedded models.dev catalog). Sizes are counts; the strings are
+    // empty when unknown.
+    virtual size_t Providers(std::vector<std::string> *ids) const = 0;
+    virtual std::string ProviderName(const std::string &provider_id) const = 0;
+    virtual std::string ProviderApi(const std::string &provider_id) const = 0;
+    virtual std::string ProviderEnvName(const std::string &provider_id, size_t index) const = 0;
+    virtual size_t Models(const std::string &provider_id, std::vector<std::string> *ids) const = 0;
+    virtual bool ModelInfo(const std::string &model_id, ModelFacts *out) const = 0;
 
     // ── a few things the frontend does ───────────────────────────
     virtual void SendUserMessage(const std::string &session_id, const std::string &content) = 0;
@@ -144,6 +184,17 @@ class AppFacade : public IAppFacade
     bool ConfigApiKey(std::string *out) const override;
     bool SandboxEnabled() const override;
     bool SetLlmConfig(const ConnectConfig &config) override;
+
+    bool Onboarded() const override;
+    bool SetSetup(const SetupConfig &config) override;
+    bool MarkOnboarded() override;
+    std::string TestEndpoint(const std::string &api_url, const std::string &api_key) const override;
+    size_t Providers(std::vector<std::string> *ids) const override;
+    std::string ProviderName(const std::string &provider_id) const override;
+    std::string ProviderApi(const std::string &provider_id) const override;
+    std::string ProviderEnvName(const std::string &provider_id, size_t index) const override;
+    size_t Models(const std::string &provider_id, std::vector<std::string> *ids) const override;
+    bool ModelInfo(const std::string &model_id, ModelFacts *out) const override;
 
     void SendUserMessage(const std::string &session_id, const std::string &content) override;
     void RequestTaskSnapshot(const std::string &session_id) override;

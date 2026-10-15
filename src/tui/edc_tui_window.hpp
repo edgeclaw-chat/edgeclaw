@@ -5,6 +5,7 @@
 #include "edc_app_facade.hpp"
 #include "edc_channel_dispatcher.hpp"
 #include "edc_connect_dialog.hpp"
+#include "edc_setup_dialog.hpp"
 #include "edc_transcript_store.hpp"
 #include "edc_task_snapshot.hpp"
 #include "edc_clipboard.hpp"
@@ -228,6 +229,8 @@ class TUIWindow : public ::ftxui::ComponentBase,
     // /connect dialog: a self-contained widget (owns its three fields, its
     // rendering and its event handling). The window only opens and overlays it.
     std::shared_ptr<ui::ConnectDialog> connect_dialog_;
+    /* First-run setup page: a modal shown once while config.json is not "onboarded". */
+    std::shared_ptr<ui::SetupDialog> setup_dialog_;
 
     // True while the foreground group's active task runs. Owned exclusively by
     // SyncWorkingFromSnapshot(), never toggled by channel messages.

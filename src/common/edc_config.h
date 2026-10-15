@@ -82,6 +82,11 @@ struct edc_config
      * edc_service.h). Defaults to on; config.json's top-level key `services_enabled`
      * may turn it off (then the timer never arms; manual pumps still work). */
     bool services_enabled;
+    /* First-run wizard state: false until the user finishes or skips the setup page.
+     * Persisted (config.json top-level "onboarded"); the TUI opens the setup page once
+     * when it is false. A stored flag, not "is anything configured": clearing the key
+     * later must not make the wizard reappear. */
+    bool onboarded;
     /* Turn off "context file" discovery (--no-context-files / -nc in pi): do not read the
      * user-global and workdir-tree AGENTS.md / CLAUDE.md, leaving only the workspace's
      * bootstrap files in the prompt. config.json's top-level key `skip_context_files`
@@ -126,6 +131,18 @@ extern bool edc_config_add_sandbox_rw(struct edc_config *conf, const char *path)
  * encrypted before writing. A NULL argument leaves that field unchanged.
  * Returns true on success. Used by the app's /connect command. */
 extern bool edc_config_update_llm(const char *edc_home, const char *api_url, const char *model, const char *api_key);
+
+/* Persist the first-run wizard flag (config.json top-level "onboarded"), preserving
+ * every other setting. Set it once the user finishes OR skips the setup page, so the
+ * wizard does not reappear. Returns true on success. */
+extern bool edc_config_update_onboarded(const char *edc_home, bool onboarded);
+/* Persist first, then update the running config (see /sandbox's pattern). */
+extern bool edc_config_set_onboarded(struct edc_config *cfg, bool onboarded);
+
+/* Persist the context window (config.json top-level "context_window"). The wizard writes
+ * the chosen model's catalog limit here. |context_window| <= 0 is refused: the window has
+ * no "unconfigured" state (see edc_init_env). Returns true on success. */
+extern bool edc_config_update_context_window(const char *edc_home, int context_window);
 
 /* Persist the sandbox master switch ("sandbox.enable") in config.json,
  * preserving all other settings. Used by the in-TUI /sandbox command; the CLI

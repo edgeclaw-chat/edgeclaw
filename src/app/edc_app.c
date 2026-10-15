@@ -4,6 +4,7 @@
 #include "edc_commands.h"
 #include "edc_compat.h"
 #include "edc_config.h"
+#include "edc_endpoint_probe.h"
 #include "edc_file_utils.h"
 #include "edc_context.h"
 #include "edc_init_env.h"
@@ -202,6 +203,44 @@ bool edc_app_set_llm_config(struct edc_app *app, const char *api_url, const char
     edc_actor_send(app->llm_actor, edc_actor_msg_new(BC_ACTOR_MSG_LLM_SET_CONFIG, NULL, NULL, u,
                                                        (edc_actor_data_free_fn)edc_llm_api_conf_update_free));
     return true;
+}
+
+bool edc_app_complete_setup(struct edc_app *app, const char *api_url, const char *model, const char *api_key,
+                            int context_window)
+{
+    if (!app || !app->config)
+        return false;
+
+    /* The LLM settings are the gate: on failure nothing else is touched, so the running
+     * app and disk stay in agreement (same rule as edc_app_set_llm_config). */
+    if (!edc_app_set_llm_config(app, api_url, model, api_key))
+        return false;
+
+    /* The chosen model's window: best-effort (the LLM write already succeeded). */
+    if (context_window > 0 && edc_config_update_context_window(app->config->edc_home, context_window))
+        app->config->context_window = context_window;
+
+    /* Mark the wizard done so it does not reopen (persist + live field). */
+    edc_config_set_onboarded(app->config, true);
+    return true;
+}
+
+bool edc_app_mark_onboarded(struct edc_app *app)
+{
+    if (!app || !app->config)
+        return false;
+    return edc_config_set_onboarded(app->config, true);
+}
+
+bool edc_app_test_endpoint(struct edc_app *app, const char *api_url, const char *api_key, int timeout_ms, char *out,
+                           size_t cap)
+{
+    if (!app || !app->config)
+        return false;
+    sds cacert = app->config->workspace ? edc_path_join(app->config->workspace, "ssl", "cacert.pem", NULL) : NULL;
+    bool ok = edc_endpoint_probe(cacert, api_url, api_key, timeout_ms, out, cap);
+    sdsfree(cacert);
+    return ok;
 }
 
 

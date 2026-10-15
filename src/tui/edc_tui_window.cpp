@@ -294,6 +294,21 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
             status_bar_->SetModel(model);
     }
 
+    // First-run setup page: a modal like /connect, opened ONCE while config.json is not
+    // "onboarded". Finish persists (LLM settings + context window + the flag); Skip (or
+    // Esc) just marks it done, leaving the settings as they are.
+    setup_dialog_ = std::make_shared<ui::SetupDialog>(App());
+    if (!App()->Onboarded())
+    {
+        port::SetupConfig seed;
+        std::string s;
+        if (App()->ConfigApiUrl(&s))
+            seed.api_url = s;
+        if (App()->ConfigApiKey(&s))
+            seed.api_key = s;
+        setup_dialog_->Open(seed);
+    }
+
     // The transcript store owns the chat-log file I/O (path, append, replay); it
     // needs the app port for the workspace path and the symlink-safe writes.
     transcript_ = std::make_unique<port::TranscriptStore>(*app_);
@@ -696,6 +711,9 @@ void TUIWindow::TickAnimations()
     // task's state change, coalesced once per actor message.
 
     auto base = split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
+    // The first-run page sits above /connect (only one is open at a time in practice).
+    if (setup_dialog_->IsOpen())
+        return ::ftxui::dbox({base | ::ftxui::dim, setup_dialog_->Render() | ::ftxui::clear_under | ::ftxui::center});
     if (!connect_dialog_->IsOpen())
         return base;
     // The dialog is borderless, so the backdrop is dimmed while it is open: the
@@ -731,6 +749,11 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
                 screen_->RequestAnimationFrame();
         }
     }
+
+    // The first-run setup page is the innermost modal while open: it owns every event
+    // (Esc = Skip). Checked before /connect.
+    if (setup_dialog_ && setup_dialog_->IsOpen())
+        return setup_dialog_->OnEvent(event);
 
     // The /connect dialog is a modal: while open it owns every event (Esc closes,
     // Enter submits, the rest go to its fields). Checked first -- it is the

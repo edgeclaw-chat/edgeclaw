@@ -15,3 +15,11 @@ py_binary(
     srcs = ["embed_blob.py"],
     visibility = ["//visibility:public"],
 )
+
+# Build-time tool: embeds the generated AI-model catalog as a C byte array (see
+# //:models_catalog_embedded_c). An absent catalog embeds an empty one.
+py_binary(
+    name = "embed_models",
+    srcs = ["embed_models.py"],
+    visibility = ["//visibility:public"],
+)

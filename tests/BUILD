@@ -687,6 +687,15 @@ cc_test(
 )
 
 cc_test(
+    name = "test_config_onboarded",
+    srcs = ["test_config_onboarded.c"],
+    deps = [
+        "//src/common:common",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_sandbox_helper",
     srcs = ["test_sandbox_helper.c"],
     deps = [
@@ -1074,6 +1083,17 @@ cc_test(
     deps = [
         "//src/common:common",
         "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_models_catalog",
+    srcs = ["test_models_catalog.c"],
+    deps = [
+        "//src/common:common",
         "//src/kernel:kernel",
         "@log.c//:log.c",
     ],

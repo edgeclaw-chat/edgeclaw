@@ -305,6 +305,12 @@ struct edc_config *edc_config_load(const char *edc_home)
     if (svc_enabled && cJSON_IsBool(svc_enabled))
         config->services_enabled = cJSON_IsTrue(svc_enabled);
 
+    /* First-run wizard flag, top-level "onboarded". Absent/false => it has not run. */
+    config->onboarded = false;
+    cJSON *onboarded = cJSON_GetObjectItem(conf, "onboarded");
+    if (onboarded && cJSON_IsBool(onboarded))
+        config->onboarded = cJSON_IsTrue(onboarded);
+
     cJSON *sandbox = cJSON_GetObjectItem(conf, "sandbox");
     if (sandbox && cJSON_IsObject(sandbox))
     {
@@ -748,6 +754,105 @@ static cJSON *cjson_ensure_array(cJSON *sandbox, const char *key)
     arr = cJSON_CreateArray();
     cJSON_AddItemToObject(sandbox, key, arr);
     return arr;
+}
+
+/* Read-modify-write one top-level key in <edc_home>/config.json, preserving everything
+ * else. `edit` mutates the parsed object with `ctx`. Shared by the first-run writers. */
+static bool config_edit(const char *edc_home, void (*edit)(cJSON *conf, void *ctx), void *ctx)
+{
+    if (!edc_home)
+        return false;
+
+    sds path = edc_path_join(edc_home, "config.json", NULL);
+    EdcError *error = NULL;
+    sds contents = edc_file_read(path, &error);
+    if (!contents)
+    {
+        log_error("edc_config: cannot read %s: %s", path, error ? error->message : "unknown");
+        if (error)
+            edc_error_free(error);
+        sdsfree(path);
+        return false;
+    }
+
+    cJSON *conf = cJSON_Parse(contents);
+    sdsfree(contents);
+    if (!conf || !cJSON_IsObject(conf))
+    {
+        if (conf)
+            cJSON_Delete(conf);
+        sdsfree(path);
+        return false;
+    }
+
+    edit(conf, ctx);
+
+    char *out = cJSON_Print(conf);
+    cJSON_Delete(conf);
+    if (!out)
+    {
+        sdsfree(path);
+        return false;
+    }
+
+    bool ok = edc_file_write(path, out, -1, &error);
+    if (!ok)
+    {
+        log_error("edc_config: cannot write %s: %s", path, error ? error->message : "unknown");
+        if (error)
+            edc_error_free(error);
+    }
+    cJSON_free(out);
+    sdsfree(path);
+    return ok;
+}
+
+struct config_bool_edit
+{
+    const char *key;
+    bool value;
+};
+static void config_edit_bool(cJSON *conf, void *ctx)
+{
+    struct config_bool_edit *b = ctx;
+    cJSON_DeleteItemFromObject(conf, b->key);
+    cJSON_AddBoolToObject(conf, b->key, b->value);
+}
+
+struct config_int_edit
+{
+    const char *key;
+    int value;
+};
+static void config_edit_int(cJSON *conf, void *ctx)
+{
+    struct config_int_edit *n = ctx;
+    cJSON_DeleteItemFromObject(conf, n->key);
+    cJSON_AddNumberToObject(conf, n->key, n->value);
+}
+
+bool edc_config_update_onboarded(const char *edc_home, bool onboarded)
+{
+    struct config_bool_edit b = {"onboarded", onboarded};
+    return config_edit(edc_home, config_edit_bool, &b);
+}
+
+bool edc_config_set_onboarded(struct edc_config *cfg, bool onboarded)
+{
+    /* Persist first: if config.json cannot be written, memory and disk must not
+     * disagree (same rule as edc_config_set_sandbox_enabled). */
+    if (!cfg || !cfg->edc_home || !edc_config_update_onboarded(cfg->edc_home, onboarded))
+        return false;
+    cfg->onboarded = onboarded;
+    return true;
+}
+
+bool edc_config_update_context_window(const char *edc_home, int context_window)
+{
+    if (context_window <= 0) /* the window has no "unconfigured" state */
+        return false;
+    struct config_int_edit n = {"context_window", context_window};
+    return config_edit(edc_home, config_edit_int, &n);
 }
 
 bool edc_config_update_sandbox_path(const char *edc_home, const char *path, edc_sandbox_path_kind kind, bool add)

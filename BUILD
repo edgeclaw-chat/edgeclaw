@@ -196,6 +196,20 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+# The generated AI-model catalog (tools/gen_models.py) is NOT committed (a fresh build
+# input; see .gitignore). This embeds it as a byte array so the wizard / model picker work
+# offline. When it is absent -- a plain `bazel build` on a clean checkout -- an EMPTY
+# catalog is embedded (see tools/embed_models.py). Regenerate before packaging:
+# tools/package.sh runs gen_models.py first.
+genrule(
+    name = "models_catalog_embedded_c",
+    srcs = glob(["models_catalog.json"], allow_empty = True),
+    outs = ["models_catalog_embedded.c"],
+    cmd = "$(execpath //tools:embed_models) --out $@ --name edc_bundled_models_catalog --header edc_bundled_models_catalog.h $(SRCS)",
+    tools = ["//tools:embed_models"],
+    visibility = ["//visibility:public"],
+)
+
 # Release archive: a single self-contained binary. The default workspace is
 # embedded in the binary and released to ~/.edgeclaw/ on first run, so no
 # workspace/ copy ships alongside it.

@@ -69,6 +69,24 @@ extern struct edc_actor *edc_app_channel_actor(const struct edc_app *app);
 extern bool edc_app_set_llm_config(struct edc_app *app, const char *api_url, const char *model,
                                    const char *api_key);
 
+/** Finish the first-run wizard: persist the LLM settings, the chosen model's context
+ *  window (when > 0) and the `onboarded` flag, then hot-apply. Returns true on success;
+ *  false leaves nothing half-written that the running app disagrees with (the LLM write
+ *  is the gate, the rest are best-effort). */
+extern bool edc_app_complete_setup(struct edc_app *app, const char *api_url, const char *model, const char *api_key,
+                                   int context_window);
+
+/** Mark the first-run wizard as done WITHOUT changing the LLM settings (the "Skip"
+ *  path): persist `onboarded` so the setup page does not reopen. */
+extern bool edc_app_mark_onboarded(struct edc_app *app);
+
+/** Test an OpenAI-compatible endpoint (the setup page's Test button): send one tiny chat
+ *  request and report. Writes a short human message into |out| and returns true when the
+ *  endpoint ANSWERED (any HTTP status). BLOCKING for up to |timeout_ms| -- call it off
+ *  the UI/runner thread. */
+extern bool edc_app_test_endpoint(struct edc_app *app, const char *api_url, const char *api_key, int timeout_ms,
+                                  char *out, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif
