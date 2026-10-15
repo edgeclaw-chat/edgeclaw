@@ -125,6 +125,31 @@ edc_sink edc_task_classify_sink(const char *name)
     return EDC_SINK_CHANNEL;
 }
 
+const char *edc_task_memo_kind_name(edc_memo_kind kind)
+{
+    switch (kind)
+    {
+    case EDC_MEMO_KIND_COMPACT:
+        return "COMPACT";
+    case EDC_MEMO_KIND_EXTRACT:
+        return "EXTRACT";
+    case EDC_MEMO_KIND_CURATE:
+    default:
+        return "CURATE";
+    }
+}
+
+edc_memo_kind edc_task_classify_memo_kind(const char *name)
+{
+    if (!name)
+        return EDC_MEMO_KIND_CURATE;
+    if (strcmp(name, "COMPACT") == 0)
+        return EDC_MEMO_KIND_COMPACT;
+    if (strcmp(name, "EXTRACT") == 0)
+        return EDC_MEMO_KIND_EXTRACT;
+    return EDC_MEMO_KIND_CURATE;
+}
+
 /* The display name (snapshot / logs / command text), derived straight from
  * (step, life) with life speaking first, matching the old order. WAITING_INPUT is
  * never returned. */
@@ -505,6 +530,7 @@ void edc_task_free(struct edc_task *task)
     if (task->output)
         sdsfree(task->output);
     free(task->fold_cut_task_id);
+    free(task->memo_cut_task_id);
 
     if (task->redirect_stdout)
         sdsfree(task->redirect_stdout);

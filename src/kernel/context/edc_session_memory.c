@@ -1,9 +1,14 @@
 #include "edc_session_memory.h"
 
+#include "edc_config.h"
+#include "edc_group_fold.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_session_manager.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
+#include "edc_token_estimate.h"
+#include "edc_turn.h"
 
 #include "edc_compat.h"
 #include "log.h"
@@ -18,6 +23,7 @@
 #endif
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* ── Vocabulary ────────────────────────────────────────────── */
 
@@ -436,7 +442,7 @@ sds edc_session_memory_create_entry(struct edc_session_memory *m, const char *ti
  * the memory tools) started when the entry table outgrows its cap, prompted to merge /
  * condense / drop and rebuild the index. It has to be told apart from the CURATION task,
  * which shares its sink and tools, so it carries its own system prompt (the request picks
- * it by task->memo_compact, see edc_llm_request.c). */
+ * it by task->memo_kind, see edc_llm_request.c). */
 
 static const char kCompactSystemPrompt[] =
     "You are compacting this session's shared memory. Nobody is waiting on a conversation: "
@@ -514,7 +520,7 @@ int edc_session_memory_hold_task(struct edc_task *task)
     struct edc_task *t;
     LL_FOREACH2(sys->members, t, group_next)
     {
-        if (t == task || edc_task_is_finished(t) || !t->memo_compact)
+        if (t == task || edc_task_is_finished(t) || t->memo_kind != EDC_MEMO_KIND_COMPACT)
             continue;
         if (edc_task_add_dependency(task, t, TASK_DEP_BARRIER))
             added++;
@@ -551,7 +557,7 @@ struct edc_task *edc_session_memory_start_compact(struct edc_scheduler *sched, s
         return NULL;
     }
     /* Same sink as curation, different prompt: this is what tells the two apart. */
-    task->memo_compact = true;
+    task->memo_kind = EDC_MEMO_KIND_COMPACT;
 
     /* Barrier over the WHOLE session: every task that is still going waits for this round, so
      * the memory is not rewritten underneath a task that is mid-flight, and they pick up
@@ -770,6 +776,538 @@ struct edc_task *edc_session_memory_start_manual(struct edc_scheduler *sched, st
     log_info("L2 memo start (manual): session=%s task=%s entries=%zu", session->session_id, task->task_id,
              session->memo->entry_count);
     return task;
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  L2 extraction: an idle group's unfolded history
+ *
+ *  The third L2 write path (the other two: the fold-chained curation and the
+ *  manual `/session memo` curation). The fold chain only curates what a fold
+ *  actually covered, so a group that never reaches the fold threshold -- or is
+ *  never folded by hand -- keeps its committed history outside L2 forever. This
+ *  path closes that gap.
+ *
+ *  Data (persisted): turn->memo_prefix (the extraction watermark, next to
+ *  folded_prefix) and the task's memo_kind = EXTRACT + cut (memo_cut_*).
+ *  Invariants:
+ *    - folded_prefix <= memo_prefix <= turn_len; both writers only raise it (the
+ *      fold landing clamps memo_prefix up to folded_prefix, the loader too).
+ *    - memo_prefix NEVER feeds request assembly / group history / fold corpus: it
+ *      only answers "has this already reached L2".
+ *  Material = the raw unfolded history after the watermark + the FULL entry index.
+ *  The old group memory is deliberately NOT included: a group that has memory has
+ *  been folded, so that knowledge already reached L2 through the fold chain, and
+ *  the entry index is the correct "known" reference -- not the group memory.
+ * ══════════════════════════════════════════════════════════════ */
+
+/* Distinct from the curator's prompt, which says the material "was just folded" --
+ * it was not. Same two-part job and the same rules otherwise. */
+static const char kExtractSystemPrompt[] =
+    "You are the session-memory curator for the EdgeClaw agent.\n"
+    "\n"
+    "You are given the raw, UN-FOLDED conversation history of ONE group (appended at the\n"
+    "end of your input) and the index of the session's existing memory entries. That\n"
+    "history never reached the group memory, so nothing in it is in the session memory\n"
+    "yet except what the existing entries already cover. Your job has TWO parts, and both\n"
+    "are mandatory:\n"
+    "\n"
+    "1) RECONCILE the existing entries against the material. The material is the NEWER\n"
+    "   truth. Go through the index, find the entries whose subject it covers, read them\n"
+    "   (memory_get), and check whether what they say still holds. If an entry's fact has\n"
+    "   changed, either UPDATE it to the correct content or, if it is simply obsolete,\n"
+    "   RETIRE it. An entry that no longer matches the material must not stay as it is.\n"
+    "2) EXTRACT the material's durable knowledge: update a related entry, or create a new\n"
+    "   one when nothing related exists.\n"
+    "\n"
+    "Rules:\n"
+    "- SEARCH FIRST: use memory_search (POSIX ERE regexes) / memory_list to find related entries, and\n"
+    "  memory_get (a list of ids) to read them in full before changing them.\n"
+    "- Prefer UPDATE over creating a near-duplicate. memory_update takes a list; for each item pass\n"
+    "  the `rev` you read as `expected_rev`; if the tool says an item is stale, re-read and redo it.\n"
+    "- RETIRE entries the material shows to be obsolete or wrong: memory_supersede takes a\n"
+    "  list of ids and needs no rev.\n"
+    "- memory_write a new entry only when nothing related exists, or when the knowledge\n"
+    "  genuinely deserves its own entry.\n"
+    "- Record knowledge, not activity: decisions, constraints, gotchas, external facts,\n"
+    "  exact paths / commands / error text. Never progress logs, todos or transient\n"
+    "  conclusions.\n"
+    "- Keep entries small: title <= 80 chars, summary <= 240 chars, detail holds the rest.\n"
+    "- You have ONLY the memory tools. Do not try to read files or run commands.\n"
+    "\n"
+    "If the material changes nothing, say so and change nothing. When you are done, reply\n"
+    "with a one-line summary of what you changed.\n";
+
+const char *edc_session_memory_extract_prompt(void)
+{
+    return kExtractSystemPrompt;
+}
+
+/* ── Selection: the raw un-extracted committed history, oldest first ── */
+
+struct extract_piece
+{
+    struct edc_task *task;
+    struct edc_turn *turn;
+    size_t turn_index; /* index in the member's committed turns queue */
+    size_t msg_index;  /* absolute index within that turn */
+    long long tokens;
+};
+
+/* Flatten one member's committed turns, from each turn's memo_prefix onwards, into the
+ * column. Only committed turns are read -- extraction never touches an in-flight turn
+ * (the group is idle, so there is normally none anyway). */
+static void extract_push(struct extract_piece **ps, size_t *cnt, size_t *cap, struct edc_task *t, struct edc_turn *turn,
+                         size_t turn_index)
+{
+    size_t len = edc_queue_length(&turn->messages);
+    size_t from = (turn->memo_prefix > 0) ? (size_t)turn->memo_prefix : 0;
+    if (from > len)
+        from = len;
+    for (size_t mi = from; mi < len; mi++)
+    {
+        if (*cnt == *cap)
+        {
+            *cap = *cap ? *cap * 2 : 64;
+            *ps = realloc(*ps, *cap * sizeof(**ps));
+        }
+        struct extract_piece *fp = &(*ps)[(*cnt)++];
+        fp->task = t;
+        fp->turn = turn;
+        fp->turn_index = turn_index;
+        fp->msg_index = mi;
+        fp->tokens = edc_token_estimate_msg(turn->messages.data[turn->messages.head + mi]);
+    }
+}
+
+/* Where one extraction round's cut went: the member it falls in, that member's turn
+ * index, and how many leading messages of that turn the round covered. Everything
+ * earlier in content order is covered whole. */
+struct edc_extract_cut
+{
+    const char *task_id;
+    uint32_t turn;
+    uint32_t prefix;
+};
+
+static size_t extract_collect(struct edc_task *const *members, size_t n, struct extract_piece **out)
+{
+    struct extract_piece *ps = NULL;
+    size_t cnt = 0, cap = 0;
+    for (size_t i = 0; i < n; i++)
+    {
+        struct edc_task *t = members[i];
+        for (size_t qi = t->turns.head; qi < t->turns.tail; qi++)
+            extract_push(&ps, &cnt, &cap, t, t->turns.data[qi], qi);
+    }
+    *out = ps;
+    return cnt;
+}
+
+static sds build_extract_prompt(struct edc_session *session, struct edc_task_group *group,
+                                struct edc_extract_cut *out_cut)
+{
+    if (out_cut)
+    {
+        out_cut->task_id = NULL;
+        out_cut->turn = 0;
+        out_cut->prefix = 0;
+    }
+    if (!session || !group)
+        return NULL;
+
+    size_t n = 0;
+    struct edc_task **members = edc_task_group_content_order(group, &n);
+    struct extract_piece *ps = NULL;
+    size_t cnt = extract_collect(members, n, &ps);
+    if (cnt == 0)
+    {
+        free(members);
+        free(ps);
+        return NULL;
+    }
+
+    long long total = 0;
+    for (size_t i = 0; i < cnt; i++)
+        total += ps[i].tokens;
+
+    /* Corpus cap per round, reusing the fold's: the same "do not push an
+     * un-compressible pile onto one call" argument. Over the cap the cut moves back
+     * so only the oldest span is sent; the rest waits for the next round (each round
+     * advances at least one message, so the loop terminates). Never move the cut to 0
+     * (a "due but yields nothing" spin). */
+    size_t cut_at = cnt; /* index of the first NOT-covered piece */
+    if (total > EDC_FOLD_MAX_CORPUS_TOKENS)
+    {
+        long long acc = 0;
+        cut_at = 0;
+        while (cut_at < cnt && acc + ps[cut_at].tokens <= EDC_FOLD_MAX_CORPUS_TOKENS)
+        {
+            acc += ps[cut_at].tokens;
+            cut_at++;
+        }
+        if (cut_at == 0)
+            cut_at = 1;
+        log_info("L2 memo extract: group %s corpus %lld > cap %d — extracting the oldest %zu of %zu msgs",
+                 group->group_id, total, EDC_FOLD_MAX_CORPUS_TOKENS, cut_at, cnt);
+    }
+
+    if (out_cut)
+    {
+        if (cut_at < cnt)
+        {
+            out_cut->task_id = ps[cut_at].task->task_id;
+            out_cut->turn = (uint32_t)ps[cut_at].turn_index;
+            out_cut->prefix = (uint32_t)ps[cut_at].msg_index; /* = leading covered count */
+        }
+        else
+        {
+            /* Everything covered: the cut is just past the last message of the last turn. */
+            struct extract_piece *last = &ps[cnt - 1];
+            out_cut->task_id = last->task->task_id;
+            out_cut->turn = (uint32_t)last->turn_index;
+            out_cut->prefix = (uint32_t)edc_queue_length(&last->turn->messages);
+        }
+    }
+
+    sds out = sdscatprintf(sdsempty(),
+                           "## Group history to extract from\n"
+                           "Group %s. Everything below is raw, un-folded conversation history (tasks in\n"
+                           "content order) that has NOT reached the session memory yet.\n\n",
+                           group->group_id ? group->group_id : "?");
+    struct edc_task *cur = NULL;
+    for (size_t i = 0; i < cut_at; i++)
+    {
+        struct edc_task *tk = ps[i].task;
+        if (tk != cur)
+        {
+            cur = tk;
+            out = sdscatprintf(out, "\n### [task %s] %s\n", tk->task_id, tk->description ? tk->description : "");
+        }
+        cJSON *m = ps[i].turn->messages.data[ps[i].turn->messages.head + ps[i].msg_index];
+        cJSON *role = cJSON_GetObjectItem(m, "role");
+        cJSON *content = cJSON_GetObjectItem(m, "content");
+        if (role && content && cJSON_IsString(role) && cJSON_IsString(content))
+            out = sdscatprintf(out, "%s: %s\n", role->valuestring, content->valuestring);
+    }
+
+    out = sdscat(out, "\n## Existing session entries\n");
+    size_t total_entries = 0;
+    sds index = edc_session_memory_index_lines(session->memo, 0, EDC_SESSION_MEMORY_MAX_ENTRIES + 1, &total_entries);
+    if (sdslen(index))
+        out = sdscatsds(out, index);
+    else
+        out = sdscat(out, "(none yet)");
+    sdsfree(index);
+    out = sdscat(out, "\n\nNow use the memory tools on the material above:\n"
+                      "1) RECONCILE -- find the existing entries it covers (memory_search / memory_list),\n"
+                      "   read each (memory_get), and update or retire any whose facts it has changed;\n"
+                      "2) EXTRACT -- update a related entry, or memory_write a new one when nothing\n"
+                      "   related exists.\n");
+
+    free(members);
+    free(ps);
+    return out;
+}
+
+/* ── Due / triggering ──────────────────────────────────────── */
+
+size_t edc_task_group_extractable_msg_count(struct edc_task_group *group)
+{
+    if (!group)
+        return 0;
+    size_t total = 0;
+    struct edc_task *t;
+    LL_FOREACH2(group->members, t, group_next)
+    {
+        if (edc_task_is_memory_sink(t))
+            continue;
+        for (size_t qi = t->turns.head; qi < t->turns.tail; qi++)
+        {
+            struct edc_turn *turn = t->turns.data[qi];
+            size_t len = edc_queue_length(&turn->messages);
+            size_t from = (turn->memo_prefix > 0) ? (size_t)turn->memo_prefix : 0;
+            if (from < len)
+                total += len - from;
+        }
+    }
+    return total;
+}
+
+/* Parse a message's wall-clock timestamp ("%Y-%m-%d %H:%M:%S", local time, see
+ * edc_turn_add_message). 0 when absent or unparseable. sscanf instead of strptime:
+ * the latter is POSIX but not declared without an XOPEN macro. */
+static time_t parse_wall_clock(const char *s)
+{
+    int y = 0, mo = 0, d = 0, h = 0, mi = 0, sec = 0;
+    if (!s || sscanf(s, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &sec) != 6)
+        return 0;
+
+    struct tm tm;
+    memset(&tm, 0, sizeof(tm));
+    tm.tm_year = y - 1900;
+    tm.tm_mon = mo - 1;
+    tm.tm_mday = d;
+    tm.tm_hour = h;
+    tm.tm_min = mi;
+    tm.tm_sec = sec;
+    tm.tm_isdst = -1;
+    return mktime(&tm);
+}
+
+/* Newest committed message timestamp in the group (the last time anything happened). */
+static time_t group_last_activity(struct edc_task_group *group)
+{
+    time_t best = 0;
+    struct edc_task *t;
+    LL_FOREACH2(group->members, t, group_next)
+    {
+        if (edc_task_is_memory_sink(t))
+            continue;
+        for (size_t qi = t->turns.head; qi < t->turns.tail; qi++)
+        {
+            struct edc_turn *turn = t->turns.data[qi];
+            for (size_t mi = turn->messages.head; mi < turn->messages.tail; mi++)
+            {
+                cJSON *m = turn->messages.data[mi];
+                cJSON *ts = cJSON_GetObjectItem(m, "ts");
+                if (ts && cJSON_IsString(ts))
+                {
+                    time_t v = parse_wall_clock(ts->valuestring);
+                    if (v > best)
+                        best = v;
+                }
+            }
+        }
+    }
+    return best;
+}
+
+bool edc_session_memory_extract_due(struct edc_task_group *group, const struct edc_config *conf, time_t now)
+{
+    if (!group || edc_task_group_is_system(group))
+        return false;
+    if (group->member_count == 0)
+        return false;
+    /* Failure cap: automatic rounds stop until the group gets new committed content. */
+    if (group->memo_extract_failures >= EDC_MEMO_EXTRACT_MAX_FAILURES)
+        return false;
+
+    /* Idle: every member (memory sinks aside) is finished -- nobody is running. */
+    struct edc_task *t;
+    LL_FOREACH2(group->members, t, group_next)
+    {
+        if (edc_task_is_memory_sink(t))
+            continue;
+        if (!edc_task_is_finished(t))
+            return false;
+    }
+
+    if (edc_task_group_extractable_msg_count(group) == 0)
+        return false;
+
+    /* Fold has priority: if a fold is due, let it fold; extraction will pick up any
+     * remainder afterwards. And nothing else may be in flight for this group. */
+    if (edc_group_fold_due(group, conf))
+        return false;
+    if (edc_group_fold_in_flight(group))
+        return false;
+
+    time_t last = group_last_activity(group);
+    if (last == 0)
+        return false; /* no usable timestamp -- do not guess */
+    if (now < last + EDC_MEMO_EXTRACT_IDLE_SECS)
+        return false;
+
+    return true;
+}
+
+static struct edc_task *extract_start(struct edc_scheduler *sched, struct edc_session *session,
+                                      struct edc_task_group *group)
+{
+    if (!sched || !session || !session->memo || !group)
+        return NULL;
+    /* One system task per session at a time (the same gate the fold uses). */
+    if (edc_scheduler_has_pending_system_task(session))
+        return NULL;
+
+    struct edc_extract_cut cut;
+    memset(&cut, 0, sizeof(cut));
+    sds prompt = build_extract_prompt(session, group, &cut);
+    if (!prompt)
+        return NULL;
+
+    struct edc_task *task = edc_scheduler_spawn_system_task_as(sched, session, "extract session memory",
+                                                              EDC_SINK_SESSION_MEMORY);
+    if (!task)
+    {
+        sdsfree(prompt);
+        return NULL;
+    }
+    task->memo_kind = EDC_MEMO_KIND_EXTRACT;
+    task->sink_group = group;
+    task->memo_cut_task_id = cut.task_id ? strdup(cut.task_id) : NULL;
+    task->memo_cut_turn = cut.turn;
+    task->memo_cut_prefix = cut.prefix;
+
+    /* No barrier: the group is idle (no non-terminal member to hold), and the round
+     * only reads committed turns and raises a watermark -- it changes nothing about
+     * what any request sends. */
+    if (!edc_scheduler_attach_input(sched, task, prompt))
+    {
+        log_error("L2 memo extract: could not attach the prompt for group %s — nothing started", group->group_id);
+        edc_task_mark_failed(task); /* failure also releases dependents */
+        sdsfree(prompt);
+        edc_session_memory_extract_note_failure(group);
+        return NULL;
+    }
+    sdsfree(prompt);
+    log_info("L2 memo extract start: session=%s group=%s task=%s cut=task %s turn %u msg %u", session->session_id,
+             group->group_id, task->task_id, task->memo_cut_task_id ? task->memo_cut_task_id : "(none)",
+             task->memo_cut_turn, task->memo_cut_prefix);
+    return task;
+}
+
+bool edc_session_memory_extract_try(struct edc_scheduler *sched, struct edc_session_manager *sessions,
+                                    struct edc_config *conf, struct edc_session **out_session)
+{
+    if (out_session)
+        *out_session = NULL;
+    if (!sched || !sessions)
+        return false;
+
+    time_t now = time(NULL);
+    struct edc_session_manager *sm = sessions;
+    for (int si = 0; si < sm->session_count; si++)
+    {
+        struct edc_session *sess = sm->sessions[si];
+        if (!sess || !sess->memo)
+            continue;
+        if (edc_scheduler_has_pending_system_task(sess))
+            continue;
+
+        struct edc_task_group *g;
+        DL_FOREACH(sess->groups, g)
+        {
+            if (!edc_session_memory_extract_due(g, conf, now))
+                continue;
+            log_info("L2 memo extract trigger: group %s idle, %zu msgs pending", g->group_id,
+                     edc_task_group_extractable_msg_count(g));
+            struct edc_task *task = extract_start(sched, sess, g);
+            if (task)
+            {
+                if (out_session)
+                    *out_session = sess;
+                return true; /* one group at a time */
+            }
+        }
+    }
+    return false;
+}
+
+void edc_session_memory_extract_note_failure(struct edc_task_group *group)
+{
+    if (!group)
+        return;
+    group->memo_extract_failures++;
+    if (group->memo_extract_failures >= EDC_MEMO_EXTRACT_MAX_FAILURES)
+        log_error("L2 memo extract: group %s failed %d times in a row — automatic extraction is paused for this "
+                  "group (do new work in it, or fold it, to try again)",
+                  group->group_id, group->memo_extract_failures);
+    else
+        log_info("L2 memo extract: group %s failure %d/%d", group->group_id, group->memo_extract_failures,
+                 EDC_MEMO_EXTRACT_MAX_FAILURES);
+}
+
+void edc_session_memory_extract_note_progress(struct edc_task_group *group)
+{
+    if (!group || group->memo_extract_failures == 0)
+        return;
+    log_info("L2 memo extract: group %s failure streak cleared (was %d)", group->group_id,
+             group->memo_extract_failures);
+    group->memo_extract_failures = 0;
+}
+
+/* ── Landing: advance the watermark by the recorded cut ── */
+
+static void extract_turn_whole(struct edc_turn *turn)
+{
+    size_t len = edc_queue_length(&turn->messages);
+    if ((size_t)turn->memo_prefix < len)
+        turn->memo_prefix = (int)len;
+}
+
+static void extract_turn_prefix(struct edc_turn *turn, uint32_t prefix)
+{
+    size_t len = edc_queue_length(&turn->messages);
+    size_t want = prefix;
+    if (want > len)
+        want = len;
+    if ((size_t)turn->memo_prefix < want)
+        turn->memo_prefix = (int)want;
+}
+
+bool edc_session_memory_extract_land(struct edc_task *task)
+{
+    struct edc_task_group *group = task ? task->sink_group : NULL;
+    if (!group || !task->memo_cut_task_id)
+    {
+        log_error("L2 memo extract: task %s carries no resolvable cut — watermark unchanged",
+                  (task && task->task_id) ? task->task_id : "(null)");
+        edc_session_memory_extract_note_failure(group);
+        return false;
+    }
+
+    size_t n = 0;
+    struct edc_task **members = edc_task_group_content_order(group, &n);
+    struct edc_task *cut_member = NULL;
+    for (size_t i = 0; i < n && !cut_member; i++)
+    {
+        if (members[i]->task_id && strcmp(members[i]->task_id, task->memo_cut_task_id) == 0)
+            cut_member = members[i];
+    }
+
+    struct edc_turn *cut_turn = NULL;
+    if (cut_member && (size_t)task->memo_cut_turn >= cut_member->turns.head &&
+        (size_t)task->memo_cut_turn < cut_member->turns.tail)
+        cut_turn = cut_member->turns.data[(size_t)task->memo_cut_turn];
+
+    if (!cut_member || !cut_turn)
+    {
+        log_error("L2 memo extract: cut (task=%s turn=%u) does not resolve in group %s — watermark unchanged",
+                  task->memo_cut_task_id, task->memo_cut_turn, group->group_id);
+        free(members);
+        edc_session_memory_extract_note_failure(group);
+        return false;
+    }
+
+    /* Members before the cut: every committed turn whole. The cut's member: turns
+     * before the cut turn whole, the cut turn up to its prefix. Nothing after. */
+    size_t advanced_turns = 0;
+    for (size_t i = 0; i < n; i++)
+    {
+        struct edc_task *t = members[i];
+        bool stop_after = false;
+        for (size_t qi = t->turns.head; qi < t->turns.tail; qi++)
+        {
+            struct edc_turn *turn = t->turns.data[qi];
+            if (turn == cut_turn)
+            {
+                extract_turn_prefix(turn, task->memo_cut_prefix);
+                stop_after = true;
+                break;
+            }
+            extract_turn_whole(turn);
+            advanced_turns++;
+        }
+        if (t == cut_member)
+            break;
+    }
+    free(members);
+
+    edc_session_memory_extract_note_progress(group);
+    log_info("L2 memo extract done: group %s advanced %zu turns, cut at task %s turn %u msg %u", group->group_id,
+             advanced_turns, task->memo_cut_task_id, task->memo_cut_turn, task->memo_cut_prefix);
+    return true;
 }
 
 /* ── `/session memo` text ──────────────────────────────────── */

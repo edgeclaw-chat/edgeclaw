@@ -617,6 +617,10 @@ static void fold_turn_whole(struct edc_turn *turn, size_t *turns, size_t *msgs)
     *msgs += len - cur;
     (*turns)++;
     turn->folded_prefix = (int)len;
+    /* Folded messages are in the group memory, so the chained curation puts them in
+     * L2: the extraction watermark must not lag behind the fold watermark. */
+    if (turn->memo_prefix < turn->folded_prefix)
+        turn->memo_prefix = turn->folded_prefix;
 }
 
 /* Fold only the first |prefix| messages (the prefix only grows, never regresses). */
@@ -629,6 +633,8 @@ static void fold_turn_prefix(struct edc_turn *turn, uint32_t prefix, size_t *tur
     *msgs += (size_t)prefix - cur;
     (*turns)++;
     turn->folded_prefix = (int)prefix;
+    if (turn->memo_prefix < turn->folded_prefix)
+        turn->memo_prefix = turn->folded_prefix;
 }
 
 bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)

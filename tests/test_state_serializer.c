@@ -1956,7 +1956,7 @@ static void test_fold_watermark(void)
 
 static void test_schema_version_is_current(void)
 {
-    TEST("serialize writes version 7; older versions fail loudly instead of being patched up");
+    TEST("serialize writes version 8; the previous version is still accepted, older fails loudly");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-ver", "Ver");
@@ -1973,7 +1973,7 @@ static void test_schema_version_is_current(void)
     CHECK(json != NULL, "serialize returns non-NULL");
     /* 本文件构造 JSON 时用的版本号是手写镜像 (见各 cJSON_Parse 字面量): 一律等于
      * 当前 schema, 升级时这里会先红。 */
-    CHECK(edc_state_schema_version() == 7, "schema version bumped -> update this file's literals");
+    CHECK(edc_state_schema_version() == 8, "schema version bumped -> update this file's literals");
     CHECK(edc_state_json_version(json) == edc_state_schema_version(), "on-disk version is the current schema");
 
     struct edc_session *s2 = edc_session_new(cfg, "sess-ver", "Ver");
@@ -1983,6 +1983,16 @@ static void test_schema_version_is_current(void)
     CHECK(edc_session_find_task(s2, "1") != NULL, "task restored");
     edc_session_free(s2);
     edc_scheduler_free(sched2);
+
+    /* The immediately preceding schema (v7) must still load: a bump must not strand
+     * the archives the previous binary wrote. Fields v7 lacks read back as defaults. */
+    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(7));
+    struct edc_session *s7 = edc_session_new(cfg, "sess-ver", "Ver");
+    struct edc_scheduler *sched7 = edc_scheduler_new(cfg);
+    install_resolver(sched7, s7);
+    CHECK(edc_state_deserialize(json, s7, sched7), "a v7 archive is still accepted");
+    edc_session_free(s7);
+    edc_scheduler_free(sched7);
 
     /* A pre-migration file must be rejected: the load path no longer carries the
      * v3 compatibility branches (system-container drop, displayed/header strip)
@@ -1994,6 +2004,15 @@ static void test_schema_version_is_current(void)
     CHECK(!edc_state_deserialize(json, s3, sched3), "a v3 tree is rejected");
     edc_session_free(s3);
     edc_scheduler_free(sched3);
+
+    /* A version NEWER than this binary also refuses (do not guess a future shape). */
+    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(9));
+    struct edc_session *s9 = edc_session_new(cfg, "sess-ver", "Ver");
+    struct edc_scheduler *sched9 = edc_scheduler_new(cfg);
+    install_resolver(sched9, s9);
+    CHECK(!edc_state_deserialize(json, s9, sched9), "a future version is rejected");
+    edc_session_free(s9);
+    edc_scheduler_free(sched9);
 
     cJSON_Delete(json);
     edc_session_free(session);

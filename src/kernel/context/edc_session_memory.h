@@ -5,10 +5,13 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 #include "sds.h"
 
 struct edc_scheduler;
 struct edc_session;
+struct edc_session_manager;
+struct edc_config;
 struct edc_task;
 struct edc_task_group;
 
@@ -259,6 +262,50 @@ extern struct edc_task *edc_session_memory_start_compact(struct edc_scheduler *s
  * automatic path). */
 extern struct edc_task *edc_session_memory_start_manual(struct edc_scheduler *sched, struct edc_session *session,
                                                         const char *focus);
+
+/* ── L2 extraction: an idle group's unfolded history ─────────
+ *
+ * The fold chain only curates what a fold actually covered. A group that never
+ * reaches the fold threshold -- or is simply never folded by hand -- keeps its
+ * committed history forever outside L2. This third write path closes that gap:
+ * once a user group has been idle long enough and still holds committed messages
+ * past its `turn->memo_prefix` watermark, run ONE self-contained curation call
+ * over that raw history. It is dispatched as an ordinary system task
+ * (sink SESSION_MEMORY, memo_kind EXTRACT) and its only post-hoc action is
+ * advancing the watermark. */
+#define EDC_MEMO_EXTRACT_IDLE_SECS 600
+#define EDC_MEMO_EXTRACT_MAX_FAILURES 3
+
+/* The extraction call's system text (self-contained: this plus its turn). Distinct
+ * from the curator's, which says the material "was just folded" -- it was not. */
+extern const char *edc_session_memory_extract_prompt(void);
+
+/* How many committed messages of |group| are still past their turn's memo watermark
+ * (the material an EXTRACT round would carry). Members with a memory sink are skipped.
+ */
+extern size_t edc_task_group_extractable_msg_count(struct edc_task_group *group);
+
+/* Is |group| due for extraction at wall-clock |now|? Conditions: a USER group, at least
+ * one member, every member finished (idle), something extractable, a fold not due (fold
+ * has priority), no fold/curation in flight for it, and its failure streak under the cap.
+ * The idle clock is the newest committed message's timestamp. */
+extern bool edc_session_memory_extract_due(struct edc_task_group *group, const struct edc_config *conf, time_t now);
+
+/* Scan every session and start at most one extraction. When one started, `*out_session`
+ * (optional) is the owning session so the caller persists the new task. */
+extern bool edc_session_memory_extract_try(struct edc_scheduler *sched, struct edc_session_manager *sessions,
+                                           struct edc_config *conf, struct edc_session **out_session);
+
+/* Landing: advance the memo watermark by the cut the task carries (members before the cut
+ * whole, the cut's turn up to its prefix). Returns true when it advanced; false when the
+ * cut does not resolve (then nothing changes and one failure is counted). */
+extern bool edc_session_memory_extract_land(struct edc_task *task);
+
+/* Consecutive-failure accounting for extraction (automatic path only): at the cap the
+ * automatic rounds stop until the group gets new committed content or a manual fold.
+ * Reset on a successful landing and on new committed content. In-memory only. */
+extern void edc_session_memory_extract_note_failure(struct edc_task_group *group);
+extern void edc_session_memory_extract_note_progress(struct edc_task_group *group);
 
 /* Text for `/session memo show` (pure function, easy to assert): empty id = list
  * all entries + total; an id = that entry's full content (or a hint when missing).

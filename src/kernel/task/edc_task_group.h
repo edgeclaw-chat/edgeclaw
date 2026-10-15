@@ -55,6 +55,11 @@ struct edc_task_group
      * content. In-memory only, not persisted (a restart counts as new). */
     int fold_failures;
 
+    /* Same shape for the L2 extraction of this group's unfolded history: consecutive
+     * failures stop the AUTOMATIC path at EDC_MEMO_EXTRACT_MAX_FAILURES; reset on
+     * successful landing / new committed content. In-memory only. */
+    int memo_extract_failures;
+
     struct edc_task_group *prev, *next; /* session's group list */
 };
 

@@ -14,11 +14,14 @@
 #include <string.h>
 
 /* ── On-disk schema version ─────────────────────────────────────────────
- * The loader accepts ONLY this exact number (see edc_state_deserialize): when
- * the shape changes, or a legacy shape is finally retired, bump it and ship a
- * one-shot migration under tools/ (e.g. migrate_session_v3_to_v4.py) instead of
- * teaching the load path to patch old data up on every load. */
-#define EDC_STATE_SCHEMA_VERSION 7
+ * The loader accepts any version in [MIN_SUPPORTED, CURRENT]. MIN is one behind
+ * CURRENT on purpose: a version bump must not strand the archives written by the
+ * immediately preceding binary, so the load path reads them with defaults for the
+ * fields they lack (v7's turn has no `memo_prefix`, its task has `memo_compact`
+ * instead of `memo_kind`). Anything older must run its one-shot migration first
+ * (tools/migrate_session_v*.py, see docs/session-model-v3.md §10). */
+#define EDC_STATE_SCHEMA_VERSION 8
+#define EDC_STATE_SCHEMA_MIN_SUPPORTED 7
 
 /* ══════════════════════════════════════════════════════════════
  *  Internal helpers — dep type ↔ string
@@ -89,6 +92,11 @@ static cJSON *turn_to_json(struct edc_turn *turn)
     /* Messages already folded into group memory (the L1 fold cut): requests and history start after this. */
     cJSON_AddNumberToObject(tj, "folded_prefix", turn->folded_prefix);
 
+    /* Messages already extracted into session memory (L2). A pure extraction
+     * watermark: nothing reads it for request assembly. Invariant (repaired on read):
+     * folded_prefix <= memo_prefix <= turn_len. */
+    cJSON_AddNumberToObject(tj, "memo_prefix", turn->memo_prefix);
+
     return tj;
 }
 
@@ -123,9 +131,11 @@ static cJSON *task_to_json(struct edc_task *task)
      * false), so old files read back a normal task -- no schema bump. */
     if (task->tool_only)
         cJSON_AddBoolToObject(tj, "tool_only", true);
-    /* Same shape: optional key, absent = an ordinary (curation) memory task. */
-    if (task->memo_compact)
-        cJSON_AddBoolToObject(tj, "memo_compact", true);
+    /* Which SESSION_MEMORY round this is: curation (default) / compaction / extraction.
+     * Omitted for the default; a v7 archive carries the old `memo_compact` bool instead,
+     * read back in the loader. */
+    if (task->memo_kind != EDC_MEMO_KIND_CURATE)
+        cJSON_AddStringToObject(tj, "memo_kind", edc_task_memo_kind_name(task->memo_kind));
 
     /* ── sink / fold target ──
      * A fold task (sink = GROUP_MEMORY) is now an ordinary persisted task, so its
@@ -139,6 +149,13 @@ static cJSON *task_to_json(struct edc_task *task)
         cJSON_AddStringToObject(tj, "fold_cut_task", task->fold_cut_task_id);
         cJSON_AddNumberToObject(tj, "fold_cut_turn", (int)task->fold_cut_turn);
         cJSON_AddNumberToObject(tj, "fold_cut_prefix", (int)task->fold_cut_prefix);
+    }
+    /* Extraction rounds carry their own cut, same shape as the fold cut. */
+    if (task->memo_cut_task_id)
+    {
+        cJSON_AddStringToObject(tj, "memo_cut_task", task->memo_cut_task_id);
+        cJSON_AddNumberToObject(tj, "memo_cut_turn", (int)task->memo_cut_turn);
+        cJSON_AddNumberToObject(tj, "memo_cut_prefix", (int)task->memo_cut_prefix);
     }
 
     /* ── channel ── */
@@ -396,6 +413,10 @@ static struct edc_turn *turn_from_json(cJSON *tj)
     if (folded && cJSON_IsNumber(folded))
         turn->folded_prefix = (int)cJSON_GetNumberValue(folded);
 
+    cJSON *memo = cJSON_GetObjectItem(tj, "memo_prefix");
+    if (memo && cJSON_IsNumber(memo))
+        turn->memo_prefix = (int)cJSON_GetNumberValue(memo);
+
     cJSON *embedded = cJSON_GetObjectItem(tj, "messages");
     if (embedded && cJSON_IsArray(embedded))
     {
@@ -407,6 +428,18 @@ static struct edc_turn *turn_from_json(cJSON *tj)
             edc_queue_push(&turn->messages, copy);
         }
     }
+
+    /* Normalize: what is folded is in L2 by construction (the fold chain curated it),
+     * and neither prefix may exceed the message count. A v7 archive lacks memo_prefix
+     * entirely (reads back 0) => it becomes folded_prefix, which is exactly the old
+     * binary's implicit assumption. */
+    size_t len = edc_queue_length(&turn->messages);
+    if (turn->memo_prefix < turn->folded_prefix)
+        turn->memo_prefix = turn->folded_prefix;
+    if (turn->memo_prefix > (int)len)
+        turn->memo_prefix = (int)len;
+    if (turn->folded_prefix > (int)len)
+        turn->folded_prefix = (int)len;
 
     return turn;
 }
@@ -657,8 +690,13 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->is_background = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "tool_only")))
             task->tool_only = cJSON_IsTrue(v);
-        if ((v = cJSON_GetObjectItem(tj, "memo_compact")))
-            task->memo_compact = cJSON_IsTrue(v);
+        /* v8: the tri-state tag. A v7 archive has no `memo_kind`; its old
+         * `memo_compact` bool says COMPACT when true, and the default (CURATE) when
+         * absent -- which is what memo_kind already holds. */
+        if ((v = cJSON_GetObjectItem(tj, "memo_kind")) && cJSON_IsString(v))
+            task->memo_kind = edc_task_classify_memo_kind(cJSON_GetStringValue(v));
+        else if ((v = cJSON_GetObjectItem(tj, "memo_compact")) && cJSON_IsTrue(v))
+            task->memo_kind = EDC_MEMO_KIND_COMPACT;
         if ((v = cJSON_GetObjectItem(tj, "fork_point_completion_seq")) && cJSON_IsNumber(v))
             task->fork_point_completion_seq = (uint32_t)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "output")) && cJSON_IsString(v))
@@ -671,6 +709,12 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->fold_cut_turn = (uint32_t)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "fold_cut_prefix")) && cJSON_IsNumber(v))
             task->fold_cut_prefix = (uint32_t)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "memo_cut_task")) && cJSON_IsString(v))
+            task->memo_cut_task_id = strdup(cJSON_GetStringValue(v));
+        if ((v = cJSON_GetObjectItem(tj, "memo_cut_turn")) && cJSON_IsNumber(v))
+            task->memo_cut_turn = (uint32_t)cJSON_GetNumberValue(v);
+        if ((v = cJSON_GetObjectItem(tj, "memo_cut_prefix")) && cJSON_IsNumber(v))
+            task->memo_cut_prefix = (uint32_t)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "tokens_prompt")) && cJSON_IsNumber(v))
             task->tokens_prompt = (long long)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "tokens_completion")) && cJSON_IsNumber(v))
@@ -1109,12 +1153,14 @@ bool edc_state_deserialize(cJSON *json, struct edc_session *session, struct edc_
         return false;
     }
     double ver_num = cJSON_GetNumberValue(ver);
-    /* Only the current schema is accepted. An old version must run the one-shot
-     * migration first (tools/migrate_session_v3_to_v4.py, see
-     * docs/session-model-v3.md §10) -- the load path no longer patches old data. */
-    if (ver_num != EDC_STATE_SCHEMA_VERSION)
+    /* Accept the current schema and the one right before it (see the schema-version
+     * note at the top): a bump must not strand the archives the previous binary wrote.
+     * Fields the older shape lacks read back as defaults. Older than that must run its
+     * one-shot migration first -- the load path does not patch ancient data up. */
+    if (ver_num < EDC_STATE_SCHEMA_MIN_SUPPORTED || ver_num > EDC_STATE_SCHEMA_VERSION)
     {
-        log_error("deserialize: unsupported version %g (expected %d)", ver_num, EDC_STATE_SCHEMA_VERSION);
+        log_error("deserialize: unsupported version %g (expected %d..%d)", ver_num, EDC_STATE_SCHEMA_MIN_SUPPORTED,
+                  EDC_STATE_SCHEMA_VERSION);
         return false;
     }
 

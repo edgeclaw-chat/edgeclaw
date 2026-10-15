@@ -1320,8 +1320,9 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
             edc_task_set_completion_seq(task, own->next_completion_seq++);
             /* (c) New committed content in the group => clear the fold failure count:
              * this is a new situation worth retrying (distinct from the same content
-             * failing repeatedly). */
+             * failing repeatedly). Same for the extraction failure streak. */
             edc_group_fold_note_progress(task->group);
+            edc_session_memory_extract_note_progress(task->group);
         }
         else
             edc_task_set_completion_seq(task, 0);
@@ -1348,11 +1349,24 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
         }
         else if (task->sink == EDC_SINK_SESSION_MEMORY)
         {
-            /* The curator writes through the memory tools DURING its run (see
-             * docs/session-memory-write-path.md); there is no post-hoc landing step.
-             * Its final text is just a wrap-up and must not be sent to the user. */
-            log_info("L2 memo done: task=%s (writes already landed via the memory tools)",
-                     task->task_id ? task->task_id : "(null)");
+            /* Curation and compaction write through the memory tools DURING their run
+             * so there is no post-hoc landing
+             * step. Its final text is just a wrap-up and must not be sent to the user.
+             * Extraction is the exception: its only post-hoc action is advancing the
+             * memo watermark by the cut it carried. A clean STOP reaches here; a
+             * truncated/failed one took the ERROR branch instead (the executor fails a
+             * memory sink on any non-stop reason), and an iteration-cap stop comes in
+             * COMPLETED but with a non-DONE outcome, so it is skipped here. */
+            if (task->memo_kind == EDC_MEMO_KIND_EXTRACT)
+            {
+                if (res->outcome == EDC_STEP_DONE)
+                    edc_session_memory_extract_land(task);
+                else
+                    edc_session_memory_extract_note_failure(task->sink_group);
+            }
+            else
+                log_info("L2 memo done: task=%s (writes already landed via the memory tools)",
+                         task->task_id ? task->task_id : "(null)");
         }
         else if (sched->send_reply)
             sched->send_reply(sched, task, res->notice, EDC_CHANNEL_MESSAGE_RESP_TYPE, req_id);
@@ -1375,6 +1389,10 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
     {
         /* An explicit cancel is persisted immediately, or a restart restores it as running. */
         sched_mark_dirty(sched, own, "foreground");
+        /* An extraction round that was cancelled advanced nothing: count one failure so
+         * a cancelling loop cannot become a retry loop. */
+        if (task->sink == EDC_SINK_SESSION_MEMORY && task->memo_kind == EDC_MEMO_KIND_EXTRACT)
+            edc_session_memory_extract_note_failure(task->sink_group);
         sched_save_session(sched, own);
     }
     else /* ERROR */
@@ -1385,6 +1403,8 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
          * A cancel is not a failure -- a human stopped it. */
         if (task->sink == EDC_SINK_GROUP_MEMORY)
             edc_group_fold_note_failure(task->sink_group);
+        if (task->sink == EDC_SINK_SESSION_MEMORY && task->memo_kind == EDC_MEMO_KIND_EXTRACT)
+            edc_session_memory_extract_note_failure(task->sink_group);
         if (sched->send_reply)
         {
             sds copy = sched_error_copy(sched, res->notice);
@@ -1421,6 +1441,18 @@ void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *t
         struct edc_session *folded = NULL;
         if (edc_group_fold_try(sched, sched->sessions, sched->config, &folded) && folded)
             sched_save_session(sched, folded);
+    }
+
+    /* (5b) L2 extraction, asked at the same boundary. A fold has priority: it is
+     * checked first above, and edc_session_memory_extract_due refuses while a fold is
+     * due or in flight. Like the fold, the round it starts may belong to a background
+     * session, so use the one try reports back. Its own completion is another message
+     * boundary: apply_advance runs again, so a capped material continues until the
+     * group has nothing left un-extracted. */
+    {
+        struct edc_session *extracted = NULL;
+        if (edc_session_memory_extract_try(sched, sched->sessions, sched->config, &extracted) && extracted)
+            sched_save_session(sched, extracted);
     }
 
     /* (6) L2 hygiene, asked at the same boundary: once a session's memory outgrows its entry

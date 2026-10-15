@@ -66,6 +66,20 @@ extern const char *edc_task_sink_name(edc_sink sink);
 extern void edc_task_memo_commit(struct edc_task *task);
 extern edc_sink edc_task_classify_sink(const char *name);
 
+/* Which kind of SESSION_MEMORY round a system task is. All three share the sink and
+ * the memory tools, so the request picks the system prompt by this tag, and the
+ * landing step dispatches on it. Three states replaced the old `memo_compact` bool
+ * (which could only say "compact vs everything else"). */
+typedef enum
+{
+    EDC_MEMO_KIND_CURATE = 0, /* fold-chained curation (the default, and what an old
+                               * file without the key reads back as) */
+    EDC_MEMO_KIND_COMPACT,    /* entry-cap compaction: make the memory smaller */
+    EDC_MEMO_KIND_EXTRACT,    /* idle group's unfolded history -> session memory */
+} edc_memo_kind;
+extern const char *edc_task_memo_kind_name(edc_memo_kind kind);
+extern edc_memo_kind edc_task_classify_memo_kind(const char *name);
+
 /* Its output is not for the user but written into some memory (fold / curation).
  * The shared shape of these tasks: a self-contained request (its own description +
  * its own turn), no completion order (`completion_seq = 0`), not part of the
@@ -141,10 +155,11 @@ struct edc_task
      * (the executor reads this flag on both the resume and the tool-done path). */
     bool tool_only;
 
-    /* This system task is a MEMORY COMPACTION round (sink SESSION_MEMORY), not a curation
-     * one: they share the sink and the tools, so the request picks the system prompt by this
-     * flag (see edc_session_memory_compact_prompt). Persisted. */
-    bool memo_compact;
+    /* This system task is a SESSION_MEMORY round (sink SESSION_MEMORY): curation,
+     * compaction or extraction -- they share the sink and the tools, so the request
+     * picks the system prompt by this tag and the landing step dispatches on it.
+     * Persisted (tri-state; see edc_memo_kind). */
+    edc_memo_kind memo_kind;
 
     struct edc_task_group *group;
 
@@ -257,6 +272,17 @@ struct edc_task
     char *fold_cut_task_id;
     uint32_t fold_cut_turn;
     uint32_t fold_cut_prefix;
+
+    /* Where one EXTRACT round's cut went, exactly like the fold cut above: the member
+     * it falls in, that member's turn index, and how many leading messages of that
+     * turn the round took. Everything earlier in content order is covered whole;
+     * nothing later is touched. Only committed turns are ever cut (extraction never
+     * reads an in-flight turn), so there is no active-turn sentinel. A NULL task id
+     * means no cut was recorded (the landing then advances nothing and counts one
+     * failure). Filled by the extraction side; the task does not interpret them. */
+    char *memo_cut_task_id;
+    uint32_t memo_cut_turn;
+    uint32_t memo_cut_prefix;
 
     /* Tasks a cancel or a dependency change moved as a side effect (cascaded JOIN,
      * released SEQUENCE). The task layer does not know the host, so it records them

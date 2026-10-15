@@ -222,7 +222,7 @@ int main(void)
     struct edc_task *ct = edc_session_memory_start_compact(sched, sess);
     CHECK(ct != NULL, "压缩任务起出来了");
     CHECK(ct && ct->sink == EDC_SINK_SESSION_MEMORY, "sink = SESSION_MEMORY（与策展同一性质）");
-    CHECK(ct && ct->memo_compact, "带 memo_compact 标记（请求侧据此选提示词）");
+    CHECK(ct && ct->memo_kind == EDC_MEMO_KIND_COMPACT, "带 memo_kind=COMPACT 标记（请求侧据此选提示词）");
     CHECK(ct && ct->group && edc_task_group_is_system(ct->group), "落在系统组里");
     {
         struct edc_turn *turn = ct ? ct->active_turn : NULL;
@@ -289,11 +289,12 @@ int main(void)
             struct edc_task *tt = NULL;
             LL_FOREACH2(gg->members, tt, group_next)
             {
-                if (tt->sink == EDC_SINK_SESSION_MEMORY && tt->memo_compact && !edc_task_is_finished(tt))
+                if (tt->sink == EDC_SINK_SESSION_MEMORY && tt->memo_kind == EDC_MEMO_KIND_COMPACT &&
+                    !edc_task_is_finished(tt))
                     ct2 = tt;
             }
         }
-        CHECK(ct2 != NULL, "起的是压缩任务（带 memo_compact）");
+        CHECK(ct2 != NULL, "起的是压缩任务（memo_kind=COMPACT）");
         const char *material = NULL;
         if (ct2 && ct2->active_turn && edc_queue_length(&ct2->active_turn->messages) > 0)
         {

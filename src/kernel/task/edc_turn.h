@@ -12,6 +12,12 @@ struct edc_turn
      * fold). Request assembly and the group history both start after them; set at
      * fold landing, persisted with the turn. 0 = nothing folded. */
     int folded_prefix;
+    /* How many leading messages of this turn have already entered the session memory
+     * (L2), by ANY path (fold-chained curation or the idle-group extraction). It is a
+     * pure extraction watermark: it NEVER participates in request assembly, the group
+     * history or the fold corpus. Invariant: folded_prefix <= memo_prefix <= turn_len,
+     * and both writers (extraction landing, fold landing clamp) only ever raise it. */
+    int memo_prefix;
 };
 
 extern struct edc_turn *edc_turn_new();
