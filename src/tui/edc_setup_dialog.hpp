@@ -17,6 +17,7 @@
 #include "ftxui/component/component_base.hpp"
 
 #include <cstddef>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -27,7 +28,8 @@ class SetupDialog : public Widget
 {
   public:
     // |facade| is borrowed and must outlive this dialog; it is not touched until Open().
-    explicit SetupDialog(port::IAppFacade *facade);
+    // |on_done| runs after a successful Finish (the host refreshes the footer's model).
+    explicit SetupDialog(port::IAppFacade *facade, std::function<void()> on_done = nullptr);
 
     // Seed from |initial| (the current config), (re)load the catalog and open at step 1.
     void Open(const port::SetupConfig &initial);
@@ -62,10 +64,12 @@ class SetupDialog : public Widget
     void CommitModel();    /* step 2: finish (persist) and close */
     void Exit();           /* Esc: mark done and close */
 
-    /* A scrolling list of |rows| with a highlighted |sel|; |max_rows| visible at once. */
-    ::ftxui::Element ListElement(const std::vector<std::string> &rows, int sel, int max_rows) const;
+    /* A scrolling list: |sel| is the keyboard cursor (highlighted), |current_row| is the
+     * item the config currently uses (marked with a tick), -1 for none. */
+    ::ftxui::Element ListElement(const std::vector<std::string> &rows, int sel, int current_row, int max_rows) const;
 
     port::IAppFacade *facade_;
+    std::function<void()> on_done_; /* host refresh after a successful Finish */
 
     bool open_ = false;
     Step step_ = STEP_PROVIDER;
@@ -82,15 +86,29 @@ class SetupDialog : public Widget
     std::vector<size_t> model_view_;
     int model_sel_ = 0;
 
+    /* The config's current choice, ticked in the lists (distinct from the cursor). */
+    std::string current_api_;
+    std::string current_model_;
+    int provider_current_row_ = -1;
+    int model_current_row_ = -1;
+
     std::string url_;
     std::string key_;
     int context_window_ = 0;
-    int key_focus_ = 0; /* step 2: 0 = base URL, 1 = API key */
 
     ::ftxui::Component provider_filter_input_;
-    ::ftxui::Component url_input_;
     ::ftxui::Component key_input_;
     ::ftxui::Component model_filter_input_;
+    /* A Tab over the three inputs, so exactly the current step's input is focused (and
+     * draws the caret); added as the dialog's child (see the ctor). */
+    ::ftxui::Component tabs_;
+    int tab_index_ = 0;
+
+    /* Caret position per field, bound into the inputs' InputOption so Open() can park it
+     * at the END of a pre-filled value (typing then appends, not prepends). */
+    int provider_cursor_ = 0;
+    int key_cursor_ = 0;
+    int model_cursor_ = 0;
 };
 
 } // namespace edc::ui

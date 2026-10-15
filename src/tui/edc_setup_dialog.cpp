@@ -8,17 +8,33 @@
 #include "ftxui/dom/elements.hpp"
 
 #include <algorithm>
+#include <utility>
 
 namespace edc::ui
 {
 
 namespace
 {
-/* The list steps always render exactly this many rows (padded), and the dialog has a
- * FIXED size, so typing changes the rows' contents but never the window's size/position. */
+/* At most this many list rows; the list grows/shrinks with the matches (the dialog's top
+ * stays anchored, so it does not jump). The width is fixed so the centered column does
+ * not shift. */
 constexpr int kListRows = 12;
 constexpr int kDialogWidth = 76;
-constexpr int kDialogHeight = 22;
+
+/* Same base URL: the config may hold a base or a full endpoint, with or without a
+ * trailing slash. */
+bool same_url(const std::string &a, const std::string &b)
+{
+    auto norm = [](std::string s) {
+        static const std::string suffix = "/chat/completions";
+        if (s.size() >= suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0)
+            s.erase(s.size() - suffix.size());
+        while (!s.empty() && s.back() == '/')
+            s.pop_back();
+        return s;
+    };
+    return !a.empty() && !b.empty() && norm(a) == norm(b);
+}
 
 /* Field look: the palette's own foreground, placeholder dimmed (same as ConnectDialog:
  * ftxui's default `inverted` fill hides the terminal caret). */
@@ -37,18 +53,29 @@ constexpr int kDialogHeight = 22;
 }
 } // namespace
 
-SetupDialog::SetupDialog(port::IAppFacade *facade) : facade_(facade)
+SetupDialog::SetupDialog(port::IAppFacade *facade, std::function<void()> on_done)
+    : facade_(facade), on_done_(std::move(on_done))
 {
     ::ftxui::InputOption pfilter = field_option();
     pfilter.on_change = [this] { ApplyProviderFilter(); };
+    pfilter.cursor_position = &provider_cursor_;
     provider_filter_input_ = ::ftxui::Input(&provider_filter_, "Search providers...", pfilter);
 
-    url_input_ = ::ftxui::Input(&url_, "https://api.example.com/v1", field_option());
-    key_input_ = ::ftxui::Input(&key_, "API key", field_option());
+    ::ftxui::InputOption keyopt = field_option();
+    keyopt.cursor_position = &key_cursor_;
+    key_input_ = ::ftxui::Input(&key_, "API key", keyopt);
 
     ::ftxui::InputOption mfilter = field_option();
     mfilter.on_change = [this] { ApplyModelFilter(); };
+    mfilter.cursor_position = &model_cursor_;
     model_filter_input_ = ::ftxui::Input(&model_filter_, "Search models...", mfilter);
+
+    /* Adopt the inputs as a real component child: without a child the dialog is not
+     * Focusable(), so its current input never reports Focused() and ftxui never asks the
+     * terminal for a caret (see ConnectDialog). Draw() still renders only the active
+     * step's input; this link carries focus. */
+    tabs_ = ::ftxui::Container::Tab({provider_filter_input_, key_input_, model_filter_input_}, &tab_index_);
+    Add(tabs_);
 }
 
 void SetupDialog::ReloadProviders()
@@ -57,6 +84,8 @@ void SetupDialog::ReloadProviders()
     if (facade_)
         facade_->Providers(&provider_ids_);
     ApplyProviderFilter();
+    if (provider_current_row_ >= 0)
+        provider_sel_ = provider_current_row_; /* start the cursor on the current choice */
 }
 
 void SetupDialog::ApplyProviderFilter()
@@ -76,6 +105,40 @@ void SetupDialog::ApplyProviderFilter()
     }
     if (provider_sel_ >= static_cast<int>(provider_view_.size()))
         provider_sel_ = provider_view_.empty() ? 0 : static_cast<int>(provider_view_.size()) - 1;
+
+    /* Which provider the config currently uses (by base URL, else by containing the
+     * current model) -- shown with a tick. */
+    provider_current_row_ = -1;
+    int match = -1;
+    if (facade_ && !current_api_.empty())
+    {
+        for (size_t i = 0; i < provider_ids_.size(); i++)
+            if (same_url(facade_->ProviderApi(provider_ids_[i]), current_api_))
+            {
+                match = static_cast<int>(i);
+                break;
+            }
+    }
+    if (match < 0 && facade_ && !current_model_.empty())
+    {
+        for (size_t i = 0; i < provider_ids_.size() && match < 0; i++)
+        {
+            std::vector<std::string> ms;
+            facade_->Models(provider_ids_[i], &ms);
+            for (const std::string &m : ms)
+                if (m == current_model_)
+                {
+                    match = static_cast<int>(i);
+                    break;
+                }
+        }
+    }
+    for (size_t r = 0; r < provider_view_.size(); r++)
+        if (static_cast<int>(provider_view_[r]) == match)
+        {
+            provider_current_row_ = static_cast<int>(r);
+            break;
+        }
 }
 
 void SetupDialog::ReloadModels()
@@ -93,8 +156,9 @@ void SetupDialog::ReloadModels()
                 model_ids_.push_back(mid);
         }
     }
-    model_sel_ = 0;
     ApplyModelFilter();
+    if (model_current_row_ >= 0)
+        model_sel_ = model_current_row_; /* start the cursor on the current model */
 }
 
 void SetupDialog::ApplyModelFilter()
@@ -114,6 +178,14 @@ void SetupDialog::ApplyModelFilter()
     }
     if (model_sel_ >= static_cast<int>(model_view_.size()))
         model_sel_ = model_view_.empty() ? 0 : static_cast<int>(model_view_.size()) - 1;
+
+    model_current_row_ = -1;
+    for (size_t r = 0; r < model_view_.size(); r++)
+        if (model_ids_[model_view_[r]] == current_model_)
+        {
+            model_current_row_ = static_cast<int>(r);
+            break;
+        }
 }
 
 void SetupDialog::CommitProvider()
@@ -123,10 +195,9 @@ void SetupDialog::CommitProvider()
     const std::string &pid = provider_ids_[provider_view_[provider_sel_]];
     std::string api = facade_ ? facade_->ProviderApi(pid) : "";
     if (!api.empty())
-        url_ = api;
+        url_ = api; /* the base URL is bound to the provider (never shown) */
     ReloadModels();
     step_ = STEP_KEY;
-    key_focus_ = 0;
 }
 
 void SetupDialog::CommitKey()
@@ -147,7 +218,11 @@ void SetupDialog::CommitModel()
     cfg.api_key = key_;
     cfg.context_window = context_window_;
     if (facade_->SetSetup(cfg))
+    {
+        if (on_done_)
+            on_done_(); /* host refreshes the footer's model */
         Close();
+    }
 }
 
 void SetupDialog::Exit()
@@ -161,11 +236,17 @@ void SetupDialog::Open(const port::SetupConfig &initial)
 {
     url_ = initial.api_url;
     key_ = initial.api_key;
+    current_api_ = initial.api_url; /* ticked in the provider list */
+    current_model_ = initial.model; /* ticked in the model list */
     provider_filter_.clear();
     model_filter_.clear();
     provider_sel_ = 0;
     model_sel_ = 0;
-    key_focus_ = 0;
+    /* Park each caret at the END of its value: the user is editing an existing value and
+     * the next keystroke should append (the API key is pre-filled from the config). */
+    provider_cursor_ = static_cast<int>(provider_filter_.size());
+    key_cursor_ = static_cast<int>(key_.size());
+    model_cursor_ = static_cast<int>(model_filter_.size());
     step_ = STEP_PROVIDER;
     ReloadProviders();
     open_ = true;
@@ -201,17 +282,12 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
         return provider_filter_input_->OnEvent(event);
 
     case STEP_KEY:
-        if (event == ::ftxui::Event::ArrowUp || event == ::ftxui::Event::ArrowDown)
-        {
-            key_focus_ = (event == ::ftxui::Event::ArrowDown) ? 1 : 0;
-            return true;
-        }
         if (event == ::ftxui::Event::Return)
         {
             CommitKey();
             return true;
         }
-        return (key_focus_ == 0 ? url_input_ : key_input_)->OnEvent(event);
+        return key_input_->OnEvent(event);
 
     case STEP_MODEL:
         if (event == ::ftxui::Event::ArrowUp)
@@ -228,12 +304,16 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     return false;
 }
 
-::ftxui::Element SetupDialog::ListElement(const std::vector<std::string> &rows, int sel, int max_rows) const
+::ftxui::Element SetupDialog::ListElement(const std::vector<std::string> &rows, int sel, int current_row,
+                                          int max_rows) const
 {
     using namespace ::ftxui;
     const auto &pal = style::palette();
 
     int n = static_cast<int>(rows.size());
+    if (n == 0)
+        return text("(no match)") | color(pal.text_dim);
+
     int first = 0;
     if (n > max_rows)
     {
@@ -244,23 +324,18 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
             first = n - max_rows;
     }
 
-    /* ALWAYS render exactly max_rows lines (pad with blanks) so the dialog never
-     * resizes -- only the rows' content changes while typing. */
+    /* Only the rows that exist (at most max_rows). The keyboard cursor is the highlight
+     * colour; the config's current choice carries a tick. */
     Elements lines;
-    int shown = 0;
-    if (n == 0)
-    {
-        lines.push_back(text("  (no match)") | color(pal.text_dim));
-        shown = 1;
-    }
-    for (int i = first; i < n && shown < max_rows; i++, shown++)
+    for (int i = first; i < n && i < first + max_rows; i++)
     {
         bool cur = (i == sel);
-        auto row = text((cur ? "> " : "  ") + rows[i]);
-        lines.push_back(cur ? (row | bold | color(pal.accent)) : (row | color(pal.text)));
+        std::string prefix = (i == current_row) ? "\u2713 " : "  ";
+        auto row = text(prefix + rows[i]);
+        /* The cursor is a background fill (not a font colour); the tick marks the config's
+         * current choice. */
+        lines.push_back(cur ? (row | bold | bgcolor(pal.accent) | color(pal.dialog_bg)) : (row | color(pal.text)));
     }
-    for (; shown < max_rows; shown++)
-        lines.push_back(text(""));
     return vbox(std::move(lines));
 }
 
@@ -269,32 +344,35 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     using namespace ::ftxui;
     const auto &pal = style::palette();
 
+    /* The active Tab child is the current step's input, so it is the focused one (and the
+     * only one that draws a caret). */
+    tab_index_ = static_cast<int>(step_);
+
+    /* A 2-column left gutter, matching the list's "✓ "/"  " prefix, so the title, the
+     * inputs and the list rows all share one text margin. */
+    auto field = [&](const Component &input) { return hbox({text("  "), input->Render() | flex}); };
+
     Element body;
     if (step_ == STEP_PROVIDER)
     {
         body = vbox({
-            provider_filter_input_->Render(), /* the search box itself: its placeholder reads as the prompt */
+            field(provider_filter_input_), /* the search box itself: its placeholder reads as the prompt */
             separator() | color(pal.line_dim),
-            ListElement(provider_rows_, provider_sel_, kListRows),
+            ListElement(provider_rows_, provider_sel_, provider_current_row_, kListRows),
         });
     }
     else if (step_ == STEP_KEY)
     {
-        body = vbox({
-            hbox({text((key_focus_ == 0 ? "> " : "  ") + std::string("Base URL  ")) | color(pal.text),
-                  url_input_->Render() | flex}),
-            hbox({text((key_focus_ == 1 ? "> " : "  ") + std::string("API key   ")) | color(pal.text),
-                  key_input_->Render() | flex}),
-            text(" "),
-            text("Leave the key empty for a local endpoint.") | color(pal.text_dim),
-        });
+        /* Just the field: the base URL is bound to the provider, and a nav hint would be
+         * noise on a single-field step. */
+        body = field(key_input_);
     }
     else
     {
         body = vbox({
-            model_filter_input_->Render(),
+            field(model_filter_input_),
             separator() | color(pal.line_dim),
-            ListElement(model_rows_, model_sel_, kListRows),
+            ListElement(model_rows_, model_sel_, model_current_row_, kListRows),
         });
     }
 
@@ -302,17 +380,18 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     std::string step_no = "Step " + std::to_string(static_cast<int>(step_) + 1) + "/3";
 
     // The header IS the step's name (not a generic "Setup"); flat and borderless (same
-    // language as ConnectDialog), and FIXED size so the centered window never moves: the
-    // list always renders a constant number of rows and a filler absorbs the slack.
-    return vbox({
-               hbox({text(title) | bold | color(pal.accent), filler(), text(step_no + " ") | color(pal.text_dim)}),
-               separator() | color(pal.line_dim),
-               body,
-               filler(),
-               separator() | color(pal.line_dim),
-               text("Up/Down move  |  Enter select  |  Esc cancel") | color(pal.text_dim),
-           }) |
-           size(WIDTH, EQUAL, kDialogWidth) | size(HEIGHT, EQUAL, kDialogHeight) | borderStyled(BorderStyle::EMPTY) |
+    // language as ConnectDialog). A right-aligned footer shows the keys that apply here
+    // (the list steps move the cursor; the key step submits).
+    const char *hint = step_ == STEP_KEY ? "Enter submit  |  Esc exit" : "Up/Down move  |  Enter select  |  Esc exit";
+
+    Elements rows;
+    rows.push_back(hbox({text("  " + std::string(title)) | bold | color(pal.accent), filler(),
+                         text(step_no + " ") | color(pal.text_dim)}));
+    rows.push_back(separator() | color(pal.line_dim));
+    rows.push_back(body);
+    rows.push_back(separator() | color(pal.line_dim));
+    rows.push_back(hbox({filler(), text(hint) | color(pal.text_dim)}));
+    return vbox(std::move(rows)) | size(WIDTH, EQUAL, kDialogWidth) | borderStyled(BorderStyle::EMPTY) |
            bgcolor(pal.dialog_bg);
 }
 
