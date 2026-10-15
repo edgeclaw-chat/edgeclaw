@@ -114,6 +114,7 @@ int main(void)
                                 "\"detail\":\"明细：CI 与本地都用 bazelisk；不要再用 make。\"}");
     CHECK(w.calls == 1 && w.error == NULL, "工具成功返回");
     CHECK(w.result && strstr(w.result, "m1") != NULL, "结果里给出新 id");
+    CHECK(w.result && strstr(w.result, ", 20") != NULL, "回显带创建时间（rev, 时间）");
     CHECK(session->memo->entry_count == 1, "条目落了一条");
     CHECK(session->memo->event_count == 1, "事件落了一条");
     CHECK(session->memo->events[0].kind == EDC_MEMO_CREATED, "事件是 CREATED");
@@ -169,6 +170,8 @@ int main(void)
     CHECK(g1.error == NULL, "批量读成功");
     CHECK(g1.result && strstr(g1.result, "[m1] rev ") != NULL && strstr(g1.result, "不要再用 make") != NULL,
           "m1 明细 + rev 回来");
+    CHECK(g1.result && strstr(g1.result, "created: ") != NULL && strstr(g1.result, "updated: ") != NULL,
+          "明细带 created/updated 时间");
     CHECK(g1.result && strstr(g1.result, "[m99] (no such entry") != NULL, "m99 给说明");
     free_capture(&g1);
     struct capture g0 = run_tool(tb, task, "memory_get", "{}");

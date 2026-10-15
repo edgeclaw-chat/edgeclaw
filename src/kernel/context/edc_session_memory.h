@@ -49,6 +49,10 @@ enum edc_memo_event_kind
 struct edc_memo_event
 {
     uint64_t seq;
+    /* When this change happened (epoch seconds; 0 = unknown, an old archive). The
+     * notice renders it so a reader can tell "how fresh" a change is. seq stays the
+     * authoritative order -- this clock can drift. */
+    uint64_t ts;
     char *entry_id;
     enum edc_memo_event_kind kind;
     char *title;
@@ -65,6 +69,12 @@ struct edc_memo_entry
     char *proposed_by; /* who proposed it (foreground memory_write's task id; NULL for the curator) */
     uint64_t created_seq;
     uint64_t updated_seq;
+    /* Wall-clock (epoch seconds; 0 = unknown, an old archive). `updated_seq` is still
+     * the authoritative "rev" for optimistic concurrency and ordering; these are the
+     * human-facing timestamps shown in the index / detail / notices so a reader can
+     * judge how fresh the entry is. */
+    uint64_t created_at;
+    uint64_t updated_at;
     bool superseded;
 };
 

@@ -3,6 +3,7 @@
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_context.h"
+#include "edc_datetime_utils.h"
 #include "edc_init_env.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
@@ -477,7 +478,13 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus,
         cJSON *role = cJSON_GetObjectItem(m, "role");
         cJSON *content = cJSON_GetObjectItem(m, "content");
         if (role && content && cJSON_IsString(role) && cJSON_IsString(content))
-            prompt = sdscatprintf(prompt, "%s: %s\n", role->valuestring, content->valuestring);
+        {
+            /* Carry each message's wall-clock time, so the summary the fold writes has a
+             * temporal anchor (and the curator/extractor can judge staleness later). */
+            const char *ts = cJSON_GetStringValue(cJSON_GetObjectItem(m, "ts"));
+            prompt = sdscatprintf(prompt, "%s  %s: %s\n", (ts && ts[0]) ? ts : "?", role->valuestring,
+                                  content->valuestring);
+        }
     }
 
     /* Only members ENTIRELY in the corpus carry output (a half-folded member keeps its tail as detail). */
@@ -637,6 +644,40 @@ static void fold_turn_prefix(struct edc_turn *turn, uint32_t prefix, size_t *tur
         turn->memo_prefix = turn->folded_prefix;
 }
 
+/* The newest wall-clock among the messages the group memory now covers: for every
+ * member's committed turns (and a live member's active turn), the leading
+ * [0, folded_prefix) messages. This is the "up to when does the memory know" bound a
+ * curator uses to judge whether new material is newer or older than the memory. Keeps
+ * the previous value when nothing parseable is found (e.g. messages added without ts). */
+static uint64_t group_memory_covers_to(struct edc_task_group *group)
+{
+    uint64_t best = group->memory_covers_to;
+    size_t n = 0;
+    struct edc_task **members = edc_task_group_content_order(group, &n);
+    for (size_t i = 0; i < n; i++)
+    {
+        struct edc_task *t = members[i];
+        for (size_t qi = t->turns.head; qi < t->turns.tail; qi++)
+        {
+            struct edc_turn *turn = t->turns.data[qi];
+            size_t len = edc_queue_length(&turn->messages);
+            size_t upto = (turn->folded_prefix > 0) ? (size_t)turn->folded_prefix : 0;
+            if (upto > len)
+                upto = len;
+            for (size_t mi = 0; mi < upto; mi++)
+            {
+                cJSON *m = turn->messages.data[turn->messages.head + mi];
+                const char *ts = cJSON_GetStringValue(cJSON_GetObjectItem(m, "ts"));
+                time_t v;
+                if (ts && edc_datetime_parse(ts, &v) && (uint64_t)v > best)
+                    best = (uint64_t)v;
+            }
+        }
+    }
+    free(members);
+    return best;
+}
+
 bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
 {
     struct edc_task_group *group = task ? task->sink_group : NULL;
@@ -653,6 +694,13 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
     if (group->memory)
         sdsfree(group->memory);
     group->memory = sdsnew(content);
+    /* Wall-clock about the memory: first write + last write. The covered-to bound is
+     * refreshed only where the cut really advanced (below), so a landing that wrote the
+     * memory without folding anything does not claim new coverage. */
+    uint64_t now = (uint64_t)edc_datetime_now();
+    if (group->memory_created_at == 0)
+        group->memory_created_at = now;
+    group->memory_updated_at = now;
 
     /* Apply the cut: members BEFORE it in content order fold whole (including an
      * in-flight member entirely in the corpus -- its active turn folds whole too and the
@@ -744,6 +792,8 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
     /* The prefix these members' requests counted is gone: every anchor older than
      * this is stale from here on (see the fold_epoch field). */
     group->fold_epoch++;
+    /* The memory now covers up to the newest message it folded. */
+    group->memory_covers_to = group_memory_covers_to(group);
     /* (c) Successful landing => clear the consecutive-failure count. */
     edc_group_fold_note_progress(group);
     log_info("L1 fold done: group %s folded %zu turns (%zu msgs), cut at task %s turn %u msg %u", group->group_id,

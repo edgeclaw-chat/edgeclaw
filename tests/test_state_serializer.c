@@ -1956,7 +1956,7 @@ static void test_fold_watermark(void)
 
 static void test_schema_version_is_current(void)
 {
-    TEST("serialize writes version 8; the previous version is still accepted, older fails loudly");
+    TEST("serialize writes version 9; older versions are still accepted, older/newer fails loudly");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-ver", "Ver");
@@ -1967,13 +1967,18 @@ static void test_schema_version_is_current(void)
     task->is_group_leader = 1;
     edc_task_mark_ready(task);
     edc_task_mark_suspended(task);
-    edc_session_add_group(session, edc_task_group_new(task));
+    struct edc_task_group *grp = edc_task_group_new(task);
+    grp->memory = sdsnew("# remembered");
+    grp->memory_created_at = 111;
+    grp->memory_updated_at = 222;
+    grp->memory_covers_to = 333;
+    edc_session_add_group(session, grp);
 
     cJSON *json = edc_state_serialize(session, sched);
     CHECK(json != NULL, "serialize returns non-NULL");
     /* 本文件构造 JSON 时用的版本号是手写镜像 (见各 cJSON_Parse 字面量): 一律等于
      * 当前 schema, 升级时这里会先红。 */
-    CHECK(edc_state_schema_version() == 8, "schema version bumped -> update this file's literals");
+    CHECK(edc_state_schema_version() == 9, "schema version bumped -> update this file's literals");
     CHECK(edc_state_json_version(json) == edc_state_schema_version(), "on-disk version is the current schema");
 
     struct edc_session *s2 = edc_session_new(cfg, "sess-ver", "Ver");
@@ -1981,6 +1986,11 @@ static void test_schema_version_is_current(void)
     install_resolver(sched2, s2);
     CHECK(edc_state_deserialize(json, s2, sched2), "the current schema round-trips");
     CHECK(edc_session_find_task(s2, "1") != NULL, "task restored");
+    {
+        struct edc_task_group *rg = edc_session_find_group(s2, "1");
+        CHECK(rg && rg->memory_created_at == 111 && rg->memory_updated_at == 222 && rg->memory_covers_to == 333,
+              "group memory times round-trip (v9)");
+    }
     edc_session_free(s2);
     edc_scheduler_free(sched2);
 
@@ -2006,7 +2016,7 @@ static void test_schema_version_is_current(void)
     edc_scheduler_free(sched3);
 
     /* A version NEWER than this binary also refuses (do not guess a future shape). */
-    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(9));
+    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(10));
     struct edc_session *s9 = edc_session_new(cfg, "sess-ver", "Ver");
     struct edc_scheduler *sched9 = edc_scheduler_new(cfg);
     install_resolver(sched9, s9);

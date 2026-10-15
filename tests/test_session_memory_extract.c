@@ -218,6 +218,7 @@ static void test_material_excludes_group_memory(void)
 
     struct edc_task_group *group = make_finished_user_group(session, "g1", "hello world", OLD_TS, 1);
     group->memory = sdsnew("# Old group memory\n- SECRET_REMEMBERED_FACT");
+    group->memory_updated_at = (uint64_t)time(NULL);
 
     /* One existing entry, so the index has a row to carry. */
     sds id = edc_session_memory_create_entry(session->memo, "Existing entry", "a summary", "detail", NULL);
@@ -238,6 +239,12 @@ static void test_material_excludes_group_memory(void)
     CHECK(material != NULL, "the prompt is attached");
     CHECK(material && strstr(material, "## Group history to extract from") != NULL, "material header present");
     CHECK(material && strstr(material, "hello world") != NULL, "the raw history is in the material");
+    CHECK(material && strstr(material, "2000-01-01 00:00:00  user: hello world") != NULL,
+          "each material line carries the message timestamp");
+    CHECK(material && strstr(material, "memory last updated") != NULL,
+          "the group memory's last-updated time is stated (its text is not included)");
+    CHECK(material && strstr(material, "memory last updated unknown") == NULL,
+          "the group memory time is a real time, not unknown");
     CHECK(material && strstr(material, "## Existing session entries") != NULL, "the index section is present");
     CHECK(material && strstr(material, "Existing entry") != NULL, "an existing entry row is in the index");
     CHECK(material && strstr(material, "SECRET_REMEMBERED_FACT") == NULL,
@@ -351,6 +358,14 @@ static void test_fold_landing_clamps_memo_prefix(void)
 
     struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
     CHECK(fold != NULL, "a fold started");
+    /* The fold corpus is the task's own input; capture it before the reply commits the turn. */
+    const char *fold_prompt = NULL;
+    if (fold->active_turn && edc_queue_length(&fold->active_turn->messages) > 0)
+    {
+        cJSON *m = fold->active_turn->messages.data[fold->active_turn->messages.head];
+        fold_prompt = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+    }
+    CHECK(fold_prompt && strstr(fold_prompt, OLD_TS) != NULL, "the fold corpus carries each message's timestamp");
     edc_scheduler_schedule(sched);
     CHECK(g_send_llm_calls == 1, "the fold request was dispatched");
 
@@ -365,6 +380,8 @@ static void test_fold_landing_clamps_memo_prefix(void)
     CHECK(group->memory != NULL, "the fold landed a memory");
     CHECK(turn->folded_prefix > 0, "the fold advanced the folded watermark");
     CHECK(turn->memo_prefix >= turn->folded_prefix, "memo_prefix was clamped up to folded_prefix (folded => on L2)");
+    CHECK(group->memory_created_at > 0 && group->memory_updated_at > 0, "the landing stamps the group memory times");
+    CHECK(group->memory_covers_to > 0, "covers_to is the newest folded message's time");
 
     edc_session_free(session);
     edc_scheduler_free(sched);
@@ -493,6 +510,20 @@ static void test_serialization_tristate_and_v7(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
+ *  Test 7: the recency rule is in every memory prompt
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_prompts_have_recency_rule(void)
+{
+    TEST("prompts: the recency rule is in curate / extract / compact");
+
+    CHECK(strstr(edc_session_memory_system_prompt(), "TIME IS A HINT") != NULL, "curator prompt carries the rule");
+    CHECK(strstr(edc_session_memory_extract_prompt(), "TIME IS A HINT") != NULL, "extract prompt carries the rule");
+    CHECK(strstr(edc_session_memory_compact_prompt(), "updated LATER") != NULL,
+          "compact prompt prefers the newer on merge");
+}
+
+/* ══════════════════════════════════════════════════════════════
  *  main
  *  ══════════════════════════════════════════════════════════════ */
 
@@ -504,6 +535,7 @@ int main(void)
     test_fold_landing_clamps_memo_prefix();
     test_failure_backoff_and_bad_cut();
     test_serialization_tristate_and_v7();
+    test_prompts_have_recency_rule();
 
     log_info("  ====== %d passed, %d failed ======", test_passed, test_failed);
     return test_failed ? 1 : 0;

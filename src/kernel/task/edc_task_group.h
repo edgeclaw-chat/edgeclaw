@@ -4,6 +4,7 @@
 #include "edc_task.h"
 #include "sds.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 struct edc_session;
 
@@ -42,6 +43,16 @@ struct edc_task_group
      * turn (edc_turn.folded_prefix) — the history below only ever holds what is
      * still sent, so no group-level watermark is needed. */
     sds memory;
+
+    /* Wall-clock about `memory` (epoch seconds; 0 = unknown / never written).
+     * `memory_created_at` = first write, `memory_updated_at` = the last write (i.e.
+     * "how fresh is the group memory"), `memory_covers_to` = the newest message
+     * timestamp among the messages the memory now covers ("up to when does it know").
+     * The last one is what a curator needs to judge whether new material is newer or
+     * older than the memory. Set by the fold landing; persisted. */
+    uint64_t memory_created_at;
+    uint64_t memory_updated_at;
+    uint64_t memory_covers_to;
 
     /* Bumped every time a fold lands. A member's context anchor (the last reply's
      * real usage) only counts the prefix that was sent *then*; once a fold has

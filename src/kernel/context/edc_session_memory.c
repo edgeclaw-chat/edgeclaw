@@ -1,6 +1,7 @@
 #include "edc_session_memory.h"
 
 #include "edc_config.h"
+#include "edc_datetime_utils.h"
 #include "edc_group_fold.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
@@ -122,7 +123,7 @@ static void memo_trim_if_due(struct edc_session_memory *m);
 /* ── Event table ───────────────────────────────────────────── */
 
 /* Append an event with a PREDETERMINED seq (an assembly internal: the writer supplies seq, load uses the on-disk seq). */
-static struct edc_memo_event *append_event(struct edc_session_memory *m, uint64_t seq, const char *entry_id,
+static struct edc_memo_event *append_event(struct edc_session_memory *m, uint64_t seq, uint64_t ts, const char *entry_id,
                                            enum edc_memo_event_kind kind, const char *title, const char *summary)
 {
     if (!m || !entry_id || seq == 0)
@@ -135,6 +136,7 @@ static struct edc_memo_event *append_event(struct edc_session_memory *m, uint64_
     struct edc_memo_event *e = &m->events[m->event_count];
     memset(e, 0, sizeof(*e));
     e->seq = seq;
+    e->ts = ts;
     e->entry_id = dup_or_null(entry_id);
     e->kind = kind;
     e->title = dup_or_null(title);
@@ -149,7 +151,7 @@ uint64_t edc_session_memory_add_event(struct edc_session_memory *m, const char *
     if (!m)
         return 0;
     uint64_t seq = m->next_seq + 1;
-    if (!append_event(m, seq, entry_id, kind, title, summary))
+    if (!append_event(m, seq, (uint64_t)edc_datetime_now(), entry_id, kind, title, summary))
         return 0;
     m->next_seq = seq;
     return seq;
@@ -217,6 +219,12 @@ static sds index_line_for(const struct edc_memo_entry *e)
                             (e->superseded ? " (retired)" : ""), e->title ? e->title : "(untitled)");
     if (e->summary && e->summary[0])
         line = sdscatprintf(line, " — %s", e->summary);
+    /* When it was last touched (falls back to created for an untouched entry), so a
+     * reader can tell how fresh the entry is. Appended at the END so line-shaped
+     * consumers (and tests) that match "[id] title" are unaffected. */
+    sds when = edc_datetime_format_min((time_t)(e->updated_at ? e->updated_at : e->created_at));
+    line = sdscatprintf(line, " (%s)", when);
+    sdsfree(when);
     return line;
 }
 
@@ -406,7 +414,17 @@ sds edc_session_memory_get_detail(const struct edc_session_memory *m, const char
     {
         const struct edc_memo_entry *e = &m->entries[i];
         if (e->id && strcmp(e->id, id) == 0)
-            return (e->detail && sdslen(e->detail) > 0) ? sdsdup(e->detail) : index_line_for(e);
+        {
+            sds body = (e->detail && sdslen(e->detail) > 0) ? sdsdup(e->detail) : index_line_for(e);
+            /* Both timestamps up front: the reader judges freshness before the detail. */
+            sds created = edc_datetime_format((time_t)e->created_at);
+            sds updated = edc_datetime_format((time_t)e->updated_at);
+            sds out = sdscatprintf(sdsempty(), "created: %s\nupdated: %s\n%s", created, updated, body);
+            sdsfree(body);
+            sdsfree(created);
+            sdsfree(updated);
+            return out;
+        }
     }
     return NULL;
 }
@@ -427,6 +445,7 @@ sds edc_session_memory_create_entry(struct edc_session_memory *m, const char *ti
     if (proposed_by)
         edc_session_memory_note_proposer(e, proposed_by);
     /* created_seq/updated_seq are filled by the caller from the event seq it appended (memory_write / L2 landing). */
+    e->created_at = e->updated_at = (uint64_t)edc_datetime_now();
     memo_trim_if_due(m);
     return id;
 }
@@ -461,6 +480,8 @@ static const char kCompactSystemPrompt[] =
     "- Never lose durable knowledge to save space. A decision, a constraint, a gotcha or an "
     "external fact the next session would need must survive somewhere.\n"
     "- Keep what cannot be recovered otherwise: paths, commands, error text, numbers.\n"
+    "- When two entries cover the same thing, keep the content of the one updated LATER "
+    "(the dump shows each entry's `updated`); if you cannot tell, keep both and note it.\n"
     "- Nothing about this round belongs in the memory: do not write an entry saying you "
     "compacted it.\n"
     "- Do not invent facts. If two entries disagree and you cannot tell which is right, keep "
@@ -493,8 +514,10 @@ static sds build_compact_prompt(struct edc_session *session)
     for (size_t i = 0; i < m->entry_count; i++)
     {
         const struct edc_memo_entry *e = &m->entries[i];
-        out = sdscatprintf(out, "\n- id: %s  rev: %llu%s\n", e->id, (unsigned long long)e->updated_seq,
-                           e->superseded ? "  (retired)" : "");
+        sds when = edc_datetime_format_min((time_t)(e->updated_at ? e->updated_at : e->created_at));
+        out = sdscatprintf(out, "\n- id: %s  rev: %llu  updated: %s%s\n", e->id, (unsigned long long)e->updated_seq,
+                           when, e->superseded ? "  (retired)" : "");
+        sdsfree(when);
         out = sdscatprintf(out, "  title: %s\n", e->title ? e->title : "(untitled)");
         if (e->summary && e->summary[0])
             out = sdscatprintf(out, "  summary: %s\n", e->summary);
@@ -627,6 +650,12 @@ static const char kCurateSystemPrompt[] =
     "  exact paths / commands / error text. Never progress logs, todos or transient\n"
     "  conclusions.\n"
     "- Keep entries small: title <= 80 chars, summary <= 240 chars, detail holds the rest.\n"
+    "- TIME IS A HINT, NOT A GATE: every history line carries its timestamp and every entry\n"
+    "  carries when it was last updated. If the material is NEWER than an entry, reconcile it\n"
+    "  (update to the new truth, or retire it); if the material is OLDER than the entry (the\n"
+    "  entry was updated afterwards), treat the entry as already current and do NOT regress it.\n"
+    "  If they conflict and time cannot settle it, keep both and say so. Timestamps can be\n"
+    "  wrong (the host clock may drift); never discard material only because of a timestamp.\n"
     "- You have ONLY the memory tools. Do not try to read files or run commands.\n"
     "\n"
     "If the material changes nothing, say so and change nothing. When you are done, reply\n"
@@ -645,7 +674,8 @@ const char *edc_session_memory_system_prompt(void)
  * That makes the material exactly "what the fold really wrote".
  * all_groups = true is manual curation (/session memo compact): it has no such edge,
  * so it gathers EVERY group's memory into the prompt itself. */
-static sds build_curate_prompt(struct edc_session *session, bool all_groups, const char *focus)
+static sds build_curate_prompt(struct edc_session *session, struct edc_task_group *group, bool all_groups,
+                               const char *focus)
 {
     sds out = sdsempty();
     if (all_groups)
@@ -659,7 +689,10 @@ static sds build_curate_prompt(struct edc_session *session, bool all_groups, con
                 if (!g->memory || sdslen(g->memory) == 0)
                     continue;
                 any = true;
-                out = sdscatprintf(out, "\n### group %s\n%s", g->group_id ? g->group_id : "?", g->memory);
+                sds when = edc_datetime_format_min((time_t)g->memory_updated_at);
+                out = sdscatprintf(out, "\n### group %s (memory last updated %s)\n%s", g->group_id ? g->group_id : "?",
+                                   when, g->memory);
+                sdsfree(when);
             }
         }
         if (!any)
@@ -667,8 +700,19 @@ static sds build_curate_prompt(struct edc_session *session, bool all_groups, con
     }
     else
     {
-        out = sdscat(out, "## Group memory to curate\n"
-                          "It is **appended at the end of this message** (the fold task's output).\n"
+        out = sdscat(out, "## Group memory to curate\n");
+        if (group)
+        {
+            /* The material's own recency: the curator needs it to tell whether the
+             * existing entries are newer or older than this group memory. */
+            sds when = edc_datetime_format_min((time_t)group->memory_updated_at);
+            sds covers = edc_datetime_format_min((time_t)group->memory_covers_to);
+            out = sdscatprintf(out, "Group %s — memory last updated %s (covers up to %s).\n",
+                               group->group_id ? group->group_id : "?", when, covers);
+            sdsfree(when);
+            sdsfree(covers);
+        }
+        out = sdscat(out, "It is **appended at the end of this message** (the fold task's output).\n"
                           "It is the NEWER truth: reconcile the existing entries against it, then fold in\n"
                           "what is new (use the memory tools; search first).\n");
     }
@@ -701,7 +745,7 @@ struct edc_task *edc_session_memory_start(struct edc_scheduler *sched, struct ed
     if (!sched || !session || !session->memo)
         return NULL;
 
-    sds prompt = build_curate_prompt(session, /*all_groups=*/false, NULL);
+    sds prompt = build_curate_prompt(session, folded_group, /*all_groups=*/false, NULL);
     struct edc_task *task =
         edc_scheduler_spawn_system_task_as(sched, session, "curate session memory", EDC_SINK_SESSION_MEMORY);
     if (!task)
@@ -757,7 +801,7 @@ struct edc_task *edc_session_memory_start_manual(struct edc_scheduler *sched, st
         return NULL;
     }
 
-    sds prompt = build_curate_prompt(session, /*all_groups=*/true, focus);
+    sds prompt = build_curate_prompt(session, NULL, /*all_groups=*/true, focus);
     struct edc_task *task =
         edc_scheduler_spawn_system_task_as(sched, session, "curate session memory", EDC_SINK_SESSION_MEMORY);
     if (!task)
@@ -832,6 +876,12 @@ static const char kExtractSystemPrompt[] =
     "  exact paths / commands / error text. Never progress logs, todos or transient\n"
     "  conclusions.\n"
     "- Keep entries small: title <= 80 chars, summary <= 240 chars, detail holds the rest.\n"
+    "- TIME IS A HINT, NOT A GATE: every history line carries its timestamp and every entry\n"
+    "  carries when it was last updated. If the material is NEWER than an entry, reconcile it\n"
+    "  (update to the new truth, or retire it); if the material is OLDER than the entry (the\n"
+    "  entry was updated afterwards), treat the entry as already current and do NOT regress it.\n"
+    "  If they conflict and time cannot settle it, keep both and say so. Timestamps can be\n"
+    "  wrong (the host clock may drift); never discard material only because of a timestamp.\n"
     "- You have ONLY the memory tools. Do not try to read files or run commands.\n"
     "\n"
     "If the material changes nothing, say so and change nothing. When you are done, reply\n"
@@ -974,6 +1024,17 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
                            "Group %s. Everything below is raw, un-folded conversation history (tasks in\n"
                            "content order) that has NOT reached the session memory yet.\n\n",
                            group->group_id ? group->group_id : "?");
+    if (group->memory && sdslen(group->memory) > 0)
+    {
+        /* Neither the group memory's text nor its entries are here, but its recency is:
+         * it tells the curator whether the existing entries already reflect it. */
+        sds when = edc_datetime_format_min((time_t)group->memory_updated_at);
+        out = sdscatprintf(out,
+                           "This group has a memory last updated %s (not included here); the entries below are the\n"
+                           "session's known state.\n\n",
+                           when);
+        sdsfree(when);
+    }
     struct edc_task *cur = NULL;
     for (size_t i = 0; i < cut_at; i++)
     {
@@ -987,7 +1048,13 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
         cJSON *role = cJSON_GetObjectItem(m, "role");
         cJSON *content = cJSON_GetObjectItem(m, "content");
         if (role && content && cJSON_IsString(role) && cJSON_IsString(content))
-            out = sdscatprintf(out, "%s: %s\n", role->valuestring, content->valuestring);
+        {
+            /* Each line carries its wall-clock time; a message added by a path that
+             * bypassed edc_turn_add_message has none -> "?". */
+            const char *ts = cJSON_GetStringValue(cJSON_GetObjectItem(m, "ts"));
+            out = sdscatprintf(out, "%s  %s: %s\n", (ts && ts[0]) ? ts : "?", role->valuestring,
+                               content->valuestring);
+        }
     }
 
     out = sdscat(out, "\n## Existing session entries\n");
@@ -1415,6 +1482,7 @@ enum edc_memo_write_result edc_session_memory_update(struct edc_session_memory *
     }
     uint64_t seq = edc_session_memory_add_event(m, id, EDC_MEMO_UPDATED, e->title, e->summary);
     e->updated_seq = seq;
+    e->updated_at = (uint64_t)edc_datetime_now();
     if (out_rev)
         *out_rev = seq;
     memo_trim_if_due(m);
@@ -1439,6 +1507,7 @@ bool edc_session_memory_supersede(struct edc_session_memory *m, const char *cons
         e->superseded = true;
         uint64_t seq = edc_session_memory_add_event(m, ids[i], EDC_MEMO_SUPERSEDED, e->title, e->summary);
         e->updated_seq = seq;
+        e->updated_at = (uint64_t)edc_datetime_now();
     }
     memo_trim_if_due(m);
     return true;
@@ -1575,11 +1644,13 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
         }
         if (sdslen(body))
             body = sdscat(body, "\n");
+        sds when = edc_datetime_format_min((time_t)ev->ts);
         if (ev->kind == EDC_MEMO_DELETED)
         {
             /* A deletion is a CHANGE, not knowledge: announce it without the content
              * (the entry has left every view). */
-            body = sdscatprintf(body, "- [%s] deleted", ev->entry_id);
+            body = sdscatprintf(body, "- [%s] deleted (%s)", ev->entry_id, when);
+            sdsfree(when);
             continue;
         }
         body = sdscatprintf(body, "- [%s] %s: %s", ev->entry_id, edc_memo_event_kind_name(ev->kind),
@@ -1587,6 +1658,9 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
         const char *sum = (en && en->summary && en->summary[0]) ? en->summary : ev->summary;
         if (sum && sum[0])
             body = sdscatprintf(body, " — %s", sum);
+        /* When the change happened, so a reader can weigh recency against what it knows. */
+        body = sdscatprintf(body, " (%s)", when);
+        sdsfree(when);
     }
 
     sds out = sdscatprintf(sdsempty(), "## Session Memory Updates  (共 %zu 条)\n", m->entry_count);
@@ -1659,6 +1733,7 @@ cJSON *edc_session_memory_to_json(const struct edc_session_memory *m)
         const struct edc_memo_event *e = &m->events[i];
         cJSON *o = cJSON_CreateObject();
         cJSON_AddNumberToObject(o, "seq", (double)e->seq);
+        cJSON_AddNumberToObject(o, "ts", (double)e->ts);
         json_add_str(o, "entry_id", e->entry_id);
         cJSON_AddStringToObject(o, "kind", edc_memo_event_kind_name(e->kind));
         json_add_str(o, "title", e->title);
@@ -1680,6 +1755,8 @@ cJSON *edc_session_memory_to_json(const struct edc_session_memory *m)
         json_add_str(o, "proposed_by", e->proposed_by);
         cJSON_AddNumberToObject(o, "created_seq", (double)e->created_seq);
         cJSON_AddNumberToObject(o, "updated_seq", (double)e->updated_seq);
+        cJSON_AddNumberToObject(o, "created_at", (double)e->created_at);
+        cJSON_AddNumberToObject(o, "updated_at", (double)e->updated_at);
         cJSON_AddBoolToObject(o, "superseded", e->superseded);
         cJSON_AddItemToArray(entries, o);
     }
@@ -1719,8 +1796,8 @@ struct edc_session_memory *edc_session_memory_from_json(const cJSON *json)
         if (!eid)
             continue;
         uint64_t seq = (uint64_t)json_num(ev, "seq");
-        if (!append_event(m, seq, eid, edc_memo_event_classify_kind(json_str(ev, "kind")), json_str(ev, "title"),
-                          json_str(ev, "summary")))
+        if (!append_event(m, seq, (uint64_t)json_num(ev, "ts"), eid, edc_memo_event_classify_kind(json_str(ev, "kind")),
+                          json_str(ev, "title"), json_str(ev, "summary")))
             continue;
         if (seq > m->next_seq)
             m->next_seq = seq;
@@ -1753,6 +1830,8 @@ struct edc_session_memory *edc_session_memory_from_json(const cJSON *json)
             m->next_entry_id = (uint64_t)entry_id_num(id);
         e->created_seq = (uint64_t)json_num(en, "created_seq");
         e->updated_seq = (uint64_t)json_num(en, "updated_seq");
+        e->created_at = (uint64_t)json_num(en, "created_at");
+        e->updated_at = (uint64_t)json_num(en, "updated_at");
         const cJSON *sup = cJSON_GetObjectItemCaseSensitive(en, "superseded");
         e->superseded = cJSON_IsTrue(sup) != 0;
     }

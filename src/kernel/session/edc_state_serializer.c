@@ -14,13 +14,14 @@
 #include <string.h>
 
 /* ── On-disk schema version ─────────────────────────────────────────────
- * The loader accepts any version in [MIN_SUPPORTED, CURRENT]. MIN is one behind
- * CURRENT on purpose: a version bump must not strand the archives written by the
- * immediately preceding binary, so the load path reads them with defaults for the
- * fields they lack (v7's turn has no `memo_prefix`, its task has `memo_compact`
- * instead of `memo_kind`). Anything older must run its one-shot migration first
+ * The loader accepts any version in [MIN_SUPPORTED, CURRENT]. Older-but-supported
+ * archives are read with defaults for the fields they lack, so a bump does not
+ * strand them:
+ *   - v7: no `turn->memo_prefix`, and `task->memo_compact` (bool) instead of `memo_kind`;
+ *   - v8: no wall-clock on entries / events / group memory (reads back 0 = unknown).
+ * Anything older must run its one-shot migration first
  * (tools/migrate_session_v*.py, see docs/session-model-v3.md §10). */
-#define EDC_STATE_SCHEMA_VERSION 8
+#define EDC_STATE_SCHEMA_VERSION 9
 #define EDC_STATE_SCHEMA_MIN_SUPPORTED 7
 
 /* ══════════════════════════════════════════════════════════════
@@ -280,6 +281,10 @@ static cJSON *group_to_json(struct edc_task_group *group)
     if (group->memory)
         cJSON_AddStringToObject(gj, "memory", group->memory);
     cJSON_AddNumberToObject(gj, "fold_epoch", (int)group->fold_epoch);
+    /* Wall-clock about `memory` (v9). Optional keys: an old archive reads back 0 = unknown. */
+    cJSON_AddNumberToObject(gj, "memory_created_at", (double)group->memory_created_at);
+    cJSON_AddNumberToObject(gj, "memory_updated_at", (double)group->memory_updated_at);
+    cJSON_AddNumberToObject(gj, "memory_covers_to", (double)group->memory_covers_to);
 
     /* member task ids */
     cJSON *members = cJSON_CreateArray();
@@ -891,6 +896,16 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
             cJSON *fe = cJSON_GetObjectItem(gj, "fold_epoch");
             if (fe && cJSON_IsNumber(fe))
                 group->fold_epoch = (uint32_t)cJSON_GetNumberValue(fe);
+        }
+        {
+            /* v9: wall-clock about `memory`. Missing (old file) => 0 = unknown. */
+            cJSON *v;
+            if ((v = cJSON_GetObjectItem(gj, "memory_created_at")) && cJSON_IsNumber(v))
+                group->memory_created_at = (uint64_t)cJSON_GetNumberValue(v);
+            if ((v = cJSON_GetObjectItem(gj, "memory_updated_at")) && cJSON_IsNumber(v))
+                group->memory_updated_at = (uint64_t)cJSON_GetNumberValue(v);
+            if ((v = cJSON_GetObjectItem(gj, "memory_covers_to")) && cJSON_IsNumber(v))
+                group->memory_covers_to = (uint64_t)cJSON_GetNumberValue(v);
         }
 
         cJSON *members = cJSON_GetObjectItem(gj, "member_task_ids");

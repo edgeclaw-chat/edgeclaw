@@ -1,6 +1,7 @@
 #include "edc_tools_memory.h"
 
 #include "edc_compat.h"
+#include "edc_datetime_utils.h"
 #include "edc_error.h"
 #include "edc_param_types.h"
 #include "edc_session.h"
@@ -339,8 +340,10 @@ static void memory_write_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool 
             e->sources = strdup(src);
     }
 
-    sds out = sdscatprintf(sdsempty(), "Stored as %s (rev %llu). Other tasks see it on their next request.", id,
-                           (unsigned long long)seq);
+    sds when = edc_datetime_format_min((time_t)(e ? e->created_at : 0));
+    sds out = sdscatprintf(sdsempty(), "Stored as %s (rev %llu, %s). Other tasks see it on their next request.", id,
+                           (unsigned long long)seq, when);
+    sdsfree(when);
     if (related)
         out = sdscatprintf(out,
                            "\n\nNote: existing entries look related:\n%s\n"
@@ -471,8 +474,11 @@ static void memory_update_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool
         edc_session_memory_update(m, ids[i], titles[i], summaries[i], details[i], revs[i], &now);
         list = sdscatprintf(list, "%s%s", i ? ", " : "", ids[i]);
     }
-    sds out = sdscatprintf(sdsempty(), "Updated %d entr%s: %s. Other tasks see it on their next request.", n,
-                           n == 1 ? "y" : "ies", list);
+    struct edc_memo_entry *e0 = n > 0 ? edc_session_memory_entry(m, ids[0]) : NULL;
+    sds when = edc_datetime_format_min((time_t)(e0 ? e0->updated_at : 0));
+    sds out = sdscatprintf(sdsempty(), "Updated %d entr%s: %s (%s). Other tasks see it on their next request.", n,
+                           n == 1 ? "y" : "ies", list, when);
+    sdsfree(when);
     sdsfree(list);
     free(ids);
     free(titles);
