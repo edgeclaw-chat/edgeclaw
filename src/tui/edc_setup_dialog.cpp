@@ -14,8 +14,11 @@ namespace edc::ui
 
 namespace
 {
-/* The steps render a scrolling list; show this many rows at once. */
+/* The list steps always render exactly this many rows (padded), and the dialog has a
+ * FIXED size, so typing changes the rows' contents but never the window's size/position. */
 constexpr int kListRows = 12;
+constexpr int kDialogWidth = 76;
+constexpr int kDialogHeight = 22;
 
 /* Field look: the palette's own foreground, placeholder dimmed (same as ConnectDialog:
  * ftxui's default `inverted` fill hides the terminal caret). */
@@ -38,14 +41,14 @@ SetupDialog::SetupDialog(port::IAppFacade *facade) : facade_(facade)
 {
     ::ftxui::InputOption pfilter = field_option();
     pfilter.on_change = [this] { ApplyProviderFilter(); };
-    provider_filter_input_ = ::ftxui::Input(&provider_filter_, "type to filter", pfilter);
+    provider_filter_input_ = ::ftxui::Input(&provider_filter_, "Search providers...", pfilter);
 
     url_input_ = ::ftxui::Input(&url_, "https://api.example.com/v1", field_option());
     key_input_ = ::ftxui::Input(&key_, "API key", field_option());
 
     ::ftxui::InputOption mfilter = field_option();
     mfilter.on_change = [this] { ApplyModelFilter(); };
-    model_filter_input_ = ::ftxui::Input(&model_filter_, "type to filter", mfilter);
+    model_filter_input_ = ::ftxui::Input(&model_filter_, "Search models...", mfilter);
 }
 
 void SetupDialog::ReloadProviders()
@@ -229,23 +232,35 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
 {
     using namespace ::ftxui;
     const auto &pal = style::palette();
-    if (rows.empty())
-        return text("  (no match)") | color(pal.text_dim);
 
     int n = static_cast<int>(rows.size());
-    int first = sel - max_rows / 2;
-    if (first < 0)
-        first = 0;
-    if (first > n - max_rows)
-        first = std::max(0, n - max_rows);
+    int first = 0;
+    if (n > max_rows)
+    {
+        first = sel - max_rows / 2;
+        if (first < 0)
+            first = 0;
+        if (first > n - max_rows)
+            first = n - max_rows;
+    }
 
+    /* ALWAYS render exactly max_rows lines (pad with blanks) so the dialog never
+     * resizes -- only the rows' content changes while typing. */
     Elements lines;
-    for (int i = first; i < n && i < first + max_rows; i++)
+    int shown = 0;
+    if (n == 0)
+    {
+        lines.push_back(text("  (no match)") | color(pal.text_dim));
+        shown = 1;
+    }
+    for (int i = first; i < n && shown < max_rows; i++, shown++)
     {
         bool cur = (i == sel);
         auto row = text((cur ? "> " : "  ") + rows[i]);
         lines.push_back(cur ? (row | bold | color(pal.accent)) : (row | color(pal.text)));
     }
+    for (; shown < max_rows; shown++)
+        lines.push_back(text(""));
     return vbox(std::move(lines));
 }
 
@@ -258,7 +273,7 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     if (step_ == STEP_PROVIDER)
     {
         body = vbox({
-            hbox({text("Search ") | color(pal.text), provider_filter_input_->Render() | flex}),
+            provider_filter_input_->Render(), /* the search box itself: its placeholder reads as the prompt */
             separator() | color(pal.line_dim),
             ListElement(provider_rows_, provider_sel_, kListRows),
         });
@@ -277,7 +292,7 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     else
     {
         body = vbox({
-            hbox({text("Search ") | color(pal.text), model_filter_input_->Render() | flex}),
+            model_filter_input_->Render(),
             separator() | color(pal.line_dim),
             ListElement(model_rows_, model_sel_, kListRows),
         });
@@ -286,15 +301,19 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     const char *title = step_ == STEP_PROVIDER ? "Choose a provider" : step_ == STEP_KEY ? "API key" : "Choose a model";
     std::string step_no = "Step " + std::to_string(static_cast<int>(step_) + 1) + "/3";
 
+    // The header IS the step's name (not a generic "Setup"); flat and borderless (same
+    // language as ConnectDialog), and FIXED size so the centered window never moves: the
+    // list always renders a constant number of rows and a filler absorbs the slack.
     return vbox({
-               hbox({text(" Setup ") | bold | color(pal.accent), filler(), text(step_no + " ") | color(pal.text_dim)}),
+               hbox({text(title) | bold | color(pal.accent), filler(), text(step_no + " ") | color(pal.text_dim)}),
                separator() | color(pal.line_dim),
-               text(title) | bold | color(pal.accent),
                body,
+               filler(),
                separator() | color(pal.line_dim),
-               text("up/down move · Enter select · Esc cancel") | color(pal.text_dim),
+               text("Up/Down move  |  Enter select  |  Esc cancel") | color(pal.text_dim),
            }) |
-           borderStyled(BorderStyle::ROUNDED) | bgcolor(pal.dialog_bg);
+           size(WIDTH, EQUAL, kDialogWidth) | size(HEIGHT, EQUAL, kDialogHeight) | borderStyled(BorderStyle::EMPTY) |
+           bgcolor(pal.dialog_bg);
 }
 
 } // namespace edc::ui
