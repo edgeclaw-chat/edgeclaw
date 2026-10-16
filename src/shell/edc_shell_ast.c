@@ -227,7 +227,7 @@ static struct edc_task *exec_node(
         sds spawn_err = NULL;
         struct edc_task *task =
             edc_shell_spawn_task(ctx->sm, ctx->sched, ctx->to.type, ctx->session, &opts, prev_task, group,
-                                 node->at_group ? "@" : "task", &out_group, NULL, false, NULL, ctx->dep_type,
+                                 node->at_group ? "+" : "task", &out_group, NULL, false, NULL, ctx->dep_type,
                                  &spawn_err);
         if (spawn_err)
         {

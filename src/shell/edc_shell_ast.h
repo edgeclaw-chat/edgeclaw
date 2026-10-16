@@ -37,7 +37,7 @@ typedef struct ast_node
     struct ast_node *var_refs; /* for AST_VAR_ASSIGN: linked list of AST_DEP / AST_VAR_DEF (via next) */
 
     /* AST_CMD fields */
-    bool at_group; /* @ prefix */
+    bool at_group; /* `+` prefix -- the task goes into a group of its own */
     bool bg;       /* --bg flag */
     sds text;
     sds *dep_ids;
@@ -52,8 +52,9 @@ typedef struct ast_node
 ast_node_t *ast_new(ast_type_t type);
 void ast_free(ast_node_t *node);
 
-/* Parse tokens into AST. is_at: @ prefix on the input. */
-ast_node_t *ast_parse(edc_shell_token_t *tokens, int count, bool is_at);
+/* Parse tokens into AST. is_new_group: the `+` prefix on the input, which puts the
+ * first command of the chain into a group of its own. */
+ast_node_t *ast_parse(edc_shell_token_t *tokens, int count, bool is_new_group);
 
 /* Walk the AST and execute via the app. */
 /* |session| = the session this input belongs to (the caller resolves it from the

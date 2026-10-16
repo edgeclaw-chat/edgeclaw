@@ -100,8 +100,8 @@ Defined in `src/agent/edc_actor.h` (`edc_actor_msg_type_t`):
    callback or a scheduled cron job.
 2. The Channel Actor delivers it to the **Scheduler** as `CHANNEL_RECV`.
 3. The Scheduler attaches the input to a waiting task (or creates one): plain
-   text creates/attaches an LLM task; `/`-prefixed input and `@group`
-   addressing go to the **command handler** (shell module: tokenizer → parser
+   text creates/attaches an LLM task; `/`-prefixed input and the `+` new-group
+   form go to the **command handler** (shell module: tokenizer → parser
    → AST → executor).
 4. For an LLM round, the agent's `send_llm` callback builds the context (group
    memory summary, system prompt, safe-window history with tool-boundary

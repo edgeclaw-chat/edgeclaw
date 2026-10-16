@@ -1204,8 +1204,10 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     /* Record the raw text being handled (cleared on every exit of this function). */
     sched->input_raw = input->content;
 
-    /* Slash commands and @group go to the command handler; anything else creates a task. */
-    const bool is_plain = input->content && input->content[0] != '/' && input->content[0] != '@';
+    /* Slash commands and the `+` new-group form go to the command handler; anything else
+     * creates a task. (`@` is no longer a sigil -- it is the file-reference one, and the
+     * handler answers it before this fallback could ever see it.) */
+    const bool is_plain = input->content && input->content[0] != '/' && input->content[0] != '+';
 
     /* The command handler takes core's inbound input (origin for the raw message). */
     if (sched->handle_command && sched->handle_command(sched, msg->from, input))

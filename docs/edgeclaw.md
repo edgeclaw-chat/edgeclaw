@@ -92,25 +92,37 @@ Shell below); a `!n` or `!!` inside a task description is literal text.
 
 ---
 
-## Quick Task Syntax (`@`)
+## Quick Task Syntax (`+`)
 
-Use `@` to create a task in a **new** group with one line:
+Use `+` to create a task in a **new** group with one line:
 
 ```
-@find performance bugs in src/
++find performance bugs in src/
 ```
 
-To pass options, quote the description — an `@` command with an unquoted description
+To pass options, quote the description — a `+` command with an unquoted description
 carrying an option (`-`, `--bg`, ...) is a syntax error, not a silently-ignored flag:
 
 ```
-@"find bugs" --bg                # background
-@"please merge" -d task-1        # wait for task-1 first
-@"check code" -d t1 -d t2        # wait for multiple tasks
++"find bugs" --bg                # background
++"please merge" -d task-1        # wait for task-1 first
++"check code" -d t1 -d t2        # wait for multiple tasks
 ```
 
-The description is everything you type; `@` only says "put it in a new group" (plain
+The description is everything you type; `+` only says "put it in a new group" (plain
 input joins the current group). See Shell-like Job Control below.
+
+A description may legitimately start with `+` or `@`, so both have an escape: the
+backslash is dropped and the rest is ordinary input (it stays in the **current** group).
+
+```
+\+1 issue is still open          # a literal "+"
+\@alice please take a look       # a literal "@"
+```
+
+> `@` **used to be the new-group sigil.** It no longer creates a task: a leading `@` is
+> answered with a migration hint, because silently rereading an old `@desc` as "a task in
+> the current group" would move the task to another group without saying so.
 
 ---
 
@@ -244,8 +256,8 @@ of the parent's conversation context up to the fork point (`desc` is its input).
 | `fork()`          | `/task fork <parent> <desc>`  |
 
 `&` is the background modifier: the task joins the **current** group but does not take
-the foreground. `@input` is a different thing -- it puts the task in a **new** group
-(`@input &` = new group, still background). So `@task "input" --bg` is not the
+the foreground. `+input` is a different thing -- it puts the task in a **new** group
+(`+input &` = new group, still background). So `+task "input" --bg` is not the
 equivalent of `cmd &`.
 
 ---
@@ -407,7 +419,7 @@ A: Found 3 performance issues ...
 $ edgeclaw
 > hello
 Welcome! How can I help?
-> @code "write a Python HTTP server"
+> +code "write a Python HTTP server"
 ```
 
 ### Pipe Chain (output injected at each step)

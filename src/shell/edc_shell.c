@@ -560,8 +560,34 @@ bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sch
     if (!message || !message->content || sdslen(message->content) == 0)
         return false;
 
-    bool is_at = (message->content[0] == '@');
-    const char *body = is_at ? message->content + 1 : message->content;
+    /* `+` is the new-group sigil; `@` used to be it and is now the file-reference one.
+     * `\@` / `\+` are the escapes: the backslash is dropped and the rest is ordinary
+     * input, so a description may start with a literal `@` or `+`. (Same shape as the
+     * `\!` escape in edc_local_shell.c -- the tokenizer does NOT unescape outside quotes,
+     * so this cannot be left to it.) */
+    const char *raw = message->content;
+    const char *body = raw;
+    bool is_new_group = false;
+
+    if (sdslen(message->content) >= 2 && raw[0] == '\\' && (raw[1] == '@' || raw[1] == '+'))
+    {
+        body = raw + 1;
+    }
+    else if (raw[0] == '@')
+    {
+        /* An old `@desc` must NOT be silently reread as "a task in the CURRENT group":
+         * that moves the task to a different conversation without saying so. Reject it
+         * and name both ways out. (When the file-reference sigil lands, this becomes its
+         * fallback: a leading `@` that does not resolve to a file says exactly this.) */
+        edc_commands_reply(to, "`@` no longer opens a new group.\n\n"
+                               "Write `+<description>` for a new group, or `\\@<text>` to send a literal `@`.");
+        return true;
+    }
+    else if (raw[0] == '+')
+    {
+        is_new_group = true;
+        body = raw + 1;
+    }
 
     sds trimmed = sdstrim(sdsnew(body), " \t");
     if (sdslen(trimmed) == 0)
@@ -571,13 +597,13 @@ bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sch
     }
     sdsfree(trimmed);
 
-    /* Options are only recognised after a quoted description, so an unquoted `@`
+    /* Options are only recognised after a quoted description, so an unquoted `+`
      * command carrying one would silently swallow it into the description text.
      * Reject it instead of creating a task nobody meant. */
-    if (is_at && edc_cmd_desc_needs_quotes(body))
+    if (is_new_group && edc_cmd_desc_needs_quotes(body))
     {
-        edc_commands_reply(to, "Syntax error — an `@` command with options needs its description quoted: "
-                               "write `@\"<description>\" --bg`, or drop the options.");
+        edc_commands_reply(to, "Syntax error — a `+` command with options needs its description quoted: "
+                               "write `+\"<description>\" --bg`, or drop the options.");
         return true;
     }
 
@@ -586,7 +612,7 @@ bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sch
     int tok_count = 0;
     edc_shell_token_t *tokens = edc_shell_tokenize(body, &tok_count);
 
-    ast_node_t *root = ast_parse(tokens, tok_count, is_at);
+    ast_node_t *root = ast_parse(tokens, tok_count, is_new_group);
     ast_execute(sm, sched, to, root,
                 edc_session_store_resolve_session(sm, message->session_id), message->task_desc);
     ast_free(root);

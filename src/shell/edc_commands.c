@@ -259,7 +259,10 @@ struct edc_cmd_doc
 
 static const struct edc_cmd_doc k_cmd_docs[] = {
     {"Input", "`desc`", "a task in the current group", NULL},
-    {"Input", "`@desc`", "a new group + task", NULL},
+    {"Input", "`+desc`", "a new group + task",
+     "The description goes into a NEW group -- plain input joins the current one. Options need a quoted "
+     "description (`+\"desc\" --bg`); an unquoted one carrying options is a syntax error. `\\+` sends a "
+     "literal `+`, `\\@` a literal `@`. (`@` used to open a new group; it no longer does.)"},
     {"Input", "`!<cmd>` · `!!` · `\\!<cmd>`",
      "local shell: run it / rerun the last one / send it as input (no model call)", NULL},
     {"Input", "`a | b` · `a ; b` · `cmd &`",

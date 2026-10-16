@@ -12,7 +12,7 @@
 struct edc_cmd_task_opts
 {
     sds desc;     /* task description (the remaining text) */
-    sds input;    /* quoted input -- @ syntax only */
+    sds input;    /* quoted input -- '+' syntax only */
     bool bg;        /* --bg background */
     bool new_group; /* --new-group: open a group of its own instead of joining the one in front */
     bool literal; /* input came from a '''/''' block or single quotes: do not expand {{…}} refs */

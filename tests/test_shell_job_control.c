@@ -1,17 +1,18 @@
 /* Group / foreground semantics of one shell command line.
  *
- * Pins what `&`, `--bg` and the `@` prefix mean for the *group* dimension:
+ * Pins what `&`, `--bg` and the `+` prefix mean for the *group* dimension:
  *   - a plain command opens a group (when the session has none) and takes the
  *     foreground;
  *   - `cmd &` joins the **current** group and stays off the foreground -- it is not
- *     an "@" command, it does not open a group of its own;
- *   - `@cmd "..."` opens a **new** group (and takes the foreground unless background);
+ *     a "+" command, it does not open a group of its own;
+ *   - `+cmd "..."` opens a **new** group (and takes the foreground unless background);
  *   - and a task that declared itself background must not touch the foreground concept
  *     at all -- not even when the session has no foreground group, which is the case
  *     that used to promote it (the AST used to set the foreground pointer there).
  *
- * Plus the syntax rule: an `@` command that carries options must quote its
- * description, otherwise nothing is built at all.
+ * Plus the syntax rule: a `+` command that carries options must quote its
+ * description, otherwise nothing is built at all; and a leading `@` (the sigil `+`
+ * replaced) is rejected outright rather than silently reread as a current-group task.
  *
  * And the serialization rule: joining the group that is in front means queueing behind
  * whatever is still running there (one in front at a time), while a background task in
@@ -108,6 +109,21 @@ static int group_count(struct edc_session *sess)
     return n;
 }
 
+/* Total tasks the session holds, however they queue. A rejected line must not add one --
+ * checking only the dispatcher would confuse "rejected" with "waiting behind a peer". */
+static int task_count(struct edc_session *sess)
+{
+    int n = 0;
+    struct edc_task_group *g;
+    DL_FOREACH(sess->groups, g)
+    {
+        struct edc_task *t;
+        LL_FOREACH2(g->members, t, group_next)
+        n++;
+    }
+    return n;
+}
+
 /* A task that is waiting keeps out of send_llm, so lookup by description is the only
  * way to reach it. */
 static struct edc_task *find_task_by_desc(struct edc_session *sess, const char *desc)
@@ -176,19 +192,19 @@ int main(void)
     CHECK(edc_scheduler_get_foreground(sess) == NULL, "still no foreground group");
     CHECK(edc_session_get_active_task(sess) == NULL, "still no active task");
 
-    /* ── @ + 后台 + 没有前台组: 不得被推上前台 ───────────────────── */
+    /* ── + + 后台 + 没有前台组: 不得被推上前台 ───────────────────── */
 
-    TEST("`@cmd \"...\" &` with no foreground group must not be promoted");
-    struct edc_task *at = drive_command(cfg, sm, sched, "@grpwork \"new group work\" &");
+    TEST("`+cmd \"...\" &` with no foreground group must not be promoted");
+    struct edc_task *at = drive_command(cfg, sm, sched, "+grpwork \"new group work\" &");
     CHECK(at != NULL, "the task ran");
-    CHECK(at && at->group && lonely && at->group != lonely->group, "the @ opened its own group");
+    CHECK(at && at->group && lonely && at->group != lonely->group, "the + opened its own group");
     CHECK(edc_scheduler_get_foreground(sess) == NULL, "a background task did not touch the foreground");
     CHECK(edc_session_get_active_task(sess) == NULL, "nor the active task");
 
     /* 同一件事的另一种拼法: 整行以引号开头时, 后面的 `--bg` 才真的被解析
      * (parser 的规矩: 不以引号开头 => 整段就是输入, 不扫 flag)。 */
-    TEST("`@\"...\" --bg` with no foreground group must not be promoted either");
-    struct edc_task *at_bg = drive_command(cfg, sm, sched, "@\"quoted bg\" --bg");
+    TEST("`+\"...\" --bg` with no foreground group must not be promoted either");
+    struct edc_task *at_bg = drive_command(cfg, sm, sched, "+\"quoted bg\" --bg");
     CHECK(at_bg != NULL, "the task ran");
     CHECK(at_bg && at_bg->group && at->group && at_bg->group != at->group, "its own group again");
     CHECK(edc_scheduler_get_foreground(sess) == NULL, "still no foreground group");
@@ -196,17 +212,17 @@ int main(void)
 
     /* ── desc 没带引号却带选项: 语法错误, 什么都不建 ────────────────── */
 
-    TEST("`@cmd \"...\" --bg` with an unquoted desc is a syntax error");
+    TEST("`+cmd \"...\" --bg` with an unquoted desc is a syntax error");
     int groups_before = group_count(sess);
-    struct edc_task *rejected = drive_command(cfg, sm, sched, "@grpwork \"new group work\" --bg");
+    struct edc_task *rejected = drive_command(cfg, sm, sched, "+grpwork \"new group work\" --bg");
     CHECK(rejected == NULL, "no task was created (nothing was dispatched)");
     CHECK(group_count(sess) == groups_before, "and no group was opened either");
     CHECK(edc_scheduler_get_foreground(sess) == NULL, "the foreground is still untouched");
 
-    /* ── @ 不带 --bg: 这才是占前台的那条路 ──────────────────────── */
+    /* ── + 不带 --bg: 这才是占前台的那条路 ──────────────────────── */
 
-    TEST("`@cmd \"...\"` without --bg is the one that takes the foreground");
-    struct edc_task *at_fg = drive_command(cfg, sm, sched, "@grp plain work");
+    TEST("`+cmd \"...\"` without --bg is the one that takes the foreground");
+    struct edc_task *at_fg = drive_command(cfg, sm, sched, "+grp plain work");
     CHECK(at_fg != NULL, "the task ran");
     CHECK(at_fg && at_fg->group && at_fg->group == edc_scheduler_get_foreground(sess),
           "its new group became the foreground");
@@ -263,6 +279,35 @@ int main(void)
     CHECK(bg2 && bg2->is_background, "它被记成后台任务");
     CHECK(bg2 && bg2->group == at_fg->group, "还是进当前前台组");
     CHECK(edc_session_get_active_task(sess) == waiting, "焦点没有跑到它身上 (后台不上屏)");
+
+    /* ── 旧 `@` 前缀: 拒绝, 什么都不建 ──────────────────────────── */
+
+    TEST("a leading `@` is rejected -- `+` is the new-group sigil now");
+    const int groups_before_at = group_count(sess);
+    const int tasks_before_at = task_count(sess);
+    drive_command(cfg, sm, sched, "@grpwork \"new group work\" &");
+    CHECK(group_count(sess) == groups_before_at, "no group was opened");
+    CHECK(task_count(sess) == tasks_before_at, "and no task was created at all");
+
+    /* ── 转义: 描述可以以字面 `+` / `@` 开头, 落在当前组 ────────── */
+
+    TEST("`\\+` sends a literal `+` as ordinary input (current group)");
+    const int groups_before_plus = group_count(sess);
+    const int tasks_before_plus = task_count(sess);
+    drive_command(cfg, sm, sched, "\\+1 issue is still open");
+    struct edc_task *plus = find_task_by_desc(sess, "+1 issue is still open");
+    CHECK(plus != NULL, "a task carried the literal `+` description");
+    CHECK(task_count(sess) == tasks_before_plus + 1, "exactly one task was created");
+    CHECK(plus && plus->group == edc_scheduler_get_foreground(sess), "it joined the current group");
+    CHECK(group_count(sess) == groups_before_plus, "and did not open a group of its own");
+
+    TEST("`\\@` sends a literal `@` as ordinary input (current group)");
+    const int groups_before_at_lit = group_count(sess);
+    drive_command(cfg, sm, sched, "\\@alice please take a look");
+    struct edc_task *at_lit = find_task_by_desc(sess, "@alice please take a look");
+    CHECK(at_lit != NULL, "a task carried the literal `@` description (the rejection did not fire)");
+    CHECK(at_lit && at_lit->group == edc_scheduler_get_foreground(sess), "it joined the current group");
+    CHECK(group_count(sess) == groups_before_at_lit, "and did not open a group of its own");
 
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

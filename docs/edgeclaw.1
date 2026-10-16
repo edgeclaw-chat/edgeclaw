@@ -51,8 +51,8 @@ SHELL SYNTAX
            > analyze src/ for bugs
        Creates a task in the current foreground group with the text as input.
 
-     @ syntax (new group)
-           > @review the latest commits
+     + syntax (new group)
+           > +review the latest commits
        Same as above but creates a new group for the task.
 
      Pipe (|)
@@ -122,8 +122,8 @@ SHELL SYNTAX
        There is none: ! is only special at the start of a line (the local
        shell above); a !n or !! inside a task description is literal text.
 
-     Options on @ and /task new
-           > @"input text" --bg -d task1 --group dev
+     Options on + and /task new
+           > +"input text" --bg -d task1 --group dev
        Options are recognised only after a quoted description (or when the
        description is the only content); otherwise a token starting with "-"
        is a syntax error, not a silently-ignored flag.
@@ -376,8 +376,8 @@ WORKFLOW EXAMPLES
            > help me understand this code
            Welcome! How can I help?
 
-     @ syntax (new group + task)
-           > @code "write a Python HTTP server"
+     + syntax (new group + task)
+           > +code "write a Python HTTP server"
 
      Pipe chain (output injected at each step)
            > scan for vulns | create fix plan | apply patches

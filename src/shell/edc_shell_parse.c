@@ -228,7 +228,7 @@ static ast_node_t *parse_bg_cmd(edc_shell_token_t *tokens, int count, int *pos, 
 
 /* ── public entry: parse full input ────────────────────────── */
 
-ast_node_t *ast_parse(edc_shell_token_t *tokens, int count, bool is_at)
+ast_node_t *ast_parse(edc_shell_token_t *tokens, int count, bool is_new_group)
 {
     int pos = 0;
 
@@ -239,9 +239,9 @@ ast_node_t *ast_parse(edc_shell_token_t *tokens, int count, bool is_at)
 
     while (pos < count)
     {
-        ast_node_t *cmd = parse_bg_cmd(tokens, count, &pos, is_at);
-        /* only first cmd in chain gets is_at */
-        is_at = false;
+        ast_node_t *cmd = parse_bg_cmd(tokens, count, &pos, is_new_group);
+        /* only first cmd in chain gets the new group */
+        is_new_group = false;
 
         if (pos < count && tokens[pos].type == TOK_PIPE)
         {

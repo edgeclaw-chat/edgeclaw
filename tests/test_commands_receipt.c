@@ -50,7 +50,7 @@ int main(void)
 {
     printf("=== task-creation receipt tests ===\n\n");
 
-    /* #3 leads its own group, which has exactly one member -- the plain `@desc` shape. */
+    /* #3 leads its own group, which has exactly one member -- the plain `+desc` shape. */
     struct edc_task *t3 = edc_task_new("3", "s1", "3", "do it", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t3);
 
