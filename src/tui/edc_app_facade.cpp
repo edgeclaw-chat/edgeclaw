@@ -69,6 +69,11 @@ bool AppFacade::SandboxEnabled() const
     return app_ && edc_app_sandbox_enabled(app_);
 }
 
+int AppFacade::ContextWindow() const
+{
+    return app_ ? edc_app_config_context_window(app_) : 0;
+}
+
 bool AppFacade::Onboarded() const
 {
     return app_ && edc_app_onboarded(app_);

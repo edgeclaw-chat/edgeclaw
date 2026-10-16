@@ -18,6 +18,7 @@
 #include <ftxui/dom/elements.hpp>
 
 #include <memory>
+#include <string>
 
 namespace edc::ui
 {
@@ -35,6 +36,10 @@ class WorkingIndicatorView : public Widget
     // Stop counting (called when the process is no longer busy).
     void Stop();
 
+    // A transient hint shown between the elapsed label and the right-hand stop hint
+    // (e.g. "Ctrl+C again to quit"). Empty hides it.
+    void SetHint(std::string hint);
+
     // True while counting from the last Restart().
     bool Running() const
     {
@@ -48,6 +53,10 @@ class WorkingIndicatorView : public Widget
     // callers can draw a given moment without an instance.
     static ::ftxui::Element ElementAt(long long elapsed_ms);
 
+    // The row's elapsed label: "0s" / "45s" / "3m12s" / "1h02m". Pure, so it is
+    // unit-testable without a clock.
+    static std::string ElapsedLabel(long long elapsed_ms);
+
   protected:
     ::ftxui::Element Draw(const Frame &frame) override;
 
@@ -55,6 +64,7 @@ class WorkingIndicatorView : public Widget
     std::shared_ptr<const port::IClock> clock_;
     port::IClock::TimePoint started_{};
     bool running_ = false;
+    std::string hint_;
 };
 
 } // namespace edc::ui

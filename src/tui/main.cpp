@@ -125,6 +125,12 @@ int main(int argc, char **argv)
         else
         {
             window->SetScreen(&screen);
+            // ftxui's Ctrl-C default is "quit, even if the component handled the event"
+            // (force_handle_ctrl_c_ defaults to true). We handle it ourselves in
+            // window->OnInterrupt() -- first press clears the input box, a second one in
+            // a row quits -- so tell ftxui to stay out of the way: it now only quits for
+            // a Ctrl-C nobody handled.
+            screen.ForceHandleCtrlC(false);
             // ftxui's Loop::Run() sleeps ~16.6ms after every iteration, even the
             // ones that just handled input (~59 batches/s). Counting events lets
             // the loop below sleep only on an iteration that saw none.
@@ -134,10 +140,12 @@ int main(int argc, char **argv)
                 events_seen++;
                 // No 'q' (a bare letter must reach the text input) and no Escape
                 // (it belongs to the innermost component: the /connect dialog and
-                // the history view). Ctrl-C and the signals below are the way out.
+                // the history view). Ctrl-C is routed to the window: a lone press
+                // clears the input box, a second one in a row quits.
                 if (e == Event::CtrlC)
                 {
-                    screen.Exit();
+                    if (window->OnInterrupt())
+                        screen.Exit();
                     return true;
                 }
                 return false;

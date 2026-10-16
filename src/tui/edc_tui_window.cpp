@@ -47,6 +47,13 @@ static void DisableBracketedPaste()
     std::fflush(stdout);
 }
 
+// Ctrl+C pressed twice within this window quits; a lone press only clears the input box.
+constexpr auto kQuitWindow = std::chrono::milliseconds(1500);
+// The "press Ctrl+C again to quit" hint stays up exactly as long as a second press
+// would still quit, so the hint is never shown when the second press would do nothing.
+constexpr auto kHintHold = kQuitWindow;
+constexpr char kInterruptHint[] = "Ctrl+C again to quit";
+
 // The state of the foreground group's active task -- the task whose todo list
 // the sidebar shows -- or "" when there is none. Only the foreground group's
 // active task counts: a busy sibling in the same group is not the foreground
@@ -218,7 +225,7 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     // and the sidebar width are pulled per frame (both change at runtime).
     status_bar_ = std::make_shared<ui::StatusBarView>(
         session_model_, terminal_, [this] { return app_ && app_->SandboxEnabled(); },
-        [this] { return sidebar_width_; });
+        [this] { return sidebar_width_; }, [this] { return app_ ? app_->ContextWindow() : 0; });
 
     const auto &pal = style::palette();
     prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(pal.prompt) | ::ftxui::bold;
@@ -373,6 +380,81 @@ void TUIWindow::Submit()
     // The animated status is not started here and not tied to message types: the
     // snapshot (this one or the next periodic one) flips the spinner through
     // SyncWorkingFromSnapshot(). Ask for a frame so the submitted message paints now.
+    if (screen_)
+        screen_->RequestAnimationFrame();
+}
+
+void TUIWindow::StopForegroundTask()
+{
+    // The same thing a typed "/task stop" does, minus the chat bubble: nothing here was
+    // typed, and the command layer's own reply is the feedback. With no id the command
+    // stops the foreground group's active task.
+    app_->SendUserMessage(session_model_->displayed_id(), "/task stop");
+    RequestTaskSnapshot();
+    if (screen_)
+        screen_->RequestAnimationFrame();
+}
+
+bool TUIWindow::OnInterrupt()
+{
+    const auto now = std::chrono::steady_clock::now();
+    // A second Ctrl+C within the window quits; a lone press just clears the input box
+    // and arms the next one. (Ctrl+C never reaches OnEvent: main()'s top-level
+    // CatchEvent routes it here.)
+    if (now - last_interrupt_ <= kQuitWindow)
+    {
+        ClearInterruptHint();
+        return true;
+    }
+    last_interrupt_ = now;
+
+    if (!input_text_.empty())
+    {
+        input_text_.clear();
+        input_->Reset();
+        RecomputeCommandPalette();
+    }
+
+    // Say what the second press would do, in the bottom-left corner (the footer, or the
+    // working row while a task runs).
+    interrupt_hint_ = kInterruptHint;
+    interrupt_hint_until_ = now + kHintHold;
+    PushInterruptHint();
+
+    if (screen_)
+        screen_->RequestAnimationFrame();
+    return false;
+}
+
+void TUIWindow::PushInterruptHint()
+{
+    if (status_bar_)
+        status_bar_->SetHint(interrupt_hint_);
+    if (working_indicator_)
+        working_indicator_->SetHint(interrupt_hint_);
+}
+
+void TUIWindow::ClearInterruptHint()
+{
+    if (interrupt_hint_.empty())
+        return;
+    interrupt_hint_.clear();
+    PushInterruptHint();
+}
+
+void TUIWindow::TickInterruptHint(std::chrono::steady_clock::time_point now)
+{
+    if (interrupt_hint_.empty())
+        return;
+    if (now < interrupt_hint_until_)
+    {
+        // Keep frames coming, so the hint goes away on time even while nothing else is
+        // repainting.
+        if (screen_)
+            screen_->RequestAnimationFrame();
+        return;
+    }
+    ClearInterruptHint();
     if (screen_)
         screen_->RequestAnimationFrame();
 }
@@ -586,6 +668,8 @@ void TUIWindow::TickAnimations()
         return;
 
     const auto now = std::chrono::steady_clock::now();
+    // Expire the "press Ctrl+C again to quit" hint (and keep repainting while it is up).
+    TickInterruptHint(now);
 
     // The sidebar's breathing (a processing task's marker) runs on the working
     // bar's tempo. Feed it the clock here, off the render path; a run that starts
@@ -755,6 +839,16 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
     if (setup_dialog_ && setup_dialog_->IsOpen())
         return setup_dialog_->OnEvent(event);
 
+    // Any other key means the user moved on, so the "press Ctrl+C again" hint goes away.
+    if (!interrupt_hint_.empty() &&
+        (event.is_character() || event == ::ftxui::Event::Return || event == ::ftxui::Event::Backspace ||
+         event == ::ftxui::Event::Delete || event == ::ftxui::Event::Escape))
+    {
+        ClearInterruptHint();
+        if (screen_)
+            screen_->RequestAnimationFrame();
+    }
+
     // Bracketed paste markers (ESC[200~ / ESC[201~) toggle the paste mode and are
     // consumed whatever the mode was. FTXUI delivers each marker as a single
     // Event::Special.
@@ -869,6 +963,20 @@ bool TUIWindow::HandleNormalEvent(::ftxui::Event event)
         }
     }
 
+    // Esc stops the foreground group's running task. The completion popup owns Esc while
+    // it is open (above), and the history view's Esc is handled before this handler is
+    // reached; so here it means "stop what is running". When nothing is running there is
+    // no task to stop, so it falls through.
+    if (event == ::ftxui::Event::Escape)
+    {
+        if (working_)
+        {
+            StopForegroundTask();
+            return true;
+        }
+        return false;
+    }
+
     // Plain Enter submits. Intercepting it here means it never reaches the Input,
     // so multiline stays purely for Alt+Enter and typed text.
     if (event == ::ftxui::Event::Return)
@@ -876,7 +984,6 @@ bool TUIWindow::HandleNormalEvent(::ftxui::Event event)
         Submit();
         return true;
     }
-
     const bool handled = split_->OnEvent(event);
     // Any text edit changes the popup's query (the whole input is its filter).
     if (event.is_character() || event == ::ftxui::Event::Backspace || event == ::ftxui::Event::Delete)
@@ -1080,6 +1187,19 @@ void TUIWindow::LoadSessionTranscript(const std::string &session_id)
 void TUIWindow::SetTaskTree(const TaskSnapshot &snap)
 {
     task_widget_->SetSnapshot(&snap);
+    // The footer's context gauge: the foreground group's current context, the same
+    // number the sidebar shows for that group.
+    long long ctx = 0;
+    bool estimated = false;
+    for (const TaskGroup &g : snap.groups)
+    {
+        if (!g.fg)
+            continue;
+        ctx = g.ctx_tokens;
+        estimated = g.ctx_estimated;
+        break;
+    }
+    status_bar_->SetContextUsage(ctx, estimated);
 }
 
 void TUIWindow::SyncWorking(const TaskSnapshot &snap)

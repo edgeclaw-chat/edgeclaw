@@ -117,6 +117,9 @@ class IAppFacade
     virtual bool ConfigApiUrl(std::string *out) const = 0;
     virtual bool ConfigApiKey(std::string *out) const = 0;
     virtual bool SandboxEnabled() const = 0;
+    // The configured model's context window in tokens (0 = unknown). The status bar
+    // reads it to show "ctx used/window".
+    virtual int ContextWindow() const = 0;
 
     // ── first-run wizard + model catalog ─────────────────────────
     // False until the user finished/skipped the setup page (config.json "onboarded").
@@ -180,6 +183,7 @@ class AppFacade : public IAppFacade
     bool ConfigApiUrl(std::string *out) const override;
     bool ConfigApiKey(std::string *out) const override;
     bool SandboxEnabled() const override;
+    int ContextWindow() const override;
 
     bool Onboarded() const override;
     bool SetSetup(const SetupConfig &config) override;

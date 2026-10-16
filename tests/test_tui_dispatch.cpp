@@ -171,6 +171,22 @@ std::string SnapJson(const char *session_id, const char *task_desc)
     return json;
 }
 
+// 同 SnapJson，但把前台 active task 的状态设成 |state|（用来驱动工作态：只有
+// 处理态才让 working_ 立起来）。
+std::string SnapJsonState(const char *session_id, const char *task_desc, const char *state)
+{
+    std::string json = R"({"session_id":")";
+    json += session_id;
+    json += R"(","session_name":"harness","message_count":1,"created_at":"2026-09-16 05:00:00","groups":[)"
+            R"({"id":"1","kind":"user","member_count":1,"msg_count":1,"orphaned":false,"fg":true,)"
+            R"("tokens_total":3,"ctx_tokens":45000,"tasks":[{"id":"4242","state":")";
+    json += state;
+    json += R"(","leader":true,"active":true,"desc":")";
+    json += task_desc;
+    json += R"(","tokens_prompt":1,"tokens_completion":2,"tokens_total":3,"tokens_cached":0}]}]})";
+    return json;
+}
+
 // 让窗口把 |session_id| 当成"正在显示的那一棵" —— 走的是生产路径的同一条：
 // tree-changed(reason=active) ⇒ LoadChatTranscript() ⇒ current_session_id_ = sid。
 void AdoptDisplayedSession(edc::TUIWindow &win, const char *session_id)
@@ -498,8 +514,34 @@ void TestCommandPalette(edc::TUIWindow &win)
         Check(Has(f, "/model "), "输入留在 '/model '");
     }
 
-    // 收尾：把 '/model ' 提交掉，别把脏输入留给后面的用例（本条是最后一条）。
+    // 收尾：把 '/model ' 提交掉，别把脏输入留给后面的用例。
     win.OnEvent(::ftxui::Event::Return);
+}
+
+// 键盘中断：Esc 只在有任务在跑时被吃掉（停下来）；Ctrl+C 第一次清空输入框、连按两次
+// 才退出。Ctrl+C 不走 OnEvent（main() 的 CatchEvent 把它路由到 OnInterrupt）。
+void TestInterruptKeys(edc::TUIWindow &win)
+{
+    std::cout << "键盘中断：Esc 停任务 / Ctrl+C 两段退出\n";
+
+    // 空闲：前台任务不是处理态 → 没有任务可停，Esc 放行。
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonState(kShown, "HARNESS_ESC_IDLE", "IDLE").c_str(), kShown));
+    Check(!win.OnEvent(::ftxui::Event::Escape), "空闲时 Esc 放行（没有任务可停）");
+
+    // 前台任务进入处理态 → 工作态立起来，Esc 被吃掉。
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonState(kShown, "HARNESS_ESC_BUSY", "LLM_PROCESSING").c_str(),
+                      kShown));
+    Check(win.OnEvent(::ftxui::Event::Escape), "忙时 Esc 被吃掉（停前台任务）");
+
+    // Ctrl+C：第一次清空输入框（不退出），紧接着第二次才退出。
+    const std::string draft = "HARNESS_CTRLC_DRAFT";
+    for (char c : draft)
+        win.OnEvent(::ftxui::Event::Character(std::string(1, c)));
+    Check(Has(FrameOf(win), draft), "打字后草稿在输入框里");
+    Check(!win.OnInterrupt(), "第一次 Ctrl+C 不退出");
+    Check(!Has(FrameOf(win), draft), "第一次 Ctrl+C 清空输入框");
+    Check(Has(FrameOf(win), "Ctrl+C again to quit"), "第一次 Ctrl+C 后提示再按一次退出");
+    Check(win.OnInterrupt(), "紧接着第二次 Ctrl+C 退出");
 }
 
 } // namespace
@@ -538,6 +580,7 @@ int main()
     TestUserInputIsEchoedImmediately(win);
     TestTaskHistoryPayloadBecomesBubbles(win);
     TestCommandPalette(win);
+    TestInterruptKeys(win);
 
     if (g_failures)
     {

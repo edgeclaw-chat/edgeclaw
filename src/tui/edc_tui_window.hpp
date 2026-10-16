@@ -83,6 +83,11 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // Pace the window's own animations from the main-loop iteration.
     void TickAnimations();
 
+    // Ctrl+C: the first press clears the input box, a second one in a row (within a
+    // short window) quits. Returns true when the caller should exit the screen. Called
+    // by main()'s top-level CatchEvent -- Ctrl+C never reaches OnEvent.
+    bool OnInterrupt();
+
     // ── IChannelHost hooks ───────────────────────────────────────
     // Called by ChannelDispatcher for the view actions that live outside the
     // models; events themselves are handled by the dispatcher (the AppFacade
@@ -122,6 +127,15 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // Append the current input as a user message and clear the box. A bare
     // "/connect" opens the setup wizard instead of sending anything.
     void Submit();
+    // Esc: stop the foreground group's running task. Sends the same "/task stop" a user
+    // would type (no chat bubble: the command layer's reply is the feedback).
+    void StopForegroundTask();
+    // While the "press Ctrl+C again to quit" hint is up: push its text to whichever
+    // bottom row is showing (the footer, or the working row that replaces it).
+    void PushInterruptHint();
+    void ClearInterruptHint();
+    // Expire the hint (called once per main-loop iteration from TickAnimations).
+    void TickInterruptHint(std::chrono::steady_clock::time_point now);
     // Seed + open the setup wizard (reads the persisted config).
     void OpenConnect();
     // Seed the input history from $EDC_HOME/.tui_history (a missing file is fine).
@@ -242,6 +256,11 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     std::shared_ptr<ui::StatusBarView> status_bar_;
     // When the spinner's next repaint is due.
     std::chrono::steady_clock::time_point last_spinner_frame_;
+    // When Ctrl+C was last pressed (the second press within a short window quits).
+    std::chrono::steady_clock::time_point last_interrupt_{};
+    // The "press Ctrl+C again to quit" hint: its text ("" = hidden) and when it expires.
+    std::string interrupt_hint_;
+    std::chrono::steady_clock::time_point interrupt_hint_until_{};
     // When the chat log's next post-resize re-measure frame is due (see
     // TickAnimations).
     std::chrono::steady_clock::time_point last_remeasure_frame_;

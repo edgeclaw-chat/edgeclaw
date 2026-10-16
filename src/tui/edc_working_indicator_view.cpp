@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <string>
+#include <utility>
 
 namespace edc::ui
 {
@@ -158,7 +161,47 @@ long long WorkingIndicatorView::ElapsedMs() const
 
 ::ftxui::Element WorkingIndicatorView::Draw(const Frame &)
 {
-    return ElementAt(ElapsedMs());
+    // The bar says "working", the label says "for how long", and the hint says how to
+    // stop it (Esc). The bar itself stays pure/bar-only (ElementAt) so its geometry
+    // tests keep holding; the row is composed here.
+    const long long ms = ElapsedMs();
+    const auto &pal = style::palette();
+
+    ::ftxui::Elements row = {
+        ElementAt(ms),
+        ::ftxui::text("  " + ElapsedLabel(ms)) | ::ftxui::color(pal.text_dim),
+    };
+    // The same transient hint the footer shows (this row replaces the footer while busy).
+    // Same style as everything else on this row: dim, no highlight.
+    if (!hint_.empty())
+        row.push_back(::ftxui::text("  ·  " + hint_) | ::ftxui::color(pal.text_dim));
+    row.push_back(::ftxui::filler());
+    row.push_back(::ftxui::text("Esc to stop ") | ::ftxui::color(pal.text_dim));
+    return ::ftxui::hbox(std::move(row));
+}
+
+void WorkingIndicatorView::SetHint(std::string hint)
+{
+    hint_ = std::move(hint);
+}
+
+std::string WorkingIndicatorView::ElapsedLabel(long long elapsed_ms)
+{
+    if (elapsed_ms < 0)
+        elapsed_ms = 0;
+    const long long total_s = elapsed_ms / 1000;
+    const long long h = total_s / 3600;
+    const long long m = (total_s % 3600) / 60;
+    const long long s = total_s % 60;
+
+    char buf[32];
+    if (h > 0)
+        std::snprintf(buf, sizeof(buf), "%lldh%02lldm", h, m);
+    else if (m > 0)
+        std::snprintf(buf, sizeof(buf), "%lldm%02llds", m, s);
+    else
+        std::snprintf(buf, sizeof(buf), "%llds", s);
+    return std::string(buf);
 }
 
 } // namespace edc::ui

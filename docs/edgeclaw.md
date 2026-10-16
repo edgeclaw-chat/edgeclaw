@@ -21,6 +21,16 @@ While the input starts with `/`, a completion list hangs just below it: `↑`/`�
 the selection, `Tab` completes it, `Esc` dismisses it. `Enter` is untouched — it still
 sends what you typed.
 
+Two keys interrupt things. **Esc** stops the foreground group's running task (what
+`/task stop` does); while the completion list is open, `Esc` dismisses the list instead.
+**Ctrl+C** clears the input box and shows "Ctrl+C again to quit" in the footer in place of
+the working directory — press it a second time (within ~1.5s) to quit EdgeClaw.
+
+The footer's right end reads `model · ctx used/window · sandbox:on|off · /help` (the
+context gauge is the foreground group's current context; a `~` marks an estimate), and
+while a task runs the bottom row becomes a progress bar carrying its elapsed time and an
+"Esc to stop" hint.
+
 Type a message in the input box and press Enter. Conversations are saved per session under `workspace/<session_id>/`.
 
 ---
