@@ -56,8 +56,26 @@ void edc_skill_free(struct edc_skill *skill)
     {
         sdsfree(skill->location);
     }
+    if (skill->shadowed)
+    {
+        for (int i = 0; skill->shadowed[i]; i++)
+            sdsfree(skill->shadowed[i]);
+        free(skill->shadowed);
+    }
 
     free(skill);
+}
+
+/* Remember that |location| lost the name to |skill| (see struct edc_skill.shadowed). */
+static void edc_skill_add_shadowed(struct edc_skill *skill, const char *location)
+{
+    int n = 0;
+    if (skill->shadowed)
+        while (skill->shadowed[n])
+            n++;
+    skill->shadowed = realloc(skill->shadowed, (size_t)(n + 2) * sizeof(sds));
+    skill->shadowed[n] = sdsnew(location ? location : "");
+    skill->shadowed[n + 1] = NULL;
 }
 
 static bool edc_extract_skill_meta_and_content(const char *content, struct edc_skill *skill)
@@ -245,9 +263,17 @@ UT_array *edc_skills_load_roots(const UT_array *roots)
                 struct edc_skill *sk = ps ? *ps : NULL;
                 if (!sk)
                     continue;
-                if (edc_skills_find(out, sk->name))
+                struct edc_skill *winner = edc_skills_find(out, sk->name);
+                if (winner)
                 {
-                    edc_skill_free(sk); /* shadowed by a higher-precedence root */
+                    /* Same name from a later (less specific) root: the first one wins, but
+                     * SAY SO. Silently dropping it is exactly what pi's `collision`
+                     * diagnostic exists to avoid -- a user editing the shadowed file would
+                     * otherwise never learn their change has no effect. */
+                    log_warn("skill '%s': %s is shadowed by %s", sk->name, sk->location ? sk->location : "?",
+                             winner->location ? winner->location : "?");
+                    edc_skill_add_shadowed(winner, sk->location);
+                    edc_skill_free(sk);
                     continue;
                 }
                 sdsfree(sk->source);

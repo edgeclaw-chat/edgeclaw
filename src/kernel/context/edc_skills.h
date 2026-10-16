@@ -23,6 +23,12 @@ struct edc_skill
      * `<skill name="…" location="…">` block, whose "References are relative to <dir>" line
      * is what tells the model where the skill's scripts/references live. */
     sds location;
+    /* The copies this one SHADOWED -- the SKILL.md paths of same-named skills found in
+     * later (less specific) roots, NULL-terminated. Recorded so the collision can be
+     * REPORTED (a `log_warn` at load, `_(shadowed: …)_` in `/skill`'s listing) instead of
+     * silently dropping them; pi does the same with its `collision` diagnostics. NULL when
+     * nothing collided. */
+    sds *shadowed;
     /* pi's `disable-model-invocation: true` -- the author says the MODEL must not reach
      * for this skill on its own. It then stays out of the system prompt's skill list and
      * only an explicit `/skill <name>` runs it. Default true (the model may pick it). */

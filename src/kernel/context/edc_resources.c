@@ -45,30 +45,11 @@ UT_array *edc_resource_dirs(const struct edc_config *conf, const char *workdir)
     UT_array *out;
     utarray_new(out, &ut_resource_dir_icd);
 
-    /* Ours first: the workspace is both the highest-precedence and the only WRITABLE root. */
-    if (conf && conf->workspace)
-        add_root(out, sdsdup(conf->workspace));
-
-    /* The user's foreign roots, under $HOME. */
-    const char *home = getenv("HOME");
-    if (home && *home)
-    {
-        sds h = sdsnew(home);
-        static const char *const user[] = {
-            ".claude",
-            ".agents",
-            ".config/opencode",
-            ".pi/agent",
-        };
-        for (size_t i = 0; i < sizeof(user) / sizeof(user[0]); i++)
-            add_root(out, edc_path_join(h, user[i], NULL));
-        sdsfree(h);
-    }
-
-    /* The project's. NOT the process cwd: a session is BOUND to a directory, and that is
-     * the project it is talking about -- so walk UP from it (the same walk AGENTS.md /
-     * CLAUDE.md use), NEAREST first: a session bound to a subdirectory still sees the
-     * repository's resources, and the closest one wins. */
+    /* The PROJECT first: the most specific one wins, so a repository may ship its own
+     * skills and govern them. (Position decided 2026-10-16: opencode puts the project
+     * after the global dir and lets the LAST source win, which comes to the same thing;
+     * pi puts the agent dir first instead. We take opencode's outcome, and -- like pi --
+     * report what a collision shadowed rather than dropping it silently.) */
     if (!conf || conf->load_project_resources)
     {
         static const char *const project[] = {
@@ -95,6 +76,26 @@ UT_array *edc_resource_dirs(const struct edc_config *conf, const char *workdir)
             cur = parent;
         }
         sdsfree(cur);
+    }
+
+    /* Ours next: the workspace is our own store and the only WRITABLE root. */
+    if (conf && conf->workspace)
+        add_root(out, sdsdup(conf->workspace));
+
+    /* The user's foreign roots last, under $HOME. */
+    const char *home = getenv("HOME");
+    if (home && *home)
+    {
+        sds h = sdsnew(home);
+        static const char *const user[] = {
+            ".claude",
+            ".agents",
+            ".config/opencode",
+            ".pi/agent",
+        };
+        for (size_t i = 0; i < sizeof(user) / sizeof(user[0]); i++)
+            add_root(out, edc_path_join(h, user[i], NULL));
+        sdsfree(h);
     }
 
     return out;

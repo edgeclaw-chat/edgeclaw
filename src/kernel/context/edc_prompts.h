@@ -35,6 +35,10 @@ struct edc_prompt
     sds argument_hint; /* NULL when absent */
     sds body;          /* never empty: a template with an empty body is refused */
     sds source;        /* the resource ROOT it came from ("" = the single-dir API) */
+    /* The same-named templates this one SHADOWED (their paths, NULL-terminated), recorded
+     * so the collision is REPORTED rather than swallowed -- see edc_skills.h. NULL when
+     * nothing collided. */
+    sds *shadowed;
 };
 
 void edc_prompt_free(struct edc_prompt *prompt);

@@ -8,9 +8,10 @@
  * from their directories.
  *
  * Order = precedence: the first root that has a given name wins.
- * ours (workspace)  ->  user (~/.claude, ~/.agents, ~/.config/opencode, ~/.pi/agent)
- *                   ->  project (walking up from the SESSION's bound directory:
- *                               .edgeclaw, .claude, .agents, .opencode, .pi)
+ * project (walking up from the SESSION's bound directory: .edgeclaw, .claude, .agents,
+ *          .opencode, .pi -- nearest level first)
+ *   ->  ours (the workspace: our own store, the only writable one)
+ *   ->  user (~/.claude, ~/.agents, ~/.config/opencode, ~/.pi/agent)
  *
  * Project-level roots are ON by default; config.json's top-level `load_project_resources`
  * (false) turns them off. The layouts a root may have -- only the ones that exist are used:

@@ -507,6 +507,26 @@ inheriting the parent's memory and conversation context up to the fork point.
 | `~/.edgeclaw/workspace/TOOLS.md` | Tool quick reference |
 | `~/.edgeclaw/workspace/skills/` | Custom skill SKILL.md files |
 
+### Where prompts and skills come from
+
+`/prompt` and `/skill` read more than `~/.edgeclaw/workspace`: the directories the other
+tools already use are searched as well, so a template or skill you wrote for them works
+here unedited. Precedence — the first hit wins:
+
+| # | Root |
+|---|------|
+| 1 | the **project**, walking up from the session's directory: `.edgeclaw` `.claude` `.agents` `.opencode` `.pi` (nearest level first) |
+| 2 | `~/.edgeclaw/workspace` (ours, the only writable one) |
+| 3 | the user's: `~/.claude` · `~/.agents` · `~/.config/opencode` · `~/.pi/agent` |
+
+A root may keep templates in `prompts/` (pi) or `command/` `commands/` (opencode / Claude
+Code), and skills in `skills/` or `skill/`. The project level can be switched off with
+`load_project_resources: false` in `config.json`.
+
+**A collision is reported, not swallowed.** When the same name exists in two roots the
+higher one wins and the shadowed copy is named: a warning in the log, and a
+`_(shadowed: …)_` line under it in `/prompt` and `/skill`.
+
 ## See Also
 
 - Architecture: `docs/task-session-architecture.md`

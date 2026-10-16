@@ -418,6 +418,13 @@ FILES
      ~/.edgeclaw/workspace/<sid>/        Per-session directory.
      ~/.edgeclaw/workspace/<sid>/history.jsonl  Session history.
      ~/.edgeclaw/workspace/skills/       Custom skill SKILL.md files.
+     Prompts and skills are also read from the directories the other tools
+     already use, the first hit winning: the project's (walking up from the
+     session's directory -- .edgeclaw .claude .agents .opencode .pi), then
+     ~/.edgeclaw/workspace (ours, the only writable one), then the user's
+     (~/.claude, ~/.agents, ~/.config/opencode, ~/.pi/agent).  A name found in
+     two roots is REPORTED -- a log warning, and a "_(shadowed: ...)_" line in
+     /prompt and /skill -- rather than dropped silently.
 
 SEE ALSO
      Architecture: docs/task-session-architecture.md

@@ -2047,6 +2047,13 @@ static void edc_commands_prompt_list(struct edc_config *cfg, const char *workdir
              * foreign directories are read. */
             if (p->source && cfg->workspace && strcmp(p->source, cfg->workspace) != 0)
                 out = sdscatprintf(out, "  _(from `%s`)_\n", p->source);
+            /* The same-named templates this one shadowed: reported so editing them does not
+             * look like it had no effect. */
+            if (p->shadowed)
+            {
+                for (int j = 0; p->shadowed[j]; j++)
+                    out = sdscatprintf(out, "  _(shadowed: `%s`)_\n", p->shadowed[j]);
+            }
         }
         out = sdscatprintf(out, "\nUsage: `/prompt <name> [args…]`\n");
     }
@@ -2177,6 +2184,13 @@ static void edc_commands_skill_list(struct edc_config *cfg, const char *workdir,
                 out = sdscat(out, "  _(user-only: `disable-model-invocation`)_\n");
             if (sk->source && cfg->workspace && strcmp(sk->source, cfg->workspace) != 0)
                 out = sdscatprintf(out, "  _(from `%s`)_\n", sk->source);
+            /* The copies that lost the name to this one: a user editing them would
+             * otherwise never learn the change has no effect (pi's collision diagnostic). */
+            if (sk->shadowed)
+            {
+                for (int j = 0; sk->shadowed[j]; j++)
+                    out = sdscatprintf(out, "  _(shadowed: `%s`)_\n", sk->shadowed[j]);
+            }
         }
         out = sdscat(out, "\nUsage: `/skill <name> [args…]`\n");
     }

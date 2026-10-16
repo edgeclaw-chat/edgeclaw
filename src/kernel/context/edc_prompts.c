@@ -31,7 +31,25 @@ void edc_prompt_free(struct edc_prompt *prompt)
         sdsfree(prompt->body);
     if (prompt->source)
         sdsfree(prompt->source);
+    if (prompt->shadowed)
+    {
+        for (int i = 0; prompt->shadowed[i]; i++)
+            sdsfree(prompt->shadowed[i]);
+        free(prompt->shadowed);
+    }
     free(prompt);
+}
+
+/* Remember that |path| lost the name to |prompt| (see struct edc_prompt.shadowed). */
+static void edc_prompt_add_shadowed(struct edc_prompt *prompt, sds path)
+{
+    int n = 0;
+    if (prompt->shadowed)
+        while (prompt->shadowed[n])
+            n++;
+    prompt->shadowed = realloc(prompt->shadowed, (size_t)(n + 2) * sizeof(sds));
+    prompt->shadowed[n] = path ? path : sdsnew("");
+    prompt->shadowed[n + 1] = NULL;
 }
 
 /* A bare file name only: no separator, not dot-prefixed, nothing outside [A-Za-z0-9._-].
@@ -326,8 +344,14 @@ UT_array *edc_prompts_list_roots(const UT_array *roots)
                 struct edc_prompt *p = ps ? *ps : NULL;
                 if (!p)
                     continue;
-                if (edc_prompts_find(out, p->name))
+                struct edc_prompt *winner = edc_prompts_find(out, p->name);
+                if (winner)
                 {
+                    /* Same name from a later (less specific) root: the first wins, but SAY
+                     * so -- otherwise editing the shadowed file looks like it does nothing. */
+                    sds path = sdsdup(p->source ? p->source : "");
+                    log_warn("prompt '%s': %s is shadowed by %s", p->name, path, winner->source ? winner->source : "?");
+                    edc_prompt_add_shadowed(winner, path);
                     edc_prompt_free(p); /* shadowed by a higher-precedence root */
                     continue;
                 }

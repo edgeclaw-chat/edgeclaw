@@ -137,9 +137,11 @@ int main(void)
 
     UT_array *roots = edc_resource_dirs(&cfg, proj);
 
-    TEST("the workspace is the first root (ours wins)");
+    TEST("the project comes first, then the workspace, then the user's");
     struct edc_resource_dir **first = (struct edc_resource_dir **)utarray_eltptr(roots, 0);
-    CHECK(first && *first && strcmp((*first)->path, ws) == 0, "root 0 is the workspace");
+    CHECK(first && *first && strcmp((*first)->path, proj_own_root) == 0, "root 0 is the project's ./.edgeclaw");
+    CHECK(root_at(roots, ws) != NULL, "the workspace is a root too");
+    CHECK(root_at(roots, home_claude_root) != NULL, "so is the user's");
 
     TEST("the user's foreign roots are found");
     struct edc_resource_dir *d = root_at(roots, home_claude_root);
@@ -186,6 +188,19 @@ int main(void)
     TEST("listing spans the roots, one row per name");
     UT_array *all = edc_prompts_list_roots(roots);
     CHECK(utarray_len(all) == 6, "claude-only, pi-only, proj-only, own-only, shared, ref");
+    /* The listing is where a collision is REPORTED (the load path just takes the first
+     * hit, so it has nothing to report). */
+    {
+        struct edc_prompt *shared = NULL;
+        for (size_t i = 0; i < utarray_len(all); i++)
+        {
+            struct edc_prompt **slot = (struct edc_prompt **)utarray_eltptr(all, (unsigned)i);
+            if (slot && *slot && strcmp((*slot)->name, "shared") == 0)
+                shared = *slot;
+        }
+        CHECK(shared && shared->shadowed && shared->shadowed[0] != NULL,
+              "the shadowed template is reported, not swallowed");
+    }
     for (size_t i = 0; i < utarray_len(all); i++)
     {
         struct edc_prompt **slot = (struct edc_prompt **)utarray_eltptr(all, (unsigned)i);
@@ -232,7 +247,7 @@ int main(void)
     roots = edc_resource_dirs(&cfg, proj);
     UT_array *skills = edc_skills_load_roots(roots);
 
-    TEST("a skill is found across the roots, the workspace shadowing it");
+    TEST("a skill is found across the roots, the workspace shadowing the user's");
     struct edc_skill *sk = NULL;
     for (size_t i = 0; i < utarray_len(skills); i++)
     {
@@ -243,6 +258,39 @@ int main(void)
     CHECK(sk != NULL, "pdf found");
     CHECK(sk && sk->source && strcmp(sk->source, ws) == 0, "the workspace's copy won");
     CHECK(sk && sk->content && strstr(sk->content, "OUR BODY") != NULL, "and so did its body");
+    CHECK(sk && sk->shadowed && sk->shadowed[0] != NULL, "the shadowed copy is RECORDED, not dropped silently");
+    CHECK(sk && sk->shadowed && sk->shadowed[0] && strstr(sk->shadowed[0], "skills/pdf") != NULL,
+          "and it names the file that lost");
+
+    TEST("the PROJECT's copy outranks the workspace's");
+    {
+        char proj_skill[PATH_BUF];
+        snprintf(proj_skill, sizeof(proj_skill), "%s/.claude/skills/pdf", proj);
+        mkdirs(proj_skill);
+        write_file_at(proj_skill, "SKILL.md", "---\ndescription: project pdf\n---\nPROJECT BODY\n");
+
+        UT_array *r2 = edc_resource_dirs(&cfg, proj);
+        UT_array *s2 = edc_skills_load_roots(r2);
+        struct edc_skill *pdf = NULL;
+        for (size_t i = 0; i < utarray_len(s2); i++)
+        {
+            struct edc_skill **slot = (struct edc_skill **)utarray_eltptr(s2, (unsigned)i);
+            if (slot && *slot && strcmp((*slot)->name, "pdf") == 0)
+                pdf = *slot;
+        }
+        CHECK(pdf && pdf->content && strstr(pdf->content, "PROJECT BODY") != NULL,
+              "the project's body is what runs");
+        CHECK(pdf && pdf->shadowed && pdf->shadowed[0] && pdf->shadowed[1],
+              "both losers are listed (the workspace's and the user's)");
+        for (size_t i = 0; i < utarray_len(s2); i++)
+        {
+            struct edc_skill **slot = (struct edc_skill **)utarray_eltptr(s2, (unsigned)i);
+            if (slot)
+                edc_skill_free(*slot);
+        }
+        utarray_free(s2);
+        edc_resource_dirs_free(r2);
+    }
 
     TEST("`disable-model-invocation: true` is read");
     struct edc_skill *db = NULL;
