@@ -2,6 +2,7 @@
 #include "edc_api.h" /* EDC_APP_RENDER_PLAIN / _MARKDOWN */
 #include "edc_chat_transcript.hpp"
 #include "edc_chat_widget.hpp"
+#include "edc_command_palette.hpp"
 #include "edc_domain.hpp"
 #include "edc_input.hpp"
 #include "edc_scroll_view.hpp"
@@ -341,6 +342,7 @@ void TUIWindow::Submit()
     {
         input_text_.clear();
         input_->Reset();
+        RecomputeCommandPalette();
         OpenConnect();
         return;
     }
@@ -354,6 +356,7 @@ void TUIWindow::Submit()
     AppendChatTranscript("user", "", message, "", EDC_APP_RENDER_PLAIN);
     input_text_.clear();
     input_->Reset(); // caret/scroll back to the start after the external clear
+    RecomputeCommandPalette();
     // Record the submitted text for ArrowUp recall and persist it so history
     // survives a restart.
     input_->AddHistory(message);
@@ -652,7 +655,14 @@ void TUIWindow::TickAnimations()
     // the pane is just history + status row. The return hint is a badge in the
     // history pane's top-right corner (same dbox trick as the "Copied" chip).
 
-    ::ftxui::Elements children = {chat | ::ftxui::flex, ::ftxui::separator()};
+    // The chat is the flex child, and the completion popup is pushed right after it -- i.e.
+    // ABOVE the input's top rule. The popup therefore grows into the chat's bottom, and the
+    // input block (rule / input / rule) keeps its exact place and height: the list never
+    // looks like part of the input box.
+    ::ftxui::Elements children = {chat | ::ftxui::flex};
+    if (!history_view_ && command_palette_.open() && !setup_dialog_->IsOpen())
+        children.push_back(ui::CommandPaletteElement(command_palette_));
+    children.push_back(::ftxui::separator());
     if (!history_view_)
     {
         children.push_back(input_row);
@@ -758,6 +768,9 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
     if (event == kPasteEnd)
     {
         in_paste_ = false;
+        // The paste just changed the text without going through the key path, so refresh
+        // the completion popup once here (during the paste it stays as it was).
+        RecomputeCommandPalette();
         return true;
     }
 
@@ -819,6 +832,43 @@ bool TUIWindow::HandleNormalEvent(::ftxui::Event event)
         return true;
     }
 
+    // The completion popup owns Up/Down/Tab/Esc while it is open. Enter is deliberately
+    // NOT taken -- it still submits below (Tab is what completes), so a plain `/help⏎`
+    // keeps working exactly as before.
+    if (command_palette_.open())
+    {
+        if (event == ::ftxui::Event::ArrowUp)
+        {
+            command_palette_.MoveUp();
+            return true;
+        }
+        if (event == ::ftxui::Event::ArrowDown)
+        {
+            command_palette_.MoveDown();
+            return true;
+        }
+        if (event == ::ftxui::Event::Tab)
+        {
+            // Tab completes the selected row. When there is nothing left to complete
+            // (the completion is exactly what is already typed), it means "this one is
+            // it": confirm and fold the list instead of re-inserting the same text.
+            const std::string completed = command_palette_.Accept();
+            if (completed == input_text_)
+            {
+                command_palette_.Close();
+                return true;
+            }
+            input_->ReplaceAll(completed);
+            RecomputeCommandPalette();
+            return true;
+        }
+        if (event == ::ftxui::Event::Escape)
+        {
+            command_palette_.Close();
+            return true;
+        }
+    }
+
     // Plain Enter submits. Intercepting it here means it never reaches the Input,
     // so multiline stays purely for Alt+Enter and typed text.
     if (event == ::ftxui::Event::Return)
@@ -827,7 +877,22 @@ bool TUIWindow::HandleNormalEvent(::ftxui::Event event)
         return true;
     }
 
-    return split_->OnEvent(event);
+    const bool handled = split_->OnEvent(event);
+    // Any text edit changes the popup's query (the whole input is its filter).
+    if (event.is_character() || event == ::ftxui::Event::Backspace || event == ::ftxui::Event::Delete)
+        RecomputeCommandPalette();
+    return handled;
+}
+
+void TUIWindow::RecomputeCommandPalette()
+{
+    // Load the command table once (static data; the facade projects it from the shell).
+    if (!palette_loaded_ && app_)
+    {
+        command_palette_.SetSource(app_->CommandFamilies(), app_->Commands());
+        palette_loaded_ = true;
+    }
+    command_palette_.Update(input_text_);
 }
 
 TUIWindow::~TUIWindow()

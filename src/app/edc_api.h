@@ -86,6 +86,16 @@ extern int edc_app_models_model_output(const char *model_id);
 extern int edc_app_models_model_is_chat(const char *model_id);
 extern int edc_app_models_provider_matches(const char *provider_id, const char *query);
 extern int edc_app_models_model_matches(const char *model_id, const char *query);
+
+/* ── Command surface (read-only projection of the shell's command table) ──────
+ * The TUI's completion palette reads these. Static data -> no `struct edc_app`
+ * parameter (same rule as edc_app_models_*). Borrowed strings. */
+extern size_t edc_app_cmd_count(void);
+extern const char *edc_app_cmd_text(size_t index);
+extern const char *edc_app_cmd_brief(size_t index);
+extern size_t edc_app_cmd_family_count(void);
+extern const char *edc_app_cmd_family_name(size_t index);
+extern const char *edc_app_cmd_family_brief(size_t index);
 /* The transcript path for a given session (`<workspace>/<session_id>/chat.jsonl`).
  * Built by convention, does not query the store; |session_id| must be an id (as
  * carried by snapshots/messages), not a display name. */

@@ -27,6 +27,23 @@ extern void edc_commands_reply(struct edc_reply_to to, const char *text);
 extern sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_group *group,
                                         const struct edc_config *conf);
 
+/** The command help, rendered from the command table: with |arg| NULL or empty the full
+ *  list, otherwise the matching command(s)' detail. Exposed for tests (and so docs could be
+ *  generated from the same table). Caller frees. */
+extern sds edc_commands_help_text(const char *arg);
+
+/* ── The command table as data (read-only) ───────────────────
+ * The TUI's completion palette consumes the surface through these instead of parsing
+ * `edc_commands_help_text()`'s markdown. Rows are the help lines; families are the first
+ * tokens (one per row), for the bare-`/` list. All strings are borrowed (static
+ * lifetime); an out-of-range index yields NULL. */
+extern size_t edc_commands_doc_count(void);
+extern const char *edc_commands_doc_cmd(size_t index);
+extern const char *edc_commands_doc_brief(size_t index);
+extern size_t edc_commands_family_count(void);
+extern const char *edc_commands_family_name(size_t index);
+extern const char *edc_commands_family_brief(size_t index);
+
 /** Structured command reply: the same exit as edc_commands_reply (the same
  *  to.channel_actor), only the message type changes (TASK_HISTORY) -- the frontend then
  *  renders it as a message history rather than a text blob. |payload| is the JSON from

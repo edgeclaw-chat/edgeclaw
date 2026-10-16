@@ -162,6 +162,36 @@ bool AppFacade::ModelInfo(const std::string &model_id, ModelFacts *out) const
     return true;
 }
 
+std::vector<model::CommandFact> AppFacade::Commands() const
+{
+    std::vector<model::CommandFact> out;
+    const size_t n = edc_app_cmd_count();
+    out.reserve(n);
+    for (size_t i = 0; i < n; i++)
+    {
+        const char *t = edc_app_cmd_text(i);
+        const char *b = edc_app_cmd_brief(i);
+        if (t)
+            out.push_back({t, b ? b : ""});
+    }
+    return out;
+}
+
+std::vector<model::CommandFact> AppFacade::CommandFamilies() const
+{
+    std::vector<model::CommandFact> out;
+    const size_t n = edc_app_cmd_family_count();
+    out.reserve(n);
+    for (size_t i = 0; i < n; i++)
+    {
+        const char *t = edc_app_cmd_family_name(i);
+        const char *b = edc_app_cmd_family_brief(i);
+        if (t)
+            out.push_back({t, b ? b : ""});
+    }
+    return out;
+}
+
 void AppFacade::SendUserMessage(const std::string &session_id, const std::string &content)
 {
     if (app_)

@@ -292,8 +292,8 @@ cc_test(
 )
 
 cc_test(
-    name = "test_edc_shell",
-    srcs = ["test_edc_shell.c"],
+    name = "test_commands_help",
+    srcs = ["test_commands_help.c"],
     deps = [
         "//src/shell:shell",
     ],
@@ -765,6 +765,16 @@ cc_test(
         "//:debug": ["EDGECLAW_DEBUG"],
         "//conditions:default": [],
     }),
+)
+cc_test(
+    name = "test_command_palette",
+    srcs = ["test_command_palette.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
 )
 cc_test(
     name = "test_status_bar_view",

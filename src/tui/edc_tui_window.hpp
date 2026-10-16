@@ -172,6 +172,9 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // true = consumed; false = pass through to the normal path (mouse/wheel/Alt+Enter).
     bool HandleHistoryEvent(::ftxui::Event event);
     bool HandleNormalEvent(::ftxui::Event event);
+    // Refresh the completion popup from the current input text (and load its source
+    // from the command table on first use).
+    void RecomputeCommandPalette();
 
     std::shared_ptr<edc::ChatWidget> chat_widget_;
     std::shared_ptr<edc::TaskWidget> task_widget_;
@@ -180,6 +183,11 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     std::shared_ptr<edc::EdcInput> input_;
     ::ftxui::Element prompt_;
     std::string input_text_;
+
+    // The completion popup, shown while the input starts with '/'. Hangs just below the
+    // input. Its source (the shell's command table, via the facade) is loaded once, lazily.
+    model::CommandPalette command_palette_;
+    bool palette_loaded_ = false;
 
     // Routes keyboard focus between the chat log and the input (1 = input).
     // Declared before |container_| because the container borrows it.

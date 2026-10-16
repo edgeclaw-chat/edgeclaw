@@ -20,12 +20,18 @@ GETTING STARTED
            $ edgeclaw
            EdgeClaw TUI ready.
 
-     Type a message in the input box and press Enter.  All non-/ input
-     creates a task in the current foreground group and sends it to the LLM.
-     Conversations are saved per session under workspace/<session_id>/.
+     On first run config.json is created with defaults and the guided setup
+     wizard opens once (provider, API key, model); reopen it any time with
+     /connect.  Type a message in the input box and press Enter: non-/ input
+     goes through the shell parser (see SHELL SYNTAX) and becomes a task in
+     the current foreground group.  Conversations are saved per session under
+     workspace/<session_id>/.
 
-     Tab completion is available for commands (type / then Tab) and will
-     cycle through matching completions on subsequent Tab presses.
+     Type /help for the command list.
+
+     While the input starts with /, a completion list hangs just below it:
+     Up/Down move the selection, Tab completes it, Esc dismisses it.  Enter
+     is untouched -- it still sends what you typed.
 
 SHELL SYNTAX
      All non-/ input is processed through the edgeclaw shell parser:
@@ -97,21 +103,19 @@ SHELL SYNTAX
        A command that needs a terminal (sudo, vim, ssh, an editor) fails immediately:
        the child gets no tty. A non-zero exit is NOT a task failure -- the output
        (including stderr) is still the result.
-     History expansion (!, inside a task description)
-           > !!
-           > !3
-       !!  — repeat the last command.
-       !n  — repeat the nth command from history.
-       That history is written only from outside the TUI, so inside the TUI these
-       expand to nothing and the text is taken literally.
+     History expansion
+       There is none: ! is only special at the start of a line (the local
+       shell above); a !n or !! inside a task description is literal text.
 
-     Options on any shell command
-           > "input text" --bg -d task1 --group dev --prompt reviewer
-       Options must appear after the input or be the only content:
+     Options on @ and /task new
+           > @"input text" --bg -d task1 --group dev
+       Options are recognised only after a quoted description (or when the
+       description is the only content); otherwise a token starting with "-"
+       is a syntax error, not a silently-ignored flag.
        --bg              Run in background.
-       -d <id>           Wait for this task before executing.
+       --new-group       Open a group of its own (a fresh conversation).
+       -d <id>           Wait for this task before executing (repeatable).
        --group <id>      Create in this group (-g is a shortcut).
-       --prompt <name>   Use this subagent prompt template.
 
 SHELL ARCHITECTURE
      Input processing follows a Unix-style pipeline:
@@ -152,12 +156,11 @@ SHELL ARCHITECTURE
 
        Dependency types:
          JOIN      (|)       Source output injected into destination's LLM
-                             context.  If the source is CANCELLED the
-                             dependency can never be satisfied, so the
-                             destination is CANCELLED too (cascades).
-         SEQUENCE  (;)       Destination waits, no output injection.  If the
-                             source is CANCELLED only this edge is dropped;
-                             the destination stays runnable.
+                             context.  A source that fails / is cancelled /
+                             interrupted cascades: the destination is
+                             cancelled too, and the edge stays.
+         SEQUENCE  (;)       Same waiting and cascade, but NO output
+                             injection.
 
 TASK MODEL
      Three-layer Unix-like process model:
@@ -173,35 +176,46 @@ TASK MODEL
      Session  — Per-session history storage.  Like a Unix login session.
                 Contains multiple groups in a linked list.
 
-     Fork     — /task fork <parent> <desc> creates a child in the parent's
-                group, inheriting a slice of the parent's conversation.
+     Fork     — /task fork <parent> <desc> creates a child that leads a
+                group of its own (taking the foreground) and inherits the
+                parent group's memory plus a snapshot of its conversation.
 
 TASK STATES
-       IDLE → WAITING_DEPS → WAITING_INPUT → LLM_PROCESSING
-         ⇄ TOOL_CALLING → SUSPENDED → COMPLETED / CANCELLED / ERROR
+       IDLE → WAITING_DEPS → LLM_PROCESSING ⇄ TOOL_CALLING
+                                            → COMPLETED / CANCELLED / ERROR
+       INTERRUPTED (the loop stopped mid-flight)
+       (WAITING_INPUT is retired: IDLE is the ready state, and there is no
+       separate waiting-for-input phase.)
 
      LLM_PROCESSING and TOOL_CALLING alternate as tools are invoked.
      Tasks reach COMPLETED on final LLM response; CANCELLED when stopped;
      ERROR on failure.
 
-     Restart behavior: unfinished tasks are persisted as-is on exit; on load
-     every unfinished task is parked as SUSPENDED.  /task resume [tid]
-     re-derives the state to return to:
+     Restart behavior: on exit every unfinished task is rewritten as
+     INTERRUPTED (queued ones included), and the interrupt propagates to
+     dependents like a failure.  /task resume [tid] re-derives the state to
+     return to:
        - unsatisfied deps            -> WAITING_DEPS
        - unfinished tool call        -> TOOL_CALLING (re-run not-yet-started
                                         tools; a mid-flight tool gets a
                                         synthesized "interrupted" result)
        - pending turn (no LLM reply) -> LLM_PROCESSING
-       - otherwise                   -> WAITING_INPUT
+       - otherwise                   -> IDLE
 
      Failed tasks: a task that failed mid-run is ERROR but keeps its
      half-finished turn (and any interrupted tool ledger).  /task resume
      [tid] continues that turn instead of starting over.
 
+     Cancelled tasks: a task stopped with /task stop is CANCELLED but not
+     destroyed -- its turn and messages are kept; /task resume revives it.
+
      - COMPLETED tasks are terminal; read output with /task output <id>.
      - WAITING_DEPS tasks accept input and queue it until deps resolve.
-     - SUSPENDED tasks are parked (e.g. after a restart); /task resume revives.
+     - INTERRUPTED tasks are revived by /task resume.
+     - SUSPENDED tasks are parked; /task resume revives.  Nothing produces
+       this state today.
      - ERROR tasks failed mid-run; /task resume continues their unfinished turn.
+     - CANCELLED tasks were stopped; /task resume continues them too.
 
 SHELL-LIKE JOB CONTROL
      Shell            EdgeClaw
@@ -217,16 +231,36 @@ SHELL-LIKE JOB CONTROL
      fg %n            /task fg <id>
      bg %n            /task bg [id]
      kill %n          /task stop <id>
-     !!   !n          !!  !3  (history expansion, inside a task description)
      !cmd             !git status  (local shell: a task of its own)
      $LAST  $1  $$    variable expansion
 
 COMMAND REFERENCE
+     General
+     /help                         Show the command list.
+     /whoami                       Show the current session, model,
+                                   foreground group, and active task.
+     /model                        List the current provider's chat models
+                                   (the current one marked).
+     /model <id>                   Switch model (persisted).
+     /model search <q>             Search chat models across all providers.
+     /prompt                       List the templates in workspace/prompts/.
+     /prompt <name> [args...]      Run a template: substitute its {{...}}
+                                   placeholders and run the result as input.
+     /connect                      Guided setup (provider, API key, model).
+     /sandbox [on|off]             Enable/disable the filesystem sandbox.
+     /sandbox list                 Show the allow/deny path lists.
+     /sandbox add-ro|rm-ro <dir>   Add/remove a read-only path.
+     /sandbox add-rw|rm-rw <dir>   Add/remove a read-write path.
+     /sandbox add-deny|rm-deny <dir>
+                                   Add/remove a masked dir (wins over ro/rw).
+
      Session
-     /session new [name]           Start a new session (optionally named).
+     /session new [name] [dir]     Start a new session (optionally named,
+                                   optionally with a working directory).
      /session switch <name_or_id>  Switch to another session.
      /session list                 List all sessions.
      /session info                 Show current session details.
+     /session status [id]          Show a session's state (default: active).
      /session save                 Persist the current session's history
                                    and state.
      /session stop                 Cancel all active tasks in the current
@@ -234,42 +268,57 @@ COMMAND REFERENCE
      /session remove <name_or_id>  Remove a session (the last one cannot
                                    be removed).
      /session rename <old> <new>   Rename a session.
-     /help                         Show help message.
-     /whoami                       Show current session, model, and group info.
-     /model [name]                 Show or set the current LLM model name.
-     /connect                      Configure the LLM provider (API URL, model,
-                                   API key) in the TUI.
+     /session memo [show [id]]     Show the session memory (all entries, or
+                                   one entry's detail).
+     /session memo search <q>      Search the session memory.
+     /session memo curate [focus]  Curate durable entries out of the group
+                                   memories now.
+     /session memo compact         Compact the session memory now.
 
      Task creation
-     /task new <desc>                  Create new group + task (foreground).
-     /task new <desc> --bg             Create new group + task (background).
+     /task new <desc>                  Create a task in the group in front.
+     /task new <desc> --bg             Same group, background (no foreground).
+     /task new <desc> --new-group      Open a group of its own (foreground).
      /task new <desc> -g <gid>         Create in existing group.
-     /task new <desc> -d <tid>         Create + wait for dependency.
-     /task fork <pid> <desc>           Fork child in parent's group.
-     /task fork <pid> <desc> --prompt <name>
-                                       Fork with subagent prompt.
+     /task new <desc> -d <tid>         Create + wait for dependency,
+                                       injecting its output (--with is the
+                                       explicit form).
+     /task fork <pid> <desc>           Fork: child leads its own group and
+                                       inherits the parent's context.
 
      Task inspection
      /task list               List all groups and tasks. Active task
                                marked with * (e.g. [L*] or [M*]).
      /task status [tid]       Show task details (state, output, deps).
      /task output <tid>       Show only the task's output text.
-     /task groups             List all process groups.
+     /task history <tid>      Show the task's messages (--json = raw payload).
 
      Foreground / active
      /task fg <tid>           Foreground + set as active task.
-     /task bg                 Move current foreground to background.
+     /task bg [tid]           Move the foreground group (or that task) to
+                               the background.
 
      Task control
      /task stop [tid]         Cancel a task (SIGTERM — notifies deps).
                               Without an id, stops the active task of the
                               foreground group; errors if the id is not
                               found.
-     /task resume [tid]       Resume a SUSPENDED, ERROR or CANCELLED task:
-                              re-derives state (deps / tool chain / turn) and
-                              drives it; an ERROR or CANCELLED task continues
-                              its unfinished turn. Without an id, resumes the
-                              active task of the foreground group.
+     /task resume [tid]       Resume an INTERRUPTED, SUSPENDED, ERROR or
+                              CANCELLED task: re-derives state (deps / tool
+                              chain / turn) and drives it; an ERROR or
+                              CANCELLED task continues its unfinished turn.
+                              Without an id, resumes the active task of the
+                              foreground group.
+     /task resume --all       Re-decide every stopped task of the session
+                              (after a restart).
+
+     Group
+     /group list              List all process groups.
+     /group info [id]         A group's context / fold numbers (default:
+                              the foreground group).
+     /group history <id>      The whole group's history, one block per member.
+     /group fold [id] [focus] Fold the group now, ignoring the trigger
+                              (default: the foreground group).
 
 OUTPUT
      Only the session's active task outputs to the terminal.  Other tasks
@@ -325,13 +374,8 @@ WORKFLOW EXAMPLES
            > based on $LAST, create an optimization plan
            ... task 2 waits for task 1, then sees its output ...
 
-     History expansion
-           > review the latest PR
-           > !!                    # repeats "review the latest PR"
-           > !3                    # repeats command #3 from history
-
-     Fork with subagent
-           > /task fork task-0 "audit the database schema" --prompt dba
+     Fork (child leads its own group)
+           > /task fork task-0 "audit the database schema"
 
 FILES
      ~/.edgeclaw/                        EdgeClaw home directory.

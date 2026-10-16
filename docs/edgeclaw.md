@@ -12,10 +12,14 @@ control for orchestrating multiple parallel agent tasks.
 $ edgeclaw              # start the interactive TUI
 ```
 
-On first run EdgeClaw creates `config.json` with defaults and does not prompt;
-every setting uses its default. Configure the provider with `/connect`, which
-opens a dialog (prefilled with the current values) for the API URL, model and key
-and applies them immediately.
+On first run EdgeClaw creates `config.json` with defaults and opens the guided
+setup wizard once (until it is completed). Reopen it any time with `/connect`: it
+walks through three steps — provider, API key, model — and applies the choice
+immediately (it writes the base URL, key, model and the model's context window).
+
+While the input starts with `/`, a completion list hangs just below it: `↑`/`↓` move
+the selection, `Tab` completes it, `Esc` dismisses it. `Enter` is untouched — it still
+sends what you typed.
 
 Type a message in the input box and press Enter. Conversations are saved per session under `workspace/<session_id>/`.
 
@@ -73,16 +77,8 @@ The AST executor (`exec_ctx_t`) walks the tree recursively, carrying context:
 
 ### History Expansion
 
-`!` at the **start of a line** is the local shell entry point, not a history reference
-(see Local Shell below) — a line-leading `!` never reaches task creation.
-
-The parser still expands `!n` / `!!` **inside a task description** before tokenization:
-
-- `!!` — repeat the last command
-- `!n` — repeat the nth command from history
-
-That history is written only from outside the TUI, so inside the TUI these expand to
-nothing and the text is taken literally.
+There is none. `!` is only special at the **start of a line** (the local shell — see Local
+Shell below); a `!n` or `!!` inside a task description is literal text.
 
 ---
 
@@ -219,8 +215,9 @@ Two dependency types:
 
 ### Fork
 
-`/task fork <parent> <desc>` creates a child task in the parent's group.
-The child inherits a slice of the parent's conversation context.
+`/task fork <parent> <desc>` creates a child task that **leads a group of its own**
+and takes the foreground. It inherits the parent group's memory summary plus a snapshot
+of the parent's conversation context up to the fork point (`desc` is its input).
 
 ---
 
@@ -245,20 +242,41 @@ equivalent of `cmd &`.
 
 ## Command Reference
 
+### General
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show the command list |
+| `/whoami` | Show the current session, model, foreground group and active task |
+| `/model` | List the current provider's chat models (the current one marked) |
+| `/model <id>` | Switch model (persisted; the catalog's context window is applied too) |
+| `/model search <q>` | Search chat models across all providers |
+| `/prompt` | List the templates in `workspace/prompts/` |
+| `/prompt <name> [args…]` | Load a template, substitute its `{{…}}` placeholders, and run the result as input |
+| `/connect` | Guided setup: choose a provider, API key, and model (three-step wizard) |
+| `/sandbox [on\|off]` | Enable/disable the filesystem sandbox |
+| `/sandbox list` | Show the sandbox allow/deny path lists |
+| `/sandbox add-ro\|rm-ro <dir>` | Add/remove a read-only path |
+| `/sandbox add-rw\|rm-rw <dir>` | Add/remove a read-write path |
+| `/sandbox add-deny\|rm-deny <dir>` | Add/remove a masked dir (wins over ro/rw; e.g. `~/.ssh`) |
+
 ### Session
 
 | Command | Description |
 |---------|-------------|
-| `/session new [name]` | Start a new session (optionally named) |
+| `/session new [name] [dir]` | Start a new session (optionally named, optionally with a working directory) |
 | `/session switch <name_or_id>` | Switch to another session |
 | `/session list` | List all sessions |
 | `/session info` | Show current session details |
+| `/session status [id]` | Show a session's state (no id = the active session) |
 | `/session save` | Persist the current session's history and state |
 | `/session stop` | Cancel all active tasks in the current session |
 | `/session remove <name_or_id>` | Remove a session (the last one cannot be removed) |
 | `/session rename <old> <new>` | Rename a session |
-| `/help` | Show help message |
-| `/connect` | Configure the LLM provider (API URL, model, key) — opens a dialog |
+| `/session memo` · `/session memo show [id]` | Show the session memory (all entries, or one entry's detail) |
+| `/session memo search <q>` | Search the session memory |
+| `/session memo curate [focus]` | Curate durable entries out of the group memories now |
+| `/session memo compact` | Compact the session memory now (merge / condense / rebuild) |
 
 ### Task Creation
 
@@ -267,9 +285,9 @@ equivalent of `cmd &`.
 | `/task new <desc>` | Create a task in the group in front (queues behind whatever runs there) |
 | `/task new <desc> --bg` | Same group, but background: runs alongside, takes no foreground |
 | `/task new <desc> --new-group` | Open a group of its own (a fresh conversation) and take the foreground |
-| `/task new <desc> -g <gid>` | Create in that existing group |
-| `/task new <desc> -d <tid>` | Create + wait for dependency |
-| `/task fork <pid> <desc>` | Fork child in parent's group |
+| `/task new <desc> -g <gid>` | Create in that existing group (`--group <gid>` is the long form) |
+| `/task new <desc> -d <tid>` | Create + wait for dependency, injecting its output (repeatable; `--with <tid>` is the explicit form) |
+| `/task fork <pid> <desc>` | Fork: a child task that leads a group of its own and takes the foreground, inheriting the parent group's memory and a snapshot of its context |
 
 ### Task Inspection
 
@@ -278,23 +296,31 @@ equivalent of `cmd &`.
 | `/task list` | List all groups and tasks. Active task marked with `*` (e.g. `[L*]` or `[M*]`). |
 | `/task status [tid]` | Show task details (state, output, deps, turns) |
 | `/task output <tid>` | Show only the task's output text |
-| `/task groups` | List all process groups |
+| `/task history <tid>` | Show the task's messages (`--json` = raw payload) |
 
 ### Foreground / Active
 
 | Command | Description |
 |---------|-------------|
 | `/task fg <tid>` | Foreground + set as active. **Only the active task outputs to terminal.** |
-| `/task bg` | Move current foreground group to background |
+| `/task bg [tid]` | Move the foreground group (or that task) to the background |
 
 ### Task Control
 
 | Command | Description |
 |---------|-------------|
 | `/task stop [tid]` | Cancel a task (SIGTERM — notifies dependents). Without an id, stops the active task of the foreground group; errors if the id is not found |
-| `/group info [id]` | A group's context / fold numbers (window, the fold line, how far it is, epoch, failures, fold in flight) |
-| `/task resume --all` | Re-decide every stopped task of the session (after a restart); ones whose dependency is stopped too wait for it |
 | `/task resume [tid]` | Resume an INTERRUPTED, SUSPENDED, ERROR or CANCELLED task: re-derives state (deps / tool chain / turn) and drives it; an ERROR or CANCELLED task continues its unfinished turn. Without an id, resumes the active task of the foreground group |
+| `/task resume --all` | Re-decide every stopped task of the session (after a restart); ones whose dependency is stopped too wait for it |
+
+### Group
+
+| Command | Description |
+|---------|-------------|
+| `/group list` | List all process groups |
+| `/group info [id]` | A group's context / fold numbers (window, the fold line, how far it is, epoch, failures, fold in flight); no id = the foreground group |
+| `/group history <id>` | The whole group's history, one block per member |
+| `/group fold [id] [focus]` | Fold the group now, ignoring the trigger; no id = the foreground group |
 
 ---
 
@@ -443,8 +469,8 @@ wait for another, and the source's inputs + output are injected into it.
 > /task fork task-0 "review the database schema"
 ```
 
-Creates a child task in task-0's group, inheriting the parent's conversation
-context.
+Creates a child task that leads a group of its own (taking the foreground),
+inheriting the parent's memory and conversation context up to the fork point.
 
 ---
 

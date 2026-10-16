@@ -113,49 +113,181 @@ static bool edc_commands_handle_session_stop(struct edc_session_manager *sm, str
 
 /* ── /help ─────────────────────────────────────────────────── */
 
-static bool edc_commands_handle_help(struct edc_reply_to to)
+/* The command surface, described ONCE. `/help` renders it, `/help <command>` looks a row
+ * (or several) up, and this table is the thing to keep in sync with the dispatcher -- the
+ * help text used to be a hand-written blob and drifted from the code (missing `curate`,
+ * missing `-g/-d`, ...). Keep rows in dispatch order; a run of rows sharing |section| is
+ * printed under one heading. */
+struct edc_cmd_doc
 {
-    const char *text =
-        "## EdgeClaw Commands\n"
-        "\n"
-        "- /help\n"
-        "- !<cmd>   (run a local shell command — a task of its own; no model call)\n"
-        "- /session new [name] [dir]  ·  /session switch <name>\n"
-        "- /session list  ·  /session info  ·  /session status [id]\n"
-        "- /session save  ·  /session stop\n"
-        "- /session memo [show [id] | search <q> | compact [focus]]\n"
-        "- /session remove <name>  ·  /session rename <old> <new>\n"
-        "\n"
-        "- /task new <desc>   [--bg] [--new-group]\n"
-        "- /task fork <parent> <desc>\n"
-        "- /task list  ·  /task status [id]  ·  /task output <id>\n"
-        "- /task history <id>   (its messages; `--json` = raw payload)\n"
-        "- /group history <id>  (the whole group; one block per member)\n"
-        "- /group info [id]  (context / fold numbers)\n"
-        "- /group fold [id] [focus]  (fold now, ignoring the trigger)\n"
-        "- /task groups  ·  /task fg <id>  ·  /task bg [id]\n"
-        "- /task stop [id]  ·  /task resume [id|--all]   (default: active task of the foreground group)\n"
-        "\n"
-        "- /whoami\n"
-        "- /model [name]\n"
-        "- /prompt   (list)  ·  /prompt <name> [args…]   (run a template)\n"
-        "- /connect   (guided setup: choose a provider, key, and model)\n"
-        "- /sandbox [on|off]   (enable/disable the filesystem sandbox)\n"
-        "- /sandbox list   ·  /sandbox add-ro|rm-ro <dir>  ·  /sandbox add-rw|rm-rw <dir>\n"
-        "- /sandbox add-deny|rm-deny <dir>   (mask a dir: wins over ro/rw; e.g. ~/.ssh)\n"
-        "\n"
-        "## Shell Syntax\n"
-        "\n"
-        "- `@desc` — new group + task\n"
-        "- `desc` — task in current group\n"
-        "- `a | b` — pipe chain\n"
-        "- `cmd &` — background\n"
-        "- `> file` `>> file` — redirect output\n"
-        "- `< file` — redirect input\n"
-        "- `a ; b` — sequential execution\n"
-        "- `$LAST` `$1` `$$` — variable expansion\n";
+    const char *section; /* heading */
+    const char *cmd;     /* the spelling, as the user writes it */
+    const char *brief;   /* one line */
+    const char *detail;  /* longer text for `/help <command>`; NULL = the brief suffices */
+};
 
+static const struct edc_cmd_doc k_cmd_docs[] = {
+    {"Input", "`desc`", "a task in the current group", NULL},
+    {"Input", "`@desc`", "a new group + task", NULL},
+    {"Input", "`!<cmd>` · `!!` · `\\!<cmd>`",
+     "local shell: run it / rerun the last one / send it as input (no model call)", NULL},
+    {"Input", "`a | b` · `a ; b` · `cmd &`",
+     "pipe (injects the source output) · sequential (wait only) · background",
+     "`|` chains tasks and injects the source's output into the next one's context; `;` only "
+     "makes it wait; `&` runs it in the background (takes no foreground)."},
+    {"Input", "`> file` `>> file` `2> file` `< file`", "redirect output / append / stderr / input", NULL},
+    {"Input", "`$LAST` `$1` `$$`", "variable expansion (last output / a task's output / current task id)", NULL},
+
+    {"General", "/help [<command>]", "show this list, or the detail of one command",
+     "`/help` alone lists every command; `/help <command>` (a prefix, or a subcommand name "
+     "like `memo`) prints that command's detail."},
+    {"General", "/whoami", "show the current session, model, foreground group and active task", NULL},
+    {"General", "/model [<id> | search <q>]", "list the current provider's models, switch model, or search all",
+     "No argument lists the current provider's chat models; `/model <id>` switches (and persists); "
+     "`/model search <q>` searches every provider."},
+    {"General", "/connect", "guided setup: choose a provider, API key, and model", NULL},
+    {"General", "/prompt", "list the templates in workspace/prompts/", NULL},
+    {"General", "/prompt <name> [args…]",
+     "run a template: its `{{…}}` placeholders are filled in and the result runs as input", NULL},
+    {"General", "/sandbox [on|off]", "enable/disable the filesystem sandbox", NULL},
+    {"General", "/sandbox list", "show the allow/deny path lists", NULL},
+    {"General", "/sandbox add-ro|rm-ro <dir>", "add/remove a read-only path", NULL},
+    {"General", "/sandbox add-rw|rm-rw <dir>", "add/remove a read-write path", NULL},
+    {"General", "/sandbox add-deny|rm-deny <dir>", "mask a dir (wins over ro/rw; e.g. ~/.ssh)", NULL},
+
+    {"Session", "/session new [name] [dir]",
+     "start a new session (optionally named, optionally with a working directory)", NULL},
+    {"Session", "/session switch <name>", "switch to another session", NULL},
+    {"Session", "/session list", "list all sessions", NULL},
+    {"Session", "/session info", "show the current session's details (name, id, directory)", NULL},
+    {"Session", "/session status [id]", "show a session's runtime state (no id = the active session)",
+     "`/session status` is runtime state; `/session info` is static metadata."},
+    {"Session", "/session save", "persist the current session's history and state", NULL},
+    {"Session", "/session stop", "cancel all active tasks in the current session", NULL},
+    {"Session", "/session remove <name>", "remove a session (the last one cannot be removed)", NULL},
+    {"Session", "/session rename <old> <new>", "rename a session", NULL},
+    {"Session", "/session memo [show [id] | search <q> | curate | compact]", "view and curate the session memory",
+     "`show [id]` = the entries (all, or one entry's detail) · `search <q>` = grep the entries · "
+     "`curate [focus]` = pull durable knowledge out of the group memories now · `compact` = "
+     "merge / condense the entries now."},
+
+    {"Task", "/task new <desc>   [--bg] [--new-group] [-g <group>] [-d <task> | --with <task>]", "create a task",
+     "`--bg` runs it in the background (no foreground) · `--new-group` gives it a fresh "
+     "conversation · `-g <group>` puts it in an existing group · `-d` / `--with <task>` makes it "
+     "wait for that task AND injects its output into this one's context. Options are recognised "
+     "only after a quoted description: `/task new \"<desc>\" --bg`."},
+    {"Task", "/task fork <parent> <desc>",
+     "fork: the child leads a group of its own and inherits the parent's context", NULL},
+    {"Task", "/task list", "list all groups and tasks", NULL},
+    {"Task", "/task status [id]", "show a task's state, output, deps and turns", NULL},
+    {"Task", "/task output <id>", "show only the task's output text", NULL},
+    {"Task", "/task history <id>", "show the task's messages (`--json` = raw payload)", NULL},
+    {"Task", "/task fg <id>", "foreground + set as active (only the active task outputs to terminal)", NULL},
+    {"Task", "/task bg [id]", "move the foreground group (or that task) to the background", NULL},
+    {"Task", "/task stop [id]", "cancel a task (default: the foreground group's active task)", NULL},
+    {"Task", "/task resume [id|--all]",
+     "resume an INTERRUPTED / SUSPENDED / ERROR / CANCELLED task (default: the foreground group's active task)",
+     "`--all` re-decides every stopped task of the session."},
+
+    {"Group", "/group list", "list all groups", NULL},
+    {"Group", "/group info [id]", "a group's context / fold numbers (default: the foreground group)", NULL},
+    {"Group", "/group history <id>", "the whole group's history, one block per member", NULL},
+    {"Group", "/group fold [id] [focus]", "fold the group now, ignoring the trigger", NULL},
+};
+
+#define EDC_CMD_DOC_COUNT (sizeof(k_cmd_docs) / sizeof(k_cmd_docs[0]))
+
+/* The first tokens, one row each: a bare `/` in the completion palette lists these ~9
+ * families instead of all ~45 rows. Kept beside the table, so a new family is one edit. */
+static const struct edc_cmd_doc k_cmd_families[] = {
+    {"General", "/help", "show this list, or one command's detail", NULL},
+    {"General", "/whoami", "show the current session, model and foreground task", NULL},
+    {"General", "/model", "list / switch / search models", NULL},
+    {"General", "/connect", "guided setup: provider, API key, model", NULL},
+    {"General", "/prompt", "list and run prompt templates", NULL},
+    {"General", "/sandbox", "the filesystem sandbox (on/off, ro/rw/deny paths)", NULL},
+    {"Session", "/session", "new / switch / list / save / remove sessions, and the session memory", NULL},
+    {"Task", "/task", "create, inspect and control tasks", NULL},
+    {"Group", "/group", "list groups and their context / fold state", NULL},
+};
+#define EDC_CMD_FAMILY_COUNT (sizeof(k_cmd_families) / sizeof(k_cmd_families[0]))
+
+/* Read-only window onto the tables above: the surface as DATA, for the TUI's completion
+ * palette (which must not parse the rendered markdown). Borrowed strings, static
+ * lifetime. */
+size_t edc_commands_doc_count(void)
+{
+    return EDC_CMD_DOC_COUNT;
+}
+const char *edc_commands_doc_cmd(size_t index)
+{
+    return index < EDC_CMD_DOC_COUNT ? k_cmd_docs[index].cmd : NULL;
+}
+const char *edc_commands_doc_brief(size_t index)
+{
+    return index < EDC_CMD_DOC_COUNT ? k_cmd_docs[index].brief : NULL;
+}
+size_t edc_commands_family_count(void)
+{
+    return EDC_CMD_FAMILY_COUNT;
+}
+const char *edc_commands_family_name(size_t index)
+{
+    return index < EDC_CMD_FAMILY_COUNT ? k_cmd_families[index].cmd : NULL;
+}
+const char *edc_commands_family_brief(size_t index)
+{
+    return index < EDC_CMD_FAMILY_COUNT ? k_cmd_families[index].brief : NULL;
+}
+
+/* Does a row match a `/help <arg>` query? A prefix of the command, or anywhere in it (so
+ * `/help memo` finds `/session memo …`). */
+static bool edc_cmd_doc_matches(const struct edc_cmd_doc *d, const char *q)
+{
+    return strncmp(d->cmd, q, strlen(q)) == 0 || strstr(d->cmd, q) != NULL;
+}
+
+sds edc_commands_help_text(const char *arg)
+{
+    if (!arg || !*arg)
+    {
+        sds out = sdsnew("## EdgeClaw Commands\n");
+        const char *section = NULL;
+        for (size_t i = 0; i < EDC_CMD_DOC_COUNT; i++)
+        {
+            const struct edc_cmd_doc *d = &k_cmd_docs[i];
+            if (!section || strcmp(section, d->section) != 0)
+            {
+                section = d->section;
+                out = sdscatprintf(out, "\n### %s\n", section);
+            }
+            out = sdscatprintf(out, "- %s — %s\n", d->cmd, d->brief);
+        }
+        return out;
+    }
+
+    sds out = sdscatprintf(sdsempty(), "## Help — `%s`\n", arg);
+    bool any = false;
+    for (size_t i = 0; i < EDC_CMD_DOC_COUNT; i++)
+    {
+        const struct edc_cmd_doc *d = &k_cmd_docs[i];
+        if (!edc_cmd_doc_matches(d, arg))
+            continue;
+        any = true;
+        out = sdscatprintf(out, "\n**%s**\n%s\n", d->cmd, d->brief);
+        if (d->detail)
+            out = sdscatprintf(out, "\n%s\n", d->detail);
+    }
+    if (!any)
+        out = sdscatprintf(out, "\nNo command matches `%s`. Type `/help` for the full list.\n", arg);
+    return out;
+}
+
+static bool edc_commands_handle_help(struct edc_reply_to to, const char *arg)
+{
+    sds text = edc_commands_help_text(arg);
     edc_commands_reply(to, text);
+    sdsfree(text);
     return true;
 }
 
@@ -572,6 +704,15 @@ static bool edc_commands_handle_session_status(struct edc_session_manager *sm, s
 static bool edc_commands_handle_session(struct edc_session_manager *sm, struct edc_scheduler *sched,
                                         struct edc_reply_to to, struct edc_channel_message *msg)
 {
+    /* Bare `/session`: usage, same shape as bare `/task` and `/group`. */
+    if (edc_commands_is_target(msg->content, "/session"))
+    {
+        edc_commands_reply(to, "Usage: `/session` knows `new [name] [dir]`, `switch <name>`, `list`, `info`, "
+                               "`status [id]`, `save`, `stop`, `remove <name>`, `rename <old> <new>`, `memo`. "
+                               "Type `/help /session`.");
+        return true;
+    }
+
     sds rest = NULL;
     /* The name is optional: match exactly first, or a bare "/session new" falls through to unknown subcommand. */
     if (edc_commands_is_target(msg->content, "/session new"))
@@ -1204,7 +1345,7 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
     sdsfree(desc);
 }
 
-static void edc_commands_handle_task_groups(struct edc_session_manager *sm, struct edc_reply_to to)
+static void edc_commands_handle_group_list(struct edc_session_manager *sm, struct edc_reply_to to)
 {
     sds out = sdsnew("## Groups\n\n");
     struct edc_task_group *g;
@@ -1580,16 +1721,23 @@ static bool edc_commands_handle_group(struct edc_session_manager *sm, struct edc
         edc_commands_handle_group_fold(sm, sched, to, NULL);
         return true;
     }
+    /* `/group list` first: it also matches the bare `/group` prefix below. */
+    if (edc_commands_is_command(message->content, "/group list"))
+    {
+        edc_commands_handle_group_list(sm, to);
+        return true;
+    }
     if (edc_commands_is_command(message->content, "/group") ||
         edc_commands_is_command(message->content, "/group history"))
     {
-        edc_commands_reply(to, "Usage: `/group info [id]`   (context / fold numbers; no id = the foreground group)\n\n"
+        edc_commands_reply(to, "Usage: `/group list`   (all groups of the session)\n\n"
+                               "Usage: `/group info [id]`   (context / fold numbers; no id = the foreground group)\n\n"
                                "Usage: `/group history <id>`   (the id is the group header's)\n\n"
                                "Usage: `/group fold [id] [focus]`   (fold now, ignoring the trigger; "
                                "no id = the foreground group)");
         return true;
     }
-    edc_commands_reply(to, "**Unknown subcommand** — `/group` knows `info [id]`, `history <id>` and "
+    edc_commands_reply(to, "**Unknown subcommand** — `/group` knows `list`, `info [id]`, `history <id>` and "
                            "`fold [id] [focus]`.");
     return true;
 }
@@ -1672,14 +1820,17 @@ static bool edc_commands_handle_task(struct edc_session_manager *sm, struct edc_
     {
         edc_commands_handle_task_bg(sm, to, NULL);
     }
-    else if (strcmp(content_trim, "/task groups") == 0)
+    else if (strcmp(content_trim, "/task") == 0)
     {
-        edc_commands_handle_task_groups(sm, to);
+        /* Bare `/task`: same shape as bare `/group` and `/session` -- usage, not "unknown". */
+        edc_commands_reply(to, "Usage: `/task` knows `new <desc>`, `fork <parent> <desc>`, `list`, `status [id]`, "
+                               "`output <id>`, `history <id>`, `fg <id>`, `bg [id]`, `stop [id]`, "
+                               "`resume [id|--all]`. Type `/help /task`.");
     }
     else
     {
         /* Unknown /task subcommand — report error instead of falling through */
-        sds reply = sdscatprintf(sdsempty(), "Unknown `/task` subcommand. Type `/help` for available commands.");
+        sds reply = sdscatprintf(sdsempty(), "Unknown `/task` subcommand. Type `/help /task` for the subcommands.");
         edc_commands_reply(to, reply);
         sdsfree(reply);
         sdsfree(content_trim);
@@ -1842,8 +1993,14 @@ bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm
         if (edc_commands_is_command(message->content, "/session"))
             return edc_commands_handle_session(sm, sched, to, message);
 
-        if (edc_commands_is_target(message->content, "/help"))
-            return edc_commands_handle_help(to);
+        if (edc_commands_is_command(message->content, "/help"))
+        {
+            sds help_arg = NULL;
+            edc_commands_arg(message->content, "/help", &help_arg);
+            bool ret = edc_commands_handle_help(to, help_arg);
+            sdsfree(help_arg);
+            return ret;
+        }
 
         sds reply = sdscatprintf(sdsempty(), "**Unknown command** — `%s`\n\nType `/help` for available commands.",
                                  message->content);

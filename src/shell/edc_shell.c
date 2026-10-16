@@ -1,5 +1,4 @@
 #include "edc_shell.h"
-#include "edc_cli_history.h"
 #include "edc_session_store.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
@@ -420,84 +419,6 @@ sds edc_shell_read_file(const char *path, sds *err_out)
     return content;
 }
 
-sds edc_shell_expand_history(const char *input)
-{
-    if (edc_cli_history_count() == 0)
-        return sdsnew(input);
-
-    sds result = sdsempty();
-    bool in_dq = false, in_sq = false;
-    const char *p = input;
-
-    while (*p)
-    {
-        if (in_dq)
-        {
-            if (*p == '"')
-                in_dq = false;
-            else if (*p == '\\' && *(p + 1))
-            {
-                result = sdscatlen(result, p, 1);
-                p++;
-            }
-            result = sdscatlen(result, p, 1);
-            p++;
-        }
-        else if (in_sq)
-        {
-            if (*p == '\'')
-                in_sq = false;
-            result = sdscatlen(result, p, 1);
-            p++;
-        }
-        else if (*p == '"')
-        {
-            in_dq = true;
-            result = sdscatlen(result, p, 1);
-            p++;
-        }
-        else if (*p == '\'')
-        {
-            in_sq = true;
-            result = sdscatlen(result, p, 1);
-            p++;
-        }
-        else if (*p == '!' && *(p + 1))
-        {
-            p++; /* skip ! */
-            if (*p == '!')
-            {
-                p++;
-                result = sdscat(result, edc_cli_history_at(edc_cli_history_count() - 1));
-            }
-            else if (*p >= '0' && *p <= '9')
-            {
-                int idx = 0;
-                while (*p >= '0' && *p <= '9')
-                {
-                    idx = idx * 10 + (*p - '0');
-                    p++;
-                }
-                if (idx > 0 && idx <= edc_cli_history_count())
-                    result = sdscat(result, edc_cli_history_at(idx - 1));
-            }
-            else
-            {
-                result = sdscatlen(result, "!", 1);
-                result = sdscatlen(result, p, 1);
-                p++;
-            }
-        }
-        else
-        {
-            result = sdscatlen(result, p, 1);
-            p++;
-        }
-    }
-
-    return result;
-}
-
 sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_scheduler *sched, const char *input,
                                sds **out_deps, int *out_dep_count,
                                sds *out_error)
@@ -664,13 +585,10 @@ bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sch
         return true;
     }
 
-    /* expand !n / !! history references */
-    sds hist_expanded = edc_shell_expand_history(body);
-
-    /* tokenize → parse → execute via AST */
+    /* No history expansion: a `!n` / `!!` inside a description is literal text. Only a
+     * LINE-LEADING `!` is special (the local shell, handled before this point). */
     int tok_count = 0;
-    edc_shell_token_t *tokens = edc_shell_tokenize(hist_expanded, &tok_count);
-    sdsfree(hist_expanded);
+    edc_shell_token_t *tokens = edc_shell_tokenize(body, &tok_count);
 
     ast_node_t *root = ast_parse(tokens, tok_count, is_at);
     ast_execute(sm, sched, to, root,

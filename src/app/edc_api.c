@@ -21,6 +21,7 @@
 #include "edc_actor.h"
 #include "edc_app.h"
 #include "edc_channel_actor.h"
+#include "edc_commands.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
 #include "edc_models.h"
@@ -227,6 +228,32 @@ int edc_app_models_provider_matches(const char *provider_id, const char *query)
 int edc_app_models_model_matches(const char *model_id, const char *query)
 {
     return edc_models_model_matches(model_id, query);
+}
+
+/* The command surface, straight from the shell's table (static data, no app). */
+size_t edc_app_cmd_count(void)
+{
+    return edc_commands_doc_count();
+}
+const char *edc_app_cmd_text(size_t index)
+{
+    return edc_commands_doc_cmd(index);
+}
+const char *edc_app_cmd_brief(size_t index)
+{
+    return edc_commands_doc_brief(index);
+}
+size_t edc_app_cmd_family_count(void)
+{
+    return edc_commands_family_count();
+}
+const char *edc_app_cmd_family_name(size_t index)
+{
+    return edc_commands_family_name(index);
+}
+const char *edc_app_cmd_family_brief(size_t index)
+{
+    return edc_commands_family_brief(index);
 }
 
 /* Where a transcript lives -- path resolution only; encode/append/replay are the

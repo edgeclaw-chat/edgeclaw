@@ -393,6 +393,115 @@ void TestTaskHistoryPayloadBecomesBubbles(edc::TUIWindow &win)
     Check(Has(frame, "LIVE_AFTER_ESC_MARKER"), "Esc 之后实时产出又上屏");
 }
 
+// 帧里包含 |needle| 的那一行的行号（找不到返回 -1）。
+int RowOf(const std::string &frame, const std::string &needle)
+{
+    int row = 0;
+    size_t pos = 0;
+    while (pos <= frame.size())
+    {
+        const size_t end = frame.find('\n', pos);
+        const std::string line = end == std::string::npos ? frame.substr(pos) : frame.substr(pos, end - pos);
+        if (line.find(needle) != std::string::npos)
+            return row;
+        if (end == std::string::npos)
+            break;
+        row++;
+        pos = end + 1;
+    }
+    return -1;
+}
+
+// |row| 那一行的内容（超界返回空串）。
+std::string LineOf(const std::string &frame, int row)
+{
+    if (row < 0)
+        return "";
+    int r = 0;
+    size_t pos = 0;
+    while (pos <= frame.size())
+    {
+        const size_t end = frame.find('\n', pos);
+        if (r == row)
+            return end == std::string::npos ? frame.substr(pos) : frame.substr(pos, end - pos);
+        if (end == std::string::npos)
+            break;
+        r++;
+        pos = end + 1;
+    }
+    return "";
+}
+
+// ── 输入框的命令补全弹层 ────────────────────────────────────────────────────
+// 打 "/" 弹家族、"ta" 收敛、Tab 补全、Esc 关掉；Enter 语义不被抢（下一条仍走 Submit）。
+void TestCommandPalette(edc::TUIWindow &win)
+{
+    std::cout << "输入框补全弹层\n";
+    auto type = [&](const char *s) {
+        for (const char *p = s; *p; p++)
+            win.OnEvent(::ftxui::Event::Character(std::string(1, *p)));
+    };
+
+    // 起点：输入框是空的（上一条输入用例提交后清空了它）。
+    type("/");
+    {
+        const std::string f = FrameOf(win);
+        Check(Has(f, "/task") && Has(f, "/session"), "裸 / 列出家族");
+        Check(Has(f, "Tab complete"), "带了提示行");
+
+        // 面板是输入框**上方**的一块，而且在输入框的**上分割线之上**（中间正好隔着那条
+        // 规则线）—— 不然它会看起来像输入框长高了。
+        const int input_row = RowOf(f, "❯");
+        const int hint_row = RowOf(f, "Tab complete");
+        Check(input_row >= 0 && hint_row >= 0 && hint_row < input_row, "补全列表在输入框上方");
+        Check(input_row - hint_row == 2 && LineOf(f, input_row - 1).find("─") != std::string::npos,
+              "列表在上分割线之上（两者之间隔着规则线）");
+    }
+
+    type("ta");
+    {
+        const std::string f = FrameOf(win);
+        Check(Has(f, "/task"), "收敛到 /task");
+        Check(!Has(f, "/session"), "无关家族被过滤");
+    }
+
+    win.OnEvent(::ftxui::Event::Tab);
+    {
+        const std::string f = FrameOf(win);
+        Check(Has(f, "/task new"), "Tab 之后进了子命令列表（输入成了 '/task '）");
+
+        // 同一件事在 10 行子的列表上也成立（面板最多 8 行 + 提示行）。
+        const int hint_row = RowOf(f, "Tab complete");
+        const int prompt_row = RowOf(f, "❯");
+        Check(hint_row >= 0 && prompt_row >= 0 && prompt_row - hint_row == 2 &&
+                  LineOf(f, prompt_row - 1).find("─") != std::string::npos,
+              "子命令列表同样在上分割线之上");
+    }
+
+    win.OnEvent(::ftxui::Event::Escape);
+    {
+        const std::string f = FrameOf(win);
+        Check(!Has(f, "Tab complete"), "Esc 关掉弹层");
+        Check(Has(f, "/task "), "输入内容留着");
+    }
+
+    // Tab 在"没有可补全的了"时 = 确认：列表收起，输入留在原地。
+    // 先提交上一条把输入清空，再从干净状态走一遍。
+    win.OnEvent(::ftxui::Event::Return);
+    type("/model");
+    win.OnEvent(::ftxui::Event::Tab); // -> "/model "，还有下一级（参数形状），列表仍开
+    Check(Has(FrameOf(win), "Tab complete"), "补到 '/model ' 后列表还在（还有下一级）");
+    win.OnEvent(::ftxui::Event::Tab); // 没有可补的了 -> 等同于"确认"
+    {
+        const std::string f = FrameOf(win);
+        Check(!Has(f, "Tab complete"), "无可补全时 Tab = 确认，列表收起");
+        Check(Has(f, "/model "), "输入留在 '/model '");
+    }
+
+    // 收尾：把 '/model ' 提交掉，别把脏输入留给后面的用例（本条是最后一条）。
+    win.OnEvent(::ftxui::Event::Return);
+}
+
 } // namespace
 
 int main()
@@ -428,6 +537,7 @@ int main()
     TestUnknownMessageIgnored(win);
     TestUserInputIsEchoedImmediately(win);
     TestTaskHistoryPayloadBecomesBubbles(win);
+    TestCommandPalette(win);
 
     if (g_failures)
     {

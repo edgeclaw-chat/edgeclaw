@@ -21,6 +21,7 @@
 // synchronously.
 
 #include "edc_api.h" /* struct edc_channel_message + message_* read-only views + EDC_APP_RENDER_* */
+#include "edc_command_palette.hpp" /* model::CommandFact (the completion popup's rows) */
 
 #include <cstddef>
 #include <ctime>
@@ -137,6 +138,12 @@ class IAppFacade
     virtual size_t Models(const std::string &provider_id, std::vector<std::string> *ids) const = 0;
     virtual bool ModelInfo(const std::string &model_id, ModelFacts *out) const = 0;
 
+    // ── command surface (the input's completion popup) ───────────
+    // Static data from the shell's command table: every row, and the families (first
+    // tokens) a bare "/" lists.
+    virtual std::vector<model::CommandFact> Commands() const = 0;
+    virtual std::vector<model::CommandFact> CommandFamilies() const = 0;
+
     // ── a few things the frontend does ───────────────────────────
     virtual void SendUserMessage(const std::string &session_id, const std::string &content) = 0;
     virtual void RequestTaskSnapshot(const std::string &session_id) = 0;
@@ -184,6 +191,9 @@ class AppFacade : public IAppFacade
     std::string ProviderEnvName(const std::string &provider_id, size_t index) const override;
     size_t Models(const std::string &provider_id, std::vector<std::string> *ids) const override;
     bool ModelInfo(const std::string &model_id, ModelFacts *out) const override;
+
+    std::vector<model::CommandFact> Commands() const override;
+    std::vector<model::CommandFact> CommandFamilies() const override;
 
     void SendUserMessage(const std::string &session_id, const std::string &content) override;
     void RequestTaskSnapshot(const std::string &session_id) override;

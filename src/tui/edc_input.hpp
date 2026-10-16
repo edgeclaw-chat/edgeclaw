@@ -28,6 +28,10 @@ class EdcInput : public ::ftxui::ComponentBase
     // capped); also leaves any in-progress recall.
     void AddHistory(const std::string &entry);
 
+    // Replace the whole draft (the completion popup completes by swapping the line)
+    // and put the caret at its end; leaves history recall.
+    void ReplaceAll(const std::string &text);
+
     // Drop every entry, so the owner can re-seed from disk idempotently.
     void ClearHistory();
 

@@ -61,6 +61,18 @@ void EdcInput::Reset()
     StopBrowsing();
 }
 
+void EdcInput::ReplaceAll(const std::string &text)
+{
+    // Completion popup: swap the whole draft for the completed command and put the
+    // caret after it. Browsing is left behind (the popup and history recall are
+    // mutually exclusive: the popup only shows on a line starting with '/').
+    *content_ = text;
+    cursor_ = static_cast<int>(content_->size());
+    scroll_ = 0;
+    desired_col_ = -1;
+    StopBrowsing();
+}
+
 void EdcInput::AddHistory(const std::string &entry)
 {
     // Appending is the owner's signal that the draft was consumed: leave any

@@ -164,8 +164,6 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
     return app;
 }
 
-/* CLI `!n` / `!!` history lives in src/shell/edc_cli_history.{c,h} (the shell's own
- * per-process command history, not runtime assembly). */
 bool edc_app_set_llm_config(struct edc_app *app, const char *api_url, const char *model, const char *api_key)
 {
     if (!app || !app->config)
