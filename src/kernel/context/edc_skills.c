@@ -52,6 +52,10 @@ void edc_skill_free(struct edc_skill *skill)
     {
         sdsfree(skill->source);
     }
+    if (skill->location)
+    {
+        sdsfree(skill->location);
+    }
 
     free(skill);
 }
@@ -178,6 +182,8 @@ static void edc_skills_foreach_cb(const char *name, int type, void *userdata)
     {
         sdsfree(skill->source);
         skill->source = sdsdup(ctx->dir_path);
+        sdsfree(skill->location);
+        skill->location = sdsdup(full_path);
         utarray_push_back(ctx->skills, &skill);
     }
     sdsfree(full_path);

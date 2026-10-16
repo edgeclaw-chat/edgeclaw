@@ -19,6 +19,10 @@ struct edc_skill
     struct edc_skill_meta_entry *meta;
     sds content; /* the SKILL.md body (front matter stripped) */
     sds source;  /* the resource ROOT it came from */
+    /* The SKILL.md path itself. `/skill` wraps the body in pi's
+     * `<skill name="…" location="…">` block, whose "References are relative to <dir>" line
+     * is what tells the model where the skill's scripts/references live. */
+    sds location;
     /* pi's `disable-model-invocation: true` -- the author says the MODEL must not reach
      * for this skill on its own. It then stays out of the system prompt's skill list and
      * only an explicit `/skill <name>` runs it. Default true (the model may pick it). */

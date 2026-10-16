@@ -11,6 +11,7 @@
 #include "edc_prompts.h"
 #include "edc_resources.h"
 #include "edc_skills.h"
+#include "edc_string_utils.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
@@ -2255,13 +2256,23 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
         return true;
     }
 
-    /* The body IS the input, with its `$1` / `$ARGUMENTS` / `{{…}}` placeholders filled in
-     * (and, when it has none, the user's words appended) -- so `/skill pdf extract pages`
-     * hands the skill its arguments. |found->content| is borrowed: the skill frees it. */
+    /* pi's shape: the body goes in wrapped in a <skill> block that names the file and the
+     * directory its relative paths hang off -- otherwise "run scripts/foo.sh" leaves the
+     * model guessing where that is. The user's arguments then land either in the body's
+     * placeholders or, when it has none, appended after the closing tag (the rule in
+     * edc_prompt_expand). |found| is the skill: it owns the strings and is freed below. */
+    sds base_dir = edc_path_dirname(found->location ? found->location : "");
+    sds wrapped = sdscatprintf(sdsempty(),
+                               "<skill name=\"%s\" location=\"%s\">\nReferences are relative to %s.\n\n%s\n</skill>",
+                               found->name ? found->name : "", found->location ? found->location : "",
+                               base_dir ? base_dir : "", found->content ? found->content : "");
+    sdsfree(base_dir);
+
     struct edc_prompt shell_body;
     memset(&shell_body, 0, sizeof(shell_body));
-    shell_body.body = found->content;
+    shell_body.body = wrapped;
     sds input = edc_prompt_expand(&shell_body, args + 1, argc - 1);
+    sdsfree(wrapped);
     edc_skill_free(found);
     edc_prompt_args_free(args, argc);
 
@@ -2272,15 +2283,38 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
         return true;
     }
 
-    /* Same exit as `/prompt`: USER INPUT, so the shell path gives it `| ; & >` for free. */
-    struct edc_channel_message *expanded_msg = edc_channel_message_new(message->type, message->message_type, input);
-    if (message->session_id)
-        expanded_msg->session_id = sdsnew(message->session_id);
-    /* The task is LABELLED by what the user typed (`/skill pdf extract pages`), not by the
-     * skill body it expanded into. */
-    expanded_msg->task_desc = sdstrim(sdsnew(message->content), " \t\r\n");
-    edc_shell_execute(sm, sched, to, expanded_msg);
-    edc_channel_message_free(expanded_msg);
+    /* Spawned DIRECTLY rather than through edc_shell_execute: a skill body is a DOCUMENT,
+     * and the shell layer tokenizes its input -- `<` and `>` are redirect operators there,
+     * so pi's `<skill …>` wrapper would be eaten by the tokenizer (and any `<tag>` in a
+     * body silently mangled). */
+    struct edc_session *session = cmd_input_session(sm, message);
+    struct edc_task_group *group = session ? session->foreground_group : NULL;
+    if (!group || group->is_orphaned || group->member_count == 0)
+        group = NULL;
+
+    struct edc_cmd_task_opts opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.input = input; /* ownership moves to |opts| */
+    /* LABELLED by what the user typed (`/skill pdf extract pages`), not by the body. */
+    opts.desc = edc_str_utf8_truncate(message->content, EDC_TASK_DESC_MAX, true);
+
+    struct edc_task_group *out_group = NULL;
+    sds spawn_err = NULL;
+    struct edc_task *task = edc_shell_spawn_task(sm, sched, to.type, session, &opts, NULL, group, "task", &out_group,
+                                                 NULL, false, NULL, TASK_DEP_SEQUENCE, &spawn_err);
+    if (spawn_err)
+    {
+        edc_commands_reply(to, spawn_err);
+        sdsfree(spawn_err);
+    }
+    /* A `{{LAST}}` / `{{<id>}}` written in a skill body still resolves (the input layer owns
+     * those), so register the deferred expansion exactly as the shell path does. */
+    if (task && strstr(input, "{{"))
+        task->has_deferred_vars = 1;
+    if (task)
+        edc_commands_announce_task(to, task); /* the receipt: id / group / when it runs */
+
+    edc_cmd_task_opts_free(&opts); /* frees |input| too */
     return true;
 }
 

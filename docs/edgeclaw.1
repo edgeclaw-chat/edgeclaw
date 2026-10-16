@@ -269,9 +269,13 @@ COMMAND REFERENCE
      /skill                        List the skills (ours, plus any found in a
                                    .claude / .agents / .pi / .opencode
                                    skills directory).
-     /skill <name> [args...]       Run a skill directly: its SKILL.md body is
-                                   loaded into this task (args substituted, or
-                                   appended when the body has none).
+     /skill <name> [args...]       Run a skill directly: its SKILL.md body goes
+                                   into this task wrapped in a <skill name=...
+                                   location=...> block (pi's shape, so the model
+                                   knows where the skill's relative paths hang
+                                   off); the args are substituted, or appended
+                                   after the closing tag when the body has
+                                   none.
      /reload                       Re-read the resource files and rebuild the
                                    cached system prompt (a skill or AGENTS.md
                                    edited on disk takes effect; config.json
