@@ -55,7 +55,25 @@ typedef struct
     struct edc_session *session; /* the session this input belongs to (tasks/groups it creates land here) */
     bool bg;
     edc_task_dep_type dep_type;
+    /* The tasks this input creates, gathered so the whole input gets ONE receipt (a
+     * `a | b | c` chain used to announce one line per segment). */
+    struct edc_task **created;
+    size_t created_count;
+    size_t created_cap;
 } exec_ctx_t;
+
+/* Remember |task| as a product of this input (no-op for NULL). */
+static void exec_record_created(exec_ctx_t *ctx, struct edc_task *task)
+{
+    if (!task)
+        return;
+    if (ctx->created_count == ctx->created_cap)
+    {
+        ctx->created_cap = ctx->created_cap ? ctx->created_cap * 2 : 4;
+        ctx->created = realloc(ctx->created, ctx->created_cap * sizeof(*ctx->created));
+    }
+    ctx->created[ctx->created_count++] = task;
+}
 
 static struct edc_task *exec_node(
                                   ast_node_t *node, struct edc_task *prev_task, exec_ctx_t *ctx);
@@ -213,9 +231,9 @@ static struct edc_task *exec_node(
         if (task && node->has_deferred_vars)
             task->has_deferred_vars = 1;
 
-        /* The user sees what they just created: id, group, and when it runs. */
-        if (task)
-            edc_commands_announce_task(ctx->to, task);
+        /* The receipt is sent once, at the end of the whole input (ast_execute): the user
+         * learns what their line became, not one line per pipe segment. */
+        exec_record_created(ctx, task);
 
         edc_cmd_task_opts_free(&opts);
 
@@ -364,4 +382,9 @@ void ast_execute(struct edc_session_manager *sm, struct edc_scheduler *sched, st
     if (!ctx.target_group || ctx.target_group->is_orphaned || ctx.target_group->member_count == 0)
         ctx.target_group = NULL;
     exec_node(root, NULL, &ctx);
+
+    /* One receipt for the whole input: what this line became, if there is anything the UI
+     * does not already show (background / dependencies). A plain creation is silent. */
+    edc_commands_announce_tasks(to, ctx.created, ctx.created_count);
+    free(ctx.created);
 }

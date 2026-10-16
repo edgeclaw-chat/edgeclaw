@@ -5,6 +5,7 @@
 #include "edc_config.h"
 #include "sds.h"
 #include <stdbool.h>
+#include <stddef.h>
 struct edc_actor;
 struct edc_channel_message;
 struct edc_config;
@@ -53,17 +54,26 @@ extern void edc_commands_send_history(struct edc_reply_to to, const char *payloa
 
 /* ── Task-creation receipt ─────────────────────────────────── */
 
-/** The one-line receipt for a just-created task, e.g.
- *    "→ task #3 · group #3 (new) · starts now"
- *    "→ task #4 · group #3 · queued behind #3"
+/** The one-line receipt for a just-created task, or an EMPTY sds when there is nothing
+ *  to say. The receipt only speaks about what the UI does not show -- that the task runs
+ *  in the background, or what it waits for:
  *    "→ task #1 · group #1 · background"
+ *    "→ task #4 · group #3 · queued behind #3"
  *    "→ task #5 · group #3 · waits for #4 (outputs injected)"
- *  Empty sds for a system task or a NULL task. Pure (reads only the task). Exposed for
- *  tests. Caller frees. */
+ *  A plain foreground creation ("starts now") is silent: the sidebar row and the echoed
+ *  input already say it. Also empty for a system task or a NULL task. Pure (reads only the
+ *  task). Exposed for tests. Caller frees. */
 extern sds edc_commands_task_receipt_text(const struct edc_task *task);
+
+/** The receipt for the task(s) ONE input created. A single task yields its own line (see
+ *  above); a chain (`a | b | c`) yields one aggregated line naming them all, so a pipeline
+ *  is a single receipt rather than one per segment. Empty when nothing is worth saying.
+ *  Pure. Exposed for tests. Caller frees. */
+extern sds edc_commands_tasks_receipt_text(struct edc_task *const *tasks, size_t count);
 
 /** Send that receipt to the user (no-op when the text is empty). */
 extern void edc_commands_announce_task(struct edc_reply_to to, const struct edc_task *task);
+extern void edc_commands_announce_tasks(struct edc_reply_to to, struct edc_task *const *tasks, size_t count);
 
 /* ── Ports: the command layer provides `handle_command` ──────
  *

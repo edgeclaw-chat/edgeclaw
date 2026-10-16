@@ -100,14 +100,21 @@ void edc_commands_send_history(struct edc_reply_to to, const char *payload)
 
 /* ── Task-creation receipt ─────────────────────────────────── */
 
-/* The one line a user sees after a task is born: which task, which group, and when it runs.
- * Everything it needs lives on the task itself -- the group it landed in and its own
- * dependency edges -- so no scheduler state has to be threaded through. That is what makes
- * it a pure function of the task, and testable without an actor.
+/* The one line a user sees after a task is born: which task, which group, and -- only when
+ * it is worth saying -- when it runs. Everything it needs lives on the task itself (the
+ * group it landed in and its own dependency edges), so no scheduler state has to be
+ * threaded through; that is what makes it a pure function of the task, testable without an
+ * actor.
+ *
+ * It speaks ONLY about what the UI cannot already show: that the task runs in the
+ * background, or what it waits for. A plain foreground creation is silent -- the new
+ * sidebar row and the echoed input already say it, and a receipt per task is just noise
+ * (in a `a | b | c` chain, three lines of it).
  *
  * Callers: the three user-facing creation paths -- plain input / `@` / pipes in
- * edc_shell_ast.c, `/task new` here, and `!cmd` in edc_local_shell.c. System tasks (fold /
- * curation / extraction) are created on another path and are never announced. */
+ * edc_shell_ast.c (which aggregates the whole input into ONE receipt), `/task new` here,
+ * and `!cmd` in edc_local_shell.c. System tasks (fold / curation / extraction) are created
+ * on another path and are never announced. */
 sds edc_commands_task_receipt_text(const struct edc_task *task)
 {
     if (!task || !task->task_id)
@@ -116,14 +123,11 @@ sds edc_commands_task_receipt_text(const struct edc_task *task)
     if (task->group && edc_task_group_is_system(task->group))
         return sdsempty();
 
-    sds out = sdscatprintf(sdsempty(), "→ task #%s · group #%s", task->task_id,
-                           (task->group && task->group->group_id) ? task->group->group_id : "?");
-    if (task->group && task->group->member_count == 1)
-        out = sdscat(out, " (new)");
-
     /* A background task runs alongside: "background" is the whole story. */
+    const char *gid = (task->group && task->group->group_id) ? task->group->group_id : "?";
+    const char *fresh = (task->group && task->group->member_count == 1) ? " (new)" : "";
     if (task->is_background)
-        return sdscat(out, " · background");
+        return sdscatprintf(sdsempty(), "→ task #%s · group #%s%s · background", task->task_id, gid, fresh);
 
     /* JOIN deps inject the source's output, SEQUENCE deps only order. A just-created task
      * has at most these (the `|` / `;` predecessor, `-d`/`--with`, or the wait-behind-the-
@@ -139,14 +143,78 @@ sds edc_commands_task_receipt_text(const struct edc_task *task)
         else if (d->type == TASK_DEP_SEQUENCE)
             seq = d;
     }
+
+    sds out = sdsempty();
     if (sdslen(joins) > 0)
-        out = sdscatprintf(out, " · waits for %s (outputs injected)", joins);
+        out = sdscatprintf(out, "→ task #%s · group #%s%s · waits for %s (outputs injected)", task->task_id, gid, fresh,
+                           joins);
     else if (seq)
-        out = sdscatprintf(out, " · queued behind #%s", seq->source->task_id);
-    else
-        out = sdscat(out, " · starts now");
+        out = sdscatprintf(out, "→ task #%s · group #%s%s · queued behind #%s", task->task_id, gid, fresh,
+                           seq->source->task_id);
+    /* else: a plain foreground creation -- the UI already shows it, so say nothing. */
     sdsfree(joins);
     return out;
+}
+
+sds edc_commands_tasks_receipt_text(struct edc_task *const *tasks, size_t count)
+{
+    if (!tasks || count == 0)
+        return sdsempty();
+    if (count == 1)
+        return edc_commands_task_receipt_text(tasks[0]);
+
+    /* Several tasks from one input (a `|` / `;` chain): one line naming them all, so a
+     * three-segment pipeline is one receipt, not three. Silent when none of them is worth
+     * mentioning. */
+    bool any_notable = false;
+    bool all_background = true;
+    bool same_group = true;
+    const char *group_id = NULL;
+    sds ids = sdsempty();
+    for (size_t i = 0; i < count; i++)
+    {
+        const struct edc_task *t = tasks[i];
+        sds one = edc_commands_task_receipt_text(t);
+        if (sdslen(one) > 0)
+            any_notable = true;
+        sdsfree(one);
+
+        if (!t || !t->task_id)
+            continue;
+        ids = sdscatprintf(ids, "%s#%s", sdslen(ids) ? ", " : "", t->task_id);
+        if (!t->is_background)
+            all_background = false;
+
+        const char *gid = (t->group && t->group->group_id) ? t->group->group_id : NULL;
+        if (!gid)
+            same_group = false;
+        else if (!group_id)
+            group_id = gid;
+        else if (strcmp(group_id, gid) != 0)
+            same_group = false;
+    }
+
+    if (!any_notable)
+    {
+        sdsfree(ids);
+        return sdsempty();
+    }
+
+    sds out = sdscatprintf(sdsempty(), "→ %zu tasks %s", count, ids);
+    if (same_group && group_id)
+        out = sdscatprintf(out, " · group #%s", group_id);
+    if (all_background)
+        out = sdscat(out, " · background");
+    sdsfree(ids);
+    return out;
+}
+
+void edc_commands_announce_tasks(struct edc_reply_to to, struct edc_task *const *tasks, size_t count)
+{
+    sds text = edc_commands_tasks_receipt_text(tasks, count);
+    if (sdslen(text) > 0)
+        edc_commands_reply(to, text);
+    sdsfree(text);
 }
 
 void edc_commands_announce_task(struct edc_reply_to to, const struct edc_task *task)
