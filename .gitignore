@@ -286,3 +286,6 @@ MODULE.bazel.lock
 # Terminal emulator stray files (accidental empty files in repo root)
 ghostty
 iTerm2
+
+# Local agent configuration (Claude Code session data, todos, local skills)
+.claude/
