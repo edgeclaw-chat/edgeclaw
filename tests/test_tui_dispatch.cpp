@@ -84,6 +84,15 @@ bool SetupHome(std::string *out_home)
             R"("model":"harness-model","api_key":"harness-plaintext-key","onboarded":true})";
     conf.close();
 
+    // 一个 prompt 模板：给补全弹层的 `/prompt <name>` 词表用（否则那份词表是空的）。
+    const std::string prompts = dir + "/workspace/prompts";
+    std::filesystem::create_directories(prompts);
+    std::ofstream pf(prompts + "/review.md");
+    if (!pf)
+        return false;
+    pf << "---\ndescription: review the staged changes\n---\nReview the staged changes.\n";
+    pf.close();
+
     setenv("HOME", home.c_str(), 1);
     setenv("EDGECLAW_MASTER_KEY", "harness-master-key", 1);
     setenv("EDGECLAW_TUI_NO_PULL", "1", 1); /* 接缝 2：构造期/回调里都不拉树 */
@@ -544,6 +553,22 @@ void TestCommandPalette(edc::TUIWindow &win)
     Check(Has(FrameOf(win), "❯ /session memo show"), "Tab 补到 '/session memo show '");
     win.OnEvent(::ftxui::Event::Escape);
     win.OnEvent(::ftxui::Event::Return); // 清空，别把脏输入留给后面的用例
+
+    // `/prompt <name>`：它的参数词表来自 workspace/prompts/*.md 的模板名（harness 预置了
+    // review.md）。模板名**从命令词打完那一刻**就在列表里（不必先打空格）。
+    type("/prompt");
+    Check(Has(FrameOf(win), "/prompt review"), "只打到 /prompt（还没空格）模板名已在列");
+    Check(!Has(FrameOf(win), "/prompt <name>"), "占位行（/prompt <name> …）不再是候选");
+    win.OnEvent(::ftxui::Event::Tab); // 先把命令词补完 -> "/prompt "
+    Check(Has(FrameOf(win), "❯ /prompt "), "Tab 先补完命令词");
+    {
+        const std::string f = FrameOf(win);
+        Check(Has(f, "/prompt review"), "空格之后模板名仍在");
+        Check(Has(f, "review the staged changes"), "带上模板自己的 description");
+    }
+    win.OnEvent(::ftxui::Event::Tab);
+    Check(Has(FrameOf(win), "❯ /prompt review "), "Tab 补全到模板名");
+    win.OnEvent(::ftxui::Event::Return); // 收尾清空
 }
 // 键盘中断：Esc 只在有任务在跑时被吃掉（停下来）；Ctrl+C 第一次清空输入框、连按两次
 // 才退出。Ctrl+C 不走 OnEvent（main() 的 CatchEvent 把它路由到 OnInterrupt）。

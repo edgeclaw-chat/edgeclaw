@@ -2,6 +2,7 @@
 
 #include "edc_style.hpp"
 
+#include <algorithm>
 #include <utility>
 
 namespace edc::model
@@ -69,6 +70,13 @@ std::vector<std::string> WordsOf(const std::string &cmd)
     return words;
 }
 
+// A syntax hint rather than a runnable command: its text carries an argument shape
+// ("<…", "[…", the "|" of an alternative), so it names no concrete thing to pick.
+bool IsPlaceholderRow(const CommandFact &r)
+{
+    return r.text.find_first_of("<|[") != std::string::npos;
+}
+
 std::string CommonPrefix(const std::string &a, const std::string &b)
 {
     size_t n = 0;
@@ -96,6 +104,12 @@ void CommandPalette::SetSource(std::vector<CommandFact> families, std::vector<Co
     commands_ = std::move(commands);
 }
 
+void CommandPalette::SetArgSource(std::string head, std::vector<CommandFact> rows)
+{
+    arg_head_ = std::move(head);
+    arg_rows_ = std::move(rows);
+}
+
 bool CommandPalette::Update(const std::string &content)
 {
     content_ = content;
@@ -119,6 +133,20 @@ bool CommandPalette::Update(const std::string &content)
         return false;
     }
 
+    // A command whose first argument is an open set (the prompt library). Once the command
+    // word is WHOLE its vocabulary is part of the list: past the word ("/prompt re") those
+    // rows ARE the list, and at the bare word ("/prompt", no space yet) they join the
+    // command's own rows -- so the names are visible before the space is even typed.
+    const bool head_word = !arg_rows_.empty() && content.compare(0, arg_head_.size(), arg_head_) == 0;
+    const bool past_head =
+        head_word && content.size() > arg_head_.size() && content[arg_head_.size()] == ' ';
+    if (past_head)
+    {
+        items_ = Prefixed(arg_rows_, content);
+        open_ = !items_.empty();
+        return open_;
+    }
+
     if (content.back() == ' ')
     {
         // "... " -> the next level: that family's subcommands.
@@ -140,6 +168,18 @@ bool CommandPalette::Update(const std::string &content)
                 hits.swap(fams);
         }
         items_ = std::move(hits);
+    }
+
+    // Bare command word ("/prompt"): the argument vocabulary rides along with the command's
+    // own rows. The syntax-hint row ("/prompt <name> [args…]") steps aside -- a placeholder
+    // is not a candidate once the real names are known; the bare word itself stays (it is
+    // runnable: it lists the templates). They share the first token, so Tab still completes
+    // the word itself.
+    if (head_word && content == arg_head_)
+    {
+        items_.erase(std::remove_if(items_.begin(), items_.end(), IsPlaceholderRow), items_.end());
+        for (const CommandFact &r : arg_rows_)
+            items_.push_back(r);
     }
 
     open_ = !items_.empty();

@@ -25,6 +25,7 @@
 #include "edc_config.h"
 #include "edc_file_utils.h"
 #include "edc_models.h"
+#include "edc_prompts.h"
 #include "log.h"
 #include "sds.h"
 #include <stdio.h>
@@ -254,6 +255,44 @@ const char *edc_app_cmd_family_name(size_t index)
 const char *edc_app_cmd_family_brief(size_t index)
 {
     return edc_commands_family_brief(index);
+}
+
+/* The prompt templates under <workspace>/prompts/, as "<name>\t<description>" lines.
+ * The frontend's completion popup offers `/prompt <name>`, so it needs the names. */
+size_t edc_app_prompts(const struct edc_app *app, char *buf, size_t cap)
+{
+    if (buf && cap > 0)
+        buf[0] = '\0';
+    const struct edc_config *cfg = edc_app_config(app);
+    if (!cfg || !cfg->workspace)
+        return 0;
+
+    sds dir = edc_path_join(cfg->workspace, "prompts", NULL);
+    UT_array *prompts = edc_prompts_list(dir);
+    const size_t count = utarray_len(prompts);
+
+    size_t used = 0;
+    for (size_t i = 0; i < count; i++)
+    {
+        struct edc_prompt **slot = (struct edc_prompt **)utarray_eltptr(prompts, (unsigned)i);
+        struct edc_prompt *p = slot ? *slot : NULL;
+        if (p && p->name)
+        {
+            sds line = sdscatprintf(sdsempty(), "%s\t%s\n", p->name,
+                                    (p->description && sdslen(p->description)) ? p->description : "");
+            if (buf && used + sdslen(line) + 1 <= cap)
+            {
+                memcpy(buf + used, line, sdslen(line));
+                used += sdslen(line);
+                buf[used] = '\0';
+            }
+            sdsfree(line);
+        }
+        edc_prompt_free(p);
+    }
+    utarray_free(prompts);
+    sdsfree(dir);
+    return count;
 }
 
 /* Where a transcript lives -- path resolution only; encode/append/replay are the

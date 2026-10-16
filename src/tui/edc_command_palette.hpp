@@ -32,6 +32,13 @@ class CommandPalette
     // |commands| = every table row. Both come from IAppFacade.
     void SetSource(std::vector<CommandFact> families, std::vector<CommandFact> commands);
 
+    // The candidate rows for the tokens AFTER |head| (e.g. "/prompt" -> one row per prompt
+    // template, spelled "/prompt <name>"). While the input is "|head| " plus an argument,
+    // these replace the command table's rows; an empty |rows| leaves the table in charge.
+    // This is how a command whose first argument is an open set -- the prompt library --
+    // gets its names into the list.
+    void SetArgSource(std::string head, std::vector<CommandFact> rows);
+
     // Recompute from the WHOLE input content. Returns true when the list is visible.
     bool Update(const std::string &content);
 
@@ -71,6 +78,9 @@ class CommandPalette
 
     std::vector<CommandFact> families_;
     std::vector<CommandFact> commands_;
+    // The open-set vocabulary for one command's first argument (see SetArgSource).
+    std::string arg_head_;
+    std::vector<CommandFact> arg_rows_;
     std::vector<CommandFact> items_;
     int selected_ = 0;
     bool open_ = false;

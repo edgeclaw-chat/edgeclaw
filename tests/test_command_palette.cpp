@@ -42,6 +42,8 @@ static CommandPalette Make()
     p.SetSource({CommandFact{"/help", "help"}, CommandFact{"/task", "tasks"},
                  CommandFact{"/session", "sessions"}, CommandFact{"/group", "groups"}},
                 {CommandFact{"/help [<command>]", "show help"},
+                 CommandFact{"/prompt", "list the templates"},
+                 CommandFact{"/prompt <name> [args…]", "run a template"},
                  CommandFact{"/task new <desc>   [--bg]", "create a task"},
                  CommandFact{"/task list", "list tasks"}, CommandFact{"/task bg [id]", "background"},
                  CommandFact{"/session memo show [id]", "show the memory"},
@@ -189,6 +191,56 @@ int main(void)
         CHECK(p.HasMore(), "no trailing space yet: Tab would add it");
         p.Update("/session memo compact ");
         CHECK(!p.HasMore(), "then nothing more to add");
+    }
+    {
+        TEST("'/prompt ' without a vocabulary falls back to the table's generic row");
+        CommandPalette p = Make();
+        CHECK(p.Update("/prompt "), "open");
+        CHECK(p.items().size() == 1 && p.items()[0].text == "/prompt <name> [args…]", "the generic row");
+        CHECK(!p.HasMore(), "and there is nothing to complete into");
+    }
+    {
+        TEST("with a vocabulary, bare '/prompt' ALREADY lists the names (no space needed)");
+        CommandPalette p = Make();
+        p.SetArgSource("/prompt", {CommandFact{"/prompt review", "review the staged changes"},
+                                   CommandFact{"/prompt fix", "fix the failing test"}});
+        CHECK(p.Update("/prompt"), "open");
+        bool has_review = false;
+        bool has_fix = false;
+        bool has_placeholder = false;
+        bool has_bare = false;
+        for (const CommandFact &it : p.items())
+        {
+            has_review = has_review || it.text == "/prompt review";
+            has_fix = has_fix || it.text == "/prompt fix";
+            has_placeholder = has_placeholder || it.text.find('<') != std::string::npos;
+            has_bare = has_bare || it.text == "/prompt";
+        }
+        CHECK(has_review && has_fix, "both template names are in the list before any space");
+        CHECK(!has_placeholder, "the '<name>' syntax-hint row is NOT a candidate");
+        CHECK(has_bare, "the bare command word stays (it is runnable: it lists the templates)");
+        CHECK(p.Accept() == "/prompt ", "Tab still finishes the command word first");
+        CHECK(p.HasMore(), "and there is a level left to go");
+    }
+    {
+        TEST("with a vocabulary, '/prompt ' lists the template NAMES and Tab completes one");
+        CommandPalette p = Make();
+        p.SetArgSource("/prompt", {CommandFact{"/prompt review", "review the staged changes"},
+                                   CommandFact{"/prompt fix", "fix the failing test"}});
+        CHECK(p.Update("/prompt "), "open");
+        CHECK(p.items().size() == 2, "past the word the vocabulary is the whole list");
+        CHECK(p.items()[0].text == "/prompt review", "rung up as a command line");
+        CHECK(p.items()[0].brief == "review the staged changes", "its description rides along");
+
+        CHECK(p.Update("/prompt re"), "open");
+        CHECK(p.items().size() == 1, "narrowed");
+        CHECK(p.Accept() == "/prompt review ", "Tab completes the name (got: " + p.Accept() + ")");
+
+        CHECK(!p.Update("/prompt review "), "closed once the name is whole");
+        CHECK(!p.Update("/prompt zz"), "an unknown name closes it too (no misleading generic row)");
+
+        CHECK(p.Update("/task n"), "the command table is back in charge for other commands");
+        CHECK(p.items().size() == 1 && p.items()[0].text == "/task new <desc>   [--bg]", "the /task row");
     }
     {
         TEST("Tab on a closed popup is a no-op (keeps the text)");

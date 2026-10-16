@@ -146,6 +146,9 @@ class IAppFacade
     // tokens) a bare "/" lists.
     virtual std::vector<model::CommandFact> Commands() const = 0;
     virtual std::vector<model::CommandFact> CommandFamilies() const = 0;
+    // The prompt templates, as palette rows ("/prompt <name>", brief = its description):
+    // the vocabulary of the `/prompt <name>` argument.
+    virtual std::vector<model::CommandFact> PromptNames() const = 0;
 
     // ── a few things the frontend does ───────────────────────────
     virtual void SendUserMessage(const std::string &session_id, const std::string &content) = 0;
@@ -198,6 +201,7 @@ class AppFacade : public IAppFacade
 
     std::vector<model::CommandFact> Commands() const override;
     std::vector<model::CommandFact> CommandFamilies() const override;
+    std::vector<model::CommandFact> PromptNames() const override;
 
     void SendUserMessage(const std::string &session_id, const std::string &content) override;
     void RequestTaskSnapshot(const std::string &session_id) override;

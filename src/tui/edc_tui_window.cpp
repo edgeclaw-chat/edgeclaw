@@ -1161,6 +1161,10 @@ void TUIWindow::RecomputeCommandPalette()
         command_palette_.SetSource(app_->CommandFamilies(), app_->Commands());
         palette_loaded_ = true;
     }
+    // `/prompt` takes a template name: refresh that vocabulary while it is in play, so a
+    // template added on disk is offered without a restart.
+    if (app_ && input_text_.compare(0, 7, "/prompt") == 0)
+        command_palette_.SetArgSource("/prompt", app_->PromptNames());
     command_palette_.Update(input_text_);
 }
 

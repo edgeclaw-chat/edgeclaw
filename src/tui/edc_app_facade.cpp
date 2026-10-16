@@ -197,6 +197,34 @@ std::vector<model::CommandFact> AppFacade::CommandFamilies() const
     return out;
 }
 
+std::vector<model::CommandFact> AppFacade::PromptNames() const
+{
+    std::vector<model::CommandFact> out;
+    if (!app_)
+        return out;
+
+    // "<name>\t<description>\n" per template (see edc_app_prompts).
+    char buf[4096] = {0};
+    edc_app_prompts(app_, buf, sizeof(buf));
+    const std::string all(buf);
+    size_t pos = 0;
+    while (pos < all.size())
+    {
+        const size_t nl = all.find('\n', pos);
+        const std::string line =
+            (nl == std::string::npos) ? all.substr(pos) : all.substr(pos, nl - pos);
+        pos = (nl == std::string::npos) ? all.size() : nl + 1;
+        if (line.empty())
+            continue;
+        const size_t tab = line.find('\t');
+        const std::string name = (tab == std::string::npos) ? line : line.substr(0, tab);
+        const std::string desc = (tab == std::string::npos) ? "" : line.substr(tab + 1);
+        if (!name.empty())
+            out.push_back({"/prompt " + name, desc});
+    }
+    return out;
+}
+
 void AppFacade::SendUserMessage(const std::string &session_id, const std::string &content)
 {
     if (app_)
