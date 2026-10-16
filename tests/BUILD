@@ -301,6 +301,15 @@ cc_test(
 )
 
 cc_test(
+    name = "test_commands_receipt",
+    srcs = ["test_commands_receipt.c"],
+    deps = [
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_commands_task_new",
     srcs = ["test_commands_task_new.c"],
     deps = [

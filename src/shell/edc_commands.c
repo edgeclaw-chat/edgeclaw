@@ -98,6 +98,65 @@ void edc_commands_send_history(struct edc_reply_to to, const char *payload)
                                               (edc_actor_data_free_fn)edc_channel_message_free));
 }
 
+/* ── Task-creation receipt ─────────────────────────────────── */
+
+/* The one line a user sees after a task is born: which task, which group, and when it runs.
+ * Everything it needs lives on the task itself -- the group it landed in and its own
+ * dependency edges -- so no scheduler state has to be threaded through. That is what makes
+ * it a pure function of the task, and testable without an actor.
+ *
+ * Callers: the three user-facing creation paths -- plain input / `@` / pipes in
+ * edc_shell_ast.c, `/task new` here, and `!cmd` in edc_local_shell.c. System tasks (fold /
+ * curation / extraction) are created on another path and are never announced. */
+sds edc_commands_task_receipt_text(const struct edc_task *task)
+{
+    if (!task || !task->task_id)
+        return sdsempty();
+    /* System work is not something the user "派"ed; stay silent about it. */
+    if (task->group && edc_task_group_is_system(task->group))
+        return sdsempty();
+
+    sds out = sdscatprintf(sdsempty(), "→ task #%s · group #%s", task->task_id,
+                           (task->group && task->group->group_id) ? task->group->group_id : "?");
+    if (task->group && task->group->member_count == 1)
+        out = sdscat(out, " (new)");
+
+    /* A background task runs alongside: "background" is the whole story. */
+    if (task->is_background)
+        return sdscat(out, " · background");
+
+    /* JOIN deps inject the source's output, SEQUENCE deps only order. A just-created task
+     * has at most these (the `|` / `;` predecessor, `-d`/`--with`, or the wait-behind-the-
+     * front edge), never a mix worth more than a short list. */
+    sds joins = sdsempty();
+    const struct edc_task_dep *seq = NULL;
+    for (const struct edc_task_dep *d = task->deps; d; d = d->next)
+    {
+        if (!d->source || !d->source->task_id)
+            continue;
+        if (d->type == TASK_DEP_JOIN)
+            joins = sdscatprintf(joins, "%s#%s", sdslen(joins) ? ", " : "", d->source->task_id);
+        else if (d->type == TASK_DEP_SEQUENCE)
+            seq = d;
+    }
+    if (sdslen(joins) > 0)
+        out = sdscatprintf(out, " · waits for %s (outputs injected)", joins);
+    else if (seq)
+        out = sdscatprintf(out, " · queued behind #%s", seq->source->task_id);
+    else
+        out = sdscat(out, " · starts now");
+    sdsfree(joins);
+    return out;
+}
+
+void edc_commands_announce_task(struct edc_reply_to to, const struct edc_task *task)
+{
+    sds text = edc_commands_task_receipt_text(task);
+    if (sdslen(text) > 0)
+        edc_commands_reply(to, text);
+    sdsfree(text);
+}
+
 /* ── /session stop ─────────────────────────────────────────── */
 
 /* Cancel every non-terminal turn in the current session and persist. Was the
@@ -887,6 +946,8 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
         edc_cmd_task_opts_free(&opts);
         return;
     }
+
+    edc_commands_announce_task(to, task);
 
     if (opts.desc && sdslen(opts.desc) > 0 && edc_task_awaits_deps(task))
         log_info("/task new: task %s waits for its dependencies, turn queued", task->task_id);

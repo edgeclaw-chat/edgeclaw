@@ -213,6 +213,10 @@ static struct edc_task *exec_node(
         if (task && node->has_deferred_vars)
             task->has_deferred_vars = 1;
 
+        /* The user sees what they just created: id, group, and when it runs. */
+        if (task)
+            edc_commands_announce_task(ctx->to, task);
+
         edc_cmd_task_opts_free(&opts);
 
         if (!ctx->target_group && out_group)

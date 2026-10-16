@@ -11,6 +11,7 @@ struct edc_config;
 struct edc_scheduler;
 struct edc_session;
 struct edc_session_manager;
+struct edc_task;
 struct edc_task_group;
 
 /* The command handler (the userland entry). It takes exactly the few things its
@@ -49,6 +50,20 @@ extern const char *edc_commands_family_brief(size_t index);
  *  renders it as a message history rather than a text blob. |payload| is the JSON from
  *  edc_scheduler_task_history_json. */
 extern void edc_commands_send_history(struct edc_reply_to to, const char *payload);
+
+/* ── Task-creation receipt ─────────────────────────────────── */
+
+/** The one-line receipt for a just-created task, e.g.
+ *    "→ task #3 · group #3 (new) · starts now"
+ *    "→ task #4 · group #3 · queued behind #3"
+ *    "→ task #1 · group #1 · background"
+ *    "→ task #5 · group #3 · waits for #4 (outputs injected)"
+ *  Empty sds for a system task or a NULL task. Pure (reads only the task). Exposed for
+ *  tests. Caller frees. */
+extern sds edc_commands_task_receipt_text(const struct edc_task *task);
+
+/** Send that receipt to the user (no-op when the text is empty). */
+extern void edc_commands_announce_task(struct edc_reply_to to, const struct edc_task *task);
 
 /* ── Ports: the command layer provides `handle_command` ──────
  *

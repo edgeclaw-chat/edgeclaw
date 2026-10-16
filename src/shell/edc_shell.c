@@ -362,8 +362,9 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
 
     struct edc_task_group *group = task->group;
 
-    /* Task creation is silent: state transitions are observable via /task list,
-     * /task status, /whoami and the TUI snapshot. */
+    /* The receipt is emitted by the caller (edc_shell_ast.c announces the task it just
+     * spawned). It cannot live here: `!cmd` and `/task new` create tasks too and must say
+     * the same line. What is logged here stays for the trace. */
     log_info("%s created task=%s group=%s%s%s%s%s", reply_prefix, task->task_id,
              group ? group->group_id : "-", opts->bg ? " [bg]" : "", opts->dep_count > 0 ? " [chained]" : "",
              prev_task ? (prev_dep_type == TASK_DEP_SEQUENCE ? " [seq]" : " [pipe]") : "",

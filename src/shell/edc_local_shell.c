@@ -121,6 +121,8 @@ bool edc_local_shell_handle(struct edc_session_manager *sm, struct edc_scheduler
     struct edc_task *task = spawn_command_task(sched, session, raw, cmd, message->type);
     if (!task)
         edc_commands_reply(to, "Could not create a task for this command.");
+    else
+        edc_commands_announce_task(to, task);
     sdsfree(raw);
     return true;
 }
