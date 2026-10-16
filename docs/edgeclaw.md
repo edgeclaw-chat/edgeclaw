@@ -62,8 +62,8 @@ and `'` single-quotes. Recognized token types:
 Quoting and escapes follow Python's string rules: `"..."` and `'...'` both process
 escapes (`\n`, `\t`, `\\`, `\"`, `\'`, `\xHH`; an unknown escape keeps its backslash),
 and `"""` / `'''` are the multi-line forms. The two quote kinds differ in exactly one
-thing: `$VAR` interpolation happens inside double quotes and never inside single ones
-(single quotes are the way to write a literal `$`). A quoted region must open the
+thing: a `{{…}}` reference is expanded inside double quotes and never inside single ones
+(single quotes are the way to write a literal `{{`). A quoted region must open the
 argument for anything after the closing quote to be read as options.
 
 ### Parser & AST
@@ -263,6 +263,9 @@ equivalent of `cmd &`.
 | `/model search <q>` | Search chat models across all providers |
 | `/prompt` | List the templates in `workspace/prompts/` |
 | `/prompt <name> [args…]` | Load a template, substitute its `{{…}}` placeholders, and run the result as input |
+| `/skill` | List the skills — ours, plus any found in a `.claude` / `.agents` / `.pi` / `.opencode` skills directory |
+| `/skill <name> [args…]` | Run a skill directly: its `SKILL.md` body is loaded into this task (no tool round) |
+| `/reload` | Re-read the resource files and rebuild the cached system prompt (a skill or AGENTS.md edited on disk takes effect; `config.json` still needs a restart) |
 | `/connect` | Guided setup: choose a provider, API key, and model (three-step wizard) |
 | `/sandbox [on\|off]` | Enable/disable the filesystem sandbox |
 | `/sandbox list` | Show the sandbox allow/deny path lists |
@@ -344,29 +347,36 @@ the active task. Other tasks complete silently; use
 
 ## Variable Expansion
 
-Variable references (`$VAR`) undergo a **two-phase expansion**:
+Task references (`{{…}}`) undergo a **two-phase expansion**.
+
+The sigil is `{{…}}`, **not** `$`: `$` belongs to the prompt template layer (`$1`, `$@`,
+`${1:-x}` — the pi / Claude Code / opencode convention), so the two layers never collide.
 
 ### Phase 1: Collect (at task creation)
 
-When a task is created with `$N`, `$LAST`, or `$$`:
+When a task is created with `{{<id>}}`, `{{LAST}}`, or `{{SELF}}`:
 1. The reference is **validated** — the target task must exist
 2. An **implicit dependency** is added from this task to the referenced task
-3. The `$VAR` text is **preserved** as-is in the task input
+3. The `{{…}}` text is **preserved** as-is in the task input
 
 ### Phase 2: Expand (when dependencies resolve)
 
 Once the referenced task completes:
-1. `$VAR` is replaced with the referenced task's **actual output text**
+1. The reference is replaced with the referenced task's **actual output text**
 2. The expanded input is then sent to the LLM
 
-This means `$VAR` references are resolved **just in time** — the task waits for
+This means references are resolved **just in time** — the task waits for
 its dependency, then substitutes the output before LLM processing begins.
 
-| Variable | Meaning |
+| Reference | Meaning |
 |----------|---------|
-| `$LAST` | Output of the most recently completed task (by completion order) |
-| `$N` | Output of task with id N (e.g. `$1`, `$2`) |
-| `$$` | Task ID of the current foreground active task |
+| `{{LAST}}` | Output of the most recently completed task (by completion order) |
+| `{{<id>}}` | Output of task with id N (e.g. `{{1}}`, `{{2}}`) |
+| `{{SELF}}` | Task ID of the current foreground active task |
+
+**Only these forms count.** Any other `{{…}}` — a pasted `{{ var }}`, a stray brace — is
+copied verbatim, and so is every `$`: nothing becomes a reference unless it is spelled
+exactly, which is what makes pasted text (Jinja, shell snippets, `$HOME`, `$5.00`) safe.
 
 Expansion happens **after** pipe splitting and redirect stripping, so any `|`
 or `>` in expanded output is treated as literal text.
@@ -442,7 +452,7 @@ text before `<`, they are joined with a newline.
 ```
 > find performance bottlenecks in src/
 ... task 1 completes with output ...
-> based on $LAST, create an optimization plan
+> based on {{LAST}}, create an optimization plan
 ... task 2 waits for task 1, then sees its output ...
 ```
 

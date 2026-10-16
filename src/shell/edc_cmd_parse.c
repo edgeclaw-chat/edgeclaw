@@ -8,7 +8,7 @@
 /* ── Quoted regions ──────────────────────────────────────────
  *
  * Quotes and escapes follow Python's string rules. The one EdgeClaw addition is
- * `$VAR` interpolation, and that is the only thing the two quote kinds differ on:
+ * `{{…}}` interpolation, and that is the only thing the two quote kinds differ on:
  * single-quoted text is raw (literal = 1, no interpolation), double-quoted text
  * interpolates. Escapes are identical in both, and an unknown escape keeps its
  * backslash -- also as in Python. Not implemented: adjacent literal concatenation
@@ -120,7 +120,7 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
      *     text that merely contains quotes (e.g. JSON) is never truncated;
      *     flags are not scanned in this mode.
      * Escapes are Python's in every case (see append_escape); the two quote kinds
-     * differ only in $VAR interpolation.
+     * differ only in {{…}} interpolation.
      */
     char *s = remaining;
     while (*s == ' ' || *s == '\t')

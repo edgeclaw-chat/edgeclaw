@@ -3,6 +3,7 @@
 #include "edc_compat.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
+#include "edc_resources.h"
 #include "log.h"
 #include "utarray.h"
 
@@ -28,6 +29,8 @@ void edc_prompt_free(struct edc_prompt *prompt)
         sdsfree(prompt->argument_hint);
     if (prompt->body)
         sdsfree(prompt->body);
+    if (prompt->source)
+        sdsfree(prompt->source);
     free(prompt);
 }
 
@@ -161,7 +164,13 @@ static struct edc_prompt *edc_prompt_parse(const char *name, const char *content
         edc_prompt_free(prompt);
         return NULL;
     }
-    prompt->body = trimmed;
+
+    /* `$` belongs to the template layer, so translate their spelling unconditionally:
+     * `$1` / `$@` / `$ARGUMENTS` / `${1:-x}` become our `{{…}}`. Task references are NOT
+     * `$` any more (they are `{{LAST}}` / `{{<id>}}` / `{{SELF}}`, which this leaves
+     * alone), so there is nothing to collide with and no per-file dialect to track. */
+    prompt->body = edc_prompt_translate_dollar(trimmed);
+    sdsfree(trimmed);
 
     if (!prompt->description)
         prompt->description = edc_prompt_first_line(prompt->body);
@@ -187,8 +196,14 @@ struct edc_prompt *edc_prompt_load(const char *dir, const char *name)
         return NULL;
     }
 
+    /* The `$` -> `{{…}}` translation happens in edc_prompt_parse, so every path that
+     * parses a template gets it exactly once. */
     struct edc_prompt *prompt = edc_prompt_parse(name, content);
     sdsfree(content);
+    if (!prompt)
+        return NULL;
+
+    prompt->source = sdsdup(dir);
     return prompt;
 }
 
@@ -238,6 +253,96 @@ UT_array *edc_prompts_list(const char *dir)
 
     utarray_sort(prompts, edc_prompt_name_cmp);
     return prompts;
+}
+
+/* ── Over the resource roots (edc_resources.h) ─────────────── */
+/* Where a root may keep its templates: pi uses prompts/, opencode and Claude Code use
+ * command/ (+ commands/). A nested file name cannot be addressed by `/prompt <name>` (the
+ * name is a bare file name), so only the flat files are read. */
+static const char *const k_prompt_subdirs[] = {"prompts", "command", "commands"};
+
+static struct edc_prompt *edc_prompts_find(UT_array *prompts, const sds name)
+{
+    for (size_t i = 0; i < utarray_len(prompts); i++)
+    {
+        struct edc_prompt **slot = (struct edc_prompt **)utarray_eltptr(prompts, (unsigned)i);
+        if (slot && *slot && strcmp((*slot)->name, name) == 0)
+            return *slot;
+    }
+    return NULL;
+}
+
+struct edc_prompt *edc_prompt_load_roots(const UT_array *roots, const char *name)
+{
+    if (!roots)
+        return NULL;
+
+    for (size_t r = 0; r < utarray_len(roots); r++)
+    {
+        struct edc_resource_dir **slot = (struct edc_resource_dir **)utarray_eltptr(roots, (unsigned)r);
+        if (!slot || !*slot)
+            continue;
+        struct edc_resource_dir *root = *slot;
+
+        for (size_t s = 0; s < sizeof(k_prompt_subdirs) / sizeof(k_prompt_subdirs[0]); s++)
+        {
+            sds dir = edc_path_join(root->path, k_prompt_subdirs[s], NULL);
+            struct edc_prompt *p = edc_prompt_load(dir, name);
+            sdsfree(dir);
+            if (p)
+            {
+                /* Name the ROOT, not the subdirectory it happened to sit in: that is what
+                 * "where did this come from" means to the user. */
+                sdsfree(p->source);
+                p->source = sdsdup(root->path);
+                return p;
+            }
+        }
+    }
+    return NULL;
+}
+
+UT_array *edc_prompts_list_roots(const UT_array *roots)
+{
+    UT_array *out;
+    utarray_new(out, &ut_prompt_ptr_icd);
+    if (!roots)
+        return out;
+
+    for (size_t r = 0; r < utarray_len(roots); r++)
+    {
+        struct edc_resource_dir **slot = (struct edc_resource_dir **)utarray_eltptr(roots, (unsigned)r);
+        if (!slot || !*slot)
+            continue;
+        struct edc_resource_dir *root = *slot;
+
+        for (size_t s = 0; s < sizeof(k_prompt_subdirs) / sizeof(k_prompt_subdirs[0]); s++)
+        {
+            sds dir = edc_path_join(root->path, k_prompt_subdirs[s], NULL);
+            UT_array *one = edc_prompts_list(dir);
+            sdsfree(dir);
+
+            for (size_t i = 0; i < utarray_len(one); i++)
+            {
+                struct edc_prompt **ps = (struct edc_prompt **)utarray_eltptr(one, (unsigned)i);
+                struct edc_prompt *p = ps ? *ps : NULL;
+                if (!p)
+                    continue;
+                if (edc_prompts_find(out, p->name))
+                {
+                    edc_prompt_free(p); /* shadowed by a higher-precedence root */
+                    continue;
+                }
+                sdsfree(p->source);
+                p->source = sdsdup(root->path);
+                utarray_push_back(out, &p);
+            }
+            utarray_free(one); /* the array only: its elements moved into |out| */
+        }
+    }
+
+    utarray_sort(out, edc_prompt_name_cmp);
+    return out;
 }
 
 /* ── Argument splitting ────────────────────────────────────── */
@@ -398,6 +503,138 @@ static bool edc_prompt_braced(sds spec, const sds *args, int argc, sds *out)
     return false;
 }
 
+/* ── `$` dialect: pi / Claude Code / opencode templates ────── */
+
+static bool edc_prompt_is_digit(char c)
+{
+    return c >= '0' && c <= '9';
+}
+
+/* Is |inner| (the text between `${` and `}`) one of the forms we can spell with `{{…}}`?
+ * Accepts `N`, `N:-D`, `@`, `@:-D`, `@:N`, `@:N:L` -- anything else is left to the input
+ * layer (see the header). */
+static bool edc_prompt_brace_ok(const sds inner)
+{
+    const char *s = inner;
+    size_t n = sdslen(inner);
+    if (n == 0)
+        return false;
+
+    if (s[0] == '@')
+    {
+        if (n == 1)
+            return true; /* ${@} */
+        if (n >= 3 && s[1] == ':' && s[2] == '-')
+            return true; /* ${@:-D} */
+        if (n >= 2 && s[1] == ':')
+        {
+            size_t i = 2;
+            size_t d1 = 0;
+            while (i < n && edc_prompt_is_digit(s[i]))
+            {
+                i++;
+                d1++;
+            }
+            if (d1 == 0)
+                return false;
+            if (i == n)
+                return true; /* ${@:N} */
+            if (s[i] != ':')
+                return false;
+            i++;
+            size_t d2 = 0;
+            while (i < n && edc_prompt_is_digit(s[i]))
+            {
+                i++;
+                d2++;
+            }
+            return d2 > 0 && i == n; /* ${@:N:L} */
+        }
+        return false;
+    }
+
+    if (edc_prompt_is_digit(s[0]))
+    {
+        size_t i = 0;
+        while (i < n && edc_prompt_is_digit(s[i]))
+            i++;
+        if (i == n)
+            return true; /* ${N} */
+        return n - i >= 3 && s[i] == ':' && s[i + 1] == '-'; /* ${N:-D} */
+    }
+    return false;
+}
+
+sds edc_prompt_translate_dollar(const char *body)
+{
+    sds out = sdsempty();
+    const char *p = body ? body : "";
+
+    while (*p)
+    {
+        if (*p == '\\' && *(p + 1) == '$')
+        {
+            out = sdscatlen(out, "$", 1); /* \$ -> a literal $ */
+            p += 2;
+            continue;
+        }
+        if (*p != '$')
+        {
+            out = sdscatlen(out, p, 1);
+            p++;
+            continue;
+        }
+
+        const char *q = p + 1;
+        sds rep = NULL;
+        size_t used = 0;
+
+        if (*q == '@')
+        {
+            rep = sdsnew("{{@}}");
+            used = 2;
+        }
+        else if (edc_prompt_is_digit(*q))
+        {
+            rep = sdscatprintf(sdsempty(), "{{%c}}", *q);
+            used = 2;
+        }
+        else if (strncmp(q, "ARGUMENTS", 9) == 0)
+        {
+            rep = sdsnew("{{@}}");
+            used = 10;
+        }
+        else if (*q == '{')
+        {
+            const char *close = strchr(q + 1, '}');
+            if (close)
+            {
+                sds inner = sdsnewlen(q + 1, (size_t)(close - q - 1));
+                if (edc_prompt_brace_ok(inner))
+                {
+                    rep = sdscatprintf(sdsempty(), "{{%s}}", inner);
+                    used = (size_t)(close - p) + 1;
+                }
+                sdsfree(inner);
+            }
+        }
+
+        if (rep)
+        {
+            out = sdscatsds(out, rep);
+            sdsfree(rep);
+            p += used;
+        }
+        else
+        {
+            /* Not a template parameter: leave the `$` to the input layer. */
+            out = sdscatlen(out, "$", 1);
+            p++;
+        }
+    }
+    return out;
+}
+
 sds edc_prompt_expand(const struct edc_prompt *prompt, sds *args, int argc)
 {
     if (!prompt || !prompt->body)
@@ -430,8 +667,8 @@ sds edc_prompt_expand(const struct edc_prompt *prompt, sds *args, int argc)
         }
 
         /* Everything else -- an unrecognised `{{…}}`, a lone `{`, and every `$` -- is
-         * copied verbatim. In particular `$` is NEVER ours: `$$` / `$N` / `$LAST` /
-         * `$NAME` belong to the input layer this text is later executed by. */
+         * copied verbatim. (`$` is special in neither layer: the ecosystem's parameter
+         * spellings were translated at load, and task references are `{{…}}`.) */
         out = sdscatlen(out, &s[i], 1);
         i++;
     }

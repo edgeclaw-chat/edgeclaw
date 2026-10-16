@@ -46,7 +46,7 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
 /* Read file contents; on failure set an error message in *err_out. */
 sds edc_shell_read_file(const char *path, sds *err_out);
 
-/* ── Variable references ($VAR) ────────────────────────────── */
+/* ── Task references ({{…}}) ───────────────────────────────── */
 
 sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_scheduler *sched, const char *input,
                                sds **out_deps, int *out_dep_count,

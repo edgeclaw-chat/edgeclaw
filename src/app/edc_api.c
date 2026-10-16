@@ -26,6 +26,7 @@
 #include "edc_file_utils.h"
 #include "edc_models.h"
 #include "edc_prompts.h"
+#include "edc_resources.h"
 #include "log.h"
 #include "sds.h"
 #include <stdio.h>
@@ -259,7 +260,7 @@ const char *edc_app_cmd_family_brief(size_t index)
 
 /* The prompt templates under <workspace>/prompts/, as "<name>\t<description>" lines.
  * The frontend's completion popup offers `/prompt <name>`, so it needs the names. */
-size_t edc_app_prompts(const struct edc_app *app, char *buf, size_t cap)
+size_t edc_app_prompts(const struct edc_app *app, const char *workdir, char *buf, size_t cap)
 {
     if (buf && cap > 0)
         buf[0] = '\0';
@@ -267,8 +268,12 @@ size_t edc_app_prompts(const struct edc_app *app, char *buf, size_t cap)
     if (!cfg || !cfg->workspace)
         return 0;
 
-    sds dir = edc_path_join(cfg->workspace, "prompts", NULL);
-    UT_array *prompts = edc_prompts_list(dir);
+    /* Every resource root, ours first -- so a template migrated from pi / Claude Code /
+     * opencode is offered by the completion popup without being moved. The project roots
+     * come from the displayed session's directory. */
+    UT_array *roots = edc_resource_dirs(cfg, workdir);
+    UT_array *prompts = edc_prompts_list_roots(roots);
+    edc_resource_dirs_free(roots);
     const size_t count = utarray_len(prompts);
 
     size_t used = 0;
@@ -291,7 +296,6 @@ size_t edc_app_prompts(const struct edc_app *app, char *buf, size_t cap)
         edc_prompt_free(p);
     }
     utarray_free(prompts);
-    sdsfree(dir);
     return count;
 }
 

@@ -297,6 +297,12 @@ struct edc_config *edc_config_load(const char *edc_home)
     if (skip_ctx && cJSON_IsBool(skip_ctx))
         config->skip_context_files = cJSON_IsTrue(skip_ctx);
 
+    /* Project-level prompt/skill roots. Defaults ON (the key is an opt-out). */
+    config->load_project_resources = true;
+    cJSON *proj_res = cJSON_GetObjectItem(conf, "load_project_resources");
+    if (proj_res && cJSON_IsBool(proj_res))
+        config->load_project_resources = cJSON_IsTrue(proj_res);
+
     config->enable_sandbox = true;
 
     /* Background services master switch, top-level "services_enabled". Defaults on. */

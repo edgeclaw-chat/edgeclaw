@@ -25,7 +25,7 @@ typedef enum
     AST_REDIR_IN,     /* < file */
     AST_CMD,          /* leaf: text + options */
     AST_DEP,          /* dependency on a task (dep_ids[0] = task_id) */
-    AST_VAR_DEF,      /* $VAR reference definition (text = "$1", dep_ids[0] = task_id) */
+    AST_VAR_DEF,      /* task-reference definition (text = "{{1}}", dep_ids[0] = task_id) */
     AST_VAR_ASSIGN,   /* wraps a CMD with deferred var expansion (child = CMD, var_refs = DEP/VAR_DEF chain) */
 } ast_type_t;
 

@@ -197,15 +197,17 @@ std::vector<model::CommandFact> AppFacade::CommandFamilies() const
     return out;
 }
 
-std::vector<model::CommandFact> AppFacade::PromptNames() const
+std::vector<model::CommandFact> AppFacade::PromptNames(const std::string &workdir) const
 {
     std::vector<model::CommandFact> out;
     if (!app_)
         return out;
 
-    // "<name>\t<description>\n" per template (see edc_app_prompts).
+    // "<name>\t<description>\n" per template (see edc_app_prompts). No workdir: the frontend
+    // passes the DISPLAYED session's directory when it has one (the project roots are found
+    // by walking up from it); "" falls back to the process cwd.
     char buf[4096] = {0};
-    edc_app_prompts(app_, buf, sizeof(buf));
+    edc_app_prompts(app_, workdir.c_str(), buf, sizeof(buf));
     const std::string all(buf);
     size_t pos = 0;
     while (pos < all.size())

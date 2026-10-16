@@ -22,7 +22,7 @@ struct edc_task;
  * Both arrays are read-only here and owned by the toolbox (freed by edc_toolbox_free).
  *   llm_actor    -- the LLM endpoint mailbox (owned by the assembly root)
  *
- * $VAR's "value semantics" ($$ / $LAST / $N / $NAME) are a static resolver private to
+ * Task references' "value semantics" ({{SELF}} / {{LAST}} / {{<id>}}) are a static resolver private to
  * this file, its data source = sched->sessions (the store handle). */
 extern void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJSON *tool_schemas,
                                  cJSON *memory_schemas, edc_actor_t *llm_actor, void *request_id);

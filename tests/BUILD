@@ -1057,6 +1057,25 @@ cc_test(
     ],
     linkopts = LINK_OPTS,
 )
+cc_test(
+    name = "test_commands_reload",
+    srcs = ["test_commands_reload.c"],
+    deps = [
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+cc_test(
+    name = "test_resources",
+    srcs = ["test_resources.c"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@sds//:sds",
+        "@uthash//:uthash",
+    ],
+    linkopts = LINK_OPTS,
+)
 
 cc_test(
     name = "test_commands_prompt",

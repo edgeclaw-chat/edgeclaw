@@ -1162,9 +1162,11 @@ void TUIWindow::RecomputeCommandPalette()
         palette_loaded_ = true;
     }
     // `/prompt` takes a template name: refresh that vocabulary while it is in play, so a
-    // template added on disk is offered without a restart.
+    // template added on disk is offered without a restart. The DISPLAYED session's bound
+    // directory goes with it -- the project roots are found by walking up from there (and
+    // the frontend already holds it, so no store read on this thread).
     if (app_ && input_text_.compare(0, 7, "/prompt") == 0)
-        command_palette_.SetArgSource("/prompt", app_->PromptNames());
+        command_palette_.SetArgSource("/prompt", app_->PromptNames(session_model_->workdir()));
     command_palette_.Update(input_text_);
 }
 

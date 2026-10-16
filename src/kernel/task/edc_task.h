@@ -253,7 +253,7 @@ struct edc_task
     sds output; /* final output, injected into a JOIN dependent */
 
     uint32_t completion_seq; /* completion order (0 = not finished) */
-    int has_deferred_vars;   /* $VAR references to expand */
+    int has_deferred_vars;   /* {{…}} task references to expand */
 
     struct edc_tool_call_record *tool_calls;
 

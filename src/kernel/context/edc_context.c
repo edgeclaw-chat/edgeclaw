@@ -1,5 +1,6 @@
 #include "edc_context.h"
 #include "edc_file_utils.h"
+#include "edc_resources.h"
 #include "edc_skills.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -228,21 +229,33 @@ static sds edc_context_load_bootstrap_files(const char *workspace)
     return result;
 }
 
-static sds edc_context_load_skills(const char *workspace)
+static sds edc_context_load_skills(const struct edc_config *conf, const char *workdir)
 {
     sds result = sdsempty();
-    sds tmp = edc_path_join(workspace, "skills", NULL);
-    UT_array *skills = edc_skills_load(tmp);
-    sdsfree(tmp);
+    /* Every resource root, ours first -- so a skill the user brought over from pi /
+     * Claude Code / opencode shows up here without being moved. The project roots come
+     * from the SESSION's directory (see edc_resource_dirs). */
+    UT_array *roots = edc_resource_dirs(conf, workdir);
+    UT_array *skills = edc_skills_load_roots(roots);
 
     result = sdscatprintf(result, "## Skills\n\n"
                                   "The following skills extend your capabilities. To use a skill, read its SKILL.md "
-                                  "file using the read_file tool.\n\n");
+                                  "file using the read_file tool. (`/skill <name>` runs one directly.)\n\n");
 
+    bool wrote_any = false;
     for (size_t i = 0; i < utarray_len(skills); i++)
     {
         struct edc_skill **skill_ptr = (struct edc_skill **)utarray_eltptr(skills, (unsigned)i);
         struct edc_skill *skill = *skill_ptr;
+
+        /* The author said the model must not reach for it on its own: it stays off this
+         * list (an explicit `/skill <name>` still runs it). */
+        if (!skill->model_invocable)
+        {
+            edc_skill_free(skill);
+            continue;
+        }
+
         struct edc_skill_meta_entry *e;
         HASH_FIND_STR(skill->meta, "description", e);
         const char *desc = e ? e->value : NULL;
@@ -252,19 +265,18 @@ static sds edc_context_load_skills(const char *workspace)
             continue;
         }
 
-        sds loc = edc_path_join(workspace, "skills", skill->name, "SKILL.md", NULL);
-        result = sdscatprintf(result, "### Skill: %s\n\n", skill->name);
-        result = sdscatprintf(result, "description: %s\nSKILL.md localtion: %s\n", desc, loc);
-        sdsfree(loc);
-        if (i < utarray_len(skills) - 1)
-        {
+        sds loc = edc_path_join(skill->source ? skill->source : "", "skills", skill->name, "SKILL.md", NULL);
+        if (wrote_any)
             result = sdscat(result, "\n\n---\n\n");
-        }
-
+        result = sdscatprintf(result, "### Skill: %s\n\n", skill->name);
+        result = sdscatprintf(result, "description: %s\nSKILL.md location: %s\n", desc, loc);
+        sdsfree(loc);
+        wrote_any = true;
         edc_skill_free(skill);
     }
 
     utarray_free(skills);
+    edc_resource_dirs_free(roots);
     return result;
 }
 
@@ -335,7 +347,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
      * -- so a session bound to a project directory really picks up that project's
      * AGENTS.md. */
     sds project_context = load_project_context(workspace, workdir, conf->skip_context_files);
-    sds skills = edc_context_load_skills(workspace);
+    sds skills = edc_context_load_skills(conf, workdir);
 
     sds system_prompt = sdsempty();
     system_prompt = sdscat(system_prompt, identity);

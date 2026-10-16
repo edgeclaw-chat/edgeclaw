@@ -100,8 +100,12 @@ extern const char *edc_app_cmd_family_brief(size_t index);
  * The frontend's completion popup offers `/prompt <name>`, so it needs the template
  * names: one "<name>\t<description>" line per template (the description is empty when the
  * front matter has none). Returns how many templates exist; |buf| is always
- * NUL-terminated and truncated to |cap| when the list does not fit. */
-extern size_t edc_app_prompts(const struct edc_app *app, char *buf, size_t cap);
+ * NUL-terminated and truncated to |cap| when the list does not fit.
+ *
+ * |workdir| is the DISPLAYED session's bound directory (the frontend already holds it):
+ * the project roots are looked for by walking up from it. Pass NULL/"" when there is no
+ * session bound yet. */
+extern size_t edc_app_prompts(const struct edc_app *app, const char *workdir, char *buf, size_t cap);
 
 /* The transcript path for a given session (`<workspace>/<session_id>/chat.jsonl`).
  * Built by convention, does not query the store; |session_id| must be an id (as

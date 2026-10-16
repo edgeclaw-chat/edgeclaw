@@ -85,14 +85,18 @@ SHELL SYNTAX
        If the file does not exist or is a directory, the task is NOT created
        and an error message is shown instead.
 
-     Variable expansion ($)
-           > $LAST
-           > $1
-           > $$
-       $LAST  — output of the most recently completed task (by completion
-                order, not creation order).
-       $N     — output of task with id N (e.g. $1, $2).
-       $$     — task id of the current foreground active task.
+     Task references ({{...}})
+           > {{LAST}}
+           > {{1}}
+           > {{SELF}}
+       {{LAST}}  — output of the most recently completed task (by
+                   completion order, not creation order).
+       {{N}}     — output of task with id N (e.g. {{1}}, {{2}}).
+       {{SELF}}  — task id of the current foreground active task.
+       The sigil is {{...}} and NOT $: $ belongs to the prompt template
+       layer ($1, $@, ${1:-x} -- the pi / Claude Code / opencode spelling).
+       Only those three forms count; any other {{...}} (a pasted
+       {{ var }}, a stray brace) is copied verbatim, and so is every $.
        Expansion happens after pipe splitting and redirect stripping, so
        any | or > in the expanded output is treated as literal text.
 
@@ -153,10 +157,12 @@ SHELL ARCHITECTURE
        target_group (preserved across pipe segments), bg flag, and dep_type.
 
      Variable expansion (two-phase)
-       Phase 1 (collect) — at task creation: validates $VAR references,
-       converts them to implicit dependencies, preserves $ text as-is.
-       Phase 2 (expand)  — when dependencies resolve: replaces $VAR with
-       the referenced task's actual output text, then sends to the LLM.
+       Phase 1 (collect) — at task creation: validates {{...}} references,
+       converts them to implicit dependencies, preserves the text as-is.
+       Phase 2 (expand)  — when dependencies resolve: replaces the
+       reference with the referenced task's actual output text, then
+       sends to the LLM.  The sigil is {{...}}, not `$` (which belongs
+       to prompt templates).
        Expansion happens after pipe splitting and redirect stripping,
        so any | or > in expanded output is treated as literal text.
 
@@ -243,7 +249,7 @@ SHELL-LIKE JOB CONTROL
      bg %n            /task bg [id]
      kill %n          /task stop <id>
      !cmd             !git status  (local shell: a task of its own)
-     $LAST  $1  $$    variable expansion
+     {{LAST}} {{1}} {{SELF}}   task references
 
 COMMAND REFERENCE
      General
@@ -257,6 +263,15 @@ COMMAND REFERENCE
      /prompt                       List the templates in workspace/prompts/.
      /prompt <name> [args...]      Run a template: substitute its {{...}}
                                    placeholders and run the result as input.
+     /skill                        List the skills (ours, plus any found in a
+                                   .claude / .agents / .pi / .opencode
+                                   skills directory).
+     /skill <name> [args...]       Run a skill directly: its SKILL.md body is
+                                   loaded into this task.
+     /reload                       Re-read the resource files and rebuild the
+                                   cached system prompt (a skill or AGENTS.md
+                                   edited on disk takes effect; config.json
+                                   still needs a restart).
      /connect                      Guided setup (provider, API key, model).
      /sandbox [on|off]             Enable/disable the filesystem sandbox.
      /sandbox list                 Show the allow/deny path lists.
@@ -382,7 +397,7 @@ WORKFLOW EXAMPLES
      Variable expansion (two-phase)
            > find performance bottlenecks in src/
            ... task 1 completes ...
-           > based on $LAST, create an optimization plan
+           > based on {{LAST}}, create an optimization plan
            ... task 2 waits for task 1, then sees its output ...
 
      Fork (child leads its own group)

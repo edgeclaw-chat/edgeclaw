@@ -2,10 +2,14 @@
  *
  * Unit tests for parsing (src/kernel/context/edc_prompts.c), argument splitting and
  * substitution. Two properties matter most:
- *   ① the placeholder set is exactly the one the header promises -- `{{…}}`, NEVER `$`;
- *   ② the template layer does not read `$` at all, because the input layer it feeds
- *      already gives `$` a meaning (task references -- see
- *      tests/test_cmd_parse.c::test_expand_vars_dollar_syntax). */
+ *   ① `edc_prompt_expand`'s placeholder set is exactly the one the header promises --
+ *      `{{…}}` -- and it reads nothing else. In particular it never reads `$`: the `$`
+ *      forms of the ecosystem (`$1`, `$@`, `${1:-x}`) are turned into `{{…}}` by the
+ *      LOADER (edc_prompt_parse -> edc_prompt_translate_dollar), so by the time the
+ *      expander runs there is only one syntax left;
+ *   ② `$` is inert in the input layer too: task references are `{{LAST}}` / `{{<id>}}` /
+ *      `{{SELF}}` now (see tests/test_cmd_parse.c::test_expand_task_refs), so a `$HOME` or
+ *      a `$5.00` in a body passes through everything untouched. */
 #include "edc_prompts.h"
 #include "sds.h"
 #include "utarray.h"
@@ -104,13 +108,12 @@ static void test_expand(void)
     check_expand("a lone { is left verbatim", "A:{1}", "one", "A:{1}");
     check_expand("plain text is untouched", "no placeholders here", "one", "no placeholders here");
 
-    /* ── 不变式：模板层**完全不碰 `$`** ────────────────────────────
-     * 这是换掉 `$` 参数语法的全部理由：输入层用 `$`（`$$`/`$N`/`$LAST`/`$NAME` 都是
-     * **任务引用**，见 tests/test_cmd_parse.c::test_expand_vars_dollar_syntax）。
-     * 模板层只要碰一次 `$1`，就会抢走输入层的东西。 */
-    check_expand("$1 is NOT ours -- the input layer's task reference", "A:$1", "one", "A:$1");
-    check_expand("$@ is NOT ours either", "A:$@", "one", "A:$@");
-    check_expand("$$ is NOT ours", "A:$$", "one", "A:$$");
+    /* ── 分层：展开器只认 `{{…}}` ─────────────────────────────────
+     * 生态的 `$` 语法由**加载器**翻译成 `{{…}}`（见 test_translate_dollar），所以展开器
+     * 永远只看得到一种写法；这里钉住"展开器读到 `$` 时一个字也不碰"。 */
+    check_expand("$1 is not the expander's business", "A:$1", "one", "A:$1");
+    check_expand("$@ neither", "A:$@", "one", "A:$@");
+    check_expand("$$ neither", "A:$$", "one", "A:$$");
     check_expand("$HOME passes through untouched", "run $HOME/bin", "one", "run $HOME/bin");
     check_expand("$ARGUMENTS passes through untouched", "A:$ARGUMENTS", "one", "A:$ARGUMENTS");
 }
@@ -267,11 +270,55 @@ static void test_parse(void)
         printf("  (cleanup failed)\n");
 }
 
+/* The `$` dialect (pi / Claude Code / opencode): the translation itself is mechanical.
+ * WHEN to apply it is the caller's decision -- a template of ours must keep its `$`, which
+ * is why this is a standalone step and not baked into edc_prompt_load (see the header). */
+static void test_translate_dollar(void)
+{
+    sds (*T)(const char *) = edc_prompt_translate_dollar;
+
+    TEST("positional: $1 / $2");
+    sds t = T("$1 then $2");
+    CHECK_STR(t, "{{1}} then {{2}}", "single digits");
+    sdsfree(t);
+
+    TEST("$10 is $1 followed by a literal 0 (shell positional semantics)");
+    t = T("$10");
+    CHECK_STR(t, "{{1}}0", "NOT the tenth argument (that spelling is {{10}})");
+    sdsfree(t);
+
+    TEST("$@ and $ARGUMENTS -> {{@}}");
+    t = T("$@ / $ARGUMENTS");
+    CHECK_STR(t, "{{@}} / {{@}}", "both spellings");
+    sdsfree(t);
+
+    TEST("braced forms map 1:1");
+    t = T("${1}|${1:-d}|${@}|${@:-d}|${@:2}|${@:2:3}");
+    CHECK_STR(t, "{{1}}|{{1:-d}}|{{@}}|{{@:-d}}|{{@:2}}|{{@:2:3}}", "all six forms");
+    sdsfree(t);
+
+    TEST("an escaped dollar is a literal dollar");
+    t = T("\\$1 costs \\$2");
+    CHECK_STR(t, "$1 costs $2", "backslash escape");
+    sdsfree(t);
+
+    TEST("a non-parameter $ is left to the input layer");
+    t = T("$HOME and ${HOME} and $ and $$");
+    CHECK_STR(t, "$HOME and ${HOME} and $ and $$", "verbatim");
+    sdsfree(t);
+
+    TEST("a body with no dollar is unchanged");
+    t = T("plain {{1}} text");
+    CHECK_STR(t, "plain {{1}} text", "untouched");
+    sdsfree(t);
+}
+
 int main(void)
 {
     test_expand();
     test_split();
     test_parse();
+    test_translate_dollar();
 
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed > 0 ? 1 : 0;

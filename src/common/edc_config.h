@@ -92,6 +92,11 @@ struct edc_config
      * bootstrap files in the prompt. config.json's top-level key `skip_context_files`
      * (default -> false). */
     bool skip_context_files;
+    /* Read the project-level resource dirs (./.edgeclaw, ./.claude, ./.agents, ./.opencode,
+     * ./.pi) for prompt templates and skills. ON by default; config.json's top-level
+     * `load_project_resources` (false) turns it off. The user-level roots under $HOME are
+     * never gated by this. */
+    bool load_project_resources;
     sds sandbox_root_real;
     sds *sandbox_ro_paths;
     sds *sandbox_rw_paths;

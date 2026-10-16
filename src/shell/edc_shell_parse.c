@@ -50,7 +50,7 @@ static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos)
 
         cmd->bg = t_opts.bg;
 
-        /* Literal input (''' / ' blocks) keeps $VAR text verbatim: no
+        /* Literal input (''' / ' blocks) keeps {{…}} text verbatim: no
          * deferred variable expansion is registered for it. */
         literal = t_opts.literal;
 
@@ -75,9 +75,9 @@ static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos)
 
     cmd->text = text;
 
-    /* detect $VAR references: mark for AST_VAR_ASSIGN wrapping.
+    /* detect task references: mark for AST_VAR_ASSIGN wrapping.
      * Literal inputs ('''/'-quoted) never expand, so they skip this. */
-    if (text && strchr(text, '$') && !literal)
+    if (text && strstr(text, "{{") && !literal)
         cmd->has_deferred_vars = true;
 
     return cmd;
@@ -193,18 +193,18 @@ static ast_node_t *parse_bg_cmd(edc_shell_token_t *tokens, int count, int *pos, 
     ast_node_t *cmd = parse_cmd(tokens, count, pos);
     cmd->at_group = at_group;
 
-    /* save $VAR info before redirect wrapping may modify cmd->text */
+    /* save {{…}} info before redirect wrapping may modify cmd->text */
     bool has_vars = cmd->has_deferred_vars;
     sds saved_text = has_vars ? sdsdup(cmd->text) : NULL;
 
     ast_node_t *inner = parse_redirects(tokens, count, pos, cmd);
 
-    /* wrap with AST_VAR_ASSIGN if this command has $VAR references */
+    /* wrap with AST_VAR_ASSIGN if this command has {{…}} references */
     if (has_vars)
     {
         ast_node_t *va = ast_new(AST_VAR_ASSIGN);
         va->child = inner;
-        va->text = saved_text; /* original text with $VAR refs for executor */
+        va->text = saved_text; /* original text with {{…}} refs for executor */
         inner = va;
     }
 

@@ -471,7 +471,7 @@ void TestCommandPalette(edc::TUIWindow &win)
     type("/");
     {
         const std::string f = FrameOf(win);
-        Check(Has(f, "/task") && Has(f, "/session"), "裸 / 列出家族");
+        Check(Has(f, "/task") && Has(f, "/session") && Has(f, "/group"), "裸 / 先列三个容器家族");
         Check(Has(f, "Tab complete"), "带了提示行");
 
         // 面板是输入框**上方**的一块，而且在输入框的**上分割线之上**（中间正好隔着那条

@@ -420,6 +420,17 @@ sds edc_shell_read_file(const char *path, sds *err_out)
     return content;
 }
 
+/* Same recognition as the expand phase (edc_shell_vars.c): only our exact forms count. */
+static bool edc_shell_all_digits(const char *s, size_t n)
+{
+    if (n == 0)
+        return false;
+    for (size_t i = 0; i < n; i++)
+        if (s[i] < '0' || s[i] > '9')
+            return false;
+    return true;
+}
+
 sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_scheduler *sched, const char *input,
                                sds **out_deps, int *out_dep_count,
                                sds *out_error)
@@ -431,9 +442,6 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
 
     bool in_dq = false, in_sq = false;
     const char *p = input;
-
-#define VAR_DELIM(c)                                                                                                   \
-    ((c) == ' ' || (c) == '\t' || (c) == '\0' || (c) == '|' || (c) == ';' || (c) == '&' || (c) == '>' || (c) == '<')
 
     while (*p)
     {
@@ -452,9 +460,9 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
                 result = sdscatlen(result, p, 1);
                 p++;
             }
-            else if (*p == '$' && *(p + 1))
+            else if (p[0] == '{' && p[1] == '{')
             {
-                p++;
+                p += 2;
                 goto expand_var;
             }
             else
@@ -482,70 +490,58 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
             result = sdscatlen(result, p, 1);
             p++;
         }
-        else if (*p == '$' && *(p + 1))
+        else if (p[0] == '{' && p[1] == '{')
         {
-            p++; /* skip $ */
+            p += 2;
         expand_var:
-            if (*p == '$')
             {
-                p++;
-                /* `$$` is the task in front (not the screen focus: that one may sit on a
-                 * task that already finished). */
-                struct edc_task *front = edc_scheduler_current_task(edc_session_manager_get_active(sm));
-                if (front)
-                    result = sdscat(result, front->task_id);
-            }
-            else if (strncmp(p, "LAST", 4) == 0 && VAR_DELIM(p[4]))
-            {
-                result = sdscatlen(result, "$LAST", 5);
-                p += 4;
-            }
-            else if (*p >= '0' && *p <= '9')
-            {
-                const char *ns = p;
-                while (*p >= '0' && *p <= '9')
-                    p++;
-                char buf[32];
-                size_t nl = (size_t)(p - ns);
-                if (nl < sizeof(buf))
+                const char *close = strstr(p, "}}");
+                if (!close)
                 {
-                    memcpy(buf, ns, nl);
-                    buf[nl] = '\0';
-                    struct edc_task *t = edc_session_store_resolve_task(sm, sched, buf, NULL);
+                    result = sdscatlen(result, "{{", 2); /* unterminated: literal bytes */
+                    continue;
+                }
+                const char *after = close + 2;
+                sds body = sdsnewlen(p, (size_t)(close - p));
+
+                if (strcmp(body, "SELF") == 0)
+                {
+                    /* `{{SELF}}` is the task in front (not the screen focus: that one may
+                     * sit on a task that already finished). Resolved NOW, as `$$` was. */
+                    struct edc_task *front = edc_scheduler_current_task(edc_session_manager_get_active(sm));
+                    if (front)
+                        result = sdscat(result, front->task_id);
+                }
+                else if (strcmp(body, "LAST") == 0)
+                {
+                    /* No dependency, and no value yet: the marker stays for the expand
+                     * phase (edc_shell_vars.c), which runs once this task's deps are done. */
+                    result = sdscat(result, "{{LAST}}");
+                }
+                else if (edc_shell_all_digits(body, sdslen(body)))
+                {
+                    struct edc_task *t = edc_session_store_resolve_task(sm, sched, body, NULL);
                     if (!t)
                     {
-                        *out_error = sdscatprintf(sdsempty(), "$%s: task not found", buf);
+                        *out_error = sdscatprintf(sdsempty(), "{{%s}}: task not found", body);
+                        sdsfree(body);
                         sdsfree(result);
                         return NULL;
                     }
                     (*out_dep_count)++;
                     *out_deps = realloc(*out_deps, (size_t)*out_dep_count * sizeof(sds));
-                    (*out_deps)[*out_dep_count - 1] = sdsnew(buf);
-                    result = sdscatprintf(result, "$%s", buf);
+                    (*out_deps)[*out_dep_count - 1] = sdsdup(body);
+                    result = sdscatprintf(result, "{{%s}}", body);
                 }
-            }
-            else
-            {
-                const char *is = p;
-                while (*p && !VAR_DELIM(*p) && *p != '$')
-                    p++;
-                size_t il = (size_t)(p - is);
-                if (il > 0)
+                else
                 {
-                    sds id = sdsnewlen(is, il);
-                    struct edc_task *t = edc_session_store_resolve_task(sm, sched, id, NULL);
-                    if (!t)
-                    {
-                        *out_error = sdscatprintf(sdsempty(), "$%s: task not found", id);
-                        sdsfree(id);
-                        sdsfree(result);
-                        return NULL;
-                    }
-                    (*out_dep_count)++;
-                    *out_deps = realloc(*out_deps, (size_t)*out_dep_count * sizeof(sds));
-                    (*out_deps)[*out_dep_count - 1] = id;
-                    result = sdscatprintf(result, "$%s", id);
+                    /* Not one of our forms: verbatim, no dep, no error (see the header of
+                     * edc_shell_vars.c -- nothing is a reference unless spelled exactly). */
+                    result = sdscatprintf(result, "{{%s}}", body);
                 }
+                sdsfree(body);
+                p = after;
+                continue;
             }
         }
         else
@@ -555,7 +551,6 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
         }
     }
 
-#undef VAR_DELIM
     return result;
 }
 

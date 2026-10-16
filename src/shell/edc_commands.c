@@ -4,10 +4,13 @@
 #include "edc_cmd_parse.h"
 #include "edc_compat.h"
 #include "edc_context.h"
+#include "edc_models.h"
 #include "edc_file_utils.h"
 #include "edc_group_fold.h"
 #include "edc_local_shell.h"
 #include "edc_prompts.h"
+#include "edc_resources.h"
+#include "edc_skills.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
@@ -263,7 +266,7 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "`|` chains tasks and injects the source's output into the next one's context; `;` only "
      "makes it wait; `&` runs it in the background (takes no foreground)."},
     {"Input", "`> file` `>> file` `2> file` `< file`", "redirect output / append / stderr / input", NULL},
-    {"Input", "`$LAST` `$1` `$$`", "variable expansion (last output / a task's output / current task id)", NULL},
+    {"Input", "`{{LAST}}` `{{1}}` `{{SELF}}`", "task references (last output / a task's output / current task id)", NULL},
 
     {"General", "/help [<command>]", "show this list, or the detail of one command",
      "`/help` alone lists every command; `/help <command>` (a prefix, or a subcommand name "
@@ -276,6 +279,10 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
     {"General", "/prompt", "list the templates in workspace/prompts/", NULL},
     {"General", "/prompt <name> [args…]",
      "run a template: its `{{…}}` placeholders are filled in and the result runs as input", NULL},
+    {"General", "/skill", "list the skills (yours, plus any found in .claude / .agents / .pi / .opencode)", NULL},
+    {"General", "/skill <name> [args…]",
+     "run a skill directly: its SKILL.md body is loaded into this task (no tool round)", NULL},
+    {"General", "/reload", "re-read the resource files and rebuild the cached system prompt", NULL},
     {"General", "/sandbox [on|off]", "enable/disable the filesystem sandbox", NULL},
     {"General", "/sandbox list", "show the allow/deny path lists", NULL},
     {"General", "/sandbox add-ro|rm-ro <dir>", "add/remove a read-only path", NULL},
@@ -333,16 +340,21 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
 
 /* The first tokens, one row each: a bare `/` in the completion palette lists these ~9
  * families instead of all ~45 rows. Kept beside the table, so a new family is one edit. */
+/* The bare-`/` list. The THREE CONTAINERS lead: they are what a user reaches for, and the
+ * popup only shows 8 rows -- with the leaves first the three families fell off the bottom.
+ * (Table order is the display order; `/help`'s own list comes from k_cmd_docs.) */
 static const struct edc_cmd_doc k_cmd_families[] = {
+    {"Task", "/task", "create, inspect and control tasks", NULL},
+    {"Session", "/session", "new / switch / list / save / remove sessions, and the session memory", NULL},
+    {"Group", "/group", "list groups and their context / fold state", NULL},
     {"General", "/help", "show this list, or one command's detail", NULL},
     {"General", "/whoami", "show the current session, model and foreground task", NULL},
     {"General", "/model", "list / switch / search models", NULL},
     {"General", "/connect", "guided setup: provider, API key, model", NULL},
     {"General", "/prompt", "list and run prompt templates", NULL},
+    {"General", "/skill", "list and run skills", NULL},
+    {"General", "/reload", "re-read resources, rebuild the system prompt", NULL},
     {"General", "/sandbox", "the filesystem sandbox (on/off, ro/rw/deny paths)", NULL},
-    {"Session", "/session", "new / switch / list / save / remove sessions, and the session memory", NULL},
-    {"Task", "/task", "create, inspect and control tasks", NULL},
-    {"Group", "/group", "list groups and their context / fold state", NULL},
 };
 #define EDC_CMD_FAMILY_COUNT (sizeof(k_cmd_families) / sizeof(k_cmd_families[0]))
 
@@ -947,7 +959,7 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
     /* A task needs something to run. With no text there is nothing to attach, and a READY
      * task without a turn is never drivable: it just sits in the group forever (and would
      * be picked as the foreground group's "current task" by /task stop, /task status and
-     * `$$`). Same rule as the shell path. */
+     * `{{SELF}}`). Same rule as the shell path. */
     if (!opts.input || sdslen(opts.input) == 0)
     {
         edc_commands_reply(to, "A task needs an input — write `/task new \"<desc>\"` "
@@ -1992,15 +2004,31 @@ static bool edc_commands_handle_task(struct edc_session_manager *sm, struct edc_
  *
  * There is no reserved sub-command, so a template named `list` keeps working. */
 
-static void edc_commands_prompt_list(struct edc_config *cfg, struct edc_reply_to to)
+/* The directory the SESSION is bound to -- the "project" whose resources we read. Empty
+ * when there is no session; the resource lookup then falls back to the process cwd. */
+static sds cmd_session_workdir(struct edc_session_manager *sm, const struct edc_channel_message *msg)
 {
-    sds dir = edc_path_join(cfg->workspace, "prompts", NULL);
-    UT_array *prompts = edc_prompts_list(dir);
+    struct edc_session *s = edc_session_store_resolve_session(sm, msg ? msg->session_id : NULL);
+    const char *w = s ? edc_session_get_workdir(s) : NULL;
+    return (w && *w) ? sdsnew(w) : sdsempty();
+}
+
+static void edc_commands_prompt_list(struct edc_config *cfg, const char *workdir, struct edc_reply_to to)
+{
+    /* Every resource root (ours first), so a template the user brought over from pi /
+     * Claude Code / opencode shows up here too. */
+    UT_array *roots = edc_resource_dirs(cfg, workdir);
+    UT_array *prompts = edc_prompts_list_roots(roots);
 
     sds out;
     if (utarray_len(prompts) == 0)
     {
-        out = sdscatprintf(sdsempty(), "**No prompts** — put a `.md` file in `%s`.", dir);
+        sds dir = edc_path_join(cfg->workspace, "prompts", NULL);
+        out = sdscatprintf(sdsempty(),
+                           "**No prompts** — put a `.md` file in `%s` (or in a `.claude` / `.pi` / "
+                           "`.opencode` prompts or command directory).",
+                           dir);
+        sdsfree(dir);
     }
     else
     {
@@ -2014,6 +2042,10 @@ static void edc_commands_prompt_list(struct edc_config *cfg, struct edc_reply_to
                                (p->description && sdslen(p->description)) ? " — " : "",
                                (p->description && sdslen(p->description)) ? p->description : "");
             sdsfree(hint);
+            /* Name the root when it is not ours: "where did this come from" matters once
+             * foreign directories are read. */
+            if (p->source && cfg->workspace && strcmp(p->source, cfg->workspace) != 0)
+                out = sdscatprintf(out, "  _(from `%s`)_\n", p->source);
         }
         out = sdscatprintf(out, "\nUsage: `/prompt <name> [args…]`\n");
     }
@@ -2026,7 +2058,7 @@ static void edc_commands_prompt_list(struct edc_config *cfg, struct edc_reply_to
         edc_prompt_free(*slot);
     }
     utarray_free(prompts);
-    sdsfree(dir);
+    edc_resource_dirs_free(roots);
 }
 
 static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_session_manager *sm,
@@ -2040,7 +2072,9 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
     {
         if (arg)
             sdsfree(arg);
-        edc_commands_prompt_list(cfg, to);
+        sds wd = cmd_session_workdir(sm, message);
+        edc_commands_prompt_list(cfg, wd, to);
+        sdsfree(wd);
         return true;
     }
 
@@ -2050,19 +2084,25 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
     if (argc == 0)
     {
         edc_prompt_args_free(args, argc);
-        edc_commands_prompt_list(cfg, to);
+        sds wd = cmd_session_workdir(sm, message);
+        edc_commands_prompt_list(cfg, wd, to);
+        sdsfree(wd);
         return true;
     }
 
-    sds dir = edc_path_join(cfg->workspace, "prompts", NULL);
-    struct edc_prompt *prompt = edc_prompt_load(dir, args[0]);
+    /* Search every resource root, ours first: a template the user brought over works
+     * without being moved (and is translated if its dialect is `$`). */
+    sds workdir = cmd_session_workdir(sm, message);
+    UT_array *roots = edc_resource_dirs(cfg, workdir);
+    sdsfree(workdir);
+    struct edc_prompt *prompt = edc_prompt_load_roots(roots, args[0]);
+    edc_resource_dirs_free(roots);
     if (!prompt)
     {
-        sds reply = sdscatprintf(
-            sdsempty(), "**No prompt** named `%s` (looked in `%s`).\n\nRun `/prompt` to list them.", args[0], dir);
+        sds reply = sdscatprintf(sdsempty(), "**No prompt** named `%s`.\n\nRun `/prompt` to list them.",
+                                 args[0]);
         edc_commands_reply(to, reply);
         sdsfree(reply);
-        sdsfree(dir);
         edc_prompt_args_free(args, argc);
         return true;
     }
@@ -2070,7 +2110,6 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
     sds expanded = edc_prompt_expand(prompt, args + 1, argc - 1);
     edc_prompt_free(prompt);
     edc_prompt_args_free(args, argc);
-    sdsfree(dir);
 
     if (sdslen(expanded) == 0)
     {
@@ -2080,13 +2119,230 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
     }
 
     /* The result is USER INPUT, not a command: it goes to the shell path (which is what
-     * gives templates `| ; & >` and `$VAR` for free), never back through the command
+     * gives templates `| ; & >` and `{{…}}` for free), never back through the command
      * dispatch -- that is what makes a body containing `/prompt` harmless (invariant 2). */
     struct edc_channel_message *expanded_msg = edc_channel_message_new(message->type, message->message_type, expanded);
     if (message->session_id)
         expanded_msg->session_id = sdsnew(message->session_id);
     edc_shell_execute(sm, sched, to, expanded_msg);
     edc_channel_message_free(expanded_msg);
+    return true;
+}
+
+/* ── /skill ──────────────────────────────────────────────────
+ *
+ * A skill is a directory of instructions (`<root>/skills/<name>/SKILL.md`) the model may
+ * pick up on its own -- it sees name + description in the system prompt, then reads the
+ * file. `/skill` is the EXPLICIT way in: `/skill <name> [args…]` loads the body and runs
+ * it as this task's input, the same path `/prompt` takes (so a pipe or a redirect in the
+ * body still works). pi / Claude Code spell this `/skill:name`; we keep our single-verb
+ * style, `/prompt <name>` / `/skill <name>`.
+ *
+ * A skill whose front matter says `disable-model-invocation: true` is NOT in the system
+ * prompt (the model must not reach for it), but it is still runnable from here. */
+
+static void edc_commands_skill_list(struct edc_config *cfg, const char *workdir, struct edc_reply_to to)
+{
+    UT_array *roots = edc_resource_dirs(cfg, workdir);
+    UT_array *skills = edc_skills_load_roots(roots);
+
+    sds out;
+    if (utarray_len(skills) == 0)
+    {
+        sds dir = edc_path_join(cfg->workspace, "skills", NULL);
+        out = sdscatprintf(sdsempty(),
+                           "**No skills** — a skill is `<dir>/<name>/SKILL.md`; ours live in `%s` (a `.claude` / "
+                           "`.agents` / `.pi` / `.opencode` skills directory is read too).",
+                           dir);
+        sdsfree(dir);
+    }
+    else
+    {
+        out = sdsnew("## Skills\n\n");
+        for (size_t i = 0; i < utarray_len(skills); i++)
+        {
+            struct edc_skill **slot = (struct edc_skill **)utarray_eltptr(skills, (unsigned)i);
+            struct edc_skill *sk = slot ? *slot : NULL;
+            if (!sk)
+                continue;
+            struct edc_skill_meta_entry *e = NULL;
+            HASH_FIND_STR(sk->meta, "description", e);
+            out = sdscatprintf(out, "- `/skill %s`%s%s\n", sk->name, (e && e->value && sdslen(e->value)) ? " — " : "",
+                               (e && e->value && sdslen(e->value)) ? e->value : "");
+            if (!sk->model_invocable)
+                out = sdscat(out, "  _(user-only: `disable-model-invocation`)_\n");
+            if (sk->source && cfg->workspace && strcmp(sk->source, cfg->workspace) != 0)
+                out = sdscatprintf(out, "  _(from `%s`)_\n", sk->source);
+        }
+        out = sdscat(out, "\nUsage: `/skill <name> [args…]`\n");
+    }
+    edc_commands_reply(to, out);
+    sdsfree(out);
+
+    for (size_t i = 0; i < utarray_len(skills); i++)
+    {
+        struct edc_skill **slot = (struct edc_skill **)utarray_eltptr(skills, (unsigned)i);
+        if (slot)
+            edc_skill_free(*slot);
+    }
+    utarray_free(skills);
+    edc_resource_dirs_free(roots);
+}
+
+static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session_manager *sm,
+                                      struct edc_scheduler *sched, struct edc_reply_to to,
+                                      struct edc_channel_message *message)
+{
+    sds arg = NULL;
+    bool has_arg = edc_commands_arg(message->content, "/skill", &arg);
+    if (!has_arg || !arg || sdslen(arg) == 0)
+    {
+        if (arg)
+            sdsfree(arg);
+        sds wd = cmd_session_workdir(sm, message);
+        edc_commands_skill_list(cfg, wd, to);
+        sdsfree(wd);
+        return true;
+    }
+
+    int argc = 0;
+    sds *args = edc_prompt_split_args(arg, &argc); /* the same quoting rules as /prompt */
+    sdsfree(arg);
+    if (argc == 0)
+    {
+        edc_prompt_args_free(args, argc);
+        sds wd = cmd_session_workdir(sm, message);
+        edc_commands_skill_list(cfg, wd, to);
+        sdsfree(wd);
+        return true;
+    }
+
+    /* Find it by name, roots in order; take it OUT of the array so the shared free below
+     * cannot touch it. */
+    sds workdir = cmd_session_workdir(sm, message);
+    UT_array *roots = edc_resource_dirs(cfg, workdir);
+    sdsfree(workdir);
+    UT_array *skills = edc_skills_load_roots(roots);
+    struct edc_skill *found = NULL;
+    for (size_t i = 0; i < utarray_len(skills); i++)
+    {
+        struct edc_skill **slot = (struct edc_skill **)utarray_eltptr(skills, (unsigned)i);
+        if (slot && *slot && strcmp((*slot)->name, args[0]) == 0)
+        {
+            found = *slot;
+            *slot = NULL;
+            break;
+        }
+    }
+    for (size_t i = 0; i < utarray_len(skills); i++)
+    {
+        struct edc_skill **slot = (struct edc_skill **)utarray_eltptr(skills, (unsigned)i);
+        if (slot)
+            edc_skill_free(*slot);
+    }
+    utarray_free(skills);
+    edc_resource_dirs_free(roots);
+
+    if (!found)
+    {
+        sds reply = sdscatprintf(sdsempty(), "**No skill** named `%s`.\n\nRun `/skill` to list them.", args[0]);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        edc_prompt_args_free(args, argc);
+        return true;
+    }
+
+    /* The body IS the input, with the ecosystem's `$1` / `$ARGUMENTS` (and our `{{…}}`)
+     * filled in -- so `/skill pdf extract pages 1-5` hands the skill its arguments. */
+    sds body = edc_prompt_translate_dollar(found->content);
+    struct edc_prompt shell_body;
+    memset(&shell_body, 0, sizeof(shell_body));
+    shell_body.body = body;
+    sds input = edc_prompt_expand(&shell_body, args + 1, argc - 1);
+    sdsfree(body);
+    edc_skill_free(found);
+    edc_prompt_args_free(args, argc);
+
+    if (sdslen(input) == 0)
+    {
+        edc_commands_reply(to, "**Skill has no body** — nothing to run.");
+        sdsfree(input);
+        return true;
+    }
+
+    /* Same exit as `/prompt`: USER INPUT, so the shell path gives it `| ; & >` for free. */
+    struct edc_channel_message *expanded_msg = edc_channel_message_new(message->type, message->message_type, input);
+    if (message->session_id)
+        expanded_msg->session_id = sdsnew(message->session_id);
+    edc_shell_execute(sm, sched, to, expanded_msg);
+    edc_channel_message_free(expanded_msg);
+    return true;
+}
+
+/* ── /reload ─────────────────────────────────────────────────
+ *
+ * The system prompt is built ONCE per group and then CACHED in `group->history[0]`
+ * (every request references that node -- that constancy is what keeps the provider's
+ * cache prefix stable). So a resource the user adds or edits on disk -- a skill, an
+ * AGENTS.md, anything that ends up in the prompt -- would otherwise never take effect.
+ *
+ * `/reload` rebuilds it from disk and writes the new content back over history[0] for
+ * every group of the session. The node itself is kept (its "content" is replaced in
+ * place) so a request that is holding a reference to it cannot dangle.
+ *
+ * Prompts and skills are read from disk on every use already, so they need nothing; the
+ * lazily-loaded model catalog IS dropped here so a regenerated one is re-read. */
+static bool edc_commands_handle_reload(struct edc_config *cfg, struct edc_session_manager *sm,
+                                       struct edc_reply_to to, struct edc_channel_message *message)
+{
+    struct edc_session *session = cmd_input_session(sm, message);
+    if (!session)
+    {
+        edc_commands_reply(to, "No session — nothing to reload.");
+        return true;
+    }
+
+    const char *workdir = edc_session_get_workdir(session);
+    size_t groups = 0;
+    size_t changed = 0;
+
+    struct edc_task_group *g;
+    DL_FOREACH(session->groups, g)
+    {
+        /* A system group carries no system prompt (see edc_task_group.c), and a group
+         * that never built one has nothing to replace. */
+        if (g->kind == EDC_GROUP_KIND_SYSTEM || cJSON_GetArraySize(g->history) == 0)
+            continue;
+
+        cJSON *slot = cJSON_GetArrayItem(g->history, 0);
+        cJSON *content = slot ? cJSON_GetObjectItem(slot, "content") : NULL;
+        if (!slot || !content || !cJSON_IsString(content))
+            continue;
+
+        sds prompt = edc_context_build_system_prompt(cfg, workdir);
+        if (!prompt)
+            continue;
+
+        if (strcmp(content->valuestring, prompt) != 0)
+        {
+            /* In place: the node stays, only its content changes. */
+            cJSON_ReplaceItemInObject(slot, "content", cJSON_CreateString(prompt));
+            changed++;
+        }
+        groups++;
+        sdsfree(prompt);
+    }
+
+    /* Forget the lazily-loaded catalog so the next use re-reads it (EDGECLAW_MODELS_CATALOG). */
+    edc_models_reset();
+
+    sds reply = sdscatprintf(sdsempty(),
+                             "**Reloaded** — system prompt rebuilt from disk for %zu group%s (%zu changed). "
+                             "The model catalog was dropped (re-read on next use). Prompts and skills are "
+                             "already read on every use. `config.json` is NOT re-read — restart for that.",
+                             groups, groups == 1 ? "" : "s", changed);
+    edc_commands_reply(to, reply);
+    sdsfree(reply);
     return true;
 }
 
@@ -2117,6 +2373,14 @@ bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm
          * `/promptx` is an unknown command rather than a template lookup. */
         if (edc_commands_is_command(message->content, "/prompt"))
             return edc_commands_handle_prompt(cfg, sm, sched, to, message);
+
+        /* The explicit way into a skill (`/skill <name> [args…]`); `/skill` alone lists. */
+        if (edc_commands_is_command(message->content, "/skill"))
+            return edc_commands_handle_skill(cfg, sm, sched, to, message);
+
+        /* Re-read the resource files and rebuild the CACHED system prompt (group history[0]). */
+        if (edc_commands_is_target(message->content, "/reload"))
+            return edc_commands_handle_reload(cfg, sm, to, message);
 
         /* The top-level shortcuts (/tasks, /bg, /fg) were removed -- all go through /task subcommands. */
 

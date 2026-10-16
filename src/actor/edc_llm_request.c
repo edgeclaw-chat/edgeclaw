@@ -54,7 +54,7 @@ static bool append_to_task_input(struct edc_task *task, const char *block)
  * Three invariants: does not know struct edc_app / does not know the toolbox / does not
  * depend back on app.
  *
- * $VAR's "value semantics" ($$ / $LAST / $N / $NAME) are a static resolver private to
+ * {{…}}'s "value semantics" ({{SELF}} / {{LAST}} / {{<id>}}) are a static resolver private to
  * this file, its data source = sched->sessions (the store handle). The shell side does
  * only two things -- recognize the syntax and set has_deferred_vars
  * (edc_shell_parse.c:88 / edc_shell_ast.c:216); the actual substitution is deferred to
@@ -66,15 +66,15 @@ static sds edc_llm_var_resolver(const char *name, void *user_data)
     if (!sched)
         return NULL;
 
-    /* $$ -> the task in front (the foreground group's last unfinished member), not the
-     * screen focus: that one may sit on a task that already finished. */
-    if (strcmp(name, "$") == 0)
+    /* {{SELF}} -> the task in front (the foreground group's last unfinished member), not
+     * the screen focus: that one may sit on a task that already finished. */
+    if (strcmp(name, "SELF") == 0)
     {
         struct edc_task *front = edc_scheduler_current_task(edc_session_manager_get_active(sched->sessions));
         return front ? sdsnew(front->task_id) : NULL;
     }
 
-    /* $LAST -> the last completed task's output */
+    /* {{LAST}} -> the last completed task's output */
     if (strcmp(name, "LAST") == 0)
     {
         struct edc_task *last = NULL;
@@ -96,7 +96,7 @@ static sds edc_llm_var_resolver(const char *name, void *user_data)
         return (last && last->output) ? sdsdup(last->output) : NULL;
     }
 
-    /* $NUMBER or $NAME -> look up by task id / job number (global; lazily activates the owning session if needed) */
+    /* {{<digits>}} -> look up by task id (global; lazily activates the owning session if needed) */
     struct edc_task *t = edc_session_store_resolve_task(sched->sessions, sched, name, NULL);
     return (t && t->output) ? sdsdup(t->output) : NULL;
 }
@@ -135,7 +135,7 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
 
     /* Group-level context: the system part (group memory + system prompt, pristine, no
      * todo) is assembled by edc_context_append_system_part; the rest is all unfolded
-     * history + task-specific material (dep outputs / $VAR expansion). The todo reminder
+     * history + task-specific material (dep outputs / {{…}} expansion). The todo reminder
      * is not in the head -- nor sent every request: it is throttled by
      * edc_task_llm_request_poke and generated only when EDC_TODO_SYNC_REMIND_GAP requests
      * have passed without a todowrite, recomputed via edc_context_make_todo_reminder and
@@ -266,7 +266,7 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         }
     }
 
-    /* expand deferred $VAR references in the current turn's user messages */
+    /* expand deferred {{…}} references in the current turn's user messages */
     if (task->has_deferred_vars && task->active_turn)
     {
         for (size_t mj = task->active_turn->messages.head; mj < task->active_turn->messages.tail; mj++)

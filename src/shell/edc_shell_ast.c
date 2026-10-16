@@ -272,7 +272,7 @@ static struct edc_task *exec_node(
         return prev_task;
 
     case AST_VAR_ASSIGN: {
-        /* collect $VAR references: validate + get deps, then inject into inner CMD */
+        /* collect {{…}} references: validate + get deps, then inject into inner CMD */
         sds *var_deps = NULL;
         int var_dep_count = 0;
         sds var_err = NULL;
@@ -333,7 +333,7 @@ static struct edc_task *exec_node(
                 *vr_tail = dep;
                 vr_tail = &dep->next;
 
-                /* AST_VAR_DEF: variable definition (track $VAR → task_id mapping) */
+                /* AST_VAR_DEF: variable definition (track {{…}} → task_id mapping) */
                 ast_node_t *vdef = ast_new(AST_VAR_DEF);
                 vdef->filename = sdsnew(cmd->dep_ids[i]); /* task_id */
                 *vr_tail = vdef;
@@ -347,7 +347,7 @@ static struct edc_task *exec_node(
         /* mark for deferred expansion in edc_app_cb_send_llm */
         if (task && var_dep_count >= 0)
         {
-            /* check if any $VAR references exist (even $LAST which has no deps) */
+            /* check if any {{…}} references exist (even `{{LAST}}` which has no deps) */
             if (node->text && strstr(node->text, "$"))
                 task->has_deferred_vars = 1;
         }
