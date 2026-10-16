@@ -104,6 +104,68 @@ static void test_flags_after_quotes(void)
     edc_cmd_task_opts_free(&o);
 }
 
+/* ── `$` 的语法：这一层没有"字面 $"这条写法 ──────────────────────
+ *
+ * 这一层（`edc_shell_expand_vars`）的 `$` 是**任务引用**，不是变量插值：
+ *   `$$`    → 当前前台任务的 task_id（`edc_llm_request.c` 的 resolver；**不是**转义）
+ *   `$N`    → 任务 N 的输出
+ *   `$LAST` → 最后一个已完成任务的输出
+ *   `$NAME` → 任务 NAME 的输出
+ * 引用不到是**硬错误**（返回 NULL + 文案），且 `collect_var_refs` 那时已经把依赖建好了。
+ *
+ * 为什么钉它：`/prompt` 的模板层也用 `$`（`$1` = 第一个参数），两层的 `$N` 直接撞车。
+ * 在决定"模板里怎么写字面 $"之前，必须先有这份事实，否则只是猜。 */
+static sds shape_resolver(const char *name, void *user_data)
+{
+    (void)user_data;
+    if (strcmp(name, "$") == 0)
+        return sdsnew("<front>");
+    if (strcmp(name, "1") == 0)
+        return sdsnew("<task1-output>");
+    if (strcmp(name, "LAST") == 0)
+        return sdsnew("<last-output>");
+    if (strcmp(name, "NAME") == 0)
+        return sdsnew("<name-output>");
+    return NULL;
+}
+
+static void test_expand_vars_dollar_syntax(void)
+{
+    sds err = NULL;
+    sds out = NULL;
+
+    out = edc_shell_expand_vars("$$", shape_resolver, NULL, &err);
+    T_STREQ(out, "<front>", "expand: `$$` = 当前前台任务，**不是**字面 $");
+    sdsfree(out);
+
+    out = edc_shell_expand_vars("$1", shape_resolver, NULL, &err);
+    T_STREQ(out, "<task1-output>", "expand: `$1` = 任务 1 的输出");
+    sdsfree(out);
+
+    out = edc_shell_expand_vars("$NAME", shape_resolver, NULL, &err);
+    T_STREQ(out, "<name-output>", "expand: `$NAME` = 任务 NAME 的输出");
+    sdsfree(out);
+
+    /* 单引号是**唯一**能挡住这一层的东西；双引号挡不住（两种引号只差 $VAR 插值）。 */
+    out = edc_shell_expand_vars("'$1'", shape_resolver, NULL, &err);
+    T_STREQ(out, "'$1'", "expand: 单引号内不展开——但**引号本身留在文本里**");
+    sdsfree(out);
+
+    out = edc_shell_expand_vars("\"$1\"", shape_resolver, NULL, &err);
+    T_STREQ(out, "\"<task1-output>\"", "expand: 双引号挡不住 $");
+    sdsfree(out);
+
+    /* 后跟分隔符的 `$` 没有东西可解析 → 它被**丢掉**（不是原样留下）。 */
+    out = edc_shell_expand_vars("a $ b", shape_resolver, NULL, &err);
+    T_STREQ(out, "a  b", "expand: `$` 后跟分隔符 → 这个 $ 被丢掉");
+    sdsfree(out);
+
+    /* 结尾的 `$` 走另一个分支（`*(p+1)` 为假）→ 原样留下。 */
+    out = edc_shell_expand_vars("a$", shape_resolver, NULL, &err);
+    T_STREQ(out, "a$", "expand: 结尾的 $ 原样留下");
+    sdsfree(out);
+}
+
 /* ── $VAR 展开的出参契约 ──────────────────────────────────────
  * `edc_shell_expand_vars` 是"出参一定写定"的: **成功**也要把 *out_error 置 NULL,
  * 这样调用方可以传一个未初始化的 `sds err;` 而不必自己先清零 (同 `edc_shell_spawn_task`)。
@@ -191,6 +253,7 @@ int main(void)
     test_escapes();
     test_desc_needs_quotes();
     test_expand_vars_out_error();
+    test_expand_vars_dollar_syntax();
 
     printf("test_cmd_parse: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

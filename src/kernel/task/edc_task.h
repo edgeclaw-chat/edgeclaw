@@ -66,6 +66,20 @@ extern const char *edc_task_sink_name(edc_sink sink);
 extern void edc_task_memo_commit(struct edc_task *task);
 extern edc_sink edc_task_classify_sink(const char *name);
 
+/* Which kind of SESSION_MEMORY round a system task is. All three share the sink and
+ * the memory tools, so the request picks the system prompt by this tag, and the
+ * landing step dispatches on it. Three states replaced the old `memo_compact` bool
+ * (which could only say "compact vs everything else"). */
+typedef enum
+{
+    EDC_MEMO_KIND_CURATE = 0, /* fold-chained curation (the default, and what an old
+                               * file without the key reads back as) */
+    EDC_MEMO_KIND_COMPACT,    /* entry-cap compaction: make the memory smaller */
+    EDC_MEMO_KIND_EXTRACT,    /* idle group's unfolded history -> session memory */
+} edc_memo_kind;
+extern const char *edc_task_memo_kind_name(edc_memo_kind kind);
+extern edc_memo_kind edc_task_classify_memo_kind(const char *name);
+
 /* Its output is not for the user but written into some memory (fold / curation).
  * The shared shape of these tasks: a self-contained request (its own description +
  * its own turn), no completion order (`completion_seq = 0`), not part of the
@@ -133,6 +147,19 @@ struct edc_task
      * it keeps that property across a restart -- resuming it must not put it on screen
      * either. Persisted. */
     bool is_background;
+
+    /* A "tool-only" task (`!cmd`): its whole job is to issue the one tool call it was
+     * created with. Its step producer is the tool chain, never the LLM -- when that
+     * call's result is in, the task settles instead of asking the model to continue.
+     * Persisted: after a restart the same task must not suddenly turn into an LLM round
+     * (the executor reads this flag on both the resume and the tool-done path). */
+    bool tool_only;
+
+    /* This system task is a SESSION_MEMORY round (sink SESSION_MEMORY): curation,
+     * compaction or extraction -- they share the sink and the tools, so the request
+     * picks the system prompt by this tag and the landing step dispatches on it.
+     * Persisted (tri-state; see edc_memo_kind). */
+    edc_memo_kind memo_kind;
 
     struct edc_task_group *group;
 
@@ -219,9 +246,6 @@ struct edc_task
     struct edc_task *forked_from;       /* parent (NULL = not a fork) */
     uint32_t fork_point_completion_seq; /* parent's completion watermark at the fork point */
 
-    sds prompt;      /* custom system prompt (NULL = default) */
-    sds prompt_name; /* e.g. "code-reviewer" */
-
     struct edc_task_dep *deps;       /* whom I depend on */
     struct edc_task_dep *dependents; /* who depends on me */
     size_t deps_total;
@@ -248,6 +272,17 @@ struct edc_task
     char *fold_cut_task_id;
     uint32_t fold_cut_turn;
     uint32_t fold_cut_prefix;
+
+    /* Where one EXTRACT round's cut went, exactly like the fold cut above: the member
+     * it falls in, that member's turn index, and how many leading messages of that
+     * turn the round took. Everything earlier in content order is covered whole;
+     * nothing later is touched. Only committed turns are ever cut (extraction never
+     * reads an in-flight turn), so there is no active-turn sentinel. A NULL task id
+     * means no cut was recorded (the landing then advances nothing and counts one
+     * failure). Filled by the extraction side; the task does not interpret them. */
+    char *memo_cut_task_id;
+    uint32_t memo_cut_turn;
+    uint32_t memo_cut_prefix;
 
     /* Tasks a cancel or a dependency change moved as a side effect (cascaded JOIN,
      * released SEQUENCE). The task layer does not know the host, so it records them
@@ -349,7 +384,7 @@ static inline bool edc_task_awaits_tools(const struct edc_task *task)
     return task && task->life == EDC_LIFE_ALIVE && task->step == EDC_TASKSTEP_AWAIT_TOOLS;
 }
 /* Parked = ready or waiting on deps: input and output are in place, only an event
- * is missing. These are the tasks `/task join` can inject into. */
+ * is missing. A JOIN dependency injects its output into a parked task. */
 static inline bool edc_task_is_parked(const struct edc_task *task)
 {
     return edc_task_is_ready(task) || edc_task_awaits_deps(task);
@@ -441,6 +476,11 @@ extern bool edc_task_tool_call_remove(struct edc_task *task, const char *call_id
 extern void edc_task_tool_calls_clear(struct edc_task *task);
 extern bool edc_task_has_pending_tool_calls(const struct edc_task *task);
 
+/** The text written as a tool response when a dispatched call's result was lost (see
+ *  edc_task_repair_dangling_tool_calls above). A tool-only task that resumes into that
+ *  repair has no result of its own, so this is what its output says instead. */
+extern const char *edc_task_interrupted_tool_note(void);
+
 /** Fill in dangling tool responses before driving a task (idempotent).
  *
  *  An assistant message with `tool_calls` but no matching tool response is
@@ -474,8 +514,6 @@ extern size_t edc_task_unfolded_msg_count(struct edc_task *task);
 /** True when any committed turn of this task has a folded prefix (its own
  *  conversation is therefore only partly in the group history). */
 extern bool edc_task_has_folded_turns(struct edc_task *task);
-
-extern void edc_task_set_prompt(struct edc_task *task, const char *prompt_name, const char *prompt_text);
 
 extern cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *config);
 

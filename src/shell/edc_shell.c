@@ -5,6 +5,7 @@
 #include "edc_channel_actor.h"
 #include "edc_cmd_parse.h"
 #include "edc_commands.h"
+#include "edc_models.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
@@ -48,6 +49,44 @@ static sds edc_shell_sandbox_paths_md(sds out, struct edc_config *conf)
     return out;
 }
 
+/* The provider whose model list contains |model_id|, or NULL (the catalog may not know
+ * the configured model). */
+static const char *edc_shell_provider_of_model(const char *model_id)
+{
+    if (!model_id)
+        return NULL;
+    size_t np = edc_models_provider_count();
+    for (size_t i = 0; i < np; i++)
+    {
+        const char *pid = edc_models_provider_id(i);
+        size_t nm = edc_models_model_count(pid);
+        for (size_t j = 0; j < nm; j++)
+        {
+            const char *mid = edc_models_model_id_at(pid, j);
+            if (mid && strcmp(mid, model_id) == 0)
+                return pid;
+        }
+    }
+    return NULL;
+}
+
+/* Append one provider's chat models as list rows, marking |current|. */
+static sds edc_shell_append_provider_models(sds out, const char *pid, const char *current)
+{
+    size_t nm = edc_models_model_count(pid);
+    for (size_t j = 0; j < nm; j++)
+    {
+        const char *mid = edc_models_model_id_at(pid, j);
+        if (!mid || !edc_models_is_chat_model(mid))
+            continue;
+        struct edc_model_info f;
+        edc_models_model_info(mid, &f);
+        out = sdscatprintf(out, "- `%s`%s — %lld ctx\n", mid, (current && strcmp(mid, current) == 0) ? " **(current)**" : "",
+                           f.context);
+    }
+    return out;
+}
+
 bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_reply_to to,
                               struct edc_channel_message *message)
 {
@@ -84,29 +123,79 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
         sdsfree(content);
         return true;
     }
-    if (strncmp(content, "/model ", 7) == 0)
+    if (strcmp(content, "/model") == 0 || strncmp(content, "/model ", 7) == 0)
     {
-        sds arg = sdsnew(content + 7);
-        sdstrim(arg, " \t");
-        if (sdslen(arg) > 0)
+        const char *arg = strncmp(content, "/model ", 7) == 0 ? content + 7 : "";
+        while (*arg == ' ' || *arg == '\t')
+            arg++;
+        const char *cur = cfg->llm_api_conf.model;
+
+        if (*arg == '\0')
+        {
+            /* List the current provider's chat models (switch with `/model <id>`). */
+            const char *pid = edc_shell_provider_of_model(cur);
+            sds out = sdscatprintf(sdsempty(), "**Model** — `%s`\n", cur ? cur : "default");
+            if (pid)
+            {
+                out = sdscatprintf(out, "\n`%s` models:\n", pid);
+                out = edc_shell_append_provider_models(out, pid, cur);
+            }
+            else
+            {
+                out = sdscat(out, "\n_(the current model is not in the catalog; `/model <id>` sets one)_\n");
+            }
+            out = sdscat(out, "\n`/model <id>` switches · `/model search <q>` searches all providers.");
+            edc_commands_reply(to, out);
+            sdsfree(out);
+        }
+        else if (strncmp(arg, "search ", 7) == 0)
+        {
+            const char *q = arg + 7;
+            while (*q == ' ' || *q == '\t')
+                q++;
+            sds out = sdscatprintf(sdsempty(), "**Model search** — `%s`\n", q);
+            size_t np = edc_models_provider_count();
+            size_t hits = 0;
+            for (size_t i = 0; i < np; i++)
+            {
+                const char *pid = edc_models_provider_id(i);
+                size_t nm = edc_models_model_count(pid);
+                for (size_t j = 0; j < nm && hits < 40; j++)
+                {
+                    const char *mid = edc_models_model_id_at(pid, j);
+                    if (!mid || !edc_models_is_chat_model(mid) || !edc_models_model_matches(mid, q))
+                        continue;
+                    struct edc_model_info f;
+                    edc_models_model_info(mid, &f);
+                    out = sdscatprintf(out, "- `%s` (%s) — %lld ctx\n", mid, pid, f.context);
+                    hits++;
+                }
+            }
+            if (hits == 0)
+                out = sdscat(out, "_(no chat model matches)_");
+            else if (hits >= 40)
+                out = sdscat(out, "… (more; narrow the query)");
+            edc_commands_reply(to, out);
+            sdsfree(out);
+        }
+        else
         {
             if (cfg->llm_api_conf.model)
                 sdsfree(cfg->llm_api_conf.model);
             cfg->llm_api_conf.model = sdsdup(arg);
+            /* If the catalog knows it, carry its context window too (as the wizard does),
+             * and persist both so the switch survives a restart (best-effort writes). */
+            struct edc_model_info f;
+            if (edc_models_model_info(arg, &f) && f.context > 0)
+            {
+                cfg->context_window = (int)f.context;
+                edc_config_update_context_window(cfg->edc_home, (int)f.context);
+            }
+            edc_config_update_llm(cfg->edc_home, NULL, arg, NULL);
             sds reply = sdscatprintf(sdsempty(), "**Model** — set to `%s`.", cfg->llm_api_conf.model);
             edc_commands_reply(to, reply);
             sdsfree(reply);
         }
-        sdsfree(arg);
-        sdsfree(content);
-        return true;
-    }
-    if (strcmp(content, "/model") == 0)
-    {
-        sds reply = sdscatprintf(sdsempty(), "**Model** — `%s`",
-                                 cfg->llm_api_conf.model ? cfg->llm_api_conf.model : "default");
-        edc_commands_reply(to, reply);
-        sdsfree(reply);
         sdsfree(content);
         return true;
     }
@@ -264,8 +353,6 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
     if (!task)
         return NULL;
 
-    if (opts->prompt_name)
-        edc_task_set_prompt(task, opts->prompt_name, NULL);
     if (redirect_stdout)
     {
         task->redirect_stdout = redirect_stdout;

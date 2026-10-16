@@ -4,14 +4,16 @@
 #include "edc_commands.h"
 #include "edc_compat.h"
 #include "edc_config.h"
-#include "edc_file_utils.h"
 #include "edc_context.h"
+#include "edc_endpoint_probe.h"
+#include "edc_file_utils.h"
 #include "edc_init_env.h"
 #include "edc_llm_actor.h"
 #include "edc_llm_request.h"
 #include "edc_sandbox.h"
 #include "edc_secret.h"
 #include "edc_state_serializer.h"
+#include "edc_string_utils.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_toolbox_actor.h"
@@ -140,6 +142,9 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
     app->runner = edc_actor_runner_new();
     edc_file_utils_init(&app->runner->loop);
     edc_actor_runner_add(app->runner, edc_scheduler_get_actor(app->scheduler));
+    /* The scheduler actor now has a loop: register the built-in background services and
+     * arm their shared timer (before this, uv_now has no loop to read). */
+    edc_scheduler_services_start(app->scheduler);
     edc_actor_runner_add(app->runner, app->channel_actor);
     edc_actor_runner_add(app->runner, app->llm_actor);
 
@@ -197,10 +202,50 @@ bool edc_app_set_llm_config(struct edc_app *app, const char *api_url, const char
     u->model = model ? sdsnew(model) : NULL;
     u->api_key = api_key ? sdsnew(api_key) : NULL;
     edc_actor_send(app->llm_actor, edc_actor_msg_new(BC_ACTOR_MSG_LLM_SET_CONFIG, NULL, NULL, u,
-                                                       (edc_actor_data_free_fn)edc_llm_api_conf_update_free));
+                                                     (edc_actor_data_free_fn)edc_llm_api_conf_update_free));
     return true;
 }
 
+bool edc_app_complete_setup(struct edc_app *app, const char *api_url, const char *model, const char *api_key,
+                            int context_window)
+{
+    if (!app || !app->config)
+        return false;
+
+    /* The LLM settings are the gate: on failure nothing else is touched, so the running
+     * app and disk stay in agreement (same rule as edc_app_set_llm_config). */
+    if (!edc_app_set_llm_config(app, api_url, model, api_key))
+        return false;
+
+    /* The chosen model's window: best-effort (the LLM write already succeeded). */
+    if (context_window > 0 && edc_config_update_context_window(app->config->edc_home, context_window))
+        app->config->context_window = context_window;
+
+    /* Mark the wizard done so it does not reopen (persist + live field). */
+    edc_config_set_onboarded(app->config, true);
+    return true;
+}
+
+bool edc_app_mark_onboarded(struct edc_app *app)
+{
+    if (!app || !app->config)
+        return false;
+    return edc_config_set_onboarded(app->config, true);
+}
+
+bool edc_app_test_endpoint(struct edc_app *app, const char *api_url, const char *api_key, int timeout_ms, char *out,
+                           size_t cap)
+{
+    if (!app || !app->config)
+        return false;
+    sds cacert = app->config->workspace ? edc_path_join(app->config->workspace, "ssl", "cacert.pem", NULL) : NULL;
+    /* The config holds a base URL; probe its /chat/completions endpoint (see the actor). */
+    sds url = edc_url_chat_completions(api_url);
+    bool ok = edc_endpoint_probe(cacert, url ? url : api_url, api_key, timeout_ms, out, cap);
+    sdsfree(url);
+    sdsfree(cacert);
+    return ok;
+}
 
 /* ── sandbox path whitelist (ro/rw) management ─────────────────────────── */
 

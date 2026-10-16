@@ -1,16 +1,44 @@
 #include "edc_string_utils.h"
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <inttypes.h>
 
-#define T_PASS()  do { passed++; } while (0)
-#define T_FAIL(msg) do { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, msg); failed++; } while (0)
-#define T_CHECK(cond, msg) do { if (cond) T_PASS(); else T_FAIL(msg); } while (0)
-#define T_STREQ(a, b, msg) do { if (a && b && strcmp(a, b) == 0) T_PASS(); else T_FAIL(msg); } while (0)
-#define T_STREQ_OR_NULL(a, b, msg) do { \
-    if ((a == NULL && b == NULL) || (a && b && strcmp(a, b) == 0)) T_PASS(); else T_FAIL(msg); \
-} while (0)
+#define T_PASS()                                                                                                       \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        passed++;                                                                                                      \
+    } while (0)
+#define T_FAIL(msg)                                                                                                    \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, msg);                                                  \
+        failed++;                                                                                                      \
+    } while (0)
+#define T_CHECK(cond, msg)                                                                                             \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if (cond)                                                                                                      \
+            T_PASS();                                                                                                  \
+        else                                                                                                           \
+            T_FAIL(msg);                                                                                               \
+    } while (0)
+#define T_STREQ(a, b, msg)                                                                                             \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if (a && b && strcmp(a, b) == 0)                                                                               \
+            T_PASS();                                                                                                  \
+        else                                                                                                           \
+            T_FAIL(msg);                                                                                               \
+    } while (0)
+#define T_STREQ_OR_NULL(a, b, msg)                                                                                     \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if ((a == NULL && b == NULL) || (a && b && strcmp(a, b) == 0))                                                 \
+            T_PASS();                                                                                                  \
+        else                                                                                                           \
+            T_FAIL(msg);                                                                                               \
+    } while (0)
 
 static int passed = 0;
 static int failed = 0;
@@ -285,6 +313,35 @@ static void test_edge_cases(void)
     /* strdup_printf with NULL is already tested; strdup is not needed */
 }
 
+/* ---- edc_url_chat_completions ---- */
+static void test_url_chat_completions(void)
+{
+    sds s;
+
+    s = edc_url_chat_completions("https://api.deepseek.com");
+    T_STREQ(s, "https://api.deepseek.com/chat/completions", "bare base -> endpoint");
+    sdsfree(s);
+
+    s = edc_url_chat_completions("https://api.openai.com/v1");
+    T_STREQ(s, "https://api.openai.com/v1/chat/completions", "base with /v1 -> endpoint");
+    sdsfree(s);
+
+    s = edc_url_chat_completions("https://api.openai.com/v1/");
+    T_STREQ(s, "https://api.openai.com/v1/chat/completions", "trailing slash ignored");
+    sdsfree(s);
+
+    s = edc_url_chat_completions("https://x/chat/completions");
+    T_STREQ(s, "https://x/chat/completions", "a full endpoint is left as-is");
+    sdsfree(s);
+
+    s = edc_url_chat_completions("https://x/chat/completions/");
+    T_STREQ(s, "https://x/chat/completions", "full endpoint + trailing slash normalized");
+    sdsfree(s);
+
+    T_CHECK(edc_url_chat_completions(NULL) == NULL, "NULL -> NULL");
+    T_CHECK(edc_url_chat_completions("") == NULL, "empty -> NULL");
+}
+
 int main(void)
 {
     test_strdup_printf();
@@ -299,6 +356,7 @@ int main(void)
     test_strsplit();
     test_strfreev();
     test_edge_cases();
+    test_url_chat_completions();
 
     printf("passed=%d failed=%d\n", passed, failed);
     return failed > 0 ? 1 : 0;

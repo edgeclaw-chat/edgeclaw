@@ -1,22 +1,23 @@
-#include <cJSON.h>
 #include "edc_tui_window.hpp"
-#include "edc_working_indicator_view.hpp"
-#include "edc_domain.hpp"
-#include "edc_sidebar.hpp"
+#include "edc_api.h" /* EDC_APP_RENDER_PLAIN / _MARKDOWN */
 #include "edc_chat_transcript.hpp"
 #include "edc_chat_widget.hpp"
+#include "edc_domain.hpp"
 #include "edc_input.hpp"
 #include "edc_scroll_view.hpp"
+#include "edc_sidebar.hpp"
+#include "edc_status_bar_view.hpp"
 #include "edc_style.hpp"
 #include "edc_task_widget.hpp"
-#include "edc_status_bar_view.hpp"
 #include "edc_todo_widget.hpp"
+#include "edc_working_indicator_view.hpp"
 #include "ftxui/component/component.hpp"
 #include "ftxui/component/component_options.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/string.hpp"
 #include <algorithm>
+#include <cJSON.h>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -27,7 +28,6 @@
 #include <memory>
 #include <set>
 #include <string>
-#include "edc_api.h" /* EDC_APP_RENDER_PLAIN / _MARKDOWN */
 #include <unistd.h>
 #include <vector>
 
@@ -215,9 +215,9 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     working_indicator_ = std::make_shared<ui::WorkingIndicatorView>();
     // The status row reads the session model + terminal width; the sandbox state
     // and the sidebar width are pulled per frame (both change at runtime).
-    status_bar_ = std::make_shared<ui::StatusBarView>(session_model_, terminal_,
-                                                      [this] { return app_ && app_->SandboxEnabled(); },
-                                                      [this] { return sidebar_width_; });
+    status_bar_ = std::make_shared<ui::StatusBarView>(
+        session_model_, terminal_, [this] { return app_ && app_->SandboxEnabled(); },
+        [this] { return sidebar_width_; });
 
     const auto &pal = style::palette();
     prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(pal.prompt) | ::ftxui::bold;
@@ -253,18 +253,6 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     });
     Add(split_);
 
-    // /connect dialog: a self-contained widget (owns its fields + rendering +
-    // events). The window only opens it and overlays it; persistence + hot-apply
-    // go through this Submit callback (so the dialog itself never sees the app).
-    connect_dialog_ = std::make_shared<ui::ConnectDialog>([this](const port::ConnectConfig &cfg) -> bool {
-        if (!app_->SetLlmConfig(cfg))
-            return false;
-        status_bar_->SetModel(cfg.model); // refresh the footer's model label
-        if (screen_)
-            screen_->RequestAnimationFrame();
-        return true;
-    });
-
     // The dispatcher is the AppFacade sink; it updates the models and calls back
     // into this window (IChannelHost) for the view actions. Created before the
     // app so the port can register it as its channel sink.
@@ -292,6 +280,30 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
         std::string model;
         if (app_->ConfigModel(&model))
             status_bar_->SetModel(model);
+    }
+
+    // First-run setup page: a modal like /connect, opened ONCE while config.json is not
+    // "onboarded". Finish persists (LLM settings + context window + the flag); Skip (or
+    // Esc) just marks it done, leaving the settings as they are.
+    setup_dialog_ = std::make_shared<ui::SetupDialog>(App(), [this] {
+        /* Finish persisted a new model: refresh the footer with it. */
+        std::string model;
+        if (app_->ConfigModel(&model))
+            status_bar_->SetModel(model);
+        if (screen_)
+            screen_->RequestAnimationFrame();
+    });
+    if (!App()->Onboarded())
+    {
+        port::SetupConfig seed;
+        std::string s;
+        if (App()->ConfigApiUrl(&s))
+            seed.api_url = s;
+        if (App()->ConfigApiKey(&s))
+            seed.api_key = s;
+        if (App()->ConfigModel(&s))
+            seed.model = s; /* ticks the config's current provider/model in the lists */
+        setup_dialog_->Open(seed);
     }
 
     // The transcript store owns the chat-log file I/O (path, append, replay); it
@@ -323,8 +335,8 @@ void TUIWindow::Submit()
     const auto last = input_text_.find_last_not_of(" \t\r\n");
     std::string message = input_text_.substr(first, last - first + 1);
 
-    // "/connect" is handled locally: open the provider dialog and do not send
-    // anything to the app or record it as a chat message.
+    // "/connect" is handled locally: open the setup wizard and do not send anything to
+    // the app or record it as a chat message. It is the same page the first run shows.
     if (message == "/connect")
     {
         input_text_.clear();
@@ -364,16 +376,17 @@ void TUIWindow::Submit()
 
 void TUIWindow::OpenConnect()
 {
-    // Seed the dialog from the persisted config; a missing field reads empty
-    // (matching the pre-portal behaviour).
-    port::ConnectConfig initial;
-    if (!app_->ConfigApiUrl(&initial.api_url))
-        initial.api_url.clear();
-    if (!app_->ConfigModel(&initial.model))
-        initial.model.clear();
-    if (!app_->ConfigApiKey(&initial.api_key))
-        initial.api_key.clear();
-    connect_dialog_->Open(initial);
+    // Seed the setup wizard from the persisted config (the same seed the first-run
+    // auto-open uses); the model ticks the config's current choice in the lists.
+    port::SetupConfig seed;
+    std::string s;
+    if (app_->ConfigApiUrl(&s))
+        seed.api_url = s;
+    if (app_->ConfigApiKey(&s))
+        seed.api_key = s;
+    if (app_->ConfigModel(&s))
+        seed.model = s;
+    setup_dialog_->Open(seed);
     if (screen_)
         screen_->RequestAnimationFrame();
 }
@@ -431,8 +444,8 @@ void TUIWindow::RequestTaskSnapshot()
 // so a message looks the same whether it just arrived or was re-derived from
 // session.json. |kind| is the bridge's tag: user | tool | thought | reply | sys.
 static std::shared_ptr<Message> MakeChatWidget(const std::string &kind, const std::string &header,
-                                               const std::string &content, const std::string &task_id,
-                                               int render_pref, time_t ts)
+                                               const std::string &content, const std::string &task_id, int render_pref,
+                                               time_t ts)
 {
     if (kind == "user")
         return std::make_shared<UserMessage>(content, ts, task_id);
@@ -510,8 +523,8 @@ void TUIWindow::LoadChatTranscript(const char *session_id)
 void TUIWindow::LoadChatTranscriptFile(const std::string &path)
 {
     const size_t entries = transcript_->Replay(path, [this](const ChatTranscriptEntry &entry) {
-        const std::shared_ptr<Message> widget = MakeChatWidget(entry.kind, entry.header, entry.content, entry.task_id,
-                                                               entry.render_pref, ::time(nullptr));
+        const std::shared_ptr<Message> widget =
+            MakeChatWidget(entry.kind, entry.header, entry.content, entry.task_id, entry.render_pref, ::time(nullptr));
         if (widget)
             chat_widget_->AddMessage(widget);
     });
@@ -650,8 +663,8 @@ void TUIWindow::TickAnimations()
     // row (the status row's slot); nothing is drawn where the input was.
     if (history_view_)
     {
-        children.push_back(::ftxui::hbox({::ftxui::text(" History · Esc to go back ") |
-                                          ::ftxui::color(style::palette().accent)}));
+        children.push_back(
+            ::ftxui::hbox({::ftxui::text(" History · Esc to go back ") | ::ftxui::color(style::palette().accent)}));
         children.push_back(::ftxui::text(""));
         return ::ftxui::vbox(std::move(children));
     }
@@ -696,18 +709,13 @@ void TUIWindow::TickAnimations()
     // task's state change, coalesced once per actor message.
 
     auto base = split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
-    if (!connect_dialog_->IsOpen())
+    // The /connect setup wizard is a modal, centered -- its natural place. The backdrop is
+    // dimmed while it is open; clear_under is load-bearing: ftxui's `dim` is a per-cell flag
+    // the backdrop stamps over its box, which an overlaid element does not clear.
+    if (!setup_dialog_->IsOpen())
         return base;
-    // The dialog is borderless, so the backdrop is dimmed while it is open: the
-    // raised surface then reads as the one lit panel on a muted screen.
-    // clear_under is load-bearing: ftxui's `dim` is a per-cell flag the backdrop
-    // stamps over its box and an overlaid element never clears it, so without it the
-    // dialog renders gray whatever its text colour.
-    return ::ftxui::dbox({base | ::ftxui::dim, connect_dialog_->Render() | ::ftxui::clear_under |
-                                                   ::ftxui::size(::ftxui::WIDTH, ::ftxui::LESS_THAN, 80) |
-                                                   ::ftxui::center});
+    return ::ftxui::dbox({base | ::ftxui::dim, setup_dialog_->Render() | ::ftxui::clear_under | ::ftxui::center});
 }
-
 
 bool TUIWindow::OnEvent(::ftxui::Event event)
 {
@@ -732,11 +740,10 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
         }
     }
 
-    // The /connect dialog is a modal: while open it owns every event (Esc closes,
-    // Enter submits, the rest go to its fields). Checked first -- it is the
-    // innermost thing on screen, so it takes the event before any input mode.
-    if (connect_dialog_->IsOpen())
-        return connect_dialog_->OnEvent(event);
+    // The /connect setup wizard is a modal: while open it owns every event (Esc exits,
+    // Enter advances, arrows move, the rest goes to its current field).
+    if (setup_dialog_ && setup_dialog_->IsOpen())
+        return setup_dialog_->OnEvent(event);
 
     // Bracketed paste markers (ESC[200~ / ESC[201~) toggle the paste mode and are
     // consumed whatever the mode was. FTXUI delivers each marker as a single
@@ -864,7 +871,8 @@ static void AppendHistoryBubbles(const cJSON *messages, const std::string &task_
         const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(m, "name"));
         const char *body = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
         const char *render = cJSON_GetStringValue(cJSON_GetObjectItem(m, "render"));
-        const int render_pref = (render && strcmp(render, "markdown") == 0) ? EDC_APP_RENDER_MARKDOWN : EDC_APP_RENDER_PLAIN;
+        const int render_pref =
+            (render && strcmp(render, "markdown") == 0) ? EDC_APP_RENDER_MARKDOWN : EDC_APP_RENDER_PLAIN;
         const cJSON *ts_json = cJSON_GetObjectItem(m, "ts");
         const time_t ts = (ts_json && cJSON_IsNumber(ts_json)) ? (time_t)ts_json->valuedouble : 0;
 

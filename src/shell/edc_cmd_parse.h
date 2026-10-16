@@ -19,7 +19,6 @@ struct edc_cmd_task_opts
     sds *dep_ids; /* -d <id> dependency list */
     int dep_count;
     sds group_id;    /* --group <id> / -g <id> */
-    sds prompt_name; /* --prompt <name> */
 };
 
 /* ── API ───────────────────────────────────────────────────── */

@@ -9,6 +9,7 @@
 #include "edc_session_memory.h"
 #include "edc_session_manager.h"
 #include "edc_session_store.h"
+#include "edc_service.h"
 #include "edc_turn.h"
 #include "log.h"
 #include "uthash.h"
@@ -31,6 +32,7 @@ struct edc_sched_task_entry
 /* ── Forward declarations ──────────────────────────────────── */
 
 static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg);
+static void sched_save_session(struct edc_scheduler *sched, struct edc_session *s);
 /* Sidebar-only task-tree snapshot, pulled by explicit session_id; the chat pane is the TUI's own. */
 static void sched_handle_pull_snapshot(struct edc_scheduler *sched, const char *session_id);
 static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_session *session, const char *reason);
@@ -252,6 +254,30 @@ bool edc_scheduler_open(struct edc_scheduler *sched)
     return true;
 }
 
+/* Built-in service: look for an idle group with unfolded history and start one
+ * extraction round. It only "knocks" -- edc_session_memory_extract_try decides (idle,
+ * nothing in flight, no fold due) and is a cheap no-op when nothing is due, so a short
+ * interval costs nothing but a function call. */
+#define EDC_MEMO_EXTRACT_SCAN_MS (60 * 1000)
+
+static void sched_service_extract_scan(struct edc_service *svc, void *ud)
+{
+    (void)svc;
+    struct edc_scheduler *sched = ud;
+    if (!sched || !sched->sessions)
+        return;
+    struct edc_session *got = NULL;
+    if (edc_session_memory_extract_try(sched, sched->sessions, sched->config, &got) && got)
+        sched_save_session(sched, got);
+}
+
+void edc_scheduler_services_start(struct edc_scheduler *sched)
+{
+    if (!sched)
+        return;
+    edc_service_register(sched, "extract-scan", EDC_MEMO_EXTRACT_SCAN_MS, sched_service_extract_scan, sched);
+}
+
 /* Shutdown pass: nothing will advance any more, so every task that is not already
  * terminal says so in its own state -- READY and waiting ones included: the queue they
  * were sitting in is over, and each of them needs a decision now. Memory-sink tasks
@@ -288,6 +314,10 @@ bool edc_scheduler_close(struct edc_scheduler *sched)
      * land) without touching the states just written. */
     edc_session_store_drop_in_flight_requests(sched->sessions, sched);
 
+    /* Stop the background services' registry. Their single timer is closed by the
+     * actor runner's shutdown walk (this runs after the runner is gone). */
+    edc_services_close(sched);
+
     sched->sessions_closed = true;
     return true;
 }
@@ -303,6 +333,10 @@ void edc_scheduler_free(struct edc_scheduler *sched)
         HASH_DEL(sched->task_hash, entry);
         free(entry);
     }
+
+    /* Idempotent with edc_scheduler_close; frees the registry only (no uv: the timer is
+     * closed by the actor runner). */
+    edc_services_close(sched);
 
     /* Groups and their tasks are owned by their session (freed in edc_session_free). */
 
@@ -432,6 +466,16 @@ struct edc_task *edc_scheduler_task_new(struct edc_scheduler *sched, struct edc_
 /* Choose the group a task lands in and join it. The single answer to "where does a
  * new task go" -- create / fork / system all settle through here instead of each
  * deciding for itself. */
+/* The ONE place that decides "a maintenance round holds this task": attach the barrier edges
+ * at the two doors that can make a task runnable (creation, resume). Everything else follows
+ * from the dep graph -- a task with an unresolved edge is not runnable, and a BARRIER is
+ * released by its source ending either way. There is deliberately no drive-time predicate any
+ * more: two mechanisms deciding the same thing is how they drift apart. */
+static int sched_attach_maintenance_barrier(struct edc_task *task)
+{
+    return edc_group_fold_hold_task(task) + edc_session_memory_hold_task(task);
+}
+
 static struct edc_task_group *sched_settle_task(struct edc_scheduler *sched, struct edc_session *session,
                                                 struct edc_task *task, const struct edc_task_spec *spec,
                                                 bool *chained_out)
@@ -498,6 +542,10 @@ static struct edc_task_group *sched_settle_task(struct edc_scheduler *sched, str
             *chained_out = chained;
     }
 
+    /* Door 1 of 2: a task that joins while a maintenance round is in flight waits for it too
+     * (this is what the former drive-time predicate caught for newcomers). */
+    sched_attach_maintenance_barrier(task);
+
     return group;
 }
 
@@ -546,6 +594,23 @@ bool edc_scheduler_task_adopt(struct edc_scheduler *sched, struct edc_session *s
         turn->task_id = strdup(task->task_id);
         edc_turn_add_user_message(turn, spec->input);
         task->active_turn = turn;
+    }
+
+    /* A seeded starting tool call (`!cmd`): mark the task tool-only, put the
+     * assistant(tool_calls) message into its turn, and register the call PENDING in the
+     * ledger. Nothing is dispatched here -- the end-of-message scan drives the task and the
+     * executor's tool-only branch sends the call, exactly as it would for a call the model
+     * had asked for. From there the ordinary tool path runs it. */
+    if (spec->initial_tool_name)
+    {
+        task->tool_only = true;
+
+        sds call_id = sdscatprintf(sdsempty(), "call_local_%s", task->task_id ? task->task_id : "0");
+        if (task->active_turn)
+            edc_turn_add_assistant_tool_call(task->active_turn, call_id, spec->initial_tool_name,
+                                             spec->initial_tool_args);
+        edc_task_tool_call_add(task, call_id, spec->initial_tool_name, spec->initial_tool_args);
+        sdsfree(call_id);
     }
 
     return true;
@@ -685,8 +750,12 @@ static void *sched_gen_request_id(void)
  * in the session's system group, so it is not held by its own fold. */
 static bool sched_task_runnable(struct edc_scheduler *sched, struct edc_task *task)
 {
+    /* "May this run" is decided by the task's OWN edges (plus the cross-session ledger). A task
+     * parked at AWAIT_DEPS is already excluded by is_ready; this term keeps the invariant true
+     * for a READY task that somehow still carries an unmet edge (the barrier is attached at
+     * creation and at resume, and every consumer must agree the edge is what holds it). */
     return task && edc_task_is_ready(task) && task->active_turn &&
-           !edc_scheduler_task_has_unresolved_deps(sched, task) && !edc_group_fold_holds_group(task->group);
+           !edc_task_has_unresolved_deps(task) && !edc_scheduler_task_has_unresolved_deps(sched, task);
 }
 
 static void sched_drive_task(struct edc_scheduler *sched, struct edc_task *task);
@@ -707,9 +776,15 @@ static void sched_fold_before_request(struct edc_scheduler *sched, struct edc_ta
     /* Only a task about to send a request triggers (a sink=GROUP_MEMORY fold task does not fold itself). */
     if (!edc_task_is_ready(task) || edc_task_is_memory_sink(task))
         return;
+    /* A tool-only task (`!cmd`) sends no context at all -- its round is one tool call --
+     * so folding for it would burn an LLM call on nothing. */
+    if (task->tool_only)
+        return;
 
     struct edc_session *session = task->group->session;
-    if (!session || edc_scheduler_has_pending_system_task(session) || edc_group_fold_holds_group(task->group))
+    /* `has_pending_system_task` is session-wide, so it already covers "a fold/curation for any
+     * group is in flight" -- the former per-group term here could never decide anything. */
+    if (!session || edc_scheduler_has_pending_system_task(session))
         return;
     if (!edc_group_fold_due(task->group, sched->config))
         return;
@@ -848,7 +923,7 @@ struct edc_task_group *edc_scheduler_get_foreground(struct edc_session *session)
  * Deliberately not `active_task` -- that one is the screen focus and may sit on a task
  * that already finished (the final reply is delivered *after* the task reaches
  * COMPLETED, see edc_executor.c), which makes it a poor default for /task stop, /task
- * resume, /task join and `$$`. */
+ * resume and `$$`. */
 struct edc_task *edc_scheduler_current_task(struct edc_session *session)
 {
     struct edc_task_group *fg = sched_foreground(session);
@@ -918,6 +993,17 @@ void edc_scheduler_unregister_task(struct edc_scheduler *sched, void *request_id
 
 /* ── Signals ───────────────────────────────────────────────── */
 
+/* A task that just got cancelled takes its running tools with it: the child is a detached
+ * process, and a user-typed command has NO timeout by design, so if the toolbox is not
+ * told, a cancelled `!tail -f` would run until the app exits. The toolbox owns the
+ * in-flight calls, so it is asked by request id (never by task pointer: the tool side must
+ * not dereference a task that may already be reclaimed). */
+static void sched_abort_cancelled_tools(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
+{
+    if (sched->abort_tools && edc_task_is_cancelled(task))
+        sched->abort_tools(sched, request_id);
+}
+
 void edc_scheduler_send_signal_to_task_ptr(struct edc_scheduler *sched, struct edc_task *task, edc_task_signal sig)
 {
     if (!sched || !task)
@@ -929,8 +1015,10 @@ void edc_scheduler_send_signal_to_task_ptr(struct edc_scheduler *sched, struct e
     ev.kind = EDC_EVENT_SIGNAL;
     ev.as.signal.sig = sig;
     /* A signal carries no request_id: unregister the one the task remembers. */
+    void *req_id = task->current_request_id;
     struct edc_advance_result res = edc_executor_advance(&sched->executor, task, &ev);
-    edc_scheduler_apply_advance(sched, task, task->current_request_id, &res);
+    sched_abort_cancelled_tools(sched, task, req_id);
+    edc_scheduler_apply_advance(sched, task, req_id, &res);
 }
 
 void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, struct edc_session *session, const char *task_id,
@@ -956,12 +1044,14 @@ static void sched_signal_one(struct edc_scheduler *sched, struct edc_task *task,
         return;
 
     /* Cancel = explicit termination: unregister, reap, dirty, settle, all in one entry. */
+    void *req_id = task->current_request_id;
+    sched_abort_cancelled_tools(sched, task, req_id);
     struct edc_advance_result res;
     memset(&res, 0, sizeof(res));
     res.outcome = EDC_STEP_DONE;
     res.changed = true;
     res.settled = true;
-    edc_scheduler_apply_advance(sched, task, task->current_request_id, &res);
+    edc_scheduler_apply_advance(sched, task, req_id, &res);
 }
 
 /* Signal a group: walk each member through the single-task path above. */
@@ -1019,6 +1109,21 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
     if (!sched || !task)
         return;
 
+    /* Door 2 of 2: a maintenance round in flight holds it. Park at READY/ALIVE -- the intent to
+     * resume is NOT dropped: the message-end scan drives it as soon as the round ends and
+     * releases the barrier (same effect as the fold's own member sweep, for the doors that sweep
+     * cannot see). */
+    if (sched_attach_maintenance_barrier(task) > 0)
+    {
+        /* AWAIT_DEPS is the ONE representation of "waiting for something": an edge added to a
+         * READY task parks it there by itself, and the release path (the edge being completed or
+         * voided) is written against that state. Parking at READY instead would leave a task that
+         * is runnable-in-shape but held, which is exactly the drift this change removes. */
+        edc_task_mark_waiting_deps(task);
+        edc_scheduler_task_moved(sched, task);
+        return;
+    }
+
     /* Gate: only between-tasks checks stay here. An unresolved cross-session dep
      * holds the task back; unsatisfied deps send it back to waiting. */
     if (edc_scheduler_task_has_unresolved_deps(sched, task))
@@ -1059,15 +1164,6 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
      * on this task, parking it in AWAIT_DEPS; after the fold lands the scan drives it
      * again, and that request then carries the compressed context. */
     sched_fold_before_request(sched, task);
-
-    /* A fold in flight for this group parks the task instead of driving it: leave
-     * it READY/ALIVE and let the message-end scan start it once the fold lands. */
-    if (edc_group_fold_holds_group(task->group))
-    {
-        edc_task_mark_ready(task);
-        edc_scheduler_task_moved(sched, task);
-        return;
-    }
 
     /* Drive: the within-task re-decision is the executor's START. */
     sched_drive_task(sched, task);
@@ -1258,8 +1354,9 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
             edc_task_set_completion_seq(task, own->next_completion_seq++);
             /* (c) New committed content in the group => clear the fold failure count:
              * this is a new situation worth retrying (distinct from the same content
-             * failing repeatedly). */
+             * failing repeatedly). Same for the extraction failure streak. */
             edc_group_fold_note_progress(task->group);
+            edc_session_memory_extract_note_progress(task->group);
         }
         else
             edc_task_set_completion_seq(task, 0);
@@ -1286,11 +1383,24 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
         }
         else if (task->sink == EDC_SINK_SESSION_MEMORY)
         {
-            /* The curator writes through the memory tools DURING its run (see
-             * docs/session-memory-write-path.md); there is no post-hoc landing step.
-             * Its final text is just a wrap-up and must not be sent to the user. */
-            log_info("L2 memo done: task=%s (writes already landed via the memory tools)",
-                     task->task_id ? task->task_id : "(null)");
+            /* Curation and compaction write through the memory tools DURING their run
+             * so there is no post-hoc landing
+             * step. Its final text is just a wrap-up and must not be sent to the user.
+             * Extraction is the exception: its only post-hoc action is advancing the
+             * memo watermark by the cut it carried. A clean STOP reaches here; a
+             * truncated/failed one took the ERROR branch instead (the executor fails a
+             * memory sink on any non-stop reason), and an iteration-cap stop comes in
+             * COMPLETED but with a non-DONE outcome, so it is skipped here. */
+            if (task->memo_kind == EDC_MEMO_KIND_EXTRACT)
+            {
+                if (res->outcome == EDC_STEP_DONE)
+                    edc_session_memory_extract_land(task);
+                else
+                    edc_session_memory_extract_note_failure(task->sink_group);
+            }
+            else
+                log_info("L2 memo done: task=%s (writes already landed via the memory tools)",
+                         task->task_id ? task->task_id : "(null)");
         }
         else if (sched->send_reply)
             sched->send_reply(sched, task, res->notice, EDC_CHANNEL_MESSAGE_RESP_TYPE, req_id);
@@ -1313,6 +1423,10 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
     {
         /* An explicit cancel is persisted immediately, or a restart restores it as running. */
         sched_mark_dirty(sched, own, "foreground");
+        /* An extraction round that was cancelled advanced nothing: count one failure so
+         * a cancelling loop cannot become a retry loop. */
+        if (task->sink == EDC_SINK_SESSION_MEMORY && task->memo_kind == EDC_MEMO_KIND_EXTRACT)
+            edc_session_memory_extract_note_failure(task->sink_group);
         sched_save_session(sched, own);
     }
     else /* ERROR */
@@ -1323,6 +1437,8 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
          * A cancel is not a failure -- a human stopped it. */
         if (task->sink == EDC_SINK_GROUP_MEMORY)
             edc_group_fold_note_failure(task->sink_group);
+        if (task->sink == EDC_SINK_SESSION_MEMORY && task->memo_kind == EDC_MEMO_KIND_EXTRACT)
+            edc_session_memory_extract_note_failure(task->sink_group);
         if (sched->send_reply)
         {
             sds copy = sched_error_copy(sched, res->notice);
@@ -1359,6 +1475,33 @@ void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *t
         struct edc_session *folded = NULL;
         if (edc_group_fold_try(sched, sched->sessions, sched->config, &folded) && folded)
             sched_save_session(sched, folded);
+    }
+
+    /* (5b) L2 extraction, asked at the same boundary. A fold has priority: it is
+     * checked first above, and edc_session_memory_extract_due refuses while a fold is
+     * due or in flight. Like the fold, the round it starts may belong to a background
+     * session, so use the one try reports back. Its own completion is another message
+     * boundary: apply_advance runs again, so a capped material continues until the
+     * group has nothing left un-extracted. */
+    {
+        struct edc_session *extracted = NULL;
+        if (edc_session_memory_extract_try(sched, sched->sessions, sched->config, &extracted) && extracted)
+            sched_save_session(sched, extracted);
+    }
+
+    /* (6) L2 hygiene, asked at the same boundary: once a session's memory outgrows its entry
+     * cap, start a compaction round. The decision is a fact about the data (entry_count vs
+     * the cap, and whether it grew since the last round), so no write path had to set a flag
+     * for it -- the same shape as the fold check above, and gated the same way (one system
+     * task per session at a time). */
+    {
+        struct edc_session *own = edc_task_session(task);
+        if (own && edc_session_memory_compact_due(own))
+        {
+            struct edc_task *compact = edc_session_memory_start_compact(sched, own);
+            if (compact)
+                sched_save_session(sched, own);
+        }
     }
 }
 
@@ -1626,6 +1769,11 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
         break;
     case BC_ACTOR_MSG_TOOL_EMIT:
         sched_handle_tool_emit(sched, msg);
+        break;
+    case BC_ACTOR_MSG_SERVICE_PUMP:
+        /* A service timer fired: run whichever services are due. This is the only place
+         * a service body runs, so it is still "at a message boundary". */
+        edc_services_pump(sched, sched->self && sched->self->loop ? uv_now(sched->self->loop) : 0);
         break;
     case BC_ACTOR_MSG_TASK_SNAPSHOT:
         /* A pull names which tree it wants; nothing pushes a tree unasked. */

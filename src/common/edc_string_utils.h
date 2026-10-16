@@ -18,6 +18,12 @@ unsigned int edc_direct_hash(const void *v);
 
 int edc_str_has_prefix(const char *str, const char *prefix);
 
+/* The OpenAI-compatible chat endpoint for a configured BASE url: appends
+ * "/chat/completions" unless the url already ends with it (so a configured base url and
+ * a ready full endpoint are both accepted; trailing '/' is ignored). Returns a fresh sds
+ * (caller frees), or NULL for NULL/empty input. */
+sds edc_url_chat_completions(const char *base_url);
+
 char *edc_strstrip(char *str);
 
 int edc_strv_length(char **str_array);

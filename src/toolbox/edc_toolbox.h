@@ -32,8 +32,11 @@ struct edc_toolbox_call_ctx
     void *request_id; /* the request_id of the task that issued this tool call (injected by the toolbox actor) */
     struct edc_task
         *task; /* the task that issued this tool call (same source as request_id; injected by app when building the request chain; NULL on a non-task path) */
+    /* The tool this call was dispatched to (filled in by edc_toolbox_exec, which is the
+     * only path that resolves a name to a tool). Lets the actor hand a cancellation back to
+     * the tool that owns the in-flight work, instead of the port hardcoding one tool. */
+    struct edc_tool *tool;
     void *priv;
-
 };
 
 /* struct edc_toolbox_emit_msg moved to edc_exec_io.h (the executor's I/O vocabulary). */

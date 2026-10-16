@@ -169,16 +169,6 @@ int main(void)
     CHECK(edc_scheduler_get_foreground(edc_session_manager_get_active(sm)) == fg_before,
           "foreground group unchanged");
 
-    /* ── S1a: /task chain is cross-session ──────────────────── */
-    TEST("/task chain links tasks across sessions");
-    struct edc_task *at2 = edc_scheduler_task_new(sched, sa, "chain-target", edc_channel_adapter);
-    edc_scheduler_create_group(sched, sa, at2);
-    size_t deps_before = at2->deps_total;
-    sds chain_cmd = sdscatprintf(sdsempty(), "/task chain %s %s", bt->task_id, at2->task_id);
-    send_cmd(cfg, sm, sched, channel_actor, chain_cmd);
-    sdsfree(chain_cmd);
-    CHECK(at2->deps_total == deps_before + 1, "chain added a cross-session dependency");
-
     /* ── S2: dependency onto a task in a session that was not activated ──
      * Simulate "the owner session exists on disk but was never activated this
      * run": save B's state, then drop B's live groups. The resolver must find

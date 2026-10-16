@@ -5,17 +5,15 @@
  *
  * This is the SHELL'S OWN command history: its semantics (`!1` / `!!`, indices and
  * bounds) live entirely in edc_shell.c's edc_shell_expand_history(), and only the shell
- * reads it. One per process, not persisted, unrelated to session/channel -- the
- * same-package edc_completion.c has a SIMILAR piece of state (the completion source's
- * Frecency history, g_history).
+ * reads it. One per process, not persisted, unrelated to session/channel.
  *
- * It is NOT the TUI's history; do not confuse it with these two (three data, each with
- * its own reader, never merged):
- *   - src/tui's input history_ -- the input box's Up/Down line recall (a C++ member,
- *     transient, capped at 500; THAT is "the frontend UI's history");
- *   - edc_completion.c's g_history -- the ordering source for completion candidates
- *     (2000 entries, scored);
- *   - this file -- the command history used for `!n` / `!!` expansion.
+ * It is NOT the TUI's history; do not confuse it with it -- the input box's Up/Down
+ * line recall is src/tui's own `history_` (a C++ member, transient, capped at 500;
+ * THAT is "the frontend UI's history").
+ *
+ * (The sibling `edc_completion.c` used to be referenced here for contrast -- it held a
+ * third, similar piece of state, the completion source's Frecency history. That module
+ * was dead code and has been deleted; a completion system will be rebuilt separately.)
  *
  * Lineage: it used to hang on `struct edc_app` (so the shell's `!` expansion had to take
  * an umbrella and tests had to build an app for it), moved to assembly/ (today app/) in

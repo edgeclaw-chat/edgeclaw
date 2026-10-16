@@ -1,4 +1,4 @@
-/* `/task fork <parent_id> <desc> [--prompt <name>]`.
+/* `/task fork <parent_id> <desc>`.
  *
  * Pins the child's landing, which now comes from the scheduler
  * (edc_scheduler_task_adopt) instead of this handler:
@@ -185,25 +185,18 @@ int main(void)
     }
     CHECK(g_llm_calls == 1 && g_llm_task == child, "send_llm handed the request to the child");
 
-    /* ── 只有 flag、没有 desc: 照样装上一条空输入并派发 ─────────────
-     * (spec->input != NULL 就装 turn —— 空串也装。fork 一直如此, 故意保留。) */
+    /* ── 只有 parent、没有 desc: 一条用法错误 ───────────────────────
+     * (过去可以靠 `--prompt p1` 凑出第二个 token, 从而"无 desc 也建任务";
+     *  --prompt 随 per-task prompt 一起删掉了, desc 是必需项。) */
 
-    TEST("/task fork with no desc still attaches an (empty) input turn");
+    TEST("/task fork with no desc is a usage error");
     g_llm_calls = 0;
     g_llm_task = NULL;
-    snprintf(fork_cmd, sizeof(fork_cmd), "/task fork %s --prompt p1", parent->task_id);
+    snprintf(fork_cmd, sizeof(fork_cmd), "/task fork %s", parent->task_id);
     drive_command(cfg, sm, sched, fork_cmd);
 
-    struct edc_task *empty_desc = find_task_by_desc(sess, "");
-    CHECK(empty_desc != NULL, "the child exists (empty description)");
-    if (empty_desc)
-    {
-        CHECK(empty_desc->active_turn != NULL, "an empty turn is attached anyway");
-        const char *ec = first_user_content(empty_desc->active_turn);
-        CHECK(ec != NULL && ec[0] == '\0', "and the message is empty");
-        CHECK(empty_desc->current_request_id != NULL, "so it is dispatched (not a dead end)");
-    }
-    CHECK(g_llm_calls == 1 && g_llm_task == empty_desc, "send_llm handed the request to it");
+    CHECK(find_task_by_desc(sess, "") == NULL, "no child was created");
+    CHECK(g_llm_calls == 0, "and nothing was dispatched");
 
     /* ── 未知 parent: 什么都不建 ──────────────────────────────────── */
 

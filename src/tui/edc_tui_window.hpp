@@ -1,13 +1,13 @@
 #pragma once
 
-#include "edc_working_indicator_view.hpp"
-#include "edc_ports.hpp"
 #include "edc_app_facade.hpp"
 #include "edc_channel_dispatcher.hpp"
-#include "edc_connect_dialog.hpp"
-#include "edc_transcript_store.hpp"
-#include "edc_task_snapshot.hpp"
 #include "edc_clipboard.hpp"
+#include "edc_ports.hpp"
+#include "edc_setup_dialog.hpp"
+#include "edc_task_snapshot.hpp"
+#include "edc_transcript_store.hpp"
+#include "edc_working_indicator_view.hpp"
 #include <chrono>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
@@ -52,16 +52,13 @@ enum class LiveOutputRoute
 LiveOutputRoute RouteLiveOutput(const std::string &session_id, bool from_active_task,
                                 const std::string &displayed_session);
 
-class TUIWindow : public ::ftxui::ComponentBase,
-                  public control::IChannelHost,
-                  public port::IUiDispatcher
+class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, public port::IUiDispatcher
 {
   public:
     // |sandbox_override| mirrors --sandbox/--no-sandbox: -1 keeps the persisted
     // config.json value, 0 forces off, 1 forces on (per-run only). |terminal|
     // supplies the width the footer trims against (nullptr = the real terminal).
-    explicit TUIWindow(int sandbox_override = -1,
-                       std::shared_ptr<const port::ITerminalInfo> terminal = nullptr);
+    explicit TUIWindow(int sandbox_override = -1, std::shared_ptr<const port::ITerminalInfo> terminal = nullptr);
     virtual ~TUIWindow();
 
     TUIWindow(const TUIWindow &) = delete;
@@ -123,9 +120,9 @@ class TUIWindow : public ::ftxui::ComponentBase,
     bool history_view_ = false;
 
     // Append the current input as a user message and clear the box. A bare
-    // "/connect" opens the provider dialog instead of sending anything.
+    // "/connect" opens the setup wizard instead of sending anything.
     void Submit();
-    // Seed + open the /connect dialog (reads the persisted config).
+    // Seed + open the setup wizard (reads the persisted config).
     void OpenConnect();
     // Seed the input history from $EDC_HOME/.tui_history (a missing file is fine).
     void LoadInputHistory();
@@ -225,9 +222,8 @@ class TUIWindow : public ::ftxui::ComponentBase,
     int press_y_ = 0;
     bool copy_pending_ = false;
 
-    // /connect dialog: a self-contained widget (owns its three fields, its
-    // rendering and its event handling). The window only opens and overlays it.
-    std::shared_ptr<ui::ConnectDialog> connect_dialog_;
+    /* The /connect setup wizard: a modal shown on first run (and by /connect). */
+    std::shared_ptr<ui::SetupDialog> setup_dialog_;
 
     // True while the foreground group's active task runs. Owned exclusively by
     // SyncWorkingFromSnapshot(), never toggled by channel messages.

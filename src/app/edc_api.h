@@ -65,6 +65,27 @@ extern bool edc_app_config_model(const struct edc_app *app, char *buf, size_t ca
 extern bool edc_app_config_api_url(const struct edc_app *app, char *buf, size_t cap);
 extern bool edc_app_config_api_key(const struct edc_app *app, char *buf, size_t cap);
 extern bool edc_app_sandbox_enabled(const struct edc_app *app);
+/* First-run wizard: false until the user finished/skipped the setup page. */
+extern int edc_app_onboarded(const struct edc_app *app);
+/* The configured context window (tokens), for the setup page's default. */
+extern int edc_app_config_context_window(const struct edc_app *app);
+
+/* ── Model catalog (read-only projection of edc_models) ───────
+ * The setup page / model picker read the embedded catalog through these. All returned
+ * strings are BORROWED (lifetime = the loaded catalog); sizes are counts. */
+extern size_t edc_app_models_providers(void);
+extern const char *edc_app_models_provider_id(size_t index);
+extern const char *edc_app_models_provider_name(const char *provider_id);
+extern const char *edc_app_models_provider_api(const char *provider_id);
+extern const char *edc_app_models_provider_env_name(const char *provider_id, size_t index);
+extern size_t edc_app_models_count(const char *provider_id);
+extern const char *edc_app_models_model_id(const char *provider_id, size_t index);
+extern const char *edc_app_models_model_name(const char *model_id);
+extern int edc_app_models_model_context(const char *model_id);
+extern int edc_app_models_model_output(const char *model_id);
+extern int edc_app_models_model_is_chat(const char *model_id);
+extern int edc_app_models_provider_matches(const char *provider_id, const char *query);
+extern int edc_app_models_model_matches(const char *model_id, const char *query);
 /* The transcript path for a given session (`<workspace>/<session_id>/chat.jsonl`).
  * Built by convention, does not query the store; |session_id| must be an id (as
  * carried by snapshots/messages), not a display name. */

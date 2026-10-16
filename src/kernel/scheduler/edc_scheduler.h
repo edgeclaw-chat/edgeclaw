@@ -12,6 +12,7 @@
 struct edc_session;
 struct edc_session_manager;
 struct edc_config;
+struct edc_service;
 
 /* Core's own inbound vocabulary: the channel boundary translates a channel
  * message into this, so the scheduler never sees `struct edc_channel_message`. */
@@ -36,6 +37,10 @@ typedef void (*edc_scheduler_dispatch_tools_fn)(struct edc_scheduler *sched, str
                                                 void *request_id);
 /** Replays the task's PENDING tool ledger; returns how many requests were posted. */
 typedef int (*edc_scheduler_redispatch_tools_fn)(struct edc_scheduler *sched, struct edc_task *task, void *request_id);
+/** Abort whatever tools are still running for |request_id| (the task was cancelled).
+ *  Provided by the toolbox, which owns the in-flight calls: a cancelled task's child
+ *  process must die with it, or a command with no timeout (`!cmd`) would run forever. */
+typedef void (*edc_scheduler_abort_tools_fn)(struct edc_scheduler *sched, void *request_id);
 /** Returns true when the command was handled. */
 typedef bool (*edc_scheduler_command_fn)(struct edc_scheduler *sched, struct edc_actor *actor,
                                          const struct edc_sched_input *input);
@@ -98,6 +103,7 @@ struct edc_scheduler
     edc_scheduler_send_tool_fn send_tool_message;
     edc_scheduler_dispatch_tools_fn dispatch_tools;
     edc_scheduler_redispatch_tools_fn redispatch_tools;
+    edc_scheduler_abort_tools_fn abort_tools;
     edc_scheduler_command_fn handle_command;
     edc_scheduler_snapshot_fn snapshot_reply;
     edc_scheduler_snapshot_changed_fn snapshot_changed;
@@ -112,6 +118,13 @@ struct edc_scheduler
     size_t dirty_cap;
 
     int64_t next_task_id;
+
+    /* Background services (see edc_service.h): a list of named "silent checks" and
+     * ONE uv_timer shared by all of them, re-armed to the earliest next_due. The timer
+     * is closed by the actor runner's shutdown walk, so nothing here is heap-owned. */
+    struct edc_service *services;
+    uv_timer_t service_timer;
+    bool service_timer_inited;
 
     /* Opaque handle so tests can hang a fixture session on this scheduler. */
     void *ctx;
@@ -143,6 +156,13 @@ extern void edc_scheduler_free(struct edc_scheduler *sched);
  *  that can fail. Tests that want a store keep installing their own fixture on
  *  `sched->sessions` -- `sessions_owned` stays false and free leaves it alone. */
 extern bool edc_scheduler_open(struct edc_scheduler *sched);
+
+/** Register the kernel's built-in background services (today: the idle-group
+ *  extraction scan) and arm the shared timer. Called by the assembly root once the
+ *  scheduler's actor has a loop (i.e. after edc_actor_runner_add). No-op when the
+ *  config disables services. Tests without a loop may call it and then drive
+ *  `edc_services_pump` with a fake clock. */
+extern void edc_scheduler_services_start(struct edc_scheduler *sched);
 
 /** Shut the process down: persist every session as-is, then drop the in-flight
  *  turns. Does NOT free anything -- that is edc_scheduler_free's job.
@@ -203,8 +223,7 @@ struct edc_task_spec
     edc_channel_type channel_type;
 
     /* The turn this task runs on. NULL attaches none (system tasks, and any caller
-     * that builds its own turn); an empty string still attaches an empty turn -- which
-     * is what a `/task fork <id> --prompt p` (no desc) has always produced. */
+     * that builds its own turn); an empty string still attaches an empty turn. */
     const char *input;
 
     edc_task_place place;
@@ -229,6 +248,15 @@ struct edc_task_spec
      * pass it (NULL for a lone command). */
     struct edc_task *prev;
     edc_task_dep_type prev_type;
+
+    /* A seeded starting tool call: when set, the task is created `tool_only` (it never
+     * talks to the LLM) with one PENDING call already in its ledger and the matching
+     * `assistant(tool_calls)` message already in its turn. Driving it then walks the
+     * ordinary tool path -- dispatch, result into the turn, settle -- with no LLM round
+     * at all. `args` is the JSON argument object (copied; caller keeps ownership).
+     * First user: `!cmd` (a user-typed shell command as a task). */
+    const char *initial_tool_name;
+    cJSON *initial_tool_args;
 };
 
 /** Create a task and place it: object -> edges -> group -> foreground -> turn.
@@ -289,7 +317,7 @@ extern struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sche
  *  member, or NULL when there is no foreground group or all of its members have
  *  finished. Deliberately NOT `session->active_task` -- that one is the screen focus
  *  and may sit on a task that already finished, which makes it a poor default for
- *  "/task stop", "/task status", "/task join" and `$$`. */
+ *  "/task stop", "/task status" and `$$`. */
 extern struct edc_task *edc_scheduler_current_task(struct edc_session *session);
 
 /** Same as edc_scheduler_current_task, but the last member that is not COMPLETED --

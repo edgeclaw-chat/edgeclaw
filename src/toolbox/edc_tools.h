@@ -28,6 +28,24 @@ struct edc_toolbox_call_ctx;
 typedef void (*edc_tool_exec_async_fn)(struct edc_toolbox_call_ctx *ctx, struct edc_tool *, cJSON *,
                                        void (*callback)(struct edc_toolbox_call_ctx *ctx, sds, EdcError *));
 
+/* Optional: stop the in-flight call this context belongs to. The toolbox actor calls it
+ * (with that call's own context) when the issuing task is cancelled.
+ *
+ * NULL means "nothing this hook can do", which today is true of most tools for one of two
+ * different reasons -- the only one that finishes inside `exec` needs no hook, while the
+ * ones that DO have an in-flight window and no implementation yet (the device_* tools) are
+ * simply not wired. Do not read NULL as a guarantee that no work is outstanding.
+ *
+ * A tool that implements it owns the meaning. "Interrupt" is not one thing:
+ *   - a local process: kill it (see edc_tools_shell.c);
+ *   - work that cannot be preempted mid-step (a file write already handed to the thread
+ *     pool): give up now and refuse whatever comes next, but the step in progress cannot
+ *     be unsent;
+ *   - work that can, once the handle is reachable: signal the worker / close the connection.
+ * It must NOT free |ctx|: the actor owns it and still needs it to receive the call's
+ * outcome (which will simply be discarded). */
+typedef void (*edc_tool_abort_fn)(struct edc_toolbox_call_ctx *ctx);
+
 struct edc_tool
 {
     sds name;
@@ -36,6 +54,12 @@ struct edc_tool
     void *priv;
 
     edc_tool_exec_async_fn exec;
+    edc_tool_abort_fn abort; /* optional: NULL = this tool has no interruptible work */
+    /* Declared by the tool: its result must NOT be cut at tool_max_output_size on the way to
+     * the model. For a tool whose output IS knowledge rather than bulk (the session memory
+     * tools), a silent cut loses facts; such a tool must be able to bound its own output
+     * (the memory tools are bounded by the entry table). */
+    bool keep_full_output;
     EdcDestroyNotify priv_free_fn;
     UT_hash_handle hh;
 };
@@ -43,6 +67,11 @@ struct edc_tool
 extern struct edc_tool *edc_tool_new(const char *name, const char *desc, struct edc_tool_param *params,
                                      edc_tool_exec_async_fn exec);
 extern void edc_tool_free(struct edc_tool *tool);
+/* Install the tool's abort hook (kept out of edc_tool_new so the 17 existing constructions
+ * did not have to grow a NULL argument). */
+extern void edc_tool_set_abort(struct edc_tool *tool, edc_tool_abort_fn abort);
+/* Declare that this tool's output must reach the model whole (see keep_full_output). */
+extern void edc_tool_set_keep_full_output(struct edc_tool *tool, bool keep);
 extern struct edc_tool *edc_tool_new_v(const char *name, const char *desc, struct edc_tool_param **params,
                                        edc_tool_exec_async_fn exec);
 #endif

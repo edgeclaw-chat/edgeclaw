@@ -162,9 +162,15 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
     {
         cJSON *sys = cJSON_CreateObject();
         cJSON_AddStringToObject(sys, "role", "system");
-        cJSON_AddStringToObject(sys, "content", task->sink == EDC_SINK_SESSION_MEMORY
-                                                    ? edc_session_memory_system_prompt()
-                                                    : edc_group_fold_system_prompt());
+        /* A compaction/extraction round shares the curation task's sink and tools, so it
+         * is its own prompt that tells it apart (see edc_session_memory_*_prompt). */
+        const char *memo_prompt = edc_session_memory_system_prompt();
+        if (task->memo_kind == EDC_MEMO_KIND_COMPACT)
+            memo_prompt = edc_session_memory_compact_prompt();
+        else if (task->memo_kind == EDC_MEMO_KIND_EXTRACT)
+            memo_prompt = edc_session_memory_extract_prompt();
+        cJSON_AddStringToObject(sys, "content",
+                                task->sink == EDC_SINK_SESSION_MEMORY ? memo_prompt : edc_group_fold_system_prompt());
         cJSON_AddItemToArray(msgs, sys);
     }
     else

@@ -16,7 +16,7 @@
  *
  * edc_config.c only falls back to these values when a key has been removed
  * from the file by hand; after init that should never happen. */
-#define EDC_CONFIG_DEFAULT_API_URL "https://api.deepseek.com/chat/completions"
+#define EDC_CONFIG_DEFAULT_API_URL "https://api.deepseek.com"
 #define EDC_CONFIG_DEFAULT_MODEL "deepseek-v4-flash"
 #define EDC_CONFIG_DEFAULT_MAX_ITER (-1) /* -1 = unlimited */
 /* The model's context window, in tokens. The fold trigger compares the group's

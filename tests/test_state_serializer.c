@@ -600,7 +600,7 @@ static void test_turnless_shell_is_dropped(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
-    /* 旧模型的残渣形状: 创建后不带 input 就停在 READY (fork leader / /task join 的
+    /* 旧模型的残渣形状: 创建后不带 input 就停在 READY (fork leader / 历史 join 路径的
      * Joined task / @task 无正文)。新模型里任务创建时就带着它的 input, 所以这条形状
      * 不该存在 —— 落盘判据丢掉它并告警
      * (见 edc_state_serializer.c / docs/retire-waiting-input.md §4)。 */
@@ -667,6 +667,9 @@ static void test_state_degradation(void)
     edc_task_await_exec(t2);
     edc_task_await_tools(t2);
     /* stays in TOOL_CALLING */
+    /* `!cmd`: a task that only issues its seeded tool call. Must round-trip, or a
+     * restart would resume it as an ordinary task and ask the model to continue. */
+    t2->tool_only = true;
 
     struct edc_task_group *group = edc_task_group_new(t1);
     edc_task_group_add_task(group, t2);
@@ -684,6 +687,8 @@ static void test_state_degradation(void)
                 "AWAIT_EXEC", "JSON keeps step AWAIT_EXEC");
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(j2, "step")),
                 "AWAIT_TOOLS", "JSON keeps step AWAIT_TOOLS");
+    CHECK(cJSON_IsTrue(cJSON_GetObjectItem(j2, "tool_only")), "JSON keeps tool_only");
+    CHECK(!cJSON_GetObjectItem(j1, "tool_only"), "an ordinary task writes no tool_only key");
 
     /* Deserialize */
     struct edc_session *session2 = edc_session_new(cfg, "sess-deg", "Degrade");
@@ -700,6 +705,8 @@ static void test_state_degradation(void)
      * resume 不再靠残留物猜的那份信息。 */
     CHECK(rt1->step == EDC_TASKSTEP_AWAIT_EXEC, "step AWAIT_EXEC preserved");
     CHECK(rt2->step == EDC_TASKSTEP_AWAIT_TOOLS, "step AWAIT_TOOLS preserved");
+    CHECK(rt2->tool_only, "tool_only survives the round trip");
+    CHECK(!rt1->tool_only, "an ordinary task stays ordinary");
     CHECK(rt1->life == EDC_LIFE_INTERRUPTED && rt2->life == EDC_LIFE_INTERRUPTED,
           "both were in flight -> INTERRUPTED");
     CHECK(rt1->step != rt2->step, "the two are still distinguishable");
@@ -1061,10 +1068,6 @@ static void test_extra_fields(void)
     edc_task_await_exec(task);
     edc_task_mark_completed(task);
 
-    /* Set prompt */
-    task->prompt_name = sdsnew("code-reviewer");
-    task->prompt = sdsnew("You are a senior code reviewer.");
-
     /* Set redirect */
     task->redirect_stdout = sdsnew("/tmp/out.log");
     task->redirect_stderr = sdsnew("/tmp/err.log");
@@ -1102,10 +1105,6 @@ static void test_extra_fields(void)
 
     struct edc_task *rt = find_task(session2, "t-extra");
     CHECK(rt != NULL, "task restored");
-
-    /* Verify prompt */
-    CHECK_STREQ(rt->prompt_name, "code-reviewer", "prompt_name preserved");
-    CHECK_STREQ(rt->prompt, "You are a senior code reviewer.", "prompt preserved");
 
     /* Verify redirect */
     CHECK_STREQ(rt->redirect_stdout, "/tmp/out.log", "redirect_stdout preserved");
@@ -1957,7 +1956,7 @@ static void test_fold_watermark(void)
 
 static void test_schema_version_is_current(void)
 {
-    TEST("serialize writes version 7; older versions fail loudly instead of being patched up");
+    TEST("serialize writes version 9; older versions are still accepted, older/newer fails loudly");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-ver", "Ver");
@@ -1968,13 +1967,18 @@ static void test_schema_version_is_current(void)
     task->is_group_leader = 1;
     edc_task_mark_ready(task);
     edc_task_mark_suspended(task);
-    edc_session_add_group(session, edc_task_group_new(task));
+    struct edc_task_group *grp = edc_task_group_new(task);
+    grp->memory = sdsnew("# remembered");
+    grp->memory_created_at = 111;
+    grp->memory_updated_at = 222;
+    grp->memory_covers_to = 333;
+    edc_session_add_group(session, grp);
 
     cJSON *json = edc_state_serialize(session, sched);
     CHECK(json != NULL, "serialize returns non-NULL");
     /* 本文件构造 JSON 时用的版本号是手写镜像 (见各 cJSON_Parse 字面量): 一律等于
      * 当前 schema, 升级时这里会先红。 */
-    CHECK(edc_state_schema_version() == 7, "schema version bumped -> update this file's literals");
+    CHECK(edc_state_schema_version() == 9, "schema version bumped -> update this file's literals");
     CHECK(edc_state_json_version(json) == edc_state_schema_version(), "on-disk version is the current schema");
 
     struct edc_session *s2 = edc_session_new(cfg, "sess-ver", "Ver");
@@ -1982,8 +1986,23 @@ static void test_schema_version_is_current(void)
     install_resolver(sched2, s2);
     CHECK(edc_state_deserialize(json, s2, sched2), "the current schema round-trips");
     CHECK(edc_session_find_task(s2, "1") != NULL, "task restored");
+    {
+        struct edc_task_group *rg = edc_session_find_group(s2, "1");
+        CHECK(rg && rg->memory_created_at == 111 && rg->memory_updated_at == 222 && rg->memory_covers_to == 333,
+              "group memory times round-trip (v9)");
+    }
     edc_session_free(s2);
     edc_scheduler_free(sched2);
+
+    /* The immediately preceding schema (v7) must still load: a bump must not strand
+     * the archives the previous binary wrote. Fields v7 lacks read back as defaults. */
+    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(7));
+    struct edc_session *s7 = edc_session_new(cfg, "sess-ver", "Ver");
+    struct edc_scheduler *sched7 = edc_scheduler_new(cfg);
+    install_resolver(sched7, s7);
+    CHECK(edc_state_deserialize(json, s7, sched7), "a v7 archive is still accepted");
+    edc_session_free(s7);
+    edc_scheduler_free(sched7);
 
     /* A pre-migration file must be rejected: the load path no longer carries the
      * v3 compatibility branches (system-container drop, displayed/header strip)
@@ -1995,6 +2014,15 @@ static void test_schema_version_is_current(void)
     CHECK(!edc_state_deserialize(json, s3, sched3), "a v3 tree is rejected");
     edc_session_free(s3);
     edc_scheduler_free(sched3);
+
+    /* A version NEWER than this binary also refuses (do not guess a future shape). */
+    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(10));
+    struct edc_session *s9 = edc_session_new(cfg, "sess-ver", "Ver");
+    struct edc_scheduler *sched9 = edc_scheduler_new(cfg);
+    install_resolver(sched9, s9);
+    CHECK(!edc_state_deserialize(json, s9, sched9), "a future version is rejected");
+    edc_session_free(s9);
+    edc_scheduler_free(sched9);
 
     cJSON_Delete(json);
     edc_session_free(session);

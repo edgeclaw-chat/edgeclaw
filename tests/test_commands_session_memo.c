@@ -171,10 +171,10 @@ int main(void)
     CHECK(g_llm_calls == 0, "没有请求出去");
     CHECK(find_l2(sess) == NULL, "也没有 L2 被建出来");
 
-    TEST("/session memo compact: 立刻起 L2, 材料含所有组与 focus");
+    TEST("/session memo curate: 立刻起 L2, 材料含所有组与 focus（收料=它的职责）");
     g_llm_calls = 0;
     g_llm_task = NULL;
-    drive_command(cfg, sm, sched, "/session memo compact keep the build flags");
+    drive_command(cfg, sm, sched, "/session memo curate keep the build flags");
     CHECK(g_llm_calls == 1, "策展请求发出去了");
     struct edc_task *l2 = find_l2(sess);
     CHECK(l2 != NULL && g_llm_task == l2, "出去的就是这个 L2");
@@ -193,10 +193,119 @@ int main(void)
         CHECK(material && strstr(material, "[m1]") != NULL, "带上了现有条目索引");
     }
 
-    TEST("compact: 已有 system task 在飞 ⇒ 拒绝 (一次一个)");
+    TEST("curate: 已有 system task 在飞 ⇒ 拒绝 (一次一个)");
     g_llm_calls = 0;
-    drive_command(cfg, sm, sched, "/session memo compact again");
+    drive_command(cfg, sm, sched, "/session memo curate again");
     CHECK(g_llm_calls == 0, "没有再发请求");
+
+    TEST("L2 压缩任务: 条目超上限 => due; start_compact 起一个同性质但有自己的提示词的任务");
+    if (l2)
+        edc_task_mark_completed(l2); /* 腾出“一次一个系统任务”的门 */
+    while (sess->memo->entry_count <= EDC_SESSION_MEMORY_COMPACT_ENTRIES)
+    {
+        sds filler = seed_entry(sess, "填充", "s", NULL);
+        sdsfree(filler);
+    }
+    CHECK(edc_session_memory_compact_due(sess), "超过条目上限 => compact_due");
+
+    /* 一个“还在跑”的普通任务（另一个组，验证屏障是全 session 而不只是一个组） */
+    struct edc_task_spec uspec;
+    memset(&uspec, 0, sizeof(uspec));
+    uspec.desc = "runner";
+    uspec.input = "hello";
+    uspec.channel_type = edc_channel_adapter;
+    uspec.place = EDC_TASK_PLACE_FOREGROUND;
+    uspec.take_foreground = true;
+    struct edc_task *runner = edc_scheduler_task_create(sched, sess, &uspec);
+    CHECK(runner != NULL, "另一个组里有个非终态任务");
+
+    struct edc_task *ct = edc_session_memory_start_compact(sched, sess);
+    CHECK(ct != NULL, "压缩任务起出来了");
+    CHECK(ct && ct->sink == EDC_SINK_SESSION_MEMORY, "sink = SESSION_MEMORY（与策展同一性质）");
+    CHECK(ct && ct->memo_kind == EDC_MEMO_KIND_COMPACT, "带 memo_kind=COMPACT 标记（请求侧据此选提示词）");
+    CHECK(ct && ct->group && edc_task_group_is_system(ct->group), "落在系统组里");
+    {
+        struct edc_turn *turn = ct ? ct->active_turn : NULL;
+        const char *material = NULL;
+        if (turn && edc_queue_length(&turn->messages) > 0)
+        {
+            cJSON *m = turn->messages.data[turn->messages.head];
+            material = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+        }
+        CHECK(material && strstr(material, "## Compact the session memory") != NULL, "压缩指令在材料里");
+        CHECK(material && strstr(material, "id: m1") != NULL && strstr(material, "rev: ") != NULL,
+              "全量 dump：每条的 id 与 rev 都在（update 要用）");
+    }
+    CHECK(strcmp(edc_session_memory_compact_prompt(), edc_session_memory_system_prompt()) != 0,
+          "压缩有自己的系统提示词（与策展的不同）");
+    CHECK(strstr(edc_session_memory_compact_prompt(), "SMALLER") != NULL, "它要的是变小");
+
+    {
+        /* 屏障：还在跑的任务都依赖这个压缩任务，且是 BARRIER（源无论怎么结束都放行） */
+        bool barrier = false;
+        struct edc_task_dep *dep = NULL;
+        LL_FOREACH(runner->deps, dep)
+        {
+            if (dep->source == ct && dep->type == TASK_DEP_BARRIER && !dep->cancelled)
+                barrier = true;
+        }
+        CHECK(barrier, "还在跑的 task 依赖了压缩任务（TASK_DEP_BARRIER）");
+
+        /* 压缩任务结束 ⇒ 屏障作废、被攥着的任务放行（走 host 的统一结算路径） */
+        /* 真的把它结算掉：READY 不能直接 COMPLETED（迁移矩阵），先过一步 AWAIT_EXEC，
+         * 然后走 host 的统一结算（那里才会 notify_dependents）。 */
+        CHECK(edc_task_await_exec(ct), "压缩任务被驱动");
+        CHECK(edc_task_mark_completed(ct), "压缩任务完成");
+        struct edc_advance_result res;
+        memset(&res, 0, sizeof(res));
+        res.outcome = EDC_STEP_DONE;
+        res.changed = true;
+        res.settled = true;
+        edc_scheduler_apply_advance(sched, ct, NULL, &res);
+        /* 源正常完成 ⇒ 边标记 completed；源取消/失败 ⇒ 边被作废(cancelled)。
+         * 两种都不再攥着目标（BARRIER 的"怎么结束都放行"由 test_edc_task.c 的
+         * 失败放行用例钉住）。 */
+        bool holds = false;
+        LL_FOREACH(runner->deps, dep)
+        {
+            if (dep->source == ct && !dep->cancelled && !dep->completed)
+                holds = true;
+        }
+        CHECK(!holds, "压缩任务一结束就不再攥着它（边已 completed/cancelled，任务接着跑）");
+    }
+
+    CHECK(!edc_session_memory_compact_due(sess), "同尺寸不会立刻再来一轮（要再长才触发）");
+
+    TEST("/session memo compact: 只压 session memory（材料里**没有** group memory）");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "/session memo compact");
+    CHECK(g_llm_calls == 1, "压缩请求发出去了");
+    {
+        struct edc_task *ct2 = NULL;
+        struct edc_task_group *gg = NULL;
+        DL_FOREACH(sess->groups, gg)
+        {
+            struct edc_task *tt = NULL;
+            LL_FOREACH2(gg->members, tt, group_next)
+            {
+                if (tt->sink == EDC_SINK_SESSION_MEMORY && tt->memo_kind == EDC_MEMO_KIND_COMPACT &&
+                    !edc_task_is_finished(tt))
+                    ct2 = tt;
+            }
+        }
+        CHECK(ct2 != NULL, "起的是压缩任务（memo_kind=COMPACT）");
+        const char *material = NULL;
+        if (ct2 && ct2->active_turn && edc_queue_length(&ct2->active_turn->messages) > 0)
+        {
+            cJSON *m = ct2->active_turn->messages.data[ct2->active_turn->messages.head];
+            material = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+        }
+        CHECK(material && strstr(material, "## Compact the session memory") != NULL, "材料里是压缩指令");
+        CHECK(material && strstr(material, "id: m1") != NULL, "以及条目 dump（id/rev/内容）");
+        CHECK(material && strstr(material, "### group") == NULL,
+              "材料里**没有** group memory —— 压缩只动 session memory 自己");
+    }
 
     printf("\n  %d passed, %d failed\n\n", passed, failed);
     edc_scheduler_free(sched);

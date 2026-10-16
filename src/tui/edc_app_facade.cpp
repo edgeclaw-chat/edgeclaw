@@ -69,11 +69,97 @@ bool AppFacade::SandboxEnabled() const
     return app_ && edc_app_sandbox_enabled(app_);
 }
 
-bool AppFacade::SetLlmConfig(const ConnectConfig &config)
+bool AppFacade::Onboarded() const
+{
+    return app_ && edc_app_onboarded(app_);
+}
+
+bool AppFacade::SetSetup(const SetupConfig &config)
 {
     if (!app_)
         return false;
-    return edc_app_set_llm_config(app_, config.api_url.c_str(), config.model.c_str(), config.api_key.c_str());
+    return edc_app_complete_setup(app_, config.api_url.c_str(), config.model.c_str(), config.api_key.c_str(),
+                                  config.context_window);
+}
+
+bool AppFacade::MarkOnboarded()
+{
+    return app_ && edc_app_mark_onboarded(app_);
+}
+
+std::string AppFacade::TestEndpoint(const std::string &api_url, const std::string &api_key) const
+{
+    if (!app_)
+        return "app not ready";
+    char buf[160] = {0};
+    edc_app_test_endpoint(app_, api_url.c_str(), api_key.c_str(), 8000, buf, sizeof(buf));
+    return buf;
+}
+
+size_t AppFacade::Providers(std::vector<std::string> *ids) const
+{
+    size_t n = edc_app_models_providers();
+    if (ids)
+    {
+        ids->clear();
+        for (size_t i = 0; i < n; i++)
+        {
+            const char *id = edc_app_models_provider_id(i);
+            if (id)
+                ids->emplace_back(id);
+        }
+    }
+    return n;
+}
+
+std::string AppFacade::ProviderName(const std::string &provider_id) const
+{
+    const char *s = edc_app_models_provider_name(provider_id.c_str());
+    return s ? s : "";
+}
+
+std::string AppFacade::ProviderApi(const std::string &provider_id) const
+{
+    const char *s = edc_app_models_provider_api(provider_id.c_str());
+    return s ? s : "";
+}
+
+std::string AppFacade::ProviderEnvName(const std::string &provider_id, size_t index) const
+{
+    const char *s = edc_app_models_provider_env_name(provider_id.c_str(), index);
+    return s ? s : "";
+}
+
+size_t AppFacade::Models(const std::string &provider_id, std::vector<std::string> *ids) const
+{
+    size_t n = edc_app_models_count(provider_id.c_str());
+    if (ids)
+    {
+        ids->clear();
+        for (size_t i = 0; i < n; i++)
+        {
+            const char *id = edc_app_models_model_id(provider_id.c_str(), i);
+            if (id)
+                ids->emplace_back(id);
+        }
+    }
+    return n;
+}
+
+bool AppFacade::ModelInfo(const std::string &model_id, ModelFacts *out) const
+{
+    const char *mid = model_id.c_str();
+    const char *name = edc_app_models_model_name(mid);
+    if (!name)
+        return false;
+    if (out)
+    {
+        out->name = name;
+        out->context = edc_app_models_model_context(mid);
+        out->output = edc_app_models_model_output(mid);
+        out->chat = edc_app_models_model_is_chat(mid);
+    }
+    return true;
 }
 
 void AppFacade::SendUserMessage(const std::string &session_id, const std::string &content)

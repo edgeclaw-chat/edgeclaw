@@ -683,6 +683,92 @@ static void test_fold_request_is_self_contained(void)
 
 /* ══════════════════════════════════════════════════════════════ */
 
+/* ══════════════════════════════════════════════════════════════
+ *  `!cmd`: the tool-only turn must reach the NEXT request
+ *
+ *  A `!cmd` task is one "user asked / exec_shell ran / here is the output" turn. Its
+ *  whole reason to exist as a task is that this turn enters the group's history, so the
+ *  next request carries the command AND its output. The three messages are built by the
+ *  same calls the production path uses (edc_scheduler_task_adopt seeds user +
+ *  assistant(tool_calls); tool_done appends the tool message;
+ *  exec_tool_only_finish hands the turn to the group history), so what this pins is the
+ *  assembly, not a re-implementation. ══════════════════════════════════════════════ */
+
+static void test_tool_only_turn_reaches_the_next_request(void)
+{
+    TEST("`!cmd`: 命令 + 输出 (user / assistant(tool_calls) / tool) 原样进下一轮请求");
+
+    struct harness h;
+    harness_up(&h);
+    struct edc_task *leader = NULL;
+    struct edc_task_group *g = make_group(&h, &leader, "sess-req");
+
+    /* The completed `!cmd` task's turn. Not freed on purpose: history_add_turn stores
+     * BORROWED references (in production the turn lives in task->turns). */
+    struct edc_turn *done = edc_turn_new();
+    done->task_id = strdup("2");
+    edc_turn_add_user_message(done, "!pwd");
+    cJSON *args = cJSON_CreateObject();
+    cJSON_AddStringToObject(args, "command", "pwd");
+    edc_turn_add_assistant_tool_call(done, "call_local_2", "exec_shell", args);
+    cJSON_Delete(args);
+    edc_turn_add_tool_message(done, "call_local_2", "exec_shell", "/home/conley/workspace\n");
+    edc_task_group_history_add_turn(g, done);
+
+    /* The next round: a fresh turn on the leader. */
+    attach_turn(&h, leader, "next question");
+    edc_llm_request_send(h.sched, leader, NULL, NULL, h.llm_actor, NULL);
+    pump(&h);
+
+    CHECK(g_req_msgs == 1, "请求真发出去了");
+
+    char order[4] = {0};
+    int n = 0;
+    bool cmd_seen = false, output_seen = false;
+    if (g_req && g_req->history)
+    {
+        for (int i = 0; i < cJSON_GetArraySize(g_req->history) && n < 3; i++)
+        {
+            cJSON *m = cJSON_GetArrayItem(g_req->history, i);
+            const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(m, "role"));
+            if (!role)
+                continue;
+            if (strcmp(role, "user") == 0)
+            {
+                const char *c = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+                if (c && strcmp(c, "!pwd") == 0)
+                {
+                    order[n++] = 'u';
+                    cmd_seen = true;
+                }
+            }
+            else if (strcmp(role, "assistant") == 0)
+            {
+                cJSON *tcs = cJSON_GetObjectItem(m, "tool_calls");
+                const char *id = tcs ? cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(tcs, 0), "id")) : NULL;
+                if (id && strcmp(id, "call_local_2") == 0)
+                    order[n++] = 'a';
+            }
+            else if (strcmp(role, "tool") == 0)
+            {
+                const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(m, "tool_call_id"));
+                const char *c = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+                if (id && strcmp(id, "call_local_2") == 0)
+                {
+                    order[n++] = 't';
+                    output_seen = c && strstr(c, "/home/conley/workspace") != NULL;
+                }
+            }
+        }
+    }
+
+    CHECK(n == 3, "三条都在 (user + assistant(tool_calls) + tool)");
+    CHECK(strcmp(order, "uat") == 0, "顺序是 user -> assistant(tool_calls) -> tool (>每一条 tool 都有配对的 assistant)");
+    CHECK(cmd_seen && output_seen, "命令和它的输出都在请求里");
+
+    harness_down(&h);
+}
+
 int main(void)
 {
     test_turn_begin_honours_folded_prefix();
@@ -693,6 +779,7 @@ int main(void)
     test_curate_request_is_self_contained();
     test_summary_request_is_capped();
     test_fold_request_is_self_contained();
+    test_tool_only_turn_reaches_the_next_request();
 
     printf("\n  %d passed, %d failed\n\n", test_passed, test_failed);
     return test_failed ? 1 : 0;

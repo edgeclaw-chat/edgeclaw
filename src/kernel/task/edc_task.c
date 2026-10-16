@@ -125,6 +125,31 @@ edc_sink edc_task_classify_sink(const char *name)
     return EDC_SINK_CHANNEL;
 }
 
+const char *edc_task_memo_kind_name(edc_memo_kind kind)
+{
+    switch (kind)
+    {
+    case EDC_MEMO_KIND_COMPACT:
+        return "COMPACT";
+    case EDC_MEMO_KIND_EXTRACT:
+        return "EXTRACT";
+    case EDC_MEMO_KIND_CURATE:
+    default:
+        return "CURATE";
+    }
+}
+
+edc_memo_kind edc_task_classify_memo_kind(const char *name)
+{
+    if (!name)
+        return EDC_MEMO_KIND_CURATE;
+    if (strcmp(name, "COMPACT") == 0)
+        return EDC_MEMO_KIND_COMPACT;
+    if (strcmp(name, "EXTRACT") == 0)
+        return EDC_MEMO_KIND_EXTRACT;
+    return EDC_MEMO_KIND_CURATE;
+}
+
 /* The display name (snapshot / logs / command text), derived straight from
  * (step, life) with life speaking first, matching the old order. WAITING_INPUT is
  * never returned. */
@@ -502,13 +527,10 @@ void edc_task_free(struct edc_task *task)
     if (task->raw_input)
         sdsfree(task->raw_input);
 
-    if (task->prompt)
-        sdsfree(task->prompt);
-    if (task->prompt_name)
-        sdsfree(task->prompt_name);
     if (task->output)
         sdsfree(task->output);
     free(task->fold_cut_task_id);
+    free(task->memo_cut_task_id);
 
     if (task->redirect_stdout)
         sdsfree(task->redirect_stdout);
@@ -1147,6 +1169,13 @@ bool edc_task_has_pending_tool_calls(const struct edc_task *task)
 static const char *const kInterruptedToolNote =
     "[interrupted: this tool was still running when the process restarted; it did not produce a result]";
 
+/* Same text, for the executor: a tool-only task resumed into the repair has no result
+ * of its own, and this is what its output has to say about that. */
+const char *edc_task_interrupted_tool_note(void)
+{
+    return kInterruptedToolNote;
+}
+
 static bool task_turn_has_tool_response(struct edc_turn *turn, size_t upto, const char *call_id)
 {
     for (size_t i = 0; i < upto; i++)
@@ -1295,31 +1324,12 @@ bool edc_task_has_folded_turns(struct edc_task *task)
     return false;
 }
 
-/* ── Prompt ────────────────────────────────────────────────── */
-
-void edc_task_set_prompt(struct edc_task *task, const char *prompt_name, const char *prompt_text)
-{
-    if (!task)
-        return;
-
-    if (task->prompt_name)
-    {
-        sdsfree(task->prompt_name);
-        task->prompt_name = NULL;
-    }
-    if (task->prompt)
-    {
-        sdsfree(task->prompt);
-        task->prompt = NULL;
-    }
-
-    if (prompt_name)
-        task->prompt_name = sdsnew(prompt_name);
-    if (prompt_text)
-        task->prompt = sdsnew(prompt_text);
-}
-
-/* ── Context building ──────────────────────────────────────── */
+/* ── Context building ──────────────────────────────────────── *
+ *
+ * A per-task custom system prompt used to live here (`edc_task_set_prompt` +
+ * `task->prompt` / `task->prompt_name`). It was a stub -- every caller passed a NULL
+ * body -- and has been removed: reusing a prompt is now the `/prompt` command's job
+ * (docs/prompt-library.md). */
 
 cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *config)
 {
@@ -1329,14 +1339,7 @@ cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *c
     cJSON *messages = cJSON_CreateArray();
 
     /* 1. System prompt */
-    if (task->prompt)
-    {
-        cJSON *sys_msg = cJSON_CreateObject();
-        cJSON_AddStringToObject(sys_msg, "role", "system");
-        cJSON_AddStringToObject(sys_msg, "content", task->prompt);
-        cJSON_AddItemToArray(messages, sys_msg);
-    }
-    else if (config)
+    if (config)
     {
         sds default_prompt = edc_context_build_system_prompt(config, NULL);
         cJSON *sys_msg = cJSON_CreateObject();

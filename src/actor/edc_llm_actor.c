@@ -4,6 +4,7 @@
 #include "edc_error.h"
 #include "edc_file_utils.h"
 #include "edc_https_client.h"
+#include "edc_string_utils.h"
 #include "log.h"
 #include "sds.h"
 #include "utarray.h"
@@ -35,8 +36,8 @@ struct edc_llm_actor_http_req
     struct llm_api_conf *api_conf;
     edc_actor_t *from;
     sds response;
-    sds error;    /* first cause reported by the https client; surfaced on CLOSE */
-    int status;   /* HTTP status of the response (0 = no response: transport failure) */
+    sds error;  /* first cause reported by the https client; surfaced on CLOSE */
+    int status; /* HTTP status of the response (0 = no response: transport failure) */
     void *request_id;
 };
 
@@ -125,8 +126,7 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
                  * closes without a response; surface it instead of the generic text. */
                 struct edc_llm_actor_resp *resp = edc_llm_actor_resp_new();
                 resp->error = edc_error_new(EDC_ERR_FAILED, "%s",
-                                            httpreq->error ? httpreq->error
-                                                           : "LLM API connection closed unexpectedly");
+                                            httpreq->error ? httpreq->error : "LLM API connection closed unexpectedly");
                 edc_actor_send(httpreq->from, edc_actor_msg_new(BC_ACTOR_MSG_LLM_RESPONSE, NULL, httpreq->request_id,
                                                                 resp, (edc_actor_data_free_fn)edc_llm_actor_resp_free));
             }
@@ -181,8 +181,7 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
     if (req->tail_parts)
     {
         cJSON *part = NULL;
-        cJSON_ArrayForEach(part, req->tail_parts)
-        cJSON_AddItemReferenceToArray(messages, part);
+        cJSON_ArrayForEach(part, req->tail_parts) cJSON_AddItemReferenceToArray(messages, part);
     }
 
     if (req->tools)
@@ -225,9 +224,14 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
     struct edc_llm_actor_http_req *httpreq =
         edc_llm_actor_http_req_new(actor, body_s, &state->api_conf, from, request_id);
 
-    if (edc_https_client_connect(state->client, state->api_conf.api_url, edc_llm_actor_on_http_fn, httpreq) < 0)
+    /* The config holds a BASE url; the request goes to its /chat/completions endpoint
+     * (a url that already ends with it is left as-is). */
+    sds url = edc_url_chat_completions(state->api_conf.api_url);
+    int connected = url ? edc_https_client_connect(state->client, url, edc_llm_actor_on_http_fn, httpreq) : -1;
+    sdsfree(url);
+    if (connected < 0)
     {
-        log_error("llm actor: invalid api url: %s", state->api_conf.api_url);
+        log_error("llm actor: invalid api url: %s", state->api_conf.api_url ? state->api_conf.api_url : "(none)");
         edc_llm_actor_http_req_free(httpreq);
         if (from)
         {
@@ -309,8 +313,8 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
         {
             char *err_msg = cJSON_Print(response);
             log_error("resp format error choice 0 is not exist (HTTP %d): %s", http_status, err_msg);
-            resp->error = edc_error_new(EDC_ERR_INVAL, "resp format choice 0 is not exist (HTTP %d): %s", http_status,
-                                        err_msg);
+            resp->error =
+                edc_error_new(EDC_ERR_INVAL, "resp format choice 0 is not exist (HTTP %d): %s", http_status, err_msg);
             cJSON_free(err_msg);
         }
         return false;

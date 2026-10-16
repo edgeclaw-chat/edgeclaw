@@ -49,6 +49,32 @@ void edc_turn_add_tool_message(struct edc_turn *turn, const char *tool_call_id, 
     edc_turn_add_message(turn, msg);
 }
 
+void edc_turn_add_assistant_tool_call(struct edc_turn *turn, const char *call_id, const char *name, cJSON *args)
+{
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "role", "assistant");
+
+    /* `arguments` is a STRING in the API, not an object. */
+    char *args_s = args ? cJSON_PrintUnformatted(args) : NULL;
+    cJSON *call = cJSON_CreateObject();
+    cJSON_AddStringToObject(call, "id", call_id ? call_id : "");
+    cJSON_AddStringToObject(call, "type", "function");
+    cJSON *fn = cJSON_CreateObject();
+    cJSON_AddStringToObject(fn, "name", name ? name : "");
+    cJSON_AddStringToObject(fn, "arguments", args_s ? args_s : "{}");
+    if (args_s)
+        cJSON_free(args_s);
+    cJSON_AddItemToObject(call, "function", fn);
+
+    cJSON *calls = cJSON_CreateArray();
+    cJSON_AddItemToArray(calls, call);
+    cJSON_AddItemToObject(msg, "tool_calls", calls);
+
+    /* No "content": edc_turn_add_message fills it with "" (the API accepts an empty
+     * content next to tool_calls). */
+    edc_turn_add_message(turn, msg);
+}
+
 struct edc_turn *edc_turn_new()
 {
     struct edc_turn *turn = g_new0(struct edc_turn, 1);
@@ -71,4 +97,32 @@ void edc_turn_free(struct edc_turn *turn)
 
     free(turn->task_id);
     free(turn);
+}
+
+sds edc_turn_render_message(const cJSON *msg)
+{
+    if (!msg)
+        return sdsempty();
+    const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "role"));
+    const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
+    const char *ts = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "ts"));
+    sds line = sdscatprintf(sdsempty(), "%s  %s: %s", (ts && ts[0]) ? ts : "?", role ? role : "?",
+                            content ? content : "");
+
+    /* Assistant tool calls: name + arguments are knowledge the content alone lacks (a
+     * tool-call message has empty content), so the fold corpus and the extraction
+     * material keep them. */
+    cJSON *calls = cJSON_GetObjectItem(msg, "tool_calls");
+    if (calls && cJSON_IsArray(calls))
+    {
+        cJSON *call;
+        cJSON_ArrayForEach(call, calls)
+        {
+            cJSON *fn = cJSON_GetObjectItem(call, "function");
+            const char *name = fn ? cJSON_GetStringValue(cJSON_GetObjectItem(fn, "name")) : NULL;
+            const char *args = fn ? cJSON_GetStringValue(cJSON_GetObjectItem(fn, "arguments")) : NULL;
+            line = sdscatprintf(line, "\n  -> call %s(%s)", name ? name : "?", args ? args : "{}");
+        }
+    }
+    return line;
 }

@@ -160,6 +160,7 @@ cc_test(
         "//src/kernel:kernel",
         "//src/toolbox:toolbox",
         "@log.c//:log.c",
+        "@uthash//:uthash",
     ],
     linkopts = LINK_OPTS,
 )
@@ -223,6 +224,46 @@ cc_test(
         "//src/actor:actors",
         "//src/common:common",
         "//src/kernel:kernel",
+        "//src/toolbox:toolbox",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_output_buf",
+    srcs = ["test_output_buf.c"],
+    deps = [
+        "//src/toolbox:toolbox",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_tool_shell_loop",
+    srcs = ["test_tool_shell_loop.c"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "//src/toolbox:toolbox",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_local_shell",
+    srcs = ["test_local_shell.c"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "//src/shell:shell",
         "//src/toolbox:toolbox",
         "@log.c//:log.c",
     ],
@@ -646,6 +687,15 @@ cc_test(
 )
 
 cc_test(
+    name = "test_config_onboarded",
+    srcs = ["test_config_onboarded.c"],
+    deps = [
+        "//src/common:common",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_sandbox_helper",
     srcs = ["test_sandbox_helper.c"],
     deps = [
@@ -974,6 +1024,76 @@ cc_test(
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
         "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_prompts",
+    srcs = ["test_prompts.c"],
+    deps = [
+        "//src/kernel:kernel",
+        "@sds//:sds",
+        "@uthash//:uthash",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_commands_prompt",
+    srcs = ["test_commands_prompt.c"],
+    deps = [
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_session_memory_extract",
+    srcs = ["test_session_memory_extract.c"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_service",
+    srcs = ["test_service.c"],
+    deps = [
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_models_catalog",
+    srcs = ["test_models_catalog.c"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_crontab_service",
+    srcs = ["test_crontab_service.c"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "//src/toolbox:toolbox",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
     ],
     linkopts = LINK_OPTS,
 )

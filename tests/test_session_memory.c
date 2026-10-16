@@ -119,6 +119,25 @@ static void test_read_write_api(void)
     struct edc_memo_entry *e1 = edc_session_memory_entry(m, "m1");
     CHECK(e1 && e1->proposed_by && strcmp(e1->proposed_by, "task-7") == 0, "proposed_by 记下");
     CHECK(e1 && e1->summary != NULL, "摘要存住");
+    /* 建条目即带 wall-clock，且 索引行 里能看到 */
+    CHECK(e1 && e1->created_at > 0 && e1->created_at == e1->updated_at, "建条目即带 created/updated（相等且非 0）");
+    {
+        sds idx0 = edc_session_memory_index_lines(m, 0, 10, NULL);
+        CHECK(strstr(idx0, " (20") != NULL, "索引行带时间");
+        sdsfree(idx0);
+    }
+    /* update 只抬 updated_at，不动 created_at */
+    {
+        struct edc_memo_entry *e2 = edc_session_memory_entry(m, "m2");
+        uint64_t created_before = e2->created_at;
+        e2->updated_at = 100; /* 假装很久以前，好验证会被抬到现在 */
+        uint64_t rev_out = 0;
+        /* 三个字段都 NULL = 不改内容，只追加一次 UPDATED 事件（验证时间被抬）。 */
+        CHECK(edc_session_memory_update(m, "m2", NULL, NULL, NULL, e2->updated_seq, &rev_out) == EDC_MEMO_WRITE_OK,
+              "update 成功");
+        CHECK(e2->updated_at > 100, "update 把 updated_at 抬到现在");
+        CHECK(e2->created_at == created_before, "update 不动 created_at");
+    }
 
     /* 停用一条: 索引行要标 retired, 但**不删** */
     e1->superseded = true;
@@ -170,9 +189,10 @@ static void test_read_write_api(void)
     CHECK(regerr == 1 && hits == 0 && sdslen(rr) == 0, "非法正则: 置 regerror, 不回行");
     sdsfree(rr);
 
-    /* 取明细: 有条目 = 明细; 没明细 = 索引行; 不存在 = NULL */
+    /* 取明细: 有条目 = created/updated 头 + 明细; 没明细 = 索引行; 不存在 = NULL */
     sds d = edc_session_memory_get_detail(m, "m2");
-    CHECK(d && strcmp(d, "明细二") == 0, "明细原样回来");
+    CHECK(d && strstr(d, "明细二") != NULL, "明细在（前面带头）");
+    CHECK(d && strstr(d, "created: ") != NULL && strstr(d, "updated: ") != NULL, "明细带 created/updated 头");
     sdsfree(d);
     d = edc_session_memory_get_detail(m, "m3");
     CHECK(d && strstr(d, "[m3]") != NULL, "没有明细时退化成索引行");
@@ -219,6 +239,7 @@ static void test_notice(void)
     CHECK(strstr(n, "- [m2] created: 沙箱策略") != NULL, "第二条一行 (无摘要不拖尾巴)");
     CHECK(strstr(n, "memory_list") != NULL && strstr(n, "memory_get") != NULL, "带用法提示");
     CHECK(strstr(n, "RECONCILE") != NULL && strstr(n, "expected_rev") != NULL, "带 reconcile/merge/create 纪律");
+    CHECK(strstr(n, " (20") != NULL, "每行带事件时间");
     sdsfree(n);
 
     /* 同一条目再更新: 只出最新那行 (kind = updated), 不是两行 */
@@ -264,8 +285,12 @@ static void test_round_trip(void)
     struct edc_memo_entry *e = edc_session_memory_upsert_entry(m, "m1", "标题", "摘要", "明细正文", "group 1");
     e->created_seq = 1;
     e->updated_seq = 2;
+    e->created_at = 111;
+    e->updated_at = 222;
     e->superseded = true;
     edc_session_memory_note_proposer(e, "task-7");
+    uint64_t ev_ts = m->events[0].ts;
+    CHECK(ev_ts > 0, "add_event 带上了 wall-clock 时间");
 
     cJSON *json = edc_session_memory_to_json(m);
     CHECK(json != NULL, "能序列化");
@@ -282,6 +307,8 @@ static void test_round_trip(void)
     CHECK(be != NULL, "条目按 id 回来");
     CHECK(be && be->detail && strstr(be->detail, "明细正文") != NULL, "明细回来");
     CHECK(be && be->created_seq == 1 && be->updated_seq == 2, "两个 seq 回来");
+    CHECK(be && be->created_at == 111 && be->updated_at == 222, "两个 wall-clock 时间回来");
+    CHECK(back->events[0].ts == ev_ts && back->events[1].ts > 0, "事件时间回来");
     CHECK(be && be->superseded, "superseded 回来");
     CHECK(be && be->sources && strcmp(be->sources, "group 1") == 0, "来源回来");
     CHECK(be && be->proposed_by && strcmp(be->proposed_by, "task-7") == 0, "谁提议写的回来");
@@ -344,6 +371,55 @@ static void test_adopt(void)
     edc_config_free(cfg);
 }
 
+/* ── 7. 逻辑删除 + 压缩 ────────────────────────────────────── */
+
+static void test_delete_and_trim(void)
+{
+    TEST("删除: 真删（表里没有、按 id 读不到、视图没有），并留一条 DELETED 事件");
+    struct edc_session_memory *m = edc_session_memory_new();
+    sds id1 = edc_session_memory_create_entry(m, "要删的", "过期了", "明细 A", NULL);
+    sds id2 = edc_session_memory_create_entry(m, "留着的", "还在用", "明细 B", NULL);
+    CHECK_STREQ(id1, "m1", "id1 = m1");
+    CHECK_STREQ(id2, "m2", "id2 = m2");
+
+    const char *one[] = {"m1"};
+    CHECK(edc_session_memory_delete(m, one, 1), "删除 m1");
+    CHECK(m->entry_count == 1, "条目表真的少了一条");
+    CHECK(edc_session_memory_entry(m, "m1") == NULL, "按 id 查不到了");
+    CHECK(edc_session_memory_get_detail(m, "m1") == NULL, "明细也读不到了");
+    CHECK(m->events[m->event_count - 1].kind == EDC_MEMO_DELETED, "留了一条 DELETED 事件（变化流要告诉别人）");
+    CHECK(!edc_session_memory_delete(m, one, 1), "再删一次 = 未知 id（不是幂等）");
+    const char *mixed[] = {"m2", "m404"};
+    CHECK(!edc_session_memory_delete(m, mixed, 2), "原子: 含未知 id 就整批拒绝");
+    CHECK(edc_session_memory_entry(m, "m2") != NULL, "m2 没被牵连");
+
+    size_t total = 0;
+    sds idx = edc_session_memory_index_lines(m, 0, 10, &total);
+    CHECK(total == 1 && strstr(idx, "要删的") == NULL, "索引只剩一条、没有它的标题");
+    sdsfree(idx);
+    size_t hits = 0;
+    sds found = edc_session_memory_search_lines(m, "过期了", 10, &hits);
+    CHECK(hits == 0, "搜索搜不到");
+    sdsfree(found);
+    sds shown = edc_session_memory_show_text(m, "m1");
+    CHECK(shown && strstr(shown, "no entry") != NULL, "show 报没有这条");
+    sdsfree(shown);
+
+    TEST("事件日志: 写路径上自动裁剪, 不会无限增长");
+    uint64_t rev = edc_session_memory_entry(m, "m2")->updated_seq;
+    for (int i = 0; i < EDC_SESSION_MEMORY_TRIM_EVENTS + 20; i++)
+    {
+        enum edc_memo_write_result r = edc_session_memory_update(m, "m2", NULL, "改了", NULL, rev, &rev);
+        if (r != EDC_MEMO_WRITE_OK)
+            break;
+    }
+    CHECK(m->event_count <= EDC_SESSION_MEMORY_TRIM_EVENTS, "日志被压在触发线以内（不再无限增长）");
+    CHECK(m->pruned_before > 0, "pruned_before 前进了");
+    CHECK(edc_session_memory_entry(m, "m2") != NULL, "裁剪不会碰活着的条目");
+
+    edc_session_memory_free(m);
+}
+
 int main(void)
 {
 
@@ -353,6 +429,7 @@ int main(void)
     test_notice();
     test_round_trip();
     test_adopt();
+    test_delete_and_trim();
     printf("\n%d passed, %d failed\n", g_passed, g_failed);
     return g_failed ? 1 : 0;
 }

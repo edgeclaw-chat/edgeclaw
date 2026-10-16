@@ -73,9 +73,16 @@ The AST executor (`exec_ctx_t`) walks the tree recursively, carrying context:
 
 ### History Expansion
 
-Before tokenization, `!n` and `!!` patterns are expanded:
+`!` at the **start of a line** is the local shell entry point, not a history reference
+(see Local Shell below) — a line-leading `!` never reaches task creation.
+
+The parser still expands `!n` / `!!` **inside a task description** before tokenization:
+
 - `!!` — repeat the last command
 - `!n` — repeat the nth command from history
+
+That history is written only from outside the TUI, so inside the TUI these expand to
+nothing and the text is taken literally.
 
 ---
 
@@ -101,6 +108,43 @@ input joins the current group). See Shell-like Job Control below.
 
 ---
 
+## Local Shell (`!`)
+
+A line starting with `!` runs a **local shell command** on this machine:
+
+```
+!git status
+```
+
+What happens is worth stating exactly, because it is also how the rest of the system
+sees it: the command becomes **a task of its own** (its own line in the sidebar, its own
+entry in the group's history) whose only job is to issue one `exec_shell` call. So
+
+- the command runs through `sh -c`, in the session's working directory, subject to the
+  sandbox setting (`/sandbox`), with the same output cap as the `exec_shell` tool the model
+  uses and **no timeout at all** — a command runs until it exits. Bound it yourself when
+  you want to: `!timeout 60 make -j8`;
+- its output is that task's result, and it is **shown on screen and stored in the group's
+  history** — the next prompt sees the command and its output;
+- **no model is called** — no LLM request is made for it, and it costs no tokens.
+
+| Input | Behavior |
+|---|---|
+| `!cmd` | run `cmd` (a task of its own) |
+| `!!` | run this session's previous `!` command again |
+| `\!cmd` | escape: send `!cmd` as ordinary input (a task description) instead |
+| `!` alone | usage |
+
+Commands that need a terminal (`sudo`, `vim`, `ssh`, an editor) fail immediately: the
+child gets no tty. A non-zero exit is not a task failure — the output (including
+stderr) is still the result.
+
+A running command is stopped from the task side: `/task stop <id>` (or `/session stop`)
+cancels the task and **kills the command's whole process group** — that is what makes
+"no timeout" safe.
+
+---
+
 ## Task Model
 
 Three-layer Unix-like process model:
@@ -108,7 +152,7 @@ Three-layer Unix-like process model:
 | EdgeClaw   | Unix        | Behavior                              |
 |------------|-------------|---------------------------------------|
 | **Task**   | Thread      | Conversation sharing history with siblings. |
-| **Group**  | Process     | Isolated container. Cross-group needs pipe or `/task chain`. |
+| **Group**  | Process     | Isolated container. Cross-group needs a pipe (`\|`). |
 | **Session**| Session     | Per-session history storage, groups container. |
 
 ### Task States
@@ -150,7 +194,7 @@ gets a synthesized "interrupted" result first (the assistant message is the only
 record left of it), so the next LLM request stays well-formed. Only `COMPLETED`
 cannot be resumed.
 
-- **COMPLETED**: persists until reclaimed with `/task join`.
+- **COMPLETED**: terminal; its output stays readable with `/task output <id>`.
 - **WAITING_DEPS**: accepts input and queues it until dependencies resolve.
 - **INTERRUPTED**: the process went down while it was running; `/task resume` revives it.
   Like ERROR it propagates to its dependents (a JOIN dependent is cancelled, an order edge
@@ -176,8 +220,7 @@ Two dependency types:
 ### Fork
 
 `/task fork <parent> <desc>` creates a child task in the parent's group.
-The child inherits a slice of the parent's conversation context. Use
-`--prompt <name>` to assign a subagent prompt to the forked task.
+The child inherits a slice of the parent's conversation context.
 
 ---
 
@@ -190,8 +233,7 @@ The child inherits a slice of the parent's conversation context. Use
 | `fg %1`           | `/task fg <task_id>`          |
 | `bg %1`           | `/task bg`                    |
 | `kill %1`         | `/task stop <task_id>`        |
-| `cmd1 \| cmd2`    | `/task chain <src> <dst>`     |
-| `pthread_join()`  | `/task join <task_id>`        |
+| `cmd1 \| cmd2`    | `a \| b`                      |
 | `fork()`          | `/task fork <parent> <desc>`  |
 
 `&` is the background modifier: the task joins the **current** group but does not take
@@ -228,7 +270,6 @@ equivalent of `cmd &`.
 | `/task new <desc> -g <gid>` | Create in that existing group |
 | `/task new <desc> -d <tid>` | Create + wait for dependency |
 | `/task fork <pid> <desc>` | Fork child in parent's group |
-| `/task fork <pid> <desc> --prompt <name>` | Fork with subagent prompt |
 
 ### Task Inspection
 
@@ -254,13 +295,6 @@ equivalent of `cmd &`.
 | `/group info [id]` | A group's context / fold numbers (window, the fold line, how far it is, epoch, failures, fold in flight) |
 | `/task resume --all` | Re-decide every stopped task of the session (after a restart); ones whose dependency is stopped too wait for it |
 | `/task resume [tid]` | Resume an INTERRUPTED, SUSPENDED, ERROR or CANCELLED task: re-derives state (deps / tool chain / turn) and drives it; an ERROR or CANCELLED task continues its unfinished turn. Without an id, resumes the active task of the foreground group |
-| `/task join <tid>` | Show output, auto-inject into active task (or create one), then reclaim |
-
-### Pipelines
-
-| Command | Description |
-|---------|-------------|
-| `/task chain <src> <dst>` | dst waits for src. When src completes, its user inputs and final output are injected into dst's LLM context as Q&A. Like `src \| dst`. |
 
 ---
 
@@ -268,7 +302,7 @@ equivalent of `cmd &`.
 
 Only the session's **active task** outputs to the terminal. `/task fg` changes
 the active task. Other tasks complete silently; use
-`/task join` to retrieve their output.
+`/task output <id>` to read their output.
 
 ---
 
@@ -307,7 +341,7 @@ or `>` in expanded output is treated as literal text.
 
 **Within a group**: all tasks share the full conversation history automatically.
 
-**Cross-group** (`/task chain` or `/task join`): the source task's user inputs
+**Cross-task** (a `-d` dependency, or a `|` pipe): the source task's user inputs
 and final output are injected into the destination's LLM context as a
 Q&A-style system message:
 
@@ -376,48 +410,41 @@ text before `<`, they are joined with a newline.
 ... task 2 waits for task 1, then sees its output ...
 ```
 
-### History Expansion
+### Local Shell
 
 ```
-> review the latest PR
-> !!                    # repeats "review the latest PR"
-> !3                    # repeats command #3 from history
+> !git status          # runs on this machine, as a task of its own
+... task 2 completes with the command's output ...
+
+> !make -j8            # a command that needs a terminal fails fast (no tty)
+> !!                   # runs `make -j8` again
 ```
 
 ### Cross-Group Chain
 
 Three separate conversations, wired together by hand. `--new-group` is what makes them
-separate -- without it they would all land in the group in front.
+separate -- without it they would all land in the group in front. `-d <id>` makes a task
+wait for another, and the source's inputs + output are injected into it.
 
 ```
 > /task new "security audit" --new-group
 > /task new "performance review" --new-group
-> /task new "final summary" --new-group
-> /task chain task-1 task-3     ← task-3 waits for task-1
-> /task chain task-2 task-3     ← task-3 waits for both
+> /task new "final summary" --new-group -d task-1 -d task-2
 
-... task-1, task-2 complete ...
+... task-1, task-2 complete → task-3 runs with both reports injected ...
 
 > /task fg task-3
-> please summarize both reports
 → LLM sees task-1 and task-2 Q&A injected as context
 ```
 
-### Join and Reclaim
+### Fork
 
 ```
-> /task join task-1
-[task-1 output]: ... → injected into active task → task-1 reaped
+> /task fork task-0 "review the database schema"
 ```
 
-### Fork with Subagent
-
-```
-> /task fork task-0 "review the database schema" --prompt dba
-```
-
-Creates a child task in task-0's group, using the "dba" subagent prompt,
-inheriting the parent's conversation context.
+Creates a child task in task-0's group, inheriting the parent's conversation
+context.
 
 ---
 

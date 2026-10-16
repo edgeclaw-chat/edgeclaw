@@ -1,20 +1,5 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
-# ── Completion (纯独立，不依赖 app) ────────────────────────
-
-cc_library(
-    name = "completion",
-    srcs = ["edc_completion.c"],
-    hdrs = ["edc_completion.h"],
-    includes = ["."],
-    deps = [
-        "//src/common:common",
-    ],
-    linkstatic = True,
-    visibility = ["//visibility:public"],
-)
-
-
 # ── Shell 解析原语 (leaf: 只依赖 common，app 可直接依赖) ──────
 #
 # 刻意不依赖 //src/app:app：app 侧需要 cmd_parse（/task 参数解析）
@@ -47,6 +32,7 @@ cc_library(
     srcs = [
         "edc_cli_history.c",
         "edc_commands.c",
+        "edc_local_shell.c",
         "edc_shell.c",
         "edc_shell_ast.c",
         "edc_shell_parse.c",
@@ -55,7 +41,7 @@ cc_library(
     hdrs = [
         "edc_cli_history.h",
         "edc_commands.h",
-        "edc_completion.h",
+        "edc_local_shell.h",
         "edc_shell.h",
         "edc_shell_ast.h",
         "edc_shell_token.h",
@@ -69,7 +55,6 @@ cc_library(
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
-        "//src/shell:completion",
         "//src/shell:shell_parse",
         "@log.c//:log.c",
         "@sds//:sds",

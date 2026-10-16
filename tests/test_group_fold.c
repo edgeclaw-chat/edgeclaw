@@ -877,8 +877,47 @@ static void test_resume_held_while_fold_in_flight(void)
     pump_schedule(sched);
     CHECK(g_send_llm_calls == 1, "只发了折叠");
 
+    /* 新建门：折叠在飞时**新建**的任务同样被挂上屏障边，并被自动 park 到 AWAIT_DEPS
+     * （edc_task_add_dependency 对 READY 目标就是这么做的）。这正是"等待只由边表达"的关键
+     * 一环——旧实现靠 sched_task_runnable 里那个 per-group 谓词兜住这些新来者。 */
+    {
+        struct edc_task_spec nspec;
+        memset(&nspec, 0, sizeof(nspec));
+        nspec.desc = "newcomer";
+        nspec.input = "newcomer work";
+        nspec.channel_type = edc_channel_adapter;
+        nspec.place = EDC_TASK_PLACE_GROUP;
+        nspec.group_id = group->group_id;
+        struct edc_task *newcomer = edc_scheduler_task_create(sched, session, &nspec);
+        CHECK(newcomer != NULL, "折叠在飞时新建了一个任务");
+        CHECK(edc_task_awaits_deps(newcomer), "它被自动 park 到 AWAIT_DEPS（新建门挂了边）");
+        bool barrier = false;
+        struct edc_task_dep *nd = NULL;
+        LL_FOREACH(newcomer->deps, nd)
+        {
+            if (nd->type == TASK_DEP_BARRIER && !nd->cancelled && !nd->completed)
+                barrier = true;
+        }
+        CHECK(barrier, "边是 TASK_DEP_BARRIER，指向在飞的维护任务");
+        pump_schedule(sched);
+        CHECK(g_send_llm_calls == 1, "扫描也没有为它发请求（它没有一步是'可跑'的）");
+        /* 撤掉它，好让本用例后半段的"谁被驱动"计数保持原样 */
+        edc_task_mark_cancelled(newcomer);
+    }
+
     edc_scheduler_resume_task(sched, t);
-    CHECK(edc_task_is_ready(t), "resume 被闸门扣在 READY (没被驱动)");
+    /* 现在扣着它的不是谓词，而是**它自己身上刚挂上的屏障边**（resume 这道门挂的） */
+    {
+        bool barrier = false;
+        struct edc_task_dep *dep = NULL;
+        LL_FOREACH(t->deps, dep)
+        {
+            if (dep->type == TASK_DEP_BARRIER && !dep->cancelled && !dep->completed)
+                barrier = true;
+        }
+        CHECK(barrier, "resume 时挂上了 TASK_DEP_BARRIER（不是靠谓词扣着）");
+    }
+    CHECK(edc_task_awaits_deps(t), "resume 被屏障扣在 AWAIT_DEPS (等待的唯一表示)");
     CHECK(g_send_llm_calls == 1, "没有为 t 发请求");
 
     struct edc_llm_actor_resp resp;
@@ -888,10 +927,9 @@ static void test_resume_held_while_fold_in_flight(void)
     void *fold_req = fold->current_request_id;
     struct edc_advance_result fr = edc_executor_advance_llm_resp(&sched->executor, fold, fold_req, &resp);
     edc_scheduler_apply_advance(sched, fold, fold_req, &fr);
-    /* t 是折叠开始后才加入组的 ⇒ 它没有显式的 dep 边, 但 holds_group 这只手仍然扣着它
-     * (晚加入的成员也等策展)。它不是 AWAIT_DEPS, 是 READY-但-不被驱动。 */
-    /* 扫一次: 该被驱动的是链上的 L2, **不是** t (t 没有显式 dep 边, 靠
-     * edc_group_fold_holds_group 这只手扣着 —— 这条断言就是奔着那个谓词去的)。 */
+    /* t 是折叠开始后才加入组的：它没有赶上折叠开始时那次成员扫边，但 resume 这道门给它挂上
+     * 了屏障边（指向 L1 与 L2 两者），所以它照样等。它不是 AWAIT_DEPS，是 READY-但-带未满足边。 */
+    /* 扫一次：该被驱动的是链上的 L2，**不是** t（t 的边还没被放行）。 */
     pump_schedule(sched);
     CHECK(g_send_llm_calls == 2, "折叠落地后只驱动了 L2");
     CHECK(g_last_llm_task_id && strcmp(g_last_llm_task_id, t->task_id) != 0, "没有为 t 发请求 (它仍被扣着)");

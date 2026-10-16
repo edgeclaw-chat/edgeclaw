@@ -1,6 +1,7 @@
 #include "edc_tools_memory.h"
 
 #include "edc_compat.h"
+#include "edc_datetime_utils.h"
 #include "edc_error.h"
 #include "edc_param_types.h"
 #include "edc_session.h"
@@ -339,8 +340,10 @@ static void memory_write_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool 
             e->sources = strdup(src);
     }
 
-    sds out = sdscatprintf(sdsempty(), "Stored as %s (rev %llu). Other tasks see it on their next request.", id,
-                           (unsigned long long)seq);
+    sds when = edc_datetime_format_min((time_t)(e ? e->created_at : 0));
+    sds out = sdscatprintf(sdsempty(), "Stored as %s (rev %llu, %s). Other tasks see it on their next request.", id,
+                           (unsigned long long)seq, when);
+    sdsfree(when);
     if (related)
         out = sdscatprintf(out,
                            "\n\nNote: existing entries look related:\n%s\n"
@@ -471,8 +474,11 @@ static void memory_update_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool
         edc_session_memory_update(m, ids[i], titles[i], summaries[i], details[i], revs[i], &now);
         list = sdscatprintf(list, "%s%s", i ? ", " : "", ids[i]);
     }
-    sds out = sdscatprintf(sdsempty(), "Updated %d entr%s: %s. Other tasks see it on their next request.", n,
-                           n == 1 ? "y" : "ies", list);
+    struct edc_memo_entry *e0 = n > 0 ? edc_session_memory_entry(m, ids[0]) : NULL;
+    sds when = edc_datetime_format_min((time_t)(e0 ? e0->updated_at : 0));
+    sds out = sdscatprintf(sdsempty(), "Updated %d entr%s: %s (%s). Other tasks see it on their next request.", n,
+                           n == 1 ? "y" : "ies", list, when);
+    sdsfree(when);
     sdsfree(list);
     free(ids);
     free(titles);
@@ -548,6 +554,71 @@ static void memory_supersede_exec(struct edc_toolbox_call_ctx *ctx, struct edc_t
     callback(ctx, out, NULL);
 }
 
+/* ── memory_delete (an entry leaves the views; the row stays in the data) ── */
+
+static void memory_delete_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
+                               void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
+{
+    (void)tool;
+    sds err = NULL;
+    struct edc_session_memory *m = memory_of(ctx, &err);
+    if (!m)
+    {
+        callback(ctx, err, edc_error_new(EDC_ERR_INVAL, "%s", err));
+        return;
+    }
+
+    cJSON *arr = cJSON_GetObjectItem(args, "ids");
+    int n = (arr && cJSON_IsArray(arr)) ? cJSON_GetArraySize(arr) : 0;
+    if (n <= 0)
+    {
+        fail(ctx, callback, "Error: `ids` must be a non-empty array of entry ids, e.g. [\"m9\",\"m12\"].");
+        return;
+    }
+
+    const char **ids = calloc((size_t)n, sizeof(*ids));
+    if (!ids)
+    {
+        fail(ctx, callback, "Error: out of memory.");
+        return;
+    }
+    for (int i = 0; i < n; i++)
+    {
+        cJSON *it = cJSON_GetArrayItem(arr, i);
+        ids[i] = (it && cJSON_IsString(it)) ? it->valuestring : NULL;
+    }
+
+    if (!edc_session_memory_delete(m, ids, (size_t)n))
+    {
+        /* Atomic refusal (all-or-nothing): name the ids that do not resolve. */
+        sds unknown = sdsempty();
+        for (int i = 0; i < n; i++)
+        {
+            if (!ids[i] || !edc_session_memory_entry(m, ids[i]))
+                unknown = sdscatprintf(unknown, "%s%s", sdslen(unknown) ? ", " : "",
+                                       ids[i] ? ids[i] : "(not a string)");
+        }
+        fail(ctx, callback, "Error: these ids are unknown — nothing deleted (atomic): %s.", unknown);
+        sdsfree(unknown);
+        free(ids);
+        return;
+    }
+
+    sds list = sdsempty();
+    for (int i = 0; i < n; i++)
+        list = sdscatprintf(list, "%s%s", i ? ", " : "", ids[i]);
+    sds out = sdscatprintf(sdsempty(),
+                           "Deleted %d entr%s for real: %s. They are gone from the memory (no longer listable, "
+                           "searchable, or fetchable by id).",
+                           n, n == 1 ? "y" : "ies", list);
+    sdsfree(list);
+    free(ids);
+    sds header = edc_tools_memory_call_header("memory_delete", args);
+    edc_toolbox_emit_tool_message_plain(ctx, header, out);
+    sdsfree(header);
+    callback(ctx, out, NULL);
+}
+
 /* ── Registration ──────────────────────────────────────────── */
 
 void edc_tools_memory_register(struct edc_toolbox *tb)
@@ -567,6 +638,7 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
                                                     edc_param_str_type("POSIX ERE (grep -E)", NULL)),
                                true),
             memory_search_exec);
+        edc_tool_set_keep_full_output(tool, true); /* the agent's own store: never cut silently */
         edc_toolbox_register(tb, tool);
     }
     {
@@ -576,6 +648,7 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
         params->next = edc_tool_param_new("n", edc_param_int_type("How many to list (default 20, max 50)", 1, 50), false);
         const char *d2 = "List this session's shared memory entries (index lines: id, title, summary).";
         struct edc_tool *tool = edc_tool_new("memory_list", d2, params, memory_list_exec);
+        edc_tool_set_keep_full_output(tool, true); /* the agent's own store: never cut silently */
         edc_toolbox_register(tb, tool);
     }
     {
@@ -588,6 +661,7 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
                                                     edc_param_str_type("Entry id, e.g. \"m12\"", NULL)),
                                true),
             memory_get_exec);
+        edc_tool_set_keep_full_output(tool, true); /* the agent's own store: never cut silently */
         edc_toolbox_register(tb, tool);
     }
     {
@@ -601,6 +675,7 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
         params->next->next = edc_tool_param_new("detail", edc_param_str_type("Full detail: paths, commands, error text", NULL), false);
         struct edc_tool *tool = edc_tool_new("memory_write", desc, params, memory_write_exec);
         sdsfree(desc);
+        edc_tool_set_keep_full_output(tool, true); /* the agent's own store: never cut silently */
         edc_toolbox_register(tb, tool);
     }
     {
@@ -623,18 +698,36 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
                                      edc_param_object_type("One entry update", props, G_N_ELEMENTS(props))),
                 true),
             memory_update_exec);
+        edc_tool_set_keep_full_output(tool, true); /* the agent's own store: never cut silently */
         edc_toolbox_register(tb, tool);
     }
     {
-        const char *desc = "Mark one or more session-memory entries as retired (obsolete or wrong). Entries are kept "
-                           "(never deleted) and shown as (retired). ATOMIC: if any id is unknown, none is retired. "
-                           "Ids come from memory_search / memory_list / memory_get.";
+        const char *desc = "Mark one or more session-memory entries as retired (obsolete or wrong). Retired entries "
+                           "are kept and stay visible as (retired); use memory_delete when a fact should leave the "
+                           "views entirely. ATOMIC: if any id is unknown, none is retired. Ids come from "
+                           "memory_search / memory_list / memory_get.";
         struct edc_tool_param *sp = edc_tool_param_new(
             "ids",
             edc_param_array_type("Entry ids to retire, e.g. [\"m9\",\"m12\"]",
                                  edc_param_str_type("Entry id, e.g. \"m9\"", NULL)),
             true);
         struct edc_tool *tool = edc_tool_new("memory_supersede", desc, sp, memory_supersede_exec);
+        edc_tool_set_keep_full_output(tool, true); /* the agent's own store: never cut silently */
+        edc_toolbox_register(tb, tool);
+    }
+    {
+        const char *desc = "Delete one or more session-memory entries for real (use this for a fact that is simply "
+                           "wrong or no longer wanted, rather than cluttering the index). Unlike memory_supersede "
+                           "(which only marks an entry obsolete and keeps it visible), a deleted entry is removed: "
+                           "it can no longer be listed, searched or fetched. ATOMIC: if any id is unknown, none is "
+                           "deleted. Ids come from memory_search / memory_list / memory_get.";
+        struct edc_tool_param *dp = edc_tool_param_new(
+            "ids",
+            edc_param_array_type("Entry ids to delete, e.g. [\"m9\",\"m12\"]",
+                                 edc_param_str_type("Entry id, e.g. \"m9\"", NULL)),
+            true);
+        struct edc_tool *tool = edc_tool_new("memory_delete", desc, dp, memory_delete_exec);
+        edc_tool_set_keep_full_output(tool, true); /* the agent's own store: never cut silently */
         edc_toolbox_register(tb, tool);
     }
 }

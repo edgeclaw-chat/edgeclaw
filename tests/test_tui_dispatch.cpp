@@ -81,7 +81,7 @@ bool SetupHome(std::string *out_home)
     // 明文 api_key（无 EDGECLAW_ENC: 前缀 → 不需要解密；EDGECLAW_MASTER_KEY 让
     // secret 模块不必问口令）。api_url 指向一个没人听的端口：本测试不跑 LLM。
     conf << R"({"api_url":"https://127.0.0.1:1/v1/chat/completions",)"
-            R"("model":"harness-model","api_key":"harness-plaintext-key"})";
+            R"("model":"harness-model","api_key":"harness-plaintext-key","onboarded":true})";
     conf.close();
 
     setenv("HOME", home.c_str(), 1);

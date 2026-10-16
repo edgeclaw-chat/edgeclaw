@@ -15,7 +15,7 @@ static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos)
     bool literal = false;
 
     /* Collect all TOK_TEXT into one string. The tokenizer doesn't split on
-     * whitespace, so flags like -d / -g / --bg / --prompt end up embedded
+     * whitespace, so flags like -d / -g / --bg end up embedded
      * in text tokens. We defer all flag parsing to edc_cmd_parse_task_opts below. */
     while (*pos < count)
     {
@@ -68,13 +68,6 @@ static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos)
         {
             cmd->group_id = t_opts.group_id;
             t_opts.group_id = NULL;
-        }
-
-        /* Merge prompt_name */
-        if (t_opts.prompt_name)
-        {
-            cmd->prompt_name = t_opts.prompt_name;
-            t_opts.prompt_name = NULL;
         }
 
         edc_cmd_task_opts_free(&t_opts);
