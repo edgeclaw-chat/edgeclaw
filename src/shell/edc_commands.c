@@ -263,8 +263,13 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "The description goes into a NEW group -- plain input joins the current one. Options need a quoted "
      "description (`+\"desc\" --bg`); an unquoted one carrying options is a syntax error. `\\+` sends a "
      "literal `+`, `\\@` a literal `@`. (`@` used to open a new group; it no longer does.)"},
-    {"Input", "`!<cmd>` · `!!` · `\\!<cmd>`",
-     "local shell: run it / rerun the last one / send it as input (no model call)", NULL},
+    {"Input", "`+/cmd` · `+!cmd`", "run that command in a group of its own",
+     "`+` composes with the other input sigils: `+/task new …` (the same statement as `--new-group`), "
+     "`+/skill …`, `+/prompt …`, `+!cmd`. Whatever task the command creates opens a new group instead "
+     "of joining the one in front -- a new conversation, with its own queue and its own history. `+/` "
+     "still completes; the `+` is kept in front of what Tab inserts."},
+    {"Input", "`!<cmd>` · `!!` · `+!cmd` · `\\!<cmd>`",
+     "local shell: run it / rerun the last one / run it in a new group / send it as input", NULL},
     {"Input", "`a | b` · `a ; b` · `cmd &`",
      "pipe (injects the source output) · sequential (wait only) · background",
      "`|` chains tasks and injects the source's output into the next one's context; `;` only "
@@ -319,8 +324,9 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
     {"Task", "/task new <desc>   [--bg] [--new-group] [-g <group>] [-d <task> | --with <task>]", "create a task",
      "`--bg` runs it in the background (no foreground) · `--new-group` gives it a fresh "
      "conversation · `-g <group>` puts it in an existing group · `-d` / `--with <task>` makes it "
-     "wait for that task AND injects its output into this one's context. Options are recognised "
-     "only after a quoted description: `/task new \"<desc>\" --bg`."},
+     "wait for that task AND injects its output into this one's context. `+/task new <desc>` says the "
+     "same thing as `--new-group`. Options are recognised only after a quoted description: "
+     "`/task new \"<desc>\" --bg`."},
     {"Task", "/task fork <parent> <desc>",
      "fork: the child leads a group of its own and inherits the parent's context", NULL},
     {"Task", "/task list", "list all groups and tasks", NULL},
@@ -359,6 +365,11 @@ static const struct edc_cmd_doc k_cmd_families[] = {
     {"General", "/skill", "list and run skills", NULL},
     {"General", "/reload", "re-read resources, rebuild the system prompt", NULL},
     {"General", "/sandbox", "the filesystem sandbox (on/off, ro/rw/deny paths)", NULL},
+    {"General", "/shell", "the shell-like input syntax: sigils + operators (on/off)",
+     "The switch owns the sigils `+<desc>` (open a new group) and `!<cmd>` (run a local shell command), and "
+     "the operators `|` `;` `&` `>` `>>` `2>` `<`. OFF by default: they spell out a Unix shell vocabulary, "
+     "and with the switch off every line that is not a `/` command is ONE task description, verbatim. "
+     "`/shell on|off` is the only way to flip it (persisted; no CLI flag)."},
 };
 #define EDC_CMD_FAMILY_COUNT (sizeof(k_cmd_families) / sizeof(k_cmd_families[0]))
 
@@ -944,7 +955,8 @@ static struct edc_session *cmd_input_session(struct edc_session_manager *sm, str
 }
 
 static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                         struct edc_reply_to to, struct edc_session *session, sds arg)
+                                         struct edc_reply_to to, struct edc_session *session, sds arg,
+                                         bool force_new_group)
 {
     if (!session)
         return;
@@ -1023,8 +1035,9 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
     {
         /* No group named: join the group that is in front (creating one when the session
          * has none). It is the same group, i.e. the same conversation and the same queue --
-         * a new group is a new conversation, so it takes an explicit --new-group. */
-        spec.place = opts.new_group ? EDC_TASK_PLACE_NEW_GROUP : EDC_TASK_PLACE_FOREGROUND;
+         * a new group is a new conversation, so it takes an explicit --new-group, or the
+         * `+` prefix on the input (`+/task new …`), which is the same statement. */
+        spec.place = (opts.new_group || force_new_group) ? EDC_TASK_PLACE_NEW_GROUP : EDC_TASK_PLACE_FOREGROUND;
         spec.take_foreground = !opts.bg;
         spec.background = opts.bg;
     }
@@ -1906,7 +1919,7 @@ static bool edc_commands_handle_task(struct edc_session_manager *sm, struct edc_
     if (strncmp(content_trim, "/task new ", 10) == 0)
     {
         arg = sdsnew(content_trim + 10);
-        edc_commands_handle_task_new(sm, sched, to, cmd_input_session(sm, message), arg);
+        edc_commands_handle_task_new(sm, sched, to, cmd_input_session(sm, message), arg, message->new_group);
     }
     else if (strncmp(content_trim, "/task fork ", 11) == 0)
     {
@@ -2138,6 +2151,9 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
     /* The task is LABELLED by what the user typed, not by the body the template expanded
      * into (see edc_channel_message.task_desc). */
     expanded_msg->task_desc = sdstrim(sdsnew(message->content), " \t\r\n");
+    /* `+/prompt …`: the expanded body is what runs, and it must open its own group. The
+     * fact travels with the message, so it survives the expansion unchanged. */
+    expanded_msg->new_group = message->new_group;
     edc_shell_execute(sm, sched, to, expanded_msg);
     edc_channel_message_free(expanded_msg);
     return true;
@@ -2308,6 +2324,10 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
     struct edc_task_group *group = session ? session->foreground_group : NULL;
     if (!group || group->is_orphaned || group->member_count == 0)
         group = NULL;
+    /* `+/skill …`: the task opens a group of its own rather than joining the one in
+     * front -- one flag, read where this path places its task. */
+    if (message->new_group)
+        group = NULL;
 
     struct edc_cmd_task_opts opts;
     memset(&opts, 0, sizeof(opts));
@@ -2411,11 +2431,40 @@ bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm
     if (!message || !message->content)
         return false;
 
+    /* The shell-like syntax master switch (see edc_config.shell_syntax). It owns the `+`
+     * and `!` sigils and the whole operator vocabulary. `/` commands are NOT shell syntax
+     * and are never gated -- `/shell` itself has to stay reachable to turn it back on. */
+    const bool shell_on = cfg && cfg->shell_syntax;
+
+    /* `+`: "do this in a group of its own". It composes with the other sigils -- `+/task
+     * new …`, `+/skill …`, `+/prompt …`, `+!cmd` -- and, with a plain description behind
+     * it, is the new-group task form itself. Strip the prefix once and hand the rest back
+     * to this same dispatcher with the fact recorded on the message: the `/` and `!` paths
+     * below then stay exactly as they are, and only read one flag where they place a task. */
+    if (shell_on && message->content[0] == '+')
+    {
+        /* `+` with nothing behind it names no command and no task, so there is no group
+         * to open for it. (The stripped content would be empty, which the paths below
+         * read as "not mine" -- and then the scheduler would build a task out of the bare
+         * `+`.) */
+        if (sdslen(message->content) == 1)
+            return true;
+
+        struct edc_channel_message in_group = *message;
+        in_group.content = sdsnew(message->content + 1);
+        in_group.new_group = true;
+        const bool handled = edc_commands_handler(cfg, sm, sched, to, &in_group);
+        /* The paths below only borrow it (the turn copies an input), so it dies here --
+         * the same contract the `\!` escape in edc_local_shell.c relies on. */
+        sdsfree(in_group.content);
+        return handled;
+    }
+
     /* `!cmd`: a user-typed local shell command. It becomes a task of its own that issues
      * one `exec_shell` call and settles on its result -- no model involved, and the
      * output lands in the group's history like any other task's. The `\!` escape (and any
      * input that is not ours) falls through to the paths below. */
-    if (message->content[0] == '!' && edc_local_shell_handle(sm, sched, to, message))
+    if (shell_on && message->content[0] == '!' && edc_local_shell_handle(sm, sched, to, message))
         return true;
 
     /* / commands: shell builtins first, then shortcuts, then existing handlers */
@@ -2465,7 +2514,11 @@ bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm
         return true;
     }
 
-    /* non-/ input: delegate to shell module */
+    /* non-/ input: with the shell-like syntax on, the shell parses it -- operators and
+     * sigils. With it off there is no syntax to parse, and the line is one task
+     * description, verbatim. */
+    if (!shell_on)
+        return edc_shell_spawn_plain_task(sm, sched, to, message);
     return edc_shell_execute(sm, sched, to, message);
 }
 

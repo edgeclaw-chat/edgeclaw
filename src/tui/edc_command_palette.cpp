@@ -112,9 +112,10 @@ void CommandPalette::SetArgSource(std::string head, std::vector<CommandFact> row
 
 bool CommandPalette::Update(const std::string &content)
 {
-    content_ = content;
+    raw_ = content;
 
-    // Esc dismissed this exact text; any change re-opens.
+    // Esc dismissed this exact text; any change re-opens. On the RAW text: the `+` is part
+    // of what the user sees, so it is part of what Esc dismissed.
     if (closed_by_user_ && content == closed_content_)
     {
         open_ = false;
@@ -122,12 +123,18 @@ bool CommandPalette::Update(const std::string &content)
     }
     closed_by_user_ = false;
 
+    // `+/cmd` runs the command in a group of its own. The `+` is transparent here: a
+    // prefix to put back on whatever Tab produces, never part of the word being completed.
+    // So every match below sees `/cmd …` and only Accept() re-attaches it.
+    prefix_ = (content.size() >= 2 && content[0] == '+' && content[1] == '/') ? "+" : "";
+    content_ = prefix_.empty() ? content : content.substr(1);
+
     items_.clear();
     selected_ = 0;
 
     // Gate: a single line that starts with '/'. (Multi-line input -- Alt+Enter or a
     // paste -- never shows the popup.)
-    if (content.empty() || content[0] != '/' || content.find('\n') != std::string::npos)
+    if (content_.empty() || content_[0] != '/' || raw_.find('\n') != std::string::npos)
     {
         open_ = false;
         return false;
@@ -137,25 +144,25 @@ bool CommandPalette::Update(const std::string &content)
     // word is WHOLE its vocabulary is part of the list: past the word ("/prompt re") those
     // rows ARE the list, and at the bare word ("/prompt", no space yet) they join the
     // command's own rows -- so the names are visible before the space is even typed.
-    const bool head_word = !arg_rows_.empty() && content.compare(0, arg_head_.size(), arg_head_) == 0;
+    const bool head_word = !arg_rows_.empty() && content_.compare(0, arg_head_.size(), arg_head_) == 0;
     const bool past_head =
-        head_word && content.size() > arg_head_.size() && content[arg_head_.size()] == ' ';
+        head_word && content_.size() > arg_head_.size() && content_[arg_head_.size()] == ' ';
     if (past_head)
     {
-        items_ = Prefixed(arg_rows_, content);
+        items_ = Prefixed(arg_rows_, content_);
         open_ = !items_.empty();
         return open_;
     }
 
-    if (content.back() == ' ')
+    if (content_.back() == ' ')
     {
         // "... " -> the next level: that family's subcommands.
-        items_ = Prefixed(commands_, content);
+        items_ = Prefixed(commands_, content_);
     }
     else
     {
-        std::vector<CommandFact> hits = Prefixed(commands_, content);
-        if (CountTokens(content) <= 1)
+        std::vector<CommandFact> hits = Prefixed(commands_, content_);
+        if (CountTokens(content_) <= 1)
         {
             // Still on the first token ("/", "/ta"): list the FAMILIES, so a bare '/' shows
             // ~9 modules instead of every row. Families are for telling modules apart,
@@ -163,7 +170,7 @@ bool CommandPalette::Update(const std::string &content)
             // step into it: the family row would only echo the name plus its blurb, while
             // the subcommands are what the user is after. (Falling back when no command row
             // matches keeps the list from going empty.)
-            std::vector<CommandFact> fams = Prefixed(families_, content);
+            std::vector<CommandFact> fams = Prefixed(families_, content_);
             if (!fams.empty() && (fams.size() > 1 || hits.empty()))
                 hits.swap(fams);
         }
@@ -175,7 +182,7 @@ bool CommandPalette::Update(const std::string &content)
     // is not a candidate once the real names are known; the bare word itself stays (it is
     // runnable: it lists the templates). They share the first token, so Tab still completes
     // the word itself.
-    if (head_word && content == arg_head_)
+    if (head_word && content_ == arg_head_)
     {
         items_.erase(std::remove_if(items_.begin(), items_.end(), IsPlaceholderRow), items_.end());
         for (const CommandFact &r : arg_rows_)
@@ -202,7 +209,7 @@ void CommandPalette::Close()
 {
     open_ = false;
     closed_by_user_ = true;
-    closed_content_ = content_;
+    closed_content_ = raw_;
 }
 
 std::string CommandPalette::WordCompletion() const
@@ -257,23 +264,23 @@ std::string CommandPalette::WordCompletion() const
 std::string CommandPalette::Accept() const
 {
     if (!open_ || items_.empty())
-        return content_;
+        return raw_;
 
     // 1. Complete the ONE word being typed ("/sess" -> "/session "): Tab grows a token, it
     //    does not swallow a whole candidate row.
     const std::string word = WordCompletion();
     if (word != content_)
-        return word;
+        return prefix_ + word;
 
     // 2. That word has nothing left to give (the candidates disagree on it, or they agree
     //    on it and already disagree on the next one): take the highlighted row, which
     //    breaks the tie by choosing one -- that is what Up/Down is for.
-    return CompletionOf(items_[selected_].text);
+    return prefix_ + CompletionOf(items_[selected_].text);
 }
 
 bool CommandPalette::HasMore() const
 {
-    return open_ && !items_.empty() && Accept() != content_;
+    return open_ && !items_.empty() && Accept() != raw_;
 }
 
 } // namespace edc::model

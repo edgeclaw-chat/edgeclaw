@@ -10,6 +10,7 @@
 #include "edc_session_manager.h"
 #include "edc_shell_ast.h"
 #include "edc_shell_token.h"
+#include "edc_string_utils.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "utlist_fix.h"
@@ -272,6 +273,43 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
 
         sdsfree(verb);
         sdsfree(rest);
+        sdsfree(arg);
+        sdsfree(content);
+        return true;
+    }
+    if (strcmp(content, "/shell") == 0 || strncmp(content, "/shell ", 7) == 0)
+    {
+        /* The ONLY way to flip the shell-like syntax switch (there is deliberately no CLI
+         * flag): one statement, and it persists. Off by default -- the operators below
+         * spell out a Unix shell vocabulary, so a user who does not expect it should not
+         * get a half-parsed task out of it. */
+        sds arg = sdstrim(sdsnew(content + 6), " \t");
+        sds reply;
+        if (sdslen(arg) == 0)
+        {
+            reply = sdscatprintf(sdsempty(),
+                                 "## Shell-like syntax `%s`\n\n"
+                                 "The sigils `+<desc>` (open a new group) and `!<cmd>` (run a local shell "
+                                 "command), and the operators `|` `;` `&` `>` `>>` `2>` `<`.\n\n"
+                                 "Off, every line that is not a `/` command is one task description, "
+                                 "verbatim.\n\n"
+                                 "Toggle: `/shell on|off` (persisted to config.json).\n",
+                                 cfg->shell_syntax ? "on" : "off");
+        }
+        else if (strcmp(arg, "on") == 0 || strcmp(arg, "off") == 0)
+        {
+            bool enable = strcmp(arg, "on") == 0;
+            bool saved = edc_config_set_shell_syntax(cfg, enable);
+            reply = sdscatprintf(sdsempty(), "**Shell-like syntax** — `%s`%s", enable ? "on" : "off",
+                                 saved ? "" : " (not persisted: config.json write failed)");
+            log_info("/shell: shell-like syntax %s (persisted=%d)", enable ? "enabled" : "disabled", saved);
+        }
+        else
+        {
+            reply = sdsnew("Usage: `/shell [on|off]`");
+        }
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
         sdsfree(arg);
         sdsfree(content);
         return true;
@@ -554,6 +592,49 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
     return result;
 }
 
+/* Shell-like syntax OFF: the whole line becomes ONE task description, verbatim -- no
+ * tokenizing, so no `| ; & > >> 2> <` operators and no `+ ! @` sigil. This is the
+ * DEFAULT path, and it is why the switch exists: those operators spell out a Unix shell
+ * vocabulary, and a user who does not expect them would otherwise get a silently
+ * half-parsed task instead of their text.
+ *
+ * It goes through edc_shell_spawn_task (the single creation entry point) rather than
+ * building a spec here, so "how an input line becomes a task" keeps one owner. The
+ * placement is the scheduler's plain-input one: the group in front, when it is still a
+ * place to put new work. */
+bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                struct edc_reply_to to, struct edc_channel_message *message)
+{
+    struct edc_session *session = edc_session_store_resolve_session(sm, message->session_id);
+
+    struct edc_task_group *group = session ? session->foreground_group : NULL;
+    if (group && (group->is_orphaned || group->member_count == 0 || edc_task_group_is_system(group)))
+        group = NULL;
+
+    struct edc_cmd_task_opts opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.input = sdsnew(message->content);
+    /* The sender may have declared a better label (a `/prompt` expansion names the line
+     * the user typed, not the body it became); otherwise the text is the label. */
+    opts.desc = edc_str_utf8_truncate(message->task_desc ? message->task_desc : message->content,
+                                      EDC_TASK_DESC_MAX, true);
+
+    struct edc_task_group *out_group = NULL;
+    sds spawn_err = NULL;
+    struct edc_task *task = edc_shell_spawn_task(sm, sched, to.type, session, &opts, NULL, group, "task",
+                                                 &out_group, NULL, false, NULL, TASK_DEP_SEQUENCE, &spawn_err);
+    if (spawn_err)
+    {
+        edc_commands_reply(to, spawn_err);
+        sdsfree(spawn_err);
+    }
+    if (task)
+        edc_commands_announce_task(to, task);
+
+    edc_cmd_task_opts_free(&opts); /* frees input + desc */
+    return true;
+}
+
 bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
                        struct edc_channel_message *message)
 {
@@ -567,7 +648,11 @@ bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sch
      * so this cannot be left to it.) */
     const char *raw = message->content;
     const char *body = raw;
-    bool is_new_group = false;
+    /* `+/cmd` / `+!cmd` carry the fact on the message: the handler stripped the prefix and
+     * recorded it. A bare `+desc` that reaches here directly -- a `+` written at the head
+     * of a template body, say -- still spells it out. The escape is checked first, so `\+`
+     * stays a literal. */
+    bool is_new_group = message->new_group;
 
     if (sdslen(message->content) >= 2 && raw[0] == '\\' && (raw[1] == '@' || raw[1] == '+'))
     {

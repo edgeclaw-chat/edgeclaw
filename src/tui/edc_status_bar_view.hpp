@@ -26,13 +26,14 @@ namespace edc::ui
 class StatusBarView : public Widget
 {
   public:
-    // |sandbox_enabled| / |sidebar_width| / |context_window| are read per frame (the
-    // first two change at runtime: /sandbox and the draggable split; the window is the
-    // configured model's context size). |session| supplies the bound working directory;
-    // |terminal| the pane width.
+    // |sandbox_enabled| / |shell_syntax| / |sidebar_width| / |context_window| are read
+    // per frame (the first three change at runtime: /sandbox, /shell and the draggable
+    // split; the window is the configured model's context size). |session| supplies the
+    // bound working directory; |terminal| the pane width.
     StatusBarView(std::shared_ptr<const model::SessionModel> session,
                   std::shared_ptr<const port::ITerminalInfo> terminal, std::function<bool()> sandbox_enabled,
-                  std::function<int()> sidebar_width, std::function<int()> context_window);
+                  std::function<bool()> shell_syntax, std::function<int()> sidebar_width,
+                  std::function<int()> context_window);
 
     // The model name shown at the right end ("·" separated); "" hides it.
     void SetModel(std::string model);
@@ -51,11 +52,11 @@ class StatusBarView : public Widget
     static std::string LeftText(const std::string &dir, const std::string &hint);
 
     // The right-hand text for |pane_width| columns with |left| already drawn:
-    // "model · ctx · sandbox:on|off · /help", dropping fields from the front outward as
-    // the pane narrows (the model first, then ctx, then the sandbox state), leaving
-    // "/help" alone. Pure, so the drop policy is unit-testable.
+    // "model · ctx · sandbox:on|off · shell:on|off · /help", dropping fields from the
+    // front outward as the pane narrows (the model first, then ctx, then sandbox, then
+    // shell), leaving "/help" alone. Pure, so the drop policy is unit-testable.
     static std::string RightText(int pane_width, const std::string &left, const std::string &model,
-                                 const std::string &ctx, bool sandbox_on);
+                                 const std::string &ctx, bool sandbox_on, bool shell_on);
 
     // "ctx 45k/128k" (with "~" when the size is an estimate); "" when |used| is 0. Pure.
     static std::string ContextText(long long used, bool estimated, int window);
@@ -71,6 +72,7 @@ class StatusBarView : public Widget
     std::shared_ptr<const model::SessionModel> session_;
     std::shared_ptr<const port::ITerminalInfo> terminal_;
     std::function<bool()> sandbox_enabled_;
+    std::function<bool()> shell_syntax_;
     std::function<int()> sidebar_width_;
     std::function<int()> context_window_;
     std::string model_;

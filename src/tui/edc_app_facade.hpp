@@ -117,6 +117,9 @@ class IAppFacade
     virtual bool ConfigApiUrl(std::string *out) const = 0;
     virtual bool ConfigApiKey(std::string *out) const = 0;
     virtual bool SandboxEnabled() const = 0;
+    // Whether the shell-like input syntax is on (see /shell). The footer shows it, so it
+    // is read per frame -- /shell flips it while the TUI runs.
+    virtual bool ShellSyntax() const = 0;
     // The configured model's context window in tokens (0 = unknown). The status bar
     // reads it to show "ctx used/window".
     virtual int ContextWindow() const = 0;
@@ -187,6 +190,7 @@ class AppFacade : public IAppFacade
     bool ConfigApiUrl(std::string *out) const override;
     bool ConfigApiKey(std::string *out) const override;
     bool SandboxEnabled() const override;
+    bool ShellSyntax() const override;
     int ContextWindow() const override;
 
     bool Onboarded() const override;

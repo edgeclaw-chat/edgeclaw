@@ -40,12 +40,24 @@ GETTING STARTED
      directory -- press it a second time (within ~1.5s) to quit EdgeClaw.
 
      The footer's right end reads "model · ctx used/window · sandbox:on|off
-     · /help" (the context gauge is the foreground group's current context;
-     a ~ marks an estimate), and while a task runs the bottom row becomes a
-     progress bar carrying its elapsed time and an "Esc to stop" hint.
+     · shell:on|off · /help" (the context gauge is the foreground group's
+     current context; a ~ marks an estimate), and while a task runs the
+     bottom row becomes a progress bar carrying its elapsed time and an
+     "Esc to stop" hint.
 
-SHELL SYNTAX
-     All non-/ input is processed through the edgeclaw shell parser:
+SHELL SYNTAX (off by default)
+     The shell-like syntax -- the sigils + and !, and the operators
+     | ; & > >> 2> < -- is OFF until you ask for it: it presumes a Unix
+     shell, and fails silently when you do not have one (a stray | makes
+     one odd task instead of two, and nothing says why).  Turn it on with
+     "/shell on"; the state is persisted and the footer shows shell:on|off.
+
+     With it off, every line that is not a / command is ONE task
+     description, verbatim.  / commands are never gated -- /shell itself
+     has to stay reachable.
+
+     With it on, all non-/ input is processed through the edgeclaw shell
+     parser:
 
      Implicit task creation
            > analyze src/ for bugs
@@ -53,7 +65,17 @@ SHELL SYNTAX
 
      + syntax (new group)
            > +review the latest commits
-       Same as above but creates a new group for the task.
+       Same as above but creates a new group for the task.  @ used to be this
+       sigil; it no longer opens a group (write \e@ for a literal one).
+
+     + composes with / and ! (run that command in a new group)
+           > +/task new "security audit" --bg
+           > +/skill pdf extract pages
+           > +/prompt review src/
+           > +!git status
+       Each opens a fresh conversation: its own group, its own queue, its own
+       history.  +/ still completes, keeping the + in front of what Tab
+       inserts.
 
      Pipe (|)
            > scan for issues | fix them | write a report
@@ -113,7 +135,8 @@ SHELL SYNTAX
        !timeout 60 make -j8. Stop it with /task stop <id> (or /session stop), which kills
        the command's whole process group.
        !!  — run this session's previous ! command again.
-       \!  — escape: send !cmd as ordinary input (a task description) instead.
+       +!cmd — run it in a group of its own (a fresh conversation).
+       \e!  — escape: send !cmd as ordinary input (a task description) instead.
        !   alone — usage.
        A command that needs a terminal (sudo, vim, ssh, an editor) fails immediately:
        the child gets no tty. A non-zero exit is NOT a task failure -- the output
@@ -286,7 +309,11 @@ COMMAND REFERENCE
      /sandbox add-ro|rm-ro <dir>   Add/remove a read-only path.
      /sandbox add-rw|rm-rw <dir>   Add/remove a read-write path.
      /sandbox add-deny|rm-deny <dir>
-                                   Add/remove a masked dir (wins over ro/rw).
+                                   Add/remove a masked dir (wins over ro/rw;
+                                   e.g. ~/.ssh).
+     /shell [on|off]               Turn the shell-like input syntax on or
+                                   off (off by default; persisted; shown in
+                                   the footer as shell:on|off).
 
      Session
      /session new [name] [dir]     Start a new session (optionally named,
@@ -313,6 +340,7 @@ COMMAND REFERENCE
      /task new <desc>                  Create a task in the group in front.
      /task new <desc> --bg             Same group, background (no foreground).
      /task new <desc> --new-group      Open a group of its own (foreground).
+                                       (+/task new <desc> says the same thing.)
      /task new <desc> -g <gid>         Create in existing group.
      /task new <desc> -d <tid>         Create + wait for dependency,
                                        injecting its output (--with is the

@@ -297,6 +297,15 @@ struct edc_config *edc_config_load(const char *edc_home)
     if (skip_ctx && cJSON_IsBool(skip_ctx))
         config->skip_context_files = cJSON_IsTrue(skip_ctx);
 
+    /* Shell-like syntax switch, top-level "shell_syntax". Defaults OFF: the operators
+     * (`| ; & > >> 2> <`) and the sigils (`+ !`) spell out a Unix shell, and a user who
+     * does not expect that gets a silent mess (the whole line as one task description)
+     * rather than an error. Turned on with /shell on. */
+    config->shell_syntax = false;
+    cJSON *shell_syntax = cJSON_GetObjectItem(conf, "shell_syntax");
+    if (shell_syntax && cJSON_IsBool(shell_syntax))
+        config->shell_syntax = cJSON_IsTrue(shell_syntax);
+
     /* Project-level prompt/skill roots. Defaults ON (the key is an opt-out). */
     config->load_project_resources = true;
     cJSON *proj_res = cJSON_GetObjectItem(conf, "load_project_resources");
@@ -850,6 +859,22 @@ bool edc_config_set_onboarded(struct edc_config *cfg, bool onboarded)
     if (!cfg || !cfg->edc_home || !edc_config_update_onboarded(cfg->edc_home, onboarded))
         return false;
     cfg->onboarded = onboarded;
+    return true;
+}
+
+bool edc_config_update_shell_syntax(const char *edc_home, bool enable)
+{
+    struct config_bool_edit b = {"shell_syntax", enable};
+    return config_edit(edc_home, config_edit_bool, &b);
+}
+
+bool edc_config_set_shell_syntax(struct edc_config *cfg, bool enable)
+{
+    /* Persist first: if config.json cannot be written, memory and disk must not
+     * disagree (same rule as edc_config_set_sandbox_enabled). */
+    if (!cfg || !cfg->edc_home || !edc_config_update_shell_syntax(cfg->edc_home, enable))
+        return false;
+    cfg->shell_syntax = enable;
     return true;
 }
 

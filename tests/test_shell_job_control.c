@@ -151,6 +151,9 @@ int main(void)
 
     struct edc_config *cfg = calloc(1, sizeof(*cfg));
     cfg->workspace = sdsnew(ws);
+    /* This file is ABOUT the shell-like syntax, so it declares the switch on. The default
+     * is off; what off does is pinned in test_shell_switch.c. */
+    cfg->shell_syntax = true;
     struct edc_session_manager *sm = edc_session_manager_new(cfg);
     struct edc_session *sess = edc_session_manager_get_active(sm);
     CHECK(sess != NULL, "manager has an active session");

@@ -39,6 +39,12 @@ struct edc_channel_message
      * reads as what was asked for, not as the body it turned into. NULL = derive the label
      * from the content, the usual way. */
     sds task_desc;
+    /* A fact the sender declares: whether the task this input creates should open a group
+     * of its own instead of joining the one in front. The `+` prefix says it, and the
+     * command handler both strips the prefix and records the fact here -- so every
+     * creation path (`!cmd`, `/task new`, `/skill`, `/prompt`, the shell) reads ONE flag
+     * instead of each re-parsing the sigil. `+` alone is not a task; see edc_commands_handler. */
+    bool new_group;
     bool from_active_task;         /* A fact the sender declares: whether this output came from
                                     * its own session's active task. Declaration only -- the
                                     * kernel drops nothing based on it (it does not know who is

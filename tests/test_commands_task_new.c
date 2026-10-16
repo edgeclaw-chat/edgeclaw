@@ -90,6 +90,16 @@ static int count_tasks(struct edc_session *sess)
     return n;
 }
 
+/* 会话里当前有几个组. */
+static int count_groups(struct edc_session *sess)
+{
+    int n = 0;
+    struct edc_task_group *g;
+    DL_FOREACH(sess->groups, g)
+    n++;
+    return n;
+}
+
 /* 这条 turn 发给 LLM 的第一条用户消息。 */
 static const char *first_user_content(struct edc_turn *turn)
 {
@@ -123,6 +133,8 @@ int main(void)
 
     struct edc_config *cfg = calloc(1, sizeof(*cfg));
     cfg->workspace = sdsnew(ws);
+    /* The `+/task new` case below is shell syntax; the switch is off by default. */
+    cfg->shell_syntax = true;
     struct edc_session_manager *sm = edc_session_manager_new(cfg);
     struct edc_session *sess = edc_session_manager_get_active(sm);
     CHECK(sess != NULL, "manager has an active session");
@@ -183,6 +195,29 @@ int main(void)
         CHECK(g_llm_task && edc_scheduler_get_foreground(sess) == g_llm_task->group,
               "and it took the foreground");
     }
+
+    /* ── `+/task new`: `+` 前缀就是 --new-group 那句话 ───────────── */
+
+    TEST("`+/task new \"...\"` opens a group of its own (the prefix is the same statement)");
+    struct edc_task_group *front_before = edc_scheduler_get_foreground(sess);
+    const int groups_before = count_groups(sess);
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "+/task new \"scoped\"");
+    CHECK(g_llm_task != NULL, "it ran immediately -- a new group has nothing to queue behind");
+    if (g_llm_task)
+    {
+        CHECK(g_llm_task->group && g_llm_task->group != front_before, "its group is not the one in front");
+        CHECK(g_llm_task->group && strcmp(g_llm_task->group->group_id, g_llm_task->task_id) == 0,
+              "it leads a group of its own");
+        CHECK(edc_scheduler_get_foreground(sess) == g_llm_task->group, "and it took the foreground");
+        /* The `+` is the handler's to strip: nothing downstream may see it. */
+        const char *sent = first_user_content(g_llm_task->active_turn);
+        CHECK(sent && strcmp(sent, "scoped") == 0, "the input is the description, with no `+` left on it");
+        CHECK(g_llm_task->description && strcmp(g_llm_task->description, "scoped") == 0,
+              "nor on the display name");
+    }
+    CHECK(count_groups(sess) == groups_before + 1, "exactly one group was opened");
 
     /* ── 带选项但 desc 没引号: 语法错误 ──────────────────────────── */
 

@@ -63,6 +63,12 @@ int main(void)
     CHECK(has(full, "/group list"), "/group list (groups live here)");
     CHECK(has(full, "/group fold"), "/group fold");
 
+    TEST("full help documents the `+` new-group forms");
+    CHECK(has(full, "+desc"), "the new-group task form");
+    CHECK(has(full, "+/cmd"), "the composition with / commands");
+    CHECK(has(full, "+!cmd"), "the composition with the local shell");
+    CHECK(has(full, "--new-group"), "the long form is still documented, not replaced");
+
     TEST("full help no longer lists /task groups");
     CHECK(!has(full, "/task groups"), "old spelling gone");
 
@@ -79,6 +85,11 @@ int main(void)
     TEST("/help <subcommand name> matches anywhere in the command");
     t = edc_commands_help_text("memo");
     CHECK(has(t, "/session memo") && has(t, "curate"), "memo detail");
+    sdsfree(t);
+
+    TEST("/help <sigil> reaches the `+` rows' detail");
+    t = edc_commands_help_text("+/cmd");
+    CHECK(has(t, "composes with the other input sigils"), "`/help +/cmd` prints the composition detail");
     sdsfree(t);
 
     TEST("/help <unknown> says so");

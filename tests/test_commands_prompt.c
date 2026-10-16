@@ -151,6 +151,9 @@ int main(void)
 
     struct edc_config *cfg = calloc(1, sizeof(*cfg));
     cfg->workspace = sdsnew(ws);
+    /* The `piped` body and the `+/prompt` / `+/skill` cases are shell syntax; the switch
+     * is off by default (see test_shell_switch.c for what off does). */
+    cfg->shell_syntax = true;
     struct edc_session_manager *sm = edc_session_manager_new(cfg);
     struct edc_session *sess = edc_session_manager_get_active(sm);
     CHECK(sess != NULL, "manager has an active session");
@@ -177,6 +180,27 @@ int main(void)
         CHECK(input && strstr(input, "focus") != NULL, "the argument was substituted in");
         CHECK(input && strstr(input, "{{1:-") == NULL, "and no placeholder survived");
         CHECK(input && strstr(input, "Review the staged changes") != NULL, "the template body is there");
+    }
+
+    /* ── `+/prompt`: 展开体照跑, 但落进它自己的组 ─────────────────── */
+
+    TEST("`+/prompt <name>` runs the expanded body in a group of its own");
+    struct edc_task_group *front_before = edc_scheduler_get_foreground(sess);
+    const int tasks_before = count_tasks(sess);
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "+/prompt review focus");
+
+    CHECK(count_tasks(sess) == tasks_before + 1, "one task was created");
+    CHECK(g_llm_task != NULL, "and dispatched (a fresh group has nothing to queue behind)");
+    if (g_llm_task)
+    {
+        const char *input = first_user_content(g_llm_task->active_turn);
+        CHECK(input && strstr(input, "Review the staged changes") != NULL,
+              "the body still expands and runs -- the `+` is not read as part of the template name");
+        CHECK(g_llm_task->group && g_llm_task->group != front_before,
+              "but its group is not the one that was in front");
+        CHECK(edc_scheduler_get_foreground(sess) == g_llm_task->group, "and it took the foreground");
     }
 
     /* ── 未知名字: 只回一条错误, 不建任务 ────────────────────────── */
@@ -294,6 +318,27 @@ int main(void)
         CHECK(in && strstr(in, "</skill>") != NULL, "the block is closed");
         CHECK(in && strstr(in, "page 3") != NULL, "the user's words reached it (no placeholder: appended)");
         CHECK(in && (strstr(in, "page 3") > strstr(in, "</skill>")), "and they land after the closing tag");
+    }
+
+    /* ── `+/skill`: 同一个 body, 但落进它自己的组 ──────────────────── */
+
+    TEST("`+/skill <name>` runs the same body in a group of its own");
+    {
+        struct edc_task_group *front_before = edc_scheduler_get_foreground(sess);
+        g_llm_calls = 0;
+        g_llm_task = NULL;
+        drive_command(cfg, sm, sched, "+/skill pdf page 7");
+
+        /* A fresh group has nothing to queue behind, so this one does dispatch (unlike the
+         * case above) -- and the `+` must not have leaked into the label. */
+        struct edc_task *own = find_task_by_desc(sess, "/skill pdf page 7");
+        CHECK(own != NULL, "a task was created, still labelled by the command (`+` stripped)");
+        CHECK(own && own->group && own->group != front_before, "its group is not the one that was in front");
+        CHECK(own && own->group && strcmp(own->group->group_id, own->task_id) == 0,
+              "it leads a group of its own");
+        CHECK(g_llm_task == own, "and it ran immediately");
+        const char *in = own ? first_user_content(own->active_turn) : NULL;
+        CHECK(in && strstr(in, "<skill name=\"pdf\"") != NULL, "the skill body is still what runs");
     }
 
     printf("\n  %d passed, %d failed\n", passed, failed);

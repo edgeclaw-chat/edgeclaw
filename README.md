@@ -465,6 +465,7 @@ Create `~/.edgeclaw/config.json`:
   "max_iter": -1,
   "context_window": 1048576,
   "tool_max_output_size": 10000,
+  "shell_syntax": false,
   "sandbox": {
     "enable": true,
     "rw_paths": ["/home/<user>/.edgeclaw/workspace", "/tmp", "/dev", "/home/<user>/.cache"],
@@ -481,6 +482,15 @@ Create `~/.edgeclaw/config.json`:
 (default) means **unlimited** (the agent loop keeps running until the model
 produces a final answer), while a positive integer caps the number of
 LLM/tool rounds before the scheduler stops and asks for a follow-up.
+
+`shell_syntax` (default `false`) turns on the shell-like input vocabulary: the
+sigils `+` (a new group) and `!` (a local shell command), and the operators
+`|` `;` `&` `>` `>>` `2>` `<`. It is off by default because it presumes a Unix
+shell and fails *silently* without one (a line with a stray `|` becomes one odd
+task, not two). With it off, every line that is not a `/` command is one task
+description, verbatim; `/` commands are never gated. Turn it on at runtime with
+`/shell on` — which is the only way to flip it, and it persists this key. The
+footer shows the state as `shell:on|off`.
 
 #### Channel Configuration
 

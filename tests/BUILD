@@ -337,6 +337,15 @@ cc_test(
 )
 
 cc_test(
+    name = "test_shell_switch",
+    srcs = ["test_shell_switch.c"],
+    deps = [
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_commands_session_memo",
     srcs = ["test_commands_session_memo.c"],
     deps = [
@@ -698,6 +707,15 @@ cc_test(
 cc_test(
     name = "test_config_onboarded",
     srcs = ["test_config_onboarded.c"],
+    deps = [
+        "//src/common:common",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_config_shell_syntax",
+    srcs = ["test_config_shell_syntax.c"],
     deps = [
         "//src/common:common",
     ],

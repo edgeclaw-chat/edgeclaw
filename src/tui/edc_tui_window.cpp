@@ -235,11 +235,13 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     task_widget_ = std::make_shared<TaskWidget>();
     todo_widget_ = std::make_shared<TodoWidget>();
     working_indicator_ = std::make_shared<ui::WorkingIndicatorView>();
-    // The status row reads the session model + terminal width; the sandbox state
-    // and the sidebar width are pulled per frame (both change at runtime).
+    // The status row reads the session model + terminal width; the sandbox state, the
+    // shell-like syntax switch and the sidebar width are pulled per frame (all three
+    // change at runtime).
     status_bar_ = std::make_shared<ui::StatusBarView>(
         session_model_, terminal_, [this] { return app_ && app_->SandboxEnabled(); },
-        [this] { return sidebar_width_; }, [this] { return app_ ? app_->ContextWindow() : 0; });
+        [this] { return app_ && app_->ShellSyntax(); }, [this] { return sidebar_width_; },
+        [this] { return app_ ? app_->ContextWindow() : 0; });
 
     const auto &pal = style::palette();
     prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(pal.prompt) | ::ftxui::bold;
@@ -1169,9 +1171,15 @@ void TUIWindow::RecomputeCommandPalette()
     if (app_)
     {
         const std::string &wd = session_model_->workdir();
-        if (input_text_.compare(0, 7, "/prompt") == 0)
+        // `+/prompt <name>` offers the same names as `/prompt <name>`: the palette treats
+        // the `+` as a prefix it puts back on whatever Tab produces, so the command word to
+        // match here is the same one.
+        const std::string head = (input_text_.size() >= 2 && input_text_[0] == '+' && input_text_[1] == '/')
+                                     ? input_text_.substr(1)
+                                     : input_text_;
+        if (head.compare(0, 7, "/prompt") == 0)
             command_palette_.SetArgSource("/prompt", app_->PromptNames(wd));
-        else if (input_text_.compare(0, 6, "/skill") == 0)
+        else if (head.compare(0, 6, "/skill") == 0)
             command_palette_.SetArgSource("/skill", app_->SkillNames(wd));
         else
             command_palette_.SetArgSource("", {});

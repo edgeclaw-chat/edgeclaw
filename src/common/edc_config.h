@@ -92,6 +92,14 @@ struct edc_config
      * bootstrap files in the prompt. config.json's top-level key `skip_context_files`
      * (default -> false). */
     bool skip_context_files;
+    /* Whether the SHELL-LIKE input syntax is on: the sigils `+<desc>` (a new group) and
+     * `!<cmd>` (the local shell), and the operators `|` `;` `&` `>` `>>` `2>` `<`. OFF by
+     * default -- those operators spell out a Unix shell vocabulary, which a user coming
+     * from another system has no reason to know, and getting them wrong is silent (the
+     * line just becomes one odd task). config.json's top-level `shell_syntax` (true)
+     * turns it on. Flipped at runtime ONLY through /shell on|off -- deliberately no CLI
+     * flag, so there is one way to say it and it is persisted with it. */
+    bool shell_syntax;
     /* Read the project-level resource dirs (./.edgeclaw, ./.claude, ./.agents, ./.opencode,
      * ./.pi) for prompt templates and skills. ON by default; config.json's top-level
      * `load_project_resources` (false) turns it off. The user-level roots under $HOME are
@@ -154,6 +162,13 @@ extern bool edc_config_update_context_window(const char *edc_home, int context_w
  * --sandbox flag is a per-run override and is intentionally not persisted.
  * Returns true on success. */
 extern bool edc_config_update_sandbox_enabled(const char *edc_home, bool enable);
+
+/* Persist the shell-like syntax switch (config.json top-level "shell_syntax"),
+ * preserving all other settings. Used by the in-TUI /shell command -- which is the ONLY
+ * way to flip it (there is deliberately no CLI flag). Returns true on success. */
+extern bool edc_config_update_shell_syntax(const char *edc_home, bool enable);
+/* Persist first, then update the running config (see /sandbox's pattern). */
+extern bool edc_config_set_shell_syntax(struct edc_config *cfg, bool enable);
 
 /* Add (add=true) or remove (add=false) a directory from a sandbox path list
  * and persist it to <edc_home>/config.json, preserving all other settings.

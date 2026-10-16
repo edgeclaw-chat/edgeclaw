@@ -65,6 +65,9 @@ extern bool edc_app_config_model(const struct edc_app *app, char *buf, size_t ca
 extern bool edc_app_config_api_url(const struct edc_app *app, char *buf, size_t cap);
 extern bool edc_app_config_api_key(const struct edc_app *app, char *buf, size_t cap);
 extern bool edc_app_sandbox_enabled(const struct edc_app *app);
+/* Whether the shell-like input syntax is on (sigils + operators). Off by default; the
+ * footer shows it and /shell on|off flips it. */
+extern bool edc_app_shell_syntax(const struct edc_app *app);
 /* First-run wizard: false until the user finished/skipped the setup page. */
 extern int edc_app_onboarded(const struct edc_app *app);
 /* The configured context window (tokens), for the setup page's default. */

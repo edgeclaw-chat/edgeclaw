@@ -26,13 +26,14 @@ static const char *kUsage = "## `!` — run a shell command\n"
                             "\n"
                             "- `!cmd` — run `cmd`\n"
                             "- `!!` — run the previous `!` command of this session again\n"
+                            "- `+!cmd` — run it in a group of its own (a fresh conversation)\n"
                             "- `\\!cmd` — send `!cmd` as ordinary input (a task description) instead\n";
 
 /* Create the tool-only task for |cmd|. |raw| is the text the user typed (the turn's
  * user message); `session` owns the task. Returns NULL when the task could not be
  * created. */
 static struct edc_task *spawn_command_task(struct edc_scheduler *sched, struct edc_session *session, sds raw,
-                                           const char *cmd, edc_channel_type channel_type)
+                                           const char *cmd, edc_channel_type channel_type, bool new_group)
 {
     cJSON *args = cJSON_CreateObject();
     cJSON_AddStringToObject(args, "command", cmd);
@@ -44,7 +45,7 @@ static struct edc_task *spawn_command_task(struct edc_scheduler *sched, struct e
      * may free it as soon as this returns. */
     spec.input = raw;
     spec.channel_type = channel_type;
-    spec.place = EDC_TASK_PLACE_FOREGROUND;
+    spec.place = new_group ? EDC_TASK_PLACE_NEW_GROUP : EDC_TASK_PLACE_FOREGROUND;
     spec.take_foreground = true;
     /* The whole mechanism: one seeded call instead of an LLM round. The drive then walks
      * the ordinary tool path (dispatch -> result into the turn -> settle). */
@@ -118,7 +119,7 @@ bool edc_local_shell_handle(struct edc_session_manager *sm, struct edc_scheduler
         session->last_local_cmd = sdsnew(cmd);
     }
 
-    struct edc_task *task = spawn_command_task(sched, session, raw, cmd, message->type);
+    struct edc_task *task = spawn_command_task(sched, session, raw, cmd, message->type, message->new_group);
     if (!task)
         edc_commands_reply(to, "Could not create a task for this command.");
     else

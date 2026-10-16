@@ -394,6 +394,22 @@ static void test_bang_entry(void)
     CHECK(!edc_local_shell_handle(sm, sched, to, m), "ordinary input is declined");
     edc_channel_message_free(m);
 
+    /* `+!cmd`: stripping the `+` and recording the fact is the HANDLER's job (it re-enters
+     * with the flag set); what this unit sees is the flag on the message. The task opens a
+     * group of its own instead of joining the one in front. */
+    TEST("`+!cmd` opens a group of its own (new_group on the message)");
+    struct edc_task_group *front_before = edc_scheduler_get_foreground(sess);
+    m = edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsnew("!git log"));
+    m->new_group = true;
+    CHECK(edc_local_shell_handle(sm, sched, to, m), "`!` input is taken");
+    edc_channel_message_free(m);
+    CHECK(count_tasks(sess) == 3, "a third task was created");
+    struct edc_task_group *own = edc_scheduler_get_foreground(sess);
+    CHECK(own && own != front_before, "its group is not the one that was in front");
+    CHECK(own && own->leader && own->leader->tool_only, "still a tool-only task (no model call)");
+    CHECK(own && own->leader && strcmp(own->group_id, own->leader->task_id) == 0,
+          "and it leads a group of its own");
+
     edc_scheduler_free(sched);
     free(sess);
     edc_config_free(cfg);

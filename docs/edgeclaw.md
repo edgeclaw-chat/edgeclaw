@@ -92,7 +92,34 @@ Shell below); a `!n` or `!!` inside a task description is literal text.
 
 ---
 
+## Shell-like Syntax (off by default)
+
+Everything below borrows a shell's vocabulary: the sigils `+` (open a new group) and `!`
+(run a local shell command), and the operators `|` `;` `&` `>` `>>` `2>` `<`. **That
+vocabulary is off until you ask for it**, because it presumes you know a Unix shell — and
+it fails *silently* when you do not: a line with a stray `|` becomes one odd task instead
+of two, and nothing tells you why.
+
+```
+/shell on
+```
+
+With it **off** (the default), every line that is not a `/` command is **one task
+description, verbatim** — no operators to get wrong, no sigil to escape.
+
+`/` commands are never gated: the command layer is a different thing from the shell layer,
+and `/shell` itself has to stay reachable to turn the switch back on. So `/task new`,
+`/skill` and `/prompt` keep working either way.
+
+The state is persisted (`config.json` → `shell_syntax`) and shown in the footer as
+`shell:on|off`. `/shell on|off` is the only way to flip it — deliberately no CLI flag, so
+there is one way to say it and it is the one that persists.
+
+---
+
 ## Quick Task Syntax (`+`)
+
+Needs the shell-like syntax: **off by default**, `/shell on` turns it on.
 
 Use `+` to create a task in a **new** group with one line:
 
@@ -112,6 +139,24 @@ carrying an option (`-`, `--bg`, ...) is a syntax error, not a silently-ignored 
 The description is everything you type; `+` only says "put it in a new group" (plain
 input joins the current group). See Shell-like Job Control below.
 
+### `+` composes with the other sigils
+
+`+` is not only the shorthand for a plain description: it prefixes the other two input
+sigils and means the same thing for all of them -- *the task this creates opens its own
+group*.
+
+```
++/task new "security audit" --bg     # /task new, but into a new group (== --new-group)
++/skill pdf extract pages            # run the skill in a new group
++/prompt review src/                 # expand the template into a new group
++!git status                         # the local shell command, in a new group
+```
+
+Each opens a fresh conversation: its own group, its own queue, its own history. `+/`
+still completes -- the command palette, and the `/prompt` and `/skill` name vocabulary,
+behave as they do for the unprefixed command, with the `+` kept in front of whatever Tab
+inserts.
+
 A description may legitimately start with `+` or `@`, so both have an escape: the
 backslash is dropped and the rest is ordinary input (it stays in the **current** group).
 
@@ -127,6 +172,8 @@ backslash is dropped and the rest is ordinary input (it stays in the **current**
 ---
 
 ## Local Shell (`!`)
+
+Needs the shell-like syntax: **off by default**, `/shell on` turns it on.
 
 A line starting with `!` runs a **local shell command** on this machine:
 
@@ -245,6 +292,9 @@ of the parent's conversation context up to the fork point (`desc` is its input).
 
 ## Shell-like Job Control
 
+Everything in this section needs the shell-like syntax (see above): it is **off by
+default**, and `/shell on` turns it on.
+
 | Shell             | EdgeClaw                      |
 |-------------------|-------------------------------|
 | `cmd &`           | `"input" &`                   |
@@ -284,6 +334,7 @@ equivalent of `cmd &`.
 | `/sandbox add-ro\|rm-ro <dir>` | Add/remove a read-only path |
 | `/sandbox add-rw\|rm-rw <dir>` | Add/remove a read-write path |
 | `/sandbox add-deny\|rm-deny <dir>` | Add/remove a masked dir (wins over ro/rw; e.g. `~/.ssh`) |
+| `/shell [on\|off]` | Turn the shell-like input syntax on or off (off by default; persisted; shown in the footer as `shell:on\|off`) |
 
 ### Session
 
@@ -309,7 +360,7 @@ equivalent of `cmd &`.
 |---------|-------------|
 | `/task new <desc>` | Create a task in the group in front (queues behind whatever runs there) |
 | `/task new <desc> --bg` | Same group, but background: runs alongside, takes no foreground |
-| `/task new <desc> --new-group` | Open a group of its own (a fresh conversation) and take the foreground |
+| `/task new <desc> --new-group` | Open a group of its own (a fresh conversation) and take the foreground (`+/task new <desc>` is the same statement) |
 | `/task new <desc> -g <gid>` | Create in that existing group (`--group <gid>` is the long form) |
 | `/task new <desc> -d <tid>` | Create + wait for dependency, injecting its output (repeatable; `--with <tid>` is the explicit form) |
 | `/task fork <pid> <desc>` | Fork: a child task that leads a group of its own and takes the foreground, inheriting the parent group's memory and a snapshot of its context |

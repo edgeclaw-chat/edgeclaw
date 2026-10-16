@@ -163,6 +163,12 @@ bool edc_app_sandbox_enabled(const struct edc_app *app)
     return cfg && cfg->enable_sandbox;
 }
 
+bool edc_app_shell_syntax(const struct edc_app *app)
+{
+    struct edc_config *cfg = edc_app_config(app);
+    return cfg && cfg->shell_syntax;
+}
+
 int edc_app_onboarded(const struct edc_app *app)
 {
     struct edc_config *cfg = edc_app_config(app);

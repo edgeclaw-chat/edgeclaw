@@ -87,6 +87,11 @@ class CommandPalette
     // Esc dismissed the list for this exact content.
     bool closed_by_user_ = false;
     std::string closed_content_;
+    // The text as typed, and the same text with a leading `+` (the new-group prefix on
+    // `+/cmd`) taken off. Every match works on |content_|; |prefix_| is re-attached to
+    // whatever Tab produces, so the `+` never takes part in the word being completed.
+    std::string raw_;
+    std::string prefix_;
     std::string content_;
 };
 
