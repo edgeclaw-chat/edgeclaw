@@ -107,6 +107,11 @@ extern const char *edc_app_cmd_family_brief(size_t index);
  * session bound yet. */
 extern size_t edc_app_prompts(const struct edc_app *app, const char *workdir, char *buf, size_t cap);
 
+/* The skills, as "<name>\t<description>" lines, for `/skill`'s completion vocabulary.
+ * Reads the same resource roots as everything else (|workdir| = the displayed session's
+ * directory; NULL/"" = the process cwd). Returns how many skills exist. */
+extern size_t edc_app_skills(const struct edc_app *app, const char *workdir, char *buf, size_t cap);
+
 /* The transcript path for a given session (`<workspace>/<session_id>/chat.jsonl`).
  * Built by convention, does not query the store; |session_id| must be an id (as
  * carried by snapshots/messages), not a display name. */

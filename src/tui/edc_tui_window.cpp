@@ -1161,12 +1161,21 @@ void TUIWindow::RecomputeCommandPalette()
         command_palette_.SetSource(app_->CommandFamilies(), app_->Commands());
         palette_loaded_ = true;
     }
-    // `/prompt` takes a template name: refresh that vocabulary while it is in play, so a
-    // template added on disk is offered without a restart. The DISPLAYED session's bound
-    // directory goes with it -- the project roots are found by walking up from there (and
-    // the frontend already holds it, so no store read on this thread).
-    if (app_ && input_text_.compare(0, 7, "/prompt") == 0)
-        command_palette_.SetArgSource("/prompt", app_->PromptNames(session_model_->workdir()));
+    // A command whose first argument names a resource (`/prompt <name>`, `/skill <name>`)
+    // gets that vocabulary while it is in play, so a file added on disk is offered without a
+    // restart. The DISPLAYED session's bound directory goes with it -- the project roots are
+    // found by walking up from there (and the frontend already holds it, so no store read on
+    // this thread). Any other input clears the vocabulary so a stale one cannot linger.
+    if (app_)
+    {
+        const std::string &wd = session_model_->workdir();
+        if (input_text_.compare(0, 7, "/prompt") == 0)
+            command_palette_.SetArgSource("/prompt", app_->PromptNames(wd));
+        else if (input_text_.compare(0, 6, "/skill") == 0)
+            command_palette_.SetArgSource("/skill", app_->SkillNames(wd));
+        else
+            command_palette_.SetArgSource("", {});
+    }
     command_palette_.Update(input_text_);
 }
 

@@ -27,6 +27,7 @@
 #include "edc_models.h"
 #include "edc_prompts.h"
 #include "edc_resources.h"
+#include "edc_skills.h"
 #include "log.h"
 #include "sds.h"
 #include <stdio.h>
@@ -296,6 +297,44 @@ size_t edc_app_prompts(const struct edc_app *app, const char *workdir, char *buf
         edc_prompt_free(p);
     }
     utarray_free(prompts);
+    return count;
+}
+
+size_t edc_app_skills(const struct edc_app *app, const char *workdir, char *buf, size_t cap)
+{
+    if (buf && cap > 0)
+        buf[0] = '\0';
+    const struct edc_config *cfg = edc_app_config(app);
+    if (!cfg || !cfg->workspace)
+        return 0;
+
+    UT_array *roots = edc_resource_dirs(cfg, workdir);
+    UT_array *skills = edc_skills_load_roots(roots);
+    edc_resource_dirs_free(roots);
+    const size_t count = utarray_len(skills);
+
+    size_t used = 0;
+    for (size_t i = 0; i < count; i++)
+    {
+        struct edc_skill **slot = (struct edc_skill **)utarray_eltptr(skills, (unsigned)i);
+        struct edc_skill *sk = slot ? *slot : NULL;
+        if (sk && sk->name)
+        {
+            struct edc_skill_meta_entry *e = NULL;
+            HASH_FIND_STR(sk->meta, "description", e);
+            sds line =
+                sdscatprintf(sdsempty(), "%s\t%s\n", sk->name, (e && e->value && sdslen(e->value)) ? e->value : "");
+            if (buf && used + sdslen(line) + 1 <= cap)
+            {
+                memcpy(buf + used, line, sdslen(line));
+                used += sdslen(line);
+                buf[used] = '\0';
+            }
+            sdsfree(line);
+        }
+        edc_skill_free(sk);
+    }
+    utarray_free(skills);
     return count;
 }
 

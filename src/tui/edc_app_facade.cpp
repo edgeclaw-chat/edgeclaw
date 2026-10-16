@@ -197,6 +197,34 @@ std::vector<model::CommandFact> AppFacade::CommandFamilies() const
     return out;
 }
 
+std::vector<model::CommandFact> AppFacade::SkillNames(const std::string &workdir) const
+{
+    std::vector<model::CommandFact> out;
+    if (!app_)
+        return out;
+
+    // "<name>\t<description>\n" per skill (see edc_app_skills) -- the same shape prompts use.
+    char buf[4096] = {0};
+    edc_app_skills(app_, workdir.c_str(), buf, sizeof(buf));
+    const std::string all(buf);
+    size_t pos = 0;
+    while (pos < all.size())
+    {
+        const size_t nl = all.find('\n', pos);
+        const std::string line =
+            (nl == std::string::npos) ? all.substr(pos) : all.substr(pos, nl - pos);
+        pos = (nl == std::string::npos) ? all.size() : nl + 1;
+        if (line.empty())
+            continue;
+        const size_t tab = line.find('\t');
+        const std::string name = (tab == std::string::npos) ? line : line.substr(0, tab);
+        const std::string desc = (tab == std::string::npos) ? "" : line.substr(tab + 1);
+        if (!name.empty())
+            out.push_back({"/skill " + name, desc});
+    }
+    return out;
+}
+
 std::vector<model::CommandFact> AppFacade::PromptNames(const std::string &workdir) const
 {
     std::vector<model::CommandFact> out;
