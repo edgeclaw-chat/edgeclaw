@@ -229,6 +229,18 @@ std::shared_ptr<edc::ChatWidget> MakeWrappingLog(int count)
     return chat;
 }
 
+// |count| single-word messages numbered 0..count-1 with a common |prefix|; one
+// prepend batch for the backfill tests.
+std::vector<std::shared_ptr<edc::Message>> MakeBatch(const std::string &prefix, int count)
+{
+    std::vector<std::shared_ptr<edc::Message>> out;
+    const auto now = ::time(nullptr);
+    out.reserve(count);
+    for (int i = 0; i < count; i++)
+        out.push_back(std::make_shared<edc::Message>(prefix + std::to_string(i), now));
+    return out;
+}
+
 std::string NumberedBody(int lines)
 {
     std::string body;
@@ -279,6 +291,101 @@ static void test_appending_measures_only_the_new_item(void)
     const std::string frame = Draw(chat);
     ASSERT(renders < 40, "frame after an append laid out %d items", renders);
     ASSERT(AnyRowContains(frame, "zzz newest"), "new message not shown while following the tail");
+    PASS();
+}
+
+// The startup backfill prepends the older history above the head, a bounded batch
+// per frame. While it lands, a reader parked at the tail must not move: the rows
+// on screen keep their place (the list's scroll anchor moves the offset by exactly
+// the height that landed above).
+// StickingToBottom() drives the "Loading earlier history…" hint: it must be true
+// only while the reader is pinned to the tail.
+static void test_sticking_to_bottom_tracks_the_tail(void)
+{
+    TEST("StickingToBottom() follows the reader to and from the tail");
+    auto chat = MakeLog(60);
+    (void)Draw(chat);
+    ASSERT(chat->StickingToBottom(), "not pinned to the tail after the first frame");
+
+    chat->OnEvent(ftxui::Event::ArrowUp);
+    (void)Draw(chat);
+    ASSERT(!chat->StickingToBottom(), "still sticky after scrolling up");
+
+    for (int i = 0; i < 2000; i++)
+        chat->OnEvent(ftxui::Event::ArrowDown);
+    (void)Draw(chat);
+    ASSERT(chat->StickingToBottom(), "not re-pinned after scrolling back to the bottom");
+    PASS();
+}
+
+static void test_prepend_keeps_the_tail_pinned(void)
+{
+    TEST("prepending older batches keeps the tail pinned");
+    auto chat = MakeLog(60);
+    (void)Draw(chat);
+    const int tail_before = RowOf(Draw(chat), "message number 59");
+    ASSERT(tail_before >= 0, "tail not visible before the prepend");
+
+    chat->PrependMessages(MakeBatch("older number ", 20)); // the block just above the tail
+    const std::string after1 = Draw(chat);
+    ASSERT(AnyRowContains(after1, "message number 59"), "tail left the screen after the first prepend");
+    ASSERT(RowOf(after1, "message number 59") == tail_before, "the tail row moved (%d -> %d)", tail_before,
+           RowOf(after1, "message number 59"));
+
+    chat->PrependMessages(MakeBatch("oldest number ", 20)); // an even older block
+    const std::string after2 = Draw(chat);
+    ASSERT(RowOf(after2, "message number 59") == tail_before, "the tail row moved after the second prepend");
+    PASS();
+}
+
+// Prepending in file-order batches must reconstruct the original order: the last
+// batch fed in (the oldest block) ends up at the top.
+static void test_prepend_preserves_history_order(void)
+{
+    TEST("prepended batches read oldest -> newest");
+    auto chat = MakeLog(3); // "message number 0..2"
+    (void)Draw(chat);
+
+    chat->PrependMessages(MakeBatch("older number ", 2));  // first: the block just above the tail
+    chat->PrependMessages(MakeBatch("oldest number ", 2)); // then the older block
+    (void)Draw(chat); // settle the geometry so ScrollToTop can move against it
+    ScrollToTop(chat);
+
+    const std::string frame = Draw(chat);
+    const int rows[] = {
+        RowOf(frame, "oldest number 0"), RowOf(frame, "oldest number 1"), RowOf(frame, "older number 0"),
+        RowOf(frame, "older number 1"),  RowOf(frame, "message number 0"),
+    };
+    for (int i = 0; i < 5; i++)
+        ASSERT(rows[i] >= 0, "history row %d is missing from the frame", i);
+    for (int i = 1; i < 5; i++)
+        ASSERT(rows[i - 1] < rows[i], "history out of order at %d (%d !< %d)", i, rows[i - 1], rows[i]);
+    PASS();
+}
+
+// A prepend lands between frames, so the hit boxes from the last draw are still in
+// use when the next click arrives. Everything shifted down by the batch size, so
+// the indices must move with it or the click toggles the wrong bubble.
+static void test_prepend_keeps_clicks_on_the_right_row(void)
+{
+    TEST("a click arriving after a prepend still toggles the visible entry");
+    auto chat = std::make_shared<edc::ChatWidget>();
+    const auto now = ::time(nullptr);
+    for (int i = 0; i < 20; i++)
+        chat->AddMessage(std::make_shared<edc::Message>("plain " + std::to_string(i), now));
+    chat->AddMessage(std::make_shared<edc::ToolMessage>("shell", NumberedBody(60), now, false));
+
+    const std::string before = Draw(chat); // hit boxes for this frame
+    const int footer = RowOf(before, "Click to expand");
+    ASSERT(footer >= 0, "the collapsed entry has no expand footer to click");
+
+    // Backfill prepends older history; the anchored footer keeps its row.
+    chat->PrependMessages(MakeBatch("older number ", 50));
+
+    // Click BEFORE drawing again: that is the app's real ordering (input is handled,
+    // then TickAnimations prepends, then the frame renders).
+    chat->OnEvent(ClickAt(3, footer));
+    ASSERT(AnyRowContains(Draw(chat), "Collapse"), "the click after a prepend missed the entry");
     PASS();
 }
 
@@ -658,6 +765,10 @@ int main(void)
 {
     test_only_visible_items_are_laid_out();
     test_appending_measures_only_the_new_item();
+    test_sticking_to_bottom_tracks_the_tail();
+    test_prepend_keeps_the_tail_pinned();
+    test_prepend_preserves_history_order();
+    test_prepend_keeps_clicks_on_the_right_row();
     test_large_log_scrolls_to_both_ends();
     test_middle_of_log_renders_its_own_messages();
     test_wheel_scrolls_the_virtualized_log();

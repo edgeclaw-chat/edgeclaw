@@ -34,6 +34,15 @@ class ITranscriptStore
     virtual size_t Replay(const std::string &path,
                           const std::function<void(const ChatTranscriptEntry &)> &emit) const = 0;
 
+    // Progressive replay: the newest |max_entries| bubbles only, plus the byte
+    // offset where the older history ends (0 = nothing older). See LoadTranscriptTail.
+    virtual size_t ReplayTail(const std::string &path, size_t max_entries, size_t *prefix_end,
+                              const std::function<void(const ChatTranscriptEntry &)> &emit) const = 0;
+
+    // Decode the older history in [0, |prefix_end|) (|prefix_end| from ReplayTail).
+    virtual size_t ReplayPrefix(const std::string &path, size_t prefix_end,
+                                const std::function<void(const ChatTranscriptEntry &)> &emit) const = 0;
+
     // Append one entry (after ensuring the parent dir, fixing a possible
     // half-written line, symlink-safe).
     virtual void Append(const std::string &path, const ChatTranscriptEntry &entry) = 0;
@@ -48,6 +57,10 @@ class TranscriptStore : public ITranscriptStore
     bool PathFor(const std::string &session_id, std::string *out) const override;
     size_t Replay(const std::string &path,
                   const std::function<void(const ChatTranscriptEntry &)> &emit) const override;
+    size_t ReplayTail(const std::string &path, size_t max_entries, size_t *prefix_end,
+                      const std::function<void(const ChatTranscriptEntry &)> &emit) const override;
+    size_t ReplayPrefix(const std::string &path, size_t prefix_end,
+                        const std::function<void(const ChatTranscriptEntry &)> &emit) const override;
     void Append(const std::string &path, const ChatTranscriptEntry &entry) override;
 
   private:

@@ -35,6 +35,7 @@ class ChatWidget : public ::ftxui::ComponentBase
     ChatWidget &operator=(ChatWidget const &) = delete;
 
     void AddMessage(std::shared_ptr<Message> message);
+    void PrependMessages(std::vector<std::shared_ptr<Message>> messages);
     void Clear();
     void SetFilter(std::shared_ptr<const std::set<std::string>> allowed, std::string label = "");
     void SetTaskInputs(std::shared_ptr<const std::map<std::string, std::string>> inputs);
@@ -58,6 +59,10 @@ class ChatWidget : public ::ftxui::ComponentBase
     bool Scroll(int delta);
     bool ScrollToTop();
     bool ScrollToBottom();
+
+    // True while the log is pinned to its tail (the reader has not scrolled up).
+    // Used to tell "reading the newest" from "browsing older history".
+    bool StickingToBottom() const;
 
   private:
     // One model change -> one list update (append or rebuild).

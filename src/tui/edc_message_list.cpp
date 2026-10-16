@@ -197,6 +197,51 @@ void MessageList::AddMessage(std::shared_ptr<Message> message)
     items_.push_back(std::move(message));
     heights_.push_back(kUnmeasured);
     stale_.push_back(false);
+    /* Incremental geometry: an append only extends the row map by one entry.
+     * The new item starts at the current total and, being unmeasured, adds no
+     * height yet (Rebuild skips kUnmeasured heights) -- byte-for-byte what a
+     * full Rebuild would have computed. Rebuilding the whole prefix_ on every
+     * append made loading an N-message log O(N^2): a 15k-line transcript spent
+     * ~0.8s here alone, and it grows quadratically. */
+    if (prefix_.empty())
+        prefix_.push_back(0); /* prefix_[0] = row 0 */
+    prefix_.push_back(total_); /* start row of the new item == the old total */
+}
+
+void MessageList::PrependMessages(std::vector<std::shared_ptr<Message>> messages)
+{
+    messages.erase(std::remove(messages.begin(), messages.end(), nullptr), messages.end());
+    if (messages.empty())
+        return;
+
+    const size_t count = messages.size();
+    items_.insert(items_.begin(), std::make_move_iterator(messages.begin()), std::make_move_iterator(messages.end()));
+    heights_.insert(heights_.begin(), count, kUnmeasured);
+    stale_.insert(stale_.begin(), count, false);
+
+    /* Every existing item moved down by |count| indices, so the remembered window
+     * and the scroll anchor have to move with them -- otherwise the offset
+     * correction (TakeOffsetAdjustment) would point at the wrong row. */
+    if (visible_known_)
+    {
+        visible_first_ += count;
+        visible_last_ += count;
+    }
+    if (anchor_known_)
+        anchor_index_ += count;
+
+    /* The mouse hit boxes and the last selection highlight are index-based too.
+     * The anchor keeps the visible rows exactly where they were, so each of those
+     * items now sits |count| indices higher; shift the indices with them, or a
+     * click/selection arriving before the next frame targets the wrong bubble. */
+    for (Hit &hit : hits_)
+        hit.index += count;
+    for (size_t &index : highlighted_)
+        index += count;
+
+    /* The prepended items are unmeasured, so they add no height yet and the
+     * existing rows keep their positions; the next frame measures the new window
+     * and the anchor moves the offset by exactly the height that lands above. */
     Rebuild();
 }
 

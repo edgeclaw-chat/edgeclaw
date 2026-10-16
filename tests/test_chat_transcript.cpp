@@ -155,6 +155,74 @@ void TestLoadTranscript()
     std::remove(path.c_str());
 }
 
+// Progressive replay: the startup path reads only the file's tail, then decodes the
+// older prefix (possibly cancelled). The two halves must reconstruct the whole log.
+void TestProgressiveReplay()
+{
+    std::cout << "progressive replay: tail + prefix rebuild the log; cancel stops early\n";
+
+    const std::string path = "/tmp/test_chat_transcript_progressive.jsonl";
+    const int total = 1000;
+    {
+        std::ofstream f(path, std::ios::binary | std::ios::trunc);
+        for (int i = 0; i < total; i++)
+            f << "user\t0\t\t\tline" << i << "\n";
+        f << "user\t0\t\t\tpartial tail"; /* no newline: an unfinished append, dropped */
+    }
+
+    std::vector<edc::ChatTranscriptEntry> full;
+    edc::LoadTranscript(path, [&full](const edc::ChatTranscriptEntry &e) { full.push_back(e); });
+    Check(full.size() == static_cast<size_t>(total), "full replay has every whole line");
+
+    size_t prefix_end = 0;
+    std::vector<edc::ChatTranscriptEntry> tail;
+    const size_t n_tail = edc::LoadTranscriptTail(path, 100, &prefix_end, &tail);
+    Check(n_tail == 100, "tail replay returns the newest 100 (got " + std::to_string(n_tail) + ")");
+    Check(prefix_end > 0, "tail replay reports where the older history ends");
+    Check(tail.size() == 100 && tail.front().content == "line900" && tail.back().content == "line999",
+          "the tail is the newest end, in file order");
+
+    std::vector<edc::ChatTranscriptEntry> prefix;
+    const size_t n_prefix = edc::LoadTranscriptPrefix(path, prefix_end, &prefix);
+    Check(n_prefix == 900, "prefix replay returns the older 900 (got " + std::to_string(n_prefix) + ")");
+    bool same = prefix.size() + tail.size() == full.size();
+    for (size_t i = 0; same && i < prefix.size(); i++)
+        same = Same(prefix[i], full[i]);
+    for (size_t i = 0; same && i < tail.size(); i++)
+        same = Same(tail[i], full[prefix.size() + i]);
+    Check(same, "prefix + tail reproduce the full replay element for element");
+
+    /* A cancel that fires on the first poll stops early (the poll runs every ~256
+     * lines), so a session switch never waits for a whole history to decode. */
+    int calls = 0;
+    std::vector<edc::ChatTranscriptEntry> stopped;
+    const size_t n_stopped = edc::LoadTranscriptPrefix(path, prefix_end, &stopped, [&calls]() { return ++calls > 0; });
+    Check(n_stopped > 0 && n_stopped < static_cast<size_t>(total),
+          "cancel stops the decode early (got " + std::to_string(n_stopped) + ")");
+    Check(stopped.size() == n_stopped, "the entries decoded before the cancel are kept");
+
+    std::vector<edc::ChatTranscriptEntry> never;
+    const size_t n_never = edc::LoadTranscriptPrefix(path, prefix_end, &never, []() { return false; });
+    Check(n_never == 900, "a never-cancelled decode returns the whole prefix");
+
+    /* Fewer lines than the tail size: the whole file is the tail, nothing to
+     * backfill (the caller then starts no worker and shows no hint). */
+    const std::string small = path + ".small";
+    {
+        std::ofstream f(small, std::ios::binary | std::ios::trunc);
+        for (int i = 0; i < 5; i++)
+            f << "user\t0\t\t\tsmall" << i << "\n";
+    }
+    size_t small_end = 123;
+    std::vector<edc::ChatTranscriptEntry> small_tail;
+    const size_t n_small = edc::LoadTranscriptTail(small, 200, &small_end, &small_tail);
+    Check(n_small == 5 && small_tail.size() == 5, "a log shorter than the tail is all tail");
+    Check(small_end == 0, "a short log reports no older history (so no backfill/hint)");
+    std::remove(small.c_str());
+
+    std::remove(path.c_str());
+}
+
 } // namespace
 
 int main()
@@ -164,6 +232,7 @@ int main()
     TestRejects();
     TestLegacyShapes();
     TestLoadTranscript();
+    TestProgressiveReplay();
 
     std::cout << (g_failures == 0 ? "PASS" : "FAIL") << ": " << g_failures << " failure(s)\n";
     return g_failures == 0 ? 0 : 1;

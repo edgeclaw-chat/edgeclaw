@@ -27,20 +27,27 @@ void CopyToClipboard(const std::string &text);
 // a collapsible entry's footer.
 bool IsSelectionDrag(int press_x, int press_y, int release_x, int release_y);
 
-// The transient "Copied to clipboard" chip: an overlay pinned to the top-right of
-// the pane it is drawn in, one row and column clear of the edges. |fade| runs from
-// 0 (fully painted) to 1 (gone) -- FTXUI has no alpha.
+// The transient chip look shared by the "Copied to clipboard" toast and the
+// "Loading earlier history" hint: a heavy left rule + label on the raised dialog
+// surface, pinned to the top-right of the pane it is drawn in. |label| is used
+// verbatim (keep the surrounding spaces for the chip's breathing room). |fade| runs
+// from 0 (fully painted) to 1 (gone) -- FTXUI has no alpha.
+::ftxui::Element ToastChipElement(const std::string &label, float fade);
+
+// The clipboard chip (ToastChipElement with the "Copied to clipboard" label).
 ::ftxui::Element ClipboardToastElement(float fade);
 
-// When the chip is on screen and how far gone it is.
-class ClipboardToast
+// When a chip is on screen and how far gone it is: a hold at full strength, then a
+// fade. Generic over which chip, so the clipboard toast and the loading hint both
+// drive it (Raise while the condition holds, leave it alone to let it fade out).
+class Toast
 {
   public:
     // How long the chip holds at full strength, then how long it fades.
     static constexpr auto kHold = std::chrono::milliseconds(1400);
     static constexpr auto kFade = std::chrono::milliseconds(600);
 
-    // A copy just happened: (re)start the chip's life at |now|.
+    // A chip just (re)started at |now|.
     void Raise(std::chrono::steady_clock::time_point now);
 
     bool Visible(std::chrono::steady_clock::time_point now) const;
@@ -52,5 +59,8 @@ class ClipboardToast
     // When the chip goes away; the default (epoch) means "never raised".
     std::chrono::steady_clock::time_point until_;
 };
+
+// The clipboard chip's state machine (kept named for the tests / call sites).
+using ClipboardToast = Toast;
 
 } // namespace edc

@@ -40,6 +40,12 @@ class MessageList : public ::ftxui::ComponentBase, public ui::IScrollAnchor
 
     void AddMessage(std::shared_ptr<Message> message);
 
+    // Insert |messages| (file order: oldest first) above the current head. Used by
+    // the startup backfill to fill the older history in without blocking: the
+    // already-measured rows only shift down, and the scroll anchor moves the offset
+    // by the same amount, so a reader parked at the tail (or scrolled up) stays put.
+    void PrependMessages(std::vector<std::shared_ptr<Message>> messages);
+
     // Remove every message (the log was re-pointed at another session), and their
     // cached heights.
     void Clear();
