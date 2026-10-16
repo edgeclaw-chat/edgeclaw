@@ -61,6 +61,6 @@ ast_node_t *ast_parse(edc_shell_token_t *tokens, int count, bool is_at);
  * creates land on it -- after P3 the scheduler has no "current session", so it must be
  * passed explicitly. */
 void ast_execute(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to, ast_node_t *root,
-                 struct edc_session *session);
+                 struct edc_session *session, const char *desc_override);
 
 #endif

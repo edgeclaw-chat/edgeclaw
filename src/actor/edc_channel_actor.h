@@ -33,6 +33,12 @@ struct edc_channel_message
     edc_channel_type type;
     edc_channel_message_type message_type;
     edc_render_pref_t render_pref; /* render preference declared by the sender; 0 = PLAIN (plain text) */
+    /* A fact the sender declares: the LABEL to give a task created from this message when
+     * that must differ from the content. The template paths set it to the line the user
+     * typed (`/prompt review ars`) while the content is the expanded body -- so the task
+     * reads as what was asked for, not as the body it turned into. NULL = derive the label
+     * from the content, the usual way. */
+    sds task_desc;
     bool from_active_task;         /* A fact the sender declares: whether this output came from
                                     * its own session's active task. Declaration only -- the
                                     * kernel drops nothing based on it (it does not know who is

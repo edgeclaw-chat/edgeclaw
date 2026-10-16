@@ -13,14 +13,15 @@
  *     description: Review staged git changes
  *     argument-hint: "[focus]"
  *     ---
- *     Review the staged changes. Focus on {{1:-correctness and error handling}}.
+ *     Review the staged changes. Focus on ${1:-correctness and error handling}.
  *
- * Substitution is TEXTUAL and uses `{{…}}`. The loader ALSO accepts the ecosystem's
- * `$1` / `$@` / `$ARGUMENTS` / `${1:-x}` and translates them to `{{…}}` at parse time
- * (see edc_prompt_translate_dollar); a `$` that is not one of those forms is copied
- * verbatim. TASK REFERENCES ARE NOT `$` ANY MORE: they are `{{LAST}}` / `{{<id>}}` /
- * `{{SELF}}`, expanded by the input layer this text is later executed by (see
- * edc_shell_vars.c). So a body says `{{LAST}}`, not `$LAST`.
+ * Substitution is TEXTUAL, and the placeholders are THIS layer's: `$1` / `$@` /
+ * `$ARGUMENTS` / `${1:-x}` -- the spelling pi / Claude Code / opencode use, so a template
+ * brought over from them runs unedited. `{{…}}` is the legacy alias of the same forms and
+ * keeps working. TASK REFERENCES ARE `{{…}}` TOO but live in the INPUT LAYER this text is
+ * later executed by (`{{LAST}}` / `{{<id>}}` / `{{SELF}}`, see edc_shell_vars.c): a body
+ * writes `{{LAST}}` for the previous output, and `{{1}}` means "argument 1" here because
+ * this layer runs first.
  */
 
 #include "sds.h"
@@ -44,8 +45,8 @@ void edc_prompt_free(struct edc_prompt *prompt);
  * |name| must be a bare file name: empty, dot-prefixed, or containing anything outside
  * [A-Za-z0-9._-] is refused, so `/prompt ../../etc/passwd` cannot leave |dir|.
  *
- * A body that spells its parameters the pi / Claude Code / opencode way (`$1`, `$@`,
- * `${1:-x}`) is translated to `{{…}}` at parse time -- see edc_prompt_translate_dollar. */
+ * A body keeps its placeholders AS WRITTEN (`$1`, `{{1}}`, ...); edc_prompt_expand reads
+ * both. */
 struct edc_prompt *edc_prompt_load(const char *dir, const char *name);
 
 /* Every template in |dir| (only direct `*.md` children), sorted by name. A missing or
@@ -69,31 +70,6 @@ UT_array *edc_prompts_list_roots(const UT_array *roots);
  * edc_prompt_args_free. */
 sds *edc_prompt_split_args(const char *s, int *out_count);
 void edc_prompt_args_free(sds *args, int count);
-
-/* Translate a pi / Claude Code / opencode-style template body into ours, at LOAD time.
- * Their dialects spell parameters with `$`; ours use `{{…}}`. The two grammars are the
- * same shape, so this is mechanical:
- *
- *     $1 … $9          -> {{N}}       (single digit on purpose: in shell positional
- *                                      semantics `$10` is `$1` then a literal `0`, NOT
- *                                      the tenth argument -- ours says `{{10}}` for that)
- *     $@ / $ARGUMENTS  -> {{@}}
- *     ${N}             -> {{N}}
- *     ${N:-default}    -> {{N:-default}}
- *     ${@}             -> {{@}}
- *     ${@:-default}    -> {{@:-default}}
- *     ${@:N}           -> {{@:N}}
- *     ${@:N:L}         -> {{@:N:L}}
- *     \$               -> a literal `$`
- *
- * Anything else after a `$` (`$HOME`, a lone `$`, `$$`) is copied VERBATIM: it is not a
- * template parameter, and nothing downstream reads `$` either (task references are
- * `{{LAST}}` / `{{<id>}}` / `{{SELF}}` now -- see edc_shell_vars.c).
- *
- * It runs on EVERY template at parse time (edc_prompt_parse): with task references moved
- * off `$`, there is no second meaning of `$` left to protect, so no per-file or per-root
- * dialect has to be tracked. Caller frees. */
-extern sds edc_prompt_translate_dollar(const char *body);
 
 /* Substitute the placeholders below in |prompt|'s body using |args| (|argc| of them).
  * A placeholder is `{{…}}`; recognised forms -- a missing positional argument yields the

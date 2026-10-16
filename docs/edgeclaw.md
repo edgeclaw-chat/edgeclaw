@@ -262,9 +262,9 @@ equivalent of `cmd &`.
 | `/model <id>` | Switch model (persisted; the catalog's context window is applied too) |
 | `/model search <q>` | Search chat models across all providers |
 | `/prompt` | List the templates in `workspace/prompts/` |
-| `/prompt <name> [args…]` | Load a template, substitute its `{{…}}` placeholders, and run the result as input |
+| `/prompt <name> [args…]` | Load a template, substitute its `$1` / `$@` / `${…}` placeholders (`{{…}}` also works), and run the result as input (the last placeholder takes the remaining args; a body with no placeholder gets the args appended) |
 | `/skill` | List the skills — ours, plus any found in a `.claude` / `.agents` / `.pi` / `.opencode` skills directory |
-| `/skill <name> [args…]` | Run a skill directly: its `SKILL.md` body is loaded into this task (no tool round) |
+| `/skill <name> [args…]` | Run a skill directly: its `SKILL.md` body is loaded into this task (no tool round); the args are substituted, or appended when the body has none |
 | `/reload` | Re-read the resource files and rebuild the cached system prompt (a skill or AGENTS.md edited on disk takes effect; `config.json` still needs a restart) |
 | `/connect` | Guided setup: choose a provider, API key, and model (three-step wizard) |
 | `/sandbox [on\|off]` | Enable/disable the filesystem sandbox |

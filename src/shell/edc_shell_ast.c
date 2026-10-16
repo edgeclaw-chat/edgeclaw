@@ -55,6 +55,10 @@ typedef struct
     struct edc_session *session; /* the session this input belongs to (tasks/groups it creates land here) */
     bool bg;
     edc_task_dep_type dep_type;
+    /* The sender's label for the tasks this input creates, when it differs from the text
+     * (a template expansion: the user typed `/prompt review ars`, the input is the expanded
+     * body). NULL = derive it from the text, the usual way. */
+    const char *desc_override;
     /* The tasks this input creates, gathered so the whole input gets ONE receipt (a
      * `a | b | c` chain used to announce one line per segment). */
     struct edc_task **created;
@@ -192,8 +196,11 @@ static struct edc_task *exec_node(
         if (node->text && sdslen(node->text) > 0)
         {
             opts.input = sdsnew(node->text);
-            /* derive the display description the same way /task does */
-            opts.desc = edc_str_utf8_truncate(node->text, EDC_TASK_DESC_MAX, true);
+            /* The display name: the SENDER may have declared a better label for the task
+             * this input creates (`/prompt review ars` rather than the expanded body it
+             * became); otherwise derive it from the text, the same way /task does. */
+            opts.desc = edc_str_utf8_truncate(ctx->desc_override ? ctx->desc_override : node->text,
+                                              EDC_TASK_DESC_MAX, true);
         }
         opts.dep_ids = malloc((size_t)node->dep_count * sizeof(sds));
         for (int i = 0; i < node->dep_count; i++)
@@ -366,7 +373,7 @@ static struct edc_task *exec_node(
 }
 
 void ast_execute(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to, ast_node_t *root,
-                 struct edc_session *session)
+                 struct edc_session *session, const char *desc_override)
 {
     if (!root)
         return;
@@ -376,6 +383,7 @@ void ast_execute(struct edc_session_manager *sm, struct edc_scheduler *sched, st
     ctx.to = to;
     ctx.dep_type = TASK_DEP_SEQUENCE;
     ctx.session = session;
+    ctx.desc_override = desc_override;
     /* The foreground group is a session attribute -- read it straight from the passed-in
      * session (no more asking the scheduler for its "currently bound" copy). */
     ctx.target_group = session ? session->foreground_group : NULL;

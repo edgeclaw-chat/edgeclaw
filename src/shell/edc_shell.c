@@ -588,7 +588,7 @@ bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sch
 
     ast_node_t *root = ast_parse(tokens, tok_count, is_at);
     ast_execute(sm, sched, to, root,
-                edc_session_store_resolve_session(sm, message->session_id));
+                edc_session_store_resolve_session(sm, message->session_id), message->task_desc);
     ast_free(root);
 
     for (int i = 0; i < tok_count; i++)

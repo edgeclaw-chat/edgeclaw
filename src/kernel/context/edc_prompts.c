@@ -165,12 +165,10 @@ static struct edc_prompt *edc_prompt_parse(const char *name, const char *content
         return NULL;
     }
 
-    /* `$` belongs to the template layer, so translate their spelling unconditionally:
-     * `$1` / `$@` / `$ARGUMENTS` / `${1:-x}` become our `{{…}}`. Task references are NOT
-     * `$` any more (they are `{{LAST}}` / `{{<id>}}` / `{{SELF}}`, which this leaves
-     * alone), so there is nothing to collide with and no per-file dialect to track. */
-    prompt->body = edc_prompt_translate_dollar(trimmed);
-    sdsfree(trimmed);
+    /* Stored AS WRITTEN: `$1` / `$@` / `${1:-x}` are our placeholder spelling -- the one pi
+     * / Claude Code / opencode use, which is what lets their files run unedited -- and the
+     * legacy `{{…}}` alias is accepted by the same expander (edc_prompt_placeholder_at). */
+    prompt->body = trimmed;
 
     if (!prompt->description)
         prompt->description = edc_prompt_first_line(prompt->body);
@@ -428,8 +426,172 @@ static sds edc_prompt_join(const sds *args, int from, int to)
     return out;
 }
 
-/* Recognise the inside of `{{…}}`; false = not a form we know (leave it verbatim). */
-static bool edc_prompt_braced(sds spec, const sds *args, int argc, sds *out)
+/* The placeholder grammar lives in edc_prompt_braced (defined below, with the arg rules);
+ * the recogniser asks IT whether a spec is a form we know, so the grammar stays in one
+ * place. */
+static bool edc_prompt_braced(sds spec, const sds *args, int argc, sds *out, long last_positional);
+
+/* Which kind of argument reference a spec is. */
+enum edc_prompt_spec_kind
+{
+    SPEC_NONE,       /* not a form we know: copied verbatim */
+    SPEC_ALL,        /* @ / @:-D / @:N / @:N:L */
+    SPEC_POSITIONAL, /* N / N:-D */
+};
+
+/* Where a placeholder starts: our `$…` (the spelling pi / Claude Code / opencode use --
+ * running THEIR files unedited is the point) or the legacy `{{…}}` alias. On success
+ * |*out_spec| is the canonical inner form ("1", "1:-D", "@", "@:2:1") and the result is how
+ * many bytes were consumed; 0 = not a placeholder (copy the byte verbatim).
+ *
+ * The grammar lives in ONE place: edc_prompt_braced is asked whether the spec is a form we
+ * know (with no arguments a positional resolves to the empty string, so false really means
+ * "unrecognised").
+ *
+ *   $1 … $9          one positional argument -- SINGLE digit, as in a shell: `$10` is `$1`
+ *                    followed by a literal `0`, not the tenth argument (`${10}` says that)
+ *   $@ / $ARGUMENTS  every argument
+ *   ${1} ${10} ${1:-D} ${@} ${@:-D} ${@:N} ${@:N:L}
+ *   \$               a literal `$` (handled by the callers, which see the backslash) */
+static size_t edc_prompt_placeholder_at(const char *p, sds *out_spec)
+{
+    const char *spec_start = NULL;
+    size_t spec_len = 0;
+    size_t consumed = 0;
+
+    if (p[0] == '{' && p[1] == '{')
+    {
+        const char *close = strstr(p + 2, "}}");
+        if (!close)
+            return 0;
+        spec_start = p + 2;
+        spec_len = (size_t)(close - (p + 2));
+        consumed = (size_t)(close - p) + 2;
+    }
+    else if (p[0] == '$' && p[1] != '\0')
+    {
+        const char *q = p + 1;
+        if (*q == '{')
+        {
+            const char *close = strchr(q + 1, '}');
+            if (!close)
+                return 0;
+            spec_start = q + 1;
+            spec_len = (size_t)(close - (q + 1));
+            consumed = (size_t)(close - p) + 1;
+        }
+        else if (*q == '@')
+        {
+            spec_start = q;
+            spec_len = 1;
+            consumed = 2;
+        }
+        else if (*q >= '0' && *q <= '9')
+        {
+            spec_start = q;
+            spec_len = 1; /* single digit on purpose -- see above */
+            consumed = 2;
+        }
+        else if (strncmp(q, "ARGUMENTS", 9) == 0)
+        {
+            spec_start = "@"; /* canonical: it means every argument */
+            spec_len = 1;
+            consumed = 10;
+        }
+        else
+        {
+            return 0;
+        }
+    }
+    else
+    {
+        return 0;
+    }
+
+    sds spec = sdsnewlen(spec_start, spec_len);
+    sds dummy = NULL;
+    const bool known = edc_prompt_braced(spec, NULL, 0, &dummy, 0);
+    if (dummy)
+        sdsfree(dummy);
+    if (!known)
+    {
+        sdsfree(spec);
+        return 0;
+    }
+    *out_spec = spec;
+    return consumed;
+}
+
+/* Which kind of argument reference a (already recognised) spec is. */
+static enum edc_prompt_spec_kind edc_prompt_spec_kind_of(const char *spec, long *out_index)
+{
+    if (out_index)
+        *out_index = 0;
+    if (!spec || !*spec)
+        return SPEC_NONE;
+    if (spec[0] == '@')
+        return SPEC_ALL;
+
+    char *end = NULL;
+    const long idx = strtol(spec, &end, 10);
+    if (end != spec && idx >= 1)
+    {
+        if (out_index)
+            *out_index = idx;
+        return SPEC_POSITIONAL;
+    }
+    return SPEC_NONE;
+}
+
+/* Walk the body's placeholders: the HIGHEST positional index, and whether any argument
+ * reference at all is present. This drives the argument rules in edc_prompt_expand. */
+static void edc_prompt_scan_args(const sds body, long *out_last, bool *out_any)
+{
+    long last = 0;
+    bool any = false;
+    const char *s = body;
+    size_t len = sdslen(body);
+
+    for (size_t i = 0; i < len;)
+    {
+        if (s[i] == '\\' && i + 1 < len && s[i + 1] == '$')
+        {
+            i += 2; /* an escaped dollar is text, not a reference */
+            continue;
+        }
+        sds spec = NULL;
+        const size_t used = edc_prompt_placeholder_at(s + i, &spec);
+        if (used == 0)
+        {
+            i++;
+            continue;
+        }
+
+        long idx = 0;
+        const enum edc_prompt_spec_kind kind = edc_prompt_spec_kind_of(spec, &idx);
+        sdsfree(spec);
+        if (kind == SPEC_ALL)
+            any = true;
+        else if (kind == SPEC_POSITIONAL)
+        {
+            any = true;
+            if (idx > last)
+                last = idx;
+        }
+        i += used;
+    }
+
+    if (out_last)
+        *out_last = last;
+    if (out_any)
+        *out_any = any;
+}
+
+/* Recognise the inside of a placeholder; false = not a form we know (leave it verbatim).
+ * |last_positional| is the highest positional index in the body: that ONE takes every
+ * remaining argument, so `/prompt x a b c` with `{{1}}` (or `$1`) hands the body "a b c"
+ * instead of dropping "b c" (opencode's rule -- see the header). */
+static bool edc_prompt_braced(sds spec, const sds *args, int argc, sds *out, long last_positional)
 {
     const char *p = spec;
     if (!p || !*p)
@@ -490,11 +652,29 @@ static bool edc_prompt_braced(sds spec, const sds *args, int argc, sds *out)
             return false;
         if (*end == '\0')
         {
-            *out = sdsnew(edc_prompt_arg(args, argc, (int)idx));
+            if ((long)idx == last_positional)
+                *out = edc_prompt_join(args, (int)(idx - 1), argc); /* the rest */
+            else
+                *out = sdsnew(edc_prompt_arg(args, argc, (int)idx));
             return true;
         }
         if (strncmp(end, ":-", 2) == 0)
         {
+            if ((long)idx == last_positional)
+            {
+                /* The LAST positional takes the remaining arguments -- but when there is
+                 * nothing left to take, the default still applies (that is what `:-` is
+                 * for). */
+                sds rest = edc_prompt_join(args, (int)(idx - 1), argc);
+                if (sdslen(rest) > 0)
+                {
+                    *out = rest;
+                    return true;
+                }
+                sdsfree(rest);
+                *out = sdsnew(end + 2);
+                return true;
+            }
             const char *cur = edc_prompt_arg(args, argc, (int)idx);
             *out = sdsnew((cur && *cur) ? cur : end + 2);
             return true;
@@ -503,142 +683,18 @@ static bool edc_prompt_braced(sds spec, const sds *args, int argc, sds *out)
     return false;
 }
 
-/* ── `$` dialect: pi / Claude Code / opencode templates ────── */
-
-static bool edc_prompt_is_digit(char c)
-{
-    return c >= '0' && c <= '9';
-}
-
-/* Is |inner| (the text between `${` and `}`) one of the forms we can spell with `{{…}}`?
- * Accepts `N`, `N:-D`, `@`, `@:-D`, `@:N`, `@:N:L` -- anything else is left to the input
- * layer (see the header). */
-static bool edc_prompt_brace_ok(const sds inner)
-{
-    const char *s = inner;
-    size_t n = sdslen(inner);
-    if (n == 0)
-        return false;
-
-    if (s[0] == '@')
-    {
-        if (n == 1)
-            return true; /* ${@} */
-        if (n >= 3 && s[1] == ':' && s[2] == '-')
-            return true; /* ${@:-D} */
-        if (n >= 2 && s[1] == ':')
-        {
-            size_t i = 2;
-            size_t d1 = 0;
-            while (i < n && edc_prompt_is_digit(s[i]))
-            {
-                i++;
-                d1++;
-            }
-            if (d1 == 0)
-                return false;
-            if (i == n)
-                return true; /* ${@:N} */
-            if (s[i] != ':')
-                return false;
-            i++;
-            size_t d2 = 0;
-            while (i < n && edc_prompt_is_digit(s[i]))
-            {
-                i++;
-                d2++;
-            }
-            return d2 > 0 && i == n; /* ${@:N:L} */
-        }
-        return false;
-    }
-
-    if (edc_prompt_is_digit(s[0]))
-    {
-        size_t i = 0;
-        while (i < n && edc_prompt_is_digit(s[i]))
-            i++;
-        if (i == n)
-            return true; /* ${N} */
-        return n - i >= 3 && s[i] == ':' && s[i + 1] == '-'; /* ${N:-D} */
-    }
-    return false;
-}
-
-sds edc_prompt_translate_dollar(const char *body)
-{
-    sds out = sdsempty();
-    const char *p = body ? body : "";
-
-    while (*p)
-    {
-        if (*p == '\\' && *(p + 1) == '$')
-        {
-            out = sdscatlen(out, "$", 1); /* \$ -> a literal $ */
-            p += 2;
-            continue;
-        }
-        if (*p != '$')
-        {
-            out = sdscatlen(out, p, 1);
-            p++;
-            continue;
-        }
-
-        const char *q = p + 1;
-        sds rep = NULL;
-        size_t used = 0;
-
-        if (*q == '@')
-        {
-            rep = sdsnew("{{@}}");
-            used = 2;
-        }
-        else if (edc_prompt_is_digit(*q))
-        {
-            rep = sdscatprintf(sdsempty(), "{{%c}}", *q);
-            used = 2;
-        }
-        else if (strncmp(q, "ARGUMENTS", 9) == 0)
-        {
-            rep = sdsnew("{{@}}");
-            used = 10;
-        }
-        else if (*q == '{')
-        {
-            const char *close = strchr(q + 1, '}');
-            if (close)
-            {
-                sds inner = sdsnewlen(q + 1, (size_t)(close - q - 1));
-                if (edc_prompt_brace_ok(inner))
-                {
-                    rep = sdscatprintf(sdsempty(), "{{%s}}", inner);
-                    used = (size_t)(close - p) + 1;
-                }
-                sdsfree(inner);
-            }
-        }
-
-        if (rep)
-        {
-            out = sdscatsds(out, rep);
-            sdsfree(rep);
-            p += used;
-        }
-        else
-        {
-            /* Not a template parameter: leave the `$` to the input layer. */
-            out = sdscatlen(out, "$", 1);
-            p++;
-        }
-    }
-    return out;
-}
-
 sds edc_prompt_expand(const struct edc_prompt *prompt, sds *args, int argc)
 {
     if (!prompt || !prompt->body)
         return sdsempty();
+
+    /* The argument rules (opencode's, verified 2026-10-16 -- packages/opencode/src/session/
+     * prompt.ts): the highest positional placeholder takes the remaining arguments, and a
+     * body with NO reference at all gets the user's arguments appended instead. Either way
+     * what the user typed reaches the model. */
+    long last_positional = 0;
+    bool any_reference = false;
+    edc_prompt_scan_args(prompt->body, &last_positional, &any_reference);
 
     sds out = sdsempty();
     const char *s = prompt->body;
@@ -647,30 +703,43 @@ sds edc_prompt_expand(const struct edc_prompt *prompt, sds *args, int argc)
 
     while (i < len)
     {
-        if (s[i] == '{' && i + 1 < len && s[i + 1] == '{')
+        if (s[i] == '\\' && i + 1 < len && s[i + 1] == '$')
         {
-            const char *close = strstr(s + i + 2, "}}");
-            if (close)
+            out = sdscatlen(out, "$", 1); /* \$ -> a literal $ */
+            i += 2;
+            continue;
+        }
+
+        sds spec = NULL;
+        const size_t used = edc_prompt_placeholder_at(s + i, &spec);
+        if (used > 0)
+        {
+            sds value = NULL;
+            const bool ok = edc_prompt_braced(spec, args, argc, &value, last_positional);
+            sdsfree(spec);
+            if (ok)
             {
-                sds spec = sdsnewlen(s + i + 2, (size_t)(close - (s + i + 2)));
-                sds value = NULL;
-                bool ok = edc_prompt_braced(spec, args, argc, &value);
-                sdsfree(spec);
-                if (ok)
-                {
-                    out = sdscatsds(out, value);
-                    sdsfree(value);
-                    i = (size_t)(close - s) + 2;
-                    continue;
-                }
+                out = sdscatsds(out, value);
+                sdsfree(value);
+                i += used;
+                continue;
             }
         }
 
-        /* Everything else -- an unrecognised `{{…}}`, a lone `{`, and every `$` -- is
-         * copied verbatim. (`$` is special in neither layer: the ecosystem's parameter
-         * spellings were translated at load, and task references are `{{…}}`.) */
+        /* Not a placeholder: copied verbatim (`$HOME`, a bare `{`, an unknown `{{…}}`, the
+         * input layer's `{{LAST}}`/`{{<id>}}` task references, ...). */
         out = sdscatlen(out, &s[i], 1);
         i++;
+    }
+
+    /* Nothing in the body took the arguments, and the user gave some: append them. A
+     * template that never mentions its arguments (or a migrated skill body that simply does
+     * not spell them out) still hands the user's words to the model -- never a silent drop. */
+    if (!any_reference && argc > 0)
+    {
+        sds joined = edc_prompt_join(args, 0, argc);
+        out = sdscatprintf(out, "\n\n%s", joined);
+        sdsfree(joined);
     }
 
     return out;

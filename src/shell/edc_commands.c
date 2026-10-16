@@ -2124,6 +2124,9 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
     struct edc_channel_message *expanded_msg = edc_channel_message_new(message->type, message->message_type, expanded);
     if (message->session_id)
         expanded_msg->session_id = sdsnew(message->session_id);
+    /* The task is LABELLED by what the user typed, not by the body the template expanded
+     * into (see edc_channel_message.task_desc). */
+    expanded_msg->task_desc = sdstrim(sdsnew(message->content), " \t\r\n");
     edc_shell_execute(sm, sched, to, expanded_msg);
     edc_channel_message_free(expanded_msg);
     return true;
@@ -2252,14 +2255,13 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
         return true;
     }
 
-    /* The body IS the input, with the ecosystem's `$1` / `$ARGUMENTS` (and our `{{…}}`)
-     * filled in -- so `/skill pdf extract pages 1-5` hands the skill its arguments. */
-    sds body = edc_prompt_translate_dollar(found->content);
+    /* The body IS the input, with its `$1` / `$ARGUMENTS` / `{{…}}` placeholders filled in
+     * (and, when it has none, the user's words appended) -- so `/skill pdf extract pages`
+     * hands the skill its arguments. |found->content| is borrowed: the skill frees it. */
     struct edc_prompt shell_body;
     memset(&shell_body, 0, sizeof(shell_body));
-    shell_body.body = body;
+    shell_body.body = found->content;
     sds input = edc_prompt_expand(&shell_body, args + 1, argc - 1);
-    sdsfree(body);
     edc_skill_free(found);
     edc_prompt_args_free(args, argc);
 
@@ -2274,6 +2276,9 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
     struct edc_channel_message *expanded_msg = edc_channel_message_new(message->type, message->message_type, input);
     if (message->session_id)
         expanded_msg->session_id = sdsnew(message->session_id);
+    /* The task is LABELLED by what the user typed (`/skill pdf extract pages`), not by the
+     * skill body it expanded into. */
+    expanded_msg->task_desc = sdstrim(sdsnew(message->content), " \t\r\n");
     edc_shell_execute(sm, sched, to, expanded_msg);
     edc_channel_message_free(expanded_msg);
     return true;

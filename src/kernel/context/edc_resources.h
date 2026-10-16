@@ -19,9 +19,9 @@
  *     <root>/command(s)/        opencode / Claude Code commands (nested .md files)
  *     <root>/skill(s)/          skills, one SKILL.md per skill (Claude: skills/<name>/)
  *
- * There is no per-root "dialect": a template may spell its parameters `{{…}}` or the
- * ecosystem's `$1` / `$@` / `${1:-x}`, and the `$` forms are translated at parse time
- * (edc_prompt_translate_dollar) -- task references are `{{…}}` now, so nothing collides.
+ * There is no per-root "dialect": a template may spell a parameter the ecosystem's way
+ * (`$1` / `$@` / `${1:-x}`) or with the legacy `{{…}}` alias, and the same expander reads
+ * both -- task references are `{{…}}` too, but they belong to the input layer below.
  */
 
 #include "sds.h"

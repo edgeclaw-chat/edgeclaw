@@ -153,16 +153,16 @@ int main(void)
     d = root_at(roots, proj_own_root);
     CHECK(d != NULL, "./.edgeclaw present");
 
-    TEST("a foreign template is translated on load, and names its source");
+    TEST("a foreign template loads AS WRITTEN (no translation step), and names its source");
     struct edc_prompt *p = edc_prompt_load_roots(roots, "claude-only");
     CHECK(p != NULL, "found in $HOME/.claude");
-    CHECK_STR(p ? p->body : NULL, "use {{1}} now", "`$1` -> `{{1}}` at load");
+    CHECK_STR(p ? p->body : NULL, "use $1 now", "the body keeps the author's `$1`");
     CHECK(p && p->source && strcmp(p->source, home_claude_root) == 0, "source is the root");
     edc_prompt_free(p);
 
-    TEST("a project template is translated too");
+    TEST("a project template too");
     p = edc_prompt_load_roots(roots, "proj-only");
-    CHECK_STR(p ? p->body : NULL, "proj {{1}}", "`$1` -> `{{1}}`");
+    CHECK_STR(p ? p->body : NULL, "proj $1", "kept as written");
     edc_prompt_free(p);
 
     TEST("the workspace SHADOWS a foreign template of the same name");
@@ -177,11 +177,10 @@ int main(void)
     CHECK(p && p->source && strcmp(p->source, ws) == 0, "source is the workspace");
     edc_prompt_free(p);
 
-    TEST("in a template body `$1` is an ARGUMENT; task refs are `{{…}}`");
+    TEST("in a template body `$1` is an ARGUMENT and `{{…}}` a task ref");
     write_file_at(ws_prompts, "ref.md", "arg: $1 / last: {{LAST}}\n");
     p = edc_prompt_load_roots(roots, "ref");
-    CHECK_STR(p ? p->body : NULL, "arg: {{1}} / last: {{LAST}}",
-              "`$1` -> the arg placeholder, `{{LAST}}` left for the input layer");
+    CHECK_STR(p ? p->body : NULL, "arg: $1 / last: {{LAST}}", "both spellings are kept as written");
     edc_prompt_free(p);
 
     TEST("listing spans the roots, one row per name");

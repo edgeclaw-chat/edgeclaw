@@ -8,9 +8,11 @@
 #include "edc_commands.h"
 #include "edc_config.h"
 #include "edc_compat.h"
+#include "edc_resources.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
+#include "edc_skills.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -197,9 +199,28 @@ int main(void)
     drive_command(cfg, sm, sched, "/prompt piped");
 
     CHECK(count_tasks(sess) == before + 2, "two tasks were created");
-    struct edc_task *alpha = find_task_by_desc(sess, "alpha");
-    struct edc_task *beta = find_task_by_desc(sess, "beta");
-    CHECK(alpha != NULL && beta != NULL, "alpha and beta both exist");
+    /* The two tasks are LABELLED by the command the user typed and carry the body's halves
+     * as their INPUT (edc_channel_message.task_desc). */
+    struct edc_task *alpha = NULL;
+    struct edc_task *beta = NULL;
+    {
+        struct edc_task_group *g;
+        DL_FOREACH(sess->groups, g)
+        {
+            struct edc_task *t;
+            LL_FOREACH2(g->members, t, group_next)
+            {
+                const char *in = first_user_content(t->active_turn);
+                if (in && strcmp(in, "alpha") == 0)
+                    alpha = t;
+                if (in && strcmp(in, "beta") == 0)
+                    beta = t;
+            }
+        }
+    }
+    CHECK(alpha != NULL && beta != NULL, "alpha and beta both exist (as their inputs)");
+    CHECK(alpha && alpha->description && strcmp(alpha->description, "/prompt piped") == 0,
+          "labelled by what the user typed, not by the body");
     CHECK(beta != NULL && beta->deps_total > 0, "beta is the piped dependent (it has a dependency)");
 
     /* ── 正文以 '/' 开头: 仍然是**文本**, 不是命令 (不变式 2) ──────── */
@@ -209,8 +230,11 @@ int main(void)
     g_llm_task = NULL;
     drive_command(cfg, sm, sched, "/prompt recursive");
 
-    struct edc_task *literal = find_task_by_desc(sess, "/task new inner");
-    CHECK(literal != NULL, "the task's description is the literal text (no recursion into dispatch)");
+    struct edc_task *literal = find_task_by_desc(sess, "/prompt recursive");
+    CHECK(literal != NULL, "the task is labelled by the command the user typed");
+    CHECK(literal && first_user_content(literal->active_turn) &&
+              strcmp(first_user_content(literal->active_turn), "/task new inner") == 0,
+          "and its INPUT is the literal body (no recursion into dispatch)");
     CHECK(find_task_by_desc(sess, "inner") == NULL, "and no '/task new' ever ran");
 
     /* ── 裸 /prompt: 只列出来, 不建任务 ──────────────────────────── */
@@ -238,6 +262,35 @@ int main(void)
     snprintf(cmd, sizeof(cmd), "rm -rf %s", ws);
     if (system(cmd) != 0)
         printf("  (cleanup failed)\n");
+
+    /* ── /skill: 正文当输入 + 用户输入（无占位符 → 追加）+ desc 用用户原话 ── */
+
+    TEST("/skill <name> <args>: body runs, args appended, desc = the command");
+    {
+        char cmd[1024];
+        snprintf(cmd, sizeof(cmd), "mkdir -p %s/skills/pdf", ws);
+        if (system(cmd) != 0)
+            return 1;
+        char path[1024];
+        snprintf(path, sizeof(path), "%s/skills/pdf/SKILL.md", ws);
+        FILE *f = fopen(path, "w");
+        if (!f)
+            return 1;
+        fputs("---\ndescription: extract from PDFs\n---\nExtract text from the PDF.\n", f);
+        fclose(f);
+
+        g_llm_calls = 0;
+        g_llm_task = NULL;
+        drive_command(cfg, sm, sched, "/skill pdf page 3");
+
+        /* Not "did it dispatch": the earlier cases left unfinished tasks in front, so a task
+         * created here legitimately queues behind them. What this pins is the task itself. */
+        struct edc_task *pdf = find_task_by_desc(sess, "/skill pdf page 3");
+        CHECK(pdf != NULL, "a task was created, labelled by the command the user typed");
+        const char *in = pdf ? first_user_content(pdf->active_turn) : NULL;
+        CHECK(in && strstr(in, "Extract text from the PDF.") != NULL, "the SKILL.md body is its input");
+        CHECK(in && strstr(in, "page 3") != NULL, "the user's words reached it (no placeholder: appended)");
+    }
 
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed > 0 ? 1 : 0;

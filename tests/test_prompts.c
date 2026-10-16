@@ -2,14 +2,13 @@
  *
  * Unit tests for parsing (src/kernel/context/edc_prompts.c), argument splitting and
  * substitution. Two properties matter most:
- *   ① `edc_prompt_expand`'s placeholder set is exactly the one the header promises --
- *      `{{…}}` -- and it reads nothing else. In particular it never reads `$`: the `$`
- *      forms of the ecosystem (`$1`, `$@`, `${1:-x}`) are turned into `{{…}}` by the
- *      LOADER (edc_prompt_parse -> edc_prompt_translate_dollar), so by the time the
- *      expander runs there is only one syntax left;
- *   ② `$` is inert in the input layer too: task references are `{{LAST}}` / `{{<id>}}` /
- *      `{{SELF}}` now (see tests/test_cmd_parse.c::test_expand_task_refs), so a `$HOME` or
- *      a `$5.00` in a body passes through everything untouched. */
+ *   ① the placeholders are THIS layer's, spelled the ecosystem's way -- `$1` / `$@` /
+ *      `${1:-x}` (pi / Claude Code / opencode, so their files run unedited) -- with the
+ *      legacy `{{…}}` alias read by the SAME expander. There is no translation step: a body
+ *      keeps exactly what its author wrote;
+ *   ② `$` is inert in the *input* layer: task references are `{{LAST}}` / `{{<id>}}` /
+ *      `{{SELF}}` (see tests/test_cmd_parse.c::test_expand_task_refs), so the `$` forms
+ *      belong to templates and the braces to the layer below. */
 #include "edc_prompts.h"
 #include "sds.h"
 #include "utarray.h"
@@ -88,34 +87,53 @@ static void check_expand(const char *name, const char *body, const char *argline
 
 static void test_expand(void)
 {
-    check_expand("{{1}} is the first argument", "A:{{1}}", "one two", "A:one");
+    /* ── 替换：位置占位符 + 全量形式 ───────────────────────────── */
+    check_expand("{{1}} takes the REST when it is the last one", "A:{{1}}", "one two", "A:one two");
     check_expand("{{2}} is the second argument", "A:{{2}}", "one two", "A:two");
+    check_expand("{{2}} (last) takes what is left after it", "A:{{1}}|{{2}}", "one two three", "A:one|two three");
     check_expand("{{10}} is multi-digit (the tenth argument)", "A:{{10}}", "1 2 3 4 5 6 7 8 9 ten", "A:ten");
     check_expand("a missing positional is EMPTY, not literal", "A[{{3}}]", "one two", "A[]");
     check_expand("{{@}} joins every argument with a space", "A:{{@}}", "one two three", "A:one two three");
     check_expand("{{@}} with no arguments is empty", "A:{{@}}", "", "A:");
+    check_expand("{{@}} consumes: nothing is appended", "A:{{@}}", "one two", "A:one two");
     check_expand("{{1:-default}} uses the argument", "A:{{1:-D}}", "one", "A:one");
     check_expand("{{1:-default}} falls back when missing", "A:{{1:-D}}", "", "A:D");
     check_expand("{{1:-default}} falls back when empty", "A:{{1:-D}}", "\"\"", "A:D");
+    check_expand("{{1:-default}} (last) also takes the rest", "A:{{1:-D}}", "one two", "A:one two");
     check_expand("{{@:-default}} uses the arguments", "A:{{@:-D}}", "one two", "A:one two");
     check_expand("{{@:-default}} falls back when there are none", "A:{{@:-D}}", "", "A:D");
     check_expand("{{@:2}} slices from the second argument", "A:{{@:2}}", "one two three", "A:two three");
     check_expand("{{@:2:1}} takes one from the second", "A:{{@:2:1}}", "one two three", "A:two");
     check_expand("{{@:9}} past the end is empty", "A:{{@:9}}", "one", "A:");
-    check_expand("{{0}} is not ours", "A:{{0}}", "one", "A:{{0}}");
-    check_expand("an unknown {{...}} is left verbatim", "A:{{weird}}", "one", "A:{{weird}}");
-    check_expand("an unterminated {{ is left verbatim", "A:{{1", "one", "A:{{1");
-    check_expand("a lone { is left verbatim", "A:{1}", "one", "A:{1}");
-    check_expand("plain text is untouched", "no placeholders here", "one", "no placeholders here");
 
-    /* ── 分层：展开器只认 `{{…}}` ─────────────────────────────────
-     * 生态的 `$` 语法由**加载器**翻译成 `{{…}}`（见 test_translate_dollar），所以展开器
-     * 永远只看得到一种写法；这里钉住"展开器读到 `$` 时一个字也不碰"。 */
-    check_expand("$1 is not the expander's business", "A:$1", "one", "A:$1");
-    check_expand("$@ neither", "A:$@", "one", "A:$@");
-    check_expand("$$ neither", "A:$$", "one", "A:$$");
-    check_expand("$HOME passes through untouched", "run $HOME/bin", "one", "run $HOME/bin");
-    check_expand("$ARGUMENTS passes through untouched", "A:$ARGUMENTS", "one", "A:$ARGUMENTS");
+    /* ── 兜底：正文里没有任何引用 → 把用户输入追加在末尾 ────────────
+     * （opencode 的规则，2026-10-16 核过源码；这样 `/prompt x 一些话` 与
+     * `/skill y 一些话` 里的话永远不会被静默丢掉。） */
+    check_expand("no reference: the arguments are appended", "no placeholders here", "one",
+                 "no placeholders here\n\none");
+    check_expand("no reference, no arguments: untouched", "no placeholders here", "", "no placeholders here");
+    check_expand("{{0}} is not ours -> appended", "A:{{0}}", "one", "A:{{0}}\n\none");
+    check_expand("an unknown {{...}} is left verbatim, then appended", "A:{{weird}}", "one",
+                 "A:{{weird}}\n\none");
+    check_expand("an unterminated {{ is not a reference -> appended", "A:{{1", "one", "A:{{1\n\none");
+    check_expand("a lone { is not a reference -> appended", "A:{1}", "one", "A:{1}\n\none");
+
+    /* ── `$…` 是**本层**的占位符 ─────────────────────────────────
+     * 生态写法（pi / Claude Code / opencode）就是我们的写法：与 `{{…}}` 同一套文法、同一个
+     * 展开器（`edc_prompt_placeholder_at`），**没有“翻译”这一步**。 */
+    check_expand("$1 substitutes like {{1}}", "A:$1", "one", "A:one");
+    check_expand("$1 (last) takes the rest too", "A:$1", "one two", "A:one two");
+    check_expand("$10 is $1 plus a literal 0", "A:$10", "one", "A:one0");
+    check_expand("$@ is every argument", "A:$@", "one two", "A:one two");
+    check_expand("$ARGUMENTS too", "A:$ARGUMENTS", "one two", "A:one two");
+    check_expand("${10} says the tenth (braced forms are multi-digit)", "A:${10}", "1 2 3 4 5 6 7 8 9 ten",
+                 "A:ten");
+    check_expand("${1:-D} default", "A:${1:-D}", "", "A:D");
+    check_expand("${@:2:1} slice", "A:${@:2:1}", "one two three", "A:two");
+    check_expand("\\$1 is a literal dollar", "A:\\$1", "one", "A:$1\n\none");
+    check_expand("$HOME is not a placeholder -> appended", "run $HOME/bin", "one", "run $HOME/bin\n\none");
+    check_expand("$$ is not a form of ours -> appended", "A:$$", "one", "A:$$\n\none");
+    check_expand("{{1}} still works (legacy alias)", "A:{{1}}", "one", "A:one");
 }
 
 /* ── Argument splitting ────────────────────────────────────── */
@@ -270,55 +288,11 @@ static void test_parse(void)
         printf("  (cleanup failed)\n");
 }
 
-/* The `$` dialect (pi / Claude Code / opencode): the translation itself is mechanical.
- * WHEN to apply it is the caller's decision -- a template of ours must keep its `$`, which
- * is why this is a standalone step and not baked into edc_prompt_load (see the header). */
-static void test_translate_dollar(void)
-{
-    sds (*T)(const char *) = edc_prompt_translate_dollar;
-
-    TEST("positional: $1 / $2");
-    sds t = T("$1 then $2");
-    CHECK_STR(t, "{{1}} then {{2}}", "single digits");
-    sdsfree(t);
-
-    TEST("$10 is $1 followed by a literal 0 (shell positional semantics)");
-    t = T("$10");
-    CHECK_STR(t, "{{1}}0", "NOT the tenth argument (that spelling is {{10}})");
-    sdsfree(t);
-
-    TEST("$@ and $ARGUMENTS -> {{@}}");
-    t = T("$@ / $ARGUMENTS");
-    CHECK_STR(t, "{{@}} / {{@}}", "both spellings");
-    sdsfree(t);
-
-    TEST("braced forms map 1:1");
-    t = T("${1}|${1:-d}|${@}|${@:-d}|${@:2}|${@:2:3}");
-    CHECK_STR(t, "{{1}}|{{1:-d}}|{{@}}|{{@:-d}}|{{@:2}}|{{@:2:3}}", "all six forms");
-    sdsfree(t);
-
-    TEST("an escaped dollar is a literal dollar");
-    t = T("\\$1 costs \\$2");
-    CHECK_STR(t, "$1 costs $2", "backslash escape");
-    sdsfree(t);
-
-    TEST("a non-parameter $ is left to the input layer");
-    t = T("$HOME and ${HOME} and $ and $$");
-    CHECK_STR(t, "$HOME and ${HOME} and $ and $$", "verbatim");
-    sdsfree(t);
-
-    TEST("a body with no dollar is unchanged");
-    t = T("plain {{1}} text");
-    CHECK_STR(t, "plain {{1}} text", "untouched");
-    sdsfree(t);
-}
-
 int main(void)
 {
     test_expand();
     test_split();
     test_parse();
-    test_translate_dollar();
 
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed > 0 ? 1 : 0;

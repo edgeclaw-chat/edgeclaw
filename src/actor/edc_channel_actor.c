@@ -91,6 +91,8 @@ void edc_channel_message_free(struct edc_channel_message *msg)
         sdsfree(msg->task_id);
     if (msg->session_id)
         sdsfree(msg->session_id);
+    if (msg->task_desc)
+        sdsfree(msg->task_desc);
     sdsfree(msg->content);
     free(msg);
 }
