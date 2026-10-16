@@ -112,10 +112,9 @@ void CommandPalette::SetArgSource(std::string head, std::vector<CommandFact> row
 
 bool CommandPalette::Update(const std::string &content)
 {
-    raw_ = content;
+    content_ = content;
 
-    // Esc dismissed this exact text; any change re-opens. On the RAW text: the `+` is part
-    // of what the user sees, so it is part of what Esc dismissed.
+    // Esc dismissed this exact text; any change re-opens.
     if (closed_by_user_ && content == closed_content_)
     {
         open_ = false;
@@ -123,18 +122,12 @@ bool CommandPalette::Update(const std::string &content)
     }
     closed_by_user_ = false;
 
-    // `+/cmd` runs the command in a group of its own. The `+` is transparent here: a
-    // prefix to put back on whatever Tab produces, never part of the word being completed.
-    // So every match below sees `/cmd …` and only Accept() re-attaches it.
-    prefix_ = (content.size() >= 2 && content[0] == '+' && content[1] == '/') ? "+" : "";
-    content_ = prefix_.empty() ? content : content.substr(1);
-
     items_.clear();
     selected_ = 0;
 
     // Gate: a single line that starts with '/'. (Multi-line input -- Alt+Enter or a
     // paste -- never shows the popup.)
-    if (content_.empty() || content_[0] != '/' || raw_.find('\n') != std::string::npos)
+    if (content_.empty() || content_[0] != '/' || content_.find('\n') != std::string::npos)
     {
         open_ = false;
         return false;
@@ -209,7 +202,7 @@ void CommandPalette::Close()
 {
     open_ = false;
     closed_by_user_ = true;
-    closed_content_ = raw_;
+    closed_content_ = content_;
 }
 
 std::string CommandPalette::WordCompletion() const
@@ -264,23 +257,23 @@ std::string CommandPalette::WordCompletion() const
 std::string CommandPalette::Accept() const
 {
     if (!open_ || items_.empty())
-        return raw_;
+        return content_;
 
     // 1. Complete the ONE word being typed ("/sess" -> "/session "): Tab grows a token, it
     //    does not swallow a whole candidate row.
     const std::string word = WordCompletion();
     if (word != content_)
-        return prefix_ + word;
+        return word;
 
     // 2. That word has nothing left to give (the candidates disagree on it, or they agree
     //    on it and already disagree on the next one): take the highlighted row, which
     //    breaks the tie by choosing one -- that is what Up/Down is for.
-    return prefix_ + CompletionOf(items_[selected_].text);
+    return CompletionOf(items_[selected_].text);
 }
 
 bool CommandPalette::HasMore() const
 {
-    return open_ && !items_.empty() && Accept() != raw_;
+    return open_ && !items_.empty() && Accept() != content_;
 }
 
 } // namespace edc::model

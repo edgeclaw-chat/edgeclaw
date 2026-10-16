@@ -91,6 +91,20 @@ static sds scan_quoted(const char *q, bool triple, char quote, const char **end_
     return NULL;
 }
 
+sds edc_cmd_unquote(const char *s, const char **end_out)
+{
+    if (!s || !end_out)
+        return NULL;
+
+    bool triple = false;
+    if (strlen(s) >= 3 && (strncmp(s, "\"\"\"", 3) == 0 || strncmp(s, "'''", 3) == 0))
+        triple = true;
+    if (!triple && *s != '"' && *s != '\'')
+        return NULL;
+
+    return scan_quoted(s, triple, *s, end_out);
+}
+
 void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
 {
     if (!opts)
@@ -255,9 +269,16 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
                 }
                 continue;
             }
-            /* unrecognized token — skip until space */
-            while (*p && *p != ' ')
-                p++;
+            /* Anything else unrecognized is recorded, not skipped: the caller refuses the
+             * line (option area = options only; see edc_cmd_task_opts.unknown_option). The
+             * first one is kept for the message. */
+            {
+                char *start = p;
+                while (*p && *p != ' ')
+                    p++;
+                if (!opts->unknown_option)
+                    opts->unknown_option = sdsnewlen(start, (size_t)(p - start));
+            }
         }
         sdsfree(work);
         sdsfree(remaining);
@@ -305,6 +326,8 @@ void edc_cmd_task_opts_free(struct edc_cmd_task_opts *opts)
         sdsfree(opts->input);
     if (opts->group_id)
         sdsfree(opts->group_id);
+    if (opts->unknown_option)
+        sdsfree(opts->unknown_option);
     for (int i = 0; i < opts->dep_count; i++)
         sdsfree(opts->dep_ids[i]);
     free(opts->dep_ids);

@@ -219,6 +219,15 @@ int main(void)
     CHECK(task_count(sess) == before + 1, "the line still became a task");
     CHECK(find_task_by_desc(sess, "@probe") != NULL, "with the `@` kept as text");
 
+    TEST("with the switch off a backslash is just text (nothing is a sigil, so nothing is escaped)");
+    /* The `\@` / `\+` escapes are gone: with shell syntax ON they were superseded by
+     * quoting (`"+text"` is a literal `+`), and with it OFF there is no sigil to escape. */
+    before = task_count(sess);
+    drive(cfg, sm, sched, "\\+1 issue is still open");
+    CHECK(find_task_by_desc(sess, "\\+1 issue is still open") != NULL,
+          "the backslash stays, as text");
+    CHECK(task_count(sess) == before + 1, "one task");
+
     /* ── `/` commands are NOT shell syntax: they keep working ───── */
 
     TEST("a `/` command is not gated (the switch could never be turned back on otherwise)");
@@ -248,7 +257,9 @@ int main(void)
 
     TEST("with the switch on, `a | b` really is a pipe chain (two dependent tasks)");
     before = task_count(sess);
-    drive(cfg, sm, sched, "gamma | delta");
+    /* Quoted operands: a line that uses an operator requires them (see the rule in
+     * edc_shell.c) -- `gamma | delta` unquoted is refused, not guessed. */
+    drive(cfg, sm, sched, "\"gamma\" | \"delta\"");
     CHECK(task_count(sess) == before + 2, "two tasks were created");
     struct edc_task *delta = find_task_by_desc(sess, "delta");
     CHECK(delta != NULL && delta->deps_total == 1, "the second one waits on the first (JOIN edge)");
@@ -263,9 +274,18 @@ int main(void)
     TEST("with the switch on, `+desc` really opens a group");
     front_before = edc_scheduler_get_foreground(sess);
     groups_before = group_count(sess);
-    drive(cfg, sm, sched, "+grp plain work");
+    drive(cfg, sm, sched, "+\"grp plain work\"");
     CHECK(group_count(sess) == groups_before + 1, "one group was opened");
     CHECK(edc_scheduler_get_foreground(sess) != front_before, "and it took the foreground");
+
+    TEST("with the switch on, `@desc` is still intercepted (the migration hint, no task)");
+    /* The `@` layer sits ABOVE this switch, so it answers in both modes. Today, with no
+     * resolution built yet, that answer is the migration hint; the off-mode case above
+     * shows the other half (literal text). When `@file` lands, the resolved case attaches
+     * the file in BOTH modes -- which is the whole reason this layer is not gated. */
+    before = task_count(sess);
+    drive(cfg, sm, sched, "@probe");
+    CHECK(task_count(sess) == before, "no task was created -- the `@` layer answered instead");
 
     TEST("`/shell off` puts it back");
     CHECK(run_shell_cmd(cfg, sm, (struct edc_reply_to){}, "off"), "`/shell off` is a builtin");
@@ -273,6 +293,8 @@ int main(void)
     before = task_count(sess);
     drive(cfg, sm, sched, "epsilon | zeta");
     CHECK(task_count(sess) == before + 1, "and a `|` line is one task again");
+    CHECK(find_task_by_desc(sess, "epsilon | zeta") != NULL,
+          "and needs no quotes -- with the switch off, nothing is an operator");
 
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

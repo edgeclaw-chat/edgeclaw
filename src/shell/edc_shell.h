@@ -25,11 +25,11 @@ struct edc_task_group;
 bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
                        struct edc_channel_message *message);
 
-/* One task from the whole line, verbatim -- the path taken when the shell-like syntax
- * switch is OFF (see edc_config.shell_syntax). The caller (edc_commands_handler) owns the
- * gate; this only does the placement. true = handled. */
+/* One task from the whole line, verbatim -- the path edc_shell_execute takes when the
+ * shell-like syntax switch is OFF (see edc_config.shell_syntax). |text| is the line as it
+ * should become the task's input (already de-escaped). true = handled. */
 bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                                struct edc_channel_message *message);
+                                struct edc_channel_message *message, const char *text);
 
 /* Handle a built-in command (/whoami, /model); true = handled. */
 bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_reply_to to,

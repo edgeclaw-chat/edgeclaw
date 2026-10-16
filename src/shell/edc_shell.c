@@ -602,8 +602,23 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
  * building a spec here, so "how an input line becomes a task" keeps one owner. The
  * placement is the scheduler's plain-input one: the group in front, when it is still a
  * place to put new work. */
+/**
+ * Shell-like syntax OFF: the whole line becomes ONE task description, verbatim -- no
+ * tokenizing, so no `| ; & > >> 2> <` operators and no `+ !` sigil. This is the DEFAULT
+ * path, and it is why the switch exists: those operators spell out a Unix shell
+ * vocabulary, and a user who does not expect them would otherwise get a silently
+ * half-parsed task instead of their text.
+ *
+ * It goes through edc_shell_spawn_task (the single creation entry point) rather than
+ * building a spec here, so "how an input line becomes a task" keeps one owner. The
+ * placement is the scheduler's plain-input one: the group in front, when it is still a
+ * place to put new work.
+ *
+ * |text| is the line as it should become the task's input -- the caller passes the
+ * de-escaped form (see edc_shell_execute), so `\@`/`\+` mean a literal character here too.
+ */
 bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                struct edc_reply_to to, struct edc_channel_message *message)
+                                struct edc_reply_to to, struct edc_channel_message *message, const char *text)
 {
     struct edc_session *session = edc_session_store_resolve_session(sm, message->session_id);
 
@@ -613,11 +628,10 @@ bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_sched
 
     struct edc_cmd_task_opts opts;
     memset(&opts, 0, sizeof(opts));
-    opts.input = sdsnew(message->content);
+    opts.input = sdsnew(text);
     /* The sender may have declared a better label (a `/prompt` expansion names the line
      * the user typed, not the body it became); otherwise the text is the label. */
-    opts.desc = edc_str_utf8_truncate(message->task_desc ? message->task_desc : message->content,
-                                      EDC_TASK_DESC_MAX, true);
+    opts.desc = edc_str_utf8_truncate(message->task_desc ? message->task_desc : text, EDC_TASK_DESC_MAX, true);
 
     struct edc_task_group *out_group = NULL;
     sds spawn_err = NULL;
@@ -635,43 +649,100 @@ bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_sched
     return true;
 }
 
+/* Shell syntax requires EVERY string operand to be quoted -- the rule is Python's
+ * (`"…"` interpolates, `'…'` is raw, `"""…"""` / `'''…'''` span lines, escapes as in
+ * Python), and it is mandatory rather than a convenience: an unquoted operand is refused,
+ * never guessed. `现在新建任务A|B` is either ONE task whose text contains a `|` or two
+ * tasks joined by a pipe, and quoting is what says which.
+ *
+ * A token right after a redirect is a FILENAME. It is a string like any other, so it is
+ * quoted too -- and edc_shell_parse.c unquotes it, which is also what makes a filename
+ * with a space in it expressible.
+ */
+static bool edc_shell_operands_are_quoted(const edc_shell_token_t *tokens, int count)
+{
+    for (int i = 0; i < count; i++)
+    {
+        if (tokens[i].type != TOK_TEXT || !tokens[i].value)
+            continue;
+
+        const char *p = tokens[i].value;
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (*p == '\0')
+            continue; /* blanks only (e.g. what a trailing `&` leaves behind) */
+        if (*p != '"' && *p != '\'')
+            return false;
+    }
+    return true;
+}
+
 bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
                        struct edc_channel_message *message)
 {
     if (!message || !message->content || sdslen(message->content) == 0)
         return false;
 
-    /* `+` is the new-group sigil; `@` used to be it and is now the file-reference one.
-     * `\@` / `\+` are the escapes: the backslash is dropped and the rest is ordinary
-     * input, so a description may start with a literal `@` or `+`. (Same shape as the
-     * `\!` escape in edc_local_shell.c -- the tokenizer does NOT unescape outside quotes,
-     * so this cannot be left to it.) */
+    /* The shell-like syntax switch is checked HERE, not at the command handler's door:
+     * this function IS the "parse a line as a shell line" entry, and it has more than one
+     * caller (the handler, and the `\!` escape forwarding from edc_local_shell.c). A gate
+     * at one door leaves the others open -- which is exactly how a `/prompt` body kept its
+     * `|` while the switch was off. One choke point. */
+    const bool shell_on = sched && sched->config && sched->config->shell_syntax;
+
     const char *raw = message->content;
     const char *body = raw;
-    /* `+/cmd` / `+!cmd` carry the fact on the message: the handler stripped the prefix and
-     * recorded it. A bare `+desc` that reaches here directly -- a `+` written at the head
-     * of a template body, say -- still spells it out. The escape is checked first, so `\+`
-     * stays a literal. */
-    bool is_new_group = message->new_group;
+    bool is_new_group = false;
 
-    if (sdslen(message->content) >= 2 && raw[0] == '\\' && (raw[1] == '@' || raw[1] == '+'))
-    {
-        body = raw + 1;
-    }
-    else if (raw[0] == '@')
+    /* `@`: the file-reference layer, and NOT shell-like syntax -- it is the opencode /
+     * Claude Code convention, not a Unix shell vocabulary, so the switch must not reach
+     * it. Resolving a mention (attaching the named file) is not built yet; until it is, a
+     * leading `@` is either the migration hint or plain text. The hint is only for the
+     * world where `@desc` ever MEANT something, i.e. with the shell-like syntax on -- and
+     * its advice is only true there too. This is where `@file` lands: resolve first, in
+     * both modes, and fall back to the hint. */
+    if (raw[0] == '@' && shell_on)
     {
         /* An old `@desc` must NOT be silently reread as "a task in the CURRENT group":
          * that moves the task to a different conversation without saying so. Reject it
-         * and name both ways out. (When the file-reference sigil lands, this becomes its
-         * fallback: a leading `@` that does not resolve to a file says exactly this.) */
+         * and name the way out. */
         edc_commands_reply(to, "`@` no longer opens a new group.\n\n"
-                               "Write `+<description>` for a new group, or `\\@<text>` to send a literal `@`.");
+                               "Write `+\"<description>\"` for a new group. A description that merely "
+                               "starts with `@` or `+` is just a quoted string: `\"@alice\"`.");
         return true;
     }
-    else if (raw[0] == '+')
+
+    /* No shell vocabulary: the line is one task, verbatim. */
+    if (!shell_on)
+        return edc_shell_spawn_plain_task(sm, sched, to, message, raw);
+
+    if (raw[0] == '+')
     {
+        /* `+` is SHELL syntax; `/` and `!` are not -- a line is one or the other, and the
+         * two do not compose. This shape used to run the command in a new group; it is
+         * refused rather than quietly becoming a task whose description is the command. */
+        if (raw[1] == '/' || raw[1] == '!')
+        {
+            edc_commands_reply(to, "`+` is shell syntax and `/` / `!` are not — a line is one or the other, "
+                                   "they do not combine.\n\n"
+                                   "For a task in a group of its own: `/task new \"<description>\" --new-group`.");
+            return true;
+        }
         is_new_group = true;
         body = raw + 1;
+    }
+    /* Is this a SHELL line at all? Command syntax is `/…` (the handler takes it) and the
+     * sigils announce themselves, so what is left to decide is quote-led vs a plain
+     * message. Every string in shell syntax is quoted, so a shell line ALWAYS begins with
+     * `"` or `'` -- and a line that does not is a NORMAL MESSAGE: one task, verbatim, with
+     * nothing parsed out of it. That is the discriminator, and it is why conversation
+     * needs no quoting.
+     *
+     * (`现在新建任务A|B` is therefore a message -- one task whose text contains the `|`.
+     * The pipe is written the other way: `"现在新建任务A" | "B"`.) */
+    else if (raw[0] != '"' && raw[0] != '\'')
+    {
+        return edc_shell_spawn_plain_task(sm, sched, to, message, raw);
     }
 
     sds trimmed = sdstrim(sdsnew(body), " \t");
@@ -696,6 +767,60 @@ bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sch
      * LINE-LEADING `!` is special (the local shell, handled before this point). */
     int tok_count = 0;
     edc_shell_token_t *tokens = edc_shell_tokenize(body, &tok_count);
+
+    /* Every string operand must be quoted (Python's rules); see the helper. */
+    if (!edc_shell_operands_are_quoted(tokens, tok_count))
+    {
+        edc_commands_reply(to, "**Strings must be quoted** in shell syntax — the rule is Python's:\n\n"
+                               "    \"analyze src/ for bugs\"            one task\n"
+                               "    \"scan src/\" | \"create a fix plan\"   two tasks joined by a pipe\n"
+                               "    'raw text, no {{…}} interpolation'\n"
+                               "    '''\n"
+                               "    pasted, multi-line text\n"
+                               "    '''\n\n"
+                               "An unquoted operand is refused, never guessed: `现在新建任务A|B` is either one "
+                               "task whose text contains a `|` or two tasks joined by a pipe, and only the "
+                               "quoting says which.");
+        for (int i = 0; i < tok_count; i++)
+            edc_shell_token_free(&tokens[i]);
+        free(tokens);
+        return true;
+    }
+
+    /* The option area takes OPTIONS. Anything else there is refused rather than dropped:
+     * `"hello" and more` used to lose ` and more` silently, and a message that happens to
+     * open with a quote lands in exactly this shape. */
+    for (int i = 0; i < tok_count; i++)
+    {
+        if (tokens[i].type != TOK_TEXT || !tokens[i].value)
+            continue;
+        /* the target of a redirect is a filename, not an option area */
+        if (i > 0 && (tokens[i - 1].type == TOK_REDIR_OUT || tokens[i - 1].type == TOK_REDIR_APPEND ||
+                      tokens[i - 1].type == TOK_REDIR_IN))
+            continue;
+
+        struct edc_cmd_task_opts probe;
+        edc_cmd_parse_task_opts(tokens[i].value, &probe);
+        sds bad = probe.unknown_option;
+        probe.unknown_option = NULL; /* keep it for the message */
+        edc_cmd_task_opts_free(&probe);
+        if (bad)
+        {
+            sds reply = sdscatprintf(sdsempty(),
+                                     "**Not an option** — `%s` follows the quoted string, but everything "
+                                     "after the closing quote is the option area (`--bg`, `-d <id>`, "
+                                     "`-g <group>`, `2>` …).\n\n"
+                                     "Put the whole text inside the quotes, or drop it.",
+                                     bad);
+            edc_commands_reply(to, reply);
+            sdsfree(reply);
+            sdsfree(bad);
+            for (int k = 0; k < tok_count; k++)
+                edc_shell_token_free(&tokens[k]);
+            free(tokens);
+            return true;
+        }
+    }
 
     ast_node_t *root = ast_parse(tokens, tok_count, is_new_group);
     ast_execute(sm, sched, to, root,

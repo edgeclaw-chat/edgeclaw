@@ -266,29 +266,11 @@ int main(void)
     }
 
     {
-        TEST("`+/cmd` completes like `/cmd` and keeps the `+` in front");
-        CommandPalette p = Make();
-        CHECK(p.Update("+/ta"), "a `+/` line opens the popup the way `/` does");
-        CHECK(p.Accept() == "+/task ", "Tab completes the word and re-attaches the prefix (got: " + p.Accept() + ")");
-
-        p = Make();
-        p.Update("+/session memo sh");
-        CHECK(p.Accept() == "+/session memo show ", "and it walks the same rows (got: " + p.Accept() + ")");
-
-        p = Make();
-        p.Update("+/");
-        CHECK(p.Accept().rfind("+/", 0) == 0, "a lone '+/' lists the families, and keeps the `+`");
-
-        p = Make();
-        p.Update("+/help ");
-        CHECK(p.Accept() == "+/help ", "with nothing left to complete the text is unchanged");
-        CHECK(!p.HasMore(), "so the same Tab folds the list");
-    }
-    {
         TEST("a bare `+` (no command behind it) does not open the popup");
         CommandPalette p = Make();
         CHECK(!p.Update("+"), "just the prefix: nothing to complete");
         CHECK(!p.Update("+find bugs"), "a new-group description is not a command line");
+        CHECK(!p.Update("+/task"), "`+` does not combine with the command syntax, so `+/...` is not a command line");
     }
 
     if (failed)

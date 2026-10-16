@@ -1,7 +1,9 @@
 /* /prompt: the template is reached as the ARGUMENT of one built-in, and what it expands
- * to is USER INPUT (it goes through edc_shell_execute, never back through the command
- * dispatch). This drives the public edc_commands_handler entry with a spy send_llm --
- * handle_prompt is static -- and asserts on the tasks that come out.
+ * to becomes ONE task's input, verbatim -- a body is a DOCUMENT, not a command line, so
+ * the shell never parses it (no `| ; & >`, and no `{{…}}` task references; the template
+ * layer's own placeholders are substituted first, which is a different layer). This drives
+ * the public edc_commands_handler entry with a spy send_llm -- handle_prompt is static --
+ * and asserts on the tasks that come out.
  *
  * Harness copied from test_commands_task_new. */
 #include "edc_channel_actor.h"
@@ -103,6 +105,19 @@ static struct edc_task *find_task_by_desc(struct edc_session *sess, const char *
     return NULL;
 }
 
+/* 把会话里现有任务全部标记完成：否则下一条落在同组的任务会因为"组里有人没跑完"而拿到一条
+ * SEQUENCE 边排到后面，于是"正文自己造了依赖"和"在队列里等"就分不开了（deps_total 都是 1）。 */
+static void complete_all_tasks(struct edc_session *sess)
+{
+    struct edc_task_group *g;
+    DL_FOREACH(sess->groups, g)
+    {
+        struct edc_task *t;
+        LL_FOREACH2(g->members, t, group_next)
+        edc_task_mark_completed(t);
+    }
+}
+
 /* The first user message of a turn -- what the model actually receives. */
 static const char *first_user_content(struct edc_turn *turn)
 {
@@ -140,8 +155,11 @@ int main(void)
                  "argument-hint: \"[focus]\"\n"
                  "---\n"
                  "Review the staged changes. Focus on {{1:-correctness}}.\n");
-    /* A body that is a shell pipeline: only the input path can make two tasks out of it. */
+    /* A body full of shell syntax: it must stay ONE task -- a body is a document, never
+     * parsed as a command line. */
     write_prompt(ws, "piped", "alpha | beta\n");
+    /* A body with an input-layer reference: it must stay TEXT (see the header). */
+    write_prompt(ws, "refs", "summarize {{LAST}} please\n");
     /* A body that STARTS with a command-looking line: it must stay text. */
     write_prompt(ws, "recursive", "/task new inner\n");
     /* Named `x` on purpose: the strict-vs-loose prefix match on `/prompt` is only
@@ -151,8 +169,8 @@ int main(void)
 
     struct edc_config *cfg = calloc(1, sizeof(*cfg));
     cfg->workspace = sdsnew(ws);
-    /* The `piped` body and the `+/prompt` / `+/skill` cases are shell syntax; the switch
-     * is off by default (see test_shell_switch.c for what off does). */
+    /* Bodies are documents and do not care about this (see the header). It is on for the
+     * two `+` cases below, which are shell syntax. */
     cfg->shell_syntax = true;
     struct edc_session_manager *sm = edc_session_manager_new(cfg);
     struct edc_session *sess = edc_session_manager_get_active(sm);
@@ -182,26 +200,18 @@ int main(void)
         CHECK(input && strstr(input, "Review the staged changes") != NULL, "the template body is there");
     }
 
-    /* ── `+/prompt`: 展开体照跑, 但落进它自己的组 ─────────────────── */
+    /* ── `+` 不与命令语法组合 ───────────────────────────────────── */
 
-    TEST("`+/prompt <name>` runs the expanded body in a group of its own");
-    struct edc_task_group *front_before = edc_scheduler_get_foreground(sess);
-    const int tasks_before = count_tasks(sess);
+    TEST("`+/prompt` is refused: the two syntaxes do not combine");
+    /* `+` is shell syntax, `/prompt` is not. This used to run the template in a new group;
+     * now it must not quietly become a task whose description is the command either. */
+    const int before_combined = count_tasks(sess);
     g_llm_calls = 0;
     g_llm_task = NULL;
     drive_command(cfg, sm, sched, "+/prompt review focus");
 
-    CHECK(count_tasks(sess) == tasks_before + 1, "one task was created");
-    CHECK(g_llm_task != NULL, "and dispatched (a fresh group has nothing to queue behind)");
-    if (g_llm_task)
-    {
-        const char *input = first_user_content(g_llm_task->active_turn);
-        CHECK(input && strstr(input, "Review the staged changes") != NULL,
-              "the body still expands and runs -- the `+` is not read as part of the template name");
-        CHECK(g_llm_task->group && g_llm_task->group != front_before,
-              "but its group is not the one that was in front");
-        CHECK(edc_scheduler_get_foreground(sess) == g_llm_task->group, "and it took the foreground");
-    }
+    CHECK(count_tasks(sess) == before_combined, "no task was created");
+    CHECK(g_llm_calls == 0, "and nothing ran");
 
     /* ── 未知名字: 只回一条错误, 不建任务 ────────────────────────── */
 
@@ -214,38 +224,43 @@ int main(void)
     CHECK(count_tasks(sess) == before, "no task was created");
     CHECK(g_llm_calls == 0, "and nothing ran");
 
-    /* ── 正文里的管道: 证明它走的是 shell 那条路 ─────────────────── */
+    /* ── 正文是一个原子: 算符不生效, 也不收集 {{…}} ──────────────── */
 
-    TEST("a body with '|' becomes two dependent tasks");
+    /* 先把前面那些还没结束的任务标成完成，否则新任务会排在它们后面拿到一条 SEQUENCE 边，
+     * deps_total 就不是"正文造出来的"了（见 complete_all_tasks）。 */
+
+    TEST("a body with '|' is ONE task, verbatim (a document, not a command line)");
+    complete_all_tasks(sess);
     before = count_tasks(sess);
     g_llm_calls = 0;
     g_llm_task = NULL;
     drive_command(cfg, sm, sched, "/prompt piped");
 
-    CHECK(count_tasks(sess) == before + 2, "two tasks were created");
-    /* The two tasks are LABELLED by the command the user typed and carry the body's halves
-     * as their INPUT (edc_channel_message.task_desc). */
-    struct edc_task *alpha = NULL;
-    struct edc_task *beta = NULL;
+    CHECK(count_tasks(sess) == before + 1, "exactly one task was created (no pipe chain)");
+    struct edc_task *piped = find_task_by_desc(sess, "/prompt piped");
+    CHECK(piped != NULL, "labelled by what the user typed, not by the body");
+    CHECK(piped && piped->deps_total == 0, "and it waits for nobody (the `|` made no second task)");
     {
-        struct edc_task_group *g;
-        DL_FOREACH(sess->groups, g)
-        {
-            struct edc_task *t;
-            LL_FOREACH2(g->members, t, group_next)
-            {
-                const char *in = first_user_content(t->active_turn);
-                if (in && strcmp(in, "alpha") == 0)
-                    alpha = t;
-                if (in && strcmp(in, "beta") == 0)
-                    beta = t;
-            }
-        }
+        const char *in = piped ? first_user_content(piped->active_turn) : NULL;
+        CHECK(in && strcmp(in, "alpha | beta") == 0, "the body reaches the model as written, `|` and all");
     }
-    CHECK(alpha != NULL && beta != NULL, "alpha and beta both exist (as their inputs)");
-    CHECK(alpha && alpha->description && strcmp(alpha->description, "/prompt piped") == 0,
-          "labelled by what the user typed, not by the body");
-    CHECK(beta != NULL && beta->deps_total > 0, "beta is the piped dependent (it has a dependency)");
+
+    TEST("a body with `{{LAST}}` keeps it as text (no task reference is collected)");
+    complete_all_tasks(sess); /* the `piped` task above is still unfinished: clear the queue */
+    before = count_tasks(sess);
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "/prompt refs");
+
+    CHECK(count_tasks(sess) == before + 1, "one task");
+    struct edc_task *refs = find_task_by_desc(sess, "/prompt refs");
+    CHECK(refs != NULL, "it was created");
+    CHECK(refs && refs->deps_total == 0, "and no dependency was made for the `{{…}}` in the body");
+    CHECK(refs && !refs->has_deferred_vars, "nor was a deferred expansion registered");
+    {
+        const char *in = refs ? first_user_content(refs->active_turn) : NULL;
+        CHECK(in && strstr(in, "{{LAST}}") != NULL, "the `{{LAST}}` is still there, as text");
+    }
 
     /* ── 正文以 '/' 开头: 仍然是**文本**, 不是命令 (不变式 2) ──────── */
 
@@ -300,7 +315,7 @@ int main(void)
         FILE *f = fopen(path, "w");
         if (!f)
             return 1;
-        fputs("---\ndescription: extract from PDFs\n---\nExtract text from the PDF.\n", f);
+        fputs("---\ndescription: extract from PDFs\n---\nExtract text from the PDF. Summarize {{LAST}} too.\n", f);
         fclose(f);
 
         g_llm_calls = 0;
@@ -315,30 +330,26 @@ int main(void)
         CHECK(in && strstr(in, "<skill name=\"pdf\"") != NULL, "the body is wrapped in a <skill> block (pi's shape)");
         CHECK(in && strstr(in, "References are relative to") != NULL, "which names the directory its paths hang off");
         CHECK(in && strstr(in, "Extract text from the PDF.") != NULL, "the SKILL.md body is inside it");
+        CHECK(in && strstr(in, "{{LAST}}") != NULL,
+              "and a `{{…}}` in the body stays TEXT -- a skill body is a document, not shell input");
+        /* The point is that nothing was RECOGNIZED; deps_total here would also count the
+         * queue edge behind the earlier cases' unfinished tasks (see the note above). */
+        CHECK(pdf && !pdf->has_deferred_vars, "no deferred expansion was registered for it");
         CHECK(in && strstr(in, "</skill>") != NULL, "the block is closed");
         CHECK(in && strstr(in, "page 3") != NULL, "the user's words reached it (no placeholder: appended)");
         CHECK(in && (strstr(in, "page 3") > strstr(in, "</skill>")), "and they land after the closing tag");
     }
 
-    /* ── `+/skill`: 同一个 body, 但落进它自己的组 ──────────────────── */
+    /* ── `+` 不与 `!` 组合: 同一条规矩 ───────────────────────────── */
 
-    TEST("`+/skill <name>` runs the same body in a group of its own");
+    TEST("`+!cmd` is refused as well");
     {
-        struct edc_task_group *front_before = edc_scheduler_get_foreground(sess);
+        const int before_bang = count_tasks(sess);
         g_llm_calls = 0;
         g_llm_task = NULL;
-        drive_command(cfg, sm, sched, "+/skill pdf page 7");
-
-        /* A fresh group has nothing to queue behind, so this one does dispatch (unlike the
-         * case above) -- and the `+` must not have leaked into the label. */
-        struct edc_task *own = find_task_by_desc(sess, "/skill pdf page 7");
-        CHECK(own != NULL, "a task was created, still labelled by the command (`+` stripped)");
-        CHECK(own && own->group && own->group != front_before, "its group is not the one that was in front");
-        CHECK(own && own->group && strcmp(own->group->group_id, own->task_id) == 0,
-              "it leads a group of its own");
-        CHECK(g_llm_task == own, "and it ran immediately");
-        const char *in = own ? first_user_content(own->active_turn) : NULL;
-        CHECK(in && strstr(in, "<skill name=\"pdf\"") != NULL, "the skill body is still what runs");
+        drive_command(cfg, sm, sched, "+!git status");
+        CHECK(count_tasks(sess) == before_bang, "no task was created");
+        CHECK(g_llm_calls == 0, "and nothing ran");
     }
 
     printf("\n  %d passed, %d failed\n", passed, failed);

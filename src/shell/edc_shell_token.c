@@ -128,11 +128,30 @@ edc_shell_token_t *edc_shell_tokenize(const char *input, int *count)
             }
             else if (*p == '>')
             {
+                /* `2>`: the `2` was already collected into the text. Recognise it HERE, at
+                 * the operator, and take it back out. (The old place was the AST, checking
+                 * whether the command text ends with a `2` -- which only worked while the
+                 * description was unquoted. With every string quoted, the `2` lands in the
+                 * option area and is gone by then.) */
+                bool stderr_redir = false;
+                size_t clen = sdslen(cur);
+                if (clen >= 1 && cur[clen - 1] == '2' &&
+                    (clen == 1 || cur[clen - 2] == ' ' || cur[clen - 2] == '\t'))
+                {
+                    stderr_redir = true;
+                    sdssetlen(cur, clen - 1);
+                    sdstrim(cur, " \t");
+                }
+
                 EMIT_TEXT();
                 if (*(p + 1) == '>')
                 {
                     EMIT_TOK(TOK_REDIR_APPEND);
                     p++;
+                }
+                else if (stderr_redir)
+                {
+                    EMIT_TOK(TOK_REDIR_ERR);
                 }
                 else
                 {

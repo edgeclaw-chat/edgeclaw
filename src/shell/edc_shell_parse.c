@@ -22,7 +22,7 @@ static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos)
         edc_shell_token_t *t = &tokens[*pos];
 
         if (t->type == TOK_PIPE || t->type == TOK_SEQ || t->type == TOK_BG || t->type == TOK_REDIR_OUT ||
-            t->type == TOK_REDIR_APPEND || t->type == TOK_REDIR_IN)
+            t->type == TOK_REDIR_APPEND || t->type == TOK_REDIR_ERR || t->type == TOK_REDIR_IN)
             break;
 
         if (t->type == TOK_TEXT && t->value)
@@ -85,6 +85,56 @@ static ast_node_t *parse_cmd(edc_shell_token_t *tokens, int count, int *pos)
 
 /* ── parse command with redirect modifiers ────────────────── */
 
+/* Take a redirect's target. It is a string like any other, so it is quoted (Python's rules,
+ * see edc_cmd_parse.h) and is unquoted here -- which is also what makes a filename with a
+ * space in it expressible: `> "my file.txt"`. Whatever follows the closing quote goes back
+ * into the token (more operators may follow). |*pos| advances when the token is consumed
+ * whole, or when it is not a text token at all (the parser tolerates that). Returns the
+ * filename (caller frees) or NULL. */
+static sds take_redirect_target(edc_shell_token_t *tokens, int count, int *pos)
+{
+    (*pos)++;
+    if (*pos >= count || tokens[*pos].type != TOK_TEXT || !tokens[*pos].value)
+        return NULL;
+
+    const char *vp = tokens[*pos].value;
+    while (*vp == ' ' || *vp == '\t')
+        vp++;
+
+    const char *qend = NULL;
+    sds unq = edc_cmd_unquote(vp, &qend);
+    if (!unq)
+    {
+        /* Not a quoted region. The syntax check upstream refuses that, so this is only
+         * reached on a path that did not go through it: keep the old first-word reading. */
+        char *sp = strchr(tokens[*pos].value, ' ');
+        if (!sp)
+        {
+            sds whole = sdsdup(tokens[*pos].value);
+            (*pos)++;
+            return whole;
+        }
+        sds head = sdsnewlen(tokens[*pos].value, (size_t)(sp - tokens[*pos].value));
+        sds rest = sdstrim(sdsnew(sp + 1), " \t");
+        sdsfree(tokens[*pos].value);
+        tokens[*pos].value = rest;
+        return head;
+    }
+
+    sds rest = sdstrim(sdsnew(qend), " \t");
+    if (sdslen(rest) == 0)
+    {
+        sdsfree(rest);
+        (*pos)++;
+    }
+    else
+    {
+        sdsfree(tokens[*pos].value);
+        tokens[*pos].value = rest;
+    }
+    return unq;
+}
+
 static ast_node_t *parse_redirects(edc_shell_token_t *tokens, int count, int *pos, ast_node_t *inner)
 {
     while (*pos < count)
@@ -94,88 +144,36 @@ static ast_node_t *parse_redirects(edc_shell_token_t *tokens, int count, int *po
         if (t->type == TOK_PIPE || t->type == TOK_SEQ || t->type == TOK_BG)
             break;
 
-        if (t->type == TOK_REDIR_OUT || t->type == TOK_REDIR_APPEND)
+        if (t->type == TOK_REDIR_OUT || t->type == TOK_REDIR_APPEND || t->type == TOK_REDIR_ERR)
         {
-            bool is_append = (t->type == TOK_REDIR_APPEND);
-            ast_type_t rtype = is_append ? AST_REDIR_APPEND : AST_REDIR_OUT;
+            ast_type_t rtype = (t->type == TOK_REDIR_APPEND) ? AST_REDIR_APPEND
+                              : (t->type == TOK_REDIR_ERR)  ? AST_REDIR_ERR
+                                                            : AST_REDIR_OUT;
 
-            /* check for 2> */
-            if (!is_append)
             {
-                size_t slen = inner->text ? sdslen(inner->text) : 0;
-                if (slen > 0 && inner->text[slen - 1] == '2')
+                sds fname = take_redirect_target(tokens, count, pos);
+                if (fname)
                 {
-                    if (slen == 1 || inner->text[slen - 2] == ' ' || inner->text[slen - 2] == '\t')
-                    {
-                        rtype = AST_REDIR_ERR;
-                        sdssetlen(inner->text, slen - 1);
-                        sdstrim(inner->text, " \t");
-                    }
+                    ast_node_t *wrap = ast_new(rtype);
+                    wrap->filename = fname;
+                    wrap->child = inner;
+                    inner = wrap;
                 }
-            }
-
-            (*pos)++;
-            if (*pos < count && tokens[*pos].type == TOK_TEXT && tokens[*pos].value)
-            {
-                sds val = tokens[*pos].value;
-                char *sp = strchr(val, ' ');
-                sds fname;
-                if (sp)
-                {
-                    fname = sdsnewlen(val, (size_t)(sp - val));
-                    sds rest = sdsnew(sp + 1);
-                    sdstrim(rest, " \t");
-                    sdsfree(tokens[*pos].value);
-                    tokens[*pos].value = rest;
-                }
-                else
-                {
-                    fname = sdsdup(val);
-                    (*pos)++;
-                }
-
-                ast_node_t *wrap = ast_new(rtype);
-                wrap->filename = fname;
-                wrap->child = inner;
-                inner = wrap;
-            }
-            else
-            {
-                (*pos)++;
             }
             continue;
         }
 
         if (t->type == TOK_REDIR_IN)
         {
-            (*pos)++;
-            if (*pos < count && tokens[*pos].type == TOK_TEXT && tokens[*pos].value)
             {
-                sds val = tokens[*pos].value;
-                char *sp = strchr(val, ' ');
-                sds fname;
-                if (sp)
+                sds fname = take_redirect_target(tokens, count, pos);
+                if (fname)
                 {
-                    fname = sdsnewlen(val, (size_t)(sp - val));
-                    sds rest = sdsnew(sp + 1);
-                    sdstrim(rest, " \t");
-                    sdsfree(tokens[*pos].value);
-                    tokens[*pos].value = rest;
+                    ast_node_t *wrap = ast_new(AST_REDIR_IN);
+                    wrap->filename = fname;
+                    wrap->child = inner;
+                    inner = wrap;
                 }
-                else
-                {
-                    fname = sdsdup(val);
-                    (*pos)++;
-                }
-
-                ast_node_t *wrap = ast_new(AST_REDIR_IN);
-                wrap->filename = fname;
-                wrap->child = inner;
-                inner = wrap;
-            }
-            else
-            {
-                (*pos)++;
             }
             continue;
         }

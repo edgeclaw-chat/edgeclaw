@@ -56,41 +56,75 @@ SHELL SYNTAX (off by default)
      description, verbatim.  / commands are never gated -- /shell itself
      has to stay reachable.
 
+     What it does NOT govern: a /prompt or /skill body is a document, not
+     input to this layer -- it becomes one task's input verbatim, so the
+     operators do nothing inside it and {{...}} references in it are not
+     collected (a template is authored content; its meaning must not depend
+     on the reader's setting).  @ is outside it too: @file is a file
+     reference, the opencode/Claude convention rather than a Unix shell
+     one, so it works with the switch off.
+
      With it on, all non-/ input is processed through the edgeclaw shell
      parser:
+
+     Shell syntax is recognised by the FIRST character
+           > analyze src/ for bugs
+           > "scan src/" | "create a fix plan"
+           > "alpha|beta"
+       A line that does not begin with " / ' / + / ! is a normal MESSAGE: one
+       task, verbatim, nothing parsed out of it.  That is ordinary
+       conversation, and it needs no quoting.  A line that begins with a quote
+       -- or with the sigil + / ! -- is SHELL syntax, and inside it EVERY
+       string is quoted: the rule is Python's ("..." interpolates {{...}},
+       '...' is raw, """...""" / '''...''' span lines, the shape pasted text
+       wants; escapes as in Python).  An unquoted operand in a shell line is
+       refused, never guessed -- so the second line above is two tasks (the
+       second fed the first's output) and the third is one task whose text
+       contains the |.  Quoting is also how you write a description that
+       starts with a sigil ("+1 issue"), and there is no escape character.
+       The redirect target is a string too ("say hi" > "out.md"), which is
+       what makes a filename with a space in it expressible; "if x > 5" is a
+       message, not a redirect to a file called 5.
+       What follows the closing quote is the OPTION area (--bg, -d <id>,
+       -g <group>, 2>, ...).  Anything else there is refused rather than
+       dropped, so "hello" and more is an error -- not a task quietly
+       called hello.
 
      Implicit task creation
            > analyze src/ for bugs
        Creates a task in the current foreground group with the text as input.
 
      + syntax (new group)
-           > +review the latest commits
-       Same as above but creates a new group for the task.  @ used to be this
-       sigil; it no longer opens a group (write \e@ for a literal one).
+           > +"review the latest commits"
+       Same as above but creates a new group for the task.  The description is
+       a quoted string, like every string in shell syntax.  @ used to be this
+       sigil; it no longer opens a group (quote a description to write a
+       literal @ or +).
 
-     + composes with / and ! (run that command in a new group)
-           > +/task new "security audit" --bg
-           > +/skill pdf extract pages
-           > +/prompt review src/
-           > +!git status
-       Each opens a fresh conversation: its own group, its own queue, its own
-       history.  +/ still completes, keeping the + in front of what Tab
-       inserts.
+     + is shell syntax, / and ! are command syntax
+           > +security audit
+           > /task new "security audit" --new-group
+       A line is one or the other -- they do NOT compose: +/task new …,
+       +/skill …, +/prompt … and +!cmd are refused, rather than quietly
+       becoming a task whose description is the command.  To put a task in a
+       group of its own, say it in the syntax you are already in.  A prompt
+       or a skill has no --new-group of its own (its arguments belong to the
+       template), so open the group first and run the command in it.
 
      Pipe (|)
-           > scan for issues | fix them | write a report
+           > "scan for issues" | "fix them" | "write a report"
        Each segment is a separate task, labeled [pipe].  Each task depends
        on the previous one.  When a task completes, its output is injected
        into the next task's LLM context.
 
      Sequential (;)
-           > review src/ ; run tests ; summarize > report.md
+           > "review src/" ; "run tests" ; "summarize" > report.md
        Splits on ; (outside quotes) and executes each sub-command in order.
        Each segment is labeled [seq].  Tasks wait for the previous one to
        complete, but output is NOT injected between segments (unlike |).
 
      Background (&)
-           > run the full test suite &
+           > "run the full test suite" &
        Runs the task in the background.  The prompt returns immediately.
 
      Output redirect (>  >>  2>)
@@ -111,6 +145,11 @@ SHELL SYNTAX (off by default)
            > {{LAST}}
            > {{1}}
            > {{SELF}}
+       These belong to the SHELL syntax: only a line the shell parses
+       recognizes one.  A task created by a COMMAND takes its input as
+       text -- a {{LAST}} in a /task new description or in a /prompt or
+       /skill body is plain text, and neither is such an input split into
+       a | chain or redirected by >.
        {{LAST}}  — output of the most recently completed task (by
                    completion order, not creation order).
        {{N}}     — output of task with id N (e.g. {{1}}, {{2}}).
@@ -135,8 +174,9 @@ SHELL SYNTAX (off by default)
        !timeout 60 make -j8. Stop it with /task stop <id> (or /session stop), which kills
        the command's whole process group.
        !!  — run this session's previous ! command again.
-       +!cmd — run it in a group of its own (a fresh conversation).
-       \e!  — escape: send !cmd as ordinary input (a task description) instead.
+       The text after ! is a command line for sh, so it is NOT quoted here --
+       quoting is for the strings of our own syntax.  To send the text !cmd as
+       a normal task description instead, quote it: "!cmd".
        !   alone — usage.
        A command that needs a terminal (sudo, vim, ssh, an editor) fails immediately:
        the child gets no tty. A non-zero exit is NOT a task failure -- the output
@@ -180,6 +220,10 @@ SHELL ARCHITECTURE
        target_group (preserved across pipe segments), bg flag, and dep_type.
 
      Variable expansion (two-phase)
+       Belongs to the SHELL syntax: only a line the shell parses recognizes
+       a {{...}} reference.  A task created by a command (/task new,
+       /prompt, /skill, /task fork) takes its input as text -- nothing in
+       it is collected, and nothing in it is split into a pipe chain.
        Phase 1 (collect) — at task creation: validates {{...}} references,
        converts them to implicit dependencies, preserves the text as-is.
        Phase 2 (expand)  — when dependencies resolve: replaces the
@@ -260,13 +304,13 @@ TASK STATES
 SHELL-LIKE JOB CONTROL
      Shell            EdgeClaw
      ─────────────────────────────────────────
-     cmd &            task "input" &  or  task "input" --bg
-     cmd | cmd        a | b | c  (pipe chain, output injected)
-     cmd ; cmd        a ; b      (sequential, no injection)
-     cmd > file       task > out.md  (redirect output)
-     cmd >> file      task >> log    (append output)
-     cmd 2> file      task 2> err    (stderr redirect)
-     cmd < file       task < in.txt  (input from file)
+     cmd &            "input" &  or  "input" --bg
+     cmd | cmd        "a" | "b"  (pipe chain, output injected)
+     cmd ; cmd        "a" ; "b"  (sequential, no injection)
+     cmd > file       "task" > out.md  (redirect output)
+     cmd >> file      "task" >> log    (append output)
+     cmd 2> file      "task" 2> err    (stderr redirect)
+     cmd < file       "task" < in.txt  (input from file)
      jobs             /task list
      fg %n            /task fg <id>
      bg %n            /task bg [id]
@@ -286,9 +330,14 @@ COMMAND REFERENCE
      /prompt                       List the templates in workspace/prompts/.
      /prompt <name> [args...]      Run a template: substitute its $1 / $@ /
                                    ${...} placeholders ({{...}} works too) and
-                                   run the result as input.  The last
+                                   make the body ONE task, as written.  The last
                                    placeholder takes the remaining args; a body
                                    with no placeholder gets the args appended.
+                                   A body is a DOCUMENT, not a command line:
+                                   | ; & > in it do nothing, and a {{LAST}}
+                                   reference in it stays text.  So a template
+                                   means the same thing whatever the reader's
+                                   /shell setting is.
      /skill                        List the skills (ours, plus any found in a
                                    .claude / .agents / .pi / .opencode
                                    skills directory).
@@ -298,7 +347,8 @@ COMMAND REFERENCE
                                    knows where the skill's relative paths hang
                                    off); the args are substituted, or appended
                                    after the closing tag when the body has
-                                   none.
+                                   none.  Same rule as a prompt body: the text
+                                   is a document, one task, verbatim.
      /reload                       Re-read the resource files and rebuild the
                                    cached system prompt (a skill or AGENTS.md
                                    edited on disk takes effect; config.json
@@ -340,7 +390,6 @@ COMMAND REFERENCE
      /task new <desc>                  Create a task in the group in front.
      /task new <desc> --bg             Same group, background (no foreground).
      /task new <desc> --new-group      Open a group of its own (foreground).
-                                       (+/task new <desc> says the same thing.)
      /task new <desc> -g <gid>         Create in existing group.
      /task new <desc> -d <tid>         Create + wait for dependency,
                                        injecting its output (--with is the
@@ -405,25 +454,25 @@ WORKFLOW EXAMPLES
            Welcome! How can I help?
 
      + syntax (new group + task)
-           > +code "write a Python HTTP server"
+           > +"write a Python HTTP server"
 
      Pipe chain (output injected at each step)
-           > scan for vulns | create fix plan | apply patches
+           > "scan for vulns" | "create fix plan" | "apply patches"
 
      Sequential (no output injection)
-           > review src/ ; run tests ; commit changes
+           > "review src/" ; "run tests" ; "commit changes"
 
      Sequential with redirect
-           > review src/ ; run tests ; summarize findings > report.md
+           > "review src/" ; "run tests" ; "summarize findings" > report.md
 
      Combined pipes + redirects
-           > analyze codebase | find critical bugs | generate report > bugs.md
-           > build project 2> build-errors.log
-           > fix all issues < context.txt
+           > "analyze codebase" | "find critical bugs" | "generate report" > bugs.md
+           > "build project" 2> build-errors.log
+           > "fix all issues" < context.txt
 
      Background + pipeline
-           > analyze the error logs &
-           > audit API endpoints &
+           > "analyze the error logs" &
+           > "audit API endpoints" &
            > /task list
              - [fg] 1 (2)
                  - [L]* 1   LLM_PROCESSING  analyze the error logs

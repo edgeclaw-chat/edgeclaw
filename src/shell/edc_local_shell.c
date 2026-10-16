@@ -26,14 +26,16 @@ static const char *kUsage = "## `!` — run a shell command\n"
                             "\n"
                             "- `!cmd` — run `cmd`\n"
                             "- `!!` — run the previous `!` command of this session again\n"
-                            "- `+!cmd` — run it in a group of its own (a fresh conversation)\n"
-                            "- `\\!cmd` — send `!cmd` as ordinary input (a task description) instead\n";
+                            "\n"
+                            "The text after `!` is a command line for the shell, so it is NOT quoted here — "
+                            "quoting is for the strings of our own syntax. To send the text `!cmd` as an ordinary "
+                            "task description instead, write it as a quoted string: `\"!cmd\"`.\n";
 
 /* Create the tool-only task for |cmd|. |raw| is the text the user typed (the turn's
  * user message); `session` owns the task. Returns NULL when the task could not be
  * created. */
 static struct edc_task *spawn_command_task(struct edc_scheduler *sched, struct edc_session *session, sds raw,
-                                           const char *cmd, edc_channel_type channel_type, bool new_group)
+                                           const char *cmd, edc_channel_type channel_type)
 {
     cJSON *args = cJSON_CreateObject();
     cJSON_AddStringToObject(args, "command", cmd);
@@ -45,7 +47,7 @@ static struct edc_task *spawn_command_task(struct edc_scheduler *sched, struct e
      * may free it as soon as this returns. */
     spec.input = raw;
     spec.channel_type = channel_type;
-    spec.place = new_group ? EDC_TASK_PLACE_NEW_GROUP : EDC_TASK_PLACE_FOREGROUND;
+    spec.place = EDC_TASK_PLACE_FOREGROUND;
     spec.take_foreground = true;
     /* The whole mechanism: one seeded call instead of an LLM round. The drive then walks
      * the ordinary tool path (dispatch -> result into the turn -> settle). */
@@ -65,19 +67,10 @@ bool edc_local_shell_handle(struct edc_session_manager *sm, struct edc_scheduler
 
     sds raw = sdstrim(sdsnew(message->content), " \t\r\n");
 
-    /* `\!`: the escape. Drop the backslash and send the rest down the ordinary input
-     * path (it becomes a task description, as if `!` were never special). The message is
-     * not ours to rewrite, so the swapped content lives on a shallow copy for the length
-     * of the call -- edc_shell_execute only reads it. */
-    if (sdslen(raw) >= 2 && raw[0] == '\\' && raw[1] == '!')
-    {
-        struct edc_channel_message plain = *message;
-        plain.content = sdsnew(raw + 1);
-        bool handled = edc_shell_execute(sm, sched, to, &plain);
-        sdsfree(plain.content);
-        sdsfree(raw);
-        return handled;
-    }
+    /* (`\!` used to be the escape here. It is gone: a task description is a QUOTED string
+     * now, so `"!cmd"` says "this is text, not the local shell" -- and this branch was
+     * unreachable anyway, since the `content[0] != '!'` guard above rejects a backslash
+     * before it could run.) */
 
     struct edc_session *session = edc_session_store_resolve_session(sm, message->session_id);
     if (!session)
@@ -119,7 +112,7 @@ bool edc_local_shell_handle(struct edc_session_manager *sm, struct edc_scheduler
         session->last_local_cmd = sdsnew(cmd);
     }
 
-    struct edc_task *task = spawn_command_task(sched, session, raw, cmd, message->type, message->new_group);
+    struct edc_task *task = spawn_command_task(sched, session, raw, cmd, message->type);
     if (!task)
         edc_commands_reply(to, "Could not create a task for this command.");
     else

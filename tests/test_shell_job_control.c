@@ -34,6 +34,7 @@
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "utlist_fix.h"
+#include <cJSON.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -61,6 +62,15 @@ static int passed = 0, failed = 0;
             passed++;                                                                                                  \
         }                                                                                                              \
     } while (0)
+
+/* The first user message of a turn -- what the model actually receives. */
+static const char *first_user_content(struct edc_turn *turn)
+{
+    if (!turn || turn->messages.tail == turn->messages.head)
+        return NULL;
+    cJSON *msg = turn->messages.data[turn->messages.head];
+    return cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
+}
 
 static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
 {
@@ -167,7 +177,7 @@ int main(void)
     /* ── 普通命令: 开组 + 占前台 ─────────────────────────────────── */
 
     TEST("a plain command opens a group and takes the foreground");
-    struct edc_task *seed = drive_command(cfg, sm, sched, "seed");
+    struct edc_task *seed = drive_command(cfg, sm, sched, "\"seed\"");
     CHECK(seed != NULL, "the task ran");
     struct edc_task_group *g0 = seed ? seed->group : NULL;
     CHECK(g0 != NULL && g0 == edc_scheduler_get_foreground(sess), "its group is the foreground");
@@ -176,7 +186,7 @@ int main(void)
     /* ── cmd & : 进当前组, 不占前台 ─────────────────────────────── */
 
     TEST("`cmd &` joins the current group and leaves the foreground alone");
-    struct edc_task *bg = drive_command(cfg, sm, sched, "helper &");
+    struct edc_task *bg = drive_command(cfg, sm, sched, "\"helper\" &");
     CHECK(bg != NULL, "the background task ran anyway (bg is not 'do not run')");
     CHECK(bg && bg->group == g0, "it joined the group already in front");
     CHECK(g0 && g0->member_count == 2, "member count grew");
@@ -189,7 +199,7 @@ int main(void)
     /* 与 `/task bg`(无参数) 同一效果: 清掉前台指针。 */
     edc_scheduler_set_foreground(sess, NULL);
     edc_session_set_active_task(sess, NULL);
-    struct edc_task *lonely = drive_command(cfg, sm, sched, "lonely &");
+    struct edc_task *lonely = drive_command(cfg, sm, sched, "\"lonely\" &");
     CHECK(lonely != NULL, "the task ran");
     CHECK(lonely && lonely->group && lonely->group != g0, "nowhere to join -> a group of its own");
     CHECK(edc_scheduler_get_foreground(sess) == NULL, "still no foreground group");
@@ -198,7 +208,7 @@ int main(void)
     /* ── + + 后台 + 没有前台组: 不得被推上前台 ───────────────────── */
 
     TEST("`+cmd \"...\" &` with no foreground group must not be promoted");
-    struct edc_task *at = drive_command(cfg, sm, sched, "+grpwork \"new group work\" &");
+    struct edc_task *at = drive_command(cfg, sm, sched, "+\"new group work\" &");
     CHECK(at != NULL, "the task ran");
     CHECK(at && at->group && lonely && at->group != lonely->group, "the + opened its own group");
     CHECK(edc_scheduler_get_foreground(sess) == NULL, "a background task did not touch the foreground");
@@ -209,7 +219,7 @@ int main(void)
     TEST("`+\"...\" --bg` with no foreground group must not be promoted either");
     struct edc_task *at_bg = drive_command(cfg, sm, sched, "+\"quoted bg\" --bg");
     CHECK(at_bg != NULL, "the task ran");
-    CHECK(at_bg && at_bg->group && at->group && at_bg->group != at->group, "its own group again");
+    CHECK(at && at_bg && at_bg->group && at->group && at_bg->group != at->group, "its own group again");
     CHECK(edc_scheduler_get_foreground(sess) == NULL, "still no foreground group");
     CHECK(edc_session_get_active_task(sess) == NULL, "still no active task");
 
@@ -225,7 +235,7 @@ int main(void)
     /* ── + 不带 --bg: 这才是占前台的那条路 ──────────────────────── */
 
     TEST("`+cmd \"...\"` without --bg is the one that takes the foreground");
-    struct edc_task *at_fg = drive_command(cfg, sm, sched, "+grp plain work");
+    struct edc_task *at_fg = drive_command(cfg, sm, sched, "+\"grp plain work\"");
     CHECK(at_fg != NULL, "the task ran");
     CHECK(at_fg && at_fg->group && at_fg->group == edc_scheduler_get_foreground(sess),
           "its new group became the foreground");
@@ -235,7 +245,7 @@ int main(void)
 
     TEST("a second foreground task in the same group queues behind the first");
     /* 此刻前台组就是 at_fg 的组, 而 at_fg 正在跑。 */
-    struct edc_task *queued = drive_command(cfg, sm, sched, "queued work");
+    struct edc_task *queued = drive_command(cfg, sm, sched, "\"queued work\"");
     CHECK(queued == NULL, "nothing was dispatched -- it waits for the one in front");
     struct edc_task *waiting = find_task_by_desc(sess, "queued work");
     CHECK(waiting != NULL, "but the task was created");
@@ -246,7 +256,7 @@ int main(void)
     CHECK(edc_session_get_active_task(sess) == at_fg, "nor did the front land on a waiting task");
 
     TEST("a background task in that same group is not chained");
-    struct edc_task *aside = drive_command(cfg, sm, sched, "aside &");
+    struct edc_task *aside = drive_command(cfg, sm, sched, "\"aside\" &");
     CHECK(aside != NULL && aside->group == at_fg->group, "it joined the same group");
     CHECK(aside && aside->deps_total == 0, "but it waits for nobody");
     CHECK(g_llm_task == aside, "so it ran alongside the one in front");
@@ -277,7 +287,7 @@ int main(void)
     edc_task_mark_completed(waiting); /* 焦点停在一个已结束的任务上, 场上没人跑 */
     g_llm_calls = 0;
     g_llm_task = NULL;
-    struct edc_task *bg2 = drive_command(cfg, sm, sched, "bgwork &");
+    struct edc_task *bg2 = drive_command(cfg, sm, sched, "\"bgwork\" &");
     CHECK(bg2 != NULL, "后台任务跑起来了");
     CHECK(bg2 && bg2->is_background, "它被记成后台任务");
     CHECK(bg2 && bg2->group == at_fg->group, "还是进当前前台组");
@@ -294,23 +304,134 @@ int main(void)
 
     /* ── 转义: 描述可以以字面 `+` / `@` 开头, 落在当前组 ────────── */
 
-    TEST("`\\+` sends a literal `+` as ordinary input (current group)");
+    TEST("a quoted string starting with `+` is ordinary text (current group)");
+    /* The `\+` escape is gone -- quoting is how you say "literal": the sigil is only read
+     * when the `+` is the first character OUTSIDE a quoted string. */
     const int groups_before_plus = group_count(sess);
     const int tasks_before_plus = task_count(sess);
-    drive_command(cfg, sm, sched, "\\+1 issue is still open");
+    drive_command(cfg, sm, sched, "\"+1 issue is still open\"");
     struct edc_task *plus = find_task_by_desc(sess, "+1 issue is still open");
     CHECK(plus != NULL, "a task carried the literal `+` description");
     CHECK(task_count(sess) == tasks_before_plus + 1, "exactly one task was created");
     CHECK(plus && plus->group == edc_scheduler_get_foreground(sess), "it joined the current group");
     CHECK(group_count(sess) == groups_before_plus, "and did not open a group of its own");
 
-    TEST("`\\@` sends a literal `@` as ordinary input (current group)");
+    TEST("...and a quoted string starting with `@` is ordinary text too");
     const int groups_before_at_lit = group_count(sess);
-    drive_command(cfg, sm, sched, "\\@alice please take a look");
+    drive_command(cfg, sm, sched, "\"@alice please take a look\"");
     struct edc_task *at_lit = find_task_by_desc(sess, "@alice please take a look");
     CHECK(at_lit != NULL, "a task carried the literal `@` description (the rejection did not fire)");
     CHECK(at_lit && at_lit->group == edc_scheduler_get_foreground(sess), "it joined the current group");
     CHECK(group_count(sess) == groups_before_at_lit, "and did not open a group of its own");
+
+    /* ── 判别: 引号开头 = shell 行; 否则是普通输入 ─────────────────── */
+
+    TEST("an unquoted line is a normal message -- the `|` in it is text");
+    /* `现在新建任务A|B` needs neither quotes nor an error: unquoted, it is a message, i.e.
+     * ONE task whose text contains the `|`. The pipe has to be asked for explicitly. */
+    const int before_ambiguous = task_count(sess);
+    drive_command(cfg, sm, sched, "alpha|beta");
+    CHECK(task_count(sess) == before_ambiguous + 1, "one task");
+    CHECK(find_task_by_desc(sess, "alpha|beta") != NULL, "carrying the whole text, `|` and all");
+    CHECK(find_task_by_desc(sess, "alpha") == NULL, "and no first half was split off");
+
+    TEST("...and a plain sentence is a message too, with no quotes anywhere");
+    const int before_plain = task_count(sess);
+    drive_command(cfg, sm, sched, "analyze src/ for bugs");
+    CHECK(task_count(sess) == before_plain + 1, "one task");
+    CHECK(find_task_by_desc(sess, "analyze src/ for bugs") != NULL, "verbatim, as written");
+
+    TEST("a quoted first character makes the same line SHELL syntax: a pipe");
+    const int before_pipe = task_count(sess);
+    drive_command(cfg, sm, sched, "\"alpha\" | \"beta\"");
+    CHECK(task_count(sess) == before_pipe + 2, "two tasks -- the quoted operands are a chain");
+    CHECK(find_task_by_desc(sess, "alpha") != NULL, "the left operand is the first task's text");
+    CHECK(find_task_by_desc(sess, "beta") != NULL, "and the right one the second's");
+
+    TEST("...and quoting the `|` makes it text");
+    const int before_literal = task_count(sess);
+    drive_command(cfg, sm, sched, "\"alpha|beta\"");
+    CHECK(task_count(sess) == before_literal + 1, "one task");
+    CHECK(find_task_by_desc(sess, "alpha|beta") != NULL, "whose text contains the `|`");
+
+    TEST("inside a SHELL line every string is still quoted (so a mixed one is refused)");
+    const int before_mixed = task_count(sess);
+    drive_command(cfg, sm, sched, "\"alpha\" | beta");
+    CHECK(task_count(sess) == before_mixed, "the unquoted operand made it ambiguous -- nothing was created");
+
+    TEST("`if x > 5` is prose (a message), not a redirect to a file called 5");
+    const int before_gt = task_count(sess);
+    drive_command(cfg, sm, sched, "if x > 5");
+    CHECK(task_count(sess) == before_gt + 1, "one task");
+    CHECK(find_task_by_desc(sess, "if x > 5") != NULL, "with the text as written, nothing redirected");
+
+    TEST("the redirect TARGET is a string too -- quoted, and unquoted on the way out");
+    const int before_redir = task_count(sess);
+    drive_command(cfg, sm, sched, "\"say hi\" > \"out.md\"");
+    struct edc_task *redir = find_task_by_desc(sess, "say hi");
+    CHECK(redir != NULL, "the quoted description became the task's text");
+    CHECK(redir && redir->redirect_stdout && strcmp(redir->redirect_stdout, "out.md") == 0,
+          "and the quoted filename reached it unquoted (the quotes are delimiters, not part of the path)");
+
+    /* ── 选项区只接选项: 其它 token 报错, 不再静默丢弃 ─────────────── */
+
+    TEST("text after a quoted string is not an option -- refused, not dropped");
+    /* `"hello" and some more` used to keep `hello` and lose the rest with no word. */
+    const int before_tail = task_count(sess);
+    drive_command(cfg, sm, sched, "\"hello\" and then some more");
+    CHECK(task_count(sess) == before_tail, "nothing was created");
+    CHECK(find_task_by_desc(sess, "hello") == NULL, "and no truncated task either");
+
+    TEST("...but a real option is still an option");
+    const int before_opt = task_count(sess);
+    drive_command(cfg, sm, sched, "\"opt work\" --bg");
+    struct edc_task *opt = find_task_by_desc(sess, "opt work");
+    CHECK(opt != NULL, "the task was created");
+    CHECK(opt && opt->is_background, "and `--bg` meant what it says");
+
+    TEST("...and the `2` of a stderr redirect is a redirect prefix, not a stray token");
+    const int before_err = task_count(sess);
+    drive_command(cfg, sm, sched, "\"redirect work\" 2> \"err.log\"");
+    struct edc_task *err = find_task_by_desc(sess, "redirect work");
+    CHECK(err != NULL, "the task was created");
+    CHECK(err && err->redirect_stderr && strcmp(err->redirect_stderr, "err.log") == 0,
+          "with the stderr redirect intact");
+
+    /* ── 指南里的例子: 至少把没被别处覆盖的几条钉住 ────────────────── */
+
+    TEST("guide: `\"a\" ; \"b\"` is two tasks, sequential");
+    const int before_seq = task_count(sess);
+    drive_command(cfg, sm, sched, "\"first step\" ; \"second step\"");
+    CHECK(task_count(sess) == before_seq + 2, "two tasks");
+    CHECK(find_task_by_desc(sess, "first step") != NULL, "the first");
+    struct edc_task *second = find_task_by_desc(sess, "second step");
+    CHECK(second != NULL, "and the second");
+    CHECK(second && second->deps_total >= 1, "which waits for it (a sequence edge)");
+
+    TEST("guide: `\"task\" < \"path\"` appends the file's content to the task");
+    {
+        /* The path is handed to stat()/fopen() as-is -- relative to the PROCESS's cwd,
+         * not the session's working directory -- so the guide uses an absolute one, and so
+         * does this test. */
+        char path[256];
+        snprintf(path, sizeof(path), "%s/context.txt", ws);
+        FILE *f = fopen(path, "w");
+        if (f)
+        {
+            fputs("FILE-CONTENT-MARKER\n", f);
+            fclose(f);
+        }
+        char line[512];
+        snprintf(line, sizeof(line), "\"read the context\" < \"%s\"", path);
+        const int before_in = task_count(sess);
+        drive_command(cfg, sm, sched, line);
+        struct edc_task *rdf = find_task_by_desc(sess, "read the context");
+        CHECK(rdf != NULL, "the task was created");
+        const char *in = rdf ? first_user_content(rdf->active_turn) : NULL;
+        CHECK(in && strstr(in, "FILE-CONTENT-MARKER") != NULL,
+              "and the quoted target's file content was appended to what the model sees");
+        CHECK(task_count(sess) == before_in + 1, "still one task");
+    }
 
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

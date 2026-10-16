@@ -107,6 +107,34 @@ of two, and nothing tells you why.
 With it **off** (the default), every line that is not a `/` command is **one task
 description, verbatim** — no operators to get wrong, no sigil to escape.
 
+**A shell line is recognised by its first character.** Every string in shell syntax is
+quoted, so a shell line always begins with `"` or `'` — or with its own sigil, `+` / `!`. A
+line beginning with none of those is **a normal message**: one task, verbatim, nothing
+parsed out of it. That is what ordinary conversation looks like, and it is why it needs no
+quoting:
+
+```
+analyze src/ for bugs                 a MESSAGE -- one task, nothing parsed
+现在新建任务A|B                        a MESSAGE -- one task whose text contains the |
+"analyze src/ for bugs"               shell -- a string literal (also one task, but parsed)
+"scan src/" | "create a fix plan"     shell -- two tasks, the second fed the first's output
+"alpha|beta"                          shell -- one task whose text contains the |
+```
+
+The quoting rule is Python's: `"…"` interpolates `{{…}}`, `'…'` is raw (no interpolation),
+`"""…"""` / `'''…'''` span lines (the shape pasted text wants), escapes as in Python. Inside
+a shell line it is mandatory: an unquoted operand is refused, never guessed (`"a" | b` comes
+back with the fix). There is no escape character for the sigils — quoting is what makes a
+`+` or `@` literal: `"+1 issue"` is a `+` and a task in the *current* group.
+
+The redirect target is a string too — `"say hi" > "out.md"` — and its quotes are
+delimiters, not part of the path, which is what makes a filename with a space in it
+expressible.
+
+What follows the closing quote is the **option area** (`--bg`, `-d <id>`, `-g <group>`,
+`2>`, …). Anything else there is refused rather than dropped, so `"hello" and more` is an
+error — not a task quietly called `hello`.
+
 `/` commands are never gated: the command layer is a different thing from the shell layer,
 and `/shell` itself has to stay reachable to turn the switch back on. So `/task new`,
 `/skill` and `/prompt` keep working either way.
@@ -114,6 +142,20 @@ and `/shell` itself has to stay reachable to turn the switch back on. So `/task 
 The state is persisted (`config.json` → `shell_syntax`) and shown in the footer as
 `shell:on|off`. `/shell on|off` is the only way to flip it — deliberately no CLI flag, so
 there is one way to say it and it is the one that persists.
+
+**What the switch does *not* govern.** It is about the line you type. Two things sit
+outside it:
+
+- **A `/prompt` or `/skill` body is a document, not input to this layer.** It becomes one
+  task's input, verbatim; the operators do nothing inside it and the input layer's `{{…}}`
+  references are not collected. That is deliberate: a template is authored content, and an
+  author must not have the meaning of their template depend on the *reader's* setting —
+  they could never reproduce a bug report. (It is the same decision that made skill bodies
+  spawn directly, and the same shape as a `'''` block: one literal atom.)
+- **`@` is not part of it.** `@file` is a file reference — the opencode / Claude Code
+  convention, not a Unix shell vocabulary — so it is expected to work with the switch off
+  too. The migration hint an old `@desc` gets is the one piece that only makes sense with
+  the switch on, since that is the only world where `@desc` ever meant a group.
 
 ---
 
@@ -124,11 +166,15 @@ Needs the shell-like syntax: **off by default**, `/shell on` turns it on.
 Use `+` to create a task in a **new** group with one line:
 
 ```
-+find performance bugs in src/
++"find performance bugs in src/"
 ```
 
-To pass options, quote the description — a `+` command with an unquoted description
-carrying an option (`-`, `--bg`, ...) is a syntax error, not a silently-ignored flag:
+The description is a quoted string like any other (see Shell-like Syntax above); quoting is
+also how you write one that itself starts with `+` or `@`.
+
+To pass options, they ride after the closing quote — a `+` command whose description is
+unquoted while carrying an option (`-`, `--bg`, ...) is a syntax error, not a
+silently-ignored flag:
 
 ```
 +"find bugs" --bg                # background
@@ -136,33 +182,31 @@ carrying an option (`-`, `--bg`, ...) is a syntax error, not a silently-ignored 
 +"check code" -d t1 -d t2        # wait for multiple tasks
 ```
 
-The description is everything you type; `+` only says "put it in a new group" (plain
-input joins the current group). See Shell-like Job Control below.
+`+` only says "put it in a new group" (a plain string joins the current group). See
+Shell-like Job Control below.
 
-### `+` composes with the other sigils
+### Shell syntax and command syntax are separate
 
-`+` is not only the shorthand for a plain description: it prefixes the other two input
-sigils and means the same thing for all of them -- *the task this creates opens its own
-group*.
+`+` is **shell** syntax; `/…` is **command** syntax. A line is one or the other, and they do
+not compose: `+/task new …`, `+/skill …`, `+/prompt …` and `+!cmd` are not a thing, and are
+refused -- rather than quietly becoming a task whose description is the command.
 
-```
-+/task new "security audit" --bg     # /task new, but into a new group (== --new-group)
-+/skill pdf extract pages            # run the skill in a new group
-+/prompt review src/                 # expand the template into a new group
-+!git status                         # the local shell command, in a new group
-```
-
-Each opens a fresh conversation: its own group, its own queue, its own history. `+/`
-still completes -- the command palette, and the `/prompt` and `/skill` name vocabulary,
-behave as they do for the unprefixed command, with the `+` kept in front of whatever Tab
-inserts.
-
-A description may legitimately start with `+` or `@`, so both have an escape: the
-backslash is dropped and the rest is ordinary input (it stays in the **current** group).
+To put a task in a group of its own, say it in the syntax you are already in:
 
 ```
-\+1 issue is still open          # a literal "+"
-\@alice please take a look       # a literal "@"
++"security audit"                         # shell: a new-group task
+/task new "security audit" --new-group    # command: the same statement
+```
+
+A prompt or a skill has no `--new-group` of its own -- its arguments belong to the template,
+so there is nowhere unambiguous to put the option. Open the group first, then run the
+command in it.
+
+To write a description that starts with a sigil, quote it — there is no escape character:
+
+```
+"+1 issue is still open"         # a `+` that is just text, in the CURRENT group
+"@alice please take a look"      # a `@` that is just text
 ```
 
 > `@` **used to be the new-group sigil.** It no longer creates a task: a leading `@` is
@@ -197,8 +241,11 @@ entry in the group's history) whose only job is to issue one `exec_shell` call. 
 |---|---|
 | `!cmd` | run `cmd` (a task of its own) |
 | `!!` | run this session's previous `!` command again |
-| `\!cmd` | escape: send `!cmd` as ordinary input (a task description) instead |
+| `"!cmd"` | the same text as a normal task description instead (a quoted string) |
 | `!` alone | usage |
+
+The text after `!` is a command line for `sh`, so it is **not** quoted here — quoting is
+for the strings of our own syntax, and this payload belongs to the shell.
 
 Commands that need a terminal (`sudo`, `vim`, `ssh`, an editor) fail immediately: the
 child gets no tty. A non-zero exit is not a task failure — the output (including
@@ -295,6 +342,14 @@ of the parent's conversation context up to the fork point (`desc` is its input).
 Everything in this section needs the shell-like syntax (see above): it is **off by
 default**, and `/shell on` turns it on.
 
+**Every string in a shell line is quoted** — `"alpha" | "beta"`, never `alpha | beta`.
+Unquoted, nothing says whether that `|` is a pipe the user meant or a `|` inside their text,
+so the line is refused and the fix is spelled out. Quote the operator instead and it is
+text: `"alpha|beta"`.
+
+(A line with no operator at all is *not* a shell line — see above: it is a message, and
+stays as written. Only a line that begins with a quote or a sigil is parsed.)
+
 | Shell             | EdgeClaw                      |
 |-------------------|-------------------------------|
 | `cmd &`           | `"input" &`                   |
@@ -302,13 +357,13 @@ default**, and `/shell on` turns it on.
 | `fg %1`           | `/task fg <task_id>`          |
 | `bg %1`           | `/task bg`                    |
 | `kill %1`         | `/task stop <task_id>`        |
-| `cmd1 \| cmd2`    | `a \| b`                      |
+| `cmd1 \| cmd2`    | `"a" \| "b"`                  |
 | `fork()`          | `/task fork <parent> <desc>`  |
 
 `&` is the background modifier: the task joins the **current** group but does not take
-the foreground. `+input` is a different thing -- it puts the task in a **new** group
-(`+input &` = new group, still background). So `+task "input" --bg` is not the
-equivalent of `cmd &`.
+the foreground. `+"input"` is a different thing -- it puts the task in a **new** group
+(`+"input" &` = new group, still background). So `+"input" --bg` is not the equivalent of
+`cmd &`.
 
 ---
 
@@ -324,9 +379,9 @@ equivalent of `cmd &`.
 | `/model <id>` | Switch model (persisted; the catalog's context window is applied too) |
 | `/model search <q>` | Search chat models across all providers |
 | `/prompt` | List the templates in `workspace/prompts/` |
-| `/prompt <name> [args…]` | Load a template, substitute its `$1` / `$@` / `${…}` placeholders (`{{…}}` also works), and run the result as input (the last placeholder takes the remaining args; a body with no placeholder gets the args appended) |
+| `/prompt <name> [args…]` | Load a template, substitute its `$1` / `$@` / `${…}` placeholders (`{{…}}` also works), and make the body ONE task — as written. A body is a **document**, not a command line: `\| ; & >` in it do nothing, and a `{{LAST}}`-style reference in it stays text (the last placeholder takes the remaining args; a body with no placeholder gets the args appended) |
 | `/skill` | List the skills — ours, plus any found in a `.claude` / `.agents` / `.pi` / `.opencode` skills directory |
-| `/skill <name> [args…]` | Run a skill directly: its `SKILL.md` body goes into this task wrapped in a `<skill name=… location=…>` block (pi's shape, so the model knows where the skill's relative paths hang off); the args are substituted, or appended after the closing tag when the body has none |
+| `/skill <name> [args…]` | Run a skill directly: its `SKILL.md` body goes into this task wrapped in a `<skill name=… location=…>` block (pi's shape, so the model knows where the skill's relative paths hang off); the args are substituted, or appended after the closing tag when the body has none. Same as a prompt body, the text is a **document**: one task, verbatim |
 | `/reload` | Re-read the resource files and rebuild the cached system prompt (a skill or AGENTS.md edited on disk takes effect; `config.json` still needs a restart) |
 | `/connect` | Guided setup: choose a provider, API key, and model (three-step wizard) |
 | `/sandbox [on\|off]` | Enable/disable the filesystem sandbox |
@@ -360,7 +415,7 @@ equivalent of `cmd &`.
 |---------|-------------|
 | `/task new <desc>` | Create a task in the group in front (queues behind whatever runs there) |
 | `/task new <desc> --bg` | Same group, but background: runs alongside, takes no foreground |
-| `/task new <desc> --new-group` | Open a group of its own (a fresh conversation) and take the foreground (`+/task new <desc>` is the same statement) |
+| `/task new <desc> --new-group` | Open a group of its own (a fresh conversation) and take the foreground |
 | `/task new <desc> -g <gid>` | Create in that existing group (`--group <gid>` is the long form) |
 | `/task new <desc> -d <tid>` | Create + wait for dependency, injecting its output (repeatable; `--with <tid>` is the explicit form) |
 | `/task fork <pid> <desc>` | Fork: a child task that leads a group of its own and takes the foreground, inheriting the parent group's memory and a snapshot of its context |
@@ -410,7 +465,14 @@ the active task. Other tasks complete silently; use
 
 ## Variable Expansion
 
-Task references (`{{…}}`) undergo a **two-phase expansion**.
+Task references (`{{…}}`) undergo a **two-phase expansion** — and they belong to the
+**shell** syntax: only a line the shell parses recognizes one.
+
+A task created by a **command** takes its input as text, never as a shell line. So a
+`{{LAST}}` written in a `/task new` description, or in a `/prompt` or `/skill` body, is
+plain text: no reference is recognized, no dependency is made, nothing is substituted. The
+same goes for the operators there — a command's input is not split into a `|` chain, and
+`>` does not redirect.
 
 The sigil is `{{…}}`, **not** `$`: `$` belongs to the prompt template layer (`$1`, `$@`,
 `${1:-x}` — the pi / Claude Code / opencode convention), so the two layers never collide.
@@ -476,16 +538,18 @@ Welcome! How can I help?
 ### Pipe Chain (output injected at each step)
 
 ```
-> scan src/ for vulnerabilities | create a fix plan | apply the patches
+> "scan src/ for vulnerabilities" | "create a fix plan" | "apply the patches"
 ```
 
 Creates three tasks in sequence. Task 2 receives task 1's output injected into
 its LLM context. Task 3 receives task 2's output. All share the same group.
+(Each operand is quoted because the line uses an operator — see Shell-like
+Syntax above.)
 
 ### Sequential (no injection between steps)
 
 ```
-> review src/ ; run the test suite ; commit and push
+> "review src/" ; "run the test suite" ; "commit and push"
 ```
 
 Creates three tasks that run in order. Unlike `|`, task outputs are NOT injected
@@ -494,17 +558,17 @@ between segments — each task starts fresh.
 ### Background + Dependencies
 
 ```
-> @logs "analyze error logs in /var/log" --bg
-> @api "audit all API endpoints" --bg
-> @summary "merge both findings" -d task-1 -d task-2
+> +"analyze error logs in /var/log" --bg
+> +"audit all API endpoints" --bg
+> +"merge both findings" -d task-1 -d task-2
 ```
 
 ### Combined Syntax: Pipes + Redirects
 
 ```
-> analyze codebase | find critical bugs | generate report > bugs.md
-> build project 2> build-errors.log
-> fix all issues < context.txt
+> "analyze codebase" | "find critical bugs" | "generate report" > bugs.md
+> "build project" 2> build-errors.log
+> "fix all issues" < context.txt
 ```
 
 Note: `<` reads the file and appends its content to the task input. If there is

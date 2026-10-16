@@ -1171,15 +1171,9 @@ void TUIWindow::RecomputeCommandPalette()
     if (app_)
     {
         const std::string &wd = session_model_->workdir();
-        // `+/prompt <name>` offers the same names as `/prompt <name>`: the palette treats
-        // the `+` as a prefix it puts back on whatever Tab produces, so the command word to
-        // match here is the same one.
-        const std::string head = (input_text_.size() >= 2 && input_text_[0] == '+' && input_text_[1] == '/')
-                                     ? input_text_.substr(1)
-                                     : input_text_;
-        if (head.compare(0, 7, "/prompt") == 0)
+        if (input_text_.compare(0, 7, "/prompt") == 0)
             command_palette_.SetArgSource("/prompt", app_->PromptNames(wd));
-        else if (head.compare(0, 6, "/skill") == 0)
+        else if (input_text_.compare(0, 6, "/skill") == 0)
             command_palette_.SetArgSource("/skill", app_->SkillNames(wd));
         else
             command_palette_.SetArgSource("", {});

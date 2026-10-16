@@ -90,16 +90,6 @@ static int count_tasks(struct edc_session *sess)
     return n;
 }
 
-/* 会话里当前有几个组. */
-static int count_groups(struct edc_session *sess)
-{
-    int n = 0;
-    struct edc_task_group *g;
-    DL_FOREACH(sess->groups, g)
-    n++;
-    return n;
-}
-
 /* 这条 turn 发给 LLM 的第一条用户消息。 */
 static const char *first_user_content(struct edc_turn *turn)
 {
@@ -196,29 +186,6 @@ int main(void)
               "and it took the foreground");
     }
 
-    /* ── `+/task new`: `+` 前缀就是 --new-group 那句话 ───────────── */
-
-    TEST("`+/task new \"...\"` opens a group of its own (the prefix is the same statement)");
-    struct edc_task_group *front_before = edc_scheduler_get_foreground(sess);
-    const int groups_before = count_groups(sess);
-    g_llm_calls = 0;
-    g_llm_task = NULL;
-    drive_command(cfg, sm, sched, "+/task new \"scoped\"");
-    CHECK(g_llm_task != NULL, "it ran immediately -- a new group has nothing to queue behind");
-    if (g_llm_task)
-    {
-        CHECK(g_llm_task->group && g_llm_task->group != front_before, "its group is not the one in front");
-        CHECK(g_llm_task->group && strcmp(g_llm_task->group->group_id, g_llm_task->task_id) == 0,
-              "it leads a group of its own");
-        CHECK(edc_scheduler_get_foreground(sess) == g_llm_task->group, "and it took the foreground");
-        /* The `+` is the handler's to strip: nothing downstream may see it. */
-        const char *sent = first_user_content(g_llm_task->active_turn);
-        CHECK(sent && strcmp(sent, "scoped") == 0, "the input is the description, with no `+` left on it");
-        CHECK(g_llm_task->description && strcmp(g_llm_task->description, "scoped") == 0,
-              "nor on the display name");
-    }
-    CHECK(count_groups(sess) == groups_before + 1, "exactly one group was opened");
-
     /* ── 带选项但 desc 没引号: 语法错误 ──────────────────────────── */
 
     TEST("/task new with options needs the description quoted");
@@ -237,6 +204,42 @@ int main(void)
     drive_command(cfg, sm, sched, "/task new \"\"");
     CHECK(count_tasks(sess) == before, "no task was created (a task needs an input)");
     CHECK(g_llm_task == NULL, "nothing was dispatched");
+
+    /* ── 命令建的任务：入参是文本，不过 shell ───────────────────── */
+
+    TEST("/task new takes its input as TEXT: `|` is not a pipe");
+    /* A command's input is not a shell line, so nothing in it is an operator. The
+     * `--new-group` keeps the group fresh, so deps_total can only come from the input. */
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "/task new \"alpha | beta\" --new-group");
+    CHECK(g_llm_task != NULL, "the task ran (a fresh group has nothing to queue behind)");
+    if (g_llm_task)
+    {
+        const char *sent = first_user_content(g_llm_task->active_turn);
+        CHECK(sent && strcmp(sent, "alpha | beta") == 0, "the whole text reached the model, `|` and all");
+        CHECK(g_llm_task->deps_total == 0, "and no second task was made out of it");
+    }
+
+    TEST("/task new takes its input as TEXT: `{{LAST}}` is not a reference");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "/task new \"see {{LAST}}\" --new-group");
+    CHECK(g_llm_task != NULL, "the task ran");
+    if (g_llm_task)
+    {
+        const char *sent = first_user_content(g_llm_task->active_turn);
+        CHECK(sent && strcmp(sent, "see {{LAST}}") == 0, "the text is literal");
+        CHECK(!g_llm_task->has_deferred_vars, "no deferred expansion was registered");
+        CHECK(g_llm_task->deps_total == 0, "and no dependency was made for it");
+    }
+
+    TEST("/task new refuses a stray token after the quoted description");
+    int before_stray = count_tasks(sess);
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "/task new \"scoped\" junk");
+    CHECK(count_tasks(sess) == before_stray, "no task was created (the stray token is refused)");
 
     /* ── desc 只用于显示名, 送给 LLM 的是完整输入 ──────────────────── */
 

@@ -19,9 +19,20 @@ struct edc_cmd_task_opts
     sds *dep_ids; /* -d/--with <id> dependency list (JOIN: waits and injects) */
     int dep_count;
     sds group_id;    /* --group <id> / -g <id> */
+    /* The first token in the OPTION AREA that is not an option and not the `2` of a
+     * stderr redirect. The option area takes options; anything else is an error rather
+     * than text silently dropped (`"hello" and more` must not lose ` and more`, and a
+     * message that happens to open with a quote lands exactly there). NULL = clean. */
+    sds unknown_option;
 };
 
 /* ── API ───────────────────────────────────────────────────── */
+
+/** Unquote ONE leading quoted region -- `"…"`, `'…'`, `"""…"""`, `'''…'''`, escapes as in
+ *  Python -- and store the position just past the closing delimiter in |*end_out|.
+ *  Returns the inner text (caller frees), or NULL when |s| does not open a quoted region
+ *  (or never closes one). Used wherever a string operand is taken, e.g. a redirect target. */
+extern sds edc_cmd_unquote(const char *s, const char **end_out);
 
 /** Parse task operation arguments. arg may be NULL; the caller frees with edc_cmd_task_opts_free. */
 extern void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts);
