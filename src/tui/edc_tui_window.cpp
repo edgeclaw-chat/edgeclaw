@@ -943,17 +943,17 @@ bool TUIWindow::HandleNormalEvent(::ftxui::Event event)
         }
         if (event == ::ftxui::Event::Tab)
         {
-            // Tab completes the selected row. When there is nothing left to complete
-            // (the completion is exactly what is already typed), it means "this one is
-            // it": confirm and fold the list instead of re-inserting the same text.
+            // Tab completes the selected row. When that leaves nothing more to complete,
+            // this same press is the "that's it": fold the list now instead of demanding
+            // one more Tab to say so (the extra press carried no new information).
             const std::string completed = command_palette_.Accept();
-            if (completed == input_text_)
+            if (completed != input_text_)
             {
-                command_palette_.Close();
-                return true;
+                input_->ReplaceAll(completed);
+                RecomputeCommandPalette();
             }
-            input_->ReplaceAll(completed);
-            RecomputeCommandPalette();
+            if (!command_palette_.HasMore())
+                command_palette_.Close();
             return true;
         }
         if (event == ::ftxui::Event::Escape)

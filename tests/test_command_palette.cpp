@@ -44,7 +44,10 @@ static CommandPalette Make()
                 {CommandFact{"/help [<command>]", "show help"},
                  CommandFact{"/task new <desc>   [--bg]", "create a task"},
                  CommandFact{"/task list", "list tasks"}, CommandFact{"/task bg [id]", "background"},
-                 CommandFact{"/session memo [show [id] | search <q>]", "memory"},
+                 CommandFact{"/session memo show [id]", "show the memory"},
+                 CommandFact{"/session memo search <q>", "search the memory"},
+                 CommandFact{"/session memo curate [focus]", "curate"},
+                 CommandFact{"/session memo compact", "compact"},
                  CommandFact{"/group fold [id] [focus]", "fold"}});
     return p;
 }
@@ -61,10 +64,19 @@ int main(void)
         CHECK(p.items()[0].text == "/help" && p.items()[1].text == "/task", "family names, in order");
     }
     {
-        TEST("'/ta' converges to the /task family");
+        TEST("'/ta' identifies ONE family -> steps into its subcommands");
         CommandPalette p = Make();
         CHECK(p.Update("/ta"), "open");
-        CHECK(p.items().size() == 1 && p.items()[0].text == "/task", "one family row");
+        CHECK(p.items().size() == 3, "the /task subcommands, not the family row");
+        CHECK(p.items()[0].text == "/task new <desc>   [--bg]", "first is new");
+        CHECK(p.Update("/t"), "a shorter unique prefix too");
+        CHECK(p.items().size() == 3, "same subcommands");
+    }
+    {
+        TEST("'/h' identifies /help -> its single row, not the family");
+        CommandPalette p = Make();
+        CHECK(p.Update("/h"), "open");
+        CHECK(p.items().size() == 1 && p.items()[0].text == "/help [<command>]", "the /help row");
     }
     {
         TEST("'/task ' steps into the subcommands");
@@ -72,6 +84,26 @@ int main(void)
         CHECK(p.Update("/task "), "open");
         CHECK(p.items().size() == 3, "3 subcommands");
         CHECK(p.items()[0].text == "/task new <desc>   [--bg]", "first is new");
+    }
+    {
+        TEST("'/session memo ' lists its subcommands (they are rows of their own)");
+        CommandPalette p = Make();
+        CHECK(p.Update("/session memo "), "open");
+        CHECK(p.items().size() == 4, "4 subcommands");
+        CHECK(p.items()[0].text == "/session memo show [id]", "first is show");
+        CHECK(p.Accept() == "/session memo show ", "Tab lands inside 'show'");
+        p.Update("/session memo show ");
+        CHECK(!p.HasMore(), "nothing more to complete after that");
+    }
+    {
+        TEST("Tab grows ONE word: '/session memo sh' -> '/session memo show '");
+        CommandPalette p = Make();
+        CHECK(p.Update("/session memo sh"), "open");
+        CHECK(p.items().size() == 1, "one candidate");
+        CHECK(p.Accept() == "/session memo show ", "exactly that word (got: " + p.Accept() + ")");
+        p.Update("/session memo se");
+        CHECK(p.items().size() == 1 && p.items()[0].text == "/session memo search <q>", "still one");
+        CHECK(p.Accept() == "/session memo search ", "and its word");
     }
     {
         TEST("'/task n' narrows to a single subcommand");
@@ -93,16 +125,22 @@ int main(void)
         CHECK(!p.Update("/task\nnew"), "multi-line closed");
     }
     {
-        TEST("Tab completes the highlighted row");
+        TEST("Tab completes ONE word, not a whole row");
         CommandPalette p = Make();
+        p.Update("/");
+        CHECK(p.Accept() == "/help ", "no shared word (families differ) -> the highlighted row");
         p.Update("/ta");
-        CHECK(p.Accept() == "/task ", "family row -> name + space");
+        CHECK(p.Accept() == "/task ", "the family word + a space (got: " + p.Accept() + ")");
         p.Update("/task n");
-        CHECK(p.Accept() == "/task new ", "drops <desc>");
+        CHECK(p.Accept() == "/task new ", "one word further in (got: " + p.Accept() + ")");
         p.Update("/task b");
         CHECK(p.Accept() == "/task bg ", "drops [id] (got: " + p.Accept() + ")");
         p.Update("/hel");
         CHECK(p.Accept() == "/help ", "drops [<command>] (got: " + p.Accept() + ")");
+        p.Update("/sess");
+        CHECK(p.Accept() == "/session ", "the memo rows share their first word (got: " + p.Accept() + ")");
+        p.Update("/task ");
+        CHECK(p.Accept() == "/task new ", "next word is ambiguous -> the highlighted row");
     }
     {
         TEST("Up/Down move the selection and clamp");
@@ -132,9 +170,25 @@ int main(void)
         CommandPalette p = Make();
         p.Update("/task n");
         CHECK(p.Accept() == "/task new ", "advances into the args");
+        CHECK(p.HasMore(), "at '/task n' there is still something to complete");
         p.Update("/task new ");
         CHECK(p.open(), "the row still matches as a prefix");
         CHECK(p.Accept() == "/task new ", "but Tab would change nothing");
+        CHECK(!p.HasMore(), "nothing left -> the same Tab also folds the list");
+    }
+    {
+        TEST("HasMore: a family with pickable subcommands still has more");
+        CommandPalette p = Make();
+        p.Update("/task ");
+        CHECK(p.HasMore(), "the subcommands would still change the text");
+        p.Update("/session memo ");
+        CHECK(p.HasMore(), "likewise for the memo subcommands");
+        p.Update("/session memo show ");
+        CHECK(!p.HasMore(), "landed inside 'show' -> nothing more to add");
+        p.Update("/session memo compact");
+        CHECK(p.HasMore(), "no trailing space yet: Tab would add it");
+        p.Update("/session memo compact ");
+        CHECK(!p.HasMore(), "then nothing more to add");
     }
     {
         TEST("Tab on a closed popup is a no-op (keeps the text)");

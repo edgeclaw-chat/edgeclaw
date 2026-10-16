@@ -293,10 +293,17 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
     {"Session", "/session stop", "cancel all active tasks in the current session", NULL},
     {"Session", "/session remove <name>", "remove a session (the last one cannot be removed)", NULL},
     {"Session", "/session rename <old> <new>", "rename a session", NULL},
-    {"Session", "/session memo [show [id] | search <q> | curate | compact]", "view and curate the session memory",
-     "`show [id]` = the entries (all, or one entry's detail) · `search <q>` = grep the entries · "
-     "`curate [focus]` = pull durable knowledge out of the group memories now · `compact` = "
-     "merge / condense the entries now."},
+    /* `/session memo`'s sub-modes are rows of their own (not one row with the alternatives
+     * inside its argument shape): the completion palette matches whole-row prefixes, so a
+     * shape like "[show [id] | search <q> | ...]" would make `show`/`search`/`curate`/
+     * `compact` impossible to complete. The docs list them separately too. */
+    {"Session", "/session memo show [id]", "show the session memory (all entries, or one entry's detail)",
+     "A bare `/session memo` is the same as `show`."},
+    {"Session", "/session memo search <q>", "grep the session memory entries", NULL},
+    {"Session", "/session memo curate [focus]", "pull durable knowledge out of the group memories now",
+     "Curation reads the group memories and writes entries through its memory tools."},
+    {"Session", "/session memo compact", "merge / condense the session memory entries now",
+     "Compaction only rewrites the session entries (merge / condense / drop / rebuild the index)."},
 
     {"Task", "/task new <desc>   [--bg] [--new-group] [-g <group>] [-d <task> | --with <task>]", "create a task",
      "`--bg` runs it in the background (no foreground) · `--new-group` gives it a fresh "

@@ -53,12 +53,22 @@ class CommandPalette
     // Esc: stay closed until the content changes again (typing re-opens).
     void Close();
 
-    // Tab: the text the input should be replaced with (the selected row, completed).
-    // When this already equals the input, nothing is left to complete -- the caller then
-    // reads Tab as "confirm" and closes the list instead of replacing the text.
+    // Tab: the text the input should be replaced with. It completes the ONE word being
+    // typed -- the last token grows to the longest common prefix of the candidates' token
+    // there ("/sess" -> "/session ", with a space once the word is whole) -- and only when
+    // that word has nothing left to give does it fall back to the highlighted row (which
+    // breaks the tie by choosing one).
     std::string Accept() const;
 
+    // True while Tab would change the text -- i.e. the last completion has NOT been reached
+    // yet. False means the same Tab is also the "that's it", so the CALLER folds the list
+    // instead of demanding one more press.
+    bool HasMore() const;
+
   private:
+    // Accept()'s first half: grow the last token to the candidates' common prefix for it.
+    std::string WordCompletion() const;
+
     std::vector<CommandFact> families_;
     std::vector<CommandFact> commands_;
     std::vector<CommandFact> items_;

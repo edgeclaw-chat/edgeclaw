@@ -40,6 +40,54 @@ int CountTokens(const std::string &s)
     return n;
 }
 
+// The whitespace-separated words of a row's LITERAL part (its text up to the argument
+// shape "<…", "[…", "|"): "/task new <desc>   [--bg]" -> {"/task", "new"}.
+std::vector<std::string> WordsOf(const std::string &cmd)
+{
+    const size_t cut = cmd.find_first_of("<|[");
+    const std::string head = (cut == std::string::npos) ? cmd : cmd.substr(0, cut);
+
+    std::vector<std::string> words;
+    std::string word;
+    for (char c : head)
+    {
+        if (c == ' ')
+        {
+            if (!word.empty())
+            {
+                words.push_back(word);
+                word.clear();
+            }
+        }
+        else
+        {
+            word += c;
+        }
+    }
+    if (!word.empty())
+        words.push_back(word);
+    return words;
+}
+
+std::string CommonPrefix(const std::string &a, const std::string &b)
+{
+    size_t n = 0;
+    while (n < a.size() && n < b.size() && a[n] == b[n])
+        n++;
+    return a.substr(0, n);
+}
+
+// The text Tab inserts for one row: the command itself, dropping the argument shape
+// ("<desc>", "[--bg]", the "|" of an alternative), with one space left for the next token.
+std::string CompletionOf(const std::string &cmd)
+{
+    const size_t cut = cmd.find_first_of("<|[");
+    std::string head = (cut == std::string::npos) ? cmd : cmd.substr(0, cut);
+    while (!head.empty() && head.back() == ' ')
+        head.pop_back();
+    return head + " ";
+}
+
 } // namespace
 
 void CommandPalette::SetSource(std::vector<CommandFact> families, std::vector<CommandFact> commands)
@@ -81,10 +129,14 @@ bool CommandPalette::Update(const std::string &content)
         std::vector<CommandFact> hits = Prefixed(commands_, content);
         if (CountTokens(content) <= 1)
         {
-            // Still typing the first token ("/", "/ta"): list families, so a bare '/'
-            // shows ~9 rows instead of all of them.
+            // Still on the first token ("/", "/ta"): list the FAMILIES, so a bare '/' shows
+            // ~9 modules instead of every row. Families are for telling modules apart,
+            // though -- once the prefix identifies exactly ONE of them ("/ta" -> /task),
+            // step into it: the family row would only echo the name plus its blurb, while
+            // the subcommands are what the user is after. (Falling back when no command row
+            // matches keeps the list from going empty.)
             std::vector<CommandFact> fams = Prefixed(families_, content);
-            if (!fams.empty())
+            if (!fams.empty() && (fams.size() > 1 || hits.empty()))
                 hits.swap(fams);
         }
         items_ = std::move(hits);
@@ -113,19 +165,75 @@ void CommandPalette::Close()
     closed_content_ = content_;
 }
 
+std::string CommandPalette::WordCompletion() const
+{
+    const size_t sp = content_.rfind(' ');
+    const std::string typed = (sp == std::string::npos) ? std::string() : content_.substr(0, sp + 1);
+
+    // How many whole words precede the one being typed (a trailing space means "the next
+    // word").
+    int index = 0;
+    bool in = false;
+    for (char c : typed)
+    {
+        if (c == ' ')
+            in = false;
+        else if (!in)
+        {
+            in = true;
+            index++;
+        }
+    }
+
+    std::string common;
+    bool first = true;
+    bool whole = true;
+    for (const CommandFact &item : items_)
+    {
+        const std::vector<std::string> words = WordsOf(item.text);
+        if (static_cast<int>(words.size()) <= index)
+            return content_; /* this candidate has no token there: nothing to grow into */
+        if (first)
+        {
+            common = words[index];
+            first = false;
+        }
+        else
+        {
+            common = CommonPrefix(common, words[index]);
+        }
+        if (common != words[index])
+            whole = false;
+    }
+    if (common.empty())
+        return content_;
+
+    // The space goes on only when every candidate agrees on the whole token: the word is
+    // finished ("/sess" -> "/session "), not merely narrowed ("/task st" stays "/task st").
+    const std::string grown = typed + common + (whole ? " " : "");
+    return grown == content_ ? content_ : grown;
+}
+
 std::string CommandPalette::Accept() const
 {
     if (!open_ || items_.empty())
         return content_;
 
-    // Complete to the command itself: drop the argument shape ("<desc>", "[--bg]", the
-    // "|" of an alternative), trim, and leave a space for the next token.
-    const std::string &cmd = items_[selected_].text;
-    const size_t cut = cmd.find_first_of("<|[");
-    std::string head = (cut == std::string::npos) ? cmd : cmd.substr(0, cut);
-    while (!head.empty() && head.back() == ' ')
-        head.pop_back();
-    return head + " ";
+    // 1. Complete the ONE word being typed ("/sess" -> "/session "): Tab grows a token, it
+    //    does not swallow a whole candidate row.
+    const std::string word = WordCompletion();
+    if (word != content_)
+        return word;
+
+    // 2. That word has nothing left to give (the candidates disagree on it, or they agree
+    //    on it and already disagree on the next one): take the highlighted row, which
+    //    breaks the tie by choosing one -- that is what Up/Down is for.
+    return CompletionOf(items_[selected_].text);
+}
+
+bool CommandPalette::HasMore() const
+{
+    return open_ && !items_.empty() && Accept() != content_;
 }
 
 } // namespace edc::model

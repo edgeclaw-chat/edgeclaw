@@ -474,50 +474,77 @@ void TestCommandPalette(edc::TUIWindow &win)
               "列表在上分割线之上（两者之间隔着规则线）");
     }
 
+    // 唯一命中一个家族（"/ta" -> /task）时直接列出它的子命令 —— 家族那一行只是把名字和
+    // 简介再念一遍，没有用处。
     type("ta");
     {
         const std::string f = FrameOf(win);
-        Check(Has(f, "/task"), "收敛到 /task");
+        Check(Has(f, "/task new"), "唯一命中一个家族 -> 直接列出子命令");
+        Check(!Has(f, "create, inspect and control tasks"), "家族行的简介不再单独占一行");
         Check(!Has(f, "/session"), "无关家族被过滤");
-    }
-
-    win.OnEvent(::ftxui::Event::Tab);
-    {
-        const std::string f = FrameOf(win);
-        Check(Has(f, "/task new"), "Tab 之后进了子命令列表（输入成了 '/task '）");
 
         // 同一件事在 10 行子的列表上也成立（面板最多 8 行 + 提示行）。
         const int hint_row = RowOf(f, "Tab complete");
         const int prompt_row = RowOf(f, "❯");
         Check(hint_row >= 0 && prompt_row >= 0 && prompt_row - hint_row == 2 &&
                   LineOf(f, prompt_row - 1).find("─") != std::string::npos,
-              "子命令列表同样在上分割线之上");
+              "子命令列表在上分割线之上");
     }
 
+    // Tab 一次只补一个词：'/ta' -> '/task '（列表继续列出子命令）。
+    win.OnEvent(::ftxui::Event::Tab);
+    {
+        const std::string f = FrameOf(win);
+        Check(Has(f, "❯ /task "), "Tab 补成了一个词：'/task '");
+        Check(Has(f, "Tab complete") && Has(f, "/task new"), "列表还在，继续列子命令");
+    }
+    // 再按一次才落到高亮那一行的下一个词；此时已无可补 -> 同一次 Tab 收起。
+    win.OnEvent(::ftxui::Event::Tab);
+    {
+        const std::string f = FrameOf(win);
+        Check(Has(f, "❯ /task new"), "再一次 Tab 取高亮行的下一个词");
+        Check(!Has(f, "Tab complete"), "无可再补 -> 同一次 Tab 收起列表");
+    }
+
+    // Esc 仍然只是关列表、内容留着：重新开一次验证。
+    win.OnEvent(::ftxui::Event::Return); // 提交上一条，输入清空
+    type("/task");
+    Check(Has(FrameOf(win), "Tab complete"), "重新敲 /task 又开出子命令列表");
     win.OnEvent(::ftxui::Event::Escape);
     {
         const std::string f = FrameOf(win);
         Check(!Has(f, "Tab complete"), "Esc 关掉弹层");
-        Check(Has(f, "/task "), "输入内容留着");
+        Check(Has(f, "/task"), "输入内容留着");
     }
 
-    // Tab 在"没有可补全的了"时 = 确认：列表收起，输入留在原地。
+    // Tab 补到"最后一个"时，同一次 Tab 就是"就这个了"：列表当即收起，不再多按一次。
     // 先提交上一条把输入清空，再从干净状态走一遍。
     win.OnEvent(::ftxui::Event::Return);
     type("/model");
-    win.OnEvent(::ftxui::Event::Tab); // -> "/model "，还有下一级（参数形状），列表仍开
-    Check(Has(FrameOf(win), "Tab complete"), "补到 '/model ' 后列表还在（还有下一级）");
-    win.OnEvent(::ftxui::Event::Tab); // 没有可补的了 -> 等同于"确认"
+    win.OnEvent(::ftxui::Event::Tab); // -> "/model "，已无可补 -> 同一次即收起
     {
         const std::string f = FrameOf(win);
-        Check(!Has(f, "Tab complete"), "无可补全时 Tab = 确认，列表收起");
-        Check(Has(f, "/model "), "输入留在 '/model '");
+        Check(Has(f, "/model "), "Tab 补到了 '/model '");
+        Check(!Has(f, "Tab complete"), "补到最后一个即收起（不再多按一次）");
     }
 
     // 收尾：把 '/model ' 提交掉，别把脏输入留给后面的用例。
     win.OnEvent(::ftxui::Event::Return);
-}
 
+    // "/session memo" 的子命令是独立的表行，所以它们能进补全列表并被 Tab 补上（以前它们挤
+    // 在同一行的参数形状 "[show [id] | search <q> | ...]" 里，按整行前缀永远匹配不到）。
+    type("/session memo ");
+    {
+        const std::string f = FrameOf(win);
+        Check(Has(f, "/session memo show") && Has(f, "/session memo search") &&
+                  Has(f, "/session memo curate") && Has(f, "/session memo compact"),
+              "/session memo 的子命令进入补全列表");
+    }
+    win.OnEvent(::ftxui::Event::Tab);
+    Check(Has(FrameOf(win), "❯ /session memo show"), "Tab 补到 '/session memo show '");
+    win.OnEvent(::ftxui::Event::Escape);
+    win.OnEvent(::ftxui::Event::Return); // 清空，别把脏输入留给后面的用例
+}
 // 键盘中断：Esc 只在有任务在跑时被吃掉（停下来）；Ctrl+C 第一次清空输入框、连按两次
 // 才退出。Ctrl+C 不走 OnEvent（main() 的 CatchEvent 把它路由到 OnInterrupt）。
 void TestInterruptKeys(edc::TUIWindow &win)
