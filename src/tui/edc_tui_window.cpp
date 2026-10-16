@@ -253,18 +253,6 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     });
     Add(split_);
 
-    // /connect dialog: a self-contained widget (owns its fields + rendering +
-    // events). The window only opens it and overlays it; persistence + hot-apply
-    // go through this Submit callback (so the dialog itself never sees the app).
-    connect_dialog_ = std::make_shared<ui::ConnectDialog>([this](const port::ConnectConfig &cfg) -> bool {
-        if (!app_->SetLlmConfig(cfg))
-            return false;
-        status_bar_->SetModel(cfg.model); // refresh the footer's model label
-        if (screen_)
-            screen_->RequestAnimationFrame();
-        return true;
-    });
-
     // The dispatcher is the AppFacade sink; it updates the models and calls back
     // into this window (IChannelHost) for the view actions. Created before the
     // app so the port can register it as its channel sink.
@@ -347,23 +335,13 @@ void TUIWindow::Submit()
     const auto last = input_text_.find_last_not_of(" \t\r\n");
     std::string message = input_text_.substr(first, last - first + 1);
 
-    // "/connect" is handled locally: open the provider dialog and do not send
-    // anything to the app or record it as a chat message.
+    // "/connect" is handled locally: open the setup wizard and do not send anything to
+    // the app or record it as a chat message. It is the same page the first run shows.
     if (message == "/connect")
     {
         input_text_.clear();
         input_->Reset();
         OpenConnect();
-        return;
-    }
-
-    // "/setup" re-opens the first-run wizard on demand (the same page the first run
-    // shows), for changing the provider/model later; local, like /connect.
-    if (message == "/setup")
-    {
-        input_text_.clear();
-        input_->Reset();
-        OpenSetup();
         return;
     }
 
@@ -398,23 +376,8 @@ void TUIWindow::Submit()
 
 void TUIWindow::OpenConnect()
 {
-    // Seed the dialog from the persisted config; a missing field reads empty
-    // (matching the pre-portal behaviour).
-    port::ConnectConfig initial;
-    if (!app_->ConfigApiUrl(&initial.api_url))
-        initial.api_url.clear();
-    if (!app_->ConfigModel(&initial.model))
-        initial.model.clear();
-    if (!app_->ConfigApiKey(&initial.api_key))
-        initial.api_key.clear();
-    connect_dialog_->Open(initial);
-    if (screen_)
-        screen_->RequestAnimationFrame();
-}
-
-void TUIWindow::OpenSetup()
-{
-    // Seed the wizard from the persisted config (the same seed the auto-open uses).
+    // Seed the setup wizard from the persisted config (the same seed the first-run
+    // auto-open uses); the model ticks the config's current choice in the lists.
     port::SetupConfig seed;
     std::string s;
     if (app_->ConfigApiUrl(&s))
@@ -422,7 +385,7 @@ void TUIWindow::OpenSetup()
     if (app_->ConfigApiKey(&s))
         seed.api_key = s;
     if (app_->ConfigModel(&s))
-        seed.model = s; /* ticks the config's current provider/model in the lists */
+        seed.model = s;
     setup_dialog_->Open(seed);
     if (screen_)
         screen_->RequestAnimationFrame();
@@ -746,20 +709,12 @@ void TUIWindow::TickAnimations()
     // task's state change, coalesced once per actor message.
 
     auto base = split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
-    // The first-run page sits above /connect (only one is open at a time in practice) and
-    // is centered -- its natural, intuitive place.
-    if (setup_dialog_->IsOpen())
-        return ::ftxui::dbox({base | ::ftxui::dim, setup_dialog_->Render() | ::ftxui::clear_under | ::ftxui::center});
-    if (!connect_dialog_->IsOpen())
+    // The /connect setup wizard is a modal, centered -- its natural place. The backdrop is
+    // dimmed while it is open; clear_under is load-bearing: ftxui's `dim` is a per-cell flag
+    // the backdrop stamps over its box, which an overlaid element does not clear.
+    if (!setup_dialog_->IsOpen())
         return base;
-    // The dialog is borderless, so the backdrop is dimmed while it is open: the
-    // raised surface then reads as the one lit panel on a muted screen.
-    // clear_under is load-bearing: ftxui's `dim` is a per-cell flag the backdrop
-    // stamps over its box and an overlaid element never clears it, so without it the
-    // dialog renders gray whatever its text colour.
-    return ::ftxui::dbox({base | ::ftxui::dim, connect_dialog_->Render() | ::ftxui::clear_under |
-                                                   ::ftxui::size(::ftxui::WIDTH, ::ftxui::LESS_THAN, 80) |
-                                                   ::ftxui::center});
+    return ::ftxui::dbox({base | ::ftxui::dim, setup_dialog_->Render() | ::ftxui::clear_under | ::ftxui::center});
 }
 
 bool TUIWindow::OnEvent(::ftxui::Event event)
@@ -785,16 +740,10 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
         }
     }
 
-    // The first-run setup page is the innermost modal while open: it owns every event
-    // (Esc = Skip). Checked before /connect.
+    // The /connect setup wizard is a modal: while open it owns every event (Esc exits,
+    // Enter advances, arrows move, the rest goes to its current field).
     if (setup_dialog_ && setup_dialog_->IsOpen())
         return setup_dialog_->OnEvent(event);
-
-    // The /connect dialog is a modal: while open it owns every event (Esc closes,
-    // Enter submits, the rest go to its fields). Checked first -- it is the
-    // innermost thing on screen, so it takes the event before any input mode.
-    if (connect_dialog_->IsOpen())
-        return connect_dialog_->OnEvent(event);
 
     // Bracketed paste markers (ESC[200~ / ESC[201~) toggle the paste mode and are
     // consumed whatever the mode was. FTXUI delivers each marker as a single

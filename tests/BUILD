@@ -904,22 +904,6 @@ cc_test(
     }),
 )
 cc_test(
-    name = "test_connect_dialog",
-    srcs = ["test_connect_dialog.cpp"],
-    deps = [
-        "//src/tui:tui",
-        "@ftxui//:component",
-        "@ftxui//:dom",
-        "@ftxui//:screen",
-    ],
-    linkstatic = True,
-    linkopts = TUI_TEST_LINK_OPTS,
-    local_defines = select({
-        "//:debug": ["EDGECLAW_DEBUG"],
-        "//conditions:default": [],
-    }),
-)
-cc_test(
     name = "test_working_status",
     srcs = ["test_working_status.cpp"],
     deps = [

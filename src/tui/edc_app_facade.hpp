@@ -82,16 +82,8 @@ class IChannelSink
     virtual void OnTaskHistory(const std::string &payload) = 0;
 };
 
-// The config submitted by the /connect dialog.
-struct ConnectConfig
-{
-    std::string api_url;
-    std::string model;
-    std::string api_key;
-};
-
-// The config submitted by the first-run setup page (a superset of ConnectConfig: it also
-// records the chosen model's context window).
+// The config submitted by the first-run setup page (the wizard): the LLM settings plus
+// the chosen model's context window.
 struct SetupConfig
 {
     std::string api_url;
@@ -124,8 +116,6 @@ class IAppFacade
     virtual bool ConfigApiUrl(std::string *out) const = 0;
     virtual bool ConfigApiKey(std::string *out) const = 0;
     virtual bool SandboxEnabled() const = 0;
-    // Persist + hot-apply; true when it succeeded.
-    virtual bool SetLlmConfig(const ConnectConfig &config) = 0;
 
     // ── first-run wizard + model catalog ─────────────────────────
     // False until the user finished/skipped the setup page (config.json "onboarded").
@@ -183,7 +173,6 @@ class AppFacade : public IAppFacade
     bool ConfigApiUrl(std::string *out) const override;
     bool ConfigApiKey(std::string *out) const override;
     bool SandboxEnabled() const override;
-    bool SetLlmConfig(const ConnectConfig &config) override;
 
     bool Onboarded() const override;
     bool SetSetup(const SetupConfig &config) override;
@@ -201,8 +190,7 @@ class AppFacade : public IAppFacade
 
     bool HistoryPath(std::string *out) const override;
     bool ChatLogPathFor(const std::string &session_id, std::string *out) const override;
-    bool WriteFile(const std::string &path, const char *data, size_t len, bool append,
-                   bool under_workspace) override;
+    bool WriteFile(const std::string &path, const char *data, size_t len, bool append, bool under_workspace) override;
     bool EnsureParentDir(const std::string &path) override;
 
     void HandleChannelMessage(struct edc_channel_message *message) override;

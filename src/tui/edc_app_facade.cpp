@@ -69,13 +69,6 @@ bool AppFacade::SandboxEnabled() const
     return app_ && edc_app_sandbox_enabled(app_);
 }
 
-bool AppFacade::SetLlmConfig(const ConnectConfig &config)
-{
-    if (!app_)
-        return false;
-    return edc_app_set_llm_config(app_, config.api_url.c_str(), config.model.c_str(), config.api_key.c_str());
-}
-
 bool AppFacade::Onboarded() const
 {
     return app_ && edc_app_onboarded(app_);

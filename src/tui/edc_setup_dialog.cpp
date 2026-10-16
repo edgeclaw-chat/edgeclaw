@@ -36,8 +36,8 @@ bool same_url(const std::string &a, const std::string &b)
     return !a.empty() && !b.empty() && norm(a) == norm(b);
 }
 
-/* Field look: the palette's own foreground, placeholder dimmed (same as ConnectDialog:
- * ftxui's default `inverted` fill hides the terminal caret). */
+/* Field look: the palette's own foreground, placeholder dimmed. (ftxui's default
+ * `inverted` fill paints a full-width slab that hides the terminal caret.) */
 ::ftxui::InputOption field_option()
 {
     ::ftxui::InputOption opt;
@@ -72,8 +72,8 @@ SetupDialog::SetupDialog(port::IAppFacade *facade, std::function<void()> on_done
 
     /* Adopt the inputs as a real component child: without a child the dialog is not
      * Focusable(), so its current input never reports Focused() and ftxui never asks the
-     * terminal for a caret (see ConnectDialog). Draw() still renders only the active
-     * step's input; this link carries focus. */
+     * terminal for a caret. Draw() still renders only the active step's input; this link
+     * carries focus. */
     tabs_ = ::ftxui::Container::Tab({provider_filter_input_, key_input_, model_filter_input_}, &tab_index_);
     Add(tabs_);
 }
@@ -379,8 +379,8 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     const char *title = step_ == STEP_PROVIDER ? "Choose a provider" : step_ == STEP_KEY ? "API key" : "Choose a model";
     std::string step_no = "Step " + std::to_string(static_cast<int>(step_) + 1) + "/3";
 
-    // The header IS the step's name (not a generic "Setup"); flat and borderless (same
-    // language as ConnectDialog). A right-aligned footer shows the keys that apply here
+    // The header IS the step's name (not a generic "Setup"); flat and borderless. A
+    // right-aligned footer shows the keys that apply here
     // (the list steps move the cursor; the key step submits).
     const char *hint = step_ == STEP_KEY ? "Enter submit  |  Esc exit" : "Up/Down move  |  Enter select  |  Esc exit";
 
