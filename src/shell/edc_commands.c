@@ -306,9 +306,15 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "`/help` alone lists every command; `/help <command>` (a prefix, or a subcommand name "
      "like `memo`) prints that command's detail."},
     {"General", "/whoami", "show the current session, model, foreground group and active task", NULL},
-    {"General", "/model [<id> | search <q>]", "list the current provider's models, switch model, or search all",
-     "No argument lists the current provider's chat models; `/model <id>` switches (and persists); "
-     "`/model search <q>` searches every provider."},
+    {"General", "/model", "list the current provider's chat models; `/model <id>` switches",
+     "No argument lists the current provider's chat models (the current one marked). `/model <id>` switches "
+     "to that model and persists it, applying the catalog's context window -- the id is the one the list "
+     "shows (`/model` is the place to copy it from). `/model search <q>` searches every provider.\n\n"
+     "`<id>` deliberately has NO row of its own: a row whose subcommand position holds a placeholder has "
+     "no word to grow into, and WordCompletion() gives up for ALL candidates when any of them lacks a token "
+     "at that index -- so that one row would cost `/model search` its completion. One row per completable "
+     "subcommand word."},
+    {"General", "/model search <q>", "search chat models across all providers", NULL},
     {"General", "/connect", "guided setup: choose a provider, API key, and model", NULL},
     {"General", "/prompt", "list the templates in workspace/prompts/", NULL},
     {"General", "/prompt <name> [args…]",

@@ -539,10 +539,12 @@ void TestCommandPalette(edc::TUIWindow &win)
     // 先提交上一条把输入清空，再从干净状态走一遍。
     win.OnEvent(::ftxui::Event::Return);
     type("/model");
-    win.OnEvent(::ftxui::Event::Tab); // -> "/model "，已无可补 -> 同一次即收起
+    win.OnEvent(::ftxui::Event::Tab); // -> "/model "
+    win.OnEvent(::ftxui::Event::Tab); // -> "/model search "，已无可补 -> 同一次即收起
     {
         const std::string f = FrameOf(win);
-        Check(Has(f, "/model "), "Tab 补到了 '/model '");
+        Check(Has(f, "/model search"), "子命令 search 是独立的表行，能进补全列表");
+        Check(Has(f, "❯ /model search "), "Tab 补到了 '/model search '");
         Check(!Has(f, "Tab complete"), "补到最后一个即收起（不再多按一次）");
     }
 
