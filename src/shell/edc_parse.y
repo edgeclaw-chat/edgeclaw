@@ -92,6 +92,15 @@ static void opt_witharg(const edc_tok *o, const edc_tok *val)
 }
 static void redir_add(const edc_tok *target, const edc_tok *spec)
 {
+    /* `<` 是"把文件读进这条任务"，这件事归 `@file`（passes 里读，过沙箱与 workdir）。
+     * 不静默丢弃：旧的写法必须停下来，并告诉用户换成什么。 */
+    if (spec && spec->fd == 0)
+    {
+        set_err("input redirect `\<` is gone — put the file in the message as `@file` "
+                "(it is read the same way, through the sandbox)");
+        return;
+    }
+
     struct edc_ast_redir *r = calloc(1, sizeof(*r));
     r->fd = spec->fd;
     r->append = spec->append;

@@ -404,7 +404,7 @@ static const struct edc_cmd_doc k_cmd_families[] = {
     {"General", "/sandbox", "the filesystem sandbox (on/off, ro/rw/deny paths)", NULL},
     {"General", "/shell", "the shell-like input syntax: sigils + operators (on/off)",
      "The switch owns the sigils `+<desc>` (open a new group) and `!<cmd>` (run a local shell command), and "
-     "the operators `|` `;` `&` `>` `>>` `2>` `<`. OFF by default: they spell out a Unix shell vocabulary, "
+     "the operators `|` `;` `&` `>` `>>` `2>`. OFF by default: they spell out a Unix shell vocabulary, "
      "and with the switch off every line that is not a `/` command is ONE task description, verbatim. "
      "`/shell on|off` is the only way to flip it (persisted; no CLI flag).\n\n"
      "It governs what you TYPE. A `/prompt` or `/skill` body is a document, not input to this layer, so the "
@@ -2505,7 +2505,8 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
     }
 
     /* Spawned DIRECTLY rather than through edc_shell_execute: a skill body is a DOCUMENT,
-     * and the shell layer tokenizes its input -- `<` and `>` are redirect operators there,
+     * and the shell layer tokenizes its input -- `<` / `>` are operators there (`<` is
+ * rejected outright now, since `@file` replaced it, but `>` still redirects),
      * so pi's `<skill …>` wrapper would be eaten by the tokenizer (and any `<tag>` in a
      * body silently mangled). */
     struct edc_session *session = cmd_input_session(sm, message);

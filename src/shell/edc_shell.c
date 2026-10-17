@@ -302,7 +302,8 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
             reply = sdscatprintf(sdsempty(),
                                  "## Shell-like syntax `%s`\n\n"
                                  "The sigils `+<desc>` (open a new group) and `!<cmd>` (run a local shell "
-                                 "command), and the operators `|` `;` `&` `>` `>>` `2>` `<`.\n\n"
+                                 "command), and the operators `|` `;` `&` `>` `>>` `2>` — no `<`\n"
+                                 "(it is `@file`'s job now).\n\n"
                                  "Off, every line that is not a `/` command is one task description, "
                                  "verbatim.\n\n"
                                  "Toggle: `/shell on|off` (persisted to config.json).\n",
@@ -431,45 +432,6 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
         *out_group = group;
 
     return task;
-}
-
-sds edc_shell_read_file(const char *path, sds *err_out)
-{
-    struct stat st;
-    if (stat(path, &st) != 0)
-    {
-        if (err_out)
-            *err_out = sdscatprintf(sdsempty(), "cannot read '%s': %s", path, strerror(errno));
-        return NULL;
-    }
-    if (S_ISDIR(st.st_mode))
-    {
-        if (err_out)
-            *err_out = sdscatprintf(sdsempty(), "cannot read '%s': Is a directory", path);
-        return NULL;
-    }
-    FILE *f = fopen(path, "r");
-    if (!f)
-    {
-        if (err_out)
-            *err_out = sdscatprintf(sdsempty(), "cannot read '%s': %s", path, strerror(errno));
-        return NULL;
-    }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    if (sz < 0)
-    {
-        fclose(f);
-        if (err_out)
-            *err_out = sdscatprintf(sdsempty(), "cannot read '%s': %s", path, strerror(errno));
-        return NULL;
-    }
-    fseek(f, 0, SEEK_SET);
-    sds content = sdsnewlen(NULL, (size_t)sz);
-    if (sz > 0)
-        fread(content, 1, (size_t)sz, f);
-    fclose(f);
-    return content;
 }
 
 /* Same recognition as the expand phase (edc_shell_vars.c): only our exact forms count. */

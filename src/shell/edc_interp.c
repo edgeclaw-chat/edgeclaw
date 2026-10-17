@@ -79,35 +79,6 @@ edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
     return EDC_IN_MESSAGE;
 }
 
-/* `< file`：把文件内容追加到这条 turn 的用户消息（与老 AST_REDIR_IN 一致）。 */
-static void apply_input_file(struct edc_task *task, const char *path)
-{
-    sds err = NULL;
-    sds content = edc_shell_read_file(path, &err);
-    if (err)
-        sdsfree(err);
-    if (!content || !task->active_turn)
-    {
-        if (content)
-            sdsfree(content);
-        return;
-    }
-    for (size_t mj = task->active_turn->messages.head; mj < task->active_turn->messages.tail; mj++)
-    {
-        cJSON *msg = task->active_turn->messages.data[mj];
-        cJSON *role = cJSON_GetObjectItem(msg, "role");
-        if (!role || !cJSON_IsString(role) || strcmp(role->valuestring, "user") != 0)
-            continue;
-        cJSON *c = cJSON_GetObjectItem(msg, "content");
-        if (!c || !cJSON_IsString(c))
-            continue;
-        sds merged = sdscatprintf(sdsempty(), "%s\n\n%s", c->valuestring, content);
-        cJSON_ReplaceItemInObject(msg, "content", cJSON_CreateString(merged));
-        sdsfree(merged);
-    }
-    sdsfree(content);
-}
-
 bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
                       struct edc_channel_message *message, const edc_ast *ast)
 {
@@ -130,7 +101,7 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
         for (struct edc_ast_stage *s = p->stages; s; s = s->next)
         {
             /* 重定向：按 fd 收，同 fd 后写覆盖（shell 的 last-wins）。 */
-            sds r_out = NULL, r_err = NULL, r_in = NULL;
+            sds r_out = NULL, r_err = NULL;
             bool r_out_app = false, r_err_app = false;
             for (struct edc_ast_redir *r = s->redirs; r; r = r->next)
             {
@@ -147,12 +118,6 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
                         sdsfree(r_err);
                     r_err = sdsdup(r->target);
                     r_err_app = r->append;
-                }
-                else
-                {
-                    if (r_in)
-                        sdsfree(r_in);
-                    r_in = sdsdup(r->target);
                 }
             }
 
@@ -172,10 +137,6 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
                     edc_commands_reply(to, verr ? verr : "bad task reference");
                     if (verr)
                         sdsfree(verr);
-                    for (struct edc_ast_redir *r = s->redirs; r; r = r->next)
-                        ;
-                    if (r_in)
-                        sdsfree(r_in);
                     continue; /* 这一条 stage 不建任务，其余照旧 */
                 }
                 stage_text = processed;
@@ -223,16 +184,12 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
             {
                 if (r_err_app)
                     task->redirect_stderr_append = true;
-                if (r_in)
-                    apply_input_file(task, r_in);
                 if (s->has_var_refs)
                     task->has_deferred_vars = 1;
                 edc_commands_announce_task(to, task);
                 if (out_group)
                     group = out_group; /* 后续 stage 进同一个组 */
             }
-            if (r_in)
-                sdsfree(r_in);
             edc_cmd_task_opts_free(&opts);
 
             prev = task ? task : prev;

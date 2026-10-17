@@ -51,7 +51,6 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
                                       edc_task_dep_type prev_dep_type, sds *out_error);
 
 /* Read file contents; on failure set an error message in *err_out. */
-sds edc_shell_read_file(const char *path, sds *err_out);
 
 /* ── Task references ({{…}}) ───────────────────────────────── */
 

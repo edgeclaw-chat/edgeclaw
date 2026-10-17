@@ -37,7 +37,8 @@ void edc_msg_payload_add_part(struct edc_msg_payload *payload, enum edc_msg_role
 
 struct edc_ast_redir
 {
-    int fd;         /* 0 = <, 1 = stdout, 2 = stderr */
+    int fd;         /* 1 = stdout, 2 = stderr. fd 0 (`<`) is retired: the grammar rejects
+                     * it with a pointer at `@file` (see redir_add in edc_parse.y). */
     bool append;    /* >> / 2>> */
     sds target;
     struct edc_ast_redir *next;

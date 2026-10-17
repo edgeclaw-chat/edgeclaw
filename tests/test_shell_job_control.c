@@ -231,6 +231,16 @@ int main(void)
     CHECK(edc_scheduler_get_foreground(sess) == NULL, "still no foreground group");
     CHECK(edc_session_get_active_task(sess) == NULL, "still no active task");
 
+    /* `<` 是"把文件读进这条任务"，这件事归 `@file`（那个 pass 里读，过沙箱与 workdir）。
+     * 不能静默变成别的意思：解析阶段就拒掉，并指向替代写法。 */
+    TEST("input redirect `<` is refused (it is `@file`'s job now)");
+    const int tasks_before_in = task_count(sess);
+    const int groups_before_in = group_count(sess);
+    struct edc_task *at_in = drive_command(cfg, sm, sched, "+\"fix bugs\" < \"context.txt\"");
+    CHECK(at_in == NULL, "nothing was dispatched");
+    CHECK(task_count(sess) == tasks_before_in, "and no task was created");
+    CHECK(group_count(sess) == groups_before_in, "nor a group opened");
+
     /* ── desc 没带引号却带选项: 语法错误, 什么都不建 ────────────────── */
 
     TEST("an unquoted word after `+` is a MESSAGE (拍板①), not a group");
@@ -423,11 +433,11 @@ int main(void)
     CHECK(second != NULL, "and the second");
     CHECK(second && second->deps_total >= 1, "which waits for it (a sequence edge)");
 
-    TEST("guide: `\"task\" < \"path\"` appends the file's content to the task");
+    TEST("guide: `\"task\" < \"path\"` is now REFUSED -- `<` is `@file`'s job");
     {
-        /* The path is handed to stat()/fopen() as-is -- relative to the PROCESS's cwd,
-         * not the session's working directory -- so the guide uses an absolute one, and so
-         * does this test. */
+        /* Input redirect is gone: the parser refuses it (and says to use @file), so no
+         * task is built. This pins the failure closed -- a line that used to append a
+         * file must not silently become something else. */
         char path[256];
         snprintf(path, sizeof(path), "%s/context.txt", ws);
         FILE *f = fopen(path, "w");
@@ -440,12 +450,8 @@ int main(void)
         snprintf(line, sizeof(line), "\"read the context\" < \"%s\"", path);
         const int before_in = task_count(sess);
         drive_command(cfg, sm, sched, line);
-        struct edc_task *rdf = find_task_by_desc(sess, "read the context");
-        CHECK(rdf != NULL, "the task was created");
-        const char *in = rdf ? first_user_content(rdf->active_turn) : NULL;
-        CHECK(in && strstr(in, "FILE-CONTENT-MARKER") != NULL,
-              "and the quoted target's file content was appended to what the model sees");
-        CHECK(task_count(sess) == before_in + 1, "still one task");
+        CHECK(find_task_by_desc(sess, "read the context") == NULL, "no task was created");
+        CHECK(task_count(sess) == before_in, "and the count did not move");
     }
 
     TEST("`2>>` is stderr + append; `2>` is stderr alone (the old `2>>` bug)");
