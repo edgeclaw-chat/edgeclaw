@@ -1153,3 +1153,12 @@ cc_test(
     ],
     linkopts = LINK_OPTS,
 )
+
+cc_test(
+    name = "test_lex",
+    srcs = ["test_lex.c"],
+    deps = [
+        "//src/shell:lex",
+    ],
+    linkopts = LINK_OPTS,
+)

@@ -61,3 +61,28 @@ cc_library(
     linkstatic = True,
     visibility = ["//visibility:public"],
 )
+
+# ── 新输入流水线的词法器（flex 生成；docs/input-pipeline.zh.md §3） ──────
+#
+# 与老的 edc_shell_token.c 并存：第①步只落地 + 单测，尚未接进生产。
+# 生成物是 bazel 的 outs，不签入仓库（构建机需要 flex；见 §11 的代价说明）。
+
+genrule(
+    name = "lex_c",
+    srcs = ["edc_lex.l"],
+    outs = ["edc_lex.c"],
+    cmd = "flex -o $@ $(location edc_lex.l)",
+)
+
+cc_library(
+    name = "lex",
+    srcs = ["edc_lex.c"],
+    hdrs = ["edc_lex.h"],
+    includes = ["."],
+    deps = [
+        ":shell_parse",
+        "//src/common:common",
+    ],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
