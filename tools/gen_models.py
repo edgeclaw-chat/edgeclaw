@@ -121,12 +121,17 @@ def fetch(url):
 
 
 def openai_base_url(pid, p):
-    """The provider's OpenAI-compatible base URL, or None if we have none verifiable."""
-    if pid in API_OVERRIDES:
-        return API_OVERRIDES[pid]
-    if p.get("npm") in OPENAI_COMPAT_NPM:
-        return p.get("api")
-    return None
+    """The provider's OpenAI-compatible base URL (no trailing slash), or None.
+
+    Trailing slashes are stripped here so the generated catalog, the keyless probe and
+    the runtime all agree: edc_url_chat_completions() strips them too, while a naive
+    `base + "/models"` probe turns fireworks-ai's ".../inference/v1/" into a double
+    slash that answers 404 (observed 2026-10-17) and risked dropping a good provider.
+    """
+    url = API_OVERRIDES.get(pid)
+    if url is None and p.get("npm") in OPENAI_COMPAT_NPM:
+        url = p.get("api")
+    return url.rstrip("/") if url else None
 
 
 def keep_model(m):
@@ -191,16 +196,26 @@ def render(providers, models, source, generated_at):
 
 # ── endpoint testing (keyless) ───────────────────────────────────────────────
 
-def _http(url, method="GET", body=None, headers=None, timeout=15, limit=300):
-    """(status_or_None, first_bytes up to `limit`). None + bytes(msg) on transport error."""
+def _http(url, method="GET", body=None, headers=None, timeout=15, limit=300, retries=1):
+    """(status_or_None, first_bytes up to `limit`). None + bytes(msg) on transport error.
+
+    A transport error is retried `retries` times before giving up: a single DNS/TLS blip
+    used to make `--check` report the catalog as STALE (and a full run silently drop a
+    healthy provider), which is far worse than a slightly slower probe. Same policy as
+    the LLM client (one automatic re-send on transport failure); an HTTP status of any
+    kind is a real answer and is never retried.
+    """
     req = urllib.request.Request(url, method=method, data=body, headers=headers or {})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read(limit)
-    except urllib.error.HTTPError as e:
-        return e.code, e.read(limit)
-    except Exception as e:  # DNS / TCP / TLS / timeout
-        return None, str(e).encode()
+    last = None
+    for _ in range(retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read(limit)
+        except urllib.error.HTTPError as e:
+            return e.code, e.read(limit)
+        except Exception as e:  # DNS / TCP / TLS / timeout
+            last = str(e).encode()
+    return None, last or b"transport error"
 
 
 def _is_local(base):
