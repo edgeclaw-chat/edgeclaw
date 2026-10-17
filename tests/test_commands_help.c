@@ -103,6 +103,22 @@ int main(void)
     CHECK(has(t, "No command matches"), "no-match message");
     sdsfree(t);
 
+    TEST("every dispatchable command is documented (the dispatch table and /help cannot drift)");
+    {
+        const char *names[32];
+        const int dn = edc_commands_table_names(names, 32);
+        CHECK(dn >= 6, "the table carries the commands");
+        for (int i = 0; i < dn; i++)
+        {
+            sds d = edc_commands_help_text(names[i]);
+            const bool documented = d && d[0] && strstr(d, names[i]) != NULL;
+            if (!documented)
+                printf("[undocumented: %s] ", names[i]);
+            CHECK(documented, names[i]);
+            sdsfree(d);
+        }
+    }
+
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;
 }

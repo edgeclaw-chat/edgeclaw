@@ -897,8 +897,9 @@ static bool edc_commands_handle_session_status(struct edc_session_manager *sm, s
     return true;
 }
 
-static bool edc_commands_handle_session(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                        struct edc_reply_to to, struct edc_channel_message *msg)
+static bool edc_commands_handle_session(struct edc_config *cfg, struct edc_session_manager *sm,
+                                        struct edc_scheduler *sched, struct edc_reply_to to,
+                                        struct edc_channel_message *msg)
 {
     /* Bare `/session`: usage, same shape as bare `/task` and `/group`. */
     if (edc_commands_is_target(msg->content, "/session"))
@@ -1898,8 +1899,9 @@ static void edc_commands_handle_group_info(struct edc_session_manager *sm, struc
     sdsfree(out);
 }
 
-static bool edc_commands_handle_group(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                      struct edc_reply_to to, struct edc_channel_message *message)
+static bool edc_commands_handle_group(struct edc_config *cfg, struct edc_session_manager *sm,
+                                      struct edc_scheduler *sched, struct edc_reply_to to,
+                                      struct edc_channel_message *message)
 {
     sds arg = NULL;
     if (edc_commands_arg(message->content, "/group history", &arg))
@@ -1955,8 +1957,9 @@ static bool edc_commands_handle_group(struct edc_session_manager *sm, struct edc
     return true;
 }
 
-static bool edc_commands_handle_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                     struct edc_reply_to to, struct edc_channel_message *message)
+static bool edc_commands_handle_task(struct edc_config *cfg, struct edc_session_manager *sm,
+                                     struct edc_scheduler *sched, struct edc_reply_to to,
+                                     struct edc_channel_message *message)
 {
 
     const char *content = message->content;
@@ -2131,6 +2134,21 @@ static void edc_commands_prompt_list(struct edc_config *cfg, const char *workdir
     }
     utarray_free(prompts);
     edc_resource_dirs_free(roots);
+}
+
+/* `/help [<command>]` 的表入口：取参这一步从派发链搬进来。 */
+static bool edc_commands_handle_help_cmd(struct edc_config *cfg, struct edc_session_manager *sm,
+                                         struct edc_scheduler *sched, struct edc_reply_to to,
+                                         struct edc_channel_message *message)
+{
+    (void)cfg;
+    (void)sm;
+    (void)sched;
+    sds arg = NULL;
+    edc_commands_arg(message->content, "/help", &arg);
+    const bool ret = edc_commands_handle_help(to, arg);
+    sdsfree(arg);
+    return ret;
 }
 
 static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_session_manager *sm,
@@ -2435,7 +2453,8 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
  * Prompts and skills are read from disk on every use already, so they need nothing; the
  * lazily-loaded model catalog IS dropped here so a regenerated one is re-read. */
 static bool edc_commands_handle_reload(struct edc_config *cfg, struct edc_session_manager *sm,
-                                       struct edc_reply_to to, struct edc_channel_message *message)
+                                       struct edc_scheduler *sched, struct edc_reply_to to,
+                                       struct edc_channel_message *message)
 {
     struct edc_session *session = cmd_input_session(sm, message);
     if (!session)
@@ -2488,6 +2507,68 @@ static bool edc_commands_handle_reload(struct edc_config *cfg, struct edc_sessio
     return true;
 }
 
+/* ── 命令表：表驱动派发 ────────────────────────────────────────
+ *
+ * 一条命令 = 一行数据：名字、匹配方式、入口。派发 = 查一次表，于是：
+ *   - 没有"插入顺序决定谁先匹配"这回事；
+ *   - 匹配方式（整行相等 / 前缀 + 空格）写在行里，不用在 is_command 与 is_target 之间挑；
+ *   - 表可以被测试直接读到（见 test_commands_help 的防漂移断言）。
+ *
+ * 子命令的处理仍在各命令自己的入口里（每个命令一条 strcmp 梯子）—— 那是下一步。 */
+typedef bool (*edc_cmd_fn)(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
+                           struct edc_reply_to to, struct edc_channel_message *message);
+
+struct edc_cmd_entry
+{
+    const char *name; /* 不含斜杠 */
+    bool exact;       /* true = 整行必须等于 `/name`；false = 允许 `/name …` */
+    edc_cmd_fn fn;
+};
+
+static const struct edc_cmd_entry k_commands[] = {
+    {"prompt", false, edc_commands_handle_prompt},
+    {"skill", false, edc_commands_handle_skill},
+    {"reload", true, edc_commands_handle_reload},
+    {"task", false, edc_commands_handle_task},
+    {"group", false, edc_commands_handle_group},
+    {"session", false, edc_commands_handle_session},
+    {"help", false, edc_commands_handle_help_cmd},
+};
+
+#define EDC_CMD_COUNT (sizeof(k_commands) / sizeof(k_commands[0]))
+
+/* 把 `/name rest…` 拆成名字 + 剩余，按表派发。false = 这张表里没有它。 */
+static bool edc_commands_dispatch(struct edc_config *cfg, struct edc_session_manager *sm,
+                                  struct edc_scheduler *sched, struct edc_reply_to to,
+                                  struct edc_channel_message *message)
+{
+    const char *p = message->content + 1; /* 跳过 '/' */
+    const size_t n = strcspn(p, " \t\r\n");
+    const char *rest = p + n;
+    while (*rest == ' ' || *rest == '\t')
+        rest++;
+    const bool alone = (*rest == '\0' || *rest == '\r' || *rest == '\n');
+
+    for (size_t i = 0; i < EDC_CMD_COUNT; i++)
+    {
+        const struct edc_cmd_entry *e = &k_commands[i];
+        if (strlen(e->name) != n || strncmp(e->name, p, n) != 0)
+            continue;
+        if (e->exact && !alone)
+            return false; /* `/reload x` 不是 `/reload` */
+        return e->fn(cfg, sm, sched, to, message);
+    }
+    return false;
+}
+
+int edc_commands_table_names(const char **out, int cap)
+{
+    int n = 0;
+    for (size_t i = 0; i < EDC_CMD_COUNT && n < cap; i++)
+        out[n++] = k_commands[i].name;
+    return n;
+}
+
 bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
                           struct edc_reply_to to, struct edc_channel_message *message)
 {
@@ -2520,39 +2601,9 @@ bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm
         if (edc_shell_handle_builtin(cfg, sm, to, message))
             return true;
 
-        /* One verb for the whole user-extensible surface; the template name is its
-         * argument (see the block above edc_commands_handler). Strict match, so
-         * `/promptx` is an unknown command rather than a template lookup. */
-        if (edc_commands_is_command(message->content, "/prompt"))
-            return edc_commands_handle_prompt(cfg, sm, sched, to, message);
-
-        /* The explicit way into a skill (`/skill <name> [args…]`); `/skill` alone lists. */
-        if (edc_commands_is_command(message->content, "/skill"))
-            return edc_commands_handle_skill(cfg, sm, sched, to, message);
-
-        /* Re-read the resource files and rebuild the CACHED system prompt (group history[0]). */
-        if (edc_commands_is_target(message->content, "/reload"))
-            return edc_commands_handle_reload(cfg, sm, to, message);
-
-        /* The top-level shortcuts (/tasks, /bg, /fg) were removed -- all go through /task subcommands. */
-
-        if (edc_commands_is_command(message->content, "/task"))
-            return edc_commands_handle_task(sm, sched, to, message);
-
-        if (edc_commands_is_command(message->content, "/group"))
-            return edc_commands_handle_group(sm, sched, to, message);
-
-        if (edc_commands_is_command(message->content, "/session"))
-            return edc_commands_handle_session(sm, sched, to, message);
-
-        if (edc_commands_is_command(message->content, "/help"))
-        {
-            sds help_arg = NULL;
-            edc_commands_arg(message->content, "/help", &help_arg);
-            bool ret = edc_commands_handle_help(to, help_arg);
-            sdsfree(help_arg);
-            return ret;
-        }
+        /* 表驱动：名字、匹配方式、入口都在 k_commands[] 里，没有顺序依赖。 */
+        if (edc_commands_dispatch(cfg, sm, sched, to, message))
+            return true;
 
         sds reply = sdscatprintf(sdsempty(), "**Unknown command** — `%s`\n\nType `/help` for available commands.",
                                  message->content);

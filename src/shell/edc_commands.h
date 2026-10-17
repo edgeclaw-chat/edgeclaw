@@ -19,6 +19,9 @@ struct edc_task_group;
  * downstream really needs (signature = reader roster) -- borrowing no umbrella object:
  * cfg for displays like /model, sm/sched for the task graph and store,
  * channel_actor+actor+channel_type for the "reply address". */
+/* 分派表的命令名（不含斜杠），供测试做"文档 ↔ 派发"的一致性断言。返回写入条数。 */
+extern int edc_commands_table_names(const char **out, int cap);
+
 extern bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
                                  struct edc_reply_to to, struct edc_channel_message *);
 extern void edc_commands_reply(struct edc_reply_to to, const char *text);
