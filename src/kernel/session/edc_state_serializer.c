@@ -210,6 +210,7 @@ static cJSON *task_to_json(struct edc_task *task)
     if (task->redirect_stderr)
         cJSON_AddStringToObject(tj, "redirect_stderr", task->redirect_stderr);
     cJSON_AddBoolToObject(tj, "redirect_append", task->redirect_append);
+    cJSON_AddBoolToObject(tj, "redirect_stderr_append", task->redirect_stderr_append);
 
     /* ── todos ── */
     if (task->todos)
@@ -746,6 +747,8 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->redirect_stderr = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "redirect_append")))
             task->redirect_append = cJSON_IsTrue(v);
+        if ((v = cJSON_GetObjectItem(tj, "redirect_stderr_append")))
+            task->redirect_stderr_append = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "todos")) && cJSON_IsArray(v))
             task->todos = cJSON_Duplicate(v, 1);
         if ((v = cJSON_GetObjectItem(tj, "todo_sync_gap")) && cJSON_IsNumber(v))

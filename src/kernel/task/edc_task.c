@@ -1404,7 +1404,9 @@ void edc_task_flush_redirects(struct edc_task *task)
     }
     if (task->redirect_stderr)
     {
-        FILE *f = fopen(task->redirect_stderr, "w");
+        /* `2>>` appends; `2>` truncates. (It used to always truncate -- that was half of the
+         * `2>>` bug; the other half is that nothing set the flag yet, see the lexer work.) */
+        FILE *f = fopen(task->redirect_stderr, task->redirect_stderr_append ? "a" : "w");
         if (f)
         {
             if (task->output)

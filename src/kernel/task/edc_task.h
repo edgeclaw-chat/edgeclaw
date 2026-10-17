@@ -260,6 +260,9 @@ struct edc_task
     sds redirect_stdout;
     sds redirect_stderr;
     bool redirect_append; /* true = >>, false = > */
+    /* The same for stderr (`2>>`). `redirect_append` above is shared by whichever stream is
+     * redirected; a line that appends to BOTH streams needs to say it per stream. */
+    bool redirect_stderr_append;
 
     /* Output target for a sink=GROUP_MEMORY task: which group's memory to write,
      * and where this round's cut went (P2a-4). The cut is one point in the group's
