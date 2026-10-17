@@ -1,6 +1,7 @@
 #ifndef __BC_TURN_H__
 #define __BC_TURN_H__
 #include "edc_containers.h"
+#include "edc_msg_part.h"
 #include "sds.h"
 #include <cJSON.h>
 #include <stdbool.h>
@@ -31,6 +32,15 @@ extern sds edc_turn_render_message(const cJSON *msg);
 /* Append one full message (takes ownership); cleans UTF-8 and fills ts/render. */
 extern void edc_turn_add_message(struct edc_turn *turn, cJSON *msg);
 extern void edc_turn_add_user_message(struct edc_turn *turn, const char *content);
+/* One message a PASS asked for (an @file's contents, and later the other message-level
+ * syntaxes). |role| is "user" / "system"; |synthetic| marks "not typed by the user" so
+ * the request phase can tell it apart -- the deferred {{…}} expansion walks user messages
+ * and must not rewrite a file's body.
+ *
+ * The generic door on purpose: a new pass appends to the payload's part list and never
+ * needs a new function here. */
+extern void edc_turn_add_extra_message(struct edc_turn *turn, int role, bool synthetic, const char *content);
+
 extern void edc_turn_add_assistant_message(struct edc_turn *turn, cJSON *msg);
 /* A tool message = the tool result in the LLM's context (tool_call_id/name/content
  * is all the request needs). */

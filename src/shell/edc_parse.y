@@ -57,7 +57,7 @@ static void stage_begin(void)
 }
 static void stage_set_word(const edc_tok *w)
 {
-    g_stage->text = sdsdup(w->value ? w->value : sdsempty());
+    g_stage->msg.text = sdsdup(w->value ? w->value : sdsempty());
     g_stage->has_var_refs = w->has_var_refs;
 }
 /* 无参选项：shell 行里只允许这两个以外的一个都没有 —— `--bg`/`--new-group` 属于命令层。 */
@@ -141,6 +141,7 @@ remember
 bool edc_parse(const edc_lex_out *toks, edc_ast *out, sds *err)
 {
     memset(out, 0, sizeof(*out));
+    out->kind = EDC_AST_SHELL; /* 文法只产出这一种；MESSAGE 节点由派发层直接构造 */
     if (err)
         *err = NULL;
 
@@ -207,10 +208,36 @@ void yyerror(const char *msg)
         g_err = sdsnew(msg ? msg : "syntax error");
 }
 
+void edc_msg_payload_add_part(struct edc_msg_payload *payload, enum edc_msg_role role, bool synthetic,
+                             const char *content)
+{
+    if (!payload || !content)
+        return;
+    payload->parts = realloc(payload->parts, sizeof(*payload->parts) * (size_t)(payload->nparts + 1));
+    struct edc_msg_part *p = &payload->parts[payload->nparts++];
+    p->role = role;
+    p->synthetic = synthetic;
+    p->content = sdsnew(content);
+}
+
+static void payload_free(struct edc_msg_payload *payload)
+{
+    if (!payload)
+        return;
+    if (payload->text)
+        sdsfree(payload->text);
+    for (int i = 0; i < payload->nparts; i++)
+        sdsfree(payload->parts[i].content);
+    free(payload->parts);
+    payload->parts = NULL;
+    payload->nparts = 0;
+}
+
 void edc_ast_free(edc_ast *a)
 {
     if (!a)
         return;
+    payload_free(&a->message);
     struct edc_ast_pipeline *p = a->pipelines;
     while (p)
     {
@@ -232,8 +259,7 @@ void edc_ast_free(edc_ast *a)
             free(s->deps);
             if (s->group)
                 sdsfree(s->group);
-            if (s->text)
-                sdsfree(s->text);
+            payload_free(&s->msg);
             free(s);
             s = sn;
         }

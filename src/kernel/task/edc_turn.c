@@ -34,6 +34,16 @@ void edc_turn_add_user_message(struct edc_turn *turn, const char *content)
     edc_turn_add_message(turn, msg);
 }
 
+void edc_turn_add_extra_message(struct edc_turn *turn, int role, bool synthetic, const char *content)
+{
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "role", role == EDC_MSG_SYSTEM ? "system" : "user");
+    cJSON_AddStringToObject(msg, "content", content);
+    if (synthetic)
+        cJSON_AddTrueToObject(msg, "synthetic");
+    edc_turn_add_message(turn, msg);
+}
+
 void edc_turn_add_assistant_message(struct edc_turn *turn, cJSON *msg)
 {
     edc_turn_add_message(turn, msg);

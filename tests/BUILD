@@ -319,6 +319,15 @@ cc_test(
 )
 
 cc_test(
+    name = "test_mention_pass",
+    srcs = ["test_mention_pass.c"],
+    deps = [
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_commands_task_fork",
     srcs = ["test_commands_task_fork.c"],
     deps = [

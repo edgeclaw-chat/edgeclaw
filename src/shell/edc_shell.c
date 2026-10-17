@@ -11,6 +11,7 @@
 #include "edc_interp.h"
 #include "edc_lex.h"
 #include "edc_parse.h"
+#include "edc_passes.h"
 #include "edc_string_utils.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -369,6 +370,8 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
     spec.desc = (opts->desc && sdslen(opts->desc) > 0) ? opts->desc : "New task";
     spec.channel_type = channel_type;
     spec.input = opts->input;
+    spec.parts = opts->parts;
+    spec.nparts = opts->nparts;
     spec.deps = deps;
     spec.dep_count = (size_t)opts->dep_count;
     spec.prev = prev_task;
@@ -619,7 +622,8 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
  * de-escaped form (see edc_shell_execute), so `\@`/`\+` mean a literal character here too.
  */
 bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                struct edc_reply_to to, struct edc_channel_message *message, const char *text)
+                                struct edc_reply_to to, struct edc_channel_message *message,
+                                const struct edc_msg_payload *payload)
 {
     struct edc_session *session = edc_session_store_resolve_session(sm, message->session_id);
 
@@ -627,9 +631,19 @@ bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_sched
     if (group && (group->is_orphaned || group->member_count == 0 || edc_task_group_is_system(group)))
         group = NULL;
 
+    /* The payload is what the passes produced: |text| is the final user text, |synthetic|
+     * is the extra content the model also sees (an @file's contents). They stay two
+     * separate messages -- see struct edc_msg_payload. */
+    const char *text = (payload && payload->text) ? payload->text : "";
+
     struct edc_cmd_task_opts opts;
     memset(&opts, 0, sizeof(opts));
     opts.input = sdsnew(text);
+    if (payload)
+    {
+        opts.parts = payload->parts; /* borrowed: the AST outlives interpolation */
+        opts.nparts = payload->nparts;
+    }
     /* The sender may have declared a better label (a `/prompt` expansion names the line
      * the user typed, not the body it became); otherwise the text is the label. */
     opts.desc = edc_str_utf8_truncate(message->task_desc ? message->task_desc : text, EDC_TASK_DESC_MAX, true);
@@ -648,6 +662,37 @@ bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_sched
 
     edc_cmd_task_opts_free(&opts); /* frees input + desc */
     return true;
+}
+
+/* ── 流水线的最后两步：passes → 解释执行 ────────────────────────
+ *
+ * 这两步永远成对出现（每个入口都一样），所以收在一个函数里：跑 pass 链，再让解释器消费
+ * pass 定稿后的 IR。|ast| 的所有权在这里结束。 */
+static bool edc_run_passes_and_interp(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                     struct edc_reply_to to, struct edc_channel_message *message, edc_ast *ast)
+{
+    struct edc_session *session = edc_session_store_resolve_session(sm, message->session_id);
+    struct edc_pass_ctx ctx = {
+        .conf = sched ? sched->config : NULL,
+        .sm = sm,
+        .sched = sched,
+        .workdir = session ? edc_session_get_workdir(session) : NULL,
+    };
+
+    sds perr = NULL;
+    const bool ok = edc_passes_run(&ctx, ast, &perr);
+    if (!ok)
+    {
+        edc_commands_reply(to, perr ? perr : "input rejected");
+        if (perr)
+            sdsfree(perr);
+        edc_ast_free(ast);
+        return true; /* 已回话：这条输入处理完毕 */
+    }
+
+    const bool handled = edc_interp(sm, sched, to, message, ast);
+    edc_ast_free(ast);
+    return handled;
 }
 
 bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
@@ -688,9 +733,7 @@ bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sch
                 sdsfree(perr);
             return true;
         }
-        edc_interp_shell(sm, sched, to, message, &ast);
-        edc_ast_free(&ast);
-        return true;
+        return edc_run_passes_and_interp(sm, sched, to, message, &ast);
     }
 
     /* 消息：开关关着却用了 shell 语法，说一声（Ⓔ）。 */
@@ -698,5 +741,12 @@ bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sch
         edc_commands_reply(to, "Shell-like syntax is off (`/shell on`) — this line went to the model "
                                "as a message, not to the shell layer.");
     edc_lex_out_free(&toks);
-    return edc_shell_spawn_plain_task(sm, sched, to, message, message->content);
+
+    /* 消息也有节点：展开是 AST 上的 pass，解释器只消费结果（edc_ast.h 说明为什么
+     * MESSAGE 不进文法，但必须进 IR）。 */
+    edc_ast ast;
+    memset(&ast, 0, sizeof(ast));
+    ast.kind = EDC_AST_MESSAGE;
+    ast.message.text = sdsdup(message->content);
+    return edc_run_passes_and_interp(sm, sched, to, message, &ast);
 }

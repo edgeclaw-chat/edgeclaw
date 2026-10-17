@@ -4,6 +4,7 @@
 #include "edc_actor.h"
 #include "edc_config.h"
 #include "edc_executor.h"
+#include "edc_msg_part.h" /* struct edc_msg_part：pass 追加的消息 */
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "sds.h"
@@ -225,6 +226,15 @@ struct edc_task_spec
     /* The turn this task runs on. NULL attaches none (system tasks, and any caller
      * that builds its own turn); an empty string still attaches an empty turn. */
     const char *input;
+    /* Extra messages the model sees next to |input|, in order (an @file's contents, and
+     * whatever the next pass adds). Borrowed, not owned: the caller keeps the AST alive
+     * for the duration of creation, and the turn copies each content.
+     *
+     * A LIST, not one field per kind: a new pass appends to it, and creation just loops.
+     * Kept apart from |input| on purpose -- the request phase expands {{…}} in USER
+     * messages, so an expansion's bytes must never share a message with them. */
+    const struct edc_msg_part *parts;
+    int nparts;
 
     edc_task_place place;
     const char *group_id; /* EDC_TASK_PLACE_GROUP */

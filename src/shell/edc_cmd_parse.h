@@ -1,6 +1,7 @@
 #ifndef __BC_CMD_PARSE_H__
 #define __BC_CMD_PARSE_H__
 
+#include "edc_msg_part.h" /* struct edc_msg_part (pass 追加的附加消息) */
 #include "sds.h"
 #include <stdbool.h>
 
@@ -24,6 +25,11 @@ struct edc_cmd_task_opts
      * than text silently dropped (`"hello" and more` must not lose ` and more`, and a
      * message that happens to open with a quote lands exactly there). NULL = clean. */
     sds unknown_option;
+    /* pass 追加的附加消息（@文件读出来的正文等），**借用**自 AST 的载荷：opts 不拥有
+     * 它们，调用方在解释期间保持 AST 存活。模型看到的额外内容就靠这张表 —— 新增一个
+     * pass 只往载荷里 add_part，不需要再动 opts / spec / task_create。 */
+    const struct edc_msg_part *parts;
+    int nparts;
 };
 
 /* ── API ───────────────────────────────────────────────────── */

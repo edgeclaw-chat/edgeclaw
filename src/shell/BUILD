@@ -33,12 +33,15 @@ cc_library(
         "edc_commands.c",
         "edc_interp.c",
         "edc_local_shell.c",
+        "edc_pass_mentions.c",
+        "edc_passes.c",
         "edc_shell.c",
     ],
     hdrs = [
         "edc_commands.h",
         "edc_interp.h",
         "edc_local_shell.h",
+        "edc_passes.h",
         "edc_shell.h",
     ],
     includes = [
@@ -51,6 +54,7 @@ cc_library(
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
+        "//src/sandbox:sandbox",
         "//src/shell:shell_parse",
         "@log.c//:log.c",
         "@sds//:sds",

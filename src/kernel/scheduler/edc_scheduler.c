@@ -593,6 +593,11 @@ bool edc_scheduler_task_adopt(struct edc_scheduler *sched, struct edc_session *s
         struct edc_turn *turn = edc_turn_new();
         turn->task_id = strdup(task->task_id);
         edc_turn_add_user_message(turn, spec->input);
+        /* Whatever the passes asked for (an @file's body today, anything tomorrow):
+         * one message each, in order. Nothing here knows WHICH pass produced them. */
+        for (int i = 0; i < spec->nparts; i++)
+            edc_turn_add_extra_message(turn, spec->parts[i].role, spec->parts[i].synthetic,
+                                       spec->parts[i].content);
         task->active_turn = turn;
     }
 

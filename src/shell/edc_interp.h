@@ -26,6 +26,11 @@ typedef enum
 edc_in_kind edc_classify(const edc_lex_out *toks, sds *err);
 
 
+/* 解释一棵 AST：按 kind 分派。**passes 已经跑过** —— 这里的载荷是定稿的
+ * （文本 + synthetic 块），解释器不再做任何语法上的展开。 */
+bool edc_interp(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                struct edc_channel_message *message, const edc_ast *ast);
+
 /* 解释一棵 SHELL AST：每个 stage 一个任务；同一 pipeline 内 JOIN（注入），pipeline 之间
  * SEQUENCE（只等）。链尾 `&` 让每个 stage 都不占前台。 */
 bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,

@@ -161,12 +161,12 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
              * 校验引用、把 {{SELF}} 就地解析掉。 */
             sds *vdeps = NULL;
             int vn = 0;
-            sds stage_text = s->text;
+            sds stage_text = s->msg.text;
             sds processed = NULL;
             if (s->has_var_refs)
             {
                 sds verr = NULL;
-                processed = edc_shell_collect_var_refs(sm, sched, s->text, &vdeps, &vn, &verr);
+                processed = edc_shell_collect_var_refs(sm, sched, s->msg.text, &vdeps, &vn, &verr);
                 if (!processed)
                 {
                     edc_commands_reply(to, verr ? verr : "bad task reference");
@@ -183,8 +183,11 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
 
             struct edc_cmd_task_opts opts;
             memset(&opts, 0, sizeof(opts));
-            opts.input = processed ? processed : sdsdup(s->text); /* processed 的所有权给 opts */
+            opts.input = processed ? processed : sdsdup(s->msg.text); /* processed 的所有权给 opts */
             opts.desc = edc_str_utf8_truncate(stage_text, EDC_TASK_DESC_MAX, true);
+            /* pass 追加的消息（借用；AST 活到解释结束）。解释器不知道它们是什么。 */
+            opts.parts = s->msg.parts;
+            opts.nparts = s->msg.nparts;
             opts.bg = ast->background; /* 链尾 `&`：作用整条链的每个 stage（⑨） */
             if (s->ndep > 0)
             {
@@ -237,4 +240,21 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
         }
     }
     return true;
+}
+
+/* 消息：整条载荷 -> 一个 task。载荷是 passes 定稿后的样子（synthetic 已挂好）。 */
+static bool interp_message(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                           struct edc_channel_message *message, const edc_ast *ast)
+{
+    return edc_shell_spawn_plain_task(sm, sched, to, message, &ast->message);
+}
+
+bool edc_interp(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                struct edc_channel_message *message, const edc_ast *ast)
+{
+    if (!ast)
+        return false;
+    if (ast->kind == EDC_AST_MESSAGE)
+        return interp_message(sm, sched, to, message, ast);
+    return edc_interp_shell(sm, sched, to, message, ast);
 }

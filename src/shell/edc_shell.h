@@ -16,6 +16,7 @@ struct edc_session_manager;
 struct edc_actor;
 struct edc_channel_message;
 struct edc_cmd_task_opts;
+struct edc_msg_payload;
 struct edc_task;
 struct edc_task_group;
 
@@ -25,11 +26,11 @@ struct edc_task_group;
 bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
                        struct edc_channel_message *message);
 
-/* One task from the whole line, verbatim -- the path edc_shell_execute takes when the
- * shell-like syntax switch is OFF (see edc_config.shell_syntax). |text| is the line as it
- * should become the task's input (already de-escaped). true = handled. */
+/* One task from the whole line, verbatim -- the path edc_shell_execute takes for a plain
+ * message (EDC_AST_MESSAGE). |payload| is the pass-expanded message: its text becomes
+ * the task's input, its synthetic block becomes the extra message the model sees. */
 bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                                struct edc_channel_message *message, const char *text);
+                                struct edc_channel_message *message, const struct edc_msg_payload *payload);
 
 /* Handle a built-in command (/whoami, /model); true = handled. */
 bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_reply_to to,

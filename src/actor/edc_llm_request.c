@@ -275,6 +275,11 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
             cJSON *role = cJSON_GetObjectItem(msg, "role");
             if (role && cJSON_IsString(role) && strcmp(role->valuestring, "user") == 0)
             {
+                /* Pass expansions (an @file's body) are not what the user typed: their
+                 * bytes are final. Expanding {{…}} inside them would rewrite the file. */
+                cJSON *synthetic = cJSON_GetObjectItem(msg, "synthetic");
+                if (synthetic && cJSON_IsTrue(synthetic))
+                    continue;
                 cJSON *content = cJSON_GetObjectItem(msg, "content");
                 if (content && cJSON_IsString(content))
                 {

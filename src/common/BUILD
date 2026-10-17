@@ -140,6 +140,7 @@ cc_library(
         "edc_https_client.h",
         "edc_init_env.h",
         "edc_log.h",
+        "edc_msg_part.h",
         "edc_string.h",
     ],
     includes = ["."],
