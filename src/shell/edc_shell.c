@@ -656,10 +656,10 @@ bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sch
     if (!message || !message->content || sdslen(message->content) == 0)
         return false;
 
-    /* 开关是**词法器模式**（docs/input-pipeline.zh.md §1.5）：关闭时 sigil/算符/选项根本不
-     * 成为 token，整行退化成 word，并记一笔 saw_disabled 供下面的 note 用。 */
     const bool shell_on = sched && sched->config && sched->config->shell_syntax;
 
+    /* 先词法，再分类（分类是**纯 token 函数**），然后才 parse。开关是词法器模式：关闭时它
+     * 不产出 sigil/算符，也不给任何 word 打 fully_quoted —— 所以分类不需要再看开关。 */
     edc_lex_out toks;
     if (!edc_lex(message->content, shell_on ? EDC_LEX_SHELL_ON : EDC_LEX_SHELL_OFF, &toks))
         return false;
@@ -674,11 +674,7 @@ bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sch
         return true;
     }
 
-    /* 开关关闭却用了 shell 语法：说一声，别静默改道（Ⓔ）。 */
-    if (toks.saw_disabled)
-        edc_commands_reply(to, "Shell-like syntax is off (`/shell on`) — this line went to the model "
-                               "as a message, not to the shell layer.");
-
+    /* shell 行：从这里起任何问题（含词法）都是语法错误，绝不降级成消息。 */
     if (kind == EDC_IN_SHELL)
     {
         edc_ast ast;
@@ -697,10 +693,10 @@ bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sch
         return true;
     }
 
+    /* 消息：开关关着却用了 shell 语法，说一声（Ⓔ）。 */
+    if (toks.saw_disabled)
+        edc_commands_reply(to, "Shell-like syntax is off (`/shell on`) — this line went to the model "
+                               "as a message, not to the shell layer.");
     edc_lex_out_free(&toks);
-    if (kind == EDC_IN_MESSAGE)
-        return edc_shell_spawn_plain_task(sm, sched, to, message, message->content);
-
-    /* COMMAND / LOCALSHELL 由派发层（edc_commands_handler）先一步处理掉。 */
-    return false;
+    return edc_shell_spawn_plain_task(sm, sched, to, message, message->content);
 }

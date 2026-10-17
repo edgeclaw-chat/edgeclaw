@@ -17,6 +17,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* ── 分类：**纯 token 函数**（§2 的提交点）─────────────────────────────
+ *
+ * 只读 token 流：命中即定、不回退。**不读源字节** —— 如果某个判断在 token 里表达不出来，
+ * 那是 token 模型缺东西（`fully_quoted` 曾把"以引号开头"和"是一个闭合引号区"揉在一起，
+ * 于是"引号没闭合"两不沾，分类器只能回头读字节；现在它有自己的 token：`TK_BAD_QUOTED`）。
+ *
+ * 开关关闭时不需要在这里再判一次：那时的词法器不产出 sigil/算符，也不给任何 word 打
+ * `fully_quoted`（词汇表不存在 ⇒ 引号不是信号）。 */
 edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
 {
     if (err)
@@ -26,9 +34,19 @@ edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
 
     const edc_tok *f = &toks->toks[0];
     if (f->kind == TK_SLASH_CMD)
-        return EDC_IN_COMMAND;
+        return EDC_IN_COMMAND; /* 命令层永不受开关影响 */
     if (f->kind == TK_SIGIL_LOCALSHELL)
         return EDC_IN_LOCALSHELL;
+
+    /* 行首开了引号却没闭合：已提交到 shell 行，是语法错误，不是消息。 */
+    if (f->kind == TK_BAD_QUOTED)
+    {
+        if (err)
+            *err = sdsnew("Unterminated quoted string — a line that opens with a quote must close it.");
+        return EDC_IN_MESSAGE;
+    }
+    if (f->kind == TK_WORD && f->fully_quoted)
+        return EDC_IN_SHELL;
 
     if (f->kind == TK_SIGIL_NEWGROUP)
     {
@@ -39,7 +57,13 @@ edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
                 *err = sdsnew("`+` needs a quoted description, e.g. `+\"<text>\"`.");
             return EDC_IN_MESSAGE;
         }
-        /* Ⓐ `+!cmd` / `+/task …`：两层语法不组合，保留今天的教学文案。 */
+        if (n->kind == TK_BAD_QUOTED)
+        {
+            if (err)
+                *err = sdsnew("Unterminated quoted string — the `\"…\"` after `+` has no closing quote.");
+            return EDC_IN_MESSAGE;
+        }
+        /* Ⓐ `+!cmd` / `+/task …`：两层语法不组合（token 的 value 里看得见）。 */
         if (n->kind == TK_WORD && n->value && (n->value[0] == '!' || n->value[0] == '/'))
         {
             if (err)
@@ -50,14 +74,10 @@ edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
         }
         if (n->kind == TK_WORD && n->fully_quoted)
             return EDC_IN_SHELL;
-        return EDC_IN_MESSAGE; /* ① `+foo`（未引号、有内容）→ 消息 */
+        return EDC_IN_MESSAGE; /* ① `+foo`（有内容、不是引号）→ 消息 */
     }
-
-    if (f->kind == TK_WORD && f->fully_quoted)
-        return EDC_IN_SHELL;
     return EDC_IN_MESSAGE;
 }
-
 
 /* `< file`：把文件内容追加到这条 turn 的用户消息（与老 AST_REDIR_IN 一致）。 */
 static void apply_input_file(struct edc_task *task, const char *path)

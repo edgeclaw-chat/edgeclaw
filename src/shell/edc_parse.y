@@ -144,6 +144,15 @@ bool edc_parse(const edc_lex_out *toks, edc_ast *out, sds *err)
     if (err)
         *err = NULL;
 
+    /* 未闭合的字面量在哪个位置都不合法：先在 token 层拦一次，文案比 bison 的默认好。 */
+    for (int i = 0; toks && i < toks->count; i++)
+        if (toks->toks[i].kind == TK_BAD_QUOTED)
+        {
+            if (err)
+                *err = sdsnew("Unterminated quoted string — `\"…\"` on a shell line must close.");
+            return false;
+        }
+
     g_toks = toks;
     g_i = 0;
     g_cur = NULL;

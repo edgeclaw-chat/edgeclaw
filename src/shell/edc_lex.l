@@ -9,7 +9,7 @@
 
 typedef enum
 {
-    C_UNQUOTED, C_QUOTED, C_WS, C_PIPE, C_SEQ, C_BG, C_REDIR, C_OPT, C_OPTARG,
+    C_UNQUOTED, C_QUOTED, C_BADQ, C_WS, C_PIPE, C_SEQ, C_BG, C_REDIR, C_OPT, C_OPTARG,
     C_SLASH, C_SIGIL_NG, C_SIGIL_LS, C_REST
 } chunk_kind;
 
@@ -71,6 +71,8 @@ static void push_unquoted(const char *raw, size_t len)
 "'''"[^']*"'''"             { push_quoted(yytext, false); }
 \"([^"\\]|\\.)*\"           { push_quoted(yytext, true); }
 '([^'\\]|\\.)*'             { push_quoted(yytext, false); }
+\"([^\"\\]|\\.)*$          { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
+'([^'\\]|\\.)*$            { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
 "2>>"                       { chunk_t *c = push(C_REDIR); c->fd = 2; c->append = true; }
 "2>"                        { chunk_t *c = push(C_REDIR); c->fd = 2; }
 ">>"                        { chunk_t *c = push(C_REDIR); c->fd = 1; c->append = true; }
@@ -216,7 +218,8 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
         /* 非 word：先把挂着的 word 吐出去 */
         if (cur)
         {
-            emit(out, TK_WORD, cur, nchunks_in_word == 1 && nquoted == 1, refs, 0, false, wb, we);
+            emit(out, TK_WORD, cur, mode == EDC_LEX_SHELL_ON && nchunks_in_word == 1 && nquoted == 1, refs, 0,
+                 false, wb, we);
             cur = NULL;
             nchunks_in_word = nquoted = 0;
             refs = false;
@@ -231,6 +234,9 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
         case C_REDIR: emit(out, TK_REDIR, NULL, false, false, c->fd, c->append, c->b, c->e); break;
         case C_OPT: emit(out, TK_OPT, sdsdup(c->text), false, false, 0, false, c->b, c->e); break;
         case C_OPTARG: emit(out, TK_OPTARG, sdsdup(c->text), false, false, 0, false, c->b, c->e); break;
+        case C_BADQ:
+            emit(out, TK_BAD_QUOTED, sdsdup(c->text), false, false, 0, false, c->b, c->e);
+            break;
         case C_SLASH: emit(out, TK_SLASH_CMD, sdsdup(c->text), false, false, 0, false, c->b, c->e); break;
         case C_SIGIL_NG: emit(out, TK_SIGIL_NEWGROUP, NULL, false, false, 0, false, c->b, c->e); break;
         case C_SIGIL_LS: emit(out, TK_SIGIL_LOCALSHELL, NULL, false, false, 0, false, c->b, c->e); break;
@@ -250,7 +256,8 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
         }
     }
     if (cur)
-        emit(out, TK_WORD, cur, nchunks_in_word == 1 && nquoted == 1, refs, 0, false, wb, we);
+        emit(out, TK_WORD, cur, mode == EDC_LEX_SHELL_ON && nchunks_in_word == 1 && nquoted == 1, refs, 0,
+             false, wb, we);
 
     emit(out, TK_EOF, NULL, false, false, 0, false, g_pos, g_pos);
 

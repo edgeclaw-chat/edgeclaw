@@ -14,7 +14,8 @@
 typedef enum
 {
     TK_SLASH_CMD,         /* /name（位置 0） */
-    TK_WORD,              /* 一个 shell word */
+    TK_WORD,              /* 一个 shell word（fully_quoted = 恰好一个闭合引号区） */
+    TK_BAD_QUOTED,        /* 引号开了却没闭合 —— token **自己就是**那个错误，不走侧信道 */
     TK_SIGIL_NEWGROUP,    /* + （位置 0） */
     TK_SIGIL_LOCALSHELL,  /* ! （位置 0，其载荷整体是下一个 TK_RAW_REST） */
     TK_RAW_REST,          /* ! 之后到输入尾的原文 */

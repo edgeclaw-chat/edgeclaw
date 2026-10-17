@@ -486,6 +486,28 @@ int main(void)
         CHECK(task_count(sess) == b4v + 1, "exactly one task");
     }
 
+    TEST("an unterminated quote at the START of a shell line is an error, not a message");
+    {
+        const int b4q = task_count(sess);
+        drive_command(cfg, sm, sched, "+\"ABC");
+        CHECK(task_count(sess) == b4q, "`+\"ABC` created nothing (it committed to a shell line)");
+        drive_command(cfg, sm, sched, "\"ABC");
+        CHECK(task_count(sess) == b4q, "`\"ABC` created nothing either");
+        drive_command(cfg, sm, sched, "'ABC");
+        CHECK(task_count(sess) == b4q, "and neither did the single-quoted form");
+        /* 句中才出现的未闭合引号：行首已经提交到 shell 行，所以同样是错误。 */
+        drive_command(cfg, sm, sched, "\"a\" \"b");
+        CHECK(task_count(sess) == b4q, "nor a shell line whose second literal never closes");
+    }
+
+    TEST("...but an apostrophe inside a plain message is just text");
+    {
+        const int b4a = task_count(sess);
+        drive_command(cfg, sm, sched, "don't panic");
+        CHECK(task_count(sess) == b4a + 1, "one task");
+        CHECK(find_task_by_desc(sess, "don't panic") != NULL, "with the apostrophe kept");
+    }
+
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }
