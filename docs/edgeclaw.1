@@ -155,7 +155,7 @@ SHELL SYNTAX (off by default)
        {{N}}     — output of task with id N (e.g. {{1}}, {{2}}).
        {{SELF}}  — task id of the current foreground active task.
        The sigil is {{...}} and NOT $: $ belongs to the prompt template
-       layer ($1, $@, ${1:-x} -- the pi / Claude Code / opencode spelling).
+       layer ($1 .. $N, $ARGUMENTS -- opencode's two forms).
        Only those three forms count; any other {{...}} (a pasted
        {{ var }}, a stray brace) is copied verbatim, and so is every $.
        Expansion happens after pipe splitting and redirect stripping, so
@@ -328,9 +328,9 @@ COMMAND REFERENCE
      /model <id>                   Switch model (persisted).
      /model search <q>             Search chat models across all providers.
      /prompt                       List the templates in workspace/prompts/.
-     /prompt <name> [args...]      Run a template: substitute its $1 / $@ /
-                                   ${...} placeholders (opencode's spelling --
-                                   {{...}} is NOT a placeholder) and
+     /prompt <name> [args...]      Run a template: substitute its $1 .. $N /
+                                   $ARGUMENTS placeholders (exactly opencode's;
+                                   {{...}} and ${...} are NOT placeholders) and
                                    make the body ONE task, as written.  The last
                                    placeholder takes the remaining args; a body
                                    with no placeholder gets the args appended.

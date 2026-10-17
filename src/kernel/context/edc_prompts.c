@@ -183,9 +183,9 @@ static struct edc_prompt *edc_prompt_parse(const char *name, const char *content
         return NULL;
     }
 
-    /* Stored AS WRITTEN: `$1` / `$@` / `${1:-x}` are our placeholder spelling -- the one pi
-     * / Claude Code / opencode use, which is what lets their files run unedited -- and the
-     * legacy `{{…}}` alias is accepted by the same expander (edc_prompt_placeholder_at). */
+    /* Stored AS WRITTEN: `$1` … `$N` and `$ARGUMENTS` are our placeholder spelling -- exactly
+     * opencode's two forms, which is what lets their files run unedited. (Neither `{{…}}` nor
+     * the braced `${…}` family is a placeholder any more; see edc_prompt_placeholder_at.) */
     prompt->body = trimmed;
 
     if (!prompt->description)
@@ -459,24 +459,27 @@ static bool edc_prompt_braced(sds spec, const sds *args, int argc, sds *out, lon
 enum edc_prompt_spec_kind
 {
     SPEC_NONE,       /* not a form we know: copied verbatim */
-    SPEC_ALL,        /* @ / @:-D / @:N / @:N:L */
-    SPEC_POSITIONAL, /* N / N:-D */
+    SPEC_ALL,        /* "@" -- every argument (spelled $ARGUMENTS) */
+    SPEC_POSITIONAL, /* a digit string -- argument N */
 };
 
-/* Where a placeholder starts: our `$…` (the spelling pi / Claude Code / opencode use --
- * running THEIR files unedited is the point) or the legacy `{{…}}` alias. On success
- * |*out_spec| is the canonical inner form ("1", "1:-D", "@", "@:2:1") and the result is how
- * many bytes were consumed; 0 = not a placeholder (copy the byte verbatim).
+/* Where a placeholder starts: our `$…` (opencode's two forms, so running THEIR files
+ * unedited is the point). On success |*out_spec| is the canonical inner form -- a digit
+ * string ("1", "10") or "@" -- and the result is how many bytes were consumed; 0 = not a
+ * placeholder (copy the byte verbatim).
  *
  * The grammar lives in ONE place: edc_prompt_braced is asked whether the spec is a form we
  * know (with no arguments a positional resolves to the empty string, so false really means
  * "unrecognised").
  *
- *   $1 … $9          one positional argument -- SINGLE digit, as in a shell: `$10` is `$1`
- *                    followed by a literal `0`, not the tenth argument (`${10}` says that)
- *   $@ / $ARGUMENTS  every argument
- *   ${1} ${10} ${1:-D} ${@} ${@:-D} ${@:N} ${@:N:L}
+ *   $1 … $n          one positional argument -- MULTI-digit, as opencode's `/\$(\d+)/` reads
+ *                    it: `$10` is the tenth argument (not `$1` followed by a literal `0`,
+ *                    which is what a shell would say, and what this used to do)
+ *   $ARGUMENTS       every argument
  *   \$               a literal `$` (handled by the callers, which see the backslash)
+ *
+ * That is the whole vocabulary, and it is opencode's: `$@`, `${1}`, `${1:-D}` and the slice
+ * forms were ours, not theirs, so they are gone (they stay as text now).
  *
  * `{{…}}` is NOT a placeholder here. It used to be a legacy alias of these forms, but that
  * made one spelling mean two things (`{{…}}` is the INPUT layer's task reference) and it was
@@ -491,26 +494,18 @@ static size_t edc_prompt_placeholder_at(const char *p, sds *out_spec)
     if (p[0] == '$' && p[1] != '\0')
     {
         const char *q = p + 1;
-        if (*q == '{')
+        if (*q >= '0' && *q <= '9')
         {
-            const char *close = strchr(q + 1, '}');
-            if (!close)
-                return 0;
-            spec_start = q + 1;
-            spec_len = (size_t)(close - (q + 1));
-            consumed = (size_t)(close - p) + 1;
-        }
-        else if (*q == '@')
-        {
+            /* MULTI-digit, the way opencode's `/\$(\d+)/` reads it: `$10` is argument ten.
+             * It used to be a single digit (so `$10` was `$1` + a literal `0`, shell-style),
+             * which silently disagreed with opencode -- a template with ten arguments
+             * behaved differently on the two sides. */
+            const char *d = q;
+            while (*d >= '0' && *d <= '9')
+                d++;
             spec_start = q;
-            spec_len = 1;
-            consumed = 2;
-        }
-        else if (*q >= '0' && *q <= '9')
-        {
-            spec_start = q;
-            spec_len = 1; /* single digit on purpose -- see above */
-            consumed = 2;
+            spec_len = (size_t)(d - q);
+            consumed = (size_t)(d - p);
         }
         else if (strncmp(q, "ARGUMENTS", 9) == 0)
         {
@@ -617,88 +612,30 @@ static bool edc_prompt_braced(sds spec, const sds *args, int argc, sds *out, lon
     if (!p || !*p)
         return false;
 
+    /* The only specs that exist are the ones the recognizer can produce: "@" for
+     * `$ARGUMENTS`, and a digit string for `$N`. The braced family's extras -- defaults
+     * (`:-`) and slices (`:N`, `:N:L`) -- went with `${...}`; keeping branches for them
+     * would leave code nothing can reach. */
     if (*p == '@')
     {
-        const char *rest = p + 1;
-        if (*rest == '\0')
-        {
-            *out = edc_prompt_join(args, 0, argc);
-            return true;
-        }
-        if (strncmp(rest, ":-", 2) == 0)
-        {
-            *out = (argc > 0) ? edc_prompt_join(args, 0, argc) : sdsnew(rest + 2);
-            return true;
-        }
-        if (*rest == ':')
-        {
-            const char *nump = rest + 1;
-            char *end = NULL;
-            long first = strtol(nump, &end, 10);
-            if (end == nump)
-                return false;
-            int from = (first <= 0) ? 0 : (int)(first - 1);
-            if (from > argc)
-                from = argc;
-
-            if (*end == '\0')
-            {
-                *out = edc_prompt_join(args, from, argc);
-                return true;
-            }
-            if (*end == ':' && end[1])
-            {
-                char *end2 = NULL;
-                long len = strtol(end + 1, &end2, 10);
-                if (end2 == end + 1 || *end2 != '\0')
-                    return false;
-                int to = (len < 0) ? from : from + (int)len;
-                if (to > argc)
-                    to = argc;
-                *out = edc_prompt_join(args, from, to);
-                return true;
-            }
-        }
-        return false;
+        if (p[1] != '\0')
+            return false;
+        *out = edc_prompt_join(args, 0, argc);
+        return true;
     }
 
-    /* A positional index. Multi-digit on purpose: `{{10}}` is the tenth argument (the
-     * `$10` spelling this replaced could not say that). */
+    /* A positional index. Multi-digit, so `$10` is the tenth argument. */
     if (isdigit((unsigned char)*p))
     {
         char *end = NULL;
         long idx = strtol(p, &end, 10);
-        if (end == p || idx < 1 || idx > 1000000)
+        if (end == p || *end != '\0' || idx < 1 || idx > 1000000)
             return false;
-        if (*end == '\0')
-        {
-            if ((long)idx == last_positional)
-                *out = edc_prompt_join(args, (int)(idx - 1), argc); /* the rest */
-            else
-                *out = sdsnew(edc_prompt_arg(args, argc, (int)idx));
-            return true;
-        }
-        if (strncmp(end, ":-", 2) == 0)
-        {
-            if ((long)idx == last_positional)
-            {
-                /* The LAST positional takes the remaining arguments -- but when there is
-                 * nothing left to take, the default still applies (that is what `:-` is
-                 * for). */
-                sds rest = edc_prompt_join(args, (int)(idx - 1), argc);
-                if (sdslen(rest) > 0)
-                {
-                    *out = rest;
-                    return true;
-                }
-                sdsfree(rest);
-                *out = sdsnew(end + 2);
-                return true;
-            }
-            const char *cur = edc_prompt_arg(args, argc, (int)idx);
-            *out = sdsnew((cur && *cur) ? cur : end + 2);
-            return true;
-        }
+        if (idx == last_positional)
+            *out = edc_prompt_join(args, (int)(idx - 1), argc); /* the rest */
+        else
+            *out = sdsnew(edc_prompt_arg(args, argc, (int)idx));
+        return true;
     }
     return false;
 }

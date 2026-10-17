@@ -113,15 +113,19 @@ static void test_expand(void)
      * 展开器（`edc_prompt_placeholder_at`），**没有“翻译”这一步**。 */
     check_expand("$1 substitutes like {{1}}", "A:$1", "one", "A:one");
     check_expand("$1 (last) takes the rest too", "A:$1", "one two", "A:one two");
-    check_expand("$10 is $1 plus a literal 0", "A:$10", "one", "A:one0");
-    check_expand("$@ is every argument", "A:$@", "one two", "A:one two");
+    check_expand("$10 is the tenth argument (multi-digit, as opencode reads it)",
+                 "A:$10", "1 2 3 4 5 6 7 8 9 ten", "A:ten");
+    check_expand("$10 with one argument is EMPTY -- it is not $1 followed by a 0",
+                 "A:$10", "one", "A:");
     check_expand("$ARGUMENTS too", "A:$ARGUMENTS", "one two", "A:one two");
-    check_expand("${10} says the tenth (braced forms are multi-digit)", "A:${10}", "1 2 3 4 5 6 7 8 9 ten",
-                 "A:ten");
-    check_expand("${1:-D} default", "A:${1:-D}", "", "A:D");
-    check_expand("${@:2:1} slice", "A:${@:2:1}", "one two three", "A:two");
-    check_expand("\\$1 is a literal dollar", "A:\\$1", "one", "A:$1\n\none");
-    check_expand("$HOME is not a placeholder -> appended", "run $HOME/bin", "one", "run $HOME/bin\n\none");
+    /* `$@` and the braced family (`${10}` `$@` `${1:-D}` `${@:2:1}`) are GONE: opencode has
+     * only `$1..$n` and `$ARGUMENTS`, and we align with it exactly. They are not
+     * placeholders any more, so they stay as text (and, with no reference found, the
+     * arguments are appended). */
+    check_expand("`$@` is not a form of ours", "A:$@", "one two", "A:$@\n\none two");
+    check_expand("`${1}` is not a form of ours", "A:${1}", "one", "A:${1}\n\none");
+    check_expand("`${1:-D}` is not a form of ours", "A:${1:-D}", "", "A:${1:-D}");
+    check_expand("`$HOME` is not a form of ours -> appended", "run $HOME/bin", "one", "run $HOME/bin\n\none");
     check_expand("$$ is not a form of ours -> appended", "A:$$", "one", "A:$$\n\none");
 }
 

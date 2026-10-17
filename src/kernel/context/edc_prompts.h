@@ -13,10 +13,11 @@
  *     description: Review staged git changes
  *     argument-hint: "[focus]"
  *     ---
- *     Review the staged changes. Focus on ${1:-correctness and error handling}.
+ *     Review the staged changes. Focus on $1.
  *
- * Substitution is TEXTUAL, and the placeholders are THIS layer's: `$1` / `$@` /
- * `$ARGUMENTS` / `${1:-x}` -- the spelling pi / Claude Code / opencode use, so a template
+ * Substitution is TEXTUAL, and the placeholders are THIS layer's: `$1` … `$N` and
+ * `$ARGUMENTS` -- exactly opencode's two forms (its expander is `/\$(\d+)/` plus a
+ * `$ARGUMENTS` replaceAll), so a template
  * brought over from them runs unedited. `{{…}}` is NOT a placeholder here: it belongs to the
  * INPUT (shell) layer as a task reference, and opencode / pi substitute only the `$` forms,
  * so a `{{1}}` in a body is plain text -- one spelling, one meaning.
