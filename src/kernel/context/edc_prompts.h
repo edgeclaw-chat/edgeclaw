@@ -17,13 +17,9 @@
  *
  * Substitution is TEXTUAL, and the placeholders are THIS layer's: `$1` / `$@` /
  * `$ARGUMENTS` / `${1:-x}` -- the spelling pi / Claude Code / opencode use, so a template
- * brought over from them runs unedited. `{{…}}` is the legacy alias of the same forms and
- * keeps working. TASK REFERENCES ARE ALSO `{{…}}` but they belong to the INPUT (shell)
- * LAYER, not to this one -- a template is substituted here, and only what the SHELL parses
- * afterwards may recognize a `{{LAST}}` / `{{<id>}}` / `{{SELF}}` (see edc_shell_vars.c).
- * A `/prompt` body, a `/skill` body and a `/task new` description are DOCUMENTS: no
- * reference in them is recognized, so `{{LAST}}` in a body is text, never the previous
- * output.
+ * brought over from them runs unedited. `{{…}}` is NOT a placeholder here: it belongs to the
+ * INPUT (shell) layer as a task reference, and opencode / pi substitute only the `$` forms,
+ * so a `{{1}}` in a body is plain text -- one spelling, one meaning.
  */
 
 #include "sds.h"

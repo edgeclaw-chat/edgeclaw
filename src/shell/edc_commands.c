@@ -311,9 +311,9 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
     {"General", "/prompt", "list the templates in workspace/prompts/", NULL},
     {"General", "/prompt <name> [args…]",
      "run a template: its placeholders are filled in and the body becomes ONE task, as written",
-     "The body is a DOCUMENT, not a command line: the template's `$1` / `$@` / `${…}` (and the legacy "
-     "`{{…}}` alias) placeholders are substituted, and what comes out is one task's input, verbatim. "
-     "`| ; & >` in a body do nothing, and a `{{LAST}}`-style task reference in it stays text. A body is "
+     "The body is a DOCUMENT, not a command line: the template's `$1` / `$@` / `${…}` placeholders are "
+     "substituted (opencode's spelling -- `{{…}}` is NOT a placeholder), and what comes out is one task's "
+     "input, verbatim. `| ; & >` in a body do nothing, and a `{{…}}` in it is plain text too. A body is "
      "therefore independent of the `/shell` switch -- its meaning must not depend on the reader's setting."},
     {"General", "/skill", "list the skills (yours, plus any found in .claude / .agents / .pi / .opencode)", NULL},
     {"General", "/skill <name> [args…]",
@@ -2191,8 +2191,10 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
     /* The body is a DOCUMENT, not a command line: it becomes ONE task's input, verbatim.
      * The shell never parses it -- the same treatment a skill body gets, and the same
      * shape as a `'''` block (one literal atom). So a body gets no `| ; & >`, and no
-     * `{{…}}` task references; the template layer's own placeholders ($1 / $@ / ${…} and
-     * the legacy {{…}} alias) were substituted above, which is a different layer.
+     * `{{…}}` task references; the template layer's own placeholders ($1 / $@ / ${…})
+     * were substituted above, which is a different layer -- and `{{…}}` is NOT one of
+     * them (that alias is gone; it is the input layer's task reference, so in a body it
+     * is plain text).
      *
      * Its meaning must not depend on the READER's shell-like syntax setting: a template is
      * authored content, and an author who could not reproduce someone else's report would

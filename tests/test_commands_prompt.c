@@ -154,7 +154,7 @@ int main(void)
                  "description: Review staged changes\n"
                  "argument-hint: \"[focus]\"\n"
                  "---\n"
-                 "Review the staged changes. Focus on {{1:-correctness}}.\n");
+                 "Review the staged changes. Focus on ${1:-correctness}.\n");
     /* A body full of shell syntax: it must stay ONE task -- a body is a document, never
      * parsed as a command line. */
     write_prompt(ws, "piped", "alpha | beta\n");
@@ -196,7 +196,7 @@ int main(void)
         const char *input = first_user_content(g_llm_task->active_turn);
         CHECK(input != NULL, "the turn carries a user message");
         CHECK(input && strstr(input, "focus") != NULL, "the argument was substituted in");
-        CHECK(input && strstr(input, "{{1:-") == NULL, "and no placeholder survived");
+        CHECK(input && strstr(input, "${1:-") == NULL, "and no placeholder survived");
         CHECK(input && strstr(input, "Review the staged changes") != NULL, "the template body is there");
     }
 

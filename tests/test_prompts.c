@@ -88,23 +88,13 @@ static void check_expand(const char *name, const char *body, const char *argline
 static void test_expand(void)
 {
     /* ── 替换：位置占位符 + 全量形式 ───────────────────────────── */
-    check_expand("{{1}} takes the REST when it is the last one", "A:{{1}}", "one two", "A:one two");
-    check_expand("{{2}} is the second argument", "A:{{2}}", "one two", "A:two");
-    check_expand("{{2}} (last) takes what is left after it", "A:{{1}}|{{2}}", "one two three", "A:one|two three");
-    check_expand("{{10}} is multi-digit (the tenth argument)", "A:{{10}}", "1 2 3 4 5 6 7 8 9 ten", "A:ten");
-    check_expand("a missing positional is EMPTY, not literal", "A[{{3}}]", "one two", "A[]");
-    check_expand("{{@}} joins every argument with a space", "A:{{@}}", "one two three", "A:one two three");
-    check_expand("{{@}} with no arguments is empty", "A:{{@}}", "", "A:");
-    check_expand("{{@}} consumes: nothing is appended", "A:{{@}}", "one two", "A:one two");
-    check_expand("{{1:-default}} uses the argument", "A:{{1:-D}}", "one", "A:one");
-    check_expand("{{1:-default}} falls back when missing", "A:{{1:-D}}", "", "A:D");
-    check_expand("{{1:-default}} falls back when empty", "A:{{1:-D}}", "\"\"", "A:D");
-    check_expand("{{1:-default}} (last) also takes the rest", "A:{{1:-D}}", "one two", "A:one two");
-    check_expand("{{@:-default}} uses the arguments", "A:{{@:-D}}", "one two", "A:one two");
-    check_expand("{{@:-default}} falls back when there are none", "A:{{@:-D}}", "", "A:D");
-    check_expand("{{@:2}} slices from the second argument", "A:{{@:2}}", "one two three", "A:two three");
-    check_expand("{{@:2:1}} takes one from the second", "A:{{@:2:1}}", "one two three", "A:two");
-    check_expand("{{@:9}} past the end is empty", "A:{{@:9}}", "one", "A:");
+    /* ── `{{…}}` 不是占位符（它是输入层的任务引用）──────────────────
+     * 这是一次有意的对齐，2026-10-16 核过 opencode 源码：它只认 `$1..$n` 与
+     * `$ARGUMENTS`，从来没有 `{{…}}` 占位符。把 `{{…}}` 也当占位符是我们自己的
+     * 旧别名，它让同一个拼写在两层有两种意思。现在它在这一层是纯文本。 */
+    check_expand("`{{1}}` is NOT a placeholder", "A:{{1}}", "one", "A:{{1}}\n\none");
+    check_expand("`{{@}}` neither", "A:{{@}}", "one two", "A:{{@}}\n\none two");
+    check_expand("`{{1:-D}}` neither", "A:{{1:-D}}", "", "A:{{1:-D}}");
 
     /* ── 兜底：正文里没有任何引用 → 把用户输入追加在末尾 ────────────
      * （opencode 的规则，2026-10-16 核过源码；这样 `/prompt x 一些话` 与
@@ -133,7 +123,6 @@ static void test_expand(void)
     check_expand("\\$1 is a literal dollar", "A:\\$1", "one", "A:$1\n\none");
     check_expand("$HOME is not a placeholder -> appended", "run $HOME/bin", "one", "run $HOME/bin\n\none");
     check_expand("$$ is not a form of ours -> appended", "A:$$", "one", "A:$$\n\none");
-    check_expand("{{1}} still works (legacy alias)", "A:{{1}}", "one", "A:one");
 }
 
 /* ── Argument splitting ────────────────────────────────────── */

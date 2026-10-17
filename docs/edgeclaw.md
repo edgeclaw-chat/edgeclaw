@@ -379,7 +379,7 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 | `/model <id>` | Switch model (persisted; the catalog's context window is applied too) |
 | `/model search <q>` | Search chat models across all providers |
 | `/prompt` | List the templates in `workspace/prompts/` |
-| `/prompt <name> [args…]` | Load a template, substitute its `$1` / `$@` / `${…}` placeholders (`{{…}}` also works), and make the body ONE task — as written. A body is a **document**, not a command line: `\| ; & >` in it do nothing, and a `{{LAST}}`-style reference in it stays text (the last placeholder takes the remaining args; a body with no placeholder gets the args appended) |
+| `/prompt <name> [args…]` | Load a template, substitute its `$1` / `$@` / `${…}` placeholders (opencode's spelling — `{{…}}` is NOT one), and make the body ONE task — as written. A body is a **document**, not a command line: `\| ; & >` in it do nothing, and `{{…}}` in it is plain text too (the last placeholder takes the remaining args; a body with no placeholder gets the args appended) |
 | `/skill` | List the skills — ours, plus any found in a `.claude` / `.agents` / `.pi` / `.opencode` skills directory |
 | `/skill <name> [args…]` | Run a skill directly: its `SKILL.md` body goes into this task wrapped in a `<skill name=… location=…>` block (pi's shape, so the model knows where the skill's relative paths hang off); the args are substituted, or appended after the closing tag when the body has none. Same as a prompt body, the text is a **document**: one task, verbatim |
 | `/reload` | Re-read the resource files and rebuild the cached system prompt (a skill or AGENTS.md edited on disk takes effect; `config.json` still needs a restart) |

@@ -476,23 +476,19 @@ enum edc_prompt_spec_kind
  *                    followed by a literal `0`, not the tenth argument (`${10}` says that)
  *   $@ / $ARGUMENTS  every argument
  *   ${1} ${10} ${1:-D} ${@} ${@:-D} ${@:N} ${@:N:L}
- *   \$               a literal `$` (handled by the callers, which see the backslash) */
+ *   \$               a literal `$` (handled by the callers, which see the backslash)
+ *
+ * `{{…}}` is NOT a placeholder here. It used to be a legacy alias of these forms, but that
+ * made one spelling mean two things (`{{…}}` is the INPUT layer's task reference) and it was
+ * ours alone -- opencode and pi substitute only the `$` forms. So a `{{1}}` in a body is
+ * plain text now, exactly as it is for them. */
 static size_t edc_prompt_placeholder_at(const char *p, sds *out_spec)
 {
     const char *spec_start = NULL;
     size_t spec_len = 0;
     size_t consumed = 0;
 
-    if (p[0] == '{' && p[1] == '{')
-    {
-        const char *close = strstr(p + 2, "}}");
-        if (!close)
-            return 0;
-        spec_start = p + 2;
-        spec_len = (size_t)(close - (p + 2));
-        consumed = (size_t)(close - p) + 2;
-    }
-    else if (p[0] == '$' && p[1] != '\0')
+    if (p[0] == '$' && p[1] != '\0')
     {
         const char *q = p + 1;
         if (*q == '{')
