@@ -9,7 +9,7 @@
 
 typedef enum
 {
-    C_UNQUOTED, C_QUOTED, C_WS, C_PIPE, C_SEQ, C_BG, C_REDIR, C_OPT,
+    C_UNQUOTED, C_QUOTED, C_WS, C_PIPE, C_SEQ, C_BG, C_REDIR, C_OPT, C_OPTARG,
     C_SLASH, C_SIGIL_NG, C_SIGIL_LS, C_REST
 } chunk_kind;
 
@@ -81,10 +81,10 @@ static void push_unquoted(const char *raw, size_t len)
 "&"[ \t]*$                  { push(C_BG); }
 "--bg"([ \t\n]|$)           { chunk_t *c = push(C_OPT); c->text = sdsnew("--bg"); }
 "--new-group"([ \t\n]|$)    { chunk_t *c = push(C_OPT); c->text = sdsnew("--new-group"); }
-"--with"([ \t\n]|$)         { chunk_t *c = push(C_OPT); c->text = sdsnew("--with"); }
-"--group"([ \t\n]|$)        { chunk_t *c = push(C_OPT); c->text = sdsnew("--group"); }
-"-d"[ \t]                   { chunk_t *c = push(C_OPT); c->text = sdsnew("-d"); }
-"-g"[ \t]                   { chunk_t *c = push(C_OPT); c->text = sdsnew("-g"); }
+"--with"([ \t\n]|$)         { chunk_t *c = push(C_OPTARG); c->text = sdsnew("--with"); }
+"--group"([ \t\n]|$)        { chunk_t *c = push(C_OPTARG); c->text = sdsnew("--group"); }
+"-d"[ \t]                   { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-d"); }
+"-g"[ \t]                   { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-g"); }
 ^"/"[A-Za-z_-]+             { chunk_t *c = push(C_SLASH); c->text = sdsnewlen(yytext + 1, (size_t)yyleng - 1); }
 [ \t\n]+                    { push(C_WS); }
 [^ \t\n|;&<>"' ]+           { push_unquoted(yytext, (size_t)yyleng); }
@@ -180,14 +180,16 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
                 }
             }
             /* 位置 0 的 `+`：从首片段里拆出来（同上，最长匹配会吃掉它） */
-            if (!cur && c->b == 0 && c->text && c->text[0] == '+' && mode == EDC_LEX_SHELL_ON)
+            if (!cur && c->kind == C_UNQUOTED && c->b == 0 && c->text && c->text[0] == '+' &&
+                mode == EDC_LEX_SHELL_ON)
             {
                 emit(out, TK_SIGIL_NEWGROUP, NULL, false, false, 0, false, 0, 1);
                 sdsrange(c->text, 1, -1);
                 if (sdslen(c->text) == 0)
                     continue;
             }
-            else if (!cur && c->b == 0 && c->text && c->text[0] == '+' && mode == EDC_LEX_SHELL_OFF)
+            else if (!cur && c->kind == C_UNQUOTED && c->b == 0 && c->text && c->text[0] == '+' &&
+                     mode == EDC_LEX_SHELL_OFF)
             {
                 out->saw_disabled = true;
             }
@@ -228,6 +230,7 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
         case C_BG: emit(out, TK_BG, NULL, false, false, 0, false, c->b, c->e); break;
         case C_REDIR: emit(out, TK_REDIR, NULL, false, false, c->fd, c->append, c->b, c->e); break;
         case C_OPT: emit(out, TK_OPT, sdsdup(c->text), false, false, 0, false, c->b, c->e); break;
+        case C_OPTARG: emit(out, TK_OPTARG, sdsdup(c->text), false, false, 0, false, c->b, c->e); break;
         case C_SLASH: emit(out, TK_SLASH_CMD, sdsdup(c->text), false, false, 0, false, c->b, c->e); break;
         case C_SIGIL_NG: emit(out, TK_SIGIL_NEWGROUP, NULL, false, false, 0, false, c->b, c->e); break;
         case C_SIGIL_LS: emit(out, TK_SIGIL_LOCALSHELL, NULL, false, false, 0, false, c->b, c->e); break;

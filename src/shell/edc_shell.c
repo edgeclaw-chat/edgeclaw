@@ -8,8 +8,9 @@
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
-#include "edc_shell_ast.h"
-#include "edc_shell_token.h"
+#include "edc_interp.h"
+#include "edc_lex.h"
+#include "edc_parse.h"
 #include "edc_string_utils.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -649,201 +650,57 @@ bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_sched
     return true;
 }
 
-/* Shell syntax requires EVERY string operand to be quoted -- the rule is Python's
- * (`"…"` interpolates, `'…'` is raw, `"""…"""` / `'''…'''` span lines, escapes as in
- * Python), and it is mandatory rather than a convenience: an unquoted operand is refused,
- * never guessed. `现在新建任务A|B` is either ONE task whose text contains a `|` or two
- * tasks joined by a pipe, and quoting is what says which.
- *
- * A token right after a redirect is a FILENAME. It is a string like any other, so it is
- * quoted too -- and edc_shell_parse.c unquotes it, which is also what makes a filename
- * with a space in it expressible.
- */
-static bool edc_shell_operands_are_quoted(const edc_shell_token_t *tokens, int count)
-{
-    for (int i = 0; i < count; i++)
-    {
-        if (tokens[i].type != TOK_TEXT || !tokens[i].value)
-            continue;
-
-        const char *p = tokens[i].value;
-        while (*p == ' ' || *p == '\t')
-            p++;
-        if (*p == '\0')
-            continue; /* blanks only (e.g. what a trailing `&` leaves behind) */
-        if (*p != '"' && *p != '\'')
-            return false;
-    }
-    return true;
-}
-
 bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
                        struct edc_channel_message *message)
 {
     if (!message || !message->content || sdslen(message->content) == 0)
         return false;
 
-    /* The shell-like syntax switch is checked HERE, not at the command handler's door:
-     * this function IS the "parse a line as a shell line" entry, and it has more than one
-     * caller (the handler, and the `\!` escape forwarding from edc_local_shell.c). A gate
-     * at one door leaves the others open -- which is exactly how a `/prompt` body kept its
-     * `|` while the switch was off. One choke point. */
+    /* 开关是**词法器模式**（docs/input-pipeline.zh.md §1.5）：关闭时 sigil/算符/选项根本不
+     * 成为 token，整行退化成 word，并记一笔 saw_disabled 供下面的 note 用。 */
     const bool shell_on = sched && sched->config && sched->config->shell_syntax;
 
-    const char *raw = message->content;
-    const char *body = raw;
-    bool is_new_group = false;
+    edc_lex_out toks;
+    if (!edc_lex(message->content, shell_on ? EDC_LEX_SHELL_ON : EDC_LEX_SHELL_OFF, &toks))
+        return false;
 
-    /* `@`: the file-reference layer, and NOT shell-like syntax -- it is the opencode /
-     * Claude Code convention, not a Unix shell vocabulary, so the switch must not reach
-     * it. Resolving a mention (attaching the named file) is not built yet; until it is, a
-     * leading `@` is either the migration hint or plain text. The hint is only for the
-     * world where `@desc` ever MEANT something, i.e. with the shell-like syntax on -- and
-     * its advice is only true there too. This is where `@file` lands: resolve first, in
-     * both modes, and fall back to the hint. */
-    if (raw[0] == '@' && shell_on)
+    sds cerr = NULL;
+    const edc_in_kind kind = edc_classify(&toks, &cerr);
+    if (cerr)
     {
-        /* An old `@desc` must NOT be silently reread as "a task in the CURRENT group":
-         * that moves the task to a different conversation without saying so. Reject it
-         * and name the way out. */
-        edc_commands_reply(to, "`@` no longer opens a new group.\n\n"
-                               "Write `+\"<description>\"` for a new group. A description that merely "
-                               "starts with `@` or `+` is just a quoted string: `\"@alice\"`.");
+        edc_commands_reply(to, cerr);
+        sdsfree(cerr);
+        edc_lex_out_free(&toks);
         return true;
     }
 
-    /* No shell vocabulary: the line is one task, verbatim. */
-    if (!shell_on)
-        return edc_shell_spawn_plain_task(sm, sched, to, message, raw);
+    /* 开关关闭却用了 shell 语法：说一声，别静默改道（Ⓔ）。 */
+    if (toks.saw_disabled)
+        edc_commands_reply(to, "Shell-like syntax is off (`/shell on`) — this line went to the model "
+                               "as a message, not to the shell layer.");
 
-    if (raw[0] == '+')
+    if (kind == EDC_IN_SHELL)
     {
-        /* `+` is SHELL syntax; `/` and `!` are not -- a line is one or the other, and the
-         * two do not compose. This shape used to run the command in a new group; it is
-         * refused rather than quietly becoming a task whose description is the command. */
-        if (raw[1] == '/' || raw[1] == '!')
+        edc_ast ast;
+        sds perr = NULL;
+        const bool ok = edc_parse(&toks, &ast, &perr);
+        edc_lex_out_free(&toks);
+        if (!ok)
         {
-            edc_commands_reply(to, "`+` is shell syntax and `/` / `!` are not — a line is one or the other, "
-                                   "they do not combine.\n\n"
-                                   "For a task in a group of its own: `/task new \"<description>\" --new-group`.");
+            edc_commands_reply(to, perr ? perr : "syntax error");
+            if (perr)
+                sdsfree(perr);
             return true;
         }
-        is_new_group = true;
-        body = raw + 1;
-    }
-    /* Is this a SHELL line at all? Command syntax is `/…` (the handler takes it) and the
-     * sigils announce themselves, so what is left to decide is quote-led vs a plain
-     * message. Every string in shell syntax is quoted, so a shell line ALWAYS begins with
-     * `"` or `'` -- and a line that does not is a NORMAL MESSAGE: one task, verbatim, with
-     * nothing parsed out of it. That is the discriminator, and it is why conversation
-     * needs no quoting.
-     *
-     * (`现在新建任务A|B` is therefore a message -- one task whose text contains the `|`.
-     * The pipe is written the other way: `"现在新建任务A" | "B"`.) */
-    else if (raw[0] != '"' && raw[0] != '\'')
-    {
-        return edc_shell_spawn_plain_task(sm, sched, to, message, raw);
-    }
-
-    sds trimmed = sdstrim(sdsnew(body), " \t");
-    if (sdslen(trimmed) == 0)
-    {
-        sdsfree(trimmed);
-        return true;
-    }
-    sdsfree(trimmed);
-
-    /* Options are only recognised after a quoted description, so an unquoted `+`
-     * command carrying one would silently swallow it into the description text.
-     * Reject it instead of creating a task nobody meant. */
-    if (is_new_group && edc_cmd_desc_needs_quotes(body))
-    {
-        edc_commands_reply(to, "Syntax error — a `+` command with options needs its description quoted: "
-                               "write `+\"<description>\" --bg`, or drop the options.");
+        edc_interp_shell(sm, sched, to, message, &ast);
+        edc_ast_free(&ast);
         return true;
     }
 
-    /* No history expansion: a `!n` / `!!` inside a description is literal text. Only a
-     * LINE-LEADING `!` is special (the local shell, handled before this point). */
-    int tok_count = 0;
-    edc_shell_token_t *tokens = edc_shell_tokenize(body, &tok_count);
+    edc_lex_out_free(&toks);
+    if (kind == EDC_IN_MESSAGE)
+        return edc_shell_spawn_plain_task(sm, sched, to, message, message->content);
 
-    /* Every string operand must be quoted (Python's rules); see the helper. */
-    if (!edc_shell_operands_are_quoted(tokens, tok_count))
-    {
-        edc_commands_reply(to, "**Strings must be quoted** in shell syntax — the rule is Python's:\n\n"
-                               "    \"analyze src/ for bugs\"            one task\n"
-                               "    \"scan src/\" | \"create a fix plan\"   two tasks joined by a pipe\n"
-                               "    'raw text, no {{…}} interpolation'\n"
-                               "    '''\n"
-                               "    pasted, multi-line text\n"
-                               "    '''\n\n"
-                               "An unquoted operand is refused, never guessed: `现在新建任务A|B` is either one "
-                               "task whose text contains a `|` or two tasks joined by a pipe, and only the "
-                               "quoting says which.");
-        for (int i = 0; i < tok_count; i++)
-            edc_shell_token_free(&tokens[i]);
-        free(tokens);
-        return true;
-    }
-
-    /* The option area takes OPTIONS. Anything else there is refused rather than dropped:
-     * `"hello" and more` used to lose ` and more` silently, and a message that happens to
-     * open with a quote lands in exactly this shape. */
-    for (int i = 0; i < tok_count; i++)
-    {
-        if (tokens[i].type != TOK_TEXT || !tokens[i].value)
-            continue;
-        /* the target of a redirect is a filename, not an option area */
-        if (i > 0 && (tokens[i - 1].type == TOK_REDIR_OUT || tokens[i - 1].type == TOK_REDIR_APPEND ||
-                      tokens[i - 1].type == TOK_REDIR_IN))
-            continue;
-
-        struct edc_cmd_task_opts probe;
-        edc_cmd_parse_task_opts(tokens[i].value, &probe);
-        /* A shell line has no `--bg`: backgrounding is the trailing `&`, which arrives as TOK_BG
-         * and never lands in the text -- so `bg` here can only have come from `--bg`. */
-        const bool had_bg = probe.bg;
-        sds bad = probe.unknown_option;
-        probe.unknown_option = NULL; /* keep it for the message */
-        edc_cmd_task_opts_free(&probe);
-
-        if (had_bg)
-        {
-            edc_commands_reply(to, "**Shell syntax has no `--bg`** — put `&` at the end of the line "
-                                   "instead (`\"one\" ; \"two\" &`). The command layer keeps it: "
-                                   "`/task new \"<desc>\" --bg`.");
-            for (int k = 0; k < tok_count; k++)
-                edc_shell_token_free(&tokens[k]);
-            free(tokens);
-            return true;
-        }
-
-        if (bad)
-        {
-            sds reply = sdscatprintf(sdsempty(),
-                                     "**Not an option** — `%s` follows the quoted string, but everything "
-                                     "after the closing quote is the option area (`-d <id>`, "
-                                     "`-g <group>`, `2>` …).\n\n"
-                                     "Put the whole text inside the quotes, or drop it.",
-                                     bad);
-            edc_commands_reply(to, reply);
-            sdsfree(reply);
-            sdsfree(bad);
-            for (int k = 0; k < tok_count; k++)
-                edc_shell_token_free(&tokens[k]);
-            free(tokens);
-            return true;
-        }
-    }
-
-    ast_node_t *root = ast_parse(tokens, tok_count, is_new_group);
-    ast_execute(sm, sched, to, root,
-                edc_session_store_resolve_session(sm, message->session_id), message->task_desc);
-    ast_free(root);
-
-    for (int i = 0; i < tok_count; i++)
-        edc_shell_token_free(&tokens[i]);
-    free(tokens);
-    return true;
+    /* COMMAND / LOCALSHELL 由派发层（edc_commands_handler）先一步处理掉。 */
+    return false;
 }

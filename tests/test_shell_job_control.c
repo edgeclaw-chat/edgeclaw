@@ -233,12 +233,14 @@ int main(void)
 
     /* ── desc 没带引号却带选项: 语法错误, 什么都不建 ────────────────── */
 
-    TEST("`+cmd \"...\"` with an unquoted desc is a syntax error");
+    TEST("an unquoted word after `+` is a MESSAGE (拍板①), not a group");
     int groups_before = group_count(sess);
-    struct edc_task *rejected = drive_command(cfg, sm, sched, "+grpwork \"new group work\" -d task-1");
-    CHECK(rejected == NULL, "no task was created (nothing was dispatched)");
-    CHECK(group_count(sess) == groups_before, "and no group was opened either");
-    CHECK(edc_scheduler_get_foreground(sess) == NULL, "the foreground is still untouched");
+    const int tasks_before_plusword = task_count(sess);
+    drive_command(cfg, sm, sched, "+grp \"new group\"");
+    CHECK(task_count(sess) == tasks_before_plusword + 1, "the line still became one task");
+    CHECK(find_task_by_desc(sess, "+grp \"new group\"") != NULL,
+          "as text, with the `+` kept -- it is not a sigil when a quote does not follow");
+    /* (没有前台组时，一条普通任务本来就会自己开一个组 -- 那不是这里要钉的事。) */
 
     /* ── + 不带 --bg: 这才是占前台的那条路 ──────────────────────── */
 
@@ -303,12 +305,12 @@ int main(void)
 
     /* ── 旧 `@` 前缀: 拒绝, 什么都不建 ──────────────────────────── */
 
-    TEST("a leading `@` is rejected -- `+` is the new-group sigil now");
-    const int groups_before_at = group_count(sess);
+    TEST("a leading `@` is a MESSAGE now (Ⓕ) -- `@` is the file-reference sigil, not a group one");
     const int tasks_before_at = task_count(sess);
-    drive_command(cfg, sm, sched, "@grpwork \"new group work\" &");
-    CHECK(group_count(sess) == groups_before_at, "no group was opened");
-    CHECK(task_count(sess) == tasks_before_at, "and no task was created at all");
+    drive_command(cfg, sm, sched, "@grpwork probe");
+    CHECK(task_count(sess) == tasks_before_at + 1, "the line became one task");
+    CHECK(find_task_by_desc(sess, "@grpwork probe") != NULL,
+          "carrying the text verbatim (the migration hint waits for the message-body pass)");
 
     /* ── 转义: 描述可以以字面 `+` / `@` 开头, 落在当前组 ────────── */
 
@@ -444,6 +446,44 @@ int main(void)
         CHECK(in && strstr(in, "FILE-CONTENT-MARKER") != NULL,
               "and the quoted target's file content was appended to what the model sees");
         CHECK(task_count(sess) == before_in + 1, "still one task");
+    }
+
+    TEST("`2>>` is stderr + append; `2>` is stderr alone (the old `2>>` bug)");
+    {
+        drive_command(cfg, sm, sched, "\"stderr app\" 2>> \"e.log\"");
+        struct edc_task *t = find_task_by_desc(sess, "stderr app");
+        CHECK(t != NULL, "the task was created");
+        CHECK(t && t->redirect_stderr && strcmp(t->redirect_stderr, "e.log") == 0, "pointed at e.log");
+        CHECK(t && t->redirect_stderr_append, "and APPENDING (2>>)");
+
+        drive_command(cfg, sm, sched, "\"stderr trunc\" 2> \"t.log\"");
+        struct edc_task *u = find_task_by_desc(sess, "stderr trunc");
+        CHECK(u && u->redirect_stderr && strcmp(u->redirect_stderr, "t.log") == 0, "`2>` also points");
+        CHECK(u && !u->redirect_stderr_append, "but truncates");
+    }
+
+    TEST("a malformed chain that STARTS quoted creates nothing at all (no partial run)");
+    {
+        /* 只列"以引号开头"的：以 `|`/`;`/`&`/`>` 开头的是消息（§2 的提交集里没有它们），
+         * 那就和今天一样是一条任务，不是收紧。 */
+        const char *bad[] = {"\"a\" |", "\"a\" ;", "\"a\" 2>", "+\"a\" & &"};
+        for (int i = 0; i < 4; i++)
+        {
+            const int b4 = task_count(sess);
+            drive_command(cfg, sm, sched, bad[i]);
+            CHECK(task_count(sess) == b4, bad[i]);
+        }
+    }
+
+    TEST("`{{…}}` in a shell stage collects a dependency (interpreter, in stage order)");
+    {
+        const int b4v = task_count(sess);
+        drive_command(cfg, sm, sched, "\"ref {{1}}\"");
+        struct edc_task *t = find_task_by_desc(sess, "ref {{1}}");
+        CHECK(t != NULL, "the task was created");
+        CHECK(t && t->deps_total >= 1, "with a dependency taken from the reference");
+        CHECK(t && t->has_deferred_vars, "and registered for the deferred expansion");
+        CHECK(task_count(sess) == b4v + 1, "exactly one task");
     }
 
     printf("\n  %d passed, %d failed\n", passed, failed);

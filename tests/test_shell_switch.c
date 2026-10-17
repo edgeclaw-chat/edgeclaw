@@ -278,14 +278,15 @@ int main(void)
     CHECK(group_count(sess) == groups_before + 1, "one group was opened");
     CHECK(edc_scheduler_get_foreground(sess) != front_before, "and it took the foreground");
 
-    TEST("with the switch on, `@desc` is still intercepted (the migration hint, no task)");
+    TEST("with the switch on, `@desc` is now an ordinary MESSAGE (Ⓕ: the hint waits for the post-pass)");
     /* The `@` layer sits ABOVE this switch, so it answers in both modes. Today, with no
      * resolution built yet, that answer is the migration hint; the off-mode case above
      * shows the other half (literal text). When `@file` lands, the resolved case attaches
      * the file in BOTH modes -- which is the whole reason this layer is not gated. */
     before = task_count(sess);
     drive(cfg, sm, sched, "@probe");
-    CHECK(task_count(sess) == before, "no task was created -- the `@` layer answered instead");
+    CHECK(task_count(sess) == before + 1, "it became a task");
+    CHECK(find_task_by_desc(sess, "@probe") != NULL, "carrying the text verbatim (`@` is not a sigil here)");
 
     TEST("`/shell off` puts it back");
     CHECK(run_shell_cmd(cfg, sm, (struct edc_reply_to){}, "off"), "`/shell off` is a builtin");

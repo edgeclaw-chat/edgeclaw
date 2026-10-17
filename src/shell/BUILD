@@ -31,23 +31,21 @@ cc_library(
     name = "shell",
     srcs = [
         "edc_commands.c",
+        "edc_interp.c",
         "edc_local_shell.c",
         "edc_shell.c",
-        "edc_shell_ast.c",
-        "edc_shell_parse.c",
-        "edc_shell_token.c",
     ],
     hdrs = [
         "edc_commands.h",
+        "edc_interp.h",
         "edc_local_shell.h",
         "edc_shell.h",
-        "edc_shell_ast.h",
-        "edc_shell_token.h",
     ],
     includes = [
         ".",
     ],
     deps = [
+        ":parse",
         "//src/actor:actor",
         "//src/actor:actors",
         "//src/common:common",
@@ -81,6 +79,37 @@ cc_library(
     includes = ["."],
     deps = [
         ":shell_parse",
+        "//src/common:common",
+    ],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
+# ── 新输入流水线的文法层（bison 生成；docs/input-pipeline.zh.md §4） ──────
+#
+# -Werror=conflicts-* 是关键：任何人往文法里加一条有歧义的规则，构建直接失败。
+genrule(
+    name = "parse_c",
+    srcs = ["edc_parse.y"],
+    outs = [
+        "edc_parse.tab.c",
+        "edc_parse.tab.h",
+    ],
+    cmd = "bison --defines=$(location edc_parse.tab.h) -o $(location edc_parse.tab.c) " +
+          "-Werror=conflicts-sr -Werror=conflicts-rr $(location edc_parse.y)",
+)
+
+cc_library(
+    name = "parse",
+    srcs = ["edc_parse.tab.c"],
+    hdrs = [
+        "edc_ast.h",
+        "edc_parse.h",
+        "edc_parse.tab.h", # bison 生成：要在 hdrs 里，沙箱才会把它放进来
+    ],
+    includes = ["."],
+    deps = [
+        ":lex",
         "//src/common:common",
     ],
     linkstatic = True,

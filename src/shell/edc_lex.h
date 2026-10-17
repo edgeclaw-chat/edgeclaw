@@ -22,7 +22,8 @@ typedef enum
     TK_SEQ,               /* ; */
     TK_BG,                /* & ，且其后到输入尾只有空白 */
     TK_REDIR,             /* > >> 2> < （fd/append 见 token） */
-    TK_OPT,               /* --bg --new-group --with -d -g --group */
+    TK_OPT,               /* --bg --new-group（无参） */
+    TK_OPTARG,            /* --with -d -g --group（后面吃一个 word 当参数） */
     TK_EOF,
 } edc_tok_kind;
 
