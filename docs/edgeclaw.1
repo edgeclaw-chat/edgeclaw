@@ -85,7 +85,7 @@ SHELL SYNTAX (off by default)
        The redirect target is a string too ("say hi" > "out.md"), which is
        what makes a filename with a space in it expressible; "if x > 5" is a
        message, not a redirect to a file called 5.
-       What follows the closing quote is the OPTION area (--bg, -d <id>,
+       What follows the closing quote is the OPTION area (-d <id>,
        -g <group>, 2>, ...).  Anything else there is refused rather than
        dropped, so "hello" and more is an error -- not a task quietly
        called hello.
@@ -186,11 +186,11 @@ SHELL SYNTAX (off by default)
        shell above); a !n or !! inside a task description is literal text.
 
      Options on + and /task new
-           > +"input text" --bg -d task1 --group dev
+           > +"input text" -d task1 --group dev
        Options are recognised only after a quoted description (or when the
        description is the only content); otherwise a token starting with "-"
        is a syntax error, not a silently-ignored flag.
-       --bg              Run in background.
+       --bg              Run in background (command layer only: a shell line uses `&`).
        --new-group       Open a group of its own (a fresh conversation).
        -d <id>           Wait for this task before executing (repeatable).
        --group <id>      Create in this group (-g is a shortcut).
@@ -304,7 +304,7 @@ TASK STATES
 SHELL-LIKE JOB CONTROL
      Shell            EdgeClaw
      ─────────────────────────────────────────
-     cmd &            "input" &  or  "input" --bg
+     cmd &            "input" &
      cmd | cmd        "a" | "b"  (pipe chain, output injected)
      cmd ; cmd        "a" ; "b"  (sequential, no injection)
      cmd > file       "task" > out.md  (redirect output)

@@ -269,14 +269,15 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "`\"…\"` interpolates `{{…}}`, `'…'` is raw, `\"\"\"…\"\"\"` / `'''…'''` span lines (the shape pasted "
      "text wants), escapes as in Python. Inside a shell line EVERY string is quoted: an unquoted operand is "
      "refused, never guessed (`\"a\" | b` is ambiguous, `\"a\" | \"b\"` is a pipe, `\"a|b\"` is one task). "
-     "Everything AFTER the closing quote must be an option (`--bg`, `-d <id>`, `-g <group>`, `2>` …): "
+     "Everything AFTER the closing quote must be an option (`-d <id>`, `-g <group>`, `2>` …; there is no "
+     "`--bg` in shell syntax -- backgrounding is the trailing `&`): "
      "anything else is refused rather than silently dropped, so `\"hello\" and more` is an error, not a "
      "task called `hello`."},
     {"Input", "`+\"desc\"`", "a new group + task",
      "`+` is a SHELL sigil, so the line is a shell line and its description is a quoted string -- like "
      "every string in shell syntax. The description goes into a NEW group; a plain message joins the "
      "current one. Quoting is also how you write a description that itself starts with `+` or `@` "
-     "(`\"+1 issue\"` is text). Options ride after the closing quote: `+\"desc\" --bg`.\n\n"
+     "(`\"+1 issue\"` is text). Options ride after the closing quote: `+\"desc\" -d <id>`.\n\n"
      "`+` does not combine with the command syntax: `+/task new …` / `+!cmd` are not a thing (a line is "
      "one or the other). To put a task in a group of its own, either write `+\"desc\"`, or "
      "`/task new \"<desc>\" --new-group`.\n\n"

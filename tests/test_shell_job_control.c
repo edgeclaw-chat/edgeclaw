@@ -214,20 +214,28 @@ int main(void)
     CHECK(edc_scheduler_get_foreground(sess) == NULL, "a background task did not touch the foreground");
     CHECK(edc_session_get_active_task(sess) == NULL, "nor the active task");
 
-    /* 同一件事的另一种拼法: 整行以引号开头时, 后面的 `--bg` 才真的被解析
-     * (parser 的规矩: 不以引号开头 => 整段就是输入, 不扫 flag)。 */
-    TEST("`+\"...\" --bg` with no foreground group must not be promoted either");
+    /* 新规则: shell 行里没有 `--bg` —— 后台只有一种拼法: 链尾 `&`(拍板 ⑩)。
+     * `--bg` 保留给命令层(`/task new "…" --bg`)。 */
+    TEST("`+\"...\" --bg` is refused in shell syntax; `&` is how a shell line says it");
+    const int tasks_before_bg = task_count(sess);
+    const int groups_before_bg = group_count(sess);
     struct edc_task *at_bg = drive_command(cfg, sm, sched, "+\"quoted bg\" --bg");
-    CHECK(at_bg != NULL, "the task ran");
-    CHECK(at && at_bg && at_bg->group && at->group && at_bg->group != at->group, "its own group again");
+    CHECK(at_bg == NULL, "nothing was dispatched -- `--bg` is not our shell syntax");
+    CHECK(task_count(sess) == tasks_before_bg, "and no task was created");
+    CHECK(group_count(sess) == groups_before_bg, "nor a group opened");
+
+    struct edc_task *at_amp = drive_command(cfg, sm, sched, "+\"quoted bg\" &");
+    CHECK(at_amp != NULL, "the `&` form runs");
+    CHECK(at_amp && at_amp->is_background, "and it is background");
+    CHECK(at && at_amp && at_amp->group && at->group && at_amp->group != at->group, "its own group again");
     CHECK(edc_scheduler_get_foreground(sess) == NULL, "still no foreground group");
     CHECK(edc_session_get_active_task(sess) == NULL, "still no active task");
 
     /* ── desc 没带引号却带选项: 语法错误, 什么都不建 ────────────────── */
 
-    TEST("`+cmd \"...\" --bg` with an unquoted desc is a syntax error");
+    TEST("`+cmd \"...\"` with an unquoted desc is a syntax error");
     int groups_before = group_count(sess);
-    struct edc_task *rejected = drive_command(cfg, sm, sched, "+grpwork \"new group work\" --bg");
+    struct edc_task *rejected = drive_command(cfg, sm, sched, "+grpwork \"new group work\" -d task-1");
     CHECK(rejected == NULL, "no task was created (nothing was dispatched)");
     CHECK(group_count(sess) == groups_before, "and no group was opened either");
     CHECK(edc_scheduler_get_foreground(sess) == NULL, "the foreground is still untouched");
@@ -382,12 +390,17 @@ int main(void)
     CHECK(task_count(sess) == before_tail, "nothing was created");
     CHECK(find_task_by_desc(sess, "hello") == NULL, "and no truncated task either");
 
-    TEST("...but a real option is still an option");
+    TEST("...but a real shell option is still an option");
     const int before_opt = task_count(sess);
-    drive_command(cfg, sm, sched, "\"opt work\" --bg");
+    {
+        char optline[128];
+        snprintf(optline, sizeof(optline), "\"opt work\" -d %s", at_fg ? at_fg->task_id : "1");
+        drive_command(cfg, sm, sched, optline);
+    }
     struct edc_task *opt = find_task_by_desc(sess, "opt work");
     CHECK(opt != NULL, "the task was created");
-    CHECK(opt && opt->is_background, "and `--bg` meant what it says");
+    CHECK(opt && opt->deps_total >= 1, "and `-d` made it wait for that task");
+    CHECK(task_count(sess) == before_opt + 1, "exactly one task");
 
     TEST("...and the `2` of a stderr redirect is a redirect prefix, not a stray token");
     const int before_err = task_count(sess);

@@ -801,14 +801,29 @@ bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sch
 
         struct edc_cmd_task_opts probe;
         edc_cmd_parse_task_opts(tokens[i].value, &probe);
+        /* A shell line has no `--bg`: backgrounding is the trailing `&`, which arrives as TOK_BG
+         * and never lands in the text -- so `bg` here can only have come from `--bg`. */
+        const bool had_bg = probe.bg;
         sds bad = probe.unknown_option;
         probe.unknown_option = NULL; /* keep it for the message */
         edc_cmd_task_opts_free(&probe);
+
+        if (had_bg)
+        {
+            edc_commands_reply(to, "**Shell syntax has no `--bg`** — put `&` at the end of the line "
+                                   "instead (`\"one\" ; \"two\" &`). The command layer keeps it: "
+                                   "`/task new \"<desc>\" --bg`.");
+            for (int k = 0; k < tok_count; k++)
+                edc_shell_token_free(&tokens[k]);
+            free(tokens);
+            return true;
+        }
+
         if (bad)
         {
             sds reply = sdscatprintf(sdsempty(),
                                      "**Not an option** — `%s` follows the quoted string, but everything "
-                                     "after the closing quote is the option area (`--bg`, `-d <id>`, "
+                                     "after the closing quote is the option area (`-d <id>`, "
                                      "`-g <group>`, `2>` …).\n\n"
                                      "Put the whole text inside the quotes, or drop it.",
                                      bad);

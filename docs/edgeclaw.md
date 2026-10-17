@@ -131,7 +131,7 @@ The redirect target is a string too — `"say hi" > "out.md"` — and its quotes
 delimiters, not part of the path, which is what makes a filename with a space in it
 expressible.
 
-What follows the closing quote is the **option area** (`--bg`, `-d <id>`, `-g <group>`,
+What follows the closing quote is the **option area** (`-d <id>`, `-g <group>`,
 `2>`, …). Anything else there is refused rather than dropped, so `"hello" and more` is an
 error — not a task quietly called `hello`.
 
@@ -173,11 +173,11 @@ The description is a quoted string like any other (see Shell-like Syntax above);
 also how you write one that itself starts with `+` or `@`.
 
 To pass options, they ride after the closing quote — a `+` command whose description is
-unquoted while carrying an option (`-`, `--bg`, ...) is a syntax error, not a
+unquoted while carrying an option (`-`, `-d <id>`, ...) is a syntax error, not a
 silently-ignored flag:
 
 ```
-+"find bugs" --bg                # background
++"find bugs" &                   # background
 +"please merge" -d task-1        # wait for task-1 first
 +"check code" -d t1 -d t2        # wait for multiple tasks
 ```
@@ -362,8 +362,7 @@ stays as written. Only a line that begins with a quote or a sigil is parsed.)
 
 `&` is the background modifier: the task joins the **current** group but does not take
 the foreground. `+"input"` is a different thing -- it puts the task in a **new** group
-(`+"input" &` = new group, still background). So `+"input" --bg` is not the equivalent of
-`cmd &`.
+(`+"input" &` = new group, still background) -- so `+` alone is not `&`.
 
 ---
 
@@ -558,8 +557,8 @@ between segments — each task starts fresh.
 ### Background + Dependencies
 
 ```
-> +"analyze error logs in /var/log" --bg
-> +"audit all API endpoints" --bg
+> +"analyze error logs in /var/log" &
+> +"audit all API endpoints" &
 > +"merge both findings" -d task-1 -d task-2
 ```
 
