@@ -242,7 +242,17 @@ void MessageList::PrependMessages(std::vector<std::shared_ptr<Message>> messages
     /* The prepended items are unmeasured, so they add no height yet and the
      * existing rows keep their positions; the next frame measures the new window
      * and the anchor moves the offset by exactly the height that lands above. */
+    prepended_count_ += count;
     Rebuild();
+}
+
+bool MessageList::TopIsBackfilled() const
+{
+    // No window drawn yet (the log was just opened): nothing is being read, so the
+    // hint stays down. |visible_first_| and |prepended_count_| move together when a
+    // batch lands above (PrependMessages shifts the window, then counts the batch),
+    // so a reader parked in the tail never drifts over the boundary.
+    return visible_known_ && prepended_count_ > 0 && visible_first_ < prepended_count_;
 }
 
 void MessageList::Clear()
@@ -257,6 +267,7 @@ void MessageList::Clear()
     visible_first_ = 0;
     visible_last_ = 0;
     visible_known_ = false;
+    prepended_count_ = 0;
     geometry_settle_ = false;
     anchor_index_ = 0;
     anchor_prefix_ = 0;

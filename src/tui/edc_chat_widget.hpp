@@ -64,6 +64,12 @@ class ChatWidget : public ::ftxui::ComponentBase
     // Used to tell "reading the newest" from "browsing older history".
     bool StickingToBottom() const;
 
+    // True when the viewport's top row is a bubble that arrived through the
+    // startup backfill: the reader has scrolled up past the bubbles painted at
+    // startup, into the older history still being filled in above them. Scrolling
+    // up within that first screenful stays false (nothing above it is missing).
+    bool ReadingBackfilledHistory() const;
+
   private:
     // One model change -> one list update (append or rebuild).
     void OnModelChanged(const model::ChatModel::Change &change);

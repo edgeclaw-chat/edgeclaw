@@ -818,11 +818,14 @@ void TUIWindow::TickAnimations()
     // Runs every iteration, so it advances whether or not anything else is animating.
     PumpTranscriptBackfill();
 
-    // "Loading earlier history…" is for the reader who has scrolled up into the older
-    // history: keep the chip up only while the backfill still has more to prepend AND
-    // the log is not pinned to its tail. At startup (tail pinned) it never appears;
-    // scrolling back to the bottom lets it fade out.
-    if (TranscriptBackfillActive() && chat_widget_ && !chat_widget_->StickingToBottom())
+    // "Loading earlier history…" reports a load that lands *above what the reader
+    // is looking at*, so it belongs to the reader who has scrolled up past the
+    // bubbles painted at startup, into the older history the backfill is still
+    // filling in. Merely scrolling up a notch (the first screenful is already
+    // there) says nothing is missing, and neither does sitting at the tail; the
+    // hint stays down and fades out on its own once the reader comes back.
+    if (TranscriptBackfillActive() && chat_widget_ && !chat_widget_->StickingToBottom() &&
+        chat_widget_->ReadingBackfilledHistory())
         backfill_hint_.Raise(now);
 
     // The sidebar's breathing (a processing task's marker) runs on the working

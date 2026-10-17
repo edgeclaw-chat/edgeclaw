@@ -115,6 +115,11 @@ bool ChatWidget::StickingToBottom() const
     return scroll_view_->StickingToBottom();
 }
 
+bool ChatWidget::ReadingBackfilledHistory() const
+{
+    return list_ && list_->TopIsBackfilled();
+}
+
 bool ChatWidget::OnEvent(::ftxui::Event event)
 {
     return scroll_view_->OnEvent(event);
