@@ -83,8 +83,14 @@ static sds edc_shell_append_provider_models(sds out, const char *pid, const char
             continue;
         struct edc_model_info f;
         edc_models_model_info(mid, &f);
-        out = sdscatprintf(out, "- `%s`%s — %lld ctx\n", mid, (current && strcmp(mid, current) == 0) ? " **(current)**" : "",
-                           f.context);
+        /* Show the catalog name next to the id: a provider may serve a new model under an
+         * older wire id (DeepSeek answers `deepseek-flash` with V4.1-Flash), and the id
+         * alone makes such a model impossible to recognize in the list. */
+        const char *mark = (current && strcmp(mid, current) == 0) ? " **(current)**" : "";
+        if (f.name && f.name[0] && strcmp(f.name, mid) != 0)
+            out = sdscatprintf(out, "- `%s` — %s%s · %lld ctx\n", mid, f.name, mark, f.context);
+        else
+            out = sdscatprintf(out, "- `%s`%s · %lld ctx\n", mid, mark, f.context);
     }
     return out;
 }
@@ -169,7 +175,11 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
                         continue;
                     struct edc_model_info f;
                     edc_models_model_info(mid, &f);
-                    out = sdscatprintf(out, "- `%s` (%s) — %lld ctx\n", mid, pid, f.context);
+                    /* Name first, then the id in parentheses -- see append_provider_models. */
+                    if (f.name && f.name[0] && strcmp(f.name, mid) != 0)
+                        out = sdscatprintf(out, "- `%s` — %s (%s) · %lld ctx\n", mid, f.name, pid, f.context);
+                    else
+                        out = sdscatprintf(out, "- `%s` (%s) · %lld ctx\n", mid, pid, f.context);
                     hits++;
                 }
             }

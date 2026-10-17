@@ -172,7 +172,13 @@ void SetupDialog::ApplyModelFilter()
         if (model_filter_.empty() || model_ids_[i].find(model_filter_) != std::string::npos ||
             name.find(model_filter_) != std::string::npos)
         {
-            model_rows_.push_back(model_ids_[i]);
+            /* Row text = the catalog's display name plus the wire id, the same shape the
+             * provider step uses. Id-only rows hide the newest model on a provider that
+             * renames it (DeepSeek's V4.1 lane answers to `deepseek-flash`), and the
+             * filter already matches on the name, so the list must show what matched. */
+            model_rows_.push_back(name.empty() || name == model_ids_[i]
+                                     ? model_ids_[i]
+                                     : name + "  (" + model_ids_[i] + ")");
             model_view_.push_back(i);
         }
     }
