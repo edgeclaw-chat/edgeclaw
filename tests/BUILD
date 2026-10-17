@@ -1069,6 +1069,7 @@ cc_test(
     name = "test_prompts",
     srcs = ["test_prompts.c"],
     deps = [
+        "//src/shell:lex",
         "//src/kernel:kernel",
         "@sds//:sds",
         "@uthash//:uthash",

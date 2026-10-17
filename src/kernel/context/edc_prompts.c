@@ -369,57 +369,6 @@ UT_array *edc_prompts_list_roots(const UT_array *roots)
 
 /* ── Argument splitting ────────────────────────────────────── */
 
-sds *edc_prompt_split_args(const char *s, int *out_count)
-{
-    *out_count = 0;
-    if (!s)
-        return NULL;
-
-    sds *args = NULL;
-    int count = 0;
-    const char *p = s;
-
-    while (*p)
-    {
-        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
-            p++;
-        if (!*p)
-            break;
-
-        sds arg = sdsempty();
-        char quote = 0;
-        while (*p)
-        {
-            if (quote == 0 && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r'))
-                break;
-            if (quote == 0 && (*p == '"' || *p == '\''))
-            {
-                quote = *p++;
-                continue;
-            }
-            if (quote != 0 && *p == quote)
-            {
-                quote = 0;
-                p++;
-                continue;
-            }
-            if (*p == '\\' && *(p + 1))
-            {
-                arg = sdscatlen(arg, p + 1, 1);
-                p += 2;
-                continue;
-            }
-            arg = sdscatlen(arg, p, 1);
-            p++;
-        }
-
-        args = realloc(args, sizeof(sds) * (size_t)(count + 1));
-        args[count++] = arg;
-    }
-
-    *out_count = count;
-    return args;
-}
 
 void edc_prompt_args_free(sds *args, int count)
 {

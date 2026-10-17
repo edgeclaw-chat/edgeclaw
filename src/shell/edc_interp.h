@@ -25,6 +25,7 @@ typedef enum
 /* |*err| 非空 = 拒绝并回这句话（例如 `+!cmd`、`+` 空内容）。 */
 edc_in_kind edc_classify(const edc_lex_out *toks, sds *err);
 
+
 /* 解释一棵 SHELL AST：每个 stage 一个任务；同一 pipeline 内 JOIN（注入），pipeline 之间
  * SEQUENCE（只等）。链尾 `&` 让每个 stage 都不占前台。 */
 bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,

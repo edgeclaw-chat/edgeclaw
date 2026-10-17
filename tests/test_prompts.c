@@ -9,6 +9,7 @@
  *   ② `$` is inert in the *input* layer: task references are `{{LAST}}` / `{{<id>}}` /
  *      `{{SELF}}` (see tests/test_cmd_parse.c::test_expand_task_refs), so the `$` forms
  *      belong to templates and the braces to the layer below. */
+#include "edc_lex.h"
 #include "edc_prompts.h"
 #include "sds.h"
 #include "utarray.h"
@@ -68,7 +69,7 @@ static sds expand(const char *body, const char *argline)
     memset(&prompt, 0, sizeof(prompt));
     prompt.body = sdsnew(body);
     int argc = 0;
-    sds *args = edc_prompt_split_args(argline, &argc);
+    sds *args = edc_argv_from_tail(argline, &argc);
     sds out = edc_prompt_expand(&prompt, args, argc);
     edc_prompt_args_free(args, argc);
     sdsfree(prompt.body);
@@ -129,46 +130,6 @@ static void test_expand(void)
     check_expand("$$ is not a form of ours -> appended", "A:$$", "one", "A:$$\n\none");
 }
 
-/* ── Argument splitting ────────────────────────────────────── */
-
-static void test_split(void)
-{
-    TEST("splits on whitespace");
-    int argc = 0;
-    sds *args = edc_prompt_split_args("one  two\tthree", &argc);
-    CHECK(argc == 3, "three arguments");
-    CHECK(argc == 3 && strcmp(args[0], "one") == 0 && strcmp(args[1], "two") == 0 && strcmp(args[2], "three") == 0,
-          "and they are the words");
-    edc_prompt_args_free(args, argc);
-
-    TEST("double quotes group a spaced argument");
-    args = edc_prompt_split_args("\"API compatibility\" now", &argc);
-    CHECK(argc == 2, "two arguments");
-    CHECK(argc == 2 && strcmp(args[0], "API compatibility") == 0, "the quoted one keeps its space");
-    CHECK(argc == 2 && strcmp(args[1], "now") == 0, "and the rest follows");
-    edc_prompt_args_free(args, argc);
-
-    TEST("single quotes group too");
-    args = edc_prompt_split_args("'a b' c", &argc);
-    CHECK(argc == 2 && strcmp(args[0], "a b") == 0, "single-quoted keeps its space");
-    edc_prompt_args_free(args, argc);
-
-    TEST("backslash escapes the next byte");
-    args = edc_prompt_split_args("a\\ b c", &argc);
-    CHECK(argc == 2 && strcmp(args[0], "a b") == 0, "the escaped space does not split");
-    edc_prompt_args_free(args, argc);
-
-    TEST("operators are ordinary bytes here, not shell syntax");
-    args = edc_prompt_split_args("a | b", &argc);
-    CHECK(argc == 3, "three arguments -- the pipe is just text");
-    CHECK(argc == 3 && strcmp(args[1], "|") == 0, "and it comes through unchanged");
-    edc_prompt_args_free(args, argc);
-
-    TEST("an empty argument line yields no arguments");
-    args = edc_prompt_split_args("   ", &argc);
-    CHECK(argc == 0, "zero arguments");
-    edc_prompt_args_free(args, argc);
-}
 
 /* ── Parsing files ─────────────────────────────────────────── */
 
@@ -284,7 +245,6 @@ static void test_parse(void)
 int main(void)
 {
     test_expand();
-    test_split();
     test_parse();
 
     printf("\n  %d passed, %d failed\n", passed, failed);

@@ -1,4 +1,5 @@
 ﻿#include "edc_commands.h"
+#include "edc_interp.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
 #include "edc_cmd_parse.h"
@@ -2150,7 +2151,7 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
     }
 
     int argc = 0;
-    sds *args = edc_prompt_split_args(arg, &argc);
+    sds *args = edc_argv_from_tail(arg, &argc);
     sdsfree(arg);
     if (argc == 0)
     {
@@ -2312,7 +2313,7 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
     }
 
     int argc = 0;
-    sds *args = edc_prompt_split_args(arg, &argc); /* the same quoting rules as /prompt */
+    sds *args = edc_argv_from_tail(arg, &argc); /* the same quoting rules as /prompt */
     sdsfree(arg);
     if (argc == 0)
     {

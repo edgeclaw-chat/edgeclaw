@@ -276,3 +276,25 @@ void edc_lex_out_free(edc_lex_out *out)
     out->toks = NULL;
     out->count = 0;
 }
+
+sds *edc_argv_from_tail(const char *tail, int *out_count)
+{
+    if (out_count)
+        *out_count = 0;
+    edc_lex_out o;
+    if (!edc_lex(tail ? tail : "", EDC_LEX_SHELL_OFF, &o))
+        return NULL;
+    sds *args = NULL;
+    int n = 0;
+    for (int i = 0; i < o.count; i++)
+    {
+        if (o.toks[i].kind != TK_WORD)
+            continue; /* OFF 模式下一切都是 word；这里只是防 EOF */
+        args = realloc(args, sizeof(sds) * (size_t)(n + 1));
+        args[n++] = sdsdup(o.toks[i].value ? o.toks[i].value : sdsempty());
+    }
+    edc_lex_out_free(&o);
+    if (out_count)
+        *out_count = n;
+    return args;
+}

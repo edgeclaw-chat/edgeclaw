@@ -56,4 +56,8 @@ typedef struct
 bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out);
 void edc_lex_out_free(edc_lex_out *out);
 
+/* 一段文本 -> argv：切词**归词法器**（相邻片段拼接、引号已去），所以
+ * `review "a b"` 得到 2 个参数而不是 3 个。命令层用它，算符不参与（SHELL_OFF）。 */
+sds *edc_argv_from_tail(const char *tail, int *out_count);
+
 #endif

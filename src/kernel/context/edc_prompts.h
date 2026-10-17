@@ -71,7 +71,6 @@ UT_array *edc_prompts_list_roots(const UT_array *roots);
  * they are ordinary bytes, because these are a template's inputs, not a shell line.
  * Returns a NULL-terminated-free array of sds plus *out_count; free with
  * edc_prompt_args_free. */
-sds *edc_prompt_split_args(const char *s, int *out_count);
 void edc_prompt_args_free(sds *args, int count);
 
 /* Substitute the placeholders below in |prompt|'s body using |args| (|argc| of them).

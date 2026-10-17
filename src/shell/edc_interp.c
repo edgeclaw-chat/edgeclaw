@@ -58,6 +58,7 @@ edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
     return EDC_IN_MESSAGE;
 }
 
+
 /* `< file`：把文件内容追加到这条 turn 的用户消息（与老 AST_REDIR_IN 一致）。 */
 static void apply_input_file(struct edc_task *task, const char *path)
 {
