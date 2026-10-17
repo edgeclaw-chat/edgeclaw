@@ -897,87 +897,173 @@ static bool edc_commands_handle_session_status(struct edc_session_manager *sm, s
     return true;
 }
 
+/* ── 子命令表 ───────────────────────────────────────────────────
+ *
+ * 一个命令的子命令 = 一组数据：动词 + 入口。派发从"一串 strncmp"变成"拆一次动词 + 查一次表"，
+ * 于是动词表可以被测试读到（见 test_commands_help 的防漂移断言），也不会再出现
+ * `strncmp(content, "/task new ", 10)` 那种手写长度的写法。 */
+typedef void (*edc_sub_fn)(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                           struct edc_channel_message *message, sds arg);
+
+struct edc_sub_entry
+{
+    const char *verb;
+    edc_sub_fn fn;
+};
+
+/* 把 `/cmd verb rest…` 拆成 (verb, rest)；rest = NULL 表示动词后面没有东西。
+ * false = 这一行只有 `/cmd`（没有动词），由调用方给用法。 */
+static bool edc_commands_sub_split(const char *content, const char *cmd, char *verb, size_t vcap, sds *arg)
+{
+    sds line = sdstrim(sdsnew(content), " \t\r\n");
+    const size_t clen = strlen(cmd);
+    if (strncmp(line, cmd, clen) != 0 || (line[clen] != '\0' && line[clen] != ' '))
+    {
+        sdsfree(line);
+        return false;
+    }
+    const char *p = line + clen;
+    while (*p == ' ')
+        p++;
+    if (*p == '\0')
+    {
+        sdsfree(line);
+        return false; /* 只有 `/cmd` */
+    }
+    const char *sp = strchr(p, ' ');
+    size_t n = sp ? (size_t)(sp - p) : strlen(p);
+    if (n >= vcap)
+        n = vcap - 1;
+    memcpy(verb, p, n);
+    verb[n] = '\0';
+    if (arg)
+    {
+        if (!sp)
+            *arg = NULL;
+        else
+        {
+            const char *r = sp;
+            while (*r == ' ')
+                r++;
+            *arg = (*r) ? sdsnew(r) : NULL;
+        }
+    }
+    sdsfree(line);
+    return true;
+}
+
+/* ── /session 的子命令 ──────────────────────────────────────── */
+static void sub_session_new(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                            struct edc_channel_message *message, sds arg)
+{
+    (void)sched;
+    (void)message;
+    (void)edc_commands_handle_session_new(sm, to, arg); /* NULL = an unnamed session */
+}
+static void sub_session_switch(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                               struct edc_channel_message *message, sds arg)
+{
+    (void)message;
+    (void)edc_commands_handle_session_switch(sm, sched, to, arg);
+}
+static void sub_session_list(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                             struct edc_channel_message *message, sds arg)
+{
+    (void)sched;
+    (void)message;
+    (void)arg;
+    (void)edc_commands_handle_session_list(sm, to);
+}
+static void sub_session_info(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                             struct edc_channel_message *message, sds arg)
+{
+    (void)sched;
+    (void)message;
+    (void)arg;
+    (void)edc_commands_handle_session_info(sm, to);
+}
+static void sub_session_status(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                               struct edc_channel_message *message, sds arg)
+{
+    (void)sched;
+    (void)message;
+    (void)edc_commands_handle_session_status(sm, to, arg);
+}
+static void sub_session_save(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                             struct edc_channel_message *message, sds arg)
+{
+    (void)message;
+    (void)arg;
+    (void)edc_commands_handle_session_save(sm, sched, to);
+}
+static void sub_session_stop(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                             struct edc_channel_message *message, sds arg)
+{
+    (void)message;
+    if (arg)
+    {
+        /* `/session stop` takes no argument -- removing a session moved to `remove`. */
+        edc_commands_reply(to, "`/session stop` takes no arguments. To remove a session use "
+                               "`/session remove <name_or_id>`.");
+        return;
+    }
+    (void)edc_commands_handle_session_stop(sm, sched, to);
+}
+static void sub_session_remove(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                               struct edc_channel_message *message, sds arg)
+{
+    (void)message;
+    (void)edc_commands_handle_session_remove(sm, sched, to, arg);
+}
+static void sub_session_rename(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                               struct edc_channel_message *message, sds arg)
+{
+    (void)sched;
+    (void)message;
+    (void)edc_commands_handle_session_rename(sm, to, arg);
+}
+static void sub_session_memo(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                             struct edc_channel_message *message, sds arg)
+{
+    (void)message;
+    (void)edc_commands_handle_session_memo(sm, sched, to, arg);
+}
+
+static const struct edc_sub_entry k_session_subs[] = {
+    {"new", sub_session_new},       {"switch", sub_session_switch}, {"list", sub_session_list},
+    {"info", sub_session_info},     {"status", sub_session_status}, {"save", sub_session_save},
+    {"stop", sub_session_stop},     {"remove", sub_session_remove}, {"rename", sub_session_rename},
+    {"memo", sub_session_memo},
+};
+
 static bool edc_commands_handle_session(struct edc_config *cfg, struct edc_session_manager *sm,
                                         struct edc_scheduler *sched, struct edc_reply_to to,
                                         struct edc_channel_message *msg)
 {
-    /* Bare `/session`: usage, same shape as bare `/task` and `/group`. */
-    if (edc_commands_is_target(msg->content, "/session"))
+    (void)cfg;
+    char verb[32];
+    sds arg = NULL;
+    if (!edc_commands_sub_split(msg->content, "/session", verb, sizeof(verb), &arg))
     {
+        /* Bare `/session`: usage, same shape as bare `/task` and `/group`. */
         edc_commands_reply(to, "Usage: `/session` knows `new [name] [dir]`, `switch <name>`, `list`, `info`, "
                                "`status [id]`, `save`, `stop`, `remove <name>`, `rename <old> <new>`, `memo`. "
                                "Type `/help /session`.");
         return true;
     }
-
-    sds rest = NULL;
-    /* The name is optional: match exactly first, or a bare "/session new" falls through to unknown subcommand. */
-    if (edc_commands_is_target(msg->content, "/session new"))
-        return edc_commands_handle_session_new(sm, to, NULL);
-    if (edc_commands_arg(msg->content, "/session new", &rest))
+    for (size_t i = 0; i < sizeof(k_session_subs) / sizeof(k_session_subs[0]); i++)
     {
-        bool ret = edc_commands_handle_session_new(sm, to, rest);
-        sdsfree(rest);
-        return ret;
-    }
-    if (edc_commands_arg(msg->content, "/session switch", &rest))
-    {
-        bool ret = edc_commands_handle_session_switch(sm, sched, to, rest);
-        sdsfree(rest);
-        return ret;
-    }
-    if (edc_commands_is_target(msg->content, "/session list"))
-        return edc_commands_handle_session_list(sm, to);
-    if (edc_commands_is_target(msg->content, "/session info"))
-        return edc_commands_handle_session_info(sm, to);
-    if (edc_commands_is_target(msg->content, "/session status"))
-        return edc_commands_handle_session_status(sm, to, NULL);
-    if (edc_commands_arg(msg->content, "/session status", &rest))
-    {
-        bool ret = edc_commands_handle_session_status(sm, to, rest);
-        sdsfree(rest);
-        return ret;
-    }
-    if (edc_commands_is_target(msg->content, "/session save"))
-        return edc_commands_handle_session_save(sm, sched, to);
-    if (edc_commands_is_target(msg->content, "/session memo"))
-        return edc_commands_handle_session_memo(sm, sched, to, NULL);
-    if (edc_commands_arg(msg->content, "/session memo", &rest))
-    {
-        bool ret = edc_commands_handle_session_memo(sm, sched, to, rest);
-        sdsfree(rest);
-        return ret;
-    }
-    if (edc_commands_is_target(msg->content, "/session stop"))
-        return edc_commands_handle_session_stop(sm, sched, to);
-    if (edc_commands_arg(msg->content, "/session remove", &rest))
-    {
-        bool ret = edc_commands_handle_session_remove(sm, sched, to, rest);
-        sdsfree(rest);
-        return ret;
-    }
-    if (edc_commands_is_target(msg->content, "/session remove"))
-        return edc_commands_handle_session_remove(sm, sched, to, NULL);
-    if (edc_commands_arg(msg->content, "/session rename", &rest))
-    {
-        bool ret = edc_commands_handle_session_rename(sm, to, rest);
-        sdsfree(rest);
-        return ret;
-    }
-    if (edc_commands_is_target(msg->content, "/session rename"))
-        return edc_commands_handle_session_rename(sm, to, NULL);
-    /* /session stop takes no argument -- removing a session moved to /session remove. */
-    if (edc_commands_is_prefix(msg->content, "/session stop"))
-    {
-        edc_commands_reply(
-            to, "`/session stop` takes no arguments. To remove a session use `/session remove <name_or_id>`.");
+        if (strcmp(k_session_subs[i].verb, verb) != 0)
+            continue;
+        k_session_subs[i].fn(sm, sched, to, msg, arg);
+        if (arg)
+            sdsfree(arg);
         return true;
     }
-    sds reply =
-        sdscatprintf(sdsempty(), "**Unknown `/session` subcommand.** Try: `new`, `switch`, `list`, `info`, `status`, "
-                                 "`save`, `stop`, `remove`, `rename`.");
-    edc_commands_reply(to, reply);
-    sdsfree(reply);
+    if (arg)
+        sdsfree(arg);
+    edc_commands_reply(to, "**Unknown `/session` subcommand.** Try: `new`, `switch`, `list`, `info`, `status`, "
+                           "`save`, `stop`, `remove`, `rename`.");
     return true;
 }
 
@@ -1899,163 +1985,171 @@ static void edc_commands_handle_group_info(struct edc_session_manager *sm, struc
     sdsfree(out);
 }
 
+/* ── /group 的子命令 ─────────────────────────────────────────── */
+static void sub_group_list(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                           struct edc_channel_message *message, sds arg)
+{
+    (void)sched;
+    (void)message;
+    (void)arg;
+    edc_commands_handle_group_list(sm, to);
+}
+static void sub_group_info(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                           struct edc_channel_message *message, sds arg)
+{
+    (void)message;
+    edc_commands_handle_group_info(sm, sched, to, arg); /* NULL = the foreground group */
+}
+static void sub_group_history(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                              struct edc_channel_message *message, sds arg)
+{
+    (void)message;
+    edc_commands_handle_history(sm, sched, to, arg, true); /* NULL -> its own usage line */
+}
+static void sub_group_fold(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                           struct edc_channel_message *message, sds arg)
+{
+    (void)message;
+    edc_commands_handle_group_fold(sm, sched, to, arg);
+}
+
+static const struct edc_sub_entry k_group_subs[] = {
+    {"list", sub_group_list},
+    {"info", sub_group_info},
+    {"history", sub_group_history},
+    {"fold", sub_group_fold},
+};
+
 static bool edc_commands_handle_group(struct edc_config *cfg, struct edc_session_manager *sm,
                                       struct edc_scheduler *sched, struct edc_reply_to to,
                                       struct edc_channel_message *message)
 {
+    (void)cfg;
+    char verb[32];
     sds arg = NULL;
-    if (edc_commands_arg(message->content, "/group history", &arg))
+    if (edc_commands_sub_split(message->content, "/group", verb, sizeof(verb), &arg))
     {
-        edc_commands_handle_history(sm, sched, to, arg, true);
-        sdsfree(arg);
+        for (size_t i = 0; i < sizeof(k_group_subs) / sizeof(k_group_subs[0]); i++)
+        {
+            if (strcmp(k_group_subs[i].verb, verb) != 0)
+                continue;
+            k_group_subs[i].fn(sm, sched, to, message, arg);
+            if (arg)
+                sdsfree(arg);
+            return true;
+        }
+        if (arg)
+            sdsfree(arg);
+        edc_commands_reply(to, "**Unknown subcommand** — `/group` knows `list`, `info [id]`, `history <id>` and "
+                               "`fold [id] [focus]`.");
         return true;
     }
-    sds info_arg = NULL;
-    if (edc_commands_arg(message->content, "/group info", &info_arg))
-    {
-        edc_commands_handle_group_info(sm, sched, to, info_arg);
-        sdsfree(info_arg);
-        return true;
-    }
-    if (edc_commands_is_command(message->content, "/group info"))
-    {
-        edc_commands_handle_group_info(sm, sched, to, NULL);
-        return true;
-    }
-    sds fold_arg = NULL;
-    if (edc_commands_arg(message->content, "/group fold", &fold_arg))
-    {
-        edc_commands_handle_group_fold(sm, sched, to, fold_arg);
-        sdsfree(fold_arg);
-        return true;
-    }
-    /* Bare `/group fold` (no id, no focus) -- edc_commands_arg is true only with
-     * arguments, so this branch handles it separately: fold the current foreground group. */
-    if (edc_commands_is_command(message->content, "/group fold"))
-    {
-        edc_commands_handle_group_fold(sm, sched, to, NULL);
-        return true;
-    }
-    /* `/group list` first: it also matches the bare `/group` prefix below. */
-    if (edc_commands_is_command(message->content, "/group list"))
-    {
-        edc_commands_handle_group_list(sm, to);
-        return true;
-    }
-    if (edc_commands_is_command(message->content, "/group") ||
-        edc_commands_is_command(message->content, "/group history"))
-    {
-        edc_commands_reply(to, "Usage: `/group list`   (all groups of the session)\n\n"
-                               "Usage: `/group info [id]`   (context / fold numbers; no id = the foreground group)\n\n"
-                               "Usage: `/group history <id>`   (the id is the group header's)\n\n"
-                               "Usage: `/group fold [id] [focus]`   (fold now, ignoring the trigger; "
-                               "no id = the foreground group)");
-        return true;
-    }
-    edc_commands_reply(to, "**Unknown subcommand** — `/group` knows `list`, `info [id]`, `history <id>` and "
-                           "`fold [id] [focus]`.");
+    edc_commands_reply(to, "Usage: `/group list`   (all groups of the session)\n\n"
+                           "Usage: `/group info [id]`   (context / fold numbers; no id = the foreground group)\n\n"
+                           "Usage: `/group history <id>`   (the id is the group header's)\n\n"
+                           "Usage: `/group fold [id] [focus]`   (fold now, ignoring the trigger; "
+                           "no id = the foreground group)");
     return true;
 }
+
+/* ── /task 的子命令 ─────────────────────────────────────────── */
+static void sub_task_new(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                         struct edc_channel_message *message, sds arg)
+{
+    edc_commands_handle_task_new(sm, sched, to, cmd_input_session(sm, message), arg);
+}
+static void sub_task_fork(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                          struct edc_channel_message *message, sds arg)
+{
+    edc_commands_handle_task_fork(sm, sched, to, cmd_input_session(sm, message), arg);
+}
+static void sub_task_list(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                          struct edc_channel_message *message, sds arg)
+{
+    (void)sched;
+    (void)message;
+    (void)arg;
+    edc_commands_handle_task_list(sm, to);
+}
+static void sub_task_stop(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                          struct edc_channel_message *message, sds arg)
+{
+    (void)message;
+    edc_commands_handle_task_stop(sm, sched, to, arg); /* NULL = the one in front */
+}
+static void sub_task_resume(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                            struct edc_channel_message *message, sds arg)
+{
+    (void)message;
+    edc_commands_handle_task_resume(sm, sched, to, arg);
+}
+static void sub_task_status(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                            struct edc_channel_message *message, sds arg)
+{
+    (void)message;
+    edc_commands_handle_task_status(sm, sched, to, arg);
+}
+static void sub_task_output(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                            struct edc_channel_message *message, sds arg)
+{
+    (void)message;
+    edc_commands_handle_task_output(sm, sched, to, arg);
+}
+static void sub_task_history(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                             struct edc_channel_message *message, sds arg)
+{
+    (void)message;
+    edc_commands_handle_history(sm, sched, to, arg, false);
+}
+static void sub_task_fg(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                        struct edc_channel_message *message, sds arg)
+{
+    (void)sched;
+    (void)message;
+    edc_commands_handle_task_fg(sm, to, arg);
+}
+static void sub_task_bg(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                        struct edc_channel_message *message, sds arg)
+{
+    (void)sched;
+    (void)message;
+    edc_commands_handle_task_bg(sm, to, arg); /* NULL = the foreground group */
+}
+
+static const struct edc_sub_entry k_task_subs[] = {
+    {"new", sub_task_new},       {"fork", sub_task_fork},   {"list", sub_task_list},
+    {"stop", sub_task_stop},     {"resume", sub_task_resume}, {"status", sub_task_status},
+    {"output", sub_task_output}, {"history", sub_task_history}, {"fg", sub_task_fg},
+    {"bg", sub_task_bg},
+};
 
 static bool edc_commands_handle_task(struct edc_config *cfg, struct edc_session_manager *sm,
                                      struct edc_scheduler *sched, struct edc_reply_to to,
                                      struct edc_channel_message *message)
 {
-
-    const char *content = message->content;
-    sds content_trim = sdstrim(sdsnew(content), " \t\r\n");
-
+    (void)cfg;
+    char verb[32];
     sds arg = NULL;
-
-    if (strncmp(content_trim, "/task new ", 10) == 0)
+    if (!edc_commands_sub_split(message->content, "/task", verb, sizeof(verb), &arg))
     {
-        arg = sdsnew(content_trim + 10);
-        edc_commands_handle_task_new(sm, sched, to, cmd_input_session(sm, message), arg);
-    }
-    else if (strncmp(content_trim, "/task fork ", 11) == 0)
-    {
-        arg = sdsnew(content_trim + 11);
-        edc_commands_handle_task_fork(sm, sched, to, cmd_input_session(sm, message), arg);
-    }
-    else if (strcmp(content_trim, "/task list") == 0)
-    {
-        edc_commands_handle_task_list(sm, to);
-    }
-    else if (strcmp(content_trim, "/task stop") == 0)
-    {
-        edc_commands_handle_task_stop(sm, sched, to, NULL);
-    }
-    else if (strncmp(content_trim, "/task stop ", 11) == 0)
-    {
-        arg = sdsnew(content_trim + 11);
-        edc_commands_handle_task_stop(sm, sched, to, arg);
-    }
-    else if (strcmp(content_trim, "/task resume") == 0)
-    {
-        edc_commands_handle_task_resume(sm, sched, to, NULL);
-    }
-    else if (strncmp(content_trim, "/task resume ", 13) == 0)
-    {
-        arg = sdsnew(content_trim + 13);
-        edc_commands_handle_task_resume(sm, sched, to, arg);
-    }
-    else if (strcmp(content_trim, "/task status") == 0)
-    {
-        edc_commands_handle_task_status(sm, sched, to, NULL);
-    }
-    else if (strncmp(content_trim, "/task status ", 13) == 0)
-    {
-        arg = sdsnew(content_trim + 13);
-        edc_commands_handle_task_status(sm, sched, to, arg);
-    }
-    else if (strncmp(content_trim, "/task output ", 13) == 0)
-    {
-        arg = sdsnew(content_trim + 13);
-        edc_commands_handle_task_output(sm, sched, to, arg);
-    }
-    else if (strcmp(content_trim, "/task history") == 0)
-    {
-        edc_commands_handle_history(sm, sched, to, NULL, false);
-    }
-    else if (strncmp(content_trim, "/task history ", 14) == 0)
-    {
-        arg = sdsnew(content_trim + 14);
-        edc_commands_handle_history(sm, sched, to, arg, false);
-    }
-    else if (strncmp(content_trim, "/task fg ", 9) == 0)
-    {
-        arg = sdsnew(content_trim + 9);
-        edc_commands_handle_task_fg(sm, to, arg);
-    }
-    else if (strncmp(content_trim, "/task bg ", 9) == 0)
-    {
-        arg = sdsnew(content_trim + 9);
-        edc_commands_handle_task_bg(sm, to, arg);
-    }
-    else if (strcmp(content_trim, "/task bg") == 0)
-    {
-        edc_commands_handle_task_bg(sm, to, NULL);
-    }
-    else if (strcmp(content_trim, "/task") == 0)
-    {
-        /* Bare `/task`: same shape as bare `/group` and `/session` -- usage, not "unknown". */
+        /* Bare `/task`: usage, not "unknown" (same shape as /group and /session). */
         edc_commands_reply(to, "Usage: `/task` knows `new <desc>`, `fork <parent> <desc>`, `list`, `status [id]`, "
                                "`output <id>`, `history <id>`, `fg <id>`, `bg [id]`, `stop [id]`, "
                                "`resume [id|--all]`. Type `/help /task`.");
-    }
-    else
-    {
-        /* Unknown /task subcommand — report error instead of falling through */
-        sds reply = sdscatprintf(sdsempty(), "Unknown `/task` subcommand. Type `/help /task` for the subcommands.");
-        edc_commands_reply(to, reply);
-        sdsfree(reply);
-        sdsfree(content_trim);
         return true;
     }
-
-    sdsfree(content_trim);
+    for (size_t i = 0; i < sizeof(k_task_subs) / sizeof(k_task_subs[0]); i++)
+    {
+        if (strcmp(k_task_subs[i].verb, verb) != 0)
+            continue;
+        k_task_subs[i].fn(sm, sched, to, message, arg);
+        if (arg)
+            sdsfree(arg);
+        return true;
+    }
     if (arg)
         sdsfree(arg);
+    edc_commands_reply(to, "Unknown `/task` subcommand. Type `/help /task` for the subcommands.");
     return true;
 }
 
