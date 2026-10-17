@@ -24,6 +24,69 @@
 
 #include "timezone.h"
 
+/* ---------- wall-clock <-> unix time, for schedules WITHOUT an IANA tz ----------
+ * A user writing at="2026-10-18T15:00:00" (no tz) means 15:00 on THIS host, i.e.
+ * host-local time. timegm() would read that wall clock as UTC and silently shift
+ * every such job by the host's UTC offset (+8h on Asia/Shanghai), so schedules
+ * fired hours late (or, for a past-looking local time, hours early). mktime()
+ * honours /etc/localtime (and TZ) for the local->unix direction.
+ * For the cron direction ccronexpr parses a timestamp with gmtime_r(), so the
+ * local wall clock is passed in re-encoded as a pseudo-UTC timestamp. */
+
+static struct tm *edc_crontab_localtime_r(const time_t *t, struct tm *out)
+{
+#ifdef _WIN32
+    return localtime_s(out, t) == 0 ? out : NULL;
+#else
+    return localtime_r(t, out);
+#endif
+}
+
+static struct tm *edc_crontab_gmtime_r(const time_t *t, struct tm *out)
+{
+#ifdef _WIN32
+    return gmtime_s(out, t) == 0 ? out : NULL;
+#else
+    return gmtime_r(t, out);
+#endif
+}
+
+/* host-local wall clock -> real unix time (tm_isdst left to the host zone) */
+static time_t edc_crontab_local_wallclock_to_unix(struct tm *tm)
+{
+    tm->tm_isdst = -1;
+    return mktime(tm);
+}
+
+/* real unix time -> host-local wall clock re-encoded as a pseudo-unix timestamp */
+static time_t edc_crontab_unix_to_local_wallclock(time_t unix_ts)
+{
+    struct tm tm = {0};
+    if (!edc_crontab_localtime_r(&unix_ts, &tm))
+        return (time_t)-1;
+    return timegm(&tm);
+}
+
+/* pseudo-unix timestamp (local wall clock) -> real unix time */
+static time_t edc_crontab_local_wallclock_to_unix_ts(time_t wall_ts)
+{
+    struct tm tm = {0};
+    if (!edc_crontab_gmtime_r(&wall_ts, &tm))
+        return (time_t)-1;
+    return edc_crontab_local_wallclock_to_unix(&tm);
+}
+
+/* next cron occurrence for an expression written in the HOST's local time */
+static time_t edc_crontab_cron_next_local(cron_expr *expr)
+{
+    time_t now = time(NULL);
+    time_t local_now = edc_crontab_unix_to_local_wallclock(now);
+    if (local_now < 0)
+        return now + 60;
+    time_t next = edc_crontab_local_wallclock_to_unix_ts(cron_next(expr, local_now));
+    return next < 0 ? now + 60 : next;
+}
+
 static char *edc_uuid_gen(void)
 {
     unsigned char b[16];
@@ -280,7 +343,7 @@ static void edc_tool_crontab_advance_job(cJSON *job)
         }
         else
         {
-            next = cron_next(&cexpr, time(NULL));
+            next = edc_crontab_cron_next_local(&cexpr);
         }
         cJSON_ReplaceItemInObject(schedule, "next_run_at_unix_ts", cJSON_CreateNumber(next));
     }
@@ -501,12 +564,14 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
             cJSON_Delete(db);
             return;
         }
-        time_t local_ts = timegm(&tm);
+        /* With an IANA tz the wall clock belongs to that zone: timegm() encodes it
+         * as a pseudo-UTC timestamp and timezone_gmt_time() maps it to real UTC.
+         * Without one it is host-local time, so mktime() is the correct direction. */
         time_t utc_ts;
         if (tz_name && tz_name[0])
-            utc_ts = timezone_gmt_time(tz_name, local_ts);
+            utc_ts = timezone_gmt_time(tz_name, timegm(&tm));
         else
-            utc_ts = local_ts;
+            utc_ts = edc_crontab_local_wallclock_to_unix(&tm);
         if (utc_ts < 0)
         {
             cJSON_Delete(job);
@@ -556,7 +621,7 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
         }
         else
         {
-            next = cron_next(&expr, time(NULL));
+            next = edc_crontab_cron_next_local(&expr);
         }
         cJSON_AddNumberToObject(schedule, "next_run_at_unix_ts", next);
         cJSON_AddBoolToObject(schedule, "once", false);
