@@ -57,7 +57,6 @@ and `'` single-quotes. Recognized token types:
 | `>`   | TOK_REDIR_OUT | Redirect stdout to file (overwrite) |
 | `>>`  | TOK_REDIR_APPEND | Redirect stdout to file (append) |
 | `2>`  | TOK_REDIR_ERR | Redirect stderr to file |
-| `<`   | TOK_REDIR_IN | Read input from file |
 
 Quoting and escapes follow Python's string rules: `"..."` and `'...'` both process
 escapes (`\n`, `\t`, `\\`, `\"`, `\'`, `\xHH`; an unknown escape keeps its backslash),
@@ -75,7 +74,7 @@ AST_ROOT   — top-level wrapper
   AST_SEQ  — ; chain (sequential dependency)
     AST_PIPE — | chain (pipe dependency with injection)
       AST_BG     — & background modifier
-      AST_REDIR_* — > / >> / 2> / < redirect
+      AST_REDIR_* — > / >> / 2> redirect
       AST_CMD   — leaf node: text + options
 ```
 
@@ -95,7 +94,7 @@ Shell below); a `!n` or `!!` inside a task description is literal text.
 ## Shell-like Syntax (off by default)
 
 Everything below borrows a shell's vocabulary: the sigils `+` (open a new group) and `!`
-(run a local shell command), and the operators `|` `;` `&` `>` `>>` `2>` `<`. **That
+(run a local shell command), and the operators `|` `;` `&` `>` `>>` `2>`. **That
 vocabulary is off until you ask for it**, because it presumes you know a Unix shell — and
 it fails *silently* when you do not: a line with a stray `|` becomes one odd task instead
 of two, and nothing tells you why.
@@ -254,6 +253,44 @@ stderr) is still the result.
 A running command is stopped from the task side: `/task stop <id>` (or `/session stop`)
 cancels the task and **kills the command's whole process group** — that is what makes
 "no timeout" safe.
+
+## @file References
+
+`@path` attaches a file's content to the task. It is **not** shell syntax: it works with
+the switch off, in a message and in a shell line's text alike, because it is a file
+reference (the opencode / Claude Code convention), not a shell operator.
+
+```
+> explain @src/main.c
+> 看下 @src/tui/edc_input.hpp#40-80 这个滚动逻辑
+> @src/ 目录里有什么
+```
+
+Rules:
+
+- The `@` must open a token: line start, or right after whitespace. `foo@bar.com` and
+  `@Override` inside pasted code are not references.
+- The path runs to the next whitespace. Trailing ASCII punctuation is ignored when
+  resolving (`看下 @a.c.` reads `a.c`), and the text is left exactly as typed.
+- `\@` is the escape: it becomes a literal `@` and attaches nothing.
+- `@path#12` / `@path#12-20` attaches only those lines (1-based, inclusive; `#12-` runs to
+  the end).
+- A relative path is resolved against the **session's working directory**, and the read
+  goes through the sandbox and symlink checks — the same rules the `read_file` tool obeys.
+- A directory attaches its listing; a binary file is skipped with a note.
+- Caps: 2000 lines / 64 KB per file, 128 KB per message. Truncation says so.
+- A missing or unreadable file does not drop the message: the task is created and the
+  failure appears in the attached content.
+
+What the model sees: your text keeps `@path` verbatim, and the file's content arrives as
+its own message, shaped exactly like a `read_file` result
+(`Called the Read tool with the following input: {"path":"src/main.c"}` + the body). Two
+consequences: `raw_input`, the transcript, `/task history` and the sidebar keep showing
+what you typed, and `{{...}}` references are never expanded inside a file's body.
+
+> There is no input redirect. `<` used to read a file into a task's input; it is refused
+> now with a pointer at `@file`, because `@file` does the same job better — anchored at the
+> session's directory, sandboxed, capped, and visible in the text.
 
 ---
 
@@ -567,11 +604,12 @@ between segments — each task starts fresh.
 ```
 > "analyze codebase" | "find critical bugs" | "generate report" > bugs.md
 > "build project" 2> build-errors.log
-> "fix all issues" < context.txt
 ```
 
-Note: `<` reads the file and appends its content to the task input. If there is
-text before `<`, they are joined with a newline.
+Note: there is no input redirect. To give a task a file's content, reference it with
+`@path` (see `@file` below): `<` used to do this, and it was removed because `@file`
+does it better — relative to the session's directory, through the sandbox, with a size
+cap, and visible in the text the model reads.
 
 ### Variable Expansion
 

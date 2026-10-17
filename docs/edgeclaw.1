@@ -47,7 +47,7 @@ GETTING STARTED
 
 SHELL SYNTAX (off by default)
      The shell-like syntax -- the sigils + and !, and the operators
-     | ; & > >> 2> < -- is OFF until you ask for it: it presumes a Unix
+     | ; & > >> 2> -- is OFF until you ask for it: it presumes a Unix
      shell, and fails silently when you do not have one (a stray | makes
      one odd task instead of two, and nothing says why).  Turn it on with
      "/shell on"; the state is persisted and the footer shows shell:on|off.
@@ -134,13 +134,6 @@ SHELL SYNTAX (off by default)
        After the task completes, its output is written to the specified file.
        >> appends.  2> writes stderr.  Quoted > is not interpreted.
 
-     Input redirect (<)
-           > fix bugs < context.txt
-       Reads context.txt and appends its content to the task's user input
-       (if there is preceding text, it is joined with a newline separator).
-       If the file does not exist or is a directory, the task is NOT created
-       and an error message is shown instead.
-
      Task references ({{...}})
            > {{LAST}}
            > {{1}}
@@ -204,7 +197,6 @@ SHELL ARCHITECTURE
        A quote-aware tokenizer respecting " and ' quoting.  Token types:
        TOK_TEXT (regular text), TOK_PIPE (|), TOK_SEQ (;), TOK_BG (&),
        TOK_REDIR_OUT (>), TOK_REDIR_APPEND (>>), TOK_REDIR_ERR (2>),
-       TOK_REDIR_IN (<).
 
      Parser & AST
        Recursive-descent parser building an AST (Abstract Syntax Tree):
@@ -245,6 +237,37 @@ SHELL ARCHITECTURE
                              cancelled too, and the edge stays.
          SEQUENCE  (;)       Same waiting and cascade, but NO output
                              injection.
+
+FILE REFERENCES (@)
+     A token starting with @ attaches a file's content to the task.  It is
+     NOT shell syntax: it works with the switch off, inside a message and
+     inside a shell line's text alike, because it is a file reference (the
+     opencode / Claude Code convention), not a shell operator.
+
+           > explain @src/main.c
+           > @src/main.c#40-80 what does this loop do
+           > @src/  what is in here
+
+     The @ must open a token -- line start, or right after whitespace -- and
+     the path runs to the next whitespace.  Trailing ASCII punctuation is
+     ignored when resolving, and the text is left exactly as typed.  A
+     backslash directly before the @ makes it a literal @ and attaches
+     nothing.  @path#12 and @path#12-20 attach only those lines (the first
+     line is 1, #12- runs to the end).
+
+     A relative path resolves against the session's working directory, and
+     the read goes through the sandbox and the same reader the read_file
+     tool uses.  A directory attaches its listing; a binary file is skipped
+     with a note.  Caps: 2000 lines / 64 KB per file, 128 KB per message,
+     and truncation says so.  A missing file does not drop the message --
+     the task is created and the failure appears in the attached content.
+
+     Your text keeps @path verbatim, and the content arrives as its own
+     message shaped like a read_file result, so raw_input, the transcript
+     and /task history keep showing what you typed, and {{...}} is never
+     expanded inside a file's body.
+
+     There is no input redirect: < is refused, with a pointer at @file.
 
 TASK MODEL
      Three-layer Unix-like process model:
@@ -310,7 +333,6 @@ SHELL-LIKE JOB CONTROL
      cmd > file       "task" > out.md  (redirect output)
      cmd >> file      "task" >> log    (append output)
      cmd 2> file      "task" 2> err    (stderr redirect)
-     cmd < file       "task" < in.txt  (input from file)
      jobs             /task list
      fg %n            /task fg <id>
      bg %n            /task bg [id]
@@ -469,7 +491,6 @@ WORKFLOW EXAMPLES
      Combined pipes + redirects
            > "analyze codebase" | "find critical bugs" | "generate report" > bugs.md
            > "build project" 2> build-errors.log
-           > "fix all issues" < context.txt
 
      Background + pipeline
            > "analyze the error logs" &
