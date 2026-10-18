@@ -326,7 +326,8 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "`--new-group` runs it in a group of its own (a fresh conversation); `--group <id>` (also "
      "spelled `--group=<id>`) runs it in "
      "that existing group. Either may stand before or after the template name, because a template "
-     "argument may not start with `--` (a single dash is fine)."},
+     "argument may not start with `--` (a single dash is fine). The task waits for whatever is still "
+     "running in that group, whether or not the group is the one in front."},
     {"General", "/skill", "list the skills (yours, plus any found in .claude / .agents / .pi / .opencode)", NULL},
     {"General", "/skill <name> [args…]",
      "run a skill directly: its SKILL.md body is loaded into this task (no tool round)",

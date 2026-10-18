@@ -459,6 +459,29 @@ int main(void)
         CHECK(in && strstr(in, "--strict") != NULL, "the literal reached the template's $1");
     }
 
+    TEST("--group into a BUSY group queues behind the task still running there");
+    {
+        complete_all_tasks(sess); /* clean slate: nothing unfinished anywhere */
+
+        /* Group A gets a task that stays running (the spy never answers), then group B
+         * takes the front, so A is a group in the background that is still busy. */
+        drive_command(cfg, sm, sched, "/prompt --new-group review busy");
+        struct edc_task_group *busy = sess->foreground_group;
+        drive_command(cfg, sm, sched, "/prompt --new-group review other");
+        CHECK(busy != NULL && sess->foreground_group != busy, "the busy group is not the group in front");
+
+        char line[256];
+        snprintf(line, sizeof(line), "/prompt review --group %s queued", busy ? busy->group_id : "none");
+        const int tasks_before = count_tasks(sess);
+        drive_command(cfg, sm, sched, line);
+
+        CHECK(count_tasks(sess) == tasks_before + 1, "the task exists");
+        struct edc_task *t = last_member(busy);
+        CHECK(t != NULL && t->group == busy, "it joined the busy group");
+        CHECK(t && t->deps_total >= 1, "and it waits for the task still running in that group");
+        CHECK(t && edc_task_awaits_deps(t), "so it is queued, not running alongside");
+    }
+
     TEST("an unknown --option is an error, never part of the prompt");
     {
         const int tasks_before = count_tasks(sess);

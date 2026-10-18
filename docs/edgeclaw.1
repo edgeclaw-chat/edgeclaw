@@ -412,7 +412,11 @@ COMMAND REFERENCE
      /session memo compact         Compact the session memory now.
 
      Both take --new-group (a group of its own) and --group <id> (an existing
-     one; --group=<id> is the same option), before or after the name.  A `--...` word anywhere on the line is an
+     one; --group=<id> is the same option), before or after the name.  A group
+     runs one task at a time even when it is not the group in front, so the
+     task waits for whatever is still running there.  Running alongside is
+     spelled `&` (shell line) or `--bg` (/task new); /prompt and /skill have
+     no --bg.  A `--...` word anywhere on the line is an
      option, so a template argument may not start with `--` -- quote it
      ("--strict") when it must.  Single dashes are ordinary arguments.
 

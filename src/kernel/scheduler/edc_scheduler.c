@@ -50,18 +50,26 @@ static bool sched_task_holds_front(const struct edc_task *task)
     return task && !edc_task_is_finished(task) && (task->active_turn || edc_task_is_running(task));
 }
 
-/* Put |task| at the back of the queue of the group it is in, when that group is the one
- * in front: one edge to the member that currently holds the front. Two doors lead to "a
- * task is about to run in the foreground group" -- creation (sched_settle_task) and
- * resume -- and both must respect the queue, or the group runs two at a time.
+/* Put |task| at the back of its group's queue: one edge to the member that is still
+ * unfinished there. Two doors lead to "a task is about to run" -- creation
+ * (sched_settle_task) and resume -- and both must respect the queue, or the group runs
+ * two at a time.
+ *
+ * A group runs ONE task at a time whether or not it is the group in front: an explicit
+ * `--group <id>` on a group in the background queues there too (decided 2026-10-18). A
+ * task that was asked to be background (`&` / `--bg`) never gets here -- the callers skip
+ * it -- so running alongside is still spelled `&`, not `--group`.
+ *
+ * The system group is the exception: fold and curation rounds have their own barrier
+ * (sched_attach_maintenance_barrier) and are not serialized here.
+ *
  * Returns true when an edge was added (false when there is nothing to wait for). */
-static bool sched_chain_behind_front(struct edc_task *task)
+static bool sched_chain_behind_unfinished(struct edc_task *task)
 {
-    struct edc_session *own = edc_task_session(task);
     struct edc_task *prev = NULL;
     struct edc_task *m;
 
-    if (!own || !task->group || own->foreground_group != task->group)
+    if (!task || !task->group || edc_task_group_is_system(task->group))
         return false;
 
     LL_FOREACH2(task->group->members, m, group_next)
@@ -537,7 +545,7 @@ static struct edc_task_group *sched_settle_task(struct edc_scheduler *sched, str
      * alongside. */
     if (!spec->background)
     {
-        bool chained = sched_chain_behind_front(task);
+        bool chained = sched_chain_behind_unfinished(task);
         if (chained_out)
             *chained_out = chained;
     }
@@ -1158,7 +1166,7 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
 
     /* Resume is the other door into "this task is about to run in the foreground group":
      * it must not jump the queue (creation goes through sched_settle_task for this). */
-    if (sched_chain_behind_front(task))
+    if (sched_chain_behind_unfinished(task))
     {
         edc_task_mark_waiting_deps(task);
         edc_scheduler_task_moved(sched, task);

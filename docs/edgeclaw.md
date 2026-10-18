@@ -503,7 +503,12 @@ A `/prompt` or `/skill` task joins the group in front, unless you say otherwise:
 ```
 
 `--new-group` and `--group <id>` (equals form `--group=<id>` too) may stand before or after
-the template name. A `--…` token
+the template name.
+
+A group runs one task at a time, and that applies whether or not it is the group in front:
+a task sent to a group that is still busy waits for the task already running there. To run
+something alongside instead, say so explicitly — `&` on a shell line, or `--bg` on
+`/task new`. `/prompt` and `/skill` have no `--bg`, so a template task always queues. A `--…` token
 anywhere on the line is read as an option, so **a template argument may not start with `--`**
 — quote it (`/prompt review "--strict"`) when a template really needs that word. Single
 dashes are ordinary arguments (`/prompt review -strict`).
