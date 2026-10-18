@@ -164,6 +164,34 @@ int main()
         Check(m.IsUnread("3"), "and marked unread again");
     }
 
+    {
+        std::cout << "a task whose output was on screen is read, not announced\n";
+        /* This is the `!cmd` case the user hit: its output goes to the chat pane, and by
+         * the time the completion snapshot arrives the scheduler's active pointer has
+         * often moved on to the next task in the group -- so "is it the active one?"
+         * answers no, and the marker appeared even though the output was on screen. */
+        TaskTreeModel m;
+        edc::TaskSnapshot running = Snap(GroupKind::User, {Task("4", "TOOL_CALLING")});
+        m.Apply(&running);
+
+        edc::TaskSnapshot done = Snap(GroupKind::User, {Task("4", "COMPLETED")});
+        m.Apply(&done);
+        Check(SameList(m.TakeFinished(), {"4"}), "the model does record the finish first");
+        Check(m.IsUnread("4"), "and marks it unread on its own");
+
+        /* What the window does once it knows the output was presented. */
+        m.DropSeen({"4"});
+        Check(m.TakeFinished().empty(), "the announcement is withdrawn");
+        Check(!m.IsUnread("4"), "and the row is read");
+
+        /* A finish the user never saw is unaffected by an empty / unrelated set. */
+        m.Apply(&running);
+        m.Apply(&done);
+        m.DropSeen({"999"});
+        Check(SameList(m.TakeFinished(), {"4"}), "an unrelated id does not withdraw it");
+        Check(m.IsUnread("4"), "and it stays unread");
+    }
+
     if (g_failures == 0)
         std::cout << "\nall model checks passed\n";
     else

@@ -15,6 +15,7 @@
 #include <ftxui/component/screen_interactive.hpp>
 #include <functional>
 #include <memory>
+#include <set>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -214,6 +215,10 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // Multi-line input with soft wrapping; also handed to |container_| for focus.
     std::shared_ptr<edc::EdcInput> input_;
     ::ftxui::Element prompt_;
+    /* Tasks whose output was presented since the last task-tree snapshot: finished
+     * ones among them are read, not unread. */
+    std::set<std::string> presented_tasks_;
+
     std::string input_text_;
 
     // The completion popup, shown while the input starts with '/'. Hangs just below the

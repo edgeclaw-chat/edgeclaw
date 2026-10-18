@@ -1402,6 +1402,11 @@ void TUIWindow::SetTaskTree(const TaskSnapshot &snap)
     /* A task that ended between the last two snapshots, while the user was not looking
      * at it: say so once, in the chat pane. The transcript is deliberately NOT written --
      * this is interface feedback, not something the conversation said. */
+    /* "Seen" wins over "finished": a task whose output was on screen since the last
+     * snapshot is read -- no marker, and nothing announced. */
+    task_widget_->model()->DropSeen(presented_tasks_);
+    presented_tasks_.clear();
+
     const std::vector<std::string> just_finished = task_widget_->TakeFinished();
     if (!just_finished.empty())
     {
@@ -1475,6 +1480,15 @@ bool TUIWindow::PresentChat(const port::ChatMessageEvent &event, const std::stri
     if (std::shared_ptr<Message> widget =
             MakeChatWidget(kind_str, event.header, event.content, event.task_id, event.render_pref, event.ts))
         chat_widget_->AddMessage(widget);
+
+    /* Its output is on screen, so this task has been read -- whatever the scheduler's
+     * active pointer says by the time the next snapshot arrives (that pointer moves on
+     * to the next task in the same batch, which used to make a `!cmd` look unread). */
+    if (!event.task_id.empty())
+    {
+        presented_tasks_.insert(event.task_id);
+        task_widget_->model()->MarkRead(event.task_id);
+    }
 
     // No explicit ScrollToBottom() here: if the reader is already at the tail the
     // view follows it automatically; if they scrolled up to read history, arriving

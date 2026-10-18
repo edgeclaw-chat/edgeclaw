@@ -2,6 +2,7 @@
 #include "edc_style.hpp"
 #include "edc_text_util.hpp"
 
+#include <algorithm>
 #include <utility>
 
 namespace edc::model
@@ -146,6 +147,17 @@ bool TaskTreeModel::IsUnread(const std::string &task_id) const
             if (t.task_id == task_id)
                 return t.unread;
     return false;
+}
+
+void TaskTreeModel::DropSeen(const std::set<std::string> &seen)
+{
+    if (seen.empty())
+        return;
+    finished_.erase(std::remove_if(finished_.begin(), finished_.end(),
+                                   [&seen](const std::string &id) { return seen.count(id) > 0; }),
+                    finished_.end());
+    for (const std::string &id : seen)
+        MarkRead(id);
 }
 
 void TaskTreeModel::MarkRead(const std::string &task_id)

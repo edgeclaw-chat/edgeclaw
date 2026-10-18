@@ -16,6 +16,7 @@
 #include "edc_task_snapshot.hpp"
 
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -115,6 +116,10 @@ class TaskTreeModel
     bool IsUnread(const std::string &task_id) const;
     // The user has seen this task: drop its unread marker.
     void MarkRead(const std::string &task_id);
+    // The same, for "its output was on screen" rather than "it is the active one":
+    // those tasks are read, and a finish already recorded for them is dropped too
+    // (no marker, nothing announced).
+    void DropSeen(const std::set<std::string> &seen);
 
   private:
     std::string session_id_;
