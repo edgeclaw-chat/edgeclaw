@@ -319,6 +319,15 @@ cc_test(
 )
 
 cc_test(
+    name = "test_sandbox_paths",
+    srcs = ["test_sandbox_paths.c"],
+    deps = [
+        "//src/sandbox:sandbox",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_mention_pass",
     srcs = ["test_mention_pass.c"],
     deps = [

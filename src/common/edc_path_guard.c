@@ -24,8 +24,8 @@ static int prefix_match_len(const char *resolved, char *const *paths)
     int best = -1;
     for (int i = 0; paths[i]; i++)
     {
-        /* An entry that does not resolve cannot match. (A deny entry naming a directory
-         * that does not exist yet is therefore inert -- a known limit of the清单对比.) */
+        /* An entry that does not resolve cannot match, so a deny entry naming a directory
+         * that does not exist yet does nothing. Known limit: nothing reports it. */
         char *entry = realpath(paths[i], NULL);
         if (!entry)
             continue;

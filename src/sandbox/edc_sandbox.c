@@ -4,6 +4,7 @@
 #include "edc_config.h"
 #include "edc_file_utils.h"
 #include "log.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -35,8 +36,33 @@ bool edc_sandbox_init(struct edc_config *conf)
     }
 #endif
 
+    if (conf->enable_sandbox)
+        edc_sandbox_report_unresolved_paths(conf);
+
     log_info("edc_sandbox: initialized, root = %s", conf->sandbox_root_real);
     return true;
+}
+
+size_t edc_sandbox_report_unresolved_paths(struct edc_config *conf)
+{
+    if (!conf || !conf->enable_sandbox || !conf->sandbox_deny_paths)
+        return 0;
+
+    size_t bad = 0;
+    for (int i = 0; conf->sandbox_deny_paths[i]; i++)
+    {
+        char *real = realpath(conf->sandbox_deny_paths[i], NULL);
+        if (real)
+        {
+            free(real);
+            continue;
+        }
+        bad++;
+        log_warn("sandbox: deny entry '%s' does not resolve (%s) -- it matches nothing, so what it "
+                 "names is NOT masked",
+                 conf->sandbox_deny_paths[i], strerror(errno));
+    }
+    return bad;
 }
 
 const char *edc_sandbox_get_root(struct edc_config *conf)
