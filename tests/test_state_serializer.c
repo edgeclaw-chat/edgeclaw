@@ -187,6 +187,9 @@ static void test_single_task(void)
     task->completion_seq = 42;
     /* 用户原文 (由哪条输入建成): 可选键, 但要能原样来回。 */
     task->raw_input = sdsnew("do something");
+    /* `{{…}}` 引用已收集、尚未展开：这个标志不落盘的话，重启后消息里就只剩字面量
+     * （展开阶段被它 gate 住）——静默丢语义。 */
+    task->has_deferred_vars = 1;
 
     /* Add a turn with messages */
     struct edc_turn *turn = edc_turn_new();
@@ -215,6 +218,7 @@ static void test_single_task(void)
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "step")), "DONE", "step DONE");
     CHECK(cJSON_IsTrue(cJSON_GetObjectItem(t0, "is_group_leader")), "is_group_leader");
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "raw_input")), "do something", "raw_input persisted");
+    CHECK(cJSON_IsTrue(cJSON_GetObjectItem(t0, "deferred_vars")), "deferred_vars persisted");
 
     cJSON *turns_j = cJSON_GetObjectItem(t0, "turns");
     CHECK(cJSON_GetArraySize(turns_j) == 1, "1 turn serialized");
@@ -236,6 +240,7 @@ static void test_single_task(void)
     CHECK(rtask->completion_seq == 42, "completion_seq preserved");
     CHECK_STREQ(rtask->output, "task output result", "output preserved");
     CHECK_STREQ(rtask->raw_input, "do something", "raw_input restored");
+    CHECK(rtask->has_deferred_vars == 1, "deferred_vars restored -- a {{…}} is still expanded after a restart");
 
     /* Check turn messages */
     CHECK(edc_queue_length(&rtask->turns) == 1, "1 turn in turns queue");

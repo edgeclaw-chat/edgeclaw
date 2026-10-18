@@ -132,6 +132,12 @@ static cJSON *task_to_json(struct edc_task *task)
      * false), so old files read back a normal task -- no schema bump. */
     if (task->tool_only)
         cJSON_AddBoolToObject(tj, "tool_only", true);
+    /* `{{…}}` references collected at input time but not expanded yet. Without this the
+     * task comes back from disk with a LITERAL `{{LAST}}` in its message -- the expand
+     * phase is gated on this flag (edc_llm_request), so a restart silently turned a task
+     * reference into text. Optional key: absent = false, so no schema bump. */
+    if (task->has_deferred_vars)
+        cJSON_AddBoolToObject(tj, "deferred_vars", true);
     /* Which SESSION_MEMORY round this is: curation (default) / compaction / extraction.
      * Omitted for the default; a v7 archive carries the old `memo_compact` bool instead,
      * read back in the loader. */
@@ -696,6 +702,8 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->is_background = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "tool_only")))
             task->tool_only = cJSON_IsTrue(v);
+        if ((v = cJSON_GetObjectItem(tj, "deferred_vars")))
+            task->has_deferred_vars = cJSON_IsTrue(v) ? 1 : 0;
         /* v8: the tri-state tag. A v7 archive has no `memo_kind`; its old
          * `memo_compact` bool says COMPACT when true, and the default (CURATE) when
          * absent -- which is what memo_kind already holds. */
