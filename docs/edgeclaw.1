@@ -471,6 +471,18 @@ COMMAND REFERENCE
      /group fold [id] [focus] Fold the group now, ignoring the trigger
                               (default: the foreground group).
 
+     Scheduling
+     /jobs                     List the scheduled jobs (workspace/jobs.json):
+                               id, name, schedule and the next run in local
+                               time, how far away and in which zone.
+     /jobs run <id>            Fire a job now.  Its instruction goes through
+                               the input pipeline exactly as a timer firing
+                               does; the schedule itself is left alone.
+     /jobs rm <id>             Remove a job.
+                               <id> is any unique prefix (uuids, so eight
+                               characters is plenty); an unknown or ambiguous
+                               prefix changes nothing.
+
 OUTPUT
      Only the session's active task outputs to the terminal.  Other tasks
      complete silently; use /task output <id> to read output.  /task fg

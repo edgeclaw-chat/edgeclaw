@@ -8,6 +8,7 @@
 #include "edc_channel_actor.h"
 #include "edc_compat.h"
 #include "edc_error.h"
+#include "edc_crontab_jobs.h"
 #include "edc_file_utils.h"
 #include "edc_scheduler.h"
 #include "edc_service.h"
@@ -292,15 +293,6 @@ static void edc_tool_crontab_exec_remove_async(struct edc_toolbox_call_ctx *ctx,
 
     cJSON_Delete(db);
 }
-static sds edc_tool_crontab_build_task_message(char *job_name, char *job_message)
-{
-    return sdscatprintf(sdsempty(),
-                        "[Scheduled Task] Timer finished.\n\n"
-                        "Task '%s' has been triggered.\n"
-                        "Scheduled instruction: %s",
-                        job_name, job_message);
-}
-
 /* Advance ONE job's next_run after it FIRED: "every" -> now + interval, "cron" -> the
  * next occurrence, "at" -> nothing (a one-shot is removed by the caller). Only fired
  * jobs are advanced: advancing every job on every scan would push a not-yet-due job
@@ -422,8 +414,7 @@ static void edc_tool_crontab_scan(struct edc_service *svc, void *ud)
         const char *job_name = cJSON_GetStringValue(cJSON_GetObjectItem(job, "name"));
         const char *job_msg = cJSON_GetStringValue(cJSON_GetObjectItem(job, "message"));
         bool once = cJSON_IsTrue(cJSON_GetObjectItem(schedule, "once"));
-        sds text = edc_tool_crontab_build_task_message((char *)(job_name ? job_name : ""),
-                                                       (char *)(job_msg ? job_msg : ""));
+        sds text = edc_crontab_task_message(job_name, job_msg);
         struct edc_channel_message *message =
             edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, text);
         edc_actor_send(state->scheduler_actor,

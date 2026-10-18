@@ -154,6 +154,7 @@ model, and continues instead of starting over.
 | Session | `/session new · switch · list · info · status · save · stop · remove · rename · memo` |
 | Tasks | `/task new · fork · list · status · output · history · fg · bg · stop · resume` |
 | Groups | `/group list · info · history · fold` |
+| Scheduling | `/jobs list · run <id> · rm <id>` |
 
 Common options: `--bg` (same group, background), `--new-group`, `-d <id>` (wait for a task
 and inject its output), `-g <group>`. A shell line says background with `&`, not `--bg`.

@@ -494,6 +494,20 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 | `/group history <id>` | The whole group's history, one block per member |
 | `/group fold [id] [focus]` | Fold the group now, ignoring the trigger; no id = the foreground group |
 
+### Scheduling
+
+Scheduled jobs live in `workspace/jobs.json` and are created by the assistant (the
+`crontab` tool). These commands are how a person sees and manages them:
+
+| Command | Description |
+|---------|-------------|
+| `/jobs` (or `/jobs list`) | Every job: its id, name, schedule (`cron 0 3 * * *`, `every 2h`, `one-shot`) and when it runs next — local time, how far away, and the zone it was scheduled in |
+| `/jobs run <id>` | Fire a job **now**. Its instruction goes through the input pipeline exactly as a timer firing does, so the task is the one the schedule would have created; the schedule itself is left alone |
+| `/jobs rm <id>` | Remove a job |
+
+`<id>` is any unique prefix of a job's id (they are uuids, so the first eight characters
+are enough). An unknown or ambiguous prefix changes nothing and says which it was.
+
 ---
 
 ### Where a template's task goes

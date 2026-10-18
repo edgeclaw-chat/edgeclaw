@@ -1,4 +1,5 @@
 ﻿#include "edc_commands.h"
+#include "edc_crontab_jobs.h"
 #include "edc_interp.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
@@ -7,6 +8,7 @@
 #include "edc_context.h"
 #include "edc_models.h"
 #include "edc_file_utils.h"
+#include "edc_path_guard.h"
 #include "edc_group_fold.h"
 #include "edc_local_shell.h"
 #include "edc_prompts.h"
@@ -341,6 +343,12 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
     {"General", "/sandbox add-ro|rm-ro <dir>", "add/remove a read-only path", NULL},
     {"General", "/sandbox add-rw|rm-rw <dir>", "add/remove a read-write path", NULL},
     {"General", "/sandbox add-deny|rm-deny <dir>", "mask a dir (wins over ro/rw; e.g. ~/.ssh)", NULL},
+
+    {"Scheduling", "/jobs", "list the scheduled jobs (cron / every / one-shot) with when they run next", NULL},
+    {"Scheduling", "/jobs run <id>", "fire a scheduled job now; its schedule is left alone",
+     "The job's instruction goes through the input pipeline exactly as a timer firing does, so "
+     "the task it creates is the one the schedule would have created. The job stays scheduled."},
+    {"Scheduling", "/jobs rm <id>", "remove a scheduled job", NULL},
 
     {"Session", "/session new [name] [dir]",
      "start a new session (optionally named, optionally with a working directory)", NULL},
@@ -2901,6 +2909,396 @@ static bool edc_commands_handle_reload(struct edc_config *cfg, struct edc_sessio
 typedef bool (*edc_cmd_fn)(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
                            struct edc_reply_to to, struct edc_channel_message *message);
 
+/* ── /jobs — what is scheduled ───────────────────────────────
+ *
+ * The schedules are DATA (<workspace>/jobs.json), owned by the crontab tool; the ticking
+ * is a background service. Until now only the model could touch them: a person could not
+ * see what was going to run, remove a stale entry, or run one now. This family is that
+ * window. It reads and writes the same file through the guarded file helpers, and `run`
+ * injects the job's text into the input pipeline exactly the way the ticker does -- so
+ * "run now" and "the timer fired" produce the same task.
+ */
+#define EDC_JOBS_MAX_BYTES (4 * 1024 * 1024)
+
+static sds jobs_file_path(struct edc_config *cfg)
+{
+    return edc_path_join(cfg && cfg->workspace ? cfg->workspace : "", "jobs.json", NULL);
+}
+
+/* NULL with |*error| set when the file exists but cannot be used. A MISSING file is not
+ * an error: it means "nothing scheduled yet". */
+static cJSON *jobs_load(struct edc_config *cfg, EdcError **error)
+{
+    sds path = jobs_file_path(cfg);
+    struct edc_path_rules rules = {
+        .root = cfg ? cfg->workspace : NULL,
+        .refuse_symlink = true,
+        .deny_paths = (cfg && cfg->enable_sandbox) ? cfg->sandbox_deny_paths : NULL,
+    };
+    sds content = edc_path_guard_read(&rules, path, EDC_JOBS_MAX_BYTES, error);
+    bool missing = !content && !edc_file_is_regular(path);
+    sdsfree(path);
+    if (!content)
+    {
+        if (missing)
+        {
+            if (error)
+                *error = NULL;
+            return cJSON_CreateObject(); /* nothing scheduled */
+        }
+        return NULL;
+    }
+    cJSON *db = cJSON_Parse(content);
+    sdsfree(content);
+    if (!db)
+    {
+        edc_error_set(error, EDC_ERR_INVAL, "jobs.json is not valid JSON");
+        return NULL;
+    }
+    if (!cJSON_GetObjectItem(db, "jobs"))
+        cJSON_AddArrayToObject(db, "jobs");
+    return db;
+}
+
+static bool jobs_save(struct edc_config *cfg, cJSON *db, sds *err)
+{
+    sds path = jobs_file_path(cfg);
+    char *text = cJSON_Print(db);
+    EdcError *error = NULL;
+    const bool ok = text && edc_file_write_safe(path, text, (ssize_t)strlen(text), cfg->workspace, &error);
+    if (!ok && err)
+        *err = sdsnew(error && error->message ? error->message : "cannot write jobs.json");
+    if (error)
+        edc_error_free(error);
+    if (text)
+        cJSON_free(text);
+    sdsfree(path);
+    return ok;
+}
+
+/* Host-local wall clock (the schedules without an IANA tz are host-local). */
+static bool jobs_localtime(time_t t, struct tm *out)
+{
+#ifdef _WIN32
+    return localtime_s(out, &t) == 0;
+#else
+    return localtime_r(&t, out) != NULL;
+#endif
+}
+
+/* "2026-10-19 09:00 (in 2h 13m)" -- the number a person needs; the raw unix timestamp
+ * alone was unreadable and did not show which zone it was in. */
+static sds jobs_describe_next(const cJSON *schedule)
+{
+    const cJSON *ts = schedule ? cJSON_GetObjectItem(schedule, "next_run_at_unix_ts") : NULL;
+    if (!ts || !cJSON_IsNumber(ts))
+        return sdsnew("not scheduled");
+
+    const time_t at = (time_t)ts->valuedouble;
+    struct tm tm;
+    char buf[32];
+    if (!jobs_localtime(at, &tm) || strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm) == 0)
+        snprintf(buf, sizeof(buf), "%ld", (long)at);
+
+    const char *tz = cJSON_GetStringValue(cJSON_GetObjectItem(schedule, "tz"));
+    sds when = sdsnew(buf);
+    const long delta = (long)(at - time(NULL));
+    if (delta <= 0)
+        return sdscatprintf(when, " (due now)%s%s", (tz && *tz) ? " " : "", (tz && *tz) ? tz : "");
+
+    const long d = delta / 86400, h = (delta % 86400) / 3600, m = (delta % 3600) / 60;
+    sds rel = sdsempty();
+    if (d > 0)
+        rel = sdscatprintf(rel, "%ldd %ldh", d, h);
+    else if (h > 0)
+        rel = sdscatprintf(rel, "%ldh %ldm", h, m);
+    else
+        rel = sdscatprintf(rel, "%ldm", m);
+    when = sdscatprintf(when, " (in %s)%s%s", rel, (tz && *tz) ? " " : "", (tz && *tz) ? tz : "");
+    sdsfree(rel);
+    return when;
+}
+
+static sds jobs_describe_schedule(const cJSON *schedule)
+{
+    const char *kind = schedule ? cJSON_GetStringValue(cJSON_GetObjectItem(schedule, "kind")) : NULL;
+    if (!kind)
+        return sdsnew("?");
+
+    if (strcmp(kind, "cron") == 0)
+    {
+        const char *expr = cJSON_GetStringValue(cJSON_GetObjectItem(schedule, "cron_expr"));
+        return sdscatprintf(sdsempty(), "cron `%s`", expr ? expr : "?");
+    }
+    if (strcmp(kind, "every") == 0)
+    {
+        const cJSON *every = cJSON_GetObjectItem(schedule, "every_seconds");
+        const long secs = (every && cJSON_IsNumber(every)) ? (long)every->valuedouble : 0;
+        if (secs > 0 && secs % 3600 == 0)
+            return sdscatprintf(sdsempty(), "every %ldh", secs / 3600);
+        if (secs > 0 && secs % 60 == 0)
+            return sdscatprintf(sdsempty(), "every %ldm", secs / 60);
+        return sdscatprintf(sdsempty(), "every %lds", secs);
+    }
+    return sdsnew("one-shot"); /* "at" */
+}
+
+/* The job whose id starts with |prefix|. |*matches| counts how many did: 0 = none,
+ * >1 = ambiguous (ids are uuids, so a short prefix is enough in practice but a wrong one
+ * must not silently pick a job). */
+static cJSON *jobs_by_prefix(cJSON *jobs, const char *prefix, int *matches)
+{
+    *matches = 0;
+    cJSON *found = NULL;
+    if (!jobs || !prefix || !*prefix)
+        return NULL;
+    const int n = cJSON_GetArraySize(jobs);
+    for (int i = 0; i < n; i++)
+    {
+        cJSON *job = cJSON_GetArrayItem(jobs, i);
+        const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(job, "job_id"));
+        if (id && strncmp(id, prefix, strlen(prefix)) == 0)
+        {
+            (*matches)++;
+            found = job;
+        }
+    }
+    return *matches == 1 ? found : NULL;
+}
+
+static sds jobs_short_id(const cJSON *job)
+{
+    const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(job, "job_id"));
+    return sdsnewlen(id ? id : "", (id && strlen(id) > 8) ? 8 : (id ? strlen(id) : 0));
+}
+
+static void sub_jobs_list(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                          struct edc_channel_message *message, sds arg)
+{
+    (void)sm;
+    (void)message;
+    (void)arg;
+    struct edc_config *cfg = sched ? sched->config : NULL;
+
+    EdcError *error = NULL;
+    cJSON *db = jobs_load(cfg, &error);
+    if (!db)
+    {
+        sds reply = sdscatprintf(sdsempty(), "**Cannot read the scheduled jobs** — %s",
+                                 error && error->message ? error->message : "unknown error");
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        if (error)
+            edc_error_free(error);
+        return;
+    }
+
+    cJSON *jobs = cJSON_GetObjectItem(db, "jobs");
+    const int n = cJSON_GetArraySize(jobs);
+    if (n == 0)
+    {
+        edc_commands_reply(to, "**No scheduled jobs.**\n\nAsk the assistant to set one up; it uses the `crontab` tool.");
+        cJSON_Delete(db);
+        return;
+    }
+
+    sds reply = sdscatprintf(sdsempty(), "**Scheduled jobs** (%d)\n\n", n);
+    for (int i = 0; i < n; i++)
+    {
+        cJSON *job = cJSON_GetArrayItem(jobs, i);
+        const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(job, "name"));
+        cJSON *schedule = cJSON_GetObjectItem(job, "schedule");
+        sds id = jobs_short_id(job);
+        sds kind = jobs_describe_schedule(schedule);
+        sds next = jobs_describe_next(schedule);
+        reply = sdscatprintf(reply, "`%s`  **%s**  · %s\n      next: %s\n", id, name ? name : "(unnamed)", kind, next);
+        sdsfree(id);
+        sdsfree(kind);
+        sdsfree(next);
+    }
+    reply = sdscat(reply, "\n`/jobs run <id>` fires one now · `/jobs rm <id>` removes it");
+    edc_commands_reply(to, reply);
+    sdsfree(reply);
+    cJSON_Delete(db);
+}
+
+static void sub_jobs_run(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                         struct edc_channel_message *message, sds arg)
+{
+    (void)sm;
+    struct edc_config *cfg = sched ? sched->config : NULL;
+    if (!arg || !*arg)
+    {
+        edc_commands_reply(to, "Usage: `/jobs run <id>`   (the id is the one `/jobs` prints)");
+        return;
+    }
+
+    EdcError *error = NULL;
+    cJSON *db = jobs_load(cfg, &error);
+    if (!db)
+    {
+        sds reply = sdscatprintf(sdsempty(), "**Cannot read the scheduled jobs** — %s",
+                                 error && error->message ? error->message : "unknown error");
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        if (error)
+            edc_error_free(error);
+        return;
+    }
+
+    int matches = 0;
+    cJSON *job = jobs_by_prefix(cJSON_GetObjectItem(db, "jobs"), arg, &matches);
+    if (!job)
+    {
+        sds reply = matches == 0 ? sdscatprintf(sdsempty(), "**No job** whose id starts with `%s`.", arg)
+                                 : sdscatprintf(sdsempty(), "**Ambiguous id** `%s` — %d jobs match; type more of it.",
+                                                arg, matches);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        cJSON_Delete(db);
+        return;
+    }
+
+    const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(job, "name"));
+    const char *instruction = cJSON_GetStringValue(cJSON_GetObjectItem(job, "message"));
+    sds text = edc_crontab_task_message(name, instruction);
+
+    /* Exactly what the ticker does: the text enters the input pipeline as a user message.
+     * The caller's session is used, so "run now" lands where the person is looking. */
+    struct edc_channel_message *cm =
+        edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, text);
+    if (message && message->session_id)
+        cm->session_id = sdsnew(message->session_id);
+    edc_actor_send(edc_scheduler_get_actor(sched),
+                   edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, NULL, edc_channel_input_new(cm),
+                                     (edc_actor_data_free_fn)edc_channel_input_free));
+
+    sds reply = sdscatprintf(sdsempty(), "**Job `%s` fired** — its instruction went in as a message; "
+                                         "the schedule itself was not changed.",
+                             name ? name : arg);
+    edc_commands_reply(to, reply);
+    sdsfree(reply);
+    cJSON_Delete(db);
+}
+
+static void sub_jobs_rm(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                        struct edc_channel_message *message, sds arg)
+{
+    (void)sm;
+    (void)message;
+    struct edc_config *cfg = sched ? sched->config : NULL;
+    if (!arg || !*arg)
+    {
+        edc_commands_reply(to, "Usage: `/jobs rm <id>`   (the id is the one `/jobs` prints)");
+        return;
+    }
+
+    EdcError *error = NULL;
+    cJSON *db = jobs_load(cfg, &error);
+    if (!db)
+    {
+        sds reply = sdscatprintf(sdsempty(), "**Cannot read the scheduled jobs** — %s",
+                                 error && error->message ? error->message : "unknown error");
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        if (error)
+            edc_error_free(error);
+        return;
+    }
+
+    cJSON *jobs = cJSON_GetObjectItem(db, "jobs");
+    int matches = 0;
+    cJSON *job = jobs_by_prefix(jobs, arg, &matches);
+    if (!job)
+    {
+        sds reply = matches == 0 ? sdscatprintf(sdsempty(), "**No job** whose id starts with `%s`.", arg)
+                                 : sdscatprintf(sdsempty(), "**Ambiguous id** `%s` — %d jobs match; type more of it.",
+                                                arg, matches);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        cJSON_Delete(db);
+        return;
+    }
+
+    const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(job, "name"));
+    sds removed_name = sdsnew(name ? name : arg);
+
+    /* The pointer came out of this array, so its index is what DeleteItemFromArray wants
+     * -- deleting position 0 would remove somebody else's job. */
+    int index = -1;
+    const int count = cJSON_GetArraySize(jobs);
+    for (int i = 0; i < count; i++)
+    {
+        if (cJSON_GetArrayItem(jobs, i) == job)
+        {
+            index = i;
+            break;
+        }
+    }
+    if (index < 0)
+    {
+        edc_commands_reply(to, "**Could not remove the job** — it vanished while reading the file.");
+        sdsfree(removed_name);
+        cJSON_Delete(db);
+        return;
+    }
+    cJSON_DeleteItemFromArray(jobs, index);
+
+    sds err = NULL;
+    if (!jobs_save(cfg, db, &err))
+    {
+        sds reply = sdscatprintf(sdsempty(), "**Could not remove the job** — %s", err ? err : "write failed");
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        if (err)
+            sdsfree(err);
+        cJSON_Delete(db);
+        sdsfree(removed_name);
+        return;
+    }
+
+    sds reply = sdscatprintf(sdsempty(), "**Removed** job `%s` (`%s`).", removed_name, arg);
+    edc_commands_reply(to, reply);
+    sdsfree(reply);
+    sdsfree(removed_name);
+    cJSON_Delete(db);
+}
+
+static const struct edc_sub_entry k_jobs_subs[] = {
+    {"list", sub_jobs_list},
+    {"run", sub_jobs_run},
+    {"rm", sub_jobs_rm},
+};
+
+static bool edc_commands_handle_jobs(struct edc_config *cfg, struct edc_session_manager *sm,
+                                     struct edc_scheduler *sched, struct edc_reply_to to,
+                                     struct edc_channel_message *message)
+{
+    (void)cfg;
+    char verb[32];
+    sds arg = NULL;
+    if (edc_commands_sub_split(message->content, "/jobs", verb, sizeof(verb), &arg))
+    {
+        for (size_t i = 0; i < sizeof(k_jobs_subs) / sizeof(k_jobs_subs[0]); i++)
+        {
+            if (strcmp(k_jobs_subs[i].verb, verb) != 0)
+                continue;
+            k_jobs_subs[i].fn(sm, sched, to, message, arg);
+            if (arg)
+                sdsfree(arg);
+            return true;
+        }
+        if (arg)
+            sdsfree(arg);
+        edc_commands_reply(to, "**Unknown subcommand** — `/jobs` knows `list`, `run <id>` and `rm <id>`.");
+        return true;
+    }
+
+    /* Bare `/jobs` lists: it is the question people actually have. */
+    sub_jobs_list(sm, sched, to, message, NULL);
+    return true;
+}
+
 struct edc_cmd_entry
 {
     const char *name; /* 不含斜杠 */
@@ -2914,6 +3312,7 @@ static const struct edc_cmd_entry k_commands[] = {
     {"reload", true, edc_commands_handle_reload},
     {"task", false, edc_commands_handle_task},
     {"group", false, edc_commands_handle_group},
+    {"jobs", false, edc_commands_handle_jobs},
     {"session", false, edc_commands_handle_session},
     {"help", false, edc_commands_handle_help_cmd},
 };

@@ -1129,6 +1129,15 @@ cc_test(
 )
 
 cc_test(
+    name = "test_commands_jobs",
+    srcs = ["test_commands_jobs.c"],
+    deps = [
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_commands_prompt",
     srcs = ["test_commands_prompt.c"],
     deps = [
