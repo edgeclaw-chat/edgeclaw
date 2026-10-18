@@ -482,6 +482,48 @@ int main(void)
         CHECK(t && edc_task_awaits_deps(t), "so it is queued, not running alongside");
     }
 
+    TEST("--bg runs the template alongside a busy group instead of queueing");
+    {
+        complete_all_tasks(sess);
+        drive_command(cfg, sm, sched, "/prompt --new-group review busy-bg");
+        struct edc_task_group *busy = sess->foreground_group;
+        drive_command(cfg, sm, sched, "/prompt --new-group review other-bg");
+        struct edc_task_group *front = sess->foreground_group;
+
+        char line[256];
+        snprintf(line, sizeof(line), "/prompt review --group %s --bg alongside", busy ? busy->group_id : "none");
+        drive_command(cfg, sm, sched, line);
+
+        struct edc_task *t = last_member(busy);
+        CHECK(t != NULL && t->group == busy, "it joined the busy group");
+        CHECK(t && t->is_background, "as a background task");
+        CHECK(t && t->deps_total == 0, "so it waits for nobody (no queueing)");
+        CHECK(sess->foreground_group == front, "and the group in front did not move");
+    }
+
+    TEST("--new-group --bg opens a group without taking the front");
+    {
+        complete_all_tasks(sess);
+        struct edc_task_group *front = sess->foreground_group;
+        const int groups_before = count_groups(sess);
+        drive_command(cfg, sm, sched, "/prompt --new-group --bg review lonely");
+
+        CHECK(count_groups(sess) == groups_before + 1, "a group was opened");
+        CHECK(sess->foreground_group == front, "but the front did not move");
+
+        struct edc_task *bg = NULL, *m;
+        struct edc_task_group *g;
+        DL_FOREACH(sess->groups, g)
+        {
+            LL_FOREACH2(g->members, m, group_next)
+            {
+                if (m->is_background)
+                    bg = m;
+            }
+        }
+        CHECK(bg != NULL, "the task is background");
+    }
+
     TEST("an unknown --option is an error, never part of the prompt");
     {
         const int tasks_before = count_tasks(sess);
@@ -546,6 +588,13 @@ int main(void)
         CHECK(count_groups(sess) == skill_groups_before + 1, "a group was opened");
         struct edc_task *sk = last_member(sess->foreground_group);
         CHECK(sk && sk->group && sk->group->leader == sk, "the skill task leads it");
+
+        TEST("/skill --bg ... is background too");
+        complete_all_tasks(sess);
+        drive_command(cfg, sm, sched, "/skill pdf --bg page 5");
+        struct edc_task *skbg = last_member(sess->foreground_group);
+        CHECK(skbg && skbg->is_background, "background");
+        CHECK(skbg && skbg->deps_total == 0, "and not queued behind anything");
     }
 
     /* ── `+` 不与 `!` 组合: 同一条规矩 ───────────────────────────── */

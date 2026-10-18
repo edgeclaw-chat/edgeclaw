@@ -327,12 +327,14 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "spelled `--group=<id>`) runs it in "
      "that existing group. Either may stand before or after the template name, because a template "
      "argument may not start with `--` (a single dash is fine). The task waits for whatever is still "
-     "running in that group, whether or not the group is the one in front."},
+     "running in that group, whether or not the group is the one in front -- unless you add `--bg`: "
+     "then it runs alongside instead (no queueing, and it does not take the front)."},
     {"General", "/skill", "list the skills (yours, plus any found in .claude / .agents / .pi / .opencode)", NULL},
     {"General", "/skill <name> [args…]",
      "run a skill directly: its SKILL.md body is loaded into this task (no tool round)",
      "Same rule as a prompt body: the skill text is a DOCUMENT, one task's input, verbatim -- never parsed "
-     "as a command line. `--new-group` / `--group <id>` place it, exactly as they do for `/prompt`."},
+     "as a command line. `--new-group` / `--group <id>` / `--bg` place it, exactly as they do for "
+     "`/prompt`."},
     {"General", "/reload", "re-read the resource files and rebuild the cached system prompt", NULL},
     {"General", "/sandbox [on|off]", "enable/disable the filesystem sandbox", NULL},
     {"General", "/sandbox list", "show the allow/deny path lists", NULL},
@@ -2275,6 +2277,7 @@ static bool edc_commands_handle_help_cmd(struct edc_config *cfg, struct edc_sess
 struct cmd_place_flags
 {
     bool new_group; /* --new-group: put the task in a group of its own */
+    bool bg;        /* --bg: run it in the background, alongside (no queueing, no front) */
     sds group_id;   /* --group <id>: put it in that existing group */
 };
 
@@ -2340,9 +2343,12 @@ static sds cmd_strip_place_flags(const char *cmd, const char *tail, struct cmd_p
             continue;
 
         sds tok = sdsnewlen(work + b, e - b);
-        if (strcmp(tok, "--new-group") == 0)
+        if (strcmp(tok, "--new-group") == 0 || strcmp(tok, "--bg") == 0)
         {
-            out->new_group = true;
+            if (tok[2] == 'b')
+                out->bg = true; /* --bg */
+            else
+                out->new_group = true;
             memset(work + b, ' ', e - b);
             sdsfree(tok);
             continue;
@@ -2401,7 +2407,7 @@ static sds cmd_strip_place_flags(const char *cmd, const char *tail, struct cmd_p
         }
 
         *err = sdscatprintf(sdsempty(),
-                            "**Unknown option** `%s` — `%s` knows `--new-group` and `--group <id>`.\n\n"
+                            "**Unknown option** `%s` — `%s` knows `--new-group`, `--group <id>` and `--bg`.\n\n"
                             "Quote it (`\"%s\"`) if a template should receive it as an argument.",
                             tok, cmd, tok);
         sdsfree(tok);
@@ -2570,6 +2576,7 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
     memset(&opts, 0, sizeof(opts));
     opts.input = expanded; /* ownership moves to |opts| */
     /* LABELLED by what the user typed (`/prompt review ars`), not by the body. */
+    opts.bg = flags.bg;
     opts.desc = edc_str_utf8_truncate(message->content, EDC_TASK_DESC_MAX, true);
 
     struct edc_task_group *out_group = NULL;
@@ -2790,6 +2797,7 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
     memset(&opts, 0, sizeof(opts));
     opts.input = input; /* ownership moves to |opts| */
     /* LABELLED by what the user typed (`/skill pdf extract pages`), not by the body. */
+    opts.bg = flags.bg;
     opts.desc = edc_str_utf8_truncate(message->content, EDC_TASK_DESC_MAX, true);
 
     struct edc_task_group *out_group = NULL;
