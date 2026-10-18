@@ -28,7 +28,11 @@ bool StateIsProcessing(const std::string &state)
 constexpr const char *kStateDot = "●";
 constexpr const char *kActiveMarker = style::kBlockGlyph;
 constexpr const char *kInterruptedMarker = "□";
-constexpr int kMarkerCells = 1; // any of the three is a single terminal cell
+/* Finished while the user was not looking at it. A glyph of its own rather than a
+ * colour change: the colour already says which state the task is in, and two signals
+ * in one cell would overwrite each other. */
+constexpr const char *kUnreadMarker = "*";
+constexpr int kMarkerCells = 1; // any of the four is a single terminal cell
 
 // Blank cells kept at the right edge of every full-width row: the sidebar is the
 // window's rightmost element, so this restores the inset the left side has.
@@ -108,6 +112,11 @@ TaskWidget::TaskWidget() : TaskWidget(std::make_shared<model::TaskTreeModel>())
 TaskWidget::TaskWidget(std::shared_ptr<model::TaskTreeModel> tree)
     : tree_(tree ? std::move(tree) : std::make_shared<model::TaskTreeModel>())
 {
+}
+
+std::vector<std::string> TaskWidget::TakeFinished()
+{
+    return tree_->TakeFinished();
 }
 
 void TaskWidget::SetSnapshot(const TaskSnapshot *snap)
@@ -313,8 +322,9 @@ int TaskWidget::RowWidth() const
                 // Indent, the marker glyph and the task id; the description is
                 // appended separately so its length can be measured against the
                 // row width.
-                const char *marker = (t.state == "INTERRUPTED") ? kInterruptedMarker
-                                     : (t.is_active ? kActiveMarker : kStateDot);
+                const char *marker = (t.state == "INTERRUPTED")
+                                         ? kInterruptedMarker
+                                         : (t.is_active ? kActiveMarker : (t.unread ? kUnreadMarker : kStateDot));
                 const std::string head = " " + t.task_id;
                 std::string left = head;
 

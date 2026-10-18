@@ -132,6 +132,8 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // Append the current input as a user message and clear the box. A bare
     // "/connect" opens the setup wizard instead of sending anything.
     void Submit();
+    // Clear the sidebar's unread marker when a command names that task.
+    void MarkReadFromInput(const std::string &line);
     // Esc: stop the foreground group's running task. Sends the same "/task stop" a user
     // would type (no chat bubble: the command layer's reply is the feedback).
     void StopForegroundTask();

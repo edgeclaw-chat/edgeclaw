@@ -1013,6 +1013,20 @@ cc_test(
     }),
 )
 cc_test(
+    name = "test_task_tree_model",
+    srcs = ["test_task_tree_model.cpp"],
+    deps = [
+        "//src/tui:tui",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+
+cc_test(
     name = "test_task_widget",
     srcs = ["test_task_widget.cpp"],
     deps = [

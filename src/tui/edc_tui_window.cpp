@@ -385,6 +385,10 @@ void TUIWindow::Submit()
     input_->AddHistory(message);
     SaveInputHistory();
 
+    /* Naming a task in a command counts as looking at it: drop its unread marker now,
+     * without waiting for the next snapshot (the task's own state does not change). */
+    MarkReadFromInput(message);
+
     app_->SendUserMessage(session_model_->displayed_id(), message);
     chat_widget_->ScrollToBottom();
 
@@ -1353,6 +1357,27 @@ void TUIWindow::Post(std::function<void()> task)
         task(); // no screen (construction / harness): run synchronously
 }
 
+/* `/task output|status|fg <id>`: the user asked about that task, so it has been read.
+ * Parsed from what was typed -- the frontend owns the input box, and the reply text is
+ * not something to re-parse. */
+void TUIWindow::MarkReadFromInput(const std::string &line)
+{
+    static const char *const kCommands[] = {"/task output ", "/task status ", "/task fg "};
+    for (const char *cmd : kCommands)
+    {
+        const size_t len = std::strlen(cmd);
+        if (line.compare(0, len, cmd) != 0)
+            continue;
+        std::string id = line.substr(len);
+        const size_t end = id.find_first_of(" \t\r\n");
+        if (end != std::string::npos)
+            id.resize(end);
+        if (!id.empty())
+            task_widget_->model()->MarkRead(id);
+        return;
+    }
+}
+
 void TUIWindow::RequestFrame()
 {
     if (screen_)
@@ -1373,6 +1398,31 @@ void TUIWindow::LoadSessionTranscript(const std::string &session_id)
 void TUIWindow::SetTaskTree(const TaskSnapshot &snap)
 {
     task_widget_->SetSnapshot(&snap);
+
+    /* A task that ended between the last two snapshots, while the user was not looking
+     * at it: say so once, in the chat pane. The transcript is deliberately NOT written --
+     * this is interface feedback, not something the conversation said. */
+    const std::vector<std::string> just_finished = task_widget_->TakeFinished();
+    if (!just_finished.empty())
+    {
+        std::string line;
+        for (size_t i = 0; i < just_finished.size(); i++)
+        {
+            std::string state;
+            for (const TaskGroup &g : snap.groups)
+                for (const TaskInfo &t : g.tasks)
+                    if (t.task_id == just_finished[i])
+                        state = t.state;
+            if (i > 0)
+                line += ", ";
+            line += "task " + just_finished[i];
+            if (!state.empty())
+                line += " (" + state + ")";
+        }
+        line += just_finished.size() == 1 ? " finished · /task output " + just_finished.front()
+                                          : " finished";
+        chat_widget_->AddMessage(std::make_shared<Message>(line, ::time(nullptr)));
+    }
     // The footer's context gauge: the foreground group's current context, the same
     // number the sidebar shows for that group.
     long long ctx = 0;
