@@ -94,11 +94,21 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
         group = NULL; /* `+`：新组（首个任务会成为 leader） */
 
     struct edc_task *prev = NULL;
-    edc_task_dep_type dep = TASK_DEP_SEQUENCE;
+    edc_task_dep_type dep = TASK_DEP_BARRIER;
 
     for (struct edc_ast_pipeline *p = ast->pipelines; p; p = p->next)
     {
-        dep = TASK_DEP_SEQUENCE; /* 跨 pipeline（`;`）：只等、不注入 */
+        /* pipeline 之间，算符决定边的"种类"（都只等、不注入）：
+         *   `;`  -> BARRIER  源怎么结束都放行（shell 的 `;`）
+         *   `&&` -> SEQUENCE 只有成功才继续，源失败/被停就级联取消后件、边保留
+         *   `||` -> UNLESS   反过来：源成功就跳过（取消）后件，源失败/被停就放行 */
+        switch (p->chain)
+        {
+        case EDC_CHAIN_AND: dep = TASK_DEP_SEQUENCE; break;
+        case EDC_CHAIN_OR: dep = TASK_DEP_UNLESS; break;
+        case EDC_CHAIN_SEMI:
+        default: dep = TASK_DEP_BARRIER; break;
+        }
         for (struct edc_ast_stage *s = p->stages; s; s = s->next)
         {
             /* 重定向：按 fd 收，同 fd 后写覆盖（shell 的 last-wins）。 */
@@ -173,9 +183,11 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
 
             struct edc_task_group *out_group = NULL;
             sds spawn_err = NULL;
-            struct edc_task *task = edc_shell_spawn_task(sm, sched, to.type, session, &opts, prev, group,
-                                                         ast->new_group ? "+" : "task", &out_group, r_out,
-                                                         r_out_app, r_err, dep, &spawn_err);
+            /* 前一个任务和"怎么等它"是一个整体：没有前一个就没有这一类边（见 edc_prev_dep）。 */
+            const struct edc_prev_dep link = {prev, dep};
+            struct edc_task *task = edc_shell_spawn_task(sm, sched, to.type, session, &opts, prev ? &link : NULL,
+                                                         group, ast->new_group ? "+" : "task", &out_group, r_out,
+                                                         r_out_app, r_err, &spawn_err);
             if (spawn_err)
             {
                 edc_commands_reply(to, spawn_err);

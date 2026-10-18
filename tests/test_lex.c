@@ -72,6 +72,27 @@ int main(void)
           "the `&` stayed a word");
     edc_lex_out_free(&o);
 
+    TEST("`&&` is ONE operator token, not two `&` words");
+    CHECK(edc_lex("\"a\" && \"b\"", EDC_LEX_SHELL_ON, &o), "lex ok");
+    CHECK(o.count == 4, "word + && + word + EOF");
+    CHECK(o.toks[0].kind == TK_WORD && o.toks[1].kind == TK_ANDAND && o.toks[2].kind == TK_WORD,
+          "the middle token is ANDAND");
+    edc_lex_out_free(&o);
+
+    TEST("`&&` at the end of the line is not the background `&`");
+    CHECK(edc_lex("\"a\" &&", EDC_LEX_SHELL_ON, &o), "lex ok");
+    CHECK(o.count == 3 && o.toks[1].kind == TK_ANDAND, "still ANDAND (BG is a lone `&` at EOL)");
+    edc_lex_out_free(&o);
+
+    TEST("`||` is ONE operator token, and `|` still reads as a pipe");
+    CHECK(edc_lex("\"a\" || \"b\"", EDC_LEX_SHELL_ON, &o), "lex ok");
+    CHECK(o.count == 4, "word + || + word + EOF");
+    CHECK(o.toks[1].kind == TK_OROR, "the middle token is OROR");
+    edc_lex_out_free(&o);
+    CHECK(edc_lex("\"a\" | \"b\"", EDC_LEX_SHELL_ON, &o), "lex ok");
+    CHECK(o.count == 4 && o.toks[1].kind == TK_PIPE, "a single `|` is still a PIPE");
+    edc_lex_out_free(&o);
+
     TEST("`--bg` is an OPTION; `-dfoo` / `--bg=1` are ordinary words");
     CHECK(edc_lex("--bg", EDC_LEX_SHELL_ON, &o), "lex ok");
     CHECK(o.count == 2 && o.toks[0].kind == TK_OPT, "at end of line it is still an option");

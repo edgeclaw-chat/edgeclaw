@@ -9,7 +9,7 @@
 
 typedef enum
 {
-    C_UNQUOTED, C_QUOTED, C_BADQ, C_WS, C_PIPE, C_SEQ, C_BG, C_REDIR, C_OPT, C_OPTARG,
+    C_UNQUOTED, C_QUOTED, C_BADQ, C_WS, C_PIPE, C_SEQ, C_ANDAND, C_OROR, C_BG, C_REDIR, C_OPT, C_OPTARG,
     C_SLASH, C_SIGIL_NG, C_SIGIL_LS, C_REST
 } chunk_kind;
 
@@ -78,8 +78,10 @@ static void push_unquoted(const char *raw, size_t len)
 ">>"                        { chunk_t *c = push(C_REDIR); c->fd = 1; c->append = true; }
 ">"                         { chunk_t *c = push(C_REDIR); c->fd = 1; }
 "<"                         { chunk_t *c = push(C_REDIR); c->fd = 0; }
+"||"                        { push(C_OROR); }
 "|"                         { push(C_PIPE); }
 ";"                         { push(C_SEQ); }
+"&&"                        { push(C_ANDAND); }
 "&"[ \t]*$                  { push(C_BG); }
 "--bg"([ \t\n]|$)           { chunk_t *c = push(C_OPT); c->text = sdsnew("--bg"); }
 "--new-group"([ \t\n]|$)    { chunk_t *c = push(C_OPT); c->text = sdsnew("--new-group"); }
@@ -230,6 +232,8 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
         case C_WS: break;
         case C_PIPE: emit(out, TK_PIPE, NULL, false, false, 0, false, c->b, c->e); break;
         case C_SEQ: emit(out, TK_SEQ, NULL, false, false, 0, false, c->b, c->e); break;
+        case C_ANDAND: emit(out, TK_ANDAND, NULL, false, false, 0, false, c->b, c->e); break;
+        case C_OROR: emit(out, TK_OROR, NULL, false, false, 0, false, c->b, c->e); break;
         case C_BG: emit(out, TK_BG, NULL, false, false, 0, false, c->b, c->e); break;
         case C_REDIR: emit(out, TK_REDIR, NULL, false, false, c->fd, c->append, c->b, c->e); break;
         case C_OPT: emit(out, TK_OPT, sdsdup(c->text), false, false, 0, false, c->b, c->e); break;

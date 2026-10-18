@@ -38,6 +38,8 @@ static const char *dep_type_name(edc_task_dep_type t)
         return "SEQUENCE";
     case TASK_DEP_BARRIER:
         return "BARRIER";
+    case TASK_DEP_UNLESS:
+        return "UNLESS";
     default:
         return "UNKNOWN";
     }
@@ -53,6 +55,8 @@ static edc_task_dep_type dep_type_from_name(const char *name)
         return TASK_DEP_SEQUENCE;
     if (strcmp(name, "BARRIER") == 0)
         return TASK_DEP_BARRIER;
+    if (strcmp(name, "UNLESS") == 0)
+        return TASK_DEP_UNLESS;
     return TASK_DEP_JOIN;
 }
 
@@ -1053,8 +1057,10 @@ static void deser_reconcile_deps(struct task_map_entry **id_map)
                  * without producing (ERROR / CANCELLED / INTERRUPTED) takes its dependent
                  * with it -- JOIN and SEQUENCE alike, exactly as
                  * edc_task_on_dep_failed/cancelled do at runtime, which the file may not
-                 * have recorded (the source's end can be newer than the last save). An
-                 * internal BARRIER is the exception: it is released instead. */
+                 * have recorded (the source's end can be newer than the last save). The two
+                 * RELEASING kinds are the exception: BARRIER (the order is satisfied) and
+                 * UNLESS (`||` -- a source that did not succeed is why the dependent exists)
+                 * both release instead. */
                 struct edc_task_dep *dep;
                 LL_FOREACH(task->deps, dep)
                 {
@@ -1070,6 +1076,14 @@ static void deser_reconcile_deps(struct task_map_entry **id_map)
                              * an interrupt is a manufactured error -- both cascade as a
                              * failure. */
                             edc_task_on_dep_failed(task, dep->source);
+                    }
+                    else if (dep->source && edc_task_is_completed(dep->source) &&
+                             dep->type == TASK_DEP_UNLESS)
+                    {
+                        /* The inverse rule needs the same mirror: the source DID produce, so
+                         * a `||` dependent must be skipped even though the file still says
+                         * the edge is outstanding. */
+                        edc_task_on_dep_completed(task, dep->source);
                     }
                 }
 

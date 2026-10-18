@@ -1676,6 +1676,47 @@ static void test_cancelled_task_resume_accepts_reply(void)
     free_config(cfg);
 }
 
+
+/* 队列边不许被"前一个任务那条 JSON/`;` 边"遮住。sched_chain_behind_unfinished 回答的是
+ * "这个任务排在前台那个后面吗", 而不是"我刚加了一行边吗": add_dependency 按 source 去重,
+ * `a ; b` 早就把那条边建好了, 再问一次会答 false —— 调用方于是把屏幕焦点抢到 b 身上, 而
+ * b 还在队列里没跑, 正在跑的 a 的输出就被黑掉了(实测)。 */
+static void test_queue_edge_not_shadowed_by_prev_edge(void)
+{
+    struct edc_config *cfg = make_config();
+    clean_task_seq(cfg);
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+
+    struct edc_task_spec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.desc = "a";
+    spec.input = "a";
+    spec.place = EDC_TASK_PLACE_NEW_GROUP;
+    spec.take_foreground = true;
+    struct edc_task *a = edc_scheduler_task_create(sched, sess, &spec);
+    CHECK(a && edc_session_get_active_task(sess) == a, "A holds the focus");
+
+    /* `a ; b`: 边由 interp 通过 spec.prev 先建好, 队列随后再问一次。 */
+    memset(&spec, 0, sizeof(spec));
+    spec.desc = "b";
+    spec.input = "b";
+    spec.place = EDC_TASK_PLACE_FOREGROUND;
+    spec.take_foreground = true;
+    spec.prev = a;
+    spec.prev_type = TASK_DEP_BARRIER;
+    struct edc_task *b = edc_scheduler_task_create(sched, sess, &spec);
+
+    CHECK(b && edc_task_awaits_deps(b), "B is queued behind A");
+    CHECK(b && b->deps_total == 1, "one edge (the queue's is deduped into the same pair)");
+    CHECK(edc_session_get_active_task(sess) == a, "and the focus stays on A -- B is not running yet");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
 int main(void)
 {
     log_info("=== Phase 3: edc_scheduler 模块测试 ===");
@@ -1690,6 +1731,7 @@ int main(void)
     test_task_placement();
     test_current_task();
     test_resume_queues();
+    test_queue_edge_not_shadowed_by_prev_edge();
     test_queue_advances_when_front_dies();
     test_scheduler_signals();
     test_scheduler_group_signals();

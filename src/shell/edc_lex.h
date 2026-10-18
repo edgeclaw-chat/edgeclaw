@@ -21,6 +21,8 @@ typedef enum
     TK_RAW_REST,          /* ! 之后到输入尾的原文 */
     TK_PIPE,              /* | */
     TK_SEQ,               /* ; */
+    TK_ANDAND,            /* && */
+    TK_OROR,              /* || */
     TK_BG,                /* & ，且其后到输入尾只有空白 */
     TK_REDIR,             /* > >> 2> < （fd/append 见 token） */
     TK_OPT,               /* --bg --new-group（无参） */

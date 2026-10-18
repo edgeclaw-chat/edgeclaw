@@ -88,6 +88,14 @@ static bool sched_chain_behind_unfinished(struct edc_task *task)
     if (!prev)
         return false;
 
+    /* The question is "is this task queued behind the one in front?", NOT "did I just add
+     * a row". A shell chain puts the row there first (`a ; b` / `a && b` pass `prev`), and
+     * edc_task_add_dependency dedups by source, so asking again would answer false -- and
+     * the caller would then take the screen focus onto a task that is queued and will not
+     * run, blacking out the one that is. */
+    if (edc_task_depends_on(task, prev))
+        return true;
+
     return edc_task_add_dependency(task, prev, TASK_DEP_BARRIER);
 }
 

@@ -59,7 +59,14 @@ struct edc_ast_stage
 struct edc_ast_pipeline
 {
     struct edc_ast_stage *stages;
-    /* 下一个 pipeline（`;` 分隔）：边是 SEQUENCE（只等、不注入）。 */
+    /* The operator that joins this pipeline to the previous one (`;` / `&&` / `||`). The
+     * first pipeline has no predecessor, so its value is never read. */
+    enum edc_ast_chain
+    {
+        EDC_CHAIN_SEMI = 0, /* ;  -- order only: the next one runs whatever happened */
+        EDC_CHAIN_AND,      /* && -- the next one runs only if this one succeeded */
+        EDC_CHAIN_OR,       /* || -- the next one runs only if this one did not */
+    } chain;
     struct edc_ast_pipeline *next;
 };
 

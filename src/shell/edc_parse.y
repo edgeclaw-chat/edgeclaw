@@ -113,7 +113,7 @@ static void redir_add(const edc_tok *target, const edc_tok *spec)
 }
 
 %}
-%token T_WORD T_NEWGROUP T_PIPE T_SEQ T_BG T_REDIR T_OPT T_OPTARG T_EOF2
+%token T_WORD T_NEWGROUP T_PIPE T_SEQ T_ANDAND T_OROR T_BG T_REDIR T_OPT T_OPTARG T_EOF2
 %%
 input
     : stage_head rest
@@ -132,10 +132,20 @@ rest
     : /* empty */
     | T_BG                              { g_ast->background = true; }
     | T_PIPE stage_head rest
-    | T_SEQ pipe_new stage_head rest
+    | T_SEQ seq_pipe stage_head rest
+    | T_ANDAND strict_pipe stage_head rest
+    | T_OROR unless_pipe stage_head rest
     ;
-pipe_new
+/* 中规则动作（独立非终结符）: `&&` 的 strict 位必须落在**它自己**新建的那个 pipeline 上。
+ * 写在这条规则的末尾不行 —— rest 会继续建 pipeline, 那时 g_pipe 已经指向最后一个了。 */
+seq_pipe
     : /* empty */                       { pipe_new(); }
+    ;
+strict_pipe
+    : /* empty */                       { pipe_new(); g_pipe->chain = EDC_CHAIN_AND; }
+    ;
+unless_pipe
+    : /* empty */                       { pipe_new(); g_pipe->chain = EDC_CHAIN_OR; }
     ;
 opts
     : /* empty */
@@ -203,6 +213,8 @@ int yylex(void)
     case TK_SIGIL_NEWGROUP: return T_NEWGROUP;
     case TK_PIPE: return T_PIPE;
     case TK_SEQ: return T_SEQ;
+    case TK_ANDAND: return T_ANDAND;
+    case TK_OROR: return T_OROR;
     case TK_BG: return T_BG;
     case TK_REDIR: return T_REDIR;
     case TK_OPT: return T_OPT;

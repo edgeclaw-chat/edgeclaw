@@ -334,10 +334,10 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
 struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
                                       edc_channel_type channel_type, struct edc_session *session,
                                       struct edc_cmd_task_opts *opts,
-                                      struct edc_task *prev_task, struct edc_task_group *target_group,
+                                      const struct edc_prev_dep *prev, struct edc_task_group *target_group,
                                       const char *reply_prefix, struct edc_task_group **out_group,
                                       sds redirect_stdout, bool redirect_append, sds redirect_stderr,
-                                      edc_task_dep_type prev_dep_type, sds *out_error)
+                                      sds *out_error)
 {
     if (out_error)
         *out_error = NULL;
@@ -385,8 +385,11 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
     spec.nparts = opts->nparts;
     spec.deps = deps;
     spec.dep_count = (size_t)opts->dep_count;
-    spec.prev = prev_task;
-    spec.prev_type = prev_dep_type;
+    if (prev)
+    {
+        spec.prev = prev->task;
+        spec.prev_type = prev->type;
+    }
     spec.take_foreground = !opts->bg;
     spec.background = opts->bg;
     if (target_group)
@@ -420,7 +423,7 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
      * the same line. What is logged here stays for the trace. */
     log_info("%s created task=%s group=%s%s%s%s%s", reply_prefix, task->task_id,
              group ? group->group_id : "-", opts->bg ? " [bg]" : "", opts->dep_count > 0 ? " [chained]" : "",
-             prev_task ? (prev_dep_type == TASK_DEP_SEQUENCE ? " [seq]" : " [pipe]") : "",
+             prev ? (prev->type == TASK_DEP_JOIN ? " [pipe]" : " [ordered]") : "",
              redirect_stdout ? (redirect_append ? " (>> redirect)" : " (> redirect)") : "");
 
     /* The turn is already attached (input is mandatory in this path); running it is
@@ -623,7 +626,7 @@ bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_sched
     struct edc_task_group *out_group = NULL;
     sds spawn_err = NULL;
     struct edc_task *task = edc_shell_spawn_task(sm, sched, to.type, session, &opts, NULL, group, "task",
-                                                 &out_group, NULL, false, NULL, TASK_DEP_SEQUENCE, &spawn_err);
+                                                 &out_group, NULL, false, NULL, &spawn_err);
     if (spawn_err)
     {
         edc_commands_reply(to, spawn_err);

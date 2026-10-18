@@ -71,7 +71,7 @@ A recursive-descent parser builds an AST (Abstract Syntax Tree). Node hierarchy:
 
 ```
 AST_ROOT   — top-level wrapper
-  AST_SEQ  — ; chain (sequential dependency)
+  AST_SEQ  — ; / && / || chain (order only: ; never gates, && needs success, || needs failure)
     AST_PIPE — | chain (pipe dependency with injection)
       AST_BG     — & background modifier
       AST_REDIR_* — > / >> / 2> redirect

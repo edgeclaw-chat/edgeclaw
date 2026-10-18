@@ -430,10 +430,122 @@ int main(void)
     const int before_seq = task_count(sess);
     drive_command(cfg, sm, sched, "\"first step\" ; \"second step\"");
     CHECK(task_count(sess) == before_seq + 2, "two tasks");
-    CHECK(find_task_by_desc(sess, "first step") != NULL, "the first");
+    struct edc_task *first_step = find_task_by_desc(sess, "first step");
+    CHECK(first_step != NULL, "the first");
     struct edc_task *second = find_task_by_desc(sess, "second step");
     CHECK(second != NULL, "and the second");
-    CHECK(second && second->deps_total >= 1, "which waits for it (a sequence edge)");
+    CHECK(second && second->deps_total >= 1, "which waits for it");
+    {
+        /* `;` 是顺序, 不是 `&&`: 边必须是 BARRIER(源怎么结束都放行), 否则前一条失败会把
+         * 后一条一起取消 —— 那不是 shell 的 `;`。 */
+        struct edc_task_dep *seq_edge = NULL;
+        for (struct edc_task_dep *d = second ? second->deps : NULL; d; d = d->next)
+            if (first_step && d->source == first_step)
+            {
+                seq_edge = d;
+                break;
+            }
+        CHECK(seq_edge != NULL, "one edge to the first task");
+        CHECK(seq_edge && seq_edge->type == TASK_DEP_BARRIER, "and it is an ORDER edge (`;`), not `&&`");
+    }
+
+    TEST("`a ; b`: the predecessor failing runs b anyway (shell's `;`, not `&&`)");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "+\"doomed\" ; \"runs anyway\"");
+    struct edc_task *doomed = find_task_by_desc(sess, "doomed");
+    struct edc_task *runs = find_task_by_desc(sess, "runs anyway");
+    CHECK(doomed && runs && doomed->group == runs->group, "both landed in the fresh group");
+    CHECK(runs && runs->deps && runs->deps->type == TASK_DEP_BARRIER, "b waits on an ORDER edge");
+    if (doomed)
+        edc_task_mark_failed(doomed);
+    CHECK(runs && !edc_task_has_failed(runs), "b was NOT taken down with a");
+    CHECK(runs && edc_task_is_ready(runs), "so b is free to run");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    edc_scheduler_schedule(sched);
+    CHECK(g_llm_task == runs, "and the scan drove it");
+
+    TEST("`a && b`: the edge is a SEQUENCE -- b runs only if a succeeded");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "+\"gate\" && \"gated\"");
+    struct edc_task *gate = find_task_by_desc(sess, "gate");
+    struct edc_task *gated = find_task_by_desc(sess, "gated");
+    CHECK(gate && gated && gate->group == gated->group, "both landed in the fresh group");
+    CHECK(gated && gated->deps_total == 1, "one edge");
+    CHECK(gated && gated->deps && gated->deps->type == TASK_DEP_SEQUENCE, "and it is the STRICT kind (`&&`)");
+
+    TEST("`a && b`: a failing CANCELS b, and the edge is kept");
+    if (gate)
+        edc_task_mark_failed(gate);
+    CHECK(gated && edc_task_has_failed(gated), "b was taken down with a");
+    CHECK(gated && gated->deps_total == 1 && gated->deps && !gated->deps->cancelled,
+          "the edge is KEPT: resuming b puts it back behind a");
+    CHECK(gated && edc_task_is_resumable(gated), "and b stays resumable");
+
+    TEST("`a || b`: the edge is an UNLESS -- b runs only if a did NOT succeed");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "+\"try\" || \"fallback\"");
+    struct edc_task *try_t = find_task_by_desc(sess, "try");
+    struct edc_task *fallback = find_task_by_desc(sess, "fallback");
+    CHECK(try_t && fallback && try_t->group == fallback->group, "both landed in the fresh group");
+    CHECK(fallback && fallback->deps_total == 1, "one edge");
+    CHECK(fallback && fallback->deps && fallback->deps->type == TASK_DEP_UNLESS, "and it is UNLESS (`||`)");
+
+    TEST("`a || b`: a SUCCEEDING skips b (cancelled, not run)");
+    if (try_t)
+    {
+        edc_task_await_exec(try_t);
+        edc_task_mark_completed(try_t);
+        edc_task_notify_dependents(try_t);
+    }
+    CHECK(fallback && !edc_task_is_ready(fallback), "b is not runnable");
+    CHECK(fallback && edc_task_is_cancelled(fallback), "b was skipped (cancelled)");
+    CHECK(fallback && edc_task_is_resumable(fallback), "an explicit resume can still run it");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    edc_scheduler_schedule(sched);
+    CHECK(g_llm_task != fallback, "and the scan did not drive it");
+
+    TEST("`a || b`: a FAILING runs b (the whole point of `||`)");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "+\"boom\" || \"rescue\"");
+    struct edc_task *boom = find_task_by_desc(sess, "boom");
+    struct edc_task *rescue = find_task_by_desc(sess, "rescue");
+    CHECK(boom && rescue && rescue->deps && rescue->deps->type == TASK_DEP_UNLESS, "the UNLESS edge is there");
+    if (boom)
+    {
+        edc_task_await_exec(boom);
+        edc_task_mark_failed(boom);
+        edc_task_notify_dependents(boom);
+    }
+    CHECK(rescue && edc_task_is_ready(rescue), "b was released by a's failure");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    edc_scheduler_schedule(sched);
+    CHECK(g_llm_task == rescue, "and the scan drove it");
+
+    TEST("`a && b`: a succeeding releases b");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "+\"ok\" && \"then\"");
+    struct edc_task *ok = find_task_by_desc(sess, "ok");
+    struct edc_task *then = find_task_by_desc(sess, "then");
+    CHECK(ok && then && then->deps && then->deps->type == TASK_DEP_SEQUENCE, "the strict edge is there");
+    if (ok)
+    {
+        edc_task_await_exec(ok);
+        edc_task_mark_completed(ok);
+        edc_task_notify_dependents(ok); /* what the scheduler does when a task completes */
+    }
+    CHECK(then && edc_task_is_ready(then), "b was released by a's success");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    edc_scheduler_schedule(sched);
+    CHECK(g_llm_task == then, "and the scan drove it");
 
     TEST("guide: `\"task\" < \"path\"` is now REFUSED -- `<` is `@file`'s job");
     {

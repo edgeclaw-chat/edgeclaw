@@ -818,8 +818,20 @@ bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, e
     return true;
 }
 
-bool edc_task_has_unresolved_deps(const struct edc_task *task)
+bool edc_task_depends_on(const struct edc_task *target, const struct edc_task *source)
 {
+    if (!target || !source)
+        return false;
+    struct edc_task_dep *dep;
+    LL_FOREACH(target->deps, dep)
+    {
+        if (dep->source == source && !dep->cancelled)
+            return true;
+    }
+    return false;
+}
+
+bool edc_task_has_unresolved_deps(const struct edc_task *task){
     if (!task)
         return false;
     struct edc_task_dep *dep;
@@ -839,11 +851,13 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
     if (!target || !source)
         return;
 
+    struct edc_task_dep *found = NULL;
     struct edc_task_dep *dep;
     LL_FOREACH(target->deps, dep)
     {
         if (dep->source == source && !dep->completed && !dep->cancelled)
         {
+            found = dep;
             dep->completed = true;
             target->deps_completed++;
 
@@ -859,6 +873,26 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
             }
             break;
         }
+    }
+
+    /* `||` INVERTS the rule: the source SUCCEEDING is exactly the case in which the dependent
+     * must not run. Cancel it -- but only while it is still waiting: a task the user already
+     * resumed is theirs to run, and this same path replays on load (see deser_deps). The edge
+     * stays completed, so an explicit resume afterwards does run it.
+     * NB a skipped task cancels its own dependents; `a || b ; c` is fine (the `;` edge is a
+     * BARRIER and releases c), while `a || b && c` takes c down with b -- unlike a shell,
+     * which would pass a's success through the skipped b. */
+    if (found && found->type == TASK_DEP_UNLESS)
+    {
+        if (edc_task_awaits_deps(target))
+        {
+            edc_task_step step_before = target->step;
+            edc_task_life life_before = target->life;
+            edc_task_send_signal(target, TASK_SIGTERM);
+            if (target->step != step_before || target->life != life_before)
+                task_record_move(source, target);
+        }
+        return;
     }
 
     if (target->deps_completed >= target->deps_total && edc_task_awaits_deps(target))
@@ -890,11 +924,12 @@ static void task_record_move(struct edc_task *source, struct edc_task *moved)
     source->moved_report = r;
 }
 
-/* Void target's BARRIER edge to a source that has terminated and will never produce: the
- * order it stood for is over, so drop the edge and let target run. Reached only from the
- * barrier kind -- a user-authored dependency (JOIN / SEQUENCE) keeps its edge and takes the
- * target with it instead. */
-static void task_void_barrier_dep(struct edc_task_dep *dep, struct edc_task *target, struct edc_task *source)
+/* Void a RELEASING edge to a source that has terminated: the constraint it stood for is
+ * over, so drop the edge and let target run. Two kinds release their target -- BARRIER (the
+ * source ending either way is all it needed) and UNLESS (`||`, where a source that did NOT
+ * succeed is exactly why the dependent exists). JOIN / SEQUENCE keep their edge and take the
+ * target with them instead. */
+static void task_void_dep(struct edc_task_dep *dep, struct edc_task *target, struct edc_task *source)
 {
     dep->cancelled = true;
 
@@ -962,11 +997,12 @@ void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source)
     if (!dep)
         return;
 
-    /* A barrier is released by the source ending either way: a fold / curation round that
-     * died must not take the tasks it was holding with it. */
-    if (dep->type == TASK_DEP_BARRIER)
+    /* Two kinds are released by the source ending badly: BARRIER (a fold / curation round
+     * that died must not take the tasks it was holding with it) and UNLESS (`||` -- "run the
+     * right-hand side only if the left one did not succeed", so this IS its turn). */
+    if (dep->type == TASK_DEP_BARRIER || dep->type == TASK_DEP_UNLESS)
     {
-        task_void_barrier_dep(dep, target, source);
+        task_void_dep(dep, target, source);
         return;
     }
 
@@ -1002,10 +1038,10 @@ void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
     if (!dep)
         return;
 
-    /* A barrier is released by the source ending either way -- see on_dep_cancelled. */
-    if (dep->type == TASK_DEP_BARRIER)
+    /* Released by the source ending badly -- see on_dep_cancelled (BARRIER and `||`). */
+    if (dep->type == TASK_DEP_BARRIER || dep->type == TASK_DEP_UNLESS)
     {
-        task_void_barrier_dep(dep, target, source);
+        task_void_dep(dep, target, source);
         return;
     }
 

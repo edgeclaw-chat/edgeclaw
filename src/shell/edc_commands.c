@@ -136,9 +136,9 @@ sds edc_commands_task_receipt_text(const struct edc_task *task)
     if (task->is_background)
         return sdscatprintf(sdsempty(), "→ task #%s · group #%s%s · background", task->task_id, gid, fresh);
 
-    /* JOIN deps inject the source's output, SEQUENCE deps only order. A just-created task
-     * has at most these (the `|` / `;` predecessor, `-d`/`--with`, or the wait-behind-the-
-     * front edge), never a mix worth more than a short list. */
+    /* JOIN deps inject the source's output; every other kind only orders (the `|` / `;` / `&&` /
+ * `||` predecessor, the wait-behind-the-front edge, or a maintenance barrier). A just-created
+ * task has at most these, never a mix worth more than a short list. */
     sds joins = sdsempty();
     const struct edc_task_dep *seq = NULL;
     for (const struct edc_task_dep *d = task->deps; d; d = d->next)
@@ -147,7 +147,9 @@ sds edc_commands_task_receipt_text(const struct edc_task *task)
             continue;
         if (d->type == TASK_DEP_JOIN)
             joins = sdscatprintf(joins, "%s#%s", sdslen(joins) ? ", " : "", d->source->task_id);
-        else if (d->type == TASK_DEP_SEQUENCE)
+        else if (!seq && !edc_task_is_memory_sink(d->source))
+            /* "queued behind" is about a predecessor the user can see. A fold / curation task
+             * is the runtime's own housekeeping: naming it here would only confuse. */
             seq = d;
     }
 
@@ -2590,7 +2592,7 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
     struct edc_task_group *out_group = NULL;
     sds spawn_err = NULL;
     struct edc_task *task = edc_shell_spawn_task(sm, sched, to.type, session, &opts, NULL, group, "task", &out_group,
-                                                NULL, false, NULL, TASK_DEP_SEQUENCE, &spawn_err);
+                                                NULL, false, NULL, &spawn_err);
     if (spawn_err)
     {
         edc_commands_reply(to, spawn_err);
@@ -2811,7 +2813,7 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
     struct edc_task_group *out_group = NULL;
     sds spawn_err = NULL;
     struct edc_task *task = edc_shell_spawn_task(sm, sched, to.type, session, &opts, NULL, group, "task", &out_group,
-                                                 NULL, false, NULL, TASK_DEP_SEQUENCE, &spawn_err);
+                                                 NULL, false, NULL, &spawn_err);
     if (spawn_err)
     {
         edc_commands_reply(to, spawn_err);

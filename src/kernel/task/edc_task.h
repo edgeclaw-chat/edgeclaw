@@ -439,6 +439,11 @@ extern void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *
  * cancelled). Used by the executor at a request boundary: a task that owes someone
  * parks instead of sending the next LLM request (the fold barrier). */
 extern bool edc_task_has_unresolved_deps(const struct edc_task *task);
+/** True when |target| already holds a LIVE edge to |source| (a row exists and has not
+ *  been voided). The predicate the queue needs: "is this task already queued behind that
+ *  one?" must not depend on who created the row -- a `;` chain puts it there before the
+ *  queue asks, and `edc_task_add_dependency` dedups by source. */
+extern bool edc_task_depends_on(const struct edc_task *target, const struct edc_task *source);
 extern void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source);
 /** Handle a source that failed, symmetric with cancellation (the source will not
  *  produce anything either way): a JOIN edge cascades the failure to the dependent

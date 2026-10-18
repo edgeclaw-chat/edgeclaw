@@ -36,19 +36,30 @@ bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_sched
 bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_reply_to to,
                               struct edc_channel_message *message);
 
+/* The predecessor of a chained task (`a | b`, `a ; b`, `a && b`, `a || b`): WHERE to wait and
+ * HOW the wait behaves travel together, because a dep type without a predecessor is not a
+ * thing — that pairing is what a bare `NULL, TASK_DEP_SEQUENCE` used to fake. */
+struct edc_prev_dep
+{
+    struct edc_task *task;
+    edc_task_dep_type type;
+};
+
 /* Generic task creation + group management + deps + turn + LLM dispatch. */
+
 /* Build a task from one AST command node: translate the shell's syntax into an
  * edc_task_spec, then let the scheduler create and place it (the group/foreground/
- * turn/edge decisions live there, not here). Does NOT reply: on error it writes the
- * reason into *out_error (caller frees; NULL when there is no error) -- task creation
- * must not write into the channel as a side effect. */
+ * turn/edge decisions live there, not here). |prev| is NULL for a task that starts a
+ * chain. Does NOT reply: on error it writes the reason into *out_error (caller frees; NULL
+ * when there is no error) -- task creation must not write into the channel as a side
+ * effect. */
 struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
                                       edc_channel_type channel_type, struct edc_session *session,
                                       struct edc_cmd_task_opts *opts,
-                                      struct edc_task *prev_task, struct edc_task_group *target_group,
+                                      const struct edc_prev_dep *prev, struct edc_task_group *target_group,
                                       const char *reply_prefix, struct edc_task_group **out_group,
                                       sds redirect_stdout, bool redirect_append, sds redirect_stderr,
-                                      edc_task_dep_type prev_dep_type, sds *out_error);
+                                      sds *out_error);
 
 /* Read file contents; on failure set an error message in *err_out. */
 

@@ -2181,6 +2181,69 @@ static void test_continuation_preserved(void)
     edc_config_free(cfg);
 }
 
+
+/* ── `||` (UNLESS) 的存档往返 ────────────────────────────────────────────
+ * 两类"放行型"边的名字必须落盘成字符串且能读回（`dep_type_from_name` 缺一条就会**静默降级
+ * 成 JOIN**）。同时钉住加载时的镜像：源已完成 ⇒ 后件被跳过，即使文件里那条边还是 outstanding。 */
+static void test_unless_dep_roundtrip(void)
+{
+    TEST("|| (UNLESS) dep roundtrip: name survives, and a completed source skips the dependent");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-unless", "Unless");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    struct edc_task *ta = edc_task_new("task-OK", "sess-unless", "task-OK", "the one that works",
+                                       edc_channel_adapter);
+    ta->is_group_leader = 1;
+    edc_task_mark_ready(ta);
+    edc_task_await_exec(ta);
+    edc_task_mark_completed(ta);
+    ta->output = sdsnew("fine");
+
+    struct edc_task *tb = edc_task_new("task-FALLBACK", "sess-unless", "task-OK", "the fallback",
+                                       edc_channel_adapter);
+    edc_task_mark_waiting_deps(tb);
+    {
+        /* 带 turn 才会落盘（README 判据：无 turn 的 READY 任务被丢弃）。 */
+        struct edc_turn *turn = edc_turn_new();
+        turn->task_id = strdup(tb->task_id);
+        edc_turn_add_user_message(turn, "fallback input");
+        tb->active_turn = turn;
+    }
+    CHECK(edc_task_add_dependency(tb, ta, TASK_DEP_UNLESS), "tb -UNLESS-> ta");
+
+    struct edc_task_group *group = edc_task_group_new(ta);
+    edc_task_group_add_task(group, tb);
+    edc_session_add_group(session, group);
+
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize returns non-NULL");
+
+    struct edc_session *session2 = edc_session_new(cfg, "sess-unless", "Unless");
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
+    CHECK(edc_state_deserialize(json, session2, sched2), "deserialize succeeds");
+
+    struct edc_task *rb = find_task(session2, "task-FALLBACK");
+    CHECK(rb != NULL, "the dependent came back");
+    if (rb)
+    {
+        CHECK(rb->deps != NULL, "with its edge");
+        CHECK(rb->deps && rb->deps->type == TASK_DEP_UNLESS,
+              "and the type is UNLESS (a missing name in dep_type_from_name would make it JOIN)");
+        CHECK(edc_task_is_cancelled(rb), "the source succeeded, so the `||` branch was skipped");
+    }
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(session2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     log_info("=== Phase 1: edc_state_serializer module tests ===");
@@ -2193,6 +2256,7 @@ int main(void)
     test_fork_snapshot_turns_flushed();
     test_fork_snapshot_turns_unflushed();
     test_dependency_graph();
+    test_unless_dep_roundtrip();
     test_complex_topology();
     test_turnless_shell_is_dropped();
     test_state_degradation();
