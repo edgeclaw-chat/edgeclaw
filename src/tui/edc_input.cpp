@@ -30,6 +30,20 @@ int GlyphLenAt(const std::string &s, int at, int limit)
     return len > 0 ? static_cast<int>(len) : 1;
 }
 
+// |at| clamped to [0, size], then moved left off any UTF-8 continuation byte, so the
+// result is always a code point boundary. A caret between two bytes of one character
+// would make the next edit corrupt it.
+int SnapToBoundary(const std::string &s, int at)
+{
+    if (at <= 0)
+        return 0;
+    if (at > static_cast<int>(s.size()))
+        at = static_cast<int>(s.size());
+    while (at > 0 && at < static_cast<int>(s.size()) && (static_cast<unsigned char>(s[at]) & 0xC0) == 0x80)
+        at--;
+    return at;
+}
+
 // Byte offset of the code point preceding |pos| (or 0 when already at the
 // start). '\n' counts as a single-byte code point.
 int PrevGlyph(const std::string &s, int pos)
@@ -71,6 +85,29 @@ void EdcInput::ReplaceAll(const std::string &text)
     scroll_ = 0;
     desired_col_ = -1;
     StopBrowsing();
+}
+
+void EdcInput::SetCursor(int offset)
+{
+    cursor_ = SnapToBoundary(*content_, offset);
+    desired_col_ = -1; /* the column is derived from the caret again */
+}
+
+void EdcInput::ReplaceRange(int begin, int end, const std::string &text)
+{
+    if (begin > end)
+    {
+        const int t = begin;
+        begin = end;
+        end = t;
+    }
+    begin = SnapToBoundary(*content_, begin);
+    end = SnapToBoundary(*content_, end);
+
+    content_->replace(static_cast<size_t>(begin), static_cast<size_t>(end - begin), text);
+    cursor_ = begin + static_cast<int>(text.size());
+    desired_col_ = -1;
+    StopBrowsing(); /* an edit ends any history browse, like typing does */
 }
 
 void EdcInput::AddHistory(const std::string &entry)

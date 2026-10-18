@@ -110,9 +110,56 @@ void CommandPalette::SetArgSource(std::string head, std::vector<CommandFact> row
     arg_rows_ = std::move(rows);
 }
 
-bool CommandPalette::Update(const std::string &content)
+void CommandPalette::SetFileSource(std::vector<CommandFact> rows)
+{
+    file_rows_ = std::move(rows);
+}
+
+CommandPalette::MentionHit CommandPalette::ParseMention(const std::string &content, int cursor)
+{
+    MentionHit hit;
+    if (cursor < 0 || cursor > static_cast<int>(content.size()))
+        cursor = static_cast<int>(content.size());
+    if (cursor == 0)
+        return hit;
+
+    // The LAST '@' before the caret, with no whitespace between it and the caret, and at
+    // the line start or right after whitespace (so "foo@bar" and "@Override in a word"
+    // never trigger).
+    const size_t at = content.rfind('@', static_cast<size_t>(cursor) - 1);
+    if (at == std::string::npos || static_cast<int>(at) >= cursor)
+        return hit;
+    if (at > 0)
+    {
+        const char prev = content[at - 1];
+        if (prev != ' ' && prev != '\t' && prev != '\n')
+            return hit;
+    }
+    for (size_t i = at + 1; i < static_cast<size_t>(cursor); i++)
+    {
+        if (content[i] == ' ' || content[i] == '\t' || content[i] == '\n')
+            return hit;
+    }
+
+    hit.active = true;
+    hit.begin = static_cast<int>(at);
+    hit.query = content.substr(at + 1, static_cast<size_t>(cursor) - at - 1);
+    return hit;
+}
+
+std::string CommandPalette::MentionInsert() const
+{
+    if (items_.empty() || selected_ < 0 || selected_ >= static_cast<int>(items_.size()))
+        return "";
+    const std::string &row = items_[static_cast<size_t>(selected_)].text;
+    const bool dir = !row.empty() && row.back() == '/';
+    return "@" + row + (dir ? "" : " ");
+}
+
+bool CommandPalette::Update(const std::string &content, int cursor)
 {
     content_ = content;
+    cursor_ = cursor;
 
     // Esc dismissed this exact text; any change re-opens.
     if (closed_by_user_ && content == closed_content_)
@@ -124,6 +171,19 @@ bool CommandPalette::Update(const std::string &content)
 
     items_.clear();
     selected_ = 0;
+
+    // `@`: the caret is inside a file reference. The rows are whatever the kernel found
+    // for this query -- filtering happens there (it owns the tree), so they go straight in.
+    const MentionHit hit = ParseMention(content, cursor);
+    if (hit.active)
+    {
+        mode_ = Mode::Mention;
+        trigger_ = hit.begin;
+        items_ = file_rows_;
+        open_ = !items_.empty();
+        return open_;
+    }
+    mode_ = Mode::Command;
 
     // Gate: a single line that starts with '/'. (Multi-line input -- Alt+Enter or a
     // paste -- never shows the popup.)
@@ -322,7 +382,12 @@ namespace edc::ui
         rows.push_back(row);
     }
 
-    rows.push_back(text("  ↑↓ move · Tab complete · Esc close") | xflex | color(pal.text_dim));
+    /* The hint names what the list IS, so a `@` popup and a `/` popup are told apart at a
+     * glance (and a stale build is visible: the mention hint is newer). */
+    const char *hint = (palette.mode() == ::edc::model::CommandPalette::Mode::Mention)
+                           ? "  @ files · Tab: enter directory / complete · Esc close"
+                           : "  ↑↓ move · Tab complete · Esc close";
+    rows.push_back(text(hint) | xflex | color(pal.text_dim));
     return vbox(std::move(rows)) | bgcolor(pal.pane_bg);
 }
 

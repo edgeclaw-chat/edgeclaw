@@ -223,6 +223,43 @@ static void test_internal_scroll_follows_caret(void)
     }
 }
 
+static void test_cursor_and_range_replace(void)
+{
+    std::printf("  SetCursor / ReplaceRange: clamped, snapped, caret after the insert\n");
+    std::string text = "abc def";
+    edc::EdcInput input(&text, "");
+
+    input.SetCursor(-5);
+    CHECK(input.CursorPosition() == 0, "a negative caret clamps to 0, got %d", input.CursorPosition());
+    input.SetCursor(9999);
+    CHECK(input.CursorPosition() == static_cast<int>(text.size()), "past the end clamps to the end, got %d",
+          input.CursorPosition());
+
+    text = "abc def";
+    input.ReplaceRange(0, 3, "XYZ");
+    CHECK(text == "XYZ def", "a prefix is replaced in place: '%s'", text.c_str());
+    CHECK(input.CursorPosition() == 3, "the caret sits right after the insert, got %d", input.CursorPosition());
+
+    /* What `@` completion does: replace the half-typed mention, keep the rest. */
+    text = "@src x";
+    input.ReplaceRange(0, 4, "@src/main.c ");
+    CHECK(text == "@src/main.c  x", "the mention is completed in place: '%s'", text.c_str());
+    CHECK(input.CursorPosition() == 12, "caret after the inserted text, got %d", input.CursorPosition());
+
+    /* Reversed offsets are accepted (one caller passes trigger/cursor in order; another
+       may not). */
+    text = "abcdef";
+    input.ReplaceRange(4, 1, "-");
+    CHECK(text == "a-ef", "begin > end is swapped: '%s'", text.c_str());
+
+    /* An offset inside a multi-byte character snaps back to its start, so the
+       replacement can never split it. */
+    text = "\xe4\xb8\xad\xe6\x96\x87x"; /* 中文x */
+    input.ReplaceRange(1, 3, "-");
+    CHECK(text == "-\xe6\x96\x87x", "a caret inside a character snaps to its boundary: '%s'", text.c_str());
+    CHECK(input.CursorPosition() == 1, "and the caret follows the insert, got %d", input.CursorPosition());
+}
+
 static void test_history_recall_up_down(void)
 {
     std::printf("  history: up recalls older, down returns to the draft\n");
@@ -362,6 +399,7 @@ int main(void)
     test_arrow_navigation_across_rows();
     test_typing_and_deletion();
     test_internal_scroll_follows_caret();
+    test_cursor_and_range_replace();
     test_history_recall_up_down();
     test_history_preserves_draft();
     test_history_dedupes_consecutive();

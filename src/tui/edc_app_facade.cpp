@@ -202,6 +202,48 @@ std::vector<model::CommandFact> AppFacade::CommandFamilies() const
     return out;
 }
 
+std::vector<model::CommandFact> AppFacade::FileCandidates(const std::string &workdir,
+                                                           const std::string &query) const
+{
+    std::vector<model::CommandFact> out;
+    if (!app_)
+        return out;
+    /* An unbound session has no directory of its own: the kernel falls back to the
+     * workspace, so an empty |workdir| must NOT stop us here (it did, and the popup simply
+     * never opened for those sessions). */
+
+    // The kernel answers "<relative path>\t<f|d>" rows, already filtered and ranked.
+    std::vector<char> buf(8192, '\0');
+    const size_t rows =
+        edc_app_file_candidates(app_, workdir.c_str(), query.empty() ? NULL : query.c_str(), buf.data(), buf.size());
+    if (rows == 0)
+        return out;
+
+    std::string text(buf.data());
+    size_t pos = 0;
+    while (pos < text.size())
+    {
+        const size_t nl = text.find('\n', pos);
+        if (nl == std::string::npos)
+            break;
+        const std::string row = text.substr(pos, nl - pos);
+        pos = nl + 1;
+        const size_t tab = row.rfind('\t');
+        if (tab == std::string::npos)
+            continue;
+        model::CommandFact fact;
+        fact.text = row.substr(0, tab); /* a directory already ends with '/' */
+        fact.brief.clear();             /* the popup shows the path alone */
+        out.push_back(std::move(fact));
+    }
+    return out;
+}
+
+void AppFacade::ResetFileCandidates() const
+{
+    edc_app_file_candidates_reset();
+}
+
 std::vector<model::CommandFact> AppFacade::SkillNames(const std::string &workdir) const
 {
     std::vector<model::CommandFact> out;

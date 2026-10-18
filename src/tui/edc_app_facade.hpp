@@ -153,6 +153,12 @@ class IAppFacade
     // the vocabulary of the `/prompt <name>` argument.
     virtual std::vector<model::CommandFact> PromptNames(const std::string &workdir) const = 0;
     virtual std::vector<model::CommandFact> SkillNames(const std::string &workdir) const = 0;
+    // `@` completion: the files under |workdir| matching |query| (the kernel walks and
+    // filters; a directory's row ends with '/'). Empty when it cannot be listed.
+    virtual std::vector<model::CommandFact> FileCandidates(const std::string &workdir,
+                                                           const std::string &query) const = 0;
+    // The tree may have changed (a message was submitted): walk again next time.
+    virtual void ResetFileCandidates() const = 0;
 
     // ── a few things the frontend does ───────────────────────────
     virtual void SendUserMessage(const std::string &session_id, const std::string &content) = 0;
@@ -208,6 +214,9 @@ class AppFacade : public IAppFacade
     std::vector<model::CommandFact> CommandFamilies() const override;
     std::vector<model::CommandFact> PromptNames(const std::string &workdir) const override;
     std::vector<model::CommandFact> SkillNames(const std::string &workdir) const override;
+    std::vector<model::CommandFact> FileCandidates(const std::string &workdir,
+                                                   const std::string &query) const override;
+    void ResetFileCandidates() const override;
 
     void SendUserMessage(const std::string &session_id, const std::string &content) override;
     void RequestTaskSnapshot(const std::string &session_id) override;

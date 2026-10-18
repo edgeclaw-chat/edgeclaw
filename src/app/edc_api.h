@@ -113,6 +113,15 @@ extern size_t edc_app_prompts(const struct edc_app *app, const char *workdir, ch
 /* The skills, as "<name>\t<description>" lines, for `/skill`'s completion vocabulary.
  * Reads the same resource roots as everything else (|workdir| = the displayed session's
  * directory; NULL/"" = the process cwd). Returns how many skills exist. */
+/* `@` completion: up to |cap| bytes of "<relative path>\t<f|d>\n" rows, best match
+ * first (20 max), under |workdir|. The directory is sandbox-checked: one that cannot be
+ * listed answers 0 rows. Safe to call on the UI thread -- the tree is cached after the
+ * first walk. */
+extern size_t edc_app_file_candidates(struct edc_app *app, const char *workdir, const char *query, char *buf,
+                                      size_t cap);
+/* The tree may have changed (a message was just submitted): walk again next time. */
+extern void edc_app_file_candidates_reset(void);
+
 extern size_t edc_app_skills(const struct edc_app *app, const char *workdir, char *buf, size_t cap);
 
 /* The transcript path for a given session (`<workspace>/<session_id>/chat.jsonl`).

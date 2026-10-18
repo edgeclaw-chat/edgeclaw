@@ -389,6 +389,7 @@ void TUIWindow::Submit()
      * without waiting for the next snapshot (the task's own state does not change). */
     MarkReadFromInput(message);
 
+    app_->ResetFileCandidates(); /* a submission may have created files */
     app_->SendUserMessage(session_model_->displayed_id(), message);
     chat_widget_->ScrollToBottom();
 
@@ -1114,6 +1115,21 @@ bool TUIWindow::HandleNormalEvent(::ftxui::Event event)
         }
         if (event == ::ftxui::Event::Tab)
         {
+            if (command_palette_.mode() == model::CommandPalette::Mode::Mention)
+            {
+                // Replace "@src" with the selected "@src/main.c " -- or, for a directory,
+                // with "@src/" and stay open so the next level can be picked.
+                const std::string insert = command_palette_.MentionInsert();
+                if (!insert.empty())
+                {
+                    input_->ReplaceRange(command_palette_.trigger_begin(), input_->CursorPosition(), insert);
+                    if (insert.back() == '/')
+                        RecomputeCommandPalette();
+                    else
+                        command_palette_.Close();
+                }
+                return true;
+            }
             // Tab completes the selected row. When that leaves nothing more to complete,
             // this same press is the "that's it": fold the list now instead of demanding
             // one more Tab to say so (the extra press carried no new information).
@@ -1156,8 +1172,12 @@ bool TUIWindow::HandleNormalEvent(::ftxui::Event event)
         return true;
     }
     const bool handled = split_->OnEvent(event);
-    // Any text edit changes the popup's query (the whole input is its filter).
-    if (event.is_character() || event == ::ftxui::Event::Backspace || event == ::ftxui::Event::Delete)
+    // Any text edit -- or a caret move, which decides which `@` is being typed -- changes
+    // the popup's query.
+    if (event.is_character() || event == ::ftxui::Event::Backspace || event == ::ftxui::Event::Delete ||
+        event == ::ftxui::Event::ArrowLeft || event == ::ftxui::Event::ArrowRight ||
+        event == ::ftxui::Event::ArrowUp || event == ::ftxui::Event::ArrowDown ||
+        event == ::ftxui::Event::Home || event == ::ftxui::Event::End)
         RecomputeCommandPalette();
     return handled;
 }
@@ -1170,6 +1190,17 @@ void TUIWindow::RecomputeCommandPalette()
         command_palette_.SetSource(app_->CommandFamilies(), app_->Commands());
         palette_loaded_ = true;
     }
+    // `@`: the caret is inside a file reference. The kernel owns the tree, so ask it for
+    // the candidates that match what has been typed -- the popup only shows them.
+    const int cursor = input_->CursorPosition();
+    const model::CommandPalette::MentionHit mention = model::CommandPalette::ParseMention(input_text_, cursor);
+    if (app_ && mention.active)
+    {
+        command_palette_.SetFileSource(app_->FileCandidates(session_model_->workdir(), mention.query));
+        command_palette_.Update(input_text_, cursor);
+        return;
+    }
+
     // A command whose first argument names a resource (`/prompt <name>`, `/skill <name>`)
     // gets that vocabulary while it is in play, so a file added on disk is offered without a
     // restart. The DISPLAYED session's bound directory goes with it -- the project roots are
@@ -1185,7 +1216,7 @@ void TUIWindow::RecomputeCommandPalette()
         else
             command_palette_.SetArgSource("", {});
     }
-    command_palette_.Update(input_text_);
+    command_palette_.Update(input_text_, cursor);
 }
 
 TUIWindow::~TUIWindow()

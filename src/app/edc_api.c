@@ -17,6 +17,9 @@
  *
  * C++-safe (`edc_api.h` and `edc_app.h` share the rule: include no sds header). */
 #include "edc_api.h"
+#include "edc_sandbox.h"
+#include "edc_file_index.h"
+#include "edc_path_guard.h"
 
 #include "edc_actor.h"
 #include "edc_app.h"
@@ -304,6 +307,65 @@ size_t edc_app_prompts(const struct edc_app *app, const char *workdir, char *buf
     }
     utarray_free(prompts);
     return count;
+}
+
+size_t edc_app_file_candidates(struct edc_app *app, const char *workdir, const char *query, char *buf, size_t cap)
+{
+    if (buf && cap > 0)
+        buf[0] = '\0';
+    const struct edc_config *cfg = edc_app_config(app);
+    if (!cfg)
+        return 0;
+
+    /* Which directory to list: the SESSION's bound directory, and nothing else. The list is
+     * what the user is working in -- it is not a permission check, so the rw/ro lists are
+     * not applied (they say what the model may touch, and a session is allowed to be bound
+     * to a repository outside them; the tools refuse individual reads at their own layer).
+     * Applying them here made the picker come up empty for exactly those sessions. The deny
+     * list still applies, the same rule the prompt/skill readers use.
+     *
+     * An unbound session falls back to the LAUNCH directory (edc_cwd()), which is what
+     * every other "where am I" answer in the app uses (edc_resource_dirs walks up from
+     * there). Falling back to cfg->workspace was wrong: that is the agent's own data
+     * directory, not the project the person is looking at. */
+    sds fallback = NULL;
+    const char *root = (workdir && workdir[0]) ? workdir : NULL;
+    if (!root)
+    {
+        fallback = edc_cwd();
+        root = fallback;
+    }
+
+    struct edc_path_rules rules = {
+        .root = NULL, /* a listing root: no containment boundary above it */
+        .refuse_symlink = false,
+        .deny_paths = cfg->enable_sandbox ? cfg->sandbox_deny_paths : NULL,
+    };
+    EdcError *error = NULL;
+    sds safe = edc_path_guard_resolve(&rules, root, &error);
+    if (!safe)
+    {
+        /* A directory that cannot be resolved is worth one line in the log: otherwise the
+         * popup simply never opens and nothing says why. */
+        log_warn("file candidates: cannot list '%s': %s", root, error && error->message ? error->message : "?");
+        if (error)
+            edc_error_free(error);
+        if (fallback)
+            sdsfree(fallback);
+        return 0;
+    }
+    const size_t rows = edc_file_index_query(safe, query, buf, cap);
+    if (rows == 0)
+        log_info("file candidates: none for root='%s' query='%s'", safe, query ? query : "");
+    sdsfree(safe);
+    if (fallback)
+        sdsfree(fallback);
+    return rows;
+}
+
+void edc_app_file_candidates_reset(void)
+{
+    edc_file_index_reset();
 }
 
 size_t edc_app_skills(const struct edc_app *app, const char *workdir, char *buf, size_t cap)

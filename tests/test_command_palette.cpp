@@ -54,100 +54,149 @@ static CommandPalette Make()
     return p;
 }
 
+// The palette takes the caret now; every case here types at the end of the line.
+static bool Upd(CommandPalette &p, const std::string &text)
+{
+    return p.Update(text, static_cast<int>(text.size()));
+}
+
+static void test_mention_trigger(void)
+{
+    using Hit = CommandPalette::MentionHit;
+    auto at_end = [](const std::string &text) {
+        return CommandPalette::ParseMention(text, static_cast<int>(text.size()));
+    };
+
+    TEST("@ alone at the line start opens with an empty query");
+    Hit h = at_end("@");
+    CHECK(h.active && h.begin == 0 && h.query.empty(), "active at 0, empty query");
+
+    TEST("@ after a space: the query is what follows");
+    h = at_end("look @sr");
+    CHECK(h.active && h.begin == 5 && h.query == "sr", "begin 5, query 'sr'");
+    h = at_end("\xe4\xb8\xad\xe6\x96\x87 @sr"); /* 中文 @sr */
+    CHECK(h.active && h.query == "sr", "a multi-byte character before the space is fine");
+
+    TEST("@ inside a word does not trigger (emails, decorators, pasted code)");
+    h = at_end("foo@bar");
+    CHECK(!h.active, "foo@bar is not a reference");
+    h = at_end("\xe4\xb8\xad\xe6\x96\x87@sr"); /* 中文@sr */
+    CHECK(!h.active, "and neither is it right after a character");
+
+    TEST("the caret decides: the query stops there");
+    h = CommandPalette::ParseMention("@src/main", 4);
+    CHECK(h.active && h.begin == 0 && h.query == "src", "caret after 'src' -> query 'src'");
+    h = CommandPalette::ParseMention("@src/main", 0);
+    CHECK(!h.active, "caret at 0 has nothing before it");
+
+    TEST("a space between @ and the caret closes it");
+    h = at_end("@src file");
+    CHECK(!h.active, "the caret is past a space");
+
+    TEST("a newline counts as whitespace before the @");
+    h = at_end("first line\n@x");
+    CHECK(h.active && h.query == "x", "line start after a newline");
+
+    TEST("the LAST @ wins");
+    h = at_end("@a @b");
+    CHECK(h.active && h.begin == 3 && h.query == "b", "begin 3, query 'b'");
+}
+
 int main(void)
 {
     printf("=== command palette tests ===\n\n");
+    test_mention_trigger();
 
     {
         TEST("bare '/' lists the families, not every row");
         CommandPalette p = Make();
-        CHECK(p.Update("/"), "open");
+        CHECK(Upd(p, "/"), "open");
         CHECK(p.items().size() == 4, "4 families");
         CHECK(p.items()[0].text == "/help" && p.items()[1].text == "/task", "family names, in order");
     }
     {
         TEST("'/ta' identifies ONE family -> steps into its subcommands");
         CommandPalette p = Make();
-        CHECK(p.Update("/ta"), "open");
+        CHECK(Upd(p, "/ta"), "open");
         CHECK(p.items().size() == 3, "the /task subcommands, not the family row");
         CHECK(p.items()[0].text == "/task new <desc>   [--bg]", "first is new");
-        CHECK(p.Update("/t"), "a shorter unique prefix too");
+        CHECK(Upd(p, "/t"), "a shorter unique prefix too");
         CHECK(p.items().size() == 3, "same subcommands");
     }
     {
         TEST("'/h' identifies /help -> its single row, not the family");
         CommandPalette p = Make();
-        CHECK(p.Update("/h"), "open");
+        CHECK(Upd(p, "/h"), "open");
         CHECK(p.items().size() == 1 && p.items()[0].text == "/help [<command>]", "the /help row");
     }
     {
         TEST("'/task ' steps into the subcommands");
         CommandPalette p = Make();
-        CHECK(p.Update("/task "), "open");
+        CHECK(Upd(p, "/task "), "open");
         CHECK(p.items().size() == 3, "3 subcommands");
         CHECK(p.items()[0].text == "/task new <desc>   [--bg]", "first is new");
     }
     {
         TEST("'/session memo ' lists its subcommands (they are rows of their own)");
         CommandPalette p = Make();
-        CHECK(p.Update("/session memo "), "open");
+        CHECK(Upd(p, "/session memo "), "open");
         CHECK(p.items().size() == 4, "4 subcommands");
         CHECK(p.items()[0].text == "/session memo show [id]", "first is show");
         CHECK(p.Accept() == "/session memo show ", "Tab lands inside 'show'");
-        p.Update("/session memo show ");
+        Upd(p, "/session memo show ");
         CHECK(!p.HasMore(), "nothing more to complete after that");
     }
     {
         TEST("Tab grows ONE word: '/session memo sh' -> '/session memo show '");
         CommandPalette p = Make();
-        CHECK(p.Update("/session memo sh"), "open");
+        CHECK(Upd(p, "/session memo sh"), "open");
         CHECK(p.items().size() == 1, "one candidate");
         CHECK(p.Accept() == "/session memo show ", "exactly that word (got: " + p.Accept() + ")");
-        p.Update("/session memo se");
+        Upd(p, "/session memo se");
         CHECK(p.items().size() == 1 && p.items()[0].text == "/session memo search <q>", "still one");
         CHECK(p.Accept() == "/session memo search ", "and its word");
     }
     {
         TEST("'/task n' narrows to a single subcommand");
         CommandPalette p = Make();
-        CHECK(p.Update("/task n"), "open");
+        CHECK(Upd(p, "/task n"), "open");
         CHECK(p.items().size() == 1 && p.items()[0].text == "/task new <desc>   [--bg]", "only new");
     }
     {
         TEST("no match closes the popup");
         CommandPalette p = Make();
-        CHECK(!p.Update("/nope"), "closed");
-        CHECK(!p.Update("/task new x"), "closed once the args start");
+        CHECK(!Upd(p, "/nope"), "closed");
+        CHECK(!Upd(p, "/task new x"), "closed once the args start");
     }
     {
         TEST("only a single line starting with '/' opens it");
         CommandPalette p = Make();
-        CHECK(!p.Update("hello"), "plain text closed");
-        CHECK(!p.Update(""), "empty closed");
-        CHECK(!p.Update("/task\nnew"), "multi-line closed");
+        CHECK(!Upd(p, "hello"), "plain text closed");
+        CHECK(!Upd(p, ""), "empty closed");
+        CHECK(!Upd(p, "/task\nnew"), "multi-line closed");
     }
     {
         TEST("Tab completes ONE word, not a whole row");
         CommandPalette p = Make();
-        p.Update("/");
+        Upd(p, "/");
         CHECK(p.Accept() == "/help ", "no shared word (families differ) -> the highlighted row");
-        p.Update("/ta");
+        Upd(p, "/ta");
         CHECK(p.Accept() == "/task ", "the family word + a space (got: " + p.Accept() + ")");
-        p.Update("/task n");
+        Upd(p, "/task n");
         CHECK(p.Accept() == "/task new ", "one word further in (got: " + p.Accept() + ")");
-        p.Update("/task b");
+        Upd(p, "/task b");
         CHECK(p.Accept() == "/task bg ", "drops [id] (got: " + p.Accept() + ")");
-        p.Update("/hel");
+        Upd(p, "/hel");
         CHECK(p.Accept() == "/help ", "drops [<command>] (got: " + p.Accept() + ")");
-        p.Update("/sess");
+        Upd(p, "/sess");
         CHECK(p.Accept() == "/session ", "the memo rows share their first word (got: " + p.Accept() + ")");
-        p.Update("/task ");
+        Upd(p, "/task ");
         CHECK(p.Accept() == "/task new ", "next word is ambiguous -> the highlighted row");
     }
     {
         TEST("Up/Down move the selection and clamp");
         CommandPalette p = Make();
-        p.Update("/");
+        Upd(p, "/");
         CHECK(p.selected() == 0, "starts on the first row");
         p.MoveUp();
         CHECK(p.selected() == 0, "clamps at the top");
@@ -161,19 +210,19 @@ int main(void)
     {
         TEST("Esc closes until the text changes again");
         CommandPalette p = Make();
-        p.Update("/ta");
+        Upd(p, "/ta");
         p.Close();
         CHECK(!p.open(), "closed");
-        CHECK(!p.Update("/ta"), "same text stays closed");
-        CHECK(p.Update("/tas"), "a new keystroke re-opens");
+        CHECK(!Upd(p, "/ta"), "same text stays closed");
+        CHECK(Upd(p, "/tas"), "a new keystroke re-opens");
     }
     {
         TEST("Tab with nothing left to complete yields the same text (=> confirm)");
         CommandPalette p = Make();
-        p.Update("/task n");
+        Upd(p, "/task n");
         CHECK(p.Accept() == "/task new ", "advances into the args");
         CHECK(p.HasMore(), "at '/task n' there is still something to complete");
-        p.Update("/task new ");
+        Upd(p, "/task new ");
         CHECK(p.open(), "the row still matches as a prefix");
         CHECK(p.Accept() == "/task new ", "but Tab would change nothing");
         CHECK(!p.HasMore(), "nothing left -> the same Tab also folds the list");
@@ -181,21 +230,21 @@ int main(void)
     {
         TEST("HasMore: a family with pickable subcommands still has more");
         CommandPalette p = Make();
-        p.Update("/task ");
+        Upd(p, "/task ");
         CHECK(p.HasMore(), "the subcommands would still change the text");
-        p.Update("/session memo ");
+        Upd(p, "/session memo ");
         CHECK(p.HasMore(), "likewise for the memo subcommands");
-        p.Update("/session memo show ");
+        Upd(p, "/session memo show ");
         CHECK(!p.HasMore(), "landed inside 'show' -> nothing more to add");
-        p.Update("/session memo compact");
+        Upd(p, "/session memo compact");
         CHECK(p.HasMore(), "no trailing space yet: Tab would add it");
-        p.Update("/session memo compact ");
+        Upd(p, "/session memo compact ");
         CHECK(!p.HasMore(), "then nothing more to add");
     }
     {
         TEST("'/prompt ' without a vocabulary falls back to the table's generic row");
         CommandPalette p = Make();
-        CHECK(p.Update("/prompt "), "open");
+        CHECK(Upd(p, "/prompt "), "open");
         CHECK(p.items().size() == 1 && p.items()[0].text == "/prompt <name> [args…]", "the generic row");
         CHECK(!p.HasMore(), "and there is nothing to complete into");
     }
@@ -204,7 +253,7 @@ int main(void)
         CommandPalette p = Make();
         p.SetArgSource("/prompt", {CommandFact{"/prompt review", "review the staged changes"},
                                    CommandFact{"/prompt fix", "fix the failing test"}});
-        CHECK(p.Update("/prompt"), "open");
+        CHECK(Upd(p, "/prompt"), "open");
         bool has_review = false;
         bool has_fix = false;
         bool has_placeholder = false;
@@ -227,25 +276,25 @@ int main(void)
         CommandPalette p = Make();
         p.SetArgSource("/prompt", {CommandFact{"/prompt review", "review the staged changes"},
                                    CommandFact{"/prompt fix", "fix the failing test"}});
-        CHECK(p.Update("/prompt "), "open");
+        CHECK(Upd(p, "/prompt "), "open");
         CHECK(p.items().size() == 2, "past the word the vocabulary is the whole list");
         CHECK(p.items()[0].text == "/prompt review", "rung up as a command line");
         CHECK(p.items()[0].brief == "review the staged changes", "its description rides along");
 
-        CHECK(p.Update("/prompt re"), "open");
+        CHECK(Upd(p, "/prompt re"), "open");
         CHECK(p.items().size() == 1, "narrowed");
         CHECK(p.Accept() == "/prompt review ", "Tab completes the name (got: " + p.Accept() + ")");
 
-        CHECK(!p.Update("/prompt review "), "closed once the name is whole");
-        CHECK(!p.Update("/prompt zz"), "an unknown name closes it too (no misleading generic row)");
+        CHECK(!Upd(p, "/prompt review "), "closed once the name is whole");
+        CHECK(!Upd(p, "/prompt zz"), "an unknown name closes it too (no misleading generic row)");
 
-        CHECK(p.Update("/task n"), "the command table is back in charge for other commands");
+        CHECK(Upd(p, "/task n"), "the command table is back in charge for other commands");
         CHECK(p.items().size() == 1 && p.items()[0].text == "/task new <desc>   [--bg]", "the /task row");
     }
     {
         TEST("Tab on a closed popup is a no-op (keeps the text)");
         CommandPalette p = Make();
-        p.Update("hello");
+        Upd(p, "hello");
         CHECK(p.Accept() == "hello", "text unchanged");
     }
     {
@@ -253,7 +302,7 @@ int main(void)
         // Colour assertions need real colour support declared (the test has no tty).
         ::ftxui::Terminal::SetColorSupport(::ftxui::Terminal::TrueColor);
         CommandPalette p = Make();
-        p.Update("/task n"); // exactly one row, and it is the selected one
+        Upd(p, "/task n"); // exactly one row, and it is the selected one
         auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(40), ::ftxui::Dimension::Fixed(3));
         ::ftxui::Render(screen, edc::ui::CommandPaletteElement(p, 3));
 
@@ -268,9 +317,9 @@ int main(void)
     {
         TEST("a bare `+` (no command behind it) does not open the popup");
         CommandPalette p = Make();
-        CHECK(!p.Update("+"), "just the prefix: nothing to complete");
-        CHECK(!p.Update("+find bugs"), "a new-group description is not a command line");
-        CHECK(!p.Update("+/task"), "`+` does not combine with the command syntax, so `+/...` is not a command line");
+        CHECK(!Upd(p, "+"), "just the prefix: nothing to complete");
+        CHECK(!Upd(p, "+find bugs"), "a new-group description is not a command line");
+        CHECK(!Upd(p, "+/task"), "`+` does not combine with the command syntax, so `+/...` is not a command line");
     }
 
     if (failed)

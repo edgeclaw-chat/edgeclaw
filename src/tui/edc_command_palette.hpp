@@ -28,6 +28,24 @@ struct CommandFact
 class CommandPalette
 {
   public:
+    // What the popup is listing. The two are mutually exclusive: a line either starts a
+    // `/` command or contains an `@` reference under the caret.
+    enum class Mode
+    {
+        Command,
+        Mention,
+    };
+
+    // Where an `@` reference starts and what has been typed after it. Pure: no state, so
+    // the rule can be tested on its own (it is the same rule opencode uses).
+    struct MentionHit
+    {
+        bool active = false;
+        int begin = 0;        // byte offset of the '@'
+        std::string query;    // what follows it, up to the caret
+    };
+    static MentionHit ParseMention(const std::string &content, int cursor);
+
     // |families| = the bare-`/` list (one row per first token, e.g. "/task").
     // |commands| = every table row. Both come from IAppFacade.
     void SetSource(std::vector<CommandFact> families, std::vector<CommandFact> commands);
@@ -39,8 +57,26 @@ class CommandPalette
     // gets its names into the list.
     void SetArgSource(std::string head, std::vector<CommandFact> rows);
 
-    // Recompute from the WHOLE input content. Returns true when the list is visible.
-    bool Update(const std::string &content);
+    // The `@` candidates, already filtered by the query (the kernel walks the tree; this
+    // only holds the rows). A directory's text ends with '/'.
+    void SetFileSource(std::vector<CommandFact> rows);
+
+    // Recompute from the WHOLE input content and the caret. Returns true when the list is
+    // visible. The caret decides which `@` (if any) is being typed.
+    bool Update(const std::string &content, int cursor);
+
+    Mode mode() const
+    {
+        return mode_;
+    }
+    // The `@` of the mention being typed (Mention mode only).
+    int trigger_begin() const
+    {
+        return trigger_;
+    }
+    // Text to put in place of [trigger_begin(), cursor): "@path " for a file, "@dir/" for
+    // a directory (which keeps the list open for the next level).
+    std::string MentionInsert() const;
 
     bool open() const
     {
@@ -82,6 +118,10 @@ class CommandPalette
     std::string arg_head_;
     std::vector<CommandFact> arg_rows_;
     std::vector<CommandFact> items_;
+    std::vector<CommandFact> file_rows_;
+    Mode mode_ = Mode::Command;
+    int trigger_ = 0;
+    int cursor_ = 0;
     int selected_ = 0;
     bool open_ = false;
     // Esc dismissed the list for this exact content.

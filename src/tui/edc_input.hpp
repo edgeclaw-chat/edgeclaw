@@ -32,6 +32,15 @@ class EdcInput : public ::ftxui::ComponentBase
     // and put the caret at its end; leaves history recall.
     void ReplaceAll(const std::string &text);
 
+    // Put the caret at |offset|: clamped to the content and snapped back to a code point
+    // boundary (a caret inside a UTF-8 sequence would corrupt the next edit).
+    void SetCursor(int offset);
+
+    // Replace the bytes [begin, end) with |text| and leave the caret right after it --
+    // what `@` completion does ("@src" -> "@src/main.c ") without touching the rest of
+    // the draft. Offsets are clamped/snapped like SetCursor; |begin| > |end| is accepted.
+    void ReplaceRange(int begin, int end, const std::string &text);
+
     // Drop every entry, so the owner can re-seed from disk idempotently.
     void ClearHistory();
 
