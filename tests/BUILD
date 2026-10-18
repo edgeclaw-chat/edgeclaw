@@ -328,6 +328,15 @@ cc_test(
 )
 
 cc_test(
+    name = "test_file_index",
+    srcs = ["test_file_index.c"],
+    deps = [
+        "//src/common:edc_file_utils",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_mention_pass",
     srcs = ["test_mention_pass.c"],
     deps = [

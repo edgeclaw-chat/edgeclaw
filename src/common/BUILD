@@ -35,10 +35,12 @@ cc_library(
 cc_library(
     name = "edc_file_utils",
     srcs = [
+        "edc_file_index.c",
         "edc_file_utils.c",
         "edc_path_guard.c",
     ],
     hdrs = [
+        "edc_file_index.h",
         "edc_file_utils.h",
         "edc_path_guard.h",
     ],
