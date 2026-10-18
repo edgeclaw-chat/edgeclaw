@@ -129,8 +129,9 @@ static void test_close_persists_then_is_idempotent(void)
 
 /* ── 2b. close() states what was in flight, and the queue heals ──────────
  * The process going down is written into the state itself (INTERRUPTED, not inferred on
- * the way back in) for every unfinished task -- queued ones included -- and the interrupt
- * propagates, so nobody is left waiting for a predecessor that will not run on its own. */
+ * the way back in) for every unfinished task -- queued ones included. The queue's order
+ * edge is a BARRIER, so a predecessor that will not run on its own releases whoever was
+ * queued behind it instead of taking it down. */
 static void test_close_interrupts_in_flight_and_heals_the_queue(void)
 {
     char ws[256];
@@ -160,11 +161,12 @@ static void test_close_interrupts_in_flight_and_heals_the_queue(void)
 
     CHECK(edc_scheduler_close(sched), "close() settles");
 
-    TEST("close() interrupts what was in flight, and the queue behind it goes down with it");
+    TEST("close() interrupts what was in flight, and VOIDS the order edge instead of cascading");
     CHECK(edc_task_is_interrupted(a), "A was in flight -> INTERRUPTED");
-    CHECK(b && edc_task_has_failed(b), "B (queued behind A) cascaded to ERROR, like a JOIN dependent");
-    CHECK(b && b->deps_total == 1, "and its edge to A is kept");
-    CHECK(b && edc_task_is_resumable(b), "so B can be resumed...");
+    CHECK(b && edc_task_is_interrupted(b), "B was unfinished too, so close() interrupts it as well");
+    CHECK(b && b->deps && b->deps->cancelled, "the queue's order edge is voided (BARRIER: the source ended)");
+    CHECK(b && b->deps_total == 0, "so it no longer counts as a constraint");
+    CHECK(b && edc_task_is_resumable(b), "and B can be resumed...");
 
     /* Reopen: the state comes back as stated -- nothing is inferred on the way in. */
     const char *a_id = a->task_id;
@@ -175,17 +177,15 @@ static void test_close_interrupts_in_flight_and_heals_the_queue(void)
     struct edc_task *rb = edc_session_manager_find_task_any(sched2->sessions, b_id, NULL);
     CHECK(ra && edc_task_is_interrupted(ra), "INTERRUPTED round-trips (no inference on load)");
     CHECK(ra && ra->is_background, "and the background flag does too (resuming it must not put it on screen)");
-    CHECK(rb && edc_task_has_failed(rb), "and B's ERROR does too");
-    CHECK(rb && rb->deps_total == 1 && rb->deps && rb->deps->source && a_id &&
-              strcmp(rb->deps->source->task_id, a_id) == 0,
-          "with its edge to A still there: resuming it will wait for A");
+    CHECK(rb && edc_task_is_interrupted(rb), "and B's INTERRUPTED does too");
+    CHECK(rb && rb->deps_total == 0, "the voided order edge comes back voided: B is free to run");
 
-    TEST("resuming B waits for A: it does not jump the queue");
+    TEST("resuming B does not wait for the stopped task in front: the queue is done with A");
     if (rb)
     {
         edc_scheduler_resume_task(sched2, rb);
-        CHECK(edc_task_awaits_deps(rb), "B went back to dep-wait (its edge to A is still there)");
-        CHECK(!edc_task_is_ready(rb), "so the scan will not start it");
+        CHECK(!edc_task_awaits_deps(rb), "B did not go back to dep-wait -- A no longer holds the queue");
+        CHECK(edc_task_is_ready(rb) || edc_task_await_exec(rb), "so it is runnable again");
     }
 
     edc_scheduler_free(sched2);

@@ -263,7 +263,7 @@ int main(void)
 
     /* ── /task resume --all: 重启后一把复活 ───────────────────────── */
 
-    TEST("/task resume --all re-decides every stopped task, in dependency order");
+    TEST("/task resume --all re-decides every stopped task; the revived one joins the back of the queue");
     /* 先造两个: A 在新组里跑, B 排在它后面(同组)。 */
     g_llm_calls = 0;
     g_llm_task = NULL;
@@ -277,15 +277,19 @@ int main(void)
         beta = last_member_except(alpha->group, alpha);
         CHECK(beta && edc_task_awaits_deps(beta), "B 排在 A 后面");
 
-        /* 模拟重启后的样子: A 被中断 —— 而按依赖语义, 排队等它的 B 一起倒。 */
+        /* 模拟重启后的样子: A 被中断。组队列是**顺序**约束, 不是数据依赖 —— 排队等它的
+         * B 不该跟着倒: 边作废, B 回到可跑。 */
         CHECK(edc_task_mark_interrupted(alpha), "A 被中断");
-        CHECK(beta && edc_task_has_failed(beta), "B 跟着级联失败 (SEQ 与 JOIN 一致)");
+        CHECK(beta && !edc_task_has_failed(beta), "排队等它的 B 不倒 (队列边是 BARRIER)");
+        CHECK(beta && beta->deps_total == 0, "那条边被作废, 不再是约束");
 
         g_llm_calls = 0;
         g_llm_task = NULL;
         drive_command(cfg, sm, sched, "/task resume --all");
-        CHECK(g_llm_task == alpha, "A 被复活并驱动");
-        CHECK(beta && edc_task_awaits_deps(beta), "B 回到等依赖 (没有越过 A)");
+        /* B 接手了前台(前一个倒下时就轮到它了), 所以复活的 A 只能排到队尾 ——
+         * resume 是"让已有任务再跑起来"的另一道门, 同样不许插队。 */
+        CHECK(g_llm_task == beta, "B 接上了前台");
+        CHECK(alpha && edc_task_awaits_deps(alpha), "复活的 A 排在队尾 (没有插队)");
     }
 
     printf("\n  %d passed, %d failed\n", passed, failed);

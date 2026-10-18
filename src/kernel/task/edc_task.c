@@ -711,10 +711,35 @@ static bool edc_task_can_reach(struct edc_task *from, struct edc_task *to, int d
     struct edc_task_dep *dep;
     LL_FOREACH(from->deps, dep)
     {
+        /* A VOIDED edge imposes no order anymore (its source ended and released us), so it
+         * cannot deadlock: counting it would report a cycle for a pair that is free to run
+         * in the other direction now -- e.g. re-queueing the stopped task behind the one
+         * that took its place. */
+        if (dep->cancelled)
+            continue;
         if (edc_task_can_reach(dep->source, to, depth + 1))
             return true;
     }
     return false;
+}
+
+/* deps_total / deps_completed are the "active edge" counts: a voided edge is not a
+ * constraint anymore and does not count (which is exactly what task_void_barrier_dep
+ * leaves behind). Recomputing them from the flags keeps the two in step after a re-arm. */
+static void task_recount_deps(struct edc_task *task)
+{
+    size_t total = 0, completed = 0;
+    struct edc_task_dep *dep;
+    LL_FOREACH(task->deps, dep)
+    {
+        if (dep->cancelled)
+            continue;
+        total++;
+        if (dep->completed)
+            completed++;
+    }
+    task->deps_total = total;
+    task->deps_completed = completed;
 }
 
 bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, edc_task_dep_type type)
@@ -726,12 +751,40 @@ bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, e
     if (edc_task_can_reach(source, target, 0))
         return false;
 
-    /* Check for an already-existing identical dependency */
+    /* An edge to this source is the pair's dedup key. Still live -> nothing to do
+     * (idempotent). VOIDED -> the order it stood for is over, but asking for it again is a
+     * NEW constraint on the same pair: resume re-queues a task behind the one it was
+     * queued behind. Re-arm it in place; leaving it voided would keep it out of
+     * deps_total and let the target jump the queue it just rejoined. */
     struct edc_task_dep *existing;
     LL_FOREACH(target->deps, existing)
     {
         if (existing->source == source)
-            return false;
+            break;
+    }
+    if (existing && !existing->cancelled)
+        return false;
+    if (existing)
+    {
+        existing->cancelled = false;
+        existing->type = type;
+        struct edc_task_dep *sd;
+        LL_FOREACH(source->dependents, sd)
+        {
+            if (sd->target == target)
+            {
+                sd->cancelled = false;
+                sd->type = type;
+                break;
+            }
+        }
+        task_recount_deps(target);
+
+        if (edc_task_is_completed(source))
+            edc_task_on_dep_completed(target, source);
+        else if (edc_task_is_ready(target))
+            edc_task_mark_waiting_deps(target);
+        return true;
     }
 
     /* Add a node to target->deps */

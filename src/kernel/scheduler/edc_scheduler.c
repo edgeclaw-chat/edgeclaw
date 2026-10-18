@@ -55,6 +55,13 @@ static bool sched_task_holds_front(const struct edc_task *task)
  * (sched_settle_task) and resume -- and both must respect the queue, or the group runs
  * two at a time.
  *
+ * The edge is a TASK_DEP_BARRIER, not a SEQUENCE: group order is an ORDER constraint and
+ * nothing else. The two tasks it joins are unrelated work, so the one in front dying says
+ * nothing about whether the one behind may run -- stopping the running task must advance
+ * the queue, not cancel everything queued behind it. That is exactly BARRIER's rule (the
+ * source ending EITHER way releases the target); the queue is only the second producer of
+ * that kind, alongside the maintenance rounds. Nothing is injected either way.
+ *
  * A group runs ONE task at a time whether or not it is the group in front: an explicit
  * `--group <id>` on a group in the background queues there too (decided 2026-10-18). A
  * task that was asked to be background (`&` / `--bg`) never gets here -- the callers skip
@@ -81,7 +88,7 @@ static bool sched_chain_behind_unfinished(struct edc_task *task)
     if (!prev)
         return false;
 
-    return edc_task_add_dependency(task, prev, TASK_DEP_SEQUENCE);
+    return edc_task_add_dependency(task, prev, TASK_DEP_BARRIER);
 }
 
 /* The task's owner session -- now edc_task_session() in edc_task.c. */
@@ -537,12 +544,11 @@ static struct edc_task_group *sched_settle_task(struct edc_scheduler *sched, str
     }
 
     /* One in front at a time: a task joining the group that is currently in front waits
-     * for whatever is still unfinished there. The edge is an order constraint (no output
-     * is injected), but its failure semantics are a dependency's: a predecessor that dies
-     * takes this task with it and keeps the edge, so resuming this one puts it back behind
-     * the predecessor instead of jumping the queue. A predecessor that finished satisfies
-     * it at once. A background task (`&` / `--bg`) is not queued -- it asked to run
-     * alongside. */
+     * for whatever is still unfinished there. The edge is an order constraint and nothing
+     * more (no output is injected, and a predecessor that dies releases this task instead
+     * of taking it with it -- see sched_chain_behind_unfinished). A predecessor that
+     * finished satisfies it at once. A background task (`&` / `--bg`) is not queued -- it
+     * asked to run alongside. */
     if (!spec->background)
     {
         bool chained = sched_chain_behind_unfinished(task);

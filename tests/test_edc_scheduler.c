@@ -331,7 +331,9 @@ static void test_task_placement(void)
     CHECK(g1 && g1->leader == t1, "leader unchanged");
     /* 前台组一次只跑一个: t1 还攥着前台, 所以新任务排在它后面。 */
     CHECK(t2 && edc_task_awaits_deps(t2), "queued behind the member in front");
-    CHECK(t2 && t2->deps_total == 1, "one SEQUENCE edge");
+    CHECK(t2 && t2->deps_total == 1, "one edge");
+    /* 组内顺序是 BARRIER: 前一个死了要放行, 不能把它后面排队的一起取消。 */
+    CHECK(t2 && t2->deps && t2->deps->type == TASK_DEP_BARRIER, "and it is a BARRIER, not a SEQUENCE");
     CHECK(edc_session_get_active_task(sess) == t1, "the front stays on the one that holds it");
 
     TEST("PLACE_FOREGROUND with nothing in front makes a group");
@@ -495,7 +497,8 @@ static void test_resume_queues(void)
     TEST("resume does not jump the queue of the group in front");
     edc_scheduler_resume_task(sched, b);
     CHECK(edc_task_awaits_deps(b), "B is parked behind A");
-    CHECK(b->deps_total == 1 && b->deps && b->deps->source == a, "one SEQUENCE edge, pointing at A");
+    CHECK(b->deps_total == 1 && b->deps && b->deps->source == a, "one order edge, pointing at A");
+    CHECK(b->deps && b->deps->type == TASK_DEP_BARRIER, "it is a BARRIER (group order)");
     CHECK(!edc_task_is_suspended(b), "it is no longer suspended -- it is queued now");
 
     TEST("a second resume changes nothing while it still waits");
@@ -685,6 +688,79 @@ static void mock_send_llm(struct edc_scheduler *sched, struct edc_task *task, vo
     (void)request_id;
     g_llm_calls++;
     g_llm_task = task;
+}
+
+/* ── 组内队列: 前面的死了, 后面排队的接上 ─────────────────────
+ * 组队列连接的是两件互不相关的活 —— 前一个"结束"(无论怎么结束)只等于"轮到你了"。
+ * 用 SEQUENCE 会把顺序约束当成数据依赖: stop 掉正在跑的那个, 排在它后面的一起被
+ * 级联取消, 整条队列被清空。所以队列边必须是 BARRIER。 */
+static void test_queue_advances_when_front_dies(void)
+{
+    struct edc_config *cfg = make_config();
+    clean_task_seq(cfg);
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    sched->send_llm = mock_send_llm;
+
+    struct edc_task_spec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.desc = "front";
+    spec.input = "front";
+    spec.place = EDC_TASK_PLACE_NEW_GROUP;
+    spec.take_foreground = true;
+    struct edc_task *a = edc_scheduler_task_create(sched, sess, &spec);
+    CHECK(a != NULL, "A created in a fresh group");
+
+    memset(&spec, 0, sizeof(spec));
+    spec.desc = "queued";
+    spec.input = "queued";
+    spec.place = EDC_TASK_PLACE_FOREGROUND;
+    spec.take_foreground = true;
+    struct edc_task *b = edc_scheduler_task_create(sched, sess, &spec);
+
+    TEST("the queue edge is a BARRIER, not a SEQUENCE");
+    CHECK(b && a && b->group == a->group, "B joined A's group");
+    CHECK(b && edc_task_awaits_deps(b), "B is queued behind A");
+    CHECK(b && b->deps_total == 1 && b->deps && b->deps->source == a, "one edge, pointing at A");
+    CHECK(b && b->deps->type == TASK_DEP_BARRIER, "and it is a BARRIER");
+
+    TEST("A runs first");
+    edc_scheduler_schedule(sched);
+    CHECK(g_llm_task == a, "A was driven");
+    CHECK(b && edc_task_awaits_deps(b), "B still waits");
+
+    TEST("stopping the task in front ADVANCES the queue instead of cancelling it");
+    edc_scheduler_send_signal_to_task_ptr(sched, a, TASK_SIGTERM);
+    CHECK(a && edc_task_is_cancelled(a), "A was stopped");
+    CHECK(b && !edc_task_is_cancelled(b), "B was NOT taken down with it");
+    CHECK(b && b->deps && b->deps->cancelled, "the order edge was voided");
+    CHECK(b && b->deps_total == 0, "and it no longer counts as a constraint");
+
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    edc_scheduler_schedule(sched);
+    CHECK(g_llm_task == b, "B took the front and ran");
+    CHECK(b && edc_task_awaits_exec(b), "B is running");
+
+    TEST("resuming the stopped one queues it behind whoever took its place");
+    edc_scheduler_resume_task(sched, a);
+    CHECK(a && edc_task_awaits_deps(a), "A waits for B");
+    CHECK(a && a->deps_total == 1 && a->deps && a->deps->source == b, "one edge, pointing at B");
+    /* 这里钉住 can_reach: B 对 A 还挂着一条**已作废**的边, 若把它当成真边, A->B 会被
+     * 判成环而加不上, resume 就会让 A 与 B 并跑。 */
+    CHECK(a && a->deps && a->deps->type == TASK_DEP_BARRIER, "the voided A<-B edge must not read as a cycle");
+
+    TEST("and B finishing releases A");
+    edc_task_mark_completed(b);
+    edc_task_notify_dependents(b); /* what the scheduler does when a task completes */
+    CHECK(edc_task_is_ready(a), "A was released");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
 }
 
 /* 发起请求的那个 request_id 现在由**调度**发号 (唯一驱动入口), 测试不能再自己写死
@@ -1614,6 +1690,7 @@ int main(void)
     test_task_placement();
     test_current_task();
     test_resume_queues();
+    test_queue_advances_when_front_dies();
     test_scheduler_signals();
     test_scheduler_group_signals();
     test_signal_cascade_settles_dependents();

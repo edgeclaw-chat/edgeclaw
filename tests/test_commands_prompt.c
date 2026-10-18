@@ -126,7 +126,7 @@ static struct edc_task *find_task_by_desc(struct edc_session *sess, const char *
 }
 
 /* 把会话里现有任务全部标记完成：否则下一条落在同组的任务会因为"组里有人没跑完"而拿到一条
- * SEQUENCE 边排到后面，于是"正文自己造了依赖"和"在队列里等"就分不开了（deps_total 都是 1）。 */
+ * 顺序边（BARRIER）排到后面，于是"正文自己造了依赖"和"在队列里等"就分不开了（deps_total 都是 1）。 */
 static void complete_all_tasks(struct edc_session *sess)
 {
     struct edc_task_group *g;

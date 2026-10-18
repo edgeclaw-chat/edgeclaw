@@ -270,7 +270,9 @@ int main(void)
     struct edc_task *waiting = find_task_by_desc(sess, "queued work");
     CHECK(waiting != NULL, "but the task was created");
     CHECK(waiting && edc_task_awaits_deps(waiting), "it is waiting on a dependency");
-    CHECK(waiting && waiting->deps_total == 1, "one SEQUENCE edge");
+    CHECK(waiting && waiting->deps_total == 1, "one order edge");
+    /* 组内顺序 = BARRIER（源死了放行），不是 SEQUENCE（源死了级联）。 */
+    CHECK(waiting && waiting->deps && waiting->deps->type == TASK_DEP_BARRIER, "and it is a BARRIER");
     CHECK(at_fg && waiting && waiting->group == at_fg->group, "and it joined the same group");
     CHECK(at_fg && edc_scheduler_get_foreground(sess) == at_fg->group, "the group in front did not move");
     CHECK(edc_session_get_active_task(sess) == at_fg, "nor did the front land on a waiting task");

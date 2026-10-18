@@ -13,11 +13,18 @@ typedef enum
                         * (`;` semantics). Failure/cancel propagate exactly like JOIN --
                         * the two kinds differ in the output injection and in nothing
                         * else. */
-    TASK_DEP_BARRIER,  /* an internal order barrier the runtime hangs on its own (a fold
-                        * in flight, an L2 curation round): the target waits for the
-                        * source, and if the source dies the edge is voided and the target
-                        * proceeds -- a maintenance round failing must never take the
-                        * tasks it was holding with it. Never created by a user command. */
+    TASK_DEP_BARRIER,  /* an ORDER constraint, and nothing else: wait for the source, and
+                        * if the source ends -- however it ends -- release the target
+                        * instead of taking it down. Two producers, both the runtime's own
+                        * and neither a user command:
+                        *   1. a maintenance round in flight (a fold, an L2 curation, a
+                        *      compaction): the round failing must never take the tasks it
+                        *      was holding with it;
+                        *   2. the group queue (sched_chain_behind_unfinished): a group
+                        *      runs one task at a time, and the tasks in that queue are
+                        *      unrelated work -- the one in front dying must advance the
+                        *      queue, not cancel everything behind it.
+                        * The pair is ordered, not joined: no output is injected either way. */
 } edc_task_dep_type;
 
 #endif
