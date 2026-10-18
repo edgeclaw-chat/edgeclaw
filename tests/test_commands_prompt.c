@@ -110,19 +110,6 @@ static struct edc_task *last_member(struct edc_task_group *group)
     return last;
 }
 
-static struct edc_task *newest_task(struct edc_session *sess)
-{
-    struct edc_task *last = NULL;
-    struct edc_task_group *g;
-    DL_FOREACH(sess->groups, g)
-    {
-        struct edc_task *t;
-        LL_FOREACH2(g->members, t, group_next)
-        last = t;
-    }
-    return last;
-}
-
 static struct edc_task *find_task_by_desc(struct edc_session *sess, const char *desc)
 {
     struct edc_task_group *g;
@@ -341,7 +328,7 @@ int main(void)
         drive_command(cfg, sm, sched, "/prompt --new-group review focus");
 
         CHECK(count_groups(sess) == groups_before + 1, "a group was opened");
-        struct edc_task *t = newest_task(sess);
+        struct edc_task *t = last_member(sess->foreground_group);
         CHECK(t != NULL, "a task was created");
         CHECK(t && t->group && t->group != prev_fg, "it did not join the group that was in front");
         CHECK(t && t->group && t->group->leader == t, "it leads the new group");
@@ -355,7 +342,7 @@ int main(void)
         drive_command(cfg, sm, sched, "/prompt review --new-group focus");
 
         CHECK(count_groups(sess) == groups_before + 1, "one more group");
-        struct edc_task *t = newest_task(sess);
+        struct edc_task *t = last_member(sess->foreground_group);
         CHECK(t && t->group && t->group->leader == t, "the task leads it");
     }
 
@@ -366,7 +353,7 @@ int main(void)
          * by NAMING it -- aiming at the foreground group would pass even if --group were
          * ignored altogether. */
         drive_command(cfg, sm, sched, "/prompt --new-group review first");
-        struct edc_task_group *older = newest_task(sess) ? newest_task(sess)->group : NULL;
+        struct edc_task_group *older = sess->foreground_group; /* the group it just opened */
         drive_command(cfg, sm, sched, "/prompt --new-group review second");
         CHECK(older != NULL && sess->foreground_group != older, "the older group is not in front");
 
@@ -392,8 +379,7 @@ int main(void)
     {
         complete_all_tasks(sess);
         drive_command(cfg, sm, sched, "/prompt --new-group review doomed");
-        struct edc_task *lead = newest_task(sess);
-        struct edc_task_group *doomed = lead ? lead->group : NULL;
+        struct edc_task_group *doomed = sess->foreground_group; /* the group it just opened */
         CHECK(doomed != NULL, "a group to orphan");
         if (doomed)
         {
@@ -432,6 +418,47 @@ int main(void)
         CHECK(count_tasks(sess) == tasks_before, "no task was created");
     }
 
+    TEST("--group=<id> (the equals form) names the group too");
+    {
+        complete_all_tasks(sess);
+        drive_command(cfg, sm, sched, "/prompt --new-group review eq-target");
+        struct edc_task_group *target = sess->foreground_group;
+        drive_command(cfg, sm, sched, "/prompt --new-group review eq-other");
+        CHECK(target != NULL && sess->foreground_group != target, "the target is not the group in front");
+
+        char line[256];
+        snprintf(line, sizeof(line), "/prompt review --group=%s focus", target ? target->group_id : "none");
+        const int tasks_before = count_tasks(sess);
+        drive_command(cfg, sm, sched, line);
+        CHECK(count_tasks(sess) == tasks_before + 1, "a task was created");
+        CHECK(target && last_member(target) && last_member(target)->group == target, "and it joined the named group");
+    }
+
+    TEST("--group refuses the system group (it takes no new work)");
+    {
+        complete_all_tasks(sess);
+        struct edc_task *sys = edc_scheduler_spawn_system_task(sched, sess, "fold probe");
+        CHECK(sys != NULL && sys->group != NULL, "a system group exists");
+        if (sys && sys->group)
+        {
+            char line[256];
+            snprintf(line, sizeof(line), "/prompt review --group %s focus", sys->group->group_id);
+            const int tasks_before = count_tasks(sess);
+            drive_command(cfg, sm, sched, line);
+            CHECK(count_tasks(sess) == tasks_before, "nothing was created");
+            CHECK(sys->group->member_count == 1, "and the system group did not grow");
+        }
+    }
+
+    TEST("a QUOTED \"--strict\" is an argument, not an option");
+    {
+        complete_all_tasks(sess);
+        drive_command(cfg, sm, sched, "/prompt review \"--strict\"");
+        struct edc_task *t = last_member(sess->foreground_group);
+        const char *in = t ? first_user_content(t->active_turn) : NULL;
+        CHECK(in && strstr(in, "--strict") != NULL, "the literal reached the template's $1");
+    }
+
     TEST("an unknown --option is an error, never part of the prompt");
     {
         const int tasks_before = count_tasks(sess);
@@ -443,7 +470,7 @@ int main(void)
     {
         complete_all_tasks(sess);
         drive_command(cfg, sm, sched, "/prompt review -strict");
-        struct edc_task *t = newest_task(sess);
+        struct edc_task *t = last_member(sess->foreground_group);
         const char *in = t ? first_user_content(t->active_turn) : NULL;
         CHECK(in && strstr(in, "-strict") != NULL, "`-strict` was substituted into the body");
     }
@@ -494,7 +521,7 @@ int main(void)
         const int skill_groups_before = count_groups(sess);
         drive_command(cfg, sm, sched, "/skill --new-group pdf page 4");
         CHECK(count_groups(sess) == skill_groups_before + 1, "a group was opened");
-        struct edc_task *sk = newest_task(sess);
+        struct edc_task *sk = last_member(sess->foreground_group);
         CHECK(sk && sk->group && sk->group->leader == sk, "the skill task leads it");
     }
 

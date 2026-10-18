@@ -323,7 +323,8 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "substituted (opencode's spelling -- `{{…}}` is NOT a placeholder), and what comes out is one task's "
      "input, verbatim. `| ; & >` in a body do nothing, and a `{{…}}` in it is plain text too. A body is "
      "therefore independent of the `/shell` switch -- its meaning must not depend on the reader's setting.\n\n"
-     "`--new-group` runs it in a group of its own (a fresh conversation); `--group <id>` runs it in "
+     "`--new-group` runs it in a group of its own (a fresh conversation); `--group <id>` (also "
+     "spelled `--group=<id>`) runs it in "
      "that existing group. Either may stand before or after the template name, because a template "
      "argument may not start with `--` (a single dash is fine)."},
     {"General", "/skill", "list the skills (yours, plus any found in .claude / .agents / .pi / .opencode)", NULL},
@@ -2322,8 +2323,10 @@ static bool cmd_token_at(const char *s, size_t i, size_t *b, size_t *e, bool *qu
  * intact -- the caller feeds it to the usual quote-aware argv builder, so a template's
  * arguments keep their quoting. NULL = rejected, |*err| is the reply.
  *
- * Rules: `--` tokens are options wherever they stand (before or after the name); a
- * QUOTED "--x" is an argument (the escape hatch); any other unquoted `--x` is an error. */
+ * Rule: an UNQUOTED word starting with `--` is an option, wherever it stands -- before or
+ * after the template name. So a template argument cannot start with `--` unless it is
+ * written in quotes: a quoted word is passed to the template as plain text. Any other
+ * unquoted `--x` is an error, not a template argument. */
 static sds cmd_strip_place_flags(const char *cmd, const char *tail, struct cmd_place_flags *out, sds *err)
 {
     sds work = sdsnew(tail ? tail : "");
