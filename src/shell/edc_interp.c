@@ -69,7 +69,8 @@ edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
             if (err)
                 *err = sdsnew("`+` is shell syntax and `/` / `!` are not -- a line is one or the other, "
                               "they do not combine.\n\nFor a task in a group of its own: "
-                              "`/task new \"<description>\" --new-group`.");
+                              "`/task new \"<description>\" --new-group`, `/prompt --new-group <name>` "
+                              "or `/skill --new-group <name>`.");
             return EDC_IN_MESSAGE;
         }
         if (n->kind == TK_WORD && n->fully_quoted)

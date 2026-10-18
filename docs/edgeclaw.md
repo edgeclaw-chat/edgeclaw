@@ -415,9 +415,9 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 | `/model <id>` | Switch model (persisted; the catalog's context window is applied too) |
 | `/model search <q>` | Search chat models across all providers |
 | `/prompt` | List the templates in `workspace/prompts/` |
-| `/prompt <name> [args…]` | Load a template, substitute its `$1` … `$N` / `$ARGUMENTS` placeholders (exactly opencode's; `{{…}}` and `${…}` are NOT ones), and make the body ONE task — as written. A body is a **document**, not a command line: `\| ; & >` in it do nothing, and `{{…}}` in it is plain text too (the last placeholder takes the remaining args; a body with no placeholder gets the args appended) |
+| `/prompt <name> [args…]` | Load a template, substitute its `$1` … `$N` / `$ARGUMENTS` placeholders (exactly opencode's; `{{…}}` and `${…}` are NOT ones), and make the body ONE task — as written. A body is a **document**, not a command line: `\| ; & >` in it do nothing, and `{{…}}` in it is plain text too (the last placeholder takes the remaining args; a body with no placeholder gets the args appended). `--new-group` runs it in a group of its own, `--group <id>` in that existing group |
 | `/skill` | List the skills — ours, plus any found in a `.claude` / `.agents` / `.pi` / `.opencode` skills directory |
-| `/skill <name> [args…]` | Run a skill directly: its `SKILL.md` body goes into this task wrapped in a `<skill name=… location=…>` block (pi's shape, so the model knows where the skill's relative paths hang off); the args are substituted, or appended after the closing tag when the body has none. Same as a prompt body, the text is a **document**: one task, verbatim |
+| `/skill <name> [args…]` | Run a skill directly: its `SKILL.md` body goes into this task wrapped in a `<skill name=… location=…>` block (pi's shape, so the model knows where the skill's relative paths hang off); the args are substituted, or appended after the closing tag when the body has none. Same as a prompt body, the text is a **document**: one task, verbatim. `--new-group` / `--group <id>` place it, exactly as for `/prompt` |
 | `/reload` | Re-read the resource files and rebuild the cached system prompt (a skill or AGENTS.md edited on disk takes effect; `config.json` still needs a restart) |
 | `/connect` | Guided setup: choose a provider, API key, and model (three-step wizard) |
 | `/sandbox [on\|off]` | Enable/disable the filesystem sandbox |
@@ -490,6 +490,21 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 | `/group fold [id] [focus]` | Fold the group now, ignoring the trigger; no id = the foreground group |
 
 ---
+
+### Where a template's task goes
+
+A `/prompt` or `/skill` task joins the group in front, unless you say otherwise:
+
+```
+> /prompt --new-group review src/main.c        # a fresh conversation for this one
+> /prompt review --new-group src/main.c        # same thing; position does not matter
+> /prompt --group grp-3 review src/main.c      # into an existing group
+```
+
+`--new-group` and `--group <id>` may stand before or after the template name. A `--…` token
+anywhere on the line is read as an option, so **a template argument may not start with `--`**
+— quote it (`/prompt review "--strict"`) when a template really needs that word. Single
+dashes are ordinary arguments (`/prompt review -strict`).
 
 ## Output
 

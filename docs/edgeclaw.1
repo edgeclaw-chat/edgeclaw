@@ -350,7 +350,8 @@ COMMAND REFERENCE
      /model <id>                   Switch model (persisted).
      /model search <q>             Search chat models across all providers.
      /prompt                       List the templates in workspace/prompts/.
-     /prompt <name> [args...]      Run a template: substitute its $1 .. $N /
+     /prompt [--new-group|--group <id>] <name> [args...]
+                                   Run a template: substitute its $1 .. $N /
                                    $ARGUMENTS placeholders (exactly opencode's;
                                    {{...}} and ${...} are NOT placeholders) and
                                    make the body ONE task, as written.  The last
@@ -364,7 +365,8 @@ COMMAND REFERENCE
      /skill                        List the skills (ours, plus any found in a
                                    .claude / .agents / .pi / .opencode
                                    skills directory).
-     /skill <name> [args...]       Run a skill directly: its SKILL.md body goes
+     /skill [--new-group|--group <id>] <name> [args...]
+                                   Run a skill directly: its SKILL.md body goes
                                    into this task wrapped in a <skill name=...
                                    location=...> block (pi's shape, so the model
                                    knows where the skill's relative paths hang
@@ -408,6 +410,11 @@ COMMAND REFERENCE
      /session memo curate [focus]  Curate durable entries out of the group
                                    memories now.
      /session memo compact         Compact the session memory now.
+
+     Both take --new-group (a group of its own) and --group <id> (an existing
+     one), before or after the name.  A `--...` word anywhere on the line is an
+     option, so a template argument may not start with `--` -- quote it
+     ("--strict") when it must.  Single dashes are ordinary arguments.
 
      Task creation
      /task new <desc>                  Create a task in the group in front.

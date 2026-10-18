@@ -322,12 +322,15 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "The body is a DOCUMENT, not a command line: the template's `$1` … `$N` / `$ARGUMENTS` placeholders are "
      "substituted (opencode's spelling -- `{{…}}` is NOT a placeholder), and what comes out is one task's "
      "input, verbatim. `| ; & >` in a body do nothing, and a `{{…}}` in it is plain text too. A body is "
-     "therefore independent of the `/shell` switch -- its meaning must not depend on the reader's setting."},
+     "therefore independent of the `/shell` switch -- its meaning must not depend on the reader's setting.\n\n"
+     "`--new-group` runs it in a group of its own (a fresh conversation); `--group <id>` runs it in "
+     "that existing group. Either may stand before or after the template name, because a template "
+     "argument may not start with `--` (a single dash is fine)."},
     {"General", "/skill", "list the skills (yours, plus any found in .claude / .agents / .pi / .opencode)", NULL},
     {"General", "/skill <name> [args…]",
      "run a skill directly: its SKILL.md body is loaded into this task (no tool round)",
      "Same rule as a prompt body: the skill text is a DOCUMENT, one task's input, verbatim -- never parsed "
-     "as a command line."},
+     "as a command line. `--new-group` / `--group <id>` place it, exactly as they do for `/prompt`."},
     {"General", "/reload", "re-read the resource files and rebuild the cached system prompt", NULL},
     {"General", "/sandbox [on|off]", "enable/disable the filesystem sandbox", NULL},
     {"General", "/sandbox list", "show the allow/deny path lists", NULL},
@@ -2251,6 +2254,175 @@ static bool edc_commands_handle_help_cmd(struct edc_config *cfg, struct edc_sess
     return ret;
 }
 
+/* ── --new-group / --group <id> on a document command ────────────────
+ *
+ * /prompt and /skill hand their arguments to the template VERBATIM, so where the
+ * placement options may stand has to be unambiguous. The rule (decided 2026-10-18):
+ *
+ *   - a `--…` token is an option WHEREVER it stands, before or after the template name;
+ *   - template arguments therefore may not start with `--` (a single dash is fine:
+ *     `/prompt review -strict` passes `-strict` on to the template);
+ *   - an unknown `--…` is an ERROR, never a template name or argument -- a typo must not
+ *     silently end up inside the prompt text.
+ *
+ * Both spellings mean the same thing, so either muscle memory works:
+ *
+ *     /prompt --new-group review src/main.c
+ *     /prompt review --new-group src/main.c
+ */
+struct cmd_place_flags
+{
+    bool new_group; /* --new-group: put the task in a group of its own */
+    sds group_id;   /* --group <id>: put it in that existing group */
+};
+
+/* One raw token of |s| at/after |i|: [b,e) covering any quotes, |*quoted| set when it
+ * opens with one. Deliberately dumb -- it only needs to find whole tokens, the real
+ * unquoting/unwrapping stays with the lexer and edc_cmd_unquote. */
+static bool cmd_token_at(const char *s, size_t i, size_t *b, size_t *e, bool *quoted)
+{
+    while (s[i] == ' ' || s[i] == '\t' || s[i] == '\n')
+        i++;
+    if (!s[i])
+        return false;
+    *b = i;
+    *quoted = (s[i] == '"' || s[i] == '\'');
+    while (s[i])
+    {
+        const char c = s[i];
+        if (c == ' ' || c == '\t' || c == '\n')
+            break;
+        if (c == '"' || c == '\'')
+        {
+            const char q = c;
+            i++;
+            while (s[i] && s[i] != q)
+            {
+                if (q == '"' && s[i] == '\\' && s[i + 1])
+                    i++;
+                i++;
+            }
+            if (s[i] == q)
+                i++;
+            continue;
+        }
+        i++;
+    }
+    *e = i;
+    return true;
+}
+
+/* Take the placement options off the RAW tail (before the lexer sees anything).
+ *
+ * Not done on tokens: with the shell switch off the lexer's option rules swallow the
+ * space after `--group`, so `--new-group review` reaches the token layer as one word
+ * (`--new-groupreview`). The raw text has no such problem.
+ *
+ * |*stripped| is a copy of |tail| with every option span blanked out, byte offsets
+ * intact -- the caller feeds it to the usual quote-aware argv builder, so a template's
+ * arguments keep their quoting. NULL = rejected, |*err| is the reply.
+ *
+ * Rules: `--` tokens are options wherever they stand (before or after the name); a
+ * QUOTED "--x" is an argument (the escape hatch); any other unquoted `--x` is an error. */
+static sds cmd_strip_place_flags(const char *cmd, const char *tail, struct cmd_place_flags *out, sds *err)
+{
+    sds work = sdsnew(tail ? tail : "");
+    size_t i = 0, b = 0, e = 0;
+    bool quoted = false;
+    while (cmd_token_at(work, i, &b, &e, &quoted))
+    {
+        i = e;
+        if (quoted || e - b < 3 || work[b] != '-' || work[b + 1] != '-')
+            continue;
+
+        sds tok = sdsnewlen(work + b, e - b);
+        if (strcmp(tok, "--new-group") == 0)
+        {
+            out->new_group = true;
+            memset(work + b, ' ', e - b);
+            sdsfree(tok);
+            continue;
+        }
+        if (strcmp(tok, "--group") == 0 || strncmp(tok, "--group=", 8) == 0)
+        {
+            sds value = NULL;
+            if (tok[7] == '=')
+            {
+                value = sdsnew(tok + 8);
+            }
+            else
+            {
+                size_t b2 = 0, e2 = 0;
+                bool quoted2 = false;
+                if (!cmd_token_at(work, e, &b2, &e2, &quoted2))
+                {
+                    *err = sdscatprintf(sdsempty(), "`--group` needs an id: `%s ... --group <id>`.", cmd);
+                    sdsfree(tok);
+                    sdsfree(work);
+                    return NULL;
+                }
+                sds raw = sdsnewlen(work + b2, e2 - b2);
+                value = edc_cmd_unquote(raw, NULL);
+                if (!value)
+                    value = sdsnew(raw);
+                sdsfree(raw);
+                memset(work + b2, ' ', e2 - b2);
+                i = e2;
+            }
+            if (out->group_id)
+                sdsfree(out->group_id);
+            out->group_id = value;
+            memset(work + b, ' ', e - b);
+            sdsfree(tok);
+            continue;
+        }
+
+        *err = sdscatprintf(sdsempty(),
+                            "**Unknown option** `%s` — `%s` knows `--new-group` and `--group <id>`.\n\n"
+                            "Quote it (`\"%s\"`) if a template should receive it as an argument.",
+                            tok, cmd, tok);
+        sdsfree(tok);
+        sdsfree(work);
+        return NULL;
+    }
+    return work;
+}
+
+/* Where does this task go? |*out| == NULL means "open a group of its own" (the contract
+ * of edc_shell_spawn_task). false = the request cannot be honoured; |*err| is the reply. */
+static bool cmd_resolve_place(struct edc_session *session, const struct cmd_place_flags *flags,
+                              struct edc_task_group **out, sds *err)
+{
+    *out = NULL;
+
+    if (flags->new_group)
+        return true; /* a group of its own */
+
+    if (flags->group_id)
+    {
+        struct edc_task_group *group = session ? edc_session_find_group(session, flags->group_id) : NULL;
+        if (!group)
+        {
+            *err = sdscatprintf(sdsempty(), "**No group** named `%s`.\n\nRun `/group list` to see them.",
+                                flags->group_id);
+            return false;
+        }
+        if (edc_task_group_is_system(group))
+        {
+            *err = sdsnew("`--group` cannot name the system group — it does not take new work.");
+            return false;
+        }
+        *out = group;
+        return true;
+    }
+
+    struct edc_task_group *group = session ? session->foreground_group : NULL;
+    if (group && (group->is_orphaned || group->member_count == 0 || edc_task_group_is_system(group)))
+        group = NULL;
+    *out = group;
+    return true;
+}
+
 static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_session_manager *sm,
                                        struct edc_scheduler *sched, struct edc_reply_to to,
                                        struct edc_channel_message *message)
@@ -2268,12 +2440,29 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
         return true;
     }
 
+    struct cmd_place_flags flags = {0};
+    sds flags_err = NULL;
+    sds stripped = cmd_strip_place_flags("/prompt", arg, &flags, &flags_err);
+    if (!stripped)
+    {
+        edc_commands_reply(to, flags_err);
+        sdsfree(flags_err);
+        if (flags.group_id)
+            sdsfree(flags.group_id);
+        sdsfree(arg);
+        return true;
+    }
+
     int argc = 0;
-    sds *args = edc_argv_from_tail(arg, &argc);
+    sds *args = edc_argv_from_tail(stripped, &argc);
+    sdsfree(stripped);
     sdsfree(arg);
+
     if (argc == 0)
     {
         edc_prompt_args_free(args, argc);
+        if (flags.group_id)
+            sdsfree(flags.group_id);
         sds wd = cmd_session_workdir(sm, message);
         edc_commands_prompt_list(cfg, wd, to);
         sdsfree(wd);
@@ -2321,9 +2510,17 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
      * be chasing a ghost. (This is also why a body containing `/prompt` stays harmless:
      * nothing in it is ever dispatched as a command.) */
     struct edc_session *session = cmd_input_session(sm, message);
-    struct edc_task_group *group = session ? session->foreground_group : NULL;
-    if (!group || group->is_orphaned || group->member_count == 0 || edc_task_group_is_system(group))
-        group = NULL;
+    struct edc_task_group *group = NULL;
+    sds place_err = NULL;
+    if (!cmd_resolve_place(session, &flags, &group, &place_err))
+    {
+        edc_commands_reply(to, place_err);
+        sdsfree(place_err);
+        sdsfree(expanded); /* the body would leak */
+        if (flags.group_id)
+            sdsfree(flags.group_id);
+        return true;
+    }
 
     struct edc_cmd_task_opts opts;
     memset(&opts, 0, sizeof(opts));
@@ -2344,6 +2541,8 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
         edc_commands_announce_task(to, task);
 
     edc_cmd_task_opts_free(&opts); /* frees |input| too */
+    if (flags.group_id)
+        sdsfree(flags.group_id);
     return true;
 }
 
@@ -2430,12 +2629,29 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
         return true;
     }
 
+    struct cmd_place_flags flags = {0};
+    sds flags_err = NULL;
+    sds stripped = cmd_strip_place_flags("/skill", arg, &flags, &flags_err);
+    if (!stripped)
+    {
+        edc_commands_reply(to, flags_err);
+        sdsfree(flags_err);
+        if (flags.group_id)
+            sdsfree(flags.group_id);
+        sdsfree(arg);
+        return true;
+    }
+
     int argc = 0;
-    sds *args = edc_argv_from_tail(arg, &argc); /* the same quoting rules as /prompt */
+    sds *args = edc_argv_from_tail(stripped, &argc); /* the same quoting rules as /prompt */
+    sdsfree(stripped);
     sdsfree(arg);
+
     if (argc == 0)
     {
         edc_prompt_args_free(args, argc);
+        if (flags.group_id)
+            sdsfree(flags.group_id);
         sds wd = cmd_session_workdir(sm, message);
         edc_commands_skill_list(cfg, wd, to);
         sdsfree(wd);
@@ -2510,9 +2726,17 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
      * so pi's `<skill …>` wrapper would be eaten by the tokenizer (and any `<tag>` in a
      * body silently mangled). */
     struct edc_session *session = cmd_input_session(sm, message);
-    struct edc_task_group *group = session ? session->foreground_group : NULL;
-    if (!group || group->is_orphaned || group->member_count == 0)
-        group = NULL;
+    struct edc_task_group *group = NULL;
+    sds place_err = NULL;
+    if (!cmd_resolve_place(session, &flags, &group, &place_err))
+    {
+        edc_commands_reply(to, place_err);
+        sdsfree(place_err);
+        sdsfree(input); /* the body would leak */
+        if (flags.group_id)
+            sdsfree(flags.group_id);
+        return true;
+    }
 
     struct edc_cmd_task_opts opts;
     memset(&opts, 0, sizeof(opts));
@@ -2537,6 +2761,8 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
         edc_commands_announce_task(to, task); /* the receipt: id / group / when it runs */
 
     edc_cmd_task_opts_free(&opts); /* frees |input| too */
+    if (flags.group_id)
+        sdsfree(flags.group_id);
     return true;
 }
 

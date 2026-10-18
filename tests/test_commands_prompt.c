@@ -90,6 +90,29 @@ static int count_tasks(struct edc_session *sess)
     return n;
 }
 
+static int count_groups(struct edc_session *sess)
+{
+    int n = 0;
+    struct edc_task_group *g;
+    DL_FOREACH(sess->groups, g)
+    n++;
+    return n;
+}
+
+/* The task created last (the description is truncated to 30 chars, so it is a poor key). */
+static struct edc_task *newest_task(struct edc_session *sess)
+{
+    struct edc_task *last = NULL;
+    struct edc_task_group *g;
+    DL_FOREACH(sess->groups, g)
+    {
+        struct edc_task *t;
+        LL_FOREACH2(g->members, t, group_next)
+        last = t;
+    }
+    return last;
+}
+
 static struct edc_task *find_task_by_desc(struct edc_session *sess, const char *desc)
 {
     struct edc_task_group *g;
@@ -298,6 +321,73 @@ int main(void)
     CHECK(count_tasks(sess) == before, "no task was created (a loose prefix match would run the `x` template)");
     CHECK(g_llm_calls == 0, "and nothing ran");
 
+    /* ── --new-group / --group <id>: where the template's task lands ── */
+
+    TEST("/prompt --new-group opens a group of its own");
+    {
+        complete_all_tasks(sess);
+        struct edc_task_group *prev_fg = sess->foreground_group;
+        const int groups_before = count_groups(sess);
+        drive_command(cfg, sm, sched, "/prompt --new-group review focus");
+
+        CHECK(count_groups(sess) == groups_before + 1, "a group was opened");
+        struct edc_task *t = newest_task(sess);
+        CHECK(t != NULL, "a task was created");
+        CHECK(t && t->group && t->group != prev_fg, "it did not join the group that was in front");
+        CHECK(t && t->group && t->group->leader == t, "it leads the new group");
+        CHECK(edc_scheduler_get_foreground(sess) == (t ? t->group : NULL), "and the new group took the front");
+    }
+
+    TEST("--new-group also works AFTER the template name");
+    {
+        complete_all_tasks(sess);
+        const int groups_before = count_groups(sess);
+        drive_command(cfg, sm, sched, "/prompt review --new-group focus");
+
+        CHECK(count_groups(sess) == groups_before + 1, "one more group");
+        struct edc_task *t = newest_task(sess);
+        CHECK(t && t->group && t->group->leader == t, "the task leads it");
+    }
+
+    TEST("--group <id> puts the task in that existing group");
+    {
+        complete_all_tasks(sess);
+        struct edc_task_group *target = sess->foreground_group;
+        CHECK(target != NULL, "there is a group to aim at");
+        char line[256];
+        snprintf(line, sizeof(line), "/prompt review --group %s focus", target ? target->group_id : "none");
+        const int groups_before = count_groups(sess);
+        drive_command(cfg, sm, sched, line);
+
+        struct edc_task *t = newest_task(sess);
+        CHECK(t != NULL, "a task was created");
+        CHECK(t && t->group == target, "it joined the named group");
+        CHECK(count_groups(sess) == groups_before, "and no new group was opened");
+    }
+
+    TEST("--group with an unknown id builds nothing");
+    {
+        const int tasks_before = count_tasks(sess);
+        drive_command(cfg, sm, sched, "/prompt review --group grp-nope focus");
+        CHECK(count_tasks(sess) == tasks_before, "no task was created");
+    }
+
+    TEST("an unknown --option is an error, never part of the prompt");
+    {
+        const int tasks_before = count_tasks(sess);
+        drive_command(cfg, sm, sched, "/prompt review --strict");
+        CHECK(count_tasks(sess) == tasks_before, "no task was created");
+    }
+
+    TEST("a single dash is still a template argument");
+    {
+        complete_all_tasks(sess);
+        drive_command(cfg, sm, sched, "/prompt review -strict");
+        struct edc_task *t = newest_task(sess);
+        const char *in = t ? first_user_content(t->active_turn) : NULL;
+        CHECK(in && strstr(in, "-strict") != NULL, "`-strict` was substituted into the body");
+    }
+
     snprintf(cmd, sizeof(cmd), "rm -rf %s", ws);
     if (system(cmd) != 0)
         printf("  (cleanup failed)\n");
@@ -338,6 +428,14 @@ int main(void)
         CHECK(in && strstr(in, "</skill>") != NULL, "the block is closed");
         CHECK(in && strstr(in, "page 3") != NULL, "the user's words reached it (no placeholder: appended)");
         CHECK(in && (strstr(in, "page 3") > strstr(in, "</skill>")), "and they land after the closing tag");
+
+        TEST("/skill --new-group opens a group of its own");
+        complete_all_tasks(sess);
+        const int skill_groups_before = count_groups(sess);
+        drive_command(cfg, sm, sched, "/skill --new-group pdf page 4");
+        CHECK(count_groups(sess) == skill_groups_before + 1, "a group was opened");
+        struct edc_task *sk = newest_task(sess);
+        CHECK(sk && sk->group && sk->group->leader == sk, "the skill task leads it");
     }
 
     /* ── `+` 不与 `!` 组合: 同一条规矩 ───────────────────────────── */
