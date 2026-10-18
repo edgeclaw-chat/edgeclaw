@@ -247,8 +247,12 @@ static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
 
     if (sdslen(out) > 0)
         result = sdscatprintf(result, "%s\n", out);
+    /* The command's error output follows its normal output with no label: a reader
+     * (person or model) gets what the command produced, nothing prepended. The two
+     * streams are already collected separately, so the interleaving was lost either
+     * way; the label only told you where the switch happened. */
     if (sdslen(err) > 0)
-        result = sdscatprintf(result, "stderr:\n%s\n", err);
+        result = sdscatprintf(result, "%s\n", err);
 
     edc_toolbox_emit_tool_message_plain(ctx->tb_ctx, ctx->command, result);
 
