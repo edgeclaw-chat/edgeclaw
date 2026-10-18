@@ -107,7 +107,7 @@ The first character decides what the line is. That is the whole rule.
 | Line starts with | It is | Example |
 |---|---|---|
 | anything else | **one task**, verbatim | `explain src/edc_interp.c` |
-| `/` | **a command** (never affected by `/shell`) | `/task list` |
+| `/` | **a command** — always; an unknown one is an error, not a message | `/task list` |
 | `!` | **a local shell command**, no model call, no tokens | `!git status` |
 | `+` | a task in a **new group** (shell syntax) | `+"review the last commits"` |
 | `"` or `'` | a **shell line**: pipes, sequences, redirects | `"scan src/" \| "fix the top 3"` |

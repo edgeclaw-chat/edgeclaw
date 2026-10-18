@@ -29,6 +29,12 @@ GETTING STARTED
 
      Type /help for the command list.
 
+     A line that starts with / is ALWAYS a command, never a message.  If no
+     command answers to that word, the line is refused with "Unknown command"
+     and is not sent to the model -- there is no spelling that turns it into
+     one.  Only the FIRST character matters, so text about a path can start
+     with a word: "check /usr/bin for the old binary".
+
      While the input starts with /, a completion list hangs just below it:
      Up/Down move the selection, Tab completes it, Esc dismisses it.  Enter
      is untouched -- it still sends what you typed.
@@ -412,11 +418,11 @@ COMMAND REFERENCE
      /session memo compact         Compact the session memory now.
 
      Both take --new-group (a group of its own) and --group <id> (an existing
-     one; --group=<id> is the same option), before or after the name.  A group
-     runs one task at a time even when it is not the group in front, so the
-     task waits for whatever is still running there.  Running alongside is
-     spelled `&` (shell line) or `--bg` (/task new); /prompt and /skill have
-     no --bg.  A `--...` word anywhere on the line is an
+     one; --group=<id> is the same option), before or after the name, plus
+     --bg.  A group runs one task at a time even when it is not the group in
+     front, so the task waits for whatever is still running there -- unless
+     --bg is given, which runs it alongside (no queueing, and it does not take
+     the front).  A `--...` word anywhere on the line is an
      option, so a template argument may not start with `--` -- quote it
      ("--strict") when it must.  Single dashes are ordinary arguments.
 

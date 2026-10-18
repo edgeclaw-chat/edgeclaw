@@ -106,6 +106,11 @@ of two, and nothing tells you why.
 With it **off** (the default), every line that is not a `/` command is **one task
 description, verbatim** — no operators to get wrong, no sigil to escape.
 
+A line that starts with `/` is **always a command**, never a message. If no command answers
+to that word the line is refused with `Unknown command`; it is not sent to the model, and
+there is no spelling that turns it into one. The `/` only matters as the *first* character,
+so text about a path can simply start with a word: `check /usr/bin for the old binary`.
+
 **A shell line is recognised by its first character.** Every string in shell syntax is
 quoted, so a shell line always begins with `"` or `'` — or with its own sigil, `+` / `!`. A
 line beginning with none of those is **a normal message**: one task, verbatim, nothing
@@ -500,15 +505,18 @@ A `/prompt` or `/skill` task joins the group in front, unless you say otherwise:
 > /prompt review --new-group src/main.c        # same thing; position does not matter
 > /prompt --group grp-3 review src/main.c      # into an existing group
 > /prompt --group=grp-3 review src/main.c      # the same, equals form
+> /prompt --bg review src/main.c               # alongside: no queueing, no front
 ```
 
 `--new-group` and `--group <id>` (equals form `--group=<id>` too) may stand before or after
 the template name.
 
 A group runs one task at a time, and that applies whether or not it is the group in front:
-a task sent to a group that is still busy waits for the task already running there. To run
-something alongside instead, say so explicitly — `&` on a shell line, or `--bg` on
-`/task new`. `/prompt` and `/skill` have no `--bg`, so a template task always queues. A `--…` token
+a task sent to a group that is still busy waits for the task already running there.
+
+To run something alongside instead, say so explicitly: `&` on a shell line, `--bg` on
+`/task new`, `/prompt` or `/skill`. A `--bg` task does not queue and does not take the
+front — with `--new-group` it opens a group and leaves the group in front alone. A `--…` token
 anywhere on the line is read as an option, so **a template argument may not start with `--`**
 — quote it (`/prompt review "--strict"`) when a template really needs that word. Single
 dashes are ordinary arguments (`/prompt review -strict`).
