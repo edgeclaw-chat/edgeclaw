@@ -1,4 +1,5 @@
 ﻿#include "edc_file_utils.h"
+#include "edc_path_guard.h"
 #include "edc_compat.h"
 
 #include <dirent.h>
@@ -149,19 +150,19 @@ FILE *edc_file_fopen_safe(const char *path, const char *mode, const char *root)
     if (!path || !mode)
         return NULL;
 
-    struct stat lst;
-    if (lstat(path, &lst) == 0 && S_ISLNK(lst.st_mode))
-    {
-        errno = ELOOP;
-        return NULL;
-    }
-    if (!edc_path_parent_within(path, root))
+    /* The rules live in edc_path_guard: symlink refused, target contained in |root|, a
+     * file that does not exist yet resolved through its parent. |conf| NULL = no denylist
+     * here; the guarded READERS are the ones that consult it. */
+    struct edc_path_rules rules = {.root = root, .writable = true, .refuse_symlink = true};
+    sds resolved = edc_path_guard_resolve(&rules, path, NULL);
+    if (!resolved)
     {
         errno = EACCES;
         return NULL;
     }
 
-    int fd = open(path, edc_fopen_flags_from_mode(mode) | O_NOFOLLOW, 0644);
+    int fd = open(resolved, edc_fopen_flags_from_mode(mode) | O_NOFOLLOW, 0644);
+    sdsfree(resolved);
     if (fd < 0)
         return NULL;
 

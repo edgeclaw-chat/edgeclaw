@@ -24,6 +24,10 @@ bool edc_file_write(const char *path, const char *content, ssize_t len, EdcError
 FILE *edc_file_fopen_safe(const char *path, const char *mode, const char *root);
 bool edc_file_write_safe(const char *path, const char *content, ssize_t len, const char *root, EdcError **error);
 
+/* Reading a path the model can influence lives in edc_path_guard.h (edc_path_guard_read):
+ * it is the one place that owns the symlink / hardlink / containment / deny rules. */
+
+
 bool edc_file_exists(const char *path);
 bool edc_file_is_dir(const char *path);
 bool edc_file_is_regular(const char *path);

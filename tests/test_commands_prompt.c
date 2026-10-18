@@ -100,6 +100,16 @@ static int count_groups(struct edc_session *sess)
 }
 
 /* The task created last (the description is truncated to 30 chars, so it is a poor key). */
+static struct edc_task *last_member(struct edc_task_group *group)
+{
+    struct edc_task *last = NULL, *t;
+    if (!group)
+        return NULL;
+    LL_FOREACH2(group->members, t, group_next)
+    last = t;
+    return last;
+}
+
 static struct edc_task *newest_task(struct edc_session *sess)
 {
     struct edc_task *last = NULL;
@@ -349,26 +359,76 @@ int main(void)
         CHECK(t && t->group && t->group->leader == t, "the task leads it");
     }
 
-    TEST("--group <id> puts the task in that existing group");
+    TEST("--group <id> puts the task in a group that is NOT in front");
     {
         complete_all_tasks(sess);
-        struct edc_task_group *target = sess->foreground_group;
-        CHECK(target != NULL, "there is a group to aim at");
+        /* Two fresh groups: the second takes the front, so the first can only be reached
+         * by NAMING it -- aiming at the foreground group would pass even if --group were
+         * ignored altogether. */
+        drive_command(cfg, sm, sched, "/prompt --new-group review first");
+        struct edc_task_group *older = newest_task(sess) ? newest_task(sess)->group : NULL;
+        drive_command(cfg, sm, sched, "/prompt --new-group review second");
+        CHECK(older != NULL && sess->foreground_group != older, "the older group is not in front");
+
         char line[256];
-        snprintf(line, sizeof(line), "/prompt review --group %s focus", target ? target->group_id : "none");
+        snprintf(line, sizeof(line), "/prompt review --group %s focus", older ? older->group_id : "none");
         const int groups_before = count_groups(sess);
+        const int tasks_before = count_tasks(sess);
         drive_command(cfg, sm, sched, line);
 
-        struct edc_task *t = newest_task(sess);
-        CHECK(t != NULL, "a task was created");
-        CHECK(t && t->group == target, "it joined the named group");
+        CHECK(count_tasks(sess) == tasks_before + 1, "exactly one task was created");
         CHECK(count_groups(sess) == groups_before, "and no new group was opened");
+        CHECK(older && last_member(older) && last_member(older)->group == older, "it joined the named group");
+
+        TEST("--group accepts a QUOTED id");
+        snprintf(line, sizeof(line), "/prompt review --group \"%s\" focus", older ? older->group_id : "none");
+        const int tasks_before_q = count_tasks(sess);
+        drive_command(cfg, sm, sched, line);
+        CHECK(count_tasks(sess) == tasks_before_q + 1, "the quotes are stripped, so the group is found");
+        CHECK(older && last_member(older) && last_member(older)->group == older, "and the task joined it");
+    }
+
+    TEST("--group refuses a conversation whose leader is gone");
+    {
+        complete_all_tasks(sess);
+        drive_command(cfg, sm, sched, "/prompt --new-group review doomed");
+        struct edc_task *lead = newest_task(sess);
+        struct edc_task_group *doomed = lead ? lead->group : NULL;
+        CHECK(doomed != NULL, "a group to orphan");
+        if (doomed)
+        {
+            const int members_before = doomed->member_count;
+            edc_task_group_mark_orphaned(doomed); /* what a departed leader leaves behind */
+
+            char line[256];
+            snprintf(line, sizeof(line), "/prompt review --group %s focus", doomed->group_id);
+            const int tasks_before = count_tasks(sess);
+            drive_command(cfg, sm, sched, line);
+
+            CHECK(count_tasks(sess) == tasks_before, "nothing was created");
+            CHECK(doomed->member_count == members_before, "the group did not grow");
+            CHECK(doomed->leader == NULL, "and no leader was silently invented for it");
+        }
     }
 
     TEST("--group with an unknown id builds nothing");
     {
         const int tasks_before = count_tasks(sess);
         drive_command(cfg, sm, sched, "/prompt review --group grp-nope focus");
+        CHECK(count_tasks(sess) == tasks_before, "no task was created");
+    }
+
+    TEST("--new-group and --group together are refused, not silently resolved");
+    {
+        const int tasks_before = count_tasks(sess);
+        drive_command(cfg, sm, sched, "/prompt --new-group --group grp-1 review focus");
+        CHECK(count_tasks(sess) == tasks_before, "no task was created");
+    }
+
+    TEST("an option where --group's id belongs is an error");
+    {
+        const int tasks_before = count_tasks(sess);
+        drive_command(cfg, sm, sched, "/prompt --group --new-group review focus");
         CHECK(count_tasks(sess) == tasks_before, "no task was created");
     }
 

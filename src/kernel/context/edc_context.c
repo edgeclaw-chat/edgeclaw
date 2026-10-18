@@ -236,7 +236,7 @@ static sds edc_context_load_skills(const struct edc_config *conf, const char *wo
      * Claude Code / opencode shows up here without being moved. The project roots come
      * from the SESSION's directory (see edc_resource_dirs). */
     UT_array *roots = edc_resource_dirs(conf, workdir);
-    UT_array *skills = edc_skills_load_roots(roots);
+    UT_array *skills = edc_skills_load_roots(roots, conf);
 
     result = sdscatprintf(result, "## Skills\n\n"
                                   "The following skills extend your capabilities. To use a skill, read its SKILL.md "

@@ -10,6 +10,7 @@
  *      `{{SELF}}` (see tests/test_cmd_parse.c::test_expand_task_refs), so the `$` forms
  *      belong to templates and the braces to the layer below. */
 #include "edc_lex.h"
+#include "edc_config.h"
 #include "edc_prompts.h"
 #include "sds.h"
 #include "utarray.h"
@@ -17,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h> /* symlink/unlink */
 
 static int passed = 0, failed = 0;
 
@@ -161,7 +163,7 @@ static void test_parse(void)
     write_file_at(dir, "other.txt", "not a prompt\n");
 
     TEST("front matter: description + argument-hint");
-    struct edc_prompt *p = edc_prompt_load(dir, "full");
+    struct edc_prompt *p = edc_prompt_load(dir, "full", NULL);
     CHECK(p != NULL, "loaded");
     if (p)
     {
@@ -173,7 +175,7 @@ static void test_parse(void)
     edc_prompt_free(p);
 
     TEST("no front matter: description falls back to the first non-empty line");
-    p = edc_prompt_load(dir, "bare");
+    p = edc_prompt_load(dir, "bare", NULL);
     CHECK(p != NULL, "loaded");
     if (p)
     {
@@ -184,36 +186,100 @@ static void test_parse(void)
     edc_prompt_free(p);
 
     TEST("a value may contain a colon (split on the FIRST one only)");
-    p = edc_prompt_load(dir, "colon");
+    p = edc_prompt_load(dir, "colon", NULL);
     CHECK(p != NULL, "loaded");
     if (p)
         CHECK_STR(p->description, "Review: focus on X", "the colon inside the value survived");
     edc_prompt_free(p);
 
     TEST("front matter opened but never closed is refused, not half-parsed");
-    p = edc_prompt_load(dir, "unclosed");
+    p = edc_prompt_load(dir, "unclosed", NULL);
     CHECK(p == NULL, "NULL");
     edc_prompt_free(p);
 
     TEST("an empty body is refused");
-    p = edc_prompt_load(dir, "empty");
+    p = edc_prompt_load(dir, "empty", NULL);
     CHECK(p == NULL, "NULL");
     edc_prompt_free(p);
 
     TEST("a missing file is refused");
-    p = edc_prompt_load(dir, "nope");
+    p = edc_prompt_load(dir, "nope", NULL);
     CHECK(p == NULL, "NULL");
     edc_prompt_free(p);
 
     TEST("a name that could leave the directory is refused");
-    CHECK(edc_prompt_load(dir, "../secret") == NULL, "../ refused");
-    CHECK(edc_prompt_load(dir, "a/b") == NULL, "/ refused");
-    CHECK(edc_prompt_load(dir, ".hidden") == NULL, "dot-prefixed refused");
-    CHECK(edc_prompt_load(dir, "") == NULL, "empty refused");
-    CHECK(edc_prompt_load(dir, "ok`;rm -rf /") == NULL, "non-[A-Za-z0-9._-] refused");
+    CHECK(edc_prompt_load(dir, "../secret", NULL) == NULL, "../ refused");
+    CHECK(edc_prompt_load(dir, "a/b", NULL) == NULL, "/ refused");
+    CHECK(edc_prompt_load(dir, ".hidden", NULL) == NULL, "dot-prefixed refused");
+    CHECK(edc_prompt_load(dir, "", NULL) == NULL, "empty refused");
+    CHECK(edc_prompt_load(dir, "ok`;rm -rf /", NULL) == NULL, "non-[A-Za-z0-9._-] refused");
+
+    TEST("a symlinked template is refused, not read through");
+    {
+        /* The model can write into workspace/prompts: without this it could plant
+         * `evil.md -> ~/.ssh/id_rsa` and have the contents land in its own context. */
+        char outside[1024], link[1024];
+        snprintf(outside, sizeof(outside), "%s_outside_secret.txt", dir);
+        FILE *f = fopen(outside, "w");
+        if (f)
+        {
+            fputs("TOP-SECRET\n", f);
+            fclose(f);
+        }
+        snprintf(link, sizeof(link), "%s/evil.md", dir);
+        unlink(link);
+        CHECK(symlink(outside, link) == 0, "symlink planted");
+        struct edc_prompt *evil = edc_prompt_load(dir, "evil", NULL);
+        CHECK(evil == NULL, "the link is refused");
+        edc_prompt_free(evil);
+        unlink(link);
+        unlink(outside);
+    }
+
+    TEST("a HARDLINKED template is refused too (lstat cannot see it)");
+    {
+        char outside[1024], href[1024];
+        snprintf(outside, sizeof(outside), "%s_hardlink_secret.txt", dir);
+        FILE *f = fopen(outside, "w");
+        if (f)
+        {
+            fputs("TOP-SECRET\n", f);
+            fclose(f);
+        }
+        snprintf(href, sizeof(href), "%s/linked.md", dir);
+        unlink(href);
+        CHECK(link(outside, href) == 0, "hardlink planted");
+        struct edc_prompt *linked = edc_prompt_load(dir, "linked", NULL);
+        CHECK(linked == NULL, "refused (st_nlink > 1)");
+        edc_prompt_free(linked);
+        unlink(href);
+        unlink(outside);
+    }
+
+    TEST("the sandbox DENY list applies to templates (its roots are outside ro/rw)");
+    {
+        /* Being inside the resource root is not permission: a denied directory still
+         * refuses, even though it is neither in ro_paths nor in rw_paths. */
+        struct edc_prompt *allowed = edc_prompt_load(dir, "bare", NULL);
+        CHECK(allowed != NULL, "loads with no policy (control)");
+        edc_prompt_free(allowed);
+
+        struct edc_config conf;
+        memset(&conf, 0, sizeof(conf));
+        conf.enable_sandbox = true;
+        sds deny[2] = {sdsnew(dir), NULL};
+        conf.sandbox_deny_paths = deny;
+
+        struct edc_prompt *denied_p = edc_prompt_load(dir, "bare", &conf);
+        CHECK(denied_p == NULL, "the same template is refused when its directory is denied");
+        edc_prompt_free(denied_p);
+
+        sdsfree(deny[0]);
+        conf.sandbox_deny_paths = NULL;
+    }
 
     TEST("listing is sorted, only .md, and skips refused files");
-    UT_array *all = edc_prompts_list(dir);
+    UT_array *all = edc_prompts_list(dir, NULL);
     CHECK(utarray_len(all) == 3, "bare / colon / full (no other.txt, no unclosed, no empty)");
     if (utarray_len(all) == 3)
     {
@@ -232,7 +298,7 @@ static void test_parse(void)
     utarray_free(all);
 
     TEST("a missing directory lists as empty, not an error");
-    all = edc_prompts_list("/tmp/edc_prompt_unit_does_not_exist");
+    all = edc_prompts_list("/tmp/edc_prompt_unit_does_not_exist", NULL);
     CHECK(utarray_len(all) == 0, "empty");
     utarray_free(all);
 

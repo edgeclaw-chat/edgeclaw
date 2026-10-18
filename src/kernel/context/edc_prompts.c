@@ -1,8 +1,10 @@
 #include "edc_prompts.h"
 
 #include "edc_compat.h"
+#include "edc_config.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
+#include "edc_path_guard.h"
 #include "edc_resources.h"
 #include "log.h"
 #include "utarray.h"
@@ -194,7 +196,11 @@ static struct edc_prompt *edc_prompt_parse(const char *name, const char *content
     return prompt;
 }
 
-struct edc_prompt *edc_prompt_load(const char *dir, const char *name)
+/* Templates are documents a human writes; anything past this is not one, and reading it
+ * whole just to show its first line (the bare `/prompt` listing) would be an OOM lever. */
+#define EDC_PROMPT_MAX_BYTES (256 * 1024)
+
+struct edc_prompt *edc_prompt_load(const char *dir, const char *name, const struct edc_config *conf)
 {
     if (!dir || !edc_prompt_name_is_safe(name))
         return NULL;
@@ -203,12 +209,25 @@ struct edc_prompt *edc_prompt_load(const char *dir, const char *name)
     sds path = edc_path_join(dir, file, NULL);
     sdsfree(file);
 
+    /* |dir| is both the root it was found under and the containment boundary, and the
+     * sandbox's DENY list still applies (the rw/ro lists do not: these roots live outside
+     * them by design). Symlinks and hardlinks are refused outright. That matters because
+     * the model can WRITE into workspace/prompts -- without this it could plant a link to
+     * ~/.ssh and have the contents land in its own context on the next `/prompt`. */
+    struct edc_path_rules rules = {
+        .root = dir,
+        .refuse_symlink = true,
+        .refuse_hardlink = true,
+        .deny_paths = (conf && conf->enable_sandbox) ? conf->sandbox_deny_paths : NULL,
+    };
     EdcError *error = NULL;
-    sds content = edc_file_read(path, &error);
+    sds content = edc_path_guard_read(&rules, path, EDC_PROMPT_MAX_BYTES, &error);
     sdsfree(path);
     if (!content)
     {
-        edc_error_free(error); /* absence is normal */
+        if (error && error->message)
+            log_warn("prompt '%s': %s", name, error->message); /* absence is normal, a refusal is not */
+        edc_error_free(error);
         return NULL;
     }
 
@@ -229,6 +248,7 @@ struct edc_prompts_scan
 {
     UT_array *prompts;
     sds dir;
+    const struct edc_config *conf;
 };
 
 static void edc_prompts_scan_cb(const char *name, int type, void *userdata)
@@ -241,7 +261,7 @@ static void edc_prompts_scan_cb(const char *name, int type, void *userdata)
         return;
 
     sds base = sdsnewlen(name, len - 3);
-    struct edc_prompt *prompt = edc_prompt_load(scan->dir, base);
+    struct edc_prompt *prompt = edc_prompt_load(scan->dir, base, scan->conf);
     sdsfree(base);
     if (prompt)
         utarray_push_back(scan->prompts, &prompt);
@@ -254,14 +274,14 @@ static int edc_prompt_name_cmp(const void *a, const void *b)
     return strcmp((*pa)->name, (*pb)->name);
 }
 
-UT_array *edc_prompts_list(const char *dir)
+UT_array *edc_prompts_list(const char *dir, const struct edc_config *conf)
 {
     UT_array *prompts;
     utarray_new(prompts, &ut_prompt_ptr_icd);
     if (!dir)
         return prompts;
 
-    struct edc_prompts_scan scan = {.prompts = prompts, .dir = sdsnew(dir)};
+    struct edc_prompts_scan scan = {.prompts = prompts, .dir = sdsnew(dir), .conf = conf};
     EdcError *error = NULL;
     edc_dir_foreach(dir, edc_prompts_scan_cb, &scan, &error);
     edc_error_free(error);
@@ -288,7 +308,7 @@ static struct edc_prompt *edc_prompts_find(UT_array *prompts, const sds name)
     return NULL;
 }
 
-struct edc_prompt *edc_prompt_load_roots(const UT_array *roots, const char *name)
+struct edc_prompt *edc_prompt_load_roots(const UT_array *roots, const char *name, const struct edc_config *conf)
 {
     if (!roots)
         return NULL;
@@ -303,7 +323,7 @@ struct edc_prompt *edc_prompt_load_roots(const UT_array *roots, const char *name
         for (size_t s = 0; s < sizeof(k_prompt_subdirs) / sizeof(k_prompt_subdirs[0]); s++)
         {
             sds dir = edc_path_join(root->path, k_prompt_subdirs[s], NULL);
-            struct edc_prompt *p = edc_prompt_load(dir, name);
+            struct edc_prompt *p = edc_prompt_load(dir, name, conf);
             sdsfree(dir);
             if (p)
             {
@@ -318,7 +338,7 @@ struct edc_prompt *edc_prompt_load_roots(const UT_array *roots, const char *name
     return NULL;
 }
 
-UT_array *edc_prompts_list_roots(const UT_array *roots)
+UT_array *edc_prompts_list_roots(const UT_array *roots, const struct edc_config *conf)
 {
     UT_array *out;
     utarray_new(out, &ut_prompt_ptr_icd);
@@ -335,7 +355,7 @@ UT_array *edc_prompts_list_roots(const UT_array *roots)
         for (size_t s = 0; s < sizeof(k_prompt_subdirs) / sizeof(k_prompt_subdirs[0]); s++)
         {
             sds dir = edc_path_join(root->path, k_prompt_subdirs[s], NULL);
-            UT_array *one = edc_prompts_list(dir);
+            UT_array *one = edc_prompts_list(dir, conf);
             sdsfree(dir);
 
             for (size_t i = 0; i < utarray_len(one); i++)

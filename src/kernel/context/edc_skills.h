@@ -6,6 +6,8 @@
 #include "uthash.h"
 #include <stdbool.h>
 
+struct edc_config;
+
 struct edc_skill_meta_entry
 {
     sds key;
@@ -40,10 +42,10 @@ extern void edc_skill_free(struct edc_skill *skill);
 /** Every skill directly under |dir| (`<dir>/<name>/SKILL.md`), as `struct edc_skill *`.
  *  A missing/unreadable directory yields an empty array. Caller frees each skill, then
  *  utarray_free. */
-extern UT_array *edc_skills_load(const char *dir_path);
+extern UT_array *edc_skills_load(const char *dir_path, const struct edc_config *conf);
 
 /** The same, over the resource roots (edc_resources.h): `<root>/skills/` and
  *  `<root>/skill/`, roots IN ORDER, first name wins, `skill->source` = the root. */
-extern UT_array *edc_skills_load_roots(const UT_array *roots);
+extern UT_array *edc_skills_load_roots(const UT_array *roots, const struct edc_config *conf);
 
 #endif /* __BC_SKILLS_H__ */

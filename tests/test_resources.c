@@ -156,14 +156,14 @@ int main(void)
     CHECK(d != NULL, "./.edgeclaw present");
 
     TEST("a foreign template loads AS WRITTEN (no translation step), and names its source");
-    struct edc_prompt *p = edc_prompt_load_roots(roots, "claude-only");
+    struct edc_prompt *p = edc_prompt_load_roots(roots, "claude-only", NULL);
     CHECK(p != NULL, "found in $HOME/.claude");
     CHECK_STR(p ? p->body : NULL, "use $1 now", "the body keeps the author's `$1`");
     CHECK(p && p->source && strcmp(p->source, home_claude_root) == 0, "source is the root");
     edc_prompt_free(p);
 
     TEST("a project template too");
-    p = edc_prompt_load_roots(roots, "proj-only");
+    p = edc_prompt_load_roots(roots, "proj-only", NULL);
     CHECK_STR(p ? p->body : NULL, "proj $1", "kept as written");
     edc_prompt_free(p);
 
@@ -174,19 +174,19 @@ int main(void)
     write_file_at(ws_prompts, "shared.md", "ours {{1}}\n");
     write_file_at(home_claude, "shared.md", "theirs $1\n");
 
-    p = edc_prompt_load_roots(roots, "shared");
+    p = edc_prompt_load_roots(roots, "shared", NULL);
     CHECK_STR(p ? p->body : NULL, "ours {{1}}", "our body, not the foreign one");
     CHECK(p && p->source && strcmp(p->source, ws) == 0, "source is the workspace");
     edc_prompt_free(p);
 
     TEST("in a template body `$1` is an ARGUMENT and `{{…}}` a task ref");
     write_file_at(ws_prompts, "ref.md", "arg: $1 / last: {{LAST}}\n");
-    p = edc_prompt_load_roots(roots, "ref");
+    p = edc_prompt_load_roots(roots, "ref", NULL);
     CHECK_STR(p ? p->body : NULL, "arg: $1 / last: {{LAST}}", "both spellings are kept as written");
     edc_prompt_free(p);
 
     TEST("listing spans the roots, one row per name");
-    UT_array *all = edc_prompts_list_roots(roots);
+    UT_array *all = edc_prompts_list_roots(roots, NULL);
     CHECK(utarray_len(all) == 6, "claude-only, pi-only, proj-only, own-only, shared, ref");
     /* The listing is where a collision is REPORTED (the load path just takes the first
      * hit, so it has nothing to report). */
@@ -245,7 +245,7 @@ int main(void)
                   "---\ndescription: dangerous\n\ndisable-model-invocation: true\n---\nDB BODY\n");
 
     roots = edc_resource_dirs(&cfg, proj);
-    UT_array *skills = edc_skills_load_roots(roots);
+    UT_array *skills = edc_skills_load_roots(roots, NULL);
 
     TEST("a skill is found across the roots, the workspace shadowing the user's");
     struct edc_skill *sk = NULL;
@@ -270,7 +270,7 @@ int main(void)
         write_file_at(proj_skill, "SKILL.md", "---\ndescription: project pdf\n---\nPROJECT BODY\n");
 
         UT_array *r2 = edc_resource_dirs(&cfg, proj);
-        UT_array *s2 = edc_skills_load_roots(r2);
+        UT_array *s2 = edc_skills_load_roots(r2, NULL);
         struct edc_skill *pdf = NULL;
         for (size_t i = 0; i < utarray_len(s2); i++)
         {

@@ -34,8 +34,14 @@ cc_library(
 
 cc_library(
     name = "edc_file_utils",
-    srcs = ["edc_file_utils.c"],
-    hdrs = ["edc_file_utils.h"],
+    srcs = [
+        "edc_file_utils.c",
+        "edc_path_guard.c",
+    ],
+    hdrs = [
+        "edc_file_utils.h",
+        "edc_path_guard.h",
+    ],
     includes = ["."],
     deps = [
         "//src/common:edc_compat",

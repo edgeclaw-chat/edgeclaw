@@ -1,9 +1,11 @@
 #include "edc_skills.h"
+#include "edc_config.h"
 #include "edc_error.h"
 #include "sds.h"
 
 #include "edc_compat.h"
 #include "edc_file_utils.h"
+#include "edc_path_guard.h"
 #include "edc_resources.h"
 #include "log.h"
 #include "utarray.h"
@@ -155,10 +157,24 @@ static bool edc_extract_skill_meta_and_content(const char *content, struct edc_s
     return true;
 }
 
-static struct edc_skill *edc_skill_load(const char *name, const char *file_path)
+/* A SKILL.md is documentation, often with examples; still bounded, because the model can
+ * write into workspace/skills and a bare `/skill` walks every one of them. */
+#define EDC_SKILL_MAX_BYTES (512 * 1024)
+
+static struct edc_skill *edc_skill_load(const char *name, const char *file_path, const char *dir,
+                                        const struct edc_config *conf)
 {
     EdcError *gerror = NULL;
-    sds content = edc_file_read(file_path, &gerror);
+    /* |dir| is the skills directory this one was found under: a symlinked SKILL.md, a
+     * hardlink, or a directory symlinking out of it, is refused -- and the sandbox DENY
+     * list applies (the rw/ro lists do not; these roots live outside them by design). */
+    struct edc_path_rules rules = {
+        .root = dir,
+        .refuse_symlink = true,
+        .refuse_hardlink = true,
+        .deny_paths = (conf && conf->enable_sandbox) ? conf->sandbox_deny_paths : NULL,
+    };
+    sds content = edc_path_guard_read(&rules, file_path, EDC_SKILL_MAX_BYTES, &gerror);
 
     if (content)
     {
@@ -177,6 +193,8 @@ static struct edc_skill *edc_skill_load(const char *name, const char *file_path)
     }
     else
     {
+        if (gerror && gerror->message)
+            log_warn("skill '%s': %s", name, gerror->message); /* refusal, not absence */
         edc_error_free(gerror);
     }
     return NULL;
@@ -186,6 +204,7 @@ struct edc_skills_foreach_ctx
 {
     UT_array *skills;
     sds dir_path;
+    const struct edc_config *conf;
 };
 
 static void edc_skills_foreach_cb(const char *name, int type, void *userdata)
@@ -195,7 +214,7 @@ static void edc_skills_foreach_cb(const char *name, int type, void *userdata)
         return;
 
     sds full_path = edc_path_join(ctx->dir_path, name, "SKILL.md", NULL);
-    struct edc_skill *skill = edc_skill_load(name, full_path);
+    struct edc_skill *skill = edc_skill_load(name, full_path, ctx->dir_path, ctx->conf);
     if (skill)
     {
         sdsfree(skill->source);
@@ -207,12 +226,12 @@ static void edc_skills_foreach_cb(const char *name, int type, void *userdata)
     sdsfree(full_path);
 }
 
-UT_array *edc_skills_load(const char *dir_path)
+UT_array *edc_skills_load(const char *dir_path, const struct edc_config *conf)
 {
     UT_array *skills;
     utarray_new(skills, &ut_skill_ptr_icd);
 
-    struct edc_skills_foreach_ctx ctx = {.skills = skills, .dir_path = sdsnew(dir_path)};
+    struct edc_skills_foreach_ctx ctx = {.skills = skills, .dir_path = sdsnew(dir_path), .conf = conf};
     edc_dir_foreach(dir_path, edc_skills_foreach_cb, &ctx, NULL);
     sdsfree(ctx.dir_path);
 
@@ -235,7 +254,7 @@ static struct edc_skill *edc_skills_find(UT_array *skills, const sds name)
 /* Roots in order, first name wins -- so the workspace shadows a migrated skill of the same
  * name, and `skill->source` names the root it came from. A root may keep its skills in
  * `skills/` (Claude / pi / opencode) or `skill/` (opencode's other spelling). */
-UT_array *edc_skills_load_roots(const UT_array *roots)
+UT_array *edc_skills_load_roots(const UT_array *roots, const struct edc_config *conf)
 {
     UT_array *out;
     utarray_new(out, &ut_skill_ptr_icd);
@@ -254,7 +273,7 @@ UT_array *edc_skills_load_roots(const UT_array *roots)
         for (size_t s = 0; s < sizeof(k_skill_subdirs) / sizeof(k_skill_subdirs[0]); s++)
         {
             sds dir = edc_path_join(root->path, k_skill_subdirs[s], NULL);
-            UT_array *one = edc_skills_load(dir);
+            UT_array *one = edc_skills_load(dir, conf);
             sdsfree(dir);
 
             for (size_t i = 0; i < utarray_len(one); i++)

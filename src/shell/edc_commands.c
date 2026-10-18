@@ -2189,7 +2189,7 @@ static void edc_commands_prompt_list(struct edc_config *cfg, const char *workdir
     /* Every resource root (ours first), so a template the user brought over from pi /
      * Claude Code / opencode shows up here too. */
     UT_array *roots = edc_resource_dirs(cfg, workdir);
-    UT_array *prompts = edc_prompts_list_roots(roots);
+    UT_array *prompts = edc_prompts_list_roots(roots, cfg);
 
     sds out;
     if (utarray_len(prompts) == 0)
@@ -2361,10 +2361,29 @@ static sds cmd_strip_place_flags(const char *cmd, const char *tail, struct cmd_p
                     sdsfree(work);
                     return NULL;
                 }
+                if (e2 - b2 >= 2 && work[b2] == '-' && work[b2 + 1] == '-')
+                {
+                    *err = sdscatprintf(sdsempty(), "`--group` needs an id: `%s ... --group <id>`.", cmd);
+                    sdsfree(tok);
+                    sdsfree(work);
+                    return NULL;
+                }
                 sds raw = sdsnewlen(work + b2, e2 - b2);
-                value = edc_cmd_unquote(raw, NULL);
-                if (!value)
+                /* edc_cmd_unquote() refuses a NULL end_out, and it unquotes the LEADING
+                 * quoted region only -- so take its result only when the quotes span the
+                 * whole token, otherwise keep the raw text (`\"a\"b` is not an id). */
+                const char *qend = NULL;
+                sds unquoted = edc_cmd_unquote(raw, &qend);
+                if (unquoted && qend && *qend == '\0')
+                {
+                    value = unquoted;
+                }
+                else
+                {
+                    if (unquoted)
+                        sdsfree(unquoted);
                     value = sdsnew(raw);
+                }
                 sdsfree(raw);
                 memset(work + b2, ' ', e2 - b2);
                 i = e2;
@@ -2395,6 +2414,12 @@ static bool cmd_resolve_place(struct edc_session *session, const struct cmd_plac
 {
     *out = NULL;
 
+    if (flags->new_group && flags->group_id)
+    {
+        *err = sdsnew("`--new-group` and `--group <id>` are alternatives — pick one.");
+        return false;
+    }
+
     if (flags->new_group)
         return true; /* a group of its own */
 
@@ -2410,6 +2435,17 @@ static bool cmd_resolve_place(struct edc_session *session, const struct cmd_plac
         if (edc_task_group_is_system(group))
         {
             *err = sdsnew("`--group` cannot name the system group — it does not take new work.");
+            return false;
+        }
+        /* A group whose leader left (or one that was born without a leader) has no
+         * `leader`: adding a member to it would leave "leader == NULL with members",
+         * which every other path assumes cannot happen -- the group is serialized with
+         * the old leader's id and comes back from disk with a DIFFERENT leader object.
+         * Refuse instead of half-reviving it. */
+        if (group->is_orphaned || !group->leader)
+        {
+            *err = sdsnew("`--group` cannot name a conversation whose leader is gone — "
+                          "start a fresh one with `--new-group`.");
             return false;
         }
         *out = group;
@@ -2474,7 +2510,7 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
     sds workdir = cmd_session_workdir(sm, message);
     UT_array *roots = edc_resource_dirs(cfg, workdir);
     sdsfree(workdir);
-    struct edc_prompt *prompt = edc_prompt_load_roots(roots, args[0]);
+    struct edc_prompt *prompt = edc_prompt_load_roots(roots, args[0], cfg);
     edc_resource_dirs_free(roots);
     if (!prompt)
     {
@@ -2483,6 +2519,8 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
         edc_commands_reply(to, reply);
         sdsfree(reply);
         edc_prompt_args_free(args, argc);
+        if (flags.group_id)
+            sdsfree(flags.group_id);
         return true;
     }
 
@@ -2494,6 +2532,8 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
     {
         edc_commands_reply(to, "**Prompt expanded to nothing** — nothing to run.");
         sdsfree(expanded);
+        if (flags.group_id)
+            sdsfree(flags.group_id);
         return true;
     }
 
@@ -2561,7 +2601,7 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
 static void edc_commands_skill_list(struct edc_config *cfg, const char *workdir, struct edc_reply_to to)
 {
     UT_array *roots = edc_resource_dirs(cfg, workdir);
-    UT_array *skills = edc_skills_load_roots(roots);
+    UT_array *skills = edc_skills_load_roots(roots, cfg);
 
     sds out;
     if (utarray_len(skills) == 0)
@@ -2663,7 +2703,7 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
     sds workdir = cmd_session_workdir(sm, message);
     UT_array *roots = edc_resource_dirs(cfg, workdir);
     sdsfree(workdir);
-    UT_array *skills = edc_skills_load_roots(roots);
+    UT_array *skills = edc_skills_load_roots(roots, cfg);
     struct edc_skill *found = NULL;
     for (size_t i = 0; i < utarray_len(skills); i++)
     {
@@ -2690,6 +2730,8 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
         edc_commands_reply(to, reply);
         sdsfree(reply);
         edc_prompt_args_free(args, argc);
+        if (flags.group_id)
+            sdsfree(flags.group_id);
         return true;
     }
 
@@ -2717,6 +2759,8 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
     {
         edc_commands_reply(to, "**Skill has no body** — nothing to run.");
         sdsfree(input);
+        if (flags.group_id)
+            sdsfree(flags.group_id);
         return true;
     }
 

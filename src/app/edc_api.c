@@ -279,7 +279,7 @@ size_t edc_app_prompts(const struct edc_app *app, const char *workdir, char *buf
      * opencode is offered by the completion popup without being moved. The project roots
      * come from the displayed session's directory. */
     UT_array *roots = edc_resource_dirs(cfg, workdir);
-    UT_array *prompts = edc_prompts_list_roots(roots);
+    UT_array *prompts = edc_prompts_list_roots(roots, cfg);
     edc_resource_dirs_free(roots);
     const size_t count = utarray_len(prompts);
 
@@ -315,7 +315,7 @@ size_t edc_app_skills(const struct edc_app *app, const char *workdir, char *buf,
         return 0;
 
     UT_array *roots = edc_resource_dirs(cfg, workdir);
-    UT_array *skills = edc_skills_load_roots(roots);
+    UT_array *skills = edc_skills_load_roots(roots, cfg);
     edc_resource_dirs_free(roots);
     const size_t count = utarray_len(skills);
 

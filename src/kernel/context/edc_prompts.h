@@ -27,6 +27,8 @@
 #include "utarray.h"
 #include <stdbool.h>
 
+struct edc_config;
+
 struct edc_prompt
 {
     sds name;          /* the file's base name (no `.md`) */
@@ -50,12 +52,12 @@ void edc_prompt_free(struct edc_prompt *prompt);
  *
  * A body keeps its placeholders AS WRITTEN (`$1`, `{{1}}`, ...); edc_prompt_expand reads
  * both. */
-struct edc_prompt *edc_prompt_load(const char *dir, const char *name);
+struct edc_prompt *edc_prompt_load(const char *dir, const char *name, const struct edc_config *conf);
 
 /* Every template in |dir| (only direct `*.md` children), sorted by name. A missing or
  * unreadable directory yields an empty array, not an error. UT_array of
  * `struct edc_prompt *`; free each with edc_prompt_free, then utarray_free. */
-UT_array *edc_prompts_list(const char *dir);
+UT_array *edc_prompts_list(const char *dir, const struct edc_config *conf);
 
 /* ── Over the resource roots (edc_resources.h) ───────────────
  *
@@ -63,8 +65,8 @@ UT_array *edc_prompts_list(const char *dir);
  * Claude Code); both layouts are read. Roots are searched IN ORDER and the first one that
  * has a name wins -- so the workspace shadows a migrated template of the same name, and
  * `p->source` says which root a template actually came from. */
-struct edc_prompt *edc_prompt_load_roots(const UT_array *roots, const char *name);
-UT_array *edc_prompts_list_roots(const UT_array *roots);
+struct edc_prompt *edc_prompt_load_roots(const UT_array *roots, const char *name, const struct edc_config *conf);
+UT_array *edc_prompts_list_roots(const UT_array *roots, const struct edc_config *conf);
 
 /* Split a command tail into arguments: whitespace-separated, quote-aware (`"…"` /
  * `'…'`), backslash escapes the next byte. Operators (`| ; & >`) are NOT special here --
