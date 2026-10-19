@@ -389,6 +389,9 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
     {"Task", "/task history <id>", "show the task's messages (`--json` = raw payload)", NULL},
     {"Task", "/task fg <id>", "foreground + set as active (only the active task outputs to terminal)", NULL},
     {"Task", "/task bg [id]", "move the foreground group (or that task) to the background", NULL},
+    {"Task", "/task dep <id> [--drop [<source>]]",
+     "show a task's dependency edges; `--drop` voids one (or all) so a task waiting on a source that can never "
+     "produce again can run", NULL},
     {"Task", "/task stop [id]", "cancel a task (default: the foreground group's active task)", NULL},
     {"Task", "/task resume <id>",
      "resume an INTERRUPTED / ERROR / CANCELLED task; the id is required (there is no batch form)",
@@ -2180,6 +2183,177 @@ static bool edc_commands_handle_group(struct edc_config *cfg, struct edc_session
 }
 
 /* ── /task 的子命令 ─────────────────────────────────────────── */
+/* /task dep <id> [--drop [<source>]]: show a task's dependency edges, or drop one.
+ *
+ * `--drop` is the door out of an edge that can never be satisfied: a cross-session
+ * dependency whose owner session is gone keeps the task held forever (`/task resume`
+ * answers "is held"), and a stopped source nobody will ever resume does the same.
+ * Dropping is the user's explicit "stop waiting for it": the edge is voided (persisted,
+ * like any other release), and the task runs as soon as that was the last thing it
+ * waited for. */
+static const char *edc_commands_dep_kind(edc_task_dep_type type)
+{
+    switch (type)
+    {
+    case TASK_DEP_JOIN:
+        return "JOIN (`|`)";
+    case TASK_DEP_SEQUENCE:
+        return "SEQUENCE (`&&`)";
+    case TASK_DEP_BARRIER:
+        return "ORDER (`;`)";
+    case TASK_DEP_UNLESS:
+        return "INVERSE (`||`)";
+    }
+    return "DEP";
+}
+
+/* The outstanding edges of |t|, as one comma-separated list of ids (caller frees). */
+static sds edc_commands_outstanding_deps(const struct edc_task *t)
+{
+    sds out = sdsempty();
+    for (const struct edc_task_dep *dep = t->deps; dep; dep = dep->next)
+    {
+        if (dep->completed || dep->cancelled || !dep->source || !dep->source->task_id)
+            continue;
+        if (sdslen(out))
+            out = sdscat(out, ", ");
+        out = sdscatprintf(out, "`%s` (%s)", dep->source->task_id, edc_task_state_str(dep->source));
+    }
+    return out;
+}
+
+static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                         struct edc_reply_to to, sds arg)
+{
+    if (!arg || sdslen(arg) == 0)
+    {
+        edc_commands_reply(to, "**Task dep** — `/task dep <id>` lists the edges, `/task dep <id> --drop "
+                               "[<source-id>]` stops waiting for one (or for all of them).");
+        return;
+    }
+
+    /* "<id> [--drop [<source>]]": ids are opaque, whitespace-free tokens. */
+    char *buf = strdup(arg);
+    if (!buf)
+        return;
+    char *save = NULL;
+    const char *id = strtok_r(buf, " \t", &save);
+    const char *flag = strtok_r(NULL, " \t", &save);
+    const char *src = strtok_r(NULL, " \t", &save);
+
+    struct edc_task *t = id ? edc_session_store_resolve_task(sm, sched, id, NULL) : NULL;
+    if (!t)
+    {
+        sds reply = sdscatprintf(sdsempty(), "Task not found: `%s`", id ? id : "");
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        free(buf);
+        return;
+    }
+
+    if (flag && strcmp(flag, "--drop") != 0)
+    {
+        sds reply = sdscatprintf(sdsempty(),
+                                 "**Task dep** — unknown option `%s`. Use `/task dep %s --drop [<source-id>]`.", flag,
+                                 t->task_id ? t->task_id : "");
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        free(buf);
+        return;
+    }
+
+    if (!flag)
+    {
+        /* Listing: the edges, their kind, and -- for the ones still outstanding -- what
+         * the source is doing. Unresolved cross-session holds come last: they are the ones
+         * `--drop` exists for. */
+        size_t total = 0;
+        for (const struct edc_task_dep *dep = t->deps; dep; dep = dep->next)
+            total++;
+        sds out = sdscatprintf(sdsempty(), "**Task `%s`** — %d dependency edge%s\n", t->task_id ? t->task_id : "?",
+                               (int)total, total == 1 ? "" : "s");
+        for (const struct edc_task_dep *dep = t->deps; dep; dep = dep->next)
+        {
+            const char *state = dep->cancelled ? "dropped" : dep->completed ? "done" : "outstanding";
+            out = sdscatprintf(out, "- `%s` %s — %s",
+                               (dep->source && dep->source->task_id) ? dep->source->task_id : "?",
+                               edc_commands_dep_kind(dep->type), state);
+            if (!dep->cancelled && !dep->completed && dep->source)
+                out = sdscatprintf(out, " (%s)", edc_task_state_str(dep->source));
+            out = sdscat(out, "\n");
+        }
+        {
+            const struct edc_pending_dep *pd = NULL;
+            while ((pd = edc_scheduler_next_pending_dep(sched, t->task_id, pd)) != NULL)
+                out = sdscatprintf(out,
+                                   "- `%s` — held: its owner session is not loaded "
+                                   "(`/task dep %s --drop %s`)\n",
+                                   pd->source_task_id ? pd->source_task_id : "?", t->task_id,
+                                   pd->source_task_id ? pd->source_task_id : "?");
+        }
+        if (total == 0 && !edc_scheduler_first_unresolved_dep(sched, t))
+            out = sdscat(out, "_No dependencies._\n");
+        edc_commands_reply(to, out);
+        sdsfree(out);
+        free(buf);
+        return;
+    }
+
+    /* --drop: live edges first (that includes the "source is stopped and nobody will
+     * resume it" case), then the unresolved cross-session constraint, which has no edge
+     * row at all. */
+    int dropped = 0;
+    for (struct edc_task_dep *dep = t->deps; dep; dep = dep->next)
+    {
+        if (dep->completed || dep->cancelled || !dep->source)
+            continue;
+        if (src && (!dep->source->task_id || strcmp(dep->source->task_id, src) != 0))
+            continue;
+        if (edc_task_drop_dep(t, dep->source))
+            dropped++;
+    }
+    dropped += edc_scheduler_drop_pending_dep(sched, t->task_id, src);
+
+    if (dropped == 0)
+    {
+        sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — nothing to drop%s%s%s.", t->task_id ? t->task_id : "",
+                                 src ? " for `" : "", src ? src : "", src ? "`" : "");
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        free(buf);
+        return;
+    }
+
+    /* Re-decide and drive: with the constraint gone the task may be runnable now, and
+     * resume_task is the one entry that respects the queue and the remaining holds. */
+    if (!edc_task_is_finished(t))
+        edc_scheduler_resume_task(sched, t);
+
+    sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — dropped %d dependency edge%s", t->task_id ? t->task_id : "",
+                             dropped, dropped == 1 ? "" : "s");
+    if (edc_task_awaits_deps(t))
+    {
+        sds still = edc_commands_outstanding_deps(t);
+        if (sdslen(still))
+            reply = sdscatprintf(reply, "; it still waits for %s", still);
+        else
+            reply = sdscat(reply, "; it is ready and the scan will run it");
+        sdsfree(still);
+    }
+    else
+        reply = sdscat(reply, "; it is ready and the scan will run it");
+    reply = sdscat(reply, ".");
+    edc_commands_reply(to, reply);
+    sdsfree(reply);
+    free(buf);
+}
+
+static void sub_task_dep(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                         struct edc_channel_message *message, sds arg)
+{
+    (void)message;
+    edc_commands_handle_task_dep(sm, sched, to, arg);
+}
 static void sub_task_new(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
                          struct edc_channel_message *message, sds arg)
 {
@@ -2245,6 +2419,7 @@ static void sub_task_bg(struct edc_session_manager *sm, struct edc_scheduler *sc
 
 static const struct edc_sub_entry k_task_subs[] = {
     {"new", sub_task_new},       {"fork", sub_task_fork},   {"list", sub_task_list},
+    {"dep", sub_task_dep},
     {"stop", sub_task_stop},     {"resume", sub_task_resume}, {"status", sub_task_status},
     {"output", sub_task_output}, {"history", sub_task_history}, {"fg", sub_task_fg},
     {"bg", sub_task_bg},
@@ -2262,7 +2437,7 @@ static bool edc_commands_handle_task(struct edc_config *cfg, struct edc_session_
         /* Bare `/task`: usage, not "unknown" (same shape as /group and /session). */
         edc_commands_reply(to, "Usage: `/task` knows `new <desc>`, `fork <parent> <desc>`, `list`, `status [id]`, "
                                "`output <id>`, `history <id>`, `fg <id>`, `bg [id]`, `stop [id]`, "
-                               "`resume <id>`. Type `/help /task`.");
+                               "`resume <id>`, `dep <id> [--drop [<source>]]`. Type `/help /task`.");
         return true;
     }
     for (size_t i = 0; i < sizeof(k_task_subs) / sizeof(k_task_subs[0]); i++)

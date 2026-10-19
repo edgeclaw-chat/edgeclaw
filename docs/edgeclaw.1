@@ -448,6 +448,10 @@ COMMAND REFERENCE
                                the background.
 
      Task control
+     /task dep <tid> [--drop  Show a task's dependency edges, or void
+     [<sid>]]                 one (or all) of them so a task waiting
+                              on a source that can never produce
+                              again can run.  The drop persists.
      /task stop [tid]         Cancel a task (SIGTERM — notifies deps).
                               Without an id, stops the active task of the
                               foreground group; errors if the id is not

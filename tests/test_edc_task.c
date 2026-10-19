@@ -1368,7 +1368,57 @@ static void test_free_deps_releases_dependents(void)
     edc_task_free(d2);
 }
 
+/* 「显式断边」：一条永远满足不了的依赖（源会话没了 / 源停了且没人会再 resume）过去只能
+ * 永远 hold 住目标。丢掉边之后目标要立刻重新判定。 */
+static void test_drop_dep(void)
+{
+    TEST("dropping a dependency voids the edge and re-decides");
+    struct edc_task *src = edc_task_new("dd-src", "sess-dd", "dd-src", "src", edc_channel_adapter);
+    struct edc_task *tgt = edc_task_new("dd-tgt", "sess-dd", "dd-src", "tgt", edc_channel_adapter);
+    edc_task_add_dependency(tgt, src, TASK_DEP_SEQUENCE);
+    CHECK(edc_task_awaits_deps(tgt), "tgt waits for src");
+    CHECK(edc_task_drop_dep(tgt, src), "the drop lands");
+    CHECK(!edc_task_depends_on(tgt, src), "no live edge left");
+    CHECK(edc_task_is_ready(tgt), "and tgt is READY again");
+    CHECK(!edc_task_drop_dep(tgt, src), "dropping it twice is a no-op (nothing live)");
+
+    TEST("a satisfied edge cannot be dropped");
+    struct edc_task *c_src = edc_task_new("dd-csrc", "sess-dd2", "dd-csrc", "src", edc_channel_adapter);
+    struct edc_task *c_tgt = edc_task_new("dd-ctgt", "sess-dd2", "dd-csrc", "tgt", edc_channel_adapter);
+    edc_task_add_dependency(c_tgt, c_src, TASK_DEP_JOIN);
+    edc_task_await_exec(c_src);
+    edc_task_mark_completed(c_src);
+    edc_task_notify_dependents(c_src);
+    CHECK(edc_task_is_ready(c_tgt), "fixture: the JOIN edge completed and released the target");
+    CHECK(!edc_task_drop_dep(c_tgt, c_src), "a completed edge is not droppable (the source produced)");
+
+    TEST("dropping one of two outstanding dependencies does not release the task");
+    struct edc_task *a = edc_task_new("dd-a", "sess-dd3", "dd-a", "a", edc_channel_adapter);
+    struct edc_task *b = edc_task_new("dd-b", "sess-dd3", "dd-a", "b", edc_channel_adapter);
+    struct edc_task *z = edc_task_new("dd-z", "sess-dd3", "dd-a", "z", edc_channel_adapter);
+    edc_task_add_dependency(z, a, TASK_DEP_SEQUENCE);
+    edc_task_add_dependency(z, b, TASK_DEP_SEQUENCE);
+    CHECK(edc_task_drop_dep(z, a), "drop a");
+    CHECK(edc_task_awaits_deps(z), "z still waits for b");
+
+    /* 一条已完成 + 一条被丢掉 ⇒ 没有任何未满足了: 必须放行（task_void_dep 的放行条件
+     * 从 "计数归零" 改成了 "完成了的就是全部"）。 */
+    edc_task_await_exec(b);
+    edc_task_mark_completed(b);
+    edc_task_notify_dependents(b);
+    CHECK(edc_task_is_ready(z), "released: one completed edge plus one dropped edge is nothing outstanding");
+
+    edc_task_free(src);
+    edc_task_free(tgt);
+    edc_task_free(c_src);
+    edc_task_free(c_tgt);
+    edc_task_free(a);
+    edc_task_free(b);
+    edc_task_free(z);
+}
+
 int main(void)
+
 {
     log_info("=== Phase 1: edc_task 模块测试 ===");
     log_info("");
@@ -1394,6 +1444,7 @@ int main(void)
     test_dep_failure_propagates();
     test_dep_completion_releases();
     test_free_deps_releases_dependents();
+    test_drop_dep();
     test_end_reason();
 
     log_info("");

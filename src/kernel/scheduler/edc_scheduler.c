@@ -437,6 +437,50 @@ const char *edc_scheduler_first_unresolved_dep(struct edc_scheduler *sched, stru
     return NULL;
 }
 
+/* Iterate the pending (unresolvable) edges of one task: NULL starts, the returned node is
+ * the next "previous". Read-only, for /task dep's listing. */
+const struct edc_pending_dep *edc_scheduler_next_pending_dep(const struct edc_scheduler *sched, const char *task_id,
+                                                             const struct edc_pending_dep *prev)
+{
+    if (!sched || !task_id)
+        return NULL;
+    const struct edc_pending_dep *pd = prev ? prev->next : sched->pending_deps;
+    for (; pd; pd = pd->next)
+    {
+        if (pd->target_task_id && strcmp(pd->target_task_id, task_id) == 0)
+            return pd;
+    }
+    return NULL;
+}
+
+int edc_scheduler_drop_pending_dep(struct edc_scheduler *sched, const char *target_task_id, const char *source_task_id)
+{
+    if (!sched || !target_task_id)
+        return 0;
+    int dropped = 0;
+    struct edc_pending_dep **link = &sched->pending_deps;
+    while (*link)
+    {
+        struct edc_pending_dep *pd = *link;
+        const bool match =
+            pd->target_task_id && strcmp(pd->target_task_id, target_task_id) == 0 &&
+            (!source_task_id || (pd->source_task_id && strcmp(pd->source_task_id, source_task_id) == 0));
+        if (!match)
+        {
+            link = &pd->next;
+            continue;
+        }
+        *link = pd->next;
+        if (pd->target_task_id)
+            sdsfree(pd->target_task_id);
+        if (pd->source_task_id)
+            sdsfree(pd->source_task_id);
+        free(pd);
+        dropped++;
+    }
+    return dropped;
+}
+
 edc_actor_t *edc_scheduler_get_actor(struct edc_scheduler *sched)
 {
     return sched ? sched->self : NULL;

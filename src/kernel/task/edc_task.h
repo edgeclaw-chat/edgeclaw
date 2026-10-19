@@ -483,6 +483,14 @@ extern bool edc_task_has_unresolved_deps(const struct edc_task *task);
  *  one?" must not depend on who created the row -- a `;` chain puts it there before the
  *  queue asks, and `edc_task_add_dependency` dedups by source. */
 extern bool edc_task_depends_on(const struct edc_task *target, const struct edc_task *source);
+
+/** Drop ONE still-live edge on purpose -- the user's explicit "stop waiting for this" --
+ *  and re-decide: the edge is voided (persisted, like a BARRIER release) and, if that was
+ *  the last unsatisfied dependency, the task becomes READY. Returns false when there is no
+ *  live edge to |source| (already completed, already dropped, or never existed).
+ *  The door out of a dependency whose source can never produce again -- its owner session
+ *  is gone, so nothing will ever release it. Exposed for `/task dep <id> --drop <source>`. */
+extern bool edc_task_drop_dep(struct edc_task *target, struct edc_task *source);
 extern void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source);
 /** Handle a source that failed, symmetric with cancellation (the source will not
  *  produce anything either way): a JOIN edge cascades the failure to the dependent

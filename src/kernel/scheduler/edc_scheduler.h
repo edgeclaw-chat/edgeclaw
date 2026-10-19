@@ -144,6 +144,19 @@ extern bool edc_scheduler_task_has_unresolved_deps(struct edc_scheduler *sched, 
 /** Source id of |task|'s first unresolved cross-session dep, or NULL. */
 extern const char *edc_scheduler_first_unresolved_dep(struct edc_scheduler *sched, struct edc_task *task);
 
+/** Walk the pending (unresolvable) edges of |task_id|: pass NULL to start, then the
+ *  returned node as |prev|. Read-only, for `/task dep`'s listing. */
+extern const struct edc_pending_dep *edc_scheduler_next_pending_dep(const struct edc_scheduler *sched,
+                                                                   const char *task_id,
+                                                                   const struct edc_pending_dep *prev);
+
+/** Forget the unresolved edge |target| -> |source| (or every one of |target|'s when
+ *  |source_task_id| is NULL): the answer to "that session is gone for good". The caller
+ *  re-decides the target -- there is no edge row to void here (the source task was never
+ *  loaded), only this constraint. Returns how many were removed. */
+extern int edc_scheduler_drop_pending_dep(struct edc_scheduler *sched, const char *target_task_id,
+                                          const char *source_task_id);
+
 extern struct edc_scheduler *edc_scheduler_new(struct edc_config *config);
 extern void edc_scheduler_free(struct edc_scheduler *sched);
 

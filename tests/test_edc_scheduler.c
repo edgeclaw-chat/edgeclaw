@@ -1786,7 +1786,36 @@ static void test_unblocked_dependent_is_announced(void)
     free_config(cfg);
 }
 
+/* 跨会话依赖解析不出来时只留下一条 pending 约束（没有 task 对象可以作废边）。
+ * /task dep --drop 走的就是这里：删掉它，目标才可能跑起来。 */
+static void test_pending_dep_drop(void)
+{
+    struct edc_config *cfg = make_config();
+    clean_task_seq(cfg);
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+
+    TEST("a pending (unresolvable) dependency holds, is listed, and can be dropped");
+    struct edc_task *probe = edc_task_new("pend-t", "sess-pd", "g", "probe", edc_channel_adapter);
+    edc_scheduler_add_pending_dep(sched, "pend-t", "gone-src", TASK_DEP_SEQUENCE, false, false, false);
+    CHECK(edc_scheduler_first_unresolved_dep(sched, probe) != NULL, "the task is held");
+    {
+        const struct edc_pending_dep *pd = edc_scheduler_next_pending_dep(sched, "pend-t", NULL);
+        CHECK(pd && pd->source_task_id && strcmp(pd->source_task_id, "gone-src") == 0, "and listed with its source id");
+    }
+    CHECK(edc_scheduler_drop_pending_dep(sched, "pend-t", "gone-src") == 1, "the drop removes it");
+    CHECK(edc_scheduler_first_unresolved_dep(sched, probe) == NULL, "the hold is gone");
+    CHECK(edc_scheduler_drop_pending_dep(sched, "pend-t", NULL) == 0, "dropping again finds nothing");
+
+    edc_task_free(probe);
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
 int main(void)
+
 {
     log_info("=== Phase 3: edc_scheduler 模块测试 ===");
     log_info("");
@@ -1800,6 +1829,7 @@ int main(void)
     test_task_placement();
     test_current_task();
     test_unblocked_dependent_is_announced();
+    test_pending_dep_drop();
     test_resume_queues();
     test_queue_edge_not_shadowed_by_prev_edge();
     test_queue_advances_when_front_dies();

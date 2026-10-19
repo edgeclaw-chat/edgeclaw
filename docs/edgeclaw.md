@@ -520,6 +520,7 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 |---------|-------------|
 | `/task stop [tid]` | Cancel a task (SIGTERM — notifies dependents). Without an id, stops the active task of the foreground group; errors if the id is not found |
 | `/task resume <id>` | Resume an INTERRUPTED, ERROR or CANCELLED task: re-derives state (deps / tool chain / turn) and drives it; an ERROR or CANCELLED task continues its unfinished turn. The id is **required** — there is no batch form, and no "the obvious one" derivation |
+| `/task dep <id> [--drop [<sid>]]` | Show a task's dependency edges (kind, state, and the source's own state). `--drop` voids one edge — or every outstanding one when no source is named — so a task waiting on a source that can never produce again (its session is gone) can run; the drop persists, and the task is re-decided immediately |
 
 ### Group
 

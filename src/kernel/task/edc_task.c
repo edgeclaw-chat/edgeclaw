@@ -1129,7 +1129,10 @@ static void task_void_dep(struct edc_task_dep *dep, struct edc_task *target, str
     }
     target->deps_total = active_deps;
 
-    if (target->deps_total == 0 && edc_task_awaits_deps(target))
+    /* Released when nothing unsatisfied is left -- not only when nothing is left at all:
+     * a task may hold a COMPLETED edge plus this one, and "the last count is zero" then
+     * never fires (that task would sit in dep-wait with everything satisfied). */
+    if (target->deps_completed >= target->deps_total && edc_task_awaits_deps(target))
     {
         /* Voiding the last invalid dependency moves this task from AWAIT_DEPS to
          * READY -- also a phase change (the sidebar's dep-wait clears), also recorded. */
@@ -1139,6 +1142,24 @@ static void task_void_dep(struct edc_task_dep *dep, struct edc_task *target, str
         if (target->step != step_before || target->life != life_before)
             task_record_move(source, target, EDC_MOVE_RELEASED, NULL);
     }
+}
+
+bool edc_task_drop_dep(struct edc_task *target, struct edc_task *source)
+{
+    if (!target || !source)
+        return false;
+    struct edc_task_dep *dep;
+    LL_FOREACH(target->deps, dep)
+    {
+        if (dep->source != source || dep->completed || dep->cancelled)
+            continue;
+        /* Same bookkeeping as any other release: void the row and re-decide. `cancelled`
+         * is persisted, so the drop survives a restart (the constraint is gone, not the
+         * record of it). */
+        task_void_dep(dep, target, source);
+        return true;
+    }
+    return false; /* no live edge: nothing was waited for */
 }
 
 void edc_task_drain_moves(struct edc_task *task,

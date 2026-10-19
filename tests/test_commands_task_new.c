@@ -338,6 +338,30 @@ int main(void)
          * 产出才算数。这里 src 早就完成，所以那个下游的边本来就是完成的。 */
     }
 
+    TEST("/task dep <id> --drop <source> voids the edge so the task can run");
+    {
+        struct edc_task *dsrc = edc_scheduler_task_new(sched, sess, "dep source", edc_channel_adapter);
+        struct edc_task_group *dg = edc_scheduler_create_group(sched, sess, dsrc);
+        edc_scheduler_set_foreground(sess, dg);
+        struct edc_task *dtgt = edc_scheduler_task_new(sched, sess, "dep target", edc_channel_adapter);
+        edc_task_group_add_task(dg, dtgt);
+        edc_scheduler_attach_input(sched, dtgt, "go");
+        edc_task_add_dependency(dtgt, dsrc, TASK_DEP_SEQUENCE);
+        CHECK(edc_task_awaits_deps(dtgt), "夹具: 目标在等源");
+
+        char cmd[160];
+        snprintf(cmd, sizeof cmd, "/task dep %s", dtgt->task_id);
+        drive_command(cfg, sm, sched, cmd); /* 列表: 不改状态 */
+        CHECK(edc_task_awaits_deps(dtgt), "只是列出来，不动状态");
+
+        g_llm_task = NULL;
+        g_llm_calls = 0;
+        snprintf(cmd, sizeof cmd, "/task dep %s --drop %s", dtgt->task_id, dsrc->task_id);
+        drive_command(cfg, sm, sched, cmd);
+        CHECK(!edc_task_depends_on(dtgt, dsrc), "边被作废");
+        CHECK(g_llm_task == dtgt, "目标随即被驱动 (不再卡在等依赖)");
+    }
+
     TEST("resume reply names what the task was, and repeats the last error when it had failed");
     {
         struct edc_task *r = edc_task_new("rr-1", "sess-reply", "rr-1", "r", edc_channel_adapter);
