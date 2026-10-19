@@ -67,4 +67,22 @@ typedef enum
     EDC_END_SKIPPED,     /* `||` INVERSE: the source succeeded, this branch is not taken */
 } edc_task_end;
 
+/* WHY a FAILED task failed, when that is knowable. Only meaningful with EDC_END_FAILED.
+ * It exists so a resume can say "this will probably fail the same way" instead of looking
+ * like a fresh start: a bad key or an overflowing context does not heal by retrying.
+ * Mirrors the executor's LLM error kinds (edc_llm_error_kind.h) through a small mapping,
+ * and stays a separate enum so the task layer never depends on the LLM package. */
+typedef enum
+{
+    EDC_FAIL_NONE = 0,       /* not a failure, not classified, or not a model failure */
+    EDC_FAIL_AUTH,           /* missing/bad key, or not entitled to the model */
+    EDC_FAIL_CONTEXT_OVERFLOW, /* the request did not fit the model's window */
+    EDC_FAIL_RATE_LIMIT,     /* throttled: retrying later can work */
+    EDC_FAIL_TRANSPORT,      /* no HTTP response at all: DNS/TCP/TLS/timeout */
+    EDC_FAIL_OTHER,          /* anything else the provider said */
+} edc_task_fail;
+
+extern const char *edc_task_fail_name(edc_task_fail fail);
+extern edc_task_fail edc_task_classify_fail(const char *name);
+
 #endif

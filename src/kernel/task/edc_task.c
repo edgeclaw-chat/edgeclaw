@@ -188,6 +188,50 @@ edc_task_end edc_task_classify_end(const char *name)
     return EDC_END_NONE;
 }
 
+const char *edc_task_fail_name(edc_task_fail fail)
+{
+    switch (fail)
+    {
+    case EDC_FAIL_AUTH:
+        return "AUTH";
+    case EDC_FAIL_CONTEXT_OVERFLOW:
+        return "CONTEXT_OVERFLOW";
+    case EDC_FAIL_RATE_LIMIT:
+        return "RATE_LIMIT";
+    case EDC_FAIL_TRANSPORT:
+        return "TRANSPORT";
+    case EDC_FAIL_OTHER:
+        return "OTHER";
+    case EDC_FAIL_NONE:
+        break;
+    }
+    return "NONE";
+}
+
+edc_task_fail edc_task_classify_fail(const char *name)
+{
+    if (!name)
+        return EDC_FAIL_NONE;
+    if (strcmp(name, "AUTH") == 0)
+        return EDC_FAIL_AUTH;
+    if (strcmp(name, "CONTEXT_OVERFLOW") == 0)
+        return EDC_FAIL_CONTEXT_OVERFLOW;
+    if (strcmp(name, "RATE_LIMIT") == 0)
+        return EDC_FAIL_RATE_LIMIT;
+    if (strcmp(name, "TRANSPORT") == 0)
+        return EDC_FAIL_TRANSPORT;
+    if (strcmp(name, "OTHER") == 0)
+        return EDC_FAIL_OTHER;
+    return EDC_FAIL_NONE;
+}
+
+void edc_task_set_fail(struct edc_task *task, edc_task_fail fail)
+{
+    if (!task)
+        return;
+    task->fail = fail;
+}
+
 const char *edc_task_state_str(const struct edc_task *task)
 {
     if (!task)
@@ -244,6 +288,7 @@ bool edc_task_move(struct edc_task *task, edc_task_step step, edc_task_life life
     if (life == EDC_LIFE_ALIVE)
     {
         task->end = EDC_END_NONE;
+        task->fail = EDC_FAIL_NONE;
         task->blocked_end = EDC_END_NONE;
         if (task->blocked_by)
         {

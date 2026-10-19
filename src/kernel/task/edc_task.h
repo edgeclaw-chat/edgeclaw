@@ -64,6 +64,10 @@ extern edc_task_life edc_task_classify_life(const char *name);
 extern const char *edc_task_end_name(edc_task_end end);
 extern edc_task_end edc_task_classify_end(const char *name);
 
+/** Record WHY a failure happened (EDC_FAIL_NONE ignores). Only call it on a task that is
+ *  in EDC_END_FAILED; any move back to ALIVE clears it with the rest of the reason. */
+extern void edc_task_set_fail(struct edc_task *task, edc_task_fail fail);
+
 /* Two more orthogonal axes: where the output goes, and whether the task must
  * survive a restart. Defaults (CHANNEL, PERSISTENT) describe a user task; only a
  * system task flips them, and that combination is the whole reason a fold needs
@@ -276,6 +280,10 @@ struct edc_task
      * nothing branches on them yet. */
     char *blocked_by;
     edc_task_end blocked_end;
+
+    /* WHY it failed, when that is knowable (only with end == EDC_END_FAILED): a doomed
+     * retry must be distinguishable from a transient one. Cleared with `end`. */
+    edc_task_fail fail;
 
     struct edc_tool_call_record *tool_calls;
 

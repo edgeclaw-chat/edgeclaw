@@ -23,9 +23,11 @@
  *     inferred conservatively from `life` (CANCELLED -> STOPPED, ERROR -> FAILED), i.e.
  *     "not a cascade", so nothing is auto-released and nothing extra is counted as needing
  *     attention on the first load of an old session.
+ *   - v10: no `task->fail` -- a failed task's reason is simply unknown, so a resume cannot
+ *     warn "this will fail again".
  * Anything older must run its one-shot migration first
  * (tools/migrate_session_v*.py, see docs/session-model-v3.md §10). */
-#define EDC_STATE_SCHEMA_VERSION 10
+#define EDC_STATE_SCHEMA_VERSION 11
 #define EDC_STATE_SCHEMA_MIN_SUPPORTED 7
 
 /* ══════════════════════════════════════════════════════════════
@@ -145,6 +147,10 @@ static cJSON *task_to_json(struct edc_task *task)
             cJSON_AddStringToObject(tj, "blocked_by", task->blocked_by);
         cJSON_AddStringToObject(tj, "blocked_end", edc_task_end_name(task->blocked_end));
     }
+    /* v11: WHY it failed, when that is knowable. Written only for a classified failure --
+     * an absent key means "not a failure or unknown", which is also what v10 archives say. */
+    if (task->fail != EDC_FAIL_NONE)
+        cJSON_AddStringToObject(tj, "fail", edc_task_fail_name(task->fail));
     cJSON_AddBoolToObject(tj, "is_group_leader", task->is_group_leader);
     cJSON_AddBoolToObject(tj, "bg", task->is_background);
     /* `!cmd`: the task exists only to issue its seeded tool call. Optional key (absent =
@@ -741,6 +747,9 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
                 const char *be = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "blocked_end"));
                 task->blocked_end = be ? edc_task_classify_end(be) : EDC_END_NONE;
             }
+
+            /* v11: the failure class, if the archive recorded one (absent -> unknown). */
+            task->fail = edc_task_classify_fail(cJSON_GetStringValue(cJSON_GetObjectItem(tj, "fail")));
         }
 
         cJSON *v;

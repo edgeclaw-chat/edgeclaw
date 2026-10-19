@@ -1252,10 +1252,15 @@ static void test_end_reason(void)
     CHECK(edc_task_mark_failed(a), "A fails by itself");
     CHECK(a->end == EDC_END_FAILED, "reason FAILED");
 
+    /* The failure class rides with the reason and is cleared with it. */
+    edc_task_set_fail(a, EDC_FAIL_AUTH);
+    CHECK(a->fail == EDC_FAIL_AUTH, "the failure class is recorded (a doomed retry is knowable)");
+
     /* Resume wipes it: a task that can move again has no end (and /task status must stop
      * claiming one). */
     CHECK(edc_task_mark_ready(a), "A is resumed back to READY");
     CHECK(a->end == EDC_END_NONE, "a resumed task has no reason again");
+    CHECK(a->fail == EDC_FAIL_NONE, "and no failure class either");
 
     edc_task_await_exec(a);
     edc_task_send_signal(a, TASK_SIGTERM);

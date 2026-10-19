@@ -40,10 +40,10 @@ extern sds edc_commands_help_text(const char *arg);
 
 /** The one-line answer to `/task resume <id>` once the task has been driven: what it WAS
  *  (|was| is the end reason captured before resume cleared it) and, for a task that had
- *  failed, the last error line -- so "retried the same doomed request" is visible instead
- *  of looking like a fresh start. Caller frees. Exposed for tests: the reply path goes
- *  through the channel actor, which the command tests do not run. */
-extern sds edc_commands_resume_text(const struct edc_task *t, edc_task_end was);
+ *  failed, the last error line and -- when it is knowable -- whether retrying it is
+ *  pointless (a bad key, an overflowing context). Caller frees. Exposed for tests: the
+ *  reply path goes through the channel actor, which the command tests do not run. */
+extern sds edc_commands_resume_text(const struct edc_task *t, edc_task_end was, edc_task_fail was_fail);
 
 /* ── The command table as data (read-only) ───────────────────
  * The TUI's completion palette consumes the surface through these instead of parsing

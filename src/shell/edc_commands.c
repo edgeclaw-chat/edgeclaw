@@ -1232,6 +1232,8 @@ static sds edc_commands_end_note(const struct edc_task *t)
     case EDC_END_STOPPED:
         return sdsnew("stopped by the user");
     case EDC_END_FAILED:
+        if (t->fail != EDC_FAIL_NONE)
+            return sdscatprintf(sdsempty(), "failed on its own (%s)", edc_task_fail_name(t->fail));
         return sdsnew("failed on its own");
     case EDC_END_SKIPPED:
         return sdsnew("skipped: `||` saw its source succeed");
@@ -1335,7 +1337,7 @@ static void edc_commands_handle_task_stop(struct edc_session_manager *sm, struct
  * (the loop stopped mid-flight), ERROR (continue the failed round, reusing the active
  * turn and tool ledger), and CANCELLED (cancel only stopped it; the step is re-derived
  * from the messages). A task that `||` skipped is refused. The id is required. */
-sds edc_commands_resume_text(const struct edc_task *t, edc_task_end was)
+sds edc_commands_resume_text(const struct edc_task *t, edc_task_end was, edc_task_fail was_fail)
 {
     if (!t)
         return sdsempty();
@@ -1366,6 +1368,18 @@ sds edc_commands_resume_text(const struct edc_task *t, edc_task_end was)
             n--; /* never end inside a UTF-8 sequence */
         if (n > 0)
             out = sdscatprintf(out, " Last error: %.*s%s", (int)n, s, cut ? "…" : "");
+    }
+
+    /* "Retried the same doomed request" is the case this class exists for: say it, so the
+     * user fixes the cause instead of watching the same failure twice. */
+    if (was == EDC_END_FAILED)
+    {
+        if (was_fail == EDC_FAIL_AUTH)
+            out = sdscat(out, " This looks like an auth failure — fix the credentials (`/connect`) first; "
+                              "a blind retry fails the same way.");
+        else if (was_fail == EDC_FAIL_CONTEXT_OVERFLOW)
+            out = sdscat(out, " The context did not fit — the same request will not fit either; let the "
+                              "group fold, or start a smaller task.");
     }
     return out;
 }
@@ -1456,6 +1470,7 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
 
     /* What it was, said before resume clears the reason (any move back to ALIVE wipes it). */
     const edc_task_end was_end = t->end;
+    const edc_task_fail was_fail = t->fail;
 
     edc_scheduler_resume_task(sched, t);
 
@@ -1491,7 +1506,7 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
     }
 
     /* What it was, now that it is being driven again (the move to ALIVE cleared `end`). */
-    sds reply = edc_commands_resume_text(t, was_end);
+    sds reply = edc_commands_resume_text(t, was_end, was_fail);
     if (t->group && t->group->session && t->group->session != sess)
         reply = sdscatprintf(reply, " (session `[%s]`)", t->group->session->session_id);
     edc_commands_reply(to, reply);

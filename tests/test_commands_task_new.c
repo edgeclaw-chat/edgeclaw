@@ -343,13 +343,13 @@ int main(void)
         struct edc_task *r = edc_task_new("rr-1", "sess-reply", "rr-1", "r", edc_channel_adapter);
         edc_task_await_exec(r);
 
-        sds txt = edc_commands_resume_text(r, EDC_END_INTERRUPTED);
+        sds txt = edc_commands_resume_text(r, EDC_END_INTERRUPTED, EDC_FAIL_NONE);
         CHECK(strstr(txt, "was interrupted") != NULL, "INTERRUPTED 说得出来");
         CHECK(strstr(txt, "Last error") == NULL, "没失败过就不附错误");
         sdsfree(txt);
 
         edc_task_set_output(r, sdsnew("LLM request failed: 401 Unauthorized\nmore detail follows"));
-        txt = edc_commands_resume_text(r, EDC_END_FAILED);
+        txt = edc_commands_resume_text(r, EDC_END_FAILED, EDC_FAIL_OTHER);
         CHECK(strstr(txt, "had failed") != NULL, "FAILED 说得出来");
         CHECK(strstr(txt, "Last error: LLM request failed: 401 Unauthorized") != NULL, "并附上上次错误的第一行");
         CHECK(strstr(txt, "more detail") == NULL, "只取第一行");
@@ -359,13 +359,28 @@ int main(void)
         for (int i = 0; i < 40; i++)
             long_err = sdscat(long_err, " xxxxxxxxx");
         edc_task_set_output(r, long_err);
-        txt = edc_commands_resume_text(r, EDC_END_FAILED);
+        txt = edc_commands_resume_text(r, EDC_END_FAILED, EDC_FAIL_OTHER);
         CHECK(strstr(txt, "…") != NULL, "过长的错误被截断并加省略号");
         CHECK(sdslen(txt) < 260, "而且回执不会失控");
         sdsfree(txt);
 
-        txt = edc_commands_resume_text(r, EDC_END_STOPPED);
+        txt = edc_commands_resume_text(r, EDC_END_STOPPED, EDC_FAIL_NONE);
         CHECK(strstr(txt, "was stopped") != NULL, "STOPPED 说得出来");
+        sdsfree(txt);
+
+        /* 注定失败的失败要说出来：坏 key / 上下文放不下，重试不会自己好。 */
+        txt = edc_commands_resume_text(r, EDC_END_FAILED, EDC_FAIL_AUTH);
+        CHECK(strstr(txt, "auth failure") != NULL, "AUTH: 预警重试无用");
+        CHECK(strstr(txt, "blind retry") != NULL, "并指出该先修什么");
+        sdsfree(txt);
+
+        txt = edc_commands_resume_text(r, EDC_END_FAILED, EDC_FAIL_CONTEXT_OVERFLOW);
+        CHECK(strstr(txt, "did not fit") != NULL, "CONTEXT_OVERFLOW: 预警同一请求仍放不下");
+        sdsfree(txt);
+
+        txt = edc_commands_resume_text(r, EDC_END_FAILED, EDC_FAIL_OTHER);
+        CHECK(strstr(txt, "auth failure") == NULL && strstr(txt, "did not fit") == NULL,
+              "OTHER/TRANSPORT/RATE_LIMIT 不预警 (重试可能成功)");
         sdsfree(txt);
 
         edc_task_free(r);

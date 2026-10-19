@@ -1983,7 +1983,7 @@ static void test_schema_version_is_current(void)
     CHECK(json != NULL, "serialize returns non-NULL");
     /* 本文件构造 JSON 时用的版本号是手写镜像 (见各 cJSON_Parse 字面量): 一律等于
      * 当前 schema, 升级时这里会先红。 */
-    CHECK(edc_state_schema_version() == 10, "schema version bumped -> update this file's literals");
+    CHECK(edc_state_schema_version() == 11, "schema version bumped -> update this file's literals");
     CHECK(edc_state_json_version(json) == edc_state_schema_version(), "on-disk version is the current schema");
 
     struct edc_session *s2 = edc_session_new(cfg, "sess-ver", "Ver");
@@ -2021,7 +2021,7 @@ static void test_schema_version_is_current(void)
     edc_scheduler_free(sched3);
 
     /* A version NEWER than this binary also refuses (do not guess a future shape). */
-    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(11));
+    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(12));
     struct edc_session *s9 = edc_session_new(cfg, "sess-ver", "Ver");
     struct edc_scheduler *sched9 = edc_scheduler_new(cfg);
     install_resolver(sched9, s9);
@@ -2273,6 +2273,8 @@ static void test_task_end_roundtrip(void)
     struct edc_task *running = edc_task_new("end-running", "sess-end", "end-leader", "running", edc_channel_adapter);
     edc_task_group_add_task(group, running);
     edc_task_await_exec(running); /* mid-request: the state a restart interrupts */
+    struct edc_task *failed = edc_task_new("end-failed", "sess-end", "end-leader", "failed", edc_channel_adapter);
+    edc_task_group_add_task(group, failed);
 
     /* A dependency that is interrupted takes its dependent down: BLOCKED, not FAILED. */
     edc_task_add_dependency(blocked, source, TASK_DEP_SEQUENCE);
@@ -2280,13 +2282,18 @@ static void test_task_end_roundtrip(void)
     edc_task_mark_interrupted(source);
     /* The user's own stop: STOPPED, not SKIPPED. */
     edc_task_send_signal(stopped, TASK_SIGTERM);
+    /* A failure whose cause is knowable: the class must survive the save, or a resume
+     * cannot warn "this will fail the same way". */
+    edc_task_await_exec(failed);
+    edc_task_mark_failed(failed);
+    edc_task_set_fail(failed, EDC_FAIL_AUTH);
 
     TEST("end: reason / blocker / the source's own reason are written");
     cJSON *json = edc_state_serialize(session, sched);
     CHECK(json != NULL, "serialize returns non-NULL");
     cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
     CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(json, "groups")) == 1, "the group is written");
-    CHECK(cJSON_GetArraySize(tasks_j) == 5, "five tasks are written");
+    CHECK(cJSON_GetArraySize(tasks_j) == 6, "six tasks are written");
     for (int i = 0; i < cJSON_GetArraySize(tasks_j); i++)
     {
         cJSON *t = cJSON_GetArrayItem(tasks_j, i);
@@ -2307,6 +2314,11 @@ static void test_task_end_roundtrip(void)
             CHECK_STREQ(end, "STOPPED", "the user's stop says STOPPED");
         else if (strcmp(id, "end-running") == 0)
             CHECK_STREQ(end, "NONE", "a task that was still running has no reason");
+        else if (strcmp(id, "end-failed") == 0)
+        {
+            CHECK_STREQ(end, "FAILED", "its own failure says FAILED");
+            CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t, "fail")), "AUTH", "and the failure class rides along");
+        }
     }
 
     TEST("end: the reasons survive a roundtrip, and a running task lands as INTERRUPTED");
@@ -2327,6 +2339,9 @@ static void test_task_end_roundtrip(void)
     CHECK(r_stopped && r_stopped->end == EDC_END_STOPPED, "STOPPED preserved");
     CHECK(r_running && r_running->life == EDC_LIFE_INTERRUPTED, "a running task reloads as INTERRUPTED");
     CHECK(r_running && r_running->end == EDC_END_INTERRUPTED, "and says why");
+    struct edc_task *r_failed = find_task(session2, "end-failed");
+    CHECK(r_failed && r_failed->end == EDC_END_FAILED, "FAILED preserved");
+    CHECK(r_failed && r_failed->fail == EDC_FAIL_AUTH, "and its failure class (v11)");
 
     TEST("end: an older file without `end` maps conservatively (never BLOCKED)");
     /* Same archive, v9: the reason keys are gone, exactly as an older binary wrote them. */
@@ -2337,6 +2352,7 @@ static void test_task_end_roundtrip(void)
         cJSON_DeleteItemFromObject(t, "end");
         cJSON_DeleteItemFromObject(t, "blocked_by");
         cJSON_DeleteItemFromObject(t, "blocked_end");
+        cJSON_DeleteItemFromObject(t, "fail"); /* v10 and older never wrote it */
     }
     struct edc_session *session3 = edc_session_new(cfg, "sess-end", "Ends");
     struct edc_scheduler *sched3 = edc_scheduler_new(cfg);
@@ -2349,6 +2365,9 @@ static void test_task_end_roundtrip(void)
           "an ERROR row with no reason is FAILED -- never BLOCKED, so nothing is auto-released on a guess");
     CHECK(o_blocked && o_blocked->blocked_by == NULL, "and no blocker is invented");
     CHECK(o_stopped && o_stopped->end == EDC_END_STOPPED, "a CANCELLED row reads back as STOPPED");
+    struct edc_task *o_failed = find_task(session3, "end-failed");
+    CHECK(o_failed && o_failed->fail == EDC_FAIL_NONE,
+          "no failure class in an old archive -> NONE (a resume cannot claim to know)");
 
     cJSON_Delete(json);
     /* The fixtures are owned by their sessions here (freed with the process), as in the
