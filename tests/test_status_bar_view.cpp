@@ -1,7 +1,8 @@
 // StatusBarView 的右段丢弃策略单测 (纯函数, 无需终端/屏幕)。
 //
-// 页脚右端是 "model · ctx 45k/128k · sandbox:on|off · shell:on|off · /help"; 窄屏时从
-// 最前面往外丢字段: 先丢 model, 再丢 ctx, 再丢 sandbox, 再丢 shell, 永远保留 "/help"。
+// 页脚右端只留三样: "model · ctx 45k/128k · sandbox:on|off"; 窄屏时从最前面往外丢
+// 字段: 先丢 model, 再丢 ctx, 永远保留 sandbox。这里**不出现** shell:on|off 与 /help:
+// 开关状态不是常驻信息（它的效果在输入行上体现），/help 挪进了输入框的 placeholder。
 // 这条策略原来藏在 TUIWindow::RenderFooter() 里, 只能靠渲染整个窗口验证; 现在它是
 // StatusBarView::RightText() 纯函数, 直接钉住。
 //
@@ -37,70 +38,62 @@ const int kLeftW = static_cast<int>(std::string(kLeft).size());
 
 void TestWideShowsEverything()
 {
-    std::cout << "wide pane: model + both switches + /help\n";
-    // No context yet: the field is simply absent. The shell switch is the default (off)
-    // in the first case, on in the second -- both states have to render.
+    std::cout << "wide pane: model + the sandbox state, nothing else\n";
+    // No context yet: the field is simply absent. Both sandbox states have to render.
     const std::string r =
-        edc::ui::StatusBarView::RightText(80, kLeft, kModel, /*ctx=*/"", /*sandbox_on=*/true, /*shell_on=*/false);
-    Check(r == std::string(kModel) + " · sandbox:on · shell:off · /help", "all fields present (got: " + r + ")");
-    Check(edc::ui::StatusBarView::RightText(80, kLeft, kModel, "", false, true) ==
-              std::string(kModel) + " · sandbox:off · shell:on · /help",
-          "each switch reflects its own flag");
+        edc::ui::StatusBarView::RightText(80, kLeft, kModel, /*ctx=*/"", /*sandbox_on=*/true);
+    Check(r == std::string(kModel) + " · sandbox:on", "all fields present (got: " + r + ")");
+    Check(edc::ui::StatusBarView::RightText(80, kLeft, kModel, "", /*sandbox_on=*/false) ==
+              std::string(kModel) + " · sandbox:off",
+          "the sandbox field reflects its flag");
+    Check(r.find("shell:") == std::string::npos, "no shell switch cell (it is not a footer field)");
+    Check(r.find("/help") == std::string::npos, "/help is not a footer field (it moved to the input)");
 }
 
 void TestWideWithContext()
 {
-    std::cout << "wide pane: the context field sits between model and the switches\n";
-    const std::string r = edc::ui::StatusBarView::RightText(80, kLeft, kModel, kCtx, true, false);
-    Check(r == std::string(kModel) + " · " + kCtx + " · sandbox:on · shell:off · /help",
-          "ctx shown (got: " + r + ")");
+    std::cout << "wide pane: the context field sits between model and the sandbox state\n";
+    const std::string r = edc::ui::StatusBarView::RightText(80, kLeft, kModel, kCtx, true);
+    Check(r == std::string(kModel) + " · " + kCtx + " · sandbox:on", "ctx shown (got: " + r + ")");
 }
 
 void TestNarrowDropsModelFirst()
 {
-    std::cout << "narrow pane: drop model, keep the switches + /help\n";
-    const int pane = kLeftW + 1 + ::ftxui::string_width(std::string("sandbox:on · shell:off · /help"));
-    const std::string r = edc::ui::StatusBarView::RightText(pane, kLeft, kModel, "", true, false);
-    Check(r == "sandbox:on · shell:off · /help", "model dropped, both switches kept (got: " + r + ")");
+    std::cout << "narrow pane: drop model, keep the sandbox state\n";
+    const int pane = kLeftW + 1 + ::ftxui::string_width(std::string("sandbox:on"));
+    const std::string r = edc::ui::StatusBarView::RightText(pane, kLeft, kModel, "", true);
+    Check(r == "sandbox:on", "model dropped, the sandbox state kept (got: " + r + ")");
 }
 
 void TestContextDroppedBeforeSandbox()
 {
-    std::cout << "narrower pane: drop model then ctx, keep the switches + /help\n";
-    // One column short of "ctx 45k/128k · sandbox:on · shell:off · /help": the model goes
-    // first, then ctx, leaving the switches + /help. (string_width, not size(): the "·"
-    // is two bytes but one cell.)
-    const std::string cand = std::string(kCtx) + " · sandbox:on · shell:off · /help";
+    std::cout << "narrower pane: drop model then ctx, keep the sandbox state\n";
+    // One column short of "ctx 45k/128k · sandbox:on": the model goes first, then ctx.
+    // (string_width, not size(): the "·" is two bytes but one cell.)
+    const std::string cand = std::string(kCtx) + " · sandbox:on";
     const int pane = kLeftW + 1 + ::ftxui::string_width(cand) - 1;
-    const std::string r = edc::ui::StatusBarView::RightText(pane, kLeft, kModel, kCtx, true, false);
-    Check(r == "sandbox:on · shell:off · /help", "model + ctx dropped (got: " + r + ")");
+    const std::string r = edc::ui::StatusBarView::RightText(pane, kLeft, kModel, kCtx, true);
+    Check(r == "sandbox:on", "model + ctx dropped (got: " + r + ")");
 }
 
-void TestSandboxDroppedBeforeShell()
+void TestNarrowestKeepsTheSandboxState()
 {
-    std::cout << "narrower still: the sandbox switch goes before the shell one\n";
-    // Room for "shell:off · /help" but not for "sandbox:on · shell:off · /help": the drop
-    // order is model, ctx, sandbox, shell -- sandbox is the older, always-on-default
-    // switch, so it is the one that yields first.
-    const int pane = kLeftW + 1 + ::ftxui::string_width(std::string("shell:off · /help"));
-    const std::string r = edc::ui::StatusBarView::RightText(pane, kLeft, kModel, kCtx, true, false);
-    Check(r == "shell:off · /help", "sandbox dropped, shell kept (got: " + r + ")");
-}
-
-void TestNarrowerDropsBothSwitches()
-{
-    std::cout << "narrowest pane: only /help survives\n";
-    // Room for "/help" alone.
-    const int pane = kLeftW + 1 + static_cast<int>(std::string("/help").size());
-    const std::string r = edc::ui::StatusBarView::RightText(pane, kLeft, kModel, kCtx, true, false);
-    Check(r == "/help", "everything but /help dropped (got: " + r + ")");
+    std::cout << "narrowest pane: the sandbox state is the last thing to go (it never does)\n";
+    // Room for "sandbox:on" alone; one column less and the field is still returned
+    // (the loop floors at the last field rather than dropping everything).
+    for (int extra = 0; extra >= -4; extra--)
+    {
+        const int pane = kLeftW + 1 + ::ftxui::string_width(std::string("sandbox:on")) + extra;
+        const std::string r = edc::ui::StatusBarView::RightText(pane, kLeft, kModel, kCtx, true);
+        Check(r == "sandbox:on", "still just the sandbox state (pane " + std::to_string(pane) + ", got: " + r + ")");
+    }
 }
 
 void TestEmptyModelNeverShowsAModelField()
 {
-    std::cout << "no model name: the switches + /help only\n";
-    const std::string r = edc::ui::StatusBarView::RightText(80, kLeft, /*model=*/"", "", true, false);
-    Check(r == "sandbox:on · shell:off · /help", "empty model -> no leading field (got: " + r + ")");
+    std::cout << "no model name: the sandbox state only\n";
+    const std::string r = edc::ui::StatusBarView::RightText(80, kLeft, /*model=*/"", "", true);
+    Check(r == "sandbox:on", "empty model -> no leading field (got: " + r + ")");
 }
 
 void TestContextText()
@@ -130,8 +123,7 @@ int main()
     TestWideWithContext();
     TestNarrowDropsModelFirst();
     TestContextDroppedBeforeSandbox();
-    TestSandboxDroppedBeforeShell();
-    TestNarrowerDropsBothSwitches();
+    TestNarrowestKeepsTheSandboxState();
     TestEmptyModelNeverShowsAModelField();
     TestContextText();
     TestLeftText();

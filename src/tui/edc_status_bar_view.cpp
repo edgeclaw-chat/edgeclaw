@@ -18,11 +18,6 @@ namespace edc::ui
 namespace
 {
 
-// The only hint the footer shows: instead of spelling out every key binding in
-// the status line, point users at the slash command that lists them. Placed at
-// the right end of the footer, after the model name.
-constexpr char kFooterHelp[] = "/help";
-
 // Replace a leading $HOME with "~" so a deep directory stays readable in the
 // one-line footer. Falls back to the raw path when HOME is unset or the path is
 // not under it.
@@ -69,11 +64,10 @@ std::string CompactTokens(long long n)
 
 StatusBarView::StatusBarView(std::shared_ptr<const model::SessionModel> session,
                              std::shared_ptr<const port::ITerminalInfo> terminal,
-                             std::function<bool()> sandbox_enabled, std::function<bool()> shell_syntax,
-                             std::function<int()> sidebar_width, std::function<int()> context_window)
+                             std::function<bool()> sandbox_enabled, std::function<int()> sidebar_width,
+                             std::function<int()> context_window)
     : session_(std::move(session)), terminal_(std::move(terminal)), sandbox_enabled_(std::move(sandbox_enabled)),
-      shell_syntax_(std::move(shell_syntax)), sidebar_width_(std::move(sidebar_width)),
-      context_window_(std::move(context_window))
+      sidebar_width_(std::move(sidebar_width)), context_window_(std::move(context_window))
 {
 }
 
@@ -113,15 +107,16 @@ std::string StatusBarView::ContextText(long long used, bool estimated, int windo
 }
 
 std::string StatusBarView::RightText(int pane_width, const std::string &left, const std::string &model,
-                                     const std::string &ctx, bool sandbox_on, bool shell_on)
+                                     const std::string &ctx, bool sandbox_on)
 {
-    // Right end: the model in use, the current context size, and the two mode switches,
-    // then the "/help" pointer, joined by middle dots so they read as one compact unit.
+    // Right end: what changes (the model in use, the current context size) and the one
+    // state that is a safety report (the sandbox), joined by middle dots so they read as
+    // one compact unit. Everything else deliberately stays out: a switch that changes
+    // once in a blue moon does not earn a permanent cell, and "/help" lives in the
+    // input's placeholder, where the reader is about to type.
     // Flush to the pane's right edge with the filler; as the pane narrows, drop fields
-    // from the front outward -- the model first, then ctx, then sandbox, then shell --
-    // and never drop "/help".
+    // from the front outward -- the model first, then ctx -- and never drop the sandbox.
     const std::string sandbox = std::string("sandbox:") + (sandbox_on ? "on" : "off");
-    const std::string shell = std::string("shell:") + (shell_on ? "on" : "off");
 
     std::vector<std::string> fields;
     if (!model.empty())
@@ -129,8 +124,6 @@ std::string StatusBarView::RightText(int pane_width, const std::string &left, co
     if (!ctx.empty())
         fields.push_back(ctx);
     fields.push_back(sandbox);
-    fields.push_back(shell);
-    fields.push_back(kFooterHelp);
 
     const int budget = pane_width - ::ftxui::string_width(left) - 1;
     for (size_t first = 0; first < fields.size(); first++)
@@ -145,7 +138,7 @@ std::string StatusBarView::RightText(int pane_width, const std::string &left, co
         if (::ftxui::string_width(cand) <= budget || first + 1 == fields.size())
             return cand;
     }
-    return kFooterHelp; // unreachable: the loop returns on its last iteration
+    return sandbox; // unreachable: the loop returns on its last iteration
 }
 
 std::string StatusBarView::CurrentDir() const
@@ -175,7 +168,7 @@ std::string StatusBarView::CurrentDir() const
     const bool sandbox_on = sandbox_enabled_();
     const std::string ctx = ContextText(ctx_tokens_, ctx_estimated_, context_window_ ? context_window_() : 0);
 
-    const std::string right = RightText(pane_w, left, model_, ctx, sandbox_on, shell_syntax_());
+    const std::string right = RightText(pane_w, left, model_, ctx, sandbox_on);
 
     // The left end is one dim run: the working directory -- or, while a hint is up, the
     // hint in its place (same style: no highlight, same corner).

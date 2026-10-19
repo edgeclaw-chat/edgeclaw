@@ -45,18 +45,23 @@ GETTING STARTED
      "Ctrl+C again to quit" in the footer, in place of the working
      directory -- press it a second time (within ~1.5s) to quit EdgeClaw.
 
-     The footer's right end reads "model · ctx used/window · sandbox:on|off
-     · shell:on|off · /help" (the context gauge is the foreground group's
-     current context; a ~ marks an estimate), and while a task runs the
-     bottom row becomes a progress bar carrying its elapsed time and an
-     "Esc to stop" hint.
+     The footer's right end reads "model · ctx used/window · sandbox:on|off"
+     (the context gauge is the foreground group's current context; a ~ marks
+     an estimate), and while a task runs the bottom row becomes a progress bar
+     carrying its elapsed time and an "Esc to stop" hint.  That is all it
+     carries: a switch that changes once in a blue moon does not earn a
+     permanent cell, so the shell-like syntax is reported by /shell (and, where
+     it matters, by the input line itself).  The empty input box's placeholder
+     points at /help.
 
 SHELL SYNTAX (off by default)
-     The shell-like syntax -- the sigils + and !, and the operators
+     The shell-like syntax -- the sigil + and the operators
      | ; & > >> 2> -- is OFF until you ask for it: it presumes a Unix
      shell, and fails silently when you do not have one (a stray | makes
      one odd task instead of two, and nothing says why).  Turn it on with
-     "/shell on"; the state is persisted and the footer shows shell:on|off.
+     "/shell on"; the state is persisted and "/shell" alone reports it.  It is
+     not a footer cell: its effect shows up where it matters (a line that will
+     be parsed says so above the input).
 
      With it off, every line that is not a / command is ONE task
      description, verbatim.  / commands are never gated -- /shell itself
@@ -68,7 +73,9 @@ SHELL SYNTAX (off by default)
      collected (a template is authored content; its meaning must not depend
      on the reader's setting).  @ is outside it too: @file is a file
      reference, the opencode/Claude convention rather than a Unix shell
-     one, so it works with the switch off.
+     one, so it works with the switch off.  ! is outside it as well: !cmd
+     never enters the parser (one token dispatches it to a task that issues
+     one exec_shell call), so it means the same thing on or off.
 
      With it on, all non-/ input is processed through the edgeclaw shell
      parser:
@@ -77,10 +84,10 @@ SHELL SYNTAX (off by default)
            > analyze src/ for bugs
            > "scan src/" | "create a fix plan"
            > "alpha|beta"
-       A line that does not begin with " / ' / + / ! is a normal MESSAGE: one
+       A line that does not begin with " / ' / + is a normal MESSAGE: one
        task, verbatim, nothing parsed out of it.  That is ordinary
        conversation, and it needs no quoting.  A line that begins with a quote
-       -- or with the sigil + / ! -- is SHELL syntax, and inside it EVERY
+       -- or with the sigil + -- is SHELL syntax, and inside it EVERY
        string is quoted: the rule is Python's ("..." interpolates {{...}},
        '...' is raw, """...""" / '''...''' span lines, the shape pasted text
        wants; escapes as in Python).  An unquoted operand in a shell line is
@@ -162,6 +169,7 @@ SHELL SYNTAX (off by default)
 
      Local shell (!)
            > !git status
+       Not gated by the switch above: ! works with the shell-like syntax on or off.
        A line starting with ! runs a local shell command on THIS machine. The command
        becomes a task of its own -- its own line in the sidebar, its own entry in the
        group's history -- whose only job is to issue one exec_shell call. No model is
@@ -391,8 +399,8 @@ COMMAND REFERENCE
                                    Add/remove a masked dir (wins over ro/rw;
                                    e.g. ~/.ssh).
      /shell [on|off]               Turn the shell-like input syntax on or
-                                   off (off by default; persisted; shown in
-                                   the footer as shell:on|off).
+                                   off (off by default; persisted; /shell
+                                   alone reports the state).
 
      Session
      /session new [name] [dir]     Start a new session (optionally named,

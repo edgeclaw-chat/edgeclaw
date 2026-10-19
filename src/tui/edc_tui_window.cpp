@@ -235,13 +235,13 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     task_widget_ = std::make_shared<TaskWidget>();
     todo_widget_ = std::make_shared<TodoWidget>();
     working_indicator_ = std::make_shared<ui::WorkingIndicatorView>();
-    // The status row reads the session model + terminal width; the sandbox state, the
-    // shell-like syntax switch and the sidebar width are pulled per frame (all three
-    // change at runtime).
+    // The status row reads the session model + terminal width; the sandbox state and the
+    // sidebar width are pulled per frame (both change at runtime). The shell-like syntax
+    // switch is NOT a footer field (it changes once in a blue moon and its effect is
+    // shown where it matters -- see the input line).
     status_bar_ = std::make_shared<ui::StatusBarView>(
         session_model_, terminal_, [this] { return app_ && app_->SandboxEnabled(); },
-        [this] { return app_ && app_->ShellSyntax(); }, [this] { return sidebar_width_; },
-        [this] { return app_ ? app_->ContextWindow() : 0; });
+        [this] { return sidebar_width_; }, [this] { return app_ ? app_->ContextWindow() : 0; });
 
     const auto &pal = style::palette();
     prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(pal.prompt) | ::ftxui::bold;
@@ -250,7 +250,8 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     // wrap onto following rows instead of overflowing the input width;
     // Alt+Enter / pasted newlines still create real '\n' in the content. The
     // placeholder is dimmed by the widget itself (no InputOption transform).
-    input_ = std::make_shared<edc::EdcInput>(&input_text_, "Type a message, Enter to send, Alt+Enter for a newline...");
+    input_ = std::make_shared<edc::EdcInput>(
+        &input_text_, "Type a message, or /help for commands, Alt+Enter for a newline...");
 
     container_ = ::ftxui::Container::Vertical({chat_widget_, input_}, &focused_);
 

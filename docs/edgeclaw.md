@@ -32,10 +32,12 @@ Two keys interrupt things. **Esc** stops the foreground group's running task (wh
 **Ctrl+C** clears the input box and shows "Ctrl+C again to quit" in the footer in place of
 the working directory — press it a second time (within ~1.5s) to quit EdgeClaw.
 
-The footer's right end reads `model · ctx used/window · sandbox:on|off · /help` (the
-context gauge is the foreground group's current context; a `~` marks an estimate), and
-while a task runs the bottom row becomes a progress bar carrying its elapsed time and an
-"Esc to stop" hint.
+The footer's right end reads `model · ctx used/window · sandbox:on|off` (the context
+gauge is the foreground group's current context; a `~` marks an estimate), and while a
+task runs the bottom row becomes a progress bar carrying its elapsed time and an "Esc to
+stop" hint. That is all it carries: a switch that changes once in a blue moon does not
+earn a permanent cell, so the shell-like syntax is reported by `/shell` (and, where it
+matters, by the input line itself). The empty input box's placeholder points at `/help`.
 
 Type a message in the input box and press Enter. Conversations are saved per session under `workspace/<session_id>/`.
 
@@ -99,9 +101,9 @@ Shell below); a `!n` or `!!` inside a task description is literal text.
 
 ## Shell-like Syntax (off by default)
 
-Everything below borrows a shell's vocabulary: the sigils `+` (open a new group) and `!`
-(run a local shell command), and the operators `|` `;` `&` `>` `>>` `2>`. **That
-vocabulary is off until you ask for it**, because it presumes you know a Unix shell — and
+Everything below borrows a shell's vocabulary: the sigil `+` (open a new group) and the
+operators `|` `;` `&` `>` `>>` `2>`. **That vocabulary is off until you ask for it**,
+because it presumes you know a Unix shell — and
 it fails *silently* when you do not: a line with a stray `|` becomes one odd task instead
 of two, and nothing tells you why.
 
@@ -118,7 +120,7 @@ there is no spelling that turns it into one. The `/` only matters as the *first*
 so text about a path can simply start with a word: `check /usr/bin for the old binary`.
 
 **A shell line is recognised by its first character.** Every string in shell syntax is
-quoted, so a shell line always begins with `"` or `'` — or with its own sigil, `+` / `!`. A
+quoted, so a shell line always begins with `"` or `'` — or with its own sigil, `+`. A
 line beginning with none of those is **a normal message**: one task, verbatim, nothing
 parsed out of it. That is what ordinary conversation looks like, and it is why it needs no
 quoting:
@@ -149,11 +151,13 @@ error — not a task quietly called `hello`.
 and `/shell` itself has to stay reachable to turn the switch back on. So `/task new`,
 `/skill` and `/prompt` keep working either way.
 
-The state is persisted (`config.json` → `shell_syntax`) and shown in the footer as
-`shell:on|off`. `/shell on|off` is the only way to flip it — deliberately no CLI flag, so
-there is one way to say it and it is the one that persists.
+The state is persisted (`config.json` → `shell_syntax`). `/shell on|off` is the only way
+to flip it — deliberately no CLI flag, so there is one way to say it and it is the one that
+persists — and `/shell` with no argument reports the current state. It is deliberately not
+a footer cell: the switch changes once in a blue moon, and its effect shows up where it
+matters (a line that will be parsed says so above the input).
 
-**What the switch does *not* govern.** It is about the line you type. Two things sit
+**What the switch does *not* govern.** It is about the line you type. Three things sit
 outside it:
 
 - **A `/prompt` or `/skill` body is a document, not input to this layer.** It becomes one
@@ -166,6 +170,11 @@ outside it:
   convention, not a Unix shell vocabulary — so it is expected to work with the switch off
   too. The migration hint an old `@desc` gets is the one piece that only makes sense with
   the switch on, since that is the only world where `@desc` ever meant a group.
+- **`!` is not part of it.** `!cmd` never enters the parser: it is a one-token dispatch to
+  a task that issues one `exec_shell` call, so it means the same thing on or off. The
+  switch governs the *vocabulary* of the parser, and `!` is not in that vocabulary — with
+  the switch off it would be a plain word that happens to start with a bang, and turning a
+  command into a task description is never what a user wants from a safety switch.
 
 ---
 
@@ -227,7 +236,7 @@ To write a description that starts with a sigil, quote it — there is no escape
 
 ## Local Shell (`!`)
 
-Needs the shell-like syntax: **off by default**, `/shell on` turns it on.
+Not governed by the switch (see above): `!` works with the shell-like syntax **on or off**.
 
 A line starting with `!` runs a **local shell command** on this machine:
 
@@ -467,7 +476,7 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 | `/sandbox add-ro\|rm-ro <dir>` | Add/remove a read-only path |
 | `/sandbox add-rw\|rm-rw <dir>` | Add/remove a read-write path |
 | `/sandbox add-deny\|rm-deny <dir>` | Add/remove a masked dir (wins over ro/rw; e.g. `~/.ssh`) |
-| `/shell [on\|off]` | Turn the shell-like input syntax on or off (off by default; persisted; shown in the footer as `shell:on\|off`) |
+| `/shell [on\|off]` | Turn the shell-like input syntax on or off (off by default; persisted; `/shell` alone reports the state) |
 
 ### Session
 

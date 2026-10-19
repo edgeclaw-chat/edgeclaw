@@ -117,8 +117,9 @@ class IAppFacade
     virtual bool ConfigApiUrl(std::string *out) const = 0;
     virtual bool ConfigApiKey(std::string *out) const = 0;
     virtual bool SandboxEnabled() const = 0;
-    // Whether the shell-like input syntax is on (see /shell). The footer shows it, so it
-    // is read per frame -- /shell flips it while the TUI runs.
+    // Whether the shell-like input syntax is on (see /shell). Read per frame so the input
+    // line can say how the current line will be read -- /shell flips it while the TUI runs.
+    // (Deliberately not a footer field: the switch is not worth a permanent cell.)
     virtual bool ShellSyntax() const = 0;
     // The configured model's context window in tokens (0 = unknown). The status bar
     // reads it to show "ctx used/window".

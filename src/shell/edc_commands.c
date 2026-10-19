@@ -3652,10 +3652,11 @@ bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm
         return false;
 
     /* The shell-like syntax master switch (see edc_config.shell_syntax). It owns the `+`
-     * and `!` sigils and the whole operator vocabulary. `/` commands are NOT shell syntax
-     * and are never gated -- `/shell` itself has to stay reachable to turn it back on. */
-    const bool shell_on = cfg && cfg->shell_syntax;
-
+     * sigil, the quoting rule and the whole operator vocabulary -- in other words exactly
+     * what the shell parser understands. Two things are NOT shell syntax and are never
+     * gated: `/` commands (the `/shell` switch itself has to stay reachable to turn it back
+     * on) and `!` local shell (it issues one exec_shell call and never enters the parser, so
+     * a user who has the switch off still gets a command instead of a task description). */
     /* `+desc` is SHELL syntax and is handled in the shell layer (edc_shell_execute), which
      * the fall-through below reaches. It deliberately does NOT combine with the command
      * syntax: `+/task new …` / `+!cmd` used to run the command in a new group, and that is
@@ -3663,9 +3664,11 @@ bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm
 
     /* `!cmd`: a user-typed local shell command. It becomes a task of its own that issues
      * one `exec_shell` call and settles on its result -- no model involved, and the
-     * output lands in the group's history like any other task's. The `\!` escape (and any
-     * input that is not ours) falls through to the paths below. */
-    if (shell_on && message->content[0] == '!' && edc_local_shell_handle(sm, sched, to, message))
+     * output lands in the group's history like any other task's. Deliberately outside the
+     * shell_syntax switch (below): `!` is not part of the parser's vocabulary, it is a
+     * one-token dispatch, so it means the same thing with the switch on or off. The `\!`
+     * escape (and any input that is not ours) falls through to the paths below. */
+    if (message->content[0] == '!' && edc_local_shell_handle(sm, sched, to, message))
         return true;
 
     /* / commands: shell builtins first, then shortcuts, then existing handlers */

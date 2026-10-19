@@ -1,11 +1,13 @@
 /* The shell-like syntax switch: what the input means with it OFF (the default).
  *
- * The point of the switch is that the operators (`| ; & > >> 2> <`) and the sigils
- * (`+ ! @`) spell out a Unix shell vocabulary. A user who does not expect them should get
- * their text, not a silently half-parsed task -- so OFF, every line that is not a `/`
- * command is ONE task description, verbatim. This pins both halves: OFF the operators and
- * sigils are inert, ON they are not (that direction is what test_shell_job_control covers
- * in depth; here it is the control that keeps these cases from passing vacuously).
+ * The point of the switch is that the operators (`| ; & > >> 2> <`) and the sigil `+`
+ * (plus the quoting rule) spell out a Unix shell vocabulary. A user who does not expect
+ * them should get their text, not a silently half-parsed task -- so OFF, every line that is
+ * not a `/` command or a `!` local shell is ONE task description, verbatim. (`!` and `@`
+ * are outside the switch: they are not the parser's vocabulary, and a command must never
+ * silently become a description.) This pins both halves: OFF the operators and `+` are
+ * inert, ON they are not (that direction is what test_shell_job_control covers in depth;
+ * here it is the control that keeps these cases from passing vacuously).
  *
  * It also pins `/shell on|off` as the only way to flip it.
  *
@@ -205,14 +207,6 @@ int main(void)
     CHECK(front_before == NULL || edc_scheduler_get_foreground(sess) == front_before,
           "the group in front did not move");
 
-    TEST("`!cmd` with the switch off is NOT the local shell");
-    before = task_count(sess);
-    drive(cfg, sm, sched, "!git status");
-    CHECK(task_count(sess) == before + 1, "one task");
-    struct edc_task *bang = find_task_by_desc(sess, "!git status");
-    CHECK(bang != NULL, "the `!` is part of the description");
-    CHECK(bang && !bang->tool_only, "and it is NOT a tool-only task (no exec_shell, no free command)");
-
     TEST("`@desc` with the switch off is a literal description (no migration reply, no task lost)");
     before = task_count(sess);
     drive(cfg, sm, sched, "@probe");
@@ -296,6 +290,23 @@ int main(void)
     CHECK(task_count(sess) == before + 1, "and a `|` line is one task again");
     CHECK(find_task_by_desc(sess, "epsilon | zeta") != NULL,
           "and needs no quotes -- with the switch off, nothing is an operator");
+
+    /* ── `!` is NOT part of the switch (the last one, so a pending tool-only task
+     *    cannot disturb the queueing of the cases above) ─────────────── */
+
+    TEST("`!cmd` is not gated: with the switch off it is STILL the local shell");
+    /* The switch owns the shell parser's vocabulary -- `+`, the quoting rule, the
+     * operators. `!cmd` is a one-token dispatch that never enters the parser, so turning
+     * the switch off must not turn a command into a task description. That was the bug:
+     * the line became an ordinary message, the model then called exec_shell itself -- one
+     * extra LLM round, a task that never settles, and no hint at all. */
+    before = task_count(sess);
+    drive(cfg, sm, sched, "!git status");
+    CHECK(task_count(sess) == before + 1, "one task");
+    struct edc_task *off_tool = find_task_by_desc(sess, "git status");
+    CHECK(off_tool != NULL && off_tool->tool_only, "it is tool-only (one exec_shell call, no model)");
+    CHECK(find_task_by_desc(sess, "!git status") == NULL, "the `!` never becomes part of a description");
+    CHECK(g_llm_calls == 0, "no LLM request was made for it");
 
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
