@@ -362,6 +362,30 @@ int main(void)
         CHECK(g_llm_task == dtgt, "目标随即被驱动 (不再卡在等依赖)");
     }
 
+    TEST("/task dep --drop releases a task that was BLOCKED by that dependency");
+    {
+        struct edc_task *bsrc = edc_scheduler_task_new(sched, sess, "blocked src", edc_channel_adapter);
+        struct edc_task_group *bg = edc_scheduler_create_group(sched, sess, bsrc);
+        edc_scheduler_set_foreground(sess, bg);
+        struct edc_task *btgt = edc_scheduler_task_new(sched, sess, "blocked tgt", edc_channel_adapter);
+        edc_task_group_add_task(bg, btgt);
+        edc_scheduler_attach_input(sched, btgt, "go");
+        edc_task_add_dependency(btgt, bsrc, TASK_DEP_SEQUENCE);
+        edc_task_await_exec(bsrc);
+        CHECK(edc_task_mark_interrupted(bsrc), "源被中断");
+        CHECK(btgt->end == EDC_END_BLOCKED, "夹具: 目标被拖下水 (BLOCKED)");
+
+        /* 源永远不会再产出了：断掉这条边必须把它放回来，而不是留在 BLOCKED 里。 */
+        char cmd[160];
+        snprintf(cmd, sizeof cmd, "/task dep %s --drop %s", btgt->task_id, bsrc->task_id);
+        g_llm_task = NULL;
+        g_llm_calls = 0;
+        drive_command(cfg, sm, sched, cmd);
+        CHECK(!edc_task_depends_on(btgt, bsrc), "边被作废");
+        CHECK(btgt->end == EDC_END_NONE, "BLOCKED 的原因被清掉");
+        CHECK(g_llm_task == btgt, "目标随即被驱动 (不再是 BLOCKED 的僵尸)");
+    }
+
     TEST("resume reply names what the task was, and repeats the last error when it had failed");
     {
         struct edc_task *r = edc_task_new("rr-1", "sess-reply", "rr-1", "r", edc_channel_adapter);

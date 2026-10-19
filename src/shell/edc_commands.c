@@ -2324,14 +2324,21 @@ static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct 
         return;
     }
 
-    /* Re-decide and drive: with the constraint gone the task may be runnable now, and
-     * resume_task is the one entry that respects the queue and the remaining holds. */
-    if (!edc_task_is_finished(t))
+    /* Re-decide and drive. A task that already ENDED because of this dependency
+     * (end == BLOCKED) is the case this command exists for: with the edge gone there is
+     * nothing left to wait for, so it gets what the automatic release gives it -- back to
+     * dep-wait, then READY. resume_task is the one entry that respects the group queue and
+     * any dependency that is still outstanding. */
+    if (!edc_task_is_finished(t) || t->end == EDC_END_BLOCKED)
         edc_scheduler_resume_task(sched, t);
 
     sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — dropped %d dependency edge%s", t->task_id ? t->task_id : "",
                              dropped, dropped == 1 ? "" : "s");
-    if (edc_task_awaits_deps(t))
+    /* Say what actually happened, in the task's own words: "ready" for a task that is
+     * still BLOCKED would be a lie. */
+    if (edc_task_is_running(t))
+        reply = sdscat(reply, "; it is running now");
+    else if (edc_task_awaits_deps(t))
     {
         sds still = edc_commands_outstanding_deps(t);
         if (sdslen(still))
@@ -2340,8 +2347,11 @@ static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct 
             reply = sdscat(reply, "; it is ready and the scan will run it");
         sdsfree(still);
     }
-    else
+    else if (edc_task_is_ready(t))
         reply = sdscat(reply, "; it is ready and the scan will run it");
+    else
+        reply = sdscatprintf(reply, "; it is still %s (`/task resume %s` decides what next)",
+                             edc_task_state_str(t), t->task_id ? t->task_id : "?");
     reply = sdscat(reply, ".");
     edc_commands_reply(to, reply);
     sdsfree(reply);
