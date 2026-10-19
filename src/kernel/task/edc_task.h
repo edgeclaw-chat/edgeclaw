@@ -436,14 +436,18 @@ static inline bool edc_task_is_parked(const struct edc_task *task)
 {
     return edc_task_is_ready(task) || edc_task_awaits_deps(task);
 }
-/* `/task resume` gate: interrupted, suspended, failed, or cancelled. All of them only
- * stopped the task, so the resume re-derives the step from the messages and ledger. */
+/* `/task resume` gate: interrupted, suspended, failed, or cancelled -- by a stop, by its
+ * own failure, or by a dependency (all of them only stopped the task, so the resume
+ * re-derives the step from the messages and the ledger). One exclusion: a task that `||`
+ * SKIPPED never ran because the shell decided it should not, so it is NOT resumable --
+ * the reason says so, the life (CANCELLED) cannot. */
 static inline bool edc_task_is_resumable(const struct edc_task *task)
 {
     /* INTERRUPTED is in here for the same reason ERROR is: the loop did not finish it and
      * nothing was decided about it, so /task resume picks it up where it stopped. */
-    return task && (task->life == EDC_LIFE_SUSPENDED || task->life == EDC_LIFE_INTERRUPTED ||
-                    task->life == EDC_LIFE_ERROR || task->life == EDC_LIFE_CANCELLED);
+    return task && task->end != EDC_END_SKIPPED &&
+           (task->life == EDC_LIFE_SUSPENDED || task->life == EDC_LIFE_INTERRUPTED ||
+            task->life == EDC_LIFE_ERROR || task->life == EDC_LIFE_CANCELLED);
 }
 
 /* Outward vocabulary for the snapshot's "state" field, logs and command text.

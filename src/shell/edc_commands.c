@@ -1380,26 +1380,26 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
         }
     }
 
-    /* The resumable kinds: INTERRUPTED, SUSPENDED, ERROR, CANCELLED (only COMPLETED
-     * and ALIVE are not). */
-    if (!edc_task_is_resumable(t))
-    {
-        sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — %s, not resumable.", t->task_id, edc_task_state_str(t));
-        edc_commands_reply(to, reply);
-        sdsfree(reply);
-        return;
-    }
-
-    /* `||` decided this branch is not taken. Running it now would execute exactly the
-     * thing the shell said should not run, with the input it was created with -- and the
-     * branch's reason is now recorded (EDC_END_SKIPPED), so this is stated instead of
-     * quietly overridden. Sending the command again is the unambiguous way to ask. */
+    /* `||` decided this branch is not taken (checked BEFORE the generic gate so the
+     * specific answer wins): running it now would execute exactly the thing the shell
+     * said should not run, with the input it was created with. Sending the command again
+     * is the unambiguous way to ask. */
     if (t->end == EDC_END_SKIPPED)
     {
         sds reply = sdscatprintf(sdsempty(),
                                  "**Task `%s`** — skipped: `||` saw its source succeed, so this branch was not "
                                  "taken. Send the command again if you want it to run.",
                                  t->task_id);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        return;
+    }
+
+    /* The resumable kinds: INTERRUPTED, SUSPENDED, ERROR, CANCELLED (only COMPLETED
+     * and ALIVE are not). */
+    if (!edc_task_is_resumable(t))
+    {
+        sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — %s, not resumable.", t->task_id, edc_task_state_str(t));
         edc_commands_reply(to, reply);
         sdsfree(reply);
         return;

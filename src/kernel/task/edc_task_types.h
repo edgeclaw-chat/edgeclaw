@@ -36,10 +36,11 @@ typedef enum
                         * The pair is ordered, not joined: no output is injected either way. */
     TASK_DEP_UNLESS,   /* the INVERSE order constraint (`||`): wait for the source, then run only
                         * if the source did NOT succeed. A source that completed means this
-                        * branch is not taken -- the dependent is cancelled ("skipped"), and the
-                        * edge stays completed so an explicit resume still runs it. A source
-                        * that failed / was cancelled / was interrupted is exactly the case the
-                        * dependent exists for: void the edge and release it. Never injected. */
+                        * branch is not taken -- the dependent is cancelled ("skipped", end =
+                        * SKIPPED) and is NOT resumable: the edge stays completed only so the
+                        * record of why it never ran survives. A source that failed / was
+                        * cancelled / was interrupted is exactly the case the dependent exists
+                        * for: void the edge and release it. Never injected. */
 } edc_task_dep_type;
 
 #endif

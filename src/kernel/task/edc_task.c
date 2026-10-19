@@ -971,7 +971,8 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
     /* `||` INVERTS the rule: the source SUCCEEDING is exactly the case in which the dependent
      * must not run. Cancel it -- but only while it is still waiting: a task the user already
      * resumed is theirs to run, and this same path replays on load (see deser_deps). The edge
-     * stays completed, so an explicit resume afterwards does run it.
+     * stays completed, and the reason is recorded as SKIPPED so that (a) a UI can tell it
+     * apart from a stop and (b) `/task resume` refuses it: the branch was not taken.
      * NB a skipped task cancels its own dependents; `a || b ; c` is fine (the `;` edge is a
      * BARRIER and releases c), while `a || b && c` takes c down with b -- unlike a shell,
      * which would pass a's success through the skipped b. */

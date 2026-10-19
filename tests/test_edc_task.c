@@ -321,7 +321,9 @@ struct read_side_row
 static void test_step_life_read_side(void)
 {
     TEST("read predicates: one row per reachable (step, life)");
-    /* 行序即断言序 —— 失败信息只报谓词名, 靠行序定位。 */
+    /* 行序即断言序 —— 失败信息只报谓词名, 靠行序定位。
+     * NB `is_resumable` 还读 `end`: 被 `||` 跳过的任务 (life=CANCELLED, end=SKIPPED) 是
+     * 不可恢复的例外, 不在这张 (step, life) 表里 —— 见 test_end_reason()。 */
     static const struct read_side_row rows[] = {
         {EDC_TASKSTEP_READY, EDC_LIFE_ALIVE, true, true, false, false, false, false, false, true, false},
         {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE, true, false, true, false, false, false, false, true, false},
@@ -1354,6 +1356,7 @@ static void test_end_reason(void)
     edc_task_send_signal(a, TASK_SIGTERM);
     CHECK(edc_task_is_cancelled(a), "A stops (CANCELLED)");
     CHECK(a->end == EDC_END_STOPPED, "reason STOPPED, not skipped/blocked");
+    CHECK(edc_task_is_resumable(a), "a stopped task IS resumable (only the reason says otherwise)");
 
     CHECK(edc_task_mark_ready(a), "resumed again");
     edc_task_await_exec(a);
@@ -1406,6 +1409,9 @@ static void test_end_reason(void)
     edc_task_notify_dependents(l);
     CHECK(edc_task_is_cancelled(r), "R is skipped (CANCELLED)");
     CHECK(r->end == EDC_END_SKIPPED, "reason SKIPPED");
+    /* The predicate and the command must agree: `||` said this branch is not taken, so it
+     * is NOT resumable -- CANCELLED alone would have said it was. */
+    CHECK(!edc_task_is_resumable(r), "and it is NOT resumable (the reason, not the life, decides)");
     CHECK(edc_task_classify_end(edc_task_end_name(r->end)) == r->end, "the name round-trips");
     edc_task_free(l);
     edc_task_free(r);

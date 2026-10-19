@@ -503,7 +503,8 @@ int main(void)
     }
     CHECK(fallback && !edc_task_is_ready(fallback), "b is not runnable");
     CHECK(fallback && edc_task_is_cancelled(fallback), "b was skipped (cancelled)");
-    CHECK(fallback && edc_task_is_resumable(fallback), "an explicit resume can still run it");
+    CHECK(fallback && !edc_task_is_resumable(fallback),
+          "a skipped branch is NOT resumable: `||` decided it does not run");
     g_llm_calls = 0;
     g_llm_task = NULL;
     edc_scheduler_schedule(sched);
