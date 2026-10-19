@@ -1323,6 +1323,46 @@ static void test_end_reason(void)
     edc_task_free(r);
 }
 
+/* 删边是唯一一条"没有任何任务产出、下游却失去最后一个未满足依赖"的路。以前
+ * edc_task_free_deps 只减计数、不重判，下游就永久停在 dep-wait —— 而它还占着组前台
+ * （有 active turn），会把整组静默堵死。 */
+static void test_free_deps_releases_dependents(void)
+{
+    TEST("freeing a source re-decides its dependents");
+    struct edc_task *src = edc_task_new("fd-src", "sess-fd", "fd-src", "src", edc_channel_adapter);
+    struct edc_task *dep = edc_task_new("fd-dep", "sess-fd", "fd-src", "dep", edc_channel_adapter);
+    edc_task_add_dependency(dep, src, TASK_DEP_SEQUENCE);
+    CHECK(edc_task_awaits_deps(dep), "dep waits for src");
+    edc_task_free(src);
+    CHECK(dep->deps_total == 0, "the freed edge no longer counts");
+    CHECK(edc_task_is_ready(dep), "dep is READY again (not stranded in dep-wait)");
+    edc_task_free(dep);
+
+    TEST("... but only when the LAST unsatisfied dependency is the one that went away");
+    struct edc_task *a = edc_task_new("fd-a", "sess-fd2", "fd-a", "a", edc_channel_adapter);
+    struct edc_task *b = edc_task_new("fd-b", "sess-fd2", "fd-a", "b", edc_channel_adapter);
+    struct edc_task *z = edc_task_new("fd-z", "sess-fd2", "fd-a", "z", edc_channel_adapter);
+    edc_task_add_dependency(z, a, TASK_DEP_SEQUENCE);
+    edc_task_add_dependency(z, b, TASK_DEP_SEQUENCE);
+    edc_task_free(a);
+    CHECK(edc_task_awaits_deps(z), "z still waits for b");
+    edc_task_free(b);
+    CHECK(edc_task_is_ready(z), "the last one going releases it");
+    edc_task_free(z);
+
+    TEST("a task that already ENDED is not resurrected by its source disappearing");
+    struct edc_task *s2 = edc_task_new("fd-s2", "sess-fd3", "fd-s2", "s2", edc_channel_adapter);
+    struct edc_task *d2 = edc_task_new("fd-d2", "sess-fd3", "fd-s2", "d2", edc_channel_adapter);
+    edc_task_add_dependency(d2, s2, TASK_DEP_SEQUENCE);
+    edc_task_await_exec(s2);
+    edc_task_mark_interrupted(s2); /* 级联: d2 变 BLOCKED */
+    CHECK(d2->end == EDC_END_BLOCKED, "d2 was taken down by its dependency");
+    edc_task_free(s2);
+    CHECK(d2->end == EDC_END_BLOCKED && !edc_task_is_ready(d2),
+          "it stays BLOCKED: 'the source is gone' is not 'the source produced' -- resume is the door");
+    edc_task_free(d2);
+}
+
 int main(void)
 {
     log_info("=== Phase 1: edc_task 模块测试 ===");
@@ -1348,6 +1388,7 @@ int main(void)
     test_scenario_multi_deps();
     test_dep_failure_propagates();
     test_dep_completion_releases();
+    test_free_deps_releases_dependents();
     test_end_reason();
 
     log_info("");

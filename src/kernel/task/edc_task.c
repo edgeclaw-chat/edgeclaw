@@ -570,6 +570,17 @@ static void edc_task_free_deps(struct edc_task *task)
                 }
             }
             dep->target->deps_total--;
+
+            /* Re-decide the dependent NOW. Dropping an edge is the one way a task can lose
+             * its last unsatisfied dependency without any task producing -- and nothing else
+             * would ever look at it again: it would sit in dep-wait forever, holding its
+             * group's front (a waiting task has an active turn), stalling everything queued
+             * behind it. Only a task that is still waiting can be released here; a task
+             * that already ENDED (BLOCKED included) keeps its state and its reason -- it is
+             * resumable, and "the dependency it was blocked on no longer exists" is not the
+             * same statement as "it produced". */
+            if (edc_task_awaits_deps(dep->target) && dep->target->deps_completed >= dep->target->deps_total)
+                edc_task_mark_ready(dep->target); /* the message-end scan drives it from here */
         }
         LL_DELETE(task->dependents, dep);
         free(dep);
