@@ -391,7 +391,7 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
     {"Task", "/task bg [id]", "move the foreground group (or that task) to the background", NULL},
     {"Task", "/task stop [id]", "cancel a task (default: the foreground group's active task)", NULL},
     {"Task", "/task resume <id>",
-     "resume an INTERRUPTED / SUSPENDED / ERROR / CANCELLED task; the id is required (there is no batch form)",
+     "resume an INTERRUPTED / ERROR / CANCELLED task; the id is required (there is no batch form)",
      NULL},
 
     {"Group", "/group list", "list all groups", NULL},
@@ -1331,11 +1331,10 @@ static void edc_commands_handle_task_stop(struct edc_session_manager *sm, struct
     sdsfree(reply);
 }
 
-/* /task resume [id]: re-decide and drive a resumable task. Accepts INTERRUPTED
- * (the loop stopped mid-flight), SUSPENDED (the user parked it),
- * ERROR (continue the failed round, reusing the active turn and tool ledger), and
- * CANCELLED (cancel only stopped it; the step is re-derived from the messages).
- * Without an id it uses the foreground group's active task. */
+/* /task resume <id>: re-decide and drive a resumable task. Accepts INTERRUPTED
+ * (the loop stopped mid-flight), ERROR (continue the failed round, reusing the active
+ * turn and tool ledger), and CANCELLED (cancel only stopped it; the step is re-derived
+ * from the messages). A task that `||` skipped is refused. The id is required. */
 sds edc_commands_resume_text(const struct edc_task *t, edc_task_end was)
 {
     if (!t)
@@ -1430,7 +1429,7 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
         return;
     }
 
-    /* The resumable kinds: INTERRUPTED, SUSPENDED, ERROR, CANCELLED (only COMPLETED
+    /* The resumable kinds: INTERRUPTED, ERROR, CANCELLED (only COMPLETED
      * and ALIVE are not). */
     if (!edc_task_is_resumable(t))
     {

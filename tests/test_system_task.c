@@ -298,7 +298,7 @@ static void test_system_task_persisted(void)
         CHECK(fold2->sink_group != NULL && strcmp(fold2->sink_group->group_id, ug->group_id) == 0,
               "sink_group 解析回用户组");
         CHECK(edc_task_is_ready(fold2) && edc_task_is_alive(fold2),
-              "在飞的折叠任务读回是 READY/ALIVE (重启由扫描重新派发), 不是 SUSPENDED");
+              "在飞的折叠任务读回是 READY/ALIVE (重启由扫描重新派发), 不是 INTERRUPTED");
         CHECK(fold2->active_turn != NULL, "折叠 prompt 的 active_turn 也读回来了");
     }
 

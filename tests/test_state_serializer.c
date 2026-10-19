@@ -308,7 +308,7 @@ static void test_fork_chain(void)
 
     struct edc_task *child2 = edc_task_fork(parent, "task-child2", "child 2", 10, edc_channel_adapter);
     /* 新模型: fork 子任务创建时就带着它的 input —— /task fork 现在把 desc 当 input
-     * 装上并派发 (--suspended 时停住)。旧 fixture 让子任务停在 WAITING_INPUT 等
+     * 装上并派发。旧 fixture 让子任务停在 WAITING_INPUT 等
      * attach 喂输入, 那种 turn-less 任务现在落盘时会被丢掉
      * (docs/retire-waiting-input.md §4)。 */
     {
@@ -652,7 +652,7 @@ static void test_turnless_shell_is_dropped(void)
 
 static void test_state_degradation(void)
 {
-    TEST("interrupted STEPS are preserved; only life collapses to SUSPENDED");
+    TEST("interrupted STEPS are preserved; only life collapses to INTERRUPTED");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-deg", "Degrade");
@@ -705,7 +705,7 @@ static void test_state_degradation(void)
     struct edc_task *rt1 = find_task(session2, "t-llm");
     struct edc_task *rt2 = find_task(session2, "t-tool");
 
-    /* P2 之前这里断言的是"相位被丢掉": 两个 task 都变成 SUSPENDED, 分不出谁在哪一步。
+    /* P2 之前这里断言的是"相位被丢掉": 两个 task 都变成 INTERRUPTED, 分不出谁在哪一步。
      * 现在 life 仍然收敛 (重启后没有东西在跑), 但 **step 原样保留** —— 这正是能够让
      * resume 不再靠残留物猜的那份信息。 */
     CHECK(rt1->step == EDC_TASKSTEP_AWAIT_EXEC, "step AWAIT_EXEC preserved");
@@ -1650,7 +1650,7 @@ static void test_fork_new_group_snapshot(void)
         cturn->task_id = strdup(child->task_id);
         edc_turn_add_user_message(cturn, "child input");
         child->active_turn = cturn;
-        edc_task_mark_suspended(child);
+        edc_task_mark_interrupted(child);
     }
 
     /* ── runtime invariants ── */
@@ -1971,7 +1971,7 @@ static void test_schema_version_is_current(void)
     struct edc_task *task = edc_task_new("1", "sess-ver", "1", "task", edc_channel_adapter);
     task->is_group_leader = 1;
     edc_task_mark_ready(task);
-    edc_task_mark_suspended(task);
+    edc_task_mark_interrupted(task);
     struct edc_task_group *grp = edc_task_group_new(task);
     grp->memory = sdsnew("# remembered");
     grp->memory_created_at = 111;
@@ -2051,7 +2051,7 @@ static void test_message_unknown_keys_round_trip(void)
     struct edc_task *task = edc_task_new("1", "sess-disp", "1", "task", edc_channel_adapter);
     task->is_group_leader = 1;
     edc_task_mark_ready(task);
-    edc_task_mark_suspended(task);
+    edc_task_mark_interrupted(task);
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(session, group);
 
@@ -2108,7 +2108,7 @@ static void test_message_unknown_keys_round_trip(void)
  *
  * 现状 (runtime-model.md §1.4, 台账第 4 条): 相位**存得下来** —— 上面
  * test_state_degradation 自己就断言了 JSON 里写着 "LLM_PROCESSING"/"TOOL_CALLING"
- * —— 但**读不回**: normalize_interrupted_state 把五个相位一起塌成 SUSPENDED,
+ * —— 但**读不回**: normalize_interrupted_state 把五个相位一起塌成 INTERRUPTED,
  * resume 再靠顺序探测 (deps -> 工具账本 -> active_turn) 把相位猜回来。
  *
  * 丢的不只是"叫什么名字": 一个正在等工具结果的 task, 和一个刚建好还没跑的
@@ -2118,7 +2118,7 @@ static void test_message_unknown_keys_round_trip(void)
  * P2 之后: 相位原样回来, 下面的断言全绿; 而 test_state_degradation 要改成
  * 表达新契约 (它现在钉的是旧行为, 这正是"行为变更先补测试"要面对的东西)。
  *
- * 变异测试: 把 step 再粗化回 SUSPENDED, 这条必须**红**。 */
+ * 变异测试: 把 step 再粗化回 INTERRUPTED, 这条必须**红**。 */
 static void test_continuation_preserved(void)
 {
     TEST("interrupted phases survive the round trip");

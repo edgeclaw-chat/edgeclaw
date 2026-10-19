@@ -368,9 +368,8 @@ extern void edc_scheduler_send_signal_to_session(struct edc_scheduler *sched, st
 extern void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, struct edc_session *session,
                                              edc_task_signal sig);
 
-/** Resume a stopped task (interrupted / suspended / failed / cancelled): dependency gate,
- *  then drive it
- *  through the executor's START (the same path a READY task takes). */
+/** Resume a stopped task (interrupted / failed / cancelled): dependency gate, then drive
+ *  it through the executor's START (the same path a READY task takes). */
 extern void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *task);
 
 /** Drive every runnable task (READY/ALIVE + turn + deps satisfied). Called at the

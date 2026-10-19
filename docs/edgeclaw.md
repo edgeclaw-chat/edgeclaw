@@ -359,11 +359,10 @@ cannot be resumed.
 - **INTERRUPTED**: the process went down while it was running; `/task resume` revives it.
   Like ERROR it propagates to its dependents (a JOIN dependent is cancelled, an order edge
   is voided), and it never holds a group's front.
-- **SUSPENDED**: the user parked it; `/task resume` revives it. Nothing produces it today.
 - **ERROR**: a failed task; `/task resume` continues its unfinished turn.
 - **CANCELLED**: stopped with `/task stop`; `/task resume` continues it too.
 
-Those six are the *bucket*. `/task status <id>` also prints an **ended** line, because a
+Those five are the *bucket*. `/task status <id>` also prints an **ended** line, because a
 bucket is not a reason: `CANCELLED` covers "the user stopped it", "a `||` branch was
 skipped because its source succeeded" and "a dependency was cancelled, so this could not
 produce" (`STOPPED` / `SKIPPED` / `BLOCKED`), and `ERROR` covers "it failed by itself" and
@@ -510,7 +509,7 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 | Command | Description |
 |---------|-------------|
 | `/task stop [tid]` | Cancel a task (SIGTERM — notifies dependents). Without an id, stops the active task of the foreground group; errors if the id is not found |
-| `/task resume <id>` | Resume an INTERRUPTED, SUSPENDED, ERROR or CANCELLED task: re-derives state (deps / tool chain / turn) and drives it; an ERROR or CANCELLED task continues its unfinished turn. The id is **required** — there is no batch form, and no "the obvious one" derivation |
+| `/task resume <id>` | Resume an INTERRUPTED, ERROR or CANCELLED task: re-derives state (deps / tool chain / turn) and drives it; an ERROR or CANCELLED task continues its unfinished turn. The id is **required** — there is no batch form, and no "the obvious one" derivation |
 
 ### Group
 

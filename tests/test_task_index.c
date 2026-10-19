@@ -103,7 +103,7 @@ int main(void)
     struct edc_task *bt = edc_scheduler_task_new(sched, sb, "b-task", edc_channel_adapter);
     edc_scheduler_create_group(sched, sb, bt);
     /* 新模型: task 创建时就带着它的 input —— 没装 turn 的任务落盘时会被丢掉
-     * (docs/retire-waiting-input.md §4)。装上 input 再停到 SUSPENDED
+     * (docs/retire-waiting-input.md §4)。装上 input 再停到 INTERRUPTED
      * (= "建了、有输入、先不跑"), 它才会出现在 session.json 里; 本用例要验的正是
      * "从磁盘上的 session.json 反解出 task 的属主"。 */
     {
@@ -111,7 +111,7 @@ int main(void)
         turn->task_id = strdup(bt->task_id);
         edc_turn_add_user_message(turn, "b-task input");
         bt->active_turn = turn;
-        edc_task_mark_suspended(bt);
+        edc_task_mark_interrupted(bt);
     }
     CHECK(edc_session_save_state(sb, sched), "B state saved");
 

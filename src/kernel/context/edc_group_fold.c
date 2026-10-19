@@ -349,7 +349,7 @@ static size_t collect_pieces(struct edc_task *const *members, size_t n, struct f
         /* In-flight member (P2a-4b): the active turn is uncommitted but is the NEWEST
          * content. Folding its prefix is pi's split turn -- after landing the request
          * starts after turn->folded_prefix (req->turn_begin lights up). Only ALIVE
-         * members count as in-flight: an INTERRUPTED / SUSPENDED / CANCELLED half-turn is
+         * members count as in-flight: an INTERRUPTED / CANCELLED half-turn is
          * not part of the current conversation and takes the normal path when it
          * resumes. */
         if (t->life == EDC_LIFE_ALIVE && t->active_turn)

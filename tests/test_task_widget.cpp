@@ -167,9 +167,9 @@ void TestMarkerPerStateInItsColor(void)
     // Processing states are excluded here: they breathe, so their color is not
     // a fixed value (see TestProcessingMarkerBreathes).
     const std::vector<TaskSpec> specs = {
-        {"1", "IDLE", "idle task"},         {"3", "COMPLETED", "done task"},
-        {"4", "ERROR", "failed task"},      {"5", "SUSPENDED", "paused task"},
-        {"6", "CANCELLED", "dropped task"}, {"7", "INTERRUPTED", "interrupted task"},
+        {"1", "IDLE", "idle task"},      {"3", "COMPLETED", "done task"},
+        {"4", "ERROR", "failed task"},   {"6", "CANCELLED", "dropped task"},
+        {"7", "INTERRUPTED", "interrupted task"},
     };
     auto widget = MakeWidget(specs);
     const auto screen = Render(*widget);
@@ -177,12 +177,11 @@ void TestMarkerPerStateInItsColor(void)
 
     const auto &pal = edc::style::palette();
     const std::vector<::ftxui::Color> expected = {
-        pal.warn,       // IDLE (and the active task)
-        pal.ok,         // COMPLETED
-        pal.error,      // ERROR
-        pal.suspended, // SUSPENDED
-        pal.text_dim,  // CANCELLED
-        pal.error,     // INTERRUPTED (red like ERROR; the shape tells them apart)
+        pal.warn,     // IDLE (and the active task)
+        pal.ok,       // COMPLETED
+        pal.error,    // ERROR
+        pal.text_dim, // CANCELLED
+        pal.error,    // INTERRUPTED (red like ERROR; the shape tells them apart)
     };
 
     Check(markers.size() == specs.size(), "one marker per task (and nothing else draws one)");

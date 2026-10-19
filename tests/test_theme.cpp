@@ -319,7 +319,6 @@ void test_light_palette_contrast(void)
         {"ok", light.ok, "6aaf19", nullptr, 2.0},               // 2.71  function / class
         {"warn", light.warn, "fd971f", nullptr, 2.0},           // 2.18  function argument
         {"error", light.error, "f92672", nullptr, 2.0},         // 3.79  keyword
-        {"suspended", light.suspended, "ae81ff", nullptr, 2.0}, // 2.84  constant
         {"prompt", light.prompt, "28c6e4", nullptr, 2.0},
         {"user_rule", light.user_rule, "28c6e4", nullptr, 2.0},
         {"thought_open", light.thought_open, "8a8345", nullptr, 2.0},     // 3.88  the dark palette's yellow, kept
@@ -469,7 +468,7 @@ void test_task_state_table(void)
         const auto &pal = edc::style::palette();
 
         // The mapping the task tree draws with. COMPLETED ok, ERROR error,
-        // processing accent, SUSPENDED suspended, CANCELLED neutral dim, and the
+        // processing accent, CANCELLED neutral dim, and the
         // three waiting/idle states share warn (a known trade-off). INTERRUPTED takes
         // the error colour too; the marker's shape is what tells it from ERROR.
         CHECK(edc::style::TaskStateColor(pal, "COMPLETED") == pal.ok, "COMPLETED -> ok");
@@ -477,7 +476,6 @@ void test_task_state_table(void)
         CHECK(edc::style::TaskStateColor(pal, "LLM_PROCESSING") == pal.accent, "processing -> accent");
         CHECK(edc::style::TaskStateColor(pal, "TOOL_CALLING") == pal.accent, "tool calls -> accent too");
         CHECK(edc::style::TaskStateColor(pal, "INTERRUPTED") == pal.error, "INTERRUPTED -> error (red)");
-        CHECK(edc::style::TaskStateColor(pal, "SUSPENDED") == pal.suspended, "SUSPENDED -> suspended");
         CHECK(edc::style::TaskStateColor(pal, "CANCELLED") == pal.text_dim, "CANCELLED -> neutral dim");
         CHECK(edc::style::TaskStateColor(pal, "IDLE") == pal.warn, "IDLE -> warn");
         CHECK(edc::style::TaskStateColor(pal, "WAITING_DEPS") == pal.warn, "WAITING_DEPS -> warn");

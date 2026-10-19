@@ -32,7 +32,6 @@ struct Palette
     ::ftxui::Color ok;             // green: success/COMPLETED, nothing else
     ::ftxui::Color warn;           // yellow: foreground group, IDLE/WAITING
     ::ftxui::Color error;          // ERROR
-    ::ftxui::Color suspended;      // INTERRUPTED / SUSPENDED (both are parked)
     ::ftxui::Color thought_open;   // expanded "Thought" toggle
     ::ftxui::Color thought_closed; // collapsed "Thought" toggle
 
@@ -73,7 +72,6 @@ inline const Palette &dark_palette()
         ::ftxui::Color::RGB(166, 226, 46),  // ok
         ::ftxui::Color::RGB(230, 219, 116), // warn
         ::ftxui::Color::RGB(249, 38, 114),  // error
-        ::ftxui::Color::RGB(174, 129, 255), // suspended
         ::ftxui::Color::RGB(230, 219, 116), // thought_open
         ::ftxui::Color::RGB(138, 131, 69),  // thought_closed
         ::ftxui::Color::RGB(102, 217, 239), // prompt
@@ -111,7 +109,6 @@ inline const Palette &light_palette()
         ::ftxui::Color::RGB(106, 175, 25),  // ok
         ::ftxui::Color::RGB(253, 151, 31),  // warn
         ::ftxui::Color::RGB(249, 38, 114),  // error
-        ::ftxui::Color::RGB(174, 129, 255), // suspended
         ::ftxui::Color::RGB(138, 131, 69),  // thought_open
         ::ftxui::Color::RGB(168, 154, 94),  // thought_closed
         ::ftxui::Color::RGB(40, 198, 228),  // prompt
@@ -188,8 +185,6 @@ inline ::ftxui::Color TaskStateColor(const Palette &pal, const std::string &stat
         return pal.accent;
     if (state == "INTERRUPTED")
         return pal.error; // red, like ERROR: the loop stopped underneath it
-    if (state == "SUSPENDED")
-        return pal.suspended;
     if (state == "CANCELLED")
         return pal.text_dim;
     // IDLE / WAITING_DEPS / WAITING_INPUT

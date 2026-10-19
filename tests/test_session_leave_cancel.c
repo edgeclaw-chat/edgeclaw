@@ -5,8 +5,8 @@
  *   真正会取消任务的只有:
  *     - 进程退出: running_only=true, 只把该 session 里**正在执行**的任务
  *       (LLM_PROCESSING / TOOL_CALLING) 打成 CANCELLED; WAITING_INPUT /
- *       WAITING_DEPS / SUSPENDED 原样保留。退出前先落盘, 磁盘留在途态, 加载
- *       时统一收敛为 SUSPENDED (用户可选择 resume)。
+ *       WAITING_DEPS 原样保留。退出前先落盘, 磁盘留在途态, 加载
+ *       时统一收敛为 INTERRUPTED (用户可选择 resume)。
  *     - /session remove: running_only=false, 用户明确要移除 → 全取消。
  *
  * 覆盖三个层面:
@@ -14,13 +14,13 @@
  *      session 的运行中任务: 不碰别的 session, 不碰终态 (COMPLETED), 不碰
  *      WAITING_INPUT; running_only=false 仍然全清;
  *   2. 信号 + save 之后反序列化回来: 终态 CANCELLED 原样保留; 未完成的
- *      WAITING_INPUT 落地后加载时统一收敛为 SUSPENDED (由用户 resume 再判定);
- *   3. 重启安全网: 中断的在途任务 (LLM_PROCESSING) 加载后为 SUSPENDED, 而不是
+ *      WAITING_INPUT 落地后加载时统一收敛为 INTERRUPTED (由用户 resume 再判定);
+ *   3. 重启安全网: 中断的在途任务 (LLM_PROCESSING) 加载后为 INTERRUPTED, 而不是
  *      变回 WAITING_INPUT 假装什么都没发生。
  *
  *  注: 加载归一化 (edc_state_serializer 的 normalize_interrupted_state) 现在把
  *  **所有非终态** (WAITING_INPUT / WAITING_DEPS / LLM_PROCESSING / TOOL_CALLING)
- *  统一变成 SUSPENDED —— 打开后先全部停住, 由 /task resume 重新判定。
+ *  统一变成 INTERRUPTED —— 打开后先全部停住, 由 /task resume 重新判定。
  */
 
 #include "edc_channel_actor.h"
@@ -215,7 +215,7 @@ static void test_signal_scoped_to_session(void)
 
 static void test_leave_persists_cancelled(void)
 {
-    TEST("cancel + save -> reload: CANCELLED stays, non-terminal -> SUSPENDED");
+    TEST("cancel + save -> reload: CANCELLED stays, non-terminal -> INTERRUPTED");
     clean_workspace();
 
     struct edc_config *cfg = make_config();

@@ -154,8 +154,8 @@ int main(void)
     }
 
     /* `/task new --suspended` was removed (never used): a task is dispatched on
-     * creation, always. The SUSPENDED life itself stays -- an interrupted task
-     * restores as SUSPENDED -- and `/task resume` is covered by
+     * creation, always. A task restored from disk comes back as INTERRUPTED, and
+     * `/task resume` is covered by
      * test_cross_dep_restart (it drives the real command). */
 
     /* ── 默认进当前组（因此会排队）; 想另起一段得显式 --new-group ──── */

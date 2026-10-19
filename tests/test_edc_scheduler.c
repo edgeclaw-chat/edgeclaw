@@ -486,15 +486,15 @@ static void test_resume_queues(void)
     struct edc_task *b = edc_scheduler_task_new(sched, sess, "b", edc_channel_adapter);
     edc_task_group_add_task(g, b);
     edc_scheduler_attach_input(sched, b, "b's input");
-    edc_task_mark_suspended(b);
-    CHECK(edc_task_is_suspended(b), "B starts parked");
+    edc_task_mark_interrupted(b);
+    CHECK(edc_task_is_interrupted(b), "B starts parked");
 
     TEST("resume does not jump the queue of the group in front");
     edc_scheduler_resume_task(sched, b);
     CHECK(edc_task_awaits_deps(b), "B is parked behind A");
     CHECK(b->deps_total == 1 && b->deps && b->deps->source == a, "one order edge, pointing at A");
     CHECK(b->deps && b->deps->type == TASK_DEP_BARRIER, "it is a BARRIER (group order)");
-    CHECK(!edc_task_is_suspended(b), "it is no longer suspended -- it is queued now");
+    CHECK(!edc_task_is_interrupted(b), "it is no longer interrupted -- it is queued now");
 
     TEST("a second resume changes nothing while it still waits");
     edc_scheduler_resume_task(sched, b);

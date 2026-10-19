@@ -44,8 +44,6 @@ const char *edc_task_life_name(edc_task_life life)
         return "ALIVE";
     case EDC_LIFE_INTERRUPTED:
         return "INTERRUPTED";
-    case EDC_LIFE_SUSPENDED:
-        return "SUSPENDED";
     case EDC_LIFE_COMPLETED:
         return "COMPLETED";
     case EDC_LIFE_CANCELLED:
@@ -83,9 +81,9 @@ edc_task_life edc_task_classify_life(const char *name)
         return EDC_LIFE_ALIVE;
     if (strcmp(name, "INTERRUPTED") == 0)
         return EDC_LIFE_INTERRUPTED;
-    /* Legacy: only the old load-time collapse ever wrote "SUSPENDED", and what it meant
-     * was exactly what INTERRUPTED now says (the user pause had no producer even then).
-     * When a real pause lands, this mapping has to be revisited. */
+    /* Legacy string only -- "SUSPENDED" is no longer a state (the old load-time collapse
+     * wrote it, and what it meant is exactly what INTERRUPTED says). Old archives must
+     * still load, so the spelling keeps its meaning here and nowhere else. */
     if (strcmp(name, "SUSPENDED") == 0)
         return EDC_LIFE_INTERRUPTED;
     if (strcmp(name, "COMPLETED") == 0)
@@ -198,8 +196,6 @@ const char *edc_task_state_str(const struct edc_task *task)
     {
     case EDC_LIFE_INTERRUPTED:
         return "INTERRUPTED";
-    case EDC_LIFE_SUSPENDED:
-        return "SUSPENDED";
     case EDC_LIFE_COMPLETED:
         return "COMPLETED";
     case EDC_LIFE_CANCELLED:
@@ -244,8 +240,8 @@ bool edc_task_move(struct edc_task *task, edc_task_step step, edc_task_life life
     task->step = step;
     task->life = life;
     /* The reason for a past end belongs to that end: a task that can move again has no
-     * end, so resuming (or suspending) wipes the slate here instead of in every writer. */
-    if (life == EDC_LIFE_ALIVE || life == EDC_LIFE_SUSPENDED)
+     * end, so resuming wipes the slate here instead of in every writer. */
+    if (life == EDC_LIFE_ALIVE)
     {
         task->end = EDC_END_NONE;
         task->blocked_end = EDC_END_NONE;
@@ -344,14 +340,6 @@ bool edc_task_mark_blocked(struct edc_task *task, edc_task_life life, const stru
     return true;
 }
 
-/* Stopping speaks ONLY about life: it stops at whatever step it was on -- exactly what
- * the step/life split preserves (the old TASK_SUSPENDED meant the same, it just could not
- * say so). */
-bool edc_task_mark_suspended(struct edc_task *task)
-{
-    return task && edc_task_move(task, task->step, EDC_LIFE_SUSPENDED);
-}
-
 /* An interruption speaks about life only (keeps the step) AND is broadcast like a
  * failure: the process is gone, so its dependents are in the same situation as if this
  * task had errored -- a JOIN dependent is cancelled (it can come back once this one is
@@ -383,17 +371,15 @@ static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life 
         return false; /* terminal */
     case EDC_LIFE_CANCELLED:
         /* Resume: cancel only stops the task, so CANCELLED shares the target group
-         * with SUSPENDED / ERROR. */
+         * with ERROR. */
         return (to_life == EDC_LIFE_ALIVE &&
                 (to_step == EDC_TASKSTEP_READY || to_step == EDC_TASKSTEP_AWAIT_DEPS ||
                  to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_TOOLS)) ||
                (to_step == EDC_TASKSTEP_DONE && to_life == EDC_LIFE_CANCELLED);
-    case EDC_LIFE_SUSPENDED:
-        /* resume re-decides: back to dep-wait / ready / re-request LLM / continue the tool chain, or cancel */
     case EDC_LIFE_INTERRUPTED:
-        /* Same as a user pause: nothing was decided, so resume re-decides. */
+        /* The process went down mid-flight: nothing was decided, so resume re-decides. */
     case EDC_LIFE_ERROR:
-        /* continue the failed round (same target set as SUSPENDED), or cancel. */
+        /* continue the failed round (same target set as INTERRUPTED), or cancel. */
         return (to_life == EDC_LIFE_ALIVE &&
                 (to_step == EDC_TASKSTEP_READY || to_step == EDC_TASKSTEP_AWAIT_DEPS ||
                  to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_TOOLS)) ||
@@ -402,21 +388,20 @@ static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life 
         break;
     }
 
-    /* An interruption keeps the step it was on and may land on any of them: unlike a
-     * user pause (restricted to the rows below), the process went down mid-request. */
+    /* An interruption keeps the step it was on and may land on any of them: the process
+     * went down mid-request. */
     if (to_life == EDC_LIFE_INTERRUPTED)
         return to_step == from_step;
 
     switch (from_step)
     {
     /* READY = parked with input, waiting to be dispatched: dispatch / hit a
-     * dependency / cancel / suspend / failure. Failure is allowed so a drive that
+     * dependency / cancel / failure. Failure is allowed so a drive that
      * cannot start any I/O fails instead of being rescanned forever. */
     case EDC_TASKSTEP_READY:
         return (to_life == EDC_LIFE_ALIVE &&
                 (to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_DEPS)) ||
-               (to_step == EDC_TASKSTEP_DONE && (to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR)) ||
-               (to_step == EDC_TASKSTEP_READY && to_life == EDC_LIFE_SUSPENDED);
+               (to_step == EDC_TASKSTEP_DONE && (to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR));
     case EDC_TASKSTEP_AWAIT_DEPS:
     case EDC_TASKSTEP_AWAIT_RESOURCE: /* no such step in the old vocabulary (mirrors to WAITING_DEPS): same row */
         /* deps satisfied -> back to ready; or cancel / fail */
@@ -433,16 +418,14 @@ static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life 
         return (to_life == EDC_LIFE_ALIVE &&
                 (to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_DEPS)) ||
                (to_step == EDC_TASKSTEP_DONE &&
-                (to_life == EDC_LIFE_COMPLETED || to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR)) ||
-               (to_step == EDC_TASKSTEP_AWAIT_TOOLS && to_life == EDC_LIFE_SUSPENDED); /* suspend mid-run */
+                (to_life == EDC_LIFE_COMPLETED || to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR));
     case EDC_TASKSTEP_DONE:
         /* Malformed: DONE yet ALIVE (display name folds to IDLE, see edc_task_state_str's
          * fallback). No path produces it; reuse the READY row to avoid behaviour
          * outside default. */
         return (to_life == EDC_LIFE_ALIVE &&
                 (to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_DEPS)) ||
-               (to_step == EDC_TASKSTEP_DONE && to_life == EDC_LIFE_CANCELLED) ||
-               (to_step == EDC_TASKSTEP_DONE && to_life == EDC_LIFE_SUSPENDED);
+               (to_step == EDC_TASKSTEP_DONE && to_life == EDC_LIFE_CANCELLED);
     }
     return false;
 }
@@ -1287,7 +1270,7 @@ static void task_notify_dependents_cancelled(struct edc_task *task)
 bool edc_task_is_running(const struct edc_task *task)
 {
     /* Running = ALIVE and awaiting the executor/tool reply; stopped-while-awaiting tools
-     * (INTERRUPTED / SUSPENDED) does not count. */
+     * (INTERRUPTED) does not count. */
     return edc_task_awaits_exec(task) || edc_task_awaits_tools(task);
 }
 
@@ -1474,7 +1457,7 @@ void edc_task_repair_dangling_tool_calls(struct edc_task *task)
             cJSON *nm = fn ? cJSON_GetObjectItem(fn, "name") : NULL;
             edc_turn_add_tool_message(turn, id->valuestring, (nm && cJSON_IsString(nm)) ? nm->valuestring : "",
                                       kInterruptedToolNote);
-            /* If the ledger still holds this one (INTERRUPTED / SUSPENDED / ERROR path: EXECUTING
+            /* If the ledger still holds this one (INTERRUPTED / ERROR path: EXECUTING
              * dispatched, result never returned), remove it too -- it now has a
              * response and must not count as incomplete. */
             edc_task_tool_call_remove(task, id->valuestring);

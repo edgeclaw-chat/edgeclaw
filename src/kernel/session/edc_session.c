@@ -308,8 +308,7 @@ sds edc_session_status_text(struct edc_session *session, bool is_current, const 
      * missed state-machine edit -- then warn, do not silently drop.
      * WAITING_INPUT is retired (old name = READY), always 0, kept only for order. */
     static const char *const k_state_order[] = {"IDLE",        "WAITING_DEPS", "WAITING_INPUT", "LLM_PROCESSING",
-                                                "TOOL_CALLING", "SUSPENDED",    "COMPLETED",     "CANCELLED",
-                                                "ERROR"};
+                                                "TOOL_CALLING", "COMPLETED",     "CANCELLED",     "ERROR"};
     enum
     {
         k_state_order_n = sizeof(k_state_order) / sizeof(k_state_order[0])

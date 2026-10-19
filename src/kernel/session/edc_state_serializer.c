@@ -685,9 +685,9 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
         /* v5: step and life are read back separately -- the phase is NOT coarsened.
          *
          * Only life converges: after a restart nothing is running, so ALIVE lands as
-         * SUSPENDED. But step is kept verbatim -- that is exactly what this change
-         * preserves: normalize_interrupted_state used to collapse five phases into
-         * SUSPENDED, losing "where the task was", and resume could only guess it back
+         * INTERRUPTED. But step is kept verbatim -- that is exactly what this change
+         * preserves: normalize_interrupted_state used to collapse five phases into one
+         * parked state, losing "where the task was", and resume could only guess it back
          * from the tool ledger / active_turn.
          *
          * Exception: a fold task (sink = GROUP_MEMORY). It persists too now, so a

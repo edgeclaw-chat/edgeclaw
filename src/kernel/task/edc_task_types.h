@@ -52,7 +52,7 @@ typedef enum
  *
  * Invariant: EDC_END_NONE exactly while the task can still move on its own (ALIVE), and
  * for a COMPLETED one (it ended by succeeding, which the life already says). Every move
- * back to ALIVE/SUSPENDED clears the reason -- resume therefore wipes the slate without
+ * back to ALIVE clears the reason -- resume therefore wipes the slate without each writer
  * each writer having to remember it.
  *
  * Lives here (not in edc_task.h) because the shell's command layer names it in a signature

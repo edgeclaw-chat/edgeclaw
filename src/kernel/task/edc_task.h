@@ -37,10 +37,6 @@ typedef enum
      * it propagates to its dependents (see edc_task_mark_interrupted). It never holds the
      * front: it will not advance on its own. */
     EDC_LIFE_INTERRUPTED,
-    /* The user parked it (Ctrl+Z). Distinct from INTERRUPTED on purpose; nothing produces
-     * it today -- the old "everything lands here after a restart" collapse is what
-     * INTERRUPTED replaced. Kept so the two meanings cannot be conflated again. */
-    EDC_LIFE_SUSPENDED,
     EDC_LIFE_COMPLETED,
     EDC_LIFE_CANCELLED,
     EDC_LIFE_ERROR,
@@ -60,8 +56,8 @@ extern edc_task_life edc_task_classify_life(const char *name);
  *
  * Invariant: EDC_END_NONE exactly while the task can still move on its own (ALIVE), and
  * for a COMPLETED one (it ended by succeeding, which the life already says). Every move
- * back to ALIVE/SUSPENDED clears the reason -- resume therefore wipes the slate without
- * each writer having to remember it.
+ * back to ALIVE clears the reason -- resume therefore wipes the slate without each writer
+ * having to remember it.
  *
  * The enum itself lives in edc_task_types.h (the shell<->app seam); see edc_task_end. */
 
@@ -273,7 +269,7 @@ struct edc_task
     int has_deferred_vars;   /* {{…}} task references to expand */
 
     /* Why it ended (see edc_task_end). EDC_END_NONE while it can still move, and for a
-     * task that ended by succeeding. Cleared by any move back to ALIVE/SUSPENDED. */
+     * task that ended by succeeding. Cleared by any move back to ALIVE. */
     edc_task_end end;
     /* EDC_END_BLOCKED only: the dependency that never produced, and what THAT one's end
      * was (so "blocked by 7 (interrupted)" survives 7 being deleted later). Informational:
@@ -358,8 +354,6 @@ extern bool edc_task_mark_skipped(struct edc_task *task);
  *  one); the reason is EDC_END_BLOCKED plus which source (and that source's own end), so
  *  "cascaded" is never confused with "failed by itself". Broadcasts nothing. */
 extern bool edc_task_mark_blocked(struct edc_task *task, edc_task_life life, const struct edc_task *source);
-/** The user parked it. */
-extern bool edc_task_mark_suspended(struct edc_task *task); /* moves life only */
 
 /** The process went down while this task was in flight: keeps the step it was on and
  *  broadcasts to its dependents exactly like a failure (a JOIN dependent is cancelled,
@@ -373,8 +367,8 @@ extern bool edc_task_move(struct edc_task *task, edc_task_step step, edc_task_li
 extern void edc_task_force_move(struct edc_task *task, edc_task_step step, edc_task_life life);
 
 /* Read-side predicates. Each carries a life condition because a stop does not move
- * step: a task stopped while awaiting tools is (AWAIT_TOOLS, INTERRUPTED) or
- * (AWAIT_TOOLS, SUSPENDED) and must not be mistaken for running or awaiting tools. */
+ * step: a task stopped while awaiting tools is (AWAIT_TOOLS, INTERRUPTED) and must not be
+ * mistaken for running or awaiting tools. */
 static inline bool edc_task_is_alive(const struct edc_task *task)
 {
     return task && task->life == EDC_LIFE_ALIVE;
@@ -398,10 +392,6 @@ static inline bool edc_task_is_cancelled(const struct edc_task *task)
 static inline bool edc_task_has_failed(const struct edc_task *task)
 {
     return task && task->life == EDC_LIFE_ERROR;
-}
-static inline bool edc_task_is_suspended(const struct edc_task *task)
-{
-    return task && task->life == EDC_LIFE_SUSPENDED;
 }
 static inline bool edc_task_is_interrupted(const struct edc_task *task)
 {
@@ -429,18 +419,18 @@ static inline bool edc_task_is_parked(const struct edc_task *task)
 {
     return edc_task_is_ready(task) || edc_task_awaits_deps(task);
 }
-/* `/task resume` gate: interrupted, suspended, failed, or cancelled -- by a stop, by its
- * own failure, or by a dependency (all of them only stopped the task, so the resume
- * re-derives the step from the messages and the ledger). One exclusion: a task that `||`
- * SKIPPED never ran because the shell decided it should not, so it is NOT resumable --
- * the reason says so, the life (CANCELLED) cannot. */
+/* `/task resume` gate: interrupted, failed, or cancelled -- by a stop, by its own failure,
+ * or by a dependency (all of them only stopped the task, so the resume re-derives the step
+ * from the messages and the ledger). One exclusion: a task that `||` SKIPPED never ran
+ * because the shell decided it should not, so it is NOT resumable -- the reason says so,
+ * the life (CANCELLED) cannot. */
 static inline bool edc_task_is_resumable(const struct edc_task *task)
 {
     /* INTERRUPTED is in here for the same reason ERROR is: the loop did not finish it and
      * nothing was decided about it, so /task resume picks it up where it stopped. */
     return task && task->end != EDC_END_SKIPPED &&
-           (task->life == EDC_LIFE_SUSPENDED || task->life == EDC_LIFE_INTERRUPTED ||
-            task->life == EDC_LIFE_ERROR || task->life == EDC_LIFE_CANCELLED);
+           (task->life == EDC_LIFE_INTERRUPTED || task->life == EDC_LIFE_ERROR ||
+            task->life == EDC_LIFE_CANCELLED);
 }
 
 /* Outward vocabulary for the snapshot's "state" field, logs and command text.

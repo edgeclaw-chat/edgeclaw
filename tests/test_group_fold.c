@@ -508,7 +508,7 @@ static void test_fold_task_is_persisted(void)
     struct edc_task *fold2 = sg2 ? sg2->members : NULL;
     CHECK(fold2 != NULL, "折叠任务读回来");
     CHECK(fold2 && edc_task_is_ready(fold2) && edc_task_is_alive(fold2),
-          "未完成的折叠任务读回后置回就绪 (重启续跑), 不是 SUSPENDED");
+          "未完成的折叠任务读回后置回就绪 (重启续跑), 不是 INTERRUPTED");
     CHECK(fold2 && fold2->sink_group && strcmp(fold2->sink_group->group_id, group->group_id) == 0,
           "sink_group 解析回目标组");
 

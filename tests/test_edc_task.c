@@ -104,11 +104,6 @@ static void test_state_machine(void)
     CHECK(edc_task_mark_cancelled(t), "READY → CANCELLED");
     edc_task_free(t);
 
-    t = park_at("sm3", EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
-    CHECK(edc_task_mark_suspended(t), "READY → suspended (as a task restored from disk lands)");
-    CHECK(t->step == EDC_TASKSTEP_READY && t->life == EDC_LIFE_SUSPENDED, "… keeps the step it was on");
-    edc_task_free(t);
-
     t = park_at("sm3b", EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
     CHECK(edc_task_mark_failed(t), "READY → ERROR (驱动时就绪任务发起不了 I/O: 没端口/相位不允许)");
     CHECK(edc_task_has_failed(t), "… lands on ERROR");
@@ -148,10 +143,6 @@ static void test_state_machine(void)
     t = park_at("sm11", EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
     CHECK(edc_task_mark_failed(t), "AWAIT_EXEC → ERROR");
     edc_task_free(t);
-    t = park_at("sm12", EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
-    CHECK(!edc_task_mark_suspended(t), "AWAIT_EXEC → suspended rejected (nothing to park mid-LLM)");
-    edc_task_free(t);
-
     TEST("transitions from AWAIT_TOOLS");
     t = park_at("sm13", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
     CHECK(edc_task_await_exec(t), "AWAIT_TOOLS → AWAIT_EXEC (chain continues)");
@@ -165,30 +156,6 @@ static void test_state_machine(void)
     t = park_at("sm16", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
     CHECK(edc_task_mark_cancelled(t), "AWAIT_TOOLS → CANCELLED");
     edc_task_free(t);
-    t = park_at("sm17", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
-    CHECK(edc_task_mark_suspended(t), "AWAIT_TOOLS → suspended (Ctrl+Z mid-flight)");
-    CHECK(t->step == EDC_TASKSTEP_AWAIT_TOOLS && t->life == EDC_LIFE_SUSPENDED, "… step kept, life suspended");
-    CHECK(!edc_task_mark_suspended(t), "suspending twice rejected (self)");
-    edc_task_free(t);
-
-    TEST("resume targets from SUSPENDED");
-    t = park_at("sm18", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED);
-    CHECK(edc_task_mark_ready(t), "SUSPENDED → READY");
-    edc_task_free(t);
-    t = park_at("sm19", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED);
-    CHECK(edc_task_mark_waiting_deps(t), "SUSPENDED → AWAIT_DEPS (re-decide: deps first)");
-    edc_task_free(t);
-    t = park_at("sm20", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED);
-    CHECK(edc_task_await_exec(t), "SUSPENDED → AWAIT_EXEC (re-request LLM)");
-    edc_task_free(t);
-    t = park_at("sm21", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED);
-    CHECK(edc_task_await_tools(t), "SUSPENDED → AWAIT_TOOLS (re-dispatch the tools)");
-    edc_task_free(t);
-    t = park_at("sm22", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED);
-    CHECK(edc_task_mark_cancelled(t), "SUSPENDED → CANCELLED");
-    CHECK(!edc_task_mark_completed(t), "a suspended task cannot complete");
-    edc_task_free(t);
-
     TEST("resume targets from ERROR");
     const edc_task_life error_life = EDC_LIFE_ERROR;
     t = park_at("sm23", EDC_TASKSTEP_DONE, error_life);
@@ -206,10 +173,9 @@ static void test_state_machine(void)
     t = park_at("sm27", EDC_TASKSTEP_DONE, error_life);
     CHECK(edc_task_mark_cancelled(t), "ERROR → CANCELLED");
     CHECK(!edc_task_mark_completed(t), "an errored task cannot complete");
-    CHECK(!edc_task_mark_suspended(t), "ERROR → suspended rejected");
     edc_task_free(t);
 
-    TEST("CANCELLED can be resumed (by the state machine, same targets as SUSPENDED/ERROR)");
+    TEST("CANCELLED can be resumed (by the state machine, same targets as ERROR)");
     t = park_at("sm28", EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED);
     CHECK(edc_task_mark_ready(t), "CANCELLED → READY");
     edc_task_free(t);
@@ -230,8 +196,7 @@ static void test_state_machine(void)
     TEST("COMPLETED is terminal");
     t = park_at("sm30", EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED);
     CHECK(!edc_task_mark_ready(t) && !edc_task_await_exec(t) && !edc_task_await_tools(t), "no way out of COMPLETED");
-    CHECK(!edc_task_mark_failed(t) && !edc_task_mark_cancelled(t) && !edc_task_mark_suspended(t),
-          "… not even to another terminal");
+    CHECK(!edc_task_mark_failed(t) && !edc_task_mark_cancelled(t), "… not even to another terminal");
     edc_task_free(t);
 }
 
@@ -250,32 +215,26 @@ static void test_display_names(void)
     TEST("display names: the frozen vocabulary, (step, life) → word");
     static const struct name_row rows[] = {
         {EDC_TASKSTEP_READY, EDC_LIFE_ALIVE, "IDLE"},
-        {EDC_TASKSTEP_READY, EDC_LIFE_SUSPENDED, "SUSPENDED"},
         {EDC_TASKSTEP_READY, EDC_LIFE_COMPLETED, "COMPLETED"},
         {EDC_TASKSTEP_READY, EDC_LIFE_CANCELLED, "CANCELLED"},
         {EDC_TASKSTEP_READY, EDC_LIFE_ERROR, "ERROR"},
         {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE, "WAITING_DEPS"},
-        {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_SUSPENDED, "SUSPENDED"},
         {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_COMPLETED, "COMPLETED"},
         {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_CANCELLED, "CANCELLED"},
         {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ERROR, "ERROR"},
         {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE, "LLM_PROCESSING"},
-        {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_SUSPENDED, "SUSPENDED"},
         {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_COMPLETED, "COMPLETED"},
         {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_CANCELLED, "CANCELLED"},
         {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ERROR, "ERROR"},
         {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE, "TOOL_CALLING"},
-        {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED, "SUSPENDED"},
         {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_COMPLETED, "COMPLETED"},
         {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_CANCELLED, "CANCELLED"},
         {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ERROR, "ERROR"},
         {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_ALIVE, "WAITING_DEPS"},
-        {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_SUSPENDED, "SUSPENDED"},
         {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_COMPLETED, "COMPLETED"},
         {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_CANCELLED, "CANCELLED"},
         {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_ERROR, "ERROR"},
         {EDC_TASKSTEP_DONE, EDC_LIFE_ALIVE, "IDLE"},
-        {EDC_TASKSTEP_DONE, EDC_LIFE_SUSPENDED, "SUSPENDED"},
         {EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED, "COMPLETED"},
         {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED, "CANCELLED"},
         {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR, "ERROR"},
@@ -329,8 +288,6 @@ static void test_step_life_read_side(void)
         {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE, true, false, true, false, false, false, false, true, false},
         {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE, true, false, false, false, false, false, false, false, true},
         {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE, true, false, false, false, false, false, false, false, true},
-        {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_SUSPENDED, false, false, false, false, false, false, true, false, false},
-        {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED, false, false, false, false, false, false, true, false, false},
         {EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED, false, false, false, true, false, false, false, false, false},
         {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED, false, false, false, false, true, false, true, false, false},
         {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR, false, false, false, false, false, true, true, false, false},
@@ -377,7 +334,7 @@ static void test_step_life_read_side(void)
  * (6x5 sources x 6x5 targets = 900). Self-transitions are omitted; the edge count is
  * pinned so the spec cannot be silently emptied. */
 
-#define EDC_TABLE_EDGES 115
+#define EDC_TABLE_EDGES 82
 
 struct table_target
 {
@@ -395,19 +352,11 @@ struct table_row
 
 static const struct table_row g_table[] = {
     /* READY + ALIVE */
-    {EDC_TASKSTEP_READY, EDC_LIFE_ALIVE, 5,
+    {EDC_TASKSTEP_READY, EDC_LIFE_ALIVE, 4,
      {{EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR},
-      {EDC_TASKSTEP_READY, EDC_LIFE_SUSPENDED}}},
-    /* READY + SUSPENDED */
-    {EDC_TASKSTEP_READY, EDC_LIFE_SUSPENDED, 5,
-     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
+      {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR}}},
     /* READY + COMPLETED */
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
     {EDC_TASKSTEP_READY, EDC_LIFE_COMPLETED, 0, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
@@ -430,13 +379,6 @@ static const struct table_row g_table[] = {
      {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED},
       {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR}}},
-    /* AWAIT_DEPS + SUSPENDED */
-    {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_SUSPENDED, 5,
-     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* AWAIT_DEPS + COMPLETED */
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
     {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_COMPLETED, 0, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
@@ -461,13 +403,6 @@ static const struct table_row g_table[] = {
       {EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED},
       {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR}}},
-    /* AWAIT_EXEC + SUSPENDED */
-    {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_SUSPENDED, 5,
-     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* AWAIT_EXEC + COMPLETED */
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
     {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_COMPLETED, 0, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
@@ -486,20 +421,12 @@ static const struct table_row g_table[] = {
       {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* AWAIT_TOOLS + ALIVE */
-    {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE, 6,
+    {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE, 5,
      {{EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR},
-      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED}}},
-    /* AWAIT_TOOLS + SUSPENDED */
-    {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED, 5,
-     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
+      {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR}}},
     /* AWAIT_TOOLS + COMPLETED */
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
     {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_COMPLETED, 0, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
@@ -522,13 +449,6 @@ static const struct table_row g_table[] = {
      {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED},
       {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR}}},
-    /* AWAIT_RESOURCE + SUSPENDED */
-    {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_SUSPENDED, 5,
-     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* AWAIT_RESOURCE + COMPLETED */
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
     {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_COMPLETED, 0, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
@@ -547,17 +467,9 @@ static const struct table_row g_table[] = {
       {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* DONE + ALIVE */
-    {EDC_TASKSTEP_DONE, EDC_LIFE_ALIVE, 4,
+    {EDC_TASKSTEP_DONE, EDC_LIFE_ALIVE, 3,
      {{EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_SUSPENDED}}},
-    /* DONE + SUSPENDED */
-    {EDC_TASKSTEP_DONE, EDC_LIFE_SUSPENDED, 5,
-     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* DONE + COMPLETED */
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
@@ -592,11 +504,11 @@ static void test_transition_table_spec(void)
     static const edc_task_step steps[] = {EDC_TASKSTEP_READY,          EDC_TASKSTEP_AWAIT_DEPS,
                                           EDC_TASKSTEP_AWAIT_EXEC,     EDC_TASKSTEP_AWAIT_TOOLS,
                                           EDC_TASKSTEP_AWAIT_RESOURCE, EDC_TASKSTEP_DONE};
-    static const edc_task_life lifes[] = {EDC_LIFE_ALIVE, EDC_LIFE_SUSPENDED, EDC_LIFE_COMPLETED, EDC_LIFE_CANCELLED,
+    static const edc_task_life lifes[] = {EDC_LIFE_ALIVE, EDC_LIFE_COMPLETED, EDC_LIFE_CANCELLED,
                                           EDC_LIFE_ERROR};
 
-    /* 规格必须**盖满** 30 个源: 一个不漏, 一个不重。 */
-    CHECK(sizeof(g_table) / sizeof(g_table[0]) == 30, "the spec has 30 source rows");
+    /* 6 步 × 4 个 life = 24 个源: 规格必须**盖满**它们, 一个不漏, 一个不重。 */
+    CHECK(sizeof(g_table) / sizeof(g_table[0]) == 24, "the spec has 24 source rows");
 
     struct edc_task *t = edc_task_new("t-spec", "s", "g", "x", edc_channel_adapter);
     int combos = 0, drift = 0, edges = 0, missing = 0, dup = 0;
@@ -612,7 +524,7 @@ static void test_transition_table_spec(void)
                     continue;
                 hits++;
                 edges += (int)row->n;
-                /* 逐格对照: 这个源 × 全部 30 个目标。 */
+                /* 逐格对照: 这个源 × 全部 24 个目标。 */
                 for (size_t a = 0; a < sizeof(steps) / sizeof(steps[0]); a++)
                 {
                     for (size_t b = 0; b < sizeof(lifes) / sizeof(lifes[0]); b++)
@@ -639,7 +551,7 @@ static void test_transition_table_spec(void)
     }
     CHECK(dup == 0, "every source appears exactly once in the spec");
     CHECK(missing == 0, "no source is missing from the spec");
-    CHECK(combos == 900, "900 combinations walked (30 sources x 30 targets)");
+    CHECK(combos == 576, "576 combinations walked (24 sources x 24 targets)");
     CHECK(edges == EDC_TABLE_EDGES, "the spec lists EDC_TABLE_EDGES allowed edges (it cannot be emptied)");
     CHECK(drift == 0, "no drift between the written-out spec and the code");
     edc_task_free(t);
@@ -654,15 +566,8 @@ static void test_intent_writes(void)
     CHECK(t->step == EDC_TASKSTEP_READY && t->life == EDC_LIFE_ALIVE, "a new task starts READY+ALIVE");
     CHECK(edc_task_await_exec(t), "READY → await_exec");
     CHECK(t->step == EDC_TASKSTEP_AWAIT_EXEC && t->life == EDC_LIFE_ALIVE, "… lands on AWAIT_EXEC+ALIVE");
-    CHECK(!edc_task_mark_suspended(t), "AWAIT_EXEC → suspend refused (nothing parks mid-LLM)");
     CHECK(edc_task_await_tools(t), "AWAIT_EXEC → await_tools");
     CHECK(t->step == EDC_TASKSTEP_AWAIT_TOOLS, "… lands on AWAIT_TOOLS");
-    CHECK(edc_task_mark_suspended(t), "AWAIT_TOOLS → suspend (the one mid-flight park)");
-    CHECK(t->life == EDC_LIFE_SUSPENDED && t->step == EDC_TASKSTEP_AWAIT_TOOLS,
-          "suspend only moves life: the step it stopped on is kept");
-    CHECK(!edc_task_mark_suspended(t), "suspending twice is a self-transition");
-    CHECK(edc_task_await_tools(t), "resume back onto the tool chain");
-    CHECK(t->life == EDC_LIFE_ALIVE, "… which also brings life back to ALIVE");
     CHECK(edc_task_mark_completed(t), "tool chain done → completed");
     CHECK(t->step == EDC_TASKSTEP_DONE && t->life == EDC_LIFE_COMPLETED, "… lands on DONE+COMPLETED");
     CHECK(!edc_task_mark_ready(t) && !edc_task_await_exec(t) && !edc_task_mark_failed(t), "COMPLETED is terminal");
@@ -690,8 +595,7 @@ static void test_intent_writes(void)
     edc_task_free(t);
 
     CHECK(!edc_task_move(NULL, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE), "move(NULL) is refused");
-    CHECK(!edc_task_await_exec(NULL) && !edc_task_mark_ready(NULL) && !edc_task_mark_suspended(NULL),
-          "intents are NULL-safe");
+    CHECK(!edc_task_await_exec(NULL) && !edc_task_mark_ready(NULL), "intents are NULL-safe");
 }
 
 /* ── 5. Turn 管理 ──────────────────────────────────────────── */
@@ -1326,7 +1230,6 @@ static void test_interrupted_state(void)
 
     t = park_at("int-tools", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
     CHECK(edc_task_mark_interrupted(t), "AWAIT_TOOLS -> INTERRUPTED");
-    CHECK(!edc_task_mark_suspended(t), "and it is not the user-pause row");
     CHECK(edc_task_mark_cancelled(t), "INTERRUPTED -> CANCELLED");
     edc_task_free(t);
 

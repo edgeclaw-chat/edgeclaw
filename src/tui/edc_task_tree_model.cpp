@@ -25,8 +25,7 @@ bool StateIsProcessing(const std::string &state)
  * can produce for a finished task). */
 bool IsTerminalState(const std::string &state)
 {
-    return state == "COMPLETED" || state == "CANCELLED" || state == "ERROR" || state == "INTERRUPTED" ||
-           state == "SUSPENDED";
+    return state == "COMPLETED" || state == "CANCELLED" || state == "ERROR" || state == "INTERRUPTED";
 }
 
 /* The endings worth telling the user about. INTERRUPTED is left out on purpose: it
