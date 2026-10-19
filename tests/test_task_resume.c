@@ -689,6 +689,38 @@ static void test_resume_cancelled_nothing_left(void)
     edc_config_free(cfg);
 }
 
+/* 一个因为依赖没产出而结束的任务，output 里留着级联写的那句
+ * "[failed: its dependency … ]"。resume 撤销的正是那个状态，所以那句机器文案必须跟着走，
+ * 否则 /task output 会报一个正在重试的"失败"。 */
+static void test_resume_blocked_clears_the_note(void)
+{
+    TEST("resume: a BLOCKED task drops the cascade's note from its output");
+    struct edc_config *cfg = make_config();
+    struct edc_session *s = edc_session_new(cfg, "sess-blocked", "Blocked");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, s);
+    sched->send_llm = stub_send_llm;
+
+    struct edc_task *src = edc_task_new("bl-src", "sess-blocked", "bl-src", "src", edc_channel_adapter);
+    struct edc_task *dep = edc_task_new("bl-dep", "sess-blocked", "bl-src", "dep", edc_channel_adapter);
+    struct edc_task_group *g = edc_task_group_new(src);
+    edc_session_add_group(s, g);
+    edc_task_group_add_task(g, dep);
+    edc_task_add_dependency(dep, src, TASK_DEP_SEQUENCE);
+    edc_task_await_exec(src);
+    edc_task_mark_interrupted(src); /* 级联: dep 变 BLOCKED，并写下那句 note */
+
+    CHECK(dep->end == EDC_END_BLOCKED && dep->output != NULL, "夹具: 被阻塞且带着 note");
+    edc_scheduler_resume_task(sched, dep);
+    CHECK(dep->output == NULL, "note 被清掉 (它描述的状态已经撤销)");
+    CHECK(edc_task_awaits_deps(dep), "并且停在 dep-wait: 源还没产出");
+    CHECK(dep->end == EDC_END_NONE, "原因也清了");
+
+    edc_session_free(s);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     log_info("=== task resume / tool ledger tests ===");
@@ -707,6 +739,7 @@ int main(void)
     test_resume_error_pending_tool_redispatches();
     test_resume_cancelled_dangling_tool();
     test_resume_cancelled_nothing_left();
+    test_resume_blocked_clears_the_note();
 
     log_info("");
     log_info("=== Results: %d passed, %d failed ===", test_passed, test_failed);

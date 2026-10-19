@@ -1170,9 +1170,11 @@ static void test_scenario_multi_deps(void)
 /* Failure also propagates: an upstream failure means its output never arrives, so
  * the dependent cascades to ERROR (resumable).
  * Mutation: removing the failed-dependents notify must fail this. */
-static void count_move(void *ctx, struct edc_task *moved)
+static void count_move(void *ctx, struct edc_task *moved, edc_task_move_kind kind, const char *notice)
 {
     (void)moved;
+    (void)kind;
+    (void)notice;
     (*(int *)ctx)++;
 }
 
@@ -1394,6 +1396,7 @@ static void test_end_reason(void)
     CHECK(edc_task_is_ready(d), "D is released by the completion itself (no /task resume)");
     CHECK(d->end == EDC_END_NONE, "and its reason is gone");
     CHECK(d->blocked_by == NULL, "and so is the blocker");
+    CHECK(d->output == NULL, "and the machine note it carried (its dependency failed) is cleared");
 
     edc_task_free(s);
     edc_task_free(d);

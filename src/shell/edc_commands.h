@@ -3,6 +3,7 @@
 
 #include "edc_channel_actor.h"
 #include "edc_config.h"
+#include "edc_task_types.h" /* edc_task_end: named in the resume reply signature */
 #include "sds.h"
 #include <stdbool.h>
 #include <stddef.h>
@@ -36,6 +37,13 @@ extern sds edc_commands_group_info_text(struct edc_session *session, struct edc_
  *  list, otherwise the matching command(s)' detail. Exposed for tests (and so docs could be
  *  generated from the same table). Caller frees. */
 extern sds edc_commands_help_text(const char *arg);
+
+/** The one-line answer to `/task resume <id>` once the task has been driven: what it WAS
+ *  (|was| is the end reason captured before resume cleared it) and, for a task that had
+ *  failed, the last error line -- so "retried the same doomed request" is visible instead
+ *  of looking like a fresh start. Caller frees. Exposed for tests: the reply path goes
+ *  through the channel actor, which the command tests do not run. */
+extern sds edc_commands_resume_text(const struct edc_task *t, edc_task_end was);
 
 /* ── The command table as data (read-only) ───────────────────
  * The TUI's completion palette consumes the surface through these instead of parsing

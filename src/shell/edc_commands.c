@@ -1336,6 +1336,41 @@ static void edc_commands_handle_task_stop(struct edc_session_manager *sm, struct
  * ERROR (continue the failed round, reusing the active turn and tool ledger), and
  * CANCELLED (cancel only stopped it; the step is re-derived from the messages).
  * Without an id it uses the foreground group's active task. */
+sds edc_commands_resume_text(const struct edc_task *t, edc_task_end was)
+{
+    if (!t)
+        return sdsempty();
+
+    const char *what = was == EDC_END_INTERRUPTED ? "was interrupted"
+                      : was == EDC_END_FAILED    ? "had failed"
+                      : was == EDC_END_BLOCKED   ? "was blocked by a dependency"
+                                                 : "was stopped";
+    sds out = sdscatprintf(sdsempty(), "**Task `%s`** — resumed (%s, %s).", t->task_id ? t->task_id : "?", what,
+                           edc_task_state_str(t));
+
+    /* A failed task is being retried: say what failed last time, or "resumed" looks like a
+     * fresh start (an auth or context-overflow error will just fail again). First line, and
+     * capped -- the full text is available with /task output. */
+    if (was == EDC_END_FAILED && t->output)
+    {
+        const char *s = t->output;
+        size_t n = 0;
+        while (s[n] && s[n] != '\n')
+            n++;
+        bool cut = false;
+        if (n > 100)
+        {
+            n = 100;
+            cut = true;
+        }
+        while (n > 0 && ((unsigned char)s[n] & 0xC0) == 0x80)
+            n--; /* never end inside a UTF-8 sequence */
+        if (n > 0)
+            out = sdscatprintf(out, " Last error: %.*s%s", (int)n, s, cut ? "…" : "");
+    }
+    return out;
+}
+
 static void edc_commands_handle_task_resume(struct edc_session_manager *sm, struct edc_scheduler *sched,
                                             struct edc_reply_to to, sds arg)
 {
@@ -1457,13 +1492,7 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
     }
 
     /* What it was, now that it is being driven again (the move to ALIVE cleared `end`). */
-    const char *was = was_end == EDC_END_INTERRUPTED ? "was interrupted"
-                      : was_end == EDC_END_FAILED  ? "had failed"
-                      : was_end == EDC_END_STOPPED ? "was stopped"
-                      : was_end == EDC_END_BLOCKED ? "was blocked by a dependency"
-                                                   : "was stopped";
-    sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — resumed (%s, %s).", t->task_id, was,
-                             edc_task_state_str(t));
+    sds reply = edc_commands_resume_text(t, was_end);
     if (t->group && t->group->session && t->group->session != sess)
         reply = sdscatprintf(reply, " (session `[%s]`)", t->group->session->session_id);
     edc_commands_reply(to, reply);

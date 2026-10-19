@@ -374,10 +374,13 @@ Resuming a task clears the reason (it can move again, so it has no end).
 Two behaviours follow from the reason:
 
 - **`BLOCKED` is not a decision, so nobody has to make it.** When the dependency named in
-  `blocked_by` finally produces, the blocked task is put back in dependency-wait and runs
-  on its own (`AWAIT_DEPS → READY`, then the normal scan drives it). Two things do *not*
-  trigger it: another dependency of the same task finishing (that says nothing about the
-  blocker), and the blocker merely being resumed.
+  `blocked_by` finally produces, the blocked task is put back in dependency-wait, runs on
+  its own (`AWAIT_DEPS → READY`, then the normal scan drives it), and a one-line notice
+  says so — the same task was just reported as having failed. Its `output` is cleared with
+  it (that text described a state that is over). Two things do *not* trigger the release:
+  another dependency of the same task finishing (that says nothing about the blocker), and
+  the blocker merely being resumed — it has to actually produce. A routine queue advance
+  (the next task in a group) is *not* announced.
 - **`SKIPPED` cannot be resumed.** `||` decided the branch is not taken, and running it now
   would execute exactly that with the input it was created with. `/task resume` refuses and
   says so; send the command again if you want it to run.

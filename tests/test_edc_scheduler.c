@@ -1258,6 +1258,7 @@ static void test_input_routing(void)
 static int g_dispatch_calls = 0;
 static int g_reply_calls = 0;
 static char g_reply_content[512];
+static edc_channel_message_type g_reply_type = EDC_CHANNEL_MESSAGE_USER_TYPE;
 
 static void mock_dispatch_tools(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
                                 void *request_id)
@@ -1274,8 +1275,8 @@ static void mock_send_reply(struct edc_scheduler *sched, struct edc_task *task, 
 {
     (void)sched;
     (void)task;
-    (void)message_type;
     (void)request_id;
+    g_reply_type = message_type;
     g_reply_calls++;
     snprintf(g_reply_content, sizeof(g_reply_content), "%s", content ? content : "");
 }
@@ -1712,6 +1713,79 @@ static void test_queue_edge_not_shadowed_by_prev_edge(void)
     free_config(cfg);
 }
 
+/* 被依赖拖下水(BLOCKED)的任务，在依赖真的产出后自动恢复 —— 而且这件事要**说出来**：
+ * 用户先前收到的是"它失败了，因为 7 被中断"，现在它自己跑起来了。队列前进不算这件事
+ * （那是日常），所以不能发同一条提示。 */
+static void test_unblocked_dependent_is_announced(void)
+{
+    struct edc_config *cfg = make_config();
+    clean_task_seq(cfg);
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+    sched->send_reply = mock_send_reply;
+
+    TEST("an UNBLOCKED dependent is announced: it was told 'failed', now it runs");
+    struct edc_task *up = edc_scheduler_task_new(sched, sess, "upstream", edc_channel_adapter);
+    struct edc_task_group *g = edc_scheduler_create_group(sched, sess, up);
+    edc_scheduler_set_foreground(sess, g);
+    struct edc_task *down = edc_scheduler_task_new(sched, sess, "downstream", edc_channel_adapter);
+    edc_task_group_add_task(g, down);
+    CHECK(edc_task_add_dependency(down, up, TASK_DEP_SEQUENCE), "down 依赖 up (`&&`)");
+
+    edc_task_await_exec(up);
+    CHECK(edc_task_mark_interrupted(up), "up 被中断");
+    CHECK(down->end == EDC_END_BLOCKED, "down 被拖下水 (BLOCKED)");
+
+    /* 源恢复并真的产出。 */
+    edc_task_force_move(up, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
+    edc_task_await_exec(up);
+    CHECK(edc_task_mark_completed(up), "up 恢复后完成");
+
+    g_reply_calls = 0;
+    g_reply_content[0] = '\0';
+    g_reply_type = EDC_CHANNEL_MESSAGE_USER_TYPE;
+    struct edc_advance_result res;
+    memset(&res, 0, sizeof(res));
+    res.outcome = EDC_STEP_DONE;
+    res.settled = true;
+    res.changed = true;
+    edc_scheduler_apply_advance(sched, up, NULL, &res);
+
+    CHECK(edc_task_is_ready(down), "down 自动放行 (不再需要 /task resume)");
+    CHECK(g_reply_type == EDC_CHANNEL_MESSAGE_SYS_TYPE && strstr(g_reply_content, "running again") != NULL,
+          "而且发了一条 SYS: 告诉用户它又跑起来了");
+    CHECK(strstr(g_reply_content, up->task_id) != NULL && strstr(g_reply_content, down->task_id) != NULL,
+          "两边都点名了");
+
+    TEST("a queue advance is routine: it must NOT be announced");
+    struct edc_task *first = edc_scheduler_task_new(sched, sess, "first", edc_channel_adapter);
+    struct edc_task_group *g2 = edc_scheduler_create_group(sched, sess, first);
+    edc_scheduler_set_foreground(sess, g2);
+    struct edc_task *second = edc_scheduler_task_new(sched, sess, "second", edc_channel_adapter);
+    edc_task_group_add_task(g2, second);
+    /* 组队列边就是 BARRIER（前一个怎么结束，后面都接上）。 */
+    CHECK(edc_task_add_dependency(second, first, TASK_DEP_BARRIER), "second 排在 first 后面");
+    edc_task_await_exec(first);
+    edc_task_mark_completed(first);
+
+    g_reply_calls = 0;
+    g_reply_content[0] = '\0';
+    g_reply_type = EDC_CHANNEL_MESSAGE_USER_TYPE;
+    memset(&res, 0, sizeof(res));
+    res.outcome = EDC_STEP_DONE;
+    res.settled = true;
+    res.changed = true;
+    edc_scheduler_apply_advance(sched, first, NULL, &res);
+
+    CHECK(edc_task_is_ready(second), "队列前进: 第二个就绪");
+    CHECK(strstr(g_reply_content, "running again") == NULL, "但那条提示没有发 (日常事件，不值得说)");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
 int main(void)
 {
     log_info("=== Phase 3: edc_scheduler 模块测试 ===");
@@ -1725,6 +1799,7 @@ int main(void)
     test_scheduler_fg_bg();
     test_task_placement();
     test_current_task();
+    test_unblocked_dependent_is_announced();
     test_resume_queues();
     test_queue_edge_not_shadowed_by_prev_edge();
     test_queue_advances_when_front_dies();

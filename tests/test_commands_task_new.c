@@ -338,6 +338,39 @@ int main(void)
          * 产出才算数。这里 src 早就完成，所以那个下游的边本来就是完成的。 */
     }
 
+    TEST("resume reply names what the task was, and repeats the last error when it had failed");
+    {
+        struct edc_task *r = edc_task_new("rr-1", "sess-reply", "rr-1", "r", edc_channel_adapter);
+        edc_task_await_exec(r);
+
+        sds txt = edc_commands_resume_text(r, EDC_END_INTERRUPTED);
+        CHECK(strstr(txt, "was interrupted") != NULL, "INTERRUPTED 说得出来");
+        CHECK(strstr(txt, "Last error") == NULL, "没失败过就不附错误");
+        sdsfree(txt);
+
+        edc_task_set_output(r, sdsnew("LLM request failed: 401 Unauthorized\nmore detail follows"));
+        txt = edc_commands_resume_text(r, EDC_END_FAILED);
+        CHECK(strstr(txt, "had failed") != NULL, "FAILED 说得出来");
+        CHECK(strstr(txt, "Last error: LLM request failed: 401 Unauthorized") != NULL, "并附上上次错误的第一行");
+        CHECK(strstr(txt, "more detail") == NULL, "只取第一行");
+        sdsfree(txt);
+
+        sds long_err = sdsnew("boom");
+        for (int i = 0; i < 40; i++)
+            long_err = sdscat(long_err, " xxxxxxxxx");
+        edc_task_set_output(r, long_err);
+        txt = edc_commands_resume_text(r, EDC_END_FAILED);
+        CHECK(strstr(txt, "…") != NULL, "过长的错误被截断并加省略号");
+        CHECK(sdslen(txt) < 260, "而且回执不会失控");
+        sdsfree(txt);
+
+        txt = edc_commands_resume_text(r, EDC_END_STOPPED);
+        CHECK(strstr(txt, "was stopped") != NULL, "STOPPED 说得出来");
+        sdsfree(txt);
+
+        edc_task_free(r);
+    }
+
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

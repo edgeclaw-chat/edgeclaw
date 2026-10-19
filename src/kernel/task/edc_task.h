@@ -61,16 +61,9 @@ extern edc_task_life edc_task_classify_life(const char *name);
  * Invariant: EDC_END_NONE exactly while the task can still move on its own (ALIVE), and
  * for a COMPLETED one (it ended by succeeding, which the life already says). Every move
  * back to ALIVE/SUSPENDED clears the reason -- resume therefore wipes the slate without
- * each writer having to remember it. */
-typedef enum
-{
-    EDC_END_NONE = 0,    /* not over, or over by SUCCESS */
-    EDC_END_INTERRUPTED, /* the process went down underneath it */
-    EDC_END_STOPPED,     /* a stop signal: /task stop, or an inbound signal event */
-    EDC_END_FAILED,      /* it failed by itself (LLM / tool / io) */
-    EDC_END_BLOCKED,     /* a dependency ended without producing, so it was cascaded */
-    EDC_END_SKIPPED,     /* `||` INVERSE: the source succeeded, this branch is not taken */
-} edc_task_end;
+ * each writer having to remember it.
+ *
+ * The enum itself lives in edc_task_types.h (the shell<->app seam); see edc_task_end. */
 
 extern const char *edc_task_end_name(edc_task_end end);
 extern edc_task_end edc_task_classify_end(const char *name);
@@ -510,16 +503,35 @@ extern void edc_task_send_signal(struct edc_task *task, edc_task_signal sig);
  * but the task layer does not know the host, so it only records them; they are
  * cleared through the host's unified entry. The list is carried by the task that
  * initiated the operation. */
+/* Why a task moved as a side effect. The host settles every moved task through one entry,
+ * but only ONE kind deserves a line in the chat: a task the user was told had ended, which
+ * is now running again because its blocker produced. Queue advances (a group's next task)
+ * and cascades (already announced by the failure notice) stay quiet. */
+typedef enum
+{
+    EDC_MOVE_CASCADED,  /* a cancel / failure cascade took it down */
+    EDC_MOVE_RELEASED,  /* a dependency satisfied it and it is READY again */
+    EDC_MOVE_UNBLOCKED, /* it was BLOCKED and its blocker produced: worth saying */
+} edc_task_move_kind;
+
 struct edc_task_move_report
 {
     struct edc_task *task; /* a task moved as a side effect (not owned) */
+    edc_task_move_kind kind;
+    /* Optional user-facing line the move deserves. Filled only for UNBLOCKED, because only
+     * the task layer still knows which dependency did it (the move clears `blocked_by`).
+     * Owned by the report. */
+    sds notice;
     struct edc_task_move_report *next;
 };
 
 /** Take and hand each side-effect-moved task to |cb|, then clear the list. The
  *  callback may recurse (clearing can move more tasks), so the list is drained
- *  until empty. */
-extern void edc_task_drain_moves(struct edc_task *task, void (*cb)(void *ctx, struct edc_task *moved), void *ctx);
+ *  until empty. |cb| = NULL just clears the list (used when freeing the task). */
+extern void edc_task_drain_moves(struct edc_task *task,
+                                 void (*cb)(void *ctx, struct edc_task *moved, edc_task_move_kind kind,
+                                            const char *notice),
+                                 void *ctx);
 
 /* Resume ledger of unfinished tool calls. Lifecycle: add (PENDING) when the LLM
  * returns tool_calls; mark_executing when the toolbox reports start; remove when

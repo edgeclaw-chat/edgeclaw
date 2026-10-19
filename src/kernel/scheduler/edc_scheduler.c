@@ -1119,6 +1119,13 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
     if (!sched || !task)
         return;
 
+    /* A task that ended because a dependency never produced carries the cascade's note
+     * ("[failed: its dependency … ]") as its output. Resume undoes that state, so the note
+     * goes with it -- otherwise /task output reports a failure that is being retried. A
+     * real output (a stop's, an interrupt's, a failure's own message) is untouched. */
+    if (task->end == EDC_END_BLOCKED)
+        edc_task_set_output(task, NULL);
+
     /* Door 2 of 2: a maintenance round in flight holds it. Park at READY/ALIVE -- the intent to
      * resume is NOT dropped: the message-end scan drives it as soon as the round ends and
      * releases the barrier (same effect as the fold's own member sweep, for the doors that sweep
@@ -1321,10 +1328,21 @@ static sds sched_error_copy(struct edc_scheduler *sched, const char *notice)
 
 /* Settle callback for side-effect-moved tasks: their facts come from the task's
  * current state. Recursion is intentional (settling can move more tasks). */
-static void sched_settle_cascaded(void *ctx, struct edc_task *task)
+static void sched_settle_cascaded(void *ctx, struct edc_task *task, edc_task_move_kind kind, const char *notice)
 {
     struct edc_scheduler *sched = ctx;
     bool finished = edc_task_is_finished(task);
+
+    /* A task the user was told had ended, now running again because the dependency it was
+     * blocked on produced: say so, or its output simply appears with no explanation. Only
+     * this kind speaks -- a queue advance is routine, and a cascade announced itself when
+     * the failure notice went out. */
+    if (kind == EDC_MOVE_UNBLOCKED && notice && !finished && sched->send_reply)
+    {
+        sds copy = sdsnew(notice);
+        sched->send_reply(sched, task, copy, EDC_CHANNEL_MESSAGE_SYS_TYPE, task->current_request_id);
+        sdsfree(copy);
+    }
 
     struct edc_advance_result res;
     memset(&res, 0, sizeof(res));

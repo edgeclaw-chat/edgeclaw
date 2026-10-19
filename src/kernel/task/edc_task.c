@@ -937,7 +937,7 @@ bool edc_task_has_unresolved_deps(const struct edc_task *task){
 }
 
 /* Ledger: the side-effect move recorder (defined in the dependency section below). */
-static void task_record_move(struct edc_task *source, struct edc_task *moved);
+static void task_record_move(struct edc_task *source, struct edc_task *moved, edc_task_move_kind kind, sds notice);
 
 void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
 {
@@ -986,7 +986,7 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
              * confuse it with what the user did by hand. */
             edc_task_mark_skipped(target);
             if (target->step != step_before || target->life != life_before)
-                task_record_move(source, target);
+                task_record_move(source, target, EDC_MOVE_CASCADED, NULL);
         }
         return;
     }
@@ -1001,11 +1001,22 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
     if (target->end == EDC_END_BLOCKED && target->blocked_by && source->task_id &&
         strcmp(target->blocked_by, source->task_id) == 0 && !edc_task_awaits_deps(target))
     {
+        /* The note the cascade wrote ("[failed: its dependency … ]") described a state that
+         * is over: the task is about to move again, and leaving it there makes /task output
+         * report a failure that no longer happened. Only that machine note is dropped --
+         * a real output (a stopped or interrupted task's) is not touched. */
+        edc_task_set_output(target, NULL);
         edc_task_step step_before = target->step;
         edc_task_life life_before = target->life;
         edc_task_mark_waiting_deps(target);
         if (target->step != step_before || target->life != life_before)
-            task_record_move(source, target); /* moved as a side effect: the source owes the notice */
+            /* This one IS announced: the user was told the task had ended, and now it runs
+             * again because the dependency it was blocked on produced. A queue advance and
+             * a cascade are routine / already announced, so they carry no notice. */
+            task_record_move(source, target, EDC_MOVE_UNBLOCKED,
+                             sdscatprintf(sdsempty(), "`%s` is running again — its dependency `%s` produced.",
+                                          target->task_id ? target->task_id : "?",
+                                          source->task_id ? source->task_id : "?"));
     }
 
     if (target->deps_completed >= target->deps_total && edc_task_awaits_deps(target))
@@ -1016,7 +1027,7 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
         edc_task_life life_before = target->life;
         edc_task_mark_ready(target);
         if (target->step != step_before || target->life != life_before)
-            task_record_move(source, target);
+            task_record_move(source, target, EDC_MOVE_RELEASED, NULL);
     }
 }
 
@@ -1024,15 +1035,27 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
 
 /* Record a debt: |moved|'s phase was moved as a side effect of an operation
  * |source| started. The debt is charged to the INITIATOR -- the host is about to
- * settle it and clears the list along the way. */
-static void task_record_move(struct edc_task *source, struct edc_task *moved)
+ * settle it and clears the list along the way. |notice| (optional) is a line the move
+ * deserves and is OWNED by the report; |kind| says why, so the host can decide whether
+ * the move is worth telling anyone. */
+static void task_record_move(struct edc_task *source, struct edc_task *moved, edc_task_move_kind kind, sds notice)
 {
     if (!source || !moved)
+    {
+        if (notice)
+            sdsfree(notice);
         return;
+    }
     struct edc_task_move_report *r = malloc(sizeof(*r));
     if (!r)
+    {
+        if (notice)
+            sdsfree(notice);
         return; /* a failed record only loses one notice; no phase changes */
+    }
     r->task = moved;
+    r->kind = kind;
+    r->notice = notice;
     r->next = source->moved_report;
     source->moved_report = r;
 }
@@ -1075,11 +1098,13 @@ static void task_void_dep(struct edc_task_dep *dep, struct edc_task *target, str
         edc_task_life life_before = target->life;
         edc_task_mark_ready(target);
         if (target->step != step_before || target->life != life_before)
-            task_record_move(source, target);
+            task_record_move(source, target, EDC_MOVE_RELEASED, NULL);
     }
 }
 
-void edc_task_drain_moves(struct edc_task *task, void (*cb)(void *ctx, struct edc_task *moved), void *ctx)
+void edc_task_drain_moves(struct edc_task *task,
+                          void (*cb)(void *ctx, struct edc_task *moved, edc_task_move_kind kind, const char *notice),
+                          void *ctx)
 {
     if (!task)
         return;
@@ -1090,7 +1115,9 @@ void edc_task_drain_moves(struct edc_task *task, void (*cb)(void *ctx, struct ed
         struct edc_task_move_report *r = task->moved_report;
         task->moved_report = r->next;
         if (cb)
-            cb(ctx, r->task);
+            cb(ctx, r->task, r->kind, r->notice);
+        if (r->notice)
+            sdsfree(r->notice);
         free(r);
     }
 }
@@ -1133,7 +1160,7 @@ void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source)
      * state while the host only named the source task. Record a debt (repeated
      * cancels are idempotent: no real move, no record). */
     if (target->step != step_before || target->life != life_before)
-        task_record_move(source, target);
+        task_record_move(source, target, EDC_MOVE_CASCADED, NULL);
 }
 
 /* Handle a failed source, symmetric with cancellation (neither will produce
@@ -1187,7 +1214,7 @@ void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
      * state while the host only named the source task. Record a debt (repeated
      * failures are idempotent: no real move, no record). */
     if (target->step != step_before || target->life != life_before)
-        task_record_move(source, target);
+        task_record_move(source, target, EDC_MOVE_CASCADED, NULL);
 }
 
 /* Failure broadcast: snapshot the dependents before processing, since a JOIN

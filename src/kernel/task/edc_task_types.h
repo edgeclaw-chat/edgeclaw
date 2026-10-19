@@ -43,4 +43,28 @@ typedef enum
                         * for: void the edge and release it. Never injected. */
 } edc_task_dep_type;
 
+/* WHY a task is over. |life| says which terminal bucket it landed in; |end| says what put
+ * it there -- the fact the coarse buckets cannot carry, because they are not one thing:
+ * CANCELLED is "the user stopped it" OR "a `||` branch was skipped" OR "a dependency was
+ * cancelled", and ERROR is "it failed by itself" OR "a dependency never produced". Without
+ * this axis every consumer (sidebar, /task status, the restart hint, the release of
+ * cascaded work) has to guess, and the guess differs per caller.
+ *
+ * Invariant: EDC_END_NONE exactly while the task can still move on its own (ALIVE), and
+ * for a COMPLETED one (it ended by succeeding, which the life already says). Every move
+ * back to ALIVE/SUSPENDED clears the reason -- resume therefore wipes the slate without
+ * each writer having to remember it.
+ *
+ * Lives here (not in edc_task.h) because the shell's command layer names it in a signature
+ * and this header is the shell<->app seam. */
+typedef enum
+{
+    EDC_END_NONE = 0,    /* not over, or over by SUCCESS */
+    EDC_END_INTERRUPTED, /* the process went down underneath it */
+    EDC_END_STOPPED,     /* a stop signal: /task stop, or an inbound signal event */
+    EDC_END_FAILED,      /* it failed by itself (LLM / tool / io) */
+    EDC_END_BLOCKED,     /* a dependency ended without producing, so it was cascaded */
+    EDC_END_SKIPPED,     /* `||` INVERSE: the source succeeded, this branch is not taken */
+} edc_task_end;
+
 #endif
