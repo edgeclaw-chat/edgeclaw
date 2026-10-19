@@ -4,7 +4,9 @@
 // list of matching commands floats ABOVE the input (above its top rule, so it grows into
 // the chat area and never looks like part of the input box). Up/Down move the selection,
 // Tab completes -- or, when there is nothing left to complete, CONFIRMS and the caller
-// folds the list; Esc dismisses. Enter is NOT touched -- it still submits.
+// folds the list; Esc dismisses. Enter submits, EXCEPT once Up/Down has been used to walk
+// the list: then Enter picks the highlighted row (navigated()), the same thing Tab does,
+// because the row under the bar is what the user is pointing at.
 //
 // CommandPalette below is the MODEL (pure logic, no terminal): the window feeds it the
 // input content and renders items(). Its source is the shell's command table, projected
@@ -82,6 +84,14 @@ class CommandPalette
     {
         return open_;
     }
+    // True when the selection was moved since the text last changed -- the user is walking
+    // the list. The window reads this to let Enter PICK the highlighted row (what the eye
+    // is already on) instead of sending; a text change resets it, so plain typing plus
+    // Enter still submits.
+    bool navigated() const
+    {
+        return navigated_;
+    }
     const std::vector<CommandFact> &items() const
     {
         return items_;
@@ -124,6 +134,8 @@ class CommandPalette
     int cursor_ = 0;
     int selected_ = 0;
     bool open_ = false;
+    // The user moved the selection since the last text change (see navigated()).
+    bool navigated_ = false;
     // Esc dismissed the list for this exact content.
     bool closed_by_user_ = false;
     std::string closed_content_;

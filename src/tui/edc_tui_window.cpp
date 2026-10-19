@@ -1098,9 +1098,11 @@ bool TUIWindow::HandleNormalEvent(::ftxui::Event event)
         return true;
     }
 
-    // The completion popup owns Up/Down/Tab/Esc while it is open. Enter is deliberately
-    // NOT taken -- it still submits below (Tab is what completes), so a plain `/help⏎`
-    // keeps working exactly as before.
+    // The completion popup owns Up/Down/Tab/Esc while it is open, so ↑/↓ walk the rows
+    // instead of the caret and history. Enter stays a submit -- with ONE exception: once
+    // the user has walked the list (Up/Down pressed on it), the bar is what they are
+    // pointing at, so Enter picks that row instead of sending. Typing again clears the
+    // walk, so plain `/help⏎` still submits exactly as before.
     if (command_palette_.open())
     {
         if (event == ::ftxui::Event::ArrowUp)
@@ -1115,32 +1117,15 @@ bool TUIWindow::HandleNormalEvent(::ftxui::Event event)
         }
         if (event == ::ftxui::Event::Tab)
         {
-            if (command_palette_.mode() == model::CommandPalette::Mode::Mention)
-            {
-                // Replace "@src" with the selected "@src/main.c " -- or, for a directory,
-                // with "@src/" and stay open so the next level can be picked.
-                const std::string insert = command_palette_.MentionInsert();
-                if (!insert.empty())
-                {
-                    input_->ReplaceRange(command_palette_.trigger_begin(), input_->CursorPosition(), insert);
-                    if (insert.back() == '/')
-                        RecomputeCommandPalette();
-                    else
-                        command_palette_.Close();
-                }
-                return true;
-            }
-            // Tab completes the selected row. When that leaves nothing more to complete,
-            // this same press is the "that's it": fold the list now instead of demanding
-            // one more Tab to say so (the extra press carried no new information).
-            const std::string completed = command_palette_.Accept();
-            if (completed != input_text_)
-            {
-                input_->ReplaceAll(completed);
-                RecomputeCommandPalette();
-            }
-            if (!command_palette_.HasMore())
-                command_palette_.Close();
+            AcceptCompletion();
+            return true;
+        }
+        if (event == ::ftxui::Event::Return && command_palette_.navigated())
+        {
+            // Pick, don't send. Only when the pick changes nothing (the highlighted row is
+            // already what the line says) is sending all that is left to do.
+            if (!AcceptCompletion())
+                Submit();
             return true;
         }
         if (event == ::ftxui::Event::Escape)
@@ -1180,6 +1165,38 @@ bool TUIWindow::HandleNormalEvent(::ftxui::Event event)
         event == ::ftxui::Event::Home || event == ::ftxui::Event::End)
         RecomputeCommandPalette();
     return handled;
+}
+
+bool TUIWindow::AcceptCompletion()
+{
+    if (command_palette_.mode() == model::CommandPalette::Mode::Mention)
+    {
+        // Replace "@src" with the selected "@src/main.c " -- or, for a directory,
+        // with "@src/" and stay open so the next level can be picked.
+        const std::string insert = command_palette_.MentionInsert();
+        if (insert.empty())
+            return false;
+        input_->ReplaceRange(command_palette_.trigger_begin(), input_->CursorPosition(), insert);
+        if (insert.back() == '/')
+            RecomputeCommandPalette();
+        else
+            command_palette_.Close();
+        return true;
+    }
+
+    // Complete the selected row. When that leaves nothing more to complete, this same
+    // press is the "that's it": fold the list now instead of demanding one more press to
+    // say so (the extra press carried no new information).
+    const std::string completed = command_palette_.Accept();
+    const bool changed = completed != input_text_;
+    if (changed)
+    {
+        input_->ReplaceAll(completed);
+        RecomputeCommandPalette();
+    }
+    if (!command_palette_.HasMore())
+        command_palette_.Close();
+    return changed;
 }
 
 void TUIWindow::RecomputeCommandPalette()

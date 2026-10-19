@@ -122,8 +122,10 @@ The first character decides what the line is. That is the whole rule.
 ```
 
 While you type a `/` command the completion list sits just above the input: ↑/↓ to move,
-Tab to complete, Esc to dismiss — Enter still sends what you typed. Esc alone stops the
-foreground task; Ctrl+C clears the input (twice to quit).
+Tab to complete, Esc to dismiss. Enter sends what you typed — unless you have walked the
+list with ↑/↓, in which case Enter picks the highlighted row instead (Tab does the same,
+and the next Enter sends). Esc alone stops the foreground task; Ctrl+C clears the input
+(twice to quit).
 
 ↑/↓ recall earlier messages, but only ones that **start with what you have already typed**
 (an empty line recalls everything). Type `task ` and ↑ walks the `task …` lines; if nothing

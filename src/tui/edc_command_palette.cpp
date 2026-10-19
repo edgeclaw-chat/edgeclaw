@@ -158,6 +158,12 @@ std::string CommandPalette::MentionInsert() const
 
 bool CommandPalette::Update(const std::string &content, int cursor)
 {
+    // A new text is a new question: the walk over the previous rows is over, so Enter
+    // means "send" again until the user moves the selection once more. (A caret move
+    // with the same text is not a new question -- the highlight stays meaning what it
+    // meant.)
+    if (content != content_)
+        navigated_ = false;
     content_ = content;
     cursor_ = cursor;
 
@@ -248,19 +254,29 @@ bool CommandPalette::Update(const std::string &content, int cursor)
 
 void CommandPalette::MoveUp()
 {
-    if (open_ && selected_ > 0)
+    if (!open_)
+        return;
+    /* Walking the list: the highlighted row is now what the user means, so Enter picks
+     * it instead of sending (see navigated()). Set even at the top -- pressing Up is a
+     * "I am choosing here" signal, not a request to move pixels. */
+    navigated_ = true;
+    if (selected_ > 0)
         selected_--;
 }
 
 void CommandPalette::MoveDown()
 {
-    if (open_ && selected_ + 1 < static_cast<int>(items_.size()))
+    if (!open_)
+        return;
+    navigated_ = true;
+    if (selected_ + 1 < static_cast<int>(items_.size()))
         selected_++;
 }
 
 void CommandPalette::Close()
 {
     open_ = false;
+    navigated_ = false;
     closed_by_user_ = true;
     closed_content_ = content_;
 }

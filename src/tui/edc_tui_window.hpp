@@ -208,6 +208,11 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // Refresh the completion popup from the current input text (and load its source
     // from the command table on first use).
     void RecomputeCommandPalette();
+    // Fold the highlighted popup row into the input -- what Tab does, and what Enter does
+    // once the user has walked the list (so Enter picks instead of sending). Returns true
+    // when the input text actually changed (Enter only falls back to sending when it did
+    // not: there was nothing to pick).
+    bool AcceptCompletion();
 
     std::shared_ptr<edc::ChatWidget> chat_widget_;
     std::shared_ptr<edc::TaskWidget> task_widget_;

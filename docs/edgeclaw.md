@@ -18,8 +18,9 @@ walks through three steps — provider, API key, model — and applies the choic
 immediately (it writes the base URL, key, model and the model's context window).
 
 While the input starts with `/`, a completion list hangs just below it: `↑`/`↓` move
-the selection, `Tab` completes it, `Esc` dismisses it. `Enter` is untouched — it still
-sends what you typed.
+the selection, `Tab` completes it, `Esc` dismisses it. `Enter` sends what you typed —
+except once you have walked the list with `↑`/`↓`: then `Enter` picks the highlighted row
+(what `Tab` does) instead of sending, and the next `Enter` sends.
 
 With no completion list open, `↑`/`↓` recall earlier messages — but only the ones that
 start with what you have already typed (an empty line recalls everything). Type `task `

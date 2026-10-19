@@ -208,6 +208,22 @@ int main(void)
         CHECK(p.selected() == 3, "clamps at the bottom");
     }
     {
+        TEST("navigated: walking the list is what makes Enter a pick");
+        CommandPalette p = Make();
+        Upd(p, "/");
+        CHECK(!p.navigated(), "typing alone is not a walk");
+        p.MoveUp();
+        CHECK(p.navigated(), "even a clamped move counts: the user pointed at a row");
+        Upd(p, "/t");
+        CHECK(!p.navigated(), "typing again -> Enter means send again");
+        p.MoveDown();
+        CHECK(p.navigated(), "the next move marks it again");
+        CHECK(p.Update("/t", 1), "a caret move on the same text keeps the list open");
+        CHECK(p.navigated(), "and keeps the walk (the highlight still means something)");
+        p.Close();
+        CHECK(!p.navigated(), "closing forgets the walk");
+    }
+    {
         TEST("Esc closes until the text changes again");
         CommandPalette p = Make();
         Upd(p, "/ta");

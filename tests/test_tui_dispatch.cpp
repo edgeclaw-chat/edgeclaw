@@ -467,7 +467,8 @@ std::string LineOf(const std::string &frame, int row)
 }
 
 // ── 输入框的命令补全弹层 ────────────────────────────────────────────────────
-// 打 "/" 弹家族、"ta" 收敛、Tab 补全、Esc 关掉；Enter 语义不被抢（下一条仍走 Submit）。
+// 打 "/" 弹家族、"ta" 收敛、Tab 补全、Esc 关掉；Enter 默认仍是 Submit，只在上下浏览过
+// 列表之后变成"选中"（见下面 TestPaletteEnterPicks）。
 void TestCommandPalette(edc::TUIWindow &win)
 {
     std::cout << "输入框补全弹层\n";
@@ -596,6 +597,53 @@ void TestCommandPalette(edc::TUIWindow &win)
     win.OnEvent(::ftxui::Event::Tab);
     Check(Has(FrameOf(win), "❯ /skill demo "), "Tab 补全到技能名");
     win.OnEvent(::ftxui::Event::Return); // 收尾清空
+}
+// 上下浏览过补全列表之后，Enter 是"就选这条"，不是发送：光标在列表里指着某一行，按下去
+// 显然不是要把半截命令发出去。没浏览过（只是打字）时 Enter 照旧发送，`/help⏎` 那条老路不变。
+void TestPaletteEnterPicks(edc::TUIWindow &win)
+{
+    std::cout << "补全列表里 Enter 是选中而不是发送\n";
+    auto type = [&](const char *s) {
+        for (const char *p = s; *p; p++)
+            win.OnEvent(::ftxui::Event::Character(std::string(1, *p)));
+    };
+    // 输入行整行文本（行尾填充空格去掉）。
+    auto input_line = [&](const std::string &f) {
+        std::string line = LineOf(f, RowOf(f, "❯"));
+        while (!line.empty() && line.back() == ' ')
+            line.pop_back();
+        return line;
+    };
+
+    const std::string empty_line = input_line(FrameOf(win));
+
+    // 1) 只打字、没上下浏览：Enter 仍然是发送（输入清空、弹层收起）。
+    type("/model");
+    Check(Has(FrameOf(win), "Tab complete"), "敲 /model 弹出列表");
+    win.OnEvent(::ftxui::Event::Return);
+    Check(input_line(FrameOf(win)) == empty_line, "没浏览时 Enter 仍然发送（输入被清空）");
+
+    // 2) 基准：'↓' 走一行后按 Tab，取到高亮那一行的补全结果。
+    type("/task ");
+    Check(Has(FrameOf(win), "Tab complete"), "敲 '/task ' 弹出子命令列表");
+    win.OnEvent(::ftxui::Event::ArrowDown);
+    win.OnEvent(::ftxui::Event::Tab);
+    const std::string picked_by_tab = input_line(FrameOf(win));
+    Check(picked_by_tab.size() > std::string("❯ /task").size(), "Tab 落到了高亮那一行（实际 '" + picked_by_tab + "'）");
+    win.OnEvent(::ftxui::Event::Return); // 清空，准备第二轮
+
+    // 3) 同样 '↓' 走一行，这次按 Enter：结果与 Tab 完全相同，而且**没有发送**。
+    type("/task ");
+    win.OnEvent(::ftxui::Event::ArrowDown);
+    win.OnEvent(::ftxui::Event::Return);
+    const std::string picked_by_enter = input_line(FrameOf(win));
+    Check(picked_by_enter == picked_by_tab,
+          "浏览后 Enter 与 Tab 选中同一行（Enter '" + picked_by_enter + "' vs Tab '" + picked_by_tab + "'）");
+    Check(picked_by_enter != empty_line, "而且没有发送：输入框没被清空");
+
+    // 4) 选中改变了文本，"走列表"状态清零 —— 再按一次 Enter 才是发送。
+    win.OnEvent(::ftxui::Event::Return);
+    Check(input_line(FrameOf(win)) == empty_line, "再按一次 Enter 才发送（输入被清空）");
 }
 
 // 回翻历史时补全弹层不能抢走上下键。历史里只要有一条以 '/' 开头的条目（`/task new` 这种
@@ -727,6 +775,7 @@ int main()
     TestUserInputIsEchoedImmediately(win);
     TestTaskHistoryPayloadBecomesBubbles(win);
     TestCommandPalette(win);
+    TestPaletteEnterPicks(win);
     TestHistoryRecallKeepsArrows(win);
     TestInterruptKeys(win);
 
