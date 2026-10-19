@@ -371,6 +371,17 @@ produce" (`STOPPED` / `SKIPPED` / `BLOCKED`), and `ERROR` covers "it failed by i
 A `BLOCKED` task also names which dependency blocked it and what that one's end was.
 Resuming a task clears the reason (it can move again, so it has no end).
 
+Two behaviours follow from the reason:
+
+- **`BLOCKED` is not a decision, so nobody has to make it.** When the dependency named in
+  `blocked_by` finally produces, the blocked task is put back in dependency-wait and runs
+  on its own (`AWAIT_DEPS → READY`, then the normal scan drives it). Two things do *not*
+  trigger it: another dependency of the same task finishing (that says nothing about the
+  blocker), and the blocker merely being resumed.
+- **`SKIPPED` cannot be resumed.** `||` decided the branch is not taken, and running it now
+  would execute exactly that with the input it was created with. `/task resume` refuses and
+  says so; send the command again if you want it to run.
+
 ### Dependency System
 
 Tasks form a directed acyclic graph (DAG) via dependency edges. Each task

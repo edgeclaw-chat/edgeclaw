@@ -1390,6 +1390,21 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
         return;
     }
 
+    /* `||` decided this branch is not taken. Running it now would execute exactly the
+     * thing the shell said should not run, with the input it was created with -- and the
+     * branch's reason is now recorded (EDC_END_SKIPPED), so this is stated instead of
+     * quietly overridden. Sending the command again is the unambiguous way to ask. */
+    if (t->end == EDC_END_SKIPPED)
+    {
+        sds reply = sdscatprintf(sdsempty(),
+                                 "**Task `%s`** — skipped: `||` saw its source succeed, so this branch was not "
+                                 "taken. Send the command again if you want it to run.",
+                                 t->task_id);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        return;
+    }
+
     /* Resume gate: try to restore any cross-session dependency now (may lazy-load
      * its owner); if it cannot be resolved, hold the task. */
     edc_session_store_reconcile_pending_deps(sm, sched);
@@ -1404,6 +1419,9 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
         sdsfree(reply);
         return;
     }
+
+    /* What it was, said before resume clears the reason (any move back to ALIVE wipes it). */
+    const edc_task_end was_end = t->end;
 
     edc_scheduler_resume_task(sched, t);
 
@@ -1424,9 +1442,11 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
                 waiting = sdscat(waiting, ", ");
             waiting = sdscatprintf(waiting, "`%s` (%s)", dep->source->task_id, edc_task_state_str(dep->source));
         }
+        /* No "its output arrives": a SEQUENCE / BARRIER edge injects nothing, it only
+         * needs the dependency to produce (succeed). */
         sds reply = sdscatprintf(sdsempty(),
-                                 "**Task `%s` is waiting** — it still depends on %s. Resume that one (this task "
-                                 "runs once its output arrives), or remove it.",
+                                 "**Task `%s` is waiting** — it still depends on %s. Resume one of them "
+                                 "(`/task resume <id>`); this task runs once its dependency produces.",
                                  t->task_id, sdslen(waiting) ? waiting : "an unfinished dependency");
         if (t->group && t->group->session && t->group->session != sess)
             reply = sdscatprintf(reply, " (session `[%s]`)", t->group->session->session_id);
@@ -1436,7 +1456,14 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
         return;
     }
 
-    sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — resume signal sent (%s).", t->task_id, edc_task_state_str(t));
+    /* What it was, now that it is being driven again (the move to ALIVE cleared `end`). */
+    const char *was = was_end == EDC_END_INTERRUPTED ? "was interrupted"
+                      : was_end == EDC_END_FAILED  ? "had failed"
+                      : was_end == EDC_END_STOPPED ? "was stopped"
+                      : was_end == EDC_END_BLOCKED ? "was blocked by a dependency"
+                                                   : "was stopped";
+    sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — resumed (%s, %s).", t->task_id, was,
+                             edc_task_state_str(t));
     if (t->group && t->group->session && t->group->session != sess)
         reply = sdscatprintf(reply, " (session `[%s]`)", t->group->session->session_id);
     edc_commands_reply(to, reply);

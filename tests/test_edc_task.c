@@ -1287,7 +1287,10 @@ static void test_dep_completion_releases(void)
     edc_task_mark_completed(s2);
     edc_task_notify_dependents(s2);
     CHECK(!edc_task_has_unresolved_deps(d2), "源后来产出 ⇒ d2 的边也满足");
-    CHECK(edc_task_is_ready(d2) || edc_task_is_cancelled(d2), "(相位随实现; 关键是边不再是未决)");
+    /* 2026-10-19 定稿：由于依赖而结束(BLOCKED)的任务不再需要人工 resume —— 源一旦真的
+     * 产出，它就被这次完成通知自己放行。以前这里是一句 "is_ready || is_cancelled" 的宽断言。 */
+    CHECK(edc_task_is_ready(d2), "d2 被自动放行 (BLOCKED → AWAIT_DEPS → READY)");
+    CHECK(d2->end == EDC_END_NONE, "而且原因被清掉");
 
     edc_task_free(src);
     edc_task_free(dst);
@@ -1379,10 +1382,15 @@ static void test_end_reason(void)
     CHECK(c->end == EDC_END_BLOCKED, "reason BLOCKED, not STOPPED");
     CHECK(c->blocked_end == EDC_END_STOPPED, "the source's own reason is STOPPED");
 
-    /* Resuming D clears both the reason and the blocker. */
-    CHECK(edc_task_mark_waiting_deps(d), "D goes back to dep-wait");
-    CHECK(d->end == EDC_END_NONE, "reason cleared");
-    CHECK(d->blocked_by == NULL, "blocker cleared");
+    /* The source recovers and produces: the dependent comes back BY ITSELF -- nobody has
+     * to resume it, because it never made a decision (a dependency did). */
+    edc_task_force_move(s, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE); /* resume the source */
+    edc_task_await_exec(s);
+    CHECK(edc_task_mark_completed(s), "S produces after being resumed");
+    edc_task_notify_dependents(s);
+    CHECK(edc_task_is_ready(d), "D is released by the completion itself (no /task resume)");
+    CHECK(d->end == EDC_END_NONE, "and its reason is gone");
+    CHECK(d->blocked_by == NULL, "and so is the blocker");
 
     edc_task_free(s);
     edc_task_free(d);

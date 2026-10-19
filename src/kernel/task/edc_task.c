@@ -990,6 +990,23 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
         return;
     }
 
+    /* A task that ended BECAUSE a dependency never produced is not a human decision: when
+     * THAT dependency produces, put it back in dep-wait so the release just below (and the
+     * message-end scan) drive it -- no `/task resume` needed. Two guards keep this from
+     * overriding a decision:
+     *   - only EDC_END_BLOCKED (a stop, its own failure and a `||` skip stay explicit);
+     *   - only when the source completing NOW is the one that blocked it (blocked_by):
+     *     some OTHER dependency finishing says nothing about whether it may run again. */
+    if (target->end == EDC_END_BLOCKED && target->blocked_by && source->task_id &&
+        strcmp(target->blocked_by, source->task_id) == 0 && !edc_task_awaits_deps(target))
+    {
+        edc_task_step step_before = target->step;
+        edc_task_life life_before = target->life;
+        edc_task_mark_waiting_deps(target);
+        if (target->step != step_before || target->life != life_before)
+            task_record_move(source, target); /* moved as a side effect: the source owes the notice */
+    }
+
     if (target->deps_completed >= target->deps_total && edc_task_awaits_deps(target))
     {
         /* Completion also moves the dependent's phase, so it owes the same

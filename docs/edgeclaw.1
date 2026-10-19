@@ -459,7 +459,11 @@ COMMAND REFERENCE
                               chain / turn) and drives it; an ERROR or
                               CANCELLED task continues its unfinished turn.
                               The id is required: there is no batch mode and
-                              no default task.
+                              no default task. A task skipped by `||` is
+                              refused (the branch was not taken; send the
+                              command again to run it). A task blocked by a
+                              dependency needs no resume: it runs by itself
+                              once that dependency produces.
 
      Group
      /group list              List all process groups.

@@ -310,6 +310,34 @@ int main(void)
         CHECK(g_llm_calls == 0, "这一轮没有新的 LLM 请求 (A 只是重新排队)");
     }
 
+    TEST("/task resume refuses a task that `||` skipped");
+    if (alpha && alpha->group)
+    {
+        /* `src` succeeds → `skipped` is the `||` branch, so it never runs (end=SKIPPED). */
+        struct edc_task *src = edc_scheduler_task_new(sched, sess, "|| source", edc_channel_adapter);
+        edc_task_group_add_task(alpha->group, src);
+        struct edc_task *skipped = edc_scheduler_task_new(sched, sess, "|| branch", edc_channel_adapter);
+        edc_task_group_add_task(alpha->group, skipped);
+        edc_task_add_dependency(skipped, src, TASK_DEP_UNLESS);
+        edc_task_await_exec(src);
+        edc_task_mark_completed(src);
+        edc_task_notify_dependents(src);
+        CHECK(skipped->end == EDC_END_SKIPPED, "夹具: 该分支被 `||` 跳过 (CANCELLED + SKIPPED)");
+
+        char cmd[128];
+        snprintf(cmd, sizeof cmd, "/task resume %s", skipped->task_id);
+        g_llm_task = NULL;
+        g_llm_calls = 0;
+        drive_command(cfg, sm, sched, cmd);
+        CHECK(edc_task_is_cancelled(skipped) && skipped->end == EDC_END_SKIPPED,
+              "resume 被拒: 仍是跳过态 (理由保留，不再被悄悄改成可跑)");
+        CHECK(g_llm_calls == 0, "没有请求被发出");
+        CHECK(g_llm_task != skipped, "也没有驱动它");
+
+        /* 但它的下游(task BLOCKED on a skipped source)在源成功时并不复活 —— 只有源真的
+         * 产出才算数。这里 src 早就完成，所以那个下游的边本来就是完成的。 */
+    }
+
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }
