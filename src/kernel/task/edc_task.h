@@ -51,6 +51,30 @@ extern const char *edc_task_life_name(edc_task_life life);
 extern edc_task_step edc_task_classify_step(const char *name);
 extern edc_task_life edc_task_classify_life(const char *name);
 
+/* WHY a task is over. |life| says which terminal bucket it landed in; |end| says what put
+ * it there -- the fact the coarse buckets cannot carry, because they are not one thing:
+ * CANCELLED is "the user stopped it" OR "a `||` branch was skipped" OR "a dependency was
+ * cancelled", and ERROR is "it failed by itself" OR "a dependency never produced". Without
+ * this axis every consumer (sidebar, /task status, the restart hint, any future
+ * auto-release of cascaded work) has to guess, and the guess differs per caller.
+ *
+ * Invariant: EDC_END_NONE exactly while the task can still move on its own (ALIVE), and
+ * for a COMPLETED one (it ended by succeeding, which the life already says). Every move
+ * back to ALIVE/SUSPENDED clears the reason -- resume therefore wipes the slate without
+ * each writer having to remember it. */
+typedef enum
+{
+    EDC_END_NONE = 0,    /* not over, or over by SUCCESS */
+    EDC_END_INTERRUPTED, /* the process went down underneath it */
+    EDC_END_STOPPED,     /* a stop signal: /task stop, or an inbound signal event */
+    EDC_END_FAILED,      /* it failed by itself (LLM / tool / io) */
+    EDC_END_BLOCKED,     /* a dependency ended without producing, so it was cascaded */
+    EDC_END_SKIPPED,     /* `||` INVERSE: the source succeeded, this branch is not taken */
+} edc_task_end;
+
+extern const char *edc_task_end_name(edc_task_end end);
+extern edc_task_end edc_task_classify_end(const char *name);
+
 /* Two more orthogonal axes: where the output goes, and whether the task must
  * survive a restart. Defaults (CHANNEL, PERSISTENT) describe a user task; only a
  * system task flips them, and that combination is the whole reason a fold needs
@@ -255,6 +279,15 @@ struct edc_task
     uint32_t completion_seq; /* completion order (0 = not finished) */
     int has_deferred_vars;   /* {{…}} task references to expand */
 
+    /* Why it ended (see edc_task_end). EDC_END_NONE while it can still move, and for a
+     * task that ended by succeeding. Cleared by any move back to ALIVE/SUSPENDED. */
+    edc_task_end end;
+    /* EDC_END_BLOCKED only: the dependency that never produced, and what THAT one's end
+     * was (so "blocked by 7 (interrupted)" survives 7 being deleted later). Informational:
+     * nothing branches on them yet. */
+    char *blocked_by;
+    edc_task_end blocked_end;
+
     struct edc_tool_call_record *tool_calls;
 
     sds redirect_stdout;
@@ -321,7 +354,18 @@ extern bool edc_task_mark_completed(struct edc_task *task);
  *  ERROR gets the propagation for free. Returns false and does not broadcast when
  *  the self-transition is rejected. */
 extern bool edc_task_mark_failed(struct edc_task *task);
+/** A stop signal landed on it (user `/task stop`, an inbound signal event): life becomes
+ *  CANCELLED and the reason is EDC_END_STOPPED -- NOT skipped, NOT blocked. */
 extern bool edc_task_mark_cancelled(struct edc_task *task);
+/** `||`: the source succeeded, so this branch is not taken. Life becomes CANCELLED with
+ *  the reason EDC_END_SKIPPED, so a UI can tell it apart from a user stop. */
+extern bool edc_task_mark_skipped(struct edc_task *task);
+/** A dependency ended without producing and took this task with it. |life| is the bucket
+ *  the cascade lands in (ERROR for a failed/interrupted source, CANCELLED for a cancelled
+ *  one); the reason is EDC_END_BLOCKED plus which source (and that source's own end), so
+ *  "cascaded" is never confused with "failed by itself". Broadcasts nothing. */
+extern bool edc_task_mark_blocked(struct edc_task *task, edc_task_life life, const struct edc_task *source);
+/** The user parked it. */
 extern bool edc_task_mark_suspended(struct edc_task *task); /* moves life only */
 
 /** The process went down while this task was in flight: keeps the step it was on and

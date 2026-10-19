@@ -390,9 +390,9 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
     {"Task", "/task fg <id>", "foreground + set as active (only the active task outputs to terminal)", NULL},
     {"Task", "/task bg [id]", "move the foreground group (or that task) to the background", NULL},
     {"Task", "/task stop [id]", "cancel a task (default: the foreground group's active task)", NULL},
-    {"Task", "/task resume [id|--all]",
-     "resume an INTERRUPTED / SUSPENDED / ERROR / CANCELLED task (default: the foreground group's active task)",
-     "`--all` re-decides every stopped task of the session."},
+    {"Task", "/task resume <id>",
+     "resume an INTERRUPTED / SUSPENDED / ERROR / CANCELLED task; the id is required (there is no batch form)",
+     NULL},
 
     {"Group", "/group list", "list all groups", NULL},
     {"Group", "/group info [id]", "a group's context / fold numbers (default: the foreground group)", NULL},
@@ -1217,6 +1217,37 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
     edc_cmd_task_opts_free(&opts);
 }
 
+/* Why a task ended, in words -- for /task list and /task status. NULL when it has not
+ * ended (paused/running) or ended by succeeding, which the state already says. A BLOCKED
+ * one names the dependency and what became of it, because "ERROR" alone cannot tell that
+ * apart from the task failing by itself. */
+static sds edc_commands_end_note(const struct edc_task *t)
+{
+    if (!t)
+        return NULL;
+    switch (t->end)
+    {
+    case EDC_END_INTERRUPTED:
+        return sdsnew("interrupted: the process went down");
+    case EDC_END_STOPPED:
+        return sdsnew("stopped by the user");
+    case EDC_END_FAILED:
+        return sdsnew("failed on its own");
+    case EDC_END_SKIPPED:
+        return sdsnew("skipped: `||` saw its source succeed");
+    case EDC_END_BLOCKED:
+        if (t->blocked_end == EDC_END_NONE)
+            return sdscatprintf(sdsempty(), "blocked by `%s` (it produced nothing)",
+                                (t->blocked_by && *t->blocked_by) ? t->blocked_by : "a dependency");
+        return sdscatprintf(sdsempty(), "blocked by `%s`, which was %s",
+                            (t->blocked_by && *t->blocked_by) ? t->blocked_by : "a dependency",
+                            edc_task_end_name(t->blocked_end));
+    case EDC_END_NONE:
+        break;
+    }
+    return NULL;
+}
+
 static void edc_commands_handle_task_list(struct edc_session_manager *sm, struct edc_reply_to to)
 {
     sds out = sdsnew("## Tasks\n\n");
@@ -1237,6 +1268,15 @@ static void edc_commands_handle_task_list(struct edc_session_manager *sm, struct
             bool is_active = edc_session_manager_get_active(sm) && edc_session_manager_get_active(sm)->active_task == t;
             out = sdscatprintf(out, "  - %s `%s` **%s**", t == g->leader ? "`[L]`" : "`[M]`", t->task_id,
                                edc_task_state_str(t));
+            /* Why it ended, when the state alone does not say it (see EDC_END_*). */
+            {
+                sds note = edc_commands_end_note(t);
+                if (note)
+                {
+                    out = sdscatprintf(out, " _%s_", note);
+                    sdsfree(note);
+                }
+            }
             if (t->description && *t->description)
                 out = sdscatprintf(out, " — %s", t->description);
             if (is_active)
@@ -1302,30 +1342,18 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
     struct edc_session *sess = edc_session_manager_get_active(sm);
     struct edc_task *t = NULL;
 
-    if (arg && strcmp(arg, "--all") == 0)
+    /* Resume is per task, and there is NO batch form. A stopped task is a decision
+     * point, so reviving them wholesale is not a shortcut -- it also revives what the
+     * user deliberately stopped, tasks that failed for good, and the `||` branches that
+     * were SKIPPED because their source succeeded (their edge is satisfied, so a bulk
+     * resume would actually run them). An option-shaped argument is therefore a usage
+     * error and never a task id. */
+    if (arg && arg[0] == '-')
     {
-        /* Batch revive, for after a restart (which stops every unfinished task): re-decide
-         * each stopped task of this session. The order does not matter -- a task whose
-         * dependency is stopped too parks in dep-wait and is released when that one
-         * produces, and the message-end scan drives it then. */
-        edc_session_store_reconcile_pending_deps(sm, sched);
-        int resumed = 0;
-        struct edc_task_group *g;
-        DL_FOREACH(sess ? sess->groups : NULL, g)
-        {
-            struct edc_task *m;
-            LL_FOREACH2(g->members, m, group_next)
-            {
-                if (!edc_task_is_resumable(m))
-                    continue;
-                edc_scheduler_resume_task(sched, m);
-                resumed++;
-            }
-        }
         sds reply = sdscatprintf(sdsempty(),
-                                 "**Resumed** — %d task(s) re-decided. Ones whose dependency is still stopped "
-                                 "wait for it.",
-                                 resumed);
+                                 "**Task resume** — unknown option `%s`. Usage: `/task resume [id]`, one task at "
+                                 "a time.",
+                                 arg);
         edc_commands_reply(to, reply);
         sdsfree(reply);
         return;
@@ -1333,18 +1361,12 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
 
     if (!arg || sdslen(arg) == 0)
     {
-        /* No id: the last member of the foreground group that is not COMPLETED. A
-         * stopped task (INTERRUPTED / SUSPENDED / ERROR / CANCELLED) is what one wants
-         * to revive here,
-         * so this is wider than "the one still in play" (see the header). */
-        t = edc_scheduler_resumable_task(sess);
-        if (!t)
-        {
-            edc_commands_reply(to, edc_scheduler_get_foreground(sess)
-                                       ? "**Task** — nothing to resume in the foreground group."
-                                       : "**Task** — no foreground group.");
-            return;
-        }
+        /* The id is REQUIRED. There is no "the obvious one": reviving a task is a decision
+         * about a specific task, and a derivation here would happily pick a running member
+         * of the foreground group and then refuse it. `/task list` names them. */
+        edc_commands_reply(to, "**Task resume** — an id is required: `/task resume <id>`. `/task list` shows the "
+                               "tasks and their states.");
+        return;
     }
     else
     {
@@ -1715,6 +1737,18 @@ static void edc_commands_handle_task_status(struct edc_session_manager *sm, stru
                            "- **group**: %s\n"
                            "- **desc**: %s\n",
                            t->task_id, edc_task_state_str(t), t->group_id, t->description);
+
+    /* The state says which bucket it is in; this says why it got there. Without it a
+     * CANCELLED task looks the same whether the user stopped it, a `||` branch skipped it,
+     * or a dependency took it down. */
+    {
+        sds note = edc_commands_end_note(t);
+        if (note)
+        {
+            out = sdscatprintf(out, "- **ended**: %s\n", note);
+            sdsfree(note);
+        }
+    }
 
     /* For a task of a non-current session, also mark its owning session, or the user cannot tell where it came from. */
     {
@@ -2158,7 +2192,7 @@ static bool edc_commands_handle_task(struct edc_config *cfg, struct edc_session_
         /* Bare `/task`: usage, not "unknown" (same shape as /group and /session). */
         edc_commands_reply(to, "Usage: `/task` knows `new <desc>`, `fork <parent> <desc>`, `list`, `status [id]`, "
                                "`output <id>`, `history <id>`, `fg <id>`, `bg [id]`, `stop [id]`, "
-                               "`resume [id|--all]`. Type `/help /task`.");
+                               "`resume <id>`. Type `/help /task`.");
         return true;
     }
     for (size_t i = 0; i < sizeof(k_task_subs) / sizeof(k_task_subs[0]); i++)

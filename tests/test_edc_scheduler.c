@@ -427,9 +427,8 @@ static void test_current_task(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, sess);
 
-    TEST("no foreground group -> no current task, nothing resumable");
+    TEST("no foreground group -> no current task");
     CHECK(edc_scheduler_current_task(sess) == NULL, "NULL without a foreground group");
-    CHECK(edc_scheduler_resumable_task(sess) == NULL, "and for resume too");
 
     /* 前台组三个成员: 已完成 / 已取消 / 还活着; 焦点故意放在已完成的那个上。 */
     struct edc_task *done = edc_scheduler_task_new(sched, sess, "done", edc_channel_adapter);
@@ -449,23 +448,19 @@ static void test_current_task(void)
 
     TEST("current task: the last unfinished member, not the focus");
     CHECK(edc_scheduler_current_task(sess) == alive, "the finished ones are skipped");
-    CHECK(edc_scheduler_resumable_task(sess) == alive, "alive is the resumable pick too");
 
-    TEST("a CANCELLED member stays resumable while an unfinished one exists");
+    TEST("a CANCELLED member is not picked once nothing is unfinished");
     edc_task_await_exec(alive);
     edc_task_mark_completed(alive);
     CHECK(edc_scheduler_current_task(sess) == NULL, "nothing unfinished left to act on");
-    CHECK(edc_scheduler_resumable_task(sess) == cancelled,
-          "only COMPLETED is final, so the cancelled one is still a resume candidate");
 
-    TEST("all members COMPLETED -> neither derivation yields anything");
+    TEST("all members COMPLETED -> no derivation yields anything");
     struct edc_task *d2 = edc_scheduler_task_new(sched, sess, "done 2", edc_channel_adapter);
     struct edc_task_group *g2 = edc_scheduler_create_group(sched, sess, d2);
     edc_scheduler_set_foreground(sess, g2);
     edc_task_await_exec(d2);
     edc_task_mark_completed(d2);
     CHECK(edc_scheduler_current_task(sess) == NULL, "current: NULL");
-    CHECK(edc_scheduler_resumable_task(sess) == NULL, "resumable: NULL");
 
     edc_scheduler_free(sched);
     free(sess);

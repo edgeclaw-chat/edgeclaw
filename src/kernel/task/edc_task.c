@@ -153,6 +153,43 @@ edc_memo_kind edc_task_classify_memo_kind(const char *name)
 /* The display name (snapshot / logs / command text), derived straight from
  * (step, life) with life speaking first, matching the old order. WAITING_INPUT is
  * never returned. */
+const char *edc_task_end_name(edc_task_end end)
+{
+    switch (end)
+    {
+    case EDC_END_INTERRUPTED:
+        return "INTERRUPTED";
+    case EDC_END_STOPPED:
+        return "STOPPED";
+    case EDC_END_FAILED:
+        return "FAILED";
+    case EDC_END_BLOCKED:
+        return "BLOCKED";
+    case EDC_END_SKIPPED:
+        return "SKIPPED";
+    case EDC_END_NONE:
+        break;
+    }
+    return "NONE";
+}
+
+edc_task_end edc_task_classify_end(const char *name)
+{
+    if (!name)
+        return EDC_END_NONE;
+    if (strcmp(name, "INTERRUPTED") == 0)
+        return EDC_END_INTERRUPTED;
+    if (strcmp(name, "STOPPED") == 0)
+        return EDC_END_STOPPED;
+    if (strcmp(name, "FAILED") == 0)
+        return EDC_END_FAILED;
+    if (strcmp(name, "BLOCKED") == 0)
+        return EDC_END_BLOCKED;
+    if (strcmp(name, "SKIPPED") == 0)
+        return EDC_END_SKIPPED;
+    return EDC_END_NONE;
+}
+
 const char *edc_task_state_str(const struct edc_task *task)
 {
     if (!task)
@@ -206,6 +243,18 @@ bool edc_task_move(struct edc_task *task, edc_task_step step, edc_task_life life
         return false;
     task->step = step;
     task->life = life;
+    /* The reason for a past end belongs to that end: a task that can move again has no
+     * end, so resuming (or suspending) wipes the slate here instead of in every writer. */
+    if (life == EDC_LIFE_ALIVE || life == EDC_LIFE_SUSPENDED)
+    {
+        task->end = EDC_END_NONE;
+        task->blocked_end = EDC_END_NONE;
+        if (task->blocked_by)
+        {
+            free(task->blocked_by);
+            task->blocked_by = NULL;
+        }
+    }
     return true;
 }
 
@@ -238,6 +287,9 @@ bool edc_task_mark_completed(struct edc_task *task)
 
 /* Failure is BROADCAST to dependents (defined in the dependency section below). */
 static void task_notify_dependents_failed(struct edc_task *task);
+/* Cancel broadcast, declared here because mark_blocked (above the dependency section)
+ * passes the cascade on. */
+static void task_notify_dependents_cancelled(struct edc_task *task);
 
 /* Failure = set ERROR and broadcast to every dependent, so "a task failed"
  * propagates no matter who initiated it. Symmetric with send_signal: neither does
@@ -249,13 +301,47 @@ bool edc_task_mark_failed(struct edc_task *task)
     /* A failed self-transition = it was not failing (terminal/illegal phase), so nothing is broadcast -- idempotent. */
     if (!edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR))
         return false;
+    task->end = EDC_END_FAILED;
     task_notify_dependents_failed(task);
     return true;
 }
 
 bool edc_task_mark_cancelled(struct edc_task *task)
 {
-    return edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED);
+    if (!edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED))
+        return false;
+    task->end = EDC_END_STOPPED;
+    return true;
+}
+
+bool edc_task_mark_skipped(struct edc_task *task)
+{
+    if (!edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED))
+        return false;
+    task->end = EDC_END_SKIPPED;
+    return true;
+}
+
+bool edc_task_mark_blocked(struct edc_task *task, edc_task_life life, const struct edc_task *source)
+{
+    if (!edc_task_move(task, EDC_TASKSTEP_DONE, life))
+        return false;
+    task->end = EDC_END_BLOCKED;
+    task->blocked_end = source ? source->end : EDC_END_NONE;
+    if (task->blocked_by)
+    {
+        free(task->blocked_by);
+        task->blocked_by = NULL;
+    }
+    if (source && source->task_id)
+        task->blocked_by = strdup(source->task_id);
+    /* A cascaded task will not produce either, so it passes the cascade on -- through the
+     * SAME broadcast its life implies, exactly as the stop and failure paths do. */
+    if (life == EDC_LIFE_CANCELLED)
+        task_notify_dependents_cancelled(task);
+    else
+        task_notify_dependents_failed(task);
+    return true;
 }
 
 /* Stopping speaks ONLY about life: it stops at whatever step it was on -- exactly what
@@ -278,6 +364,7 @@ bool edc_task_mark_interrupted(struct edc_task *task)
      * nothing is broadcast -- idempotent. */
     if (!edc_task_move(task, task->step, EDC_LIFE_INTERRUPTED))
         return false;
+    task->end = EDC_END_INTERRUPTED;
     task_notify_dependents_failed(task);
     return true;
 }
@@ -503,6 +590,12 @@ static void edc_task_free_deps(struct edc_task *task)
         }
         LL_DELETE(task->dependents, dep);
         free(dep);
+    }
+
+    if (task->blocked_by)
+    {
+        free(task->blocked_by);
+        task->blocked_by = NULL;
     }
 }
 
@@ -888,7 +981,9 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
         {
             edc_task_step step_before = target->step;
             edc_task_life life_before = target->life;
-            edc_task_send_signal(target, TASK_SIGTERM);
+            /* Not a stop: this branch is not taken. The reason says so, so no UI can
+             * confuse it with what the user did by hand. */
+            edc_task_mark_skipped(target);
             if (target->step != step_before || target->life != life_before)
                 task_record_move(source, target);
         }
@@ -1010,10 +1105,12 @@ void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source)
      * source's output would have been injected: the source produced nothing, so this
      * dependent cannot continue => cancel it in a cascade. The EDGE STAYS (cancel does not
      * detach it), so a later resume sends it back to dep-wait until the source really
-     * produces. */
+     * produces. NOTE: mark_blocked, not send_signal -- this is not a stop by anyone, and
+     * the reason has to survive (/task status, the restart hint, and any future
+     * auto-release all read it). */
     edc_task_step step_before = target->step;
     edc_task_life life_before = target->life;
-    edc_task_send_signal(target, TASK_SIGTERM);
+    edc_task_mark_blocked(target, EDC_LIFE_CANCELLED, source);
     /* The cascade cancel is also a PHASE CHANGE -- this task now enters a terminal
      * state while the host only named the source task. Record a debt (repeated
      * cancels are idempotent: no real move, no record). */
@@ -1067,7 +1164,7 @@ void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
     else
         edc_task_set_output(target, sdscatprintf(sdsempty(), "[failed: a dependency %s, %s]", what, why));
 
-    edc_task_mark_failed(target); /* edge not detached: see above */
+    edc_task_mark_blocked(target, EDC_LIFE_ERROR, source); /* edge not detached: see above */
     /* The cascade failure is also a PHASE CHANGE -- this task now enters a terminal
      * state while the host only named the source task. Record a debt (repeated
      * failures are idempotent: no real move, no record). */
@@ -1117,6 +1214,29 @@ void edc_task_notify_dependents(struct edc_task *task)
     }
 }
 
+/* The CANCELLED twin of task_notify_dependents_failed: broadcast a cascade cancel. The
+ * list is snapshotted first because a nested cascade writes back into it. Shared by the
+ * stop path (send_signal) and by a dependency cascade (mark_blocked) so both keep the
+ * recursion the cancel semantics were built on. */
+static void task_notify_dependents_cancelled(struct edc_task *task)
+{
+    size_t n = 0;
+    struct edc_task_dep *dep;
+    LL_FOREACH(task->dependents, dep)
+    n++;
+    if (n == 0)
+        return;
+    struct edc_task **targets = malloc(n * sizeof(*targets));
+    if (!targets)
+        return; /* losing a notice is better than a partial cascade */
+    size_t i = 0;
+    LL_FOREACH(task->dependents, dep)
+    targets[i++] = dep->target;
+    for (size_t k = 0; k < i; k++)
+        edc_task_on_dep_cancelled(targets[k], task);
+    free(targets);
+}
+
 /* ── Signals ───────────────────────────────────────────────── */
 
 bool edc_task_is_running(const struct edc_task *task)
@@ -1133,28 +1253,22 @@ void edc_task_send_signal(struct edc_task *task, edc_task_signal sig)
 
     task->cancelled_request = 1;
 
+    /* State FIRST, then tell the dependents: a cascade records what became of its source
+     * (EDC_END_BLOCKED's blocked_end), so "cancelled" has to be the truth before anyone
+     * is told about it. */
     if (sig == TASK_SIGTERM)
     {
-        /* Snapshot the dependent list first: a cascade cancel writes to them (voided
-         * edges) and the list itself may change during recursion -- taking it out
-         * before iterating is safest. */
-        size_t n = 0;
-        struct edc_task_dep *dep;
-        LL_FOREACH(task->dependents, dep)
-        n++;
-        if (n > 0)
-        {
-            struct edc_task **targets = malloc(n * sizeof(*targets));
-            if (targets)
-            {
-                size_t i = 0;
-                LL_FOREACH(task->dependents, dep)
-                targets[i++] = dep->target;
-                for (size_t k = 0; k < i; k++)
-                    edc_task_on_dep_cancelled(targets[k], task);
-                free(targets);
-            }
-        }
+        edc_task_mark_cancelled(task);
+        /* Cancelled: chasing in-flight tool records is pointless; drop the ledger */
+        edc_task_tool_calls_clear(task);
+        task_notify_dependents_cancelled(task);
+    }
+    else
+    {
+        /* SIGKILL: force cancel -- same ledger drop, no notification (the host already
+         * decided nothing behind it should hear about this). */
+        edc_task_tool_calls_clear(task);
+        edc_task_mark_cancelled(task);
     }
 
     /* It does NOT touch its own deps: cancel = stop, not delete/reclaim -- the task can

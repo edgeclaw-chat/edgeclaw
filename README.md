@@ -147,9 +147,10 @@ does not swallow your message: the task runs and says what happened.
 * **Session** — a working directory plus its groups. `/session new [name] [dir]` binds a
   new one; conversations are stored under `workspace/<session_id>/`.
 
-`/task resume` picks up where a stopped, failed or interrupted task left off — it
+`/task resume <id>` picks up where a stopped, failed or interrupted task left off — it
 re-derives whether the task was waiting on dependencies, mid-tool-call, or waiting for the
-model, and continues instead of starting over.
+model, and continues instead of starting over. The id is required (there is no batch form);
+`/task list` shows the tasks, and `/task status <id>` also says *why* one ended.
 
 ---
 

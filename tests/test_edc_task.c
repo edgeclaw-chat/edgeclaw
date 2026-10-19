@@ -1328,6 +1328,81 @@ static void test_interrupted_state(void)
     edc_task_free(t);
 }
 
+/* The reason axis: `life` says which bucket a task ended in, `end` says WHY it got there.
+ * Without it, CANCELLED covers a user stop, a `||` skip and a dependency cascade, and
+ * ERROR covers its own failure and a dependency that never produced. */
+static void test_end_reason(void)
+{
+    TEST("end: every write point records its own reason");
+
+    struct edc_task *a = edc_task_new("end-a", "sess-end", "end-a", "A", edc_channel_adapter);
+    CHECK(a->end == EDC_END_NONE, "a fresh task has no reason");
+
+    edc_task_await_exec(a);
+    CHECK(edc_task_mark_failed(a), "A fails by itself");
+    CHECK(a->end == EDC_END_FAILED, "reason FAILED");
+
+    /* Resume wipes it: a task that can move again has no end (and /task status must stop
+     * claiming one). */
+    CHECK(edc_task_mark_ready(a), "A is resumed back to READY");
+    CHECK(a->end == EDC_END_NONE, "a resumed task has no reason again");
+
+    edc_task_await_exec(a);
+    edc_task_send_signal(a, TASK_SIGTERM);
+    CHECK(edc_task_is_cancelled(a), "A stops (CANCELLED)");
+    CHECK(a->end == EDC_END_STOPPED, "reason STOPPED, not skipped/blocked");
+
+    CHECK(edc_task_mark_ready(a), "resumed again");
+    edc_task_await_exec(a);
+    CHECK(edc_task_mark_interrupted(a), "A is interrupted");
+    CHECK(a->end == EDC_END_INTERRUPTED, "reason INTERRUPTED");
+    edc_task_free(a);
+
+    TEST("end: a cascade says BLOCKED and names the source");
+    struct edc_task *s = edc_task_new("end-s", "sess-end", "end-s", "S", edc_channel_adapter);
+    struct edc_task *d = edc_task_new("end-d", "sess-end", "end-d", "D runs after S", edc_channel_adapter);
+    edc_task_add_dependency(d, s, TASK_DEP_SEQUENCE);
+    edc_task_await_exec(s);
+    CHECK(edc_task_mark_interrupted(s), "S is interrupted");
+    CHECK(edc_task_has_failed(d), "D cascades into ERROR");
+    CHECK(d->end == EDC_END_BLOCKED, "but the reason is BLOCKED, not FAILED");
+    CHECK(d->blocked_by && strcmp(d->blocked_by, "end-s") == 0, "the source is named");
+    CHECK(d->blocked_end == EDC_END_INTERRUPTED, "and what became of it is kept");
+
+    /* A cascade that came from a cancelled source lands in CANCELLED, still BLOCKED. */
+    struct edc_task *c = edc_task_new("end-c", "sess-end", "end-c", "C waits", edc_channel_adapter);
+    struct edc_task *src2 = edc_task_new("end-s2", "sess-end", "end-s2", "S2", edc_channel_adapter);
+    edc_task_add_dependency(c, src2, TASK_DEP_JOIN);
+    edc_task_await_exec(src2);
+    edc_task_send_signal(src2, TASK_SIGTERM);
+    CHECK(edc_task_is_cancelled(c), "C is cancelled by the cascade");
+    CHECK(c->end == EDC_END_BLOCKED, "reason BLOCKED, not STOPPED");
+    CHECK(c->blocked_end == EDC_END_STOPPED, "the source's own reason is STOPPED");
+
+    /* Resuming D clears both the reason and the blocker. */
+    CHECK(edc_task_mark_waiting_deps(d), "D goes back to dep-wait");
+    CHECK(d->end == EDC_END_NONE, "reason cleared");
+    CHECK(d->blocked_by == NULL, "blocker cleared");
+
+    edc_task_free(s);
+    edc_task_free(d);
+    edc_task_free(c);
+    edc_task_free(src2);
+
+    TEST("end: a `||` skip says SKIPPED, not STOPPED");
+    struct edc_task *l = edc_task_new("end-l", "sess-end2", "end-l", "L", edc_channel_adapter);
+    struct edc_task *r = edc_task_new("end-r", "sess-end2", "end-r", "R", edc_channel_adapter);
+    edc_task_add_dependency(r, l, TASK_DEP_UNLESS);
+    edc_task_await_exec(l);
+    edc_task_mark_completed(l);
+    edc_task_notify_dependents(l);
+    CHECK(edc_task_is_cancelled(r), "R is skipped (CANCELLED)");
+    CHECK(r->end == EDC_END_SKIPPED, "reason SKIPPED");
+    CHECK(edc_task_classify_end(edc_task_end_name(r->end)) == r->end, "the name round-trips");
+    edc_task_free(l);
+    edc_task_free(r);
+}
+
 int main(void)
 {
     log_info("=== Phase 1: edc_task 模块测试 ===");
@@ -1353,6 +1428,7 @@ int main(void)
     test_scenario_multi_deps();
     test_dep_failure_propagates();
     test_dep_completion_releases();
+    test_end_reason();
 
     log_info("");
     log_info("=== 测试结果: %d passed, %d failed ===", test_passed, test_failed);

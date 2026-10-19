@@ -261,9 +261,9 @@ int main(void)
         CHECK(sent && strcmp(sent, full) == 0, "while the prompt reaches the LLM in full");
     }
 
-    /* ── /task resume --all: 重启后一把复活 ───────────────────────── */
+    /* ── /task resume: 一次一个，没有批量 ──────────────────────────── */
 
-    TEST("/task resume --all re-decides every stopped task; the revived one joins the back of the queue");
+    TEST("/task resume with an option is refused — nothing is revived in bulk");
     /* 先造两个: A 在新组里跑, B 排在它后面(同组)。 */
     g_llm_calls = 0;
     g_llm_task = NULL;
@@ -283,13 +283,31 @@ int main(void)
         CHECK(beta && !edc_task_has_failed(beta), "排队等它的 B 不倒 (队列边是 BARRIER)");
         CHECK(beta && beta->deps_total == 0, "那条边被作废, 不再是约束");
 
-        g_llm_calls = 0;
+        /* 批量恢复已删除: `--all` 是用法错误, 不是任务 id, 也不许悄悄复活任何任务。 */
         g_llm_task = NULL;
         drive_command(cfg, sm, sched, "/task resume --all");
-        /* B 接手了前台(前一个倒下时就轮到它了), 所以复活的 A 只能排到队尾 ——
-         * resume 是"让已有任务再跑起来"的另一道门, 同样不许插队。 */
-        CHECK(g_llm_task == beta, "B 接上了前台");
+        CHECK(alpha && edc_task_is_interrupted(alpha), "`--all` 被拒: A 仍是 INTERRUPTED");
+        CHECK(g_llm_task != alpha, "也没有任何请求发给 A");
+
+        /* id 是必须的: 不带 id 的 `/task resume` 同样是用法错误, 不会去"猜"该恢复谁。 */
+        drive_command(cfg, sm, sched, "/task resume");
+        CHECK(alpha && edc_task_is_interrupted(alpha), "裸 `/task resume` 被拒: A 仍是 INTERRUPTED");
+        CHECK(g_llm_task != alpha, "也没有请求发给 A");
+    }
+
+    TEST("/task resume <id> revives exactly that task; it joins the back of the queue");
+    if (alpha)
+    {
+        char cmd[128];
+        snprintf(cmd, sizeof cmd, "/task resume %s", alpha->task_id);
+        g_llm_task = NULL;
+        g_llm_calls = 0;
+        drive_command(cfg, sm, sched, cmd);
+        /* 前台已经被 B 占着, 所以复活的 A 只能排到队尾 —— resume 是"让已有任务再跑起来"
+         * 的另一道门, 同样不许插队。 */
+        CHECK(g_llm_task != alpha, "A 没有立刻跑: 前台还是 B");
         CHECK(alpha && edc_task_awaits_deps(alpha), "复活的 A 排在队尾 (没有插队)");
+        CHECK(g_llm_calls == 0, "这一轮没有新的 LLM 请求 (A 只是重新排队)");
     }
 
     printf("\n  %d passed, %d failed\n", passed, failed);

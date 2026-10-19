@@ -330,7 +330,7 @@ response; CANCELLED when stopped; ERROR on failure.
 (the loop stopped underneath it -- that is what happened, so that is what is recorded),
 queued ones included, and the interrupt propagates to dependents like a failure so nobody
 is left waiting for a task that will not run on its own. Load reads that back as stated:
-an INTERRUPTED task stays INTERRUPTED until `/task resume [tid]` re-derives the state to
+an INTERRUPTED task stays INTERRUPTED until `/task resume <id>` re-derives the state to
 return to. Only fold / curation tasks resume by themselves (a half-done background round
 is re-dispatched).
 
@@ -341,14 +341,14 @@ is re-dispatched).
 - otherwise → `IDLE` (ready; there is no separate "waiting for input" phase)
 
 **Failed tasks**: a task that failed mid-run is `ERROR` but keeps its half-finished
-turn (and any interrupted tool ledger). `/task resume [tid]` continues that turn
+turn (and any interrupted tool ledger). `/task resume <id>` continues that turn
 instead of starting over — it re-derives the same way (deps / tool chain / turn)
 and re-drives it.
 
 **Cancelled tasks**: a task stopped with `/task stop` is `CANCELLED`, but it is not
 destroyed — its turn, messages and the work done so far are all kept (the tool
 ledger is dropped, since a cancelled tool no longer has a result to wait for).
-`/task resume [tid]` revives it: the cancel flattened the step to `DONE`, so resume
+`/task resume <id>` revives it: the cancel flattened the step to `DONE`, so resume
 re-derives the position. A tool call that was in flight when the task was stopped
 gets a synthesized "interrupted" result first (the assistant message is the only
 record left of it), so the next LLM request stays well-formed. Only `COMPLETED`
@@ -362,6 +362,14 @@ cannot be resumed.
 - **SUSPENDED**: the user parked it; `/task resume` revives it. Nothing produces it today.
 - **ERROR**: a failed task; `/task resume` continues its unfinished turn.
 - **CANCELLED**: stopped with `/task stop`; `/task resume` continues it too.
+
+Those six are the *bucket*. `/task status <id>` also prints an **ended** line, because a
+bucket is not a reason: `CANCELLED` covers "the user stopped it", "a `||` branch was
+skipped because its source succeeded" and "a dependency was cancelled, so this could not
+produce" (`STOPPED` / `SKIPPED` / `BLOCKED`), and `ERROR` covers "it failed by itself" and
+"a dependency ended without producing" (`FAILED` / `BLOCKED`). `INTERRUPTED` stands alone.
+A `BLOCKED` task also names which dependency blocked it and what that one's end was.
+Resuming a task clears the reason (it can move again, so it has no end).
 
 ### Dependency System
 
@@ -488,8 +496,7 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 | Command | Description |
 |---------|-------------|
 | `/task stop [tid]` | Cancel a task (SIGTERM — notifies dependents). Without an id, stops the active task of the foreground group; errors if the id is not found |
-| `/task resume [tid]` | Resume an INTERRUPTED, SUSPENDED, ERROR or CANCELLED task: re-derives state (deps / tool chain / turn) and drives it; an ERROR or CANCELLED task continues its unfinished turn. Without an id, resumes the active task of the foreground group |
-| `/task resume --all` | Re-decide every stopped task of the session (after a restart); ones whose dependency is stopped too wait for it |
+| `/task resume <id>` | Resume an INTERRUPTED, SUSPENDED, ERROR or CANCELLED task: re-derives state (deps / tool chain / turn) and drives it; an ERROR or CANCELLED task continues its unfinished turn. The id is **required** — there is no batch form, and no "the obvious one" derivation |
 
 ### Group
 

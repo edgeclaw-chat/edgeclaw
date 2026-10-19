@@ -330,13 +330,6 @@ extern struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sche
  *  "/task stop", "/task status" and `{{SELF}}`. */
 extern struct edc_task *edc_scheduler_current_task(struct edc_session *session);
 
-/** Same as edc_scheduler_current_task, but the last member that is not COMPLETED --
- *  what `/task resume` can pick up. INTERRUPTED, SUSPENDED, ERROR and CANCELLED can all
- *  be resumed
- *  (only COMPLETED is final), so they are candidates where the plain "in front"
- *  derivation would skip them. */
-extern struct edc_task *edc_scheduler_resumable_task(struct edc_session *session);
-
 /** The foreground group is a property of the session, not the scheduler. */
 extern void edc_scheduler_set_foreground(struct edc_session *session, struct edc_task_group *group);
 extern struct edc_task_group *edc_scheduler_get_foreground(struct edc_session *session);

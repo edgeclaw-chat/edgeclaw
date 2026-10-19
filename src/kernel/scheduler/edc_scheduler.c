@@ -968,23 +968,6 @@ struct edc_task *edc_scheduler_current_task(struct edc_session *session)
     return last;
 }
 
-struct edc_task *edc_scheduler_resumable_task(struct edc_session *session)
-{
-    struct edc_task_group *fg = sched_foreground(session);
-    struct edc_task *last = NULL;
-    struct edc_task *t;
-
-    if (!fg)
-        return NULL;
-
-    LL_FOREACH2(fg->members, t, group_next)
-    {
-        if (!edc_task_is_completed(t))
-            last = t;
-    }
-    return last;
-}
-
 const char *edc_scheduler_task_workdir(struct edc_task *task)
 {
     /* Runs in the task's own bound directory; NULL when it has no owner. */

@@ -18,10 +18,14 @@
  * archives are read with defaults for the fields they lack, so a bump does not
  * strand them:
  *   - v7: no `turn->memo_prefix`, and `task->memo_compact` (bool) instead of `memo_kind`;
- *   - v8: no wall-clock on entries / events / group memory (reads back 0 = unknown).
+ *   - v8: no wall-clock on entries / events / group memory (reads back 0 = unknown);
+ *   - v9: no `task->end` / `blocked_by` / `blocked_end` -- the reason a task ended is then
+ *     inferred conservatively from `life` (CANCELLED -> STOPPED, ERROR -> FAILED), i.e.
+ *     "not a cascade", so nothing is auto-released and nothing extra is counted as needing
+ *     attention on the first load of an old session.
  * Anything older must run its one-shot migration first
  * (tools/migrate_session_v*.py, see docs/session-model-v3.md §10). */
-#define EDC_STATE_SCHEMA_VERSION 9
+#define EDC_STATE_SCHEMA_VERSION 10
 #define EDC_STATE_SCHEMA_MIN_SUPPORTED 7
 
 /* ══════════════════════════════════════════════════════════════
@@ -130,6 +134,17 @@ static cJSON *task_to_json(struct edc_task *task)
      * constant. step = where (stored and read back verbatim), life = alive or not. */
     cJSON_AddStringToObject(tj, "step", edc_task_step_name(task->step));
     cJSON_AddStringToObject(tj, "life", edc_task_life_name(task->life));
+    /* v10: WHY it ended, which `life` alone cannot say (CANCELLED covers user stop,
+     * `||` skip and dependency cascade; ERROR covers its own failure and a dependency
+     * that never produced). Written even for NONE so an old binary reading a new file
+     * still finds a consistent (step, life) pair. */
+    cJSON_AddStringToObject(tj, "end", edc_task_end_name(task->end));
+    if (task->end == EDC_END_BLOCKED)
+    {
+        if (task->blocked_by)
+            cJSON_AddStringToObject(tj, "blocked_by", task->blocked_by);
+        cJSON_AddStringToObject(tj, "blocked_end", edc_task_end_name(task->blocked_end));
+    }
     cJSON_AddBoolToObject(tj, "is_group_leader", task->is_group_leader);
     cJSON_AddBoolToObject(tj, "bg", task->is_background);
     /* `!cmd`: the task exists only to issue its seeded tool call. Optional key (absent =
@@ -697,6 +712,35 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
                  * the process died without one, and the same state is what actually
                  * happened. No further inference: INTERRUPTED is read back as it is. */
                 task->life = EDC_LIFE_INTERRUPTED;
+        }
+
+        /* v10: the reason it ended. A row saved while it was still ALIVE carries "NONE",
+         * so an absent OR "NONE" reason falls back to life -- conservatively: a CANCELLED
+         * one is treated as the user's stop and an ERROR one as its own failure, never as
+         * a cascade (auto-releasing on a guess is exactly what this axis exists to avoid).
+         * An ALIVE row that just became INTERRUPTED above gets INTERRUPTED too, so the
+         * restart hint can count it. */
+        {
+            const char *end_name = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "end"));
+            task->end = edc_task_classify_end(end_name);
+            if (task->end == EDC_END_NONE)
+            {
+                if (task->life == EDC_LIFE_INTERRUPTED)
+                    task->end = EDC_END_INTERRUPTED;
+                else if (task->life == EDC_LIFE_CANCELLED)
+                    task->end = EDC_END_STOPPED;
+                else if (task->life == EDC_LIFE_ERROR)
+                    task->end = EDC_END_FAILED;
+            }
+
+            if (task->end == EDC_END_BLOCKED)
+            {
+                const char *by = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "blocked_by"));
+                if (by && *by)
+                    task->blocked_by = strdup(by);
+                const char *be = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "blocked_end"));
+                task->blocked_end = be ? edc_task_classify_end(be) : EDC_END_NONE;
+            }
         }
 
         cJSON *v;

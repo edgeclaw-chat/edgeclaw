@@ -1961,7 +1961,7 @@ static void test_fold_watermark(void)
 
 static void test_schema_version_is_current(void)
 {
-    TEST("serialize writes version 9; older versions are still accepted, older/newer fails loudly");
+    TEST("serialize writes the current version; older versions are still accepted, older/newer fails loudly");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-ver", "Ver");
@@ -1983,7 +1983,7 @@ static void test_schema_version_is_current(void)
     CHECK(json != NULL, "serialize returns non-NULL");
     /* 本文件构造 JSON 时用的版本号是手写镜像 (见各 cJSON_Parse 字面量): 一律等于
      * 当前 schema, 升级时这里会先红。 */
-    CHECK(edc_state_schema_version() == 9, "schema version bumped -> update this file's literals");
+    CHECK(edc_state_schema_version() == 10, "schema version bumped -> update this file's literals");
     CHECK(edc_state_json_version(json) == edc_state_schema_version(), "on-disk version is the current schema");
 
     struct edc_session *s2 = edc_session_new(cfg, "sess-ver", "Ver");
@@ -2021,7 +2021,7 @@ static void test_schema_version_is_current(void)
     edc_scheduler_free(sched3);
 
     /* A version NEWER than this binary also refuses (do not guess a future shape). */
-    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(10));
+    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(11));
     struct edc_session *s9 = edc_session_new(cfg, "sess-ver", "Ver");
     struct edc_scheduler *sched9 = edc_scheduler_new(cfg);
     install_resolver(sched9, s9);
@@ -2244,6 +2244,117 @@ static void test_unless_dep_roundtrip(void)
     edc_config_free(cfg);
 }
 
+/* v10: the reason a task ended must survive the save, and an older file (no `end`) must
+ * map conservatively -- never to BLOCKED, because that is the value a future auto-release
+ * would act on. Backed by the two facts this axis exists for: CANCELLED covers "the user
+ * stopped it" / "a `||` branch was skipped" / "a dependency took it down", and ERROR
+ * covers "it failed" / "a dependency never produced". */
+static void test_task_end_roundtrip(void)
+{
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-end", "Ends");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    struct edc_task *leader = edc_task_new("end-leader", "sess-end", "end-leader", "leader", edc_channel_adapter);
+    /* Mid-request: the persist predicate drops a task that sits READY+ALIVE with nothing
+     * in flight (its committed turns do not count), and a group whose leader is dropped is
+     * restored as nothing at all. */
+    edc_task_await_exec(leader);
+    struct edc_task_group *group = edc_task_group_new(leader);
+    edc_session_add_group(session, group);
+
+    struct edc_task *source = edc_task_new("end-src", "sess-end", "end-leader", "source", edc_channel_adapter);
+    edc_task_group_add_task(group, source);
+    struct edc_task *blocked = edc_task_new("end-blocked", "sess-end", "end-leader", "blocked", edc_channel_adapter);
+    edc_task_group_add_task(group, blocked);
+    struct edc_task *stopped = edc_task_new("end-stopped", "sess-end", "end-leader", "stopped", edc_channel_adapter);
+    edc_task_group_add_task(group, stopped);
+    struct edc_task *running = edc_task_new("end-running", "sess-end", "end-leader", "running", edc_channel_adapter);
+    edc_task_group_add_task(group, running);
+    edc_task_await_exec(running); /* mid-request: the state a restart interrupts */
+
+    /* A dependency that is interrupted takes its dependent down: BLOCKED, not FAILED. */
+    edc_task_add_dependency(blocked, source, TASK_DEP_SEQUENCE);
+    edc_task_await_exec(source);
+    edc_task_mark_interrupted(source);
+    /* The user's own stop: STOPPED, not SKIPPED. */
+    edc_task_send_signal(stopped, TASK_SIGTERM);
+
+    TEST("end: reason / blocker / the source's own reason are written");
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize returns non-NULL");
+    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
+    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(json, "groups")) == 1, "the group is written");
+    CHECK(cJSON_GetArraySize(tasks_j) == 5, "five tasks are written");
+    for (int i = 0; i < cJSON_GetArraySize(tasks_j); i++)
+    {
+        cJSON *t = cJSON_GetArrayItem(tasks_j, i);
+        const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(t, "task_id"));
+        if (!id)
+            continue;
+        const char *end = cJSON_GetStringValue(cJSON_GetObjectItem(t, "end"));
+        if (strcmp(id, "end-src") == 0)
+            CHECK_STREQ(end, "INTERRUPTED", "the interrupted source says INTERRUPTED");
+        else if (strcmp(id, "end-blocked") == 0)
+        {
+            CHECK_STREQ(end, "BLOCKED", "the cascaded dependent says BLOCKED");
+            CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t, "blocked_by")), "end-src", "the blocker is named");
+            CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t, "blocked_end")), "INTERRUPTED",
+                        "and what became of it");
+        }
+        else if (strcmp(id, "end-stopped") == 0)
+            CHECK_STREQ(end, "STOPPED", "the user's stop says STOPPED");
+        else if (strcmp(id, "end-running") == 0)
+            CHECK_STREQ(end, "NONE", "a task that was still running has no reason");
+    }
+
+    TEST("end: the reasons survive a roundtrip, and a running task lands as INTERRUPTED");
+    struct edc_session *session2 = edc_session_new(cfg, "sess-end", "Ends");
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
+    CHECK(edc_state_deserialize(json, session2, sched2), "deserialize succeeds");
+
+    struct edc_task *r_src = find_task(session2, "end-src");
+    struct edc_task *r_blocked = find_task(session2, "end-blocked");
+    struct edc_task *r_stopped = find_task(session2, "end-stopped");
+    struct edc_task *r_running = find_task(session2, "end-running");
+    CHECK(r_src && r_src->end == EDC_END_INTERRUPTED, "INTERRUPTED preserved");
+    CHECK(r_blocked && r_blocked->end == EDC_END_BLOCKED, "BLOCKED preserved");
+    CHECK(r_blocked && r_blocked->blocked_by && strcmp(r_blocked->blocked_by, "end-src") == 0,
+          "the blocker id is preserved");
+    CHECK(r_blocked && r_blocked->blocked_end == EDC_END_INTERRUPTED, "and the source's reason");
+    CHECK(r_stopped && r_stopped->end == EDC_END_STOPPED, "STOPPED preserved");
+    CHECK(r_running && r_running->life == EDC_LIFE_INTERRUPTED, "a running task reloads as INTERRUPTED");
+    CHECK(r_running && r_running->end == EDC_END_INTERRUPTED, "and says why");
+
+    TEST("end: an older file without `end` maps conservatively (never BLOCKED)");
+    /* Same archive, v9: the reason keys are gone, exactly as an older binary wrote them. */
+    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(9));
+    for (int i = 0; i < cJSON_GetArraySize(tasks_j); i++)
+    {
+        cJSON *t = cJSON_GetArrayItem(tasks_j, i);
+        cJSON_DeleteItemFromObject(t, "end");
+        cJSON_DeleteItemFromObject(t, "blocked_by");
+        cJSON_DeleteItemFromObject(t, "blocked_end");
+    }
+    struct edc_session *session3 = edc_session_new(cfg, "sess-end", "Ends");
+    struct edc_scheduler *sched3 = edc_scheduler_new(cfg);
+    install_resolver(sched3, session3);
+    CHECK(edc_state_deserialize(json, session3, sched3), "v9 deserialize succeeds");
+
+    struct edc_task *o_blocked = find_task(session3, "end-blocked");
+    struct edc_task *o_stopped = find_task(session3, "end-stopped");
+    CHECK(o_blocked && o_blocked->end == EDC_END_FAILED,
+          "an ERROR row with no reason is FAILED -- never BLOCKED, so nothing is auto-released on a guess");
+    CHECK(o_blocked && o_blocked->blocked_by == NULL, "and no blocker is invented");
+    CHECK(o_stopped && o_stopped->end == EDC_END_STOPPED, "a CANCELLED row reads back as STOPPED");
+
+    cJSON_Delete(json);
+    /* The fixtures are owned by their sessions here (freed with the process), as in the
+     * rest of this file. */
+}
+
 int main(void)
 {
     log_info("=== Phase 1: edc_state_serializer module tests ===");
@@ -2276,6 +2387,7 @@ int main(void)
     test_orphaned_group();
     test_message_provenance();
     test_fold_watermark();
+    test_task_end_roundtrip();
 
     log_info("");
     log_info("=== Results: %d passed, %d failed ===", test_passed, test_failed);
