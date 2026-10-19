@@ -1184,6 +1184,18 @@ bool TUIWindow::HandleNormalEvent(::ftxui::Event event)
 
 void TUIWindow::RecomputeCommandPalette()
 {
+    // A recall is a browse, not typing. If the popup opened on a recalled `/command` it
+    // would grab the very Up/Down keys that walk the history -- after landing on e.g.
+    // `/task new` the next ArrowUp would move the list instead of recalling the entry
+    // above, so the history dead-ends there. Keep it folded for as long as the browse
+    // lasts: the first edit (or ArrowDown past the newest entry) ends it inside EdcInput,
+    // and every such event lands here again, so the popup returns with the typing.
+    if (input_->IsBrowsingHistory())
+    {
+        command_palette_.Close();
+        return;
+    }
+
     // Load the command table once (static data; the facade projects it from the shell).
     if (!palette_loaded_ && app_)
     {

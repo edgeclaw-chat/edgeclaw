@@ -597,6 +597,74 @@ void TestCommandPalette(edc::TUIWindow &win)
     Check(Has(FrameOf(win), "❯ /skill demo "), "Tab 补全到技能名");
     win.OnEvent(::ftxui::Event::Return); // 收尾清空
 }
+
+// 回翻历史时补全弹层不能抢走上下键。历史里只要有一条以 '/' 开头的条目（`/task new` 这种
+// 太常见了），回翻到它时弹层就会弹出来并接管 ArrowUp/ArrowDown —— 于是历史就地卡死在
+// 那条上，再往上是"在列表里移动"而不是"回翻更早的一条"。
+void TestHistoryRecallKeepsArrows(edc::TUIWindow &win)
+{
+    std::cout << "历史回翻不被补全弹层抢键\n";
+    auto type = [&](const char *s) {
+        for (const char *p = s; *p; p++)
+            win.OnEvent(::ftxui::Event::Character(std::string(1, *p)));
+    };
+
+    // 输入行整行文本（行尾填充空格去掉）。必须整行比：`❯ /task` 是 `❯ /task new` 的前缀,
+    // 用子串判定会让"根本没回翻"也通过。
+    auto input_line = [&](const std::string &f) {
+        std::string line = LineOf(f, RowOf(f, "❯"));
+        while (!line.empty() && line.back() == ' ')
+            line.pop_back();
+        return line;
+    };
+
+    // 两条历史：较新的 `/task new`（本来会开弹层的那种），较旧的 `/model`（两者前缀无关，
+    // 回翻了哪一条一眼能分辨）。
+    type("/model");
+    win.OnEvent(::ftxui::Event::Return);
+    type("/task new");
+    win.OnEvent(::ftxui::Event::Return);
+    Check(!Has(FrameOf(win), "Tab complete"), "提交后输入框清空，弹层收着");
+    // 空草稿时输入行长什么样（带 dim placeholder 提示语）：下面"回到草稿"就是回到它。
+    const std::string empty_line = input_line(FrameOf(win));
+
+    // 空输入框 -> ArrowUp 回翻到最近一条。
+    win.OnEvent(::ftxui::Event::ArrowUp);
+    {
+        const std::string f = FrameOf(win);
+        Check(input_line(f) == "❯ /task new", "上键回翻到最近一条 /task new（实际 '" + input_line(f) + "'）");
+        Check(!Has(f, "Tab complete"), "回翻出来的命令不算在打字：弹层不弹");
+    }
+
+    // 关键：这一次上键必须继续走历史（以前被弹层吃掉了，历史就停在这儿）。
+    win.OnEvent(::ftxui::Event::ArrowUp);
+    {
+        const std::string f = FrameOf(win);
+        Check(input_line(f) == "❯ /model", "上键继续回翻更早的一条（实际 '" + input_line(f) + "'）");
+        Check(!Has(f, "Tab complete"), "回翻期间弹层一直收着");
+    }
+    win.OnEvent(::ftxui::Event::ArrowDown);
+    Check(input_line(FrameOf(win)) == "❯ /task new", "下键回到较新的一条");
+    win.OnEvent(::ftxui::Event::ArrowDown);
+    Check(input_line(FrameOf(win)) == empty_line,
+          "再下键越过最新一条：回到空草稿（实际 '" + input_line(FrameOf(win)) + "'）");
+    Check(!Has(FrameOf(win), "Tab complete"), "草稿是空的，弹层也不该弹");
+
+    // 一开始编辑就离开历史态：弹层按正常规则回来。
+    win.OnEvent(::ftxui::Event::ArrowUp); // 重新回翻 /task new
+    win.OnEvent(::ftxui::Event::Backspace);
+    {
+        const std::string f = FrameOf(win);
+        Check(input_line(f) == "❯ /task ne", "退格编辑了回翻出来的那一行（实际 '" + input_line(f) + "'）");
+        Check(Has(f, "Tab complete") && Has(f, "/task new"), "一编辑，补全弹层就回来");
+    }
+
+    // 收尾：Esc 关弹层，退格清空，别把脏输入留给后面的用例。
+    win.OnEvent(::ftxui::Event::Escape);
+    for (int i = 0; i < 32; i++)
+        win.OnEvent(::ftxui::Event::Backspace);
+}
+
 // 键盘中断：Esc 只在有任务在跑时被吃掉（停下来）；Ctrl+C 第一次清空输入框、连按两次
 // 才退出。Ctrl+C 不走 OnEvent（main() 的 CatchEvent 把它路由到 OnInterrupt）。
 void TestInterruptKeys(edc::TUIWindow &win)
@@ -659,6 +727,7 @@ int main()
     TestUserInputIsEchoedImmediately(win);
     TestTaskHistoryPayloadBecomesBubbles(win);
     TestCommandPalette(win);
+    TestHistoryRecallKeepsArrows(win);
     TestInterruptKeys(win);
 
     if (g_failures)

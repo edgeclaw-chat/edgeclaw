@@ -50,6 +50,15 @@ class EdcInput : public ::ftxui::ComponentBase
         return history_;
     }
 
+    // True between the first ArrowUp that recalls an entry and the first edit (or
+    // ArrowDown past the newest entry) that leaves history mode. The owner uses it to
+    // keep the completion popup out of the way: a recalled line is not being typed, and
+    // Up/Down belong to the history while a browse lasts.
+    bool IsBrowsingHistory() const
+    {
+        return browsing_;
+    }
+
     bool Focusable() const override
     {
         return true;
@@ -106,13 +115,18 @@ class EdcInput : public ::ftxui::ComponentBase
     bool HandleUp();
     bool HandleDown();
 
-    // History recall: step to the next-older/newer entry; entering history mode
-    // stashes the in-progress draft, and stepping past the newest restores it.
-    // Both return false when there is nothing to recall.
+    // History recall: step to the next-older/newer entry that starts with the text
+    // that was typed when the browse began (an empty draft matches everything, so
+    // plain Up/Down still walks the whole list); entering history mode stashes the
+    // in-progress draft, and stepping past the newest match restores it. Both return
+    // false when there is nothing to recall -- HistoryPrev also returns false when no
+    // entry starts with the draft, which keeps ArrowUp on its caret meaning.
     bool HistoryPrev();
     bool HistoryNext();
     void RecallHistory(size_t index);
-    // Forget the browsing position and the stashed draft.
+    // True when history entry |index| starts with the browse prefix.
+    bool MatchesPrefix(size_t index) const;
+    // Forget the browsing position, the prefix and the stashed draft.
     void StopBrowsing();
 
     // Terminal cells available for one wrapped row (one column reserved for the
@@ -153,10 +167,14 @@ class EdcInput : public ::ftxui::ComponentBase
 
     // Submitted-message history, oldest first. |history_pos_| is the entry shown
     // (== size() while editing the draft); |draft_| is the text stashed when
-    // browsing starts, so HistoryNext() can restore it.
+    // browsing starts, so HistoryNext() can restore it. |prefix_| is the draft as it
+    // was at that moment: only entries starting with it are recall candidates, and
+    // editing the recalled entry ends the browse (so the prefix never has to follow
+    // an edit).
     std::vector<std::string> history_;
     size_t history_pos_ = 0;
     std::string draft_;
+    std::string prefix_;
     int draft_cursor_ = 0;
     bool browsing_ = false;
 

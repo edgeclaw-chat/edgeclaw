@@ -136,7 +136,16 @@ void EdcInput::StopBrowsing()
     browsing_ = false;
     history_pos_ = history_.size();
     draft_.clear();
+    prefix_.clear();
     draft_cursor_ = 0;
+}
+
+bool EdcInput::MatchesPrefix(size_t index) const
+{
+    // Byte prefix, case-sensitive (what a shell does): the draft is what the user
+    // typed, so it has to match the entry from its first byte. An empty prefix
+    // matches every entry, which leaves plain Up/Down browsing unchanged.
+    return history_[index].compare(0, prefix_.size(), prefix_) == 0;
 }
 
 int EdcInput::WrapColumns() const
@@ -519,7 +528,9 @@ bool EdcInput::HandleUp()
     const int row = FindCaretRow(layout, cursor_, &lo);
     if (row > 0)
         return MoveUp();
-    return HistoryPrev();
+    // Nothing in the history starts with what is typed: keep ArrowUp on the caret
+    // (at the first row that is a no-op, exactly as with an empty history).
+    return HistoryPrev() || MoveUp();
 }
 
 bool EdcInput::HandleDown()
@@ -537,6 +548,17 @@ bool EdcInput::HistoryPrev()
         return false;
     if (!browsing_)
     {
+        // The text already typed filters the recall: only entries that START with it
+        // are candidates, so typing `task ` and pressing Up walks the `task ...` lines
+        // instead of every unrelated message. A draft nothing matches is not a recall
+        // at all -- return false without stashing anything, so ArrowUp stays "move the
+        // caret" (and an empty draft matches everything: plain Up is unchanged).
+        prefix_ = *content_;
+        bool any_match = false;
+        for (size_t i = 0; i < history_.size() && !any_match; ++i)
+            any_match = MatchesPrefix(i);
+        if (!any_match)
+            return false;
         // Entering history mode: stash whatever the user was typing so it can
         // be brought back with ArrowDown past the newest entry.
         draft_ = *content_;
@@ -544,22 +566,30 @@ bool EdcInput::HistoryPrev()
         browsing_ = true;
         history_pos_ = history_.size();
     }
-    if (history_pos_ == 0)
-        return true; // already at the oldest entry: consume, no change
-    RecallHistory(history_pos_ - 1);
-    return true;
+    // Walk back to the previous entry that still fits the prefix.
+    for (size_t i = history_pos_; i > 0; --i)
+    {
+        if (!MatchesPrefix(i - 1))
+            continue;
+        RecallHistory(i - 1);
+        return true;
+    }
+    return true; // already at the oldest match: consume, no change
 }
 
 bool EdcInput::HistoryNext()
 {
     if (!browsing_)
         return false;
-    if (history_pos_ + 1 < history_.size())
+    // Walk forward to the next entry that still fits the prefix.
+    for (size_t i = history_pos_ + 1; i < history_.size(); ++i)
     {
-        RecallHistory(history_pos_ + 1);
+        if (!MatchesPrefix(i))
+            continue;
+        RecallHistory(i);
         return true;
     }
-    // Stepped past the newest entry: restore the draft and leave history mode.
+    // Stepped past the newest match: restore the draft and leave history mode.
     *content_ = draft_;
     cursor_ = std::min(draft_cursor_, static_cast<int>(content_->size()));
     StopBrowsing();

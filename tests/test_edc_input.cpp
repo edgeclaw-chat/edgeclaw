@@ -295,22 +295,23 @@ static void test_history_recall_up_down(void)
 static void test_history_preserves_draft(void)
 {
     std::printf("  history: a typed draft is stashed and restored on the way back\n");
-    std::string text = "my draft";
+    // The draft is a prefix filter, so the recallable entries have to start with it.
+    std::string text = "al";
     edc::EdcInput input(&text, "");
     input.AddHistory("alpha");
-    input.AddHistory("beta");
+    input.AddHistory("alpine");
     render_twice(input, 20, 8);
     input.OnEvent(::ftxui::Event::End); // caret at the end (single visual row)
 
     input.OnEvent(::ftxui::Event::ArrowUp);
-    CHECK(text == "beta", "up recalls beta, got '%s'", text.c_str());
+    CHECK(text == "alpine", "up recalls the newest match, got '%s'", text.c_str());
     input.OnEvent(::ftxui::Event::ArrowUp);
     CHECK(text == "alpha", "up recalls alpha, got '%s'", text.c_str());
     input.OnEvent(::ftxui::Event::ArrowDown);
-    CHECK(text == "beta", "down -> beta, got '%s'", text.c_str());
+    CHECK(text == "alpine", "down -> alpine, got '%s'", text.c_str());
     input.OnEvent(::ftxui::Event::ArrowDown);
-    CHECK(text == "my draft", "down restores the draft, got '%s'", text.c_str());
-    CHECK(input.CursorPosition() == 8, "draft caret restored, got %d", input.CursorPosition());
+    CHECK(text == "al", "down restores the draft, got '%s'", text.c_str());
+    CHECK(input.CursorPosition() == 2, "draft caret restored, got %d", input.CursorPosition());
 }
 
 static void test_history_dedupes_consecutive(void)
@@ -336,45 +337,70 @@ static void test_history_edit_leaves_browsing(void)
     std::printf("  history: editing a recalled entry leaves history mode\n");
     std::string text;
     edc::EdcInput input(&text, "");
-    input.AddHistory("old1");
-    input.AddHistory("old2");
+    input.AddHistory("/task list");
+    input.AddHistory("/task new");
     render_twice(input, 20, 8);
 
-    input.OnEvent(::ftxui::Event::ArrowUp); // recall old2, caret at its end
-    CHECK(text == "old2", "recalled old2, got '%s'", text.c_str());
-    input.OnEvent(::ftxui::Event::Character("!"));
-    CHECK(text == "old2!", "edited recalled entry, got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::ArrowUp); // recall /task new, caret at its end
+    CHECK(text == "/task new", "recalled /task new, got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::Backspace);
+    CHECK(text == "/task ne", "edited recalled entry, got '%s'", text.c_str());
+    CHECK(!input.IsBrowsingHistory(), "the edit ends the browse");
 
-    // The edit leaves history mode; the edited text becomes the current draft
-    // (so the next Up browses afresh from the newest entry) and Down brings the
-    // edited draft back instead of losing it.
+    // The edited text becomes the current draft and the prefix filter is taken from
+    // it afresh: the next Up browses the entries starting with "/task ne" from the
+    // newest one, and Down brings the edited draft back instead of losing it.
     input.OnEvent(::ftxui::Event::ArrowUp);
-    CHECK(text == "old2", "up after edit browses from newest, got '%s'", text.c_str());
+    CHECK(text == "/task new", "up after edit browses from the newest match, got '%s'", text.c_str());
     input.OnEvent(::ftxui::Event::ArrowDown);
-    CHECK(text == "old2!", "down restores the edited draft, got '%s'", text.c_str());
+    CHECK(text == "/task ne", "down restores the edited draft, got '%s'", text.c_str());
 }
 
 static void test_history_up_from_lower_row_moves_caret(void)
 {
     std::printf("  history: up on a lower visual row moves the caret, not history\n");
-    std::string text = "abcdefghijklmnopqrstuvwxyz"; // soft-wraps at width 10
+    const std::string draft = "abcdefghijklmnopqrstuvwxyz"; // soft-wraps at width 10
+    std::string text = draft;
     edc::EdcInput input(&text, "");
-    input.AddHistory("hist");
+    // The draft is a prefix filter, so a recallable entry has to extend it.
+    input.AddHistory(draft + " tail");
     render_twice(input, 10, 8);
 
     input.OnEvent(::ftxui::Event::End); // caret on the last visual row
     const int before = input.CursorPosition();
     CHECK(input.OnEvent(::ftxui::Event::ArrowUp), "up handled");
-    CHECK(text == "abcdefghijklmnopqrstuvwxyz", "content untouched by caret up");
+    CHECK(text == draft, "content untouched by caret up");
     CHECK(input.CursorPosition() != before, "caret moved up within the draft");
 
     // Once the caret reaches the first visual row, Up recalls history and the
     // draft is stashed for ArrowDown to bring back.
     input.OnEvent(::ftxui::Event::Home);
     input.OnEvent(::ftxui::Event::ArrowUp);
-    CHECK(text == "hist", "up from the first row recalls history, got '%s'", text.c_str());
+    CHECK(text == draft + " tail", "up from the first row recalls history, got '%s'", text.c_str());
     input.OnEvent(::ftxui::Event::ArrowDown);
-    CHECK(text == "abcdefghijklmnopqrstuvwxyz", "down restores the stashed draft, got '%s'", text.c_str());
+    CHECK(text == draft, "down restores the stashed draft, got '%s'", text.c_str());
+}
+
+/* The owner asks "am I browsing?" to keep the completion popup from opening on a
+   recalled `/command` (it would then steal Up/Down from the history). The flag has
+   to be up exactly between the recalling Up and the edit that ends the browse. */
+static void test_history_browsing_flag(void)
+{
+    std::printf("  history: IsBrowsingHistory marks a recall from the first Up to the edit\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+    input.AddHistory("/task");
+    render_twice(input, 20, 8);
+
+    CHECK(!input.IsBrowsingHistory(), "a fresh input is not browsing");
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    CHECK(input.IsBrowsingHistory(), "after a recall the flag is up");
+    input.OnEvent(::ftxui::Event::ArrowDown); // past the newest: back to the draft
+    CHECK(!input.IsBrowsingHistory(), "down past the newest ends the browse");
+
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    input.OnEvent(::ftxui::Event::Character("x")); // an edit ends it too
+    CHECK(!input.IsBrowsingHistory(), "an edit ends the browse");
 }
 
 static void test_history_clear(void)
@@ -388,6 +414,68 @@ static void test_history_clear(void)
     input.ClearHistory();
     CHECK(input.History().empty(), "history cleared");
     CHECK(!input.OnEvent(::ftxui::Event::ArrowUp), "up with no history not handled");
+}
+
+/* Recalling only what the user is in the middle of typing: the draft at the moment
+   the browse starts is a prefix filter, so `task ` + Up walks the `task ...` lines
+   instead of every unrelated message. */
+static void test_history_prefix_filters_entries(void)
+{
+    std::printf("  history: only entries starting with the typed draft are recalled\n");
+    std::string text = "task ";
+    edc::EdcInput input(&text, "");
+    input.AddHistory("hello world");
+    input.AddHistory("task list");
+    input.AddHistory("task new --foo");
+    render_twice(input, 40, 8);
+    input.OnEvent(::ftxui::Event::End); // caret at the end of the draft
+
+    CHECK(input.OnEvent(::ftxui::Event::ArrowUp), "up handled");
+    CHECK(text == "task new --foo", "newest match recalled, got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    CHECK(text == "task list", "the non-matching entry is skipped, got '%s'", text.c_str());
+    CHECK(input.OnEvent(::ftxui::Event::ArrowUp), "up at the oldest match consumed");
+    CHECK(text == "task list", "stays at the oldest match, got '%s'", text.c_str());
+
+    input.OnEvent(::ftxui::Event::ArrowDown);
+    CHECK(text == "task new --foo", "down -> the next match, got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::ArrowDown); // past the newest match
+    CHECK(text == "task ", "down past the newest match restores the draft, got '%s'", text.c_str());
+    CHECK(input.CursorPosition() == 5, "draft caret restored, got %d", input.CursorPosition());
+    CHECK(!input.IsBrowsingHistory(), "the browse is over");
+}
+
+/* A draft nothing matches is not a recall: ArrowUp keeps its caret meaning and the
+   draft is not stashed as if a browse had started. */
+static void test_history_prefix_no_match_keeps_caret(void)
+{
+    std::printf("  history: a draft nothing matches leaves ArrowUp on the caret\n");
+    std::string text = "zzz";
+    edc::EdcInput input(&text, "");
+    input.AddHistory("task list");
+    render_twice(input, 40, 8);
+    input.OnEvent(::ftxui::Event::End);
+
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    CHECK(text == "zzz", "content untouched by a non-matching up, got '%s'", text.c_str());
+    CHECK(!input.IsBrowsingHistory(), "no recall -> not browsing");
+    CHECK(input.CursorPosition() == 0, "up still moves the caret to the start, got %d", input.CursorPosition());
+}
+
+/* The filter is a real prefix: a shorter entry and a case difference both miss. */
+static void test_history_prefix_exact_and_shorter(void)
+{
+    std::printf("  history: a shorter or differently-cased entry does not match the prefix\n");
+    std::string text = "task ";
+    edc::EdcInput input(&text, "");
+    input.AddHistory("task");      // strictly shorter than the draft
+    input.AddHistory("Task list"); // same text, different case
+    render_twice(input, 40, 8);
+    input.OnEvent(::ftxui::Event::End);
+
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    CHECK(text == "task ", "draft untouched, got '%s'", text.c_str());
+    CHECK(!input.IsBrowsingHistory(), "nothing matched, so no browse");
 }
 
 int main(void)
@@ -405,7 +493,11 @@ int main(void)
     test_history_dedupes_consecutive();
     test_history_edit_leaves_browsing();
     test_history_up_from_lower_row_moves_caret();
+    test_history_browsing_flag();
     test_history_clear();
+    test_history_prefix_filters_entries();
+    test_history_prefix_no_match_keeps_caret();
+    test_history_prefix_exact_and_shorter();
 
     if (g_failures)
     {

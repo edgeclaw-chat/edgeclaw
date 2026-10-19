@@ -125,6 +125,11 @@ While you type a `/` command the completion list sits just above the input: ↑/
 Tab to complete, Esc to dismiss — Enter still sends what you typed. Esc alone stops the
 foreground task; Ctrl+C clears the input (twice to quit).
 
+↑/↓ recall earlier messages, but only ones that **start with what you have already typed**
+(an empty line recalls everything). Type `task ` and ↑ walks the `task …` lines; if nothing
+matches, ↑ keeps moving the caret instead. The draft you were typing comes back on ↓ past
+the newest match.
+
 `@path#12-20` attaches just those lines. `\@` is a literal `@`. A missing or binary file
 does not swallow your message: the task runs and says what happened.
 

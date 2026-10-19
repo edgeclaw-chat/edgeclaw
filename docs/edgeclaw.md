@@ -21,6 +21,11 @@ While the input starts with `/`, a completion list hangs just below it: `↑`/`�
 the selection, `Tab` completes it, `Esc` dismisses it. `Enter` is untouched — it still
 sends what you typed.
 
+With no completion list open, `↑`/`↓` recall earlier messages — but only the ones that
+start with what you have already typed (an empty line recalls everything). Type `task `
+and `↑` walks the `task …` lines; when nothing matches, `↑` keeps moving the caret
+instead. `↓` past the newest match restores the draft you were typing.
+
 Two keys interrupt things. **Esc** stops the foreground group's running task (what
 `/task stop` does); while the completion list is open, `Esc` dismisses the list instead.
 **Ctrl+C** clears the input box and shows "Ctrl+C again to quit" in the footer in place of
