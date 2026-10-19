@@ -35,6 +35,10 @@ struct TaskInfo
 {
     std::string task_id;
     std::string state; /* scheduler state name, e.g. "COMPLETED" */
+    /* WHY it ended: "" / "NONE" (not over), "INTERRUPTED", "STOPPED", "FAILED",
+     * "BLOCKED", "SKIPPED". `state` alone cannot tell a stop from a `||` skip or from a
+     * dependency cascade -- the sidebar's marker shape is driven by this. */
+    std::string end;
     bool is_leader = false;
     bool is_active = false;
     std::string description;

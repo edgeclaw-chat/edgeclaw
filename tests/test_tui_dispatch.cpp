@@ -205,6 +205,32 @@ std::string SnapJsonState(const char *session_id, const char *task_desc, const c
     return json;
 }
 
+// 同 SnapJsonState，但带上 end —— 侧栏字形与启动提示都靠它。
+std::string SnapJsonEnd(const char *session_id, const char *task_id, const char *state, const char *end)
+{
+    std::string json = R"({"session_id":")";
+    json += session_id;
+    json += R"(","session_name":"harness","message_count":1,"created_at":"2026-09-16 05:00:00","groups":[)"
+            R"({"id":"1","kind":"user","member_count":1,"msg_count":1,"orphaned":false,"fg":true,)"
+            R"("tokens_total":3,"ctx_tokens":45000,"tasks":[{"id":")";
+    json += task_id;
+    json += R"(","state":")";
+    json += state;
+    json += R"(","end":")";
+    json += end;
+    json += R"(","leader":true,"active":false,"desc":"hint task","tokens_prompt":1,"tokens_completion":2,)"
+            R"("tokens_total":3,"tokens_cached":0}]}]})";
+    return json;
+}
+
+int CountOf(const std::string &hay, const std::string &needle)
+{
+    int n = 0;
+    for (size_t p = hay.find(needle); p != std::string::npos; p = hay.find(needle, p + needle.size()))
+        n++;
+    return n;
+}
+
 // 让窗口把 |session_id| 当成"正在显示的那一棵" —— 走的是生产路径的同一条：
 // tree-changed(reason=active) ⇒ LoadChatTranscript() ⇒ current_session_id_ = sid。
 void AdoptDisplayedSession(edc::TUIWindow &win, const char *session_id)
@@ -715,6 +741,33 @@ void TestHistoryRecallKeepsArrows(edc::TUIWindow &win)
 
 // 键盘中断：Esc 只在有任务在跑时被吃掉（停下来）；Ctrl+C 第一次清空输入框、连按两次
 // 才退出。Ctrl+C 不走 OnEvent（main() 的 CatchEvent 把它路由到 OnInterrupt）。
+// 重启后侧栏里那批 INTERRUPTED 任务：启动时在聊天流里说一次，并给出恢复方式。
+// 只出一次（同一个 session），而且不写 transcript —— 换会话就看不到。
+void TestInterruptedStartupHint(edc::TUIWindow &win)
+{
+    std::cout << "启动提示：被中断的任务\n";
+
+    // 切到一个别的 session：切会话会重置"只提示一次"的开关（生产路径同一条）。
+    AdoptDisplayedSession(win, kOther);
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonEnd(kOther, "HARNESS_INT", "INTERRUPTED", "INTERRUPTED").c_str(),
+                      kOther));
+    {
+        const std::string f = FrameOf(win);
+        Check(CountOf(f, "was interrupted") == 1, "一行提示说有个任务被中断");
+        Check(Has(f, "/task resume"), "并给出恢复方式");
+    }
+
+    // 同一会话再来一帧：不再重复。
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonEnd(kOther, "HARNESS_INT", "INTERRUPTED", "INTERRUPTED").c_str(),
+                      kOther));
+    Check(CountOf(FrameOf(win), "was interrupted") == 1, "同一个 session 只提示一次");
+
+    // 换回原会话：提示不在 transcript 里，所以看不到它了。
+    AdoptDisplayedSession(win, kShown);
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonEnd(kShown, "HARNESS_IDLE", "IDLE", "NONE").c_str(), kShown));
+    Check(!Has(FrameOf(win), "was interrupted"), "提示不写 transcript：换个会话就没了");
+}
+
 void TestInterruptKeys(edc::TUIWindow &win)
 {
     std::cout << "键盘中断：Esc 停任务 / Ctrl+C 两段退出\n";
@@ -778,6 +831,7 @@ int main()
     TestPaletteEnterPicks(win);
     TestHistoryRecallKeepsArrows(win);
     TestInterruptKeys(win);
+    TestInterruptedStartupHint(win);
 
     if (g_failures)
     {

@@ -78,7 +78,7 @@ const char *kFull = R"json({
           ]
         },
         {
-          "id": "12", "state": "COMPLETED", "leader": false, "active": false,
+          "id": "12", "state": "COMPLETED", "end": "NONE", "leader": false, "active": false,
           "desc": "", "tokens_prompt": 0, "tokens_completion": 0,
           "tokens_total": 0, "tokens_cached": 0
         }
@@ -93,6 +93,14 @@ void TestParseFullSnapshot()
 
     edc::TaskSnapshot snap;
     Check(edc::ParseTaskSnapshot(kFull, &snap), "parses");
+    {
+        const edc::TaskInfo *done = nullptr;
+        for (const auto &g : snap.groups)
+            for (const auto &t : g.tasks)
+                if (t.task_id == "12")
+                    done = &t;
+        Check(done && done->end == "NONE", "the end reason travels with the task");
+    }
     Check(snap.session_id == "s7", "session_id");
     Check(snap.session_name == "work", "session_name");
     Check(snap.workdir == "/home/u/proj", "workdir");

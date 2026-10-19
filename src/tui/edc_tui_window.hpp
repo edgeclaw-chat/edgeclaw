@@ -223,6 +223,9 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     /* Tasks whose output was presented since the last task-tree snapshot: finished
      * ones among them are read, not unread. */
     std::set<std::string> presented_tasks_;
+    /* The startup hint about interrupted tasks is a once-per-session line: the first
+     * snapshot that actually carries tasks decides it. */
+    bool interrupted_hint_done_ = false;
 
     std::string input_text_;
 

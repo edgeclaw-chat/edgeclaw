@@ -40,10 +40,13 @@ constexpr int kH = 20;
 constexpr const char *kDot = "●";
 constexpr const char *kBlock = edc::style::kBlockGlyph; // the working bar's own block
 constexpr const char *kHollow = "□";                     // INTERRUPTED's marker
+constexpr const char *kStopped = "×";                    // the user stopped it
+constexpr const char *kSkipped = "–";                    // `||` said this branch is not taken
+constexpr const char *kBlocked = "⊘";                    // a dependency ended without producing
 
 bool IsMarker(const std::string &s)
 {
-    return s == kDot || s == kBlock || s == kHollow;
+    return s == kDot || s == kBlock || s == kHollow || s == kStopped || s == kSkipped || s == kBlocked;
 }
 
 struct TaskSpec
@@ -51,6 +54,7 @@ struct TaskSpec
     const char *id;
     const char *state;
     const char *desc;
+    const char *end = ""; // WHY it ended; "" = not over (drives the marker's shape)
 };
 
 // One group holding `specs.size()` tasks, with `active` marked as the active
@@ -68,6 +72,7 @@ std::shared_ptr<edc::TaskWidget> MakeWidget(const std::vector<TaskSpec> &specs, 
         edc::TaskInfo task;
         task.task_id = specs[i].id;
         task.state = specs[i].state;
+        task.end = specs[i].end;
         task.description = specs[i].desc;
         // A group only starts expanded when it holds the active task, so there is
         // always one: the test cares about the task rows, not about folding.
@@ -158,6 +163,27 @@ int RowWith(const ::ftxui::Screen &screen, const std::string &needle)
     if (markers.empty())
         return ::ftxui::Color();
     return screen.CellAt(markers[0].first, markers[0].second).foreground_color;
+}
+
+// The state's colour cannot tell a stop from a `||` skip or from a dependency cascade --
+// all three are CANCELLED/ERROR. The marker's SHAPE is what says which.
+void TestMarkerShapeFollowsTheEndReason(void)
+{
+    std::cout << "the marker's shape says WHY a task is over\n";
+    const std::vector<TaskSpec> specs = {
+        {"1", "INTERRUPTED", "interrupted", "INTERRUPTED"},
+        {"2", "CANCELLED", "stopped", "STOPPED"},
+        {"3", "CANCELLED", "skipped", "SKIPPED"},
+        {"4", "ERROR", "blocked", "BLOCKED"},
+    };
+    auto widget = MakeWidget(specs);
+    const auto screen = Render(*widget);
+    const auto cells = MarkerCells(screen);
+    const std::vector<std::string> want = {kHollow, kStopped, kSkipped, kBlocked};
+    Check(cells.size() == specs.size(), "one marker per task");
+    for (size_t i = 0; i < cells.size() && i < want.size(); i++)
+        Check(screen.CellAt(cells[i].first, cells[i].second).character == want[i],
+              std::string("marker ") + std::to_string(i) + " is " + want[i]);
 }
 
 void TestMarkerPerStateInItsColor(void)
@@ -595,6 +621,7 @@ void TestGroupUsageLine(void)
 int main()
 {
     TestMarkerPerStateInItsColor();
+    TestMarkerShapeFollowsTheEndReason();
     TestActiveTaskWearsTheBlock();
     TestInterruptedWearsTheHollowSquare();
     TestLeaderMarkerIsGone();

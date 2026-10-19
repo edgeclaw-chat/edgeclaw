@@ -1741,6 +1741,11 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
             cJSON *tj = cJSON_CreateObject();
             cJSON_AddStringToObject(tj, "id", t->task_id ? t->task_id : "");
             cJSON_AddStringToObject(tj, "state", edc_task_state_str(t));
+            /* WHY it ended ("" = NONE): the sidebar draws a different marker for a task
+             * the user stopped, one a `||` branch skipped and one a dependency blocked --
+             * all three are CANCELLED/ERROR in `state`, and the shape is what tells them
+             * apart. */
+            cJSON_AddStringToObject(tj, "end", edc_task_end_name(t->end));
             cJSON_AddBoolToObject(tj, "leader", t->is_group_leader);
             cJSON_AddBoolToObject(tj, "active", sess->active_task == t);
             cJSON_AddStringToObject(tj, "desc", t->description ? t->description : "");

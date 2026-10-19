@@ -54,6 +54,7 @@ TaskInfo ParseTask(const cJSON *item)
     TaskInfo task;
     task.task_id = JsonStr(Field(item, "id"));
     task.state = JsonStr(Field(item, "state"));
+    task.end = JsonStr(Field(item, "end")); /* "" from an older producer = not over */
     task.is_leader = JsonBool(Field(item, "leader"));
     task.is_active = JsonBool(Field(item, "active"));
     task.description = JsonStr(Field(item, "desc"));

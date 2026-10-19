@@ -20,19 +20,38 @@ bool StateIsProcessing(const std::string &state)
     return style::TaskStateProcessing(state);
 }
 
-// A task's marker in the tree: three shapes, one meaning each -- the block is the active
-// task, the hollow square is an INTERRUPTED one (the loop stopped underneath it), the dot
-// is everything else. The colour says the state, and INTERRUPTED wears the error colour:
-// it did not fail, but it is not going to move on its own either. The block is
-// style::kBlockGlyph, the same glyph the working bar is made of.
+// A task's marker in the tree: one shape per meaning. The block is the active task, the
+// dot is everything else, the star means "finished while you were not looking". The rest
+// answer "why is this one over?" -- the colour already says CANCELLED/ERROR, and these
+// shapes keep a stop, a `||` skip and a dependency cascade from looking alike.
+// style::kBlockGlyph is the same glyph the working bar is made of.
 constexpr const char *kStateDot = "●";
 constexpr const char *kActiveMarker = style::kBlockGlyph;
-constexpr const char *kInterruptedMarker = "□";
+constexpr const char *kInterruptedMarker = "□"; /* the process went down underneath it */
+constexpr const char *kStoppedMarker = "×";     /* the user stopped it */
+constexpr const char *kSkippedMarker = "–";     /* `||`: the branch is not taken */
+constexpr const char *kBlockedMarker = "⊘";     /* a dependency ended without producing */
 /* Finished while the user was not looking at it. A glyph of its own rather than a
  * colour change: the colour already says which state the task is in, and two signals
  * in one cell would overwrite each other. */
 constexpr const char *kUnreadMarker = "*";
-constexpr int kMarkerCells = 1; // any of the four is a single terminal cell
+constexpr int kMarkerCells = 1; // any of the markers is a single terminal cell
+
+/* The shape for a task that has ENDED, by WHY (nullptr = no reason-specific shape). An
+ * older producer sends no `end`: fall back to the one state that already had a shape of
+ * its own, so a mixed-version frontend does not lose it. */
+const char *EndMarker(const std::string &end, const std::string &state)
+{
+    if (end == "INTERRUPTED" || (end.empty() && state == "INTERRUPTED"))
+        return kInterruptedMarker;
+    if (end == "STOPPED")
+        return kStoppedMarker;
+    if (end == "SKIPPED")
+        return kSkippedMarker;
+    if (end == "BLOCKED")
+        return kBlockedMarker;
+    return nullptr;
+}
 
 // Blank cells kept at the right edge of every full-width row: the sidebar is the
 // window's rightmost element, so this restores the inset the left side has.
@@ -322,9 +341,9 @@ int TaskWidget::RowWidth() const
                 // Indent, the marker glyph and the task id; the description is
                 // appended separately so its length can be measured against the
                 // row width.
-                const char *marker = (t.state == "INTERRUPTED")
-                                         ? kInterruptedMarker
-                                         : (t.is_active ? kActiveMarker : (t.unread ? kUnreadMarker : kStateDot));
+                const char *marker = EndMarker(t.end, t.state);
+                if (!marker)
+                    marker = t.is_active ? kActiveMarker : (t.unread ? kUnreadMarker : kStateDot);
                 const std::string head = " " + t.task_id;
                 std::string left = head;
 

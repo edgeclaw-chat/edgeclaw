@@ -30,6 +30,8 @@ class TaskTreeModel
     {
         std::string task_id;
         std::string state;
+        /* WHY it ended (see snapshot TaskInfo::end): drives the marker's shape. */
+        std::string end;
         /* How this task read in the PREVIOUS snapshot ("" = never seen). The pair
          * (prev_state, state) is what says "it has just finished". */
         std::string prev_state;

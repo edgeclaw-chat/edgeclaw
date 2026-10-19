@@ -86,6 +86,7 @@ void TaskTreeModel::Apply(const TaskSnapshot *snap)
             TaskInfo task;
             task.task_id = t.task_id;
             task.state = t.state;
+            task.end = t.end;
             task.is_leader = t.is_leader;
             task.is_active = t.is_active;
             task.description = TruncateUtf8(t.description, kMaxDescCodepoints);

@@ -1453,6 +1453,9 @@ void TUIWindow::PresentHistory(const std::string &payload)
 void TUIWindow::LoadSessionTranscript(const std::string &session_id)
 {
     LoadChatTranscript(session_id.c_str());
+    /* A new session deserves the startup hint again: whether this one has interrupted
+     * tasks is only knowable from its first snapshot. */
+    interrupted_hint_done_ = false;
 }
 
 void TUIWindow::SetTaskTree(const TaskSnapshot &snap)
@@ -1487,6 +1490,30 @@ void TUIWindow::SetTaskTree(const TaskSnapshot &snap)
         line += just_finished.size() == 1 ? " finished · /task output " + just_finished.front()
                                           : " finished";
         chat_widget_->AddMessage(std::make_shared<Message>(line, ::time(nullptr)));
+    }
+
+    /* Startup hint: tasks the exit interrupted (nothing decided about them). Once per
+     * session, and only from a snapshot that actually carries tasks -- the first pull can
+     * arrive before the session is loaded, and that one says nothing about the archive.
+     * No transcript write, like the finish notice: this is interface feedback. */
+    if (!interrupted_hint_done_ && !snap.groups.empty())
+    {
+        interrupted_hint_done_ = true;
+        std::vector<std::string> interrupted;
+        for (const TaskGroup &g : snap.groups)
+            for (const TaskInfo &t : g.tasks)
+                if (t.end == "INTERRUPTED")
+                    interrupted.push_back(t.task_id);
+        if (interrupted.size() == 1)
+            chat_widget_->AddMessage(std::make_shared<Message>(
+                "task " + interrupted.front() + " was interrupted — `/task resume " + interrupted.front() +
+                    "` to continue it",
+                ::time(nullptr)));
+        else if (!interrupted.empty())
+            chat_widget_->AddMessage(std::make_shared<Message>(
+                std::to_string(interrupted.size()) +
+                    " tasks were interrupted — `/task resume <id>` brings one back, one at a time",
+                ::time(nullptr)));
     }
     // The footer's context gauge: the foreground group's current context, the same
     // number the sidebar shows for that group.

@@ -368,7 +368,17 @@ skipped because its source succeeded" and "a dependency was cancelled, so this c
 produce" (`STOPPED` / `SKIPPED` / `BLOCKED`), and `ERROR` covers "it failed by itself" and
 "a dependency ended without producing" (`FAILED` / `BLOCKED`). `INTERRUPTED` stands alone.
 A `BLOCKED` task also names which dependency blocked it and what that one's end was.
-Resuming a task clears the reason (it can move again, so it has no end).
+Resuming a task clears the reason (it can move again, so it has no end). A `FAILED` one
+also records *why* the model call failed (`AUTH`, `CONTEXT_OVERFLOW`, `RATE_LIMIT`,
+`TRANSPORT`, `OTHER`), and `/task resume` repeats it: a bad key or an overflowing context
+does not heal by retrying.
+
+The sidebar's marker says the same thing at a glance — the colour is the state, the shape
+is the reason: `■` the active task, `●` anything else, `*` finished while you were not
+looking, `□` interrupted, `×` stopped by you, `–` skipped by `||`, `⊘` blocked by a
+dependency. When a session opens with interrupted tasks, one line in the chat says so
+(`/task resume <id>` takes one back at a time); it is not written to the transcript, so it
+does not come back on the next load.
 
 Two behaviours follow from the reason:
 
