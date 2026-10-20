@@ -63,49 +63,47 @@ int main(int argc, char **argv)
 
     for (int i = 1; i < argc; i++)
     {
-        if (strcmp(argv[i], "--ro") == 0)
-        {
-            i++;
-            while (i < argc && strcmp(argv[i], "--rw") != 0 && strcmp(argv[i], "--deny") != 0 &&
-                   strcmp(argv[i], "--") != 0)
-            {
-                if (nro < MAX_PATHS - 1)
-                    ro[nro++] = argv[i];
-                i++;
-            }
-            i--;
-        }
-        else if (strcmp(argv[i], "--rw") == 0)
-        {
-            i++;
-            while (i < argc && strcmp(argv[i], "--ro") != 0 && strcmp(argv[i], "--deny") != 0 &&
-                   strcmp(argv[i], "--") != 0)
-            {
-                if (nrw < MAX_PATHS - 1)
-                    rw[nrw++] = argv[i];
-                i++;
-            }
-            i--;
-        }
-        else if (strcmp(argv[i], "--deny") == 0)
-        {
-            i++;
-            while (i < argc && strcmp(argv[i], "--ro") != 0 && strcmp(argv[i], "--rw") != 0 &&
-                   strcmp(argv[i], "--") != 0)
-            {
-                if (ndeny < MAX_PATHS - 1)
-                    deny[ndeny++] = argv[i];
-                i++;
-            }
-            i--;
-        }
-        else if (strcmp(argv[i], "--") == 0)
+        const char *arg = argv[i];
+        if (strcmp(arg, "--") == 0)
         {
             if (i + 1 < argc)
                 cmd = argv[i + 1];
             break;
         }
-        /* unknown tokens are ignored */
+
+        /* A list keeps appending until the next flag, so both spellings work:
+         * "--ro a b --rw c" and the repeated "--deny d --deny e". The repeated
+         * form used to swallow the following "--deny" as if it were a path. */
+        const char **list = NULL;
+        int *count = NULL;
+        if (strcmp(arg, "--ro") == 0)
+        {
+            list = ro;
+            count = &nro;
+        }
+        else if (strcmp(arg, "--rw") == 0)
+        {
+            list = rw;
+            count = &nrw;
+        }
+        else if (strcmp(arg, "--deny") == 0)
+        {
+            list = deny;
+            count = &ndeny;
+        }
+        else
+            continue; /* unknown tokens are ignored */
+
+        while (i + 1 < argc)
+        {
+            const char *next = argv[i + 1];
+            if (strcmp(next, "--ro") == 0 || strcmp(next, "--rw") == 0 || strcmp(next, "--deny") == 0 ||
+                strcmp(next, "--") == 0)
+                break;
+            i++;
+            if (*count < MAX_PATHS - 1)
+                list[(*count)++] = next;
+        }
     }
 
     ro[nro] = NULL;
