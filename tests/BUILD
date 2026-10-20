@@ -952,6 +952,16 @@ cc_test(
     }),
 )
 cc_test(
+    name = "test_edc_payload",
+    srcs = ["test_edc_payload.cpp"],
+    deps = [
+        "//src/common:common",
+        "//src/shell:shell",
+    ],
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+
+cc_test(
     name = "test_edc_input",
     srcs = ["test_edc_input.cpp"],
     deps = [

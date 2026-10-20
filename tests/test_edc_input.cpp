@@ -481,6 +481,102 @@ static void test_history_prefix_exact_and_shorter(void)
 // The mode label is what gets written into the input box's top rule. A plain message has
 // none (the rule stays plain, and the prompt below stays flush left); everything else names
 // itself, and the two separators centre it.
+static void test_paste_block_folds_and_expands(void)
+{
+    std::printf("  paste block: one placeholder in the box, the bytes behind it for the message\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+
+    input.InsertPasteBlock("[Pasted #1 \xc2\xb7 3 lines]", "line1\nline2\nline3");
+
+    /* The buffer holds ONE line: that is the whole point of folding. */
+    CHECK(text == "[Pasted #1 \xc2\xb7 3 lines] ", "'%s'", text.c_str());
+    CHECK(text.find('\n') == std::string::npos, "no newline in the buffer");
+    CHECK(input.CursorPosition() == static_cast<int>(text.size()), "the caret sits after the chip");
+
+    /* Rendering it stays on one row. */
+    const auto screen = render_twice(input, 40, 6);
+    CHECK(row_text(screen, 0, 40) == "[Pasted #1 \xc2\xb7 3 lines]", "row 0 shows the chip: '%s'",
+          row_text(screen, 0, 40).c_str());
+    CHECK(row_text(screen, 1, 40).empty(), "and nothing wraps below it: '%s'", row_text(screen, 1, 40).c_str());
+
+    /* But the line SAYS the pasted bytes: that is what the app receives. */
+    CHECK(input.ExpandedDraft() == "line1\nline2\nline3 ", "expanded: '%s'", input.ExpandedDraft().c_str());
+    CHECK(edc_payload_count(input.Payload()) == 1, "one block in the payload");
+}
+
+static void test_paste_block_is_one_atom(void)
+{
+    std::printf("  paste block: Backspace deletes the whole chip, payload and all\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+    input.InsertPasteBlock("[Pasted #1 \xc2\xb7 2 lines]", "a\nb");
+
+    /* First Backspace eats the trailing space the insert added... */
+    input.OnEvent(ftxui::Event::Backspace);
+    CHECK(text == "[Pasted #1 \xc2\xb7 2 lines]", "the trailing space goes first: '%s'", text.c_str());
+    CHECK(edc_payload_count(input.Payload()) == 1, "the chip is still there");
+
+    /* ...the second one eats the chip as one atom, and the payload entry with it. */
+    input.OnEvent(ftxui::Event::Backspace);
+    CHECK(text.empty(), "the whole placeholder is gone: '%s'", text.c_str());
+    CHECK(edc_payload_count(input.Payload()) == 0, "and its parked bytes are gone too");
+    CHECK(input.ExpandedDraft().empty(), "nothing left to expand");
+}
+
+static void test_paste_block_moves_and_caret(void)
+{
+    std::printf("  paste block: Left/Right step over the chip, they do not walk into it\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+    input.InsertPasteBlock("[Pasted #1 \xc2\xb7 2 lines]", "a\nb");
+
+    const int end = static_cast<int>(text.size());
+    input.OnEvent(ftxui::Event::ArrowLeft); /* over the trailing space */
+    CHECK(input.CursorPosition() == end - 1, "one column into the trailing space, got %d", input.CursorPosition());
+    input.OnEvent(ftxui::Event::ArrowLeft);
+    CHECK(input.CursorPosition() == 0, "and then straight to the chip's start, got %d", input.CursorPosition());
+    input.OnEvent(ftxui::Event::ArrowRight);
+    CHECK(input.CursorPosition() == end - 1, "Right jumps over the whole chip again, got %d", input.CursorPosition());
+
+    /* Typing at the chip's edge does not eat it: the placeholder stays intact. */
+    input.SetCursor(0);
+    input.OnEvent(ftxui::Event::ArrowRight);
+    /* The caret is right after the chip (ArrowRight put it there), so the text lands
+     * between the chip and its trailing space. */
+    input.ReplaceRange(input.CursorPosition(), input.CursorPosition(), "- ");
+    CHECK(edc_payload_count(input.Payload()) == 1, "still one block after typing next to it");
+    CHECK(input.ExpandedDraft() == "a\nb-  ", "expanded: '%s'", input.ExpandedDraft().c_str());
+}
+
+static void test_paste_block_expansion_tracks_edits(void)
+{
+    std::printf("  paste block: the expanded draft is cached but never stale\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+    input.InsertPasteBlock("[Pasted #1 \xc2\xb7 2 lines]", "a\nb");
+
+    CHECK(input.ExpandedDraft() == "a\nb ", "first expansion");
+    input.ReplaceRange(0, 0, "看下 ");
+    CHECK(input.ExpandedDraft() == "看下 a\nb ", "the cache follows the edit: '%s'", input.ExpandedDraft().c_str());
+}
+
+static void test_paste_block_broken_placeholder(void)
+{
+    std::printf("  paste block: a placeholder the user edited through stops expanding\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+    input.InsertPasteBlock("[Pasted #1 \xc2\xb7 2 lines]", "a\nb");
+
+    /* Delete the closing bracket: the key no longer matches, so the text is plain and the
+     * parked bytes are unreachable -- Reset() drops them instead of keeping a ghost. */
+    const int close = static_cast<int>(text.find(']'));
+    input.ReplaceRange(close, close + 1, "");
+    CHECK(input.ExpandedDraft() == text, "no expansion without the key: '%s'", input.ExpandedDraft().c_str());
+    input.Reset();
+    CHECK(edc_payload_count(input.Payload()) == 0, "the orphaned block is pruned on Reset");
+}
+
 static void test_input_mode_label()
 {
     CHECK(edc::InputModeLabel(EDC_INPUT_TEXT) == "message", "a plain message says message");
@@ -510,6 +606,11 @@ int main(void)
     test_history_prefix_filters_entries();
     test_history_prefix_no_match_keeps_caret();
     test_history_prefix_exact_and_shorter();
+    test_paste_block_folds_and_expands();
+    test_paste_block_is_one_atom();
+    test_paste_block_moves_and_caret();
+    test_paste_block_expansion_tracks_edits();
+    test_paste_block_broken_placeholder();
     test_input_mode_label();
 
     if (g_failures)

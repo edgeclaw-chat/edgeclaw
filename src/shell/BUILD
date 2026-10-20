@@ -35,6 +35,7 @@ cc_library(
         "edc_local_shell.c",
         "edc_pass_mentions.c",
         "edc_passes.c",
+        "edc_text_passes.c",
         "edc_shell.c",
     ],
     hdrs = [
@@ -42,6 +43,7 @@ cc_library(
         "edc_interp.h",
         "edc_local_shell.h",
         "edc_passes.h",
+        "edc_text_passes.h",
         "edc_shell.h",
     ],
     includes = [

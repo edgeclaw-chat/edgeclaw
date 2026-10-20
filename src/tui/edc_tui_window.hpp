@@ -207,6 +207,8 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
         return InputMode::Normal;
     }
     bool HandlePasteEvent(::ftxui::Event event);
+    // Insert the collected paste (folded, when it is large enough to be worth folding).
+    void CommitPasteBuffer();
     // true = consumed; false = pass through to the normal path (mouse/wheel/Alt+Enter).
     bool HandleHistoryEvent(::ftxui::Event event);
     bool HandleNormalEvent(::ftxui::Event event);
@@ -254,6 +256,13 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // Set between the bracketed-paste ESC[200~ and ESC[201~, where Return is
     // inserted as a newline instead of submitting.
     bool in_paste_ = false;
+    // Everything between the two markers, held until the paste ends. Pastes are
+    // inserted in one go at ESC[201~: only there do we know the whole thing, and only
+    // there can a large paste become ONE folded block instead of forty rows of text.
+    std::string paste_buffer_;
+    // Monotone per-run counter for the block labels (`[Pasted #3 · 42 lines]`): the label
+    // is the payload key, so two pastes in one draft must never share one.
+    int paste_seq_ = 0;
 
     // Chat log state (messages + filter + task inputs) and the displayed
     // session's identity. Widgets render them; the dispatcher writes them.

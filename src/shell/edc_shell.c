@@ -633,7 +633,11 @@ bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_sched
         sdsfree(spawn_err);
     }
     if (task)
+    {
+        if (message && message->payload)
+            edc_task_set_user_payload(task, message->payload);
         edc_commands_announce_task(to, task);
+    }
 
     edc_cmd_task_opts_free(&opts); /* frees input + desc */
     return true;

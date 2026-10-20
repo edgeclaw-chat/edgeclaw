@@ -1,4 +1,6 @@
 #include "edc_channel_actor.h"
+
+#include "edc_payload.h"
 #include "edc_actor.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -91,6 +93,8 @@ void edc_channel_message_free(struct edc_channel_message *msg)
         sdsfree(msg->task_id);
     if (msg->session_id)
         sdsfree(msg->session_id);
+    if (msg->payload)
+        edc_payload_free(msg->payload);
     if (msg->task_desc)
         sdsfree(msg->task_desc);
     sdsfree(msg->content);

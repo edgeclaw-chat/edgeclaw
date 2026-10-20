@@ -138,6 +138,7 @@ cc_library(
         "edc_https_client.c",
         "edc_init_env.c",
         "edc_log.c",
+        "edc_payload.c",
     ],
     hdrs = [
         "edc_bundled_workspace.h",
@@ -151,6 +152,7 @@ cc_library(
         "edc_init_env.h",
         "edc_log.h",
         "edc_msg_part.h",
+        "edc_payload.h",
         "edc_string.h",
     ],
     includes = ["."],

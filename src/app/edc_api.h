@@ -157,8 +157,19 @@ extern bool edc_app_history_path(char *buf, size_t cap);
  * reaches |on_send|. */
 extern void edc_app_channel_adapter_init(struct edc_app *app, void *instance,
                                          void (*on_send)(void *, struct edc_channel_message *));
-/* Send a user input; |session_id| names its session (NULL/"" = the active one). */
-extern void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content);
+/* Send a user input; |session_id| names its session (NULL/"" = the active one).
+ *
+ * |payload_json| is the frontend's folded-paste map (placeholder -> real bytes, JSON
+ * object) or NULL. It is applied HERE, through the text-layer passes, before anything
+ * looks at the line: the content this function queues is always the finished text, so
+ * classification (edc_commands_input_kind), the lexer and the {{…}} expansion all see
+ * bytes that a typed line would have produced. A caller that already expanded its text
+ * (the TUI does, to show the bubble) just gets a no-op -- the pass is idempotent.
+ *
+ * The payload itself rides along on the queued message as provenance and is stored on
+ * the task's user message (fork/serialize copy it with the message). */
+extern void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content,
+                                      const char *payload_json);
 /* Request a task tree: built on the scheduler thread, answered as a TASK_SNAPSHOT
  * message. */
 extern void edc_app_request_task_snapshot(struct edc_app *app, const char *session_id);

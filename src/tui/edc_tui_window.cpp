@@ -56,6 +56,13 @@ constexpr auto kQuitWindow = std::chrono::milliseconds(1500);
 constexpr auto kHintHold = kQuitWindow;
 constexpr char kInterruptHint[] = "Ctrl+C again to quit";
 
+/* 粘贴折叠的门槛（opencode 用的是同一对数：3 行 / 150 字节）。
+ *
+ * 折叠只在屏幕上有意义：一段两行的东西塞进输入框还不至于失控，一段四十行的会。所以
+ * 低于门槛就原样插入 —— 行为与手打完全一致，用户看不出区别。 */
+constexpr int kPasteFoldLines = 3;
+constexpr int kPasteFoldChars = 150;
+
 // The state of the foreground group's active task -- the task whose todo list
 // the sidebar shows -- or "" when there is none. Only the foreground group's
 // active task counts: a busy sibling in the same group is not the foreground
@@ -353,14 +360,20 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
 
 void TUIWindow::Submit()
 {
-    const auto first = input_text_.find_first_not_of(" \t\r\n");
+    // What the line SAYS, not what the box shows: a folded block expands here, so the
+    // bubble, the transcript, the history check and the message the app receives all see
+    // the same bytes the user would have typed. Folding never changes meaning.
+    const std::string expanded = input_->ExpandedDraft();
+    const auto first = expanded.find_first_not_of(" \t\r\n");
     if (first == std::string::npos)
     {
         input_text_.clear();
+        input_->ClearPasteBlocks();
+        input_->Reset();
         return;
     }
-    const auto last = input_text_.find_last_not_of(" \t\r\n");
-    std::string message = input_text_.substr(first, last - first + 1);
+    const auto last = expanded.find_last_not_of(" \t\r\n");
+    std::string message = expanded.substr(first, last - first + 1);
 
     // "/connect" is handled locally: open the setup wizard and do not send anything to
     // the app or record it as a chat message. It is the same page the first run shows.
@@ -380,20 +393,39 @@ void TUIWindow::Submit()
     // (ChatWidget::SetTaskInputs), so it is hidden here and shown there.
     chat_widget_->AddMessage(std::make_shared<UserMessage>(message, ::time(nullptr)));
     AppendChatTranscript("user", "", message, "", EDC_APP_RENDER_PLAIN);
+    // A draft that still holds a folded block is not recorded for ArrowUp recall: the
+    // history file keeps plain text only, and a recalled placeholder with no payload
+    // behind it would go out as the literal `[Pasted #1 · 42 lines]`. (Payload lookup by
+    // message id is the follow-up that makes these recallable.)
+    const bool folded = !edc_payload_empty(input_->Payload());
+    // Snapshot the payload before the draft is cleared (Reset drops the orphaned blocks).
+    std::string payload_json;
+    if (folded)
+    {
+        char *json = edc_payload_to_json(input_->Payload());
+        if (json)
+        {
+            payload_json.assign(json);
+            edc_payload_string_free(json);
+        }
+    }
     input_text_.clear();
     input_->Reset(); // caret/scroll back to the start after the external clear
     RecomputeCommandPalette();
-    // Record the submitted text for ArrowUp recall and persist it so history
-    // survives a restart.
-    input_->AddHistory(message);
-    SaveInputHistory();
+    if (!folded)
+    {
+        // Record the submitted text for ArrowUp recall and persist it so history
+        // survives a restart.
+        input_->AddHistory(message);
+        SaveInputHistory();
+    }
 
     /* Naming a task in a command counts as looking at it: drop its unread marker now,
      * without waiting for the next snapshot (the task's own state does not change). */
     MarkReadFromInput(message);
 
     app_->ResetFileCandidates(); /* a submission may have created files */
-    app_->SendUserMessage(session_model_->displayed_id(), message);
+    app_->SendUserMessage(session_model_->displayed_id(), message, payload_json);
     chat_widget_->ScrollToBottom();
 
     // A new message may spawn/attach a task, so refresh the sidebar tree. The
@@ -413,7 +445,7 @@ void TUIWindow::StopForegroundTask()
     // The same thing a typed "/task stop" does, minus the chat bubble: nothing here was
     // typed, and the command layer's own reply is the feedback. With no id the command
     // stops the foreground group's active task.
-    app_->SendUserMessage(session_model_->displayed_id(), "/task stop");
+    app_->SendUserMessage(session_model_->displayed_id(), "/task stop", "");
     RequestTaskSnapshot();
     if (screen_)
         screen_->RequestAnimationFrame();
@@ -884,7 +916,10 @@ void TUIWindow::TickAnimations()
 
 ::ftxui::Element TUIWindow::InputSeparatorElement()
 {
-    const edc_input_mode mode = app_ ? app_->InputMode(input_text_) : EDC_INPUT_TEXT;
+    // The badge answers "how will this line be read", so it reads the EXPANDED draft: a
+    // folded block whose text starts with `/` is a command, and the badge must say so
+    // before the user presses Enter (m175: 逐行判定可见).
+    const edc_input_mode mode = app_ ? app_->InputMode(input_->ExpandedDraft()) : EDC_INPUT_TEXT;
     const std::string label = InputModeLabel(mode);
 
     // One colour for the whole frame: the rules and the badge's fill are the SAME colour, so
@@ -1072,11 +1107,13 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
     if (event == kPasteStart)
     {
         in_paste_ = true;
+        paste_buffer_.clear();
         return true;
     }
     if (event == kPasteEnd)
     {
         in_paste_ = false;
+        CommitPasteBuffer();
         // The paste just changed the text without going through the key path, so refresh
         // the completion popup once here (during the paste it stays as it was).
         RecomputeCommandPalette();
@@ -1103,15 +1140,77 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
 
 bool TUIWindow::HandlePasteEvent(::ftxui::Event event)
 {
-    // Everything inside a paste is text. Return/newline becomes a line break;
-    // other characters flow straight through to the Input (cursor movement and
-    // UTF-8). Nothing here submits.
+    // Everything inside a paste is text, and it is collected rather than typed: the
+    // whole paste is inserted once, at ESC[201~ (see CommitPasteBuffer). Nothing here
+    // submits.
     if (event == ::ftxui::Event::Return)
     {
-        input_->OnEvent(::ftxui::Event::Character("\n"));
+        paste_buffer_ += '\n';
         return true;
     }
-    return input_->OnEvent(event);
+    if (event.is_character())
+    {
+        paste_buffer_ += event.character();
+        return true;
+    }
+    return false; // mouse / wheel keep their normal meaning
+}
+
+/* The paste just ended: insert it as one thing.
+ *
+ * Small pastes are typed in as-is, so a paste that would be one line stays one line. A
+ * large one (>= kPasteFoldLines lines, or > kPasteFoldChars bytes) becomes ONE block:
+ * the draft holds a placeholder (`[Pasted #1 · 42 lines]`) and the bytes go to the
+ * payload. Folding is a display decision only -- ExpandedDraft() is what the badge, the
+ * bubble and the message use, so the line still says exactly what it would have said if
+ * it had been typed (edc_text_passes.h has the why). */
+void TUIWindow::CommitPasteBuffer()
+{
+    std::string text = std::move(paste_buffer_);
+    paste_buffer_.clear();
+    if (text.empty())
+        return;
+
+    // Terminals disagree on line endings inside a bracketed paste (Windows ConPTY sends
+    // bare CR); normalise once, here, so nothing downstream has to care.
+    std::string normalised;
+    normalised.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i)
+    {
+        if (text[i] == '\r')
+        {
+            if (i + 1 < text.size() && text[i + 1] == '\n')
+                continue; // CRLF -> the LF is kept by the next iteration
+            normalised += '\n';
+            continue;
+        }
+        normalised += text[i];
+    }
+
+    // Trim, the way the submit path trims: a pasted file usually carries a trailing
+    // newline that the user did not mean to send.
+    const auto first = normalised.find_first_not_of(" \t\n");
+    if (first == std::string::npos)
+        return; // whitespace only: nothing to insert
+    const auto last = normalised.find_last_not_of(" \t\n");
+    const std::string body = normalised.substr(first, last - first + 1);
+
+    int lines = 1;
+    for (char c : body)
+        if (c == '\n')
+            ++lines;
+
+    if (!input_)
+        return;
+    if (lines < kPasteFoldLines && static_cast<int>(body.size()) <= kPasteFoldChars)
+    {
+        input_->ReplaceRange(input_->CursorPosition(), input_->CursorPosition(), body);
+        return;
+    }
+
+    char label[64];
+    snprintf(label, sizeof(label), "[Pasted #%d \xc2\xb7 %d line%s]", ++paste_seq_, lines, lines == 1 ? "" : "s");
+    input_->InsertPasteBlock(label, body);
 }
 
 bool TUIWindow::HandleHistoryEvent(::ftxui::Event event)

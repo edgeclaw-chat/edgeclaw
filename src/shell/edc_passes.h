@@ -5,7 +5,12 @@
  *   用户输入 → edc_lex → edc_classify → [edc_parse] → **passes** → edc_interp → task
  *
  * 约定（新增功能就加一个 pass，不要往解释器里塞）：
- *   - pass **只改 IR**：文本定稿、挂 synthetic 块、补依赖。不建任务、不回话、不碰调度。
+ *   - pass **只改 IR**：挂 synthetic 块、补依赖、给已解析的文本去转义。不建任务、不回话、
+ *     不碰调度。
+ *   - **任何会改变"这行是什么"的变换都不能住在这里**：这一层跑在 parse 之后，`has_var_refs`
+ *     已经在词法期定死在 stage 上（edc_parse.y 的 stage_set_word），事后改 msg.text 既不会
+ *     让依赖被收集，也不会让请求期去替换 `{{…}}`。这类变换属于**文本层**（edc_text_passes.h），
+ *     跑在分类之前。
  *   - pass 的失败分两种：**就地记在载荷里**（例如某个 @文件读不到 —— 只写一行说明，输入
  *     照常执行），和**拒绝整条输入**（返回 false + out_error，解释器根本不跑）。默认前者。
  *   - 顺序＝注册顺序（edc_passes.c 的 k_passes[]），后面的 pass 看到前面 pass 的结果。

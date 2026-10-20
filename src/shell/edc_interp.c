@@ -195,6 +195,8 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
             }
             if (task)
             {
+                if (message && message->payload)
+                    edc_task_set_user_payload(task, message->payload);
                 if (r_err_app)
                     task->redirect_stderr_append = true;
                 if (s->has_var_refs)

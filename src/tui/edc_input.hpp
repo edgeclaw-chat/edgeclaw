@@ -1,6 +1,7 @@
 #pragma once
 
 #include "edc_api.h" /* edc_input_mode: what the mode tag renders */
+#include "edc_payload.h" /* folded paste blocks: placeholder key -> real bytes */
 
 #include <ftxui/component/component_base.hpp>
 #include <ftxui/screen/box.hpp>
@@ -30,6 +31,7 @@ class EdcInput : public ::ftxui::ComponentBase
   public:
     // Edits |content| in place; |placeholder| shows while empty.
     EdcInput(std::string *content, std::string placeholder, int max_visible_rows = 8);
+    ~EdcInput() override;
 
     // Reset caret/scroll state after the caller clears the content. Also leaves
     // history mode.
@@ -51,6 +53,36 @@ class EdcInput : public ::ftxui::ComponentBase
     // what `@` completion does ("@src" -> "@src/main.c ") without touching the rest of
     // the draft. Offsets are clamped/snapped like SetCursor; |begin| > |end| is accepted.
     void ReplaceRange(int begin, int end, const std::string &text);
+
+    // ── Folded paste blocks ──────────────────────────────────────────
+    //
+    // A large paste becomes ONE line of placeholder text (|label|, e.g.
+    // "[Pasted #1 · 42 lines]") with the real bytes parked in the payload. Folding is
+    // display only: everything that decides meaning (the input-kind badge, the message
+    // that gets sent, the transcript) reads ExpandedDraft(), never the buffer. See
+    // edc_text_passes.h for why that distinction is load-bearing.
+    //
+    // The placeholder is a byte string that has to survive editing, so it is matched as
+    // text (no offsets to maintain). Editing treats a whole block as one atom:
+    // Backspace/Delete at either edge removes the block AND its payload entry, and
+    // Left/Right step over it in one move. Editing *inside* a placeholder (only possible
+    // by overwrite mode) simply breaks the match -- see ExpandedDraft().
+    void InsertPasteBlock(const std::string &label, const std::string &text);
+
+    // The blocks, in paste order (key = the placeholder text that appears in |content|).
+    // Borrowed; empty when nothing is folded.
+    const struct edc_payload *Payload() const
+    {
+        return payload_;
+    }
+
+    // The draft with every placeholder replaced by its parked text -- what this line
+    // actually says. Single pass, non-recursive, cached until the draft or the blocks
+    // change (the input badge asks for it once per frame).
+    const std::string &ExpandedDraft() const;
+
+    // Forget every block (the caller cleared the draft).
+    void ClearPasteBlocks();
 
     // Drop every entry, so the owner can re-seed from disk idempotently.
     void ClearHistory();
@@ -162,6 +194,21 @@ class EdcInput : public ::ftxui::ComponentBase
     // Column of the caret (cached for vertical movement) or -1 if unset.
     int CaretColumn();
 
+    // ── Folded-paste plumbing ────────────────────────────────────────
+    //
+    // True when a placeholder starts at |at| (then |*end| = one past it) / ends at |at|
+    // (then |*begin| = its first byte). Keys are matched longest-first, so a key that is
+    // a prefix of another never steals the match.
+    bool BlockStartingAt(int at, int *end) const;
+    bool BlockEndingAt(int at, int *begin) const;
+    // A block's key no longer appears in the draft (the user edited through it): drop the
+    // parked bytes so the payload cannot outlive the text that referenced it.
+    void PruneOrphanBlocks();
+    void InvalidateExpansion();
+    // One visual row, split into plain text and chips (a chip is drawn as a block).
+    ::ftxui::Element RowElement(const Row &row, int caret_at, bool is_focused,
+                                const ::ftxui::Decorator &caret) const;
+
     std::string *content_;
     std::string placeholder_;
     int max_visible_rows_ = 8;
@@ -192,6 +239,15 @@ class EdcInput : public ::ftxui::ComponentBase
     // Box measured during the previous frame's layout; the wrap width comes from
     // it, so the widget adapts to a resize one frame later.
     ::ftxui::Box box_;
+
+    // Folded paste blocks (key = placeholder text). NULL until the first paste, so the
+    // ordinary typing path never allocates for it.
+    struct edc_payload *payload_ = nullptr;
+    // ExpandedDraft() cache. |expanded_epoch_| moves on every edit or payload change;
+    // |expanded_at_| is the epoch the cached string was built at.
+    mutable std::string expanded_cache_;
+    long long expanded_epoch_ = 0;
+    mutable long long expanded_at_ = -1;
 };
 
 } // namespace edc

@@ -328,6 +328,16 @@ struct edc_task
 
 extern struct edc_task *edc_task_new(const char *task_id, const char *session_id, const char *group_id,
                                      const char *desc, edc_channel_type channel_type);
+/* Park the frontend's folded-paste map on this task's own user message, as a `payload`
+ * object inside the message JSON. It rides with the message, so fork (cJSON_Duplicate in
+ * edc_task_snapshot_turns) and the state serializer carry it without knowing about it.
+ *
+ * The bytes are for the store and the UI, NOT for the model: the LLM request builder
+ * strips the field when it puts a message on the wire (edc_llm_actor.c). |payload| empty
+ * or no own user message = nothing happens. */
+struct edc_payload;
+extern void edc_task_set_user_payload(struct edc_task *task, const struct edc_payload *payload);
+
 extern struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,
                                       uint32_t fork_point_completion_seq, edc_channel_type channel_type);
 extern void edc_task_free(struct edc_task *task);

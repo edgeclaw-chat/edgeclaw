@@ -18,6 +18,8 @@
  * task/message and WRITTEN TO DISK -- that part is format compatibility (see
  * edc_channel_to_json), not "there are other channels". */
 
+struct edc_payload; /* folded paste blocks: placeholder -> real bytes (common/edc_payload.h) */
+
 struct edc_channel_message
 {
     sds content;
@@ -39,6 +41,12 @@ struct edc_channel_message
      * reads as what was asked for, not as the body it turned into. NULL = derive the label
      * from the content, the usual way. */
     sds task_desc;
+    /* The sender's folded paste blocks (a user input only). |content| is already the
+     * EXPANDED text: this rides along as provenance (what was pasted, under which
+     * placeholder) and is stored on the task's user message. NULL when nothing was
+     * folded -- the ordinary case, and the reason no code needs to test for null
+     * everywhere but the two places that care. Owned by this message. */
+    struct edc_payload *payload;
     bool from_active_task;         /* A fact the sender declares: whether this output came from
                                     * its own session's active task. Declaration only -- the
                                     * kernel drops nothing based on it (it does not know who is

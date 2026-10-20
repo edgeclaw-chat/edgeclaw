@@ -168,7 +168,10 @@ class IAppFacade
     virtual void ResetFileCandidates() const = 0;
 
     // ── a few things the frontend does ───────────────────────────
-    virtual void SendUserMessage(const std::string &session_id, const std::string &content) = 0;
+    // |payload_json| = folded paste blocks (placeholder -> real bytes); the app expands
+    // them through the text-layer passes before classifying the line. "" = none.
+    virtual void SendUserMessage(const std::string &session_id, const std::string &content,
+                                 const std::string &payload_json) = 0;
     virtual void RequestTaskSnapshot(const std::string &session_id) = 0;
 
     // ── paths / files the frontend owns ──────────────────────────
@@ -227,7 +230,8 @@ class AppFacade : public IAppFacade
                                                    const std::string &query) const override;
     void ResetFileCandidates() const override;
 
-    void SendUserMessage(const std::string &session_id, const std::string &content) override;
+    void SendUserMessage(const std::string &session_id, const std::string &content,
+                         const std::string &payload_json) override;
     void RequestTaskSnapshot(const std::string &session_id) override;
 
     bool HistoryPath(std::string *out) const override;

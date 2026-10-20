@@ -1,4 +1,6 @@
 #include "edc_task.h"
+
+#include "edc_payload.h"
 #include "edc_compat.h"
 #include "edc_context.h"
 #include "edc_session.h"
@@ -508,6 +510,33 @@ struct edc_task *edc_task_new(const char *task_id, const char *session_id, const
     edc_queue_init(&task->turns);
 
     return task;
+}
+
+void edc_task_set_user_payload(struct edc_task *task, const struct edc_payload *payload)
+{
+    if (!task || !task->active_turn || edc_payload_empty(payload))
+        return;
+
+    for (size_t i = task->active_turn->messages.head; i < task->active_turn->messages.tail; i++)
+    {
+        cJSON *msg = (cJSON *)task->active_turn->messages.data[i];
+        const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "role"));
+        if (!role || strcmp(role, "user") != 0)
+            continue;
+        /* Pass output (synthetic) is not what the user typed: only their own line. */
+        cJSON *synthetic = cJSON_GetObjectItem(msg, "synthetic");
+        if (synthetic && cJSON_IsTrue(synthetic))
+            continue;
+
+        cJSON *map = cJSON_CreateObject();
+        if (!map)
+            return;
+        for (int k = 0; k < payload->n; k++)
+            cJSON_AddStringToObject(map, payload->items[k].key, payload->items[k].text);
+        cJSON_DeleteItemFromObject(msg, "payload");
+        cJSON_AddItemToObject(msg, "payload", map);
+        return;
+    }
 }
 
 struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,

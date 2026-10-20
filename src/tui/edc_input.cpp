@@ -2,6 +2,7 @@
 
 #include "edc_text_util.hpp"
 #include <algorithm>
+#include <cstring>
 #include <ftxui/component/component_base.hpp>
 #include <ftxui/component/event.hpp>
 #include <ftxui/component/mouse.hpp>
@@ -66,6 +67,126 @@ EdcInput::EdcInput(std::string *content, std::string placeholder, int max_visibl
     box_.y_max = -1;
 }
 
+EdcInput::~EdcInput()
+{
+    edc_payload_free(payload_);
+}
+
+// ── Folded paste blocks ──────────────────────────────────────────────
+
+void EdcInput::InvalidateExpansion()
+{
+    ++expanded_epoch_;
+}
+
+const std::string &EdcInput::ExpandedDraft() const
+{
+    if (expanded_at_ == expanded_epoch_)
+        return expanded_cache_;
+    if (edc_payload_empty(payload_))
+    {
+        expanded_cache_ = *content_;
+    }
+    else
+    {
+        char *expanded = edc_payload_expand(content_->c_str(), payload_);
+        expanded_cache_.assign(expanded ? expanded : "", expanded ? strlen(expanded) : 0);
+        edc_payload_string_free(expanded);
+    }
+    expanded_at_ = expanded_epoch_;
+    return expanded_cache_;
+}
+
+void EdcInput::InsertPasteBlock(const std::string &label, const std::string &text)
+{
+    if (label.empty())
+        return;
+    StopBrowsing();
+    if (!payload_)
+        payload_ = edc_payload_new();
+    edc_payload_set(payload_, label.c_str(), text.c_str());
+
+    // One trailing space: the caret then lands right AFTER the chip instead of inside
+    // it, which is where the next character belongs. The space survives expansion
+    // (only the key is replaced), so the block never welds onto the following word.
+    const std::string inserted = label + " ";
+    content_->insert(static_cast<size_t>(cursor_), inserted);
+    cursor_ += static_cast<int>(inserted.size());
+    desired_col_ = -1;
+    InvalidateExpansion();
+}
+
+void EdcInput::ClearPasteBlocks()
+{
+    edc_payload_free(payload_);
+    payload_ = nullptr;
+    InvalidateExpansion();
+}
+
+void EdcInput::PruneOrphanBlocks()
+{
+    if (!payload_)
+        return;
+    // A key that is no longer in the draft (the user edited through the placeholder)
+    // must not keep its bytes: walking backwards keeps the removal indices valid.
+    for (int i = payload_->n - 1; i >= 0; --i)
+        if (content_->find(payload_->items[i].key) == std::string::npos)
+            edc_payload_remove(payload_, payload_->items[i].key);
+    InvalidateExpansion();
+}
+
+bool EdcInput::BlockStartingAt(int at, int *end) const
+{
+    if (edc_payload_empty(payload_) || at < 0 || at >= static_cast<int>(content_->size()))
+        return false;
+    const size_t room = content_->size() - static_cast<size_t>(at);
+    int best = -1;
+    size_t best_len = 0;
+    for (int i = 0; i < payload_->n; ++i)
+    {
+        const char *key = payload_->items[i].key;
+        const size_t len = strlen(key);
+        // Longest match wins: one key may be a prefix of another.
+        if (len == 0 || len > room || len < best_len)
+            continue;
+        if (content_->compare(static_cast<size_t>(at), len, key) == 0)
+        {
+            best = i;
+            best_len = len;
+        }
+    }
+    if (best < 0)
+        return false;
+    if (end)
+        *end = at + static_cast<int>(best_len);
+    return true;
+}
+
+bool EdcInput::BlockEndingAt(int at, int *begin) const
+{
+    if (edc_payload_empty(payload_) || at <= 0 || at > static_cast<int>(content_->size()))
+        return false;
+    int best = -1;
+    size_t best_len = 0;
+    for (int i = 0; i < payload_->n; ++i)
+    {
+        const char *key = payload_->items[i].key;
+        const size_t len = strlen(key);
+        if (len == 0 || len > static_cast<size_t>(at) || len < best_len)
+            continue;
+        if (content_->compare(static_cast<size_t>(at) - len, len, key) == 0)
+        {
+            best = i;
+            best_len = len;
+        }
+    }
+    if (best < 0)
+        return false;
+    if (begin)
+        *begin = at - static_cast<int>(best_len);
+    return true;
+}
+
 std::string InputModeLabel(edc_input_mode mode)
 {
     switch (mode)
@@ -91,6 +212,10 @@ void EdcInput::Reset()
     desired_col_ = -1;
     hovered_ = false;
     StopBrowsing();
+    // The caller cleared the draft behind our back: any block whose placeholder is gone
+    // (i.e. every block, after a clear) no longer has text pointing at it.
+    PruneOrphanBlocks();
+    InvalidateExpansion();
 }
 
 void EdcInput::ReplaceAll(const std::string &text)
@@ -103,6 +228,8 @@ void EdcInput::ReplaceAll(const std::string &text)
     scroll_ = 0;
     desired_col_ = -1;
     StopBrowsing();
+    PruneOrphanBlocks();
+    InvalidateExpansion();
 }
 
 void EdcInput::SetCursor(int offset)
@@ -126,6 +253,7 @@ void EdcInput::ReplaceRange(int begin, int end, const std::string &text)
     cursor_ = begin + static_cast<int>(text.size());
     desired_col_ = -1;
     StopBrowsing(); /* an edit ends any history browse, like typing does */
+    InvalidateExpansion();
 }
 
 void EdcInput::AddHistory(const std::string &entry)
@@ -294,6 +422,81 @@ int EdcInput::CaretColumn()
     return ColumnAt(*content_, layout, row, lo);
 }
 
+::ftxui::Element EdcInput::RowElement(const Row &row, int caret_at, bool is_focused,
+                                      const ::ftxui::Decorator &caret) const
+{
+    // Runs: plain text and chips, in row order. A chip is recognised by its placeholder
+    // text, so a placeholder the user edited through simply renders as plain text (the
+    // block is gone; PruneOrphanBlocks drops its bytes).
+    struct Run
+    {
+        bool chip;
+        int begin;
+        int end;
+    };
+    std::vector<Run> runs;
+    int p = row.begin;
+    while (p < row.end)
+    {
+        int block_end = 0;
+        if (BlockStartingAt(p, &block_end) && block_end <= row.end)
+        {
+            runs.push_back({true, p, block_end});
+            p = block_end;
+            continue;
+        }
+        const int len = GlyphLenAt(*content_, p, row.end);
+        if (len <= 0)
+            break;
+        if (!runs.empty() && !runs.back().chip)
+            runs.back().end = p + len; // merge into the plain run (no hbox churn per glyph)
+        else
+            runs.push_back({false, p, p + len});
+        p += len;
+    }
+    if (runs.empty())
+        runs.push_back({false, row.begin, row.end}); // empty line: the caret still needs a cell
+
+    ::ftxui::Elements parts;
+    const int caret_pos = (caret_at < 0) ? -1 : std::max(row.begin, std::min(caret_at, row.end));
+
+    auto push_text = [&](int a, int b, bool chip) {
+        if (b <= a)
+            return;
+        ::ftxui::Element e =
+            ::ftxui::text(content_->substr(static_cast<size_t>(a), static_cast<size_t>(b - a)));
+        // Inverted video, not a palette slot: chrome's hues are spoken for (see
+        // edc_style.hpp), and a chip is a block of text, not a colour's job.
+        if (chip)
+            e = e | ::ftxui::inverted;
+        parts.push_back(e);
+    };
+
+    for (const Run &run : runs)
+    {
+        if (caret_pos < 0 || caret_pos < run.begin || caret_pos > run.end)
+        {
+            push_text(run.begin, run.end, run.chip);
+            continue;
+        }
+        if (caret_pos == run.end)
+        {
+            // After this run's last glyph: one caret cell (between two runs, or at the row
+            // end), exactly like ftxui::Input at a line end.
+            push_text(run.begin, run.end, run.chip);
+            parts.push_back(::ftxui::text(is_focused ? " " : "") | caret);
+            continue;
+        }
+        // On a glyph: block/bar over it.
+        const int len = GlyphLenAt(*content_, caret_pos, run.end);
+        push_text(run.begin, caret_pos, run.chip);
+        parts.push_back(
+            ::ftxui::text(content_->substr(static_cast<size_t>(caret_pos), static_cast<size_t>(len))) | caret);
+        push_text(caret_pos + len, run.end, run.chip);
+    }
+    return ::ftxui::hbox(std::move(parts));
+}
+
 ::ftxui::Element EdcInput::OnRender()
 {
     const bool is_focused = Focused();
@@ -341,35 +544,8 @@ int EdcInput::CaretColumn()
     {
         const int row_index = scroll_ + i;
         const Row &r = layout.rows[row_index];
-        if (row_index != caret_row)
-        {
-            elements.push_back(::ftxui::text(content_->substr(r.begin, r.end - r.begin)));
-            continue;
-        }
-
-        const std::string before = content_->substr(r.begin, caret_lo - r.begin);
-        if (caret_lo >= r.end)
-        {
-            // Caret sits after the last glyph of this visual row: append a
-            // one-cell caret, like ftxui::Input does at a line end.
-            const std::string caret_cell = is_focused ? " " : "";
-            elements.push_back(::ftxui::hbox({
-                ::ftxui::text(before),
-                ::ftxui::text(caret_cell) | caret,
-            }));
-        }
-        else
-        {
-            // Caret sits on a glyph of this row: block/bar over that glyph.
-            const int len = GlyphLenAt(*content_, caret_lo, r.end);
-            const std::string at = content_->substr(caret_lo, len);
-            const std::string after = content_->substr(caret_lo + len, r.end - (caret_lo + len));
-            elements.push_back(::ftxui::hbox({
-                ::ftxui::text(before),
-                ::ftxui::text(at) | caret,
-                ::ftxui::text(after),
-            }));
-        }
+        const int caret_at = (row_index == caret_row) ? caret_lo : -1;
+        elements.push_back(RowElement(r, caret_at, is_focused, caret));
     }
 
     return ::ftxui::vbox(std::move(elements)) | ::ftxui::xflex | ::ftxui::reflect(box_);
@@ -421,13 +597,21 @@ bool EdcInput::HandleCharacter(const std::string &character)
     StopBrowsing();
     if (!insert_mode_ && cursor_ < static_cast<int>(content_->size()) && (*content_)[cursor_] != '\n')
     {
-        // Overwrite mode: replace the glyph under the caret.
+        // Overwrite mode: replace the glyph under the caret. This is the one way to type
+        // INTO a placeholder -- the key stops matching, so the parked bytes go with it.
         const int len = GlyphLenAt(*content_, cursor_, static_cast<int>(content_->size()));
         content_->erase(cursor_, static_cast<size_t>(len));
+        content_->insert(cursor_, character);
+        cursor_ += static_cast<int>(character.size());
+        desired_col_ = -1;
+        PruneOrphanBlocks();
+        InvalidateExpansion();
+        return true;
     }
     content_->insert(cursor_, character);
     cursor_ += static_cast<int>(character.size());
     desired_col_ = -1;
+    InvalidateExpansion();
     return true;
 }
 
@@ -436,10 +620,23 @@ bool EdcInput::HandleBackspace()
     if (cursor_ == 0)
         return false;
     StopBrowsing();
+    int block_begin = 0;
+    if (BlockEndingAt(cursor_, &block_begin))
+    {
+        // A folded paste is one atom on screen, so it is one atom to Backspace: the whole
+        // placeholder goes, and its bytes with it (no orphan left in the payload).
+        content_->erase(static_cast<size_t>(block_begin), static_cast<size_t>(cursor_ - block_begin));
+        cursor_ = block_begin;
+        desired_col_ = -1;
+        PruneOrphanBlocks();
+        InvalidateExpansion();
+        return true;
+    }
     const int p = PrevGlyph(*content_, cursor_);
-    content_->erase(p, static_cast<size_t>(cursor_ - p));
+    content_->erase(static_cast<size_t>(p), static_cast<size_t>(cursor_ - p));
     cursor_ = p;
     desired_col_ = -1;
+    InvalidateExpansion();
     return true;
 }
 
@@ -447,12 +644,23 @@ bool EdcInput::HandleDelete()
 {
     if (cursor_ >= static_cast<int>(content_->size()))
         return false;
+    StopBrowsing();
+    int block_end = 0;
+    if (BlockStartingAt(cursor_, &block_end))
+    {
+        // Mirror of Backspace: Delete on a placeholder's first glyph removes the block.
+        content_->erase(static_cast<size_t>(cursor_), static_cast<size_t>(block_end - cursor_));
+        desired_col_ = -1;
+        PruneOrphanBlocks();
+        InvalidateExpansion();
+        return true;
+    }
     const int len = GlyphLenAt(*content_, cursor_, static_cast<int>(content_->size()));
     if (len == 0)
         return false;
-    StopBrowsing();
     content_->erase(cursor_, static_cast<size_t>(len));
     desired_col_ = -1;
+    InvalidateExpansion();
     return true;
 }
 
@@ -466,6 +674,13 @@ bool EdcInput::MoveLeft()
 {
     if (cursor_ == 0)
         return false;
+    int block_begin = 0;
+    if (BlockEndingAt(cursor_, &block_begin))
+    {
+        cursor_ = block_begin; // one move over the whole chip
+        desired_col_ = -1;
+        return true;
+    }
     cursor_ = PrevGlyph(*content_, cursor_);
     desired_col_ = -1;
     return true;
@@ -475,6 +690,13 @@ bool EdcInput::MoveRight()
 {
     if (cursor_ >= static_cast<int>(content_->size()))
         return false;
+    int block_end = 0;
+    if (BlockStartingAt(cursor_, &block_end))
+    {
+        cursor_ = block_end; // right before the chip -> right after it
+        desired_col_ = -1;
+        return true;
+    }
     const int len = GlyphLenAt(*content_, cursor_, static_cast<int>(content_->size()));
     cursor_ += len;
     desired_col_ = -1;
@@ -610,6 +832,8 @@ bool EdcInput::HistoryNext()
     // Stepped past the newest match: restore the draft and leave history mode.
     *content_ = draft_;
     cursor_ = std::min(draft_cursor_, static_cast<int>(content_->size()));
+    PruneOrphanBlocks();
+    InvalidateExpansion();
     StopBrowsing();
     scroll_ = 0;
     desired_col_ = -1;
@@ -620,6 +844,9 @@ void EdcInput::RecallHistory(size_t index)
 {
     history_pos_ = index;
     *content_ = history_[index];
+    // A recalled line is plain text: any chips the old draft had are gone with it.
+    PruneOrphanBlocks();
+    InvalidateExpansion();
     // Like a shell, the caret lands at the end of the recalled entry so it can
     // be edited or re-sent; OnRender() then scrolls the caret row into view.
     cursor_ = static_cast<int>(content_->size());

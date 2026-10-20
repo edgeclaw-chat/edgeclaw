@@ -328,10 +328,12 @@ std::vector<model::CommandFact> AppFacade::PromptNames(const std::string &workdi
     return out;
 }
 
-void AppFacade::SendUserMessage(const std::string &session_id, const std::string &content)
+void AppFacade::SendUserMessage(const std::string &session_id, const std::string &content,
+                                const std::string &payload_json)
 {
     if (app_)
-        edc_app_send_user_message(app_, session_id.c_str(), content.c_str());
+        edc_app_send_user_message(app_, session_id.c_str(), content.c_str(),
+                                  payload_json.empty() ? nullptr : payload_json.c_str());
 }
 
 void AppFacade::RequestTaskSnapshot(const std::string &session_id)

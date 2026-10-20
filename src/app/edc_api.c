@@ -29,9 +29,11 @@
 #include "edc_config.h"
 #include "edc_file_utils.h"
 #include "edc_models.h"
+#include "edc_payload.h"
 #include "edc_prompts.h"
 #include "edc_resources.h"
 #include "edc_skills.h"
+#include "edc_text_passes.h"
 #include "log.h"
 #include "sds.h"
 #include <stdio.h>
@@ -507,14 +509,21 @@ void edc_app_channel_adapter_init(struct edc_app *app, void *instance,
 
 /* Send a user input. |session_id| names the session it belongs to (the task it
  * spawns lands there). NULL/"" = unspecified, the store picks the default. */
-void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content)
+void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content,
+                               const char *payload_json)
 {
     edc_actor_t *channel = edc_app_channel_actor(app);
     if (!channel)
         return;
 
+    /* Text-layer passes: the one place every user input is finalized, so a folded paste
+     * and a typed line cannot diverge -- the queue below only ever carries final text. */
+    struct edc_payload *payload = edc_payload_from_json(payload_json);
+    sds final_text = edc_text_passes_run(content, payload); /* sds == char* */
+
     struct edc_channel_message *message =
-        edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsnew(content));
+        edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, final_text);
+    message->payload = payload; /* NULL when nothing was folded */
     if (session_id && *session_id)
         message->session_id = sdsnew(session_id);
 
