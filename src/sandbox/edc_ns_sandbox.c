@@ -5,6 +5,7 @@
 #include "log.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +14,7 @@
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
+#include <sys/sysmacros.h>
 #include <sys/syscall.h>
 #include <sys/vfs.h>
 #include <unistd.h>
@@ -318,11 +320,88 @@ static bool ns_mount_dir_as_ro(const char *path)
     return false;
 }
 
+/* Mask a REGULAR FILE so that open() FAILS, rather than turning it into a 0-byte
+ * file. An empty file is not a mask: a reader cannot tell "denied" from "empty",
+ * and a tool that treats the file as present-but-blank gets a wrong answer
+ * instead of an error.
+ *
+ * The trick is the kernel's "unnamed" character device (0:0, what overlayfs uses
+ * as a whiteout): opening it fails. Creating one needs CAP_MKNOD over the
+ * superblock it lives on, so it has to be made on a tmpfs WE mounted (mknod on
+ * the host's /tmp or /dev is refused). That tmpfs is detached and its directory
+ * removed right after the bind -- the bind mount keeps the inode alive, so
+ * nothing is left behind.
+ *
+ * Returns false when any step fails, leaving the caller to fall back to the
+ * empty-file bind: degraded (open succeeds, contents gone) but logged, and still
+ * better than a live file. */
+static bool ns_mask_file(const char *path, const char *scratch_base)
+{
+    /* The scratch dir must be creatable AFTER the tree went read-only, so it has
+     * to be inside a writable path: the first rw path, else /tmp. */
+    const char *bases[2] = {scratch_base, "/tmp"};
+    char tmpl[PATH_MAX];
+    char *dir = NULL;
+    for (size_t b = 0; b < sizeof(bases) / sizeof(bases[0]) && !dir; b++)
+    {
+        if (!bases[b] || !bases[b][0])
+            continue;
+        if (b > 0 && scratch_base && strcmp(bases[b - 1], bases[b]) == 0)
+            continue; /* same base twice, no point retrying it */
+        if (snprintf(tmpl, sizeof(tmpl), "%s/.edc-mask-XXXXXX", bases[b]) >= (int)sizeof(tmpl))
+            continue;
+        dir = mkdtemp(tmpl);
+    }
+    if (!dir)
+        return false;
+
+    bool ok = false;
+    char node[PATH_MAX];
+    if (mount("tmpfs", dir, "tmpfs", MS_NOSUID | MS_NODEV, "size=64k,mode=700") != 0)
+    {
+        log_debug("edc_ns_sandbox: mask tmpfs on %s failed: %s", dir, strerror(errno));
+    }
+    else if (snprintf(node, sizeof(node), "%s/m", dir) >= (int)sizeof(node))
+    {
+        log_debug("edc_ns_sandbox: scratch path too long: %s", dir);
+    }
+    else if (mknod(node, S_IFCHR | 0600, makedev(0, 0)) != 0)
+    {
+        log_debug("edc_ns_sandbox: mknod(0:0) in %s failed: %s", dir, strerror(errno));
+    }
+    else
+    {
+        /* Verify the node really refuses to open BEFORE binding it over the
+         * target: if this kernel/filesystem allows it, the empty-file fallback is
+         * the honest outcome rather than a silently readable "mask". */
+        int probe = open(node, O_RDONLY | O_CLOEXEC);
+        if (probe >= 0)
+        {
+            close(probe);
+            log_debug("edc_ns_sandbox: a 0:0 node is openable here, cannot use it as a mask");
+        }
+        else if (mount(node, path, NULL, MS_BIND, NULL) != 0)
+        {
+            log_debug("edc_ns_sandbox: bind mask node over %s failed: %s", path, strerror(errno));
+        }
+        else
+        {
+            ok = true;
+        }
+    }
+
+    /* Detach the scratch tmpfs (the bind above holds its own reference) and drop
+     * the now-empty directory: no leftovers on the host filesystem. */
+    umount2(dir, MNT_DETACH);
+    rmdir(dir);
+    return ok;
+}
+
 /* Mask a path so its contents become unreachable: overlay an empty mode-000
- * tmpfs on a directory, or bind an empty file over a regular file. Landlock
- * cannot express a deny inside an allowed parent, so masking is done here, in
- * the mount namespace, where the last mount on a path wins. */
-static bool ns_mask_path(const char *path)
+ * tmpfs on a directory, or bind an unopenable 0:0 device node over a regular
+ * file. Landlock cannot express a deny inside an allowed parent, so masking is
+ * done here, in the mount namespace, where the last mount on a path wins. */
+static bool ns_mask_path(const char *path, const char *scratch_base)
 {
     struct stat st;
     if (stat(path, &st) != 0)
@@ -335,32 +414,39 @@ static bool ns_mask_path(const char *path)
             log_debug("edc_ns_sandbox: mask tmpfs on %s failed: %s", path, strerror(errno));
             return false;
         }
-    }
-    else
-    {
-        /* Bind an empty file over the target. Do NOT use /dev/null here: the rw
-         * handling above may have replaced /dev with a fresh empty tmpfs, so
-         * /dev/null is not necessarily present in this namespace. /tmp is
-         * writable, so create the blank there and drop its name afterwards --
-         * the bind mount keeps the inode alive. */
-        char tmpl[] = "/tmp/.edc-mask-XXXXXX";
-        int fd = mkstemp(tmpl);
-        if (fd < 0)
-        {
-            log_debug("edc_ns_sandbox: cannot create mask file: %s", strerror(errno));
-            return false;
-        }
-        close(fd);
-        if (mount(tmpl, path, NULL, MS_BIND, NULL) != 0)
-        {
-            log_debug("edc_ns_sandbox: mask empty file on %s failed: %s", path, strerror(errno));
-            unlink(tmpl);
-            return false;
-        }
-        unlink(tmpl);
+        log_info("edc_ns_sandbox: masked %s", path);
+        return true;
     }
 
-    log_info("edc_ns_sandbox: masked %s", path);
+    if (ns_mask_file(path, scratch_base))
+    {
+        log_info("edc_ns_sandbox: masked %s (unopenable)", path);
+        return true;
+    }
+
+    /* Fallback: bind an empty file over the target, so the CONTENTS are gone even
+     * though open() still succeeds. Do NOT use /dev/null here: the rw handling
+     * above may have replaced /dev with a fresh empty tmpfs, so /dev/null is not
+     * necessarily present in this namespace. /tmp is writable, so create the
+     * blank there and drop its name afterwards -- the bind mount keeps the inode
+     * alive. */
+    char tmpl[] = "/tmp/.edc-mask-XXXXXX";
+    int fd = mkstemp(tmpl);
+    if (fd < 0)
+    {
+        log_debug("edc_ns_sandbox: cannot create mask file: %s", strerror(errno));
+        return false;
+    }
+    close(fd);
+    if (mount(tmpl, path, NULL, MS_BIND, NULL) != 0)
+    {
+        log_debug("edc_ns_sandbox: mask empty file on %s failed: %s", path, strerror(errno));
+        unlink(tmpl);
+        return false;
+    }
+    unlink(tmpl);
+
+    log_warn("edc_ns_sandbox: masked %s with an EMPTY FILE (open still succeeds, contents are gone)", path);
     return true;
 }
 
@@ -499,13 +585,18 @@ bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths, const ch
         log_debug("edc_ns_sandbox: could not make %s writable", rw_paths[i]);
     }
 
-    /* Mask denied paths last so they win over any ro/rw mount above. */
+    /* Mask denied paths last so they win over any ro/rw mount above. A mask that
+     * does not take effect is a security hole, not a cosmetic problem -- masking
+     * is the only layer that can deny a path inside an allowed parent -- so it is
+     * a warning rather than a debug line. */
     if (deny_paths)
     {
         for (int i = 0; deny_paths[i]; i++)
         {
-            if (!ns_mask_path(deny_paths[i]))
-                log_debug("edc_ns_sandbox: deny path %s not masked", deny_paths[i]);
+            /* Mask files through a tmpfs under the first writable path (or /tmp),
+             * so the 0:0 node is created on a superblock we own. */
+            if (!ns_mask_path(deny_paths[i], rw_paths[0]))
+                log_warn("edc_ns_sandbox: deny path %s was NOT masked -- it stays reachable", deny_paths[i]);
         }
     }
 

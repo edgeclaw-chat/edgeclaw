@@ -237,7 +237,10 @@ int main(void)
         if (edc_sandbox_helper_prepare(conf, "true", &pfile, &pargs))
         {
             run_helper_capture(pfile, pargs, dbg_tmpl);
-            char buf[512] = {0};
+            /* 4 KiB: the debug line we look for comes AFTER several log lines, and
+             * a 512-byte window silently truncated it (which made the deny
+             * assertions below skip themselves). */
+            char buf[4096] = {0};
             FILE *df = fopen(dbg_tmpl, "r");
             if (df)
             {
@@ -267,6 +270,61 @@ int main(void)
             sdsfree(dcfile);
             free(dcargs);
             sdsfree(dccmd);
+
+            /* A denied FILE must be UNOPENABLE, not a 0-byte file: "masked" and
+             * "empty" must not look the same to whoever reads it (an empty file
+             * reads as success with nothing in it -- a wrong answer, not an
+             * error). */
+            sds deny_file = sdscatprintf(sdsempty(), "%s/deny_file", rw);
+            FILE *secretf = fopen(deny_file, "w");
+            if (secretf)
+            {
+                fputs("TOPSECRET", secretf);
+                fclose(secretf);
+            }
+            /* Control: a normal file in the same directory still opens, so the
+             * assertion below cannot pass just because the whole path is dead. */
+            sds plain_file = sdscatprintf(sdsempty(), "%s/plain_file", rw);
+            FILE *plainf = fopen(plain_file, "w");
+            if (plainf)
+            {
+                fputs("hello", plainf);
+                fclose(plainf);
+            }
+
+            sds *saved_deny = conf->sandbox_deny_paths;
+            sds two_deny[3] = {sdsdup(saved_deny[0]), sdsdup(deny_file), NULL};
+            conf->sandbox_deny_paths = two_deny;
+
+            sds dfile2 = NULL;
+            char **dargs2 = NULL;
+            sds dcmd2 = sdscatprintf(sdsempty(), "cat %s", deny_file);
+            if (edc_sandbox_helper_prepare(conf, dcmd2, &dfile2, &dargs2))
+            {
+                T_CHECK(run_helper(dfile2, dargs2) != 0, "a denied FILE cannot be opened (not merely emptied)");
+            }
+            sdsfree(dfile2);
+            free(dargs2);
+            sdsfree(dcmd2);
+
+            /* Control: the file next to it still opens, so the assertion above
+             * cannot pass just because the whole directory went dead. */
+            sds cfile2 = NULL;
+            char **cargs2 = NULL;
+            sds ccmd2 = sdscatprintf(sdsempty(), "cat %s", plain_file);
+            if (edc_sandbox_helper_prepare(conf, ccmd2, &cfile2, &cargs2))
+            {
+                T_CHECK(run_helper(cfile2, cargs2) == 0, "control: a normal file next to it still opens");
+            }
+            sdsfree(cfile2);
+            free(cargs2);
+            sdsfree(ccmd2);
+
+            conf->sandbox_deny_paths = saved_deny;
+            sdsfree(two_deny[0]);
+            sdsfree(two_deny[1]);
+            sdsfree(deny_file);
+            sdsfree(plain_file);
         }
     }
 #endif
