@@ -395,11 +395,14 @@ COMMAND REFERENCE
      /connect                      Guided setup (provider, API key, model).
      /sandbox [on|off]             Enable/disable the filesystem sandbox.
      /sandbox list                 Show the allow/deny path lists.
-     /sandbox add-ro|rm-ro <dir>   Add/remove a read-only path.
-     /sandbox add-rw|rm-rw <dir>   Add/remove a read-write path.
-     /sandbox add-deny|rm-deny <dir>
-                                   Add/remove a masked dir (wins over ro/rw;
-                                   e.g. ~/.ssh).
+     /sandbox add-ro <dir>         Make a path read-only (it leaves the rw/deny
+                                   lists).
+     /sandbox rm-ro <dir>          Drop a read-only path.
+     /sandbox add-rw <dir>         Make a path read-write (it leaves the ro/deny
+                                   lists).
+     /sandbox rm-rw <dir>          Drop a read-write path.
+     /sandbox add-deny <dir>       Mask a dir (wins over ro/rw; e.g. ~/.ssh).
+     /sandbox rm-deny <dir>        Unmask a dir.
      /shell [on|off]               Turn the shell-like input syntax on or
                                    off (off by default; persisted; /shell
                                    alone reports the state).

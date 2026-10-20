@@ -56,6 +56,14 @@ int main(void)
     CHECK(has(full, "/connect"), "/connect");
     CHECK(has(full, "/prompt <name>"), "/prompt");
     CHECK(has(full, "/sandbox add-deny"), "/sandbox");
+    /* One row per `/sandbox` verb: the completion palette inserts the row's literal
+     * words, so a packed "add-ro|rm-ro" row both showed the two verbs as one and made
+     * `rm-*` unreachable (the row text starts with "add-"). */
+    CHECK(has(full, "/sandbox rm-ro <dir>") && has(full, "/sandbox rm-rw <dir>") && has(full, "/sandbox rm-deny <dir>"),
+          "each rm-* verb has its own row (so it is completable)");
+    CHECK(!has(full, "/sandbox add-ro|rm-ro") && !has(full, "/sandbox add-rw|rm-rw") &&
+              !has(full, "/sandbox add-deny|rm-deny"),
+          "and no row packs two verbs behind a `|`");
     CHECK(has(full, "/session memo"), "/session memo");
     CHECK(has(full, "/session status"), "/session status");
     CHECK(has(full, "/task history"), "/task history");

@@ -342,9 +342,15 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
     {"General", "/reload", "re-read the resource files and rebuild the cached system prompt", NULL},
     {"General", "/sandbox [on|off]", "enable/disable the filesystem sandbox", NULL},
     {"General", "/sandbox list", "show the allow/deny path lists", NULL},
-    {"General", "/sandbox add-ro|rm-ro <dir>", "add/remove a read-only path", NULL},
-    {"General", "/sandbox add-rw|rm-rw <dir>", "add/remove a read-write path", NULL},
-    {"General", "/sandbox add-deny|rm-deny <dir>", "mask a dir (wins over ro/rw; e.g. ~/.ssh)", NULL},
+    /* `/sandbox`'s six verbs are six rows, not one row with `add-rw|rm-rw` inside its
+     * argument shape: the completion palette inserts the literal words, so a packed row
+     * made Tab hand back `add-ro|rm-ro` as if that were the verb. One row per verb. */
+    {"General", "/sandbox add-ro <dir>", "make a path read-only (it leaves the rw/deny lists)", NULL},
+    {"General", "/sandbox rm-ro <dir>", "drop a read-only path", NULL},
+    {"General", "/sandbox add-rw <dir>", "make a path read-write (it leaves the ro/deny lists)", NULL},
+    {"General", "/sandbox rm-rw <dir>", "drop a read-write path", NULL},
+    {"General", "/sandbox add-deny <dir>", "mask a dir (wins over ro/rw; e.g. ~/.ssh)", NULL},
+    {"General", "/sandbox rm-deny <dir>", "unmask a dir", NULL},
 
     {"Scheduling", "/jobs", "list the scheduled jobs (cron / every / one-shot) with when they run next", NULL},
     {"Scheduling", "/jobs run <id>", "fire a scheduled job now; its schedule is left alone",
