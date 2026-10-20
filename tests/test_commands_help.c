@@ -127,6 +127,52 @@ int main(void)
         }
     }
 
+    TEST("every documented command row starts with a dispatchable command (the reverse direction)");
+    {
+        /* The check above only proves "dispatchable => documented". A row like
+         * `/sesion list` would be documented, promised by the palette, and then
+         * rejected on use -- so the first token of every row whose text starts with
+         * `/` must appear in the dispatch table. */
+        /* Dispatchable = the command table PLUS the families: some first tokens are
+         * handled by the shell's builtin chain (/whoami /model /sandbox /shell) and
+         * are listed only in k_cmd_families. A row that names neither is a promise
+         * nothing keeps. */
+        const char *names[32];
+        const int dn = edc_commands_table_names(names, 32);
+        const char *fam[32];
+        const int fn = (int)edc_commands_family_count();
+        for (int i = 0; i < fn && i < 32; i++)
+            fam[i] = edc_commands_family_name((size_t)i);
+        int rows = 0;
+        for (size_t i = 0; i < edc_commands_doc_count(); i++)
+        {
+            const char *cmd = edc_commands_doc_cmd(i);
+            if (!cmd || cmd[0] != '/')
+                continue; /* the Input section documents syntax, not commands */
+            rows++;
+
+            char first[64];
+            size_t n = strcspn(cmd, " ");
+            if (n >= sizeof(first))
+                n = sizeof(first) - 1;
+            memcpy(first, cmd, n);
+            first[n] = '\0';
+
+            bool dispatchable = false;
+            const char *bare = (first[0] == '/') ? first + 1 : first; /* table names carry no slash */
+            for (int k = 0; k < dn; k++)
+                if (strcmp(names[k], bare) == 0 || strcmp(names[k], first) == 0)
+                    dispatchable = true;
+            for (int k = 0; k < fn && k < 32; k++)
+                if (fam[k] && (strcmp(fam[k], first) == 0 || strcmp(fam[k], bare) == 0))
+                    dispatchable = true;
+            if (!dispatchable)
+                printf("[row names an unknown command: `%s`] ", cmd);
+            CHECK(dispatchable, first);
+        }
+        CHECK(rows > 40, "the table really has that many command rows");
+    }
+
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;
 }
