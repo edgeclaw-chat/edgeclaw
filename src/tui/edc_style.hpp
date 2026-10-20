@@ -164,6 +164,45 @@ inline const Palette &palette()
 // current step from it, so the two panes cannot drift apart.
 
 // Processing = working right now (the states edc_task_is_running marks).
+// ── The input box's accents ──────────────────────────────────
+// ── The input box's colours ─────────────────────────────────
+// One hue, two steps of brightness, both derived from the theme accent rather than hard-coded,
+// so the box follows the colour scheme.
+//
+// The plain accent is Monokai's #66D9EF (an INK colour, meant for small text): as a full-width
+// rule and a filled badge it reads as neon. So the frame -- both rules and the badge's fill --
+// wears it mixed 0.55 of the way to black in linear light, which is roughly half its
+// luminance: still clearly the scheme's blue, no longer a lamp, and black glyphs still clear
+// ~6:1 on it.
+constexpr float kInputFrameFade = 0.55f;
+
+inline ::ftxui::Color input_frame_color(const Palette &pal)
+{
+    return ::ftxui::Color::Interpolate(kInputFrameFade, pal.accent, ::ftxui::Color::RGB(0, 0, 0));
+}
+
+// The prompt glyph sits one step darker again: a single cell at the badge's brightness reads as
+// a lamp next to dim body text, and the glyph only has to mark where typing starts.
+constexpr float kInputPromptFade = 0.72f;
+
+inline ::ftxui::Color input_prompt_color(const Palette &pal)
+{
+    // Note: Color::Interpolate blends in LINEAR light, so these fractions are considerably
+    // larger than the sRGB result suggests (0.4 yields RGB(82,172,189) -- barely darker).
+    // Interpolating towards Color::RGB(0,0,0), NOT towards Color::Black(): a Palette1 colour
+    // makes Interpolate return one of its arguments instead of mixing, and NOT towards
+    // window_bg either -- on the light palette that is white, i.e. it would brighten the glyph.
+    return ::ftxui::Color::Interpolate(kInputPromptFade, pal.accent, ::ftxui::Color::RGB(0, 0, 0));
+}
+
+// The badge's glyphs: pure black on the accent fill (~12:1 on the dark palette's cyan, ~9:1 on
+// the light one's deeper blue). Fixed black rather than a palette slot on purpose -- the fill
+// is light in both themes, so black is the ink that always works.
+inline ::ftxui::Color input_frame_ink()
+{
+    return ::ftxui::Color::RGB(0, 0, 0);
+}
+
 inline bool TaskStateProcessing(const std::string &state)
 {
     return state == "LLM_PROCESSING" || state == "TOOL_CALLING";

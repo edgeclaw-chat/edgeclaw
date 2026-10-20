@@ -60,8 +60,10 @@ SHELL SYNTAX (off by default)
      shell, and fails silently when you do not have one (a stray | makes
      one odd task instead of two, and nothing says why).  Turn it on with
      "/shell on"; the state is persisted and "/shell" alone reports it.  It is
-     not a footer cell: its effect shows up where it matters (a line that will
-     be parsed says so above the input).
+     not a footer cell: its effect shows up where it matters -- the rule above the
+     input box writes the draft's name into itself as a filled badge ("--- message
+     ---", "--- command ---", "--- local shell ---", "--- shell ---", "--- syntax
+     error ---") for any non-empty draft, and the prompt below never moves.
 
      With it off, every line that is not a / command is ONE task
      description, verbatim.  / commands are never gated -- /shell itself

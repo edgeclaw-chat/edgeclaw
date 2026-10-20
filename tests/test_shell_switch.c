@@ -142,6 +142,58 @@ static bool run_shell_cmd(struct edc_config *cfg, struct edc_session_manager *sm
     return handled;
 }
 
+/* The input-kind predicate is what the UI's mode tag reads; it must agree with the
+ * dispatch in every branch, so it is exercised as a table rather than one case at a time.
+ * `err` is non-NULL exactly when the dispatch would reject the line. */
+static void test_input_kind_table(void)
+{
+    struct
+    {
+        const char *text;
+        bool shell_on;
+        edc_in_kind want;
+        bool want_err;
+    } cases[] = {
+        {"", false, EDC_IN_MESSAGE, false},
+        {"hello", false, EDC_IN_MESSAGE, false},
+        {"hello", true, EDC_IN_MESSAGE, false},
+        {"!git status", false, EDC_IN_LOCALSHELL, false},
+        {"!git status", true, EDC_IN_LOCALSHELL, false},
+        {"/task list", false, EDC_IN_COMMAND, false},
+        {"/task list", true, EDC_IN_COMMAND, false},
+        {"\"a\" | \"b\"", false, EDC_IN_MESSAGE, false},
+        {"\"a\" | \"b\"", true, EDC_IN_SHELL, false},
+        {"+\"x\"", false, EDC_IN_MESSAGE, false},
+        {"+\"x\"", true, EDC_IN_SHELL, false},
+        {"\"abc", true, EDC_IN_MESSAGE, true},
+        {"+", true, EDC_IN_MESSAGE, true},
+        {"+!cmd", true, EDC_IN_MESSAGE, true},
+    };
+
+    TEST("edc_commands_input_kind(): one predicate, both switch states, errors flagged");
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+    {
+        struct edc_config *cfg = calloc(1, sizeof(*cfg));
+        cfg->shell_syntax = cases[i].shell_on;
+        sds err = NULL;
+        const edc_in_kind got = edc_commands_input_kind(cfg, cases[i].text, &err);
+        if (got != cases[i].want || (err != NULL) != cases[i].want_err)
+        {
+            printf("FAIL: `%s` (switch %s) -> kind %d err=%d, wanted kind %d err=%d\n", cases[i].text,
+                   cases[i].shell_on ? "on" : "off", (int)got, err != NULL, (int)cases[i].want,
+                   (int)cases[i].want_err);
+            failed++;
+        }
+        else
+        {
+            passed++;
+        }
+        sdsfree(err);
+        free(cfg);
+    }
+    printf("  (each row counts once; the last message above is the failing one)\n");
+}
+
 int main(void)
 {
     const char *ws = "/tmp/test_shell_switch_ws";
@@ -171,6 +223,8 @@ int main(void)
 
     TEST("default is OFF (a fresh config must opt in)");
     CHECK(!cfg->shell_syntax, "shell_syntax starts false");
+
+    test_input_kind_table();
 
     TEST("`a | b` with the switch off is ONE task, verbatim (not a pipe chain)");
     struct edc_task_group *front = edc_scheduler_get_foreground(sess);

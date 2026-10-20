@@ -636,6 +636,11 @@ void TestPaletteEnterPicks(edc::TUIWindow &win)
     // 输入行整行文本（行尾填充空格去掉）。
     auto input_line = [&](const std::string &f) {
         std::string line = LineOf(f, RowOf(f, "❯"));
+        // 行首是固定的模式槽（"cmd" / "sh" / "!sh" / "err"，普通消息是 3 个空格）。
+        // 这里只比从 "❯" 起的部分 —— 槽的可见性由 TestInputModeTag 单独钉。
+        const size_t at = line.find("❯");
+        if (at != std::string::npos)
+            line = line.substr(at);
         while (!line.empty() && line.back() == ' ')
             line.pop_back();
         return line;
@@ -687,6 +692,11 @@ void TestHistoryRecallKeepsArrows(edc::TUIWindow &win)
     // 用子串判定会让"根本没回翻"也通过。
     auto input_line = [&](const std::string &f) {
         std::string line = LineOf(f, RowOf(f, "❯"));
+        // 行首是固定的模式槽（"cmd" / "sh" / "!sh" / "err"，普通消息是 3 个空格）。
+        // 这里只比从 "❯" 起的部分 —— 槽的可见性由 TestInputModeTag 单独钉。
+        const size_t at = line.find("❯");
+        if (at != std::string::npos)
+            line = line.substr(at);
         while (!line.empty() && line.back() == ' ')
             line.pop_back();
         return line;
@@ -737,6 +747,35 @@ void TestHistoryRecallKeepsArrows(edc::TUIWindow &win)
     win.OnEvent(::ftxui::Event::Escape);
     for (int i = 0; i < 32; i++)
         win.OnEvent(::ftxui::Event::Backspace);
+}
+
+// 输入框上面那条分割线兼做"这行会被怎么读"的标签（"──── shell ────"）：
+// 普通消息保持整条线，其它情况把名字写进线里。它读的是派发用的同一个谓词
+// （edc_commands_input_kind），所以标签和回车永远一致。
+void TestInputModeTag(edc::TUIWindow &win)
+{
+    std::cout << "输入框分割线上的模式标签\n";
+    auto type = [&](const char *s) {
+        for (const char *p = s; *p; p++)
+            win.OnEvent(::ftxui::Event::Character(std::string(1, *p)));
+    };
+    auto clear = [&]() {
+        for (int i = 0; i < 40; i++)
+            win.OnEvent(::ftxui::Event::Backspace);
+    };
+
+    // 普通消息：也标 message（空输入框是唯一不标的状态）。
+    type("hello");
+    Check(Has(FrameOf(win), "─── message "), "普通消息也标 message");
+    Check(Has(FrameOf(win), "❯ hello"), "提示符位置不动（❯ 仍贴左）");
+    clear();
+    Check(!Has(FrameOf(win), "─── message ") && !Has(FrameOf(win), "─── command "), "清空后回到无标签");
+
+    // `/` 命令：名字写进线里，靠左（不是居中 —— 居中看着像个装饰）。
+    type("/task");
+    Check(Has(FrameOf(win), "─── command "), "命令行：线上靠左标 command");
+    Check(Has(FrameOf(win), "❯ /task"), "提示符位置不动（❯ 仍贴左）");
+    clear();
 }
 
 // 键盘中断：Esc 只在有任务在跑时被吃掉（停下来）；Ctrl+C 第一次清空输入框、连按两次
@@ -830,6 +869,7 @@ int main()
     TestCommandPalette(win);
     TestPaletteEnterPicks(win);
     TestHistoryRecallKeepsArrows(win);
+    TestInputModeTag(win);
     TestInterruptKeys(win);
     TestInterruptedStartupHint(win);
 

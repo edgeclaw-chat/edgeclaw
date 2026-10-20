@@ -244,7 +244,9 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
         [this] { return sidebar_width_; }, [this] { return app_ ? app_->ContextWindow() : 0; });
 
     const auto &pal = style::palette();
-    prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(pal.prompt) | ::ftxui::bold;
+    // The prompt glyph is a step darker than the input box's frame (style::input_prompt_color):
+    // a one-cell glyph at the badge's brightness reads as a lamp, not as punctuation.
+    prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(style::input_prompt_color(pal)) | ::ftxui::bold;
 
     // Multiline chat draft with soft (visual) wrapping. Long unbroken lines
     // wrap onto following rows instead of overflowing the input width;
@@ -880,6 +882,45 @@ void TUIWindow::TickAnimations()
     screen_->RequestAnimationFrame();
 }
 
+::ftxui::Element TUIWindow::InputSeparatorElement()
+{
+    const edc_input_mode mode = app_ ? app_->InputMode(input_text_) : EDC_INPUT_TEXT;
+    const std::string label = InputModeLabel(mode);
+
+    // One colour for the whole frame: the rules and the badge's fill are the SAME colour, so
+    // the line runs straight into the badge -- the badge is not a chip laid on top of the rule,
+    // it is a word written into it. That colour is the accent toned down (style::
+    // input_frame_color): at full strength it reads as neon across a hundred columns.
+    const auto &pal = style::palette();
+    const ::ftxui::Color rule = style::input_frame_color(pal);
+    const ::ftxui::Color badge = rule;
+
+    // The empty box is the one state with no label: nothing is being read yet, and an
+    // untouched input should not look decorated.
+    if (input_text_.empty())
+        return ::ftxui::separator() | ::ftxui::color(rule);
+
+    // The exception writes its name INTO the rule, near its left end: a short run of the
+    // line, then the label, then the line running to the right edge. (Centred between two
+    // equal runs looked decorative and cost the eye a jump; the label belongs to the line
+    // the input box starts on, so it sits where reading starts.)
+    //
+    // `| flex` is load-bearing on the trailing run: a bare separator in an hbox gets one
+    // column and draws the VERTICAL glyph (│), while a stretched one sees a line box and
+    // draws "─". The leading run is a fixed 3 columns, which is what keeps the label at the
+    // left instead of floating to the middle of the row.
+    //
+    // A FILLED badge, not coloured text: the label sits IN the line as a block, its glyphs
+    // punched out in the frame ink, so the line runs into it and the badge is what the eye
+    // lands on. Which mode it is, the word says -- every mode wears the same fill; the kind
+    // is not a colour signal.
+    return ::ftxui::hbox({::ftxui::separator() | ::ftxui::size(::ftxui::WIDTH, ::ftxui::EQUAL, 3) |
+                              ::ftxui::color(rule),
+                          ::ftxui::text(" " + label + " ") | ::ftxui::bgcolor(badge) |
+                              ::ftxui::color(style::input_frame_ink()) | ::ftxui::bold,
+                          ::ftxui::separator() | ::ftxui::flex | ::ftxui::color(rule)});
+}
+
 ::ftxui::Element TUIWindow::RenderMain()
 {
     auto input_row = ::ftxui::hbox({prompt_, input_->Render() | ::ftxui::flex});
@@ -919,11 +960,12 @@ void TUIWindow::TickAnimations()
     ::ftxui::Elements children = {chat | ::ftxui::flex};
     if (!history_view_ && command_palette_.open() && !setup_dialog_->IsOpen())
         children.push_back(ui::CommandPaletteElement(command_palette_));
-    children.push_back(::ftxui::separator());
+    children.push_back(InputSeparatorElement());
     if (!history_view_)
     {
         children.push_back(input_row);
-        children.push_back(::ftxui::separator());
+        // The box's bottom rule wears the same colour, so the input reads as one framed block.
+        children.push_back(::ftxui::separator() | ::ftxui::color(style::input_frame_color(style::palette())));
     }
 
     // History view: the input is off screen, so the return hint takes the bottom

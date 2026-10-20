@@ -1,5 +1,7 @@
 #pragma once
 
+#include "edc_api.h" /* edc_input_mode: what the mode tag renders */
+
 #include <ftxui/component/component_base.hpp>
 #include <ftxui/screen/box.hpp>
 #include <string>
@@ -7,6 +9,15 @@
 
 namespace edc
 {
+
+// The label a mode gets when it is written INTO the input box's top rule
+// ("──── shell ────"): how the command layer will read the line being typed.
+//
+// Every draft gets a name, the plain message included: silence would read as "not classified
+// yet", and the whole point of the label is that the reader never has to remember the rule
+// table. The one state with no label is the EMPTY input box -- nothing is being read yet --
+// which is also what keeps that row from looking decorated before you type.
+std::string InputModeLabel(edc_input_mode mode);
 
 // A multi-line editor that soft-wraps long logical lines to the widget's width
 // (CJK/wide-char aware) instead of clipping them. Editing only ever changes the

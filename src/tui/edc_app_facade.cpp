@@ -74,6 +74,13 @@ bool AppFacade::ShellSyntax() const
     return app_ && edc_app_shell_syntax(app_);
 }
 
+edc_input_mode AppFacade::InputMode(const std::string &text) const
+{
+    if (!app_)
+        return EDC_INPUT_TEXT;
+    return edc_app_input_mode(app_, text.c_str());
+}
+
 int AppFacade::ContextWindow() const
 {
     return app_ ? edc_app_config_context_window(app_) : 0;

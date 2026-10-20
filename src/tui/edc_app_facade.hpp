@@ -121,6 +121,9 @@ class IAppFacade
     // line can say how the current line will be read -- /shell flips it while the TUI runs.
     // (Deliberately not a footer field: the switch is not worth a permanent cell.)
     virtual bool ShellSyntax() const = 0;
+    // How the command layer would read |text| right now: the input line's mode tag
+    // reads this per frame, so the tag and Enter can never disagree.
+    virtual edc_input_mode InputMode(const std::string &text) const = 0;
     // The configured model's context window in tokens (0 = unknown). The status bar
     // reads it to show "ctx used/window".
     virtual int ContextWindow() const = 0;
@@ -198,6 +201,7 @@ class AppFacade : public IAppFacade
     bool ConfigApiKey(std::string *out) const override;
     bool SandboxEnabled() const override;
     bool ShellSyntax() const override;
+    edc_input_mode InputMode(const std::string &text) const override;
     int ContextWindow() const override;
 
     bool Onboarded() const override;

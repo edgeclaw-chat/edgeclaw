@@ -172,6 +172,30 @@ bool edc_app_shell_syntax(const struct edc_app *app)
     return cfg && cfg->shell_syntax;
 }
 
+edc_input_mode edc_app_input_mode(const struct edc_app *app, const char *text)
+{
+    struct edc_config *cfg = edc_app_config(app);
+    sds err = NULL;
+    const edc_in_kind kind = edc_commands_input_kind(cfg, text, &err);
+    if (err)
+    {
+        sdsfree(err);
+        return EDC_INPUT_REJECTED;
+    }
+    switch (kind)
+    {
+    case EDC_IN_COMMAND:
+        return EDC_INPUT_COMMAND;
+    case EDC_IN_LOCALSHELL:
+        return EDC_INPUT_LOCALSHELL;
+    case EDC_IN_SHELL:
+        return EDC_INPUT_SHELL;
+    case EDC_IN_MESSAGE:
+    default:
+        return EDC_INPUT_TEXT;
+    }
+}
+
 int edc_app_onboarded(const struct edc_app *app)
 {
     struct edc_config *cfg = edc_app_config(app);

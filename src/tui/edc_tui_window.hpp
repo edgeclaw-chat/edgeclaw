@@ -180,6 +180,11 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // Switch the log to |session_id|: the log is cleared and that session's
     // messages re-derived, so it always belongs to the displayed session.
     ::ftxui::Element RenderMain();
+    // The input box's top rule, which doubles as the "how will this line be read" label
+    // ("──── shell ────") when the line is anything but a plain message. Reads the live
+    // draft through the facade (the same predicate the dispatch uses), so it is
+    // re-evaluated every frame and cannot drift from what Enter will do.
+    ::ftxui::Element InputSeparatorElement();
     // Put the selection on the clipboard and raise the chip; runs on the frame
     // after the drag was released, once FTXUI's selection is complete.
     void CopySelectionToClipboard();

@@ -69,6 +69,20 @@ extern bool edc_app_sandbox_enabled(const struct edc_app *app);
  * /shell on|off flips it and /shell alone reports it. It is read per frame so the input
  * line can say how the current line will be read. */
 extern bool edc_app_shell_syntax(const struct edc_app *app);
+
+/* How the command layer will read the line currently being typed -- the frontend's copy
+ * of the ONE predicate (edc_commands_input_kind), so a tag on the input line can never
+ * disagree with what Enter does. |text| is the raw draft (not trimmed). */
+typedef enum
+{
+    EDC_INPUT_TEXT = 0, /* one task, verbatim -- the default, and the common case */
+    EDC_INPUT_COMMAND,  /* /… */
+    EDC_INPUT_LOCALSHELL, /* !… (never gated by the shell switch) */
+    EDC_INPUT_SHELL,    /* a shell line: quoted strings ± the sigil + */
+    EDC_INPUT_REJECTED, /* the line is already an error (unterminated quote, "+!cmd", …) */
+} edc_input_mode;
+
+extern edc_input_mode edc_app_input_mode(const struct edc_app *app, const char *text);
 /* First-run wizard: false until the user finished/skipped the setup page. */
 extern int edc_app_onboarded(const struct edc_app *app);
 /* The configured context window (tokens), for the setup page's default. */

@@ -3,6 +3,7 @@
 
 #include "edc_channel_actor.h"
 #include "edc_config.h"
+#include "edc_interp.h" /* edc_in_kind: the input kind edc_commands_input_kind() returns */
 #include "edc_task_types.h" /* edc_task_end: named in the resume reply signature */
 #include "sds.h"
 #include <stdbool.h>
@@ -25,6 +26,19 @@ extern int edc_commands_table_names(const char **out, int cap);
 
 extern bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
                                  struct edc_reply_to to, struct edc_channel_message *);
+
+/** What the command layer will do with |text| -- THE predicate, shared by the dispatch
+ *  below and by whatever wants to say it out loud (the TUI's input-line mode tag).
+ *
+ *  One rule, one place: `!` is a local shell and `/` is a command (both are dispatch
+ *  prefixes, not parser vocabulary, so neither is gated by the shell switch); anything
+ *  else goes to the shell layer, which lexes it in the mode the switch selects and
+ *  classifies it as a shell line or a plain message. A rejection -- an unterminated
+ *  quote, `+` with nothing after it, `+!cmd` -- comes back as EDC_IN_MESSAGE with |*err|
+ *  set to the sentence the dispatch would reply with (the caller frees it).
+ *
+ *  Empty input is EDC_IN_MESSAGE (nothing to do). |err| may be NULL. */
+extern edc_in_kind edc_commands_input_kind(const struct edc_config *cfg, const char *text, sds *err);
 extern void edc_commands_reply(struct edc_reply_to to, const char *text);
 
 /** The `/group info` body: one group's context and fold numbers, so "why is this group

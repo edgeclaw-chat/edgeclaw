@@ -151,6 +151,16 @@ error — not a task quietly called `hello`.
 and `/shell` itself has to stay reachable to turn the switch back on. So `/task new`,
 `/skill` and `/prompt` keep working either way.
 
+**The rule above the input box tells you how the line you are typing will be read.** While you
+are typing, the draft's name is written into the line, near the left, as a filled badge --
+`─── message ───` for ordinary text (the empty box says nothing, there is nothing to read yet),
+then `─── command ───` (`/…`),
+`─── local shell ───` (`!…`), `─── shell ───` (a shell line), `─── syntax error ───` (a line
+that already cannot be parsed — the same badge, not an alarm: half-typed quotes are *supposed*
+to be unterminated while you type). The label comes
+from the same predicate the dispatch uses, so it cannot disagree with what Enter does, and the
+prompt below it never moves.
+
 The state is persisted (`config.json` → `shell_syntax`). `/shell on|off` is the only way
 to flip it — deliberately no CLI flag, so there is one way to say it and it is the one that
 persists — and `/shell` with no argument reports the current state. It is deliberately not

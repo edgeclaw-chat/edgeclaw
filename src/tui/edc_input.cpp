@@ -66,6 +66,24 @@ EdcInput::EdcInput(std::string *content, std::string placeholder, int max_visibl
     box_.y_max = -1;
 }
 
+std::string InputModeLabel(edc_input_mode mode)
+{
+    switch (mode)
+    {
+    case EDC_INPUT_COMMAND:
+        return "command";
+    case EDC_INPUT_LOCALSHELL:
+        return "local shell";
+    case EDC_INPUT_SHELL:
+        return "shell";
+    case EDC_INPUT_REJECTED:
+        return "syntax error";
+    case EDC_INPUT_TEXT:
+    default:
+        return "message"; /* the common case gets a name too -- silence reads as "unclassified" */
+    }
+}
+
 void EdcInput::Reset()
 {
     cursor_ = 0;

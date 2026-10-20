@@ -3642,6 +3642,35 @@ int edc_commands_table_names(const char **out, int cap)
     return n;
 }
 
+edc_in_kind edc_commands_input_kind(const struct edc_config *cfg, const char *text, sds *err)
+{
+    if (err)
+        *err = NULL;
+    if (!text || !*text)
+        return EDC_IN_MESSAGE;
+
+    /* The two dispatch prefixes. Neither is the parser's vocabulary -- `!` never enters
+     * the shell layer at all (one token, one exec_shell task) and `/` belongs to the
+     * command layer -- so the switch, which only selects the LEXER's vocabulary, has no
+     * say here. */
+    if (text[0] == '!')
+        return EDC_IN_LOCALSHELL;
+    if (text[0] == '/')
+        return EDC_IN_COMMAND;
+
+    /* Everything else is the shell layer's call, decided by the same two calls
+     * edc_shell_execute makes, in the same order: lex in the switch's mode, then classify
+     * the tokens (a pure function -- see edc_classify). The lexer has a catch-all rule,
+     * so a false here means "not our input": treat it as a message rather than inventing
+     * a fifth kind. */
+    edc_lex_out toks;
+    if (!edc_lex(text, (cfg && cfg->shell_syntax) ? EDC_LEX_SHELL_ON : EDC_LEX_SHELL_OFF, &toks))
+        return EDC_IN_MESSAGE;
+    const edc_in_kind kind = edc_classify(&toks, err);
+    edc_lex_out_free(&toks);
+    return kind;
+}
+
 bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
                           struct edc_reply_to to, struct edc_channel_message *message)
 {
@@ -3651,28 +3680,25 @@ bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm
     if (!message || !message->content)
         return false;
 
-    /* The shell-like syntax master switch (see edc_config.shell_syntax). It owns the `+`
-     * sigil, the quoting rule and the whole operator vocabulary -- in other words exactly
-     * what the shell parser understands. Two things are NOT shell syntax and are never
-     * gated: `/` commands (the `/shell` switch itself has to stay reachable to turn it back
-     * on) and `!` local shell (it issues one exec_shell call and never enters the parser, so
-     * a user who has the switch off still gets a command instead of a task description). */
-    /* `+desc` is SHELL syntax and is handled in the shell layer (edc_shell_execute), which
+    /* Where this line goes is decided ONCE, by the predicate the UI also reads
+     * (edc_commands_input_kind). The comment on that function is the whole rule; the
+     * short version: `!` and `/` are dispatch prefixes (never gated), everything else is
+     * the shell layer's call.
+     *
+     * `+desc` is SHELL syntax and is handled in the shell layer (edc_shell_execute), which
      * the fall-through below reaches. It deliberately does NOT combine with the command
      * syntax: `+/task new …` / `+!cmd` used to run the command in a new group, and that is
      * gone -- the two syntaxes are separate, and a line is one or the other. */
+    const edc_in_kind kind = edc_commands_input_kind(cfg, message->content, NULL);
 
     /* `!cmd`: a user-typed local shell command. It becomes a task of its own that issues
      * one `exec_shell` call and settles on its result -- no model involved, and the
-     * output lands in the group's history like any other task's. Deliberately outside the
-     * shell_syntax switch (below): `!` is not part of the parser's vocabulary, it is a
-     * one-token dispatch, so it means the same thing with the switch on or off. The `\!`
-     * escape (and any input that is not ours) falls through to the paths below. */
-    if (message->content[0] == '!' && edc_local_shell_handle(sm, sched, to, message))
+     * output lands in the group's history like any other task's. */
+    if (kind == EDC_IN_LOCALSHELL && edc_local_shell_handle(sm, sched, to, message))
         return true;
 
     /* / commands: shell builtins first, then shortcuts, then existing handlers */
-    if (message->content[0] == '/')
+    if (kind == EDC_IN_COMMAND)
     {
         if (edc_shell_handle_builtin(cfg, sm, to, message))
             return true;

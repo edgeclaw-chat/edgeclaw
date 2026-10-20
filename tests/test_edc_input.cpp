@@ -478,6 +478,18 @@ static void test_history_prefix_exact_and_shorter(void)
     CHECK(!input.IsBrowsingHistory(), "nothing matched, so no browse");
 }
 
+// The mode label is what gets written into the input box's top rule. A plain message has
+// none (the rule stays plain, and the prompt below stays flush left); everything else names
+// itself, and the two separators centre it.
+static void test_input_mode_label()
+{
+    CHECK(edc::InputModeLabel(EDC_INPUT_TEXT) == "message", "a plain message says message");
+    CHECK(edc::InputModeLabel(EDC_INPUT_COMMAND) == "command", "a / command says command");
+    CHECK(edc::InputModeLabel(EDC_INPUT_LOCALSHELL) == "local shell", "a ! line says local shell");
+    CHECK(edc::InputModeLabel(EDC_INPUT_SHELL) == "shell", "a shell line says shell");
+    CHECK(edc::InputModeLabel(EDC_INPUT_REJECTED) == "syntax error", "a rejected line says syntax error");
+}
+
 int main(void)
 {
     test_long_word_wraps();
@@ -498,6 +510,7 @@ int main(void)
     test_history_prefix_filters_entries();
     test_history_prefix_no_match_keeps_caret();
     test_history_prefix_exact_and_shorter();
+    test_input_mode_label();
 
     if (g_failures)
     {
