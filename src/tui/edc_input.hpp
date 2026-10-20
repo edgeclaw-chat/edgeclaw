@@ -107,22 +107,24 @@ class EdcInput : public ::ftxui::ComponentBase
     // Drop one recall entry (its payload is gone for good: never offer it again).
     void RemoveHistoryEntry(const std::string &entry);
 
-    // ── Atomic tokens: a completed `@file` mention ───────────────────
+    // ── Tokens ───────────────────────────────────────────────────────
     //
-    // A mention accepted from the completion popup becomes ONE unit on screen: Backspace
-    // and Delete remove it whole, Left/Right step over it, exactly like a folded paste
-    // chip. It carries no payload and changes nothing about the line -- `@path` stays in
-    // the buffer and the AST-layer pass still reads the file (sandbox + budget), because
-    // that reading is I/O and cannot live in the text layer. This is editing feel only.
+    // A token's identity is a function of the TEXT, not of what this run happens to
+    // remember: the same `ScanTokens()` the chat bubble uses decides, so a line typed now
+    // and the same line recalled from history behave identically -- display, atomic
+    // delete, everything. Nothing has to be registered, and nothing is lost on a restart.
     //
-    // Matching is by text, like the paste keys: no offsets to maintain. A label that no
-    // longer appears in the draft costs nothing (there are no bytes behind it), so the
-    // list is only ever appended to.
-    void RegisterAtom(const std::string &label);
-    size_t AtomCount() const
+    // What the library adds is only the BYTES behind a paste placeholder (and those arrive
+    // from the store when a recalled line needs them); `@path` needs none, because the AST
+    // pass reads the file at submit time.
+    struct Token
     {
-        return atoms_.size();
-    }
+        int begin = 0;
+        int end = 0;
+        bool paste = false;
+    };
+    // The draft's tokens, in order, cached on the same epoch as the expansion.
+    const std::vector<Token> &Tokens() const;
 
     // The draft with every placeholder replaced by its parked text -- what this line
     // actually says. Single pass, non-recursive, cached until the draft or the blocks
@@ -242,14 +244,9 @@ class EdcInput : public ::ftxui::ComponentBase
     // Column of the caret (cached for vertical movement) or -1 if unset.
     int CaretColumn();
 
-    // ── Folded-paste plumbing ────────────────────────────────────────
-    //
-    std::string payload_key_of(int index) const;
-    // Longest token starting at / ending at |at|, over BOTH kinds (a payload block or an
-    // atom). |*is_paste| tells them apart (the renderer styles them differently, and only
-    // a paste block has bytes).
-    bool TokenStartingAt(int at, int *end, std::string *key = nullptr, bool *is_paste = nullptr) const;
-    bool TokenEndingAt(int at, int *begin, std::string *key = nullptr, bool *is_paste = nullptr) const;
+    // The token that starts at / ends at |at| (nullptr when there is none).
+    const Token *TokenStartingAt(int at) const;
+    const Token *TokenEndingAt(int at) const;
     void InvalidateExpansion();
     // One visual row, split into plain text and chips (a chip is drawn as a block).
     ::ftxui::Element RowElement(const Row &row, int caret_at, bool is_focused,
@@ -295,8 +292,9 @@ class EdcInput : public ::ftxui::ComponentBase
     mutable struct edc_payload *draft_payload_ = nullptr;
     mutable long long draft_at_ = -1;
     std::function<void(const std::string &)> recall_hook_;
-    // Completed `@file` mentions: atomic while editing, no payload behind them.
-    std::vector<std::string> atoms_;
+    // Tokens of the current draft (see Token above), rebuilt when the text changes.
+    mutable std::vector<Token> tokens_cache_;
+    mutable long long tokens_at_ = -1;
     // ExpandedDraft() cache. |expanded_epoch_| moves on every edit or payload change;
     // |expanded_at_| is the epoch the cached string was built at.
     mutable std::string expanded_cache_;

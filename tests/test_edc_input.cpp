@@ -624,11 +624,14 @@ static void test_history_entry_removal(void)
 
 static void test_mention_atom(void)
 {
-    std::printf("  mention atom: a completed `@file` is one unit while editing\n");
+    std::printf("  mention token: an `@file` is one unit while editing, typed or recalled\n");
     std::string text = "看下 @src/main.c 这段";
     edc::EdcInput input(&text, "");
-    input.RegisterAtom("@src/main.c");
-    CHECK(input.AtomCount() == 1, "the mention is registered");
+
+    /* Nothing was registered: the token comes from the text alone, so a mention typed by
+     * hand, completed from the popup and recalled from history are the same thing. */
+    CHECK(input.Tokens().size() == 1, "the text alone yields one token");
+    CHECK(input.Tokens()[0].paste == false, "and it is a mention");
 
     /* The buffer is unchanged: `@` keeps its meaning, nothing is expanded. */
     CHECK(text == "看下 @src/main.c 这段", "'%s'", text.c_str());
@@ -656,7 +659,7 @@ static void test_mention_atom(void)
     input.OnEvent(ftxui::Event::ArrowRight);
     CHECK(input.CursorPosition() == static_cast<int>(text.size()), "Right jumps past it: %d", input.CursorPosition());
 
-    /* Rendering keeps the text (the underline is a style, not a different string). */
+    /* Rendering keeps the text (the colour is a style, not a different string). */
     const auto screen = render_twice(input, 40, 4);
     CHECK(row_text(screen, 0, 40) == "see @src/main.c", "row 0: '%s'", row_text(screen, 0, 40).c_str());
 }
@@ -714,7 +717,6 @@ static void test_token_colours(void)
         const ftxui::Color mention_fg = edc::style::input_mention_text();
         std::string text = "see @src/main.c";
         edc::EdcInput input(&text, "");
-        input.RegisterAtom("@src/main.c");
         const auto screen = render_twice(input, 40, 4);
         const auto cell = screen.CellAt(4, 0); /* the '@' */
         CHECK(cell.foreground_color == mention_fg, "the mention wears the keyword colour");
@@ -723,6 +725,65 @@ static void test_token_colours(void)
         CHECK(mention_fg != provider->pal.md_link, "the mention is not the link blue any more");
         CHECK(mention_fg != paste_fg, "and not the paste colour either");
     }
+
+    edc::style::SetPaletteProvider(nullptr);
+}
+
+/* A line recalled from history after a restart is just text: nothing was registered and the
+ * paste's bytes arrive over an async pull. It must look and behave exactly like the line
+ * that was typed -- one path, decided by the text (edc_token_style.hpp). */
+static void test_recalled_line_matches_typed(void)
+{
+    std::printf("  tokens: a recalled line looks and edits like a typed one\n");
+
+    auto provider = std::make_shared<FixedPalette>();
+    provider->pal = edc::style::palette();
+    edc::style::SetPaletteProvider(provider);
+
+    const ftxui::Color mention = edc::style::input_mention_text();
+    const ftxui::Color paste_fg = edc::style::input_paste_text();
+    const ftxui::Color paste_bg = edc::style::input_paste_surface();
+
+    /* Just text, put there the way a recall puts it: no registration of any kind. */
+    std::string text = "看下 @src/main.c 和 [Pasted #1 \xc2\xb7 2 lines]";
+    edc::EdcInput input(&text, "");
+    CHECK(input.Tokens().size() == 2, "both tokens come from the text");
+    CHECK(edc_payload_empty(input.Blocks()), "no bytes yet");
+    CHECK(input.HasUnresolvedBlocks(), "the paste label is still waiting for its bytes");
+
+    const auto screen = render_twice(input, 60, 4);
+    bool saw_at = false, saw_paste = false;
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 60; ++x)
+        {
+            const auto cell = screen.CellAt(x, y);
+            if (cell.character == "@")
+            {
+                saw_at = true;
+                CHECK(cell.foreground_color == mention, "an unknown @mention is still pink");
+            }
+            if (cell.character == "[" && x + 1 < 60 && screen.CellAt(x + 1, y).character == "P")
+            {
+                saw_paste = true;
+                CHECK(cell.foreground_color == paste_fg, "an unresolved paste label keeps its colour");
+                CHECK(cell.background_color == paste_bg, "and its surface");
+            }
+        }
+    CHECK(saw_at && saw_paste, "both kinds were drawn");
+
+    /* And it edits like a typed line: Backspace right after the label removes the WHOLE
+     * block on the first press, even though its bytes have not arrived (the label is a token
+     * by its text; only the bytes are pending). */
+    input.SetCursor(static_cast<int>(text.size()));
+    input.OnEvent(ftxui::Event::Backspace);
+    CHECK(text == "看下 @src/main.c 和 ", "the whole label goes at once: '%s'", text.c_str());
+    input.OnEvent(ftxui::Event::Backspace);
+    CHECK(text == "看下 @src/main.c 和", "then the space the insert left: '%s'", text.c_str());
+
+    /* The mention behaves the same way, with no bytes involved at all. */
+    input.SetCursor(static_cast<int>(text.find(" 和")));
+    input.OnEvent(ftxui::Event::Backspace);
+    CHECK(text == "看下  和", "the whole @mention goes: '%s'", text.c_str());
 
     edc::style::SetPaletteProvider(nullptr);
 }
@@ -765,6 +826,7 @@ int main(void)
     test_history_entry_removal();
     test_mention_atom();
     test_token_colours();
+    test_recalled_line_matches_typed();
     test_input_mode_label();
 
     if (g_failures)

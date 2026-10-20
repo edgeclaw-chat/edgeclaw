@@ -166,16 +166,17 @@ const struct edc_payload *EdcInput::DraftPayload() const
 
 bool EdcInput::HasUnresolvedBlocks() const
 {
-    /* The only way to notice "this placeholder has no bytes behind it": walk the draft's
-     * own placeholder sigil. Nothing else in the widget looks at the text. */
-    static const char kSigil[] = "[Pasted #";
-    size_t at = content_->find(kSigil);
-    while (at != std::string::npos)
+    /* A paste token the draft points at but the library has no bytes for: the line cannot
+     * be sent yet (the bytes come from the store). Tokens are syntactic, so this is the
+     * only thing left that can be "unknown". */
+    for (const Token &token : Tokens())
     {
-        int end = 0;
-        if (!TokenStartingAt(static_cast<int>(at), &end))
+        if (!token.paste)
+            continue;
+        const std::string key =
+            content_->substr(static_cast<size_t>(token.begin), static_cast<size_t>(token.end - token.begin));
+        if (!edc_payload_get(blocks_, key.c_str()))
             return true;
-        at = content_->find(kSigil, static_cast<size_t>(end));
     }
     return false;
 }
@@ -199,91 +200,32 @@ void EdcInput::RemoveHistoryEntry(const std::string &entry)
 }
 
 
-bool EdcInput::TokenStartingAt(int at, int *end, std::string *key, bool *is_paste) const
+const std::vector<EdcInput::Token> &EdcInput::Tokens() const
 {
-    if (at < 0 || at >= static_cast<int>(content_->size()))
-        return false;
+    if (tokens_at_ == expanded_epoch_)
+        return tokens_cache_;
 
-    const size_t room = content_->size() - static_cast<size_t>(at);
-    size_t best_len = 0;
-    bool best_paste = false;
-    std::string best_key;
-
-    auto consider = [&](const char *candidate, bool paste) {
-        const size_t len = candidate ? strlen(candidate) : 0;
-        // Longest match wins: one key may be a prefix of another.
-        if (len == 0 || len > room || len <= best_len)
-            return;
-        if (content_->compare(static_cast<size_t>(at), len, candidate) == 0)
-        {
-            best_len = len;
-            best_paste = paste;
-            best_key.assign(candidate, len);
-        }
-    };
-
-    if (blocks_)
-        for (int i = 0; i < blocks_->n; ++i)
-            consider(blocks_->items[i].key, true);
-    for (const std::string &atom : atoms_)
-        consider(atom.c_str(), false);
-
-    if (best_len == 0)
-        return false;
-    if (end)
-        *end = at + static_cast<int>(best_len);
-    if (key)
-        *key = best_key;
-    if (is_paste)
-        *is_paste = best_paste;
-    return true;
+    tokens_cache_.clear();
+    for (const TokenSpan &span : ScanTokens(*content_))
+        tokens_cache_.push_back({static_cast<int>(span.begin), static_cast<int>(span.begin + span.len), span.paste});
+    tokens_at_ = expanded_epoch_;
+    return tokens_cache_;
 }
 
-bool EdcInput::TokenEndingAt(int at, int *begin, std::string *key, bool *is_paste) const
+const EdcInput::Token *EdcInput::TokenStartingAt(int at) const
 {
-    if (at <= 0 || at > static_cast<int>(content_->size()))
-        return false;
-
-    size_t best_len = 0;
-    bool best_paste = false;
-    std::string best_key;
-    auto consider = [&](const char *candidate, bool paste) {
-        const size_t len = candidate ? strlen(candidate) : 0;
-        if (len == 0 || len > static_cast<size_t>(at) || len <= best_len)
-            return;
-        if (content_->compare(static_cast<size_t>(at) - len, len, candidate) == 0)
-        {
-            best_len = len;
-            best_paste = paste;
-            best_key.assign(candidate, len);
-        }
-    };
-
-    if (blocks_)
-        for (int i = 0; i < blocks_->n; ++i)
-            consider(blocks_->items[i].key, true);
-    for (const std::string &atom : atoms_)
-        consider(atom.c_str(), false);
-
-    if (best_len == 0)
-        return false;
-    if (begin)
-        *begin = at - static_cast<int>(best_len);
-    if (key)
-        *key = best_key;
-    if (is_paste)
-        *is_paste = best_paste;
-    return true;
+    for (const Token &token : Tokens())
+        if (token.begin == at)
+            return &token;
+    return nullptr;
 }
 
-void EdcInput::RegisterAtom(const std::string &label)
+const EdcInput::Token *EdcInput::TokenEndingAt(int at) const
 {
-    if (label.empty())
-        return;
-    for (const std::string &known : atoms_)
-        if (known == label)
-            return;
-    atoms_.push_back(label);
+    for (const Token &token : Tokens())
+        if (token.end == at)
+            return &token;
+    return nullptr;
 }
 
 std::string InputModeLabel(edc_input_mode mode)
@@ -539,7 +481,12 @@ int EdcInput::CaretColumn()
     {
         int block_end = 0;
         bool is_paste = false;
-        if (TokenStartingAt(p, &block_end, nullptr, &is_paste) && block_end <= row.end)
+        if (const Token *token = TokenStartingAt(p))
+        {
+            block_end = token->end;
+            is_paste = token->paste;
+        }
+        if (block_end > p && block_end <= row.end)
         {
             /* A paste chip owns one space of padding: the insert puts a space right after
              * the placeholder, and painting it with the chip's surface is what makes the
@@ -726,19 +673,20 @@ bool EdcInput::HandleBackspace()
     if (cursor_ == 0)
         return false;
     StopBrowsing();
-    int block_begin = 0;
-    std::string block_key;
-    bool is_paste = false;
-    if (TokenEndingAt(cursor_, &block_begin, &block_key, &is_paste))
+    if (const Token *token = TokenEndingAt(cursor_))
     {
         // One token on screen, one token to Backspace: the whole placeholder -- or the whole
-        // `@mention` -- goes. Only a paste block also drops its bytes (deleting it is how you
-        // discard that); an atom has none, and `@` keeps its meaning either way.
-        content_->erase(static_cast<size_t>(block_begin), static_cast<size_t>(cursor_ - block_begin));
-        cursor_ = block_begin;
+        // `@mention` -- goes, whether it was typed, completed or recalled. A paste block
+        // also drops its bytes (deleting it is how you discard that); an `@path` has none.
+        const std::string key =
+            content_->substr(static_cast<size_t>(token->begin), static_cast<size_t>(token->end - token->begin));
+        const int begin = token->begin;
+        const bool paste = token->paste;
+        content_->erase(static_cast<size_t>(begin), static_cast<size_t>(cursor_ - begin));
+        cursor_ = begin;
         desired_col_ = -1;
-        if (is_paste)
-            edc_payload_remove(blocks_, block_key.c_str());
+        if (paste)
+            edc_payload_remove(blocks_, key.c_str());
         InvalidateExpansion();
         return true;
     }
@@ -755,16 +703,17 @@ bool EdcInput::HandleDelete()
     if (cursor_ >= static_cast<int>(content_->size()))
         return false;
     StopBrowsing();
-    int block_end = 0;
-    std::string block_key;
-    bool is_paste = false;
-    if (TokenStartingAt(cursor_, &block_end, &block_key, &is_paste))
+    if (const Token *token = TokenStartingAt(cursor_))
     {
         // Mirror of Backspace: Delete on the first glyph of a token removes all of it.
-        content_->erase(static_cast<size_t>(cursor_), static_cast<size_t>(block_end - cursor_));
+        const std::string key =
+            content_->substr(static_cast<size_t>(token->begin), static_cast<size_t>(token->end - token->begin));
+        const int end = token->end;
+        const bool paste = token->paste;
+        content_->erase(static_cast<size_t>(cursor_), static_cast<size_t>(end - cursor_));
         desired_col_ = -1;
-        if (is_paste)
-            edc_payload_remove(blocks_, block_key.c_str());
+        if (paste)
+            edc_payload_remove(blocks_, key.c_str());
         InvalidateExpansion();
         return true;
     }
@@ -787,10 +736,9 @@ bool EdcInput::MoveLeft()
 {
     if (cursor_ == 0)
         return false;
-    int block_begin = 0;
-    if (TokenEndingAt(cursor_, &block_begin))
+    if (const Token *token = TokenEndingAt(cursor_))
     {
-        cursor_ = block_begin; // one move over the whole chip
+        cursor_ = token->begin; // one move over the whole token
         desired_col_ = -1;
         return true;
     }
@@ -803,10 +751,9 @@ bool EdcInput::MoveRight()
 {
     if (cursor_ >= static_cast<int>(content_->size()))
         return false;
-    int block_end = 0;
-    if (TokenStartingAt(cursor_, &block_end))
+    if (const Token *token = TokenStartingAt(cursor_))
     {
-        cursor_ = block_end; // right before the chip -> right after it
+        cursor_ = token->end; // right before the token -> right after it
         desired_col_ = -1;
         return true;
     }

@@ -1398,10 +1398,9 @@ bool TUIWindow::AcceptCompletion()
             RecomputeCommandPalette();
             return true;
         }
-        // The mention is complete: from here it is ONE unit (Backspace/Delete remove it
-        // whole, Left/Right step over it), like a folded paste chip. The buffer still says
-        // `@path` and the AST-layer pass still reads the file -- this is editing feel only.
-        input_->RegisterAtom(insert.substr(0, insert.size() - 1));
+        // The inserted `@path` is already one unit: a token's identity comes from the text
+        // (edc_token_style.hpp), so nothing has to be registered -- and the same holds for a
+        // mention typed by hand or recalled from history.
         command_palette_.Close();
         return true;
     }
