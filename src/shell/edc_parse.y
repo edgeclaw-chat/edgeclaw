@@ -122,8 +122,7 @@ input
 stage_head
     : T_WORD                            { if (!g_cur->fully_quoted)
                                           {
-                                              set_err("a shell stage must be one quoted string, e.g. "
-                                                      "`\"text\"` -- an unquoted word there is ambiguous");
+                                              set_err(EDC_QUOTED_DESC_HINT);
                                               YYERROR;
                                           }
                                           stage_begin(); stage_set_word(g_cur); } opts
@@ -169,7 +168,7 @@ bool edc_parse(const edc_lex_out *toks, edc_ast *out, sds *err)
         if (toks->toks[i].kind == TK_BAD_QUOTED)
         {
             if (err)
-                *err = sdsnew("Unterminated quoted string — `\"…\"` on a shell line must close.");
+                *err = edc_lex_unterminated_quote(toks->toks[i].value, toks->toks[i].begin + 1);
             return false;
         }
 

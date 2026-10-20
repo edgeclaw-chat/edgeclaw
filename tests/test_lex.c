@@ -121,6 +121,35 @@ int main(void)
     CHECK(o.toks[0].kind == TK_WORD, "everything is words");
     edc_lex_out_free(&o);
 
+    TEST("an unclosed quote is one token, and the error names it AND where it starts");
+    CHECK(edc_lex("\"a\" ; \"unclosed tail", EDC_LEX_SHELL_ON, &o), "lex ok");
+    {
+        int bad = -1;
+        for (int i = 0; i < o.count; i++)
+            if (o.toks[i].kind == TK_BAD_QUOTED)
+                bad = i;
+        CHECK(bad >= 0, "the lexer marks the bad token itself (no side channel)");
+        if (bad >= 0)
+        {
+            sds msg = edc_lex_unterminated_quote(o.toks[bad].value, o.toks[bad].begin + 1);
+            /* The three call sites (parser / `+` branch / classifier) all use this
+             * one builder, so pinning its shape here pins all of them. */
+            CHECK(strstr(msg, "at column 7") != NULL, "the column is where the quote opens");
+            CHECK(strstr(msg, "unclosed tail") != NULL, "and the offending text is quoted back");
+            CHECK(strstr(msg, "`\"text\"`") != NULL, "with the shape of a correct line");
+            sdsfree(msg);
+        }
+    }
+    edc_lex_out_free(&o);
+
+    TEST("a very long unclosed quote is truncated, not dumped in full");
+    {
+        sds msg = edc_lex_unterminated_quote("\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1);
+        CHECK(sdslen(msg) < 160, "the snippet is capped");
+        CHECK(strstr(msg, "…") != NULL, "and says it was cut");
+        sdsfree(msg);
+    }
+
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

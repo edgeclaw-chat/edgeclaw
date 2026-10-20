@@ -59,6 +59,31 @@ typedef struct
 bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out);
 void edc_lex_out_free(edc_lex_out *out);
 
+/* The ONE message for "a quote opened and never closed". Shared by the three
+ * places that can notice it (the lexer's TK_BAD_QUOTED check in edc_parse, the
+ * `+` sigil branch and the classifier), because the same mistake used to be
+ * reported three different ways. Naming the offending text and where it starts is
+ * the whole point: "unterminated quoted string" alone leaves the user hunting.
+ *
+ * |text| is the source slice that starts at the unclosed quote (may be NULL),
+ * |col| is its 1-based column. */
+static inline sds edc_lex_unterminated_quote(const char *text, size_t col)
+{
+    char snippet[32];
+    size_t n = 0;
+    while (text && text[n] && text[n] != '\n' && n + 1 < sizeof(snippet))
+    {
+        snippet[n] = text[n];
+        n++;
+    }
+    snippet[n] = '\0';
+    const bool cut = text && text[n] && text[n] != '\n';
+    return sdscatprintf(sdsempty(),
+                        "Unterminated quoted string at column %zu: `%s%s` never closes — every quote on a shell "
+                        "line must close, e.g. `\"text\"`.",
+                        col, snippet, cut ? "…" : "");
+}
+
 /* 一段文本 -> argv：切词**归词法器**（相邻片段拼接、引号已去），所以
  * `review "a b"` 得到 2 个参数而不是 3 个。命令层用它，算符不参与（SHELL_OFF）。 */
 sds *edc_argv_from_tail(const char *tail, int *out_count);

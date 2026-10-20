@@ -7,6 +7,7 @@
 #include "edc_compat.h"
 #include "edc_context.h"
 #include "edc_models.h"
+#include "edc_parse.h"
 #include "edc_file_utils.h"
 #include "edc_path_guard.h"
 #include "edc_group_fold.h"
@@ -1118,8 +1119,7 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
      * text is rejected rather than quietly creating a task nobody meant. */
     if (edc_cmd_desc_needs_quotes(arg))
     {
-        edc_commands_reply(to, "Syntax error — `/task new` with options needs its description quoted: "
-                               "write `/task new \"<description>\" --bg`, or drop the options.");
+        edc_commands_reply(to, "Syntax error — `/task new`: " EDC_QUOTED_DESC_HINT ".");
         return;
     }
     struct edc_cmd_task_opts opts;

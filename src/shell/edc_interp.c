@@ -42,7 +42,7 @@ edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
     if (f->kind == TK_BAD_QUOTED)
     {
         if (err)
-            *err = sdsnew("Unterminated quoted string — a line that opens with a quote must close it.");
+            *err = edc_lex_unterminated_quote(f->value, f->begin + 1);
         return EDC_IN_MESSAGE;
     }
     if (f->kind == TK_WORD && f->fully_quoted)
@@ -60,7 +60,7 @@ edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
         if (n->kind == TK_BAD_QUOTED)
         {
             if (err)
-                *err = sdsnew("Unterminated quoted string — the `\"…\"` after `+` has no closing quote.");
+                *err = edc_lex_unterminated_quote(n->value, n->begin + 1);
             return EDC_IN_MESSAGE;
         }
         /* Ⓐ `+!cmd` / `+/task …`：两层语法不组合（token 的 value 里看得见）。 */
