@@ -194,6 +194,25 @@ std::vector<model::CommandFact> AppFacade::Commands() const
     return out;
 }
 
+/* Only meaningful with the shell switch ON: with it off a line that opens with a quote is
+ * a message, so offering options would suggest a syntax that is not in force. */
+std::vector<model::CommandFact> AppFacade::ShellOptions() const
+{
+    std::vector<model::CommandFact> out;
+    if (!ShellSyntax())
+        return out;
+    const size_t n = edc_app_shell_option_count();
+    out.reserve(n);
+    for (size_t i = 0; i < n; i++)
+    {
+        const char *t = edc_app_shell_option_text(i);
+        const char *b = edc_app_shell_option_brief(i);
+        if (t)
+            out.push_back({t, b ? b : ""});
+    }
+    return out;
+}
+
 std::vector<model::CommandFact> AppFacade::CommandFamilies() const
 {
     std::vector<model::CommandFact> out;

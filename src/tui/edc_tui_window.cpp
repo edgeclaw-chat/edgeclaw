@@ -1262,6 +1262,10 @@ void TUIWindow::RecomputeCommandPalette()
         command_palette_.SetSource(app_->CommandFamilies(), app_->Commands());
         palette_loaded_ = true;
     }
+    // The shell line's option vocabulary follows the switch (the facade returns none while
+    // it is off), so a stale one can never offer syntax that is not in force.
+    if (app_)
+        command_palette_.SetShellOptionSource(app_->ShellOptions());
     // `@`: the caret is inside a file reference. The kernel owns the tree, so ask it for
     // the candidates that match what has been typed -- the popup only shows them.
     const int cursor = input_->CursorPosition();

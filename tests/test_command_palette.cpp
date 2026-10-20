@@ -338,6 +338,62 @@ int main(void)
         CHECK(!Upd(p, "+/task"), "`+` does not combine with the command syntax, so `+/...` is not a command line");
     }
 
+    /* ── a SHELL line's option vocabulary ─────────────────────────────────── */
+    {
+        auto shell = [](bool on) {
+            CommandPalette p = Make();
+            if (on)
+                p.SetShellOptionSource({CommandFact{"--bg", "background"},
+                                        CommandFact{"--new-group", "own group"},
+                                        CommandFact{"-g <group>", "existing group"},
+                                        CommandFact{"-d <task>", "wait for a task"}});
+            else
+                p.SetShellOptionSource({});
+            return p;
+        };
+
+        TEST("shell line: typing an option word lists the options, Tab splices it in");
+        {
+            CommandPalette p = shell(true);
+            CHECK(Upd(p, "\"desc\" --n"), "open on `--n`");
+            CHECK(p.items().size() == 1 && p.items()[0].text == "--new-group", "filtered to --new-group");
+            CHECK(p.Accept() == "\"desc\" --new-group ", "the description stays, the option is appended");
+        }
+        {
+            CommandPalette p = shell(true);
+            CHECK(Upd(p, "\"desc\" -d"), "open on `-d`");
+            CHECK(p.Accept() == "\"desc\" -d ", "an option that takes a value leaves the space for it");
+        }
+        {
+            CommandPalette p = shell(true);
+            CHECK(Upd(p, "\"desc\" --"), "open on `--`");
+            CHECK(p.items().size() == 2, "both long options");
+            CHECK(p.Accept() == "\"desc\" --bg ", "nothing left to grow: the highlighted row breaks the tie");
+        }
+        {
+            /* The `+` sigil form is the same line shape. */
+            CommandPalette p = shell(true);
+            CHECK(Upd(p, "+\"desc\" --b"), "open after the sigil form");
+            CHECK(p.Accept() == "+\"desc\" --bg ", "spliced after the same prefix");
+        }
+        {
+            TEST("shell line but not an option word -> no popup");
+            CommandPalette p = shell(true);
+            CHECK(!Upd(p, "\"desc\""), "a plain quoted description has no vocabulary");
+            CHECK(!Upd(p, "\"desc\" more"), "a following word is not an option");
+            /* A COMPLETE option stays listed (same as `\"/task \"` listing subcommands): the
+             * word has nothing left to grow, so Tab only finishes it with the space. */
+            CHECK(Upd(p, "\"desc\" --bg"), "a complete option keeps the list open");
+            CHECK(p.Accept() == "\"desc\" --bg ", "and Tab just leaves the space after it");
+        }
+        {
+            TEST("switch off (no vocabulary) -> no popup, and a message is unaffected");
+            CommandPalette p = shell(false);
+            CHECK(!Upd(p, "\"desc\" --b"), "no shell-line completion while the switch is off");
+            CHECK(!Upd(p, "hello --b"), "an ordinary message never opens the popup");
+        }
+    }
+
     if (failed)
     {
         printf("\n%d failed\n", failed);

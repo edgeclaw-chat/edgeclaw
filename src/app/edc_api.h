@@ -114,6 +114,12 @@ extern const char *edc_app_cmd_brief(size_t index);
 extern size_t edc_app_cmd_family_count(void);
 extern const char *edc_app_cmd_family_name(size_t index);
 extern const char *edc_app_cmd_family_brief(size_t index);
+
+/* The shell line's option vocabulary (what may follow a quoted description), used by the
+ * completion popup when the input is a shell line. Same shape as the command rows. */
+extern size_t edc_app_shell_option_count(void);
+extern const char *edc_app_shell_option_text(size_t index);
+extern const char *edc_app_shell_option_brief(size_t index);
 /* ── Prompt library (read-only projection of <workspace>/prompts) ────────────
  * The frontend's completion popup offers `/prompt <name>`, so it needs the template
  * names: one "<name>\t<description>" line per template (the description is empty when the

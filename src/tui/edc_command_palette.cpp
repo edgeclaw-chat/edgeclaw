@@ -85,15 +85,22 @@ std::string CommonPrefix(const std::string &a, const std::string &b)
     return a.substr(0, n);
 }
 
-// The text Tab inserts for one row: the command itself, dropping the argument shape
-// ("<desc>", "[--bg]", the "|" of an alternative), with one space left for the next token.
-std::string CompletionOf(const std::string &cmd)
+// A row's literal part: the text up to its argument shape ("<desc>", "[--bg]", the "|" of
+// an alternative), trailing spaces trimmed. "-d <task>" -> "-d".
+std::string LiteralOf(const std::string &cmd)
 {
     const size_t cut = cmd.find_first_of("<|[");
     std::string head = (cut == std::string::npos) ? cmd : cmd.substr(0, cut);
     while (!head.empty() && head.back() == ' ')
         head.pop_back();
-    return head + " ";
+    return head;
+}
+
+// The text Tab inserts for one row: the command itself, dropping the argument shape, with
+// one space left for the next token.
+std::string CompletionOf(const std::string &cmd)
+{
+    return LiteralOf(cmd) + " ";
 }
 
 } // namespace
@@ -113,6 +120,11 @@ void CommandPalette::SetArgSource(std::string head, std::vector<CommandFact> row
 void CommandPalette::SetFileSource(std::vector<CommandFact> rows)
 {
     file_rows_ = std::move(rows);
+}
+
+void CommandPalette::SetShellOptionSource(std::vector<CommandFact> rows)
+{
+    shell_option_rows_ = std::move(rows);
 }
 
 CommandPalette::MentionHit CommandPalette::ParseMention(const std::string &content, int cursor)
@@ -191,9 +203,37 @@ bool CommandPalette::Update(const std::string &content, int cursor)
     }
     mode_ = Mode::Command;
 
-    // Gate: a single line that starts with '/'. (Multi-line input -- Alt+Enter or a
-    // paste -- never shows the popup.)
-    if (content_.empty() || content_[0] != '/' || content_.find('\n') != std::string::npos)
+    // Gate: a single line. (Multi-line input -- Alt+Enter or a paste -- never shows the
+    // popup.)
+    if (content_.empty() || content_.find('\n') != std::string::npos)
+    {
+        open_ = false;
+        return false;
+    }
+
+    // A SHELL line ("desc" --bg / +"desc" --bg / 'desc' --bg): while an option word is
+    // being typed, the option vocabulary is the list. Only the word under the caret is a
+    // filter here -- the quoted description before it is context, not a prefix.
+    const bool shell_line = content_[0] == '"' || content_[0] == '\'' || content_[0] == '+';
+    if (shell_line && !shell_option_rows_.empty())
+    {
+        const size_t sp = content_.rfind(' ');
+        const std::string word = (sp == std::string::npos) ? content_ : content_.substr(sp + 1);
+        if (!word.empty() && word[0] == '-')
+        {
+            mode_ = Mode::ShellOption;
+            items_.clear();
+            for (const CommandFact &r : shell_option_rows_)
+                if (r.text.compare(0, word.size(), word) == 0)
+                    items_.push_back(r);
+            open_ = !items_.empty();
+            return open_;
+        }
+        open_ = false;
+        return false;
+    }
+
+    if (content_[0] != '/')
     {
         open_ = false;
         return false;
@@ -334,6 +374,40 @@ std::string CommandPalette::Accept() const
 {
     if (!open_ || items_.empty())
         return content_;
+
+    // A shell line's option word is spliced into the line: everything before it stays
+    // (that is the quoted description), the chosen option replaces the word. WordCompletion
+    // cannot do this -- it grows a token, and for "--bg" the token is the whole candidate.
+    if (mode_ == Mode::ShellOption)
+    {
+        const size_t sp = content_.rfind(' ');
+        const std::string prefix = (sp == std::string::npos) ? std::string() : content_.substr(0, sp + 1);
+        const std::string typed = (sp == std::string::npos) ? content_ : content_.substr(sp + 1);
+
+        std::string common;
+        bool whole = true;
+        bool first = true;
+        for (const CommandFact &r : items_)
+        {
+            const std::string lit = LiteralOf(r.text);
+            if (first)
+            {
+                common = lit;
+                first = false;
+            }
+            else
+            {
+                common = CommonPrefix(common, lit);
+                if (common != lit)
+                    whole = false;
+            }
+        }
+        // Grow the word when the candidates still share something ("--" stays "--");
+        // otherwise take the highlighted row, which is what Up/Down is for.
+        if (common.size() > typed.size() && common.compare(0, typed.size(), typed) == 0)
+            return prefix + common + (whole ? " " : "");
+        return prefix + CompletionOf(items_[selected_].text);
+    }
 
     // 1. Complete the ONE word being typed ("/sess" -> "/session "): Tab grows a token, it
     //    does not swallow a whole candidate row.

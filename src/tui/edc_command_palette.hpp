@@ -36,6 +36,7 @@ class CommandPalette
     {
         Command,
         Mention,
+        ShellOption, // a shell line's option word ("desc" --bg) -- see SetShellOptionSource
     };
 
     // Where an `@` reference starts and what has been typed after it. Pure: no state, so
@@ -58,6 +59,11 @@ class CommandPalette
     // This is how a command whose first argument is an open set -- the prompt library --
     // gets its names into the list.
     void SetArgSource(std::string head, std::vector<CommandFact> rows);
+
+    // The option vocabulary of a shell line (--bg, -g <group>, …), empty when the shell
+    // switch is off. Only consulted when the line IS a shell line and the word under the
+    // caret starts with '-': the popup then lists options instead of commands.
+    void SetShellOptionSource(std::vector<CommandFact> rows);
 
     // The `@` candidates, already filtered by the query (the kernel walks the tree; this
     // only holds the rows). A directory's text ends with '/'.
@@ -129,6 +135,7 @@ class CommandPalette
     std::vector<CommandFact> arg_rows_;
     std::vector<CommandFact> items_;
     std::vector<CommandFact> file_rows_;
+    std::vector<CommandFact> shell_option_rows_;
     Mode mode_ = Mode::Command;
     int trigger_ = 0;
     int cursor_ = 0;

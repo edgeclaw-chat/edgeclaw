@@ -153,6 +153,9 @@ class IAppFacade
     // tokens) a bare "/" lists.
     virtual std::vector<model::CommandFact> Commands() const = 0;
     virtual std::vector<model::CommandFact> CommandFamilies() const = 0;
+    // The option vocabulary of a shell line (what may follow its quoted description):
+    // completion rows for the palette, empty when the shell switch is off.
+    virtual std::vector<model::CommandFact> ShellOptions() const = 0;
     // The prompt templates, as palette rows ("/prompt <name>", brief = its description):
     // the vocabulary of the `/prompt <name>` argument.
     virtual std::vector<model::CommandFact> PromptNames(const std::string &workdir) const = 0;
@@ -217,6 +220,7 @@ class AppFacade : public IAppFacade
 
     std::vector<model::CommandFact> Commands() const override;
     std::vector<model::CommandFact> CommandFamilies() const override;
+    std::vector<model::CommandFact> ShellOptions() const override;
     std::vector<model::CommandFact> PromptNames(const std::string &workdir) const override;
     std::vector<model::CommandFact> SkillNames(const std::string &workdir) const override;
     std::vector<model::CommandFact> FileCandidates(const std::string &workdir,

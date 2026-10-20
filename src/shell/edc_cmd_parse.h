@@ -34,6 +34,15 @@ struct edc_cmd_task_opts
 
 /* ── API ───────────────────────────────────────────────────── */
 
+/* The option words a shell line accepts AFTER its quoted description, and a one-line
+ * brief each. This is the single table the completion palette's shell-line vocabulary
+ * comes from (it mirrors edc_lex.l, which is what actually tokenizes them): the rows ARE
+ * these entries, so the popup cannot promise an option the lexer does not know. A row's
+ * text stops at the argument shape ("-d <task>"), so completing it leaves a space for it. */
+size_t edc_cmd_shell_option_count(void);
+const char *edc_cmd_shell_option_text(size_t index);
+const char *edc_cmd_shell_option_brief(size_t index);
+
 /** Unquote ONE leading quoted region -- `"…"`, `'…'`, `"""…"""`, `'''…'''`, escapes as in
  *  Python -- and store the position just past the closing delimiter in |*end_out|.
  *  Returns the inner text (caller frees), or NULL when |s| does not open a quoted region

@@ -24,6 +24,7 @@
 #include "edc_actor.h"
 #include "edc_app.h"
 #include "edc_channel_actor.h"
+#include "edc_cmd_parse.h"
 #include "edc_commands.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
@@ -290,6 +291,19 @@ const char *edc_app_cmd_family_name(size_t index)
 const char *edc_app_cmd_family_brief(size_t index)
 {
     return edc_commands_family_brief(index);
+}
+
+const char *edc_app_shell_option_text(size_t index)
+{
+    return edc_cmd_shell_option_text(index);
+}
+size_t edc_app_shell_option_count(void)
+{
+    return edc_cmd_shell_option_count();
+}
+const char *edc_app_shell_option_brief(size_t index)
+{
+    return edc_cmd_shell_option_brief(index);
 }
 
 /* The prompt templates under <workspace>/prompts/, as "<name>\t<description>" lines.

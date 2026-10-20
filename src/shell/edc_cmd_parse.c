@@ -333,3 +333,38 @@ void edc_cmd_task_opts_free(struct edc_cmd_task_opts *opts)
     free(opts->dep_ids);
     memset(opts, 0, sizeof(*opts));
 }
+
+/* ── the shell-line option vocabulary (one table, see edc_cmd_parse.h) ──────── */
+
+/* Mirrors the TK_OPT / TK_OPTARG rules in edc_lex.l. When an option is added there, it
+ * belongs here too -- otherwise the popup would offer what the lexer rejects, or stay
+ * silent about what it accepts. The text stops at the argument shape so completion can
+ * leave a space behind it ("-d " and not "-d <task>"). */
+static const struct
+{
+    const char *text;
+    const char *brief;
+} k_shell_options[] = {
+    {"--bg", "run the task in the background"},
+    {"--new-group", "put the task in a group of its own"},
+    {"-g <group>", "put the task in that existing group"},
+    {"--group <id>", "same as -g"},
+    {"-d <task>", "wait for that task and inject its output"},
+    {"--with <task>", "same as -d"},
+};
+#define EDC_SHELL_OPTION_COUNT (sizeof(k_shell_options) / sizeof(k_shell_options[0]))
+
+size_t edc_cmd_shell_option_count(void)
+{
+    return EDC_SHELL_OPTION_COUNT;
+}
+
+const char *edc_cmd_shell_option_text(size_t index)
+{
+    return index < EDC_SHELL_OPTION_COUNT ? k_shell_options[index].text : NULL;
+}
+
+const char *edc_cmd_shell_option_brief(size_t index)
+{
+    return index < EDC_SHELL_OPTION_COUNT ? k_shell_options[index].brief : NULL;
+}
