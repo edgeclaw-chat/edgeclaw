@@ -13,8 +13,11 @@
  * it when a message is submitted -- the model may have just written a file). */
 #include <stddef.h>
 
-/* Up to |cap| bytes of "<relative path>\t<f|d>\n" rows, best match first, at most 20
- * rows. A directory's path ends with '/'. |query| NULL/"" lists the default order.
+/* Up to |cap| bytes of "<relative path>\t<f|d|s>\n" rows, best match first, at most 20
+ * rows. A directory's path ends with '/' (kind 'd'); kind 's' is the directory the query
+ * ITSELF names ("sub/" -> "sub\ts"), offered so a mention of the whole directory can be
+ * completed -- accepting that row finishes the mention instead of descending into it.
+ * |query| NULL/"" lists the default order.
  * Returns the number of rows written (0 when nothing matches or the root is unusable). */
 size_t edc_file_index_query(const char *root, const char *query, char *buf, size_t cap);
 

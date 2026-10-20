@@ -102,10 +102,36 @@ static void test_mention_trigger(void)
     CHECK(h.active && h.begin == 3 && h.query == "b", "begin 3, query 'b'");
 }
 
+static void test_mention_insert(void)
+{
+    TEST("@ completion inserts a file with a trailing space, a directory with a slash");
+    CommandPalette p;
+    p.SetSource({}, {});
+    p.SetFileSource({{"src/main.c", ""}, {"src/", ""}});
+    p.Update("@sr", 3);
+    CHECK(p.mode() == CommandPalette::Mode::Mention, "mention mode");
+    /* The first row is selected: a file -> "@src/main.c " (the space finishes it). */
+    CHECK(p.MentionInsert() == "@src/main.c ", "a file row is inserted with a trailing space");
+
+    /* A directory row keeps the list open: no space, so the next level can be picked. */
+    CommandPalette only_dir;
+    only_dir.SetFileSource({{"src/", ""}});
+    only_dir.Update("@sr", 3);
+    CHECK(only_dir.MentionInsert() == "@src/", "a CHILD directory row opens the next level (no space)");
+
+    /* ...but the directory the query ALREADY names ("@src/") is a reference of its own:
+     * accepting it finishes the mention instead of descending. */
+    CommandPalette self;
+    self.SetFileSource({{"src", "", /*mention_completes=*/true}, {"src/tui/", ""}});
+    self.Update("@src/", 5);
+    CHECK(self.MentionInsert() == "@src ", "the directory the query names finishes the mention");
+}
+
 int main(void)
 {
     printf("=== command palette tests ===\n\n");
     test_mention_trigger();
+    test_mention_insert();
 
     {
         TEST("bare '/' lists the families, not every row");

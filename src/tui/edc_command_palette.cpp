@@ -163,7 +163,12 @@ std::string CommandPalette::MentionInsert() const
 {
     if (items_.empty() || selected_ < 0 || selected_ >= static_cast<int>(items_.size()))
         return "";
-    const std::string &row = items_[static_cast<size_t>(selected_)].text;
+    const model::CommandFact &item = items_[static_cast<size_t>(selected_)];
+    /* The directory the query already points into: accepting it means "this directory",
+     * so the mention is finished (trailing space) rather than opened for the next level. */
+    if (item.mention_completes)
+        return "@" + item.text + " ";
+    const std::string &row = item.text;
     const bool dir = !row.empty() && row.back() == '/';
     return "@" + row + (dir ? "" : " ");
 }

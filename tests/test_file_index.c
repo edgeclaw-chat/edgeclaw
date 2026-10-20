@@ -100,9 +100,16 @@ int main(void)
 
     TEST("a path prefix browses one level");
     {
-        CHECK(edc_file_index_query(ws, "sub/", buf, sizeof(buf)) == 2, "b.txt and deep/");
-        CHECK(strstr(buf, "sub/deep/") != NULL, "the nested directory is written with its path");
+        /* The directory the query points INTO comes first (its own row), then its
+         * children -- `@sub` is a real reference (the mention pass lists a directory),
+         * so the popup must be able to hand it back. */
+        CHECK(edc_file_index_query(ws, "sub/", buf, sizeof(buf)) == 3, "sub itself, b.txt, deep/");
+        CHECK(strncmp(buf, "sub\ts\n", 6) == 0, "the directory itself is kind 's', ahead of its children");
+        CHECK(strstr(buf, "sub/b.txt\tf") != NULL, "a file child keeps its path and kind");
+        CHECK(strstr(buf, "sub/deep/\td") != NULL, "the nested directory is written with its path");
         CHECK(edc_file_index_query(ws, "sub/de", buf, sizeof(buf)) == 1, "one more component: only deep/ is one level in");
+        CHECK(strstr(buf, "sub/deep/\td") != NULL && strstr(buf, "\ts\n") == NULL,
+              "a partial name has no 'the directory itself' row");
     }
 
     TEST(".. walks out of the root, and the rows become absolute");

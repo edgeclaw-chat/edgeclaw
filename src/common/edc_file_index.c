@@ -187,7 +187,6 @@ size_t edc_file_index_query(const char *root, const char *query, char *buf, size
     edc_dir_foreach(dir_real, list_cb, &ctx, &error);
     if (error)
         edc_error_free(error);
-    free(dir_real);
 
     qsort(ctx.hits, ctx.n, sizeof(*ctx.hits), hit_cmp);
 
@@ -198,6 +197,33 @@ size_t edc_file_index_query(const char *root, const char *query, char *buf, size
     const size_t base_len = base_real ? strlen(base_real) : 0;
 
     size_t used = 0, rows = 0;
+
+    /* 3b. The query can name a directory ITSELF ("@src/"). A directory reference is
+     * meaningful -- the mention pass turns it into a [DIR]/[FILE] listing -- so the popup
+     * has to be able to hand the directory back, not only its children. The row is the
+     * query minus its trailing slashes, kind 's' ("select this one, do not descend"),
+     * and it only appears when the directory is strictly inside the completion root:
+     * the root itself, an absolute path or a ".." walk-out have no short relative form
+     * (and outside the root the reference is usually refused by the sandbox anyway). */
+    if (!absolute && base_real && sdslen(prefix) == 0 && q[0])
+    {
+        size_t qlen = strlen(q);
+        const bool stepped_in = qlen > 0 && q[qlen - 1] == '/';
+        while (qlen > 1 && q[qlen - 1] == '/')
+            qlen--;
+        const bool inside = strncmp(dir_real, base_real, base_len) == 0 && dir_real[base_len] == '/';
+        if (stepped_in && inside)
+        {
+            const int need = snprintf(buf + used, cap - used, "%.*s\ts\n", (int)qlen, q);
+            if (need > 0 && (size_t)need < cap - used)
+            {
+                used += (size_t)need;
+                rows++;
+            }
+        }
+    }
+    free(dir_real);
+
     for (size_t i = 0; i < ctx.n && rows < EDC_FILES_MAX_RESULTS; i++)
     {
         const char *path = ctx.hits[i].path;

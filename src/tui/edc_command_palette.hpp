@@ -25,6 +25,9 @@ struct CommandFact
 {
     std::string text;  // "/task new <desc>   [--bg] …", or a family name "/task"
     std::string brief; // one line
+    // `@` completion only: this row IS the directory the query already points into
+    // ("@src/" -> "src"). Accepting it finishes the mention instead of descending.
+    bool mention_completes = false;
 };
 
 class CommandPalette
