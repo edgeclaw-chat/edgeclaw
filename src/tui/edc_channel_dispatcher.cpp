@@ -1,5 +1,7 @@
 #include "edc_channel_dispatcher.hpp"
 
+#include "edc_token_style.hpp"
+
 #include <map>
 #include <memory>
 #include <utility>
@@ -23,7 +25,11 @@ std::shared_ptr<const std::map<std::string, std::string>> TaskInputsOf(const Tas
     for (const TaskGroup &g : snap.groups)
         for (const TaskInfo &t : g.tasks)
             if (!t.input.empty())
-                (*inputs)[t.task_id] = t.input;
+            {
+                /* `input` is the expanded text (what the model saw); the bubble shows the
+                 * line the user typed, so a folded paste goes back to its placeholder. */
+                (*inputs)[t.task_id] = FoldPastedText(t.input, t.payload);
+            }
     return inputs;
 }
 

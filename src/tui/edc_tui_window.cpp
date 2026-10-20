@@ -5,6 +5,7 @@
 #include "edc_command_palette.hpp"
 #include "edc_domain.hpp"
 #include "edc_history_line.hpp"
+#include "edc_token_style.hpp"
 #include "edc_input.hpp"
 #include "edc_scroll_view.hpp"
 #include "edc_sidebar.hpp"
@@ -330,6 +331,14 @@ void TUIWindow::Submit()
     const auto last = expanded.find_last_not_of(" \t\r\n");
     std::string message = expanded.substr(first, last - first + 1);
 
+    /* What the user SAW, and what the bubble/transcript record: a folded block stays the
+     * placeholder it was in the box (the bytes go to the app, not to the screen). Without
+     * a folded block the two strings are the same one. */
+    std::string draft_entry = input_text_;
+    const auto d_first = draft_entry.find_first_not_of(" \t\r\n");
+    const auto d_last = draft_entry.find_last_not_of(" \t\r\n");
+    draft_entry = d_first == std::string::npos ? std::string() : draft_entry.substr(d_first, d_last - d_first + 1);
+
     // "/connect" is handled locally: open the setup wizard and do not send anything to
     // the app or record it as a chat message. It is the same page the first run shows.
     if (message == "/connect")
@@ -346,12 +355,9 @@ void TUIWindow::Submit()
     // active that is all the log needs; under a selection the input is drawn from
     // the task's own raw_input, as the first user message of its history
     // (ChatWidget::SetTaskInputs), so it is hidden here and shown there.
-    chat_widget_->AddMessage(std::make_shared<UserMessage>(message, ::time(nullptr)));
-    AppendChatTranscript("user", "", message, "", EDC_APP_RENDER_PLAIN);
-    // A draft that still holds a folded block is not recorded for ArrowUp recall: the
-    // history file keeps plain text only, and a recalled placeholder with no payload
-    // behind it would go out as the literal `[Pasted #1 · 42 lines]`. (Payload lookup by
-    // message id is the follow-up that makes these recallable.)
+    const std::string &shown = draft_entry.empty() ? message : draft_entry;
+    chat_widget_->AddMessage(std::make_shared<UserMessage>(shown, ::time(nullptr)));
+    AppendChatTranscript("user", "", shown, "", EDC_APP_RENDER_PLAIN);
     // Only what this draft actually references travels with the message.
     const struct edc_payload *draft_payload = input_->DraftPayload();
     std::string payload_json;
@@ -364,12 +370,7 @@ void TUIWindow::Submit()
             edc_payload_string_free(json);
         }
     }
-    // What ArrowUp should give back is what the user SAW (placeholders kept), and the mid
-    // is what lets that recalled line fetch its bytes back from the store.
-    std::string draft_entry = input_text_;
-    const auto d_first = draft_entry.find_first_not_of(" \t\r\n");
-    const auto d_last = draft_entry.find_last_not_of(" \t\r\n");
-    draft_entry = d_first == std::string::npos ? std::string() : draft_entry.substr(d_first, d_last - d_first + 1);
+    // The mid is what lets a recalled line fetch its bytes back from the store.
     const std::string mid = NewMessageMid();
     input_text_.clear();
     input_->Reset(); // caret/scroll back to the start after the external clear
@@ -1543,6 +1544,21 @@ static void AppendHistoryBubbles(const cJSON *messages, const std::string &task_
         }
 
         std::string text = body ? body : "";
+        if (kind == "user")
+        {
+            /* The message holds the expanded text; the history view shows the line the
+             * user typed, so the bytes go back to their placeholders. */
+            const cJSON *payload = cJSON_GetObjectItem(m, "payload");
+            if (cJSON_IsObject(payload))
+            {
+                char *printed = cJSON_PrintUnformatted(payload);
+                if (printed)
+                {
+                    text = FoldPastedText(std::move(text), printed);
+                    cJSON_free(printed);
+                }
+            }
+        }
         const cJSON *calls = cJSON_GetObjectItem(m, "tool_calls");
         if (text.empty() && calls && cJSON_GetArraySize(calls) > 0)
         {

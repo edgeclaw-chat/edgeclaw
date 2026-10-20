@@ -1,6 +1,6 @@
 #include "edc_input.hpp"
 
-#include "edc_style.hpp"
+#include "edc_token_style.hpp"
 #include "edc_text_util.hpp"
 #include <algorithm>
 #include <cstring>
@@ -571,17 +571,10 @@ int EdcInput::CaretColumn()
             return;
         ::ftxui::Element e =
             ::ftxui::text(content_->substr(static_cast<size_t>(a), static_cast<size_t>(b - a)));
-        /* Two kinds, two looks (see edc_style.hpp: input_paste_text / input_paste_surface):
-         *   - a pasted block is a chip -- amber on its own warm surface. It only ever appears
-         *     in the input line, where no status colour is painted, so the warm hue is free
-         *     there and is neither the chrome accent (cyan: references) nor the inline-code
-         *     purple the replies are full of;
-         *   - an `@mention` is a keyword: the keyword pink, no surface, no underline -- the
-         *     colour is the whole mark (edc_style.hpp: input_mention_text).
-         * Both knobs are in edc_style.hpp: these are content colours, not chrome roles. */
+        /* One styling function, shared with the chat bubble (edc_token_style.hpp): the
+         * line must look the same before and after it is sent. */
         if (token)
-            e = paste ? (e | ::ftxui::color(style::input_paste_text()) | ::ftxui::bgcolor(style::input_paste_surface()))
-                      : (e | ::ftxui::color(style::input_mention_text()));
+            e = StyleToken(e, paste);
         parts.push_back(e);
     };
 

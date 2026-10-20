@@ -559,6 +559,19 @@ void edc_task_set_user_origin(struct edc_task *task, const char *mid, const stru
     }
 }
 
+cJSON *edc_task_user_payload(struct edc_task *task)
+{
+    if (!task)
+        return NULL;
+    cJSON *msg = turn_user_message(task->active_turn);
+    if (!msg)
+    {
+        for (size_t i = task->turns.tail; i > task->turns.head && !msg; i--)
+            msg = turn_user_message((struct edc_turn *)task->turns.data[i - 1]);
+    }
+    return msg ? cJSON_GetObjectItem(msg, "payload") : NULL;
+}
+
 cJSON *edc_task_find_user_payload(struct edc_task *task, const char *mid)
 {
     if (!task || !mid || !*mid)

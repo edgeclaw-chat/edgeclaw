@@ -351,6 +351,10 @@ extern void edc_task_set_user_origin(struct edc_task *task, const char *mid, con
  *  mid" pull answers from. */
 extern cJSON *edc_task_find_user_payload(struct edc_task *task, const char *mid);
 
+/** The folded-paste map of this task's own user message (borrowed), or NULL. Used by the
+ *  frontend to show the line the way it was typed: the message text is the expanded one. */
+extern cJSON *edc_task_user_payload(struct edc_task *task);
+
 extern struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,
                                       uint32_t fork_point_completion_seq, edc_channel_type channel_type);
 extern void edc_task_free(struct edc_task *task);

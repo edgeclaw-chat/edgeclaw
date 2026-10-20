@@ -1838,6 +1838,11 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
             cJSON_AddStringToObject(tj, "desc", t->description ? t->description : "");
             /* The raw input that created the task ("" when none). */
             cJSON_AddStringToObject(tj, "input", t->raw_input ? t->raw_input : "");
+            /* Its folded-paste map, so the frontend can show the line as it was typed
+             * (the text above is the expanded one -- what the model saw). */
+            cJSON *task_payload = edc_task_user_payload(t);
+            if (task_payload)
+                cJSON_AddItemToObject(tj, "payload", cJSON_Duplicate(task_payload, 1));
             /* Token usage for the sidebar (double, exact below 2^53). */
             cJSON_AddNumberToObject(tj, "tokens_prompt", (double)t->tokens_prompt);
             cJSON_AddNumberToObject(tj, "tokens_completion", (double)t->tokens_completion);

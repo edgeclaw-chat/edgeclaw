@@ -952,6 +952,17 @@ cc_test(
     }),
 )
 cc_test(
+    name = "test_token_style",
+    srcs = ["test_token_style.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+
+cc_test(
     name = "test_history_line",
     srcs = ["test_history_line.cpp"],
     deps = [
