@@ -704,12 +704,11 @@ static void test_token_colours(void)
         CHECK(cell.background_color == paste_bg, "and sit on the chip's own surface");
         CHECK(paste_fg != provider->pal.md_link, "a chip is not the reference colour");
         CHECK(paste_fg != provider->pal.md_code_inline, "nor the inline-code purple of the replies");
-        /* The trailing space is part of the block, so the chip has one cell of padding. */
-        /* The trailing space is part of the block, so the chip has one cell of padding.
+        /* The chip's surface stops at the label: the space after it is a word separator, not
+         * part of the block (painting it looked like a stray selected cell on the right).
          * Columns are terminal cells, not bytes: the label's middle dot is two bytes. */
-        const int pad = edc::StringWidth("[Pasted #1 \xc2\xb7 2 lines]");
-        CHECK(screen.CellAt(pad, 0).background_color == paste_bg,
-              "the chip's padding cell shares its surface");
+        const int after = edc::StringWidth("[Pasted #1 \xc2\xb7 2 lines]");
+        CHECK(screen.CellAt(after, 0).background_color != paste_bg, "the trailing space is NOT painted");
     }
 
     /* An `@mention`: the keyword colour, no surface, no underline. */

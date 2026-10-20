@@ -488,12 +488,10 @@ int EdcInput::CaretColumn()
         }
         if (block_end > p && block_end <= row.end)
         {
-            /* A paste chip owns one space of padding: the insert puts a space right after
-             * the placeholder, and painting it with the chip's surface is what makes the
-             * block read as a block instead of a highlighted run of text. (The extra space
-             * is display only -- the placeholder that expands is still the label.) */
-            if (is_paste && block_end < row.end && (*content_)[static_cast<size_t>(block_end)] == ' ')
-                block_end++;
+            /* The surface covers the placeholder exactly, nothing else: the space the insert
+             * leaves after it is a word separator, and painting it made the chip look like it
+             * had a stray selected cell on the right (the bubble, which paints the same
+             * token, never painted it either). */
             runs.push_back({true, is_paste, p, block_end});
             p = block_end;
             continue;
