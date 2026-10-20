@@ -52,7 +52,8 @@ constexpr int kUserRuleChrome = 3;
     rows.reserve(lines.size());
     for (const std::string &line : lines)
     {
-        const std::vector<TokenSpan> spans = ScanTokens(line);
+        /* A sent line has no caret, so a mention reaching its end is finished. */
+        const std::vector<TokenSpan> spans = ScanTokens(line, /*end_closes=*/true);
         if (spans.empty())
         {
             rows.push_back(::ftxui::text(line));
@@ -64,7 +65,13 @@ constexpr int kUserRuleChrome = 3;
         {
             if (span.begin > at)
                 parts.push_back(::ftxui::text(line.substr(at, span.begin - at)));
-            parts.push_back(StyleToken(::ftxui::text(line.substr(span.begin, span.len)), span.paste));
+            const std::string token_text = line.substr(span.begin, span.len);
+            /* Plain when the reference is not real: the mark means "this is a reference",
+             * so it must not appear on a path that does not exist. */
+            if (MentionIsMarked(span, token_text))
+                parts.push_back(StyleToken(::ftxui::text(token_text), span.paste));
+            else
+                parts.push_back(::ftxui::text(token_text));
             at = span.begin + span.len;
         }
         if (at < line.size())

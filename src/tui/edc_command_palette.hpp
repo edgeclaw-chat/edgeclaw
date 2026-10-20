@@ -122,6 +122,12 @@ class CommandPalette
     // breaks the tie by choosing one).
     std::string Accept() const;
 
+    // Enter, after Up/Down: the HIGHLIGHTED row taken WHOLE ("/tas" + Up/Down onto
+    // "/task new" -> "/task new "). Accept() above is Tab's job -- grow the word being
+    // typed -- and growing is exactly what must NOT happen once the user has said which
+    // row they mean.
+    std::string AcceptSelected() const;
+
     // True while Tab would change the text -- i.e. the last completion has NOT been reached
     // yet. False means the same Tab is also the "that's it", so the CALLER folds the list
     // instead of demanding one more press.

@@ -138,6 +138,12 @@ extern size_t edc_app_prompts(const struct edc_app *app, const char *workdir, ch
  * first (20 max), under |workdir|. The directory is sandbox-checked: one that cannot be
  * listed answers 0 rows. Safe to call on the UI thread -- the tree is cached after the
  * first walk. */
+/* Does |path| name something the mention pass would actually read? Same resolution as the
+ * pass (relative to the session's directory, through the sandbox), plus an existence check.
+ * The input line colours a reference only when this says yes: the mark means "this is a
+ * real reference". */
+extern int edc_app_mention_exists(struct edc_app *app, const char *workdir, const char *path);
+
 extern size_t edc_app_file_candidates(struct edc_app *app, const char *workdir, const char *query, char *buf,
                                       size_t cap);
 /* The tree may have changed (a message was just submitted): walk again next time. */

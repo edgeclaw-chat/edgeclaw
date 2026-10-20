@@ -38,6 +38,7 @@
 #include "sds.h"
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 /* ── The frontend's read-only window (sds -> plain C types) ────
  * This file is C++-safe (it includes no sds header), so every sds field or
@@ -361,6 +362,31 @@ size_t edc_app_prompts(const struct edc_app *app, const char *workdir, char *buf
     }
     utarray_free(prompts);
     return count;
+}
+
+int edc_app_mention_exists(struct edc_app *app, const char *workdir, const char *path)
+{
+    if (!app || !path || !*path)
+        return 0;
+    struct edc_config *cfg = edc_app_config(app);
+    if (!cfg)
+        return 0;
+
+    /* The mention pass's OWN resolution: relative to the session's directory, through the
+     * sandbox. That is what makes the colour honest -- a path the pass would refuse must not
+     * wear the mark that says "this reference is real". */
+    EdcError *error = NULL;
+    sds safe = edc_sandbox_verify_path_at(cfg, (workdir && workdir[0]) ? workdir : NULL, path, false, &error);
+    if (!safe)
+    {
+        if (error)
+            edc_error_free(error);
+        return 0;
+    }
+    struct stat st;
+    const int exists = stat(safe, &st) == 0 ? 1 : 0;
+    sdsfree(safe);
+    return exists;
 }
 
 size_t edc_app_file_candidates(struct edc_app *app, const char *workdir, const char *query, char *buf, size_t cap)

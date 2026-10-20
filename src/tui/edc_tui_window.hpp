@@ -222,7 +222,9 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // once the user has walked the list (so Enter picks instead of sending). Returns true
     // when the input text actually changed (Enter only falls back to sending when it did
     // not: there was nothing to pick).
-    bool AcceptCompletion();
+    // |take_selected|: Enter (the user walked the list with Up/Down) takes the highlighted
+    // row whole; Tab (the default) grows the word being typed.
+    bool AcceptCompletion(bool take_selected = false);
 
     std::shared_ptr<edc::ChatWidget> chat_widget_;
     std::shared_ptr<edc::TaskWidget> task_widget_;

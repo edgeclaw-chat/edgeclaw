@@ -127,11 +127,59 @@ static void test_mention_insert(void)
     CHECK(self.MentionInsert() == "@src ", "the directory the query names finishes the mention");
 }
 
+static void test_enter_takes_the_row(void)
+{
+    /* ── Enter picks the highlighted row WHOLE; Tab keeps growing one word ──── */
+    {
+        TEST("Enter after Up/Down takes the highlighted row whole, not just the next word");
+        CommandPalette p;
+        p.SetSource({}, {CommandFact{"/task new <desc>", "create"}, CommandFact{"/task list", "list"},
+                         CommandFact{"/task stop", "stop"}});
+        CHECK(Upd(p, "/tas"), "the list opens on the typed prefix");
+        CHECK(p.items().size() == 3, "three rows behind /tas");
+        CHECK(p.Accept() == "/task ", "Tab grows the typed word only");
+
+        p.MoveDown(); /* onto /task list */
+        CHECK(p.selected() == 1, "the second row is highlighted");
+        CHECK(p.AcceptSelected() == "/task list ", "Enter takes it whole, arguments shape dropped");
+        CHECK(p.Accept() == "/task ", "…while Tab would still have grown one word");
+
+        p.MoveDown(); /* onto /task stop */
+        CHECK(p.AcceptSelected() == "/task stop ", "and the row the user landed on is what is taken");
+    }
+
+    /* The `@` popup: Enter takes the highlighted row even WITHOUT Up/Down -- a half-typed
+     * path is not something to send, and the window never falls through to Submit there. */
+    {
+        TEST("mention mode: the highlighted row is taken without any Up/Down");
+        CommandPalette p;
+        p.SetFileSource({CommandFact{"src/main.c", ""}, CommandFact{"src/tui/", ""}});
+        CHECK(Upd(p, "看下 @sr"), "the mention list opens");
+        CHECK(p.mode() == CommandPalette::Mode::Mention, "mention mode");
+        CHECK(!p.navigated(), "nothing was walked");
+        CHECK(p.AcceptSelected() == "@src/main.c ", "Enter takes the first row, arguments shape dropped");
+        p.MoveDown();
+        CHECK(p.AcceptSelected() == "@src/tui/", "and a directory row stays open for the next level");
+    }
+
+    /* A shell line's option word is spliced in, keeping the quoted description. */
+    {
+        TEST("Enter takes the highlighted shell option (the description stays)");
+        CommandPalette p;
+        p.SetShellOptionSource({CommandFact{"--bg", "background"}, CommandFact{"--new-group", "own group"}});
+        CHECK(Upd(p, "\"desc\" --"), "both long options are listed");
+        CHECK(p.items().size() == 2, "two rows");
+        p.MoveDown();
+        CHECK(p.AcceptSelected() == "\"desc\" --new-group ", "the highlighted option replaces the word");
+    }
+}
+
 int main(void)
 {
     printf("=== command palette tests ===\n\n");
     test_mention_trigger();
     test_mention_insert();
+    test_enter_takes_the_row();
 
     {
         TEST("bare '/' lists the families, not every row");

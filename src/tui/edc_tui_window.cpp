@@ -203,6 +203,12 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     // placeholder is dimmed by the widget itself (no InputOption transform).
     input_ = std::make_shared<edc::EdcInput>(
         &input_text_, "Type a message, or /help for commands, Alt+Enter for a newline...");
+    /* An `@path` wears its mark only when the reference is REAL. The check goes through the
+     * app (session directory + sandbox + existence), which is also where the mention pass
+     * resolves it at submit time -- so the colour cannot promise something the pass refuses. */
+    edc::SetMentionPathCheck([this](const std::string &path) {
+        return app_ && app_->MentionExists(session_model_->workdir(), path);
+    });
     // A recalled line may carry folded blocks whose bytes only the store still has: ask
     // for them as soon as the entry lands in the box (they arrive in a few milliseconds).
     input_->SetRecallHook([this](const std::string &entry) { OnRecalledHistory(entry); });
@@ -1336,11 +1342,17 @@ bool TUIWindow::HandleNormalEvent(::ftxui::Event event)
             AcceptCompletion();
             return true;
         }
-        if (event == ::ftxui::Event::Return && command_palette_.navigated())
+        /* Enter picks instead of sending -- and "picks" means the highlighted ROW, whole.
+         *
+         * In the `@` popup there is no "send the half-typed path" reading at all: the line
+         * under the caret is a reference that is not finished yet, so Enter always takes the
+         * highlighted row (Esc closes the popup first if what you want is to send the text
+         * as typed). For `/` commands Enter stays "send" until Up/Down says otherwise -- a
+         * whole command line can be typed without ever looking at the list. */
+        const bool mention = command_palette_.mode() == model::CommandPalette::Mode::Mention;
+        if (event == ::ftxui::Event::Return && (mention || command_palette_.navigated()))
         {
-            // Pick, don't send. Only when the pick changes nothing (the highlighted row is
-            // already what the line says) is sending all that is left to do.
-            if (!AcceptCompletion())
+            if (!AcceptCompletion(/*take_selected=*/true))
                 Submit();
             return true;
         }
@@ -1383,7 +1395,7 @@ bool TUIWindow::HandleNormalEvent(::ftxui::Event event)
     return handled;
 }
 
-bool TUIWindow::AcceptCompletion()
+bool TUIWindow::AcceptCompletion(bool take_selected)
 {
     if (command_palette_.mode() == model::CommandPalette::Mode::Mention)
     {
@@ -1408,7 +1420,8 @@ bool TUIWindow::AcceptCompletion()
     // Complete the selected row. When that leaves nothing more to complete, this same
     // press is the "that's it": fold the list now instead of demanding one more press to
     // say so (the extra press carried no new information).
-    const std::string completed = command_palette_.Accept();
+    const std::string completed =
+        take_selected ? command_palette_.AcceptSelected() : command_palette_.Accept();
     const bool changed = completed != input_text_;
     if (changed)
     {

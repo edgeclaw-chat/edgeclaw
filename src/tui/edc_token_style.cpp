@@ -19,6 +19,14 @@ bool IsDigit(char c)
     return c >= '0' && c <= '9';
 }
 
+// One slot per process: the frontend installs it once (TUIWindow), tests install their own,
+// and nothing has to be threaded through the widget tree to reach it.
+std::function<bool(const std::string &)> &mention_path_check_slot()
+{
+    static std::function<bool(const std::string &)> check;
+    return check;
+}
+
 // Trailing ASCII punctuation is not part of a reference: "看下 @a.c." names a.c.
 bool IsTrailingPunct(char c)
 {
@@ -76,7 +84,17 @@ size_t MentionAt(const std::string &text, size_t at)
 }
 } // namespace
 
-std::vector<TokenSpan> ScanTokens(const std::string &text)
+// A mention is finished once nothing that could still belong to it follows: whitespace, the
+// stripped punctuation (the pass ends the reference before it), or -- in a display context
+// with no caret -- the end of the text.
+static bool ClosedAfter(const std::string &text, size_t end, bool end_closes)
+{
+    if (end >= text.size())
+        return end_closes;
+    return IsSpace(text[end]) || IsTrailingPunct(text[end]);
+}
+
+std::vector<TokenSpan> ScanTokens(const std::string &text, bool end_closes)
 {
     std::vector<TokenSpan> spans;
     const size_t n = text.size();
@@ -93,7 +111,7 @@ std::vector<TokenSpan> ScanTokens(const std::string &text)
         {
             if (const size_t len = PasteLabelAt(text, i))
             {
-                spans.push_back({i, len, true});
+                spans.push_back({i, len, true, ClosedAfter(text, i + len, end_closes)});
                 i += len;
                 continue;
             }
@@ -104,7 +122,7 @@ std::vector<TokenSpan> ScanTokens(const std::string &text)
         {
             if (const size_t len = MentionAt(text, i))
             {
-                spans.push_back({i, len, false});
+                spans.push_back({i, len, false, ClosedAfter(text, i + len, end_closes)});
                 i += len;
                 continue;
             }
@@ -139,6 +157,47 @@ std::string FoldPastedText(std::string text, const std::string &payload_json)
     }
     edc_payload_free(payload);
     return text;
+}
+
+std::string MentionPath(const std::string &token_text)
+{
+    /* "@a.c#12-20" -> "a.c". Same rule as the pass's split_range(): the '#' only opens a
+     * range when what follows is digits or digits-digits, so a name that merely contains a
+     * '#' keeps it. */
+    std::string path = token_text.empty() || token_text[0] != '@' ? token_text : token_text.substr(1);
+    const size_t hash = path.rfind('#');
+    if (hash == std::string::npos || hash + 1 >= path.size())
+        return path;
+
+    size_t i = hash + 1;
+    if (!IsDigit(path[i]))
+        return path;
+    while (i < path.size() && IsDigit(path[i]))
+        i++;
+    if (i < path.size() && path[i] == '-')
+    {
+        i++;
+        while (i < path.size() && IsDigit(path[i]))
+            i++;
+    }
+    if (i != path.size())
+        return path; // not a range: the '#' belongs to the name
+    return path.substr(0, hash);
+}
+
+void SetMentionPathCheck(MentionPathCheck check)
+{
+    mention_path_check_slot() = std::move(check);
+}
+
+bool MentionIsMarked(const TokenSpan &span, const std::string &token_text)
+{
+    if (span.paste)
+        return true; // a folded block is a block whether or not its bytes are back yet
+    if (!span.closed)
+        return false; // still being typed: not a reference yet
+    const MentionPathCheck &check = mention_path_check_slot();
+    return check && check(MentionPath(token_text));
 }
 
 ::ftxui::Element StyleToken(::ftxui::Element element, bool paste)

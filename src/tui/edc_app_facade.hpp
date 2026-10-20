@@ -166,6 +166,9 @@ class IAppFacade
     // filters; a directory's row ends with '/'). Empty when it cannot be listed.
     virtual std::vector<model::CommandFact> FileCandidates(const std::string &workdir,
                                                            const std::string &query) const = 0;
+    // Whether an `@path` names something the mention pass would read (the sandbox's own
+    // resolution, plus existence). The input line marks a reference only when this is true.
+    virtual bool MentionExists(const std::string &workdir, const std::string &path) const = 0;
     // The tree may have changed (a message was submitted): walk again next time.
     virtual void ResetFileCandidates() const = 0;
 
@@ -232,6 +235,7 @@ class AppFacade : public IAppFacade
     std::vector<model::CommandFact> SkillNames(const std::string &workdir) const override;
     std::vector<model::CommandFact> FileCandidates(const std::string &workdir,
                                                    const std::string &query) const override;
+    bool MentionExists(const std::string &workdir, const std::string &path) const override;
     void ResetFileCandidates() const override;
 
     void SendUserMessage(const std::string &session_id, const std::string &content,

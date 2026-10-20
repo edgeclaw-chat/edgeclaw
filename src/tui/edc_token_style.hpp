@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ftxui/dom/elements.hpp>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -27,12 +28,37 @@ struct TokenSpan
     size_t begin = 0;
     size_t len = 0;
     bool paste = false; // false = an `@file` mention
+    // The token is FINISHED: nothing that could still extend it follows. A mention being
+    // typed is not marked (it is not a reference yet), and neither is one the caret can
+    // still grow; see MentionIsMarked().
+    bool closed = false;
 };
 
 // Every token in |text|, in order, non-overlapping. A token the scanner cannot finish
 // (an `@` at the very end of a line, an unterminated label) is left as plain text - the
 // same way the pass would ignore it.
-std::vector<TokenSpan> ScanTokens(const std::string &text);
+//
+// |end_closes|: whether a token that reaches the end of the text counts as finished. The
+// input box passes false -- the caret sitting there means it is still being typed -- and a
+// bubble (a sent line, no caret) passes true.
+std::vector<TokenSpan> ScanTokens(const std::string &text, bool end_closes = true);
+
+// The filesystem path behind a mention, without the leading `@` and without a line range:
+// "@a.c#12-20" -> "a.c". The same split the pass makes (a '#' that does not open a range
+// is part of the name).
+std::string MentionPath(const std::string &token_text);
+
+// How a mention's path is checked, installed by the frontend that owns the app (the
+// display must not touch the disk: it renders every frame). TUIWindow points this at the
+// app, i.e. the mention pass's own resolution (session directory + sandbox); a test
+// installs its own. No check installed = nothing is "real", so nothing is marked.
+using MentionPathCheck = std::function<bool(const std::string &)>;
+void SetMentionPathCheck(MentionPathCheck check);
+
+// Whether a token wears its mark. A paste block always does; a mention only when it is
+// FINISHED and the path EXISTS -- the colour means "this reference is real", so painting a
+// half-typed or non-existent one would be lying.
+bool MentionIsMarked(const TokenSpan &span, const std::string &token_text);
 
 // |payload_json| = a folded-paste map (placeholder -> bytes), as stored with a message.
 // Returns |text| with each block's bytes put back under its placeholder: the reverse of

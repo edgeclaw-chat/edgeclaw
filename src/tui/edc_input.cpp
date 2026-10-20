@@ -206,8 +206,17 @@ const std::vector<EdcInput::Token> &EdcInput::Tokens() const
         return tokens_cache_;
 
     tokens_cache_.clear();
-    for (const TokenSpan &span : ScanTokens(*content_))
-        tokens_cache_.push_back({static_cast<int>(span.begin), static_cast<int>(span.begin + span.len), span.paste});
+    /* The input box is the one place with a caret, so a mention that reaches the end of the
+     * text is still being typed: it is not a token yet (typing "@sr" must not turn the three
+     * characters into one unit, nor colour them). A paste label is a block either way. */
+    for (const TokenSpan &span : ScanTokens(*content_, /*end_closes=*/false))
+    {
+        if (!span.paste && !span.closed)
+            continue;
+        const std::string text = content_->substr(span.begin, span.len);
+        tokens_cache_.push_back({static_cast<int>(span.begin), static_cast<int>(span.begin + span.len), span.paste,
+                                 MentionIsMarked(span, text)});
+    }
     tokens_at_ = expanded_epoch_;
     return tokens_cache_;
 }
@@ -481,7 +490,8 @@ int EdcInput::CaretColumn()
     {
         int block_end = 0;
         bool is_paste = false;
-        if (const Token *token = TokenStartingAt(p))
+        const Token *token = TokenStartingAt(p);
+        if (token)
         {
             block_end = token->end;
             is_paste = token->paste;
@@ -491,8 +501,10 @@ int EdcInput::CaretColumn()
             /* The surface covers the placeholder exactly, nothing else: the space the insert
              * leaves after it is a word separator, and painting it made the chip look like it
              * had a stray selected cell on the right (the bubble, which paints the same
-             * token, never painted it either). */
-            runs.push_back({true, is_paste, p, block_end});
+             * token, never painted it either). A mention whose path is not real is drawn as
+             * plain text -- it is still one token to edit, it just is not a reference. */
+            const bool marked = !token || token->paste || token->marked;
+            runs.push_back({marked, is_paste, p, block_end});
             p = block_end;
             continue;
         }

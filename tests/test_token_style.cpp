@@ -90,8 +90,10 @@ static void test_bubble_matches_the_input_line(void)
 {
     std::printf("  bubble: the same two marks the input line paints\n");
 
-    /* The bubble takes its colours from the same knobs as the editor (StyleToken), so
-     * the only thing left to verify is that it paints them at all. */
+    /* The bubble takes its colours from the same knobs as the editor (StyleToken), so the
+     * only thing left to verify is that it paints them at all. A mention only wears the mark
+     * when its path is real, so the harness says "this one exists". */
+    edc::SetMentionPathCheck([](const std::string &path) { return path == "src/main.c"; });
     const ftxui::Color mention = edc::style::input_mention_text();
     const ftxui::Color paste_fg = edc::style::input_paste_text();
     const ftxui::Color paste_bg = edc::style::input_paste_surface();
@@ -135,6 +137,36 @@ static void test_bubble_matches_the_input_line(void)
     }
     CHECK(saw_at, "the bubble actually drew the mention");
     CHECK(saw_paste, "…and the paste block");
+    edc::SetMentionPathCheck(nullptr);
+}
+
+static void test_bubble_mention_rules(void)
+{
+    std::printf("  bubble: no caret, so a mention ending the line is finished\n");
+
+    edc::SetMentionPathCheck([](const std::string &path) { return path == "src/main.c"; });
+    const ftxui::Color mention = edc::style::input_mention_text();
+
+    auto mention_is_painted = [&](const std::string &content) {
+        edc::UserMessage msg(content, 0, "");
+        msg.SetRenderWidth(80);
+        ftxui::Screen screen(ftxui::Screen::Create(ftxui::Dimension::Fixed(80), ftxui::Dimension::Fixed(3)));
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(80), ftxui::Dimension::Fixed(3));
+            auto doc = msg.Render();
+            Render(screen, doc);
+        }
+        for (int y = 0; y < 3; ++y)
+            for (int x = 0; x < 80; ++x)
+                if (screen.CellAt(x, y).character == "@")
+                    return screen.CellAt(x, y).foreground_color == mention;
+        return false;
+    };
+
+    CHECK(mention_is_painted("看下 @src/main.c"), "a sent line ending in a real reference IS painted");
+    CHECK(!mention_is_painted("看下 @ghost.c"), "a path that does not exist is NOT painted");
+    edc::SetMentionPathCheck(nullptr);
 }
 
 static void test_fold_back(void)
@@ -163,6 +195,7 @@ int main(void)
     test_mentions();
     test_paste_labels();
     test_bubble_matches_the_input_line();
+    test_bubble_mention_rules();
     test_fold_back();
 
     if (g_failures)

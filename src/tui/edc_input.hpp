@@ -122,6 +122,9 @@ class EdcInput : public ::ftxui::ComponentBase
         int begin = 0;
         int end = 0;
         bool paste = false;
+        // A mention wears its mark only when it is FINISHED and the path exists: half-typed
+        // text is not a reference yet, and a reference to nothing is not one either.
+        bool marked = false;
     };
     // The draft's tokens, in order, cached on the same epoch as the expansion.
     const std::vector<Token> &Tokens() const;

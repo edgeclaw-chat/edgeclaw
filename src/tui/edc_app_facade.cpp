@@ -267,6 +267,13 @@ std::vector<model::CommandFact> AppFacade::FileCandidates(const std::string &wor
     return out;
 }
 
+bool AppFacade::MentionExists(const std::string &workdir, const std::string &path) const
+{
+    if (!app_ || path.empty())
+        return false;
+    return edc_app_mention_exists(app_, workdir.c_str(), path.c_str()) != 0;
+}
+
 void AppFacade::ResetFileCandidates() const
 {
     edc_app_file_candidates_reset();

@@ -426,6 +426,26 @@ std::string CommandPalette::Accept() const
     return CompletionOf(items_[selected_].text);
 }
 
+std::string CommandPalette::AcceptSelected() const
+{
+    if (!open_ || items_.empty())
+        return content_;
+
+    // A shell line's option word: keep the quoted description in front, replace the word
+    // with the chosen option (the same splice Accept() does, without the common-prefix step).
+    if (mode_ == Mode::ShellOption)
+    {
+        const size_t sp = content_.rfind(' ');
+        const std::string prefix = (sp == std::string::npos) ? std::string() : content_.substr(0, sp + 1);
+        return prefix + CompletionOf(items_[selected_].text);
+    }
+
+    if (mode_ == Mode::Mention)
+        return MentionInsert(); // already a whole row: "@src/main.c " / "@dir/"
+
+    return CompletionOf(items_[selected_].text);
+}
+
 bool CommandPalette::HasMore() const
 {
     return open_ && !items_.empty() && Accept() != content_;

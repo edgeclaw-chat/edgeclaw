@@ -675,6 +675,17 @@ void TestPaletteEnterPicks(edc::TUIWindow &win)
     // 4) 选中改变了文本，"走列表"状态清零 —— 再按一次 Enter 才是发送。
     win.OnEvent(::ftxui::Event::Return);
     Check(input_line(FrameOf(win)) == empty_line, "再按一次 Enter 才发送（输入被清空）");
+
+    // 5) 正在打的词还能再长的时候（'/tas' 的词是 '/task'），Enter 不能只补那个词：上下
+    //    浏览过之后 Enter 采纳的是高亮那一行整条。这里落到第二行，结果是 '/task ' 加一个词。
+    type("/tas");
+    Check(Has(FrameOf(win), "Tab complete"), "敲 /tas 弹出 task 的子命令");
+    win.OnEvent(::ftxui::Event::ArrowDown);
+    win.OnEvent(::ftxui::Event::Return);
+    const std::string picked_after_growing = input_line(FrameOf(win));
+    Check(picked_after_growing.size() > std::string("❯ /task ").size(),
+          "Enter 采纳整行，不是只补一个词（实际 '" + picked_after_growing + "'）");
+    win.OnEvent(::ftxui::Event::Return); // 清空
 }
 
 // 回翻历史时补全弹层不能抢走上下键。历史里只要有一条以 '/' 开头的条目（`/task new` 这种

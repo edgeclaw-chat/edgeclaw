@@ -9,6 +9,7 @@
 #include "edc_input.hpp"
 #include "edc_style.hpp"
 #include "edc_text_util.hpp"
+#include "edc_token_style.hpp"
 
 #include <cstdio>
 #include <ftxui/component/event.hpp>
@@ -650,18 +651,21 @@ static void test_mention_atom(void)
     input.OnEvent(ftxui::Event::Delete);
     CHECK(text == "a  b", "Delete takes the whole mention: '%s'", text.c_str());
 
-    /* Left/Right step over it instead of walking inside. */
-    text = "see @src/main.c";
-    input.SetCursor(static_cast<int>(text.size()));
+    /* Left/Right step over it instead of walking inside. (The mention needs a terminator to
+     * be a token at all -- see test_mention_mark_rules: a reference still being typed is
+     * plain text, and edits one character at a time.) */
+    text = "see @src/main.c 好";
+    input.SetCursor(static_cast<int>(text.find(" 好")));
     input.OnEvent(ftxui::Event::ArrowLeft);
     CHECK(input.CursorPosition() == static_cast<int>(text.find("@src")), "Left lands on the mention's start: %d",
           input.CursorPosition());
     input.OnEvent(ftxui::Event::ArrowRight);
-    CHECK(input.CursorPosition() == static_cast<int>(text.size()), "Right jumps past it: %d", input.CursorPosition());
+    CHECK(input.CursorPosition() == static_cast<int>(text.find(" 好")), "Right jumps past it: %d",
+          input.CursorPosition());
 
     /* Rendering keeps the text (the colour is a style, not a different string). */
     const auto screen = render_twice(input, 40, 4);
-    CHECK(row_text(screen, 0, 40) == "see @src/main.c", "row 0: '%s'", row_text(screen, 0, 40).c_str());
+    CHECK(row_text(screen, 0, 40) == "see @src/main.c 好", "row 0: '%s'", row_text(screen, 0, 40).c_str());
 }
 
 /* The two token kinds must be *visible*: a paste chip is purple on the code surface, an
@@ -711,10 +715,12 @@ static void test_token_colours(void)
         CHECK(screen.CellAt(after, 0).background_color != paste_bg, "the trailing space is NOT painted");
     }
 
-    /* An `@mention`: the keyword colour, no surface, no underline. */
+    /* An `@mention`: the keyword colour, no surface, no underline -- once it is finished and
+     * the path is real (see test_mention_mark_rules for the negative cases). */
     {
+        edc::SetMentionPathCheck([](const std::string &path) { return path == "src/main.c"; });
         const ftxui::Color mention_fg = edc::style::input_mention_text();
-        std::string text = "see @src/main.c";
+        std::string text = "see @src/main.c 好";
         edc::EdcInput input(&text, "");
         const auto screen = render_twice(input, 40, 4);
         const auto cell = screen.CellAt(4, 0); /* the '@' */
@@ -723,6 +729,7 @@ static void test_token_colours(void)
         CHECK(!cell.underlined, "and no underline: the colour is the whole mark");
         CHECK(mention_fg != provider->pal.md_link, "the mention is not the link blue any more");
         CHECK(mention_fg != paste_fg, "and not the paste colour either");
+        edc::SetMentionPathCheck(nullptr);
     }
 
     edc::style::SetPaletteProvider(nullptr);
@@ -739,6 +746,7 @@ static void test_recalled_line_matches_typed(void)
     provider->pal = edc::style::palette();
     edc::style::SetPaletteProvider(provider);
 
+    edc::SetMentionPathCheck([](const std::string &path) { return path == "src/main.c"; });
     const ftxui::Color mention = edc::style::input_mention_text();
     const ftxui::Color paste_fg = edc::style::input_paste_text();
     const ftxui::Color paste_bg = edc::style::input_paste_surface();
@@ -784,6 +792,59 @@ static void test_recalled_line_matches_typed(void)
     input.OnEvent(ftxui::Event::Backspace);
     CHECK(text == "看下  和", "the whole @mention goes: '%s'", text.c_str());
 
+    edc::SetMentionPathCheck(nullptr);
+    edc::style::SetPaletteProvider(nullptr);
+}
+
+/* The mark means "this reference is real", so it only appears once BOTH are true: the
+ * mention is finished (nothing that could still extend it) and the path exists. A half-typed
+ * or imaginary path is plain text -- while still being one token to edit. */
+static void test_mention_mark_rules(void)
+{
+    std::printf("  mention mark: finished + real, otherwise plain text\n");
+
+    auto provider = std::make_shared<FixedPalette>();
+    provider->pal = edc::style::palette();
+    edc::style::SetPaletteProvider(provider);
+    edc::SetMentionPathCheck([](const std::string &path) { return path == "src/main.c"; });
+    const ftxui::Color mention = edc::style::input_mention_text();
+
+    auto mention_is_painted = [&](const std::string &content) {
+        std::string text = content;
+        edc::EdcInput input(&text, "");
+        /* The caret paints over the glyph it sits on, so park it at the end: this asks what
+         * the '@' looks like when nobody is editing it. */
+        input.SetCursor(static_cast<int>(text.size()));
+        const auto screen = render_twice(input, 60, 3);
+        for (int y = 0; y < 3; ++y)
+            for (int x = 0; x < 60; ++x)
+                if (screen.CellAt(x, y).character == "@")
+                    return screen.CellAt(x, y).foreground_color == mention;
+        return false;
+    };
+
+    /* Still being typed: the caret sits right after it, so it is not a reference yet. */
+    CHECK(!mention_is_painted("@src/main.c"), "an unfinished mention is NOT painted");
+    /* Finished by a space: a real reference. */
+    CHECK(mention_is_painted("@src/main.c 好"), "a finished, existing path IS painted");
+    /* Finished, but the path does not exist: no mark (the mark would be a lie). */
+    CHECK(!mention_is_painted("@ghost.c 好"), "a finished path that does not exist is NOT painted");
+    /* Finished by punctuation: the pass ends the reference there, so it is finished too. */
+    CHECK(mention_is_painted("看下 @src/main.c. 谢谢"), "a full stop also finishes it");
+    /* A line range is not part of the path. */
+    CHECK(mention_is_painted("@src/main.c#12-20 好"), "the range is stripped before the check");
+
+    /* Not painted is not the same as not a token: once finished it still deletes as a whole. */
+    {
+        std::string text = "@ghost.c 好";
+        edc::EdcInput input(&text, "");
+        CHECK(input.Tokens().size() == 1, "an unknown path is still one token to edit");
+        input.SetCursor(static_cast<int>(text.find(' ')));
+        input.OnEvent(ftxui::Event::Backspace);
+        CHECK(text == " 好", "and it is deleted as one: '%s'", text.c_str());
+    }
+
+    edc::SetMentionPathCheck(nullptr);
     edc::style::SetPaletteProvider(nullptr);
 }
 
@@ -826,6 +887,7 @@ int main(void)
     test_mention_atom();
     test_token_colours();
     test_recalled_line_matches_typed();
+    test_mention_mark_rules();
     test_input_mode_label();
 
     if (g_failures)
