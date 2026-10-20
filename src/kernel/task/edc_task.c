@@ -512,14 +512,13 @@ struct edc_task *edc_task_new(const char *task_id, const char *session_id, const
     return task;
 }
 
-void edc_task_set_user_payload(struct edc_task *task, const struct edc_payload *payload)
+static cJSON *turn_user_message(struct edc_turn *turn)
 {
-    if (!task || !task->active_turn || edc_payload_empty(payload))
-        return;
-
-    for (size_t i = task->active_turn->messages.head; i < task->active_turn->messages.tail; i++)
+    if (!turn)
+        return NULL;
+    for (size_t i = turn->messages.head; i < turn->messages.tail; i++)
     {
-        cJSON *msg = (cJSON *)task->active_turn->messages.data[i];
+        cJSON *msg = (cJSON *)turn->messages.data[i];
         const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "role"));
         if (!role || strcmp(role, "user") != 0)
             continue;
@@ -527,7 +526,29 @@ void edc_task_set_user_payload(struct edc_task *task, const struct edc_payload *
         cJSON *synthetic = cJSON_GetObjectItem(msg, "synthetic");
         if (synthetic && cJSON_IsTrue(synthetic))
             continue;
+        return msg;
+    }
+    return NULL;
+}
 
+void edc_task_set_user_origin(struct edc_task *task, const char *mid, const struct edc_payload *payload)
+{
+    if (!task || !task->active_turn)
+        return;
+    if (!mid && edc_payload_empty(payload))
+        return;
+
+    cJSON *msg = turn_user_message(task->active_turn);
+    if (!msg)
+        return;
+
+    if (mid && *mid)
+    {
+        cJSON_DeleteItemFromObject(msg, "mid");
+        cJSON_AddStringToObject(msg, "mid", mid);
+    }
+    if (!edc_payload_empty(payload))
+    {
         cJSON *map = cJSON_CreateObject();
         if (!map)
             return;
@@ -535,8 +556,33 @@ void edc_task_set_user_payload(struct edc_task *task, const struct edc_payload *
             cJSON_AddStringToObject(map, payload->items[k].key, payload->items[k].text);
         cJSON_DeleteItemFromObject(msg, "payload");
         cJSON_AddItemToObject(msg, "payload", map);
-        return;
     }
+}
+
+cJSON *edc_task_find_user_payload(struct edc_task *task, const char *mid)
+{
+    if (!task || !mid || !*mid)
+        return NULL;
+
+    /* The in-flight turn first (a message sent moments ago is what a recall right after
+     * sending asks for), then the committed ones newest-first. */
+    cJSON *hit = NULL;
+    struct edc_turn *active = task->active_turn;
+    if (active)
+    {
+        cJSON *msg = turn_user_message(active);
+        const char *found = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "mid"));
+        if (found && strcmp(found, mid) == 0)
+            hit = cJSON_GetObjectItem(msg, "payload");
+    }
+    for (size_t i = task->turns.tail; i > task->turns.head && !hit; i--)
+    {
+        cJSON *msg = turn_user_message((struct edc_turn *)task->turns.data[i - 1]);
+        const char *found = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "mid"));
+        if (found && strcmp(found, mid) == 0)
+            hit = cJSON_GetObjectItem(msg, "payload");
+    }
+    return hit;
 }
 
 struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,

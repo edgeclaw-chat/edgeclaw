@@ -260,6 +260,8 @@ std::vector<model::CommandFact> AppFacade::FileCandidates(const std::string &wor
         model::CommandFact fact;
         fact.text = row.substr(0, tab); /* a directory already ends with '/' */
         fact.brief.clear();             /* the popup shows the path alone */
+        /* 's' = the directory the query names; 'd'/'f' = an entry inside it. */
+        fact.mention_completes = row.size() > tab + 1 && row[tab + 1] == 's';
         out.push_back(std::move(fact));
     }
     return out;
@@ -329,11 +331,18 @@ std::vector<model::CommandFact> AppFacade::PromptNames(const std::string &workdi
 }
 
 void AppFacade::SendUserMessage(const std::string &session_id, const std::string &content,
-                                const std::string &payload_json)
+                                const std::string &payload_json, const std::string &mid)
 {
     if (app_)
         edc_app_send_user_message(app_, session_id.c_str(), content.c_str(),
-                                  payload_json.empty() ? nullptr : payload_json.c_str());
+                                  payload_json.empty() ? nullptr : payload_json.c_str(),
+                                  mid.empty() ? nullptr : mid.c_str());
+}
+
+void AppFacade::RequestMessagePayload(const std::string &mid)
+{
+    if (app_)
+        edc_app_request_message_payload(app_, mid.c_str());
 }
 
 void AppFacade::RequestTaskSnapshot(const std::string &session_id)
@@ -399,6 +408,17 @@ void AppFacade::TranslateAndDispatch(struct edc_channel_message *message)
         return;
 
     const auto *content = edc_app_message_content(message);
+
+    // A payload pull reply: header = the mid it answers, content = the payload JSON.
+    if (edc_app_message_is_message_payload(message))
+    {
+        const char *mid_c = edc_app_message_mid(message);
+        const std::string mid = mid_c ? mid_c : "";
+        const std::string payload = content ? content : "";
+        IChannelSink *sink = sink_;
+        dispatcher_->Post([sink, mid, payload]() { sink->OnMessagePayload(mid, payload); });
+        return;
+    }
 
     // Structured reply for `/task history <id>` / `/group history <id>`.
     if (edc_app_message_is_task_history(message))

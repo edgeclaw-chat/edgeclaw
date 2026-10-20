@@ -14,6 +14,8 @@ _Static_assert(HARNESS_MSG_TASK_SNAPSHOT == EDC_CHANNEL_MESSAGE_TASK_SNAPSHOT_TY
 _Static_assert(HARNESS_MSG_TASK_TREE_CHANGED == EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE,
                "HARNESS_MSG_TASK_TREE_CHANGED 镜像");
 _Static_assert(HARNESS_MSG_TASK_HISTORY == EDC_CHANNEL_MESSAGE_TASK_HISTORY_TYPE, "HARNESS_MSG_TASK_HISTORY 镜像");
+_Static_assert(HARNESS_MSG_MESSAGE_PAYLOAD == EDC_CHANNEL_MESSAGE_MESSAGE_PAYLOAD_TYPE,
+               "HARNESS_MSG_MESSAGE_PAYLOAD 镜像");
 
 struct edc_channel_message *harness_msg_new(int message_type, const char *content, const char *session_id,
                                             const char *header, int from_active_task)

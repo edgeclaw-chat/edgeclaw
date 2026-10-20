@@ -56,6 +56,11 @@ ChannelDispatcher::ChannelDispatcher(model::ChatModel &chat, model::SessionModel
 {
 }
 
+void ChannelDispatcher::OnMessagePayload(const std::string &mid, const std::string &payload_json)
+{
+    host_.PresentMessagePayload(mid, payload_json);
+}
+
 void ChannelDispatcher::OnTaskHistory(const std::string &payload)
 {
     // Structured history payload: split into bubbles appended to the chat pane.

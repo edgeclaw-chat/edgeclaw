@@ -69,7 +69,8 @@ EdcInput::EdcInput(std::string *content, std::string placeholder, int max_visibl
 
 EdcInput::~EdcInput()
 {
-    edc_payload_free(payload_);
+    edc_payload_free(blocks_);
+    edc_payload_free(draft_payload_);
 }
 
 // ── Folded paste blocks ──────────────────────────────────────────────
@@ -83,13 +84,13 @@ const std::string &EdcInput::ExpandedDraft() const
 {
     if (expanded_at_ == expanded_epoch_)
         return expanded_cache_;
-    if (edc_payload_empty(payload_))
+    if (edc_payload_empty(blocks_))
     {
         expanded_cache_ = *content_;
     }
     else
     {
-        char *expanded = edc_payload_expand(content_->c_str(), payload_);
+        char *expanded = edc_payload_expand(content_->c_str(), blocks_);
         expanded_cache_.assign(expanded ? expanded : "", expanded ? strlen(expanded) : 0);
         edc_payload_string_free(expanded);
     }
@@ -102,9 +103,9 @@ void EdcInput::InsertPasteBlock(const std::string &label, const std::string &tex
     if (label.empty())
         return;
     StopBrowsing();
-    if (!payload_)
-        payload_ = edc_payload_new();
-    edc_payload_set(payload_, label.c_str(), text.c_str());
+    if (!blocks_)
+        blocks_ = edc_payload_new();
+    edc_payload_set(blocks_, label.c_str(), text.c_str());
 
     // One trailing space: the caret then lands right AFTER the chip instead of inside
     // it, which is where the next character belongs. The space survives expansion
@@ -118,73 +119,170 @@ void EdcInput::InsertPasteBlock(const std::string &label, const std::string &tex
 
 void EdcInput::ClearPasteBlocks()
 {
-    edc_payload_free(payload_);
-    payload_ = nullptr;
+    edc_payload_free(blocks_);
+    blocks_ = nullptr;
     InvalidateExpansion();
 }
 
-void EdcInput::PruneOrphanBlocks()
+bool EdcInput::HasBlock(const std::string &label) const
 {
-    if (!payload_)
+    return edc_payload_get(blocks_, label.c_str()) != NULL;
+}
+
+void EdcInput::RestoreBlocks(const struct edc_payload *blocks)
+{
+    if (edc_payload_empty(blocks))
         return;
-    // A key that is no longer in the draft (the user edited through the placeholder)
-    // must not keep its bytes: walking backwards keeps the removal indices valid.
-    for (int i = payload_->n - 1; i >= 0; --i)
-        if (content_->find(payload_->items[i].key) == std::string::npos)
-            edc_payload_remove(payload_, payload_->items[i].key);
+    if (!blocks_)
+        blocks_ = edc_payload_new();
+    for (int i = 0; i < blocks->n; ++i)
+        edc_payload_set(blocks_, blocks->items[i].key, blocks->items[i].text);
     InvalidateExpansion();
 }
 
-bool EdcInput::BlockStartingAt(int at, int *end) const
+const struct edc_payload *EdcInput::DraftPayload() const
 {
-    if (edc_payload_empty(payload_) || at < 0 || at >= static_cast<int>(content_->size()))
-        return false;
-    const size_t room = content_->size() - static_cast<size_t>(at);
-    int best = -1;
-    size_t best_len = 0;
-    for (int i = 0; i < payload_->n; ++i)
+    if (draft_at_ == expanded_epoch_)
+        return draft_payload_;
+
+    edc_payload_free(draft_payload_);
+    draft_payload_ = nullptr;
+    if (!edc_payload_empty(blocks_))
     {
-        const char *key = payload_->items[i].key;
-        const size_t len = strlen(key);
-        // Longest match wins: one key may be a prefix of another.
-        if (len == 0 || len > room || len < best_len)
-            continue;
-        if (content_->compare(static_cast<size_t>(at), len, key) == 0)
+        for (int i = 0; i < blocks_->n; ++i)
         {
-            best = i;
-            best_len = len;
+            /* Only the blocks the draft still points at travel with the message. */
+            if (content_->find(blocks_->items[i].key) == std::string::npos)
+                continue;
+            if (!draft_payload_)
+                draft_payload_ = edc_payload_new();
+            edc_payload_set(draft_payload_, blocks_->items[i].key, blocks_->items[i].text);
         }
     }
-    if (best < 0)
+    draft_at_ = expanded_epoch_;
+    return draft_payload_;
+}
+
+bool EdcInput::HasUnresolvedBlocks() const
+{
+    /* The only way to notice "this placeholder has no bytes behind it": walk the draft's
+     * own placeholder sigil. Nothing else in the widget looks at the text. */
+    static const char kSigil[] = "[Pasted #";
+    size_t at = content_->find(kSigil);
+    while (at != std::string::npos)
+    {
+        int end = 0;
+        if (!TokenStartingAt(static_cast<int>(at), &end))
+            return true;
+        at = content_->find(kSigil, static_cast<size_t>(end));
+    }
+    return false;
+}
+
+void EdcInput::RemoveHistoryEntry(const std::string &entry)
+{
+    for (size_t i = 0; i < history_.size(); ++i)
+    {
+        if (history_[i] != entry)
+            continue;
+        history_.erase(history_.begin() + static_cast<long>(i));
+        if (browsing_)
+        {
+            if (history_pos_ > i)
+                --history_pos_;
+            else if (history_pos_ == i)
+                history_pos_ = std::min(history_.size(), i);
+        }
+        return;
+    }
+}
+
+
+bool EdcInput::TokenStartingAt(int at, int *end, std::string *key, bool *is_paste) const
+{
+    if (at < 0 || at >= static_cast<int>(content_->size()))
+        return false;
+
+    const size_t room = content_->size() - static_cast<size_t>(at);
+    size_t best_len = 0;
+    bool best_paste = false;
+    std::string best_key;
+
+    auto consider = [&](const char *candidate, bool paste) {
+        const size_t len = candidate ? strlen(candidate) : 0;
+        // Longest match wins: one key may be a prefix of another.
+        if (len == 0 || len > room || len <= best_len)
+            return;
+        if (content_->compare(static_cast<size_t>(at), len, candidate) == 0)
+        {
+            best_len = len;
+            best_paste = paste;
+            best_key.assign(candidate, len);
+        }
+    };
+
+    if (blocks_)
+        for (int i = 0; i < blocks_->n; ++i)
+            consider(blocks_->items[i].key, true);
+    for (const std::string &atom : atoms_)
+        consider(atom.c_str(), false);
+
+    if (best_len == 0)
         return false;
     if (end)
         *end = at + static_cast<int>(best_len);
+    if (key)
+        *key = best_key;
+    if (is_paste)
+        *is_paste = best_paste;
     return true;
 }
 
-bool EdcInput::BlockEndingAt(int at, int *begin) const
+bool EdcInput::TokenEndingAt(int at, int *begin, std::string *key, bool *is_paste) const
 {
-    if (edc_payload_empty(payload_) || at <= 0 || at > static_cast<int>(content_->size()))
+    if (at <= 0 || at > static_cast<int>(content_->size()))
         return false;
-    int best = -1;
+
     size_t best_len = 0;
-    for (int i = 0; i < payload_->n; ++i)
-    {
-        const char *key = payload_->items[i].key;
-        const size_t len = strlen(key);
-        if (len == 0 || len > static_cast<size_t>(at) || len < best_len)
-            continue;
-        if (content_->compare(static_cast<size_t>(at) - len, len, key) == 0)
+    bool best_paste = false;
+    std::string best_key;
+    auto consider = [&](const char *candidate, bool paste) {
+        const size_t len = candidate ? strlen(candidate) : 0;
+        if (len == 0 || len > static_cast<size_t>(at) || len <= best_len)
+            return;
+        if (content_->compare(static_cast<size_t>(at) - len, len, candidate) == 0)
         {
-            best = i;
             best_len = len;
+            best_paste = paste;
+            best_key.assign(candidate, len);
         }
-    }
-    if (best < 0)
+    };
+
+    if (blocks_)
+        for (int i = 0; i < blocks_->n; ++i)
+            consider(blocks_->items[i].key, true);
+    for (const std::string &atom : atoms_)
+        consider(atom.c_str(), false);
+
+    if (best_len == 0)
         return false;
     if (begin)
         *begin = at - static_cast<int>(best_len);
+    if (key)
+        *key = best_key;
+    if (is_paste)
+        *is_paste = best_paste;
     return true;
+}
+
+void EdcInput::RegisterAtom(const std::string &label)
+{
+    if (label.empty())
+        return;
+    for (const std::string &known : atoms_)
+        if (known == label)
+            return;
+    atoms_.push_back(label);
 }
 
 std::string InputModeLabel(edc_input_mode mode)
@@ -212,9 +310,9 @@ void EdcInput::Reset()
     desired_col_ = -1;
     hovered_ = false;
     StopBrowsing();
-    // The caller cleared the draft behind our back: any block whose placeholder is gone
-    // (i.e. every block, after a clear) no longer has text pointing at it.
-    PruneOrphanBlocks();
+    // The caller cleared the draft behind our back. The library keeps its bytes: a recalled
+    // history entry still needs them, and DraftPayload() only sends what the draft
+    // references.
     InvalidateExpansion();
 }
 
@@ -228,7 +326,6 @@ void EdcInput::ReplaceAll(const std::string &text)
     scroll_ = 0;
     desired_col_ = -1;
     StopBrowsing();
-    PruneOrphanBlocks();
     InvalidateExpansion();
 }
 
@@ -427,10 +524,11 @@ int EdcInput::CaretColumn()
 {
     // Runs: plain text and chips, in row order. A chip is recognised by its placeholder
     // text, so a placeholder the user edited through simply renders as plain text (the
-    // block is gone; PruneOrphanBlocks drops its bytes).
+    // block is gone; its library entry is dropped by the atomic delete above).
     struct Run
     {
-        bool chip;
+        bool token; /* one of the two atomic kinds */
+        bool paste; /* ...and it is a folded paste (bytes behind it), not an `@mention` */
         int begin;
         int end;
     };
@@ -439,36 +537,38 @@ int EdcInput::CaretColumn()
     while (p < row.end)
     {
         int block_end = 0;
-        if (BlockStartingAt(p, &block_end) && block_end <= row.end)
+        bool is_paste = false;
+        if (TokenStartingAt(p, &block_end, nullptr, &is_paste) && block_end <= row.end)
         {
-            runs.push_back({true, p, block_end});
+            runs.push_back({true, is_paste, p, block_end});
             p = block_end;
             continue;
         }
         const int len = GlyphLenAt(*content_, p, row.end);
         if (len <= 0)
             break;
-        if (!runs.empty() && !runs.back().chip)
+        if (!runs.empty() && !runs.back().token)
             runs.back().end = p + len; // merge into the plain run (no hbox churn per glyph)
         else
-            runs.push_back({false, p, p + len});
+            runs.push_back({false, false, p, p + len});
         p += len;
     }
     if (runs.empty())
-        runs.push_back({false, row.begin, row.end}); // empty line: the caret still needs a cell
+        runs.push_back({false, false, row.begin, row.end}); // empty line: the caret still needs a cell
 
     ::ftxui::Elements parts;
     const int caret_pos = (caret_at < 0) ? -1 : std::max(row.begin, std::min(caret_at, row.end));
 
-    auto push_text = [&](int a, int b, bool chip) {
+    auto push_text = [&](int a, int b, bool token, bool paste) {
         if (b <= a)
             return;
         ::ftxui::Element e =
             ::ftxui::text(content_->substr(static_cast<size_t>(a), static_cast<size_t>(b - a)));
-        // Inverted video, not a palette slot: chrome's hues are spoken for (see
-        // edc_style.hpp), and a chip is a block of text, not a colour's job.
-        if (chip)
-            e = e | ::ftxui::inverted;
+        /* Neither style spends a palette slot (chrome's hues are spoken for, see
+         * edc_style.hpp): a pasted block is a solid chip (inverted), an `@mention` is a
+         * reference (underlined). Two kinds, two looks, no colour. */
+        if (token)
+            e = paste ? (e | ::ftxui::inverted) : (e | ::ftxui::underlined);
         parts.push_back(e);
     };
 
@@ -476,23 +576,23 @@ int EdcInput::CaretColumn()
     {
         if (caret_pos < 0 || caret_pos < run.begin || caret_pos > run.end)
         {
-            push_text(run.begin, run.end, run.chip);
+            push_text(run.begin, run.end, run.token, run.paste);
             continue;
         }
         if (caret_pos == run.end)
         {
             // After this run's last glyph: one caret cell (between two runs, or at the row
             // end), exactly like ftxui::Input at a line end.
-            push_text(run.begin, run.end, run.chip);
+            push_text(run.begin, run.end, run.token, run.paste);
             parts.push_back(::ftxui::text(is_focused ? " " : "") | caret);
             continue;
         }
         // On a glyph: block/bar over it.
         const int len = GlyphLenAt(*content_, caret_pos, run.end);
-        push_text(run.begin, caret_pos, run.chip);
+        push_text(run.begin, caret_pos, run.token, run.paste);
         parts.push_back(
             ::ftxui::text(content_->substr(static_cast<size_t>(caret_pos), static_cast<size_t>(len))) | caret);
-        push_text(caret_pos + len, run.end, run.chip);
+        push_text(caret_pos + len, run.end, run.token, run.paste);
     }
     return ::ftxui::hbox(std::move(parts));
 }
@@ -598,13 +698,13 @@ bool EdcInput::HandleCharacter(const std::string &character)
     if (!insert_mode_ && cursor_ < static_cast<int>(content_->size()) && (*content_)[cursor_] != '\n')
     {
         // Overwrite mode: replace the glyph under the caret. This is the one way to type
-        // INTO a placeholder -- the key stops matching, so the parked bytes go with it.
+        // INTO a placeholder -- the key stops matching, so the block simply stops being
+        // referenced (its bytes stay in the library: another history entry may want them).
         const int len = GlyphLenAt(*content_, cursor_, static_cast<int>(content_->size()));
         content_->erase(cursor_, static_cast<size_t>(len));
         content_->insert(cursor_, character);
         cursor_ += static_cast<int>(character.size());
         desired_col_ = -1;
-        PruneOrphanBlocks();
         InvalidateExpansion();
         return true;
     }
@@ -621,14 +721,18 @@ bool EdcInput::HandleBackspace()
         return false;
     StopBrowsing();
     int block_begin = 0;
-    if (BlockEndingAt(cursor_, &block_begin))
+    std::string block_key;
+    bool is_paste = false;
+    if (TokenEndingAt(cursor_, &block_begin, &block_key, &is_paste))
     {
-        // A folded paste is one atom on screen, so it is one atom to Backspace: the whole
-        // placeholder goes, and its bytes with it (no orphan left in the payload).
+        // One token on screen, one token to Backspace: the whole placeholder -- or the whole
+        // `@mention` -- goes. Only a paste block also drops its bytes (deleting it is how you
+        // discard that); an atom has none, and `@` keeps its meaning either way.
         content_->erase(static_cast<size_t>(block_begin), static_cast<size_t>(cursor_ - block_begin));
         cursor_ = block_begin;
         desired_col_ = -1;
-        PruneOrphanBlocks();
+        if (is_paste)
+            edc_payload_remove(blocks_, block_key.c_str());
         InvalidateExpansion();
         return true;
     }
@@ -646,12 +750,15 @@ bool EdcInput::HandleDelete()
         return false;
     StopBrowsing();
     int block_end = 0;
-    if (BlockStartingAt(cursor_, &block_end))
+    std::string block_key;
+    bool is_paste = false;
+    if (TokenStartingAt(cursor_, &block_end, &block_key, &is_paste))
     {
-        // Mirror of Backspace: Delete on a placeholder's first glyph removes the block.
+        // Mirror of Backspace: Delete on the first glyph of a token removes all of it.
         content_->erase(static_cast<size_t>(cursor_), static_cast<size_t>(block_end - cursor_));
         desired_col_ = -1;
-        PruneOrphanBlocks();
+        if (is_paste)
+            edc_payload_remove(blocks_, block_key.c_str());
         InvalidateExpansion();
         return true;
     }
@@ -675,7 +782,7 @@ bool EdcInput::MoveLeft()
     if (cursor_ == 0)
         return false;
     int block_begin = 0;
-    if (BlockEndingAt(cursor_, &block_begin))
+    if (TokenEndingAt(cursor_, &block_begin))
     {
         cursor_ = block_begin; // one move over the whole chip
         desired_col_ = -1;
@@ -691,7 +798,7 @@ bool EdcInput::MoveRight()
     if (cursor_ >= static_cast<int>(content_->size()))
         return false;
     int block_end = 0;
-    if (BlockStartingAt(cursor_, &block_end))
+    if (TokenStartingAt(cursor_, &block_end))
     {
         cursor_ = block_end; // right before the chip -> right after it
         desired_col_ = -1;
@@ -832,8 +939,9 @@ bool EdcInput::HistoryNext()
     // Stepped past the newest match: restore the draft and leave history mode.
     *content_ = draft_;
     cursor_ = std::min(draft_cursor_, static_cast<int>(content_->size()));
-    PruneOrphanBlocks();
     InvalidateExpansion();
+    if (recall_hook_)
+        recall_hook_(*content_);
     StopBrowsing();
     scroll_ = 0;
     desired_col_ = -1;
@@ -844,9 +952,11 @@ void EdcInput::RecallHistory(size_t index)
 {
     history_pos_ = index;
     *content_ = history_[index];
-    // A recalled line is plain text: any chips the old draft had are gone with it.
-    PruneOrphanBlocks();
     InvalidateExpansion();
+    // The owner can now pull the payload this entry's placeholders need (they are not in
+    // the library after a restart).
+    if (recall_hook_)
+        recall_hook_(*content_);
     // Like a shell, the caret lands at the end of the recalled entry so it can
     // be edited or re-sent; OnRender() then scrolls the caret row into view.
     cursor_ = static_cast<int>(content_->size());

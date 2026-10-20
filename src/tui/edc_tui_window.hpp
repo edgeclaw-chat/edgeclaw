@@ -15,6 +15,7 @@
 #include <ftxui/component/screen_interactive.hpp>
 #include <functional>
 #include <memory>
+#include <map>
 #include <set>
 #include <mutex>
 #include <string>
@@ -108,6 +109,8 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     void SyncWorking(const TaskSnapshot &snap) override;
     void SetTodos(const TaskSnapshot &snap) override;
     void PresentHistory(const std::string &payload) override;
+    // A payload pull came back: header = the mid it answers ("" = that message is gone).
+    void PresentMessagePayload(const std::string &mid, const std::string &payload_json) override;
     void RequestTaskSnapshot() override;
     void RequestFrame() override;
 
@@ -263,6 +266,25 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // Monotone per-run counter for the block labels (`[Pasted #3 · 42 lines]`): the label
     // is the payload key, so two pastes in one draft must never share one.
     int paste_seq_ = 0;
+
+    // The mid of a submitted message: `<session>#<n>#<ms>` -- unique in this run and
+    // across restarts, opaque to the kernel, remembered by the input history. It is how a
+    // recalled folded block asks the store for its bytes (RequestMessagePayload).
+    long long mid_seq_ = 0;
+    std::string NewMessageMid();
+    // history entry text -> mid. Entries submitted before this feature existed have none.
+    std::map<std::string, std::string> history_mid_;
+    // Mids the store no longer knows: the entry is dropped from the history instead of
+    // being offered again, and nothing is asked a second time.
+    std::set<std::string> dead_mids_;
+    // Raised when a recall needs its payload.
+    void OnRecalledHistory(const std::string &entry);
+    // Ask for the payload of the draft's placeholders. False when there is nothing to ask
+    // (no matching history entry: those placeholders were typed by hand).
+    bool RequestPayloadForDraft();
+    void RaisePasteHint(const std::string &label);
+    std::string paste_hint_label_;
+    Toast paste_hint_;
 
     // Chat log state (messages + filter + task inputs) and the displayed
     // session's identity. Widgets render them; the dispatcher writes them.

@@ -1,3 +1,4 @@
+#include "edc_payload.h"
 #include "edc_task.h"
 #include "edc_turn.h"
 #include "edc_config.h"
@@ -1417,6 +1418,56 @@ static void test_drop_dep(void)
     edc_task_free(z);
 }
 
+
+/* The folded-paste identity: the frontend's mid and its payload ride on the user message, and
+ * the store answers "payload by mid" from there (the TUI's history recall path). */
+static void test_user_origin_payload(void)
+{
+    TEST("edc_task_set_user_origin / edc_task_find_user_payload");
+    struct edc_task *t = edc_task_new("task-origin", "sess-1", "g", "origin test", edc_channel_adapter);
+
+    /* No user message yet: nothing to park on, nothing to find. */
+    edc_task_set_user_origin(t, "s1#1#1000", NULL);
+    CHECK(edc_task_find_user_payload(t, "s1#1#1000") == NULL, "no turn -> no payload");
+
+    struct edc_turn *turn = edc_turn_new();
+    edc_turn_add_user_message(turn, "[Pasted #1 \xc2\xb7 2 lines] explain this");
+    t->active_turn = turn;
+
+    struct edc_payload *payload = edc_payload_new();
+    edc_payload_set(payload, "[Pasted #1 \xc2\xb7 2 lines]", "line1\nline2");
+    edc_task_set_user_origin(t, "s1#1#1000", payload);
+    edc_payload_free(payload);
+
+    cJSON *found = edc_task_find_user_payload(t, "s1#1#1000");
+    CHECK(found != NULL, "the payload is found by its mid");
+    if (found)
+        CHECK(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(found, "[Pasted #1 \xc2\xb7 2 lines]")), "line1\nline2") ==
+                  0,
+              "with its bytes intact");
+    CHECK(edc_task_find_user_payload(t, "s1#2#2000") == NULL, "an unknown mid finds nothing");
+    CHECK(edc_task_find_user_payload(t, NULL) == NULL, "a NULL mid finds nothing");
+
+    /* It rides on the MESSAGE, so committing the turn keeps it reachable. */
+    edc_task_commit_active_turn(t);
+    CHECK(edc_task_find_user_payload(t, "s1#1#1000") != NULL, "still found after the turn is committed");
+
+    /* And the fork path copies messages wholesale: the snapshot turn (what a fork replays)
+     * carries the field too, because it is inside the message object. */
+    struct edc_turn *snap = edc_task_snapshot_turns(t, NULL, "task-origin-fork");
+    CHECK(snap != NULL, "the fork snapshot copied the turn");
+    if (snap)
+    {
+        struct edc_task *tmp = edc_task_new("task-origin-tmp", "sess-1", "g", "tmp", edc_channel_adapter);
+        tmp->active_turn = snap; /* borrowed: the find only reads it */
+        CHECK(edc_task_find_user_payload(tmp, "s1#1#1000") != NULL, "a forked snapshot carries the payload");
+        tmp->active_turn = NULL;
+        edc_task_free(tmp);
+        edc_turn_free(snap);
+    }
+    edc_task_free(t);
+}
+
 int main(void)
 
 {
@@ -1432,6 +1483,7 @@ int main(void)
     test_transition_table_spec();
     test_intent_writes();
     test_turns();
+    test_user_origin_payload();
     test_dependencies();
     test_dep_cancelled();
     test_dep_cancel_cascade();

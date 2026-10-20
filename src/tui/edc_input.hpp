@@ -4,6 +4,7 @@
 #include "edc_payload.h" /* folded paste blocks: placeholder key -> real bytes */
 
 #include <ftxui/component/component_base.hpp>
+#include <functional>
 #include <ftxui/screen/box.hpp>
 #include <string>
 #include <vector>
@@ -69,11 +70,58 @@ class EdcInput : public ::ftxui::ComponentBase
     // by overwrite mode) simply breaks the match -- see ExpandedDraft().
     void InsertPasteBlock(const std::string &label, const std::string &text);
 
-    // The blocks, in paste order (key = the placeholder text that appears in |content|).
-    // Borrowed; empty when nothing is folded.
-    const struct edc_payload *Payload() const
+    // Every block this widget knows about (key = the placeholder text), including the ones
+    // a recalled history entry brought back. Borrowed; empty when nothing is known.
+    const struct edc_payload *Blocks() const
     {
-        return payload_;
+        return blocks_;
+    }
+
+    // The subset |content| actually references, i.e. what has to travel with the message.
+    // A block whose placeholder is no longer in the draft contributes nothing: folding is a
+    // display device, so an unreferenced block is not part of what the line says. Rebuilt
+    // when the draft or the library changes; NULL when nothing is referenced.
+    const struct edc_payload *DraftPayload() const;
+
+    // True while |label| is already known (the caller numbers pastes, and two blocks must
+    // never share a key).
+    bool HasBlock(const std::string &label) const;
+
+    // Merge blocks back into the library (a history entry's payload arrived from the
+    // store). Does NOT touch the draft: the placeholder text is already there, and
+    // ExpandedDraft() starts working as soon as its bytes are known.
+    void RestoreBlocks(const struct edc_payload *blocks);
+
+    // True when the draft contains a placeholder whose bytes are NOT known (a recalled
+    // history entry still waiting for its payload). Submitting such a line would send the
+    // literal `[Pasted #1 · 42 lines]`, so the owner must ask first.
+    bool HasUnresolvedBlocks() const;
+
+    // A recalled history entry (called from the recall path, so the owner can pull its
+    // payload if this widget does not know it yet).
+    void SetRecallHook(std::function<void(const std::string &)> hook)
+    {
+        recall_hook_ = std::move(hook);
+    }
+
+    // Drop one recall entry (its payload is gone for good: never offer it again).
+    void RemoveHistoryEntry(const std::string &entry);
+
+    // ── Atomic tokens: a completed `@file` mention ───────────────────
+    //
+    // A mention accepted from the completion popup becomes ONE unit on screen: Backspace
+    // and Delete remove it whole, Left/Right step over it, exactly like a folded paste
+    // chip. It carries no payload and changes nothing about the line -- `@path` stays in
+    // the buffer and the AST-layer pass still reads the file (sandbox + budget), because
+    // that reading is I/O and cannot live in the text layer. This is editing feel only.
+    //
+    // Matching is by text, like the paste keys: no offsets to maintain. A label that no
+    // longer appears in the draft costs nothing (there are no bytes behind it), so the
+    // list is only ever appended to.
+    void RegisterAtom(const std::string &label);
+    size_t AtomCount() const
+    {
+        return atoms_.size();
     }
 
     // The draft with every placeholder replaced by its parked text -- what this line
@@ -196,14 +244,12 @@ class EdcInput : public ::ftxui::ComponentBase
 
     // ── Folded-paste plumbing ────────────────────────────────────────
     //
-    // True when a placeholder starts at |at| (then |*end| = one past it) / ends at |at|
-    // (then |*begin| = its first byte). Keys are matched longest-first, so a key that is
-    // a prefix of another never steals the match.
-    bool BlockStartingAt(int at, int *end) const;
-    bool BlockEndingAt(int at, int *begin) const;
-    // A block's key no longer appears in the draft (the user edited through it): drop the
-    // parked bytes so the payload cannot outlive the text that referenced it.
-    void PruneOrphanBlocks();
+    std::string payload_key_of(int index) const;
+    // Longest token starting at / ending at |at|, over BOTH kinds (a payload block or an
+    // atom). |*is_paste| tells them apart (the renderer styles them differently, and only
+    // a paste block has bytes).
+    bool TokenStartingAt(int at, int *end, std::string *key = nullptr, bool *is_paste = nullptr) const;
+    bool TokenEndingAt(int at, int *begin, std::string *key = nullptr, bool *is_paste = nullptr) const;
     void InvalidateExpansion();
     // One visual row, split into plain text and chips (a chip is drawn as a block).
     ::ftxui::Element RowElement(const Row &row, int caret_at, bool is_focused,
@@ -240,9 +286,17 @@ class EdcInput : public ::ftxui::ComponentBase
     // it, so the widget adapts to a resize one frame later.
     ::ftxui::Box box_;
 
-    // Folded paste blocks (key = placeholder text). NULL until the first paste, so the
-    // ordinary typing path never allocates for it.
-    struct edc_payload *payload_ = nullptr;
+    // Folded paste blocks, by key (placeholder text). This is a LIBRARY, not "the current
+    // draft's blocks": history recall brings blocks back into it, and deleting a chip only
+    // removes the text that referenced one. NULL until the first paste, so the ordinary
+    // typing path never allocates for it.
+    struct edc_payload *blocks_ = nullptr;
+    // Cache for DraftPayload() (same epoch scheme as the expansion cache).
+    mutable struct edc_payload *draft_payload_ = nullptr;
+    mutable long long draft_at_ = -1;
+    std::function<void(const std::string &)> recall_hook_;
+    // Completed `@file` mentions: atomic while editing, no payload behind them.
+    std::vector<std::string> atoms_;
     // ExpandedDraft() cache. |expanded_epoch_| moves on every edit or payload change;
     // |expanded_at_| is the epoch the cached string was built at.
     mutable std::string expanded_cache_;

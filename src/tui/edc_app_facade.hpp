@@ -81,6 +81,8 @@ class IChannelSink
     virtual void OnTreeChanged(const std::string &session_id, const std::string &reason) = 0;
     // Structured payload for `/task history` / `/group history`.
     virtual void OnTaskHistory(const std::string &payload) = 0;
+    // The folded-paste payload of the user message named by |mid| ("" = gone for good).
+    virtual void OnMessagePayload(const std::string &mid, const std::string &payload_json) = 0;
 };
 
 // The config submitted by the first-run setup page (the wizard): the LLM settings plus
@@ -171,8 +173,10 @@ class IAppFacade
     // |payload_json| = folded paste blocks (placeholder -> real bytes); the app expands
     // them through the text-layer passes before classifying the line. "" = none.
     virtual void SendUserMessage(const std::string &session_id, const std::string &content,
-                                 const std::string &payload_json) = 0;
+                                 const std::string &payload_json, const std::string &mid) = 0;
     virtual void RequestTaskSnapshot(const std::string &session_id) = 0;
+    // Ask the scheduler thread for that payload (the store is not ours to read).
+    virtual void RequestMessagePayload(const std::string &mid) = 0;
 
     // ── paths / files the frontend owns ──────────────────────────
     virtual bool HistoryPath(std::string *out) const = 0;
@@ -231,8 +235,9 @@ class AppFacade : public IAppFacade
     void ResetFileCandidates() const override;
 
     void SendUserMessage(const std::string &session_id, const std::string &content,
-                         const std::string &payload_json) override;
+                         const std::string &payload_json, const std::string &mid) override;
     void RequestTaskSnapshot(const std::string &session_id) override;
+    void RequestMessagePayload(const std::string &mid) override;
 
     bool HistoryPath(std::string *out) const override;
     bool ChatLogPathFor(const std::string &session_id, std::string *out) const override;

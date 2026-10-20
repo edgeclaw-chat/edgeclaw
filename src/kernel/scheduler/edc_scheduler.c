@@ -35,6 +35,7 @@ static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg
 static void sched_save_session(struct edc_scheduler *sched, struct edc_session *s);
 /* Sidebar-only task-tree snapshot, pulled by explicit session_id; the chat pane is the TUI's own. */
 static void sched_handle_pull_snapshot(struct edc_scheduler *sched, const char *session_id);
+static void sched_handle_pull_message_payload(struct edc_scheduler *sched, const char *mid);
 static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_session *session, const char *reason);
 static void sched_trace_notify(const char *reason, const char *session_id);
 static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *task, edc_task_step step,
@@ -1702,6 +1703,48 @@ static void sched_handle_pull_snapshot(struct edc_scheduler *sched, const char *
     sched_handle_task_snapshot(sched, session, "pull");
 }
 
+/* Answer "the folded-paste payload of the user message with this mid". The payload lives on
+ * the message JSON, so this is a read-only full-table scan -- the only thread allowed to
+ * touch the store is this one, which is why the frontend asks instead of reading. */
+struct sched_payload_lookup
+{
+    const char *mid;
+    cJSON *payload;
+};
+
+static void sched_payload_lookup_visit(void *ctx, struct edc_task *task)
+{
+    struct sched_payload_lookup *lookup = ctx;
+    if (lookup->payload)
+        return;
+    lookup->payload = edc_task_find_user_payload(task, lookup->mid);
+}
+
+static void sched_handle_pull_message_payload(struct edc_scheduler *sched, const char *mid)
+{
+    if (!sched || !mid || !*mid)
+        return;
+
+    struct sched_payload_lookup lookup = {.mid = mid, .payload = NULL};
+    edc_session_manager_foreach_task(sched->sessions, sched_payload_lookup_visit, &lookup);
+
+    sds json = sdsempty();
+    if (lookup.payload)
+    {
+        char *printed = cJSON_PrintUnformatted(lookup.payload);
+        if (printed)
+        {
+            sdsfree(json);
+            json = sdsnew(printed);
+            cJSON_free(printed);
+        }
+    }
+    /* "" is the honest answer for "that message is gone": the frontend drops the history
+     * entry instead of sending a placeholder that expands to nothing. */
+    if (sched->message_payload_reply)
+        sched->message_payload_reply(sched, mid, json);
+}
+
 static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_session *session, const char *reason)
 {
     if (!sched || !session)
@@ -1857,6 +1900,10 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
     case BC_ACTOR_MSG_TASK_SNAPSHOT:
         /* A pull names which tree it wants; nothing pushes a tree unasked. */
         sched_handle_pull_snapshot(sched, (const char *)msg->data);
+        break;
+    case BC_ACTOR_MSG_MESSAGE_PAYLOAD:
+        /* A pull names a mid; the answer is that user message's folded-paste map. */
+        sched_handle_pull_message_payload(sched, (const char *)msg->data);
         break;
     default:
         break;

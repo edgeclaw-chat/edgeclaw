@@ -4,6 +4,7 @@
 #include "edc_chat_widget.hpp"
 #include "edc_command_palette.hpp"
 #include "edc_domain.hpp"
+#include "edc_history_line.hpp"
 #include "edc_input.hpp"
 #include "edc_scroll_view.hpp"
 #include "edc_sidebar.hpp"
@@ -166,68 +167,8 @@ ActiveTaskTodos ActiveTaskTodosOf(const TaskSnapshot *snap)
     return todos; // no foreground group at all
 }
 
-// $EDC_HOME/.tui_history stores one recalled entry per line. Backslash and the
-// control characters that would break the one-line format are escaped so a
-// multi-line message (Alt+Enter newlines) round-trips as a single line.
-std::string EscapeHistoryEntry(const std::string &entry)
-{
-    std::string out;
-    out.reserve(entry.size());
-    for (char c : entry)
-    {
-        switch (c)
-        {
-        case '\\':
-            out += "\\\\";
-            break;
-        case '\n':
-            out += "\\n";
-            break;
-        case '\r':
-            out += "\\r";
-            break;
-        default:
-            out += c;
-            break;
-        }
-    }
-    return out;
-}
-
-std::string UnescapeHistoryLine(const std::string &line)
-{
-    std::string out;
-    out.reserve(line.size());
-    for (size_t i = 0; i < line.size(); ++i)
-    {
-        if (line[i] != '\\')
-        {
-            out += line[i];
-            continue;
-        }
-        if (i + 1 >= line.size())
-            break; // dangling escape at EOF: drop it
-        const char n = line[++i];
-        switch (n)
-        {
-        case 'n':
-            out += '\n';
-            break;
-        case 'r':
-            out += '\r';
-            break;
-        case '\\':
-            out += '\\';
-            break;
-        default:
-            // Unknown escape: keep both bytes verbatim.
-            out += '\\';
-            out += n;
-            break;
-        }
-    }
-    return out;
-}
+// $EDC_HOME/.tui_history stores one recalled entry per line: see edc_history_line.hpp for
+// the shape (`<mid>\t<text>`, with the text escaped so newlines and tabs survive).
 
 } // namespace
 
@@ -261,6 +202,9 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     // placeholder is dimmed by the widget itself (no InputOption transform).
     input_ = std::make_shared<edc::EdcInput>(
         &input_text_, "Type a message, or /help for commands, Alt+Enter for a newline...");
+    // A recalled line may carry folded blocks whose bytes only the store still has: ask
+    // for them as soon as the entry lands in the box (they arrive in a few milliseconds).
+    input_->SetRecallHook([this](const std::string &entry) { OnRecalledHistory(entry); });
 
     container_ = ::ftxui::Container::Vertical({chat_widget_, input_}, &focused_);
 
@@ -360,6 +304,18 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
 
 void TUIWindow::Submit()
 {
+    // A recalled block whose bytes have not arrived yet would go out as the literal
+    // `[Pasted #1 · 42 lines]`. Ask again and hold the send: folding must never change what
+    // is sent. (When there is nothing to ask for, those placeholders were typed by hand --
+    // they are text, and sending them is right.)
+    if (input_->HasUnresolvedBlocks() && RequestPayloadForDraft())
+    {
+        RaisePasteHint(" Fetching the pasted block… ");
+        if (screen_)
+            screen_->RequestAnimationFrame();
+        return;
+    }
+
     // What the line SAYS, not what the box shows: a folded block expands here, so the
     // bubble, the transcript, the history check and the message the app receives all see
     // the same bytes the user would have typed. Folding never changes meaning.
@@ -368,8 +324,7 @@ void TUIWindow::Submit()
     if (first == std::string::npos)
     {
         input_text_.clear();
-        input_->ClearPasteBlocks();
-        input_->Reset();
+        input_->Reset(); // the library keeps its blocks: a history entry still needs them
         return;
     }
     const auto last = expanded.find_last_not_of(" \t\r\n");
@@ -397,26 +352,35 @@ void TUIWindow::Submit()
     // history file keeps plain text only, and a recalled placeholder with no payload
     // behind it would go out as the literal `[Pasted #1 · 42 lines]`. (Payload lookup by
     // message id is the follow-up that makes these recallable.)
-    const bool folded = !edc_payload_empty(input_->Payload());
-    // Snapshot the payload before the draft is cleared (Reset drops the orphaned blocks).
+    // Only what this draft actually references travels with the message.
+    const struct edc_payload *draft_payload = input_->DraftPayload();
     std::string payload_json;
-    if (folded)
+    if (!edc_payload_empty(draft_payload))
     {
-        char *json = edc_payload_to_json(input_->Payload());
+        char *json = edc_payload_to_json(draft_payload);
         if (json)
         {
             payload_json.assign(json);
             edc_payload_string_free(json);
         }
     }
+    // What ArrowUp should give back is what the user SAW (placeholders kept), and the mid
+    // is what lets that recalled line fetch its bytes back from the store.
+    std::string draft_entry = input_text_;
+    const auto d_first = draft_entry.find_first_not_of(" \t\r\n");
+    const auto d_last = draft_entry.find_last_not_of(" \t\r\n");
+    draft_entry = d_first == std::string::npos ? std::string() : draft_entry.substr(d_first, d_last - d_first + 1);
+    const std::string mid = NewMessageMid();
     input_text_.clear();
     input_->Reset(); // caret/scroll back to the start after the external clear
     RecomputeCommandPalette();
-    if (!folded)
+    // Record the submitted line for ArrowUp recall and persist it so history survives a
+    // restart. A folded entry is recorded like any other: its bytes live on the message,
+    // and the mid (stored next to the entry) is how a recall gets them back.
+    if (!draft_entry.empty())
     {
-        // Record the submitted text for ArrowUp recall and persist it so history
-        // survives a restart.
-        input_->AddHistory(message);
+        input_->AddHistory(draft_entry);
+        history_mid_[draft_entry] = mid;
         SaveInputHistory();
     }
 
@@ -425,7 +389,7 @@ void TUIWindow::Submit()
     MarkReadFromInput(message);
 
     app_->ResetFileCandidates(); /* a submission may have created files */
-    app_->SendUserMessage(session_model_->displayed_id(), message, payload_json);
+    app_->SendUserMessage(session_model_->displayed_id(), message, payload_json, mid);
     chat_widget_->ScrollToBottom();
 
     // A new message may spawn/attach a task, so refresh the sidebar tree. The
@@ -445,7 +409,7 @@ void TUIWindow::StopForegroundTask()
     // The same thing a typed "/task stop" does, minus the chat bubble: nothing here was
     // typed, and the command layer's own reply is the feedback. With no id the command
     // stops the foreground group's active task.
-    app_->SendUserMessage(session_model_->displayed_id(), "/task stop", "");
+    app_->SendUserMessage(session_model_->displayed_id(), "/task stop", "", "");
     RequestTaskSnapshot();
     if (screen_)
         screen_->RequestAnimationFrame();
@@ -532,6 +496,100 @@ void TUIWindow::OpenConnect()
         screen_->RequestAnimationFrame();
 }
 
+std::string TUIWindow::NewMessageMid()
+{
+    /* <session>#<n>#<ms>: unique per run (the counter) and across runs (the millisecond
+     * clock), readable in a log, and narrow enough that LooksLikeMid() can tell it from a
+     * pasted line that happens to contain a tab. Opaque to the kernel -- it only stores it. */
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count();
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%s#%lld#%lld", session_model_->displayed_id().c_str(),
+             static_cast<long long>(++mid_seq_), static_cast<long long>(ms));
+    return buf;
+}
+
+void TUIWindow::RaisePasteHint(const std::string &label)
+{
+    paste_hint_label_ = label;
+    paste_hint_.Raise(std::chrono::steady_clock::now());
+}
+
+void TUIWindow::OnRecalledHistory(const std::string &entry)
+{
+    /* A recalled line whose placeholders this widget does not know: the bytes are in the
+     * store, under the mid recorded with that entry. Nothing is asked twice. */
+    if (!input_->HasUnresolvedBlocks())
+        return;
+    const auto mid = history_mid_.find(entry);
+    if (mid == history_mid_.end() || dead_mids_.count(mid->second))
+        return;
+    app_->RequestMessagePayload(mid->second);
+}
+
+bool TUIWindow::RequestPayloadForDraft()
+{
+    if (!input_->HasUnresolvedBlocks())
+        return false;
+
+    /* The draft was recalled from the history: name the entry and ask for its payload.
+     * A draft that matches no entry has placeholders the user typed by hand -- there is
+     * nothing to fetch, and they are text. */
+    const std::string draft = input_text_;
+    bool asked = false;
+    for (const auto &entry : history_mid_)
+    {
+        if (dead_mids_.count(entry.second))
+            continue;
+        if (draft.find(entry.first) == std::string::npos)
+            continue;
+        app_->RequestMessagePayload(entry.second);
+        asked = true;
+    }
+    return asked;
+}
+
+void TUIWindow::PresentMessagePayload(const std::string &mid, const std::string &payload_json)
+{
+    struct edc_payload *payload = edc_payload_from_json(payload_json.c_str());
+    if (edc_payload_empty(payload))
+    {
+        /* The message is gone (its session was removed, or the store never had it). Offering
+         * that history line again would put a placeholder in the box that can never be
+         * expanded, so it is dropped -- "查不到就跳过该条", never a literal placeholder. */
+        edc_payload_free(payload);
+        dead_mids_.insert(mid);
+        for (auto it = history_mid_.begin(); it != history_mid_.end(); ++it)
+        {
+            if (it->second != mid)
+                continue;
+            const std::string entry = it->first;
+            history_mid_.erase(it);
+            input_->RemoveHistoryEntry(entry);
+            SaveInputHistory();
+            if (input_text_.find(entry) != std::string::npos)
+            {
+                input_text_.clear();
+                input_->Reset();
+                RecomputeCommandPalette();
+            }
+            break;
+        }
+        RaisePasteHint(" Pasted block is gone ");
+        if (screen_)
+            screen_->RequestAnimationFrame();
+        return;
+    }
+
+    /* Its bytes are back in the library: ExpandedDraft() starts working, the badge and the
+     * next submit see the real line. */
+    input_->RestoreBlocks(payload);
+    edc_payload_free(payload);
+    if (screen_)
+        screen_->RequestAnimationFrame();
+}
+
 void TUIWindow::LoadInputHistory()
 {
     std::string path;
@@ -543,6 +601,7 @@ void TUIWindow::LoadInputHistory()
         return; // first run (or unreadable): start with an empty history
 
     input_->ClearHistory();
+    history_mid_.clear();
     std::string line;
     while (std::getline(file, line))
     {
@@ -550,7 +609,10 @@ void TUIWindow::LoadInputHistory()
             line.pop_back();
         if (line.empty())
             continue;
-        input_->AddHistory(UnescapeHistoryLine(line));
+        const HistoryLine decoded = DecodeHistoryLine(line);
+        input_->AddHistory(decoded.text);
+        if (!decoded.mid.empty())
+            history_mid_[decoded.text] = decoded.mid;
     }
 }
 
@@ -562,7 +624,10 @@ void TUIWindow::SaveInputHistory()
 
     std::string out;
     for (const std::string &entry : input_->History())
-        out += EscapeHistoryEntry(entry) + "\n";
+    {
+        const auto mid = history_mid_.find(entry);
+        out += EncodeHistoryLine(mid == history_mid_.end() ? std::string() : mid->second, entry) + "\n";
+    }
     // Symlink-safe (the file sits in $EDC_HOME; still never follow a link).
     app_->WriteFile(path, out.data(), out.size(), /*append=*/false, /*under_workspace=*/false);
 }
@@ -984,6 +1049,14 @@ void TUIWindow::TickAnimations()
             screen_->RequestAnimationFrame();
     }
 
+    // "Fetching the pasted block…" / "Pasted block is gone": same chip, same corner.
+    if (paste_hint_.Visible(toast_now))
+    {
+        chat = ::ftxui::dbox({std::move(chat), ToastChipElement(paste_hint_label_, paste_hint_.Fade(toast_now))});
+        if (screen_)
+            screen_->RequestAnimationFrame();
+    }
+
     // History view: the input is not rendered at all (nor its two separators) --
     // the pane is just history + status row. The return hint is a badge in the
     // history pane's top-right corner (same dbox trick as the "Copied" chip).
@@ -1320,9 +1393,15 @@ bool TUIWindow::AcceptCompletion()
             return false;
         input_->ReplaceRange(command_palette_.trigger_begin(), input_->CursorPosition(), insert);
         if (insert.back() == '/')
+        {
             RecomputeCommandPalette();
-        else
-            command_palette_.Close();
+            return true;
+        }
+        // The mention is complete: from here it is ONE unit (Backspace/Delete remove it
+        // whole, Left/Right step over it), like a folded paste chip. The buffer still says
+        // `@path` and the AST-layer pass still reads the file -- this is editing feel only.
+        input_->RegisterAtom(insert.substr(0, insert.size() - 1));
+        command_palette_.Close();
         return true;
     }
 

@@ -502,7 +502,7 @@ static void test_paste_block_folds_and_expands(void)
 
     /* But the line SAYS the pasted bytes: that is what the app receives. */
     CHECK(input.ExpandedDraft() == "line1\nline2\nline3 ", "expanded: '%s'", input.ExpandedDraft().c_str());
-    CHECK(edc_payload_count(input.Payload()) == 1, "one block in the payload");
+    CHECK(edc_payload_count(input.Blocks()) == 1, "one block in the payload");
 }
 
 static void test_paste_block_is_one_atom(void)
@@ -515,12 +515,12 @@ static void test_paste_block_is_one_atom(void)
     /* First Backspace eats the trailing space the insert added... */
     input.OnEvent(ftxui::Event::Backspace);
     CHECK(text == "[Pasted #1 \xc2\xb7 2 lines]", "the trailing space goes first: '%s'", text.c_str());
-    CHECK(edc_payload_count(input.Payload()) == 1, "the chip is still there");
+    CHECK(edc_payload_count(input.Blocks()) == 1, "the chip is still there");
 
     /* ...the second one eats the chip as one atom, and the payload entry with it. */
     input.OnEvent(ftxui::Event::Backspace);
     CHECK(text.empty(), "the whole placeholder is gone: '%s'", text.c_str());
-    CHECK(edc_payload_count(input.Payload()) == 0, "and its parked bytes are gone too");
+    CHECK(edc_payload_count(input.Blocks()) == 0, "and its parked bytes are gone too");
     CHECK(input.ExpandedDraft().empty(), "nothing left to expand");
 }
 
@@ -545,7 +545,7 @@ static void test_paste_block_moves_and_caret(void)
     /* The caret is right after the chip (ArrowRight put it there), so the text lands
      * between the chip and its trailing space. */
     input.ReplaceRange(input.CursorPosition(), input.CursorPosition(), "- ");
-    CHECK(edc_payload_count(input.Payload()) == 1, "still one block after typing next to it");
+    CHECK(edc_payload_count(input.Blocks()) == 1, "still one block after typing next to it");
     CHECK(input.ExpandedDraft() == "a\nb-  ", "expanded: '%s'", input.ExpandedDraft().c_str());
 }
 
@@ -568,13 +568,95 @@ static void test_paste_block_broken_placeholder(void)
     edc::EdcInput input(&text, "");
     input.InsertPasteBlock("[Pasted #1 \xc2\xb7 2 lines]", "a\nb");
 
-    /* Delete the closing bracket: the key no longer matches, so the text is plain and the
-     * parked bytes are unreachable -- Reset() drops them instead of keeping a ghost. */
+    /* Delete the closing bracket: the key no longer matches, so the text is plain. */
     const int close = static_cast<int>(text.find(']'));
     input.ReplaceRange(close, close + 1, "");
     CHECK(input.ExpandedDraft() == text, "no expansion without the key: '%s'", input.ExpandedDraft().c_str());
-    input.Reset();
-    CHECK(edc_payload_count(input.Payload()) == 0, "the orphaned block is pruned on Reset");
+
+    /* The bytes stay in the library (another history entry may still point at them), but
+     * the draft references nothing -- so a submit carries nothing. */
+    CHECK(edc_payload_count(input.Blocks()) == 1, "the block is still known");
+    CHECK(edc_payload_empty(input.DraftPayload()), "but nothing is referenced by this draft");
+}
+
+static void test_paste_block_library(void)
+{
+    std::printf("  paste block: a recalled entry's bytes can arrive later (library model)\n");
+    std::string text = "[Pasted #7 \xc2\xb7 2 lines] answer this";
+    edc::EdcInput input(&text, "");
+
+    /* A line recalled from history: its placeholder is text, its bytes are not here yet. */
+    CHECK(input.HasUnresolvedBlocks(), "a placeholder with no bytes behind it is unresolved");
+    CHECK(edc_payload_empty(input.DraftPayload()), "nothing to send yet");
+    CHECK(input.ExpandedDraft() == text, "and nothing to expand: '%s'", input.ExpandedDraft().c_str());
+
+    /* The store's answer lands: the library learns the block, the line starts expanding. */
+    struct edc_payload *restored = edc_payload_new();
+    edc_payload_set(restored, "[Pasted #7 \xc2\xb7 2 lines]", "a\nb");
+    input.RestoreBlocks(restored);
+    edc_payload_free(restored);
+
+    CHECK(!input.HasUnresolvedBlocks(), "the placeholder is resolved now");
+    CHECK(input.ExpandedDraft() == "a\nb answer this", "expanded: '%s'", input.ExpandedDraft().c_str());
+    CHECK(edc_payload_count(input.DraftPayload()) == 1, "and the block travels with the message");
+
+    /* Typing your own placeholder is text, not a block: there is nothing to fetch. */
+    std::string typed = "[Pasted #9 \xc2\xb7 1 line]";
+    edc::EdcInput plain(&typed, "");
+    CHECK(plain.HasUnresolvedBlocks(), "a hand-typed placeholder looks the same...");
+    CHECK(edc_payload_empty(plain.DraftPayload()), "...and carries nothing (it is just text)");
+}
+
+static void test_history_entry_removal(void)
+{
+    std::printf("  history: an entry whose payload is gone can be dropped\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+    input.AddHistory("first");
+    input.AddHistory("[Pasted #1 \xc2\xb7 2 lines]");
+    CHECK(input.History().size() == 2, "two entries");
+
+    input.RemoveHistoryEntry("[Pasted #1 \xc2\xb7 2 lines]");
+    CHECK(input.History().size() == 1 && input.History()[0] == "first", "the dead one is gone");
+}
+
+static void test_mention_atom(void)
+{
+    std::printf("  mention atom: a completed `@file` is one unit while editing\n");
+    std::string text = "看下 @src/main.c 这段";
+    edc::EdcInput input(&text, "");
+    input.RegisterAtom("@src/main.c");
+    CHECK(input.AtomCount() == 1, "the mention is registered");
+
+    /* The buffer is unchanged: `@` keeps its meaning, nothing is expanded. */
+    CHECK(text == "看下 @src/main.c 这段", "'%s'", text.c_str());
+    CHECK(input.ExpandedDraft() == text, "no payload, no expansion");
+
+    /* Caret just after the mention: Backspace deletes the WHOLE mention, not one glyph. */
+    input.SetCursor(static_cast<int>(text.find(" 这段")));
+    input.OnEvent(ftxui::Event::Backspace);
+    CHECK(text == "看下  这段", "the whole @mention is gone: '%s'", text.c_str());
+    CHECK(input.CursorPosition() == static_cast<int>(std::string("看下 ").size()), "caret where it was: %d",
+          input.CursorPosition());
+
+    /* Delete at the mention's first glyph removes it too. */
+    text = "a @src/main.c b";
+    input.SetCursor(2);
+    input.OnEvent(ftxui::Event::Delete);
+    CHECK(text == "a  b", "Delete takes the whole mention: '%s'", text.c_str());
+
+    /* Left/Right step over it instead of walking inside. */
+    text = "see @src/main.c";
+    input.SetCursor(static_cast<int>(text.size()));
+    input.OnEvent(ftxui::Event::ArrowLeft);
+    CHECK(input.CursorPosition() == static_cast<int>(text.find("@src")), "Left lands on the mention's start: %d",
+          input.CursorPosition());
+    input.OnEvent(ftxui::Event::ArrowRight);
+    CHECK(input.CursorPosition() == static_cast<int>(text.size()), "Right jumps past it: %d", input.CursorPosition());
+
+    /* Rendering keeps the text (the underline is a style, not a different string). */
+    const auto screen = render_twice(input, 40, 4);
+    CHECK(row_text(screen, 0, 40) == "see @src/main.c", "row 0: '%s'", row_text(screen, 0, 40).c_str());
 }
 
 static void test_input_mode_label()
@@ -611,6 +693,9 @@ int main(void)
     test_paste_block_moves_and_caret();
     test_paste_block_expansion_tracks_edits();
     test_paste_block_broken_placeholder();
+    test_paste_block_library();
+    test_history_entry_removal();
+    test_mention_atom();
     test_input_mode_label();
 
     if (g_failures)

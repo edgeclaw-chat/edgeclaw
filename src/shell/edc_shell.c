@@ -634,8 +634,8 @@ bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_sched
     }
     if (task)
     {
-        if (message && message->payload)
-            edc_task_set_user_payload(task, message->payload);
+        if (message)
+            edc_task_set_user_origin(task, message->mid, message->payload);
         edc_commands_announce_task(to, task);
     }
 

@@ -103,6 +103,20 @@ int edc_app_message_is_task_history(const struct edc_channel_message *message)
     return message ? message->message_type == EDC_CHANNEL_MESSAGE_TASK_HISTORY_TYPE : 0;
 }
 
+/* The mid carried by a MESSAGE_PAYLOAD reply (the message it answers for), or NULL. */
+const char *edc_app_message_mid(const struct edc_channel_message *message)
+{
+    /* A reply names the request it answers in its header; a USER message carries its own
+     * id in `mid`. Both spellings exist because they answer different questions. */
+    return message ? message->header : NULL;
+}
+
+/* A pull REPLY: the folded-paste payload of the user message named by the reply's header. */
+int edc_app_message_is_message_payload(const struct edc_channel_message *message)
+{
+    return message ? message->message_type == EDC_CHANNEL_MESSAGE_MESSAGE_PAYLOAD_TYPE : 0;
+}
+
 /* A pull REPLY: the content is task-tree snapshot JSON to parse, never rendered as
  * chat text. */
 int edc_app_message_is_task_snapshot(const struct edc_channel_message *message)
@@ -510,7 +524,7 @@ void edc_app_channel_adapter_init(struct edc_app *app, void *instance,
 /* Send a user input. |session_id| names the session it belongs to (the task it
  * spawns lands there). NULL/"" = unspecified, the store picks the default. */
 void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content,
-                               const char *payload_json)
+                               const char *payload_json, const char *mid)
 {
     edc_actor_t *channel = edc_app_channel_actor(app);
     if (!channel)
@@ -524,6 +538,8 @@ void edc_app_send_user_message(struct edc_app *app, const char *session_id, cons
     struct edc_channel_message *message =
         edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, final_text);
     message->payload = payload; /* NULL when nothing was folded */
+    if (mid && *mid)
+        message->mid = sdsnew(mid);
     if (session_id && *session_id)
         message->session_id = sdsnew(session_id);
 
@@ -537,6 +553,21 @@ void edc_app_send_user_message(struct edc_app *app, const char *session_id, cons
 
 /* Request a task tree (the frontend pulls only the one it displays); built on the
  * scheduler thread and answered as TASK_SNAPSHOT through the channel adapter. */
+void edc_app_request_message_payload(struct edc_app *app, const char *mid)
+{
+    edc_actor_t *channel = edc_app_channel_actor(app);
+    if (!channel || !mid || !*mid)
+        return;
+
+    edc_channel_actor_state_t *state = channel->state;
+    if (!state || !state->observer)
+        return;
+
+    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_MESSAGE_PAYLOAD, channel, NULL, sdsnew(mid),
+                                             (edc_actor_data_free_fn)sdsfree);
+    edc_actor_send(state->observer, msg);
+}
+
 void edc_app_request_task_snapshot(struct edc_app *app, const char *session_id)
 {
     edc_actor_t *channel = edc_app_channel_actor(app);

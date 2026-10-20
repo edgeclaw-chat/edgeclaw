@@ -952,6 +952,15 @@ cc_test(
     }),
 )
 cc_test(
+    name = "test_history_line",
+    srcs = ["test_history_line.cpp"],
+    deps = [
+        "//src/tui:tui",
+    ],
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+
+cc_test(
     name = "test_edc_payload",
     srcs = ["test_edc_payload.cpp"],
     deps = [

@@ -336,7 +336,20 @@ extern struct edc_task *edc_task_new(const char *task_id, const char *session_id
  * strips the field when it puts a message on the wire (edc_llm_actor.c). |payload| empty
  * or no own user message = nothing happens. */
 struct edc_payload;
-extern void edc_task_set_user_payload(struct edc_task *task, const struct edc_payload *payload);
+/* Park the frontend's user-message identity (`mid`) and its folded-paste map (`payload`) on
+ * this task's own user message, as `mid` / `payload` fields of the message JSON. Both ride
+ * with the message, so fork (cJSON_Duplicate in edc_task_snapshot_turns) and the state
+ * serializer carry them without knowing about them.
+ *
+ * They are for the store and the UI, NOT for the model: the LLM request builder strips
+ * them when a message goes on the wire (edc_llm_actor.c). |payload| empty and |mid| NULL =
+ * nothing happens. */
+extern void edc_task_set_user_origin(struct edc_task *task, const char *mid, const struct edc_payload *payload);
+
+/** The folded-paste map parked on this task's user message with |mid| (borrowed), or NULL.
+ *  Read-only scan of the committed turns plus the in-flight one -- what the "payload by
+ *  mid" pull answers from. */
+extern cJSON *edc_task_find_user_payload(struct edc_task *task, const char *mid);
 
 extern struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,
                                       uint32_t fork_point_completion_seq, edc_channel_type channel_type);

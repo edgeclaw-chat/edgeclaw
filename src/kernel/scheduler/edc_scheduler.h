@@ -47,6 +47,9 @@ typedef bool (*edc_scheduler_command_fn)(struct edc_scheduler *sched, struct edc
                                          const struct edc_sched_input *input);
 /** Answer to a pull: the serialized tree the frontend asked for. */
 typedef void (*edc_scheduler_snapshot_fn)(struct edc_scheduler *sched, sds serialized);
+/** Answer to a "payload by mid" pull: |mid| names the user message, |payload| is its
+ *  folded-paste map as JSON ("" = that message is gone). Never rendered as chat text. */
+typedef void (*edc_scheduler_message_payload_fn)(struct edc_scheduler *sched, const char *mid, sds payload);
 /** "The tree of session X changed" -- an event carrying no tree; the frontend
  *  pulls what it displays. `reason` is trace-only. */
 typedef void (*edc_scheduler_snapshot_changed_fn)(struct edc_scheduler *sched, const char *session_id,
@@ -107,6 +110,7 @@ struct edc_scheduler
     edc_scheduler_abort_tools_fn abort_tools;
     edc_scheduler_command_fn handle_command;
     edc_scheduler_snapshot_fn snapshot_reply;
+    edc_scheduler_message_payload_fn message_payload_reply;
     edc_scheduler_snapshot_changed_fn snapshot_changed;
 
     /* Raw text of the input being handled (not owned, valid during the message);

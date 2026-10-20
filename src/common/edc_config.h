@@ -50,6 +50,9 @@ typedef enum
                                                   * `/group history <id>`: that task's/group's message
                                                   * history (JSON). The answer returns with the command's
                                                   * reply; the frontend only splits it into bubbles. */
+    EDC_CHANNEL_MESSAGE_MESSAGE_PAYLOAD_TYPE,    /* A pull REPLY: the folded-paste payload parked on the
+                                                  * user message named by the request's tag (header = that
+                                                  * tag, content = the payload JSON, "" = not found). */
 } edc_channel_message_type;
 
 /* Render preference for message content: declared explicitly by the sender (tool/app);

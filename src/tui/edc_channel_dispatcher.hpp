@@ -52,6 +52,8 @@ class IChannelHost
     virtual void SetTodos(const TaskSnapshot &snap) = 0;
     // Structured `/task history` payload -> history view.
     virtual void PresentHistory(const std::string &payload) = 0;
+    // A folded-paste payload came back for |mid| ("" = the message is gone).
+    virtual void PresentMessagePayload(const std::string &mid, const std::string &payload_json) = 0;
 
     virtual void RequestTaskSnapshot() = 0;
     virtual void RequestFrame() = 0;
@@ -71,6 +73,7 @@ class ChannelDispatcher : public port::IChannelSink
     void OnTaskSnapshot(const std::string &json) override;
     void OnTreeChanged(const std::string &session_id, const std::string &reason) override;
     void OnTaskHistory(const std::string &payload) override;
+    void OnMessagePayload(const std::string &mid, const std::string &payload_json) override;
 
   private:
     model::ChatModel &chat_;

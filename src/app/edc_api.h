@@ -168,8 +168,20 @@ extern void edc_app_channel_adapter_init(struct edc_app *app, void *instance,
  *
  * The payload itself rides along on the queued message as provenance and is stored on
  * the task's user message (fork/serialize copy it with the message). */
+/* |mid| is the frontend-generated id of this user message (NULL = none). It is stored on
+ * the message next to the payload; the input history remembers it, and
+ * edc_app_request_message_payload() hands the payload back by that id. */
 extern void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content,
-                                      const char *payload_json);
+                                      const char *payload_json, const char *mid);
+/* Ask for the folded-paste payload of the user message named by |mid|. The store belongs
+ * to the scheduler thread, so the answer arrives as a MESSAGE_PAYLOAD channel message
+ * (header = the mid, content = the payload JSON, "" = no such message). */
+extern void edc_app_request_message_payload(struct edc_app *app, const char *mid);
+/* That reply's mid (the header), or NULL. */
+extern const char *edc_app_message_mid(const struct edc_channel_message *message);
+/* True for the MESSAGE_PAYLOAD reply above. */
+extern int edc_app_message_is_message_payload(const struct edc_channel_message *message);
+
 /* Request a task tree: built on the scheduler thread, answered as a TASK_SNAPSHOT
  * message. */
 extern void edc_app_request_task_snapshot(struct edc_app *app, const char *session_id);
