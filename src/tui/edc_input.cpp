@@ -1,5 +1,6 @@
 #include "edc_input.hpp"
 
+#include "edc_style.hpp"
 #include "edc_text_util.hpp"
 #include <algorithm>
 #include <cstring>
@@ -540,6 +541,12 @@ int EdcInput::CaretColumn()
         bool is_paste = false;
         if (TokenStartingAt(p, &block_end, nullptr, &is_paste) && block_end <= row.end)
         {
+            /* A paste chip owns one space of padding: the insert puts a space right after
+             * the placeholder, and painting it with the chip's surface is what makes the
+             * block read as a block instead of a highlighted run of text. (The extra space
+             * is display only -- the placeholder that expands is still the label.) */
+            if (is_paste && block_end < row.end && (*content_)[static_cast<size_t>(block_end)] == ' ')
+                block_end++;
             runs.push_back({true, is_paste, p, block_end});
             p = block_end;
             continue;
@@ -564,11 +571,17 @@ int EdcInput::CaretColumn()
             return;
         ::ftxui::Element e =
             ::ftxui::text(content_->substr(static_cast<size_t>(a), static_cast<size_t>(b - a)));
-        /* Neither style spends a palette slot (chrome's hues are spoken for, see
-         * edc_style.hpp): a pasted block is a solid chip (inverted), an `@mention` is a
-         * reference (underlined). Two kinds, two looks, no colour. */
+        /* Two kinds, two looks (see edc_style.hpp: input_paste_text / input_paste_surface):
+         *   - a pasted block is a chip -- amber on its own warm surface. It only ever appears
+         *     in the input line, where no status colour is painted, so the warm hue is free
+         *     there and is neither the chrome accent (cyan: references) nor the inline-code
+         *     purple the replies are full of;
+         *   - an `@mention` is a keyword: the keyword pink, no surface, no underline -- the
+         *     colour is the whole mark (edc_style.hpp: input_mention_text).
+         * Both knobs are in edc_style.hpp: these are content colours, not chrome roles. */
         if (token)
-            e = paste ? (e | ::ftxui::inverted) : (e | ::ftxui::underlined);
+            e = paste ? (e | ::ftxui::color(style::input_paste_text()) | ::ftxui::bgcolor(style::input_paste_surface()))
+                      : (e | ::ftxui::color(style::input_mention_text()));
         parts.push_back(e);
     };
 

@@ -201,6 +201,47 @@ inline ::ftxui::Color input_frame_ink()
     return ::ftxui::Color::RGB(0, 0, 0);
 }
 
+// ── The input box's token colours ───────────────────────────
+// Two kinds of atomic token live in the draft: a folded paste block (a chip: bytes behind it)
+// and an `@file` mention (a reference). They are two different things and must not look alike.
+//
+// Why a WARM hue for the paste chip, in a UI whose chrome is cyan/green/yellow/orange/pink/
+// olive (see the notes on Palette): a folded block exists ONLY in the input line -- a bubble
+// shows the expanded text, never the chip -- and no status colour is ever painted there. So
+// the local context is free, and amber gives the one thing the palette's own hues cannot: a
+// colour that is neither the chrome accent (cyan, which marks references and headers) nor the
+// markdown inline-code purple (which the replies are full of). Two tokens side by side --
+// `@a.c` in keyword pink, `[Pasted #1]` amber on its own surface -- read as two kinds at a
+// glance instead of as one long highlight.
+//
+// Deliberately NOT a Palette slot: this is a piece of CONTENT (like the markdown syntax
+// colours), not a semantic role of the chrome, and it follows the theme on its own below.
+inline ::ftxui::Color input_paste_text()
+{
+    // Monokai's own "line/prompt" family is too close to warn/interrupted; this amber sits
+    // between them without borrowing either (#FFC66D dark, #8A5A00 light).
+    return theme::IsLight() ? ::ftxui::Color::RGB(138, 90, 0) : ::ftxui::Color::RGB(255, 198, 109);
+}
+
+// An `@file` mention wears the KEYWORD colour (Monokai's pink). Same reasoning as the paste
+// chip above: a mention only ever appears in the input line, where no status colour is
+// painted, so reusing the error/pink hue carries no risk here -- and it is exactly the hue a
+// reader already associates with "keyword". No underline: the colour says it, and an
+// underlined token next to a solid chip reads as two decorations instead of two kinds.
+inline ::ftxui::Color input_mention_text()
+{
+    // One value for both themes: this is the palette's own keyword pink (error and md_list
+    // carry the same hue in both), so a light terminal gets the same mark as a dark one.
+    return ::ftxui::Color::RGB(249, 38, 114);
+}
+
+inline ::ftxui::Color input_paste_surface()
+{
+    // The chip's own surface, one step off the window beneath it: warm-tinted in both themes
+    // so the block looks like a pasted excerpt rather than a selected run of text.
+    return theme::IsLight() ? ::ftxui::Color::RGB(255, 240, 209) : ::ftxui::Color::RGB(59, 50, 38);
+}
+
 // One vocabulary for the scheduler's task-state names. The task tree paints its markers with
 // this table, the todo list takes the failure colour of its current step from it, and a reply
 // that carries a state as a `code span` is coloured by it (see markdown.cpp), so the three

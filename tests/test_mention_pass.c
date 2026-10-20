@@ -132,7 +132,7 @@ int main(void)
 {
     const char *ws = "/tmp/test_mention_pass_ws";
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s/sub", ws, ws);
+    snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s/sub/deep %s/many", ws, ws, ws);
     if (system(cmd) != 0)
         return 1;
 
@@ -142,6 +142,13 @@ int main(void)
 
     snprintf(path, sizeof(path), "%s/sub/b.txt", ws);
     write_file(path, "nested-bravo\n");
+
+    /* 250 个文件：越过目录清单的 200 条上限。 */
+    for (int i = 0; i < 250; i++)
+    {
+        snprintf(path, sizeof(path), "%s/many/e-%03d.txt", ws, i);
+        write_file(path, "x\n");
+    }
 
     snprintf(path, sizeof(path), "%s/bin.dat", ws);
     {
@@ -242,6 +249,27 @@ int main(void)
         struct edc_task *t = run(cfg, sm, sched, sess, "@sub/ 里面有什么");
         CHECK(msg_count(t) == 2, "expanded");
         CHECK(has(content_at(t, 1), "[FILE] b.txt"), "the listing uses the list_dir shape");
+        CHECK(has(content_at(t, 1), "[DIR]  deep"), "a nested directory is marked as one");
+        /* Every directory contains itself and its parent; the model does not need to hear
+         * about it (and the `@` completion does not offer them either). */
+        CHECK(!has(content_at(t, 1), "[DIR]  .\n"), "`.` is not listed");
+        CHECK(!has(content_at(t, 1), "[DIR]  ..\n"), "`..` is not listed");
+    }
+
+    TEST("@sub/#2-3 drops the range: a listing has no lines to slice");
+    {
+        struct edc_task *t = run(cfg, sm, sched, sess, "@sub/#2-3 只看两行");
+        CHECK(msg_count(t) == 2, "expanded");
+        CHECK(!has(content_at(t, 1), "\"offset\""), "the header does not advertise an offset");
+        CHECK(has(content_at(t, 1), "[FILE] b.txt"), "and the whole listing is still there");
+    }
+
+    TEST("@many/ stops at the entry cap");
+    {
+        struct edc_task *t = run(cfg, sm, sched, sess, "@many/ 有多少");
+        CHECK(msg_count(t) == 2, "expanded");
+        CHECK(count_of(content_at(t, 1), "[FILE] ") == 200, "exactly 200 entries");
+        CHECK(has(content_at(t, 1), "… [truncated]"), "and it says so");
     }
 
     /* ── 8. 二进制 ────────────────────────────────────────────── */

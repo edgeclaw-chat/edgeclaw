@@ -7,6 +7,8 @@
 // frame later).
 
 #include "edc_input.hpp"
+#include "edc_style.hpp"
+#include "edc_text_util.hpp"
 
 #include <cstdio>
 #include <ftxui/component/event.hpp>
@@ -659,6 +661,72 @@ static void test_mention_atom(void)
     CHECK(row_text(screen, 0, 40) == "see @src/main.c", "row 0: '%s'", row_text(screen, 0, 40).c_str());
 }
 
+/* The two token kinds must be *visible*: a paste chip is purple on the code surface, an
+ * `@mention` wears the link colour. Colours come from the palette the renderer uses, so the
+ * test installs a fixed one and checks the screen cells (not the code path). */
+namespace
+{
+struct FixedPalette : edc::style::IPalette
+{
+    edc::style::Palette pal;
+    const edc::style::Palette &colors() const override
+    {
+        return pal;
+    }
+};
+} // namespace
+
+static void test_token_colours(void)
+{
+    std::printf("  tokens: both kinds are colour-highlighted on screen\n");
+
+    auto provider = std::make_shared<FixedPalette>();
+    provider->pal = edc::style::palette(); /* start from the real theme, then pin the link role */
+    provider->pal.md_link = ftxui::Color::RGB(7, 8, 9);
+    edc::style::SetPaletteProvider(provider);
+
+    /* The chip's colours are the input box's own knobs (edc_style.hpp), not palette slots:
+     * whatever the theme resolves them to, the screen must use exactly those. */
+    const ftxui::Color paste_fg = edc::style::input_paste_text();
+    const ftxui::Color paste_bg = edc::style::input_paste_surface();
+
+    /* A pasted chip: purple glyphs on its own surface, so it reads as a block. */
+    {
+        std::string text;
+        edc::EdcInput input(&text, "");
+        input.InsertPasteBlock("[Pasted #1 \xc2\xb7 2 lines]", "a\nb");
+        const auto screen = render_twice(input, 40, 4);
+        const auto cell = screen.CellAt(0, 0);
+        CHECK(cell.foreground_color == paste_fg, "the chip's glyphs wear the paste colour");
+        CHECK(cell.background_color == paste_bg, "and sit on the chip's own surface");
+        CHECK(paste_fg != provider->pal.md_link, "a chip is not the reference colour");
+        CHECK(paste_fg != provider->pal.md_code_inline, "nor the inline-code purple of the replies");
+        /* The trailing space is part of the block, so the chip has one cell of padding. */
+        /* The trailing space is part of the block, so the chip has one cell of padding.
+         * Columns are terminal cells, not bytes: the label's middle dot is two bytes. */
+        const int pad = edc::StringWidth("[Pasted #1 \xc2\xb7 2 lines]");
+        CHECK(screen.CellAt(pad, 0).background_color == paste_bg,
+              "the chip's padding cell shares its surface");
+    }
+
+    /* An `@mention`: the keyword colour, no surface, no underline. */
+    {
+        const ftxui::Color mention_fg = edc::style::input_mention_text();
+        std::string text = "see @src/main.c";
+        edc::EdcInput input(&text, "");
+        input.RegisterAtom("@src/main.c");
+        const auto screen = render_twice(input, 40, 4);
+        const auto cell = screen.CellAt(4, 0); /* the '@' */
+        CHECK(cell.foreground_color == mention_fg, "the mention wears the keyword colour");
+        CHECK(cell.background_color == ::ftxui::Color::Default, "a mention has no surface of its own");
+        CHECK(!cell.underlined, "and no underline: the colour is the whole mark");
+        CHECK(mention_fg != provider->pal.md_link, "the mention is not the link blue any more");
+        CHECK(mention_fg != paste_fg, "and not the paste colour either");
+    }
+
+    edc::style::SetPaletteProvider(nullptr);
+}
+
 static void test_input_mode_label()
 {
     CHECK(edc::InputModeLabel(EDC_INPUT_TEXT) == "message", "a plain message says message");
@@ -696,6 +764,7 @@ int main(void)
     test_paste_block_library();
     test_history_entry_removal();
     test_mention_atom();
+    test_token_colours();
     test_input_mode_label();
 
     if (g_failures)

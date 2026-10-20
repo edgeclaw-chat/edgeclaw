@@ -14,6 +14,9 @@
 #define EDC_MENTION_MAX_FILE_LINES 2000
 #define EDC_MENTION_MAX_FILE_BYTES (64 * 1024)
 #define EDC_MENTION_MAX_TOTAL_BYTES (128 * 1024)
+/* 目录清单的条数上限。清单是给模型判断"这个目录里有什么方向"的，不是内容本身：200 条足够，
+ * 再多只是烧总预算（一个 Build 产物目录可以轻松上万条）。 */
+#define EDC_MENTION_MAX_DIR_ENTRIES 200
 
 struct mention_state
 {
@@ -156,12 +159,25 @@ static sds cap_content(sds content)
 struct list_ctx
 {
     sds out;
+    int n;           /* 已写入的条目数 */
+    bool truncated;  /* 撞到 EDC_MENTION_MAX_DIR_ENTRIES */
 };
 
 static void list_cb(const char *name, int type, void *userdata)
 {
     struct list_ctx *c = userdata;
+    /* `.` and `..` are on every directory listing and nobody ever means them: the `@`
+     * completion (edc_file_index.c) skips them too, and the model does not need to be
+     * told that a directory contains itself. */
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
+        return;
+    if (c->n >= EDC_MENTION_MAX_DIR_ENTRIES)
+    {
+        c->truncated = true;
+        return;
+    }
     c->out = sdscatprintf(c->out, "%s%s\n", (type == UV_DIRENT_DIR) ? "[DIR]  " : "[FILE] ", name);
+    c->n++;
 }
 
 static sds failed_block(const char *display, const char *reason)
@@ -187,7 +203,14 @@ static sds build_block(struct mention_state *st, const char *display, const char
             sdsfree(lc.out);
             return block;
         }
+        if (lc.truncated)
+            lc.out = sdscat(lc.out, "… [truncated]\n");
         body = lc.out;
+        /* A line range cannot apply to a LISTING: drop it, so the header below does not
+         * advertise an offset/limit the body does not honour (a model told "offset 2,
+         * limit 2" would read the listing as those lines). */
+        start = 0;
+        end = 0;
     }
     else
     {
