@@ -31,7 +31,8 @@ struct Palette
     ::ftxui::Color accent;         // cyan: headers, in_progress, spinner
     ::ftxui::Color ok;             // green: success/COMPLETED, nothing else
     ::ftxui::Color warn;           // yellow: foreground group, IDLE/WAITING
-    ::ftxui::Color error;          // ERROR
+    ::ftxui::Color error;          // ERROR, i.e. it failed by itself
+    ::ftxui::Color interrupted;    // INTERRUPTED: the loop stopped under it, not a failure
     ::ftxui::Color thought_open;   // expanded "Thought" toggle
     ::ftxui::Color thought_closed; // collapsed "Thought" toggle
 
@@ -72,6 +73,7 @@ inline const Palette &dark_palette()
         ::ftxui::Color::RGB(166, 226, 46),  // ok
         ::ftxui::Color::RGB(230, 219, 116), // warn
         ::ftxui::Color::RGB(249, 38, 114),  // error
+        ::ftxui::Color::RGB(253, 151, 31),  // interrupted (Monokai orange)
         ::ftxui::Color::RGB(230, 219, 116), // thought_open
         ::ftxui::Color::RGB(138, 131, 69),  // thought_closed
         ::ftxui::Color::RGB(102, 217, 239), // prompt
@@ -109,6 +111,7 @@ inline const Palette &light_palette()
         ::ftxui::Color::RGB(106, 175, 25),  // ok
         ::ftxui::Color::RGB(253, 151, 31),  // warn
         ::ftxui::Color::RGB(249, 38, 114),  // error
+        ::ftxui::Color::RGB(253, 151, 31),  // interrupted (Monokai orange)
         ::ftxui::Color::RGB(138, 131, 69),  // thought_open
         ::ftxui::Color::RGB(168, 154, 94),  // thought_closed
         ::ftxui::Color::RGB(40, 198, 228),  // prompt
@@ -159,11 +162,6 @@ inline const Palette &palette()
     return theme::IsLight() ? light_palette() : dark_palette();
 }
 
-// One vocabulary for the scheduler's task-state names. The task tree paints its
-// markers with this table and the todo list takes the failure colour of its
-// current step from it, so the two panes cannot drift apart.
-
-// Processing = working right now (the states edc_task_is_running marks).
 // ── The input box's accents ──────────────────────────────────
 // ── The input box's colours ─────────────────────────────────
 // One hue, two steps of brightness, both derived from the theme accent rather than hard-coded,
@@ -203,6 +201,12 @@ inline ::ftxui::Color input_frame_ink()
     return ::ftxui::Color::RGB(0, 0, 0);
 }
 
+// One vocabulary for the scheduler's task-state names. The task tree paints its markers with
+// this table, the todo list takes the failure colour of its current step from it, and a reply
+// that carries a state as a `code span` is coloured by it (see markdown.cpp), so the three
+// cannot drift apart.
+//
+// Processing = working right now (the states edc_task_is_running marks).
 inline bool TaskStateProcessing(const std::string &state)
 {
     return state == "LLM_PROCESSING" || state == "TOOL_CALLING";
@@ -223,11 +227,20 @@ inline ::ftxui::Color TaskStateColor(const Palette &pal, const std::string &stat
     if (TaskStateProcessing(state))
         return pal.accent;
     if (state == "INTERRUPTED")
-        return pal.error; // red, like ERROR: the loop stopped underneath it
+        return pal.interrupted; // orange: the loop stopped underneath it -- not a failure
     if (state == "CANCELLED")
         return pal.text_dim;
     // IDLE / WAITING_DEPS / WAITING_INPUT
     return pal.warn;
+}
+
+// Is |s| one of the scheduler's task-state names? Used where a reply carries a state as an
+// inline code span: markdown colours such a span by its state instead of by the code-chip
+// colour, so `/task list` is scannable without inventing any new markup.
+inline bool IsTaskStateName(const std::string &s)
+{
+    return s == "COMPLETED" || s == "ERROR" || s == "INTERRUPTED" || s == "CANCELLED" ||
+           s == "IDLE" || s == "WAITING_DEPS" || s == "WAITING_INPUT" || TaskStateProcessing(s);
 }
 
 // The working bar's lit cell and a processing task's sidebar marker are the

@@ -1271,7 +1271,10 @@ static void edc_commands_handle_task_list(struct edc_session_manager *sm, struct
         LL_FOREACH2(g->members, t, group_next)
         {
             bool is_active = edc_session_manager_get_active(sm) && edc_session_manager_get_active(sm)->active_task == t;
-            out = sdscatprintf(out, "  - %s `%s` **%s**", t == g->leader ? "`[L]`" : "`[M]`", t->task_id,
+            /* The state is an inline code span, not bold: the renderer colours a span that
+             * carries a task-state name with that state's colour (markdown.cpp), so the list is
+             * scannable by colour without any new markup. */
+            out = sdscatprintf(out, "  - %s `%s` `%s`", t == g->leader ? "`[L]`" : "`[M]`", t->task_id,
                                edc_task_state_str(t));
             /* Why it ended, when the state alone does not say it (see EDC_END_*). */
             {

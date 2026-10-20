@@ -327,6 +327,10 @@ int TaskWidget::RowWidth() const
             const int core_budget = row_width - kRightPad - StringWidth(arrow) - 1;
             const std::string visible_core = core_budget > 0 ? TruncateToWidth(core, core_budget) : "";
 
+            // Two weights only: the foreground group is yellow, everything else is dim. A
+            // system/fold group (the agent's own housekeeping) was tried with a hue of its own
+            // and it sat in the tree like a foreign object -- the word "System", its place at
+            // the top and its folded-by-default state already say it.
             lines.push_back(hbox({
                                 text(arrow + visible_core) | flex | bold | color(g.fg ? pal.warn : pal.text_dim),
                                 text(std::string(kRightPad, ' ')),

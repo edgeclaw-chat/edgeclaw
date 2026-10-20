@@ -207,7 +207,7 @@ void TestMarkerPerStateInItsColor(void)
         pal.ok,       // COMPLETED
         pal.error,    // ERROR
         pal.text_dim, // CANCELLED
-        pal.error,    // INTERRUPTED (red like ERROR; the shape tells them apart)
+        pal.interrupted, // INTERRUPTED (orange: the loop stopped under it, it did not fail)
     };
 
     Check(markers.size() == specs.size(), "one marker per task (and nothing else draws one)");
@@ -220,7 +220,7 @@ void TestMarkerPerStateInItsColor(void)
 
 void TestInterruptedWearsTheHollowSquare(void)
 {
-    std::cout << "an INTERRUPTED task wears the hollow square, in the error colour\n";
+    std::cout << "an INTERRUPTED task wears the hollow square, in its own orange\n";
 
     // The interrupted row is deliberately NOT the active one: the hollow square follows
     // the state, the block follows the flag, and the two must not be confused.
@@ -230,6 +230,7 @@ void TestInterruptedWearsTheHollowSquare(void)
     auto widget = MakeWidget(specs, 0);
     const auto screen = Render(*widget);
     const auto markers = MarkerCells(screen);
+    const auto &pal = edc::style::palette();
 
     Check(markers.size() == 3, "every row still draws a marker");
     if (markers.size() == 3)
@@ -238,9 +239,13 @@ void TestInterruptedWearsTheHollowSquare(void)
               "INTERRUPTED wears the hollow square (not the active block, not the dot)");
         Check(screen.CellAt(markers[2].first, markers[2].second).character == kDot,
               "ERROR keeps the dot -- that is what tells the two apart");
-        Check(screen.CellAt(markers[1].first, markers[1].second).foreground_color ==
+        // Colour AND shape say it: orange (interrupted) versus red (failed). They used to
+        // share the error colour, which made "the process died under it" look like "it failed".
+        Check(screen.CellAt(markers[1].first, markers[1].second).foreground_color == pal.interrupted,
+              "INTERRUPTED is orange");
+        Check(screen.CellAt(markers[1].first, markers[1].second).foreground_color !=
                   screen.CellAt(markers[2].first, markers[2].second).foreground_color,
-              "same colour, different shape");
+              "different colour from ERROR, and the shape differs too");
         // All three glyphs must be one terminal cell wide, or the id column shifts.
         Check(markers[0].first == markers[1].first && markers[1].first == markers[2].first,
               "block, hollow square and dot share one column");

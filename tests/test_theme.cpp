@@ -475,7 +475,10 @@ void test_task_state_table(void)
         CHECK(edc::style::TaskStateColor(pal, "ERROR") == pal.error, "ERROR -> error");
         CHECK(edc::style::TaskStateColor(pal, "LLM_PROCESSING") == pal.accent, "processing -> accent");
         CHECK(edc::style::TaskStateColor(pal, "TOOL_CALLING") == pal.accent, "tool calls -> accent too");
-        CHECK(edc::style::TaskStateColor(pal, "INTERRUPTED") == pal.error, "INTERRUPTED -> error (red)");
+        // INTERRUPTED is orange, not the failure red: the loop stopped underneath the task
+        // and no decision was made about it, which is a different fact from "it failed".
+        CHECK(edc::style::TaskStateColor(pal, "INTERRUPTED") == pal.interrupted, "INTERRUPTED -> orange");
+        CHECK(pal.interrupted != pal.error, "interrupted and ERROR are distinct colours");
         CHECK(edc::style::TaskStateColor(pal, "CANCELLED") == pal.text_dim, "CANCELLED -> neutral dim");
         CHECK(edc::style::TaskStateColor(pal, "IDLE") == pal.warn, "IDLE -> warn");
         CHECK(edc::style::TaskStateColor(pal, "WAITING_DEPS") == pal.warn, "WAITING_DEPS -> warn");
@@ -484,6 +487,16 @@ void test_task_state_table(void)
         // The failure colour is not the accent, so the todo list's current step
         // cannot be mistaken for a running one when its task has failed.
         CHECK(pal.error != pal.accent, "failure and the running accent are distinct");
+
+        // The vocabulary a reply's code span is matched against (markdown.cpp): every state
+        // the scheduler can print is in it, and ordinary code stays code.
+        for (const char *name :
+             {"COMPLETED", "ERROR", "INTERRUPTED", "CANCELLED", "IDLE", "WAITING_DEPS", "WAITING_INPUT",
+              "LLM_PROCESSING", "TOOL_CALLING"})
+            CHECK(edc::style::IsTaskStateName(name), "the state vocabulary covers %s", name);
+        CHECK(!edc::style::IsTaskStateName("COMPLETED_"), "a near-miss is not a state");
+        CHECK(!edc::style::IsTaskStateName("bazel build"), "ordinary inline code stays code");
+        CHECK(!edc::style::IsTaskStateName(""), "empty is not a state");
     }
     edc::theme::SetMode(Mode::kDark);
 }
