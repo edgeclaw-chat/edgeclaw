@@ -750,6 +750,10 @@ void edc_task_free(struct edc_task *task)
     if (task->output)
         sdsfree(task->output);
     free(task->fold_cut_task_id);
+    if (task->fold_read_files)
+        sdsfree(task->fold_read_files);
+    if (task->fold_modified_files)
+        sdsfree(task->fold_modified_files);
     free(task->memo_cut_task_id);
 
     if (task->redirect_stdout)

@@ -1321,6 +1321,190 @@ static void push_msg(struct edc_turn *turn, const char *role, const char *tag, s
     edc_turn_add_message(turn, m);
 }
 
+/* ── R5b: 折叠里的文件追踪 ────────────────────────────────────── */
+
+/* 一条 assistant 消息，带一次 |tool|(path=|path|) 调用 —— 就是追踪器读取的形状。 */
+static void push_tool_call(struct edc_turn *turn, const char *tool, const char *path)
+{
+    cJSON *m = cJSON_CreateObject();
+    cJSON_AddStringToObject(m, "role", "assistant");
+    cJSON_AddNullToObject(m, "content");
+    cJSON *calls = cJSON_AddArrayToObject(m, "tool_calls");
+    cJSON *call = cJSON_CreateObject();
+    cJSON_AddStringToObject(call, "id", "call_1");
+    cJSON_AddStringToObject(call, "type", "function");
+    cJSON *fn = cJSON_AddObjectToObject(call, "function");
+    cJSON_AddStringToObject(fn, "name", tool);
+    sds args = sdscatprintf(sdsempty(), "{\"path\":\"%s\"}", path);
+    cJSON_AddStringToObject(fn, "arguments", args);
+    sdsfree(args);
+    cJSON_AddItemToArray(calls, call);
+    edc_turn_add_message(turn, m);
+}
+
+/* 一个已完成的成员：一 turn 一条 user 消息（折叠语料的基本单位）。 */
+static struct edc_task *add_completed_member(struct edc_session *session, struct edc_task_group *group,
+                                             const char *sid, const char *id, const char *text, int seq)
+{
+    struct edc_task *t = edc_task_new(id, sid, group->group_id, text, edc_channel_adapter);
+    edc_task_group_add_task(group, t);
+    edc_task_await_exec(t);
+    edc_task_mark_completed(t);
+    t->completion_seq = seq;
+    struct edc_turn *turn = edc_turn_new();
+    cJSON *m = cJSON_CreateObject();
+    cJSON_AddStringToObject(m, "role", "user");
+    cJSON_AddStringToObject(m, "content", text);
+    edc_queue_push(&turn->messages, m);
+    edc_task_add_turn(t, turn);
+    return t;
+}
+
+static size_t count_occurrences(const char *hay, const char *needle)
+{
+    size_t n = 0;
+    for (const char *q = hay; (q = strstr(q, needle)) != NULL; q += strlen(needle))
+        n++;
+    return n;
+}
+
+static void test_fold_tracks_touched_files(void)
+{
+    TEST("R5b: 折叠把 tool call 里的文件路径写进 memory（read-files / modified-files）");
+
+    struct edc_config *cfg = make_config();
+    cfg_win(cfg, 1000000);
+    struct edc_session *session = edc_session_new(cfg, "sess-files", "Files");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+    g_send_llm_calls = 0;
+
+    struct edc_task_group *group = make_foldable_group(session, "sess-files", "leader work");
+    struct edc_turn *t = (struct edc_turn *)group->leader->turns.data[group->leader->turns.head];
+    push_tool_call(t, "read_file", "src/a.c");
+    push_tool_call(t, "list_dir", "src/");
+    push_tool_call(t, "edit_file", "src/b.c");
+    push_tool_call(t, "write_file", "src/c.c");
+    push_tool_call(t, "exec_shell", "not-a-file"); /* 非文件工具：不进清单 */
+    /* 宽窗口下"折最老一半"，后一半是保留的细节 —— 把填充消息放后面，让 tool call 落进语料。 */
+    for (int i = 0; i < 4; i++)
+        push_msg(t, "user", "FILL", 200, NULL);
+
+    struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
+    CHECK(fold != NULL, "折叠任务起来了");
+    if (fold)
+    {
+        CHECK(fold->fold_read_files && strstr(fold->fold_read_files, "src/a.c") != NULL,
+              "语料里的读操作挂到了折叠任务上");
+        edc_group_fold_deliver_memory(fold, "# Summary\n- work done");
+
+        CHECK(group->memory && strstr(group->memory, "<read-files>\nsrc/a.c\nsrc/\n</read-files>") != NULL,
+              "读过的文件按首次出现顺序成块");
+        CHECK(group->memory && strstr(group->memory, "<modified-files>\nsrc/b.c\nsrc/c.c\n</modified-files>") != NULL,
+              "改过的文件成块，edit 与 write 同桶");
+        CHECK(group->memory && strstr(group->memory, "not-a-file") == NULL, "非文件工具不进清单");
+        CHECK(group->memory && strstr(group->memory, "# Summary") == group->memory, "摘要本体仍在最前面");
+    }
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+static void test_fold_files_accumulate_across_folds(void)
+{
+    TEST("R5b: 第二次落地取并集（旧的从 memory 带过来，不丢也不重复）");
+
+    struct edc_config *cfg = make_config();
+    cfg_win(cfg, 1000000);
+    struct edc_session *session = edc_session_new(cfg, "sess-files2", "Files2");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+    g_send_llm_calls = 0;
+
+    struct edc_task_group *group = make_foldable_group(session, "sess-files2", "leader work");
+    struct edc_turn *t0 = (struct edc_turn *)group->leader->turns.data[group->leader->turns.head];
+    push_tool_call(t0, "edit_file", "a.c");
+    push_msg(t0, "user", "FILL", 200, NULL); /* 让 a.c 落在被折的那一半 */
+
+    /* 第一次折叠走完整路径：语料 -> 抽取 -> 落地。 */
+    struct edc_task *fold1 = edc_group_fold_start(sched, session, group, NULL);
+    CHECK(fold1 != NULL, "第一次折叠起来了");
+    if (fold1)
+        edc_group_fold_deliver_memory(fold1, "# Summary 1");
+    CHECK(group->memory && strstr(group->memory, "a.c") != NULL, "第一次折叠记下 a.c");
+
+    /* 第二次只测"落地时的合并"：抽取侧已由上一个用例覆盖，这里直接给一个带新清单的
+     * 折叠任务 -- 关键是被折掉的那批 turn 已经不在了，a.c 只能从 memory 里带过来。 */
+    struct edc_task *fold2 = edc_scheduler_spawn_system_task(sched, session, "fold group memory");
+    CHECK(fold2 != NULL, "第二个折叠任务");
+    if (fold2)
+    {
+        fold2->sink_group = group;
+        fold2->fold_modified_files = sdsnew("b.c\n");
+        edc_group_fold_deliver_memory(fold2, "# Summary 2");
+    }
+
+    CHECK(group->memory && strstr(group->memory, "a.c") != NULL, "第一次折叠的 a.c 还在（从 memory 带过来）");
+    CHECK(group->memory && strstr(group->memory, "b.c") != NULL, "第二次的 b.c 也进来了");
+    CHECK(group->memory && strstr(group->memory, "<modified-files>\na.c\nb.c\n</modified-files>") != NULL,
+          "并集按旧->新顺序，无重复");
+    CHECK(group->memory && count_occurrences(group->memory, "\na.c\n") == 1, "a.c 只出现一次");
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+static void test_fold_files_are_capped_and_idempotent(void)
+{
+    TEST("R5b: 清单上限 50 条（留最近的），同一份 memory 重复落地不涨");
+
+    struct edc_config *cfg = make_config();
+    cfg_win(cfg, 1000000);
+    struct edc_session *session = edc_session_new(cfg, "sess-files3", "Files3");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+    g_send_llm_calls = 0;
+
+    struct edc_task_group *group = make_foldable_group(session, "sess-files3", "leader work");
+    struct edc_turn *t = (struct edc_turn *)group->leader->turns.data[group->leader->turns.head];
+    for (int i = 0; i < 60; i++)
+    {
+        sds path = sdscatprintf(sdsempty(), "src/f%02d.c", i);
+        push_tool_call(t, "read_file", path);
+        sdsfree(path);
+    }
+    for (int i = 0; i < 60; i++)
+        push_msg(t, "user", "FILL", 200, NULL); /* 一半被折、一半留作细节 */
+
+    struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
+    CHECK(fold != NULL, "折叠任务起来了");
+    if (fold)
+        edc_group_fold_deliver_memory(fold, "# Summary");
+
+    /* 60 条里只留最近 50 条：f00..f09 丢掉，f10 起保留。 */
+    CHECK(group->memory && strstr(group->memory, "src/f00.c") == NULL, "最老的被挤出（上限 50）");
+    CHECK(group->memory && strstr(group->memory, "src/f10.c") != NULL, "第 11 条是保留区间的第一条");
+    CHECK(group->memory && strstr(group->memory, "src/f59.c") != NULL, "最新的在");
+    CHECK(group->memory && count_occurrences(group->memory, ".c\n") == 50, "正好 50 条");
+
+    /* 幂等：同一份 content 再落一次，memory 不该变长（块被 stripped 后重贴）。 */
+    sds before = group->memory ? sdsdup(group->memory) : NULL;
+    if (fold)
+        edc_group_fold_deliver_memory(fold, "# Summary");
+    CHECK(before && group->memory && strcmp(before, group->memory) == 0, "重复落地得到同一份 memory");
+    if (before)
+        sdsfree(before);
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 static void test_cut_never_orphans_tool_results(void)
 {
     TEST("切点合法性: 第一条留下的消息不能是工具结果 (往回退到它的 assistant, pi §4)");
@@ -1786,6 +1970,9 @@ int main(void)
     test_fold_on_non_settling_advance();
     test_cut_keeps_recent_tokens();
     test_cut_inside_active_turn();
+    test_fold_tracks_touched_files();
+    test_fold_files_accumulate_across_folds();
+    test_fold_files_are_capped_and_idempotent();
     test_cut_never_orphans_tool_results();
     test_prompt_initial_variant_names_the_sections();
     test_truncated_summary_discards_fold();

@@ -359,7 +359,223 @@ static size_t collect_pieces(struct edc_task *const *members, size_t n, struct f
     return cnt;
 }
 
-sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus, struct edc_fold_cut *out_cut)
+/* ── File tracking (R5b, docs/pi-toolset-plan.zh.md) ──────────────────────────
+ *
+ * A fold drops the turns it summarizes, and with them the tool calls that named the files
+ * the task read and changed. What survives is a narrative: the model knows what happened but
+ * not where it happened, so a long task re-reads files it already read and cannot answer
+ * "what did you change".
+ *
+ * The summary therefore ends with two blocks, pi's shape:
+ *
+ *   <read-files>
+ *   src/a.c
+ *   </read-files>
+ *   <modified-files>
+ *   src/b.c
+ *   </modified-files>
+ *
+ * The content is EXTRACTED FROM THE TOOL CALLS in code, never asked of the model: extraction
+ * is deterministic, cumulative across folds, and cannot be forgotten halfway through a
+ * summary. The lists are capped because they travel in every request from now on. */
+
+#define EDC_FOLD_MAX_TRACKED_FILES 50
+
+/* Append |path| to the newline-separated |list| unless it is already there. */
+static void file_set_add(sds *list, const char *path)
+{
+    if (!list || !path || !*path)
+        return;
+    if (!*list)
+        *list = sdsempty();
+    if (sdslen(*list) > 0)
+    {
+        /* Whole-line match: "a/b.c" must not be found inside "x/a/b.c". */
+        sds needle = sdscatprintf(sdsempty(), "\n%s\n", path);
+        sds hay = sdscatprintf(sdsempty(), "\n%s", *list);
+        const bool found = strstr(hay, needle) != NULL;
+        sdsfree(needle);
+        sdsfree(hay);
+        if (found)
+            return;
+    }
+    *list = sdscatprintf(*list, "%s\n", path);
+}
+
+/* The file a tool call names, classified: reader (read_file / list_dir) or writer
+ * (write_file / edit_file). Everything else is ignored -- device_* paths are on the device,
+ * crontab/todo have no paths, and guessing would pollute the list. */
+static void collect_tool_call_file(cJSON *call, sds *reads, sds *writes)
+{
+    cJSON *fn = cJSON_GetObjectItem(call, "function");
+    cJSON *name = fn ? cJSON_GetObjectItem(fn, "name") : NULL;
+    cJSON *args = fn ? cJSON_GetObjectItem(fn, "arguments") : NULL;
+    if (!name || !cJSON_IsString(name) || !args)
+        return;
+
+    sds *bucket = NULL;
+    if (strcmp(name->valuestring, "read_file") == 0 || strcmp(name->valuestring, "list_dir") == 0)
+        bucket = reads;
+    else if (strcmp(name->valuestring, "write_file") == 0 || strcmp(name->valuestring, "edit_file") == 0)
+        bucket = writes;
+    if (!bucket)
+        return;
+
+    /* On the wire `arguments` is a JSON *string*; tolerate an object for hand-built history. */
+    cJSON *parsed = cJSON_IsString(args) ? cJSON_Parse(args->valuestring) : args;
+    cJSON *path = parsed ? cJSON_GetObjectItem(parsed, "path") : NULL;
+    if (path && cJSON_IsString(path))
+        file_set_add(bucket, path->valuestring);
+    if (parsed != args)
+        cJSON_Delete(parsed);
+}
+
+static void collect_message_files(cJSON *msg, sds *reads, sds *writes)
+{
+    cJSON *calls = cJSON_GetObjectItem(msg, "tool_calls");
+    if (!cJSON_IsArray(calls))
+        return;
+    cJSON *call = NULL;
+    cJSON_ArrayForEach(call, calls) collect_tool_call_file(call, reads, writes);
+}
+
+/* Read the entries of an existing "<tag> ... </tag>" block into |out|. */
+static void parse_file_block(const char *text, const char *tag, sds *out)
+{
+    if (!text || !tag || !out)
+        return;
+    sds open_tag = sdscatprintf(sdsempty(), "<%s>", tag);
+    sds close_tag = sdscatprintf(sdsempty(), "</%s>", tag);
+    const char *b = strstr(text, open_tag);
+    if (b)
+    {
+        b += sdslen(open_tag);
+        const char *e = strstr(b, close_tag);
+        if (e)
+        {
+            int n = 0;
+            char **lines = sdssplitlen(b, (ssize_t)(e - b), "\n", 1, &n);
+            for (int i = 0; lines && i < n; i++)
+            {
+                sds line = sdstrim(sdsnew(lines[i]), " \t\r\"'");
+                if (sdslen(line) > 0)
+                    file_set_add(out, line);
+                sdsfree(line);
+            }
+            if (lines)
+                sdsfreesplitres(lines, n);
+        }
+    }
+    sdsfree(open_tag);
+    sdsfree(close_tag);
+}
+
+/* Drop every "<tag> ... </tag>" block from |text| (a summary that echoed the previous one
+ * would otherwise duplicate the blocks appended below). */
+static sds without_block(sds text, const char *tag)
+{
+    if (!text)
+        return text;
+    sds open_tag = sdscatprintf(sdsempty(), "<%s>", tag);
+    sds close_tag = sdscatprintf(sdsempty(), "</%s>", tag);
+    for (;;)
+    {
+        const char *b = strstr(text, open_tag);
+        if (!b)
+            break;
+        const char *e = strstr(b, close_tag);
+        if (!e)
+            break;
+        size_t start = (size_t)(b - text);
+        size_t end = (size_t)(e - text) + sdslen(close_tag);
+        sds head = sdsnewlen(text, start);
+        sds tail = sdsnew(text + end);
+        sdsfree(text);
+        text = sdscatsds(head, tail);
+        sdsfree(head);
+        sdsfree(tail);
+    }
+    sdsfree(open_tag);
+    sdsfree(close_tag);
+    return text;
+}
+
+/* The most recent |max| entries of a newline-separated list (frees |list|). */
+static sds keep_last_entries(sds list, size_t max)
+{
+    if (!list)
+        return NULL;
+    int n = 0;
+    char **lines = sdssplitlen(list, (ssize_t)sdslen(list), "\n", 1, &n);
+    while (n > 0 && (!lines[n - 1] || lines[n - 1][0] == '\0'))
+        n--;
+    const size_t from = ((size_t)n > max) ? (size_t)n - max : 0;
+    sds out = sdsempty();
+    for (size_t i = from; lines && i < (size_t)n; i++)
+    {
+        if (lines[i] && lines[i][0])
+            out = sdscatprintf(out, "%s\n", lines[i]);
+    }
+    if (lines)
+        sdsfreesplitres(lines, n);
+    sdsfree(list);
+    return out;
+}
+
+static void merge_entries(sds *dst, const sds src)
+{
+    if (!dst || !src)
+        return;
+    int n = 0;
+    char **lines = sdssplitlen(src, (ssize_t)sdslen(src), "\n", 1, &n);
+    for (int i = 0; lines && i < n; i++)
+    {
+        if (lines[i] && lines[i][0])
+            file_set_add(dst, lines[i]);
+    }
+    if (lines)
+        sdsfreesplitres(lines, n);
+}
+
+/* The memory to store: |summary| with the accumulated file blocks appended.
+ * Old entries come from the memory being replaced (so the list grows across folds), new ones
+ * from this fold's corpus; the result is deduped, capped and in first-seen order, which makes
+ * two runs over the same transcript produce the same bytes (memory sits in the cached
+ * prefix). */
+static sds fold_memory_with_files(const char *old_memory, const char *summary, sds new_reads, sds new_writes)
+{
+    sds reads = sdsempty();
+    sds writes = sdsempty();
+    if (old_memory)
+    {
+        parse_file_block(old_memory, "read-files", &reads);
+        parse_file_block(old_memory, "modified-files", &writes);
+    }
+    merge_entries(&reads, new_reads);
+    merge_entries(&writes, new_writes);
+    reads = keep_last_entries(reads, EDC_FOLD_MAX_TRACKED_FILES);
+    writes = keep_last_entries(writes, EDC_FOLD_MAX_TRACKED_FILES);
+
+    sds body = sdsnew(summary ? summary : "");
+    body = without_block(body, "read-files");
+    body = without_block(body, "modified-files");
+    while (sdslen(body) > 0 && (body[sdslen(body) - 1] == '\n' || body[sdslen(body) - 1] == ' '))
+        sdsrange(body, 0, -2);
+
+    if (reads && sdslen(reads) > 0)
+        body = sdscatprintf(body, "\n\n<read-files>\n%s</read-files>", reads);
+    if (writes && sdslen(writes) > 0)
+        body = sdscatprintf(body, "\n\n<modified-files>\n%s</modified-files>", writes);
+    body = sdscat(body, "\n");
+    sdsfree(reads);
+    sdsfree(writes);
+    return body;
+}
+
+/* The implementation; the public wrapper below keeps its three-argument shape for the tests
+ * and callers that only want the prompt. */
+static sds fold_build_prompt(struct edc_task_group *group, const char *focus, struct edc_fold_cut *out_cut,
+                             sds *out_reads, sds *out_writes)
 {
     if (out_cut)
     {
@@ -475,6 +691,8 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus,
             prompt = sdscatprintf(prompt, "\n### [task %s] %s\n", tk->task_id, tk->description ? tk->description : "");
         }
         cJSON *m = ps[i].turn->messages.data[ps[i].turn->messages.head + ps[i].msg_index];
+        if (out_reads)
+            collect_message_files(m, out_reads, out_writes);
         if (cJSON_GetStringValue(cJSON_GetObjectItem(m, "role")))
         {
             /* One line, with the message's wall-clock time and (for a tool call) its
@@ -532,6 +750,11 @@ sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus,
     return prompt;
 }
 
+sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus, struct edc_fold_cut *out_cut)
+{
+    return fold_build_prompt(group, focus, out_cut, NULL, NULL);
+}
+
 struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_session *session,
                                       struct edc_task_group *group, const char *focus)
 {
@@ -544,16 +767,32 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
 
     struct edc_fold_cut cut;
     memset(&cut, 0, sizeof(cut));
-    sds prompt = edc_group_fold_build_prompt(group, focus, &cut);
+    sds reads = NULL;
+    sds writes = NULL;
+    sds prompt = fold_build_prompt(group, focus, &cut, &reads, &writes);
     if (!prompt)
+    {
+        if (reads)
+            sdsfree(reads);
+        if (writes)
+            sdsfree(writes);
         return NULL;
+    }
 
     struct edc_task *task = edc_scheduler_spawn_system_task(sched, session, "fold group memory");
     if (!task)
     {
         sdsfree(prompt);
+        if (reads)
+            sdsfree(reads);
+        if (writes)
+            sdsfree(writes);
         return NULL;
     }
+    /* The names travel with the task: landing is where the memory is written, and the turns
+     * that named them are gone by then (see fold_memory_with_files). */
+    task->fold_read_files = reads;
+    task->fold_modified_files = writes;
     task->sink_group = group; /* output goes into this group's memory (sink = GROUP_MEMORY) */
     /* The corpus and the cut are computed in one pass, so landing applies this cut. */
     task->fold_cut_task_id = cut.task_id ? strdup(cut.task_id) : NULL;
@@ -689,9 +928,20 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
         return false;
     }
 
+    sds merged = fold_memory_with_files(group->memory, content, task->fold_read_files, task->fold_modified_files);
     if (group->memory)
         sdsfree(group->memory);
-    group->memory = sdsnew(content);
+    group->memory = merged;
+    if (task->fold_read_files)
+    {
+        sdsfree(task->fold_read_files);
+        task->fold_read_files = NULL;
+    }
+    if (task->fold_modified_files)
+    {
+        sdsfree(task->fold_modified_files);
+        task->fold_modified_files = NULL;
+    }
     /* Wall-clock about the memory: first write + last write. The covered-to bound is
      * refreshed only where the cut really advanced (below), so a landing that wrote the
      * memory without folding anything does not claim new coverage. */
