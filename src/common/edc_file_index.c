@@ -72,8 +72,6 @@ static bool prefix_ci(const char *name, const char *prefix, size_t plen)
 static void list_cb(const char *name, int type, void *ud)
 {
     struct list_ctx *c = ud;
-    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
-        return;
     if (c->n >= EDC_FILES_MAX_RESULTS)
         return;
     if (!prefix_ci(name, c->prefix, c->plen))

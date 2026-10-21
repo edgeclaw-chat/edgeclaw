@@ -210,8 +210,6 @@ struct edc_skills_foreach_ctx
 static void edc_skills_foreach_cb(const char *name, int type, void *userdata)
 {
     struct edc_skills_foreach_ctx *ctx = (struct edc_skills_foreach_ctx *)userdata;
-    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
-        return;
 
     sds full_path = edc_path_join(ctx->dir_path, name, "SKILL.md", NULL);
     struct edc_skill *skill = edc_skill_load(name, full_path, ctx->dir_path, ctx->conf);

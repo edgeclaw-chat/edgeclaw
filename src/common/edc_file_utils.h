@@ -43,6 +43,10 @@ bool edc_file_is_regular(const char *path);
 
 bool edc_dir_create_with_parents(const char *path, int mode, EdcError **error);
 
+/* Visit every entry of |path| except "." and ".." -- they name the directory itself and
+ * its parent, no caller ever wanted them, and three of them filtered them out with their
+ * own copy of the test. |name| is an entry name, not a path: join it with edc_path_join().
+ * |type| is one of the UV_DIRENT_* values (UNKNOWN when the platform does not say). */
 typedef void (*edc_dir_entry_cb)(const char *name, int type, void *userdata);
 bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata, EdcError **error);
 

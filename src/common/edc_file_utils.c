@@ -334,6 +334,14 @@ bool edc_dir_create_with_parents(const char *path, int mode, EdcError **error)
     return true;
 }
 
+/* "." and ".." are on every directory listing and no caller means them: three callers
+ * used to filter them out with their own copy of this test, and a fourth (the list_dir
+ * tool) showed them to the model as if they were entries. */
+static bool edc_dir_entry_is_dot(const char *name)
+{
+    return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
+}
+
 bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata, EdcError **error)
 {
 #ifdef _WIN32
@@ -350,6 +358,9 @@ bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata, EdcE
 
     do
     {
+        if (edc_dir_entry_is_dot(fd.cFileName))
+            continue;
+
         int type = UV_DIRENT_UNKNOWN;
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
             type = UV_DIRENT_DIR;
@@ -371,6 +382,9 @@ bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata, EdcE
     struct dirent *entry;
     while ((entry = readdir(dir)))
     {
+        if (edc_dir_entry_is_dot(entry->d_name))
+            continue;
+
         int type = UV_DIRENT_UNKNOWN;
         if (entry->d_type == DT_DIR)
             type = UV_DIRENT_DIR;

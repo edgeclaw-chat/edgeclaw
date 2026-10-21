@@ -505,6 +505,78 @@ static void test_normal_form(void)
     else
         passed++;
 }
+/* ── edc_dir_foreach skips "." and ".." ───────────────────────────────────── */
+
+struct names_ctx
+{
+    int n;
+    char seen[8][64];
+};
+
+static void collect_cb(const char *name, int type, void *ud)
+{
+    struct names_ctx *c = ud;
+    (void)type;
+    if (c->n < 8)
+        snprintf(c->seen[c->n++], sizeof(c->seen[0]), "%s", name);
+}
+
+static bool seen_has(const struct names_ctx *c, const char *name)
+{
+    for (int i = 0; i < c->n; i++)
+        if (strcmp(c->seen[i], name) == 0)
+            return true;
+    return false;
+}
+
+/* The listing leaves out "." and ".." itself now. Three callers filtered them out with
+ * their own copy of the test (the @ completion, the skills scan, the mention listing) and
+ * a fourth -- the list_dir tool -- showed them to the model as if they were entries, so
+ * the rule belongs to the traversal, not to four call sites. */
+static void test_dir_foreach(void)
+{
+    char dir[512], f1[600], f2[600];
+
+    if (!scratch(dir, sizeof(dir), "ls"))
+    {
+        fail("cannot build a scratch path");
+        return;
+    }
+    EdcError *error = NULL;
+    if (!edc_dir_create_with_parents(dir, 0755, &error))
+    {
+        fail("mkdir_p(%s): %s", dir, error ? error->message : "?");
+        if (error)
+            edc_error_free(error);
+        return;
+    }
+
+    snprintf(f1, sizeof(f1), "%s%ca.txt", dir, PATH_SEP);
+    snprintf(f2, sizeof(f2), "%s%cb.txt", dir, PATH_SEP);
+    write_text(f1, "a\n");
+    write_text(f2, "b\n");
+
+    struct names_ctx c;
+    memset(&c, 0, sizeof(c));
+    error = NULL;
+    const bool ok = edc_dir_foreach(dir, collect_cb, &c, &error);
+    if (!ok)
+        fail("edc_dir_foreach(%s): %s", dir, error ? error->message : "?");
+    else
+        passed++;
+    if (error)
+        edc_error_free(error);
+
+    if (seen_has(&c, ".") || seen_has(&c, ".."))
+        fail("the listing contains \".\" or \"..\": %.64s", c.n > 0 ? c.seen[0] : "");
+    else
+        passed++;
+    if (!seen_has(&c, "a.txt") || !seen_has(&c, "b.txt"))
+        fail("the listing is missing the real entries");
+    else
+        passed++;
+}
+
 int main(void)
 {
     uv_loop_t loop;
@@ -521,6 +593,7 @@ int main(void)
     test_mkdir_p();
     test_index_query();
     test_normal_form();
+    test_dir_foreach();
 
     uv_loop_close(&loop);
 
