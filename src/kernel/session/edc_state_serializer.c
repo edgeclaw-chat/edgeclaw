@@ -953,14 +953,15 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
         if (is_orph)
             group->is_orphaned = true;
         /* The kind travels with the group (v12): only its creator knows it, and an L2
-         * curation task leads a system group exactly like an L1 fold task does. A v11
-         * archive has no key -- keep the old derivation for it, widened to both memory
-         * sinks so a curation-led group is not mistaken for a user group. */
+         * curation task leads a system group exactly like an L1 fold task does. There is
+         * deliberately no fallback inferring it from the leader sink: an archive written
+         * before v12 simply has no system group until one is created again. */
         const char *kind_name = cJSON_GetStringValue(cJSON_GetObjectItem(gj, "kind"));
         if (kind_name)
             group->kind = edc_task_group_classify_kind(kind_name);
-        else if (edc_task_is_memory_sink(leader))
-            group->kind = EDC_GROUP_KIND_SYSTEM;
+        else
+            log_debug("deserialize: group %s carries no kind (pre-v12 archive) -- user group",
+                      group_id ? group_id : "?");
 
         {
             cJSON *mem = cJSON_GetObjectItem(gj, "memory");
