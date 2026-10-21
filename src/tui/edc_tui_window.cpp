@@ -1233,6 +1233,18 @@ bool TUIWindow::HandlePasteEvent(::ftxui::Event event)
         paste_buffer_ += event.character();
         return true;
     }
+    /* A control byte is text inside a paste. The parser reports TAB -- and the rest of the
+     * C0 range -- as Event::Special, and ignoring those welded the words on both sides of
+     * every tab together: a pasted `git ls-files --eol patches/x.patch` line came out as
+     * `--eolpatches/x.patch`, unrecoverable once sent. Escape sequences (arrows, mouse
+     * reports, the paste terminator) are not text and stay ignored. */
+    const std::string &paste_input = event.input();
+    if (paste_input.size() == 1 && paste_input[0] != '\x1b' &&
+        static_cast<unsigned char>(paste_input[0]) < 0x20)
+    {
+        paste_buffer_ += paste_input[0];
+        return true;
+    }
     return false; // mouse / wheel keep their normal meaning
 }
 
