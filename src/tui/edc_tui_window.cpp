@@ -219,9 +219,18 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     // (TaskWidget) with the todo list (TodoWidget) stacked under it. Both sections
     // are always present (an empty list still shows its "▾/▸ Todos 0/0" header, so
     // the sidebar is stable from startup) and take only their natural height.
-    // ResizableSplit keeps "main" on the right at a drag-adjustable width; the
-    // separator is a blank column, so the sidebar stays borderless but grabbable.
-    auto main_area = ::ftxui::Renderer(container_, [this] { return RenderMain(); });
+    // ResizableSplit keeps "main" on the right at a drag-adjustable width; its
+    // separator is style::split_gutter, so the sidebar stays borderless while the
+    // seam between the two panes is still findable (and grabbable).
+    /* The whole left pane wears pane_bg, in one piece. RenderMain paints the panel's
+     * contents, but only the message bubbles carry a background of their own: every
+     * other row (the input box, the footer, the working bar, the blank line under it,
+     * the space below the last message) used to fall through to the backdrop. That is
+     * what made the pane look like loose blocks on the terminal's own colour instead
+     * of one panel -- and the pane's edge could not be located at all. */
+    auto main_area = ::ftxui::Renderer(container_, [this] {
+        return RenderMain() | ::ftxui::bgcolor(style::palette().pane_bg);
+    });
     // The sidebar column is a real component (ui::SidebarView, built in
     // edc_sidebar.cpp) so a test can compose the very same layout: both sections
     // fit-content with their headers pinned, the tree anchored to its bottom --
@@ -234,7 +243,7 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
         main_area,                          // back (left pane)
         ::ftxui::Direction::Right,          // direction
         &sidebar_width_,                    // main_size
-        [] { return ::ftxui::text("  "); }, // subtle separator, drag grab area
+        style::split_gutter,                // gutter + hairline, and the drag grab area
     });
     Add(split_);
 

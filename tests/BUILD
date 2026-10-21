@@ -947,6 +947,7 @@ cc_test(
     srcs = ["test_theme.cpp"],
     deps = [
         "//src/tui:tui",
+        "@ftxui//:dom",
         "@ftxui//:screen",
     ],
     linkstatic = True,

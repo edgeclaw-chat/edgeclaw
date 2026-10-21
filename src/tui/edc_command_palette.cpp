@@ -503,7 +503,12 @@ namespace edc::ui
                            ? "  @ files · Tab: enter directory / complete · Esc close"
                            : "  ↑↓ move · Tab complete · Esc close";
     rows.push_back(text(hint) | xflex | color(pal.text_dim));
-    return vbox(std::move(rows)) | bgcolor(pal.pane_bg);
+    /* A raised surface, not the pane's: the popup is drawn OVER the chat, which paints
+     * pane_bg from edge to edge -- a pane_bg popup would sink into it without a trace.
+     * dialog_bg is the palette's "this floats" tone (the same one the toast chip and
+     * the setup modal wear); the popup's bottom edge is the input's accent rule, so the
+     * block is closed on the side the eye needs. */
+    return vbox(std::move(rows)) | bgcolor(pal.dialog_bg);
 }
 
 } // namespace edc::ui
