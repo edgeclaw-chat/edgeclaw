@@ -9,6 +9,7 @@
  * absolute one must resolve regardless. Kept free of /tmp and mkdtemp so it runs on every
  * platform -- tests/test_session_workdir.c hardcodes /tmp and cannot run on Windows. */
 #include "edc_compat.h"
+#include "edc_path.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
 #include "edc_session.h"

@@ -1,6 +1,7 @@
 ﻿#include "edc_sandbox.h"
 #include "edc_path_guard.h"
 #include "edc_compat.h"
+#include "edc_path.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
 #include "log.h"

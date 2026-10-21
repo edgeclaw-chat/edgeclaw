@@ -16,6 +16,7 @@
  * Free of /tmp and mkdtemp so it can run on Windows: the scratch directory comes from
  * TMPDIR -> TEMP -> TMP -> /tmp, named after the pid (compare test_path_absolute.c). */
 #include "edc_compat.h"
+#include "edc_path.h"
 #include "edc_error.h"
 #include "edc_file_index.h"
 #include "edc_file_utils.h"
@@ -389,12 +390,121 @@ static void test_index_query(void)
     char q[600];
     snprintf(q, sizeof(q), "%s%c", root, PATH_SEP);
     rows = edc_file_index_query(root, q, buf, sizeof(buf));
-    if (rows == 0 || !strstr(buf, alpha))
-        fail("an absolute query should emit absolute rows containing %s: %s", alpha, buf);
+    /* rows are emitted in DISPLAY form, so on Windows the absolute row carries '/' */
+    sds alpha_disp = edc_path_display(alpha);
+    if (rows == 0 || !strstr(buf, alpha_disp ? alpha_disp : alpha))
+        fail("an absolute query should emit absolute rows containing %s: %s", alpha_disp ? alpha_disp : alpha,
+             buf);
+    else
+        passed++;
+    if (alpha_disp)
+        sdsfree(alpha_disp);
+}
+
+/* ── the normal form (edc_path_norm / _abs / _display / _equal) ─────────── */
+
+static void expect_norm(const char *in, const char *want)
+{
+    /* |want| is written in display form ('/' for every separator) so ONE table covers both
+     * platforms: the normal form uses the platform's separator, which is what this turns
+     * the expectation into. |in| stays as written -- that is the input. */
+    sds native = sdsnew(want);
+    for (size_t i = 0; i < sdslen(native); i++)
+        if (native[i] == '/')
+            native[i] = PATH_SEP;
+
+    sds got = edc_path_norm(in);
+    expect_str(got ? got : "(null)", native, in && in[0] ? in : "(empty)");
+    if (got)
+        sdsfree(got);
+    sdsfree(native);
+}
+
+/* The normal form is the promise the rest of the program relies on: one spelling per
+ * directory, so a comparison, a dedup or a cache key can be a plain string compare.
+ * It is lexical on purpose (edc_path.h says so): a path that does not exist yet still
+ * has a normal form, which is what a write needs. */
+static void test_normal_form(void)
+{
+    expect_norm("/a//b/", "/a/b");
+    expect_norm("/a/./b", "/a/b");
+    expect_norm("/a/b/../c", "/a/c");
+    expect_norm("/", "/");
+    expect_norm(".", ".");
+    expect_norm("", ".");
+    expect_norm("a/b", "a/b");
+
+    /* An absolute path stops at its root: "/.." is "/", never "..". */
+    expect_norm("/..", "/");
+    expect_norm("/a/../../b", "/b");
+
+    /* A relative one keeps what it cannot cancel. */
+    expect_norm("../a", "../a");
+    expect_norm("a/../../b", "../b");
+
+#ifdef _WIN32
+    /* One spelling: platform separators, no trailing one, except for a root. */
+    expect_norm("D:/ws/x", "D:\\ws\\x");
+    expect_norm("D:\\ws\\", "D:\\ws");
+    expect_norm("D:\\", "D:\\");         /* the drive root keeps its separator */
+    expect_norm("D:\\a\\..\\b", "D:\\b");
+    expect_norm("\\\\srv\\share\\a\\..", "\\\\srv\\share");
+    expect_norm("C:a\\..\\b", "C:b");    /* drive-RELATIVE stays drive-relative */
+#else
+    expect_norm("//a//b", "/a/b");
+    expect_norm("/a\\b", "/a\\b");        /* '\\' is an ordinary character here */
+#endif
+
+    /* edc_path_abs: an absolute path is never joined onto the base (that is the bug it
+     * replaced), a relative one always is. */
+#ifdef _WIN32
+    sds a = edc_path_abs("D:\\ws", "D:\\ws\\x");
+    expect_str(a, "D:\\ws\\x", "abs(D:\\ws, D:\\ws\\x)");
+    sdsfree(a);
+    a = edc_path_abs("D:\\ws", "sub\\f.txt");
+    expect_str(a, "D:\\ws\\sub\\f.txt", "abs(D:\\ws, sub\\f.txt)");
+    sdsfree(a);
+    a = edc_path_abs(NULL, "C:\\x");
+    expect_str(a, "C:\\x", "abs(NULL, C:\\x)");
+    sdsfree(a);
+    /* display form: what goes into the input box / a mention */
+    a = edc_path_display("D:\\ws\\src\\main.c");
+    expect_str(a, "D:/ws/src/main.c", "display(D:\\ws\\src\\main.c)");
+    sdsfree(a);
+    /* equal: up to normal form, and case-insensitively */
+    if (!edc_path_equal("D:\\ws", "d:/ws") || !edc_path_equal("D:\\ws\\", "D:\\ws") ||
+        edc_path_equal("D:\\ws", "D:\\ws2") || edc_path_equal(NULL, "D:\\ws"))
+        fail("edc_path_equal is wrong on Windows-shaped paths");
+    else
+        passed++;
+#else
+    sds a = edc_path_abs("/ws", "/ws/x");
+    expect_str(a, "/ws/x", "abs(/ws, /ws/x)");
+    sdsfree(a);
+    a = edc_path_abs("/ws", "sub/f.txt");
+    expect_str(a, "/ws/sub/f.txt", "abs(/ws, sub/f.txt)");
+    sdsfree(a);
+    a = edc_path_abs(NULL, "/x");
+    expect_str(a, "/x", "abs(NULL, /x)");
+    sdsfree(a);
+    a = edc_path_display("/ws/src/main.c");
+    expect_str(a, "/ws/src/main.c", "display keeps POSIX paths");
+    sdsfree(a);
+    if (!edc_path_equal("/ws/", "/ws") || edc_path_equal("/ws", "/ws2") || edc_path_equal(NULL, "/ws"))
+        fail("edc_path_equal is wrong on POSIX-shaped paths");
+    else
+        passed++;
+#endif
+
+    if (edc_path_norm(NULL) != NULL)
+        fail("norm(NULL) should be NULL");
+    else
+        passed++;
+    if (edc_path_display(NULL) != NULL)
+        fail("display(NULL) should be NULL");
     else
         passed++;
 }
-
 int main(void)
 {
     uv_loop_t loop;
@@ -410,6 +520,7 @@ int main(void)
     test_join_and_dirname();
     test_mkdir_p();
     test_index_query();
+    test_normal_form();
 
     uv_loop_close(&loop);
 

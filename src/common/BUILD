@@ -32,16 +32,20 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+# Path semantics (edc_path.h/.c) live in this target rather than their own: every one of
+# these files is built on them, and edc_path.c needs nothing they do not already pull in.
 cc_library(
     name = "edc_file_utils",
     srcs = [
         "edc_file_index.c",
         "edc_file_utils.c",
+        "edc_path.c",
         "edc_path_guard.c",
     ],
     hdrs = [
         "edc_file_index.h",
         "edc_file_utils.h",
+        "edc_path.h",
         "edc_path_guard.h",
     ],
     includes = ["."],

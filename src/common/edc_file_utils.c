@@ -1,6 +1,7 @@
 ﻿#include "edc_file_utils.h"
 #include "edc_path_guard.h"
 #include "edc_compat.h"
+#include "edc_path.h"
 
 #include <dirent.h>
 #include <errno.h>

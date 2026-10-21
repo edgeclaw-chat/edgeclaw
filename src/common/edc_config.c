@@ -1,6 +1,7 @@
 ﻿#include "edc_config.h"
 #include "cJSON.h"
 #include "edc_compat.h"
+#include "edc_path.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
 #include "edc_init_env.h"
@@ -135,26 +136,35 @@ static void sds_array_add_unique(sds **arrp, const char *s)
  * directory appears), and dropping it would silently widen the policy. */
 static sds sandbox_path_canonical(sds entry)
 {
-    if (!entry || entry[0] != '/')
+    /* Only an absolute entry is a sandbox path at all. "Absolute" has to be ASKED, not
+     * guessed from a leading '/': on Windows that guess was false for every entry, so
+     * these lists were never canonicalised there at all -- the trailing backslash
+     * stayed, the symlink stayed, and the strcmp dedup below missed the duplicates it
+     * exists to catch. */
+    if (!entry || !entry[0] || !edc_path_is_absolute(entry))
         return entry;
 
     char *rp = realpath(entry, NULL);
     if (rp)
     {
-        sds out = sdsnew(rp); /* also strips a trailing slash and any symlink */
+        /* edc_path_norm() rather than sdsnew(): one spelling on every platform --
+         * platform separators, no trailing one, no dot segments. */
+        sds out = edc_path_norm(rp);
         free(rp);
-        sdsfree(entry);
-        return out;
+        if (out)
+        {
+            sdsfree(entry);
+            return out;
+        }
+        return entry;
     }
 
-    /* Unresolvable: trim trailing slashes so "<dir>/" and "<dir>" still compare
-     * equal. "/" itself is left alone. */
-    size_t len = sdslen(entry);
-    while (len > 1 && entry[len - 1] == '/')
-        len--;
-    if (len == sdslen(entry))
+    /* Unresolvable (a directory that does not exist yet keeps its meaning: it starts
+     * applying the moment it appears): the lexical normal form is enough for "<dir>/"
+     * and "<dir>" -- and "<dir>\" and "<dir>" -- to compare equal. */
+    sds out = edc_path_norm(entry);
+    if (!out)
         return entry;
-    sds out = sdsnewlen(entry, len);
     sdsfree(entry);
     return out;
 }

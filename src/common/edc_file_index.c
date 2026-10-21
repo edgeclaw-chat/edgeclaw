@@ -1,5 +1,6 @@
 #include "edc_file_index.h"
 #include "edc_compat.h"
+#include "edc_path.h"
 
 #include "edc_file_utils.h"
 #include "sds.h"
@@ -247,8 +248,15 @@ size_t edc_file_index_query(const char *root, const char *query, char *buf, size
             }
         }
 
-        const int need = snprintf(buf + used, cap - used, "%s%s\t%c\n", path, ctx.hits[i].dir ? "/" : "",
-                                  ctx.hits[i].dir ? 'd' : 'f');
+        /* Emitted in DISPLAY form: this text is what the picker writes into the input box
+         * and what the mention pass later resolves, so it reads the same on both
+         * platforms -- a Windows row comes out as "src/sub/" and not as "src\sub\".
+         * The directory marker stays '/' for the same reason. */
+        sds shown = edc_path_display(path);
+        const int need = snprintf(buf + used, cap - used, "%s%s\t%c\n", shown ? shown : path,
+                                  ctx.hits[i].dir ? "/" : "", ctx.hits[i].dir ? 'd' : 'f');
+        if (shown)
+            sdsfree(shown);
         if (need < 0 || (size_t)need >= cap - used)
             break;
         used += (size_t)need;

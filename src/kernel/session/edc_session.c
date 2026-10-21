@@ -1,6 +1,7 @@
 ﻿#include "edc_session.h"
 #include "edc_session_memory.h"
 #include "edc_compat.h"
+#include "edc_path.h"
 #include "edc_config.h"
 #include "edc_context.h"
 #include "edc_datetime_utils.h"
@@ -126,10 +127,13 @@ sds edc_session_resolve_workdir(const char *base, const char *workdir, EdcError 
         return NULL;
     }
 
-    sds out = sdsnew(resolved);
+    /* Normal form at the boundary: everything downstream (the tools' path anchoring,
+     * the sandbox lists, the prompt) then sees one spelling of the same directory --
+     * no trailing separator, no mixed ones. */
+    sds out = edc_path_norm(resolved);
     free(resolved);
     sdsfree(candidate);
-    return out;
+    return out ? out : sdsnew(".");
 }
 
 struct edc_session *edc_session_new_with_workdir(struct edc_config *config, const char *session_id, const char *name,

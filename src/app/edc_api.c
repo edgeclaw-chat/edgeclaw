@@ -18,6 +18,7 @@
  * C++-safe (`edc_api.h` and `edc_app.h` share the rule: include no sds header). */
 #include "edc_api.h"
 #include "edc_compat.h"
+#include "edc_path.h"
 #include "edc_sandbox.h"
 #include "edc_file_index.h"
 #include "edc_path_guard.h"
