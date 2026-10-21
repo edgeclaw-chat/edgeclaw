@@ -509,6 +509,17 @@ cc_test(
 )
 
 cc_test(
+    name = "test_path_absolute",
+    srcs = ["test_path_absolute.c"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_session_workdir",
     srcs = ["test_session_workdir.c"],
     deps = [

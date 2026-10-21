@@ -138,6 +138,13 @@ static inline char *win32_realpath(const char *path, char *resolved)
 
 /* ---- environment ---- */
 #define unsetenv(name) SetEnvironmentVariable(name, NULL)
+static inline int win32_setenv(const char *name, const char *value, int overwrite)
+{
+    (void)overwrite;
+    SetEnvironmentVariable(name, value);
+    return _putenv_s(name, value) == 0 ? 0 : -1;
+}
+#define setenv(name, value, overwrite) win32_setenv(name, value, overwrite)
 
 /* ---- binary mode flag (Windows text-mode open() breaks binary I/O) ---- */
 #ifndef O_BINARY
@@ -296,5 +303,27 @@ typedef ssize_t gssize;
 #ifdef _WIN32
 #define timegm _mkgmtime
 #endif
+
+/* True when |path| names an absolute path on this platform: a leading slash or, on
+ * Windows, a leading backslash (rooted or UNC) or a drive prefix like "C:\" or "C:/".
+ * Callers that anchor a user-supplied path at a base must ask this instead of testing
+ * path[0] == slash, or an absolute Windows path gets joined onto the base
+ * ("D:\ws" resolved against "D:\ws" became "D:\ws\D:\ws"). */
+static inline bool edc_path_is_absolute(const char *path)
+{
+    if (!path || !path[0])
+        return false;
+    if (path[0] == '/')
+        return true;
+#ifdef _WIN32
+    if (path[0] == '\\')
+        return true;
+    const char drive = path[0];
+    const bool is_letter = (drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z');
+    return is_letter && path[1] == ':' && (path[2] == '\\' || path[2] == '/');
+#else
+    return false;
+#endif
+}
 
 #endif /* EDC_COMPAT_H */

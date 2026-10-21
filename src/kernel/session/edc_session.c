@@ -88,7 +88,7 @@ sds edc_session_resolve_workdir(const char *base, const char *workdir, EdcError 
         candidate = workdir[1] ? edc_path_join(home, workdir + 2, NULL) : sdsnew(home);
         sdsfree(home);
     }
-    else if (workdir[0] == '/')
+    else if (edc_path_is_absolute(workdir))
     {
         candidate = sdsnew(workdir);
     }
