@@ -80,11 +80,13 @@ static void shell_ctx_destroy(struct edc_tool_shell_ctx *ctx)
     free(ctx);
 }
 
-/* Kill the child's whole process group. The child is spawned with UV_PROCESS_DETACHED, so
- * setsid() made it the leader of its own group (pgid == pid): signalling the GROUP is what
- * also takes down grandchildren -- for `sh -c 'a && sudo b'` killing only `/bin/sh` would
- * leave the grandchild running and holding stdout/stderr open. uv_process_kill() is kept as
- * a fallback in case the group signal did not land (e.g. the group is already gone). */
+/* Kill the child's whole process group. On POSIX the child is spawned with
+ * UV_PROCESS_DETACHED, so setsid() made it the leader of its own group (pgid == pid):
+ * signalling the GROUP is what also takes down grandchildren -- for `sh -c 'a && sudo b'`
+ * killing only `/bin/sh` would leave the grandchild running and holding stdout/stderr open.
+ * uv_process_kill() is kept as a fallback in case the group signal did not land (e.g. the
+ * group is already gone). Windows has no process groups here (and the child is not
+ * detached: see the spawn flags below), so only the child itself is terminated. */
 static void shell_ctx_kill_group(struct edc_tool_shell_ctx *ctx)
 {
     if (!ctx || ctx->child_exited)
@@ -345,18 +347,31 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
     uv_process_options_t options = {0};
     options.exit_cb = on_shell_exit;
     /*
-     * Run the child in its own session (setsid, via libuv UV_PROCESS_DETACHED)
-     * so that it has NO controlling terminal. stdin is already /dev/null, but
-     * interactive tools ignore stdin and prompt on /dev/tty instead (sudo,
-     * ssh, git without GIT_TERMINAL_PROMPT=0, apt, ...). While the child
-     * inherited our terminal those prompts were written straight over the TUI
-     * and then blocked on a read nobody could answer, so the tool call hung
-     * until its timeout and the screen was left garbled. Detached,
+     * POSIX: run the child in its own session (setsid, via libuv
+     * UV_PROCESS_DETACHED) so that it has NO controlling terminal. stdin is
+     * already /dev/null, but interactive tools ignore stdin and prompt on
+     * /dev/tty instead (sudo, ssh, git without GIT_TERMINAL_PROMPT=0, apt, ...).
+     * While the child inherited our terminal those prompts were written straight
+     * over the TUI and then blocked on a read nobody could answer, so the tool
+     * call hung until its timeout and the screen was left garbled. Detached,
      * open("/dev/tty") fails and the command aborts immediately with a message
      * ("sudo: no tty present and no askpass program specified") that reaches
      * the model on stderr, which can then retry without an interactive step.
+     *
+     * Windows: DETACHED_PROCESS has the same name but a different effect --
+     * libuv maps UV_PROCESS_DETACHED to DETACHED_PROCESS, and a console program
+     * started that way (powershell.exe here) exits without writing to the
+     * redirected stdout/stderr pipes: every call returned an empty result.
+     * UV_PROCESS_WINDOWS_HIDE gives what we actually want -- no console window,
+     * no interactive prompt surfaces -- while keeping the redirected pipes
+     * connected. It also leaves the child in libuv's job object, so it does not
+     * outlive the app.
      */
+#ifdef _WIN32
+    options.flags |= UV_PROCESS_WINDOWS_HIDE;
+#else
     options.flags |= UV_PROCESS_DETACHED;
+#endif
 
     const char *spawn_file = NULL;
     char **spawn_args = NULL;
